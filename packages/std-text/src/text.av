@@ -3,12 +3,13 @@
 //! A `Text` grows in linear time: pieces are kept apart and joined
 //! once, so a scanner copies runs instead of growing a string by one
 //! character (which is quadratic). `repeat`, `pad_left` and
-//! `pad_right` shape a column — width measured in code points, so a
-//! name with an `é` aligns. `lines` and `indent` treat text as rows.
+//! `pad_right` shape a column — width measured in cells, so a name
+//! with an `é` or a wide glyph aligns. `lines` and `indent` treat text as rows.
 //! The code-point walk (`codepoints`, `chars`, `codepoint_count`)
 //! reads UTF-8 by its lead bytes, so a byte scanner and a character
 //! count never disagree inside the walk; `from_codepoint` writes one
-//! back. A code point of 0 mints a NUL, and every verb here reads the
+//! back. `graphemes` and `cells` read text as a terminal draws it: clusters
+//! of code points, and the columns each takes. A code point of 0 mints a NUL, and every verb here reads the
 //! header rather than stopping at it, so a NUL is an ordinary
 //! character: text carrying one is longer than its prefix and unequal
 //! to it. `nul_at` and `has_nul` guard the C seats, where it is not.
@@ -88,15 +89,15 @@ export fn repeat(s: string, n: int) -> string {
     out.built()
 }
 
-/// `s` followed by spaces up to `width` code points — as it is when
-/// already that wide.
+/// `s` followed by spaces up to `width` cells — as it is when already
+/// that wide.
 export fn pad_right(s: string, width: int) -> string {
-    s + repeat(" ", width - codepoint_count(s))
+    s + repeat(" ", width - cells(s))
 }
 
-/// Spaces then `s`, `width` code points in all.
+/// Spaces then `s`, `width` cells in all.
 export fn pad_left(s: string, width: int) -> string {
-    repeat(" ", width - codepoint_count(s)) + s
+    repeat(" ", width - cells(s)) + s
 }
 
 /// The rows of a text: split at newlines, a final newline closing

@@ -6,7 +6,7 @@
 use core.{flatten, Span}
 use @std.errors.{Loc}
 use @std.grammar.{Diagnostic, Cause}
-use diagnostics.{Diag, DiagCode, error_at, registered, loc_at, defect_at, defect_kind}
+use diagnostics.{Diag, DiagCode, Remedy, error_at, registered, loc_at, defect_at, defect_kind}
 
 /// One engine cause's projection row.
 type EngineCode = { cause: Cause, kind: string, summary: string }
@@ -22,11 +22,6 @@ fn engine_codes() -> List<EngineCode> {
             cause: Cause.Expected,
             kind: "parse.expected",
             summary: "the parse needed a token that is not there",
-        },
-        EngineCode {
-            cause: Cause.Trailing,
-            kind: "parse.trailing",
-            summary: "input remains after the program ended",
         },
         EngineCode {
             cause: Cause.Builder,
@@ -50,7 +45,11 @@ fn engine_codes() -> List<EngineCode> {
 /// Codes the driver's passes emit.
 fn pass_codes() -> List<DiagCode> {
     let rows = [
-        DiagCode { kind: "resolve.unresolved", summary: "a name is not defined" },
+        DiagCode {
+            kind: "resolve.unresolved",
+            summary: "a name is not defined",
+            remedy: Remedy.Fix,
+        },
         DiagCode { kind: "resolve.use_before_def", summary: "a name is used before its definition" },
         DiagCode {
             kind: "resolve.hole_bound",
@@ -113,14 +112,51 @@ export const builtin_codes: List<DiagCode> = [DiagCode { kind: r.kind, summary: 
 /// The dotted kind an engine cause projects to — a defect when the
 /// registry has no row for it.
 fn kind_for(c: Cause) -> string {
-    engine_codes().find(it.cause == c)?.kind ?? defect_kind
+    // A parse that stops short is the expectation it breaks.
+    let said = match c { .Trailing -> Cause.Expected, rest -> c }
+    engine_codes().find(it.cause == said)?.kind ?? defect_kind
 }
 
 /// One engine diagnostic in language currency. A defect names its
-/// subject up front; parse messages already carry their rule.
+/// subject up front; a parse voice states the law and, where it has one,
+/// its help.
 export fn project(d: Diagnostic, file: string?) -> Diag {
-    let message = if d.cause is .Defect { in_rule(d) } else { d.message }
-    error_at(kind_for(d.cause), loc_at(file, engine_span(d.loc)), message)
+    error_at(kind_for(d.cause), loc_at(file, engine_span(d.loc)), message_of(d)) with { help: help_of(d) }
+}
+
+/// More alternatives than a reader weighs at a glance — the message
+/// then states the law and the help lists the leading ones.
+const crowded: int = 8
+
+/// The words a reader gets: a defect with its rule, a crowded
+/// expectation as the law it breaks, every other cause as the engine said it.
+fn message_of(d: Diagnostic) -> string {
+    match d.cause {
+        .Defect -> in_rule(d),
+        .Expected -> if d.expected.length > crowded { "this cannot start or continue a `${d.in_rule}`" } else { d.message },
+        .Lex or .Trailing or .Builder or .Block -> d.message,
+    }
+}
+
+/// What the reader can do. A builder's own words are its claim and a
+/// defect is the compiler's, so neither is advised here; a block is the
+/// grammar its word declares, which says what it wants.
+fn help_of(d: Diagnostic) -> string? {
+    match d.cause {
+        .Lex -> "no token starts with this character — remove it, or put it inside a string",
+        .Expected -> expected_help(d),
+        .Trailing -> "the program ended before this — an extra closing `}` or `)` is the usual cause",
+        .Block -> "the block is parsed by the grammar its word declares — write the shape that grammar names",
+        .Builder or .Defect -> null,
+    }
+}
+
+fn expected_help(d: Diagnostic) -> string {
+    if d.expected.length <= crowded {
+        return "the parse stopped here — a missing or misplaced token just before this point is the usual cause"
+    }
+    let more = d.expected.length - crowded
+    "it could begin with ${d.expected.take(crowded).join(", ")} — and ${more} more"
 }
 
 /// The engine's own Loc, worn as a Span — its `file` is always null

@@ -1,0 +1,124 @@
+//! `@std/http_message` — the HTTP message as a VALUE. A request here is
+//! data: it names what to ask and of whom, and nothing about how it is
+//! sent. A client sends it (`@std/http`'s `send`), a page's host sends it
+//! with its own `fetch`, and a test reads it back — one type, so what a
+//! program asks is the same value on every target, inspectable and
+//! replayable.
+//!
+//! NOTHING HERE OPENS A SOCKET, PARKS A TASK OR READS A CLOCK, so a page's
+//! program may depend on it. A wait is a `Duration`. A body is data too: a
+//! stream (a closure) is `@std/http`'s own extra, never part of the value.
+use @std.time.{Duration}
+
+use @std.url.{encoded as percent_encoded}
+
+/// The nine methods RFC 9110 registers, and `Other` for a token this
+/// framer read and does not name — a method is extensible, so an
+/// unknown one is well formed and not a refusal.
+export enum Method { Get, Head, Post, Put, Delete, Patch, Options, Connect, Trace, Other }
+
+impl Method {
+    /// The method as a request line spells it.
+    fn word() -> string {
+        match self {
+            .Get -> "GET",
+            .Head -> "HEAD",
+            .Post -> "POST",
+            .Put -> "PUT",
+            .Delete -> "DELETE",
+            .Patch -> "PATCH",
+            .Options -> "OPTIONS",
+            .Connect -> "CONNECT",
+            .Trace -> "TRACE",
+            .Other -> "GET",
+        }
+    }
+}
+
+/// One field of a message: its name and its value.
+export type Header = { name: string, value: string }
+
+impl Header {
+    /// Whether this header is named `name`, ASCII-folded as field names
+    /// compare.
+    fn named(name: string) -> bool {
+        let b = self.name.trim().bytes()
+        b.ieq_at(0, b.length, name.bytes())
+    }
+}
+
+/// What a request carries, whole. `Json` holds the document already
+/// written as text; `Octets` names its own content type.
+export enum Body {
+    Empty
+    Text(text: string)
+    Json(text: string)
+    Form(fields: List<Header>)
+    Octets(bytes: Bytes, kind: string)
+}
+
+/// One request: the method, the URL it is made to, the fields it carries,
+/// its body, how long it may take in all (none: the sender's own bound)
+/// and how many times a dropped one may be asked again.
+export type Request = {
+    method: Method,
+    url: string,
+    headers: List<Header> = [],
+    body: Body = .Empty,
+    timeout: Duration? = null,
+    retries: int = 0,
+}
+
+/// A body as it travels: its content type (none for an empty one) and its
+/// octets, whole.
+export type Encoded = { kind: string, bytes: Bytes }
+
+impl Body {
+    /// The body as it is sent: text names its charset, JSON is the text it
+    /// holds, a form is its fields percent-encoded as query parameters
+    /// joined by `&`, octets bring their own type.
+    fn encoded() -> Encoded {
+        match self {
+            .Empty -> Encoded { kind: "", bytes: "".bytes() },
+            .Text(text) -> Encoded { kind: "text/plain; charset=utf-8", bytes: text.bytes() },
+            .Json(text) -> Encoded { kind: "application/json", bytes: text.bytes() },
+            .Form(fields) -> Encoded {
+                kind: "application/x-www-form-urlencoded",
+                bytes: [form_pair(f) for f in fields].join("&").bytes(),
+            },
+            .Octets(bytes, kind) -> Encoded { kind: kind, bytes: bytes },
+        }
+    }
+}
+
+fn form_pair(f: Header) -> string {
+    let name = percent_encoded(f.name.bytes(), .Param).text() ?? ""
+    let value = percent_encoded(f.value.bytes(), .Param).text() ?? ""
+    "${name}=${value}"
+}
+
+/// What a request is answered with: the status, the fields the answer
+/// carries and its body, whole.
+export type Reply = { status: int, headers: List<Header> = [], body: Bytes }
+
+impl Request {
+    /// A request for `url`.
+    static fn get(url: string) -> Request { Request { method: .Get, url: url } }
+
+    /// A request that sends `body` to `url`.
+    static fn post(url: string, body: Body) -> Request { Request { method: .Post, url: url, body: body } }
+
+    /// A request that replaces what stands at `url` with `body`.
+    static fn put(url: string, body: Body) -> Request { Request { method: .Put, url: url, body: body } }
+
+    /// A request that changes part of what stands at `url` by `body`.
+    static fn patch(url: string, body: Body) -> Request { Request { method: .Patch, url: url, body: body } }
+
+    /// A request that removes what stands at `url`.
+    static fn delete(url: string) -> Request { Request { method: .Delete, url: url } }
+
+    /// The request carrying one more field.
+    fn header(name: string, value: string) -> Request {
+        self with { headers: self.headers.concat([Header { name: name, value: value }]) }
+    }
+}

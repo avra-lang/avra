@@ -37,6 +37,13 @@ fi
 wasm=$(tail -1 "$work/build.out")
 [ -f "$wasm" ] || { echo "ui-board: the build named no module ($wasm)"; exit 1; }
 
+# A PAGE THAT NEITHER SPAWNS NOR WAITS LINKS NO SCHEDULER: the module imports
+# none of its port (`avra_host`) and none of the file calls its trace file
+# makes. The scheduler stays in the archive and is dropped by the linker's GC
+# unless a reachable fn parks, so a count above zero is a root that holds it.
+carried=$(node -e 'const m = new WebAssembly.Module(require("fs").readFileSync(process.argv[1])); console.log(WebAssembly.Module.imports(m).map((i) => i.module + "." + i.name).filter((n) => n.startsWith("avra_host.") || n === "wasi_snapshot_preview1.path_open").join(" "))' "$wasm")
+[ -z "$carried" ] || { echo "ui-board: the board runs no task and carries a scheduler: $carried"; exit 1; }
+
 shrunk="unshrunk (no wasm-opt on PATH)"
 command -v "${WASM_OPT:-wasm-opt}" >/dev/null 2>&1 && shrunk="shrunk by ${WASM_OPT:-wasm-opt}"
 

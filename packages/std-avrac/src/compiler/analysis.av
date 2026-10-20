@@ -3,7 +3,7 @@
 //! report, run, lower — as methods. Pass order lives in the query
 //! graph (workspace.av); this is its snapshot.
 use core.{ExprId, StmtId, DeclId, TypeId, At, joined, FileId, Binding}
-use diagnostics.{Diag, SourceFile, render, has_errors}
+use diagnostics.{Diag, SourceFile, render_among, has_errors}
 use features.{
     Decls,
     NameFacts,
@@ -15,7 +15,9 @@ use features.{
     no_assign_roots,
     SiteLowering,
     SitePlan,
+    StatePlace,
     read_set_of,
+    site_places_of,
     reads_state_of,
     hoistable_of,
     site_lowering_of,
@@ -23,6 +25,7 @@ use features.{
 }
 use compiler.lower.{Lowered}
 use @std.relation.engine.{list_cell}
+use @std.text.{chars}
 
 /// One source, fully analyzed: the tree, every pass's facts, every
 /// diagnostic in pipeline order, and the registry to render them —
@@ -35,6 +38,12 @@ export type Analysis = {
     /// calls its body makes — the program-level query a call site in
     /// any body or package asks, never a pass fact of one file.
     decl_reads: fn(DeclId) -> bool,
+    /// The `state` places a DECLARATION reaches, transitively, as sorted
+    /// `place_key`s — the same query, in full (`features/read_set.av`).
+    decl_places: fn(DeclId) -> List<int>,
+    /// The places a DECLARATION reads at paint time that no reading answers
+    /// for, transitively, as `place_key`s (`features/read_set.av`).
+    decl_structural: fn(DeclId) -> List<int>,
     lang: Language,
     diagnostics: List<Diag>,
     program: fn() -> Program,
@@ -52,7 +61,7 @@ impl Analysis {
     /// Any diagnostics rendered for the terminal — analysis's or a
     /// later stage's, one look everywhere.
     fn rendered(ds: List<Diag>) -> string {
-        joined([render(d, self.view.source) for d in ds], "\n\n")
+        joined([render_among(d, [self.view.source]) for d in ds], "\n\n")
     }
 
     /// What an expression's name resolves to, when it does — the
@@ -64,7 +73,11 @@ impl Analysis {
 
     /// The `state` places an expression's subtree reads — the read set
     /// invalidation and lowering share (`features/read_set.av`).
-    fn state_reads(e: ExprId) -> List<StmtId> { read_set_of(self.view, self.names, e) }
+    fn state_reads(e: ExprId) -> List<StatePlace> { read_set_of(self.view, self.names, e) }
+
+    /// Every place the site depends on: what it reads itself and what the
+    /// calls it makes reach.
+    fn site_places(e: ExprId) -> List<StatePlace> { site_places_of(self.view, self.names, e, self.decl_places) }
 
     /// Whether the subtree reads any state at all.
     fn reads_state(e: ExprId) -> bool { reads_state_of(self.view, self.names, e) }
@@ -72,7 +85,7 @@ impl Analysis {
     /// A subtree that reads no state and holds no call that reaches
     /// state — constant, so it hoists into the binary and the frame
     /// never mentions it.
-    fn hoistable(e: ExprId) -> bool { hoistable_of(self.view, self.names, e, self.decl_reads) }
+    fn hoistable(e: ExprId) -> bool { hoistable_of(self.view, self.names, e, self.decl_places) }
 
     /// Whether a DECLARATION reads state, directly or through any call
     /// its body makes — the interprocedural read set, keyed by the
@@ -80,12 +93,31 @@ impl Analysis {
     fn decl_reads_state(d: DeclId) -> bool { self.decl_reads(d) }
 
     /// How a site lowers, from its read set.
-    fn site_lowering(e: ExprId) -> SiteLowering { site_lowering_of(self.view, self.names, e, self.decl_reads) }
+    fn site_lowering(e: ExprId) -> SiteLowering { site_lowering_of(self.view, self.names, e, self.decl_places) }
 
     /// A view's whole lowering plan, in walk order — the compiler's
     /// per-site mechanism chosen once and carried as data
     /// (`features/read_set.av`).
-    fn lowering_plan(e: ExprId) -> List<SitePlan> { lowering_plan_of(self.view, self.names, e, self.decl_reads) }
+    fn lowering_plan(e: ExprId) -> List<SitePlan> { lowering_plan_of(self.view, self.names, e, self.decl_places) }
+
+    /// An expression's source text — its first line, blanks collapsed, cut to
+    /// `width` characters — for a report that points at a site.
+    fn text_of(e: ExprId, width: int) -> string {
+        let sp? = self.view.store.expr_span(e) else { return "" }
+        let line = self.view.source.text.substring(sp.lo, sp.hi).split("\n").first() ?? ""
+        let flat = [w for w in line.split(" ") if w != ""].join(" ")
+        let cs = chars(flat)
+        if cs.length > width { cs.slice(0, width).join("") + "…" } else { flat }
+    }
+
+    /// A place in words: the `state` it is, by name.
+    fn place_name(p: StatePlace) -> string {
+        match p {
+            .Global(d) -> "`${self.view.decls.decl(d).name}`",
+            .Local(_, s) -> "`${self.view.store.let_name(s) ?? "state"}`",
+            .Unknown -> "an unnamed place",
+        }
+    }
 
     /// An expression's type as text (the printing projection).
     fn type_name(e: ExprId) -> string {
@@ -163,12 +195,20 @@ impl Language {
         ws.disarmed()
         let program = a.program
         let decl_reads = a.decl_reads
+        let decl_places = a.decl_places
+        let decl_structural = a.decl_structural
         a with { program: () -> {
             ws.standing()
             program()
         }, decl_reads: (d: DeclId) -> {
             ws.standing()
             decl_reads(d)
+        }, decl_places: (d: DeclId) -> {
+            ws.standing()
+            decl_places(d)
+        }, decl_structural: (d: DeclId) -> {
+            ws.standing()
+            decl_structural(d)
         } }
     }
 
@@ -201,7 +241,17 @@ export enum Stand { Open, LetGo, Superseded }
 impl Workspace {
     /// This one-shot workspace is the one that stands — made only after
     /// `one_shot_let_go` let the last go.
-    fn alone() { standing_one_shot().set([self]) }
+    fn alone() {
+        self.keys.one_shot.set(true)
+        standing_one_shot().set([self])
+    }
+
+    /// A restart of a one-shot workspace stands and falls with it: the next
+    /// one-shot lets both go.
+    fn stands_with() {
+        self.keys.one_shot.set(true)
+        standing_one_shot().push(self)
+    }
 
     fn superseded() {
         if self.let_go() { return }

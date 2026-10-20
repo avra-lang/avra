@@ -57,6 +57,18 @@ out="$(AVRA_MEM_STATS=1 AVRA_CENSUS_SITES=1 sh tools/memcap.sh 4000 "$census" "$
     | grep -Ev '^(mem:|memcap:)' || true)"
 printf '%s\n' "$out" | grep -q '^rc:' || { printf '%s\n' "$out" | tail -5; echo "census: the run printed no counts"; exit 1; }
 
+# THE STORE'S BYTES, read while the census run's own store stands (the exit trap puts the tree's
+# back): a row ceiling alone misses rows that got larger.
+python3 - <<'PY' > build/census-store.out 2>/dev/null || true
+import os
+n = 0
+for d, _, files in os.walk(".avra-cache/store"):
+    n += sum(os.path.getsize(os.path.join(d, f)) for f in files)
+print("store: %d bytes" % n)
+PY
+out="$out
+$(cat build/census-store.out 2>/dev/null)"
+
 # An unslid address's symbol: `atos` on macOS, `addr2line` elsewhere.
 symbol_at() {
     if command -v atos > /dev/null 2>&1; then

@@ -1,27 +1,13 @@
 //! WHAT ONE NODE MAY SWITCH THE TASK OUT THROUGH — answered once, here,
 //! for every reader of the question: the cancel fact (cancel_reach.av),
 //! the `@unbroken` law (typing/unbroken.av), and the test lowering
-//! emits after a call. Two steps: which node kinds may wait at all
-//! (`wait_probe`, every `Expr` variant spelled, so a node added later
-//! breaks the build here and is never "cannot" unasked), then what a
-//! node of such a kind waits through, read from the body's names and
+//! emits after a call. Two steps: which node kinds may wait at all (each
+//! node's own `wait_probe` fact — one that answers none cannot wait), then
+//! what a node of such a kind waits through, read from the body's names and
 //! types (`node_waits`).
-use core.{DeclId, ExprId, Expr, DeclKind, TypeId, flatten}
+use core.{DeclId, ExprId, Expr, DeclKind, TypeId, WaitProbe, flatten}
 use features.{NameFacts, TypeFacts, FileView, bound_decl_of, property_row, declaring_decl}
 use features.impls.{callee_of}
-
-/// How a node may wait, before its names and types are read.
-export enum WaitProbe {
-    None
-    Call
-    Method
-    Value
-    Spawn
-    Read
-    Chain
-    Record
-    Select
-}
 
 /// Whether a node of this kind may wait at all.
 export fn may_wait(p: WaitProbe) -> bool {
@@ -45,32 +31,13 @@ export enum NodeWait {
     Calls(callee: DeclId, name: string)
 }
 
-/// The one spelling of which node kinds may wait.
-export fn wait_probe(e: Expr) -> WaitProbe {
-    match e {
-        .Call(_, _, _) -> WaitProbe.Call,
-        .MethodCall(_, _, _) -> WaitProbe.Method,
-        .CallValue(_, _) -> WaitProbe.Value,
-        .Spawn(_) -> WaitProbe.Spawn,
-        .Prop(_, _) -> WaitProbe.Read,
-        .Chain(_, _) -> WaitProbe.Chain,
-        // a `select` rests on its arms
-        .Select(_, _) -> WaitProbe.Select,
-        // a record literal runs the defaults of the fields it leaves out
-        .StructLit(_, _, _) -> WaitProbe.Record,
-        // a component instance's expansion stands in its place, inside
-        // the body's range, and is answered node by node
-        .Component(_, _, _, _, _) or .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .Ident(_) or .Receiver or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .ListLit(_) or .Comp(_, _) or .MapLit(_, _) or .Index(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .NullLit or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Force(_) or .Is(_, _) or .VariantLit(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Error or .Collect(_) or .BytesLit(_) or .Range(_, _) or .Env(_) -> WaitProbe.None,
-    }
-}
-
 /// What a body's names and types say one node waits through.
 export type WaitReader = { view: FileView, names: NameFacts, facts: TypeFacts }
 
 impl WaitReader {
     fn node_waits(e: ExprId) -> List<NodeWait> {
         let node = self.view.store.expr(e)
-        match wait_probe(node) {
+        match node.wait_probe() {
             .None -> [],
             .Call -> self.named_call(e, node),
             .Method -> self.method_call(e),

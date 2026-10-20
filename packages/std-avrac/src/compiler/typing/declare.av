@@ -29,9 +29,10 @@ use core.{
     Scoped,
     faceted,
 }
-use diagnostics.{refusal, Diag}
+use diagnostics.{refusal, Diag, unread_behind}
 use features.{
     TypeCx,
+    slot_help,
     WrittenIn,
     FnSig,
     StructSig,
@@ -487,7 +488,7 @@ impl TypeCx {
         let sh: Type = self.view.types.shape_of(named)
         if sh is .Error { return named }
         if slot_worthy(sh) { return named }
-        self.emit(refusal(kind, at, message, label, null))
+        self.emit(refusal(kind, at, message, label, slot_help))
         self.error_type
     }
 
@@ -727,7 +728,7 @@ impl TypeCx {
                     self.stmt_loc(s),
                     "`once fn ${name}` answers `${self.view.types.name_of(answer)}`, which the runtime cannot keep",
                     "declared here",
-                    "a `once` value is one the runtime owns — a string, a list, a map, an enum, or a record wider than one scalar field",
+                    "a `once` answer is a managed value — a string, list, map, enum, or a record wider than one scalar",
                 ),
             )
     }
@@ -805,7 +806,7 @@ impl TypeCx {
                     self.stmt_loc(s),
                     "`${name}` stands over itself",
                     "declared here",
-                    "a named type stands over a shape it does not name — following the names from here comes back to `${name}`",
+                    "a named type stands over a shape it does not name — its names loop back to `${name}`",
                 ),
             )
     }
@@ -1022,7 +1023,7 @@ impl TypeCx {
 
     fn undeclared_contract(at: Loc?, name: string) -> TypeId {
         self
-            .emit(
+            .speak_unread(
                 refusal(
                     "type.trait",
                     at,
@@ -1030,6 +1031,7 @@ impl TypeCx {
                     "written here",
                     "declare it — `trait ${name} { … }`",
                 ),
+                name,
             )
         self.error_type
     }
@@ -1088,7 +1090,7 @@ impl TypeCx {
                     at,
                     "a `${name}` slot cannot hold `${self.view.types.name_of(ty)}` — it is no value",
                     "this slot",
-                    null,
+                    slot_help,
                 ),
             )
         self.error_type
@@ -1147,7 +1149,7 @@ impl TypeCx {
                             at,
                             "`${name}<...>` makes a slot `${self.view.types.name_of(landed)}`, which is no value",
                             "applied here",
-                            null,
+                            slot_help,
                         ),
                     )
                 return true
@@ -1183,6 +1185,7 @@ impl TypeCx {
         if decl != null { return self.declared_type(at, decl!, name) }
         if width_named(name) != null { return self.width_off_a_seat(at, name) }
         if traced() { qtrace("Q\tnamed_type_fail\t${name}\t${self.view.decls.file(self.view.file).path}\n") }
+        if self.names.names.refused.contains(name) { return self.error_type }
         let apart: Diag? = self
             .view
             .decls
@@ -1193,13 +1196,17 @@ impl TypeCx {
         }
         self
             .emit(
-                refusal(
-                    "type.unknown",
-                    at,
-                    "`${name}` names no type",
-                    written_label(self.written_in),
-                    "the types today are `int`, `string`, `bool`, and your declared types",
-                ),
+                self
+                    .behind_unread(
+                        refusal(
+                            "type.unknown",
+                            at,
+                            "`${name}` names no type",
+                            written_label(self.written_in),
+                            "a type is a built-in (`int`, `string`, `bool`, `float`) or one you declared",
+                        ),
+                        name,
+                    ),
             )
         self.error_type
     }
@@ -1353,9 +1360,22 @@ fn no_fields() -> StructSig { StructSig { names: [], types: [], defaults: [], st
 // ── The bound voices ──
 
 impl TypeCx {
+    /// A refusal of a name the file could not read: silent when the name's
+    /// `use` was refused (that refusal spoke), else pointed at the unread
+    /// file when the module has one.
+    fn speak_unread(d: Diag, name: string) {
+        if self.names.names.refused.contains(name) { return }
+        self.emit(self.behind_unread(d, name))
+    }
+
+    fn behind_unread(d: Diag, name: string) -> Diag {
+        let root? = self.elsewhere.unread_root() else { return d }
+        unread_behind(d, "this module", root, name)
+    }
+
     fn bound_not_a_trait(s: StmtId, written: string) {
         self
-            .emit(
+            .speak_unread(
                 refusal(
                     "type.trait",
                     self.stmt_loc(s),
@@ -1363,6 +1383,7 @@ impl TypeCx {
                     "this bound",
                     "write the trait's name, and its arguments when it takes them",
                 ),
+                written,
             )
     }
 

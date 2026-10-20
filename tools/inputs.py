@@ -41,6 +41,8 @@ import os
 import re
 import sys
 
+import licence_families
+
 SCOPE = ["packages/std-avrac/src", "packages/cli/src"]
 # The door is the FILES that define the input verbs and the disk's
 # answers to them. A read beside one, in the same directory, is outside
@@ -107,7 +109,7 @@ SPAWNS = re.compile(r"\.(run(?=\(\))|outcome|start)\(")
 # An INERT package reads nothing: the rows it may declare, and the one
 # name of it that does read. Held to the package's own source.
 INERT = {
-    "meta": {"rows": {"avra_embed", "avra_type_named"}, "world": {"embed": "read"}},
+    "meta": {"rows": {"avra_embed", "avra_embed_octets", "avra_type_named"}, "world": {"embed": "read"}},
     "relation": {"rows": {"avra_trap", "avra_qtrace"}, "world": {}},
     "text": {
         "rows": {"avra_str_from_codepoint", "avra_str_parsed_float", "avra_str_parsed_int",
@@ -120,21 +122,24 @@ INERT = {
     "hash": {"rows": {"avra_b3_state_len", "avra_b3_fresh", "avra_b3_update", "avra_b3_digest",
                       "avra_b3_oneshot", "avra_b3_digest_hex", "avra_b3_oneshot_hex",
                       "avra_bytes_adopted", "avra_trap"}, "world": {}},
+    "http_message": {"rows": set(), "world": {}},
     "json": {"rows": set(), "world": {}},
     "math": {"rows": set(), "world": {}},
     "path": {"rows": set(), "world": {}},
     "testing": {"rows": set(), "world": {}},
     "toml": {"rows": set(), "world": {}},
+    "url": {"rows": set(), "world": {}},
 }
 
 # A runtime row a scope file declares for itself.
 ROWS = {
     "avra_host_env": "env", "avra_host_is_dir": "read", "avra_io_list": "read",
     "avra_selfhost_file_exists": "read", "avra_selfhost_read_file": "read",
-    "avra_fd_read": "read", "avra_ffi_open": "read", "avra_embed": "read",
+    "avra_fd_read": "read", "avra_fd_tty_size": "read", "avra_fd_tty_raw": "write", "avra_fd_exit_writes": "write", "avra_sig_raise": "write", "avra_ffi_open": "read", "avra_embed": "read", "avra_embed_octets": "read",
     "avra_spawn_in": "spawn", "avra_spawn_status": "spawn", "avra_exec_self": "spawn",
     "avra_self_dir": "tool", "avra_now_ns": "clock",
     "avra_own_pid": "pid", "avra_pid_alive": "pid",
+    "avra_box_observe": "effect", "avra_box_unobserve": "effect", "avra_turn_next": "effect", "avra_changes_take": "effect",
     "avra_sched_runs_wanted": "env", "avra_sched_schedule_at": "env", "avra_case_clock_virtual": "env",
     "avra_cores_online": "env",
     "avra_selfhost_argc": "argv", "avra_selfhost_get_arg_cstr": "argv",
@@ -156,7 +161,7 @@ CHAINED = re.compile(r"^\s*\.(read|exists|beneath|list|is_dir|stamp|octets)\)?\(
 SEG = r"[a-z_][a-z_0-9]*"
 USE = re.compile(r"^use\s+@std\.(" + SEG + r")((?:\." + SEG + r")*)\.(\{[^}]*\}|[A-Za-z_][A-Za-z_0-9]*)", re.M | re.S)
 EXTERN = re.compile(r"^\s*(?:export\s+)?extern\s+fn\s+([A-Za-z_][A-Za-z_0-9]*)", re.M)
-LICENSE = re.compile(r"^\s*//\s*LICENSED\s+input\.[a-z_]+:\s*\S")
+LICENSE = re.compile(r"^\s*//\s*LICENSED\s+" + licence_families.id_pattern("input.") + r":\s*\S")
 
 Site = collections.namedtuple("Site", "file line text kind verb state")
 
@@ -281,10 +286,16 @@ def inert_faults(pkg, sources):
         for row in EXTERN.findall(text):
             if row not in INERT[pkg]["rows"]:
                 out.append(f"{path}: `@std.{pkg}` is INERT and declares `{row}` — pin the row, or the package is WORLD")
-        for used in sorted(packages_used(text)):
-            if used != pkg and used not in INERT:
-                out.append(f"{path}: `@std.{pkg}` is INERT and imports `@std.{used}`, which is not")
+        for used, name, _ in imports(text):
+            if used != pkg and used not in INERT and not valued(used, name):
+                out.append(f"{path}: `@std.{pkg}` is INERT and imports `{name}` of `@std.{used}`, which is not")
     return out
+
+
+def valued(pkg, name):
+    """Whether a name of a WORLD package is a value or a type — no read of
+    the world — so an INERT package may take it."""
+    return WORLD.get(pkg, {}).get(name) in (P, T)
 
 
 def body_from(text, at):
@@ -399,6 +410,7 @@ HEADER = """# WORLD READS OUTSIDE THE INPUT DOOR, one TAB-separated site per lin
 
 
 def selftest():
+    licence_families.selftest()
     io = "use @std.io.{read_text, env,\n    write_text}\n"
     cases = [
         # refuses: a stray read, an env, a spawn, each naming its line
@@ -481,7 +493,9 @@ def selftest():
         sys.exit("inputs: self-test failed — a classified file was refused")
     if not inert_faults("path", [("p.av", "extern fn avra_host_env(n: string) -> string?\n")]) \
             or not inert_faults("path", [("p.av", "use @std.io.{env}\n")]) \
-            or inert_faults("text", [("t.av", "use @std.text.{trim}\nextern fn avra_str_parses_int(s: string) -> bool\n")]):
+            or inert_faults("text", [("t.av", "use @std.text.{trim}\nextern fn avra_str_parses_int(s: string) -> bool\n")]) \
+            or inert_faults("path", [("p.av", "use @std.time.{Duration, ms}\n")]) \
+            or not inert_faults("path", [("p.av", "use @std.time.{Duration, now_ms}\n")]):
         sys.exit("inputs: self-test failed — an inert package is held to its own source")
     WORLD["px"] = {"quiet": P, "one_line": P, "loud": P, "far": P, "named": P, "env": "env"}
     px = [("p.av", "extern fn avra_host_env(n: string) -> string?\n"

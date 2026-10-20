@@ -1,0 +1,28 @@
+// `when_ladder` reads VALUE ladders: a chain whose branches answer. A
+// ladder written at statement position keeps statement branches, so it
+// is never one — the rule's own examples, checked both ways.
+use @std.avrac.compiler.{checks_fixes, checks_keeps}
+use @std.avrac.features.if_expr.{when_ladder}
+
+spec "features/if_expr — when_ladder" {
+    given "a ladder that answers a value" {
+        then "is a `when`" {
+            checks_fixes(
+                when_ladder.run,
+                "if a { 1 } else if b { 2 } else { 3 }",
+                "when { a -> 1, b -> 2, _ -> 3 }",
+            )
+        }
+    }
+    given "a ladder at statement position" {
+        then "is kept" {
+            checks_keeps(when_ladder.run, "if a { x } else if b { y } else { z }\nw")
+        }
+        then "is kept in a block, not only at the program's top" {
+            checks_keeps(
+                when_ladder.run,
+                "fn f() {\n    if a { x } else if b { y } else { z }\n    w\n}",
+            )
+        }
+    }
+}

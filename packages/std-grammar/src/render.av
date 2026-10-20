@@ -4,7 +4,22 @@
 //! the rules only; a grammar's name is packaging, not structure.
 
 use util.{quoted_text}
-use ast.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Operators, Tier, Assoc}
+use ast.{
+    Grammar,
+    Rule,
+    Alt,
+    Seq,
+    Item,
+    Prim,
+    Rep,
+    Build,
+    Fixed,
+    Term,
+    Operators,
+    Tier,
+    Suffix,
+    Assoc,
+}
 /// The whole grammar, one rule per line, in rule order.
 export fn render_grammar(g: Grammar) -> string {
     [render_rule(r) for r in g.rules].join("\n")
@@ -48,9 +63,14 @@ fn render_operators(o: Operators) -> string {
 
 fn render_tier(l: Tier) -> string {
     let words = [render_word(w) for w in l.words]
-    let suffixes = ["suffix ${quoted_text(x.word)} ${x.rule}" for x in l.suffixes]
+    let suffixes = [render_suffix(x) for x in l.suffixes]
     let build = if l.build == null { [] } else { ["-> ${render_build(l.build!)}"] }
-    [render_assoc(l.assoc)].concat(words).concat(suffixes).concat(build).join(" ")
+    [render_assoc(l.assoc)].concat(words).concat(build).concat(suffixes).join(" ")
+}
+
+fn render_suffix(x: Suffix) -> string {
+    let own = if x.build == null { "" } else { " -> ${render_build(x.build!)}" }
+    "suffix ${quoted_text(x.word)} ${x.rule}${own}"
 }
 
 fn render_assoc(a: Assoc) -> string {
@@ -90,5 +110,13 @@ fn render_prim(p: Prim) -> string {
 /// The payloads a node build STATES, as the notation writes them.
 fn stated_payloads(fixed: List<Fixed>) -> string {
     if fixed.is_empty() { return "" }
-    "(${["${f.name} = ${f.text}" for f in fixed].join(", ")})"
+    "(${["${f.name} = ${render_term(f.stated())}" for f in fixed].join(", ")})"
+}
+
+fn render_term(t: Term) -> string {
+    match t {
+        .Text(text) -> text,
+        .Node(b) -> render_build(b),
+        .List(items) -> "[${[render_term(i) for i in items].join(", ")}]",
+    }
 }

@@ -25,6 +25,8 @@
 /// preflight may ask for, the response headers a page may read,
 /// whether credentials ride, and how long a browser may keep a
 /// preflight's answer.
+use @std.http_message.message.{Header}
+use @std.text.{codepoints}
 export type Cors = {
     origins: List<string>,
     methods: List<string> = ["GET", "HEAD", "POST"],
@@ -132,8 +134,40 @@ export fn hardening(h: Hardening) -> fn(Request<Unrouted>, Handler) -> Response 
 
 /// The policy that loads only from the page's own origin, runs no
 /// plugin, keeps `<base>` home and lets no other page frame it.
-export fn strict_csp(_q: Request<Unrouted>) -> string? {
-    "default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+export fn strict_csp(_q: Request<Unrouted>) -> string? { strict_policy([]) }
+
+/// The strict policy with `extra` directives after `default-src`.
+fn strict_policy(extra: List<string>) -> string {
+    ["default-src 'self'"]
+        .concat(extra)
+        .concat(["object-src 'none'", "base-uri 'self'", "frame-ancestors 'none'"])
+        .join("; ")
+}
+
+/// The strict policy that also lets the page's one `style` element in,
+/// by the nonce it carries and no other way: styles stay out of every
+/// attribute. A page sets it itself (`with_header`), the nonce being the
+/// one it wrote into its `style` element. Nothing when the nonce is not
+/// base64 or base64url text, since any other character could end the
+/// directive.
+export fn nonced_csp(nonce: string) -> string? {
+    if !nonce_text(nonce) { return null }
+    strict_policy(["style-src 'self' 'nonce-${nonce}'"])
+}
+
+/// Whether `s` is a non-empty run of base64 and base64url characters.
+fn nonce_text(s: string) -> bool { !s.is_empty() && codepoints(s).all(nonce_char(it)) }
+
+/// Letters, digits, and the four marks base64 and base64url add.
+fn nonce_char(c: int) -> bool {
+    c >= 48 && c <= 57 ||
+        c >= 65 && c <= 90 ||
+        c >= 97 && c <= 122 ||
+        c == 43 ||
+        c == 45 ||
+        c == 47 ||
+        c == 61 ||
+        c == 95
 }
 
 /// The defaults' fixed headers, spelled once for the process.

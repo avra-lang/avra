@@ -1,15 +1,10 @@
 //! The list literal's NodeSemantics — dispatch one-liners; the rule
 //! bodies live beside this file, by concern.
-use core.{ExprId, TypeId, Reg, CompClause, some_list}
-use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, Bound, Meaning}
+use core.{ExprId, TypeId, Reg, CompClause, some_list, Kids, Heirs}
+use features.{ResolveCx, TypeCx, LowerCx, nothing, Bound, Meaning}
 use diagnostics.{refusal}
 
 use core.expr.{ListLit, Comp, Collect}
-
-/// A literal's elements are kids.
-impl NodeSemantics for ListLit {
-    fn kids() -> List<ExprId> { self.elems }
-}
 
 /// A comprehension's FIRST head's source and range bound are kids —
 /// they resolve outside every binder. Its element is the one HEIR:
@@ -19,13 +14,17 @@ impl NodeSemantics for ListLit {
 /// range bound or condition answers an unrelated type, so `resolve_comp`/
 /// `comp_type`/`comp_reg` walk those by hand, under the scope each
 /// opens, never through this list.
-impl NodeSemantics for Comp {
+impl Kids for Comp {
     fn kids() -> List<ExprId> { comp_kids(self.clauses) }
+}
+impl Heirs for Comp {
     fn heirs() -> List<ExprId> { [self.elem] }
 }
 
 /// A `collect` owns its body's walk, as a block owns its own.
-impl NodeSemantics for Collect {}
+impl Kids for Collect {
+    fn kids() -> List<ExprId> { [] }
+}
 
 /// The FIRST clause's source (and range bound) alone — the only read
 /// that names no binder of its own, so the generic walk may visit it
@@ -76,7 +75,7 @@ fn paired_alike(mut cx: ResolveCx, e: ExprId, name: string) {
                 cx.view.loc_of(e),
                 "`${name}` names both the index and the element",
                 "bound here",
-                "give the index its own name — `for i, ${name} in …`",
+                "rename the index — `for index, ${name} in …`",
             ),
         )
 }
@@ -115,12 +114,12 @@ impl Meaning for Comp {
 }
 impl Meaning for Collect {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        cx.walk(self.body)
+        cx.block_scope(self.stmts, null)
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        collect_type(cx, e, self.body)
+        collect_type(cx, e, self.stmts)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        collect_reg(cx, e, self.body)
+        collect_reg(cx, e, self.stmts)
     }
 }

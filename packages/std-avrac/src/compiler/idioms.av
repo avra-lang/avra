@@ -17,7 +17,43 @@ use @std.meta.{name}
 @keeps("refusal(\"k\", at, \"m\", \"l\", null)")
 // LICENSED compiler.refusal_assembled: the pattern's own text names the shape it detects
 export rule refusal_assembled {
+    // LICENSED compiler.helpless_refusal: the rewrite's own text is the shape it replaces with
     quote { pointed(error_at(${kind}, ${at}, ${msg}), ${label}) } -> quote { refusal(${kind}, ${at}, ${msg}, ${label}, null) },
+}
+
+/// A refusal that passes `null` for its help — a voice states what to do
+/// about the law it speaks. A seat that judges a value against its want
+/// words its refusal through `seat_mismatch`, which carries the
+/// conversion or what the seat needs; any other refusal writes its help.
+///
+/// NO REWRITE: the help is the voice's own sentence about its own law, and
+/// nothing in the call says what it is.
+@keeps("refusal(\"k\", at, \"m\", \"l\", \"what to do\")")
+@says("a help is the voice's own sentence about its law, which no call states")
+export rule helpless_refusal {
+    // LICENSED compiler.helpless_refusal: the pattern's own text names the shape it detects
+    quote { refusal(${kind}, ${at}, ${msg}, ${label}, null) } -> helpless(kind, "refusal"),
+}
+
+/// `helpless_refusal`'s twin for a warning: it blocks nothing, and states
+/// no less.
+@keeps("warning(\"k\", at, \"m\", \"l\", \"what to do\")")
+@says("a help is the voice's own sentence about its law, which no call states")
+export rule helpless_warning {
+    // LICENSED compiler.helpless_refusal: the pattern's own text names the shape it detects
+    quote { warning(${kind}, ${at}, ${msg}, ${label}, null) } -> helpless(kind, "warning"),
+}
+
+fn helpless(kind: Code, shape: string) -> Fix {
+    Fix
+        .Say(
+            said(
+                kind.loc(),
+                "this ${shape} of ${kind.text()} passes no help — state what to do about the law it speaks",
+                "this ${shape}",
+                null,
+            ),
+        )
 }
 
 /// Text grown THROUGH A PLACE by `p = p + piece` — quadratic: a field
@@ -38,6 +74,7 @@ export rule refusal_assembled {
 /// be sound here; the fix is a whole-declaration refactor.
 @keeps("out = out2 + piece")
 @keeps("n = n + 1")
+@says("the builder is seeded before and read after the growing assignments, and retyping the place changes its other readers")
 export rule str_grown_quadratically {
     quote { ${s} = ${s} + ${piece} } if s.type()?.name() == "string" && s.name() == null -> quadratic_growth(s, piece),
 }
@@ -76,6 +113,7 @@ fn quadratic_growth(s: Code, piece: Code) -> Fix {
 @keeps("{\n    mut t = c.get()\n    c.set(t)\n}")
 @keeps("{\n    mut t = a.get()\n    t.push(1)\n    b.set(t)\n}")
 @keeps("{\n    c.push(1)\n}")
+@says("the in-place write is the cell's own verb, chosen by what the cell holds (`push`, `set_at`, `put`, `side_put`, `side_grow`)")
 export rule cell_get_copy {
     quote {
         {
@@ -180,41 +218,52 @@ fn cell_get_copy_found(c: Code, t: string) -> Fix {
 /// here can write that sentence.
 // LICENSED compiler.bool_of_defaulted: a DIFFERENT protocol projection than this rule's own — still the family's shape
 @keeps("(raw).int_of() ?? 0")
+@says("dropping the default makes absence a refusal, and its `cx.lower_defect` message names a guarantee only the author knows")
 export rule bool_of_defaulted {
     // LICENSED compiler.bool_of_defaulted: the pattern's own text names the shape it detects
     quote { (${e}).bool_of() ?? ${d} } -> protocol_default_papered(e, d, "bool_of"),
 }
 
+/// `(e).text_of() ?? default` — a protocol read's absence is a defect (`cx.lower_defect`), never a plausible default (the `bool_of_defaulted` family).
 // LICENSED compiler.text_of_defaulted: a DIFFERENT protocol projection than this rule's own — still the family's shape
 @keeps("(raw).int_of() ?? 0")
+@says("dropping the default makes absence a refusal, and its `cx.lower_defect` message names a guarantee only the author knows")
 export rule text_of_defaulted {
     // LICENSED compiler.text_of_defaulted: the pattern's own text names the shape it detects
     quote { (${e}).text_of() ?? ${d} } -> protocol_default_papered(e, d, "text_of"),
 }
 
+/// `(e).int_of() ?? default` — a protocol read's absence is a defect (`cx.lower_defect`), never a plausible default (the `bool_of_defaulted` family).
 // LICENSED compiler.int_of_defaulted: a DIFFERENT protocol projection than this rule's own — still the family's shape
 @keeps("(raw).bool_of() ?? false")
+@says("dropping the default makes absence a refusal, and its `cx.lower_defect` message names a guarantee only the author knows")
 export rule int_of_defaulted {
     // LICENSED compiler.int_of_defaulted: the pattern's own text names the shape it detects
     quote { (${e}).int_of() ?? ${d} } -> protocol_default_papered(e, d, "int_of"),
 }
 
+/// `(e).bits_of() ?? default` — a protocol read's absence is a defect (`cx.lower_defect`), never a plausible default (the `bool_of_defaulted` family).
 // LICENSED compiler.bits_of_defaulted: a DIFFERENT protocol projection than this rule's own — still the family's shape
 @keeps("(raw).bool_of() ?? false")
+@says("dropping the default makes absence a refusal, and its `cx.lower_defect` message names a guarantee only the author knows")
 export rule bits_of_defaulted {
     // LICENSED compiler.bits_of_defaulted: the pattern's own text names the shape it detects
     quote { (${e}).bits_of() ?? ${d} } -> protocol_default_papered(e, d, "bits_of"),
 }
 
+/// `(e).elems_of() ?? default` — a protocol read's absence is a defect (`cx.lower_defect`), never a plausible default (the `bool_of_defaulted` family).
 // LICENSED compiler.elems_of_defaulted: a DIFFERENT protocol projection than this rule's own — still the family's shape
 @keeps("(raw).bool_of() ?? false")
+@says("dropping the default makes absence a refusal, and its `cx.lower_defect` message names a guarantee only the author knows")
 export rule elems_of_defaulted {
     // LICENSED compiler.elems_of_defaulted: the pattern's own text names the shape it detects
     quote { (${e}).elems_of() ?? ${d} } -> protocol_default_papered(e, d, "elems_of"),
 }
 
+/// `(e).pairs_of() ?? default` — a protocol read's absence is a defect (`cx.lower_defect`), never a plausible default (the `bool_of_defaulted` family).
 // LICENSED compiler.pairs_of_defaulted: a DIFFERENT protocol projection than this rule's own — still the family's shape
 @keeps("(raw).bool_of() ?? false")
+@says("dropping the default makes absence a refusal, and its `cx.lower_defect` message names a guarantee only the author knows")
 export rule pairs_of_defaulted {
     // LICENSED compiler.pairs_of_defaulted: the pattern's own text names the shape it detects
     quote { (${e}).pairs_of() ?? ${d} } -> protocol_default_papered(e, d, "pairs_of"),
@@ -244,24 +293,31 @@ fn protocol_default_papered(e: Code, d: Code, verb: string) -> Fix {
 /// author who wrote the test knows how many refusals it expects; this
 /// rule only sees the one comparison.
 @keeps("refusals(src) == 1")
+@says("the exact count is what `>= 1` declined to say, and only running the guarded check finds it")
 export rule uncounted_refusal {
     // LICENSED compiler.uncounted_refusal: the pattern's own text names the shape it detects
     quote { refusals(${src}) >= 1 } -> uncounted(src),
 }
 
+/// `a.diagnostics >= 1` — a refusal test counts: one mistake, one message, so `== 1` (the `uncounted_refusal` family).
 @keeps("a.diagnostics.length == 1")
+@says("the exact count is what `>= 1` declined to say, and only running the guarded check finds it")
 export rule diagnostics_uncounted {
     // LICENSED compiler.diagnostics_uncounted: the pattern's own text names the shape it detects
     quote { ${a}.diagnostics >= 1 } -> uncounted(a),
 }
 
+/// `a.diagnostics.length >= 1` — a refusal test counts: one mistake, one message, so `== 1` (the `uncounted_refusal` family).
 @keeps("a.diagnostics == 1")
+@says("the exact count is what `>= 1` declined to say, and only running the guarded check finds it")
 export rule diagnostics_length_uncounted {
     // LICENSED compiler.diagnostics_length_uncounted: the pattern's own text names the shape it detects
     quote { ${a}.diagnostics.length >= 1 } -> uncounted(a),
 }
 
+/// `p.voices.list.length >= 1` — a refusal test counts: one mistake, one message, so `== 1` (the `uncounted_refusal` family).
 @keeps("p.voices.list.length == 1")
+@says("the exact count is what `>= 1` declined to say, and only running the guarded check finds it")
 export rule voices_uncounted {
     // LICENSED compiler.voices_uncounted: the pattern's own text names the shape it detects
     quote { ${p}.voices.list.length >= 1 } -> uncounted(p),
@@ -296,41 +352,52 @@ fn uncounted(src: Code) -> Fix {
 /// not a site-local substitution.
 // LICENSED compiler.if_start_raw: a DIFFERENT raw Ins than this rule's own — still the family's shape
 @keeps("cx.emit(Ins.ArmEnd(v))")
+@says("a raw region instruction is half a bracket, and the verb that replaces the pair needs the region's bounds, which only the author knows")
 export rule if_start_raw {
     // LICENSED compiler.if_start_raw: the pattern's own text names the shape it detects
     quote { ${cx}.emit(Ins.IfStart(${c})) } if !it.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "IfStart"),
 }
 
+/// `Ins.LoopStart` emitted raw in a feature — `cx.loop_start` speaks it (the `if_start_raw` family).
 // LICENSED compiler.loop_start_raw: a DIFFERENT raw Ins than this rule's own — still the family's shape
 @keeps("cx.emit(Ins.LoopEnd)")
+@says("a raw region instruction is half a bracket, and the verb that replaces the pair needs the region's bounds, which only the author knows")
 export rule loop_start_raw {
     // LICENSED compiler.loop_start_raw: the pattern's own text names the shape it detects
     quote { ${cx}.emit(Ins.LoopStart) } if !it.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "LoopStart"),
 }
 
+/// `Ins.ArmEnd` emitted raw in a feature — `cx.arm_end` speaks it (the `if_start_raw` family).
 // LICENSED compiler.arm_end_raw: a DIFFERENT raw Ins than this rule's own — still the family's shape
 @keeps("cx.emit(Ins.RegionEnd(dst, last))")
+@says("a raw region instruction is half a bracket, and the verb that replaces the pair needs the region's bounds, which only the author knows")
 export rule arm_end_raw {
     // LICENSED compiler.arm_end_raw: the pattern's own text names the shape it detects
     quote { ${cx}.emit(Ins.ArmEnd(${v})) } if !it.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "ArmEnd"),
 }
 
+/// `Ins.RegionEnd` emitted raw in a feature — `cx.close_region` speaks it (the `if_start_raw` family).
 // LICENSED compiler.region_end_raw: a DIFFERENT raw Ins than this rule's own — still the family's shape
 @keeps("cx.emit(Ins.LoopCond(more))")
+@says("a raw region instruction is half a bracket, and the verb that replaces the pair needs the region's bounds, which only the author knows")
 export rule region_end_raw {
     // LICENSED compiler.region_end_raw: the pattern's own text names the shape it detects
     quote { ${cx}.emit(Ins.RegionEnd(${dst}, ${last})) } if !it.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "RegionEnd"),
 }
 
+/// `Ins.LoopCond` emitted raw in a feature — `cx.loop_cond` speaks it (the `if_start_raw` family).
 // LICENSED compiler.loop_cond_raw: a DIFFERENT raw Ins than this rule's own — still the family's shape
 @keeps("cx.emit(Ins.LoopStart)")
+@says("a raw region instruction is half a bracket, and the verb that replaces the pair needs the region's bounds, which only the author knows")
 export rule loop_cond_raw {
     // LICENSED compiler.loop_cond_raw: the pattern's own text names the shape it detects
     quote { ${cx}.emit(Ins.LoopCond(${more})) } if !it.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "LoopCond"),
 }
 
+/// `Ins.LoopEnd` emitted raw in a feature — `cx.loop_end` speaks it (the `if_start_raw` family).
 // LICENSED compiler.loop_end_raw: a DIFFERENT raw Ins than this rule's own — still the family's shape
 @keeps("cx.emit(Ins.IfStart(c))")
+@says("a raw region instruction is half a bracket, and the verb that replaces the pair needs the region's bounds, which only the author knows")
 export rule loop_end_raw {
     // LICENSED compiler.loop_end_raw: the pattern's own text names the shape it detects
     quote { ${cx}.emit(Ins.LoopEnd) } if !it.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "LoopEnd"),
@@ -358,13 +425,16 @@ fn raw_region_ins(cx: Code, name: string) -> Fix {
 /// half a bracket, its other half elsewhere in the body.
 // LICENSED compiler.scope_enter_raw: a DIFFERENT raw scope Ins than this rule's own — still the family's shape
 @keeps("cx.emit(Ins.ScopeExit(g))")
+@says("a raw scope instruction is half a bracket, and the frame verbs replace the pair together")
 export rule scope_enter_raw {
     // LICENSED compiler.scope_enter_raw: the pattern's own text names the shape it detects
     quote { ${cx}.emit(Ins.ScopeEnter(${tier})) } if !it.of.view.source.file.ends_with("lower/walk.av") -> raw_scope_ins(cx),
 }
 
+/// `Ins.ScopeExit` emitted raw — `cx.scope_exit(r)` brackets a frame (the `scope_enter_raw` family).
 // LICENSED compiler.scope_exit_raw: a DIFFERENT raw scope Ins than this rule's own — still the family's shape
 @keeps("cx.emit(Ins.ScopeEnter(t))")
+@says("a raw scope instruction is half a bracket, and the frame verbs replace the pair together")
 export rule scope_exit_raw {
     // LICENSED compiler.scope_exit_raw: the pattern's own text names the shape it detects
     quote { ${cx}.emit(Ins.ScopeExit(${gives})) } if !it.of.view.source.file.ends_with("lower/walk.av") -> raw_scope_ins(cx),
@@ -401,35 +471,44 @@ export rule interned_int {
     quote { ${r}.intern(Type.Int) } if !it.of.view.source.file.ends_with("core/types.av") -> quote { ${r}.type(int) },
 }
 
+/// `r.intern(Type.Str)` — a scalar type is spelled, `r.type(string)` (the `interned_int` family).
 // LICENSED compiler.interned_str: the example's own text names the shape it detects
 @fixes("types.intern(Type.Str)", "types.type(string)")
 export rule interned_str {
     // LICENSED compiler.interned_str: the pattern's own text names the shape it detects
     quote { ${r}.intern(Type.Str) } if !it.of.view.source.file.ends_with("core/types.av") -> quote { ${r}.type(string) },
 }
+/// `r.intern(Type.Opt(…))` — a structural type is spelled, `r.type(T?)` (the `interned_int` family).
 // LICENSED compiler.interned_opt: a DIFFERENT constructor than this rule's own — still the family's shape
 @keeps("types.type(string?)")
+@says("a spelled type's hole takes a bound name, and this argument may be any expression yielding a type id")
 export rule interned_opt {
     // LICENSED compiler.interned_opt: the pattern's own text names the shape it detects
     quote { ${r}.intern(Type.Opt(${inner})) } if !it.of.view.source.file.ends_with("core/types.av") -> spelled_by_hand(r, "Opt", "T?"),
 }
 
+/// `r.intern(Type.List(…))` — a structural type is spelled, `r.type(List<T>)` (the `interned_int` family).
 // LICENSED compiler.interned_list: a DIFFERENT constructor than this rule's own — still the family's shape
 @keeps("types.type(List<string>)")
+@says("a spelled type's hole takes a bound name, and this argument may be any expression yielding a type id")
 export rule interned_list {
     // LICENSED compiler.interned_list: the pattern's own text names the shape it detects
     quote { ${r}.intern(Type.List(${inner})) } if !it.of.view.source.file.ends_with("core/types.av") -> spelled_by_hand(r, "List", "List<T>"),
 }
 
+/// `r.intern(Type.Map(…))` — a structural type is spelled, `r.type(Map<K, V>)` (the `interned_int` family).
 // LICENSED compiler.interned_map: a DIFFERENT constructor than this rule's own — still the family's shape
 @keeps("types.type(Map<string, int>)")
+@says("a spelled type's hole takes a bound name, and this argument may be any expression yielding a type id")
 export rule interned_map {
     // LICENSED compiler.interned_map: the pattern's own text names the shape it detects
     quote { ${r}.intern(Type.Map(${key}, ${value})) } if !it.of.view.source.file.ends_with("core/types.av") -> spelled_by_hand(r, "Map", "Map<K, V>"),
 }
 
+/// `r.intern(Type.Res(…))` — a structural type is spelled, `r.type(Result<T, E>)` (the `interned_int` family).
 // LICENSED compiler.interned_res: a DIFFERENT constructor than this rule's own — still the family's shape
 @keeps("types.type(Result<int, string>)")
+@says("a spelled type's hole takes a bound name, and this argument may be any expression yielding a type id")
 export rule interned_res {
     // LICENSED compiler.interned_res: the pattern's own text names the shape it detects
     quote { ${r}.intern(Type.Res(${ok}, ${err})) } if !it.of.view.source.file.ends_with("core/types.av") -> spelled_by_hand(r, "Res", "Result<T, E>"),
@@ -458,6 +537,7 @@ fn spelled_by_hand(r: Code, shape: string, literal: string) -> Fix {
 /// architectural change this pattern's one bound subtraction cannot
 /// see, let alone perform.
 @keeps("k.length - base_id.length")
+@says("adopting `SideTable<V>` replaces the table's declaration and every site that reads or grows it")
 export rule hand_sized_index {
     // LICENSED compiler.filled_by_arena_count: the pattern's own text names the shape it detects
     quote { ${e}.index - ${k} } -> hand_sized(e, k),
@@ -490,6 +570,7 @@ fn hand_sized(e: Code, k: Code) -> Fix {
 /// other site that reads or grows it, outside this one call's span.
 @keeps("filled(n, null)")
 @keeps("filled<TypeId>(n, hole)")
+@says("adopting `SideTable<V>` replaces the table's declaration and every site that reads or grows it")
 export rule filled_by_arena_count {
     // LICENSED compiler.filled_by_arena_count: the pattern's own text names the shape it detects
     quote { filled(${n}.count(), ${seed}) } -> hand_sized_column(n, seed, null),
@@ -530,6 +611,7 @@ fn hand_sized_column(n: Code, seed: Code, t: TypeRef?) -> Fix {
 /// which, and `decls_mint.av`'s own walk needs the int (a `by_stmt`
 /// map key), not the id.
 @keeps("for i in 0..xs.length { log(i) }")
+@says("the body may read the index as a plain int (a map key, an offset), and only the body says which")
 export rule stmt_index_walk { quote { ${lit} } if stmt_index_walked(lit) -> stmt_index_walk_found(lit) }
 
 fn stmt_index_walked(lit: Code) -> bool {
@@ -571,6 +653,7 @@ fn stmt_index_walk_found(lit: Code) -> Fix {
 /// see, let alone perform.
 @keeps("fn f(a: int, b: int) -> int { a + b }")
 @keeps("fn lower(a: Analysis) -> Lowered { a }")
+@says("the fix moves the body into the state's `impl` and drops the first argument at every call site")
 export rule free_state_verb { quote { ${lit} } if free_state_param(lit) != null -> free_state_verb_found(lit) }
 
 /// The states a vocabulary verb's OWN impl belongs to — `open_region`,
@@ -687,10 +770,12 @@ fn free_state_verb_found(lit: Code) -> Fix {
 /// the reason that family names `CallRt`/`CallRtVoid` as its
 /// EXCLUSION rather than a tenth sibling.
 @keeps("cx.array_sized(sh, size)")
+@says("the generated method mints the destination, so the rewrite folds in an earlier mint this expression never binds, and moving it can reorder effects")
 export rule raw_rt_call { quote { Ins.CallRt(${dst}, ${name}, ${args}) } if is_rt_string(name) -> raw_rt_call_found(name) }
 
 /// The void twin — no `dst` to bind.
 @keeps("self.array_push(box, v)")
+@says("the generated method mints the destination, so the rewrite folds in an earlier mint this expression never binds, and moving it can reorder effects")
 export rule raw_rt_call_void { quote { Ins.CallRtVoid(${name}, ${args}) } if is_rt_string(name) -> raw_rt_call_found(name) }
 
 fn is_rt_string(name: Code) -> bool {
@@ -722,6 +807,7 @@ fn raw_rt_call_found(name: Code) -> Fix {
 @keeps("ws.there(path)")
 @keeps("ws.octets(path)")
 @keeps("ws.spared_octets(path)")
+@says("the cell that records the question depends on the verb that answers it, and a driver that must see the disk is licensed instead")
 export rule host_asked_directly {
     quote { ${h}.read(${p}) } if asks_a_host(h) -> host_asked_found(h, "read"),
     quote { ${h}.exists(${p}) } if asks_a_host(h) -> host_asked_found(h, "exists"),
@@ -782,6 +868,7 @@ fn host_asked_found(h: Code, question: string) -> Fix {
 /// call SITES to rewrite live inside `body`'s own text, which a hole
 /// only ever splices whole, never edits.
 @keeps("{\n    mut seen: List<string> = []\n    log(x)\n}")
+@says("the replacement names the loop's iterable and index, which this pattern never binds")
 export rule seen_accumulator {
     quote {
         {
@@ -819,6 +906,7 @@ fn seen_accumulator_found(seen: string, init: Code) -> Fix {
 /// DIFFERENT receiver. Whether the pair even collapses depends on a
 /// fact this pattern does not hold; the voice differs by site.
 @keeps("{\n    cx.emit(d)\n    other()\n}")
+@says("`spoken(d)` has one receiver, and the pattern never checks the emit's and the error type's receivers agree")
 export rule emit_then_error {
     quote {
         {
@@ -853,6 +941,7 @@ fn emit_then_error_found(cx: Code, d: Code) -> Fix {
 /// yet to be written. `popped` only confirms a `pop` call's TEXT
 /// appears somewhere in `rest`; it locates none of that.
 @keeps("{\n    let f = go()\n}")
+@says("the rewrite wraps the stretch to the matching `pop` in a thunk for a bracket fn that owns the pop on every exit, and none may exist")
 export rule bracket_ritual {
     quote {
         {
@@ -939,12 +1028,13 @@ fn raw_mint_emit_found(dst: Code, variant: string) -> Fix {
 ///
 /// NARROWER THAN THE RETIRED REGEX, structurally: the ROOT is a
 /// BLOCK — `if`/`while`/`for` bodies are flat statement lists on
-/// their OWN node (core/nodes.av's `IfStmt`, `While`, `For`), never a
+/// their OWN node (core/nodes.av's `While`, `For`), never a
 /// nested `Block`, so a pair sitting inside one (`hollow_of`'s two
 /// `ConstBool`/`ConstFloat` sites, values.av) is outside this
 /// pattern's reach — the same shape `bracket_ritual`/
 /// `seen_accumulator` already carry. Both stay licensed by comment
 /// for a human reader; a native finding never reaches them to ask.
+@says("a register read across branches has no one verb call, and its mint and emit cannot move together past the statements between")
 export rule raw_mint_emit_bin {
     quote {
         {
@@ -957,7 +1047,9 @@ export rule raw_mint_emit_bin {
     } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Bin"),
 }
 
+/// A register minted and emitted by hand as the `Un` shape — the emission vocabulary's one-call verb (`un`/`un_at`) does both (the `raw_mint_emit_bin` family).
 @keeps("{\n    let dst = cx.mint_shape(Type.Bool)\n    log(dst)\n}")
+@says("a register read across branches has no one verb call, and its mint and emit cannot move together past the statements between")
 export rule raw_mint_emit_un {
     quote {
         {
@@ -970,7 +1062,9 @@ export rule raw_mint_emit_un {
     } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Un"),
 }
 
+/// A register minted and emitted by hand as the `Pack` shape — the emission vocabulary's one-call verb (`pack`) does both (the `raw_mint_emit_bin` family).
 @keeps("{\n    let dst = cx.mint_shape(ty)\n    log(dst)\n}")
+@says("a register read across branches has no one verb call, and its mint and emit cannot move together past the statements between")
 export rule raw_mint_emit_pack {
     quote {
         {
@@ -983,7 +1077,9 @@ export rule raw_mint_emit_pack {
     } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Pack"),
 }
 
+/// A register minted and emitted by hand as the `Call` shape — the emission vocabulary's one-call verb (`call`/`call_at`) does both (the `raw_mint_emit_bin` family).
 @keeps("{\n    let dst = cx.mint_ty(ty)\n    log(dst)\n}")
+@says("a register read across branches has no one verb call, and its mint and emit cannot move together past the statements between")
 export rule raw_mint_emit_call {
     quote {
         {
@@ -996,7 +1092,9 @@ export rule raw_mint_emit_call {
     } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Call"),
 }
 
+/// A register minted and emitted by hand as the `CallPtr` shape — the emission vocabulary's one-call verb (`call_ptr_at`) does both (the `raw_mint_emit_bin` family).
 @keeps("{\n    let dst = cx.mint_ty(ty)\n    log(dst)\n}")
+@says("a register read across branches has no one verb call, and its mint and emit cannot move together past the statements between")
 export rule raw_mint_emit_call_ptr {
     quote {
         {
@@ -1009,7 +1107,9 @@ export rule raw_mint_emit_call_ptr {
     } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "CallPtr"),
 }
 
+/// A register minted and emitted by hand as the `ConstInt` shape — the emission vocabulary's one-call verb (`const_int_at`) does both (the `raw_mint_emit_bin` family).
 @keeps("{\n    let dst = cx.mint_shape(Type.Int)\n    log(dst)\n}")
+@says("a register read across branches has no one verb call, and its mint and emit cannot move together past the statements between")
 export rule raw_mint_emit_const_int {
     quote {
         {
@@ -1022,7 +1122,9 @@ export rule raw_mint_emit_const_int {
     } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "ConstInt"),
 }
 
+/// A register minted and emitted by hand as the `ConstBool` shape — the emission vocabulary's one-call verb (`const_bool_at`) does both (the `raw_mint_emit_bin` family).
 @keeps("{\n    let dst = cx.mint_shape(Type.Bool)\n    log(dst)\n}")
+@says("a register read across branches has no one verb call, and its mint and emit cannot move together past the statements between")
 export rule raw_mint_emit_const_bool {
     quote {
         {
@@ -1035,7 +1137,9 @@ export rule raw_mint_emit_const_bool {
     } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "ConstBool"),
 }
 
+/// A register minted and emitted by hand as the `ConstStr` shape — the emission vocabulary's one-call verb (`const_str_at`) does both (the `raw_mint_emit_bin` family).
 @keeps("{\n    let dst = cx.mint_shape(Type.Str)\n    log(dst)\n}")
+@says("a register read across branches has no one verb call, and its mint and emit cannot move together past the statements between")
 export rule raw_mint_emit_const_str {
     quote {
         {
@@ -1048,7 +1152,9 @@ export rule raw_mint_emit_const_str {
     } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "ConstStr"),
 }
 
+/// A register minted and emitted by hand as the `Load` shape — the emission vocabulary's one-call verb (its covering verb) does both (the `raw_mint_emit_bin` family).
 @keeps("{\n    let dst = cx.mint_ty(ty)\n    log(dst)\n}")
+@says("a register read across branches has no one verb call, and its mint and emit cannot move together past the statements between")
 export rule raw_mint_emit_load {
     quote {
         {
@@ -1277,6 +1383,7 @@ fn arm_text(a: ArmInfo) -> string {
 /// NO REWRITE: the fix is a fn the caller names — a judgement call
 /// this pattern's one bound literal cannot make on its own.
 @keeps("\"a message long enough to be shared\"")
+@says("the repeat's name and home are the author's choice, absent from the one literal found")
 export rule duplicated_message { quote { ${lit} } if is_shared_message(lit) -> duplicated_message_found(lit) }
 
 fn is_shared_message(lit: Code) -> bool {
@@ -1326,6 +1433,7 @@ fn duplicated_message_found(lit: Code) -> Fix {
 @keeps("Span { lo: 0, hi: 1 }")
 @keeps("fn f() {\n    let a = Empty {}\n    let b = Empty {}\n}")
 @keeps("fn f() {\n    let a = ExprId { index: 0 }\n    let b = ExprId { index: 0 }\n}")
+@says("the repeat's name and home are the author's choice, absent from the one literal found")
 export rule duplicated_literal { quote { ${lit} } if is_shared_literal(lit) -> duplicated_literal_found(lit) }
 
 fn is_shared_literal(lit: Code) -> bool {
@@ -1363,6 +1471,7 @@ fn duplicated_literal_found(lit: Code) -> Fix {
 /// side effect worth running twice; without that fact, the honest
 /// answer is to ask the reader, not the compiler.
 @keeps("let ok = cx.shape_at(e) && cx.shape_at(other)")
+@says("`a && a` folds to `a` only when `a` runs no effect, and a declared method carries no purity fact")
 export rule repeated_projection {
     quote { ${a} && ${b} } if is_repeated_call(a, b) -> repeated_projection_found(a),
     quote { ${a} || ${b} } if is_repeated_call(a, b) -> repeated_projection_found(a),
@@ -1412,6 +1521,7 @@ fn repeated_projection_found(a: Code) -> Fix {
 @keeps("x.writes_receiver(d)")
 @keeps("x.methods_of(target)")
 @keeps("x.decl(d)")
+@says("the remedy is the table's recording accessor or an `@bracket(...)` caller, and which is right depends on the caller")
 export rule bypass_outside_bracket {
     quote { ${recv}.${name}(${..args}) } if bypasses_bracket(it, name) -> bypass_found(it, name, covered_bracket(name)!),
     quote { ${r}.methods.get() } if bypasses_methods_cell(it) -> bypass_found(it, "methods.get()", "methods"),
@@ -1499,6 +1609,7 @@ fn bypass_found(c: Code, verb: string, bracket: string) -> Fix {
 /// NO REWRITE: which global column narrows the rows — and whether the
 /// relation indexes it — is the relation's own design, not this site's.
 @keeps("[s for s in rows if s.at == c]")
+@says("which column narrows the rows, and whether it is indexed, is the relation's design")
 export rule file_id_across_relation {
     quote { ${lit} } if file_scoped_column(lit) != null -> file_id_across_relation_found(file_scoped_column(lit)!),
 }
@@ -1569,6 +1680,7 @@ fn file_id_across_relation_found(col: Code) -> Fix {
 /// `test_workspace(host, root)` (@std.avrac.testing) is the door that holds
 /// the law: the workspace made before it is let go.
 @keeps("new_workspace(h, \"/w\", avra())")
+@says("`test_workspace(host, root)` lets the previous workspace go, which changes when it dies, and the test's reads may depend on that")
 export rule direct_test_workspace {
     quote { new_workspace(${host}, ${root}, ${lang}) } if in_a_test(host) -> direct_test_workspace_found(host),
 }
@@ -1598,6 +1710,7 @@ fn direct_test_workspace_found(host: Code) -> Fix {
 ///
 /// NO REWRITE: the base is a new declaration the file must name.
 @keeps("let d = \"/tmp/avra-x\"")
+@says("the per-run base is a new declaration whose source is the author's to choose")
 export rule fixed_tmp_path { quote { ${lit} } if is_fixed_tmp_path(lit) -> fixed_tmp_path_found(lit) }
 
 fn is_fixed_tmp_path(lit: Code) -> bool {

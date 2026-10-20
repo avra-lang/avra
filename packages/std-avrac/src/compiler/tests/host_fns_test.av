@@ -82,6 +82,19 @@ fn hosted_text(target: string, name: string) -> string {
     read_text(path) catch ""
 }
 
+/// A program that calls the runtime row `avra_now_ns` through an `extern fn` of its own, and a
+/// bodiless extern no row names (`told`), for wasm.
+fn imports_text() -> string {
+    let _ = make_dirs(hosted_base())
+    let path = "${hosted_base()}/imports.ll"
+    let main = "use seam.{asked}\nextern fn avra_now_ns() -> int\nasked(avra_now_ns())\n"
+    if emit_ll(hosted(main).lowered(), path, "wasm32-wasip1") != null { return "" }
+    read_text(path) catch ""
+}
+
+/// Whether `ll` imports `name` from the host's `avra:rt` module.
+fn host_imports(ll: string, name: string) -> bool { ll.contains("\"wasm-import-name\"=\"${name}\"") }
+
 fn exports(ll: string, name: string) -> bool { ll.contains("\"wasm-export-name\"=\"${name}\"") }
 
 /// What the program answers, or the refusal.
@@ -107,6 +120,16 @@ spec "compiler/lower — a host fn" {
         then "no export fn is exported" {
             let ll = hosted_text("wasm32-wasip1", "plain")
             ll != "" && !exports(ll, "used") && !exports(ll, "offered") && !exports(ll, "helper")
+        }
+    }
+    given "a program that declares a runtime row as an extern, emitted for wasm" {
+        then "a symbol no row names is a host import" {
+            let ll = imports_text()
+            ll != "" && host_imports(ll, "told")
+        }
+        then "a runtime row is the runtime's own symbol, linked, and never a host import" {
+            let ll = imports_text()
+            ll != "" && !host_imports(ll, "avra_now_ns")
         }
     }
     given "that program emitted for the host" {
@@ -211,11 +234,11 @@ spec "compiler/lower — a host fn" {
                     "extern fn avra_ptr_at(address: int) -> ptr?\nextern fn malloc(n: int) -> ptr {\n    avra_ptr_at(n)!\n}\n1",
                 ),
             )
-                .contains("`malloc` is a symbol this platform already defines")
+                .contains("`malloc` is a platform symbol")
         }
         then "the program's own start refuses" {
             lowering_refusal(hosted("extern fn main() -> int {\n    7\n}\n1"))
-                .contains("`main` is a symbol this platform already defines")
+                .contains("`main` is a platform symbol")
         }
     }
     given "the refusal, rendered" {

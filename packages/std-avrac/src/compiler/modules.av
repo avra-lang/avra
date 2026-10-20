@@ -17,7 +17,7 @@ use core.{
 }
 use @std.path.{dir_of, under_dir, joined_path, normalized, file_name}
 use features.{Decl, Import, nothing, table_of}
-use diagnostics.{Diag, loc_at}
+use diagnostics.{Diag, loc_at, is_error}
 use @std.testing.{words}
 
 impl Workspace {
@@ -344,11 +344,16 @@ impl Workspace {
     /// declaration order. A NAME IS READ THROUGH ITS BUCKET: the asker depends on the
     /// declarations of that name, never on the module's whole surface, so a declaration
     /// of another name moves nothing it read.
-    fn written_export(m: ModulePath, name: string) -> DeclId? {
+    fn written_export(m: ModulePath, name: string) -> DeclId? { self.written_exports(m, name).last() }
+
+    /// Every WRITTEN export of a name in a module, in file then declaration order.
+    fn written_exports(m: ModulePath, name: string) -> List<DeclId> {
         let files = self.module_file_ids(m)
         for f in files { self.admission(f) }
-        let named = self.decls.named(name)
-        [x.id for f in files for x in named if self.written_export_in(x, f)].last()
+        let here = [self.decls.file(f).path for f in files]
+        self.minted_files([p for p in self.hold.named_by.get().get(name) ?? [] if here.contains(p)])
+        let named = self.decls.named_filed(name)
+        [x.id for f in files for x in named if self.written_export_in(x, f)]
     }
 
     /// Whether a row is one of `f`'s own written top-level exports.
@@ -437,16 +442,13 @@ impl Workspace {
         let at = loc_at(p.source.file, p.store.stmt_span(u.stmt))
         let from = self.packages()[self.holder_of_path(p.source.file)]
         let m = qualified(module_path(u.path), from)
-        if self.lone { return Imported { imports: [], diagnostics: [unpackaged_use(at)] } }
-        if m.malformed() { return Imported { imports: [], diagnostics: [package_form(at, m)] } }
+        if self.lone { return refused_line(u, [unpackaged_use(at)]) }
+        if m.malformed() { return refused_line(u, [package_form(at, m)]) }
         if m.package() != null && !self.reaches(from, m.package()!) {
-            return Imported {
-                imports: [],
-                diagnostics: [self.not_a_dependency(at, from, m.package()!)],
-            }
+            return refused_line(u, [self.not_a_dependency(at, from, m.package()!)])
         }
-        if self.ambiguous_module(m) { return Imported { imports: [], diagnostics: [module_ambiguous(at, m)] } }
-        if self.module_files(m).is_empty() { return Imported { imports: [], diagnostics: [no_module(at, m)] } }
+        if self.ambiguous_module(m) { return refused_line(u, [module_ambiguous(at, m)]) }
+        if self.module_files(m).is_empty() { return refused_line(u, [no_module(at, m)]) }
         let shared = p.store.is_exported(u.stmt)
         let own_test = !shared && self.tests_module(p.source.file, m)
         mut imports: List<Import> = []
@@ -462,7 +464,17 @@ impl Workspace {
             } else if id == null && self.reexports(m).any(it.name == item) {
                 diags.push(reexport_unreached(at, m, item))
             } else if id == null {
-                diags.push(not_exported(at, m, item, self.exported_names(m), own_test))
+                diags
+                    .push(
+                        not_exported(
+                            at,
+                            m,
+                            item,
+                            self.exported_names(m),
+                            own_test,
+                            self.unread_source(m),
+                        ),
+                    )
             } else if exported == null && own.length > 1 {
                 diags
                     .push(
@@ -476,13 +488,32 @@ impl Workspace {
             } else if shared && self.closes_cycle(from, m) {
                 diags.push(reexport_cycle(at, from.key, m.package() ?? ""))
             } else if claimed != null && !same_decl(claimed!, id!) {
-                diags.push(reexport_twice(at, u.bound_as(j)))
+                if !self.declared_twice_here(p, u.bound_as(j)) { diags.push(reexport_twice(at, u.bound_as(j))) }
             } else {
                 imports.push(Import { decl: id!, at: at, renamed: u.bound_as(j), shared: shared })
             }
             listed.push(item)
         }
-        Imported { imports: imports, diagnostics: diags }
+        Imported { imports: imports, diagnostics: diags, refused: unbound(u, imports) }
+    }
+
+    /// The first parse error among `m`'s files — the root a refusal
+    /// about `m`'s surface follows from, when a file of it is unread.
+    fn unread_source(m: ModulePath) -> Diag? {
+        flatten(
+            [self.parsed(self.file_id(path)).voices.list.filter(is_error(it)) for path in self.module_files(m)],
+        )
+            .first()
+    }
+
+    /// Whether the module of `p`'s file declares `name` twice — a surface
+    /// already refused as contradictory, so a re-export of the name that
+    /// meets it adds no finding.
+    fn declared_twice_here(p: Parsed, name: string) -> bool {
+        self
+            .namespace(self.decls.file(self.file_id(p.source.file)).module_id)
+            .clashes
+            .any(it.name == name)
     }
 
     /// A TEST READS ITS MODULE'S PRIVATE NAMES. Whether `asker` is a file
@@ -573,4 +604,14 @@ fn reexports_in(fields: List<List<string>>, path: string) -> List<Reexport> {
 /// `reexport_line`'s inverse.
 fn held_reexport(p: List<string>) -> Reexport {
     Reexport { name: p[2], from: module_path(p[3].split(".")), item: p[4] }
+}
+
+/// A `use` whose every item was refused as a whole.
+fn refused_line(u: UseParts, diagnostics: List<Diag>) -> Imported {
+    Imported { imports: [], diagnostics: diagnostics, refused: unbound(u, []) }
+}
+
+/// The names a `use` line binds that no import answered.
+fn unbound(u: UseParts, imports: List<Import>) -> List<string> {
+    [u.bound_as(j) for j, _item in u.items if !imports.any(it.renamed == u.bound_as(j))]
 }

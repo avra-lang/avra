@@ -14,29 +14,37 @@
 use features.{LanguageFeature, BuilderRow, PropertyRow}
 use features.structs.{index_compared}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
-use diagnostics.{DiagCode}
+use diagnostics.{DiagCode, Remedy}
 
 export fn structs() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name         | build
         "type_decl"  | build_type_decl
         "struct_lit" | build_struct_lit
+        "fields_pat" | build_fields_pat
     }
     let codes = table<DiagCode> {
-        kind                     | summary
-        "resolve.duplicate_type" | "two types share one name"
-        "type.struct_scalar"     | "a struct field holds a value"
-        "type.duplicate_field"   | "a struct's fields have distinct names"
-        "type.spread"            | "a spread places another record's fields"
-        "type.struct_fields"     | "a literal provides each declared field exactly once"
-        "type.struct_targs"      | "a literal's written type arguments pin the record's parameters"
-        "type.with_struct"       | "`with` copies a struct value"
-        "type.named"             | "a named type stands over one written shape"
-        "type.alias"             | "an alias names one type that is not itself"
-        "type.tparam"            | "a declaration's type parameters are fresh, distinct names"
-        "type.identity_field"    | "an identity's field is a Cell, or another identity"
-        "type.lacks"             | "only a record lacks a field — each once, and none it declares"
-        "type.sealed"            | "a sealed type is built and rewritten in the module that declares it"
+        kind                     | summary                                                                | remedy
+        "resolve.duplicate_type" | "two types share one name"                                             | Remedy.Help
+        "type.struct_scalar"     | "a struct field holds a value"                                         | Remedy.Help
+        "type.duplicate_field"   | "a struct's fields have distinct names"                                | Remedy.Help
+        "type.record_pattern"    | "a record pattern names the subject's record and its fields"           | Remedy.Help
+        "type.spread"            | "a spread places another record's fields"                              | Remedy.Help
+        "type.spread_value"      | "a literal's spread is a record of the literal's own type or a subset" | Remedy.Help
+        "type.spread_nullable"   | "a spread source is never null"                                        | Remedy.Help
+        "type.spread_field"      | "a spread carries only fields the literal's type declares, same types" | Remedy.Help
+        "type.spread_missing"    | "a spread literal's entries cover every field without a default"       | Remedy.Help
+        "type.spread_dead"       | "a field written before a spread that carries it is overwritten"       | Remedy.Help
+        "type.spread_generic"    | "a spread literal builds a record that takes no type parameters"       | Remedy.Help
+        "type.struct_fields"     | "a literal provides each declared field exactly once"                  | Remedy.Fix
+        "type.struct_targs"      | "a literal's written type arguments pin the record's parameters"       | Remedy.Help
+        "type.with_struct"       | "`with` copies a struct value"                                         | Remedy.Help
+        "type.named"             | "a named type stands over one written shape"                           | Remedy.Help
+        "type.alias"             | "an alias names one type that is not itself"                           | Remedy.Help
+        "type.tparam"            | "a declaration's type parameters are fresh, distinct names"            | Remedy.Help
+        "type.identity_field"    | "an identity's field is a Cell, or another identity"                   | Remedy.Help
+        "type.lacks"             | "only a record lacks a field — each once, and none it declares"      | Remedy.Help
+        "type.sealed"            | "a sealed type is built and rewritten in the module that declares it"  | Remedy.Help
     }
     let properties = table<PropertyRow> {
         name | takes      | check          | lower
@@ -47,7 +55,10 @@ export fn structs() -> LanguageFeature {
             stmt = "type" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? "=" ( "{" BREAK? ( ( fields:field | rs:".." ( dd:"." )? rt:type ) ( ( "," | BREAK ) BREAK? ( fields:field | rs:".." ( dd:"." )? rt:type ) )* ","? BREAK? )? "}" | nt:type ) END @recover(sync_to: "END") -> type_decl(n, tp, fields, nt, rs, rt, dd)
             field = ( marks:mark )* ( state_field:STATE )? name:NAME ":" ty:type ( "=" default:expression )? -> Record.ParamSyntax | spread:".." name:HOLE -> Record.ParamSyntax
             stmt = "alias" name:NAME ( "<" tparams:NAME ( "," tparams:NAME )* ","? ">" )? "=" of:type END @recover(sync_to: "END") -> Stmt.Alias
-            primary = t:NAME ( "<" ta:type ( "," ta:type )* ","? ">" )? "{" BREAK? ( ( vn:NAME ":" ve:expression | sp:".." vn:HOLE ) ( ( "," | BREAK ) BREAK? ( vn:NAME ":" ve:expression | sp:".." vn:HOLE ) )* ","? BREAK? )? "}" -> struct_lit(t, ta, vn, ve, sp)
+            primary = t:NAME ( "<" ta:type ( "," ta:type )* ","? ">" )? "{" BREAK? ( ( vn:NAME ":" ve:expression | sp:".." ( vn:HOLE | se:postfix ) ) ( ( "," | BREAK ) BREAK? ( vn:NAME ":" ve:expression | sp:".." ( vn:HOLE | se:postfix ) ) )* ","? BREAK? )? "}" -> struct_lit(t, ta, vn, ve, sp, se)
+            pattern = t:NAME "{" BREAK? ( ( names:NAME ( ":" pats:pattern )? | dots:".." ) ( ( "," | BREAK ) BREAK? ( names:NAME ( ":" pats:pattern )? | dots:".." ) )* ","? BREAK? )? "}" -> fields_pat(t, names, pats, dots)
+            asked = t:NAME "{" BREAK? ( ( names:NAME ( ":" pats:pattern )? | dots:".." ) ( ( "," | BREAK ) BREAK? ( names:NAME ( ":" pats:pattern )? | dots:".." ) )* ","? BREAK? )? "}" -> fields_pat(t, names, pats, dots)
+            destructure = t:NAME "{" BREAK? ( ( names:NAME ( ":" pats:pattern )? | dots:".." ) ( ( "," | BREAK ) BREAK? ( names:NAME ( ":" pats:pattern )? | dots:".." ) )* ","? BREAK? )? "}" -> fields_pat(t, names, pats, dots)
         }
         builders: rows
         diags: codes

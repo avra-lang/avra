@@ -18,9 +18,23 @@
 //! `Field.kind` answers "is this a list", "is this text-filled"
 //! structurally, so the answer holds under renaming and cannot forget
 //! the next declared type the way a string table would.
-use core.{flatten, joined, PayloadRow, row_for, binop_of}
+use core.{flatten, joined, PayloadRow, row_for, binop_of, facet_table}
 use @std.meta.{Field, Kind}
-use @std.grammar.{Grammar, Alt, Seq, Item, Prim, Build, Slot, Fixed, Operators, Diagnostic, defect}
+use @std.grammar.{
+    Grammar,
+    Alt,
+    Seq,
+    Item,
+    Prim,
+    Build,
+    Slot,
+    Fixed,
+    Term,
+    Operators,
+    Tier,
+    Diagnostic,
+    defect,
+}
 
 /// A grammar with every node build bound, and what binding refused.
 export type NodeBinding = { g: Grammar, defects: List<Diagnostic> }
@@ -53,7 +67,12 @@ fn bound_seq(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> Seq {
 /// every build.
 fn bound_operators(ops: Operators?, outer: Seq, rows: List<PayloadRow>) -> Operators? {
     let held? = ops else { return null }
-    held with { tiers: [t with { build: bound_build(t.build, outer, rows) } for t in held.tiers] }
+    held with { tiers: [bound_tier(t, outer, rows) for t in held.tiers] }
+}
+
+/// A tier with its own build and each suffix's bound.
+fn bound_tier(t: Tier, outer: Seq, rows: List<PayloadRow>) -> Tier {
+    t with { build: bound_build(t.build, outer, rows), suffixes: [x with { build: bound_build(x.build, outer, rows) } for x in t.suffixes] }
 }
 
 fn bound_prim(rname: string, p: Prim, outer: Seq, rows: List<PayloadRow>) -> Prim {
@@ -85,17 +104,28 @@ fn filled_slots(
     rows: List<PayloadRow>,
 ) -> List<Slot>? {
     let row? = row_for(rows, owner, variant) else { return null }
-    [filling(p, outer.labels(), fixed) for p in row.payloads]
+    [filling(p, outer, fixed, rows) for p in row.payloads]
 }
 
 /// One payload's slot: the label that captures it, the value the rule
 /// states, or nothing — which the arity law permits only for a list
 /// or a nullable.
-fn filling(p: Field, labels: List<string>, fixed: List<Fixed>) -> Slot {
-    if labels.contains(p.name) { return Slot.Label(p.name) }
+fn filling(p: Field, outer: Seq, fixed: List<Fixed>, rows: List<PayloadRow>) -> Slot {
     let stated: Fixed? = fixed.find(it.name == p.name)
-    if stated != null { return Slot.Fixed(stated!.text) }
+    if stated != null { return slot_of(stated!.stated(), outer, rows) }
+    if outer.labels().contains(p.name) { return Slot.Label(p.name) }
     Slot.Empty
+}
+
+/// A stated term as the slot it fills: a word that is a capture's label
+/// reads as that capture, any other word and every literal is stated, a
+/// node is built in place from the same labels, a list is its items.
+fn slot_of(t: Term, outer: Seq, rows: List<PayloadRow>) -> Slot {
+    match t {
+        .Text(text) -> if outer.labels().contains(text) { Slot.Label(text) } else { Slot.Fixed(text) },
+        .Node(b) -> Slot.Nested(bound_build(b, outer, rows) ?? b),
+        .List(items) -> Slot.Items([slot_of(i, outer, rows) for i in items]),
+    }
 }
 
 // ── The refusals. A node build is checked against the DECLARATION,
@@ -129,8 +159,23 @@ fn judged_seqs(s: Seq, scope: Seq) -> List<Judged> {
 
 fn seq_defects(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> List<Diagnostic> {
     let tiers = s.operators?.tiers ?? []
-    build_defects(rname, s.build, outer, rows, flatten([t.words for t in tiers if t.build == null]))
-        .concat(flatten([build_defects(rname, t.build, outer, rows, t.words) for t in tiers]))
+    build_defects(
+        rname,
+        s.build,
+        outer,
+        rows,
+        flatten([t.served_words() for t in tiers if t.build == null]),
+    )
+        .concat(flatten([tier_build_defects(rname, t, outer, rows) for t in tiers]))
+}
+
+/// A tier's own build, and each of its suffixes', judged for the
+/// operators each builds.
+fn tier_build_defects(rname: string, t: Tier, outer: Seq, rows: List<PayloadRow>) -> List<
+    Diagnostic,
+> {
+    build_defects(rname, t.build, outer, rows, t.served_words())
+        .concat(flatten([build_defects(rname, x.build, outer, rows, [[x.word]]) for x in t.suffixes]))
 }
 
 /// One build judged against the node it names; `words` are the operator
@@ -158,9 +203,10 @@ fn node_defects(
     fixed: List<Fixed>,
     rows: List<PayloadRow>,
     words: List<List<string>>,
+    top: bool = true,
 ) -> List<Diagnostic> {
     let row? = row_for(rows, owner, variant) else { return [node_refusal(rname, no_such_variant(owner, variant))] }
-    judged(rname, outer, row, fixed).concat(operator_words_defects(rname, row, words))
+    judged(rname, outer, row, fixed, rows, top).concat(operator_words_defects(rname, row, words))
 }
 
 /// A payload that is an operator (`BinOp`) is filled from the word the
@@ -179,18 +225,112 @@ fn is_operator(p: Field) -> bool {
 
 /// The branch against a variant that EXISTS: what it names, what it
 /// leaves unfilled, and what it fills with the wrong shape.
-fn judged(rname: string, s: Seq, row: PayloadRow, fixed: List<Fixed>) -> List<Diagnostic> {
-    stranger_defects(rname, s, row, fixed)
+fn judged(
+    rname: string,
+    s: Seq,
+    row: PayloadRow,
+    fixed: List<Fixed>,
+    rows: List<PayloadRow>,
+    top: bool,
+) -> List<Diagnostic> {
+    stranger_defects(rname, s, row, fixed, top)
         .concat(unfilled_defects(rname, s, row, fixed))
-        .concat(shape_defects(rname, s, row))
+        .concat(shape_defects(rname, s, row, fixed))
+        .concat(truth_defects(rname, s, row, fixed))
+        .concat(nested_defects(rname, s, row, fixed, rows))
+}
+
+/// Each node a stated payload builds in place: it must be the kind of value
+/// the payload holds, and it is judged as any build is — against its own
+/// declaration, by the labels of the branch that holds it.
+fn nested_defects(
+    rname: string,
+    s: Seq,
+    row: PayloadRow,
+    fixed: List<Fixed>,
+    rows: List<PayloadRow>,
+) -> List<Diagnostic> {
+    flatten([nested_judged(rname, s, row, f, n, rows) for f in fixed for n in nodes_in(f.stated())])
+}
+
+fn nested_judged(rname: string, s: Seq, row: PayloadRow, f: Fixed, n: Build, rows: List<PayloadRow>) -> List<
+    Diagnostic,
+> {
+    let held? = row.payloads.find(it.name == f.name) else { return [] }
+    match n {
+        .Node(owner, variant, inner, _) -> nested_fit(rname, row, held, owner, variant)
+            .concat(node_defects(rname, s, owner, variant, inner, rows, [], false)),
+        .Call(_, _) or .Var(_) -> [],
+    }
+}
+
+/// A nested node fills a payload that holds nodes, of the kind it builds.
+fn nested_fit(rname: string, row: PayloadRow, p: Field, owner: string, variant: string) -> List<
+    Diagnostic,
+> {
+    if texted(p.kind) { return [node_refusal(rname, node_fills_text(row, p, owner, variant))] }
+    let built = built_type(owner, variant)
+    if named_of(p.kind) == built { return [] }
+    [node_refusal(rname, node_of_another_kind(row, p, owner, variant, built))]
+}
+
+/// The nodes a term builds in place, in order.
+fn nodes_in(t: Term) -> List<Build> {
+    match t {
+        .Text(_) -> [],
+        .Node(b) -> [b],
+        .List(items) -> flatten([nodes_in(i) for i in items]),
+    }
+}
+
+/// The declared type a build answers: a node row answers its enum's id
+/// (`Expr` answers `ExprId`), a record row the record, and any other
+/// enum's row that enum.
+fn built_type(owner: string, variant: string) -> string {
+    match owner {
+        "Expr" -> "ExprId",
+        "Pat" -> "PatId",
+        "Stmt" -> "StmtId",
+        "Record" -> variant,
+        rest -> owner,
+    }
+}
+
+/// The declared type a payload holds, through its list and its nullable.
+fn named_of(k: Kind) -> string? {
+    match k {
+        .Named(name, _) -> name,
+        .List(elem) -> named_of(elem),
+        .Opt(inner) -> named_of(inner),
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
+    }
 }
 
 /// Names the rule uses — captured or stated — that the variant has no
 /// payload for. A climb's own `op` and `right` are offered to every build, so a
 /// build that reads neither is no stranger to them.
-fn stranger_defects(rname: string, s: Seq, row: PayloadRow, fixed: List<Fixed>) -> List<Diagnostic> {
+/// A node built in place is judged by what it states alone: the branch's own
+/// labels belong to the build that holds it.
+fn stranger_defects(rname: string, s: Seq, row: PayloadRow, fixed: List<Fixed>, top: bool) -> List<
+    Diagnostic,
+> {
     let names = [p.name for p in row.payloads]
-    [node_refusal(rname, no_such_payload(row, n, names)) for n in s.written_labels().concat([f.name for f in fixed]) if !names.contains(n)]
+    let spoken = flatten([words_in(f.stated()) for f in fixed])
+    let used = if top { s.written_labels().filter((l) -> !spoken.contains(l)).concat([f.name for f in fixed]) } else { [f.name for f in fixed] }
+    [node_refusal(rname, no_such_payload(row, n, names)) for n in used if !names.contains(n)]
+}
+
+/// The words a stated term reads, through the nodes it builds in place: a
+/// capture it names is spoken for, whichever payload takes it.
+fn words_in(t: Term) -> List<string> {
+    match t {
+        .Text(text) -> [text],
+        .Node(b) -> match b {
+            .Node(_, _, inner, _) -> flatten([words_in(f.stated()) for f in inner]),
+            .Call(_, _) or .Var(_) -> [],
+        },
+        .List(items) -> flatten([words_in(i) for i in items]),
+    }
 }
 
 /// Payloads nothing fills, and whose type does not answer absence.
@@ -214,18 +354,72 @@ fn absence_is_a_value(k: Kind) -> bool {
 }
 
 /// Each payload's SHAPE against what its label matches: a node payload
-/// is built by a rule, text is carried by a terminal. Refused only
+/// is built by a rule, text is carried by a terminal. A `@facet` payload
+/// is judged by nothing — its label is read by PRESENCE, and its shape
+/// does not cross. Refused only
 /// where the branch PROVES the mismatch — a literal captures nothing
 /// and a group may answer either, so neither is judged.
-fn shape_defects(rname: string, s: Seq, row: PayloadRow) -> List<Diagnostic> {
-    flatten([payload_shape(rname, s, row, p) for p in row.payloads])
+fn shape_defects(rname: string, s: Seq, row: PayloadRow, fixed: List<Fixed>) -> List<Diagnostic> {
+    flatten(
+        [payload_shape(rname, s, row, p, label_of(p, fixed, s)) for p in row.payloads if facet_table(p) == null],
+    )
 }
 
-fn payload_shape(rname: string, s: Seq, row: PayloadRow, p: Field) -> List<Diagnostic> {
-    let hit? = s.deep_items().find(labelled(it, p.name)) else { return [] }
+/// The label a payload is filled from: the capture a stated word names, the
+/// payload's own name when nothing is stated, and none for a literal or a node.
+fn label_of(p: Field, fixed: List<Fixed>, s: Seq) -> string? {
+    let stated: Fixed? = fixed.find(it.name == p.name)
+    if stated == null { return p.name }
+    match stated!.stated() {
+        .Text(text) -> if s.labels().contains(text) { text } else { null },
+        .Node(_) or .List(_) -> null,
+    }
+}
+
+fn payload_shape(rname: string, s: Seq, row: PayloadRow, p: Field, label: string?) -> List<
+    Diagnostic,
+> {
+    let named? = label else { return [] }
+    let hit? = s.deep_items().find(labelled(it, named)) else { return [] }
     let carried: Carrier? = carrier_of(hit.prim)
     if carried == null || carried! == wanted_carrier(p.kind) { return [] }
     [node_refusal(rname, wrong_shape(row, p, carried!))]
+}
+
+/// A `bool` payload is stated `true` or `false`, or is the presence of a
+/// terminal the rule captured under its label. Any other word, and a built
+/// node, states no truth.
+fn truth_defects(rname: string, s: Seq, row: PayloadRow, fixed: List<Fixed>) -> List<Diagnostic> {
+    flatten([truth_defect(rname, s, row, p, fixed) for p in row.payloads if is_bool(p.kind)])
+}
+
+fn is_bool(k: Kind) -> bool {
+    match k { .Bool -> true, rest -> false }
+}
+
+fn truth_defect(rname: string, s: Seq, row: PayloadRow, p: Field, fixed: List<Fixed>) -> List<
+    Diagnostic,
+> {
+    let label? = label_of(p, fixed, s) else { return stated_truth(rname, row, p, fixed.find(it.name == p.name)) }
+    let hit? = s.deep_items().find(labelled(it, label)) else { return [] }
+    if presence_item(hit.prim) { return [] }
+    [node_refusal(rname, truth_from_node(row, p))]
+}
+
+/// A stated word that is no truth; a node or a list is the nesting's own to judge.
+fn stated_truth(rname: string, row: PayloadRow, p: Field, stated: Fixed?) -> List<Diagnostic> {
+    let f? = stated else { return [] }
+    match f.stated() {
+        .Text(text) -> if text == "true" || text == "false" { [] } else { [node_refusal(rname, states_no_truth(row, p, text))] },
+        .Node(_) or .List(_) -> [],
+    }
+}
+
+/// Whether an item's presence can be read as a truth: a terminal, literal or
+/// named (`state:STATE`), or a group, which may answer either. A rule's built
+/// node is a value, and holds no truth.
+fn presence_item(p: Prim) -> bool {
+    match p { .Lit(_) or .Named(_) or .Group(_) -> true, .Ref(_) or .NotChar(_) -> false }
 }
 
 /// What a grammar atom answers with: a built node, or a token's text.
@@ -304,6 +498,22 @@ fn carrier_word(c: Carrier) -> string {
 fn listed(names: List<string>) -> string {
     if names.is_empty() { return "nothing" }
     "`${joined(names, "`, `")}`"
+}
+
+fn node_fills_text(row: PayloadRow, p: Field, owner: string, variant: string) -> string {
+    "builds `${owner}.${variant}` in `${row.owner}.${row.variant}`'s `${p.name}: ${p.ty}`, and it holds a token's text"
+}
+
+fn node_of_another_kind(row: PayloadRow, p: Field, owner: string, variant: string, built: string) -> string {
+    "builds `${owner}.${variant}` in `${row.owner}.${row.variant}`'s `${p.name}: ${p.ty}`, and it builds a `${built}`"
+}
+
+fn states_no_truth(row: PayloadRow, p: Field, text: string) -> string {
+    "states `${row.owner}.${row.variant}`'s `${p.name}: ${p.ty}` as `${text}` — a `bool` payload is stated `true` or `false`, or is the presence of a terminal"
+}
+
+fn truth_from_node(row: PayloadRow, p: Field) -> string {
+    "fills `${row.owner}.${row.variant}`'s `${p.name}: ${p.ty}` from a built node — a `bool` payload is a terminal's presence, or stated `true` or `false`"
 }
 
 fn names_no_operator(row: PayloadRow, word: string) -> string {

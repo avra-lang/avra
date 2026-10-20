@@ -1,7 +1,7 @@
 //! THE DISK HOST: the workspace's questions answered by this machine's
 //! disk, environment and running binary — the door's body on the CLI's side.
 use @std.avrac.compiler.{digest_of_binary}
-use @std.avrac.core.{qtrace, traced}
+use @std.avrac.core.{qtrace, traced, EmbedKind}
 use @std.avrac.compiler.host.{Host, Beneath, Octet, Stamp, process_env}
 use @std.path.{dir_of, joined_path, file_name}
 use @std.process.{tool as process_tool, exit, Exit}
@@ -27,7 +27,7 @@ fn disk_host() -> Host {
         exists: (p: string) -> exists(p),
         peek: (p: string) -> disk_peek(p),
         refused: (p: string) -> refusal_spoken(p),
-        beneath: (root: string, rel: string) -> disk_beneath(root, rel),
+        beneath: (root: string, rel: string, kind: EmbedKind) -> disk_beneath(root, rel, kind),
         list: (dir: string) -> list_dir(dir) catch [],
         write: (p: string, text: string) -> write_file(p, text),
         is_dir: (dir: string) -> is_dir(dir),
@@ -55,14 +55,20 @@ fn is_a_dir(path: string) -> bool {
 /// segment and never through a link (`@std/io`'s `open_beneath`). A
 /// refusal the path itself survives — something stands there when
 /// links are followed — was a link's.
-fn disk_beneath(root: string, rel: string) -> Beneath {
+fn disk_beneath(root: string, rel: string, kind: EmbedKind) -> Beneath {
     let o = match open_beneath(root, rel) {
         .Ok(o) -> o,
         .Err(e) -> { return unopened(e, exists(joined_path(root, rel))) },
     }
     defer o.close()
     match o.kind {
-        .File -> match o.text() { .Ok(text) -> Beneath.Text(text), .Err(e) -> unread(e) },
+        .File -> match kind {
+            .Text -> match o.text() { .Ok(text) -> Beneath.Text(text), .Err(e) -> unread(e) },
+            .Octets -> match o.span(0, o.size) {
+                .Ok(octets) -> Beneath.Octets(octets),
+                .Err(e) -> Beneath.Refused(e.describe().message),
+            },
+        },
         .Missing or .Dir or .Other -> Beneath.Refused("`${rel}` is not a file"),
     }
 }

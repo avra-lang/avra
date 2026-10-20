@@ -1,6 +1,6 @@
 #!/bin/sh
 # What a non-host target does with a row or a package it has no body for: a
-# fiber or a core ROW, or a package whose manifest names no `wasm_objects`, is
+# core ROW, or a package whose manifest names no `wasm_objects`, is
 # refused BY NAME — never a linker's "undefined symbol", which accuses the
 # innocent. A package that DOES name a wasm object links instead.
 set -eu
@@ -35,7 +35,8 @@ check() {
     say "$name: refused, naming ${want}"
 }
 
-# A package that names a wasm object must LINK, not refuse.
+# A package that names a wasm object must LINK, not refuse; so must a program
+# whose only mention of a row this target lacks sits in a body nothing reaches.
 builds() {
     name=$1
     rm -rf "$work/$name"
@@ -49,8 +50,10 @@ builds() {
 }
 
 fail=0
-check fiber 'avra_task_spawn' || fail=1
 check package '@std/process' || fail=1
+builds spawn || fail=1
 builds io || fail=1
+builds unreached || fail=1
+builds time || fail=1
 [ "$fail" -eq 0 ] || exit 1
 say "refusals speak, and a wasm-named package links"

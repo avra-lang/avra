@@ -181,7 +181,7 @@ provision() {
         sudo ln -sf "$llvm/bin/clang" /usr/local/bin/clang
         sudo ln -sf "$llvm/bin/clang" /usr/local/bin/cc
         sudo ln -sf "$llvm/bin/llvm-config" /usr/local/bin/llvm-config
-        printf '%s\n' "export LLVM_PREFIX=$llvm" "export CC=$llvm/bin/clang" | sudo tee /etc/profile.d/avra-llvm.sh >/dev/null
+        printf '%s\n' "export LLVM_PREFIX=$llvm" "export CC=$llvm/bin/clang" "export AVRA_CXX_RUNTIME=stdc++" | sudo tee /etc/profile.d/avra-llvm.sh >/dev/null
     fi
     mkdir -p "$runs" "$compilers" "$trees"
     test -e "$llvm/lib/libLLVM.so" || { echo "unprovisioned=libLLVM.so"; return 1; }
@@ -436,7 +436,7 @@ supervise() {
 
     (
         trap - EXIT TERM
-        export LLVM_PREFIX=/usr/lib/llvm-22 CC=/usr/lib/llvm-22/bin/clang
+        export LLVM_PREFIX=/usr/lib/llvm-22 CC=/usr/lib/llvm-22/bin/clang AVRA_CXX_RUNTIME=stdc++
         mkdir -p "$remote/build" "$compilers"
         cd "$remote"
         t0=$(date +%s)

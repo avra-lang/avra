@@ -16,6 +16,7 @@
 //! package of one rooted at its directory.
 use core.{
     CollectKind,
+    CollectScope,
     Plain,
     SyntaxArena,
     StmtId,
@@ -47,6 +48,7 @@ use @std.path.{dir_of, joined_path, relative_path}
 use features.components.{word_of, instanced, named_instances}
 use features.{
     ExternNote,
+    Ref,
     takes_receiver,
     Unsettled,
     Settled,
@@ -77,7 +79,16 @@ use features.{
     Instanced,
 }
 use @std.meta.{Diagnostic, bracket, identity, plain_field, derive, code_hash}
-use core.{StmtId, ModulePath, watched_kernel, leaves_traced, db_verified}
+use core.{
+    EmbedKind,
+    EmbedBase,
+    ForeignRange,
+    StmtId,
+    ModulePath,
+    watched_kernel,
+    leaves_traced,
+    db_verified,
+}
 use diagnostics.{
     SourceFile,
     new_source_file,
@@ -93,7 +104,7 @@ use diagnostics.{
 use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, InputName, memory_host}
-use compiler.store.{Store, Keeping}
+use compiler.store.{Store, Keeping, pack_released}
 use compiler.lower.{Unit, FieldPlan, CodeFacts}
 use compiler.families.{Family}
 use compiler.typing.{new_type_cx}
@@ -139,8 +150,10 @@ type ExternNames = { decls: int, names: List<string> }
 /// cannot move mid-process). Cleared piecemeal by `keep_interfaces`: `object_keys` and
 /// `object_parts` every record write, the rest only when a record's SEEN part (its
 /// interface or imports) moved.
+type Suspects = { files: int, rows: Map<string, bool> }
+
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, file_tokens: Cell<Map<string, Map<string, int>>>, seen_views: Cell<Map<string, SeenView>>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string>, one_shot: Cell<bool> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -152,7 +165,7 @@ fn new_keys() -> Keys {
     let no_object: Map<string, string> = {}
     let no_parts: Map<string, KeyParts> = {}
     let no_digests: Map<string, string> = {}
-    let no_tokens: Map<string, Map<string, int>> = {}
+    let no_tokens: Map<string, Spelling> = {}
     let no_views: Map<string, SeenView> = {}
     let no_named: Map<string, int> = {}
     let no_seen: Map<string, int> = {}
@@ -171,11 +184,14 @@ fn new_keys() -> Keys {
         text_digests: Cell.new(no_digests),
         file_tokens: Cell.new(no_tokens),
         seen_views: Cell.new(no_views),
+        suspects: Cell.new(Suspects { files: -1, rows: {} }),
         name_index: Cell.new(no_named),
         name_seen: Cell.new(no_seen),
         viewed: Cell.new(no_viewed),
         view_marks: Cell.new(no_marks),
         store_root: Cell.new(""),
+        held_pack: Cell.new(""),
+        one_shot: Cell.new(false),
         keeping: Cell.new(Keeping.Disk),
         compiler_id: Cell.new(""),
         build_mode: Cell.new(""),
@@ -266,8 +282,18 @@ type Hold = {
     externed_by: Cell<List<ExternNote>>,
     /// The held files whose records declare a type that may implement a trait.
     typed_by: Cell<List<string>>,
-    /// The record `ref` rows whose target is a held file, by that file's path, with the file each came from.
-    held_refs: Cell<Map<string, List<HeldRef>>>,
+    /// The files whose records' `ref` rows name each target file, by the target's path.
+    refs_by_target: Cell<Map<string, List<string>>>,
+    /// The references held files make into a held file, restored once per target.
+    held_refs: Cell<Map<string, List<Ref>>>,
+    /// A held file's `ref` lines off its module's kept record, decoded once a process.
+    kept_refs: Cell<Map<string, List<List<string>>>>,
+    /// The files held because their kept rows stand: their object keys are the rows', never re-derived.
+    standing: Cell<Map<string, bool>>,
+    /// The plain free fn names a module's forms moved by, from the forms a row stood on: per `module<TAB>digest`.
+    forms_moved: Cell<Map<string, Map<string, bool>>>,
+    /// Each judged file's run tokens off its module's row, decoded once per build.
+    lite_runs: Cell<Map<string, List<string>>>,
     linked_by: Cell<List<string>>,
     held_flat: Cell<List<TypeId>>,
     moved: Cell<Map<string, List<PartMoved>>>,
@@ -279,7 +305,7 @@ type Hold = {
     // each held collector, with the set its record says it gathered
     gathered: Cell<List<HeldGather>>,
     lowering: Cell<List<int>>,
-    unit_asks: Cell<Map<string, List<ConstAsk>>>,
+    unit_asks: Cell<Map<string, Cell<Map<string, ConstAsk>>>>,
     owners: Cell<Map<string, DeclId>>,
     serving: Cell<bool>,
     warm: Cell<bool>,
@@ -290,9 +316,6 @@ type Hold = {
     rows_fresh: Cell<Map<string, bool>>,
 }
 
-/// A held file's `ref` row and the file that wrote it.
-type HeldRef = { file: FileId, row: List<string> }
-
 /// One const a unit's lowering asked the settlement for.
 type ConstAsk = { file: FileId, root: SettleRoot, seats: List<SeatValue> }
 
@@ -300,13 +323,13 @@ type ConstAsk = { file: FileId, root: SettleRoot, seats: List<SeatValue> }
 /// decided: the file whose key carries it, and the read itself.
 type PendingRead = { reader: string, read: RunRead }
 
-/// A held file's `collect` that gathers its package: the file, the package's source,
+/// A held file's `collect` that gathers across files: the file, the package's source,
 /// what it gathers, and the set it gathered when it was last read.
 type HeldGather = { collector: string, package: string, gathering: Gathering, digest: string }
 
-/// What a `collect` gathers by, the order it gathers in, and what it reads of each
+/// What a `collect` gathers by, from where, the order it gathers in, and what it reads of each
 /// member, one plan per projected field.
-type Gathering = { kind: CollectKind, order: List<Plain>, plans: List<FieldPlan> }
+type Gathering = { kind: CollectKind, scope: CollectScope, order: List<Plain>, plans: List<FieldPlan> }
 
 /// One line a settlement keeps: what it says, the unit's file when it names
 /// a unit, the bodies it covers, so the run's entered set can mark it when
@@ -356,7 +379,12 @@ fn new_hold() -> Hold {
         marked_by: Cell.new(no_producers),
         externed_by: list_cell(),
         typed_by: list_cell(),
+        refs_by_target: Cell.new(no_producers),
         held_refs: map_cell(),
+        kept_refs: map_cell(),
+        standing: map_cell(),
+        forms_moved: map_cell(),
+        lite_runs: map_cell(),
         linked_by: list_cell(),
         held_flat: Cell.new(no_flat),
         moved: Cell.new(no_moved),
@@ -390,15 +418,15 @@ type Records = {
     record_lines: Cell<Map<string, List<string>>>,
     record_fields: Cell<Map<string, List<List<string>>>>,
     record_places: Cell<Map<string, Map<string, Placed>>>,
-    /// A MODULE'S RE-EXPORTING FILES, keyed by module: the files its record
+    /// A MODULE'S RE-EXPORTING FILES, keyed by record key: the files its record
     /// marks as re-exporting a name, read once per build however many
     /// modules see it.
     record_reexports: Cell<Map<string, List<string>>>,
-    /// A MODULE'S RECORD FAULT, keyed by record key: "" when the record is
-    /// whole, else the one reason its decoder refused it — read once per build,
-    /// since the scan is over the record's every line and a module reached by
-    /// several importers would repeat it at each.
-    record_fault: Cell<Map<string, string>>,
+    /// A MODULE'S PRODUCERS, keyed by record key: what the load walk and the bucket
+    /// readers read of its record, decoded once per build however many importers reach it.
+    record_producers: Cell<Map<string, Producers>>,
+    /// What each module stands as to a reader, whole — asked once per build, restated when its record is.
+    record_stamps: Cell<Map<string, string>>,
     /// A FILE'S OWN ANSWER, keyed by path: whether it lexes to a
     /// `grammar` token at all — `module_names_syntax`'s cold-path
     /// pre-filter, asked once per file per build no matter how many
@@ -424,8 +452,8 @@ fn new_records() -> Records {
     let no_lines: Map<string, List<string>> = {}
     let no_fields: Map<string, List<List<string>>> = {}
     let no_places: Map<string, Map<string, Placed>> = {}
+    let no_producers_of: Map<string, Producers> = {}
     let no_reexports: Map<string, List<string>> = {}
-    let no_fault: Map<string, string> = {}
     let no_met: Map<string, bool> = {}
     let no_block_named: Map<string, List<string>> = {}
     let no_block_rows: Map<string, List<Row>> = {}
@@ -435,8 +463,9 @@ fn new_records() -> Records {
         record_lines: Cell.new(no_lines),
         record_fields: Cell.new(no_fields),
         record_places: Cell.new(no_places),
+        record_producers: Cell.new(no_producers_of),
+        record_stamps: map_cell(),
         record_reexports: Cell.new(no_reexports),
-        record_fault: Cell.new(no_fault),
         met_files: Cell.new(no_met),
         block_named: Cell.new(no_block_named),
         block_rows: Cell.new(no_block_rows),
@@ -539,8 +568,9 @@ export type Workspace = {
     /// members' in-flight answers; everyone else reads `Raised`.
     raised_fixpoint: Fixpoint<List<TypeId>>,
     /// The whole-program read-reach fixpoint over the declarations' call
-    /// graph — whether each declaration reads `state`, transitively.
-    read_fixpoint: Fixpoint<bool>,
+    /// graph — which `state` places each declaration reads, transitively,
+    /// as sorted `place_key`s (`features/read_set.av`).
+    read_fixpoint: Fixpoint<List<int>>,
 }
 
 /// One annotation query's stable inputs. Its dense list position is
@@ -827,7 +857,7 @@ fn read_reach_verified(ws: Workspace, arg: int) -> int {
     ws.db.changed_at(key(Family.ReadReach, arg))
 }
 fn decl_reads_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.decl_reads_state(decl_at_arg(arg)))
+    touch(ws.decl_places(decl_at_arg(arg)).length)
     ws.db.changed_at(key(Family.DeclReads, arg))
 }
 fn input_verified(ws: Workspace, arg: int) -> int {
@@ -966,6 +996,7 @@ impl Workspace {
         )
         fresh.keys.keeping.set(self.keys.keeping.get())
         fresh.keys.build_mode.set(self.keys.build_mode.get())
+        if self.keys.one_shot.get() { fresh.stands_with() }
         fresh
     }
 }
@@ -1031,7 +1062,7 @@ fn built(
         clock: clock,
         phases: list_cell(),
         raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, Family.Raised.ordinal, [], raised_join, raised_fp),
-        read_fixpoint: new_fixpoint<bool>(kernel, Family.DeclReads.ordinal, false, read_reach_join, read_reach_fp),
+        read_fixpoint: new_fixpoint<List<int>>(kernel, Family.DeclReads.ordinal, [], places_join, places_fp),
         input_index: map_cell(),
         input_names: list_cell(),
         manifest_texts: list_cell(),
@@ -1067,7 +1098,12 @@ fn built(
             () -> ws.hold.typed_by.get(),
             (modules: List<string>) -> ws.minted_modules(modules),
         )
-    ws.decls.arm_embeds((f: FileId, rel: string) -> ws.embed_placed(f, rel))
+    ws
+        .decls
+        .arm_embeds(
+            (f: FileId, rel: string, kind: EmbedKind, base: EmbedBase) -> ws
+                .embed_placed(f, rel, kind, base),
+        )
     ws.decls.arm_package((f: FileId) -> ws.package_admitted(f))
     ws.decls.arm_const((f: FileId, s: StmtId) -> ws.const_type_ensured(f, s))
     ws.decls.arm_entry(() -> ws.entry_of() != null)
@@ -1116,6 +1152,13 @@ impl Workspace {
         self.db.relation(fam.ordinal)
     }
 
+    /// The set of one unit's const asks, newly held in `unit_asks` under `key`.
+    fn unit_asks_opened(key: string) -> Cell<Map<string, ConstAsk>> {
+        let asks: Cell<Map<string, ConstAsk>> = map_cell()
+        self.hold.unit_asks.put(key, asks)
+        asks
+    }
+
     /// A ONE-SHOT WORKSPACE ENDS ITS OWN CYCLE: the families and the
     /// table's hooks capture `ws`, so `ws` could never die — 1674 spec
     /// cases kept 1674 workspaces, 922 MB. Once the analysis it was made
@@ -1147,6 +1190,8 @@ impl Workspace {
         self.db.kernel.folds_forgotten()
         self.decls.let_go(stand_voice(why))
         self.stand.set(why)
+        if !self.keys.held_pack.get().is_empty() { pack_released(self.keys.held_pack.get()) }
+        self.keys.held_pack.set("")
     }
 
     fn ensured(d: DeclId) {
@@ -1355,6 +1400,18 @@ impl Workspace {
         known
     }
 
+    /// A file's row alone: no sibling, no directory read. What a names-only walk registers.
+    fn registered(path: string) -> FileId {
+        let known? = self.decls.known_file_id(path) else { return self.minted_file(path) }
+        known
+    }
+
+    /// The files a read file's parse needs beside it: the component declarers of its directory.
+    fn declarers_registered(path: string) {
+        if self.lone || !self.reads_as_source(path) { return }
+        for sibling in self.declaring_siblings(path) { let _ = self.registered(sibling) }
+    }
+
     fn minted_file(path: string) -> FileId {
         self
             .decls
@@ -1555,15 +1612,32 @@ impl Workspace {
         let t0 = self.clock()
         let words = self.block_words(f, first)
         self.timed("sublang", t0)
-        if words.is_empty() { return self.with_import_remedies(first, words) }
+        if words.is_empty() { return self.noted_origins(f, self.with_import_remedies(first, words)) }
         let t1 = self.clock()
         let p = self.with_import_remedies(parse_program(self.lang, self.source(f), words), words)
         self.timed("ast", t1)
+        self.noted_origins(f, p)
+    }
+
+    /// Each run of nodes written elsewhere — a template's, a sublanguage's, a builder's —
+    /// filed under the file that wrote it, so its names resolve there.
+    fn noted_origins(f: FileId, p: Parsed) -> Parsed {
         for r in p.store.foreign.get() {
-            let origin = self.file_id(r.path)
+            let origin? = self.written_file(r) else { continue }
             if !same_file(origin, f) { self.decls.note_runs(f, r.runs, origin) }
         }
         p
+    }
+
+    /// The file a run was written in: its path, or — for a builder that names a
+    /// module — that module's first file, its package admitted.
+    fn written_file(r: ForeignRange) -> FileId? {
+        if r.module.is_empty() { return self.file_id(r.path) }
+        let m = module_path(r.module.split("."))
+        let key? = m.package() else { return null }
+        if !self.std_admitted(key) && !self.packages().any(it.key == key) { return null }
+        let first? = self.module_files(m).first() else { return null }
+        self.file_id(first)
     }
 
     /// A parse that stops on a component nobody imported says where it
@@ -1575,10 +1649,10 @@ impl Workspace {
     }
 
     /// A refusal near a component word this file does NOT import names
-    /// the `use` that would bring it; an imported word's refusal is its own.
+    /// the `use` that would bring it, in place of the parse's generic help;
+    /// an imported word's refusal is its own.
     fn import_remedy(p: Parsed, d: Diag, words: BlockWords) -> Diag {
         let at? = d.primary.loc else { return d }
-        if d.help != null { return d }
         let near = names_near(p.source.text, at.lo)
         let own = self.module_at(p.source.file)
         let homes = flatten(
@@ -1879,10 +1953,12 @@ impl Workspace {
         let p = self.parsed(f)
         mut imports: List<Import> = []
         mut diags: List<Diag> = []
+        mut refused: List<string> = []
         for u in use_lines(p) {
             let line = self.imported_line(p, u)
             imports = imports.concat(line.imports)
             diags = diags.concat(line.diagnostics)
+            refused = refused.concat(line.refused)
         }
         let names = self
             .decls
@@ -1893,7 +1969,7 @@ impl Workspace {
                 self.prelude_imports(f),
                 (path: string) -> self.shown(path),
             )
-        let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
+        let out = names with { refused: refused, voices: Voices { list: diags.concat(names.voices.list) } }
         let ids = self.decls.ids()
         visible_of(
             self
@@ -1923,6 +1999,12 @@ impl Workspace {
             .Compute -> nothing(),
         }
         touch(self.items(f))
+        // A RESOLVE UNDER AN OPEN EXPANSION IS A SMALLER VIEW: the
+        // expansion is still minting, so the tables sized here are
+        // short of the arena it ends with. Its answer serves the run
+        // that asked and is never kept — the next ask resolves the
+        // finished arena.
+        let partial = self.relation(Family.Expanded).open(f.index)
         // THE ARENA IS COMPLETE BEFORE ANY TABLE IS SIZED. An
         // expansion MINTS the twin's nodes, and the resolver's
         // per-expression tables are sized to the arena as it stands —
@@ -1954,11 +2036,13 @@ impl Workspace {
             list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()),
         } }
         let ids = self.decls.ids()
-        resolved_of(
+        let facts = resolved_of(
             self
                 .relation(Family.Resolved)
                 .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> name_facts_fp(resolved_of(r), ids)),
         )
+        if partial { self.relation(Family.Resolved).evict_call(f.index) }
+        facts
     }
 
     /// The statements of generated declarations that are members, or
@@ -1982,6 +2066,7 @@ impl Workspace {
         Elsewhere {
             generated: (name: string) -> self.generated_named(f, name),
             written_in: (origin: FileId) -> self.visible(origin),
+            unread: () -> self.unread_source(self.module_path_of(self.decls.file(f).path)),
         }
     }
 

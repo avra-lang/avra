@@ -4,32 +4,15 @@
 //! the type namespace, so its own passes do nothing. A match is
 //! CONTROL-OWNING: its arms are hidden from `kids` and walked
 //! through the driver, each under its own bind.
-use core.{ExprId, StmtId, TypeId, Reg, Arm, PatId, SyntaxArena, Binder}
+use core.{ExprId, StmtId, TypeId, Reg, Arm, PatId, SyntaxArena, Binder, Heirs}
 use core.stmt.{EnumDecl}
-use features.{
-    NodeSemantics,
-    StmtSemantics,
-    PatSemantics,
-    ResolveCx,
-    TypeCx,
-    LowerCx,
-    NameFacts,
-    nothing,
-    Meaning,
-}
+use features.{StmtSemantics, PatSemantics, ResolveCx, TypeCx, LowerCx, NameFacts, nothing, Meaning}
 use features.enums.{bind_types, pat_reg, bind_regs}
 
 use core.expr.{Match, Is, VariantLit}
 
-impl NodeSemantics for Match {
-    fn kids() -> List<ExprId> { [self.subject] }
+impl Heirs for Match {
     fn heirs() -> List<ExprId> { [a.value for a in self.arms] }
-}
-impl NodeSemantics for Is {
-    fn kids() -> List<ExprId> { [self.subject] }
-}
-impl NodeSemantics for VariantLit {
-    fn kids() -> List<ExprId> { self.args }
 }
 
 /// The pattern ladder's five variants are all enums' today. Each
@@ -87,7 +70,8 @@ export fn binders(store: SyntaxArena, names: NameFacts, p: PatId) -> List<Binder
 
 /// A pattern nothing can refuse: a hole, or a name that binds.
 export fn catches(store: SyntaxArena, names: NameFacts, p: PatId) -> bool {
-    store.irrefutable(p) && names.compared(store, p) == null
+    let fields? = store.fields_parts(p) else { return store.irrefutable(p) && names.compared(store, p) == null }
+    all_irrefutable(store, names, fields.args)
 }
 
 /// Whether every pattern is irrefutable — spelled as a scan: a
@@ -129,10 +113,10 @@ impl Meaning for Is {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        asked_type(cx, e, self.subject, self.variant.of)
+        asked_type(cx, e, self.left, cx.view.store.asked_tag(self.right))
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        asked_reg(cx, e, self.subject, self.variant.of)
+        asked_reg(cx, e, self.left, cx.view.store.asked_tag(self.right))
     }
 }
 impl Meaning for VariantLit {

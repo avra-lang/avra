@@ -3,6 +3,7 @@
 //! one makes the objects of the files that moved and links them with the ones
 //! the store holds for the rest.
 use core.{
+    EmbedKind,
     new_digest,
     digest_text,
     digest_key,
@@ -29,6 +30,8 @@ use @std.time.{now_ns}
 use compiler.backend.{
     in_symbol_order,
     emit_object,
+    emit_index,
+    EmitIndex,
     objects_made,
     inlines_runtime,
     Owned,
@@ -38,10 +41,20 @@ use compiler.backend.{
     not_closed,
     program_closed,
     unsupported_on_wasm,
+    runs_tasks,
 }
 use compiler.lower.{Body, Lowered, program_symbol}
 use compiler.memory.{sound_checked}
-use compiler.store.{Store, Stored, Keeping, Producers, node_key, store_stamped, Reading}
+use compiler.store.{
+    Store,
+    Stored,
+    Keeping,
+    Producers,
+    node_key,
+    store_stamped,
+    Reading,
+    pack_holding,
+}
 use compiler.host.{no_target, read_manifest, Stamp, Read}
 use @std.errors.{Error, ErrorInfo, info}
 use diagnostics.{new_source_file}
@@ -111,14 +124,18 @@ export type BuildOutcome = {
 }
 
 /// THE FEATURES A WASM MODULE BUILT HERE MAY USE: LLVM's baseline for a
-/// wasm triple that names no CPU, which is what the backend and the C
-/// beside it are built to. The optimizer is told these and no others —
-/// told "every feature it knows", it also writes proposals no engine
-/// ships yet, and the module it answers does not compile where it runs.
+/// wasm triple that names no CPU, which is what the backend and the C beside
+/// it are built to, and exception handling, which the runtime's guarded run
+/// is built with (Makefile, `WASM_SJLJ_avra_runtime.c`). The optimizer is told
+/// these and no others: told "every feature it knows" it also writes the
+/// encodings no engine ships yet — the compact import section an iPhone's
+/// WebKit cannot parse — and a link carries no feature section it could read
+/// its own set from.
 const WASM_FEATURES = [
     "bulk-memory",
     "bulk-memory-opt",
     "call-indirect-overlong",
+    "exception-handling",
     "multivalue",
     "mutable-globals",
     "nontrapping-float-to-int",
@@ -126,17 +143,50 @@ const WASM_FEATURES = [
     "sign-ext",
 ]
 
-/// The optimizer's words to shrink `linked` into `shrunk`, for size — the
-/// spellings to try, in order. An optimizer too old to know a feature by
-/// name is older than any proposal "every feature" would turn on, so for
-/// it alone that word is the same set.
+/// The names an older optimizer does not know: it refuses an `--enable` of a
+/// feature it has no word for, and the same set without them is the set it knows.
+const NEWER_FEATURES = ["bulk-memory-opt", "call-indirect-overlong"]
+
+/// `--enable-<f>` for each of `features`.
+fn enabling(features: List<string>) -> List<string> { ["--enable-${f}" for f in features] }
+
+/// The optimizer's words for `shrinking`, the spellings to try in order: the
+/// features above, then the ones an older optimizer knows. Never a spelling that
+/// lets the optimizer pick.
+fn feature_tries(shrinking: List<string>) -> List<List<string>> {
+    [
+        enabling(WASM_FEATURES).concat(shrinking),
+        enabling([f for f in WASM_FEATURES if !NEWER_FEATURES.contains(f)]).concat(shrinking),
+    ]
+}
+
+/// The optimizer's words to shrink `linked` into `shrunk`, for size.
 /// THE FUNCTIONS ARE NUMBERED BY USE, after the size passes: a call spells
 /// its callee's index in as many bytes as the index needs, and the runtime's
 /// rows — a push, a release, a slot read — are what a program calls most.
 fn wasm_opt_tries(linked: string, shrunk: string) -> List<List<string>> {
-    let shrink = ["-Oz", "--reorder-functions", linked, "-o", shrunk]
-    [["--enable-${f}" for f in WASM_FEATURES].concat(shrink), ["--all-features"].concat(shrink)]
+    feature_tries(["-Oz", "--reorder-functions", linked, "-o", shrunk])
 }
+
+/// THE FALLBACK FOR A HOST THAT CANNOT SUSPEND A STACK: the same module with
+/// asyncify over the two host imports a hosted scheduler parks through, the
+/// spellings to try in the order `wasm_opt_tries` tries them.
+const ASYNCIFIED = ["--asyncify", "--pass-arg=asyncify-imports@avra_host.switch,avra_host.idle"]
+
+fn asyncify_tries(shipped: string, out: string) -> List<List<string>> {
+    feature_tries(ASYNCIFIED.concat(["-Oz", shipped, "-o", out]))
+}
+
+/// A module the optimizer answered, or the words it did not: `path` is null when it made none.
+type Shrunk = { path: string?, said: string }
+
+/// Where the fallback of `binary` stands: beside it, `app.wasm` to `app.asyncify.wasm`.
+export fn fallback_name(binary: string) -> string {
+    if binary.ends_with(".wasm") { "${binary.substring(0, binary.length - 5)}.asyncify.wasm" } else { "${binary}.asyncify" }
+}
+
+/// The key the fallback of a kept binary is kept under.
+fn fallback_key(key: string) -> string { "${key}.asyncify" }
 
 /// ONE OBJECT OF A BUILD: what it is an object of, the key it is kept under,
 /// where it stands for the link, and the source the link orders it by.
@@ -165,7 +215,7 @@ export type CaseHome = { call: CaseCall, path: string }
 /// the linker the host found, the stamp of the driver of each tool it runs —
 /// never what a driver runs in its turn — and the linker that driver is told
 /// to run (`ld`, its own choice when empty).
-export type Toolchain = { opt: string, runtime: string, linker: string, tools: List<Stamp>, target: string = "", reactor: bool = false, wasm_opt: string = "", debug: bool = false, ld: string = "" }
+export type Toolchain = { opt: string, runtime: string, linker: string, tools: List<Stamp>, target: string = "", reactor: bool = false, wasm_opt: string = "", debug: bool = false, ld: string = "", fallback: bool = false }
 
 impl Workspace {
     /// THE PRODUCING COMPILER'S OWN IDENTITY — memoized once a workspace, so
@@ -195,6 +245,10 @@ impl Workspace {
     /// THE STORE THIS WORKSPACE READS AND KEEPS IN — the one door every derivation
     /// opens it by, so where its writes land is decided once.
     fn opened_store() -> Store {
+        self
+            .keys
+            .held_pack
+            .set(pack_holding(self.keys.held_pack.get(), build_cache_root(self), self.compiler_id()))
         store_stamped(
             build_cache_root(self),
             self.compiler_id(),
@@ -385,7 +439,7 @@ impl Toolchain {
     /// host's own build is the empty mode.
     fn mode() -> string {
         if self.target == "" { return "" }
-        "${self.target}${marked(self.reactor, "+reactor")}${marked(self.wasm_opt != "", "+opt")}${marked(self.debug, "+debug")}"
+        "${self.target}${marked(self.reactor, "+reactor")}${marked(self.wasm_opt != "", "+opt")}${marked(self.debug, "+debug")}${marked(self.fallback, "+fallback")}"
     }
 }
 
@@ -467,12 +521,28 @@ impl Workspace {
             let _ = avra_spawn_status("chmod", ["+x", staged])
             if !published(staged, binary) { return null }
         }
+        self.fallback_kept(store, key, binary, tools)
         BuildOutcome {
             binary: binary,
             warnings: warnings,
             reused: true,
             host_fns: [line for line in host_fns.split("\n") if !line.is_empty()],
         }
+    }
+
+    /// The fallback a kept binary was built with, placed beside it; none standing
+    /// when the kept build made none.
+    fn fallback_kept(store: Store, key: string, binary: string, tools: Toolchain) {
+        let place = fallback_name(binary)
+        if !tools.fallback || !store.has(Stored.Bin, fallback_key(key)) {
+            let _ = remove(place)
+            return
+        }
+        let staged = staged_beside(place)
+        if !store.place(Stored.Bin, fallback_key(key), staged) { return }
+        // LICENSED input.staged_output: marks the program just placed executable, never an input of what is built
+        let _ = avra_spawn_status("chmod", ["+x", staged])
+        let _ = published(staged, place)
     }
 
     /// EVERY PACKAGE A PROGRAM'S KEY COVERS, each as `src<TAB>root`: the admitted
@@ -520,7 +590,10 @@ impl Workspace {
     /// text's digest — or why it can no longer be read, which is a
     /// different answer and never a trap.
     fn embed_said(path: string) -> string {
-        match self.embed_read(path) { .Ok(text) -> digest_of_file(text), .Err(why) -> "!${why}" }
+        match self.embed_read(path, EmbedKind.Octets) {
+            .Ok(octets) -> "${octets.length}.${digest_of_octets(octets)}",
+            .Err(why) -> "!${why}",
+        }
     }
 
     /// An embedded file's line of the key.
@@ -558,18 +631,32 @@ impl Workspace {
 
     /// The key of a run: the manifest's, when every line it holds still stands; else folded.
     fn confirmed_key(store: Store, under: Keyed) -> string {
+        let reading = self.clock()
         let row = store.get(Stored.Fp, self.manifest_key(under))
+        self.timed("manifest read", reading)
         if row != null {
+            let parsing = self.clock()
             let lines = row!.split("\n")
             let entries = [read_entry(l) for l in lines.slice(1, lines.length)]
+            self.timed("manifest parse", parsing)
             if !entries.any(it == null) && self.manifest_stands(under, [e! for e in entries]) { return lines[0] }
         }
         self.program_key(under.named, under.beside)
     }
 
     fn manifest_stands(under: Keyed, entries: List<ManifestEntry>) -> bool {
-        joined(self.closure(under.named), "\n") == joined([c for e in entries for c in e.covered()], "\n") &&
-            entries.all((e) -> self.entry_stands(e))
+        let closing = self.clock()
+        let same = joined(self.closure(under.named), "\n") == joined([c for e in entries for c in e.covered()], "\n")
+        self.timed("closure", closing)
+        same && entries.all((e) -> self.entry_timed(e))
+    }
+
+    /// One entry confirmed, its time kept under what kind of input it is.
+    fn entry_timed(e: ManifestEntry) -> bool {
+        let confirming = self.clock()
+        let stands = self.entry_stands(e)
+        self.timed(e.kind_word(), confirming)
+        stands
     }
 
     fn entry_stands(e: ManifestEntry) -> bool {
@@ -582,8 +669,12 @@ impl Workspace {
         }
     }
 
-    /// A directory's files as one word, as a walk lists them now.
-    fn listing_word(dir: string) -> string { digest_of(joined(self.all_files(dir), "\n")) }
+    /// A directory's files as one word, as a walk lists them now — the files `source_inputs`
+    /// reads of it: a dependency's tests are no input, so they are never walked.
+    fn listing_word(dir: string) -> string {
+        let files = if dir == self.packages()[0].src { self.all_files(dir) } else { self.all_files_no_tests(dir) }
+        digest_of(joined(files, "\n"))
+    }
 
     /// The key a finished derivation keeps under: its closure remembered
     /// first, so the next ask — before anything is read — names the same
@@ -692,8 +783,8 @@ impl Workspace {
         }
         let stay = [bd for bd in lo.fns if by_name.get(bd.name) == null]
         let owed = [stub! for stub in [self.decls.unlowered_stub(w) for w in unlowered] if stub != null]
-        let stand = held_stubs(self)
-            .concat(owed)
+        // a symbol is one body: a held stub stands only where nothing lowered the symbol
+        let stand = undeclared(held_stubs(self).concat(owed), lo.fns)
             .concat(stay)
             .concat([by_name.get(n)! for n in sorted_texts(distinct([bd.name for bd in roams]))])
         // a held module nobody read is never minted, so nothing else declares its cases
@@ -704,11 +795,11 @@ impl Workspace {
     /// THE PROGRAM MODULE'S KEY BY ITS OWN BYTES — written as bitcode at `bc`, and
     /// what compiles them. A module that cannot be read back has no key: an empty
     /// read would key every program alike.
-    fn bytes_keyed(full: Lowered, bc: string, which: Owned, tools: Toolchain) -> Result<
+    fn bytes_keyed(full: Lowered, ix: EmitIndex, bc: string, which: Owned, tools: Toolchain) -> Result<
         string,
         BuildError,
     > {
-        let broke = emit_closed(full, bc, which, tools.target)
+        let broke = emit_closed(full, ix, bc, which, tools.target)
         if broke != null { fail BuildError.EmitFailed(broke!) }
         match read_bytes(bc) {
             .Ok(bytes) -> .Ok(node_key(Stored.Obj, ["entry", digest_of_octets(bytes), tools.opt, tools.runtime])),
@@ -733,7 +824,7 @@ impl Workspace {
         mut clock = self.marking()
         let full = closed(self.homed(d.lowered, m, main, d.unlowered))?
         if tools.target != "" {
-            let missing = unsupported_on_wasm(full)
+            let missing = unsupported_on_wasm(d.program.reached())
             if !missing.is_empty() { fail BuildError.UnsupportedOnWasm(missing) }
         }
         let programs = self.program_objects(d, full, asked, tools)?
@@ -749,7 +840,7 @@ impl Workspace {
         let code = avra_spawn_status(
             tools.linker,
             link_objects(
-                [o.obj for o in by_source(read.concat(held))].concat([p.obj for p in programs]),
+                [d.store.path(Stored.Obj, o.key) for o in by_source(read.concat(held)).concat(programs)],
                 self,
                 tools.runtime,
                 staged,
@@ -766,9 +857,12 @@ impl Workspace {
                 .LinkFailed(code, if tools.target == "" { unanswered_externs(full, hosted) } else { [] })
         }
         clock.mark("link")
-        let ready = shipped(staged, tools)
+        let shrunk = shipped(staged, tools)
+        let ready = shrunk.path ?? staged
         let key = self.kept_key(under)
-        let _ = d.store.keep(Stored.Warn, key, d.warnings, [key])
+        let fallback = self.fallback_made(d, full, ready, key, binary, tools)
+        let warnings = spoken([d.warnings, shrunk.said, fallback.said])
+        let _ = d.store.keep(Stored.Warn, key, warnings, [key])
         let host_fns = self.host_fn_lines([a.view.file for a in d.program.files])
         let reads = linked_reads(self.linked_files(tools.runtime, tools.target), tools.tools)
         if reads != null {
@@ -777,14 +871,48 @@ impl Workspace {
                 .keep_reading(Stored.Unit, host_fns_key(key), joined(host_fns, "\n"), reads!)
         }
         let _ = d.store.keep_file(Stored.Bin, key, ready, [key])
+        clock.mark("keep binary")
         if !published(ready, binary) { fail BuildError.Unpublished(binary) }
+        self.fallback_published(fallback.path, binary)
+        clock.mark("publish")
         BuildOutcome {
             binary: binary,
-            warnings: d.warnings,
+            warnings: warnings,
             reused: false,
             phases: d.timed(clock.spans),
             host_fns: host_fns,
         }
+    }
+
+    /// THE FALLBACK, when this build asked for one and the program runs tasks: the
+    /// shipped module asyncified, kept beside the binary's own bytes. Null when
+    /// none is made — a program that never parks has nothing to unwind.
+    fn fallback_made(
+        d: Derived,
+        full: Lowered,
+        shipped_to: string,
+        key: string,
+        binary: string,
+        tools: Toolchain,
+    ) -> Shrunk {
+        if !tools.fallback || tools.wasm_opt == "" || !runs_tasks(full) { return Shrunk { path: null, said: "" } }
+        let out = staged_beside(fallback_name(binary))
+        if !asyncify_tries(shipped_to, out).any((words) -> wasm_opt_runs(tools.wasm_opt, words)) {
+            let _ = remove(out)
+            return Shrunk { path: null, said: no_fallback(tools.wasm_opt) }
+        }
+        let _ = d.store.keep_file(Stored.Bin, fallback_key(key), out, [key])
+        Shrunk { path: out, said: "" }
+    }
+
+    /// The fallback onto its place, or what stood there from an earlier build gone.
+    fn fallback_published(staged: string?, binary: string) {
+        let place = fallback_name(binary)
+        let made? = staged else {
+            let _ = remove(place)
+            return
+        }
+        let _ = published(made, place)
     }
 
     /// The program's host fns, each as `package name`, in name order.
@@ -840,10 +968,11 @@ impl Workspace {
             }
         }
         mut made: List<Made> = []
+        let ix = emit_index(full)
         for i in occupied_buckets(full) {
             // LICENSED input.scratch_name: a call-unique scratch name, never an input of what is built
             let bc = "${build_cache_root(self)}/obj/${node_key(Stored.Obj, ["bc-scratch", "${i}", "${now_ns()}"])}.bc"
-            let key = self.bytes_keyed(full, bc, Owned.Bucket(i, PROGRAM_BUCKETS), tools)?
+            let key = self.bytes_keyed(full, ix, bc, Owned.Bucket(i, PROGRAM_BUCKETS), tools)?
             if traced() { qtrace("Q\tbucket\t${i}\t${key}\n") }
             made.push(self.bucket_made(i, key))
         }
@@ -860,7 +989,7 @@ impl Workspace {
         }
     }
 
-    /// EVERY OBJECT A BUILD OWES, STANDING AND KEPT. One the store holds is placed;
+    /// EVERY OBJECT A BUILD OWES, STANDING AND KEPT. One the store holds is linked where it stands;
     /// the rest are made ONE way — here, by the compiler that runs, a worker each —
     /// so a tree's objects are the same bytes however many a build had to make. The
     /// workers are waited for whatever broke: a module handed over is theirs.
@@ -868,7 +997,7 @@ impl Workspace {
         int,
         BuildError,
     > {
-        let owed = [o for o in objects if !d.store.place(Stored.Obj, o.key, o.obj)]
+        let owed = [o for o in objects if !d.store.has(Stored.Obj, o.key)]
         let gone = owed.find((o: Made) -> in_bucket(o.which))
         if gone != null && !d.unlowered.is_empty() { fail BuildError.ObjectGone(gone!.obj) }
         if traced() {
@@ -984,17 +1113,17 @@ fn unanswered_note(names: List<string>) -> string {
 
 /// THE LINKED FILE AS IT SHIPS, the one staged file left standing: a wasm
 /// module is what a browser downloads, so it is shrunk when the host offers
-/// the optimizer and that succeeds — the link's own answer otherwise. What a
-/// build keeps and what it publishes are both this file.
-fn shipped(staged: string, tools: Toolchain) -> string {
-    if tools.target == "" || tools.wasm_opt == "" { return staged }
+/// the optimizer and that succeeds — the link's own answer otherwise, and the
+/// build says so. What a build keeps and what it publishes are both this file.
+fn shipped(staged: string, tools: Toolchain) -> Shrunk {
+    if tools.target == "" || tools.wasm_opt == "" { return Shrunk { path: staged, said: "" } }
     let shrunk = staged_beside(staged)
-    if !wasm_opt_tries(staged, shrunk).any((words) -> avra_spawn_status(tools.wasm_opt, words) == 0) {
+    if !wasm_opt_tries(staged, shrunk).any((words) -> wasm_opt_runs(tools.wasm_opt, words)) {
         let _ = remove(shrunk)
-        return staged
+        return Shrunk { path: staged, said: unoptimized(tools.wasm_opt) }
     }
     let _ = remove(staged)
-    shrunk
+    Shrunk { path: shrunk, said: "" }
 }
 
 /// The declarations a program's module brings that nothing standing makes — each once.
@@ -1034,8 +1163,9 @@ fn digest_of_file(text: string) -> string { "${text.length}.${digest_of(text)}" 
 /// Every owed object's module built and handed to a worker — the first
 /// refusal, or null. `objects_made` waits for them.
 fn handed(full: Lowered, owed: List<Made>, opt: int, target: string) -> string? {
+    let ix = emit_index(full)
     for o in owed {
-        let broke = emit_object(full, o.obj, o.which, opt, target)
+        let broke = emit_object(full, ix, o.obj, o.which, opt, target)
         if broke != null { return broke }
     }
     null
@@ -1053,6 +1183,14 @@ fn unpublished(path: string) -> string {
 
 fn module_unreadable(path: string) -> string {
     "avra: the entry's module could not be read back — ${path}"
+}
+
+fn unoptimized(tool: string) -> string {
+    "warning: `${tool}` refused the linked module under the features its link uses, so it ships unoptimized — a size cost, never another program"
+}
+
+fn no_fallback(tool: string) -> string {
+    "warning: `${tool}` could not asyncify the module, so none ships for a host that cannot suspend a stack"
 }
 
 fn wasm_unsupported(names: List<string>) -> string {
@@ -1077,6 +1215,17 @@ impl ManifestEntry {
             .Input(path, line) -> "I\t${path}\t${line}",
             .Embed(path, line) -> "E\t${path}\t${line}",
             .Object(path, line) -> "O\t${path}\t${line}",
+        }
+    }
+
+    /// What kind of input the entry confirms, as a phase's name.
+    fn kind_word() -> string {
+        match self {
+            .Covered(_) -> "covered",
+            .Listing(_, _) -> "listings",
+            .Input(_, _) -> "inputs",
+            .Embed(_, _) -> "embeds",
+            .Object(_, _) -> "objects",
         }
     }
 
@@ -1107,4 +1256,10 @@ fn read_entry(line: string) -> ManifestEntry? {
         tag == "O" -> ManifestEntry.Object(first, second)
         _ -> null
     }
+}
+
+/// Whether `wasm-opt` ran clean over `words`.
+fn wasm_opt_runs(tool: string, words: List<string>) -> bool {
+    // LICENSED input.staged_output: post-processes the program just built, never an input of what is built
+    avra_spawn_status(tool, words) == 0
 }

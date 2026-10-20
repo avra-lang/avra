@@ -5,6 +5,8 @@
 //! record's instance is its literal, the body's settings by name and
 //! its other statements `collect`ed into its one `List` field.
 use core.{
+    void_ref,
+    Means,
     Expr,
     Stmt,
     Pat,
@@ -40,7 +42,6 @@ use features.{
     Record,
     ChildSlot,
     Event,
-    marked_seats,
     marks_at,
     params_at,
     pat_id_at,
@@ -48,7 +49,6 @@ use features.{
     arms_at,
     record_spreads,
     three_dots,
-    void_ref,
 }
 use grammar.{Token}
 use @std.path.{stem_of}
@@ -117,6 +117,14 @@ fn holds_a_member(store: SyntaxArena, s: StmtId) -> bool {
 
 /// `within ms(5) { … }` / `text "hi" { … }` — an instance with its
 /// head value.
+/// The closure an instance is extended by, and every node its copy made.
+type Again = { root: ExprId, minted: List<ExprId> }
+
+/// The sentence that says what the extension means.
+fn said_again_note(word: string) -> string {
+    "`${word}` says its words again as a closure, so a write to a place they read can be answered by those words alone"
+}
+
 fn build_component_value(b: Builder) -> Result<LangNode, string> {
     let word = b.word_at(0)?
     let targs = b.type_refs(1)?
@@ -149,11 +157,13 @@ fn build_component_keyed(b: Builder) -> Result<LangNode, string> {
     let loop_block = b.store.alloc_expr(Expr.Block([loop_stmt], null), b.span)
     let built = b.instance(word, [], [], loop_block, null)?
     match b.store.expr(built) {
-        .Component(_, _, _, .Expanded(lit), check) -> {
+        .Component(_, _, _, .Expanded(lit), check, _) -> {
             let inst = b
                 .store
-                .alloc_expr(Expr.Component(word.word, [source], body, BodyView.Expanded(lit), check), b.span)
-            b.store.mark_keyed_list(inst, key)
+                .alloc_expr(
+                    Expr.Component(word.word, [source], body, BodyView.Expanded(lit), check, key),
+                    b.span,
+                )
             b.wrap_expr(inst)
         },
         rest -> b.wrap_expr(built),
@@ -165,9 +175,9 @@ fn build_component_keyed(b: Builder) -> Result<LangNode, string> {
 /// statement.
 fn keyed_loop_body(store: SyntaxArena, body: ExprId, key: ExprId, at: Span?) -> List<StmtId> {
     match store.expr(body) {
-        .Block(stmts, held) -> {
-            if held == null { return stmts }
-            stmts.concat([store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, held!, key)), at)])
+        .Block(stmts, _) -> {
+            let held? = store.tail_of(body) else { return stmts }
+            stmts.concat([store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, held, key)), at)])
         },
         rest -> [store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, body, key)), at)],
     }
@@ -178,7 +188,7 @@ fn keyed_loop_body(store: SyntaxArena, body: ExprId, key: ExprId, at: Span?) -> 
 /// the marker alone — the renderer's key is that component's own field.
 fn keyed_child(store: SyntaxArena, value: ExprId, key: ExprId) -> ExprId {
     match store.expr(value) {
-        .Component(w, heads, block, .Expanded(lit), check) -> {
+        .Component(w, heads, block, .Expanded(lit), check, _) -> {
             match store.expr(lit) {
                 .StructLit(name, fields, values) -> {
                     let grown = store
@@ -189,7 +199,7 @@ fn keyed_child(store: SyntaxArena, value: ExprId, key: ExprId) -> ExprId {
                         )
                     store
                         .alloc_expr(
-                            Expr.Component(w, heads, block, BodyView.Expanded(grown), check),
+                            Expr.Component(w, heads, block, BodyView.Expanded(grown), check, null),
                             store.expr_span(value),
                         )
                 },
@@ -251,16 +261,11 @@ fn build_component_named_bare(b: Builder) -> Result<LangNode, string> {
 /// block the printer spells — or, under a `req ->` head, a fn over
 /// what the component offers.
 fn build_instance_body(b: Builder) -> Result<LangNode, string> {
-    let ps = b.tokens(0)?
+    let ps = params_at(b.args, 0)
     let stmts = b.stmts(1)?
     if ps.is_empty() { return b.make_expr(Expr.Block(stmts, null)) }
     if stmts.any((s) -> b.store.setting_parts(s) != null) { return .Err(fn_body_setting()) }
-    let unwritten: List<TypeRef?> = [null for p in ps]
-    b
-        .make_expr(
-            Expr
-                .Lambda(marked_seats(b.store, ps, unwritten, [], [], b.span?.lo ?? 0), b.block_of(stmts)),
-        )
+    b.make_expr(Expr.Lambda(ps, b.block_of(stmts)))
 }
 
 /// A ONE-SEAT FN FIELD'S BODY WRITTEN AS ARMS: `Name inst { pattern
@@ -298,14 +303,8 @@ fn build_instance_arms_body(b: Builder) -> Result<LangNode, string> {
 /// follows it — never a reserved word.
 fn build_on_handler(b: Builder) -> Result<LangNode, string> {
     let event = (b.token(1)?).text
-    let ps = b.tokens(2)?
     let stmts = b.stmts(3)?
-    let unwritten: List<TypeRef?> = [null for p in ps]
-    let lam = b
-        .expr_node(
-            Expr
-                .Lambda(marked_seats(b.store, ps, unwritten, [], [], b.span?.lo ?? 0), b.block_of(stmts)),
-        )
+    let lam = b.expr_node(Expr.Lambda(params_at(b.args, 2), b.block_of(stmts)))
     b.store.mark_on_handler(lam, event)
     b.make_stmt(Stmt.Setting(Plain(event), lam))
 }
@@ -419,12 +418,13 @@ impl Builder {
         if stmts.any((s) -> self.store.setting_parts(s) != null) { return .Err(template_setting(word.word, self.store.ident_name(heads[0]))) }
         let block = self.filled_body(body!, stmts)
         let minted = [self.minted_format(word, t, h, heads[j])? for j, h in t.head]
-        let expansion = self.store.instantiated(t, word, heads, block, minted)
+        let expansion = self.store.instantiated(t, word, heads, block, minted, self.words.door)
         .Ok(
             self
                 .store
                 .alloc_expr(
-                    Expr.Component(word.word, heads, block, BodyView.Expanded(expansion), null),
+                    Expr
+                        .Component(word.word, heads, block, BodyView.Expanded(expansion), null, null),
                     self.span,
                 ),
         )
@@ -448,9 +448,12 @@ impl Builder {
         let fn_filled = if written_fn == null { [] } else { [Field { name: r.fn_field ?? "", value: written_fn! }] }
         if written_fn != null && r.fn_field == null { return .Err(record_fn_body(word)) }
         let stmts = if written_fn == null { self.written(body) } else { [] }
-        let settings = flatten([some_list(self.store.setting_parts(s)) for s in stmts])
-        let children = [s for s in stmts if self.store.setting_parts(s) == null]
+        let loose = [s for s in stmts if self.store.setting_parts(s) == null]
+        let written = flatten([some_list(self.store.setting_parts(s)) for s in stmts])
+        let settings = written.concat(self.defaulted(word, r, loose, written)?)
+        let children = if r.events.any(it.default) { [] } else { loose }
         let places = self.placed(word, r, settings, children)?
+        let again = self.said_again(r, heads)
         let named = if name != null && r.named && !settings.any(it.name == "name") { [Field { name: "name", value: self.store.alloc_expr(Expr.StrLit(name!), self.span) }] } else { [] }
         let placed_in = [pl.slot for pl in places]
         let set = flatten(
@@ -470,11 +473,51 @@ impl Builder {
             )
         self.store.mark_struct_targs(literal, targs)
         let check: ExprId? = if r.checks { self.store.alloc_expr(Expr.MethodCall(literal, Plain("check"), []), self.span) } else { null }
+        if again != null { self.store.extend(literal, said_again_note(word), [again!.root], again!.minted) }
         .Ok(
             self
                 .store
-                .alloc_expr(Expr.Component(word, heads, body, BodyView.Expanded(literal), check), self.span),
+                .alloc_expr(
+                    Expr.Component(word, heads, body, BodyView.Expanded(literal), check, null),
+                    self.span,
+                ),
         )
+    }
+
+    /// A SITED component's head text, said again: a closure over a COPY of the
+    /// head's expression, minted beside the literal before names resolve, so its
+    /// captures are found as any written lambda's are. A component that takes no
+    /// closure of the kind, and a head with no hole in it, mint nothing; the
+    /// lowering uses the closure only for a slot of `@std/meta`'s `Words`.
+    fn said_again(r: Record, heads: List<ExprId>) -> Again? {
+        if !r.words { return null }
+        let head? = heads.first() else { return null }
+        if !self.holey(head) { return null }
+        mut copying = copier(self.store, self.store, [], [], self.words.door)
+        let copy = copying.expr(head)
+        let lambda = self.store.alloc_expr(Expr.Lambda([], copy), self.store.expr_span(head))
+        Again { root: lambda, minted: copying.made_exprs.concat([lambda]) }
+    }
+
+    /// Whether an expression is a text with a hole in it.
+    fn holey(e: ExprId) -> bool {
+        match self.store.expr(e) { .Body(_, _, holes, _) -> !holes.is_empty(), rest -> false }
+    }
+
+    /// The statements an instance writes bare, taken as the handler of the
+    /// component's `@default` event: `key "ctrl+s" { save() }` is `key
+    /// "ctrl+s" { on press { save() } }`. None when the component has no
+    /// default event or the instance writes no bare statement.
+    fn defaulted(word: string, r: Record, loose: List<StmtId>, written: List<SettingParts>) -> Result<
+        List<SettingParts>,
+        string,
+    > {
+        let seat? = r.events.find(it.default) else { return .Ok([]) }
+        if loose.is_empty() { return .Ok([]) }
+        if written.any(it.name == seat.name) { return .Err(default_twice(word, seat.name)) }
+        let handler = self.store.alloc_expr(Expr.Lambda([], self.block_of(loose)), self.span)
+        self.store.mark_on_handler(handler, seat.name)
+        .Ok([SettingParts { name: seat.name, value: handler }])
     }
 
     /// The field a setting fills. A handler its component cannot hear
@@ -591,9 +634,7 @@ impl Builder {
     /// A slot filled by `collect { … }` over the children placed in it —
     /// after what a setting of the same name already lists.
     fn collected(pl: Placed, settings: List<SettingParts>) -> Field {
-        let gathered = self
-            .store
-            .alloc_expr(Expr.Collect(self.store.alloc_expr(Expr.Block(pl.stmts, null), self.span)), self.span)
+        let gathered = self.store.alloc_expr(Expr.Collect(pl.stmts), self.span)
         let first? = settings.find(it.name == pl.slot) else { return Field { name: pl.slot, value: gathered } }
         Field {
             name: pl.slot,
@@ -674,6 +715,7 @@ impl SyntaxArena {
         heads: List<ExprId>,
         block: ExprId,
         minted: List<Minted?>,
+        door: Means,
     ) -> ExprId {
         let since = self.marks()
         let fills = [field_fill(template, read, heads, block, minted) for read in template.reads]
@@ -684,6 +726,7 @@ impl SyntaxArena {
             self,
             [(kind: HoleKind) -> self.filled(kind, f) for f in fills],
             [false for f in fills],
+            door,
         )
         let root = self.template_value(rb.stmts(template.stmts))
         self.note_copied(since, word.origin)
@@ -701,7 +744,7 @@ impl SyntaxArena {
     /// it is, or as the one statement it makes.
     fn filled(kind: HoleKind, f: Fill) -> Filled {
         match kind {
-            .Expression -> Filled.Expr(f.record?.named ?? f.value),
+            .Expression or .Tail -> Filled.Expr(f.record?.named ?? f.value),
             .Statement -> Filled.Stmts([self.alloc_stmt(Stmt.ExprStmt(f.value), self.expr_span(f.value))]),
             .Type -> self.pattern_type(f),
             .Name or .Binder or .Arm or .Run or .Fields or .Inits -> Filled.Unplaceable(unplaceable_field()),
@@ -851,6 +894,10 @@ fn pattern_literal(word: string, field: string) -> string {
 
 fn fn_body_setting() -> string {
     "a body with parameters is a fn, and a fn holds no settings — write them in a body without a `name ->` head"
+}
+
+fn default_twice(word: string, event: string) -> string {
+    "`${word}` hears `${event}` once: its bare statements are the `@default` handler, so `on ${event}` beside them says it twice"
 }
 
 fn unmarked_handler() -> string {

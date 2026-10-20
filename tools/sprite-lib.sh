@@ -7,9 +7,30 @@
 # `sprite` CLI.
 sprite_cli=${AVRA_SPRITE_CLI:-sprite}
 remote_script=$(cat "$here/sprite-remote.sh")
-ci_packages=$(grep -v '^#' "$here/../.github/ci/packages.txt" | tr '\n' ' ')
-# A Sprite also carries the profilers (never the checks' image).
-sprite_packages="$ci_packages $(grep -v '^#' "$here/../.github/ci/packages-dev.txt" 2>/dev/null | tr '\n' ' ')"
+# WHAT A SPRITE MUST CARRY IS MAIN'S ANSWER, never only the caller's checkout: a lane branched before a
+# package joined `.github/ci/packages.txt` has the older list, and a Sprite provisioned from it (or
+# judged healthy by it) lacks a package every newer tree needs (libzstd-dev: `-lzstd` unfound).
+# `packages_of <file>` is one list, a package a line.
+packages_of() { grep -v '^#' | tr '\n' ' '; }
+
+# main's list: origin/main refreshed best-effort (a bounded fetch, once per process, only where a list is
+# asked for), else the ref as it stands, else the checkout's own file (a tree with no origin, a fixture).
+main_packages() {
+    root=$(cd "$here/.." && pwd)
+    if [ -z "${main_fetched:-}" ]; then
+        main_fetched=1
+        timeout -k 2 15 git -C "$root" fetch -q origin main 2>/dev/null || :
+    fi
+    git -C "$root" show "origin/main:$1" 2>/dev/null || cat "$root/$1" 2>/dev/null
+}
+
+# What a RUN installs: main's list plus the checkout's own (a branch that adds a package needs it for
+# its own run before main has it), plus the profilers. What HEALTH judges: main's list and the
+# profilers, never a branch's.
+local_list() { cat "$here/../$1" 2>/dev/null; }
+unioned() { tr ' ' '\n' | awk 'NF && !seen[$0]++' | tr '\n' ' '; }
+health_packages_list() { { main_packages .github/ci/packages.txt; main_packages .github/ci/packages-dev.txt; } | packages_of | unioned; }
+sprite_packages_list() { { health_packages_list; local_list .github/ci/packages.txt | packages_of; local_list .github/ci/packages-dev.txt | packages_of; } | unioned; }
 
 # sx <sprite> <seconds> <command...>
 sx() {

@@ -1,0 +1,31 @@
+//! What a derive over a gathered enum can read of the types its
+//! variants hold: `payload_of` answers for what the ENUM's module
+//! exports — a record, an enum — and for nothing a member's own file
+//! imported from elsewhere.
+use @std.meta.{Type, Variant, Directive, Decls, Field, Kind, Held, payload_of, literal}
+
+fn named(k: Kind) -> string? {
+    match k { .List(inner) -> named(inner), .Named(n, _) -> n, rest -> null }
+}
+
+/// What `payload_of` reads for a field's named type.
+fn read(t: Type, f: Field) -> string {
+    let n? = named(f.kind) else { return "${f.name}: ${f.ty} names no declaration" }
+    let found? = payload_of(t, n) else { return "${f.name}: ${f.ty} is NOT readable from the enum's module" }
+    match found {
+        .Record(fields) -> "${f.name}: ${f.ty} is a record of [${[x.name for x in fields].join(", ")}]",
+        .Enum(variants) -> "${f.name}: ${f.ty} is an enum of [${[v.name for v in variants].join(", ")}]",
+    }
+}
+
+fn lines(t: Type, v: Variant) -> List<string> {
+    [read(t, f) for f in v.fields]
+}
+
+export trait Reads {
+    static fn derive(t: Type) -> List<Directive> {
+        let body = literal([line for v in t.variants for line in lines(t, v)].join("\n"))
+        let source: Decls = quote { fn ${"reads_${t.name}"}() -> string { ${body} } }
+        [Directive { twin: "", name: t.name, at: t.at, source: source }]
+    }
+}

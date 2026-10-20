@@ -1,0 +1,54 @@
+// proves: a terminal holds a list of 100,000 rows in a screen ten lines tall.
+// It builds the rows its height holds; Page Down, End, Home and Tab past the
+// last row scroll it and the focus rests on a control of what it shows; a
+// press lands on the row it names — eval == native.
+use @std.text.{from_codepoint}
+use @std.ui.components.{button, column, list, row, text}
+use @std.ui.terminal.{terminal}
+use @std.ui.tree.rows.{windowed}
+
+state pressed: string = "none"
+
+component tapper(n: int) {
+    row {
+        text "row ${self.n}"
+        button "Tap ${self.n}" { on press { pressed = "row ${self.n}" } }
+    }
+}
+
+fn keyed(i: int) -> string { "k${i}" }
+
+let on = terminal(
+    () -> column {
+        text "100000 rows"
+        list {
+            windowed(
+                [i for i in 0..100000],
+                (i: int) -> keyed(i),
+                (i: int) -> tapper i { key: keyed(i) },
+            )
+        }
+    },
+    width: 30,
+    height: 10,
+)
+let esc = from_codepoint(27)
+
+println("── start")
+println(on.screen())
+println("built ${on.shown.app.stands.built()}")
+
+on.feed("${esc}[6~")
+println("── page down")
+println(on.screen())
+
+on.feed("${esc}[F")
+println("── end")
+println(on.screen())
+
+on.feed("\n")
+println("── enter on the focused control: pressed ${pressed}")
+
+on.feed("${esc}[H\t\t\t\t\t\t\t\t")
+println("── home, then tab past the last row built")
+println(on.screen())

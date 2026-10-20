@@ -101,6 +101,18 @@ fn chosen(ws: Workspace, name: string, fallback: string) -> string {
     if named.is_empty() { fallback } else { named }
 }
 
+/// THE FAST LINKER: lld beside the C compiler, else under `LLVM_PREFIX`, else on the PATH. GNU ld
+/// resolves the compiler's own static LLVM link in ~6 s where lld takes ~0.4 s, and a `clang`
+/// reached through a symlink directory has no lld beside it.
+fn fast_linker(ws: Workspace, host: Stamp) -> Stamp? {
+    let prefix = ws.env("LLVM_PREFIX") ?? ""
+    let beside = ws.tool(joined_path(dir_of(host.path), "ld.lld"))
+    if beside != null { return beside }
+    let under = if prefix.is_empty() { null } else { ws.tool(joined_path(joined_path(prefix, "bin"), "ld.lld")) }
+    if under != null { return under }
+    ws.tool("ld.lld")
+}
+
 /// Whether `clang` links a module for `triple`: where it says that target's
 /// startup object stands is a file. A clang with no libc for the target
 /// answers the bare name.
@@ -481,13 +493,32 @@ fn build_entry(ws: Workspace, path: string) -> string? {
 /// out of a record is a copy the hooks never see.
 export fn argued_path(args: CliResult) -> string? {
     let path = path_arg(args)
-    // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
-    let there = match disk_host().there(path) { .Exists(_, t) -> t, rest -> false }
-    if !there {
+    if !exists_at(path) {
         no_such_file(path)
         return null
     }
     path
+}
+
+/// Whether a path stands on the disk.
+fn exists_at(path: string) -> bool {
+    // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
+    match disk_host().there(path) { .Exists(_, t) -> t, rest -> false }
+}
+
+/// A variadic `file`'s paths, each rooted and checked to exist (`no_such_file` spoken for the
+/// first that does not), a compile slot taken first when the first names a package.
+export fn slotted_paths(args: CliResult) -> List<string>? {
+    let paths = [rooted(p) for p in args.args_of("file")]
+    let gone = paths.find(!exists_at(it))
+    if gone != null {
+        no_such_file(gone!)
+        return null
+    }
+    let first? = paths.first() else { return null }
+    // LICENSED input.compile_slot: a package-scale command takes one of the machine's slots, which never changes a compile answer
+    if is_a_dir(first) { let _ = compile_slot() }
+    paths
 }
 
 /// The argued path, a compile slot taken first when it names a
@@ -559,14 +590,14 @@ fn build_report(e: BuildError) -> string {
 /// runtime for the empty target, a wasm toolchain found on this machine for
 /// any other — or the exit code of the refusal it spoke, naming what is
 /// missing and how to point at one. Each tool is an input of `ws`.
-export fn toolchain(ws: Workspace, target: string, reactor: bool, debug: bool) -> Result<
+export fn toolchain(ws: Workspace, target: string, reactor: bool, debug: bool, fallback: bool) -> Result<
     Toolchain,
     int,
 > {
     if target == "" {
         let word = chosen(ws, "CC", "clang")
         let host? = ws.tool(word) else { return .Err(refused_by_host(ProcessError.NotFound(word, ws.env("PATH") ?? ""))) }
-        let ld = if links_with_ld64() { null } else { ws.tool(joined_path(dir_of(host.path), "ld.lld")) }
+        let ld = if links_with_ld64() { null } else { fast_linker(ws, host) }
         return .Ok(
             Toolchain {
                 opt: "-O1",
@@ -592,6 +623,7 @@ export fn toolchain(ws: Workspace, target: string, reactor: bool, debug: bool) -
         reactor: reactor,
         debug: debug,
         wasm_opt: wasm_opt.path,
+        fallback: fallback,
     }
 }
 
@@ -612,6 +644,7 @@ export fn built_binary(args: CliResult) -> Result<string, int> {
         args.option("target"),
         args.has_flag("wasm_reactor"),
         args.has_flag("wasm_debug"),
+        !args.has_flag("no_wasm_fallback"),
     ) { .Ok(t) -> t, .Err(code) -> { return .Err(code) } }
     let b = built_outcome(ws, path, tools)?
     if b.warnings != "" { eprintln(b.warnings) }

@@ -1,9 +1,11 @@
 // Each primitive's exact HTML, the look as atomic classes, nesting, the
 // stylesheet and the page. Trees are neutral nodes, so no component is
 // involved.
-use @std.ui.tree.node.{Node, Prim}
+use @std.ui.tree.node.{Node, Prim, Attribute}
 use @std.ui.realize.html.html.{fragment, render, page, Page}
 use @std.ui.env.{Env}
+use @std.ui.realize.html.css.{all_rules, class_names}
+use @std.text.{codepoints}
 use @std.ui.style.box.{Box}
 use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
@@ -176,7 +178,7 @@ spec "std/ui html — primitives" {
         then "the page's base reads the surface, the text tone and the body face" {
             sheet()
                 .contains(
-                    "body{margin:0;background:var(--tone-surface);color:var(--tone-text);font-family:var(--face-body)}",
+                    "body{margin:0;overflow-wrap:break-word;background:var(--tone-surface);color:var(--tone-text);font-family:var(--face-body)}",
                 )
         }
         then "the axis classes are flex" {
@@ -191,8 +193,8 @@ spec "std/ui html — primitives" {
             ["dir-col", "dir-row", "gap-m", "pis-s", "pie-s", "pt-s", "pb-s"]
                 .all((c) -> count(sheet(), ".${c}{") == 1)
         }
-        then "it holds the variables, the nine base rules and one line per class the tree named" {
-            sheet().split("\n").length == 1 + 9 + 8
+        then "it holds the variables, the eleven base rules and one line per class the tree named" {
+            sheet().split("\n").length == 1 + 11 + 8
         }
         then "a button shows what it stands on inside a border, so a fill it names is the fill a reader sees" {
             sheet()
@@ -261,5 +263,178 @@ spec "std/ui html — primitives" {
         then "the fragment is the page's body" {
             page(Page { title: "T" }, tree()).contains("<body>${fragment(tree())}</body>")
         }
+    }
+    given "sizes along an axis" {
+        then "a fill takes the room that is left along its parent's axis and stretches across it" {
+            let css = render(
+                boxed(.Row, Layout {}, [boxed(.Column, Layout { width: .Fill, height: .Fill }, [])]),
+                Env {},
+            )
+            css.contains("\n.dir-row>.w-fill{flex:var(--grow) 1 0%;min-width:0}") &&
+                css.contains("\n.dir-col>.w-fill{align-self:stretch}") &&
+                css.contains("\n.dir-col>.h-fill{flex:var(--grow) 1 0%;min-height:0}") &&
+                css.contains("\n.dir-row>.h-fill{align-self:stretch}")
+        }
+        then "a fixed size holds along its parent's axis and is no more than its width elsewhere" {
+            let css = render(
+                boxed(
+                    .Row,
+                    Layout {},
+                    [boxed(.Column, Layout { width: .Fixed(8), height: .Fixed(3) }, [])],
+                ),
+                Env {},
+            )
+            css.contains("\n.w-fixed{width:var(--w)}") &&
+                css.contains("\n.dir-row>.w-fixed{flex-shrink:0}") &&
+                css.contains("\n.h-fixed{height:var(--h)}") &&
+                css.contains("\n.dir-col>.h-fixed{flex-shrink:0}")
+        }
+        then "a node that fills in both directions names its class once" {
+            fragment(boxed(.Column, Layout { width: .Fill }, [])) == "<div class=\"dir-col w-fill\"></div>"
+        }
+        then "a growth given to a fill is its share" {
+            render(boxed(.Row, Layout { grow: 3 }, []), Env {})
+                .contains("\n.grow{flex-grow:var(--grow)}")
+        }
+        then "wrap, margin and order are written, an order by a class that reads its property" {
+            let css = render(
+                boxed(.Row, Layout { wrap: .WrapReverse, margin: around(.S), order: -2 }, []),
+                Env {},
+            )
+            css.contains("\n.wrap-rev{flex-wrap:wrap-reverse}") &&
+                css.contains("\n.mis-s{margin-inline-start:var(--space-s)}") &&
+                css.contains("\n.order{order:var(--order)}")
+        }
+        then "every box is measured by its border" { sheet().contains("\n*,*::before,*::after{box-sizing:border-box}\n") }
+        then "text breaks at spaces and a word longer than its line breaks where it must" {
+            sheet().contains("\nbody{margin:0;overflow-wrap:break-word;")
+        }
+    }
+}
+
+spec "std/ui html — no value reaches a class name" {
+    given "fixed sizes, a growth and an order" {
+        then "a node names the classes that read them and the place of its rule in the sheet" {
+            fragment(
+                boxed(
+                    .Column,
+                    Layout { width: .Fixed(8), height: .Fixed(3), grow: 2, order: -2 },
+                    [],
+                ),
+            ) == "<div class=\"dir-col w-fixed h-fixed grow order\" data-v=\"0\"></div>"
+        }
+        then "two nodes of different sizes are the same markup" {
+            fragment(boxed(.Row, Layout { width: .Fixed(8) }, [])) == fragment(boxed(.Row, Layout { width: .Fixed(99) }, []))
+        }
+        then "a node that states none writes no style" {
+            fragment(boxed(.Column, Layout { width: .Fill }, [])) == "<div class=\"dir-col w-fill\"></div>"
+        }
+    }
+    given "the vocabulary" {
+        then "every rule a node names is one of its rules" {
+            let all = all_rules().map(it.name)
+            let nodes = [
+                boxed(
+                    .Row,
+                    Layout {
+                        width: .Fixed(8),
+                        grow: 3,
+                        order: 1,
+                        gap: .L,
+                        align: .Center,
+                        wrap: .Wrap,
+                        pad: around(.M),
+                    },
+                    [],
+                ),
+                boxed(
+                    .Column,
+                    Layout { height: .Fill, margin: around(.S), distribute: .SpaceBetween },
+                    [],
+                ),
+            ]
+            nodes.all((n) -> class_names(n).all((c) -> all.contains(c)))
+        }
+        then "no class name carries a number" {
+            !all_rules().any((r) -> codepoints(r.name).any((c) -> c >= 48 && c <= 57))
+        }
+    }
+}
+
+/// A column of fixed size over two rows, one fixed and one filling.
+fn tall() -> Node {
+    boxed(
+        .Column,
+        Layout { width: .Fixed(8), height: .Fixed(3), grow: 2, order: -2 },
+        [boxed(.Row, Layout { width: .Fixed(5) }, []), boxed(.Row, Layout { width: .Fill }, [])],
+    )
+}
+
+fn small() -> Node { boxed(.Row, Layout { width: .Fixed(8) }, []) }
+
+spec "std/ui html — the sheet carries the values" {
+    given "a page of nodes that state sizes" {
+        then "each element that states any has a rule, numbered in document order" {
+            let html = page(Page { title: "t" }, tall())
+            html.contains("<div class=\"dir-col w-fixed h-fixed grow order\" data-v=\"0\">") &&
+                html.contains("<div class=\"dir-row gap-s w-fixed\" data-v=\"1\">") &&
+                html.contains("\n[data-v=\"0\"]{--w:8px;--h:3px;--grow:2;--order:-2}") &&
+                html.contains("\n[data-v=\"1\"]{--w:5px}")
+        }
+        then "an element that states none has no rule and no number" {
+            page(Page { title: "t" }, tall()).contains("<div class=\"dir-row gap-s w-fill\">")
+        }
+        then "no element carries a style attribute" { !page(Page { title: "t" }, tall()).contains("style=\"") }
+    }
+    given "a page under a policy that allows styles by nonce" {
+        then "its one style element carries the nonce" {
+            page(Page { title: "t", nonce: "n1" }, small()).contains("<style nonce=\"n1\">")
+        }
+        then "a nonce is escaped where it lands" {
+            page(Page { title: "t", nonce: "a\"b" }, small()).contains("<style nonce=\"a&quot;b\">")
+        }
+        then "a page with no nonce writes a bare style element" {
+            page(Page { title: "t" }, small()).contains("<style>")
+        }
+    }
+}
+
+spec "std/ui html — a shortcut" {
+    given "a key node" {
+        then "stands hidden and says its chord as a page's keydown reads it" {
+            fragment(leaf(.Key, [.Label("ctrl+s")])) == "<div hidden=\"\" data-avra-chord=\"c/KeyS/s\" aria-label=\"ctrl+s\">ctrl+s</div>"
+        }
+        then "spells a named key as KeyboardEvent.key does, with every modifier it holds" {
+            fragment(leaf(.Key, [.Label("ctrl+alt+shift+Up")]))
+                    .contains("data-avra-chord=\"cas//ArrowUp\"") &&
+                fragment(leaf(.Key, [.Label("F5")])).contains("data-avra-chord=\"//F5\"") &&
+                fragment(leaf(.Key, [.Label("ctrl+Plus")])).contains("data-avra-chord=\"c//+\"")
+        }
+        then "says the place of a letter, a digit and a punctuation key as a US layout has it" {
+            fragment(leaf(.Key, [.Label("ctrl+1")])).contains("data-avra-chord=\"c/Digit1/1\"") &&
+                fragment(leaf(.Key, [.Label("ctrl+/")])).contains("data-avra-chord=\"c/Slash//\"") &&
+                fragment(leaf(.Key, [.Label("alt+[")]))
+                    .contains("data-avra-chord=\"a/BracketLeft/[\"")
+        }
+        then "with a chord that is none stands hidden and says none" {
+            fragment(leaf(.Key, [.Label("ctrl+")])) == "<div hidden=\"\" aria-label=\"ctrl+\">ctrl+</div>"
+        }
+    }
+}
+
+/// A spacer standing for four unbuilt rows of twenty pixels each, which says no height of its own.
+fn spacer() -> Node {
+    Node { prim: .Item, attrs: [Attribute.Skipped("p", 4, 20)], box: Box {}, children: [] }
+}
+
+spec "std/ui html — a window's spacer" {
+    given "a spacer standing for unbuilt rows" {
+        then "stands as a fixed height its class reads, never as a style attribute" {
+            let item = fragment(spacer())
+            item.contains("h-fixed") &&
+                item.contains("data-avra-skip=\"4\"") &&
+                !item.contains("style=")
+        }
+        then "has its height in the page's sheet" { page(Page { title: "t" }, spacer()).contains("{--h:80px}") }
     }
 }

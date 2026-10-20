@@ -3,6 +3,7 @@
 use compiler.backend.{
     unreached_dropped,
     host_export_words,
+    table_export_words,
     reactor_entry_words,
     host_kept_words,
     link_named,
@@ -17,6 +18,10 @@ use compiler.backend.{
 /// them all instead (`-rdynamic`): the evaluator resolves an extern through
 /// `dlsym(RTLD_DEFAULT)`, which on ELF reaches the executable only when its
 /// globals stand in the dynamic table.
+/// `-lm` RIDES EVERY NATIVE LINK, as libc does: core's float methods (`round`, `floor`, `ceil`,
+/// `trunc`) lower to libm calls, so a package must not have to name the math library for a
+/// method of the language itself (macOS keeps it in libSystem). The runtime archive is last of the
+/// objects, and the library follows it.
 /// THE RUNTIME IS LAST because it is an archive: an ELF linker takes from it
 /// only what the words BEFORE it name, so a member only a package object
 /// reaches — a row the compiler's host table names — is otherwise dropped.
@@ -47,6 +52,7 @@ fn link_objects(
             .concat(if debug { [] } else { ["-Wl,--strip-all"] })
             .concat(if reactor { ["-mexec-model=reactor"].concat(reactor_entry_words()) } else { [] })
             .concat(host_export_words())
+            .concat(table_export_words())
             .concat(objs)
             .concat(ws.link_words(target))
             .concat(
@@ -55,6 +61,7 @@ fn link_objects(
                     "-lwasi-emulated-mman",
                     "-lwasi-emulated-signal",
                     "-lwasi-emulated-getpid",
+                    "-lsetjmp",
                     "-o",
                     out,
                 ],
@@ -68,7 +75,7 @@ fn link_objects(
             .concat(link_named(binary))
             .concat(objs)
             .concat(ws.link_words(""))
-            .concat([runtime, "-o", out])
+            .concat([runtime, "-lm", "-o", out])
     }
 }
 

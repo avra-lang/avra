@@ -7,7 +7,9 @@
 //! Ids are opaque: compared or looked up, never inspected. All
 //! allocation goes through the one `alloc_*` seam per arena, so
 //! interning can arrive without call-site churn.
-use @std.meta.{dense, derive, Field, Mark as MetaMark, Named}
+// LICENSED modules.unused_import: `Rewrite` is named by GENERATED code — the
+// `NodeFacts` delegation writes `means`'s answer here
+use @std.meta.{dense, derive, Field, Mark as MetaMark, Named, Rewrite}
 use @std.errors.{Loc}
 use @std.relation.{relation, arena}
 
@@ -342,6 +344,13 @@ export type Scoped = string
 /// where the node resolves.
 export type Plain = string
 
+/// What an embedded file is read as: its UTF-8 text, or the octets it holds.
+export enum EmbedKind { Text, Octets }
+
+/// Where an embedded file's path starts: beside the source that names it,
+/// or at the root of the package that holds the source.
+export enum EmbedBase { Beside, Root }
+
 /// A name in the TYPE namespace — a literal's type, an impl's
 /// target. A template's hole in one is filled by a written TYPE.
 export type Nominal = string
@@ -401,7 +410,7 @@ export fn stmt_makers() -> List<Maker<Stmt>> {
 @derive(Makes)
 @relation
 @arena
-export collect enum Expr: Identity = @expr_node in package by it.name
+export collect enum Expr: Identity, Kids, Heirs, NodeFacts = @expr_node in package by it.name
 
 /// Marks a record as `Expr`'s variant at `rank` — its fields are the
 /// variant's payload.
@@ -415,27 +424,14 @@ export fn is_literal(e: Expr) -> bool {
 
 /// Whether a node HEARS its seat's want: a list whose elements each
 /// answer to the seat's element, or a lambda whose parameters and
-/// answer the seat's fn type gives — typed again under that want when
-/// it was typed before the seat was known.
+/// answer the seat's fn type gives, or an expression-only `quote`
+/// that answers `Stmts` where its seat wants statements — typed again
+/// under that want when it was typed before the seat was known.
 export fn hears_want(e: Expr) -> bool {
-    match e { .ListLit(_) or .Comp(_, _) or .Collect(_) or .Lambda(_, _) -> true, _ -> false }
-}
-
-/// A FORM THE SOURCE SPELLS AS A VALUE — a scalar, text, a list, a
-/// map, a variant, a lambda, `null`. The parts inside may be computed; the
-/// FORM is what this asks about.
-///
-/// A NAMED TYPE'S SEAT TAKES ONE DIRECTLY (`let id: UserId = 5`):
-/// the name's shape becomes the want and the literal fills it.
-/// Nothing COMPUTED wears a name it was not given, which is the
-/// opacity half of the named-type law and what makes the name worth
-/// having. A REGISTRY, every arm spelled: the day a new value form
-/// lands it must decide whether a name adopts it.
-export fn literal_form(e: Expr) -> bool {
     match e {
-        .Body(word, _, _, _) -> body_literal(word),
-        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .ListLit(_) or .Comp(_, _) or .Collect(_) or .MapLit(_, _) or .NullLit or .VariantLit(_, _) or .StructLit(_, _, _) or .Lambda(_, _) or .Range(_, _) -> true,
-        .Ident(_) or .Receiver or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .Index(_, _) or .Prop(_, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Call(_, _, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .CallValue(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error or .Env(_) -> false,
+        .ListLit(_) or .Comp(_, _) or .Collect(_) or .Lambda(_, _) -> true,
+        .Body(word, _, _, _) -> body_behavior(word) is .Quote,
+        _ -> false,
     }
 }
 
@@ -468,7 +464,7 @@ export fn body_behavior(word: string) -> BodyBehavior {
 }
 
 /// Whether a body of this word is a value form the source spells.
-fn body_literal(word: string) -> bool {
+export fn body_literal(word: string) -> bool {
     body_rows().find(it.word == word)?.literal ?? false
 }
 
@@ -542,7 +538,7 @@ impl ArenaMarks {
 /// in the ORIGIN's offsets (a copied template's, so its errors point
 /// home) rather than this file's (a sublanguage's, shifted into the
 /// block).
-export type ForeignRange = { runs: ArenaRuns, path: string, spanned_home: bool }
+export type ForeignRange = { runs: ArenaRuns, path: string, spanned_home: bool, module: string = "" }
 /// A WRITTEN type: its name, its arguments (`List<int>`), and
 /// whether it was written nullable (`int?`). An annotation is DATA,
 /// not a node — no pass walks one — so its span rides here rather
@@ -577,6 +573,9 @@ export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynam
 export fn named_ref(name: string) -> TypeRef {
     TypeRef { name: name, args: [], optional: false, dynamic: false, arrow: false, span: null }
 }
+
+/// The answer a fn declares by writing none: `void`.
+export const void_ref: TypeRef = named_ref("void")
 
 export fn plain(t: TypeRef) -> TypeRef {
     t with { optional: false }
@@ -637,7 +636,17 @@ export const pronoun_param: Param = Param {
 // mitigation the doctrine names is paid in full: the unknown SPEAKS
 // (workspace's claim law) rather than falling through.
 @derive(Identity)
-export type Mark = { name: string, args: List<string>, @local span: Span? = null, call: ExprId? = null }
+export type Mark = {
+    name: string,
+    args: List<string>,
+    @local span: Span? = null,
+    call: ExprId? = null,
+    named: List<MarkArg> = [],
+}
+
+/// An argument a mark names: its label and the words of its value.
+@derive(Identity)
+export type MarkArg = { label: string, value: string }
 
 /// A handler an instance hears an event with: the event it names,
 /// whether the `on` sugar wrote it (a setting that names an event hears
@@ -666,7 +675,7 @@ export enum Unheard {
 /// string)`): the seats its handler is told, none for an event that
 /// says nothing — and absent on every seat that is not an event.
 @derive(Identity)
-export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, @local id: ParamId, marks: List<Mark> = [], state: bool = false, says: List<Param>? = null }
+export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, @local id: ParamId, marks: List<Mark> = [], state: bool = false, says: List<Param>? = null, variadic: bool = false }
 
 /// What a parameter seat WRITES, as a grammar rule labels it: the
 /// marks are words (`mut`, `const`, `state`, and `isolated` as `unshared`)
@@ -674,7 +683,7 @@ export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: Se
 /// enum payload writes no name. A rule ending
 /// `-> Record.ParamSyntax` fills this, and the seat's builder reads it.
 @derive(Grammar)
-export type ParamSyntax = { marks: List<Mark> = [], state_field: bool = false, constant: bool = false, mutable: bool = false, state: bool = false, unshared: bool = false, spread: bool = false, name: Scoped?, ty: TypeRef?, default: ExprId? }
+export type ParamSyntax = { marks: List<Mark> = [], state_field: bool = false, constant: bool = false, mutable: bool = false, state: bool = false, unshared: bool = false, spread: bool = false, name: Scoped?, ty: TypeRef?, default: ExprId?, variadic: bool = false }
 
 /// What one enum VARIANT writes, as a rule labels it: the marks
 /// before its name, its name, and the payloads it carries. A rule
@@ -737,22 +746,17 @@ export fn pat_node(_node: Named) {}
 /// the two agree, because a suffix anchor already fixes that hole's
 /// end — which is why the mark reads there as a statement of what the
 /// hole does rather than a change to it.
+@derive(Identity)
 export type Hole = { name: string, ty: TypeRef?, greedy: bool }
 
 /// A hole and the literal text that follows it.
+@derive(Identity)
 export type FormatPart = { hole: Hole, piece: string }
 
 /// The format a `grammar` declaration read. Its holes became the
 /// record's fields, and a record cannot say what text it reads —
 /// so the format is kept beside the statement that declared it.
 export type GrammarSpec = { head: string, parts: List<FormatPart> }
-
-/// A `table<Row> { header | … }` literal's own header, by the list
-/// it desugared to — an EMPTY table carries no row to read a header
-/// back from (`features/tables/builders.av`'s `build_table` answers
-/// a bare `[]` for zero rows), so the header is kept beside the list
-/// rather than read off its first element.
-export type TableSpec = { row_type: string, header: List<string> }
 
 /// One name a pattern binds, and the pattern node it binds under.
 export type Binder = { pat: PatId, name: string }
@@ -798,6 +802,9 @@ export enum PlaceStep {
     At(subject: ExprId, index: ExprId)
     Unwrap(subject: ExprId)
 }
+
+/// A property read's projection: the receiver and the name.
+export type PropParts = { subject: ExprId, name: string }
 
 /// A method call's projection: the receiver, the name, the arguments.
 export type MethodParts = { subject: ExprId, name: string, args: List<ExprId> }
@@ -1036,16 +1043,4 @@ fn exact_proj_fields(a: List<ProjField>, b: List<ProjField>) -> bool {
 
 fn exact_projection(a: Projection, b: Projection) -> bool {
     exact_type_ref(a.ty, b.ty) && exact_proj_fields(a.fields, b.fields)
-}
-
-fn exact_hole(a: Hole, b: Hole) -> bool {
-    a.name == b.name && exact_type_ref(a.ty, b.ty) && a.greedy == b.greedy
-}
-
-fn exact_format_part(a: FormatPart, b: FormatPart) -> bool {
-    a.piece == b.piece && exact_hole(a.hole, b.hole)
-}
-
-fn exact_format_parts(a: List<FormatPart>, b: List<FormatPart>) -> bool {
-    a.length == b.length && [i for i in 0..a.length].all(exact_format_part(a[it], b[it]))
 }

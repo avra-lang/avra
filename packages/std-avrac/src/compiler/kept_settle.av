@@ -15,6 +15,7 @@
 //! a flat record, and one store serves programs that seal differently — so a
 //! verdict is kept beside the layout of every type its answer reaches, and
 //! stands only in a program that lays them out alike.
+use core.debug.{db_verified_files}
 use core.{
     StmtId,
     ExprId,
@@ -39,6 +40,7 @@ use core.{
 use features.{Unsettled, Settled, Wanted, SettleRoot, SeatValue, Budgets}
 use compiler.backend.{reaches_world}
 use compiler.store.{Store, Stored, node_key}
+use compiler.work.{work_spell_lookup}
 use compiler.lower.{Unit, type_shape_key}
 use core.{Type}
 use @std.relation.engine.{list_cell}
@@ -174,7 +176,7 @@ impl Workspace {
         if top != null { top!.push(self.kept_unit_line(w, u)) }
         let d = w.decl ?? self.root_decl(w)
         if d != null { self.note_decl_types(d!) }
-        for ask in self.hold.unit_asks.get().get("${id}") ?? [] { let _ = self.settled(ask.file, ask.root, ask.seats) }
+        for ask in self.asks_of(id) { let _ = self.settled_replay(ask.file, ask.root, ask.seats) }
         u
     }
 
@@ -328,7 +330,7 @@ impl Workspace {
             "f" -> self.kept_file_stands(r),
             "b" -> r.length == 2 && budget_line(self.budgets()) == joined(r, "\t"),
             "e" -> r.length == 3 && self.embed_said(r[1]) == r[2],
-            "r" or "n" -> true,
+            "r" or "n" or "s" -> true,
             rest -> false,
         }
     }
@@ -373,15 +375,10 @@ impl Workspace {
         let at = "${self.db.revision()}\t${joined([m.text() for m in modules], ",")}"
         let known: SeenView? = self.keys.seen_views.get().get(at)
         if known != null { return known! }
+        let states = self.view_states(modules)
         let lines = [self.module_line(m) for m in modules]
-            .concat(
-                [
-                    joined(
-                        ["n", self.names_digest(modules), self.narrow_names_digest(modules)],
-                        "\t",
-                    ),
-                ],
-            )
+            .concat([joined(["n", self.names_digest(modules), states.narrow], "\t")])
+            .concat(states.lines)
             .concat(
                 [self.file_line(path) for path in distinct(flatten([self.module_files(m) for m in modules]))],
             )
@@ -424,7 +421,7 @@ impl Workspace {
     fn rows_stand(rows: List<List<string>>) -> bool {
         if !rows.all((r: List<string>) -> self.kept_row_stands(r)) { return false }
         let mods = [module_path(r[1].split(".")) for r in rows if r[0] == "m"]
-        rows.all((r: List<string>) -> r[0] != "n" || self.names_stand(r, mods))
+        rows.all((r: List<string>) -> r[0] != "n" || self.names_stand(r, mods, rows))
     }
 
     /// Whether a kept row that needs no analysis refuses: a view by its lines, any other by its own.
@@ -485,10 +482,11 @@ impl Workspace {
     }
 
     /// A file's outline as a verdict keeps it: its declarations that are not named types (a
-    /// named type is keyed by its shape, in a `t` line) and its `use` lines.
+    /// named type is keyed by its shape, in a `t` line) and not reached by name alone (a verdict
+    /// stands on the fns and consts its run read, in its own lines) and its `use` lines.
     fn outline_values(path: string) -> string {
         let f? = self.decls.known_file_id(path) else { return "" }
-        let decls = [fp_str("${self.outline_syntax(d)}") for d in self.decls.decls_of_file(f) if outlined_value(self.decls.decl(d).kind)]
+        let decls = [fp_str("${self.outline_syntax(d)}") for d in self.decls.decls_of_file(f) if outlined_value(self.decls.decl(d).kind) && !self.plain_free(d)]
         let uses = self.use_fps(f)
         "${fp(313, [fp_list(decls), fp_list(uses)])}"
     }
@@ -516,13 +514,105 @@ impl Workspace {
     /// The declaration names of the modules a verdict sees, as one digest: a name a
     /// seen module gains or loses moves it.
     fn names_digest(mods: List<ModulePath>) -> string {
-        digest_of(joined(sorted_texts(flatten([self.module_decl_names(m) for m in mods])), "\n"))
+        names_digest_of([self.file_bound_digest(p) for m in mods for p in self.module_files(m)])
+    }
+
+    /// The digest of the names a file binds: a held file's off its module's producer row, any
+    /// other's from its declarations.
+    fn file_bound_digest(path: string) -> string { names_digest_of([unmarked(b) for b in self.bound_of(path)]) }
+
+    /// A file's bound names, a plain free fn's marked `*`: off its module's producer row when it is
+    /// held, from its declarations otherwise.
+    fn bound_of(path: string) -> List<string> {
+        let held = self.held_names(path)
+        if held != null { return held!.bound }
+        let f? = self.decls.known_file_id(path) else { return [] }
+        [if self.plain_free(d) { "*${self.decls.decl(d).name}" } else { self.decls.decl(d).name } for d in self.decls.decls_of_file(f) if binds_name(self.decls.decl(d).kind)]
+    }
+
+    /// A held file's names off its module's producer row; null for a file no record answers for.
+    fn held_names(path: string) -> FileNames? {
+        let store? = self.store.get() else { return null }
+        if !self.held_path(path) { return null }
+        (self.producers_for(store, self.module_path_of(path))?.narrows ?? []).find(it.path == path)
     }
 
     /// A names line stands when the names are the ones it was kept with, or, for a plain free fn
     /// nothing spells, the narrowed names are.
-    fn names_stand(r: List<string>, mods: List<ModulePath>) -> bool {
-        r[1] == self.names_digest(mods) || r.length > 2 && r[2] == self.narrow_names_digest(mods)
+    fn names_stand(r: List<string>, mods: List<ModulePath>, rows: List<List<string>>) -> bool {
+        if r[1] == self.names_digest(mods) { return true }
+        if r.length < 3 { return false }
+        let moved? = self.narrow_stands(rows, mods) else { return r[2] == self.narrow_names_digest(mods) }
+        if moved && db_verified_files() && r[2] != self.narrow_names_digest(mods) { self.defect(narrow_unsound()) }
+        moved
+    }
+
+    /// THE NARROWED NAMES, JUDGED BY WHAT MOVED: the kept `s` lines hold each file's names by
+    /// kind and the names its module's view counted, so only files whose text moved, whose names
+    /// drifted, or that bind a name some file stopped or started spelling are judged again.
+    /// Null when the kept lines cannot say.
+    fn narrow_stands(rows: List<List<string>>, mods: List<ModulePath>) -> bool? {
+        let files = distinct(flatten([self.module_files(m) for m in mods]))
+        let kept = keyed_rows([r for r in rows if r[0] == "s" && r.length == 4])
+        let texts = keyed_rows([r for r in rows if r[0] == "f"])
+        if kept.length != files.length || files.any((p: string) -> !kept.has(p) || !texts.has(p)) { return null }
+        let changed = [p for p in files if texts.get(p)![2] != self.text_digest(p)]
+        let moved? = self.moved_spellings(changed, texts) else { return null }
+        let heads = [p for p in files if self.state_head(p) != kept.get(p)![2]]
+        if heads
+            .any((p: string) -> self.state_head(p).split(".")[0] != kept.get(p)![2].split(".")[0]) {
+            return false
+        }
+        let generated = [p for p in heads if self.has_generated(p) != (kept.get(p)![2].split(".")[1] == "1")]
+        let sees: Cell<Map<string, Sight>> = Cell.new({})
+        for m in mods {
+            let own = self.module_files(m)
+            let stem = m.text().split(".").last() ?? ""
+            let whole = moved.has(stem) ||
+                generated.any((g: string) -> own.contains(g) || self.spells(g, stem))
+            for path in own {
+                let affected = whole ||
+                    changed.contains(path) ||
+                    heads.contains(path) ||
+                    self.binds_moved(path, moved)
+                if affected &&
+                    self.sp_digest(path, self.sight_of(sees, m, files)) != kept.get(path)![3] {
+                    return false
+                }
+            }
+        }
+        true
+    }
+
+    /// What a module's view counts: the files that can reach its fns, and whether plain fns are
+    /// counted by spelling there.
+    fn sight_of(seen: Cell<Map<string, Sight>>, m: ModulePath, files: List<string>) -> Sight {
+        let known: Sight? = seen.get().get(m.text())
+        if known != null { return known! }
+        let sees = self.module_sees(m, files)
+        let made = Sight { files: sees, narrow: !sees.any((p: string) -> self.has_generated(p)) }
+        seen.put(m.text(), made)
+        made
+    }
+
+    /// The names some changed file spells now and did not when the lines were kept, or the
+    /// reverse; null when a kept spelling is gone.
+    fn moved_spellings(changed: List<string>, texts: Map<string, List<string>>) -> Map<string, bool>? {
+        let moved: Cell<Map<string, bool>> = Cell.new({})
+        for path in changed {
+            let kept? = self.store.get()?.get(Stored.Unit, tokens_key(texts.get(path)![2])) else { return null }
+            let was = spelling_of(kept).names
+            let now = self.spelling(path).names
+            for n in now.keys() { if !was.has(n) { moved.put(n, true) } }
+            for n in was.keys() { if !now.has(n) { moved.put(n, true) } }
+        }
+        moved.get()
+    }
+
+    /// Whether a file binds a plain free fn whose name moved.
+    fn binds_moved(path: string, moved: Map<string, bool>) -> bool {
+        !moved.is_empty() &&
+            self.bound_of(path).any((b: string) -> b.starts_with("*") && moved.has(unmarked(b)))
     }
 
     /// The same names with each plain free fn counted only where a file that can see its
@@ -540,70 +630,85 @@ impl Workspace {
     fn narrow_module_names(m: ModulePath, files: List<string>) -> List<string> {
         let own = self.module_files(m)
         let stem = m.text().split(".").last() ?? ""
-        let sees = distinct(own.concat([p for p in files if self.tokens_of(p).has(stem)]))
+        let sees = self.module_sees(m, files)
         let narrow = !sees.any((p: string) -> self.has_generated(p))
         flatten([self.file_decl_names(path, sees, narrow) for path in own])
     }
 
-    /// A module's declaration names, over the files it holds.
-    fn module_decl_names(m: ModulePath) -> List<string> {
-        flatten([self.file_decl_names(path, [], false) for path in self.module_files(m)])
+    /// The files of `files` that can reach a module's fns: its own, and those spelling its last segment.
+    fn module_sees(m: ModulePath, files: List<string>) -> List<string> {
+        let stem = m.text().split(".").last() ?? ""
+        distinct(self.module_files(m).concat([p for p in files if self.spells(p, stem)]))
+    }
+
+    /// The digest of a file's plain free fn names a view counts: those spelled beside it, or all
+    /// of them where the view's files hold generated code.
+    fn sp_digest(path: string, sight: Sight) -> string { names_digest_of(self.counted_plain(path, sight)) }
+
+    /// What a file's `s` line says of its names apart from what a view counts: the non-plain names'
+    /// digest, whether it holds generated code, and every bound name's digest.
+    fn state_head(path: string) -> string {
+        let held = self.held_names(path)
+        if held != null { return held!.head }
+        head_of(self.bound_of(path), self.has_generated(path))
+    }
+
+    /// Each file of the modules, as an `s` line — its path, its head, and what its view counted of
+    /// it — with the narrowed names digest the same walk counts.
+    fn view_states(modules: List<ModulePath>) -> ViewStates {
+        let files = distinct(flatten([self.module_files(m) for m in modules]))
+        let found = flatten([self.module_states(m, files) for m in modules])
+        ViewStates {
+            lines: [f.line for f in found],
+            narrow: names_digest_of(flatten([f.counted for f in found])),
+        }
+    }
+
+    /// One module's files, each with its `s` line and the names its view counts.
+    fn module_states(m: ModulePath, files: List<string>) -> List<FileState> {
+        let no_sights: Map<string, Sight> = {}
+        let sight = self.sight_of(Cell.new(no_sights), m, files)
+        [self.file_state(p, sight) for p in self.module_files(m)]
+    }
+
+    /// A file's `s` line, and the names a view counts of it: the non-plain ones and the plain ones counted.
+    fn file_state(path: string, sight: Sight) -> FileState {
+        let plain = self.counted_plain(path, sight)
+        FileState {
+            line: joined(["s", path, self.state_head(path), names_digest_of(plain)], "\t"),
+            counted: [unmarked(b) for b in self.bound_of(path) if !b.starts_with("*")].concat(plain),
+        }
+    }
+
+    /// The plain free fn names of a file a view counts: those spelled beside it, or all of them
+    /// where the view's files hold generated code.
+    fn counted_plain(path: string, sight: Sight) -> List<string> {
+        [unmarked(b) for b in self.bound_of(path) if b.starts_with("*") && (!sight.narrow || self.spelled_beside(path, unmarked(b), sight.files))]
     }
 
     /// Whether any declaration of a file was written by an annotation: its code spells names
     /// its text does not.
     fn has_generated(path: string) -> bool {
         let f? = self.decls.known_file_id(path) else { return false }
-        if self.held_path(path) && self.store.get() != null {
-            let m = self.module_path_of(path)
-            return makers_in(record_fields(self, self.store.get()!, m), path)
-                .values()
-                .any(!it.is_empty())
+        let held? = self.held_names(path) else {
+            return self
+                .decls
+                .decls_of_file(f)
+                .any((d: DeclId) -> !self.decls.decl(d).maker.is_empty())
         }
-        self.decls.decls_of_file(f).any((d: DeclId) -> !self.decls.decl(d).maker.is_empty())
+        held.generated
     }
 
     /// A file's declaration names, when the file is known; a plain free fn's only when `files`
     /// spell it beyond its own declaration, or `narrow` is off.
     fn file_decl_names(path: string, files: List<string>, narrow: bool) -> List<string> {
-        let f? = self.decls.known_file_id(path) else { return [] }
-        if self.held_path(path) && self.store.get() != null {
-            let m = self.module_path_of(path)
-            let fields = record_fields(self, self.store.get()!, m)
-            let makers = makers_in(fields, path)
-            let rows = file_rows(fields, record_places(self, self.store.get()!, m).get(path))
-            return flatten([self.kept_names(p, path, files, narrow, makers) for p in rows])
-        }
-        [self.decls.decl(d).name for d in self.decls.decls_of_file(f) if binds_name(self.decls.decl(d).kind) &&
-            (!narrow ||
-                !self.plain_free(d) ||
-                self.spelled_beside(path, self.decls.decl(d).name, files))]
+        [unmarked(b) for b in self.bound_of(path) if !narrow || !b.starts_with("*") || self.spelled_beside(path, unmarked(b), files)]
     }
 
-    /// The name a held file's record line binds, counted as `file_decl_names` counts it.
-    fn kept_names(
-        parts: List<string>,
-        path: string,
-        files: List<string>,
-        narrow: bool,
-        makers: Map<string, string>,
-    ) -> List<string> {
-        let row? = read_row(parts) else { return [] }
-        let kind? = declared_kind(row.shape, row.kind) else { return [] }
-        let facts? = facts_unblocked(row.facts) else { return [] }
-        let plain = kind is .Fn &&
-            row.owner.is_empty() &&
-            row.enclosing.is_empty() &&
-            (makers.get("${row.ordinal}") ?? "").is_empty() &&
-            facts.word == null &&
-            facts.annotations.is_empty()
-        if binds_name(kind) && (!narrow || !plain || self.spelled_beside(path, row.name, files)) { [row.name] } else { [] }
-    }
-
-    /// Whether a declaration is a free fn nothing generated and no annotation touches.
+    /// Whether a declaration is a free fn or const nothing generated and no annotation touches.
     fn plain_free(d: DeclId) -> bool {
         let x = self.decls.decl(d)
-        x.kind is .Fn &&
+        reached_by_name(x.kind) &&
             x.owner.is_empty() &&
             x.maker.is_empty() &&
             x.enclosing.is_empty() &&
@@ -613,28 +718,48 @@ impl Workspace {
 
     /// Whether a name is spelled twice in its own file, or once in another of `files`.
     fn spelled_beside(path: string, name: string, files: List<string>) -> bool {
-        self.occurrences(path, name) > 1 ||
-            files.any((p: string) -> p != path && self.tokens_of(p).has(name))
+        self.spelled_twice(path, name) ||
+            files.any((p: string) -> p != path && self.spells(p, name))
     }
 
-    /// How many times a file's text spells a name.
-    fn occurrences(path: string, name: string) -> int { self.tokens_of(path).get(name) ?? 0 }
+    /// Whether a file's text spells a name more than once.
+    fn spelled_twice(path: string, name: string) -> bool { self.spelling(path).twice.has(name) }
 
-    /// A file's tokens with their counts, remembered per text.
-    fn tokens_of(path: string) -> Map<string, int> {
+    /// Whether a file's text spells a name.
+    fn spells(path: string, name: string) -> bool {
+        work_spell_lookup()
+        self.spelling(path).names.has(name)
+    }
+
+    /// The names a file's text spells, indexed by name: its row is kept under the text's digest,
+    /// so a text that did not move is read and never lexed again.
+    fn spelling(path: string) -> Spelling {
         let at = "${self.octets_word(path)}\t${path}"
-        let known: Map<string, int>? = self.keys.file_tokens.get().get(at)
+        let known: Spelling? = self.keys.file_tokens.get().get(at)
         if known != null { return known! }
-        let made = token_counts(self.listed_text(path))
+        let key = tokens_key(self.text_digest(path))
+        let kept: string? = self.store.get()?.get(Stored.Unit, key)
+        let made = spelling_of(kept ?? self.lexed_row(path, key))
         self.keys.file_tokens.put(at, made)
         made
+    }
+
+    /// A file's spelled-name row, lexed from its text and kept when a store is open.
+    fn lexed_row(path: string, key: string) -> string {
+        let counts = token_counts(self.listed_text(path))
+        let row = joined(
+            [if counts.get(n) ?? 0 > 1 { "+${n}" } else { n } for n in sorted_texts(counts.keys())],
+            "\n",
+        )
+        let _ = self.store.get()?.keep(Stored.Unit, key, row, [])
+        row
     }
 
     /// What a file says to a body it does not hold: every declaration but a
     /// body's own, and every `use` line.
     fn outline(path: string) -> string {
         let f? = self.decls.known_file_id(path) else { return "" }
-        let decls = [fp_str("${self.syntax(d)}") for d in self.decls.decls_of_file(f) if outlined(self.decls.decl(d).kind)]
+        let decls = [fp_str("${self.syntax(d)}") for d in self.decls.decls_of_file(f) if outlined(self.decls.decl(d).kind) && !self.plain_free(d)]
         let uses = self.use_fps(f)
         "${fp(311, [fp_list(decls), fp_list(uses)])}"
     }
@@ -668,7 +793,43 @@ impl Workspace {
 /// What a verdict's units see — module lines, names, file lines — named by the digest of its text.
 type SeenView = { id: string, lines: List<string> }
 
+/// The files a module's view counts spellings in, and whether plain free fns are counted by them.
+type Sight = { files: List<string>, narrow: bool }
+
+/// A file's kept `s` line, and the names its view counts of it.
+type FileState = { line: string, counted: List<string> }
+
+/// What a view keeps of its modules' names: each file's `s` line, and the narrowed names digest.
+type ViewStates = { lines: List<string>, narrow: string }
+
+/// Rows by the path they name.
+fn keyed_rows(rows: List<List<string>>) -> Map<string, List<string>> {
+    let by: Cell<Map<string, List<string>>> = Cell.new({})
+    for r in rows { by.put(r[1], r) }
+    by.get()
+}
+
+fn narrow_unsound() -> string {
+    "a kept names line stood by its moved-name judgement where the whole narrowed digest says it moved — the judgement skips files, so one of them was skipped that reads a name that moved"
+}
+
+/// The names a text spells, and those it spells more than once.
+type Spelling = { names: Map<string, bool>, twice: Map<string, bool> }
+
+/// A spelling read back from its row: one name a line, `+` before a name spelled more than once.
+fn spelling_of(row: string) -> Spelling {
+    let names: Cell<Map<string, bool>> = Cell.new({})
+    let twice: Cell<Map<string, bool>> = Cell.new({})
+    for l in row.split("\n") {
+        if l.starts_with("+") { twice.put(l.substring(1, l.length), true) }
+        names.put(if l.starts_with("+") { l.substring(1, l.length) } else { l }, true)
+    }
+    Spelling { names: names.get(), twice: twice.get() }
+}
+
 /// Where a view's lines are kept.
+fn tokens_key(digest: string) -> string { node_key(Stored.Unit, ["tokens", digest]) }
+
 fn view_key(id: string) -> string { node_key(Stored.Unit, ["kept-view", id]) }
 
 /// A kept text's rows, split into fields.

@@ -13,19 +13,37 @@
 import fs from "node:fs";
 import { run } from "../../runtime/dom/bootstrap.js";
 import { wasiPreview1 } from "../../runtime/dom/wasi.js";
-import { stubDocument, stubElement, textOf } from "../../runtime/dom/stub_dom.js";
+import { dispatch, stubDocument, stubElement, textOf } from "../../runtime/dom/stub_dom.js";
 
 const mount = stubElement("root");
+// The page's timers, by hand: what was armed, and a way to let it fire.
+const armed = new Map();
+// The page's fetch, by hand: each call waits for the test to answer it.
+const asked = [];
+const fetchFn = (url, init) => new Promise((resolve, reject) => asked.push({ url, init, resolve, reject }));
+const clock = {
+  setTimeout: (fn, ms) => { const h = armed.size + 1; armed.set(h, { fn, ms }); return h; },
+  setInterval: (fn, ms) => { const h = armed.size + 1; armed.set(h, { fn, ms }); return h; },
+  clearTimeout: (h) => armed.delete(h),
+  clearInterval: (h) => armed.delete(h),
+};
 const style = { textContent: "" };
 let frames = 0;
 let writes = 0;
 
-await run(new Uint8Array(fs.readFileSync(process.argv[2])), {
+// The page's frames, by hand: the program asks for one (requestAnimationFrame)
+// and the test lets the display's frame come.
+const rafs = [];
+const frame = () => { for (const cb of rafs.splice(0)) cb(); };
+const { mod, ears } = await run(new Uint8Array(fs.readFileSync(process.argv[2])), {
   document: stubDocument(),
   mount,
   style,
   wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(`the program exited ${code}`); }),
   sent: (bytes) => { frames++; writes += bytes.length; },
+  clock,
+  fetch: fetchFn,
+  raf: (cb) => rafs.push(cb),
 });
 
 const shape = (n) => {
@@ -36,10 +54,15 @@ const shape = (n) => {
 };
 const every = (n, hit, out = []) => { if (hit(n)) out.push(n); n.childNodes.forEach((c) => every(c, hit, out)); return out; };
 // A control by its accessible name, among those that listen.
-const named = (name, under = mount) => every(under, (n) => n.attrs["aria-label"] === name && n.listeners.size > 0);
+const named = (name, under = mount) => every(under, (n) => n.attrs["aria-label"] === name && ears(n.__avra_id).length > 0);
 // A keyed row by its key.
 const keyed = (key) => every(mount, (n) => n.attrs["data-key"] === key)[0] || null;
-const fire = (n) => { const [event, listener] = [...n.listeners][0]; listener(); return event; };
+const fire = (n) => {
+  const [, ear] = ears(n.__avra_id)[0];
+  dispatch(mount, n, ear.event, { bubbles: false });
+  frame();
+  return ear.event;
+};
 // What one event cost the wire: frames and bytes since the last ask.
 const spent = () => { const s = `${frames} frame(s), ${writes} byte(s)`; frames = 0; writes = 0; return s; };
 
@@ -123,6 +146,95 @@ const faint = (css) => {
 claim("each mode's sheet names its inks and its fills", Object.keys(tones(sheet)).length >= 4 && Object.keys(tones(style.textContent)).length >= 4);
 claim("every ink reads on every fill in the light mode", faint(sheet).length === 0, faint(sheet).join(", "));
 claim("every ink reads on every fill in the dark mode", faint(style.textContent).length === 0, faint(style.textContent).join(", "));
+
+// A SOURCE IS THE HOST'S TIMER: a press asks, the page arms a timer, its
+// firing is a turn, and the footer says so.
+spent();
+const footerWords = () => every(mount, (n) => n.tagName === "#text" && n.textContent.includes("open ·")).map((n) => n.textContent)[0] || "";
+const remind = named("Remind me")[0];
+claim("the footer holds a Remind me that listens", Boolean(remind));
+claim("before the reminder the footer does not say it", !footerWords().includes("reminder"), footerWords());
+fire(remind);
+claim("pressing it arms one timer of 100 ms on the page's clock", armed.size === 1 && [...armed.values()][0].ms === 100, `${armed.size}`);
+claim("asking cost no frame: nothing changed on the page", frames === 0, spent());
+[...armed.values()][0].fn();
+frame();
+claim("the timer firing is a turn: the footer says the reminder", footerWords().includes("reminder"), footerWords());
+spent();
+
+// A SOURCE IS THE HOST'S FETCH TOO: the same Request value, one frame to the
+// host, its answer a turn.
+const settle = async () => { for (let k = 0; k < 8; k++) await Promise.resolve(); };
+const sync = named("Sync")[0];
+claim("the footer holds a Sync that listens", Boolean(sync));
+spent();
+fire(sync);
+await settle();
+claim("pressing it sends one request for /tasks with the page's fetch", asked.length === 1 && asked[0].url === "/tasks" && asked[0].init.method === "POST", `${asked.length}`);
+claim("the whole request crossed the wasm boundary: field, content type and body", asked[0].init.headers["x-board"] === "1" && asked[0].init.headers["content-type"] === "application/json" && new TextDecoder().decode(asked[0].init.body) === "[1,2]", JSON.stringify(asked[0].init.headers));
+claim("the footer says it is syncing; the ask cost one small frame", footerWords().includes("syncing") && frames === 1, `${footerWords()} / ${spent()}`);
+spent();
+asked[0].resolve({ status: 200, arrayBuffer: async () => new TextEncoder().encode("12345").buffer });
+await settle();
+frame();
+claim("the answer is a turn: the footer says what the server sent", footerWords().includes("synced 5"), footerWords());
+spent();
+fire(sync);
+await settle();
+asked[1].resolve({ status: 503, arrayBuffer: async () => new ArrayBuffer(0) });
+await settle();
+frame();
+claim("a refusal shows as the words the parse gave", footerWords().includes("sync failed: status 503"), footerWords());
+spent();
+
+// TURNS THAT LAND TOGETHER ARE ONE PAINT: a timer and a fetch answer in one
+// tick wait for the display's frame, which walks the view once and sends one
+// frame; a frame nothing asked for walks nothing; and an EVENT shows what is
+// pending first, because the user acts on the screen they saw.
+fire(remind);
+fire(sync);
+await settle();
+frame();
+spent();
+const walks = () => Number(mod.avra_ui_walks());
+let walked = walks();
+const reminderTimer = [...armed.values()].slice(-1)[0];
+asked[asked.length - 1].resolve({ status: 200, arrayBuffer: async () => new TextEncoder().encode("1").buffer });
+await settle();
+reminderTimer.fn();
+claim("nothing is painted until the frame comes: no frame sent, no walk", frames === 0 && walks() === walked, `${frames} frame(s), ${walks() - walked} walk(s)`);
+frame();
+claim("the frame is one frame and one walk for both sources", frames === 1 && walks() - walked === 1, `${spent()}, ${walks() - walked} walk(s)`);
+claim("what each source did shows in it", footerWords().includes("synced 1") && footerWords().includes("reminder"), footerWords());
+frame();
+claim("a frame nothing asked for walks nothing", walks() - walked === 1, `${walks() - walked}`);
+spent();
+
+// A source lands, then the user presses before the frame: the press meets the
+// screen the user saw, so the pending paint is shown first.
+walked = walks();
+const mode = named("Light mode")[0] ?? named("Dark mode")[0];
+const [, mode_ear] = ears(mode.__avra_id)[0];
+const dark = () => dispatch(mount, mode, mode_ear.event, { bubbles: false });
+fire(sync);
+await settle();
+asked[asked.length - 1].resolve({ status: 200, arrayBuffer: async () => new TextEncoder().encode("1234").buffer });
+await settle();
+frame();
+spent();
+walked = walks();
+fire(sync);
+await settle();
+frame();
+walked = walks();
+asked[asked.length - 1].resolve({ status: 200, arrayBuffer: async () => new TextEncoder().encode("12").buffer });
+await settle();
+spent();
+dark();
+claim("a press after a pending answer shows the answer first, then its own change", frames === 1 && walks() - walked === 1, `${frames} frame(s), ${walks() - walked} walk(s)`);
+frame();
+claim("and the press's own frame follows at the display's frame", walks() - walked === 2 && named("Dark mode").length + named("Light mode").length === 1, `${walks() - walked}`);
+spent();
 
 console.log(failed === 0 ? "ui-board: every claim holds" : `ui-board: ${failed} claim(s) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

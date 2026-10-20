@@ -1,0 +1,30 @@
+//! Parse-time lowering: a map literal's entries in written order.
+use core.{Expr, ExprId, Plain, sorted_by, spread_entry}
+use features.{LangNode, Builder}
+
+/// One entry in written order: where it began, its key node and its
+/// value node.
+type Entry = { at: int, key: ExprId, value: ExprId }
+
+/// `{ "a": 1, ..m, "b": 2 }` — pairs and spreads in written order. A
+/// spread's key is the `Named` node `..` wearing the map, and its value
+/// a `null` placeholder at the same place, so the two lists stay one
+/// entry long each.
+fn build_map_lit(b: Builder) -> Result<LangNode, string> {
+    let keys = b.exprs(0)?
+    let values = b.exprs(1)?
+    if keys.length != values.length { return .Err("a map's keys and values arrive in pairs") }
+    let pairs = [Entry { at: b.store.expr_span(k)?.lo ?? 0, key: k, value: values[j] } for j, k in keys]
+    let spreads = [spread_at(b, m) for m in b.exprs(2)?]
+    let entries = sorted_by(pairs.concat(spreads), (x, y) -> x.at < y.at)
+    b.make_expr(Expr.MapLit([x.key for x in entries], [x.value for x in entries]))
+}
+
+fn spread_at(b: Builder, map: ExprId) -> Entry {
+    let span = b.store.expr_span(map)
+    Entry {
+        at: span?.lo ?? 0,
+        key: b.store.alloc_expr(Expr.Named(Plain(spread_entry), map), span),
+        value: b.store.alloc_expr(Expr.NullLit, span),
+    }
+}

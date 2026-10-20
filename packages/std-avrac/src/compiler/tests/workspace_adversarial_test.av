@@ -358,6 +358,23 @@ spec "compiler/workspace (adversarial)" {
                     .report()
                     .contains("`twice` is imported, but this module (`facade/a.av`) already has it")
         }
+        then "a module that declares a name twice is refused once — the re-exports and imports meeting it stay silent" {
+            let ws = package(
+                {
+                    "/w/src/main.av": "use hub.{f}\n1\n",
+                    "/w/src/hub.av": "export use util.{f}\nexport use util2.{f}\n",
+                    "/w/src/util.av": "export fn f() -> int {\n    1\n}\n",
+                    "/w/src/util2.av": "export fn f() -> int {\n    2\n}\n",
+                },
+                ["/w/src/main.av", "/w/src/hub.av", "/w/src/util.av", "/w/src/util2.av"],
+            )
+            let said = [ws.analyze_file(path).report() for path in ["/w/src/main.av", "/w/src/hub.av", "/w/src/util.av", "/w/src/util2.av"]]
+            let all = said.join("\n")
+            all.contains("`f` is declared twice in this module") &&
+                !all.contains("import_clash") &&
+                !all.contains("already on this module's surface") &&
+                !all.contains("is imported, but")
+        }
         then "a re-export of a name its own file declares refuses" {
             let a = analysed_at(
                 {

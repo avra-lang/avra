@@ -16,6 +16,7 @@ use core.{
     Binding,
     SyntaxArena,
     SeatMark,
+    SeatFill,
     same_expr,
     is_literal,
     state_mark,
@@ -24,6 +25,7 @@ use core.{
     StaticBox,
 }
 use diagnostics.{loc_at, refusal, Diag}
+use features.lists.{listed}
 use features.{
     LowerCx,
     capture_lane,
@@ -87,10 +89,71 @@ impl LowerCx {
     /// call to its own default body for each seat no argument writes.
     /// Typing held every unwritten seat to a default.
     mut fn seated_regs(e: ExprId, d: DeclId, args: List<ExprId>, regs: List<Reg>) -> List<Reg> {
+        let variadic: int? = self.view.decls.variadic_of(d)
+        if variadic != null { return self.variadic_regs(e, d, variadic!, args, regs) }
+        if args.any((a) -> self.view.store.spread_operand(a) != null) { return self.spread_regs(e, d, args, regs) }
         let seats: List<string> = self.view.decls.facts_of(d)?.seats ?? []
         if seats.length < regs.length { return regs }
         let defaults = self.view.decls.seat_defaults(d)
         [if i >= 0 { regs[i] } else { self.default_reg(e, defaults[j]) } for j, i in self.view.store.seat_plan(args, seats)]
+    }
+
+    /// A call that spreads a record: each seat from the argument or the
+    /// FIELD that fills it — read off the spread's one register, which
+    /// the caller evaluated once — or its default.
+    mut fn spread_regs(e: ExprId, d: DeclId, args: List<ExprId>, regs: List<Reg>) -> List<Reg> {
+        let seats: List<string> = self.view.decls.facts_of(d)?.seats ?? []
+        let defaults = self.view.decls.seat_defaults(d)
+        let fills = self
+            .view
+            .store
+            .seat_fills(args, seats, [self.spread_field_names(a) for a in args])
+        [self.filled_reg(e, f, defaults[j], args, regs) for j, f in fills]
+    }
+
+    fn spread_field_names(a: ExprId) -> List<string> {
+        if self.view.store.spread_operand(a) == null { return [] }
+        self.fields_at(a)?.names ?? []
+    }
+
+    mut fn filled_reg(e: ExprId, f: SeatFill?, body: DeclId?, args: List<ExprId>, regs: List<Reg>) -> Reg {
+        let fill? = f else { return self.default_reg(e, body) }
+        if fill.field < 0 { return regs[fill.arg] }
+        let sig? = self.fields_at(args[fill.arg]) else { return self.lower_defect(e, "a spread over a value that is no record survived typing") }
+        self
+            .field_read(regs[fill.arg], self.type_at(args[fill.arg]), fill.field, sig.types[fill.field])
+    }
+
+    /// A variadic callee's registers: the seats before its `..` seat as
+    /// written, then ONE list of every argument past them — plain ones
+    /// its elements, a `..` one joined in. A lone spread hands its list
+    /// over as it stands: the callee borrows, as it does any argument.
+    mut fn variadic_regs(e: ExprId, d: DeclId, k: int, args: List<ExprId>, regs: List<Reg>) -> List<
+        Reg,
+    > {
+        let spreads = [self.view.store.spread_operand(a) != null for a in args.slice(k, args.length)]
+        let extras = regs.slice(k, regs.length)
+        let packed = if spreads.length == 1 && spreads[0] { extras[0] } else { listed(self, self.variadic_shape(e, d), extras, spreads) }
+        regs.slice(0, k).concat([packed])
+    }
+
+    /// The shape of the list a variadic seat takes, as this call
+    /// instantiates it.
+    fn variadic_shape(e: ExprId, d: DeclId) -> Type {
+        let declared? = (self.view.decls.sig(d)?.fn_sig()?.params ?? []).last() else { return Type.Error }
+        let sub? = self.facts.subst_at(e) else { return self.view.types.shape_of(self.viewed(declared)) }
+        self
+            .view
+            .types
+            .shape_of(
+                self
+                    .viewed(
+                        self
+                            .view
+                            .types
+                            .substituted(declared, sub.target, [self.concrete(t) for t in sub.args]),
+                    ),
+            )
     }
 
     mut fn default_reg(e: ExprId, body: DeclId?) -> Reg {
@@ -392,10 +455,12 @@ impl LowerCx {
     fn inline_safe(e: ExprId) -> bool {
         let node = self.view.store.expr(e)
         match node {
-            .Block(stmts, value) -> stmts.is_empty() && value != null && self.inline_safe(value!),
+            .Block(stmts, _) -> stmts.is_empty() &&
+                self.view.store.tail_of(e) != null &&
+                self.inline_safe(self.view.store.tail_of(e)!),
             .Propagate(_) or .Catch(_, _, _, _) -> false,
             .Lambda(_, _) -> true,
-            rest -> node.kids().all((k: ExprId) -> self.inline_safe(k)),
+            rest -> self.view.store.walked(e).all((k: ExprId) -> self.inline_safe(k)),
         }
     }
 
@@ -474,6 +539,17 @@ impl LowerCx {
             .Def(s) if self.view.store.is_state_stmt(s) -> self.defined_reg(a, s, self.def_ty(s)),
             .Param(i) if self.state_seat(i) -> self.param_reg(i),
             _ -> null,
+        }
+    }
+
+    /// The cell a `state` BINDING names in THIS body: a local's, a seat's or
+    /// a capture's env cell; null for any other binding.
+    fn state_cell_of(e: ExprId, b: Binding) -> Reg? {
+        match b {
+            .Def(s) if self.view.store.is_state_stmt(s) -> self.defined_reg(e, s, self.def_ty(s)),
+            .Param(i) if self.state_seat(i) -> self.param_reg(i),
+            .Capture(l, j) if self.state_capture(l, j) != null -> self.state_capture_cell(l, j),
+            rest -> null,
         }
     }
 
@@ -602,8 +678,8 @@ impl LowerCx {
             if b != null {
                 match b! {
                     .Param(i) -> {
-                        if !settled_mark(self.seat_marks, i) { return "parameter ${i + 1}" }
-                        if self.sub != null && !self.seats.any(it.index == i) { return "parameter ${i + 1}" }
+                        if !settled_mark(self.seat_marks, i) { return self.read_name(node, i) }
+                        if self.sub != null && !self.seats.any(it.index == i) { return self.read_name(node, i) }
                     },
                     rest -> nothing(),
                 }
@@ -611,6 +687,9 @@ impl LowerCx {
         }
         null
     }
+
+    /// The word a read of seat `i` is written under.
+    fn read_name(node: ExprId, i: int) -> string { self.view.store.ident_name(node) ?? "parameter ${i + 1}" }
 
     /// Whether an initializer reads a DECLARED `const` seat — the
     /// signal that a body is a template with no unit to fold it.

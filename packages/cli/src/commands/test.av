@@ -2,22 +2,26 @@
 //! program tests, one binary a suite, linked through the store a build
 //! links through — so a file nothing moved is not read, compiled or
 //! evaluated again. The binaries run in a fresh image of this program. A
-//! package's root proves everything; any other path the proofs at or under it.
-use @std.cli.{CliResult, Runnable, command}
+//! package's root proves everything; any other paths the proofs at or under any of them.
+use @std.cli.{CliResult, Runnable, command, arg}
 use @std.avrac.compiler.{BuildOutcome, Toolchain, Workspace}
 use @std.avrac.core.{flatten}
+use @std.path.{dir_of}
 
 type TestCmd = {}
 
 impl Runnable for TestCmd {
     fn run(args: CliResult) -> int {
-        let path? = slotted_path(args) else { return 1 }
+        let paths? = slotted_paths(args) else { return 1 }
+        let path = paths[0]
+        let apart = paths.find(path_root(it) != path_root(path))
+        if apart != null { return paths_apart(path, apart!) }
         let ws = proving_workspace(path)
-        let tools = match toolchain(ws, "", false, false) {
+        let tools = match toolchain(ws, "", false, false, false) {
             .Ok(t) -> t,
             .Err(code) -> { return code },
         }
-        let scope = scope_of(path)
+        let scope = scopes_of(paths)
         match ws.suites(scope, here(), tools) {
             .Ok(made) -> proved(args, path, scope, made, tools),
             .Err(report) -> {
@@ -37,15 +41,24 @@ fn proving_workspace(path: string) -> Workspace {
     if is_a_dir(path) { root_workspace(dir_root(path)) } else { file_workspace(path) }
 }
 
-/// What a path scopes the run to: nothing for a root, which proves all it
-/// carries; else the proofs at or under the path.
-fn scope_of(path: string) -> string? {
-    if is_a_dir(path) && dir_root(path) == path { null } else { path }
+/// The package a path stands in: a directory's own root, a file's directory's.
+fn path_root(path: string) -> string { dir_root(if is_a_dir(path) { path } else { dir_of(path) }) }
+
+/// What the paths scope the run to: nothing for a lone root, which proves all it carries;
+/// else the proofs at or under any of the paths.
+fn scopes_of(paths: List<string>) -> List<string> {
+    if paths.length == 1 && is_a_dir(paths[0]) && dir_root(paths[0]) == paths[0] { [] } else { paths }
 }
 
 /// The suites said, their child-run tests held to their voice, then run
 /// by a fresh image — or the voice for none.
-fn proved(args: CliResult, path: string, scope: string?, made: List<BuildOutcome>, tools: Toolchain) -> int {
+fn proved(
+    args: CliResult,
+    path: string,
+    scope: List<string>,
+    made: List<BuildOutcome>,
+    tools: Toolchain,
+) -> int {
     for b in made {
         if !b.warnings.is_empty() { eprintln(b.warnings) }
         if timed(args) { eprintln(if b.reused { "time: suite · cache hit" } else { "time: ${b.phases}" }) }
@@ -62,15 +75,19 @@ fn proved(args: CliResult, path: string, scope: string?, made: List<BuildOutcome
 export command test {
     description: "Run a package's spec cases and its program tests"
     flags: [time]
-    args: [file]
+    arg file {
+        description: "the package, or the paths of one package whose proofs to run"
+        required: true
+        variadic: true
+    }
     run: TestCmd {}
 }
 
 /// ZERO PROOFS FOR A SCOPED PATH IS A REFUSAL, not a green run: the whole job
 /// of `test` is the verdict, and a path that yields none has none to give. A
 /// root with none says so and stands.
-fn nothing_to_prove(path: string, scope: string?) -> int {
-    if scope == null { return no_tests_here() }
+fn nothing_to_prove(path: string, scope: List<string>) -> int {
+    if scope.is_empty() { return no_tests_here() }
     if is_a_dir(path) { names_no_test_under(path) } else { names_no_test(path) }
 }
 
@@ -79,6 +96,13 @@ fn nothing_to_prove(path: string, scope: string?) -> int {
 fn no_tests_here() -> int {
     println("no spec cases here")
     0
+}
+
+fn paths_apart(first: string, other: string) -> int {
+    eprintln(
+        "avra: ${first} and ${other} stand in different packages — `test` proves the paths of one package",
+    )
+    2
 }
 
 fn names_no_test(path: string) -> int {

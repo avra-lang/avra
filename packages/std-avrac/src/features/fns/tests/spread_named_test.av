@@ -1,0 +1,111 @@
+// A record spread into a call's named seats, by seat law. Accepted
+// programs run through `shown`; each refusal pins its voice, and the
+// goldens pin the rendering.
+use @std.avrac.testing.{shown, refused_with, projected}
+use compiler.{analyze_source}
+
+const P: string = "type O = { w: int, h: int }\nfn area(w: int, h: int = 1) -> int { w * h }\n"
+
+spec "features/fns — a record spread into named seats" {
+    given "fills" {
+        then "a field fills the seat of its name" { shown("${P}area(..O { w: 3, h: 4 })") == "12" }
+        then "a seat no field names keeps its default" {
+            shown("${P}type W = { w: int }\narea(..W { w: 4 })") == "4"
+        }
+        then "a later argument wins a seat" { shown("${P}area(..O { w: 3, h: 4 }, h: 5)") == "15" }
+        then "a later spread wins a seat" { shown("${P}area(..O { w: 3, h: 4 }, ..O { w: 1, h: 2 })") == "2" }
+        then "a field after an argument wins, and the argument is a dead write" {
+            let r = analyze_source("${P}area(2, ..O { w: 3, h: 4 })")
+            r.ran() == "12" &&
+                r.report().contains("the argument for seat `w` is overwritten by a spread after it")
+        }
+        then "the operand runs once however many fields it fills" {
+            shown(
+                "${P}fn make(c: Cell<int>) -> O {\n    c.set(c.get() + 1)\n    O { w: 2, h: 3 }\n}\nlet hits = Cell.new(0)\nlet n = area(..make(hits))\nhits.get() * 100 + n",
+            ) == "106"
+        }
+        then "a managed field is shared safely" {
+            shown(
+                "type S = { name: string, n: int }\nfn f(name: string, n: int) -> string { \"\${name}\${n}\" }\nlet s = S { name: \"a\", n: 1 }\nlet t = f(..s)\n\"\${s.name}\${t}\"",
+            ) == "aa1"
+        }
+        then "a method's seats fill beside its receiver" {
+            shown(
+                "type A = { n: int }\ntype G = { by: int }\nimpl A {\n    fn add(by: int) -> int { self.n + by }\n}\nA { n: 1 }.add(..G { by: 2 })",
+            ) == "3"
+        }
+        then "a field pins a type parameter as an argument does" {
+            shown("type K = { x: string }\nfn id<T>(x: T) -> T { x }\nid(..K { x: \"pinned\" })") == "pinned"
+        }
+        then "a field and an argument that agree pin one type parameter" {
+            shown("type K = { a: int }\nfn two<T>(a: T, b: T) -> T { b }\ntwo(..K { a: 1 }, b: 2)") == "2"
+        }
+        then "a generic callee fills a concrete seat" {
+            shown(
+                "type K = { n: int }\nfn pick<T>(x: T, n: int) -> int { n }\npick(\"s\", ..K { n: 4 })",
+            ) == "4"
+        }
+    }
+    given "refusals" {
+        then "a field no seat has" {
+            refused_with(
+                "type Z = { w: int, z: int }\nfn f(w: int) -> int { w }\nf(..Z { w: 1, z: 2 })",
+                "this spread carries `z`, and `f` has no seat of that name",
+            )
+        }
+        then "a field of another type" {
+            refused_with(
+                "type S = { w: string }\nfn f(w: int) -> int { w }\nf(..S { w: \"a\" })",
+                "this spread's field `w` is `string`, and `f`'s seat of that name wants `int`",
+            )
+        }
+        then "a seat nothing writes and no default" {
+            refused_with(
+                "type W = { w: int }\nfn f(w: int, h: int) -> int { w }\nf(..W { w: 1 })",
+                "seat `h` of `f` is written by no argument, and has no default",
+            )
+        }
+        then "a field into a mut seat" {
+            analyze_source(
+                "type M = { w: int }\nfn f(mut w: int) -> int { 1 }\nlet m = M { w: 1 }\nf(..m)",
+            )
+                .report()
+                .contains("takes a place or a settled value, and a spread's field is neither")
+        }
+        then "a field and an argument pinning one type parameter differently" {
+            analyze_source(
+                "type K = { a: int }\nfn two<T>(a: T, b: T) -> int { 1 }\ntwo(..K { a: 1 }, b: \"s\")",
+            )
+                .report()
+                .contains("this spread's field `a` is `int`")
+        }
+        then "a non-record source" { refused_with("${P}area(..5)", "`..` spreads `int`, which has no fields") }
+        then "a nullable source" {
+            refused_with("${P}let o: O? = null\narea(..o)", "`..` spreads `O?`, which may be null")
+        }
+        then "a list into fixed seats stays refused" {
+            refused_with(
+                "${P}area(..[1, 2])",
+                "`..` spreads into a seat that takes the rest of the arguments",
+            )
+        }
+    }
+    given "the refusals, rendered" {
+        then "a field no seat has" {
+            analyze_source(
+                "type Z = { w: int, z: int }\nfn f(w: int) -> int { w }\nf(..Z { w: 1, z: 2 })",
+            )
+                .report() == "error[type.spread_field]: this spread carries `z`, and `f` has no seat of that name\n  ╭─[<source>:3:3]\n3 │ f(..Z { w: 1, z: 2 })\n  ·   ┬\n  ·   ╰── spread here\n──╯\nhelp: spread a record of `f`'s seats, or write the arguments"
+        }
+        then "a dead write" {
+            analyze_source("${P}area(2, ..O { w: 3, h: 4 })").report() == "warning[type.spread_dead]: the argument for seat `w` is overwritten by a spread after it\n  ╭─[<source>:3:6]\n3 │ area(2, ..O { w: 3, h: 4 })\n  ·      ┬\n  ·      ╰── overwritten\n──╯\nhelp: write it after the spread to keep it"
+        }
+    }
+    given "the printer" {
+        then "a spread argument keeps its place among the arguments" {
+            projected(
+                "type O = {\n    w: int,\n}\nfn f(a: int, w: int) -> int {\n    a\n}\nlet x = f(1,   ..O { w: 2 })\n",
+            ) == "type O = {\n    w: int,\n}\nfn f(a: int, w: int) -> int {\n    a\n}\nlet x = f(1, ..O { w: 2 })"
+        }
+    }
+}

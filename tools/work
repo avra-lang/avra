@@ -71,6 +71,29 @@ built_from() {
     echo "$(compiler_hash "$tree") $at"
 }
 
+# THE DEPOT: every compiler `make avra` builds from a clean tree is kept, stamped, under the user's cache
+# (newest AVRA_DEPOT_KEEP, default 3), so a fresh worktree has a compiler to start from after the
+# worktree that built it is gone. A Linux binary from a published release cannot run on macOS, so on a
+# Mac the depot (or a worktree) is the only source short of `make bootstrap`.
+depot() { echo "${AVRA_COMPILER_DEPOT:-${XDG_CACHE_HOME:-$HOME/.cache}/avra/compilers}"; }
+
+# deposit [tree]: keep the tree's built compiler in the depot — only one built from the commit's own source
+# (`edited` says a lane's edits went in, which no other tree can account for).
+deposit() {
+    tree=${1:-$PWD}
+    [ -x "$tree/build/avra" ] && [ -s "$tree/build/.avra-built-from" ] || return 0
+    read -r hash at < "$tree/build/.avra-built-from" || return 0
+    [ "$at" != edited ] || return 0
+    d=$(depot)/$hash
+    mkdir -p "$d"
+    for f in avra libavra_runtime.a .avra-built-from; do
+        [ ! -f "$tree/build/$f" ] || cp -p "$tree/build/$f" "$d/$f"
+    done
+    touch "$d"
+    keep=${AVRA_DEPOT_KEEP:-3}
+    ls -t "$(depot)" | tail -n +$((keep + 1)) | while IFS= read -r old; do find "$(depot)/$old" -delete; done
+}
+
 # A NEW WORKTREE STARTS FROM A COMPILER THAT CAN BUILD IT, OR FROM NONE.
 # Every worktree's binary says what it was built from; the one built from
 # THIS tree's compiler source is this tree's, and failing that the one
@@ -84,9 +107,10 @@ seed_local() {
     paths=$(compiler_paths "$1")
     best=
     best_n=
-    for tree in $(git -C "$1" worktree list --porcelain | sed -n 's/^worktree //p'); do
-        [ -x "$tree/build/avra" ] && [ -s "$tree/build/.avra-built-from" ] || continue
-        read -r hash at < "$tree/build/.avra-built-from" || continue
+    holders=$( { git -C "$1" worktree list --porcelain | sed -n 's/^worktree //p' | sed 's|$|/build|'; ls -d "$(depot)"/*/ 2>/dev/null | sed 's|/$||'; } )
+    for tree in $holders; do
+        [ -x "$tree/avra" ] && [ -s "$tree/.avra-built-from" ] || continue
+        read -r hash at < "$tree/.avra-built-from" || continue
         if [ "$hash" = "$want" ]; then best=$tree; best_n=0; break; fi
         [ "$at" != edited ] && git -C "$1" merge-base --is-ancestor "$at" origin/main 2>/dev/null || continue
         n=$(git -C "$1" rev-list --count "$at..origin/main" -- $paths ':(exclude,glob)**/tests/**' 2>/dev/null) || continue
@@ -94,7 +118,7 @@ seed_local() {
     done
     limit=${AVRA_SEED_BEHIND:-10}
     if [ -z "$best" ]; then
-        echo "work: no worktree holds a compiler that says what it was built from — this lane starts with none. \`make bootstrap\` here builds one from the seed, or \`work run\` builds it on the Sprite."
+        echo "work: no worktree or depot entry holds a compiler that says what it was built from — this lane starts with none. \`make bootstrap\` here builds one from the seed, or \`work run\` builds it on the Sprite."
         return 0
     fi
     if [ "$best_n" -gt "$limit" ]; then
@@ -103,9 +127,9 @@ seed_local() {
     fi
     mkdir -p "$1/build"
     for f in avra libavra_runtime.a .avra-built-from; do
-        [ ! -f "$best/build/$f" ] || cp -p "$best/build/$f" "$1/build/$f"
+        [ ! -f "$best/$f" ] || cp -p "$best/$f" "$1/build/$f"
     done
-    made=$(date -r "$best/build/avra" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "an unknown time")
+    made=$(date -r "$best/avra" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "an unknown time")
     if [ "$best_n" = 0 ]; then
         echo "work: compiler from $best, built $made — it is this tree's"
     else
@@ -581,7 +605,7 @@ run() {
     remote_tree=${AVRA_SPRITE_HOME:-/home/sprite}/avra-build/$slug/tree
     wake_s=${AVRA_WAKE_S:-150}
     echo "work: $sprite — waking" >&2
-    info=$(woken "$sprite" "$wake_s" ready "$hash" $sprite_packages) || {
+    info=$(woken "$sprite" "$wake_s" ready "$hash" $(sprite_packages_list)) || {
         blame
         echo "work: $who — $sprite did not answer within ${wake_s}s: $why. Nothing was started" >&2
         exit "$code"
@@ -699,7 +723,7 @@ import json, sys
 ids = [c["id"] for c in json.load(sys.stdin) if c.get("comment", "").startswith("avra-clean")]
 print(ids[-1] if ids else "")' 2>/dev/null || :
 }
-ready_info() { woken "$1" "$2" ready - $sprite_packages 2>/dev/null; }
+ready_info() { woken "$1" "$2" ready - $(health_packages_list) 2>/dev/null; }
 unwell() { [ -z "$1" ] || printf '%s\n' "$1" | grep -q '^unprovisioned=\|^home=no'; }
 
 # Whether the lane standing at $1 has a run of its own going.
@@ -784,8 +808,9 @@ sprites() {
     d=$(mktemp -d "${TMPDIR:-/tmp}/avra-sprites.XXXXXX")
     held=$(lanes)
     states=$(api_state)
+    health_list=$(health_packages_list)
     for s in $(pool); do
-        (t=$(date +%s); remote "$s" "${AVRA_HEALTH_S:-25}" status - $sprite_packages > "$d/$s" 2>/dev/null && echo $(($(date +%s) - t)) > "$d/$s.s") &
+        (t=$(date +%s); remote "$s" "${AVRA_HEALTH_S:-25}" status - $health_list > "$d/$s" 2>/dev/null && echo $(($(date +%s) - t)) > "$d/$s.s") &
     done
     wait
     printf '%-18s %-9s %-26s %-10s %-9s %-7s %s\n' sprite answers lane toolchain disk-free mem-MB running
@@ -1006,6 +1031,8 @@ case "${1:-}" in
     seed) shift; seed "$@" ;;
     compiler-hash) compiler_hash "${2:-$PWD}" ;;
     built-from) built_from "${2:-$PWD}" ;;
+    deposit) deposit "${2:-$PWD}" ;;
+    compiler) seed_local "$PWD" ;;
     seed-local) seed_local "$2" ;;
     libs-step) printf '%s\n' "$libs_step" ;;
     land) shift; land "$@" ;;

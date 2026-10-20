@@ -1,0 +1,66 @@
+// A list literal's spread, by attack class. Accepted programs run
+// through `shown`; each refusal pins its voice, and the goldens pin
+// the rendering.
+use @std.avrac.testing.{shown, refused_with, projected}
+use compiler.{analyze_source}
+
+const LISTS: string = "let xs = [1, 2, 3]\nlet ys = [10, 20]\n"
+
+spec "features/lists — spread, adversarial" {
+    given "order and shape" {
+        then "elements and spreads keep written order" {
+            shown(
+                "${LISTS}let a = [0, ..xs, 4, ..ys]\na[0] * 10000 + a[1] * 1000 + a[4] * 100 + a[5] * 10 + a.length",
+            ) == "1507"
+        }
+        then "a lone spread is a copy" { shown("${LISTS}let c = [..xs]\nc.length * 10 + c[2]") == "33" }
+        then "a copy is its own list" {
+            shown("${LISTS}mut c = [..xs]\nc.push(9)\nxs.length * 10 + c.length") == "34"
+        }
+        then "the same list spreads twice" { shown("${LISTS}[..xs, ..xs].length") == "6" }
+        then "an empty list spreads nothing" { shown("${LISTS}[..[], ..xs].length") == "3" }
+        then "a trailing comma is a list's" { shown("${LISTS}[..xs,].length") == "3" }
+        then "a spread source is evaluated once" {
+            shown("fn make() -> List<int> { [1, 2] }\n[..make(), 3].length") == "3"
+        }
+        then "a field's list spreads" {
+            shown(
+                "type R = { t: List<string> }\nlet r = R { t: [\"a\"] }\n[..r.t, \"b\"].join(\"\")",
+            ) == "ab"
+        }
+        then "managed elements are shared safely" {
+            shown(
+                "type R = { n: int }\nlet rs = [R { n: 1 }]\nlet all = [..rs, R { n: 2 }]\nall[0].n * 10 + all[1].n + rs.length",
+            ) == "13"
+        }
+    }
+    given "refusals" {
+        then "a source that is no list" {
+            refused_with("let a = [..5]\n1", "`..` in a list spreads a list, found `int`")
+        }
+        then "a nullable source" {
+            refused_with(
+                "let xs: List<int>? = null\nlet a = [..xs]\n1",
+                "`..` spreads `List<int>?`, which may be null",
+            )
+        }
+        then "a source of another element type" {
+            refused_with("${LISTS}let a = [..xs, \"s\"]\n1", "a list's elements share one type")
+        }
+        then "a third dot" { !analyze_source("${LISTS}let a = [...xs]\n1").diagnostics.is_empty() }
+        then "a spread of a range" { !analyze_source("let a = [..0..3]\n1").diagnostics.is_empty() }
+    }
+    given "the refusals, rendered" {
+        then "a source that is no list" {
+            analyze_source("let a = [..5]\n1").report() == "error[type.spread_list]: `..` in a list spreads a list, found `int`\n  ╭─[<source>:1:12]\n1 │ let a = [..5]\n  ·            ┬\n  ·            ╰── spread here\n──╯\nhelp: a list literal spreads lists — `[..xs, y]`; write any other value as an element"
+        }
+    }
+    given "the printer" {
+        then "a spread keeps its place and its spelling" {
+            projected("let xs = [1]\nlet a = [0,   ..xs, 2]") == "let xs = [1]\nlet a = [0, ..xs, 2]"
+        }
+        then "a spread of a fallback keeps its parentheses" {
+            projected("let xs: List<int>? = null\nlet a = [..(xs ?? [])]") == "let xs: List<int>? = null\nlet a = [..(xs ?? [])]"
+        }
+    }
+}

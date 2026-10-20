@@ -10,7 +10,7 @@
 //! unread rather than half read, and a torn frame ends that segment's
 //! read. Nothing past a torn frame is trusted.
 //!
-//! `body-<rev>.pack`/`.idx` are the SEALED half (`store/body.av`), folded
+//! `body-<rev>.pack` is the SEALED half (`store/body.av`), folded
 //! by compaction under the flock at open: the process that takes the lock
 //! seals what it read into one body and retires the dead segments it
 //! folded; a process that cannot take the lock says it skipped.
@@ -52,6 +52,14 @@ const ACTION_TAG: int = 2
 /// reclaim by the same rule, so a store is bounded however it is written.
 const REVISIONS_KEPT: int = 10
 const MAX_BYTES_KEPT: int = 2147483648
+
+/// What the kept binaries (`bin/`) may hold: each is a whole program, one per program key, so a
+/// session of edits would otherwise fill a disk. Oldest out first; the newest always stays.
+const BIN_BYTES_KEPT: int = 1073741824
+
+/// What the kept objects (`obj/`) may hold. An object is a cache entry like any row: one the
+/// ceiling drops is a MISS, its file read again and its object rebuilt, never a build refusal.
+const OBJ_BYTES_KEPT: int = 2147483648
 const MAX_AGE_KEPT_NS: int = 0
 
 /// A store's limits, as `avra cache clean` and the automatic seal read them.
@@ -66,7 +74,7 @@ fn env_int(name: string) -> int? {
 /// The limits in force: the design's revision window by default, overridden by
 /// `AVRA_STORE_REVISIONS`, `AVRA_STORE_MAX_MB` and `AVRA_STORE_MAX_AGE_S`.
 export fn store_limits() -> StoreLimits {
-    let mb = env_int("AVRA_STORE_MAX_MB") ?? 0
+    let mb = env_int("AVRA_STORE_MAX_MB") ?? MAX_BYTES_KEPT / 1048576
     let age = env_int("AVRA_STORE_MAX_AGE_S") ?? 0
     StoreLimits {
         revisions: env_int("AVRA_STORE_REVISIONS") ?? REVISIONS_KEPT,
@@ -138,10 +146,12 @@ export type Pack = {
     content: Cell<Map<string, string>>,
     /// Values the newest sealed body holds, read from its `.val` on demand.
     slots: Cell<Map<string, ValueSlot>>,
-    /// The newest body's name and set tables as written, and the tables decoded from them.
-    table_names: Cell<Bytes>,
-    table_sets: Cell<Bytes>,
+    /// The newest sealed body, open and lazy (none or one), whose rows a lookup decodes on
+    /// demand, and the tables decoded from its names and sets.
+    sealed: Cell<List<Sealed>>,
     tables: Cell<List<Tables>>,
+    /// Whether every sealed row has been lifted into `records`, as a seal needs.
+    whole: Cell<bool>,
     opened: Cell<bool>,
     /// Whether a WRITER has taken the compaction lock and sealed. An
     /// inspection opens the index and never sets this, so the same pack can
@@ -162,10 +172,6 @@ export type Pack = {
     /// older view would drop the rows of whoever sealed since.
     seen_rev: Cell<int>,
     lock_fd: Cell<int>,
-    /// Input name -> the rows that read it, built on first ask and dropped by a write.
-    /// The newest body's reverse section as written, and its rows' record keys in body order.
-    table_reverse: Cell<Bytes>,
-    order: Cell<List<string>>,
     /// The value file, open once for the revision it was opened at (none or one handle).
     val_open: Cell<List<Opened>>,
     val_open_rev: Cell<int>,
@@ -177,7 +183,7 @@ export type Pack = {
 
 /// What a process asked of a pack: lookups that found a row and that did not, values read out
 /// of the sealed body, and the bytes those reads covered.
-export type Traffic = { hits: int, misses: int, values: int, bytes: int }
+export type Traffic = { hits: int, misses: int, values: int, bytes: int, rows: int = 0, probes: int = 0 }
 
 /// THE STORE DIRECTORY a cache root names — ONE projection, so the pack and
 /// every tool that measures it (`avra cache log`) agree where it stands.
@@ -193,9 +199,9 @@ export fn pack_at(root: string, print: string) -> Pack {
         withdrawn: map_cell(),
         content: map_cell(),
         slots: map_cell(),
-        table_names: Cell.new("".bytes()),
-        table_sets: Cell.new("".bytes()),
+        sealed: list_cell(),
         tables: list_cell(),
+        whole: Cell.new(false),
         opened: Cell.new(false),
         admitted: Cell.new(false),
         torn: Cell.new(false),
@@ -208,8 +214,6 @@ export fn pack_at(root: string, print: string) -> Pack {
         val_rev: Cell.new(0),
         seen_rev: Cell.new(0),
         lock_fd: Cell.new(0 - 1),
-        table_reverse: Cell.new("".bytes()),
-        order: list_cell(),
         val_open: list_cell(),
         val_open_rev: Cell.new(0 - 1),
         seg_open: list_cell(),
@@ -503,7 +507,7 @@ fn emptied(pack: Pack) {
 /// size. A process that appended nothing never reaches here, so it takes no lock
 /// and writes no store file.
 fn settled(pack: Pack) {
-    let half = pack.records.get().length / 2
+    let half = (pack.records.get().length + sealed_count(pack)) / 2
     let due = hooked_frames() ?? if half > SEAL_FRAMES { half } else { SEAL_FRAMES }
     if pack.frames.get() >= due { admit(pack) }
 }
@@ -595,6 +599,8 @@ export fn pack_clean(pack: Pack, limits: StoreLimits) -> CleanReport {
         }
     }
     let evicted = prune_bodies(pack.dir, limits)
+    let _ = trim_kept_binaries(dir_of(pack.dir), bin_limit())
+    let _ = trim_kept_files(dir_of(pack.dir), "obj", obj_limit())
     CleanReport {
         skipped: false,
         sealed: sealed,
@@ -623,7 +629,62 @@ fn empty_clean() -> CleanReport {
 fn enforce_limits(pack: Pack) {
     let _ = prune_bodies(pack.dir, store_limits())
     drop_unreferenced_values(pack.dir)
+    let _ = trim_kept_binaries(dir_of(pack.dir), bin_limit())
+    let _ = trim_kept_files(dir_of(pack.dir), "obj", obj_limit())
 }
+
+/// The kept objects' ceiling in bytes: `AVRA_OBJ_MAX_BYTES`, else two gigabytes.
+fn obj_limit() -> int { env_int("AVRA_OBJ_MAX_BYTES") ?? OBJ_BYTES_KEPT }
+
+/// The kept binaries' ceiling in bytes: `AVRA_BIN_MAX_BYTES`, else a gigabyte.
+fn bin_limit() -> int { env_int("AVRA_BIN_MAX_BYTES") ?? BIN_BYTES_KEPT }
+
+/// One kept binary: where it stands, its edge beside it, its size and its time.
+type KeptFile = { path: string, bytes: int, at: int }
+
+/// The binaries under `<root>/bin`, oldest first, past what `limit` allows: each is removed
+/// with its edge, so a later ask finds a miss and links again. The newest is never removed.
+export fn trim_kept_binaries(root: string, limit: int) -> int { trim_kept_files(root, "bin", limit) }
+
+/// The files of one file family (`bin`, `obj`) under `<root>/<family>`, oldest first, past `limit`.
+export fn trim_kept_files(root: string, family: string, limit: int) -> int {
+    if limit <= 0 { return 0 }
+    let bin = joined_path(root, family)
+    let kept = sorted_by(kept_binaries(bin), (a: KeptFile, b: KeptFile) -> a.at < b.at)
+    mut held = kept.fold(0, (sum, f) -> sum + f.bytes)
+    mut gone = 0
+    for f in kept.slice(0, if kept.is_empty() { 0 } else { kept.length - 1 }) {
+        if held <= limit { break }
+        let _ = remove("${f.path}.deps")
+        let _ = remove(f.path)
+        held = held - f.bytes
+        gone = gone + 1
+    }
+    if traced() && gone > 0 { qtrace("Q\tstore\t${family}-trimmed\t${gone}\t${held}\n") }
+    gone
+}
+
+fn kept_binaries(bin: string) -> List<KeptFile> {
+    // LICENSED input.store_io: the store's own kept binaries, listed and measured to bound them
+    let shards = match list_dir(bin) { .Ok(ns) -> ns, .Err(_) -> [] }
+    [f! for shard in shards for name in kept_names(joined_path(bin, shard)) for f in [kept_file(joined_path(joined_path(bin, shard), name))] if f != null]
+}
+
+fn kept_names(shard: string) -> List<string> {
+    // LICENSED input.store_io: the store's own kept binaries, listed per shard to bound them
+    let names = match list_dir(shard) { .Ok(ns) -> ns, .Err(_) -> [] }
+    [n for n in names if !n.ends_with(".deps")]
+}
+
+fn kept_file(path: string) -> KeptFile? {
+    // LICENSED input.store_io: a kept binary, measured and dated for the ceiling
+    let o? = match open_beneath(dir_of(path), file_part(path)) { .Ok(o) -> o, .Err(_) -> null } else { return null }
+    let f = KeptFile { path: path, bytes: o.size, at: o.mtime }
+    o.close()
+    f
+}
+
+fn file_part(path: string) -> string { path.substring(dir_of(path).length + 1, path.length) }
 
 /// Evict sealed revisions past the time window, past the age, or to fit the byte
 /// ceiling — oldest first, and NEVER the newest, so a store always answers. A
@@ -735,7 +796,7 @@ fn pack_found(pack: Pack, family: string, key: string, read_only: bool) -> strin
     opened_at(pack, read_only)
     let at = record_key(family, key)
     if withdrawn(pack, at) { return null }
-    let held? = pack.records.get().get(at) else { return null }
+    let held? = record_of(pack, at) else { return null }
     content_of(pack, held.digest)
 }
 
@@ -745,7 +806,7 @@ export fn pack_reads(pack: Pack, family: string, key: string, inspect: bool) -> 
     opened_at(pack, inspect)
     let at = record_key(family, key)
     if withdrawn(pack, at) { return null }
-    let held? = pack.records.get().get(at) else { return null }
+    let held? = record_of(pack, at) else { return null }
     reads_known(pack, held)
 }
 
@@ -763,8 +824,7 @@ export fn pack_get_rev(pack: Pack, rev: int, family: string, key: string) -> str
 export fn pack_rows_rev(pack: Pack, rev: int) -> List<Held> {
     if !body_scan_rev(pack, rev) { return [] }
     pack.opened.set(true)
-    let by = pack.records.get()
-    [by.get(k)! for k in pack.order.get() if by.get(k) != null]
+    sealed_rows(pack)
 }
 
 /// A value by its digest without keeping it: held in memory, else read from the
@@ -788,7 +848,7 @@ fn content_of(pack: Pack, digest: string) -> string? {
 /// A sealed value: `get` seeks its slot in the newest body's `.val` and checks
 /// the bytes against the digest, so a missing or damaged value answers absent.
 fn spilled(pack: Pack, digest: string) -> string? {
-    let slot? = pack.slots.get().get(digest) else { return null }
+    let slot? = pack.slots.get().get(digest) ?? sealed_slot(pack, digest) else { return null }
     if traced() { qtrace("Q\tstore\tvalue\t${pack.rev.get()}\t${digest}\n") }
     let o? = value_file(pack) else { return null }
     let raw = match o.span(slot.at, slot.len) { .Ok(b) -> b, .Err(_) -> "".bytes() }

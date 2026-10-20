@@ -1,0 +1,18 @@
+//! Typing: the receiver is a float and the answer is `Result<int, ToInt>`,
+//! with `ToInt` the prelude's enum named by its declaration.
+use features.{MethodCall, TypeCx}
+use core.{Type, TypeId}
+
+fn on_float(t: Type) -> bool { t is .Float }
+
+fn check_floor(mut cx: TypeCx, mc: MethodCall) -> TypeId { rounded_answer(cx, mc, "floor") }
+fn check_ceil(mut cx: TypeCx, mc: MethodCall) -> TypeId { rounded_answer(cx, mc, "ceil") }
+fn check_round(mut cx: TypeCx, mc: MethodCall) -> TypeId { rounded_answer(cx, mc, "round") }
+fn check_trunc(mut cx: TypeCx, mc: MethodCall) -> TypeId { rounded_answer(cx, mc, "trunc") }
+
+fn rounded_answer(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
+    let to_int? = cx.view.decls.prelude_named("ToInt") else { return cx.error_type }
+    let err = cx.view.types.intern(Type.Enum(to_int, "ToInt"))
+    let ok = cx.view.types.type(int)
+    cx.worded(mc, name, [], Type.Res(ok, err))
+}

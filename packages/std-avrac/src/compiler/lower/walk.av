@@ -182,10 +182,10 @@ impl LowerCx {
 
     /// A `collect`'s body lowered into `into`, the list its kept
     /// values join.
-    mut fn gathering(into: Reg, body: ExprId) {
+    mut fn gathering(into: Reg, stmts: List<StmtId>) {
         // LICENSED compiler.bracket_ritual: this IS the bracket
         self.gathers.push(into)
-        let _ = self.reg_of(body)
+        let _ = self.lower_block(stmts, null, self.view.decls.types.type(void))
         let _ = self.gathers.pop()
     }
 
@@ -216,15 +216,17 @@ impl LowerCx {
         if !self.view.decls.owns_tasks(self.type_at(v)) { return }
         let slot = self.body.slot_of(s)
         let owner? = slot ?? r else { return }
+        self.settles_at_close(owner, slot != null && self.body.is_boxed(s))
+    }
+
+    /// The tasks `owner` holds are joined as the frame now open closes — and
+    /// cancelled first when the task closing it was itself cancelled, so a
+    /// cancel reaches every task a frame made. `cell` says `owner` is a slot
+    /// to read, not the value.
+    mut fn settles_at_close(owner: Reg, cell: bool) {
         self
             .deferred
-            .push(
-                Deferred {
-                    work: Deferral.Settle(owner, slot != null && self.body.is_boxed(s)),
-                    depth: self.depth,
-                    on_error: false,
-                },
-            )
+            .push(Deferred { work: Deferral.Settle(owner, cell), depth: self.depth, on_error: false })
     }
 
     /// The program's answer, shown — printing IS lowering: the text
@@ -271,7 +273,7 @@ impl LowerCx {
         refusal(
             "lower.no_projection",
             self.answer_loc(),
-            "the program's answer is a `${tname}`, which has no text projection yet",
+            "a `${tname}` has no text projection, so it cannot be the program's answer",
             "this is the answer",
             "project a field instead — `p.x` prints",
         )

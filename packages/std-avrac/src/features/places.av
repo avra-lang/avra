@@ -14,6 +14,8 @@ use features.{state_slot}
 export enum Place {
     Cell(slot: Reg)
     Slot(box: Reg, at: Reg)
+    // a slot the box's shape proves exists: a cell's one, a record's declared field
+    Proved(box: Reg, at: Reg)
 }
 
 impl LowerCx {
@@ -27,7 +29,7 @@ impl LowerCx {
             .Field(subject, name) -> {
                 // A `state` field's slot IS its cell's one slot.
                 let cell = self.state_field_cell(subject, name.of)
-                if cell != null { return self.slot_write(cell!, self.const_int(0), v) }
+                if cell != null { return self.slot_write_proved(cell!, self.const_int(0), v) }
                 if self.view.types.is_wide(self.type_at(subject)) {
                     return self.repacked(subject, name.of, v)
                 }
@@ -67,6 +69,7 @@ impl LowerCx {
         match place {
             .Cell(slot) -> self.emit(Ins.Store(slot, v)),
             .Slot(box, at) -> self.slot_write(box, at, v),
+            .Proved(box, at) -> self.slot_write_proved(box, at, v),
         }
     }
 
@@ -108,9 +111,9 @@ impl LowerCx {
         // A `state` field's slot IS the cell's one slot.
         let cell? = self.state_field_cell(subject, name) else {
             if self.flat_at(subject) { return self.opened_place(subject) }
-            return Place.Slot(self.unique_box(subject), self.field_slot(subject, name))
+            return Place.Proved(self.unique_box(subject), self.field_slot(subject, name))
         }
-        Place.Slot(cell, self.const_int(0))
+        Place.Proved(cell, self.const_int(0))
     }
 
     /// The `Cell` a `state` field holds, read from its record — null for
@@ -146,23 +149,23 @@ impl LowerCx {
     /// assigns what it holds — the lambda shares the caller's place.
     fn state_capture_place(l: ExprId, j: int) -> Place? {
         let cell? = self.state_capture_cell(l, j) else { return null }
-        Place.Slot(cell, self.const_int(0))
+        Place.Proved(cell, self.const_int(0))
     }
 
     /// A module-level state's place: the shared cell's one slot, so a
     /// write lands where every other reader's read looks.
     fn state_decl_place(d: DeclId) -> Place? {
-        Place.Slot(self.state_decl_cell(d), self.const_int(0))
+        Place.Proved(self.state_decl_cell(d), self.const_int(0))
     }
     /// A `state` seat's place: the seat register IS the caller's cell,
     /// so a whole assignment lands in what it holds.
     fn state_param_place(i: int) -> Place? {
-        Place.Slot(self.param_reg(i), self.const_int(0))
+        Place.Proved(self.param_reg(i), self.const_int(0))
     }
 
     fn state_place(e: ExprId, s: StmtId) -> Place? {
         let cell? = self.defined_reg(e, s, self.def_ty(s)) else { return null }
-        Place.Slot(cell, self.const_int(0))
+        Place.Proved(cell, self.const_int(0))
     }
 
     fn cell_place(e: ExprId) -> Place? {

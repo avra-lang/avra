@@ -1,7 +1,24 @@
 //! The node store: append-only arenas in one table, side tables keyed
 //! by id, and the mint/access seam. The node MODEL lives in nodes.av.
-use @std.meta.{identity, plain_field}
+use @std.meta.{derive, identity, plain_field}
 use @std.relation.engine.{list_cell, map_cell}
+
+/// How a sugar's meaning is minted beside it: the language's own door,
+/// since only the language reads a template. It answers the nodes it
+/// minted, the last the root, or none when it cannot.
+export alias Means = fn(SyntaxArena, ExprId) -> List<ExprId>
+
+/// The door of a store whose language is not at hand: it mints nothing.
+export fn no_door(_store: SyntaxArena, _sugar: ExprId) -> List<ExprId> { [] }
+
+/// The forms an expression was written in: a lambda as a trailing block,
+/// a string as `"""raw"""`, a name inside a type literal (a hole), and a
+/// `${..name}` hole that binds a run of siblings rather than one node.
+export type ExprMarks = { is_trailing: bool, is_raw: bool, is_hole: bool, is_run_hole: bool }
+
+fn no_expr_marks() -> ExprMarks {
+    ExprMarks { is_trailing: false, is_raw: false, is_hole: false, is_run_hole: false }
+}
 
 /// A STATEMENT'S MARKS: `export`, `mut fn`, `once fn`, `static fn` — the
 /// fn-shaped keywords a declaration wears, one bitset instead of four
@@ -10,7 +27,7 @@ use @std.relation.engine.{list_cell, map_cell}
 /// `grammar` declaration read), so it stays its own side table — a
 /// payload wearing a nullable field inside this struct would read as
 /// "grammar-ness is a mark" when it is a kept value.
-export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_provide: bool, is_module_state: bool, is_host: bool }
+export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_provide: bool, is_module_state: bool, is_host: bool, is_asset: bool }
 
 fn no_stmt_marks() -> StmtMarks {
     StmtMarks {
@@ -22,6 +39,7 @@ fn no_stmt_marks() -> StmtMarks {
         is_provide: false,
         is_module_state: false,
         is_host: false,
+        is_asset: false,
     }
 }
 
@@ -36,141 +54,139 @@ export type ImplTypeParams = { of: List<Plain>, target: List<Plain> }
 /// `else`, so the printer can spell an elseless guard back.
 export type PayloadIs = { pat: PatId, has_else: bool }
 
+/// The payload ask of a binding `is` pattern, as the source wrote it: with an `else`.
+fn binding_payload(asked: PatId) -> PayloadIs { PayloadIs { pat: asked, has_else: true } }
+
+/// A seat's source in a call that spreads a record: argument `arg`, whole
+/// (`field` is -1) or its field `field`.
+export type SeatFill = { arg: int, field: int }
+
 /// ONE IDENTITY: every arena and side table is a `Cell`, so a copy of
 /// the store allocates into the same arenas as the original.
 @identity
 @plain_field("file")
+@derive(Copied)
 export type SyntaxArena = {
     exprs: Arena<Expr>,
-    expr_fingerprints: Cell<List<int>>,
+    @not_copied("folded at allocation and by each mark's verb") expr_fingerprints: Cell<List<int>>,
     stmts: Arena<Stmt>,
-    stmt_fingerprints: Cell<List<int>>,
-    marks: Cell<List<StmtMarks>>,
+    @not_copied("folded at allocation and by each mark's verb") stmt_fingerprints: Cell<List<int>>,
+    @copied(stmt, wear) marks: Cell<List<StmtMarks>>,
     // the format a `grammar` declaration read, by its statement
-    grammars: Cell<List<GrammarSpec?>>,
+    @copied(stmt, wear_grammar) grammars: Cell<List<GrammarSpec?>>,
     // a named instance's component, by its statement — the record it
     // desugars to carries every field the sugar would print, so the
     // mark alone is enough to read the spelling back
-    component_insts: Cell<List<string?>>,
+    @copied(stmt, wear_component_inst) component_insts: Cell<List<string?>>,
     // an impl's own written type-parameter lists, by its statement —
     // printing only, absent on a plain (non-generic) impl
-    impl_tparams: Cell<List<ImplTypeParams?>>,
+    @copied(stmt, wear_impl_tparams) impl_tparams: Cell<List<ImplTypeParams?>>,
     // a trait impl's trait arguments (`impl Realize<Text> for Html`), by its statement
-    impl_trait_args: Cell<List<List<TypeRef>>>,
+    @copied_by_hand("minted_stmt: its TypeRefs are rebuilt through tref") impl_trait_args: Cell<List<List<TypeRef>>>,
     // a trait's own type parameters beside `Self`, by its statement
-    trait_tparams: Cell<List<List<string>>>,
+    @copied(stmt, wear_trait_tparams) trait_tparams: Cell<List<List<string>>>,
     // declarations an instance MINTED while its file parsed — a
     // route's pattern record — joining the file's top level
-    hoisted: Cell<List<StmtId>>,
+    @not_copied("the file's own top level, never a node's") hoisted: Cell<List<StmtId>>,
     // plain for its identity: the path of the file this store
     // parsed, set once at construction — "" for a fragment
     file: string,
     // `@name(args)` marks per statement, in written order
-    annotations: Cell<List<List<Annotation>>>,
+    @copied_by_hand("minted_stmt: each annotation is annotated anew") annotations: Cell<List<List<Annotation>>>,
     // declaration-leading `///` lines; absent on synthesized nodes
-    docs: Cell<List<List<string>?>>,
+    @copied_by_hand("minted_stmt: document, with the doc position") docs: Cell<List<List<string>?>>,
     // the file's own `//!` header — a leading run before anything
     // else, absent when the file opens with something other than
     // one. Not folded into any statement's fingerprint yet: an
     // edit to only this text is invisible to program_hash-keyed
     // caches until a consumer needs that (today's one-shot `avra
     // docs` never holds a stale cell across an edit).
-    file_doc: Cell<List<string>?>,
+    @not_copied("the file's own header") file_doc: Cell<List<string>?>,
     // the offset each doc group's FIRST `///` was written at, and -1
     // for none, so the printer can put a remark between a doc and its
     // declaration back in the author's order
-    doc_ats: Cell<List<int>>,
+    @copied_by_hand("minted_stmt: document, with the docs") doc_ats: Cell<List<int>>,
     // plain `//` lines, by source offset — printing only
-    remarks: Cell<List<Remark>>,
-    pats: Cell<List<Pat>>,
-    pat_spans: Cell<List<Span?>>,
-    pat_reads: Cell<List<ExprId?>>,
-    pat_fingerprints: Cell<List<int>>,
+    @not_copied("the file's own comments") remarks: Cell<List<Remark>>,
+    @copied_by_hand("the pattern walk: alloc_pat") pats: Cell<List<Pat>>,
+    @copied_by_hand("the pattern walk: alloc_pat") pat_spans: Cell<List<Span?>>,
+    @copied_by_hand("the pattern walk: name_read") pat_reads: Cell<List<ExprId?>>,
+    @copied_by_hand("the pattern walk: alloc_pat") pat_fingerprints: Cell<List<int>>,
     // a seat's span, by ParamId — the store's only fact about a
     // Param, which otherwise never touches an arena
-    param_spans: Cell<List<Span?>>,
-    // a lambda written as a TRAILING BLOCK (`f(a) { x -> … }`)
-    trailing: Cell<List<bool>>,
+    @copied_by_hand("the param walk: alloc_param_id") param_spans: Cell<List<Span?>>,
+    // the forms an expression was written in, by id — one record, so a
+    // template copy carries them all through `wear_expr`
+    @copied(expr, wear_expr) expr_marks: Cell<List<ExprMarks>>,
     // a call written as a PIPE (`x |> f(a)`), its first argument
-    // the piped value — printing only
-    piped: Cell<List<bool>>,
-    // a call written as a TYPE LITERAL (`v.type(T)`), and a NAME
-    // written inside one — a hole
-    type_lits: Cell<List<bool>>,
-    holes: Cell<List<bool>>,
-    // a `${..name}` hole — a RUN, binding a sibling span rather than
-    // one node; the mark rides the hole's own CONTENT expr, never the
-    // quote body's placeholder
-    run_holes: Cell<List<bool>>,
+    // a call written as a TYPE LITERAL (`v.type(T)`)
+    @copied(expr, wear_type_lit) type_lits: Cell<List<bool>>,
     // a record's `..R` entries, by its statement
-    spreads: Cell<List<List<Spread>>>,
+    @copied_by_hand("minted_stmt: its TypeRefs are rebuilt through tref") spreads: Cell<List<List<Spread>>>,
     // a collect's `dense` mark, by its statement: its order is data,
     // unique and gap-free from 0
-    collect_dense: Cell<List<bool>>,
-    // a string written `"""raw"""`, never `"escaped"` — the printer's
-    // only way to tell them apart once both are one StrLit
-    raw_strings: Cell<List<bool>>,
+    @copied(stmt, wear_collect_dense) collect_dense: Cell<List<bool>>,
     // a Match a trailing-block ARM sugar synthesized — never one a
     // program wrote — so a missing arm under a nullable seat answers
     // `null` instead of refusing; the mark is the ONE way the checker
     // tells the two apart
-    sugar_matches: Cell<List<bool>>,
+    @copied(expr, wear_sugar_match) sugar_matches: Cell<List<bool>>,
+    // an `if` written at STATEMENT position — branches that hold
+    // statements and answer nothing; what a promoted chain, or an `if`
+    // written as an expression whose branch leaves, is not
+    @copied(expr, wear_statement_if) statement_ifs: Cell<List<bool>>,
     // the SUGAR node whose meaning minted each node — null for a node
     // the author wrote; what lets a refusal about a minted node speak
     // at the sugar the author did write
-    minted_by: Cell<List<ExprId?>>,
+    @copied_by_hand("minted_expr: mean re-mints what a sugar means") minted_by: Cell<List<ExprId?>>,
+    // the root of what a sugar means, by the sugar — the node a walk
+    // descends into in its place; null for every other node
+    @copied_by_hand("minted_expr: mean re-mints what a sugar means") meaning: Cell<List<ExprId?>>,
     // what a sugar node says its meaning is, by the sugar — the one
     // sentence `avra expand` prints and a refusal about a minted
     // node carries
-    means_notes: Cell<List<string?>>,
-    // the variant pattern a payload `is` names (`.V(p, q)`), by the
-    // Is node and by the Match an `if` desugared it into — the binder
-    // list a match arm would take, kept beside the node so the `if`
-    // that binds can desugar it, enums can refuse it everywhere else,
-    // and the printer can spell the `if` back
-    is_payloads: Cell<List<PayloadIs?>>,
+    @copied_by_hand("minted_expr: mean re-mints what a sugar means") means_notes: Cell<List<string?>>,
+    // the nodes a node is EXTENDED by, beside its own kids — a walk reaches
+    // them, so names resolve and types settle in them as anywhere
+    @copied_by_hand("minted_expr: `extended` copies the roots beside the copy") extensions: Cell<List<List<ExprId>>>,
+    // the variant pattern an `if` that binds desugared into a Match
+    // (`.V(p, q)`) — the binder list a match arm would take, kept
+    // beside the node so the printer can spell the `if` back
+    @copied_by_hand("minted_expr: its pattern is rebuilt through pat") is_payloads: Cell<List<PayloadIs?>>,
     // a component instance's WRAPPING STATEMENT — where its `///`
     // and `@name(args)` annotations live, attached from OUTSIDE once
     // the instance's own expression already stands; absent for an
     // instance that binds no statement of its own (a nested child)
-    instance_owners: Cell<List<StmtId?>>,
+    @not_copied("an owner is a statement of the source, attached from outside once a copy's own statement stands") instance_owners: Cell<List<StmtId?>>,
     // the DSL text an expression-position `grammar { … }` literal
     // read, by the `Grammar` struct literal it fully expanded into —
     // the raw block's own words, never rebuilt from the expansion
-    grammar_lits: Cell<List<string?>>,
-    // a `table<Row> { … }` literal's row type and header, by the
-    // list it desugared to
-    tables: Cell<List<TableSpec?>>,
+    @copied(expr, wear_grammar_lit) grammar_lits: Cell<List<string?>>,
     // the type arguments a literal or instance writes after its name
     // (`Box<float> { … }`, `queue<Charge> charges { … }`), by the
     // struct literal they pin — the record's parameters, seated from
     // the WRITTEN types rather than inferred from the fields
-    struct_targs: Cell<List<List<TypeRef>>>,
+    @copied_by_hand("minted_expr: its TypeRefs are rebuilt through tref") struct_targs: Cell<List<List<TypeRef>>>,
     // a written `{ … }`'s own closing-brace offset, by the Block whose
     // span `tail_scoped` narrowed to its lone tail value for
     // diagnostics — printing only, absent everywhere the node's own
     // span already reaches the brace
-    written_close: Cell<List<int?>>,
+    @copied(expr, wear_written_close) written_close: Cell<List<int?>>,
     // each quote by the offset it starts at — how a template VALUE
     // names its node
-    quotes_at: Cell<Map<string, int>>,
+    @copied_by_hand("minted_expr: a quote is named by its new offset") quotes_at: Cell<Map<string, int>>,
     // the file's sublanguage blocks, in order, and each one's body
     // offset in the source; what their grammars refused; the node
     // runs their actions minted, with the library each names
-    sublangs: Cell<List<ExprId>>,
-    body_starts: Cell<Map<string, int>>,
-    block_voices: Cell<List<BlockVoice>>,
-    foreign: Cell<List<ForeignRange>>,
-    // a keyed list's reconciliation key, by the component instance
-    // that carries it — the `by it.<field>` accessor read on each
-    // element, the one fact that makes a list reconcile by identity
-    // rather than by position
-    keyed_lists: Cell<List<ExprId?>>,
+    @copied_by_hand("minted_expr: a block is named by its new offset") sublangs: Cell<List<ExprId>>,
+    @copied_by_hand("minted_expr: a block is named by its new offset") body_starts: Cell<Map<string, int>>,
+    @not_copied("the file's own parse refusals") block_voices: Cell<List<BlockVoice>>,
+    @not_copied("the file's own sublanguage ranges") foreign: Cell<List<ForeignRange>>,
     // an `on <kind> { … }` handler's KIND, by the nullary lambda the
     // instance-body sugar built — the word the handler was written
     // with, so the printer spells the sugar back rather than the
     // setting and closure it lowers to
-    on_handlers: Cell<List<OnHandler?>>,
+    @copied(expr, wear_handler) on_handlers: Cell<List<OnHandler?>>,
 }
 
 export fn new_node_store(file: string = "") -> SyntaxArena {
@@ -198,21 +214,19 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         pat_reads: list_cell(),
         pat_fingerprints: list_cell(),
         param_spans: list_cell(),
-        trailing: list_cell(),
-        piped: list_cell(),
+        expr_marks: list_cell(),
         type_lits: list_cell(),
-        holes: list_cell(),
-        run_holes: list_cell(),
         spreads: list_cell(),
         collect_dense: list_cell(),
-        raw_strings: list_cell(),
         sugar_matches: list_cell(),
+        statement_ifs: list_cell(),
         minted_by: list_cell(),
+        meaning: list_cell(),
         means_notes: list_cell(),
+        extensions: list_cell(),
         is_payloads: list_cell(),
         instance_owners: list_cell(),
         grammar_lits: list_cell(),
-        tables: list_cell(),
         struct_targs: list_cell(),
         written_close: list_cell(),
         quotes_at: map_cell(),
@@ -220,7 +234,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         body_starts: map_cell(),
         block_voices: list_cell(),
         foreign: list_cell(),
-        keyed_lists: list_cell(),
         on_handlers: list_cell(),
     }
 }
@@ -274,22 +287,19 @@ impl SyntaxArena {
     /// The one expression-allocation seam.
     fn alloc_expr(e: Expr, span: Span? = null) -> ExprId {
         self.expr_fingerprints.push(e.identity(self))
-        self.trailing.push(false)
-        self.piped.push(false)
+        self.expr_marks.push(no_expr_marks())
         self.type_lits.push(false)
-        self.holes.push(false)
-        self.run_holes.push(false)
-        self.raw_strings.push(false)
         self.sugar_matches.push(false)
+        self.statement_ifs.push(false)
         self.minted_by.push(null)
+        self.meaning.push(null)
         self.means_notes.push(null)
+        self.extensions.push([])
         self.is_payloads.push(null)
         self.instance_owners.push(null)
         self.grammar_lits.push(null)
-        self.tables.push(null)
         self.struct_targs.push([])
         self.written_close.push(null)
-        self.keyed_lists.push(null)
         self.on_handlers.push(null)
         ExprId { index: self.exprs.add(e, span) }
     }
@@ -297,29 +307,20 @@ impl SyntaxArena {
     /// A lambda written as a TRAILING BLOCK — the mark is part of the
     /// node: the block's refusals speak in the block's words.
     fn mark_trailing(e: ExprId) {
-        self.trailing.set_at(e.index, true)
+        self.update_expr_marks(e, (m) -> m with { is_trailing: true })
         self.expr_fingerprints.set_at(e.index, fp(111, [self.expr_fingerprints.get()[e.index]]))
     }
 
     fn is_trailing(e: ExprId) -> bool {
-        self.trailing.get()[e.index]
-    }
-
-    /// A call written as a PIPE — its first argument stood left of
-    /// `|>`. The mark is part of the node: the parsed value holds the
-    /// spelling, so its fingerprint does.
-    fn mark_piped(e: ExprId) {
-        self.piped.set_at(e.index, true)
-        self.expr_fingerprints.set_at(e.index, fp(194, [self.expr_fingerprints.get()[e.index]]))
-    }
-
-    fn is_piped(e: ExprId) -> bool {
-        self.piped.get()[e.index]
+        self.expr_marks_at(e).is_trailing
     }
 
     /// The seat an argument names, when it is written `name: value`.
     fn arg_label(a: ExprId) -> string? {
-        match self.expr(a) { .Named(name, _) -> name.of, _ -> null }
+        match self.expr(a) {
+            .Named(name, _) -> if name.of == spread_entry { null } else { name.of },
+            _ -> null,
+        }
     }
 
     /// An argument's value, its name stripped.
@@ -330,9 +331,36 @@ impl SyntaxArena {
     /// A call's arguments in SEAT order, names stripped; a seat no
     /// argument writes is skipped. A callee that names fewer seats
     /// than it is handed keeps the written order.
-    fn seated_args(args: List<ExprId>, seats: List<string>) -> List<ExprId> {
+    fn seated_args(written: List<ExprId>, seats: List<string>) -> List<ExprId> {
+        let args = [a for a in written if self.spread_operand(a) == null]
         if seats.length < args.length { return [self.unnamed(a) for a in args] }
         [self.unnamed(args[i]) for i in self.seat_plan(args, seats) if i >= 0]
+    }
+
+    /// Where each seat's value comes from when an argument SPREADS a
+    /// record (`fields[j]` names argument `j`'s fields, none for a plain
+    /// one): written order, a later source winning a seat. A plain
+    /// argument fills the seat of its name, or the seat at its own place
+    /// among the plain ones; a field fills the seat of its name. Null is a
+    /// seat nothing writes.
+    fn seat_fills(args: List<ExprId>, seats: List<string>, fields: List<List<string>>) -> List<
+        SeatFill?,
+    > {
+        mut out: List<SeatFill?> = filled<SeatFill?>(seats.length, null)
+        mut place = 0
+        for j, a in args {
+            if self.spread_operand(a) != null {
+                for i, n in fields[j] {
+                    if seats.contains(n) { out.set(seats.index_of(n), SeatFill { arg: j, field: i }) }
+                }
+            } else {
+                let label: string? = self.arg_label(a)
+                let seat = if label == null { place } else { seats.index_of(label!) }
+                if label == null { place = place + 1 }
+                if seat >= 0 && seat < seats.length { out.set(seat, SeatFill { arg: j, field: 0 - 1 }) }
+            }
+        }
+        out
     }
 
     /// Which argument fills each seat: its index among `args`, or -1
@@ -354,16 +382,36 @@ impl SyntaxArena {
         self.type_lits.get()[e.index]
     }
 
+    /// Whether this value is a type literal, or the chain over one
+    /// (`a?.type(T)`) — a literal is no call, so no block follows it.
+    fn spells_a_type(e: ExprId) -> bool {
+        match self.expr(e) {
+            .MatchOpt(_, _, call, _) -> self.is_type_lit(call),
+            _ -> self.is_type_lit(e),
+        }
+    }
+
+    /// Whether this is a call whose last argument is a trailing block.
+    fn ends_in_block(e: ExprId) -> bool {
+        match self.expr(e) {
+            .Call(_, _, args) or .MethodCall(_, _, args) or .CallValue(_, args) -> {
+                let last: ExprId? = args.last()
+                last != null && self.is_trailing(last!)
+            },
+            _ -> false,
+        }
+    }
+
     /// A string written `"""raw"""` — the mark is part of the node:
     /// the printer spells its own delimiters back, never the escaped
     /// form its twin reads identically.
     fn mark_raw_string(e: ExprId) {
-        self.raw_strings.set_at(e.index, true)
+        self.update_expr_marks(e, (m) -> m with { is_raw: true })
         self.expr_fingerprints.set_at(e.index, fp(144, [self.expr_fingerprints.get()[e.index]]))
     }
 
     fn is_raw_string(e: ExprId) -> bool {
-        self.raw_strings.get()[e.index]
+        self.expr_marks_at(e).is_raw
     }
 
     /// An expression-position `grammar { … }` literal fully expanded
@@ -378,30 +426,6 @@ impl SyntaxArena {
 
     fn grammar_lit_of(e: ExprId) -> string? {
         self.grammar_lits.get()[e.index]
-    }
-
-    /// A `table<Row> { … }` literal desugared into this list — the
-    /// row type and header the rows' own fields cannot answer once
-    /// the table is empty, the mark's code 148.
-    fn mark_table(e: ExprId, tbl: TableSpec) {
-        self.tables.set_at(e.index, tbl)
-        self
-            .expr_fingerprints
-            .set_at(
-                e.index,
-                fp(
-                    148,
-                    [
-                        self.expr_fingerprints.get()[e.index],
-                        fp_str(tbl.row_type),
-                        fp_list(str_fps(tbl.header)),
-                    ],
-                ),
-            )
-    }
-
-    fn table_of(e: ExprId) -> TableSpec? {
-        self.tables.get()[e.index]
     }
 
     /// `tail_scoped` narrowed this Block's own span to its lone tail
@@ -419,18 +443,18 @@ impl SyntaxArena {
     /// A name written inside a type literal — a HOLE, the id it
     /// names: a binding of the wrong type refuses as a hole.
     fn mark_hole(e: ExprId) {
-        self.holes.set_at(e.index, true)
+        self.update_expr_marks(e, (m) -> m with { is_hole: true })
         self.expr_fingerprints.set_at(e.index, fp(113, [self.expr_fingerprints.get()[e.index]]))
     }
 
     fn is_hole(e: ExprId) -> bool {
-        self.holes.get()[e.index]
+        self.expr_marks_at(e).is_hole
     }
 
     /// A hole written `${..name}` — a RUN, standing for zero or more
     /// sibling nodes rather than one.
     fn mark_run_hole(e: ExprId) {
-        self.run_holes.set_at(e.index, true)
+        self.update_expr_marks(e, (m) -> m with { is_run_hole: true })
         self.expr_fingerprints.set_at(e.index, fp(149, [self.expr_fingerprints.get()[e.index]]))
     }
 
@@ -465,7 +489,7 @@ impl SyntaxArena {
     fn is_collect_dense(s: StmtId) -> bool { self.collect_dense.get()[s.index] }
 
     fn is_run_hole(e: ExprId) -> bool {
-        self.run_holes.get()[e.index]
+        self.expr_marks_at(e).is_run_hole
     }
 
     /// A `Match` a trailing block of arms sugar built (`{ .Ok(v) ->
@@ -494,16 +518,52 @@ impl SyntaxArena {
         [ExprId { index: i } for i, n in self.means_notes.get() if n != null]
     }
 
-    /// The operand a `~` was written over: the left of the `^` it
-    /// means. A rewrite that is no such pair names nothing, so the
-    /// error node stands in.
-    fn bitnot_operand(rewrite: ExprId) -> ExprId {
-        match self.expr(rewrite) { .Binary(_, left, _) -> left, rest -> rewrite }
+    /// What `sugar` means, minted beside it: its nodes answer for it, the
+    /// last is the root a walk descends into in its place, and `note` is the
+    /// sentence that says what the sugar means. The one door a builder and
+    /// a template copy both use, so a copy re-mints and never copies.
+    fn mean(sugar: ExprId, note: string, door: Means) -> List<ExprId> {
+        let minted = door(self, sugar)
+        let root? = minted.last() else { return [] }
+        self.meaning.set_at(sugar.index, root)
+        self.mint_for(sugar, minted, note)
+        minted
     }
 
-    /// What `sugar`'s meaning minted, in allocation order.
-    fn minted_nodes(sugar: ExprId) -> List<ExprId> {
-        [ExprId { index: i } for i, by in self.minted_by.get() if by != null && same_expr(by!, sugar)]
+    /// Mints nodes `sugar` is EXTENDED by: `roots` are what a walk reaches
+    /// beside the sugar's own kids, `minted` every node made (the roots and
+    /// all they hold), each answering for the sugar, and `note` says what they
+    /// add. `mean` REPLACES the sugar with what it means; `extend` keeps it.
+    fn extend(sugar: ExprId, note: string, roots: List<ExprId>, minted: List<ExprId>) {
+        self.mint_for(sugar, minted, note)
+        self.extensions.set_at(sugar.index, roots)
+        let prints = self.expr_fingerprints.get()
+        self
+            .expr_fingerprints
+            .set_at(sugar.index, fp(198, [prints[sugar.index], fp_list([prints[r.index] for r in roots])]))
+    }
+
+    /// The nodes `e` is extended by; none for a node that is not.
+    fn extended_by(e: ExprId) -> List<ExprId> {
+        self.extensions.get()[e.index]
+    }
+
+    /// The root of what `sugar` means; null for any other node.
+    fn meant(e: ExprId) -> ExprId? {
+        self.meaning.get()[e.index]
+    }
+
+    /// The nodes a walk descends into from `e`: a sugar walks as what it
+    /// means, every other node as its kids. THE one place that rule lives.
+    fn walked(e: ExprId) -> List<ExprId> {
+        let root? = self.meant(e) else { return self.expr(e).kids().concat(self.extended_by(e)) }
+        [root]
+    }
+
+    /// The nodes a planted want flows into from `e`, by the same rule.
+    fn heired(e: ExprId) -> List<ExprId> {
+        let root? = self.meant(e) else { return self.expr(e).heirs() }
+        [root]
     }
 
     /// The sugar a minted node stands in for; null for any other.
@@ -511,20 +571,91 @@ impl SyntaxArena {
         self.minted_by.get()[e.index]
     }
 
+    fn mark_statement_if(e: ExprId) {
+        self.statement_ifs.set_at(e.index, true)
+        self.expr_fingerprints.set_at(e.index, fp(151, [self.expr_fingerprints.get()[e.index]]))
+    }
+
+    /// Whether an `if` was written at statement position, where its
+    /// value is nothing — the guard idiom. A chain that answers is
+    /// promoted out of this form where a value is wanted
+    /// (`chain_value`).
+    fn statement_if(e: ExprId) -> bool {
+        self.statement_ifs.get()[e.index]
+    }
+
+    /// Whether a statement is a guard `if` — an expression statement
+    /// whose expression answers nothing.
+    fn guard_stmt(s: StmtId) -> bool {
+        let v? = self.stmt_value(s) else { return false }
+        self.stmt(s) is .ExprStmt && self.statement_if(v)
+    }
+
+    /// The match a destructuring `let` means: the pattern's arm holds the
+    /// rest of its block, and a wildcard arm holds what a refused value
+    /// does. None until the block has folded its statements in.
+    fn let_matched(pat: PatId, subject: ExprId, otherwise: ExprId?, rest: ExprId?, span: Span?) -> List<
+        ExprId,
+    > {
+        let held? = rest else { return [] }
+        let taken = Arm { pats: [pat], guard: null, value: held }
+        let refused = Arm {
+            pats: [self.alloc_pat(Pat.Wild, span)],
+            guard: null,
+            value: otherwise ?? held,
+        }
+        [
+            self
+                .alloc_expr(
+                    Expr.Match(subject, if otherwise == null { [taken] } else { [taken, refused] }),
+                    span,
+                ),
+        ]
+    }
+
+    /// Whether `e` is the match a destructuring `let` means.
+    fn minted_by_let(e: ExprId) -> bool {
+        let sugar? = self.minted_for(e) else { return false }
+        self.expr(sugar) is .LetPattern
+    }
+
     fn is_sugar_match(e: ExprId) -> bool {
         self.sugar_matches.get()[e.index]
     }
 
-    /// `x is .V(p, q)` — the variant pattern the payload list names,
-    /// or null for a bare `is` and for every other node. One question
-    /// answered here so the `if` that BINDS, the enum law that REFUSES
-    /// and the printer that spells the `if` back read the same fact.
+    /// The pattern of the Match an `if` desugared a payload `is` into.
     fn mark_is_payload(e: ExprId, p: PatId, has_else: bool) {
         self.is_payloads.set_at(e.index, PayloadIs { pat: p, has_else: has_else })
     }
 
-    fn is_payload(e: ExprId) -> PayloadIs? {
+    fn payload_marked(e: ExprId) -> PayloadIs? {
         self.is_payloads.get()[e.index]
+    }
+
+    /// `x is .V(p, q)` — the pattern that binds, or null for a bare
+    /// `is` and for every other node; a desugared `if`'s Match answers
+    /// its marked one. One question answered here so the `if` that
+    /// BINDS, the enum law that REFUSES and the printer that spells the
+    /// `if` back read the same fact.
+    fn is_payload(e: ExprId) -> PayloadIs? {
+        match self.expr(e) { .Is(_, asked) -> self.binding_ask(asked), _ -> self.payload_marked(e) }
+    }
+
+    fn binding_ask(asked: PatId) -> PayloadIs? {
+        match self.pat(asked) {
+            .Variant(_, args) -> if args.is_empty() { null } else { binding_payload(asked) },
+            .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> binding_payload(asked),
+            .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Member(_, _) -> null,
+        }
+    }
+
+    /// The name an `is` pattern tests: a variant's tag, or a bound type's.
+    fn asked_tag(asked: PatId) -> string {
+        match self.pat(asked) {
+            .Variant(name, _) -> name.of,
+            .Typed(_, ty) -> ty.name,
+            .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> "",
+        }
     }
 
     /// The subject of any `is` — the tag test's left side.
@@ -542,13 +673,6 @@ impl SyntaxArena {
 
     fn instance_owner(e: ExprId) -> StmtId? {
         self.instance_owners.get()[e.index]
-    }
-
-    /// A keyed list's reconciliation key, by its component instance —
-    /// the element accessor the `by it.<field>` clause names. Absent
-    /// on every list that states no key, so `Tree` stays its lowering.
-    fn mark_keyed_list(e: ExprId, key: ExprId) {
-        self.keyed_lists.set_at(e.index, key)
     }
 
     /// The type arguments a literal writes after its name — part of
@@ -579,8 +703,11 @@ impl SyntaxArena {
         self.struct_targs_of(x)
     }
 
+    /// A keyed list's reconciliation key — the element accessor its
+    /// `by it.<field>` clause names; absent on every list that states
+    /// none, so `Tree` stays its lowering.
     fn keyed_list_key(e: ExprId) -> ExprId? {
-        self.keyed_lists.get()[e.index]
+        match self.expr(e) { .Component(_, _, _, _, _, key) -> key, _ -> null }
     }
 
     /// The event an `on <event> { … }` handler was written for, by the
@@ -625,6 +752,52 @@ impl SyntaxArena {
 
     /// The handler at `e`, when the sugar wrote it.
     fn on_handler(e: ExprId) -> OnHandler? { self.on_handlers.get()[e.index] }
+
+    /// The writers a template copy reaches, one per `@copied` table: each takes
+    /// the table's own element for the node and does nothing for the empty one.
+    fn wear_type_lit(e: ExprId, on: bool) { if on { self.mark_type_lit(e) } }
+
+    fn wear_sugar_match(e: ExprId, on: bool) { if on { self.mark_sugar_match(e) } }
+
+    fn wear_statement_if(e: ExprId, on: bool) { if on { self.mark_statement_if(e) } }
+
+    fn wear_grammar_lit(e: ExprId, text: string?) {
+        let held? = text else { return }
+        self.mark_grammar_lit(e, held)
+    }
+
+    fn wear_written_close(e: ExprId, hi: int?) {
+        let held? = hi else { return }
+        self.mark_written_close(e, held)
+    }
+
+    fn wear_collect_dense(s: StmtId, on: bool) { if on { self.mark_collect_dense(s, true) } }
+
+    fn wear_grammar(s: StmtId, read: GrammarSpec?) {
+        let held? = read else { return }
+        self.mark_grammar(s, held)
+    }
+
+    fn wear_component_inst(s: StmtId, of: string?) {
+        let held? = of else { return }
+        self.mark_component_inst(s, held)
+    }
+
+    fn wear_impl_tparams(s: StmtId, held: ImplTypeParams?) {
+        let own? = held else { return }
+        self.mark_impl_tparams(s, own.of, own.target)
+    }
+
+    fn wear_trait_tparams(s: StmtId, names: List<string>) { if !names.is_empty() { self.mark_trait_tparams(s, names) } }
+
+    /// Gives `e` the handler `worn` records, if any, each mark through its own
+    /// verb so the fingerprint follows — the door a copy uses.
+    fn wear_handler(e: ExprId, worn: OnHandler?) {
+        let held? = worn else { return }
+        if held.sugar { self.mark_on_handler(e, held.event) } else { self.mark_heard(e, held.event) }
+        let why? = held.unheard else { return }
+        self.mark_unheard(e, why)
+    }
 
     /// Where a quote's runs of text start in the source, one per part.
     fn mark_quote_at(e: ExprId) {
@@ -674,6 +847,21 @@ impl SyntaxArena {
     /// `path`, and keeps that file's spans.
     fn note_copied(since: ArenaMarks, path: string) { self.foreign.push(self.minted_since(since, path, true)) }
 
+    /// Every node minted since `since` was written in the module `module`
+    /// (`@std.meta`): its bare names resolve there, whatever file they land in.
+    fn note_written_in(since: ArenaMarks, module: string) {
+        self
+            .foreign
+            .push(
+                ForeignRange {
+                    runs: since.until(self.marks()),
+                    path: "",
+                    spanned_home: false,
+                    module: module,
+                },
+            )
+    }
+
     fn minted_since(since: ArenaMarks, path: string, spanned_home: bool) -> ForeignRange {
         ForeignRange { runs: since.until(self.marks()), path: path, spanned_home: spanned_home }
     }
@@ -685,7 +873,7 @@ impl SyntaxArena {
 
     fn expansion_of(e: ExprId) -> ExprId? {
         match self.expr(e) {
-            .Body(_, _, _, view) or .Component(_, _, _, view, _) -> view.expansion(),
+            .Body(_, _, _, view) or .Component(_, _, _, view, _, _) -> view.expansion(),
             _ -> null,
         }
     }
@@ -736,16 +924,7 @@ impl SyntaxArena {
     /// arguments — a trailing block is a call's LAST argument, and a
     /// name or a field read with no parentheses is a call with none.
     /// Null for every shape that is not a call.
-    fn called_with(e: ExprId, blocks: List<ExprId>) -> Expr? {
-        match self.expr(e) {
-            .Call(callee, pins, args) -> Expr.Call(callee, pins, args.concat(blocks)),
-            .MethodCall(subject, name, args) -> Expr.MethodCall(subject, name, args.concat(blocks)),
-            .CallValue(subject, args) -> Expr.CallValue(subject, args.concat(blocks)),
-            .Ident(name) -> Expr.Call(name, [], blocks),
-            .Prop(subject, name) -> Expr.MethodCall(subject, name, blocks),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
-        }
-    }
+    fn called_with(e: ExprId, blocks: List<ExprId>) -> Expr? { self.expr(e).called_with(blocks) }
 
     /// THE PIPE PROTOCOL: `value |> stage` IS the stage's call with
     /// `value` as its FIRST argument — the call protocol's other end.
@@ -754,17 +933,7 @@ impl SyntaxArena {
     /// as any argument written in its parentheses is seated. A free
     /// stage's own arguments ride the pronoun (`stage_args`). Null
     /// for every shape that is not a call.
-    fn called_on(stage: ExprId, value: ExprId) -> Expr? {
-        match self.expr(stage) {
-            .Call(callee, pins, args) -> Expr.Call(callee, pins, [value].concat(self.stage_args(args))),
-            .MethodCall(subject, name, args) -> Expr.MethodCall(subject, name, [self.pronouned(value)].concat(args)),
-            .CallValue(subject, args) -> Expr.CallValue(subject, [value].concat(self.stage_args(args))),
-            .Ident(name) -> Expr.Call(name, [], [value]),
-            .Prop(subject, name) -> Expr.MethodCall(subject, name, [self.pronouned(value)]),
-            .Lambda(_, _) -> Expr.CallValue(stage, [value]),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
-        }
-    }
+    fn called_on(stage: ExprId, value: ExprId) -> Expr? { self.expr(stage).called_on(self, stage, value) }
 
     /// A STAGE'S CALL BINDS THE PRONOUN AS A METHOD CALL DOES: the
     /// arguments written in a stage's parentheses each ride `it` —
@@ -772,8 +941,8 @@ impl SyntaxArena {
     /// stage's were wrapped where its call was built.
     fn stage_args(args: List<ExprId>) -> List<ExprId> { [self.pronouned(a) for a in args] }
 
-    /// `value |> stage` as its node, marked piped — or null when the
-    /// stage is no call. A `?` or `!` after a stage acts on the
+    /// `value |> stage` as the call it means — or null when the stage is
+    /// no call. A `?` or `!` after a stage acts on the
     /// stage's ANSWER: `x |> f(a)?` is `f(x, a)?`.
     fn piped(stage: ExprId, value: ExprId) -> ExprId? {
         let whole = self.cover(value, stage)
@@ -789,11 +958,17 @@ impl SyntaxArena {
             // the pipe protocol answers for every other shape
             rest -> {
                 let call? = self.called_on(stage, value) else { return null }
-                let id = self.alloc_expr(call, whole)
-                self.mark_piped(id)
-                id
+                self.alloc_expr(call, whole)
             },
         }
+    }
+
+    /// The nodes `piped` minted, the call it answers last; none when the
+    /// stage is no call.
+    fn piped_nodes(stage: ExprId, value: ExprId) -> List<ExprId> {
+        let before = self.exprs.count()
+        let root? = self.piped(stage, value) else { return [] }
+        [ExprId { index: i } for i in before..self.exprs.count() if i != root.index].concat([root])
     }
 
     /// An argument the PRONOUN rides becomes an implicit one-param
@@ -814,32 +989,41 @@ impl SyntaxArena {
     /// a chain in tail position is a value wherever a block is.
     fn answer_of(s: StmtId) -> ExprId? {
         match self.stmt(s) {
-            .ExprStmt(v) -> v,
-            .Discard(_) -> null,
-            .IfStmt(c, t, e) -> self.chain_value(s, c, t, e),
-            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+            .ExprStmt(v) -> self.answered_by(s, v),
+            .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
         }
     }
 
-    /// A chain answers when it has an else and both sides answer.
-    /// THE ELSE SIDE'S OWN AMBIGUITY: `else if` and `else { if … }`
-    /// capture the identical one-statement list (no node marks which
-    /// was written), so `branch_value`'s lone-tail wrap seeds its
-    /// `written_close` from that ONE statement's own span either way.
-    /// This statement's OWN span is the only place a real brace still
-    /// shows: parsed straight through to wherever the else side ends,
-    /// it lands past the branch's single statement exactly when one
-    /// stands there, and exactly there when none does — so it
-    /// overwrites the branch's seed once the branch turns out to have
-    /// been that single, promotable statement.
-    fn chain_value(s: StmtId, c: ExprId, t: List<StmtId>, e: List<StmtId>) -> ExprId? {
-        if e.is_empty() { return null }
-        let tv: ExprId? = self.branch_value(t)
-        let ev: ExprId? = self.branch_value(e)
+    /// An expression statement's answer: its expression, or — for a
+    /// statement `if` — the chain it promotes to when every branch
+    /// answers (`chain_value`).
+    fn answered_by(s: StmtId, v: ExprId) -> ExprId? {
+        match self.expr(v) {
+            .If(c, t, e) -> if self.statement_if(v) { self.chain_value(self.stmt_span(s), c, t, e) } else { v },
+            _ -> v,
+        }
+    }
+
+    /// A chain answers when it has an else and both sides answer. An
+    /// `else if` link is its own `If` (an `else { if … }` is a block
+    /// around one), so a promoted chain keeps the form it was written in.
+    fn chain_value(span: Span?, c: ExprId, t: ExprId, e: ExprId?) -> ExprId? {
+        let other? = e else { return null }
+        let tv: ExprId? = self.arm_value(t)
+        let ev: ExprId? = self.arm_value(other)
         if tv == null || ev == null { return null }
-        let span = self.stmt_span(s)
-        if e.length == 1 && span != null { self.mark_written_close(ev!, span!.hi) }
         self.alloc_expr(Expr.If(c, tv!, ev!), span)
+    }
+
+    /// What one branch of a statement `if` answers: a block's statements
+    /// as a value, a chained `if`'s own answer, or the expression a
+    /// binding link already is.
+    fn arm_value(b: ExprId) -> ExprId? {
+        match self.expr(b) {
+            .Block(stmts, _) -> self.branch_value(stmts),
+            .If(c, t, e) -> self.chain_value(self.expr_span(b), c, t, e),
+            _ -> b,
+        }
     }
 
     /// THE TAIL LAW: a scope's tail STATEMENT already answered a
@@ -885,6 +1069,11 @@ impl SyntaxArena {
         self.tail_scoped(stmts, last, value, self.stmt_span(last))
     }
 
+    /// Whether `v` is a statement `if` with an else.
+    fn else_written(v: ExprId) -> bool {
+        match self.expr(v) { .If(_, _, e) -> self.statement_if(v) && e != null, _ -> false }
+    }
+
     /// The statements with a trailing if-chain that answers turned
     /// into the expression statement it is — the top level's tail
     /// law, the same as a block's. THE MINT REPLACES THE STATEMENT,
@@ -894,7 +1083,10 @@ impl SyntaxArena {
     fn answered(stmts: List<StmtId>) -> List<StmtId> {
         let held? = stmts.last() else { return stmts }
         let last = held
-        let chained: bool = match self.stmt(last) { .IfStmt(_, _, e) -> !e.is_empty(), _ -> false }
+        let chained: bool = match self.stmt(last) {
+            .ExprStmt(v) -> self.else_written(v),
+            _ -> false,
+        }
         if !chained || !self.annotations_of(last).is_empty() { return stmts }
         let value? = self.answer_of(last) else { return stmts }
         stmts
@@ -953,7 +1145,8 @@ impl SyntaxArena {
     fn pattern_binds(id: PatId) -> List<Binder> {
         match self.pat(id) {
             .Bind(name) or .Typed(name, _) or .Member(_, name) -> [Binder { pat: id, name: name.of }],
-            .Variant(_, args) -> flatten([self.pattern_binds(a) for a in args]),
+            .Variant(_, args) or .Fields(_, _, args, _) -> flatten([self.pattern_binds(a) for a in args]),
+            .Seq(before, middle, after) -> flatten([self.pattern_binds(a) for a in before.concat(middle).concat(after)]),
             .Format(_, parts) -> named_binders(id, bound_names(parts)),
             .Quote(body) -> named_binders(id, quote_pat_names(quote_pat_holes(self, body))),
             .Wild or .Rest or .Lit(_) -> [],
@@ -969,7 +1162,7 @@ impl SyntaxArena {
     fn irrefutable(id: PatId) -> bool {
         match self.pat(id) {
             .Wild or .Rest or .Bind(_) -> true,
-            .Variant(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) -> false,
+            .Variant(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> false,
         }
     }
 
@@ -986,6 +1179,23 @@ impl SyntaxArena {
             .Quote(body) -> fp(143, [self.expr_fingerprint(body)]),
             .Typed(name, ty) -> fp(196, [fp_str(name.of), type_fp(ty)]),
             .Member(name, bind) -> fp(197, [fp_str(name.of), fp_str(bind.of)]),
+            .Seq(before, middle, after) -> fp(
+                315,
+                [
+                    fp_list([self.pat_fingerprint(a) for a in before]),
+                    fp_list([self.pat_fingerprint(a) for a in middle]),
+                    fp_list([self.pat_fingerprint(a) for a in after]),
+                ],
+            ),
+            .Fields(name, fields, args, open) -> fp(
+                316,
+                [
+                    fp_str(name.of),
+                    fp_list([fp_str(f.of) for f in fields]),
+                    fp_list([self.pat_fingerprint(a) for a in args]),
+                    if open { 1 } else { 0 },
+                ],
+            ),
         }
     }
 
@@ -1140,8 +1350,39 @@ impl SyntaxArena {
         self.marks.set_at(s.index, upd(self.marks_at(s)))
     }
 
+    /// An expression's forms, replaced by what `upd` computes from what it
+    /// already wears — the one seam every expression `mark_*` writes through.
+    fn update_expr_marks(e: ExprId, upd: fn(ExprMarks) -> ExprMarks) {
+        self.expr_marks.set_at(e.index, upd(self.expr_marks_at(e)))
+    }
+
+    fn expr_marks_at(e: ExprId) -> ExprMarks { self.expr_marks.get()[e.index] }
+
+    /// Gives `e` every form `worn` records, each through its own verb so
+    /// the fingerprint follows — the one door a copy uses, so a new form
+    /// is added here and a template copy never forgets it.
+    fn wear_expr(e: ExprId, worn: ExprMarks) {
+        if worn.is_trailing { self.mark_trailing(e) }
+        if worn.is_raw { self.mark_raw_string(e) }
+        if worn.is_hole { self.mark_hole(e) }
+        if worn.is_run_hole { self.mark_run_hole(e) }
+    }
+
     /// The marks a statement wears.
     fn marks_at(s: StmtId) -> StmtMarks { self.marks.get()[s.index] }
+
+    /// Gives `s` every keyword `worn` records, each through its own verb
+    /// so the fingerprint follows — the one door a copy uses, so a new
+    /// bit is added here and a template copy never forgets it.
+    fn wear(s: StmtId, worn: StmtMarks) {
+        if worn.is_exported { self.mark_exported(s) }
+        if worn.is_mutating { self.mark_mutating(s) }
+        if worn.is_once { self.mark_once(s) }
+        if worn.is_static { self.mark_static(s) }
+        if worn.is_state { self.mark_state(s) }
+        if worn.is_module_state { self.mark_module_state(s) }
+        if worn.is_host { self.mark_host(s) }
+    }
 
     /// `mut fn` crossed this declaration — it says its receiver is
     /// written; a trait sig's word is the contract.
@@ -1182,13 +1423,24 @@ impl SyntaxArena {
         self.restamp(s, 110)
     }
 
-    fn is_static(s: StmtId) -> bool { if s.index < self.marks.get().length { self.marks_at(s).is_static } else { true } }
+    fn is_static(s: StmtId) -> bool { s.index < self.marks.get().length && self.marks_at(s).is_static }
 
     /// `state n: T = v` — the binding is a PLACE with identity: it holds a
     /// `Cell<T>` a read answers as `T` and a write assigns.
     fn mark_state(s: StmtId) {
         self.update_marks(s, (m) -> m with { is_state: true })
         self.restamp(s, 155)
+    }
+
+    /// `asset n: T = "path"` — written as the asset statement, which IS the
+    /// const `provided<T>("path")`: the mark is how the printer says it back.
+    fn mark_asset(s: StmtId) {
+        self.update_marks(s, (m) -> m with { is_asset: true })
+        self.restamp(s, 158)
+    }
+
+    fn is_asset_stmt(s: StmtId) -> bool {
+        if s.index < self.marks.get().length { self.marks_at(s).is_asset } else { false }
     }
 
     fn is_state_stmt(s: StmtId) -> bool {
@@ -1385,26 +1637,18 @@ impl SyntaxArena {
     /// (`h.r!` — a path runs through what the nullable carries). The one
     /// projection for the place category — every other shape is a
     /// value, not a place.
-    fn place_step(e: ExprId) -> PlaceStep? {
-        match self.expr(e) {
-            .Ident(name) -> PlaceStep.Root(name),
-            .Receiver -> PlaceStep.Root("self"),
-            .Prop(subject, name) -> PlaceStep.Field(subject, name),
-            .Index(subject, index) -> PlaceStep.At(subject, index),
-            .Force(subject) -> PlaceStep.Unwrap(subject),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
-        }
-    }
+    fn place_step(e: ExprId) -> PlaceStep? { self.expr(e).place_step() }
 
     /// A record literal's TURN among the literals written ALIKE in its
-    /// file: how many of them stand before it. A template's literal and
+    /// file — alike as a site tells them (`site_fingerprint`): how many of
+    /// them stand before it. A template's literal and
     /// its splice stand at one place, so they share a turn.
     fn literal_turn(e: ExprId) -> int {
         let at? = self.expr_span(e)?.lo else { return 0 }
-        let own = self.expr_fingerprint(e)
+        let own = self.site_fingerprint(e)
         let like = self
             .exprs_by_kind(0, self.exprs.count(), self.tag_expr(Expr.StructLit("", [], [])))
-        let before = [lo for x in like if self.expr_fingerprint(x) == own for lo in some_list(self.expr_span(x)?.lo) if lo < at]
+        let before = [lo for x in like if self.site_fingerprint(x) == own for lo in some_list(self.expr_span(x)?.lo) if lo < at]
         [lo for j, lo in before if !before.slice(0, j).contains(lo)].length
     }
 
@@ -1416,11 +1660,10 @@ impl SyntaxArena {
     /// literal's name, its brace the next token. As an instance's head
     /// that brace would be read as the instance's block.
     fn opens_with_literal(e: ExprId) -> bool {
-        match self.expr(e) {
-            .StructLit(_, _, _) -> true,
-            .Binary(_, left, _) or .Coalesce(left, _) -> self.opens_with_literal(left),
-            .Force(held) or .Propagate(held) or .Prop(held, _) or .Chain(held, _) or .Is(held, _) or .Index(held, _) or .MethodCall(held, _, _) or .With(held, _, _) or .CallValue(held, _) -> self.opens_with_literal(held),
-            .Bitnot(_) or .Not(_) or .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .When(_, _, _) or .Block(_, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> false,
+        match self.expr(e).leftmost() {
+            .Nothing -> false,
+            .Literal -> true,
+            .Operand(held) -> self.opens_with_literal(held),
         }
     }
 
@@ -1584,11 +1827,6 @@ fn unheard_fp(why: Unheard) -> int {
 }
 
 impl SyntaxArena {
-    /// A case list's fingerprint parts — one value per case.
-    fn case_fps(cases: List<Case>) -> List<int> {
-        [c.identity(self) for c in cases]
-    }
-
     /// A param list's fingerprint parts — ONE VALUE PER SEAT. A seat
     /// IS its name, its written type, its contract and the default it
     /// declares: `{ a: int = 1, b: int }` and `{ a: int, b: int = 1 }`
@@ -1630,13 +1868,6 @@ impl SyntaxArena {
             199,
             [fp_str(p.of ?? ""), fp_str(p.target), fp_list([self.signature_fp(m) for m in p.fns])],
         )
-    }
-
-    /// A variant list's fingerprint parts — ONE VALUE PER VARIANT.
-    /// Spliced flat, a variant's payload run and the next variant's
-    /// name share a boundary that moves.
-    fn variant_fps(variants: List<Variant>) -> List<int> {
-        [v.identity(self) for v in variants]
     }
 
     /// A comprehension clause list's fingerprint parts — ONE VALUE
@@ -1700,25 +1931,6 @@ impl SyntaxArena {
         a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_arm(a[k], b[k]))
     }
 
-    /// A clause's own equality — `comp_clause_fp`'s exact twin.
-    fn exact_comp_clause(a: CompClause, b: CompClause) -> bool {
-        match a {
-            .Head(ai, an, asrc, ahi) -> match b {
-                .Head(bi, bn, bsrc, bhi) -> ai?.of == bi?.of &&
-                    an.of == bn.of &&
-                    self.exact_expr(self.expr(asrc), self.expr(bsrc)) &&
-                    self.exact_opt_expr(ahi, bhi),
-                rest -> false,
-            },
-            .Filter(ac) -> match b { .Filter(bc) -> self.exact_expr(self.expr(ac), self.expr(bc)), rest -> false },
-        }
-    }
-
-    fn exact_comp_clauses(a: List<CompClause>, b: List<CompClause>) -> bool {
-        a.length == b.length &&
-            [i for i in 0..a.length].all((k) -> self.exact_comp_clause(a[k], b[k]))
-    }
-
     /// A seat's own equality — `param_fps`'s exact twin.
     fn exact_param(a: Param, b: Param) -> bool {
         a.name.of == b.name.of &&
@@ -1730,28 +1942,6 @@ impl SyntaxArena {
 
     fn exact_params(a: List<Param>, b: List<Param>) -> bool {
         a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_param(a[k], b[k]))
-    }
-
-    /// A variant's own equality — `variant_fps`'s exact twin.
-    fn exact_variant(a: Variant, b: Variant) -> bool {
-        a.name.of == b.name.of &&
-            self.exact_params(a.payloads, b.payloads) &&
-            exact_marks(a.marks, b.marks)
-    }
-
-    fn exact_variants(a: List<Variant>, b: List<Variant>) -> bool {
-        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_variant(a[k], b[k]))
-    }
-
-    /// A case's own equality — `case_fps`'s exact twin.
-    fn exact_case(a: Case, b: Case) -> bool {
-        a.group == b.group &&
-            a.name == b.name &&
-            self.exact_expr(self.expr(a.body), self.expr(b.body))
-    }
-
-    fn exact_cases(a: List<Case>, b: List<Case>) -> bool {
-        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_case(a[k], b[k]))
     }
 
     /// `view_fp`'s exact twin: an EXPANSION compares equal to any

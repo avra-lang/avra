@@ -3,6 +3,8 @@
 use @std.ui.realize.dom.live.{Live, live}
 use @std.ui.tree.node.{Node, Action, Handler, Said}
 use @std.ui.realize.tests.support.{
+    hearing,
+    seat_for,
     spoken,
     named,
     button_node,
@@ -31,14 +33,14 @@ fn nothing() {}
 
 fn heard_text(_text: string) {}
 
-fn hearing(n: Node, handler: Handler) -> Node { n with { events: [Action { kind: .Input, handler: handler }] } }
+fn typing(n: Node, handler: Handler) -> Node { hearing(n, .Input, handler) }
 
-fn pressing(n: Node) -> Node { n with { events: [Action { kind: .Press, handler: Handler.Nothing(nothing) }] } }
+fn pressing(n: Node) -> Node { hearing(n, .Press, Handler.Nothing(nothing)) }
 
 fn heard_number(_n: int) {}
 
 fn slider_at(n: int) -> Node {
-    leaf(.Slider, [.Label("V"), .Amount(n)]) with { events: [Action { kind: .Change, handler: Handler.Number(heard_number) }] }
+    hearing(leaf(.Slider, [.Label("V"), .Amount(n)]), .Change, Handler.Number(heard_number))
 }
 
 /// The patches after a user moves a slider showing `shown` to `moved`
@@ -46,7 +48,7 @@ fn slider_at(n: int) -> Node {
 fn after_sliding(shown: int, moved: int, drawn: int) -> string {
     let page = live()
     let _ = page.patches(slider_at(shown), default_theme)
-    let _ = page.fire(named(page, "V")[0], .Change, Said.Number(moved))
+    let _ = page.fire(named(page, "V")[0], seat_for(.Change), Said.Number(moved))
     spoken(page, slider_at(drawn), default_theme)
 }
 
@@ -56,13 +58,13 @@ fn muted(n: Node) -> Node { n with { box: Box { style: Style { color: .Muted } }
 /// and the program then draws `drawn`.
 fn after_typing(shown: string, typed: string, drawn: string) -> string {
     let page = live()
-    let _ = page.patches(hearing(field_node("N", shown), Handler.Text(heard_text)), default_theme)
-    let _ = page.fire(named(page, "N")[0], .Input, Said.Text(typed))
-    spoken(page, hearing(field_node("N", drawn), Handler.Text(heard_text)), default_theme)
+    let _ = page.patches(typing(field_node("N", shown), Handler.Text(heard_text)), default_theme)
+    let _ = page.fire(named(page, "N")[0], seat_for(.Input), Said.Text(typed))
+    spoken(page, typing(field_node("N", drawn), Handler.Text(heard_text)), default_theme)
 }
 
 fn dialog_node(open: bool) -> Node {
-    leaf(.Dialog, [.Label("D"), .Open(open)]) with { events: [Action { kind: .Dismiss, handler: Handler.Nothing(nothing) }] }
+    hearing(leaf(.Dialog, [.Label("D"), .Open(open)]), .Dismiss, Handler.Nothing(nothing))
 }
 
 /// The patches after the user sends an open dialog away and the program
@@ -70,7 +72,7 @@ fn dialog_node(open: bool) -> Node {
 fn after_dismissing(open: bool) -> string {
     let page = live()
     let _ = page.patches(dialog_node(true), default_theme)
-    let _ = page.fire(named(page, "D")[0], .Dismiss, null)
+    let _ = page.fire(named(page, "D")[0], seat_for(.Dismiss), null)
     spoken(page, dialog_node(open), default_theme)
 }
 
@@ -149,7 +151,7 @@ spec "std/ui dom — a repaint says only what changed" {
             between(text_node("x"), holding(.Form, [])).contains("listen 0 submit")
         }
         then "a form that hears its submit hears it once" {
-            let heard = holding(.Form, []) with { events: [Action { kind: .Submit, handler: Handler.Nothing(nothing) }] }
+            let heard = hearing(holding(.Form, []), .Submit, Handler.Nothing(nothing))
             between(text_node("x"), heard).split("listen 0 submit").length == 2
         }
         then "is left alone while it is still heard" { between(pressing(button_node("a")), pressing(button_node("a"))) == "" }
@@ -173,7 +175,8 @@ spec "std/ui dom — depth costs a page nothing" {
         then "is found by name and its event fires" {
             let page = live()
             let _ = page.patches(chain(120, long_key), default_theme)
-            named(page, "deep").length == 1 && page.fire(named(page, "deep")[0], .Press, null)
+            named(page, "deep").length == 1 &&
+                page.fire(named(page, "deep")[0], seat_for(.Press), null)
         }
     }
     given "a chain twice as deep" {
@@ -200,7 +203,7 @@ fn pick_first() { picked = "first" }
 fn pick_second() { picked = "second" }
 
 fn picking(pick: fn() -> void) -> Node {
-    button_node("Pick") with { events: [Action { kind: .Press, handler: Handler.Nothing(pick) }] }
+    hearing(button_node("Pick"), .Press, Handler.Nothing(pick))
 }
 
 spec "std/ui dom — two siblings under one key" {
@@ -216,11 +219,11 @@ spec "std/ui dom — two siblings under one key" {
                     default_theme,
                 )
             let both = named(page, "Pick")
-            let first = page.fire(both[0], .Press, null) && picked == "first"
+            let first = page.fire(both[0], seat_for(.Press), null) && picked == "first"
             both.length == 2 &&
                 both[0] != both[1] &&
                 first &&
-                page.fire(both[1], .Press, null) &&
+                page.fire(both[1], seat_for(.Press), null) &&
                 picked == "second"
         }
     }
@@ -254,15 +257,11 @@ spec "std/ui dom — a property the tree names is the program's" {
         then "holds one record of what its property now holds, the latest" {
             let page = live()
             let _ = page
-                .patches(hearing(field_node("N", ""), Handler.Text(heard_text)), default_theme)
-            let _ = page.fire(named(page, "N")[0], .Input, Said.Text("a"))
-            let _ = page.fire(named(page, "N")[0], .Input, Said.Text("ab"))
+                .patches(typing(field_node("N", ""), Handler.Text(heard_text)), default_theme)
+            let _ = page.fire(named(page, "N")[0], seat_for(.Input), Said.Text("a"))
+            let _ = page.fire(named(page, "N")[0], seat_for(.Input), Said.Text("ab"))
             page.heard.get().length == 1 &&
-                spoken(
-                    page,
-                    hearing(field_node("N", "ab"), Handler.Text(heard_text)),
-                    default_theme,
-                ) == ""
+                spoken(page, typing(field_node("N", "ab"), Handler.Text(heard_text)), default_theme) == ""
         }
     }
     given "a field the user typed into, drawn with what the program still holds" {
@@ -273,12 +272,12 @@ spec "std/ui dom — a property the tree names is the program's" {
     given "what a user typed" {
         then "is forgotten once a paint has answered it" {
             let page = live()
-            let shown = hearing(field_node("N", ""), Handler.Text(heard_text))
+            let shown = typing(field_node("N", ""), Handler.Text(heard_text))
             let _ = page.patches(shown, default_theme)
-            let _ = page.fire(named(page, "N")[0], .Input, Said.Text("abc"))
+            let _ = page.fire(named(page, "N")[0], seat_for(.Input), Said.Text("abc"))
             let _ = page
-                .patches(hearing(field_node("N", "abc"), Handler.Text(heard_text)), default_theme)
-            spoken(page, hearing(field_node("N", "abc"), Handler.Text(heard_text)), default_theme) == ""
+                .patches(typing(field_node("N", "abc"), Handler.Text(heard_text)), default_theme)
+            spoken(page, typing(field_node("N", "abc"), Handler.Text(heard_text)), default_theme) == ""
         }
     }
 }

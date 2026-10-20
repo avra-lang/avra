@@ -1,0 +1,600 @@
+//! `place/solve.av` — the layout solver: a tree and a width in, a
+//! rectangle for every node out. It is CSS flexbox over the `Layout`
+//! vocabulary — the very algorithm a browser runs for the rules the web
+//! target writes — so a view lays out alike on a page and in a terminal.
+//! `tools/layout-oracle` places random trees here and in Firefox and
+//! demands every box agree.
+//!
+//! What a `Measure` answers is the only place a unit lives: a node's own
+//! content (text, a button) and its narrowest form, and what a spacing
+//! step is. Everything else is whole numbers, by one rule: free room is
+//! shared exactly, and each EDGE is then snapped to a whole unit, halves
+//! up, so a share that does not divide costs no unit twice.
+//!
+//! Read: direction, wrap, gap, pad, margin, align (a baseline reads as the
+//! start), distribute, width and height, grow and order. A `Fixed` size
+//! holds; a `Hug` size asks its content and may shrink to its narrowest;
+//! a `Fill` takes the room that is left along its parent's axis (a `grow`
+//! given is its share) and stretches across it. `Percent` reads as `Hug`.
+//! Not read: aspect and inset.
+use style.layout.{Axis, Align, Distribute, Wrap, Sizing, Edge}
+use tree.node.{Node, own_axis}
+use place.measure.{Measure, Extent}
+
+/// A box in the target's unit, from the root's top-left corner.
+export type Rect = { x: int, y: int, w: int, h: int }
+
+/// A node's rectangle and its children's, in their order.
+export type Placed = { rect: Rect, kids: List<Placed> }
+
+/// What a solve shares: the target's answers and the sizes already worked
+/// out, by what they are of.
+type Ctx = { m: dyn Measure, known: Cell<Map<string, int>> }
+
+/// The cells an edge keeps on each side.
+type Sides = { start: int, end: int, top: int, bottom: int }
+
+/// One child along its container's main axis: the size it asks for there
+/// (`base`), the least it can be squeezed to, that ask held to that least,
+/// its share of growth, whether it holds its size rather than shrink, its
+/// padding along the main axis (a shrink is shared by what is inside it), its margins on each axis, its size across when that is known before the
+/// main axis is, whether it stretches across, and the least it takes across
+/// (its padding there).
+type Item = {
+    at: int,
+    base: int,
+    least: int,
+    hyp: int,
+    grow: int,
+    rigid: bool,
+    padded: int,
+    m0: int,
+    m1: int,
+    c0: int,
+    c1: int,
+    across: int?,
+    stretches: bool,
+    floor: int,
+}
+
+/// Where a line's items lie: each one's start and size along the main axis.
+type Span = { start: int, size: int }
+
+/// A line's sizes after growing and shrinking, each scaled by `whole`.
+type Flexed = { sizes: List<int>, whole: int }
+
+/// The children's rectangles, relative to the container's inner corner,
+/// whether each one's height is definite to what it holds (a percentage of
+/// it then resolves), and the height their layout asks for.
+type Flow = { rects: List<Rect>, sure: List<bool>, content_h: int }
+
+/// A width no content reaches: text laid in it never wraps.
+const unbounded = 1000000
+
+/// The widest a tree is laid out: far wider than any screen, and narrow enough
+/// that no length overflows once carried in sixtieths.
+const widest = 100000000
+
+/// Lengths are carried in sixtieths of a unit, as a browser carries them
+/// in sixtieths of a pixel: a share that does not divide keeps its fraction
+/// down the tree, and only the boxes handed back are snapped to whole units.
+const unit = 60
+
+/// The tree laid out in `width`, its height its content's.
+export fn place(root: Node, m: dyn Measure, width: int) -> Placed {
+    let cx = Ctx { m: m, known: no_sizes() }
+    whole(
+        arrange(
+            cx,
+            root,
+            "0",
+            0,
+            0,
+            fixed_w(cx, root) ?? smaller(at_least_zero(width), widest) * unit,
+            null,
+            false,
+        ),
+    )
+}
+
+/// The placement with every box snapped to whole units: each edge, from
+/// the root's corner, to the nearest unit, halves up.
+fn whole(p: Placed) -> Placed {
+    let r = p.rect
+    Placed {
+        rect: Rect {
+            x: snapped(r.x, unit),
+            y: snapped(r.y, unit),
+            w: snapped(r.x + r.w, unit) - snapped(r.x, unit),
+            h: snapped(r.y + r.h, unit) - snapped(r.y, unit),
+        },
+        kids: [whole(k) for k in p.kids],
+    }
+}
+
+/// A node's own content laid in `avail` across.
+fn own_of(cx: Ctx, n: Node, avail: int) -> Extent {
+    let e = cx.m.own(n, floor_div(avail, unit))
+    Extent { w: e.w * unit, h: e.h * unit }
+}
+
+fn kept_of(cx: Ctx, n: Node, path: string) -> int { cx.m.kept(n, path) * unit }
+
+fn no_sizes() -> Cell<Map<string, int>> { Cell.new({}) }
+
+fn at_least_zero(n: int) -> int { if n < 0 { 0 } else { n } }
+
+fn bigger(a: int, b: int) -> int { if a > b { a } else { b } }
+
+fn smaller(a: int, b: int) -> int { if a < b { a } else { b } }
+
+/// `h` less `by`, never below nothing; absent stays absent.
+fn less(h: int?, by: int) -> int? {
+    let v? = h else { return null }
+    at_least_zero(v - by)
+}
+
+/// The whole number below `a / b`, for a positive `b`.
+fn floor_div(a: int, b: int) -> int { if a >= 0 { a / b } else { 0 - (0 - a + b - 1) / b } }
+
+/// `num / den` to the nearest whole number, halves up.
+fn snapped(num: int, den: int) -> int { floor_div(2 * num + den, 2 * den) }
+
+// ── reading the vocabulary ──────────────────────────────────────
+
+fn fixed(s: Sizing?) -> int? {
+    let v? = s else { return null }
+    match v { .Fixed(k) -> k * unit, .Hug or .Fill or .Percent(_) -> null }
+}
+
+/// A node's fixed width, held no narrower than its own padding: a box
+/// is measured by its border.
+fn fixed_w(cx: Ctx, n: Node) -> int? {
+    let k? = fixed(n.box.layout.width) else { return null }
+    let pad = sides(cx, n.box.layout.pad)
+    bigger(k, pad.start + pad.end)
+}
+
+fn fixed_h(cx: Ctx, n: Node) -> int? {
+    let k? = fixed(n.box.layout.height) else { return null }
+    let pad = sides(cx, n.box.layout.pad)
+    bigger(k, pad.top + pad.bottom)
+}
+
+fn fills(s: Sizing?) -> bool {
+    let v? = s else { return false }
+    v is .Fill
+}
+
+/// How far a box gives way on an axis: not at all when it fills, no further
+/// than its own size when fixed, as far as its content when it hugs.
+fn yields(s: Sizing?, content: int, own: int) -> int {
+    when {
+        fills(s) -> 0
+        fixed(s) != null -> smaller(content, own)
+        _ -> content
+    }
+}
+
+fn axis_of(n: Node) -> Axis { n.box.layout.direction ?? own_axis(n.prim) ?? .Column }
+
+fn sides(cx: Ctx, e: Edge?) -> Sides {
+    let edge? = e else { return Sides { start: 0, end: 0, top: 0, bottom: 0 } }
+    Sides {
+        start: cx.m.pad_x(edge.start ?? .None) * unit,
+        end: cx.m.pad_x(edge.end ?? .None) * unit,
+        top: cx.m.pad_y(edge.top ?? .None) * unit,
+        bottom: cx.m.pad_y(edge.bottom ?? .None) * unit,
+    }
+}
+
+/// The gap between siblings along `dir`.
+fn gap_along(cx: Ctx, n: Node, dir: Axis) -> int {
+    let z = n.gap() ?? .None
+    if dir is .Row { cx.m.gap_x(z) } else { cx.m.gap_y(z) } * unit
+}
+
+fn wraps(n: Node) -> bool {
+    let w? = n.box.layout.wrap else { return false }
+    !(w is .NoWrap)
+}
+
+fn reversed(n: Node) -> bool {
+    let w? = n.box.layout.wrap else { return false }
+    w is .WrapReverse
+}
+
+// ── intrinsic sizes ─────────────────────────────────────────────
+
+/// A size worked out once, by its key.
+fn remembered(cx: Ctx, key: string, make: fn() -> int) -> int {
+    let hit? = cx.known.get().get(key) else {
+        let v = make()
+        cx.known.put(key, v)
+        return v
+    }
+    hit
+}
+
+/// A child's margins on the main axis in a container flowing along `dir`.
+fn margin_x(cx: Ctx, c: Node) -> int {
+    let mg = sides(cx, c.box.layout.margin)
+    mg.start + mg.end
+}
+
+/// The widest a node's content makes it: nothing wraps. Its own width,
+/// if it fixes one, is not read here.
+fn max_w(cx: Ctx, n: Node, path: string) -> int {
+    remembered(
+        cx,
+        "M${path}",
+        () -> {
+            let pad = sides(cx, n.box.layout.pad)
+            let own = cx.m.own(n, unbounded).w * unit
+            let kids = [margin_x(cx, c) + (fixed_w(cx, c) ?? max_w(cx, c, "${path}.${i}")) for i, c in n.children if cx.m.holds(n) && !cx.m.hidden(c)]
+            let inside = if axis_of(n) is .Row { kids.sum() + gap_along(cx, n, .Row) * at_least_zero(kids.length - 1) } else { kids.max() ?? 0 }
+            pad.start + pad.end + kept_of(cx, n, path) + bigger(own, inside)
+        },
+    )
+}
+
+/// The narrowest a node's content lets it be. Its own width, if it fixes
+/// one, is not read here.
+fn min_w(cx: Ctx, n: Node, path: string) -> int {
+    remembered(
+        cx,
+        "N${path}",
+        () -> {
+            let pad = sides(cx, n.box.layout.pad)
+            let own = cx.m.min_own(n) * unit
+            let kids = [margin_x(cx, c) + (fixed_w(cx, c) ?? min_w(cx, c, "${path}.${i}")) for i, c in n.children if cx.m.holds(n) && !cx.m.hidden(c)]
+            let along = axis_of(n) is .Row && !wraps(n)
+            let inside = if along { kids.sum() + gap_along(cx, n, .Row) * at_least_zero(kids.length - 1) } else { kids.max() ?? 0 }
+            pad.start + pad.end + kept_of(cx, n, path) + bigger(own, inside)
+        },
+    )
+}
+
+/// How high a node is when it is `w` wide: its own height if it fixes
+/// one, else what its content takes there.
+fn height_at(cx: Ctx, n: Node, path: string, w: int) -> int {
+    remembered(
+        cx,
+        "H${path}:${w}",
+        () -> {
+            let pad = sides(cx, n.box.layout.pad)
+            let iw = at_least_zero(w - pad.start - pad.end - kept_of(cx, n, path))
+            fixed_h(cx, n) ?? pad.top +
+                pad.bottom +
+                own_of(cx, n, iw).h +
+                flow(cx, n, path, iw, null).content_h
+        },
+    )
+}
+
+// ── the flow ────────────────────────────────────────────────────
+
+/// A child's asks along and across `dir` in an inner box `iw` wide and,
+/// when known, `ih` high.
+fn item_of(cx: Ctx, n: Node, path: string, i: int, iw: int, ih: int?, dir: Axis, wrapped: bool) -> Item {
+    let c = n.children[i]
+    let cp = "${path}.${i}"
+    let l = c.box.layout
+    let mg = sides(cx, l.margin)
+    let stretch = n.box.layout.align ?? .Stretch is .Stretch
+    if dir is .Row {
+        let pads = sides(cx, l.pad)
+        let wide = fixed_w(cx, c) ?? if fills(l.width) { pads.start + pads.end } else { max_w(cx, c, cp) }
+        let squeezed = min_w(cx, c, cp)
+        let least = bigger(pads.start + pads.end, yields(l.width, squeezed, wide))
+        Item {
+            at: i,
+            base: wide,
+            least: least,
+            hyp: bigger(wide, least),
+            grow: if fills(l.width) { bigger(1, l.grow) } else { l.grow },
+            rigid: fixed(l.width) != null,
+            padded: pads.start + pads.end,
+            m0: mg.start,
+            m1: mg.end,
+            c0: mg.top,
+            c1: mg.bottom,
+            across: null,
+            stretches: fills(l.height) || l.height == null && stretch,
+            floor: pads.top + pads.bottom,
+        }
+    } else {
+        let room = at_least_zero(iw - mg.start - mg.end)
+        let stretching = fills(l.width) || l.width == null && stretch
+        let w = fixed_w(cx, c) ?? if stretching && !wrapped { room } else { smaller(max_w(cx, c, cp), bigger(min_w(cx, c, cp), room)) }
+        let content = height_at(cx, c, cp, w)
+        let pads = sides(cx, l.pad)
+        let tall = fixed_h(cx, c) ?? if fills(l.height) && ih != null { pads.top + pads.bottom } else { content }
+        let least = bigger(pads.top + pads.bottom, yields(l.height, content, tall))
+        Item {
+            at: i,
+            base: tall,
+            least: least,
+            hyp: bigger(tall, least),
+            grow: if fills(l.height) { bigger(1, l.grow) } else { l.grow },
+            rigid: fixed(l.height) != null,
+            padded: pads.top + pads.bottom,
+            m0: mg.top,
+            m1: mg.bottom,
+            c0: mg.start,
+            c1: mg.end,
+            across: w,
+            stretches: stretching,
+            floor: pads.start + pads.end,
+        }
+    }
+}
+
+fn outer(item: Item, main: int) -> int { item.m0 + main + item.m1 }
+
+/// The children's indices in layout order: by `order`, then as written.
+fn in_order(kids: List<Node>) -> List<int> {
+    let all = [k.box.layout.order for k in kids]
+    if all.all(it == all[0]) { return [i for i in 0..kids.length] }
+    [i for o in distinct(inserted(all)) for i, k in kids if k.box.layout.order == o]
+}
+
+fn inserted(xs: List<int>) -> List<int> {
+    mut out: List<int> = []
+    for x in xs { out = [y for y in out if y <= x].concat([x]).concat([y for y in out if y > x]) }
+    out
+}
+
+fn distinct(sorted: List<int>) -> List<int> { [x for i, x in sorted if i == 0 || x != sorted[i - 1]] }
+
+/// The items cut into lines along an axis `avail` long: a line breaks
+/// when the next item would pass it, and never leaves a line empty.
+fn lines_of(items: List<Item>, avail: int?, gap: int, wrapping: bool) -> List<List<Item>> {
+    let room? = avail else { return [items] }
+    if !wrapping { return [items] }
+    mut out: List<List<Item>> = []
+    mut cur: List<Item> = []
+    mut used = 0
+    for item in items {
+        let next = used + outer(item, item.hyp) + if cur.is_empty() { 0 } else { gap }
+        if !cur.is_empty() && next > room {
+            out.push(cur)
+            cur = []
+            used = 0
+        }
+        used = used + outer(item, item.hyp) + if cur.is_empty() { 0 } else { gap }
+        cur.push(item)
+    }
+    if cur.is_empty() { out } else { out.concat([cur]) }
+}
+
+/// A line's items sized along an axis `avail` long (absent: as much as
+/// they ask): growth when they fall short of it, shrinkage in proportion
+/// to their size when they pass it, an item frozen once it meets its least.
+fn flexed(items: List<Item>, avail: int?, gap: int) -> Flexed {
+    let room? = avail else { return whole_sizes([item.hyp for item in items]) }
+    let gaps = gap * at_least_zero(items.length - 1)
+    let growing = [outer(item, item.hyp) for item in items].sum() + gaps < room
+    let factors = [when {
+        growing -> item.grow
+        item.rigid -> 0
+        _ -> at_least_zero(item.base - item.padded)
+    } for item in items]
+    mut frozen = [factors[i] == 0 || growing && item.base > item.hyp || !growing && item.base < item.hyp for i, item in items]
+    mut sizes = [item.hyp for item in items]
+    for _round in 0..items.length + 1 {
+        let free_ids = [i for i, f in frozen if !f]
+        if free_ids.is_empty() { return whole_sizes(sizes) }
+        let used = [outer(item, if frozen[i] { sizes[i] } else { item.base }) for i, item in items].sum() +
+            gaps
+        let whole = free_ids.map(factors[it]).sum()
+        let spare = room - used
+        let want = [items[i].base * whole + spare * factors[i] for i in free_ids]
+        let least = [items[i].least * whole for i in free_ids]
+        let short = [j for j, w in want if w < least[j]]
+        if short.is_empty() {
+            mut scaled = [size * whole for size in sizes]
+            for j, i in free_ids { scaled[i] = want[j] }
+            return Flexed { sizes: scaled, whole: whole }
+        }
+        for j in short {
+            frozen[free_ids[j]] = true
+            sizes[free_ids[j]] = items[free_ids[j]].least
+        }
+    }
+    whole_sizes(sizes)
+}
+
+fn whole_sizes(sizes: List<int>) -> Flexed { Flexed { sizes: sizes, whole: 1 } }
+
+/// The weights of the `n + 1` spaces round `n` items — before the first,
+/// between, after the last — that a distribution gives the free room. A
+/// distribution that cannot space items out when they overflow starts them.
+fn spaces_of(d: Distribute, n: int, overflow: bool) -> List<int> {
+    match d {
+        .Start -> [if i == n { 1 } else { 0 } for i in 0..n + 1],
+        .End -> [if i == 0 { 1 } else { 0 } for i in 0..n + 1],
+        .Center -> [if i == 0 || i == n { 1 } else { 0 } for i in 0..n + 1],
+        .SpaceBetween -> if n < 2 || overflow { spaces_of(.Start, n, false) } else { [if i == 0 || i == n { 0 } else { 1 } for i in 0..n + 1] },
+        .SpaceAround -> if overflow { spaces_of(.Start, n, false) } else { [if i == 0 || i == n { 1 } else { 2 } for i in 0..n + 1] },
+        .SpaceEvenly -> if overflow { spaces_of(.Start, n, false) } else { [1 for _i in 0..n + 1] },
+    }
+}
+
+/// A line's items placed along the main axis: sizes from `flexed`, free
+/// room left over given out by the distribution, every edge snapped.
+fn spanned(items: List<Item>, f: Flexed, avail: int?, gap: int, d: Distribute) -> List<Span> {
+    let gaps = gap * at_least_zero(items.length - 1)
+    let taken = [item.m0 * f.whole + f.sizes[i] + item.m1 * f.whole for i, item in items].sum()
+    let spare = if avail == null { 0 } else { (avail ?? 0) * f.whole - taken - gaps * f.whole }
+    let spaces = spaces_of(d, items.length, spare < 0)
+    let weight = bigger(1, spaces.sum())
+    let whole = f.whole * weight
+    mut base = 0
+    mut out: List<Span> = []
+    for i, item in items {
+        let from = (base + item.m0 * f.whole) * weight + spare * spaces.slice(0, i + 1).sum()
+        out
+            .push(
+                Span {
+                    start: snapped(from, whole),
+                    size: snapped(from + f.sizes[i] * weight, whole) - snapped(from, whole),
+                },
+            )
+        base = base + (item.m0 + item.m1 + gap) * f.whole + f.sizes[i]
+    }
+    out
+}
+
+/// The lines' cross sizes and where each starts: a line is as tall as its
+/// tallest item, and a container of known cross size shares what is left
+/// among its lines.
+fn stacked_lines(natural: List<int>, gap: int, definite: int?, multiline: bool) -> List<Span> {
+    let count = natural.length
+    let asked = natural.sum() + gap * (count - 1)
+    let free = at_least_zero((definite ?? asked) - asked)
+    if !multiline { return [Span { start: 0, size: definite ?? natural[0] }] }
+    mut base = 0
+    mut out: List<Span> = []
+    for k, size in natural {
+        let from = base * count + free * k
+        out
+            .push(
+                Span {
+                    start: snapped(from, count),
+                    size: snapped(from + size * count + free, count) - snapped(from, count),
+                },
+            )
+        base = base + size + gap
+    }
+    out
+}
+
+/// Twice an item's offset across its line from the line's near edge: the
+/// room left to it is cut in half, so the offset may be a half.
+fn doubled_offset(a: Align, space: int) -> int {
+    match a { .Start or .Stretch or .Baseline -> 0, .Center -> space, .End -> 2 * space }
+}
+
+/// Where an item starts across its container: `near` plus its offset in the
+/// room left, turned end for end in a container whose cross axis runs
+/// backwards, the half snapped last.
+fn placed_across(near: int, a: Align, space: int, size: int, extent: int, backwards: bool) -> int {
+    let doubled = 2 * near + doubled_offset(a, space)
+    snapped(if backwards { 2 * extent - doubled - 2 * size } else { doubled }, 2)
+}
+
+/// An item seen from a container whose cross axis runs backwards: the
+/// margin on its cross end comes first.
+fn flipped(item: Item, backwards: bool) -> Item { if backwards { item with { c0: item.c1, c1: item.c0 } } else { item } }
+
+fn empty_rect() -> Rect { Rect { x: 0, y: 0, w: 0, h: 0 } }
+
+/// A container none of whose children takes a place: every box empty.
+fn unplaced(n: Node) -> Flow {
+    Flow {
+        rects: [empty_rect() for _c in n.children],
+        sure: [false for _c in n.children],
+        content_h: 0,
+    }
+}
+
+/// The container's children placed in an inner box `iw` wide and, when
+/// known, `ih` high, with the height their layout asks for.
+fn flow(cx: Ctx, n: Node, path: string, iw: int, ih: int?) -> Flow {
+    let shown = if cx.m.holds(n) { [i for i in in_order(n.children) if !cx.m.hidden(n.children[i])] } else { [] }
+    if shown.is_empty() { return unplaced(n) }
+    let dir = axis_of(n)
+    let wrapped = wraps(n) || reversed(n)
+    let items = [flipped(item_of(cx, n, path, i, iw, ih, dir, wrapped), reversed(n)) for i in shown]
+    let along = if dir is .Row { iw } else { ih }
+    let gap = gap_along(cx, n, dir)
+    let across_gap = if dir is .Row { cx.m.gap_y(n.gap() ?? .None) } else { cx.m.gap_x(n.gap() ?? .None) } * unit
+    let lines = lines_of(items, along, gap, wrapped)
+    let sized = [flexed(line, along, gap) for line in lines]
+    let spans = [spanned(line, sized[k], along, gap, n.box.layout.distribute ?? .Start) for k, line in lines]
+    let crossed = [cross_sizes(cx, n, path, line, spans[k]) for k, line in lines]
+    let natural = [[line[j].c0 + crossed[k][j] + line[j].c1 for j, _item in line].max() ?? 0 for k, line in lines]
+    let definite = if dir is .Row { ih } else { iw }
+    let rows = stacked_lines(natural, across_gap, definite, wrapped)
+    let align = n.box.layout.align ?? .Stretch
+    let extent = definite ?? natural.sum() + across_gap * (lines.length - 1)
+    mut rects: List<Rect> = [empty_rect() for _c in n.children]
+    mut sure = [false for _c in n.children]
+    for k, line in lines {
+        for j, item in line {
+            let room = rows[k].size - item.c0 - item.c1
+            let cross = if item.stretches { bigger(item.floor, room) } else { crossed[k][j] }
+            let off = placed_across(
+                rows[k].start + item.c0,
+                if item.stretches { Align.Stretch } else { align },
+                room - cross,
+                cross,
+                extent,
+                reversed(n),
+            )
+            let r = if dir is .Row {
+                Rect { x: spans[k][j].start, y: off, w: spans[k][j].size, h: cross }
+            } else {
+                Rect { x: off, y: spans[k][j].start, w: cross, h: spans[k][j].size }
+            }
+            rects[item.at] = r
+            let own_height = n.children[item.at].box.layout.height
+            sure[item.at] = fixed(own_height) != null ||
+                if dir is .Row { item.stretches || fills(own_height) && ih != null } else { true }
+        }
+    }
+    let main_total = [line_asked(line, gap) for line in lines].max() ?? 0
+    Flow {
+        rects: rects,
+        sure: sure,
+        content_h: if dir is .Row { natural.sum() + across_gap * (lines.length - 1) } else { main_total },
+    }
+}
+
+/// What a line's items ask along the main axis, gaps between.
+fn line_asked(line: List<Item>, gap: int) -> int { [outer(item, item.hyp) for item in line].sum() + gap * at_least_zero(line.length - 1) }
+
+/// Each item's size across, once its size along is settled: a column's was
+/// asked up front; a row's is its height at the width it came to.
+fn cross_sizes(cx: Ctx, n: Node, path: string, line: List<Item>, spans: List<Span>) -> List<int> {
+    [cross_of(cx, n, path, item, spans[j]) for j, item in line]
+}
+
+fn cross_of(cx: Ctx, n: Node, path: string, item: Item, span: Span) -> int {
+    let known? = item.across else {
+        let c = n.children[item.at]
+        let content = height_at(cx, c, "${path}.${item.at}", span.size)
+        return fixed_h(cx, c) ?? content
+    }
+    known
+}
+
+// ── the arrangement ─────────────────────────────────────────────
+
+/// The node at `x`, `y`, `w` wide and, when its parent fixes it, `h`
+/// high, with its children placed inside.
+fn arrange(cx: Ctx, n: Node, path: string, x: int, y: int, w: int, asked_h: int?, sure: bool) -> Placed {
+    let h = asked_h ?? fixed_h(cx, n)
+    let pad = sides(cx, n.box.layout.pad)
+    let kept = kept_of(cx, n, path)
+    let iw = at_least_zero(w - pad.start - pad.end - kept)
+    let own = own_of(cx, n, iw)
+    let ih = if sure || fixed(n.box.layout.height) != null { less(h, pad.top + pad.bottom + own.h) } else { null }
+    let f = flow(cx, n, path, iw, ih)
+    let ox = x + pad.start + kept
+    let oy = y + pad.top + own.h
+    Placed {
+        rect: Rect { x: x, y: y, w: w, h: h ?? own.h + f.content_h + pad.top + pad.bottom },
+        kids: [arrange(
+            cx,
+            c,
+            "${path}.${i}",
+            ox + f.rects[i].x,
+            oy + f.rects[i].y,
+            f.rects[i].w,
+            f.rects[i].h,
+            f.sure[i],
+        ) for i, c in n.children],
+    }
+}

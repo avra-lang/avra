@@ -8,6 +8,7 @@
 # CLEARS the store, as the attacks beside it do.
 set -u
 cd "$(dirname "$0")/.."
+. tools/lib/failed_tail.sh
 R=build/held-runs-attack; fails=0; LINKS=${HELD_LINKS:-5}
 rm -rf "$R" .avra-cache && mkdir -p $R/app/src
 cat > $R/app/avra.toml <<'TOML'
@@ -27,7 +28,7 @@ last 1
 printf 'use s0.{f0}\n\nconst K: int = f0()\n\nprintln("k ${K}")\n' > $R/app/src/main.av
 B() { # B <label> <wanted output>: build through the store and run it
     ./avra build --time $R/app > $R/out 2> $R/err; st=$?
-    [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  $1: status $st: $(grep -vE '^watch:|^time:' $R/err | head -2 | tr '\n' ' ')"; return 1; }
+    [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  $1: status $st"; failed_tail $R/out $R/err; return 1; }
     got=$($R/app/src/main 2>&1)
     [ "$got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  $1: printed '$got', wanted '$2'"; }
 }

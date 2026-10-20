@@ -5,7 +5,7 @@
 //! arguments in, this out; nothing here touches a filesystem.
 use core.{SyntaxArena, Remark, flatten}
 use features.{Analysed, Decl}
-use diagnostics.{spliced, Diag}
+use diagnostics.{spliced, Diag, is_error}
 use @std.errors.{Edit, Loc, Suggestion}
 use compiler.backend.{trimmed}
 
@@ -22,14 +22,14 @@ use compiler.backend.{trimmed}
 /// `Suggestion` with no edits never reaches here either
 /// (`suggestion_applications`) — and carries no law, since a law
 /// lives on a `rule`, never on an arbitrary diagnostic.
-export type Application = { kind: string, edits: List<Edit>, proved: bool, by_law: string? }
+export type Application = { kind: string, edits: List<Edit>, proved: bool, by_law: string?, repaired: bool = false }
 
 impl Application {
     /// Whether `avra fix` writes this edit — the IR proof holding, or
     /// the rule's own law trusted in its place. Never both at once:
     /// `rewrite_application` only asks the law once the IR proof has
     /// already answered false.
-    fn accepted() -> bool { self.proved || self.by_law != null }
+    fn accepted() -> bool { self.proved || self.by_law != null || self.repaired }
 }
 
 impl Program {
@@ -95,6 +95,72 @@ impl Program {
             by_law: null,
         }
     }
+}
+
+impl Program {
+    /// THE REPAIR DOOR: every ERROR's high-confidence suggestion, each
+    /// tried against the file as it stands — accepted when its splice
+    /// clears the error and mints none (`repair_clears`). A repair of a
+    /// type or name error cannot be IR-equal to the program it repairs,
+    /// so this door asks a different question than the proof does: did
+    /// the voice's own remedy make its refusal go away.
+    fn repair_applications(path: string, a: Analysed, diags: List<Diag>, only: string?) -> List<
+        Application,
+    > {
+        flatten(
+            [self.repairs_of(path, a, diags, d) for d in diags if is_error(d) && (only == null || d.kind == only)],
+        )
+    }
+
+    fn repairs_of(path: string, a: Analysed, diags: List<Diag>, d: Diag) -> List<Application> {
+        [Application {
+            kind: d.kind,
+            edits: sg.edits,
+            proved: false,
+            by_law: null,
+            repaired: self.repair_clears(path, a, diags, sg.edits),
+        } for sg in d.suggestions if repairable(a.view.store, sg)]
+    }
+
+    /// Whether `edits`, spliced into `path`, leave the file with fewer
+    /// errors than it had and none it did not already have.
+    fn repair_clears(path: string, a: Analysed, before: List<Diag>, edits: List<Edit>) -> bool {
+        if edits.any(it.loc.file != null && it.loc.file! != path) { return false }
+        let after_text? = spliced(a.view.source.text, edits) else { return false }
+        let after_p = self.after_program(path, after_text, path)
+        let cleared = repair_cleared(after_p, path, before)
+        after_p.ws.discarded()
+        cleared
+    }
+}
+
+/// Whether the after-program has fewer errors than `before` and none new.
+fn repair_cleared(after_p: Program, path: string, before: List<Diag>) -> bool {
+    let after = after_p.files.find(it.view.source.file == path)?.diagnostics ?? []
+    let was = errors_spoken(before)
+    let now = errors_spoken(after)
+    if now.is_empty() { return lowers(after_p) }
+    now.length < was.length && now.all((e: string) -> was.contains(e))
+}
+
+/// Whether a program with no file errors also LOWERS clean: the lowering
+/// speaks its own refusals (a bare fn as the answer) that a file's
+/// diagnostics never carry, and a repair that trades one for another
+/// has cleared nothing.
+fn lowers(p: Program) -> bool {
+    match p.checked_from(null, true) { .Ok(_) -> true, .Err(_) -> false }
+}
+
+/// The errors a file speaks, each as its kind and words — a repair
+/// moves every span after it, so identity is never a position.
+fn errors_spoken(ds: List<Diag>) -> List<string> {
+    [d.kind + " " + d.message for d in ds if is_error(d)]
+}
+
+/// A suggestion `avra fix --repair` may apply unasked: fixable at all,
+/// and certain — the editor's own `Confidence.High`.
+fn repairable(store: SyntaxArena, sg: Suggestion) -> bool {
+    fixable(store, sg) && match sg.confidence { .High -> true, .Medium or .Low -> false }
 }
 
 /// Whether `sg` has anything for `avra fix` to even consider: at

@@ -3,9 +3,9 @@
 //! err side accepts; lowering wraps the value as the built-in
 //! enum's `.Err` and exits — `FnExit` settles every open scope's
 //! debts at the site, exactly as `return` does.
-use core.{StmtId, TypeId, Reg, Ins, ResSides}
+use core.{StmtId, TypeId, Reg, Ins}
 use core.stmt.{Fail}
-use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx, this_is}
+use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx}
 use diagnostics.{refusal}
 
 impl StmtSemantics for Fail {
@@ -43,33 +43,20 @@ fn check_fail(mut cx: TypeCx, s: StmtId) {
     }
     let promised = ret!
     if cx.errored_ty(promised) { return }
-    let sides: ResSides? = cx.view.types.res_parts(promised)
-    if sides == null {
-        let promise = cx.view.types.name_of(promised)
-        cx
-            .emit(
-                refusal(
-                    "type.fail",
-                    cx.stmt_loc(s),
-                    "`fail` raises on a `Result`'s failure channel, and this fn promises a `${promise}`",
-                    "raised here",
-                    "declare the answer fallible — `-> Result<${promise}, E>`",
-                ),
-            )
-        return
-    }
+    let sides? = cx.view.types.res_parts(promised) else { return not_fallible(cx, s, cx.view.types.name_of(promised)) }
     if cx.errored(v) { return }
-    if cx.accepts(v, sides!.err) { return }
+    if cx.accepts(v, sides.err) { return }
     let gn = cx.name_at(v)
     cx
         .emit(
-            refusal(
-                "type.fail",
-                cx.stmt_loc(s),
-                "`fail` raises a `${cx.view.types.name_of(sides!.err)}`, this is `${gn}`",
-                this_is(gn),
-                null,
-            ),
+            cx
+                .seat_mismatch(
+                    "type.fail",
+                    cx.stmt_loc(s),
+                    v,
+                    "`fail` raises a `${cx.view.types.name_of(sides.err)}`, this is `${gn}`",
+                    sides.err,
+                ),
         )
 }
 
@@ -87,4 +74,17 @@ fn lower_fail(mut cx: LowerCx, s: StmtId) -> Reg? {
     cx.failing()
     cx.emit(Ins.FnExit(raised))
     null
+}
+
+fn not_fallible(mut cx: TypeCx, s: StmtId, promise: string) {
+    cx
+        .emit(
+            refusal(
+                "type.fail",
+                cx.stmt_loc(s),
+                "`fail` raises on a `Result`'s failure channel, and this fn promises `${promise}`",
+                "raised here",
+                "declare the answer fallible — `-> Result<${promise}, E>`",
+            ),
+        )
 }

@@ -3,14 +3,15 @@
 //! interaction contract, an attribute is a component property, a Node is
 //! the eager tree. No user writes these; they are a component's machine
 //! projection, the component being the one source of truth.
+use tree.sites.{Reading}
 use style.box.{Box}
 use style.tokens.{Size}
 use style.layout.{Axis}
 use @std.meta.{derive}
 use style.words.{Words}
-use tree.codes.{Codes, Coded}
 use tree.facets.{Facets, Facet}
 use tree.url.{Url}
+use tree.seats.{Seat}
 
 /// The interaction contract a component IS. Every target answers every
 /// one, or the build names the target.
@@ -38,21 +39,7 @@ export enum Prim {
     @word(form) Form
     @word(switch) Switch
     @word(slider) Slider
-}
-
-/// What a node says when the user speaks to it, in words no platform
-/// owns: a `press` is a click, a tap or a key, as its target hears one; a
-/// `dismiss` is the key or the press outside that sends a dialog away. A
-/// REGISTRY: every target subscribes to every arm, or the build names the
-/// target. Each kind carries the number a host echoes it back as.
-@derive(Words)
-@derive(Codes)
-export enum EventKind {
-    @word(press) @code(1) Press
-    @word(input) @code(2) Input
-    @word(change) @code(3) Change
-    @word(submit) @code(4) Submit
-    @word(dismiss) @code(5) Dismiss
+    @word(key) Key
 }
 
 /// What a control SAYS when it speaks: the value the user gave it, as
@@ -77,7 +64,7 @@ export enum Handler {
 /// What a node does when it speaks: the KIND of event and the handler the
 /// component bound to it. The handler stays in the program — a target
 /// subscribes to the kind and echoes WHICH node spoke, never the code.
-export type Action = { kind: EventKind, handler: Handler }
+export type Action = { seat: Seat, handler: Handler }
 
 impl Said {
     /// The text said, when text is what was said.
@@ -91,6 +78,20 @@ impl Said {
 
     fn number() -> int? {
         match self { .Number(n) -> n, .Text(_) or .Flag(_) -> null }
+    }
+}
+
+impl Handler {
+    /// Whether this handler hears what was said: a handler that wants a value
+    /// hears only a value of its shape, and one that wants none hears nothing
+    /// said. Every shape spelled.
+    fn hears(said: Said?) -> bool {
+        match self {
+            .Nothing(_) -> said == null,
+            .Text(_) -> said?.text() != null,
+            .Flag(_) -> said?.flag() != null,
+            .Number(_) -> said?.number() != null,
+        }
     }
 }
 
@@ -152,6 +153,12 @@ export enum Attribute {
     Name(text: string)
     /// Pressing the control submits the form it stands in.
     Submits(flag: bool)
+    /// Rows a windowed list at `path` leaves unbuilt here, each `extent`
+    /// tall in the target's own measure: the room they would take.
+    Skipped(path: string, rows: int, extent: int)
+    /// Row `at` of `of` in a windowed list, whatever of it is built;
+    /// `reveal` asks the target to bring it into view once.
+    Placed(at: int, of: int, reveal: bool)
 }
 
 /// A drawn node: its primitive, its attributes, its shared Box and its
@@ -162,6 +169,7 @@ export type Node = {
     box: Box,
     children: List<Node>,
     events: List<Action> = [],
+    sites: List<Reading> = [],
 }
 
 // ── neutral projections every target reads ──────────────────────
@@ -175,6 +183,11 @@ impl Node {
 
     /// The gap between this node's children.
     fn gap() -> Size? { gap_between(self.prim, self.box) }
+
+    /// Whether the node is something a reader sees: a key is a shortcut and draws nothing.
+    fn drawn() -> bool {
+        match self.prim { .Key -> false, rest -> true }
+    }
 
     /// Whether the node is open — a dialog showing what it holds.
     fn open() -> bool { self.attrs.any(says_open) }
@@ -194,7 +207,7 @@ export fn own_axis(p: Prim) -> Axis? {
     match p {
         .Row -> .Row,
         .Column or .Surface or .Form or .Card or .Dialog -> .Column,
-        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Divider or .Icon or .List or .Item or .Progress or .Alert or .Spinner or .Switch or .Slider -> null,
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Divider or .Icon or .List or .Item or .Progress or .Alert or .Spinner or .Switch or .Slider or .Key -> null,
     }
 }
 

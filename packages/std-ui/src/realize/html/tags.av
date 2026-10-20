@@ -2,6 +2,7 @@
 //! model upstream is typed end to end; strings appear only in the two
 //! serializers, so a tag cannot be hostile.
 use @std.meta.{derive}
+use tree.chord.{parsed}
 use tree.node.{Node, Prim}
 use style.words.{Words}
 
@@ -54,6 +55,16 @@ export enum HtmlAttrName {
     @word(type) Type
     @word(role) Role
     @word(closedby) Closedby
+    @word(aria_hidden) AriaHidden
+    @word(data_avra_window) DataWindow
+    @word(data_avra_skip) DataSkip
+    @word(data_avra_extent) DataExtent
+    @word(aria_posinset) AriaPosinset
+    @word(aria_setsize) AriaSetsize
+    @word(data_avra_reveal) DataReveal
+    @word(data_v) DataV
+    @word(hidden) Hidden
+    @word(data_avra_chord) DataChord
 }
 
 /// One attribute: a typed name, an escaped value.
@@ -64,7 +75,7 @@ export type HtmlAttr = { name: HtmlAttrName, value: string }
 /// pressing it submits the form it stands in — never by the browser's
 /// default, which submits. A dialog says a press outside it sends it away,
 /// as its key does. Every primitive spelled.
-export fn control_attrs(prim: Prim, submits: bool) -> List<HtmlAttr> {
+export fn control_attrs(prim: Prim, submits: bool, words: string) -> List<HtmlAttr> {
     match prim {
         .Field -> [input_type("text")],
         .Checkbox -> [input_type("checkbox")],
@@ -72,7 +83,19 @@ export fn control_attrs(prim: Prim, submits: bool) -> List<HtmlAttr> {
         .Slider -> [input_type("range")],
         .Button -> [input_type(if submits { "submit" } else { "button" })],
         .Dialog -> [HtmlAttr { name: .Closedby, value: "any" }],
+        .Key -> key_attrs(words),
         .Text or .Heading or .Link or .Image or .Row or .Column or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form -> [],
+    }
+}
+
+/// A shortcut draws nothing: it stands hidden, saying the chord it answers to
+/// in the spelling a page's keydown is read by (`Chord.web_spec`). A chord
+/// that is none leaves it dead, and the page says nothing of it.
+fn key_attrs(words: string) -> List<HtmlAttr> {
+    let hidden = HtmlAttr { name: .Hidden, value: "" }
+    match parsed(words) {
+        c? -> [hidden, HtmlAttr { name: .DataChord, value: c.web_spec() }]
+        null -> [hidden]
     }
 }
 
@@ -80,7 +103,11 @@ export fn control_attrs(prim: Prim, submits: bool) -> List<HtmlAttr> {
 fn input_type(kind: string) -> HtmlAttr { HtmlAttr { name: .Type, value: kind } }
 
 fn heading_tag(rank: int) -> HtmlTag {
-    let r = if rank < 1 { 1 } else if rank > 6 { 6 } else { rank }
+    let r = when {
+        rank < 1 -> 1
+        rank > 6 -> 6
+        _ -> rank
+    }
     let tags: List<HtmlTag> = [.H1, .H2, .H3, .H4, .H5, .H6]
     tags[r - 1]
 }
@@ -105,6 +132,7 @@ fn tag_for(prim: Prim, rank: int) -> HtmlTag {
         .Progress -> .Progress,
         .Form -> .Form,
         .Heading -> .H1,
+        .Key -> .Div,
     }
 }
 

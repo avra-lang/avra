@@ -150,6 +150,15 @@ fn depending_on(rows: string) -> Workspace {
     )
 }
 
+/// The package where `solo` fails to parse (a continuation led by its
+/// operator) and `main` imports from it.
+fn with_unread_solo(main: string) -> Workspace {
+    mut fs = ws_files()
+    fs.set("/w/src/main.av", main)
+    fs.set("/w/src/solo.av", "export fn only(a: bool, b: bool) -> bool {\n    a\n        && b\n}\n")
+    test_workspace(memory_host(fs, ws_names()), "/w")
+}
+
 fn main_report(text: string) -> string {
     with_main(text).analyze_file("/w/src/main.av").report()
 }
@@ -291,6 +300,77 @@ spec "compiler/workspace" {
             main_refuses("use util.{hidden}\n2\n", "`util` does not export `hidden`") &&
                 main_report("use util.{hidden}\n2\n")
                     .contains("its exports: twice, ident, Pair, Box, Shape")
+        }
+        then "an item its module's unread file would have declared — the parse error named, the reads silent" {
+            let a = with_unread_solo("use solo.{only}\nonly(true, true)\n")
+                .analyze_file("/w/src/main.av")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`solo` does not export `only`") &&
+                a
+                    .report()
+                    .contains(
+                        "`solo` fails to parse here, so its names are unread: expected `}` to close the block",
+                    ) &&
+                a.report().contains("fix the parse error first") &&
+                !a.report().contains("is not defined") &&
+                !a.report().contains("no `fn only`")
+        }
+        then "a failed use's names answer to the use alone — a type read and a call both stay silent" {
+            let a = with_unread_solo(
+                "use solo.{only, Wide}\nlet w = Wide { n: 1 }\nonly(true, true)\n",
+            )
+                .analyze_file("/w/src/main.av")
+            a.diagnostics.length == 2 && !a.report().contains("no `type Wide`")
+        }
+        then "a name a sibling file would have declared — the sibling's parse error named, no remedy of its own" {
+            mut fs = ws_files()
+            fs
+                .set(
+                    "/w/src/helper.av",
+                    "fn helper(a: bool, b: bool) -> bool {\n    a\n        && b\n}\n",
+                )
+            fs.set("/w/src/main.av", "helper(true, true)\n")
+            let a = test_workspace(memory_host(fs, ws_names()), "/w").analyze_file("/w/src/main.av")
+            a.diagnostics.length == 1 &&
+                a.report().contains("no `fn helper` is defined") &&
+                a
+                    .report()
+                    .contains(
+                        "this module fails to parse here, so its names are unread: expected `}` to close the block",
+                    ) &&
+                !a.report().contains("did you mean")
+        }
+        then "an aliased item of an unread module — the alias's reads are silent too" {
+            let a = with_unread_solo("use solo.{only as one}\none(true, true)\n")
+                .analyze_file("/w/src/main.av")
+            a.diagnostics.length == 1 && a.report().contains("`solo` does not export `only`")
+        }
+        then "a local declaration of a refused name still answers its reads" {
+            let a = with_unread_solo(
+                "use solo.{only}\nfn only(a: bool, b: bool) -> bool { a }\nonly(true, true)\n",
+            )
+                .analyze_file("/w/src/main.av")
+            a.diagnostics.length == 1 && !a.report().contains("no `fn only`")
+        }
+        then "an item the unread module never named is refused with the parse error beside it" {
+            let a = with_unread_solo("use solo.{nope}\n1\n").analyze_file("/w/src/main.av")
+            a.diagnostics.length == 1 &&
+                a.report().contains("fix the parse error first") &&
+                !a.report().contains("its exports: ")
+        }
+        then "a refused item named as an impl's trait, a `dyn` and a bound stays silent beside its use" {
+            let a = with_main(
+                "use solo.{Gone}\ntype S = { a: int }\nimpl Gone for S {\n}\nfn f(x: dyn Gone) {}\nfn g<T: Gone>(x: T) -> int { 1 }\n1\n",
+            )
+                .analyze_file("/w/src/main.av")
+            a.diagnostics.length == 1 && a.report().contains("`solo` does not export `Gone`")
+        }
+        then "an impl's trait, a `dyn` and a bound refused in a module with an unread file point at it" {
+            let a = with_unread_solo(
+                "type S = { a: int }\nimpl Gone for S {\n}\nfn f(x: dyn Gone) {}\nfn g<T: Gone>(x: T) -> int { 1 }\n1\n",
+            )
+                .analyze_file("/w/src/main.av")
+            a.diagnostics.length == 3 && a.report().split("fix the parse error first").length == 4
         }
         then "a package the manifest does not declare — a root without one declares nothing" {
             main_refuses(
@@ -746,7 +826,7 @@ spec "avra fmt --write's own receipt" {
                 .starts_with(
                     "error[manifest.unset_link_variable]: `" +
                         word +
-                        "` in `search` fills `UNSET`, which is not set — a hole inside a `[link]` word needs its variable, or the word names another path\n  ╭─[/w/avra.toml:6:1]",
+                        "` in `search` needs `UNSET`, which is not set — without it the word names another path\n  ╭─[/w/avra.toml:6:1]",
                 )
         }
     }

@@ -2,7 +2,10 @@
 //! template rebuilder, read off its payload SPELLINGS: an id is a
 //! child to rebuild, a name goes through the verb its KIND names, a
 //! written type through `tref`, a record list through its walker, and
-//! every other payload is carried through. `@std/meta` hands a
+//! every other payload is carried through. A record or enum with no
+//! walker of its own is READ OFF ITS DECLARATION: each field rebuilt by
+//! its own type's verb, the rest carried, so only a payload that is a
+//! hole SEAT (`Arm`, `Param`, `FormatPart`) keeps a row. `@std/meta` hands a
 //! payload's type over as the words the program wrote, so the derive
 //! reads the same declaration a person does — these are DECLARATIONS
 //! read at compile time, never tags read at run time.
@@ -11,7 +14,19 @@
 //! the file that declares it, and a file that also walked the nodes
 //! would be typed while the annotated file's own impls are still
 //! registering (CLAUDE.md).
-use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive, Arms, Code, name}
+use @std.meta.{
+    Type as MetaType,
+    Variant as MetaVariant,
+    Field,
+    Directive,
+    Arms,
+    Code,
+    Kind,
+    Held,
+    payload_of,
+    holds,
+    name,
+}
 
 /// The compiler's derive for the template rebuilder.
 export trait Rebuild {
@@ -43,8 +58,9 @@ export trait Rebuild {
 /// values rebuilt together, since a hole may stand for several.
 fn arm_of(t: MetaType, v: MetaVariant) -> Arms {
     let binders = ["p${i}" for i in 0..v.payload.length]
-    let at? = inits_at(v.payload) else { return built(v, binders, [rebuilt_arg(p, binders[i]) for i, p in v.payload]) }
-    let args = [init_arg(p, binders[i], i - at) for i, p in v.payload]
+    let seats = [f for f in v.fields if carried(f)]
+    let at? = inits_at(v.payload) else { return built(v, binders, [rebuilt_arg(t, seats[i], binders[i]) for i in 0..seats.length]) }
+    let args = [init_arg(t, seats[i], binders[i], i - at) for i in 0..seats.length]
     let names = name(binders[at])
     let values = name(binders[at + 1])
     quote { .${v}(${binders}) -> {
@@ -62,19 +78,80 @@ fn inits_at(payload: List<string>) -> int? {
 
 /// A payload of an arm that rebuilds inits: the names and values read
 /// from them, every other payload through its own verb.
-fn init_arg(spelling: string, binder: string, from: int) -> Code {
+fn init_arg(t: MetaType, f: Field, binder: string, from: int) -> Code {
     if from == 0 { return quote { inits.names } }
     if from == 1 { return quote { inits.values } }
-    rebuilt_arg(spelling, binder)
+    rebuilt_arg(t, f, binder)
 }
 
 /// One payload rebuilt: through the verb its TYPE names, or carried
 /// through when the type names none — a literal's value, an
 /// operator, a `use` path, a spec's title.
-fn rebuilt_arg(spelling: string, binder: string) -> Code {
-    let verb? = verb_of(spelling) else { return name(binder) }
-    quote { rb.${verb}(${name(binder)}) }
+fn rebuilt_arg(t: MetaType, f: Field, binder: string) -> Code {
+    let rebuilt? = rebuilt_through(t, f.kind, name(binder), []) else { return name(binder) }
+    rebuilt
 }
+
+/// A value rebuilt through its TYPE: the verb its spelling names, else
+/// — for a list, a record or an enum that holds something a verb
+/// rebuilds — its own declaration. Absence is "carried through".
+fn rebuilt_through(t: MetaType, k: Kind, e: Code, entered: List<string>) -> Code? {
+    let verb? = verb_of(k.spelled()) else { return structural_rebuild(t, k, e, entered) }
+    quote { rb.${verb}(${e}) }
+}
+
+fn structural_rebuild(t: MetaType, k: Kind, e: Code, entered: List<string>) -> Code? {
+    match k {
+        .List(inner) -> {
+            let each? = rebuilt_through(t, inner, quote { each }, entered) else { return null }
+            quote { [${each} for each in ${e}] }
+        },
+        .Named(n, _) -> declared_rebuild(t, k, n, e, entered),
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
+    }
+}
+
+/// A declared type is entered only when something under it has a verb,
+/// and never from inside itself — that is a defect at the generated
+/// code, naming the type, not a silent carry.
+fn declared_rebuild(t: MetaType, k: Kind, n: string, e: Code, entered: List<string>) -> Code? {
+    if !holds(t, k, has_verb) { return null }
+    if entered.contains(n) { return quote { a_payload_type_the_rebuild_derive_cannot_read() } }
+    let held? = payload_of(t, n) else { return null }
+    let inside = entered.concat([n])
+    match held {
+        .Record(fields) -> {
+            mut acc = e
+            for f in fields {
+                let r? = rebuilt_through(t, f.kind, quote { ${e}.${f.name} }, inside) else { continue }
+                let sofar = acc
+                acc = quote { (${sofar} with { ${f.name}: ${r} }) }
+            }
+            acc
+        },
+        .Enum(variants) -> {
+            let arms = [variant_rebuild(t, n, v, inside) for v in variants]
+            quote { (match ${e} { ${arms} }) }
+        },
+    }
+}
+
+/// One variant of a declared enum, built again from its payloads.
+fn variant_rebuild(t: MetaType, owner: string, v: MetaVariant, entered: List<string>) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> ${name(owner)}.${v} } }
+    let bound = ["${f.name}_held" for f in v.fields if carried(f)]
+    let args = [rebuilt_arg_inside(t, f, "${f.name}_held", entered) for f in v.fields if carried(f)]
+    quote { .${v}(${bound}) -> ${name(owner)}.${v}(${..args}) }
+}
+
+fn rebuilt_arg_inside(t: MetaType, f: Field, binder: string, entered: List<string>) -> Code {
+    let rebuilt? = rebuilt_through(t, f.kind, name(binder), entered) else { return name(binder) }
+    rebuilt
+}
+
+/// Whether a type is one a verb rebuilds, by the name it is spelled
+/// with — or a list of it.
+fn has_verb(n: string) -> bool { verb_of(n) != null || verb_of("List<${n}>") != null }
 
 /// THE ARM, ONE CALL FOR EVERY ARITY: a run hole splices a whole
 /// argument list, so the variant is built again in one quote — no
@@ -92,15 +169,14 @@ fn verb_of(spelling: string) -> string? {
         "ExprId?" -> "expr_opt",
         "List<ExprId>" -> "exprs",
         "List<StmtId>" -> "stmts",
+        "PatId" -> "pat",
         "List<PatId>" -> "pats",
         "TypeRef" -> "tref",
         "TypeRef?" -> "tref_opt",
         "List<TypeRef>" -> "trefs",
         "List<Arm>" -> "arms",
-        "List<CompClause>" -> "comp_clauses",
-        "List<Case>" -> "cases",
         "List<Param>" -> "params",
-        "List<Variant>" -> "variants",
+        "List<Mark>" -> "marks",
         "List<FormatPart>" -> "rebuilt_parts",
         "BodyView" -> "rebuilt_view",
         "Scoped" -> "scoped_name",

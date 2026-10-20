@@ -50,7 +50,18 @@ use core.{
     Annotation,
     At,
 }
-use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck, Mark, CollectKind, db_verified}
+use core.{
+    EmbedKind,
+    EmbedBase,
+    SeatMark,
+    mark_at,
+    plain_mark,
+    ArenaRuns,
+    wreck,
+    Mark,
+    CollectKind,
+    db_verified,
+}
 use @std.relation.db.{Db, Durable, durable_db, transient}
 use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
 use core.{Fingerprint, Exemplar, Ids, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
@@ -299,6 +310,10 @@ export type DeclFacts = {
     /// so a held file must say which of its externs a caller links to
     /// and which the target answers.
     hosted: bool = false,
+    /// THE SEAT THAT TAKES THE REST OF A CALL'S ARGUMENTS (`..rest: List<T>`),
+    /// by position, absent for a fn with none — a caller in another file packs
+    /// its extra arguments into that seat's list without the parse the hold skips.
+    variadic: int? = null,
 }
 
 impl DeclFacts {
@@ -367,12 +382,17 @@ fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
         annotated: owns && !store.annotations_of(x.stmt).is_empty(),
         of: if readable && x.kind is .Impl { store.impl_parts(x.stmt)?.of ?? "" } else { "" },
         instance: readable && x.kind is .Const && store.is_component_inst(x.stmt),
-        word: if x.kind is .Const { store.instance_of(x.stmt) } else if x.kind is .CollectEnum { collect_enum_word } else { null },
+        word: when {
+            x.kind is .Const -> store.instance_of(x.stmt)
+            x.kind is .CollectEnum -> collect_enum_word
+            _ -> null
+        },
         doc: if owns { store.doc_comment(x.stmt) } else { null },
         annotations: if owns { [annotation_fact(store, a) for a in store.annotations_of(x.stmt)] } else { [] },
         mut_seats: if readable && x.kind is .Fn { mut_seat_names(store, x.stmt) } else { [] },
         trait_args: if readable && x.kind is .Impl { [spelled(a) for a in store.trait_args_of(x.stmt)] } else { [] },
         hosted: readable && x.kind is .Fn && store.is_host_fn(x.stmt),
+        variadic: if owns { [j for j, p in store.fn_parts(x.stmt)?.params ?? [] if p.variadic].first() } else { null },
     }
 }
 
@@ -467,7 +487,7 @@ export type Decls = {
     /// THE FILE AN `embed` LITERAL NAMES, or why a const may not read
     /// it: the hook the workspace arms — it knows the package a file
     /// stands in and the ones it depends on, and its host is what reads.
-    embed_judge: Cell<fn(FileId, string) -> Result<string, EmbedFault>>,
+    embed_judge: Cell<fn(FileId, string, EmbedKind, EmbedBase) -> Result<string, EmbedFault>>,
     /// A PACKAGE-SCOPED COLLECT GATHERS THE WHOLE PACKAGE: the hook the
     /// workspace arms, admitting every file of the package a file stands
     /// in — once per package, `scoped` records which.
@@ -488,6 +508,7 @@ export type Decls = {
     held_items: Cell<Map<string, List<DeclId>>>,
     spliced: Cell<Map<string, List<DeclId>>>,
     reentered: Table<List<DeclId>>,
+    reentering: Table<bool>,
     /// Each file's declarations by kind, owner and name, keyed by file
     /// index, kept until the file holds more declarations than it was
     /// indexed with.
@@ -763,7 +784,10 @@ export enum EmbedFault { Outside, Undeclared(key: string), Missing, Linked, NotT
 export const embed_literal_law: string = "`embed` reads a file named in the source — its path is a literal"
 
 /// A table no workspace stands behind has no host to read a file with.
-fn embed_unjudged(_f: FileId, _rel: string) -> Result<string, EmbedFault> {
+fn embed_unjudged(_f: FileId, _rel: string, _kind: EmbedKind, _base: EmbedBase) -> Result<
+    string,
+    EmbedFault,
+> {
     .Err(EmbedFault.Refused("no workspace stands behind this file"))
 }
 
@@ -788,6 +812,13 @@ fn no_audit(_r: Bypassed) {}
 /// Whether a scope gathers from every file of the owner's package.
 export fn admits_package(scope: CollectScope) -> bool {
     match scope { .Package -> true, .Self or .Closure or .UnknownScope(_) -> false }
+}
+
+/// Whether a scope's members are declared in OTHER files, so a file holding the collect is
+/// held to the set they form: a package's files, or an import closure's. A `self` collect
+/// gathers its own file, which its text already keys.
+export fn gathers_across_files(scope: CollectScope) -> bool {
+    match scope { .Package or .Closure -> true, .Self or .UnknownScope(_) -> false }
 }
 
 // LICENSED fns.dead_parameter: a fn VALUE filling the const-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
@@ -889,6 +920,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         held_items: map_cell(),
         spliced: map_cell(),
         reentered: new_table(),
+        reentering: new_table(),
         wire_index: map_cell(),
         faces: Cell.new(no_faces),
         doc_facts: Cell.new(side_table("doc_facts", 0, 0, DocFact { doc: null, annotations: [] })),
@@ -1106,12 +1138,23 @@ impl Decls {
         self.auditing.set(true)
     }
 
+    /// What a read under name bucket `b` records for a declaration of `kind` in `f`: the
+    /// bucket — except a `main`. Every file with top-level statements mints one under the one
+    /// name, so the bucket holds a `main` per file and would tie each to every other file's;
+    /// a `main` is a function of its own file's rows alone.
+    fn name_read(kind: DeclKind, f: FileId, b: int) {
+        match kind {
+            .Main -> self.rows_read(f),
+            rest -> self.record_kernel.record_at(self.record_names.get(), b),
+        }
+    }
+
     /// A read of one row records what the row is a function of in the open query: its
     /// name's bucket when its file's rows are settled, its module's record when the
     /// file is held, nothing while the rows are being minted.
     fn row_read(x: Decl) {
         if x.standing == 1 {
-            self.record_kernel.record_at(self.record_names.get(), x.bucket)
+            self.name_read(x.kind, x.file, x.bucket)
         } else if x.standing == 2 {
             (self.held_rows.get())(x.file)
         }
@@ -1139,6 +1182,13 @@ impl Decls {
     @bracket("decls")
     fn named(name: string) -> List<Decl> {
         self.hold_named(name)
+        self.named_filed(name)
+    }
+
+    /// `named`'s read of what is filed, no module minted for it: the asker has stood up
+    /// the files whose rows it wants, and a row of another module answers nothing it asked.
+    @bracket("decls")
+    fn named_filed(name: string) -> List<Decl> {
         let b = self.name_bucket(name)
         if b >= self.cell_names.get().length { self.room_for_cell(b, name) }
         self.bucket_moved(b)
@@ -1420,10 +1470,24 @@ impl Decls {
         match self.reentered.entry(f.index) { .Present(made) -> made, .Missing -> null }
     }
 
-    fn reentry_kept(f: FileId, made: List<DeclId>) { self.reentered.keep(f.index, made) }
+    fn reentry_kept(f: FileId, made: List<DeclId>) {
+        self.reentering.drop(f.index)
+        self.reentered.keep(f.index, made)
+    }
 
     /// The outer run ended: a later run starts with no re-entry settled.
-    fn reentry_over(f: FileId) { self.reentered.drop(f.index) }
+    fn reentry_over(f: FileId) {
+        self.reentering.drop(f.index)
+        self.reentered.drop(f.index)
+    }
+
+    /// A file's first re-entrant expansion is computing: a deeper re-entry
+    /// reads what is minted so far instead of computing again.
+    fn reentry_begun(f: FileId) { self.reentering.keep(f.index, true) }
+
+    fn reentry_running(f: FileId) -> bool {
+        match self.reentering.entry(f.index) { .Present(_) -> true, .Missing -> false }
+    }
 
     /// A file's expansion begins with nothing refused.
     fn hush_expansion(f: FileId) {
@@ -1469,8 +1533,12 @@ impl Decls {
 
     /// A declaration's module fully qualified, as `use` spells it from
     /// outside the package: a root module gains the root's own name.
-    fn qualified_module(d: DeclId) -> string {
-        let m = self.module_of(d)
+    fn qualified_module(d: DeclId) -> string { self.qualified_module_named(self.module_of(d)) }
+
+    /// A module's name fully qualified: a root module gains the root's own
+    /// name, so one file reads the same as the root being built and as a
+    /// dependency of the program that carries it.
+    fn qualified_module_named(m: string) -> string {
         if !package_of_module(m).is_empty() { return m }
         let root = self.root_name.get()
         when {
@@ -1505,7 +1573,7 @@ impl Decls {
     /// (`rule_id`, compiler/rules_table.av) is named after this, so
     /// it must read the same whether `@std/avrac` is the root being
     /// built or a dependency of the program that carries it.
-    fn short_module_of(d: DeclId) -> string { self.module_of(d).split(".").last()! }
+    fn short_module_of(d: DeclId) -> string { self.module_of(d).split(".").last() ?? "" }
 
     /// Every declaration of `k` admitted so far — a fixture proving
     /// one (`FileInfo.test`) is not the program's own. Admission is
@@ -1660,11 +1728,22 @@ impl Decls {
         self.decl(d).name == name && self.package_of(d) == "@std.meta"
     }
 
-    fn arm_embeds(judge: fn(FileId, string) -> Result<string, EmbedFault>) { self.embed_judge.set(judge) }
+    /// What an `@std/meta` embedding fn reads its file as; null for any other fn.
+    fn embed_kind_of(d: DeclId) -> EmbedKind? {
+        if self.is_meta_fn(d, "embed") { return EmbedKind.Text }
+        null
+    }
+
+    fn arm_embeds(judge: fn(FileId, string, EmbedKind, EmbedBase) -> Result<string, EmbedFault>) { self.embed_judge.set(judge) }
 
     /// The path of the file an `embed` literal in `f` names, when a const
     /// may read it — or what is wrong with it.
-    fn embed_placed(f: FileId, rel: string) -> Result<string, EmbedFault> { (self.embed_judge.get())(f, rel) }
+    fn embed_placed(f: FileId, rel: string, kind: EmbedKind, base: EmbedBase) -> Result<
+        string,
+        EmbedFault,
+    > {
+        (self.embed_judge.get())(f, rel, kind, base)
+    }
 
     /// Whether a type is one declaration exported by `@std/meta` —
     /// `is_meta_fn`'s door, opened over a TYPE's shape rather than a
@@ -1686,6 +1765,24 @@ impl Decls {
     /// which a literal that leaves it unset fills with where it was
     /// written — so it owes no default.
     fn sited_slot(sig: StructSig, j: int) -> bool { self.meta_type(sig.types[j], "Site") }
+
+    /// Whether slot `j` holds the CELLS a sibling closure reads: a field typed
+    /// `@std/meta`'s `Cells`, which a literal that leaves it unset fills with
+    /// them — so it owes no default.
+    fn cells_slot(sig: StructSig, j: int) -> bool { self.meta_type(sig.types[j], "Cells") }
+
+    /// Whether slot `j` holds the closure that says its component's text again
+    /// (`@std/meta`'s `Words`), which an instance that has one minted beside it
+    /// fills.
+    fn words_slot(sig: StructSig, j: int) -> bool { self.meta_type(sig.types[j], "Words") }
+
+    /// Whether slot `j` holds the cells its FRAME reads that no text says again
+    /// (`@std/meta`'s `Structural`), which a literal that leaves it unset fills.
+    fn structural_slot(sig: StructSig, j: int) -> bool { self.meta_type(sig.types[j], "Structural") }
+
+    /// Whether slot `j` holds whether its frame can be placed (`@std/meta`'s
+    /// `Opaque`), which a literal that leaves it unset fills.
+    fn opaque_slot(sig: StructSig, j: int) -> bool { self.meta_type(sig.types[j], "Opaque") }
 
     /// A declaration's signature — asking it IS the query: the hook
     /// the workspace arms computes it on first ask and records the
@@ -2041,8 +2138,17 @@ impl Decls {
     /// declaration's flatness is read.
     fn declared_first(t: TypeId) {
         match self.types.shape_of(t) {
-            .Struct(r, _) or .Enum(r, _) -> {
-                for sealer in self.mut_seat_sealers(self.decl(r).name) { touch(self.sig(sealer)) }
+            .Struct(r, _) -> {
+                let _ = self.sig(r)
+                // only a record that is NATURALLY flat (all-scalar fields, flat now or boxed by a seal already landed) can be sealed
+                // boxed by a `mut` seat: one with a pointer-riding field never is, and asking every fn that seats it `mut` would
+                // sign them all (hundreds, each asking the rest back). Never the sealed state alone, which a seal is about to change.
+                if self.types.peek_flat(t) || self.types.peek_boxed_flat(t) {
+                    for sealer in self.mut_seat_sealers(self.decl(r).name) { touch(self.sig(sealer)) }
+                }
+            },
+            // an enum keeps the layout its declaration made, under any `mut` seat
+            .Enum(r, _) -> {
                 let _ = self.sig(r)
             },
             rest -> nothing_asked(),
@@ -2918,6 +3024,10 @@ impl Decls {
 
     /// Each written seat's default body, in seat order — null where
     /// the seat has none.
+    /// The seat that takes the rest of a call's arguments, when the fn
+    /// declares one — always its last.
+    fn variadic_of(d: DeclId) -> int? { self.facts_of(d)?.variadic }
+
     fn seat_defaults(d: DeclId) -> List<DeclId?> {
         [self.default_named(d, n) for n in self.facts_of(d)?.seats ?? []]
     }
@@ -3086,16 +3196,18 @@ impl Decls {
         "${dirs.concat([stem_of(info.path)]).join("/")}.av"
     }
 
-    /// A literal's SITE: its file — module and stem — its own content,
-    /// and its turn among the literals written alike in that file,
-    /// folded. Content-addressed, so a line added above a literal moves
-    /// nothing; two literals written alike are told apart by their turn.
+    /// A literal's SITE: its file — package-qualified module and stem —
+    /// its own content, and its turn among the literals written alike in
+    /// that file, folded. Content-addressed, so a line added above a
+    /// literal moves nothing; two literals written alike are told apart by
+    /// their turn. The module is read by `qualified_module_named`, so a
+    /// package's file wears one site as the root and as a dependency.
     fn site_of(f: FileId, content: int, turn: int) -> int {
         let info = self.file(f)
         mix_final(
             fp_list(
                 [
-                    fp_str(self.module_name(info.module_id)),
+                    fp_str(self.qualified_module_named(self.module_name(info.module_id))),
                     fp_str(stem_of(info.path)),
                     content,
                     turn,

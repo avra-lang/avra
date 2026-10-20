@@ -25,7 +25,7 @@
 # A run asked for by hand (`gh workflow run checks --ref <branch>`) runs the
 # whole gate over every package. The shards are packed by measured seconds
 # (tools/shards.py), so the slowest is as short as the heaviest suite allows. The shard count
-# trades runner slots against wall time: five shards keeps a PR's gate short.
+# trades runner slots against wall time: six shards keeps a PR's gate short.
 name: checks
 
 on:
@@ -46,6 +46,9 @@ on:
       warm_skip:
         description: "set only to skip the warm-edit gate BY HAND; unset, a run that cannot judge FAILS (a skip is not a pass)"
         default: ""
+      cold:
+        description: "1 sets the hand-down store aside before the suites, so each runs from nothing and main records its COLD numbers (the watcher asks for one a day)"
+        default: ""
 
 # The event is part of the group: a run asked for by hand on a ref never
 # cancels that ref's own PR check or train.
@@ -59,6 +62,10 @@ concurrency:
 permissions:
   contents: read
   packages: read
+
+# The PR body, for the speed gates' one waiver line (`SPEED_ACCEPT: <reason>`).
+env:
+  PR_BODY: ${{ github.event.pull_request.body }}
 
 jobs:
   prepare:
@@ -79,6 +86,7 @@ jobs:
       build: ${{ steps.plan.outputs.build }}
       runtime: ${{ steps.plan.outputs.runtime }}
       runtime_keep: ${{ steps.plan.outputs.runtime_keep }}
+      layout_oracle: ${{ steps.plan.outputs.layout_oracle }}
       cache: ${{ steps.plan.outputs.cache }}
       codecs: ${{ steps.plan.outputs.codecs }}
       key: ${{ steps.plan.outputs.key }}
@@ -86,6 +94,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 20 }
+      # THE SHARDS ARE PACKED BY MEASURED SECONDS: the newest weights a main run kept
+      # (`suite-timing`), else the committed seed rows alone.
+      - uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: .github/ci/suite-seconds.measured
+          key: suite-seconds-${{ github.run_id }}
+          restore-keys: suite-seconds-
       # A PR diffs against its base, `origin/main`; so does the train.
       - if: github.event_name != 'push'
         name: base
@@ -125,6 +141,10 @@ jobs:
           # the Makefile rules and the memcap wrapper they run under). Main's push
           # and a hand-run always carry them (tools/ci_path_gate.py).
           runtime_keep=$(git diff --name-only "$runtime_base" HEAD | python3 tools/ci_path_gate.py runtime-keep --event "$event")
+          # THE LAYOUT SOLVER'S BROWSER ORACLE owes a PR only a change to what it
+          # reads: std-ui, std-text and its own tools. Main's push and a hand-run
+          # always carry it; the wide sweep is the nightly orders run's.
+          layout_oracle=$(git diff --name-only "$runtime_base" HEAD | python3 tools/ci_path_gate.py layout-oracle --event "$event")
           # A PR AND A TRAIN OWE THE SAME CHECK SET: the affected closure. The
           # train adds the suites over it, never a package the PR skipped.
           if [ "$event" = merge_group ] || [ "$event" = pull_request ]; then
@@ -177,7 +197,8 @@ jobs:
           if [ "$event" = pull_request ] && ! git diff --quiet origin/main...HEAD -- \
               packages/std-avrac/src tools/codecs.py; then codecs=1; fi
           key=$(sh tools/compiler_paths.sh --key)
-          shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py --split 5)
+          shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py --split 6)
+          if [ -f .github/ci/suite-seconds.measured ]; then echo "suite weights: $(grep -vc '^#' .github/ci/suite-seconds.measured) measured row(s) over the committed seed"; else echo "suite weights: the committed seed alone"; fi
           # A DRAFT RUNS THE LIGHT GATE: the compiler and the changed-file gate,
           # the compiler-free keepers and the codecs scan. The heavy legs owe
           # nothing until the PR is ready or carries `full-ci`, so a draft that
@@ -199,7 +220,7 @@ jobs:
             dup=$(GH_TOKEN="$GH_TOKEN" python3 tools/ci_dup_run.py --repo "${{ github.repository }}" \
               --sha "${{ github.event.pull_request.head.sha }}" --run "${{ github.run_id }}") || dup=work
             case "$dup" in
-                mirror\ *) mirror=${dup#mirror }; full=0; build=0; changed=; pkgs=; codecs=0; cache=0; runtime=0; runtime_keep=0 ;;
+                mirror\ *) mirror=${dup#mirror }; full=0; build=0; changed=; pkgs=; codecs=0; cache=0; runtime=0; runtime_keep=0; layout_oracle=0 ;;
             esac
           fi
           # MAIN'S OWN RUN: its push, or the dispatch the watcher sends when a merge's
@@ -216,6 +237,7 @@ jobs:
             echo "build=${build}"
             echo "runtime=${runtime}"
             echo "runtime_keep=${runtime_keep}"
+            echo "layout_oracle=${layout_oracle}"
             echo "cache=${cache}"
             echo "codecs=${codecs}"
             echo "key=avrac-${key}"
@@ -339,6 +361,22 @@ jobs:
           chmod +x build/avra
           build/avra check packages/cli >/dev/null 2>&1 || true
           echo "warm store: check packages/cli took $(( $(date +%s) - s ))s"
+      # THE EVALUATOR'S PROOFS RIDE THE HAND-DOWN. A program test the evaluator agreed with is
+      # remembered by a file named for the compiler, the program's expected text and every file
+      # it reaches (`.avra-cache/proofs`), so a run owes only the programs whose key moved. Main's
+      # own runs save the set (`suite-timing`); every run restores the newest here.
+      - if: steps.plan.outputs.build == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: proofs-kept
+          key: proofs-restore-only-${{ github.run_id }}
+          restore-keys: proofs-
+      - if: steps.plan.outputs.build == '1'
+        name: place proofs
+        run: |
+          mkdir -p .avra-cache/proofs
+          [ ! -d proofs-kept ] || cp -R proofs-kept/. .avra-cache/proofs/
+          echo "proofs: $(ls .avra-cache/proofs | wc -l) kept row(s) handed down"
       # THE CACHE'S MACHINE CODE IS BOUNDED BY SIZE. `.avra-cache/obj` and `bin` are
       # restored by prefix from the run before and saved again, and an entry keyed to
       # a compiler that no longer exists is never read, so they only grow (1.1 GB, 621 MB
@@ -352,6 +390,16 @@ jobs:
           before=$(du -sm .avra-cache | cut -f1)
           find .avra-cache/obj .avra-cache/bin -type f -printf '%T@ %s %p\n' 2>/dev/null | sort -rn \
             | awk -v cap=314572800 '{ acc += $2; if (acc > cap) print $3 }' | xargs -r rm -f
+          # THE STORE KEEPS TWO REVISIONS AND AT MOST 600 MB. Each revision is one compiler's rows, and
+          # a cache that restores and saves the store every main run only grows: 1.1 GB of dead
+          # generations rode into the hand-down tar and broke its 1 GB budget. The newest two are what
+          # a run reads (the compiler it built wrote them last).
+          if [ -d .avra-cache/store ]; then
+            chmod +x build/avra
+            echo "store before: $(du -sm .avra-cache/store | cut -f1) MB"
+            AVRA_STORE_REVISIONS=2 AVRA_STORE_MAX_MB=600 build/avra cache clean || echo "::warning::the bounded cache clean failed"
+            echo "store after: $(du -sm .avra-cache/store | cut -f1) MB"
+          fi
           echo "prune: .avra-cache $before MB -> $(du -sm .avra-cache | cut -f1) MB"
       # A CACHE IS SCOPE-BOUND, AND ONLY THE DEFAULT BRANCH CROSSES RUNS: a run
       # restores caches from its own branch and `main`, never a sibling's, and
@@ -377,7 +425,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: avra-store
-          path: .avra-cache
+          # `.avra-cache` is a hidden directory, which upload-artifact@v4 skips unless asked: the
+          # artifact was never made and every job reading it ran cold. Rows only: the objects and
+          # binaries ride the hand-down tar's own budget.
+          path: |
+            .avra-cache
+            !.avra-cache/obj
+            !.avra-cache/bin
+          include-hidden-files: true
           retention-days: 1
           if-no-files-found: ignore
       - if: steps.plan.outputs.build == '1'
@@ -432,14 +487,15 @@ jobs:
           # suite reads what prepare's self-compile already analysed.
           # the store reclaims by its own rule before it rides to every job
           [ ! -d .avra-cache ] || { build/avra cache clean || echo "::warning::avra cache clean failed"; du -sh .avra-cache/* 2>/dev/null; }
-          tar -cf avra-build.tar --exclude=build/avra build
+          # gzip -1 (in the image) rides the tar: the store is text-heavy and the budget is the bytes a job downloads.
           # Downstream jobs read the analysis (`store`); machine code is each job's own to make.
-          [ ! -d .avra-cache ] || tar -rf avra-build.tar --exclude=.avra-cache/obj --exclude=.avra-cache/bin .avra-cache
-          # The tar rides to every downstream job; a store that grows into it costs each of them a download.
-          size=$(wc -c < avra-build.tar)
-          echo "hand-down: avra-build.tar is $(( size / 1048576 )) MB"
-          [ "$size" -le 314572800 ] || echo "::warning::avra-build.tar is $(( size / 1048576 )) MB; every downstream job downloads it (2.4 GB cost 3-5 min a job)"
-          [ "$size" -le 1073741824 ] || { echo "::error::avra-build.tar is $(( size / 1048576 )) MB, over the 1 GB budget every downstream job downloads"; exit 1; }
+          dirs=build; [ ! -d .avra-cache ] || dirs="build .avra-cache"
+          tar -cf - --exclude=build/avra --exclude=.avra-cache/obj --exclude=.avra-cache/bin $dirs | gzip -1 > avra-build.tar.gz
+          raw=$(du -sb $dirs | awk '{s+=$1} END {print s}')
+          size=$(wc -c < avra-build.tar.gz)
+          echo "hand-down: avra-build.tar.gz is $(( size / 1048576 )) MB compressed ($(( raw / 1048576 )) MB of files before excludes)"
+          [ "$size" -le 314572800 ] || echo "::warning::avra-build.tar.gz is $(( size / 1048576 )) MB; every downstream job downloads it (2.4 GB cost 3-5 min a job)"
+          [ "$size" -le 1073741824 ] || { echo "::error::avra-build.tar.gz is $(( size / 1048576 )) MB, over the 1 GB budget every downstream job downloads"; exit 1; }
           echo "objects: ${{ steps.objcache.outputs.cache-hit == 'true' && 'restored from cache' || 'built' }}"
       - if: steps.plan.outputs.build == '1' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/cache/save@v4
@@ -452,7 +508,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: avra-build
-          path: avra-build.tar
+          path: avra-build.tar.gz
+          compression-level: 0
           retention-days: 1
 
       - name: speed baseline
@@ -464,15 +521,14 @@ jobs:
           restore-keys: speed-main-prepare-
       - if: always()
         name: speed note
-        continue-on-error: true
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && steps.plan.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
+      - if: success() && steps.plan.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
-        run: cp speed-now.metrics speed-base.metrics
-      - if: always() && steps.plan.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
+        run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
+      - if: success() && steps.plan.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
@@ -523,9 +579,19 @@ jobs:
       # Handed-down objects stand newer than this checkout's sources, so no
       # job rebuilds what prepare built from the same commit.
       - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
       # WHAT THE RUNNER HAD: the cgroup's ceiling is the number a 137 is
       # measured against, and it is not the VM's published spec.
+      # MAIN'S LAST COLD-COMPILE COUNTS, restored for the census gate (tools/census_ratchet.py):
+      # a PR is held to the less of the committed ceiling and main's last run, so the ceiling
+      # tightens by itself. Only group 1 runs the gate.
+      - if: matrix.group == '1'
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: census-main.txt
+          key: census-main-${{ github.sha }}
+          restore-keys: census-main-
       - name: room
         run: |
           echo "room: cpu=$(nproc)"
@@ -553,13 +619,16 @@ jobs:
           WARM_EDIT_SKIP: ${{ inputs.warm_skip }}
         run: |
           a=0
+          # THE ONE WAY TO LET A PR COST MORE: `SPEED_ACCEPT: <reason>` in its body (the squash keeps it).
+          SPEED_ACCEPT=$(printf '%s\n' "$PR_BODY" | sed -n 's/^SPEED_ACCEPT: *//p' | head -n 1)
+          export SPEED_ACCEPT
           # A CONTAINER STEP'S SHELL IS `sh`, WHICH HAS NO time BUILTIN and no
           # TIMEFORMAT — a first cut wrote `time ... %M` and every make was
           # skipped with "time: not found". The peak is read from the finished
           # tree's rusage, which needs nothing from the shell.
           peak() {
             peak_label="$1"; shift
-            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$peak_label" "$@"
+            python3 tools/step_cpu.py "$peak_label" -- "$@"
           }
           ta=$(date +%s)
           peak keepers-a${{ matrix.group }} make -s -o avra keepers-a${{ matrix.group }} || a=1
@@ -574,17 +643,25 @@ jobs:
           path: speed-base.metrics
           key: speed-main-keepers-${{ github.sha }}
           restore-keys: speed-main-keepers-
+      - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('build/census-now.txt') != ''
+        name: census counts kept for main
+        run: cp build/census-now.txt census-main.txt
+      - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('census-main.txt') != ''
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: census-main.txt
+          key: census-main-${{ github.sha }}
       - if: always()
         name: speed note
-        continue-on-error: true
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
+      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
-        run: cp speed-now.metrics speed-base.metrics
-      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
+        run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
+      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
@@ -608,7 +685,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with: { name: avra-build }
       - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
       - name: keepers
         timeout-minutes: 30
         env:
@@ -621,7 +698,7 @@ jobs:
           # tree's rusage, which needs nothing from the shell.
           peak() {
             peak_label="$1"; shift
-            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$peak_label" "$@"
+            python3 tools/step_cpu.py "$peak_label" -- "$@"
           }
           peak keepers-b make -s -o avra keepers-b || exit 1
   # THE COMMITTED SEED STILL BUILDS THIS TREE — a compiler build, the
@@ -648,11 +725,11 @@ jobs:
       # Handed-down objects stand newer than this checkout's sources, so make
       # rebuilds none of what prepare built from the same commit.
       - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
       - name: seed check
         timeout-minutes: 20
         run: |
-          python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[1:]); print("seed-check: peak %d KB max RSS" % resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss); sys.exit(rc)' make -s -o avra seed-check
+          python3 -c 'import re,resource,subprocess,sys; rc=subprocess.call(sys.argv[1:]); print("seed-check: peak %d KB max RSS" % resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss); sys.exit(rc)' make -s -o avra seed-check
   # THE BUILD CACHE, ATTACKED. Its own job: it clears the store it builds
   # through, and it runs beside the gate. It runs on the train, on main's own
   # push, and on a PR that reaches the store or the attacks — the three places
@@ -679,7 +756,7 @@ jobs:
       # Handed-down objects stand newer than this checkout's sources, so no
       # job rebuilds what prepare built from the same commit.
       - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
       - name: cache-attacks
         timeout-minutes: 15
         run: |
@@ -700,15 +777,14 @@ jobs:
           restore-keys: speed-main-cache-attacks-
       - if: always()
         name: speed note
-        continue-on-error: true
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
+      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
-        run: cp speed-now.metrics speed-base.metrics
-      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
+        run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
+      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
@@ -811,22 +887,50 @@ jobs:
       # Handed-down objects stand newer than this checkout's sources, so no
       # job rebuilds what prepare built from the same commit.
       - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
       - name: suites
-        timeout-minutes: 30
+        timeout-minutes: 50
         run: |
           fail=0
+          first=first
+          # A COLD PASS records main's cold numbers: the baseline keeps a number per cache state, and a
+          # PR's cold suite is only judged against a cold one.
+          if [ "${{ inputs.cold }}" = 1 ]; then
+            mkdir -p "${RUNNER_TEMP:-/tmp}/aside"
+            mv .avra-cache "${RUNNER_TEMP:-/tmp}/aside/" 2>/dev/null || :
+            echo "cold pass: the hand-down store is set aside; every suite runs from nothing"
+          fi
           for p in ${{ join(matrix.shard, ' ') }}; do
             [ -d "packages/${p%%/*}/src" ] || continue
             echo "::group::$p"
             t=$(date +%s)
             # The memory pass's L2 proof rides the suite run: a use-after-free
             # in the pass's own output fails the gate instead of hiding behind it.
-            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$p" env AVRA_SOUND_CHECK=1 build/avra test "packages/$p" || { fail=1; echo "::error::suite $p failed"; }
+            python3 tools/step_cpu.py --state "$p" -- env AVRA_SOUND_CHECK=1 build/avra test --time $(python3 tools/shards.py --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
             echo "::endgroup::"
             echo "$(echo "$p" | tr / _) $(( $(date +%s) - t ))s" | tee -a speed.log
+            # What the packer learns from (tools/shards.py --merge-times): the suite's own seconds,
+            # marked when it was the shard's first, which also paid the runner's cold start.
+            echo "$p $(( $(date +%s) - t )) $first" >> suite-times.txt
+            first=
           done
           exit $fail
+      # THE PACKER LEARNS FROM MAIN'S OWN RUNS: a main run hands its suite timings to the
+      # `suite-timing` job, which keeps them for every run's `prepare` to pack by.
+      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('suite-times.txt') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-times-${{ strategy.job-index }}
+          path: suite-times.txt
+          retention-days: 1
+
+      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('.avra-cache/proofs/*') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: proofs-${{ strategy.job-index }}
+          path: .avra-cache/proofs
+          include-hidden-files: true
+          retention-days: 1
 
       - name: speed baseline
         uses: actions/cache/restore@v4
@@ -837,20 +941,68 @@ jobs:
           restore-keys: speed-main-suites-${{ strategy.job-index }}-
       - if: always()
         name: speed note
-        continue-on-error: true
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
+      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
-        run: cp speed-now.metrics speed-base.metrics
-      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
+        run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
+      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
           path: speed-base.metrics
           key: speed-main-suites-${{ strategy.job-index }}-${{ github.sha }}
+  # THE SUITE WEIGHTS, MEASURED. Main's own run times every suite; this job merges those
+  # timings into the weights a later `prepare` packs the shards by, so the packer never
+  # reads a hand-kept file that went stale (`cli` sat at 120 s while it ran 417). The
+  # committed `suite-seconds.txt` is only the seed a cold cache falls back to.
+  suite-timing:
+    needs: [prepare, suites]
+    if: always() && needs.prepare.outputs.main == '1' && needs.suites.result == 'success'
+    runs-on: ubuntu-latest
+    # Prepare's own image: a cache's version includes how it was compressed, so the job that
+    # saves the weights and the one that restores them must share a toolchain.
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { pattern: suite-times-*, path: times, merge-multiple: false }
+      - uses: actions/cache/restore@v4
+        with:
+          path: .github/ci/suite-seconds.measured
+          key: suite-seconds-${{ github.run_id }}
+          restore-keys: suite-seconds-
+      - name: merge
+        run: python3 tools/shards.py --merge-times times > suite-seconds.new && mv suite-seconds.new .github/ci/suite-seconds.measured && cat .github/ci/suite-seconds.measured
+      - uses: actions/cache/save@v4
+        with:
+          path: .github/ci/suite-seconds.measured
+          key: suite-seconds-${{ github.run_id }}
+      # THE PROOFS A MAIN RUN HELD OR MADE, kept for every run's `prepare`: the union of every
+      # shard's set over the previous set, newest 4000 files (a proof is an empty file).
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { pattern: proofs-*, path: proofs-in, merge-multiple: true }
+      - uses: actions/cache/restore@v4
+        with:
+          path: proofs-kept
+          key: proofs-${{ github.run_id }}
+          restore-keys: proofs-
+      - name: merge proofs
+        run: |
+          mkdir -p proofs-kept
+          [ ! -d proofs-in ] || cp -R proofs-in/. proofs-kept/
+          find proofs-kept -type f -printf '%T@ %p\n' | sort -rn | tail -n +4001 | cut -d' ' -f2- | while IFS= read -r f; do find "$f" -delete; done
+          echo "proofs kept: $(ls proofs-kept | wc -l)"
+      - uses: actions/cache/save@v4
+        with:
+          path: proofs-kept
+          key: proofs-${{ github.run_id }}
   # THE COMPILER-FREE FLOOR ON A PULL REQUEST. The gate runs these too, but a
   # PR runs them FIRST and for nothing, so a keeper that reads only the tree
   # refuses on the PR instead of after the objects build. The set is
@@ -887,6 +1039,12 @@ jobs:
       image: ghcr.io/avra-lang/avra-ci:llvm22
       credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
     timeout-minutes: 60
+    # THE BREAKS RUN IN TWO PARTS (runtime/tests/mutations.py, MUTATION_SHARD): the scheduler's
+    # mutations were 10 of this job's 11 minutes, so each runner owns every other one.
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ['0/2', '1/2']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -896,7 +1054,7 @@ jobs:
       # Handed-down objects stand newer than this checkout's sources, so no
       # job rebuilds what prepare built from the same commit.
       - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
       # WHAT THE RUNNER HAD: the cgroup's ceiling is the number a 137 is
       # measured against, and it is not the VM's published spec.
       - name: room
@@ -908,6 +1066,7 @@ jobs:
         env:
           # the landing tool's supervisor checks need a machine with an init
           AVRA_NO_SUPERVISOR_TESTS: "1"
+          MUTATION_SHARD: ${{ matrix.part }}
         run: |
           log=build/keepers-alone.log
           # `if cmd; then` keeps a failing keeper from tripping the step
@@ -927,11 +1086,33 @@ jobs:
             echo "::error::runtime-keep refused (exit $rc) — $cause"
             exit "$rc"
           fi
+  # THE LAYOUT SOLVER AGAINST THE WEB TARGET, in Firefox: std-ui's `place` and
+  # the page the real html realizer writes, one fixed seed of 300 random trees,
+  # every box in agreement (tools/layout-oracle). Owed only to a change it reads
+  # (tools/ci_path_gate.py); the nine-seed sweep is the nightly orders run's.
+  layout-oracle:
+    needs: [prepare]
+    if: needs.prepare.outputs.layout_oracle == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-compiler, path: build }
+      - uses: actions/download-artifact@v4
+        with: { name: avra-build }
+      - name: built
+        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
+      - name: layout oracle
+        run: sh tools/layout_oracle.sh
   # THE ONE REQUIRED CHECK. Every other job is a shard or a step; this passes
   # iff each of them succeeded or was skipped (`always()` so it still reports
   # when a needed job failed, rather than being skipped itself).
   test:
-    needs: [prepare, keepers-a, keepers-b, keepers-static, runtime-keep, seed-check, flow-gate, cache-attacks, codecs, gate, suites]
+    needs: [prepare, keepers-a, keepers-b, keepers-static, runtime-keep, layout-oracle, seed-check, flow-gate, cache-attacks, codecs, gate, suites]
     if: always()
     runs-on: ubuntu-latest
     permissions:

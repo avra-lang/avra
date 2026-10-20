@@ -1,0 +1,96 @@
+// proves: the edges of answers and streams. A fetch asked twice lands the
+// later answer, a loop that ends mid-fetch leaves the cell Loading, a
+// source that ends stops its watcher, an empty source runs nothing, and
+// Async reads answer only their own state, eval == native.
+// The real loop (`looped`), not the driven one: its channels and answers are tasks, and a loop that ends mid-answer is the claim.
+use @std.ui.components.{text}
+use @std.ui.headless.{headless}
+use @std.ui.app.{Async, Fetch, fetch, fetched}
+use @std.ui.native.sources.{answered, watching}
+use @std.http_message.message.{Reply, Request}
+use @std.text.{parse_int}
+use @std.task.{unbounded_channel}
+use @std.time.{ms, sleep}
+
+/// A network that answers "<wait>/<body>" after the wait: a body of `offline`
+/// is no answer at all.
+fn network(r: Request) -> Result<Reply, string> {
+    let parts = r.url.split("/")
+    sleep(ms(parse_int(parts[0]) ?? 0))
+    if parts[1] == "offline" { return .Err("offline") }
+    .Ok(Reply { status: 200, body: parts[1].bytes() })
+}
+
+fn parsed(r: Reply) -> Result<int, string> {
+    let n? = parse_int(r.body.text() ?? "") else { return .Err("not a number") }
+    .Ok(n)
+}
+
+fn slow_work() -> Result<int, string> {
+    sleep(ms(500))
+    .Ok(2)
+}
+
+fn words(a: Async<int>) -> string {
+    "${a.is_loading()} ${a.value() ?? -1} ${a.failure() ?? "-"}"
+}
+
+let cell: Fetch<int> = fetch()
+let raced: Fetch<int> = fetch()
+let cut: Fetch<int> = fetch()
+let n = Cell.new(0)
+let screen = headless(() -> text "n=${n.get()}")
+screen.wired(network)
+let empty = unbounded_channel<int>()
+let ending = unbounded_channel<int>()
+screen
+    .looped(
+        () -> {
+            let _ = screen
+                .turn(
+                    () -> {
+                        let _ = fetched(cell, Request.get("500/2"), parsed)
+                        fetched(cell, Request.get("10/1"), parsed)
+                    },
+                )
+            let _ = watching(
+                empty.source,
+                (_x: int) -> {
+                    n.set(n.get() + 100)
+                    true
+                },
+            )
+            let _ = watching(
+                ending.source,
+                (x: int) -> {
+                    n.set(n.get() + x)
+                    true
+                },
+            )
+            let _ = ending.sink.send(5)
+            ending.sink.close()
+            screen.advance(ms(50))
+            println("two fetches, the quick one lands first: ${words(cell.state())} n=${n.get()}")
+            screen.advance(ms(600))
+            println("the slow earlier ask landed after: ${words(cell.state())}")
+            let _ = screen
+                .turn(
+                    () -> {
+                        let _ = fetched(raced, Request.get("10/1"), parsed)
+                        fetched(raced, Request.get("100/2"), parsed)
+                    },
+                )
+            screen.advance(ms(200))
+            println("the older ask answers first, the newer answer stands: ${words(raced.state())}")
+            let _ = screen.turn(() -> fetched(cut, Request.get("500/2"), parsed))
+            screen.advance(ms(10))
+        },
+    )
+println("loop ended mid-fetch: ${words(cut.state())}")
+let kept: Fetch<int> = fetch()
+kept.now.set(Async.Ready(9))
+println(
+    "fetch with no loop leaves the cell: ${fetched(kept, Request.get("10/1"), parsed)} ${words(kept.state())}",
+)
+println("idle: ${words(Async.Idle)} failed: ${words(Async.Failed("x"))}")
+"asked with no loop: ${answered(slow_work, (r: Result<int, string>) -> true)}"

@@ -26,6 +26,7 @@
 use @std.text.{parse_int}
 use features.{Decls}
 use compiler.{mark_word}
+use @std.relation.engine.{list_cell, map_cell}
 use core.{
     Ins,
     Reg,
@@ -461,93 +462,155 @@ fn callptr_node(shapes: Map<string, string>, b: Body, i: Ins) -> string {
 fn typed_by(b: Body) -> List<TypeId> { b.params.concat([b.ret]).concat(b.reg_types) }
 
 /// A TYPE BY ITS SHAPE, as a KEY: what its values are made of, never its
-/// name — a record's field types in order, an enum's payloads in variant
-/// order, a named type its shape; a declared type met again inside itself is
-/// its distance up the walk. The key is built from the KEYS of the parts,
-/// each a short digest, so a type that reaches a big record twice holds its
-/// key twice and no text of the unfolding exists. Filed build-wide.
+/// name. The key is built from the KEYS of the parts, each a short digest,
+/// so a type that reaches a big record twice holds its key twice and no text
+/// of the unfolding exists. A CYCLE'S MEMBERS are keyed together, by what
+/// each is made of and what the others make of it (`cycle_keys`), so a key
+/// is a function of the type alone — never of which member was asked first.
+/// Filed build-wide.
 export fn type_shape_key(decls: Decls, t: TypeId) -> string {
-    let kept? = decls.shape_keys.at(t.index) else { return shape_keyed(decls, t, []).key }
+    let seen = decls.types.seen_through(t)
+    let kept? = decls.shape_keys.at(seen.index) else {
+        let walk = Walk {
+            index: map_cell(),
+            low: map_cell(),
+            stack: list_cell(),
+            next: Cell.new(0),
+        }
+        walk.visit(decls, seen)
+        return decls.shape_keys.at(seen.index) ?? "unkeyed"
+    }
     kept
 }
 
-/// A shape's key, and how far up the walk it reaches: the shallowest open
-/// depth a back-reference inside it names, `no_reach` when none does.
-type Keyed = { key: string, reach: int }
+/// A shape's own word and the types it is made of, in order.
+type Parts = { tag: string, kids: List<TypeId> }
 
-const no_reach: int = 1000000000
+fn leaf(word: string) -> Parts { Parts { tag: word, kids: [] } }
 
-/// One node of the walk. A node nothing inside it points above is CLOSED:
-/// its key is the same wherever it is met (a back-reference is a distance,
-/// not a position), so it is filed by its type and every later asker reads it.
-fn shape_keyed(decls: Decls, t: TypeId, open: List<int>) -> Keyed {
-    let seen = decls.types.seen_through(t)
-    let depth = open.index_of(seen.index)
-    if depth >= 0 { return Keyed { key: "rec ${open.length - depth}", reach: depth } }
-    let kept? = decls.shape_keys.at(seen.index) else {
-        let node = shape_node(decls, seen, open.concat([seen.index]))
-        if node.reach >= open.length { decls.shape_keys.keep(seen.index, node.key) }
-        return node
-    }
-    Keyed { key: kept, reach: no_reach }
-}
+fn made_of(tag: string, kids: List<TypeId>) -> Parts { Parts { tag: tag, kids: kids } }
 
-/// A leaf shape: a word, reaching nowhere.
-fn word_shape(word: string) -> Keyed { Keyed { key: word, reach: no_reach } }
-
-/// A shape made of parts: a tag, then the parts' keys, digested.
-fn joined_shape(tag: string, parts: List<Keyed>) -> Keyed {
-    Keyed {
-        key: digest_of("${tag}(${[p.key for p in parts].join(",")})"),
-        reach: parts.fold(no_reach, (low, p) -> if p.reach < low { p.reach } else { low }),
-    }
-}
-
-fn shape_node(decls: Decls, seen: TypeId, inner: List<int>) -> Keyed {
+fn shape_parts(decls: Decls, seen: TypeId) -> Parts {
     match decls.types.shape_of(seen) {
-        .Int -> word_shape("int"),
-        .Float -> word_shape("float"),
-        .Bool -> word_shape("bool"),
-        .Str -> word_shape("string"),
-        .Bytes -> word_shape("Bytes"),
-        .Ptr -> word_shape("ptr"),
-        .Struct(_, _) or .App(_, _, _) or .Enum(_, _) -> declared_shape(decls, seen, inner),
-        .Dyn(_, _) -> word_shape("dyn"),
-        .List(e) -> joined_shape("List", [shape_keyed(decls, e, inner)]),
-        .Cell(c) -> joined_shape("Cell", [shape_keyed(decls, c, inner)]),
-        .Task(a) -> joined_shape("Task", [shape_keyed(decls, a, inner)]),
-        .Tasks -> word_shape("Tasks"),
-        .Map(k, v) -> joined_shape("Map", [shape_keyed(decls, k, inner), shape_keyed(decls, v, inner)]),
-        .Res(ok, err) -> joined_shape("Result", [shape_keyed(decls, ok, inner), shape_keyed(decls, err, inner)]),
-        .Fn(params, marks, ret) -> joined_shape(
-            "fn ${[mark_word(m) for m in marks].join(",")}",
-            [shape_keyed(decls, p, inner) for p in params].concat([shape_keyed(decls, ret, inner)]),
+        .Int -> leaf("int"),
+        .Float -> leaf("float"),
+        .Bool -> leaf("bool"),
+        .Str -> leaf("string"),
+        .Bytes -> leaf("Bytes"),
+        .Ptr -> leaf("ptr"),
+        .Struct(_, _) or .App(_, _, _) or .Enum(_, _) -> declared_parts(decls, seen),
+        .Dyn(_, trait_name) -> leaf("dyn ${trait_name}"),
+        .List(e) -> made_of("List", [e]),
+        .Cell(c) -> made_of("Cell", [c]),
+        .Task(a) -> made_of("Task", [a]),
+        .Tasks -> leaf("Tasks"),
+        .Map(k, v) -> made_of("Map", [k, v]),
+        .Res(ok, err) -> made_of("Result", [ok, err]),
+        .Fn(params, marks, ret) -> made_of(
+            "fn ${params.length} ${[mark_word(m) for m in marks].join(",")}",
+            params.concat([ret]),
         ),
-        .Void -> word_shape("void"),
-        .Opt(o) -> joined_shape("Opt", [shape_keyed(decls, o, inner)]),
-        .Null -> word_shape("null"),
-        .EmptyList -> word_shape("[]"),
-        .EmptyMap -> word_shape("{}"),
-        .TypeName(_, _) -> word_shape(decls.types.name_of(seen)),
-        .Var(_, ordinal, _) -> word_shape("var ${ordinal}"),
-        .Union(members) -> joined_shape("Union", [shape_keyed(decls, m, inner) for m in members]),
-        .Error -> word_shape("error"),
-        .Range -> word_shape("Range"),
+        .Void -> leaf("void"),
+        .Opt(o) -> made_of("Opt", [o]),
+        .Null -> leaf("null"),
+        .EmptyList -> leaf("[]"),
+        .EmptyMap -> leaf("{}"),
+        .TypeName(_, _) -> leaf(decls.types.name_of(seen)),
+        .Var(_, ordinal, _) -> leaf("var ${ordinal}"),
+        .Union(members) -> made_of("Union ${members.length}", members),
+        .Error -> leaf("error"),
+        .Range -> leaf("Range"),
     }
 }
 
-/// A declared box by its parts: a record's field types, or an enum's
-/// payloads, each list behind its count.
-fn declared_shape(decls: Decls, t: TypeId, inner: List<int>) -> Keyed {
+/// A declared box by its parts: a record's field types, or an enum's payloads, each list
+/// behind its count.
+fn declared_parts(decls: Decls, t: TypeId) -> Parts {
     let fields? = decls.fields_of_type(t) else {
-        let variants? = decls.variants_of_type(t) else { return word_shape(decls.types.name_of(t)) }
-        let arms = [joined_shape("payload", [shape_keyed(decls, p, inner) for p in payload]) for payload in variants.payloads]
-        return joined_shape("enum ${arms.length}", arms)
+        let variants? = decls.variants_of_type(t) else { return leaf(decls.types.name_of(t)) }
+        let widths = [v.length for v in variants.payloads]
+        return made_of("enum ${widths.map("${it}").join(",")}", flatten(variants.payloads))
     }
-    joined_shape(
-        "record ${fields.types.length}",
-        [shape_keyed(decls, f, inner) for f in fields.types],
-    )
+    made_of("record ${fields.types.length}", fields.types)
+}
+
+/// The shape DFS (Tarjan's): a type's key is settled when the walk leaves its component, so a
+/// type's parts are always keyed before it is.
+type Walk = { index: Cell<Map<string, int>>, low: Cell<Map<string, int>>, stack: Cell<List<TypeId>>, next: Cell<int> }
+
+impl Walk {
+    fn visit(decls: Decls, t: TypeId) {
+        let at = self.next.get()
+        let name = "${t.index}"
+        self.next.set(at + 1)
+        self.index.put(name, at)
+        self.low.put(name, at)
+        self.stack.push(t)
+        for kid in shape_parts(decls, t).kids {
+            let seen = decls.types.seen_through(kid)
+            let other = "${seen.index}"
+            if decls.shape_keys.at(seen.index) != null { continue }
+            let met = self.index.get().get(other)
+            if met == null { self.visit(decls, seen) }
+            let reach = met ?? self.low.get().get(other) ?? at
+            if reach < self.low.get().get(name) ?? at { self.low.put(name, reach) }
+        }
+        if self.low.get().get(name) != at { return }
+        let from = self.stack.get().index_of(t)
+        let members = self.stack.get().slice(from, self.stack.get().length)
+        self.stack.set(self.stack.get().slice(0, from))
+        for m in members { self.index.put("${m.index}", 1000000000) }
+        settle(decls, members)
+    }
+}
+
+/// Files the keys of a finished component: a lone type by its parts, a cycle's members together.
+fn settle(decls: Decls, members: List<TypeId>) {
+    let lone = members.length == 1 &&
+        !shape_parts(decls, members[0]).kids.any((k) -> decls.types.seen_through(k) == members[0])
+    if lone {
+        let p = shape_parts(decls, members[0])
+        decls
+            .shape_keys
+            .keep(
+                members[0].index,
+                if p.kids.is_empty() { p.tag } else { digest_of("${p.tag}(${[type_shape_key(decls, k) for k in p.kids].join(",")})") },
+            )
+        return
+    }
+    let keys = cycle_keys(decls, members)
+    for i, m in members { decls.shape_keys.keep(m.index, keys[i]) }
+}
+
+/// A CYCLE'S KEYS: each member starts as its own word, then is repeatedly rewritten from the
+/// words of the members it is made of (a part outside the cycle contributes its own key), until
+/// no two members part ways any further; a member's key is then its word beside every member's,
+/// sorted. Nothing in it names the entry the walk came in by.
+fn cycle_keys(decls: Decls, members: List<TypeId>) -> List<string> {
+    let at: Map<string, int> = {}
+    let place: Cell<Map<string, int>> = Cell.new(at)
+    for i, m in members { place.put("${m.index}", i) }
+    let parts = [shape_parts(decls, m) for m in members]
+    mut words = [digest_of(p.tag) for p in parts]
+    mut classes = distinct_count(words)
+    for _round in 0..members.length {
+        let was = words
+        words = [digest_of(
+            "${was[i]}(${[member_word(decls, place.get(), was, k) for k in parts[i].kids].join(",")})",
+        ) for i in 0..members.length]
+        let now = distinct_count(words)
+        if now == classes { break }
+        classes = now
+    }
+    let all = sorted_texts(words).join(",")
+    [digest_of("${w}|${all}") for w in words]
+}
+
+/// What a part contributes to a cycle member's word: its word inside the cycle, its key outside.
+fn member_word(decls: Decls, place: Map<string, int>, words: List<string>, kid: TypeId) -> string {
+    let seen = decls.types.seen_through(kid)
+    let i = place.get("${seen.index}")
+    if i == null { type_shape_key(decls, seen) } else { "~${words[i!]}" }
 }
 
 /// A static as a node: its boxes, each code slot replaced by its place. A DEBUG

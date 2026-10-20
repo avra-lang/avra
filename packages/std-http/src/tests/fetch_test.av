@@ -6,12 +6,25 @@ use @std.net.{NetError, listen}
 use @std.time.{ms, secs, sleep}
 use @std.json.{Json, field}
 use @std.http.frame.{limits}
-use @std.http.http.{Header, text}
+use @std.http.http.{text}
 use @std.http.server.{Server, served, timing}
 use @std.http.client.{Answer, ClientError, Stage, method_word}
 use @std.http.pool.{pool}
 use @std.http.form.{FormField}
-use @std.http.fetch.{Payload, Options, Timeouts, get, post, put, patch, delete, fetch, options}
+use @std.http.fetch.{
+    Payload,
+    Options,
+    Timeouts,
+    get,
+    post,
+    put,
+    patch,
+    delete,
+    fetch,
+    options,
+    send,
+}
+use @std.http_message.message.{Body, Header, Request}
 
 fn ft_lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
     match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
@@ -92,6 +105,37 @@ fn ft_timed(path: string, t: Timeouts) -> Stage? {
     let o = Options { pool: pool(), timeouts: t }
     defer { let _ = within secs(5) { o.pool.close_all() } }
     ft_stage(fetch(.Get, ft_url(s, path), .Empty, o))
+}
+
+fn ft_sent(path: string, ask: fn(string) -> Request) -> string {
+    ft_seen(path, (u) -> send(ask(u), options()))
+}
+
+spec "@std.http fetch sends a request value" {
+    given "a request built as data" {
+        then "get is sent as a get" { ft_sent("/r?x=1", (u) -> Request.get(u)).starts_with("GET|/r?x=1||-|127.0.0.1:") }
+        then "a text body is sent as text" {
+            ft_sent("/t", (u) -> Request.post(u, Body.Text("hi")))
+                .starts_with("POST|/t|hi|text/plain; charset=utf-8|")
+        }
+        then "a json body is sent as the text it holds, typed json" {
+            ft_sent("/j", (u) -> Request.post(u, Body.Json("{\"a\":1}")))
+                .starts_with("POST|/j|{\"a\":1}|application/json|")
+        }
+        then "a form is sent encoded" {
+            ft_sent("/f", (u) -> Request.post(u, Body.Form([Header { name: "a b", value: "1&2" }])))
+                .contains("|a%20b=1%262|")
+        }
+        then "octets name their own type" {
+            ft_sent("/o", (u) -> Request.put(u, Body.Octets("xy".bytes(), "application/x-test")))
+                .starts_with("PUT|/o|xy|application/x-test|")
+        }
+        then "a request that names its total bound is held to it" {
+            ft_why(
+                send(Request.get("http://127.0.0.1:1/never") with { timeout: ms(50) }, options()),
+            ) != "answered"
+        }
+    }
 }
 
 spec "@std.http fetch" {

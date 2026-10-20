@@ -1,0 +1,64 @@
+// A seat judging a value against its want words its refusal through
+// ONE verb: the help always says what the seat needs, and a shape with
+// one honest conversion offers it as help and as the edit.
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.diagnostics.{suggested}
+use @std.avrac.testing.{makers}
+
+fn first_fix(src: string) -> string {
+    suggested(analyze_source(src).diagnostics[0]).join(";")
+}
+
+fn reported(src: string) -> string {
+    analyze_source(src).report()
+}
+
+spec "features/checks (the seat mismatch)" {
+    given "a nullable handed to the seat of its payload" {
+        then "the help names the ways out, the fix the assertion" {
+            let r = reported("fn f(n: int) -> int { n }\n${makers}f(some(1))")
+            r.contains("`some(1) ?? <default>` supplies a value") &&
+                r.contains("assert it is present — `some(1)!`")
+        }
+        then "the edit asserts presence, at the value" {
+            first_fix("fn f(n: int) -> int { n }\n${makers}f(some(1))") == "<source>: some(1)!"
+        }
+        then "a non-postfix value is parenthesized first" {
+            first_fix("fn f(n: int) -> int { n }\n${makers}f(some(1) ?? none())") == "<source>: (some(1) ?? none())!"
+        }
+    }
+    given "a scalar at a text seat" {
+        then "the edit interpolates" {
+            first_fix("let s: string = 5\ns") == "<source>: \"\${5}\""
+        }
+        then "the help says how text is made" {
+            reported("let s: string = 5\ns")
+                .contains("text is made by interpolation, never by conversion")
+        }
+    }
+    given "a value at the seat of a list of it" {
+        then "the edit wraps it" {
+            first_fix("let xs: List<int> = 5\nxs") == "<source>: [5]"
+        }
+    }
+    given "a value no conversion carries" {
+        then "the help still says what the seat needs" {
+            let a = analyze_source("let n: int = true\nn")
+            a.diagnostics.length == 1 &&
+                a.report().contains("make the value `int`, or change the declaration that wants it") &&
+                suggested(a.diagnostics[0]).is_empty()
+        }
+    }
+    given "a condition that is no bool" {
+        then "a nullable offers the presence test" {
+            first_fix("${makers}let v = some(1)\nif v { 1 } else { 2 }") == "<source>: v != null"
+        }
+        then "text offers the emptiness test" {
+            first_fix("let s = \"a\"\nif s { 1 } else { 2 }") == "<source>: s != \"\""
+        }
+        then "a count seat offers no test, only the measures" {
+            let a = analyze_source("let n = true\nlet xs = [1]\nxs[n]")
+            a.report().contains("an index is a position") && suggested(a.diagnostics[0]).is_empty()
+        }
+    }
+}

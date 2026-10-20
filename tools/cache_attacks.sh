@@ -5,6 +5,7 @@
 # disagreement here. The fixtures are written fresh each run: the steps edit them.
 set -u
 cd "$(dirname "$0")/.."
+. tools/lib/failed_tail.sh
 # The shim's own lines are no program's output: its `watch:` reports, and the
 # warning a shell with no terminal prints when the watchdog asks for job control.
 unwatched() { grep -v -e '^watch:' -e 'job control turned off'; }
@@ -117,7 +118,7 @@ S() { # S <label> <app>
     out=$(./avra build --time $R/$2 2>$R/$2.err); st=$?; bin=$(printf '%s\n' "$out" | tail -1)
     held=$(grep -oE "held [0-9]+/[0-9]+" $R/$2.err | tail -1)
     case "$held" in "held 0/"*|"") ;; *) holds=$((holds+1)) ;; esac
-    if [ ! -x "$bin" ]; then fails=$((fails+1)); echo "FAIL  $1 [$2] did not build (status $st): $(printf '%s\n' "$out" | cat - $R/$2.err | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')"; return; fi
+    if [ ! -x "$bin" ]; then fails=$((fails+1)); echo "FAIL  $1 [$2] did not build (status $st)"; { printf '%s\n' "$out"; cat $R/$2.err; } | failed_words; return; fi
     # A REFUSED HOLD IS A FINDING HERE: the build is right and the hold was wrong.
     if grep -q "the hold was refused" $R/$2.err; then fails=$((fails+1)); echo "FAIL  $1 [$2] the hold was refused: $(grep 'the hold was refused' $R/$2.err | head -1 | cut -c1-200)"; return; fi
     nat=$("$bin" 2>&1); ev=$(./avra run $R/$2 2>/dev/null | unwatched)
@@ -134,7 +135,7 @@ HR() { # HR <label> <build|check> <pkg> <exit> [<path-substr> <held|read>]...
     label=$1; verb=$2; pkg=$3; want_st=$4; shift 4
     out=$(./avra $verb --time $R/$pkg 2>&1); st=$?
     case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
-    if [ $st -ne "$want_st" ]; then fails=$((fails+1)); echo "FAIL  $label: exit $st, wanted $want_st: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')"; return; fi
+    if [ $st -ne "$want_st" ]; then fails=$((fails+1)); echo "FAIL  $label: exit $st, wanted $want_st"; printf '%s\n' "$out" | failed_words; return; fi
     read_list=$(printf '%s\n' "$out" | sed -n '/^read:/,$p' | grep '^  ')
     while [ $# -ge 2 ]; do
         case "$read_list" in *"$1"*) got=read ;; *) got=held ;; esac
@@ -170,6 +171,40 @@ case "$kr_out" in *"discarded 0, refused 0"*"f/held.av"*|*"f/held.av"*"discarded
 S "kr: and the binary follows" kr
 steps=$((steps+1)); kr_out=$($R/kr/src/main 2>&1)
 [ "$kr_out" = "18 90" ] || { fails=$((fails+1)); echo "FAIL  kr: K or the seat it feeds kept the value of the body J ran before: printed '$kr_out', wanted '18 90'"; }
+fi
+if section kq; then
+# A CONST'S VALUE IS READ BY NAME. `kq`'s V reads B in another module and a plain fn
+# inlines C at lowering, while A is read by nobody. Moving A's value must leave every
+# kept verdict but A's own standing; moving B must rerun exactly its own and V's;
+# moving C must rerun only its own but re-lower the fn that inlined it, so the binary
+# follows. Verdicts are counted by what the query kernel says it ran.
+mkdir -p $R/kq/src/f $R/kq/src/x
+printf '[package]\nname = "rt-kq"\nversion = "0.1.0"\n' > $R/kq/avra.toml
+printf 'export const A: int = 1\nexport const B: int = 2\nexport const C: int = 3\n' > $R/kq/src/x/vals.av
+printf 'use x.{B, C}\nexport const V: int = B * 10\nexport fn shows() -> int { C }\n' > $R/kq/src/f/readers.av
+printf 'use f.{V, shows}\nprintln("${V} ${shows()}")\n' > $R/kq/src/main.av
+kq_ran() { # kq_ran <label> <want>: the verdicts the next check ran, counted
+    steps=$((steps+1)); n=$(AVRA_QTRACE=1 ./avra check $R/kq 2>&1 | grep -c 'const_verdict.*ran')
+    if [ "$n" -eq "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    kq: $1 -> $n verdicts ran"; else fails=$((fails+1)); echo "FAIL  kq: $1 ran $n verdicts, wanted $2"; fi
+}
+kq_prints() { # kq_prints <label> <want>: the native binary's line
+    steps=$((steps+1)); out=$(./avra build $R/kq 2>/dev/null); bin=$(printf '%s\n' "$out" | tail -1); got=$("$bin" 2>&1)
+    [ "$got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  kq: $1 printed '$got', wanted '$2'"; }
+}
+HR "cold kq" check kq 0
+S "kq: built with every verdict kept" kq
+kq_prints "cold" "20 3"
+printf '// moved\n' >> $R/kq/src/main.av
+kq_ran "an edit elsewhere" 0
+ed $R/kq/src/x/vals.av "A: int = 1" "A: int = 9"
+kq_ran "an unread const's value moved" 1
+kq_prints "after A" "20 3"
+ed $R/kq/src/x/vals.av "C: int = 3" "C: int = 4"
+kq_ran "a const only a fn body inlines moved" 1
+kq_prints "after C: the inlining fn follows" "20 4"
+ed $R/kq/src/x/vals.av "B: int = 2" "B: int = 5"
+kq_ran "a const a verdict read moved" 2
+kq_prints "after B: V follows" "50 4"
 fi
 if section kv; then
 # A KEPT VERDICT CARRIES THE READS OF THE RUN THAT MADE IT. `kv`'s L stands on K, K on
@@ -560,7 +595,9 @@ unset CC
 LK "CC back to the default word" built; LK "and nothing touched" hit
 lk_rt=build/libavra_runtime.a
 cp $lk_rt $R/lk.rt.kept
-printf '\n' >> $lk_rt
+# a member added through `ar` moves the archive's bytes and leaves it a valid one: bytes appended
+# raw make a malformed archive, which a strict linker (lld) refuses where GNU ld forgave it
+printf 'int lk_pad;\n' > $R/lk_pad.c; $lk_cc -c $R/lk_pad.c -o $R/lk_pad.o; ar q $lk_rt $R/lk_pad.o 2>/dev/null
 LK "the runtime archive moved" built
 cp $R/lk.rt.kept $lk_rt
 LK "and put back" built
@@ -672,7 +709,7 @@ vd_case() { # vd_case <label> <ran|stood> <const module> <edit command>: warm, e
   steps=$((steps+1))
   AVRA_QTRACE=1 ./avra check $R/vdc/vd > $R/vd.out 2>&1; st=$?
   got=$(awk -F'\t' -v m="^x\\.$3" '$1 == "Q" && $2 == "const_verdict" && $3 ~ m { if (v != "ran") v = $4 } END { print v }' $R/vd.out)
-  if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the check failed (status $st)"
+  if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the check failed (status $st)"; failed_tail $R/vd.out
   elif [ "$got" != "$2" ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the $3 verdict was '$got', wanted '$2'"
   elif [ -n "${5:-}" ] && [ "$(./avra run $R/vdc/vd 2>/dev/null | tail -1)" != "$5" ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the program printed '$(./avra run $R/vdc/vd 2>/dev/null | tail -1)', wanted '$5'"
   else [ -n "${VERBOSE:-}" ] && echo "ok    vd: $1 -> $got"; fi
@@ -779,7 +816,7 @@ printf 'use x.{one, two}\nuse @rt.exl.{exl_one}\nuse @rt.exl2.{exl2_one}\nprintl
 EXC() { # EXC <label> <want exit> <phrase the refusal speaks, or ->: a check of ex
     steps=$((steps+1)); ex_out=$(./avra check --time $ex 2>&1); ex_st=$?
     case "$ex_out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
-    if [ $ex_st -ne "$2" ]; then fails=$((fails+1)); echo "FAIL  ex: $1: exit $ex_st, wanted $2: $(printf '%s' "$ex_out" | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')"; return; fi
+    if [ $ex_st -ne "$2" ]; then fails=$((fails+1)); echo "FAIL  ex: $1: exit $ex_st, wanted $2"; printf '%s\n' "$ex_out" | failed_words; return; fi
     case "$3" in -) ;; *) case "$ex_out" in *"$3"*) ;; *) fails=$((fails+1)); echo "FAIL  ex: $1: the refusal did not speak '$3': $(printf '%s' "$ex_out" | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')" ;; esac ;; esac
 }
 EXH() { # EXH <label> <symbol>: the build names the host fn and the binary defines it
@@ -872,6 +909,65 @@ printf 'use many.{f0, f5}\nprintln("${f0(1)} ${f5(2)}")\n' > $R/tp/src/main.av
 ./avra check $R/tp >/dev/null 2>&1
 ed $R/tp/src/many.av 'v5 ' 'w5 '
 TP "tp: one literal of one body moves — only that body is typed" 2
+if section rx; then
+# A NAME REACHED THROUGH A RE-EXPORT KEYS ON THE RE-EXPORTING FILE TOO: `show.av`
+# names `twice` from `@rt/rxl`, whose `lib.av` re-exports it, so the importer's
+# reference lands on the ORIGINAL declaration's file. Re-pointing the re-export at
+# another declaration never moves that file, and must still re-read `show.av` —
+# or it stays held against a name that now means something else. A body edit to
+# the original holds it (avra-8sb5.64.10.1).
+RX() { # RX <label> <path-substr> <want: held|read> <printed>
+    steps=$((steps+1))
+    out=$(./avra build --time $R/rx 2>&1)
+    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; *"held 0/"*) [ "$3" = held ] && { fails=$((fails+1)); echo "FAIL  $1: a derivation held nothing, so a file staying held was never examined"; } ;; esac
+    case "$out" in *"read:"*"$2"*) got=read ;; *) got=held ;; esac
+    if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $1 wanted $3, got $got: $(printf '%s' "$out" | grep -A5 '^read:' | tr '\n' ' ')"; fi
+    printed=$("$(printf '%s\n' "$out" | tail -1)" 2>&1)
+    [ "$printed" = "$4" ] || { fails=$((fails+1)); echo "FAIL  $1 printed '$printed', wanted '$4'"; }
+}
+mkdir -p $R/rxl/src/util $R/rxl/src/other $R/rx/src
+printf '[package]\nname = "@rt/rxl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-rxl"\npath = "src/lib.av"\n' > $R/rxl/avra.toml
+printf 'export fn twice() -> int { 2 }\n' > $R/rxl/src/util/u.av
+printf 'export fn twice() -> int { 20 }\n' > $R/rxl/src/other/o.av
+printf 'export use util.{twice}\n' > $R/rxl/src/lib.av
+printf '[package]\nname = "rt-rx"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/rxl" = { path = "../rxl" }\n' > $R/rx/avra.toml
+printf 'use @rt.rxl.{twice}\nexport fn shown() -> int { twice() }\n' > $R/rx/src/show.av
+printf 'println("rx ${shown()}")\n' > $R/rx/src/main.av
+S "cold rx: an importer reaches a name through a re-export" rx
+ed $R/rxl/src/util/u.av "{ 2 }" "{ 4 }"
+RX "rx: the original's body only moves — show.av stays held" show.av held "rx 4"
+ed $R/rxl/src/util/u.av "{ 4 }" "{ 2 }"
+RX "rx: and back" show.av held "rx 2"
+ed $R/rxl/src/lib.av "util.{twice}" "other.{twice}"
+RX "rx: the re-export is re-pointed — show.av re-reads" show.av read "rx 20"
+ed $R/rxl/src/lib.av "other.{twice}" "util.{twice}"
+RX "rx: and back — the store still keeps the first build's importer" show.av held "rx 2"
+fi
+
+if section vw; then
+# A FILE'S KEPT ROWS ARE JUDGED AGAINST THE PROGRAM THAT ASKS. A library tested as the root and
+# the same library read by an app see its files through different views, so after the suite
+# wrote last, an edit to the app must still find its own rows standing: no file falls back to
+# rebuilding.
+VW() { # VW <label> <max fallbacks>
+    steps=$((steps+1))
+    out=$(./avra check --counts $R/vwa 2>&1)
+    n=$(printf '%s\n' "$out" | grep -oE 'judge_fallbacks=[0-9]+' | tail -1 | cut -d= -f2)
+    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
+    if [ -z "$n" ]; then fails=$((fails+1)); echo "FAIL  $1: no judge_fallbacks count printed"; return; fi
+    if [ "$n" -le "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $n"; else fails=$((fails+1)); echo "FAIL  $1: judge_fallbacks=$n, wanted at most $2"; fi
+}
+mkdir -p $R/vwl/src/tests $R/vwa/src
+printf '[package]\nname = "@rt/vwl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-vwl"\npath = "src/lib.av"\n' > $R/vwl/avra.toml
+printf 'export fn three() -> int { 3 }\n' > $R/vwl/src/lib.av
+printf 'use @rt.vwl.{three}\nspec "three" { given "the fn" { then "it answers three" { three() == 3 } } }\n' > $R/vwl/src/tests/lib_test.av
+printf '[package]\nname = "rt-vwa"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/vwl" = { path = "../vwl" }\n' > $R/vwa/avra.toml
+printf 'use @rt.vwl.{three}\nexport fn shown() -> int { three() }\n' > $R/vwa/src/show.av
+printf 'use show.{shown}\nprintln("vw ${shown()}")\n' > $R/vwa/src/main.av
+./avra check $R/vwa >/dev/null 2>&1
+./avra test $R/vwl >/dev/null 2>&1
+printf '// edited\n' >> $R/vwa/src/main.av
+VW "vw: an app edit after the library's own suite wrote last judges by stamps" 0
 fi
 
 # CACHE_ATTACKS set: the sections named above are the whole run.
@@ -907,6 +1003,7 @@ fi
 rm -f $bi build/.avra.bi.print $R/bi.orig $R/bi.other
 
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
+    [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the sections named examined nothing"; exit 1; }
     [ "$fails" -eq 0 ]; exit $?
 fi
 S "cold a" a; S "b after a (shared leaf, other bodies + other instantiation)" b
@@ -1221,7 +1318,7 @@ MH() { # MH <label> <path-substr> <want: held|read> [<path-substr> <want>]...
     out=$(./avra build --time $R/mh 2>&1); st=$?
     case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
     # a build that failed read nothing, and says nothing a hold could be judged by
-    if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  $label did not build (status $st): $(printf '%s' "$out" | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')"; return; fi
+    if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  $label did not build (status $st)"; printf '%s\n' "$out" | failed_words; return; fi
     while [ $# -ge 2 ]; do
         case "$out" in *"read:"*"$1"*) got=read ;; *) got=held ;; esac
         if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $label: $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $label: $1 wanted $2, got $got: $(printf '%s' "$out" | grep -A6 '^read:' | tr '\n' ' ')"; fi
@@ -1304,38 +1401,6 @@ ed $R/mhl/src/pt_say.av "fn base() -> int { 1 }" "fn base() -> int { 1 }
 impl Say for Pt { fn say() -> int { self.v + base() } }"
 S "mh: the impl back home" mh
 
-# A NAME REACHED THROUGH A RE-EXPORT KEYS ON THE RE-EXPORTING FILE TOO: `show.av`
-# names `twice` from `@rt/rxl`, whose `lib.av` re-exports it, so the importer's
-# reference lands on the ORIGINAL declaration's file. Re-pointing the re-export at
-# another declaration never moves that file, and must still re-read `show.av` —
-# or it stays held against a name that now means something else. A body edit to
-# the original holds it (avra-8sb5.64.10.1).
-RX() { # RX <label> <path-substr> <want: held|read> <printed>
-    steps=$((steps+1))
-    out=$(./avra build --time $R/rx 2>&1)
-    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
-    case "$out" in *"read:"*"$2"*) got=read ;; *) got=held ;; esac
-    if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $1 wanted $3, got $got: $(printf '%s' "$out" | grep -A5 '^read:' | tr '\n' ' ')"; fi
-    printed=$("$(printf '%s\n' "$out" | tail -1)" 2>&1)
-    [ "$printed" = "$4" ] || { fails=$((fails+1)); echo "FAIL  $1 printed '$printed', wanted '$4'"; }
-}
-mkdir -p $R/rxl/src/util $R/rxl/src/other $R/rx/src
-printf '[package]\nname = "@rt/rxl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-rxl"\npath = "src/lib.av"\n' > $R/rxl/avra.toml
-printf 'export fn twice() -> int { 2 }\n' > $R/rxl/src/util/u.av
-printf 'export fn twice() -> int { 20 }\n' > $R/rxl/src/other/o.av
-printf 'export use util.{twice}\n' > $R/rxl/src/lib.av
-printf '[package]\nname = "rt-rx"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/rxl" = { path = "../rxl" }\n' > $R/rx/avra.toml
-printf 'use @rt.rxl.{twice}\nexport fn shown() -> int { twice() }\n' > $R/rx/src/show.av
-printf 'println("rx ${shown()}")\n' > $R/rx/src/main.av
-S "cold rx: an importer reaches a name through a re-export" rx
-ed $R/rxl/src/util/u.av "{ 2 }" "{ 4 }"
-RX "rx: the original's body only moves — show.av stays held" show.av held "rx 4"
-ed $R/rxl/src/util/u.av "{ 4 }" "{ 2 }"
-RX "rx: and back" show.av held "rx 2"
-ed $R/rxl/src/lib.av "util.{twice}" "other.{twice}"
-RX "rx: the re-export is re-pointed — show.av re-reads" show.av read "rx 20"
-ed $R/rxl/src/lib.av "other.{twice}" "util.{twice}"
-RX "rx: and back — the store still keeps the first build's importer" show.av held "rx 2"
 
 # `--verify-held` OVER A HELD `collect enum` (avra-8sb5.57.109): its record line's
 # shape is `enum`, and its KIND column is what says a collect made it — read the
@@ -1577,7 +1642,7 @@ AV
 S "cold cutfp: a closure capture and an unmutated mut sit in one file" cutfp
 got=$($R/cutfp/src/main 2>&1)
 [ "$got" = "cutfp 15" ] || { fails=$((fails+1)); echo "FAIL  cold cutfp printed '$got', wanted 'cutfp 15'"; }
-cutfp_warn0=$(./avra check $R/cutfp 2>&1 | grep -c 'unmutated_mut')
+cutfp_warn0=$(./avra check $R/cutfp 2>&1 | grep -c '^warning\[[a-z_.]*unmutated_mut\]')
 [ "$cutfp_warn0" = "1" ] || { fails=$((fails+1)); echo "FAIL  cutfp's cold check did not find the unmutated_mut warning it was written to earn"; }
 
 # THE CAPTURE MOVES: the closure now closes over a DIFFERENT computation —
@@ -1598,7 +1663,7 @@ ed $R/cutfp/src/main.av 'println("cutfp ${add(10)}")' 'println("cutfp ${add(10)}
 S "cutfp: a voice-only edit — the warning is earned no longer, the closure is untouched" cutfp
 got=$($R/cutfp/src/main 2>&1)
 [ "$got" = "cutfp 16 2" ] || { fails=$((fails+1)); echo "FAIL  warm cutfp printed '$got', wanted 'cutfp 16 2'"; }
-cutfp_warn1=$(./avra check $R/cutfp 2>&1 | grep -c 'unmutated_mut')
+cutfp_warn1=$(./avra check $R/cutfp 2>&1 | grep -c '^warning\[[a-z_.]*unmutated_mut\]')
 [ "$cutfp_warn1" = "0" ] || { fails=$((fails+1)); echo "FAIL  cutfp's warm check still finds unmutated_mut after the local was written — a stale voices fold"; }
 
 # A NON-STRUCTURAL SETTLEMENT REFUSAL RE-SPEAKS ON EVERY WARM BUILD: only a
@@ -2258,7 +2323,7 @@ printf 'use util.{g, h}\nconst B: string = g()\nconst P: string = h()\nprintln("
 printf 'use util.{g}\nconst T: string = g()\nspec "kw" { then "reads the embed" { T == "b" } }\n' > $R/kw/src/tests/kw_test.av
 kw_tested() { # kw_tested <label>: the package's tests run and pass
     steps=$((steps+1)); out=$(./avra test $R/kw 2>&1); st=$?
-    [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  kw: $1: test exit $st: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | tail -2 | tr '\n' ' ' | cut -c1-220)"; }
+    [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  kw: $1: test exit $st"; printf '%s\n' "$out" | failed_words; }
 }
 kw_says() { # kw_says <label> <wanted>: the built binary prints the embedded texts as they stand
     steps=$((steps+1)); kw_out=$($R/kw/src/main 2>&1)

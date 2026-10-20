@@ -15,6 +15,8 @@ use core.{
     fp_str,
     mix_final,
     joined,
+    closest,
+    some_list,
     flatten,
     sorted_texts,
     TypeId,
@@ -52,12 +54,14 @@ use features.{
     SeatValue,
     Instanced,
 }
-use features.{no_kind, ComponentWord, Instancing}
+use features.{no_kind, ComponentWord, Instancing, default_mark}
 use @std.meta.{
     Node,
     Field as MetaField,
+    Spelled as MetaSpelled,
     Param as MetaParam,
     Mark as MetaMark,
+    MarkArg as MetaMarkArg,
     Kind,
     Annotation as MetaAnnotation,
     Code as MetaCode,
@@ -78,7 +82,7 @@ use core.{
 }
 use @std.grammar.{ready}
 use grammar.{parse_grammar, avra_known_terminals, lex_source, Token, TokenKind}
-use diagnostics.{defect_at}
+use diagnostics.{defect_at, unread_behind}
 use diagnostics.{Diag, refusal, Severity, DiagFacts, diag_facts_of, Voices}
 use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
 use @std.testing.{words}
@@ -136,7 +140,7 @@ fn reexport_cycle(at: Loc?, home: string, other: string) -> Diag {
         at,
         "`${other}` already uses `${home}`, so re-exporting from it here would close a package cycle",
         "in this use",
-        "packages never depend in a cycle — re-export both from a FACADE package above them, one made of `export use` lines",
+        "packages never depend in a cycle — re-export both from a facade package above them, made of `export use` lines",
     )
 }
 
@@ -152,14 +156,35 @@ fn reexport_twice(at: Loc?, name: string) -> Diag {
 
 /// `own_test` says the asker is one of `m`'s own tests, which reads the
 /// module's private names too — so the name is declared there at all.
-fn not_exported(at: Loc?, m: ModulePath, item: string, exports: List<string>, own_test: bool) -> Diag {
-    refusal(
+/// `unread` is a parse error in one of `m`'s files: the name may be
+/// declared where nothing could be read, so the refusal points there.
+fn not_exported(
+    at: Loc?,
+    m: ModulePath,
+    item: string,
+    exports: List<string>,
+    own_test: bool,
+    unread: Diag?,
+) -> Diag {
+    let d = refusal(
         "resolve.not_exported",
         at,
         if own_test { "`${m.text()}` declares no `${item}`, exported or private" } else { "`${m.text()}` does not export `${item}`" },
         "in this use",
-        if own_test { "a module's own tests read its private names as well as its exports: ${joined(exports, ", ")}" } else { "its exports: ${joined(exports, ", ")}" },
+        exports_help(item, exports, own_test),
     )
+    let root? = unread else { return d }
+    unread_behind(d, "`${m.text()}`", root, item)
+}
+
+/// What a module's surface offers in place of the name asked for: the
+/// nearest export, then every export — or, when there is none, how one is made.
+fn exports_help(item: string, exports: List<string>, own_test: bool) -> string {
+    if exports.is_empty() { return "it exports nothing — mark the declaration `export` to share it" }
+    let near = joined(["did you mean `${n.name}`? " for n in some_list(closest(item, exports))], "")
+    let known = joined(exports, ", ")
+    if own_test { return "${near}a module's own tests read its private names as well as its exports: ${known}" }
+    "${near}its exports: ${known}"
 }
 
 fn private_apart(at: Loc?, m: ModulePath, item: string, files: List<string>) -> Diag {
@@ -183,7 +208,13 @@ fn module_ambiguous(at: Loc?, m: ModulePath) -> Diag {
 }
 
 fn listed_twice(at: Loc?, item: string) -> Diag {
-    refusal("resolve.import_clash", at, "`${item}` is listed twice", "in this use", null)
+    refusal(
+        "resolve.import_clash",
+        at,
+        "`${item}` is listed twice",
+        "in this use",
+        "list each name once — drop the repeat",
+    )
 }
 
 fn unpackaged_use(at: Loc?) -> Diag {
@@ -192,7 +223,7 @@ fn unpackaged_use(at: Loc?) -> Diag {
         at,
         "this file is not in a package — `use` needs a root",
         "this use",
-        "put an `avra.toml` at the package root, with this file under its `src/` — modules are named from there",
+        "put an `avra.toml` at the package root, this file under its `src/`",
     )
 }
 
@@ -263,7 +294,7 @@ fn kind_at(kinds: List<Kind>, j: int) -> Kind {
 /// a payload's name, its spelling and its shape cannot come from two
 /// places and disagree, which is the property the crossing suite
 /// asserts positionally.
-fn crossed_field(v: FileView, p: Param, kind: Kind) -> MetaField {
+fn crossed_field(v: FileView, p: Param, kind: Kind, spelled: MetaSpelled?) -> MetaField {
     MetaField {
         name: p.name.of,
         ty: written_spelling(p.ty),
@@ -276,6 +307,7 @@ fn crossed_field(v: FileView, p: Param, kind: Kind) -> MetaField {
         says: crossed_says(v, p, kind),
         state: p.state,
         default: crossed_default(v, p),
+        spelled: spelled,
     }
 }
 
@@ -324,7 +356,12 @@ fn told_kinds(kind: Kind) -> List<Kind> {
 /// A member's marks as the derive reads them — the word, its words,
 /// and where it stands.
 fn crossed_marks(v: FileView, ms: List<Mark>) -> List<MetaMark> {
-    [MetaMark { name: m.name, args: m.args, at: placed(v, m.span) } for m in ms]
+    [MetaMark {
+        name: m.name,
+        args: m.args,
+        at: placed(v, m.span),
+        named: [MetaMarkArg { label: a.label, value: a.value } for a in m.named],
+    } for m in ms]
 }
 
 /// A member's marks again, as its OWN `annotations` — `crossed_marks`'s
@@ -368,6 +405,11 @@ fn claims_nothing() -> List<string> {
     let none: List<string> = []
     none
 }
+
+/// The marks the compiler reads ITSELF, claimed on every declaration —
+/// one row per mark a feature owns, so a feature's mark is never a
+/// reader's to claim.
+fn own_marks() -> List<string> { [default_mark] }
 
 /// EVERY PART OR NONE — claim sets folded into one union, absent when
 /// any part is absent. An unanswerable claim set POISONS the union
@@ -427,7 +469,7 @@ impl Workspace {
                 arms: [],
                 inits: joined_inits([self.spliced_inits(f, x) for x in fills]),
             },
-            .Expression or .Statement or .Name or .Binder or .Type or .Run -> Copied { stmts: flatten([self.spliced_stmts(f, x) for x in fills]), arms: [] },
+            .Expression or .Statement or .Name or .Binder or .Type or .Run or .Tail -> Copied { stmts: flatten([self.spliced_stmts(f, x) for x in fills]), arms: [] },
         }
     }
 }
@@ -456,7 +498,7 @@ fn fields_of(s: Stmt) -> List<Param>? {
     match s {
         .StructDecl(_, _, fields) -> fields,
         .FnDecl(_, _, params, _, _) -> params,
-        .ExprStmt(_) or .Discard(_) or .IfStmt(_, _, _) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+        .ExprStmt(_) or .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
     }
 }
 
@@ -1082,6 +1124,7 @@ export fn namespace_fp(ns: Namespace, ids: Ids) -> int {
                 ids,
             ),
             fp_list([ids.of_decl(d.index) for d in ns.apart]),
+            fp_list([fp_str(x) for x in ns.refused]),
             voices_fp(ns.voices),
         ],
     )

@@ -10,6 +10,8 @@ use @std.avrac.diagnostics.{
     diag_facts_of,
     SourceFile,
     new_source_file,
+    refusal,
+    unread_behind,
 }
 
 enum Underlying { Bad }
@@ -259,7 +261,7 @@ fix (low): second fix
     }
     given "a Diag's wire-safe DiagFacts twin" {
         then "a located diagnostic with suggestions renders identically through facts" {
-            let at = Loc { file: "app.av", lo: 14, hi: 15 }
+            let at = Loc { file: "<source>", lo: 14, hi: 15 }
             let m = Frame { label: "expected NAME", loc: at }
             let edit = Edit { loc: at, replacement: "x" }
             let sg = Suggestion {
@@ -284,11 +286,60 @@ fix (low): second fix
         }
         then "a secondary frame in ANOTHER file picks that file's own source, same as render_among" {
             let other = new_source_file("other.av", "fn f() {}\n")
-            let primary_at = Loc { file: "app.av", lo: 14, hi: 15 }
+            let primary_at = Loc { file: "<source>", lo: 14, hi: 15 }
             let secondary_at = Loc { file: "other.av", lo: 0, hi: 2 }
             let d = error_at("type.extern_value", primary_at, "an extern fn is not a value") with { primary: Frame { label: "read as a value here", loc: primary_at }, secondary: [Frame { label: "declared here", loc: secondary_at }] }
             let sources = [two_lines(), other]
             render_facts_among(diag_facts_of(d), sources) == render_among(d, sources)
+        }
+        then "a frame of a file no source answers to renders its label alone, the file named — never a window over the wrong text" {
+            let primary_at = Loc { file: "<source>", lo: 14, hi: 15 }
+            let d = error_at("type.extern_value", primary_at, "an extern fn is not a value") with { primary: Frame { label: "read as a value here", loc: primary_at }, secondary: [Frame { label: "declared here", loc: Loc { file: "other.av", lo: 900, hi: 902 } }] }
+            let expected = """error[type.extern_value]: an extern fn is not a value
+  ╭─[<source>:2:5]
+2 │ let = 3
+  ·     ┬
+  ·     ╰── read as a value here
+──╯
+  other.av: declared here"""
+            render_among(d, [two_lines()]) == expected
+        }
+        then "a refusal following from an unread file renders both windows, the parse error named, no remedy of its own" {
+            let root_text = new_source_file(
+                "a.av",
+                "fn ok(a: bool, b: bool) -> bool {\n    a\n        && b\n}\n",
+            )
+            let use_text = new_source_file("b.av", "use a.{ok}\n")
+            let root = error_at(
+                "parse.expected",
+                Loc { file: "a.av", lo: 48, hi: 50 },
+                "expected `}` to close the block",
+            )
+            let d = unread_behind(
+                refusal(
+                    "resolve.not_exported",
+                    Loc { file: "b.av", lo: 0, hi: 10 },
+                    "`a` does not export `ok`",
+                    "in this use",
+                    "its exports: none",
+                ),
+                "`a`",
+                root,
+                "ok",
+            )
+            let expected = """error[resolve.not_exported]: `a` does not export `ok`
+  ╭─[b.av:1:1]
+1 │ use a.{ok}
+  · ┬
+  · ╰── in this use
+──╯
+  ╭─[a.av:3:9]
+3 │         && b
+  ·         ┬
+  ·         ╰── `a` fails to parse here, so its names are unread: expected `}` to close the block
+──╯
+help: fix the parse error first — `ok` may be declared where nothing could be read"""
+            render_among(d, [use_text, root_text]) == expected
         }
     }
 }

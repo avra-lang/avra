@@ -47,12 +47,12 @@ use @std.net.{Admission, Conn, connect}
 use @std.json.{Json, to_text}
 use @std.text.{parse_int}
 use @std.time.{Duration, ms, secs, now_ms, sleep}
-use frame.{Method, Limits, limits}
+use frame.{Limits, limits}
 use hpack.{HeaderField, header_field}
 use h2.{is_pseudo, status_name}
 use h2_client_drive.{H2Ask, h2_conversing, h2_pumped}
 use h2_serve.{folded}
-use http.{Header, names_one_of, piece_on_wire, body_end}
+use http.{names_one_of, piece_on_wire, body_end}
 use client.{
     Client,
     Answer,
@@ -70,6 +70,8 @@ use client.{
 }
 use wire.{Transport, Securing, plainly}
 use jar.{Jar}
+use form.{FormField}
+use @std.http_message.message.{Body as SentBody, Encoded, Header, Method, Request as SentRequest}
 use pool.{Pool, Carrier, H2Carrier, pool, origin_of}
 
 /// A request body, by kind.
@@ -128,6 +130,40 @@ once fn shared_pool() -> Pool { pool() }
 
 /// The default options.
 export fn options() -> Options { Options {} }
+
+/// A request value, sent: its method, URL, fields and body, under its own
+/// bound (`timeout`, the total) and retries when it names them. The
+/// native realization of `@std/http_message`'s `Request`; a page's host
+/// realizes the same value with its own `fetch`.
+export fn send(r: SentRequest, o: Options) -> Fetched {
+    fetch(
+        r.method,
+        r.url,
+        payload_of(r.body),
+        bounded(r, o with { headers: o.headers.concat(r.headers) }),
+    )
+}
+
+/// A request's body as the client sends it.
+fn payload_of(b: SentBody) -> Payload {
+    match b {
+        .Empty -> .Empty,
+        .Text(text) -> .Text(text),
+        .Json(text) -> .Octets(text.bytes(), "application/json"),
+        .Form(_) -> encoded_payload(b.encoded()),
+        .Octets(bytes, kind) -> .Octets(bytes, kind),
+    }
+}
+
+/// A body already encoded, as the client sends it.
+fn encoded_payload(e: Encoded) -> Payload { .Octets(e.bytes, e.kind) }
+
+/// `o`, with the bounds a request names laid over its own.
+fn bounded(r: SentRequest, o: Options) -> Options {
+    let total = r.timeout ?? o.timeouts.total
+    let tried = if r.retries > 0 { r.retries + 1 } else { o.retry.attempts }
+    o with { timeouts: o.timeouts with { total: total }, retry: o.retry with { attempts: tried } }
+}
 
 export fn get(url: string) -> Fetched { fetch(.Get, url, .Empty, options()) }
 

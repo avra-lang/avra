@@ -1,0 +1,61 @@
+// proves: work a control asks belongs to the control's place, so a control told from its
+// siblings by order alone is refused it, and one that wears a key keeps its own across a
+// removal before it — the row that shifted into the slot is never answered for the one
+// that left. eval == native.
+use @std.ui.components.{button, item}
+use @std.ui.headless.{headless}
+use @std.ui.app.{later}
+use @std.time.{ms}
+
+state log: List<string> = []
+state rows: List<string> = ["a", "b"]
+state keyed: bool = false
+
+fn note(what: string) -> bool {
+    log = log.concat([what])
+    true
+}
+
+fn asks(who: string) {
+    let filed = later(ms(5), () -> note(who))
+    log = log.concat(["${who} filed ${filed}"])
+}
+
+fn without_first() -> bool {
+    rows = rows.slice(1, rows.length)
+    true
+}
+
+fn view() -> item {
+    if keyed {
+        return item {
+            items: [button r {
+                key: r
+                on press { asks(r) }
+            } for r in rows]
+        }
+    }
+    item { items: [button r { on press { asks(r) } } for r in rows] }
+}
+
+fn turn_to(k: bool) -> bool {
+    keyed = k
+    true
+}
+
+let screen = headless(view)
+screen
+    .running(
+        () -> {
+            let _ = screen.press("a")
+            screen.advance(ms(10))
+            println("unkeyed, told by order: [${log.join(",")}]")
+            println("it says: ${screen.shown.app.warnings().join(" | ")}")
+            let _ = screen.turn(() -> turn_to(true))
+            let _ = screen.press("a")
+            let _ = screen.press("b")
+            let _ = screen.turn(without_first)
+            screen.advance(ms(10))
+            println("keyed, a left: [${log.join(",")}]")
+        },
+    )

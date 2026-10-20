@@ -2,11 +2,29 @@
 //! derive claims the words it takes off a declaration's members — the
 //! compiler judges no mark, so a word no reader claims is refused
 //! where it was written, and this is the other side of that law.
-use @std.meta.{Type, Directive}
+use @std.meta.{Type, Directive, literal}
 
 export trait Claimer {
     static fn derive(t: Type) -> List<Directive> {
-        [Directive { twin: "", name: t.name, at: t.at, source: quote { impl ${t} { fn claimed() -> int { 7 } } } }]
+        let named = [a.label + "=" + a.value for v in t.variants for m in v.marks for a in m.named]
+            .join(",")
+        let positional = [x for v in t.variants for m in v.marks for x in m.args].join(",")
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    impl ${t} {
+                        fn claimed() -> int { 7 }
+
+                        fn named() -> string { ${literal(named)} }
+
+                        fn positional() -> string { ${literal(positional)} }
+                    }
+                },
+            },
+        ]
     }
 
     /// The words this derive reads off a variant or a field.

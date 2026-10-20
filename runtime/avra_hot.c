@@ -9,7 +9,7 @@
 
 void avra_rc_retain(void* p) {
     Header* h = avra_hdr(p);
-    if (h == 0 || h->kind < 0) return;
+    if (h == 0 || avra_kind(h) < 0) return;
     CENSUS(g_rc_retains++);
     CENSUS(note_retain(AVRA_CALLER()));
     if (__builtin_expect(avra_rc_guard_on, 0)) { avra_retain_noted(p, h); return; }
@@ -20,7 +20,7 @@ void avra_rc_release(void* p) {
     Header* h = avra_hdr(p);
     if (h == 0) return;
     if (__builtin_expect(avra_rc_guard_on, 0)) { avra_release_guarded(p, h); return; }
-    if (h->kind < 0) return;
+    if (avra_kind(h) < 0) return;
     CENSUS(g_rc_releases++);
     h->rc--;
     if (__builtin_expect(h->rc > 0, 1)) return;
@@ -30,7 +30,7 @@ void avra_rc_release(void* p) {
     // it is READ HERE and HANDED to the reclaim, which is out of
     // line and tail-called: a release that does not free keeps no
     // frame, and most releases do not free.
-    avra_release_dead(p, h->kind);
+    avra_release_dead(p, avra_kind(h));
 }
 
 // A value enum's word counted only when bit `tag` of `counted` says
@@ -64,7 +64,7 @@ void* avra_array_get_owned(void* arr, int64_t i) {
     if (__builtin_expect(i < 0 || i >= a->len, 0)) avra_trap_bounds(i, a->len);
     void* v = (void*)(uintptr_t)a->data[i];
     Header* h = avra_hdr(v);
-    if (h != 0 && h->kind >= 0) { CENSUS(g_rc_retains++); h->rc++; }
+    if (h != 0 && avra_kind(h) >= 0) { CENSUS(g_rc_retains++); h->rc++; }
     return v;
 }
 
@@ -81,7 +81,7 @@ void* avra_slot_get_owned(void* box, int64_t i) {
     CENSUS(g_list_gets++);
     void* v = (void*)(uintptr_t)((AvraArray*)box)->data[i];
     Header* h = avra_hdr(v);
-    if (h != 0 && h->kind >= 0) {
+    if (h != 0 && avra_kind(h) >= 0) {
         if (__builtin_expect(avra_rc_guard_on, 0)) { avra_retain_noted(v, h); return v; }
         CENSUS(g_rc_retains++);
         h->rc++;
@@ -100,7 +100,7 @@ int64_t avra_array_len(void* arr) {
 // so the clone log names the write site and not this leaf.
 void* avra_box_thawed(void* p) {
     Header* h = avra_hdr(p);
-    if (__builtin_expect(h != 0 && IS_IMMORTAL(h->kind), 0))
+    if (__builtin_expect(h != 0 && IS_IMMORTAL(avra_kind(h)), 0))
         return avra_box_thawed_cloned(p, AVRA_CALLER());
     avra_rc_retain(p);
     return p;

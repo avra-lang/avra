@@ -81,6 +81,7 @@ export fn parse_toml(text: string) -> TomlDoc {
         n: text.length,
         doc: TomlDoc { headers: [], entries: [], errors: [] },
         section: "",
+        lost: false,
     }
     mut i = 0
     while i < rd.n {
@@ -90,8 +91,9 @@ export fn parse_toml(text: string) -> TomlDoc {
 }
 
 /// The reader's state: the text, its length, the document being
-/// filled, and the section the next entry lands under.
-type Reader = { text: string, n: int, doc: TomlDoc, section: string }
+/// filled, the section the next entry lands under, and whether the last
+/// header was refused — entries under one belong to no section.
+type Reader = { text: string, n: int, doc: TomlDoc, section: string, lost: bool }
 
 impl Reader {
     /// A refusal, spanning the line that holds its byte.
@@ -108,8 +110,10 @@ impl Reader {
             )
     }
 
-    /// An entry under the open section.
+    /// An entry under the open section; none under a header that was
+    /// refused, whose section is unknown.
     fn hold(p: TomlPair, lo: int, hi: int) {
+        if self.lost { return }
         self
             .doc
             .entries
@@ -120,6 +124,12 @@ impl Reader {
     fn enter(h: TomlHeader) {
         self.doc.headers.push(h)
         self.section = h.name
+        self.lost = false
+    }
+
+    /// A header refused: the entries after it have no section to land in.
+    fn lose_section() {
+        self.lost = true
     }
 }
 
@@ -161,13 +171,14 @@ fn read_header(mut rd: Reader, lo: int) -> int {
     let hi = line_hi(rd.text, rd.n, lo)
     let line = rd.text.substring(lo, hi)
     let close = line.index_of("]")
-    if close < 0 { return refused(rd, unclosed_header(lo)) }
+    if close < 0 { return refused_header(rd, unclosed_header(lo)) }
     let name = line.substring(1, close).trim()
     let rest = run_end(rd.text, rd.n, lo + close + 1, is_space)
     when {
-        name.is_empty() -> refused(rd, empty_header(lo))
-        !dotted_word(name) -> refused(rd, bad_header(name, lo))
-        !at_line_end(rd.text, rd.n, rest) -> refused(rd, junk_after(rest, "header"))
+        name.is_empty() -> refused_header(rd, empty_header(lo))
+        !dotted_word(name) -> refused_header(rd, bad_header(name, lo))
+        !at_line_end(rd.text, rd.n, rest) -> refused_header(rd, junk_after(rest, "header"))
+        rd.doc.headers.any(it.name == name) -> refused_header(rd, duplicate_header(name, lo))
         _ -> {
             rd.enter(TomlHeader { name: name, lo: lo, hi: hi })
             hi
@@ -188,9 +199,15 @@ fn read_entry(mut rd: Reader, lo: int) -> int {
 fn placed(mut rd: Reader, lo: int, p: TomlPair, next: int) -> int {
     let stop = run_end(rd.text, rd.n, next, is_space)
     if !at_line_end(rd.text, rd.n, stop) { return refused(rd, junk_after(stop, "value")) }
-    if rd.doc.entry(rd.section, p.key) != null { return refused(rd, duplicate_key(p.key, lo)) }
+    if !rd.lost && rd.doc.entry(rd.section, p.key) != null { return refused(rd, duplicate_key(p.key, lo)) }
     rd.hold(p, lo, line_hi(rd.text, rd.n, stop))
     stop
+}
+
+/// A header's refusal: recorded, and the section it opened is lost.
+fn refused_header(mut rd: Reader, r: Refusal) -> int {
+    rd.lose_section()
+    refused(rd, r)
 }
 
 /// A refusal recorded; reading resumes where it says.
@@ -483,6 +500,13 @@ fn duplicate_key(key: string, at: int) -> Refusal { refusal("duplicate key `${ke
 fn unclosed_header(at: int) -> Refusal { refusal("expected `]` to close the header", at) }
 
 fn empty_header(at: int) -> Refusal { refusal("a header names its section: `[name]`", at) }
+
+fn duplicate_header(name: string, at: int) -> Refusal {
+    refusal(
+        "`[${name}]` is declared twice — the first stays, and this one's keys are not read",
+        at,
+    )
+}
 
 fn bad_header(name: string, at: int) -> Refusal {
     refusal("a header is a dotted name of `[A-Za-z0-9_-]` words, not `${name}`", at)

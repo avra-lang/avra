@@ -1,7 +1,6 @@
 // proves: a task whose every wait finds its arm ready still hears a
-// cancel at its next wait — it runs none of its turns.
-use @std.time.{ms, sleep}
-
+// cancel at its next wait — it runs none of its turns — whether the
+// cancel lands while it stands parked and answered, or before it began.
 extern fn avra_wait_task(t: ptr, arm: int, member: int)
 extern fn avra_wait_park() -> int
 extern fn avra_task_pending() -> ptr
@@ -9,10 +8,12 @@ extern fn avra_task_answer(t: ptr, v: ptr)
 extern fn avra_array_sized(n: int) -> ptr
 
 let turns = Cell.new(0)
+let gate = avra_task_pending()
 let ended = avra_task_pending()
 avra_task_answer(ended, avra_array_sized(1))
 let busy = spawn {
-    sleep(ms(0))
+    avra_wait_task(gate, 0, 0)
+    let _ = avra_wait_park()
     for i in 0..1000 {
         avra_wait_task(ended, 0, 0)
         let _ = avra_wait_park()
@@ -20,7 +21,7 @@ let busy = spawn {
     }
     0
 }
-sleep(ms(0))
+avra_task_answer(gate, avra_array_sized(1))
 busy.cancel()
-sleep(ms(5))
+let _ = busy.await catch c -> 0
 "${turns.get()}"

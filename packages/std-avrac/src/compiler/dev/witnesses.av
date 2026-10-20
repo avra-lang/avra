@@ -17,7 +17,16 @@
 //! fired.
 use core.{joined}
 use diagnostics.{DiagCode, new_source_file}
-use compiler.{avra}
+use compiler.{avra, new_workspace, one_shot_let_go, Want}
+use compiler.host.{memory_host}
+use testing.{
+    vendored_meta,
+    vendored_meta_as,
+    real_meta_source,
+    vendored_prelude,
+    vendored_task,
+    vendored_time,
+}
 
 /// How a code is witnessed. ABSENCE HAS TWO CAUSES and they are named
 /// apart: a code nobody has written a witness for is a DEBT, and one
@@ -26,6 +35,12 @@ use compiler.{avra}
 export enum Witness {
     Absent
     Source(text: string)
+    /// A program at `/w`, file by file — what a manifest or a module
+    /// path refuses is a property of a package, not of a lone source.
+    Package(files: Map<string, string>)
+    /// A package built as far as lowering and linking say: what only a
+    /// whole program refuses (a statement in a module, a host fn's symbol).
+    Built(files: Map<string, string>)
     Beyond(why: string)
 }
 
@@ -35,18 +50,33 @@ impl Witness {
     /// one variant of a registry enum falls through for every variant
     /// added after it, which is a hole in different clothes.
     fn runs() -> bool {
-        match self { .Source(_) -> true, .Absent or .Beyond(_) -> false }
+        match self {
+            .Source(_) or .Package(_) or .Built(_) -> true,
+            .Absent or .Beyond(_) -> false,
+        }
     }
 
     /// Whether this code is still owed a witness — a debt, where an
     /// unreachable one is a fact.
     fn owed() -> bool {
-        match self { .Absent -> true, .Source(_) or .Beyond(_) -> false }
+        match self {
+            .Absent -> true,
+            .Source(_) or .Package(_) or .Built(_) or .Beyond(_) -> false,
+        }
     }
 }
 
 /// One code's witness, as the registry spells it.
 export type CodeWitness = { code: string, witness: Witness }
+
+/// A package witness BUILT: derived through the door `avra build` takes, so it
+/// says what a build says — the refusal, or the warnings of a program that lowers.
+fn built_report(files: Map<string, string>) -> string {
+    one_shot_let_go()
+    let ws = new_workspace(memory_host(files, files.keys()), "/w", avra())
+    ws.alone()
+    match ws.derived("/w/src/main.av", Want.Binary) { .Err(report) -> report, .Ok(d) -> d.warnings }
+}
 
 /// One code's witness, run: what the compiler actually said, and
 /// whether the code it claims to show came out.
@@ -56,7 +86,11 @@ impl Shown {
     /// The source the witness ran, when one ran — empty otherwise, so
     /// a caller showing it prints nothing rather than a placeholder.
     fn witness_source() -> string {
-        match self.witness { .Source(text) -> text, .Absent or .Beyond(_) -> "" }
+        match self.witness {
+            .Source(text) -> text,
+            .Package(files) or .Built(files) -> package_text(files),
+            .Absent or .Beyond(_) -> "",
+        }
     }
 }
 
@@ -74,11 +108,38 @@ fn shown(c: DiagCode) -> Shown {
 
 /// The compiler's own words over a witness; nothing where no source
 /// reaches the code.
-fn rendered_over(w: Witness) -> string {
+export fn rendered_over(w: Witness) -> string {
     match w {
         .Source(text) -> avra().check(new_source_file("witness.av", text)),
+        .Package(files) -> package_report(files),
+        .Built(files) -> built_report(files),
         .Absent or .Beyond(_) -> "",
     }
+}
+
+/// A package witness's files, each under its path.
+fn package_text(files: Map<string, string>) -> string {
+    joined(["// ${path}\n${text}" for path, text in files if !is_carried(path)], "\n")
+}
+
+/// Whether a package witness's file is the toolchain's, laid out beside the
+/// program — never the witness itself, so a golden does not print it.
+fn is_carried(path: string) -> bool { path.starts_with("/w/vendor/") || path.starts_with("/std/") }
+
+/// A package witness compiled: its files laid out in memory at `/w`,
+/// and what the program there says. One one-shot workspace is alive at a
+/// time, so the one before is let go.
+fn package_report(files: Map<string, string>) -> string {
+    one_shot_let_go()
+    let host = memory_host(files, files.keys())
+    let ws = new_workspace(
+        if files.keys().any(it.starts_with("/std/")) { host with { std_root: "/std" } } else { host },
+        "/w",
+        avra(),
+    )
+    ws.alone()
+    let entry: string? = if files.has("/w/src/main.av") { "/w/src/main.av" } else { null }
+    match ws.program(entry).check() { .Ok(warned) -> warned, .Err(report) -> report }
 }
 
 /// One code's witness, run — what `avra docs` shows beside the
@@ -152,6 +213,7 @@ fn entry(s: Shown) -> string {
 fn body(s: Shown) -> List<string> {
     match s.witness {
         .Source(text) -> ["```avra", text, "```", "", "```", s.rendered, "```"],
+        .Package(files) or .Built(files) -> ["```", package_text(files), "```", "", "```", s.rendered, "```"],
         .Beyond(why) -> ["No witness here: ${why}."],
         .Absent -> ["No witness yet."],
     }
@@ -170,12 +232,18 @@ fn witnesses() -> List<CodeWitness> {
             code: "lower.no_projection",
             witness: Witness.Source("type P = { x: int }\nP { x: 1 }"),
         },
-        CodeWitness { code: "type.mismatch", witness: Witness.Source("!5") },
+        CodeWitness {
+            code: "type.mismatch",
+            witness: Witness.Source("let a = !5\nfn f(n: int) -> int { n }\nlet v: int? = null\nf(v)"),
+        },
         CodeWitness {
             code: "type.unknown",
             witness: Witness.Source("fn f(x: decimal) -> int { 1 }\nf(1)"),
         },
-        CodeWitness { code: "type.unknown_prop", witness: Witness.Source("let n = 3\nn.x") },
+        CodeWitness {
+            code: "type.unknown_prop",
+            witness: Witness.Source("let n = 3\nn.x\nlet xs = [1]\nxs.lengt\nlet ys = [1]\nys.push"),
+        },
         CodeWitness { code: "type.list_element", witness: Witness.Source("[1, true]\n2") },
         CodeWitness {
             code: "type.list_scalar",
@@ -200,6 +268,7 @@ fn witnesses() -> List<CodeWitness> {
                     "fn one() -> int {\n    1\n}\nfn hush() {\n}\nlet job = spawn one()\n@fair select {\n    r in job -> hush()\n}",
                 ),
         },
+        CodeWitness { code: "type.guard_value", witness: Witness.Beyond(guard_value_golden) },
         CodeWitness { code: "flow.arm", witness: Witness.Source("select {\n    1 -> 2\n}") },
         CodeWitness {
             code: "flow.arm_binder",
@@ -236,11 +305,62 @@ fn witnesses() -> List<CodeWitness> {
         CodeWitness { code: "type.lacks", witness: Witness.Beyond(lacks_golden) },
         CodeWitness {
             code: "type.struct_fields",
-            witness: Witness.Source("type P = { x: int }\nlet p = P { x: true }\n2"),
+            witness: Witness.Source("type P = { x: int, y: string }\nlet p = P { x: true, y: 5 }\n2"),
         },
         CodeWitness {
             code: "type.with_struct",
             witness: Witness.Source("let n = 3\nlet m = n with { x: 1 }\n2"),
+        },
+        CodeWitness {
+            code: "type.spread_value",
+            witness: Witness.Source("type P = { x: int }\nlet p = P { ..5, x: 1 }\n2"),
+        },
+        CodeWitness {
+            code: "type.spread_nullable",
+            witness: Witness.Source("type P = { x: int }\nlet a: P? = null\nlet p = P { ..a, x: 1 }\n2"),
+        },
+        CodeWitness {
+            code: "type.spread_field",
+            witness: Witness
+                .Source(
+                    "type P = { x: int }\ntype Q = { x: int, w: int }\nlet q = Q { x: 1, w: 2 }\nlet p = P { ..q }\n2",
+                ),
+        },
+        CodeWitness {
+            code: "type.spread_missing",
+            witness: Witness
+                .Source("type P = { x: int, y: int }\ntype X = { x: int }\nlet p = P { ..X { x: 1 } }\n2"),
+        },
+        CodeWitness {
+            code: "type.spread_dead",
+            witness: Witness.Source("type P = { x: int }\nlet a = P { x: 1 }\nlet p = P { x: 2, ..a }\n2"),
+        },
+        CodeWitness {
+            code: "type.spread_generic",
+            witness: Witness.Source("type G<T> = { v: T }\nlet g = G { v: 1 }\nlet h = G { ..g }\n2"),
+        },
+        CodeWitness { code: "type.spread_list", witness: Witness.Source("let a = [..5]\n2") },
+        CodeWitness { code: "type.spread_map", witness: Witness.Source("let m = { ..5 }\n2") },
+        CodeWitness {
+            code: "type.list_pattern",
+            witness: Witness.Source("let n = 3\nmatch n {\n    [a, ..] -> a\n    _ -> 0\n}"),
+        },
+        CodeWitness {
+            code: "type.record_pattern",
+            witness: Witness
+                .Source("type P = { x: int }\nlet n = 3\nmatch n {\n    P { x, .. } -> x\n    _ -> 0\n}"),
+        },
+        CodeWitness {
+            code: "type.let_pattern",
+            witness: Witness.Source("let [q, ..] = [1] else { 1 }\n2"),
+        },
+        CodeWitness {
+            code: "type.variadic",
+            witness: Witness.Source("fn h(..r: List<int>, a: int) -> int { a }\n1"),
+        },
+        CodeWitness {
+            code: "type.spread_seat",
+            witness: Witness.Source("fn g(a: int, b: int) -> int { a }\nlet c = g(1, ..[2])\nc"),
         },
         CodeWitness { code: "type.enum_decl", witness: Witness.Source("enum E { }\n1") },
         CodeWitness {
@@ -266,6 +386,10 @@ fn witnesses() -> List<CodeWitness> {
                     "type Nope = {}\ntype Dot = {}\ncollect enum Shape: Nope = @numbered in self by it.mark.args[0] dense\n1",
                 ),
         },
+        CodeWitness {
+            code: "collect_enum.empty",
+            witness: Witness.Source("collect enum Shape = @numbered in self by it.name\n1"),
+        },
         CodeWitness { code: "type.coalesce", witness: Witness.Source("null ?? 1") },
         CodeWitness {
             code: "type.applied",
@@ -281,7 +405,10 @@ fn witnesses() -> List<CodeWitness> {
             witness: Witness.Source("match null {\n    v? -> 1\n    null -> 2\n}"),
         },
         CodeWitness { code: "type.chain", witness: Witness.Source("let n = 1\nn?.x") },
-        CodeWitness { code: "type.binding", witness: Witness.Source("let x: int = true\nx") },
+        CodeWitness {
+            code: "type.binding",
+            witness: Witness.Source("let x: int = true\nlet y: string = 5\nx"),
+        },
         CodeWitness { code: "type.return", witness: Witness.Source("return 1") },
         CodeWitness {
             code: "type.propagate",
@@ -293,7 +420,7 @@ fn witnesses() -> List<CodeWitness> {
             witness: Witness.Source("fn f() -> int {\n    fail 1\n}\nf()"),
         },
         CodeWitness { code: "type.catch", witness: Witness.Source("let n = 1 catch 2\nn") },
-        CodeWitness { code: "type.method", witness: Witness.Source("[1].reverse()") },
+        CodeWitness { code: "type.method", witness: Witness.Source("[1].reverse()\n[1].lenght()") },
         CodeWitness {
             code: "type.impl",
             witness: Witness.Source("impl Nope {\n    fn f() -> int { 1 }\n}\n1"),
@@ -402,6 +529,13 @@ fn witnesses() -> List<CodeWitness> {
                 ),
         },
         CodeWitness {
+            code: "type.provided_kind",
+            witness: Witness
+                .Beyond(
+                    "`provided` is `@std/meta`'s, which a lone source cannot import — the golden is features/fns/tests/provided_test.av",
+                ),
+        },
+        CodeWitness {
             code: "annotation.receiver",
             witness: Witness.Source("fn tag() { }\n@tag\ntype P = { x: int }\nP { x: 2 }.x"),
         },
@@ -480,7 +614,10 @@ fn witnesses() -> List<CodeWitness> {
         CodeWitness { code: "type.plan_residual", witness: Witness.Beyond(planned_golden) },
         CodeWitness { code: "type.plans_mismatch", witness: Witness.Beyond(planned_golden) },
         CodeWitness { code: "type.plan_scan", witness: Witness.Beyond(planned_golden) },
-        CodeWitness { code: "resolve.unresolved", witness: Witness.Source("nope(1)") },
+        CodeWitness {
+            code: "resolve.unresolved",
+            witness: Witness.Source("nope(1)\nfn alpha() -> int { 1 }\nalph()"),
+        },
         CodeWitness { code: "resolve.use_before_def", witness: Witness.Source("x\nlet x = 1") },
         CodeWitness {
             code: "resolve.hole_bound",
@@ -545,8 +682,962 @@ fn witnesses() -> List<CodeWitness> {
                     "it names a directory's own shape — no src/ and no direct .av file — which no lone source text can stand in for",
                 ),
         },
+        CodeWitness {
+            code: "manifest.no_package",
+            witness: manifest("[bin]\npath = \"src/main.av\"\n"),
+        },
+        CodeWitness {
+            code: "manifest.no_name",
+            witness: manifest("[package]\nversion = \"0.1.0\"\n"),
+        },
+        CodeWitness {
+            code: "manifest.no_version",
+            witness: manifest("[package]\nname = \"app\"\n"),
+        },
+        CodeWitness {
+            code: "manifest.bad_version",
+            witness: manifest("[package]\nname = \"app\"\nversion = \"one\"\n"),
+        },
+        CodeWitness {
+            code: "manifest.bad_name",
+            witness: manifest("[package]\nname = \"Bad Name\"\nversion = \"0.1.0\"\n"),
+        },
+        CodeWitness {
+            code: "manifest.lib_name",
+            witness: manifest(app_manifest + "\n[lib]\nname = \"other\"\npath = \"src/main.av\"\n"),
+        },
+        CodeWitness {
+            code: "manifest.self_dependency",
+            witness: manifest(app_manifest + "\n[dependencies]\n\"app\" = { path = \".\" }\n"),
+        },
+        CodeWitness {
+            code: "manifest.bad_path",
+            witness: manifest(app_manifest + "\n[dependencies]\n\"@x/y\" = { path = \"nowhere\" }\n"),
+        },
+        CodeWitness {
+            code: "manifest.unscoped_dependency",
+            witness: manifest(app_manifest + "\n[dependencies]\ny = { path = \"../y\" }\n"),
+        },
+        CodeWitness {
+            code: "manifest.unsupported_dependency",
+            witness: manifest(app_manifest + "\n[dependencies]\n\"@x/y\" = \"1.0\"\n"),
+        },
+        CodeWitness {
+            code: "manifest.bad_opt_level",
+            witness: manifest(app_manifest + "\n[profile.release]\nopt_level = 9\n"),
+        },
+        CodeWitness {
+            code: "manifest.unknown_section",
+            witness: manifest(app_manifest + "\n[nonsense]\na = 1\n"),
+        },
+        CodeWitness {
+            code: "manifest.unknown_key",
+            witness: manifest(app_manifest + "frobnicate = 1\n"),
+        },
+        CodeWitness {
+            code: "manifest.syntax",
+            witness: manifest(app_manifest + "\n[package]\nname = \"other\"\n"),
+        },
+        CodeWitness {
+            code: "manifest.bad_profile",
+            witness: manifest(app_manifest + "\n[profile.Bad]\nopt_level = 2\n"),
+        },
+        CodeWitness {
+            code: "manifest.tool_env_var",
+            witness: manifest(app_manifest + "\n[process.tools]\ncc = { from = \"env\" }\n"),
+        },
+        CodeWitness {
+            code: "manifest.tool_abs_at",
+            witness: manifest(app_manifest + "\n[process.tools]\ncc = { from = \"abs\" }\n"),
+        },
+        CodeWitness {
+            code: "manifest.unknown_process_key",
+            witness: manifest(
+                app_manifest + "\n[process.tools]\ngit = { from = \"path\", frobnicate = 1 }\n",
+            ),
+        },
+        CodeWitness {
+            code: "manifest.no_target",
+            witness: Witness
+                .Beyond("it is what `avra run` says of a package with no entry, which a check never asks"),
+        },
+        CodeWitness {
+            code: "manifest.name_mismatch",
+            witness: dependency_package(["y"], {"/w/vendor/y/avra.toml": package_toml("z", "")}),
+        },
+        CodeWitness {
+            code: "manifest.cycle",
+            witness: dependency_package(
+                ["y"],
+                {
+                    "/w/vendor/y/avra.toml": package_toml("y", "\n[dependencies]\n\"@x/root\" = { path = \"../..\" }\n"),
+                },
+            ),
+        },
+        CodeWitness {
+            code: "manifest.duplicate_package",
+            witness: dependency_package(
+                ["y", "w"],
+                {
+                    "/w/vendor/y/avra.toml": package_toml("y", ""),
+                    "/w/vendor/w/avra.toml": package_toml("w", "\n[dependencies]\n\"@x/y\" = { path = \"../other\" }\n"),
+                    "/w/vendor/other/avra.toml": package_toml("y", ""),
+                },
+            ),
+        },
+        CodeWitness {
+            code: "manifest.prelude_floor",
+            witness: dependency_package(
+                ["prelude"],
+                {
+                    "/w/vendor/prelude/avra.toml": package_toml(
+                        "prelude",
+                        "\n[dependencies]\n\"@x/y\" = { path = \"../y\" }\n",
+                        "@std",
+                    ),
+                },
+            ),
+        },
+        CodeWitness {
+            code: "manifest.unset_link_variable",
+            witness: manifest(app_manifest + "\n[link]\nsearch = [\"\${NOPE_VAR}/lib\"]\n"),
+        },
+        CodeWitness {
+            code: "manifest.bad_tool_from",
+            witness: manifest(app_manifest + "\n[process.tools]\ngit = { from = \"nowhere\" }\n"),
+        },
+        CodeWitness {
+            code: "resolve.kept_apart",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest,
+                        "/w/src/main.av": "use util.{g}\ng()\n",
+                        "/w/src/util/a.av": private_h_one,
+                        "/w/src/util/b.av": private_h_two,
+                        "/w/src/util/c.av": "export fn g() -> int { h() }\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "resolve.private_apart",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest,
+                        "/w/src/main.av": "1\n",
+                        "/w/src/util/a.av": private_h_one,
+                        "/w/src/util/b.av": private_h_two,
+                        "/w/src/util/tests/u_test.av": "use util.{h}\nspec \"u\" {\n    given \"g\" {\n        then \"t\" { h() == 1 }\n    }\n}\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "resolve.reexport_twice",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest,
+                        "/w/src/main.av": "use facade.{f}\nf()\n",
+                        "/w/src/util/u.av": util_fn,
+                        "/w/src/other/o.av": other_fn,
+                        "/w/src/facade/f.av": "export use util.{f}\nexport use other.{f}\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "resolve.reexport_unreached",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest,
+                        "/w/src/main.av": "use a.{x}\nx\n",
+                        "/w/src/a.av": "export use b.{x}\n",
+                        "/w/src/b.av": "export use a.{x}\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "resolve.block_word",
+            witness: with_provider(
+                "use @x.c.{work}\nlet work = 1\n0\n",
+                "export component work {\n    each: int\n}\n",
+            ),
+        },
+        CodeWitness {
+            code: "annotation.callee",
+            witness: Witness.Source("const tag: int = 1\n@tag\nfn g() -> int { 1 }\ng()"),
+        },
+        CodeWitness {
+            code: "annotation.seats",
+            witness: meta_program(
+                "use @std.meta.{Fn}\nfn tag(f: Fn, n: int) { }\n@tag\nfn g() -> int { 1 }\ng()",
+            ),
+        },
+        CodeWitness {
+            code: "annotation.answer",
+            witness: meta_program(
+                "use @std.meta.{Fn}\nfn tag(f: Fn) -> int { 1 }\n@tag\nfn g() -> int { 1 }\ng()",
+            ),
+        },
+        CodeWitness {
+            code: "annotation.derive",
+            witness: meta_program(
+                "use @std.meta.{derive}\ntype X = { a: int }\n@derive(X)\ntype T = { x: int }\n0",
+            ),
+        },
+        CodeWitness {
+            code: "annotation.generated_taken",
+            witness: Witness.Beyond(meta_probes_golden),
+        },
+        CodeWitness { code: "annotation.wrap_missing", witness: Witness.Beyond(meta_probes_golden) },
+        CodeWitness {
+            code: "annotation.wrap_bodiless",
+            witness: Witness.Beyond(meta_probes_golden),
+        },
+        CodeWitness {
+            code: "annotation.wrap_mismatch",
+            witness: Witness.Beyond(meta_probes_golden),
+        },
+        CodeWitness {
+            code: "type.orphan",
+            witness: Witness.Source("impl int {\n    fn double() -> int { 2 }\n}\n1"),
+        },
+        CodeWitness {
+            code: "type.builtin_name",
+            witness: Witness
+                .Source(
+                    "trait Sz {\n    fn length() -> int\n}\nimpl Sz for string {\n    fn length() -> int { 0 }\n}\n1",
+                ),
+        },
+        CodeWitness {
+            code: "type.trait_member",
+            witness: Witness.Source("trait T {\n    fn a() -> int\n    fn a() -> int\n}\n1"),
+        },
+        CodeWitness {
+            code: "type.static_fn",
+            witness: Witness.Source("static fn f() -> int { 1 }\nf()"),
+        },
+        CodeWitness {
+            code: "type.contract_write",
+            witness: Witness
+                .Source(
+                    "trait T {\n    fn a() -> int\n}\ntype P = { x: int }\nimpl T for P {\n    mut fn a() -> int {\n        self.x = 1\n        1\n    }\n}\n1",
+                ),
+        },
+        CodeWitness {
+            code: "type.state_seat",
+            witness: Witness
+                .Source("type P = { x: int }\nimpl P {\n    fn f(state n: int) -> int { n }\n}\n1"),
+        },
+        CodeWitness { code: "type.spread", witness: Witness.Source("type P = { ..P, a: int }\n1") },
+        CodeWitness {
+            code: "type.alias",
+            witness: Witness.Source("alias Box<T> = List<T>\nlet x: Box<void> = []\n1"),
+        },
+        CodeWitness {
+            code: "type.tparam",
+            witness: Witness.Source("fn f<T, T>(x: T) -> T { x }\n1"),
+        },
+        CodeWitness {
+            code: "type.struct_targs",
+            witness: Witness.Source("type G<T> = { v: T }\nlet g = G<int, string> { v: 1 }\n1"),
+        },
+        CodeWitness {
+            code: "type.format",
+            witness: Witness.Source("match 5 { \"{a}b\" -> 1\n    _ -> 0 }"),
+        },
+        CodeWitness {
+            code: "type.format_shape",
+            witness: Witness.Source("match \"x\" { \"{a}{b}\" -> 1\n    _ -> 0 }"),
+        },
+        CodeWitness {
+            code: "type.format_repeat",
+            witness: Witness.Source("match \"x\" { \"{a}z{a}\" -> 1\n    _ -> 0 }"),
+        },
+        CodeWitness {
+            code: "type.format_parse",
+            witness: Witness.Source("match \"x\" { \"{n: float}z\" -> 1\n    _ -> 0 }"),
+        },
+        CodeWitness {
+            code: "type.const_seat",
+            witness: Witness
+                .Source("const N: int = 1\nfn take(const n: int) -> int {\n    n\n}\ntake(N + 1)"),
+        },
+        CodeWitness {
+            code: "type.not_offered",
+            witness: Witness
+                .Source(
+                    "type Offer = { req: string, db: int }\nfn handle(f: fn(Offer) -> string) -> string {\n    f(Offer { req: \"GET /\", db: 7 })\n}\nhandle { db, reqq -> \"x\" }",
+                ),
+        },
+        CodeWitness {
+            code: "type.narrow",
+            witness: Witness.Source("match 5 {\n    c: int -> 1\n    _ -> 0\n}"),
+        },
+        CodeWitness {
+            code: "type.is_bind",
+            witness: Witness.Source("enum E {\n    a(int)\n}\nlet r = E.a(1) is .a(x)\n1"),
+        },
+        CodeWitness {
+            code: "type.pattern",
+            witness: Witness
+                .Source("enum E {\n    a(int)\n}\nmatch E.a(1) {\n    .a(.x) -> 1\n    _ -> 0\n}"),
+        },
+        CodeWitness {
+            code: "type.enum_all",
+            witness: Witness.Source("enum K {\n    A\n    B(int)\n}\nK.all()"),
+        },
+        CodeWitness {
+            code: "type.infer_result",
+            witness: Witness.Source("fn f() -> Result<int, _> {\n    .Ok(1)\n}\n1"),
+        },
+        CodeWitness {
+            code: "type.defer",
+            witness: Witness.Source("fn f() -> Result<int, string> {\n    .Ok(1)\n}\ndefer f()\n1"),
+        },
+        CodeWitness { code: "type.errdefer", witness: Witness.Source("errdefer println(\"x\")\n1") },
+        CodeWitness {
+            code: "flow.yield",
+            witness: Witness.Source("fn f() -> int {\n    yield 1\n    1\n}\n0"),
+        },
+        CodeWitness { code: "const.cycle", witness: Witness.Source("const a = a\n0") },
+        CodeWitness {
+            code: "type.embed_place",
+            witness: with_meta("use @std.meta.{embed}\nconst s: string = embed(\"../../x.txt\")\n0"),
+        },
+        CodeWitness {
+            code: "type.embed_file",
+            witness: with_meta("use @std.meta.{embed}\nconst s: string = embed(\"nothere.txt\")\n0"),
+        },
+        CodeWitness {
+            code: "type.embed_literal",
+            witness: with_meta(
+                "use @std.meta.{embed}\nconst p: string = \"a.txt\"\nconst s: string = embed(p)\n0",
+            ),
+        },
+        CodeWitness {
+            code: "type.code_hash_named",
+            witness: with_meta("use @std.meta.{code_hash}\nlet h = code_hash(1)\n0"),
+        },
+        CodeWitness {
+            code: "type.host_fn",
+            witness: Witness.Source("extern fn avra_bool_text(b: bool) -> string { \"x\" }\n0"),
+        },
+        CodeWitness {
+            code: "type.host_seat",
+            witness: Witness.Source("extern fn c_count(mut out: string) -> int\nmut s = \"\"\nc_count(s)"),
+        },
+        CodeWitness {
+            code: "type.row_shape",
+            witness: Witness.Source("extern fn avra_array_new(x: int) -> ptr\n0"),
+        },
+        CodeWitness {
+            code: "type.host_absence",
+            witness: Witness.Source("extern fn avra_str_len(s: string?) -> int\n0"),
+        },
+        CodeWitness {
+            code: "type.isolated",
+            witness: Witness
+                .Source(
+                    "fn run(isolated make: fn() -> int) -> int { make() }\nlet c = Cell.new(1)\nrun(() -> c.get())",
+                ),
+        },
+        CodeWitness {
+            code: "type.component_check",
+            witness: with_meta(
+                "use @std.meta.{Diagnostic}\ncomponent box {\n    a: int\n    fn check() -> int { 1 }\n}\n0",
+            ),
+        },
+        CodeWitness {
+            code: "type.within",
+            witness: with_time("use @std.time.{ms}\nlet r = within ms(100) {\n    let a = 1\n}\n0"),
+        },
+        CodeWitness {
+            code: "build.failed",
+            witness: Witness.Source("component tally {\n    n: int\n}\ntally Span { n: 2 } { n: 3 }\n0"),
+        },
+        CodeWitness {
+            code: "block.parse",
+            witness: provided_program(
+                "use @x.c.{sql, Select}\nlet q: Select = sql { garbage }\n0",
+                sql_provider,
+            ),
+        },
+        CodeWitness {
+            code: "type.syntax_action",
+            witness: Witness
+                .Source(
+                    "fn f(c: string) -> string { c }\ngrammar bad {\n    select = \"A\" x:nothing -> f(x)\n}\n0",
+                ),
+        },
+        CodeWitness {
+            code: "type.component_format",
+            witness: with_meta(
+                "use @std.meta.{Code}\ntype Format = { n: int }\ncomponent loose(path: Format) {\n    body: Code\n    fn expand() -> Code {\n        quote { \${self.body} }\n    }\n}\n0",
+            ),
+        },
+        CodeWitness {
+            code: "language.defect",
+            witness: Witness
+                .Beyond(
+                    "it is the compiler blaming its own grammar or builders, which no program can cause",
+                ),
+        },
+        CodeWitness {
+            code: "resolve.reexport_cycle",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest,
+                        "/w/src/main.av": "use @std.low.{g}\ng()\n",
+                        "/std/std-low/avra.toml": "[package]\nname = \"@std/low\"\nversion = \"0.1.0\"\n",
+                        "/std/std-low/src/low.av": "export fn g() -> int {\n    1\n}\nexport use @std.high.{h}\n",
+                        "/std/std-high/avra.toml": "[package]\nname = \"@std/high\"\nversion = \"0.1.0\"\n",
+                        "/std/std-high/src/high.av": "use @std.low.{g}\nexport fn h() -> int {\n    g() + 1\n}\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "type.cell_map",
+            witness: Witness.Source("let c = Cell.new(1)\nc.put(\"k\", 1)\n1"),
+        },
+        CodeWitness {
+            code: "collect.kind",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = spell in closure as Entry { name: it.name } by it.name\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.scope",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in everywhere as Entry { name: it.name } by it.name\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.order",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name }\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.not_a_list",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: int = @tag in self as Entry { name: it.name } by it.name\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.not_a_record",
+            witness: Witness
+                .Source("collect xs: List<int> = @tag in self as int { name: it.name } by it.name\n1"),
+        },
+        CodeWitness {
+            code: "collect.proj_type",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string }\ntype Other = { name: string }\ncollect xs: List<Entry> = @tag in self as Other { name: it.name } by it.name\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.fields",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string, module: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.name\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.path",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.label } by it.name\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.order_key",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.nope\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.order_uncomparable",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.mark\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.self_read",
+            witness: Witness
+                .Source(
+                    "export component widget {\n    run: fn(int) -> int?\n}\ntype Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nexport widget cyclic { n -> if xs.length > n { n } else { null } }\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect_enum.scope",
+            witness: Witness
+                .Source(
+                    "export component widget {\n    run: fn(int) -> int?\n}\nexport widget a { n -> null }\ncollect enum S = widget in closure by it.name\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.closure_fold",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest + "\n[lib]\n",
+                        "/w/src/lib.av": "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in closure as Entry { name: it.name } by it.name\nconst n: int = xs.length\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "const.budget",
+            witness: Witness.Source("const n: int = (0..99999999).fold(0, (a, b) -> a + b)\nn"),
+        },
+        CodeWitness {
+            code: "const.param",
+            witness: Witness.Source("fn g(x: int) -> int {\n    const k: int = x + 1\n    k\n}\ng(1)"),
+        },
+        CodeWitness {
+            code: "const.form",
+            witness: Witness
+                .Source(
+                    "fn mk() -> fn(int) -> int { (x: int) -> x }\nconst f: fn(int) -> int = mk()\nf(1)",
+                ),
+        },
+        CodeWitness {
+            code: "flow.produce",
+            witness: Witness.Source("let s = produce<int>(1) { yield 1 }\n1"),
+        },
+        CodeWitness {
+            code: "flow.callback_pointer",
+            witness: Witness.Source("extern fn avra_probe_cb(cb: fn(int) -> ptr) -> int\n1"),
+        },
+        CodeWitness { code: "type.quote_meta", witness: Witness.Source("let q = quote { 1 }\n1") },
+        CodeWitness {
+            code: "type.quote_hole",
+            witness: with_meta(
+                "use @std.meta.{Code}\nlet xs = [1, 2]\nlet w = quote { fn f(x: \${xs}) -> int { 1 } }\n1",
+            ),
+        },
+        CodeWitness {
+            code: "manifest.link_option",
+            witness: manifest(app_manifest + "\n[link]\nlibs = [\"-lm\"]\n"),
+        },
+        CodeWitness {
+            code: "manifest.link_flag",
+            witness: manifest(app_manifest + "\n[link]\ndynamic_symbols = \"yes\"\n"),
+        },
+        CodeWitness {
+            code: "manifest.bad_budget",
+            witness: manifest(app_manifest + "\n[lifted]\nsteps = 0\n"),
+        },
+        CodeWitness { code: "manifest.borrowed_raw", witness: borrowed_raw() },
+        CodeWitness {
+            code: "collect.order_mixed",
+            witness: with_meta(
+                "use @std.meta.{Named}\ntrait Mark {\n    fn label() -> string\n}\nimpl Mark for int {\n    fn label() -> string { \"i\" }\n}\nimpl Mark for string {\n    fn label() -> string { self }\n}\nfn mark(what: Named, label: dyn Mark) -> void {}\n@mark(\"a\")\nfn alpha() {}\n@mark(1)\nfn beta() {}\ntype Entry = { name: string }\ncollect xs: List<Entry> = @mark in self as Entry { name: it.name } by it.mark.args[0]\n1",
+            ),
+        },
+        CodeWitness {
+            code: "collect.dense",
+            witness: with_meta(
+                "use @std.meta.{Named}\nfn numbered(what: Named, ordinal: int) -> void {}\n@numbered(0)\nfn a() {}\n@numbered(2)\nfn b() {}\ntype MarkInfo = { name: string, args: List<string> }\ntype Entry = { name: string, mark: MarkInfo }\ncollect xs: List<Entry> = @numbered in self as Entry { name: it.name, mark: it.mark } by it.mark.args[0] dense\n1",
+            ),
+        },
+        CodeWitness {
+            code: "collect_enum.tie",
+            witness: with_meta(
+                "use @std.meta.{Named}\nfn numbered(what: Named, ordinal: int) -> void {}\n@numbered(0)\ntype Dot = {}\n@numbered(0)\ntype Line = { to: int }\ncollect enum Shape = @numbered in self by it.mark.args[0]\n1",
+            ),
+        },
+        CodeWitness {
+            code: "collect_enum.member",
+            witness: with_meta(
+                "use @std.meta.{Named}\nfn numbered(what: Named, ordinal: int) -> void {}\n@numbered(0)\ntype Wrap<T> = { held: T }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+            ),
+        },
+        CodeWitness {
+            code: "collect_enum.variant",
+            witness: with_meta_modules(
+                "use @std.meta.{Named}\nfn tag(what: Named, label: string) -> void {}\ncollect enum Command = @tag in package by it.name\n1",
+                {
+                    "/w/src/a/a.av": "use @std.meta.{Named}\nfn tag(what: Named, label: string) -> void {}\n@tag(\"one\")\nfn run() {}\n",
+                    "/w/src/b/b.av": "use @std.meta.{Named}\nfn tag(what: Named, label: string) -> void {}\n@tag(\"two\")\nfn run() {}\n",
+                },
+            ),
+        },
+        CodeWitness {
+            code: "collect_enum.self",
+            witness: with_meta(
+                "use @std.meta.{Named}\nfn numbered(what: Named, ordinal: int) -> void {}\ntrait Rank {\n    fn versus(other: Self) -> int\n}\n@numbered(0)\ntype Dot = { at: int }\nimpl Rank for Dot {\n    fn versus(other: Dot) -> int { self.at - other.at }\n}\ncollect enum Item: Rank = @numbered in self by it.mark.args[0] dense\n1",
+            ),
+        },
+        CodeWitness {
+            code: "type.quote_pat_subj",
+            witness: Witness.Source("match 1 { quote { 1 } -> true, _ -> false }"),
+        },
+        CodeWitness {
+            code: "type.quote_pat_shape",
+            witness: Witness.Source("match 1 { quote { 1\n2 } -> true, _ -> false }"),
+        },
+        CodeWitness {
+            code: "type.quote_pat_hole",
+            witness: Witness.Source("match 1 { quote { \${1 + 1} } -> true, _ -> false }"),
+        },
+        CodeWitness {
+            code: "type.quote_pat_type",
+            witness: Witness.Source("match 1 { quote { let x: \${T}? = null } -> true, _ -> false }"),
+        },
+        CodeWitness {
+            code: "type.quote_pat_seat",
+            witness: Witness.Source("match 1 { quote { let l\${x}_y = 1 } -> true, _ -> false }"),
+        },
+        CodeWitness {
+            code: "type.quote_pat_mixed",
+            witness: Witness.Source("match 1 { quote { \${x}(\${x}) } -> true, _ -> false }"),
+        },
+        CodeWitness {
+            code: "type.quote_pat_run",
+            witness: Witness.Source("match 1 { quote { f(\${..a}, \${..b}) } -> true, _ -> false }"),
+        },
+        CodeWitness {
+            code: "const.reach",
+            witness: with_prelude(
+                "fn noisy() -> int {\n    println(\"x\")\n    1\n}\nconst n: int = noisy()\nn",
+            ),
+        },
+        CodeWitness {
+            code: "flow.end_arm",
+            witness: with_task(
+                "use @std.task.{Source}\nfn pick(src: Source<int>) -> int {\n    select {\n        x in src -> x\n    }\n}\n0",
+            ),
+        },
+        CodeWitness {
+            code: "flow.no_fate",
+            witness: with_provider(
+                "use @x.c.{work, ok}\nlet w = work {\n    each: ok\n}\n0\n",
+                "export fn ok(n: int) -> Result<int, string> { .Ok(n) }\n\nexport component work {\n    each: fn(int) -> Result<int, string>\n    dead: string? = null\n}\n",
+            ),
+        },
+        CodeWitness {
+            code: "resolve.no_module",
+            witness: program({"/w/src/main.av": "use nope.{x}\n1\n"}),
+        },
+        CodeWitness {
+            code: "resolve.not_exported",
+            witness: program(
+                {
+                    "/w/src/main.av": "use util.{hidden}\n1\n",
+                    "/w/src/util.av": "fn hidden() -> int { 1 }\n",
+                },
+            ),
+        },
+        CodeWitness {
+            code: "resolve.not_a_dependency",
+            witness: program({"/w/src/main.av": "use @x.y.{z}\n1\n"}),
+        },
+        CodeWitness {
+            code: "resolve.export_kind",
+            witness: program({"/w/src/main.av": "export let a = 1\n1\n"}),
+        },
+        CodeWitness {
+            code: "resolve.module_ambiguous",
+            witness: program(
+                {
+                    "/w/src/main.av": "use util.{f}\n1\n",
+                    "/w/src/util.av": util_fn,
+                    "/w/src/util/mod.av": "export fn g() -> int { 1 }\n",
+                },
+            ),
+        },
+        CodeWitness {
+            code: "resolve.duplicate_in_module",
+            witness: program(
+                {
+                    "/w/src/main.av": "use util.{f}\nf()\n",
+                    "/w/src/util/a.av": util_fn,
+                    "/w/src/util/b.av": other_fn,
+                },
+            ),
+        },
+        CodeWitness {
+            code: "resolve.import_clash",
+            witness: program({"/w/src/main.av": "use util.{f, f}\nf()\n", "/w/src/util.av": util_fn}),
+        },
+        CodeWitness {
+            code: "resolve.nested_use",
+            witness: program(
+                {
+                    "/w/src/main.av": "fn g() -> int {\n    use util.{f}\n    f()\n}\ng()\n",
+                    "/w/src/util.av": util_fn,
+                },
+            ),
+        },
+        CodeWitness {
+            code: "resolve.package_form",
+            witness: program({"/w/src/main.av": "use @solo.{z}\n1\n"}),
+        },
+        CodeWitness {
+            code: "lower.entry_only",
+            witness: entry_program(
+                "use lib.{f}\nf()\n",
+                {"/w/src/lib.av": "export fn f() -> int {\n    1\n}\nlet stray = 1\n"},
+            ),
+        },
+        CodeWitness { code: "lower.code_hash_const", witness: Witness.Beyond(code_hash_golden) },
+        CodeWitness {
+            code: "lower.host_fn_twice",
+            witness: entry_program(
+                "use near.{used}\nextern fn far_event(n: int) -> int {\n    n\n}\nused(1)\n",
+                {
+                    "/w/src/near.av": "use far.{helper}\nexport fn used(n: int) -> int {\n    helper(n)\n}\n",
+                    "/w/src/far.av": "export fn helper(n: int) -> int {\n    n * 2\n}\nextern fn far_event(n: int) -> int {\n    n + 40\n}\n",
+                },
+            ),
+        },
+        CodeWitness {
+            code: "lower.host_fn_shadows",
+            witness: entry_program(
+                "extern fn avra_ptr_at(address: int) -> ptr?\nextern fn malloc(n: int) -> ptr {\n    avra_ptr_at(n)!\n}\n1",
+                {},
+            ),
+        },
+        CodeWitness {
+            code: "lower.host_fn_unasked",
+            witness: near_far_program(
+                "use @x.near.{used}\nextern fn page_row(n: int) -> int {\n    n\n}\n\"\${used(1)}\"",
+                "extern fn far_event(n: int) -> int {\n    n\n}\n",
+            ),
+        },
+        CodeWitness {
+            code: "lower.host_fn_answers",
+            witness: near_far_program(
+                "use @x.near.{used}\nuse @x.far.{helper}\n\"\${used(helper(1))}\"",
+                "extern fn page_row(n: int) -> int {\n    0\n}\n",
+            ),
+        },
+        CodeWitness {
+            code: "lower.component_checked",
+            witness: provided_program(
+                "use @x.c.{port}\nlet p = port 70000\np.n",
+                "use @std.meta.{Diagnostic, refuse}\n\nexport component port(n: int) {\n    fn check() -> List<Diagnostic> {\n        if self.n > 0 && self.n < 65536 { return [] }\n        [refuse(\"a port is 1 to 65535, this is \${self.n}\")]\n    }\n}\n",
+            ),
+        },
+        CodeWitness { code: "annotation.said", witness: provided_program(plain_main, annotators) },
+        CodeWitness {
+            code: "annotation.kind",
+            witness: provided_program("use @x.c.{badkind}\n@badkind\nfn f() -> int { 1 }\nf()", annotators),
+        },
+        CodeWitness {
+            code: "annotation.unsettled",
+            witness: provided_program(
+                "use @std.meta.{derive}\nuse @x.c.{Traps}\n@derive(Traps)\ntype T = { x: int }\n0",
+                annotators,
+            ),
+        },
+        CodeWitness { code: "annotation.wrap_kind", witness: Witness.Beyond(wrap_kind_golden) },
+        CodeWitness { code: "annotation.meta", witness: moved_meta_program(plain_main) },
+        CodeWitness {
+            code: "annotation.warning",
+            witness: meta_program(
+                "use @std.meta.{deprecated}\n@deprecated(\"use add\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)",
+            ),
+        },
+        CodeWitness {
+            code: "annotation.unplaceable",
+            witness: provided_program(
+                "use @std.meta.{derive}\nuse @x.c.{Fields}\n@derive(Fields)\ntype T = { x: int }\n0",
+                annotators,
+            ),
+        },
+        CodeWitness {
+            code: "type.sealed",
+            witness: meta_program(
+                "use urls.{Url}\nlet u: Url = \"x\"\n1",
+                {
+                    "/w/src/urls/urls.av": "use @std.meta.{sealed}\n@sealed\nexport type Url = string\n",
+                },
+            ),
+        },
     ]
     rows
+}
+
+/// The one module body a module witness imports from.
+const util_fn: string = "export fn f() -> int { 1 }\n"
+
+const other_fn: string = "export fn f() -> int { 2 }\n"
+
+const private_h_one: string = "fn h() -> int { 1 }\n"
+
+const private_h_two: string = "fn h() -> int { 2 }\n"
+
+/// A program with `@std/meta` beside it, built — and the modules beside its entry.
+fn meta_program(main: string, modules: Map<string, string> = {}) -> Witness {
+    mut files = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+        "/w/src/main.av": main,
+    }
+    for path, text in modules { files.set(path, text) }
+    Witness.Built(vendored_meta(files))
+}
+
+/// A program over one provider package `@x/c` (which sees `@std/meta`), built.
+fn provided_program(main: string, provider: string) -> Witness {
+    Witness.Built(provided_files(main, provider, real_meta_source()))
+}
+
+fn provided_files(main: string, provider: string, meta: string) -> Map<string, string> {
+    vendored_meta_as(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/c\" = { path = \"vendor/c\" }\n",
+            "/w/src/main.av": main,
+            "/w/vendor/c/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/c/src/c.av": provider,
+        },
+        meta,
+    )
+}
+
+/// The sublanguage provider the block witnesses stand on: a `sql` grammar over a record.
+const sql_provider: string = "export type Select = { cols: List<string>, relation: string, cond: Where? }\nexport type Where = { col: string, value: int }\nexport fn query(cols: List<string>, relation: string, cond: Where?) -> Select { Select { cols: cols, relation: relation, cond: cond } }\nexport fn eq(col: string, value: int) -> Where { Where { col: col, value: value } }\nexport grammar sql {\n    select = \"SELECT\" c:NAME ( \",\" c:NAME )* \"FROM\" t:NAME ( \"WHERE\" w:where )? -> query(c, t, w)\n    where = c:NAME \"=\" v:NAME -> eq(c, v)\n}\n"
+
+/// The annotation fns the annotation witnesses stand on.
+const annotators: string = "use @std.meta.{Fn, Type, Named, Decls, Diagnostic, Directive, Declared, refuse, refuse_as}\nexport fn plain(f: Fn) -> List<Diagnostic> {\n    [refuse(\"`\${f.name}` is plain\")]\n}\nexport fn badkind(f: Fn) -> List<Diagnostic> {\n    [refuse_as(\"not a word\", \"a refusal under a bad kind\")]\n}\nexport trait Traps {\n    static fn derive(t: Type) -> Declared {\n        let none: List<Directive> = []\n        Declared { made: [none[3]] }\n    }\n}\nexport trait Fields {\n    static fn derive(t: Type) -> List<Directive> {\n        let rows: List<Decls> = [quote { enum E { A } }]\n        [Directive { twin: \"\", name: \"gen\", at: t.at, source: quote { fn gen(..\${rows}) {} } }]\n    }\n}\n"
+
+/// A program over the same provider whose `@std/meta` has a moved shape.
+fn moved_meta_program(main: string) -> Witness {
+    Witness.Built(provided_files(main, annotators, real_meta_source().replace("message", "msg")))
+}
+
+/// A program `app` over two packages: `@x/near`, which names an extern bodiless
+/// and imports `@x/far`; and `@x/far`, which declares `far_src` — built.
+fn near_far_program(main: string, far_src: string) -> Witness {
+    Witness
+        .Built(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/near\" = { path = \"vendor/near\" }\n\"@x/far\" = { path = \"vendor/far\" }\n",
+                "/w/src/main.av": main,
+                "/w/vendor/near/avra.toml": "[package]\nname = \"@x/near\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/far\" = { path = \"../far\" }\n",
+                "/w/vendor/near/src/near.av": "use @x.far.{helper}\nextern fn page_row(n: int) -> int\nexport fn used(n: int) -> int {\n    page_row(helper(n))\n}\n",
+                "/w/vendor/far/avra.toml": "[package]\nname = \"@x/far\"\nversion = \"0.1.0\"\n",
+                "/w/vendor/far/src/far.av": "export fn helper(n: int) -> int {\n    n * 2\n}\n" + far_src,
+            },
+        )
+}
+
+/// An annotated fn the `plain` annotation refuses.
+const plain_main: string = "use @x.c.{plain}\n@plain\nfn f() -> int { 1 }\nf()"
+
+/// A program of one entry and the files beside it, built.
+fn entry_program(main: string, others: Map<string, string>) -> Witness {
+    mut files = {"/w/avra.toml": app_manifest, "/w/src/main.av": main}
+    for path, text in others { files.set(path, text) }
+    Witness.Built(files)
+}
+
+/// A lawful manifest, for a witness to add one wrong line to.
+export const app_manifest: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
+
+/// A package witness whose program sees `@std/meta`, vendored in memory.
+export fn with_meta(main: string) -> Witness { with_meta_modules(main, {}) }
+
+/// `with_meta`, with more files of the program's own beside the entry.
+fn with_meta_modules(main: string, more: Map<string, string>) -> Witness {
+    mut files = {
+        "/w/avra.toml": app_manifest + "\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+        "/w/src/main.av": main,
+    }
+    for path, text in more { files.set(path, text) }
+    Witness.Package(vendored_meta(files))
+}
+
+/// A package witness whose program imports from a provider package,
+/// `@x/c`, whose one file is `provider` — a component declared elsewhere.
+export fn with_provider(main: string, provider: string) -> Witness {
+    let meta_dep = "[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n"
+    Witness
+        .Package(
+            vendored_meta(
+                {
+                    "/w/avra.toml": app_manifest + "\n" + meta_dep + "\"@x/c\" = { path = \"vendor/c\" }\n",
+                    "/w/src/main.av": main,
+                    "/w/vendor/c/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+                    "/w/vendor/c/src/c.av": "use @std.meta.{Code}\n" + provider,
+                },
+            ),
+        )
+}
+
+/// A package witness whose toolchain carries the real `@std/task`.
+export fn with_task(main: string) -> Witness {
+    Witness.Package(vendored_task({"/w/avra.toml": app_manifest, "/w/src/main.av": main}))
+}
+
+/// A package witness whose toolchain carries the real `@std/time`.
+export fn with_time(main: string) -> Witness {
+    Witness.Package(vendored_time({"/w/avra.toml": app_manifest, "/w/src/main.av": main}))
+}
+
+/// A package witness whose toolchain carries the real `@std/prelude`, so
+/// its program reads `println` as a file in a package does.
+fn with_prelude(main: string) -> Witness {
+    Witness.Package(vendored_prelude({"/w/avra.toml": app_manifest, "/w/src/main.av": main}))
+}
+
+/// A dependency that asks for raw linker options, under an app that names it.
+fn borrowed_raw() -> Witness {
+    Witness
+        .Package(
+            {
+                "/w/avra.toml": app_manifest + "\n[dependencies]\n\"@acme/dep\" = { path = \"vendor/dep\" }\n",
+                "/w/src/main.av": "use @acme.dep.{d}\nd(1)\n",
+                "/w/vendor/dep/avra.toml": "[package]\nname = \"@acme/dep\"\nversion = \"0.1.0\"\n\n[link.raw]\nflags = [\"-o\", \"/tmp/x\"]\n",
+                "/w/vendor/dep/src/dep.av": "export fn d(n: int) -> int { n }\n",
+            },
+        )
+}
+
+/// A package witness over files laid out as the program at `/w`, beside a
+/// lawful manifest.
+fn program(files: Map<string, string>) -> Witness {
+    mut all = files
+    all.set("/w/avra.toml", app_manifest)
+    Witness.Package(all)
+}
+
+/// A package witness over one manifest and the one-line program beside it.
+export fn manifest(toml: string) -> Witness {
+    Witness.Package({"/w/avra.toml": toml, "/w/src/main.av": "1\n"})
+}
+
+/// A vendored package's manifest.
+fn package_toml(name: string, rows: string, scope: string = "@x") -> string {
+    "[package]\nname = \"${scope}/${name}\"\nversion = \"1.0.0\"\n${rows}"
+}
+
+/// A package that depends on each `vendored` name under `vendor/`, beside the vendored
+/// manifests in `more` — what a dependency's own manifest refuses is a property of the graph.
+fn dependency_package(vendored: List<string>, more: Map<string, string>) -> Witness {
+    mut files: Map<string, string> = {
+        "/w/avra.toml": package_toml("root", "\n[dependencies]\n${rows_of(vendored)}"),
+        "/w/src/main.av": "1\n",
+    }
+    for path, text in more { files.set(path, text) }
+    Witness.Package(files)
+}
+
+/// One `[dependencies]` row a vendored name.
+fn rows_of(vendored: List<string>) -> string {
+    joined(
+        ["\"${if n == "prelude" { "@std" } else { "@x" }}/${n}\" = { path = \"vendor/${n}\" }\n" for n in vendored],
+        "",
+    )
 }
 
 /// Where the planner's refusals are witnessed: a planned relation's marks
@@ -558,9 +1649,22 @@ const planned_golden: string = "a planned relation's `@plans` marks come from `@
 /// cannot import.
 const identity_clash_golden: string = "two variant names fold to one 64-bit identity, which no source can be written to produce — the refusal is reached only by a hash collision"
 const identity_golden: string = "`@identity` resolves to `@std/meta`'s own declaration, which a lone source cannot import — the golden is features/structs/tests/identity_test.av"
+const guard_value_golden: string = "`guarded` is `@std/meta`'s own declaration, which a lone source cannot import — the golden is features/fns/tests/contained_test.av"
 const unbroken_golden: string = "`@unbroken` resolves to `@std/meta`'s own declaration, which a lone source cannot import — the golden is compiler/tests/unbroken_test.av"
 
 const never_ends_golden: string = "a `channel` needs `@std/task`'s carrier, which a lone source cannot import — the golden is features/tasks/tests/channel_test.av"
 const lacks_golden: string = "`@lacks` resolves to `@std/meta`'s own declaration, which a lone source cannot import — the golden is features/structs/tests/lacks_test.av"
+
+/// Where the code-hash law is witnessed: a const's settlement speaks it, and the
+/// user reads it carried in `const.trap`'s words.
+const code_hash_golden: string = "the refusal is spoken inside a const's settlement and reaches a program as `const.trap` carrying its words — the golden is compiler/tests/code_hash_test.av"
+
+/// Why the wrap-kind guard has no witness: it speaks for a declaration that
+/// carries a body root yet is no fn or method (a seat default, a spec case),
+/// and no annotation stands on either.
+/// Where the directive-twin refusals are witnessed: the real `@std/meta` deliberately ships no annotator that generates a twin or wraps a fn, so the fixtures are the test's own.
+const meta_probes_golden: string = "the real `@std/meta` ships no annotator that generates a twin or wraps a fn, so the fixtures are the suite's own — the golden is features/annotations/tests/annotations_adversarial_test.av"
+
+const wrap_kind_golden: string = "a declaration with a body root that is no fn or method is a seat default or a spec case, and no annotation can stand on either — `@a` before `then` is a parse error"
 
 const quiet_never_golden: string = "a timer is `@std/time`'s own declaration, which a lone source cannot import — the golden is features/select_expr/tests/select_expr_test.av"

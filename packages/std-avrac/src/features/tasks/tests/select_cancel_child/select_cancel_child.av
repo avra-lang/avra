@@ -1,0 +1,37 @@
+// proves: cancelling a task cancels the tasks its `select` heads made — each
+// unwinds, its deferred call runs once, and it runs before the cancelled
+// task's own unwind ends, whether the head spawns one task or names a list
+// of them
+use @std.time.{ms, secs, sleep}
+
+fn leaf(log: Cell<string>) -> int {
+    defer log.set(log.get() + "l")
+    sleep(secs(60))
+    0
+}
+
+fn one(log: Cell<string>) -> int {
+    defer log.set(log.get() + "s")
+    select {
+        r in spawn leaf(log) -> r
+    }
+}
+
+fn several(log: Cell<string>) -> int {
+    defer log.set(log.get() + "S")
+    let made = [spawn leaf(log), spawn leaf(log)]
+    select {
+        i, r in made -> r
+    }
+}
+
+fn cancelled(work: fn(Cell<string>) -> int) -> string {
+    let log = Cell.new("")
+    let t = spawn work(log)
+    sleep(ms(2))
+    t.cancel()
+    let _ = t.await catch c -> { -1 }
+    log.get()
+}
+
+"${cancelled(one)} ${cancelled(several)}"

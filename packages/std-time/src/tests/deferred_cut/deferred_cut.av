@@ -1,22 +1,25 @@
 // proves: a valued await inside a `defer` that the task's own cancel
 // cuts reads no answer — the deferred body leaves at the await, and its
 // scope's end cancels the task it was waiting on
-use @std.time.{ms, secs, sleep}
+use @std.task.{open_channel}
+use @std.time.{secs, sleep}
 
 let seen = Cell.new(0)
+let up = open_channel<int>(1)
 let holder = spawn {
     defer {
         let slow = spawn {
             sleep(secs(60))
             1
         }
+        let _ = up.sink.post(1)
         let v = slow.await
         seen.set(seen.get() + v + 100)
     }
     seen.set(seen.get() + 10)
     0
 }
-sleep(ms(1))
+let _ = up.source.next()
 holder.cancel()
-sleep(ms(5))
+let _ = holder.await catch c -> 0
 "${holder.done} ${seen.get()}"

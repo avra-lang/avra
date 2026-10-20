@@ -5,7 +5,7 @@
 //! there first, and a disagreement stops the run before a binary exists.
 use core.{sorted_texts, joined, flatten, module_path, TypeRegistry, counted, FileId}
 use @std.path.{joined_path, dir_of, stem_of, relative_path, normalized, under_dir}
-use @std.io.{make_dirs}
+use @std.io.{make_dirs, exists, write_text}
 use compiler.backend.{run_scheduled}
 use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Lowered, program_symbol}
@@ -52,7 +52,7 @@ enum Hearing {
 
 /// A suite's own module, as one derivation tells it: every case in scope and
 /// the file its body is in, and each program the entry calls.
-fn suite_module(d: Derived, only: string?, calls: List<ProgramCall>) -> ProgramModule {
+fn suite_module(d: Derived, only: List<string>, calls: List<ProgramCall>) -> ProgramModule {
     let told = [s for s in d.said if in_scope(only, s.path)]
     let cases = flatten([s.cases for s in told])
     ProgramModule {
@@ -66,9 +66,9 @@ impl Workspace {
     /// EVERY SUITE THE PACKAGE CARRIES: its own, and one per package nested under
     /// its sources — a module tree, a vendored dependency, a test that reaches
     /// past the library's own dependencies — each proved on its own. `only`
-    /// scopes the run to the proofs at or under one path; labels are told from
+    /// scopes the run to the proofs at or under any of its paths; labels are told from
     /// `told_from`.
-    fn suites(only: string?, told_from: string, tools: Toolchain) -> Result<
+    fn suites(only: List<string>, told_from: string, tools: Toolchain) -> Result<
         List<BuildOutcome>,
         string,
     > {
@@ -76,7 +76,7 @@ impl Workspace {
         mut out: List<BuildOutcome> = if own == null { [] } else { [own!] }
         for root in [r for r in self.nested_roots(joined_path(self.root, "src")) if in_scope(only, r)] {
             let inner = self.nested_at(root)
-            let made: BuildOutcome? = inner.suite(null, told_from, tools)?
+            let made: BuildOutcome? = inner.suite([], told_from, tools)?
             inner.discarded()
             if made != null { out.push(made!) }
         }
@@ -92,13 +92,16 @@ impl Workspace {
 
     /// Whether this run proves the rule examples: std-avrac's own, once, in an
     /// unscoped run or one whose scope holds `src/compiler`.
-    fn proves_rules(only: string?) -> bool {
+    fn proves_rules(only: List<string>) -> bool {
         let home = joined_path(self.root, "src/compiler")
         self.manifest(0).name == "@std/avrac" && in_scope(only, home)
     }
 
     /// One suite's binary, or null when there is nothing to prove.
-    fn suite(only: string?, told_from: string, tools: Toolchain) -> Result<BuildOutcome?, string> {
+    fn suite(only: List<string>, told_from: string, tools: Toolchain) -> Result<
+        BuildOutcome?,
+        string,
+    > {
         // A rule's examples run NATIVE, right here, at build time —
         // no evaluator, no generated case: std-avrac testing ITSELF
         // means its own rules are already part of the standing
@@ -116,15 +119,16 @@ impl Workspace {
         let refuses = [r for r in self.refuses_tests() if in_scope(only, r.path)]
         let programs = [path for path in self.program_tests() if in_scope(only, path)]
         let under = Keyed {
-            named: "suite:${only ?? ""}",
+            named: "suite:${joined(only, ",")}",
             beside: [beside(path, "expected") for path in programs],
         }
         let binary = joined_path(joined_path(self.root, "build"), "suite")
         let kept = self.kept_binary(self.program_key(under.named, under.beside), binary, tools)
         if kept != null { return .Ok(kept! with { refuses: refuses }) }
         let store = self.opened_store()
-        let owed = [path for path in programs if !self.native_only(path) && !store.has(Stored.Unit, self.proved_key(store, path))]
+        let owed = [path for path in programs if !self.native_only(path) && !self.proved(store, path)]
         let calls = [self.program_call(path, told_from) for path in programs]
+        let began = self.clock()
         let d = self
             .evaluated(
                 store,
@@ -132,6 +136,9 @@ impl Workspace {
                 told_from,
                 (met: Derived) -> link_owes(met, suite_module(met, only, calls), tools),
             )?
+        eprintln(
+            "proofs: ${owed.length} of ${programs.length} programs owed, evaluated in ${(self.clock() - began) / 1000000} ms",
+        )
         let m = suite_module(d, only, calls)
         if m.cases.is_empty() && programs.is_empty() && refuses.is_empty() { return .Ok(null) }
         let _ = make_dirs(dir_of(binary))
@@ -222,7 +229,8 @@ impl Workspace {
 
     /// The evaluator agreed with each: remembered under what the program can see.
     fn agreed(store: Store, d: Derived, owed: List<string>) -> Derived {
-        for path in owed { let _ = store.keep_once(Stored.Unit, self.proved_key(store, path), "") }
+        let _ = make_dirs(self.proofs_dir())
+        for path in owed { let _ = write_text(self.proof_file(store, path), "") }
         d
     }
 
@@ -277,28 +285,42 @@ impl Workspace {
         )
     }
 
-    /// WHERE THE EVALUATOR'S AGREEMENT IS REMEMBERED: under the text the program
-    /// must print and the text of every file it can reach — a BODY moves a run,
-    /// so an interface digest would not do.
+    /// WHERE THE EVALUATOR'S AGREEMENT IS REMEMBERED: under the compiler that agreed, the
+    /// text the program must print and the text of every file it can reach — a BODY moves
+    /// a run, so an interface digest would not do, and a compiler can move the answer.
     fn proved_key(store: Store, path: string) -> string {
         let texts = [self.text_digest(f) for f in self.seen_files(store, path)]
         node_key(
             Stored.Unit,
-            ["proved", path, self.listed_text(beside(path, "expected")), joined(texts, "\n")],
+            [
+                "proved",
+                self.compiler_id(),
+                path,
+                self.listed_text(beside(path, "expected")),
+                joined(texts, "\n"),
+            ],
         )
     }
+
+    /// A PROOF IS A FILE, one per key: empty, present once the evaluator agreed. A directory
+    /// of them moves between machines and runs by itself, which a packed store's rows do not.
+    fn proofs_dir() -> string { joined_path(build_cache_root(self), "proofs") }
+
+    fn proof_file(store: Store, path: string) -> string { joined_path(self.proofs_dir(), self.proved_key(store, path)) }
+
+    // LICENSED input.test_setting: a proof only skips a test run, never an input of what is built
+    fn proved(store: Store, path: string) -> bool { exists(self.proof_file(store, path)) }
 }
 
 /// The file beside a program that wears its stem and this extension.
 fn beside(path: string, extension: string) -> string { joined_path(dir_of(path), "${stem_of(path)}.${extension}") }
 
-/// Whether a run scoped to `only` reaches `path`: every path when unscoped,
-/// else the path itself and what lies under it.
-fn in_scope(only: string?, path: string) -> bool {
-    let scope? = only else { return true }
+/// Whether a run scoped to `only` reaches `path`: every path when unscoped (no scope),
+/// else a path that is, or lies under, one of the scopes.
+fn in_scope(only: List<string>, path: string) -> bool {
+    if only.is_empty() { return true }
     let at = normalized(path)
-    let top = normalized(scope)
-    at == top || under_dir(at, top)
+    only.any((scope) -> at == normalized(scope) || under_dir(at, normalized(scope)))
 }
 
 impl Workspace {
@@ -331,7 +353,11 @@ fn quarrel_from(lo: Lowered, pr: ProgramCall, i: int, runs: int) -> List<string>
     // PATH MODE WALKED EVERY ORDER: -1 names no schedule left to run.
     if schedule < 0 { return [] }
     match run_scheduled(lo, pr.symbol, schedule) {
-        .Ok(r) -> if r.out != pr.expected { [said_otherwise_under(pr, r.out, schedule)] } else if r.choices == 0 { [] } else { quarrel_from(lo, pr, i + 1, runs) },
+        .Ok(r) -> when {
+            r.out != pr.expected -> [said_otherwise_under(pr, r.out, schedule)]
+            r.choices == 0 -> []
+            _ -> quarrel_from(lo, pr, i + 1, runs)
+        },
         .Err(why) -> [eval_wrecked(pr, why)],
     }
 }

@@ -18,9 +18,26 @@ export type Reg = { index: int }
 @derive(Fingerprint)
 export enum Level { Application, Systems, Bare, Hardware }
 
-/// The unary operators.
+/// How a float takes its int. `Nearest` ties away from zero.
 @derive(Fingerprint)
-export enum UnOp { Not }
+export enum Rounding { Floor, Ceil, Nearest, Trunc }
+
+/// Whether two unary ops are the same op: a payload op compares its
+/// rounding, which is payload-free and compares by variant.
+export fn same_un(a: UnOp, b: UnOp) -> bool {
+    match a { .Not -> b is .Not, .ToInt(r) -> match b { .ToInt(s) -> r == s, rest -> false } }
+}
+
+/// The one number each rounding is keyed by, in the evaluator's C body
+/// and the backend's intrinsic table alike.
+export fn rounding_code(r: Rounding) -> int {
+    match r { .Floor -> 0, .Ceil -> 1, .Nearest -> 2, .Trunc -> 3 }
+}
+
+/// The unary operators. `ToInt` rounds a float to the int it names; the
+/// lowering checks the range before it runs, so the conversion is defined.
+@derive(Fingerprint)
+export enum UnOp { Not, ToInt(Rounding) }
 
 /// A byte the runtime keeps about the running task, which compiled code
 /// reads in place: its unwind bit, and the tick the source sets so a
@@ -40,7 +57,15 @@ export fn flag_word(f: RtFlag) -> string {
 
 /// The operator's surface symbol — the projection beside its enum.
 export fn un_symbol(op: UnOp) -> string {
-    match op { .Not -> "!" }
+    match op {
+        .Not -> "!",
+        .ToInt(r) -> match r {
+            .Floor -> "floor_int",
+            .Ceil -> "ceil_int",
+            .Nearest -> "round_int",
+            .Trunc -> "trunc_int",
+        },
+    }
 }
 
 /// THE INSTRUCTION VOCABULARY. Features lower into it and never
@@ -742,7 +767,7 @@ export fn same_ins(a: Ins, b: Ins) -> bool {
             rest -> false,
         },
         .Un(d1, op1, s1) -> match b {
-            .Un(d2, op2, s2) -> same_reg(d1, d2) && op1 == op2 && same_reg(s1, s2),
+            .Un(d2, op2, s2) -> same_reg(d1, d2) && same_un(op1, op2) && same_reg(s1, s2),
             rest -> false,
         },
         .CallRtVoid(c1, args1) -> match b { .CallRtVoid(c2, args2) -> c1 == c2 && same_regs(args1, args2), rest -> false },
@@ -859,6 +884,7 @@ export enum RtHost {
     Strlen
     ArrayPop
     ArrayConcat
+    ArrayExtend
     ArraySlice
     StrContains
     StrStartsWith
@@ -906,6 +932,13 @@ export enum RtHost {
     /// holds by construction.
     ErrnoText
     NowNs
+    /// The evaluator's own change log: a box watched, let go, its key, the
+    /// turn's stamp and the keys written under it.
+    BoxObserve
+    BoxUnobserve
+    BoxKey
+    TurnNext
+    ChangesTake
     HostEnv
     Eputs
     IoList
@@ -946,6 +979,10 @@ export enum RtHost {
     /// The join a `catch` reads: how the task ended, never its answer.
     TaskJoinCaught
     TaskDone
+    /// A guarded run: the evaluator enters the closure under a catch floor
+    /// on its own stack, and a trap on the task lands back at the call.
+    GuardRun
+    GuardWords
     TaskSettle
     TaskSettleAll
     TasksPush
@@ -967,6 +1004,12 @@ export enum RtHost {
     /// workspace directly, the one row whose C body is never its
     /// real answer.
     TypeNamed
+    /// A program's own trap, in its words. A settlement records it as the
+    /// const's refusal and goes on; a running program exits.
+    Trap
+    /// `embed`'s twin for a file of any octets: the interpreter's arm
+    /// answers the compiler's placed read, natively it traps.
+    EmbedOctets
     /// Reached by the backend only — an instruction or a Bin op
     /// covers it in the interpreter.
     Unhosted
@@ -1107,12 +1150,16 @@ export enum RtHost {
 /// out, never minted. Together they are every count a row's body
 /// moves, so an engine that hosts the row moves the same ones.
 ///
+/// `traps` says the body can raise a trap — one a guard catches. A row says
+/// `traps: true` exactly when it can, and `tools/traps.py` holds the C to that
+/// both ways; a row that cannot is declared `nounwind`.
+///
 /// `waits` says the body may switch the calling task out — a CANCEL
 /// POINT: a cancel or a deadline standing there is heard there, so
 /// every caller that may reach the row tests for one after the call.
 export enum Reach { Pure, Embed, Lookup, World }
 
-export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], writes: List<bool> = [], aliases_arg0: bool = false, cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false, has_reusing_twin: bool = false, has_moving_twin: bool = false, wasm: bool = true, takes: Takes = Takes.Never, stood: bool = false, waits: bool = false }
+export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], writes: List<bool> = [], aliases_arg0: bool = false, cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false, has_reusing_twin: bool = false, has_moving_twin: bool = false, wasm: bool = true, takes: Takes = Takes.Never, stood: bool = false, waits: bool = false, traps: bool = false }
 
 /// WHEN A ROW'S BODY TAKES ITS OWN REFERENCE to a seat it keeps — the
 /// `avra_rc_retain` the C makes, as data. `keeps` says a seat escapes;

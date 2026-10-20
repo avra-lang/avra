@@ -1,9 +1,10 @@
 #!/bin/sh
 # ONE DECLARATION OF "NO WASM BODY". A runtime row marked `wasm: false` claims
-# the runtime does not carry it on a non-host target — and the Makefile excludes
-# avra_fiber.c and avra_cores.c from the archive. If the two drift, either a
-# reachable row links to nothing or a body is dropped for no reason. This is
-# the keeper that ties them.
+# the runtime does not carry it on a non-host target — a core, or a wait on a
+# descriptor or a signal, which a hosted scheduler has no poller for — and the
+# Makefile excludes avra_cores.c from the archive (avra_fiber.c is in, hosted).
+# If the two drift, either a reachable row links to nothing or a body is
+# dropped for no reason. This is the keeper that ties them.
 set -eu
 tree=$(cd "$(dirname "$0")/.." && pwd)
 rows=$(cd "$tree" && awk '/name: "/{ n=$0; sub(/.*name: "/,"",n); sub(/".*/,"",n) } /wasm: false/{ print n }' packages/std-avrac/src/core/runtime_api.av)
@@ -17,8 +18,8 @@ for s in $rows; do
 done
 excluded=$(cd "$tree" && sed -n 's/^WASM_RUNTIME_SRCS :=.*filter-out \(.*\),\$(wildcard.*/\1/p' Makefile)
 case "$excluded" in
-    *avra_fiber.c*avra_cores.c*|*avra_cores.c*avra_fiber.c*) : ;;
-    *) echo "wasm-body: the Makefile does not exclude avra_fiber.c and avra_cores.c — found: $excluded" >&2; fail=1 ;;
+    "runtime/avra_cores.c") : ;;
+    *) echo "wasm-body: the Makefile must exclude exactly runtime/avra_cores.c — found: $excluded" >&2; fail=1 ;;
 esac
 [ "$fail" -eq 0 ] || exit 1
 echo "wasm-body: $(echo "$rows" | wc -l | tr -d ' ') row(s) and the archive exclusion agree"

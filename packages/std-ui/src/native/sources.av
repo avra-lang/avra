@@ -5,23 +5,48 @@
 //! loop does. A TARGET WITHOUT TASKS REALIZES THE SAME SEAM ITS OWN WAY:
 //! a source is anything that posts an `Act`, and the page's host does it
 //! from its own callbacks (docs/2026_10_05_UI_ARCHITECTURE.md, law 7).
-use app.{Act, App, Door, Job, Msg, running}
-use @std.time.{Duration, every, sleep}
-use @std.task.{Channel, Posted, Source, unbounded_channel}
+use app.{Act, App, Door, Job, Msg, Want, running}
+use @std.http_message.message.{Reply, Request}
+use @std.time.{Duration, every, ms, now_ms, sleep}
+use @std.task.{Channel, Posted, Sink, Source, unbounded_channel}
 
 /// A paint that shows nothing further.
 export fn unshown() {}
 
 /// The inbox of an app's loop, open: the app's door leads to it, so what
 /// a source leaves is kept for the loop that serves it.
-export fn opened(on: App) -> Channel<Msg> {
+export fn opened(on: App, net: fn(Request) -> Result<Reply, string>) -> Channel<Msg> {
     if on.looping.get() { avra_trap(one_loop()) }
     on.looping.set(true)
     let inbox = unbounded_channel<Msg>()
+    let send = (m: Msg) -> taken(inbox.sink.post(m))
     on
         .door
-        .set(Door { send: (m: Msg) -> taken(inbox.sink.post(m)), close: () -> inbox.sink.close() })
+        .set(
+            Door {
+                send: send,
+                ask: (w: Want, act: Act, owner: string?) -> asked(send, net, w, act, owner),
+                close: () -> inbox.sink.close(),
+            },
+        )
     inbox
+}
+
+/// A want as the loop realizes it: a job that waits, or sends over `net`,
+/// then posts.
+fn asked(
+    send: fn(Msg) -> bool,
+    net: fn(Request) -> Result<Reply, string>,
+    want: Want,
+    act: Act,
+    owner: string?,
+) -> bool {
+    let job: Job = match want {
+        .After(span) -> () -> waited(send, owner, ms(span), act),
+        .Every(period) -> () -> ticked(send, owner, ms(period), act),
+        .Get(request, into) -> () -> got(send, owner, net, request, into, act),
+    }
+    send(Msg.Start(job, owner))
 }
 
 fn taken(p: Posted) -> bool {
@@ -30,87 +55,241 @@ fn taken(p: Posted) -> bool {
 
 extern fn avra_trap(message: string)
 
+/// A task of the loop that runs jobs one at a time: the queue it is
+/// handed them on, the line a cancel of its current job travels, the
+/// control whose job it runs, and the serial of that job.
+type Hand = { queue: Sink<Job>, cuts: Sink<int>, owner: Cell<string?>, busy: Cell<bool>, serial: Cell<int> }
+
 /// THE LOOP: each act in the inbox is a turn, until the inbox ends. Each
 /// job runs on a worker, a task this block owns: a job takes an idle
 /// worker or, when none is idle, a new one, and a worker that finishes a
 /// job says so and waits for the next. The block holds as many tasks as
-/// jobs were ever live at once, however many have run. `painted` runs
-/// after a turn that ran.
+/// jobs were ever live at once, however many have run or been cancelled.
+/// WORK BELONGS TO THE CONTROL THAT ASKED: after a paint, the job of a
+/// control no longer on the screen is cancelled — the worker lives on —
+/// and what that control left in the inbox is dropped unrun. THE SCREEN IS
+/// PAINTED ON THE LOOP'S OWN FRAME (`window_ms`), the first after a turn
+/// moved it: turns that arrive within one frame — timers due together wake
+/// back to back, never at one instant — are one paint, and no source can keep
+/// the screen from being painted longer than a frame, however full the inbox
+/// stays. `painted` runs after each paint.
 export fn served(on: App, inbox: Channel<Msg>, painted: fn() -> void) {
-    let queue = unbounded_channel<Job>()
-    mut workers: List<Task<bool>> = []
-    mut idle = 0
+    let workers = Tasks.new()
+    let hands: Cell<List<Hand>> = Cell.new([])
+    on.holding.set(true)
+    let wakes = unbounded_channel<bool>()
+    workers.push(spawn framed(wakes.source, on.sender()))
+    mut pending = false
+    mut since = now_ms()
     mut going = true
     while going {
         going = select {
             msg in inbox.source -> {
                 match msg {
-                    .Turn(act) -> {
-                        if on.turn(act) { painted() }
+                    .Turn(act, owner) -> {
+                        if on.owns(owner) { let _ = on.turn_for(owner, act) }
                     },
-                    .Start(job) -> {
-                        if idle > 0 {
-                            idle = idle - 1
-                        } else {
-                            workers.push(spawn worked(queue.source, on.sender()))
-                        }
-                        let _ = queue.sink.post(job)
+                    .Start(job, owner) -> {
+                        if on.owns(owner) { started(on, hands, workers, job, owner) }
                     },
-                    .Ended -> {
-                        idle = idle + 1
+                    .Ended(at, serial) -> { hands.get()[at].freed(serial) },
+                    .Frame -> {
+                        on.frames.set(on.frames.get() + 1)
+                        pending = false
+                        if on.flush() { painted() }
                     },
                 }
-                on.jobs.set(workers.length)
+                if on.dirty.get() && !pending {
+                    pending = true
+                    since = now_ms()
+                    let _ = wakes.sink.post(true)
+                }
+                // a backlog keeps the frame's own message waiting behind it:
+                // the clock is read at each message, so the window holds
+                if pending && now_ms() - since >= window_ms {
+                    pending = false
+                    if on.flush() { painted() }
+                }
+                swept(on, hands)
+                on.jobs.set(hands.get().length)
                 true
             }
             inbox.source.ended -> false
         }
     }
-    queue.sink.close()
+    for h in hands.get() {
+        if h.busy.get() { let _ = h.cuts.post(h.serial.get()) }
+        h.queue.close()
+        h.cuts.close()
+    }
+    wakes.sink.close()
+    if on.flush() { painted() }
+    on.holding.set(false)
     on.looping.set(false)
 }
 
-/// A worker: each job it is handed, then its word that it is free.
-fn worked(jobs: Source<Job>, send: fn(Msg) -> bool) -> bool {
-    for job in jobs {
-        let _ = job()
-        let _ = send(Msg.Ended)
+/// The loop's frame: short enough that a key shows at once, long enough that
+/// timers due together are one paint.
+const window_ms = 8
+
+/// The frame's own task: each time the loop says the screen moved, a window
+/// passes, then the loop is told. One task for the loop's whole life, parked
+/// on its channel between: an idle app wakes nothing.
+fn framed(wakes: Source<bool>, send: fn(Msg) -> bool) -> bool {
+    for _wake in wakes {
+        sleep(ms(window_ms))
+        let _ = send(Msg.Frame)
     }
     true
 }
 
-/// `act` runs as a turn once `span` has gone by. False when no loop runs.
-export fn later(span: Duration, act: Act) -> bool {
-    let on? = running() else { return false }
-    let send = on.sender()
-    on.start(() -> waited(send, span, act))
+impl Hand {
+    /// The worker says it is done with job `serial`: waiting for another,
+    /// unless it has been handed one since.
+    fn freed(serial: int) {
+        if self.serial.get() != serial { return }
+        self.busy.set(false)
+        self.owner.set(null)
+    }
+
+    /// The worker runs `job` for the control at `owner`.
+    fn handed(job: Job, owner: string?) {
+        self.busy.set(true)
+        self.owner.set(owner)
+        self.serial.set(self.serial.get() + 1)
+        let _ = self.queue.post(job)
+    }
 }
 
-/// `act` runs as a turn every `period`, until the loop ends. False when
-/// no loop runs.
-export fn repeating(period: Duration, act: Act) -> bool {
-    let on? = running() else { return false }
-    let send = on.sender()
-    on.start(() -> ticked(send, period, act))
+/// `job` goes to an idle worker, or to a new one when none is idle.
+fn started(on: App, hands: Cell<List<Hand>>, workers: Tasks, job: Job, owner: string?) {
+    let free = [j for j, h in hands.get() if !h.busy.get()].first()
+    let at = free ?? hands.get().length
+    if free == null { grown(on, hands, workers) }
+    hands.get()[at].handed(job, owner)
 }
 
-fn waited(send: fn(Msg) -> bool, span: Duration, act: Act) -> bool {
-    sleep(span)
-    let _ = send(Msg.Turn(act))
+/// A new worker, its hand the last of `hands`.
+fn grown(on: App, hands: Cell<List<Hand>>, workers: Tasks) {
+    let jobs = unbounded_channel<Job>()
+    let cuts = unbounded_channel<int>()
+    let nobody: string? = null
+    let at = hands.get().length
+    hands
+        .push(
+            Hand {
+                queue: jobs.sink,
+                cuts: cuts.sink,
+                owner: Cell.new(nobody),
+                busy: Cell.new(false),
+                serial: Cell.new(0),
+            },
+        )
+    workers.push(spawn worked(at, jobs.source, cuts.source, on.sender()))
+}
+
+/// The job of a control no longer on the screen is cancelled; its worker
+/// is free at once.
+fn swept(on: App, hands: Cell<List<Hand>>) {
+    for h in hands.get() {
+        if h.busy.get() && !on.owns(h.owner.get()) {
+            let _ = h.cuts.post(h.serial.get())
+            h.owner.set(null)
+        }
+    }
+}
+
+/// A worker: each job it is handed runs as a task of its own, which a cut
+/// naming that job's serial cancels; then its word that it is free. A cut
+/// for a job that already finished names an older serial and is passed.
+fn worked(at: int, jobs: Source<Job>, cuts: Source<int>, send: fn(Msg) -> bool) -> bool {
+    mut serial = 0
+    for job in jobs {
+        serial = serial + 1
+        let run = spawn job()
+        mut waiting = true
+        while waiting {
+            waiting = select {
+                n in cuts -> {
+                    let stays = n != serial
+                    if !stays { run.cancel() }
+                    stays
+                }
+                cuts.ended -> {
+                    run.cancel()
+                    false
+                }
+                run -> false
+            }
+        }
+        let _ = send(Msg.Ended(at, serial))
+    }
     true
 }
 
-fn ticked(send: fn(Msg) -> bool, period: Duration, act: Act) -> bool {
+fn waited(send: fn(Msg) -> bool, owner: string?, span: Duration, act: Act) -> bool {
+    sleep(span)
+    let _ = send(Msg.Turn(act, owner))
+    true
+}
+
+fn ticked(send: fn(Msg) -> bool, owner: string?, period: Duration, act: Act) -> bool {
     let beat = every(period)
     while true {
         beat.wait()
-        if !send(Msg.Turn(act)) { return true }
+        if !send(Msg.Turn(act, owner)) { return true }
     }
+    true
+}
+
+/// `work` runs as a task the loop owns, and `landed` runs as a turn with its
+/// answer. False when no loop runs.
+export fn answered<T>(work: fn() -> T, landed: fn(T) -> bool) -> bool {
+    let on? = running() else { return false }
+    let send = on.sender()
+    let owner = on.asking.get()
+    on.start(() -> told(send, owner, work, landed))
+}
+
+fn told<T>(send: fn(Msg) -> bool, owner: string?, work: fn() -> T, landed: fn(T) -> bool) -> bool {
+    let answer = work()
+    let _ = send(Msg.Turn(() -> landed(answer), owner))
+    true
+}
+
+/// Each item `source` yields runs `on_item` as a turn, until the source
+/// ends or the loop does. False when no loop runs.
+export fn watching<T>(source: Source<T>, on_item: fn(T) -> bool) -> bool {
+    let on? = running() else { return false }
+    let send = on.sender()
+    let owner = on.asking.get()
+    on.start(() -> carried(send, owner, source, on_item))
+}
+
+fn carried<T>(send: fn(Msg) -> bool, owner: string?, source: Source<T>, on_item: fn(T) -> bool) -> bool {
+    for item in source {
+        if !send(Msg.Turn(() -> on_item(item), owner)) { return true }
+    }
+    true
+}
+
+/// The request goes over `net`; its reply, or why there is none, is left
+/// in `into`, and `act` runs as a turn.
+fn got(
+    send: fn(Msg) -> bool,
+    owner: string?,
+    net: fn(Request) -> Result<Reply, string>,
+    request: Request,
+    into: Cell<Result<Reply, string>?>,
+    act: Act,
+) -> bool {
+    into.set(net(request))
+    let _ = send(Msg.Turn(act, owner))
     true
 }
 
 // ── voices ──────────────────────────────────────────────────────
 
-fn one_loop() -> string {
+export fn one_loop() -> string {
     "an app runs one loop at a time — this one already has its inbox open, and a second loop would orphan the first's sources"
 }

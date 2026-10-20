@@ -14,11 +14,13 @@ use core.{
     Unheard,
     same_file,
     same_decl,
+    some_list,
+    flatten,
     user_kind,
 }
-use features.{ResolveCx, TypeCx}
+use features.{ResolveCx, TypeCx, default_mark}
 use @std.meta.{Diagnostic}
-use diagnostics.{Diag, refusal}
+use diagnostics.{Diag, refusal, warning}
 use @std.errors.{Loc}
 
 fn resolve_component(mut cx: ResolveCx, s: StmtId) {
@@ -34,10 +36,12 @@ fn resolve_component(mut cx: ResolveCx, s: StmtId) {
 fn check_component(mut cx: TypeCx, s: StmtId) {
     let c? = cx.view.store.component_parts(s) else { return }
     seats_law(cx, c)
+    default_law(cx, s, c)
     check_body(cx, s)
     check_law(cx, c)
     expand_law(cx, c)
     format_law(cx, s, c)
+    unfired_law(cx, s, c)
 }
 
 /// THE BODY LAW: a component that holds statements is made of them,
@@ -74,6 +78,56 @@ fn seats_law(mut cx: TypeCx, c: ComponentParts) {
         let declared? = e.holder.default else { continue }
         cx.emit(seat_twice(cx.loc_of(declared), e.name, twice))
     }
+}
+
+/// THE DEFAULT LAW: `@default` marks an event, and at most one — bare
+/// statements in an instance fill the one default, so two would leave them
+/// no home.
+fn default_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
+    let defaults = [e.name for e in c.events() if e.holder.marks.any(it.name == default_mark)]
+    if defaults.length > 1 { cx.emit(default_twice(cx.stmt_loc(s), c.name, defaults)) }
+    for f in c.fields() {
+        if f.marks.any(it.name == default_mark) { cx.emit(default_field(cx.stmt_loc(s), c.name, f.name.of)) }
+    }
+}
+
+/// AN EVENT A COMPOSITION DECLARES IS FIRED OR HANDED ON: its body or one
+/// of its methods (a declaring statement reaches no child, so each
+/// method's body is a root of its own) reads `self.<event>` — to call it, or to pass it to a
+/// child's seat (`on press: self.pick`). A body that never does leaves
+/// the handler an instance writes with nothing that can run it. A
+/// template (it writes `expand`) is expanded, never run, and a component
+/// with no body is fired from outside it.
+fn unfired_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
+    if cx.view.store.component_body(s) == null { return }
+    if c.fns.any((m: StmtId) -> cx.view.store.fn_parts(m)?.name == "expand") { return }
+    let stmts = [st for m in c.fns for st in cx.view.store.member_stmts(m)]
+    let methods = [f.body for st in stmts for f in some_list(cx.view.store.fn_parts(st))]
+    let roots = cx.view.store.stmts_exprs(stmts).concat(methods)
+    let read = [n for r in roots for n in self_reads(cx, r)]
+    for e in c.events() {
+        if !read.contains(e.name) { cx.emit(unfired_event(cx.stmt_loc(s), c.name, e.name)) }
+    }
+}
+
+/// Every name `self` is read at under `e`. A block's statements are not
+/// its node's kids, so each block is entered through its statements.
+fn self_reads(cx: TypeCx, e: ExprId) -> List<string> {
+    let inner = cx.view.store.stmts_exprs(cx.view.store.block_stmts(e) ?? [])
+    flatten([self_reads(cx, k) for k in cx.view.store.walked(e).concat(inner)])
+        .concat(self_read(cx, e))
+}
+
+/// The name `self` is read at in `e` itself, when it is `self.name` — as a
+/// property or as a call's receiver.
+fn self_read(cx: TypeCx, e: ExprId) -> List<string> {
+    let p? = cx.view.store.prop_parts(e) else { return method_read(cx, e) }
+    if cx.view.store.is_receiver(p.subject) { [p.name] } else { [] }
+}
+
+fn method_read(cx: TypeCx, e: ExprId) -> List<string> {
+    let m? = cx.view.store.method_parts(e) else { return [] }
+    if cx.view.store.is_receiver(m.subject) { [m.name] } else { [] }
 }
 
 /// A `check` takes nothing and answers `List<Diagnostic>` — what the
@@ -274,6 +328,16 @@ fn heard_twice(at: Loc?, word: string, event: string) -> Diag {
     )
 }
 
+fn unfired_event(at: Loc?, word: string, event: string) -> Diag {
+    warning(
+        "type.component_event",
+        at,
+        "event `${event}` is declared and nothing in `${word}` calls it or hands it on — a handler an instance writes for it can never run",
+        "declared here",
+        "call it in the body (`self.${event}(…)`), pass it to a child's seat (`on ${event}: self.${event}`), or drop the event",
+    )
+}
+
 fn seat_twice(at: Loc?, event: string, seat: string) -> Diag {
     refusal(
         "type.component_event",
@@ -281,6 +345,26 @@ fn seat_twice(at: Loc?, event: string, seat: string) -> Diag {
         "an event's seats have distinct names, and `${event}` names `${seat}` twice",
         "declared here",
         "rename one — a handler names each seat it is told",
+    )
+}
+
+fn default_twice(at: Loc?, owner: string, events: List<string>) -> Diag {
+    refusal(
+        "type.component_event",
+        at,
+        "a component has one default event, and `${owner}` marks ${ticked(events)} `@default`",
+        "declared here",
+        "keep `@default` on the event bare statements should run, and write `on <event> { … }` for the others",
+    )
+}
+
+fn default_field(at: Loc?, owner: string, field: string) -> Diag {
+    refusal(
+        "type.component_event",
+        at,
+        "only an event can be a component's default, and `${field}` of `${owner}` is a field",
+        "declared here",
+        "mark an `on` event — `@default on press`",
     )
 }
 
@@ -317,7 +401,7 @@ fn no_composer(mut cx: TypeCx, s: StmtId, name: string) {
                 cx.view.stmt_loc(s),
                 "a component is made of what its body holds, and nothing here says what `${name}`'s is",
                 "holds statements",
-                "a body is composed by the library whose components it is made of — write one of them in it, or `use` the library; a component of fields and `fn`s holds none",
+                "write a component of a library in the body, or `use` the library",
             ),
         )
 }

@@ -1,23 +1,29 @@
 //! proves: a wait on a deadline or a period is a cancel point — a
 //! cancelled task's wait is cut, nothing after it runs, and its `defer`
 //! does
-use @std.time.{after, every, sleep, ms, secs}
+use @std.task.{open_channel}
+use @std.time.{after, every, secs}
 
 let seen = Cell.new(0)
+let up = open_channel<int>(2)
 let on_deadline = spawn {
     defer seen.set(seen.get() + 1)
+    let _ = up.sink.post(1)
     after(secs(60)).wait()
     seen.set(seen.get() + 10)
     0
 }
 let on_period = spawn {
     defer seen.set(seen.get() + 1)
+    let _ = up.sink.post(2)
     every(secs(60)).wait()
     seen.set(seen.get() + 10)
     0
 }
-sleep(ms(10))
+let _ = up.source.next()
+let _ = up.source.next()
 on_deadline.cancel()
 on_period.cancel()
-sleep(ms(50))
+let _ = on_deadline.await catch c -> 0
+let _ = on_period.await catch c -> 0
 "${seen.get()}"

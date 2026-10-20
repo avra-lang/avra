@@ -173,8 +173,25 @@ def host_symbols():
               "carries — build the compiler first", file=sys.stderr)
         sys.exit(1)
     out = subprocess.run(["nm", path], cwd=ROOT, capture_output=True, text=True)
-    return {line.split()[-1].lstrip("_")
-            for line in out.stdout.splitlines() if line.strip()}
+    return defined_names(out.stdout)
+
+
+def defined_names(nm_text):
+    """The symbols `nm` lists as DEFINED: an address, a type and a name. An undefined
+    reference (`U crc32`, two words) is what the image NEEDS, never what it CARRIES: counting
+    it made a vendored zlib's own `crc32` read as "already in the image" the day the static
+    LLVM link started referencing zlib, and the package got no library."""
+    return {parts[-1].lstrip("_") for parts in (line.split() for line in nm_text.splitlines())
+            if len(parts) >= 3 and parts[-2] not in ("U", "u")}
+
+
+def self_test():
+    nm = ("0000000000001000 T _avra_cz_decode\n                 U _crc32\n"
+          "0000000000002000 t _local\n                 w _weak_ref\n0000000000003000 W _strong_weak\n")
+    got = defined_names(nm)
+    assert got == {"avra_cz_decode", "local", "strong_weak"}, got
+    print("libs: self-test passed — defined names only")
+    return 0
 
 
 def defines(obj):
@@ -313,6 +330,8 @@ def build(name):
 
 
 def main(argv):
+    if argv[1:2] == ["--self-test"]:
+        return self_test()
     if len(argv) >= 2 and argv[1] == "--data":
         # name \t output \t objects(space) \t words(space) \t package
         # THE PACKAGE IS A COLUMN so a keeper can reach the manifest that
@@ -344,7 +363,7 @@ def main(argv):
         return 0
     if len(argv) >= 3 and argv[1] == "--build":
         return build(argv[2])
-    print("usage: libs.py --data | --outputs | --names | --undefined | --build <name>",
+    print("usage: libs.py --data | --outputs | --names | --undefined | --build <name> | --self-test",
           file=sys.stderr)
     return 2
 

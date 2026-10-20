@@ -1,0 +1,86 @@
+//! THE GUARDED-RUN LAW. `contained(body)` brings back a word or a pointer
+//! and is lowered where it is called: a body that answers more than one
+//! register carries refuses at the call, and the verb read as a value
+//! refuses — a guard that quietly runs nothing is the worst failure there
+//! is.
+use @std.avrac.testing.{test_workspace}
+use @std.avrac.compiler.{Program}
+use @std.avrac.compiler.host.{memory_host}
+use @std.avrac.testing.{vendored_meta, vendored_meta_paths, refused_in}
+
+/// `main` as the entry of a package that depends on `@std/meta`.
+fn guarding(main: string) -> Program {
+    let held = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            "/w/src/main.av": "use @std.meta.{contained}\n${main}",
+        },
+    )
+    let paths = ["/w/avra.toml", "/w/src/main.av"].concat(vendored_meta_paths())
+    test_workspace(memory_host(held, paths), "/w").program("/w/src/main.av")
+}
+
+fn answered(main: string) -> string { guarding(main).run() catch e -> e }
+
+/// The run's refusal is the const law, names the closure's own read, and never the guard.
+fn reads_world(main: string) -> bool {
+    let words = answered(main)
+    words.contains("a const cannot read the world") &&
+        words.contains("reaches `avra_now_ns`") &&
+        !words.contains("avra_guard")
+}
+
+fn refused_once(main: string, phrase: string) -> bool { refused_in(guarding(main), phrase) }
+
+spec "features/fns — contained brings back a word or a pointer" {
+    given "a body that answers a word, text or a list" {
+        then "an int comes back" {
+            answered(
+                "match contained(() -> 41 + 1) {\n    .Ok(n) -> \"\${n}\",\n    .Err(w) -> w,\n}",
+            ) == "42"
+        }
+        then "a trap comes back as its words" {
+            answered(
+                "match contained(() -> [1][3]) {\n    .Ok(n) -> \"\${n}\",\n    .Err(w) -> w,\n}",
+            ) == "index 3 is out of bounds (length 1)"
+        }
+    }
+    given "a body that answers what one register cannot carry" {
+        then "a float comes back" {
+            answered("match contained(() -> 1.5) {\n    .Ok(x) -> \"\${x}\",\n    .Err(w) -> w,\n}") == "1.5"
+        }
+        then "a record of two numbers comes back" {
+            answered(
+                "type P = { a: float, b: int }\nmatch contained(() -> P { a: 2.5, b: 3 }) {\n    .Ok(p) -> \"\${p.a} \${p.b}\",\n    .Err(w) -> w,\n}",
+            ) == "2.5 3"
+        }
+        then "a nullable comes back, absent included" {
+            answered(
+                "fn none() -> int? { null }\nmatch contained(none) {\n    .Ok(x) -> \"ok \${x ?? 9}\",\n    .Err(w) -> w,\n}",
+            ) == "ok 9"
+        }
+    }
+    given "a const settling a guarded run" {
+        then "a pure body settles" {
+            answered(
+                "fn pure() -> int { 41 + 1 }\nconst N: string = match contained(pure) {\n    .Ok(n) -> \"\${n}\",\n    .Err(w) -> w,\n}\nN",
+            ) == "42"
+        }
+        then "a body that reads the world is refused, naming its own read" {
+            reads_world(
+                "extern fn avra_now_ns() -> int\nfn clocked() -> int { avra_now_ns() }\nconst N: string = match contained(clocked) {\n    .Ok(n) -> \"\${n}\",\n    .Err(w) -> w,\n}\nN",
+            )
+        }
+    }
+    given "the verbs read as values" {
+        then "`contained` refuses: a generic fn wears no single signature" {
+            refused_once("let f = contained\n1", "a generic fn is not a value")
+        }
+        then "`guarded` refuses with its own voice: handed on uncalled it would run nothing" {
+            refused_once(
+                "use @std.meta.{guarded}\nlet f = guarded\n1",
+                "`guarded` is lowered where it is called",
+            )
+        }
+    }
+}

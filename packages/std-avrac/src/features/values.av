@@ -391,7 +391,7 @@ impl LowerCx {
     /// write.
     mut fn leaf_write(box: Reg, at: int, v: Reg) {
         let ty = self.out.type_of_reg(v)
-        if !self.valued(ty) { return self.slot_write(box, self.const_int(at), v) }
+        if !self.valued(ty) { return self.slot_write_proved(box, self.const_int(at), v) }
         let tag = self.extracted(v, 0, self.mint_shape(Type.Int))
         self.slot_set(box, self.const_int(at), tag)
         self
@@ -402,6 +402,15 @@ impl LowerCx {
                 tag,
                 self.const_int(self.view.types.counted_mask(ty)),
             )
+    }
+
+    /// `v` written into the slot at `at` of a box whose shape proves the
+    /// slot exists — a cell's one slot, a record's declared field. A
+    /// scalar nullable keeps its presence beside the word.
+    mut fn slot_write_proved(box: Reg, at: Reg, v: Reg) {
+        let ty = self.out.type_of_reg(v)
+        if self.scalar_nullable(ty) { return self.slot_write(box, at, v) }
+        self.slot_put(box, at, v)
     }
 
     /// `v` written into the slot at `at` — a nullable scalar with its
@@ -461,6 +470,12 @@ impl LowerCx {
         let present = self.map_present_at(Type.Bool, m, slot)
         let value = self.map_value_at(self.view.types.shape_of(self.carried_type(ty)), m, slot)
         self.pack(ty, [present, value])
+    }
+
+    /// A sugar lowers as what it means.
+    mut fn meant_reg(e: ExprId) -> Reg {
+        let meant? = self.view.store.meant(e) else { return self.lower_defect(e, "a sugar whose meaning was never minted") }
+        self.reg_of(meant)
     }
 
     /// The slot at a computed index, read as a value of `ty`.
@@ -564,12 +579,27 @@ impl LowerCx {
         self.bin(Type.Bool, BinOp.Eq, self.tag_of(a), self.tag_of(b))
     }
 
+    /// A variant packs exactly the payloads it declares. A count that
+    /// differs is the compiler's own defect: it is recorded here, and the
+    /// build refuses, rather than a value packed silently.
+    mut fn declared_payloads(ty: TypeId, tag: int, packed: int) {
+        let sig? = self.variants_of(ty) else { return }
+        let declared = sig.payloads[tag].length
+        if declared != packed {
+            self
+                .defect(
+                    "a variant packs exactly the payloads it declares: `${sig.names[tag]}` declares ${declared}, packed ${packed}",
+                )
+        }
+    }
+
     /// THE TAGGED VALUE: an enum's variant is a slot array holding its
     /// TAG at slot 0 and its payloads, in order, at slots 1... — a
     /// value-record payload laid inline, its fields as slots.
     mut fn tagged_value(sh: Type, tag: int, payloads: List<Reg>) -> Reg {
         // an enum whose variants carry nothing IS its tag
         let ty = self.view.types.intern(sh)
+        self.declared_payloads(ty, tag, payloads.length)
         if self.view.types.is_flat(ty) { return self.pack(ty, [self.const_int(tag)]) }
         // a value enum is its tag and its one word, in registers
         if self.view.types.is_valued(ty) { return self.pack(ty, [self.const_int(tag), payloads.first() ?? self.const_int(0)]) }
@@ -1034,8 +1064,8 @@ impl LowerCx {
         // a nullable's hollow is its absence, in its own layout
         if nullable(self.view.types.seen_shape(inner)) { return self.absent_of(inner) }
         if self.view.types.travels_wide(inner) { return self.pack(inner, [self.hollow_of(f) for f in self.view.types.flat_fields(inner)]) }
+        // LICENSED compiler.raw_mint_emit_const_bool: `inner` may be a NAMED bool type — neither the fixed-shape nor the node-tied verb fits
         if self.view.types.seen_shape(inner) is .Bool {
-            // LICENSED — `inner` may be a NAMED bool type — neither the fixed-shape nor the node-tied verb fits
             let z = self.mint_ty(inner)
             self.emit(Ins.ConstBool(z, false))
             return z

@@ -5,6 +5,7 @@ use core.{
     Scoped,
     Plain,
     TypeRef,
+    void_ref,
     ExprId,
     StmtId,
     Param,
@@ -26,10 +27,12 @@ export type Let = { name: Scoped, ty: TypeRef?, value: ExprId }
 
 /// A reassignable binding — unmanaged values only, until
 /// ownership analysis; optionally annotated, holding what it
-/// declares exactly as `let` does.
+/// declares exactly as `let` does. Its `state` facet makes it a PLACE:
+/// the binding holds a Cell the body owns, a read answers the value it
+/// holds, and a write assigns it.
 @stmt_node
 @sequence
-export type MutLet = { name: Scoped, ty: TypeRef?, value: ExprId }
+export type MutLet = { name: Scoped, ty: TypeRef?, value: ExprId, @facet(state) is_state: bool = false }
 
 /// `const name = v` — a value the COMPILER computes, so every
 /// use is that value and the program never computes it. Its
@@ -55,29 +58,24 @@ export type ExprStmt = { value: ExprId }
 @sequence
 export type Discard = { value: ExprId }
 
+/// A fn declaration. Its facets are the words written before `fn`:
+/// `once`, `mut` (it writes its receiver), `static` (it has none), and
+/// `extern` with a body (a HOST fn — its name is the symbol it defines).
 @stmt_node
 @declares
 @apart
-export type FnDecl = { name: Scoped, tparams: List<Param>, params: List<Param>, ret: TypeRef?, body: ExprId, @facet(once) is_once: bool = false }
+export type FnDecl = { name: Scoped, tparams: List<Param>, params: List<Param>, ret: TypeRef?, body: ExprId, @facet(once) is_once: bool = false, @facet(mutating) is_mutating: bool = false, @facet(static) is_static: bool = false, @facet(host) is_host: bool = false }
 
 /// `extern fn name(params) -> ret` — a fn the host provides: a
 /// signature with no body, called by its bare symbol.
 @stmt_node
 @apart
-export type ExternFn = { name: Scoped, params: List<Param>, ret: TypeRef }
+export type ExternFn = { name: Scoped, params: List<Param>, ret: TypeRef = void_ref }
 
 /// Condition re-evaluated each turn; the body is a scope.
 @stmt_node
 @branches
 export type While = { cond: ExprId, stmts: List<StmtId> }
-
-/// `if c { … }` (optionally `else { … }`) at STATEMENT
-/// position: the branches are statement lists and the whole
-/// carries no value — the guard idiom's home. An absent else
-/// IS the empty list.
-@stmt_node
-@branches
-export type IfStmt = { cond: ExprId, then_stmts: List<StmtId>, else_stmts: List<StmtId> }
 
 /// `return v` — the enclosing fn answers NOW. Typing accepts
 /// `v` against the declared return; lowering exits with every

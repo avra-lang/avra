@@ -11,14 +11,16 @@ use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recov
 
 export fn if_expr() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name      | build
-        "if_expr" | build_if
-        "if_stmt" | build_if_stmt
+        name         | build
+        "if_expr"    | build_if
+        "if_stmt"    | build_if_stmt
+        "stmt_block" | build_stmt_block
     }
     LanguageFeature if_expr {
         gram: grammar {
             stmt = v:if_stmt END -> v
-            if_stmt = "if" c:expression "{" ( t:stmt | BREAK )* "}" ( "else" ( "{" ( e:stmt | BREAK )* "}" | e:if_stmt ) )? -> if_stmt(c, t, e) @head(c)
+            stmt_block = "{" ( s:stmt | BREAK )* "}" -> stmt_block(s)
+            if_stmt = "if" c:expression t:stmt_block ( "else" ( e:stmt_block | ei:if_stmt ) )? -> if_stmt(c, t, e, ei) @head(c)
             primary = "if" c:expression t:block "else" ( e:block | e:if_expr ) @expect("else", "an `if` expression needs its `else` branch") -> if_expr(c, t, e) @head(c)
             if_expr = "if" c:expression t:block "else" ( e:block | e:if_expr ) -> if_expr(c, t, e) @head(c)
         }

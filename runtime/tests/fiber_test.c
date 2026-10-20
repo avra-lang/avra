@@ -101,6 +101,21 @@ static void* reader(void* self) {
     return answer(c);
 }
 
+// The terminal's read loop: park, read, and again until the read finds the end.
+static int g_ended[2];
+static void* park_then_read(void* self) {
+    (void)self;
+    char c = 0;
+    int64_t got = 0;
+    for (;;) {
+        avra_fiber_park_fd(g_ended[0], 0, -1);
+        ssize_t n = read(g_ended[0], &c, 1);
+        if (n == 0) break;
+        if (n == 1) got++;
+    }
+    return answer(got);
+}
+
 static void* timed_park(void* self) { return answer(avra_fiber_park_fd(g_pipe[0], 0, cap(self, 0))); }
 
 static void* g_a = NULL;
@@ -234,6 +249,15 @@ int main(void) {
     CHECK(!avra_task_done(r), "a reader parked on an empty pipe waits");
     CHECK(write(g_pipe[1], "x", 1) == 1, "the pipe takes a byte");
     CHECK(join_value(r) == 'x', "the parked reader reads what was written");
+
+    // a peer that wrote and finished before the reader first parked: the read
+    // that drains the byte leaves the close behind it, and the next park sees it
+    if (pipe(g_ended) != 0) { perror("pipe"); return 1; }
+    fcntl(g_ended[0], F_SETFL, O_NONBLOCK);
+    CHECK(write(g_ended[1], "x", 1) == 1, "the pipe takes a byte before any reader");
+    closed(g_ended[1]);
+    CHECK(join_value(spawn1(park_then_read, 0)) == 1, "a reader parked after a finished peer's short read finds the end");
+    closed(g_ended[0]);
 
     // a park with a deadline answers 0 when the time runs out
     double t0 = seconds();

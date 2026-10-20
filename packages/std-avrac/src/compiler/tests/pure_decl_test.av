@@ -5,7 +5,7 @@
 // alone, so it is computable BEFORE TypeFacts — the probe this suite
 // pins by asking it while no `Typed` cell stands.
 use @std.avrac.testing.{test_workspace}
-use compiler.{Workspace}
+use compiler.{Workspace, reach_fp}
 use compiler.families.{Family}
 use compiler.host.{memory_host}
 use core.{DeclId}
@@ -125,4 +125,43 @@ fn cross_workspace(a: string, b: string) -> Workspace {
         ),
         "/w",
     )
+}
+
+spec "compiler/workspace — a top-level state is a place the read-reach sees" {
+    given "a fn reading a top-level state, and a caller of it" {
+        then "both reach it, so neither is a pure fn" {
+            let ws = pure_workspace(
+                "state n: int = 0\nfn f() -> int { n }\nfn g() -> int { f() }\nfn p() -> int { 1 }\n",
+            )
+            prepared(ws)
+            ws.decl_reads_state(pure_decl_named(ws, "f")) &&
+                ws.decl_reads_state(pure_decl_named(ws, "g")) &&
+                !ws.decl_reads_state(pure_decl_named(ws, "p"))
+        }
+        then "each reaches exactly that one place, as its declaration's key" {
+            let ws = pure_workspace(
+                "state n: int = 0\nfn f() -> int { n }\nfn g() -> int { f() }\n",
+            )
+            prepared(ws)
+            let at_f = ws.decl_places(pure_decl_named(ws, "f"))
+            let at_g = ws.decl_places(pure_decl_named(ws, "g"))
+            at_f.length == 1 && at_g.length == 1 && at_f[0] == at_g[0] && at_f[0] < 0 - 1
+        }
+    }
+}
+
+/// A member that reaches nothing.
+fn none() -> List<int> { [] }
+
+spec "compiler/workspace — the read-reach hash folds each member's set to one value" {
+    given "two answers holding the same ints split differently" {
+        then "they hash apart" {
+            reach_fp([[1, 2], [3]]) != reach_fp([[1], [2, 3]])
+        }
+        then "an empty member is a member" {
+            reach_fp([[1], none()]) != reach_fp([none(), [1]]) &&
+                reach_fp([none(), none()]) != reach_fp([none()])
+        }
+        then "the same sets hash alike" { reach_fp([[1, 2], [3]]) == reach_fp([[1, 2], [3]]) }
+    }
 }

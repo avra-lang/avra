@@ -7,6 +7,7 @@
 # attacks beside it do.
 set -u
 cd "$(dirname "$0")/.."
+. tools/lib/failed_tail.sh
 R=build/static-names-attack; fails=0
 rm -rf "$R" .avra-cache && mkdir -p $R/app/src/a $R/app/src/b
 cat > $R/app/avra.toml <<'TOML'
@@ -21,7 +22,7 @@ kept() { # kept <a's list> <b's list>: both modules' k.av, one stem, one shape
 printf 'use a.{K as KA}\nuse b.{K as KB}\n\nprintln("${KA[0]} ${KB[0]}")\n' > $R/app/src/main.av
 B() { # B <label> <wanted output>: build through the store and run it
     ./avra build --time $R/app > $R/out 2> $R/err; st=$?
-    [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  $1: status $st: $(grep -vE '^watch:|^time:' $R/err | head -2 | tr '\n' ' ')"; return 1; }
+    [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  $1: status $st"; failed_tail $R/out $R/err; return 1; }
     got=$($R/app/src/main 2>&1)
     [ "$got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  $1: printed '$got', wanted '$2'"; }
 }

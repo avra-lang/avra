@@ -7,6 +7,7 @@
 # the cold build's own peak: one attempt at a time clears it, the sum trips it.
 set -u
 cd "$(dirname "$0")/.."
+. tools/lib/failed_tail.sh
 R=build/turn-memory-attack; fails=0
 LINKS=${TURN_LINKS:-12}; PAD=${TURN_PAD:-120}
 rm -rf "$R" .avra-cache && mkdir -p $R/app/src
@@ -41,7 +42,7 @@ peak() { grep -oE 'peak +[0-9]+ MB in all' "$1" | grep -oE '[0-9]+' | sort -n | 
 B() { # B <label> <ceiling MB>: build through the store under a ceiling
     AVRA_MEM_CEILING_MB=$2 AVRA_MEM_STATS=1 ./avra build --time $R/app > $R/out 2> $R/err; st=$?
     [ $st -eq 0 ] && return 0
-    fails=$((fails+1)); echo "FAIL  $1: status $st under a ${2} MB ceiling: $(grep -vE '^watch:|^mem:|^time:' $R/err | head -2 | tr '\n' ' ')"
+    fails=$((fails+1)); echo "FAIL  $1: status $st under a ${2} MB ceiling"; failed_tail $R/out $R/err
     return 1
 }
 B "cold" 4000 || { echo "turn-memory-attack: the cold build failed"; exit 1; }

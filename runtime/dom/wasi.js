@@ -49,6 +49,9 @@ export function wasiPreview1(memory, exit) {
     // A browser program has no filesystem, so it opens nothing.
     fd_prestat_get() { return 8; },
     fd_prestat_dir_name() { return 8; },
+    // With no preopen there is no directory to open under: EBADF, as the scan
+    // above answers. A module that links the runtime's trace file reaches it.
+    path_open() { return 8; },
     sched_yield() { return 0; },
     proc_exit(code) { exit(code); },
   };

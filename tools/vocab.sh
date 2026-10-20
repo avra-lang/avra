@@ -78,6 +78,11 @@ SlotForm	packages/std-avrac/src/compiler/backend/llvm_emit.av	answer_form	spelle
 Kind	packages/std-avrac/src/features/crossing.av	meta_of_kind	spelled	how it crosses into the evaluator
 Kind	packages/std-meta/src/meta.av	spelled	spelled	the words it is written with
 RtHost	packages/std-avrac/src/compiler/backend/interp.av	hosted	spelled	the arm that evaluates a row
+Lack	packages/std-avrac/src/compiler/dev/coverage.av	word	spelled	the baseline word a gap is written with
+Remedy	packages/std-avrac/src/compiler/dev/coverage.av	witnessed_lacks	spelled	whether a kind's witness owes a fix line
+Remedy	packages/std-avrac/src/compiler/rule_fix.av	repairable	spelled	which suggestions the repair door may apply unasked
+Cause	packages/std-avrac/src/compiler/codes.av	message_of	spelled	the words a parse voice speaks
+Cause	packages/std-avrac/src/compiler/codes.av	help_of	spelled	the advice a parse voice gives
 DeclKind	packages/std-avrac/src/core/nodes.av	binds_name	spelled	whether a declaration is found by its name
 DeclKind	packages/std-avrac/src/core/nodes.av	binds_type	spelled	whether a declaration names a type
 DeclKind	packages/std-avrac/src/compiler/interface.av	record_shape	spelled	the shape a held declaration's record line is written as

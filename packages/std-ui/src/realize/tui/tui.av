@@ -1,93 +1,55 @@
 //! `realize/tui/tui.av` — the terminal target. The same Node, the same
-//! vocabulary, drawn as lines of plain text in a width. The walk hands
-//! each node its place; a node's lines are made when it closes, from the
-//! lines of its children.
-use @std.text.{codepoints, from_codepoints}
+//! vocabulary, drawn as plain text in a width: the tree is placed by the
+//! layout solver in terminal cells (`place`), then painted on a grid of
+//! them (`paint`).
 use tree.node.{Node}
-use tree.sink.{Sink, draw}
-use realize.tui.layout.{lines_of, room}
-use realize.tui.wrap.{cut, at_least_one}
+use place.measure.{Cells}
+use place.solve.{Placed, place}
+use realize.tui.paint.{painted, trimmed, gridded, Grid, Painted}
+use realize.tui.wrap.{at_least_one}
 use env.{Env}
 
-/// A node while its children are drawn: the cells it was given and its
-/// children's lines so far.
-type Open = { node: Node, seat: int, width: int, blocks: List<List<string>> }
-
-/// The terminal target: the screen's width, the seat of the node that
-/// holds the focus, the nodes still open, and the root's lines once it
-/// has closed.
-export type Tui = {
-    width: int,
-    focus: int? = null,
-    open: Cell<List<Open>> = Cell.new([]),
-    lines: Cell<List<string>> = Cell.new([]),
-}
-
-impl Tui {
-    /// The cells the next node opened is drawn in: its parent's room, or
-    /// the screen's for the root.
-    fn next_width() -> int {
-        let parent? = self.open.get().last() else { return self.width }
-        room(parent.node, parent.width)
-    }
-
-    /// One node's finished lines, given to its parent or kept as the frame.
-    /// A node with no lines takes no place among its siblings.
-    fn give(ls: List<string>) {
-        let at = self.open.get().length - 1
-        if at < 0 {
-            self.lines.set(ls)
-            return
-        }
-        if ls.is_empty() { return }
-        let parent = self.open.get()[at]
-        self.open.set_at(at, parent with { blocks: parent.blocks.concat([ls]) })
-    }
-}
-
-impl Sink for Tui {
-    fn opened(seat: int, _parent: int?, _index: int, n: Node) {
-        self.open.push(Open { node: n, seat: seat, width: self.next_width(), blocks: [] })
-    }
-    fn words(_seat: int, _s: string) {}
-    fn closed(_n: Node) {
-        let stack = self.open.get()
-        let top? = stack.last() else { return }
-        self.open.set(stack.slice(0, stack.length - 1))
-        let ls = lines_of(top.node, top.blocks, top.width)
-        self.give(if self.focus == top.seat { pointed(ls) } else { ls })
-    }
-}
-
-/// The lines of the node that holds the focus: a mark before the first,
-/// the rest hung under it.
-fn pointed(ls: List<string>) -> List<string> { [if i == 0 { "> " } else { "  " } + l for i, l in ls] }
-
-/// The picture a control code point is shown as, so no byte of a tree
-/// can drive the terminal: C0 and DEL as their control pictures, C1 as
-/// the replacement character. Every other code point is itself.
-fn shown_code(c: int) -> int {
-    when {
-        c < 32 -> 9216 + c
-        c == 127 -> 9249
-        c >= 128 && c < 160 -> 65533
-        _ -> c
-    }
-}
-
-fn shown(line: string) -> string { from_codepoints([shown_code(c) for c in codepoints(line)]) }
-
-/// The tree as text in `width` cells, one `\n` between lines and none
-/// after the last. A width below one reads as one. Every line is at most
-/// `width` code points: text wraps on word boundaries, and a word or an
-/// atom (button, link, image) wider than the line is cut at the width.
+/// The tree as text in `width` cells, one `\n` between rows and none after
+/// the last. A width below one reads as one. Text wraps on word boundaries; a
+/// word wider than the line is cut at the width, and an atom (button, link,
+/// image) wider than it is clipped there.
 export fn render(root: Node, _env: Env, width: int) -> string { focused(root, width, null) }
 
 /// `render`, with the node at walk seat `focus` marked `> ` as the one
 /// the keys go to.
 export fn focused(root: Node, width: int, focus: int?) -> string {
     let w = at_least_one(width)
-    let t = Tui { width: w, focus: focus }
-    draw(root, t)
-    [shown(part) for l in t.lines.get() for part in cut(l, w)].join("\n")
+    [trimmed(row) for row in drawn(root, w, path_of(root, focus)).rows].join("\n")
+}
+
+/// The screen as a value: `width` cells across and `height` down (absent: as
+/// tall as the layout asks), the node at walk seat `focus` marked and the
+/// caret at its content. Rows past the layout are blank, rows past the
+/// height are cut off.
+export fn raster(root: Node, width: int, height: int?, focus: int?) -> Grid {
+    let w = at_least_one(width)
+    gridded(drawn(root, w, path_of(root, focus)), w, height)
+}
+
+fn drawn(root: Node, w: int, at: string) -> Painted {
+    painted(root, place(root, Cells { focus: at }, w), w, at)
+}
+
+/// The boxes the solver gives the tree in `width` cells, with the node at
+/// walk seat `focus` holding the keys: where `raster` draws everything.
+export fn placed(root: Node, width: int, focus: int?) -> Placed {
+    place(root, Cells { focus: path_of(root, focus) }, at_least_one(width))
+}
+
+/// The path of the node at walk seat `seat`, which is its place in the
+/// walk that numbers a tree's nodes in the order they open; nothing when
+/// there is no seat.
+fn path_of(root: Node, seat: int?) -> string {
+    let s? = seat else { return "" }
+    let all = paths(root, "0")
+    if s < all.length { all[s] } else { "" }
+}
+
+fn paths(n: Node, path: string) -> List<string> {
+    [path].concat([p for i, c in n.children for p in paths(c, "${path}.${i}")])
 }

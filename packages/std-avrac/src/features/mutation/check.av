@@ -3,8 +3,7 @@
 //! PLACE whose type — read off the target — is the slot's law, the
 //! value ACCEPTED by it with widening recorded like every slot's.
 use core.{StmtId, ExprId, TypeId, TypeRef, Type}
-use features.{TypeCx, this_is}
-use diagnostics.{refusal}
+use features.{TypeCx}
 
 export fn check_mut(mut cx: TypeCx, s: StmtId) {
     let v? = cx.view.store.stmt_value(s) else { return }
@@ -79,12 +78,13 @@ fn slot_refused(mut cx: TypeCx, s: StmtId, t: ExprId, want: TypeId, v: ExprId) {
     let spot = if cx.view.store.ident_name(t) == null { "a slot of ${named}" } else { named }
     cx
         .emit(
-            refusal(
-                "type.mismatch",
-                cx.stmt_loc(s),
-                "assignment changes ${spot}: `${cx.view.types.name_of(want)}` to `${gn}`",
-                this_is(gn),
-                null,
-            ),
+            cx
+                .seat_mismatch(
+                    "type.mismatch",
+                    cx.stmt_loc(s),
+                    v,
+                    "assignment changes ${spot}: `${cx.view.types.name_of(want)}` to `${gn}`",
+                    want,
+                ),
         )
 }

@@ -1,6 +1,8 @@
 //! The whole program: every file analyzed, the entries, the cases, the
 //! hold, and the link words. Moved out of the workspace god-object.
 use core.{
+    EmbedKind,
+    EmbedBase,
     digest_of,
     some_list,
     CollectScope,
@@ -35,6 +37,7 @@ use features.{
     bound_decl_of,
     EmbedFault,
     embed_literal_law,
+    gathers_across_files,
     admits_package,
     AnnotationFact,
     LitArg,
@@ -50,8 +53,8 @@ use compiler.lower.{
     FieldPlan,
     collect_answer_type,
 }
-use compiler.host.{library_stem, Beneath, Read, InputName}
-use compiler.backend.{platform_defines}
+use compiler.host.{library_stem, Beneath, Read, InputName, embedded_kind}
+use compiler.backend.{platform_defines, links_with_ld64}
 use @std.errors.{Loc}
 
 impl Workspace {
@@ -150,6 +153,13 @@ impl Workspace {
     /// question the analysis asks before it does anything at all.
     fn is_held(f: FileId) -> bool { self.decls.held.get().get(self.decls.file(f).path) != null }
 
+    /// THE FILES A RECORD SUPPLIED: whose interface was loaded from the store,
+    /// never parsed. The receipt an on-demand load pays against.
+    fn loaded_files() -> int { self.records.met_files.get().length }
+
+    /// Every file the program knows, held or read.
+    fn program_files() -> int { self.decls.file_count() }
+
     /// HOLD A FILE: from here it contributes its minted declarations and what the
     /// store keeps for it, and nothing reads it. Per FILE — a module with fifty
     /// files holds forty-nine.
@@ -207,20 +217,23 @@ impl Workspace {
     }
 
     /// What a statement gathers, in what order, and what it reads of each member,
-    /// when it is a `collect` that gathers its package whole.
+    /// when it is a `collect` that gathers across files. An IMPORT CLOSURE's members are
+    /// held to WHICH they are alone: what a member holds is read through the member's own
+    /// declaration, so no plan folds its text and an edit beside the members moves nothing.
     fn package_gathering(f: FileId, store: SyntaxArena, s: StmtId) -> Gathering? {
         let scope? = store.collect_scope(s) else { return null }
-        if !admits_package(scope) { return null }
+        if !gathers_across_files(scope) { return null }
         let parts? = store.collect_parts(s) else {
             let e? = store.collect_enum_parts(s) else { return null }
-            return Gathering { kind: e.kind, order: e.order, plans: [] }
+            return Gathering { kind: e.kind, scope: scope, order: e.order, plans: [] }
         }
         let rt = collect_answer_type(self.decls, f, s)
         let entry = self.decls.types.element(rt) ?? rt
         Gathering {
             kind: parts.kind,
+            scope: scope,
             order: parts.order,
-            plans: [field_plan(self.decls, entry, pf.field.of, pf.path, parts.kind) for pf in parts.proj.fields],
+            plans: if admits_package(scope) { [field_plan(self.decls, entry, pf.field.of, pf.path, parts.kind) for pf in parts.proj.fields] } else { [] },
         }
     }
 
@@ -228,19 +241,16 @@ impl Workspace {
     /// order the collect itself gathers them, so two sets differ exactly when what
     /// the collect would bake moved.
     fn gathered_set(g: Gathering, owner: FileId) -> string {
-        let members = ordered_collect_members(
-            self.decls,
-            g.kind,
-            CollectScope.Package,
-            g.order,
-            owner,
-        )
+        let members = ordered_collect_members(self.decls, g.kind, g.scope, g.order, owner)
         digest_of(fields_wire([self.member_print(g, m) for m in members]))
     }
 
     /// One member as its collect sees it: where it is declared, its name, the mark
-    /// that gathered it, its shape, and what each projected field reads of it.
+    /// that gathered it, its shape, and what each projected field reads of it. An import
+    /// closure's member is only WHICH it is: its shape and fields are read through its own
+    /// declaration, and asking them here would type what no build has asked yet.
     fn member_print(g: Gathering, m: Decl) -> string {
+        if !admits_package(g.scope) { return digest_of(fields_wire([self.decls.module_of(m.id), m.name])) }
         digest_of(
             fields_wire(
                 [
@@ -353,10 +363,13 @@ impl Workspace {
     /// `@scope/name/…` is read from the root of that package when
     /// `source`'s package depends on it, and refuses when it does not —
     /// a directory of this package named so is written `./@scope/…`.
-    fn embed_place(source: string, rel: string) -> Result<EmbedPlace, EmbedFault> {
+    fn embed_place(source: string, rel: string, base: EmbedBase) -> Result<EmbedPlace, EmbedFault> {
         if rel.starts_with("/") { fail EmbedFault.Outside }
         let from = self.packages()[self.holder_of_path(source)]
-        if !rel.starts_with("@") { return placed_beneath(from.root, joined_path(dir_of(source), rel)) }
+        if !rel.starts_with("@") {
+            let start = match base { .Beside -> dir_of(source), .Root -> from.root }
+            return placed_beneath(from.root, joined_path(start, rel))
+        }
         let segments = rel.split("/")
         let key = segments.slice(0, 2).join("/")
         if segments.length < 3 || !self.reaches(from, key) { fail EmbedFault.Undeclared(key) }
@@ -365,16 +378,22 @@ impl Workspace {
     }
 
     /// THE EMBED LAW, judged where the literal stands: the file's path,
-    /// or what is wrong with it.
-    fn embed_placed(f: FileId, rel: string) -> Result<string, EmbedFault> {
-        self.embed_placed_beside(self.decls.file(f).path, rel)
+    /// or what is wrong with it. Both kinds read from `base`: beside the source, or the package's root.
+    fn embed_placed(f: FileId, rel: string, kind: EmbedKind, base: EmbedBase) -> Result<
+        string,
+        EmbedFault,
+    > {
+        self.embed_placed_beside(self.decls.file(f).path, rel, kind, base)
     }
 
-    fn embed_placed_beside(source: string, rel: string) -> Result<string, EmbedFault> {
-        let place = self.embed_place(source, rel)?
+    fn embed_placed_beside(source: string, rel: string, kind: EmbedKind, base: EmbedBase) -> Result<
+        string,
+        EmbedFault,
+    > {
+        let place = self.embed_place(source, rel, base)?
         let path = joined_path(place.root, place.rel)
-        match self.embedded(path) {
-            .Text(_) -> path,
+        match self.embedded(path, kind) {
+            .Text(_) or .Octets(_) -> path,
             .Missing -> .Err(EmbedFault.Missing),
             .Linked -> .Err(EmbedFault.Linked),
             .NotText(at) -> .Err(EmbedFault.NotText(at)),
@@ -382,15 +401,17 @@ impl Workspace {
         }
     }
 
-    /// A settlement's `embed`: the text of the file a literal named, or
-    /// why not. THE SAME LAW AS THE LITERAL'S, asked of the path the
-    /// lowering wrote: inside a package of this workspace, through no
-    /// link — so a path no literal named reads nothing.
-    fn embed_read(path: string) -> Result<string, string> {
+    /// A settlement's `embed`: the octets of the file a literal named, as
+    /// the kind reads them, or why not. THE SAME LAW AS THE LITERAL'S,
+    /// asked of the path the lowering wrote: inside a package of this
+    /// workspace, through no link — so a path no literal named reads
+    /// nothing.
+    fn embed_read(path: string, kind: EmbedKind) -> Result<Bytes, string> {
         let root? = self.root_over(path) else { fail embed_literal_law }
         let place? = beneath_root(root, path) else { fail embed_literal_law }
-        match self.embedded(path) {
-            .Text(text) -> text,
+        match self.embedded(path, kind) {
+            .Text(text) -> text.bytes(),
+            .Octets(octets) -> octets,
             .Missing -> .Err("`embed` finds no `${place.rel}`"),
             .Linked -> .Err("`embed` follows no link — one stands on the way to `${place.rel}`"),
             .NotText(at) -> .Err("`embed` answers text, and `${place.rel}` is not UTF-8 — byte ${at}"),
@@ -401,9 +422,9 @@ impl Workspace {
     /// What stands at an embedded file, through its cell: AN EMBEDDED FILE
     /// IS AN INPUT, NEVER A FILE ROW — a query that reads it depends on its
     /// cell, and no row is minted while a query reads the File relation.
-    fn embedded(path: string) -> Beneath {
-        match self.input(InputName { kind: .Embedded, key: path }) {
-            .Embedded(_, seen) -> seen,
+    fn embedded(path: string, kind: EmbedKind) -> Beneath {
+        match self.input(InputName { kind: embedded_kind(kind), key: path }) {
+            .Embedded(_, _, seen) -> seen,
             .Text(_, _) or .Octets(_, _) or .Range(_, _, _, _) or .Listing(_, _) or .Exists(_, _) or .Env(_, _) or .Tool(_, _) or .Compiler(_) or .Refused(_, _) -> {
                 avra_trap("defect: an `embedded` input answered another kind of read")
                 Beneath.Missing
@@ -413,10 +434,10 @@ impl Workspace {
 
     /// The door's read of an embedded file: beneath the package root over
     /// it, as the key alone names it, through no link.
-    fn embedded_asked(path: string) -> Read {
-        let root? = self.root_over(path) else { return unrooted(path) }
-        let place? = beneath_root(root, path) else { return unrooted(path) }
-        self.host.embedded(path, place.root, place.rel)
+    fn embedded_asked(path: string, kind: EmbedKind) -> Read {
+        let root? = self.root_over(path) else { return unrooted(path, kind) }
+        let place? = beneath_root(root, path) else { return unrooted(path, kind) }
+        self.host.embedded(path, place.root, place.rel, kind)
     }
 
     /// Whether a file is Avra source, by its shape alone (`is_source` — a lone
@@ -622,7 +643,7 @@ fn use_lines(p: Parsed) -> List<UseParts> {
 }
 
 /// What one `use` line brought in, and what it earned.
-type Imported = { imports: List<Import>, diagnostics: List<Diag> }
+type Imported = { imports: List<Import>, diagnostics: List<Diag>, refused: List<string> }
 
 /// The symbols a linked program's own start is found by.
 const entry_symbols: List<string> = [
@@ -641,7 +662,7 @@ fn host_fn_shadows(at: Loc?, name: string) -> Diag {
     refusal(
         "lower.host_fn_shadows",
         at,
-        "`${name}` is a symbol this platform already defines — a host fn of that name would answer every caller of it",
+        "`${name}` is a platform symbol — a host fn of that name would answer every caller of it",
         "defined here",
         "name the host fn for what its host asks of this program, as `avra_ui_event` is",
     )
@@ -686,7 +707,7 @@ fn mark_prints(mark: AnnotationFact?) -> List<string> {
 fn lit_print(a: LitArg) -> string { fields_wire([lit_kind_word(a.kind), a.text]) }
 
 /// An embedded file no package root stands over: the law's refusal.
-fn unrooted(path: string) -> Read { Read.Embedded(path, Beneath.Refused(embed_literal_law)) }
+fn unrooted(path: string, kind: EmbedKind) -> Read { Read.Embedded(path, kind, Beneath.Refused(embed_literal_law)) }
 
 /// `path` as it stands beneath `root`, or null when it does not.
 fn beneath_root(root: string, path: string) -> EmbedPlace? {
@@ -791,7 +812,40 @@ impl Workspace {
         let head = flag.substring(0, opens)
         let name = flag.substring(opens + 2, closes)
         let tail = flag.substring(closes + 1, flag.length)
-        "${head}${self.env(name) ?? ""}${self.env_filled(tail)}"
+        "${head}${self.env(name) ?? self.platform_hole(name) ?? ""}${self.env_filled(tail)}"
+    }
+}
+
+impl Workspace {
+    /// WHAT A LINK HOLE MEANS ON THIS PLATFORM when the environment names nothing: the C++ runtime a
+    /// static LLVM needs, and the directory the system's zstd lives in where the driver's default
+    /// search does not reach it. The environment still wins (a machine's own paths belong to the
+    /// machine); this is the floor, so a link run from any shell — a Sprite, a test binary, a bare
+    /// `build/avra` — carries them without a shim having set them.
+    fn platform_hole(name: string) -> string? {
+        match name {
+            "AVRA_CXX_RUNTIME" -> if links_with_ld64() { "c++" } else { "stdc++" },
+            "AVRA_SYS_SEARCH" -> self.system_library_dir(),
+            rest -> null,
+        }
+    }
+
+    /// The directory holding the system's `libzstd`: Homebrew's on macOS, else the first multiarch
+    /// or lib directory that has it, each probe an INPUT through the world's door (a cached build
+    /// re-judges when the library appears or moves). None when none does — the driver's own search
+    /// then decides.
+    fn system_library_dir() -> string? {
+        let candidates = if links_with_ld64() {
+            ["/opt/homebrew/lib", "/usr/local/lib"]
+        } else {
+            ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64", "/usr/lib"]
+        }
+        candidates.find((dir) -> self.holds_zstd(dir))
+    }
+
+    fn holds_zstd(dir: string) -> bool {
+        ["libzstd.a", "libzstd.so", "libzstd.dylib"]
+            .any((name) -> self.there(joined_path(dir, name)))
     }
 }
 

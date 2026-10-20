@@ -1,0 +1,89 @@
+//! `tree/seats.av` — THE SEATS A PROGRAM'S COMPONENTS DECLARE. Each event
+//! seat of a primitive is a const the View derive writes beside the component
+//! (`@seat`), carrying what the platforms call it. `seat_rows` gathers them
+//! over everything the program imports, in name order, so a seat's number is
+//! its place in that list: dense, and the same wherever the build is read.
+use @std.meta.{Named, Marker}
+use tree.dom_event.{DomEvent}
+use tree.node.{Prim}
+use tree.terminal_key.{Key}
+
+/// A seat's number: its place among the program's seats.
+export type Seat = int
+
+impl Seat {
+    /// The number the wire spells a seat with: its place in the table.
+    fn number() -> int { self.of }
+}
+
+/// The seat a wire number names, when the table has one there.
+export fn seat_numbered(n: int) -> Seat? {
+    if n < 0 || n >= seat_rows.length { return null }
+    Seat(n)
+}
+
+/// The mark the View derive puts on a seat's row.
+export fn seat(_d: Named) -> Marker { Marker {} }
+
+/// One event seat: the component and event it is, what
+/// each platform calls it, whether the page answers it before the program
+/// does (`prevent`), whether the page listens for it even with no handler
+/// bound (`always`: the host acts on its own, as a form sends), and the
+/// primitive that declares it.
+export type SeatRow = {
+    owner: string,
+    event: string,
+    web: DomEvent?,
+    terminal: Key?,
+    prevent: bool,
+    always: bool,
+    prim: Prim,
+}
+
+/// A gathered row. The collection holds rows and nothing else.
+export type Gathered = { row: SeatRow }
+
+/// Every seat in the program's closure, ordered by the row's const name.
+export collect seat_rows: List<Gathered> = @seat in closure as Gathered { row: it } by it.name
+
+/// The seat a component's event is, when the program declares one.
+export fn seat_of(owner: string, event: string) -> Seat? {
+    [Seat(j) for j, g in seat_rows if g.row.owner == owner && g.row.event == event].first()
+}
+
+/// The seats two components of one name declare, as `owner.event`: a name
+/// the table orders by must name one seat.
+export fn ties(rows: List<SeatRow>) -> List<string> {
+    ["${r.owner}.${r.event}" for j, r in rows if rows.slice(0, j).any(it.owner == r.owner && it.event == r.event)]
+}
+
+extern fn avra_trap(message: string)
+
+/// A seat's row.
+export fn row_at(seat: Seat) -> SeatRow { seat_rows[seat.of].row }
+
+/// The seat a component's event is. A program whose components do not declare
+/// it has none, and an `on` handler cannot be bound to a seat that is not
+/// there.
+export fn seat_named(owner: string, event: string) -> Seat {
+    let found = seat_of(owner, event)
+    if found == null { avra_trap(no_seat_row(owner, event)) }
+    found!
+}
+
+/// What the web calls a seat's event. A seat with no web form is one no page
+/// listens for, and asking for its word is spoken.
+export fn web_word(seat: Seat) -> string {
+    let row = row_at(seat)
+    if row.web == null { avra_trap("`${row.owner}.${row.event}` has no web event, and a page listens for one") }
+    row.web!.word()
+}
+
+/// The seat a primitive's page always listens for, when it has one.
+export fn always_seat_of(p: Prim) -> Seat? {
+    [Seat(j) for j, g in seat_rows if g.row.prim == p && g.row.always].first()
+}
+
+fn no_seat_row(owner: string, event: string) -> string {
+    "no component declares `${owner}.${event}` in this program: the component is imported where the program is built, or it is declared in the entry file, which a closure collection does not reach"
+}

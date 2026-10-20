@@ -10,6 +10,8 @@ use features.{Code, Fix, Analysed}
 use diagnostics.{Diag, warning}
 use @std.errors.{Suggestion, Edit, Confidence, Loc}
 use compiler.backend.{trimmed}
+use compiler.work.{work_rule_node, work_rule_run, work_rule_ns}
+use @std.time.{now_ns}
 
 /// One rule's hit at one node, before any Diag is built.
 export type Candidate = { at: At, owner: RuleEntry, fix: Fix }
@@ -51,6 +53,7 @@ fn quote_pattern(store: SyntaxArena, at: At) -> bool {
 }
 
 fn node_candidates(a: Analysed, index: RuleIndex, at: At) -> List<Candidate> {
+    work_rule_node()
     let store = a.view.store
     flatten(
         [one_candidate(a, at, r) for r in index.at_node(store.shallow_at(at), store.kind_at(at))],
@@ -58,6 +61,7 @@ fn node_candidates(a: Analysed, index: RuleIndex, at: At) -> List<Candidate> {
 }
 
 fn one_candidate(a: Analysed, at: At, r: RuleEntry) -> List<Candidate> {
+    work_rule_run()
     let f? = r.run(code_at(a, at)) else { return [] }
     if site_licenses(a, at, r) { return [] }
     [Candidate { at: at, owner: r, fix: f }]
@@ -85,7 +89,12 @@ export fn code_at(a: Analysed, at: At) -> Code {
 /// firing rule's own identity (`rule_id`) — a `Fix.Rewrite` wraps in a
 /// `Suggestion` over one `Edit` at the matched node's own span besides.
 export fn rule_findings(a: Analysed, stmts: List<StmtId>) -> List<Diag> {
-    flatten([candidate_diags(a, c) for c in rule_candidates(a, stmts)])
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    let began = now_ns()
+    let found = flatten([candidate_diags(a, c) for c in rule_candidates(a, stmts)])
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    work_rule_ns(now_ns() - began)
+    found
 }
 
 fn candidate_diags(a: Analysed, c: Candidate) -> List<Diag> {
@@ -115,7 +124,13 @@ fn rewrite_diag(a: Analysed, at: At, r: RuleEntry, f: Fix) -> Diag? {
         description: "rewrite to `${text}`",
         edits: [edit],
     }
-    warning(rule_id(r), loc, "${rule_id(r)} — this is provably `${text}`", "this code", null) with { suggestions: [sg] }
+    warning(
+        rule_id(r),
+        loc,
+        "${rule_id(r)} — this is provably `${text}`",
+        "this code",
+        applied_by(r),
+    ) with { suggestions: [sg] }
 }
 
 fn delete_diags(a: Analysed, at: At, r: RuleEntry, what: List<DeclId>) -> List<Diag> {
@@ -132,5 +147,12 @@ fn delete_diag(a: Analysed, at: At, r: RuleEntry, what: List<DeclId>) -> Diag? {
     let loc? = code_at(a, at).loc() else { return null }
     let edits? = delete_edits(a, a.view.source.text, what) else { return null }
     let sg = Suggestion { confidence: Confidence.High, description: "delete this", edits: edits }
-    warning(rule_id(r), loc, "${rule_id(r)} — this is provably dead", "this code", null) with { suggestions: [sg] }
+    warning(rule_id(r), loc, "${rule_id(r)} — this is provably dead", "this code", applied_by(r)) with { suggestions: [sg] }
+}
+
+/// A finding's help: the commands that explain the rule and apply the edit.
+/// The rule's own doc is read by `avra docs`, never here — a finding's help is
+/// built on every check of a body, and a doc is another file's text.
+fn applied_by(r: RuleEntry) -> string {
+    "`avra docs ${rule_id(r)}` says why; `avra fix --only ${rule_id(r)}` applies it"
 }

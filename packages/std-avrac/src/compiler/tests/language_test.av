@@ -70,7 +70,8 @@ spec "language" {
   ╭─[app.av:2:5]
 2 │ let = 3
   ·     ┬
-──╯"""
+──╯
+help: the parse stopped here — a missing or misplaced token just before this point is the usual cause"""
             lang.check(new_source_file("app.av", "let a = 1\nlet = 3")) == expected &&
                 lang.check(new_source_file("<source>", "let a = 1")) == ""
         }
@@ -117,6 +118,16 @@ impl Small {
         then "every engine cause projects to a registered kind" {
             let causes = [Cause.Lex, Cause.Expected, Cause.Trailing, Cause.Builder, Cause.Defect]
             causes.all(cause_registered(it))
+        }
+        then "a parse that stops short is the expectation it breaks" {
+            let d = Diagnostic {
+                cause: Cause.Trailing,
+                message: "m",
+                loc: null,
+                expected: [],
+                in_rule: "r",
+            }
+            project(d, null).kind == "parse.expected"
         }
     }
     given "a commented program" {

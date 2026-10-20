@@ -35,6 +35,8 @@ use diagnostics.{DiagCode}
 export fn lists() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name                | build
+        "list_lit"          | build_list_lit
+        "list_pat"          | build_list_pat
         "comp"              | build_comp
         "comp_head"         | build_comp_head
         "comp_filter"       | build_comp_filter
@@ -43,7 +45,8 @@ export fn lists() -> LanguageFeature {
     }
     let codes = table<DiagCode> {
         kind                  | summary
-        "type.list_empty"     | "an empty list has no element type to infer"
+        "type.spread_list"    | "a list literal spreads lists"
+        "type.list_pattern"   | "a list pattern matches a list"
         "type.list_element"   | "a list's elements share one type"
         "type.list_scalar"    | "a list holds scalars for now"
         "type.place"          | "a mutation needs a mut place"
@@ -103,7 +106,10 @@ export fn lists() -> LanguageFeature {
     }
     LanguageFeature lists {
         gram: grammar {
-            primary = "[" v:expression h:comp_head ( c:comp_head | c:comp_filter )* "]" @expect("]", "expected `]` to close the comprehension") -> comp(v, h, c) | "[" BREAK? ( elems:expression ( "," BREAK? elems:expression )* ","? BREAK? )? "]" @expect("]", "expected `]` to close the list") -> Expr.ListLit | "collect" "{" ( s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the `collect`") -> collect(s) | "collect" v:expression -> collect_blockless(v)
+            primary = "[" v:expression h:comp_head ( c:comp_head | c:comp_filter )* "]" @expect("]", "expected `]` to close the comprehension") -> comp(v, h, c) | "[" BREAK? ( ( elems:expression | ".." se:postfix ) ( "," BREAK? ( elems:expression | ".." se:postfix ) )* ","? BREAK? )? "]" @expect("]", "expected `]` to close the list") -> list_lit(elems, se) | "collect" "{" ( s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the `collect`") -> collect(s) | "collect" v:expression -> collect_blockless(v)
+            pattern = "[" BREAK? ( ( pats:pattern | dots:".." ( bind:NAME )? ) ( "," BREAK? ( pats:pattern | dots:".." ( bind:NAME )? ) )* ","? BREAK? )? "]" -> list_pat(pats, dots, bind)
+            asked = "[" BREAK? ( ( pats:pattern | dots:".." ( bind:NAME )? ) ( "," BREAK? ( pats:pattern | dots:".." ( bind:NAME )? ) )* ","? BREAK? )? "]" -> list_pat(pats, dots, bind)
+            destructure = "[" BREAK? ( ( pats:pattern | dots:".." ( bind:NAME )? ) ( "," BREAK? ( pats:pattern | dots:".." ( bind:NAME )? ) )* ","? BREAK? )? "]" -> list_pat(pats, dots, bind)
             comp_head = "for" ( "(" ix:NAME "," en:NAME ")" | ix:NAME "," en:NAME | en:NAME ) "in" src:expression ( ".." hi:expression )? -> comp_head(ix, en, src, hi)
             comp_filter = "if" c:expression -> comp_filter(c)
         }

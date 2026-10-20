@@ -1,5 +1,8 @@
 //! THE READ SET — which `state` places an expression reads, the one
-//! analysis invalidation and lowering share. From it the compiler
+//! analysis invalidation and lowering share. A place is a `state` statement
+//! of a body, a top-level `state` declaration, or `Unknown`: whatever the
+//! analysis cannot name (an applied fn value, a dispatched method, an
+//! `extern` row, a callee's own local state) and so must assume. From it the compiler
 //! picks a site's mechanism instead of one runtime diff for everyone:
 //! a subtree that reads no state AND no open input (a parameter, a
 //! receiver, a capture, a binding from outside the site) is CONSTANT,
@@ -20,79 +23,150 @@
 //! - A CLOSURE's body is its own frame, so a site reads the places it
 //!   CAPTURES (chained through nested closures) and never what the
 //!   body binds. Its own `state` locals belong to the closure.
-//! - A CALL's callee is another body, so its reads are folded in
-//!   through `reads` — a declaration-keyed query the caller supplies,
-//!   which chains through the callee's own calls. A callee this
-//!   compile cannot name (a fn value applied, a method dispatched on a
-//!   runtime value, an `extern` row) answers conservatively: the site
-//!   never hoists.
+//! - A CALL's callee is another body, so its places are folded in
+//!   through `callee` — a declaration-keyed query the caller supplies
+//!   (`place_key`s), which chains through the callee's own calls. A
+//!   callee this compile cannot name (a fn value applied, a method
+//!   dispatched on a runtime value, an `extern` row) answers
+//!   `Unknown`: the site never hoists and never takes a direct write.
 //!
 //! The complete child walk (`SyntaxArena.expr_children`) reaches
 //! hidden branches and statement bodies alike, so an `if`'s arm or a
 //! block's statement contributes its reads as any expression does.
-use core.{ExprId, StmtId, DeclId, Binding, Span, SyntaxArena, flatten, some_list, same_stmt}
+use core.{ExprId, StmtId, DeclId, FileId, DeclKind, Binding, Span, SyntaxArena, flatten, some_list}
 use features.{FileView, NameFacts, bound_decl_of}
 
-/// The `state` statement a binding names, when it names one — a
-/// capture chased through the closures between a name's home and the
-/// use, since a nested closure captures a place its parent captured.
-fn place_of(store: SyntaxArena, names: NameFacts, b: Binding) -> StmtId? {
+/// A `state` place as the analysis names it.
+export enum StatePlace {
+    /// a `state` statement in a body of `file`
+    Local(file: FileId, stmt: StmtId)
+    /// a top-level `state` declaration
+    Global(decl: DeclId)
+    /// a place the analysis cannot name: assume any
+    Unknown
+}
+
+/// A place as one whole number — what a declaration-keyed query holds, so
+/// a set of places is a sorted list of ints with a hash. EVERY KEY LIES
+/// STRICTLY INSIDE (-2^51, 2^51): a place whose indexes would leave that
+/// range answers `Unknown`, which assumes any, so the structural tag below
+/// (the key moved out by 2^52) can never meet a plain key.
+export fn place_key(p: StatePlace) -> int {
+    match p {
+        .Local(f, s) -> if f.index + 1 < max_files && s.index < max_stmts { (f.index + 1) * max_stmts + s.index } else { 0 - 1 },
+        .Global(d) -> if d.index + 2 < max_decls { 0 - (d.index + 2) } else { 0 - 1 },
+        .Unknown -> 0 - 1,
+    }
+}
+
+/// The statements a file's local keys count, and the files and declarations
+/// a key tells apart: the product of the first two is 2^51, the bound every
+/// key stays inside.
+const max_stmts = 4294967296
+const max_files = 524288
+const max_decls = 2251799813685248
+
+/// THE STRUCTURAL TAG: a place a declaration reads that no reading answers
+/// for, carried in the same set as the plain place as the key moved out by
+/// 2^52. Disjoint from every plain key by `place_key`'s bound.
+const structural_offset = 4503599627370496
+
+export fn structural_key(k: int) -> int { if k >= 0 { k + structural_offset } else { k - structural_offset } }
+
+export fn is_structural_key(k: int) -> bool { k >= structural_offset || k <= 0 - structural_offset }
+
+/// The plain key a structural key wraps.
+export fn plain_of_structural(k: int) -> int { if k >= 0 { k - structural_offset } else { k + structural_offset } }
+
+/// The place a `place_key` names.
+export fn place_at_key(k: int) -> StatePlace {
+    if k == 0 - 1 { return .Unknown }
+    if k < 0 { return .Global(DeclId { index: 0 - k - 2 }) }
+    .Local(FileId { index: k / 4294967296 - 1 }, StmtId { index: k % 4294967296 })
+}
+
+/// Whether a declaration of this kind is a top-level `state`. Every kind
+/// spelled.
+fn is_state_decl(k: DeclKind) -> bool {
+    match k {
+        .State -> true,
+        .Fn or .Method or .Default or .Main or .Case or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Const or .Builtin -> false,
+    }
+}
+
+/// The `state` place a binding names, when it names one — a capture
+/// chased through the closures between a name's home and the use, since a
+/// nested closure captures a place its parent captured.
+fn place_of(view: FileView, names: NameFacts, b: Binding) -> StatePlace? {
     match b {
-        .Def(s) if store.is_state_stmt(s) -> s,
-        .Capture(l, j) -> capture_place(store, names, l, j),
+        .Def(s) if view.store.is_state_stmt(s) -> StatePlace.Local(view.file, s),
+        .Decl(d) if is_state_decl(view.decls.decl(d).kind) -> StatePlace.Global(d),
+        .Capture(l, j) -> capture_place(view, names, l, j),
         rest -> null,
     }
 }
 
 /// The place a capture's SOURCE names — chained through the closures a
 /// nested capture passes through.
-fn capture_place(store: SyntaxArena, names: NameFacts, l: ExprId, j: int) -> StmtId? {
+fn capture_place(view: FileView, names: NameFacts, l: ExprId, j: int) -> StatePlace? {
     let cap? = names.capture(l) else { return null }
     if j >= cap.sources.length { return null }
-    place_of(store, names, cap.sources[j])
+    place_of(view, names, cap.sources[j])
 }
 
 /// The places a closure node CAPTURES.
-fn captured_places(store: SyntaxArena, names: NameFacts, e: ExprId) -> List<StmtId> {
+fn captured_places(view: FileView, names: NameFacts, e: ExprId) -> List<StatePlace> {
     let cap? = names.capture(e) else { return [] }
-    [p for src in cap.sources for p in some_list(place_of(store, names, src))]
+    [p for src in cap.sources for p in some_list(place_of(view, names, src))]
 }
 
 /// The places THIS expression names directly — its own binding, and
 /// the captures a closure node carries.
-fn here(store: SyntaxArena, names: NameFacts, e: ExprId) -> List<StmtId> {
-    let caps = captured_places(store, names, e)
+fn here(view: FileView, names: NameFacts, e: ExprId) -> List<StatePlace> {
+    let caps = captured_places(view, names, e)
     let b? = names.binding(e) else { return caps }
-    some_list(place_of(store, names, b)).concat(caps)
+    some_list(place_of(view, names, b)).concat(caps)
 }
 
 /// Every place `root`'s subtree names, children first — a closure is a
 /// leaf that yields its captures, never a branch into its body.
-fn reads_of(store: SyntaxArena, names: NameFacts, root: ExprId) -> List<StmtId> {
-    let own = here(store, names, root)
-    if store.expr_is_closure(root) { return own }
-    flatten([reads_of(store, names, k) for k in store.expr_children(root)]).concat(own)
+fn reads_of(view: FileView, names: NameFacts, root: ExprId) -> List<StatePlace> {
+    let own = here(view, names, root)
+    if view.store.expr_is_closure(root) { return own }
+    flatten([reads_of(view, names, k) for k in view.store.expr_children(root)]).concat(own)
 }
 
-/// Whether any call the subtree makes reads state — its callee's own
-/// transitive read set, when the callee is a declaration this compile
-/// can name — or one whose body it cannot see (a fn value applied, a
-/// method dispatched on a runtime value, an `extern` row), which MAY
-/// read state. A CLOSURE is a frame of its own: its captures are the
-/// read, so its body is not walked, exactly as `reads_of` stops there.
-export fn calls_read_state(
+/// The places the calls in the subtree reach: a callee this compile can
+/// name answers its own transitive places (`callee`, as `place_key`s), and
+/// a call whose body it cannot see (a fn value applied, a method dispatched
+/// on a runtime value, an `extern` row) answers `Unknown`. A CLOSURE is a
+/// frame of its own: its captures are the read, so its body is not walked,
+/// exactly as `reads_of` stops there.
+export fn call_places_of(
     view: FileView,
     names: NameFacts,
     root: ExprId,
-    reads: fn(DeclId) -> bool,
-) -> bool {
-    if view.store.expr_is_call(root) {
-        let d? = bound_decl_of(names, root) else { return true }
-        if reads(d) { return true }
-    }
-    if applies_method(view.store, root) { return true }
-    if view.store.expr_is_closure(root) { return false }
-    view.store.expr_children(root).any((k) -> calls_read_state(view, names, k, reads))
+    callee: fn(DeclId) -> List<int>,
+) -> List<StatePlace> {
+    if view.store.expr_is_closure(root) { return [] }
+    let called = if view.store.expr_is_call(root) { callee_places(names, root, callee) } else { [] }
+    let method = if applies_method(view.store, root) { [StatePlace.Unknown] } else { [] }
+    called
+        .concat(method)
+        .concat(
+            flatten(
+                [call_places_of(view, names, k, callee) for k in view.store.expr_children(root)],
+            ),
+        )
+}
+
+/// What one call reaches: its callee's places, or `Unknown` for a callee no
+/// declaration names.
+fn callee_places(names: NameFacts, call: ExprId, callee: fn(DeclId) -> List<int>) -> List<
+    StatePlace,
+> {
+    let d? = bound_decl_of(names, call) else { return [StatePlace.Unknown] }
+    [place_at_key(k) for k in callee(d)]
 }
 
 /// Whether the expression APPLIES a method on a runtime value — the
@@ -102,19 +176,107 @@ fn applies_method(store: SyntaxArena, e: ExprId) -> bool {
 }
 
 /// Each place once, in first-read order.
-fn deduped(places: List<StmtId>) -> List<StmtId> {
-    mut out: List<StmtId> = []
+fn deduped(places: List<StatePlace>) -> List<StatePlace> {
+    mut out: List<StatePlace> = []
     for p in places {
-        if !out.any(same_stmt(it, p)) { out.push(p) }
+        if !out.any(place_key(it) == place_key(p)) { out.push(p) }
     }
     out
+}
+
+// ── the STRUCTURAL set: reads a reading does not answer for ───────────
+
+/// Whether a closure's reads are not the paint's: the closure the builder
+/// minted to say a text again (its reads are the reading, answered by the
+/// page), and a handler an instance hears (it runs when the user speaks, not
+/// when the page is drawn).
+fn covered(view: FileView, e: ExprId) -> bool {
+    view.store.expr_is_closure(e) &&
+        (view.store.minted_for(e) != null || view.store.on_handler(e) != null)
+}
+
+/// The heads of an instance a reading answers for: its text, which the
+/// instance's minted closure says again.
+fn sited_heads(view: FileView, e: ExprId) -> List<ExprId> {
+    match view.store.expr(e) {
+        .Component(_, heads, _, .Expanded(lit), _, _) if says_again(view, lit) -> heads.take(1),
+        rest -> [],
+    }
+}
+
+/// Whether a literal is extended by a closure the builder minted for it.
+fn says_again(view: FileView, lit: ExprId) -> bool {
+    view.store.extended_by(lit).any((v) -> view.store.expr_is_closure(v))
+}
+
+/// The places the subtree reads that no reading answers for, children first.
+/// A covered closure is a leaf with no read; the head a reading says again is
+/// not walked; every other closure yields its captures, as `reads_of` has it.
+fn structural_reads(view: FileView, names: NameFacts, root: ExprId, skip: List<ExprId>) -> List<
+    StatePlace,
+> {
+    if skip.contains(root) || covered(view, root) { return [] }
+    let own = here(view, names, root)
+    if view.store.expr_is_closure(root) { return own }
+    let inner = skip.concat(sited_heads(view, root))
+    flatten([structural_reads(view, names, k, inner) for k in view.store.expr_children(root)])
+        .concat(own)
+}
+
+/// The places the calls in the subtree reach that no reading answers for: a
+/// callee's own STRUCTURAL places (`callee`, as `place_key`s), and `Unknown`
+/// where a body is out of sight.
+fn structural_calls(
+    view: FileView,
+    names: NameFacts,
+    root: ExprId,
+    skip: List<ExprId>,
+    callee: fn(DeclId) -> List<int>,
+) -> List<StatePlace> {
+    if skip.contains(root) || covered(view, root) || view.store.expr_is_closure(root) { return [] }
+    let called = if view.store.expr_is_call(root) { callee_places(names, root, callee) } else { [] }
+    let method = if applies_method(view.store, root) { [StatePlace.Unknown] } else { [] }
+    let inner = skip.concat(sited_heads(view, root))
+    called
+        .concat(method)
+        .concat(
+            flatten(
+                [structural_calls(view, names, k, inner, callee) for k in view.store.expr_children(root)],
+            ),
+        )
+}
+
+/// Every place the subtree reads at paint time that a reading does NOT
+/// answer for: a page whose cell is among them takes the full paint when it
+/// is written.
+export fn structural_places_of(
+    view: FileView,
+    names: NameFacts,
+    root: ExprId,
+    callee: fn(DeclId) -> List<int>,
+) -> List<StatePlace> {
+    deduped(
+        structural_reads(view, names, root, [])
+            .concat(structural_calls(view, names, root, [], callee)),
+    )
 }
 
 /// The `state` places `root`'s subtree reads, deduped. A call is a
 /// boundary: the callee's reads are the callee's body's, never folded
 /// in here.
-export fn read_set_of(view: FileView, names: NameFacts, root: ExprId) -> List<StmtId> {
-    deduped(reads_of(view.store, names, root))
+export fn read_set_of(view: FileView, names: NameFacts, root: ExprId) -> List<StatePlace> {
+    deduped(reads_of(view, names, root))
+}
+
+/// Every place the site depends on: the `state` it reads itself and what
+/// the calls it makes reach.
+export fn site_places_of(
+    view: FileView,
+    names: NameFacts,
+    root: ExprId,
+    callee: fn(DeclId) -> List<int>,
+) -> List<StatePlace> {
+    deduped(read_set_of(view, names, root).concat(call_places_of(view, names, root, callee)))
 }
 
 /// Whether the subtree reads any state at all.
@@ -129,10 +291,13 @@ export fn reads_state_of(view: FileView, names: NameFacts, root: ExprId) -> bool
 /// folded in through `reads`, so a component constructor whose body is
 /// a pure projection hoists, and one that reaches state keeps the
 /// tree.
-export fn hoistable_of(view: FileView, names: NameFacts, root: ExprId, reads: fn(DeclId) -> bool) -> bool {
-    read_set_of(view, names, root).is_empty() &&
-        !calls_read_state(view, names, root, reads) &&
-        closed_of(view, names, root)
+export fn hoistable_of(
+    view: FileView,
+    names: NameFacts,
+    root: ExprId,
+    callee: fn(DeclId) -> List<int>,
+) -> bool {
+    site_places_of(view, names, root, callee).is_empty() && closed_of(view, names, root)
 }
 
 /// Whether `inner` sits inside `at` — a binding the site itself
@@ -201,7 +366,7 @@ export enum SiteLowering {
     Hoist
     /// reads exactly one state place and nothing else: a direct write
     /// to its node
-    Direct(place: StmtId)
+    Direct(place: StatePlace)
     /// several places, or a call whose callee's reads are unknown —
     /// the conservative tree path
     Tree
@@ -210,22 +375,63 @@ export enum SiteLowering {
     Keyed(key: ExprId)
 }
 
+/// WHY a site lowers as it does — the one decision, as data, that the
+/// lowering and `avra explain --sites` both read.
+export enum SiteWhy {
+    /// a list that states its key
+    Keyed(key: ExprId)
+    /// reads no state and no open input
+    Constant
+    /// reads an input the site does not bind: a parameter, a receiver, or a
+    /// binding from outside it
+    OpenInput
+    /// reaches a place it cannot name: an applied fn value, a dispatched
+    /// method, an `extern` row, or a callee's own state
+    Opaque
+    /// reads exactly one place and nothing else
+    OneRead(place: StatePlace)
+    /// reads several places
+    Several(count: int)
+}
+
+fn is_unknown(p: StatePlace) -> bool { place_key(p) == place_key(StatePlace.Unknown) }
+
+/// Why a site earns the lowering it does.
+export fn site_why_of(
+    view: FileView,
+    names: NameFacts,
+    root: ExprId,
+    callee: fn(DeclId) -> List<int>,
+) -> SiteWhy {
+    let key? = view.store.keyed_list_key(root) else {
+        if !closed_of(view, names, root) { return .OpenInput }
+        let places = site_places_of(view, names, root, callee)
+        if places.is_empty() { return .Constant }
+        if places.any(is_unknown(it)) { return .Opaque }
+        if places.length == 1 { return .OneRead(places[0]) }
+        return .Several(places.length)
+    }
+    .Keyed(key)
+}
+
+/// The lowering a reason earns.
+fn lowering_of(why: SiteWhy) -> SiteLowering {
+    match why {
+        .Keyed(key) -> .Keyed(key),
+        .Constant -> .Hoist,
+        .OneRead(place) -> .Direct(place),
+        .OpenInput or .Opaque or .Several(_) -> .Tree,
+    }
+}
+
 /// The lowering a site earns: `Hoist`, `Keyed`, `Direct`, or `Tree`.
 export fn site_lowering_of(
     view: FileView,
     names: NameFacts,
     root: ExprId,
-    reads: fn(DeclId) -> bool,
+    callee: fn(DeclId) -> List<int>,
 ) -> SiteLowering {
-    let key? = view.store.keyed_list_key(root) else {
-        if calls_read_state(view, names, root, reads) { return .Tree }
-        if !closed_of(view, names, root) { return .Tree }
-        let places = read_set_of(view, names, root)
-        if places.is_empty() { return .Hoist }
-        if places.length == 1 { return .Direct(places[0]) }
-        return .Tree
-    }
-    .Keyed(key)
+    lowering_of(site_why_of(view, names, root, callee))
 }
 
 /// One entry in a view's planning: the content address of an
@@ -233,7 +439,7 @@ export fn site_lowering_of(
 /// address is the compiler's expression fingerprint — the same
 /// content identity every fact table keys on, never an ordinal that
 /// renumbers when a sibling lands above.
-export type SitePlan = { site: int, lowering: SiteLowering }
+export type SitePlan = { site: int, expr: ExprId, lowering: SiteLowering, why: SiteWhy }
 
 /// A view's whole lowering plan, in walk order. The walk STOPS at a
 /// `Hoist` or a `Direct` site: a settled subtree is named once and
@@ -246,11 +452,14 @@ export fn lowering_plan_of(
     view: FileView,
     names: NameFacts,
     root: ExprId,
-    reads: fn(DeclId) -> bool,
+    callee: fn(DeclId) -> List<int>,
 ) -> List<SitePlan> {
+    let why = site_why_of(view, names, root, callee)
     let here = SitePlan {
         site: view.store.expr_fingerprint(root),
-        lowering: site_lowering_of(view, names, root, reads),
+        expr: root,
+        lowering: lowering_of(why),
+        why: why,
     }
     if view.store.expr_is_closure(root) { return [here] }
     match here.lowering {
@@ -258,7 +467,7 @@ export fn lowering_plan_of(
         .Tree or .Keyed(_) -> [here]
             .concat(
                 flatten(
-                    [lowering_plan_of(view, names, k, reads) for k in view.store.expr_children(root)],
+                    [lowering_plan_of(view, names, k, callee) for k in view.store.expr_children(root)],
                 ),
             ),
     }

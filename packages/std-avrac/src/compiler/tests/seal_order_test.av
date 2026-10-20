@@ -1,0 +1,65 @@
+// A `mut` SEAT BOXES A FLAT RECORD, WHEREVER ITS FN IS DECLARED. The seal must land before
+// anyone reads the record's flatness, so asking for a record's declaration first signs the
+// fns that seat it `mut` — judged on the record's NATURAL shape (all-scalar fields), never
+// on a state a seal is about to change. The fn lives in another file than the record and
+// the reader of its flatness, and the two are signed in both orders.
+use @std.avrac.testing.{test_workspace}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use core.{DeclId}
+
+fn seal_files() -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"w\"\nversion = \"0.1.0\"\n",
+        "/w/src/types.av": "export type Id = { n: int }\nexport type Holder = { id: Id }\n",
+        "/w/src/user.av": "use types.{Id}\nexport fn bump(mut x: Id) {\n    x.n = x.n + 1\n}\n",
+        "/w/src/main.av": "use types.{Holder}\nuse user.{bump}\nlet h = 1\n",
+    }
+}
+
+fn sealing() -> Workspace {
+    let ws = test_workspace(
+        memory_host(
+            seal_files(),
+            ["/w/avra.toml", "/w/src/types.av", "/w/src/user.av", "/w/src/main.av"],
+        ),
+        "/w",
+    )
+    for p in ["/w/src/types.av", "/w/src/user.av", "/w/src/main.av"] { let _ = ws.file_id(p) }
+    ws.admit_all()
+    ws
+}
+
+fn declared(ws: Workspace, name: string) -> DeclId { ws.decls.all_decls().find(it.name == name)!.id }
+
+/// Whether `Id` and the record holding it both ended boxed, the two signed in this order.
+fn boxed_after(holder_first: bool) -> bool {
+    let ws = sealing()
+    let id = declared(ws, "Id")
+    let holder = declared(ws, "Holder")
+    let bump = declared(ws, "bump")
+    if holder_first {
+        let _ = ws.sig(holder)
+        let _ = ws.sig(bump)
+    } else {
+        let _ = ws.sig(bump)
+        let _ = ws.sig(holder)
+    }
+    !ws.decls.types.is_flat(ws.decls.record_type(id)) &&
+        !ws.decls.types.is_flat(ws.decls.record_type(holder))
+}
+
+spec "compiler — the fixture declares what the order cases sign" {
+    given "the admitted program" {
+        then "Id is declared" { sealing().decls.all_decls().any(it.name == "Id") }
+        then "Holder is declared" { sealing().decls.all_decls().any(it.name == "Holder") }
+        then "bump is declared" { sealing().decls.all_decls().any(it.name == "bump") }
+    }
+}
+
+spec "compiler — a mut seat in another file boxes a flat record" {
+    given "a record whose only `mut` seat is a fn of another file" {
+        then "the holder of it is signed first: the record is boxed, and so is its holder" { boxed_after(true) }
+        then "the fn is signed first: the record is boxed, and so is its holder" { boxed_after(false) }
+    }
+}

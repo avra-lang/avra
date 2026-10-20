@@ -99,7 +99,7 @@ impl Workspace {
         // rows are readable; with none attached (a lone check with nothing
         // held) `held` is empty and this changes nothing.
         let store: Store? = self.store.get()
-        let restored = if store == null { [] } else { [self.restored_refs(store!, f) for f in held] }
+        let restored = if store == null { [] } else { [self.restored_refs(store!)] }
         // THE RELATION IS ONE VALUE: every row stands before one is filed,
         // so nothing asked here lands among the rows it writes.
         let found = flatten(surveyed.concat(restored))
@@ -130,48 +130,59 @@ impl Workspace {
         0
     }
 
-    /// The references a held file's body once made, read back off its own
-    /// module's kept record (`ref` lines, written by `record_of` the last
-    /// time this file was fresh) — never re-scanned, since a held file has
-    /// no body to walk. A line naming a declaration this attempt cannot
-    /// find (a stale row from before a name moved) answers no row rather
-    /// than a wrong one; the record it came from is validated whole
-    /// elsewhere (`record_complete`), so this is never the first place a
-    /// moved name is caught.
-    fn restored_refs(store: Store, f: FileId) -> List<Ref> {
-        let rows = self.kept_ref_rows(store, self.decls.file(f).path)
-        let apart = [p for p in rows if self.holds_target(p)]
-        for target in distinct([ref_target(p) for p in apart]) {
-            let kept = self.hold.held_refs.get().get(target) ?? []
-            self
-                .hold
-                .held_refs
-                .put(
-                    target,
-                    kept
-                        .concat([HeldRef { file: f, row: p } for p in apart if ref_target(p) == target]),
-                )
-        }
-        let read = [p for p in rows if !self.holds_target(p)]
-        // a wire names its file, which answers only once its declarations stand:
-        // each named file is stood up once, never once per row
-        for named in distinct([ref_target(p) for p in read]) { self.file_stands(named) }
-        flatten([some_list(self.resolved_ref(f, p)) for p in read])
+    /// The references held files' bodies once made to anything a read file or the language
+    /// holds, read back off their modules' kept records (`ref` lines, written by `record_of`
+    /// the last time each file was fresh) — never re-scanned, since a held file has no body to
+    /// walk. A held file's reference to another held declaration arrives on the ask that
+    /// names the declaration (`held_refs_to`), so no held module is minted for it and no
+    /// record line of a module nothing reads is decoded. A line naming a declaration this
+    /// attempt cannot find (a stale row from before a name moved) answers no row rather than
+    /// a wrong one; the record it came from is validated whole elsewhere (`record_complete`).
+    fn restored_refs(store: Store) -> List<Ref> {
+        flatten(
+            [self.refs_into(store, target) for target in self.hold.refs_by_target.get().keys() if !self.decls.held.get().has(target)],
+        )
     }
 
-    /// Whether a `ref` row's target lives in a held file — whose references arrive on the
-    /// ask that names the declaration (`held_refs_to`), so no held module is minted for them.
-    fn holds_target(p: List<string>) -> bool { self.decls.held.get().get(ref_target(p)) != null }
+    /// The references held files make to `target`, a path no held file answers to.
+    fn refs_into(store: Store, target: string) -> List<Ref> {
+        self.file_stands(target)
+        flatten(
+            [self.refs_of_source(store, source, target) for source in self.held_sources(target)],
+        )
+    }
+
+    /// The held files whose kept lines name a declaration of `target`.
+    fn held_sources(target: string) -> List<string> {
+        [p for p in self.hold.refs_by_target.get().get(target) ?? [] if self.decls.held.get().has(p)]
+    }
+
+    /// One held file's references to `target`.
+    fn refs_of_source(store: Store, source: string, target: string) -> List<Ref> {
+        let f? = self.decls.known_file_id(source) else { return [] }
+        flatten(
+            [some_list(self.resolved_ref(f, p)) for p in self.kept_ref_rows(store, source) if ref_target(p) == target],
+        )
+    }
 
     /// The references held files make to `d`, restored from their records.
     fn held_refs_to(d: DeclId) -> List<Ref> {
-        let at = self.hold.held_refs.get().get(self.decls.file(self.decls.decl(d).file).path) ?? []
-        [r for r in flatten([some_list(self.resolved_ref(h.file, h.row)) for h in at]) if same_decl(r.decl, d)]
+        let store? = self.store.get() else { return [] }
+        if !self.decls.file_held(self.decls.decl(d).file) { return [] }
+        let target = self.decls.file(self.decls.decl(d).file).path
+        let known: List<Ref>? = self.hold.held_refs.get().get(target)
+        let into = known ?? self.refs_into(store, target)
+        if known == null { self.hold.held_refs.put(target, into) }
+        [r for r in into if same_decl(r.decl, d)]
     }
 
     /// A file's `ref` lines, as its module's kept record holds them.
     fn kept_ref_rows(store: Store, path: string) -> List<List<string>> {
-        [p for p in record_fields(self, store, self.module_path_of(path)) if is_ref_row(p) && p[1] == path]
+        let known = self.hold.kept_refs.get().get(path)
+        if known != null { return known! }
+        let rows = [p for p in record_fields(self, store, self.module_path_of(path)) if is_ref_row(p) && p[1] == path]
+        self.hold.kept_refs.put(path, rows)
+        rows
     }
 
     /// A file's declarations standing; a path no file answers to stands nothing.
@@ -261,13 +272,13 @@ impl Workspace {
     fn expr_refs(f: FileId, names: NameFacts, facts: TypeFacts, store: SyntaxArena, e: ExprId) -> List<
         Ref,
     > {
-        match store.expr(e) {
-            .Call(_, _, _) -> some_list(self.use_of(f, names, e, UseKind.Call)),
-            .MethodCall(subject, name, _) -> some_list(self.method_ref(f, facts, store, e, subject, name.of)),
-            .StructLit(name, _, _) -> some_list(self.named_type_ref(f, names, e, name)),
-            .Component(word, _, _, _, _) -> some_list(self.component_ref(f, names, e, word)),
-            .Env(tr) -> some_list(self.type_name_ref(f, names, e, tr.name)),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .With(_, _, _) or .VariantLit(_, _) or .CallValue(_, _) or .Force(_) or .Block(_, _) or .Collect(_) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Match(_, _) or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .Comp(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Chain(_, _) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Named(_, _) or .Error or .Range(_, _) -> some_list(self.use_of(f, names, e, UseKind.Read)),
+        match store.expr(e).use_shape() {
+            .Read -> some_list(self.use_of(f, names, e, UseKind.Read)),
+            .Callee -> some_list(self.use_of(f, names, e, UseKind.Call)),
+            .Method(subject, name) -> some_list(self.method_ref(f, facts, store, e, subject, name.of)),
+            .Record(name) -> some_list(self.named_type_ref(f, names, e, name)),
+            .Component(word) -> some_list(self.component_ref(f, names, e, word)),
+            .TypeName(name) -> some_list(self.type_name_ref(f, names, e, name)),
         }
     }
 

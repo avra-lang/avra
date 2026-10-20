@@ -5,9 +5,16 @@ use core.{StmtId}
 use core.stmt.{ConstDecl}
 use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx}
 
+/// A top-level const's value stands on its own floor, as a fn body does: the run-time
+/// values around it are not its to read, and a read of one is refused where it stands.
+fn resolve_value(mut cx: ResolveCx, s: StmtId) {
+    let v? = cx.view.store.stmt_value(s) else { return }
+    if cx.floors.is_empty() { cx.walk_under([], v) } else { cx.walk(v) }
+}
+
 impl StmtSemantics for ConstDecl {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
-        cx.walk_value(s)
+        resolve_value(cx, s)
         cx.bind_checked(s)
     }
 

@@ -1,6 +1,6 @@
 // Every line of every render is within the width, across a tree that
 // holds each primitive, padding, gaps and non-ASCII text.
-use @std.text.{codepoint_count}
+use @std.text.{codepoint_count, cells, from_codepoints}
 use @std.ui.tree.url.{local}
 use @std.ui.tree.node.{Node, Prim}
 use @std.ui.realize.tui.tui.{render}
@@ -58,7 +58,23 @@ fn crowded() -> Node {
     )
 }
 
-fn widest_at(w: int) -> int { [codepoint_count(l) for l in render(crowded(), Env {}, w).split("\n")].max() ?? 0 }
+fn widest_at(w: int) -> int { [cells(l) for l in render(crowded(), Env {}, w).split("\n")].max() ?? 0 }
+
+fn widest_of(n: Node, w: int) -> int { [cells(l) for l in render(n, Env {}, w).split("\n")].max() ?? 0 }
+
+fn mixed() -> Node {
+    holding(
+        .Column,
+        [
+            text_node(
+                "中文 wide words 한국어 and ${from_codepoints([101, 769])} marks 👨‍👩‍👧 with flags 🇯🇵",
+            ),
+            button_node("保存する"),
+            field_node("名前", "山田太郎"),
+            heading_node("見出しの長いタイトル", 1),
+        ],
+    )
+}
 
 spec "std/ui tui — width" {
     given "a tree holding every primitive" {
@@ -66,6 +82,10 @@ spec "std/ui tui — width" {
         then "the widest line passes twenty at thirty and forty at sixty" { widest_at(30) > 20 && widest_at(60) > 40 }
         then "at a width of zero no line passes one" { widest_at(0) <= 1 }
         then "a divider's line is exactly the room it is given" { widest_at(47) == 47 }
+    }
+    given "wide glyphs, marks and clusters" {
+        then "no line passes the width in cells, from two to sixty" { [w for w in 2..60 if widest_of(mixed(), w) > w].length == 0 }
+        then "at a width of one only a single wide cluster passes it" { widest_of(mixed(), 1) <= 2 }
     }
     given "non-ASCII length" {
         then "the byte length of an accented letter is two, its code point count one" {

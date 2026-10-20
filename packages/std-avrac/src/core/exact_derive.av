@@ -12,15 +12,27 @@
 //! dereferences through the store and recurses (`exact_expr` et al,
 //! mutually generated); a `string` compares with `==`, never
 //! `fp_str`; a payload-free enum (`BinOp`) compares with `==` too. A
-//! compound type neither Expr nor Stmt nor Pat owns (`TypeRef`,
-//! `Param`, `Arm`, `Variant`, `Case`, `FormatPart`, `Projection`, …)
-//! is walked by a hand-written `exact_*` sibling beside that type's
-//! own `*_fp` (nodes.av, store.av) — the same split those folds
-//! already keep between "the derive's own registry" and "a type the
-//! derive defers to."
+//! compound type neither Expr nor Stmt nor Pat owns is READ OFF ITS
+//! DECLARATION: a record compares field by field, an enum variant by
+//! variant, a list element by element (`Arm`, `CompClause`, `Variant`,
+//! `Case`, `FormatPart`). The ones whose equality is deliberately not
+//! every field — a mark ignores its call, an expansion equals any
+//! expansion — or that hold themselves (`Param`, `TypeRef`) keep a
+//! hand-written `exact_*` row beside that type's own `*_fp`."
 //!
 //! It stands ALONE in this file on purpose (CLAUDE.md).
-use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Directive, Code, Arms, name}
+use @std.meta.{
+    Type as MetaType,
+    Variant as MetaVariant,
+    Field,
+    Directive,
+    Code,
+    Arms,
+    Kind,
+    Held,
+    payload_of,
+    name,
+}
 
 /// The compiler's derive for exact node equality.
 export trait Exact {
@@ -33,7 +45,7 @@ export trait Exact {
                 source: quote {
             impl SyntaxArena {
                 fn ${exact_of(t.name)}(a: ${t}, b: ${t}) -> bool {
-                    match a { ${[exact_variant_arm(v) for v in t.variants]} }
+                    match a { ${[exact_variant_arm(t, v) for v in t.variants]} }
                 }
             }
         },
@@ -50,16 +62,16 @@ export trait Exact {
 /// never one payload compared against itself. A DIFFERENT variant on
 /// `b`'s side is a miss, never a defect: the outer match already
 /// spells every variant of `a`, so nothing here forgets one.
-fn exact_variant_arm(v: MetaVariant) -> Arms {
+fn exact_variant_arm(t: MetaType, v: MetaVariant) -> Arms {
     if v.fields.is_empty() { return quote { .${v} -> match b { .${v} -> true, rest -> false } } }
-    quote { .${v}(${binders_a(v)}) -> match b { .${v}(${binders_b(v)}) -> ${anded(field_eqs(v))}, rest -> false } }
+    quote { .${v}(${binders_a(v)}) -> match b { .${v}(${binders_b(v)}) -> ${anded(field_eqs(t, v))}, rest -> false } }
 }
 
 fn binders_a(v: MetaVariant) -> List<string> { [f.name for f in v.fields if carried(f)] }
 
 fn binders_b(v: MetaVariant) -> List<string> { ["${f.name}_b" for f in v.fields if carried(f)] }
 
-fn field_eqs(v: MetaVariant) -> List<Code> { [field_eq(f) for f in v.fields if reached(f)] }
+fn field_eqs(t: MetaType, v: MetaVariant) -> List<Code> { [field_eq(t, f) for f in v.fields if reached(f)] }
 
 /// HOW A PAYLOAD'S TYPE COMPARES — Identity's own registry
 /// (identity_derive.av's `part`), with every hashed fold answering a
@@ -68,10 +80,68 @@ fn field_eqs(v: MetaVariant) -> List<Code> { [field_eq(f) for f in v.fields if r
 /// its own hand-written `exact_*` sibling. A type absent here is a
 /// defect at the generated code, exactly as Identity's registry
 /// refuses one.
-fn field_eq(f: Field) -> Code {
-    let a = name(f.name)
-    let b = name("${f.name}_b")
-    match f.ty {
+fn field_eq(t: MetaType, f: Field) -> Code {
+    eq_through(t, f.kind, name(f.name), name("${f.name}_b"), [])
+}
+
+/// A value's comparison through its TYPE: a row when it has one, else
+/// its own declaration — never one it is already inside of (a type
+/// holding itself keeps a row, and an absent one is a defect at the
+/// generated code, naming it).
+fn eq_through(t: MetaType, k: Kind, a: Code, b: Code, inside: List<string>) -> Code {
+    let row = eq_row(k.spelled(), a, b)
+    if row != null { return row! }
+    match k {
+        .List(inner) -> quote {
+            (${a}.length == ${b}.length && [i for i in 0..${a}.length].all((at) -> ${eq_through(t, inner, quote { ${a}[at] }, quote { ${b}[at] }, inside)}))
+        },
+        .Opt(inner) -> quote {
+            (if ${a} == null || ${b} == null { ${a} == null && ${b} == null } else { ${eq_through(t, inner, quote { ${a}! }, quote { ${b}! }, inside)} })
+        },
+        .Named(n, _) -> declared_eq(t, n, a, b, inside),
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> quote { a_payload_type_the_exact_derive_has_no_row_for() },
+    }
+}
+
+/// A declared record's fields compared in order, or an enum's variants
+/// paired.
+fn declared_eq(t: MetaType, n: string, a: Code, b: Code, inside: List<string>) -> Code {
+    let unread = quote { a_payload_type_the_exact_derive_has_no_row_for() }
+    if inside.contains(n) { return unread }
+    let held? = payload_of(t, n) else { return unread }
+    let entered = inside.concat([n])
+    match held {
+        .Record(fields) -> anded(
+            [eq_through(t, f.kind, quote { ${a}.${f.name} }, quote { ${b}.${f.name} }, entered) for f in fields if reached(f)],
+        ),
+        .Enum(variants) -> {
+            let arms = [variant_eq(t, v, b, entered) for v in variants]
+            quote { (match ${a} { ${arms} }) }
+        },
+    }
+}
+
+/// One variant of a declared enum: both sides' payloads bound under
+/// names of their own, a different variant on `b`'s side a miss.
+fn variant_eq(t: MetaType, v: MetaVariant, b: Code, inside: List<string>) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> match ${b} { .${v} -> true, rest -> false } } }
+    let left = ["${f.name}_x${inside.length}" for f in v.fields if carried(f)]
+    let right = ["${f.name}_y${inside.length}" for f in v.fields if carried(f)]
+    let same = anded(
+        [eq_through(
+            t,
+            f.kind,
+            name("${f.name}_x${inside.length}"),
+            name("${f.name}_y${inside.length}"),
+            inside,
+        ) for f in v.fields if reached(f)],
+    )
+    quote { .${v}(${left}) -> match ${b} { .${v}(${right}) -> ${same}, rest -> false } }
+}
+
+/// The rows: the payload types compared by name.
+fn eq_row(ty: string, a: Code, b: Code) -> Code? {
+    match ty {
         "ExprId" -> quote { self.exact_expr(self.expr(${a}), self.expr(${b})) },
         "StmtId" -> quote { self.exact_stmt(self.stmt(${a}), self.stmt(${b})) },
         "PatId" -> quote { self.exact_pat(self.pat(${a}), self.pat(${b})) },
@@ -79,12 +149,8 @@ fn field_eq(f: Field) -> Code {
         "List<ExprId>" -> quote { self.exact_expr_ids(${a}, ${b}) },
         "List<StmtId>" -> quote { self.exact_stmt_ids(${a}, ${b}) },
         "List<PatId>" -> quote { self.exact_pat_ids(${a}, ${b}) },
-        "List<Arm>" -> quote { self.exact_arms(${a}, ${b}) },
-        "List<CompClause>" -> quote { self.exact_comp_clauses(${a}, ${b}) },
         "List<Param>" -> quote { self.exact_params(${a}, ${b}) },
-        "List<Variant>" -> quote { self.exact_variants(${a}, ${b}) },
-        "List<Case>" -> quote { self.exact_cases(${a}, ${b}) },
-        "List<FormatPart>" -> quote { exact_format_parts(${a}, ${b}) },
+        "List<Mark>" -> quote { exact_marks(${a}, ${b}) },
         "string" -> quote { ${a} == ${b} },
         "List<string>" -> quote { exact_strs(${a}, ${b}) },
         "int" or "bool" or "BinOp" -> quote { ${a} == ${b} },
@@ -98,7 +164,7 @@ fn field_eq(f: Field) -> Code {
         "CollectKind" -> quote { exact_collect_kind(${a}, ${b}) },
         "CollectScope" -> quote { exact_collect_scope(${a}, ${b}) },
         "Projection" -> quote { exact_projection(${a}, ${b}) },
-        _ -> quote { a_payload_type_the_exact_derive_has_no_row_for() },
+        _ -> null,
     }
 }
 

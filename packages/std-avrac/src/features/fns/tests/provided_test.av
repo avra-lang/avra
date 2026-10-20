@@ -1,0 +1,77 @@
+//! `provided<T>("path")`: a file of the package, read from its root and
+//! handed to the kind `T`, whose `provide` may answer absent.
+use @std.avrac.testing.{test_workspace}
+use @std.avrac.compiler.{Program}
+use @std.avrac.compiler.host.{memory_host}
+use @std.avrac.testing.{vendored_meta, vendored_meta_paths, refused_in}
+
+/// `main` as the entry of a package whose root holds `data/side.txt`.
+fn bundling(main: string) -> Program {
+    let held = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            "/w/src/main.av": main,
+            "/w/src/hello.txt": "hi",
+            "/w/data/side.txt": "side",
+        },
+    )
+    let paths = ["/w/avra.toml", "/w/src/main.av", "/w/src/hello.txt", "/w/data/side.txt"]
+        .concat(vendored_meta_paths())
+    test_workspace(memory_host(held, paths), "/w").program("/w/src/main.av")
+}
+
+/// What the program answers, or the refusal.
+fn bundled_answer(main: string) -> string { bundling(main).run() catch e -> e }
+
+fn bundled_refusal(main: string, phrase: string) -> bool { refused_in(bundling(main), phrase) }
+
+/// A kind that reads every non-empty file, as its length.
+const lengths: string = "use @std.meta.{provided, Provider}\ntype K = { n: int }\nimpl Provider for K {\n    static fn provide(path: string, octets: Bytes) -> K? {\n        if octets.length > 0 { K { n: octets.length } } else { null }\n    }\n}\n"
+
+/// A kind that reads nothing.
+const nothing: string = "use @std.meta.{provided, Provider}\ntype K = { n: int }\nimpl Provider for K {\n    static fn provide(path: string, octets: Bytes) -> K? { null }\n}\n"
+
+spec "features/fns — provided reads a file of the package into a kind" {
+    given "a literal naming a file from the package root" {
+        then "the kind receives its octets" {
+            bundled_answer("${lengths}const A: K = provided<K>(\"data/side.txt\")\n\"\${A.n}\"") == "4"
+        }
+        then "the seat's own type names the kind when no pin is written" {
+            bundled_answer("${lengths}const A: K = provided(\"data/side.txt\")\n\"\${A.n}\"") == "4"
+        }
+        then "the path is read from the root, not beside the source" {
+            bundled_refusal(
+                "${lengths}const A: K = provided<K>(\"hello.txt\")\nA.n",
+                "`provided` finds no `hello.txt` at this package's root",
+            )
+        }
+    }
+    given "a kind that reads nothing from the file" {
+        then "the const refuses by name, naming the file and the kind" {
+            bundled_answer("${nothing}const A: K = provided<K>(\"data/side.txt\")\nA.n")
+                .contains("`data/side.txt` is no `K`")
+        }
+    }
+    given "a call that names no kind" {
+        then "it refuses, saying the file's octets do not choose it" {
+            bundled_refusal(
+                "${lengths}const A = provided(\"data/side.txt\")\n1",
+                "`provided` names its kind — the file's octets do not choose it",
+            )
+        }
+    }
+    given "a path that is not a literal, or leaves the package" {
+        then "a computed path refuses as embed's does" {
+            bundled_refusal(
+                "${lengths}fn read(p: string) -> K {\n    provided<K>(p)\n}\nconst A: K = read(\"data/side.txt\")\nA.n",
+                "`embed` reads a file named in the source — its path is a literal",
+            )
+        }
+        then "a climb past the root refuses at the literal" {
+            bundled_refusal(
+                "${lengths}const A: K = provided<K>(\"../outside/secret.txt\")\nA.n",
+                "`../outside/secret.txt` names a file outside it",
+            )
+        }
+    }
+}

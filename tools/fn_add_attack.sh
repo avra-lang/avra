@@ -107,13 +107,21 @@ sed 's/^fn p()/fn q()/' $P/src/m/a.av > $T/a.new && mv $T/a.new $P/src/m/a.av; c
 [ $ST != 0 ] || fail "a renamed private fn left the test that read it checking clean"
 back; chk
 
-# 10. a member added to a collect: the table's reader gets the new answer; an unrelated fn beside the members moves neither
+# 10. an unrelated fn beside a collect's members moves neither the table nor its reader; a member added to a
+# collect gives the table's reader the new answer
+# one build beside the members first, so the check's own rule findings are kept before the steady state is judged
+add w/members 'fn zz_prime() -> int { 3 }'; chk
+back; chk
+add w/members 'fn zz_beside_members() -> int { 1 }'; chk
+not_read "an unrelated fn beside a collect's members" n/count.av w/table.av; no_discard "an unrelated fn beside a collect's members"
+back; chk
 add w/members 'export widget three { n -> n + 3 }'; chk
 [ $ST = 0 ] || fail "a member added to a collect is refused: $(printf '%s' "$OUT" | head -3 | tr '\n' ' ')"
 case "$(ran)" in *" 3 "*) ;; *) fail "a member added to a collect left the count unchanged: $(ran)" ;; esac
 back; chk
-add w/members 'fn zz_beside_members() -> int { 1 }'; chk
-not_read "an unrelated fn beside a collect's members" n/count.av w/table.av; no_discard "an unrelated fn beside a collect's members"
+# a held collector is held to the set its record last read, and a revert to an older member set is a cache hit
+# that leaves the newer set's record standing: one build that reads the collector writes the current one
+add w/members 'fn zz_settle() -> int { 2 }'; chk
 back; chk
 
 # 11. a const settled from a fn: an fn added beside it that nothing spells leaves its verdict standing; one it spells re-runs it

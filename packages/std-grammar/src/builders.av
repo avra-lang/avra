@@ -19,6 +19,7 @@ use ast.{
     Build,
     BuildArg,
     Fixed,
+    Term,
     Expect,
     Recover,
     BranchStart,
@@ -44,10 +45,12 @@ export enum GrammarNode {
     NBuild(b: Build)
     NAnnot(an: PendingAnnot)
     NArg(a: BuildArg)
+    NTerm(t: Term)
     NAssoc(a: Assoc)
     /// One operator: its tokens, adjacent.
     NWord(w: List<string>)
     NTier(l: Tier)
+    NSuffix(x: Suffix)
 }
 
 /// A parsed-but-unattached annotation. Exists only between a branch's
@@ -100,9 +103,11 @@ impl GrammarNode {
     fn as_build() -> Build? { match self { .NBuild(b) -> b, _ -> null } }
     fn as_annot() -> PendingAnnot? { match self { .NAnnot(an) -> an, _ -> null } }
     fn as_arg() -> BuildArg? { match self { .NArg(a) -> a, _ -> null } }
+    fn as_term() -> Term? { match self { .NTerm(t) -> t, _ -> null } }
     fn as_assoc() -> Assoc? { match self { .NAssoc(a) -> a, _ -> null } }
     fn as_word() -> List<string>? { match self { .NWord(w) -> w, _ -> null } }
     fn as_tier() -> Tier? { match self { .NTier(l) -> l, _ -> null } }
+    fn as_suffix() -> Suffix? { match self { .NSuffix(x) -> x, _ -> null } }
 }
 
 /// List delivery for a repeated capture. A label repeated across a
@@ -147,8 +152,8 @@ fn token_texts<T>(lex: Lexeme<T>, v: Captured<T, GrammarNode>) -> Result<List<st
     .Ok([lex.text(want(tok_of(x), "a quoted operator")?) for x in as_list(v)?])
 }
 
-fn suffixes_of(words: List<string>, rules: List<string>) -> List<Suffix> {
-    [Suffix { word: words[i], rule: rules[i] } for i in 0..words.length]
+fn as_suffixes<T>(v: Captured<T, GrammarNode>) -> Result<List<Suffix>, string> {
+    .Ok([want(node_of(x)?.as_suffix(), "a suffix")? for x in as_list(v)?])
 }
 
 /// A tier's own build, when it writes one.
@@ -191,16 +196,57 @@ fn node_build<T>(owner: string, variant: string, written: List<BuildArg>) -> Res
 }
 
 fn fixed_arg(a: BuildArg) -> Result<Fixed, string> {
-    if a.fixed == null { return .Err(capture_is_not_an_argument(a.name)) }
-    .Ok(Fixed { name: a.name, text: a.fixed! })
+    let term? = a.term else { return .Err(capture_is_not_an_argument(a.name)) }
+    match term {
+        .Text(text) -> .Ok(Fixed { name: a.name, text: text }),
+        .Node(_) or .List(_) -> .Ok(Fixed { name: a.name, text: "", term: term }),
+    }
 }
 
 fn label_arg(a: BuildArg) -> Result<string, string> {
-    if a.fixed != null { return .Err(fixed_needs_a_node(a.name)) }
+    if a.term != null { return .Err(fixed_needs_a_node(a.name)) }
     .Ok(a.name)
 }
 
+/// A build argument: its name, and the term it states when it states one.
+fn arg_of<T>(lex: Lexeme<T>, args: List<Captured<T, GrammarNode>>) -> Result<
+    Captured<T, GrammarNode>,
+    string,
+> {
+    let n = tok_text(lex, args[0], "an argument name")?
+    let term: Term? = stated_term(args[1])?
+    ok<T>(GrammarNode.NArg(BuildArg { name: n, term: term }))
+}
+
+fn stated_term<T>(v: Captured<T, GrammarNode>) -> Result<Term?, string> {
+    match v {
+        .Absent -> .Ok(null),
+        .Terminal(_) or .Node(_) or .Many(_) -> .Ok(want(node_of(v)?.as_term(), "a stated term")?),
+    }
+}
+
+/// A term that is a build: a bare word reads as text, a node build is built
+/// in place, and a builder call has no payload to fill.
+fn term_of_build<T>(v: Captured<T, GrammarNode>) -> Result<Captured<T, GrammarNode>, string> {
+    let b = want(node_of(v)?.as_build(), "a build")?
+    match b {
+        .Var(name) -> ok<T>(GrammarNode.NTerm(Term.Text(name))),
+        .Node(_, _, _, _) -> ok<T>(GrammarNode.NTerm(Term.Node(b))),
+        .Call(name, _) -> .Err(term_calls_a_builder(name)),
+    }
+}
+
+fn term_of_list<T>(v: Captured<T, GrammarNode>) -> Result<Captured<T, GrammarNode>, string> {
+    let items = [want(node_of(x)?.as_term(), "a stated term")? for x in as_list(v)?]
+    ok<T>(GrammarNode.NTerm(Term.List(items)))
+}
+
 // ── Voices: what a build's own words refuse. ──
+
+/// A nested build constructs a NODE; a builder call has no payload to fill.
+fn term_calls_a_builder(name: string) -> string {
+    "`${name}(…)` calls a builder, and a stated payload is filled by a node (`Owner.Variant(…)`), a word, a literal or a list"
+}
 
 /// A node build's captures reach their payloads by LABEL, so a bare
 /// name in its argument list names nothing.
@@ -327,12 +373,6 @@ fn tok_text<T>(lex: Lexeme<T>, v: Captured<T, GrammarNode>, what: string) -> Res
     .Ok(lex.text(want(tok_of(v), what)?))
 }
 
-/// The token at `args[i]`'s text, or null when the capture is not one.
-fn opt_tok_text<T>(lex: Lexeme<T>, v: Captured<T, GrammarNode>) -> string? {
-    let t? = tok_of(v) else { return null }
-    lex.text(t)
-}
-
 /// The builder dispatch for the grammar DSL itself. Grammar values
 /// carry no spans, so the branch loc goes unused here. `lex` is `T`'s
 /// whole contract — this dispatch reads a captured token's text only
@@ -414,10 +454,13 @@ export fn grammar_build<T>(
                 .Node(_) or .Many(_) -> .Err("expected `(`"),
             }
         },
-        "build_arg" -> {
-            let n = tok_text(lex, args[0], "an argument name")?
-            ok<T>(GrammarNode.NArg(BuildArg { name: n, fixed: opt_tok_text(lex, args[1]) }))
+        "build_arg" -> arg_of(lex, args),
+        "term_build" -> term_of_build(args[0]),
+        "term_text" -> {
+            let text = tok_text(lex, args[0], "a literal")?
+            ok<T>(GrammarNode.NTerm(Term.Text(text)))
         },
+        "term_list" -> term_of_list(args[0]),
         "build_expect" -> {
             let token = tok_text(lex, args[0], "the expected token")?
             let msg = tok_text(lex, args[1], "the message")?
@@ -442,13 +485,29 @@ export fn grammar_build<T>(
         "build_operators" -> ok<T>(GrammarNode.NAnnot(PendingAnnot.AOperators(as_tiers(args[0])?))),
         "build_tier" -> {
             let a = want(node_of(args[0])?.as_assoc(), "an associativity")?
-            let sufs = suffixes_of(token_texts(lex, args[2])?, token_texts(lex, args[3])?)
-            let b = tier_build(args[4])?
+            let b = tier_build(args[2])?
             ok<T>(
                 GrammarNode
-                    .NTier(Tier { assoc: a, words: as_words(args[1])?, suffixes: sufs, build: b }),
+                    .NTier(
+                        Tier {
+                            assoc: a,
+                            words: as_words(args[1])?,
+                            suffixes: as_suffixes(args[3])?,
+                            build: b,
+                        },
+                    ),
             )
         },
+        "build_suffix" -> ok<T>(
+            GrammarNode
+                .NSuffix(
+                    Suffix {
+                        word: tok_text(lex, args[0], "a suffix operator")?,
+                        rule: tok_text(lex, args[1], "a suffix rule")?,
+                        build: tier_build(args[2])?,
+                    },
+                ),
+        ),
         "build_assoc_left" -> ok<T>(GrammarNode.NAssoc(Assoc.Left)),
         "build_assoc_single" -> ok<T>(GrammarNode.NAssoc(Assoc.Single)),
         "build_assoc_unmixed" -> ok<T>(GrammarNode.NAssoc(Assoc.Unmixed(tok_text(lex, args[0], "a refusal builder")?))),

@@ -111,7 +111,7 @@ spec "features/expr_spine (pipe)" {
             refusals("${law}xs |> grow(9)") == 1 && refusals("${law}grow(xs, 9)") == 1
         }
         then "a wrong value is refused at the value" {
-            report("fn dbl(n: int) -> int { n * 2 }\n\"s\" |> dbl") == "error[type.mismatch]: argument 1 of `dbl` wants `int`, found `string`\n  ╭─[<source>:2:1]\n2 │ \"s\" |> dbl\n  · ┬\n  · ╰── this is `string`\n──╯"
+            report("fn dbl(n: int) -> int { n * 2 }\n\"s\" |> dbl") == "error[type.mismatch]: argument 1 of `dbl` wants `int`, found `string`\n  ╭─[<source>:2:1]\n2 │ \"s\" |> dbl\n  · ┬\n  · ╰── this is `string`\n──╯\n  ╭─[<source>:2:1]\n2 │ \"s\" |> dbl\n  · ┬\n  · ╰── `\"s\" |> dbl` calls the stage with the piped value as its first argument\n──╯\nhelp: make the value `int`, or change the declaration that wants it"
         }
         then "a stage short of arguments counts the value" {
             refused_with("${fns}1 |> add", "`add` takes 2 arguments, found 1")
@@ -340,8 +340,8 @@ spec "features/expr_spine (pipe)" {
         then "a pipeline is its own canonical form" {
             canonical("let v = x |> f |> g(1, k: 2) |> a.m(3) |> a.n")
         }
-        then "a bare stage stays bare, and empty parentheses drop" {
-            canonical("x |> f") && projected("x |> f()") == "x |> f"
+        then "a stage prints as it was written" {
+            canonical("x |> f") && canonical("x |> f()")
         }
         then "pins keep their parentheses" {
             canonical("x |> ident<int>()")
@@ -364,7 +364,7 @@ spec "features/expr_spine (pipe)" {
         then "a `?` or `!` rides its stage" {
             canonical("let v = x |> f(1)?") &&
                 canonical("let v = x |> f? |> g!") &&
-                projected("let v = (x |> f)?") == "let v = x |> f?"
+                canonical("let v = (x |> f)?")
         }
         then "a looser left side keeps its group, a tighter one does not" {
             canonical("(a ?? b) |> f") &&

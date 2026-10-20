@@ -116,39 +116,68 @@ a bullet here.
 
 <!-- GENERATED:RULES:START -->
 - closures.pronoun_lambda A one-parameter lambda handed to a method call is `it` — the pronoun says the predicate and nothing else: no binder, no annotation, no arrow. THE ONE LAMBDA THAT STAYS: `it` binds at the NEAREST enclosing method call, so a parameter handed on to ANOTHER call's own arguments cannot be the pronoun — that is the language's own spelling; nor a block body, a nested lambda (any `->` inside reaches this the same way), or a body that already says `it`.
+- compiler.arm_end_raw `Ins.ArmEnd` emitted raw in a feature — `cx.arm_end` speaks it (the `if_start_raw` family).
+- compiler.bits_of_defaulted `(e).bits_of() ?? default` — a protocol read's absence is a defect (`cx.lower_defect`), never a plausible default (the `bool_of_defaulted` family).
 - compiler.bool_of_defaulted A payload the value-protocol dispatch GUARANTEES, papered over with a `??` default — absence here is a DEFECT the caller should speak (`cx.lower_defect(e, ...)`), never a plausible fallback. All six of core/protocol.av's projections (`bool_of`, `text_of`, `int_of`, `bits_of`, `elems_of`, `pairs_of`) are the same shape.
 - compiler.bracket_ritual A `push` held open across a stretch of work until a later `pop` on the same name — a bracket fn taking a thunk owns the pop on every path out, not just the one written.
 - compiler.bypass_outside_bracket A HOOK-FREE TABLE READ (features/bypass.av's `Bypassed`) called from outside its own bracket, or the method table's own CELL read past every wrapper's name. `sig_so_far`, `seat_written_so_far` and `inferred_errors_so_far` answer a fixpoint's table AS IT STANDS, mid-computation, and `registered_methods` a type's method table the same way — none of the four records a dependency, so each is safe only from inside the member that IS the computation trusted to see the table that way. THE CALLEE'S OWN NAME is held open (`${name}`, a text seat, never a held code position) so the four verbs are ONE arm sharing ONE bracket-lookup, over the one call shape a bypass takes whatever its arity — gating a NAMED wrapper alone would still leave `self.methods.get()` itself open to a new site reading it inline, so that raw field-then-`.get()` shape is a second arm over the SAME "methods" bracket. The declaration relation's two pinned handles (`decl_cells`, `decl_row_rows`) are that shape too, over the "decls" bracket: only `Decls`' own readers see its rows unrecorded.
 - compiler.cell_get_copy A `Cell` read out, written through, then stored back — `mut t = c.get()`, a write through `t` (`push`, `set_at`, `set`, `put`, `grow_to`, `pop`, a field write), then `c.set(t)` — copies what the cell holds on EVERY turn (spec 11.5: `get` answers a COPY). `Cell` exists to make mutation through sharing cheap, and when the loop is hot the copy is quadratic. Write in place through the cell's own verbs (`push`, `set_at`, `put`), or for a `SideTable` through core's `side_put`/`side_grow`, which DETACH the cell first (`c.set(t with { … })`) so nothing shares the box the write would copy whole. That detach is what the guard reads: a body storing the same cell with a `with` form is the in-place written shape, never this smell, and a store of any value but the very one `t` names never fires.
+- compiler.diagnostics_length_uncounted `a.diagnostics.length >= 1` — a refusal test counts: one mistake, one message, so `== 1` (the `uncounted_refusal` family).
+- compiler.diagnostics_uncounted `a.diagnostics >= 1` — a refusal test counts: one mistake, one message, so `== 1` (the `uncounted_refusal` family).
 - compiler.direct_test_workspace A test's workspace made through `new_workspace` stands beside every other one its suite makes, and its rows stand in the process until it is let go — ONE ONE-SHOT WORKSPACE IS ALIVE AT A TIME. `test_workspace(host, root)` (@std.avrac.testing) is the door that holds the law: the workspace made before it is let go.
 - compiler.duplicated_literal A struct literal written twice in one PRODUCT file, field for field — a fixture built by hand rather than named. Tests are exempt: a fixture built twice there is the test being explicit.
 - compiler.duplicated_message A long string literal written twice in one PRODUCT file — a message repeated rather than named. Guarded to a SHARED-SENTENCE shape (20+ characters, starting lowercase, the house style every diagnostic and fixture message already wears) so a short symbolic literal repeated by coincidence (a type name, a key) never fires; `fingerprint_siblings()` answers by STRUCTURE, never by re-reading `.text()`. Tests are exempt: a repeated fixture there is not a message that can drift.
+- compiler.elems_of_defaulted `(e).elems_of() ?? default` — a protocol read's absence is a defect (`cx.lower_defect`), never a plausible default (the `bool_of_defaulted` family).
 - compiler.emit_then_error `emit` immediately followed by `intern(Type.Error)` — the pair a typing law's refusal tail always ends with — is `spoken(d)`.
 - compiler.file_id_across_relation A PER-FILE id matched across a WHOLE relation store: a scan over `T.all(db)` — a comprehension's head, or a `find`/`any`/`all` call's subject — whose tests read a column typed `ExprId`, `StmtId`, `PatId` or `At` and no column typed `DeclId` or `FileId`. An arena id names a node only within its own file, and every file mints the same small numbers, so the match answers every file's node at that index. The honest scan narrows by a workspace-global column first — read through its `by_<column>` index, or test it beside the id.
 - compiler.filled_by_arena_count `hand_sized_index`'s sibling half of ONE idiom: a fact column SEEDED from an arena's own count — `filled(store.exprs.count(), null)` — rather than through `SideTable<V>`, which states the storage, the window, the growth and the out-of-window defect once. TWO ARMS, one shape: `filled(...)` and `filled<T>(...)` — a pinned type argument is a TYPE-seat hole (avra-8sb5.25.10), held open only so the SECOND arm's message can quote it back; the smell is the same either way, the first ARGUMENT ending in `.count()`.
 - compiler.fixed_tmp_path A test's fixed `/tmp/` path: two runs on one machine share it, so the second reads what the first left behind — a cache, a database, a built program. A test file that names a per-run base (a `stamp()` or `now_ns()` call, or a `*_base()` helper) owns its directory.
 - compiler.free_state_verb A VOCABULARY VERB written as a free fn taking a pass STATE first — `open_region(cx, c)`, `sig(ws, d)` — where the state's own impl IS its vocabulary, so the verb belongs there as a method (`cx.open_region(c)`, `ws.sig(d)`). A BARE-HOLE ROOT, structural GUARD (`Code.fn_params`, features/code.av, the same door `modified_copy_literal`/`one_body_arms` read a struct literal's fields and a `match`'s arms through): a param LIST has no fixed arity a quote pattern can spell, so only the FIRST param's own written type is asked, structurally, never bound through the pattern itself. THE REACH is the pass's own files — a `fn` declared directly under `features/` or `compiler/`, never one nested a directory deeper (`features/quote/lower.av`'s own dispatch targets stay free, `push_loop`'s same file-shape test).
 - compiler.hand_sized_index A fact column sized by hand, or an id read through an offset — `SideTable<V>` states the window, the growth and the out-of-window defect once: `side_table(name, lo, hi, seed)`, `get(id)`, `grow_to(n)`.
+- compiler.helpless_refusal A refusal that passes `null` for its help — a voice states what to do about the law it speaks. A seat that judges a value against its want words its refusal through `seat_mismatch`, which carries the conversion or what the seat needs; any other refusal writes its help.
+- compiler.helpless_warning `helpless_refusal`'s twin for a warning: it blocks nothing, and states no less.
 - compiler.host_asked_directly A `Host` question asked outside the door — `host.read(p)`, `.exists`, `.list`, `.is_dir`, `.stamp`, `.peek`, `.octets`, or a door verb (`.there`, `.listing`, `.spared_text`, `.spared_octets`) asked of the host itself — records nothing: what it answers is no input, no query that depends on it is ordered after it, and a workspace that lives across turns never reads it again. Ask a cell (`ws.there`, `ws.listing`, `ws.listed_text`). A driver's read that must see the disk as it is at that instant is licensed at its site, with that reason.
 - compiler.if_start_raw A region instruction emitted raw in a feature — the emission vocabulary (features/emit.av) speaks it: `open_region`, `arm_end`, `close_region`/`close_region_as`. The vocabulary's own file is exempt. Every `Ins` variant `open_region`'s family covers: `IfStart`, `ArmEnd`, `RegionEnd`, `LoopStart`, `LoopCond`, `LoopEnd`.
+- compiler.int_of_defaulted `(e).int_of() ?? default` — a protocol read's absence is a defect (`cx.lower_defect`), never a plausible default (the `bool_of_defaulted` family).
 - compiler.interned_int A structural type interned by hand where a type literal spells it — a scalar shape's own constructor call, held by hand instead of read off the surface syntax. The scalar shapes rewrite directly; the aggregate ones (`Opt`/`List`/`Map`/`Res`) carry an inner shape a rewrite cannot re-spell without re-deriving it (`intern(Type.Str)` vs `Type.Str` vs an already-bound `TypeId` all reach the same inner type by different routes), so they Say. core/types.av's own `interned`/`substituted` is the fold that GIVES a type literal its meaning, recursing through `intern(...)` by construction — the family's one exempt file, on every rule below: rewriting its OWN base case into `.type(T)` would call back into the fold this rule's rewrite exists to shortcut.
+- compiler.interned_list `r.intern(Type.List(…))` — a structural type is spelled, `r.type(List<T>)` (the `interned_int` family).
+- compiler.interned_map `r.intern(Type.Map(…))` — a structural type is spelled, `r.type(Map<K, V>)` (the `interned_int` family).
+- compiler.interned_opt `r.intern(Type.Opt(…))` — a structural type is spelled, `r.type(T?)` (the `interned_int` family).
+- compiler.interned_res `r.intern(Type.Res(…))` — a structural type is spelled, `r.type(Result<T, E>)` (the `interned_int` family).
+- compiler.interned_str `r.intern(Type.Str)` — a scalar type is spelled, `r.type(string)` (the `interned_int` family).
+- compiler.loop_cond_raw `Ins.LoopCond` emitted raw in a feature — `cx.loop_cond` speaks it (the `if_start_raw` family).
+- compiler.loop_end_raw `Ins.LoopEnd` emitted raw in a feature — `cx.loop_end` speaks it (the `if_start_raw` family).
+- compiler.loop_start_raw `Ins.LoopStart` emitted raw in a feature — `cx.loop_start` speaks it (the `if_start_raw` family).
 - compiler.modified_copy_literal A struct literal copying every other field from ONE subject — that is `with`. Guarded RULE-SIDE over `kids()` (`Expr.StructLit` has no fixed field count a quote pattern can spell): a field COPIES when its value is STRUCTURALLY `subject.<its own field name>` — a `Prop` node whose own name agrees, never a text guess (a compound value that merely ENDS in `.field`, `a.x + b.x`, is not a `Prop` and is refused before its "subject" is trusted). The rule fires only when AT LEAST TWO fields agree on ONE copied subject (the MOST-COPIED one, when more than one candidate appears) and at least one other field does not — a lone copy is too weak a signal. A field copying a DIFFERENT subject than the winner is read as "modified" too, same as one copying nothing at all — `with` only ever names ONE subject, so every other field is what it says explicitly, whatever its own value happens to look like. Narrower than the retired regex: no DECLARED-TYPE trace for the FIELDS (a coincidental `x.field` name match is accused too) — but the SUBJECT's own type IS asked (`same_type`), because `with` requires it: a subject typed differently from the literal being built merely SHARES some field names, and `subject with { … }` there is not a rewrite, it is a type error (`Parsed`'s `store`/ `stmts`/`source` read exactly like a `FileView`'s until the two are checked against each other).
 - compiler.one_body_arms Two ADJACENT `match` arms answering one IDENTICAL body — `or` joins their patterns (`.Struct(d, _) -> d`, `.Enum(d, _) -> d` is `.Struct(d, _) or .Enum(d, _) -> d`), since the alternatives may bind (every one binding the same names at the same types, F2039's law). GUARDED RULE-SIDE over `Code.arms()` (`Expr.Match` has no fixed arm count a quote pattern can spell): two sibling arms agree when neither carries a guard, their VALUE Codes are text-equal, and they BIND ALIKE — the same names, each at the type typing gave it on both arms (`ArmInfo.binds`). `.Text(p)` and `.Heading(p)` share a body's text while `p` wears two types, and `or` refuses that join; an arm typing never reached binds nothing it can vouch for, so it joins only when it binds no name at all.
+- compiler.pairs_of_defaulted `(e).pairs_of() ?? default` — a protocol read's absence is a defect (`cx.lower_defect`), never a plausible default (the `bool_of_defaulted` family).
 - compiler.raw_mint_emit_bin A register MINTED, then DEFINED by a raw `emit(Ins...)` a few statements later, outside the emission vocabulary itself — where a vocabulary verb mints and emits in ONE call (`cx.bin(sh, op, a, b)`, features/emit.av). THE MINT LAW ("a register is defined in the order it was minted") holds by CONSTRUCTION once the mint and the emit are one call; split across two statements, a refactor can separate them and the register defines out of order with nothing to catch it. `features/emit.av` is exempt — it IS the vocabulary these verbs collapse into, so its own bodies mint then emit by hand once, on purpose. Nine sibling rules, one per Ins variant a vocabulary verb covers (`CallRt`/`CallRtVoid` are `raw_rt_call`'s concern, never this one's; `FnAddr`, `ConstFloat` and a bare `Alloca` have no covering verb in any form, so there is nothing for a rule to measure there yet).
+- compiler.raw_mint_emit_call A register minted and emitted by hand as the `Call` shape — the emission vocabulary's one-call verb (`call`/`call_at`) does both (the `raw_mint_emit_bin` family).
+- compiler.raw_mint_emit_call_ptr A register minted and emitted by hand as the `CallPtr` shape — the emission vocabulary's one-call verb (`call_ptr_at`) does both (the `raw_mint_emit_bin` family).
+- compiler.raw_mint_emit_const_bool A register minted and emitted by hand as the `ConstBool` shape — the emission vocabulary's one-call verb (`const_bool_at`) does both (the `raw_mint_emit_bin` family).
+- compiler.raw_mint_emit_const_int A register minted and emitted by hand as the `ConstInt` shape — the emission vocabulary's one-call verb (`const_int_at`) does both (the `raw_mint_emit_bin` family).
+- compiler.raw_mint_emit_const_str A register minted and emitted by hand as the `ConstStr` shape — the emission vocabulary's one-call verb (`const_str_at`) does both (the `raw_mint_emit_bin` family).
+- compiler.raw_mint_emit_load A register minted and emitted by hand as the `Load` shape — the emission vocabulary's one-call verb (its covering verb) does both (the `raw_mint_emit_bin` family).
+- compiler.raw_mint_emit_pack A register minted and emitted by hand as the `Pack` shape — the emission vocabulary's one-call verb (`pack`) does both (the `raw_mint_emit_bin` family).
+- compiler.raw_mint_emit_un A register minted and emitted by hand as the `Un` shape — the emission vocabulary's one-call verb (`un`/`un_at`) does both (the `raw_mint_emit_bin` family).
 - compiler.raw_rt_call A runtime row named by a BARE STRING — `Ins.CallRt(dst, "avra_x", args)` / `Ins.CallRtVoid("avra_x", args)` — instead of through its GENERATED method (`cx.x(sh, args)`, features/rt.av, minted from `core/rt_namespace.av`'s projection of `rt_sigs()`). A row's method carries the row's own arity in its signature, so a misspelled row is the ordinary "no method" refusal at typing and a wrong seat count the ordinary fn-arity refusal; a bare string reopens both holes a typo can hide behind. Two files spell the string BY DESIGN and are exempt: `compiler/suite_entry.av` builds the TEST BINARY's own entry from its own separate row table, never `rt_sigs()`; `compiler/memory/memory.av` rewrites an ALREADY-LOWERED instruction's string field (the owned-twin substitution) — neither reads a row through `LowerCx`.
 - compiler.raw_rt_call_void The void twin — no `dst` to bind.
 - compiler.refusal_assembled A refusal assembled from `pointed`/`error_at` by hand — the one shape is `refusal(kind, at, message, label, help)`.
+- compiler.region_end_raw `Ins.RegionEnd` emitted raw in a feature — `cx.close_region` speaks it (the `if_start_raw` family).
 - compiler.repeated_projection The same method call computed twice on both sides of one `&&`/ `||` — `cx.shape_at(e) && cx.shape_at(e)` — where the second call answers exactly what the first already holds. Guarded by FINGERPRINT, so `cx.shape_at(e) && cx.shape_at(f)` (a different argument) never fires.
 - compiler.scope_enter_raw A raw scope bracket through a lowering context — the frame verbs (`scope_enter`/`scope_exit`, `seats_enter`/`seats_exit`, `arm_stmts`) are the spelling; a raw bracket is invisible to the `defer` frames. Their own implementation (compiler/lower/walk.av) is exempt.
+- compiler.scope_exit_raw `Ins.ScopeExit` emitted raw — `cx.scope_exit(r)` brackets a frame (the `scope_enter_raw` family).
 - compiler.seen_accumulator A `mut` list built to answer "have I seen this before" — a POSITION law once the whole list is already in hand: the first index a value occurs at is decided by `.index_of`, compared against the current one (`xs.index_of(x) < j`, over `enumerate`), which is what `duplicate_names` (features/contract.av) already reads instead of accumulating. `${..head}`/`${..body}` — a run hole (avra-8sb5.25.10) — is what lets this rule sit ANYWHERE in the enclosing block rather than only as its first statement.
 - compiler.stmt_index_walk A walk over a SyntaxArena's own statements BY INDEX — `for i in 0..store.stmts.count() { … }` — where `for s in store.stmt_ids()` hands the ids themselves, the thing every such walk actually wants. A BARE-HOLE ROOT, structural GUARD (`Code.for_range`, features/code.av, the same shape `loops.index_walk` reads its own range head off): the bound is `${owner}.stmts.count()` here rather than a list's `.length`. `core/store.av` is exempt — its own `stmt_ids()` IS this walk, the one place it is allowed to be spelled out.
 - compiler.str_grown_quadratically Text grown THROUGH A PLACE by `p = p + piece` — quadratic: a field is read out beside the value that holds it, so the text is never held alone and every turn copies it. A LOCAL `mut` grows in place (the memory pass hands the cell's text to the append), so a bare name is not this smell. Guarded to STRINGS ONLY — `n = n + 1` is an ordinary int accumulator.
+- compiler.text_of_defaulted `(e).text_of() ?? default` — a protocol read's absence is a defect (`cx.lower_defect`), never a plausible default (the `bool_of_defaulted` family).
 - compiler.uncounted_refusal A refusal asserted as `>= 1` — a cascade of five passes it just as easily as one; pin the count (`refused_with`, `refused_n`, or `== n`). Every receiver shape the tree has worn it in: `refusals(...)`, `.diagnostics`/`.diagnostics.length`, and `.voices.list.length`.
+- compiler.voices_uncounted `p.voices.list.length >= 1` — a refusal test counts: one mistake, one message, so `== 1` (the `uncounted_refusal` family).
 - enums.bool_variant_match A `match` answering only true/false, one arm a bare variant and the other the wildcard, is `is` — `x is .Ready`. THE ONE MATCH THAT STAYS: an `or`-run on the untested side (`.Narrow or .Ptr -> false`) spells a REGISTRY's remaining variants by NAME, so folding it to a boolean forgets the next one exactly as a catch-all would — the pattern's own WILDCARD seat (`_`, never an `or`-run) refuses that shape structurally, before any guard is asked.
 - enums.bool_variant_match_negated The arms-swapped twin: the bare variant answers `false`, the wildcard `true` — `!(x is .Ready)`.
 - fns.dead_parameter A parameter nothing reads — the signature lies about what the fn needs, and every call site carries the lie. `dead_params()` (features/code.av) already exempts a contract-bound member (a `trait` signature or an `impl Trait for` method — the TRAIT owns the seat count) and a bodiless declaration.
 - grammar_lit.comma_list_open A repeated comma list inside a `grammar { }` block with no trailing-comma option: CLAUDE.md's grammar law, `( "," x )*` ends `","?` before its closer, in every rule. A list that refuses the comma is a defect, not a style.
-- if_expr.when_ladder An if/else-if ladder of 3+ arms answering a value is `when`. The pattern's own three parts (`if`, `else if`, `else`) are the floor — "3+ arms" — and a LONGER chain nests the same shape one level down, so this rule fires again there rather than needing a pattern that spans every length: `Expr.If`'s own kids are three ExprIds fixed by arity, never a list a `${..}` run could span, so a chain of unbounded depth is read by RECURSING a bound Code, never by one wider pattern. THE FORM ITSELF excludes what the retired regex excluded by construction: a chain that answers VOID (used for its side effects, never its value) parses as `Stmt.IfStmt` — a different node kind by POSITION (avra-8sb5.25.21) — so it never reaches this pattern's `Expr.If` shape at all, and a bare two-arm `if … else …` (no `else if`) has no THIRD part to fill this pattern's own `else` seat.
+- if_expr.when_ladder An if/else-if ladder of 3+ arms answering a value is `when`. The pattern's own three parts (`if`, `else if`, `else`) are the floor — "3+ arms" — and a LONGER chain nests the same shape one level down, so this rule fires again there rather than needing a pattern that spans every length: `Expr.If`'s own kids are three ExprIds fixed by arity, never a list a `${..}` run could span, so a chain of unbounded depth is read by RECURSING a bound Code, never by one wider pattern. THE FORM ITSELF excludes what the retired regex excluded by construction: a chain that answers VOID (used for its side effects, never its value) keeps statement branches — blocks holding statements and no value — so it never matches this pattern's valued branches, and a bare two-arm `if … else …` (no `else if`) has no THIRD part to fill this pattern's own `else` seat.
 - impls.default_override An `impl Trait for T` method whose body is the trait's own DEFAULT body for that name, span-blind and with a written no-op (`nothing()`) elided on either side, is a copy: omitting it inherits the identical default (`Decls.defaulted`), so the override says nothing the trait does not already say.
 - let_stmt.unmutated_mut `mut` that nothing ever mutates — the reader is told to expect a change that never comes. `writes()` (features/code.av) already counts a place written through a call (`x.push(v)`), so this is stricter than a text scan: a local only ever READ, or handed where nothing writes back, is caught the same way a bare assignment's absence is.
 - lists.bool_comprehension_list A comprehension over a LIST folded to a bool is a SCAN — `xs.all(pred)` stops at the first answer and builds nothing, where `[e for j in src].all(it)` mints the whole list first. A comprehension with its own `if` filter is not yet reached (the subset today).
@@ -760,6 +789,38 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       tools/witness_parallel_build.sh reads mode and size in one `stat`
       while runs repeat, and a poller that read nothing is no witness.
       Not ratcheted: no grep tells a path others read from one nobody does.
+
+- http.snapshot_settle_act (unratcheted) A LOOP THAT MAY PARK ACTS ON A
+      SNAPSHOT, AND THE COLLECTION IS WRITTEN BEFORE THE FIRST PARK. A send,
+      an await or a channel op inside the loop lets other tasks run, so a
+      collection filtered or rewritten AFTER the loop by state those tasks
+      can change drops what changed meanwhile. server.av's old
+      `answered_lines` sent each ready reply and then kept the lines
+      whose reply was still null: a reply set while a send parked was
+      filtered out unsent, and its stream hung (h2c_client under
+      AVRA_SCHED_SEED=5, h2_stream_laws under 3). THE SMELL: a loop that
+      parks, followed by a filter of the same collection by a field the
+      parked work may set. THE IDIOM: take the snapshot, write the settled
+      collection, then act on the snapshot. pool.av's `reap` is the
+      exemplar: it reads `stale`, sets `kept` to the survivors, and only
+      then closes each stale carrier. Not ratcheted: no grep tells a park
+      from any other call.
+
+## A `Tasks` owner is JOINED at its scope's exit, a `List<Task>` is CANCELLED
+
+Two owners settle differently, and the difference is silent until a task
+is parked. A `List<Task<T>>` (or a bound task) is cancelled, then joined,
+at its scope's exit; a `Tasks` group is only JOINED, so a member parked
+in a wait nobody wakes holds the exit for ever (the runtime reports
+"every task is waiting — deadlock"). `packages/std-ui/src/native/sources.av`
+hit it: a worker's inner job outlived its loop until the worker cancelled
+the job itself (`run.cancel()` in the cut arm and the ended arm). The
+idiom: when a fn owns tasks through a `Tasks` group, every exit path of
+the fn gives each member a way to END — close its source, send its cut,
+or cancel it — because the group will not do it. Pick `Tasks` when the
+set must be handed to a helper; pick a local list when the exit should
+cancel for you. (Reported to CHANNELS as the join-without-cancel
+asymmetry.)
 
 ## A scan that ACCEPTS beside a parser that EXPLAINS
 
@@ -1882,28 +1943,43 @@ gets its tally where it is done, a row in the budget, and the ratchet holds it.
 
 ## A sugar keeps its node and answers for its meaning
 
-`~x` parses to `Bitnot { rewrite }`, not to its rewrite alone: the node
-is what the author wrote, `rewrite` (`x ^ -1`) is what it MEANS, minted
-with it and walked in its place (`kids() = [rewrite]`, typing answers
-`type_at(rewrite)`, lowering `reg_of(rewrite)`). Three facts hang off
-the pair, each read through ONE verb and never kept twice:
+`~x` parses to `Bitnot { value }` — exactly what the author wrote. What it
+MEANS is a template the node itself states, in its `NodeFacts`
+(core/expr/facts.av): `fn means() -> Rewrite? { quote { ${self.value} ^ -1 } }`.
+The holes are the node's own fields, read as arena ids, so the template is
+never run on a program's values. The language, which alone can read a
+template, opens the door (`compiler/sugars.av`): it parses the template
+once per process, keyed by its text, and splices a copy beside the sugar
+with the holes filled by the node's own ids — the same copier components
+use. `store.mean(sugar, note, door)` is the one call a builder and a template
+copy both make: a copy of a sugar RE-MINTS its meaning from the copied
+sugar and never copies it.
 
-- `store.mint_for(sugar, nodes, note)` — every minted node answers for
-  its sugar (`minted_for`), and the sugar says its meaning in one
-  sentence (`means_note`).
-- A refusal spoken while a minted node types carries that sentence as a
-  second frame at the sugar (`TypeCx.rewriting`, set in `type_node`) —
-  the rewrite's own words stay, the sugar says what it was.
+What `mean` records: the minted nodes answer for the sugar (`minted_for`), the
+root is `store.meant(e)`, and `note` is the one sentence that says what the
+sugar means.
+
+Walks go through ONE verb. `store.walked(e)` is the children a walk
+descends into — a sugar walks as its rewrite, every other node as its
+kids — and `store.heired(e)` the nodes a planted want flows into, by the
+same rule; `post_order`, typing's hunger and want, and lowering's inline
+test all read them, and no walker reads `meant` itself. `kids()` and
+`heirs()` stay derived over the node's own fields.
+
+- Typing answers `type_at(meant)`, lowering `reg_of(meant)`.
+- A refusal spoken while a minted node types carries the sentence as a
+  second frame at the sugar (`TypeCx.rewriting`, set in `type_node`) — the
+  rewrite's own words stay, the sugar says what it was.
 - `avra expand` prints the same sentence under the statement, and `fmt`
-  prints the node, so a sugar is no longer rewritten into its meaning
-  by the formatter.
-
-THE OPERAND IS HELD ONCE. `Bitnot { rewrite }` has no `value` field: a
-`~` is invertible, so its operand is read OFF the rewrite
-(`store.bitnot_operand`), and a copy in a template (`Rebuilder.minted_expr`)
-copies the rewrite once and re-links the copy's minted nodes and sentence
-to the copy's own sugar (`means_test.av` counts the operand's copies: one).
-A sugar that is NOT invertible keeps both fields and its rewrite is a
-DERIVED field — re-minted from the others at a splice, never copied —
-named once through the field-mark registry (`field_route`, next to
-`@local` and `@facet`), when the first such sugar lands.
+  prints the node, so a sugar is no longer rewritten into its meaning by
+  the formatter.
+- A language with no `quote` cannot read a template: its sugar stays
+  unmeant and says so (`language.defect`).
+- A meaning that depends on what stands around the sugar — a pipe into
+  whatever stage was written — is COMPUTED: the node answers
+  `minted(store, span)` instead of `means()`, through the same door.
+  `Pipe { value, stage }` keeps `value |> stage` as written, so the
+  printer prints it natively (no piped mark or walk remains,
+  and `x |> f()` stays as written) and the call it means is minted beside
+  it. A stage that is no call means nothing and is refused where it is
+  written.

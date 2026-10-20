@@ -3214,6 +3214,83 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### Interim record — a record literal has no field shorthand
+
+`Size { width, height }` for `Size { width: width, height: height }` is F0100 "expected BREAK
+while parsing `stmt`" at the `,`. The wanting site is `terminal.av`'s `sized(width, height)`,
+a helper that exists only to name the long spelling once (three sites built it by hand). It is
+the FIELD PUNNING entry above: the type-name lexical class is what it waits on.
+
+### Interim record — an `Int` has no `clamp`
+
+`x.clamp(lo, hi)` is spelled by hand as a `when` ladder (and was an `if`/`else if` chain
+the idiom ratchet refuses). Wanting sites: `terminal.av`'s `wheel` and `slid` (the window
+held inside the rows there are), both through its one `clamped(x, lo, hi)`; the same helper is
+written in `compiler/backend/interp_host.av` and `@std/compress`. The want: the method on `int`,
+and the three copies die.
+
+### Interim record — a quote wants a record literal over a computed field list
+
+`quote` builds a record only by a fixed field name (`seed with { ${fname}:
+${val} }`), so a derive over a plain record cannot spell "this record from
+one value per field". Two sites want it: `makers_derive.construction`, which
+builds an enum variant positionally (`.Ok(.${v}(${..args}))`) and so cannot
+make a record such as `TypeRef` from its labels, and `exemplar_derive`'s
+`field_sample`, which works around the same hole with a hand-written
+`codec_zero()` seed per type and one `with` per field — a second spelling of
+the type's fields. The want: `${t} { ${..entries} }`, each entry a `name:
+value` pair. It lets `@derive(Makes)` read a plain record's `t.fields`, which
+is what lets the six `type_expr` builders (and any later record target) die;
+`@local span` needs a `Slots.span_of()` beside it.
+
+Its other half is the presence read, designed and small: `Slot` (std-grammar
+`ast.av`) gains `Present(label)`, which the engine fills with a stated
+`true`/`false` terminal by whether the label captured (`executor.av`'s one
+`slot_value`), and node_grammar's `filling` emits it when the payload is
+`Bool` and its labelled item is a literal (`optional:"?"`, `dynamic:"dyn"`,
+`mutable:"mut"`). The rule decides it — no attribute, no sniffing the type
+— and `flag_of` already reads the stated word. Waits on the record maker,
+since no enum variant has a literal-bound bool without a hand builder.
+
+### Interim record — an arm that answers nothing has no spelling
+
+`_ -> {}` in a match arm is an EMPTY MAP, so beside a void arm the arms
+disagree (`type.match`, pinned in `features/expr_spine/tests/void_arm_test.av`);
+the only void arm is a block holding a statement (`{ let _ = 0 }`), which leaves
+a dead constant in the IR. The wanting site is a sugar's `means()` template —
+the elseless `if let`, whose rewrite is a `match` with a `_` arm answering
+nothing — which today has the node carry an empty block minted by its builder
+instead. The want: one spelling of an empty block in arm and expression
+position (`do {}` or a unit value), void by rule.
+
+### Interim record — a view reads a fetch as its Async, with no call
+
+`profile.state()` and `profile.value()` (`Fetch<T>`,
+`packages/std-ui/src/app/async.av`; read in every view that fetches) are
+the shortest forms the language allows, and two asks remove the
+parentheses and the `.state()`. (1) MATCHING A VALUE THROUGH ITS
+DESIGNATED PROJECTION (Scala's `unapply`, Rust's `Deref`): `match
+profile { .Loading -> …, .Ready(p) -> … }` sees the `Async` the type
+designates, so no view names the projection. (2) PROPERTY-STYLE
+ACCESSORS: a computed read with no parentheses (`profile.value`,
+`profile.is_loading`), which also reads right on every other
+state-shaped type.
+
+### Interim record — a task group wants to let go of a finished task
+
+`Tasks` (an owner a helper can be handed, `push`, `cancel`) lets
+`served` (`packages/std-ui/src/native/sources.av`) split into start,
+grow and sweep helpers, and `t.done` (a property) asks a task. What
+neither does is DROP a finished or cancelled task: a `List<Task>` write
+that replaces one is `type.task_escape`, and `Tasks` has no shed (the
+loopable group with a take is FLOW 04's D5). So `served` pools one WORKER
+per concurrently live job and runs each job inside it as an inner task a
+cut cancels, rather than reaping tasks. The want: `Tasks` reaping what
+has answered, so a loop that starts a task per job needs no pool. Also
+wanted: a handler reaching its app through the component context instead
+of the scoped `running()` binding, and work owned by a component instance
+rather than a control.
+
 ### Interim record — a bounded cleanup wants one phrase
 
 `flow.unbounded_cleanup` makes a `within` the only legal waiting cleanup,
@@ -3280,3 +3357,16 @@ filed. Both carry an `Example:` and a `Callsite:`.
   `Example: when { a is .V(r) -> r, _ -> 0 }`; `Callsite:` any scan
   that would rather choose than branch. To be filed as its own ask
   when the tasks server returns.
+
+### Deadline — the change log watches cells, never a whole collection
+
+A box is logged when a slot of it is written in place; length changes
+(`push`, `pop`, extend) and map writes are not slot writes. A Cell and
+a List are one native kind, so `avra_box_observe` cannot refuse a
+collection, and observing one directly misses those writes. Holds
+while the only box observed is a cell (std-ui's exact.av). Expires at
+the first consumer that watches a whole collection. Then: (A) touch
+every collection write (one inline byte compare per write, census it),
+or (D) a header bit set for `Type.Cell` boxes that observe requires.
+The evaluator's hooks mirror the law; flipping it flips both engines
+and the `files nothing` cases in `compiler/tests/changes_take_*`.

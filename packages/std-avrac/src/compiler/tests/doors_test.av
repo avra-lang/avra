@@ -1,0 +1,60 @@
+//! A run is billed for what it makes. Every call out of the evaluator into
+//! the compiler (`type_named`, `embed`) is a `*_door` verb that says whether
+//! the memory the compiler builds to answer is the run's, so the next
+//! callback cannot leak the compiler's own bytes into a derive's budget by
+//! being called raw. A raw call of a callback field outside a door is a line
+//! here.
+use @std.meta.{embed}
+
+const interp: string = embed("../backend/interp.av")
+
+/// A machine with a callback called raw beside one called through its door.
+const fixture: string = "type Machine = {\n    ask: fn(string) -> int,\n}\nimpl Machine {\n    fn ask_door(a: string) -> int { self.ask(a) }\n    fn sneaky(a: string) -> int { self.ask(a) + 1 }\n}\n"
+
+/// The callback fields of `Machine`: its `fn(...)` seats.
+fn callbacks(text: string) -> List<string> {
+    let lines = text.split("\n")
+    let head = lines.index_of("type Machine = {") ?? 0
+    let tail = lines.slice(head, lines.length).index_of("}") ?? 0
+    [seat(l) for l in lines.slice(head + 1, head + tail) if is_callback(l)]
+}
+
+fn is_callback(l: string) -> bool {
+    l.starts_with("    ") &&
+        !l.starts_with("     ") &&
+        !l.trim().starts_with("//") &&
+        l.contains(": fn(")
+}
+
+fn seat(l: string) -> string { l.trim().substring(0, l.trim().index_of(":")) }
+
+/// The method a line belongs to: the last `    fn name(` at or before it.
+fn owner_of(lines: List<string>, at: int) -> string {
+    let heads = [method_name(lines[j]) for j in 0..at + 1 if lines[j].starts_with("    fn ")]
+    heads.last() ?? ""
+}
+
+fn method_name(l: string) -> string {
+    let from = l.index_of("fn ") + 3
+    l.substring(from, l.index_of("("))
+}
+
+/// Every line that calls a callback outside a door.
+fn raw_calls(text: string) -> List<string> {
+    let lines = text.split("\n")
+    let seats = callbacks(text)
+    ["${owner_of(lines, i)}: ${l.trim()}" for i, l in lines if seats.any((s: string) -> l.contains("self.${s}(") || l.contains("(self.${s})(")) &&
+        !owner_of(lines, i).ends_with("_door")]
+}
+
+spec "compiler/backend — doors into the compiler" {
+    given "the evaluator's callbacks" {
+        then "the keeper looked at both of them" { callbacks(interp).contains("named") && callbacks(interp).contains("embed") }
+        then "each is called only through a door verb" { raw_calls(interp).is_empty() }
+    }
+    given "a callback called raw" {
+        then "is named, and the door beside it is not" {
+            raw_calls(fixture).length == 1 && raw_calls(fixture)[0].starts_with("sneaky")
+        }
+    }
+}

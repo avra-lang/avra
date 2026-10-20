@@ -4,7 +4,7 @@
 //! ones that grow with the tree are held as RATIOS to the program's size, so a
 //! ratchet can hold it where a clock cannot (tools/warm_edit_bench.sh, `check
 //! --counts`). A tally is process-wide and only grows.
-use @std.relation.engine.{queries_computed, whole_reads, whole_reads_by}
+use @std.relation.engine.{queries_computed, whole_reads, whole_reads_by, why_lines}
 use compiler.store.{store_rows_written}
 
 once fn loaded_tally() -> Cell<int> { Cell.new(0) }
@@ -16,6 +16,16 @@ once fn modules_tally() -> Cell<int> { Cell.new(0) }
 once fn files_tally() -> Cell<int> { Cell.new(0) }
 
 once fn typed_tally() -> Cell<int> { Cell.new(0) }
+
+once fn fallbacks_tally() -> Cell<int> { Cell.new(0) }
+
+once fn spells_tally() -> Cell<int> { Cell.new(0) }
+
+once fn rule_nodes_tally() -> Cell<int> { Cell.new(0) }
+
+once fn rule_ns_tally() -> Cell<int> { Cell.new(0) }
+
+once fn rule_runs_tally() -> Cell<int> { Cell.new(0) }
 
 fn bumped(tally: Cell<int>) { tally.set(tally.get() + 1) }
 
@@ -34,6 +44,21 @@ export fn work_file_minted() { bumped(files_tally()) }
 /// A body typed afresh, where a kept one did not stand.
 export fn work_typed() { bumped(typed_tally()) }
 
+/// A kept row judged by rebuilding its file's views, because a module it read moved or no stamp was kept.
+export fn work_judge_fallback() { bumped(fallbacks_tally()) }
+
+/// A file's spelled names asked whether they hold one name.
+export fn work_spell_lookup() { bumped(spells_tally()) }
+
+/// A node the rule pass visited.
+export fn work_rule_node() { bumped(rule_nodes_tally()) }
+
+/// Nanoseconds the rule pass took: a clock's reading, so reported and never gated.
+export fn work_rule_ns(ns: int) { rule_ns_tally().set(rule_ns_tally().get() + ns) }
+
+/// A rule tried at a node.
+export fn work_rule_run() { bumped(rule_runs_tally()) }
+
 /// The program's size, as the last check that derived it stood on it.
 once fn sizes_tally() -> Cell<List<int>> { Cell.new([0, 0, 0]) }
 
@@ -44,7 +69,7 @@ export fn work_sized(files: int, modules: int, decls: int) { sizes_tally().set([
 /// grows is not refused for doing more work on more program. 0 for no program.
 fn per_million(n: int, size: int) -> int { if size > 0 { n * 1000000 / size } else { 0 } }
 
-/// The run's counts as one line. The gated ones — `files_loaded`, `files_parsed`, `whole_reads`, and the
+/// The run's counts as one line. The gated ones — `files_loaded`, `files_parsed`, `whole_reads`, `judge_fallbacks`, and the
 /// `_ppm` ratios of work to program size — come first; `program_*` and the raw counts follow
 /// and are only reported (tools/work_ratchet.py).
 export fn work_counts() -> string {
@@ -53,9 +78,12 @@ export fn work_counts() -> string {
     let minted_modules = modules_tally().get()
     let queries = queries_computed()
     let rows = store_rows_written()
-    "counts: files_loaded=${loaded_tally().get()} files_parsed=${parsed_tally().get()} files_minted_ppm=${per_million(minted_files, size[0])} modules_minted_ppm=${per_million(minted_modules, size[1])} typed_computed_ppm=${per_million(typed_tally().get(), size[0])} queries_computed_ppm=${per_million(queries, size[2])} whole_reads=${whole_reads()} store_rows_ppm=${per_million(rows, size[2])} program_files=${size[0]} program_modules=${size[1]} program_decls=${size[2]} files_minted=${minted_files} modules_minted=${minted_modules} queries_computed=${queries} typed_computed=${typed_tally().get()} store_rows_written=${rows}"
+    "counts: files_loaded=${loaded_tally().get()} files_parsed=${parsed_tally().get()} files_minted_ppm=${per_million(minted_files, size[0])} modules_minted_ppm=${per_million(minted_modules, size[1])} typed_computed_ppm=${per_million(typed_tally().get(), size[0])} queries_computed_ppm=${per_million(queries, size[2])} whole_reads=${whole_reads()} judge_fallbacks=${fallbacks_tally().get()} store_rows_ppm=${per_million(rows, size[2])} program_files=${size[0]} program_modules=${size[1]} program_decls=${size[2]} spell_lookups=${spells_tally().get()} rule_nodes=${rule_nodes_tally().get()} rule_runs=${rule_runs_tally().get()} rule_ms=${rule_ns_tally().get() / 1000000} files_minted=${minted_files} modules_minted=${minted_modules} queries_computed=${queries} typed_computed=${typed_tally().get()} store_rows_written=${rows}"
 }
 
 /// Who read which whole relation, one line each, counted: the query open at the read (or none),
 /// then the relation it read all of, both by name. Reported beside the counts.
 export fn work_whole_reads() -> List<string> { whole_reads_by() }
+
+/// Why each query family recomputed, one line each: see the kernel's `why_lines`.
+export fn work_whys() -> List<string> { why_lines() }

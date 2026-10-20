@@ -143,6 +143,22 @@ spec "compiler/manifest" {
         then "an opt level outside the set" { speaks(packaged("[profile.release]\nopt_level = 7\n"), "manifest.bad_opt_level") }
         then "a profile name outside its charset" { speaks(packaged("[profile.Fast]\nopt_level = 2\n"), "manifest.bad_profile") }
         then "a line that is not TOML" { speaks(packaged("name\n"), "manifest.syntax") }
+        then "an unclosed header is one refusal — the missing `[package]` it swallowed stays unsaid" {
+            speaks("[package\nname = \"app\"\nversion = \"0.1.0\"\n", "manifest.syntax")
+        }
+        then "a header declared twice is one refusal — the second table's keys are not read" {
+            speaks(
+                "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[package]\nname = \"other\"\n",
+                "manifest.syntax",
+            )
+        }
+        then "an empty header is one refusal" { speaks("[]\nname = \"app\"\n", "manifest.syntax") }
+        then "an unclosed string is one refusal — the name it swallowed stays unsaid" {
+            speaks("[package]\nname = \"app\nversion = \"0.1.0\"\n", "manifest.syntax")
+        }
+        then "a key with no `=` is one refusal — the name it swallowed stays unsaid" {
+            speaks("[package]\nname \"app\"\nversion = \"0.1.0\"\n", "manifest.syntax")
+        }
     }
     given "[link] is typed — a dependency cannot spell a clang option" {
         then "objects, search and libs read as words" {

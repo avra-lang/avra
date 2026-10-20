@@ -55,10 +55,22 @@ fn declared_call(
     let picked = if choosing { chosen_member(cx, e, target, name, many, args) } else { cx.view.decls.method(decl, name) }
     let m? = picked else {
         if choosing { return cx.error_type }
-        return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name)
+        return form_refusal(cx, e, target, name) ?? no_such_method(
+            cx,
+            e,
+            target,
+            name,
+            members_of(cx, decl),
+        )
     }
     let found? = cx.view.decls.sig(m)?.fn_sig() else {
-        return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name)
+        return form_refusal(cx, e, target, name) ?? no_such_method(
+            cx,
+            e,
+            target,
+            name,
+            members_of(cx, decl),
+        )
     }
     // a member chosen at run answers what every member answers; its
     // arguments are judged as any call's, the `dyn` one as itself
@@ -93,7 +105,7 @@ fn static_call(
     let picked? = (if distinct_keys(cx, many) > 1 { chosen_member(cx, e, target, name, many, args, 0) } else { m }) else {
         return cx.error_type
     }
-    let found? = cx.view.decls.sig(picked)?.fn_sig() else { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name) }
+    let found? = cx.view.decls.sig(picked)?.fn_sig() else { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name, []) }
     let placed? = cx.placed(e, "${target}.${name}", picked, args, found.params) else { return cx.error_type }
     if placed.args.length != placed.wants.length { return wrong_static_arity(cx, e, target, name, placed.wants.length, placed.args.length) }
     for j, a in placed.args {
@@ -396,26 +408,43 @@ fn no_methods_here(mut cx: TypeCx, subject: ExprId, name: string) -> TypeId {
     let n = cx.name_at(subject)
     cx
         .spoken(
-            refusal(
-                "type.method",
-                cx.loc_of(subject),
-                "`.${name}(…)` calls a method, and `${n}` has none",
-                this_is(n),
-                "methods live on lists, maps, and declared types with an `impl`",
-            ),
+            cx
+                .nearest(
+                    refusal(
+                        "type.method",
+                        cx.loc_of(subject),
+                        "`.${name}(…)` calls a method, and `${n}` has none",
+                        this_is(n),
+                        "methods live on lists, maps, and declared types with an `impl`",
+                    ),
+                    subject,
+                    name,
+                    cx.answers_to(cx.type_at(subject)),
+                ),
         )
 }
 
-fn no_such_method(mut cx: TypeCx, e: ExprId, target: string, name: string) -> TypeId {
+/// The names a declared type's impls give it.
+fn members_of(cx: TypeCx, decl: DeclId) -> List<string> {
+    [cx.view.decls.decl(m).name for m in cx.view.decls.methods_of(decl)]
+}
+
+fn no_such_method(mut cx: TypeCx, e: ExprId, target: string, name: string, near: List<string>) -> TypeId {
     cx
         .spoken(
-            refusal(
-                "type.method",
-                cx.loc_of(e),
-                "`${target}` has no method `${name}`",
-                "called here",
-                "declare it — `impl ${target} { fn ${name}(…) -> … }`",
-            ),
+            cx
+                .nearest(
+                    refusal(
+                        "type.method",
+                        cx.loc_of(e),
+                        "`${target}` has no method `${name}`",
+                        "called here",
+                        "declare it — `impl ${target} { fn ${name}(…) -> … }`",
+                    ),
+                    cx.receiver_of(e),
+                    name,
+                    near,
+                ),
         )
 }
 
@@ -462,7 +491,7 @@ fn wrong_method_arity(
                 cx.loc_of(e),
                 "`${target}.${name}` takes ${counted(wants, "argument")} beside `self`, found ${found}",
                 "this call",
-                null,
+                "pass exactly that many — `avra docs ${target}.${name}` shows the signature",
             ),
         )
 }
@@ -529,16 +558,12 @@ fn wrong_method_argument(
     cx
         .emit(
             cx
-                .named_fix(
-                    refusal(
-                        "type.method",
-                        cx.loc_of(a),
-                        "argument ${j + 1} of `${target}.${name}` wants `${cx.view.types.name_of(want)}`, found `${n}`",
-                        this_is(n),
-                        null,
-                    ),
-                    want,
+                .seat_mismatch(
+                    "type.method",
+                    cx.loc_of(a),
                     a,
+                    "argument ${j + 1} of `${target}.${name}` wants `${cx.view.types.name_of(want)}`, found `${n}`",
+                    want,
                 ),
         )
 }
@@ -734,7 +759,7 @@ fn derive_shape(mut cx: TypeCx, m: DeclId) {
                 member_loc(cx, m),
                 "a trait's `derive` answers the declarations it makes",
                 "declared here",
-                "take the declaration (`t: Type`, `f: Fn` or `n: Named`) and answer `List<Directive>`, or `Declared` when it also has problems to speak, as a `static fn`",
+                "take the declaration (`t: Type`, `f: Fn` or `n: Named`) and answer `List<Directive>` (or `Declared`) as a `static fn`",
             ),
         )
 }

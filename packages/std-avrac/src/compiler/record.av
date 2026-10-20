@@ -13,6 +13,7 @@
 use @std.text.{parse_int}
 use core.{
     CollectKind,
+    CollectScope,
     Plain,
     wire_fields,
     some_list,
@@ -36,6 +37,7 @@ use core.{
 }
 use features.{
     implements_kind,
+    admits_package,
     ExternNote,
     DeclSig,
     DeclFacts,
@@ -74,6 +76,9 @@ export fn sig_producer() -> Producer {
             code_hash(held_sig_verified),
             code_hash(keep_interfaces),
             code_hash(record_cached),
+            code_hash(producers_of),
+            code_hash(producers_text),
+            code_hash(producers_read),
             code_hash(iface_of),
             code_hash(doc_of_wire),
         ],
@@ -452,7 +457,7 @@ fn named_file(line: string) -> string {
 export fn facts_block(f: DeclFacts) -> string {
     let slo = f.span?.lo ?? 0 - 1
     let shi = f.span?.hi ?? 0 - 1
-    let head = "${if f.external { "1" } else { "0" }};${if f.stat { "1" } else { "0" }};${if f.is_grammar { "1" } else { "0" }};${slo};${shi};${list_field(f.tparams)};${list_field(f.bounds)};${list_field(f.seats)};${list_field(f.host)};${if f.annotated { "1" } else { "0" }};${f.of};${if f.is_component { "1" } else { "0" }};${if f.instance { "1" } else { "0" }};${list_field(f.mut_seats)};${list_field(some_list(f.word))};${list_field(f.trait_args)};${if f.hosted { "1" } else { "0" }};${f.fingerprint()}"
+    let head = "${if f.external { "1" } else { "0" }};${if f.stat { "1" } else { "0" }};${if f.is_grammar { "1" } else { "0" }};${slo};${shi};${list_field(f.tparams)};${list_field(f.bounds)};${list_field(f.seats)};${list_field(f.host)};${if f.annotated { "1" } else { "0" }};${f.of};${if f.is_component { "1" } else { "0" }};${if f.instance { "1" } else { "0" }};${list_field(f.mut_seats)};${list_field(some_list(f.word))};${list_field(f.trait_args)};${if f.hosted { "1" } else { "0" }};${f.variadic ?? 0 - 1};${f.fingerprint()}"
     packed([head, doc_wire(f.doc), annotations_wire(f.annotations)])
 }
 
@@ -587,9 +592,10 @@ export fn facts_unblocked(block: string) -> DeclFacts? {
     let top = unpacked(block)
     if top.length < 3 { return null }
     let p = wire_fields(top[0], ";")
-    if p.length < 18 { return null }
+    if p.length < 19 { return null }
     let slo? = wire_number(p[3]) else { return null }
     let shi? = wire_number(p[4]) else { return null }
+    let seat? = wire_number(p[17]) else { return null }
     let facts = DeclFacts {
         external: p[0] == "1",
         stat: p[1] == "1",
@@ -607,10 +613,11 @@ export fn facts_unblocked(block: string) -> DeclFacts? {
         word: read_list(p[14]).first(),
         trait_args: read_list(p[15]),
         hosted: p[16] == "1",
+        variadic: if seat < 0 { null } else { seat },
         doc: doc_of_wire(top[1]),
         annotations: annotations_of_wire(top[2]),
     }
-    if "${facts.fingerprint()}" != p[17] { return null }
+    if "${facts.fingerprint()}" != p[18] { return null }
     facts
 }
 
@@ -619,6 +626,8 @@ export fn facts_unblocked(block: string) -> DeclFacts? {
 export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>) {
     mut seen_moved = false
     for m in modules {
+        // a module none of whose files this attempt read has its lines carried forward whole
+        if !ws.module_files(m).any((path) -> ws.read_here(path)) { continue }
         let prior = record_cached(ws, store, m)
         let made = ws.record_of(store, m)
         // a record is keyed by its module's NAME: a write is owed when its words moved
@@ -627,6 +636,7 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
             ws.db.insert_sig(store, ws.record_bodies().key(m.text(), iface), made)
             ws.db.insert_sig(store, ws.record_key(m), iface)
             record_known(ws, m, made)
+            ws.keep_producers(store, m, iface)
             if seen_part(made) != seen_part(prior) { seen_moved = true }
         }
     }
@@ -665,7 +675,15 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
 /// `.Builtin` is: nothing lowers a module that was not read. The day something does, these
 /// rows are lies.
 export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) {
-    load_named(ws, store, m, ws.module_files(m), entry, want)
+    load_named(ws, store, m, ws.module_files(m), entry, want, true)
+}
+
+/// THE SAME WALK, NAMES ONLY: every file registered and every module's impl/trait names indexed,
+/// so a by-name ask can answer — but no interface loaded, no file met, nothing held. What an
+/// on-demand load reads the store for before it decides which modules to load for real.
+// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
+export fn bare_interface(ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) {
+    load_named(ws, store, m, ws.module_files(m), entry, want, false)
 }
 
 /// THE FILES OF `m` A PATH NAMES, met under `m`'s record: the record is loaded once,
@@ -680,6 +698,7 @@ fn load_named(
     named: List<string>,
     entry: string?,
     want: Want,
+    meet: bool,
 ) {
     let key = ws.record_key(m)
     let first = ws.records.loaded_records.get().get(key) == null
@@ -687,26 +706,12 @@ fn load_named(
     // A MODULE HELD NOTHING FOR IS READ, and a read file is one the workspace MET:
     // a module whose importers are all held is met nowhere else, and a file never
     // met is neither parsed nor linked.
-    let text = record_cached(ws, store, m)
-    if text == "" {
+    let pr? = ws.producers_for(store, m) else {
         ws.met_all(named)
         return
     }
-    let fields = record_fields(ws, store, m)
-    // FAIL CLOSED: a record the decoder cannot rebuild WHOLE holds NOTHING, and
-    // its files parse. A partial hold is how a declaration goes missing — the
-    // cache must be a miss rather than a lie.
-    //
-    // AND A RECORD NAMING A FILE THE MODULE NO LONGER HAS is a previous tree's: minting
-    // its declarations asks the host for a source that is gone.
-    //
-    // EITHER WAY THE REFUSAL SPEAKS: a module refused whole is not a module
-    // "never asked about" — every file it would have held answers `read_files`
-    // with the one declaration (or the one stray file) that made the record
-    // short, so the refusal names itself instead of reading as "no reason
-    // recorded" at every file it would have covered.
     let here = ws.module_files(m)
-    let why = record_fault(ws, key, fields, here)
+    let why = fault_of(pr, here)
     if why != "" {
         if first {
             ws
@@ -723,19 +728,26 @@ fn load_named(
         ws.met_all(named)
         return
     }
-    if first { load_imports(ws, store, m, fields, entry, want) }
+    if first { load_imports(ws, store, pr, entry, want, meet) }
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
     // this same module finds it.
-    let places = record_places(ws, store, m)
     // A FILE THE RECORD PLACES IS MET WITH THE FILES NAMED: registering one file of a
     // directory registers them all, and a registered file never met is asked no hold —
     // it parses on every run, whatever moved.
-    for f in named.concat([f for f in here if places.get(f) != null && !named.contains(f)]) {
-        if ws.records.met_files.get().get(f) == null {
-            ws.records.met_files.put(f, true)
-            meet_file(ws, store, m, f, places.get(f), entry, want)
+    for f in named.concat([f for f in here if pr.placed.contains(f) && !named.contains(f)]) {
+        if ws.records.met_files.get().get(f) != null { continue }
+        // ON-DEMAND: a names-only walk registers the file so the program is whole,
+        // and leaves its interface to the module a suspect asks for.
+        if !meet {
+            let _ = ws.registered(f)
+            continue
         }
+        ws.records.met_files.put(f, true)
+        meet_file(ws, store, m, f, record_places(ws, store, m).get(f), entry, want)
     }
+    // A NAMES-ONLY WALK REGISTERS THE MODULE'S OTHER FILES TOO: one the record never placed
+    // is one the module gained, and it is read.
+    if !meet { for f in here { if !pr.placed.contains(f) && ws.reads_as_source(f) { let _ = ws.registered(f) } } }
     // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
     // pass only REMEMBERS the module for the shape pass. One parser, one minter.
 }
@@ -743,67 +755,21 @@ fn load_named(
 /// WHAT A MODULE'S RECORD SEES, loaded before its own files are met: the prelude, every
 /// import under the record that keeps it, and where its impls and traits are named.
 // LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
-fn load_imports(
-    ws: Workspace,
-    store: Store,
-    m: ModulePath,
-    fields: List<List<string>>,
-    entry: string?,
-    want: Want,
-) {
+fn load_imports(ws: Workspace, store: Store, pr: Producers, entry: string?, want: Want, meet: bool) {
     // every module sees the prelude and none imports it
     ws.ensure_package(prelude_key)
-    load_interface(ws, store, prelude_module(), entry, want)
-    for parts in fields {
+    load_named(ws, store, prelude_module(), ws.module_files(prelude_module()), entry, want, meet)
+    for parts in pr.walk {
         if parts[0] == "import" {
             // the ROOT module's name is empty, and `split` drops a trailing empty field
             let imp = module_path(if parts.length > 1 { parts[1] } else { "" }.split("."))
             let key = imp.package()
             if key != null { ws.ensure_package(key!) }
-            for owner in ws.record_modules(imp) { load_named(ws, store, owner, ws.module_files(imp), entry, want) }
+            for owner in ws.record_modules(imp) { load_named(ws, store, owner, ws.module_files(imp), entry, want, meet) }
         }
-        if parts[0] == "gathers" { load_gathered(ws, store, parts, entry, want) }
+        if parts[0] == "gathers" { load_gathered(ws, store, parts, entry, want, meet) }
     }
-    note_producers(ws, m, fields)
-}
-
-/// THE PRODUCER INDEX: every declaration NAME, WORD and MARK a held
-/// module's record lines carry, each extern it declares and each file's re-exports — filed while the record
-/// is read for its names alone, so a bucket reader can mint the modules that would file a
-/// row there BEFORE its own read. The fields are the ones `read_row` and `facts_unblocked`
-/// already decode, so nothing is parsed a second time.
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a module and its record lines in.
-export fn note_producers(ws: Workspace, m: ModulePath, fields: List<List<string>>) {
-    for parts in fields {
-        if !declares(parts) { continue }
-        let row? = read_row(parts) else { continue }
-        let f? = facts_unblocked(row.facts) else { continue }
-        filed_under(ws.hold.named_by, row.name, parts[1])
-        if f.word != null { filed_under(ws.hold.worded_by, f.word!, parts[1]) }
-        for a in f.annotations { filed_under(ws.hold.marked_by, a.name, parts[1]) }
-        if f.external {
-            ws
-                .hold
-                .externed_by
-                .push(
-                    ExternNote {
-                        module: m.text(),
-                        path: row.path,
-                        name: row.name,
-                        hosted: f.hosted,
-                    },
-                )
-        }
-        let kind? = declared_kind(row.shape, row.kind) else { continue }
-        if implements_kind(kind) && !ws.hold.typed_by.get().contains(parts[1]) { ws.hold.typed_by.push(parts[1]) }
-        if records_cancel(kind) && row.reach().links { ws.hold.linked_by.set(distinct(ws.hold.linked_by.get().concat([parts[1]]))) }
-    }
-    for path in distinct([p[1] for p in fields if p.length >= 5 && p[0] == "reexport"]) { ws.hold.reexports.put(path, reexports_in(fields, path)) }
-}
-
-/// One file filed under a value in a producer map, once.
-fn filed_under(map: Cell<Map<string, List<string>>>, value: string, path: string) {
-    map.put(value, distinct((map.get().get(value) ?? []).concat([path])))
+    note_producers(ws, pr)
 }
 
 /// A PACKAGE A HELD `collect` GATHERS WHOLE, met module by module under each one's own
@@ -811,7 +777,14 @@ fn filed_under(map: Cell<Map<string, List<string>>>, value: string, path: string
 /// beside the ones its imports reach. What the collector gathered is held to the set
 /// its record names, judged once the program is analysed (`gathered_moved`).
 // LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a package in.
-fn load_gathered(ws: Workspace, store: Store, parts: List<string>, entry: string?, want: Want) {
+fn load_gathered(
+    ws: Workspace,
+    store: Store,
+    parts: List<string>,
+    entry: string?,
+    want: Want,
+    meet: bool,
+) {
     if parts.length < 3 {
         ws.defect(gathers_collectorless())
         return
@@ -820,9 +793,13 @@ fn load_gathered(ws: Workspace, store: Store, parts: List<string>, entry: string
         ws.defect(gathers_unadmitted(parts[1]))
         return
     }
-    let files = gathered_files(ws, pkg.src)
-    for m in [module_path(name.split(".")) for name in distinct([ws.module_of(path) for path in files])] { load_named(ws, store, m, ws.module_files(m), entry, want) }
-    let held? = held_gather(parts, relative_path(ws.root, pkg.src)) else {
+    let line = held_gather(parts, relative_path(ws.root, pkg.src))
+    // an import closure's members are whatever the program's imports reach: no package is loaded for it
+    if line == null || admits_package(line!.gathering.scope) {
+        let files = gathered_files(ws, pkg.src)
+        for m in [module_path(name.split(".")) for name in distinct([ws.module_of(path) for path in files])] { load_named(ws, store, m, ws.module_files(m), entry, want, meet) }
+    }
+    let held? = line else {
         ws.hold.read_with.push(parts[2])
         ws.hold.read_seeds.push(ReadFile { path: parts[2], why: Reads.GathersUnread })
         return
@@ -837,10 +814,11 @@ fn held_gather(parts: List<string>, package: string) -> HeldGather? {
     let kind? = kind_of_words(parts[3], parts[4]) else { return null }
     let order? = hex_fields_of(parts[5]) else { return null }
     let plans? = plans_of(parts[6]) else { return null }
+    let scope? = scope_of_word(if parts.length > 8 { parts[8] } else { "package" }) else { return null }
     HeldGather {
         collector: parts[2],
         package: package,
-        gathering: Gathering { kind: kind, order: [Plain(o) for o in order], plans: plans },
+        gathering: Gathering { kind: kind, scope: scope, order: [Plain(o) for o in order], plans: plans },
         digest: parts[7],
     }
 }
@@ -860,6 +838,7 @@ fn gathers_line(key: string, path: string, g: Gathering, set: string) -> string 
                     hex_fields(["${o}" for o in g.order]),
                     hex_fields([hex_fields(plan_words(p)) for p in g.plans]),
                     set,
+                    scope_word(g.scope),
                 ],
             ),
         "\t",
@@ -909,6 +888,21 @@ fn kind_words(kind: CollectKind) -> List<string> {
         .Component(w) -> ["component", w],
         .UnknownKind(w) -> ["unknown", w],
     }
+}
+
+/// The scope a `gathers` line holds its collect to, as its last field.
+fn scope_word(scope: CollectScope) -> string {
+    match scope {
+        .Self -> "self",
+        .Package -> "package",
+        .Closure -> "closure",
+        .UnknownScope(_) -> "unknown",
+    }
+}
+
+/// `scope_word` read back; null for a word no scope writes, and for the two a line never holds.
+fn scope_of_word(word: string) -> CollectScope? {
+    match word { "package" -> CollectScope.Package, "closure" -> CollectScope.Closure, _ -> null }
 }
 
 /// `kind_words` read back; null for words no kind writes.
@@ -1036,28 +1030,6 @@ fn read_why(
     if !ws.const_rows_ready(store, m, f, rows) { return Reads.Consts }
     if !holdable(rows) { return Reads.Unholdable }
     null
-}
-
-/// A MODULE'S RECORD FAULT — "" when the record is whole, else the one reason
-/// its decoder refused it — read once per build: the scan walks the record's
-/// every line against the module's own files, and a module reached by several
-/// importers would repeat it at each, so the answer is kept under the record's key.
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a record key and its fields in.
-fn record_fault(ws: Workspace, key: string, fields: List<List<string>>, here: List<string>) -> string {
-    let known: string? = ws.records.record_fault.get().get(key)
-    if known != null { return known! }
-    let made = record_fault_of(fields, here)
-    ws.records.record_fault.put(key, made)
-    made
-}
-
-/// The reason a record's lines cannot be rebuilt whole, or "" when they can.
-fn record_fault_of(fields: List<List<string>>, here: List<string>) -> string {
-    let incomplete = record_complete(fields)
-    if incomplete != null { return incomplete! }
-    let stray = fields.find((parts) -> declares(parts) && !here.contains(parts[1]))
-    if stray == null { return "" }
-    "names `${stray![1]}`, which the module no longer has"
 }
 
 /// WHETHER A RECORD'S LINES FOR A FILE WERE WRITTEN FROM THIS TEXT. A record is kept
@@ -1259,17 +1231,13 @@ export fn module_bytes(ws: Workspace, m: ModulePath) -> string {
 /// A record that places a file the host no longer has is a previous tree's, and
 /// keys on the module's bytes like no record at all.
 export fn bytes_key(ws: Workspace, store: Store, m: ModulePath) -> string {
-    if !record_stands(ws, store, m) { return module_bytes(ws, m) }
+    let row = ws.producers_in(store, m)
+    if !row.placed.all((path) -> ws.there(path)) { return module_bytes(ws, m) }
+    if !row.files.is_empty() && row.files.all(it.length > 4) { return ifaces_digest([l[4] for l in row.files]) }
     iface_of(record_cached(ws, store, m)) ?? sub_module_bytes_key(ws, store, m) ?? module_bytes(
         ws,
         m,
     )
-}
-
-/// Whether every file a module's record places is one the host still has.
-// LICENSED compiler.free_state_verb: a KEY DERIVATION's guard — a workspace, a store and a module in.
-fn record_stands(ws: Workspace, store: Store, m: ModulePath) -> bool {
-    record_fields(ws, store, m).all((p) -> !places_file(p) || ws.there(p[1]))
 }
 
 /// Whether a record line is a `file` line naming a path.
@@ -1298,10 +1266,10 @@ fn sub_module_bytes_key(ws: Workspace, store: Store, m: ModulePath) -> string? {
 // LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace, a module and its files in, their interface digest out.
 fn files_iface(ws: Workspace, store: Store, m: ModulePath, paths: List<string>) -> string? {
     if paths.is_empty() || paths.any((f) -> !ws.there(f)) { return null }
-    let places = record_places(ws, store, m)
-    let ats = [places.get(f) for f in paths]
-    if ats.any((at: Placed?) -> at == null || at!.file.length <= 4) { return null }
-    ifaces_digest([at!.file[4] for at in ats])
+    let columns = ws.file_columns(store, m)
+    let ats = [columns.get(f) for f in paths]
+    if ats.any((at: List<string>?) -> at == null || at!.length <= 4) { return null }
+    ifaces_digest([at![4] for at in ats])
 }
 
 /// Files' interface digests as one — in name order, so the order they were asked in is no part of it.
@@ -1337,14 +1305,14 @@ type FnForm = { name: string, form: string }
 /// module seen, and the plain free fns by name. `whole` when a file of the view carries no digest.
 export type NarrowIndex = { whole: bool, globals: List<string>, alone: List<string>, named: Map<string, List<NamedForm>> }
 
-/// WHETHER A RECORD LINE IS A PLAIN FREE FN: reached by its name and by nothing else — not a
+/// WHETHER A RECORD LINE IS A PLAIN FREE FN OR CONST: reached by its name and by nothing else — not a
 /// method, a nested or generated declaration, an annotated one a collect gathers, a component
 /// or an instance, a host or external one, a static one.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a record line's fields in, whether a name alone reaches it.
-fn plain_fn(p: List<string>) -> bool {
+fn named_alone(p: List<string>) -> bool {
     if p.length < 13 ||
-        p[0] != "fn" ||
-        p[6] != "fn" ||
+        p[0] != "fn" && p[0] != "const" ||
+        p[6] != p[0] ||
         !p[7].is_empty() ||
         p[8] != "-1" ||
         p[11] != "1" {
@@ -1368,7 +1336,7 @@ fn plain_fn(p: List<string>) -> bool {
 fn global_digest(lines: List<string>) -> string {
     digest_of(
         joined(
-            sorted_texts([placed_form(unordered(l)) for l in lines if !plain_fn(l.split("\t"))]),
+            sorted_texts([placed_form(unordered(l)) for l in lines if !named_alone(l.split("\t"))]),
             "\n",
         ),
     )
@@ -1504,7 +1472,7 @@ impl Workspace {
     fn seen_by_name(store: Store, m: ModulePath, path: string) -> List<SeenPart> {
         let whole = self.view_parts(store, m)
         let index? = self.keys.view_index.get().get(m.text()) else { return whole }
-        let columns = record_places(self, store, m).get(path)?.file ?? []
+        let columns = self.file_columns(store, m).get(path) ?? []
         if index.whole || columns.length < 7 || columns[5] == "" { return whole }
         let buckets: Cell<Map<string, List<string>>> = Cell.new({})
         for name in columns[5].split(",") {
@@ -1525,12 +1493,23 @@ impl Workspace {
 
     /// A file's plain free fns, each with its form — remembered for the build, since every
     /// module that reaches the file asks for them; cleared with the view they feed.
-    fn file_fns(f: string, fields: List<List<string>>, p: Placed) -> List<FnForm> {
+    fn file_fns(store: Store, m: ModulePath, f: string) -> List<FnForm> {
         let known = self.keys.file_fns.get().get(f)
         if known != null { return known! }
-        let made = [FnForm { name: fields[j][5], form: placed_form(joined(fields[j], "\t")) } for j in p.lo..p.hi if j < fields.length && plain_fn(fields[j])]
-        self.keys.file_fns.put(f, made)
-        made
+        let by: Cell<Map<string, List<FnForm>>> = Cell.new({})
+        for l in (self.forms_at(store, m) ?? "").split("\n") {
+            let q = l.split("\t")
+            if q.length == 3 { by.put(q[0], (by.get().get(q[0]) ?? []).concat([FnForm { name: q[1], form: q[2] }])) }
+        }
+        for path in self.producers_in(store, m).placed { self.keys.file_fns.put(path, by.get().get(path) ?? []) }
+        self.keys.file_fns.get().get(f) ?? []
+    }
+
+    /// Each file a module's record places, with the columns of its `file` line.
+    fn file_columns(store: Store, m: ModulePath) -> Map<string, List<string>> {
+        let by: Cell<Map<string, List<string>>> = Cell.new({})
+        for line in self.producers_in(store, m).files { by.put(line[1], line) }
+        by.get()
     }
 
     /// The narrowed view of a module: for each module it sees, in `view_parts` order, the digest
@@ -1542,20 +1521,19 @@ impl Workspace {
         for i, dep in deps {
             let at = module_path(dep.split("."))
             let files = if dep == m.text() { self.module_files(m) } else { r.files_of(dep) }
-            let places = record_places(self, store, at)
-            let fields = record_fields(self, store, at)
+            let columns = self.file_columns(store, at)
             mut digests: List<string> = []
             for f in files {
-                let p? = places.get(f) else {
+                let p? = columns.get(f) else {
                     whole = true
                     continue
                 }
-                if p.file.length < 7 || p.file[6] == "" || !self.there(f) {
+                if p.length < 7 || p[6] == "" || !self.there(f) {
                     whole = true
                     continue
                 }
-                digests.push(p.file[6])
-                for entry in self.file_fns(f, fields, p) {
+                digests.push(p[6])
+                for entry in self.file_fns(store, at, f) {
                     named
                         .put(
                             entry.name,
@@ -1594,7 +1572,7 @@ impl Workspace {
             late: [],
         }
         for d in sees { r.sees.set(d, true) }
-        for p in record_fields(self, store, m) { if is_ref_row(p) && !names_builtin(p) { r.add(ref_target(p)) } }
+        r.add_all(self.reach_refs(store, m))
         // a name reached through a re-export references its original's file, so the
         // file that re-exports it is reached too: re-pointing the name moves that file
         r.add_all(flatten([self.reexporting_files(store, d) for d in sees]))
@@ -1632,21 +1610,27 @@ impl Workspace {
     fn place_files(store: Store, name: string) {
         if self.keys.placed_from.get().get(name) != null { return }
         self.keys.placed_from.put(name, true)
-        for p in record_fields(self, store, module_path(name.split("."))) {
-            if places_file(p) { self.keys.file_owners.put(p[1], name) }
-        }
+        for path in self.producers_in(store, module_path(name.split("."))).placed { self.keys.file_owners.put(path, name) }
     }
 
-    /// The files of a seen module's record that re-export a name — memoized for
-    /// the build, since every module that sees `name` asks again and a scan of
+    /// A module's producer row, or the one its record makes when no row is kept.
+    fn producers_in(store: Store, m: ModulePath) -> Producers {
+        self.producers_for(store, m) ?? producers_of(m, record_fields(self, store, m))
+    }
+
+    /// The files a module's record references by name, builtin types apart.
+    fn reach_refs(store: Store, m: ModulePath) -> List<string> { self.producers_in(store, m).reach_refs }
+
+    /// The files of a seen module's record that re-export a name — memoized per record, so a
+    /// record written since is read again, since every module that sees `name` asks again and a scan of
     /// its whole record per asker is the module's lines squared.
     fn reexporting_files(store: Store, name: string) -> List<string> {
-        let known: List<string>? = self.records.record_reexports.get().get(name)
+        let m = module_path(name.split("."))
+        let key = self.record_key(m)
+        let known: List<string>? = self.records.record_reexports.get().get(key)
         if known != null { return known! }
-        let made = distinct(
-            [p[1] for p in record_fields(self, store, module_path(name.split("."))) if p.length >= 5 && p[0] == "reexport"],
-        )
-        self.records.record_reexports.put(name, made)
+        let made = distinct([p[1] for p in self.producers_in(store, m).reexports])
+        self.records.record_reexports.put(key, made)
         made
     }
 
@@ -1663,15 +1647,8 @@ impl Workspace {
         let known: Map<string, List<string>>? = self.keys.typed_files.get().get(m.text())
         if known != null { return known! }
         mut made: Map<string, List<string>> = {}
-        for p in record_fields(self, store, m) {
-            let named = when {
-                is_ref_row(p) && shapes_signature(p[3]) && !names_builtin(p) -> [ref_target(p)]
-                p.length > 13 && declares(p) -> wired_files(p)
-                _ -> []
-            }
-            if !named.is_empty() { made.set(p[1], (made.get(p[1]) ?? []).concat(named)) }
-            let aimed = aimed_file(p)
-            if aimed != null { made.set(aimed!, (made.get(aimed!) ?? []).concat([p[1]])) }
+        for edge in self.producers_in(store, m).typed {
+            made.set(edge.path, (made.get(edge.path) ?? []).concat([edge.value]))
         }
         self.keys.typed_files.put(m.text(), made)
         made
@@ -2091,7 +2068,7 @@ fn runs_of(parts: List<string>) -> List<RunRead>? {
 fn imports_kept(ws: Workspace, store: Store, name: string) -> List<string> {
     let known: List<string>? = ws.import_lists.get().get(name)
     if known != null { return known! }
-    let made = [line.substring(7, line.length) for line in record_lines(ws, store, module_path(name.split("."))) if line.starts_with("import\t")]
+    let made = [p[1] for p in ws.producers_in(store, module_path(name.split("."))).walk if p[0] == "import" && p.length > 1]
     ws.import_lists.put(name, made)
     made
 }

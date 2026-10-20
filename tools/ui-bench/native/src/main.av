@@ -1,0 +1,84 @@
+//! What one paint of the bench costs natively, by phase. Arguments: the
+//! number of rows.
+use @ui.bench.{fill, prepend, tick, view, view_held, view_windowed}
+use @std.ui.app.{plain}
+use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.dom.page.{paged}
+use @std.ui.realize.html.element.{Element}
+use @std.ui.tree.view.{tree_of}
+use @std.text.{parse_int}
+use @std.io.{env}
+use @std.time.{now_ms}
+
+/// How many elements a run of them holds, nested ones too.
+fn count_all(run: List<Element>) -> int {
+    run.fold(0, (a: int, e: Element) -> a + 1 + count_in(e))
+}
+
+fn count_in(e: Element) -> int {
+    let el? = e.tagged() else { return 0 }
+    count_all(el.kids)
+}
+
+let n = parse_int(env("ROWS") ?? "1000") ?? 1000
+fill(n)
+let sent: Cell<int> = Cell.new(0)
+let page = live()
+let held_run = env("MODE") == "held"
+let windowed_run = env("MODE") == "windowed" || held_run
+let made = if held_run { paged(view_held, plain, page, (b: Bytes) -> sent.set(b.length)) } else if windowed_run { paged(view_windowed, plain, page, (b: Bytes) -> sent.set(b.length)) } else { paged(view, plain, page, (b: Bytes) -> sent.set(b.length)) }
+if windowed_run { made.app.stands.first_rows(40) }
+let w0 = now_ms()
+let tree = if held_run { tree_of(view_held()) } else if windowed_run { tree_of(view_windowed()) } else { tree_of(view()) }
+println("tree root children ${tree.children.length}")
+let w1 = now_ms()
+println("rows ${n}")
+println("walk (view + describe) ${w1 - w0} ms")
+let p0 = now_ms()
+made.app.paint()
+let p1 = now_ms()
+println("first paint (walk + lower + diff + frame) ${p1 - p0} ms, frame ${sent.get()} bytes")
+println("page elements ${count_all(page.page.get())}")
+if held_run {
+    let list = made.app.stands.windows()[0]
+    let _ = made.app.scrolled(list, 0, 10, 0, null)
+    made.app.flush()
+    let _ = made.app.scrolled(list, n - 40, n, 0, null)
+    made.app.flush()
+    println("standings kept ${made.app.stands.standings()}")
+    prepend("fresh")
+    let pp0 = now_ms()
+    made.app.paint()
+    println("one row prepended: paint ${now_ms() - pp0} ms")
+    prepend("fresher")
+    let pq0 = now_ms()
+    made.app.paint()
+    println("and another: paint ${now_ms() - pq0} ms")
+}
+tick(0)
+sent.set(0)
+let c0 = now_ms()
+made.app.paint()
+let c1 = now_ms()
+println("one row ticked: paint ${c1 - c0} ms, frame ${sent.get()} bytes")
+sent.set(0)
+let s0 = now_ms()
+made.app.paint()
+let s1 = now_ms()
+println("nothing changed: paint ${s1 - s0} ms, frame ${sent.get()} bytes")
+if windowed_run {
+    let sweep = parse_int(env("SWEEP") ?? "10000") ?? 10000
+    println("rows built this paint ${made.app.stands.built()}")
+    let list = made.app.stands.windows()[0]
+    let w0 = now_ms()
+    mut at = 0
+    while at < n && at < sweep {
+        let _ = made.app.scrolled(list, at, at + 40, 0, null)
+        made.app.flush()
+        at = at + 40
+    }
+    let w1 = now_ms()
+    println(
+        "scrolled through ${at} rows in windows of 40: ${w1 - w0} ms, ${(w1 - w0) * 1000 / (n / 40 + 1)} us a window",
+    )
+}

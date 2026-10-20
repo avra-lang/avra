@@ -4,8 +4,8 @@
 // another body's), and a subtree reading nothing and holding no call
 // is constant.
 use @std.avrac.compiler.{analyze_source, Analysis, Program}
-use @std.avrac.core.{ExprId, StmtId, DeclId, same_stmt}
-use @std.avrac.features.{SiteLowering, SitePlan}
+use @std.avrac.core.{ExprId, StmtId, DeclId, same_stmt, same_decl}
+use @std.avrac.features.{SiteLowering, SitePlan, StatePlace, place_key}
 use @std.avrac.testing.{provided}
 
 /// The body of the fn named `name`.
@@ -53,7 +53,21 @@ fn answers_one_of(ps: List<StmtId>, l: SiteLowering) -> bool {
 }
 
 fn directs_at(l: SiteLowering, p: StmtId) -> bool {
-    match l { .Direct(q) -> same_stmt(q, p), rest -> false }
+    match l { .Direct(q) -> local_at(q, p), rest -> false }
+}
+
+/// Whether a place is the `state` statement `p` of the file.
+fn local_at(q: StatePlace, p: StmtId) -> bool {
+    match q { .Local(_, s) -> same_stmt(s, p), .Global(_) or .Unknown -> false }
+}
+
+/// Whether a place is the top-level `state` declaration `d`.
+fn global_at(q: StatePlace, d: DeclId) -> bool {
+    match q { .Global(g) -> same_decl(g, d), .Local(_, _) or .Unknown -> false }
+}
+
+fn directs_global(l: SiteLowering, d: DeclId) -> bool {
+    match l { .Direct(q) -> global_at(q, d), rest -> false }
 }
 
 fn is_keyed(l: SiteLowering) -> bool { match l { .Keyed(_) -> true, rest -> false } }
@@ -87,7 +101,7 @@ spec "features/read_set" {
             let a = analyze_source("fn f() -> int {\n    state n: int = 0\n    n + 1\n}")
             let body = body_of(a, "f")!
             let set = a.state_reads(body)
-            set.length == 1 && set[0].index == places(a)[0].index
+            set.length == 1 && local_at(set[0], places(a)[0])
         }
         then "the site lowers DIRECT to its one place" {
             let a = analyze_source("fn f() -> int {\n    state n: int = 0\n    n + 1\n}")
@@ -244,6 +258,67 @@ spec "features/read_set" {
             let body = body_of(a, "f")!
             let plan = a.lowering_plan(body)
             is_tree(plan[0].lowering) && directs_in(plan, places(a))
+        }
+    }
+    given "a top-level state place" {
+        then "a body reading it lowers DIRECT to that declaration" {
+            let a = analyze_source("state n: int = 0\nfn f() -> int { n + 1 }")
+            let body = body_of(a, "f")!
+            directs_global(a.site_lowering(body), decl_of(a, "n")) && !a.hoistable(body)
+        }
+        then "a body reading two of them stays on the tree" {
+            let a = analyze_source("state x: int = 1\nstate y: int = 2\nfn f() -> int { x + y }")
+            let body = body_of(a, "f")!
+            a.site_places(body).length == 2 && is_tree(a.site_lowering(body))
+        }
+        then "a call to a fn reading exactly one is DIRECT to that place, through the callee" {
+            let a = analyze_source(
+                "state n: int = 0\nfn g() -> int { n }\nfn f() -> int { g() + 1 }",
+            )
+            let body = body_of(a, "f")!
+            directs_global(a.site_lowering(body), decl_of(a, "n")) &&
+                a.decl_reads_state(decl_of(a, "g"))
+        }
+        then "a call chain two deep carries the place all the way" {
+            let a = analyze_source(
+                "state n: int = 0\nfn h() -> int { n }\nfn g() -> int { h() }\nfn f() -> int { g() }",
+            )
+            directs_global(a.site_lowering(body_of(a, "f")!), decl_of(a, "n"))
+        }
+        then "calls to fns reading two different ones keep the tree" {
+            let a = analyze_source(
+                "state x: int = 1\nstate y: int = 2\nfn gx() -> int { x }\nfn gy() -> int { y }\nfn f() -> int { gx() + gy() }",
+            )
+            is_tree(a.site_lowering(body_of(a, "f")!)) &&
+                a.site_places(body_of(a, "f")!).length == 2
+        }
+        then "a cycle reaching a place carries it through every member" {
+            let a = analyze_source(
+                "state n: int = 0\nfn a() -> int { b() }\nfn b() -> int { a() + n }",
+            )
+            let pa = a.decl_places(decl_of(a, "a"))
+            let pb = a.decl_places(decl_of(a, "b"))
+            pa.length == 1 && pb.length == 1 && pa[0] == pb[0]
+        }
+    }
+    given "a callee's own local state" {
+        then "is a place a caller cannot name, so the caller stays on the tree" {
+            let a = analyze_source(
+                "fn g() -> int {\n    state m: int = 0\n    m\n}\nfn f() -> int { g() + 1 }",
+            )
+            let body = body_of(a, "f")!
+            let reached = a.decl_places(decl_of(a, "g"))
+            is_tree(a.site_lowering(body)) &&
+                reached.length == 1 &&
+                reached[0] == place_key(StatePlace.Unknown)
+        }
+    }
+    given "a declaration's places" {
+        then "are none for a pure fn, and sorted and once each for a reader" {
+            let a = analyze_source(
+                "state x: int = 1\nstate y: int = 2\nfn p() -> int { 1 }\nfn r() -> int { y + x + y }",
+            )
+            a.decl_places(decl_of(a, "p")).is_empty() && a.decl_places(decl_of(a, "r")).length == 2
         }
     }
 }

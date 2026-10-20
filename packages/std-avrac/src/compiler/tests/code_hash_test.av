@@ -27,6 +27,11 @@ fn hash_in(decls: string) -> string { hashing("${decls}\n\ncode_hash(answer) ?? 
 
 fn same(a: string, b: string) -> bool { hash_in(a) == hash_in(b) && !hash_in(a).starts_with("refused") && hash_in(a) != "absent" }
 
+/// A program dispatching `dyn Shape` in `answer`, with an unrelated `dyn Named` boxed elsewhere.
+fn dispatching(area: int, id: int) -> string {
+    "type A = { v: int }\ntype B = { v: int }\ntrait Shape {\n    fn area() -> int\n}\ntrait Named {\n    fn id() -> int\n}\nimpl Shape for A {\n    fn area() -> int { ${area} }\n}\nimpl Named for B {\n    fn id() -> int { ${id} }\n}\nfn elsewhere() -> int {\n    let n: dyn Named = B { v: 1 }\n    n.id()\n}\nfn answer() -> int {\n    let s: dyn Shape = A { v: 1 }\n    s.area()\n}\nelsewhere()"
+}
+
 fn moved(a: string, b: string) -> bool {
     hash_in(a) != hash_in(b) &&
         !hash_in(a).starts_with("refused") &&
@@ -94,6 +99,7 @@ spec "compiler — a fn's code hash" {
                 "fn leaf() -> int { 2 }\nfn zero() -> int { 0 }\nonce fn slot() -> Cell<fn() -> int> { Cell.new(zero) }\nfn answer() -> int { slot().get()() }\nfn setup() { slot().set(leaf) }\nsetup()",
             )
         }
+        then "an impl method of the trait it dispatches moves it" { moved(dispatching(1, 1), dispatching(2, 1)) }
         then "a fn handed through a cell the caller passes on moves it" {
             moved(
                 "fn leaf() -> int { 1 }\nfn zero() -> int { 0 }\nonce fn slot() -> Cell<fn() -> int> { Cell.new(zero) }\nfn through(c: Cell<fn() -> int>) -> int { c.get()() }\nfn answer() -> int { through(slot()) }\nfn setup() { slot().set(leaf) }\nsetup()",
@@ -143,6 +149,9 @@ spec "compiler — a fn's code hash" {
                 "fn answer() -> int { 1 }",
                 "// the answer\nfn answer() -> int {\n    // one\n    1\n}",
             )
+        }
+        then "an impl method of another trait it never dispatches moves nothing" {
+            same(dispatching(1, 1), dispatching(1, 2))
         }
         then "a fn it never reaches moves nothing" {
             same(

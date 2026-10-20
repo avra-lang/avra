@@ -3,6 +3,7 @@
 //! terminal both stand on this one target; what differs is how each is
 //! spoken to and what it prints.
 use tree.controls.{Control, controls, open_dialogs}
+use tree.identity.{Owner}
 use tree.outline.{outline}
 use tree.node.{Node}
 use tree.view.{View}
@@ -11,13 +12,27 @@ use style.theme.{Theme}
 /// An app and the tree its last paint showed.
 export type Shown = { app: App, tree: Cell<Node?> }
 
-/// `view` shown in memory, painted once.
-export fn shown<V: View>(view: fn() -> V) -> Shown {
+/// `view` shown in memory, painted once. A target with a viewport says how
+/// many rows a windowed list builds before it is told its window (`rows`, none
+/// by default: every row), and whether it keeps room for the rows a list
+/// leaves unbuilt (`spaced`).
+export fn shown<V: View>(view: fn() -> V, rows: int = 0, spaced: bool = false) -> Shown {
     let tree: Cell<Node?> = Cell.new(null)
+    let standing: Cell<List<Owner>> = Cell.new([])
     let made = Shown {
-        app: app(view, plain, (root: Node, _theme: Theme) -> tree.set(root)),
+        app: owned_app(
+            view,
+            plain,
+            (root: Node, _theme: Theme) -> {
+                tree.set(root)
+                standing.set([c.owner() for c in controls(root)])
+            },
+            standing,
+        ),
         tree: tree,
     }
+    if rows > 0 { made.app.stands.first_rows(rows) }
+    if spaced { made.app.stands.geometric() }
     made.app.paint()
     made
 }

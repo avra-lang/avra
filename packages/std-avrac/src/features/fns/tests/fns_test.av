@@ -33,7 +33,7 @@ spec "features/fns" {
         then "a bare `int` is refused in a `mut` seat, and only there" {
             refused_with(
                 "extern fn c_ck(mut n: int) -> i32\nmut n = 0\nc_ck(n)",
-                "A bare `int` is refused here alone",
+                "a bare `int` is refused here alone",
             )
         }
         then "a plain `int` seat is untouched by that law" {
@@ -181,7 +181,7 @@ spec "features/fns" {
             analyze_source("extern fn avra_host_env(name: string?) -> string\n1")
                 .report()
                 .starts_with(
-                    "error[type.host_absence]: seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_env(name: string?) -> string\n  · ┬\n  · ╰── declared here\n──╯\nhelp: core's rows are the compiler's own C and every one of them READS the pointer it is handed",
+                    "error[type.host_absence]: seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_env(name: string?) -> string\n  · ┬\n  · ╰── declared here\n──╯\nhelp: a runtime row reads the pointer it is handed, so its seat takes no absence",
                 )
         }
         then "a row with no evaluator arm is called by its name, as any extern is" {
@@ -333,7 +333,7 @@ spec "features/fns" {
             )
                 .report()
                 .starts_with(
-                    "error[type.extern_value]: an extern fn is not a value — it names a C symbol, not a callable Avra fn\n  ╭─[<source>:2:9]\n2 │ let f = avra_host_is_dir\n  ·         ┬\n  ·         ╰── read as a value here\n──╯\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_is_dir(path: string) -> int\n  · ┬\n  · ╰── declared here\n──╯\nhelp: wrap it — `(x0: string) -> avra_host_is_dir(x0)`",
+                    "error[type.extern_value]: an extern fn is not a value — it names a C symbol, not an Avra fn\n  ╭─[<source>:2:9]\n2 │ let f = avra_host_is_dir\n  ·         ┬\n  ·         ╰── read as a value here\n──╯\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_is_dir(path: string) -> int\n  · ┬\n  · ╰── declared here\n──╯\nhelp: wrap it — `(x0: string) -> avra_host_is_dir(x0)`",
                 )
         }
         then "the help's own wrapper compiles as written — a bare lambda needs a type, and the suggestion gives it one" {
@@ -439,7 +439,7 @@ spec "features/fns" {
                 a.report().contains("`decimal` names no type") &&
                 a
                     .report()
-                    .contains("the types today are `int`, `string`, `bool`, and your declared types")
+                    .contains("a type is a built-in (`int`, `string`, `bool`, `float`) or one you declared")
         }
         then "two fns cannot share a name" {
             let a = analyze_source("fn f(x: int) -> int { x }\nfn f(y: int) -> int { y }\nf(1)")
@@ -539,7 +539,7 @@ ret r1"""
             analyze_source("fn o(a: int = 1, b: int) -> int { b }\n0")
                 .report()
                 .starts_with(
-                    "error[type.param_default]: `b` has no default and follows `a`, which has one — a call writes its seats in order, so `a` could never be left to its default\n  ╭─[<source>:1:15]\n1 │ fn o(a: int = 1, b: int) -> int { b }\n  ·               ┬\n  ·               ╰── the first default\n──╯\nhelp: move the defaulted seats last, or give `b` a default too",
+                    "error[type.param_default]: `b` has no default and follows `a`, which has one — defaulted seats come last\n  ╭─[<source>:1:15]\n1 │ fn o(a: int = 1, b: int) -> int { b }\n  ·               ┬\n  ·               ╰── the first default\n──╯\nhelp: move the defaulted seats last, or give `b` a default too",
                 )
         }
         then "a generic fn's seat whose type names no parameter takes a default" {

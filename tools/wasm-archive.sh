@@ -1,8 +1,8 @@
 #!/bin/sh
 # The wasm runtime archive's law, counted rather than assumed: it carries the
-# runtime minus the two objects that HAVE no wasm body. A fiber switches
-# stacks and a core forks, so neither may appear — and a program links only
-# the members it reaches, so an unreached one costs nothing anyway.
+# runtime minus the one object that HAS no wasm body. A core forks, so it may
+# not appear — and a program links only the members it reaches, so an
+# unreached one costs nothing anyway. The scheduler is in, hosted.
 set -eu
 
 tree=$(cd "$(dirname "$0")/.." && pwd)
@@ -14,13 +14,13 @@ members=$(ar t "$lib")
 echo "wasm-archive: $lib ($(echo "$members" | wc -l | tr -d ' ') member(s))"
 
 fail=0
-for banned in avra_fiber avra_cores; do
+for banned in avra_cores; do
     if echo "$members" | grep -q "$banned"; then
         echo "wasm-archive: the archive carries $banned, which has no wasm body" >&2
         fail=1
     fi
 done
-for needed in avra_runtime; do
+for needed in avra_runtime avra_fiber; do
     if ! echo "$members" | grep -q "$needed"; then
         echo "wasm-archive: the archive is missing $needed" >&2
         fail=1
@@ -41,4 +41,4 @@ for name in AVRA_MEM_STATS AVRA_RC_GUARD AVRA_ALIAS_LOG AVRA_HASH_SEED; do
     fi
 done
 [ "$fail" -eq 0 ] || exit 1
-echo "wasm-archive: no fiber, no core, $switches of 4 instrument switches"
+echo "wasm-archive: the scheduler, no core, $switches of 4 instrument switches"

@@ -3,11 +3,14 @@
 //! DOOR, `turn`: whatever may change the state — a control speaking, a
 //! timer, an answer arriving — runs through it, and a paint follows only
 //! when it ran.
+use tree.bindings.{dead_keys}
+use tree.identity.{Owner}
 use tree.node.{Node, Prim, Attribute, Urgency}
 use style.box.{Box}
 use tree.standing.{Standing, standing}
 use tree.view.{View, rooted}
 use style.theme.{Theme, default_theme}
+use @std.http_message.message.{Reply, Request}
 
 /// Whatever may change the program's state, as the door takes it: it
 /// answers whether it ran.
@@ -17,17 +20,33 @@ export alias Act = fn() -> bool
 /// loop owns, so it ends with the loop.
 export alias Job = fn() -> bool
 
-/// What the inbox carries: a turn to run, a job to start, or a job's
-/// word that it has finished (the loop's own).
+/// What the inbox carries: a turn to run, a job to start, or a worker's
+/// word that it is free of the job numbered `serial` (the loop's own). `owner` is the path of the
+/// control that asked — where a node stands, across paints — or none for
+/// work the app itself asked: what a node that has left asked is dropped.
 export enum Msg {
-    Turn(act: Act)
-    Start(job: Job)
-    Ended
+    Turn(act: Act, owner: string?)
+    Start(job: Job, owner: string?)
+    Ended(worker: int, serial: int)
+    Frame
 }
 
-/// The way into a running loop: where a message goes, and how the loop is
-/// told to end. A target with no tasks has none.
-export type Door = { send: fn(Msg) -> bool, close: fn() -> void }
+/// What a source asks the target for, as DATA: a wait of `ms`, once or
+/// over and over, or a request answered. The target realizes it its own
+/// way — a task that sleeps and a client that sends natively, a host timer
+/// and the host's `fetch` on a page — and the answer comes back as an
+/// `Act`, run as a turn: for a request, the reply (or why there is none) is
+/// left in `into` first.
+export enum Want {
+    After(ms: int)
+    Every(ms: int)
+    Get(request: Request, into: Cell<Result<Reply, string>?>)
+}
+
+/// The way into a running loop: where a message goes, what a source's ask
+/// is realized as, and how the loop is told to end. A target with no
+/// loop has none.
+export type Door = { send: fn(Msg) -> bool, ask: fn(Want, Act, string?) -> bool, close: fn() -> void }
 
 /// An app on one target. `show` is the target's own paint: the tree as it
 /// stands and the theme it wears, in; whatever the target does with them.
@@ -39,6 +58,11 @@ export type Door = { send: fn(Msg) -> bool, close: fn() -> void }
 /// a timer, an answer, a stream — leaves its message once a loop runs;
 /// its writers never wait. A target with no loop runs an `Act` as a turn
 /// at once and starts no job. `jobs` is how many tasks the loop holds.
+/// `dirty` is whether state moved since the last paint, `holding` whether a
+/// target paints on its own frame (a page's, a loop's drained inbox) instead
+/// of at each turn, `asked` whether a frame is already asked for, `framer`
+/// how a target is asked, `walks` how many times the view was walked and `frames` how many frames
+/// a loop's own frame task brought.
 /// `guard` runs a turn's action and answers whether it ran, or the words
 /// of the failure that ended it; `failed` is the last turn's failure
 /// until a turn runs again, and `unsaid` is the part of it no target has
@@ -56,7 +80,22 @@ export type App = {
     unsaid: Cell<string?>,
     guard: Cell<fn(fn() -> bool) -> Result<bool, string>>,
     noticed: Cell<fn(string?) -> void>,
+    asking: Cell<string?>,
+    standing: Cell<List<Owner>>,
+    refused: Cell<List<string>>,
+    dirty: Cell<bool>,
+    holding: Cell<bool>,
+    asked: Cell<bool>,
+    framer: Cell<fn() -> void>,
+    walks: Cell<int>,
+    frames: Cell<int>,
 }
+
+/// A target that is asked for no frame.
+fn nobody_asks() {}
+
+/// A turn that changes nothing.
+fn unmoved() -> bool { false }
 
 /// A target with nowhere to show a notice beside the view.
 fn unnoticed(_words: string?) {}
@@ -81,10 +120,24 @@ export fn plain() -> Theme { default_theme }
 
 /// `view` under `theme`, shown by `show`.
 export fn app<V: View>(view: fn() -> V, theme: fn() -> Theme, show: fn(Node, Theme) -> void) -> App {
+    let nothing: List<Owner> = []
+    owned_app(view, theme, show, Cell.new(nothing))
+}
+
+/// `app`, whose target keeps `on_screen` — the owner keys of the controls
+/// its last paint showed — written by `show`. A target says what an owner
+/// is: a control's path where the tree is held, a node's number on a page.
+export fn owned_app<V: View>(
+    view: fn() -> V,
+    theme: fn() -> Theme,
+    show: fn(Node, Theme) -> void,
+    on_screen: Cell<List<Owner>>,
+) -> App {
     let drawn: fn(Standing) -> Node = (at: Standing) -> rooted(view().describe(at))
     let untold: List<string> = []
     let nodoor: Door? = null
     let nothing: string? = null
+    let nobody: string? = null
     App {
         view: Cell.new(drawn),
         theme: Cell.new(theme),
@@ -98,6 +151,15 @@ export fn app<V: View>(view: fn() -> V, theme: fn() -> Theme, show: fn(Node, The
         unsaid: Cell.new(nothing),
         guard: Cell.new(uncontained),
         noticed: Cell.new(unnoticed),
+        asking: Cell.new(nobody),
+        standing: on_screen,
+        refused: Cell.new(untold),
+        dirty: Cell.new(false),
+        holding: Cell.new(false),
+        asked: Cell.new(false),
+        framer: Cell.new(nobody_asks),
+        walks: Cell.new(0),
+        frames: Cell.new(0),
     }
 }
 
@@ -115,16 +177,65 @@ impl App {
     /// app's standing, so an instance this paint does not reach is gone
     /// with it.
     fn paint() {
+        self.dirty.set(false)
+        self.walks.set(self.walks.get() + 1)
         let view = self.view.get()
         let theme = self.theme.get()
         self.stands.begun()
-        self.show(view(self.stands), theme())
+        let before = self.standers()
+        let root = view(self.stands)
+        for w in dead_keys(root) { self.stands.says(w) }
+        self.show(root, theme())
+        if self.standers() != before { self.woken() }
+    }
+
+    /// State moved: the next frame shows it. A target that paints at each
+    /// turn does at once; one that holds asks for its frame, once.
+    fn mark() {
+        self.dirty.set(true)
+        if !self.holding.get() {
+            let _ = self.flush()
+            return
+        }
+        if self.asked.get() { return }
+        self.asked.set(true)
+        (self.framer.get())()
+    }
+
+    /// A target scrolled the windowed list standing at `path` to rows `from`
+    /// up to `to`, its rows measuring `extent` tall (none: zero), its focus
+    /// resting on the row `pin` names (none: elsewhere): a frame follows.
+    fn scrolled(path: string, from: int, to: int, extent: int, pin: string?) -> bool {
+        let list? = self.stands.find(path) else { return false }
+        list.windowed(from, to)
+        list.pin_to(pin)
+        list.revealed()
+        if extent > 0 { list.measured(extent) }
+        self.mark()
+        true
+    }
+
+    /// THE FRAME: the screen shows the state as it stands, if it moved.
+    /// Answers whether it painted.
+    fn flush() -> bool {
+        self.asked.set(false)
+        if !self.dirty.get() { return false }
+        self.paint()
+        true
+    }
+
+    /// A paint moved who stands on the screen: the loop is left a turn that
+    /// changes nothing, so it sweeps what the controls that left asked even
+    /// when the paint came from outside it (a test's verb, a host's echo).
+    fn woken() {
+        let door? = self.door.get() else { return }
+        let _ = door.send(Msg.Turn(unmoved, null))
     }
 
     /// What the last paint's walk said of the tree it was handed — an
     /// instance that keeps state and is told from its siblings by order
     /// alone.
-    fn warnings() -> List<string> { self.stands.warnings() }
+    fn warnings() -> List<string> { self.stands.warnings().concat(self.refused.get()) }
 
     /// What the last paint said that no paint before it did — each
     /// warning once an app.
@@ -163,8 +274,8 @@ impl App {
     fn held() -> int { self.stands.held() }
 
     /// THE ONE DOOR INTO THE LOOP. `act` is whatever may change the
-    /// program's state; it answers whether it ran, and a paint follows
-    /// only then. What the paint says is the target's to decide — a page
+    /// program's state; it answers whether it ran, and the screen follows
+    /// only then — at once, or at the target's frame when it holds. What the paint says is the target's to decide — a page
     /// that did not change is sent nothing. A FAILURE IS CONTAINED TO ITS
     /// TURN: it is kept in `failed`, the state stands as the handler
     /// left it, the view is painted as it stands, and the target is told
@@ -175,29 +286,85 @@ impl App {
             .Ok(ran) -> {
                 if ran {
                     self.said_failure(null)
-                    self.paint()
+                    self.mark()
                 }
                 ran
             },
             .Err(words) -> {
                 self.said_failure(words)
-                self.paint()
+                self.mark()
                 false
             },
         }
     }
 
+    /// The control at `owner` speaks: an event. THE SCREEN IT MEETS IS THE
+    /// ONE THE USER SAW, so a paint still pending is shown first; then `act`
+    /// is a turn, and whatever it asks of the loop is that control's.
+    fn turn_of(owner: string, act: Act) -> bool {
+        let _ = self.flush()
+        self.owned(owner, act)
+    }
+
+    /// `act` is a turn owned by `owner`, when it has one: a source's, which
+    /// only marks — it never flushes what an event has not yet shown.
+    fn turn_for(owner: string?, act: Act) -> bool {
+        let at? = owner else { return self.turn(act) }
+        self.owned(at, act)
+    }
+
+    fn owned(owner: string, act: Act) -> bool {
+        let before = self.asking.get()
+        self.asking.set(owner)
+        let ran = self.turn(act)
+        self.asking.set(before)
+        ran
+    }
+
+    /// Whether the control at `owner` is on the screen the last paint
+    /// showed. Work no control asked is always owned.
+    fn owns(owner: string?) -> bool {
+        let at? = owner else { return true }
+        self.standing.get().any(it.key == at)
+    }
+
+    /// Who stands on the screen, as one text.
+    fn standers() -> string { [o.key for o in self.standing.get()].join("\n") }
+
+    /// Whether work asked now is turned away: the control asking it is
+    /// told from its siblings by order alone, so its place says nothing of
+    /// which control it was once a sibling before it leaves.
+    fn refuses() -> bool {
+        let at? = self.asking.get() else { return false }
+        let told = self.standing.get().any(it.key == at && it.ordered)
+        if told && !self.refused.get().contains(placed_by_order()) { self.refused.push(placed_by_order()) }
+        told
+    }
+
     /// A source leaves `act` for the loop to run as a turn. False when
     /// the loop has ended.
-    fn post(act: Act) -> bool { self.send(Msg.Turn(act)) }
+    fn post(act: Act) -> bool { !self.refuses() && self.send(Msg.Turn(act, self.asking.get())) }
+
+    /// A source that belongs to no control — the keyboard — leaves `act` for
+    /// the loop to run as a turn that nothing can take back: it never
+    /// inherits the control a turn happens to be running for.
+    fn post_unowned(act: Act) -> bool { self.send(Msg.Turn(act, null)) }
 
     /// A source leaves `job` for the loop to start as a task it owns.
     /// False when the loop has ended.
-    fn start(job: Job) -> bool { self.send(Msg.Start(job)) }
+    fn start(job: Job) -> bool { !self.refuses() && self.send(Msg.Start(job, self.asking.get())) }
 
     fn send(msg: Msg) -> bool {
         let door? = self.door.get() else { return self.direct(msg) }
         door.send(msg)
+    }
+
+    /// A source asks for `want`; `act` runs as a turn when it is met,
+    /// owned by the control being heard. False when no loop runs.
+    fn ask(want: Want, act: Act) -> bool {
+        if self.refuses() { return false }
+        let door? = self.door.get() else { return false }
+        door.ask(want, act, self.asking.get())
     }
 
     /// Where messages go now: the running loop's inbox, held — a source
@@ -211,7 +378,10 @@ impl App {
     /// A message with no loop to take it: a turn runs at once, a job has
     /// nowhere to run.
     fn direct(msg: Msg) -> bool {
-        match msg { .Turn(act) -> self.turn(act), .Start(_) or .Ended -> false }
+        match msg {
+            .Turn(act, _) -> self.turn(act),
+            .Start(_, _) or .Ended(_, _) or .Frame -> false,
+        }
     }
 
     /// The loop ends once what stands in the inbox has run.
@@ -232,3 +402,9 @@ export fn stood(on: App?) { afoot().set(on) }
 
 /// The app whose loop runs, if any.
 export fn running() -> App? { afoot().get() }
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn placed_by_order() -> string {
+    "work a control asks belongs to the control's place, and among siblings told apart by order alone a place does not outlive a removal before it: give each its own `key`"
+}

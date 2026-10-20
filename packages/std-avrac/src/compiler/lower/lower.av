@@ -263,11 +263,15 @@ fn new_lower_cx(
     seat_marks: List<SeatMark>,
     jobs: Jobs,
     checks: bool = true,
+    roots: List<ExprId>? = null,
 ) -> LowerCx {
     LowerCx {
         view: a.view,
         names: a.names,
         facts: a.facts,
+        decl_places: a.decl_places,
+        decl_structural: a.decl_structural,
+        roots: roots,
         dispatch: a.lang.dispatch,
         out: new_emitter(jobs.externs, a.view.decls),
         body: new_body_regs(
@@ -285,6 +289,13 @@ fn new_lower_cx(
         deferred: [],
         depth: 0,
     }
+}
+
+/// The roots of a frame whose code is the one expression `e`, none when it has
+/// none.
+fn framed(e: ExprId?) -> List<ExprId>? {
+    let r? = e else { return null }
+    [r]
 }
 
 /// A lone file's program, lowered without a memo — the tests' seam.
@@ -1067,7 +1078,16 @@ fn lower_fn(
     // `seat_marks` above, which stays the currency a fn VALUE's TYPE
     // carries.
     let body_marks: List<SeatMark> = [m with { consumed: a.view.decls.consumed_seat(x.id, j) } for j, m in seat_marks]
-    mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle, cross), checks)
+    mut lo = new_lower_cx(
+        a,
+        rt,
+        sub,
+        seats,
+        seat_marks,
+        new_jobs(externs, settle, cross),
+        checks,
+        [root],
+    )
     lo.frame = body_frame(a, fname, decl_label(x), a.view.file, x.lo, x.hi)
     // an `@unbroken` fn's own `while`s carry no back-edge check — the
     // cancel pass already decided it: a fn that SPINS has one, and its
@@ -1086,7 +1106,7 @@ fn lower_fn(
     let cached = a.view.store.is_once(x.stmt)
     let open = if x.kind is .Case && !cached {
         match a.view.store.expr(root) {
-            .Block(stmts, value) -> lo.lower_block_open(stmts, value, rt),
+            .Block(stmts, _) -> lo.lower_block_open(stmts, a.view.store.tail_of(root), rt),
             rest -> OpenBlock { reg: lo.reg_of(root), opened: false },
         }
     } else {
@@ -1134,7 +1154,16 @@ fn lower_lambda(
     let seats: List<TypeId> = held?.seats ?? []
     let rt: TypeId = held?.answer ?? a.view.decls.types.intern(Type.Error)
     let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
-    mut lo = new_lower_cx(a, rt, lj.sub, [], [], new_jobs(externs, settle, cross), checks)
+    mut lo = new_lower_cx(
+        a,
+        rt,
+        lj.sub,
+        [],
+        [],
+        new_jobs(externs, settle, cross),
+        checks,
+        framed(body),
+    )
     lo.frame = body_frame(a, lj.name, lj.name, a.view.file, 0, 0)
     // a lambda's `while`s wear its maker's law: an `@unbroken` fn's lifted
     // body carries no back-edge check either
@@ -1423,7 +1452,7 @@ fn collect_field_reg(
 ) -> Reg {
     match field_plan(a.view.decls, entry_ty, name, path, kind) {
         .Crossed -> decl_crossed_reg(lo, field_seat(a.view.decls, entry_ty, name), d.id),
-        .Value -> collect_fn_reg(lo, d.id, field_seat(a.view.decls, entry_ty, name)),
+        .Value -> member_value_reg(lo, d, field_seat(a.view.decls, entry_ty, name)),
         .RootKind -> int_list_box(lo, component_root_kind(a.view.decls, d)),
         .NodeKinds -> int_list_box(lo, component_node_kinds(a.view.decls, d)),
         .Mark -> mark_field_reg(lo, field_seat(a.view.decls, entry_ty, name), kind, d),
@@ -1488,7 +1517,7 @@ export fn component_node_kinds(decls: Decls, d: Decl) -> List<int> {
 fn component_arms(decls: Decls, d: Decl) -> List<Arm>? {
     let store = decls.store_of(d.file)
     let v? = store.stmt_value(d.stmt) else { return null }
-    let block? = match store.expr(v) { .Component(_, _, b, _, _) -> b, rest -> null } else { return null }
+    let block? = match store.expr(v) { .Component(_, _, b, _, _, _) -> b, rest -> null } else { return null }
     let parts? = store.lambda_parts(block) else { return null }
     match store.expr(parts.body) { .Match(_, ar) -> ar, rest -> null }
 }
@@ -1558,6 +1587,23 @@ fn component_field_reg(mut lo: LowerCx, a: Analysis, field_ty: TypeId, word: str
     lo.field_named(inst, inst_ty, word, field_ty)
 }
 
+/// A bare `it` of a member: a const IS its settled value, any other
+/// declaration its callable fn value.
+fn member_value_reg(mut lo: LowerCx, d: Decl, seat: TypeId) -> Reg {
+    if !holds_a_value(d.kind) { return collect_fn_reg(lo, d.id, seat) }
+    lo.settled_value_reg(d.file, d.stmt, seat, [], lo.view.decls.const_symbol(d.file, d.stmt)) ?? lo
+        .zeroed(lo.mint_ty(seat))
+}
+
+/// Whether a declaration of this kind is a settled value rather than code.
+/// A registry: every kind answers.
+fn holds_a_value(kind: DeclKind) -> bool {
+    match kind {
+        .Const -> true,
+        .Builtin or .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Collect or .CollectEnum or .State -> false,
+    }
+}
+
 /// A NAMED fn as a value, at the reference's own site — `fn_value_reg`'s
 /// twin (compiler/lower/state.av) with no `ExprId`: a member is never
 /// CALLED by name here, only ever referenced, as a bare `it` field.
@@ -1603,7 +1649,7 @@ fn lower_root(
     checks: bool = true,
 ) -> LoweredBody {
     let rt: TypeId = a.facts.type_at(root)
-    mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle, cross), checks)
+    mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle, cross), checks, [root])
     lo.seeded()
     // THE SETTLED SEATS ARE CONSTANTS HERE: the initializer reads a
     // `const` seat as its called value, so the settlement computes on

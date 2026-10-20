@@ -59,7 +59,7 @@ export fn quote_type(mut cx: TypeCx, e: ExprId) -> TypeId {
         }
     }
     let answered: MetaKind? = match whole {
-        .Expr -> if [c! for c in classes].any(it is .Id) { MetaKind.Rewrite } else { MetaKind.Code },
+        .Expr -> if [c! for c in classes].any(it is .Id || it is .PatId) { MetaKind.Rewrite } else { expression_kind(cx, e) },
         .Stmts -> MetaKind.Stmts,
         .Arms -> MetaKind.Arms,
         .Decls -> MetaKind.Decls,
@@ -70,12 +70,20 @@ export fn quote_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     for k, h in q.holes {
         let kind = if whole is .Holes { holes_seat(answer, q.holes.length) } else { kinds[k] }
         let class = classes[k]!
-        if class is .Text && kind is .Expression { return cx.spoken(ambiguous_text(cx.loc_of(h))) }
-        if answer == MetaKind.Rewrite && !(class is .Id) { return cx.spoken(rewrite_hole(cx.loc_of(h), cx.name_at(h))) }
+        if class is .Text && (kind is .Expression || kind is .Tail) { return cx.spoken(ambiguous_text(cx.loc_of(h))) }
+        if answer == MetaKind.Rewrite && !(class is .Id || class is .PatId) { return cx.spoken(rewrite_hole(cx.loc_of(h), cx.name_at(h))) }
         if !fits(class, kind) { return cx.spoken(hole_refused(cx.loc_of(h), kind, cx.name_at(h))) }
     }
     let d? = cx.view.decls.meta_named(meta_name(answer)) else { return cx.spoken(no_meta(cx.loc_of(e), meta_name(answer))) }
     cx.view.decls.self_type_of(d)
+}
+
+/// What an expression-only quote answers: `Code`, or `Stmts` where its
+/// seat wants statements — an expression is a statement.
+fn expression_kind(cx: TypeCx, e: ExprId) -> MetaKind {
+    let wants? = cx.want_at(e) else { return MetaKind.Code }
+    let kind? = template_kind(cx.view.decls, wants) else { return MetaKind.Code }
+    match kind { .Stmts -> MetaKind.Stmts, rest -> MetaKind.Code }
 }
 
 /// The template kind a type names, when it does.
@@ -92,6 +100,7 @@ export fn class_of(decls: Decls, ty: TypeId, shape: Type) -> FillClass? {
     if decls.avrac_type(ty, "Code") || decls.meta_type(ty, "Subject") { return FillClass.Held }
     if decls.meta_type(ty, "Format") { return FillClass.Pattern }
     if decls.avrac_type(ty, "ExprId") { return FillClass.Id }
+    if decls.avrac_type(ty, "PatId") { return FillClass.PatId }
     let elem: TypeId? = decls.elem_of(ty)
     if elem != null {
         let inner: MetaKind? = template_kind(decls, elem!)
@@ -123,9 +132,9 @@ fn rewrite_hole(at: Loc?, found: string) -> Diag {
     refusal(
         "type.quote_hole",
         at,
-        "a rewrite's holes are arena ids — `ExprId`, as `\${self.value}` — and this one is `${found}`",
+        "a rewrite's holes are arena ids — `ExprId` or `PatId`, as `\${self.value}` — and this one is `${found}`",
         "this hole",
-        null,
+        "a hole in a rewrite names the node it stands for — `\${self.value}`, an `ExprId` — never its text",
     )
 }
 
@@ -180,6 +189,7 @@ fn seat_word(kind: HoleKind) -> string {
         .Run -> "run",
         .Fields -> "field",
         .Inits -> "record-field",
+        .Tail -> "block-tail",
     }
 }
 
@@ -194,6 +204,7 @@ fn takes_word(kind: HoleKind) -> string {
         .Run -> "a `List<Code>` — a call's arguments, a list literal's elements",
         .Fields -> "`Decls` of `type _ = { … }` or `fn _(…)`, or a list of them",
         .Inits -> "`Code` of a record literal `W { … }`, or a list of them",
+        .Tail -> "`Code`, `Stmts` or `Decls`, a list of them, an `int` or a `bool`",
     }
 }
 
@@ -317,7 +328,7 @@ fn hole_seat_refused(mut cx: TypeCx, p: PatId, bad: QuoteHole) -> List<TypeId> {
         .Type -> unheld_type(cx, p),
         .Arm or .Fields or .Inits -> unheld_seat(cx, p, bad.kind),
         .Name or .Binder -> unheld_name(cx, p),
-        .Expression or .Statement or .Run -> not_bare(cx, p),
+        .Expression or .Statement or .Run or .Tail -> not_bare(cx, p),
     }
 }
 
@@ -385,7 +396,7 @@ fn unheld_type(mut cx: TypeCx, p: PatId) -> List<TypeId> {
             refusal(
                 "type.quote_pat_type",
                 cx.pat_loc(p),
-                "a hole in type position binds only its WHOLE field — a lone `\${T}`, nothing around it — at a `let`/`mut`/`const`'s own annotation, a call's one pinned type argument, or a param's own type",
+                "a hole in type position binds only a lone `\${T}` — at a `let`/`mut`/`const` annotation, a call's one pinned type argument, or a param's own type",
                 "this pattern",
                 "write `\${T}` alone at one of those seats, or write the type out",
             ),
@@ -413,7 +424,7 @@ fn unheld_name(mut cx: TypeCx, p: PatId) -> List<TypeId> {
             refusal(
                 "type.quote_pat_seat",
                 cx.pat_loc(p),
-                "a hole in name position binds only its WHOLE field — a lone `\${x}`, nothing around it — at a let/for/const binder, a bind pattern, a variant test, a call's callee, a method or a field name",
+                "a hole in name position binds only a lone `\${x}` — at a let/for/const binder, a bind pattern, a variant test, a callee, a method or a field name",
                 "this pattern",
                 "write `\${x}` alone at one of those seats, or write the name out",
             ),

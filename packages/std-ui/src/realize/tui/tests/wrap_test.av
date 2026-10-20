@@ -1,5 +1,6 @@
 // The wrap: greedy on word boundaries, long words cut, every line within
 // the width.
+use @std.text.{from_codepoints}
 use @std.ui.tree.node.{Node}
 use @std.ui.realize.tui.tui.{render}
 use @std.ui.realize.tui.wrap.{wrap, cut}
@@ -35,6 +36,16 @@ spec "std/ui tui — wrap" {
             shown(cut("ab", 0)) == "a|b" && shown(cut("ab", -9223372036854775807)) == "a|b"
         }
     }
+    given "wide glyphs and marks" {
+        then "a cut counts a wide glyph as two cells" { shown(cut("中文字", 4)) == "中文|字" }
+        then "a wide glyph that does not fit starts the next run" { shown(cut("a中b", 2)) == "a|中|b" }
+        then "a combining mark stays with its letter" {
+            let e = from_codepoints([101, 769])
+            shown(cut(e + e, 1)) == "${e}|${e}"
+        }
+        then "a cluster wider than the line stands alone" { shown(cut("中文", 1)) == "中|文" }
+        then "wrapping breaks at spaces by cells" { shown(wrap("中文 中文 中文", 5)) == "中文|中文|中文" }
+    }
     given "render's width law" {
         then "a text at width ten wraps at ten with a long word cut" {
             drawn(text_node("go abcdefghijklmnopqrs stop"), 10) == "go\nabcdefghij\nklmnopqrs\nstop"
@@ -43,11 +54,11 @@ spec "std/ui tui — wrap" {
             drawn(heading_node("a long heading here", 1), 8) == "A LONG\nHEADING\nHERE\n======="
         }
         then "a width of zero renders as width one" { drawn(text_node("ab"), 0) == "a\nb" }
-        then "a width of one cuts every atom" { drawn(button_node("ab"), 1) == "[\n \na\nb\n \n]" }
+        then "a width of one cuts every atom, a row of blanks being no more than a blank line" { drawn(button_node("ab"), 1) == "[\n\na\nb\n\n]" }
         then "an empty text renders nothing" { drawn(text_node(""), 10) == "" }
         then "an empty heading renders nothing" { drawn(heading_node("", 1), 10) == "" }
-        then "a pad wider than the width leaves one column of room" {
-            drawn(boxed(.Column, pad(.Xl), [text_node("abc")]), 4) == "   a\n   b\n   c"
+        then "a pad wider than the width pushes its content off the edge" {
+            drawn(boxed(.Column, pad(.Xl), [text_node("abc")]), 4) == "\n\n"
         }
         then "unicode text is one column per character" { drawn(text_node("héllo wörld"), 5) == "héllo\nwörld" }
         then "a heading upper-cases ASCII and leaves other letters" { drawn(heading_node("café", 1), 40) == "CAFé\n====" }

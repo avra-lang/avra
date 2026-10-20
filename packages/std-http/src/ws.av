@@ -17,12 +17,13 @@
 //! A receive waits as long as its caller's `within` allows, and no
 //! longer: a socket carries no deadline of its own, so a session
 //! names how long a quiet peer lives.
+use @std.http_message.message.{Header, Method}
 use @std.errors.{Error}
 use @std.net.{NetError, connect, entropy32}
 use wire.{Transport, WireError, plainly, wire_timely}
 use @std.time.{Duration, secs}
-use frame.{Limits, Method, Reply, framed_reply, limits}
-use http.{Request, Response, Header, Upgrade, text, read_size, lists_token}
+use frame.{Limits, Reply, framed_reply, limits}
+use http.{Request, Response, Upgrade, text, read_size, lists_token}
 use @std.text.{base64}
 use codec.{sha1, base64_of_length}
 use client.{request}
@@ -117,7 +118,11 @@ fn known_op(op: int) -> bool { op <= 2 || op >= 8 && op <= 10 }
 
 /// The head's length and mask read, and judged.
 fn sized_head(b: Bytes, at: int, fin: bool, op: int, masked: bool, short: int, max: int) -> Headed {
-    let extra = if short == 126 { 2 } else if short == 127 { 8 } else { 0 }
+    let extra = when {
+        short == 126 -> 2
+        short == 127 -> 8
+        _ -> 0
+    }
     let key_len = if masked { 4 } else { 0 }
     if b.length - at < 2 + extra + key_len { return .Partial }
     if short == 127 && b.at(at + 2) >= 128 { return .Refused(protocol_error()) }

@@ -7,10 +7,26 @@
 # edited and the running page must follow.
 #
 # It needs what `make ui-board` needs, and Firefox (FIREFOX names one that is
-# not in a usual place). Where one is absent this SKIPS, spoken, naming what
-# is missing. UI_BOARD_TARGET names one wasm triple (default `wasm`);
+# not in a usual place). Where one is absent this FAILS, naming what is
+# missing: a run that examined nothing is no pass. Only a hand-set
+# UI_BROWSER_SKIP=<reason> stands it down on a local machine, loudly; on the
+# checks' machine (CI=true) nothing does. UI_BOARD_TARGET names one wasm triple (default `wasm`);
 # UI_BROWSER_SHOTS names a directory the run leaves screenshots in.
 set -eu
+
+# `--self-test`: both surfaces of the skip contract, run against a compiler that
+# is not there (the first thing a run needs), so no browser is touched.
+if [ "${1:-}" = --self-test ]; then
+    me=$0
+    ran() { env -u CI -u UI_BROWSER_SKIP AVRA=/nonexistent "$@" sh "$me" 2>&1; }
+    out=$(ran) && { echo "ui-browser self-test: a missing machine passed"; exit 1; }
+    case $out in *UI_BROWSER_SKIP*) ;; *) echo "ui-browser self-test: the refusal does not name its opt-out"; exit 1;; esac
+    out=$(ran UI_BROWSER_SKIP=no-firefox-here) || { echo "ui-browser self-test: UI_BROWSER_SKIP did not stand it down"; exit 1; }
+    case $out in *"STOOD DOWN"*no-firefox-here*) ;; *) echo "ui-browser self-test: a stand-down is not spoken with its reason"; exit 1;; esac
+    out=$(env CI=true UI_BROWSER_SKIP=no-firefox-here AVRA=/nonexistent sh "$me" 2>&1) && { echo "ui-browser self-test: CI stood down"; exit 1; }
+    echo "ui-browser self-test: a missing machine fails, only UI_BROWSER_SKIP stands it down, CI never does"
+    exit 0
+fi
 
 here=$(cd "$(dirname "$0")" && pwd)
 tree=$(cd "$here/.." && pwd)
@@ -18,7 +34,21 @@ avra=${AVRA:-$tree/build/avra}
 target=${UI_BOARD_TARGET:-wasm}
 work=$(mktemp -d "${TMPDIR:-/tmp}/avra-ui-browser.XXXXXX")
 
-skip() { echo "ui-browser: SKIPPED — $* ; the board did not run in a browser"; exit 0; }
+# A RUN THAT CANNOT JUDGE FAILS. On the checks' machine (CI=true) a missing browser,
+# node or toolchain is a broken machine. A local machine may stand the keeper
+# down by name: UI_BROWSER_SKIP=<reason>.
+skip() {
+    if [ "${CI:-}" = true ]; then
+        echo "ui-browser: ran 0 claims — $* ; the checks' machine must carry them (.github/ci/install_firefox.sh installs the browser)"
+        exit 1
+    fi
+    if [ -n "${UI_BROWSER_SKIP:-}" ]; then
+        echo "ui-browser: ran 0 claims — STOOD DOWN ($UI_BROWSER_SKIP): $* ; the board did not run in a browser"
+        exit 0
+    fi
+    echo "ui-browser: ran 0 claims — $* ; set UI_BROWSER_SKIP=<reason> to stand it down here, or install Firefox (.github/ci/install_firefox.sh)"
+    exit 1
+}
 
 [ -x "$avra" ] || skip "no compiler at $avra"
 command -v node >/dev/null 2>&1 || skip "no \`node\` on this machine"
@@ -50,4 +80,4 @@ url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/dev.out" | head -1)
 if ! out=$(node "$here/ui-board/browser.mjs" "$url" --source "$work/tools/ui-board/src/board.av" ${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"} 2>&1); then
     echo "$out" | grep -v '^ok ' ; echo "ui-browser: the board failed in the browser"; exit 1
 fi
-echo "ui-browser: $(echo "$out" | grep -c '^ok ') claims hold in Firefox, served by \`avra dev\` at $url"
+echo "ui-browser: ran $(echo "$out" | grep -c '^ok ') claims, all hold, in Firefox, served by \`avra dev\` at $url"

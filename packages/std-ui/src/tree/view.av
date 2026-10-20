@@ -14,7 +14,7 @@
 //! refused where it stands. Every word a member says is checked against
 //! the library's own declaration — a primitive against `Prim`, an
 //! attribute against `Attribute`, a style against `Style`, an event
-//! against `EventKind`'s words, what it says against `Handler` — so each
+//! against the platforms' enums (`@host`), what it says against `Handler` — so each
 //! fact has the one table its type already is, and a word or a type that
 //! does not fit is refused at the member, never inside this file.
 //!
@@ -34,6 +34,7 @@ use @std.meta.{
     Param,
     Variant,
     Mark,
+    MarkArg,
     Kind,
     Directive,
     Declared,
@@ -46,12 +47,18 @@ use @std.meta.{
     type_named,
     composes,
 }
-use tree.node.{Node, Prim, Attribute, EventKind, Action, Handler}
+use tree.node.{Node, Prim, Attribute, Action, Handler}
+use tree.dom_event.{DomEvent}
+use tree.seats.{SeatRow, seat, seat_named}
+use tree.terminal_key.{Key}
 use tree.lists.{flatten}
+// LICENSED modules.unused_import: `sighted` is named by GENERATED code (the node a primitive derives).
+use tree.sites.{sighted}
 use tree.identity.{Stand, stand_of, steps, shared}
 use tree.standing.{Standing, Kept, standing, kept, stood}
 use style.box.{Box}
 use compose.{gathered}
+use @std.validate.{nearest}
 
 /// A component that projects to a neutral `Node`. A COMPONENT WITH A
 /// BODY IS A VIEW: the compiler derives this trait over it, and it
@@ -71,7 +78,7 @@ export trait View {
         let said? = vocabulary() else { return Declared { made: [], problems: [unread(t)] } }
         let word? = prim_word(t) else { return composition(said, t) }
         if t.body != null { return unmade(t, [primitive_body(t)]) }
-        let parts = [said.part(f) for f in t.fields]
+        let parts = [said.part(t, f) for f in t.fields]
         let problems = [d for p in parts for d in p.problems].concat(said.unfit(t, word, parts))
         if !problems.is_empty() { return unmade(t, problems) }
         let node = quote {
@@ -81,6 +88,7 @@ export trait View {
                 box: ${said.box_code(parts)},
                 children: ${held_by([c for p in parts for c in p.children])},
                 events: ${joined([c for p in parts for c in p.events])},
+                sites: ${sites_code(t)},
             }
         }
         Declared {
@@ -97,11 +105,12 @@ export trait View {
                         }
                     },
                 },
-            ],
+            ]
+                .concat([said.seat_row(t, f) for f in t.fields if f.says != null]),
         }
     }
 
-    static fn marks(t: Type) -> List<string> { [attr_mark, children_mark, style_mark] }
+    static fn marks(t: Type) -> List<string> { [attr_mark, children_mark, style_mark, host_mark] }
 }
 
 /// A view that was refused: the impl that stands in for it, and why.
@@ -153,9 +162,11 @@ export fn made_of(at: Standing, items: List<dyn View>, key: string?) -> List<Nod
 }
 
 /// A node as a composition drew it: stepped through `via` where it was
-/// drawn through nothing yet, wearing `key` where it wears none.
+/// drawn through nothing yet, wearing `key` where it wears none. A composition
+/// reads state in a frame of its own that no node of its drawing answers for,
+/// so what it draws is opaque to a page that patches exactly.
 fn drawn_through(n: Node, via: string?, key: string?) -> Node {
-    n with { box: n.box with { via: n.box.via ?? via, key: n.box.key ?? key } }
+    n with { box: n.box with { via: n.box.via ?? via, key: n.box.key ?? key, opaque: true } }
 }
 
 /// What each of `items` draws, standing under `at` at its own step.
@@ -260,7 +271,8 @@ fn composition_problems(t: Type) -> List<Diagnostic> {
 type Vocabulary = {
     prims: List<Variant>,
     attributes: List<Variant>,
-    kinds: List<Variant>,
+    web: List<Variant>,
+    keys: List<Variant>,
     box: List<Field>,
     style: List<Field>,
     stand: List<Field>,
@@ -281,14 +293,16 @@ const stand_name = "Stand"
 fn vocabulary() -> Vocabulary? {
     let prim? = type_exported(tree_module, "Prim") else { return null }
     let attribute? = type_exported(tree_module, "Attribute") else { return null }
-    let kind? = type_exported(tree_module, "EventKind") else { return null }
+    let web? = type_exported(tree_module, "DomEvent") else { return null }
+    let key? = type_exported(tree_module, "Key") else { return null }
     let box? = type_exported(style_module, box_name) else { return null }
     let style? = type_exported(style_module, "Style") else { return null }
     let stand? = type_exported(tree_module, stand_name) else { return null }
     Vocabulary {
         prims: prim.variants,
         attributes: attribute.variants,
-        kinds: kind.variants,
+        web: web.variants,
+        keys: key.variants,
         box: box.fields,
         style: style.fields,
         stand: stand.fields,
@@ -323,16 +337,17 @@ fn refused(why: Diagnostic) -> Part { Part { problems: [why] } }
 
 impl Vocabulary {
     /// What `f` projects to: its event, or the one thing its mark says.
-    fn part(f: Field) -> Part {
+    fn part(t: Type, f: Field) -> Part {
         if f.state { return refused(stateful_primitive(f)) }
         let says? = f.says else { return self.marked(f) }
-        let marked? = f.marks.first() else { return self.event(f, says) }
+        let marked? = f.marks.find(it.name != host_mark) else { return self.event(t, f, says) }
         refused(marked_event(f, marked))
     }
 
     /// The one thing a member's marks say. Each mark is read by its own
     /// word, so a member saying two things shows as two parts.
     fn marked(f: Field) -> Part {
+        if says_state(f) { return Part {} }
         let said = [self.attribute(f, m) for m in marks_of(f, attr_mark)]
             .concat([children(f, m) for m in marks_of(f, children_mark)])
             .concat([self.styled(f, m) for m in marks_of(f, style_mark)])
@@ -385,21 +400,91 @@ impl Vocabulary {
     /// `on press` → the action the node binds while an instance hears
     /// it. ABSENCE IS THE OPTION'S OWN NULL: a handler left unset binds
     /// no action, so a control nobody hears emits nothing.
-    fn event(f: Field, says: List<Param>) -> Part {
-        let kind? = self.kinds.find(word_of(it) == f.name) else {
-            return refused(no_event(f, [word_of(k) for k in self.kinds]))
-        }
+    fn event(t: Type, f: Field, says: List<Param>) -> Part {
         let handler? = hearing(says, quote { bound }) else { return refused(unsayable(f, says)) }
         Part {
+            problems: self.hosted(f),
             events: [
                 quote {
                     match self.${f.name} {
-                        bound? -> [Action { kind: EventKind.${kind.name}, handler: ${handler} }]
+                        bound? -> [Action { seat: seat_named(${literal(t.name)}, ${literal(f.name)}), handler: ${handler} }]
                         null -> []
                     }
                 },
             ],
         }
+    }
+
+    /// The const that declares an event seat, beside its component: the
+    /// owner and event it is, and what each platform calls
+    /// it, read off the seat's `@host`. Named by owner and event, so the
+    /// seats are ordered by the one name that tells them apart.
+    fn seat_row(t: Type, f: Field) -> Directive {
+        let marks = marks_of(f, host_mark)
+        let named = "${t.name}\$${f.name}"
+        let row = quote {
+            SeatRow {
+                owner: ${literal(t.name)},
+                event: ${literal(f.name)},
+                web: ${self.hosted_as(marks, web_label, "DomEvent")},
+                terminal: ${self.hosted_as(marks, terminal_label, "Key")},
+                prevent: ${flag_code(hosted_flag(marks, prevent_label))},
+                always: ${flag_code(hosted_flag(marks, always_label))},
+                prim: Prim.${prim_word(t) ?? ""},
+            }
+        }
+        Directive {
+            twin: "",
+            name: named,
+            at: t.at,
+            source: quote {
+                @seat
+                export const ${named}: SeatRow = ${row}
+            },
+        }
+    }
+
+    /// The variant a platform's setting names, as the code that spells it.
+    fn hosted_as(marks: List<Mark>, label: string, enum_name: string) -> Code {
+        let w? = [a.value for m in marks for a in m.named if a.label == label].first() else { return quote { null } }
+        if enum_name == "Key" { return quote { Key.${w} } }
+        quote { DomEvent.${w} }
+    }
+
+    /// What an event's `@host(web: .Click, terminal: .Enter)` gets wrong: a
+    /// missing `@host` (a primitive's event is delivered by a platform, and
+    /// with none named it can never fire), a second `@host`, a setting no platform has, a variant the platform's
+    /// own enum lacks. Each setting is checked against the enum it names.
+    fn hosted(f: Field) -> List<Diagnostic> {
+        let marks = marks_of(f, host_mark)
+        let unheard = if marks.is_empty() { [host_unheard(f)] } else { [] }
+        let twice = if marks.length > 1 { [host_twice(f)] } else { [] }
+        unheard
+            .concat(twice)
+            .concat(
+                flatten([self.host_setting(m, a) for m in marks for a in m.named])
+                    .concat([host_unnamed(m, w) for m in marks for w in m.args]),
+            )
+    }
+
+    /// One setting of a `@host`: a platform, or `prevent`.
+    fn host_setting(m: Mark, setting: MarkArg) -> List<Diagnostic> {
+        match setting.label {
+            web_label -> self.host_variant(m, "DOM event", setting.value, self.web, "DomEvent"),
+            terminal_label -> self
+                .host_variant(m, "terminal key", setting.value, self.keys.filter(it.fields.is_empty()), "Key"),
+            prevent_label or always_label -> if setting.value == "true" || setting.value == "false" { [] } else { [host_flag(m, setting.label, setting.value)] },
+            rest -> [host_platform(m, setting.label)],
+        }
+    }
+
+    /// A platform's event, checked against that platform's enum.
+    fn host_variant(m: Mark, what: string, value: string, known: List<Variant>, enum_name: string) -> List<
+        Diagnostic,
+    > {
+        let names = [v.name for v in known]
+        if names.contains(value) { return [] }
+        [no_host_event(m, what, value, enum_name, nearest(value, names))]
     }
 
     /// The node's box: every field of `Box` read off the component, its
@@ -428,10 +513,24 @@ const attr_mark = "attr"
 const children_mark = "children"
 const style_mark = "style"
 
-/// The annotation that names a view's primitive, and the mark that gives
-/// an event kind its word.
+/// The annotation that names a view's primitive.
 const prim_mark = "prim"
-const word_mark = "word"
+
+/// The mark that says what a platform calls an event, and the settings it
+/// takes.
+const host_mark = "host"
+const web_label = "web"
+const terminal_label = "terminal"
+const prevent_label = "prevent"
+const always_label = "always"
+
+/// Whether an event's `@host` says `prevent: true`.
+fn hosted_flag(marks: List<Mark>, label: string) -> bool {
+    [a.value for m in marks for a in m.named if a.label == label].first() == "true"
+}
+
+/// A flag as the code that spells it.
+fn flag_code(on: bool) -> Code { if on { quote { true } } else { quote { false } } }
 
 /// The mark that says an attribute is its node's own words.
 const facet_mark = "facet"
@@ -455,9 +554,6 @@ fn children(f: Field, m: Mark) -> Part {
         rest -> refused(not_children(m, f)),
     }
 }
-
-/// The word an `EventKind` answers to — its `@word`.
-fn word_of(kind: Variant) -> string { kind.marks.find(it.name == word_mark)?.args?.first() ?? kind.name }
 
 /// The `Handler` arm that hears what an event says: ONE arm per thing a
 /// control can say, and absent for anything else.
@@ -492,6 +588,24 @@ fn joined(runs: List<Code>) -> Code {
     if runs.length == 1 { return runs[0] }
     quote { flatten([${..runs}]) }
 }
+
+/// The readings a primitive carries: the closure its field of type
+/// `fn() -> string` holds and the cells its `Cells` field holds, made one
+/// reading when the cells are any. A primitive without both has none.
+fn sites_code(t: Type) -> Code {
+    let said? = t.fields.find(it.ty == said_type) else { return quote { [] } }
+    let read? = t.fields.find(it.ty == cells_type) else { return quote { [] } }
+    quote { sighted(self.site, self.${said.name}, self.${read.name}) }
+}
+
+/// The spellings a field wears to carry what the compiler knows of its text:
+/// the closure that says the words again and the cells it reads.
+const said_type = "Words"
+const cells_type = "Cells"
+
+/// Whether a field is one the compiler fills to carry a reading, which no
+/// attribute, child or style says.
+fn says_state(f: Field) -> bool { f.ty == said_type || f.ty == cells_type }
 
 /// The primitive a component named with `@prim` — `@prim(.Button)` says
 /// `Button` — absent when it named none.
@@ -534,7 +648,7 @@ fn unread(t: Type) -> Diagnostic {
         "defect",
         t.at,
         "defect: `@derive(View)` could not read the library's own vocabulary over `${t.name}`",
-        "`Prim`, `Attribute`, `EventKind`, `Box`, `Style` and `Stand` are read by their modules' names — one moved",
+        "`Prim`, `Attribute`, `Box`, `Style` and `Stand` are read by their modules' names — one moved",
     )
 }
 
@@ -554,6 +668,51 @@ fn says_twice(f: Field) -> Diagnostic {
         "a member projects to one thing, and `${f.name}` says more than one",
         "keep one of `@attr`, `@children` and `@style`",
     )
+}
+
+fn host_unheard(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "host",
+        f.at,
+        "`${f.name}` is an event no platform delivers, and a primitive's event can fire only from one",
+        "name what fires it — `@host(web: .Click, terminal: .Enter) on ${f.name}`",
+    )
+}
+
+fn host_twice(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "host",
+        f.at,
+        "`${f.name}` says `@host` twice",
+        "one `@host(web: …, terminal: …)` names every platform",
+    )
+}
+
+fn host_unnamed(m: Mark, written: string) -> Diagnostic {
+    refuse_as_at(
+        "host",
+        m.at,
+        "`@host` names its platform: `${written}` has none",
+        "write `@host(web: .Click)` — the settings are ${ticked([web_label, terminal_label, prevent_label, always_label])}",
+    )
+}
+
+fn host_platform(m: Mark, label: string) -> Diagnostic {
+    refuse_as_at(
+        "host",
+        m.at,
+        "`@host` has no setting `${label}`",
+        "its settings are ${ticked([web_label, terminal_label, prevent_label, always_label])}",
+    )
+}
+
+fn host_flag(m: Mark, label: string, value: string) -> Diagnostic {
+    refuse_as_at("host", m.at, "`${label}` is `true` or `false`, not `${value}`", null)
+}
+
+fn no_host_event(m: Mark, what: string, value: string, enum_name: string, near: string?) -> Diagnostic {
+    let way = if near == null { "its events are `${enum_name}`" } else { "did you mean `${near!}`? its events are `${enum_name}`" }
+    refuse_as_at("host", m.at, "no ${what} `${value}`", way)
 }
 
 fn marked_event(f: Field, m: Mark) -> Diagnostic {
@@ -652,15 +811,6 @@ fn not_children(m: Mark, f: Field) -> Diagnostic {
         m.at,
         "a node's children are views, and `${f.name}` is `${f.kind.spelled()}`",
         "`@children` marks a `List<dyn View>`",
-    )
-}
-
-fn no_event(f: Field, known: List<string>) -> Diagnostic {
-    refuse_as_at(
-        "event",
-        f.at,
-        "`${f.name}` is no event a target hears",
-        "a primitive's events are ${ticked(known)}",
     )
 }
 

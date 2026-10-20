@@ -470,4 +470,27 @@ spec "features/closures/adversarial" {
             ) == 1
         }
     }
+    given "the fn-type seat carrier — a seat's own record" {
+        then "an empty seat list declares and calls" {
+            shown("let f: fn() -> int = () -> 4\nf()") == "4"
+        }
+        then "a trailing comma after the last seat parses" {
+            shown("let f: fn(int,) -> int = (x) -> x + 1\nf(3)") == "4"
+        }
+        then "a `mut` on only the second seat binds to the second" {
+            shown(
+                "fn w(a: List<int>, mut b: List<int>) -> int {\n    b.push(a.length)\n    b.length\n}\nlet g: fn(List<int>, mut List<int>) -> int = w\nmut ys = [1]\ng([5, 6], ys)",
+            ) == "2"
+        }
+        then "a fn type nested in a seat keeps both levels" {
+            shown(
+                "fn apply(f: fn(int) -> int, n: int) -> int { f(n) }\nlet g: fn(fn(int) -> int, int) -> int = apply\ng((v) -> v * 2, 5)",
+            ) == "10"
+        }
+        then "a `mut` seat accepts a callee that does not write" {
+            refusals(
+                "fn r(a: List<int>) -> int { a.length }\nlet g: fn(mut List<int>) -> int = r\n1",
+            ) == 0
+        }
+    }
 }

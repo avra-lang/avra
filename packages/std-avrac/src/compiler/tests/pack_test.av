@@ -39,6 +39,18 @@ fn damaged_root(name: string) -> string {
 }
 
 /// The store's segment files.
+/// `n` rows reading one shared input, sealed into a body with their segment gone.
+fn sealed_many(name: string, n: int) -> string {
+    let root = pack_root(name)
+    let w = pack_at(root, "print-one")
+    for i in 0..n { let _ = pack_put(w, "unit", "k${i}", "v${i}", ["d9 shared.av"]) }
+    let _ = seal(w)
+    for file in pack_files(root) {
+        if file.starts_with("seg-") { let _ = remove(joined_path("${root}/store", file)) }
+    }
+    root
+}
+
 fn segments_of(root: string) -> List<string> { [f for f in pack_files(root) if f.starts_with("seg-")] }
 
 spec "store/pack — segments, commit markers, the two tiers" {
@@ -156,6 +168,26 @@ spec "store/pack — segments, commit markers, the two tiers" {
             let r = pack_at(root, "print-one")
             let _ = pack_put(r, "unit", "a", "2", ["d1 z.av"])
             pack_suspects(r, ["a.av"]).is_empty() && pack_suspects(r, ["z.av"]).length == 1
+        }
+    }
+    given "a sealed body of many rows" {
+        then "a moved input names its readers by decoding each row once" {
+            let root = sealed_many("bulk", 64)
+            let r = pack_at(root, "print-one")
+            pack_suspects(r, ["shared.av"]).length == 64 && pack_traffic(r).rows == 64
+        }
+        then "a single lookup bisects the index and decodes one row" {
+            let root = sealed_many("bisect", 64)
+            let r = pack_at(root, "print-one")
+            let got = pack_get(r, "unit", "k17")
+            let t = pack_traffic(r)
+            got == "v17" && t.rows == 1 && t.probes <= 10
+        }
+        then "every key is found and an absent key is not" {
+            let root = sealed_many("every", 64)
+            let r = pack_at(root, "print-one")
+            [pack_get(r, "unit", "k${i}") == "v${i}" for i in 0..64].all(it) &&
+                pack_get(r, "unit", "absent") == null
         }
     }
     given "lookups and value reads asked of a pack" {

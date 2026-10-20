@@ -1,0 +1,65 @@
+// proves: `Field.spelled` crosses the written type WHOLE — each name beside the
+// module declaring it, its arguments nested, its `?`, and a fn type's seats with
+// the marks they were written with. A builtin crosses with no module. A variant's
+// payload fields cross the same way. A wrong crossing refuses here, which fails
+// the build.
+use @std.meta.{Type, Diagnostic, Spelled, refuse, Kind}
+use shapes.{Noted, Box}
+
+type Local = { a: int }
+
+/// A spelling as one line: `name@module`, arguments in `<>`, `?` for nullable,
+/// `!` for a `mut` seat, and a fn type as `fn(seats)->answer`.
+fn shown(s: Spelled) -> string {
+    let seat = "${s.module ?? "-"}${if s.mark.mutable { "!" } else { "" }}"
+    let tail = if s.optional { "?" } else { "" }
+    let n = s.args.length
+    if s.arrow {
+        return "fn(${[shown(a) for a in s.args.slice(0, n - 1)].join(",")})->${shown(s.args[n - 1])}${tail}"
+    }
+    let args = if s.args.is_empty() { "" } else { "<${[shown(a) for a in s.args].join(",")}>" }
+    "${s.name}@${seat}${args}${tail}"
+}
+
+fn spelled_are(t: Type) -> List<Diagnostic> {
+    let want = [
+        "own=int@-",
+        "same=Local@ftmods",
+        "imported=Noted@ftmods.shapes",
+        "meta=Kind@@std.meta",
+        "maybe=Noted@ftmods.shapes?",
+        "listed=List@-<Noted@ftmods.shapes>",
+        "mapped=Map@-<string@-,Box@ftmods.shapes<Noted@ftmods.shapes>>",
+        "nested=List@-<Box@ftmods.shapes<List@-<Noted@ftmods.shapes>>>",
+        "call=fn(Local@ftmods!,int@-)->Noted@ftmods.shapes?",
+    ]
+        .join(";")
+    let got = [f.name + "=" + shown(f.spelled!) for f in t.fields].join(";")
+    if got == want { [] } else { [refuse("spelled: ${got}")] }
+}
+
+@spelled_are
+type Carrier = {
+    own: int,
+    same: Local,
+    imported: Noted,
+    meta: Kind,
+    maybe: Noted?,
+    listed: List<Noted>,
+    mapped: Map<string, Box<Noted>>,
+    nested: List<Box<List<Noted>>>,
+    call: fn(mut Local, int) -> Noted?,
+}
+
+fn payloads_are(t: Type) -> List<Diagnostic> {
+    let got = [shown(f.spelled!) for v in t.variants for f in v.fields].join(";")
+    if got == "Noted@ftmods.shapes;List@-<Noted@ftmods.shapes>" { [] } else { [refuse("payload spelled: ${got}")] }
+}
+
+@payloads_are
+enum Either {
+    Left(item: Noted)
+    Right(items: List<Noted>)
+}
+
+println("ok")

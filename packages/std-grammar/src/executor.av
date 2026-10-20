@@ -581,12 +581,19 @@ fn match_seq<T, N>(
     // delimiter the sequence consumes opens the rest of it
     mut open = !capped
     for member in s.items {
-        let r = if member.trailer && !open {
-            missed<T, N>(cx, cursor, bindings, cx.silence, null)
-        } else if s.fold != null && member.rep == Rep.Star {
-            match_fold<T, N>(cx, rule_name, s.fold!, entry, member, cursor, bindings, !open)
-        } else {
-            match_item<T, N>(cx, rule_name, member, cursor, bindings, acc, !open)
+        let r = when {
+            member.trailer && !open -> missed<T, N>(cx, cursor, bindings, cx.silence, null)
+            s.fold != null && member.rep == Rep.Star -> match_fold<T, N>(
+                cx,
+                rule_name,
+                s.fold!,
+                entry,
+                member,
+                cursor,
+                bindings,
+                !open,
+            )
+            _ -> match_item<T, N>(cx, rule_name, member, cursor, bindings, acc, !open)
         }
         farthest = far_merge(farthest, r.farthest)
         if r.status == MatchStatus.Hit {
@@ -703,7 +710,7 @@ fn built<T, N>(
             cx
                 .build(
                     node_builder_name(owner, variant),
-                    [slot_value<T, N>(cx, bindings, sl, branch) for sl in slots!],
+                    [slot_value<T, N>(cx, bindings, sl, branch)? for sl in slots!],
                     branch,
                 )
         },
@@ -711,16 +718,29 @@ fn built<T, N>(
 }
 
 /// One payload as the builder receives it: the capture its label
-/// bound, the value the rule stated, or nothing.
-fn slot_value<T, N>(cx: MatchContext<T, N>, bindings: List<Binding<T, N>>, sl: Slot, branch: Loc?) -> Captured<
-    T,
-    N,
+/// bound, the value the rule stated, a node built in place, a list of
+/// those, or nothing. A nested build's own refusal is carried whole.
+fn slot_value<T, N>(cx: MatchContext<T, N>, bindings: List<Binding<T, N>>, sl: Slot, branch: Loc?) -> Result<
+    Captured<T, N>,
+    string,
 > {
     match sl {
-        .Label(name) -> binding_for<T, N>(bindings, name) ?? cx.absent,
-        .Fixed(text) -> captured_terminal<T, N>(cx.lex.stated(text, branch)),
-        .Empty -> cx.absent,
+        .Label(name) -> .Ok(binding_for<T, N>(bindings, name) ?? cx.absent),
+        .Fixed(text) -> .Ok(captured_terminal<T, N>(cx.lex.stated(text, branch))),
+        .Nested(inner) -> built<T, N>(cx, inner, bindings, [], branch),
+        .Items(items) -> .Ok(spliced<T, N>([slot_value<T, N>(cx, bindings, i, branch)? for i in items])),
+        .Empty -> .Ok(cx.absent),
     }
+}
+
+/// A list's items as one capture: a listed capture among them splices in
+/// and an absent one adds nothing, so `[a, rest]` reads as one run.
+fn spliced<T, N>(vs: List<Captured<T, N>>) -> Captured<T, N> {
+    Captured.Many(flatten([run_of<T, N>(v) for v in vs]))
+}
+
+fn run_of<T, N>(v: Captured<T, N>) -> List<Captured<T, N>> {
+    match v { .Many(items) -> items, .Absent -> [], .Terminal(_) or .Node(_) -> [v] }
 }
 
 /// A node build reaching the engine is a DEFECT of the assembly, not
@@ -1221,6 +1241,7 @@ type Taken<T, N> = {
     status: MatchStatus,
     tier: int,
     suffixed: bool,
+    suffix_at: int,
     op_at: int,
     op_words: int,
     rhs: Captured<T, N>,
@@ -1237,6 +1258,7 @@ fn untaken<T, N>(cx: MatchContext<T, N>, status: MatchStatus, farthest: Farthest
         status: status,
         tier: 0,
         suffixed: false,
+        suffix_at: 0 - 1,
         op_at: 0,
         op_words: 0,
         rhs: cx.absent,
@@ -1399,6 +1421,7 @@ fn take_operator<T, N>(mut cx: MatchContext<T, N>, k: Climbing, e: OpEntry, curs
             status: MatchStatus.Hit,
             tier: e.tier,
             suffixed: true,
+            suffix_at: e.at,
             op_at: cursor,
             op_words: e.words.length,
             rhs: right.value,
@@ -1421,6 +1444,7 @@ fn take_operator<T, N>(mut cx: MatchContext<T, N>, k: Climbing, e: OpEntry, curs
         status: tighter.status,
         tier: e.tier,
         suffixed: false,
+        suffix_at: 0 - 1,
         op_at: cursor,
         op_words: e.words.length,
         rhs: tighter.value,
@@ -1446,7 +1470,7 @@ fn pair<T, N>(
         Binding { label: "op", value: op },
         Binding { label: "right", value: t.rhs },
     ]
-    built<T, N>(cx, tier.build ?? k.directive, seen, [left, op, t.rhs], branch)
+    built<T, N>(cx, tier.build_at(t.suffix_at) ?? k.directive, seen, [left, op, t.rhs], branch)
 }
 
 /// The operator a pair's builds read as `op`: its one token, or — for a

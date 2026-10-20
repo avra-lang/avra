@@ -14,6 +14,7 @@ use @std.grammar.{
     Rep,
     Build,
     Fixed,
+    Term,
     Expect,
     Recover,
     Diagnostic,
@@ -36,7 +37,9 @@ fn build_grammar_lit(b: Builder) -> Result<LangNode, string> {
     if gp.built == null || gp.diagnostics.any(it.cause != Cause.Defect) {
         return .Err(unparsed(gp.diagnostics))
     }
+    let writing = b.store.marks()
     let e = b.expr_node(b.store.expr(grammar_expr(b, gp.built!, t.span)))
+    b.written_in(writing, "@std.grammar")
     b.store.mark_grammar_lit(e, t.text)
     b.wrap_expr(e)
 }
@@ -160,13 +163,32 @@ fn build_expr(b: Builder, held: Build?, sp: Span?) -> ExprId {
 }
 
 fn fixed_expr(b: Builder, f: Fixed, sp: Span?) -> ExprId {
+    let stated? = f.term else {
+        return lit_struct(
+            b,
+            "Fixed",
+            ["name", "text"],
+            [text_expr(b, f.name, sp), text_expr(b, f.text, sp)],
+            sp,
+        )
+    }
     lit_struct(
         b,
         "Fixed",
-        ["name", "text"],
-        [text_expr(b, f.name, sp), text_expr(b, f.text, sp)],
+        ["name", "text", "term"],
+        [text_expr(b, f.name, sp), text_expr(b, f.text, sp), term_expr(b, stated, sp)],
         sp,
     )
+}
+
+/// A stated term as the value that builds it: a node's build or a list's
+/// items, written whole.
+fn term_expr(b: Builder, t: Term, sp: Span?) -> ExprId {
+    match t {
+        .Text(text) -> variant(b, "Term", "Text", [text_expr(b, text, sp)], sp),
+        .Node(built) -> variant(b, "Term", "Node", [build_expr(b, built, sp)], sp),
+        .List(items) -> variant(b, "Term", "List", [list_expr(b, [term_expr(b, i, sp) for i in items], sp)], sp),
+    }
 }
 
 /// An `@operators` block is written as the call that reads its tables
@@ -198,8 +220,8 @@ fn suffix_expr(b: Builder, x: Suffix, sp: Span?) -> ExprId {
     lit_struct(
         b,
         "Suffix",
-        ["word", "rule"],
-        [text_expr(b, x.word, sp), text_expr(b, x.rule, sp)],
+        ["word", "rule", "build"],
+        [text_expr(b, x.word, sp), text_expr(b, x.rule, sp), build_expr(b, x.build, sp)],
         sp,
     )
 }

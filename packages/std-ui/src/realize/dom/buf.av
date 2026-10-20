@@ -21,9 +21,20 @@ impl Buf {
         self.push_byte(v >> 24)
     }
 
-    /// A length-prefixed value: its byte length, then its bytes.
-    fn push_str(s: string) {
-        let bs = s.bytes()
+    /// A non-negative number in seven-bit groups, the low group first, the high
+    /// bit of each byte saying another follows: one byte under 128, two under
+    /// 16,384, three under 2,097,152.
+    fn push_varint(n: int) {
+        mut rest = n
+        while rest >= 128 {
+            self.push_byte(rest % 128 + 128)
+            rest = rest / 128
+        }
+        self.push_byte(rest)
+    }
+
+    /// Octets: their count, then each.
+    fn push_octets(bs: Bytes) {
         self.push_int(bs.length)
         mut i = 0
         while i < bs.length {
@@ -31,6 +42,9 @@ impl Buf {
             i = i + 1
         }
     }
+
+    /// A length-prefixed value: its byte length, then its bytes.
+    fn push_str(s: string) { self.push_octets(s.bytes()) }
 
     /// The bytes built so far. `Bytes` gathers the list once.
     fn take() -> Bytes { self.bytes.get().bytes() ?? "".bytes() }

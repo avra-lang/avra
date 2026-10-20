@@ -1,8 +1,10 @@
 // proves: under a cancel a `defer` runs whole, so a bare await there of
 // a task that has already ended cancelled has no answer to go on with —
 // it traps
+use @std.task.{open_channel}
 use @std.time.{ms, secs, sleep}
 
+let up = open_channel<int>(1)
 let t = spawn {
     defer {
         let slow = spawn {
@@ -15,10 +17,11 @@ let t = spawn {
         let v = slow.await
         println("unreached ${v}")
     }
+    let _ = up.sink.post(1)
     sleep(secs(60))
     0
 }
-sleep(ms(1))
+let _ = up.source.next()
 t.cancel()
-sleep(ms(5))
+let _ = t.await catch c -> 0
 println("unreached ${t.done}")

@@ -1,0 +1,40 @@
+//! Parse-time lowering: the statement becomes the const that reads the
+//! file through its kind — `provided<Kind>("path")`, whose literal the
+//! embed law judges and whose kind the checker holds to `Provider` — and
+//! wears the `bundled` mark a library `collect` gathers it by. Both names
+//! are written where their libraries declare them (`written_in`), so no
+//! declaration of the landing file can stand in for either.
+use core.{Expr, Stmt, Scoped, Annotation}
+use features.{LangNode, Builder}
+
+fn build_asset(b: Builder) -> Result<LangNode, string> {
+    let name = b.token(0)?
+    let kinds = b.type_refs(1)?
+    let kind? = kinds.first() else { return .Err(unpinned_asset(name.text)) }
+    let path = b.token(2)?
+    let reading = b.store.marks()
+    let read = b
+        .expr_node(
+            Expr
+                .Call(
+                    Scoped("provided"),
+                    [kind with { spliced: true }],
+                    [b.store.alloc_expr(Expr.StrLit(path.text), path.span)],
+                ),
+        )
+    b.written_in(reading, "@std.meta")
+    let s = b.store.alloc_stmt(Stmt.ConstDecl(Scoped(name.text), kind, read), b.span)
+    b.store.mark_asset(s)
+    let marking = b.store.marks()
+    let callee = b.store.alloc_expr(Expr.Ident(Scoped("bundled")), path.span)
+    b.written_in(marking, "@std.assets")
+    b.store.annotate(s, Annotation { name: "bundled", callee: callee, args: [], span: null })
+    b.wrap_stmt(s)
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+/// An asset's type is written; the file's bytes do not choose it.
+fn unpinned_asset(name: string) -> string {
+    "an asset names its kind — `asset ${name}: Picture = \"…\"` — the file's octets do not choose it"
+}

@@ -1,67 +1,23 @@
 //! The if-expression's NodeSemantics: dispatch only. The typing rule
 //! lives in check.av; lowering — the MEANING — in lower.av.
-use core.{ExprId, StmtId, TypeId, Reg}
-use core.stmt.{IfStmt}
-use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
+use core.{ExprId, TypeId, Reg, Kids, Heirs, some_list}
+use features.{ResolveCx, TypeCx, LowerCx, Meaning}
 
 use core.expr.{If}
 
-impl NodeSemantics for If {
+impl Kids for If {
     /// The BRANCHES are hidden: each types under the narrow a
     /// presence-test condition may prove, so the rule walks them.
     fn kids() -> List<ExprId> { [self.cond] }
-
-    fn heirs() -> List<ExprId> { [self.on_true, self.on_false] }
 }
-
-/// The STATEMENT form's semantics: a valueless region — the guard
-/// idiom's home. Each branch scopes its own statements.
-impl StmtSemantics for IfStmt {
-    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
-        match cx.view.store.stmt(s) {
-            .IfStmt(c, t, e) -> {
-                cx.walk(c)
-                cx.scope_stmts(t)
-                cx.scope_stmts(e)
-            },
-            _ -> nothing(),
-        }
-    }
-
-    fn type_stmt(mut cx: TypeCx, s: StmtId) {
-        match cx.view.store.stmt(s) {
-            .IfStmt(c, t, e) -> {
-                cx.walk(c)
-                cx.require_bool(c, "an `if` condition", "this decides the branch")
-                cx.type_stmts(t)
-                cx.type_stmts(e)
-            },
-            _ -> nothing(),
-        }
-    }
-
-    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
-        match cx.view.store.stmt(s) {
-            .IfStmt(c, t, e) -> {
-                lower_if_stmt(cx, c, t, e)
-                null
-            },
-            _ -> null,
-        }
-    }
-}
-
-/// The valueless region: both arms yield a THROWAWAY zero — the
-/// merge register exists because every region merges, and nothing
-/// reads it. A branch that RETURNS never reaches its yield.
-fn lower_if_stmt(mut cx: LowerCx, c: ExprId, t: List<StmtId>, e: List<StmtId>) {
-    cx.void_branches(cx.reg_of(c)) { cx -> cx.arm_stmts(t) } else { cx -> cx.arm_stmts(e) }
+impl Heirs for If {
+    fn heirs() -> List<ExprId> { [self.on_true].concat(some_list(self.on_false)) }
 }
 
 impl Meaning for If {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
         cx.arm_scope([], self.on_true)
-        cx.arm_scope([], self.on_false)
+        if self.on_false != null { cx.arm_scope([], self.on_false!) }
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         if_type(cx, e)

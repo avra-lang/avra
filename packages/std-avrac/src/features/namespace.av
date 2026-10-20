@@ -55,6 +55,9 @@ export type Namespace = {
     // the sibling files' private declarations of a name two files keep
     // apart — what a read of that name here is refused with
     apart: List<DeclId>,
+    // the names this file's `use` lines were refused — their reads are
+    // answered by that refusal alone
+    refused: List<string>,
     voices: Voices,
 }
 
@@ -115,6 +118,7 @@ export fn no_names() -> Namespace {
         fn_names: [],
         type_names: [],
         apart: [],
+        refused: [],
         voices: no_voices(),
     }
 }
@@ -125,7 +129,8 @@ export fn no_names() -> Namespace {
 /// each file's own and no sibling's.
 export type ModuleNames = { bound: List<DeclId>, clashes: List<Clash>, base: BoundNames, apart: List<DeclId> }
 
-export type Clash = { file: FileId, diag: Diag }
+// the name a module declared twice, so a read of it is answered by this refusal
+export type Clash = { file: FileId, name: string, diag: Diag }
 
 /// One imported declaration: what, where the `use` stands, the name it
 /// binds under (empty for its own), and whether an `export use` makes
@@ -184,7 +189,7 @@ impl Decls {
         for d in module.apart {
             if self.declared_in(d, file) { b.bind_decl(d) }
         }
-        for i in imports { b.import(i, file, module.base) }
+        for i in imports { b.import(i, file, module.base, [c.name for c in module.clashes]) }
         for i in prelude { b.bind_weakly(i.decl, module.base) }
         for d in self.builtin_decls() { b.bind_weakly(d, module.base) }
         let lost = [c.diag for c in module.clashes if in_file(c, file)]
@@ -242,7 +247,7 @@ impl Binder {
         if kept_apart_pair(p, x) { return self.keep_apart(prior, d) }
         let at = self.decls.loc(d)
         let diag = if same_file(p.file, x.file) { defined_twice(at, x.kind, x.name) } else { declared_twice(at, x.name, self.shown(self.decls.file(p.file).path)) }
-        self.clashes.push(Clash { file: x.file, diag: diag })
+        self.clashes.push(Clash { file: x.file, name: x.name, diag: diag })
     }
 
     /// The declaration of this name its own file already keeps apart.
@@ -281,14 +286,16 @@ impl Binder {
     /// An import binds in the file's namespace; a name already
     /// visible refuses — unless it is the very same declaration, or a
     /// sibling file's private one, which a plain import shadows here
-    /// and a re-export, claiming the name for the module, does not.
-    fn import(i: Import, file: FileId, base: BoundNames) {
+    /// and a re-export, claiming the name for the module, does not. A name
+    /// the module already refused as declared twice (`refused`) is that
+    /// refusal's: its clash with an import is no second finding.
+    fn import(i: Import, file: FileId, base: BoundNames, refused: List<string>) {
         let x = self.decls.decl(i.decl)
         // A `use` item's ALIAS is the name it binds under; the empty
         // alias is the declaration's own name.
         let name = if i.renamed.is_empty() { x.name } else { i.renamed }
         let prior? = self.held(x.kind, name) ?? self.claimed(base, x.kind, name, file, i.shared) else { return self.bind(x.kind, name, i.decl) }
-        if same_decl(prior, i.decl) { return }
+        if same_decl(prior, i.decl) || refused.contains(name) { return }
         self.speak(import_clash(i.at, name, self.holder(prior, file)))
     }
 
@@ -377,9 +384,23 @@ impl Decls {
             let key = self.method_key(m)
             let generic = self.impl_trait_args(m).length > 0
             if taken.contains(key) {
-                out.push(Clash { file: x.file, diag: method_taken(self.loc(m), x.owner, key) })
+                out
+                    .push(
+                        Clash {
+                            file: x.file,
+                            name: x.name,
+                            diag: method_taken(self.loc(m), x.owner, key),
+                        },
+                    )
             } else if generic && plain.contains(x.name) || !generic && instanced.contains(x.name) {
-                out.push(Clash { file: x.file, diag: method_shared(self.loc(m), x.owner, x.name) })
+                out
+                    .push(
+                        Clash {
+                            file: x.file,
+                            name: x.name,
+                            diag: method_shared(self.loc(m), x.owner, x.name),
+                        },
+                    )
             }
             taken.push(key)
             if generic { instanced.push(x.name) } else { plain.push(x.name) }
@@ -474,7 +495,7 @@ fn declared_twice(at: Loc?, name: string, other: string) -> Diag {
         at,
         "`${name}` is declared twice in this module — here and in `${other}`",
         "declared here",
-        "an exported name is its module's one declaration — rename one, or drop the `export` so each file keeps its own",
+        "an exported name is its module's one declaration — rename one, or drop an `export`",
     )
 }
 

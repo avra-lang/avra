@@ -79,6 +79,28 @@ impl SyntaxArena {
         }
     }
 
+    /// A struct literal's SITE CONTENT: its own fingerprint with every
+    /// struct literal nested under it reduced to its type's name, so an
+    /// edit below a literal moves nothing above it. The literal itself is
+    /// folded whole — its own words are part of where it was written.
+    fn site_fingerprint(e: ExprId) -> int { self.site_fp(At.Expr(e)) }
+
+    fn site_fp(at: At) -> int {
+        fp(310, [self.shallow_at(at), fp_list([self.site_kid(k) for k in self.kids_at(at)])])
+    }
+
+    /// One child under a site fold: a nested struct literal is its type's
+    /// name alone, anything else folds through.
+    fn site_kid(kid: At) -> int {
+        match kid {
+            .Expr(x) -> match self.expr(x) {
+                .StructLit(name, _, _) -> fp(311, [fp_str(name.of)]),
+                _ -> self.site_fp(kid),
+            },
+            rest -> self.site_fp(kid),
+        }
+    }
+
     /// A node's KIND alone — which of `At`'s categories, and which variant
     /// — every field left out: the index a pattern whose own root names a
     /// hole narrows to, since no field's spelling can be folded for it. A
@@ -392,30 +414,6 @@ fn shallow_arms(arms: List<Arm>) -> int {
 /// its guard when it has one, then its value.
 fn kids_arms(arms: List<Arm>) -> List<At> {
     flatten([kids_of_arm(a) for a in arms])
-}
-
-/// A comprehension clause run's ARITY: each clause's own kind and,
-/// for a head, whether it names an index and a range — every id it
-/// carries is a CHILD, matched through `kids`, never folded here.
-fn shallow_comp_clauses(clauses: List<CompClause>) -> int {
-    fp_list([shallow_comp_clause(c) for c in clauses])
-}
-
-fn shallow_comp_clause(c: CompClause) -> int {
-    match c {
-        .Head(index, name, _, hi) -> fp(305, [fp_str(index?.of ?? ""), fp_str(name.of), flagged(hi != null)]),
-        .Filter(_) -> fp(306, []),
-    }
-}
-
-/// A comprehension clause run's children, in payload order: a head's
-/// source and range bound (when written), a filter's condition.
-fn kids_comp_clauses(clauses: List<CompClause>) -> List<At> {
-    flatten([kids_of_comp_clause(c) for c in clauses])
-}
-
-fn kids_of_comp_clause(c: CompClause) -> List<At> {
-    [At.Expr(k) for k in comp_clause_reach(c)]
 }
 
 fn kids_of_arm(a: Arm) -> List<At> {

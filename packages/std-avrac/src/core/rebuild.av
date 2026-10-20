@@ -11,6 +11,8 @@
 //! nested quote's body is copied verbatim, a sublanguage's expansion
 //! replaces its holes.
 
+use @std.relation.engine.{list_cell}
+
 /// What a hole is filled with — one shape per `HoleKind`, and ONE
 /// for a fill that no seat can hold. `Unplaceable` carries the words
 /// rather than a flag: the splice cannot re-derive why, and a fill
@@ -25,6 +27,7 @@ export enum Filled {
     Arms(arms: List<Arm>)
     Params(ps: List<Param>)
     Inits(inits: Inits)
+    Pat(p: PatId)
     Unplaceable(why: string)
 }
 
@@ -89,6 +92,12 @@ export type Rebuilder = {
     // the open nodes, innermost last: whether a name of each came
     // through a hole
     holed: List<bool>,
+    // how a copied sugar's meaning is minted anew beside the copy
+    door: Means,
+    // the copy of each source expression reached so far, by its index: a node
+    // the source reaches twice is one node in the copy. A cell, because it is
+    // an identity — a walk that copies the rebuilder shares it.
+    copies: Cell<List<ExprId?>>,
 }
 
 /// A classifying walk over a store's quote body, `runs` the run mark
@@ -114,6 +123,8 @@ export fn classifier(store: SyntaxArena, runs: List<bool>) -> Rebuilder {
         misfits: [],
         unplaceable: [],
         holed: [],
+        door: no_door,
+        copies: list_cell(),
     }
 }
 
@@ -125,6 +136,7 @@ export fn copier(
     dst: SyntaxArena,
     fills: List<fn(HoleKind) -> Filled>,
     runs: List<bool>,
+    door: Means,
 ) -> Rebuilder {
     Rebuilder {
         src: src,
@@ -145,6 +157,8 @@ export fn copier(
         misfits: [],
         unplaceable: [],
         holed: [],
+        door: door,
+        copies: list_cell(),
     }
 }
 
@@ -178,7 +192,11 @@ export fn quote_kind(store: SyntaxArena, e: ExprId) -> QuoteKind {
             if !arms.is_empty() { return QuoteKind.Arms }
             if ss.is_empty() { return QuoteKind.Stmts }
             if ss.all((s: StmtId) -> store.bare_hole(s)) { return QuoteKind.Holes }
-            if store.hole_stmt(ss.last()!) == null && store.stmt(ss.last()!) is .ExprStmt { return QuoteKind.Expr }
+            if store.hole_stmt(ss.last()!) == null &&
+                store.stmt(ss.last()!) is .ExprStmt &&
+                !store.guard_stmt(ss.last()!) {
+                return QuoteKind.Expr
+            }
             if ss.all((s: StmtId) -> store.declares(s) || store.hole_stmt(s) != null) { return QuoteKind.Decls }
             QuoteKind.Stmts
         },
@@ -197,11 +215,60 @@ impl Rebuilder {
             if !self.copying { return e }
             return self.placed_fill(e, self.fill_expr(k!))
         }
+        let tail: int? = self.tail_hole(x)
+        if tail != null { return self.tail_block(e, x, tail!) }
+        let known? = self.copy_of(e) else { return self.rebuilt_expr(e, x) }
+        known
+    }
+
+    /// The copy already made of source expression `e`, if any.
+    fn copy_of(e: ExprId) -> ExprId? {
+        if e.index < self.copies.get().length { self.copies.get()[e.index] } else { null }
+    }
+
+    /// Remembers `copy` as source expression `e`'s.
+    fn remember(e: ExprId, copy: ExprId) {
+        while self.copies.get().length <= e.index { self.copies.push(null) }
+        self.copies.set_at(e.index, copy)
+    }
+
+    /// The copy of `e`, kept so a second reach of the same node answers it.
+    mut fn rebuilt_expr(e: ExprId, x: Expr) -> ExprId {
         self.holed.push(false)
         let rebuilt = x.rebuilt(self)
         let holed = self.holed.pop()
         if !self.copying { return e }
-        self.minted_expr(e, rebuilt, holed)
+        let copy = self.minted_expr(e, rebuilt, holed)
+        self.remember(e, copy)
+        copy
+    }
+
+    /// The hole a block's value is, when it is a lone one.
+    fn tail_hole(x: Expr) -> int? {
+        match x {
+            .Block(ss, value) -> {
+                let v? = value else { return null }
+                let k? = self.lone_hole(self.src.ident_name(v)) else { return null }
+                if self.runs[k] { null } else { k }
+            },
+            _ -> null,
+        }
+    }
+
+    /// A block whose LAST statement is a lone hole: the fill is the
+    /// block's tail — statements join it and the last that answers is
+    /// its value, an expression is its value outright.
+    mut fn tail_block(e: ExprId, x: Expr, k: int) -> ExprId {
+        self.classify(k, HoleKind.Tail)
+        let ss: List<StmtId> = match x { .Block(held, _) -> held, _ -> [] }
+        self.holed.push(false)
+        let init = self.stmts(ss)
+        let holed = self.holed.pop()
+        if !self.copying { return e }
+        let all = init.concat(self.fill_tail(k))
+        let last? = all.last() else { return self.minted_expr(e, Expr.Block([], null), holed) }
+        let value? = self.dst.answer_of(last) else { return self.minted_expr(e, Expr.Block(all, null), holed) }
+        self.minted_expr(e, Expr.Block(all.slice(0, all.length - 1), value), holed)
     }
 
     mut fn expr_opt(e: ExprId?) -> ExprId? {
@@ -215,13 +282,20 @@ impl Rebuilder {
     /// list literal's elements: a lone `${..name}` there splices a
     /// whole span, every other element fills singly.
     mut fn expr_seat(e: ExprId) -> List<ExprId> {
-        let k: int? = self.run_hole(e)
+        let k: int? = self.run_hole(e) ?? self.spread_hole_of(e)
         if k != null {
             self.classify(k!, HoleKind.Run)
             if !self.copying { return [e] }
             return self.fill_exprs(k!)
         }
         [self.expr(e)]
+    }
+
+    /// The hole an element spreads — `..${xs}` is `${..xs}` written the
+    /// way a spread is written everywhere else.
+    fn spread_hole_of(e: ExprId) -> int? {
+        let operand? = self.src.spread_operand(e) else { return null }
+        self.lone_hole(self.src.ident_name(operand))
     }
 
     mut fn stmts(ss: List<StmtId>) -> List<StmtId> { flatten([self.stmt(s) for s in ss]) }
@@ -267,7 +341,7 @@ impl Rebuilder {
         let k? = self.lone_hole(self.src.bind_name(p)) else { return [self.pat(p)] }
         self.classify(k, HoleKind.Binder)
         if !self.copying { return [p] }
-        [self.dst.alloc_pat(Pat.Bind(Scoped(n))) for n in self.fill_names(k)]
+        self.fill_binders(k)
     }
 
     /// One pattern: a lone binder hole fills with its first name.
@@ -276,7 +350,7 @@ impl Rebuilder {
         if k != null {
             self.classify(k!, HoleKind.Binder)
             if !self.copying { return p }
-            return self.dst.alloc_pat(Pat.Bind(Scoped(self.fill_name(k!))))
+            return self.fill_pat(k!)
         }
         self.holed.push(false)
         let rebuilt = self.src.pat(p).rebuilt(self)
@@ -473,36 +547,9 @@ impl Rebuilder {
         k
     }
 
-    mut fn variants(vs: List<Variant>) -> List<Variant> { [self.variant(v) for v in vs] }
-
-    mut fn variant(v: Variant) -> Variant {
-        v with { name: self.plain_name(v.name), payloads: self.params(v.payloads), marks: self.marks(v.marks) }
-    }
-
     /// A member's marks, each call copied as any expression is.
     mut fn marks(ms: List<Mark>) -> List<Mark> {
         [m with { call: self.expr_opt(m.call) } for m in ms]
-    }
-
-    mut fn case(c: Case) -> Case {
-        c with { body: self.expr(c.body) }
-    }
-
-    mut fn cases(cs: List<Case>) -> List<Case> { [self.case(c) for c in cs] }
-
-    mut fn comp_clauses(clauses: List<CompClause>) -> List<CompClause> { [self.comp_clause(c) for c in clauses] }
-
-    mut fn comp_clause(c: CompClause) -> CompClause {
-        match c {
-            .Head(index, name, source, hi) -> CompClause
-                .Head(
-                    self.scoped_name_opt(index),
-                    self.scoped_name(name),
-                    self.expr(source),
-                    self.expr_opt(hi),
-                ),
-            .Filter(cond) -> CompClause.Filter(self.expr(cond)),
-        }
     }
 
     // ── the view payload ──
@@ -542,24 +589,18 @@ impl Rebuilder {
 
     mut fn minted_expr(e: ExprId, x: Expr, holed: bool) -> ExprId {
         let id = self.dst.alloc_expr(x, self.src.expr_span(e))
-        if self.src.is_trailing(e) { self.dst.mark_trailing(id) }
-        if self.src.is_piped(e) { self.dst.mark_piped(id) }
-        if self.src.is_type_lit(e) { self.dst.mark_type_lit(id) }
-        if self.src.is_hole(e) { self.dst.mark_hole(id) }
-        if self.src.is_raw_string(e) { self.dst.mark_raw_string(id) }
-        if self.src.is_sugar_match(e) { self.dst.mark_sugar_match(id) }
+        self.src.copy_expr_tables(e, self.dst, id)
         let noted: string? = self.src.means_note(e)
-        if noted != null { self.dst.mint_for(id, self.copies_of(self.src.minted_nodes(e)), noted!) }
-        let ip: PayloadIs? = self.src.is_payload(e)
+        if noted != null {
+            let minted = self.dst.mean(id, noted!, self.door)
+            self.made_exprs = self.made_exprs.concat(minted)
+            self.made_from = self.made_from.concat([e for _m in minted])
+        }
+        self.extended(e, id)
+        let ip: PayloadIs? = self.src.payload_marked(e)
         if ip != null { self.dst.mark_is_payload(id, self.pat(ip!.pat), ip!.has_else) }
-        let gl: string? = self.src.grammar_lit_of(e)
-        if gl != null { self.dst.mark_grammar_lit(id, gl!) }
-        let tbl: TableSpec? = self.src.table_of(e)
-        if tbl != null { self.dst.mark_table(id, tbl!) }
         let targs = self.src.struct_targs_of(e)
         if !targs.is_empty() { self.dst.mark_struct_targs(id, [self.tref(a) for a in targs]) }
-        let wc: int? = self.src.written_close(e)
-        if wc != null { self.dst.mark_written_close(id, wc!) }
         let bp: BodyParts? = x.body_of()
         if bp != null {
             let b = bp!
@@ -575,35 +616,27 @@ impl Rebuilder {
         id
     }
 
-    /// Where the copy of each source node stands — the nodes a copied
-    /// sugar's meaning minted answer for the sugar's own copy.
-    fn copies_of(from: List<ExprId>) -> List<ExprId> {
-        [self.made_exprs[i] for i, s in self.made_from if from.any(same_expr(it, s))]
+    /// The nodes `e` is extended by, copied beside its copy `id`.
+    mut fn extended(e: ExprId, id: ExprId) {
+        let roots = self.src.extended_by(e)
+        if roots.is_empty() { return }
+        let made = self.made_exprs.length
+        let holed = self.holed_exprs.length
+        let copies = [self.expr(r) for r in roots]
+        let minted = self.made_exprs.drop(made).concat(self.holed_exprs.drop(holed))
+        self.dst.extend(id, self.src.means_note(e) ?? "", copies, minted)
     }
 
     mut fn minted_stmt(s: StmtId, x: Stmt, holed: bool, annotations: List<Annotation>) -> StmtId {
         let id = self.dst.alloc_stmt(x, self.src.stmt_span(s))
-        if self.src.is_exported(s) { self.dst.mark_exported(id) }
-        if self.src.is_mutating(s) { self.dst.mark_mutating(id) }
-        if self.src.is_once(s) { self.dst.mark_once(id) }
-        if self.src.is_host_fn(s) { self.dst.mark_host(id) }
-        if self.src.is_static(s) { self.dst.mark_static(id) }
-        let g: GrammarSpec? = self.src.grammar_of(s)
-        if g != null { self.dst.mark_grammar(id, g!) }
-        let of: string? = self.src.instance_of(s)
-        if of != null { self.dst.mark_component_inst(id, of!) }
-        let itp: ImplTypeParams? = self.src.impl_tparams_of(s)
-        if itp != null { self.dst.mark_impl_tparams(id, itp!.of, itp!.target) }
+        self.src.copy_stmt_tables(s, self.dst, id)
         let args = self.src.trait_args_of(s)
         if !args.is_empty() { self.dst.mark_trait_args(id, [self.tref(a) for a in args]) }
-        let own = self.src.trait_tparams_of(s)
-        if !own.is_empty() { self.dst.mark_trait_tparams(id, own) }
         let spreads = self.src.spreads_of(s)
         if !spreads.is_empty() { self.dst.spread_fields(id, [x with { of: self.tref(x.of) } for x in spreads]) }
         let docs: List<string>? = self.src.doc_comment(s)
         if docs != null { self.dst.document(id, docs!, self.src.doc_at(s)) }
         for a in annotations { self.dst.annotate(id, a) }
-        if self.src.is_collect_dense(s) { self.dst.mark_collect_dense(id, true) }
         if holed { self.holed_stmts.push(id) } else { self.made_stmts.push(id) }
         id
     }
@@ -674,7 +707,7 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 self.dst.alloc_expr(Expr.Error)
             },
-            .Exprs(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> {
+            .Exprs(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) or .Pat(_) -> {
                 self.misfits.push(k)
                 self.dst.alloc_expr(Expr.Error)
             },
@@ -690,7 +723,7 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 []
             },
-            .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> {
+            .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) or .Pat(_) -> {
                 self.misfits.push(k)
                 []
             },
@@ -703,7 +736,32 @@ impl Rebuilder {
             .Type(t) -> t.name,
             .Names(ts) -> ts.first() ?? "",
             .Unplaceable(why) -> self.unplaced_name(k, why),
-            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> self.misfit(k),
+            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) or .Pat(_) -> self.misfit(k),
+        }
+    }
+
+    /// A binder seat's fill: a pattern id stands as itself, a name is bound.
+    mut fn fill_pat(k: int) -> PatId {
+        match self.filled(k, HoleKind.Binder) {
+            .Pat(p) -> p,
+            .Name(t) -> self.dst.alloc_pat(Pat.Bind(Scoped(t))),
+            .Names(ts) -> self.dst.alloc_pat(Pat.Bind(Scoped(ts.first() ?? ""))),
+            .Type(t) -> self.dst.alloc_pat(Pat.Bind(Scoped(t.name))),
+            .Unplaceable(why) -> self.dst.alloc_pat(Pat.Bind(Scoped(self.unplaced_name(k, why)))),
+            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> self.dst.alloc_pat(Pat.Bind(Scoped(self.misfit(k)))),
+        }
+    }
+
+    /// A binder run's fill: a pattern stands as itself, names are one
+    /// binder each.
+    mut fn fill_binders(k: int) -> List<PatId> {
+        match self.filled(k, HoleKind.Binder) {
+            .Pat(p) -> [p],
+            .Names(ts) -> [self.dst.alloc_pat(Pat.Bind(Scoped(t))) for t in ts],
+            .Name(t) -> [self.dst.alloc_pat(Pat.Bind(Scoped(t)))],
+            .Type(t) -> [self.dst.alloc_pat(Pat.Bind(Scoped(t.name)))],
+            .Unplaceable(why) -> [self.dst.alloc_pat(Pat.Bind(Scoped(self.unplaced_name(k, why))))],
+            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> [self.dst.alloc_pat(Pat.Bind(Scoped(self.misfit(k))))],
         }
     }
 
@@ -713,7 +771,7 @@ impl Rebuilder {
             .Name(t) -> [t],
             .Type(t) -> [t.name],
             .Unplaceable(why) -> [self.unplaced_name(k, why)],
-            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> [self.misfit(k)],
+            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) or .Pat(_) -> [self.misfit(k)],
         }
     }
 
@@ -722,7 +780,7 @@ impl Rebuilder {
             .Type(t) -> t,
             .Name(t) -> named_ref(t),
             .Unplaceable(why) -> named_ref(self.unplaced_name(k, why)),
-            .Names(_) or .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> named_ref(self.misfit(k)),
+            .Names(_) or .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) or .Pat(_) -> named_ref(self.misfit(k)),
         }
     }
 
@@ -734,7 +792,24 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 []
             },
-            .Exprs(_) or .Name(_) or .Names(_) or .Type(_) or .Arms(_) or .Params(_) or .Inits(_) -> {
+            .Exprs(_) or .Name(_) or .Names(_) or .Type(_) or .Arms(_) or .Params(_) or .Inits(_) or .Pat(_) -> {
+                self.misfits.push(k)
+                []
+            },
+        }
+    }
+
+    /// A block tail's fill: statements as they stand, an expression as
+    /// the one statement it makes.
+    mut fn fill_tail(k: int) -> List<StmtId> {
+        match self.filled(k, HoleKind.Tail) {
+            .Stmts(ss) -> ss,
+            .Expr(e) -> [self.dst.alloc_stmt(Stmt.ExprStmt(e))],
+            .Unplaceable(why) -> {
+                self.unplaced(k, why)
+                []
+            },
+            .Exprs(_) or .Name(_) or .Names(_) or .Type(_) or .Arms(_) or .Params(_) or .Inits(_) or .Pat(_) -> {
                 self.misfits.push(k)
                 []
             },
@@ -748,7 +823,7 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 []
             },
-            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Params(_) or .Inits(_) -> {
+            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Params(_) or .Inits(_) or .Pat(_) -> {
                 self.misfits.push(k)
                 []
             },
@@ -762,7 +837,7 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 []
             },
-            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Inits(_) -> {
+            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Inits(_) or .Pat(_) -> {
                 self.misfits.push(k)
                 []
             },
@@ -776,7 +851,7 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 spoiled_inits()
             },
-            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) -> {
+            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Pat(_) -> {
                 self.misfits.push(k)
                 spoiled_inits()
             },

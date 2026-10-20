@@ -29,6 +29,12 @@
 //! own implementation moves (CLAUDE.md's "a voice states the law,
 //! not the symptom"). A rule with no `@law` stays behind the IR
 //! proof alone.
+//!
+//! `@says("reason")` records that a rule only SAYS: its finding names the
+//! shape and no rewrite of the matched node is honest, and the reason says
+//! why (what the rewrite would have to touch beyond the node, or decide for
+//! the author). A rule carries `@fixes` or `@says`, never both —
+//! `avra voices` holds a rule with neither to its baseline.
 use features.{Code, Fix}
 use @std.meta.{Diagnostic, refuse}
 
@@ -38,7 +44,13 @@ use @std.meta.{Diagnostic, refuse}
 /// rewritten form exists to compare against, only that the finding's
 /// declaration is gone and the rest still parses
 /// (`compiler/rule_examples.av`'s `checks_delete`).
-export type Fixes = { before: string, after: string? = null }
+///
+/// `files` makes the example a PACKAGE: a rule over a `use` line has
+/// nothing to read in a lone file, so `before` is the entry
+/// (`/w/src/main.av`) of a package those files (path -> text) complete,
+/// under a lawful manifest — `@fixes("use util.{f}\n1\n", null,
+/// {"/w/src/util/util.av": "export fn f() -> int { 1 }\n"})`.
+export type Fixes = { before: string, after: string? = null, files: Map<string, string> = {} }
 
 export component rule {
     run: fn(Code) -> Fix?
@@ -46,6 +58,7 @@ export component rule {
     fixes: List<Fixes> = []
     keeps: List<string> = []
     law: List<string> = []
+    says: List<string> = []
 
     fn check() -> List<Diagnostic> {
         if self.fixes.is_empty() && self.keeps.is_empty() {
@@ -54,6 +67,14 @@ export component rule {
             ]
         }
         if self.law.length > 1 { return [refuse("a rule takes at most one `@law` — the claim is singular")] }
+        if self.says.length > 1 { return [refuse("a rule takes at most one `@says` — one reason no rewrite is honest")] }
+        if !self.says.is_empty() && !self.fixes.is_empty() {
+            return [
+                refuse(
+                    "a rule that carries `@fixes` rewrites, and `@says` states that it does not — one of them",
+                ),
+            ]
+        }
         []
     }
 }
@@ -62,5 +83,5 @@ export component rule {
 /// itself, never resolved as an ordinary call — there is no `fn
 /// fixes`, no `fn keeps`, no `fn law`.
 export fn example_marks(name: string) -> bool {
-    name == "fixes" || name == "keeps" || name == "law"
+    name == "fixes" || name == "keeps" || name == "law" || name == "says"
 }

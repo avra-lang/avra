@@ -11,24 +11,19 @@
 //! `ESC [ … final`, `ESC O final`, and the one character after any other
 //! escape.
 
-/// A key as the loop reads it.
-export enum Key {
-    Next
-    Back
-    Enter
-    Erase
-    Char(text: string)
-    End
-}
+use @std.text.{from_codepoint, parse_int}
+use tree.terminal_key.{Key, Paste}
 
 /// What a run of input spells: its keys, and the octets of an unfinished
 /// character or sequence at its end, to stand before the next run.
-export type Heard = { keys: List<Key>, held: Bytes }
+export type Heard = { keys: List<Key>, held: Bytes, draining: int = 0 }
 
 const tab = 9
 const line_feed = 10
 const carriage_return = 13
 const end_of_input = 4
+const control_z = 26
+const letter_d = 100
 const backspace = 8
 const delete = 127
 const escape = 27
@@ -40,10 +35,25 @@ const bracket = 91
 /// `O`, which opens a single-shift sequence after an escape.
 const shift_three = 79
 
-/// The finals that move the focus: `A` (up), `B` (down), `Z` (back-tab).
+/// The finals that move the focus: `A` (up), `B` (down), `Z` (back-tab); and
+/// `H` (home), `F` (end), and `~` closing a numbered key.
 const up = 65
 const down = 66
 const back_tab = 90
+const home = 72
+const finish = 70
+const numbered = 126
+const focus_in = 73
+const focus_out = 79
+const kitty = 117
+const pressed = 77
+const released = 109
+
+/// The longest paste held to hand over whole, unless a terminal says another.
+export const paste_cap = 1048576
+
+/// `ESC [ 2 0 1 ~`, which ends a paste.
+const paste_end = 6
 
 /// The most octets an unfinished sequence is held for; past it, it is
 /// dropped as read.
@@ -51,7 +61,7 @@ const longest_sequence = 64
 
 /// One reading at a place: the key it spelled, when it spelled one, and
 /// where the next begins. `waits` says the input ended inside it.
-type Read = { keys: List<Key>, next: int, waits: bool = false }
+type Read = { keys: List<Key>, next: int, waits: bool = false, drained: int = 0 }
 
 /// One octet read as `keys`.
 fn one(keys: List<Key>, at: int) -> Read { Read { keys: keys, next: at + 1 } }
@@ -62,33 +72,157 @@ fn dropped(to: int) -> Read { Read { keys: [], next: to } }
 /// What begins at `at` is unfinished: nothing is read past it.
 fn waiting(at: int) -> Read { Read { keys: [], next: at, waits: true } }
 
-/// The key a sequence's final names.
+/// The key a final names on its own: an arrow, home or end. All an
+/// `ESC O` single-shift sequence can spell.
 fn moved(last: int) -> List<Key> {
     when {
         last == up || last == back_tab -> [Key.Back]
         last == down -> [Key.Next]
+        last == home -> [Key.Top]
+        last == finish -> [Key.Bottom]
         _ -> []
+    }
+}
+
+/// The keys a control sequence spells, by its final and its parameters.
+fn spelled(last: int, params: string) -> List<Key> {
+    when {
+        last == numbered -> numbered_key(params)
+        last == focus_in -> [Key.FocusIn]
+        last == focus_out -> [Key.FocusOut]
+        last == kitty -> kitty_key(params)
+        last == pressed -> mouse_key(params, true)
+        last == released -> mouse_key(params, false)
+        _ -> moved(last)
+    }
+}
+
+/// A numbered key (`ESC [ 5 ~`) names itself by its number: 5 and 6 page,
+/// 1 and 7 go home, 4 and 8 go to the end.
+fn numbered_key(number: string) -> List<Key> {
+    match number {
+        "5" -> [Key.PageUp],
+        "6" -> [Key.PageDown],
+        "1" or "7" -> [Key.Top],
+        "4" or "8" -> [Key.Bottom],
+        _ -> [],
+    }
+}
+
+/// An SGR mouse report (`ESC [ < button ; column ; line M`, `m` on release).
+/// The primary button pressed is a click and the wheel turning is a wheel;
+/// motion, release, the other buttons and the modifier bits spell nothing.
+fn mouse_key(params: string, down: bool) -> List<Key> {
+    if !params.starts_with("<") { return [] }
+    let n = [parse_int(p) ?? -1 for p in params.replace("<", "").split(";")]
+    if n.length != 3 || n[1] < 1 || n[2] < 1 { return [] }
+    let at_x = n[1] - 1
+    let at_y = n[2] - 1
+    let button = n[0]
+    if button >= 64 && button <= 65 { return if down { [Key.Wheel(at_x, at_y, button == 65)] } else { [] } }
+    let by = button / 4
+    if down && button % 4 == 0 && button / 32 % 2 == 0 && button < 64 {
+        [Key.Click(at_x, at_y, by % 2 == 1, by / 2 % 2 == 1, by / 4 % 2 == 1)]
+    } else {
+        []
+    }
+}
+
+/// A kitty keyboard report (`ESC [ code ; modifiers u`): a key told apart from
+/// every other by its code and modifier bits, or — `ESC [ ? flags u` — the
+/// terminal's answer to the protocol query.
+fn kitty_key(params: string) -> List<Key> {
+    if params.starts_with("?") { return [Key.Reports(parse_int(params.replace("?", "")) ?? 0)] }
+    let parts = params.split(";")
+    let keys = parts[0].split(":")
+    let code = parse_int(keys[0]) ?? -1
+    let place = if keys.length > 2 { parse_int(keys[2]) ?? code } else { code }
+    let mods = if parts.length > 1 { parts[1].split(":") } else { ["1"] }
+    let bits = (parse_int(mods[0]) ?? 1) - 1
+    let let_go = mods.length > 1 && mods[1] == "3"
+    if let_go || bits / 8 > 0 || code < 0 { return [] }
+    chorded(code, place, bits % 2 == 1, bits / 2 % 2 == 1, bits / 4 % 2 == 1)
+}
+
+/// The key a kitty code and its Shift, Alt and Ctrl bits spell. A chord is
+/// named by the key's place (the base-layout key the terminal reports), so it
+/// is the same on every layout; a terminal without the protocol reports only
+/// the layout's key. A key with
+/// Ctrl or Alt is a chord, told from the control character it would be in
+/// the legacy encoding (which spells a control octet the same way). Ctrl-D ends
+/// the input as its octet does; Ctrl-C is a chord, since a terminal in cbreak
+/// mode turns it into a signal before it reaches the keys.
+fn chorded(code: int, place: int, shift: bool, alt: bool, ctrl: bool) -> List<Key> {
+    when {
+        code == tab && (ctrl || alt) -> []
+        code == tab && shift -> [Key.Back]
+        code == tab -> [Key.Next]
+        code == carriage_return -> if ctrl || alt || shift { [] } else { [Key.Enter] }
+        code == escape -> [Key.Escape]
+        code == delete || code == backspace -> [Key.Erase]
+        code < space -> []
+        ctrl && !alt && code == letter_d -> [Key.End]
+        ctrl || alt -> [Key.Chord(from_codepoint(place), ctrl, alt, shift)]
+        _ -> [Key.Char(from_codepoint(code))]
     }
 }
 
 /// A control sequence's body from `at`: parameter and intermediate octets
 /// (`0x20`–`0x3F`), then one final (`0x40`–`0x7E`). An octet that is
-/// neither ends the sequence unread.
-fn sequence(b: Bytes, opened: int, at: int) -> Read {
+/// neither ends the sequence unread. The sequence that opens a paste takes
+/// the paste with it.
+fn sequence(b: Bytes, opened: int, at: int, cap: int) -> Read {
     mut end = at
     while end < b.length && b.at(end) >= 32 && b.at(end) <= 63 { end = end + 1 }
     if end >= b.length {
         return if end - opened > longest_sequence { dropped(end) } else { waiting(opened) }
     }
     let last = b.at(end)
-    if last >= 64 && last <= 126 { Read { keys: moved(last), next: end + 1 } } else { dropped(end) }
+    if last < 64 || last > 126 { return dropped(end) }
+    let params = b.slice(at, end).text() ?? ""
+    if last == numbered && params == "200" { return pasted(b, opened, end + 1, cap) }
+    Read { keys: spelled(last, params), next: end + 1 }
 }
 
+/// A paste from `from` to the sequence that ends it: one key, however long.
+/// It waits for its end across reads; past `cap` octets it is let go — they
+/// are dropped as they come, the last few kept in case they begin the end,
+/// and what ends it is `Paste.TooLarge` with how many octets it held.
+fn pasted(b: Bytes, opened: int, from: int, cap: int) -> Read {
+    let stop? = terminator(b, from) else {
+        if b.length - opened > cap {
+            let kept = stop_tail(b, from)
+            return Read { keys: [], next: kept, drained: kept - from }
+        }
+        return waiting(opened)
+    }
+    let held = if stop - from > cap { Paste.TooLarge(stop - from) } else { Paste.Text(b.slice(from, stop).text_lossy()) }
+    Read { keys: [Key.Paste(held)], next: stop + paste_end }
+}
+
+/// Where the octets from `from` hold `ESC [ 2 0 1 ~`, if they do.
+fn terminator(b: Bytes, from: int) -> int? {
+    if b.length - from < paste_end { return null }
+    (from..b.length - paste_end + 1).find((j) -> ends_at(b, j))
+}
+
+fn ends_at(b: Bytes, j: int) -> bool {
+    b.at(j) == escape &&
+        b.at(j + 1) == bracket &&
+        b.at(j + 2) == 50 &&
+        b.at(j + 3) == 48 &&
+        b.at(j + 4) == 49 &&
+        b.at(j + 5) == numbered
+}
+
+/// Where the last octets worth keeping begin: those that could start the end.
+fn stop_tail(b: Bytes, from: int) -> int { if b.length - paste_end + 1 > from { b.length - paste_end + 1 } else { from } }
+
 /// The escape at `at`, read with what it opens.
-fn escaped(b: Bytes, at: int) -> Read {
+fn escaped(b: Bytes, at: int, cap: int) -> Read {
     if at + 1 >= b.length { return waiting(at) }
     let opener = b.at(at + 1)
-    if opener == bracket { return sequence(b, at, at + 2) }
+    if opener == bracket { return sequence(b, at, at + 2, cap) }
     if opener != shift_three { return dropped(at + 2) }
     if at + 2 >= b.length { return waiting(at) }
     Read { keys: moved(b.at(at + 2)), next: at + 3 }
@@ -125,10 +259,10 @@ fn character(b: Bytes, at: int) -> Read {
     Read { keys: [Key.Char(text)], next: at + wide }
 }
 
-fn read(b: Bytes, at: int) -> Read {
+fn read(b: Bytes, at: int, cap: int) -> Read {
     let c = b.at(at)
     when {
-        c == escape -> escaped(b, at)
+        c == escape -> escaped(b, at, cap)
         c == carriage_return -> Read {
             keys: [Key.Enter],
             next: if at + 1 < b.length && b.at(at + 1) == line_feed { at + 2 } else { at + 1 },
@@ -137,23 +271,68 @@ fn read(b: Bytes, at: int) -> Read {
         c == tab -> one([Key.Next], at)
         c == backspace || c == delete -> one([Key.Erase], at)
         c == end_of_input -> one([Key.End], at)
+        c >= 1 && c <= control_z -> one([Key.Chord(from_codepoint(c + 96), true, false, false)], at)
         c < space -> one([], at)
         _ -> character(b, at)
     }
 }
 
 /// The keys a run of octets spells, and what it leaves unfinished.
-export fn heard(input: Bytes) -> Heard {
+export fn heard(input: Bytes) -> Heard { resume(input, 0, paste_cap) }
+
+/// `heard`, for a terminal that holds pastes of at most `cap` octets whole,
+/// and — `draining` above zero — a run that arrives while a longer one is
+/// being let go: how many of its octets have gone, and its octets are dropped
+/// up to the end of the paste.
+export fn resume(input: Bytes, draining: int, cap: int) -> Heard {
+    if draining > 0 {
+        let stop? = terminator(input, 0) else {
+            let kept = if input.length > paste_end { input.length - paste_end + 1 } else { 0 }
+            return Heard {
+                keys: [],
+                held: input.slice(kept, input.length),
+                draining: draining + kept,
+            }
+        }
+        let rest = resume(input.slice(stop + paste_end, input.length), 0, cap)
+        return rest with { keys: [Key.Paste(Paste.TooLarge(draining + stop))].concat(rest.keys) }
+    }
     mut reads: List<Read> = []
     mut at = 0
     // LICENSED loops.push_loop: a key takes one octet or several — the walk steps by what it read
-    while at < input.length && !(reads.last()?.waits ?? false) {
-        let got = read(input, at)
+    while at < input.length && !(reads.last()?.waits ?? false) && reads.last()?.drained ?? 0 == 0 {
+        let got = read(input, at, cap)
         reads.push(got)
         at = got.next
     }
-    Heard { keys: [k for r in reads for k in r.keys], held: input.slice(at, input.length) }
+    Heard {
+        keys: [k for r in reads for k in r.keys],
+        held: input.slice(at, input.length),
+        draining: reads.last()?.drained ?? 0,
+    }
 }
+
+/// The input modes a terminal app asks for on entering: SGR mouse reports
+/// (1000 press and release, 1006 their form), bracketed paste (2004), focus
+/// events (1004) and the query for the kitty keyboard protocol. A terminal
+/// that knows none of them ignores them all.
+export fn modes_on() -> string {
+    let esc = from_codepoint(27)
+    "${esc}[?1000h${esc}[?1006h${esc}[?2004h${esc}[?1004h${esc}[?u"
+}
+
+/// The same modes, off — what a terminal app leaves as it found.
+export fn modes_off() -> string {
+    let esc = from_codepoint(27)
+    "${esc}[?1004l${esc}[?2004l${esc}[?1006l${esc}[?1000l"
+}
+
+/// The kitty keyboard protocol turned on (disambiguated escape codes, and the
+/// base-layout key of each key reported) once the terminal has answered its
+/// query, and its flags put back.
+export fn kitty_on() -> string { "${from_codepoint(27)}[>5u" }
+
+export fn kitty_off() -> string { "${from_codepoint(27)}[<u" }
 
 /// The keys a whole text spells: what it leaves unfinished spells none.
 export fn keys(text: string) -> List<Key> { heard(text.bytes()).keys }

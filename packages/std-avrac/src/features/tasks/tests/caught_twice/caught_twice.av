@@ -1,16 +1,19 @@
 // proves: a task is caught as often as it is asked — the second join is
 // free, a cancelled task's arm runs each time and an answer reads again
-use @std.time.{ms, secs, sleep}
+use @std.task.{open_channel, Sink}
+use @std.time.{secs, sleep}
 
-fn idle() -> string {
+fn idle(up: Sink<int>) -> string {
+    let _ = up.post(1)
     sleep(secs(60))
     "never"
 }
 
 fn said(n: int) -> string { "said ${n}" }
 
-let t = spawn idle()
-sleep(ms(1))
+let up = open_channel<int>(1)
+let t = spawn idle(up.sink)
+let _ = up.source.next()
 t.cancel()
 let a = t.await catch c -> { "first ${c.by}" }
 let b = t.await catch c -> { "second ${c.by}" }

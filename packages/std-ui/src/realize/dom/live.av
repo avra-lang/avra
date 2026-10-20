@@ -2,17 +2,20 @@
 //! under the number it was given, the sheet it wears and the handlers it
 //! heard — kept so the next paint says only what changed and a host's
 //! echo finds the handler it names.
-use tree.identity.{NodeId}
-use tree.node.{Node, Action, EventKind, Said}
+use tree.identity.{NodeId, Owner}
+use tree.node.{Node, Action, Said}
+use tree.seats.{Seat}
 use realize.html.element.{Element, lowered}
-use realize.html.css.{CssRule, distinct_rules, node_rules, page_sheet, root_vars}
+use realize.html.css.{CssRule, distinct_rules, page_sheet, root_vars, rules_of}
 use realize.dom.patch.{Patch, Heard, Held, diff, held_as, listening_of}
 use realize.html.tags.{HtmlAttrName}
 use realize.dom.wire.{frame}
+use realize.dom.exact.{Watch, watching, disagreement}
 use style.theme.{Theme}
+use @std.io.{env}
 
 /// An element that hears an event, and what it does then.
-type Bound = { id: NodeId, action: Action }
+type Bound = { id: NodeId, action: Action, ordered: bool }
 
 /// A page as last painted: its elements, the next number it will give
 /// one, every rule a paint has named so far and the theme's variables
@@ -25,15 +28,23 @@ export type Live = {
     worn: Cell<string?> = Cell.new(null),
     bound: Cell<List<Bound>> = Cell.new([]),
     heard: Cell<List<Heard>> = Cell.new([]),
+    told: Cell<List<int>> = Cell.new([]),
+    watch: Cell<Watch?> = Cell.new(null),
+    answered: Cell<int> = Cell.new(0),
+    declined: Cell<int> = Cell.new(0),
 }
 
 /// A page nothing was painted on.
 export fn live() -> Live { Live {} }
 
-/// Every rule a tree's nodes name, in walk order.
-fn rules_of(n: Node) -> List<CssRule> {
-    node_rules(n.prim, n.box).concat([r for c in n.children for r in rules_of(c)])
-}
+extern fn avra_trap(message: string)
+
+/// How the exact path runs, from `AVRA_EXACT`: unset is off, `check` runs it
+/// beside every full paint and traps when they disagree, and any other value
+/// runs it ALONE — the full paint speaks only for a turn the exact path
+/// declines.
+// LICENSED input.debug_flag: a staging flag is the process's own, not an input
+once fn exact_mode() -> string { env("AVRA_EXACT") ?? "" }
 
 /// The rules a notice's classes need, none when there is none.
 fn rules_of_notice(notice: Node?) -> List<CssRule> {
@@ -44,8 +55,25 @@ fn rules_of_notice(notice: Node?) -> List<CssRule> {
 /// Every handler an element and what it holds bound, by who hears it.
 fn bound_in(e: Element) -> List<Bound> {
     let el? = e.tagged() else { return [] }
-    [Bound { id: el.id, action: a } for a in el.hears]
+    [Bound { id: el.id, action: a, ordered: el.crowded } for a in el.hears]
         .concat([b for k in el.kids for b in bound_in(k)])
+}
+
+/// A page holding the words `said` gave its text runs.
+fn synced(page: List<Element>, said: List<Patch>) -> List<Element> { [synced_in(e, said) for e in page] }
+
+fn synced_in(e: Element, said: List<Patch>) -> Element {
+    match e {
+        .Text(run) -> .Text(run with { content: words_set(run.id, said).last() ?? run.content }),
+        .Tag(el) -> .Tag(el with { kids: synced(el.kids, said) }),
+    }
+}
+
+/// The words `said` gives the run `id`, in order.
+fn words_set(id: NodeId, said: List<Patch>) -> List<string> { [c for p in said for c in words_of(p, id)] }
+
+fn words_of(p: Patch, id: NodeId) -> List<string> {
+    match p { .SetText(at, content) -> if at == id { [content] } else { [] }, _ -> [] }
 }
 
 impl Live {
@@ -57,6 +85,57 @@ impl Live {
     /// The handlers are kept anew EVERY paint: two trees that draw alike
     /// may still close over different values.
     fn patches(root: Node, theme: Theme, notice: Node? = null) -> List<Patch> {
+        if exact_mode() == "" { return self.painted(root, theme, notice) }
+        if exact_mode() != "check" { return self.exactly(root, theme, notice) }
+        let exact = self.exact_turn()
+        let full = self.painted(root, theme, notice)
+        self.rewatched()
+        let mine? = exact else { return full }
+        let why? = disagreement(mine, full) else { return full }
+        if exact_mode() == "check" { avra_trap("exact patches disagree with the full paint: ${why}") }
+        full
+    }
+
+    /// The exact path alone: its patches stand for the turn, the page's words
+    /// follow them, and the full paint speaks only where the exact path
+    /// declines or the theme moved. SOUND BECAUSE every read a handler can
+    /// capture is a reading, a cell or structural, so a read the walkers cannot
+    /// see declines and no handler outlives the value it holds.
+    fn exactly(root: Node, theme: Theme, notice: Node?) -> List<Patch> {
+        let said = if self.worn.get() == root_vars(theme) { self.exact_turn() } else { null }
+        let mine? = said else {
+            let full = self.painted(root, theme, notice)
+            self.rewatched()
+            return full
+        }
+        self.page.set(synced(self.page.get(), mine))
+        mine
+    }
+
+    /// What the exact path says of this turn: the readings under the cells
+    /// written since the last paint. None before a paint has placed any.
+    fn exact_turn() -> List<Patch>? {
+        let w? = self.watch.get() else { return null }
+        let said = w.turn()
+        if said == null { self.declined.set(self.declined.get() + 1) } else { self.answered.set(self.answered.get() + 1) }
+        said
+    }
+
+    /// How many turns the exact path answered and how many it declined (a
+    /// structural cell was written, or the page cannot be placed), since this
+    /// page was made.
+    fn exact_counts() -> string { "answered ${self.answered.get()} declined ${self.declined.get()}" }
+
+    /// The page's readings, watched anew after a paint: the old watch is let
+    /// go first, then every reading the paint placed is observed.
+    fn rewatched() {
+        let old = self.watch.get()
+        if old != null { old!.released() }
+        self.watch.set(watching(self.page.get()))
+    }
+
+    /// The full paint, as it always was.
+    fn painted(root: Node, theme: Theme, notice: Node? = null) -> List<Patch> {
         let restyled = self.restyled(root, theme, notice)
         let now = diff(
             self.page.get(),
@@ -78,6 +157,22 @@ impl Live {
         lowered(node)
     }
 
+    /// A page that has nothing: a new connection to the same app. The elements,
+    /// the sheet and what a host was told of each seat are forgotten together,
+    /// so the next paint says all of it again.
+    fn reconnected() {
+        self.page.set([])
+        self.rules.set([])
+        self.worn.set(null)
+        self.bound.set([])
+        self.heard.set([])
+        self.told.set([])
+    }
+
+    /// The owner keys of the elements that hear something: a node's
+    /// number, the identity a page gives it while it stays.
+    fn owners() -> List<Owner> { [Owner { key: "${b.id.n}", ordered: b.ordered } for b in self.bound.get()] }
+
     /// The sheet, when it must be sent again: the page has never worn one
     /// of the tree's classes, or the theme's variables moved. The sheet's
     /// text is built only then.
@@ -93,14 +188,14 @@ impl Live {
     }
 
     /// `patches`, as the frame a host applies.
-    fn paint(root: Node, theme: Theme) -> Bytes { frame(self.patches(root, theme)) }
+    fn paint(root: Node, theme: Theme) -> Bytes { frame(self.patches(root, theme), self.told) }
 
-    /// The host's echo: element `id` spoke `kind`, saying `said`. The
+    /// The host's echo: element `id` spoke `seat`, saying `said`. The
     /// handler the last paint bound there runs; false when nothing
     /// answered. What a control said is what its property now holds, so
     /// the next paint compares against that.
-    fn fire(id: NodeId, kind: EventKind, said: Said?) -> bool {
-        let found? = self.bound.get().find(it.id == id && it.action.kind == kind) else { return false }
+    fn fire(id: NodeId, seat: Seat, said: Said?) -> bool {
+        let found? = self.bound.get().find(it.id == id && it.action.seat == seat) else { return false }
         self.hear(id, found.action, said)
         found.action.fire(said)
     }

@@ -282,7 +282,7 @@ fn not_indexable(mut cx: TypeCx, subject: ExprId) -> TypeId {
                 cx.loc_of(subject),
                 "`[...]` indexes a `List`, found `${n}`",
                 this_is(n),
-                null,
+                "`[…]` reads a list — a map answers `.get(key)`, and text answers `.substring(lo, hi)`",
             ),
         )
 }
@@ -308,7 +308,7 @@ fn index_not_int(mut cx: TypeCx, index: ExprId) {
                 cx.loc_of(index),
                 "an index is an `int`, found `${cx.name_at(index)}`",
                 "this decides the position",
-                null,
+                "an index is a position — `xs[0]` is the first, `xs[xs.length - 1]` the last",
             ),
         )
 }
@@ -367,7 +367,7 @@ fn wrong_operand(mut cx: TypeCx, op: BinOp, e: ExprId, want: Type) {
                 cx.loc_of(e),
                 "`${op_symbol(op)}` needs `${cx.view.types.name_of(cx.view.types.intern(want))}` operands, found `${n}`",
                 this_is(n),
-                null,
+                "give the operand the type the operator needs — `.length` measures text and lists, and interpolation makes text of a number",
             ),
         )
 }
@@ -381,7 +381,7 @@ fn not_negatable(mut cx: TypeCx, v: ExprId) -> TypeId {
                 cx.loc_of(v),
                 "`!` negates a `bool`, found `${n}`",
                 this_is(n),
-                null,
+                "`!` negates a `bool` — test a nullable with `v != null`, a number with `n == 0`",
             ),
         )
 }
@@ -408,7 +408,7 @@ fn not_askable(mut cx: TypeCx, op: BinOp, solid: ExprId) -> TypeId {
                 cx.loc_of(solid),
                 "`${op_symbol(op)} null` asks a nullable, this is `${n}`",
                 this_is(n),
-                "`${n}` is a guarantee — it is never absent",
+                "`${n}` is never absent — drop the comparison",
             ),
         )
 }
@@ -422,7 +422,7 @@ fn mismatched_sides(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
                 cx.loc_of(r),
                 "`${op_symbol(op)}` compares matching types, found `${cx.name_at(l)}` and `${rn}`",
                 this_is(rn),
-                null,
+                "compare two values of one type — convert one side, or compare a field of each",
             ),
         )
 }
@@ -433,16 +433,12 @@ fn mixed_with_shape(mut cx: TypeCx, e: ExprId, named: TypeId) {
     cx
         .emit(
             cx
-                .named_fix(
-                    refusal(
-                        "type.mismatch",
-                        cx.loc_of(e),
-                        "an operand of `${cx.view.types.name_of(named)}` meets `${n}` — a named type never mixes with its shape",
-                        this_is(n),
-                        null,
-                    ),
-                    named,
+                .seat_mismatch(
+                    "type.mismatch",
+                    cx.loc_of(e),
                     e,
+                    "an operand of `${cx.view.types.name_of(named)}` meets `${n}` — a named type never mixes with its shape",
+                    named,
                 ),
         )
 }
@@ -458,7 +454,7 @@ fn two_names(mut cx: TypeCx, e: ExprId, named: TypeId) {
                 cx.loc_of(e),
                 "`${cx.view.types.name_of(named)}` and `${n}` are two types — a named type never mixes with another",
                 this_is(n),
-                null,
+                "a named type is its own type — `Name(value)` crosses in and `.of` reads its shape out",
             ),
         )
 }

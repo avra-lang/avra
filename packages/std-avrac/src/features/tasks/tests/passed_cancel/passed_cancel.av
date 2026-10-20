@@ -1,19 +1,27 @@
 // proves: a task that awaits a cancelled task ends cancelled itself —
 // its `defer` runs, nothing after its await does — in both engines
-use @std.time.{ms, secs, sleep}
+use @std.task.{open_channel, Sink}
+use @std.time.{secs, sleep}
 
-let seen = Cell.new(0)
-let slow = spawn {
+/// Reports to `up` as it parks.
+fn parked_slow(up: Sink<int>) -> int {
+    let _ = up.post(1)
     sleep(secs(60))
     1
 }
+
+let seen = Cell.new(0)
+let up = open_channel<int>(2)
+let slow = spawn parked_slow(up.sink)
 let awaiter = spawn {
     defer seen.set(seen.get() + 10)
+    let _ = up.sink.post(2)
     let v = slow.await
     seen.set(seen.get() + 1)
     v
 }
-sleep(ms(1))
+let _ = up.source.next()
+let _ = up.source.next()
 slow.cancel()
-sleep(ms(1))
+let _ = awaiter.await catch c -> 0
 "${awaiter.done} ${seen.get()}"

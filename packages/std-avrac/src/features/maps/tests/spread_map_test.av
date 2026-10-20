@@ -1,0 +1,59 @@
+// A map literal's spread, by attack class. Accepted programs run
+// through `shown`; each refusal pins its voice, and the golden pins
+// the rendering.
+use @std.avrac.testing.{shown, refused_with, projected}
+use compiler.{analyze_source}
+
+const MAPS: string = "let a = { \"x\": 1, \"y\": 2 }\nlet b = { \"y\": 20, \"z\": 30 }\n"
+
+spec "features/maps — spread, adversarial" {
+    given "order and shape" {
+        then "a later spread wins" { shown("${MAPS}let c = { ..a, ..b }\nc.get(\"y\")!") == "20" }
+        then "a later pair wins" { shown("${MAPS}let c = { ..a, \"y\": 7 }\nc.get(\"y\")!") == "7" }
+        then "an earlier pair loses to the spread after it" {
+            shown("${MAPS}let c = { \"y\": 7, ..a }\nc.get(\"y\")!") == "2"
+        }
+        then "an overwritten key keeps its first place" {
+            shown("${MAPS}let c = { \"y\": 7, ..a }\nc.keys().join(\",\")") == "y,x"
+        }
+        then "keys are in first-written order" {
+            shown("${MAPS}let c = { ..a, ..b }\nc.keys().join(\",\")") == "x,y,z"
+        }
+        then "a lone spread is a copy" { shown("${MAPS}mut c = { ..a }\nc.set(\"q\", 1)\na.length * 10 + c.length") == "23" }
+        then "an empty map spreads nothing" { shown("${MAPS}{ ..{}, ..a }.length") == "2" }
+        then "a spread source is evaluated once" {
+            shown("fn make() -> Map<string, int> { { \"k\": 1 } }\n{ ..make(), \"j\": 2 }.length") == "2"
+        }
+        then "a trailing comma is a map's" { shown("${MAPS}{ ..a, }.length") == "2" }
+        then "managed values are shared safely" {
+            shown(
+                "type R = { n: int }\nlet rs = { \"a\": R { n: 1 } }\nlet all = { ..rs, \"b\": R { n: 2 } }\nall.get(\"a\")!.n * 10 + all.length + rs.length",
+            ) == "13"
+        }
+    }
+    given "refusals" {
+        then "a source that is no map" { refused_with("let m = { ..5 }\n1", "`..` in a map spreads a map, found `int`") }
+        then "a nullable source" {
+            refused_with(
+                "let a: Map<string, int>? = null\nlet m = { ..a }\n1",
+                "`..` spreads `Map<string, int>?`, which may be null",
+            )
+        }
+        then "a source of another value type" {
+            refused_with(
+                "${MAPS}let m = { ..a, \"s\": \"t\" }\n1",
+                "this map holds `string`, this is `Map<string, int>`",
+            )
+        }
+        then "a list is no map" { refused_with("let m = { ..[1] }\n1", "`..` in a map spreads a map") }
+        then "a third dot" { !analyze_source("${MAPS}let m = { ...a }\n1").diagnostics.is_empty() }
+    }
+    given "the refusals, rendered" {
+        then "a source that is no map" { analyze_source("let m = { ..5 }\n1").report() == "error[type.spread_map]: `..` in a map spreads a map, found `int`\n  ╭─[<source>:1:13]\n1 │ let m = { ..5 }\n  ·             ┬\n  ·             ╰── spread here\n──╯\nhelp: a map literal spreads maps — `{ ..m, \"k\": v }`; write any other value under a key" }
+    }
+    given "the printer" {
+        then "a spread keeps its place and its spelling" {
+            projected("let a = { \"x\": 1 }\nlet m = { \"w\": 0,   ..a, \"y\": 2 }") == "let a = {\"x\": 1}\nlet m = {\"w\": 0, ..a, \"y\": 2}"
+        }
+    }
+}

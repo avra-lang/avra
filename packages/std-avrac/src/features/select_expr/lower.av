@@ -7,7 +7,7 @@
 //! lets the world run and answers; without one each arm is filed and
 //! the task rests, and the claim that wakes it is only a hint: the next
 //! turn scans again.
-use core.{ExprId, Reg, Type, TypeId, BinOp, flatten, some_list}
+use core.{ExprId, Reg, Type, TypeId, BinOp, WaitProbe, flatten, some_list}
 use features.{LowerCx}
 use diagnostics.{refusal}
 
@@ -26,6 +26,24 @@ impl WaitKind {
     /// scan leaves a pick in a cell.
     fn listed() -> bool {
         match self { .Tasks -> true, .Task or .Source or .Ended or .Timer -> false }
+    }
+
+    /// Whether the head is a task, or a list of them.
+    fn holds_tasks() -> bool {
+        match self { .Task or .Tasks -> true, .Source or .Ended or .Timer -> false }
+    }
+}
+
+/// Whether a head's tasks are made where it is written, and so owned by no
+/// binding: only a head whose node says it makes one — a call, a method, a
+/// spawn, a record, a select. A node that says nothing (`.None`, a plain name
+/// among them) is a read of something a binding owns. Such tasks are joined as
+/// the frame closes, and cancelled first when that frame is leaving because its
+/// task was cancelled — as a bound `spawn` is.
+fn made_here(probe: WaitProbe) -> bool {
+    match probe {
+        .Call or .Method or .Value or .Spawn or .Record or .Select -> true,
+        .None or .Read or .Chain -> false,
     }
 }
 
@@ -202,6 +220,7 @@ fn waiting(
     let live: Reg? = if guard == null { null } else { cx.reg_of(guard!) }
     let head_ty = cx.type_at(head)
     let read = head_under(cx, live, head, head_ty)
+    if kind.holds_tasks() && made_here(cx.view.store.expr(head).wait_probe()) { cx.settles_at_close(read, false) }
     Wait {
         at: at,
         source: head,
@@ -426,7 +445,7 @@ fn unlowered(mut cx: LowerCx, at: ExprId, what: string) -> Reg {
             refusal(
                 "flow.select",
                 cx.view.loc_of(at),
-                "`select` is typed and not yet lowered",
+                "`select` type-checks but lowers to nothing",
                 "${what} stands here",
                 "wait on one task with `t.await`",
             ),

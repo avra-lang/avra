@@ -450,15 +450,25 @@ static int scene_listed(const char* self, const char* scene, char* buf, size_t c
     return status;
 }
 
+// Whether the listing holds `prefix` followed by a time still to wait
+// that is positive and no more than the span the task asked for: the
+// clock between the ask and the listing is the run's, never the test's.
+static int due_within(const char* buf, const char* prefix, long long span_ms) {
+    const char* at = strstr(buf, prefix);
+    if (!at) return 0;
+    long long left = strtoll(at + strlen(prefix), NULL, 10);
+    return left > 0 && left <= span_ms;
+}
+
 static void rested_listing(const char* self) {
     char buf[4096];
     pid_t pid;
     int status = scene_listed(self, "rested", buf, sizeof buf, &pid);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the rested scene runs");
     CHECK(every_line_traced(buf), "every line of it is a trace's line");
-    CHECK(strstr(buf, " park id=1 src=gate:0x") != NULL && strstr(buf, " park id=1 src=at arm=1:0 due_in=89") != NULL, "a task resting in a scan lists each arm it filed, a time with how long until it is due");
+    CHECK(strstr(buf, " park id=1 src=gate:0x") != NULL && due_within(buf, " park id=1 src=at arm=1:0 due_in=", 90000), "a task resting in a scan lists each arm it filed, a time with how long until it is due");
     CHECK(strstr(buf, " select id=1 site=pkg/main.av:12 for=0\n") != NULL, "and where its wait was written, and how long it has rested");
-    CHECK(strstr(buf, " select id=2 ") == NULL && strstr(buf, " park id=2 src=at arm=0:0 due_in=59") != NULL, "a task that rested, was claimed and now sleeps rests in no scan");
+    CHECK(strstr(buf, " select id=2 ") == NULL && due_within(buf, " park id=2 src=at arm=0:0 due_in=", 60000), "a task that rested, was claimed and now sleeps rests in no scan");
     CHECK(strstr(buf, " park id=3 src=none arm=0:0\n") != NULL, "a task parked on nothing says so");
     CHECK(strstr(buf, " park id=1 src=none") == NULL && strstr(buf, " park id=2 src=none") == NULL, "and no task that waits on something does");
 }
@@ -476,7 +486,7 @@ static void listing(const char* self) {
     CHECK(strstr(buf, " spawn id=1\n") != NULL && strstr(buf, " site id=1 0x") != NULL, "a task's spawn and its code, where it carries no line");
     CHECK(strstr(buf, " park id=1 src=gate:0x") != NULL, "a task on a gate");
     CHECK(strstr(buf, " park id=2 src=fd:r:") != NULL, "a task on a descriptor, read");
-    CHECK(strstr(buf, " park id=3 src=at arm=0:0 due_in=59") != NULL, "a task asleep, and how long until its time");
+    CHECK(due_within(buf, " park id=3 src=at arm=0:0 due_in=", 60000), "a task asleep, and how long until its time");
     CHECK(strstr(buf, " select id=") == NULL && strstr(buf, "src=none") == NULL, "no task of these rests in a scan or parks on nothing");
     CHECK(strstr(buf, " join id=4 on=1\n") != NULL && strstr(buf, " park id=4 ") == NULL, "a join names the task it waits for, and its gate is the join's");
     CHECK(strstr(buf, " spawn id=5\n") != NULL && strstr(buf, " park id=5 ") == NULL, "a task that has not run waits on nothing");

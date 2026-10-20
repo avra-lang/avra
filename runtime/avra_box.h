@@ -39,10 +39,48 @@ enum { MARK_OWNED = 1, MARK_ABSENT = 2 };
 // and a LENGTH — a string's text length, a record's payload bytes.
 typedef struct {
     uint32_t tag;
-    int32_t kind;
+    int32_t kind_word;
     int32_t rc;
     uint32_t len;
 } Header;
+
+// THE KIND WORD holds three fields in its four bytes, low byte first: the
+// kind (-8..4, signed), the flags, and a 16-bit STAMP. Every reader asks for
+// exactly its field. A box a site has read is OBSERVED (flag bit 0): the
+// first write to it in a turn stamps it with the turn's number and logs it
+// once, and later writes that turn only compare. A static box carries
+// 0xFF in its flags byte, which is not the observed value, so it never logs.
+static inline int32_t avra_kind(const Header* h) { return (int8_t)h->kind_word; }
+static inline void avra_set_kind(Header* h, int32_t kind) {
+    h->kind_word = (int32_t)(((uint32_t)h->kind_word & 0xFFFFFF00u) | ((uint32_t)kind & 0xFFu));
+}
+
+#define AVRA_FLAGS_MASK     0x0000FF00u
+#define AVRA_OBSERVED       0x00000100u
+#define AVRA_STAMP_MASK     0xFFFF0000u
+#define AVRA_STAMP_ONE      0x00010000u
+
+// The current turn's stamp, already in place (the stamp field's bits).
+extern uint32_t avra_turn_word;
+// Out of line: stamp the box and file it in the turn's change log.
+void avra_box_changed(void* payload);
+
+// A write to a box: for a box no site has read, a byte compared in place.
+// The flags are their own byte, so the test loads and masks nothing and
+// clobbers no register; the stamp is read only for an observed box.
+#if !defined(__BYTE_ORDER__) || __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+#error "the kind word's fields are read by byte position, which assumes a little-endian target"
+#endif
+#define AVRA_FLAGS_AT 5
+#define AVRA_STAMP_AT 6
+static inline void avra_box_touch(void* payload) {
+    const uint8_t* at = (const uint8_t*)((Header*)payload - 1);
+    if (__builtin_expect(at[AVRA_FLAGS_AT] == (AVRA_OBSERVED >> 8), 0)) {
+        uint16_t stamp;
+        __builtin_memcpy(&stamp, at + AVRA_STAMP_AT, sizeof stamp);
+        if (stamp != (uint16_t)(avra_turn_word >> 16)) avra_box_changed(payload);
+    }
+}
 
 // A slot array: `cap` cells at `data`, `len` of them written, and
 // one MARK byte per cell after the cells: `MARK_OWNED` when the cell

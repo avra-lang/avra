@@ -2,6 +2,7 @@
 //! families and the lowered program. The core accessors live in
 //! workspace.av.
 use core.{
+    EmbedKind,
     StmtId,
     qtrace,
     traced,
@@ -35,7 +36,13 @@ use features.{
     Lifted,
     bound_decl_of,
     read_set_of,
-    calls_read_state,
+    call_places_of,
+    structural_places_of,
+    place_key,
+    structural_key,
+    is_structural_key,
+    plain_of_structural,
+    StatePlace,
     SeatValue,
     settled_symbol,
     quote_meta,
@@ -231,43 +238,36 @@ impl Workspace {
         let solved = self
             .read_fixpoint
             .solve([d.index for d in fns], (arg: int) -> self.read_contribution(DeclId { index: arg }))
-        self
-            .db
-            .settle(
-                k,
-                fp(
-                    2,
-                    [
-                        fp_list(
-                            [if self.read_fixpoint.value_at(d.index) { 1 } else { 0 } for d in fns],
-                        ),
-                    ],
-                ),
-            )
+        self.db.settle(k, reach_fp([self.read_fixpoint.value_at(d.index) for d in fns]))
         let refusal? = refusal_of(solved) else { return fns.length }
         self.defect("defect: ${fixpoint_spoken(refusal)}")
         fns.length
     }
 
     /// Whether a declaration's evaluation reads `state` — directly, or
-    /// through any call its body makes. A call site in another body or
-    /// another package asks THIS, never the pass facts of the body it
-    /// stands in.
-    fn decl_reads_state(d: DeclId) -> bool {
+    /// through any call its body makes: the places it reaches are not none.
+    fn decl_reads_state(d: DeclId) -> bool { !self.decl_places(d).is_empty() }
+
+    /// The `state` places a declaration's evaluation reaches — directly, or
+    /// through any call its body makes — as sorted `place_key`s. A call site
+    /// in another body or another package asks THIS, never the pass facts of
+    /// the body it stands in. A body this compile cannot see answers
+    /// `Unknown`, which a site never hoists nor writes directly.
+    fn decl_places(d: DeclId) -> List<int> {
         let x = self.decls.decl(d)
-        if x.external || self.is_held(x.file) { return true }
+        if x.external || self.is_held(x.file) { return [unknown_key()] }
         match x.kind {
-            .State -> true,
+            .State -> [place_key(StatePlace.Global(d))],
             .Fn or .Method or .Default or .Main or .Case -> {
-                if x.root == null { return true }
+                if x.root == null { return [unknown_key()] }
                 let _ = self.read_reach()
                 // A pass that could not run (asked mid-resolve) has no
                 // settled cell, and an unsettled member reads as
                 // `bottom` — pure. Answer conservatively instead.
-                if self.db.value_hash_of(key(Family.ReadReach, 0)) == null { return true }
-                self.read_fixpoint.value_at(d.index)
+                if self.db.value_hash_of(key(Family.ReadReach, 0)) == null { return [unknown_key()] }
+                plain_places(self.read_fixpoint.value_at(d.index))
             },
-            .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Const or .Builtin -> false,
+            .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Const or .Builtin -> [],
         }
     }
 
@@ -277,26 +277,76 @@ impl Workspace {
         match kind { .Fn or .Method or .Default or .Main or .Case -> true, rest -> false }
     }
 
-    /// One declaration's raw contribution to the fixpoint: its own
-    /// direct state read, or any call that reaches state — a resolved
-    /// callee through the fixpoint, an unnameable one (a fn value, a
-    /// method, an `extern` row) conservatively.
-    fn read_contribution(d: DeclId) -> bool {
+    /// One declaration's raw contribution to the fixpoint: the places its
+    /// own body reads and those its calls reach — a resolved callee through
+    /// the fixpoint, an unnameable one (a fn value, a method, an `extern`
+    /// row) as `Unknown`. A `state` statement of the body is the body's own
+    /// and reaches no other, so to a caller it is `Unknown`.
+    fn read_contribution(d: DeclId) -> List<int> {
         let x = self.decls.decl(d)
-        let root? = x.root else { return true }
+        let root? = x.root else { return [unknown_key()] }
         let names = self.names_of(d)
         let view = file_view(self.lang, self.parsed(x.file), self.decls, x.file)
-        !read_set_of(view, names, root).is_empty() ||
-            calls_read_state(view, names, root, (g) -> self.callee_reads(g))
+        sorted_places(
+            [shared_key(p) for p in read_set_of(view, names, root)]
+                .concat(
+                    [place_key(p) for p in call_places_of(view, names, root, (g) -> self.callee_places(g))],
+                )
+                .concat(
+                    [structural_key(shared_key(p)) for p in structural_places_of(view, names, root, (g) -> self.callee_structural(g))],
+                ),
+        )
     }
 
     /// What a callee answers the read-reach walk: a body this compile
-    /// cannot see MAY read state, as does a `state` declaration read
-    /// directly; every other declaration answers through the fixpoint.
-    fn callee_reads(g: DeclId) -> bool {
+    /// cannot see MAY read any state, a `state` declaration read directly is
+    /// itself the place, and every other declaration answers through the
+    /// fixpoint.
+    fn callee_places(g: DeclId) -> List<int> {
         let x = self.decls.decl(g)
-        if x.external || self.is_held(x.file) { return true }
-        match x.kind { .State -> true, rest -> self.read_fixpoint.value_at(g.index) }
+        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        match x.kind {
+            .State -> [place_key(StatePlace.Global(g))],
+            rest -> plain_places(self.read_fixpoint.value_at(g.index)),
+        }
+    }
+
+    /// The `state` places a declaration reads at paint time that no reading
+    /// answers for — what a page must take the full paint for when one is
+    /// written. A reading is a text the instance's minted closure says again;
+    /// a handler runs when the user speaks. The declaration's own `state`
+    /// statements stand as themselves; a call contributes its callee's
+    /// structural places.
+    fn structural_places(d: DeclId) -> List<int> {
+        let x = self.decls.decl(d)
+        let root? = x.root else { return [unknown_key()] }
+        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        let _ = self.read_reach()
+        let names = self.names_of(d)
+        let view = file_view(self.lang, self.parsed(x.file), self.decls, x.file)
+        sorted_places(
+            [place_key(p) for p in structural_places_of(view, names, root, (g) -> self.callee_structural(g))],
+        )
+    }
+
+    /// The structural places a declaration reaches, transitively — the same
+    /// answer a call site folds in, asked as a query.
+    fn decl_structural(d: DeclId) -> List<int> {
+        let _ = self.read_reach()
+        self.callee_structural(d)
+    }
+
+    /// What a callee answers a structural walk: a body this compile cannot
+    /// see may read anything, a `state` declaration read directly is the
+    /// place, and every other declaration answers through the fixpoint's
+    /// structural half.
+    fn callee_structural(g: DeclId) -> List<int> {
+        let x = self.decls.decl(g)
+        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        match x.kind {
+            .State -> [place_key(StatePlace.Global(g))],
+            rest -> structural_places_of_keys(self.read_fixpoint.value_at(g.index)),
+        }
     }
 
     /// The record itself: every pass's facts for the file, and the way
@@ -311,6 +361,8 @@ impl Workspace {
             names: names,
             facts: facts,
             decl_reads: (d: DeclId) -> self.decl_reads_state(d),
+            decl_places: (d: DeclId) -> self.decl_places(d),
+            decl_structural: (d: DeclId) -> self.decl_structural(d),
             lang: self.lang,
             diagnostics: flatten(
                 [
@@ -345,6 +397,8 @@ impl Workspace {
             names: names,
             facts: facts,
             decl_reads: (x: DeclId) -> self.decl_reads_state(x),
+            decl_places: (x: DeclId) -> self.decl_places(x),
+            decl_structural: (x: DeclId) -> self.decl_structural(x),
             lang: self.lang,
             diagnostics: flatten([p.voices.list, names.voices.list, facts.voices.list]),
             program: () -> self.program(path),
@@ -453,6 +507,9 @@ impl Workspace {
     /// Where a file's asks live: beside its object, under the object's key.
     fn asks_key(okey: string) -> string { node_key(Stored.Unit, ["asks", okey]) }
 
+    /// FILE-SAID: a file's asks, keyed by PATH under the program's root — written beside the object-keyed row.
+    fn asks_row(path: string) -> string { node_key(Stored.Unit, ["asks-row", self.root, path]) }
+
     /// EVERY INSTANTIATION THE HELD FILES' BODIES DEMAND, read where the bodies are
     /// not — kept for the lowering — and the held files whose row could NOT be read.
     /// An unread row is a file that must parse: holding it would link a program
@@ -469,6 +526,9 @@ impl Workspace {
 
     /// Where a file's code lives: beside its object, under the object's key.
     fn codes_key(okey: string) -> string { node_key(Stored.Unit, ["codes", okey]) }
+
+    /// FILE-SAID: a file's code, keyed by PATH under the program's root — written beside the object-keyed row.
+    fn codes_row(path: string) -> string { node_key(Stored.Unit, ["codes-row", self.root, path]) }
 
     /// Where an instantiation's code is kept: its symbol, its type arguments'
     /// shapes, and the object key of the file its generic lowers from, so an
@@ -522,9 +582,23 @@ impl Workspace {
     }
 
     fn held_okey(s: Store, path: string) -> string {
-        let ws = self
-        obj_key_cached(ws, s, self.module_path_of(path), path)
+        let at = "${self.module_path_of(path).text()}\t${path}"
+        let known: string? = self.keys.object_keys.get().get(at)
+        if known != null { return known! }
+        let kept: string? = if self.hold.standing.get().has(path) &&
+            self.file_judged(s, path, Stored.Unit, self.okey_row(path)) {
+            s.get(Stored.Unit, self.okey_row(path))
+        } else {
+            null
+        }
+        let found? = kept else { return obj_key_cached(self, s, self.module_path_of(path), path) }
+        self.keys.object_keys.put(at, found)
+        found
     }
+
+    /// FILE-SAID: a file's object key, keyed by PATH under the program's root — kept beside its other rows, and read back for a
+    /// file whose rows stand, so a held file's key needs none of its parts.
+    fn okey_row(path: string) -> string { node_key(Stored.Unit, ["okey-row", self.compiler_id(), self.root, path]) }
 
     /// Whether this build is for wasm: no fiber, no thread, so no `while`
     /// check — the row it would call has no body on that target.
@@ -579,10 +653,19 @@ impl Workspace {
     /// program's, memoized — then run in the evaluator. A const whose
     /// value asks for itself is refused as the cycle it is.
     fn settled(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
-        // a run that reads this const reads its file, and what its settlement read
-        let reader: string? = self.hold.settling.get().last()
         let unit = self.hold.lowering.get().last()
         if unit != null { self.unit_asked(unit!, ConstAsk { file: f, root: root, seats: seats }) }
+        self.settled_replay(f, root, seats)
+    }
+
+    /// `settled` without filing the ask on the lowering unit: a replay of an ask
+    /// already filed is a read, never a new ask.
+    fn settled_replay(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> Result<
+        Settled,
+        Unsettled,
+    > {
+        // a run that reads this const reads its file, and what its settlement read
+        let reader: string? = self.hold.settling.get().last()
         if reader != null { self.read_by(reader!, [self.const_read(f, root)]) }
         let id = self.settle_id(f, root, seats)
         let r = self.settled_at(id)
@@ -607,17 +690,26 @@ impl Workspace {
     /// is recorded as read by the file whose run asks, THEN read — so the
     /// file's record names it, its object key digests it, and the file is
     /// held only while that text stands. `embed` is the one such read.
-    fn run_read(f: FileId, path: string) -> Result<string, string> {
+    fn run_read(f: FileId, path: string, kind: EmbedKind) -> Result<Bytes, string> {
         self.read_by(self.decls.file(f).path, [self.plain_read(path)])
-        self.embed_read(path)
+        self.embed_read(path, kind)
     }
 
     /// A const a unit's lowering asked for, noted on the UNIT: a unit is
     /// lowered once and reused by every run that reaches it, so its reads
     /// belong to each of them, never to the run that happened to lower it.
+    /// A unit's asks are a set, held once each in the order first asked.
     fn unit_asked(unit: int, ask: ConstAsk) {
         let key = "${unit}"
-        self.hold.unit_asks.put(key, (self.hold.unit_asks.get().get(key) ?? []).concat([ask]))
+        let asks = self.hold.unit_asks.get().get(key) ?? self.unit_asks_opened(key)
+        let id = "${self.settle_id(ask.file, ask.root, ask.seats)}"
+        if !asks.get().has(id) { asks.put(id, ask) }
+    }
+
+    /// The consts unit `id`'s lowering asked for, each once, in the order first asked.
+    fn asks_of(id: int) -> List<ConstAsk> {
+        let asks? = self.hold.unit_asks.get().get("${id}") else { return [] }
+        asks.get().values()
     }
 
     /// `reads` joined to what `reader`'s compile-time runs read.
@@ -858,7 +950,7 @@ impl Workspace {
         let r = self.settle_result(ask)
         // every file `embed` read is this query's input, a held answer's too
         match r {
-            .Ok(value) -> { for path in value.embeds { let _ = self.embedded(path) } },
+            .Ok(value) -> { for path in value.embeds { let _ = self.embedded(path, EmbedKind.Octets) } },
             .Err(_) -> { let _ = 0 },
         }
         let held = match r { .Ok(x) -> Settlement.Held(x), .Err(why) -> Settlement.Refused(why) }
@@ -916,7 +1008,7 @@ impl Workspace {
         let r = run_settle(
             l,
             self.budgets(),
-            (path: string) -> ws.run_read(f, path),
+            (path: string, kind: EmbedKind) -> ws.run_read(f, path, kind),
             (nm: string) -> ws.type_named_lifted(f, nm),
         )
         let chain = match r { .Err(.Reach(_)) -> world_witness(l, true), _ -> null }
@@ -958,7 +1050,7 @@ impl Workspace {
         match run_crossed(
             l,
             self.budgets(),
-            (path: string) -> ws.run_read(f, path),
+            (path: string, kind: EmbedKind) -> ws.run_read(f, path, kind),
             (nm: string) -> ws.type_named_lifted(f, nm),
         ) { .Ok(x) -> .Ok(heap.adopt(x.heap, x.answer)), .Err(why) -> .Err(why) }
     }
@@ -973,8 +1065,23 @@ impl Workspace {
         Lifted,
         Unsettled,
     > {
+        self.lifted_at(self.lift_ask_of(d, f, s, call, args))
+    }
+
+    /// The refusal a lift HELD, in its own words. A second ask of a refused lift
+    /// answers `Spoken` — the first spoke — but an expansion's voices are wiped
+    /// when the expansion runs again, so the one that must speak again asks here.
+    fn lift_refusal(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Unsettled? {
+        match self.relation(Family.Lifted).ask(self.lift_ask_of(d, f, s, call, args)) {
+            .Reuse(held) -> match lifted_of(held) { .Refused(why) -> why, .Crossed(_) -> null },
+            .Compute or .Cycle -> null,
+        }
+    }
+
+    /// The query id of one annotation call, registered on first sight.
+    fn lift_ask_of(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> int {
         let name = "lift\$${f.index}\$${call.index}\$${d.index}"
-        let id = match interned(self.lift_asks_index, name, self.lift_asks.get().length) {
+        match interned(self.lift_asks_index, name, self.lift_asks.get().length) {
             .Found(id) -> {
                 self.lift_asks.set_at(id, lift_ask(name, d, f, s, call, args))
                 id
@@ -984,7 +1091,6 @@ impl Workspace {
                 id
             },
         }
-        self.lifted_at(id)
     }
 
     /// One annotation query. The kernel's cycle verdict is the
@@ -1095,8 +1201,40 @@ impl Workspace {
 
 // ── The read-reach lattice ──
 
-/// `Fixpoint`'s join for read-reach: a declaration reads state when
-/// ANY of its sites does, so the lattice grows by disjunction.
-fn read_reach_join(a: bool, b: bool) -> bool { a || b }
+/// The key of the place nothing names.
+fn unknown_key() -> int { place_key(StatePlace.Unknown) }
 
-fn read_reach_fp(v: bool) -> int { if v { 1 } else { 0 } }
+/// A place as a caller sees it through a callee: a global `state` is the
+/// place itself, anything the callee's body owns is `Unknown`.
+fn shared_key(p: StatePlace) -> int {
+    match p { .Global(_) -> place_key(p), .Local(_, _) or .Unknown -> unknown_key() }
+}
+
+/// The keys a set holds that are plain places.
+fn plain_places(keys: List<int>) -> List<int> { [k for k in keys if !is_structural_key(k)] }
+
+/// The place keys the structural half of a set names.
+fn structural_places_of_keys(keys: List<int>) -> List<int> {
+    [plain_of_structural(k) for k in keys if is_structural_key(k)]
+}
+
+/// A set of place keys, sorted and each once — the lattice's one shape.
+fn sorted_places(keys: List<int>) -> List<int> {
+    mut out: List<int> = []
+    for k in keys {
+        if !out.contains(k) { out = [y for y in out if y < k].concat([k]).concat([y for y in out if y > k]) }
+    }
+    out
+}
+
+/// `Fixpoint`'s join for read-reach: a declaration reaches a place when ANY
+/// of its sites does, so the lattice grows by union.
+fn places_join(a: List<int>, b: List<int>) -> List<int> { sorted_places(a.concat(b)) }
+
+fn places_fp(v: List<int>) -> int { fp_list(v) }
+
+/// The read-reach pass's one settled hash: every member's set folded to ONE
+/// value, then those folded together, so where a set ends is part of what is
+/// hashed — `[1, 2] | [3]` and `[1] | [2, 3]` hold the same ints and are two
+/// answers.
+export fn reach_fp(sets: List<List<int>>) -> int { fp(3, [fp_list([fp_list(s) for s in sets])]) }

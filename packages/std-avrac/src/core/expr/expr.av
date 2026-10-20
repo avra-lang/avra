@@ -9,6 +9,7 @@ use core.{
     ExprId,
     Nominal,
     Param,
+    PatId,
     Plain,
     Scoped,
     StmtId,
@@ -56,12 +57,28 @@ export type Binary = { op: BinOp, left: ExprId, right: ExprId }
 @sequence
 export type Not = { value: ExprId }
 
-/// `~value` — bitwise not, written as itself. `rewrite` is what it
-/// MEANS (`value ^ -1`), minted with the node and walked in its place;
-/// the operand is read OFF it (`bitnot_operand`), so it is held once.
+/// `~value` — bitwise not, written as itself. What it MEANS (`value ^ -1`)
+/// is minted beside it (`means`) and walked in its place.
 @expr_node
 @sequence
-export type Bitnot = { rewrite: ExprId }
+export type Bitnot = { value: ExprId }
+
+/// `value |> stage` — the stage applied to the value, which becomes its
+/// first argument. What it means is the call (`minted`), walked in its place.
+@expr_node
+@sequence
+export type Pipe = { value: ExprId, stage: ExprId }
+
+/// `let pattern = subject [else { … }]` and every statement after it in its
+/// block: the node keeps what was written, and the match it means — the
+/// pattern's arm holding `rest`, a refused value taking `otherwise` — is
+/// minted beside it (`minted`) and walked in its place, so the pattern's
+/// names scope over `rest` as an arm's do. `rest` is absent only before the
+/// block folds its statements in; a node that stays so was written where no
+/// block holds the rest.
+@expr_node
+@sequence
+export type LetPattern = { pat: PatId, subject: ExprId, otherwise: ExprId?, rest: ExprId? }
 
 /// The first aggregate — homogeneous scalar elements.
 @expr_node
@@ -108,15 +125,16 @@ export type Body = { word: string, parts: List<string>, holes: List<ExprId>, vie
 /// component's word, its head values and its block as the user
 /// wrote them. `view` is the expansion that STANDS IN PLACE of the
 /// instance, the head and block spliced into it; the written
-/// pieces are the printing projection.
+/// pieces are the printing projection. `key` is a keyed list's element
+/// accessor (`list xs by it.id { … }`): null for every other instance.
 @expr_node
 @expands
 @apart
-export type Component = { word: string, heads: List<ExprId>, block: ExprId?, view: BodyView, check: ExprId? }
+export type Component = { word: string, heads: List<ExprId>, block: ExprId?, view: BodyView, check: ExprId?, key: ExprId? }
 
 @expr_node
 @branches
-export type If = { cond: ExprId, on_true: ExprId, on_false: ExprId }
+export type If = { cond: ExprId, on_true: ExprId, on_false: ExprId? }
 
 /// Multi-way choice; `fallback` is the total `_` arm.
 @expr_node
@@ -209,13 +227,14 @@ export type Chain = { subject: ExprId, name: Plain }
 /// which is the whole cost of writing it.
 @expr_node
 @sequence
-export type Force = { value: ExprId }
+export type Force = { subject: ExprId }
 
 /// `subject is .variant` — the tag test; typing demands an enum
-/// subject that names the variant, and answers bool.
+/// subject that names the variant, and answers bool. `asked` is the
+/// pattern as written (`right`): `.V`, `.V(x)` or a type test `c: T`.
 @expr_node
 @sequence
-export type Is = { subject: ExprId, variant: Plain }
+export type Is = { left: ExprId, right: PatId }
 
 /// `.name(args)` — a variant of the enum the site EXPECTS; the
 /// want names the enum, the literal names the variant.
@@ -228,7 +247,7 @@ export type VariantLit = { name: Plain, args: List<ExprId> }
 /// `null` right here, so the fn must promise a nullable.
 @expr_node
 @sequence
-export type Propagate = { value: ExprId }
+export type Propagate = { subject: ExprId }
 
 /// `subject catch <recovery>` — recover from a Result's
 /// failure. Arms mirror Match's shape: `variants[j]` names the
@@ -254,16 +273,24 @@ export type MethodCall = { subject: ExprId, name: Plain, args: List<ExprId> }
 export type Error = {}
 
 /// `collect { … }` — a list of every value its statements would
-/// discard, in the order they ran; `body` is a block with no tail.
+/// discard, in the order they ran; its last statement is gathered like
+/// any other, so it holds statements and no tail.
 @expr_node
 @sequence
-export type Collect = { body: ExprId }
+export type Collect = { stmts: List<StmtId> }
 
 /// `b"…"` — octets, carried as the spelling between the quotes;
 /// `byte_string_octets` (grammar/lexer.av) is what it holds.
 @expr_node
 @sequence
 export type BytesLit = { spelled: string }
+
+/// `table<Row> { h | h \n cell | cell … }` — a SUGAR: what it means is
+/// the list of `Row { h: cell, … }` literals, one per row. `rows` are
+/// the cell lists as written; `header` names the row type's fields.
+@expr_node
+@apart
+export type Table = { row: string, header: List<string>, rows: List<ExprId> }
 
 /// `(lo..hi)` — a half-open counting range, the two bounds as
 /// written. A flat value: the walk reads the bounds, no box.

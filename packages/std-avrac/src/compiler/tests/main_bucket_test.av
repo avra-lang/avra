@@ -1,0 +1,39 @@
+// A FILE'S `main` IS ITS OWN. Every file with top-level statements mints a declaration
+// named `main`, so the name's bucket holds one per file; a read of one file's `main` must
+// depend on that file's rows, never on every other file's `main` — or a file gained
+// anywhere in the program would move every entry's answer.
+use @std.avrac.testing.{test_workspace}
+use compiler.{Workspace}
+use compiler.families.{Family}
+use compiler.host.{memory_host}
+use @std.relation.engine.{Key}
+
+fn entry_files() -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"w\"\nversion = \"0.1.0\"\n",
+        "/w/src/a.av": "let a = 1\n",
+        "/w/src/c.av": "let c = 2\n",
+    }
+}
+
+fn entries() -> Workspace {
+    test_workspace(memory_host(entry_files(), ["/w/avra.toml", "/w/src/a.av", "/w/src/c.av"]), "/w")
+}
+
+/// The names whose bucket the typed answer of `path`'s `main` read.
+fn main_reads(ws: Workspace, path: string) -> List<string> {
+    let f = ws.file_id(path)
+    let _ = ws.analysis(f)
+    let d = ws.decls.main_of(f)!
+    [ws.decls.bucket_label(k.arg) ?? "" for k in ws.db.kernel.deps_of(Key { family: Family.Typed.ordinal, arg: d.index }) if k.family == Family.Named.ordinal]
+}
+
+spec "compiler — a file's main is a function of its own file" {
+    given "an entry file's `main` typed beside another file with top-level statements" {
+        then "no read of the shared `main` bucket is among what its answer read" {
+            let ws = entries()
+            let _ = ws.items(ws.file_id("/w/src/c.av"))
+            !main_reads(ws, "/w/src/a.av").contains("main")
+        }
+    }
+}

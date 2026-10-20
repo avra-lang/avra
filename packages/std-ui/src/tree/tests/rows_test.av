@@ -1,0 +1,322 @@
+//! A list of rows builds only its window: how many a paint built is counted,
+//! the window slides by key, and an instance a row holds outlives its
+//! scrolling away.
+use @std.ui.components.{button, column, list, row, text}
+use @std.ui.headless.{Screen, headless as whole}
+use @std.ui.tree.rows.{Show, windowed}
+use @std.ui.tree.view.{View}
+
+/// A row with a button of its own words and an instance state of its own.
+component tapper(n: int) {
+    state mine: int = 0
+    row {
+        text "row ${self.n} taps ${self.mine}"
+        button "Tap ${self.n}" { on press { self.mine = self.mine + 1 } }
+    }
+}
+
+/// A row that holds no state of its own.
+component plain(n: int) {
+    row {
+        text "plain ${self.n}"
+    }
+}
+
+/// A screen with a viewport of forty rows, as a page has.
+fn headless<V: View>(view: fn() -> V) -> Screen { whole(view, rows: 40) }
+
+fn keyed(i: int) -> string { "k${i}" }
+
+fn rows_of(count: int) -> List<int> { [i for i in 0..count] }
+
+fn listing(count: int) -> Screen {
+    headless(
+        () -> column {
+            list {
+                windowed(
+                    rows_of(count),
+                    (i: int) -> keyed(i),
+                    (i: int) -> tapper i { key: keyed(i) },
+                )
+            }
+        },
+    )
+}
+
+fn words(s: Screen) -> List<string> { s.text().split("\n") }
+
+spec "tree/rows — a list builds only its window" {
+    given "ten thousand rows" {
+        then "the first paint builds the first screenful, not the rows" {
+            let s = listing(10000)
+            s.built() == 40
+        }
+        then "the screen holds those rows and no others" {
+            let s = listing(10000)
+            let seen = s.text()
+            seen.contains("row 0 taps 0") &&
+                seen.contains("row 39 taps 0") &&
+                !seen.contains("row 40 ")
+        }
+        then "a repaint builds the same bounded number" {
+            let s = listing(10000)
+            s.press("Tap 3") && s.built() == 40
+        }
+    }
+    given "a window the target tells" {
+        then "builds exactly those rows" {
+            let s = listing(10000)
+            let path = s.windows()[0]
+            s.scroll(path, 5000, 5030) &&
+                s.built() == 30 &&
+                s.text().contains("row 5000 taps 0") &&
+                !s.text().contains("row 0 ")
+        }
+        then "past the rows there are is kept inside them" {
+            let s = listing(10)
+            let path = s.windows()[0]
+            s.scroll(path, 8, 500) && s.built() == 2 && s.text().contains("row 9 ")
+        }
+        then "an empty source builds nothing" {
+            let s = listing(0)
+            s.built() == 0
+        }
+    }
+    given "a row that holds an instance" {
+        then "keeps it while its key stays in the source, though it scrolled away" {
+            let s = listing(10000)
+            let path = s.windows()[0]
+            let tapped = s.press("Tap 3") && s.press("Tap 3")
+            let away = s.scroll(path, 5000, 5030) && !s.text().contains("row 3 ")
+            let back = s.scroll(path, 0, 40)
+            tapped && away && back && s.text().contains("row 3 taps 2")
+        }
+        then "and a row that never stood starts fresh" {
+            let s = listing(10000)
+            let path = s.windows()[0]
+            s.scroll(path, 100, 140) && s.text().contains("row 100 taps 0")
+        }
+    }
+    given "rows that hold nothing" {
+        then "are not kept once they leave the window" {
+            let s = headless(
+                () -> column {
+                    list {
+                        windowed(
+                            rows_of(10000),
+                            (i: int) -> keyed(i),
+                            (i: int) -> plain i { key: keyed(i) },
+                        )
+                    }
+                },
+            )
+            let path = s.windows()[0]
+            let before = s.standings()
+            let swept = s.scroll(path, 1000, 1040) &&
+                s.scroll(path, 4000, 4040) &&
+                s.scroll(path, 9000, 9040)
+            swept && s.standings() <= before
+        }
+        then "and rows that hold an instance are kept" {
+            let s = listing(10000)
+            let path = s.windows()[0]
+            let before = s.standings()
+            let tapped = s.press("Tap 3")
+            let swept = s.scroll(path, 1000, 1040) && s.scroll(path, 4000, 4040)
+            tapped && swept && s.standings() > before
+        }
+    }
+    given "a row whose key leaves the source" {
+        then "loses what it held, and a row of that key added in the next paint starts fresh" {
+            let src: Cell<List<int>> = Cell.new(rows_of(10))
+            let s = headless(
+                () -> column {
+                    list {
+                        windowed(
+                            src.get(),
+                            (i: int) -> keyed(i),
+                            (i: int) -> tapper i { key: keyed(i) },
+                        )
+                    }
+                },
+            )
+            let path = s.windows()[0]
+            let tapped = s.press("Tap 3") && s.press("Tap 3")
+            let away = s.scroll(path, 5, 10)
+            let gone = s
+                .turn(
+                    () -> {
+                        src.set([i for i in rows_of(10) if i != 3])
+                        true
+                    },
+                )
+            let back = s
+                .turn(
+                    () -> {
+                        src.set(rows_of(10))
+                        true
+                    },
+                )
+            let seen = s.scroll(path, 0, 10)
+            tapped && away && gone && back && seen && s.text().contains("row 3 taps 0")
+        }
+    }
+    given "a row whose index moves while its key stays" {
+        then "keeps what it held, and is found again at its new index" {
+            let src: Cell<List<int>> = Cell.new(rows_of(10))
+            let s = headless(
+                () -> column {
+                    list {
+                        windowed(
+                            src.get(),
+                            (i: int) -> keyed(i),
+                            (i: int) -> tapper i { key: keyed(i) },
+                        )
+                    }
+                },
+            )
+            let path = s.windows()[0]
+            let tapped = s.press("Tap 3") && s.press("Tap 3")
+            let away = s.scroll(path, 5, 10)
+            let shifted = s
+                .turn(
+                    () -> {
+                        src.set([i for i in rows_of(10) if i != 1])
+                        true
+                    },
+                )
+            let again = s.scroll(path, 0, 9)
+            tapped && away && shifted && again && s.text().contains("row 3 taps 2")
+        }
+    }
+    given "rows that measure a height" {
+        then "stand a spacer for each side's unbuilt rows, and none where none are unbuilt" {
+            let s = listing(10000)
+            let path = s.windows()[0]
+            let none = !s.text().contains("skipped")
+            let both = s.scroll_measured(path, 100, 140, 24)
+            let mid = s.text().contains("skipped=100x24") && s.text().contains("skipped=9860x24")
+            let top = s.scroll_measured(path, 0, 40, 24)
+            let first = s.text().contains("skipped=9960x24") && !s.text().contains("skipped=0x24")
+            let end = s.scroll_measured(path, 9960, 10000, 24)
+            let last = s.text().contains("skipped=9960x24") && s.built() == 40
+            none && both && mid && top && first && end && last
+        }
+    }
+    given "rows in a list that keeps room for what it leaves unbuilt" {
+        then "each says where it stands in the whole list" {
+            let s = listing(10000)
+            let path = s.windows()[0]
+            let moved = s.scroll_measured(path, 100, 140, 24)
+            moved && s.text().contains("row=100/10000") && s.text().contains("row=139/10000")
+        }
+    }
+    given "the focus resting on a row" {
+        then "keeps that row built wherever the window goes, with room between" {
+            let s = listing(10000)
+            let path = s.windows()[0]
+            let held = s.scroll_pinned(path, 5000, 5040, 24, keyed(3))
+            let shown = s.text()
+            held &&
+                shown.contains("row 3 taps") &&
+                shown.contains("row 5000 taps") &&
+                shown.contains("skipped=3x24") &&
+                shown.contains("skipped=4996x24")
+        }
+        then "lets it go when the focus moves on" {
+            let s = listing(10000)
+            let path = s.windows()[0]
+            let held = s.scroll_pinned(path, 5000, 5040, 24, keyed(3))
+            let freed = s.scroll_pinned(path, 5000, 5040, 24, keyed(4))
+            held && freed && !s.text().contains("row 3 taps") && s.text().contains("row 4 taps")
+        }
+    }
+    given "a list asked to show a row" {
+        then "builds a window that starts there, asks the page to scroll to it, and does so again for the same key asked again" {
+            let want: Cell<Show> = Cell.new(Show {})
+            let s = headless(
+                () -> column {
+                    list {
+                        windowed(
+                            rows_of(10000),
+                            (i: int) -> keyed(i),
+                            (i: int) -> tapper i { key: keyed(i) },
+                            want.get(),
+                        )
+                    }
+                },
+            )
+            let path = s.windows()[0]
+            let measured = s.scroll_measured(path, 0, 40, 24)
+            let asked = s
+                .turn(
+                    () -> {
+                        want.set(want.get().to(keyed(7000)))
+                        true
+                    },
+                )
+            let there = s.text().contains("row 7000 taps") && !s.text().contains("row 0 taps")
+            let marked = s.text().contains("row=7000/10000 reveal")
+            let done = s.scroll_measured(path, 7000, 7040, 24)
+            let cleared = !s.text().contains("reveal")
+            let again = s.scroll_measured(path, 100, 140, 24)
+            let twice = s
+                .turn(
+                    () -> {
+                        want.set(want.get().to(keyed(7000)))
+                        true
+                    },
+                )
+            let thrice = s.text().contains("row 7000 taps") &&
+                s.text().contains("reveal") &&
+                !s.text().contains("row 100 taps")
+            measured && asked && there && marked && done && cleared && again && twice && thrice
+        }
+    }
+    given "two windowed lists on one screen" {
+        then "each has a path of its own, and scrolling one leaves the other" {
+            let s = headless(
+                () -> column {
+                    list {
+                        windowed(
+                            rows_of(100),
+                            (i: int) -> keyed(i),
+                            (i: int) -> tapper i { key: keyed(i) },
+                        )
+                    }
+                    list {
+                        windowed(
+                            rows_of(100),
+                            (i: int) -> keyed(i + 1000),
+                            (i: int) -> tapper i + 1000 { key: keyed(i + 1000) },
+                        )
+                    }
+                },
+            )
+            let paths = s.windows()
+            let moved = s.scroll(paths[1], 50, 60)
+            paths.length == 2 &&
+                paths[0] != paths[1] &&
+                moved &&
+                s.text().contains("row 1050") &&
+                s.text().contains("row 0 ") &&
+                !s.text().contains("row 1000")
+        }
+    }
+    given "a row key that is not the one the list found it by" {
+        then "is said, once" {
+            let s = headless(
+                () -> column {
+                    list {
+                        windowed(
+                            rows_of(3),
+                            (i: int) -> keyed(i),
+                            (i: int) -> tapper i { key: "other${i}" },
+                        )
+                    }
+                },
+            )
+            !s.warnings().is_empty()
+        }
+    }
+}

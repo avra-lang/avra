@@ -113,19 +113,47 @@ export fn producer_under(parts: List<string?>, toolchain: string) -> Producer {
 }
 
 /// The packs this process has open, one per root and compiler print — so a store
-/// is read from disk once however many workspaces ask for it.
-once fn packs() -> Cell<Map<string, Pack>> { map_cell() }
+/// is read from disk once however many workspaces ask for it. A pack lives while a
+/// workspace holds it (`pack_held`): the last release lets it go, so a process that
+/// makes workspaces of its own prints does not keep every index it ever read. An
+/// emptied entry is a pack let go; a pack nobody holds is never entered.
+once fn packs() -> Cell<Map<string, List<Pack>>> { map_cell() }
+
+/// How many workspaces hold each pack, by its key.
+once fn holders() -> Cell<Map<string, int>> { map_cell() }
+
+fn pack_key(root: string, print: string) -> string { "${root}\n${print}" }
 
 fn pack_for(root: string, print: string) -> Pack {
-    let at = "${root}\n${print}"
-    let known: Pack? = packs().get().get(at)
+    let at = pack_key(root, print)
+    let known: Pack? = packs().get().get(at)?.first()
     known ?? mint_pack(at, root, print)
 }
 
+/// A pack is SHARED only while a workspace holds its key; a store made with no holder
+/// owns its pack, which goes with it.
 fn mint_pack(at: string, root: string, print: string) -> Pack {
     let made = pack_at(root, print)
-    packs().put(at, made)
+    if holders().get().get(at) ?? 0 > 0 { packs().put(at, [made]) }
     made
+}
+
+/// A workspace's hold, moved to the pack of `root` under `print`: `held` is the key it
+/// holds now (empty for none), and the key it holds after is answered. A hold that
+/// has not moved costs a compare.
+export fn pack_holding(held: string, root: string, print: string) -> string {
+    let at = pack_key(root, print)
+    if at == held { return held }
+    if !held.is_empty() { pack_released(held) }
+    holders().put(at, (holders().get().get(at) ?? 0) + 1)
+    at
+}
+
+/// A workspace lets go of the pack it held; the last one lets the pack go.
+export fn pack_released(at: string) {
+    let left = (holders().get().get(at) ?? 0) - 1
+    holders().put(at, if left > 0 { left } else { 0 })
+    if left <= 0 { packs().put(at, []) }
 }
 
 /// Whether a store's writes are set aside — an inspection keeps to memory.
@@ -174,7 +202,7 @@ impl Reading {
 }
 
 /// A read read back from a row's list; absent for a line that is no pair.
-fn read_spelled(line: string) -> Reading? {
+export fn read_spelled(line: string) -> Reading? {
     let name? = read_name(line) else { return null }
     Reading { name: name, digest: line.substring(0, line.length - name.length - 1) }
 }
@@ -361,8 +389,21 @@ impl Store {
         pack_suspects(self.pack, moved)
     }
 
+    /// THE KEY A ROW IS FILED UNDER, as the pack spells it: the family's name and the stamp it
+    /// stands under, then the key — the same spelling `pack_suspects` answers with.
+    fn suspect_key(family: Stored, key: string) -> string { record_key(self.packed(family), key) }
+
     /// What this process has asked of the store so far.
     fn traffic() -> Traffic { pack_traffic(self.pack) }
+
+    /// Whether a packed row is there and reads none of the inputs behind `suspect` (a suspect
+    /// set's record keys): it stands with nothing judged. An aside or file row is never so.
+    fn unsuspected(family: Stored, key: string, suspect: Map<string, bool>) -> bool {
+        !family.file_family() &&
+            self.aside_row(family, key) == null &&
+            self.has(family, key) &&
+            suspect.get(self.suspect_key(family, key)) == null
+    }
 
     /// The lines a row was kept with.
     fn reads_of(family: Stored, key: string) -> List<string>? {

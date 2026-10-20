@@ -81,6 +81,9 @@ export enum HoleKind {
     Fields
     /// a lone name standing as a whole field of a record literal
     Inits
+    /// a lone name standing as a block's LAST statement — the block's
+    /// value when it is an expression, else statements joining the block
+    Tail
 }
 
 /// The kind a template VALUE wears — one per `@std/meta` type.
@@ -118,6 +121,8 @@ export enum FillClass {
     Bool
     /// An arena id — `ExprId` — read where a rewrite's hole stands.
     Id
+    /// A pattern's arena id — `PatId` — read where a rewrite's pattern stands.
+    PatId
     Text
     Texts
     Named
@@ -140,39 +145,44 @@ export fn fits(class: FillClass, kind: HoleKind) -> bool {
         .Expression -> match class {
             .Template(k) -> k is .Code,
             .Int or .Bool or .Id or .Held or .Pattern -> true,
-            .Templates(_) or .Text or .Texts or .Named -> false,
+            .Templates(_) or .Text or .Texts or .Named or .PatId -> false,
         },
         .Name -> match class {
             .Text or .Int or .Named -> true,
-            .Template(_) or .Templates(_) or .Bool or .Texts or .Id or .Held or .Pattern -> false,
+            .Template(_) or .Templates(_) or .Bool or .Texts or .Id or .PatId or .Held or .Pattern -> false,
         },
         .Binder -> match class {
-            .Text or .Int or .Named or .Texts -> true,
-            .Template(_) or .Templates(_) or .Bool or .Id or .Held or .Pattern -> false,
+            .Text or .Int or .Bool or .Named or .Texts or .PatId -> true,
+            .Template(_) or .Templates(_) or .Id or .Held or .Pattern -> false,
         },
         .Type -> match class {
             .Text or .Named or .Pattern -> true,
-            .Template(_) or .Templates(_) or .Int or .Bool or .Texts or .Id or .Held -> false,
+            .Template(_) or .Templates(_) or .Int or .Bool or .Texts or .Id or .PatId or .Held -> false,
         },
         .Statement -> match class {
             .Template(k) or .Templates(k) -> !(k is .Arms),
-            .Int or .Bool or .Text or .Texts or .Named or .Id or .Held or .Pattern -> false,
+            .Int or .Bool or .Text or .Texts or .Named or .Id or .PatId or .Held or .Pattern -> false,
         },
         .Arm -> match class {
             .Template(k) or .Templates(k) -> k is .Arms,
-            .Int or .Bool or .Text or .Texts or .Named or .Id or .Held or .Pattern -> false,
+            .Int or .Bool or .Text or .Texts or .Named or .Id or .PatId or .Held or .Pattern -> false,
         },
         .Run -> match class {
             .Templates(k) -> k is .Code,
-            .Template(_) or .Int or .Bool or .Text or .Texts or .Named or .Id or .Held or .Pattern -> false,
+            .Template(_) or .Int or .Bool or .Text or .Texts or .Named or .Id or .PatId or .Held or .Pattern -> false,
         },
         .Fields -> match class {
             .Template(k) or .Templates(k) -> declares(k),
-            .Int or .Bool or .Text or .Texts or .Named or .Id or .Held or .Pattern -> false,
+            .Int or .Bool or .Text or .Texts or .Named or .Id or .PatId or .Held or .Pattern -> false,
         },
         .Inits -> match class {
             .Template(k) or .Templates(k) -> expresses(k),
-            .Int or .Bool or .Text or .Texts or .Named or .Id or .Held or .Pattern -> false,
+            .Int or .Bool or .Text or .Texts or .Named or .Id or .PatId or .Held or .Pattern -> false,
+        },
+        .Tail -> match class {
+            .Template(k) or .Templates(k) -> !(k is .Arms),
+            .Int or .Bool or .Id or .Held or .Pattern -> true,
+            .Text or .Texts or .Named or .PatId -> false,
         },
     }
 }
@@ -203,7 +213,7 @@ export fn class_kind(c: FillClass) -> MetaKind? {
         .Template(k) -> k,
         .Templates(k) -> many_of(k),
         .Int or .Bool or .Held or .Pattern -> MetaKind.Code,
-        .Id -> MetaKind.Rewrite,
+        .Id or .PatId -> MetaKind.Rewrite,
         .Text or .Texts or .Named -> null,
     }
 }

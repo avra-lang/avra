@@ -37,6 +37,8 @@ void* avra_task_spawn(void* body);
 void avra_task_settle(void* task);
 // The same for every task in a list.
 void avra_task_settle_all(void* list);
+void avra_task_release(void* task);
+void avra_tasks_release(void* list);
 
 // `task` joins the `Tasks` owner, which keeps its own reference; a full
 // owner first sheds the tasks that have finished.
@@ -62,6 +64,11 @@ int64_t avra_task_ended(void* task);
 // Who asked the cancel that ended the task: the asker's id, a scope's id,
 // or the task's own id for an answer.
 int64_t avra_task_ended_by(void* task);
+// How many fibers are parked on a task or a gate. Never parks.
+int64_t avra_parked_on(void* on);
+// How many fibers are parked on one direction of a descriptor: 0 reads,
+// 1 writes; any other direction traps. Never parks.
+int64_t avra_fd_parked(int64_t fd, int64_t dir);
 
 // The unwind frames the running task has passed: each fn's cold exit
 // pushes one, sixteen are kept, and past that the middle is dropped and
@@ -112,6 +119,7 @@ void avra_wait_sig(int64_t sig, int64_t arm, int64_t member);
 // The platform's signal number for a portable signal KIND (the `Sig`
 // variant index): the one currency a portable Avra enum and the C share.
 int64_t avra_sig_number(int64_t kind);
+void avra_sig_raise(int64_t kind);
 // … for `task` to end.
 void avra_wait_task(void* task, int64_t arm, int64_t member);
 // Parks the caller on what it registered and answers the claim:

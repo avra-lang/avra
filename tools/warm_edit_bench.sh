@@ -140,6 +140,12 @@ while [ "$i" -lt "$rounds" ]; do
     if [ "$least" -eq 0 ] || [ "$ms" -lt "$least" ]; then least=$ms; fi
 done
 printf 'warm unchanged %s\n' "$least" >> "$raw"
+# WHERE THE HIT'S MILLISECONDS GO, to stderr beside the number: the process's own
+# start (an arg-less run, no check) and the check's `--time` phases, so a runner that
+# is slower reads as a slower START, never as a slower compiler. Not judged.
+s0=$(now); "$avra" rules >/dev/null 2>&1; e0=$(now)
+echo "warm_edit_bench: startup $(((e0 - s0) / 1000000)) ms (\`avra rules\`, no check)" >&2
+"$avra" check --time "$target" 2>&1 >/dev/null | grep '^time:' | sed 's/^/warm_edit_bench: unchanged /' >&2
 
 # ONE BODY EDIT per round, each a miss; the LEAST is the edit's price.
 least=0
@@ -160,7 +166,7 @@ printf 'warm edit %s\n' "$least" >> "$raw"
 # a store hit.
 counted() { # <scenario>: `counts <scenario> <counter> <n>` rows from one check, its whole-read attribution to stderr
     out=$("$avra" check --counts "$target" 2>&1 >/dev/null)
-    printf '%s\n' "$out" | grep '^whole:' | sed "s/^/$1 /" >&2
+    printf '%s\n' "$out" | grep -E '^(whole|why):' | sed "s/^/$1 /" >&2
     printf '%s\n' "$out" | grep '^counts:' | tail -n 1 | tr ' ' '\n' | grep = \
         | while IFS== read -r name n; do printf 'counts %s %s %s\n' "$1" "$name" "$n"; done
 }

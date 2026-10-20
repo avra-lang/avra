@@ -1,7 +1,16 @@
 //! The instruction emitter: `impl Emit`, one arm per IR instruction.
 //! The module/declaration/entry machinery lives in llvm.av.
-use core.{Ins, Reg, BinOp, UnOp, RtFlag, flag_symbol, TypeId, RtKind, RtSig}
+use core.{Ins, Reg, BinOp, UnOp, RtFlag, flag_symbol, rounding_code, TypeId, RtKind, RtSig}
 use features.{nothing, absent_tag}
+
+/// LLVMRealPredicate codes (llvm-c/Core.h), by name. `!=` is UNE: unordered,
+/// so a NaN on either side is unequal. The rest are ordered: false on a NaN.
+const REAL_OEQ: int = 1
+const REAL_OGT: int = 2
+const REAL_OGE: int = 3
+const REAL_OLT: int = 4
+const REAL_OLE: int = 5
+const REAL_UNE: int = 14
 
 impl Emit {
     /// A register's LLVM type.
@@ -216,13 +225,12 @@ impl Emit {
             .Sub -> avra_llvm_build_fsub(self.b, a, b, "fsub"),
             .Mul -> avra_llvm_build_fmul(self.b, a, b, "fmul"),
             .Div -> avra_llvm_build_fdiv(self.b, a, b, "fdiv"),
-            // LLVMRealPredicate: OEQ 1, OGT 2, OGE 3, OLT 4, OLE 5, ONE 6
-            .Eq -> avra_llvm_build_fcmp(self.b, 1, a, b, "fcmp"),
-            .Ne -> avra_llvm_build_fcmp(self.b, 6, a, b, "fcmp"),
-            .Gt -> avra_llvm_build_fcmp(self.b, 2, a, b, "fcmp"),
-            .Ge -> avra_llvm_build_fcmp(self.b, 3, a, b, "fcmp"),
-            .Lt -> avra_llvm_build_fcmp(self.b, 4, a, b, "fcmp"),
-            .Le -> avra_llvm_build_fcmp(self.b, 5, a, b, "fcmp"),
+            .Eq -> avra_llvm_build_fcmp(self.b, REAL_OEQ, a, b, "fcmp"),
+            .Ne -> avra_llvm_build_fcmp(self.b, REAL_UNE, a, b, "fcmp"),
+            .Gt -> avra_llvm_build_fcmp(self.b, REAL_OGT, a, b, "fcmp"),
+            .Ge -> avra_llvm_build_fcmp(self.b, REAL_OGE, a, b, "fcmp"),
+            .Lt -> avra_llvm_build_fcmp(self.b, REAL_OLT, a, b, "fcmp"),
+            .Le -> avra_llvm_build_fcmp(self.b, REAL_OLE, a, b, "fcmp"),
             .Mod or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> self.wrecked(int_only_on_floats, a),
             .And or .Or -> self.wrecked(lazy_in_eager, a),
         }
@@ -257,7 +265,10 @@ impl Emit {
     }
 
     fn un_value(op: UnOp, v: ptr) -> ptr {
-        match op { .Not -> avra_llvm_build_not(self.b, v, "not") }
+        match op {
+            .Not -> avra_llvm_build_not(self.b, v, "not"),
+            .ToInt(r) -> avra_llvm_build_to_int(self.b, v, rounding_code(r), "to_int"),
+        }
     }
 
     /// A runtime call, generic over every callee declare_runtime names.

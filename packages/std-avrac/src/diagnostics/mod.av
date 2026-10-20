@@ -53,8 +53,18 @@ export type DiagFacts = {
     suggestions: List<Suggestion>,
 }
 
-/// One registry row: a kind and its one-line meaning for `avra docs`.
-export type DiagCode = { kind: string, summary: string }
+/// What a kind's voice carries beyond its words. Every voice carries
+/// `help`; `Fix` is the kind whose law states a machine-applicable
+/// edit, so its voice carries a `Suggestion` too (`avra fix` applies
+/// it, `avra voices` holds the witness to it).
+export enum Remedy {
+    Help
+    Fix
+}
+
+/// One registry row: a kind, its one-line meaning for `avra docs`, and
+/// the remedy its voice owes.
+export type DiagCode = { kind: string, summary: string, remedy: Remedy = Remedy.Help }
 
 /// The registry row a PACKAGE's kind (`@scope/name:E1`) renders and
 /// explains under.
@@ -120,6 +130,18 @@ fn start_of(d: Diag) -> int {
 export fn refusal(kind: string, at: Loc?, message: string, label: string, help: string?) -> Diag {
     // LICENSED compiler.refusal_assembled: the one site that spells the shape — every voice calls this
     pointed(error_at(kind, at, message), label) with { help: help }
+}
+
+/// `d` follows from `root`, a parse error in a file `subject` holds:
+/// the refusal points at it, and offers no remedy of its own — the name
+/// may be declared where nothing could be read.
+export fn unread_behind(d: Diag, subject: string, root: Diag, name: string) -> Diag {
+    d with { secondary: [
+        Frame {
+            label: "${subject} fails to parse here, so its names are unread: ${root.message}",
+            loc: root.primary.loc,
+        },
+    ], help: "fix the parse error first — `${name}` may be declared where nothing could be read", suggestions: [] }
 }
 
 /// A warning in the refusal's shape — rendered, never blocking.

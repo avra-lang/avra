@@ -2,10 +2,17 @@
 // program ANSWERS the page's row itself — a host fn of the row's name — so
 // `mount` paints into it, the page's echo (`avra_ui_event`) runs the handler
 // the paint bound, and each repaint is a frame, evaluated and native alike.
-use @std.ui.components.{button, column, text}
+use @std.ui.app.{Async, Fetch, fetch, fetched, later, repeating}
+use @std.http_message.message.{Reply, Request}
+use @std.time.{ms}
+use @std.ui.components.{button, column, item, text}
+use @std.ui.tree.seats.{seat_named}
 use @std.ui.web.{mount}
 
 state presses: int = 0
+
+/// The seat the page echoes for a press of a button.
+let press = seat_named("button", "press").number()
 
 /// The page's row, answered here: what a frame would have carried.
 extern fn avra_dom_frame(frame: Bytes) {
@@ -14,6 +21,14 @@ extern fn avra_dom_frame(frame: Bytes) {
 
 /// The web module's echo, named as the page's glue names it.
 extern fn avra_ui_event(who: int, what: int, tag: int, num: int, len: int)
+
+extern fn avra_ui_next_paint() {
+    println("next paint asked")
+}
+
+extern fn avra_ui_painted()
+
+extern fn avra_ui_walks() -> int
 
 fn view() -> column {
     column {
@@ -24,8 +39,213 @@ fn view() -> column {
 mount(view)
 println("── every element is told every kind once")
 for who in 0..8 {
-    for what in 0..12 { avra_ui_event(who, what, 0, 0, 0) }
+    for what in 0..12 {
+        avra_ui_event(who, what, 0, 0, 0)
+        avra_ui_painted()
+    }
 }
 println("── mounted again")
 mount(view)
 println("${presses} presses heard")
+
+// ── sources: the page's timers ──
+// The page's other rows, answered here too: a press that asks for a wait
+// arms a timer, the host's `fired` re-enters as a turn, a period keeps
+// firing until its control leaves, and then its timer is disarmed and a
+// late fire is ignored.
+state waited: int = 0
+state ticks: int = 0
+
+extern fn avra_ui_arm(token: int, ms: int, repeat: int) {
+    println("arm ${token} ${ms} ${repeat}")
+}
+
+extern fn avra_ui_disarm(token: int) {
+    println("disarm ${token}")
+}
+
+extern fn avra_ui_fired(token: int)
+
+extern fn avra_ui_get(token: int, request: Bytes) {
+    println("get ${token} (${request.length} octets)")
+}
+
+extern fn avra_ui_abort(token: int) {
+    println("abort ${token}")
+}
+
+extern fn avra_ui_answered(token: int, status: int, len: int)
+
+fn waits() -> bool {
+    waited = waited + 1
+    true
+}
+
+fn ticks_on() -> bool {
+    ticks = ticks + 1
+    true
+}
+
+fn asks() {
+    let _ = later(ms(50), waits)
+    let _ = repeating(ms(10), ticks_on)
+}
+
+fn timed() -> column {
+    column { items: [text "waited ${waited} ticks ${ticks}", button "Ask" { on press { asks() } }] }
+}
+
+fn leaves() -> column {
+    column { items: [text "waited ${waited} ticks ${ticks}"] }
+}
+
+state vanishing: int = 1
+
+fn vanishes() {
+    vanishing = 0
+    asks()
+}
+
+fn vanish() -> item {
+    item { items: [button "Self" { on press { vanishes() } } for _n in 0..vanishing] }
+}
+
+println("── a stranger's fire says nothing")
+avra_ui_fired(-1)
+avra_ui_painted()
+avra_ui_fired(9999999)
+avra_ui_painted()
+mount(timed)
+println("── a press asks for two timers")
+avra_ui_event(7, press, 0, 0, 0)
+avra_ui_painted()
+println("── the period fires twice, the wait once")
+avra_ui_fired(2)
+avra_ui_painted()
+avra_ui_fired(2)
+avra_ui_painted()
+avra_ui_fired(1)
+avra_ui_painted()
+println("── ${waited} waited, ${ticks} ticks")
+println("── a late fire of the wait is ignored")
+avra_ui_fired(1)
+avra_ui_painted()
+println("── ${waited} waited, ${ticks} ticks")
+println("── a press asks again, and the control leaves: both timers are disarmed")
+avra_ui_event(7, press, 0, 0, 0)
+avra_ui_painted()
+mount(leaves)
+println("── then a late fire is ignored")
+avra_ui_fired(4)
+avra_ui_painted()
+println("── ${waited} waited, ${ticks} ticks")
+
+println(
+    "── a control that hides itself in the press that asks: both timers are disarmed at once",
+)
+mount(vanish)
+for who in 8..40 {
+    avra_ui_event(who, press, 0, 0, 0)
+    avra_ui_painted()
+}
+println("── then a fire of either is ignored")
+avra_ui_fired(4)
+avra_ui_painted()
+avra_ui_fired(5)
+avra_ui_painted()
+avra_ui_fired(6)
+avra_ui_painted()
+println("── ${waited} waited, ${ticks} ticks")
+
+// ── sources: the page's requests ──
+// A press asks for a request; the host's `get` row is told of it as one frame,
+// its answer re-enters as a turn and shows, an older ask answering late is
+// dropped, and a control that leaves has its request aborted.
+state profile: Fetch<int> = fetch()
+
+fn words(a: Async<int>) -> string {
+    match a {
+        .Idle -> "idle",
+        .Loading -> "loading",
+        .Failed(m) -> "failed ${m}",
+        .Ready(v) -> "ready ${v}",
+    }
+}
+
+fn parsed(r: Reply) -> Result<int, string> { if r.status == 200 { .Ok(r.body.length) } else { .Err("status ${r.status}") } }
+
+fn loads() {
+    let _ = fetched(profile, Request.get("/profile"), parsed)
+}
+
+fn requesting() -> column {
+    column {
+        items: [text "profile ${words(profile.state())}", button "Load" { on press { loads() } }]
+    }
+}
+
+fn gone() -> column {
+    column { items: [text "profile ${words(profile.state())}"] }
+}
+
+mount(requesting)
+println("── a press asks for a request: the host is given one frame")
+for who in 0..160 {
+    avra_ui_event(who, press, 0, 0, 0)
+    avra_ui_painted()
+}
+println("── loading: ${words(profile.state())}")
+println("── the host answers 200, an empty body")
+avra_ui_answered(7, 200, 0)
+avra_ui_painted()
+println("── ${words(profile.state())}")
+println("── a second answer for the same request is ignored")
+avra_ui_answered(7, 500, 0)
+avra_ui_painted()
+println("── ${words(profile.state())}")
+println("── an older ask answering after a newer one is dropped")
+for who in 0..160 {
+    avra_ui_event(who, press, 0, 0, 0)
+    avra_ui_painted()
+}
+for who in 0..160 {
+    avra_ui_event(who, press, 0, 0, 0)
+    avra_ui_painted()
+}
+avra_ui_answered(8, 200, 0)
+avra_ui_painted()
+println("── older answer: ${words(profile.state())}")
+avra_ui_answered(9, -1, 0)
+avra_ui_painted()
+println("── newer answer: ${words(profile.state())}")
+println("── a request in flight when its control leaves is aborted")
+for who in 0..160 {
+    avra_ui_event(who, press, 0, 0, 0)
+    avra_ui_painted()
+}
+mount(gone)
+avra_ui_answered(10, 200, 0)
+avra_ui_painted()
+println("── then its late answer is ignored: ${words(profile.state())}")
+
+// ── the frame: turns that land together are one paint ──
+mount(timed)
+avra_ui_painted()
+for who in 0..200 { avra_ui_event(who, 1, 0, 0, 0) }
+avra_ui_painted()
+println("── a period fires three times and a wait once before the frame comes")
+let walked = avra_ui_walks()
+avra_ui_fired(12)
+avra_ui_fired(12)
+avra_ui_fired(12)
+avra_ui_fired(11)
+println("── nothing is shown yet: ${avra_ui_walks() - walked} walks")
+avra_ui_painted()
+println("── the frame: ${avra_ui_walks() - walked} walk, ${waited} waited, ${ticks} ticks")
+avra_ui_painted()
+println("── a frame nothing asked for walks nothing: ${avra_ui_walks() - walked} walk in all")
+println("── a timer then a press before the frame: the press meets the screen the user saw")
+avra_ui_fired(12)
+for who in 0..200 { avra_ui_event(who, 1, 0, 0, 0) }
+avra_ui_painted()
+println("── ${avra_ui_walks() - walked} walks in all")

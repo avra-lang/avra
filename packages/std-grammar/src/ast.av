@@ -106,16 +106,32 @@ export enum Assoc {
     Unmixed(refusal: string)
 }
 
-/// An operator whose right side is a rule, not an operand (`is`).
-export type Suffix = { word: string, rule: string }
+/// An operator whose right side is a rule, not an operand (`is`). Its own
+/// `build` wins over its tier's.
+export type Suffix = { word: string, rule: string, build: Build? = null }
 
 /// One precedence tier; the tiers of an `Operators` run loosest
 /// first. A word is the tokens of one operator, adjacent (`>` `>`).
 /// A tier's own `build` overrides the branch's.
 export type Tier = { assoc: Assoc, words: List<List<string>>, suffixes: List<Suffix>, build: Build? }
 
+impl Tier {
+    /// The operator words the tier's own build serves: its words, and
+    /// the suffixes that write no build of their own.
+    fn served_words() -> List<List<string>> {
+        self.words.concat([[x.word] for x in self.suffixes if x.build == null])
+    }
+
+    /// The build that builds the operator taken: the suffix's own when
+    /// `suffix` names one, else the tier's.
+    fn build_at(suffix: int) -> Build? {
+        if suffix < 0 { return self.build }
+        self.suffixes[suffix].build ?? self.build
+    }
+}
+
 /// One operator the climb can take, tightest tier first.
-export type OpEntry = { words: List<string>, tier: int, rule: string? }
+export type OpEntry = { words: List<string>, tier: int, rule: string?, at: int = 0 - 1 }
 
 /// The tiers and what the climb reads off them, filled by
 /// `operators_of`: `entries` tightest first and `by_first` the same
@@ -342,20 +358,42 @@ export enum Build {
 /// list or a nullable payload.
 ///
 /// A stated value is its TEXT. No consumer reads how it was spelled:
-/// what a value means is decided by the payload it fills.
+/// what a value means is decided by the payload it fills. A nested
+/// build is a node the branch constructs in place, and a list is its
+/// items in order, each a slot of its own.
 export enum Slot {
     Label(name: string)
     Fixed(text: string)
+    Nested(build: Build)
+    Items(slots: List<Slot>)
     Empty
 }
 
 /// A payload the rule states rather than captures — `-> Expr.BoolLit(value = true)`.
-export type Fixed = { name: string, text: string }
+/// A word or literal is its `text`; a node built in place or a list is `term`,
+/// which `text` then leaves empty (`stated` reads either as one `Term`).
+export type Fixed = { name: string, text: string, term: Term? = null }
+
+impl Fixed {
+    /// What the rule states, however it was written.
+    fn stated() -> Term {
+        self.term ?? Term.Text(self.text)
+    }
+}
+
+/// What a stated payload is written as: a word or literal, a node built
+/// in place, or a list of terms. A word that is also a capture's label
+/// reads as that capture.
+export enum Term {
+    Text(text: string)
+    Node(build: Build)
+    List(items: List<Term>)
+}
 
 /// One argument as the DSL wrote it, before the build kind is known:
-/// a bare name (a capture's label) or a name given a value (a fixed
+/// a bare name (a capture's label) or a name given a term (a stated
 /// payload). Exists only between a build's parse and its construction.
-export type BuildArg = { name: string, fixed: string? }
+export type BuildArg = { name: string, term: Term? }
 
 /// The builder a node build calls. ONE definition, read by the engine
 /// that calls it and by whoever registers it — a node builder is

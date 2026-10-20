@@ -8,16 +8,18 @@
 //! value ever reaches a class name.
 use style.box.{Box}
 use style.style.{Style, StateStyle, Interaction}
-use style.layout.{Axis, Align, Distribute, Sizing, Edge, Layout}
+use style.layout.{Axis, Align, Distribute, Wrap, Sizing, Edge, Layout, around}
 use style.theme.{Theme, Mode}
 use tree.lists.{flatten}
-use tree.node.{Node, Prim, own_axis, gap_between}
+use tree.node.{Node, Prim, Attribute, own_axis, gap_between}
 use style.tokens.{Size, Tone, Font}
 use realize.html.tags.{HtmlTag}
 
 /// One atomic rule: its class name (already state-prefixed), the state
-/// it applies in, and the declaration it carries.
-export type CssRule = { name: string, state: Interaction?, decl: string }
+/// it applies in, the selector it applies under (the parent axis a size
+/// or a growth speaks for; nothing for a rule that needs no parent), and
+/// the declaration it carries.
+export type CssRule = { name: string, state: Interaction?, under: string, decl: string }
 
 const sizes = [Size.None, .Xs, .S, .M, .L, .Xl]
 const tones = [Tone.Text, .Muted, .Danger, .Surface, .SurfaceRaised, .SurfaceSunk, .SurfaceHover]
@@ -44,7 +46,24 @@ fn prefixed(name: string, state: Interaction?) -> string {
 /// One rule, or nothing when the field was not given.
 fn rule(name: string, state: Interaction?, decl: string) -> List<CssRule> {
     if name == "" { return [] }
-    [CssRule { name: prefixed(name, state), state: state, decl: decl }]
+    [CssRule { name: prefixed(name, state), state: state, under: "", decl: decl }]
+}
+
+/// A rule that applies to a child of a parent laid along `parent`: what a
+/// size or a growth means depends on the axis it sits on.
+fn scoped(parent: Axis, name: string, state: Interaction?, decl: string) -> List<CssRule> {
+    [
+        CssRule {
+            name: prefixed(name, state),
+            state: state,
+            under: ".${axis_word(parent).name}>",
+            decl: decl,
+        },
+    ]
+}
+
+fn across(a: Axis) -> Axis {
+    match a { .Row -> .Column, .Column -> .Row }
 }
 
 // ── layout ──────────────────────────────────────────────────────
@@ -95,16 +114,6 @@ fn face_word(f: Font) -> CssWord {
     CssWord { name: "face-${f.word()}", decl: "font-family:var(--face-${f.word()})" }
 }
 
-/// A sizing token's class and declaration; `Hug`/`Percent` draw none.
-fn size_word_of(prefix: string, prop: string, s: Sizing) -> CssWord {
-    match s {
-        .Hug -> no_word,
-        .Fill -> CssWord { name: "${prefix}-fill", decl: "${prop}:100%" },
-        .Fixed(n) -> CssWord { name: "${prefix}-${n}", decl: "${prop}:${n}px" },
-        .Percent(_) -> no_word,
-    }
-}
-
 /// The wrappers: a token, its state and its word.
 fn axis_rule(a: Axis?, state: Interaction?) -> List<CssRule> { opted(a, state, axis_word) }
 
@@ -122,8 +131,27 @@ fn radius_rule(z: Size?, state: Interaction?) -> List<CssRule> { opted(z, state,
 
 fn face_rule(f: Font?, state: Interaction?) -> List<CssRule> { opted(f, state, face_word) }
 
-fn sizing_rule(prefix: string, prop: string, s: Sizing?, state: Interaction?) -> List<CssRule> {
-    opted(s, state, (v) -> size_word_of(prefix, prop, v))
+/// A size along `along`, the parent axis it is the main one of. A fixed
+/// size holds on it; a fill takes the room that is left there (a growth
+/// given is its share) and stretches across; hug and a fraction write
+/// nothing. The flex basis is a percentage so that a parent whose size
+/// along is not yet known gives it the content's.
+fn sizing_rule(
+    along: Axis,
+    prefix: string,
+    prop: string,
+    least: string,
+    s: Sizing?,
+    state: Interaction?,
+) -> List<CssRule> {
+    let v? = s else { return [] }
+    match v {
+        .Hug or .Percent(_) -> [],
+        .Fill -> scoped(along, "${prefix}-fill", state, "flex:var(--grow) 1 0%;${least}:0")
+            .concat(scoped(across(along), "${prefix}-fill", state, "align-self:stretch")),
+        .Fixed(_) -> rule("${prefix}-fixed", state, "${prop}:var(--${prefix})")
+            .concat(scoped(along, "${prefix}-fixed", state, "flex-shrink:0")),
+    }
 }
 
 fn edge_rule(prefix: string, prop: string, z: Size?, state: Interaction?) -> List<CssRule> {
@@ -169,7 +197,32 @@ fn distribute_word(d: Distribute) -> CssWord {
 /// A sizing token's class name, or nothing when it draws no rule.
 
 fn grow_rule(n: int, state: Interaction?) -> List<CssRule> {
-    if n > 0 { rule("grow-${n}", state, "flex-grow:${n}") } else { [] }
+    if n > 0 { rule("grow", state, "flex-grow:var(--grow)") } else { [] }
+}
+
+fn order_rule(n: int, state: Interaction?) -> List<CssRule> {
+    if n == 0 { return [] }
+    rule("order", state, "order:var(--order)")
+}
+
+fn wrap_word(w: Wrap) -> CssWord {
+    match w {
+        .NoWrap -> CssWord { name: "wrap-no", decl: "flex-wrap:nowrap" },
+        .Wrap -> CssWord { name: "wrap-yes", decl: "flex-wrap:wrap" },
+        .WrapReverse -> CssWord { name: "wrap-rev", decl: "flex-wrap:wrap-reverse" },
+    }
+}
+
+fn wrap_rule(w: Wrap?, state: Interaction?) -> List<CssRule> { opted(w, state, wrap_word) }
+
+fn margin_rules(e: Edge?, state: Interaction?) -> List<CssRule> {
+    match e {
+        v? -> edge_rule("mis", "margin-inline-start", v.start, state)
+            .concat(edge_rule("mie", "margin-inline-end", v.end, state))
+            .concat(edge_rule("mt", "margin-top", v.top, state))
+            .concat(edge_rule("mb", "margin-bottom", v.bottom, state))
+        null -> []
+    }
 }
 
 fn layout_rules(l: Layout, state: Interaction?) -> List<CssRule> {
@@ -180,9 +233,12 @@ fn layout_rules(l: Layout, state: Interaction?) -> List<CssRule> {
             pad_rules(l.pad, state),
             align_rule(l.align, state),
             distribute_rule(l.distribute, state),
-            sizing_rule("w", "width", l.width, state),
-            sizing_rule("h", "height", l.height, state),
+            sizing_rule(.Row, "w", "width", "min-width", l.width, state),
+            sizing_rule(.Column, "h", "height", "min-height", l.height, state),
+            wrap_rule(l.wrap, state),
+            margin_rules(l.margin, state),
             grow_rule(l.grow, state),
+            order_rule(l.order, state),
         ],
     )
 }
@@ -211,6 +267,38 @@ impl Box {
         out
     }
 }
+/// One custom property a node writes: a value a class reads, so no value
+/// ever reaches a class name.
+export type CssVar = { name: string, value: string }
+
+impl CssVar {
+    /// The custom property this names.
+    fn property() -> string { "--${self.name}" }
+}
+
+/// The property a fixed sizing writes, in pixels; nothing for any other sizing.
+fn px_var(name: string, s: Sizing?) -> List<CssVar> {
+    let v? = s else { return [] }
+    match v {
+        .Fixed(n) -> [CssVar { name: name, value: "${n}px" }],
+        .Hug or .Fill or .Percent(_) -> [],
+    }
+}
+
+/// The custom properties a box writes on its node: its fixed sizes, its growth
+/// and its order — the values its `w-fixed`, `h-fixed`, `grow` and `order`
+/// classes read.
+export fn box_vars(box: Box) -> List<CssVar> {
+    flatten(
+        [
+            px_var("w", box.layout.width),
+            px_var("h", box.layout.height),
+            if box.layout.grow > 0 { [CssVar { name: "grow", value: "${box.layout.grow}" }] } else { [] },
+            if box.layout.order != 0 { [CssVar { name: "order", value: "${box.layout.order}" }] } else { [] },
+        ],
+    )
+}
+
 /// Every rule a node names: its primitive's own axis unless its layout
 /// names one, the gap its axis keeps unless its layout names one, then
 /// its box. An item flows as its element does: a flex box draws no list
@@ -221,8 +309,28 @@ export fn node_rules(prim: Prim, box: Box) -> List<CssRule> {
     axis.concat(gap).concat(box.rules())
 }
 
+/// The height a window's spacer stands for, in pixels: its unbuilt rows at the
+/// height each took. Any other attribute stands for none.
+fn spacing(a: Attribute) -> List<int> {
+    match a { .Skipped(_, rows, extent) -> [rows * extent], rest -> [] }
+}
+
+/// The box a node is drawn with: a window's spacer stands as the fixed height of
+/// the rows it stands for, so it wears what every fixed height wears.
+export fn drawn_box(n: Node) -> Box {
+    let height? = [h for a in n.attrs for h in spacing(a)].first() else { return n.box }
+    n.box with { layout: n.box.layout with { height: .Fixed(height) } }
+}
+
+/// Every rule a tree's nodes name, in walk order.
+export fn rules_of(n: Node) -> List<CssRule> {
+    node_rules(n.prim, drawn_box(n)).concat([r for c in n.children for r in rules_of(c)])
+}
+
 /// Every class a node names, once, in rule order.
-export fn class_names(n: Node) -> List<string> { [r.name for r in distinct_rules(node_rules(n.prim, n.box))] }
+export fn class_names(n: Node) -> List<string> { names_once([r.name for r in node_rules(n.prim, drawn_box(n))]) }
+
+fn names_once(names: List<string>) -> List<string> { [name for i, name in names if !names.slice(0, i).contains(name)] }
 
 /// Rules with each class name kept once, order intact; two nodes that
 /// share a look share the rule.
@@ -230,12 +338,75 @@ export fn distinct_rules(rules: List<CssRule>) -> List<CssRule> {
     mut seen: List<string> = []
     mut out: List<CssRule> = []
     for r in rules {
-        if !seen.contains(r.name) {
-            seen = seen.concat([r.name])
+        if !seen.contains("${r.under}${r.name}") {
+            seen = seen.concat(["${r.under}${r.name}"])
             out = out.concat([r])
         }
     }
     out
+}
+
+// ── the vocabulary ──────────────────────────────────────────────
+
+const axes = [Axis.Row, .Column]
+const aligns = [Align.Start, .Center, .End, .Stretch, .Baseline]
+const distributions = [Distribute.Start, .Center, .End, .SpaceBetween, .SpaceAround, .SpaceEvenly]
+const wraps = [Wrap.NoWrap, .Wrap, .WrapReverse]
+const interactions = [Interaction.Hover, .Focus, .Pressed, .Disabled]
+
+/// The states a look may be given in: at rest, then each interaction.
+fn states() -> List<Interaction?> {
+    let rest: List<Interaction?> = [null]
+    let each: List<Interaction?> = [i for i in interactions]
+    rest.concat(each)
+}
+
+/// Every layout rule a token can name. A size, a growth and an order ride a
+/// custom property, so each is ONE rule here whatever its value.
+fn layout_vocabulary() -> List<CssRule> {
+    flatten(
+        [
+            flatten([axis_rule(a, null) for a in axes]),
+            flatten([gap_rule(z, null) for z in sizes]),
+            flatten([pad_rules(around(z), null) for z in sizes]),
+            flatten([margin_rules(around(z), null) for z in sizes]),
+            flatten([align_rule(a, null) for a in aligns]),
+            flatten([distribute_rule(d, null) for d in distributions]),
+            flatten([wrap_rule(w, null) for w in wraps]),
+            sizing_rule(.Row, "w", "width", "min-width", Sizing.Fill, null),
+            sizing_rule(.Row, "w", "width", "min-width", Sizing.Fixed(0), null),
+            sizing_rule(.Column, "h", "height", "min-height", Sizing.Fill, null),
+            sizing_rule(.Column, "h", "height", "min-height", Sizing.Fixed(0), null),
+            grow_rule(1, null),
+            order_rule(1, null),
+        ],
+    )
+}
+
+/// Every appearance rule a token can name, at rest and in each state.
+fn appearance_vocabulary() -> List<CssRule> {
+    flatten(
+        [
+            flatten([color_rule(c, s) for s in states() for c in tones]),
+            flatten([fill_rule(c, s) for s in states() for c in tones]),
+            flatten([radius_rule(z, s) for s in states() for z in sizes]),
+            flatten([face_rule(f, s) for s in states() for f in fonts]),
+        ],
+    )
+}
+
+/// EVERY RULE THE VOCABULARY CAN NAME, once, in a fixed order: no value ever
+/// reaches a class name, so what a tree names is always a subset of this.
+/// It is the same for every program on this version of the vocabulary.
+export fn all_rules() -> List<CssRule> { distinct_rules(layout_vocabulary().concat(appearance_vocabulary())) }
+
+/// The vocabulary as a stylesheet — the page's base and every rule, with no
+/// theme in it: one file for every page of every program.
+export fn atoms_sheet() -> string { base_rules().concat([rule_source(r) for r in all_rules()]).join("\n") }
+
+/// A theme as a stylesheet: its variables, then each alternate under its mode's query.
+export fn theme_sheet(t: Theme, alternates: List<Theme>) -> string {
+    [root_vars(t)].concat([alternate(a) for a in alternates]).join("\n")
 }
 
 // ── the stylesheet ──────────────────────────────────────────────
@@ -279,7 +450,7 @@ fn pseudo_of(s: Interaction?) -> string {
     }
 }
 
-fn rule_source(r: CssRule) -> string { "${selector(r.name)}${pseudo_of(r.state)}{${r.decl}}" }
+fn rule_source(r: CssRule) -> string { "${r.under}${selector(r.name)}${pseudo_of(r.state)}{${r.decl}}" }
 
 /// These tags as one selector.
 fn tags(of: List<HtmlTag>) -> string { [t.word() for t in of].join(",") }
@@ -299,7 +470,9 @@ fn unflexed() -> string { [":not(.${axis_word(a).name})" for a in [Axis.Row, .Co
 /// drawn whatever its classes say.
 fn base_rules() -> List<string> {
     [
-        "body{margin:0;${fill_word(.Surface).decl};${color_word(.Text).decl};${face_word(.Body).decl}}",
+        "*,*::before,*::after{box-sizing:border-box}",
+        "@property --grow{syntax:\"<number>\";inherits:false;initial-value:1}",
+        "body{margin:0;overflow-wrap:break-word;${fill_word(.Surface).decl};${color_word(.Text).decl};${face_word(.Body).decl}}",
         "${tags([.Button, .Input])}{font:inherit;color:inherit}",
         "${tags([.Button])}{background:transparent;border:1px solid var(--tone-${Tone.Muted.word()});padding:var(--space-${Size.Xs.word()}) var(--space-${Size.S.word()})}",
         "${tags([.Button])}:disabled{${color_word(.Muted).decl}}",

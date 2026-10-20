@@ -1,0 +1,113 @@
+//! `app/wants.av` — WHAT A TARGET HOLDS OF THE SOURCES IT WAS ASKED FOR. A
+//! source asks as DATA (`Want`): a wait once or over and over, a request. A
+//! target that has no task to wait on keeps the ask here, under a number,
+//! with the act that runs when it falls due or is answered and the control
+//! it belongs to, and realizes it its own way: a page hands the number to its
+//! host's timer or `fetch`; a headless screen reads the due time off its
+//! virtual clock. ONE DEFINITION: the table, the number, the sweep of what
+//! left and what a firing means are the same on every such target.
+use app.{Act, App, Want}
+use @std.http_message.message.{Reply, Request}
+
+/// How a source is kept: a timer that fires once or over and over, or a
+/// request whose reply is left in a cell.
+export enum How {
+    Timer(repeat: bool)
+    Request(request: Request, into: Cell<Result<Reply, string>?>)
+}
+
+/// A source asked for: its number, what runs when it fires or is answered,
+/// whose it is, and how it is kept. `due` is when it next falls due and
+/// `period` how far apart it repeats, on a target that keeps the time itself
+/// (a page's host keeps its own, and leaves both zero).
+export type Held = { token: int, act: Act, owner: string?, how: How, due: int, period: int }
+
+/// The sources a target holds.
+export type Wants = { held: Cell<List<Held>>, minted: Cell<int> }
+
+export fn wants() -> Wants {
+    let none: List<Held> = []
+    Wants { held: Cell.new(none), minted: Cell.new(0) }
+}
+
+impl Wants {
+    /// `want` is kept under a number nobody else wears, falling due `now` and
+    /// after: a wait of `ms` falls due `ms` on, a request at once.
+    fn filed(want: Want, act: Act, owner: string?, now: int) -> Held {
+        let token = self.minted.get() + 1
+        self.minted.set(token)
+        let made = match want {
+            .After(ms) -> Held {
+                token: token,
+                act: act,
+                owner: owner,
+                how: How.Timer(false),
+                due: now + ms,
+                period: 0,
+            },
+            .Every(ms) -> Held {
+                token: token,
+                act: act,
+                owner: owner,
+                how: How.Timer(true),
+                due: now + ms,
+                period: ms,
+            },
+            .Get(request, into) -> Held {
+                token: token,
+                act: act,
+                owner: owner,
+                how: How.Request(request, into),
+                due: now,
+                period: 0,
+            },
+        }
+        self.held.push(made)
+        made
+    }
+
+    /// The source numbered `token`, while it is kept.
+    fn find(token: int) -> Held? { self.held.get().find(it.token == token) }
+
+    /// A source is let go: it will not fire or answer, and a late fire is
+    /// ignored.
+    fn dropped(token: int) { self.held.set([h for h in self.held.get() if h.token != token]) }
+
+    /// The sources whose control has left the screen.
+    fn left(on: App) -> List<Held> { [h for h in self.held.get() if !on.owns(h.owner)] }
+
+    /// The source that falls due first by `end`, the earlier asked first of
+    /// two due together; none when nothing is due by then.
+    fn next_by(end: int) -> Held? {
+        let due = [h for h in self.held.get() if h.due <= end]
+        due
+            .fold(
+                null,
+                (best: Held?, h: Held) -> if best == null || h.due < best!.due { h } else { best },
+            )
+    }
+
+    /// A repeating source falls due next at `due`.
+    fn rearmed(token: int, due: int) {
+        self
+            .held
+            .set([if h.token == token { h with { due: due } } else { h } for h in self.held.get()])
+    }
+
+    /// Whether a source fires when its timer does: a timer does — and is let
+    /// go if it fires once — a request waits for an answer instead.
+    fn fires(h: Held) -> bool {
+        match h.how {
+            .Timer(repeat) -> {
+                if !repeat { self.dropped(h.token) }
+                true
+            },
+            .Request(_, _) -> false,
+        }
+    }
+}
+
+/// Where a request's reply is left; none for a timer.
+export fn replies_to(how: How) -> Cell<Result<Reply, string>?>? {
+    match how { .Request(_, into) -> into, .Timer(_) -> null }
+}

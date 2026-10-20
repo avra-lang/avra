@@ -3,15 +3,16 @@
 //! sketches compare and a failing one is written out as the source that
 //! makes it again.
 use realize.dom.patch.{Says}
+use realize.tests.support.{action, Event}
 use style.box.{Box}
 use style.style.{Style}
 use style.tokens.{Tone}
-use tree.node.{Node, Prim, Attribute, Action, Handler, EventKind, Urgency}
+use tree.node.{Node, Prim, Attribute, Action, Handler, Urgency}
 use @std.text.{codepoints, from_codepoints}
 
 /// One event a sketched node hears: its kind, what it says, and the
 /// number its handler writes down when it runs.
-export type Hears = { kind: EventKind, says: Says, tag: int }
+export type Hears = { kind: Event, says: Says, tag: int }
 
 /// A node, sketched.
 export type Sketch = {
@@ -41,7 +42,7 @@ export fn node_of(s: Sketch, log: Cell<List<int>>) -> Node {
         attrs: s.attrs,
         box: Box { key: s.key, style: Style { color: s.tone } },
         children: [node_of(k, log) for k in s.kids],
-        events: [Action { kind: h.kind, handler: handler_of(h, log) } for h in s.hears],
+        events: [action(h.kind, handler_of(h, log)) for h in s.hears],
     }
 }
 
@@ -86,6 +87,8 @@ fn attr_source(a: Attribute) -> string {
         .Title(t) -> ".Title(${quoted(t)})",
         .Name(t) -> ".Name(${quoted(t)})",
         .Submits(on) -> ".Submits(${on})",
+        .Skipped(path, rows, extent) -> ".Skipped(${quoted(path)}, ${rows}, ${extent})",
+        .Placed(at, of, reveal) -> ".Placed(${at}, ${of}, ${reveal})",
     }
 }
 

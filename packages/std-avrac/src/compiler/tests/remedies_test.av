@@ -1,0 +1,33 @@
+use @std.avrac.compiler.dev.{RemedyRow, Then, Witness, row_fails, rows}
+
+fn generic_wrap(form: string) -> RemedyRow {
+    RemedyRow {
+        kind: "type.lambda",
+        says: "a generic fn is not a value",
+        refused: Witness.Source("fn ident<T>(x: T) -> T { x }\nlet f: fn(int) -> int = ident\nf(1)"),
+        applied: Witness.Source("fn ident<T>(x: T) -> T { x }\nlet f: fn(int) -> int = ${form}\nf(1)"),
+        becomes: Then.Clean,
+    }
+}
+
+spec "compiler/dev/remedies — the keeper reads what a help names" {
+    given "a remedy row" {
+        then "the help's form, applied, holds" { !row_fails(generic_wrap("(x0) -> ident(x0)")) }
+        then "a form the grammar refuses is caught — the help once named `(x: T0) -> ident(x)`" {
+            row_fails(generic_wrap("(x: T0) -> ident(x)"))
+        }
+        then "a form that unreadable text names is caught" { row_fails(generic_wrap("(x0 -> ident(x0)")) }
+        then "a form that leaves the refusal standing is caught" { row_fails(generic_wrap("ident")) }
+        then "a row whose refusal the voice no longer draws is caught" {
+            row_fails(generic_wrap("(x0) -> ident(x0)") with { refused: Witness.Source("1") })
+        }
+        then "a row that wants a named refusal wants it drawn" {
+            row_fails(
+                generic_wrap("(x0) -> ident(x0)") with { becomes: Then.Draws("type.mismatch") },
+            )
+        }
+    }
+    given "the table" {
+        then "every row's claim holds" { rows().all(!row_fails(it)) }
+    }
+}

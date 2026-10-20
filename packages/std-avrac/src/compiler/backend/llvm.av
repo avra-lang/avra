@@ -8,6 +8,7 @@
 //! nothing else.
 use core.{
     sorted_by,
+    flatten,
     text_before,
     Reg,
     body_symbol,
@@ -29,6 +30,7 @@ use core.{
     fp_str,
 }
 use features.{nothing}
+use @std.relation.engine.{map_cell}
 use compiler.lower.{Body, Lowered}
 use compiler.lower.{Body, Lowered}
 
@@ -102,6 +104,66 @@ type Refs = { whole: bool, bodies: Map<string, bool>, hosted: Map<string, bool>,
 /// A whole-program module: every name is carried, so the lists are unread.
 fn every_name() -> Refs { Refs { whole: true, bodies: {}, hosted: {}, statics: {} } }
 
+/// THE PROGRAM'S BODIES AND STATICS, INDEXED ONCE. A module asks for the bodies it owns and
+/// the ones it names; answering by scanning every body (five scans of `l.fns` a module,
+/// 1,160 modules, 28,600 bodies) was most of the serial build. Positions are indexes into
+/// `l.fns` / `l.statics`, so a module visits what it wants in program order — the order
+/// the scans visited, and so the bytes it writes.
+export type EmitIndex = {
+    at: Map<string, List<int>>,
+    homed: Map<string, List<int>>,
+    homeless: List<int>,
+    hosted: Map<string, bool>,
+    static_at: Map<string, List<int>>,
+    buckets: Cell<Map<string, List<List<int>>>>,
+}
+
+export fn emit_index(l: Lowered) -> EmitIndex {
+    mut at: Map<string, List<int>> = {}
+    mut homed: Map<string, List<int>> = {}
+    mut homeless: List<int> = []
+    mut hosted: Map<string, bool> = {}
+    for i, bd in l.fns {
+        at.set(bd.name, (at.get(bd.name) ?? []).concat([i]))
+        let home = home_of(bd)
+        if home == null { homeless.push(i) } else { homed.set("${home!.index}", (homed.get("${home!.index}") ?? []).concat([i])) }
+        if bd.hosted { hosted.set(bd.name, true) }
+    }
+    mut static_at: Map<string, List<int>> = {}
+    for i, st in l.statics { static_at.set(st.name, (static_at.get(st.name) ?? []).concat([i])) }
+    EmitIndex {
+        at: at,
+        homed: homed,
+        homeless: homeless,
+        hosted: hosted,
+        static_at: static_at,
+        buckets: map_cell(),
+    }
+}
+
+impl EmitIndex {
+    /// The positions of every body wearing one of `names`, in program order.
+    fn body_positions(names: List<string>) -> List<int> {
+        sorted_by(flatten([self.at.get(n) ?? [] for n in names]), (a: int, b: int) -> a < b)
+    }
+
+    /// The positions of every static wearing one of `names`, in program order.
+    fn static_positions(names: List<string>) -> List<int> {
+        sorted_by(flatten([self.static_at.get(n) ?? [] for n in names]), (a: int, b: int) -> a < b)
+    }
+
+    /// The positions of the program's bodies that no file owns and that fall in bucket `i` of `of`.
+    fn bucket_positions(l: Lowered, i: int, of: int) -> List<int> {
+        let key = "${of}"
+        let known = self.buckets.get().get(key)
+        if known != null { return known![i] }
+        let by = [program_bucket(l.fns[p], of) for p in self.homeless]
+        let split = [[self.homeless[k] for k in 0..self.homeless.length if by[k] == j] for j in 0..of]
+        self.buckets.put(key, split)
+        split[i]
+    }
+}
+
 /// WHICH BODIES A MODULE DEFINES: every one; one file's; the PROGRAM's — what
 /// no file owns (an instantiation, a wrapper several files ask for) and the
 /// entry — or one BUCKET of that: the program's bodies whose name falls in bucket
@@ -110,31 +172,20 @@ fn every_name() -> Refs { Refs { whole: true, bodies: {}, hosted: {}, statics: {
 export enum Owned { Whole, File(f: FileId), Program, Bucket(i: int, of: int) }
 
 impl Owned {
-    fn defines(b: Body) -> bool {
+    /// Where in `l.fns` the bodies this module defines stand, in program order: the index's answer
+    /// to what `defines` asks of every body.
+    fn defined_at(l: Lowered, ix: EmitIndex) -> List<int> {
         match self {
-            .Whole -> true,
-            .File(f) -> owns(b, f),
-            .Program -> home_of(b) == null,
-            .Bucket(i, of) -> home_of(b) == null && program_bucket(b, of) == i,
+            .Whole -> [i for i in 0..l.fns.length],
+            .File(f) -> ix.homed.get("${f.index}") ?? [],
+            .Program -> ix.homeless,
+            .Bucket(i, of) -> ix.bucket_positions(l, i, of),
         }
     }
 
     fn carries_entry() -> bool {
         match self { .Whole or .Program -> true, .File(_) -> false, .Bucket(i, _) -> i == 0 }
     }
-}
-
-/// WHERE A BODY BELONGS — `Body.file`, the file that asked for it. A WRAPPER is asked
-/// for by every file that takes the named fn as a value, so several modules can name
-/// one `$w`; it is emitted WEAK (in `build_cache`'s held remap), so the copies coalesce
-/// at link and no single declaring file has to exist to own it. That is the property
-/// the held world needs, where the declaring file may come from the store and the
-/// wrapper minted here is not in the stored object.
-/// Whether a module OWNS the body — its file is that module's file. ONE question,
-/// asked once, so no caller opens the nullable twice and none can disagree.
-fn owns(b: Body, f: FileId) -> bool {
-    let home = home_of(b)
-    home != null && same_file(home!, f)
 }
 
 /// The bucket of `of` a program body falls in: its name's hash — except
@@ -148,7 +199,7 @@ export fn home_of(b: Body) -> FileId? { b.file }
 /// body it owns as much as one it only calls. A STATIC this module lays out
 /// names too — a capture-free closure's `Slot.Code` is a body reference as
 /// real as an instruction's, just not one an `Ins` scan would ever see.
-fn refs_of(bodies: List<Body>, statics: List<Static>) -> Refs {
+fn refs_of(bodies: List<Body>, statics: List<Static>, ix: EmitIndex) -> Refs {
     mut r = Refs { whole: false, bodies: {}, hosted: {}, statics: {} }
     // SETS, NOT LISTS: a symbol is NAMED once however many instructions name it, and
     // `carries` asks membership per body, per static and per runtime row. The lists this
@@ -165,10 +216,8 @@ fn refs_of(bodies: List<Body>, statics: List<Static>) -> Refs {
             if st != null { r.statics.set(st!, true) }
         }
     }
-    for st in statics {
-        if r.statics.get(st.name) != null {
-            for sym in static_code_syms(st.boxes) { r.bodies.set(sym, true) }
-        }
+    for p in ix.static_positions(r.statics.keys()) {
+        for sym in static_code_syms(statics[p].boxes) { r.bodies.set(sym, true) }
     }
     r
 }
@@ -176,8 +225,10 @@ fn refs_of(bodies: List<Body>, statics: List<Static>) -> Refs {
 /// A MODULE'S STATICS IN THE ORDER ITS BODIES FIRST READ THEM. A static's name carries
 /// ids of the process that named it, so the reads order them, never the name; one no
 /// body reads follows, as it stood.
-fn in_read_order(statics: List<Static>, bodies: List<Body>, refs: Refs) -> List<Static> {
-    let read = if refs.whole { refs_of(bodies, statics).statics } else { refs.statics }
+fn in_read_order(statics: List<Static>, bodies: List<Body>, refs: Refs, ix: EmitIndex) -> List<
+    Static,
+> {
+    let read = if refs.whole { refs_of(bodies, statics, ix).statics } else { refs.statics }
     mut by: Map<string, Static> = {}
     for st in statics { by.set(st.name, st) }
     [by.get(n)! for n in read.keys() if by.get(n) != null]
@@ -190,7 +241,10 @@ fn carries(r: Refs, named: Map<string, bool>, name: string) -> bool { r.whole ||
 
 /// The whole program as verified `.ll` text; null means written, a string is
 /// the failure.
-export fn emit_ll(l: Lowered, path: string, target: string) -> string? { emit_mode(in_symbol_order(l), path, Owned.Whole, Written.Text, target) }
+export fn emit_ll(l: Lowered, path: string, target: string) -> string? {
+    let ordered = in_symbol_order(l)
+    emit_mode(ordered, emit_index(ordered), path, Owned.Whole, Written.Text, target)
+}
 
 /// THE PROGRAM IN EMISSION ORDER: its bodies by symbol name. A module declares and
 /// defines in this order, so what it writes is the source's alone, never the order a
@@ -203,7 +257,9 @@ export fn in_symbol_order(l: Lowered) -> Lowered {
 /// NAME — LLVM wants a called symbol declared where it is called — and lays out
 /// the statics they read: private linkage, so each module's copy is its own.
 /// The caller has asked `program_closed`, a whole-program scan with one answer.
-export fn emit_closed(l: Lowered, path: string, which: Owned, target: string) -> string? { emit_mode(l, path, which, Written.Bitcode, target) }
+export fn emit_closed(l: Lowered, ix: EmitIndex, path: string, which: Owned, target: string) -> string? {
+    emit_mode(l, ix, path, which, Written.Bitcode, target)
+}
 
 extern fn avra_cores_online() -> int
 
@@ -222,7 +278,16 @@ fn emit_width() -> int {
 /// The same module as an OBJECT, optimized and generated in this process at
 /// clang's level — BY A WORKER: the module is built here and handed over, and
 /// `objects_made` waits for every one handed.
-export fn emit_object(l: Lowered, path: string, which: Owned, opt: int, target: string) -> string? { emit_mode(l, path, which, Written.Object(opt), target) }
+export fn emit_object(
+    l: Lowered,
+    ix: EmitIndex,
+    path: string,
+    which: Owned,
+    opt: int,
+    target: string,
+) -> string? {
+    emit_mode(l, ix, path, which, Written.Object(opt), target)
+}
 
 /// The link option that drops code nothing reaches: Mach-O drops by
 /// atom, ELF by section — and every definition is emitted in one of its own.
@@ -268,7 +333,7 @@ export fn not_closed(missing: string) -> string {
     "internal compiler error: nothing declares `${missing}` — the program is not closed"
 }
 
-fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: string) -> string? {
+fn emit_mode(l: Lowered, ix: EmitIndex, path: string, which: Owned, form: Written, target: string) -> string? {
     let lc = avra_llvm_context_create()
     let m = avra_llvm_module_create("avra", lc)
     // the target IS part of the module, not of the code generator that runs
@@ -276,26 +341,23 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: stri
     // entry symbol — and it is written into the text a reader inspects
     if target != "" { avra_llvm_set_module_target(m, target) }
     let b = avra_llvm_create_builder(lc)
-    let own = [bd for bd in l.fns if which.defines(bd)]
+    let own = [l.fns[p] for p in which.defined_at(l, ix)]
     // the entry is carried beside `l.fns`, and it names what it calls
     let scanned: List<Body> = if which.carries_entry() { own.concat([l.entry]) } else { own }
     let wasm = is_wasm(target)
-    let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned, l.statics) }
+    let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned, l.statics, ix) }
     mut mine: Map<string, bool> = {}
     for bd in own { mine.set(bd.name, true) }
     declare_runtime(lc, m)
-    mut own: Map<string, bool> = {}
-    for bd in l.fns {
-        if bd.hosted { own.set(bd.name, true) }
-    }
-    declare_externs(lc, m, l.externs, refs, own, wasm)
-    for bd in l.fns {
-        if carries(refs, refs.bodies, bd.name) { declare_user(lc, m, l.types, bd) }
-    }
-    let carried = [st for st in l.statics if carries(refs, refs.statics, st.name)]
-    for st in in_read_order(carried, scanned, refs) { emit_static(lc, m, st) }
+    declare_externs(lc, m, l.externs, refs, ix.hosted, wasm)
+    let named_at = if refs.whole { [i for i in 0..l.fns.length] } else { ix.body_positions(refs.bodies.keys()) }
+    for p in named_at { declare_user(lc, m, l.types, l.fns[p]) }
+    let carried = if refs.whole { l.statics } else { [l.statics[p] for p in ix.static_positions(refs.statics.keys())] }
+    for st in in_read_order(carried, scanned, refs, ix) { emit_static(lc, m, st) }
     let rt = rt_index()
-    for bd in l.fns {
+    let defined_at = if which is .Whole { [i for i in 0..l.fns.length] } else { ix.body_positions(mine.keys()) }
+    for p in defined_at {
+        let bd = l.fns[p]
         if mine.get(bd.name) != null {
             let f = avra_llvm_get_named_function(m, mangled(bd.name))
             let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, bd, f)
@@ -394,8 +456,10 @@ fn slot_value(lc: ptr, m: ptr, st: Static, c: Slot) -> ptr {
 
 /// WHAT A NON-HOST TARGET HAS NO BODY FOR, by NAME: a runtime row that
 /// declares no wasm body (a fiber, a core), and a closure package that owns C
-/// (the wasm link carries none). The build speaks which one — never a linker's
-/// "undefined symbol", which accuses the innocent.
+/// and names no wasm object. It reads the program LOWERED FROM ITS ENTRY
+/// (`Program.reached`), so a body nothing reaches names nothing. The build
+/// speaks which one — never a linker's "undefined symbol", which accuses the
+/// innocent.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a program in, the names it cannot carry out.
 export fn unsupported_on_wasm(l: Lowered) -> List<string> {
     let absent = [s.name for s in rt_sigs() if !s.wasm]
@@ -403,6 +467,18 @@ export fn unsupported_on_wasm(l: Lowered) -> List<string> {
     distinct([n! for n in called if absent.contains(n!)])
         .concat(distinct([p.name for p in l.libraries if p.library != "" && !p.wasm]))
 }
+
+/// Whether a program calls a runtime row that may switch a task out: it runs
+/// tasks, and a wasm build of it has a fallback for a host that cannot suspend
+/// a stack. The same reading of the rows `unsupported_on_wasm` makes.
+export fn runs_tasks(l: Lowered) -> bool {
+    let rt = rt_index()
+    let called = [n! for bd in l.fns.concat([l.entry]) for i in bd.ins for n in [hosted_symbol(i)] if n != null]
+    called.any((n) -> row_waits(rt, n))
+}
+
+/// Whether the runtime row `name` may switch the task that calls it out.
+fn row_waits(rt: Map<string, RtSig>, name: string) -> bool { rt.get(name)?.waits ?? false }
 
 /// THE CLOSURE LAW: every name a program's steps call is one the
 /// module will declare — a body the program lowered, a runtime row,
@@ -549,12 +625,13 @@ fn emit_body(
     null
 }
 
-/// The verifier's own report goes to stderr; the module still writes
-/// so the wreck is inspectable.
+/// The verifier's own report goes to stderr; the module's text is written
+/// beside `path`, never at it, so a wreck is inspectable and no store ever
+/// holds it as the object it failed to be.
 fn wreck(m: ptr, path: string, failure: string) -> string {
     let _ = avra_llvm_verify_module_print(m)
-    let _ = avra_llvm_print_module_to_file(m, path)
-    "${failure} (module at ${path})"
+    let _ = avra_llvm_print_module_to_file(m, "${path}.wreck")
+    "${failure} (module at ${path}.wreck)"
 }
 
 /// The runtime surface, declared straight from the registry —
@@ -571,6 +648,12 @@ const HOST_VISIBLE_ROWS: List<string> = ["avra_bytes_len"]
 /// The linker's words that export those rows, one list every consumer reads.
 export fn host_export_words() -> List<string> { ["-Wl,--export=${n}" for n in HOST_VISIBLE_ROWS] }
 
+/// THE FUNCTION TABLE IS EXPORTED, ALWAYS. A hosted scheduler hands its host the
+/// entry a task starts at and the unwind-buffer allocator as table indices,
+/// exports neither, and the host reaches them through this table. Exporting the
+/// table roots no fn: only an address some reachable fn takes is in it.
+export fn table_export_words() -> List<string> { ["-Wl,--export-table"] }
+
 fn declare_runtime(lc: ptr, m: ptr) {
     // EVERY RUNTIME ROW, in every module, and NOT filtered to the names the
     // program's instructions mention. `emit_body` emits runtime calls of its own
@@ -585,6 +668,12 @@ fn declare_runtime(lc: ptr, m: ptr) {
     }
 }
 
+/// Whether a symbol the program declares bodiless is a HOST IMPORT. A runtime
+/// row is the runtime's own symbol — declared with every row, linked from the
+/// runtime — whoever else declares it, so only a name no row names is the
+/// host's.
+fn host_import(name: string) -> bool { rt_index().get(name) == null }
+
 /// The program's own host fns, declared like the runtime's rows. ON A NON-HOST
 /// TARGET they are the HOST IMPORTS: a wasm module has no package C to define
 /// one, so each crosses as an import from `avra:rt` under its own symbol — the
@@ -598,7 +687,7 @@ fn declare_externs(
     wasm: bool,
 ) {
     for s in rows {
-        if carries(refs, refs.hosted, s.name) {
+        if host_import(s.name) && carries(refs, refs.hosted, s.name) {
             declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
             // a symbol one of the program's host fns defines is no import
             if wasm && own.get(s.name) == null { avra_llvm_set_import(avra_llvm_get_named_function(m, s.name), "avra:rt", s.name) }

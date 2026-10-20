@@ -52,8 +52,15 @@ if [ -n "$base" ]; then
     files=$(git diff --name-only --diff-filter=d "$base" "$head" -- '*.av')
     packages=$(sh tools/affected_packages.sh "$base" "$head" "$PWD" 2>/dev/null)
 fi
-if [ -z "$files" ] && [ -z "$packages" ]; then
-    echo "gate_changed: nothing changed — no .av, no affected package"
+# A PR's minimum skips the wasm proof UNLESS the PR changes what it proves: the wasm scripts,
+# fixtures, host, or the runtime files the wasm port is built from.
+wasm_touched=0
+if [ -n "$base" ] && git diff --name-only --diff-filter=d "$base" "$head" \
+    | grep -qE '^(tools/(wasm|jspi_node)|runtime/(avra_fiber|dom/tasks|.*wasm)|\.github/ci/install_node)'; then
+    wasm_touched=1
+fi
+if [ -z "$files" ] && [ -z "$packages" ] && [ "$wasm_touched" = 0 ]; then
+    echo "gate_changed: nothing changed — no .av, no affected package, no wasm file"
     exit 0
 fi
 if [ "$keepers" = 1 ]; then
@@ -70,11 +77,13 @@ done
 # Each SKIPS, spoken, when the toolchain is absent, so a machine without it is
 # not falsely green. SKIPPED for a PR's minimum — the wasm builds and cache
 # attacks are minutes, and the train is where the target is proved.
-if [ "$pr_minimum" = 0 ] && command -v clang >/dev/null 2>&1 && clang --print-targets 2>/dev/null | grep -q wasm32; then
+if { [ "$pr_minimum" = 0 ] || [ "$wasm_touched" = 1 ]; } && command -v clang >/dev/null 2>&1 && clang --print-targets 2>/dev/null | grep -q wasm32; then
     make -s -o avra wasm-runtime wasm-packages >/dev/null 2>&1 || true
     sh tools/wasm-check.sh || { echo "gate_changed: wasm-check refused" >&2; exit 1; }
     sh tools/wasm-seam-check.sh || { echo "gate_changed: wasm-seam refused" >&2; exit 1; }
     sh tools/wasm-refuses.sh || { echo "gate_changed: wasm-refuses refused" >&2; exit 1; }
+    sh tools/wasm-tasks-mutations.sh || { echo "gate_changed: wasm-tasks-mutations refused" >&2; exit 1; }
+    sh tools/wasm-host-check.sh || { echo "gate_changed: wasm-host-check refused" >&2; exit 1; }
     sh tools/wasm-cache-attacks.sh || { echo "gate_changed: wasm-cache refused" >&2; exit 1; }
 fi
 echo "gate_changed: clean — changed .av and affected idioms hold"

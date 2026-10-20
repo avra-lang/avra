@@ -35,9 +35,8 @@ impl Workspace {
 
     /// A unit's lowering kept as a row: only one that spoke nothing.
     fn unit_kept(w: Wanted, out: Unit) {
-        if !out.voices.list.is_empty() || !self.hold.warm.get() { return }
-        let s? = self.store.get() else { return }
-        let at? = self.row_place(s, w) else { return }
+        if !out.voices.list.is_empty() { return }
+        let at? = self.row_key(w) else { return }
         let consts? = self.consts_read(w) else { return }
         let facts = code_facts(self.decls, out.bodies, out.statics, out.hashes)
         self
@@ -57,13 +56,12 @@ impl Workspace {
     /// row keeps. Absent for a unit that read one a row cannot name again: an expression
     /// root, or a const settled at seats.
     fn consts_read(w: Wanted) -> string? {
-        let asks = self.hold.unit_asks.get().get("${self.spec_id(w)}") ?? []
         mut words: List<string> = []
-        for ask in asks {
+        for ask in self.asks_of(self.spec_id(w)) {
             let s = match ask.root { .Const(s) -> s, .Expr(_) -> { return null } }
             if !ask.seats.is_empty() { return null }
             let d? = self.decls.decl_of(ask.file, s) else { return null }
-            let got = match self.settled(ask.file, ask.root, ask.seats) {
+            let got = match self.settled_replay(ask.file, ask.root, ask.seats) {
                 .Ok(v) -> v,
                 .Err(_) -> { return null },
             }
@@ -110,16 +108,20 @@ impl Workspace {
     /// file shows it — every sibling's surface, the file's runs and gathers, and the
     /// interface of every module it sees. Absent for a unit no row stands for.
     fn row_place(s: Store, w: Wanted) -> RowPlace? {
+        let at? = self.row_key(w) else { return null }
+        let surface? = self.unit_surface(s, self.file_id(at.path)) else { return null }
+        RowPlace { path: at.path, surface: surface, key: at.key }
+    }
+
+    /// A UNIT'S ROW KEY, which asks nothing of the store: the file and the declaration with its
+    /// syntax. A row is written under its file's surface when the records are kept, never earlier,
+    /// since a surface read before them is a view of records not yet written.
+    fn row_key(w: Wanted) -> RowKey? {
         let d? = w.decl else { return null }
         if w.sub != null || !w.seats.is_empty() || w.root != null || self.comptime_active() { return null }
         let x = self.decls.decl(d)
         if !plain_unit(x.kind) || x.external || self.is_held(x.file) { return null }
-        let surface? = self.unit_surface(s, x.file) else { return null }
-        RowPlace {
-            path: self.decls.file(x.file).path,
-            surface: surface,
-            key: "${self.decl_ref(d)}\t${self.syntax(d)}",
-        }
+        RowKey { path: self.decls.file(x.file).path, key: "${self.decl_ref(d)}\t${self.syntax(d)}" }
     }
 
     /// A file's kept rows by key, read once for the derivation.
@@ -170,6 +172,9 @@ impl Workspace {
         )
     }
 }
+
+/// A unit's key among its file's rows: the file and the row's key.
+type RowKey = { path: string, key: string }
 
 /// A unit's place among its file's rows: the file, what the file shows, the row's key.
 type RowPlace = { path: string, surface: string, key: string }

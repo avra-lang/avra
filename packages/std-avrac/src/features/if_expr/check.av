@@ -14,28 +14,41 @@ fn if_type(mut cx: TypeCx, e: ExprId) -> TypeId {
         .If(c, t, f) -> {
             cx.require_bool(c, "an `if` condition", "this decides the branch")
             walk_branches(cx, c, t, f)
-            branch_type(cx, t, f)
+            let other? = f else { return cx.type(void) }
+            if cx.view.store.statement_if(e) { return cx.type(void) }
+            branch_type(cx, t, other)
         },
         _ -> cx.error_type,
     }
 }
 
 /// Both branches typed — the PROVEN one under its narrow.
-fn walk_branches(mut cx: TypeCx, c: ExprId, t: ExprId, f: ExprId) {
+fn walk_branches(mut cx: TypeCx, c: ExprId, t: ExprId, f: ExprId?) {
     let asked: Asked? = cx.ask_of(c)
     if asked == null {
         let _ = cx.walk_type(t)
-        let _ = cx.walk_type(f)
+        walk_other(cx, f, null)
         return
     }
     let a = asked!
     if a.on_present {
         let _ = cx.walk_narrowed(a.subject, t)
-        let _ = cx.walk_type(f)
+        walk_other(cx, f, null)
         return
     }
     let _ = cx.walk_type(t)
-    let _ = cx.walk_narrowed(a.subject, f)
+    walk_other(cx, f, a.subject)
+}
+
+/// The else side, when there is one — under the narrow its subject
+/// proves, when it has one.
+fn walk_other(mut cx: TypeCx, f: ExprId?, narrowed: ExprId?) {
+    let other? = f else { return }
+    let at? = narrowed else {
+        let _ = cx.walk_type(other)
+        return
+    }
+    let _ = cx.walk_narrowed(at, other)
 }
 
 /// The branches' one type. A branch that LEAVES answers nothing and
@@ -60,7 +73,7 @@ fn branch_type(mut cx: TypeCx, t: ExprId, f: ExprId) -> TypeId {
                     cx.loc_of(f),
                     "an `if`'s branches disagree: `${cx.name_at(t)}` vs `${n}`",
                     this_is(n),
-                    null,
+                    "make both branches answer one type — or declare the seat's type (`let x: T = if …`)",
                 ),
             )
     }

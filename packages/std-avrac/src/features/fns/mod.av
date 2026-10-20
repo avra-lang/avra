@@ -12,16 +12,12 @@
 //! 2)`) — a named argument fills the seat of its name, a
 //! positional one the seat at its own position, and arguments run
 //! in written order. `return` answers early.
-use features.{LanguageFeature, BuilderRow}
+use features.{LanguageFeature}
 use features.fns.{dead_parameter}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn fns() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name        | build
-        "extern_fn" | build_extern
-    }
     let codes = table<DiagCode> {
         kind                    | summary
         "type.duplicate_param"  | "a fn's parameters have distinct names"
@@ -37,19 +33,24 @@ export fn fns() -> LanguageFeature {
         "type.extern_value"     | "an extern fn is a C symbol, not a value — wrap it to hand it around"
         "flow.callback_pointer" | "a callback under a cancel answers zero, and this one answers a pointer the C would follow"
         "type.host_fn"          | "a host fn defines the symbol its name spells — its seats and its answer are words and pointers a host hands over, plain"
+        "type.provided_kind"    | "`provided` names its kind — the file's octets do not choose it"
         "type.embed_literal"    | "`embed` reads a file named in the source — its path is a literal, written where it is called"
         "type.embed_place"      | "`embed` reads inside its own package, through no link"
         "type.embed_file"       | "`embed` answers a file's text — the file stands there and is UTF-8"
         "type.code_hash_named"  | "`code_hash` hashes a declared fn, named where it is called"
+        "type.guard_value"      | "`guarded` is lowered where it is called — handed on uncalled it would run nothing"
         "type.named_arg"        | "a named argument writes a seat its callee declares, once — only a declared fn's, method's or static's seats have names"
         "type.param_default"    | "a default fills a plain seat whose type names no type parameter, after every seat without one, and its seat accepts it"
+        "type.variadic"         | "a `..` seat is the last, a plain list, and takes the arguments a call leaves, by position"
+        "type.spread_seat"      | "a `..` argument fills a seat that takes the rest of the arguments"
         "type.isolated"         | "an `isolated` seat takes a fn that shares nothing with its caller — a lambda capturing no identity, a declared fn, or an `isolated` parameter"
     }
     LanguageFeature fns {
         gram: grammar {
-            stmt = "extern" "fn" n:NAME "(" ( ps:extern_seat ( "," ps:extern_seat )* ","? )? ")" ( "->" r:type )? ( b:block )? END @recover(sync_to: "END") -> extern_fn(n, ps, r, b)
+            stmt = is_host:"extern" "fn" name:NAME "(" ( params:extern_seat ( "," params:extern_seat )* ","? )? ")" ( "->" ret:type )? body:block END -> Stmt.FnDecl
+            stmt = "extern" "fn" name:NAME "(" ( params:extern_seat ( "," params:extern_seat )* ","? )? ")" ( "->" ret:type )? END @recover(sync_to: "END") -> Stmt.ExternFn
             stmt = "fn" name:NAME ( "<" tparams:tparam ( "," tparams:tparam )* ","? ">" )? "(" ( params:param ( "," params:param )* ","? )? ")" ( "->" ret:type )? body:block END @recover(sync_to: "END") -> Stmt.FnDecl
-            param = ( constant:"const" )? ( mutable:"mut" )? ( state:STATE )? ( unshared:"isolated" )? name:NAME ( ":" ty:type )? ( "=" default:expression )? -> Record.ParamSyntax | spread:".." name:HOLE -> Record.ParamSyntax
+            param = ( constant:"const" )? ( mutable:"mut" )? ( state:STATE )? ( unshared:"isolated" )? name:NAME ( ":" ty:type )? ( "=" default:expression )? -> Record.ParamSyntax | spread:".." name:HOLE -> Record.ParamSyntax | variadic:".." name:NAME ":" ty:type -> Record.ParamSyntax
             tparam = name:NAME ( ":" ty:type )? -> Record.ParamSyntax
             once_seat = ( "const" )? ( "mut" )? name:NAME ( ":" ty:type )? -> Record.ParamSyntax
             seat = ( constant:"const" )? ( mutable:"mut" )? name:NAME ( ":" ty:type )? -> Record.ParamSyntax
@@ -59,7 +60,6 @@ export fn fns() -> LanguageFeature {
             primary = callee:NAME "<" pins:type ( "," pins:type )* ","? ">" "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.Call
             primary = callee:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" @expect(")", "expected `)` to close the arguments") -> Expr.Call
         }
-        builders: rows
         diags: codes
     }
     fns

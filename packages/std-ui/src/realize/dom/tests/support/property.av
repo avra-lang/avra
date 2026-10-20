@@ -8,6 +8,7 @@ use realize.dom.live.{Live, live}
 use realize.dom.patch.{Patch, Says}
 use realize.dom.wire.{frame}
 use realize.html.element.{Element, Tagged, lowered}
+use realize.tests.support.{kind_at}
 use style.theme.{default_theme}
 use tree.identity.{NodeId}
 use tree.node.{Action, Handler, Said}
@@ -85,7 +86,7 @@ export fn moves(page: Live, typed: List<Typed>) -> List<Move> {
 /// A user's moves as the program hears them: each control's echo.
 fn echo(page: Live, made: List<Move>) {
     for m in made {
-        let _ = page.fire(NodeId { n: m.id }, m.action.kind, m.said)
+        let _ = page.fire(NodeId { n: m.id }, m.action.seat, m.said)
     }
 }
 
@@ -94,7 +95,7 @@ fn echo(page: Live, made: List<Move>) {
 fn hold(mut at: Host, made: List<Move>) {
     for m in made {
         if m.said != null { at.set_prop(m.id, m.reads, m.says, m.text) }
-        if shuts(m.action.kind) { at.swing(m.id, false) }
+        if shuts(kind_at(m.action.seat)) { at.swing(m.id, false) }
     }
 }
 
@@ -240,7 +241,7 @@ fn bound_wrong(page: Live, mut at: Host, s: Sketch, log: Cell<List<int>>) -> str
     let got = rung(
         page.page.get(),
         log,
-        (b) -> page.fire(b.id, b.action.kind, probe(b.action.handler)),
+        (b) -> page.fire(b.id, b.action.seat, probe(b.action.handler)),
     )
     hold(at, [moved(b, probe(b.action.handler)) for b in held])
     if got == want { null } else { "the handlers bound are not the tree's: its events write ${want}, the page's ${got}" }

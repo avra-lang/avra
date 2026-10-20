@@ -92,7 +92,20 @@ export type ResolveCx = {
 /// file, materialized on demand (the two-tier lookup's second tier);
 /// and a template's own name lives in the namespace of the file that
 /// WROTE the quote — origin hygiene.
-export type Elsewhere = { generated: fn(string) -> DeclId?, written_in: fn(FileId) -> Namespace }
+export type Elsewhere = {
+    generated: fn(string) -> DeclId?,
+    written_in: fn(FileId) -> Namespace,
+    // the parse error the file's module is unread behind, asked only when
+    // a refusal is being worded — a clean check reads no sibling for it
+    unread: fn() -> Diag?,
+}
+
+impl Elsewhere {
+    fn unread_root() -> Diag? {
+        let ask = self.unread
+        ask()
+    }
+}
 
 /// One `let` definition of the program, in order.
 export type Def = { name: string, stmt: StmtId }
@@ -279,6 +292,7 @@ export type TypeCx = {
     narrow_params: List<NarrowFrame>,
     fn_ret: List<TypeId>,
     lam_bar: List<int>,
+    lam_promise: List<List<TypeId>>,
     tscope: List<TypeId>,
     pairs: List<ExprId>,
     task_bodies: List<ExprId>,
@@ -346,6 +360,16 @@ export type LowerCx = {
     view: FileView,
     names: NameFacts,
     facts: TypeFacts,
+    // the per-declaration QUERY of the state places a declaration reaches,
+    // asked by a body only for the declarations it names
+    decl_places: fn(DeclId) -> List<int>,
+    // the same query for the places read at paint time that no reading
+    // answers for
+    decl_structural: fn(DeclId) -> List<int>,
+    // THE FRAME'S ROOTS: the expressions this body's own code is, for the
+    // places it reads at paint time. None for a body whose code is not one
+    // expression (the entry's statements), which is read as opaque.
+    roots: List<ExprId>? = null,
     dispatch: Dispatch,
     out: Emitter,
     body: BodyRegs,
@@ -460,22 +484,6 @@ impl Deferral {
 export type DirectCall = { callee: string, host: bool, args: List<Reg>, ret: TypeId }
 
 export type Deferred = { work: Deferral, depth: int, on_error: bool }
-
-/// The per-pass behavior of one feature's expression nodes, delegated
-/// over `Expr`: each record writes its own impl and reads `self`.
-/// `heirs` are the sub-expressions a planted WANT flows into
-/// UNCHANGED — a branch answers its arms' values, everything else
-/// answers nothing; the expected-type channel recurses through
-/// them before the bottom-up walk begins.
-@delegates(Expr)
-export trait NodeSemantics {
-    fn kids() -> List<ExprId> {
-        []
-    }
-    fn heirs() -> List<ExprId> {
-        []
-    }
-}
 
 /// A syntax node's meaning at resolve, typing and lowering, delegated
 /// over `Expr`: each record writes its own impl.

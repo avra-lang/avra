@@ -1,0 +1,518 @@
+//! A MODULE'S PRODUCERS: what its record files for a bucket reader, and what the load
+//! walk needs to reach its neighbours — read from the record's lines once, kept as one
+//! small row beside the record, and read back in place so a names-only walk decodes no
+//! record line (docs/2026_10_06_COMPILER_DB.md, "load: the rest": records read in place).
+use core.{distinct, flatten, joined, digest_of, sorted_texts, DeclKind, ModulePath}
+use core.debug.{db_verified_producers}
+use features.{ExternNote, DeclFacts, implements_kind}
+use compiler.store.{Store, Stored, node_key}
+
+/// One value a file files under: a declaration name, a word or a mark.
+type Filed = { value: string, path: string }
+
+/// What a record says to the load walk and the bucket readers, and nothing else.
+type Producers = {
+    /// "" when the record rebuilds whole, else the one declaration that made it short.
+    fault: string,
+    /// Every file a declaration line names.
+    declared: List<string>,
+    /// Every file the record places.
+    placed: List<string>,
+    /// The `import` and `gathers` lines in the order the record wrote them: the walk the
+    /// load takes to a module's neighbours. `reexports` are the `reexport` lines.
+    walk: List<List<string>>,
+    reexports: List<List<string>>,
+    names: List<Filed>,
+    words: List<Filed>,
+    marks: List<Filed>,
+    externs: List<ExternNote>,
+    links: List<string>,
+    /// Every file declaring a kind that implements a trait for a type.
+    implementors: List<string>,
+    /// Each file a `ref` line names, with the files whose lines name it: value the target, path the source.
+    refs: List<Filed>,
+    /// Each placed file's names, as its module's namespace binds them.
+    narrows: List<FileNames>,
+    /// The files a file's types name and the files its impls sit in: value the file reached, path the file it is reached from.
+    typed: List<Filed>,
+    /// The files the record's non-builtin references name.
+    reach_refs: List<string>,
+    /// The digest of what other modules' keys read of the record apart from its plain free fns: its
+    /// imports, references and each file's unnamed interface.
+    seen: string,
+    /// The digest of its plain free fns' forms, one per name — "whole" when a file's unnamed
+    /// interface is not recorded and `seen` carries the whole interface instead.
+    forms: string,
+    /// The forms behind `forms`, a line per fn; empty for a row read back, kept under `forms_key`.
+    forms_text: string,
+    /// The `file` lines, as the record wrote them: each file's print and what its runs read.
+    files: List<List<string>>,
+}
+
+/// THE ONE READER OF A RECORD'S PRODUCER LINES: the fields are the ones `read_row` and
+/// `facts_unblocked` already decode.
+// LICENSED compiler.free_state_verb: a record's fields and its module in, the producers out.
+export fn producers_of(m: ModulePath, fields: List<List<string>>) -> Producers {
+    let rows = [FiledRow { parts: parts, row: read_row(parts) } for parts in fields if declares(parts)]
+    let decoded = [d for d in rows if d.row != null && facts_unblocked(d.row!.facts) != null]
+    Producers {
+        fault: record_complete(fields) ?? "",
+        declared: distinct([p[1] for p in fields if declares(p)]),
+        placed: distinct([p[1] for p in fields if places_file(p)]),
+        walk: [p for p in fields if p[0] == "import" || p[0] == "gathers"],
+        reexports: [p for p in fields if p.length >= 5 && p[0] == "reexport"],
+        names: [Filed { value: d.row!.name, path: d.parts[1] } for d in decoded],
+        words: flatten([some_filed(facts_unblocked(d.row!.facts)!.word, d.parts[1]) for d in decoded]),
+        marks: flatten(
+            [[Filed { value: a.name, path: d.parts[1] } for a in facts_unblocked(d.row!.facts)!.annotations] for d in decoded],
+        ),
+        externs: [extern_note(m, d.row!, facts_unblocked(d.row!.facts)!) for d in decoded if facts_unblocked(d.row!.facts)!.external],
+        links: distinct([d.parts[1] for d in decoded if links_a_scheduler(d.row!)]),
+        implementors: distinct([d.parts[1] for d in decoded if implements_a_type(d.row!)]),
+        refs: distinct_filed(
+            [Filed { value: ref_target(p), path: p[1] } for p in fields if is_ref_row(p)],
+        ),
+        narrows: [file_names(decoded, made_ordinals(fields), p) for p in distinct([p[1] for p in fields if declares(p)])],
+        typed: distinct_filed(flatten([typed_edges(p) for p in fields])),
+        reach_refs: distinct([ref_target(p) for p in fields if is_ref_row(p) && !names_builtin(p)]),
+        seen: seen_digest_of(fields),
+        forms: if unnamed_recorded(fields) { digest_of(forms_text_of(fields)) } else { "whole" },
+        forms_text: forms_text_of(fields),
+        files: [p for p in fields if places_file(p)],
+    }
+}
+
+/// Whether every file line carries its unnamed interface digest.
+fn unnamed_recorded(fields: List<List<string>>) -> bool {
+    [p for p in fields if places_file(p)].all((p: List<string>) -> p.length >= 7 && p[6] != "")
+}
+
+/// What a record says that other modules read apart from plain free fns' forms: its imports,
+/// references and files' unnamed interfaces — or, where those are not recorded, its whole interface.
+fn seen_digest_of(fields: List<List<string>>) -> string {
+    let shared = [joined(p, "\t") for p in fields if p[0] == "import"]
+        .concat(
+            sorted_texts(
+                distinct([ref_target(p) for p in fields if is_ref_row(p) && !names_builtin(p)]),
+            ),
+        )
+    if unnamed_recorded(fields) {
+        digest_of(joined(shared.concat([p[6] for p in fields if places_file(p)]), "\n"))
+    } else {
+        digest_of(joined(shared.concat([joined(p, "\t") for p in fields if p[0] == "iface"]), "\n"))
+    }
+}
+
+/// The plain free fns a record places, one `name<TAB>form digest` line each, in line order.
+fn forms_text_of(fields: List<List<string>>) -> string {
+    let places = places_of(fields)
+    joined(
+        sorted_texts(
+            flatten(
+                [[joined([path, fields[j][5], digest_of(placed_form(joined(fields[j], "\t")))], "\t") for j in p.lo..p.hi if j < fields.length && named_alone(fields[j])] for path, p in places],
+            ),
+        ),
+        "\n",
+    )
+}
+
+/// The filings with each pair once.
+fn distinct_filed(fs: List<Filed>) -> List<Filed> {
+    let seen: Cell<Map<string, bool>> = Cell.new({})
+    [f for f in fs if !claimed(seen, "${f.value}\t${f.path}")]
+}
+
+/// Whether `key` was already claimed in `seen`, claiming it.
+fn claimed(seen: Cell<Map<string, bool>>, key: string) -> bool {
+    if seen.get().has(key) { return true }
+    seen.put(key, true)
+    false
+}
+
+type FiledRow = { parts: List<string>, row: Row? }
+
+fn some_filed(value: string?, path: string) -> List<Filed> {
+    let v? = value else { return [] }
+    [Filed { value: v, path: path }]
+}
+
+fn extern_note(m: ModulePath, row: Row, facts: DeclFacts) -> ExternNote {
+    ExternNote { module: m.text(), path: row.path, name: row.name, hosted: facts.hosted }
+}
+
+/// What a file's names look like to a reader of its module: the name each of its declarations
+/// binds, a plain free fn's marked with `*`, and whether any declaration was written by an annotation.
+type FileNames = { path: string, generated: bool, head: string, bound: List<string> }
+
+/// The `path<TAB>ordinal` of every declaration an annotation wrote.
+fn made_ordinals(fields: List<List<string>>) -> List<string> {
+    [joined([p[1], p[2]], "\t") for p in fields if p.length == 4 && p[0] == "maker" && !text_of_field(p[3]).is_empty()]
+}
+
+/// A file's names from its decoded rows.
+fn file_names(rows: List<FiledRow>, made: List<string>, path: string) -> FileNames {
+    let bound = flatten(
+        [some_name(bound_name(d.row!, made.contains(joined([path, "${d.row!.ordinal}"], "\t")))) for d in rows if d.parts[1] == path],
+    )
+    let generated = made.any(it.starts_with("${path}\t"))
+    FileNames { path: path, generated: generated, head: head_of(bound, generated), bound: bound }
+}
+
+/// A file's names as one head: the digest of those that are not plain free fns, whether it holds
+/// generated code, and the digest of every bound name.
+export fn head_of(bound: List<string>, generated: bool) -> string {
+    joined(
+        [
+            names_digest_of([b for b in bound if !b.starts_with("*")]),
+            if generated { "1" } else { "0" },
+            names_digest_of(bound),
+        ],
+        ".",
+    )
+}
+
+/// Whether a declaration of this kind is reached by its name and nothing else, when nothing
+/// generated or annotated it: a free fn or a const.
+export fn reached_by_name(k: DeclKind) -> bool {
+    match k {
+        .Fn or .Const -> true,
+        .Default or .Method or .Impl or .Case or .Main or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Builtin or .State -> false,
+    }
+}
+
+/// The name a declaration binds, marked `*` when it is a free fn nothing generated or annotated;
+/// null for a declaration whose name the namespace does not bind.
+fn bound_name(row: Row, made: bool) -> string? {
+    let kind? = declared_kind(row.shape, row.kind) else { return null }
+    if !binds_name(kind) { return null }
+    let facts = facts_unblocked(row.facts)!
+    let plain = reached_by_name(kind) &&
+        row.owner.is_empty() &&
+        row.enclosing.is_empty() &&
+        !made &&
+        facts.word == null &&
+        facts.annotations.is_empty()
+    if plain { "*${row.name}" } else { row.name }
+}
+
+/// The edges one record line adds to the typed index: the files its types name, and the file an
+/// impl's aimed type sits in, which the impl's own file rides with.
+fn typed_edges(p: List<string>) -> List<Filed> {
+    let named = when {
+        is_ref_row(p) && shapes_signature(p[3]) && !names_builtin(p) -> [ref_target(p)]
+        p.length > 13 && declares(p) -> wired_files(p)
+        _ -> []
+    }
+    let aimed = aimed_file(p)
+    [Filed { value: n, path: p[1] } for n in named]
+        .concat(if aimed == null { [] } else { [Filed { value: p[1], path: aimed! }] })
+}
+
+/// The one name in a list, or none.
+fn some_name(n: string?) -> List<string> {
+    let name? = n else { return [] }
+    [name]
+}
+
+/// A bound name without its plain mark.
+export fn unmarked(b: string) -> string { if b.starts_with("*") { b.substring(1, b.length) } else { b } }
+
+/// A text's lines as a set.
+fn lines_set(text: string) -> Map<string, bool> {
+    let set: Cell<Map<string, bool>> = Cell.new({})
+    for l in text.split("\n") { set.put(l, true) }
+    set.get()
+}
+
+/// Where a module's forms are kept: under their digest, so the same forms are one row.
+fn forms_key(forms: string) -> string { node_key(Stored.Unit, ["forms", forms]) }
+
+/// A set of names as one digest, in name order.
+export fn names_digest_of(names: List<string>) -> string { digest_of(joined(sorted_texts(names), "\n")) }
+
+/// Whether a row is a declaration of a kind that implements a trait for a type.
+fn implements_a_type(row: Row) -> bool {
+    let kind? = declared_kind(row.shape, row.kind) else { return false }
+    implements_kind(kind)
+}
+
+/// Whether a row is a fn whose record says it links a scheduler.
+fn links_a_scheduler(row: Row) -> bool {
+    let kind? = declared_kind(row.shape, row.kind) else { return false }
+    records_cancel(kind) && row.reach().links
+}
+
+/// THE PRODUCERS FILED, each bucket reader's index and the load walk's: the one place a
+/// module's filings reach the hold.
+// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a module and its producers in.
+export fn note_producers(ws: Workspace, p: Producers) {
+    for f in p.names { filed_under(ws.hold.named_by, f) }
+    for f in p.words { filed_under(ws.hold.worded_by, f) }
+    for f in p.marks { filed_under(ws.hold.marked_by, f) }
+    ws.hold.externed_by.set(ws.hold.externed_by.get().concat(p.externs))
+    ws.hold.linked_by.set(distinct(ws.hold.linked_by.get().concat(p.links)))
+    for f in p.refs { filed_under(ws.hold.refs_by_target, f) }
+    for path in p.implementors { if !ws.hold.typed_by.get().contains(path) { ws.hold.typed_by.push(path) } }
+    for path in distinct([r[1] for r in p.reexports]) { ws.hold.reexports.put(path, reexports_in(p.reexports, path)) }
+}
+
+fn filed_under(map: Cell<Map<string, List<string>>>, f: Filed) {
+    map.put(f.value, distinct((map.get().get(f.value) ?? []).concat([f.path])))
+}
+
+/// WHY A RECORD CANNOT BE LOADED: "" when it is whole and names no file the module has
+/// lost, else the reason.
+fn fault_of(p: Producers, here: List<string>) -> string {
+    if p.fault != "" { return p.fault }
+    let stray? = p.declared.find((path) -> !here.contains(path)) else { return "" }
+    "names `${stray}`, which the module no longer has"
+}
+
+// ── THE ROW ─────────────────────────────────────────────────────────
+
+/// The row's version line: a row of another shape is no row.
+fn producers_head() -> string { "producers\t3" }
+
+/// The row's last line: a row cut short never ends in it.
+fn producers_end() -> string { "end" }
+
+/// The row as text, one line per fact. A value is a field and a field is escaped; the
+/// record's own lines ride as the record wrote them.
+export fn producers_text(p: Producers) -> string {
+    let lines = [
+        producers_head(),
+        if p.fault == "" { "complete" } else { "fault\t${field_text(p.fault)}" },
+    ]
+        .concat([path_line("declared", path) for path in p.declared])
+        .concat([path_line("placed", path) for path in p.placed])
+        .concat([joined(l, "\t") for l in p.walk])
+        .concat([joined(l, "\t") for l in p.reexports])
+        .concat([filed_line("name", f) for f in p.names])
+        .concat([filed_line("word", f) for f in p.words])
+        .concat([filed_line("mark", f) for f in p.marks])
+        .concat(
+            [joined(["extern", field_text(n.path), field_text(n.name), bit_word(n.hosted)], "\t") for n in p.externs],
+        )
+        .concat([path_line("link", path) for path in p.links])
+        .concat([path_line("implementor", path) for path in p.implementors])
+        .concat([filed_line("refs", f) for f in p.refs])
+        .concat([narrow_line(n) for n in p.narrows])
+        .concat([filed_line("typed", f) for f in p.typed])
+        .concat([path_line("rrefs", t) for t in p.reach_refs])
+        .concat([joined(["seen", p.seen, p.forms], "\t")])
+        .concat([joined(l, "\t") for l in p.files])
+        .concat([producers_end()])
+    joined(lines, "\n")
+}
+
+/// A line a file stands on alone: no value follows, so no field of it can end empty.
+fn path_line(tag: string, path: string) -> string { joined([tag, field_text(path)], "\t") }
+
+/// A line a file files a value on: the path last, which is never empty.
+fn narrow_line(n: FileNames) -> string {
+    joined(
+        [
+            "narrow",
+            if n.generated { "1" } else { "0" },
+            n.head,
+            joined(n.bound, " "),
+            field_text(n.path),
+        ],
+        "\t",
+    )
+}
+
+fn filed_line(tag: string, f: Filed) -> string { joined([tag, field_text(f.value), field_text(f.path)], "\t") }
+
+/// The producers a row spells, absent for a row that is not whole: another version, an
+/// unknown line, a line short of its fields, or no last line.
+export fn producers_read(m: ModulePath, text: string) -> Producers? {
+    let lines = text.split("\n")
+    if lines.first() ?? "" != producers_head() || lines.last() ?? "" != producers_end() { return null }
+    let rows = [l.split("\t") for l in lines.slice(1, lines.length - 1)]
+    if rows.any((r) -> !producer_line(r)) { return null }
+    if rows.filter(it[0] == "complete" || it[0] == "fault").length != 1 { return null }
+    Producers {
+        fault: faulted(rows),
+        declared: tagged_paths(rows, "declared"),
+        placed: tagged_paths(rows, "placed"),
+        walk: [r for r in rows if r[0] == "import" || r[0] == "gathers"],
+        reexports: [r for r in rows if r[0] == "reexport"],
+        names: filings(rows, "name"),
+        words: filings(rows, "word"),
+        marks: filings(rows, "mark"),
+        externs: [ExternNote {
+            module: m.text(),
+            path: text_of_field(r[1]),
+            name: text_of_field(r[2]),
+            hosted: r[3] == "1",
+        } for r in rows if r[0] == "extern"],
+        links: tagged_paths(rows, "link"),
+        implementors: tagged_paths(rows, "implementor"),
+        refs: filings(rows, "refs"),
+        narrows: [FileNames {
+            path: text_of_field(r[4]),
+            generated: r[1] == "1",
+            head: r[2],
+            bound: r[3].split(" "),
+        } for r in rows if r[0] == "narrow"],
+        typed: filings(rows, "typed"),
+        reach_refs: tagged_paths(rows, "rrefs"),
+        seen: seen_line_of(rows, 1),
+        forms: seen_line_of(rows, 2),
+        forms_text: "",
+        files: [r for r in rows if r[0] == "file"],
+    }
+}
+
+/// Whether a split line is one a row may hold, with the fields its tag owes.
+fn producer_line(r: List<string>) -> bool {
+    match r[0] {
+        "complete" -> r.length == 1,
+        "fault" or "declared" or "placed" or "link" or "implementor" or "rrefs" -> r.length == 2,
+        "name" or "word" or "mark" or "refs" or "typed" -> r.length == 3,
+        "extern" -> r.length == 4,
+        "seen" -> r.length == 3,
+        "narrow" -> r.length == 5,
+        "file" -> r.length >= 3,
+        "import" or "gathers" -> r.length >= 2,
+        "reexport" -> r.length >= 5,
+        _ -> false,
+    }
+}
+
+/// The seen digest a row spells.
+fn seen_line_of(rows: List<List<string>>, at: int) -> string {
+    let r? = rows.find(it[0] == "seen") else { return "" }
+    r[at]
+}
+
+fn faulted(rows: List<List<string>>) -> string {
+    let r? = rows.find(it[0] == "fault") else { return "" }
+    text_of_field(r[1])
+}
+
+fn tagged_paths(rows: List<List<string>>, tag: string) -> List<string> {
+    [text_of_field(r[1]) for r in rows if r[0] == tag]
+}
+
+fn filings(rows: List<List<string>>, tag: string) -> List<Filed> {
+    [Filed { value: text_of_field(r[1]), path: text_of_field(r[2]) } for r in rows if r[0] == tag]
+}
+
+// ── WHERE IT STANDS ─────────────────────────────────────────────────
+
+impl Workspace {
+    /// Where a module's producer row stands: beside its record, under the same interface.
+    fn producers_key(m: ModulePath, iface: string) -> string {
+        self.record_bodies().key("producers ${m.text()}", iface)
+    }
+
+    /// A module's producers as its kept row says — absent when no row stands for the
+    /// record's interface, or the row is not whole. Under `AVRA_DB_VERIFY=producers` a row
+    /// that stands is judged against the producers its record's own lines make.
+    fn kept_producers(store: Store, m: ModulePath) -> Producers? {
+        let iface = self.db.sig(store, self.record_key(m)) ?? ""
+        if iface == "" { return null }
+        let row = self.db.sig(store, self.producers_key(m, iface)) ?? ""
+        let kept = producers_read(m, row)
+        if kept != null &&
+            db_verified_producers() &&
+            row != producers_text(producers_of(m, record_fields(self, store, m))) {
+            self.defect(producers_disagree(m))
+        }
+        kept
+    }
+
+    /// A module's producers: its kept row, or the record's own lines where none stands —
+    /// absent for a module with no record. Decoded once per build.
+    fn producers_for(store: Store, m: ModulePath) -> Producers? {
+        let key = self.record_key(m)
+        let known: Producers? = self.records.record_producers.get().get(key)
+        if known != null { return known }
+        let found? = self.kept_producers(store, m) ?? self.recorded_producers(store, m) else { return null }
+        self.records.record_producers.put(key, found)
+        found
+    }
+
+    /// The producers the record's own lines say — absent for a module with no record.
+    fn recorded_producers(store: Store, m: ModulePath) -> Producers? {
+        if record_cached(self, store, m) == "" { return null }
+        producers_of(m, record_fields(self, store, m))
+    }
+
+    /// What a module stands as to a file that read it, whole: its record's seen lines and the listing of
+    /// its files — a name's read, judged by this digest before any narrowed view is rebuilt.
+    fn seen_stamp(store: Store, m: ModulePath) -> string {
+        let known: string? = self.records.record_stamps.get().get(m.text())
+        if known != null { return known! }
+        let made = self.stamped(self.producers_for(store, m)?.seen ?? "none", m)
+        self.records.record_stamps.put(m.text(), made)
+        made
+    }
+
+    /// A module's stamp over the seen digest of its record and the listing of its files.
+    fn stamped(seen: string, m: ModulePath) -> string {
+        digest_of("${seen}\n${joined(self.module_files(m), "\n")}")
+    }
+
+    /// The compile-time-run tokens of a file, off its module's row.
+    fn lite_runs(pr: Producers, path: string) -> List<string> {
+        let known: List<string>? = self.hold.lite_runs.get().get(path)
+        if known != null { return known! }
+        let line? = pr.files.find(it[1] == path) else { return [] }
+        let made = [self.read_token(path, read) for read in runs_of(line) ?? []]
+        self.hold.lite_runs.put(path, made)
+        made
+    }
+
+    /// What a file's package-wide collects gathered, off its module's row.
+    fn lite_gathered(pr: Producers, path: string) -> List<string> {
+        [p[7] for p in pr.walk if p.length > 7 && p[0] == "gathers" && p[2] == path]
+    }
+
+    /// The digest of a module's plain free fns' forms, as its row says them.
+    fn forms_stamp(store: Store, m: ModulePath) -> string { self.producers_for(store, m)?.forms ?? "none" }
+
+    /// A record just written: its producers read from the lines it was made of, kept beside
+    /// it and stood in for the one decoded earlier.
+    fn keep_producers(store: Store, m: ModulePath, iface: string) {
+        let made = producers_of(m, record_fields(self, store, m))
+        self.records.record_producers.put(self.record_key(m), made)
+        self.records.record_stamps.put(m.text(), self.stamped(made.seen, m))
+        self.db.insert_sig(store, self.producers_key(m, iface), producers_text(made))
+        if made.forms != "whole" { let _ = store.keep_once(Stored.Unit, forms_key(made.forms), made.forms_text) }
+    }
+
+    /// The forms of a module's plain free fns, a line each: off its row when it was just made,
+    /// else off the store, where the row's writer kept them under their digest.
+    fn forms_at(store: Store, m: ModulePath) -> string? {
+        let pr? = self.producers_for(store, m) else { return null }
+        if pr.forms == "whole" { return null }
+        if !pr.forms_text.is_empty() { return pr.forms_text }
+        store.get(Stored.Unit, forms_key(pr.forms))
+    }
+
+    /// The plain free fn names whose form differs between the forms a module had at `was` and its
+    /// forms now — added, removed or changed; null where either side's forms cannot be read.
+    fn moved_forms(store: Store, m: ModulePath, was: string) -> Map<string, bool>? {
+        let known: Map<string, bool>? = self.hold.forms_moved.get().get("${m.text()}\t${was}")
+        if known != null { return known }
+        let kept? = store.get(Stored.Unit, forms_key(was)) else { return null }
+        let now? = self.forms_at(store, m) else { return null }
+        let before = lines_set(kept)
+        let after = lines_set(now)
+        let moved: Cell<Map<string, bool>> = Cell.new({})
+        for l in before.keys() { if !after.has(l) { moved.put(l.split("\t")[1], true) } }
+        for l in after.keys() { if !before.has(l) { moved.put(l.split("\t")[1], true) } }
+        self.hold.forms_moved.put("${m.text()}\t${was}", moved.get())
+        moved.get()
+    }
+}
+
+// ── VOICES ──────────────────────────────────────────────────────────
+
+/// A kept row whose producers are not the ones its record makes.
+fn producers_disagree(m: ModulePath) -> string {
+    "the producer row kept for module `${m.text()}` is not what its record makes — a row and its record are written together, so one of them was written by something else"
+}

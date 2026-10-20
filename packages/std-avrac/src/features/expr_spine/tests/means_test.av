@@ -1,7 +1,7 @@
 // A sugar keeps its own node and answers for its meaning: `~x` is
 // `Bitnot`, minted with `x ^ -1`, and a refusal that meaning causes
 // says what the sugar means at the sugar the author wrote.
-use @std.avrac.core.{SyntaxArena, ExprId}
+use @std.avrac.core.{SyntaxArena, ExprId, same_expr}
 use @std.avrac.compiler.{parse_source, analyze_source}
 use @std.avrac.testing.{shown, refused_with, provided, answered}
 use @std.avrac.compiler.{avra}
@@ -31,13 +31,12 @@ spec "features/expr_spine — a sugar's meaning" {
         then "its minted nodes answer for the sugar" {
             let p = parse_source("let x = 1\n~x")
             let root = p.store.stmt_value(p.stmts[1])!
-            match p.store.expr(root) {
-                .Bitnot(rewrite) -> p.store.minted_for(rewrite)?.index ?? 0 - 1 == root.index &&
-                    p.store.minted_for(root) == null &&
-                    p.store.sugars().length == 1 &&
-                    p.store.sugars().first()?.index ?? 0 - 1 == root.index,
-                _ -> false,
-            }
+            let meant = p.store.meant(root)
+            meant != null &&
+                p.store.minted_for(meant!)?.index ?? 0 - 1 == root.index &&
+                p.store.minted_for(root) == null &&
+                p.store.sugars().length == 1 &&
+                p.store.sugars().first()?.index ?? 0 - 1 == root.index
         }
         then "the statement notes what it means" {
             let p = parse_source("let x = 1\n~x")
@@ -59,7 +58,8 @@ spec "features/expr_spine — a sugar's meaning" {
 2 │ ~s
   · ┬
   · ╰── `~s` means `s ^ -1`
-──╯"""
+──╯
+help: give the operand the type the operator needs — `.length` measures text and lists, and interpolation makes text of a number"""
             avra().check(new_source_file("app.av", "let s = \"x\"\n~s")) == expected
         }
         then "and keeps the rewrite's own words" {
@@ -79,7 +79,12 @@ spec "features/expr_spine — a sugar's meaning" {
             let p = provided("use @x.c.{inverted}\nlet v = inverted 5 { 1 }\nv", inverting())
             let store = p.ws.parsed(p.ws.file_id("/w/src/main.av")).store
             store.sugars().length == 2 &&
-                store.sugars().all((s) -> store.minted_nodes(s).length == 2)
+                store
+                    .sugars()
+                    .all(
+                        (s) -> store.meant(s) != null &&
+                            same_expr(store.minted_for(store.meant(s)!)!, s),
+                    )
         }
         then "and the instance's expansion is noted as written" {
             let p = provided("use @x.c.{inverted}\nlet v = inverted 5 { 1 }\nv", inverting())

@@ -17,7 +17,8 @@
 # new workflow for the events it causes; arming auto-merge is cheap either
 # way, but a merge by the repository's GITHUB_TOKEN does not run the `push`
 # runs that publish the compiler. So when the repo has a PAT or app token it
-# is used (`AVRA_QUEUE_TOKEN`), and the GITHUB_TOKEN is the fallback.
+# is used (`AVRA_QUEUE_TOKEN`) for the few WRITES that must start workflows (arming, update-branch: WRITE_TOKEN), and the
+# GITHUB_TOKEN answers every read and every other call (GH_TOKEN); that token is the owner's own, shared with every lane.
 name: pr-watcher
 
 on:
@@ -39,34 +40,62 @@ permissions:
   contents: write
   pull-requests: write
   actions: write
+  issues: write
 
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with: { sparse-checkout: tools/pr_watcher.py }
       - name: self-test
         run: python3 tools/pr_watcher.py --self-test
-      # THE STATE IS RESTORED AND SAVED AS TWO EXPLICIT STEPS, the pattern
-      # checks.yml proves. The combined action's post-step save has been
-      # denied ("token has no writable scopes") on this workflow, so the
-      # state froze and every pass re-commented; the save runs `always()` so
-      # a failed pass still records what it did. The comments carry their own
-      # dedup markers too, so correctness never rests on this cache.
-      - uses: actions/cache/restore@v4
-        with:
-          path: ~/.avra-pr-watcher
-          key: pr-watcher-${{ github.run_id }}
-          restore-keys: pr-watcher-
+      # THE STATE LIVES ON A BRANCH, never in the Actions cache. A `workflow_run` pass (nearly
+      # every pass) is denied cache writes ("token has no writable scopes"), so the state froze
+      # and every pass re-told and re-refreshed; a push to a branch is allowed. `watcher-state`
+      # holds one commit with one file, replaced each pass. The comments carry their own dedup
+      # markers too, so correctness never rests on this state.
+      - name: restore state
+        run: |
+          mkdir -p ~/.avra-pr-watcher
+          if git fetch -q --depth=1 origin watcher-state 2>/dev/null && git cat-file -e FETCH_HEAD:state.json 2>/dev/null; then
+            git show FETCH_HEAD:state.json > ~/.avra-pr-watcher/state.json
+            echo "state restored: $(wc -c < ~/.avra-pr-watcher/state.json) bytes"
+          else
+            echo "state: none kept yet"
+          fi
       - env:
-          GH_TOKEN: ${{ secrets.AVRA_QUEUE_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WRITE_TOKEN: ${{ secrets.AVRA_QUEUE_TOKEN || secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-        run: python3 tools/pr_watcher.py
+        run: python3 tools/pr_watcher.py --follow
       - if: always()
         name: save state
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.avra-pr-watcher
-          key: pr-watcher-${{ github.run_id }}
+        run: |
+          [ -f ~/.avra-pr-watcher/state.json ] || { echo "state: nothing to save"; exit 0; }
+          blob=$(git hash-object -w ~/.avra-pr-watcher/state.json)
+          tree=$(printf '100644 blob %s\tstate.json\n' "$blob" | git mktree)
+          commit=$(GIT_AUTHOR_NAME=pr-watcher GIT_AUTHOR_EMAIL=pr-watcher@users.noreply.github.com \
+            GIT_COMMITTER_NAME=pr-watcher GIT_COMMITTER_EMAIL=pr-watcher@users.noreply.github.com \
+            git commit-tree "$tree" -m "pr-watcher state")
+          git push -q --force origin "$commit:refs/heads/watcher-state"
+          echo "state saved: $(wc -c < ~/.avra-pr-watcher/state.json) bytes"
+      # A DEAD WATCHER IS LOUD. A failed pass opens (or comments on) one sticky issue naming the
+      # run and its last error line; the next clean pass closes it. A watcher that failed for
+      # two hours once, silently, and nothing landed or published.
+      - if: failure()
+        name: say the watcher failed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="pr-watcher failed: $RUN"
+          n=$(gh issue list --label pr-watcher-failing --state open --json number --jq '.[0].number // empty')
+          if [ -n "$n" ]; then gh issue comment "$n" --body "$body"; else gh issue create --title "pr-watcher is failing" --label pr-watcher-failing --body "$body" || gh issue create --title "pr-watcher is failing" --body "$body"; fi
+      - if: success()
+        name: close the failure issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for n in $(gh issue list --label pr-watcher-failing --state open --json number --jq '.[].number'); do gh issue close "$n" --comment "a pass ran clean: $GITHUB_RUN_ID"; done

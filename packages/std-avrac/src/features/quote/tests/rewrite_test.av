@@ -1,6 +1,6 @@
 // A `Rewrite` is a quote whose holes are arena ids: what a sugar
 // means, written once as the template it expands to.
-use @std.avrac.core.{ExprId}
+use @std.avrac.core.{ExprId, PatId}
 use @std.meta.{Rewrite}
 use @std.avrac.compiler.{Program}
 use @std.avrac.testing.{refused_n, vendored_meta, vendored_meta_paths, test_workspace}
@@ -53,9 +53,23 @@ spec "features/quote — a rewrite's holes" {
         then "the rewrite refuses it in its own words" {
             refused_n(
                 rewriting("quote { \${v} ^ \${n} }"),
-                "a rewrite's holes are arena ids — `ExprId`, as `\${self.value}` — and this one is `int`",
+                "a rewrite's holes are arena ids — `ExprId` or `PatId`, as `\${self.value}` — and this one is `int`",
                 1,
             )
+        }
+    }
+}
+
+/// A match whose arm head is a hole: a pattern id.
+fn arm_over(v: ExprId, p: PatId) -> Rewrite {
+    quote { match ${v} { ${p} -> 1, _ -> 0 } }
+}
+
+spec "features/quote — a rewrite's pattern hole" {
+    given "a quote whose hole is a `PatId`" {
+        then "it answers a Rewrite, the id read as its index" {
+            let shown = arm_over(ExprId { index: 4 }, PatId { index: 9 }).text()
+            shown.contains("match 4") && shown.contains("9 ->")
         }
     }
 }

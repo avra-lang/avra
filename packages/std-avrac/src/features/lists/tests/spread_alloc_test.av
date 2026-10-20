@@ -1,0 +1,43 @@
+// A list literal that spreads builds ONE box: sized for every plain value
+// and every spread's length, then filled — no singleton box, no join. The
+// source list here is static data, so the one `avra_array_sized` is the
+// literal's own.
+use @std.avrac.testing.{ir_of, shown}
+use compiler.backend.{render_ir}
+
+/// How many IR lines call the runtime row `row`.
+fn calls(source: string, row: string) -> int {
+    [l for l in render_ir(ir_of(source)).split("\n") if l.contains("call ${row}(")].length
+}
+
+const XS: string = "let xs = [1, 2]\n"
+
+spec "features/lists — a spread builds one box" {
+    given "the IR" {
+        then "a head, a spread and a tail allocate once" {
+            calls("${XS}let ys = [0, ..xs, 3]\nys.length", "avra_array_sized") == 1
+        }
+        then "and join nothing" {
+            calls("${XS}let ys = [0, ..xs, 3]\nys.length", "avra_array_concat") == 0
+        }
+        then "the spread's slots are appended into that box" {
+            calls("${XS}let ys = [0, ..xs, 3]\nys.length", "avra_array_extend") == 1
+        }
+        then "two spreads are two appends into one box" {
+            calls("${XS}let ys = [..xs, ..xs]\nys.length", "avra_array_extend") == 2 &&
+                calls("${XS}let ys = [..xs, ..xs]\nys.length", "avra_array_sized") == 1
+        }
+        then "a lone spread is a copy: one box, one append" {
+            calls("${XS}let ys = [..xs]\nys.length", "avra_array_sized") == 1 &&
+                calls("${XS}let ys = [..xs]\nys.length", "avra_array_extend") == 1
+        }
+        then "a literal without a spread appends nothing" {
+            calls("${XS}let ys = [0, 3]\nys.length", "avra_array_extend") == 0
+        }
+    }
+    given "the answers" {
+        then "order and content hold" {
+            shown("${XS}let ys = [0, ..xs, 3, ..xs]\nys.length * 100 + ys[1] * 10 + ys[4]") == "611"
+        }
+    }
+}

@@ -181,16 +181,62 @@ export fn test_workspace(host: Host, root: string) -> Workspace {
 
 const prelude_real: string = embed("@std/prelude/src/prelude.av")
 
+/// `files` with the real `@std/prelude` laid out under the std root `/std`,
+/// which the host must name (`std_root`) for the toolchain to carry it.
+export fn vendored_prelude(files: Map<string, string>) -> Map<string, string> {
+    mut out = files
+    out
+        .set("/std/std-prelude/avra.toml", "[package]\nname = \"@std/prelude\"\nversion = \"0.0.1\"\n")
+    out.set("/std/std-prelude/src/prelude.av", prelude_real)
+    out
+}
+
+// LICENSED input.compile_embed: the package's own source, read when the compiler is built
+const task_real: string = embed("@std/task/src/task.av")
+
+/// One package of the toolchain's std root: its name and its one file.
+type StdFile = { name: string, text: string }
+
+// LICENSED input.compile_embed: the package's own source, read when the compiler is built
+const time_real: string = embed("@std/time/src/time.av")
+
+/// `files` with the real `@std/task` laid out beside the prelude under the
+/// std root, with `@std/meta` and `@std/errors` it rests on.
+export fn vendored_task(files: Map<string, string>) -> Map<string, string> {
+    vendored_beside(files, StdFile { name: "task", text: task_real })
+}
+
+/// `vendored_task`'s twin for the real `@std/time`.
+export fn vendored_time(files: Map<string, string>) -> Map<string, string> {
+    vendored_beside(files, StdFile { name: "time", text: time_real })
+}
+
+/// `files` with the prelude, `@std/meta`, `@std/errors` and one more package
+/// laid out under the std root.
+fn vendored_beside(files: Map<string, string>, pkg: StdFile) -> Map<string, string> {
+    mut out = vendored_prelude(files)
+    for p in [
+        pkg,
+        StdFile { name: "meta", text: meta_real },
+        StdFile { name: "errors", text: errors_real },
+    ] {
+        out
+            .set(
+                "/std/std-${p.name}/avra.toml",
+                "[package]\nname = \"@std/${p.name}\"\nversion = \"0.0.1\"\n",
+            )
+        out.set("/std/std-${p.name}/src/${p.name}.av", p.text)
+    }
+    out
+}
+
 /// A program at `/w` whose toolchain carries the real `@std/prelude`
 /// and nothing else — what a file in a package sees and a lone source
 /// does not.
 export fn floored(main: string) -> Program {
-    let files = {
-        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-        "/w/src/main.av": main,
-        "/std/std-prelude/avra.toml": "[package]\nname = \"@std/prelude\"\nversion = \"0.0.1\"\n",
-        "/std/std-prelude/src/prelude.av": prelude_real,
-    }
+    let files = vendored_prelude(
+        {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": main},
+    )
     test_workspace(memory_host(files, files.keys()) with { std_root: "/std" }, "/w")
         .program("/w/src/main.av")
 }
@@ -199,14 +245,14 @@ export fn floored(main: string) -> Program {
 /// whose one file is `text` — for a law that reads a toolchain
 /// package's declarations by name.
 export fn floored_beside(main: string, name: string, text: string) -> Program {
-    let files = {
-        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-        "/w/src/main.av": main,
-        "/std/std-prelude/avra.toml": "[package]\nname = \"@std/prelude\"\nversion = \"0.0.1\"\n",
-        "/std/std-prelude/src/prelude.av": prelude_real,
-        "/std/std-${name}/avra.toml": "[package]\nname = \"@std/${name}\"\nversion = \"0.0.1\"\n",
-        "/std/std-${name}/src/${name}.av": text,
-    }
+    let files = vendored_prelude(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+            "/w/src/main.av": main,
+            "/std/std-${name}/avra.toml": "[package]\nname = \"@std/${name}\"\nversion = \"0.0.1\"\n",
+            "/std/std-${name}/src/${name}.av": text,
+        },
+    )
     test_workspace(memory_host(files, files.keys()) with { std_root: "/std" }, "/w")
         .program("/w/src/main.av")
 }

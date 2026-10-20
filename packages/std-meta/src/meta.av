@@ -89,6 +89,10 @@ export enum Kind {
 /// demands the caller settle its value at compile time.
 export type Seat = { kind: Kind, mutable: bool, settled: bool }
 
+/// What a seat promises, ONE value wherever a seat is written: `mutable` lets
+/// the callee write through it, `settled` demands the caller settle its value.
+export type SeatMark = { mutable: bool = false, settled: bool = false }
+
 impl Kind {
     /// The words the compiler spells this shape with — exactly what
     /// the string seat beside it carries.
@@ -161,7 +165,11 @@ export type Fn = { name: string, params: List<Param>, answer: string, at: Loc?, 
 /// words its `derive` reads, and a mark no reader on the declaration
 /// claims is refused where it was written — so a misspelled mark
 /// cannot sit there doing nothing.
-export type Mark = { name: string, args: List<string>, at: Loc? }
+export type Mark = { name: string, args: List<string>, at: Loc?, named: List<MarkArg> = [] }
+
+/// An argument a mark names — `web: .Click` is `{ label: "web", value: "Click" }`.
+/// A mark's `args` hold its positional arguments only.
+export type MarkArg = { label: string, value: string }
 
 /// `@name(args)` as a DECLARATION's own annotation, never a member's
 /// mark — `Mark`'s twin at the `Fn`/`Type` level: the call's name,
@@ -188,16 +196,53 @@ export fn applied(a: Annotation, value: Code) -> Code? {
 /// apart by their turn among them.
 export type Site = int
 
+/// THE STATE CELLS A TEXT READS. A field of this type that a record literal
+/// leaves unset holds the cells its sibling closure reads (the places the
+/// compiler found in the closure's body, fixed for the literal's life).
+export type Cells = List<ptr>
+
+/// THE STATE CELLS A PAGE READS AT PAINT TIME that no text says again: a label,
+/// a conditional, a loop, a helper's read. A field of this type that a record
+/// literal leaves unset holds the cells of the frame the literal stands in; a
+/// write to one of them takes the full paint.
+export type Structural = List<ptr>
+
+/// WHETHER A SUBTREE CANNOT BE PLACED: a read of a place no cell can be handed
+/// over for here. A field of this type that a record literal leaves unset
+/// holds whether the frame it stands in has such a read; a page that holds one
+/// is always painted whole.
+export type Opaque = bool
+
+/// THE WORDS A COMPONENT SAYS AGAIN: a closure over its head's text that
+/// recomputes it from the state as it stands. The instance's builder fills a
+/// field of this type with a closure over a copy of the head, so the compiler
+/// knows which field holds it by its type.
+export type Words = fn() -> string
+
+/// A written type, whole: its name, the module declaring that name as `use`
+/// spells it (absent for a builtin or a name nothing declares), its arguments,
+/// and the seat mark it was written with, as a fn type's parameter.
+export type Spelled = {
+    name: string,
+    module: string?,
+    args: List<Spelled> = [],
+    optional: bool = false,
+    dynamic: bool = false,
+    arrow: bool = false,
+    alternatives: List<Spelled> = [],
+    mark: SeatMark = SeatMark {},
+}
+
 /// A record's field: its name, its type's spelling, its shape, and
 /// the marks written before it. `doc`/`annotations` read as `Fn`'s.
 /// `defaulted` says it declares a default a literal may leave out.
 /// `default` is that default's own expression, absent when it declares
 /// none — a rule may omit the field's label and the default fills it.
-/// `state` says it is a place its record holds.
+/// `state` says it is a place its record holds. `spelled` is `ty` whole.
 /// `says` makes the field an EVENT its component declares (`on
 /// input(text: string)`): the seats its handler is told, none for an
 /// event that says nothing — and absent on a field that is no event.
-export type Field = { name: string, ty: string, at: Loc?, kind: Kind = Kind.Unspelled(""), marks: List<Mark> = [], doc: string? = null, annotations: List<Annotation> = [], defaulted: bool = false, says: List<Param>? = null, state: bool = false, default: Code? = null }
+export type Field = { name: string, ty: string, at: Loc?, kind: Kind = Kind.Unspelled(""), marks: List<Mark> = [], doc: string? = null, annotations: List<Annotation> = [], defaulted: bool = false, says: List<Param>? = null, state: bool = false, default: Code? = null, spelled: Spelled? = null }
 
 /// An enum's variant: its name, its payload's spellings, and the
 /// payload as FIELDS — each carrying the name a grammar rule's
@@ -369,6 +414,35 @@ export fn embed(path: string) -> string {
     avra_embed(path)
 }
 
+/// A TYPE THE COMPILER READS FROM A BUILD INPUT. A kind implements
+/// `Provider` once; a declaration marked as provided asks every kind to
+/// `provide` from the octets of the file it names, and takes the type of
+/// the one that answers. The compiler does the placed read (inside the
+/// package, through no link) and hands the octets over, so a provider is
+/// pure: its answer is a function of the file. `path` is package-relative.
+/// Absent is "this kind does not read this file".
+export trait Provider {
+    static fn provide(path: string, octets: Bytes) -> Self?
+}
+
+/// A value of the kind `T`, read from a file of this package at compile
+/// time. The path is a literal, read from the PACKAGE'S ROOT (never beside
+/// the source), inside the package and through no link; the kind is
+/// written — `provided<Picture>("art/logo.svg")` — and must implement
+/// `Provider`. The compiler lowers every call itself: the file's octets go
+/// to `T.provide` with the package-relative path, and a kind that answers
+/// absent refuses the file by name. `asset` is this call written as a
+/// declaration.
+export fn provided<T: Provider>(path: string) -> T {
+    unreached<T>(path)
+}
+
+/// A body that only types: the compiler lowers every call of `provided`
+/// itself, so this one is never run.
+fn unreached<T>(path: string) -> T {
+    unreached<T>(path)
+}
+
 /// THE HASH OF `f`'S CODE: a key that moves when what `f` does moves,
 /// and only then. It folds `f`'s lowered code and everything it can
 /// reach — what it calls, a closure it makes, a value of a const it
@@ -381,6 +455,32 @@ export fn embed(path: string) -> string {
 /// reaches a body held from an earlier build, or no compiler answered
 /// the call — so whatever is keyed by it is never kept, never read stale.
 export fn code_hash<F>(_f: F) -> string? { null }
+
+/// RUNS `body` UNDER A CATCH POINT: absent when it ran to its end, the
+/// trap's words when a trap on this task ended it. Whatever the body wrote
+/// stands, and only the trap's own task is caught — a trap on another
+/// task, a stack overflow and an unguarded trap still end the process.
+/// The compiler lowers a DIRECT CALL of this fn to the runtime's guarded
+/// run, and refuses it handed on as a value (`type.guard_value`).
+export fn guarded(_body: fn() -> bool) -> string? { null }
+
+/// RUNS `body` UNDER A CATCH POINT and brings back what it answered, of
+/// any type: `.Ok(answer)`, or `.Err(words)` when a trap on this task ended
+/// it. The answer travels through a slot this fn owns, so the runtime reads
+/// no answer and every type crosses the same way.
+export fn contained<T>(body: fn() -> T) -> Result<T, string> {
+    let slot: Cell<List<T>> = Cell.new([])
+    let ended = guarded(
+        () -> {
+            slot.set([body()])
+            true
+        },
+    )
+    match ended {
+        words? -> .Err(words)
+        null -> .Ok(slot.get()[0])
+    }
+}
 
 /// The whole `Type` a name resolves to from where the CALLER stands
 /// — this file, its imports included, through the same resolution
@@ -405,6 +505,52 @@ export fn type_named(name: string) -> Type? {
 export fn type_exported(module: string, name: string) -> Type? {
     if name.contains(".") { return null }
     avra_type_named("${module}.${name}")
+}
+
+/// What a declared payload type is made of, read off its declaration.
+export enum Held {
+    /// a record: its fields, in declaration order
+    Record(fields: List<Field>)
+    /// an enum: its variants, each with its own payload fields
+    Enum(variants: List<Variant>)
+}
+
+/// What the type `name` holds, for a derive that reads a payload
+/// type's declaration instead of keeping a row for it. `owner` is the
+/// type being derived: the lookup is that type's MODULE's export of
+/// `name` (`type_exported`), so a type only a member's own file
+/// imported is not readable here — absence, which the derive answers
+/// by refusing the payload loudly. Absent for a name no module export
+/// declares.
+export fn payload_of(owner: Type, name: string) -> Held? {
+    let t? = type_exported(owner.module, name) else { return null }
+    if t.variants.is_empty() { return Held.Record(t.fields) }
+    Held.Enum(t.variants)
+}
+
+/// Whether a payload kind's declaration graph holds a type `atom`
+/// names — a derive prunes a payload that cannot reach what it walks
+/// for (an arena id), so a type it has no row for contributes nothing
+/// without being listed. Cycles end: a declaration is entered once.
+export fn holds(owner: Type, k: Kind, atom: fn(string) -> bool) -> bool {
+    holds_under(owner, k, atom, [])
+}
+
+fn holds_under(owner: Type, k: Kind, atom: fn(string) -> bool, seen: List<string>) -> bool {
+    match k {
+        .List(inner) or .Opt(inner) -> holds_under(owner, inner, atom, seen),
+        .Named(name, _) -> {
+            if atom(name) { return true }
+            if seen.contains(name) { return false }
+            let held? = payload_of(owner, name) else { return false }
+            let entered = seen.concat([name])
+            match held {
+                .Record(fields) -> fields.any(holds_under(owner, it.kind, atom, entered)),
+                .Enum(variants) -> variants.any(it.fields.any(holds_under(owner, it.kind, atom, entered))),
+            }
+        },
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
 }
 
 /// Generated code as a TREE. A `quote { … }` names its own template
@@ -667,12 +813,24 @@ fn answers_bool(f: Fn) -> bool { f.answer == "bool" }
 
 fn delegated(t: Type, tr: Trait, f: Fn) -> Decls {
     let seats = [seat(t, p) for p in f.params]
+    let args = [name(p.name) for p in f.params]
+    let ways = Ways {
+        called: quote { member.${f.name}(${..args}) },
+        recurred: quote { self.${f.name}(${..args}) },
+        selves: [p.name for p in f.params if p.ty == self_word],
+        wraps: f.answer == self_word,
+        bool_answer: answers_bool(f),
+    }
     quote {
         fn ${f.name}(..${seats}) -> ${standing(t, f.answer)} {
-            match self { ${[delegated_arm(tr, f, v) for v in t.variants]} }
+            match self { ${[delegated_arm(tr, ways, v) for v in t.variants]} }
         }
     }
 }
+
+/// What every arm of one delegated method shares: the member's call,
+/// the call on the enum itself, the `Self` parameters and the answer's kind.
+type Ways = { called: Code, recurred: Code, selves: List<string>, wraps: bool, bool_answer: bool }
 
 /// One parameter of a delegated method, keeping its `mut` mark.
 fn seat(t: Type, p: Param) -> Decls {
@@ -689,12 +847,12 @@ fn standing(t: Type, spelled: string) -> string {
 /// One variant's arm. A member with no impl of `tr` is refused where it
 /// is declared (`collect_enum.trait`), so its arm exists only in
 /// a build already refused, and never runs.
-fn delegated_arm(tr: Trait, f: Fn, v: Variant) -> Arms {
-    let args = [name(p.name) for p in f.params]
-    if !v.impls.contains(tr.name) { return quote { .${v} -> self.${f.name}(${..args}) } }
-    let call = if f.answer == self_word { rewrapped(v, quote { member.${f.name}(${..args}) }) } else { quote { member.${f.name}(${..args}) } }
-    let other = if answers_bool(f) { quote { false } } else { quote { self.${f.name}(${..args}) } }
-    quote { .${v} as member -> ${paired(v, [p.name for p in f.params if p.ty == self_word], call, other)} }
+fn delegated_arm(tr: Trait, ways: Ways, v: Variant) -> Arms {
+    if !v.impls.contains(tr.name) { return quote { .${v} -> ${ways.recurred} } }
+    let call = if ways.wraps { rewrapped(v, ways.called) } else { ways.called }
+    if ways.selves.is_empty() { return quote { .${v} as member -> ${call} } }
+    let other = if ways.bool_answer { quote { false } } else { ways.recurred }
+    quote { .${v} as member -> ${paired(v, ways.selves, call, other)} }
 }
 
 /// A member record `made` rebuilt as variant `v`: its fields are the payload.

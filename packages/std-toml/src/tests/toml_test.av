@@ -152,9 +152,9 @@ spec "std.toml" {
         }
     }
     given "sections" {
-        then "a repeated header reopens its section and is listed once" {
+        then "a repeated header does not reopen its section — it is listed once, and refused" {
             let d = parse_toml("[a]\nx = 1\n[b]\n[a]\ny = 2\n")
-            d.errors.is_empty() && d.sections().join(",") == "a,b" && d.entries_of("a").length == 2
+            d.errors.length == 1 && d.sections().join(",") == "a,b" && d.entries_of("a").length == 1
         }
         then "a header with no entries is still declared" {
             let d = parse_toml("[a]\n[b]\n")
@@ -204,6 +204,25 @@ spec "std.toml" {
         }
     }
     given "refusals — one per mistake, pointed at its line" {
+        then "a header declared twice refuses at the second, whose entries are held by no section" {
+            let src = "[a]\nx = 1\n[b]\n[a]\ny = 2\nx = 3\n"
+            let d = parse_toml(src)
+            refused_once(src, "`[a]` is declared twice", "[a]") &&
+                d.headers.length == 2 &&
+                d.entries.length == 1 &&
+                d.entry("a", "y") == null
+        }
+        then "the entries under a refused header belong to no section — they are not held" {
+            let d = parse_toml("[a]\nx = 1\n[b.\ny = 2\n[c]\nz = 3\n")
+            d.errors.length == 1 &&
+                d.entries.length == 2 &&
+                d.sections().join(",") == "a,c" &&
+                d.entry("a", "y") == null
+        }
+        then "an entry after an unclosed header is not held at the top either" {
+            let d = parse_toml("[package\nname = \"app\"\n")
+            d.errors.length == 1 && d.entries.is_empty() && d.sections().is_empty()
+        }
         then "a missing `=`, and the next line still lands" {
             let src = "[a]\nx 1\ny = 2\n"
             refused_once(src, "`=`", "x 1") && parse_toml(src).entries.length == 1
@@ -228,12 +247,12 @@ spec "std.toml" {
                 d.entries.length == 1 &&
                 value_shown(d, "a", "y") == "1"
         }
-        then "an empty header, and the entries after it still land" {
+        then "an empty header, and the entries after it land in no section" {
             let src = "[]\nx = 1\n"
             let d = parse_toml(src)
             refused_once(src, "names its section", "[]") &&
                 d.headers.is_empty() &&
-                d.entries.length == 1
+                d.entries.is_empty()
         }
         then "text after a value" {
             let src = "x = 1 2\n"

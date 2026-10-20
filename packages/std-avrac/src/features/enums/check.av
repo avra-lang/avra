@@ -17,6 +17,7 @@ use core.{
     filled,
     flatten,
     same_type,
+    some_list,
 }
 use features.{
     TypeCx,
@@ -72,6 +73,11 @@ fn literal_type(mut cx: TypeCx, e: ExprId, name: string, args: List<ExprId>) -> 
     let sig? = cx.variants_of(want) else { return unenumerated_want(cx, e, name, want) }
     if sig.tag_of(name) == null { return no_variant_wanted(cx, e, cx.view.types.name_of(want), name, sig) }
     let _ = cx.seals(cx.loc_of(e), want, "built here")
+    let spread: ExprId? = args.find((a) -> cx.view.store.spread_operand(a) != null)
+    if spread != null {
+        cx.spread_into_fixed(spread!, ".${name}")
+        return cx.error_type
+    }
     if !cx.seats_fit(e, ".${name}", args, sig.payloads_of(name)) { return cx.error_type }
     want
 }
@@ -201,6 +207,16 @@ export fn bind_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId>
             cx.emit(defect_at(cx.pat_loc(p), "a type pattern reached the enum typing's binds"))
             []
         },
+        .Seq(_, _, _) or .Fields(_, _, _, _) -> {
+            cx
+                .emit(
+                    defect_at(
+                        cx.pat_loc(p),
+                        "a list or record pattern reached the enum typing's binds",
+                    ),
+                )
+            []
+        },
         .Bind(_) -> named_types(cx, p, expected),
         .Variant(name, args) -> variant_types(cx, p, name.of, args, expected),
         .Member(name, _) -> member_types(cx, p, name.of, expected),
@@ -324,6 +340,7 @@ fn coverage_checks(mut cx: TypeCx, e: ExprId, subject: ExprId, subject_ty: TypeI
         if a.guard == null { before = before.concat(a.pats) }
     }
     compares_last(cx, arms)
+    if declared == null && lists_cover(cx, arms) { return }
     if declared == null { return needs_catch_all(cx, e, sname) }
     let sig = declared!
     let missing = uncovered(cx, before, sig)
@@ -331,6 +348,29 @@ fn coverage_checks(mut cx: TypeCx, e: ExprId, subject: ExprId, subject_ty: TypeI
     if implicit_null_tail(cx, e) { return cx.facts.mark_null_tail(e) }
     for n in missing { unhandled_variant(cx, e, sname, n) }
 }
+
+/// A match over lists is covered when its unguarded list patterns,
+/// every element irrefutable, take every length: a `..` pattern from
+/// some length up, and an exact pattern for each shorter one.
+fn lists_cover(cx: TypeCx, arms: List<Arm>) -> bool {
+    let taken = [l for a in arms if a.guard == null for p in a.pats for l in some_list(pattern_lengths(cx, p))]
+    let from? = [l.n for l in taken if l.open].min() else { return false }
+    (0..from).all(takes_length(taken, it))
+}
+
+/// Whether an exact list pattern takes lists of length `k`.
+fn takes_length(taken: List<Lengths>, k: int) -> bool { taken.any(!it.open && it.n == k) }
+
+/// The lengths a list pattern takes, when its elements refuse nothing.
+fn pattern_lengths(cx: TypeCx, p: PatId) -> Lengths? {
+    let parts? = cx.view.store.seq_parts(p) else { return null }
+    let elems = parts.before.concat(parts.after)
+    if !all_irrefutable(cx.view.store, cx.names, elems) { return null }
+    Lengths { n: elems.length, open: !parts.rest.is_empty() }
+}
+
+/// A list pattern's lengths: exactly `n`, or `n` and more when `open`.
+type Lengths = { n: int, open: bool }
 
 /// A trailing-arms-sugar `match` leaves its uncovered variants to an
 /// implicit tail where its seat gives the tail a meaning: `_ -> null`
@@ -400,7 +440,7 @@ fn tests_first(cx: TypeCx, rows: List<Row>, name: string) -> bool {
 fn names_variant(cx: TypeCx, p: PatId, name: string) -> bool {
     match cx.view.store.pat(p) {
         .Variant(n, _) or .Member(n, _) -> n.of == name,
-        .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) -> false,
+        .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> false,
     }
 }
 
@@ -439,7 +479,7 @@ fn variant_args(cx: TypeCx, p: PatId, name: string, arity: int) -> List<PatId?>?
     match cx.view.store.pat(p) {
         .Variant(n, args) if n.of == name -> padded(args, arity),
         .Member(n, _) if n.of == name -> blanks(arity),
-        .Variant(_, _) or .Member(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) -> null,
+        .Variant(_, _) or .Member(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> null,
     }
 }
 
@@ -474,7 +514,7 @@ fn tests_variant(store: SyntaxArena, a: Arm) -> bool {
 fn variant_test(store: SyntaxArena, p: PatId) -> bool {
     match store.pat(p) {
         .Variant(_, _) or .Member(_, _) -> true,
-        .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) -> false,
+        .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> false,
     }
 }
 
@@ -519,7 +559,7 @@ fn whole_variant(cx: TypeCx, p: PatId) -> string? {
     match cx.view.store.pat(p) {
         .Variant(name, args) if all_irrefutable(cx.view.store, cx.names, args) -> name.of,
         .Member(name, _) -> name.of,
-        .Variant(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) -> null,
+        .Variant(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> null,
     }
 }
 
@@ -587,7 +627,7 @@ fn not_askable(mut cx: TypeCx, subject: ExprId) -> TypeId {
                 cx.loc_of(subject),
                 "`is` asks an enum for its variant, found `${n}`",
                 this_is(n),
-                null,
+                "`is` asks an enum for its variant — a nullable is asked with `!= null`, any other value with `==` or a `match`",
             ),
         )
 }
@@ -614,7 +654,7 @@ fn not_matchable(mut cx: TypeCx, subject: ExprId) -> TypeId {
                 cx.loc_of(subject),
                 "`match` chooses over an enum, found `${n}`",
                 this_is(n),
-                null,
+                "match literals (`5 -> …`), bind the value (`n -> …`), or declare an `enum` for variant patterns (`.a`)",
             ),
         )
 }
@@ -641,7 +681,7 @@ fn unenumerated_want(mut cx: TypeCx, e: ExprId, name: string, want: TypeId) -> T
                 cx.loc_of(e),
                 "`.${name}` builds a variant, and `${n}` has none",
                 this_is(n),
-                null,
+                "a bare `.${name}` takes the enum its seat names — qualify it (`Enum.${name}`), or declare the variant on an enum",
             ),
         )
 }
@@ -690,7 +730,7 @@ fn last_arm_compares(mut cx: TypeCx, p: PatId, name: string) {
             warning(
                 "type.const_pattern",
                 cx.pat_loc(p),
-                "`${name}` is a const here, so this arm compares — it does not take the values the arms above left",
+                "`${name}` is a const here, so this arm compares",
                 "compares to the const",
                 "add `_ -> …` after it, or rename the binder",
             ),
@@ -715,7 +755,7 @@ fn unreached_after_binder(mut cx: TypeCx, p: PatId, name: string) {
                 cx.pat_loc(p),
                 "this arm is never reached — `${name}` above binds, and takes every value",
                 "never reached",
-                "a bare name compares only where a `const` of that name is in scope — declare it, or move this arm above",
+                "a bare name compares only where a `const` of that name is in scope — declare it, or move this arm up",
             ),
         )
 }
@@ -741,7 +781,7 @@ fn repeated_arm(mut cx: TypeCx, value: ExprId, v: string) {
                 cx.loc_of(value),
                 "variant `${v}` is matched more than once",
                 "matched again here",
-                null,
+                "each variant is chosen once — drop this arm, or join patterns with `or` (`.A or .B -> …`)",
             ),
         )
 }
@@ -785,7 +825,7 @@ fn not_variant_shaped(mut cx: TypeCx, p: PatId, name: string, expected: TypeId) 
                 cx.pat_loc(p),
                 "`.${name}` tests a variant, but this is `${n}`",
                 this_is(n),
-                null,
+                "a variant pattern tests an enum — match a pattern of the subject's own type",
             ),
         )
     []
@@ -815,7 +855,7 @@ fn literal_mismatch(mut cx: TypeCx, p: PatId, got: TypeId, expected: TypeId) {
                 cx.pat_loc(p),
                 "a `${g}` never matches `${cx.view.types.name_of(expected)}`",
                 this_is(g),
-                null,
+                "a pattern is of the subject's type — write a `${cx.view.types.name_of(expected)}` pattern",
             ),
         )
 }
@@ -865,6 +905,7 @@ fn names_said(names: List<string>) -> string {
 }
 
 fn needs_catch_all(mut cx: TypeCx, e: ExprId, sname: string) {
+    if cx.view.store.minted_by_let(e) { return refutable_let(cx, e, sname) }
     cx
         .emit(
             refusal(
@@ -877,6 +918,20 @@ fn needs_catch_all(mut cx: TypeCx, e: ExprId, sname: string) {
         )
 }
 
+/// A destructuring `let` over a pattern that can refuse the value.
+fn refutable_let(mut cx: TypeCx, e: ExprId, sname: string) {
+    cx
+        .emit(
+            refusal(
+                "type.let_pattern",
+                cx.loc_of(e),
+                "this `let` takes a `${sname}` apart by a pattern that can refuse it, and says nothing for the values it refuses",
+                "this `let`",
+                "add an `else` that leaves — `let [first, ..] = xs else { return … }`",
+            ),
+        )
+}
+
 fn registry_forgets(mut cx: TypeCx, hole: PatId, hidden: List<string>) {
     cx
         .emit(
@@ -885,7 +940,7 @@ fn registry_forgets(mut cx: TypeCx, hole: PatId, hidden: List<string>) {
                 cx.pat_loc(hole),
                 "arms answer for several variants and this hole takes the rest: ${joined([".${n}" for n in hidden], ", ")}",
                 "matches them all",
-                "spell each arm, so the next variant lands here visibly — or write `rest ->` to say the remainder is deliberate",
+                "spell each arm so the next variant lands visibly, or write `rest ->` for a deliberate remainder",
             ),
         )
 }
@@ -898,7 +953,7 @@ fn registry_forgets_bound(mut cx: TypeCx, hole: PatId, hidden: List<string>) {
                 cx.pat_loc(hole),
                 "arms answer for several variants and this hole binds the rest: ${joined([".${n}" for n in hidden], ", ")}",
                 "binds them all",
-                "spell each arm, so the next variant lands here visibly — `rest` binds nothing, so it cannot take this arm's place",
+                "spell each arm so the next variant lands visibly — `rest` binds nothing, so it cannot stand here",
             ),
         )
 }

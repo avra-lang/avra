@@ -58,9 +58,10 @@
 //! Every read — one parked when the stop came included — ends by
 //! `drain` from the stop, and so does every write begun after it. A
 //! handler's own work is not a wait the drain can end.
+use @std.http_message.message.{Method}
 use @std.net.{Listener, Conn, NetError, Bell, bell, listen}
 use @std.time.{Duration, ms, secs, sleep, now_ms}
-use frame.{Head, Limits, Method, ReplyBody, RequestBody, framed, status_of, limits, no_bytes}
+use frame.{Head, Limits, ReplyBody, RequestBody, framed, status_of, limits, no_bytes}
 use body.{Body, BodyError, measured, chunked_from, whole}
 use http.{
     Request,
@@ -819,10 +820,13 @@ impl Serving {
         Line { x: x, handed: handed, reply: reply }
     }
 
-    /// Each stream whose task has answered, sent; the rest kept.
+    /// Each stream whose task had answered when this began, sent; the
+    /// rest kept — one that answers while a send waits is sent next turn,
+    /// never dropped unsent.
     fn answered_lines(mut t: Talk) {
-        for ln in t.lines { t.pours = t.pours.concat(self.h2_answered(t.h, ln)) }
-        t.lines = [ln for ln in t.lines if ln.reply.get() == null]
+        let ready = [ln for ln in t.lines if ln.reply.get() != null]
+        for ln in ready { t.pours = t.pours.concat(self.h2_answered(t.h, ln)) }
+        t.lines = [ln for ln in t.lines if !ready.any(it.x.stream == ln.x.stream)]
     }
 
     /// Stream `ln`'s answer sent, when its task has given one: the pour

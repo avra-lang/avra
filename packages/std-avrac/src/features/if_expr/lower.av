@@ -1,16 +1,41 @@
 //! The lowering rule: the region as brackets in the flat list — each
 //! branch lowers INSIDE them and names the register it yields; the
-//! if's own register is the merge.
+//! if's own register is the merge. A statement `if` is a valueless
+//! region: each branch runs its statements in its own frame and the
+//! merge is a throwaway nothing.
 use core.{ExprId, Reg}
 use features.{LowerCx}
 
 fn if_lower(mut cx: LowerCx, e: ExprId) -> Reg {
     match cx.view.store.expr(e) {
         .If(c, t, f) -> {
+            if cx.view.store.statement_if(e) { return guard_lower(cx, e, c, t, f) }
+            let other? = f else { return cx.foreign_node(e) }
             let want = cx.type_at(e)
             cx
-                .region(cx.reg_of(c), e) { cx -> cx.arm_yield(t, cx.reg_of(t), want) } else { cx -> cx.arm_yield(f, cx.reg_of(f), want) }
+                .region(cx.reg_of(c), e) { cx -> cx.arm_yield(t, cx.reg_of(t), want) } else { cx -> cx.arm_yield(other, cx.reg_of(other), want) }
         },
         _ -> cx.foreign_node(e),
     }
+}
+
+/// The valueless region: both arms yield nothing, and the merge
+/// register exists because every region merges. A branch that RETURNS
+/// never reaches its yield.
+fn guard_lower(mut cx: LowerCx, e: ExprId, c: ExprId, t: ExprId, f: ExprId?) -> Reg {
+    cx.void_branches(cx.reg_of(c)) { cx -> guard_arm(cx, t) } else { cx -> guard_arm(cx, f) }
+    cx.hollow_of(cx.type_at(e))
+}
+
+/// One branch of a guard in its own frame: a block's statements, or the
+/// `else if` link a chain nests, lowered as the statement it is.
+fn guard_arm(mut cx: LowerCx, b: ExprId?) {
+    let held? = b else { return cx.arm_stmts([]) }
+    let stmts? = cx.view.store.block_stmts(held) else {
+        cx.open_frame()
+        let _ = cx.reg_of(held)
+        cx.close_frame(null)
+        return
+    }
+    cx.arm_stmts(stmts)
 }

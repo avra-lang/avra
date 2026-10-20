@@ -1,0 +1,127 @@
+//! @std.assets — what a file is, read from its leading octets. A
+//! `Picture` (PNG, JPEG or SVG) carries the size its header states; a
+//! `Blob` is anything. Nothing here reads the host: the build hands
+//! these the octets of a file, and a handle is a settled value.
+
+use @std.text.{parse_int}
+use @std.meta.{Provider, Marker, Named}
+
+/// Where a picture's pixels come from, and how big it draws.
+export enum Picture {
+    /// A file the build has. `id` names it by its package-relative path
+    /// and never by a row number; `tone` is the dominant colour as
+    /// 0xRRGGBB, 0 until rasters are decoded.
+    Bundled(id: int, width: int, height: int, tone: int)
+    /// A name for bytes someone else has, sized by the author.
+    Remote(url: string, width: int, height: int)
+}
+
+/// The mark an `asset` declaration wears, so a `collect` over `@bundled`
+/// gathers every file a program bundles. Never run: a marker is data.
+export fn bundled(_d: Named) -> Marker { Marker {} }
+
+/// A file of no known kind: its size and where it came from.
+export type Blob = { id: int, length: int }
+
+/// The width and height a header states.
+export type Size = { width: int, height: int }
+
+/// Whether `head` opens a PNG, a JPEG or an SVG.
+export fn is_picture(head: Bytes) -> bool { png_size(head) != null || jpeg_size(head) != null || svg_size(head) != null }
+
+/// A picture from a file's octets and the package-relative path that
+/// names it; null when the octets are no picture this reads.
+export fn picture_of(path: string, octets: Bytes) -> Picture? {
+    let size? = size_of(octets) else { return null }
+    Picture.Bundled(id_of(path), size.width, size.height, 0)
+}
+
+/// A blob from a file's octets and its package-relative path.
+export fn blob_of(path: string, octets: Bytes) -> Blob { Blob { id: id_of(path), length: octets.length } }
+
+/// The size a PNG, JPEG or SVG header states.
+export fn size_of(octets: Bytes) -> Size? { png_size(octets) ?? jpeg_size(octets) ?? svg_size(octets) }
+
+/// A path's identity: a fold of its octets, so two builds agree on it.
+export fn id_of(path: string) -> int {
+    let b = path.bytes()
+    mut h = 1469598103
+    for i in 0..b.length { h = (h * 16777619 + b.at(i)) % 4294967291 }
+    h
+}
+
+const png_signature: List<int> = [137, 80, 78, 71, 13, 10, 26, 10]
+
+/// A PNG's width and height, big-endian after the `IHDR` tag.
+export fn png_size(b: Bytes) -> Size? {
+    if b.length < 24 || !(0..8).all((k) -> b.at(k) == png_signature[k]) { return null }
+    if be32(b, 12) != 1229472850 { return null }
+    Size { width: be32(b, 16), height: be32(b, 20) }
+}
+
+/// A JPEG's width and height, from its first start-of-frame segment.
+export fn jpeg_size(b: Bytes) -> Size? {
+    if b.length < 4 || b.at(0) != 255 || b.at(1) != 216 { return null }
+    jpeg_frame(b, 2)
+}
+
+/// The size in the first start-of-frame segment at or after `at`.
+fn jpeg_frame(b: Bytes, at: int) -> Size? {
+    mut i = at
+    while i + 4 <= b.length {
+        if b.at(i) != 255 { return null }
+        let marker = b.at(i + 1)
+        if marker == 255 {
+            i = i + 1
+        } else if is_frame(marker) {
+            if i + 9 > b.length { return null }
+            return Size { width: be16(b, i + 7), height: be16(b, i + 5) }
+        } else if marker == 216 || marker >= 208 && marker <= 215 || marker == 1 { i = i + 2 } else { i = i + 2 + be16(b, i + 2) }
+    }
+    null
+}
+
+/// Whether a marker opens a frame header (SOF0..SOF15 but DHT, JPG, DAC).
+fn is_frame(marker: int) -> bool { marker >= 192 && marker <= 207 && marker != 196 && marker != 200 && marker != 204 }
+
+/// An SVG's width and height: its `width`/`height` attributes in
+/// pixels, else its `viewBox`.
+export fn svg_size(b: Bytes) -> Size? {
+    let text? = b.text() else { return null }
+    let open = text.index_of("<svg")
+    if open < 0 { return null }
+    let close = text.substring(open, text.length).index_of(">")
+    if close < 0 { return null }
+    let tag = text.substring(open, open + close)
+    let w = parse_int(attribute(tag, "width") ?? "")
+    let h = parse_int(attribute(tag, "height") ?? "")
+    if w != null && h != null { return Size { width: w!, height: h! } }
+    let box = (attribute(tag, "viewBox") ?? "").split(" ")
+    if box.length != 4 { return null }
+    let bw? = parse_int(box[2]) else { return null }
+    let bh? = parse_int(box[3]) else { return null }
+    Size { width: bw, height: bh }
+}
+
+/// The value of a quoted attribute inside a tag, or null.
+fn attribute(tag: string, name: string) -> string? {
+    let at = tag.index_of(" ${name}=\"")
+    if at < 0 { return null }
+    let rest = tag.substring(at + name.length + 3, tag.length)
+    let end = rest.index_of("\"")
+    if end < 0 { return null }
+    rest.substring(0, end)
+}
+
+fn be16(b: Bytes, at: int) -> int { b.at(at) * 256 + b.at(at + 1) }
+
+fn be32(b: Bytes, at: int) -> int { be16(b, at) * 65536 + be16(b, at + 2) }
+
+impl Provider for Picture {
+    static fn provide(path: string, octets: Bytes) -> Picture? { picture_of(path, octets) }
+}
+
+/// A blob reads every file, so it answers when no other kind does.
+impl Provider for Blob {
+    static fn provide(path: string, octets: Bytes) -> Blob? { blob_of(path, octets) }
+}

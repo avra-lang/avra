@@ -1,7 +1,11 @@
 //! The builder-authoring surface: one `Builder` carries a build call's
 //! world, and its methods are the whole vocabulary a feature needs.
 use core.{
+    ArenaMarks,
     SyntaxArena,
+    void_ref,
+    Means,
+    no_door,
     Spread,
     found_at,
     Expr,
@@ -71,10 +75,20 @@ export enum Instancing {
 /// and whether ITS ANSWER is nullable, which decides whether an ARMS
 /// body written over it takes an implicit `_ -> null` tail. Its
 /// `events` are what an instance may hear.
-export type Record = { head: List<string>, slots: List<ChildSlot>, named: bool, checks: bool, fn_field: string? = null, fn_optional: bool = false, events: List<Event> = [] }
+export type Record = {
+    head: List<string>,
+    slots: List<ChildSlot>,
+    named: bool,
+    checks: bool,
+    fn_field: string? = null,
+    fn_optional: bool = false,
+    events: List<Event> = [],
+    words: bool = false,
+}
 
-/// An event a component declares, and the seats its handler is told.
-export type Event = { name: string, says: List<string> }
+/// An event a component declares, the seats its handler is told, and whether
+/// bare statements in an instance's block are its handler (`@default`).
+export type Event = { name: string, says: List<string>, default: bool = false }
 
 /// A `List` field children fill, and the name its elements are
 /// written with — a child instance of that component lands here.
@@ -92,7 +106,7 @@ export type Instanced = { name: string, declared: string }
 
 /// The words a file's imports open blocks with — named grammars and
 /// components — and the named instances its bodies may list.
-export type BlockWords = { grammars: List<BlockGrammar> = [], components: List<ComponentWord> = [], instances: List<Instanced> = [] }
+export type BlockWords = { grammars: List<BlockGrammar> = [], components: List<ComponentWord> = [], instances: List<Instanced> = [], door: Means = no_door }
 
 impl BlockWords {
     fn is_empty() -> bool { self.grammars.is_empty() && self.components.is_empty() }
@@ -193,17 +207,21 @@ impl Slots for Builder {
         .Ok(op)
     }
 
-    /// The truth the payload `n` states. The assembly already refused
-    /// any other word for a `bool` payload, so this is the belt.
+    /// The truth the payload `label` holds: stated `true` or `false`, or
+    /// whether the terminal captured under it was there at all. The
+    /// assembly refuses any other filling of a `bool` payload.
     fn flag_of(label: string) -> Result<bool, string> {
-        let word = self.text_of(label)?
-        if word == "true" { return .Ok(true) }
-        if word == "false" { return .Ok(false) }
-        .Err("`${word}` states no truth — a `bool` payload is `true` or `false`")
+        if !self.present_of(label)? { return .Ok(false) }
+        .Ok(self.text_of(label)? != "false")
     }
 }
 
 impl Builder {
+    /// Every node minted since `since` was written in the module `module`:
+    /// the names a builder emits are judged where its library declares them,
+    /// as a template's are, and never captured by what the landing file names.
+    fn written_in(since: ArenaMarks, module: string) { self.store.note_written_in(since, module) }
+
     /// The token argument at `i`.
     fn token(i: int) -> Result<Token, string> {
         want(token_at(self.args, i), "a token argument")
@@ -268,15 +286,45 @@ impl Builder {
     /// level — every body survives bad input visibly.
     fn stmts(i: int) -> Result<List<StmtId>, string> {
         let items = list_at(self.args, i)
-        .Ok([stmt_id_at(items, j) ?? self.store.alloc_stmt(Stmt.Error) for j in 0..items.length])
+        .Ok(
+            self
+                .folded_lets(
+                    [stmt_id_at(items, j) ?? self.store.alloc_stmt(Stmt.Error) for j in 0..items.length],
+                ),
+        )
+    }
+
+    /// A destructuring `let` owns the rest of its block: `let P { x } = p`
+    /// then `R` is one `LetPattern` node holding `R`, which means `match p
+    /// { P { x } -> { R } }`, so the pattern's names scope over `R` as an
+    /// arm's do, and an `else` is the other arm.
+    fn folded_lets(items: List<StmtId>) -> List<StmtId> {
+        let at? = items.find_index((s) -> self.store.open_let(s) != null) else { return items }
+        let open = self.store.open_let(items[at])!
+        let span = self.store.stmt_span(items[at])
+        let rest = self.folded_lets(items.slice(at + 1, items.length))
+        let node = self
+            .store
+            .alloc_expr(
+                Expr
+                    .LetPattern(
+                        open.pat,
+                        open.subject,
+                        open.otherwise,
+                        self.block_at(rest, self.extent_of(rest)),
+                    ),
+                span,
+            )
+        let _ = self.store.mean(node, let_means(self.source_of(node)), self.words.door)
+        items.slice(0, at).concat([self.store.alloc_stmt(Stmt.ExprStmt(node), span)])
     }
 
     /// A new pattern node, spanning the matched branch. A `@facet`
     /// field has no pattern side table, so it is refused here rather
     /// than silently dropped.
     fn make_pat(p: Pat) -> Result<LangNode, string> {
-        self.no_facets_here()?
-        .Ok(LangNode.NPat(self.store.alloc_pat(p, self.span)))
+        let f? = self.payloads.find(facet_table(it) != null) else { return .Ok(LangNode.NPat(self.store.alloc_pat(p, self.span))) }
+        .Err(facet_not_a_pattern(f.name))
     }
 
     /// One match arm, as data — `guard` null for an unguarded one.
@@ -287,21 +335,6 @@ impl Builder {
     /// One comprehension clause, as data.
     fn make_comp_clause(c: CompClause) -> Result<LangNode, string> {
         .Ok(LangNode.NCompClause(c))
-    }
-
-    /// A new expression node, spanning the matched branch. A `@facet`
-    /// field has no expression side table, so it is refused here
-    /// rather than silently dropped.
-    fn make_expr(e: Expr) -> Result<LangNode, string> {
-        self.no_facets_here()?
-        .Ok(LangNode.NExpr(self.store.alloc_expr(e, self.span)))
-    }
-
-    /// Refuse a `@facet` field where the arena has no side table for it
-    /// — only a statement's facets have a writer.
-    fn no_facets_here() -> Result<bool, string> {
-        let f? = self.payloads.find(facet_table(it) != null) else { return .Ok(true) }
-        .Err(facet_not_a_stmt(f.name))
     }
 
     /// A new statement node, spanning the matched branch. A `@facet`
@@ -318,11 +351,24 @@ impl Builder {
     fn faceted_stmt(id: StmtId) -> Result<LangNode, string> {
         for f in self.payloads {
             let side? = facet_table(f) else { continue }
-            if !self.present_of(f.name)? { continue }
+            if !self.flag_of(f.name)? { continue }
             let row? = facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
             (row.mark)(self.store, id)
         }
         .Ok(LangNode.NStmt(id))
+    }
+
+    /// A new expression node, spanning the matched branch, its facet
+    /// fields written to their side tables like a statement's.
+    fn make_expr(e: Expr) -> Result<LangNode, string> {
+        let id = self.store.alloc_expr(e, self.span)
+        for f in self.payloads {
+            let side? = facet_table(f) else { continue }
+            if !self.flag_of(f.name)? { continue }
+            let row? = expr_facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
+            (row.mark)(self.store, id)
+        }
+        .Ok(LangNode.NExpr(id))
     }
 
     /// A new expression node spanning the matched branch, as its id
@@ -373,11 +419,23 @@ impl Builder {
     /// never minted) — `tail_scoped` (core/store.av) is where a found
     /// value gets wrapped back in, shared with `branch_value` so the
     /// two cannot drift.
-    fn block_of(stmts: List<StmtId>) -> ExprId {
-        if stmts.is_empty() { return self.expr_node(Expr.Block(stmts, null)) }
+    fn block_of(stmts: List<StmtId>) -> ExprId { self.block_at(stmts, self.span) }
+
+    /// `block_of` over a span of its own — the extent of the statements
+    /// a fold gathered, never the enclosing block's.
+    fn block_at(stmts: List<StmtId>, span: Span?) -> ExprId {
+        if stmts.is_empty() { return self.store.alloc_expr(Expr.Block(stmts, null), span) }
         let tail = stmts.last()!
-        let value? = self.store.answer_of(tail) else { return self.expr_node(Expr.Block(stmts, null)) }
-        self.store.tail_scoped(stmts, tail, value, self.span)
+        let value? = self.store.answer_of(tail) else { return self.store.alloc_expr(Expr.Block(stmts, null), span) }
+        self.store.tail_scoped(stmts, tail, value, span)
+    }
+
+    /// The span from the first statement's start to the last one's end.
+    fn extent_of(stmts: List<StmtId>) -> Span? {
+        let first? = stmts.first() else { return null }
+        let a? = self.store.stmt_span(first) else { return null }
+        let b? = self.store.stmt_span(stmts.last()!) else { return a }
+        a.cover(b)
     }
 
     /// Where this build's branch ENDED — the bound a positional
@@ -418,9 +476,6 @@ export fn stmt_id_at(args: List<Captured<Token, LangNode>>, i: int) -> StmtId? {
 export fn type_ref_at(args: List<Captured<Token, LangNode>>, i: int) -> TypeRef? {
     match args[i] { .Node(.NType(t)) -> t, _ -> null }
 }
-
-/// The answer a fn declares by writing none: `void`.
-export const void_ref: TypeRef = named_ref("void")
 
 /// The pattern at `args[i]`, when that capture is one.
 export fn pat_id_at(args: List<Captured<Token, LangNode>>, i: int) -> PatId? {
@@ -566,8 +621,11 @@ export fn spread_name(f: Token, spreads: List<Token>, all: List<Token>) -> strin
 /// Whether `..` stands directly before entry `f` — after every entry
 /// written before it.
 fn spread_before(s: Token, f: Token, all: List<Token>) -> bool {
-    s.span.lo < f.span.lo && !all.any((g: Token) -> g.span.lo > s.span.lo && g.span.lo < f.span.lo)
+    s.span.hi == f.span.lo && !all.any((g: Token) -> g.span.lo > s.span.lo && g.span.lo < f.span.lo)
 }
+
+/// The mark that makes an event the one bare statements in an instance fill.
+export const default_mark: string = "default"
 
 /// A spread written with a third dot — the spelling other languages teach.
 export fn three_dots() -> string { "a spread is written `..R` — two dots, where other languages write three" }
@@ -589,56 +647,33 @@ export fn between(at: int, after: int, before: int) -> bool {
     at > after && at < before
 }
 
-/// Seats with their marks: a `mut` or `const` token between the
-/// previous name (or `from`, before the first) and a name marks that
-/// seat. ONE window law, so every param list — a fn's, a method's, a
-/// lambda's, a fn type's — reads the same marks the same way.
-export fn marked_seats(
-    store: SyntaxArena,
-    ps: List<Token>,
-    tys: List<TypeRef?>,
-    muts: List<Token>,
-    consts: List<Token>,
-    from: int,
-) -> List<Param> {
-    [Param {
-        name: Scoped(p.text),
-        ty: tys[j],
-        default: null,
-        promises: seat_mark_of(muts, consts, seat_since(ps, j, from), p.span.lo),
-        id: store.alloc_param_id(p.span),
-    } for j, p in ps]
-}
-
-/// One seat's contract: the `mut` and `const` tokens written in its
-/// window — the window a mark shares with the name it precedes.
-fn seat_mark_of(muts: List<Token>, consts: List<Token>, after: int, before: int) -> SeatMark {
-    SeatMark {
-        mutable: muts.any(mark_within(it, after, before)),
-        settled: consts.any(mark_within(it, after, before)),
-    }
-}
-
-/// Where seat `j`'s mark may start: after the previous name, or `from`.
-fn seat_since(ps: List<Token>, j: int, from: int) -> int {
-    if j == 0 { from } else { ps[j - 1].span.lo }
-}
-
-fn mark_within(t: Token, after: int, before: int) -> bool {
-    between(t.span.lo, after, before)
-}
-
-/// A side table a `@facet` may name: the word, and the store mark it
-/// writes, keyed by the node the maker just made.
+/// A side table a statement's `@facet` may name: the word, and the store
+/// mark it writes, keyed by the node the maker just made.
 type FacetRow = { side: string, mark: fn(SyntaxArena, StmtId) -> void }
+
+/// The same for an expression's `@facet`.
+type ExprFacetRow = { side: string, mark: fn(SyntaxArena, ExprId) -> void }
 
 /// THE ONE REGISTRY of facet side tables. A table no row names is a
 /// defect spoken at the mark, never a silent drop.
 fn facet_rows() -> List<FacetRow> {
     [
         FacetRow { side: "once", mark: (st, id) -> st.mark_once(id) },
+        FacetRow { side: "exported", mark: (st, id) -> st.mark_exported(id) },
         FacetRow { side: "state", mark: (st, id) -> st.mark_state(id) },
         FacetRow { side: "host", mark: (st, id) -> st.mark_host(id) },
+        FacetRow { side: "mutating", mark: (st, id) -> st.mark_mutating(id) },
+        FacetRow { side: "static", mark: (st, id) -> st.mark_static(id) },
+    ]
+}
+
+/// THE ONE REGISTRY of an expression's facet side tables.
+fn expr_facet_rows() -> List<ExprFacetRow> {
+    [
+        ExprFacetRow { side: "raw", mark: (st, id) -> st.mark_raw_string(id) },
+        ExprFacetRow { side: "hole", mark: (st, id) -> st.mark_hole(id) },
+        ExprFacetRow { side: "run_hole", mark: (st, id) -> st.mark_run_hole(id) },
+        ExprFacetRow { side: "trailing", mark: (st, id) -> st.mark_trailing(id) },
     ]
 }
 
@@ -647,13 +682,18 @@ fn facet_table_unknown(field: string, side: string) -> string {
     "`${field}` is `@facet(${side})`, and no side table is named `${side}`"
 }
 
-/// A `@facet` field on a node whose arena has no side table to write.
-fn facet_not_a_stmt(field: string) -> string {
-    "`${field}` is `@facet`, and only a statement's payload has a side table to write — an expression's or a pattern's does not"
+/// A `@facet` field on a pattern, whose arena has no side table to write.
+fn facet_not_a_pattern(field: string) -> string {
+    "`${field}` is `@facet`, and a pattern has no side table to write — only a statement's or an expression's does"
 }
 
 /// A build asked for a payload its variant does not declare.
 fn unknown_payload(ps: List<Field>, n: string) -> string {
     if ps.is_empty() { return "no payload `${n}` — this build carries none" }
     "no payload `${n}` — this build carries `${[p.name for p in ps].join("`, `")}`"
+}
+
+/// What a destructuring `let` means, in words.
+fn let_means(written: string) -> string {
+    "`${written}` takes the value apart by its pattern, and the rest of the block is the arm the pattern's names scope over"
 }

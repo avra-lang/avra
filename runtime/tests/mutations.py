@@ -5,6 +5,7 @@ every test survives is a law nothing holds; a pattern that no longer
 matches the source is a break nobody is checking. Either fails the run.
 
     mutations.py <build dir> <cc flags> <object>...
+    MUTATION_SHARD=<k>/<n> mutations.py ...   # only the breaks numbered k mod n
 
 The objects are the runtime's, the scheduler's own left out. A break is
 one line, or the few that make one fault. Each runs apart from the
@@ -66,6 +67,8 @@ MUTATIONS = [
     ("the shield overwrites a bit raised inside", "    if (--f->shield_depth == 0) *bit |= f->shield_saved;\n", "    if (--f->shield_depth == 0) *bit = f->shield_saved;\n"),
     ("the shield restores on every bracket", "    if (f->shield_depth == 0) return;\n    if (--f->shield_depth == 0) *bit |= f->shield_saved;", "    if (f->shield_depth == 0) return;\n    f->shield_depth--;\n    *bit = f->shield_saved;"),
     ("the evaluator's set does not raise the bit", "void avra_vtask_set_unwinding(int64_t t, int64_t v) { virtual_at(t)->unwinding = v != 0; }", "void avra_vtask_set_unwinding(int64_t t, int64_t v) { (void)t; (void)v; }"),
+    ("a task handle that is not the last joins the task", "    if (((const Header*)task - 1)->rc != 2) return;\n", ""),
+    ("a list that is not released by its last handle joins its members", "    if (!list || ((const Header*)list - 1)->rc != 1) return;\n", "    if (!list) return;\n"),
     ("the shield's enter is its leave", "void avra_fiber_shield_enter(void) { shield_entered(g_current, &avra_unwinding); }", "void avra_fiber_shield_enter(void) { shield_left(g_current, &avra_unwinding); }"),
     ("a join answers a cancelled task", "        cancel_met();\n        return NULL;\n    }\n    void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];", "        cancel_met();\n    }\n    void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];"),
     ("an unwinding caller's join is handed an answer, or another's request", "    if (avra_unwinding) return NULL;\n    if (cells[TASK_END] == END_CANCELLED) {", "    if (cells[TASK_END] == END_CANCELLED) {"),
@@ -76,6 +79,7 @@ MUTATIONS = [
     ("the program's own run forgets who asked", "    if (f == &g_main) avra_main_asker = f->cancel_by;\n", ""),
     ("a cancelled virtual task reads as unasked", "int64_t avra_vtask_asked(int64_t t) { return virtual_at(t)->cancel_by != 0; }", "int64_t avra_vtask_asked(int64_t t) { (void)t; return 0; }"),
     ("an unasked virtual task reads as cancelled", "int64_t avra_vtask_asked(int64_t t) { return virtual_at(t)->cancel_by != 0; }", "int64_t avra_vtask_asked(int64_t t) { (void)t; return 1; }"),
+    ("a park on a finished peer's descriptor waits for an edge that never comes", "    else if (!writable && (g_fds[fd].ready & READ_CLOSED)) waiter_claims(w, BY_POLLER);\n", ""),
     ("an evaluated yield meets no cancel", "    if (!f->shield_depth && f->cancel_by != 0) f->unwinding = 1;\n}", "    (void)f;\n}"),
     ("an evaluated yield is cut under a shield", "    if (!f->shield_depth && f->cancel_by != 0) f->unwinding = 1;\n}", "    if (f->cancel_by != 0) f->unwinding = 1;\n}"),
     ("an evaluated yield is cut with no cancel", "    if (!f->shield_depth && f->cancel_by != 0) f->unwinding = 1;\n}", "    if (!f->shield_depth) f->unwinding = 1;\n}"),
@@ -86,7 +90,7 @@ MUTATIONS = [
     ("an asker is named one off", "return f->cancel_by ? f->cancel_by - 1 : f->scope_by; }", "return f->cancel_by ? f->cancel_by : f->scope_by; }"),
     ("a caught join passes the awaited cancel on", "    if (cells[TASK_END] != END_CANCELLED) return NULL;\n    void* box = avra_array_sized(2);", "    if (cells[TASK_END] != END_CANCELLED) return NULL;\n    avra_unwinding = 1;\n    void* box = avra_array_sized(2);"),
     ("a spawned cancel forgets the asker", "    int64_t* cells = task_cells(task);\n    // The asker is kept on the task where a caught join reads it: a\n    // fiber task ends in `fiber_start` and never reaches `task_ended`.\n    cells[TASK_BY] = by;\n    Fiber* f = (Fiber*)(uintptr_t)cells[TASK_FIBER];", "    int64_t* cells = task_cells(task);\n    Fiber* f = (Fiber*)(uintptr_t)cells[TASK_FIBER];"),
-    ("the switch leaves the unwind bit where it was", "    self->unwinding = avra_unwinding;\n    avra_unwinding = next->unwinding;\n    avra_fiber_switch(&self->sp, next->sp);\n    bury_finished();\n}\n\n// The caller", "    avra_fiber_switch(&self->sp, next->sp);\n    bury_finished();\n}\n\n// The caller"),
+    ("the switch leaves the unwind bit where it was", "    self->unwinding = avra_unwinding;\n    avra_unwinding = next->unwinding;\n    fiber_switched(self, next);\n    bury_finished();\n}\n\n// The caller", "    fiber_switched(self, next);\n    bury_finished();\n}\n\n// The caller"),
     ("a body that unwinds ends answered", "    cells[TASK_END] = avra_unwinding ? END_CANCELLED : END_ANSWERED;", "    cells[TASK_END] = END_ANSWERED;"),
     ("a cancel is not heard at the next wait", "    if (cancel_heard(f)) { cut_claims(f, 0, f->cancel_by - 1); return 0; }\n", ""),
     ("a standing cancel is answered before a claim another party made while the set armed", "    if (f->claimed == CLAIMED) return 0;\n", ""),
@@ -193,7 +197,7 @@ MUTATIONS = [
     ("a waiter's gate is never let go", "    if (w->kind == W_GATE) avra_rc_release(w->on.gate);\n    else g_parked_fds--;", "    if (w->kind != W_GATE) g_parked_fds--;"),
     ("a timer task is not released when it fires", "    gate_opened(task, BY_TIMER);\n    avra_rc_release(task);", "    gate_opened(task, BY_TIMER);"),
     ("a task's slots outlive it", "        self->own.slot[i] = NULL;\n        avra_rc_release(held);", "        self->own.slot[i] = NULL;"),
-    ("the switch does not repoint the task's locals", "    g_current = next;\n    avra_task_local = next->local;\n    self->unwinding = avra_unwinding;\n    avra_unwinding = next->unwinding;\n    avra_fiber_switch(&self->sp, next->sp);\n    bury_finished();\n}\n\n// The caller has already filed itself", "    g_current = next;\n    self->unwinding = avra_unwinding;\n    avra_unwinding = next->unwinding;\n    avra_fiber_switch(&self->sp, next->sp);\n    bury_finished();\n}\n\n// The caller has already filed itself"),
+    ("the switch does not repoint the task's locals", "    g_current = next;\n    avra_task_local = next->local;\n    self->unwinding = avra_unwinding;\n    avra_unwinding = next->unwinding;\n    fiber_switched(self, next);\n    bury_finished();\n}\n\n// The caller has already filed itself", "    g_current = next;\n    self->unwinding = avra_unwinding;\n    avra_unwinding = next->unwinding;\n    fiber_switched(self, next);\n    bury_finished();\n}\n\n// The caller has already filed itself"),
     ("the guarded count never runs out", "            if (!g_guards_all) g_each_left -= n;\n", ""),
     ("a stack given back forgets what guards it", "    if (f->base) stack_give((Stack){ f->base, f->guard });", "    if (f->base) stack_give((Stack){ f->base, f->base - g_page });"),
     ("a guarded stack is not preferred", "    return pool_taken(g_guarded.len > 0 ? &g_guarded : &g_shared);", "    return pool_taken(g_shared.len > 0 ? &g_shared : &g_guarded);"),
@@ -298,6 +302,9 @@ MUTATIONS = [
     ("a cancelled end names itself", "    cells[TASK_BY] = avra_unwinding ? asker_of(self) : id_of(self);\n", "    cells[TASK_BY] = id_of(self);\n"),
     ("a task's end records no asker", "    cells[TASK_END] = how;\n    cells[TASK_BY] = by;\n", "    cells[TASK_END] = how;\n"),
     ("the ended-by row answers the end, not the asker", "    return task_cells(task)[TASK_BY];\n}", "    return task_cells(task)[TASK_END];\n}"),
+    ("the parked-on row counts no waiter", "    for (const Waiter* w = (const Waiter*)(uintptr_t)task_cells(on)[GATE_HEAD]; w; w = w->next) n++;", "    (void)on;"),
+    ("the fd-parked row counts the wrong side", "    for (const Waiter* w = g_fds[fd].head[dir]; w; w = w->next) n++;", "    for (const Waiter* w = g_fds[fd].head[1 - dir]; w; w = w->next) n++;"),
+    ("the fd-parked row takes any direction", "    if (dir != 0 && dir != 1) fd_parked_bad_direction();\n", ""),
     ("the ended-by row answers no asker", "int64_t avra_task_ended_by(void* task) {\n    return task_cells(task)[TASK_BY];\n}", "int64_t avra_task_ended_by(void* task) {\n    (void)task;\n    return 0;\n}"),
     ("a virtual claim names whoever the host runs", "    return gate_claimed(gate, id_of(virtual_at(t)));", "    return gate_claimed(gate, id_of(g_current));"),
     ("a virtual task's end is not traced", "    if (TRACING) traced_fiber(\"end\", virtual_at(t), 0);\n", ""),
@@ -395,7 +402,7 @@ HOST_MUTATIONS = [
     ("a cold arm never records the pid", "    g_owner = this_pid();\n    __atomic_store_n(&g_parked, 0, __ATOMIC_RELAXED);", "    g_owner = 0;\n    __atomic_store_n(&g_parked, 0, __ATOMIC_RELAXED);"),
     ("the pid read is never counted", "    pid_t pid = getpid();\n    __atomic_add_fetch(&g_pid_reads, 1, __ATOMIC_RELAXED);\n    return pid;", "    return getpid();"),
 ]
-TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test", "tick_test", "sig_test"]
+TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test", "tick_test", "sig_test", "task_release_test"]
 BOUND = 60
 # A BREAK LIVES INSIDE ITS OWN TEST. A mutation that makes the scheduler
 # spawn threads or processes without bound would otherwise exhaust the
@@ -474,14 +481,18 @@ def tried(numbered):
     return name, "alive", ""
 
 
-print(f"runtime-mutations: {WORKERS} workers over {len(ALL)} breaks", file=sys.stderr)
+# One of N interleaved parts, so the breaks can run on N runners at once; every part checks
+# every break it owns, and the parts together own them all.
+part, parts = (int(x) for x in os.environ.get("MUTATION_SHARD", "0/1").split("/"))
+OWNED = [(at, b) for at, b in enumerate(ALL) if at % parts == part]
+print(f"runtime-mutations: {WORKERS} workers over {len(OWNED)} of {len(ALL)} breaks (part {part + 1} of {parts})", file=sys.stderr)
 with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-    results = list(pool.map(tried, enumerate(ALL)))
+    results = list(pool.map(tried, OWNED))
 for name, how, by in results:
     print(f"  {name}: " + {"killed": f"killed by {by}", "alive": "SURVIVED every runtime test", "rotten": by}[how])
 killed = sum(how == "killed" for _, how, _ in results)
 alive = sum(how == "alive" for _, how, _ in results)
 rotten = sum(how == "rotten" for _, how, _ in results)
 bound = sum("outlived" in by for _, how, by in results if how == "killed")
-print(f"runtime-mutations: {killed} of {len(ALL)} killed, {killed - bound} by a failing check and {bound} by the bound" + (f"; {alive} survive" if alive else "") + (f"; {rotten} no longer apply" if rotten else ""))
+print(f"runtime-mutations: {killed} of {len(OWNED)} killed, {killed - bound} by a failing check and {bound} by the bound" + (f"; {alive} survive" if alive else "") + (f"; {rotten} no longer apply" if rotten else ""))
 sys.exit(1 if alive or rotten else 0)

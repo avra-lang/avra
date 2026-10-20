@@ -5,15 +5,19 @@
 # Usage: sh tools/expanded_attack.sh [avra] [package]
 avra=${1:-build/avra}
 package=${2:-packages/std-avrac}
-# A re-entry nested inside a re-entry recomputes (each settles once), so a file whose
-# delegating traits nest three resolves deep settles four times; the attack guards the
-# per-member re-run, which was 173.
-limit=4
+# A re-entry nested inside the first re-entry reads what that one has minted, so a file
+# settles twice at most: its run and that re-entry. The attack guards the per-member
+# re-run (173) and every deeper nesting level.
+limit=2
 trace=$(mktemp "${TMPDIR:-/tmp}/avra-expanded.XXXXXX")
 AVRA_QTRACE=1 "$avra" check "$package" 2>&1 | grep -a '^Q	settle	Expanded' > "$trace"
 worst=$(cut -f4 "$trace" | sort | uniq -c | sort -rn | head -n 1)
 count=$(echo "$worst" | awk '{print $1}')
 echo "expanded-attack: $package, $(wc -l < "$trace" | tr -d ' ') Expanded settles, busiest file settled ${count:-0} times (limit $limit)"
+if [ ! -s "$trace" ]; then
+    echo "expanded-attack: FAILED — no Expanded settle was traced, so nothing was examined (a warm store answers without settling: clear it first)"
+    exit 1
+fi
 if [ "${count:-0}" -gt "$limit" ]; then
     echo "expanded-attack: FAILED — a file's expansion settled more than $limit times"
     exit 1

@@ -2,30 +2,19 @@
 //! lowering — the MEANING — in lower.av. `??` is CONTROL-OWNING at
 //! lowering (its right side runs only on absence) but plain for the
 //! earlier passes: both sides resolve and type in the same scope.
-use core.{ExprId, Type, TypeId, Reg}
-use features.{named_bind, NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
+use core.{ExprId, Type, TypeId, Reg, Kids, Heirs}
+use features.{named_bind, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
 
 use core.expr.{NullLit, Coalesce, Force, Propagate, MatchOpt, Chain}
 
-impl NodeSemantics for Coalesce {
-    fn kids() -> List<ExprId> { [self.left, self.right] }
-}
-impl NodeSemantics for Force {
-    fn kids() -> List<ExprId> { [self.value] }
-}
-impl NodeSemantics for Propagate {
-    fn kids() -> List<ExprId> { [self.value] }
-}
-impl NodeSemantics for MatchOpt {
+impl Kids for MatchOpt {
     /// The arms are hidden: each is typed under its own scope, and
     /// the present one lowers INSIDE its region.
     fn kids() -> List<ExprId> { [self.subject] }
+}
+impl Heirs for MatchOpt {
     fn heirs() -> List<ExprId> { [self.present, self.absent] }
 }
-impl NodeSemantics for Chain {
-    fn kids() -> List<ExprId> { [self.subject] }
-}
-impl NodeSemantics for NullLit {}
 
 impl Meaning for NullLit {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
@@ -54,10 +43,10 @@ impl Meaning for Force {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        forced_type(cx, self.value)
+        forced_type(cx, self.subject)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        forced_reg(cx, self.value)
+        forced_reg(cx, self.subject)
     }
 }
 impl Meaning for Propagate {
@@ -65,10 +54,10 @@ impl Meaning for Propagate {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        propagate_type(cx, self.value)
+        propagate_type(cx, self.subject)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        propagate_reg(cx, e, self.value)
+        propagate_reg(cx, e, self.subject)
     }
 }
 impl Meaning for MatchOpt {

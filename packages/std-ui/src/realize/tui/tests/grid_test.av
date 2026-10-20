@@ -1,0 +1,49 @@
+// The screen as a value: cells a terminal can diff, a wide glyph two of
+// them, the caret where the focused control draws, rows cut or padded to
+// the height.
+use @std.ui.tree.node.{Node}
+use @std.ui.realize.tui.tui.{raster, render}
+use @std.ui.realize.tui.paint.{Grid, lines}
+use @std.ui.env.{Env}
+use @std.ui.realize.tests.support.{holding, text_node, button_node}
+
+fn texts(g: Grid) -> string { [c.text for c in g.cells].join("|") }
+
+fn wides(g: Grid) -> string { ["${c.wide}" for c in g.cells].join(",") }
+
+spec "std/ui tui — the grid" {
+    given "the shape" {
+        then "a grid is width by height cells, row by row" {
+            let g = raster(holding(.Column, [text_node("ab"), text_node("c")]), 3, null, null)
+            g.width == 3 && g.height == 2 && g.cells.length == 6 && texts(g) == "a|b| |c| | "
+        }
+        then "an absent height is as tall as the layout asks" { raster(text_node("a b c"), 1, null, null).height == 3 }
+        then "a height past the layout pads blank rows, one short of it cuts" {
+            let tall = raster(text_node("ab"), 2, 3, null)
+            let short = raster(holding(.Column, [text_node("a"), text_node("b")]), 2, 1, null)
+            tall.height == 3 && tall.cells.length == 6 && short.height == 1 && texts(short) == "a| "
+        }
+    }
+    given "wide glyphs" {
+        then "a wide glyph is one wide cell and a continuation that holds nothing" {
+            let g = raster(text_node("中a"), 4, null, null)
+            texts(g) == "中||a| " && wides(g) == "true,false,false,false"
+        }
+        then "a glyph that would pass the right edge is not drawn" {
+            texts(raster(text_node("中"), 1, null, null)) == " "
+        }
+    }
+    given "the caret" {
+        then "none is set when nothing is focused" { raster(button_node("go"), 10, null, null).cursor?.x == null }
+        then "it sits on the focused control's content, after its mark" {
+            let g = raster(holding(.Column, [text_node("a"), button_node("go")]), 10, null, 2)
+            g.cursor?.x == 2 && g.cursor?.y == 1
+        }
+    }
+    given "the text" {
+        then "lines of the grid are what render prints" {
+            let tree = holding(.Column, [text_node("hello world"), button_node("go")])
+            lines(raster(tree, 8, null, null)).join("\n") == render(tree, Env {}, 8)
+        }
+    }
+}

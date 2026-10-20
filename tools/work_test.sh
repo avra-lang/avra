@@ -42,6 +42,21 @@ git -C "$main" remote add origin "$scratch/origin.git"
 git -C "$main" push -q -u origin main
 work="$main/tools/work"
 
+# WHAT A SPRITE MUST CARRY IS MAIN'S LIST: a lane branched before a package joined packages.txt has the
+# older file, and provisioning or judging health by it leaves a Sprite without what newer trees need.
+# A run installs main's list plus the checkout's own; health judges main's alone.
+pk=$scratch/pk
+git init -q --bare "$pk/origin.git"
+git init -q -b main "$pk/lane"
+mkdir -p "$pk/lane/tools" "$pk/lane/.github/ci"
+cp "$here/sprite-lib.sh" "$pk/lane/tools/"
+printf 'shared\nfrommain\n' > "$pk/lane/.github/ci/packages.txt"
+git -C "$pk/lane" add -A && git -C "$pk/lane" -c user.name=t -c user.email=t@t commit -q -m main
+git -C "$pk/lane" remote add origin "$pk/origin.git" && git -C "$pk/lane" push -q -u origin main
+printf 'shared\nlocalonly\n' > "$pk/lane/.github/ci/packages.txt"
+pkg_lists() { (here="$pk/lane/tools"; . "$here/sprite-lib.sh"; printf '%s|%s' "$(sprite_packages_list | tr ' ' '\n' | sort | tr '\n' ' ')" "$(health_packages_list | tr ' ' '\n' | sort | tr '\n' ' ')"); }
+check "$(pkg_lists)" "frommain localonly shared |frommain shared " "packages: a run installs main's list plus the checkout's own; health judges main's alone, never the checkout's stale or extra lines"
+
 cat > "$scratch/sprite" <<'STUB'
 #!/bin/sh
 # sprite -s <name> exec … : answers unless the name is in SILENT; the
@@ -234,6 +249,26 @@ check "$(seeds env)" "none" "work new: a compiler built from a lane's own edits 
 holds "olderhash $old_at" "$old_at"
 check "$(seeds env) $(grep -c '1 compiler commit(s) behind' "$scratch/out")" "copied 1" "work new: failing that, the nearest behind origin/main is a start, and says how far" "$scratch/out"
 check "$(seeds env AVRA_SEED_BEHIND=0) $(grep -c 'not copied' "$scratch/out")" "none 1" "work new: one past the bound is refused with the distance, never copied" "$scratch/out"
+
+# THE DEPOT: a stamped compiler kept after its worktree is gone is a start too (a Mac has no published one).
+dp=$scratch/depot
+mkdir -p "$dp/h1"
+echo bin > "$dp/h1/avra"; chmod +x "$dp/h1/avra"; echo "olderhash $old_at" > "$dp/h1/.avra-built-from"
+holds ""
+check "$(seeds env AVRA_COMPILER_DEPOT="$dp") $(grep -c '1 compiler commit(s) behind' "$scratch/out")" "copied 1" "work new: a stamped compiler in the depot is a start when no worktree holds one" "$scratch/out"
+holds "somethingelse edited"
+dp2=$scratch/depot2
+check "$(seeds env AVRA_COMPILER_DEPOT="$dp2")" "none" "work new: an empty depot and an edited worktree compiler start none" "$scratch/out"
+# deposit keeps a clean tree's stamped compiler, never an edited one, and only the newest AVRA_DEPOT_KEEP
+holds "hashA $old_at"
+AVRA_COMPILER_DEPOT="$dp2" sh "$slw" deposit "$sl/held"
+holds "hashB edited"
+AVRA_COMPILER_DEPOT="$dp2" sh "$slw" deposit "$sl/held"
+check "$(ls "$dp2" | tr '\n' ' ')" "hashA " "work deposit: a clean stamped compiler is kept, one built from edits is not" "$scratch/out"
+sleep 1
+holds "hashC $old_at"
+AVRA_DEPOT_KEEP=1 AVRA_COMPILER_DEPOT="$dp2" sh "$slw" deposit "$sl/held"
+check "$(ls "$dp2" | tr '\n' ' ')" "hashC " "work deposit: only the newest AVRA_DEPOT_KEEP entries stay" "$scratch/out"
 
 # ══ HELP: asked after any verb it prints that verb's line, and touches nothing
 export SPRITE_LOG="$scratch/sprite.log"

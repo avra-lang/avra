@@ -1,0 +1,173 @@
+//! List patterns: `[a, b]` takes a list of exactly two, `[first, ..rest]`
+//! a list of at least one with the tail bound, `[..init, last]` the
+//! front, `[a, ..]` a list of at least one that binds one. A list pattern
+//! tests the length, then each element pattern at its place — read only
+//! once the length agreed. The `..` binds the middle as a list of its own.
+use core.{PatId, TypeId, Reg, BinOp, Type, SeqParts, flatten}
+use features.{PatSemantics, TypeCx, LowerCx, pat_semantics_of}
+use diagnostics.{refusal}
+
+export type ListPatSemantics = {}
+
+impl PatSemantics for ListPatSemantics {
+    fn pat_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
+        let parts? = cx.view.store.seq_parts(p) else { return [] }
+        seq_types(cx, p, parts, expected)
+    }
+
+    fn pat_accepts(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
+        let parts? = cx.view.store.seq_parts(p) else { return reached_wrongly(cx) }
+        seq_accepts(cx, parts, v, vty)
+    }
+
+    fn pat_binds(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg> {
+        let parts? = cx.view.store.seq_parts(p) else {
+            cx.defect("a pattern that is no list pattern reached the list binds")
+            return []
+        }
+        seq_binds(cx, parts, v, vty)
+    }
+}
+
+fn reached_wrongly(mut cx: LowerCx) -> Reg {
+    cx.defect("a pattern that is no list pattern reached the list test")
+    cx.const_bool(false)
+}
+
+// ── typing ──
+
+/// The element patterns each against the list's element, the `..`
+/// against the list itself; the subject must be a list.
+fn seq_types(mut cx: TypeCx, p: PatId, parts: SeqParts, expected: TypeId) -> List<TypeId> {
+    let elem? = cx.view.types.element(cx.seen(expected)) else { return not_a_list(cx, p, expected) }
+    let listed = cx.type(List<elem>)
+    flatten([sub_types(cx, a, elem) for a in parts.before])
+        .concat(flatten([sub_types(cx, r, listed) for r in parts.rest]))
+        .concat(flatten([sub_types(cx, a, elem) for a in parts.after]))
+}
+
+fn sub_types(mut cx: TypeCx, a: PatId, ty: TypeId) -> List<TypeId> {
+    pat_semantics_of(cx.dispatch, cx.view.store.pat(a)).pat_types(cx, a, ty)
+}
+
+// ── lowering ──
+
+/// The element's type of the list a pattern reads.
+fn element_of(cx: LowerCx, vty: TypeId) -> TypeId? {
+    cx.view.types.element(cx.view.types.seen_through(vty))
+}
+
+/// The length agrees — exactly, or at least when a `..` stands — and
+/// then every element pattern accepts its element.
+fn seq_accepts(mut cx: LowerCx, parts: SeqParts, v: Reg, vty: TypeId) -> Reg {
+    let elem? = element_of(cx, vty) else {
+        no_list(cx)
+        return cx.const_bool(false)
+    }
+    let len = cx.array_len(Type.Int, v)
+    let wanted = cx.const_int(parts.before.length + parts.after.length)
+    let sized = cx
+        .bin(Type.Bool, if parts.rest.is_empty() { BinOp.Eq } else { BinOp.Ge }, len, wanted)
+    if !parts.before.concat(parts.after).any((a) -> looks_inside(cx, a)) { return sized }
+    cx
+        .region_as(sized, cx.type(bool)) { cx -> elements_accept(cx, parts, v, len, elem) } else { cx -> cx.const_bool(false) }
+}
+
+/// Whether a pattern looks at its element: a wildcard never does.
+fn looks_inside(cx: LowerCx, a: PatId) -> bool {
+    !(cx.view.store.irrefutable(a) && cx.names.compared(cx.view.store, a) == null)
+}
+
+/// Every element pattern accepts — `a && b` as the lazy region, so a
+/// later element is read only when the earlier ones accepted.
+fn elements_accept(mut cx: LowerCx, parts: SeqParts, v: Reg, len: Reg, elem: TypeId) -> Reg {
+    mut acc = cx.const_bool(true)
+    for k, a in parts.before {
+        if looks_inside(cx, a) { acc = element_accepts(cx, acc, a, v, k, false, len, elem) }
+    }
+    for j, a in parts.after {
+        if looks_inside(cx, a) { acc = element_accepts(cx, acc, a, v, parts.after.length - j, true, len, elem) }
+    }
+    acc
+}
+
+fn element_accepts(
+    mut cx: LowerCx,
+    acc: Reg,
+    a: PatId,
+    v: Reg,
+    at: int,
+    from_end: bool,
+    len: Reg,
+    elem: TypeId,
+) -> Reg {
+    cx
+        .region_as(acc, cx.type(bool)) { cx -> sub_accepts(cx, a, element_at(cx, v, at, from_end, len, elem), elem) } else { cx -> cx.const_bool(false) }
+}
+
+fn sub_accepts(mut cx: LowerCx, a: PatId, r: Reg, ty: TypeId) -> Reg {
+    pat_semantics_of(cx.dispatch, cx.view.store.pat(a)).pat_accepts(cx, a, r, ty)
+}
+
+/// The element `at` places from the front, or from the end.
+fn element_at(mut cx: LowerCx, v: Reg, at: int, from_end: bool, len: Reg, elem: TypeId) -> Reg {
+    let index = if from_end { cx.bin(Type.Int, BinOp.Sub, len, cx.const_int(at)) } else { cx.const_int(at) }
+    cx.elem_read(v, index, elem)
+}
+
+/// The registers the element patterns and the `..` bind, in pattern
+/// order; the middle is sliced only when something binds it.
+fn seq_binds(mut cx: LowerCx, parts: SeqParts, v: Reg, vty: TypeId) -> List<Reg> {
+    let elem? = element_of(cx, vty) else {
+        no_list(cx)
+        return []
+    }
+    let len = cx.array_len(Type.Int, v)
+    let front = flatten(
+        [sub_binds(cx, a, element_at(cx, v, k, false, len, elem), elem) for k, a in parts.before],
+    )
+    let middle = flatten([middle_binds(cx, r, parts, v, vty, len) for r in parts.rest])
+    let back = flatten(
+        [sub_binds(cx, a, element_at(cx, v, parts.after.length - j, true, len, elem), elem) for j, a in parts.after],
+    )
+    front.concat(middle).concat(back)
+}
+
+fn sub_binds(mut cx: LowerCx, a: PatId, r: Reg, ty: TypeId) -> List<Reg> {
+    pat_semantics_of(cx.dispatch, cx.view.store.pat(a)).pat_binds(cx, a, r, ty)
+}
+
+fn middle_binds(mut cx: LowerCx, rest: PatId, parts: SeqParts, v: Reg, vty: TypeId, len: Reg) -> List<
+    Reg,
+> {
+    if cx.view.store.bind_name(rest) == null { return [] }
+    let hi = cx.bin(Type.Int, BinOp.Sub, len, cx.const_int(parts.after.length))
+    let slice = cx
+        .array_slice(
+            cx.view.types.shape_of(cx.view.types.seen_through(vty)),
+            v,
+            cx.const_int(parts.before.length),
+            hi,
+        )
+    sub_binds(cx, rest, slice, vty)
+}
+
+// ── voices ──
+
+fn no_list(mut cx: LowerCx) {
+    cx.defect("a list pattern over a value that is no list survived typing")
+}
+
+fn not_a_list(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.list_pattern",
+                cx.pat_loc(p),
+                "a list pattern matches a list, found `${cx.view.types.name_of(expected)}`",
+                "this pattern",
+                "match a list — `[first, ..rest]`; for any other value, match what it is",
+            ),
+        )
+    []
+}

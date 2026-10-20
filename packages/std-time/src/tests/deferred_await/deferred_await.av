@@ -1,16 +1,19 @@
 // proves: a valued bare await of a cancelled task inside a `defer` reads
 // no answer — the deferred body leaves at the await, and the task that
 // ran it ends cancelled — in both engines
-use @std.time.{ms, secs, sleep}
+use @std.task.{open_channel}
+use @std.time.{secs, sleep}
 
 let seen = Cell.new(0)
+let up = open_channel<int>(1)
 let holder = spawn {
     defer {
         let slow = spawn {
+            let _ = up.sink.post(1)
             sleep(secs(60))
             1
         }
-        sleep(ms(1))
+        let _ = up.source.next()
         slow.cancel()
         let v = slow.await
         seen.set(seen.get() + v + 100)
@@ -18,5 +21,5 @@ let holder = spawn {
     seen.set(seen.get() + 10)
     0
 }
-sleep(ms(5))
+let _ = holder.await catch c -> 0
 "${holder.done} ${seen.get()}"

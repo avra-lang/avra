@@ -7,13 +7,15 @@
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use @std.io.{write_text}
 use @std.path.{relative_path, under_dir}
-use @std.avrac.compiler.{Checked, Finding, work_counts, work_whole_reads}
+use @std.relation.engine.{count_reads}
+use @std.avrac.compiler.{Checked, Finding, work_counts, work_whole_reads, work_whys}
 
 type CheckCmd = {}
 
 impl Runnable for CheckCmd {
     fn run(args: CliResult) -> int {
         let path? = slotted_path(args) else { return 2 }
+        if args.has_flag("counts") { count_reads() }
         let base = match checked_at(path) {
             .Ok(c) -> said(args, path, c),
             .Err(report) -> {
@@ -37,12 +39,18 @@ fn said(args: CliResult, path: string, c: Checked) -> int {
         if !bad.is_empty() { return refused_sites(bad) }
     }
     if !c.warnings.is_empty() { println(c.warnings) }
-    if timed(args) { eprintln(if c.reused { "time: check · cache hit" } else { "time: ${c.timed}" }) }
+    if timed(args) { eprintln(time_line(c)) }
     if args.has_flag("counts") {
         eprintln(work_counts())
         for line in work_whole_reads() { eprintln("whole: ${line}") }
+        for line in work_whys() { eprintln("why: ${line}") }
     }
     0
+}
+
+/// What `--time` says: a hit's phases (open, judge, load) or a derivation's.
+fn time_line(c: Checked) -> string {
+    if c.reused { "time: check · cache hit — ${c.timed}" } else { "time: ${c.timed}" }
 }
 
 /// `Checked.licenses`'s own lines (`file\tline\tid`,

@@ -1,0 +1,99 @@
+//! A SUGAR'S MEANING, MINTED: the node answers `means()` — a `Rewrite`,
+//! the template it expands to, its holes the ids of the node's own fields —
+//! and the language, which alone can read a template, parses that template
+//! once and splices a copy beside the sugar with the holes filled. The
+//! template is never run on the program's values: its holes are read, and
+//! the scratch parse is kept for the process, keyed by the template's text.
+use core.{
+    SyntaxArena,
+    ExprId,
+    PatId,
+    StmtId,
+    HoleKind,
+    Filled,
+    Means,
+    copier,
+    hole_runs,
+    flatten,
+    same_expr,
+}
+use @std.meta.{Rewrite, Node}
+use diagnostics.{new_source_file}
+use features.{BlockWords}
+use @std.relation.engine.{map_cell}
+
+/// One template's parse: the store that holds it and the quote it was
+/// written in.
+type Scratch = { store: SyntaxArena, body: ExprId }
+
+once fn kept() -> Cell<Map<string, Scratch>> { map_cell() }
+
+/// The door a language opens for the sugars of the stores it parses.
+export fn sugar_door(lang: Language) -> Means {
+    (store: SyntaxArena, sugar: ExprId) -> minted_means(lang, store, sugar)
+}
+
+/// What the sugar means, copied beside it: the nodes the copy minted, the
+/// last the root; none when the node is no sugar or its template cannot be
+/// read here.
+fn minted_means(lang: Language, store: SyntaxArena, sugar: ExprId) -> List<ExprId> {
+    let rewrite: Rewrite? = store.expr(sugar).means()
+    let template? = rewrite else { return store.expr(sugar).minted(store, store.expr_span(sugar)) }
+    match template.node {
+        .Template(_, _, parts, fills) -> spliced(lang, store, sugar, parts, [hole_id(f) for f in fills]),
+        rest -> [],
+    }
+}
+
+/// The arena index a hole's fill names — an id fills as its index.
+fn hole_id(fill: Node) -> int {
+    match fill { .Int(index) -> index, rest -> 0 - 1 }
+}
+
+/// The template's runs with a hole between each, as the quote it was
+/// written in.
+fn woven_quote(parts: List<string>) -> string {
+    let holed = [p + "\${0}" for p in parts.slice(0, parts.length - 1)].join("")
+    "quote { ${holed}${parts.last()!} }"
+}
+
+fn spliced(lang: Language, store: SyntaxArena, sugar: ExprId, parts: List<string>, ids: List<int>) -> List<
+    ExprId,
+> {
+    let source = woven_quote(parts)
+    let s? = scratch(lang, source) else { return [] }
+    let body? = s.store.expr(s.body).body_of() else { return [] }
+    let stmts: List<StmtId> = match body.view { .Verbatim(ss, _) -> ss, rest -> [] }
+    let last? = stmts.last() else { return [] }
+    let thunks = [(kind: HoleKind) -> filled(kind, index) for index in ids]
+    mut rb = copier(s.store, store, thunks, hole_runs(s.store, s.body), sugar_door(lang))
+    let copied = rb.stmts(stmts)
+    let root? = store.answer_of(copied.last()!) else { return [] }
+    let made = flatten([rb.made_exprs, rb.holed_exprs])
+    let at = store.expr_span(sugar)
+    if at != null { for m in made { store.place_expr(m, at!) } }
+    made.filter(!same_expr(it, root)).concat([root])
+}
+
+/// A hole's id in the seat it stands in: an expression, a pattern, or a
+/// refusal the splice speaks.
+fn filled(kind: HoleKind, index: int) -> Filled {
+    match kind {
+        .Expression or .Tail -> Filled.Expr(ExprId { index: index }),
+        .Binder -> Filled.Pat(PatId { index: index }),
+        rest -> Filled.Unplaceable("a rewrite's hole stands where an expression or a pattern does"),
+    }
+}
+
+/// The template's scratch parse, made once.
+fn scratch(lang: Language, source: string) -> Scratch? {
+    let held: Scratch? = kept().get().get(source)
+    if held != null { return held }
+    let p = parse_program(lang, new_source_file("<means>", source), BlockWords {})
+    if !p.voices.list.is_empty() { return null }
+    let first? = p.stmts.first() else { return null }
+    let q? = p.store.answer_of(first) else { return null }
+    let made = Scratch { store: p.store, body: q }
+    kept().put(source, made)
+    made
+}

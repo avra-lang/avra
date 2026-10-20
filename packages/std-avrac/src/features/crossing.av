@@ -34,8 +34,11 @@ use @std.meta.{
     Param as MetaParam,
     Fn as MetaFn,
     Field as MetaField,
+    Spelled as MetaSpelled,
+    SeatMark as MetaSeatMark,
     Variant as MetaVariant,
     Mark as MetaMark,
+    MarkArg as MetaMarkArg,
     Type as MetaType,
     Diagnostic,
     Named,
@@ -74,7 +77,13 @@ fn meta_records() -> List<MetaShape> {
             fields: ["name", "params", "answer", "at", "answers", "doc", "annotations", "owner"],
             recent: 1,
         },
-        MetaShape { pkg: "@std.meta", name: "Mark", fields: ["name", "args", "at"] },
+        MetaShape {
+            pkg: "@std.meta",
+            name: "Mark",
+            fields: ["name", "args", "at", "named"],
+            recent: 1,
+        },
+        MetaShape { pkg: "@std.meta", name: "MarkArg", fields: ["label", "value"] },
         MetaShape {
             pkg: "@std.meta",
             name: "Annotation",
@@ -96,8 +105,24 @@ fn meta_records() -> List<MetaShape> {
                 "says",
                 "state",
                 "default",
+                "spelled",
             ],
-            recent: 4,
+            recent: 5,
+        },
+        MetaShape {
+            pkg: "@std.meta",
+            name: "Spelled",
+            fields: [
+                "name",
+                "module",
+                "args",
+                "optional",
+                "dynamic",
+                "arrow",
+                "alternatives",
+                "mutable",
+                "settled",
+            ],
         },
         MetaShape {
             pkg: "@std.meta",
@@ -176,8 +201,41 @@ impl Decls {
     /// A record's fields, in order, against the row.
     fn record_disagreement(row: MetaShape) -> string? {
         let d? = self.package_decl(row.pkg, row.name) else { return null }
+        let slots? = self.slot_names(d) else { return null }
+        first_difference(row.name, slots, owed(row, slots.length))
+    }
+
+    /// A record's SLOTS, in order, as the runtime lays them out: a field that
+    /// is a flat record of several scalars rides inline, one slot per scalar,
+    /// named by the scalar. The rows, the door and the writers all count
+    /// these, never the declared names.
+    fn slot_names(d: DeclId) -> List<string>? {
         let sig? = self.fields_of_type(self.self_type_of(d)) else { return null }
-        first_difference(row.name, sig.names, owed(row, sig.names.length))
+        flatten([self.field_slots(n, sig.types[j]) for j, n in sig.names])
+    }
+
+    /// The slots one field takes: a flat record rides inline, one slot per
+    /// scalar, however deep it nests. Whether a record is flat is the layout
+    /// fact lowering reads (a record's flat mark stands only once its own
+    /// signature has been asked, so it is asked first); the names are its
+    /// declared fields', and the count must be lowering's own.
+    fn field_slots(name: string, ty: TypeId) -> List<string> {
+        match self.types.shape_of(ty) {
+            .Struct(inner, _) -> {
+                let _ = self.sig(inner)
+                let width = self.types.flat_fields(ty).length
+                if width < 2 { return [name] }
+                let sub? = self.fields_of_type(ty) else { return [name] }
+                let slots = flatten([self.field_slots(n, sub.types[j]) for j, n in sub.names])
+                if slots.length != width {
+                    wreck(
+                        "`${name}` rides inline as ${width} slots, but its declared fields spell ${slots.length}",
+                    )
+                }
+                slots
+            },
+            _ -> [name],
+        }
     }
 
     /// How many slots the LOADED package declares for the record
@@ -185,7 +243,7 @@ impl Decls {
     fn loaded_slots(name: string) -> int {
         let row? = meta_records().find(it.name == name) else { return 0 }
         let d? = self.package_decl(row.pkg, name) else { return row.fields.length }
-        self.fields_of_type(self.self_type_of(d))?.names?.length ?? row.fields.length
+        self.slot_names(d)?.length ?? row.fields.length
     }
 
     /// `Node`'s variants, in order and by payload count.
@@ -505,6 +563,30 @@ fn meta_of_field(x: MetaField, mut heap: MetaHeap) -> MetaVal {
             meta_of_opt_params(x.says, heap),
             MetaVal.Bool(x.state),
             meta_of_opt_code(x.default, heap),
+            meta_of_opt_spelled(x.spelled, heap),
+        ],
+        heap,
+    )
+}
+
+fn meta_of_opt_spelled(x: MetaSpelled?, mut heap: MetaHeap) -> MetaVal {
+    let t? = x else { return MetaVal.Absent }
+    meta_of_spelled(t, heap)
+}
+
+fn meta_of_spelled(x: MetaSpelled, mut heap: MetaHeap) -> MetaVal {
+    written(
+        "Spelled",
+        [
+            MetaVal.Text(x.name),
+            meta_of_opt_text(x.module),
+            heap.node([meta_of_spelled(a, heap) for a in x.args]),
+            MetaVal.Bool(x.optional),
+            MetaVal.Bool(x.dynamic),
+            MetaVal.Bool(x.arrow),
+            heap.node([meta_of_spelled(a, heap) for a in x.alternatives]),
+            MetaVal.Bool(x.mark.mutable),
+            MetaVal.Bool(x.mark.settled),
         ],
         heap,
     )
@@ -540,9 +622,18 @@ fn meta_of_marks(ms: List<MetaMark>, mut heap: MetaHeap) -> MetaVal {
 fn meta_of_mark(x: MetaMark, mut heap: MetaHeap) -> MetaVal {
     written(
         "Mark",
-        [MetaVal.Text(x.name), meta_of_texts(x.args, heap), meta_of_loc(x.at, heap)],
+        [
+            MetaVal.Text(x.name),
+            meta_of_texts(x.args, heap),
+            meta_of_loc(x.at, heap),
+            heap.node([meta_of_mark_arg(a, heap) for a in x.named]),
+        ],
         heap,
     )
+}
+
+fn meta_of_mark_arg(x: MetaMarkArg, mut heap: MetaHeap) -> MetaVal {
+    written("MarkArg", [MetaVal.Text(x.label), MetaVal.Text(x.value)], heap)
 }
 
 /// A declaration's own `@name(args)` annotations, in written order —
@@ -640,6 +731,10 @@ fn meta_of_kind(k: Kind, mut heap: MetaHeap) -> MetaVal {
         .Unspelled(text) -> heap.node([kind_tag("Unspelled"), MetaVal.Text(text)]),
     }
 }
+
+/// A seat's promises as @std/meta spells them: the one conversion every
+/// crossed seat takes.
+export fn meta_mark(m: SeatMark) -> MetaSeatMark { MetaSeatMark { mutable: m.mutable, settled: m.settled } }
 
 fn meta_of_seat(s: MetaSeatValue, mut heap: MetaHeap) -> MetaVal {
     written(

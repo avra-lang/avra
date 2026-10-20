@@ -19,7 +19,7 @@ const word = (name) => { const at = named_words.indexOf(name); return at < 0 ? n
 const shots = word("--shots");
 const source = word("--source");
 const page = await openPage(firefoxBinary(), url);
-const { read, press, type } = page;
+const { read, press, type, frame } = page;
 
 let failed = 0;
 const claim = (words, holds, seen = "") => {
@@ -159,10 +159,12 @@ await read(`${named("Draft the spec")}.click(), 1`);
 const carried = named("Wire the event channel");
 await read(`(() => { const b = ${carried}; b.focus(); b.witness = "kept"; ${row("t2")}.witness = "t2"; })(), 1`);
 await read(`${named("Newest first")}.click(), 1`);
+await frame();
 claim("Newest first turns the rows end for end", (await keys()).join() === "t5,t4,t2,t1", await keys());
 claim("a keyed row carried to another place is the same element", await read(`${row("t2")}.witness`) === "t2");
 claim("and the focus is kept on the control inside it", await read(`(() => { const b = ${carried}; return [document.activeElement === b, b.witness]; })()`).then((v) => v.join() === "true,kept"));
 await read(`${named("Newest first")}.click(), 1`);
+await frame();
 claim("the rows turn back, the focus still kept", (await keys()).join() === "t1,t2,t4,t5" && await read(`document.activeElement === ${carried}`), await keys());
 
 // ── the dev loop ────────────────────────────────────────────────

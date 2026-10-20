@@ -33,6 +33,7 @@ BUDGET_ROW = re.compile(r"^(?P<scenario>[a-z]+) (?P<counter>[a-z_]+) (?P<n>[0-9]
 # Reported beside the gated rows, never judged: the program's size and the raw counts
 # whose ratios are gated.
 INFORMATIONAL = {
+    "rule_ms",
     "program_files", "program_modules", "program_decls",
     "files_minted", "modules_minted", "queries_computed", "typed_computed", "store_rows_written",
 }

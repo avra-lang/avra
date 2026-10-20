@@ -16,7 +16,7 @@ name: auto-merge
 
 on:
   pull_request:
-    types: [opened, ready_for_review, synchronize, reopened]
+    types: [opened, ready_for_review, synchronize, reopened, labeled]
 
 concurrency:
   group: auto-merge-${{ github.event.pull_request.number }}
@@ -35,17 +35,36 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: a held title is a hold
+      # A HOLD IS A TITLE OR THE `hold` LABEL, read FRESH from the PR: the event's own payload was
+      # taken when the run was queued, and a lane that creates a PR and then labels it fired this
+      # run first — a held batch PR was armed within seconds of its creation. A label added later
+      # fires `labeled`, which lands here and disarms.
+      - name: a held PR is a hold
         id: hold
         env:
-          TITLE: ${{ github.event.pull_request.title }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
         run: |
-          if printf '%s\n' "$TITLE" | grep -qiE 'DO[[:space:]]+NOT[[:space:]]+MERGE'; then
+          title=$(gh pr view "$PR" -R "$REPO" --json title --jq .title)
+          labels=$(gh pr view "$PR" -R "$REPO" --json labels --jq '[.labels[].name]|join(" ")')
+          if printf '%s\n' "$title" | grep -qiE 'DO[[:space:]]+NOT[[:space:]]+MERGE'; then
             echo "auto-merge: the title says DO NOT MERGE — not arming it"
+            echo "held=true" >> "$GITHUB_OUTPUT"
+          elif printf ' %s ' "$labels" | grep -q ' hold '; then
+            echo "auto-merge: #$PR carries the hold label — not arming it"
             echo "held=true" >> "$GITHUB_OUTPUT"
           else
             echo "held=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: a held PR is disarmed
+        if: steps.hold.outputs.held == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AVRA_QUEUE_TOKEN || secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr merge "$PR" -R "$REPO" --disable-auto || echo "auto-merge: #$PR was not armed"
       - name: enable auto-merge
         if: steps.hold.outputs.held == 'false'
         env:

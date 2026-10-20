@@ -32,6 +32,9 @@ use core.{
 use diagnostics.{Diag, Voices, refusal}
 use @std.errors.{Loc, Frame}
 
+/// The mark on a verb handed on uncalled: where the value was written.
+const handed_on_uncalled = "handed on uncalled here"
+
 impl Decls {
     /// A record's fields, the declaration's or the instantiation's.
     fn fields_of_type(ty: TypeId) -> StructSig? {
@@ -190,8 +193,12 @@ impl Decls {
             voices.speak(self.extern_not_a_value(read_at, d))
             return error_type
         }
-        if self.is_meta_fn(d, "embed") {
+        if self.embed_kind_of(d) != null {
             voices.speak(self.embed_not_a_value(read_at ?? self.loc(d)))
+            return error_type
+        }
+        if self.is_meta_fn(d, "guarded") {
+            voices.speak(self.guard_not_a_value(read_at ?? self.loc(d)))
             return error_type
         }
         let sig? = self.sig(d)?.fn_sig() else { return error_type }
@@ -735,12 +742,13 @@ impl Decls {
     }
 
     fn not_a_value(d: DeclId) -> Diag {
+        let names = joined([wrapper_seat(i) for i, _p in self.sig(d)?.fn_sig()?.params ?? []], ", ")
         refusal(
             "type.lambda",
             self.loc(d),
             "a generic fn is not a value — no single signature to wear",
             "declared here",
-            "wrap it — `(x: T0) -> ${self.fn_name(d) ?? "f"}(x)` with the types pinned",
+            "wrap it in a lambda — `(${names}) -> ${self.fn_name(d) ?? "f"}(${names})` — whose seat's own type pins the generic's",
         )
     }
 
@@ -759,8 +767,20 @@ impl Decls {
             "type.embed_literal",
             at,
             embed_literal_law,
-            "handed on uncalled here",
+            handed_on_uncalled,
             "call it where the path is written — `embed(\"schema.sql\")`",
+        )
+    }
+
+    /// `guarded` is lowered where it is called: a value of it would run
+    /// nothing, and a guard that quietly runs nothing is the worst failure.
+    fn guard_not_a_value(at: Loc?) -> Diag {
+        refusal(
+            "type.guard_value",
+            at,
+            "`guarded` is lowered where it is called, and handed on uncalled it would run nothing",
+            handed_on_uncalled,
+            "call it where the body is written — `guarded(() -> …)`",
         )
     }
 
@@ -772,7 +792,7 @@ impl Decls {
         refusal(
             "type.extern_value",
             primary,
-            "an extern fn is not a value — it names a C symbol, not a callable Avra fn",
+            "an extern fn is not a value — it names a C symbol, not an Avra fn",
             label,
             "wrap it — `${self.wrapper_hint(d)}`",
         ) with { secondary: secondary }

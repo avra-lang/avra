@@ -3,20 +3,39 @@
 //! any screen would: to a control BY ITS WORDS. An event runs the handler
 //! the view bound and the loop paints again, so a test drives the same
 //! door a host does and names no platform.
-use app.{Act, Shown, running, shown, stood}
-use native.sources.{opened, served, unshown}
+use app.{Act, Door, Held, How, Msg, Shown, Want, Wants, replies_to, running, shown, stood, wants}
+use native.net.{unwired}
+use native.sources.{one_loop, opened, served, unshown}
+use @std.http_message.message.{Reply, Request}
 use @std.time.{Duration, ms, sleep}
-use tree.controls.{Control}
-use tree.node.{EventKind, Said}
+use tree.bindings.{live, meeting}
+use tree.chord.{parsed}
+use tree.controls.{Control, said_by_control}
+use tree.node.{Said}
 use tree.view.{View}
 
 extern fn avra_clock_virtual(on: int)
 
-/// A screen nobody draws.
-export type Screen = { shown: Shown }
+extern fn avra_trap(message: string)
 
-/// `view` on a screen held in memory, painted once.
-export fn headless<V: View>(view: fn() -> V) -> Screen { Screen { shown: shown(view) } }
+/// A screen nobody draws. Its sources are kept in `wants` and its clock is
+/// `now`, in milliseconds of the virtual time the body has waited; `queue` is
+/// what sources left for the loop, which the screen runs itself, in order,
+/// inside `advance`.
+export type Screen = {
+    shown: Shown,
+    net: Cell<fn(Request) -> Result<Reply, string>> = Cell.new(unwired),
+    wants: Wants = wants(),
+    now: Cell<int> = Cell.new(0),
+    queue: Cell<List<Msg>> = Cell.new([]),
+    driving: Cell<bool> = Cell.new(false),
+}
+
+/// `view` on a screen held in memory, painted once. `rows` is a viewport's
+/// worth of rows for a windowed list, none by default: it builds every row.
+export fn headless<V: View>(view: fn() -> V, rows: int = 0) -> Screen {
+    Screen { shown: shown(view, rows: rows) }
+}
 
 impl Screen {
     /// The `nth` control named `name`, counted in reading order from
@@ -27,10 +46,10 @@ impl Screen {
         named[nth]
     }
 
-    /// The control named `name` speaks `kind`, saying `said`.
-    fn speak(name: string, nth: int, kind: EventKind, said: Said?) -> bool {
+    /// The control named `name` speaks, saying `said`.
+    fn speak(name: string, nth: int, said: Said?) -> bool {
         let c? = self.control(name, nth) else { return false }
-        self.shown.app.turn(() -> c.says(kind, said))
+        self.painted(self.shown.app.turn_of(c.path, () -> c.says(said)))
     }
 
     /// The user presses the control named `name`. False when no handler
@@ -38,26 +57,26 @@ impl Screen {
     /// press.
     fn press(name: string, nth: int = 0) -> bool {
         let c? = self.control(name, nth) else { return false }
-        self.shown.app.turn(() -> c.pressed())
+        self.painted(self.shown.app.turn_of(c.path, () -> c.pressed()))
     }
 
     /// The user gives the control named `name` its text — all of it, as a
     /// field says its own value.
-    fn fill(name: string, text: string, nth: int = 0) -> bool { self.speak(name, nth, .Input, Said.Text(text)) }
+    fn fill(name: string, text: string, nth: int = 0) -> bool { self.speak(name, nth, Said.Text(text)) }
 
     /// The user sets the control named `name` on or off.
-    fn check(name: string, on: bool, nth: int = 0) -> bool { self.speak(name, nth, .Change, Said.Flag(on)) }
+    fn check(name: string, on: bool, nth: int = 0) -> bool { self.speak(name, nth, Said.Flag(on)) }
 
     /// The user moves the control named `name` to `amount`.
     fn slide(name: string, amount: int, nth: int = 0) -> bool {
-        self.speak(name, nth, .Change, Said.Number(amount))
+        self.speak(name, nth, Said.Number(amount))
     }
 
     /// The user sends the form the control named `name` stands in, as a
     /// key in a field does.
     fn submit(name: string, nth: int = 0) -> bool {
         let c? = self.control(name, nth) else { return false }
-        self.shown.app.turn(() -> c.sends())
+        self.painted(self.shown.app.turn_of(c.path, () -> c.sends()))
     }
 
     /// The user sends away what stands over the screen, as the key or a
@@ -65,23 +84,87 @@ impl Screen {
     /// is open, or the one that is hears no dismissal.
     fn dismiss() -> bool {
         let over? = self.shown.over() else { return false }
-        let action? = over.events.find(it.kind == EventKind.Dismiss) else { return false }
-        self.shown.app.turn(() -> action.fire(null))
+        let action? = over.events.find(!said_by_control(it)) else { return false }
+        self.painted(self.shown.app.turn(() -> action.fire(null)))
     }
+
+    /// The screen's requests go over `net` from now: a test's own network,
+    /// answering after whatever it waits.
+    fn wired(net: fn(Request) -> Result<Reply, string>) { self.net.set(net) }
 
     /// `act` runs as a turn, as a source of the loop would leave it: a
     /// paint follows when it ran.
-    fn turn(act: Act) -> bool { self.shown.app.turn(act) }
+    fn turn(act: Act) -> bool { self.painted(self.shown.app.turn(act)) }
 
-    /// `body` runs while the screen's loop does: what a source leaves in
-    /// the inbox runs as turns beside it, and the screen follows. The
-    /// clock is virtual, so it moves when every task is waiting and no
-    /// real time passes. The loop ends with the body.
+    /// A verb is one whole interaction: the screen shows it before the verb
+    /// answers, whether or not a loop holds the app's frames.
+    fn painted(ran: bool) -> bool {
+        let _ = self.shown.app.flush()
+        ran
+    }
+
+    /// `body` runs while the screen is driven: the sources the app asks for
+    /// are kept on the screen's own virtual clock, and nothing runs until the
+    /// body waits (`advance`), which runs what falls due, in the order it was
+    /// asked, on the body's own task. THERE IS NO SCHEDULER IN IT, so the
+    /// screen the body reads after a call is the same under every schedule.
+    /// The loop ends with the body.
     fn running(body: fn() -> void) {
+        if self.shown.app.looping.get() { avra_trap(one_loop()) }
         avra_clock_virtual(1)
         let before = running()
         stood(self.shown.app)
-        let inbox = opened(self.shown.app)
+        self.shown.app.looping.set(true)
+        self.driving.set(true)
+        self.wants.held.set([])
+        self.queue.set([])
+        let ended = Cell.new(false)
+        self.shown.app.door.set(self.driver(ended))
+        body()
+        self.shown.app.close()
+        self.driving.set(false)
+        self.shown.app.looping.set(false)
+        self.wants.held.set([])
+        self.queue.set([])
+        stood(before)
+    }
+
+    /// The door a driven screen's sources leave their asks at: kept on the
+    /// screen's table and queue until the body waits, and refused once the
+    /// loop has ended.
+    fn driver(ended: Cell<bool>) -> Door {
+        Door {
+            send: (m: Msg) -> self.left_for_loop(ended, m),
+            ask: (w: Want, act: Act, owner: string?) -> self.asked_of(ended, w, act, owner),
+            close: () -> ended.set(true),
+        }
+    }
+
+    /// A message left for the loop: kept, unless the loop has ended.
+    fn left_for_loop(ended: Cell<bool>, m: Msg) -> bool {
+        if ended.get() { return false }
+        self.queue.push(m)
+        true
+    }
+
+    /// A source asked: kept on the table, unless the loop has ended.
+    fn asked_of(ended: Cell<bool>, w: Want, act: Act, owner: string?) -> bool {
+        if ended.get() { return false }
+        let _ = self.wants.filed(w, act, owner, self.now.get())
+        true
+    }
+
+    /// `body` runs while the screen's REAL loop does, as a task beside it:
+    /// what a source leaves in the inbox runs as turns beside the body, and
+    /// the screen follows. The clock is virtual, so it moves when every task
+    /// is waiting and no real time passes. The loop ends with the body. For
+    /// the tests of the loop itself — its workers, its inbox, its frame —
+    /// whose claim is about tasks; any other test is `running`.
+    fn looped(body: fn() -> void) {
+        avra_clock_virtual(1)
+        let before = running()
+        stood(self.shown.app)
+        let inbox = opened(self.shown.app, self.net.get())
         let loop = spawn served(self.shown.app, inbox, unshown)
         body()
         self.shown.app.close()
@@ -89,12 +172,90 @@ impl Screen {
         stood(before)
     }
 
-    /// The body waits `span` of the clock while the loop runs: what falls
-    /// due within it runs, and a job started in that wait begins at its
-    /// end, so a zero wait drains nothing a job still has to start.
+    /// The body waits `span` of the virtual clock while the loop runs beside
+    /// it as a task of its own. WHAT IS PROMISED is that the span has gone by
+    /// and the timers due in it have fired; WHETHER THE TURN THEY LEAVE HAS
+    /// RUN when this returns follows the schedule, since the loop and the body
+    /// are tasks and a seeded schedule orders them differently. A test reads
+    /// the screen where its claim does not depend on that: after a wait
+    /// longer than the act's own, as the zero-wait case does.
     fn advance(span: Duration) {
-        sleep(span)
-        sleep(ms(0))
+        if !self.driving.get() {
+            sleep(span)
+            sleep(ms(0))
+            let _ = self.shown.app.flush()
+            return
+        }
+        let end = self.now.get() + span.ms
+        self.shown.app.holding.set(true)
+        self.settled()
+        while true {
+            let next? = self.wants.next_by(end) else { break }
+            if next.due > self.now.get() {
+                self.framed()
+                self.now.set(next.due)
+            }
+            self.fire(next)
+            self.settled()
+        }
+        self.framed()
+        self.shown.app.holding.set(false)
+        self.now.set(end)
+    }
+
+    /// What sources have left runs, in the order it was left, and what left
+    /// the screen is let go.
+    fn settled() {
+        while !self.queue.get().is_empty() {
+            let m = self.queue.get()[0]
+            self.queue.set(self.queue.get().drop(1))
+            self.ran(m)
+        }
+        for h in self.wants.left(self.shown.app) { self.wants.dropped(h.token) }
+    }
+
+    /// One message, as the loop would run it: a turn, or a job to the end.
+    fn ran(m: Msg) {
+        match m {
+            .Turn(act, owner) -> self.turned(act, owner),
+            .Start(job, owner) -> self.started(job, owner),
+            .Ended(_, _) -> self.settled_nothing(),
+            .Frame -> self.framed(),
+        }
+    }
+
+    /// The display's frame comes: the screen shows the state as it stands.
+    fn framed() {
+        if self.shown.app.flush() { self.shown.app.frames.set(self.shown.app.frames.get() + 1) }
+    }
+
+    fn turned(act: Act, owner: string?) {
+        if self.shown.app.owns(owner) { let _ = self.shown.app.turn_for(owner, act) }
+    }
+
+    fn started(job: fn() -> bool, owner: string?) {
+        if self.shown.app.owns(owner) { let _ = job() }
+    }
+
+    /// A worker's end: the driver has no workers.
+    fn settled_nothing() {}
+
+    /// A source falls due: a timer runs its act and, if it repeats, falls due
+    /// again a period on; a request is answered by the screen's net and runs
+    /// its act.
+    fn fire(h: Held) {
+        match h.how {
+            .Timer(repeat) -> {
+                let go = self.wants.fires(h)
+                if repeat { self.wants.rearmed(h.token, h.due + if h.period < 1 { 1 } else { h.period }) }
+                if go && self.shown.app.owns(h.owner) { let _ = self.shown.app.turn_for(h.owner, h.act) }
+            },
+            .Request(request, into) -> {
+                self.wants.dropped(h.token)
+                into.set((self.net.get())(request))
+                if self.shown.app.owns(h.owner) { let _ = self.shown.app.turn_for(h.owner, h.act) }
+            },
+        }
     }
 
     /// The words of the failure that ended the last turn, until a turn
@@ -108,10 +269,70 @@ impl Screen {
     /// How many component instances the screen keeps.
     fn held() -> int { self.shown.app.held() }
 
+    /// The windowed lists the screen stands, by path.
+    fn windows() -> List<string> { self.shown.app.stands.windows() }
+
+    /// The user scrolls the windowed list at `path` so rows `from` up to `to`
+    /// are on the screen. False when no such list stands.
+    fn scroll(path: string, from: int, to: int) -> bool { self.scroll_measured(path, from, to, 0) }
+
+    /// The same, and the rows measure `extent` tall: the rows not built are
+    /// spaced at that height.
+    fn scroll_measured(path: string, from: int, to: int, extent: int) -> bool {
+        self.painted(self.shown.app.scrolled(path, from, to, extent, null))
+    }
+
+    /// The same, and the focus rests on the row named `key`, which stays
+    /// built wherever the window goes.
+    fn scroll_pinned(path: string, from: int, to: int, extent: int, key: string) -> bool {
+        self.painted(self.shown.app.scrolled(path, from, to, extent, key))
+    }
+
+    /// How many standings the walk keeps: the witness that a list keeps only
+    /// the rows that hold something.
+    fn standings() -> int { self.shown.app.stands.standings() }
+
+    /// How many rows windowed lists built in the last paint.
+    fn built() -> int { self.shown.app.stands.built() }
+
     /// What the last paint said of the tree it was handed.
     fn warnings() -> List<string> { self.shown.app.warnings() }
 
     /// The screen as a reader finds it: one line a node, its words and
     /// what its attributes say, what it holds indented under it.
     fn text() -> string { self.shown.text() }
+
+    /// The chord `text` writes is pressed with the focus on the `nth` control
+    /// named `name`: the nearest live key naming it runs as a turn. False
+    /// when the chord is none, no such control stands, or no key meets it.
+    fn key_in(name: string, chord_text: string, nth: int = 0) -> bool {
+        let c? = self.control(name, nth) else { return false }
+        self.pressed_key(chord_text, c.seat)
+    }
+
+    /// The same with the focus nowhere: only the root's keys are live.
+    fn key(chord_text: string) -> bool { self.pressed_key(chord_text, null) }
+
+    fn pressed_key(chord_text: string, seat: int?) -> bool {
+        let root? = self.shown.tree.get() else { return false }
+        let pressed? = parsed(chord_text) else { return false }
+        let found? = meeting(root, seat, pressed) else { return false }
+        self
+            .shown
+            .app
+            .turn(
+                () -> {
+                    (found.handler)()
+                    true
+                },
+            )
+    }
+
+    /// The chords live while the focus is on the `nth` control named `name`,
+    /// nearest first, as they are written.
+    fn bindings_in(name: string, nth: int = 0) -> List<string> {
+        let root? = self.shown.tree.get() else { return [] }
+        let c? = self.control(name, nth) else { return [] }
+        [b.chord.text() for b in live(root, c.seat)]
+    }
 }

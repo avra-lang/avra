@@ -33,16 +33,48 @@ spec "facet adversarial" {
         }
     }
     given "the payload/record split" {
-        then "the record declares six fields, so the grammar row names them all" {
-            (row_for(node_payload_rows(), "Stmt", "FnDecl")?.payloads ?? []).length == 6
+        then "the record declares nine fields, so the grammar row names them all" {
+            (row_for(node_payload_rows(), "Stmt", "FnDecl")?.payloads ?? []).length == 9
         }
-        then "the gathered enum carries five: `Stmt.FnDecl` is built without `is_once`" {
+        then "the gathered enum carries five: `Stmt.FnDecl` is built without its four facets" {
             // A compile-time fact: the maker constructs
             // `.FnDecl(name, tparams, params, ret, body)`, five
             // payloads. A sixth would not compile, and the row would
             // disagree with the declaration.
             (row_for(node_payload_rows(), "Stmt", "FnDecl")?.payloads ?? [])
                 .any(it.name == "is_once")
+        }
+    }
+    given "the fn and state words" {
+        then "`mut fn` writes the mutating table and a plain `fn` does not" {
+            let m = parse_source("mut fn seed() -> int { 7 }")
+            let plain = parse_source("fn seed() -> int { 7 }")
+            let a = seed_of(m)
+            let b = seed_of(plain)
+            a != null && b != null && m.store.is_mutating(a!) && !plain.store.is_mutating(b!)
+        }
+        then "`static fn` writes the static table" {
+            let st = parse_source("static fn seed() -> int { 7 }")
+            let plain = parse_source("fn seed() -> int { 7 }")
+            let a = seed_of(st)
+            let b = seed_of(plain)
+            a != null &&
+                b != null &&
+                st.store.is_static(a!) &&
+                !st.store.is_mutating(a!) &&
+                !plain.store.is_static(b!)
+        }
+        then "an `extern fn` with a body is a host fn, and one without a body is no fn declaration" {
+            let host = parse_source("extern fn seed() -> int { 7 }")
+            let hollow = parse_source("extern fn seed() -> int")
+            let a = seed_of(host)
+            a != null && host.store.is_host_fn(a!) && seed_of(hollow) == null
+        }
+        then "`state` marks its `mut` binding and a plain `mut` does not" {
+            let st = parse_source("state n: int = 0")
+            let plain = parse_source("mut n: int = 0")
+            st.stmts.any((s) -> st.store.is_state_stmt(s)) &&
+                !plain.stmts.any((s) -> plain.store.is_state_stmt(s))
         }
     }
     given "the side table" {

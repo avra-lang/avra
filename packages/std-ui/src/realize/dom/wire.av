@@ -1,23 +1,34 @@
 //! `realize/dom/wire.av` — patches as BYTES, and the one table a host
 //! reads them by. A frame is the version, then one record per patch:
 //!
-//!   create       id, tag
+//!   create       id, tag (its place among the tags, `TAGS`)
 //!   create_text  id, content
-//!   place        id, parent (none: the page), after (none: first)
+//!   place        id, parent (none: the page), after (first, append, or a sibling)
 //!   remove       id
 //!   set_attr     id, name, value
 //!   drop_attr    id, name
 //!   set_prop     id, name, says, value
 //!   set_text     id, content
-//!   listen       id, kind, event, says, reads (empty: none), prevents
-//!   unlisten     id, kind
+//!   define       seat, says, event, reads (empty: none), prevents
+//!   listen       id, seat, says
+//!   unlisten     id, seat
 //!   style        css
 //!   call         id, verb
+//!   set_var      id, property (`--w`), value
+//!   drop_var     id, property
 //!
-//! A record opens with its op's code (`Op`). An id is a number in eight
-//! little-endian bytes — the same width however deep its node sits — and
-//! `NO_ID` where a record names none; every other number is four; a text
-//! is its byte length then its bytes. A frame of the version alone is a
+//! A `define` tells a host once what a seat's event is called, what it reads
+//! and whether the page's own answer is stopped; every `listen` of that seat
+//! saying that thing is then the element's id and two numbers. A frame is
+//! self-contained unless it is told what an earlier frame defined.
+//!
+//! A record opens with its op's code (`Op`). An id is a number in seven-bit
+//! groups (`push_varint`) of one more than the id, so zero is `NO_ID`, where
+//! a record names none; a `place`'s `after` is zero for the first place, one
+//! for the end of the parent's run — said only of a parent made in the same
+//! frame, whose run the frame itself has built — and two more than a
+//! sibling's id otherwise; every other number is four bytes; a text is its
+//! byte length then its bytes. A frame of the version alone is a
 //! page that did not change.
 //!
 //! A host holds NO copy of these numbers by hand: `host_table` writes its
@@ -25,13 +36,22 @@
 //! checked-in copy is not what this file says.
 use @std.meta.{derive}
 use tree.identity.{NodeId}
-use tree.node.{EventKind, Said}
+use @std.http_message.message.{Request}
+use tree.node.{Said}
+use tree.seats.{Seat, seat_numbered}
 use realize.dom.buf.{Buf, buf}
 use tree.codes.{Codes, Coded}
 use realize.dom.patch.{Patch, Listening, Says, Held, held_says}
+use realize.html.tags.{HtmlTag}
 
 /// The wire's version: a host built for another REFUSES, never misapplies.
-export const wire_version = 10
+export const wire_version = 13
+
+/// A `place`'s `after`: the first place, the end of the parent's run, or — from
+/// here up — a sibling's id plus this much.
+export const after_first = 0
+export const after_append = 1
+export const after_sibling = 2
 
 /// What stands where a record names no element: the page itself as a
 /// parent, the first place as a sibling. No id is ever negative.
@@ -52,6 +72,9 @@ export enum Op {
     @code(10) Unlisten
     @code(11) Style
     @code(12) Call
+    @code(13) Define
+    @code(14) SetVar
+    @code(15) DropVar
 }
 
 /// The op a patch is written under. Every patch spelled.
@@ -69,6 +92,8 @@ fn op_of(p: Patch) -> Op {
         .Unlisten(_, _) -> .Unlisten,
         .Style(_) -> .Style,
         .Call(_, _) -> .Call,
+        .SetVar(_, _, _) -> .SetVar,
+        .DropVar(_, _) -> .DropVar,
     }
 }
 
@@ -77,56 +102,79 @@ fn held_text(value: Held) -> string {
     match value { .Text(t) -> t, .Flag(on) -> if on { "1" } else { "" } }
 }
 
-/// A host's echo, read: who spoke, what kind of event, and what it said
+/// A host's echo, read: who spoke, which seat, and what it said
 /// — absent for an event that says nothing.
-export type Echo = { id: NodeId, kind: EventKind, said: Said? }
+export type Echo = { id: NodeId, seat: Seat, said: Said? }
 
-/// The echo a host sent: element `who` spoke the kind numbered `what`,
+/// The echo a host sent: element `who` spoke the seat numbered `what`,
 /// saying what `tag` names — a number or a flag in `num`, text in `text`.
 /// An echo this wire cannot read is ABSENT and answers nothing: a kind or
 /// a tag no variant wears, or text the host could not hand over. That is
 /// never "said nothing", which is a tag of its own.
 export fn echo(who: int, what: int, tag: int, num: int, text: string?) -> Echo? {
-    let kind? = EventKind.coded_as(what) else { return null }
+    let seat? = seat_numbered(what) else { return null }
     let says? = Says.coded_as(tag) else { return null }
     let id = NodeId { n: who }
     match says {
-        .Nothing -> Echo { id: id, kind: kind, said: null },
-        .Number -> Echo { id: id, kind: kind, said: Said.Number(num) },
-        .Flag -> Echo { id: id, kind: kind, said: Said.Flag(num != 0) },
+        .Nothing -> Echo { id: id, seat: seat, said: null },
+        .Number -> Echo { id: id, seat: seat, said: Said.Number(num) },
+        .Flag -> Echo { id: id, seat: seat, said: Said.Flag(num != 0) },
         .Text -> {
             let body? = text else { return null }
-            Echo { id: id, kind: kind, said: Said.Text(body) }
+            Echo { id: id, seat: seat, said: Said.Text(body) }
         },
     }
 }
 
 impl Buf {
-    /// An id as eight little-endian bytes — one a host reads as a number
-    /// — and where there is none, the number no id is. A host's number is
-    /// whole only to 2^53, so that is how many elements one page can
-    /// ever have been given.
-    fn push_id(id: NodeId?) {
-        let n = id?.n ?? no_id
-        self.push_int(n)
-        self.push_int(n >> 32)
+    /// An id as one more than its number in seven-bit groups, and where there
+    /// is none, zero. A host's number is whole only to 2^53, so that is how
+    /// many elements one page can ever have been given.
+    fn push_id(id: NodeId?) { self.push_varint((id?.n ?? no_id) + 1) }
+
+    /// Where a `place` puts its element among the parent's, said as `after`
+    /// is: the end of a run `kept` knows whole, or the sibling it follows.
+    fn push_after(parent: NodeId?, after: NodeId?, kept: Kept) {
+        let was = after?.n ?? no_id
+        let appends = kept.ends_with(parent, was)
+        self
+            .push_varint(
+                when {
+                    appends -> after_append
+                    was == no_id -> after_first
+                    _ -> was + after_sibling
+                },
+            )
     }
 
-    fn push_listening(to: Listening) {
-        self.push_int(to.action.kind.code())
-        self.push_str(to.event)
+    /// What a host is told once of a seat's event saying `to.says`.
+    fn push_definition(to: Listening) {
+        self.push_byte(Op.Define.code())
+        self.push_int(to.action.seat.number())
         self.push_int(to.says.code())
+        self.push_str(to.event)
         self.push_str(to.reads?.word() ?? "")
         self.push_int(if to.prevents { 1 } else { 0 })
     }
 
-    /// One patch as its record.
-    fn push_patch(p: Patch) {
+    /// The definition a `listen` needs, before it, unless `told` holds it.
+    fn defined(p: Patch, told: Cell<List<int>>) {
+        let to? = listening_in(p) else { return }
+        let key = definition_key(to)
+        if told.get().contains(key) { return }
+        told.push(key)
+        self.push_definition(to)
+    }
+
+    /// One patch as its record, after the definition it needs.
+    fn push_patch(p: Patch, told: Cell<List<int>>, kept: Kept) {
+        self.defined(p, told)
         self.push_byte(op_of(p).code())
         match p {
             .Create(id, tag) -> {
+                kept.made(id)
                 self.push_id(id)
-                self.push_str(tag.word())
+                self.push_varint(tag.ordinal())
             },
             .CreateText(id, content) or .SetText(id, content) -> {
                 self.push_id(id)
@@ -135,9 +183,13 @@ impl Buf {
             .Place(id, parent, after) -> {
                 self.push_id(id)
                 self.push_id(parent)
-                self.push_id(after)
+                self.push_after(parent, after, kept)
+                kept.placed(id, parent)
             },
-            .Remove(id) -> self.push_id(id),
+            .Remove(id) -> {
+                kept.left(id)
+                self.push_id(id)
+            },
             .SetAttr(id, name, value) -> {
                 self.push_id(id)
                 self.push_str(name.word())
@@ -147,6 +199,15 @@ impl Buf {
                 self.push_id(id)
                 self.push_str(name.word())
             },
+            .SetVar(id, property, value) -> {
+                self.push_id(id)
+                self.push_str(property)
+                self.push_str(value)
+            },
+            .DropVar(id, property) -> {
+                self.push_id(id)
+                self.push_str(property)
+            },
             .SetProp(id, name, value) -> {
                 self.push_id(id)
                 self.push_str(name.word())
@@ -155,11 +216,12 @@ impl Buf {
             },
             .Listen(id, to) -> {
                 self.push_id(id)
-                self.push_listening(to)
+                self.push_int(to.action.seat.number())
+                self.push_int(to.says.code())
             },
-            .Unlisten(id, kind) -> {
+            .Unlisten(id, seat) -> {
                 self.push_id(id)
-                self.push_int(kind.code())
+                self.push_int(seat.number())
             },
             .Style(css) -> self.push_str(css),
             .Call(id, verb) -> {
@@ -170,11 +232,59 @@ impl Buf {
     }
 }
 
-/// Patches as one frame.
-export fn frame(patches: List<Patch>) -> Bytes {
+/// The listening a patch asks for, when it asks for one.
+fn listening_in(p: Patch) -> Listening? {
+    match p { .Listen(_, to) -> to, _ -> null }
+}
+
+/// What a definition is for: a seat saying one of the four things.
+fn definition_key(to: Listening) -> int { to.action.seat.number() * 4 + to.says.code() }
+
+/// WHICH RUNS A FRAME KNOWS WHOLE: an element made in this frame has no
+/// children but the ones this frame places, so the end of its run is the last
+/// one placed — and a `place` that follows it can say "the end" and no id.
+/// Anything that moves or removes a child breaks that, and the parent is
+/// let go: its later places name the sibling they follow.
+type Kept = {
+    whole: Cell<List<int>> = Cell.new([]),
+    last: Cell<Map<string, int>> = Cell.new({}),
+    under: Cell<Map<string, int>> = Cell.new({}),
+}
+
+impl Kept {
+    fn made(id: NodeId) { self.whole.push(id.n) }
+
+    /// Whether `after` is the last child placed under `parent`, which this
+    /// frame made and has not disturbed; an empty run is "the first place".
+    fn ends_with(parent: NodeId?, after: int) -> bool {
+        let p? = parent else { return false }
+        if !self.whole.get().contains(p.n) { return false }
+        self.last.get().get("${p.n}") ?? no_id == after
+    }
+
+    /// `id` placed under `parent`: the end of that run, and no longer a child
+    /// of wherever it stood.
+    fn placed(id: NodeId, parent: NodeId?) {
+        self.left(id)
+        let p? = parent else { return }
+        self.last.put("${p.n}", id.n)
+        self.under.put("${id.n}", p.n)
+    }
+
+    /// `id` taken off the run it stood in: that run is no longer known whole.
+    fn left(id: NodeId) {
+        let from? = self.under.get().get("${id.n}") else { return }
+        self.whole.set([w for w in self.whole.get() if w != from])
+    }
+}
+
+/// Patches as one frame. `told` holds the definitions an earlier frame of the
+/// same page sent, and is added to; a frame given none defines what it needs.
+export fn frame(patches: List<Patch>, told: Cell<List<int>> = Cell.new([])) -> Bytes {
     let b = buf()
     b.push_byte(wire_version)
-    for p in patches { b.push_patch(p) }
+    let known = Kept {}
+    for p in patches { b.push_patch(p, told, known) }
     b.take()
 }
 
@@ -189,15 +299,37 @@ fn table_source(name: string, rows: List<Coded>) -> string {
 type Answers = { word: string, name: string }
 
 /// THE NAMES A PROGRAM ANSWERS TO. `entry` is the compiler's: a reactor's
-/// own statements, where an app says `mount(view)`. `event` and `seat`
-/// are the web module's two host fns (`web/web.av`), each under the
+/// own statements, where an app says `mount(view)`. `event`, `seat` and
+/// `fired`, `answered`, `painted` and `walks` are the web module's host fns (`web/web.av`), each under the
 /// name it is declared by. The wasm board's own run (`make ui-board`) is
 /// what holds these to the module.
 const answers = [
     Answers { word: "entry", name: "avra_main" },
     Answers { word: "event", name: "avra_ui_event" },
     Answers { word: "seat", name: "avra_ui_seat" },
+    Answers { word: "fired", name: "avra_ui_fired" },
+    Answers { word: "answered", name: "avra_ui_answered" },
+    Answers { word: "painted", name: "avra_ui_painted" },
+    Answers { word: "walks", name: "avra_ui_walks" },
+    Answers { word: "scrolled", name: "avra_ui_scrolled" },
 ]
+
+/// THE ROWS A PAGE ANSWERS: the names the web module imports and the
+/// host supplies — the frame sink and the two timer verbs
+/// (`web/web.av`).
+const rows = [
+    Answers { word: "frame", name: "avra_dom_frame" },
+    Answers { word: "arm", name: "avra_ui_arm" },
+    Answers { word: "disarm", name: "avra_ui_disarm" },
+    Answers { word: "get", name: "avra_ui_get" },
+    Answers { word: "abort", name: "avra_ui_abort" },
+    Answers { word: "next_paint", name: "avra_ui_next_paint" },
+]
+
+/// Every tag's word, in the order a `create` numbers them by.
+fn tags_source() -> string {
+    "export const TAGS = [${["\"${t.word()}\"" for t in HtmlTag.every()].join(", ")}];"
+}
 
 fn names_source(name: string, rows: List<Answers>) -> string {
     "export const ${name} = { ${["${r.word}: \"${r.name}\"" for r in rows].join(", ")} };"
@@ -213,7 +345,32 @@ export fn host_table() -> string {
         "export const NO_ID = ${no_id};",
         table_source("OP", Op.coded()),
         table_source("SAYS", Says.coded()),
+        tags_source(),
+        "export const AFTER = { first: ${after_first}, append: ${after_append}, sibling: ${after_sibling} };",
         names_source("HOST", answers),
+        names_source("ROWS", rows),
     ]
         .join("\n")
+}
+
+/// A request as the host reads it, once, to send with its own `fetch`: the
+/// wire's version, then the method's word, the URL, the wait in
+/// milliseconds (none: -1), the fields as a count and name/value pairs, and
+/// the body as its content type (empty for none) and its octets — every
+/// number four bytes, every text its byte length then its bytes, as a frame.
+export fn request_frame(r: Request) -> Bytes {
+    let out = buf()
+    out.push_byte(wire_version)
+    out.push_str(r.method.word())
+    out.push_str(r.url)
+    out.push_int(r.timeout?.ms ?? -1)
+    out.push_int(r.headers.length)
+    for h in r.headers {
+        out.push_str(h.name)
+        out.push_str(h.value)
+    }
+    let body = r.body.encoded()
+    out.push_str(body.kind)
+    out.push_octets(body.bytes)
+    out.take()
 }

@@ -1,0 +1,212 @@
+//! What each node answers about itself (`NodeFacts`, core/facts_derive.av):
+//! one impl per node that answers anything but the defaults. A node absent
+//! here stands as a compound, is no call, no place, waits through nothing,
+//! names no declaration and begins with no operand — which is what a sugar
+//! answers until it says more.
+use core.{
+    ExprId,
+    Expr,
+    Nominal,
+    Plain,
+    Span,
+    NodeFacts,
+    Form,
+    Purity,
+    Leftmost,
+    PlaceStep,
+    SyntaxArena,
+    WaitProbe,
+    UseShape,
+    form_value,
+    form_body,
+    form_atom,
+    form_operator,
+    form_site,
+    body_literal,
+    flatten,
+}
+use @std.meta.{Rewrite}
+
+impl NodeFacts for IntLit {
+    fn form() -> Form { form_value }
+}
+impl NodeFacts for FloatLit {
+    fn form() -> Form { form_value }
+}
+impl NodeFacts for StrLit {
+    fn form() -> Form { form_value }
+}
+impl NodeFacts for BytesLit {
+    fn form() -> Form { form_value }
+}
+impl NodeFacts for BoolLit {
+    fn form() -> Form { form_value }
+}
+impl NodeFacts for NullLit {
+    fn form() -> Form { form_value }
+}
+impl NodeFacts for ListLit {
+    fn form() -> Form { form_value }
+}
+impl NodeFacts for MapLit {
+    fn form() -> Form { form_value }
+}
+impl NodeFacts for VariantLit {
+    fn form() -> Form { form_value }
+}
+impl NodeFacts for Range {
+    fn form() -> Form { form_value }
+}
+impl NodeFacts for StructLit {
+    fn form() -> Form { form_value }
+    fn wait_probe() -> WaitProbe { WaitProbe.Record }
+    fn use_shape() -> UseShape { UseShape.Record(self.name) }
+    fn leftmost() -> Leftmost { Leftmost.Literal }
+}
+impl NodeFacts for Comp {
+    fn form() -> Form { form_body }
+}
+impl NodeFacts for Collect {
+    fn form() -> Form { Form { literal: true, atomic: true, purity: Purity.Never } }
+}
+impl NodeFacts for Lambda {
+    fn form() -> Form { form_body }
+    fn called_on(store: SyntaxArena, stage: ExprId, value: ExprId) -> Expr? { Expr.CallValue(stage, [value]) }
+}
+impl NodeFacts for Body {
+    fn literal_form() -> bool { body_literal(self.word) }
+}
+impl NodeFacts for Component {
+    fn use_shape() -> UseShape { UseShape.Component(self.word) }
+}
+impl NodeFacts for Env {
+    fn form() -> Form { form_atom }
+    fn use_shape() -> UseShape { UseShape.TypeName(self.ty.name) }
+}
+impl NodeFacts for Block {
+    fn form() -> Form { form_site }
+}
+impl NodeFacts for Receiver {
+    fn form() -> Form { form_atom }
+    fn place_step() -> PlaceStep? { PlaceStep.Root("self") }
+}
+impl NodeFacts for Ident {
+    fn form() -> Form { form_atom }
+    fn place_step() -> PlaceStep? { PlaceStep.Root(self.name) }
+    fn called_with(blocks: List<ExprId>) -> Expr? { Expr.Call(self.name, [], blocks) }
+    fn called_on(store: SyntaxArena, stage: ExprId, value: ExprId) -> Expr? { Expr.Call(self.name, [], [value]) }
+}
+impl NodeFacts for Prop {
+    fn form() -> Form { form_atom }
+    fn wait_probe() -> WaitProbe { WaitProbe.Read }
+    fn place_step() -> PlaceStep? { PlaceStep.Field(self.subject, self.name) }
+    fn called_with(blocks: List<ExprId>) -> Expr? { Expr.MethodCall(self.subject, self.name, blocks) }
+    fn called_on(store: SyntaxArena, stage: ExprId, value: ExprId) -> Expr? {
+        Expr.MethodCall(self.subject, self.name, [store.pronouned(value)])
+    }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+}
+impl NodeFacts for Index {
+    fn form() -> Form { form_atom }
+    fn place_step() -> PlaceStep? { PlaceStep.At(self.subject, self.index) }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+}
+impl NodeFacts for Force {
+    fn form() -> Form { form_atom }
+    fn place_step() -> PlaceStep? { PlaceStep.Unwrap(self.subject) }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+}
+impl NodeFacts for With {
+    fn form() -> Form { form_atom }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+}
+impl NodeFacts for Call {
+    fn form() -> Form { form_site }
+    fn wait_probe() -> WaitProbe { WaitProbe.Call }
+    fn use_shape() -> UseShape { UseShape.Callee }
+    fn args_after() -> int? { 0 }
+    fn called_with(blocks: List<ExprId>) -> Expr? { Expr.Call(self.callee, self.pins, flatten([self.args, blocks])) }
+    fn called_on(store: SyntaxArena, stage: ExprId, value: ExprId) -> Expr? {
+        Expr.Call(self.callee, self.pins, flatten([[value], store.stage_args(self.args)]))
+    }
+}
+impl NodeFacts for MethodCall {
+    fn form() -> Form { Form { literal: false, atomic: true, purity: Purity.ByRow } }
+    fn wait_probe() -> WaitProbe { WaitProbe.Method }
+    fn use_shape() -> UseShape { UseShape.Method(self.subject, self.name) }
+    fn args_after() -> int? { 1 }
+    fn called_with(blocks: List<ExprId>) -> Expr? { Expr.MethodCall(self.subject, self.name, flatten([self.args, blocks])) }
+    fn called_on(store: SyntaxArena, stage: ExprId, value: ExprId) -> Expr? {
+        Expr.MethodCall(self.subject, self.name, flatten([[store.pronouned(value)], self.args]))
+    }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+}
+impl NodeFacts for CallValue {
+    fn form() -> Form { form_site }
+    fn wait_probe() -> WaitProbe { WaitProbe.Value }
+    fn args_after() -> int? { 1 }
+    fn called_with(blocks: List<ExprId>) -> Expr? { Expr.CallValue(self.subject, flatten([self.args, blocks])) }
+    fn called_on(store: SyntaxArena, stage: ExprId, value: ExprId) -> Expr? {
+        Expr.CallValue(self.subject, flatten([[value], store.stage_args(self.args)]))
+    }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+}
+impl NodeFacts for Binary {
+    fn form() -> Form { form_operator }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.left) }
+}
+impl NodeFacts for Coalesce {
+    fn form() -> Form { form_operator }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.left) }
+}
+impl NodeFacts for Not {
+    fn form() -> Form { form_operator }
+}
+impl NodeFacts for Table {
+    fn minted(store: SyntaxArena, span: Span?) -> List<ExprId> {
+        let lits = [row_literal(store, self.row, self.header, r) for r in self.rows]
+        lits.concat([store.alloc_expr(Expr.ListLit(lits), span)])
+    }
+}
+
+/// One row as `Row { header: cell, … }`, spanned as the row was.
+fn row_literal(store: SyntaxArena, row: string, header: List<string>, cells: ExprId) -> ExprId {
+    let made = Expr.StructLit(Nominal(row), [Plain(h) for h in header], cells_of(store, cells))
+    store.alloc_expr(made, store.expr_span(cells))
+}
+
+/// A row's cells, as the list node they were written in.
+fn cells_of(store: SyntaxArena, row: ExprId) -> List<ExprId> {
+    match store.expr(row) { .ListLit(cells) -> cells, rest -> [] }
+}
+impl NodeFacts for Bitnot {
+    fn form() -> Form { form_operator }
+    fn means() -> Rewrite? {
+        quote { ${self.value} ^ -1 }
+    }
+}
+impl NodeFacts for Named {
+    fn form() -> Form { form_operator }
+}
+impl NodeFacts for Chain {
+    fn form() -> Form { form_operator }
+    fn wait_probe() -> WaitProbe { WaitProbe.Chain }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+}
+impl NodeFacts for Is {
+    fn form() -> Form { form_operator }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.left) }
+}
+impl NodeFacts for Pipe {
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.value) }
+    fn minted(store: SyntaxArena, span: Span?) -> List<ExprId> { store.piped_nodes(self.stage, self.value) }
+}
+impl NodeFacts for LetPattern {
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+    fn minted(store: SyntaxArena, span: Span?) -> List<ExprId> {
+        store.let_matched(self.pat, self.subject, self.otherwise, self.rest, span)
+    }
+}
+impl NodeFacts for Propagate {
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+}

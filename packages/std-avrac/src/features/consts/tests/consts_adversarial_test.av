@@ -21,6 +21,24 @@ spec "features/consts (adversarial)" {
             shown("const READY = true\nlet f = () -> if READY { 1 } else { 0 }\nf()") == "1"
         }
     }
+    given "a top-level const reading a run-time `let`" {
+        // The value stands on its own floor, as a fn body does. It once
+        // trapped the compiler: the `let`'s type belongs to another body's facts.
+        then "is refused where it reads, with one refusal" {
+            let a = analyze_source("let p = \"a\"\nconst s: string = p\n0")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`p` is a run-time binding of the top level")
+        }
+        then "through a call as well" {
+            refused_with(
+                "fn f(x: string) -> string { x }\nlet p = \"a\"\nconst s: string = f(p)\n0",
+                "`p` is a run-time binding of the top level",
+            )
+        }
+        then "a const reading another const settles as it did" {
+            shown("const A = 2\nconst B = A + 1\nB") == "3"
+        }
+    }
     given "a name a `let` also claims" {
         // A top-level const is a DECLARATION: order-free and
         // module-wide, like a fn. A `let` of the same name shadows it
@@ -240,15 +258,15 @@ spec "features/consts (adversarial)" {
     given "a run-time read hidden in a branch" {
         then "a const reading a parameter inside an `if` branch is refused const.param, never a defect" {
             let src = "fn g(n: int) -> int {\n    const C = if true { n } else { 0 }\n    C\n}\ng(1)\n"
-            refused_at_run(src, "`C` reads `parameter 1`") && !run_words(src).contains("defect")
+            refused_at_run(src, "`C` reads `n`") && !run_words(src).contains("defect")
         }
         then "inside a `match` arm" {
             let src = "fn g(n: int) -> int {\n    const C = match 1 {\n        1 -> n\n        _ -> 0\n    }\n    C\n}\ng(1)\n"
-            refused_at_run(src, "`C` reads `parameter 1`") && !run_words(src).contains("defect")
+            refused_at_run(src, "`C` reads `n`") && !run_words(src).contains("defect")
         }
         then "inside a block's statement" {
             let src = "fn g(n: int) -> int {\n    const C = {\n        let t = n\n        t\n    }\n    C\n}\ng(1)\n"
-            refused_at_run(src, "`C` reads `parameter 1`") && !run_words(src).contains("defect")
+            refused_at_run(src, "`C` reads `n`") && !run_words(src).contains("defect")
         }
     }
 }

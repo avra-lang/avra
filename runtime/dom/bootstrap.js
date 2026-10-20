@@ -8,15 +8,20 @@
 // program's own declarations — see realize/dom/wire.av.
 //
 // Same file for every app.
-import { WIRE_VERSION, NO_ID, OP, SAYS, HOST } from "./wire.gen.js";
+import { WIRE_VERSION, NO_ID, OP, SAYS, HOST, ROWS, TAGS, AFTER } from "./wire.gen.js";
+import { createWindows } from "./windows.js";
 
-export { WIRE_VERSION, HOST };
+export { WIRE_VERSION, HOST, ROWS };
 
-// A frame's patches, in order. An id is a number in eight little-endian
-// bytes — the same width however deep its element sits — and `NO_ID` where
-// a record names none: the page itself as a parent, the first place as a
-// sibling. Every other number is four bytes; a text is its byte length,
-// then its bytes.
+// A `place` that follows no sibling but the end of the parent's run.
+export const APPENDED = -2;
+
+// A frame's patches, in order. An id is one more than its number in seven-bit
+// groups, so zero is `NO_ID`, where a record names none: the page itself as a
+// parent. A `place` says where it goes with one number: the first place, the
+// end of the parent's run, or two more than the sibling it follows. A tag is
+// its place among `TAGS`. Every other number is four bytes; a text is its
+// byte length, then its bytes.
 export function parseFrame(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const decoder = new TextDecoder();
@@ -26,22 +31,28 @@ export function parseFrame(bytes) {
     throw new Error(`unsupported wire version ${seen} — this host speaks ${WIRE_VERSION}`);
   }
   const int = () => { const v = dv.getInt32(i, true); i += 4; return v; };
-  const id = () => { const lo = dv.getUint32(i, true); const hi = dv.getInt32(i + 4, true); i += 8; return hi * 4294967296 + lo; };
+  const varint = () => { let n = 0, scale = 1, b; do { b = bytes[i++]; n += (b & 127) * scale; scale *= 128; } while (b >= 128); return n; };
+  const id = () => varint() - 1;
+  const after = () => { const v = varint(); return v === AFTER.first ? NO_ID : v === AFTER.append ? APPENDED : v - AFTER.sibling; };
+  const tag = () => TAGS[varint()];
   const str = () => { const len = int(); const s = decoder.decode(bytes.subarray(i, i + len)); i += len; return s; };
   const patches = [];
   while (i < bytes.length) {
     const op = bytes[i++];
-    if (op === OP.create) patches.push({ op, id: id(), tag: str() });
+    if (op === OP.create) patches.push({ op, id: id(), tag: tag() });
     else if (op === OP.create_text || op === OP.set_text) patches.push({ op, id: id(), content: str() });
-    else if (op === OP.place) patches.push({ op, id: id(), parent: id(), after: id() });
+    else if (op === OP.place) patches.push({ op, id: id(), parent: id(), after: after() });
     else if (op === OP.remove) patches.push({ op, id: id() });
     else if (op === OP.set_attr) patches.push({ op, id: id(), name: str(), value: str() });
     else if (op === OP.drop_attr) patches.push({ op, id: id(), name: str() });
     else if (op === OP.set_prop) patches.push({ op, id: id(), name: str(), says: int(), value: str() });
-    else if (op === OP.listen) patches.push({ op, id: id(), kind: int(), event: str(), says: int(), reads: str(), prevents: int() !== 0 });
+    else if (op === OP.define) patches.push({ op, kind: int(), says: int(), event: str(), reads: str(), prevents: int() !== 0 });
+    else if (op === OP.listen) patches.push({ op, id: id(), kind: int(), says: int() });
     else if (op === OP.unlisten) patches.push({ op, id: id(), kind: int() });
     else if (op === OP.style) patches.push({ op, css: str() });
     else if (op === OP.call) patches.push({ op, id: id(), verb: str() });
+    else if (op === OP.set_var) patches.push({ op, id: id(), property: str(), value: str() });
+    else if (op === OP.drop_var) patches.push({ op, id: id(), property: str() });
     else throw new Error(`unknown patch op ${op}`);
   }
   return patches;
@@ -63,6 +74,26 @@ function saidBy(el, says, reads) {
   return held === undefined ? null : { says, value: String(held) };
 }
 
+// The attribute a shortcut says its chord in: the modifiers held (`c`, `a`,
+// `s`), the key's `KeyboardEvent.code`, and its `KeyboardEvent.key`, each
+// after a slash.
+const CHORD = "data-avra-chord";
+
+// Whether a keydown is the chord `spec` says: exactly its modifiers (the meta
+// key is no chord's), and its key — by what the key is called when that is
+// ASCII, and by the place it sits at when the layout calls it something else
+// (a Greek or Russian ctrl+s says `σ` or `ы` of the key `KeyS`).
+function meets(spec, ev) {
+  const [held, rest] = cut(spec);
+  const [code, key] = cut(rest);
+  const ascii = /^[\x20-\x7e]+$/.test(ev.key);
+  return ev.ctrlKey === held.includes("c") && ev.altKey === held.includes("a") && ev.shiftKey === held.includes("s")
+    && !ev.metaKey && (ascii ? ev.key.toLowerCase() === key.toLowerCase() : code !== "" && ev.code === code);
+}
+
+// A spec's first field, and the rest after its slash.
+const cut = (text) => { const at = text.indexOf("/"); return [text.slice(0, at), text.slice(at + 1)]; };
+
 // Where a control's caret stands — none for an element that has none, which
 // a page says by answering nothing or by refusing the question.
 function caretOf(el) {
@@ -71,21 +102,74 @@ function caretOf(el) {
   } catch { return null; }
 }
 
+// What an element hears once it hears `def` too: a seat it already heard is
+// replaced, a lone seat stays the definition itself, and only a second seat
+// makes a list.
+function with_seat(mine, def) {
+  if (mine === undefined) return def;
+  const rest = (Array.isArray(mine) ? mine : [mine]).filter((d) => d.kind !== def.kind);
+  return rest.length === 0 ? def : [...rest, def];
+}
+
 // Build the applier over one document (a real one in a browser, a stub in a
 // test) and one mount element. `send(id, kind, said)` is the echo.
 export function createApplier(doc, mount, send = () => {}, styleEl = null) {
-  const byId = new Map();
+  // THE PAGE'S TABLES ARE KEYED BY ID, AND IDS ARE DENSE: `nodes[id]` is the
+  // element, `hears[id]` what it hears — the shared definition of its one
+  // seat, or a list of them for a second — so an element costs no object here.
+  const nodes = [];
+  const hears = [];
+  const defined = new Map();
+  const armed = new Set();
+  // WHO HEARS WHAT IS DATA HERE, NEVER A LISTENER ON EACH ELEMENT: one
+  // capturing listener per event word on the mount finds the hearers on the
+  // way up from the target.
+  const fire = (el, ev, def) => {
+    if (def.event !== ev.type) return;
+    if (def.prevents && ev.preventDefault) ev.preventDefault();
+    send(el.__avra_id, def.kind, saidBy(el, def.says, def.reads));
+  };
+  const hearing = (el, ev) => {
+    const mine = hears[el.__avra_id];
+    if (mine === undefined) return;
+    if (Array.isArray(mine)) for (const def of mine) fire(el, ev, def); else fire(el, ev, mine);
+  };
+  // A SHORTCUT IS LIVE WHILE WHAT HOLDS IT HAS THE FOCUS, so a keydown is
+  // offered to the keys among each ancestor's children, nearest first, and the
+  // first whose chord it meets is pressed — and the browser's own answer to
+  // that chord is stopped, the page having bound it.
+  const pressed = (ev) => {
+    for (let el = mount.contains(ev.target) ? ev.target : mount; el; el = el.parentNode) {
+      for (const key of el.childNodes || []) {
+        const spec = key.getAttribute ? key.getAttribute(CHORD) : null;
+        if (spec === null || !meets(spec, ev)) continue;
+        if (ev.preventDefault) ev.preventDefault();
+        hearing(key, ev);
+        return;
+      }
+      if (el === mount) return;
+    }
+  };
+  const heard = (ev) => {
+    for (let el = ev.target; el && el !== mount; el = el.parentNode) {
+      hearing(el, ev);
+      if (!ev.bubbles) break;
+    }
+  };
+  let chording = false;
+  const listed = (id) => { const mine = hears[id]; return mine === undefined ? [] : Array.isArray(mine) ? mine : [mine]; };
   const need = (id) => {
-    const el = byId.get(id);
+    const el = nodes[id];
     if (!el) throw new Error(`a patch names element ${id}, which is not on the page`);
     return el;
   };
   // An element that leaves takes everything under it.
   const forget = (el) => {
-    byId.delete(el.__avra_id);
+    nodes[el.__avra_id] = undefined;
+    hears[el.__avra_id] = undefined;
     for (const child of el.childNodes || []) forget(child);
   };
-  const keep = (id, el) => { el.__avra_id = id; byId.set(id, el); };
+  const keep = (id, el) => { el.__avra_id = id; nodes[id] = el; };
   // WHAT THE PAGE KEEPS ON AN ELEMENT IS NEVER THIS HOST'S TO LOSE: the
   // focus, a caret, how far it is scrolled, a video playing, an animation
   // under way. A page that can carry an element standing on it
@@ -116,7 +200,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     [OP.place]: (p) => {
       const parent = p.parent === NO_ID ? mount : need(p.parent);
       const el = need(p.id);
-      const before = (p.after === NO_ID ? parent.childNodes[0] : need(p.after).nextSibling) || null;
+      const before = (p.after === NO_ID ? parent.childNodes[0] : p.after === APPENDED ? null : need(p.after).nextSibling) || null;
       if (before === el || (el.parentNode === parent && el.nextSibling === before)) return;
       carry(parent, el, before);
     },
@@ -127,6 +211,10 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     },
     [OP.set_attr]: (p) => need(p.id).setAttribute(p.name, p.value),
     [OP.drop_attr]: (p) => need(p.id).removeAttribute(p.name),
+    // A CUSTOM PROPERTY IS WRITTEN THROUGH THE ELEMENT'S STYLE OBJECT, never as a
+    // `style` attribute: a page that allows styles by nonce alone allows this.
+    [OP.set_var]: (p) => need(p.id).style.setProperty(p.property, p.value),
+    [OP.drop_var]: (p) => need(p.id).style.removeProperty(p.property),
     // A PROPERTY IS WRITTEN ONLY WHEN IT DIFFERS: writing a field's own
     // text back to it would move the caret a user is typing at.
     [OP.set_prop]: (p) => {
@@ -135,22 +223,28 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
       if (el[p.name] !== value) el[p.name] = value;
     },
     [OP.set_text]: (p) => { need(p.id).textContent = p.content; },
+    // WHAT A SEAT'S EVENT IS arrives once (`define`), and each `listen` of it
+    // is an element and two numbers.
+    [OP.define]: (p) => { defined.set(p.kind * 4 + p.says, p); },
     [OP.listen]: (p) => {
-      const el = need(p.id);
-      const held = el.__avra_listeners || (el.__avra_listeners = new Map());
-      const listener = (ev) => {
-        if (p.prevents && ev) ev.preventDefault();
-        send(p.id, p.kind, saidBy(el, p.says, p.reads));
-      };
-      el.addEventListener(p.event, listener);
-      held.set(p.kind, { event: p.event, listener });
+      need(p.id);
+      const def = defined.get(p.kind * 4 + p.says);
+      if (!def) throw new Error(`a patch listens to seat ${p.kind} saying ${p.says}, which no definition told`);
+      hears[p.id] = with_seat(hears[p.id], def);
+      if (!armed.has(def.event)) {
+        armed.add(def.event);
+        mount.addEventListener(def.event, heard, true);
+      }
+      // A keydown with nothing focused lands on the body, outside the mount, so
+      // shortcuts hear the DOCUMENT.
+      if (def.event === "keydown" && !chording) {
+        chording = true;
+        doc.addEventListener("keydown", pressed, true);
+      }
     },
     [OP.unlisten]: (p) => {
-      const el = need(p.id);
-      const held = el.__avra_listeners && el.__avra_listeners.get(p.kind);
-      if (!held) return;
-      el.removeEventListener(held.event, held.listener);
-      el.__avra_listeners.delete(p.kind);
+      const rest = listed(p.id).filter((def) => def.kind !== p.kind);
+      hears[p.id] = rest.length === 0 ? undefined : rest.length === 1 ? rest[0] : rest;
     },
     [OP.style]: (p) => { if (styleEl) styleEl.textContent = p.css; },
     // A VERB OF THE ELEMENT'S OWN, asked for by name: the program says
@@ -162,22 +256,32 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     },
   };
 
-  return function applyFrame(bytes) {
+  const applyFrame = (bytes) => {
     for (const p of parseFrame(bytes)) apply[p.op](p);
   };
+  // What each element hears, for a reader of the page to inspect.
+  applyFrame.ears = (id) => listed(id).map((def) => [def.kind, def]);
+  // How many slots hold an element and a hearing: what the page still keeps.
+  applyFrame.held = () => ({ nodes: nodes.filter((n) => n !== undefined).length, hears: hears.filter((h) => h !== undefined).length });
+  return applyFrame;
 }
 
 // Load the module and run it in a page. The host supplies `rt` (its own
 // rows for module `avra:rt`) and `wasi` (preview1). An import NO host row
 // answers REFUSES by name — a missing row must never be a silent no-op.
+// A module that links the runtime's scheduler imports its port (`avra_host`)
+// whether or not the program ever parks. A host that runs tasks supplies
+// `tasks`; a page does not, and the port it is given refuses BY NAME when
+// called, so a program that never parks pays nothing and one that does says why.
 export async function instantiate(source, host) {
+  const unhosted = new Proxy({}, { get: (_, name) => () => { throw new Error(`this page hosts no tasks: the module called avra_host.${String(name)}`); } });
   // A URL in a page, the bytes themselves in a test or a node harness.
   const bytes = source instanceof Uint8Array ? source : await (await fetch(source)).arrayBuffer();
   const module = await WebAssembly.compile(bytes);
   const imports = {};
   const unknown = [];
   for (const im of WebAssembly.Module.imports(module)) {
-    const table = im.module === "avra:rt" ? host.rt : im.module === "wasi_snapshot_preview1" ? host.wasi : null;
+    const table = im.module === "avra:rt" ? host.rt : im.module === "wasi_snapshot_preview1" ? host.wasi : im.module === "avra_host" ? host.tasks ?? unhosted : null;
     const fn = table ? table[im.name] : undefined;
     if (typeof fn !== "function") { unknown.push(`${im.module}.${im.name}`); continue; }
     imports[im.module] = imports[im.module] || {};
@@ -214,6 +318,137 @@ export function sendEvent(mod, who, what, said) {
   event(BigInt(who), BigInt(what), BigInt(said.says), 0n, BigInt(bytes.length));
 }
 
+// The program's `scrolled(len, from, to, extent)` — `HOST.scrolled` — says which
+// rows of a windowed list the page shows and how tall they measure. The first
+// `len` octets of the seat are the list's path, a line break, and the key of the
+// row the focus rests on (none after it for none).
+export function sendScrolled(mod, path, from, to, extent, pin = "") {
+  const bytes = new TextEncoder().encode(`${path}\n${pin}`);
+  const at = Number(mod[HOST.seat](BigInt(bytes.length)));
+  new Uint8Array(mod.memory.buffer, at, bytes.length).set(bytes);
+  mod[HOST.scrolled](BigInt(bytes.length), BigInt(from), BigInt(to), BigInt(extent));
+}
+
+// The page's timers, for the program's asks. The program names a timer by
+// a number it counted out (`arm(token, ms, repeat)`), the host keeps the
+// handle, and `fired(token)` re-enters the program as a turn. A timer let
+// go (`disarm`) never fires; a one-shot forgets itself once it has. `clock`
+// is the page's `{ setTimeout, setInterval, clearTimeout, clearInterval }`,
+// or a test's.
+export function createTimers(clock, fired) {
+  const held = new Map();
+  return {
+    arm: (token, ms, repeat) => {
+      const t = Number(token);
+      const again = Number(repeat) !== 0;
+      const fire = () => { if (!again) held.delete(t); fired(t); };
+      held.set(t, { again, handle: (again ? clock.setInterval : clock.setTimeout)(fire, Number(ms)) });
+    },
+    disarm: (token) => {
+      const t = Number(token);
+      const timer = held.get(t);
+      if (!timer) return;
+      (timer.again ? clock.clearInterval : clock.clearTimeout)(timer.handle);
+      held.delete(t);
+    },
+    count: () => held.size,
+  };
+}
+
+// A request frame the program wrote (`request_frame`, realize/dom/wire.av):
+// the wire's version, the method's word, the URL, the wait in milliseconds
+// (-1: none), the fields as a count and name/value pairs, and the body as its
+// content type (empty: none) and its octets.
+export function parseRequest(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const decoder = new TextDecoder();
+  let i = 0;
+  const seen = bytes[i++];
+  if (seen !== WIRE_VERSION) {
+    throw new Error(`unsupported wire version ${seen} — this host speaks ${WIRE_VERSION}`);
+  }
+  const int = () => { const v = dv.getInt32(i, true); i += 4; return v; };
+  const octets = () => { const len = int(); const o = bytes.slice(i, i + len); i += len; return o; };
+  const str = () => decoder.decode(octets());
+  const method = str();
+  const url = str();
+  const timeoutMs = int();
+  const headers = [];
+  for (let n = int(); n > 0; n--) headers.push([str(), str()]);
+  const kind = str();
+  const body = octets();
+  return { method, url, timeoutMs, headers, kind, body };
+}
+
+// The page's requests, for the program's asks. The program names one by a
+// number it counted out (`get(token, frame)`), the host keeps its abort handle,
+// and `answered(token, status, octets)` re-enters the program as a turn: the
+// status and body of the reply, or status -1 and the words of why there is
+// none. An aborted request, or one already answered, never answers — a late
+// answer is dropped here, not by the program. `fetchFn` is the page's `fetch`,
+// or a test's; `clock` supplies the wait.
+export function createFetches(fetchFn, answered, clock = globalThis) {
+  const held = new Map();
+  const finish = (token, status, octets) => {
+    const mine = held.get(token);
+    if (!mine) return;
+    held.delete(token);
+    if (mine.timer !== null) clock.clearTimeout(mine.timer);
+    answered(token, status, octets);
+  };
+  return {
+    get: (token, frame) => {
+      const t = Number(token);
+      const r = parseRequest(frame);
+      const controller = new AbortController();
+      const timer = r.timeoutMs >= 0 ? clock.setTimeout(() => { finish(t, -1, new TextEncoder().encode("the request timed out")); controller.abort(); }, r.timeoutMs) : null;
+      held.set(t, { controller, timer });
+      const headers = Object.fromEntries(r.headers);
+      if (r.kind !== "" && !Object.keys(headers).some((n) => n.toLowerCase() === "content-type")) headers["content-type"] = r.kind;
+      const init = { method: r.method, headers, signal: controller.signal };
+      if (r.body.length > 0 && r.method !== "GET" && r.method !== "HEAD") init.body = r.body;
+      Promise.resolve()
+        .then(() => fetchFn(r.url, init))
+        .then((res) => res.arrayBuffer().then((buf) => finish(t, res.status, new Uint8Array(buf))))
+        .catch((err) => finish(t, -1, new TextEncoder().encode(String(err && err.message ? err.message : err))));
+    },
+    abort: (token) => {
+      const t = Number(token);
+      const mine = held.get(t);
+      if (!mine) return;
+      held.delete(t);
+      if (mine.timer !== null) clock.clearTimeout(mine.timer);
+      mine.controller.abort();
+    },
+    count: () => held.size,
+  };
+}
+
+// The program's `answered(token, status, len)` — `HOST.answered`: the octets
+// are written into the seat the program hands out for exactly that many
+// (`HOST.seat`), then the three numbers cross as i64 seats.
+export function sendAnswer(mod, token, status, octets) {
+  const at = Number(mod[HOST.seat](BigInt(octets.length)));
+  new Uint8Array(mod.memory.buffer, at, octets.length).set(octets);
+  mod[HOST.answered](BigInt(token), BigInt(status), BigInt(octets.length));
+}
+
+// The page's frames, for the program's paints. The program asks for one when
+// state moved (`next()`), once until it comes; the host calls `painted` from
+// the display's own frame (`raf`, the page's requestAnimationFrame, or a
+// test's), and the program paints once however many turns moved it.
+export function createFrames(raf, painted) {
+  let pending = false;
+  return {
+    next: () => {
+      if (pending) return;
+      pending = true;
+      raf(() => { pending = false; painted(); });
+    },
+    waiting: () => pending,
+  };
+}
+
 // RUN AN APP ON A PAGE: load the module, apply each frame it sends to
 // `mount`, echo what the user does, then run the program's own statements
 // — its `mount(view)` paints the first frame. `document`, `mount` and
@@ -221,14 +456,25 @@ export function sendEvent(mod, who, what, said) {
 // preview1 rows over the module's memory; `sent(bytes)` sees each frame
 // before it is applied. A module that is no `@std/ui` web app REFUSES by
 // the name it lacks.
-export async function run(source, { document, mount, style = null, wasi, sent = () => {} }) {
+export async function run(source, { document, mount, style = null, wasi, sent = () => {}, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a), raf = (cb) => globalThis.requestAnimationFrame(cb) }) {
   let mod = null;
+  const timers = createTimers(clock, (token) => mod[HOST.fired](BigInt(token)));
+  const frames = createFrames(raf, () => mod[HOST.painted]());
+  const fetches = createFetches(fetchFn, (token, status, octets) => sendAnswer(mod, token, status, octets), clock);
+  const windows = createWindows(document, mount, (path, from, to, extent, pin) => sendScrolled(mod, path, from, to, extent, pin));
   const apply = createApplier(document, mount, (who, what, said) => sendEvent(mod, who, what, said), style);
   mod = await instantiate(source, {
     wasi: wasi(() => mod.memory),
     // The seat is a Bytes: the pointer names its box, and the LENGTH comes
     // from the runtime's own reader, exported by the module.
-    rt: { avra_dom_frame: (ptr) => { const bytes = frameOf(mod.memory, ptr, mod.avra_bytes_len); sent(bytes); apply(bytes); } },
+    rt: {
+      [ROWS.frame]: (ptr) => { const bytes = frameOf(mod.memory, ptr, mod.avra_bytes_len); sent(bytes); apply(bytes); queueMicrotask(windows.check); },
+      [ROWS.arm]: timers.arm,
+      [ROWS.disarm]: timers.disarm,
+      [ROWS.get]: (token, ptr) => fetches.get(token, frameOf(mod.memory, ptr, mod.avra_bytes_len).slice()),
+      [ROWS.abort]: fetches.abort,
+      [ROWS.next_paint]: frames.next,
+    },
   });
   const lacks = Object.values(HOST).filter((name) => typeof mod[name] !== "function");
   if (lacks.length > 0) {
@@ -239,7 +485,7 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
   mod._initialize();
   const code = mod[HOST.entry]();
   if (code !== 0) throw new Error(`the program's statements answered ${code}`);
-  return mod;
+  return { mod, ears: apply.ears };
 }
 
 // The bytes a frame seat points at, read through the RUNTIME'S OWN length

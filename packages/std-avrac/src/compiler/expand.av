@@ -2,6 +2,7 @@
 //! materialize generated declarations, and the meta value a crossing
 //! produces. Moved out of the workspace god-object.
 use core.{
+    Pat,
     Expr,
     StmtId,
     Span,
@@ -23,6 +24,9 @@ use core.{
     FnParts,
     ImplParts,
     TypeRef,
+    SeatMark,
+    mark_at,
+    plain_mark,
     source_spelled,
     named_ref,
     spelled,
@@ -50,7 +54,16 @@ use features.{
     Generation,
     Decl,
 }
-use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind, arg_text}
+use features.{
+    meta_mark,
+    meta_of_fn,
+    meta_of_type,
+    meta_of_named,
+    meta_of_trait,
+    kind_of,
+    no_kind,
+    arg_text,
+}
 use @std.meta.{
     Directive,
     Node,
@@ -60,6 +73,7 @@ use @std.meta.{
     Trait as MetaTrait,
     Param as MetaParam,
     Field as MetaField,
+    Spelled as MetaSpelled,
     Variant as MetaVariant,
     Kind,
     Annotation as MetaAnnotation,
@@ -109,14 +123,17 @@ impl Workspace {
         // walks is itself a dependency of that resolve. The first
         // re-entry while the file's run is open expands again and keeps
         // its answer for the run; a later one reads it, so a file is not
-        // expanded once per member that asks.
+        // expanded once per member that asks. A re-entry that arrives
+        // while that first one still computes reads what is minted so far.
         let reentrant = self.relation(Family.Expanded).open(f.index)
         let settled = if reentrant { self.decls.reentry_answer(f) } else { null }
         if settled != null { return settled! }
+        if reentrant && self.decls.reentry_running(f) { return self.generated_so_far(f) }
         match self.relation(Family.Expanded).start_recursive(f.index) {
             .Reuse(value) -> { return expanded_of(value) },
             .Compute -> nothing(),
         }
+        if reentrant { self.decls.reentry_begun(f) }
         self.decls.hush_expansion(f)
         let p = self.parsed(f)
         let vis = self.visible(f)
@@ -136,6 +153,12 @@ impl Workspace {
             .finish(f.index, DbRow.Expanded(made), fp(31, [d.index for d in made]))
         if reentrant { self.decls.reentry_kept(f, made) } else { self.decls.reentry_over(f) }
         made
+    }
+
+    /// The declarations of `f` generated so far, in the store.
+    fn generated_so_far(f: FileId) -> List<DeclId> {
+        let p = self.parsed(f)
+        [d for d in self.decls.decls_of_file(f) if self.written_stmt(f, d).index >= p.store.stmts.count()]
     }
 
     /// The declarations of `f` its parse wrote. A held file's record also
@@ -169,12 +192,11 @@ impl Workspace {
         // nothing; the annotation law speaks it
         if self.decls.meta_disagreement() != null { return [] }
         if !self.is_derived(w.ret) && self.spoke_unspelled(f, w, p) { return [] }
-        let directives = if self.is_derived(w.ret) {
-            self.derive_directives(w, f, p, vis)
-        } else if self.is_declared(w.ret) {
-            self.declared_directives(w.ann, f, w.stmt, w.callee, w.args, w.at)
-        } else {
-            self.lifted_directives(w.ann, f, w.stmt, w.callee, w.args, w.at)
+        let directives = when {
+            self.is_derived(w.ret) -> self.derive_directives(w, f, p, vis)
+            self.is_declared(w.ret) -> self
+                .declared_directives(w.ann, f, w.stmt, w.callee, w.args, w.at)
+            _ -> self.lifted_directives(w.ann, f, w.stmt, w.callee, w.args, w.at)
         }
         flatten(
             [self.materialized_directive(f, w, directive, vis, maker) for directive in directives],
@@ -669,6 +691,12 @@ impl Workspace {
     /// carrying NO annotation claims nothing, and one whose every
     /// derive answered claims their union.
     fn claimed_marks(f: FileId, d: DeclId, p: Parsed, vis: Namespace) -> List<string>? {
+        let read? = self.read_claims(f, d, p, vis) else { return null }
+        read.concat(own_marks())
+    }
+
+    /// What the declaration's readers claim, before the compiler's own.
+    fn read_claims(f: FileId, d: DeclId, p: Parsed, vis: Namespace) -> List<string>? {
         if p.store.annotations_of(self.decls.decl(d).stmt).is_empty() { return claims_nothing() }
         let each: List<List<string>?> = [self.derive_claims(w, f, p, vis) for w in self.declared_work(f, d, p, vis) if self.is_derived(w.ret)]
         if each.is_empty() { return null }
@@ -756,13 +784,24 @@ impl Workspace {
         match kind {
             .Expression -> Filled.Expr(self.spliced_expr(f, node)),
             .Name -> Filled.Name(self.spliced_names(node).first() ?? ""),
-            .Binder -> Filled.Names(self.spliced_names(node)),
+            .Binder -> self.spliced_binder(f, node),
             .Type -> Filled.Type(self.spliced_type(node)),
-            .Statement -> Filled.Stmts(self.spliced_stmts(f, node)),
+            .Statement or .Tail -> Filled.Stmts(self.spliced_stmts(f, node)),
             .Arm -> Filled.Arms(self.spliced_arms(f, node)),
             .Run -> Filled.Exprs(self.spliced_exprs(f, node)),
             .Fields -> Filled.Params(self.spliced_params(f, node)),
             .Inits -> Filled.Inits(self.spliced_inits(f, node)),
+        }
+    }
+
+    /// A binder seat's fill: a number or a truth is a LITERAL pattern
+    /// (the arm tests for it), anything else the names it spells.
+    fn spliced_binder(f: FileId, node: Node) -> Filled {
+        let store = self.decls.store_of(f)
+        match node {
+            .Int(v) -> Filled.Pat(store.alloc_pat(Pat.Lit(store.alloc_expr(Expr.IntLit(v))))),
+            .Bool(b) -> Filled.Pat(store.alloc_pat(Pat.Lit(store.alloc_expr(Expr.BoolLit(b))))),
+            .Template(_, _, _, _) or .Many(_) or .Name(_) or .Text(_) or .Float(_) or .Interp(_, _) -> Filled.Names(self.spliced_names(node)),
         }
     }
 
@@ -785,7 +824,7 @@ impl Workspace {
                 inits: no_inits(),
             },
             .Inits -> Lift { lifts: true, params: [], inits: self.carried_inits(f, src, ss, file, at, rb) },
-            .Expression or .Name or .Binder or .Type or .Statement or .Arm or .Run -> Lift { lifts: false, params: [], inits: no_inits() },
+            .Expression or .Name or .Binder or .Type or .Statement or .Arm or .Run or .Tail -> Lift { lifts: false, params: [], inits: no_inits() },
         }
     }
 
@@ -932,7 +971,13 @@ impl Workspace {
         if quote_kind(src, q) is .Holes { return self.holes_copied(f, fills, seat) }
         let ws = self
         let thunks = [(kind: HoleKind) -> ws.spliced(f, fill, kind) for fill in fills]
-        mut rb = copier(src, self.decls.store_of(f), thunks, hole_runs(src, q))
+        mut rb = copier(
+            src,
+            self.decls.store_of(f),
+            thunks,
+            hole_runs(src, q),
+            sugar_door(self.lang),
+        )
         let copied_stmts: List<StmtId> = match body.view {
             .Verbatim(ss, _) -> ss,
             .None or .Expanded(_) -> [],
@@ -975,7 +1020,7 @@ impl Workspace {
     fn copied_written(f: FileId, origin: FileId, src: SyntaxArena, at: int) -> Copied {
         let e? = self.decls.default_at(origin, at) else { return nothing_copied() }
         let dst = self.decls.store_of(f)
-        mut rb = copier(src, dst, [], [])
+        mut rb = copier(src, dst, [], [], sugar_door(self.lang))
         let stmts = [dst.alloc_stmt(Stmt.ExprStmt(rb.expr(e)))]
         self.noted_copy(f, origin, src, at, rb)
         Copied { stmts: stmts, arms: [] }
@@ -999,7 +1044,7 @@ impl Workspace {
     ) -> List<Directive> {
         match self.lifted(d, f, stmt, call, args) {
             .Ok(crossed) -> crossed.directives(),
-            .Err(why) -> self.mute_lift(d, f, at, why),
+            .Err(why) -> self.mute_lift(d, f, at, self.lift_refusal(d, f, stmt, call, args) ?? why),
         }
     }
 
@@ -1016,7 +1061,7 @@ impl Workspace {
     ) -> List<Directive> {
         match self.lifted(d, f, stmt, call, args) {
             .Ok(crossed) -> crossed.declared_made(),
-            .Err(why) -> self.mute_lift(d, f, at, why),
+            .Err(why) -> self.mute_lift(d, f, at, self.lift_refusal(d, f, stmt, call, args) ?? why),
         }
     }
 
@@ -1225,7 +1270,38 @@ impl Workspace {
     /// fields a `..Record` spread placed, which the declaration never
     /// wrote, so the two runs do not share positions.
     fn crossed_fields(v: FileView, s: StmtId, d: DeclId) -> List<MetaField> {
-        [crossed_field(v, p, self.field_kind(d, p.name.of)) for p in v.store.declared_fields(s)]
+        [self.crossed(v, p, self.field_kind(d, p.name.of)) for p in v.store.declared_fields(s)]
+    }
+
+    /// One field as a `Field` value: the one door every crossed field takes.
+    fn crossed(v: FileView, p: Param, kind: Kind) -> MetaField {
+        crossed_field(v, p, kind, self.spelled_field(v.file, p.ty))
+    }
+
+    fn spelled_field(f: FileId, written: TypeRef?) -> MetaSpelled? {
+        let t? = written else { return null }
+        self.spelled_in(f, t, plain_mark)
+    }
+
+    /// A written type whole, each name met with the module declaring it and
+    /// each argument with the seat mark the spelling gave it.
+    fn spelled_in(f: FileId, t: TypeRef, mark: SeatMark) -> MetaSpelled {
+        MetaSpelled {
+            name: t.name,
+            module: self.declaring_module(f, t.name),
+            args: [self.spelled_in(f, a, mark_at(t.marks, j)) for j, a in t.args],
+            optional: t.optional,
+            dynamic: t.dynamic,
+            arrow: t.arrow,
+            alternatives: [self.spelled_in(f, a, plain_mark) for a in t.alternatives],
+            mark: meta_mark(mark),
+        }
+    }
+
+    fn declaring_module(f: FileId, name: string) -> string? {
+        let d? = self.type_decl_named(f, name) else { return null }
+        if self.decls.is_builtin(d) { return null }
+        self.decls.qualified_module(d)
     }
 
     /// An enum's variants: name, payload spellings, and the payload
@@ -1267,7 +1343,7 @@ impl Workspace {
             name: m.name,
             payload: [written_spelling(p.ty) for p in fields if !faceted(p.marks)],
             at: placed(v, v.store.stmt_span(m.stmt)),
-            fields: [crossed_field(v, p, kind_at(kinds, j)) for j, p in fields],
+            fields: [self.crossed(v, p, kind_at(kinds, j)) for j, p in fields],
             marks: crossed_marks(v, self.decls.member_marks(m.id, gathering)),
             doc: self.decl_doc_text(m.id),
             annotations: self.decl_annotations(v, m.id),
@@ -1287,7 +1363,7 @@ impl Workspace {
             name: va.name.of,
             payload: [written_spelling(p.ty) for p in va.payloads if !faceted(p.marks)],
             at: placed(v, va.span),
-            fields: [crossed_field(v, p, kind_at(kinds, j)) for j, p in va.payloads],
+            fields: [self.crossed(v, p, kind_at(kinds, j)) for j, p in va.payloads],
             marks: crossed_marks(v, va.marks),
             doc: null,
             annotations: crossed_annotations(v, va.marks),

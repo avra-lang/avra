@@ -1,0 +1,82 @@
+//! `@derive(Copied)` — what a template copy does with each table of
+//! the arena it copies from. A table says so in a mark: `@copied(expr,
+//! verb)` (or `stmt`) is carried through the destination's `verb(id,
+//! held)`, which takes the table's own element — a bool, a nullable, a
+//! record — and does nothing for the empty one; `@copied_by_hand(site)`
+//! names the copier's own walk that rebuilds ids inside the value; and
+//! `@not_copied(reason)` says why a copy has none. A table with none of
+//! the three, or more than one, is refused where it is declared, so a
+//! table added tomorrow cannot be forgotten by the copier silently.
+//!
+//! It stands ALONE in this file on purpose (CLAUDE.md).
+use @std.meta.{Type as MetaType, Field, Directive, Declared, Diagnostic, Code}
+
+const copied_word = "copied"
+const by_hand_word = "copied_by_hand"
+const not_copied_word = "not_copied"
+const expr_kind = "expr"
+const stmt_kind = "stmt"
+
+/// The compiler's derive for how an arena's tables are copied.
+export trait Copied {
+    static fn marks(t: MetaType) -> List<string> { [copied_word, by_hand_word, not_copied_word] }
+
+    static fn derive(t: MetaType) -> Declared {
+        let tables = [f for f in t.fields if is_table(f)]
+        Declared {
+            made: [
+                Directive {
+                    twin: "",
+                    name: t.name,
+                    at: t.at,
+                    source: quote {
+                        impl ${t} {
+                            fn copy_expr_tables(e: ExprId, dst: ${t}, id: ExprId) {
+                                ${[expr_call(f) for f in tables if kind_of(f) == expr_kind]}
+                                let _ = id
+                            }
+
+                            fn copy_stmt_tables(s: StmtId, dst: ${t}, id: StmtId) {
+                                ${[stmt_call(f) for f in tables if kind_of(f) == stmt_kind]}
+                                let _ = id
+                            }
+                        }
+                    },
+                },
+            ],
+            problems: [unclassified(f) for f in tables if classes(f) != 1],
+        }
+    }
+}
+
+/// Whether a field is one of the arena's own tables.
+fn is_table(f: Field) -> bool { f.ty.starts_with("Cell<") }
+
+/// How many of the three classifying marks a table wears.
+fn classes(f: Field) -> int {
+    f
+        .marks
+        .filter(it.name == copied_word || it.name == by_hand_word || it.name == not_copied_word)
+        .length
+}
+
+/// The kind of node a `copied` table is indexed by, empty for any other.
+fn kind_of(f: Field) -> string { f.marks.find(it.name == copied_word)?.args?.first() ?? "" }
+
+/// The destination verb a `copied` table is written through.
+fn verb_of(f: Field) -> string { (f.marks.find(it.name == copied_word)?.args ?? [])[1] }
+
+fn expr_call(f: Field) -> Code { quote { dst.${verb_of(f)}(id, self.${f.name}.get()[e.index]) } }
+
+fn stmt_call(f: Field) -> Code { quote { dst.${verb_of(f)}(id, self.${f.name}.get()[s.index]) } }
+
+// ── voices ──
+
+/// A table the copier has no word about.
+fn unclassified(f: Field) -> Diagnostic {
+    Diagnostic {
+        message: "`${f.name}` says nothing about a template copy — a table is `@copied(expr, verb)`, `@copied(stmt, verb)`, `@copied_by_hand(site)` or `@not_copied(reason)`, exactly one",
+        help: "a table the copy forgets leaves no mark at any site",
+        at: f.at,
+    }
+}

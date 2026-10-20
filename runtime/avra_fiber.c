@@ -21,10 +21,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !defined(__wasm32__)
 #include <sys/mman.h>
 #include <sys/resource.h>
-#include <sys/stat.h>
 #include <sys/wait.h>
+#endif
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -38,7 +40,9 @@
 #include "avra_runtime.h"
 #include "avra_platform.h"
 
-#if defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__wasm32__)
+#define AVRA_HOSTED 1
+#elif defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/event.h>
 #define AVRA_KQUEUE 1
 #elif defined(__linux__)
@@ -71,8 +75,33 @@ void avra_fiber_switch(void** from, void* to);
 #endif
 
 // FIBER_FRAME is the bytes a switched-out stack holds, and FIBER_RETURN
-// the word among them the switch returns through.
-#if defined(__aarch64__)
+// the word among them the switch returns through. A HOSTED target
+// (WebAssembly) has no such stack: its host holds each task's stack and
+// the switch is a handover to the host (`fiber_switched`).
+#if AVRA_HOSTED
+// The handover: `to` runs, and `from` stands suspended in the host until
+// something hands the thread back. A fiber that is done is not suspended:
+// its stack ends with its body.
+//
+// THE MODULE EXPORTS NOTHING OF THE SCHEDULER. What the host calls back into
+// — the entry a fresh task starts at and the allocator of an unwind buffer —
+// are handed over as FUNCTION-TABLE INDICES (`entry`, `buffers`) with every
+// port call, and the host reaches them through the exported table. An export
+// is a root the linker keeps whether or not anything reaches it; an address
+// taken here is kept exactly when a reachable fn parks, so a program that
+// never spawns or waits carries no scheduler.
+__attribute__((import_module("avra_host"), import_name("switch")))
+extern void avra_host_switch(void* from, void* to, int32_t ends, void* entry, void* buffers);
+
+// The world waited on for `timeout_ns` (below zero: for ever): the host
+// suspends the thread until that time passes or something else wakes it.
+__attribute__((import_module("avra_host"), import_name("idle")))
+extern void avra_host_idle(int64_t timeout_ns, void* buffers);
+void avra_task_entry(void);
+void* avra_asyncify_buffer(int bytes);
+static void host_idle(int64_t timeout_ns);
+
+#elif defined(__aarch64__)
 // x19–x28, the frame pair x29/x30, and d8–d15: 160 bytes, in a
 // 176-byte frame so sp stays 16-aligned. x30 is the return.
 #define FIBER_FRAME 176
@@ -273,7 +302,9 @@ static int64_t* task_cells(void* task) { return ((AvraArray*)task)->data; }
 static int64_t g_stamp = 0;
 
 // The switch reads these three by their place.
+#if !AVRA_HOSTED
 _Static_assert(offsetof(Fiber, sp) == 0 && offsetof(Fiber, floor) == 8 && offsetof(Fiber, canary) == 16, "the switch reads a fiber's first three words");
+#endif
 
 static const uint64_t g_untouched = 0;
 static Fiber g_main = { .state = FIBER_RUNNING, .canary = &g_untouched, .local = &avra_main_local };
@@ -392,7 +423,26 @@ static int64_t now_ns(void);
 static void clock_turned(void);
 static void case_spun(const char* words);
 
-__attribute__((constructor))
+// THE RUNTIME'S SETTINGS ARE READ ONCE: at load on a native target. A hosted
+// target has no load-time hook it can afford — a constructor is a root the
+// linker keeps, and it would carry the whole scheduler into every module that
+// merely links this object — so they are read where the scheduler first runs.
+#if AVRA_HOSTED
+#define SETTLED_AT_LOAD
+static void trace_settle(void);
+static void tick_settle(void);
+static int g_settled;
+static void hosted_settled(void) {
+    if (g_settled) return;
+    g_settled = 1;
+    trace_settle();
+    tick_settle();
+}
+#else
+#define SETTLED_AT_LOAD __attribute__((constructor))
+#endif
+
+SETTLED_AT_LOAD
 static void trace_settle(void) {
     avra_clock_turned_hook = clock_turned;
     avra_clock_spun_hook = case_spun;
@@ -425,7 +475,7 @@ static int64_t whole_above_zero(const char* name, const char* value) {
 // spinning `while` holds its core at most that long. AVRA_TIMER_TURNS
 // bounds a due timer's lateness to that many switches or one tick,
 // whichever is sooner.
-__attribute__((constructor))
+SETTLED_AT_LOAD
 static void tick_settle(void) {
     const char* us = getenv("AVRA_TICK_US");
     if (us && *us) avra_tick_us = whole_above_zero("AVRA_TICK_US", us);
@@ -733,7 +783,8 @@ static size_t g_fds_cap = 0;
 static Waiter* g_sig_head[NSIG];
 static Waiter* g_sig_tail[NSIG];
 static unsigned char g_sig_armed[NSIG];
-#if AVRA_KQUEUE
+#if AVRA_HOSTED
+#elif AVRA_KQUEUE
 // The disposition each armed signal had before Avra spent it, given back
 // when the last waiter leaves.
 static struct sigaction g_sig_prior[NSIG];
@@ -764,6 +815,10 @@ static void poll_counted(void) {
     g_until_poll = next;
 }
 
+#if AVRA_HOSTED
+static void poller_open(void) {
+}
+#else
 static void poller_open(void) {
     if (g_poller >= 0) return;
 #if AVRA_KQUEUE
@@ -774,6 +829,7 @@ static void poller_open(void) {
     if (g_poller < 0) avra_trap("the scheduler could not open its poller");
     avra_fd_drained_hook = fd_drained;
 }
+#endif
 
 static FdWaits* fd_waits(int fd) {
     if ((size_t)fd >= g_fds_cap) {
@@ -805,6 +861,12 @@ enum { READ_CLOSED = 4 };
 // through `avra_fiber_fd_closing`, which forgets the registration: the
 // kernel drops the watch at the close, and a number reused after a
 // close nobody reported would be taken for registered and never woken.
+#if AVRA_HOSTED
+static int fd_arm(int fd) {
+    (void)fd;
+    return 0;
+}
+#else
 static int fd_arm(int fd) {
     FdWaits* w = fd_waits(fd);
     int want = (w->head[0] ? ARMED_READ : 0) | (w->head[1] ? ARMED_WRITE : 0);
@@ -825,12 +887,19 @@ static int fd_arm(int fd) {
 #endif
     return ok;
 }
+#endif
 
 // A LEVEL WAIT ASKS WHETHER A DESCRIPTOR IS READY NOW, and the watch
 // is edge-triggered: a direction that has stayed ready since the last
 // wait reports no new edge, so the edge it holds is re-armed and the
 // poller reports the level again — a writable descriptor claims every
 // arm, not only the one that took the first edge.
+#if AVRA_HOSTED
+static void fd_refresh(int fd, int64_t writable) {
+    (void)fd;
+    (void)writable;
+}
+#else
 static void fd_refresh(int fd, int64_t writable) {
     FdWaits* w = fd_waits(fd);
     int bit = writable ? ARMED_WRITE : ARMED_READ;
@@ -847,6 +916,7 @@ static void fd_refresh(int fd, int64_t writable) {
     epoll_ctl(g_poller, EPOLL_CTL_MOD, fd, &ev);
 #endif
 }
+#endif
 
 // ── Filing, claiming, retracting ────────────────────────────────
 
@@ -1075,15 +1145,25 @@ int64_t avra_sig_number(int64_t kind) {
         case 6: return SIGPIPE;
         case 7: return SIGALRM;
         case 8: return SIGCHLD;
+        case 9: return SIGWINCH;
         default: avra_trap("a signal kind the runtime does not know");
     }
     return 0;
 }
 
+// A signal raised on this process: the platform's number for the kind, as
+// a signal from outside would arrive.
+void avra_sig_raise(int64_t kind) { raise((int)avra_sig_number(kind)); }
+
 // The wait over `sig` is done: the poller's registration goes, and the
 // disposition Avra spent is given back, so the signal is the process's
 // own again — a child forked later dies to it as it did before.
 // Idempotent.
+#if AVRA_HOSTED
+static void sig_disarm(int sig) {
+    if (sig > 0 && sig < NSIG) g_sig_armed[sig] = 0;
+}
+#else
 static void sig_disarm(int sig) {
     if (sig <= 0 || sig >= NSIG || !g_sig_armed[sig]) return;
     g_sig_armed[sig] = 0;
@@ -1105,6 +1185,7 @@ static void sig_disarm(int sig) {
     }
 #endif
 }
+#endif
 
 // The poller is told to watch `sig` ONCE: kqueue's signal filter reports
 // it, a signalfd reads it. The process ignores (Darwin) or blocks
@@ -1113,6 +1194,12 @@ static void sig_disarm(int sig) {
 // SPENT BEFORE THE WAIT IS FILED: a signal that arrives between the
 // file and the arm would take its default action, so the arm comes
 // first and the filer is the one that races nothing.
+#if AVRA_HOSTED
+static int sig_arm(int sig) {
+    (void)sig;
+    return 0;
+}
+#else
 static int sig_arm(int sig) {
     if (sig <= 0 || sig >= NSIG) return 0;
     if (g_sig_armed[sig]) return 1;
@@ -1163,6 +1250,7 @@ static int sig_arm(int sig) {
     g_sig_armed[sig] = 1;
     return 1;
 }
+#endif
 
 #if AVRA_EPOLL
 // A readable signalfd carries one record per signal; every record names
@@ -1181,6 +1269,9 @@ static void poller_wait(int64_t timeout_ns) {
     poll_counted();
     // an ask that came since the world last looked is answered before a sleep
     if (__builtin_expect(g_asked, 0)) timeout_ns = 0;
+#if AVRA_HOSTED
+    host_idle(timeout_ns);
+#else
     enum { BATCH = 256 };
 #if AVRA_KQUEUE
     struct kevent evs[BATCH];
@@ -1208,6 +1299,7 @@ static void poller_wait(int64_t timeout_ns) {
     }
 #endif
     if (n < 0 && errno != EINTR) avra_trap("the scheduler's poller failed");
+#endif
 }
 
 // ── The deadline ────────────────────────────────────────────────
@@ -1440,6 +1532,13 @@ static void guards_misspelled(const char* value) {
 // runaway recursion still reaches the slab's guard; a bounded overrun
 // that returns before the next switch and never wrote that one word is
 // not caught.
+#if AVRA_HOSTED
+// A hosted task's stack is its host's: nothing here reserves, guards or
+// pools one.
+static void stacks_settle(void) { tasks_door_opened(); }
+static void stack_give(Stack s) { free(s.base); }
+static void pool_trim(void) { overs_trimmed(); }
+#else
 static void guards_settle(void) {
     const char* env = getenv("AVRA_FIBER_GUARDS");
     // A VALUE ASKS FOR PAGES BY NAME, so it is given them whatever the
@@ -1594,6 +1693,8 @@ static void pool_trim(void) {
     overs_trimmed();
 }
 
+#endif
+
 __attribute__((noinline, cold))
 static void bury(void) {
     Fiber* f = g_finished;
@@ -1641,6 +1742,78 @@ typedef struct DoorNames DoorNames;
 static void listing_written(int dfd, const DoorNames* names);
 static void ages_noted(int64_t now);
 
+#if AVRA_HOSTED
+// A HOSTED fiber runs on a stack its host made for it, but the C frames
+// that stack spills live in linear memory, beside every other task's. So
+// each task owns a SHADOW STACK of its own and the stack pointer is
+// handed over with the thread: saved before a handover, restored when it
+// comes back, and set to the top of a fresh task's at its first run.
+#define HOSTED_STACK ((size_t)256 << 10)
+
+// THE FLOOR OF A STACK IS A CANARY, checked at every handover: the first
+// words of the block read as they were written, or the task overran its
+// stack. Frames that live in linear memory are few (a call's depth is the
+// engine's, and its limit is a RangeError the host speaks as this same
+// overflow); a check on every fn's entry would cost a call-heavy program
+// more than it saves.
+#define HOSTED_CANARY 0xC0DEF00Du
+
+static inline void* shadow_get(void) {
+    void* p;
+    __asm__ volatile("global.get __stack_pointer\n\tlocal.set %0" : "=r"(p));
+    return p;
+}
+
+static inline void shadow_set(void* p) { __asm__ volatile("local.get %0\n\tglobal.set __stack_pointer" ::"r"(p)); }
+
+// `sp` is the top of the task's shadow stack, `base` what the heap gave.
+static void fiber_bound(Fiber* f) {
+    hosted_settled();
+    char* low = malloc(HOSTED_STACK);
+    if (!low) avra_trap("the scheduler ran out of memory for a task's stack");
+    for (int i = 0; i < 4; i++) ((uint32_t*)low)[i] = HOSTED_CANARY;
+    f->base = low;
+    f->sp = (void*)(((uintptr_t)low + HOSTED_STACK) & ~(uintptr_t)15);
+}
+
+static inline void canary_held(const Fiber* f) {
+    if (!f->base) return;
+    const uint32_t* c = (const uint32_t*)f->base;
+    if (__builtin_expect(c[0] != HOSTED_CANARY || c[1] != HOSTED_CANARY || c[2] != HOSTED_CANARY || c[3] != HOSTED_CANARY, 0)) avra_trap("a task's stack overflowed");
+}
+
+static void host_idle(int64_t timeout_ns) {
+    hosted_settled();
+    avra_host_idle(timeout_ns, (void*)avra_asyncify_buffer);
+}
+
+static inline void fiber_switched(Fiber* self, Fiber* next) {
+    void* mine = shadow_get();
+    // the thread's first stack has run without being started: it is marked so
+    // a handover back to it resumes it, and never starts it as a fresh task
+    if (!self->sp) self->sp = mine;
+    canary_held(self);
+    hosted_settled();
+    avra_host_switch(self, next, self->state == FIBER_DONE, (void*)avra_task_entry, (void*)avra_asyncify_buffer);
+    shadow_set(mine);
+}
+
+// THE FALLBACK HOST'S BUFFERS: a host that unwinds a task's frames instead of
+// suspending its stack keeps them in memory of the module's own.
+void* avra_asyncify_buffer(int bytes) {
+    void* p = calloc(1, (size_t)bytes);
+    if (!p) avra_trap("the scheduler ran out of memory for a task's unwind buffer");
+    return p;
+}
+
+// The host starts a fresh task here, on the stack it made for it; the first
+// thing it does is stand on the task's shadow stack.
+void avra_task_entry(void) {
+    shadow_set(g_current->sp);
+    fiber_start();
+}
+#else
+#define fiber_switched(self, next) avra_fiber_switch(&(self)->sp, (next)->sp)
 // A fiber's first run: a stack from the pool, and at its top a frame
 // `avra_fiber_switch` will restore — zeroed callee-saved registers and
 // `fiber_start` where the return goes. The top word stays untouched:
@@ -1693,6 +1866,8 @@ void avra_fiber_overflowed(const Fiber* f) {
     avra_trap(words);
 }
 
+#endif
+
 // The switch to a fiber that has never run, whole and out of line: a
 // call that came back into the switch would cost every switch the
 // registers it saves across it.
@@ -1704,7 +1879,7 @@ static void switched_to_fresh(Fiber* self, Fiber* next) {
     avra_task_local = next->local;
     self->unwinding = avra_unwinding;
     avra_unwinding = next->unwinding;
-    avra_fiber_switch(&self->sp, next->sp);
+    fiber_switched(self, next);
     bury_finished();
 }
 
@@ -1724,7 +1899,7 @@ static inline void switch_to(Fiber* next) {
     avra_task_local = next->local;
     self->unwinding = avra_unwinding;
     avra_unwinding = next->unwinding;
-    avra_fiber_switch(&self->sp, next->sp);
+    fiber_switched(self, next);
     bury_finished();
 }
 
@@ -1938,6 +2113,10 @@ static inline void run_next(void) {
 
 // ── The guard ───────────────────────────────────────────────────
 
+#if AVRA_HOSTED
+// A hosted stack is the host's own, with its own limit and its own trap.
+static void guard_handler_install(void) {}
+#else
 static char g_signal_stack[64 * 1024] __attribute__((aligned(16)));
 static struct sigaction g_prior_segv;
 static struct sigaction g_prior_bus;
@@ -1978,6 +2157,7 @@ static void guard_handler_install(void) {
     sigaction(SIGSEGV, &sa, &g_prior_segv);
     sigaction(SIGBUS, &sa, &g_prior_bus);
 }
+#endif
 
 // ── Waiting ─────────────────────────────────────────────────────
 
@@ -1999,6 +2179,9 @@ static void waits_fd(Fiber* f, int64_t fd, int64_t writable, int64_t arm, int64_
     // A descriptor the poller refuses is ready now: the read or write
     // the caller retries reports its own error.
     if (!fd_arm((int)fd)) waiter_claims(w, BY_POLLER);
+    // A FINISHED PEER'S READ IS READY, AND NO EDGE WILL SAY SO AGAIN: the
+    // close came once, before a short read drained the bytes ahead of it.
+    else if (!writable && (g_fds[fd].ready & READ_CLOSED)) waiter_claims(w, BY_POLLER);
     else if (TRACING) traced_waiter(f, w);
 }
 
@@ -2331,7 +2514,11 @@ int64_t avra_unwind_dropped(void) { return running_unwind()->dropped; }
 
 // Where every new fiber begins: run the body, keep its answer, wake
 // whoever waits on it, and hand the thread on for good.
+#if AVRA_HOSTED
+__attribute__((noinline))
+#else
 __attribute__((noreturn))
+#endif
 static void fiber_start(void) {
     bury_finished();
     Fiber* self = g_current;
@@ -2365,7 +2552,12 @@ static void fiber_start(void) {
     g_finished = self;
     avra_rc_release(task);
     run_next();
+#if AVRA_HOSTED
+    // the host ends this stack with the body: nothing runs after the handover
+    return;
+#else
     __builtin_unreachable();
+#endif
 }
 
 void* avra_task_spawn(void* body) {
@@ -2516,12 +2708,52 @@ void avra_task_settle_all(void* list) {
     for (int64_t i = 0; i < a->len; i++) avra_task_settle((void*)(uintptr_t)a->data[i]);
 }
 
+// A handle to a running task is released. The scheduler holds one reference
+// of its own for as long as the task runs, so the last handle outside it is
+// the second: its release is where the task is joined (the owner's frame is
+// ending its life), and a copy's earlier release joins nothing.
+void avra_task_release(void* task) {
+    if (!task || task_cells(task)[GATE_OPEN]) return;
+    if (((const Header*)task - 1)->rc != 2) return;
+    avra_task_settle(task);
+}
+
+// The same for a list of tasks released by its last handle: each member is
+// its own owner, so each is joined.
+void avra_tasks_release(void* list) {
+    if (!list || ((const Header*)list - 1)->rc != 1) return;
+    avra_task_settle_all(list);
+}
+
 int64_t avra_task_done(void* task) {
     return task_cells(task)[GATE_OPEN];
 }
 
 int64_t avra_task_ended(void* task) {
     return task_cells(task)[TASK_END];
+}
+
+// How many fibers are parked on a task or a gate: the waiters filed on its
+// record. A fiber waiting on several sources counts once for each.
+int64_t avra_parked_on(void* on) {
+    int64_t n = 0;
+    for (const Waiter* w = (const Waiter*)(uintptr_t)task_cells(on)[GATE_HEAD]; w; w = w->next) n++;
+    return n;
+}
+
+__attribute__((noinline, cold, noreturn))
+static void fd_parked_bad_direction(void) {
+    avra_trap("a descriptor's waiters are read (0) or write (1)");
+}
+
+// How many fibers are parked on one direction of a descriptor: 0 reads,
+// 1 writes.
+int64_t avra_fd_parked(int64_t fd, int64_t dir) {
+    if (dir != 0 && dir != 1) fd_parked_bad_direction();
+    if (fd < 0 || (size_t)fd >= g_fds_cap) return 0;
+    int64_t n = 0;
+    for (const Waiter* w = g_fds[fd].head[dir]; w; w = w->next) n++;
+    return n;
 }
 
 // Who asked the cancel that ended the task, or the task's own id for an
@@ -3165,6 +3397,25 @@ void avra_sched_guest_waits(void) {
     avra_trap(words);
 }
 
+#if AVRA_HOSTED
+// ── What a hosted scheduler does not carry ──────────────────────
+//
+// A case runner, a listing door and a deadlock report are the native test
+// and tooling surfaces; a hosted scheduler has no process to list and no
+// runner to wake.
+static int case_deadlocked(void) { return 0; }
+static void deadlock_reported(void) {}
+static void tasks_answered(void) {}
+static void tasks_door_opened(void) { g_door_open = 1; }
+static void tasks_door_named(void) {}
+static void ages_noted(int64_t now) { (void)now; }
+static void case_spun(const char* words) { (void)words; }
+
+// A hosted scheduler has no tick source: the host never preempts a running
+// stack, so cancellation here is cooperative and the verbs are empty.
+void avra_tick_armed(void) {}
+void avra_tick_stood_down(void) {}
+#else
 // ── A case in its own task ──────────────────────────────────────
 
 // THE RUNNER WAITS ON TWO THINGS: its case's end, and an ALARM gate the
@@ -4092,3 +4343,4 @@ static void tasks_door_opened(void) {
     sigemptyset(&sa.sa_mask);
     sigaction(SIGURG, &sa, &g_prior_urg);
 }
+#endif

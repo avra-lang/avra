@@ -3,13 +3,22 @@
 //! (`avra_ui_event`), the handler the last paint bound there runs, and the page
 //! is sent only what changed. THIS MODULE NAMES THE HOST: `avra_dom_frame`
 //! is the page's to answer, so only a program built for a page imports it.
-use app.{plain, remounted}
+use app.{Act, Door, Msg, Want, plain, remounted, stood}
+use app.{Wants, replies_to, wants}
+use realize.dom.wire.{request_frame}
+use @std.http_message.message.{Reply}
 use realize.dom.live.{live}
 use realize.dom.page.{Paged, paged}
+use tree.standing.{first_window}
 use tree.view.{View}
 use style.theme.{Theme}
 
 extern fn avra_dom_frame(frame: Bytes)
+extern fn avra_ui_arm(token: int, ms: int, repeat: int)
+extern fn avra_ui_disarm(token: int)
+extern fn avra_ui_get(token: int, request: Bytes)
+extern fn avra_ui_abort(token: int)
+extern fn avra_ui_next_paint()
 extern fn avra_bytes_with_room(n: int) -> Bytes
 extern fn avra_bytes_adopted(p: Bytes, n: int) -> Bytes
 
@@ -21,6 +30,9 @@ type Seat = { box: Bytes, room: int }
 
 once fn seated() -> Cell<Seat?> { Cell.new(null) }
 
+/// The sources the page's host was asked to keep.
+once fn wanted() -> Wants { wants() }
+
 /// THE APP: `view` under `theme` on the page, painted now and after every
 /// event that ran a handler. Mounting again — from a handler too — turns
 /// the same page into the new view.
@@ -28,12 +40,19 @@ export fn mount<V: View>(view: fn() -> V, theme: fn() -> Theme = plain) {
     let held? = mounted().get() else {
         let made = paged(view, theme, live(), (sent: Bytes) -> avra_dom_frame(sent))
         mounted().set(made)
+        stood(made.app)
+        made.app.stands.geometric()
+        made.app.stands.first_rows(first_window)
+        made.app.door.set(opened())
         made.app.paint()
+        made.app.framer.set(asks_frame)
+        made.app.holding.set(true)
         made.app.warn()
         return
     }
     remounted(held.app, view, theme)
     held.app.paint()
+    swept(held)
     held.app.warn()
 }
 
@@ -47,6 +66,14 @@ extern fn avra_ui_seat(room: int) -> Bytes {
     let made = Seat { box: avra_bytes_with_room(room), room: room }
     seated().set(made)
     made.box
+}
+
+/// The first `len` octets the host wrote into the seat, whole (empty when
+/// the length is one the seat cannot hold).
+fn seated_octets(len: int) -> Bytes {
+    let held? = seated().get() else { return "".bytes() }
+    if len < 0 || len > held.room { return "".bytes() }
+    avra_bytes_adopted(held.box, len)
 }
 
 /// The first `len` octets the host wrote into the seat, as text. A length
@@ -64,5 +91,125 @@ fn seated_text(len: int) -> string? {
 extern fn avra_ui_event(who: int, what: int, tag: int, num: int, len: int) {
     let held? = mounted().get() else { return }
     let _ = held.heard(who, what, tag, num, seated_text(len))
+    swept(held)
     held.app.warn()
+}
+
+// ── sources: the page's timers ──────────────────────────────────
+
+/// What a handler's ask is on a page: a timer the host keeps. No task, no
+/// loop — the host's callback is the turn.
+fn opened() -> Door {
+    Door { send: sent, ask: armed, close: unclosed }
+}
+
+/// A page has no loop to end.
+fn unclosed() {}
+
+/// A turn left for the page's loop runs at once; a job has no task to run
+/// on.
+fn sent(msg: Msg) -> bool {
+    let held? = mounted().get() else { return false }
+    match msg {
+        .Turn(act, owner) -> held.app.turn_for(owner, act),
+        .Start(_, _) or .Ended(_, _) or .Frame -> false,
+    }
+}
+
+/// The host is asked to keep a timer or send a request for `want`, under a
+/// number nobody else wears.
+fn armed(want: Want, act: Act, owner: string?) -> bool {
+    let h = wanted().filed(want, act, owner, 0)
+    match want {
+        .After(ms) -> avra_ui_arm(h.token, ms, 0),
+        .Every(ms) -> avra_ui_arm(h.token, ms, 1),
+        .Get(request, _) -> avra_ui_get(h.token, request_frame(request)),
+    }
+    true
+}
+
+/// Every source whose control has left the page is cancelled: a timer is
+/// disarmed, a request aborted.
+fn swept(held: Paged) {
+    for h in wanted().left(held.app) {
+        wanted().dropped(h.token)
+        match h.how {
+            .Timer(_) -> avra_ui_disarm(h.token),
+            .Request(_, _) -> avra_ui_abort(h.token),
+        }
+    }
+}
+
+/// The host's timer `token` fired: its act runs as a turn, once more if it
+/// repeats. A timer already let go answers nothing.
+extern fn avra_ui_fired(token: int) {
+    let held? = mounted().get() else { return }
+    let ask? = wanted().find(token) else { return }
+    if !wanted().fires(ask) { return }
+    let _ = held.app.turn_for(ask.owner, ask.act)
+    swept(held)
+    held.app.warn()
+}
+
+/// The host's request `token` was answered: with the status and the octets
+/// in the seat (`len` of them), or — status -1 — why there is no answer, as
+/// text in the seat. The reply is left where its ask put it and its act runs
+/// as a turn. A request already let go answers nothing.
+extern fn avra_ui_answered(token: int, status: int, len: int) {
+    let held? = mounted().get() else { return }
+    let ask? = wanted().find(token) else { return }
+    let into? = replies_to(ask.how) else { return }
+    wanted().dropped(token)
+    into.set(replied(status, len))
+    let _ = held.app.turn_for(ask.owner, ask.act)
+    swept(held)
+    held.app.warn()
+}
+
+/// The words a failed request gives, or a plain one when it gave none.
+fn failure_words(words: string?) -> string {
+    let said? = words else { return "the request failed" }
+    if said == "" { "the request failed" } else { said }
+}
+
+/// What the host's answer was: a reply, or the words it gave for none.
+fn replied(status: int, len: int) -> Result<Reply, string> {
+    if status < 0 { return .Err(failure_words(seated_text(len))) }
+    .Ok(Reply { status: status, body: seated_octets(len) })
+}
+
+/// The page is asked for its next frame.
+fn asks_frame() { avra_ui_next_paint() }
+
+// ── the frame ───────────────────────────────────────────────────
+
+/// The host's frame came (its `requestAnimationFrame`, asked for by the
+/// first turn since the last): the screen shows the state as it stands, one
+/// walk however many turns moved it. What left the page since is let go.
+extern fn avra_ui_painted() {
+    let held? = mounted().get() else { return }
+    let _ = held.app.flush()
+    swept(held)
+    held.app.warn()
+}
+
+/// The host measured a windowed list: its rows from `from` up to `to` are
+/// the ones on screen, each `extent` tall. The first `len` octets of the
+/// seat are the list's path, then a line break and the key of the row the
+/// focus rests on (nothing after it for none). The list builds the window
+/// and that row, and spaces the rest at that height.
+extern fn avra_ui_scrolled(len: int, from: int, to: int, extent: int) {
+    let held? = mounted().get() else { return }
+    let said? = seated_text(len) else { return }
+    let parts = said.split("\n")
+    let pin = if parts.length > 1 { parts[1] } else { "" }
+    let _ = held.app.scrolled(parts[0], from, to, extent, if pin == "" { null } else { pin })
+    held.app.warn()
+}
+
+/// How many times the page's view has been walked — the cost a frame saves,
+/// open to whoever asks.
+extern fn avra_ui_walks() -> int {
+    let held? = mounted().get() else { return 0 }
+    held.app.walks.get()
 }

@@ -1,0 +1,23 @@
+// A match arm that is only `{}` is an EMPTY MAP, so beside a void arm the
+// arms disagree; a block holding a statement is void. A template that
+// needs an arm answering nothing spells it that way, or is handed one.
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{refused_with}
+
+/// A `match` over an int whose first arm is void and whose last is `last`.
+fn matched(last: string) -> string {
+    "fn a(n: int) {\n    match n {\n        1 -> { let _ = 1 },\n        _ -> ${last},\n    }\n}\n1"
+}
+
+spec "features/expr_spine — an arm that answers nothing" {
+    given "an empty `{}` arm beside a void one" {
+        then "the arms disagree: it is a map" {
+            refused_with(matched("{}"), "a `match`'s arms disagree: `{}` vs the first arm's `void`")
+        }
+    }
+    given "a block holding a statement beside a void one" {
+        then "the arms agree and the match is void" {
+            analyze_source(matched("{ let _ = 0 }")).diagnostics.is_empty()
+        }
+    }
+}
