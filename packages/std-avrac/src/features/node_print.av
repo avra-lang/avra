@@ -56,21 +56,27 @@ const type_rule: string = "type"
 /// the branch is outside the shape.
 type Reading = { node: string, wording: Wording? }
 
-/// Every node whose rules agree on one template, by `Owner.Variant`.
-export fn node_wordings(g: Grammar, rows: List<PayloadRow>, scale: List<RuleTier>) -> Map<
-    string,
-    Wording,
-> {
+/// The nodes whose rules agree on one wording, by `Owner.Variant`, and
+/// the nodes some rule builds that no wording covers.
+export type Wordings = { found: Map<string, Wording>, refused: List<string> }
+
+/// Every node a rule builds, read: its wording when its rules agree.
+export fn node_wordings(g: Grammar, rows: List<PayloadRow>, scale: List<RuleTier>) -> Wordings {
     let readings = flatten(
         [[read_branch(r.name, s, rows, scale) for s in r.body.branches] for r in g.rules],
     )
-    mut out: Map<string, Wording> = {}
+    mut found: Map<string, Wording> = {}
+    mut refused: List<string> = []
     for node in distinct([x.node for x in readings if x.node != ""]) {
         let own = [x.wording for x in readings if x.node == node]
         let first = own[0]
-        if first != null && own.all(it != null && shown(it!) == shown(first!)) { out.set(node, first!) }
+        if first != null && own.all(it != null && shown(it!) == shown(first!)) {
+            found.set(node, first!)
+        } else {
+            refused.push(node)
+        }
     }
-    out
+    Wordings { found: found, refused: refused }
 }
 
 /// A branch that builds no node.
@@ -267,9 +273,10 @@ fn shown_piece(p: Piece) -> string {
     }
 }
 
-/// Each claimed node whose rules do not agree on one wording.
-export fn wording_defects(wordings: Map<string, Wording>, claimed: List<string>) -> List<Diagnostic> {
-    [defect(at, unworded(at)) for at in claimed if !wordings.has(at)]
+/// Each claimed node a rule builds without a wording. A node no rule of
+/// the assembled features builds is no defect: a feature subset omits it.
+export fn wording_defects(wordings: Wordings, claimed: List<string>) -> List<Diagnostic> {
+    [defect(at, unworded(at)) for at in claimed if wordings.refused.contains(at)]
 }
 
 // ── voices ──

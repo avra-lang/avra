@@ -4,7 +4,7 @@
 // made-up variants; then the nodes the printer reads from their rule, each
 // spelled back through the printer.
 use @std.avrac.grammar.{parse_grammar}
-use @std.avrac.features.{node_wordings, shown, RuleTier}
+use @std.avrac.features.{node_wordings, wording_defects, shown, RuleTier}
 use @std.avrac.core.{PayloadRow, joined}
 use @std.avrac.compiler.{avra}
 use @std.avrac.testing.{projected}
@@ -47,7 +47,7 @@ fn grammar_of(src: string) -> Grammar {
 
 /// The wording of `node` over a grammar, shown — or "none".
 fn worded(src: string, node: string) -> string {
-    let w = node_wordings(grammar_of(src), rows(), scale()).get(node)
+    let w = node_wordings(grammar_of(src), rows(), scale()).found.get(node)
     if w == null { "none" } else { shown(w!) }
 }
 
@@ -123,6 +123,26 @@ spec "features/node_print — what a rule reads as" {
         }
         then "has none when they disagree" {
             worded("p = \"!\" x:u -> E.A | \"~\" x:u -> E.A\n", "E.A") == "none"
+        }
+    }
+}
+
+/// The claim defects over a grammar, for `claimed`.
+fn claimed_over(src: string, claimed: List<string>) -> int {
+    wording_defects(node_wordings(grammar_of(src), rows(), scale()), claimed).length
+}
+
+spec "features/node_print — a claim" {
+    given "a claimed node" {
+        then "is no defect where no rule builds it — a feature subset omits it" {
+            claimed_over("p = \"null\" -> E.Z\n", ["E.A"]) == 0
+        }
+        then "is no defect where its rules read as one wording" {
+            claimed_over("p = \"!\" x:u -> E.A\n", ["E.A"]) == 0
+        }
+        then "is a defect where a rule builds it and no wording covers it" {
+            claimed_over("p = \"!\" x:u -> E.A | \"~\" x:u -> E.A\n", ["E.A"]) == 1 &&
+                claimed_over("p = x:e \"{\" y:e -> E.B\n", ["E.B"]) == 1
         }
     }
 }
