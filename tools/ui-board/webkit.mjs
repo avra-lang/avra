@@ -1,8 +1,9 @@
 // WebKit, driven by Playwright's own build of it: the engine every iOS browser
 // is, which Firefox's reading of a page proves nothing about (it tolerates
 // `showModal` on a dialog already open, and reads import encodings WebKit
-// does not). The same page as firefox.mjs answers — read, press, type, frame,
-// complaints, screenshot, close — so browser.mjs's claims run unchanged.
+// does not). The same page as firefox.mjs answers — read, press, pressAt, drag,
+// escape, type, frame, complaints, screenshot, close — so browser.mjs's claims
+// run unchanged, including the dialog claims that press and drag by coordinate.
 import { KEY } from "./firefox.mjs";
 
 // The keys a page hears by name, as Playwright spells them.
@@ -29,12 +30,22 @@ export async function openPage(browser, url, { width = 900, height = 700, device
   const read = (expression) => page.evaluate(`(async () => (${expression}))()`);
   const framed = () => read("new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(1))))");
   const pressAt = async (x, y) => { if (shape?.hasTouch) await page.touchscreen.tap(x, y); else await page.mouse.click(x, y); await framed(); };
+  // A gesture from one point to another: down where it starts, one move, up where it ends. A
+  // touch profile still takes it as a pointer, which is what a dialog's dismissal reads.
+  const drag = async (from, to) => {
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(to.x, to.y, { steps: 4 });
+    await page.mouse.up();
+    await framed();
+  };
 
   return {
     read,
     frame: framed,
     complaints: () => logged,
     pressAt,
+    drag,
     async press(selecting) {
       const at = await read(`(() => { const el = ${selecting}; el.scrollIntoView({ block: "nearest" }); const r = el.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
       await pressAt(at.x, at.y);
