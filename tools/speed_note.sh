@@ -24,9 +24,13 @@ collect() {
     done
 }
 
+# value <file> <metric>: the metric's number — the MEDIAN when the file keeps several samples (a baseline
+# keeps its last three), so one slow or fast run never sets the bar.
 value() {
     [ -f "$1" ] || return 0
-    awk -v n="$2" '$1 == n { print $2; exit }' "$1"
+    awk -v n="$2" '$1 == n { v[++k] = $2 + 0 }
+        END { if (k == 0) exit; for (i = 2; i <= k; i++) { x = v[i]; j = i - 1; while (j > 0 && v[j] > x) { v[j+1] = v[j]; j-- } v[j+1] = x }
+              print v[int((k + 1) / 2)] }' "$1"
 }
 
 # state_other <metric> <baseline file>: when the metric names a cache state (-warm or -cold) and the baseline holds
@@ -89,12 +93,13 @@ compare() {
     return $FAIL
 }
 
-# merge <now> <base>: the baseline a main run keeps — this run's numbers, and every earlier number whose
-# name this run did not measure (a suite measured cold today keeps its warm number from before), so
-# both cache states stay comparable.
+# merge <now> <base>: the baseline a main run keeps — this run's numbers, then earlier samples of each name
+# up to three in all (the median of the last three is the bar), and every earlier number whose name this
+# run did not measure (a suite measured cold today keeps its warm number from before), so both cache
+# states stay comparable.
 merge() {
     cat "${1:-/dev/null}"
-    [ -f "${2:-}" ] && awk 'NR==FNR { seen[$1]=1; next } !($1 in seen)' "${1:-/dev/null}" "$2"
+    [ -f "${2:-}" ] && awk 'NR==FNR { seen[$1]++; next } { if (!($1 in seen)) print; else if (seen[$1] < 3) { print; seen[$1]++ } }' "${1:-/dev/null}" "$2"
     return 0
 }
 
@@ -126,10 +131,17 @@ case "${1:-}" in
         [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curs" "$d/bases" >/dev/null 2>&1; echo $?)" = 0 ] || { echo "speed_note: a doubled 6s step (+7s) failed — the backstop owes a 30s floor"; exit 1; }
         printf 'speed.cpu-small 37\n' > "$d/curs2"
         [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curs2" "$d/bases" >/dev/null 2>&1; echo $?)" = 1 ] || { echo "speed_note: a 6s step grown by 31s did not fail"; exit 1; }
+        printf 'speed.cpu-w 10\nspeed.cpu-w 90\nspeed.cpu-w 12\n' > "$d/med"
+        [ "$(value "$d/med" speed.cpu-w)" = 12 ] || { echo "speed_note: the median of 10, 90, 12 is not 12"; exit 1; }
+        printf 'speed.cpu-w 20\n' > "$d/m0"
+        [ "$(sh "$0" merge "$d/m0" "$d/med" | wc -l | tr -d ' ')" = 3 ] || { echo "speed_note: merge kept more or fewer than three samples"; exit 1; }
+        printf 'speed.cpu-w 11\nspeed.cpu-w 95\nspeed.cpu-w 12\n' > "$d/curm"
+        printf 'speed.cpu-w 40\n' > "$d/noise"
+        [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/noise" "$d/med" >/dev/null 2>&1; echo $?)" = 0 ] || { echo "speed_note: 40s against a median of 12s (+28s, under the floor) failed"; exit 1; }
         printf 'speed.cpu-a-cold 5\nspeed.cpu-b 7\n' > "$d/m1"
         printf 'speed.cpu-a-warm 1\nspeed.cpu-a-cold 9\n' > "$d/m2"
-        [ "$(sh "$0" merge "$d/m1" "$d/m2" | sort | tr '\n' ' ')" = "speed.cpu-a-cold 5 speed.cpu-a-warm 1 speed.cpu-b 7 " ] || { echo "speed_note: merge did not keep the other state's baseline"; exit 1; }
-        echo "speed_note: self-test passed — 10 fixtures"
+        [ "$(sh "$0" merge "$d/m1" "$d/m2" | sort | tr '\n' ' ')" = "speed.cpu-a-cold 5 speed.cpu-a-cold 9 speed.cpu-a-warm 1 speed.cpu-b 7 " ] || { echo "speed_note: merge did not keep the other state's baseline and the earlier sample"; exit 1; }
+        echo "speed_note: self-test passed — 13 fixtures"
         exit 0 ;;
     *) echo "usage: speed_note.sh collect <log>... | compare <current> <main>" ;;
 esac
