@@ -904,6 +904,40 @@ Open question for DB 09: validating `CallShape` means lowering the unit again. I
 more than it saves, the `u` line reads `Syntax(declaration)` in both cases and `CallShape`
 is not built.
 
+### A4.1 The `LiftResult` value save (DB 09) — MEASURED 2026-10-21
+
+`LiftResult`'s wire exists and round-trips: `compiler/family_wire.av`'s
+`lift_result_wire`/`lift_result_of_wire` (over the one heap wire `settled_wire` shares) is
+registered in `compiler/codecs.av`'s ONE registry as a `derived(...)` row over
+`LiftResult.exemplars()` (`@derive(Exemplar)`), and `make codecs` passes it. `LiftResult`'s
+own codec — the item `.lead/lanes/db-old-prs.md:163` files under DB 03 c — is PAID, not owed.
+
+What is owed is DB 03 b ("the codec grows payload enums and recursive records"). The only
+door on main that keeps a value past the process is a `@query`, and a query's answer carries
+its own codec helpers. Its
+answer-hash walk spells `<Answer>.hash_<type>(…)` (`std-relation/src/relation.av:1021`),
+and those helpers are emitted only on a `@relation` ROW (`codec_helper_members`); a query's
+answer type has no such owner. Probed with `@query fn kept_lift(db, name) -> LiftResult`
+and every payload type imported:
+
+    error[type.unknown_prop]: `LiftResult` has no variant `hash_lift_result`
+      ╭─[packages/std-relation/src/relation.av:1021:21]
+      ·  built here
+    help: the variants are `Crossed`, `Refused`
+
+A payload-free enum answer compiles and is saved as a value (`tests/durable`'s `Mood`:
+`0` runs in the next process). A RECORD answer compiles and is NOT saved — `decodable`
+(`relation.av:361`) refuses `.Named(.Record(_))` as well as `.Named(.Payload(_))`, so the
+wrapper takes the digest-only `ran` path — which `tests/durable`'s `Pair` measures (two
+runs across two processes). So even with hashing expressible, `LiftResult` would save no
+value until `decodable` can read a payload answer back.
+
+The generator that expresses it is `@codec` ("one generator for any record or enum"):
+merged as #1028 (`79f8948b`) and reverted by `f0d774c8`; it lives on `origin/codec-pr`, and
+`origin/db-07b-typed` already saves `TypeFacts` rows through it. DB 09's `Lifted` save
+therefore sits where its sibling `Typed` save sits: on `@codec` landing. Hand-writing the
+helpers on `LiftResult` is the SECOND codec the one-registry law refuses.
+
 ## A5. Attack cases carried
 
 From `origin/redteam/m3-witness-attacks` @ `a644ba4` (written against deleted code; "6 of 17
