@@ -56,9 +56,14 @@ const hugsOn = (n) => [
   n.layout.width === undefined || n.layout.width === "Hug",
   n.layout.height === undefined || n.layout.height === "Hug",
 ];
-/// Each box's contended axes, in the page's own pre-order: the root's width is the host's, decided.
+/// Each box's contended axes, in the page's own pre-order.
 function contended(spec) {
-  const flags = [hugsOn(spec), ...spec.kids.flatMap(contended)];
+  return [hugsOn(spec), ...spec.kids.flatMap(contended)];
+}
+/// The same for a tree: its root's width is the host's, which the layout does not decide, so the
+/// root's width is exact. Only the ROOT — a per-node adjustment here would out-vote every hug.
+function contended_tree(spec) {
+  const flags = contended(spec);
   flags[0][0] = false;
   return flags;
 }
@@ -294,7 +299,7 @@ async function compare(cases, browser, work) {
   const results = [];
   for (let i = 0; i < cases.length; i++) {
     const got = await browser.read(`(${BROWSER})(${JSON.stringify(pages[i])}, ${WIDTH})`);
-    results.push(agrees(got, out[i], contended(cases[i])) ? null : { got, want: out[i] });
+    results.push(agrees(got, out[i], contended_tree(cases[i])) ? null : { got, want: out[i] });
   }
   return results;
 }
@@ -367,7 +372,7 @@ async function main() {
     const n = Math.max(v.got.length, v.want.length);
     for (let k = 0; k < n; k++) {
       const a = JSON.stringify(v.want[k]), b = JSON.stringify(v.got[k]);
-      const flags = contended(small);
+      const flags = contended_tree(small);
       console.log(`  box ${k}: solver ${a}  browser ${b}${v.want[k] && v.got[k] && agrees([v.got[k]], [v.want[k]], [flags[k] ?? [false, false]]) ? "" : "   <--"}`);
     }
   }
