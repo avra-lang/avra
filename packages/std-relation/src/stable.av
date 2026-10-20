@@ -139,14 +139,17 @@ export fn indexed_scope() -> dyn Scope { Indexed {} }
 
 /// A record under construction, as octets. An IDENTITY: every holder
 /// of a writer writes the one record, so no seat needs `mut`.
-export type Writer = { out: Cell<List<int>>, scope: dyn Scope }
+export type Writer = { out: Cell<List<int>> }
 
-export fn writer() -> Writer { writer_in(indexed_scope()) }
-
-/// A writer whose dense ids cross by `scope`.
-export fn writer_in(scope: dyn Scope) -> Writer {
+export fn writer() -> Writer {
     let out: Cell<List<int>> = Cell.new([])
-    Writer { out: out, scope: scope }
+    Writer { out: out }
+}
+
+/// A dense id written: the type named `kind`, as `scope` spells it. The scope
+/// travels with the call, never with the writer, so a writer costs no box.
+export fn written_dense(w: Writer, scope: dyn Scope, kind: string, index: int) {
+    w.text(scope.spelled(kind, index))
 }
 
 impl Writer {
@@ -180,8 +183,6 @@ impl Writer {
     fn text(s: string) { self.octets(s.bytes()) }
 
     /// A dense id of the type named `kind`, as its scope spells it.
-    fn dense(kind: string, index: int) { self.text(self.scope.spelled(kind, index)) }
-
     fn octets(b: Bytes) {
         self.count(b.length)
         for i in 0..b.length { self.byte(b.at(i)) }
@@ -301,14 +302,9 @@ impl CodecFault {
 
 /// A record being read: its octets and the position reached. An
 /// IDENTITY, as a writer is: every holder reads on from one position.
-export type Reader = { b: Bytes, at: Cell<int>, scope: dyn Scope }
+export type Reader = { b: Bytes, at: Cell<int> }
 
-export fn reader(b: Bytes) -> Reader { reader_in(indexed_scope(), b) }
-
-/// A reader whose dense ids return by `scope`.
-export fn reader_in(scope: dyn Scope, b: Bytes) -> Reader {
-    Reader { b: b, at: Cell.new(0), scope: scope }
-}
+export fn reader(b: Bytes) -> Reader { Reader { b: b, at: Cell.new(0) } }
 
 impl Reader {
     fn byte() -> Result<int, CodecFault> {
@@ -372,11 +368,6 @@ impl Reader {
     }
 
     /// A dense id of the type named `kind`, read back through the scope.
-    fn dense(kind: string) -> Result<int, CodecFault> {
-        let spelling = self.text()?
-        let index? = self.scope.unspelled(kind, spelling) else { fail CodecFault.Unresolved }
-        index
-    }
 
     /// A variant's place among `n` declared, refused past the last.
     fn ordinal(n: int) -> Result<int, CodecFault> {
@@ -398,8 +389,13 @@ impl Reader {
 }
 
 /// A dense id read back through the reader's scope and built by `make`.
-export fn dense_read<T>(r: Reader, kind: string, make: fn(int) -> T) -> Result<T, CodecFault> {
-    .Ok(make(r.dense(kind)?))
+export fn dense_read<T>(r: Reader, scope: dyn Scope, kind: string, make: fn(int) -> T) -> Result<
+    T,
+    CodecFault,
+> {
+    let spelling = r.text()?
+    let index? = scope.unspelled(kind, spelling) else { fail CodecFault.Unresolved }
+    .Ok(make(index))
 }
 
 /// A tagged enum's variant, read back by its place among the names.

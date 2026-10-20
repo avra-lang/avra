@@ -55,7 +55,9 @@ use stable.{
 }
 
 /// What a query's answer codec calls its helpers on: the answer's own name, every record inline.
-fn answer_owner(f: Fn) -> Owner { Owner { name: f.answer, all: false, ordinal: false } }
+fn answer_owner(f: Fn) -> Owner {
+    Owner { name: f.answer, all: false, ordinal: false, scoped: false }
+}
 
 /// `@query`: the wrapper and the query's contract, from one reading.
 export fn query(f: Fn) -> Declared {
@@ -149,8 +151,22 @@ fn listed_source(f: Fn, lister: Fn) -> Decls {
 fn nothing_made(problems: List<Diagnostic>) -> Declared { Declared { made: [], problems: problems } }
 
 /// Every way a fn breaks the query law: a first seat that is no `Db`, an
-/// argument or an answer with no stable encoding.
-export fn query_problems(f: Fn) -> List<Diagnostic> { seat_problems(f, no_db, arg_not_carried, answer_not_carried) }
+/// argument or an answer with no stable encoding, and a record or payload
+/// enum named there whose type declares no codec.
+export fn query_problems(f: Fn) -> List<Diagnostic> {
+    let seats = seat_problems(f, no_db, arg_not_carried, answer_not_carried)
+    if !seats.is_empty() { return seats }
+    codec_problems(f)
+}
+
+/// A record and a payload enum are called by name on the way through a query — hashed for the
+/// cell, written and read for the record — so the type must hold its own codec. `@codec` is
+/// opt-in: nothing else gives a type one.
+fn codec_problems(f: Fn) -> List<Diagnostic> {
+    let args = [arg_needs_codec(f, p) for p in f.params.slice(1, f.params.length) if !codec_declared(p.kind, [])]
+    let answer = if codec_declared(f.answers, []) { [] } else { [answer_needs_codec(f)] }
+    args.concat(answer)
+}
 
 /// The signature law `@query` and `@input` (input.av) share: a `Db`
 /// first, then arguments and an answer that each fold through the
@@ -327,6 +343,24 @@ fn arg_not_carried(f: Fn, p: Param) -> Diagnostic {
         p.at ?? f.at,
         "`${f.name}`'s seat `${p.name}` is `${p.ty}`, which has no stable encoding — a query's call is named by its arguments' hash",
         "take an int, a bool, a string, a tagged enum or a nested record of those",
+    )
+}
+
+fn arg_needs_codec(f: Fn, p: Param) -> Diagnostic {
+    refuse_as_at(
+        "query_arg_codec",
+        p.at ?? f.at,
+        "`${f.name}`'s seat `${p.name}` is `${p.ty}`, which a query hash and record call by name — its type declares no codec",
+        "annotate `${p.ty}` `@codec`, which gives it the write, read and hash a query calls",
+    )
+}
+
+fn answer_needs_codec(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "query_answer_codec",
+        f.at,
+        "`${f.name}` answers `${f.answer}`, which a query hash and record call by name — its type declares no codec",
+        "annotate `${f.answer}` `@codec`, which gives it the write, read and hash a query calls",
     )
 }
 
