@@ -38,16 +38,37 @@ const PROP = args.face === "prop";
 // The engine the boxes are read from: firefox (default) or webkit (Playwright's, PLAYWRIGHT_DIR).
 const ENGINE = args.browser ?? "firefox";
 
-// How far a browser's box may stand from ours, on EVERY face: one OUTPUT PIXEL, which is 60 of
-// `fine`'s sixtieths — a solver box is whole pixels, rounded once at its edge. The tolerance is on
-// POSITION alone: a fractional space (SpaceAround's half gap) is distributed at sub-pixel precision,
-// so each engine snaps the final pixel its own way and two correct engines may legitimately differ
-// there. COUNT and SIZE are exact: a line more or fewer, or a box a word wider, is a defect
-// whichever engine shows it.
+// How far a browser's box may stand from ours, in the currency of what is CONTENDED. One output
+// pixel is 60 of `fine`'s sixtieths, since a solver box is whole pixels, rounded once at its edge.
+//
+// COUNT is always exact: a line more or fewer is a breaker defect.
+//
+// POSITION may stand one pixel apart EVERYWHERE: a box's position derives from its siblings' sizes,
+// and a hug anywhere up the chain makes it a contended quantity too.
+//
+// SIZE is exact when the LAYOUT decides it — a fixed, fill or distributed box is arithmetic both
+// engines do on the same numbers — and one pixel on an axis the node HUGS, READ from the node's own
+// `layout` and never inferred from the mismatch: a hugged size is the extent the engine MEASURES,
+// and engines measure in their own quantum (Gecko 1/60 px a glyph, WebKit 1/64). Naming the
+// contended quantity is what keeps the decided size strict without failing the measured one.
 const TOLERANCE = 1;
-const agrees = (got, want) =>
+const hugsOn = (n) => [
+  n.layout.width === undefined || n.layout.width === "Hug",
+  n.layout.height === undefined || n.layout.height === "Hug",
+];
+/// Each box's contended axes, in the page's own pre-order: the root's width is the host's, decided.
+function contended(spec) {
+  const flags = [hugsOn(spec), ...spec.kids.flatMap(contended)];
+  flags[0][0] = false;
+  return flags;
+}
+const within = (a, b, hug) => (hug ? Math.abs(a - b) <= TOLERANCE : a === b);
+const agrees = (got, want, flags) =>
   got.length === want.length &&
-  got.every((b, i) => b[2] === want[i][2] && b[3] === want[i][3] && Math.abs(b[0] - want[i][0]) <= TOLERANCE && Math.abs(b[1] - want[i][1]) <= TOLERANCE);
+  got.every(
+    (b, i) =>
+      Math.abs(b[0] - want[i][0]) <= TOLERANCE && Math.abs(b[1] - want[i][1]) <= TOLERANCE && within(b[2], want[i][2], flags[i][0]) && within(b[3], want[i][3], flags[i][1]),
+  );
 const FACE = { units: 64, advances: { i: 96, m: 272, W: 320, " ": 128 }, fallback: 205 };
 const LINE = 16;
 
@@ -273,7 +294,7 @@ async function compare(cases, browser, work) {
   const results = [];
   for (let i = 0; i < cases.length; i++) {
     const got = await browser.read(`(${BROWSER})(${JSON.stringify(pages[i])}, ${WIDTH})`);
-    results.push(agrees(got, out[i]) ? null : { got, want: out[i] });
+    results.push(agrees(got, out[i], contended(cases[i])) ? null : { got, want: out[i] });
   }
   return results;
 }
@@ -346,7 +367,8 @@ async function main() {
     const n = Math.max(v.got.length, v.want.length);
     for (let k = 0; k < n; k++) {
       const a = JSON.stringify(v.want[k]), b = JSON.stringify(v.got[k]);
-      console.log(`  box ${k}: solver ${a}  browser ${b}${v.want[k] && v.got[k] && agrees([v.got[k]], [v.want[k]]) ? "" : "   <--"}`);
+      const flags = contended(small);
+      console.log(`  box ${k}: solver ${a}  browser ${b}${v.want[k] && v.got[k] && agrees([v.got[k]], [v.want[k]], [flags[k] ?? [false, false]]) ? "" : "   <--"}`);
     }
   }
   await browser.close();
