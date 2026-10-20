@@ -174,11 +174,17 @@ fn copied_events_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
 
 /// An instance of a template refused for its events stands as a hole, and
 /// a note points it at the event's declaration — the one error is there.
-fn refused_there_law(mut cx: TypeCx, e: ExprId) {
+/// Only a hole asks: a declaration another file holds is read where its
+/// statement still stands in that file's parse, and is the component named.
+fn refused_there_law(mut cx: TypeCx, e: ExprId, x: ExprId) {
+    if !cx.errored(x) { return }
     let inst? = cx.view.store.instance_parts(e) else { return }
     let d? = type_named(cx.names, inst.word) else { return }
+    let at = cx.view.decls.decl(d)
     let store = cx.view.decls.store(d)
-    let c? = store.component_parts(cx.view.decls.decl(d).stmt) else { return }
+    if at.stmt.index >= store.stmts.count() { return }
+    let c? = store.component_parts(at.stmt) else { return }
+    if c.name != at.name { return }
     if !copies_events(store, c) { return }
     let event? = c.events().first() else { return }
     let declared: Span? = if event.holder.default == null { null } else { store.expr_span(event.holder.default!) }
@@ -188,7 +194,7 @@ fn refused_there_law(mut cx: TypeCx, e: ExprId) {
                 cx.loc_of(e),
                 c.name,
                 event.name,
-                cx.view.decls.homed(cx.view.decls.decl(d).file, null, null, declared),
+                cx.view.decls.homed(at.file, null, null, declared),
             ),
         )
 }
