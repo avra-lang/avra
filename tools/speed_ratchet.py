@@ -22,7 +22,7 @@ non-zero exit naming the phase, its ceiling and what it measured.
   speed_ratchet.py --wall --raw <file>
                                 judge the wall-clock budget: a PR check's
                                 per-job and whole wall time, as
-                                `tools/ci_wall.py` reads them from the run
+                                `tools/ci_wall.sh` reads them from the run
 
 The measurement itself is `tools/speed_measure.sh`: `packages/cli`, one
 file edited, the `--time` phases of a build and a check, each round a
@@ -47,7 +47,7 @@ raise it, so the ceiling walks down toward the goal as the cost falls.
 THE WALL-CLOCK GATE (`--wall`) is a THIRD family in the same budget file:
 `ci-wall wall <job> <ms>` for each job a PR check ran, and
 `ci-wall wall total <ms>` for the check whole, held HARD against the
-owner's own target. Its measurement is `tools/ci_wall.py`, which reads the
+owner's own target. Its measurement is `tools/ci_wall.sh`, which reads the
 run's job clocks from GitHub — so the queue and the artifact hand-downs
 count, and no step's own `date` arithmetic can see them. It is judged in
 the `test` job of every PR run; a host with no row is measured and said
@@ -96,7 +96,7 @@ WARM_GOAL = {"unchanged": 60, "edit": 150}
 # ordinary variance; `--accept` lowers the row and the allowance follows.
 WARM_RATIO = 2.0
 # The wall-clock family: a PR check's whole wall time and each job in it,
-# as `tools/ci_wall.py` reads them from the run. HARD ceilings, because
+# as `tools/ci_wall.sh` reads them from the run. HARD ceilings, because
 # these are the owner's target, not a noisy phase.
 WALL_COMMAND = "wall"
 WALL_TOTAL = "total"
@@ -224,7 +224,7 @@ def budget_text(rows):
         "# lane Sprite's; each is seeded from what that machine measured, and each",
         "# may only fall.",
         "#",
-        "# A `wall` row is the PR check's own clock (tools/ci_wall.py, judged by",
+        "# A `wall` row is the PR check's own clock (tools/ci_wall.sh, judged by",
         "# speed_ratchet.py --wall in the `test` job): `ci-wall wall <job> <ms>` and",
         "# `ci-wall wall total <ms>`, held HARD. `total` is the sum of the jobs'",
         "# own clocks, so no queue between them inflates it.",
@@ -694,10 +694,10 @@ def main(argv):
     slack = int(os.environ.get("SPEED_RATCHET_SLACK_MS", DEFAULT_SLACK_MS))
     require = "--require" in argv
     if "--wall" in argv:
-        # `tools/ci_wall.py` reads a PR check's per-job and total wall time
+        # `tools/ci_wall.sh` reads a PR check's per-job and total wall time
         # from the run; the budget and its reader live in this one file.
         if "--raw" not in argv:
-            print("speed: --wall needs `--raw <file>` — tools/ci_wall.py writes it", file=sys.stderr)
+            print("speed: --wall needs `--raw <file>` — tools/ci_wall.sh writes it", file=sys.stderr)
             return 64
         raw = open(argv[argv.index("--raw") + 1]).read()
         measured = least_rows(raw)
