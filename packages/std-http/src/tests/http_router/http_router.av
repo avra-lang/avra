@@ -2,7 +2,7 @@
 use @std.net.{Conn, NetError, connect, timely}
 use @std.time.{ms, secs}
 use @std.http.http.{text}
-use @std.http.route.{get, post, group, router}
+use @std.http.route.{get, post, group, router, faults, gathered}
 use @std.http.server.{server}
 
 export router tasks {
@@ -19,6 +19,13 @@ export router users {
 export router everything {
     users
     tasks
+}
+
+/// A table with a dead route: `/ideas/new` never runs, since the route
+/// above it takes any single segment.
+export router shadowed {
+    get "/ideas/{id}" { req -> "idea " + req.params.id }
+    get "/ideas/new" { _req -> "new" }
 }
 
 export server app {
@@ -74,4 +81,9 @@ fn shown() -> Result<string, NetError> {
     .Ok(lines.join("\n"))
 }
 
-match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
+// A bad table is refused in the library's own words, not by a compiler law:
+// this program compiles, and `faults` names the route that can never run.
+match shown() {
+    .Ok(t) -> t + "\n" + faults(gathered([shadowed])).join("\n"),
+    .Err(e) -> "failed: ${e.describe().message}",
+}
