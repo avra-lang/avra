@@ -1,0 +1,145 @@
+use models.{models, Person}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.query.{stored_value, Candidate}
+use store.choice.{Choice}
+
+fn person(id: string, name: string) -> Result<Record, string> {
+    Record { id: id, model: "Person", value: Person { name: name, email: null }.graph_value() }
+}
+
+fn publication(g: Graph, id: string, producer: string, records: List<Record>) -> Result<
+    Publication,
+    string,
+> {
+    Publication {
+        id: id,
+        producer: producer,
+        scope: "in:1",
+        input: "in:1",
+        input_revision: 1,
+        schema: g.catalog.fingerprint,
+        expected_revision: g.revision()?,
+        records: records,
+    }
+}
+
+fn contested(mut g: Graph) -> Result<bool, string> {
+    g.observe("in:1", "raw")?
+    g.publish(publication(g, "one", "agent-a", [person("p1", "Ada")?])?)?
+    g.publish(publication(g, "two", "agent-b", [person("p1", "Augusta")?])?)?
+    let fields = (g.entity("p1")?).fields
+    let name? = fields.find(it.property == "name") else { fail "no name field" }
+    name.candidates.length == 2 && name.candidates.all(!it.chosen)
+}
+
+fn named(candidate: Candidate, name: string) -> bool {
+    match candidate.value { .Text(text) -> text == name, rest -> false }
+}
+
+fn candidate(g: Graph, name: string) -> Result<Candidate, string> {
+    let fields = (g.entity("p1")?).fields
+    let name_field? = fields.find(it.property == "name") else { fail "no name field" }
+    let found? = name_field.candidates.find(named(it, name)) else { fail "no ${name} candidate" }
+    found
+}
+
+fn selected_claim(g: Graph) -> Result<int, string> {
+    let fields = (g.entity("p1")?).fields
+    let name? = fields.find(it.property == "name") else { fail "no name field" }
+    let chosen? = name.candidates.find(it.chosen) else { fail "no chosen candidate" }
+    chosen.claim
+}
+
+fn choose_reads_one() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    contested(g)?
+    let before = match g.value("p1") { .Ok(_) -> false, .Err(_) -> true }
+    let ada = candidate(g, "Ada")?
+    g.choose(Choice { decision: "c1", claim: ada.claim, decider: "user" })?
+    let read = match g.value("p1") {
+        .Ok(value) -> match Person.decode(value) { .Ok(found) -> found.name, .Err(_) -> "" },
+        .Err(_) -> "",
+    }
+    before && read == "Ada" && selected_claim(g)? == ada.claim
+}
+
+fn a_new_choice_replaces_the_old() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    contested(g)?
+    let ada = candidate(g, "Ada")?
+    let augusta = candidate(g, "Augusta")?
+    g.choose(Choice { decision: "c1", claim: ada.claim, decider: "user" })?
+    g.choose(Choice { decision: "c2", claim: augusta.claim, decider: "user" })?
+    let read = match g.value("p1") {
+        .Ok(value) -> match Person.decode(value) { .Ok(found) -> found.name, .Err(_) -> "" },
+        .Err(_) -> "",
+    }
+    let active = [c for c in g.choices()? if c.active()]
+    read == "Augusta" && active.length == 1 && active[0].decision == "c2"
+}
+
+fn unchoose_restores_the_rule() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    contested(g)?
+    let ada = candidate(g, "Ada")?
+    g.choose(Choice { decision: "c1", claim: ada.claim, decider: "user" })?
+    g.unchoose("c1")?
+    let conflict = match g.value("p1") { .Ok(_) -> false, .Err(_) -> true }
+    let fields = (g.entity("p1")?).fields
+    let name? = fields.find(it.property == "name") else { fail "no name field" }
+    let chosen = name.candidates.any(it.chosen)
+    conflict && !chosen && (g.choices()?).length == 1 && !g.choices()?[0].active()
+}
+
+fn decisions_refuse_replay() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    contested(g)?
+    let ada = candidate(g, "Ada")?
+    let augusta = candidate(g, "Augusta")?
+    let first = g.choose(Choice { decision: "c1", claim: ada.claim, decider: "user" })?
+    let replay = g.choose(Choice { decision: "c1", claim: ada.claim, decider: "user" })? == first
+    let moved = match g.choose(Choice { decision: "c1", claim: augusta.claim, decider: "user" }) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    g.unchoose("c1")?
+    let withdrawn = match g.choose(Choice { decision: "c1", claim: ada.claim, decider: "user" }) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    replay && moved && withdrawn
+}
+
+fn unknown_claim_and_decision() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    contested(g)?
+    let unknown = match g.choose(Choice { decision: "c1", claim: 99999, decider: "user" }) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    let unchoose = match g.unchoose("never") { .Ok(_) -> false, .Err(_) -> true }
+    unknown && unchoose
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "graph explicit choices" {
+    given "a property with competing statements" {
+        then "a choice makes value read through one claim" { passed(choose_reads_one()) }
+        then "a new choice withdraws the old for that property" { passed(a_new_choice_replaces_the_old()) }
+        then "withdrawing the choice restores the conflict" { passed(unchoose_restores_the_rule()) }
+        then "a decision replays, cannot move, and cannot be replayed after withdrawal" { passed(decisions_refuse_replay()) }
+        then "unknown claims and decisions are refused" { passed(unknown_claim_and_decision()) }
+    }
+}

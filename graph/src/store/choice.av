@@ -1,0 +1,131 @@
+use @std.json.{Json, field}
+use @std.sqlite.{Db}
+use store.open.{Graph, stored, modeled}
+use store.state.{Standing}
+use store.engine.{ClaimRow, ChoiceRow, ChoiceEndRow}
+
+/// One explicit decision to read a property through a named claim.
+export type Choice = {
+    decision: string,
+    claim: int,
+    decider: string,
+    revision: int = 0,
+    until_revision: int = 0,
+}
+
+impl Choice {
+    fn active() -> bool { self.until_revision == 0 }
+
+    fn json() -> Json {
+        Json
+            .Obj(
+                [
+                    field("decision", Json.Str(self.decision)),
+                    field("claim", Json.Int(self.claim)),
+                    field("decider", Json.Str(self.decider)),
+                    field("revision", Json.Int(self.revision)),
+                    field("until_revision", Json.Int(self.until_revision)),
+                    field("active", Json.Bool(self.active())),
+                ],
+            )
+    }
+}
+
+impl Graph {
+    /// Choose the claim a property reads through; one choice stands per
+    /// entity and property, and a new one withdraws the old in the same step.
+    fn choose(choice: Choice) -> Result<int, string> {
+        if choice.decision.is_empty() || choice.decider.is_empty() { fail "a choice needs a decision and a decider" }
+        mut db = self.db
+        stored(db.begin())?
+        defer { let _ = db.finish() }
+        let revision = self.current()?
+        let found = stored(ChoiceRow.where(db, decision: choice.decision))?
+        match found {
+            [one] -> {
+                if one.claim.id != choice.claim || one.decider != choice.decider {
+                    fail "choice decision was already used with a different claim"
+                }
+                if !(stored(ChoiceEndRow.where(db, choice: one))?).is_empty() {
+                    fail "choice decision was withdrawn; use a new decision id: ${choice.decision}"
+                }
+                return one.revision
+            },
+            [] -> self.chosen(db, choice, revision + 1)?,
+            rest -> { fail "choice decision is not unique: ${choice.decision}" },
+        }
+        self.advanced()?
+        stored(db.commit())?
+        revision + 1
+    }
+
+    fn chosen(mut db: Db, choice: Choice, revision: int) -> Result<int, string> {
+        let found = stored(ClaimRow.find(db, choice.claim))?
+        let claim? = found else { fail "unknown claim: ${choice.claim}" }
+        if (self.standing([claim])?).is_empty() { fail "a choice must name a standing claim" }
+        for other in self.standing_choices()? {
+            if other.claim.entity.id == claim.entity.id && other.claim.property == claim.property {
+                let _ = modeled(ChoiceEndRow { choice: other, until: revision }.insert(db))?
+            }
+        }
+        let _ = modeled(
+            ChoiceRow {
+                decision: choice.decision,
+                claim: claim,
+                decider: choice.decider,
+                revision: revision,
+            }
+                .insert(db),
+        )?
+        0
+    }
+
+    /// Withdraw one choice; the property reads by its ordinary rule again.
+    fn unchoose(decision: string) -> Result<int, string> {
+        mut db = self.db
+        stored(db.begin())?
+        defer { let _ = db.finish() }
+        let revision = self.current()?
+        let row = match stored(ChoiceRow.where(db, decision: decision))? {
+            [only] -> only,
+            [] -> { fail "unknown choice decision: ${decision}" },
+            rest -> { fail "choice decision is not unique: ${decision}" },
+        }
+        if !(stored(ChoiceEndRow.where(db, choice: row))?).is_empty() { return revision }
+        modeled(ChoiceEndRow { choice: row, until: revision + 1 }.insert(db))?
+        self.advanced()?
+        stored(db.commit())?
+        revision + 1
+    }
+
+    fn standing_choices() -> Result<List<ChoiceRow>, string> {
+        let ended = stored(ChoiceEndRow.all(self.db))?
+        [choice for choice in stored(ChoiceRow.all(self.db))? if !ended.any(it.choice.id == choice.id)]
+    }
+
+    fn choices(claim: int = 0) -> Result<List<Choice>, string> {
+        self.current()?
+        let ended = stored(ChoiceEndRow.all(self.db))?
+        [Choice {
+            decision: choice.decision,
+            claim: choice.claim.id,
+            decider: choice.decider,
+            revision: choice.revision,
+            until_revision: ended.find(it.choice.id == choice.id)?.until ?? 0,
+        } for choice in stored(ChoiceRow.all(self.db))? if claim == 0 || choice.claim.id == claim]
+    }
+
+    /// The standing choice among these live claims, for one property.
+    fn chosen_claim(live: List<Standing>, property: string) -> Result<ClaimRow?, string> {
+        let standing = self.standing_choices()?
+        let chosen = standing
+            .find(
+                it.claim.property == property &&
+                    live.any((s: Standing) -> s.claim.id == it.claim.id),
+            )
+        match chosen {
+            choice? -> choice.claim
+            null -> null
+        }
+    }
+}

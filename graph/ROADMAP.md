@@ -38,7 +38,7 @@ autonomous extraction or inference system.
 | Model-only ontology; generated registration | Working |
 | Standard validation and generated codecs | Working |
 | Scalars, optionals, lists, embedded records, typed references | Working |
-| Std-first SQLite storage (`@std/db` engine models) | Working; format 7 |
+| Std-first SQLite storage (`@std/db` engine models) | Working; format 8 |
 | Immutable observation history | Working |
 | Atomic replacement, replay, stale input/schema/revision rejection | Working |
 | Independent support, conflicts, and explanations | Working |
@@ -50,6 +50,7 @@ autonomous extraction or inference system.
 | Evidence locators | Working; opaque per-record JSON, returned by `explain` |
 | External identities | Working; namespace/key names, owned by producer and scope |
 | Confidence metadata | Working; finite 0..1, returned by `explain`, never authority |
+| Explicit choices | Working; one per entity/property, reversible, never evidence |
 | Merge/split | Working; explicit decisions, read groups, reversible split |
 | Deletion/tombstones | Working; hides live reads, history and revival kept |
 | Selection policy, derived rules | Not in baseline |
@@ -123,8 +124,10 @@ selection policy remains.
 - [x] Resolve `(namespace, external_key)` identities and aliases.
 - [x] Add explicit, reversible merge/split decisions with provenance.
 - [x] Define tombstones, deletion, and dangling-reference behavior.
-- [ ] Declare generic selection policies: source priority, explicit user
-  choice, and recency only where the model/policy asks for it.
+- [x] Explicit user choice: a decision names the claim a property reads
+  through, one per entity and property, and is revocable.
+- [ ] Declare source priority and recency policies where the model/policy
+  asks for them.
 - [x] Store confidence as evidence metadata, separate from authority.
 
 Exit: different sources can identify the same entity without silent
