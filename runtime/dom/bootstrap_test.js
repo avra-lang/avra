@@ -243,6 +243,25 @@ let verbless = "";
 try { d.apply(frame(call(0, "levitate"))); } catch (e) { verbless = e.message; }
 check("a verb the element does not have refuses by name", verbless, "a patch calls levitate on element 0, which has no such verb");
 
+// ── a press outside a dialog that says `closedby` ──
+const o = page();
+o.apply(frame(create(0, "dialog"), setAttr(0, "closedby", "any"), listen(0, 9, "cancel", SAYS.nothing, "", false), place(0, NO_ID, NO_ID)));
+const shownDialog = o.mount.childNodes[0];
+shownDialog.open = true;
+shownDialog.getBoundingClientRect = () => ({ left: 10, top: 10, right: 50, bottom: 50 });
+shownDialog.close = () => { shownDialog.open = false; };
+shownDialog.dispatchEvent = (ev) => { dispatch(o.mount, shownDialog, ev.type, { bubbles: false }); return !ev.defaultPrevented; };
+const pointer = (type, x, y) => o.doc.listeners.get(type)({ target: shownDialog, clientX: x, clientY: y });
+pointer("pointerdown", 20, 20);
+pointer("pointerup", 20, 20);
+check("a press inside a closedby dialog keeps it open", [shownDialog.open, o.sent.length], [true, 0]);
+pointer("pointerdown", 20, 20);
+pointer("pointerup", 2, 2);
+check("a press that starts inside it and ends outside keeps it open", [shownDialog.open, o.sent.length], [true, 0]);
+pointer("pointerdown", 2, 2);
+pointer("pointerup", 2, 2);
+check("a press outside it sends it away, heard as its cancel", [shownDialog.open, o.sent], [false, [[0, 9, null]]]);
+
 // ── the wire itself ──
 let refused = false;
 try { parseFrame(Uint8Array.from([WIRE_VERSION + 1])); } catch { refused = true; }
