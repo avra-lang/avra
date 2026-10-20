@@ -153,7 +153,8 @@ Implemented in `packages/std-http/src/route.av` (PR #1117,
 `http-specificity`, stacked on the router); witnesses `tests/route_test.av`
 (the ladder and the overlap cases), `tests/route_adversarial_test.av` (the
 scan oracle ranks by type too), and `tests/http_specificity` (the ladder over
-the wire, eval == native).
+the wire, eval == native). Until it lands, a table answers by declaration
+order alone — which is exactly what the fault above exists to stop.
 
 ## HTTP framing stays byte-oriented
 
