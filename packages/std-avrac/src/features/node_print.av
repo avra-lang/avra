@@ -1,0 +1,349 @@
+//! THE RULE IS THE PRINTER'S TEMPLATE. A rule that builds a node from
+//! its labels (`unary = "!" value:unary -> Expr.Not`) already states the
+//! node's surface: the words it is written with and the payloads those
+//! words surround. Read once at assembly, the rule becomes a `Wording`
+//! of literal words and holes, and the printer fills it from the node —
+//! so a printer arm for such a node is not written.
+//!
+//! WHAT A TEMPLATE IS: literal words, one hole per payload the rule
+//! names (an expression at the tier of the rule it names, a name, a
+//! written type), and an optional group around one hole, printed when
+//! that payload is present. An optional literal is never printed — the
+//! canonical form leaves it out. A rule outside that shape (a repeated
+//! group, a climb, a captured literal, a stated payload) has no
+//! template, and its node keeps its own printer arm.
+//!
+//! SPACING IS THE PRINTER'S, NEVER THE GRAMMAR'S. Each word and hole
+//! wants a space before it and after it, and each mark wants what its
+//! `Layout` row says (`(` abuts, `=` stands apart, `:` and `,`
+//! hug what precedes them); a space goes wherever one side's "after"
+//! meets the other's "before". A mark with no row has no stated layout,
+//! so its rule has no template.
+//!
+//! ONE NODE, ONE SURFACE. A variant built by several rules is worded
+//! only when every rule reads the same, at the same tier.
+use core.{PayloadRow, row_for, carried, flatten, distinct, found_at, is_name_start}
+use @std.meta.{Field}
+use @std.grammar.{Grammar, Alt, Seq, Item, Prim, Rep, Build, Diagnostic, defect, node_builder_name}
+
+/// One thing a template says, in the order the rule writes it.
+export enum Piece {
+    /// a word written as is
+    Word(text: string)
+    /// payload `at` (among the node's carried payloads), an expression
+    /// printed at `tier` or a name or a type, which need none
+    Hole(at: int, tier: int)
+    /// the pieces, printed when payload `at` is present
+    Maybe(at: int, pieces: List<Piece>)
+    /// a space, between two words or a word and a hole
+    Space
+}
+
+/// A node's surface: where it stands and what it says. `tier` is that
+/// of the rule it is written in, `no_tier` where the rule has none.
+export type Wording = { node: string, tier: int, pieces: List<Piece> }
+
+/// A grammar rule's place on the printer's precedence scale.
+export type RuleTier = { rule: string, tier: int }
+
+/// The tier of a rule the scale does not rank.
+export const no_tier: int = 0 - 1
+
+/// How a mark sits among its neighbours: whether it wants a space before
+/// it and one after. A word or a hole wants both. A template may write
+/// only a mark listed here — any other has a layout the grammar does not
+/// state, so a rule writing one has no template. A row is listed when a
+/// rule or a test uses it, never ahead of one.
+export type Layout = { mark: string, before: bool, after: bool }
+
+const layouts: List<Layout> = [
+    Layout { mark: "(", before: false, after: false },
+    Layout { mark: ")", before: false, after: false },
+    Layout { mark: "[", before: false, after: false },
+    Layout { mark: "]", before: false, after: false },
+    Layout { mark: "<", before: false, after: false },
+    Layout { mark: ">", before: false, after: false },
+    Layout { mark: ".", before: false, after: false },
+    Layout { mark: "..", before: false, after: false },
+    Layout { mark: "!", before: false, after: false },
+    Layout { mark: "=", before: true, after: true },
+    Layout { mark: ":", before: false, after: true },
+]
+
+/// The rules a hole may name for a written type, the token class it takes a name from, and the statement terminator.
+const name_class: string = "NAME"
+const terminator: string = "END"
+const type_rules: List<string> = ["type", "type_atom"]
+
+/// What one rule branch says of one node: its template, or nothing when
+/// the branch is outside the shape.
+type Reading = { node: string, wording: Wording? }
+
+/// The nodes whose rules agree on one wording, by `Owner.Variant`, and
+/// the nodes some rule builds that no wording covers.
+export type Wordings = { found: Map<string, Wording>, refused: List<string> }
+
+/// Every node a rule builds, read: its wording when its rules agree.
+export fn node_wordings(g: Grammar, rows: List<PayloadRow>, scale: List<RuleTier>) -> Wordings {
+    let readings = flatten(
+        [flatten([read_all(r.name, s, rows, scale) for s in r.body.branches]) for r in g.rules],
+    )
+    mut found: Map<string, Wording> = {}
+    mut refused: List<string> = []
+    for node in distinct([x.node for x in readings if x.node != ""]) {
+        let own = [x.wording for x in readings if x.node == node]
+        let first = own[0]
+        if first != null && own.all(it != null && shown(it!) == shown(first!)) {
+            found.set(node, first!)
+        } else {
+            refused.push(node)
+        }
+    }
+    Wordings { found: found, refused: refused }
+}
+
+/// A branch that builds no node.
+fn unread() -> Reading { Reading { node: "", wording: null } }
+
+/// A branch's own reading, and its fold's turns: each turn of a branch
+/// that folds on a seed builds a node from that seed and its own items.
+fn read_all(rule: string, s: Seq, rows: List<PayloadRow>, scale: List<RuleTier>) -> List<Reading> {
+    [read_branch(rule, s, null, rows, scale)]
+        .concat([read_branch(rule, t, s.fold, rows, scale) for t in turns_of(s)])
+}
+
+/// The branches inside a folding branch's repeated groups.
+fn turns_of(s: Seq) -> List<Seq> {
+    if s.fold == null { return [] }
+    flatten([m.prim.group_alt()?.branches ?? [] for m in s.items])
+}
+
+/// A branch that builds a node with no stated payloads, read as a
+/// template; a branch that builds none reads as no node at all. A turn
+/// of a fold carries the fold's `seed`: the payload the node holds the
+/// value so far in.
+fn read_branch(rule: string, s: Seq, seed: string?, rows: List<PayloadRow>, scale: List<RuleTier>) -> Reading {
+    let built? = s.build else { return unread() }
+    match built {
+        .Node(owner, variant, fixed, slots) -> Reading {
+            node: node_builder_name(owner, variant),
+            wording: worded(
+                rule,
+                s,
+                seed,
+                row_for(rows, owner, variant),
+                fixed.is_empty() && slots == null,
+                scale,
+            ),
+        },
+        rest -> unread(),
+    }
+}
+
+/// The template a branch reads as, when its items fit: the seed's hole
+/// first, at the tier of the rule the fold stands in.
+fn worded(rule: string, s: Seq, seed: string?, row: PayloadRow?, plain: bool, scale: List<RuleTier>) -> Wording? {
+    if !plain || row == null || s.operators != null || s.fold != null { return null }
+    let held = [f for f in row!.payloads if carried(f)]
+    let lead? = seeded(seed, held, rule, scale) else { return null }
+    let parts = [item_pieces(m, held, scale) for m in s.items]
+    if parts.any(it == null) { return null }
+    let pieces? = spaced(lead.concat(flatten([p! for p in parts]))) else { return null }
+    Wording {
+        node: node_builder_name(row!.owner, row!.variant),
+        tier: tier_of(scale, rule) ?? no_tier,
+        pieces: pieces,
+    }
+}
+
+/// The hole a fold's seed leads with: nothing without a seed, else the
+/// payload it names, an expression at the tier of the rule it stands in.
+fn seeded(seed: string?, held: List<Field>, rule: string, scale: List<RuleTier>) -> List<Piece>? {
+    let name? = seed else { return [] }
+    let at? = found_at([f.name for f in held], name) else { return null }
+    let tier? = tier_of(scale, rule) else { return null }
+    if !valued(held[at]) { return null }
+    [Piece.Hole(at, tier)]
+}
+
+/// One item's pieces, or nothing when no template can say it.
+fn item_pieces(m: Item, held: List<Field>, scale: List<RuleTier>) -> List<Piece>? {
+    match m.prim {
+        .Lit(text) -> literal(m, text),
+        .Ref(rule) -> hole(m, held, rule, scale),
+        .Named(term) -> token(m, held, term, scale),
+        .Group(inner) -> grouped(m, inner, held, scale),
+        rest -> null,
+    }
+}
+
+/// A literal word: written, or an optional one the printer leaves out.
+fn literal(m: Item, text: string) -> List<Piece>? {
+    when {
+        m.label != null -> null
+        m.rep == Rep.Opt -> []
+        m.rep == Rep.One && (wordy(text) || layout_of(text) != null) -> [Piece.Word(text)]
+        _ -> null
+    }
+}
+
+/// A token class: the statement terminator, which the line owns, or a
+/// hole the token fills.
+fn token(m: Item, held: List<Field>, term: string, scale: List<RuleTier>) -> List<Piece>? {
+    if term == terminator && m.label == null { return [] }
+    hole(m, held, term, scale)
+}
+
+/// A labelled item naming a payload, optional or not.
+fn hole(m: Item, held: List<Field>, rule: string, scale: List<RuleTier>) -> List<Piece>? {
+    let label? = m.label else { return null }
+    let at? = found_at([f.name for f in held], label) else { return null }
+    if !fits(held[at], rule) { return null }
+    let ranked = tier_of(scale, rule)
+    if ranked == null && valued(held[at]) { return null }
+    let tier = ranked ?? no_tier
+    when {
+        m.rep == Rep.One -> [Piece.Hole(at, tier)]
+        m.rep == Rep.Opt -> [Piece.Maybe(at, [Piece.Hole(at, tier)])]
+        _ -> null
+    }
+}
+
+/// A parenthesised, optional run around exactly one hole.
+fn grouped(m: Item, inner: Alt, held: List<Field>, scale: List<RuleTier>) -> List<Piece>? {
+    if m.rep != Rep.Opt || m.label != null || inner.branches.length != 1 { return null }
+    let parts = [item_pieces(x, held, scale) for x in inner.branches[0].items]
+    if parts.any(it == null) { return null }
+    let pieces = flatten([p! for p in parts])
+    let holes = [h for h in pieces if holds_at(h) != null]
+    if holes.length != 1 { return null }
+    [Piece.Maybe(holds_at(holes[0])!, pieces)]
+}
+
+/// The payload a hole reads, absent for a word.
+fn holds_at(p: Piece) -> int? {
+    match p { .Hole(at, _) -> at, .Word(_) -> null, .Maybe(at, _) -> at, .Space -> null }
+}
+
+/// Whether the rule a hole names can fill the payload's type: an
+/// expression rule an `ExprId`, a name token a name, a type rule a written type.
+fn fits(f: Field, rule: string) -> bool {
+    match f.ty {
+        "ExprId" or "ExprId?" -> rule != name_class && !type_rules.contains(rule),
+        "Plain" or "Scoped" -> rule == name_class,
+        "TypeRef" -> type_rules.contains(rule),
+        rest -> false,
+    }
+}
+
+/// Whether the payload is an expression, which a hole prints at a tier.
+fn valued(f: Field) -> bool { f.ty == "ExprId" || f.ty == "ExprId?" }
+
+/// A rule's tier on the scale, absent when the scale does not rank it.
+fn tier_of(scale: List<RuleTier>, rule: string) -> int? {
+    scale.find(it.rule == rule)?.tier
+}
+
+/// A word the printer must keep apart from a neighbouring word or hole.
+fn wordy(text: string) -> bool { !text.is_empty() && is_name_start(text.char_code(0)) }
+
+/// The pieces with a space wherever two words or holes meet. A meeting at
+/// an optional group's front puts the space INSIDE the group, which prints
+/// it with the group; a meeting after a group's end has no such home —
+/// whether it takes a space would depend on whether the group is printed —
+/// and leaves the wording unwritten.
+fn spaced(ps: List<Piece>) -> List<Piece>? {
+    let each = [respaced(p) for p in ps]
+    if each.any(it == null) { return null }
+    let qs = [q! for q in each]
+    let gaps = [i > 0 && closes(qs[i - 1]) && opens(q) for i, q in qs]
+    if [gaps[i] && is_group(qs[i - 1]) for i, q in qs].any(it) { return null }
+    flatten([parted(q, gaps[i]) for i, q in qs])
+}
+
+/// A piece after a gap: a group takes the space at its front, anything
+/// else is preceded by one.
+fn parted(q: Piece, gap: bool) -> List<Piece> {
+    when {
+        !gap -> [q]
+        is_group(q) -> [led(q)]
+        _ -> [Piece.Space, q]
+    }
+}
+
+/// A group with a space ahead of its pieces.
+fn led(q: Piece) -> Piece {
+    match q {
+        .Maybe(at, inner) -> Piece.Maybe(at, [Piece.Space].concat(inner)),
+        .Word(_) or .Hole(_, _) or .Space -> q,
+    }
+}
+
+fn is_group(p: Piece) -> bool { p is .Maybe }
+
+/// A piece with its own group spaced.
+fn respaced(p: Piece) -> Piece? {
+    match p {
+        .Maybe(at, inner) -> {
+            let held? = spaced(inner) else { return null }
+            Piece.Maybe(at, held)
+        },
+        .Word(_) or .Hole(_, _) or .Space -> p,
+    }
+}
+
+/// A mark's layout, absent for a word or a mark no row lists.
+fn layout_of(text: string) -> Layout? { layouts.find(it.mark == text) }
+
+/// Whether a piece wants a space before it: a word or a hole does, a
+/// mark as its layout says, a group as its first piece does.
+fn opens(p: Piece) -> bool {
+    match p {
+        .Word(text) -> wordy(text) || layout_of(text)?.before ?? false,
+        .Hole(_, _) -> true,
+        .Maybe(_, inner) -> !inner.is_empty() && opens(inner[0]),
+        .Space -> false,
+    }
+}
+
+/// Whether a piece wants a space after it.
+fn closes(p: Piece) -> bool {
+    match p {
+        .Word(text) -> wordy(text) || layout_of(text)?.after ?? false,
+        .Hole(_, _) -> true,
+        .Maybe(_, inner) -> !inner.is_empty() && closes(inner.last()!),
+        .Space -> false,
+    }
+}
+
+/// A template as stable text: `!$0@10` — words as they are, a hole as
+/// `$at@tier`, an optional run in brackets. The one spelling two
+/// templates are compared by and a golden pins.
+export fn shown(t: Wording) -> string {
+    "${t.node}@${t.tier}: ${shown_pieces(t.pieces)}"
+}
+
+fn shown_pieces(ps: List<Piece>) -> string {
+    [shown_piece(p) for p in ps].join(" ")
+}
+
+fn shown_piece(p: Piece) -> string {
+    match p {
+        .Word(text) -> "\"${text}\"",
+        .Hole(at, tier) -> "\$${at}@${tier}",
+        .Maybe(at, pieces) -> "[\$${at}? ${shown_pieces(pieces)}]",
+        .Space -> "_",
+    }
+}
+
+/// Each claimed node a rule builds without a wording. A node no rule of
+/// the assembled features builds is no defect: a feature subset omits it.
+export fn wording_defects(wordings: Wordings, claimed: List<string>) -> List<Diagnostic> {
+    [defect(at, unworded(at)) for at in claimed if wordings.refused.contains(at)]
+}
+
+// ── voices ──
+
+fn unworded(at: string) -> string {
+    "the printer reads `${at}` from its rule, and no rule writes it as a template — words, labelled holes and an optional group around one hole, every rule building it reading alike"
+}
