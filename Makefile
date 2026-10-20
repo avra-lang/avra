@@ -1136,7 +1136,7 @@ keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
 
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
 # on, proved on its fixtures — none reads the compiler.
-TOOL_WITNESSES = capped.sh\ --self-test failed_tail_test.sh host_fn_edit_attack.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test seed_is_tree.sh\ --self-test \
+TOOL_WITNESSES = pr_body.sh\ --self-test capped.sh\ --self-test failed_tail_test.sh host_fn_edit_attack.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test seed_is_tree.sh\ --self-test \
                  witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_compiler_release.sh witness_ci_wall.sh witness_warm_edit.sh shim_guard_test.sh work_test.sh reclaim_test.sh keepers_loop.sh\ --self-test rungs.sh\ --self-test ladder.sh\ --self-test
 tool-witnesses:
 	@python3 tools/pipeline_status.py --self-test
