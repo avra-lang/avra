@@ -1558,6 +1558,16 @@ impl Decls {
         [part for part in lead.concat([d.name]) if !part.is_empty()].join(".")
     }
 
+    /// A declaration as its module and owner spell it (`@std.meta.Code.text`, the `@` always there): the one spelling
+    /// an import of its module would write, then its owner path, then its name.
+    fn canonical_name(d: Decl) -> string {
+        let module = self.module_name(self.file(d.file).module_id)
+        let lead = if package_of_module(module).is_empty() { [self.package_named(module), module] } else { [module] }
+        let spelled = [part for part in lead.concat([d.owner, d.name]) if !part.is_empty()]
+            .join(".")
+        if spelled.starts_with("@") { spelled } else { "@${spelled}" }
+    }
+
     /// A module's package in the DOTTED spelling every package read
     /// compares (`@std.meta`): the prefix a dependency's module carries,
     /// or the root's manifest name for a root module, which none

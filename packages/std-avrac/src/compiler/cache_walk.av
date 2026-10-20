@@ -213,7 +213,8 @@ impl Workspace {
     }
 
     fn decl_named(name: string) -> Meant {
-        let found = self.decls_named(name)
+        let shown = name.split(DECL_AT).first() ?? name
+        let found = [d for d in self.decls_named(shown) if shown == name || self.decl_shown(d.id) == name]
         if found.is_empty() { return Meant.NoDecl(name) }
         if found.length > 1 { return Meant.ManyDecls(name, [self.decl_shown(d.id) for d in found]) }
         let keys = self.decl_answers(found[0].id)
@@ -253,7 +254,8 @@ impl Workspace {
     fn decls_named(name: string) -> List<Decl> {
         let last = name.split(".").last() ?? name
         let filed = if last == name { self.decls.named_rows(name) } else { self.decls.named_rows(name).concat(self.decls.named_rows(last)) }
-        [d for d in filed if d.name == name || "${d.owner}.${d.name}" == name]
+        let spelled = if name.starts_with("@") { name } else { "@${name}" }
+        [d for d in filed if d.name == name || "${d.owner}.${d.name}" == name || self.decls.canonical_name(d) == spelled]
     }
 
     /// Every settled answer keyed by this declaration: its key in each family
@@ -399,13 +401,16 @@ impl Workspace {
     /// A path as the package's root sees it.
     fn shown_path(path: string) -> string { relative_path(self.root, path) }
 
-    /// A declaration by its owner and name, then the file declaring it.
+    /// A declaration by its canonical spelling — module, owner, name — then the file declaring it
+    /// when another declaration wears the same spelling.
     fn decl_shown(d: DeclId) -> string {
         let x = self.decls.decl(d)
-        let named = if x.owner == "" { x.name } else { "${x.owner}.${x.name}" }
         match x.kind {
-            .Builtin -> "${named}${DECL_AT}builtin",
-            rest -> "${named}${DECL_AT}${self.shown_path(self.decls.file(x.file).path)}",
+            .Builtin -> "${if x.owner == "" { x.name } else { "${x.owner}.${x.name}" }}${DECL_AT}builtin",
+            rest -> {
+                let named = self.decls.canonical_name(x)
+                if self.decls_named(named).length > 1 { "${named}${DECL_AT}${self.shown_path(self.decls.file(x.file).path)}" } else { named }
+            },
         }
     }
 

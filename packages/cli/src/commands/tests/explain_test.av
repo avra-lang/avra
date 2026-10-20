@@ -154,7 +154,7 @@ spec "commands/explain" {
             let root = lib_probe("two_decls")
             let _ = make_dirs("${root}/src/more")
             let _ = write_text("${root}/src/more/a.av", "export fn one() -> int { 2 }\n")
-            explain_refusal(Asked { target: "@one", from: root }) == "avra: 2 declarations are named `one` — name one answer exactly, as `Family(subject)`:\n  one · src/lib/a.av\n  one · src/more/a.av"
+            explain_refusal(Asked { target: "@one", from: root }) == "avra: 2 declarations are named `one` — name one answer exactly, as `Family(subject)`:\n  @two_decls.lib.one\n  @two_decls.more.one"
         }
     }
     given "a declaration no answer is keyed by" {
@@ -218,9 +218,19 @@ spec "commands/explain" {
     given "a declaration by its name" {
         then "every answer keyed by it is explained, its signature among them" {
             let lines = explain_lines(Asked { target: "@one", from: lib_probe("decl_page") })
-            lines.any(it.starts_with("Names(one · src/lib/a.av)  ")) &&
-                lines.any(it.starts_with("Sig(one · src/lib/a.av)  ")) &&
-                lines.any(it.starts_with("Typed(one · src/lib/a.av)  "))
+            lines.any(it.starts_with("Names(@decl_page.lib.one)  ")) &&
+                lines.any(it.starts_with("Sig(@decl_page.lib.one)  ")) &&
+                lines.any(it.starts_with("Typed(@decl_page.lib.one)  "))
+        }
+        then "every declaration label a page prints pastes back as `@label` and names the same answers" {
+            let root = lib_probe("decl_canon")
+            let labels = [line.substring(line.index_of("(") + 1, line.index_of(")")) for line in explain_lines(Asked { target: "@one", from: root }) if line.starts_with("Sig(")]
+            !labels.is_empty() &&
+                labels
+                    .all(
+                        (label) -> explain_lines(Asked { target: "@${label}", from: root })
+                            .any((line) -> line.starts_with("Sig(${label})  ")),
+                    )
         }
     }
     given "`--stats`" {
@@ -393,12 +403,12 @@ spec "commands/explain" {
         then "`--why` of an answer names the moved input it reads" {
             let lines = explain_lines(
                 Asked {
-                    target: "Sig(one · src/lib/a.av)",
+                    target: "Sig(@why_answer.lib.one)",
                     from: edited_lib("why_answer"),
                     why: true,
                 },
             )
-            (lines.first() ?? "").starts_with("Sig(one · src/lib/a.av)  ") &&
+            (lines.first() ?? "").starts_with("Sig(@why_answer.lib.one)  ") &&
                 lines.any(it == "  moved    src/lib/a.av, read by way of:")
         }
         then "the edited file's text is read by the file a check analyses again" {
@@ -436,6 +446,22 @@ spec "commands/explain" {
             ) == "  check_length's Reference rows: 0 held, 1 fresh"
         }
     }
+    given "`--why` of a package, its files read again" {
+        then "an edit that leaves the module's interface alone is recomputed with the same digest" {
+            let root = lib_probe("same_digest")
+            let _ = holds_after_check(root)
+            let _ = write_text("${root}/src/lib/a.av", "export fn one() -> int { 2 }\n")
+            let lines = explain_lines(Asked { target: "", from: root, why: true })
+            lines.any(it == "re-read: 0 digest moved, 1 same digest — their readers stand") &&
+                lines.any(it == "  src/lib/a.av — RECOMPUTED, same digest (readers stand)")
+        }
+        then "an edit that moves the interface is recomputed with the digest moved" {
+            let lines = explain_lines(
+                Asked { target: "", from: edited_lib("moved_digest"), why: true },
+            )
+            lines.any(it == "  src/lib/a.av — RECOMPUTED, digest moved (readers re-read)")
+        }
+    }
     given "an inspection" {
         then "every form asked twice prints the same thing" {
             let root = edited_lib("twice")
@@ -447,7 +473,7 @@ spec "commands/explain" {
                 Asked { target: "src/main.av", from: root, why: true },
                 Asked { target: "src/main.av", from: root, why: true, json: true },
                 Asked { target: "@one", from: root },
-                Asked { target: "Sig(one · src/lib/a.av)", from: root, why: true },
+                Asked { target: "Sig(@twice.lib.one)", from: root, why: true },
             ]
                 .all(
                     !explain_lines(it).is_empty() &&

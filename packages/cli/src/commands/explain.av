@@ -25,7 +25,7 @@ use @std.avrac.compiler.{
     Phase,
 }
 use @std.avrac.compiler.store.{Traffic}
-use @std.avrac.core.{joined, counted, flatten, hex_word}
+use @std.avrac.core.{joined, counted, flatten, hex_word, sorted_by, text_before}
 use @std.relation.engine.{count_reads, read_calls, abandoned_frames, time_frames}
 use @std.json.{Json, Field, field, to_text}
 use @std.path.{relative_path}
@@ -154,7 +154,40 @@ fn package_answer(a: Asked, ws: Workspace) -> Lines {
         .concat([line for h in walk.holds for line in text_moved(walk, h)])
         .concat([line for h in walk.holds for line in part_moved(walk, h)])
         .concat([line for h in read for line in hold_lines(walk, h)])
+        .concat(rerun_lines(walk))
         .concat(reached_lines(walk, changed))
+}
+
+/// The files whose own input moved and were read again: how many came out with the same
+/// interface, so their readers stand, then each by path.
+fn rerun_lines(walk: CacheWalk) -> List<string> {
+    let reran = sorted_by(
+        [h for h in walk.holds if !h.held && h.moved.any(own_part)],
+        (a: FileHold, b: FileHold) -> text_before(a.path, b.path),
+    )
+    if reran.is_empty() { return [] }
+    let moved = reran.filter((h) -> h.moved.any(interface_part)).length
+    ["re-read: ${moved} digest moved, ${reran.length - moved} same digest — their readers stand"]
+        .concat(capped(["  ${at_root(walk, h.path)} — ${verdict(h)}" for h in reran]))
+}
+
+/// A file read again, and whether what its readers see of it moved.
+fn verdict(h: FileHold) -> string {
+    if h.moved.any(interface_part) { "RECOMPUTED, digest moved (readers re-read)" } else { "RECOMPUTED, same digest (readers stand)" }
+}
+
+/// A part that is a module's interface moving.
+fn interface_part(m: PartMoved) -> bool {
+    match m.part {
+        .Interface(_) -> true,
+        .Text or .Runs or .Came(_) or .Went(_) or .Gathered -> false,
+    }
+}
+
+/// The first `REACHED_CAP` lines, then how many more there are.
+fn capped(lines: List<string>) -> List<string> {
+    if lines.length <= REACHED_CAP { return lines }
+    lines.slice(0, REACHED_CAP).concat(["  +${lines.length - REACHED_CAP} more"])
 }
 
 /// How many answers a moved input's section names before the rest is a count.
