@@ -6,28 +6,34 @@ use tree.node.{Node}
 use style.tokens.{Size}
 use style.theme.{Theme}
 use place.lines.{lines_in, longest_in}
-use place.measure.{Measure, Extent}
+use place.measure.{Measure, Extent, fine}
 use place.metrics.{Metrics, run_width, line_height, subunits}
 
 /// A target of pixels (or any unit a face is drawn in): `metrics` measures
 /// the text, `theme` gives the spacing, and `rest` answers for what is not text.
 export type Text = { metrics: dyn Metrics, theme: Theme, rest: dyn Measure }
 
-/// Sixty-fourths as whole units, halves up.
-fn whole(n: int) -> int { (n + subunits / 2) / subunits }
+/// `n` in a ratio of `to` parts per `from`, halves up.
+fn rescaled(n: int, to: int, from: int) -> int { (n * to + from / 2) / from }
 
 impl Measure for Text {
     fn own(n: Node, avail: int) -> Extent {
-        if !(n.prim is .Text) { return self.rest.own(n, avail) }
+        let e = self.own_fine(n, avail * fine)
+        Extent { w: rescaled(e.w, 1, fine), h: rescaled(e.h, 1, fine) }
+    }
+
+    fn own_fine(n: Node, avail: int) -> Extent {
+        if !(n.prim is .Text) { return self.rest.own_fine(n, avail) }
         let m = self.metrics
+        let room = rescaled(avail, subunits, fine)
         let ls = lines_in(
             n.words(),
-            if avail < 1 { 1 } else { avail } * subunits,
+            if room < subunits { subunits } else { room },
             (s: string) -> run_width(m, s),
         )
         Extent {
-            w: whole([run_width(m, l) for l in ls].max() ?? 0),
-            h: whole(ls.length * line_height(m)),
+            w: rescaled([run_width(m, l) for l in ls].max() ?? 0, fine, subunits),
+            h: rescaled(ls.length * line_height(m), fine, subunits),
         }
     }
 
@@ -35,10 +41,12 @@ impl Measure for Text {
     fn hidden(n: Node) -> bool { self.rest.hidden(n) }
     fn holds(n: Node) -> bool { self.rest.holds(n) }
 
-    fn min_own(n: Node) -> int {
-        if !(n.prim is .Text) { return self.rest.min_own(n) }
+    fn min_own(n: Node) -> int { rescaled(self.min_own_fine(n), 1, fine) }
+
+    fn min_own_fine(n: Node) -> int {
+        if !(n.prim is .Text) { return self.rest.min_own_fine(n) }
         let m = self.metrics
-        whole(longest_in(n.words(), (s: string) -> run_width(m, s)))
+        rescaled(longest_in(n.words(), (s: string) -> run_width(m, s)), fine, subunits)
     }
 
     fn gap_x(z: Size) -> int { self.theme.space_of(z) }
