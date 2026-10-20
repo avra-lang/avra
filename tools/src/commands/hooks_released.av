@@ -1,0 +1,74 @@
+//! `avra-tools hooks_released` — every hook a `Decls` holds is released when the table is let go.
+//!
+//! A hook is a `Cell<fn(…) -> …>` field of `Decls`; it captures the workspace that holds the
+//! table, so a hook neither `disarm` nor `let_go` resets leaves a cycle counting never frees.
+//! This reads the struct's hook fields and the two fns that reset them, and refuses a field
+//! neither sets. Exit 0 when every hook is released, else 1.
+use @std.cli.{CliResult, Runnable, command}
+use @std.io.{read_text}
+use @std.text.{codepoints}
+
+const DECLS: string = "packages/std-avrac/src/features/decls.av"
+
+type HooksReleasedCmd = {}
+
+impl Runnable for HooksReleasedCmd {
+    fn run(_args: CliResult) -> int {
+        let text = read_text(DECLS) catch ""
+        let fields = hook_fields(text)
+        let missed = missed_hooks(text)
+        for f in missed {
+            println(
+                "hooks-released: `${f}` is a hook of Decls that neither `disarm` nor `let_go` resets",
+            )
+        }
+        println("hooks-released: ${fields.length} hooks read, ${missed.length} never released")
+        if missed.is_empty() && !fields.is_empty() { 0 } else { 1 }
+    }
+}
+
+export command hooks_released {
+    description: "Refuse a hook of `Decls` that neither `disarm` nor `let_go` resets"
+    run: HooksReleasedCmd {}
+}
+
+/// The text from `head`'s opening brace to just before its matching close brace.
+fn block(text: string, head: string) -> string {
+    let start = text.index_of(head)
+    if start < 0 { return "" }
+    let open_at = start + text.substring(start, text.length).index_of("{")
+    mut depth = 0
+    mut at = open_at
+    while at < text.length {
+        let c = text.substring(at, at + 1)
+        if c == "{" { depth = depth + 1 }
+        if c == "}" { depth = depth - 1 }
+        if depth == 0 { return text.substring(open_at, at) }
+        at = at + 1
+    }
+    ""
+}
+
+fn word_code(c: int) -> bool {
+    c == 95 || c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122
+}
+
+/// The field a line declares as a hook — an indented `name: Cell<fn(` — or null.
+fn hook_name(line: string) -> string? {
+    let indented = line.starts_with(" ") || line.starts_with("\t")
+    let t = line.trim()
+    let colon = t.index_of(": Cell<fn(")
+    if !indented || colon <= 0 || !codepoints(t.substring(0, colon)).all(word_code(it)) { return null }
+    t.substring(0, colon)
+}
+
+/// The hook fields of `type Decls`.
+export fn hook_fields(text: string) -> List<string> {
+    [name! for line in block(text, "type Decls = ").split("\n") for name in [hook_name(line)] if name != null]
+}
+
+/// The hook fields neither `disarm` nor `let_go` sets.
+export fn missed_hooks(text: string) -> List<string> {
+    let released = block(text, "fn disarm()") + block(text, "fn let_go(")
+    hook_fields(text).filter((f) -> !released.contains("self.${f}.set("))
+}
