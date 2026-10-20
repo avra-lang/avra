@@ -456,6 +456,19 @@ export type WireIndex = { count: int, by: Map<string, List<DeclId>> }
 /// ONE IDENTITY: every table is a `Cell`, or itself an `@identity`
 /// type, so a copy of `Decls` still reads and writes the tables the
 /// workspace built.
+/// The name buckets one frame's reads touched, each once: which are marked, and the order
+/// they were first read in.
+type Gather = { seen: Cell<List<bool>>, out: Cell<List<int>> }
+
+impl Gather {
+    fn note(b: int) {
+        while self.seen.get().length <= b { self.seen.push(false) }
+        if self.seen.get()[b] { return }
+        self.seen.set_at(b, true)
+        self.out.push(b)
+    }
+}
+
 @identity
 @plain_field("rows")
 export type Decls = {
@@ -589,6 +602,13 @@ export type Decls = {
     record_items: Cell<int>,
     record_methods: Cell<int>,
     record_names: Cell<int>,
+    /// THE NAME READS A FRAME GATHERS: while a run's frame gathers, the name buckets its own
+    /// reads touch are held here and recorded as ONE read of their digest, never one each.
+    /// `gathering` is the depth of the innermost gathering frame (-1 for none); `gathered`
+    /// holds each open gather's buckets, `gather_depths` the depth each one stands at.
+    gathering: Cell<int>,
+    gather_depths: Cell<List<int>>,
+    gathered: Cell<List<Gather>>,
     /// Whether the workspace armed the recording: the rows minted before it — the
     /// language's own — are filed under their cells when it does.
     recording: Cell<bool>,
@@ -890,6 +910,9 @@ export fn new_decls_under(durable: Durable) -> Decls {
         record_items: Cell.new(0),
         record_methods: Cell.new(0),
         record_names: Cell.new(0),
+        gathering: Cell.new(0 - 1),
+        gather_depths: list_cell(),
+        gathered: list_cell(),
         recording: Cell.new(false),
         name_buckets: list_cell(),
         cell_names: list_cell(),
@@ -1143,10 +1166,44 @@ impl Decls {
     /// name, so the bucket holds a `main` per file and would tie each to every other file's;
     /// a `main` is a function of its own file's rows alone.
     fn name_read(kind: DeclKind, f: FileId, b: int) {
-        match kind {
-            .Main -> self.rows_read(f),
-            rest -> self.record_kernel.record_at(self.record_names.get(), b),
+        match kind { .Main -> self.rows_read(f), rest -> self.name_recorded(b) }
+    }
+
+    /// A read of name bucket `b`, recorded in the open query — or held, when the frame
+    /// now open is gathering its name reads.
+    fn name_recorded(b: int) {
+        let at = self.gathering.get()
+        if at >= 0 && at == self.record_kernel.asker.open.get().length {
+            self.gathered.get().last()!.note(b)
+        } else {
+            self.record_kernel.record_at(self.record_names.get(), b)
         }
+    }
+
+    /// The frame now open gathers its own name reads from here, until `gather_close`.
+    fn gather_open() {
+        let depth = self.record_kernel.asker.open.get().length
+        self.gather_depths.push(depth)
+        self.gathered.push(Gather { seen: list_cell(), out: list_cell() })
+        self.gathering.set(depth)
+    }
+
+    /// The name buckets the gathering frame read, each once; its reads resume recording.
+    fn gather_close() -> List<int> {
+        let held = self.gathered.get().last()!.out.get()
+        let depths = self.gather_depths.get()
+        self.gather_depths.set(depths.slice(0, depths.length - 1))
+        self.gathered.set(self.gathered.get().slice(0, depths.length - 1))
+        self.gathering.set(self.gather_depths.get().last() ?? 0 - 1)
+        held
+    }
+
+    /// What name buckets `buckets` hold together: a fold of their own hashes, read from the
+    /// rows and recorded by nobody.
+    @bracket("decls")
+    fn buckets_print(buckets: List<int>) -> int {
+        let rows = self.decl_row_rows.get()
+        fp_list([rows.bucket_hash(b) for b in buckets])
     }
 
     /// A read of one row records what the row is a function of in the open query: its
@@ -1192,7 +1249,7 @@ impl Decls {
         let b = self.name_bucket(name)
         if b >= self.cell_names.get().length { self.room_for_cell(b, name) }
         self.bucket_moved(b)
-        self.record_kernel.record_at(self.record_names.get(), b)
+        self.name_recorded(b)
         self.decl_row_rows.get().members(b)
     }
 

@@ -28,6 +28,8 @@ use @std.relation.db.{AnswerRef, Leaf}
 use @std.relation.engine.{Key}
 use compiler.families.{Family}
 
+const CLOSURE_OF: string = "closure of "
+
 impl Workspace {
     /// The answers of `fam`, keyed by declaration, spelled by the declaration's wire.
     fn named_by_decl(name: string, fam: Family) -> AnswerRef {
@@ -282,6 +284,31 @@ impl Workspace {
         rdb.answer_known(self.named_once("References", Family.References))
         rdb.answer_known(self.named_by_file("FileRefs", Family.FileRefs))
         rdb.answer_known(self.named_by_bucket())
+        rdb.answer_known(self.named_closures())
+    }
+
+    /// The closures: the name reads of one settlement's run, held as one cell, spelled by the
+    /// settlement they belong to.
+    fn named_closures() -> AnswerRef {
+        let ws = self
+        let ordinal = self.hold.closure.get()
+        AnswerRef {
+            name: "Closure",
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_closure(arg),
+            arg: (spelled: string) -> ws.closure_arg(spelled),
+            hash: (arg: int) -> ws.closure_print(arg),
+        }
+    }
+
+    fn spelled_closure(arg: int) -> string? {
+        let settled? = self.spelled_settle(arg) else { return null }
+        "${CLOSURE_OF}${settled}"
+    }
+
+    fn closure_arg(spelled: string) -> int? {
+        if !spelled.starts_with(CLOSURE_OF) { return null }
+        self.settle_arg(spelled.substring(CLOSURE_OF.length, spelled.length))
     }
 
     /// The lifted units, spelled by their wanted and digested with arena ids folded by durable

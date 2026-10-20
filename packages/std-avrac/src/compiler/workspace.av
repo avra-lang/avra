@@ -309,6 +309,10 @@ type Hold = {
     gathered: Cell<List<HeldGather>>,
     lowering: Cell<List<int>>,
     unit_asks: Cell<Map<string, Cell<Map<string, ConstAsk>>>>,
+    /// The family a settlement's name reads stand under as one read, and the buckets each
+    /// settlement read, by its id.
+    closure: Cell<int>,
+    closures: Cell<Map<string, List<int>>>,
     owners: Cell<Map<string, DeclId>>,
     serving: Cell<bool>,
     warm: Cell<bool>,
@@ -399,6 +403,8 @@ fn new_hold() -> Hold {
         gathered: list_cell(),
         lowering: list_cell(),
         unit_asks: map_cell(),
+        closure: Cell.new(0 - 1),
+        closures: map_cell(),
         owners: map_cell(),
         serving: Cell.new(false),
         warm: Cell.new(false),
@@ -1092,6 +1098,7 @@ fn built(
         if ws.db.family() != f.ordinal { ws.defect("defect: the families registered out of ordinal order") }
         ws.db.kernel.named(f.ordinal, f.name)
     }
+    ws.hold.closure.set(ws.db.kernel.hashed_family((settled: int) -> ws.closure_print(settled)))
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
     ws.decls.arm_seats((d: DeclId) -> ws.seats_ensured(d))

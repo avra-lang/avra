@@ -1,0 +1,64 @@
+//! A SETTLEMENT'S RUN READS THE NAMES OF ITS CODE AS ONE CELL. The declarations a const's
+//! initializer reaches are looked up by name, thousands of them for a derive, and a read
+//! apiece would make the answer's read list the size of the program. They stand as one
+//! read of a digest over the buckets the run touched: it moves when one of those buckets
+//! does, and a declaration in no bucket the run read moves nothing.
+use compiler.{Workspace}
+use compiler.families.{Family}
+use core.{DeclId, DeclKind}
+use features.{SettleRoot}
+use @std.relation.engine.{Key}
+
+fn closure_source() -> string {
+    "fn f() -> int {\n    1\n}\nfn spare() -> int {\n    2\n}\nconst K: int = f() + 1\n"
+}
+
+/// A workspace over `text`, the const `K` settled; the id it settled under.
+fn settled_over(text: string) -> Workspace {
+    let ws = admitted(text)
+    let _ = ws
+        .settled(ws.file_id(readmit_path()), SettleRoot.Const(ws.decls.decl(k_of(ws)).stmt), [])
+    ws
+}
+
+fn k_of(ws: Workspace) -> DeclId { ws.decls.named_decl(readmit_path(), DeclKind.Const, "K")! }
+
+fn k_ask(ws: Workspace) -> int {
+    ws.settle_id(ws.file_id(readmit_path()), SettleRoot.Const(ws.decls.decl(k_of(ws)).stmt), [])
+}
+
+fn k_reads(ws: Workspace) -> List<Key> {
+    ws.db.edges_by_reader(Key { family: Family.Settled.ordinal, arg: k_ask(ws) })
+}
+
+spec "compiler/settle — a run's name reads are one cell" {
+    then "the settlement reads its names through the closure cell" {
+        let ws = settled_over(closure_source())
+        k_reads(ws).any(it.family == ws.hold.closure.get())
+    }
+    then "and the buckets it gathered outnumber the name reads left to it" {
+        let ws = settled_over(closure_source())
+        let gathered = (ws.hold.closures.get().get("${k_ask(ws)}") ?? []).length
+        gathered > k_reads(ws).filter(it.family == Family.Named.ordinal).length
+    }
+    then "a declaration the run never looked up leaves the digest where it was" {
+        let ws = settled_over(closure_source())
+        let before = ws.closure_print(k_ask(ws))
+        admit_again(ws, readmit_path(), closure_source() + "fn added() -> int {\n    3\n}\n")
+        before == ws.closure_print(k_ask(ws))
+    }
+    then "a declaration the run looked up moves it when its name's bucket moves" {
+        let ws = settled_over(closure_source())
+        let before = ws.closure_print(k_ask(ws))
+        admit_again(
+            ws,
+            readmit_path(),
+            closure_source()
+                .replace(
+                    "fn f() -> int {\n    1\n}",
+                    "fn f() -> int {\n    1\n}\nfn f() -> int {\n    4\n}",
+                ),
+        )
+        before != ws.closure_print(k_ask(ws))
+    }
+}
