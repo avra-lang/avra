@@ -1,0 +1,144 @@
+// The DIFF: what the shape a table was RECORDED under must become to be the
+// shape its model declares now. Read off the same texts `model_shape_test`
+// records — that file's models are this one's siblings, so step 4's two
+// halves are pinned against one another — and nothing here runs a statement
+// of its own.
+use @std.db.{shape_diff, ShapeChange}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+
+/// A change's subject: the column it names, and the fact when one fact moved.
+fn subject(change: ShapeChange) -> string {
+    match change {
+        .Added(column, _) -> "+${column}",
+        .Removed(column, _) -> "-${column}",
+        .Changed(column, fact, _, _) -> "${column}.${fact}",
+    }
+}
+
+/// A change read whole: the subject, then both readings of what moved.
+fn reading(change: ShapeChange) -> string {
+    match change {
+        .Added(column, now) -> "+${column} ${now}",
+        .Removed(column, was) -> "-${column} ${was}",
+        .Changed(column, fact, was, now) -> "${column}.${fact}: ${was} -> ${now}",
+    }
+}
+
+/// What the diff found for one pair of texts: their subjects in order, or
+/// which of the two absences it answered.
+fn found(before: string?, after: string) -> string {
+    match shape_diff(before, after) {
+        changes? -> if changes.is_empty() { "same" } else { [subject(c) for c in changes].join(", ") }
+        null -> "unknown"
+    }
+}
+
+/// The one change a pair of texts makes, read whole.
+fn moved(before: string, after: string) -> string {
+    match shape_diff(before, after) {
+        changes? -> [reading(c) for c in changes].join("; ")
+        null -> "unknown"
+    }
+}
+
+/// A shape text written by hand, so a fact no model can move is still read.
+fn by_hand(lines: List<string>) -> string { ["T"].concat(lines).join("\n") }
+
+/// The shape a live table was recorded under, against the shape its model
+/// declares now — the registry's own bytes, not a text written for the test.
+fn recorded_against_declared() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    V_optional_link.create_table(db)?
+    let stored = recorded(db, "V_optional_link")?
+    found(stored, V_optional_link.shape())
+}
+
+/// The same for a table whose claim is older than shapes: the registry holds
+/// NULL for its shape, and the diff answers UNKNOWN rather than an empty table.
+fn recorded_unknown() -> Result<string, SqlError> {
+    mut claimed = Db.memory()?
+    V_base.create_table(claimed)?
+    let at = (claimed
+        .scalar(sql("select declared_at from \"__avra_models__\" where table_name = 'V_base'"))?)
+        .text()?
+    mut older = Db.memory()?
+    older
+        .run(
+            sql(
+                "CREATE TABLE \"__avra_models__\" (\"table_name\" TEXT PRIMARY KEY, \"declared_at\" TEXT)",
+            ),
+        )?
+    older.run(sql("INSERT INTO \"__avra_models__\" VALUES ('V_base', ?)").args([.Text(at)]))?
+    V_base.create_table(older)?
+    let cell = older
+        .scalar(sql("select shape from \"__avra_models__\" where table_name = 'V_base'"))?
+    let held: string? = if cell is .Null { null } else { cell.text()? }
+    found(held, V_base.shape())
+}
+
+spec "std/db shape diff" {
+    given "a table recorded under a shape" {
+        then "the shape its model declares now is no change at all" {
+            (recorded_against_declared() catch "") == "same"
+        }
+    }
+    given "no shape recorded" {
+        then "reads UNKNOWN, never an empty table" { found(null, V_base.shape()) == "unknown" }
+        then "and so does a claim older than shapes" { (recorded_unknown() catch "") == "unknown" }
+    }
+    given "the same columns under another table's name" {
+        then "the name line is no column, so nothing moved" {
+            found(Pair_ab.shape(), Pair_ba.shape()) == "same"
+        }
+    }
+    given "a column the declared shape adds" {
+        then "reads added whole, in column order" {
+            found(Empty.shape(), Pair_ab.shape()) == "+a, +b"
+        }
+    }
+    given "a column the declared shape drops" {
+        then "reads removed whole" { found(Pair_ab.shape(), Empty.shape()) == "-a, -b" }
+    }
+    given "a renamed field" {
+        then "reads as one column removed and one added, never a rename" {
+            found(V_base.shape(), V_name.shape()) == "-x, +y"
+        }
+    }
+    given "one fact about a column that differs" {
+        then "its type reads as `type`" {
+            moved(V_base.shape(), V_type.shape()) == "x.type: INTEGER -> TEXT"
+        }
+        then "its nullability reads as `null`, both ways" {
+            moved(V_base.shape(), V_null.shape()) == "x.null: notnull -> null"
+        }
+        then "its uniqueness reads as `unique`" {
+            found(V_base.shape(), V_unique.shape()) == "x.unique"
+        }
+        then "its default reads as `default`" {
+            found(V_base.shape(), V_auto.shape()) == "x.default"
+        }
+        then "a link reads as its own column, `ref` and `on_delete` apart" {
+            found(V_base.shape(), V_link.shape()) == "-x, +x_id"
+        }
+        then "and a link's two `on_delete` actions differ from each other" {
+            found(V_link.shape(), V_cascade.shape()) == "x_id.on_delete"
+        }
+        then "a nullable link made `@set_null` differs only in its action" {
+            found(V_optional_link.shape(), V_set_null.shape()) == "x_id.on_delete"
+        }
+    }
+    given "a key that moved" {
+        then "reads as `key`, its own fact" {
+            moved(by_hand(["id|INTEGER|null|key|-|-|-|-"]), by_hand(["id|INTEGER|null|-|-|-|-|-"])) == "id.key: key -> -"
+        }
+    }
+    given "a line whose cell count is not the shape's" {
+        then "reads as ONE `line` change, both texts whole" {
+            moved(
+                by_hand(["id|INTEGER|null|key|-|-|-|-|extra"]),
+                by_hand(["id|INTEGER|null|key|-|-|-|-"]),
+            ) == "id.line: id|INTEGER|null|key|-|-|-|-|extra -> id|INTEGER|null|key|-|-|-|-"
+        }
+    }
+}

@@ -674,19 +674,30 @@ fn shape_text_of(t: Type) -> string {
     "${table_name_of(t)}\n${ordered(lines).join("\n")}"
 }
 
-fn shape_line(c: ColumnFacts) -> string {
-    let facts = [
-        c.name,
-        c.sql_type,
-        if c.not_null { "notnull" } else { "null" },
-        if c.key { "key" } else { "-" },
-        if c.unique { "unique" } else { "-" },
-        c.default ?? "-",
-        c.refs ?? "-",
-        c.on_delete ?? "-",
+/// One fact a column's line spells: what it is called, and the text this
+/// column gives it. The list's ORDER is the line's cell order, so the
+/// text's writer and the diff that reads it are ONE table — a fact cannot
+/// be written without being named.
+type ShapeFact = { name: string, text: string }
+
+fn fact_cells(c: ColumnFacts) -> List<ShapeFact> {
+    [
+        ShapeFact { name: "name", text: c.name },
+        ShapeFact { name: "type", text: c.sql_type },
+        ShapeFact { name: "null", text: if c.not_null { "notnull" } else { "null" } },
+        ShapeFact { name: "key", text: if c.key { "key" } else { "-" } },
+        ShapeFact { name: "unique", text: if c.unique { "unique" } else { "-" } },
+        ShapeFact { name: "default", text: c.default ?? "-" },
+        ShapeFact { name: "ref", text: c.refs ?? "-" },
+        ShapeFact { name: "on_delete", text: c.on_delete ?? "-" },
     ]
-    facts.join("|")
 }
+
+fn shape_line(c: ColumnFacts) -> string { [f.text for f in fact_cells(c)].join("|") }
+
+/// The facts a line carries, in the order it spells them — read off the
+/// table that writes them, so a fact cannot be written without being named.
+fn fact_names() -> List<string> { [f.name for f in fact_cells(version_facts())] }
 
 /// Texts in byte order, each placed after those that come before it.
 fn ordered(xs: List<string>) -> List<string> {
@@ -707,6 +718,104 @@ fn before(a: string, b: string) -> bool {
         if x.at(i) != y.at(i) { return x.at(i) < y.at(i) }
     }
     x.length < y.length
+}
+
+// ── The DIFF: what a table recorded under one shape must become to be the
+// shape its model declares now. A comparison over the texts the registry
+// already holds, so the answer a runner acts on is read off the SAME bytes
+// the table was recorded under — and nothing here executes. ──
+
+/// One way a table's shape differs from the shape it was recorded under.
+/// `Added` and `Removed` are a whole column, named by the line it reads as;
+/// `Changed` names the one fact that differs and both readings of it.
+export enum ShapeChange {
+    Added(column: string, now: string)
+    Removed(column: string, was: string)
+    Changed(column: string, fact: string, was: string, now: string)
+}
+
+/// What the shape a table was RECORDED under must become to be the shape its
+/// model declares now, in column-name order. `null` when no shape was
+/// recorded — an older claim is UNKNOWN, never "no change" — and `[]` when
+/// the two texts are the same. A line whose cell count is not the shape's
+/// own (a text this version of the format does not read) is ONE change
+/// named `line`, both texts whole: a format that moved is spoken, never
+/// guessed at cell by cell. READ-ONLY — every statement that runs is the
+/// program's own.
+export fn shape_diff(recorded: string?, declared: string) -> List<ShapeChange>? {
+    let text? = recorded else { return null }
+    let was = recorded_columns(text)
+    if was.is_empty() { return null }
+    changes_between(was, recorded_columns(declared))
+}
+
+/// Every column's changes, in column-name order.
+fn changes_between(was: List<ShapeColumn>, now: List<ShapeColumn>) -> List<ShapeChange> {
+    ordered(column_names(was, now))
+        .fold(
+            [],
+            (out: List<ShapeChange>, column: string) -> out
+                .concat(column_changes(column, column_named(was, column), column_named(now, column))),
+        )
+}
+
+/// One column of a shape text: its name, and the cells its line spells.
+type ShapeColumn = { column: string, cells: List<string> }
+
+/// The columns a shape text records — its first line names the table, and
+/// is no column.
+fn recorded_columns(shape: string) -> List<ShapeColumn> {
+    let lines = shape.split("\n")
+    if lines.is_empty() { return [] }
+    [column_of_line(line) for line in lines.slice(1, lines.length)]
+}
+
+fn column_of_line(line: string) -> ShapeColumn {
+    let cells = line.split("|")
+    ShapeColumn { column: cells[0], cells: cells }
+}
+
+/// Every column either text records, once each.
+fn column_names(was: List<ShapeColumn>, now: List<ShapeColumn>) -> List<string> {
+    was.map(it.column).concat([c for c in now.map(it.column) if !was.any(it.column == c)])
+}
+
+/// The column called `column`, when the text records one.
+fn column_named(columns: List<ShapeColumn>, column: string) -> ShapeColumn? {
+    columns.find(it.column == column)
+}
+
+/// What the declared shape does to one column, by name: a column only one
+/// side records is added or removed whole, and one both record is compared
+/// cell by cell.
+fn column_changes(column: string, was: ShapeColumn?, now: ShapeColumn?) -> List<ShapeChange> {
+    match now {
+        held? -> match was {
+            seen? -> changed_cells(column, seen.cells, held.cells)
+            null -> [ShapeChange.Added(column, held.cells.join("|"))]
+        }
+        null -> dropped(column, was)
+    }
+}
+
+/// A column the declared shape no longer records; a column neither side
+/// records is no change at all.
+fn dropped(column: string, was: ShapeColumn?) -> List<ShapeChange> {
+    match was {
+        seen? -> [ShapeChange.Removed(column, seen.cells.join("|"))]
+        null -> []
+    }
+}
+
+/// The facts that differ between the two readings of one column. The name
+/// cell leads the line, so a column's name is its own comparison and never
+/// one of these: a renamed column reads as one removed and one added.
+fn changed_cells(column: string, was: List<string>, now: List<string>) -> List<ShapeChange> {
+    let facts = fact_names()
+    if was.length != now.length || was.length > facts.length {
+        return [ShapeChange.Changed(column, "line", was.join("|"), now.join("|"))]
+    }
+    [ShapeChange.Changed(column, facts[i], was[i], now[i]) for i in 1..was.length if was[i] != now[i]]
 }
 
 /// Milliseconds since the epoch, as the database reads its own clock.
