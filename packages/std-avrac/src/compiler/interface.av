@@ -332,17 +332,16 @@ impl Workspace {
     fn mint_files(store: Store, m: ModulePath, paths: List<string>) {
         let held = [p for p in paths if self.decls.held.get().get(p) != null && self.hold.minted.get().get(p) == null]
         if held.is_empty() { return }
+        if !self.module_files(m).any((p) -> self.hold.minted.get().get(p) != null) { work_module_minted() }
         for path in held {
             if traced() { qtrace("Q\tmint\t${m.text()}\t${path}\n") }
             self.hold.minted.put(path, true)
         }
-        work_module_minted()
         let fields = record_fields(self, store, m)
         let places = record_places(self, store, m)
         for path in held { self.mint_file(path, file_rows(fields, places.get(path)), makers_in(fields, path)) }
         for path in held { self.link_file(path, file_rows(fields, places.get(path))) }
-        let lead? = held.first() else { return }
-        self.decls.note_module_rows(self.decls.file(self.file_id(lead)).module_id, 2)
+        for path in held { self.decls.note_rows(self.file_id(path), 2) }
     }
 
     /// ONE HELD FILE'S DECLARATIONS, minted from its record lines in record order. The

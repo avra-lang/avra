@@ -1211,7 +1211,6 @@ impl Workspace {
         self.hold.file_ready.keep(f.index, true)
         if self.is_held(f) && self.store.get() != null {
             self.minted_files([self.decls.file(f).path])
-            self.decls.note_module_rows(self.decls.file(f).module_id, 2)
         }
     }
 
@@ -1243,10 +1242,18 @@ impl Workspace {
         }
     }
 
-    /// The held modules of the listed files minted whole, once: a module stands as one
-    /// namespace, so no sibling is left to mint inside a query that already read the rows.
+    /// The listed held files minted, once: a file stands by its own record lines, so a read of
+    /// one name mints the files that declare it and no sibling.
     fn minted_files(paths: List<string>) {
-        self.minted_modules(distinct([self.module_path_of(p).text() for p in paths]))
+        let store? = self.store.get() else { return }
+        for m in distinct([self.module_path_of(p).text() for p in paths]) {
+            self
+                .mint_files(
+                    store,
+                    module_path(segments_of(m)),
+                    [p for p in paths if self.module_path_of(p).text() == m],
+                )
+        }
     }
 
     /// A held declaration may need syntax-only facts that were not part of
