@@ -49,15 +49,21 @@ export type Size = { width: int, height: int }
 export fn is_picture(head: Bytes) -> bool { png_size(head) != null || jpeg_size(head) != null || svg_size(head) != null }
 
 /// A picture from a file's octets; null when they are no picture this reads.
-export fn picture_of(octets: Bytes) -> Picture? {
+export fn picture_of(octets: Bytes) -> Picture? { digested_picture(octets, blake3_hex(octets)) }
+
+/// A picture from a file's octets and their BLAKE3 digest in hex, which the
+/// compiler hands a provider: a const that names a file calls no hash.
+fn digested_picture(octets: Bytes, digest: string) -> Picture? {
     let size? = size_of(octets) else { return null }
     let kind? = media_of(octets) else { return null }
-    Picture.Bundled(named(octets, kind.ext), size.width, size.height, 0, kind.media, octets)
+    Picture.Bundled(named(digest, kind.ext), size.width, size.height, 0, kind.media, octets)
 }
 
 /// A blob from a file's octets.
-export fn blob_of(octets: Bytes) -> Blob {
-    Blob { name: named(octets, "bin"), media: "application/octet-stream", octets: octets }
+export fn blob_of(octets: Bytes) -> Blob { digested_blob(octets, blake3_hex(octets)) }
+
+fn digested_blob(octets: Bytes, digest: string) -> Blob {
+    Blob { name: named(digest, "bin"), media: "application/octet-stream", octets: octets }
 }
 
 /// A media type and the extension its files carry.
@@ -73,7 +79,7 @@ fn media_of(octets: Bytes) -> Media? {
 
 /// A public name: the first 128 bits of the content's BLAKE3, in hex, and
 /// an extension.
-fn named(octets: Bytes, ext: string) -> string { "${blake3_hex(octets).substring(0, 32)}.${ext}" }
+fn named(digest: string, ext: string) -> string { "${digest.substring(0, 32)}.${ext}" }
 
 /// The name a bundled picture is served under; a remote one is its address.
 export fn served_name(p: Picture) -> string {
@@ -151,10 +157,10 @@ fn be16(b: Bytes, at: int) -> int { b.at(at) * 256 + b.at(at + 1) }
 fn be32(b: Bytes, at: int) -> int { be16(b, at) * 65536 + be16(b, at + 2) }
 
 impl Provider for Picture {
-    static fn provide(_path: string, octets: Bytes) -> Picture? { picture_of(octets) }
+    static fn provide(_path: string, octets: Bytes, digest: string) -> Picture? { digested_picture(octets, digest) }
 }
 
 /// A blob reads every file, so it answers when no other kind does.
 impl Provider for Blob {
-    static fn provide(_path: string, octets: Bytes) -> Blob? { blob_of(octets) }
+    static fn provide(_path: string, octets: Bytes, digest: string) -> Blob? { digested_blob(octets, digest) }
 }

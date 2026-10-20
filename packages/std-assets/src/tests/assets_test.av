@@ -79,6 +79,9 @@ fn jpeg(w: int, h: int) -> Bytes {
         .bytes()!
 }
 
+/// A digest the compiler would hand a provider: 64 hex characters.
+const digest: string = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 spec "std/assets" {
     given "a PNG header" {
         then "its size is the IHDR width and height" {
@@ -143,9 +146,15 @@ spec "std/assets" {
 
 spec "std/assets — providers" {
     given "a file's octets" {
-        then "Picture provides a PNG" { Picture.provide("a.png", png(2, 3)) != null }
-        then "Picture does not provide junk" { Picture.provide("a.bin", [1, 2, 3].bytes()!) == null }
-        then "Blob provides anything" { Blob.provide("a.bin", [1, 2, 3].bytes()!)!.octets.length == 3 }
+        then "Picture provides a PNG" { Picture.provide("a.png", png(2, 3), digest) != null }
+        then "a provided file is named by the digest it is handed, not one it computes" {
+            match Picture.provide("a.png", png(2, 3), digest)! {
+                .Bundled(name, _, _, _, _, _) -> name == "${digest.substring(0, 32)}.png",
+                .Remote(_, _, _) -> false,
+            }
+        }
+        then "Picture does not provide junk" { Picture.provide("a.bin", [1, 2, 3].bytes()!, digest) == null }
+        then "Blob provides anything" { Blob.provide("a.bin", [1, 2, 3].bytes()!, digest)!.octets.length == 3 }
     }
 }
 

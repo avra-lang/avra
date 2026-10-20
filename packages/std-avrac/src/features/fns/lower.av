@@ -64,8 +64,8 @@ fn embedded_regs(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> List<Reg>? {
     }
 }
 
-/// `provided<T>("p")`: the file's octets handed to `T.provide` with the
-/// package-relative path, and an answer of absence refused by name. The
+/// `provided<T>("p")`: the file's octets and their content digest handed to
+/// `T.provide` with the package-relative path, and an answer of absence refused by name. The
 /// path is the one the embed judge placed from the package's root. Null for
 /// every other call.
 fn provided_reg(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> Reg? {
@@ -82,8 +82,10 @@ fn provided_call(mut cx: LowerCx, e: ExprId, rel: string, path: string) -> Reg {
     let kind = cx.type_at(e)
     let provide? = provider_of(cx, kind) else { return cx.lower_defect(e, "a provided kind without a `provide` survived typing") }
     let octets = cx.embed_octets(Type.Bytes, cx.const_str(path))
+    let digest = cx.embed_digest(Type.Str, cx.const_str(path))
     let held = cx.type(kind?)
-    let answer = cx.call_decl(held, cx.method_symbol(provide, e, kind), [cx.const_str(rel), octets])
+    let answer = cx
+        .call_decl(held, cx.method_symbol(provide, e, kind), [cx.const_str(rel), octets, digest])
     cx
         .presence(answer, held, e) { cx, carried -> carried } else { cx ->
             cx.trap(cx.const_str(provided_unread(rel, kind_name(cx, kind))))
