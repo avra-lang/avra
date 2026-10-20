@@ -39,4 +39,10 @@ for seed in $seeds; do
     n=$(echo "$out" | tail -1 | sed -n 's/^layout-oracle: \([0-9]*\) of.*/\1/p')
     total=$((total + ${n:-0}))
 done
+for seed in $seeds; do
+    out=$(AVRA="$avra" node "$here/layout-oracle/oracle.mjs" --face prop --cases "$cases" --seed "$seed" --show 2 2>&1) || { echo "$out"; echo "layout-oracle: the solver and the browser disagree over a proportional face (seed $seed)"; exit 1; }
+    echo "$out" | tail -1
+    n=$(echo "$out" | tail -1 | sed -n 's/^layout-oracle: \([0-9]*\) of.*/\1/p')
+    total=$((total + ${n:-0}))
+done
 echo "layout-oracle: $total trees agree between std-ui's solver and Firefox running the real html target"
