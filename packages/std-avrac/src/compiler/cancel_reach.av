@@ -13,22 +13,37 @@
 //! is through a value. A THIRD BIT, `links`, is what a fn is KNOWN to
 //! reach — a row, a waiting read, a spawn, here or in a callee, never a
 //! call through a value — and it alone decides whether a program links
-//! a scheduler. A WHOLE-PROGRAM PASS: each member surveyed ONCE
-//! from its typed facts — every node through `node_waits` (node_waits.av,
-//! the one answer every reader asks) — into its own evidence and the
-//! members it calls, then
-//! the answer spreads from every member with evidence to its callers —
-//! linear in the call graph. A held fn answers from its interface,
+//! a scheduler. PER DECLARATION: each member is
+//! surveyed once from its typed facts — every node through `node_waits`
+//! (node_waits.av, the one answer every reader asks) — into its own
+//! evidence (`CancelSummary(d)`) and the members it calls, and a fn's bits
+//! settle with its strongly-connected set alone (`CancelBits(d)`, over
+//! `core/scc.av`), never with the whole program. A held fn answers from its interface,
 //! where the bit is contract (`interface_form`): a callee that starts
 //! to wait moves its dependents' key.
-use core.{DeclId, DeclKind, ExprId, FileId, Stmt, fp, fp_list, rt_waits, flatten}
-use features.{NameFacts, TypeFacts, FileView, Decls, CancelReach}
+use core.{
+    DeclId,
+    DeclKind,
+    ExprId,
+    FileId,
+    Stmt,
+    fp,
+    fp_list,
+    fp_str,
+    rt_waits,
+    flatten,
+    touch,
+    scc_walk,
+    scc_fixpoint,
+    same_decl,
+}
+use features.{NameFacts, TypeFacts, FileView, Decls, Decl, CancelReach}
 use compiler.families.{Family}
-use @std.relation.engine.{Table, new_table}
+use @std.relation.engine.{Key}
 
 /// One member's survey: what its own body may reach, and the members it
 /// calls, whose answers it takes.
-type CancelSummary = { own: CancelReach, callees: List<DeclId> }
+type CancelEvidence = { own: CancelReach, callees: List<DeclId> }
 
 /// What one call answers a survey: known now, or a member's answer.
 enum CallAnswer {
@@ -37,51 +52,107 @@ enum CallAnswer {
 }
 
 impl Workspace {
-    /// The pass: every member's answer, settled once per program state
-    /// and keyed by `Family.CancelReach`.
-    fn cancel_reach() -> int {
-        // A pass that ran inside a resolve would read a half-built
-        // namespace; the caller answers conservatively instead.
-        if self.db.family_active(Family.Resolved.ordinal) { return 0 }
-        let k = key(Family.CancelReach, 0)
-        if !(self.db.ask(k) is .Compute) { return 0 }
-        self.db.begin(k)
-        let fns = [x.id for x in self.decls.unheld_decls() if self.cancel_member(x.id)]
-        self.decls.clear_cancels(fns)
-        self.decls.spread_cancels(fns, [self.cancel_summary(d) for d in fns])
-        // A reader stands on each member's own answer, never on this survey: settle
-        // every member's bits under `CancelBits(d)` with a digest of the bits alone.
-        for d in fns {
-            let kb = key(Family.CancelBits, d.index)
-            if self.db.ask(kb) is .Compute {
-                self.db.begin(kb)
-                self.db.settle(kb, cancel_word(self.decls.cancels_so_far(d)))
-            }
-        }
-        self
-            .db
-            .settle(k, fp(1, [fp_list([cancel_word(self.decls.cancels_so_far(d)) for d in fns])]))
-        fns.length
-    }
-
-    /// One declaration's cancel bits, as the pass settled them: the cell a reader of the
-    /// fn's reach stands on, so a fn whose bits did not move leaves its readers standing
-    /// however the survey moved.
+    /// One declaration's cancel bits, settled with its strongly-connected set: the cell a
+    /// reader of the fn's reach stands on, so a fn whose bits did not move leaves its readers
+    /// standing however the rest of the program moved.
     fn cancel_bits_of(d: DeclId) -> int {
+        // A WHOLE-PROGRAM WALK MUST NOT RUN INSIDE A RESOLVE: it would read a half-built
+        // namespace, and the caller answers conservatively instead.
         if self.db.family_active(Family.Resolved.ordinal) { return 4 }
         let k = key(Family.CancelBits, d.index)
         if !(self.db.ask(k) is .Compute) { return 4 }
+        if !self.cancel_member(d) { return self.cancel_held(d, k) }
+        if self.cancel_walking.get() { return 4 }
+        self.cancel_walking.set(true)
+        let walk = self.frame_in(self.cancel_walk_family)
+        self.db.begin(walk)
+        scc_walk(
+            d,
+            (m: DeclId) -> self.cancel_callees(m),
+            (m: DeclId) -> !(self.db.ask(key(Family.CancelBits, m.index)) is .Compute),
+            (members: List<DeclId>) -> self.settle_cancels(members),
+        )
+        self.db.settle(walk, 0)
+        self.cancel_walking.set(false)
+        0
+    }
+
+    /// A declaration this compile holds no body for: the bits its interface recorded.
+    fn cancel_held(d: DeclId, k: Key) -> int {
         self.db.begin(k)
-        let _ = self.cancel_reach()
         self.db.settle(k, cancel_word(self.decls.cancels_so_far(d)))
         0
+    }
+
+    /// The members a member calls, whose bits the walk settles before its own.
+    fn cancel_callees(d: DeclId) -> List<DeclId> { once_each(self.cancel_evidence_of(d).callees) }
+
+    /// One set's least fixpoint, recorded and settled: every member's cell stands on the
+    /// evidence of the set and on the settled bits of what the set calls from outside.
+    fn settle_cancels(members: List<DeclId>) {
+        let sums = [self.cancel_evidence_of(m) for m in members]
+        let states = scc_fixpoint(
+            members,
+            (m: DeclId) -> reaches_nothing(),
+            (m: DeclId, read: fn(DeclId) -> CancelReach) -> reach_after(
+                sums[members.index_of(m)],
+                read,
+            ),
+            same_reach,
+            (c: DeclId) -> self.decls.cancels_so_far(c) ?? reaches_nothing(),
+        )
+        let outside = once_each(
+            [c for s in sums for c in s.callees if !members.any(same_decl(it, c))],
+        )
+        for i, m in members { self.decls.record_cancel(m, states[i]) }
+        for m in members {
+            let k = key(Family.CancelBits, m.index)
+            self.db.begin(k)
+            for x in members { touch(self.cancel_evidence_of(x)) }
+            for c in outside { touch(self.cancel_bits_of(c)) }
+            self.db.settle(k, cancel_word(self.decls.cancels_so_far(m)))
+        }
+    }
+
+    /// A fn's own evidence as a settled row: asking IS the query, and the row stands until
+    /// the body, the facts it reads or what the body names move.
+    fn cancel_evidence_of(d: DeclId) -> CancelEvidence {
+        let k = key(Family.CancelSummary, d.index)
+        if !(self.db.ask(k) is .Compute) {
+            return self.cancel_summaries.at(d.index) ?? CancelEvidence {
+                own: reaches_nothing(),
+                callees: [],
+            }
+        }
+        self.db.begin(k)
+        let s = self.cancel_summary(d)
+        self.cancel_summaries.keep(d.index, s)
+        self.db.settle(k, self.evidence_word(s))
+        s
+    }
+
+    /// Evidence as a reader can tell it: its own bits, and each callee named by its durable
+    /// key, so a bystander renamed or added moves nothing.
+    fn evidence_word(s: CancelEvidence) -> int {
+        fp(
+            2,
+            [
+                cancel_word(s.own),
+                fp_list([fp_str(Decl.key_text(self.decls.raw_decl(c).key())) for c in s.callees]),
+            ],
+        )
+    }
+
+    /// Every member's bits settled — the lowering of a program reads them one by one, and
+    /// asks them all first so no walk runs mid-lower.
+    fn cancels_settled() {
+        for x in self.decls.unheld_decls() { if self.cancel_member(x.id) { touch(self.cancel_bits_of(x.id)) } }
     }
 
     /// Whether any fn this compile knows LINKS A SCHEDULER: a member by
     /// the bit the pass settled, a held fn by its interface's. PURE: it
     /// reads the bits and writes nothing.
     fn members_link_scheduler() -> bool {
-        let _ = self.cancel_reach()
         self.decls.unheld_decls().any((x) -> self.cancel_member(x.id) && self.call_links(x.id)) ||
             self.held_link_scheduler()
     }
@@ -128,8 +199,7 @@ impl Workspace {
     /// (asked mid-resolve) answers that it may, both ways.
     fn reach_of(d: DeclId) -> CancelReach {
         if !self.cancel_member(d) { return self.callee_cancels(d) }
-        let _ = self.cancel_reach()
-        if self.db.value_hash_of(key(Family.CancelReach, 0)) == null { return reaches_both() }
+        let _ = self.cancel_bits_of(d)
         self.decls.cancel_bits(d) ?? reaches_both()
     }
 
@@ -183,13 +253,13 @@ impl Workspace {
     }
 
     /// One member surveyed: its own evidence, and the members it calls.
-    fn cancel_summary(d: DeclId) -> CancelSummary {
+    fn cancel_summary(d: DeclId) -> CancelEvidence {
         let s = self.cancel_survey(d)
         let answers = s.answers()
         // an `@unbroken` fn's `while`s carry no check
         let spins = !self.decls.marks_unbroken(d) && s.spins()
         let known = [known_reach(a) for a in answers]
-        CancelSummary {
+        CancelEvidence {
             own: CancelReach {
                 parks: known.any(it.parks),
                 spins: spins || known.any(it.spins),
@@ -307,38 +377,6 @@ fn calls_kind(k: DeclKind) -> bool {
     }
 }
 
-impl Decls {
-    /// Every member's bits fall before the pass re-earns them; a held
-    /// fn's bits are its interface's, never the pass's.
-    fn clear_cancels(fns: List<DeclId>) {
-        for d in fns { self.record_cancel(d, reaches_nothing()) }
-    }
-
-    /// Each member reaches what its own body does, and every member that
-    /// calls one reaches what it does too — breadth first over the
-    /// callers; a member grows at most twice, once a bit.
-    fn spread_cancels(fns: List<DeclId>, sums: List<CancelSummary>) {
-        let callers: Table<List<DeclId>> = new_table<List<DeclId>>()
-        for j, d in fns {
-            for c in sums[j].callees { callers.keep(c.index, (callers.at(c.index) ?? []).concat([d])) }
-        }
-        mut reached = [d for j, d in fns if sums[j].own.may()]
-        for j, d in fns { self.record_cancel(d, sums[j].own) }
-        mut at = 0
-        while at < reached.length {
-            let r = self.cancels_so_far(reached[at]) ?? reaches_nothing()
-            for c in callers.at(reached[at].index) ?? [] {
-                let had = self.cancels_so_far(c) ?? reaches_nothing()
-                if !had.covers(r) {
-                    self.record_cancel(c, had.with_reach(r))
-                    reached.push(c)
-                }
-            }
-            at = at + 1
-        }
-    }
-}
-
 /// What one member's survey reads: its file, its names, its typed
 /// facts, its expression range — a lambda's nodes among them.
 type CancelSurvey = { ws: Workspace, view: FileView, names: NameFacts, facts: TypeFacts, lo: int, hi: int }
@@ -379,6 +417,15 @@ impl CancelSurvey {
         }
     }
 }
+
+/// A member's bits after one step: its own, and what every member it calls reaches.
+fn reach_after(s: CancelEvidence, read: fn(DeclId) -> CancelReach) -> CancelReach {
+    mut r = s.own
+    for c in s.callees { r = r.with_reach(read(c)) }
+    r
+}
+
+fn same_reach(a: CancelReach, b: CancelReach) -> bool { a.covers(b) && b.covers(a) }
 
 fn known_reach(a: CallAnswer) -> CancelReach {
     match a { .Known(r) -> r, .Via(_) -> reaches_nothing() }
