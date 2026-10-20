@@ -31,6 +31,16 @@ export AVRA_BOOTSTRAPPING
 heavy=0
 n=0
 for a in "$@"; do n=$((n + 1)); [ "$n" -gt 1 ] && [ -d "$a" ] && heavy=1; done
+# A GUARDED PACKAGE RUN IS REFUSED: `AVRA_RC_GUARD` keeps every box that dies so a leak can
+# replay its life, which over a package is a machine's worth of memory — it ended a Sprite's
+# session. The guard is for one program; `AVRA_GUARDED_PACKAGE=1` takes the cost on purpose.
+case "${AVRA_RC_GUARD:-0}" in 0|"") ;; *)
+    if [ "$heavy" = 1 ] && [ -z "$AVRA_GUARDED_PACKAGE" ]; then
+        echo "avra: AVRA_RC_GUARD keeps every dead box, and a package-scale run makes a machine's worth of them" >&2
+        echo "avra:   guard one program — name a file — or set AVRA_GUARDED_PACKAGE=1 to take the cost on purpose." >&2
+        exit 2
+    fi ;;
+esac
 cd "$root" || exit 2
 # THE BINARY THAT ANSWERS: `build/avra`, or `AVRA_BIN` — `make try`'s
 # `build/avra-try`, which `./avra-try` names.
