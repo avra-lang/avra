@@ -4368,6 +4368,15 @@ const char* avra_embed_octets(const char* path) {
     return "";
 }
 
+/* `embed_digest` is the BLAKE3 of the file `embed_octets` reads, answered by
+   the compiler at compile time; a program that reaches this body called it
+   outside a const. */
+const char* avra_embed_digest(const char* path) {
+    (void)path;
+    avra_trap("`embed_digest` reads a file at compile time, into a const — this program reached it at run time");
+    return "";
+}
+
 /* ── Change tracking ─────────────────────────────────────────────
    A site that reads a box OBSERVES it, and an observed box is HELD: observing
    takes a reference and unobserving gives it back, so a box cannot die while

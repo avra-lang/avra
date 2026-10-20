@@ -4,6 +4,7 @@
 use tree.controls.{shows_content}
 use tree.identity.{readable}
 use tree.node.{Node, Attribute}
+use @std.assets.{Picture}
 
 /// A text between quotes, on one line: a quote, a backslash and a line
 /// break are written as their escapes, so no value reads as the end of
@@ -12,6 +13,14 @@ fn quoted(s: string) -> string { "\"${readable(s).replace("\"", "\\\"")}\"" }
 
 /// A state a node is in, by its word — nothing while it is not.
 fn state(word: string, on: bool) -> List<string> { if on { [word] } else { [] } }
+
+/// What a picture says: where it is from, and the size it draws.
+fn picture_notes(p: Picture) -> List<string> {
+    match p {
+        .Bundled(name, width, height, _, _, _) -> ["picture=${name}", "${width}×${height}"],
+        .Remote(url, width, height) -> ["src=${quoted(url.text())}", "${width}×${height}"],
+    }
+}
 
 /// What one attribute tells a reader beyond the node's own words. ONE
 /// exhaustive match, so a new attribute is a decision here.
@@ -22,8 +31,9 @@ fn noted(a: Attribute) -> List<string> {
         .Value(t) -> ["value=${quoted(t)}"],
         .Amount(n) -> ["amount=${n}"],
         .Placeholder(t) -> ["placeholder=${quoted(t)}"],
-        .Src(u) -> ["src=${quoted(u.text())}"],
+        .Source(p) -> picture_notes(p),
         .Alt(t) -> ["alt=${quoted(t)}"],
+        .Decorative(on) -> state("decorative", on),
         .Href(u) -> ["href=${quoted(u.text())}"],
         .Min(n) -> ["min=${n}"],
         .Max(n) -> ["max=${n}"],

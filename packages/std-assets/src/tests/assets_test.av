@@ -1,5 +1,8 @@
 // What a file's leading octets say: sizes from headers, kinds claimed or not.
+use @std.url.{Url, parse}
+use @std.hash.{blake3_hex}
 use @std.assets.{
+    remote,
     Blob,
     png_size,
     jpeg_size,
@@ -8,9 +11,15 @@ use @std.assets.{
     picture_of,
     blob_of,
     is_picture,
-    id_of,
+    served_name,
     Picture,
 }
+
+/// A picture whose name is its content's, as a caller names one.
+fn named_picture(octets: Bytes) -> Picture? { picture_of(octets, blake3_hex(octets)) }
+
+/// A blob whose name is its content's.
+fn named_blob(octets: Bytes) -> Blob { blob_of(octets, blake3_hex(octets)) }
 
 /// A PNG's signature and `IHDR` for a `w` by `h` image, no pixels.
 fn png(w: int, h: int) -> Bytes {
@@ -77,6 +86,9 @@ fn jpeg(w: int, h: int) -> Bytes {
         .bytes()!
 }
 
+/// A digest the compiler would hand a provider: 64 hex characters.
+const digest: string = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 spec "std/assets" {
     given "a PNG header" {
         then "its size is the IHDR width and height" {
@@ -106,27 +118,71 @@ spec "std/assets" {
         then "text without an svg tag is not one" { svg_size("hello".bytes()) == null }
     }
     given "the kinds" {
-        then "a PNG is a picture and carries its path's id" {
-            let p? = picture_of("art/logo.png", png(2, 3)) else { return false }
+        then "a PNG is a picture named by its content, with its media type and its octets" {
+            let p? = named_picture(png(2, 3)) else { return false }
             match p {
-                .Bundled(id, w, h, _) -> id == id_of("art/logo.png") && w == 2 && h == 3,
+                .Bundled(name, w, h, _, media, octets) -> name.ends_with(".png") &&
+                    name.length == 36 &&
+                    w == 2 &&
+                    h == 3 &&
+                    media == "image/png" &&
+                    octets.length == 24,
                 .Remote(_, _, _) -> false,
             }
+        }
+        then "a JPEG and an SVG name their own media types" {
+            let j? = named_picture(jpeg(4, 5)) else { return false }
+            let v? = named_picture("<svg viewBox=\"0 0 16 8\"></svg>".bytes()) else { return false }
+            served_name(j).ends_with(".jpg") && served_name(v).ends_with(".svg")
         }
         then "arbitrary octets are no picture but are a blob" {
             let junk = [1, 2, 3].bytes()!
             !is_picture(junk) &&
-                picture_of("a.bin", junk) == null &&
-                blob_of("a.bin", junk).length == 3
+                named_picture(junk) == null &&
+                named_blob(junk).octets.length == 3 &&
+                named_blob(junk).media == "application/octet-stream"
         }
-        then "two paths have two ids" { id_of("a.png") != id_of("b.png") }
+        then "a name is the content's: same octets one name, other octets another" {
+            let a? = named_picture(png(2, 3)) else { return false }
+            let b? = named_picture(png(2, 3)) else { return false }
+            let c? = named_picture(png(3, 3)) else { return false }
+            served_name(a) == served_name(b) && served_name(a) != served_name(c)
+        }
     }
 }
 
 spec "std/assets — providers" {
     given "a file's octets" {
-        then "Picture provides a PNG" { Picture.provide("a.png", png(2, 3)) != null }
-        then "Picture does not provide junk" { Picture.provide("a.bin", [1, 2, 3].bytes()!) == null }
-        then "Blob provides anything" { Blob.provide("a.bin", [1, 2, 3].bytes()!)!.length == 3 }
+        then "Picture provides a PNG" { Picture.provide("a.png", png(2, 3), digest) != null }
+        then "a provided file is named by the digest it is handed, not one it computes" {
+            match Picture.provide("a.png", png(2, 3), digest)! {
+                .Bundled(name, _, _, _, _, _) -> name == "${digest.substring(0, 32)}.png",
+                .Remote(_, _, _) -> false,
+            }
+        }
+        then "Picture does not provide junk" { Picture.provide("a.bin", [1, 2, 3].bytes()!, digest) == null }
+        then "Blob provides anything" { Blob.provide("a.bin", [1, 2, 3].bytes()!, digest)!.octets.length == 3 }
+    }
+}
+
+/// A parsed address, absent when the text is no URL.
+fn address(text: string) -> Url? {
+    match parse(text) { .Ok(u) -> u, .Err(_) -> null }
+}
+
+spec "std/assets — remote pictures" {
+    given "an address someone else serves" {
+        then "an https address with a size is a picture" {
+            let u? = address("https://cdn.acme.dev/u/42.jpg") else { return false }
+            remote(u, 96, 96) != null
+        }
+        then "another scheme is refused" {
+            let u? = address("ftp://host/x.png") else { return false }
+            remote(u, 96, 96) == null
+        }
+        then "a size that is not positive is refused" {
+            let u? = address("https://cdn.acme.dev/u/42.jpg") else { return false }
+            remote(u, 0, 96) == null && remote(u, 96, 0 - 1) == null
+        }
     }
 }

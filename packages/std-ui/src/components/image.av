@@ -1,13 +1,45 @@
-//! `components/image.av` — a content image; its meaning is its alternative.
-use @std.meta.{derive}
+//! `components/image.av` — a content image; its meaning is its words. An
+//! image says them where it is used: an `alt`, or `decorative: true`, and
+//! exactly one.
+use @std.meta.{derive, Diagnostic, refuse_as}
+use @std.assets.{Picture}
 use tree.prim.{prim}
-use tree.url.{Url}
 use tree.view.{View}
 use style.box.{Box}
 
 @derive(View)
 @prim(.Image)
-export component image(@attr(.Src) src: Url) {
+export component image(@attr(.Source) picture: Picture) {
     ..Box
-    @attr(.Alt) alt: string
+    @attr(.Alt) alt: string = ""
+    @attr(.Decorative) decorative: bool = false
+    /// An image says its words where it is used: one of `alt: "…"` (not
+    /// empty) or `decorative: true`.
+    fn check() -> List<Diagnostic> { image_words(self.alt, self.decorative) }
+}
+
+/// What an image owes its reader: nothing when exactly one of its two ways
+/// to be understood is written.
+export fn image_words(alt: string, decorative: bool) -> List<Diagnostic> {
+    if decorative && alt != "" { return [unsaid_twice()] }
+    if !decorative && alt == "" { return [unsaid()] }
+    []
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+/// An image with neither of its two ways to be understood.
+fn unsaid() -> Diagnostic {
+    refuse_as(
+        "image.words",
+        "an image says its words where it is used — `alt: \"…\"` or `decorative: true`",
+    )
+}
+
+/// An image that claims both.
+fn unsaid_twice() -> Diagnostic {
+    refuse_as(
+        "image.words",
+        "an image is described or decorative, never both — drop `alt:` or `decorative: true`",
+    )
 }

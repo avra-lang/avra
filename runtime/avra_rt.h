@@ -290,6 +290,7 @@ extern const char avra_rt_held_avra_io_list __asm__(AVRA_RT_LABEL(avra_io_list))
 extern const char avra_rt_held_avra_str_from_codepoint __asm__(AVRA_RT_LABEL(avra_str_from_codepoint));
 extern const char avra_rt_held_avra_embed __asm__(AVRA_RT_LABEL(avra_embed));
 extern const char avra_rt_held_avra_embed_octets __asm__(AVRA_RT_LABEL(avra_embed_octets));
+extern const char avra_rt_held_avra_embed_digest __asm__(AVRA_RT_LABEL(avra_embed_digest));
 extern const char avra_rt_held_avra_type_named __asm__(AVRA_RT_LABEL(avra_type_named));
 extern const char avra_rt_held_avra_exec_self __asm__(AVRA_RT_LABEL(avra_exec_self));
 extern const char avra_rt_held_avra_spawn_status __asm__(AVRA_RT_LABEL(avra_spawn_status));
@@ -523,6 +524,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_str_from_codepoint,
     &avra_rt_held_avra_embed,
     &avra_rt_held_avra_embed_octets,
+    &avra_rt_held_avra_embed_digest,
     &avra_rt_held_avra_type_named,
     &avra_rt_held_avra_exec_self,
     &avra_rt_held_avra_spawn_status,
@@ -985,6 +987,8 @@ _Static_assert(__builtin_classify_type(avra_embed(AVRA_RT_PTR)) == AVRA_RT_POINT
     "avra_embed: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_embed_octets(AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_embed_octets: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_classify_type(avra_embed_digest(AVRA_RT_PTR)) == AVRA_RT_POINTER,
+    "avra_embed_digest: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_type_named(AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_type_named: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_exec_self(AVRA_RT_PTR)), int64_t),
