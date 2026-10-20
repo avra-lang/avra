@@ -101,7 +101,6 @@ export enum DbKind {
     Sig
     Warn
     Scan
-    Canon
     Licenses
     Findings
     Answer
@@ -132,7 +131,6 @@ impl DbKind {
             .Sig -> "Sig",
             .Warn -> "Warn",
             .Scan -> "Scan",
-            .Canon -> "Canon",
             .Licenses -> "Licenses",
             .Findings -> "Findings",
             .Answer -> "Answer",
@@ -228,9 +226,6 @@ export enum DbRow {
     /// lex-level pre-filter), under that text's own digest — so no
     /// process lexes the same bytes twice.
     Scan(name: string, text: string)
-    /// A file's bytes known to be canonical `avra fmt` output, under
-    /// their own digest — present or absent, the text is unused.
-    Canon(name: string, text: string)
     /// A program's stale `// LICENSED <id>` citations (`compiler/
     /// licenses.av`), one `file\tline\tid` per line — kept under the
     /// SAME key as its `Warn` row, so a repeat `avra check` reads both
@@ -276,7 +271,6 @@ impl DbRow {
             .Sig(_, _) -> DbKind.Sig,
             .Warn(_, _) -> DbKind.Warn,
             .Scan(_, _) -> DbKind.Scan,
-            .Canon(_, _) -> DbKind.Canon,
             .Licenses(_, _) -> DbKind.Licenses,
             .Findings(_, _) -> DbKind.Findings,
             .Answer(_, _) -> DbKind.Answer,
@@ -291,7 +285,7 @@ impl DbRow {
     /// this — it addresses by `arg: int`, not by name).
     fn key() -> string {
         match self {
-            .Sig(name, _) or .Warn(name, _) or .Scan(name, _) or .Canon(name, _) or .Licenses(name, _) or .Findings(name, _) or .Answer(name, _) -> name,
+            .Sig(name, _) or .Warn(name, _) or .Scan(name, _) or .Licenses(name, _) or .Findings(name, _) or .Answer(name, _) -> name,
             rest -> {
                 avra_trap("defect: DbRow.key() asked of a dense (non-durable) variant")
                 ""
@@ -768,7 +762,7 @@ export fn current_file_digest(path: string) -> string? {
 /// half is never reached for a dense variant.
 fn encoded(row: DbRow) -> string {
     match row {
-        .Sig(_, text) or .Warn(_, text) or .Scan(_, text) or .Canon(_, text) or .Licenses(_, text) or .Findings(_, text) or .Answer(_, text) -> text,
+        .Sig(_, text) or .Warn(_, text) or .Scan(_, text) or .Licenses(_, text) or .Findings(_, text) or .Answer(_, text) -> text,
         rest -> {
             avra_trap("defect: encoded asked of a non-durable DbRow")
             ""
@@ -781,7 +775,6 @@ fn decoded(kind: DbKind, name: string, text: string) -> DbRow? {
         .Sig -> DbRow.Sig(name, text),
         .Warn -> DbRow.Warn(name, text),
         .Scan -> DbRow.Scan(name, text),
-        .Canon -> DbRow.Canon(name, text),
         .Licenses -> DbRow.Licenses(name, text),
         .Findings -> DbRow.Findings(name, text),
         .Answer -> DbRow.Answer(name, text),
