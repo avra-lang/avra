@@ -27,6 +27,14 @@ const SEED = Number(args.seed ?? 1);
 const SHOW = Number(args.show ?? 3);
 const WIDTH = Number(args.width ?? 300);
 
+// --face prop: text is laid in a PROPORTIONAL face whose advances are fractional
+// pixels, summed in sixty-fourths by the solver and by the browser alike. The font
+// is built here with 64 units to the em, so at a font size of one pixel a glyph's
+// advance in font units is its advance in sixty-fourths of a pixel.
+const PROP = args.face === "prop";
+const FACE = { units: 64, advances: { i: 96, m: 272, W: 320, " ": 128 }, fallback: 205 };
+const LINE = 16;
+
 // ── the trees ────────────────────────────────────────────────────
 
 function prng(seed) {
@@ -47,6 +55,7 @@ const WRAPS = ["NoWrap", "Wrap", "WrapReverse"];
 
 function words(rand) {
   const n = 1 + Math.floor(rand() * 6);
+  if (PROP) return Array.from({ length: n }, () => Array.from({ length: 1 + Math.floor(rand() * 9) }, () => "imWxa"[Math.floor(rand() * 5)]).join("")).join(" ");
   return Array.from({ length: n }, () => "abcdefghijklmnopqrstuvwxyz".slice(0, 1 + Math.floor(rand() * 9))).join(" ");
 }
 
@@ -106,6 +115,17 @@ const FIXED_CASES = [
   { prim: "Row", layout: { gap: "Xs", pad: { start: "Xs", end: "Xs", top: "None", bottom: "None" }, width: { fixed: 60 } }, kids: [leaf({ width: { fixed: 10 }, height: { fixed: 3 } }), leaf({ width: "Fill", height: { fixed: 3 } })] },
 ];
 
+// A twenty-glyph word of 205/64 pixels each is 64.06 pixels: it wraps in 64, where
+// whole-pixel advances (3 each) would not. Rows of fractional advances that land on
+// the edge pin where the browser breaks.
+const PROP_CASES = [
+  { prim: "Row", layout: { width: { fixed: 64 } }, kids: [text("xxxxxxxxxxxxxxxxxxxx")] },
+  { prim: "Row", layout: { width: { fixed: 8 } }, kids: [text("ii ii")] },
+  { prim: "Row", layout: { width: { fixed: 7 } }, kids: [text("ii ii")] },
+  { prim: "Row", layout: { width: { fixed: 40 } }, kids: [text("mmm WWW iii xxx mmm WWW iii xxx")] },
+  { prim: "Row", layout: { width: { fixed: 61 } }, kids: [text("xxxxxxxxxxxxxxxxxxx")] },
+];
+
 // ── the solver's side and the page ───────────────────────────────
 
 const sizing = (s) => (s === "Fill" ? ".Fill" : `.Fixed(${s.fixed})`);
@@ -142,6 +162,8 @@ use @std.ui.style.layout.{Layout, Edge}
 use @std.ui.style.tokens.{Size}
 use @std.ui.style.theme.{Theme}
 use @std.ui.place.measure.{Measure, Extent, Cells}
+use @std.ui.place.metrics.{Table}
+use @std.ui.place.text.{Text}
 use @std.ui.place.solve.{place, Placed}
 use @std.ui.realize.html.html.{render}
 use @std.ui.realize.tests.support.{boxed, placed, text_node}
@@ -160,13 +182,21 @@ impl Measure for Pixels {
     fn pad_y(z: Size) -> int { self.theme.space_of(z) }
 }
 
+${PROP ? `fn typeface() -> Text {
+    Text {
+        metrics: Table { advances: { ${Object.entries(FACE.advances).map(([c, u]) => `"${c}": ${u}`).join(", ")} }, fallback: ${FACE.fallback}, up: ${LINE * 48}, down: ${LINE * 16} },
+        theme: Env {}.theme,
+        rest: Cells {},
+    }
+}
+` : ""}
 fn rows_of(p: Placed) -> List<string> {
     ["\${p.rect.x} \${p.rect.y} \${p.rect.w} \${p.rect.h}"].concat([l for k in p.kids for l in rows_of(k)])
 }
 
 fn show(i: int, n: Node) {
     println("case \${i}")
-    for l in rows_of(place(n, Pixels { theme: Env {}.theme }, ${WIDTH})) { println(l) }
+    for l in rows_of(place(n, ${PROP ? "typeface()" : "Pixels { theme: Env {}.theme }"}, ${WIDTH})) { println(l) }
     println("html \${i}")
     println(render(n, Env {}).replace("\\n", " "))
     println("end \${i}")
@@ -197,7 +227,7 @@ function solved(cases, work) {
 
 // ── the browser's side ───────────────────────────────────────────
 
-const PAGE = `<!doctype html><meta charset=utf-8><style>@font-face{font-family:cell;src:url(data:font/ttf;base64,${cellFontBase64()})}body{margin:0;font:1px/1px cell}</style><body></body>`;
+const PAGE = `<!doctype html><meta charset=utf-8><style>@font-face{font-family:cell;src:url(data:font/ttf;base64,${cellFontBase64(PROP ? FACE : {})})}body{margin:0;font:1px/${PROP ? LINE : 1}px cell${PROP ? ";font-kerning:none;font-variant-ligatures:none" : ""}}</style><body></body>`;
 
 // The page the realizer wrote is laid in a host WIDTH wide. Each box is read
 // as the browser paints it: its edges, from the root's corner, snapped to the
@@ -263,7 +293,7 @@ async function shrunk(spec, browser, work) {
 
 async function main() {
   const rand = prng(SEED);
-  const cases = args.tree ? [JSON.parse(args.tree)] : FIXED_CASES.concat(Array.from({ length: CASES }, () => rooted(generate(rand, 3))));
+  const cases = args.tree ? [JSON.parse(args.tree)] : (PROP ? PROP_CASES : FIXED_CASES).concat(Array.from({ length: CASES }, () => rooted(generate(rand, 3))));
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "avra-layout-oracle-"));
   const binary = firefoxBinary();
   if (!binary) { console.log("layout-oracle: ran 0 trees — no Firefox on this machine (FIREFOX names one)"); process.exit(process.env.CI === "true" ? 1 : 0); }
