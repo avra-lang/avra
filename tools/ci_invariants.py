@@ -38,7 +38,7 @@ lists and refuses by name:
                    cancel each other; the run mode is read at run time, so the
                    runs that remain give one verdict.
   dup-run          a `labeled` run waits for the full run on its head and mirrors its verdict;
-                   it never runs a second gate beside it (tools/ci_dup_run.py).
+                   it never runs a second gate beside it (tools/ci_dup_run.sh).
   warm-edit        WHERE the DB 07 warm-edit gate exists (Makefile target
                    `warm-edit`), it is one of `KEEPERS` and its measurement
                    skips with a word on a cold store — a claim with no gate
@@ -250,12 +250,12 @@ def check_race_split(workflow_text):
 
 
 def check_dup_run(workflow_text):
-    """The labeled run asks tools/ci_dup_run.py for the verdict and mirrors it, and
+    """The labeled run asks tools/ci_dup_run.sh for the verdict and mirrors it, and
     the test job's light and verdict steps stand down for a mirror. Answers (refusals, words)."""
     jobs = parse_jobs(workflow_text)
     refusals = []
-    if "tools/ci_dup_run.py" not in jobs.get("prepare", ""):
-        refusals.append("`prepare` does not ask tools/ci_dup_run.py whether a labeled run owes the gate")
+    if "tools/ci_dup_run.sh" not in jobs.get("prepare", ""):
+        refusals.append("`prepare` does not ask tools/ci_dup_run.sh whether a labeled run owes the gate")
     if "mirror: ${{ steps.plan.outputs.mirror }}" not in jobs.get("prepare", ""):
         refusals.append("`prepare` does not expose the mirror verdict")
     test = jobs.get("test", "")
