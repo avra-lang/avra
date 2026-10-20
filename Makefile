@@ -989,6 +989,7 @@ attack:
 # SET of mutants of the tree's own program tests rides beside them; more is
 # `python3 tools/defects.py --only gen: --generate 500 --seed <n>`.
 defects:
+	@python3 tools/defects.py --self-test
 	@sh tools/watch.sh 6000 python3 tools/defects.py --generate 40 --seed 0
 
 # The IR vocabulary's guarantee: every Ins consumer stays exhaustive,
