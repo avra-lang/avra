@@ -103,6 +103,7 @@ use diagnostics.{
 }
 use @std.errors.{Loc}
 use @std.testing.{words}
+use @std.time.{now_ns}
 use compiler.host.{Host, Manifest, InputName, memory_host}
 use compiler.store.{Reading}
 use compiler.store.{Store, Keeping, pack_released}
@@ -2467,7 +2468,10 @@ impl Workspace {
             .Compute -> nothing(),
         }
         let x = self.decls.decl(d)
-        let out = self.typed_restored(x) ?? self.typed_body(x)
+        let began = now_ns()
+        let kept = self.typed_restored(x)
+        work_typed_ns(1, if kept == null { 0 } else { now_ns() - began })
+        let out = kept ?? self.typed_body(x)
         // A DECLARATION STILL EXPANDING HAS A RANGE THAT WILL GROW: a
         // window typed now lacks the ids the expansion is about to add,
         // so it answers this asker alone and is never memoized — the
@@ -2495,9 +2499,12 @@ impl Workspace {
     /// One declaration's body typed afresh.
     fn typed_body(x: Decl) -> TypeFacts {
         work_typed()
+        let began = now_ns()
         self.hold.typed_made.keep(x.id.index, true)
         mut t = self.type_cx_for(x)
-        t.type_decl(x)
+        let out = t.type_decl(x)
+        work_typed_ns(0, now_ns() - began)
+        out
     }
 
     /// A file's bodies as one table: Main's facts first (its range
