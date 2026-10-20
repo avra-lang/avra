@@ -25,8 +25,10 @@ extern fn avra_wait_until(at_ns: int, arm: int, member: int)
 extern fn avra_wait_park() -> int
 extern fn avra_trap(message: string)
 
-/// A span of time, in whole milliseconds.
-export type Duration = { ms: int }
+/// A span of time, in nanoseconds. SEALED: `ms`, `secs` and `mins` are
+/// its doors, and a span past the range they hold traps.
+@sealed
+export type Duration = { ns: int }
 
 /// The deadline a block ran past: `after` is the span it was given
 /// and `at` the frames the task stood in when it fired.
@@ -40,15 +42,21 @@ export fn late<T>(t: TimedOut) -> Result<T, TimedOut> {
 }
 
 export fn ms(n: int) -> Duration {
-    Duration { ms: n }
+    scaled(n, ns_per_ms, "ms")
 }
 
 export fn secs(n: int) -> Duration {
-    Duration { ms: n * 1000 }
+    scaled(n, 1000000000, "secs")
 }
 
 export fn mins(n: int) -> Duration {
-    Duration { ms: n * 60000 }
+    scaled(n, 60000000000, "mins")
+}
+
+/// `n` units of `unit` nanoseconds; a count past the range traps.
+fn scaled(n: int, unit: int, word: string) -> Duration {
+    if n > farthest / unit || n < 0 - farthest / unit { avra_trap("a span of ${n} ${word} is past the range of @std.time.Duration") }
+    Duration { ns: n * unit }
 }
 
 /// The monotonic clock, in milliseconds since an origin nobody is
@@ -85,24 +93,41 @@ export fn wall_secs() -> int {
 /// with none simply waits. Under a millisecond it lets every other
 /// ready task run once, then goes on.
 export fn sleep(d: Duration) {
-    avra_fiber_sleep(d.ms)
+    avra_fiber_sleep(d.ms())
 }
 
 impl Duration {
     fn plus(other: Duration) -> Duration {
-        Duration { ms: self.ms + other.ms }
+        Duration { ns: add_ns(self.ns, other.ns) }
+    }
+    /// The whole milliseconds, toward zero: the sub-millisecond part is
+    /// dropped, so `ms(1)` less one nanosecond reads `0`.
+    fn ms() -> int {
+        self.ns / ns_per_ms
     }
     /// The span in whole milliseconds.
     fn ms() -> int {
         self.ms
     }
     fn is_zero() -> bool {
-        self.ms == 0
+        self.ns == 0
     }
     /// The span as a human reads it: `340ms`, `1.2s`, `2m05s`.
     fn text() -> string {
-        duration_text(self.ms)
+        duration_text(self.ms())
     }
+}
+
+/// `a + b` in nanoseconds; a result past the int range traps.
+fn add_ns(a: int, b: int) -> int {
+    if b > 0 && a > farthest - b || b < 0 && a < 0 - farthest - 1 - b { avra_trap(out_of_range("a sum of spans")) }
+    a + b
+}
+
+/// `a - b` in nanoseconds; a result past the int range traps.
+fn sub_ns(a: int, b: int) -> int {
+    if b < 0 && a > farthest + b || b > 0 && a < 0 - farthest - 1 + b { avra_trap(out_of_range("a difference of instants")) }
+    a - b
 }
 
 /// Milliseconds as text, at the unit a human would pick.
@@ -120,16 +145,6 @@ export fn duration_text(total: int) -> string {
 const farthest: int = 9223372036854775807
 
 const ns_per_ms: int = 1000000
-
-/// `d` in nanoseconds — the largest count there is, either way, when
-/// that is past spelling.
-fn span_ns(d: Duration) -> int {
-    when {
-        d.ms > farthest / ns_per_ms -> farthest
-        d.ms < 0 - farthest / ns_per_ms -> 0 - farthest
-        _ -> d.ms * ns_per_ms
-    }
-}
 
 /// The instant `ns` after `at`: never before the clock's origin, and
 /// the farthest when that is past spelling.
@@ -159,13 +174,13 @@ export type Deadline = { at: int }
 /// The instant `d` from now. Bound once, it is one budget for
 /// everything that waits on it.
 export fn after(d: Duration) -> Deadline {
-    Deadline { at: later(avra_now_ns(), span_ns(d)) }
+    Deadline { at: later(avra_now_ns(), d.ns) }
 }
 
 impl Deadline {
     /// The instant `span` after this one.
     fn plus(span: Duration) -> Deadline {
-        Deadline { at: later(self.at, span_ns(span)) }
+        Deadline { at: later(self.at, span.ns) }
     }
 
     fn due() -> bool {
@@ -176,13 +191,14 @@ impl Deadline {
     /// exactly when it is due.
     fn left() -> Duration {
         let ns = self.at - avra_now_ns()
-        Duration { ms: if ns <= 0 { 0 } else { (ns - 1) / ns_per_ms + 1 } }
+        Duration { ns: if ns <= 0 { 0 } else { ((ns - 1) / ns_per_ms + 1) * ns_per_ms } }
     }
 
-    /// How far past it the clock is — zero until it is due.
+    /// How far past it the clock is, in whole milliseconds rounded down —
+    /// zero until it is due.
     fn late() -> Duration {
         let ns = avra_now_ns() - self.at
-        Duration { ms: if ns <= 0 { 0 } else { ns / ns_per_ms } }
+        Duration { ns: if ns <= 0 { 0 } else { ns / ns_per_ms * ns_per_ms } }
     }
 
     /// The calling task parked until the instant, the others running
@@ -216,8 +232,8 @@ export type Every = { period: Duration, next: Cell<int>, skipped: Cell<int> }
 /// after the last DUE instant, whatever was done between them. A period
 /// of nothing traps.
 export fn every(d: Duration) -> Every {
-    if d.ms <= 0 { avra_trap("a period of ${d.ms} ms is no period — `every` takes one longer than nothing") }
-    Every { period: d, next: Cell.new(later(avra_now_ns(), span_ns(d))), skipped: Cell.new(0) }
+    if d.ns <= 0 { avra_trap("a period of ${d.ms()} ms is no period — `every` takes one longer than nothing") }
+    Every { period: d, next: Cell.new(later(avra_now_ns(), d.ns)), skipped: Cell.new(0) }
 }
 
 impl Every {
@@ -227,7 +243,7 @@ impl Every {
     fn passed() -> bool {
         let behind = avra_now_ns() - self.next.get()
         if behind < 0 { return false }
-        let period = span_ns(self.period)
+        let period = self.period.ns
         let gone = behind / period
         self.skipped.set(self.skipped.get() + gone)
         self.next.set(later(self.next.get(), later(gone * period, period)))
@@ -262,21 +278,14 @@ export fn epoch() -> Time {
 const reach: int = 9223372036
 
 impl Time {
-    /// This instant moved by `d`; a move past the range is refused.
+    /// This instant moved by `d`; a move past the range traps.
     fn plus(d: Duration) -> Time {
-        if d.ms > reach * 1000 || d.ms < (0 - reach) * 1000 { avra_trap(past_range(d.ms)) }
-        let ahead = d.ms * ns_per_ms
-        if ahead > 0 && self.ns > farthest - ahead || ahead < 0 && self.ns < 0 - farthest - ahead { avra_trap(past_range(d.ms)) }
-        Time { ns: self.ns + ahead }
+        Time { ns: add_ns(self.ns, d.ns) }
     }
-    /// The exact nanoseconds from `earlier` to this instant.
-    fn minus_ns(earlier: Time) -> int {
-        self.ns - earlier.ns
-    }
-    /// The whole milliseconds from `earlier` to this instant, rounded
-    /// toward zero: the sub-millisecond part is dropped.
-    fn minus_ms(earlier: Time) -> Duration {
-        Duration { ms: self.minus_ns(earlier) / ns_per_ms }
+    /// The span from `earlier` to this instant, exact; two instants more
+    /// than the range apart trap.
+    fn minus(earlier: Time) -> Duration {
+        Duration { ns: sub_ns(self.ns, earlier.ns) }
     }
     fn before(other: Time) -> bool {
         self.ns < other.ns
@@ -387,6 +396,6 @@ fn digits(n: int, width: int) -> string {
     repeat("0", width - t.length) + t
 }
 
-fn past_range(ms: int) -> string {
-    "a span of ${ms} ms moves an instant past the range of @std.time.Time (1677 to 2262)"
+fn out_of_range(what: string) -> string {
+    "${what} is past the int range of nanoseconds: 1677 to 2262 for instants, about 292 years for spans"
 }

@@ -566,7 +566,7 @@ impl Command {
         let began = now_ms()
         let s = launched(self, 0 - 1)?
         errdefer abandoned([s])
-        let done = pumped(s, self.drain_grace.ms)
+        let done = pumped(s, self.drain_grace.ms())
         let word = avra_proc_reap(done.h)
         let _ = avra_proc_close(done.h)
         if done.timed { fail ProcessError.TimedOut(timeout_ms(self.timeout), gathered(done)) }
@@ -621,8 +621,8 @@ fn lines_text(xs: List<string>) -> string {
 /// the absence of one.
 fn timeout_ms(d: Duration?) -> int {
     if d == null { return 0 - 1 }
-    if d!.ms < 0 { return 0 }
-    d!.ms
+    if d!.ms() < 0 { return 0 }
+    d!.ms()
 }
 
 fn has_bit(word: int, bit: int) -> bool {
@@ -730,7 +730,7 @@ impl Child {
     fn until_ready(ready: Ready, limit: Duration) -> Result<int, ProcessError> {
         if ready is .Started { return 0 }
         let began = now_ms()
-        let deadline = began + limit.ms
+        let deadline = began + limit.ms()
         mut waited = 0
         while true {
             let gone = self.pump(100)
@@ -775,7 +775,7 @@ impl Child {
     /// answered once the child is gone.
     fn read_line(limit: Duration) -> string? {
         if self.ended != null { return null }
-        let deadline = now_ms() + limit.ms
+        let deadline = now_ms() + limit.ms()
         while true {
             let cut = self.out.index_of("\n")
             if cut >= 0 {
@@ -819,10 +819,10 @@ impl Child {
         if self.ended != null { return self.ended!.exit }
         let began = now_ms()
         let _ = avra_proc_signal(self.stage.h, sigterm, 1)
-        self.until_gone(self.command.stop_grace.ms)
+        self.until_gone(self.command.stop_grace.ms())
         if avra_proc_reap(self.stage.h) == 0 {
             let _ = avra_proc_signal(self.stage.h, sigkill, 1)
-            self.until_gone(self.command.stop_grace.ms)
+            self.until_gone(self.command.stop_grace.ms())
         }
         self.ended_with(began).exit
     }
@@ -1277,7 +1277,7 @@ impl Pipeline {
                 if s.stopped {
                     grown.push(s)
                 } else {
-                    let t = graced(s, waited, self.stages[i].drain_grace.ms)
+                    let t = graced(s, waited, self.stages[i].drain_grace.ms())
                     waited = waited || !t.timed
                     if overdue(t) || capped(t) {
                         let _ = avra_proc_signal(s.h, sigkill, 1)
@@ -1326,7 +1326,7 @@ export fn parallel(cs: List<Command>, limit: int) -> Result<List<Outcome>, Proce
         mut still_owners: List<int> = []
         mut waited = false
         for i, s in live {
-            let t = graced(s, waited, cs[owners[i]].drain_grace.ms)
+            let t = graced(s, waited, cs[owners[i]].drain_grace.ms())
             waited = waited || !t.timed
             if overdue(t) || capped(t) { fail broken(cs[owners[i]], t) }
             if t.stopped {
@@ -1367,13 +1367,13 @@ export fn race(cs: List<Command>, stagger: Duration) -> Result<Outcome, ProcessE
             live.push(s)
             owners.push(next)
             next = next + 1
-            next_at = now_ms() + stagger.ms
+            next_at = now_ms() + stagger.ms()
         }
         mut winner: Outcome? = null
         mut grown: List<Stage> = []
         mut waited = false
         for i, s in live {
-            let t = graced(s, waited, cs[owners[i]].drain_grace.ms)
+            let t = graced(s, waited, cs[owners[i]].drain_grace.ms())
             waited = waited || !t.timed
             if overdue(t) || capped(t) { fail broken(cs[owners[i]], t) }
             if t.stopped && winner == null { winner = collected(t, began) }

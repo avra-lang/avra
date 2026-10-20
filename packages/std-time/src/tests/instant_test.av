@@ -1,7 +1,7 @@
 // Instants: the epoch is zero nanoseconds, ISO-8601 round-trips across
 // the range, a malformed text is absent, and Duration arithmetic is exact
 // where it says so and floors where it says so.
-use @std.time.{epoch, parse_iso, ms, secs, Time}
+use @std.time.{epoch, parse_iso, ms, secs}
 
 spec "std/time — instants" {
     given "the epoch" {
@@ -53,15 +53,38 @@ spec "std/time — instants" {
         then "plus moves an instant by a span" {
             epoch().plus(secs(1)).ns == 1000000000
         }
-        then "minus_ns is exact" {
-            epoch().plus(ms(2)).minus_ns(epoch()) == 2000000
+        then "minus is exact to the nanosecond" {
+            epoch().plus(ms(2)).minus(epoch()).ns == 2000000
         }
-        then "minus_ms floors the sub-millisecond part toward zero" {
-            epoch().plus(ms(2)).minus_ms(epoch()) == ms(2) &&
-                epoch().minus_ms(epoch().plus(ms(2))) == ms(-2)
+        then "minus runs both ways" {
+            epoch().minus(epoch().plus(ms(2))).ms() == -2
         }
         then "an instant is before and after by its nanoseconds" {
             epoch().before(epoch().plus(ms(1))) && epoch().plus(ms(1)).after(epoch())
+        }
+    }
+    given "the range edges" {
+        then "the largest millisecond span holds" {
+            ms(9223372036854).ns == 9223372036854000000
+        }
+        then "the largest second span holds" {
+            secs(9223372036).ns == 9223372036000000000
+        }
+        then "the instant at the range's end is the largest nanosecond" {
+            parse_iso("2262-04-11T23:47:16.854775807Z")!.ns == 9223372036854775807
+        }
+        then "the instant at the range's start is the smallest nanosecond" {
+            parse_iso("1677-09-21T00:12:43.145224192Z")!.ns == 0 - 9223372036854775807 - 1
+        }
+        then "the epoch's neighbour is one nanosecond before it" {
+            parse_iso("1969-12-31T23:59:59.999999999Z")!.minus(epoch()).ns == 0 - 1
+        }
+    }
+    given "a span's whole milliseconds" {
+        then "they floor toward zero" {
+            ms(2).ms() == 2 &&
+                epoch().plus(ms(1)).minus(epoch()).ms() == 1 &&
+                epoch().minus(epoch().plus(ms(1))).ms() == 0 - 1
         }
     }
 }
