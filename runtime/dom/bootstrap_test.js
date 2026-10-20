@@ -261,6 +261,14 @@ check("a press that starts inside it and ends outside keeps it open", [shownDial
 pointer("pointerdown", 2, 2);
 pointer("pointerup", 2, 2);
 check("a press outside it sends it away, heard as its cancel", [shownDialog.open, o.sent], [false, [[0, 9, null]]]);
+let reached = 0;
+const clicked = { preventDefault: () => { reached--; }, stopPropagation: () => {} };
+o.doc.listeners.get("cancel")({ target: shownDialog });
+o.doc.listeners.get("click")(clicked);
+check("the click of the press that sent it away is stopped", reached, -1);
+pointer("pointerdown", 2, 2);
+o.doc.listeners.get("click")(clicked);
+check("the next press's click is not", reached, -1);
 
 // ── the wire itself ──
 let refused = false;
