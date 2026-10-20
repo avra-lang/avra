@@ -828,7 +828,7 @@ rule-examples:
 # tools/families.ceiling is lowered as one converts. A family is keyed
 # by its NAME, so declaration order is free and no ordinal is durable.
 families-left:
-	@python3 tools/families.py
+	@sh tools/avra_tools.sh families
 
 # NO ANSWER STANDS ON A LONG READ LIST: a cold derivation of the cli, each family's longest
 # read list held under 3,000, and the families still over it only shorten (tools/read_lists.py).
