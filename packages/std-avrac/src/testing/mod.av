@@ -192,40 +192,77 @@ export fn vendored_prelude(files: Map<string, string>) -> Map<string, string> {
 }
 
 // LICENSED input.compile_embed: the package's own source, read when the compiler is built
-const task_real: string = embed("@std/task/src/task.av")
-
-/// One package of the toolchain's std root: its name and its one file.
-type StdFile = { name: string, text: string }
+const task_src: string = embed("@std/task/src/task.av")
 
 // LICENSED input.compile_embed: the package's own source, read when the compiler is built
-const time_real: string = embed("@std/time/src/time.av")
+const time_src: string = embed("@std/time/src/time.av")
+
+// LICENSED input.compile_embed: the package's own source, read when the compiler is built
+const text_src: string = embed("@std/text/src/text.av")
+
+// LICENSED input.compile_embed: the package's own source, read when the compiler is built
+const display_src: string = embed("@std/text/src/display.av")
+
+// LICENSED input.compile_embed: the package's own source, read when the compiler is built
+const unicode_src: string = embed("@std/text/src/unicode.av")
+
+/// A source file of a std package, named as the package ships it.
+type StdFile = { name: string, text: string }
+
+/// One package of the toolchain's std root: its name and every file it
+/// holds. A PACKAGE IS ITS FILES — `@std/text`'s `display.av` declares
+/// the `cells` its `text.av` reads, so a host carrying one carries all.
+type StdPkg = { name: string, files: List<StdFile> }
 
 /// `files` with the real `@std/task` laid out beside the prelude under the
 /// std root, with `@std/meta` and `@std/errors` it rests on.
 export fn vendored_task(files: Map<string, string>) -> Map<string, string> {
-    vendored_beside(files, StdFile { name: "task", text: task_real })
+    vendored_beside(files, [std_pkg("task", [std_file("task.av", task_src)])])
 }
 
-/// `vendored_task`'s twin for the real `@std/time`.
+/// `vendored_task`'s twin for the real `@std/time`, and the whole
+/// `@std/text` its ISO-8601 rests on.
 export fn vendored_time(files: Map<string, string>) -> Map<string, string> {
-    vendored_beside(files, StdFile { name: "time", text: time_real })
+    vendored_beside(
+        files,
+        [
+            std_pkg(
+                "text",
+                [
+                    std_file("text.av", text_src),
+                    std_file("display.av", display_src),
+                    std_file("unicode.av", unicode_src),
+                ],
+            ),
+            std_pkg("time", [std_file("time.av", time_src)]),
+        ],
+    )
 }
 
-/// `files` with the prelude, `@std/meta`, `@std/errors` and one more package
-/// laid out under the std root.
-fn vendored_beside(files: Map<string, string>, pkg: StdFile) -> Map<string, string> {
+/// The packages every vendored host carries: what the toolchain's own
+/// std packages rest on.
+fn shared_pkgs() -> List<StdPkg> {
+    [
+        std_pkg("meta", [std_file("meta.av", meta_real)]),
+        std_pkg("errors", [std_file("errors.av", errors_real)]),
+    ]
+}
+
+fn std_pkg(name: string, files: List<StdFile>) -> StdPkg { StdPkg { name: name, files: files } }
+
+fn std_file(name: string, text: string) -> StdFile { StdFile { name: name, text: text } }
+
+/// `files` with the prelude, `@std/meta`, `@std/errors` and the packages
+/// `beside` named laid out under the std root.
+fn vendored_beside(files: Map<string, string>, beside: List<StdPkg>) -> Map<string, string> {
     mut out = vendored_prelude(files)
-    for p in [
-        pkg,
-        StdFile { name: "meta", text: meta_real },
-        StdFile { name: "errors", text: errors_real },
-    ] {
+    for p in beside.concat(shared_pkgs()) {
         out
             .set(
                 "/std/std-${p.name}/avra.toml",
                 "[package]\nname = \"@std/${p.name}\"\nversion = \"0.0.1\"\n",
             )
-        out.set("/std/std-${p.name}/src/${p.name}.av", p.text)
+        for f in p.files { out.set("/std/std-${p.name}/src/${f.name}", f.text) }
     }
     out
 }

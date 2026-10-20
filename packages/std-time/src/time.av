@@ -100,14 +100,11 @@ impl Duration {
     fn plus(other: Duration) -> Duration {
         Duration { ns: add_ns(self.ns, other.ns) }
     }
-    /// The whole milliseconds, toward zero: the sub-millisecond part is
-    /// dropped, so `ms(1)` less one nanosecond reads `0`.
+    /// The whole milliseconds, rounded down: the sub-millisecond part is
+    /// dropped, so `ms(1)` less one nanosecond reads `0` and one
+    /// nanosecond before zero reads `-1`.
     fn ms() -> int {
-        self.ns / ns_per_ms
-    }
-    /// The span in whole milliseconds.
-    fn ms() -> int {
-        self.ms
+        floor_div(self.ns, ns_per_ms)
     }
     fn is_zero() -> bool {
         self.ns == 0
@@ -341,7 +338,7 @@ fn fraction(b: Bytes) -> int? {
 
 fn field(b: Bytes, from: int, to: int) -> int? {
     let text = b.slice(from, to).text()?
-    if !codepoints(text).all((c) -> c >= 48 && c <= 57) { return null }
+    if !codepoints(text).all(it >= 48 && it <= 57) { return null }
     parse_int(text)
 }
 
@@ -355,12 +352,10 @@ fn floor_div(a: int, b: int) -> int {
 }
 
 fn days_in(m: int, y: int) -> int {
-    if m == 2 {
-        if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 29 } else { 28 }
-    } else if m == 4 || m == 6 || m == 9 || m == 11 {
-        30
-    } else {
-        31
+    when {
+        m == 2 -> if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 29 } else { 28 }
+        m == 4 || m == 6 || m == 9 || m == 11 -> 30
+        _ -> 31
     }
 }
 

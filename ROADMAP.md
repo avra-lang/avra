@@ -3334,6 +3334,18 @@ The mint differs per error type, and a bound lands only on a free fn's
 parameter, so no trait can carry "make me a timed-out one". The want: one
 generic fold over an error that says how it times out.
 
+### Interim record — an instant less an instant wants an operator
+
+The tasks server was unreachable at landing, so this stands in until the
+ticket can be filed as `avra-8sb5.10.182`. An operator over a declared
+pair: `end - start` for two `@std/time` instants answering the span
+between them, and `d1 + d2` for two spans. `Example:`
+`let took = end.minus(start)` — wanted as `end - start`. `Callsite:`
+`packages/std-time/src/time.av`'s `Time.minus`, exact to the nanosecond
+since a `Duration` became nanoseconds, and its twins `Time.plus` and
+`Duration.plus`, whose callers across std-http, std-net, std-process and
+std-ui spell `.plus(ms(5))` where `+` reads.
+
 ### Interim record — a package cannot pin "this does not build"
 
 A program test's markers say an answer (`.expected`), a trap (`.refuses`)
