@@ -59,7 +59,9 @@ unobserved fields. Typed reads assemble and validate complete records;
 generic reads can expose missing fields and conflicts. Defaults on
 complete-record construction are not extracted evidence.
 
-Resolution policy is generic and explicit; confidence is not authority.
+Resolution policy is generic and explicit: a choice names the claim one
+property reads through, one per entity and property, and is revocable.
+Confidence is metadata, not authority.
 Retain competing supported statements and their explanations. A
 materialized selection is a projection, never the evidence store. An
 explicit merge joins two entities into one read group without moving a row;

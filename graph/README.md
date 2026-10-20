@@ -98,6 +98,9 @@ CLI request files and HTTP use exactly the same JSON operations:
 | `tombstone` | `id`, `entity`, `decider` | A decision hiding that entity and its group |
 | `revive` | `id` | Withdraw a tombstone decision |
 | `tombstones` | optional `id` | Tombstone decisions touching that entity |
+| `choose` | `decision`, `claim`, `decider` | A decision to read a property through one claim |
+| `unchoose` | `decision` | Withdraw a choice; the property reads by its rule again |
+| `choices` | optional `claim` | Choice decisions, active or withdrawn |
 | `dirty` | — | Latest interpretations with stale input or schema |
 
 A publication replaces one producer's whole contribution in one scope,
@@ -223,7 +226,7 @@ input changes.
 
 Editing models and rebuilding changes the catalog fingerprint. The
 fingerprint includes metadata, constraint calls, defaults, and compiler
-code hashes of the validators. The std-first store writes format `7` in
+code hashes of the validators. The std-first store writes format `8` in
 `Meta`; a database from the earlier hand-table prototype is not migrated —
 `attach` and `open` both refuse it. Installing the new catalog advances the graph revision
 and quarantines old-schema interpretations; `dirty` names work to reprocess. No data is deleted or
@@ -265,9 +268,9 @@ its native objects). Native builds link those objects directly.
 
 ## Next slices
 
-- Declared selection policy (source priority, explicit user choice, recency
-  where asked). Confidence is evidence metadata now; tombstones define
-  deletion, and nothing removes evidence yet.
+- Declared selection policy beyond explicit choice (source priority, recency
+  where asked). Choices and confidence are in; tombstones define deletion,
+  and nothing removes evidence yet.
 - Durable pending work and multi-input dependency tracking; `dirty` is
   one-input, whole-scope invalidation, not a background scheduler.
 - Generic, declared conflict-resolution policies; the default deliberately

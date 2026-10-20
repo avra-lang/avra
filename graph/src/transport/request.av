@@ -5,6 +5,7 @@ use store.publish.{Publication, Record, RecordMode}
 use store.identity.{Identity}
 use store.merge.{Merge}
 use store.tombstone.{Tombstone}
+use store.choice.{Choice}
 
 export enum Operation {
     Schema
@@ -25,6 +26,9 @@ export enum Operation {
     Tombstone(decision: Tombstone)
     Revive(decision: string)
     Tombstones(entity: string)
+    Choose(decision: Choice)
+    Unchoose(decision: string)
+    Choices(claim: int)
     Dirty
 }
 
@@ -144,6 +148,25 @@ export fn operation(j: Json) -> Result<Operation, string> {
         "tombstones" -> {
             closed(j, ["op", "id"])?
             Operation.Tombstones(optional_text(j, "id", "")?)
+        },
+        "choose" -> {
+            closed(j, ["op", "decision", "claim", "decider"])?
+            Operation
+                .Choose(
+                    Choice {
+                        decision: text(j, "decision")?,
+                        claim: integer(j, "claim")?,
+                        decider: text(j, "decider")?,
+                    },
+                )
+        },
+        "unchoose" -> {
+            closed(j, ["op", "decision"])?
+            Operation.Unchoose(text(j, "decision")?)
+        },
+        "choices" -> {
+            closed(j, ["op", "claim"])?
+            Operation.Choices(optional_int(j, "claim", 0)?)
         },
         "dirty" -> {
             closed(j, ["op"])?

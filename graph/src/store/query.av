@@ -12,7 +12,7 @@ use store.engine.{
 }
 use data.{as_value, as_json, encoded}
 
-export type Candidate = { claim: int, value: Value }
+export type Candidate = { claim: int, value: Value, chosen: bool = false }
 export type Selection = { property: string, candidates: List<Candidate> }
 export type Entity = { id: string, model: string, revision: int, fields: List<Selection> }
 export type Edge = { entity: string, property: string, target: string, path: string }
@@ -59,24 +59,48 @@ impl Graph {
         for s in live {
             if selections.any(it.property == s.claim.property) { continue }
             mut candidates: List<Candidate> = []
+            let chosen = self.chosen_claim(live, s.claim.property)?
             for other in live {
                 if other.claim.property != s.claim.property { continue }
                 let value = stored_value(other.claim.value)?
                 if candidates.any(encoded(it.value) == encoded(value)) { continue }
-                candidates.push(Candidate { claim: other.claim.id, value: value })
+                candidates
+                    .push(
+                        Candidate {
+                            claim: other.claim.id,
+                            value: value,
+                            chosen: self.picked(chosen, value),
+                        },
+                    )
             }
             selections.push(Selection { property: s.claim.property, candidates: candidates })
         }
         Entity { id: id, model: named.model, revision: revision, fields: selections }
     }
 
+    /// Whether a standing choice names this value.
+    fn picked(chosen: ClaimRow?, value: Value) -> bool {
+        match chosen {
+            claim? -> claim.value == encoded(value)
+            null -> false
+        }
+    }
+
     /// A complete record only when every property has one supported answer.
     fn value(id: string) -> Result<Value, string> {
         let entity = self.entity(id)?
         if entity.fields.is_empty() { fail "entity has no current support: ${id}" }
-        if entity.fields.any(it.candidates.length != 1) { fail "entity has competing statements: ${id}" }
-        let assembled = Value
-            .Map([Entry { key: f.property, value: f.candidates[0].value } for f in entity.fields])
+        mut assembled: List<Entry> = []
+        for f in entity.fields {
+            let pick = if f.candidates.length == 1 {
+                f.candidates[0]
+            } else {
+                let chosen? = f.candidates.find(it.chosen) else { fail "entity has competing statements: ${id}" }
+                chosen
+            }
+            assembled.push(Entry { key: f.property, value: pick.value })
+        }
+        let assembled = Value.Map(assembled)
         let model = self.catalog.model(entity.model)?
         match (model.check)(assembled) {
             .Ok(value) -> value,
@@ -263,6 +287,7 @@ impl Entity {
                                                     [
                                                         field("claim", Json.Int(c.claim)),
                                                         field("value", as_json(c.value)),
+                                                        field("chosen", Json.Bool(c.chosen)),
                                                     ],
                                                 ) for c in f.candidates],
                                         ),
