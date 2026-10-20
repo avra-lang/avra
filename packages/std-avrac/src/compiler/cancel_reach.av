@@ -21,7 +21,7 @@
 //! linear in the call graph. A held fn answers from its interface,
 //! where the bit is contract (`interface_form`): a callee that starts
 //! to wait moves its dependents' key.
-use core.{DeclId, DeclKind, ExprId, FileId, Stmt, fp, fp_list, rt_waits, flatten}
+use core.{DeclId, DeclKind, ExprId, FileId, IndexRange, Stmt, fp, fp_list, rt_waits, flatten}
 use features.{NameFacts, TypeFacts, FileView, Decls, CancelReach}
 use compiler.families.{Family}
 use @std.relation.engine.{Table, new_table}
@@ -177,8 +177,7 @@ impl Workspace {
             view: file_view(self.lang, self.parsed(x.file), self.decls, x.file),
             names: self.names_of(d),
             facts: self.typed(d),
-            lo: x.lo,
-            hi: x.hi,
+            body: x.body(),
         }
     }
 
@@ -341,11 +340,11 @@ impl Decls {
 
 /// What one member's survey reads: its file, its names, its typed
 /// facts, its expression range — a lambda's nodes among them.
-type CancelSurvey = { ws: Workspace, view: FileView, names: NameFacts, facts: TypeFacts, lo: int, hi: int }
+type CancelSurvey = { ws: Workspace, view: FileView, names: NameFacts, facts: TypeFacts, body: IndexRange }
 
 impl CancelSurvey {
     fn in_reach(e: ExprId) -> bool {
-        e.index >= self.lo && e.index < self.hi
+        self.body.holds(e.index)
     }
 
     /// A `while` whose condition stands in the range.
@@ -363,7 +362,7 @@ impl CancelSurvey {
     /// instance's expansion among them.
     fn waits() -> List<NodeWait> {
         let reader = WaitReader { view: self.view, names: self.names, facts: self.facts }
-        flatten([reader.node_waits(ExprId { index: i }) for i in self.lo..self.hi])
+        flatten([reader.node_waits(e) for e in self.body.exprs()])
     }
 
     /// Every wait in the range, answered.

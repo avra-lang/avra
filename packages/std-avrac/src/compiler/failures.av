@@ -22,6 +22,7 @@
 //! EDGES rather than through a call to `sig()` that would just
 //! answer null for exactly the fns the edge exists to reach.
 use core.{
+    IndexRange,
     DeclId,
     Expr,
     ExprId,
@@ -286,8 +287,8 @@ fn fail_value(store: SyntaxArena, s: StmtId) -> List<ExprId> {
     match store.stmt(s) { .Fail(v) -> [v], rest -> [] }
 }
 
-fn fail_sites(store: SyntaxArena, lo: int, hi: int) -> List<ExprId> {
-    [v for v in fail_values(store) if v.index >= lo && v.index < hi]
+fn fail_sites(store: SyntaxArena, body: IndexRange) -> List<ExprId> {
+    [v for v in fail_values(store) if body.holds(v.index)]
 }
 
 /// `Propagate`'s own tag; the payload is a placeholder `tag_expr` never reads.
@@ -295,8 +296,8 @@ fn propagate_tag(store: SyntaxArena) -> int { store.tag_expr(Expr.Propagate(Expr
 
 /// Every `?` value in `[lo, hi)`: the `Expr` relation's `Propagate`
 /// bucket, sliced to the declaration's range.
-fn propagate_sites(store: SyntaxArena, lo: int, hi: int) -> List<ExprId> {
-    flatten([propagate_value(store, e) for e in store.exprs_by_kind(lo, hi, propagate_tag(store))])
+fn propagate_sites(store: SyntaxArena, body: IndexRange) -> List<ExprId> {
+    flatten([propagate_value(store, e) for e in store.body_by_kind(body, propagate_tag(store))])
 }
 
 fn propagate_value(store: SyntaxArena, e: ExprId) -> List<ExprId> {
@@ -305,7 +306,7 @@ fn propagate_value(store: SyntaxArena, e: ExprId) -> List<ExprId> {
 
 /// Every `catch` in `[lo, hi)`, at any depth: the `Expr` relation's
 /// `Catch` bucket, sliced to the declaration's range.
-fn catch_sites(store: SyntaxArena, lo: int, hi: int) -> List<ExprId> { store.exprs_by_kind(lo, hi, catch_tag(store)) }
+fn catch_sites(store: SyntaxArena, body: IndexRange) -> List<ExprId> { store.body_by_kind(body, catch_tag(store)) }
 
 /// `Catch`'s own tag; the payload is a placeholder `tag_expr` never reads.
 fn catch_tag(store: SyntaxArena) -> int { store.tag_expr(Expr.Catch(ExprId { index: 0 }, [], [], [])) }
@@ -357,14 +358,14 @@ fn smallest_owner(owners: List<ArmOwner>) -> ArmOwner {
 /// site at any nesting depth (they are index-range scans, blind to AST
 /// shape), so tagging each with `innermost_catch` is the whole of
 /// `within` — no separate arm walk, and so no double count either.
-fn built_error_sites(fs: FailSurvey, decls: Decls, d: DeclId, store: SyntaxArena, lo: int, hi: int) -> List<
+fn built_error_sites(fs: FailSurvey, decls: Decls, d: DeclId, store: SyntaxArena, body: IndexRange) -> List<
     ErrorSite,
 > {
-    let catches_at = catch_sites(store, lo, hi)
+    let catches_at = catch_sites(store, body)
     let owners = arm_owners(store, catches_at)
-    let fails = [fail_error_site(fs, d, v, innermost_catch(store, owners, v)) for v in fail_sites(store, lo, hi)]
+    let fails = [fail_error_site(fs, d, v, innermost_catch(store, owners, v)) for v in fail_sites(store, body)]
     let props = flatten(
-        [some_list(propagate_error_site(fs, decls, d, v, innermost_catch(store, owners, v))) for v in propagate_sites(store, lo, hi)],
+        [some_list(propagate_error_site(fs, decls, d, v, innermost_catch(store, owners, v))) for v in propagate_sites(store, body)],
     )
     let catches = [catch_error_site(fs, decls, d, store, c, innermost_catch(store, owners, c)) for c in catches_at]
     fails.concat(props).concat(catches)
@@ -577,16 +578,16 @@ impl Workspace {
                 seats: seats,
             },
         }
-        let fails = [fail_contribution(fs, v) for v in fail_sites(store, x.lo, x.hi)]
+        let fails = [fail_contribution(fs, v) for v in fail_sites(store, x.body())]
         let props = flatten(
-            [some_list(propagate_contribution(fs, self.decls, v)) for v in propagate_sites(store, x.lo, x.hi)],
+            [some_list(propagate_contribution(fs, self.decls, v)) for v in propagate_sites(store, x.body())],
         )
         let all = fails.concat(props)
         if all.any(is_unresolved) { self.decls.mark_inferred_unresolved(d) }
         FailSummary {
             direct: flatten([some_list(direct_ty(c)) for c in all]),
             calls: flatten([some_list(edge_callee(c)) for c in all]),
-            sites: built_error_sites(fs, self.decls, d, store, x.lo, x.hi),
+            sites: built_error_sites(fs, self.decls, d, store, x.body()),
         }
     }
 
