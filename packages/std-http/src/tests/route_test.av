@@ -4,7 +4,17 @@
 // The adversarial half of this story is route_adversarial_test.av.
 use @std.http_message.message.{Method}
 use @std.http.http.{Request, Unrouted, Response, text}
-use @std.http.route.{Route, routed, fixed, tailed, compiled, dispatch, faults}
+use @std.http.route.{
+    Route,
+    routed,
+    fixed,
+    tailed,
+    compiled,
+    dispatch,
+    faults,
+    route_faults,
+    RouteFault,
+}
 
 grammar Idea = "/ideas/{id}"
 grammar Search = "/search/{term}/{page}"
@@ -20,6 +30,19 @@ fn serve_word(_q: Request<Unrouted>) -> Response { text(200, "word") }
 
 fn r_static() -> Route { tailed<Static>(Method.Get, "/static/{path...}", (t: Bytes) -> Static.parse(t), serve_static) }
 fn r_png() -> Route { tailed<Png>(Method.Get, "/img/{path...}.png", (t: Bytes) -> Png.parse(t), serve_png) }
+
+/// The words of a table's fault variants, one per fault.
+fn kinds(rows: List<Route>) -> List<string> {
+    [kind_of(f) for f in route_faults(rows)]
+}
+
+fn kind_of(f: RouteFault) -> string {
+    match f {
+        .Overlap(_, _) -> "overlap",
+        .Unmarked(_) -> "unmarked",
+        .Unclaimed(_) -> "unclaimed",
+    }
+}
 
 /// What a table of these routes answers for a target.
 fn answer_of(rows: List<Route>, line: string) -> string {
@@ -149,7 +172,7 @@ spec "@std.http route" {
                     ),
                 ],
             )
-            found[0] == "`/ideas/{slug}` is unreachable — `/ideas/{id}` is declared above it and matches every target it does"
+            found[0] == "`GET /ideas/{slug}` is unreachable — `GET /ideas/{id}` is declared above it and matches every target it does"
         }
         then "routes of different shapes do not conflict" {
             faults(routes()).is_empty()
@@ -216,13 +239,19 @@ spec "@std.http route" {
         then "A ROUTE OF FIXED WIDTH IS STILL REFUSED A DEEPER TARGET, tails in the table or not" {
             answer_of([r_static(), routes()[0]], "GET /ideas/7/extra HTTP/1.1") == "404 "
         }
-        then "declaration order decides between a rest-taker and a path it covers" {
+        then "a path answers before a rest-taker that covers it, declared above or below" {
             answer_of(
                 [r_static(), fixed(Method.Get, "/static/logo.svg", serve_word)],
                 "GET /static/logo.svg HTTP/1.1",
-            ) == "200 static logo.svg"
+            ) == "200 word"
         }
-        then "and reversing them reverses the answer" {
+        then "and the rest-taker still answers what the path does not" {
+            answer_of(
+                [r_static(), fixed(Method.Get, "/static/logo.svg", serve_word)],
+                "GET /static/app.css HTTP/1.1",
+            ) == "200 static app.css"
+        }
+        then "the order of the two is not the answer" {
             answer_of(
                 [fixed(Method.Get, "/static/logo.svg", serve_word), r_static()],
                 "GET /static/logo.svg HTTP/1.1",
@@ -241,7 +270,7 @@ spec "@std.http route" {
                         serve_static,
                     ),
                 ],
-            )[0] == "`/static/files` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
+            )[0] == "`GET /static/files` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
         }
         then "and a pattern without the mark is named even when it has a hole" {
             faults(
@@ -266,7 +295,7 @@ spec "@std.http route" {
                         serve_static,
                     ),
                 ],
-            )[0] == "`/static/{path...}` spells a hole that takes the rest and the route was declared for one width — declare it with `tailed`, or drop the `...`"
+            )[0] == "`GET /static/{path...}` spells a hole that takes the rest and the route was declared for one width — declare it with `tailed`, or drop the `...`"
         }
         then "a static path holding the three dots is neither, because its braces are octets" {
             faults([fixed(Method.Get, "/static/{a...}", serve_word)]).is_empty()
@@ -284,10 +313,10 @@ spec "@std.http route" {
             )
                 .is_empty()
         }
-        then "a rest-taker shadows a deeper path below it" {
-            faults([r_static(), fixed(Method.Get, "/static/logo.svg", serve_word)])[0] == "`/static/logo.svg` is unreachable — `/static/{path...}` is declared above it and matches every target it does"
+        then "a rest-taker above a deeper path is no fault — the path is more specific" {
+            faults([r_static(), fixed(Method.Get, "/static/logo.svg", serve_word)]).is_empty()
         }
-        then "it shadows a route of greater width too, because it reaches every width" {
+        then "nor is a route of greater width below it — a hole outranks the rest" {
             faults(
                 [
                     r_static(),
@@ -299,7 +328,7 @@ spec "@std.http route" {
                     ),
                 ],
             )
-                .length == 1
+                .is_empty()
         }
         then "a path above a rest-taker is reachable" {
             faults([fixed(Method.Get, "/static/logo.svg", serve_word), r_static()]).is_empty()
@@ -329,6 +358,52 @@ spec "@std.http route" {
                 ],
             )
                 .length == 1
+        }
+    }
+    given "each kind of fault is its own variant" {
+
+        then "two routes of one specificity over one set of targets are an Overlap" {
+            kinds(
+                [
+                    routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{slug}",
+                        (t: Bytes) -> Idea.parse(t),
+                        serve_gone,
+                    ),
+                ],
+            )
+                .join(",") == "overlap"
+        }
+        then "a rest door under a pattern that does not say so is Unmarked" {
+            kinds(
+                [
+                    tailed<Static>(
+                        Method.Get,
+                        "/static/files",
+                        (t: Bytes) -> Static.parse(t),
+                        serve_static,
+                    ),
+                ],
+            )
+                .join(",") == "unmarked"
+        }
+        then "a rest pattern under a door of one width is Unclaimed" {
+            kinds(
+                [
+                    routed<Static>(
+                        Method.Get,
+                        "/static/{path...}",
+                        (t: Bytes) -> Static.parse(t),
+                        serve_static,
+                    ),
+                ],
+            )
+                .join(",") == "unclaimed"
+        }
+        then "a sound table has none" {
+            kinds(routes()).is_empty()
         }
     }
 }

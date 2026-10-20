@@ -4,7 +4,7 @@
 use @std.net.{Conn, NetError, connect, timely}
 use @std.time.{ms, secs}
 use @std.http.route.{get}
-use @std.http.server.{server}
+use @std.http.server.{Server, Stateless, server}
 use @std.http.frame.{limits, no_bytes}
 use @std.http.h2.{H2Conn, h2_client}
 use @std.http.hpack.{HeaderField, header_field}
@@ -75,10 +75,19 @@ fn two_at_once(port: int) -> Result<string, NetError> {
 }
 
 fn shown() -> Result<string, NetError> {
-    let s = app.listening()?
+    let s = up(app)?
     spawn s.run(1)
     defer s.stop()
     two_at_once(s.listener.port)
 }
 
 match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
+
+/// The server up, a table fault surfacing as the one error this program speaks.
+fn up(app: server) -> Result<Server<Stateless>, NetError> {
+    match app.listening() {
+        .Ok(s) -> .Ok(s),
+        .Err(.Net(e)) -> .Err(e),
+        .Err(.Routes(found)) -> .Err(NetError { verb: "start", subject: "${found.length} route faults", errno: 22 }),
+    }
+}

@@ -58,6 +58,7 @@
 //! takes a `Request<R>` — the request, its route's record at `params`.
 use @std.http_message.message.{Method}
 use @std.meta.{Code, Format}
+use client.{method_word}
 use http.{Request, Unrouted, Response, Respond, status, separates, falls_under}
 
 /// HOW FAR A ROUTE REACHES, and what its pattern's braces mean. A
@@ -323,8 +324,9 @@ fn hashed(b: Bytes, from: int, to: int) -> int {
 /// One segment of a pattern: a LITERAL, keyed by its octets' hash, or
 /// a HOLE, which any segment answers. `key` is read only when `hole`
 /// is false, and `tail` only ever marks the LAST segment of a route
-/// that takes the rest.
-type Seg = { hole: bool, key: int, tail: bool }
+/// that takes the rest. `rank` is how general the segment is: 0 a
+/// literal, 1 a hole, 2 the rest — the most specific route answers.
+type Seg = { hole: bool, key: int, tail: bool, rank: int }
 
 /// Where a shape's tail begins, or -1 when it has none.
 fn tail_at(shape: List<Seg>) -> int {
@@ -391,13 +393,39 @@ fn built(
     nodes
         .push(
             Node {
-                rows: sorted_distinct(carried.concat([r for r in cands if shapes[r].length == d])),
+                rows: most_specific_first(
+                    shapes,
+                    sorted_distinct(carried.concat([r for r in cands if shapes[r].length == d])),
+                ),
                 keys: keys,
                 kids: kids,
                 wild: wild_of(nodes, shapes, holes, d, down),
             },
         )
     nodes.length - 1
+}
+
+/// Routes ordered for answering: a route whose segments are more
+/// specific answers first — at the first segment where two differ, a
+/// literal before a hole before the rest — and declaration order breaks
+/// only a true tie. So embedding order never changes which route answers.
+fn most_specific_first(shapes: List<List<Seg>>, rows: List<int>) -> List<int> {
+    mut out: List<int> = []
+    // LICENSED loops.push_loop: an insertion sort folds its answer back in
+    for r in rows {
+        let at = [x for x in out if !tighter(shapes[r], shapes[x])].length
+        out = out.slice(0, at).concat([r]).concat(out.slice(at, out.length))
+    }
+    out
+}
+
+/// Whether route `a` is strictly more specific than `b`, segment by
+/// segment from the first.
+fn tighter(a: List<Seg>, b: List<Seg>) -> bool {
+    let shared = if a.length < b.length { a.length } else { b.length }
+    let at = [i for i in 0..shared].find(a[it].rank != b[it].rank)
+    if at == null { return false }
+    a[at!].rank < b[at!].rank
 }
 
 /// The step for a segment no key names: the holes' subtree, else a
@@ -449,8 +477,10 @@ fn shaped(r: Route) -> List<Seg> {
 
 fn seg_of(b: Bytes, from: int, to: int, reach: Reach, last: bool) -> Seg {
     let tail = last && takes_rest(reach)
-    if holes_bind(reach) && holed(b, from, to) { return Seg { hole: true, key: 0, tail: tail } }
-    Seg { hole: false, key: hashed(b, from, to), tail: tail }
+    if holes_bind(reach) && holed(b, from, to) {
+        return Seg { hole: true, key: 0, tail: tail, rank: if tail { 2 } else { 1 } }
+    }
+    Seg { hole: false, key: hashed(b, from, to), tail: tail, rank: if tail { 2 } else { 0 } }
 }
 
 fn holed(b: Bytes, from: int, to: int) -> bool {
@@ -541,33 +571,44 @@ fn step_to(n: Node, key: int) -> int {
 
 // ── The law over a table ────────────────────────────────────────
 
-/// WHAT IS WRONG WITH A TABLE, named. Two faults, both quiet in a
-/// running server and both decidable from the declared routes alone.
+/// WHAT IS WRONG WITH A TABLE: a mistake of the program's declarations,
+/// decidable from the routes alone and quiet in a running server.
 ///
-/// A ROUTE AN EARLIER ROUTE ALREADY ANSWERS. Routes are tried in
-/// declaration order, so a route whose targets are all matched by one
-/// above it never runs — not for a smaller set of targets, but for
-/// none at all. `/ideas/{id}` and `/ideas/{slug}` match exactly the
-/// same targets and only order decides; `/ideas/new` under
-/// `/ideas/{id}` is the commoner one and the quieter one, a specific
-/// route reading as an exception to a general one, and dead.
+/// AN OVERLAP: two routes of one specificity where the earlier matches
+/// every target the later does, so the later never answers. A more
+/// specific route is no overlap — it answers first wherever it stands.
 ///
-/// A DOOR AND A PATTERN THAT DISAGREE ABOUT THE REST. `tailed`
-/// promises the remaining segments to a hole and the pattern must say
-/// so with `...`; `routed` promises one width and its pattern must
-/// not. Either way round the route still ANSWERS something — the
-/// reader is the truth — so nothing here is a wrong answer, and both
-/// are a claim the other half of the declaration does not keep.
+/// A REST DISAGREEMENT: `tailed` promises the remaining segments to a
+/// hole and the pattern must say so with `...`; `routed` promises one
+/// width and its pattern must not.
+export enum RouteFault {
+    Overlap(first: Route, second: Route)
+    Unmarked(route: Route)
+    Unclaimed(route: Route)
+}
+
+/// Every fault of a table, in declaration order.
+export fn route_faults(routes: List<Route>) -> List<RouteFault> {
+    [f for j in 0..routes.length for f in faults_of(routes, j)]
+}
+
+/// The faults route `j` brings to the table.
+fn faults_of(routes: List<Route>, j: int) -> List<RouteFault> {
+    let r = routes[j]
+    let above = overshadowed_by(routes, j)
+    let unmarked: RouteFault? = if takes_rest(r.reach) && !marks_rest(r.pattern) { .Unmarked(r) } else { null }
+    let unclaimed: RouteFault? = if r.reach == Reach.Width && marks_rest(r.pattern) { .Unclaimed(r) } else { null }
+    let overlap: RouteFault? = if above != null { .Overlap(routes[above!], r) } else { null }
+    [f! for f in [unmarked, unclaimed, overlap] if f != null]
+}
+
+/// A table's faults in words, one per fault.
 export fn faults(routes: List<Route>) -> List<string> {
-    mut out: List<string> = []
-    // LICENSED loops.push_loop: a pair scan reports the LATER of two, so it needs both positions
-    for j, r in routes {
-        if takes_rest(r.reach) && !marks_rest(r.pattern) { out.push(unmarked(r.pattern)) }
-        if r.reach == Reach.Width && marks_rest(r.pattern) { out.push(unclaimed(r.pattern)) }
-        let above = [k for k in 0..j].find(shadows(routes[it], r))
-        if above != null { out.push(unreachable(r.pattern, routes[above!].pattern)) }
-    }
-    out
+    [told(f) for f in route_faults(routes)]
+}
+
+fn overshadowed_by(routes: List<Route>, j: int) -> int? {
+    [k for k in 0..j].find(shadows(routes[it], routes[j]))
 }
 
 /// Whether a pattern's LAST segment carries a greedy hole. Anywhere
@@ -578,7 +619,14 @@ fn marks_rest(pattern: string) -> bool { pieces(pattern).last()!.contains(rest_m
 /// The format's greedy mark, closing its hole.
 fn rest_mark() -> string { "...}" }
 
-fn shadows(a: Route, b: Route) -> bool { a.method == b.method && covers(a, b) }
+fn shadows(a: Route, b: Route) -> bool { a.method == b.method && covers(a, b) && alike(shaped(a), shaped(b)) }
+
+/// Whether two routes are equally specific, segment for segment: only then
+/// does order decide between them, and a route covered by an equal one
+/// above it never answers.
+fn alike(a: List<Seg>, b: List<Seg>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(a[it].rank == b[it].rank)
+}
 
 /// Whether every target `b` matches, `a` matches too — asked segment
 /// by segment, over the same segments the table descends.
@@ -624,14 +672,26 @@ fn open_hole(seg: string) -> bool {
 
 // ── Voices ──────────────────────────────────────────────────────
 
-fn unreachable(later: string, earlier: string) -> string {
-    "`${later}` is unreachable — `${earlier}` is declared above it and matches every target it does"
+/// A fault's voice.
+export fn told(f: RouteFault) -> string {
+    match f {
+        .Overlap(first, second) -> unreachable(second, first),
+        .Unmarked(r) -> unmarked(r),
+        .Unclaimed(r) -> unclaimed(r),
+    }
 }
 
-fn unmarked(pattern: string) -> string {
-    "`${pattern}` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
+/// A route by method and pattern.
+fn named_route(r: Route) -> string { "${method_word(r.method) ?? "?"} ${r.pattern}" }
+
+fn unreachable(later: Route, earlier: Route) -> string {
+    "`${named_route(later)}` is unreachable — `${named_route(earlier)}` is declared above it and matches every target it does"
 }
 
-fn unclaimed(pattern: string) -> string {
-    "`${pattern}` spells a hole that takes the rest and the route was declared for one width — declare it with `tailed`, or drop the `...`"
+fn unmarked(r: Route) -> string {
+    "`${named_route(r)}` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
+}
+
+fn unclaimed(r: Route) -> string {
+    "`${named_route(r)}` spells a hole that takes the rest and the route was declared for one width — declare it with `tailed`, or drop the `...`"
 }

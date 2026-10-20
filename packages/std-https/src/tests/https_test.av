@@ -12,7 +12,7 @@ use @std.http.frame.{limits}
 use @std.http.http.{Request, Unrouted, Response, text, stream_of}
 use @std.http.ws.{Socket, Message, ws_limits, accepted}
 use @std.http.route.{get}
-use @std.http.server.{Server, server, served, timing}
+use @std.http.server.{Server, Stateless, served, server, timing}
 use @std.http.client.{Client, ClientError, request, netted, in_stage}
 use @std.https.{over_tls, secured, tls_carried, tls_opened, wss}
 use @std.tls.{Config, TlsConn, TlsError, client_config, dial, handshake, wired}
@@ -228,7 +228,7 @@ export server secure_app {
 }
 
 fn declared_secure() -> Result<bool, ClientError> {
-    let s = netted(secure_app.listening())?
+    let s = netted(up(secure_app))?
     spawn s.run(1)
     defer s.stop()
     .Ok(fetched_secure(s.listener.port, "/health") == "200 ok")
@@ -368,5 +368,14 @@ spec "std.http over TLS" {
     }
     given "an HTTPS client at a plain port" {
         then "it fails promptly, never waits out a reply" { held(https_at_a_plain_port()) }
+    }
+}
+
+/// The server up, a table fault surfacing as the one error this program speaks.
+fn up(app: server) -> Result<Server<Stateless>, NetError> {
+    match app.listening() {
+        .Ok(s) -> .Ok(s),
+        .Err(.Net(e)) -> .Err(e),
+        .Err(.Routes(found)) -> .Err(NetError { verb: "start", subject: "${found.length} route faults", errno: 22 }),
     }
 }

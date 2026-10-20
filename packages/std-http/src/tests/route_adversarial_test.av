@@ -99,20 +99,54 @@ fn hit_raw(rows: List<Route>, raw: Bytes) -> string {
 }
 
 /// THE ORACLE — the algorithm the table replaced, judging each
-/// route's width by the reach it was declared with. The trie settles
-/// all of this at build time; this asks it per request.
+/// route's width by the reach it was declared with and ordering the
+/// routes that match by specificity, written order breaking ties. The
+/// trie settles all of this at build time; this asks it per request.
 fn scanned(rows: List<Route>, q: Request<Unrouted>) -> Response {
     let held: Bytes? = q.path()
     if held == null { return Response { status: 404 } }
     let target = held!
     // LICENSED loops.push_loop: a scan stops at its first answer
-    for r in rows {
-        if r.method == q.head.method && wide_enough(r, target) {
-            let answer: Response? = r.serve(q, target)
-            if answer != null { return answer! }
-        }
+    for r in specific_first(
+        [r for r in rows if r.method == q.head.method && wide_enough(r, target)],
+    ) {
+        let answer: Response? = r.serve(q, target)
+        if answer != null { return answer! }
     }
     Response { status: 404 }
+}
+
+/// The routes by specificity, tightest first; equals keep written order.
+fn specific_first(live: List<Route>) -> List<Route> {
+    let place = [[k for k in 0..live.length if outranks(live, k, i)].length for i in 0..live.length]
+    [live[i] for p in 0..live.length for i in 0..live.length if place[i] == p]
+}
+
+/// Whether route `k` goes before route `i`: tighter, or as tight and written first.
+fn outranks(live: List<Route>, k: int, i: int) -> bool {
+    let d = first_difference(ranks(live[k]), ranks(live[i]))
+    if d == 0 { return k < i }
+    d < 0
+}
+
+/// A pattern's segments as ranks: a literal 0, a hole 1, a rest-taker 2.
+fn ranks(r: Route) -> List<int> {
+    [seg_rank(p) for p in r.pattern.split("/")]
+}
+
+fn seg_rank(piece: string) -> int {
+    if piece.contains("...}") { return 2 }
+    if piece.contains("{") { return 1 }
+    0
+}
+
+/// Negative when `a` is tighter at the first segment they differ, positive
+/// when `b` is, zero when they never differ.
+fn first_difference(a: List<int>, b: List<int>) -> int {
+    let n = if a.length < b.length { a.length } else { b.length }
+    let at = [i for i in 0..n if a[i] != b[i]].first()
+    if at == null { return 0 }
+    a[at!] - b[at!]
 }
 
 fn wide_enough(r: Route, target: Bytes) -> bool {
@@ -268,8 +302,8 @@ spec "@std.http route adversarial" {
     }
     given "an earlier route that already answers" {
 
-        then "a static route under a hole of the same width is named" {
-            named([r_idea(), r_new()]) == "`/ideas/new` is unreachable — `/ideas/{id}` is declared above it and matches every target it does"
+        then "a static route under a hole of the same width is reachable — it is more specific" {
+            named([r_idea(), r_new()]) == ""
         }
         then "the same two the other way round are both reachable" {
             named([r_new(), r_idea()]) == ""
@@ -286,13 +320,13 @@ spec "@std.http route adversarial" {
                     ),
                 ],
             )
-                .contains("`/ideas/{slug}` is unreachable")
+                .contains("`GET /ideas/{slug}` is unreachable")
         }
         then "one path declared twice is named" {
-            named([r_new(), r_new()]).contains("`/ideas/new` is unreachable")
+            named([r_new(), r_new()]).contains("`GET /ideas/new` is unreachable")
         }
-        then "a literal three deep under three holes is named" {
-            named([r_trio(), r_abc()]).contains("`/a/b/c` is unreachable")
+        then "a literal three deep under three holes is reachable" {
+            named([r_trio(), r_abc()]) == ""
         }
         then "the same shape under two methods is two routes" {
             named([r_new(), fixed(Method.Post, "/ideas/new", word)]) == ""
@@ -304,12 +338,12 @@ spec "@std.http route adversarial" {
             named([r_idea(), r_trio()]) == ""
         }
     }
-    given "declaration order decides, and the table keeps it" {
+    given "specificity decides, and the table keeps it" {
 
-        then "the earlier of two routes that both match answers" {
-            hit([r_idea(), r_new()], "/ideas/new") == "200Inew"
+        then "the more specific of two routes that both match answers, declared below" {
+            hit([r_idea(), r_new()], "/ideas/new") == "200W"
         }
-        then "reversing the two reverses the answer" {
+        then "and declared above" {
             hit([r_new(), r_idea()], "/ideas/new") == "200W"
         }
         then "a route that does not match falls through to a later one" {
@@ -386,11 +420,11 @@ spec "@std.http route adversarial" {
     }
     given "a catch-all hoisted to the top" {
 
-        then "IT SHADOWS EVERY ROUTE BELOW IT, and each is named" {
-            faults([r_root()].concat(resting().slice(0, 5))).length == 5
+        then "IT SHADOWS NOTHING BELOW IT — every route under it is more specific" {
+            faults([r_root()].concat(resting().slice(0, 5))).is_empty()
         }
-        then "the first name is the first route it swallowed" {
-            faults([r_root()].concat(resting().slice(0, 5)))[0] == "`/ideas/{id}` is unreachable — `/{path...}` is declared above it and matches every target it does"
+        then "and a specific route below it still answers" {
+            hit([r_root()].concat(resting().slice(0, 5)), "/ideas/7") == "200I7"
         }
     }
     given "a door and a pattern that disagree about the rest" {
@@ -405,7 +439,7 @@ spec "@std.http route adversarial" {
                         adv_rest,
                     ),
                 ],
-            ) == "`/static/files` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
+            ) == "`GET /static/files` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
         }
         then "and a well-formed rest-taker earns no such fault" {
             named([r_rest()]) == ""
