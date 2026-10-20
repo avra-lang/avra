@@ -1,8 +1,9 @@
 use @std.validate.{Value, Entry}
 use @std.json.{Json, parse, field}
+use @std.sqlite.{SqlValue}
 use store.open.{Graph, storage, cell_text, cell_text_or_null, cell_int}
 use store.tables.{active}
-use data.{as_value, as_json}
+use data.{as_value, as_json, encoded}
 
 export type Candidate = { claim: int, value: Value }
 export type Selection = { property: string, candidates: List<Candidate> }
@@ -40,16 +41,20 @@ impl Graph {
         let revision = self.current()?
         let named = self.rows("SELECT model FROM entities WHERE id=?", [.Text(id)])?
         if named.is_empty() { fail "unknown entity: ${id}" }
+        let members = self.group(id)?
+        let marks = ["?" for _m in members].join(",")
+        let values: List<SqlValue> = [.Text(m) for m in members]
         let claims = self
             .rows(
-                "SELECT id, property, value FROM (${active}) WHERE entity=? ORDER BY property, value",
-                [.Text(id)],
+                "SELECT id, property, value FROM (${active}) WHERE entity IN (${marks}) ORDER BY property, value",
+                values,
             )?
         mut selections: List<Selection> = []
         for row in claims {
             let property = cell_text(row, 1)?
             if selections.any(it.property == property) { continue }
-            let candidates = [Candidate { claim: cell_int(r, 0)?, value: stored_value(cell_text(r, 2)?)? } for r in claims if cell_text(r, 1)? == property]
+            let found = [Candidate { claim: cell_int(r, 0)?, value: stored_value(cell_text(r, 2)?)? } for r in claims if cell_text(r, 1)? == property]
+            let candidates = [c for i, c in found if !found.slice(0, i).any(encoded(it.value) == encoded(c.value))]
             selections.push(Selection { property: property, candidates: candidates })
         }
         Entity { id: id, model: cell_text(named[0], 0)?, revision: revision, fields: selections }
@@ -72,16 +77,21 @@ impl Graph {
     fn find(model: string, limit: int = 100) -> Result<List<string>, string> {
         if limit < 1 || limit > 1000 { fail "limit must be between 1 and 1000" }
         self.current()?
-        [cell_text(r, 0)? for r in self
+        let found = [cell_text(r, 0)? for r in self
             .rows(
                 "SELECT DISTINCT e.id FROM entities e JOIN (${active}) a ON a.entity=e.id WHERE e.model=? ORDER BY e.id LIMIT ?",
                 [.Text(model), .Int(limit)],
             )?]
+        let roots = [self.group(id)?[0] for id in found]
+        [id for i, id in found if !roots.slice(0, i).contains(roots[i])]
     }
 
     fn edges(id: string, incoming: bool = false) -> Result<List<Edge>, string> {
         self.current()?
-        let restriction = if incoming { "ed.target=?" } else { "a.entity=?" }
+        let members = self.group(id)?
+        let marks = ["?" for _m in members].join(",")
+        let values: List<SqlValue> = [.Text(m) for m in members]
+        let restriction = if incoming { "ed.target IN (${marks})" } else { "a.entity IN (${marks})" }
         [Edge {
             entity: cell_text(r, 0)?,
             property: cell_text(r, 1)?,
@@ -90,7 +100,7 @@ impl Graph {
         } for r in self
             .rows(
                 "SELECT DISTINCT a.entity, a.property, ed.target, ed.path FROM (${active}) a JOIN edges ed ON ed.claim=a.id WHERE ${restriction} ORDER BY a.entity, a.property, ed.path",
-                [.Text(id)],
+                values,
             )?]
     }
 
@@ -122,10 +132,13 @@ impl Graph {
     /// Every historical support, including why it no longer contributes.
     fn explain(id: string, property: string) -> Result<Json, string> {
         self.current()?
+        let members = self.group(id)?
+        let marks = ["?" for _m in members].join(",")
+        let values: List<SqlValue> = [.Text(v) for v in members.concat([property])]
         let rows = self
             .rows(
-                "SELECT c.id, c.value, r.id, r.producer, r.scope, r.input_id, r.input_revision, r.schema, COALESCE(s.until_revision, 0), o.revision, r.revision, e.locator FROM claims c JOIN supports s ON s.claim=c.id JOIN runs r ON r.id=s.run JOIN observations o ON o.id=r.input_id LEFT JOIN evidence e ON e.run=r.id AND e.claim=c.id WHERE c.entity=? AND c.property=? ORDER BY c.id, r.revision",
-                [.Text(id), .Text(property)],
+                "SELECT c.id, c.value, r.id, r.producer, r.scope, r.input_id, r.input_revision, r.schema, COALESCE(s.until_revision, 0), o.revision, r.revision, e.locator FROM claims c JOIN supports s ON s.claim=c.id JOIN runs r ON r.id=s.run JOIN observations o ON o.id=r.input_id LEFT JOIN evidence e ON e.run=r.id AND e.claim=c.id WHERE c.entity IN (${marks}) AND c.property=? ORDER BY c.id, r.revision",
+                values,
             )?
         Json
             .Arr(

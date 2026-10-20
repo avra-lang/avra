@@ -11,6 +11,7 @@ export const ddl: List<string> = [
     "CREATE TABLE IF NOT EXISTS edges (claim INTEGER NOT NULL REFERENCES claims(id), target TEXT NOT NULL REFERENCES entities(id), path TEXT NOT NULL, PRIMARY KEY(claim, target, path))",
     evidence,
     aliases,
+    merges,
     "CREATE INDEX IF NOT EXISTS supports_active ON supports(claim, until_revision)",
     "CREATE INDEX IF NOT EXISTS runs_owner ON runs(producer, scope)",
     "CREATE INDEX IF NOT EXISTS claims_entity ON claims(entity, property)",
@@ -18,6 +19,8 @@ export const ddl: List<string> = [
     "CREATE INDEX IF NOT EXISTS edges_target ON edges(target, claim)",
     aliases_active,
     aliases_entity,
+    merges_left,
+    merges_right,
 ]
 
 /// A producer's external name for an entity, owned by the run that asserted it.
@@ -31,6 +34,13 @@ export const aliases_entity: string = "CREATE INDEX IF NOT EXISTS aliases_entity
 
 /// A producer's opaque source locator for one supported claim.
 export const evidence: string = "CREATE TABLE IF NOT EXISTS evidence (run TEXT NOT NULL REFERENCES runs(id), claim INTEGER NOT NULL REFERENCES claims(id), locator TEXT NOT NULL, PRIMARY KEY(run, claim))"
+
+/// One explicit decision joining two entities into one read group.
+export const merges: string = "CREATE TABLE IF NOT EXISTS merges (id TEXT PRIMARY KEY, left_entity TEXT NOT NULL REFERENCES entities(id), right_entity TEXT NOT NULL REFERENCES entities(id), decider TEXT NOT NULL, revision INTEGER NOT NULL, until_revision INTEGER)"
+
+/// A group walk reads decisions from both sides.
+export const merges_left: string = "CREATE INDEX IF NOT EXISTS merges_left ON merges(left_entity, until_revision)"
+export const merges_right: string = "CREATE INDEX IF NOT EXISTS merges_right ON merges(right_entity, until_revision)"
 
 /// Active external names, under the same revision laws as `active`.
 export const active_alias: string = "SELECT a.namespace, a.external_key, a.entity FROM aliases a JOIN runs r ON r.id=a.run JOIN observations o ON o.id=r.input_id JOIN graph_meta m ON m.key='schema' AND m.value=r.schema WHERE a.until_revision IS NULL AND o.revision=r.input_revision"

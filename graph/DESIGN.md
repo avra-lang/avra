@@ -58,7 +58,17 @@ complete-record construction are not extracted evidence.
 
 Resolution policy is generic and explicit; confidence is not authority.
 Retain competing supported statements and their explanations. A
-materialized selection is a projection, never the evidence store.
+materialized selection is a projection, never the evidence store. An
+explicit merge joins two entities into one read group without moving a row;
+split withdraws the decision, so the evidence is never rewritten. Groups are
+walked from the decision table at read time.
+
+`@std/db`'s `@model` derives per-model table CRUD, which is not this
+storage: it owns one flat table per model with an `int` primary key and a
+small scalar field ceiling, while evidence, conflicts, and history live in
+one generic claim table with joins and recursive group walks. The graph
+reuses standard validation (`@derive(Decode)`) and carries its own
+descriptor derive instead.
 
 After durable commit, update tracked inputs for incremental queries.
 `@std/relation` is a computation dependency system, not an automatic
@@ -122,12 +132,11 @@ validation, SQLite persistence, observations and immutable input history,
 atomic producer/scope replacement, replay and stale-publication checks,
 typed reference indexes, candidate/conflict reads, partial property
 assertions, opaque per-record evidence locators, producer-owned external
-identities, validated record reads, bounded traversal, explanations, and a
-shared CLI/HTTP protocol.
+identities, explicit reversible merges, validated record reads, bounded
+traversal, explanations, and a shared CLI/HTTP protocol.
 
 Schema installation conservatively invalidates all older interpretations;
 it preserves their claims, support, and source payloads. `dirty` exposes
-reprocessing work but does not run a classifier. Explicit merge/split and
-tombstone decisions, compatibility-aware migrations, multi-input
-derivations, and relation-backed incremental projections remain separate
-slices. `README.md` describes the actual protocol and guarantees.
+reprocessing work but does not run a classifier. Tombstone/deletion
+decisions, compatibility-aware migrations, multi-input derivations, and
+relation-backed incremental projections remain separate slices. `README.md` describes the actual protocol and guarantees.

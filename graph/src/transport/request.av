@@ -3,6 +3,7 @@ use @std.validate.{Value}
 use data.{as_value}
 use store.publish.{Publication, Record, RecordMode}
 use store.identity.{Identity}
+use store.merge.{Merge}
 
 export enum Operation {
     Schema
@@ -17,6 +18,9 @@ export enum Operation {
     Explain(id: string, property: string)
     Resolve(namespace: string, key: string)
     Aliases(id: string)
+    Merge(decision: Merge)
+    Split(decision: string)
+    Merges(entity: string)
     Dirty
 }
 
@@ -98,6 +102,26 @@ export fn operation(j: Json) -> Result<Operation, string> {
             closed(j, ["op", "id"])?
             Operation.Aliases(text(j, "id")?)
         },
+        "merge" -> {
+            closed(j, ["op", "id", "left", "right", "decider"])?
+            Operation
+                .Merge(
+                    Merge {
+                        id: text(j, "id")?,
+                        left: text(j, "left")?,
+                        right: text(j, "right")?,
+                        decider: text(j, "decider")?,
+                    },
+                )
+        },
+        "split" -> {
+            closed(j, ["op", "id"])?
+            Operation.Split(text(j, "id")?)
+        },
+        "merges" -> {
+            closed(j, ["op", "id"])?
+            Operation.Merges(optional_text(j, "id", "")?)
+        },
         "dirty" -> {
             closed(j, ["op"])?
             Operation.Dirty
@@ -171,6 +195,11 @@ fn integer(j: Json, key: string) -> Result<int, string> {
 fn array(j: Json, key: string) -> Result<List<Json>, string> {
     let value? = j.get(key) else { fail "${key} must be an array" }
     match value { .Arr(items) -> items, rest -> { fail "${key} must be an array" } }
+}
+
+fn optional_text(j: Json, key: string, fallback: string) -> Result<string, string> {
+    if j.get(key) == null { return fallback }
+    text(j, key)
 }
 
 fn optional_int(j: Json, key: string, fallback: int) -> Result<int, string> {

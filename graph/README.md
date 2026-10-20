@@ -92,6 +92,9 @@ CLI request files and HTTP use exactly the same JSON operations:
 | `explain` | `id`, `property` | All historical supporting runs and their locators |
 | `resolve` | `namespace`, `key` | `{"entity": …}` for the one entity that name means |
 | `aliases` | `id` | The entity's active external names as `{namespace, key}` |
+| `merge` | `id`, `left`, `right`, `decider` | Committed graph revision |
+| `split` | `id` | Withdraw a merge decision; the entities read apart |
+| `merges` | optional `id` | Decisions, active or withdrawn, touching that entity |
 | `dirty` | — | Latest interpretations with stale input or schema |
 
 A publication replaces one producer's whole contribution in one scope,
@@ -145,6 +148,14 @@ interprets or indexes it. Use it for source offsets, message sections,
 attachments, or whatever the producer's source has. An absent locator stays
 absent, and a locator is part of the run's replay identity.
 
+An explicit merge decision joins two entities of one model into one read
+group without moving a row: `get`, `value`, `edges`, `traverse`, `explain`,
+`aliases`, and `find` all answer over the group. Equal supported values
+collapse to one candidate; different values remain conflicts. `split`
+withdraws the decision and the entities read apart again, with the decision
+and its revisions kept as provenance. References and aliases are unaffected
+by the group until read through it.
+
 Use application-owned, preferably namespaced stable ids; ids are global
 across models. References can target identities from the same publication
 regardless of record order, or previously committed identities. Target
@@ -165,8 +176,8 @@ invocation, retries, scheduling, and the meaning of scopes.
 
 SQLite is the authority, with fixed generic tables for catalog revisions,
 entity identities, versioned observations, producer runs, claims, support,
-evidence locators, external identities, and reference indexes. Model
-properties never become SQL columns. WAL, foreign keys, immediate write
+evidence locators, external identities, merge decisions, and reference
+indexes. Model properties never become SQL columns. WAL, foreign keys, immediate write
 transactions, and explicit storage-format versioning are used. Failed
 publications roll back identities, support withdrawals, claims, references,
 aliases, and the revision together.
@@ -193,10 +204,10 @@ input changes.
 
 Editing models and rebuilding changes the catalog fingerprint. The
 fingerprint includes metadata, constraint calls, defaults, and compiler
-code hashes of the validators. Storage formats 2 and 3 add the evidence and
-alias tables; opening an older database migrates it additively in place,
-keeping every row, and only an unknown format is refused. Installing the new
-catalog advances the graph revision and quarantines old-schema
+code hashes of the validators. Storage formats 2 through 4 add the evidence,
+alias, and merge tables; opening an older database migrates it additively in
+place, keeping every row, and only an unknown format is refused. Installing
+the new catalog advances the graph revision and quarantines old-schema
 interpretations; `dirty` names work to reprocess. No data is deleted or
 destructively migrated. Existing handles reject publication after another
 catalog is installed. `attach` opens without installing a catalog; the server
@@ -212,6 +223,7 @@ runtime upgrades require an explicit application/schema revision policy.
 ```sh
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/evidence_test.av
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/identity_test.av
+sh tools/watch.sh 3500 ./build/avra test graph/src/tests/merge_test.av
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/partial_test.av
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/storage_test.av
 sh tools/watch.sh 3500 ./build/avra build graph
@@ -229,9 +241,8 @@ its native objects). Native builds link those objects directly.
 
 ## Next slices
 
-- Explicit, reversible merge/split operations and deletion/tombstone
-  policy; external names exist, but canonical ids still come from the
-  feeding agent.
+- Deletion and tombstone policy, plus declared selection policy; merges are
+  explicit and reversible, but nothing removes evidence yet.
 - Durable pending work and multi-input dependency tracking; `dirty` is
   one-input, whole-scope invalidation, not a background scheduler.
 - Generic, declared conflict-resolution policies; the default deliberately

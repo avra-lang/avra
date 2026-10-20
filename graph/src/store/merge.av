@@ -1,0 +1,127 @@
+use @std.json.{Json, field}
+use store.open.{Graph, storage, cell_text, cell_int}
+
+/// One explicit decision joining two entities into one read group.
+export type Merge = {
+    id: string,
+    left: string,
+    right: string,
+    decider: string,
+    revision: int = 0,
+    until_revision: int = 0,
+}
+
+impl Merge {
+    fn active() -> bool { self.until_revision == 0 }
+
+    fn json() -> Json {
+        Json
+            .Obj(
+                [
+                    field("id", Json.Str(self.id)),
+                    field("left", Json.Str(self.left)),
+                    field("right", Json.Str(self.right)),
+                    field("decider", Json.Str(self.decider)),
+                    field("revision", Json.Int(self.revision)),
+                    field("until_revision", Json.Int(self.until_revision)),
+                    field("active", Json.Bool(self.active())),
+                ],
+            )
+    }
+}
+
+impl Graph {
+    /// Every entity in the read group holding `id`, ordered.
+    fn group(id: string) -> Result<List<string>, string> {
+        self.current()?
+        [cell_text(r, 0)? for r in self
+            .rows(
+                "WITH RECURSIVE reach(node) AS (SELECT ? UNION SELECT m.right_entity FROM merges m JOIN reach r ON r.node=m.left_entity WHERE m.until_revision IS NULL UNION SELECT m.left_entity FROM merges m JOIN reach r ON r.node=m.right_entity WHERE m.until_revision IS NULL) SELECT node FROM reach ORDER BY node",
+                [.Text(id)],
+            )?]
+    }
+
+    /// Merge two entities; `decision.id` names the decision and replays it.
+    fn merge(decision: Merge) -> Result<int, string> {
+        if decision.id.is_empty() || decision.decider.is_empty() { fail "a merge needs an id and a decider" }
+        if decision.left == decision.right { fail "cannot merge an entity with itself" }
+        storage(self.db.begin())?
+        defer { let _ = self.db.finish() }
+        let revision = self.current()?
+        let existing = self
+            .rows(
+                "SELECT left_entity, right_entity, decider, revision FROM merges WHERE id=?",
+                [.Text(decision.id)],
+            )?
+        if !existing.is_empty() {
+            let same = cell_text(existing[0], 0)? == decision.left &&
+                cell_text(existing[0], 1)? == decision.right &&
+                cell_text(existing[0], 2)? == decision.decider
+            if !same { fail "merge id was already used with a different decision" }
+            return cell_int(existing[0], 3)
+        }
+        let left = self.rows("SELECT model FROM entities WHERE id=?", [.Text(decision.left)])?
+        let right = self.rows("SELECT model FROM entities WHERE id=?", [.Text(decision.right)])?
+        if left.is_empty() { fail "unknown entity: ${decision.left}" }
+        if right.is_empty() { fail "unknown entity: ${decision.right}" }
+        if cell_text(left[0], 0)? != cell_text(right[0], 0)? { fail "only entities of one model can merge" }
+        if (self.group(decision.left)?).contains(decision.right) { fail "the entities already form one group" }
+        self
+            .execute(
+                "INSERT INTO merges VALUES (?, ?, ?, ?, ?, NULL)",
+                [
+                    .Text(decision.id),
+                    .Text(decision.left),
+                    .Text(decision.right),
+                    .Text(decision.decider),
+                    .Int(revision + 1),
+                ],
+            )?
+        self.advance()?
+        storage(self.db.commit())?
+        revision + 1
+    }
+
+    /// Withdraw one merge decision; the entities read apart again.
+    fn split(decision: string) -> Result<int, string> {
+        storage(self.db.begin())?
+        defer { let _ = self.db.finish() }
+        let revision = self.current()?
+        let existing = self
+            .rows("SELECT COALESCE(until_revision, 0) FROM merges WHERE id=?", [.Text(decision)])?
+        if existing.is_empty() { fail "unknown merge decision: ${decision}" }
+        let until = cell_int(existing[0], 0)?
+        if until != 0 { return revision }
+        self
+            .execute("UPDATE merges SET until_revision=? WHERE id=?", [.Int(revision + 1), .Text(decision)])?
+        self.advance()?
+        storage(self.db.commit())?
+        revision + 1
+    }
+
+    /// Every decision, or only those touching one entity, in commit order.
+    fn merges(entity: string = "") -> Result<List<Merge>, string> {
+        self.current()?
+        let rows = if entity.is_empty() {
+            self
+                .rows(
+                    "SELECT id, left_entity, right_entity, decider, revision, COALESCE(until_revision, 0) FROM merges ORDER BY revision",
+                    [],
+                )?
+        } else {
+            self
+                .rows(
+                    "SELECT id, left_entity, right_entity, decider, revision, COALESCE(until_revision, 0) FROM merges WHERE left_entity=? OR right_entity=? ORDER BY revision",
+                    [.Text(entity), .Text(entity)],
+                )?
+        }
+        [Merge {
+            id: cell_text(r, 0)?,
+            left: cell_text(r, 1)?,
+            right: cell_text(r, 2)?,
+            decider: cell_text(r, 3)?,
+            revision: cell_int(r, 4)?,
+            until_revision: cell_int(r, 5)?,
+        } for r in rows]
+    }
+}

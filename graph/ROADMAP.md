@@ -48,10 +48,12 @@ autonomous extraction or inference system.
 | Partial assertions | Working; field rules only, record rules on assembly |
 | Evidence locators | Working; opaque per-record JSON, returned by `explain` |
 | External identities | Working; namespace/key names, owned by producer and scope |
-| Merge/split, derived rules | Not in baseline |
+| Merge/split | Working; explicit decisions, read groups, reversible split |
+| Deletion, derived rules | Not in baseline |
 
 Baseline verification: 11 store tests, 7 partial-assertion tests, 6
-evidence-locator tests, 10 external-identity tests, and `std/validate`'s
+evidence-locator tests, 10 external-identity tests, 9 merge tests, and
+`std/validate`'s
 projection suite; native CLI/HTTP smoke tests covering persistence, partial
 assertions, evidence locators, external identities, replay, validation,
 rollback, traversal, authentication, and stale-input invalidation; an
@@ -110,7 +112,7 @@ traced to a specific place in the source.
 Status: external names implemented; merge/split and deletion remain.
 
 - [x] Resolve `(namespace, external_key)` identities and aliases.
-- [ ] Add explicit, reversible merge/split decisions with provenance.
+- [x] Add explicit, reversible merge/split decisions with provenance.
 - [ ] Define tombstones, deletion, and dangling-reference behavior.
 - [ ] Declare generic selection policies: source priority, explicit user
   choice, and recency only where the model/policy asks for it.
@@ -119,7 +121,7 @@ Status: external names implemented; merge/split and deletion remain.
 Exit: different sources can identify the same entity without silent
 duplication or irreversible automatic merging. No domain-specific merge code.
 External names are owned by their producer and scope, so replacement keeps
-provenance; the merge/split doors are the remaining exit condition.
+provenance, and a merge is a reversible decision rather than a rewritten row.
 
 ## Milestone 3 — useful generic queries
 
@@ -210,6 +212,14 @@ No additional fundamental language feature is known to be necessary for the
 baseline. Enums, generic model derives, record spreads, and arbitrary maps
 remain unsupported by this graph slice and need explicit standard-library
 and graph integration work. The graph itself has no fixed field-count limit.
+
+`@std/db`'s `@model` derives per-model table CRUD for a flat record with an
+`int` id, at most six scalar columns, and no references, lists, or nullable
+fields. It is the right tool for ordinary rows and the wrong storage for this
+graph: evidence, support, conflicts, and history are one generic claim table,
+not a table per ontology, and reads need joins and recursive group walks.
+The graph uses `@derive(Decode)` for validation and its own `@model` derive
+for descriptors; it does not generate per-model tables.
 
 Future substrate requests must identify a concrete wanting site and a
 reproducer. Partial assertions and external identities have boundary tests;

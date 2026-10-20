@@ -1,4 +1,5 @@
 use @std.json.{Json, field}
+use @std.sqlite.{SqlValue}
 use store.open.{Graph, cell_text}
 use store.tables.{active_alias}
 
@@ -20,10 +21,11 @@ impl Identity {
 impl Graph {
     /// Active entities an external identity names, in entity order.
     fn bound(namespace: string, key: string) -> Result<List<string>, string> {
+        let values: List<SqlValue> = [.Text(namespace), .Text(key)]
         [cell_text(r, 0)? for r in self
             .rows(
                 "SELECT DISTINCT entity FROM (${active_alias}) WHERE namespace=? AND external_key=? ORDER BY entity",
-                [.Text(namespace), .Text(key)],
+                values,
             )?]
     }
 
@@ -37,13 +39,16 @@ impl Graph {
         }
     }
 
-    /// An entity's active external identities.
+    /// The active external identities of an entity and its group.
     fn aliases(id: string) -> Result<List<Identity>, string> {
         self.current()?
+        let members = self.group(id)?
+        let marks = ["?" for _m in members].join(",")
+        let values: List<SqlValue> = [.Text(m) for m in members]
         [Identity { namespace: cell_text(r, 0)?, external_key: cell_text(r, 1)? } for r in self
             .rows(
-                "SELECT DISTINCT namespace, external_key FROM (${active_alias}) WHERE entity=? ORDER BY namespace, external_key",
-                [.Text(id)],
+                "SELECT DISTINCT namespace, external_key FROM (${active_alias}) WHERE entity IN (${marks}) ORDER BY namespace, external_key",
+                values,
             )?]
     }
 }

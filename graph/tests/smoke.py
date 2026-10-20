@@ -67,15 +67,32 @@ def main():
         assert "error" in cli(moved, success=False)
         assert cli({"op": "schema"})["revision"] == published["revision"]
 
-        invalid = {**publication, "id": "bad", "expected_revision": published["revision"],
+        second = {"id": "p2", "model": "Person", "mode": "partial", "value": {"email": "grace@example.com"},
+                  "identities": [{"namespace": "mail", "key": "grace@example.com"}]}
+        cli({"op": "publish", "id": "run:2", "producer": "directory-agent", "scope": "directory:1",
+             "input": "mail:1", "input_revision": 1, "schema": schema["fingerprint"],
+             "expected_revision": published["revision"], "records": [second]})
+        merged = cli({"op": "merge", "id": "merge:1", "left": "p1", "right": "p2", "decider": "smoke"})
+        assert cli({"op": "merges", "id": "p1"})[0]["active"] is True
+        assert set(cli({"op": "get", "id": "p2"})["fields"]) == {"email", "name"}
+        assert cli({"op": "find", "model": "Person"}) == ["p1"]
+        assert cli({"op": "merge", "id": "merge:1", "left": "p1", "right": "p2", "decider": "smoke"})["revision"] == merged["revision"]
+        assert "error" in cli({"op": "merge", "id": "merge:bad", "left": "p1", "right": "w1", "decider": "smoke"}, success=False)
+        split = cli({"op": "split", "id": "merge:1"})
+        assert set(cli({"op": "get", "id": "p2"})["fields"]) == {"email"}
+        assert cli({"op": "merges", "id": "p1"})[0]["active"] is False
+        assert cli({"op": "split", "id": "merge:1"})["revision"] == split["revision"]
+        settled = cli({"op": "schema"})["revision"]
+
+        invalid = {**publication, "id": "bad", "expected_revision": settled,
                    "records": [{"id": "bad-person", "model": "Person", "value": {"name": ""}}]}
         assert "error" in cli(invalid, success=False)
-        assert cli({"op": "schema"})["revision"] == published["revision"]
+        assert cli({"op": "schema"})["revision"] == settled
         assert "error" in cli({"op": "get", "id": "bad-person"}, success=False)
 
         partial = {
             **publication, "id": "partial:status", "producer": "status-agent", "scope": "partial:w2",
-            "expected_revision": published["revision"],
+            "expected_revision": settled,
             "records": [{"id": "w2", "model": "WorkItem", "mode": "partial", "value": {"status": "done"}}],
         }
         partial_revision = cli(partial)
@@ -155,23 +172,24 @@ def main():
         changed = cli({"op": "observe", "id": "mail:1", "payload": "The message was edited."})
         assert changed["input_revision"] == 2
         assert cli({"op": "find", "model": "WorkItem"}) == []
-        assert len(cli({"op": "dirty"})) == 4
+        assert len(cli({"op": "dirty"})) == 5
         assert not cli({"op": "explain", "id": "p1", "property": "name"})[0]["active"]
         assert "error" in cli({**publication, "id": "stale", "expected_revision": changed["revision"]}, success=False)
 
         import sqlite3
         with sqlite3.connect(database) as raw:
-            raw.execute("DROP TABLE evidence")
-            raw.execute("DROP TABLE aliases")
+            for table in ("evidence", "aliases", "merges"):
+                raw.execute("DROP TABLE " + table)
             raw.execute("UPDATE graph_meta SET value='1' WHERE key='format'")
         assert cli({"op": "schema"})["fingerprint"] == schema["fingerprint"]
         with sqlite3.connect(database) as raw:
-            assert raw.execute("SELECT value FROM graph_meta WHERE key='format'").fetchone()[0] == "3"
-            for table in ("evidence", "aliases"):
+            assert raw.execute("SELECT value FROM graph_meta WHERE key='format'").fetchone()[0] == "4"
+            for table in ("evidence", "aliases", "merges"):
                 assert raw.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
         assert cli({"op": "explain", "id": "p1", "property": "name"})[0]["locator"] is None
         assert cli({"op": "aliases", "id": "p1"}) == []
-    print("native smoke: persistence, partial assertions, evidence locators, external identities, format migration, replay, validation, rollback, traversal, HTTP auth, and stale-input invalidation passed")
+        assert cli({"op": "merges"}) == []
+    print("native smoke: persistence, partial assertions, evidence locators, external identities, merge/split, format migration, replay, validation, rollback, traversal, HTTP auth, and stale-input invalidation passed")
 
 
 if __name__ == "__main__":
