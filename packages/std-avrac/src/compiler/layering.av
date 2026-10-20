@@ -1,0 +1,129 @@
+//! THE LAYERING IS ONE-WAY, held by the resolved `use` of every file.
+//!
+//!     core -> grammar -> features -> compiler        (packages/std-avrac/src)
+//!
+//! A file names its own layer and the ones below it, never one above. Below them all stands
+//! `@std/relation`, whose `engine/` is the kernel a running program asks too: nothing under
+//! packages/std-relation/src names the compiler, and `engine/` names `@std/meta` and itself alone
+//! — never a sibling module of its own package, which stands above it. A test drives the layers
+//! above the one it stands in, so the compiler's own `tests/` are not read; std-relation's are,
+//! with one licence: they may read the compiler's `core`.
+//!
+//! ROWS FILED BY ID HAVE ONE WRITER: `owner_named`, `put_owned` and `kept_of` are the declaration
+//! table's alone, outside packages/std-relation.
+use features.{Code, Fix, rule, said}
+
+const LAYERS: List<string> = ["core", "grammar", "features", "compiler"]
+const BY_ID_VERBS: List<string> = ["owner_named", "put_owned", "kept_of"]
+const BY_ID_WRITERS: List<string> = [
+    "/std-avrac/src/features/decls.av",
+    "/std-avrac/src/features/decls_mint.av",
+]
+
+/// A `use` that names a layer above its own file's.
+@keeps("1 + 1")
+@says("the import is the author's to move: the code it names belongs below, or the file belongs above")
+export rule climbing_import {
+    quote { ${u} } if !climbs(u).is_empty() -> import_found(u, climbs(u), "names a layer above its own"),
+}
+
+/// A `@std/relation` file that names what it may not: the compiler, or (in the engine) anything
+/// but `@std/meta` and itself.
+@keeps("1 + 1")
+@says("the import is the author's to move: the engine reads `@std/meta` and itself alone")
+export rule relation_reach {
+    quote { ${u} } if !overreach(u).is_empty() -> import_found(u, overreach(u), "reaches past what `@std/relation` may name"),
+}
+
+/// A by-id writer's verb called where the declaration table is not.
+@keeps("a.merged(b)")
+@says("hand rows over with `Rel.replaced`; the by-id verbs are the declaration table's alone")
+export rule by_id_writer { quote { ${u} } if by_id_verb(u) != null -> by_id_found(u) }
+
+/// The imported modules of the `use` statement this node is, as the compiler resolved them.
+fn imports(u: Code) -> List<string> {
+    match u.at {
+        .Stmt(id) -> [u.of.view.decls.module_of(r.decl) for r in u.import_rows_at(id)],
+        rest -> [],
+    }
+}
+
+/// The package-relative layer a file stands in: `core` for `…/std-avrac/src/core/x.av`; null for
+/// a file outside the compiler's layers and for a compiler test.
+fn own_layer(file: string) -> string? {
+    let at = file.index_of("/std-avrac/src/")
+    if at < 0 || file.contains("/tests/") { return null }
+    let layer = file.substring(at + 15, file.length).split("/").first() ?? ""
+    if LAYERS.contains(layer) { layer } else { null }
+}
+
+/// The layer a resolved module stands in: its first word, once `@std.avrac.` is dropped.
+fn module_layer(module: string) -> string? {
+    let word = if module.starts_with("@std.avrac.") { module.substring(11, module.length) } else { module }
+        .split(".")
+        .first() ?? ""
+    if LAYERS.contains(word) && (!module.starts_with("@std.") || module.starts_with("@std.avrac.")) { word } else { null }
+}
+
+fn climbs(u: Code) -> List<string> {
+    let own? = own_layer(u.of.view.source.file) else { return [] }
+    [m for m in imports(u) if above(module_layer(m), own)]
+}
+
+fn above(named: string?, own: string) -> bool {
+    let n? = named else { return false }
+    LAYERS.index_of(n) > LAYERS.index_of(own)
+}
+
+/// What a `@std/relation` file imports that it may not: any `@std.avrac` module (its tests may
+/// read `core`), and from the engine anything but `@std.meta` and the engine itself.
+fn overreach(u: Code) -> List<string> {
+    let file = u.of.view.source.file
+    if !file.contains("/std-relation/src/") { return [] }
+    let tests = file.contains("/tests/")
+    let engine = file.contains("/src/engine/")
+    [m for m in imports(u) if names_avrac(m, tests) || engine && !tests && !engine_may_name(m)]
+}
+
+fn names_avrac(module: string, tests: bool) -> bool {
+    module.starts_with("@std.avrac") && !(tests && module == "@std.avrac.core")
+}
+
+fn engine_may_name(module: string) -> bool {
+    module == "@std.meta" ||
+        module.starts_with("@std.meta.") ||
+        module == "engine" ||
+        module.starts_with("engine.") ||
+        module.starts_with("@std.relation.engine")
+}
+
+fn by_id_verb(u: Code) -> string? {
+    let file = u.of.view.source.file
+    if file.contains("/std-relation/") || BY_ID_WRITERS.any(file.ends_with(it)) { return null }
+    let name? = u.method_name() else { return null }
+    if BY_ID_VERBS.contains(name) { name } else { null }
+}
+
+fn import_found(u: Code, modules: List<string>, law: string) -> Fix {
+    Fix
+        .Say(
+            said(
+                u.loc(),
+                "`use ${modules.join(", ")}` ${law} — the layering is core -> grammar -> features -> compiler over `@std/relation`, and a file names its own layer and those below it",
+                "this import",
+                null,
+            ),
+        )
+}
+
+fn by_id_found(u: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                u.loc(),
+                "`.${by_id_verb(u) ?? ""}(` files rows by id — the declaration table's alone; hand rows over with `Rel.replaced`",
+                "this call",
+                null,
+            ),
+        )
+}
