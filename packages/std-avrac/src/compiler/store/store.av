@@ -207,6 +207,14 @@ export fn read_spelled(line: string) -> Reading? {
     Reading { name: name, digest: line.substring(0, line.length - name.length - 1) }
 }
 
+/// THE SAVED-ANSWER RULE, ONE DEFINITION: whether every read in a list of spelled lines
+/// still has its digest. A line that is no pair does not hold, and neither does a name
+/// `now` cannot read. A row's own list and a proof file's both ask it.
+export fn reads_hold(lines: List<string>, now: fn(string) -> string?) -> bool {
+    let reads = [read_spelled(l) for l in lines]
+    !reads.any(it == null || now(it!.name) != it!.digest)
+}
+
 /// A KEY OVER A PROJECTION — the one derivation every family shares, so no family can
 /// key itself differently from its neighbours. The family's name is folded first, so two
 /// families naming the same parts stay apart.
@@ -379,8 +387,7 @@ impl Store {
     /// fetched. A row not present, or kept with edges that are no pairs, does not hold.
     fn holds(family: Stored, key: string, now: fn(string) -> string?) -> bool {
         let lines? = self.reads_of(family, key) else { return false }
-        let reads = [read_spelled(l) for l in lines]
-        !reads.any(it == null || now(it!.name) != it!.digest)
+        reads_hold(lines, now)
     }
 
     /// THE SUSPECT SET: the record keys of the rows that read any of the inputs in `moved`, by
