@@ -92,6 +92,8 @@ case " $engines " in
         playwright=${PLAYWRIGHT_DIR:-$tree/build/playwright}
         if [ ! -d "$playwright/node_modules/playwright" ]; then
             mkdir -p "$playwright"
+            # a machine with no npm (the checks' image) takes the one in the pinned Node (.github/ci/install_node.sh)
+            command -v npm >/dev/null 2>&1 || PATH=/opt/node-jspi/bin:$PATH
             npm install --prefix "$playwright" --no-audit --no-fund "playwright@$playwright_version" >"$work/npm.out" 2>&1 &&
                 "$playwright/node_modules/.bin/playwright" install webkit >>"$work/npm.out" 2>&1 ||
                 skip "Playwright's WebKit did not install: $(tail -1 "$work/npm.out")"
