@@ -283,6 +283,7 @@ extern const char avra_rt_held_avra_now_ns __asm__(AVRA_RT_LABEL(avra_now_ns));
 extern const char avra_rt_held_avra_cpu_ns __asm__(AVRA_RT_LABEL(avra_cpu_ns));
 extern const char avra_rt_held_avra_clock_virtual __asm__(AVRA_RT_LABEL(avra_clock_virtual));
 extern const char avra_rt_held_avra_host_env __asm__(AVRA_RT_LABEL(avra_host_env));
+extern const char avra_rt_held_avra_file_touch __asm__(AVRA_RT_LABEL(avra_file_touch));
 extern const char avra_rt_held_avra_selfhost_read_file __asm__(AVRA_RT_LABEL(avra_selfhost_read_file));
 extern const char avra_rt_held_avra_eputs __asm__(AVRA_RT_LABEL(avra_eputs));
 extern const char avra_rt_held_avra_io_list __asm__(AVRA_RT_LABEL(avra_io_list));
@@ -515,6 +516,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_cpu_ns,
     &avra_rt_held_avra_clock_virtual,
     &avra_rt_held_avra_host_env,
+    &avra_rt_held_avra_file_touch,
     &avra_rt_held_avra_selfhost_read_file,
     &avra_rt_held_avra_eputs,
     &avra_rt_held_avra_io_list,
@@ -969,6 +971,8 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_clock_virtual(AVRA_R
     "avra_clock_virtual: its row answers void, so its C body answers void");
 _Static_assert(__builtin_classify_type(avra_host_env(AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_host_env: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_file_touch(AVRA_RT_PTR)), int64_t),
+    "avra_file_touch: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_classify_type(avra_selfhost_read_file(AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_selfhost_read_file: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_eputs(AVRA_RT_PTR)), void),

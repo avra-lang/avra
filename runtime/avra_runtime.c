@@ -4173,6 +4173,21 @@ int64_t avra_cpu_ns(void) {
 #endif
 }
 
+// A FILE'S MODIFICATION TIME SET TO NOW: 0 for done, else the negated errno. The runtime
+// carries it so a build can mark every kept object it will link as in use; wasm has no
+// filesystem clock here, so its body only refuses (`wasm: false`).
+#ifndef __wasm32__
+#include <sys/time.h>
+int64_t avra_file_touch(const char* path) {
+    return utimes(path, NULL) == 0 ? 0 : -errno;
+}
+#else
+int64_t avra_file_touch(const char* path) {
+    (void)path;
+    return -ENOSYS;
+}
+#endif
+
 void avra_clock_virtual(int64_t on) {
     avra_clock.virtual = on != 0;
     clock_settled();

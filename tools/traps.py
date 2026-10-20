@@ -47,7 +47,7 @@ dirfd dl_iterate_phdr epoll_wait fclose fcntl fflush fopen fork fprintf fputc fp
 fseek fstat ftell fwrite getenv getpid getsectiondata isfinite kevent longjmp mallinfo2 malloc
 malloc_size malloc_usable_size malloc_zone_statistics memchr memcmp memcpy memmem memmove memset
 mmap munmap open opendir pipe qsort raise read readdir realloc sched_getaffinity setjmp snprintf
-strcmp strerror strlen strtod strtoll sysconf va_arg va_end va_start waitpid write
+strcmp strerror strlen strtod strtoll sysconf utimes va_arg va_end va_start waitpid write
 AVRA_CALLER CENSUS CPU_COUNT IS_IMMORTAL KIND_IMMORTAL KIND_SHAPE MB S_ISREG WEXITSTATUS WIFEXITED
 WIFSIGNALED WTERMSIG volatile
 text source
