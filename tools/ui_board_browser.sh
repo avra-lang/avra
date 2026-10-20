@@ -16,6 +16,15 @@
 # ("iPhone 15") for the WebKit run: a touch screen and a phone's window.
 set -eu
 
+# A WebKit build stands under `$1` when the `pw_run.sh` the launcher runs is
+# there; the glob is Playwright's own `webkit-<revision>` directory.
+webkit_stands() {
+    for f in "$1"/webkit-*/pw_run.sh; do
+        [ -e "$f" ] && return 0
+    done
+    return 1
+}
+
 # `--self-test`: both surfaces of the skip contract, run against a compiler that
 # is not there (the first thing a run needs), so no browser is touched.
 if [ "${1:-}" = --self-test ]; then
@@ -26,7 +35,24 @@ if [ "${1:-}" = --self-test ]; then
     out=$(ran UI_BROWSER_SKIP=no-firefox-here) || { echo "ui-browser self-test: UI_BROWSER_SKIP did not stand it down"; exit 1; }
     case $out in *"STOOD DOWN"*no-firefox-here*) ;; *) echo "ui-browser self-test: a stand-down is not spoken with its reason"; exit 1;; esac
     out=$(env CI=true UI_BROWSER_SKIP=no-firefox-here AVRA=/nonexistent sh "$me" 2>&1) && { echo "ui-browser self-test: CI stood down"; exit 1; }
-    echo "ui-browser self-test: a missing machine fails, only UI_BROWSER_SKIP stands it down, CI never does"
+    # BOTH SURFACES OF THE GUARD, on the launcher's own file: a standing WebKit is
+    # read as standing, and Playwright's node module with no browser under it is
+    # read as missing — the case a restored cache used to pass at once.
+    d=$(mktemp -d "${TMPDIR:-/tmp}/avra-webkit-guard.XXXXXX")
+    mkdir -p "$d/standing/webkit-2370" "$d/module-only/node_modules/playwright"
+    : >"$d/standing/webkit-2370/pw_run.sh"
+    if ! webkit_stands "$d/standing"; then
+        echo "ui-browser self-test: a standing WebKit was read as missing"
+        find "$d" -delete
+        exit 1
+    fi
+    if webkit_stands "$d/module-only"; then
+        echo "ui-browser self-test: a module and no browser was read as standing"
+        find "$d" -delete
+        exit 1
+    fi
+    find "$d" -delete
+    echo "ui-browser self-test: a missing machine fails, only UI_BROWSER_SKIP stands it down, CI never does; the guard reads the launcher's own pw_run.sh"
     exit 0
 fi
 
@@ -90,12 +116,23 @@ playwright_version=1.64.1
 case " $engines " in
     *" webkit "*)
         playwright=${PLAYWRIGHT_DIR:-$tree/build/playwright}
+        # THE BROWSER STANDS WHERE THIS GUARD LOOKS. `playwright install`
+        # honours PLAYWRIGHT_BROWSERS_PATH, so the directory the checks cache
+        # holds the browser too, and a restored cache is VALIDATED rather than
+        # assumed: one that carries the node module and no `pw_run.sh` installs
+        # the browser instead of failing at launch. Guard and launcher read one
+        # path, so no cache hit can be greener than a cache miss.
+        browsers=$playwright/browsers
+        export PLAYWRIGHT_BROWSERS_PATH="$browsers"
         if [ ! -d "$playwright/node_modules/playwright" ]; then
             mkdir -p "$playwright"
             # a machine with no npm (the checks' image) takes the one in the pinned Node (.github/ci/install_node.sh)
             command -v npm >/dev/null 2>&1 || PATH=/opt/node-jspi/bin:$PATH
-            npm install --prefix "$playwright" --no-audit --no-fund "playwright@$playwright_version" >"$work/npm.out" 2>&1 &&
-                "$playwright/node_modules/.bin/playwright" install webkit >>"$work/npm.out" 2>&1 ||
+            npm install --prefix "$playwright" --no-audit --no-fund "playwright@$playwright_version" >"$work/npm.out" 2>&1 ||
+                skip "Playwright did not install: $(tail -1 "$work/npm.out")"
+        fi
+        if ! webkit_stands "$browsers"; then
+            "$playwright/node_modules/.bin/playwright" install webkit >>"$work/npm.out" 2>&1 ||
                 skip "Playwright's WebKit did not install: $(tail -1 "$work/npm.out")"
         fi
         export PLAYWRIGHT_DIR="$playwright"
