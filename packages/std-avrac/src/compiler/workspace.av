@@ -565,6 +565,9 @@ export type Workspace = {
     /// The whole-program raised-error fixpoint over `ErrorSite` — its
     /// members' in-flight answers; everyone else reads `Raised`.
     raised_fixpoint: Fixpoint<List<TypeId>>,
+    summaries: Table<Summary>,
+    walking: Cell<bool>,
+    walk_family: Cell<int>,
     /// The whole-program read-reach fixpoint over the declarations' call
     /// graph — which `state` places each declaration reads, transitively,
     /// as sorted `place_key`s (`features/read_set.av`).
@@ -773,9 +776,10 @@ fn manifest_verified(ws: Workspace, arg: int) -> int {
     touch(ws.manifest(arg))
     ws.db.changed_at(key(Family.Manifest, arg))
 }
-fn receivers_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.receivers())
-    ws.db.changed_at(key(Family.Receivers, arg))
+// LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
+fn write_summary_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.summary_of(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.WriteSummary, arg))
 }
 // LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
 fn consumed_verified(ws: Workspace, arg: int) -> int {
@@ -903,7 +907,7 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .LiftLowered -> lift_lowered_verified(ws, arg),
         .Lifted -> lifted_verified(ws, arg),
         .Manifest -> manifest_verified(ws, arg),
-        .Receivers -> receivers_verified(ws, arg),
+        .WriteSummary -> write_summary_verified(ws, arg),
         .Expanded -> expanded_verified(ws, arg),
         .Plain -> plain_verified(ws, arg),
         .References -> references_verified(ws, arg),
@@ -1060,6 +1064,9 @@ fn built(
         clock: clock,
         phases: list_cell(),
         raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, Family.Raised.ordinal, [], raised_join, raised_fp),
+        summaries: new_table<Summary>(),
+        walking: Cell.new(false),
+        walk_family: Cell.new(0 - 1),
         read_fixpoint: new_fixpoint<List<int>>(kernel, Family.DeclReads.ordinal, [], places_join, places_fp),
         input_index: map_cell(),
         input_names: list_cell(),
@@ -2606,7 +2613,7 @@ export fn family_code_hash(f: Family) -> string {
         .LiftLowered -> code_hash(lift_lowered_verified) ?? "",
         .Lifted -> code_hash(lifted_verified) ?? "",
         .Manifest -> code_hash(manifest_verified) ?? "",
-        .Receivers -> code_hash(receivers_verified) ?? "",
+        .WriteSummary -> code_hash(write_summary_verified) ?? "",
         .Expanded -> code_hash(expanded_verified) ?? "",
         .Plain -> code_hash(plain_verified) ?? "",
         .References -> code_hash(references_verified) ?? "",
