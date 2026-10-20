@@ -120,6 +120,7 @@ const FIXED_CASES = [
 // the edge pin where the browser breaks.
 const PROP_CASES = [
   { prim: "Row", layout: { width: { fixed: 64 } }, kids: [text("xxxxxxxxxxxxxxxxxxxx")] },
+  { prim: "Row", layout: { width: { fixed: 64 } }, kids: [text("xxxxxxxxxx xxxxxxxxxx")] },
   { prim: "Row", layout: { width: { fixed: 8 } }, kids: [text("ii ii")] },
   { prim: "Row", layout: { width: { fixed: 7 } }, kids: [text("ii ii")] },
   { prim: "Row", layout: { width: { fixed: 40 } }, kids: [text("mmm WWW iii xxx mmm WWW iii xxx")] },
