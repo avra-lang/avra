@@ -7,7 +7,9 @@ A labeled run waits for the other runs on its head, and then mirrors the verdict
 one that did the work, so the head's required check states exactly one result. A run
 that did no full work (a light run) is not a verdict: the labeled run does the work.
 
-    ci_dup_run.py --repo <owner/repo> --sha <head> --run <own run id>
+    ci_dup_run.py --repo <owner/repo> --sha <head> --run <own run id> [--any]
+
+`--any` counts a light run's verdict too: a label other than `full-ci` only restates it.
     ci_dup_run.py --self-test
 
 Prints `work`, or `mirror <conclusion> <run id>`.
@@ -24,14 +26,14 @@ WAIT_S = 30
 GIVE_UP_S = 45 * 60
 
 
-def decide(own, others):
+def decide(own, others, any_run=False):
     """`others`: the other runs on the head, each {id, status, conclusion, full}.
     `work` when no run carries the verdict, `wait` while one is live, else the mirror."""
     if any(o["status"] != "completed" for o in others):
         return "wait"
     # a cancelled (or skipped, or never-concluded) run carries no verdict: only a run that reached
     # success or failure does, so a run that finds only cancelled siblings does the work itself
-    done = sorted((o for o in others if o["full"] and o["conclusion"] in ("success", "failure")),
+    done = sorted((o for o in others if (o["full"] or any_run) and o["conclusion"] in ("success", "failure")),
                   key=lambda o: o["id"], reverse=True)
     if not done:
         return "work"
@@ -69,12 +71,13 @@ def others_on(repo, sha, own, token):
 def main(argv):
     if "--self-test" in argv:
         return self_test()
-    args = dict(zip(argv[::2], argv[1::2]))
+    any_run = "--any" in argv
+    args = dict(zip([a for a in argv if a != "--any"][::2], [a for a in argv if a != "--any"][1::2]))
     repo, sha, own = args["--repo"], args["--sha"], int(args["--run"])
     token = os.environ.get("GH_TOKEN", "")
     waited = 0
     while True:
-        verdict = decide({"id": own}, others_on(repo, sha, own, token))
+        verdict = decide({"id": own}, others_on(repo, sha, own, token), any_run)
         if verdict != "wait" or waited >= GIVE_UP_S:
             print("work" if verdict == "wait" else verdict)
             return 0
@@ -103,6 +106,12 @@ def self_test():
          [{"id": 4, "status": "completed", "conclusion": "success", "full": True},
           {"id": 5, "status": "completed", "conclusion": "cancelled", "full": True}], "mirror success 4"),
     ]
+    restated = [
+        ("another label restates a light run's verdict too",
+         [{"id": 5, "status": "completed", "conclusion": "success", "full": False}], "mirror success 5"),
+        ("another label with no finished run does the work",
+         [{"id": 5, "status": "completed", "conclusion": "cancelled", "full": False}], "work"),
+    ]
     jobs_cases = [
         ("a light run lists keepers-a skipped: not a full run",
          [{"name": "prepare", "conclusion": "success"}, {"name": "keepers-a", "conclusion": "skipped"}], False),
@@ -114,12 +123,13 @@ def self_test():
          [{"name": "prepare", "conclusion": "success"}], False),
     ]
     bad = [(name, got, want) for name, jobs, want in jobs_cases for got in [ran_full(jobs)] if got != want]
+    bad += [(name, got, want) for name, rows, want in restated for got in [decide({"id": 9}, rows, True)] if got != want]
     bad += [(name, got, want) for name, rows, want in cases for got in [decide({"id": 9}, rows)] if got != want]
     for name, got, want in bad:
         print("ci_dup_run: FAILED — %s: got %r, wanted %r" % (name, got, want))
     if bad:
         return 1
-    print("ci_dup_run: self-test clean — %d case(s)" % (len(cases) + len(jobs_cases)))
+    print("ci_dup_run: self-test clean — %d case(s)" % (len(cases) + len(jobs_cases) + len(restated)))
     return 0
 
 
