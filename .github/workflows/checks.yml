@@ -140,12 +140,12 @@ jobs:
           if git diff --name-only "$runtime_base" HEAD -- 'runtime/' | grep -q .; then runtime=1; fi
           # THE C RUNTIME'S OWN TESTS owe a PR only a change they read (runtime/,
           # the Makefile rules and the memcap wrapper they run under). Main's push
-          # and a hand-run always carry them (tools/ci_path_gate.py).
-          runtime_keep=$(git diff --name-only "$runtime_base" HEAD | python3 tools/ci_path_gate.py runtime-keep --event "$event")
+          # and a hand-run always carry them (tools/src/commands/ci_path_gate.av).
+          runtime_keep=$(git diff --name-only "$runtime_base" HEAD | sh tools/avra_tools.sh ci_path_gate runtime-keep --event "$event")
           # THE LAYOUT SOLVER'S BROWSER ORACLE owes a PR only a change to what it
           # reads: std-ui, std-text and its own tools. Main's push and a hand-run
           # always carry it; the wide sweep is the nightly orders run's.
-          layout_oracle=$(git diff --name-only "$runtime_base" HEAD | python3 tools/ci_path_gate.py layout-oracle --event "$event")
+          layout_oracle=$(git diff --name-only "$runtime_base" HEAD | sh tools/avra_tools.sh ci_path_gate layout-oracle --event "$event")
           # A PR AND A TRAIN OWE THE SAME CHECK SET: the affected closure. The
           # train adds the suites over it, never a package the PR skipped.
           if [ "$event" = merge_group ] || [ "$event" = pull_request ]; then
@@ -1168,7 +1168,7 @@ jobs:
   # THE LAYOUT SOLVER AGAINST THE WEB TARGET, in Firefox: std-ui's `place` and
   # the page the real html realizer writes, one fixed seed of 300 random trees,
   # every box in agreement (tools/layout-oracle). Owed only to a change it reads
-  # (tools/ci_path_gate.py); the nine-seed sweep is the nightly orders run's.
+  # (tools/src/commands/ci_path_gate.av); the nine-seed sweep is the nightly orders run's.
   layout-oracle:
     needs: [prepare]
     if: needs.prepare.outputs.layout_oracle == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
