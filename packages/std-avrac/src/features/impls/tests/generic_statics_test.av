@@ -1,0 +1,50 @@
+use @std.avrac.testing.{shown, refused_with}
+
+const boxes: string = "type Box<T> = { value: T }\nimpl Box<T> {\nstatic fn made(value: T) -> Box<T> { Box { value: value } }\nstatic fn absent() -> Box<T>? { null }\n}\n"
+
+const references: string = "type Ref<T> = { id: string }\nimpl Ref<T> {\nstatic fn named(id: string) -> Ref<T> { Ref { id: id } }\n}\ntype Person = { name: string }\ntype Project = { title: string }\n"
+
+spec "features/generic statics" {
+    given "a generic type's static members" {
+        then "arguments bind the owner at two different instantiations" {
+            shown(
+                "${boxes}let a = Box.made(7)\nlet b = Box.made(\"word\")\n\"\${a.value} \${b.value}\"",
+            ) == "7 word"
+        }
+        then "an annotated answer binds an otherwise free parameter" {
+            shown("${boxes}let a: Box<int>? = Box.absent()\na == null") == "true"
+        }
+        then "an argument seat supplies a phantom type parameter" {
+            shown(
+                "${references}fn person(r: Ref<Person>) -> string { r.id }\nperson(Ref.named(\"p1\"))",
+            ) == "p1"
+        }
+        then "a function's answer supplies a phantom type parameter" {
+            shown("${references}fn person() -> Ref<Person> { Ref.named(\"p1\") }\nperson().id") == "p1"
+        }
+        then "named arguments use the owner's substituted signature" {
+            shown("${boxes}Box.made(value: 7).value") == "7"
+        }
+        then "spread fields bind the owner's type parameters" {
+            shown("${boxes}type Args = { value: int }\nBox.made(..Args { value: 7 }).value") == "7"
+        }
+        then "an earlier argument error does not cause an inference cascade" {
+            refused_with("${boxes}Box.made(missing)", "`missing` is not defined")
+        }
+        then "conflicting argument instantiations are refused" {
+            refused_with(
+                "type Pair<T> = { a: T, b: T }\nimpl Pair<T> { static fn made(a: T, b: T) -> Pair<T> { Pair { a: a, b: b } } }\nPair.made(1, \"wrong\")",
+                "argument 2",
+            )
+        }
+        then "a phantom target remains part of the reference's type" {
+            refused_with(
+                "${references}let project: Ref<Project> = Ref.named(\"x\")\nlet person: Ref<Person> = project\n1",
+                "`person` declares `Ref<Person>`",
+            )
+        }
+        then "an uninferred parameter is refused once" {
+            refused_with("${boxes}Box.absent()", "needs a type for `T`")
+        }
+    }
+}
