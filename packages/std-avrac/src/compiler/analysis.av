@@ -34,22 +34,40 @@ export type Analysis = {
     view: FileView,
     names: NameFacts,
     facts: TypeFacts,
-    /// Whether a DECLARATION reads state, transitively through the
-    /// calls its body makes — the program-level query a call site in
-    /// any body or package asks, never a pass fact of one file.
-    decl_reads: fn(DeclId) -> bool,
-    /// The `state` places a DECLARATION reaches, transitively, as sorted
-    /// `place_key`s — the same query, in full (`features/read_set.av`).
-    decl_places: fn(DeclId) -> List<int>,
-    /// The places a DECLARATION reads at paint time that no reading answers
-    /// for, transitively, as `place_key`s (`features/read_set.av`).
-    decl_structural: fn(DeclId) -> List<int>,
+    /// The workspace the file was analysed in: the program-level questions — a
+    /// declaration's read set, the program the file belongs to — are its to answer.
+    ws: Workspace,
     lang: Language,
     diagnostics: List<Diag>,
-    program: fn() -> Program,
 }
 
 impl Analysis {
+    /// The program this file belongs to.
+    fn program() -> Program {
+        self.ws.standing()
+        self.ws.program(self.view.source.file)
+    }
+
+    /// Whether a DECLARATION reads state, transitively through the calls its body
+    /// makes — the program-level query a call site in any body or package asks.
+    fn decl_reads(d: DeclId) -> bool {
+        self.ws.standing()
+        self.ws.decl_reads_state(d)
+    }
+
+    /// The `state` places a DECLARATION reaches, transitively, as sorted `place_key`s.
+    fn decl_places(d: DeclId) -> List<int> {
+        self.ws.standing()
+        self.ws.decl_places(d)
+    }
+
+    /// The places a DECLARATION reads at paint time that no reading answers for,
+    /// transitively, as `place_key`s (`features/read_set.av`).
+    fn decl_structural(d: DeclId) -> List<int> {
+        self.ws.standing()
+        self.ws.decl_structural(d)
+    }
+
     /// No errors — warnings render and never block.
     fn clean() -> bool { !has_errors(self.diagnostics) }
 
@@ -77,7 +95,7 @@ impl Analysis {
 
     /// Every place the site depends on: what it reads itself and what the
     /// calls it makes reach.
-    fn site_places(e: ExprId) -> List<StatePlace> { site_places_of(self.view, self.names, e, self.decl_places) }
+    fn site_places(e: ExprId) -> List<StatePlace> { site_places_of(self.view, self.names, e, (d: DeclId) -> self.decl_places(d)) }
 
     /// Whether the subtree reads any state at all.
     fn reads_state(e: ExprId) -> bool { reads_state_of(self.view, self.names, e) }
@@ -85,7 +103,7 @@ impl Analysis {
     /// A subtree that reads no state and holds no call that reaches
     /// state — constant, so it hoists into the binary and the frame
     /// never mentions it.
-    fn hoistable(e: ExprId) -> bool { hoistable_of(self.view, self.names, e, self.decl_places) }
+    fn hoistable(e: ExprId) -> bool { hoistable_of(self.view, self.names, e, (d: DeclId) -> self.decl_places(d)) }
 
     /// Whether a DECLARATION reads state, directly or through any call
     /// its body makes — the interprocedural read set, keyed by the
@@ -93,12 +111,12 @@ impl Analysis {
     fn decl_reads_state(d: DeclId) -> bool { self.decl_reads(d) }
 
     /// How a site lowers, from its read set.
-    fn site_lowering(e: ExprId) -> SiteLowering { site_lowering_of(self.view, self.names, e, self.decl_places) }
+    fn site_lowering(e: ExprId) -> SiteLowering { site_lowering_of(self.view, self.names, e, (d: DeclId) -> self.decl_places(d)) }
 
     /// A view's whole lowering plan, in walk order — the compiler's
     /// per-site mechanism chosen once and carried as data
     /// (`features/read_set.av`).
-    fn lowering_plan(e: ExprId) -> List<SitePlan> { lowering_plan_of(self.view, self.names, e, self.decl_places) }
+    fn lowering_plan(e: ExprId) -> List<SitePlan> { lowering_plan_of(self.view, self.names, e, (d: DeclId) -> self.decl_places(d)) }
 
     /// An expression's source text — its first line, blanks collapsed, cut to
     /// `width` characters — for a report that points at a site.
@@ -193,23 +211,7 @@ impl Language {
         ws.alone()
         let a = ws.analysis(ws.file_id(src.file))
         ws.disarmed()
-        let program = a.program
-        let decl_reads = a.decl_reads
-        let decl_places = a.decl_places
-        let decl_structural = a.decl_structural
-        a with { program: () -> {
-            ws.standing()
-            program()
-        }, decl_reads: (d: DeclId) -> {
-            ws.standing()
-            decl_reads(d)
-        }, decl_places: (d: DeclId) -> {
-            ws.standing()
-            decl_places(d)
-        }, decl_structural: (d: DeclId) -> {
-            ws.standing()
-            decl_structural(d)
-        } }
+        a
     }
 
     /// Everything wrong with one source, rendered; "" means clean.
