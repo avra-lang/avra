@@ -528,7 +528,7 @@ STUB
 
     # WHAT A SPRITE IS PROVISIONED FROM: a run provisions again when the recorded hash differs from the
     # tree's, and skips when it is the same.
-    phash() { (cd "$scratch/avra-e2e" && here="$PWD/tools" && . "$here/sprite-lib.sh" && provision_hash); }
+    phash() { (here="$main/tools" && . "$here/sprite-lib.sh" && provision_hash); }
     stamp="$AVRA_SPRITE_HOME/.avra-provisioned"
     timeout 90 sh "$work" run true > "$scratch/out" 2> "$scratch/err"
     check "$?|$(grep -c 'provisioning again' "$scratch/err")|$(cat "$stamp" 2>/dev/null)" "0|1|$(phash)" \
@@ -537,11 +537,11 @@ STUB
     check "$?|$(grep -c 'provisioning again' "$scratch/err")" "0|0" \
         "provision hash: a Sprite whose record is the tree's skips provisioning" "$scratch/err"
     old=$(phash)
-    echo "# changed" >> "$scratch/avra-e2e/tools/sprite-provision.sh"
+    echo "# changed" >> "$main/tools/sprite-provision.sh"
     timeout 90 sh "$work" run true > "$scratch/out" 2> "$scratch/err"
     check "$?|$(grep -c "provisioned from $old" "$scratch/err")|$([ "$(cat "$stamp")" = "$(phash)" ] && [ "$(phash)" != "$old" ] && echo moved)" "0|1|moved" \
         "provision hash: a changed provisioning script is provisioned from again, and the record moves" "$scratch/err"
-    git -C "$scratch/avra-e2e" checkout -q -- tools/sprite-provision.sh
+    find "$main/tools" -name sprite-provision.sh -delete
 
     echo 3 > "$E2E/drop"
     timeout 90 sh "$work" run "$lines; exit 7" > "$scratch/out" 2> "$scratch/err"
