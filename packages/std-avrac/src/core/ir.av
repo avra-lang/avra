@@ -1300,7 +1300,7 @@ export fn static_symbol(i: Ins) -> string? {
 /// DEFINITION of what a call is covered by: the evaluator's unwind and the
 /// backend's landings both ask it.
 export fn cleanups_open(ins: List<Ins>) -> List<List<int>> {
-    mut brackets: List<Bracket> = [Bracket { open: [], region: 0 - 1 }]
+    mut brackets: List<Bracket> = [plain_bracket()]
     mut out: List<List<int>> = []
     for at, i in ins {
         out.push(covering(brackets))
@@ -1314,6 +1314,9 @@ export fn cleanups_open(ins: List<Ins>) -> List<List<int>> {
 /// entry naming the opener it ends, `-1 - position`), and, when the bracket is
 /// a cleanup region's own body, the position of its opener.
 type Bracket = { open: List<int>, region: int }
+
+/// A bracket that is no cleanup region's body.
+fn plain_bracket() -> Bracket { Bracket { open: [], region: 0 - 1 } }
 
 /// The cleanups standing over a position: none inside a cleanup region's body.
 fn covering(brackets: List<Bracket>) -> List<int> {
@@ -1330,7 +1333,7 @@ fn covering(brackets: List<Bracket>) -> List<int> {
 fn bracketed(brackets: List<Bracket>, ins: List<Ins>, at: int, i: Ins) -> List<Bracket> {
     let outer = brackets.slice(0, brackets.length - 1)
     let top = brackets.last()!
-    let fresh = Bracket { open: [], region: 0 - 1 }
+    let fresh = plain_bracket()
     match i {
         .ScopeEnter(_) or .IfStart(_) or .SwitchStart(_, _) or .LoopStart -> brackets.concat([fresh]),
         .Cleanup(id) -> if retires(ins, at) {
