@@ -8,7 +8,7 @@ use @std.ui.place.metrics.{Table}
 use @std.ui.place.solve.{place}
 use @std.ui.place.describe.{describe}
 use @std.ui.place.text.{Text}
-use @std.ui.realize.tests.support.{boxed, text_node}
+use @std.ui.realize.tests.support.{boxed, placed, text_node}
 
 /// A face of pixels: `i` 1.5 wide, `m` 4.25, `W` 5, a space 2, everything else
 /// 205/64 (3.203); a line 16 high.
@@ -22,6 +22,16 @@ fn pixels() -> Text { Text { metrics: face(), theme: Env {}.theme, rest: Cells {
 fn in_row(s: string, width: int) -> string {
     let root = boxed(.Row, Layout {}, [text_node(s)])
     describe(root, place(root, pixels(), width))
+}
+
+/// `s` as a text held to `width`, in a column of that width.
+fn held(s: string, width: int) -> string {
+    let root = boxed(
+        .Column,
+        Layout { width: .Fixed(width) },
+        [placed(text_node(s), Layout { width: .Fixed(width) })],
+    )
+    describe(root, place(root, pixels(), 300))
 }
 
 /// `s` as a text in a 36-wide column that lays it against the end edge.
@@ -50,6 +60,16 @@ spec "place/text — the solver in a typeface's units" {
     given "a text 114.45 pixels wide by its clusters' sixtieths (114.5 by the exact sum)" {
         then "is a box 114 wide, as Firefox lays it" {
             in_row("mmxaWix xmmiaiaW iimxi xi xmximaxai aax", 300) == "row 0,0 300x16\n  text 0,0 114x16"
+        }
+    }
+    given "a word cut to `axi` and `i`, then a word `ii` that fits beside its last piece" {
+        then "keeps the next word on the fragment's line, as a browser does" {
+            held("axii ii", 8) == "column 0,0 8x32\n  text 0,0 8x32"
+        }
+    }
+    given "a word cut to `axi` and `i`, then a word too wide to fit beside it" {
+        then "breaks the line first, then cuts the word from the line it starts" {
+            held("axii xWWWiaWmm", 8) == "column 0,0 8x160\n  text 0,0 8x160"
         }
     }
     given "a text 34.5 pixels wide against the end edge of a 36-wide column" {
