@@ -40,6 +40,7 @@ fn check_component(mut cx: TypeCx, s: StmtId) {
     check_body(cx, s)
     check_law(cx, c)
     expand_law(cx, c)
+    copied_events_law(cx, s, c)
     format_law(cx, s, c)
     unfired_law(cx, s, c)
 }
@@ -152,6 +153,22 @@ fn expand_law(mut cx: TypeCx, c: ComponentParts) {
     let body? = template_body(cx.view.store, parts) else { return }
     let twice? = read_twice(cx.view.store, body, formats_of(c)) else { return }
     cx.emit(read_again(cx.stmt_loc(expand), c.name, twice))
+}
+
+/// A template copies its `expand` where an instance stands, and copied
+/// code hears no event: each event it declares is refused where it is.
+fn copied_events_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
+    if expand_of(cx.view.store, c) == null { return }
+    for e in c.events() {
+        cx
+            .emit(
+                copied_event(
+                    if e.holder.default == null { cx.stmt_loc(s) } else { cx.loc_of(e.holder.default!) },
+                    c.name,
+                    e.name,
+                ),
+            )
+    }
 }
 
 /// A head spelled `Format` is `@std.meta`'s pattern: the instance read
@@ -299,6 +316,16 @@ fn undeclared_event(at: Loc?, word: string, event: string, declared: List<string
         "`${word}` declares no event `${event}` — an instance hears the events its component declares",
         "heard here",
         if declared.is_empty() { "`${word}` declares no events" } else { "the events of `${word}` are ${ticked(declared)}" },
+    )
+}
+
+fn copied_event(at: Loc?, word: string, event: string) -> Diag {
+    refusal(
+        "type.component_event",
+        at,
+        "`${word}` copies its `expand` where an instance stands, and copied code hears no event — `${event}` is never heard",
+        "declared here",
+        "declare `${event}` on a component that builds a record, one with no `expand`",
     )
 }
 
