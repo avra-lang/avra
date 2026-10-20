@@ -1,7 +1,7 @@
 //! `place/text.av` — the solver's questions about text, answered from a
 //! typeface. A text node is broken into lines by its face's advances, summed
-//! in sixty-fourths and rounded once, where the answer leaves in whole units;
-//! every other node is `rest`'s to answer.
+//! in sixty-fourths and handed to the solver in sixtieths, rounded once on the
+//! way; every other node is `rest`'s to answer.
 use tree.node.{Node}
 use style.tokens.{Size}
 use style.theme.{Theme}
@@ -18,12 +18,7 @@ fn rescaled(n: int, to: int, from: int) -> int { (n * to + from / 2) / from }
 
 impl Measure for Text {
     fn own(n: Node, avail: int) -> Extent {
-        let e = self.own_fine(n, avail * fine)
-        Extent { w: rescaled(e.w, 1, fine), h: rescaled(e.h, 1, fine) }
-    }
-
-    fn own_fine(n: Node, avail: int) -> Extent {
-        if !(n.prim is .Text) { return self.rest.own_fine(n, avail) }
+        if !(n.prim is .Text) { return self.rest.own(n, avail) }
         let m = self.metrics
         let room = rescaled(avail, subunits, fine)
         let ls = lines_in(
@@ -41,10 +36,8 @@ impl Measure for Text {
     fn hidden(n: Node) -> bool { self.rest.hidden(n) }
     fn holds(n: Node) -> bool { self.rest.holds(n) }
 
-    fn min_own(n: Node) -> int { rescaled(self.min_own_fine(n), 1, fine) }
-
-    fn min_own_fine(n: Node) -> int {
-        if !(n.prim is .Text) { return self.rest.min_own_fine(n) }
+    fn min_own(n: Node) -> int {
+        if !(n.prim is .Text) { return self.rest.min_own(n) }
         let m = self.metrics
         rescaled(longest_in(n.words(), (s: string) -> run_width(m, s)), fine, subunits)
     }
