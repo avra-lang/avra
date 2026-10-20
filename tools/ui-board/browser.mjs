@@ -132,6 +132,27 @@ claim("and it opens again after that too", await read(`${dialog}.open`));
 await press(named("Close"));
 await press(named("Light mode"));
 
+// A press outside an open dialog sends it away, as Escape does; one inside it,
+// or one that starts inside and ends outside, sends nothing away. `on` is the
+// page, `where` what the claims say of it.
+const outsidePresses = async (on, where) => {
+  const shown = `document.querySelector("dialog")`;
+  const open = () => on.read(`${shown}.open`);
+  await on.press(named("About"));
+  const r = await on.read(`(() => { const r = ${shown}.getBoundingClientRect(); return { x: Math.round(r.left + 6), y: Math.round(r.top + 6) }; })()`);
+  const away = { x: 4, y: 4 };
+  await on.pressAt(r.x, r.y);
+  claim(`a press inside it keeps it open${where}`, await open());
+  await on.drag(r, away);
+  claim(`a press that starts inside it and ends outside keeps it open${where}`, await open());
+  await on.pressAt(away.x, away.y);
+  claim(`a press outside it sends it away${where}`, await open() === false);
+  await on.press(named("About"));
+  claim(`the program heard that: About opens it again${where}`, await open());
+  await on.press(named("Close"));
+};
+await outsidePresses(page, "");
+
 // ── the keyboard ────────────────────────────────────────────────
 await read(`${named("Dark mode")}.focus(), 1`);
 const order = [];
@@ -192,5 +213,15 @@ if (source) {
 
 claim("nothing reached the console while the board was used", page.complaints().length === 0, page.complaints());
 await page.close();
+
+// ── an engine that does not send a dialog away on its own ───────
+// The same board where the browser knows no `closedby`: the page sends the
+// dialog away itself, by the same rule.
+const unaware = await openPage(firefoxBinary(), url, { prefs: { "dom.dialog.light-dismiss.enabled": false } });
+await unaware.read(`new Promise((ready) => { const look = setInterval(() => { if (document.querySelector("li")) { clearInterval(look); ready(1); } }, 20); })`);
+claim("this engine knows no `closedby`", await unaware.read(`!("closedBy" in HTMLDialogElement.prototype)`));
+await outsidePresses(unaware, ", where the engine knows no `closedby`");
+claim("nothing reached that page's console", unaware.complaints().length === 0, unaware.complaints());
+await unaware.close();
 console.log(failed === 0 ? "ui-browser: every claim holds" : `ui-browser: ${failed} claim(s) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
