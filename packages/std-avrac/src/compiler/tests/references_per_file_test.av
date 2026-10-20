@@ -75,28 +75,30 @@ fn turned() -> Turned {
     Turned { ws: ws, files: files }
 }
 
-/// How many times the references pass filed a file's rows: its owner's run in the relation.
-fn filed_runs(ws: Workspace, path: string) -> int {
-    let db = ws.decls.rows_db.get()
-    db.runs.get()[db.owner_named("references:${path}")]
+/// The revision a file's references last changed at.
+fn refs_changed_at(ws: Workspace, path: string) -> int {
+    ws.db.changed_at(Key { family: Family.FileRefs.ordinal, arg: ws.file_id(path).index })
 }
 
-/// A file's filings before and after the edit of b's body, the world read again between.
-fn filed_around_edit(path: string) -> string {
+/// A file's references' last change before and after b's body gains a second use of `one`,
+/// the world read again between.
+fn changed_around_edit(path: string) -> List<int> {
     let t = turned()
-    let before = filed_runs(t.ws, path)
-    t.files.put("/w/src/b.av", "use a.{one}\n\nexport fn two() -> int { one() + 2 }\n")
+    let before = refs_changed_at(t.ws, path)
+    t.files.put("/w/src/b.av", "use a.{one}\n\nexport fn two() -> int { one() + one() }\n")
     let _ = t.ws.world_moved()
     let _ = t.ws.analyze_file("/w/src/main.av")
     let _ = t.ws.references()
-    "${before}-${filed_runs(t.ws, path)}"
+    [before, refs_changed_at(t.ws, path)]
 }
 
 spec "compiler/references — an edit re-surveys the files it moved" {
-    then "the edited file's rows are filed again" {
-        filed_around_edit("/w/src/b.av") == "1-2"
+    then "the edited file's references move" {
+        let seen = changed_around_edit("/w/src/b.av")
+        seen[1] > seen[0]
     }
-    then "a file the edit never reached stands as it was filed" {
-        filed_around_edit("/w/src/a.av") == "1-1"
+    then "a file the edit never reached stands as it was" {
+        let seen = changed_around_edit("/w/src/a.av")
+        seen[1] == seen[0]
     }
 }
