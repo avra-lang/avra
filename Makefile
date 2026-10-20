@@ -30,7 +30,7 @@ export AVRA_CXX_RUNTIME ?= stdc++
 endif
 # THE COMPILER'S LLVM LINK, one definition: the manifest row, read by the
 # hand-written clang lines below so none of them spells the libraries again.
-LLVM_LINK := $(shell python3 tools/llvm_link.py --words)
+LLVM_LINK := $(shell sh tools/llvm_link.sh --words)
 
 # The objects the COMPILER itself links: the runtime every program
 # carries, and the compiler's own foreign machinery (the LLVM wrapper,
@@ -1134,6 +1134,7 @@ keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
 # on, proved on its fixtures — none reads the compiler.
 # One witness per line, so a lane adding an instrument appends a line.
 TOOL_WITNESSES = stamps.sh\ --self-test \
+                 llvm_link.sh\ --self-test \
                  capped.sh\ --self-test \
                  failed_tail_test.sh \
                  host_fn_edit_attack.sh\ --self-test \
