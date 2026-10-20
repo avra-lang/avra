@@ -621,12 +621,21 @@ impl Workspace {
         // runtime carries no fiber and no thread, so the tick has no body
         // there — a program that really parks fails on the row it parks at.
         let checks = !self.comptime_active() && !self.wasm_target() && self.scheduler_linked()
-        let analysis = if w.decl != null && self.comptime_active() {
+        let analysis = if w.decl != null &&
+            (self.comptime_active() || self.lowers_from_own_range(w.decl!)) {
             self.analyzed_decl(w.file, w.decl!)
         } else {
             self.analysis(w.file)
         }
         lower_unit(analysis, self.extern_symbols(), w, settle, cross, checks)
+    }
+
+    /// Whether a declaration lowers from the expressions its own range holds: a fn or a
+    /// method, whose body is all it reads. Every other kind reads expressions written
+    /// outside its statement — an annotation's arguments, a const's initializer.
+    fn lowers_from_own_range(d: DeclId) -> bool {
+        let x = self.decls.decl(d)
+        (x.kind is .Fn || x.kind is .Method) && self.decls.owns_a_range(d)
     }
 
     /// An isolated compile-time run needs the body of every function it
