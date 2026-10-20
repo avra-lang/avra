@@ -7,10 +7,16 @@
 //! THE TABLE IS COMPILED ONCE, INTO AN INDEX AND NEVER A POLICY. A
 //! trie keyed on the hash of each literal segment narrows what a
 //! target could match; the grammar reader still decides, and
-//! DECLARATION ORDER still picks among the routes that answer. So the
+//! SPECIFICITY decides which of the routes that answer does. So the
 //! table answers exactly what a scan down the same list answers —
 //! route for route, on every target — while costing the same whether
 //! the list holds three routes or three hundred.
+//!
+//! A ROUTE'S SPECIFICITY IS ITS PATTERN'S, SEGMENT BY SEGMENT from the
+//! first: a literal above a hole always, and a hole's rank is its
+//! type's — `{id: int}` above `{slug}` above `{path...}`. Written order
+//! breaks only a true tie, so embedding a list of routes never changes
+//! which one answers.
 //!
 //! A HOLE IS ONE SEGMENT, and the table holds it structurally: a
 //! route is reached only at the depth its own pattern has, so
@@ -322,10 +328,15 @@ fn hashed(b: Bytes, from: int, to: int) -> int {
 // ── The compiled table ──────────────────────────────────────────
 
 /// One segment of a pattern: a LITERAL, keyed by its octets' hash, or
-/// a HOLE, which any segment answers. `key` is read only when `hole`
-/// is false, and `tail` only ever marks the LAST segment of a route
-/// that takes the rest. `rank` is how general the segment is: 0 a
-/// literal, 1 a hole, 2 the rest — the most specific route answers.
+/// a HOLE. `key` is read only when `hole` is false, and `tail` only
+/// ever marks the LAST segment of a route that takes the rest.
+///
+/// `rank` IS HOW GENERAL THE SEGMENT IS, and it is what the most
+/// specific route answers by: 0 a literal, 1 a hole whose type is
+/// NARROW — it refuses spans any text takes — 2 a hole any span
+/// answers, 3 the rest. A hole's rank is its TYPE'S, so the ladder is
+/// the type ladder: `7` is a literal, `{id: int}` a number, `{slug}`
+/// any text, and `{path...}` a remainder.
 type Seg = { hole: bool, key: int, tail: bool, rank: int }
 
 /// Where a shape's tail begins, or -1 when it has none.
@@ -334,12 +345,12 @@ fn tail_at(shape: List<Seg>) -> int {
     0 - 1
 }
 
-/// One trie node. `rows` are the routes that END here, in DECLARATION
-/// ORDER — which is what makes the table answer exactly what a scan
-/// down the same list would. `keys` is sorted ascending and `kids` is
-/// parallel to it, so a step is a binary search over unboxed ints;
-/// `wild` is the step for a segment no key names, and is -1 when no
-/// route has a hole here.
+/// One trie node. `rows` are the routes that END here, MOST SPECIFIC
+/// FIRST — which is what makes the table answer what a scan down the
+/// same list would, and it does not depend on the order the routes were
+/// written. `keys` is sorted ascending and `kids` is parallel to it, so
+/// a step is a binary search over unboxed ints; `wild` is the step for
+/// a segment no key names, and is -1 when no route has a hole here.
 type Node = { rows: List<int>, keys: List<int>, kids: List<int>, wild: int }
 
 /// A ROUTE TABLE COMPILED ONCE. Nothing here narrows wrongly: a route
@@ -350,10 +361,10 @@ type Node = { rows: List<int>, keys: List<int>, kids: List<int>, wild: int }
 ///
 /// A ROUTE THAT TAKES THE REST answers at every depth past its own,
 /// so it is CARRIED DOWN the trie at build time and merged into every
-/// deeper node's rows by declaration index. Nothing accumulates at
-/// dispatch, and where a target outruns the trie entirely the walk
-/// lands on a node that answers the carried routes and steps to
-/// itself.
+/// deeper node's rows by specificity, as every node's rows are.
+/// Nothing accumulates at dispatch, and where a target outruns the trie
+/// entirely the walk lands on a node that answers the carried routes
+/// and steps to itself.
 export type Table = { routes: List<Route>, nodes: List<Node>, root: int }
 
 /// Compile the table. Belongs in a `once fn` — the cost is paid at
@@ -371,8 +382,8 @@ export fn compiled(routes: List<Route>) -> Table {
 /// The node for `cands` at depth `d`, its children built first.
 /// `carried` are the routes that take the rest and reached their tail
 /// ABOVE this depth, so they answer here and at every depth below.
-/// Every list is filtered from a list that arrives in declaration
-/// order, so every node's rows keep it.
+/// Every list is filtered from the candidates the caller ordered, so
+/// every node's rows are ranked once, by `most_specific_first`.
 ///
 /// A LITERAL KID CARRIES THE HOLES TOO: a route with a hole at `d`
 /// matches that literal segment as well, so it rides both branches
@@ -472,15 +483,40 @@ fn inserted(xs: List<int>, x: int) -> List<int> {
 fn shaped(r: Route) -> List<Seg> {
     let b = r.pattern.bytes()
     let cs = cuts(b)
-    [seg_of(b, opened(cs, j), c, r.reach, j == cs.length - 1) for j, c in cs]
+    let ps = pieces(r.pattern)
+    [seg_of(b, ps[j], opened(cs, j), c, r.reach, j == cs.length - 1) for j, c in cs]
 }
 
-fn seg_of(b: Bytes, from: int, to: int, reach: Reach, last: bool) -> Seg {
+/// One segment, keyed by its octets and ranked by its type.
+fn seg_of(b: Bytes, seg: string, from: int, to: int, reach: Reach, last: bool) -> Seg {
     let tail = last && takes_rest(reach)
     if holes_bind(reach) && holed(b, from, to) {
-        return Seg { hole: true, key: 0, tail: tail, rank: if tail { 2 } else { 1 } }
+        let rank = when {
+            tail -> 3
+            narrow_span(seg) -> 1
+            _ -> 2
+        }
+        return Seg { hole: true, key: 0, tail: tail, rank: rank }
     }
-    Seg { hole: false, key: hashed(b, from, to), tail: tail, rank: if tail { 2 } else { 0 } }
+    Seg { hole: false, key: hashed(b, from, to), tail: tail, rank: if tail { 3 } else { 0 } }
+}
+
+/// Whether a segment's hole reads a NARROW span — its type refuses
+/// what any text takes. A format's hole reads its span as `string` or
+/// as `int`, so `int` is the whole narrow class: `{id: int}` outranks
+/// `{slug}` and `{slug: string}`, which answer every span alike.
+///
+/// IT READS THE SEGMENT'S SPELLING, because a pattern's text is all a
+/// route carries of its grammar — the same text the table keys its
+/// literals by.
+fn narrow_span(seg: string) -> bool {
+    let open = seg.index_of("{")
+    let shut = seg.index_of("}")
+    if open < 0 || shut < open { return false }
+    let body = seg.substring(open + 1, shut)
+    let colon = body.index_of(":")
+    if colon < 0 { return false }
+    body.substring(colon + 1, body.length).trim() == "int"
 }
 
 fn holed(b: Bytes, from: int, to: int) -> bool {
@@ -574,9 +610,20 @@ fn step_to(n: Node, key: int) -> int {
 /// WHAT IS WRONG WITH A TABLE: a mistake of the program's declarations,
 /// decidable from the routes alone and quiet in a running server.
 ///
-/// AN OVERLAP: two routes of one specificity where the earlier matches
-/// every target the later does, so the later never answers. A more
+/// AN OVERLAP: two routes of ONE SPECIFICITY that may answer a common
+/// target, so written order decides between them for the targets both
+/// match. Where the earlier matches every target the later does, the
+/// later never answers; where the two only meet on some, the later
+/// answers the rest, and order still answers for the meeting. A more
 /// specific route is no overlap — it answers first wherever it stands.
+///
+/// A POSITION'S RANK IS ITS TYPE'S, so two holes of one rank are only
+/// ever told apart by order: `{id: int}` against `{num: int}` is not
+/// two routes, and `v{n: int}` against `{n: int}` is one route that
+/// is partly unreachable. Only LITERALS can be told disjoint — a
+/// hole's span is not a set a declaration can enumerate — so this law
+/// refuses what it cannot prove apart rather than inventing a
+/// disjointness no reader could check.
 ///
 /// A REST DISAGREEMENT: `tailed` promises the remaining segments to a
 /// hole and the pattern must say so with `...`; `routed` promises one
@@ -619,13 +666,25 @@ fn marks_rest(pattern: string) -> bool { pieces(pattern).last()!.contains(rest_m
 /// The format's greedy mark, closing its hole.
 fn rest_mark() -> string { "...}" }
 
-fn shadows(a: Route, b: Route) -> bool { a.method == b.method && covers(a, b) && alike(shaped(a), shaped(b)) }
+fn shadows(a: Route, b: Route) -> bool {
+    if a.method != b.method { return false }
+    let x = shaped(a)
+    let y = shaped(b)
+    alike(x, y) && coincide(x, y)
+}
 
 /// Whether two routes are equally specific, segment for segment: only then
-/// does order decide between them, and a route covered by an equal one
-/// above it never answers.
+/// does order decide between them.
 fn alike(a: List<Seg>, b: List<Seg>) -> bool {
     a.length == b.length && [i for i in 0..a.length].all(a[it].rank == b[it].rank)
+}
+
+/// Whether two equally specific routes may answer one target. Only two
+/// LITERALS can be disjoint, and only by differing; a hole of either
+/// rank is taken to meet every hole of its own rank, since nothing a
+/// declaration says proves what spans a type refuses.
+fn coincide(a: List<Seg>, b: List<Seg>) -> bool {
+    [i for i in 0..a.length].all(a[it].hole || b[it].hole || a[it].key == b[it].key)
 }
 
 /// Whether every target `b` matches, `a` matches too — asked segment
@@ -653,16 +712,15 @@ fn covers_upto(x: List<string>, y: List<string>, n: int) -> bool {
 
 fn covers_seg(a: string, b: string) -> bool { open_hole(a) || a == b }
 
-/// A segment that is exactly one hole binding a name and NOTHING
-/// ELSE — `{id}` — which every segment answers.
+/// A segment that is exactly one hole binding a name and NO TYPE —
+/// `{id}` — which every segment answers.
 ///
 /// IT ASKS ABOUT THE TYPE RATHER THAN ASSUMING THERE IS NONE. A hole
 /// that reads its span (`{id: int}`) can REFUSE one, so it covers no
 /// segment but its own spelling; a hole beside a literal (`v{major}`)
 /// covers only what that literal admits. Both are excluded by the
-/// rule itself, so this law does not rest on typed holes being
-/// unbuilt — it stays sound on the day they land, and UNDER-REPORTS
-/// rather than crying wolf.
+/// rule itself, which is what keeps this the COVERAGE question —
+/// whether the later route is answered by nothing at all.
 fn open_hole(seg: string) -> bool {
     seg.starts_with("{") &&
         seg.index_of("}") == seg.length - 1 &&
@@ -675,10 +733,17 @@ fn open_hole(seg: string) -> bool {
 /// A fault's voice.
 export fn told(f: RouteFault) -> string {
     match f {
-        .Overlap(first, second) -> unreachable(second, first),
+        .Overlap(first, second) -> clash(first, second),
         .Unmarked(r) -> unmarked(r),
         .Unclaimed(r) -> unclaimed(r),
     }
+}
+
+/// An overlap's voice, by whether the earlier route answers EVERY
+/// target the later does: then the later is answered by nothing, and
+/// otherwise the two meet on some.
+fn clash(earlier: Route, later: Route) -> string {
+    if covers(earlier, later) { unreachable(later, earlier) } else { shared(earlier, later) }
 }
 
 /// A route by method and pattern.
@@ -686,6 +751,10 @@ fn named_route(r: Route) -> string { "${method_word(r.method) ?? "?"} ${r.patter
 
 fn unreachable(later: Route, earlier: Route) -> string {
     "`${named_route(later)}` is unreachable — `${named_route(earlier)}` is declared above it and matches every target it does"
+}
+
+fn shared(earlier: Route, later: Route) -> string {
+    "`${named_route(later)}` and `${named_route(earlier)}` are equally specific and match some of the same targets — nothing but written order would separate them; narrow one, or drop one"
 }
 
 fn unmarked(r: Route) -> string {

@@ -1,9 +1,10 @@
-// proves: the most specific route answers wherever it is written or embedded — a literal beats a hole, which beats the rest — so `users` and `tasks/{id}` resolve alike in either embedding order
+// proves: the most specific route answers wherever it is written or embedded — a literal beats a hole of a narrow type, which beats a hole of any text, which beats the rest — so `users` and `tasks/{id}` resolve alike in either embedding order
 use @std.net.{Conn, NetError, connect, timely}
 use @std.time.{ms, secs}
 use @std.http.http.{text}
 use @std.http.route.{get, post, group, router}
-use @std.http.server.{Server, Stateless, server}
+use @std.http.server.{server}
+use tests.support.{up}
 
 export router tasks {
     get "/{id}" { req -> "task " + req.params.id }
@@ -35,6 +36,15 @@ export server widest_first {
     get "/a/b" { _req -> "literal" }
 }
 
+/// A text hole written above the narrow hole that outranks it, and a
+/// literal above both.
+export server ranked {
+    port: 0
+    get "/b/{slug}" { req -> "text " + req.params.slug }
+    get "/b/{n: int}" { req -> "narrow ${req.params.n}" }
+    get "/b/lit" { _req -> "literal" }
+}
+
 /// `sent` written, then read until the server closes or goes quiet.
 fn exchanged(c: Conn, sent: string) -> Result<string, NetError> {
     c.write(sent.bytes())?
@@ -59,32 +69,26 @@ fn asked(port: int, line: string) -> Result<string, NetError> {
     exchanged(c, line + "\r\nHost: a\r\nConnection: close\r\nContent-Length: 4\r\n\r\nnote")
 }
 
-fn answers(s: server) -> Result<string, NetError> {
+/// What `s` answers for each of `targets`, in the order asked.
+fn answers(s: server, targets: List<string>) -> Result<string, NetError> {
     let running = up(s)?
     spawn running.run(1)
     defer running.stop()
-    let port = running.listener.port
-    let lines = [
-        asked(port, "GET /users HTTP/1.1")?,
-        asked(port, "GET /7 HTTP/1.1")?,
-        asked(port, "GET /a/b HTTP/1.1")?,
-        asked(port, "GET /a/c HTTP/1.1")?,
-        asked(port, "GET /z/q/r HTTP/1.1")?,
-    ]
-    .Ok(lines.join("|"))
+    .Ok([asked(running.listener.port, "GET ${t} HTTP/1.1")? for t in targets].join("|"))
 }
 
 fn shown() -> Result<string, NetError> {
-    .Ok([answers(tasks_first)?, answers(users_first)?, answers(widest_first)?].join("\n"))
+    let shared = ["/users", "/7", "/a/b", "/a/c", "/z/q/r"]
+    .Ok(
+        [
+            answers(tasks_first, shared)?,
+            answers(users_first, shared)?,
+            answers(widest_first, shared)?,
+            answers(ranked, ["/b/7", "/b/abc", "/b/lit"])?,
+        ]
+            .join("\n"),
+    )
 }
 
 match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
 
-/// The server up, a table fault surfacing as the one error this program speaks.
-fn up(app: server) -> Result<Server<Stateless>, NetError> {
-    match app.listening() {
-        .Ok(s) -> .Ok(s),
-        .Err(.Net(e)) -> .Err(e),
-        .Err(.Routes(found)) -> .Err(NetError { verb: "start", subject: "${found.length} route faults", errno: 22 }),
-    }
-}

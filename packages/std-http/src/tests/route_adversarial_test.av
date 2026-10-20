@@ -12,6 +12,7 @@ use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.route.{Route, routed, fixed, tailed, compiled, dispatch, segments, faults}
 
 grammar AdvIdea = "/ideas/{id}"
+grammar AdvNumber = "/ideas/{n: int}"
 grammar AdvTenant = "/{tenant}/ideas"
 grammar AdvMajor = "/v{major}/x"
 grammar AdvTrio = "/a/{b}/{c}"
@@ -21,6 +22,7 @@ grammar AdvHoled = "/{tenant}/files/{path...}"
 grammar AdvRoot = "/{path...}"
 
 fn adv_idea(q: Request<AdvIdea>) -> Response { text(200, "I" + q.params.id) }
+fn adv_number(q: Request<AdvNumber>) -> Response { text(200, "N${q.params.n}") }
 fn adv_tenant(q: Request<AdvTenant>) -> Response { text(200, "T" + q.params.tenant) }
 fn adv_major(q: Request<AdvMajor>) -> Response { text(200, "M" + q.params.major) }
 fn adv_trio(q: Request<AdvTrio>) -> Response { text(200, "R" + q.params.b + q.params.c) }
@@ -33,6 +35,7 @@ fn adv_root(q: Request<AdvRoot>) -> Response { text(200, "R" + q.params.path) }
 // ── Fixtures ────────────────────────────────────────────────────
 
 fn r_idea() -> Route { routed<AdvIdea>(Method.Get, "/ideas/{id}", (t: Bytes) -> AdvIdea.parse(t), adv_idea) }
+fn r_number() -> Route { routed<AdvNumber>(Method.Get, "/ideas/{n: int}", (t: Bytes) -> AdvNumber.parse(t), adv_number) }
 fn r_tenant() -> Route { routed<AdvTenant>(Method.Get, "/{tenant}/ideas", (t: Bytes) -> AdvTenant.parse(t), adv_tenant) }
 fn r_major() -> Route { routed<AdvMajor>(Method.Get, "/v{major}/x", (t: Bytes) -> AdvMajor.parse(t), adv_major) }
 fn r_trio() -> Route { routed<AdvTrio>(Method.Get, "/a/{b}/{c}", (t: Bytes) -> AdvTrio.parse(t), adv_trio) }
@@ -40,15 +43,19 @@ fn r_new() -> Route { fixed(Method.Get, "/ideas/new", word) }
 fn r_slash_x() -> Route { fixed(Method.Get, "//x", word) }
 fn r_abc() -> Route { fixed(Method.Get, "/a/b/c", word) }
 
-/// Seven routes covering a hole first, a hole beside a literal, an
-/// empty segment, a static path under a hole, and two widths.
-fn every() -> List<Route> { [r_idea(), r_new(), r_tenant(), r_major(), r_slash_x(), r_trio(), r_abc()] }
+/// Eight routes covering a text hole first and a narrow hole below it, a
+/// hole beside a literal, an empty segment, a static path under a hole,
+/// and two widths.
+fn every() -> List<Route> {
+    [r_idea(), r_number(), r_new(), r_tenant(), r_major(), r_slash_x(), r_trio(), r_abc()]
+}
 
 /// The targets the sweep asks about — degenerate, deeper, shallower,
 /// empty-captured, percent-encoded, and off the end of the trie.
 fn targets() -> List<string> {
     [
         "/ideas/7",
+        "/ideas/abc",
         "/ideas/new",
         "/ideas/",
         "/ideas",
@@ -129,15 +136,20 @@ fn outranks(live: List<Route>, k: int, i: int) -> bool {
     d < 0
 }
 
-/// A pattern's segments as ranks: a literal 0, a hole 1, a rest-taker 2.
+/// A pattern's segments as ranks: a literal 0, a hole whose type refuses
+/// what any text takes 1, a hole any span answers 2, the rest 3.
 fn ranks(r: Route) -> List<int> {
-    [seg_rank(p) for p in r.pattern.split("/")]
+    let ps = r.pattern.split("/")
+    [seg_rank(ps[j], j == ps.length - 1) for j in 0..ps.length]
 }
 
-fn seg_rank(piece: string) -> int {
-    if piece.contains("...}") { return 2 }
-    if piece.contains("{") { return 1 }
-    0
+/// One segment's rank. The rest mark counts only on the LAST segment,
+/// which is the only place it claims a remainder.
+fn seg_rank(piece: string, last: bool) -> int {
+    if last && piece.contains("...") { return 3 }
+    if !piece.contains("{") { return 0 }
+    if piece.contains(": int") { return 1 }
+    2
 }
 
 /// Negative when `a` is tighter at the first segment they differ, positive
@@ -239,11 +251,11 @@ fn deep_disagreements() -> List<string> {
 
 spec "@std.http route adversarial" {
     given "the table against the algorithm it replaced" {
-        then "the table and a scan agree on every one of 27 targets" {
+        then "the table and a scan agree on every one of 28 targets" {
             disagreements().is_empty()
         }
-        then "the sweep asks about 27 targets, so agreement is not vacuous" {
-            targets().length == 27
+        then "the sweep asks about 28 targets, so agreement is not vacuous" {
+            targets().length == 28
         }
         then "a target the framer refuses is asked of neither" {
             [g for g in targets() if asked_get(g) == null].is_empty()
@@ -348,6 +360,12 @@ spec "@std.http route adversarial" {
         }
         then "a route that does not match falls through to a later one" {
             hit([r_trio(), r_idea()], "/ideas/7") == "200I7"
+        }
+        then "a narrow hole answers a number over a text hole declared above it" {
+            hit(every(), "/ideas/7") == "200N7"
+        }
+        then "and a segment its type refuses falls through to the text hole" {
+            hit(every(), "/ideas/abc") == "200Iabc"
         }
     }
     given "malformed patterns" {

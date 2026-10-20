@@ -4,7 +4,8 @@
 use @std.net.{Conn, NetError, connect, timely}
 use @std.time.{ms, secs}
 use @std.http.route.{get}
-use @std.http.server.{Server, Stateless, server}
+use @std.http.server.{server}
+use tests.support.{up}
 use @std.http.frame.{limits, no_bytes}
 use @std.http.h2.{H2Conn, h2_client}
 use @std.http.hpack.{HeaderField, header_field}
@@ -83,11 +84,3 @@ fn shown() -> Result<string, NetError> {
 
 match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
 
-/// The server up, a table fault surfacing as the one error this program speaks.
-fn up(app: server) -> Result<Server<Stateless>, NetError> {
-    match app.listening() {
-        .Ok(s) -> .Ok(s),
-        .Err(.Net(e)) -> .Err(e),
-        .Err(.Routes(found)) -> .Err(NetError { verb: "start", subject: "${found.length} route faults", errno: 22 }),
-    }
-}

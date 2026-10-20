@@ -2,7 +2,8 @@ use @std.net.{Conn, NetError, connect, timely}
 use @std.time.{ms, secs}
 use @std.http.http.{Request, Unrouted, Response, Handler, text}
 use @std.http.route.{get, post, delete, group}
-use @std.http.server.{Server, Stateless, layer, server}
+use @std.http.server.{layer, server}
+use tests.support.{up}
 
 /// Answers the order probe — reached only when nothing outside it did.
 fn timed(q: Request<Unrouted>, next: Handler) -> Response {
@@ -82,11 +83,3 @@ fn shown() -> Result<string, NetError> {
 
 match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
 
-/// The server up, a table fault surfacing as the one error this program speaks.
-fn up(app: server) -> Result<Server<Stateless>, NetError> {
-    match app.listening() {
-        .Ok(s) -> .Ok(s),
-        .Err(.Net(e)) -> .Err(e),
-        .Err(.Routes(found)) -> .Err(NetError { verb: "start", subject: "${found.length} route faults", errno: 22 }),
-    }
-}
