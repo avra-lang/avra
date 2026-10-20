@@ -21,8 +21,7 @@ impl TypeCx {
     mut fn unbroken_law(x: Decl) {
         if !self.view.decls.marks_unbroken(x.id) { return }
         let reader = WaitReader { view: self.view, names: self.names, facts: self.facts }
-        for i in x.lo..x.hi {
-            let e = ExprId { index: i }
+        for e in x.body_exprs() {
             for w in reader.node_waits(e) { self.judged(x, e, w) }
         }
     }
@@ -63,7 +62,7 @@ impl TypeCx {
     fn default_may_wait(d: DeclId) -> bool {
         let x = self.view.decls.decl(d)
         if !same_file(x.file, self.view.file) { return true }
-        (x.lo..x.hi).any((i) -> may_wait(self.view.store.expr(ExprId { index: i }).wait_probe()))
+        x.body_exprs().any((e) -> may_wait(self.view.store.expr(e).wait_probe()))
     }
 
     // ── The voices ──

@@ -11,6 +11,7 @@ use @std.meta.{derive}
 use @std.io.{env}
 use @std.errors.{Frame}
 use core.{
+    IndexRange,
     text_before,
     rt_sigs,
     Fingerprint,
@@ -1026,9 +1027,9 @@ type LoweredBody = { body: Body, voices: Voices, jobs: Jobs }
 /// The static `Frame` a body's unwind pushes: its `{label, loc}` laid
 /// out as the binary's data, one per body. The label is the name a
 /// reader knows the body by, the loc the place it was written.
-fn body_frame(a: Analysis, sym: string, label: string, file: FileId, lo: int, hi: int) -> BodyFrame {
+fn body_frame(a: Analysis, sym: string, label: string, file: FileId, body: IndexRange) -> BodyFrame {
     let site = StaticBox
-        .Slots([Slot.Text(a.view.decls.file_named(file)), Slot.Int(lo), Slot.Int(hi)])
+        .Slots([Slot.Text(a.view.decls.file_named(file)), Slot.Int(body.lo), Slot.Int(body.hi)])
     BodyFrame {
         sym: "frame\$${sym}",
         boxes: [site, StaticBox.Slots([Slot.Text(label), Slot.Box(0)])],
@@ -1088,7 +1089,7 @@ fn lower_fn(
         checks,
         [root],
     )
-    lo.frame = body_frame(a, fname, decl_label(x), a.view.file, x.lo, x.hi)
+    lo.frame = body_frame(a, fname, decl_label(x), a.view.file, x.body())
     // an `@unbroken` fn's own `while`s carry no back-edge check — the
     // cancel pass already decided it: a fn that SPINS has one, and its
     // bit is false for an `@unbroken` fn
@@ -1164,7 +1165,7 @@ fn lower_lambda(
         checks,
         framed(body),
     )
-    lo.frame = body_frame(a, lj.name, lj.name, a.view.file, 0, 0)
+    lo.frame = body_frame(a, lj.name, lj.name, a.view.file, IndexRange { lo: 0, hi: 0 })
     // a lambda's `while`s wear its maker's law: an `@unbroken` fn's lifted
     // body carries no back-edge check either
     lo.unbroken = lj.unbroken
