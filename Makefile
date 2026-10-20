@@ -862,7 +862,7 @@ libs-self-test:
 
 hooks-released:
 	@python3 tools/hooks_released.py
-	@python3 tools/hooks_pre_commit_check.py
+	@sh tools/hooks_pre_commit_check.sh
 
 # EVERY READ OF THE WORLD IS AN INPUT THROUGH ONE DOOR: the world reads
 # outside the door, counted by subsystem; a site the baseline does
