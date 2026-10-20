@@ -1,0 +1,40 @@
+// An export is a run's own addition over its base: the rows the base lacks or answers differently,
+// with their values, in one segment — nothing the base already held.
+use @std.time.{stamp}
+use compiler.store.{Pack, pack_at, pack_export, pack_get, pack_put, seal}
+
+once fn base() -> string { "/tmp/avra-store-export/${stamp()}" }
+
+fn at(name: string) -> Pack { pack_at("${base()}/${name}", "print-export") }
+
+/// A base holding k1 and k3 -> old, and a run that kept k1, changed k3, added k2 and sealed.
+fn run_over_base(name: string) -> Pack {
+    let b = at("${name}-base")
+    pack_put(b, "unit", "k1", "v1", [])
+    pack_put(b, "unit", "k3", "old", [])
+    let r = at("${name}-run")
+    pack_put(r, "unit", "k1", "v1", [])
+    pack_put(r, "unit", "k3", "new", ["k1"])
+    let _ = seal(r)
+    pack_put(r, "unit", "k2", "v2", [])
+    r
+}
+
+spec "compiler/store/export — a run's addition over its base" {
+    given "a run that changed one row and added another" {
+        then "the export counts only the rows the base lacks or answers differently" {
+            pack_export(run_over_base("count"), at("count-base"), at("count-out")) == 2
+        }
+        then "the exported segment answers the new and the changed rows, and nothing else" {
+            let _ = pack_export(run_over_base("read"), at("read-base"), at("read-out"))
+            let out = at("read-out")
+            pack_get(out, "unit", "k2") == "v2" &&
+                pack_get(out, "unit", "k3") == "new" &&
+                pack_get(out, "unit", "k1") == null
+        }
+        then "an export over itself is empty" {
+            let r = run_over_base("self")
+            pack_export(r, at("self-run"), at("self-out")) == 0
+        }
+    }
+}

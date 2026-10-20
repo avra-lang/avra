@@ -943,6 +943,13 @@ fn kill_at_commit() {
 }
 
 export fn pack_put(pack: Pack, family: string, key: string, value: string, read: List<string>) {
+    written(pack, family, key, value, read)
+    settled(pack)
+}
+
+/// A row appended to this writer's segment and held, with no seal considered: a writer that
+/// owns the whole segment (an export) never folds it away.
+fn written(pack: Pack, family: string, key: string, value: string, read: List<string>) {
     opened_at(pack, false)
     pack.withdrawn.put(record_key(family, key), false)
     // a value too big for the frames is stored as a reference to the shared blob
@@ -957,5 +964,24 @@ export fn pack_put(pack: Pack, family: string, key: string, value: string, read:
     let stamp = now_ns()
     append(pack, action_body(family, key, digest, read, stamp))
     held(pack, family, key, digest, read, stamp)
-    settled(pack)
+}
+
+/// THE ROWS THIS PACK HOLDS THAT THE BASE DOES NOT — absent there, or standing under another
+/// value — written into `into`'s own segment with the values they name, so the segment alone is
+/// everything a run added over its base. Answers how many rows it wrote.
+export fn pack_export(pack: Pack, base: Pack, into: Pack) -> int {
+    opened_at(pack, true)
+    opened_at(base, true)
+    let fresh = [h for h in lifted_rows(pack) if !withdrawn(pack, record_key(h.family, h.key)) && !base_has(pack, base, h)]
+    for h in fresh {
+        let value? = value_of(pack, h.digest) else { continue }
+        written(into, h.family, h.key, value, pack_reads(pack, h.family, h.key, false) ?? [])
+    }
+    fresh.length
+}
+
+/// Whether the base answers this row with the very value the pack holds.
+fn base_has(pack: Pack, base: Pack, h: Held) -> bool {
+    let value? = value_of(pack, h.digest) else { return false }
+    pack_get(base, h.family, h.key, true) == value
 }
