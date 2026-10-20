@@ -1,0 +1,34 @@
+use commands.{hook_fields, missed_hooks}
+
+const TABLE: string = [
+    "type Decls = {",
+    "    names: Map<string, int>,",
+    "    declare_hook: Cell<fn(int) -> int>,",
+    "    resolve_hook: Cell<fn() -> int>,",
+    "}",
+    "",
+    "impl Decls {",
+    "    fn disarm() {",
+    "        self.declare_hook.set(noop)",
+    "    }",
+    "    fn let_go(x: int) {",
+    "        self.resolve_hook.set(noop)",
+    "    }",
+    "}",
+]
+    .join("\n")
+
+spec "hooks_released — every hook of Decls is reset" {
+    then "the hook fields are the Cell<fn(…)> ones" {
+        hook_fields(TABLE).join(",") == "declare_hook,resolve_hook"
+    }
+    then "a table whose hooks disarm and let_go reset misses none" {
+        missed_hooks(TABLE).is_empty()
+    }
+    then "a hook neither fn sets is named" {
+        missed_hooks(TABLE.replace("self.resolve_hook.set(noop)", "")).join(",") == "resolve_hook"
+    }
+    then "a table with no hooks reads none" {
+        hook_fields(["type Decls = {", "    names: Map<string, int>,", "}"].join("\n")).is_empty()
+    }
+}

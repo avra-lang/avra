@@ -861,7 +861,7 @@ libs-self-test:
 	@python3 tools/llvm_link.py --twin
 
 hooks-released:
-	@python3 tools/hooks_released.py
+	@sh tools/avra_tools.sh hooks_released
 	@sh tools/hooks_pre_commit_check.sh
 
 # EVERY READ OF THE WORLD IS AN INPUT THROUGH ONE DOOR: the world reads
