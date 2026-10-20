@@ -1,0 +1,56 @@
+//! THE REPEATED-ROW LAW: a component that keeps state, written where a
+//! repetition makes it once a turn — a comprehension's element, a loop's
+//! body — is told from the rows beside it by its order alone unless it wears
+//! a key. Its state is the place's, so when the rows move it stays and lands
+//! on whichever row holds that place next. The law reads the written rows;
+//! a row made by a helper the loop calls is the runtime's to refuse.
+use core.{ExprId, StmtId, flatten}
+use diagnostics.{Diag, refusal}
+use @std.errors.{Loc}
+
+impl TypeCx {
+    /// Each unkeyed row that keeps state among what one turn of a
+    /// repetition makes, refused once.
+    mut fn repeated_rows_law(made: List<ExprId>) {
+        for e in flatten([self.rows_under(x) for x in made]) {
+            if self.rows_told.contains(e.index) || !self.keeps_state(e) { continue }
+            self.rows_told.push(e.index)
+            self.emit(unkeyed_row(self.loc_of(e), self.view.store.instance_parts(e)?.word ?? ""))
+        }
+    }
+
+    /// The same law over a loop's body.
+    mut fn repeated_rows_law_in(body: List<StmtId>) { self.repeated_rows_law(self.view.store.stmts_exprs(body)) }
+
+    /// The unkeyed instances one turn makes at and under `e`: never into a
+    /// fn it hands on, a nested comprehension (its own turn) or a keyed
+    /// instance (its key tells what is under it apart).
+    fn rows_under(e: ExprId) -> List<ExprId> {
+        let store = self.view.store
+        if store.lambda_parts(e) != null || store.repeats(e) { return [] }
+        if store.instance_parts(e) == null { return flatten([self.rows_under(k) for k in store.expr_children(e)]) }
+        // an instance holds what it expands to
+        let made = store.walked(e)
+        if made.any((x) -> store.struct_lit_parts(x)?.fields?.contains("key") ?? false) { return [] }
+        [e].concat(flatten([self.rows_under(k) for k in made]))
+    }
+
+    /// Whether the instance's component keeps state of its own.
+    fn keeps_state(e: ExprId) -> bool {
+        let word? = self.view.store.instance_parts(e)?.word else { return false }
+        let d? = type_named(self.names, word) else { return false }
+        self.view.decls.component_parts_of(d)?.fields()?.any(it.state) ?? false
+    }
+}
+
+// ── voices ──
+
+fn unkeyed_row(at: Loc?, word: string) -> Diag {
+    refusal(
+        "type.component_row",
+        at,
+        "a repeated `${word}` keeps state and wears no key, so its state stays with its place and lands on whichever row holds that place next",
+        "repeated here",
+        "give each row its own key — `${word} … { key: … }`, with what tells the row apart",
+    )
+}

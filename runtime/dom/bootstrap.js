@@ -111,9 +111,52 @@ function with_seat(mine, def) {
   return rest.length === 0 ? def : [...rest, def];
 }
 
+// Whether the page's engine sends a dialog away on its own word, `closedby`.
+const knowsClosedby = (doc) => {
+  const dialog = doc.defaultView?.HTMLDialogElement;
+  return typeof dialog === "function" && "closedBy" in dialog.prototype;
+};
+
+// A DIALOG THAT SAYS `closedby="any"` IS SENT AWAY BY A PRESS OUTSIDE IT: one
+// that starts and ends outside its box. It hears `cancel` as Escape makes it,
+// and closes unless that is stopped. An engine that knows the word does this
+// itself; where `sends` is true the page does it, by the same rule. AND A PRESS
+// THAT SENDS A DIALOG AWAY REACHES NOTHING BEHIND IT: a touch's click comes
+// after the dialog is gone, where it stood, so the press's click is stopped.
+export function dialogPresses(doc, sends) {
+  const away = (ev) => {
+    const d = ev.target;
+    if (!d || String(d.tagName).toLowerCase() !== "dialog" || !d.open || d.getAttribute("closedby") !== "any") return null;
+    const r = d.getBoundingClientRect();
+    return ev.clientX < r.left || ev.clientX >= r.right || ev.clientY < r.top || ev.clientY >= r.bottom ? d : null;
+  };
+  let pressed = null;
+  let dismissed = false;
+  doc.addEventListener("pointerdown", (ev) => {
+    dismissed = false;
+    pressed = sends ? away(ev) : null;
+  }, true);
+  doc.addEventListener("pointerup", (ev) => {
+    const d = pressed;
+    pressed = null;
+    if (d === null || away(ev) !== d) return;
+    if (typeof d.requestClose === "function") d.requestClose();
+    else if (d.dispatchEvent(new Event("cancel", { cancelable: true }))) d.close();
+  }, true);
+  doc.addEventListener("keydown", () => { dismissed = false; }, true);
+  doc.addEventListener("cancel", (ev) => { if (String(ev.target?.tagName).toLowerCase() === "dialog") dismissed = true; }, true);
+  doc.addEventListener("click", (ev) => {
+    if (!dismissed) return;
+    dismissed = false;
+    ev.preventDefault();
+    ev.stopPropagation();
+  }, true);
+}
+
 // Build the applier over one document (a real one in a browser, a stub in a
 // test) and one mount element. `send(id, kind, said)` is the echo.
 export function createApplier(doc, mount, send = () => {}, styleEl = null) {
+  dialogPresses(doc, !knowsClosedby(doc));
   // THE PAGE'S TABLES ARE KEYED BY ID, AND IDS ARE DENSE: `nodes[id]` is the
   // element, `hears[id]` what it hears — the shared definition of its one
   // seat, or a list of them for a second — so an element costs no object here.
@@ -456,13 +499,14 @@ export function createFrames(raf, painted) {
 // preview1 rows over the module's memory; `sent(bytes)` sees each frame
 // before it is applied. A module that is no `@std/ui` web app REFUSES by
 // the name it lacks.
-export async function run(source, { document, mount, style = null, wasi, sent = () => {}, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a), raf = (cb) => globalThis.requestAnimationFrame(cb) }) {
+export async function run(source, { document, mount, style = null, wasi, sent = () => {}, failed = (e) => { throw e; }, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a), raf = (cb) => globalThis.requestAnimationFrame(cb) }) {
   let mod = null;
-  const timers = createTimers(clock, (token) => mod[HOST.fired](BigInt(token)));
-  const frames = createFrames(raf, () => mod[HOST.painted]());
-  const fetches = createFetches(fetchFn, (token, status, octets) => sendAnswer(mod, token, status, octets), clock);
-  const windows = createWindows(document, mount, (path, from, to, extent, pin) => sendScrolled(mod, path, from, to, extent, pin));
-  const apply = createApplier(document, mount, (who, what, said) => sendEvent(mod, who, what, said), style);
+  const into = guarded(failed);
+  const timers = createTimers(clock, into((token) => mod[HOST.fired](BigInt(token))));
+  const frames = createFrames(raf, into(() => mod[HOST.painted]()));
+  const fetches = createFetches(fetchFn, into((token, status, octets) => sendAnswer(mod, token, status, octets)), clock);
+  const windows = createWindows(document, mount, into((path, from, to, extent, pin) => sendScrolled(mod, path, from, to, extent, pin)));
+  const apply = createApplier(document, mount, into((who, what, said) => sendEvent(mod, who, what, said)), style);
   mod = await instantiate(source, {
     wasi: wasi(() => mod.memory),
     // The seat is a Bytes: the pointer names its box, and the LENGTH comes
@@ -486,6 +530,16 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
   const code = mod[HOST.entry]();
   if (code !== 0) throw new Error(`the program's statements answered ${code}`);
   return { mod, ears: apply.ears };
+}
+
+// EVERY WAY THE PAGE ENTERS THE MODULE — an event, a timer, a frame, an
+// answer, a scroll — runs under `into(fn)`: a throw is handed to `failed`
+// whole, its stack with it, where the browser's own report of an uncaught
+// error may hide its words ("Script error.").
+export function guarded(failed) {
+  return (fn) => (...args) => {
+    try { return fn(...args); } catch (e) { failed(e); }
+  };
 }
 
 // The bytes a frame seat points at, read through the RUNTIME'S OWN length

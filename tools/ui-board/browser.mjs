@@ -13,6 +13,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { openPage, firefoxBinary, KEY } from "./firefox.mjs";
+import { outsidePresses } from "./dialog_claims.mjs";
 
 const [url, ...named_words] = process.argv.slice(2);
 const word = (name) => { const at = named_words.indexOf(name); return at < 0 ? null : named_words[at + 1]; };
@@ -132,6 +133,8 @@ claim("and it opens again after that too", await read(`${dialog}.open`));
 await press(named("Close"));
 await press(named("Light mode"));
 
+await outsidePresses({ ...page, escape: () => type(KEY.escape) }, "", claim, named);
+
 // ── the keyboard ────────────────────────────────────────────────
 await read(`${named("Dark mode")}.focus(), 1`);
 const order = [];
@@ -192,5 +195,15 @@ if (source) {
 
 claim("nothing reached the console while the board was used", page.complaints().length === 0, page.complaints());
 await page.close();
+
+// ── an engine that does not send a dialog away on its own ───────
+// The same board where the browser knows no `closedby`: the page sends the
+// dialog away itself, by the same rule.
+const unaware = await openPage(firefoxBinary(), url, { prefs: { "dom.dialog.light-dismiss.enabled": false } });
+await unaware.read(`new Promise((ready) => { const look = setInterval(() => { if (document.querySelector("li")) { clearInterval(look); ready(1); } }, 20); })`);
+claim("this engine knows no `closedby`", await unaware.read(`!("closedBy" in HTMLDialogElement.prototype)`));
+await outsidePresses({ ...unaware, escape: () => unaware.type(KEY.escape) }, ", where the engine knows no `closedby`", claim, named);
+claim("nothing reached that page's console", unaware.complaints().length === 0, unaware.complaints());
+await unaware.close();
 console.log(failed === 0 ? "ui-browser: every claim holds" : `ui-browser: ${failed} claim(s) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

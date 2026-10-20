@@ -17,8 +17,10 @@ export function firefoxBinary() {
 // The keys a page hears by name, as WebDriver spells them.
 export const KEY = { enter: "", tab: "", escape: "", left: "", right: "" };
 
-export async function openPage(binary, url, { width = 900, height = 700 } = {}) {
+export async function openPage(binary, url, { width = 900, height = 700, prefs = {} } = {}) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "avra-firefox-"));
+  // The engine's own settings this page runs under, as a profile writes them.
+  fs.writeFileSync(path.join(profile, "user.js"), Object.entries(prefs).map(([name, value]) => `user_pref(${JSON.stringify(name)}, ${JSON.stringify(value)});\n`).join(""));
   // Firefox refuses a HOME another user owns, and a container denies the
   // user namespaces its content sandbox needs, so root runs it unsandboxed.
   const root = process.getuid?.() === 0;
@@ -82,6 +84,8 @@ export async function openPage(binary, url, { width = 900, height = 700 } = {}) 
   };
 
   const pressAt = (x, y) => act([{ type: "pointer", id: "mouse", parameters: { pointerType: "mouse" }, actions: [{ type: "pointerMove", x, y }, { type: "pointerDown", button: 0 }, { type: "pointerUp", button: 0 }] }]);
+  // The pointer pressed at one point, moved, and let go at another.
+  const drag = (from, to) => act([{ type: "pointer", id: "mouse", parameters: { pointerType: "mouse" }, actions: [{ type: "pointerMove", x: from.x, y: from.y }, { type: "pointerDown", button: 0 }, { type: "pointerMove", x: to.x, y: to.y }, { type: "pointerUp", button: 0 }] }]);
 
   return {
     read,
@@ -91,6 +95,7 @@ export async function openPage(binary, url, { width = 900, height = 700 } = {}) 
     complaints: () => logged.filter((entry) => entry.level === "error" || entry.level === "warn").map((entry) => `${entry.level}: ${entry.text}`),
     // The pointer pressed and let go at a point of the window.
     pressAt,
+    drag,
     // The pointer pressed and let go at the middle of the element `selecting` answers.
     async press(selecting) {
       const at = await read(`(() => { const el = ${selecting}; el.scrollIntoView({ block: "nearest" }); const r = el.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);

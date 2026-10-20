@@ -50,7 +50,7 @@ use json.{
     json_read_float,
     json_read_bool,
 }
-use value.{Value}
+use value.{Value, Entry}
 use issue.{Issues, root}
 use check.{Checking, filed}
 
@@ -58,6 +58,13 @@ export trait Decode {
     static fn derive(t: Type) -> List<Directive> {
         if generic(t) { return [] }
         [Directive { twin: "", name: t.name, at: t.at, source: decoder(t) }]
+    }
+
+    /// A record's supplied fields, without defaults or record-level rules.
+    /// `projection` writes a Value.Map from the nullable field bindings;
+    /// the decoder retains only keys present in the input.
+    static fn fields(t: Type, projection: Code) -> List<Directive> {
+        [Directive { twin: "", name: t.name, at: t.at, source: field_decoder(t, projection) }]
     }
 
     /// Every annotation on a field is a rule this derive calls.
@@ -100,6 +107,26 @@ export fn checker(t: Type) -> Decls {
                 let got: ${t}? = self
                 ${[judging(a, checking_ruling) for a in rules(t)]}
                 c.issues()
+            }
+        }
+    }
+}
+
+/// Field decoding shares the complete reader's shapes, rules, and issue paths.
+fn field_decoder(t: Type, projection: Code) -> Decls {
+    let fields = literal_list([literal(f.name) for f in t.fields])
+    quote {
+        impl ${t} {
+            static fn decode_fields(v: Value, coercion: Coercion = Coercion.Strict, limits: Limits = Limits {}) -> Result<Value, Issues> {
+                decode(v, (mut d: Decoding, s: Slot) -> ${name(t.name)}.fields_decoded(d, s), coercion, limits)
+            }
+
+            static fn fields_decoded(mut d: Decoding, s: Slot) -> Value? {
+                let o? = d.object(s) else { return null }
+                ${[field_at(f, projection_slot(f)) for f in t.fields]}
+                if !d.closed(o, ${fields}) { return null }
+                let projected: Value = ${projection}
+                Value.Map([e for e in projected.entries() if o.entries.any(it.key == e.key)])
             }
         }
     }
@@ -284,9 +311,13 @@ fn rules(t: Type) -> List<Annotation> {
 /// `let email = { … }` — the field read at its slot and each of its
 /// rules run over what the last one answered.
 fn field_read(f: Field) -> Stmts {
+    field_at(f, slot(f))
+}
+
+fn field_at(f: Field, where: Code) -> Stmts {
     quote {
         let ${f.name} = {
-            let at = ${slot(f)}
+            let at = ${where}
             let got: ${inner(f.kind).spelled()}? = ${reader(inner(f.kind))}
             ${[judging(a, tree_ruling) for a in field_rules(f)]}
             got
@@ -299,7 +330,27 @@ fn field_read(f: Field) -> Stmts {
 fn slot(f: Field) -> Code {
     let at = quote { o.field(${literal(f.name)}) }
     let loose = if optional(f) { quote { ${at}.optional() } } else { at }
-    if f.annotations.any(is_secret(it)) { quote { ${loose}.secret() } } else { loose }
+    hidden_slot(f, loose)
+}
+
+/// Missing is permitted; explicit null follows the declared type, not its default.
+fn projection_slot(f: Field) -> Code {
+    let at = quote { o.field(${literal(f.name)}) }
+    let loose = if f.kind is .Opt {
+        quote { ${at}.optional() }
+    } else {
+        quote {
+            {
+                let at = ${at}
+                if at.value == null { at.optional() } else { at }
+            }
+        }
+    }
+    hidden_slot(f, loose)
+}
+
+fn hidden_slot(f: Field, at: Code) -> Code {
+    if f.annotations.any(is_secret(it)) { quote { ${at}.secret() } } else { at }
 }
 
 /// `@secret` is no rule: it hides what the field received.

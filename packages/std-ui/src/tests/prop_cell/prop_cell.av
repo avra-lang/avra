@@ -1,0 +1,35 @@
+// proves: a stateful composition's comparable head prop is a CELL of the
+// instance that stands — a later paint writes the NEW prop into it and
+// keeps the state the instance owns. `chip` keeps `taps`; `panel` hands
+// `chip` a label computed from its own state, so the second paint shows
+// the new label beside the taps it kept, and the control is found by
+// that new name.
+use @std.ui.components.{button, text}
+use @std.ui.headless.{Screen, headless}
+
+component chip(label: string) {
+    state taps: int = 0
+    text "${self.label}: ${self.taps}"
+    button "${self.label}+" { on press { self.taps = self.taps + 1 } }
+}
+
+component panel(tag: string) {
+    state turns: int = 0
+    chip "t${self.turns}${self.tag}"
+    button "turn ${self.turns}" { on press { self.turns = self.turns + 1 } }
+}
+
+fn page() -> panel { panel "!" }
+
+fn shown(s: Screen) -> string {
+    [l.trim() for l in s.text().split("\n") if l.trim() != ""].join(" | ")
+}
+
+let s = headless(page)
+println(shown(s))
+println("taps ${s.press("t0!+")} ${s.press("t0!+")}")
+println(shown(s))
+println("turn ${s.press("turn 0")}")
+println(shown(s))
+println("a later tap ${s.press("t1!+")}")
+println(shown(s))
