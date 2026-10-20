@@ -259,9 +259,17 @@ impl Vocabulary {
         }
     }
 
+    /// A prop the compiler made a cell: the PARENT writes it, at each paint.
+    fn prop_cell(f: Field) -> bool { f.state && f.prop }
+
+    /// A place the author keeps: a `state` written in the body. A prop cell is
+    /// no such place — it is the parent's, so a primitive is told it, never
+    /// left to keep it.
+    fn kept_state(f: Field) -> bool { f.state && !f.prop }
+
     /// The props the compiler made cells of: a later instance writes each into
     /// the one that stands, only where its value moved.
-    fn cell_props(t: Type) -> List<string> { [f.name for f in t.fields if f.state && f.prop] }
+    fn cell_props(t: Type) -> List<string> { [f.name for f in t.fields if self.prop_cell(f)] }
 
     /// The members a later instance hands the one that stands: every one
     /// that is no `state`, and where it says it stands.
@@ -346,7 +354,7 @@ fn refused(why: Diagnostic) -> Part { Part { problems: [why] } }
 impl Vocabulary {
     /// What `f` projects to: its event, or the one thing its mark says.
     fn part(t: Type, f: Field) -> Part {
-        if f.state { return refused(stateful_primitive(f)) }
+        if self.kept_state(f) { return refused(stateful_primitive(f)) }
         let says? = f.says else { return self.marked(f) }
         let marked? = f.marks.find(it.name != host_mark) else { return self.event(t, f, says) }
         refused(marked_event(f, marked))
