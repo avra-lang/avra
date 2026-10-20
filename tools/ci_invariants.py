@@ -31,7 +31,7 @@ lists and refuses by name:
                    comes last, and a merge-base compiler too old to read the tree
                    falls back to the seed (`make bootstrap`).
   path-gate        `runtime-keep` and `layout-oracle` run on a PR only when prepare's path gate
-                   (tools/ci_path_gate.py) says a path it reads changed; main's
+                   (tools/src/commands/ci_path_gate.av) says a path it reads changed; main's
                    push and a hand-run owe it always.
   race-split       a `labeled` run never shares its concurrency group with the other
                    pull_request runs, so the label and the open of one PR cannot
@@ -226,8 +226,8 @@ def check_path_gate(workflow_text):
         cond = re.search(r"^    if:\s*(.+)$", jobs.get(job, ""), re.M)
         if not cond or "needs.prepare.outputs.%s == '1'" % output not in cond.group(1):
             refusals.append("`%s` is not gated on `needs.prepare.outputs.%s`" % (job, output))
-        if "tools/ci_path_gate.py %s" % job not in jobs.get("prepare", ""):
-            refusals.append("`prepare` does not ask tools/ci_path_gate.py whether %s is owed" % job)
+        if "tools/avra_tools.sh ci_path_gate %s" % job not in jobs.get("prepare", ""):
+            refusals.append("`prepare` does not ask `avra_tools.sh ci_path_gate` whether %s is owed" % job)
     if refusals:
         return refusals, []
     return [], ["path-gate: %s run on the path gate's decision" % ", ".join(job for job, _ in GATED)]
