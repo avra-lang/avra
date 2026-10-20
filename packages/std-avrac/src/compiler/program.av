@@ -30,7 +30,7 @@ use core.{
 }
 use @std.path.{joined_path, normalized}
 use @std.errors.{Loc}
-use diagnostics.{Diag, DiagCode, has_errors, render_among, user_code}
+use diagnostics.{Diag, DiagCode, has_errors, is_note, render_among, user_code}
 use features.{Decl, Decls, DocFact, NameFacts, Wanted, FnSig, repr_word, spelled_type, kind_word}
 use @std.grammar.{
     Captured,
@@ -545,7 +545,7 @@ impl Program {
     fn report() -> string {
         let moved: string? = self.ws.decls.meta_disagreement()
         if moved != null { return self.rendered([foreign_package(moved!)]) }
-        let files = [self.rendered(a.diagnostics) for a in self.files if unclean(a)]
+        let files = [self.rendered(ds) for ds in [reported(a) for a in self.files] if !ds.is_empty()]
         let heads: List<string> = if self.voices.is_empty() { [] } else { [self.rendered(self.voices)] }
         let tails: List<string> = if self.defects.is_empty() { [] } else { [self.rendered(self.defects)] }
         joined(heads.concat(files).concat(tails), "\n\n")
@@ -791,4 +791,11 @@ impl Program {
         let said = [d for d in ds if is_warning(d)]
         if said.is_empty() { "" } else { self.rendered(said) }
     }
+}
+
+/// What a failed build's report shows of a file: everything a file with an
+/// error says, and of a clean file its notes, each pointing at an error
+/// said elsewhere.
+fn reported(a: Analysis) -> List<Diag> {
+    if unclean(a) { a.diagnostics } else { [d for d in a.diagnostics if is_note(d)] }
 }
