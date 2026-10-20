@@ -1,7 +1,7 @@
 #!/bin/sh
 # THE CPU BACKSTOP. Reads what the jobs already print and writes a table; wall seconds warn over
 # 25% (a shared runner's I/O stalls swing them), CPU seconds (`speed cpu-<step>`, user+sys from the
-# step's rusage) FAIL over 2x main's baseline AND 10 s more (a baseline that is missing says so, never passes
+# step's rusage) FAIL over 2x main's baseline AND 30 s more (a baseline that is missing says so, never passes
 # silently), unless the PR body carries `SPEED_ACCEPT: <reason>`. Counts are the primary
 # ratchet (tools/census_ratchet.py); this catches what they miss. Two modes:
 #   sh tools/speed_note.sh collect <log>...         name seconds lines on stdout
@@ -70,9 +70,10 @@ compare() {
         else
             pct=$(awk -v c="$c" -v b="$b" 'BEGIN { if (b == 0) print 0; else printf "%.0f", (c - b) * 100 / b }')
             echo "| $m | ${b}s | ${c}s | ${pct}% |" >> "$out"
-            # A few seconds of a small number is the runner's noise (6s -> 13s with nothing changed), so the
-            # backstop wants the step to have grown by 10s as well as doubled.
-            grew=$(awk -v c="$c" -v b="$b" 'BEGIN { print (c - b >= 10) ? 1 : 0 }')
+            # Runners swing a small step past 2x with nothing changed (std-path 6s -> 13s, sqlite 10s -> 23s,
+            # in one run where nearly every cold step ran 30-130% over its baseline), so the backstop wants
+            # the step to have grown by 30s as well as doubled; the counters are the ratchet for the rest.
+            grew=$(awk -v c="$c" -v b="$b" 'BEGIN { print (c - b >= 30) ? 1 : 0 }')
             if [ "$pct" -gt 100 ] 2>/dev/null && [ "$grew" = 1 ] && case "$m" in speed.cpu-*) true ;; *) false ;; esac; then
                 if [ -n "$ACCEPT" ]; then
                     echo "::warning::speed: $m is ${pct}% slower than main (${b}s -> ${c}s) — ACCEPTED by SPEED_ACCEPT: $ACCEPT"
@@ -122,9 +123,9 @@ case "${1:-}" in
         [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curc2" "$d/basec" >/dev/null 2>&1; echo $?)" = 1 ] || { echo "speed_note: a real 3x on matched cold states did not fail"; exit 1; }
         printf 'speed.cpu-small 13\n' > "$d/curs"
         printf 'speed.cpu-small 6\n' > "$d/bases"
-        [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curs" "$d/bases" >/dev/null 2>&1; echo $?)" = 0 ] || { echo "speed_note: a doubled 6s step (+7s) failed — the backstop owes a 10s floor"; exit 1; }
-        printf 'speed.cpu-small 17\n' > "$d/curs2"
-        [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curs2" "$d/bases" >/dev/null 2>&1; echo $?)" = 1 ] || { echo "speed_note: a 6s step grown by 11s did not fail"; exit 1; }
+        [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curs" "$d/bases" >/dev/null 2>&1; echo $?)" = 0 ] || { echo "speed_note: a doubled 6s step (+7s) failed — the backstop owes a 30s floor"; exit 1; }
+        printf 'speed.cpu-small 37\n' > "$d/curs2"
+        [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curs2" "$d/bases" >/dev/null 2>&1; echo $?)" = 1 ] || { echo "speed_note: a 6s step grown by 31s did not fail"; exit 1; }
         printf 'speed.cpu-a-cold 5\nspeed.cpu-b 7\n' > "$d/m1"
         printf 'speed.cpu-a-warm 1\nspeed.cpu-a-cold 9\n' > "$d/m2"
         [ "$(sh "$0" merge "$d/m1" "$d/m2" | sort | tr '\n' ' ')" = "speed.cpu-a-cold 5 speed.cpu-a-warm 1 speed.cpu-b 7 " ] || { echo "speed_note: merge did not keep the other state's baseline"; exit 1; }
