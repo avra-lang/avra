@@ -1131,7 +1131,7 @@ ci-invariants:
 	@python3 tools/ci_invariants.py --self-test
 	@python3 tools/ci_invariants.py
 	@sh tools/profile.sh --self-test
-	@python3 tools/ci_dup_run.py --self-test
+	@sh tools/ci_dup_run.sh --self-test
 	@sh tools/batch_test.sh
 	@python3 tools/pr_mode.py --self-test
 	@sh tools/fetch_compiler.sh --self-test
