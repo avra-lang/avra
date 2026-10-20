@@ -1,0 +1,207 @@
+// A table is recorded under its SHAPE: one line per column in name order,
+// the same text for the same model however its fields are ordered, and a
+// different text when any fact about a column differs. The registry holds
+// it from the table's creation; a registry older than shapes gains the
+// column, and an older claim's shape stays unknown.
+use @std.db.{model}
+use @std.db.error.{modeled}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+
+@model
+type Empty = {
+    id: int = 0,
+}
+
+@model
+type Pair_ab = {
+    id: int = 0,
+    a: int,
+    b: string,
+}
+
+@model
+type Pair_ba = {
+    id: int = 0,
+    b: string,
+    a: int,
+}
+
+@model
+type Parent = {
+    id: int = 0,
+    name: string,
+}
+
+@model
+type V_base = {
+    id: int = 0,
+    x: int,
+}
+
+@model
+type V_type = {
+    id: int = 0,
+    x: string,
+}
+
+@model
+type V_null = {
+    id: int = 0,
+    x: int?,
+}
+
+@model
+type V_unique = {
+    id: int = 0,
+    @unique x: int,
+}
+
+@model
+type V_auto = {
+    id: int = 0,
+    @auto x: int,
+}
+
+@model
+type V_name = {
+    id: int = 0,
+    y: int,
+}
+
+@model
+type V_link = {
+    id: int = 0,
+    x: Parent,
+}
+
+@model
+type V_optional_link = {
+    id: int = 0,
+    x: Parent?,
+}
+
+@model
+type V_cascade = {
+    id: int = 0,
+    @cascade x: Parent,
+}
+
+@model
+type V_set_null = {
+    id: int = 0,
+    @set_null x: Parent?,
+}
+
+/// The shape without its table-name line: what the columns say.
+fn body(shape: string) -> string { shape.substring(shape.index_of("\n") + 1, shape.length) }
+
+fn recorded(db: Db, named: string) -> Result<string, SqlError> {
+    (db
+        .scalar(sql("select shape from \"__avra_models__\" where table_name = ?").args([.Text(named)]))?)
+        .text()
+}
+
+fn at_creation() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    Empty.create_table(db)?
+    "${recorded(db, "Empty")? == Empty.shape()}"
+}
+
+fn after_an_older_registry() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    db
+        .run(
+            sql(
+                "CREATE TABLE \"__avra_models__\" (\"table_name\" TEXT PRIMARY KEY, \"declared_at\" TEXT)",
+            ),
+        )?
+    Empty.create_table(db)?
+    "${recorded(db, "Empty")? == Empty.shape()}"
+}
+
+fn an_older_claim() -> Result<string, SqlError> {
+    mut first = Db.memory()?
+    Empty.create_table(first)?
+    let at = (first
+        .scalar(sql("select declared_at from \"__avra_models__\" where table_name = 'Empty'"))?)
+        .text()?
+    mut older = Db.memory()?
+    older
+        .run(
+            sql(
+                "CREATE TABLE \"__avra_models__\" (\"table_name\" TEXT PRIMARY KEY, \"declared_at\" TEXT)",
+            ),
+        )?
+    older.run(sql("INSERT INTO \"__avra_models__\" VALUES ('Empty', ?)").args([.Text(at)]))?
+    Empty.create_table(older)?
+    let unknown = (older
+        .scalar(sql("select shape is null from \"__avra_models__\" where table_name = 'Empty'"))?)
+        .int()?
+    "${unknown}"
+}
+
+/// How many of the variants read exactly as the base does.
+fn same_as_base() -> int {
+    let base = body(V_base.shape())
+    let others = [
+        V_type.shape(),
+        V_unique.shape(),
+        V_auto.shape(),
+        V_name.shape(),
+        V_link.shape(),
+        V_optional_link.shape(),
+        V_cascade.shape(),
+        V_set_null.shape(),
+    ]
+    [s for s in others if body(s) == base].length
+}
+
+/// Whether no two of the texts are alike.
+fn all_apart(texts: List<string>) -> bool {
+    texts.all([u for u in texts if u == it].length == 1)
+}
+
+/// The link variants, which differ only in nullability and in what removing the parent does.
+fn link_texts_apart() -> bool {
+    all_apart(
+        [
+            body(V_link.shape()),
+            body(V_optional_link.shape()),
+            body(V_cascade.shape()),
+            body(V_set_null.shape()),
+        ],
+    )
+}
+
+spec "std/db shape" {
+    given "a model with no field but its key" {
+        then "reads as its table, then its columns in name order" {
+            Empty.shape() == "Empty\n__avra_version__|INTEGER|notnull|-|-|1|-|-\nid|INTEGER|null|key|-|-|-|-"
+        }
+    }
+    given "the same columns" {
+        then "read the same whatever order the fields are written in" {
+            body(Pair_ab.shape()) == body(Pair_ba.shape())
+        }
+        then "and the table's name leads the text" { Pair_ab.shape().starts_with("Pair_ab\n") }
+    }
+    given "one fact about a column that differs" {
+        then "reads differently: its type, uniqueness, default, name and link" {
+            same_as_base() == 0
+        }
+        then "and a link's nullability and what removing its parent does differ from each other" {
+            link_texts_apart()
+        }
+    }
+    given "a nullable scalar and a required one" {
+        then "read alike, since neither column is NOT NULL today (tightening it is a migration the owner decides)" {
+            body(V_null.shape()) == body(V_base.shape())
+        }
+    }
+    given "the registry" {
+        then "records the shape when the table is created" { (at_creation() catch "") == "true" }
+        then "gains the column when it was made before shapes" { (after_an_older_registry() catch "") == "true" }
+        then "leaves an older claim's shape unknown" { (an_older_claim() catch "") == "1" }
+    }
+}
