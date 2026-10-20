@@ -1,0 +1,51 @@
+use @std.meta.{derive}
+use @std.validate.{Decode, Decoding, Slot, Value, Issues, from_json}
+
+type Ref<T> = { id: string }
+
+impl Ref<T> {
+    static fn decoded(mut d: Decoding, s: Slot) -> Ref<T>? {
+        let id? = d.text(s) else { return null }
+        Ref { id: id }
+    }
+
+    static fn read_json(mut d: Decoding, depth: int, required: bool, secret: bool) -> Ref<T>? {
+        let id? = d.json_text(depth, required, secret) else { return null }
+        Ref { id: id }
+    }
+}
+
+type Person = { name: string }
+type Project = { title: string }
+
+@derive(Decode)
+type Message = {
+    author: Ref<Person>,
+    reviewer: Ref<Person>?,
+    projects: List<Ref<Project>>,
+    groups: List<List<Ref<Person>>>,
+    nested: Ref<List<Person>>,
+}
+
+@derive(Decode)
+type Envelope = { message: Message }
+
+const valid: string = "{\"author\":\"p1\",\"reviewer\":\"p2\",\"projects\":[\"a\",\"b\"],\"groups\":[[\"p3\"],[\"p4\",\"p5\"]],\"nested\":\"group\"}"
+const absent: string = "{\"author\":\"p1\",\"projects\":[],\"groups\":[],\"nested\":\"group\"}"
+const invalid: string = "{\"author\":1,\"reviewer\":2,\"projects\":[3],\"groups\":[[4]],\"nested\":5}"
+
+fn parsed(text: string) -> Value { from_json(text) catch Value.Null }
+
+fn shown(m: Message) -> string {
+    "${m.author.id}/${m.reviewer?.id ?? "none"}/${[p.id for p in m.projects].join(",")}/${[p.id for g in m.groups for p in g].join(",")}/${m.nested.id}"
+}
+
+fn answer(r: Result<Message, Issues>) -> string {
+    match r { .Ok(m) -> shown(m), .Err(e) -> [i.path.text() for i in e.all].join(",") }
+}
+
+fn envelope(r: Result<Envelope, Issues>) -> string {
+    match r { .Ok(e) -> shown(e.message), .Err(e) -> e.report() }
+}
+
+"${answer(Message.decode(parsed(valid)))}\n${answer(Message.from_json(valid))}\n${answer(Message.decode(parsed(absent)))}\n${answer(Message.from_json(absent))}\n${answer(Message.decode(parsed(invalid)))}\n${answer(Message.from_json(invalid))}\n${envelope(Envelope.decode(parsed("{\"message\":" + valid + "}")))}\n${envelope(Envelope.from_json("{\"message\":" + valid + "}"))}"
