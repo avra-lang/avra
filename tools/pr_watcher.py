@@ -125,7 +125,7 @@ MAIN_GRACE = 90
 # so a pass that sees a PR about to land FOLLOWS main: it polls its head and runs the pass again
 # the moment it moves, which is what dispatches `checks` for a head no push run was made for.
 FOLLOW_S = 600
-FOLLOW_POLL_S = 20
+FOLLOW_POLL_S = 40
 CONFLICT_PHRASE = ("this conflicts with main. Rebase onto origin/main, then "
                    "`sh tools/work land`")
 
@@ -491,11 +491,28 @@ def plan(prs, runs, state, trunk=None, held=None, now=None, seen_at=None):
 TRIES = 3
 
 
+# THE TWO TOKENS: every READ uses the workflow's own token (GH_TOKEN) and only the few WRITES whose effect
+# must start workflows or be the owner's — arming auto-merge (so the merge starts a push run) and
+# `update-branch` — use WRITE_TOKEN (the repository's queue token, the owner's budget). A PAT shared
+# with every lane's `gh` was spent by the watcher's polling alone and rate-limited all of them.
+WRITE_VERBS = (("pr", "merge"), ("pr", "update-branch"))
+
+
+def token_for(args, env):
+    """The token env var one gh call runs under: the write token for a write that needs it, else none
+    (the process's own GH_TOKEN)."""
+    if tuple(args[:2]) in WRITE_VERBS and env.get("WRITE_TOKEN"):
+        return env["WRITE_TOKEN"]
+    return None
+
+
 def _gh(args, check=True):
     """One gh call; a 5xx from GitHub (a heavy GraphQL read times out under load) is tried
     again, so one slow answer never fails a whole pass."""
+    use = token_for(args, os.environ)
+    child_env = dict(os.environ, GH_TOKEN=use) if use else None
     for attempt in range(TRIES):
-        p = subprocess.run(["gh", *args], capture_output=True, text=True)
+        p = subprocess.run(["gh", *args], capture_output=True, text=True, env=child_env)
         if p.returncode == 0 or not re.search(r"HTTP 5\d\d", p.stderr) or attempt == TRIES - 1:
             break
         time.sleep(2 * (attempt + 1))
@@ -577,8 +594,10 @@ def open_prs(repo):
                               "title,headRefName,autoMergeRequest,"
                               "headRefOid,isCrossRepository,createdAt,labels"])
     for p in prs:
-        p["statusCheckRollup"] = _gh_json(["pr", "view", str(p["number"]), "-R", repo,
-                                           "--json", "statusCheckRollup"]).get("statusCheckRollup")
+        # A DRAFT'S CHECKS ARE NOT READ: nothing is armed, refreshed or judged on one (only named), and
+        # a call per draft is most of the pass's API budget
+        p["statusCheckRollup"] = [] if p.get("isDraft") else _gh_json(
+            ["pr", "view", str(p["number"]), "-R", repo, "--json", "statusCheckRollup"]).get("statusCheckRollup")
     return prs
 
 
@@ -1218,6 +1237,14 @@ def selftest():
     execute(first, "avra-lang/avra", run=lambda args: sent.append(args) or "")
     if sent != [["workflow", "run", "checks.yml", "-R", "avra-lang/avra", "--ref", "main", "-f", "cold=1"]]:
         sys.exit(f"pr-watcher: self-test — the cold dispatch was sent as {sent}")
+    # THE TOKENS: a write that must start workflows uses the write token, a read never does
+    if token_for(["pr", "merge", "5"], {"WRITE_TOKEN": "w"}) != "w" or token_for(["pr", "update-branch", "5"], {"WRITE_TOKEN": "w"}) != "w":
+        sys.exit("pr-watcher: self-test — arming or refreshing did not use the write token")
+    for read in (["pr", "list"], ["pr", "view", "5"], ["run", "list"], ["api", "x"], ["workflow", "run", "checks.yml"], ["pr", "comment", "5"]):
+        if token_for(read, {"WRITE_TOKEN": "w"}) is not None:
+            sys.exit(f"pr-watcher: self-test — a read or other call used the write token: {read}")
+    if token_for(["pr", "merge", "5"], {}) is not None:
+        sys.exit("pr-watcher: self-test — with no write token the process's own token should answer")
     # FOLLOW: a pass that sees a PR about to land polls main and runs a pass when its head moves.
     def drive(heads, landings):
         log = {"sleeps": [], "steps": 0}

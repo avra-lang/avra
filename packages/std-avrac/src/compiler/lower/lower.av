@@ -263,11 +263,15 @@ fn new_lower_cx(
     seat_marks: List<SeatMark>,
     jobs: Jobs,
     checks: bool = true,
+    roots: List<ExprId>? = null,
 ) -> LowerCx {
     LowerCx {
         view: a.view,
         names: a.names,
         facts: a.facts,
+        decl_places: a.decl_places,
+        decl_structural: a.decl_structural,
+        roots: roots,
         dispatch: a.lang.dispatch,
         out: new_emitter(jobs.externs, a.view.decls),
         body: new_body_regs(
@@ -285,6 +289,13 @@ fn new_lower_cx(
         deferred: [],
         depth: 0,
     }
+}
+
+/// The roots of a frame whose code is the one expression `e`, none when it has
+/// none.
+fn framed(e: ExprId?) -> List<ExprId>? {
+    let r? = e else { return null }
+    [r]
 }
 
 /// A lone file's program, lowered without a memo — the tests' seam.
@@ -1067,7 +1078,16 @@ fn lower_fn(
     // `seat_marks` above, which stays the currency a fn VALUE's TYPE
     // carries.
     let body_marks: List<SeatMark> = [m with { consumed: a.view.decls.consumed_seat(x.id, j) } for j, m in seat_marks]
-    mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle, cross), checks)
+    mut lo = new_lower_cx(
+        a,
+        rt,
+        sub,
+        seats,
+        seat_marks,
+        new_jobs(externs, settle, cross),
+        checks,
+        [root],
+    )
     lo.frame = body_frame(a, fname, decl_label(x), a.view.file, x.lo, x.hi)
     // an `@unbroken` fn's own `while`s carry no back-edge check — the
     // cancel pass already decided it: a fn that SPINS has one, and its
@@ -1134,7 +1154,16 @@ fn lower_lambda(
     let seats: List<TypeId> = held?.seats ?? []
     let rt: TypeId = held?.answer ?? a.view.decls.types.intern(Type.Error)
     let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
-    mut lo = new_lower_cx(a, rt, lj.sub, [], [], new_jobs(externs, settle, cross), checks)
+    mut lo = new_lower_cx(
+        a,
+        rt,
+        lj.sub,
+        [],
+        [],
+        new_jobs(externs, settle, cross),
+        checks,
+        framed(body),
+    )
     lo.frame = body_frame(a, lj.name, lj.name, a.view.file, 0, 0)
     // a lambda's `while`s wear its maker's law: an `@unbroken` fn's lifted
     // body carries no back-edge check either
@@ -1620,7 +1649,7 @@ fn lower_root(
     checks: bool = true,
 ) -> LoweredBody {
     let rt: TypeId = a.facts.type_at(root)
-    mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle, cross), checks)
+    mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle, cross), checks, [root])
     lo.seeded()
     // THE SETTLED SEATS ARE CONSTANTS HERE: the initializer reads a
     // `const` seat as its called value, so the settlement computes on

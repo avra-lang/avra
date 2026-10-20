@@ -1,0 +1,35 @@
+// proves: a record held in a cell files the cell's key when the record is replaced or a field is written through it, alike in both engines
+extern fn avra_box_observe(box: Cell<Pair>) -> int
+extern fn avra_box_unobserve(box: Cell<Pair>) -> int
+extern fn avra_box_key(box: Cell<Pair>) -> int
+extern fn avra_turn_next() -> int
+extern fn avra_changes_take() -> List<int>
+
+type Pair = { a: int, b: int }
+
+fn taken() -> List<int> {
+    avra_changes_take()
+}
+
+fn only(keys: List<int>, k: int) -> bool {
+    keys.length == 1 && keys[0] == k
+}
+
+fn pair_of(keys: List<int>, first: int, second: int) -> bool {
+    keys.length == 2 && keys[0] == first && keys[1] == second
+}
+
+fn turn() -> List<int> {
+    let _ = avra_turn_next()
+    taken()
+}
+
+let pair = Cell.new(Pair { a: 1, b: 2 })
+let _ = avra_box_observe(pair)
+pair.set(Pair { a: 5, b: 2 })
+println("a record replaced ${only(taken(), avra_box_key(pair))}")
+let _ = avra_turn_next()
+mut copy = pair.get()
+copy.a = 9
+pair.set(copy)
+println("a field written then stored ${only(taken(), avra_box_key(pair))}")

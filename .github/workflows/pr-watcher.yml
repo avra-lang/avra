@@ -17,7 +17,8 @@
 # new workflow for the events it causes; arming auto-merge is cheap either
 # way, but a merge by the repository's GITHUB_TOKEN does not run the `push`
 # runs that publish the compiler. So when the repo has a PAT or app token it
-# is used (`AVRA_QUEUE_TOKEN`), and the GITHUB_TOKEN is the fallback.
+# is used (`AVRA_QUEUE_TOKEN`) for the few WRITES that must start workflows (arming, update-branch: WRITE_TOKEN), and the
+# GITHUB_TOKEN answers every read and every other call (GH_TOKEN); that token is the owner's own, shared with every lane.
 name: pr-watcher
 
 on:
@@ -65,7 +66,8 @@ jobs:
             echo "state: none kept yet"
           fi
       - env:
-          GH_TOKEN: ${{ secrets.AVRA_QUEUE_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WRITE_TOKEN: ${{ secrets.AVRA_QUEUE_TOKEN || secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: python3 tools/pr_watcher.py --follow
       - if: always()

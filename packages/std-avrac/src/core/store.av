@@ -146,6 +146,9 @@ export type SyntaxArena = {
     // sentence `avra expand` prints and a refusal about a minted
     // node carries
     @copied_by_hand("minted_expr: mean re-mints what a sugar means") means_notes: Cell<List<string?>>,
+    // the nodes a node is EXTENDED by, beside its own kids — a walk reaches
+    // them, so names resolve and types settle in them as anywhere
+    @copied_by_hand("minted_expr: `extended` copies the roots beside the copy") extensions: Cell<List<List<ExprId>>>,
     // the variant pattern an `if` that binds desugared into a Match
     // (`.V(p, q)`) — the binder list a match arm would take, kept
     // beside the node so the printer can spell the `if` back
@@ -220,6 +223,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         minted_by: list_cell(),
         meaning: list_cell(),
         means_notes: list_cell(),
+        extensions: list_cell(),
         is_payloads: list_cell(),
         instance_owners: list_cell(),
         grammar_lits: list_cell(),
@@ -290,6 +294,7 @@ impl SyntaxArena {
         self.minted_by.push(null)
         self.meaning.push(null)
         self.means_notes.push(null)
+        self.extensions.push([])
         self.is_payloads.push(null)
         self.instance_owners.push(null)
         self.grammar_lits.push(null)
@@ -525,6 +530,24 @@ impl SyntaxArena {
         minted
     }
 
+    /// Mints nodes `sugar` is EXTENDED by: `roots` are what a walk reaches
+    /// beside the sugar's own kids, `minted` every node made (the roots and
+    /// all they hold), each answering for the sugar, and `note` says what they
+    /// add. `mean` REPLACES the sugar with what it means; `extend` keeps it.
+    fn extend(sugar: ExprId, note: string, roots: List<ExprId>, minted: List<ExprId>) {
+        self.mint_for(sugar, minted, note)
+        self.extensions.set_at(sugar.index, roots)
+        let prints = self.expr_fingerprints.get()
+        self
+            .expr_fingerprints
+            .set_at(sugar.index, fp(198, [prints[sugar.index], fp_list([prints[r.index] for r in roots])]))
+    }
+
+    /// The nodes `e` is extended by; none for a node that is not.
+    fn extended_by(e: ExprId) -> List<ExprId> {
+        self.extensions.get()[e.index]
+    }
+
     /// The root of what `sugar` means; null for any other node.
     fn meant(e: ExprId) -> ExprId? {
         self.meaning.get()[e.index]
@@ -533,7 +556,7 @@ impl SyntaxArena {
     /// The nodes a walk descends into from `e`: a sugar walks as what it
     /// means, every other node as its kids. THE one place that rule lives.
     fn walked(e: ExprId) -> List<ExprId> {
-        let root? = self.meant(e) else { return self.expr(e).kids() }
+        let root? = self.meant(e) else { return self.expr(e).kids().concat(self.extended_by(e)) }
         [root]
     }
 

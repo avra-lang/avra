@@ -1,0 +1,114 @@
+use @std.http.frame.{framed, limits}
+use @std.http.http.{Request, Unrouted, Response}
+use @std.http.body.{Body, whole}
+use @std.http.route.{compiled, dispatch}
+use @std.mcp.{route}
+
+/// A `POST /mcp` whose head carries `Origin` when one is given.
+fn post_from(origin: string?, body: Bytes) -> Request<Unrouted>? {
+    let line = match origin {
+        o? -> "Origin: ${o}\r\n"
+        null -> ""
+    }
+    let raw = "POST /mcp HTTP/1.1\r\nHost: h\r\n${line}\r\n".bytes()
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: whole(body), peer: "t", params: Unrouted {} },
+        .Partial or .Refused(_) -> null,
+    }
+}
+
+fn status_from(origin: string?) -> int { status_when(origin, []) }
+
+fn status_when(origin: string?, origins: List<string>) -> int {
+    let q? = post_from(origin, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}".bytes()) else { return -1 }
+    dispatch(compiled([route(tools(), origins)]), q).status
+}
+
+spec "@std.mcp — the Origin of a POST" {
+    given "a page on another host" {
+        then "an https origin is refused with a 403" {
+            status_from("https://evil.example") == 403
+        }
+        then "a plain origin on another port of a foreign host is refused" {
+            status_from("http://evil.example:8080") == 403
+        }
+        then "the opaque origin a sandboxed page sends is refused" {
+            status_from("null") == 403
+        }
+        then "a host that only starts like localhost is refused" {
+            status_from("http://localhost.evil.example") == 403
+        }
+        then "a loopback name with a foreign suffix is refused" {
+            status_from("http://localhost.evil.com") == 403 &&
+                status_from("http://127.0.0.1.evil.com") == 403
+        }
+        then "a loopback name written as userinfo is refused" {
+            status_from("http://localhost@evil.com") == 403 &&
+                status_from("http://localhost:3000@evil.com") == 403
+        }
+        then "a loopback name after a fragment is refused" {
+            status_from("http://evil.com#localhost") == 403
+        }
+        then "an IPv6 loopback with a foreign suffix is refused" {
+            status_from("http://[::1].evil") == 403
+        }
+        then "a port that is not digits is refused" {
+            status_from("http://localhost:evil.com") == 403 &&
+                status_from("http://localhost:+3000") == 403
+        }
+        then "a port outside 1 to 65535 is refused" {
+            status_from("http://localhost:0") == 403 && status_from("http://localhost:99999") == 403
+        }
+        then "a mapped IPv4 loopback is not loopback, though it reaches one" {
+            status_from("http://[::ffff:127.0.0.1]") == 403
+        }
+        then "another 127 address is not loopback" {
+            status_from("http://127.0.0.2") == 403
+        }
+        then "a non-canonical spelling of ::1 is not loopback" {
+            status_from("http://[0:0:0:0:0:0:0:1]") == 403
+        }
+        then "an Origin with a path is refused, since an Origin has none" {
+            status_from("http://localhost:3000/") == 403
+        }
+    }
+    given "a client that is not a page" {
+        then "a request with no Origin is answered" {
+            status_from(null) == 200
+        }
+    }
+    given "a page on this machine" {
+        then "a localhost origin is answered" {
+            status_from("http://localhost:3000") == 200
+        }
+        then "an IPv4 loopback origin is answered" {
+            status_from("http://127.0.0.1") == 200
+        }
+        then "an IPv6 loopback origin is answered" {
+            status_from("http://[::1]:8080") == 200
+        }
+        then "the bare IPv6 loopback passes, with or without a port" {
+            status_from("http://[::1]") == 200 && status_from("http://[::1]:3000") == 200
+        }
+        then "the scheme and host are case-insensitive" {
+            status_from("HTTP://LOCALHOST") == 200
+        }
+    }
+    given "a page the server lists" {
+        then "its origin is answered" {
+            status_when("https://app.example", ["https://app.example"]) == 200
+        }
+        then "a page it does not list is still refused" {
+            status_when("https://other.example", ["https://app.example"]) == 403
+        }
+        then "a listed origin does not admit a longer host of the same prefix" {
+            status_when("https://app.example.evil", ["https://app.example"]) == 403
+        }
+        then "a listed origin is matched exactly, so a trailing slash is a different origin" {
+            status_when("https://app.example/", ["https://app.example"]) == 403
+        }
+        then "a listed origin is matched exactly, so another port is a different origin" {
+            status_when("https://app.example:8443", ["https://app.example"]) == 403
+        }
+    }
+}
