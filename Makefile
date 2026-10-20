@@ -911,11 +911,11 @@ speed-accept:
 
 # THE WALL-CLOCK RATCHET: a PR check's per-job and whole wall time, held in
 # the same tools/speed.budget the phase ratchet reads (ONE file, ONE reader),
-# measured by tools/ci_wall.py from a run's own jobs and judged in the `test`
+# measured by tools/ci_wall.sh from a run's own jobs and judged in the `test`
 # job of every PR run. A ceiling may only fall: this lowers it to a run's
 # measured times and never raises one. Point it at a run's metrics with
 # `make wall-accept WALL=<file>`, where the file is
-# `python3 tools/ci_wall.py --repo <o/r> --run <id> collect`.
+# `sh tools/ci_wall.sh --repo <o/r> --run <id> collect`.
 WALL ?= wall.metrics
 wall-ratchet:
 	@python3 tools/speed_ratchet.py --self-test >/dev/null
@@ -1133,7 +1133,7 @@ keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
 # on, proved on its fixtures — none reads the compiler.
 TOOL_WITNESSES = capped.sh\ --self-test failed_tail_test.sh host_fn_edit_attack.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test seed_is_tree.sh\ --self-test \
-                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_compiler_release.sh witness_ci_wall.sh witness_warm_edit.sh shim_guard_test.sh work_test.sh reclaim_test.sh keepers_loop.sh\ --self-test rungs.sh\ --self-test ladder.sh\ --self-test
+                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_compiler_release.sh ci_wall.sh\ --self-test witness_warm_edit.sh shim_guard_test.sh work_test.sh reclaim_test.sh keepers_loop.sh\ --self-test rungs.sh\ --self-test ladder.sh\ --self-test
 tool-witnesses:
 	@python3 tools/pipeline_status.py --self-test
 	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
