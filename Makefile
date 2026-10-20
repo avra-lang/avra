@@ -30,7 +30,7 @@ export AVRA_CXX_RUNTIME ?= stdc++
 endif
 # THE COMPILER'S LLVM LINK, one definition: the manifest row, read by the
 # hand-written clang lines below so none of them spells the libraries again.
-LLVM_LINK := $(shell python3 tools/llvm_link.py --words)
+LLVM_LINK := $(shell sh tools/llvm_link.sh --words)
 
 # The objects the COMPILER itself links: the runtime every program
 # carries, and the compiler's own foreign machinery (the LLVM wrapper,
