@@ -850,6 +850,30 @@ else case "$hh_out" in *"does not export \`target\`"*) [ -n "${VERBOSE:-}" ] && 
 rm -rf $hh
 fi
 
+if section tp; then
+# A BODY TYPED IN ONE PROCESS IS READ BACK IN THE NEXT: after one literal of one body moves, the
+# check types that body and no other, and says what a cold check says. A body that spoke is
+# typed afresh every time, so the fixture's bodies are silent.
+TP() { # TP <label> <max typed bodies>
+    steps=$((steps+1))
+    out=$(./avra check --counts $R/tp 2>&1); st=$?
+    n=$(printf '%s\n' "$out" | grep -oE ' typed_computed=[0-9]+' | tail -1 | cut -d= -f2)
+    if [ "$st" -ne 0 ] || [ -z "$n" ]; then fails=$((fails+1)); echo "FAIL  $1: check exited $st, typed_computed='$n': $(printf '%s' "$out" | grep -vE '^watch:|^time:' | head -3 | tr '\n' ' ')"; return; fi
+    if [ "$n" -le "$2" ]; then holds=$((holds+1)); [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $n"; else fails=$((fails+1)); echo "FAIL  $1: typed_computed=$n, wanted at most $2"; fi
+}
+mkdir -p $R/tp/src
+printf '[package]\nname = "tp"\nversion = "0.1.0"\n' > $R/tp/avra.toml
+python3 - <<'PY'
+import os
+body="".join("export fn f%d(n: int) -> string { \"v%d ${n + %d}\" }\n" % (i,i,i) for i in range(12))
+open(os.environ.get("R","build/cache-attacks")+"/tp/src/many.av","w").write(body)
+PY
+printf 'use many.{f0, f5}\nprintln("${f0(1)} ${f5(2)}")\n' > $R/tp/src/main.av
+./avra check $R/tp >/dev/null 2>&1
+ed $R/tp/src/many.av 'v5 ' 'w5 '
+TP "tp: one literal of one body moves — only that body is typed" 2
+fi
+
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
     # THE COMPILER'S OWN BINARY is identified by a stamp-keyed record of its bytes' digest:
