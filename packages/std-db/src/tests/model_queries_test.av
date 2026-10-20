@@ -1,0 +1,193 @@
+// A model reads and removes by its fields: `all` and `where` over an
+// empty table answer nothing, a filter narrows to the rows that match
+// every field it names, `remove` takes the row away, a `@soft_delete`
+// model keeps it (reads skip it, `trash` lists it, `restore` brings it
+// back), and an `@auto` column is the database's to set, never a request's.
+use @std.db.{model}
+use @std.db.error.{ModelError, modeled}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+
+@model
+type Job = {
+    id: int = 0,
+    title: string,
+    done: bool = false,
+}
+
+@model
+type Note = {
+    id: int = 0,
+    text: string,
+    @auto created: int,
+    @soft_delete removed_at: int? = null,
+}
+
+@model
+type Reading = {
+    id: int = 0,
+    label: string?,
+    count: int?,
+    ratio: float?,
+    flag: bool?,
+}
+
+fn seeded() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    Job.create_table(db)?
+    Note.create_table(db)?
+    Reading.create_table(db)?
+    db
+}
+
+fn count(db: Db, name: string) -> Result<int, SqlError> {
+    (db.scalar(sql("select count(*) from \"${name}\""))?).int()
+}
+
+fn titles(rows: List<Job>) -> string { [t.title for t in rows].join(",") }
+
+fn texts(rows: List<Note>) -> string { [n.text for n in rows].join(",") }
+
+fn add(mut db: Db, title: string, done: bool) -> Result<Job, ModelError> {
+    Job { title: title, done: done }.insert(db)
+}
+
+fn empty_table() -> Result<string, SqlError> {
+    let db = seeded()?
+    "${(Job.all(db)?).length} ${(Job.where(db, done: true)?).length}"
+}
+
+fn all_in_order() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let _ = add(db, "a", false)?
+    let _ = add(db, "b", true)?
+    let _ = add(db, "c", true)?
+    titles(modeled(Job.all(db))?)
+}
+
+fn filtered() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let _ = add(db, "a", false)?
+    let _ = add(db, "b", true)?
+    let _ = add(db, "c", true)?
+    let done = titles(modeled(Job.where(db, done: true))?)
+    let both = titles(modeled(Job.where(db, title: "c", done: true))?)
+    let none = titles(modeled(Job.where(db, title: "a", done: true))?)
+    let every = titles(modeled(Job.where(db))?)
+    "${done}|${both}|${none}|${every}"
+}
+
+fn removed() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let a = add(db, "a", false)?
+    let _ = add(db, "b", false)?
+    let gone = modeled(a.remove(db))?
+    let again = modeled(a.remove(db))?
+    "${gone} ${again} ${titles(modeled(Job.all(db))?)} ${modeled(count(db, "Job"))?}"
+}
+
+fn kept() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let a = Note { text: "a", created: 0 }.insert(db)?
+    let _ = Note { text: "b", created: 0 }.insert(db)?
+    let _ = modeled(a.remove(db))?
+    let live = texts(modeled(Note.all(db))?)
+    let found = modeled(Note.find(db, a.id))?
+    let trash = texts(modeled(Note.trash(db))?)
+    let rows = modeled(count(db, "Note"))?
+    "${live}|${found == null}|${trash}|${rows}"
+}
+
+fn restored() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let a = Note { text: "a", created: 0 }.insert(db)?
+    let _ = modeled(a.remove(db))?
+    let _ = modeled(a.restore(db))?
+    "${texts(modeled(Note.all(db))?)}|${texts(modeled(Note.trash(db))?)}"
+}
+
+fn stamped() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let n = Note { text: "a", created: 7 }.insert(db)?
+    let before = n.created
+    let _ = (n with { text: "b", created: 99 }).update(db)?
+    let after = modeled(Note.find(db, n.id))?!
+    "${before > 7} ${after.created == before} ${after.text}"
+}
+
+fn null_column() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let n = Note { text: "a", created: 0 }.insert(db)?
+    let live = modeled(Note.find(db, n.id))?!
+    "${live.removed_at == null}"
+}
+
+/// What one nullable column holds, absent or present.
+fn held(r: Reading) -> string {
+    "${r.label ?? "none"}|${r.count ?? -1}|${r.ratio ?? -1.0}|${r.flag ?? true}"
+}
+
+fn absent_row() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let r = Reading { label: null, count: null, ratio: null, flag: null }.insert(db)?
+    let back = modeled(Reading.find(db, r.id))?!
+    "${back.label == null} ${back.count == null} ${back.ratio == null} ${back.flag == null}"
+}
+
+fn spare_row() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let r = Reading { label: "", count: 0, ratio: 0.0, flag: false }.insert(db)?
+    let back = modeled(Reading.find(db, r.id))?!
+    "${back.label != null} ${back.count != null} ${back.ratio != null} ${back.flag != null} ${held(back)}"
+}
+
+fn labelled(mut db: Db, label: string?, count: int?) -> Result<Reading, ModelError> {
+    Reading { label: label, count: count, ratio: null, flag: null }.insert(db)
+}
+
+fn labels(rows: List<Reading>) -> string { [r.label ?? "~" for r in rows].join(",") }
+
+fn null_filter() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let _ = labelled(db, null, null)?
+    let _ = labelled(db, "", 0)?
+    let _ = labelled(db, "x", 5)?
+    let absent = labels(modeled(Reading.where(db, label: .Is(null)))?)
+    let empty = labels(modeled(Reading.where(db, label: .Is("")))?)
+    let named = labels(modeled(Reading.where(db, label: .Is("x")))?)
+    let given_nothing = labels(modeled(Reading.where(db))?)
+    let two = labels(modeled(Reading.where(db, label: .Is(null), count: .Is(5)))?)
+    "${absent}|${empty}|${named}|${given_nothing}|${two}"
+}
+
+spec "std/db queries" {
+    given "nullable columns" {
+        then "absence is read back as absence in every kind" { (absent_row() catch "") == "true true true true" }
+        then "the empty value of each kind is present, never absent" {
+            (spare_row() catch "") == "true true true true |0|0.0|false"
+        }
+    }
+    given "a filter on a nullable column" {
+        then "omitted means no filter, Is(null) means NULL, and the empty value is a value" {
+            (null_filter() catch "") == "~||x|~,,x|"
+        }
+    }
+    given "an empty table" {
+        then "all and where answer nothing" { (empty_table() catch "") == "0 0" }
+    }
+    given "rows" {
+        then "all answers them in the order they were inserted" { (all_in_order() catch "") == "a,b,c" }
+        then "where keeps the rows matching every field it names" { (filtered() catch "") == "b,c|c||a,b,c" }
+    }
+    given "remove" {
+        then "takes the row away, once" { (removed() catch "") == "1 0 b 1" }
+    }
+    given "a soft-delete model" {
+        then "keeps the row, which reads skip and trash lists" { (kept() catch "") == "b|true|a|2" }
+        then "restores it" { (restored() catch "") == "a|" }
+        then "reads a null column as null" { (null_column() catch "") == "true" }
+    }
+    given "an auto column" {
+        then "is set by the database and never by a write" { (stamped() catch "") == "true true b" }
+    }
+}
