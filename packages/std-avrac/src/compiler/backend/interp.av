@@ -287,9 +287,12 @@ type Pending = { frame: int, body: Body, pc: int, end: int }
 /// which the guarded call keeps whatever a guard inside a cleanup catches meanwhile.
 type Unwinding = { pending: List<Pending>, current: Pending?, back: Resume, floor: int, words: string }
 
+/// The place in `body` at `pc`.
+fn place_at(body: Body, pc: int) -> Place { Place { body: body, pc: pc } }
+
 /// The caller waiting at `pc` in `body` for a call answering into `dst`.
 fn resumed_at(body: Body, pc: int, dst: Reg) -> Resume {
-    Resume { place: Place { body: body, pc: pc }, dst: dst }
+    Resume { place: place_at(body, pc), dst: dst }
 }
 
 /// The register the call instruction at `pc` answers into.
@@ -1012,7 +1015,7 @@ impl Machine {
             [self
                 .regions_open(
                     k,
-                    if k == self.callers.length { Place { body: body, pc: pc } } else { self.callers[k].place },
+                    if k == self.callers.length { place_at(body, pc) } else { self.callers[k].place },
                 ) for k in reversed([j for j in floor..self.frames.length])],
         )
     }
