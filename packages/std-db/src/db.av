@@ -57,9 +57,10 @@ export trait Model {
             Directive { twin: "", name: t.name, at: t.at, source: generated(t) },
             Directive { twin: "", name: t.name, at: t.at, source: checks(read) },
             Directive { twin: "", name: t.name, at: t.at, source: decodes(read) },
-        ].concat(
-            [Directive { twin: "", name: filter_name(t, f), at: t.at, source: filter_enum(t, f) } for f in filtered_fields(t)],
-        )
+        ]
+            .concat(
+                [Directive { twin: "", name: filter_name(t, f), at: t.at, source: filter_enum(t, f) } for f in filtered_fields(t)],
+            )
     }
 
     /// The marks this derive reads: `@unique` makes a column unique,
@@ -135,9 +136,12 @@ fn checks(t: Type) -> Decls {
     checker(t)
 }
 
-/// The type read from a body by the same rules: one door in.
+/// The type read from a body by the same rules: one door in. A model that
+/// holds links has no whole wire shape yet: its link travels as a key and
+/// the parent is fetched after, which the body alone cannot do, so it
+/// derives no decoder until the key-carrying projection exists.
 fn decodes(t: Type) -> Decls {
-    if !shape_ok(t) { return quote { impl ${t} { } } }
+    if !shape_ok(t) || t.fields.any(link_target(it) != null || is_many(it)) { return quote { impl ${t} { } } }
     decoder(t)
 }
 
