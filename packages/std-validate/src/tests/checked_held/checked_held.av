@@ -1,0 +1,17 @@
+// proves: a typed check shows what each field held, as a decode does — text quoted, a number bare, and nothing for a secret
+use @std.meta.{derive}
+use @std.validate.{Checked, checked, range, length}
+
+@derive(Checked)
+type Account = {
+    @length(min: 1, max: 8) name: string,
+    @range(13, 130) age: int,
+    @secret @length(min: 8) pin: string,
+}
+
+match checked(Account { name: "", age: 3, pin: "abc" }) {
+    .Ok(_) -> println("ok"),
+    .Err(e) -> {
+        for i in e.all { println("${i.path.text()} ${i.rule} got ${i.received?.shown() ?? "nothing"}") }
+    },
+}

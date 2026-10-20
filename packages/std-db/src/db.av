@@ -38,11 +38,17 @@ use @std.meta.{
 use @std.errors.{Loc}
 use @std.sqlite.{Db, SqlValue, sql, prepared}
 use @std.sqlite.error.{SqlError}
-use error.{ModelError, UniqueField, or_attributed}
+use @std.validate.{Checked, Issues, checker, decoder, stripped}
+use error.{ModelError, UniqueField, or_attributed, or_invalid}
 
 export trait Model {
     static fn derive(t: Type) -> List<Directive> {
-        [Directive { twin: "", name: t.name, at: t.at, source: generated(t) }]
+        let read = stripped(t, claimed(t))
+        [
+            Directive { twin: "", name: t.name, at: t.at, source: generated(t) },
+            Directive { twin: "", name: t.name, at: t.at, source: checks(read) },
+            Directive { twin: "", name: t.name, at: t.at, source: decodes(read) },
+        ]
     }
 
     /// The one mark this derive reads: `@unique` on a field.
@@ -93,6 +99,22 @@ fn shape_ok(t: Type) -> bool {
     t.variants.is_empty() && has_id_field(t) && t.fields.length <= MAX_FIELDS
 }
 
+/// The annotations a model owns — its marks and its own — which are no
+/// rule of the validation it brings.
+fn claimed(t: Type) -> List<string> { Model.marks(t).concat(["model"]) }
+
+/// The rules the type declares, run over a row before any SQL.
+fn checks(t: Type) -> Decls {
+    if !shape_ok(t) { return quote { impl ${t} { } } }
+    checker(t)
+}
+
+/// The type read from a body by the same rules: one door in.
+fn decodes(t: Type) -> Decls {
+    if !shape_ok(t) { return quote { impl ${t} { } } }
+    decoder(t)
+}
+
 fn generated(t: Type) -> Decls {
     if !shape_ok(t) { return quote { impl ${t} { } } }
     quote {
@@ -118,6 +140,7 @@ fn generated(t: Type) -> Decls {
             }
 
             fn insert(mut db: Db) -> Result<${t}, ModelError> {
+                let _ = or_invalid(self.check())?
                 mut args: List<SqlValue> = []
                 ${[push_bound(f) for f in non_id_fields(t)]}
                 or_attributed(db.run(sql(${literal(insert_sql_of(t))}, args)), ${literal(table_name_of(t))}, ${unique_fields_code(t)})?
@@ -131,6 +154,7 @@ fn generated(t: Type) -> Decls {
             }
 
             fn update(mut db: Db) -> Result<int, ModelError> {
+                let _ = or_invalid(self.check())?
                 mut args: List<SqlValue> = []
                 ${[push_bound(f) for f in non_id_fields(t)]}
                 args.push(.Int(self.id))

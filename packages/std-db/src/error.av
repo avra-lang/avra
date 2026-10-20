@@ -1,10 +1,11 @@
 //! `@std/db`'s own runtime error — `SqlError` resolved back through
 //! the schema when a `@model`'s derive can name the exact `@unique`
 //! field a constraint violation broke, unenriched otherwise. Stands
-//! alone with `@std/errors` and `@std/sqlite`'s error module, per
-//! `db.av`'s derive-isolation law.
+//! alone with `@std/errors`, `@std/sqlite`'s error module and
+//! `@std/validate`'s issue types, per `db.av`'s derive-isolation law.
 use @std.errors.{Error, ErrorInfo, Loc, info}
 use @std.sqlite.error.{Cause, SqlError, Violation}
+use @std.validate.{Issue, Issues, root}
 
 /// One `@unique` field's own name and where it was declared — enough
 /// to say which law a violation broke, never the whole `@std/meta`
@@ -23,6 +24,8 @@ export enum ModelError {
     /// did not parse against any of them — every candidate, named
     /// honestly as "one of these" rather than a guess.
     Ambiguous(fields: List<UniqueField>, model: string, sql: SqlError)
+    /// The row breaks a rule its type declares: no SQL ran.
+    Invalid(issues: Issues)
     /// Every other `SqlError` — wrapped, never rewritten.
     Other(sql: SqlError)
 }
@@ -32,12 +35,29 @@ impl Error for ModelError {
         match self {
             .Unique(f, model, _) -> info("db.constraint.unique", unique_message(f, model)),
             .Ambiguous(fs, model, _) -> info("db.constraint.unique", ambiguous_message(fs, model)),
+            .Invalid(found) -> found.describe(),
             .Other(sql) -> sql.describe(),
         }
     }
 
     fn cause() -> dyn Error? {
-        match self { .Unique(_, _, sql) or .Ambiguous(_, _, sql) or .Other(sql) -> sql }
+        match self {
+            .Unique(_, _, sql) or .Ambiguous(_, _, sql) or .Other(sql) -> sql,
+            .Invalid(_) -> null,
+        }
+    }
+}
+
+impl ModelError {
+    /// What a form shows under its fields: the rules a row broke, a
+    /// taken `@unique` value at that field, nothing for the rest.
+    fn issues() -> Issues {
+        match self {
+            .Invalid(found) -> found,
+            .Unique(f, _, _) -> Issues { all: [taken(f)] },
+            .Ambiguous(fs, _, _) -> Issues { all: [taken(f) for f in fs] },
+            .Other(_) -> Issues { all: [] },
+        }
     }
 }
 
@@ -60,6 +80,15 @@ fn at_suffix(at: Loc?) -> string {
         loc? -> " at ${loc.file ?? "?"}:${loc.lo}"
         null -> ""
     }
+}
+
+fn taken(f: UniqueField) -> Issue {
+    Issue { path: root().field(f.name), rule: "unique", message: "is already taken" }
+}
+
+/// A row's own rules as a write's first step: nothing, or the refusal.
+export fn or_invalid(found: Issues) -> Result<int, ModelError> {
+    if found.all.is_empty() { .Ok(0) } else { .Err(ModelError.Invalid(found)) }
 }
 
 // ── Attribution — resolved once, at the moment a write fails. ──────
