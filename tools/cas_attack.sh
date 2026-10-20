@@ -48,6 +48,8 @@ for w in a b; do
     head -c 5242880 /dev/zero | tr '\0' 'x' > "$E/$w/src/big.txt"
     printf 'use @std.meta.{embed}\nconst A: string = embed("big.txt")\nprintln("${A.length}")\n' > "$E/$w/src/main.av"
 done
+mkdir -p "$E/c/src"; cp "$E/a/avra.toml" "$E/c/avra.toml"; cp "$E/a/src/big.txt" "$E/c/src/big.txt"
+printf 'use @std.meta.{embed}\nconst B: Bytes = embed("big.txt").bytes()\nprintln("${B.length}")\n' > "$E/c/src/main.av"
 built() { AVRA_CACHE_DIR="$E/cache" AVRA_CLOCK=real build/avra build "$E/$1" 2>&1; "$E/$1/src/main"; }
 [ "$(built a | tail -1)" = 5242880 ] && [ "$(built b | tail -1)" = 5242880 ] && say "both worktrees build the embedding program" || fail "an embedding program did not build"
 n=$(find "$E/cache/cas" -mindepth 2 -maxdepth 2 -type f -size +1000k | wc -l | tr -d ' ')
@@ -55,5 +57,12 @@ n=$(find "$E/cache/cas" -mindepth 2 -maxdepth 2 -type f -size +1000k | wc -l | t
 [ "$(built a | tail -1)" = 5242880 ] && say "a warm build reads the embed back through the blob" || fail "the warm build did not answer"
 find "$E/cache/cas" -mindepth 2 -maxdepth 2 -type f -size +1000k -delete
 [ "$(built b | tail -1)" = 5242880 ] && say "an embed whose blob is gone is rebuilt, never wrong" || fail "a missing embed blob broke the build"
+# The same file settled as `Bytes` in two worktrees: its octets are ONE blob.
+cp -R "$E/c" "$E/d"
+sized() { AVRA_CACHE_DIR="$E/cache2" AVRA_CLOCK=real build/avra build "$E/$1" 2>&1; "$E/$1/src/main"; }
+[ "$(sized c | tail -1)" = 5242880 ] && [ "$(sized d | tail -1)" = 5242880 ] && say "both worktrees build the Bytes program" || fail "a Bytes program did not build"
+n=$(find "$E/cache2/cas" -mindepth 2 -maxdepth 2 -type f -size +1000k | wc -l | tr -d ' ')
+[ "$n" = 1 ] && say "two worktrees' Bytes const is ONE blob of its octets" || fail "$n blobs over 1 MB for one Bytes const"
+[ "$(sized c | tail -1)" = 5242880 ] && say "a warm build reads the octets back through the blob" || fail "the warm Bytes build did not answer"
 [ $fails -eq 0 ] || { echo "cas-attack: $fails of $steps FAILED"; exit 1; }
 echo "cas-attack: $steps steps passed"
