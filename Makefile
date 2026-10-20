@@ -1023,10 +1023,10 @@ ui-host:
 	@sh tools/ui_host.sh
 
 # THE WEB'S EVENT ENUM IS GENERATED from the pinned webref file: DomEvent is
-# what tools/host_events.py writes, and a variant kept by hand would be an
+# what tools/src/commands/host_events.av writes, and a variant kept by hand would be an
 # event the platform never fires.
 host-events:
-	@python3 tools/host_events.py
+	@sh tools/avra_tools.sh host_events
 
 # THE JS HOST IS TESTED BY THE GATE, not by whoever remembers to: a host
 # nothing runs is a second implementation nothing checks.

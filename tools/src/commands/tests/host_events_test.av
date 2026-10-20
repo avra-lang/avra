@@ -1,0 +1,23 @@
+use commands.{generated_from}
+
+const EVENTS: string = "[{\"type\": \"click\", \"interface\": \"PointerEvent\", \"targets\": [{\"target\": \"Element\"}, {\"target\": \"Document\"}, {\"target\": \"Element\"}]}, {\"type\": \"Abort\", \"interface\": \"Event\", \"targets\": [{\"target\": \"Window\"}]}, {\"type\": \"click\", \"interface\": \"Other\", \"targets\": [{\"target\": \"Window\"}]}]"
+
+spec "host_events — the enum is derived from the webref rows" {
+    then "variants come in code-point order of the type, first letter capitalised" {
+        let g = generated_from(EVENTS)
+        g.index_of("    Abort\n    Click\n}") > 0
+    }
+    then "an event's row keeps the first interface and its targets once, in first-seen order" {
+        generated_from(EVENTS)
+            .contains(
+                "DomRow { event: .Click, interface: \"PointerEvent\", targets: [\"Element\", \"Document\", \"Window\"] },",
+            )
+    }
+    then "word names the type the DOM spells it with" {
+        generated_from(EVENTS).contains(".Abort -> \"Abort\",") &&
+            generated_from(EVENTS).contains(".Click -> \"click\",")
+    }
+    then "no events generate the empty enum" {
+        generated_from("[]").contains("export enum DomEvent {\n}")
+    }
+}
