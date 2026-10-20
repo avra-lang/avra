@@ -3,7 +3,17 @@
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
 use core.{ExprId, StmtId, TypeId, DeclId, DeclKind, same_type, counted}
-use features.{TypeCx, FnSig, this_is, MethodCall, RunChoice}
+use features.{
+    TypeCx,
+    FnSig,
+    this_is,
+    MethodCall,
+    RunChoice,
+    Placed,
+    no_pins,
+    unpinned_of,
+    tparams_refused,
+}
 use diagnostics.{refusal}
 use @std.errors.{Loc}
 
@@ -90,9 +100,8 @@ fn declared_call(
     sig.ret
 }
 
-/// A STATIC's call: a plain fn call under a type's name. No
-/// receiver rides a seat, so every argument judges against the sig
-/// exactly as written and the seats are numbered from zero.
+/// A static call has no receiver seat. Its owner's type parameters
+/// bind from the arguments and expected answer; seats start at zero.
 fn static_call(
     mut cx: TypeCx,
     e: ExprId,
@@ -108,11 +117,69 @@ fn static_call(
     let found? = cx.view.decls.sig(picked)?.fn_sig() else { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name, []) }
     let placed? = cx.placed(e, "${target}.${name}", picked, args, found.params) else { return cx.error_type }
     if placed.args.length != placed.wants.length { return wrong_static_arity(cx, e, target, name, placed.wants.length, placed.args.length) }
+    let owner = generic_static_owner(cx, picked)
+    if owner != null {
+        return generic_static_call(cx, e, picked, owner!, "${target}.${name}", placed, found)
+    }
     for j, a in placed.args {
         if !cx.accepts(a, placed.wants[j]) { wrong_method_argument(cx, target, name, j, placed.wants[j], a) }
     }
     if !cx.seat_contracts(e, "${target}.${name}", picked, 0, placed.args, null) { return cx.error_type }
     found.ret
+}
+
+/// The generic declaration whose parameters a static method names.
+fn generic_static_owner(cx: TypeCx, method: DeclId) -> DeclId? {
+    let block? = cx.view.decls.decl(method).parent else { return null }
+    let owner? = cx.view.decls.target_of(block) else { return null }
+    if cx.tparams(owner).is_empty() { null } else { owner }
+}
+
+/// A static's type parameters are its owner's; arguments and the
+/// expected answer bind them exactly as a generic function's seats do.
+fn generic_static_call(
+    mut cx: TypeCx,
+    e: ExprId,
+    method: DeclId,
+    owner: DeclId,
+    callee: string,
+    placed: Placed,
+    sig: FnSig,
+) -> TypeId {
+    let names = cx.tparams(owner)
+    if tparams_refused(names) { return cx.error_type }
+    mut bound = no_pins(names.length)
+    mut refused = false
+    for j, a in placed.args {
+        if !cx.agreed(a, placed.wants[j], owner, bound) {
+            cx.wrong_argument(callee, j, cx.as_bound(placed.wants[j], owner, bound), a)
+            refused = true
+        }
+    }
+    for pin in placed.pins {
+        if !cx.unify(pin.want, pin.have, owner, bound) {
+            let _ = cx.spread_field_type(pin.at, callee, pin.name, pin.have, pin.want)
+            refused = true
+        }
+    }
+    if refused { return cx.error_type }
+    let want = cx.want_at(e)
+    if unpinned_of(names, bound) != null && want != null {
+        let _ = cx.unify(sig.ret, want!, owner, bound)
+    }
+    let missing = unpinned_of(names, bound)
+    if missing != null {
+        if placed.args.any((a) -> cx.errored(a) && (!cx.facts.hungry_at(a) || cx.starving)) { return cx.error_type }
+        if !cx.starving { return cx.hungry(e) }
+        return static_unbound(cx, e, callee, missing!)
+    }
+    let concrete = cx.bound_closed(bound)
+    let bad = [cx.unlawful_side(cx.view.types.substituted(t, owner, concrete)) for t in sig.params.concat([sig.ret])]
+        .find(it != null)
+    if bad != null { return static_unholdable(cx, e, callee, bad!) }
+    if !cx.seat_contracts(e, callee, method, 0, placed.args, null) { return cx.error_type }
+    cx.record_subst(e, owner, concrete, cx.subst_at(e)?.consts ?? [])
+    cx.view.types.substituted(sig.ret, owner, concrete)
 }
 
 /// The static members of `m`'s type that share its name — one per
@@ -829,6 +896,32 @@ fn default_unbound(mut cx: TypeCx, e: ExprId, trait_name: string) {
                 "this call to a `${trait_name}` default does not say what its type parameters are",
                 "called here",
                 "pass an argument whose type names them, or bind the answer to a typed `let`",
+            ),
+        )
+}
+
+fn static_unbound(mut cx: TypeCx, e: ExprId, callee: string, parameter: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.method",
+                cx.loc_of(e),
+                "`${callee}` needs a type for `${parameter}` from its arguments or expected answer",
+                "no type binds this parameter",
+                "give the call a typed argument or an annotated answer",
+            ),
+        )
+}
+
+fn static_unholdable(mut cx: TypeCx, e: ExprId, callee: string, side: TypeId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.method",
+                cx.loc_of(e),
+                "`${callee}` instantiates a slot as `${cx.view.types.name_of(side)}`, which no slot holds",
+                "this call",
+                "instantiate the type parameter with a value a slot can hold",
             ),
         )
 }
