@@ -1,0 +1,142 @@
+//! A FINGERPRINT TAG NAMES A NODE KIND, and a parts list is FIXED ARITY.
+//!
+//! Inside one fold space — a file — no two kinds may wear one tag number, or their fingerprints
+//! are equal by construction and every consumer reads two things as one. And a flat concatenation
+//! of two sequences has a boundary that MOVES (`f<A>(B)` and `f<A, B?>()`, spliced to one list,
+//! wore one fingerprint), so every variable-length run folds through `fp_list` first: a `.concat`
+//! or a `flatten` standing in a parts list, with the nested folds set aside, is a run that never
+//! became one value.
+//!
+//! A tag is claimed by `fp(<int>, …)`, by a conditional `fp(if c { A } else { B }, …)`, by
+//! `restamp(x, <int>)`, and — in a file that calls the shared `fp_list` without defining it — by
+//! that fold's own tag. A tag chosen at run time (`fp(tag, …)`) claims nothing.
+use core.{ExprId}
+use features.{Code, Fix, rule, said}
+use @std.text.{parse_int}
+
+/// The shared fold's own tag, claimed once by every file that calls it.
+const SHARED_TAG: int = 105
+
+/// A tag two sites of one fold space both claim.
+@keeps("fp(1, [a])")
+@says("the tag to move to is a free number in this file's space, which the author chooses")
+export rule fp_tag_repeated { quote { fp(${tag}, ${parts}) } if repeated(tag) != null -> repeated_found(tag) }
+
+/// `fp_tag_repeated` for a mark stamped over a statement's fold.
+@keeps("restamp(s, 1)")
+@says("the tag to move to is a free number in this file's space, which the author chooses")
+export rule restamp_tag_repeated { quote { restamp(${s}, ${tag}) } if repeated(tag) != null -> repeated_found(tag) }
+
+/// `restamp_tag_repeated` for the method spelling, `self.restamp(s, tag)`.
+@keeps("o.restamp(s, 1)")
+@says("the tag to move to is a free number in this file's space, which the author chooses")
+export rule restamp_method_tag_repeated { quote { ${o}.restamp(${s}, ${tag}) } if repeated(tag) != null -> repeated_found(tag) }
+
+/// A `.concat` or a `flatten` in a parts list that no `fp_list` folded first.
+@keeps("fp(1, [a, fp_list(bs.concat(cs))])")
+@says("the run folds through `fp_list` before it joins the list, which only the author knows the boundaries of")
+export rule fp_run_spliced { quote { fp(${tag}, ${parts}) } if splices(parts) -> spliced_found(parts) }
+
+/// The integer a node spells, or null.
+fn int_spelled(c: Code) -> int? { parse_int(c.text().trim()) }
+
+/// Every tag number a node claims: its literal, or the two branches of a conditional's literals.
+fn claimed_by(tag: Code) -> List<int> {
+    let own? = int_spelled(tag) else { return branch_tags(tag) }
+    [own]
+}
+
+/// A conditional tag: every integer literal among its branches (kids past the condition).
+fn branch_tags(tag: Code) -> List<int> {
+    if !tag.text().starts_with("if ") { return [] }
+    [n for k in tag.kids().drop(1) for n in leaf_ints(k)]
+}
+
+fn leaf_ints(c: Code) -> List<int> {
+    match int_spelled(c) {
+        n? -> [n]
+        null -> [n for k in c.kids() for n in leaf_ints(k)]
+    }
+}
+
+/// Every claim in the node's file, as (tag, the claiming node).
+type Claim = { tag: int, at: Code }
+
+fn claims(u: Code) -> List<Claim> {
+    let sites = [u.coded(e) for e in u.of.view.store.expr_ids() if claims_a_tag(u, e)]
+    let named = [Claim { tag: t, at: s } for s in sites for t in tags_of(s)]
+    named.concat(borrowed(u))
+}
+
+fn claims_a_tag(u: Code, e: ExprId) -> bool {
+    let callee = u.of.view.store.callee_name(e)
+    callee == "fp" || callee == "restamp" || u.coded(e).method_name() == "restamp"
+}
+
+fn tags_of(call: Code) -> List<int> {
+    let args = call.call_args()
+    let at = if call.text().starts_with("fp(") { 0 } else { 1 }
+    if args.length <= at { return [] }
+    claimed_by(args[at])
+}
+
+/// 105, once, for a file that calls `fp_list` and defines no `fp_list` of its own.
+fn borrowed(u: Code) -> List<Claim> {
+    let callees = u.file_callees()
+    if !callees.contains("fp_list") || defines_fp_list(u) { return [] }
+    [Claim { tag: SHARED_TAG, at: u }]
+}
+
+fn defines_fp_list(u: Code) -> bool {
+    u.of.view.source.text.contains("fn fp_list(")
+}
+
+/// The tag a site shares with another claim of its file's space, or null.
+fn repeated(tag: Code) -> int? {
+    let n? = int_spelled(tag) else { return null }
+    let same = [c for c in claims(tag) if c.tag == n]
+    if same.length > 1 { n } else { null }
+}
+
+/// Whether a parts list's OWN elements — nested `fp` and `fp_list` calls set aside — splice a run.
+fn splices(parts: Code) -> bool {
+    [parts].concat(own_nodes(parts)).any(is_splice(it))
+}
+
+fn own_nodes(c: Code) -> List<Code> {
+    let kids = [k for k in c.kids() if !is_fold(k)]
+    kids.concat([n for k in kids for n in own_nodes(k)])
+}
+
+fn is_fold(c: Code) -> bool {
+    let t = c.text()
+    t.starts_with("fp(") || t.starts_with("fp_list(")
+}
+
+fn is_splice(c: Code) -> bool {
+    c.method_name() == "concat" || c.text().starts_with("flatten(")
+}
+
+fn repeated_found(tag: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                tag.loc(),
+                "tag ${tag.text()} is claimed twice in this file's fold space — two node kinds that wear one number fingerprint alike, and every consumer reads them as one",
+                "this tag",
+                "pick a number no other fold in this file claims (the file's next free tag is one past its highest)",
+            ),
+        )
+}
+
+fn spliced_found(parts: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                parts.loc(),
+                "a run is spliced into a parts list — a flat concatenation has a boundary that moves, so `f<A>(B)` and `f<A, B?>()` wear one fingerprint",
+                "this parts list",
+                "fold the run through `fp_list` first, so the list's shape is fixed per kind",
+            ),
+        )
+}
