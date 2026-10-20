@@ -37,6 +37,7 @@ fn cas_prefix() -> string { from_codepoint(1) + "avra-cas:" }
 fn cas_dir() -> string? {
     // LICENSED input.debug_flag: where the shared store lives is the machine's, never an input of what is built
     let moved? = env("AVRA_CACHE_DIR") else {
+        // LICENSED input.debug_flag: where the shared store lives is the machine's, never an input of what is built
         let home? = env("HOME") else { return null }
         return joined_path(joined_path(home, ".avra/cache"), "cas")
     }
@@ -122,6 +123,7 @@ fn damaged(at: string) -> string? {
 fn registered(dir: string, store_root: string) {
     let regs = joined_path(dir, "stores")
     let at = joined_path(regs, digest_of_octets(store_root.bytes()).substring(0, 16))
+    // LICENSED input.saved_read: the shared store's own registry of readers, never an input of what is built
     if exists(at) { return }
     match make_dirs(regs) { .Ok(_) -> {}, .Err(_) -> { return } }
     let _ = write_text(at, store_root)
@@ -132,11 +134,14 @@ fn registered(dir: string, store_root: string) {
 export fn cas_readers() -> List<string> {
     let dir? = cas_dir() else { return [] }
     let regs = joined_path(dir, "stores")
+    // LICENSED input.saved_read: the shared store's own registry of readers, never an input of what is built
     let names = match list_dir(regs) { .Ok(ns) -> ns, .Err(_) -> [] }
     mut live: List<string> = []
     for n in names {
         let at = joined_path(regs, n)
+        // LICENSED input.saved_read: the shared store's own registry of readers, never an input of what is built
         let root = match read_text(at) { .Ok(t) -> t, .Err(_) -> "" }
+        // LICENSED input.saved_read: the shared store's own registry of readers, never an input of what is built
         if !root.is_empty() && exists(joined_path(root, "store")) { live.push(root) } else { let _ = remove(at) }
     }
     distinct(live)
