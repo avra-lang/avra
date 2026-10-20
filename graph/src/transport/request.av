@@ -1,4 +1,5 @@
 use @std.json.{Json}
+use @std.validate.{Value}
 use data.{as_value}
 use store.publish.{Publication, Record, RecordMode}
 
@@ -95,13 +96,18 @@ export fn operation(j: Json) -> Result<Operation, string> {
 }
 
 fn record(j: Json) -> Result<Record, string> {
-    closed(j, ["id", "model", "value", "mode"])?
+    closed(j, ["id", "model", "value", "mode", "locator"])?
     let value? = j.get("value") else { fail "record needs value" }
+    let locator = match j.get("locator") {
+        found? -> as_value(found)
+        null -> Value.Null
+    }
     Record {
         id: text(j, "id")?,
         model: text(j, "model")?,
         value: as_value(value),
         mode: record_mode(j)?,
+        locator: locator,
     }
 }
 

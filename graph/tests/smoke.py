@@ -37,7 +37,8 @@ def main():
             "records": [
                 {"id": "p1", "model": "Person", "value": {"name": "Ada"}},
                 {"id": "m1", "model": "Message", "value": {"author": "p1", "recipients": [], "body": "review the design"}},
-                {"id": "w1", "model": "WorkItem", "value": {"title": "Review the design", "assignee": "p1", "messages": ["m1"]}},
+                {"id": "w1", "model": "WorkItem", "locator": {"section": "title"},
+                 "value": {"title": "Review the design", "assignee": "p1", "messages": ["m1"]}},
             ],
         }
         published = cli(publication)
@@ -47,6 +48,13 @@ def main():
         assert set(cli({"op": "traverse", "id": "w1"})) == {"w1", "m1", "p1"}
         assert len(cli({"op": "edges", "id": "p1", "incoming": True})) == 2
         assert cli({"op": "explain", "id": "p1", "property": "name"})[0]["active"]
+        assert cli({"op": "explain", "id": "p1", "property": "name"})[0]["locator"] is None
+        assert cli({"op": "explain", "id": "w1", "property": "assignee"})[0]["locator"] == {"section": "title"}
+        moved = {**publication, "records": [
+            {**record, "locator": {"section": "metadata"}} if record["id"] == "w1" else record
+            for record in publication["records"]
+        ]}
+        assert "error" in cli(moved, success=False)
         assert cli({"op": "schema"})["revision"] == published["revision"]
 
         invalid = {**publication, "id": "bad", "expected_revision": published["revision"],
@@ -138,7 +146,17 @@ def main():
         assert len(cli({"op": "dirty"})) == 4
         assert not cli({"op": "explain", "id": "p1", "property": "name"})[0]["active"]
         assert "error" in cli({**publication, "id": "stale", "expected_revision": changed["revision"]}, success=False)
-    print("native smoke: persistence, partial assertions, replay, validation, rollback, traversal, HTTP auth, and stale-input invalidation passed")
+
+        import sqlite3
+        with sqlite3.connect(database) as raw:
+            raw.execute("DROP TABLE evidence")
+            raw.execute("UPDATE graph_meta SET value='1' WHERE key='format'")
+        assert cli({"op": "schema"})["fingerprint"] == schema["fingerprint"]
+        with sqlite3.connect(database) as raw:
+            assert raw.execute("SELECT value FROM graph_meta WHERE key='format'").fetchone()[0] == "2"
+            assert raw.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='evidence'").fetchone()
+        assert cli({"op": "explain", "id": "p1", "property": "name"})[0]["locator"] is None
+    print("native smoke: persistence, partial assertions, evidence locators, format migration, replay, validation, rollback, traversal, HTTP auth, and stale-input invalidation passed")
 
 
 if __name__ == "__main__":

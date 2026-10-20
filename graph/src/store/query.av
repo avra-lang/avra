@@ -1,6 +1,6 @@
 use @std.validate.{Value, Entry}
 use @std.json.{Json, parse, field}
-use store.open.{Graph, storage, cell_text, cell_int}
+use store.open.{Graph, storage, cell_text, cell_text_or_null, cell_int}
 use store.tables.{active}
 use data.{as_value, as_json}
 
@@ -124,7 +124,7 @@ impl Graph {
         self.current()?
         let rows = self
             .rows(
-                "SELECT c.id, c.value, r.id, r.producer, r.scope, r.input_id, r.input_revision, r.schema, COALESCE(s.until_revision, 0), o.revision, r.revision FROM claims c JOIN supports s ON s.claim=c.id JOIN runs r ON r.id=s.run JOIN observations o ON o.id=r.input_id WHERE c.entity=? AND c.property=? ORDER BY c.id, r.revision",
+                "SELECT c.id, c.value, r.id, r.producer, r.scope, r.input_id, r.input_revision, r.schema, COALESCE(s.until_revision, 0), o.revision, r.revision, e.locator FROM claims c JOIN supports s ON s.claim=c.id JOIN runs r ON r.id=s.run JOIN observations o ON o.id=r.input_id LEFT JOIN evidence e ON e.run=r.id AND e.claim=c.id WHERE c.entity=? AND c.property=? ORDER BY c.id, r.revision",
                 [.Text(id), .Text(property)],
             )?
         Json
@@ -151,6 +151,13 @@ impl Graph {
                                     ),
                             ),
                             field("published_revision", Json.Int(cell_int(r, 10)?)),
+                            field(
+                                "locator",
+                                match cell_text_or_null(r, 11) {
+                                    stored? -> as_json(stored_value(stored)?)
+                                    null -> Json.Null
+                                },
+                            ),
                         ],
                     ) for r in rows],
             )

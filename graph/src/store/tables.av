@@ -9,12 +9,16 @@ export const ddl: List<string> = [
     "CREATE TABLE IF NOT EXISTS claims (id INTEGER PRIMARY KEY, entity TEXT NOT NULL REFERENCES entities(id), property TEXT NOT NULL, value TEXT NOT NULL, schema TEXT NOT NULL REFERENCES schemas(fingerprint), UNIQUE(entity, property, value, schema))",
     "CREATE TABLE IF NOT EXISTS supports (run TEXT NOT NULL REFERENCES runs(id), claim INTEGER NOT NULL REFERENCES claims(id), until_revision INTEGER, PRIMARY KEY(run, claim))",
     "CREATE TABLE IF NOT EXISTS edges (claim INTEGER NOT NULL REFERENCES claims(id), target TEXT NOT NULL REFERENCES entities(id), path TEXT NOT NULL, PRIMARY KEY(claim, target, path))",
+    evidence,
     "CREATE INDEX IF NOT EXISTS supports_active ON supports(claim, until_revision)",
     "CREATE INDEX IF NOT EXISTS runs_owner ON runs(producer, scope)",
     "CREATE INDEX IF NOT EXISTS claims_entity ON claims(entity, property)",
     "CREATE INDEX IF NOT EXISTS claims_lookup ON claims(property, value, entity)",
     "CREATE INDEX IF NOT EXISTS edges_target ON edges(target, claim)",
 ]
+
+/// A producer's opaque source locator for one supported claim.
+export const evidence: string = "CREATE TABLE IF NOT EXISTS evidence (run TEXT NOT NULL REFERENCES runs(id), claim INTEGER NOT NULL REFERENCES claims(id), locator TEXT NOT NULL, PRIMARY KEY(run, claim))"
 
 /// Supported claims under the current observation and schema revisions.
 export const active: string = "SELECT DISTINCT c.id, c.entity, c.property, c.value FROM claims c JOIN supports s ON s.claim=c.id JOIN runs r ON r.id=s.run JOIN observations o ON o.id=r.input_id JOIN graph_meta m ON m.key='schema' AND m.value=r.schema WHERE s.until_revision IS NULL AND o.revision=r.input_revision"

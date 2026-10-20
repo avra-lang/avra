@@ -45,10 +45,12 @@ autonomous extraction or inference system.
 | Model evolution | Conservative whole-catalog invalidation |
 | Reprocessing | `dirty` inspection; no worker or durable job scheduler |
 | Partial assertions | Working; field rules only, record rules on assembly |
+| Evidence locators | Working; opaque per-record JSON, returned by `explain` |
 | Identity resolution, derived rules | Not in baseline |
 
-Baseline verification: 11 store tests, 7 partial-assertion tests, and
-`std/validate`'s projection suite; native CLI/HTTP smoke tests covering
+Baseline verification: 11 store tests, 7 partial-assertion tests, 6
+evidence-locator tests, and `std/validate`'s projection suite; native CLI/HTTP
+smoke tests covering
 persistence, partial assertions, replay, validation, rollback, traversal,
 authentication, and stale-input invalidation; an unrelated library consumer
 with an eight-field model, a cyclic reference, and a record-level rule.
@@ -84,7 +86,7 @@ Substrate tracking:
 
 ## Milestone 1 — complete the assertion model
 
-Status: property assertions implemented; evidence locators remain.
+Status: complete.
 
 - [x] Accept partial properties without constructing a complete record.
 - [x] Use standard validation for supplied field shapes and rules; never
@@ -92,14 +94,13 @@ Status: property assertions implemented; evidence locators remain.
 - [x] Keep record-level validation at complete-record assembly boundaries.
 - [x] Test missing, explicit null, replacement/withdrawal, and conflict
   independently, including sibling-dependent validation.
-- [ ] Add generic evidence locators: source offsets, sections, attachments,
+- [x] Add generic evidence locators: source offsets, sections, attachments,
   or other source-native locations, linked to immutable input revisions.
 - [x] Expose useful machine-readable validation/incompleteness results.
 
 Exit: an agent can publish incomplete knowledge honestly; a typed read either
 constructs a validated record or explains why it cannot. Evidence can be
-traced to a specific place in the source. The remaining exit condition is the
-evidence locator.
+traced to a specific place in the source.
 
 ## Milestone 2 — identity and conflict policy
 

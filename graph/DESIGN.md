@@ -121,12 +121,12 @@ The first executable slice includes collected model metadata and standard
 validation, SQLite persistence, observations and immutable input history,
 atomic producer/scope replacement, replay and stale-publication checks,
 typed reference indexes, candidate/conflict reads, partial property
-assertions, validated record reads, bounded traversal, explanations, and a
-shared CLI/HTTP protocol.
+assertions, opaque per-record evidence locators, validated record reads,
+bounded traversal, explanations, and a shared CLI/HTTP protocol.
 
 Schema installation conservatively invalidates all older interpretations;
 it preserves their claims, support, and source payloads. `dirty` exposes
 reprocessing work but does not run a classifier. Alias/merge identity
-management, evidence locators, compatibility migrations, multi-input
-derivations, and relation-backed incremental projections remain separate
-slices. `README.md` describes the actual protocol and guarantees.
+management, compatibility-aware migrations, multi-input derivations, and
+relation-backed incremental projections remain separate slices. `README.md`
+describes the actual protocol and guarantees.

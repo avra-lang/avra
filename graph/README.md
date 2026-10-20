@@ -89,7 +89,7 @@ CLI request files and HTTP use exactly the same JSON operations:
 | `find` | `model`, optional `limit` | Active entity ids |
 | `edges` | `id`, optional `incoming` | Typed reference paths |
 | `traverse` | `id`, optional `depth`, `limit` | Breadth-first reachable ids |
-| `explain` | `id`, `property` | All historical supporting runs |
+| `explain` | `id`, `property` | All historical supporting runs and their locators |
 | `dirty` | — | Latest interpretations with stale input or schema |
 
 A publication is a successful *complete replacement* of one producer's
@@ -107,7 +107,12 @@ A classifier failure must not be published as an empty success.
   "schema": "fingerprint returned by schema",
   "expected_revision": 2,
   "records": [
-    {"id": "stable-entity-id", "model": "declared-model-name", "value": {}}
+    {
+      "id": "stable-entity-id",
+      "model": "declared-model-name",
+      "value": {},
+      "locator": {"section": "body", "span": [12, 18]}
+    }
   ]
 }
 ```
@@ -121,6 +126,12 @@ stay missing and defaults are not applied as evidence. Record-level
 validators run only when a complete record is assembled. Partial records
 still replace the producer/scope contribution; `mode` is part of the
 replay fingerprint.
+
+A record's optional `locator` is opaque JSON: the engine stores it beside
+every claim that record supports and returns it through `explain`, but never
+interprets or indexes it. Use it for source offsets, message sections,
+attachments, or whatever the producer's source has. An absent locator stays
+absent, and a locator is part of the run's replay identity.
 
 Use application-owned, preferably namespaced stable ids; ids are global
 across models. References can target identities from the same publication
@@ -142,7 +153,7 @@ invocation, retries, scheduling, and the meaning of scopes.
 
 SQLite is the authority, with fixed generic tables for catalog revisions,
 entity identities, versioned observations, producer runs, claims, support,
-and reference indexes. Model properties never become SQL columns. WAL,
+evidence locators, and reference indexes. Model properties never become SQL columns. WAL,
 foreign keys, immediate write transactions, and explicit storage-format
 versioning are used. Failed publications roll back identities, support
 withdrawals, claims, references, and the revision together.
@@ -169,7 +180,9 @@ appear in `dirty` after an input changes.
 
 Editing models and rebuilding changes the catalog fingerprint. The
 fingerprint includes metadata, constraint calls, defaults, and compiler
-code hashes of the validators. Installing the new catalog advances the
+code hashes of the validators. Storage format 2 adds the evidence table;
+opening a format 1 database migrates it additively in place, keeping every
+row, and only an unknown format is refused. Installing the new catalog advances the
 graph revision and quarantines old-schema interpretations; `dirty` names
 work to reprocess. No data is deleted or destructively migrated. Existing
 handles reject publication after another catalog is installed. `attach`
@@ -183,6 +196,7 @@ runtime upgrades require an explicit application/schema revision policy.
 ## Verify
 
 ```sh
+sh tools/watch.sh 3500 ./build/avra test graph/src/tests/evidence_test.av
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/partial_test.av
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/storage_test.av
 sh tools/watch.sh 3500 ./build/avra build graph
@@ -200,8 +214,6 @@ its native objects). Native builds link those objects directly.
 
 ## Next slices
 
-- Generic evidence locators: source offsets, sections, attachments, and
-  other source-native locations tied to immutable input revisions.
 - External identity aliases, explicit merge/split operations, and deletion
   policy; ids currently come from the feeding agent.
 - Durable pending work and multi-input dependency tracking; `dirty` is

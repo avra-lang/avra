@@ -3,7 +3,9 @@ use @std.sqlite.error.{SqlError}
 use @std.json.{Json, parse}
 use catalog.{Catalog}
 use schema.{Registration}
-use store.tables.{ddl}
+use store.tables.{ddl, evidence}
+
+const unsupported_format: string = "unsupported graph storage format"
 use data.{digest}
 
 /// One connection and the immutable model catalog this process was built with.
@@ -35,11 +37,35 @@ impl Graph {
         mut graph = Graph { db: db, catalog: catalog }
         let outcome = match mode { .Install -> graph.initialize(), .Existing -> graph.current() }
         match outcome {
-            .Ok(_) -> graph,
+            .Ok(_) -> {
+                match graph.upgraded() {
+                    .Ok(_) -> graph,
+                    .Err(e) -> {
+                        let _ = db.close()
+                        fail e
+                    },
+                }
+            },
             .Err(e) -> {
                 let _ = db.close()
                 fail e
             },
+        }
+    }
+
+    /// Storage formats 1 and 2 differ by the additive evidence table, so a
+    /// format 1 database keeps every row and gains the table in place.
+    fn upgraded() -> Result<int, string> {
+        let rows = self.rows("SELECT value FROM graph_meta WHERE key='format'")?
+        if rows.is_empty() { fail "graph storage has no format" }
+        match cell_text(rows[0], 0)? {
+            "2" -> 0,
+            "1" -> {
+                self.execute(evidence)?
+                self.execute("UPDATE graph_meta SET value='2' WHERE key='format'")?
+                0
+            },
+            rest -> { fail unsupported_format },
         }
     }
 
@@ -77,9 +103,12 @@ impl Graph {
         defer { let _ = self.db.finish() }
         self.execute(ddl[0])?
         let version = self.rows("SELECT value FROM graph_meta WHERE key='format'")?
-        if !version.is_empty() && cell_text(version[0], 0)? != "1" { fail "unsupported graph storage format" }
+        if !version.is_empty() && !["1", "2"].contains(cell_text(version[0], 0)?) { fail unsupported_format }
         for text in ddl { self.execute(text)? }
-        self.execute("INSERT OR IGNORE INTO graph_meta VALUES ('format', '1')")?
+        self
+            .execute(
+                "INSERT INTO graph_meta VALUES ('format', '2') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            )?
         self
             .execute(
                 "INSERT OR IGNORE INTO schemas VALUES (?, ?)",
@@ -125,6 +154,11 @@ impl Graph {
 
 export fn cell_text(row: Row, index: int) -> Result<string, string> {
     storage(row.text(index))
+}
+
+/// A nullable text cell; absence is the cell's own NULL.
+export fn cell_text_or_null(row: Row, index: int) -> string? {
+    match row.values[index] { .Text(v) -> v, rest -> null }
 }
 
 export fn cell_int(row: Row, index: int) -> Result<int, string> {

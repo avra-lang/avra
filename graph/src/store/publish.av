@@ -1,5 +1,5 @@
 use @std.validate.{Value, Entry}
-use @std.json.{Json, field, to_text}
+use @std.json.{Json, Field, field, to_text}
 use schema.{Shape}
 use catalog.{Catalog}
 use data.{as_json, encoded, digest, json_safe}
@@ -7,7 +7,7 @@ use store.open.{Graph, storage, cell_text, cell_int}
 
 export enum RecordMode { Complete, Partial }
 
-export type Record = { id: string, model: string, value: Value, mode: RecordMode = .Complete }
+export type Record = { id: string, model: string, value: Value, mode: RecordMode = .Complete, locator: Value = Value.Null }
 
 impl Record {
     fn request_value() -> Json {
@@ -16,14 +16,17 @@ impl Record {
             field("model", Json.Str(self.model)),
             field("value", as_json(self.value)),
         ]
-        Json
-            .Obj(
-                match self.mode {
-                    .Complete -> fields,
-                    .Partial -> fields.concat([field("mode", Json.Str("partial"))]),
-                },
-            )
+        let mode = match self.mode {
+            .Complete -> [],
+            .Partial -> [field("mode", Json.Str("partial"))],
+        }
+        Json.Obj(fields.concat(mode).concat(located(self.locator)))
     }
+}
+
+/// An absent locator is not part of the run's identity.
+fn located(locator: Value) -> List<Field> {
+    match locator { .Null -> [], found -> [field("locator", as_json(found))] }
 }
 
 /// A successful replacement of one producer's contribution in one scope.
@@ -66,7 +69,7 @@ impl Graph {
     /// All validation, references, withdrawals, and inserts share one snapshot.
     fn publish(publication: Publication) -> Result<int, string> {
         let p = publication
-        if p.records.any(!json_safe(it.value)) { fail "graph values must contain only finite numbers" }
+        if p.records.any(!json_safe(it.value) || !json_safe(it.locator)) { fail "graph values must contain only finite numbers" }
         if p.id.is_empty() || p.producer.is_empty() || p.scope.is_empty() { fail "run id, producer, and scope must be nonempty" }
         storage(self.db.begin())?
         defer { let _ = self.db.finish() }
@@ -154,6 +157,13 @@ impl Graph {
                 )?[0]
             let id = cell_int(claim, 0)?
             self.execute("INSERT INTO supports(run, claim) VALUES (?, ?)", [.Text(p.id), .Int(id)])?
+            if !absent(r.locator) {
+                self
+                    .execute(
+                        "INSERT INTO evidence VALUES (?, ?, ?)",
+                        [.Text(p.id), .Int(id), .Text(encoded(r.locator))],
+                    )?
+            }
             for link in links {
                 self
                     .execute(
@@ -173,6 +183,7 @@ impl Graph {
 }
 
 /// Defaults construct records; only supplied fields become evidence.
+fn absent(v: Value) -> bool { match v { .Null -> true, rest -> false } }
 fn observed(original: Value, normalized: Value) -> Value {
     Value.Map([e for e in normalized.entries() if original.entries().any(it.key == e.key)])
 }
