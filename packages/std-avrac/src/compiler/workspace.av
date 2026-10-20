@@ -270,6 +270,7 @@ type Hold = {
     minted: Cell<Map<string, bool>>,
     file_ready: Table<bool>,
     row_filled: Table<bool>,
+    typed_made: Table<bool>,
     holds_settled: Cell<bool>,
     /// THE PRODUCER INDEX: for each held module, every declaration NAME,
     /// WORD and MARK its record lines carry, and each extern it declares. A bucket
@@ -375,6 +376,7 @@ fn new_hold() -> Hold {
         minted: Cell.new(no_minted),
         file_ready: new_table<bool>(),
         row_filled: new_table<bool>(),
+        typed_made: new_table<bool>(),
         holds_settled: Cell.new(false),
         named_by: Cell.new(no_producers),
         worded_by: Cell.new(no_producers),
@@ -2428,8 +2430,7 @@ impl Workspace {
             .Compute -> nothing(),
         }
         let x = self.decls.decl(d)
-        mut t = self.type_cx_for(x)
-        let out = t.type_decl(x)
+        let out = self.typed_restored(x) ?? self.typed_body(x)
         // A DECLARATION STILL EXPANDING HAS A RANGE THAT WILL GROW: a
         // window typed now lacks the ids the expansion is about to add,
         // so it answers this asker alone and is never memoized — the
@@ -2452,6 +2453,14 @@ impl Workspace {
                     (r: DbRow) -> fp(123, [spot, type_facts_fp(typed_of(r), ids, true)]),
                 ),
         )
+    }
+
+    /// One declaration's body typed afresh.
+    fn typed_body(x: Decl) -> TypeFacts {
+        work_typed()
+        self.hold.typed_made.keep(x.id.index, true)
+        mut t = self.type_cx_for(x)
+        t.type_decl(x)
     }
 
     /// A file's bodies as one table: Main's facts first (its range

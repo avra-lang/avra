@@ -35,7 +35,7 @@ BUDGET_ROW = re.compile(r"^(?P<scenario>[a-z]+) (?P<counter>[a-z_]+) (?P<n>[0-9]
 INFORMATIONAL = {
     "rule_ms",
     "program_files", "program_modules", "program_decls",
-    "files_minted", "modules_minted", "queries_computed", "store_rows_written",
+    "files_minted", "modules_minted", "queries_computed", "typed_computed", "store_rows_written",
 }
 # A ratio near 1 moves a little when the tree grows by a few files (a constant few files
 # are never minted): 517/519 is not 515/517. The slack is that, and no more.
