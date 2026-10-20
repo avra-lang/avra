@@ -1,6 +1,6 @@
 // A `List` slot over a component another file of the module declares is
 // that component's slot — never a plain gatherer.
-use @std.avrac.testing.{answered, vendored_prelude, test_workspace}
+use @std.avrac.testing.{answered, vendored_prelude, test_workspace, provided, Module}
 use @std.avrac.compiler.host.{memory_host}
 use @std.avrac.compiler.{Program}
 
@@ -19,6 +19,35 @@ fn sibling_router() -> Map<string, string> {
     }
 }
 
+/// `server` in one module, the `router` it holds in another it imports.
+fn imported_router() -> List<Module> {
+    [
+        Module {
+            name: "routing",
+            text: "export component router {\n    prefix: string = \"\"\n}\n",
+        },
+        Module {
+            name: "serving",
+            text: "use routing.{router}\nexport type Route = { path: string }\nexport component layer(name: string) {}\nexport component server {\n    layers: List<layer> = []\n    routes: List<Route> = []\n    routers: List<router> = []\n}\n",
+        },
+    ]
+}
+
+/// Two modules, each holding a list of the other's component and
+/// importing it: a loop of imports no reading of the words may follow.
+fn mutual() -> List<Module> {
+    [
+        Module {
+            name: "left",
+            text: "use right.{rb}\nexport component la {\n    items: List<rb> = []\n    names: List<string> = []\n}\n",
+        },
+        Module {
+            name: "right",
+            text: "use left.{la}\nexport component rb {\n    items: List<la> = []\n    names: List<string> = []\n}\n",
+        },
+    ]
+}
+
 spec "features/components — slots over a sibling file's component" {
     given "a slot whose element component is declared in another file" {
         then "a record child lands in the one slot that takes any element" {
@@ -28,6 +57,28 @@ spec "features/components — slots over a sibling file's component" {
                     sibling_router(),
                 ),
             ) == "1 1 1"
+        }
+    }
+    given "a slot whose element component is imported from another module" {
+        then "a record child lands in the one slot that takes any element" {
+            answered(
+                provided(
+                    "use serving.{server, layer, Route}\nuse routing.{router}\nserver web {\n    layer \"auth\"\n    router api { prefix: \"/api\" }\n    Route { path: \"/a\" }\n}\n\"\${web.layers.length} \${web.routes.length} \${web.routers.length}\"",
+                    "",
+                    imported_router(),
+                ),
+            ) == "1 1 1"
+        }
+    }
+    given "modules importing each other's components" {
+        then "a plain child still lands in the one slot that takes any element" {
+            answered(
+                provided(
+                    "use left.{la}\nuse right.{rb}\nla one {\n    rb two { }\n    \"x\"\n}\n\"\${one.items.length} \${one.names.length}\"",
+                    "",
+                    mutual(),
+                ),
+            ) == "1 1"
         }
     }
 }
