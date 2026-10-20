@@ -67,8 +67,14 @@ const alertsOf = (s) => s.alerts.map((el) => ({ role: el.attrs.role, text: el.te
   await page(s.document, s.addEventListener, load);
   const thrown = new Error("index 9 is out of bounds (length 3)");
   failed(thrown);
-  const said = alertsOf(s);
-  check("a throw inside the module after it started is told by the page itself, its stack whole", [said.length, said[0].text.startsWith("The page hit an error:"), said[0].text.includes(thrown.stack)], [1, true, true]);
+  // An engine whose stack holds no message line, as Firefox and WebKit do:
+  // the words are told even so.
+  const bare = new Error("the module trapped at index 9");
+  bare.stack = "app.js:2:3";
+  failed(bare);
+  const said = alertsOf(s).map((a) => a.text);
+  check("a throw inside the module after it started is told by the page itself, its stack whole", [said.length, said[0].startsWith("The page hit an error:"), said[0].includes(thrown.stack)], [2, true, true]);
+  check("an error's own words are told before its stack, where the stack holds none", [said[1].includes(bare.message), said[1].includes(bare.stack)], [true, true]);
 }
 console.log(`page: ${fails === 0 ? "all hold" : fails + " failed"}`);
 process.exit(fails === 0 ? 0 : 1);
