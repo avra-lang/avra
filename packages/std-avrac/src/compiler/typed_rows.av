@@ -1,0 +1,43 @@
+//! A BODY'S TYPING FACTS KEPT: a declaration typed in one process is read back in the next,
+//! while every answer it stood on has the digest it had. A body that spoke is never kept, so a
+//! restored body says nothing it did not say when typed.
+use core.{DeclId}
+use core.digest.{hex, unhex}
+use compiler.store.{Store, Stored, node_key}
+use compiler.families.{Family}
+use features.{TypeFacts, Decl}
+
+impl Workspace {
+    /// Where a declaration's kept typing facts stand.
+    fn typed_row(d: DeclId) -> string { node_key(Stored.Unit, ["typed-row", self.decl_ref(d)]) }
+
+    /// A declaration's typing facts as kept, when what they stood on still stands and they
+    /// read back whole; absent otherwise.
+    fn typed_restored(x: Decl) -> TypeFacts? {
+        let store? = self.store.get() else { return null }
+        if self.db.active(key(Family.Expanded, x.file.index)) { return null }
+        let rdb = self.decls.rows_db.get()
+        let text? = store.get_valid(Stored.Unit, self.typed_row(x.id), (n) -> rdb.leaf_digest(n)) else { return null }
+        let bytes? = unhex(text) else { return null }
+        match TypeFacts.decoded_in(facts_scope(self, x.lo, x.stmt_lo), bytes) {
+            .Ok(facts) -> facts,
+            .Err(_) -> null,
+        }
+    }
+
+    /// Every body typed in this process, kept under what it stood on: the bodies restored
+    /// were kept already, and a body that spoke is not kept.
+    fn keep_typed(store: Store) {
+        let rdb = self.decls.rows_db.get()
+        for arg in 0..self.decls.decl_count() {
+            if self.hold.typed_made.at(arg) == null { continue }
+            let d = DeclId { index: arg }
+            let leaves? = rdb.leaves_of(self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg))) else { continue }
+            let facts = self.typed(d)
+            if !facts.voices.list.is_empty() { continue }
+            let at = facts_scope(self, facts.of_expr.lo, facts.binding_types.lo)
+            let _ = store
+                .keep_reading(Stored.Unit, self.typed_row(d), hex(facts.encoded_in(at)), saved_reads(leaves))
+        }
+    }
+}
