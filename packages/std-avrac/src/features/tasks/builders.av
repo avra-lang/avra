@@ -1,9 +1,8 @@
 //! Parse-time lowering: `spawn e` is a task over the zero-seat lambda
 //! `e` becomes, so its captures are a closure's — copies, taken here.
-//! `within limit body` calls the limit's own `ms()` — the span the
-//! runtime arms a scope with — so one method call serves typing and
-//! lowering alike.
-use core.{Expr, Stmt, Plain}
+//! `within limit body` keeps the limit AS WRITTEN: typing gives it a
+//! span's seat and lowering is what reads milliseconds out of it.
+use core.{Expr, Stmt}
 use features.{LangNode, Builder}
 
 fn build_spawn(b: Builder) -> Result<LangNode, string> {
@@ -11,8 +10,7 @@ fn build_spawn(b: Builder) -> Result<LangNode, string> {
 }
 
 fn build_within(b: Builder) -> Result<LangNode, string> {
-    let limit = b.expr_node(Expr.MethodCall(b.expr(0)?, Plain("ms"), []))
-    b.make_expr(Expr.Within(limit, b.expr(1)?))
+    b.make_expr(Expr.Within(b.expr(0)?, b.expr(1)?))
 }
 
 /// `yield x` — a statement, so an expression statement over `Emit`,
