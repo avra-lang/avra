@@ -31,6 +31,7 @@ use @std.meta.{
     Kind,
     Held,
     payload_of,
+    type_exported,
     name,
 }
 
@@ -111,6 +112,17 @@ fn declared_eq(t: MetaType, n: string, a: Code, b: Code, inside: List<string>) -
     if inside.contains(n) { return unread }
     let held? = payload_of(t, n) else { return unread }
     let entered = inside.concat([n])
+    let over? = named_over(t, n) else { return held_eq(t, held, a, b, entered) }
+    eq_through(t, over, quote { ${a}.of }, quote { ${b}.of }, entered)
+}
+
+/// The kind a named type stands over (`type Scoped = string`), absent for a record or an enum.
+fn named_over(t: MetaType, n: string) -> Kind? {
+    let declared? = type_exported(t.module, n) else { return null }
+    match declared.over { .Unspelled(_) -> null, rest -> declared.over }
+}
+
+fn held_eq(t: MetaType, held: Held, a: Code, b: Code, entered: List<string>) -> Code {
     match held {
         .Record(fields) -> anded(
             [eq_through(t, f.kind, quote { ${a}.${f.name} }, quote { ${b}.${f.name} }, entered) for f in fields if reached(f)],
