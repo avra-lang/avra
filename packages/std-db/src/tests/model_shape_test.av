@@ -70,6 +70,16 @@ type V_name = {
     y: int,
 }
 
+/// Two field names where one is the other's prefix. The text orders columns
+/// by NAME's own octets, never by the line: a `|` follows the name on every
+/// line, and `|` sorts after `_`, so a line order would put `x_y` first.
+@model
+type Prefixes = {
+    id: int = 0,
+    x: int,
+    x_y: int,
+}
+
 @model
 type V_link = {
     id: int = 0,
@@ -96,6 +106,11 @@ type V_set_null = {
 
 /// The shape without its table-name line: what the columns say.
 fn body(shape: string) -> string { shape.substring(shape.index_of("\n") + 1, shape.length) }
+
+/// The columns a shape text names, in the order it writes them.
+fn columns_in_order(shape: string) -> string {
+    [line.split("|")[0] for line in body(shape).split("\n")].join(",")
+}
 
 fn recorded(db: Db, named: string) -> Result<string, SqlError> {
     (db
@@ -197,6 +212,9 @@ spec "std/db shape" {
             body(Pair_ab.shape()) == body(Pair_ba.shape())
         }
         then "and the table's name leads the text" { Pair_ab.shape().starts_with("Pair_ab\n") }
+        then "and one name being another's prefix does not reorder them" {
+            columns_in_order(Prefixes.shape()) == "__avra_version__,id,x,x_y"
+        }
     }
     given "one fact about a column that differs" {
         then "reads differently: its type, nullability, uniqueness, default, name and link" {

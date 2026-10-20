@@ -669,9 +669,12 @@ fn column_ddl(c: ColumnFacts) -> string {
 // however its fields are ordered and changes when any column fact does. ──
 
 fn shape_text_of(t: Type) -> string {
-    let lines = [shape_line(column_facts(f)) for f in stored(t)]
-        .concat([shape_line(version_facts())])
-    "${table_name_of(t)}\n${ordered(lines).join("\n")}"
+    let columns = ordered_by(
+        [column_facts(f) for f in stored(t)].concat([version_facts()]),
+        (c: ColumnFacts) -> c.name,
+    )
+    let lines = [shape_line(c) for c in columns]
+    "${table_name_of(t)}\n${lines.join("\n")}"
 }
 
 /// One fact a column's line spells: what it is called, and the text this
@@ -700,10 +703,16 @@ fn shape_line(c: ColumnFacts) -> string { [f.text for f in fact_cells(c)].join("
 fn fact_names() -> List<string> { [f.name for f in fact_cells(version_facts())] }
 
 /// Texts in byte order, each placed after those that come before it.
-fn ordered(xs: List<string>) -> List<string> {
-    mut out: List<string> = []
+fn ordered(xs: List<string>) -> List<string> { ordered_by(xs, (x: string) -> x) }
+
+/// A list in the byte order of what `key` answers — ONE insertion sort, so a
+/// column sorts by its NAME the way texts sort, never by the line it renders
+/// as (whose first cell a `|` immediately follows, so a name that is another's
+/// prefix would sort by the separator rather than by its own octets).
+fn ordered_by<T>(xs: List<T>, key: fn(T) -> string) -> List<T> {
+    mut out: List<T> = []
     for x in xs {
-        let at = [y for y in out if before(y, x)].length
+        let at = [y for y in out if before(key(y), key(x))].length
         out = out.slice(0, at).concat([x]).concat(out.slice(at, out.length))
     }
     out
