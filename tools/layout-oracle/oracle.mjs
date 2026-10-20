@@ -16,7 +16,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { pathToFileURL } from "node:url";
 import { firefoxBinary, openPage } from "../ui-board/firefox.mjs";
+import { openPage as openWebkit, webkitLaunch } from "../ui-board/webkit.mjs";
 import { cellFontBase64 } from "./cellfont.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -32,6 +34,16 @@ const WIDTH = Number(args.width ?? 300);
 // is built here with 64 units to the em, so at a font size of one pixel a glyph's
 // advance in font units is its advance in sixty-fourths of a pixel.
 const PROP = args.face === "prop";
+
+// The engine the boxes are read from: firefox (default) or webkit (Playwright's, PLAYWRIGHT_DIR).
+const ENGINE = args.browser ?? "firefox";
+
+// How far a browser's box may stand from ours, in solver units. Cells are exact. A proportional
+// face is laid out in each engine's own quantum (Gecko 1/60 px a glyph, WebKit 1/64, Blink floats),
+// so an edge that falls on a half may snap either way: one unit is agreement. Further — a line
+// more or fewer, a box a word wider — is a defect whichever engine shows it.
+const TOLERANCE = PROP ? 1 : 0;
+const agrees = (got, want) => got.length === want.length && got.every((b, i) => b.every((v, k) => Math.abs(v - want[i][k]) <= TOLERANCE));
 const FACE = { units: 64, advances: { i: 96, m: 272, W: 320, " ": 128 }, fallback: 205 };
 const LINE = 16;
 
@@ -257,7 +269,7 @@ async function compare(cases, browser, work) {
   const results = [];
   for (let i = 0; i < cases.length; i++) {
     const got = await browser.read(`(${BROWSER})(${JSON.stringify(pages[i])}, ${WIDTH})`);
-    results.push(JSON.stringify(got) === JSON.stringify(out[i]) ? null : { got, want: out[i] });
+    results.push(agrees(got, out[i]) ? null : { got, want: out[i] });
   }
   return results;
 }
@@ -292,19 +304,34 @@ async function shrunk(spec, browser, work) {
   return cur;
 }
 
+// The page in the engine asked for. A machine without it FAILS (a run that compared nothing is no pass)
+// unless `--skip-if-absent` stands it down aloud.
+async function opened(url) {
+  const absent = (why) => {
+    const skipped = process.argv.includes("--skip-if-absent");
+    console.log(`layout-oracle: ran 0 trees — ${skipped ? "SKIPPED" : "FAILED"}: ${why}`);
+    process.exit(skipped ? 0 : 1);
+  };
+  if (ENGINE === "firefox") {
+    const binary = firefoxBinary();
+    if (!binary) absent("no Firefox on this machine (FIREFOX names one)");
+    return openPage(binary, url, { width: 1200, height: 900 });
+  }
+  if (ENGINE !== "webkit") absent(`no engine called ${ENGINE} (firefox or webkit)`);
+  const dir = process.env.PLAYWRIGHT_DIR ?? ".";
+  const loaded = await import(pathToFileURL(path.join(dir, "node_modules/playwright/index.mjs")).href).catch((e) => ({ said: String(e.message).split("\n")[0] }));
+  const { browser, said } = loaded.webkit ? await webkitLaunch(loaded) : { said: loaded.said };
+  if (!browser) absent(`WebKit could not launch — ${said}`);
+  return openWebkit(browser, url, { width: 1200, height: 900 });
+}
+
 async function main() {
   const rand = prng(SEED);
   const cases = args.tree ? [JSON.parse(args.tree)] : (PROP ? PROP_CASES : FIXED_CASES).concat(Array.from({ length: CASES }, () => rooted(generate(rand, 3))));
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "avra-layout-oracle-"));
-  const binary = firefoxBinary();
-  if (!binary) {
-    const skipped = process.argv.includes("--skip-if-absent");
-    console.log(`layout-oracle: ran 0 trees — ${skipped ? "SKIPPED" : "FAILED"}: no Firefox on this machine (FIREFOX names one)`);
-    process.exit(skipped ? 0 : 1);
-  }
   const page = fs.mkdtempSync(path.join(os.tmpdir(), "avra-layout-page-"));
   fs.writeFileSync(path.join(page, "index.html"), PAGE);
-  const browser = await openPage(binary, "file://" + path.join(page, "index.html"), { width: 1200, height: 900 });
+  const browser = await opened("file://" + path.join(page, "index.html"));
   await browser.read('document.fonts.load("1px cell").then((faces) => faces.length)');
   const verdicts = await compare(cases, browser, work);
   const failing = verdicts.map((v, i) => (v ? i : -1)).filter((i) => i >= 0);
@@ -315,12 +342,12 @@ async function main() {
     const n = Math.max(v.got.length, v.want.length);
     for (let k = 0; k < n; k++) {
       const a = JSON.stringify(v.want[k]), b = JSON.stringify(v.got[k]);
-      console.log(`  box ${k}: solver ${a}  browser ${b}${a === b ? "" : "   <--"}`);
+      console.log(`  box ${k}: solver ${a}  browser ${b}${v.want[k] && v.got[k] && agrees([v.got[k]], [v.want[k]]) ? "" : "   <--"}`);
     }
   }
   await browser.close();
   if (cases.length === 0) { console.log("layout-oracle: ran 0 trees — FAILED: no tree was compared"); process.exit(1); }
-  console.log(`layout-oracle: ${cases.length - failing.length} of ${cases.length} trees agree (seed ${SEED}, width ${WIDTH})`);
+  console.log(`layout-oracle: ${cases.length - failing.length} of ${cases.length} trees agree in ${ENGINE} (seed ${SEED}, width ${WIDTH})`);
   process.exit(failing.length === 0 ? 0 : 1);
 }
 

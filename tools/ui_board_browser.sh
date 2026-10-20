@@ -16,14 +16,8 @@
 # ("iPhone 15") for the WebKit run: a touch screen and a phone's window.
 set -eu
 
-# Whether a browser stands at the path `$1`.
-webkit_stands() { [ -e "$1" ]; }
-
-# THE PATH THE LAUNCHER RUNS, as Playwright's own module names it: the guard
-# and the launch read one answer, so no cache can stand for a browser it lacks.
-webkit_exe() {
-    PW_PREFIX=$1 node --input-type=module -e 'const { webkit } = await import(process.env.PW_PREFIX + "/node_modules/playwright/index.mjs"); process.stdout.write(webkit.executablePath());'
-}
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/ui-board/playwright.sh"
 
 # `--self-test`: both surfaces of the skip contract, run against a compiler that
 # is not there (the first thing a run needs), so no browser is touched.
@@ -59,7 +53,6 @@ if [ "${1:-}" = --self-test ]; then
     exit 0
 fi
 
-here=$(cd "$(dirname "$0")" && pwd)
 tree=$(cd "$here/.." && pwd)
 avra=${AVRA:-$tree/build/avra}
 target=${UI_BOARD_TARGET:-wasm}
@@ -115,32 +108,9 @@ url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/dev.out" | head -1)
 # use; one that cannot launch is a missing browser like any other: it fails unless stood down by
 # name (`skip`), and says where its libraries come from.
 engines=${UI_BROWSER_ENGINES:-firefox}
-playwright_version=1.64.1
 case " $engines " in
     *" webkit "*)
-        playwright=${PLAYWRIGHT_DIR:-$tree/build/playwright}
-        # THE BROWSER STANDS WHERE THIS GUARD LOOKS. `playwright install`
-        # honours PLAYWRIGHT_BROWSERS_PATH, so the directory the checks cache
-        # holds the browser too, and a restored cache is VALIDATED rather than
-        # assumed: one that carries the node module and no browser installs it
-        # instead of failing at launch.
-        browsers=$playwright/browsers
-        export PLAYWRIGHT_BROWSERS_PATH="$browsers"
-        if [ ! -d "$playwright/node_modules/playwright" ]; then
-            mkdir -p "$playwright"
-            # a machine with no npm (the checks' image) takes the one in the pinned Node (.github/ci/install_node.sh)
-            command -v npm >/dev/null 2>&1 || PATH=/opt/node-jspi/bin:$PATH
-            npm install --prefix "$playwright" --no-audit --no-fund "playwright@$playwright_version" >"$work/npm.out" 2>&1 ||
-                skip "Playwright did not install: $(tail -1 "$work/npm.out")"
-        fi
-        exe=$(webkit_exe "$playwright") || skip "Playwright's module named no WebKit executable"
-        if ! webkit_stands "$exe"; then
-            "$playwright/node_modules/.bin/playwright" install webkit >>"$work/npm.out" 2>&1 ||
-                skip "Playwright's WebKit did not install: $(tail -1 "$work/npm.out")"
-            exe=$(webkit_exe "$playwright") || skip "Playwright's module named no WebKit executable after install"
-            webkit_stands "$exe" || skip "Playwright's WebKit is not at $exe after install"
-        fi
-        export PLAYWRIGHT_DIR="$playwright"
+        playwright_ready "$tree" "$work/npm.out" || skip "Playwright's WebKit did not install: $(tail -1 "$work/npm.out")"
         ;;
 esac
 
