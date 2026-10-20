@@ -2058,6 +2058,67 @@ sed 's/component note(/component memo(/; s/n: note/n: memo/' $R/cb/src/part/note
 steps=$((steps+1)); cb_out=$(./avra check $R/cb 2>&1)
 case "$cb_out" in *"card.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    cb: the sibling's word gone -> card refused" ;; *) fails=$((fails+1)); echo "FAIL  cb: card names a sibling component that was renamed and the check did not refuse it: $(printf '%s' "$cb_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
 
+# A ROW ASKED OF A RENAMED SIBLING READS NOTHING PAST ITS FILE. `cr` is `cb` with `card`'s
+# body also making rows of `note` in a comprehension, so the repeated-row law asks `note`'s
+# declaration while `card` is held — and after `note` is renamed, that declaration's statement
+# no longer stands in its file's reparse: the law answers nothing of it, and `card` is refused.
+mkdir -p $R/cr/src/kit $R/cr/src/part
+printf '[package]\nname = "rt-cr"\nversion = "0.1.0"\n' > $R/cr/avra.toml
+cat > $R/cr/src/kit/kit.av <<'AV'
+use @std.meta.{Type, Directive, Declared, composes}
+
+export type Tagged = { tag: string = "" }
+
+export component words {
+    items: List<string> = []
+}
+
+@composes(Tagged)
+export trait Says {
+    fn says() -> string
+
+    static fn derive(t: Type) -> Declared {
+        let body? = t.body else { return Declared { made: [] } }
+        Declared {
+            made: [
+                Directive {
+                    twin: "",
+                    name: t.name,
+                    at: t.at,
+                    source: quote {
+                        impl Says for ${t} {
+                            fn says() -> string {
+                                words made {
+                                    ${body}
+                                }
+                                made.items.join(" ")
+                            }
+                        }
+                    },
+                },
+            ],
+        }
+    }
+}
+
+export fn said_by(s: dyn Says) -> string { s.says() }
+AV
+printf 'use kit.{said_by}\n\nexport component note(name: string) {\n    "note"\n    self.name\n}\n\nexport fn noted(n: note) -> string { said_by(n) }\n' > $R/cr/src/part/note.av
+printf 'use kit.{said_by}\n\nexport component card(name: string) {\n    said_by(note self.name)\n    "${[said_by(note r) for r in ["a", "b"]].length}"\n}\n' > $R/cr/src/part/card.av
+printf 'use kit.{said_by}\nuse part.{card}\nprintln(said_by(card "a"))\n' > $R/cr/src/main.av
+HR "cold cr" check cr 0
+printf '// moved\n' >> $R/cr/src/main.av
+HR "cr: an entry edit holds the components" check cr 0 part/note.av held part/card.av held
+cp $R/cr/src/kit/kit.av $R/cr/kit.kept
+grep -v '^@composes' $R/cr/kit.kept > $R/cr/src/kit/kit.av
+steps=$((steps+1)); cr_out=$(./avra check $R/cr 2>&1)
+case "$cr_out" in *"type.component_body"*"nothing here says"*) [ -n "${VERBOSE:-}" ] && echo "ok    cr: the mark gone -> the body is refused" ;; *) fails=$((fails+1)); echo "FAIL  cr: the trait lost @composes and a body was still composed: $(printf '%s' "$cr_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
+cp $R/cr/kit.kept $R/cr/src/kit/kit.av
+HR "cr: the mark back composes again" check cr 0
+sed 's/component note(/component memo(/; s/n: note/n: memo/' $R/cr/src/part/note.av > $R/cr/note.new && cp $R/cr/note.new $R/cr/src/part/note.av
+steps=$((steps+1)); cr_out=$(./avra check $R/cr 2>&1)
+case "$cr_out" in *"card.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    cr: the sibling's word gone -> card refused" ;; *) fails=$((fails+1)); echo "FAIL  cr: card names a sibling component that was renamed and the check did not refuse it: $(printf '%s' "$cr_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
+
 # A FILE NOTHING REACHES IS HELD LIKE ANY OTHER. `ur` names ONE file of `@rt/url`'s
 # root module; its siblings are registered with it — a module is one namespace — and
 # a sibling no `use` names must be held by its record, never parsed again on every
