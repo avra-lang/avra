@@ -10,6 +10,8 @@
 use @std.io.{make_dirs, write_text}
 use @std.time.{stamp}
 use @std.relation.engine.{map_cell}
+use compiler.host.{Host, memory_host_at}
+use compiler.record.{runtime_bodies}
 use compiler.store.{
     Keeping,
     Producer,
@@ -26,6 +28,14 @@ use compiler.store.{
 
 /// One directory per run, so no earlier run's rows answer for this one.
 once fn store_base() -> string { "/tmp/avra-store-test/${stamp()}" }
+
+/// A host over a toolchain: the compiler at `compiler`, and a runtime archive of `body` at
+/// each of `at`.
+fn toolchain_host(compiler: string?, at: List<string>, body: string) -> Host {
+    mut files: Map<string, string> = {}
+    for p in at { files.set(p, body) }
+    memory_host_at(files, at, "/") with { compiler: compiler }
+}
 
 /// A store of one spec's own, so two specs cannot see each other's rows.
 fn at(name: string) -> Store { store_at("${store_base()}/${name}") }
@@ -243,6 +253,28 @@ spec "store" {
         }
         then "a part with no hash leaves no stamp" {
             stamp_of_parts(["p", null, "dec"]) == "absent"
+        }
+        then "the C a producer runs is a part, read from the archive a program links" {
+            let beside = "/tc/build/libavra_runtime.a"
+            runtime_bodies(toolchain_host("/tc/build/avra", [beside], "one")) != runtime_bodies(toolchain_host("/tc/build/avra", [beside], "two"))
+        }
+        then "and the same bytes are one digest, wherever the archive stands" {
+            let checked_out = toolchain_host(
+                "/tc/build/avra",
+                ["/tc/build/libavra_runtime.a"],
+                "one",
+            )
+            let installed = toolchain_host(
+                "/tc/bin/avra",
+                ["/tc/lib/avra/libavra_runtime.a"],
+                "one",
+            )
+            runtime_bodies(checked_out) == runtime_bodies(installed)
+        }
+        then "a host that cannot read its C has no part, so its rows stay its own" {
+            let unread = toolchain_host("/tc/build/avra", [], "one")
+            let unnamed = toolchain_host(null, ["/tc/build/libavra_runtime.a"], "one")
+            runtime_bodies(unread) == null && runtime_bodies(unnamed) == null
         }
     }
     given "rows filed by a store that shares a family" {
