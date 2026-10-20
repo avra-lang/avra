@@ -2,8 +2,10 @@
 // defaults, and in its own module a literal fills the rest — every
 // refusal the struct law's.
 use @std.avrac.compiler.{Program}
+use @std.avrac.diagnostics.{is_error}
 use @std.avrac.testing.{
     Module,
+    said,
     shown,
     refused_with,
     refusals,
@@ -238,14 +240,24 @@ spec "features/components — events" {
                 ) &&
                 p.report().contains("c.av:4")
         }
-        then "and its instances say nothing more: one cause, one refusal, at the declaration" {
+        then "and each instance in another package points at it with a note: one error, at the declaration" {
             let p = provided(
                 "use @x.c.{lim}\nlet a = lim 1 { 2 }\nlet b = lim 3 { 4 }\na + b",
                 lim(),
             )
-            refused_n(p, "`press` is never heard", 1) &&
-                p.report().contains("c.av:4") &&
-                !p.report().contains("build.failed")
+            let all = said(p)
+            let report = p.rendered(all)
+            all.length == 3 &&
+                [d for d in all if is_error(d)].length == 1 &&
+                report.contains("error[type.component_event]: `lim` copies its `expand`") &&
+                report
+                    .contains(
+                        "note[type.component_event]: `lim`'s event `press` is refused where it is declared",
+                    ) &&
+                report.contains("main.av:2") &&
+                report.contains("main.av:3") &&
+                report.contains("c.av:4") &&
+                !report.contains("build.failed")
         }
     }
     given "a setting that names an event, holding a value that is no handler" {
