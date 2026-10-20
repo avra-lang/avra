@@ -1322,7 +1322,7 @@ impl SourceText {
             .FloatLit(bits) -> numeric(avra_float_text_bits(bits), parent),
             .StrLit(value) -> grouped(self.str_lit_text(id, value), atom_tier, parent),
             .BytesLit(spelled) -> grouped("b\"${spelled}\"", atom_tier, parent),
-            .Range(_, _) or .Not(_) or .NullLit or .Receiver or .Channel(_, _) or .Ident(_) -> self.worded(id, parent, depth, c),
+            .Range(_, _) or .Not(_) or .NullLit or .Receiver or .Channel(_, _) or .Ident(_) or .Index(_, _) or .Force(_) -> self.worded(id, parent, depth, c),
             .BoolLit(value) -> grouped(if value { "true" } else { "false" }, atom_tier, parent),
             .Binary(op, left, right) -> self.binary(op, left, right, parent, depth, c),
             .LetPattern(pat, subject, otherwise, held) -> grouped(
@@ -1336,14 +1336,6 @@ impl SourceText {
             .Table(row, header, rows) -> grouped(self.table_text(row, header, rows, depth), atom_tier, parent),
             .Comp(elem, clauses) -> self.comprehension(elem, clauses, parent, depth),
             .MapLit(keys, values) -> grouped(self.map_lit_text(id, keys, values, depth, c), atom_tier, parent),
-            .Index(subject, index) -> {
-                let s = self.expression(subject, postfix_tier, depth, c)
-                grouped(
-                    "${s}[${self.expression(index, loosest_tier, depth, col_after(s, c) + 1)}]",
-                    postfix_tier,
-                    parent,
-                )
-            },
             .Prop(_, _) -> self.chain_rendered(id, parent, depth, c),
             .Body(word, parts, holes, _) -> {
                 let text = self.body_text(word, parts, holes, depth)
@@ -1446,7 +1438,6 @@ impl SourceText {
                 postfix_tier,
                 parent,
             ),
-            .Force(value) -> grouped("${self.expression(value, postfix_tier, depth, c)}!", postfix_tier, parent),
             .Is(subject, asked) -> grouped(
                 "${self.expression(subject, 5, depth, c)} is ${self.pattern(asked, depth)}",
                 4,
@@ -2784,6 +2775,8 @@ export const worded_nodes: List<string> = [
     "Expr.Receiver",
     "Expr.Channel",
     "Expr.Ident",
+    "Expr.Index",
+    "Expr.Force",
     "Stmt.Return",
     "Stmt.Fail",
     "Stmt.Discard",
