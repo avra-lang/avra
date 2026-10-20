@@ -55,6 +55,17 @@ fn across(first: List<int>, second: List<int>) -> string {
     [word(k) for k in one.keys.concat(two.keys)].join(" ")
 }
 
+/// What reads spell one behind another, a `null` the escape window going by
+/// with nothing read.
+fn waited(reads: List<string?>) -> string {
+    let runs = reads
+        .fold(
+            [heard("".bytes())],
+            (rs: List<Heard>, r: string?) -> rs.concat([rs.last()!.after(r?.bytes(), paste_cap)]),
+        )
+    [word(k) for run in runs for k in run.keys].join(" ")
+}
+
 spec "a terminal's input is read as keys" {
     given "plain text" {
         then "each character is itself" { spelled("hé!") == "'h' 'é' '!'" }
@@ -100,6 +111,18 @@ spec "a terminal's input is read as keys" {
         }
         then "one that never ends is dropped once it is too long to be one" {
             read([27, 91].concat([49 for n in 0..80])) == " | 0"
+        }
+    }
+    given "a lone escape and its window" {
+        then "with nothing after it within the window, it is Escape" { waited([esc(), null]) == "escape" }
+        then "an arrow cut after its escape and finished within the window is the arrow" { waited([esc(), "[A"]) == "back" }
+        then "after the window, what follows is typed" { waited([esc(), null, "[A"]) == "escape '[' 'A'" }
+        then "the window ending on an opened sequence leaves it held" { waited(["${esc()}[", null, "A"]) == "back" }
+        then "the window ending with nothing held spells nothing" { waited(["a", null]) == "'a'" }
+        then "only a lone escape waits on the window" {
+            heard(esc().bytes()).escape_waits() &&
+                !heard("${esc()}[".bytes()).escape_waits() &&
+                !heard("".bytes()).escape_waits()
         }
     }
     given "octets that are not a character" {

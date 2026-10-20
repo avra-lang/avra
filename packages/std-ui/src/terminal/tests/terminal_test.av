@@ -17,8 +17,40 @@ use @std.ui.components.{
 }
 use @std.ui.headless.{headless}
 use @std.ui.terminal.{Terminal, terminal}
+use @std.ui.app.{running, stood}
+use @std.ui.native.net.{unwired}
+use @std.ui.native.sources.{opened, served, unshown}
+use @std.time.{ms, sleep}
 
 type Todo = { id: string, title: string, done: bool }
+
+/// `body` runs while the terminal's loop serves its sources, on the case's
+/// virtual clock.
+fn looped(on: Terminal, body: fn() -> void) {
+    let before = running()
+    stood(on.shown.app)
+    let inbox = opened(on.shown.app, unwired)
+    let loop = spawn served(on.shown.app, inbox, unshown)
+    body()
+    on.shown.app.close()
+    let _ = loop.await
+    stood(before)
+}
+
+/// `n` ms of the clock go by, and the turns they leave run.
+fn waited(n: int) {
+    sleep(ms(n))
+    sleep(ms(0))
+}
+
+/// An open dialog of two buttons, sent away into `open`.
+fn about(open: Cell<bool>) -> dialog {
+    dialog "About" {
+        open: open.get()
+        items: [button "Back" { on press {} }, button "Close" { on press {} }]
+        on dismiss { open.set(false) }
+    }
+}
 
 /// A small board's state, in cells a view reads and its handlers write.
 type Board = {
@@ -163,6 +195,73 @@ spec "one control holds the focus" {
             )
             on.feed("\n\t\n")
             hits.get() == 2
+        }
+    }
+    given "a dialog that is open" {
+        then "Escape sends it away, and its dismissal hears" {
+            let open: Cell<bool> = Cell.new(true)
+            let on = terminal(
+                () -> dialog "About" {
+                    open: open.get()
+                    items: [button "Close" { on press {} }]
+                    on dismiss { open.set(false) }
+                },
+            )
+            on.feed("${from_codepoint(27)}[27u")
+            open.get() == false
+        }
+        then "a lone Escape is still held 20 ms on, and sends it away by 30" {
+            let open: Cell<bool> = Cell.new(true)
+            let on = terminal(() -> about(open))
+            let held = Cell.new(false)
+            looped(
+                on,
+                () -> {
+                    on.feed(from_codepoint(27))
+                    waited(20)
+                    held.set(open.get())
+                    waited(10)
+                },
+            )
+            held.get() && !open.get()
+        }
+        then "an arrow cut after its escape and finished within the window moves the focus, and sends nothing away" {
+            let open: Cell<bool> = Cell.new(true)
+            let on = terminal(() -> about(open))
+            looped(
+                on,
+                () -> {
+                    on.feed(from_codepoint(27))
+                    waited(10)
+                    on.feed("[A")
+                    waited(30)
+                },
+            )
+            let whole = terminal(() -> about(Cell.new(true)))
+            whole.feed("${from_codepoint(27)}[A")
+            open.get() &&
+                on.screen() == whole.screen() &&
+                on.screen() != terminal(() -> about(Cell.new(true))).screen()
+        }
+    }
+    given "a field, and an escape the window closed on" {
+        then "what follows the escape is typed" {
+            let held: Cell<string> = Cell.new("")
+            let on = terminal(
+                () -> field "Name" {
+                    value: held.get()
+                    on input { typed -> held.set(typed) }
+                },
+            )
+            looped(
+                on,
+                () -> {
+                    on.feed(from_codepoint(27))
+                    waited(30)
+                    on.feed("[A")
+                },
+            )
+            held.get() == "[A"
         }
     }
     given "a screen with no control" {

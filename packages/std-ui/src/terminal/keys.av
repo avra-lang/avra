@@ -49,6 +49,11 @@ const kitty = 117
 const pressed = 77
 const released = 109
 
+/// How long a lone escape waits for what follows it, in milliseconds: with
+/// nothing after it within the window it is the Escape key, and a `[` or `O`
+/// within it opens a sequence.
+export const escape_window = 25
+
 /// The longest paste held to hand over whole, unless a terminal says another.
 export const paste_cap = 1048576
 
@@ -309,6 +314,22 @@ export fn resume(input: Bytes, draining: int, cap: int) -> Heard {
         keys: [k for r in reads for k in r.keys],
         held: input.slice(at, input.length),
         draining: reads.last()?.drained ?? 0,
+    }
+}
+
+impl Heard {
+    /// Whether the run holds a lone escape, which the window decides.
+    fn escape_waits() -> bool { self.draining == 0 && self.held.length == 1 && self.held.at(0) == escape }
+
+    /// The run after the next read, behind what this one held: `got` the
+    /// octets it brought, or null when the window went by with none — a lone
+    /// escape then is the Escape key.
+    fn after(got: Bytes?, cap: int) -> Heard {
+        let bytes? = got else {
+            if !self.escape_waits() { return self with { keys: [] } }
+            return Heard { keys: [Key.Escape], held: "".bytes() }
+        }
+        resume(self.held.concat(bytes), self.draining, cap)
     }
 }
 
