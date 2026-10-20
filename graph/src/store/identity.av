@@ -1,0 +1,49 @@
+use @std.json.{Json, field}
+use store.open.{Graph, cell_text}
+use store.tables.{active_alias}
+
+/// A producer's name for an entity, in its own namespace.
+export type Identity = { namespace: string, external_key: string }
+
+impl Identity {
+    fn json() -> Json {
+        Json
+            .Obj(
+                [
+                    field("namespace", Json.Str(self.namespace)),
+                    field("key", Json.Str(self.external_key)),
+                ],
+            )
+    }
+}
+
+impl Graph {
+    /// Active entities an external identity names, in entity order.
+    fn bound(namespace: string, key: string) -> Result<List<string>, string> {
+        [cell_text(r, 0)? for r in self
+            .rows(
+                "SELECT DISTINCT entity FROM (${active_alias}) WHERE namespace=? AND external_key=? ORDER BY entity",
+                [.Text(namespace), .Text(key)],
+            )?]
+    }
+
+    /// The one entity an external identity names.
+    fn resolve(namespace: string, key: string) -> Result<string, string> {
+        self.current()?
+        match self.bound(namespace, key)? {
+            [] -> { fail "unknown identity: ${namespace}/${key}" },
+            [only] -> only,
+            rest -> { fail "identity names more than one entity: ${namespace}/${key}" },
+        }
+    }
+
+    /// An entity's active external identities.
+    fn aliases(id: string) -> Result<List<Identity>, string> {
+        self.current()?
+        [Identity { namespace: cell_text(r, 0)?, external_key: cell_text(r, 1)? } for r in self
+            .rows(
+                "SELECT DISTINCT namespace, external_key FROM (${active_alias}) WHERE entity=? ORDER BY namespace, external_key",
+                [.Text(id)],
+            )?]
+    }
+}

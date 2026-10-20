@@ -4,10 +4,18 @@ use schema.{Shape}
 use catalog.{Catalog}
 use data.{as_json, encoded, digest, json_safe}
 use store.open.{Graph, storage, cell_text, cell_int}
+use store.identity.{Identity}
 
 export enum RecordMode { Complete, Partial }
 
-export type Record = { id: string, model: string, value: Value, mode: RecordMode = .Complete, locator: Value = Value.Null }
+export type Record = {
+    id: string,
+    model: string,
+    value: Value,
+    mode: RecordMode = .Complete,
+    locator: Value = Value.Null,
+    identities: List<Identity> = [],
+}
 
 impl Record {
     fn request_value() -> Json {
@@ -20,8 +28,19 @@ impl Record {
             .Complete -> [],
             .Partial -> [field("mode", Json.Str("partial"))],
         }
-        Json.Obj(fields.concat(mode).concat(located(self.locator)))
+        Json
+            .Obj(
+                fields
+                    .concat(mode)
+                    .concat(located(self.locator))
+                    .concat(identified(self.identities)),
+            )
     }
+}
+
+/// No identity means no field, so an identity-free run keeps its identity.
+fn identified(identities: List<Identity>) -> List<Field> {
+    if identities.is_empty() { [] } else { [field("identities", Json.Arr([i.json() for i in identities]))] }
 }
 
 /// An absent locator is not part of the run's identity.
@@ -70,6 +89,7 @@ impl Graph {
     fn publish(publication: Publication) -> Result<int, string> {
         let p = publication
         if p.records.any(!json_safe(it.value) || !json_safe(it.locator)) { fail "graph values must contain only finite numbers" }
+        if p.records.any(it.identities.any(it.namespace.is_empty() || it.external_key.is_empty())) { fail "an identity needs a nonempty namespace and key" }
         if p.id.is_empty() || p.producer.is_empty() || p.scope.is_empty() { fail "run id, producer, and scope must be nonempty" }
         storage(self.db.begin())?
         defer { let _ = self.db.finish() }
@@ -86,6 +106,12 @@ impl Graph {
         let records = [self.checked(r)? for r in p.records]
         for i, r in records {
             if records.slice(0, i).any(it.id == r.id) { fail "one publication declares an entity at most once: ${r.id}" }
+            for j, a in r.identities {
+                if r.identities.slice(0, j).any(same_identity(it, a)) { fail "one record declares an identity twice: ${a.namespace}/${a.external_key}" }
+                if records.slice(0, i).any(it.id != r.id && it.identities.any(same_identity(it, a))) {
+                    fail "one identity cannot name two entities in one publication: ${a.namespace}/${a.external_key}"
+                }
+            }
             self.identify(r, revision + 1)?
         }
         self
@@ -105,6 +131,11 @@ impl Graph {
         self
             .execute(
                 "UPDATE supports SET until_revision=? WHERE until_revision IS NULL AND run IN (SELECT id FROM runs WHERE producer=? AND scope=? AND id<>?)",
+                [.Int(revision + 1), .Text(p.producer), .Text(p.scope), .Text(p.id)],
+            )?
+        self
+            .execute(
+                "UPDATE aliases SET until_revision=? WHERE until_revision IS NULL AND run IN (SELECT id FROM runs WHERE producer=? AND scope=? AND id<>?)",
                 [.Int(revision + 1), .Text(p.producer), .Text(p.scope), .Text(p.id)],
             )?
         for r in records { self.contribute(p, r)? }
@@ -141,6 +172,16 @@ impl Graph {
 
     fn contribute(p: Publication, r: Record) -> Result<int, string> {
         let model = self.catalog.model(r.model)?
+        for a in r.identities {
+            if (self.bound(a.namespace, a.external_key)?).any(it != r.id) {
+                fail "identity already names another entity: ${a.namespace}/${a.external_key}"
+            }
+            self
+                .execute(
+                    "INSERT OR IGNORE INTO aliases(namespace, external_key, entity, run) VALUES (?, ?, ?, ?)",
+                    [.Text(a.namespace), .Text(a.external_key), .Text(r.id), .Text(p.id)],
+                )?
+        }
         for entry in r.value.entries() {
             let property? = model.properties.find(it.name == entry.key) else { fail "validated property is absent from its model" }
             let links = property.shape.links(self.catalog, entry.value, entry.key)?
@@ -184,6 +225,10 @@ impl Graph {
 
 /// Defaults construct records; only supplied fields become evidence.
 fn absent(v: Value) -> bool { match v { .Null -> true, rest -> false } }
+
+fn same_identity(a: Identity, b: Identity) -> bool {
+    a.namespace == b.namespace && a.external_key == b.external_key
+}
 fn observed(original: Value, normalized: Value) -> Value {
     Value.Map([e for e in normalized.entries() if original.entries().any(it.key == e.key)])
 }

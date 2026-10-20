@@ -35,7 +35,8 @@ def main():
             "input": "mail:1", "input_revision": observed["input_revision"],
             "schema": schema["fingerprint"], "expected_revision": observed["revision"],
             "records": [
-                {"id": "p1", "model": "Person", "value": {"name": "Ada"}},
+                {"id": "p1", "model": "Person", "identities": [{"namespace": "mail", "key": "ada@example.com"}],
+                 "value": {"name": "Ada"}},
                 {"id": "m1", "model": "Message", "value": {"author": "p1", "recipients": [], "body": "review the design"}},
                 {"id": "w1", "model": "WorkItem", "locator": {"section": "title"},
                  "value": {"title": "Review the design", "assignee": "p1", "messages": ["m1"]}},
@@ -49,6 +50,15 @@ def main():
         assert len(cli({"op": "edges", "id": "p1", "incoming": True})) == 2
         assert cli({"op": "explain", "id": "p1", "property": "name"})[0]["active"]
         assert cli({"op": "explain", "id": "p1", "property": "name"})[0]["locator"] is None
+        assert cli({"op": "resolve", "namespace": "mail", "key": "ada@example.com"})["entity"] == "p1"
+        assert cli({"op": "aliases", "id": "p1"}) == [{"namespace": "mail", "key": "ada@example.com"}]
+        assert cli({"op": "aliases", "id": "w1"}) == []
+        assert "error" in cli({"op": "resolve", "namespace": "mail", "key": "nobody@example.com"}, success=False)
+        assert "error" in cli({"op": "publish", "id": "rebind", "producer": "other-agent", "scope": "other:1",
+                               "input": "mail:1", "input_revision": 1, "schema": schema["fingerprint"],
+                               "expected_revision": published["revision"],
+                               "records": [{"id": "p2", "model": "Person", "identities": [{"namespace": "mail", "key": "ada@example.com"}],
+                                            "value": {"name": "Grace"}}]}, success=False)
         assert cli({"op": "explain", "id": "w1", "property": "assignee"})[0]["locator"] == {"section": "title"}
         moved = {**publication, "records": [
             {**record, "locator": {"section": "metadata"}} if record["id"] == "w1" else record
@@ -132,6 +142,8 @@ def main():
             assert status == 200, body
             status, body = http({"op": "get", "id": "w2"})
             assert status == 200 and json.loads(body)["fields"]["assignee"][0]["value"] is None
+            status, body = http({"op": "resolve", "namespace": "mail", "key": "ada@example.com"})
+            assert status == 200 and json.loads(body)["entity"] == "p1"
         finally:
             server.terminate()
             try:
@@ -150,13 +162,16 @@ def main():
         import sqlite3
         with sqlite3.connect(database) as raw:
             raw.execute("DROP TABLE evidence")
+            raw.execute("DROP TABLE aliases")
             raw.execute("UPDATE graph_meta SET value='1' WHERE key='format'")
         assert cli({"op": "schema"})["fingerprint"] == schema["fingerprint"]
         with sqlite3.connect(database) as raw:
-            assert raw.execute("SELECT value FROM graph_meta WHERE key='format'").fetchone()[0] == "2"
-            assert raw.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='evidence'").fetchone()
+            assert raw.execute("SELECT value FROM graph_meta WHERE key='format'").fetchone()[0] == "3"
+            for table in ("evidence", "aliases"):
+                assert raw.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
         assert cli({"op": "explain", "id": "p1", "property": "name"})[0]["locator"] is None
-    print("native smoke: persistence, partial assertions, evidence locators, format migration, replay, validation, rollback, traversal, HTTP auth, and stale-input invalidation passed")
+        assert cli({"op": "aliases", "id": "p1"}) == []
+    print("native smoke: persistence, partial assertions, evidence locators, external identities, format migration, replay, validation, rollback, traversal, HTTP auth, and stale-input invalidation passed")
 
 
 if __name__ == "__main__":

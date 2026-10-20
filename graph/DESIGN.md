@@ -76,6 +76,8 @@ SQLite backend. Its cache must be reconstructible from durable data.
 5. Add thin CLI and local HTTP adapters over the same library operations.
 6. Prove ontology independence with an unrelated model fixture, then
    document the agent protocol and model evolution behavior.
+7. Extend assertions without a second validation engine: partial properties,
+   opaque evidence locators, and producer-owned external identities.
 
 ## Substrate issues
 
@@ -85,12 +87,10 @@ https://github.com/avra-lang/avra/pull/1132 is queued for integration.
 Related existing task: `avra-8sb5.63.15` covers broader generic derives,
 which are not required by the graph's manually defined generic `Ref<T>`.
 
-The nongeneric `Message` record in
-`repro/generic-ref/src/main.av` contains `author: Ref<Person>`. The
-generic reference already implements both decoding methods. Standard
-validation generates calls to the uninstantiated receiver, producing
-three errors: `got` declares `Ref<Person>?`, but the expression answers
-`Ref<T>?`.
+Before that fix, the nongeneric `Message` record in
+`repro/generic-ref/src/main.av` with `author: Ref<Person>` produced three
+errors: `got` declared `Ref<Person>?`, but the uninstantiated receiver
+answered `Ref<T>?`.
 
 Reproduce from the repository root:
 
@@ -121,12 +121,13 @@ The first executable slice includes collected model metadata and standard
 validation, SQLite persistence, observations and immutable input history,
 atomic producer/scope replacement, replay and stale-publication checks,
 typed reference indexes, candidate/conflict reads, partial property
-assertions, opaque per-record evidence locators, validated record reads,
-bounded traversal, explanations, and a shared CLI/HTTP protocol.
+assertions, opaque per-record evidence locators, producer-owned external
+identities, validated record reads, bounded traversal, explanations, and a
+shared CLI/HTTP protocol.
 
 Schema installation conservatively invalidates all older interpretations;
 it preserves their claims, support, and source payloads. `dirty` exposes
-reprocessing work but does not run a classifier. Alias/merge identity
-management, compatibility-aware migrations, multi-input derivations, and
-relation-backed incremental projections remain separate slices. `README.md`
-describes the actual protocol and guarantees.
+reprocessing work but does not run a classifier. Explicit merge/split and
+tombstone decisions, compatibility-aware migrations, multi-input
+derivations, and relation-backed incremental projections remain separate
+slices. `README.md` describes the actual protocol and guarantees.

@@ -26,8 +26,9 @@ producers outside the engine.
 
 ## Current checkpoint
 
-Baseline commit: `f87d7312`, branch `feat/generic-personal-graph`, worktree
-`/Users/tristan/projects/tristanMatthias/avra-graph`.
+Branch `feat/generic-personal-graph`, worktree
+`/Users/tristan/projects/tristanMatthias/avra-graph`. `git log graph/` is the
+receipt for each slice; the foundation is `f87d7312`.
 
 The first slice is a usable model-driven evidence store, not yet an
 autonomous extraction or inference system.
@@ -46,15 +47,17 @@ autonomous extraction or inference system.
 | Reprocessing | `dirty` inspection; no worker or durable job scheduler |
 | Partial assertions | Working; field rules only, record rules on assembly |
 | Evidence locators | Working; opaque per-record JSON, returned by `explain` |
-| Identity resolution, derived rules | Not in baseline |
+| External identities | Working; namespace/key names, owned by producer and scope |
+| Merge/split, derived rules | Not in baseline |
 
 Baseline verification: 11 store tests, 7 partial-assertion tests, 6
-evidence-locator tests, and `std/validate`'s projection suite; native CLI/HTTP
-smoke tests covering
-persistence, partial assertions, replay, validation, rollback, traversal,
-authentication, and stale-input invalidation; an unrelated library consumer
-with an eight-field model, a cyclic reference, and a record-level rule.
-These are foundation tests, not a production readiness claim.
+evidence-locator tests, 10 external-identity tests, and `std/validate`'s
+projection suite; native CLI/HTTP smoke tests covering persistence, partial
+assertions, evidence locators, external identities, replay, validation,
+rollback, traversal, authentication, and stale-input invalidation; an
+unrelated library consumer with an eight-field model, a cyclic reference, and
+a record-level rule. These are foundation tests, not a production readiness
+claim.
 
 The working API and operational instructions live in [README.md](README.md).
 Architecture and substrate receipts live in [DESIGN.md](DESIGN.md).
@@ -104,9 +107,9 @@ traced to a specific place in the source.
 
 ## Milestone 2 — identity and conflict policy
 
-Status: planned; callers currently supply global stable entity ids.
+Status: external names implemented; merge/split and deletion remain.
 
-- [ ] Resolve `(namespace, external_key)` identities and aliases.
+- [x] Resolve `(namespace, external_key)` identities and aliases.
 - [ ] Add explicit, reversible merge/split decisions with provenance.
 - [ ] Define tombstones, deletion, and dangling-reference behavior.
 - [ ] Declare generic selection policies: source priority, explicit user
@@ -115,6 +118,8 @@ Status: planned; callers currently supply global stable entity ids.
 
 Exit: different sources can identify the same entity without silent
 duplication or irreversible automatic merging. No domain-specific merge code.
+External names are owned by their producer and scope, so replacement keeps
+provenance; the merge/split doors are the remaining exit condition.
 
 ## Milestone 3 — useful generic queries
 
@@ -207,14 +212,15 @@ remain unsupported by this graph slice and need explicit standard-library
 and graph integration work. The graph itself has no fixed field-count limit.
 
 Future substrate requests must identify a concrete wanting site and a
-reproducer. In particular, do not assume relation invalidation/retractions or
-partial validation are solved until their actual boundary tests pass.
+reproducer. Partial assertions and external identities have boundary tests;
+do not assume relation invalidation or retraction is solved until its own
+boundary test passes.
 
 ## Execution order and progress discipline
 
 Stabilize -> identity -> richer queries -> durable workers -> incremental
-derivations -> compatibility-aware evolution. Partial assertions landed with
-the foundation.
+derivations -> compatibility-aware evolution. Partial assertions, evidence
+locators, and external names landed with the foundation.
 Operational and migration safety accompany every milestone.
 
 Keep this roadmap current as changes are verified. Check off behavior, not

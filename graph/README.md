@@ -90,11 +90,14 @@ CLI request files and HTTP use exactly the same JSON operations:
 | `edges` | `id`, optional `incoming` | Typed reference paths |
 | `traverse` | `id`, optional `depth`, `limit` | Breadth-first reachable ids |
 | `explain` | `id`, `property` | All historical supporting runs and their locators |
+| `resolve` | `namespace`, `key` | `{"entity": …}` for the one entity that name means |
+| `aliases` | `id` | The entity's active external names as `{namespace, key}` |
 | `dirty` | — | Latest interpretations with stale input or schema |
 
-A publication is a successful *complete replacement* of one producer's
-output in one scope. An empty `records` list withdraws that contribution.
-A classifier failure must not be published as an empty success.
+A publication replaces one producer's whole contribution in one scope,
+whether its records are complete or partial. An empty `records` list
+withdraws that contribution. A classifier failure must not be published as
+an empty success.
 
 ```json
 {
@@ -111,7 +114,8 @@ A classifier failure must not be published as an empty success.
       "id": "stable-entity-id",
       "model": "declared-model-name",
       "value": {},
-      "locator": {"section": "body", "span": [12, 18]}
+      "locator": {"section": "body", "span": [12, 18]},
+      "identities": [{"namespace": "mail", "key": "ada@example.com"}]
     }
   ]
 }
@@ -126,6 +130,14 @@ stay missing and defaults are not applied as evidence. Record-level
 validators run only when a complete record is assembled. Partial records
 still replace the producer/scope contribution; `mode` is part of the
 replay fingerprint.
+
+A record's optional `identities` name it in producer-owned namespaces.
+`resolve` answers the one entity an active run binds a `(namespace, key)` to,
+and refuses a name no active run holds or one that names two entities.
+Binding a name an active run already binds elsewhere refuses the whole
+publication. A replacement withdraws the names its run owned, so a producer
+may correct or rebind its own name while another producer's binding survives.
+Names are lookups, never extracted properties.
 
 A record's optional `locator` is opaque JSON: the engine stores it beside
 every claim that record supports and returns it through `explain`, but never
@@ -153,10 +165,11 @@ invocation, retries, scheduling, and the meaning of scopes.
 
 SQLite is the authority, with fixed generic tables for catalog revisions,
 entity identities, versioned observations, producer runs, claims, support,
-evidence locators, and reference indexes. Model properties never become SQL columns. WAL,
-foreign keys, immediate write transactions, and explicit storage-format
-versioning are used. Failed publications roll back identities, support
-withdrawals, claims, references, and the revision together.
+evidence locators, external identities, and reference indexes. Model
+properties never become SQL columns. WAL, foreign keys, immediate write
+transactions, and explicit storage-format versioning are used. Failed
+publications roll back identities, support withdrawals, claims, references,
+aliases, and the revision together.
 
 Claims and support are distinct. Two producers can support the same value
 without duplicating it. Replacing one scope cannot withdraw another
@@ -173,20 +186,21 @@ supply: no defaults, no required-field errors for omitted fields, and no
 record-level rule until `value` assembles a complete record. An explicit
 `null` on a nullable property is evidence; `null` on a required property is
 refused rather than read as missing. Normalizers should be idempotent.
-Changing an observation immediately
-excludes its old interpretations from current queries. Historical payloads
-and explanations remain available. Empty successful interpretations also
-appear in `dirty` after an input changes.
+Changing an observation immediately excludes its old interpretations from
+current queries. Historical payloads, identities, and explanations remain
+available. Empty successful interpretations also appear in `dirty` after an
+input changes.
 
 Editing models and rebuilding changes the catalog fingerprint. The
 fingerprint includes metadata, constraint calls, defaults, and compiler
-code hashes of the validators. Storage format 2 adds the evidence table;
-opening a format 1 database migrates it additively in place, keeping every
-row, and only an unknown format is refused. Installing the new catalog advances the
-graph revision and quarantines old-schema interpretations; `dirty` names
-work to reprocess. No data is deleted or destructively migrated. Existing
-handles reject publication after another catalog is installed. `attach`
-opens without installing a catalog; the server uses it per request.
+code hashes of the validators. Storage formats 2 and 3 add the evidence and
+alias tables; opening an older database migrates it additively in place,
+keeping every row, and only an unknown format is refused. Installing the new
+catalog advances the graph revision and quarantines old-schema
+interpretations; `dirty` names work to reprocess. No data is deleted or
+destructively migrated. Existing handles reject publication after another
+catalog is installed. `attach` opens without installing a catalog; the server
+uses it per request.
 
 This policy is conservative: even an additive schema change requires
 reprocessing. Compiler code hashes can also conservatively change with
@@ -197,6 +211,7 @@ runtime upgrades require an explicit application/schema revision policy.
 
 ```sh
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/evidence_test.av
+sh tools/watch.sh 3500 ./build/avra test graph/src/tests/identity_test.av
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/partial_test.av
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/storage_test.av
 sh tools/watch.sh 3500 ./build/avra build graph
@@ -214,12 +229,13 @@ its native objects). Native builds link those objects directly.
 
 ## Next slices
 
-- External identity aliases, explicit merge/split operations, and deletion
-  policy; ids currently come from the feeding agent.
+- Explicit, reversible merge/split operations and deletion/tombstone
+  policy; external names exist, but canonical ids still come from the
+  feeding agent.
 - Durable pending work and multi-input dependency tracking; `dirty` is
   one-input, whole-scope invalidation, not a background scheduler.
-- Generic, declared conflict-resolution policies and evidence spans;
-  the default deliberately refuses competing answers.
+- Generic, declared conflict-resolution policies; the default deliberately
+  refuses competing answers.
 - Indexed property predicates, search, bounded pagination, and historical
   revision reads. Traversal is bounded BFS over supported reference paths.
 - Reconstructible `std.relation` projections and fine-grained incremental

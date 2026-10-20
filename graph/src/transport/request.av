@@ -2,6 +2,7 @@ use @std.json.{Json}
 use @std.validate.{Value}
 use data.{as_value}
 use store.publish.{Publication, Record, RecordMode}
+use store.identity.{Identity}
 
 export enum Operation {
     Schema
@@ -14,6 +15,8 @@ export enum Operation {
     Edges(id: string, incoming: bool)
     Traverse(id: string, depth: int, limit: int)
     Explain(id: string, property: string)
+    Resolve(namespace: string, key: string)
+    Aliases(id: string)
     Dirty
 }
 
@@ -87,6 +90,14 @@ export fn operation(j: Json) -> Result<Operation, string> {
             closed(j, ["op", "id", "property"])?
             Operation.Explain(text(j, "id")?, text(j, "property")?)
         },
+        "resolve" -> {
+            closed(j, ["op", "namespace", "key"])?
+            Operation.Resolve(text(j, "namespace")?, text(j, "key")?)
+        },
+        "aliases" -> {
+            closed(j, ["op", "id"])?
+            Operation.Aliases(text(j, "id")?)
+        },
         "dirty" -> {
             closed(j, ["op"])?
             Operation.Dirty
@@ -96,7 +107,7 @@ export fn operation(j: Json) -> Result<Operation, string> {
 }
 
 fn record(j: Json) -> Result<Record, string> {
-    closed(j, ["id", "model", "value", "mode", "locator"])?
+    closed(j, ["id", "model", "value", "mode", "locator", "identities"])?
     let value? = j.get("value") else { fail "record needs value" }
     let locator = match j.get("locator") {
         found? -> as_value(found)
@@ -108,7 +119,21 @@ fn record(j: Json) -> Result<Record, string> {
         value: as_value(value),
         mode: record_mode(j)?,
         locator: locator,
+        identities: identities(j)?,
     }
+}
+
+fn identities(j: Json) -> Result<List<Identity>, string> {
+    let found? = j.get("identities") else { return [] }
+    match found {
+        .Arr(items) -> [identity(item)? for item in items],
+        rest -> { fail "identities must be an array" },
+    }
+}
+
+fn identity(j: Json) -> Result<Identity, string> {
+    closed(j, ["namespace", "key"])?
+    Identity { namespace: text(j, "namespace")?, external_key: text(j, "key")? }
 }
 
 fn record_mode(j: Json) -> Result<RecordMode, string> {
