@@ -500,8 +500,24 @@ since() { echo $(($(date +%s) - t0)); }
 manifest_at() { sh -c 'AVRA_REMOTE_SCRIPT=$1; shift; eval "$AVRA_REMOTE_SCRIPT"' avra-remote "$remote_script" manifest "$@"; }
 sync_tree() {
     echo "work: $sprite — sync ($(since)s)" >&2
-    paths=$(cd "$tree" && for p in Makefile avra avra.toml CLAUDE.md DOGFOODING.md ROADMAP.md docs \
-        backend runtime packages tools bootstrap corpus benchmarks .github/ci .github/workflows; do [ ! -e "$p" ] || printf "%s " "$p"; done)
+    skipped=$(mktemp "${TMPDIR:-/tmp}/avra-skip.XXXXXX")
+    paths=$(cd "$tree" && {
+        git ls-tree --name-only HEAD
+        git ls-files --others --exclude-standard | cut -d/ -f1 | sort -u
+    } | sort -u | while IFS= read -r p; do
+        [ -e "$p" ] || continue
+        # A tracked top-level entry is the tree: never size-capped, however large.
+        if git cat-file -e "HEAD:$p" 2>/dev/null; then printf "%s " "$p"; continue; fi
+        kb=$(du -sk "$p" 2>/dev/null | cut -f1)
+        if [ "${kb:-0}" -le "${AVRA_SYNC_UNTRACKED_KB:-65536}" ]; then
+            printf "%s " "$p"
+        else
+            echo "$p" >> "$skipped"
+            echo "work: sync skips untracked top-level $p (${kb} KB > ${AVRA_SYNC_UNTRACKED_KB:-65536} KB); commit it or raise AVRA_SYNC_UNTRACKED_KB" >&2
+        fi
+    done)
+    [ ! -s "$skipped" ] || echo "work: sync skipped $(wc -l < "$skipped" | tr -d ' ') untracked top-level path(s) over ${AVRA_SYNC_UNTRACKED_KB:-65536} KB" >&2
+    rm -f "$skipped"
     held=$(mktemp -d "${TMPDIR:-/tmp}/avra-sync.XXXXXX")
     manifest_at "$tree" $paths > "$held/mine"
     # A second pass compares contents: a file of the same size and time is not always the same file.
