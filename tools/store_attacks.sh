@@ -238,7 +238,13 @@ agrees foreign "a foreign format"
 [ "$(grep -c '^Q	attempt' $R/foreign.trace)" -gt 0 ] || fail "a store of another format was read as a hit"
 
 say "§6.8 another compiler (a one-query rebuild recomputes that query only)"
-fail "stage 1 keys a segment by the compiler PRINT, so a rebuild that changed one query is a whole-store miss — the per-query recompute needs S2's query code hash"
+# `stamp_of` gives each family ONE stamp: sig stands under its producer's code hashes, every
+# other family under the compiler's own print (`own ${print}`). So a rebuild that moved one
+# leaf re-keys every row of every other family at once — measured by tools/db06_step6_rebuild.sh:
+# 0 store rows written by a warm check of an unchanged tree, 30,320 after one leaf of one query
+# moved and the compiler was rebuilt. The row asks for a row keyed by the code hash of the
+# query that ANSWERS it: S2 (§6.4), DB 05b's receipt — not DB 09, which is the settlement.
+fail "the families are keyed per FAMILY (sig by its producer's code hashes, every other by the compiler's print), so a rebuild that changed one query rewrites the whole store — the per-query recompute is S2's, DB 05b's receipt"
 
 # ── §6.8 a claim conflict ──
 # Two segments with DIFFERENT content digests for THE SAME action key trigger
