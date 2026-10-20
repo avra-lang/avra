@@ -13,6 +13,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { openPage, firefoxBinary, KEY } from "./firefox.mjs";
+import { outsidePresses } from "./dialog_claims.mjs";
 
 const [url, ...named_words] = process.argv.slice(2);
 const word = (name) => { const at = named_words.indexOf(name); return at < 0 ? null : named_words[at + 1]; };
@@ -132,26 +133,7 @@ claim("and it opens again after that too", await read(`${dialog}.open`));
 await press(named("Close"));
 await press(named("Light mode"));
 
-// A press outside an open dialog sends it away, as Escape does; one inside it,
-// or one that starts inside and ends outside, sends nothing away. `on` is the
-// page, `where` what the claims say of it.
-const outsidePresses = async (on, where) => {
-  const shown = `document.querySelector("dialog")`;
-  const open = () => on.read(`${shown}.open`);
-  await on.press(named("About"));
-  const r = await on.read(`(() => { const r = ${shown}.getBoundingClientRect(); return { x: Math.round(r.left + 6), y: Math.round(r.top + 6) }; })()`);
-  const away = { x: 4, y: 4 };
-  await on.pressAt(r.x, r.y);
-  claim(`a press inside it keeps it open${where}`, await open());
-  await on.drag(r, away);
-  claim(`a press that starts inside it and ends outside keeps it open${where}`, await open());
-  await on.pressAt(away.x, away.y);
-  claim(`a press outside it sends it away${where}`, await open() === false);
-  await on.press(named("About"));
-  claim(`the program heard that: About opens it again${where}`, await open());
-  await on.press(named("Close"));
-};
-await outsidePresses(page, "");
+await outsidePresses(page, "", claim, named);
 
 // ── the keyboard ────────────────────────────────────────────────
 await read(`${named("Dark mode")}.focus(), 1`);
@@ -220,7 +202,7 @@ await page.close();
 const unaware = await openPage(firefoxBinary(), url, { prefs: { "dom.dialog.light-dismiss.enabled": false } });
 await unaware.read(`new Promise((ready) => { const look = setInterval(() => { if (document.querySelector("li")) { clearInterval(look); ready(1); } }, 20); })`);
 claim("this engine knows no `closedby`", await unaware.read(`!("closedBy" in HTMLDialogElement.prototype)`));
-await outsidePresses(unaware, ", where the engine knows no `closedby`");
+await outsidePresses(unaware, ", where the engine knows no `closedby`", claim, named);
 claim("nothing reached that page's console", unaware.complaints().length === 0, unaware.complaints());
 await unaware.close();
 console.log(failed === 0 ? "ui-browser: every claim holds" : `ui-browser: ${failed} claim(s) FAILED`);
