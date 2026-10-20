@@ -32,10 +32,6 @@ unioned() { tr ' ' '\n' | awk 'NF && !seen[$0]++' | tr '\n' ' '; }
 health_packages_list() { { main_packages .github/ci/packages.txt; main_packages .github/ci/packages-dev.txt; } | packages_of | unioned; }
 sprite_packages_list() { { health_packages_list; local_list .github/ci/packages.txt | packages_of; local_list .github/ci/packages-dev.txt | packages_of; } | unioned; }
 
-# What a run that drives a browser adds (`work run --browser`): the browser leg's host libraries, which
-# no other run installs.
-browser_packages_list() { { main_packages .github/ci/packages-browser.txt; local_list .github/ci/packages-browser.txt; } | packages_of | unioned; }
-
 # sx <sprite> <seconds> <command...>
 sx() {
     sx_s=$1 sx_b=$2
