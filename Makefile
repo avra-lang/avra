@@ -248,10 +248,11 @@ build/%.o: %.c build/%.sha
 # then written into backend/llvm_wrapper.c's include, so every module can
 # inline the leaves and the compiler's own digest covers them — a changed
 # leaf retires every cached object. An LLVM without clang carries none,
-# and the leaves stay calls.
+# and the leaves stay calls. THE LEAVES MAY UNWIND (-fexceptions): a trap inside
+# one, inlined under a call with a cleanup region open, reaches that region.
 build/avra_hot.bc: runtime/avra_hot.c runtime/avra_hot.h runtime/avra_box.h
 	@mkdir -p build
-	@if [ -x $(LLVM_PREFIX)/bin/clang ]; then $(LLVM_PREFIX)/bin/clang -c -emit-llvm -O2 -fPIC -Iruntime -o $@ runtime/avra_hot.c; else rm -f $@; touch $@; fi
+	@if [ -x $(LLVM_PREFIX)/bin/clang ]; then $(LLVM_PREFIX)/bin/clang -c -emit-llvm -O2 -fPIC -fexceptions -Iruntime -o $@ runtime/avra_hot.c; else rm -f $@; touch $@; fi
 
 build/avra_hot.inc: build/avra_hot.bc
 	@python3 -c "import sys; d=open(sys.argv[1],'rb').read(); print('static const unsigned char avra_hot_bc[] = {' + (','.join(str(b) for b in d) or '0') + '};'); print('static const unsigned long avra_hot_bc_len = %d;' % len(d))" $< > $@

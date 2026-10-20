@@ -1,0 +1,27 @@
+// proves: a deferred call that traps WHILE a trap is unwinding is nobody's to catch —
+// the process ends saying so, in both engines, rather than looping, running a
+// cleanup twice or silently skipping the rest
+use @std.meta.{contained}
+state log: List<string> = []
+fn note(s: string) { log = log.concat([s]) }
+fn boom() -> int {
+    let xs = [1]
+    let i = 4
+    xs[i]
+}
+fn words(r: Result<int, string>) -> string {
+    match r { .Ok(n) -> "ok ${n}", .Err(w) -> "err ${w}" }
+}
+fn show(what: string, r: Result<int, string>) {
+    println("${what}: ${words(r)} | ${log.join(",")}")
+    log = []
+}
+fn bad_cleanup() { let _ = boom() }
+fn f() -> int {
+    defer note("outermost")
+    defer note("middle")
+    defer bad_cleanup()
+    defer note("innermost")
+    boom()
+}
+show("trap while unwinding", contained(f))
