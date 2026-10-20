@@ -5,6 +5,7 @@
 //! its instance's fields once.
 use core.{
     StmtId,
+    Span,
     ExprId,
     Type,
     TypeId,
@@ -18,10 +19,10 @@ use core.{
     flatten,
     user_kind,
 }
-use features.{ResolveCx, TypeCx, default_mark}
+use features.{ResolveCx, TypeCx, default_mark, type_named}
 use @std.meta.{Diagnostic}
-use diagnostics.{Diag, refusal, warning}
-use @std.errors.{Loc}
+use diagnostics.{Diag, refusal, warning, note}
+use @std.errors.{Loc, Frame}
 
 fn resolve_component(mut cx: ResolveCx, s: StmtId) {
     if cx.refuses_nested(s, "resolve.nested_type", "type declarations") { return }
@@ -169,6 +170,27 @@ fn copied_events_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
                 ),
             )
     }
+}
+
+/// An instance of a template refused for its events stands as a hole, and
+/// a note points it at the event's declaration — the one error is there.
+fn refused_there_law(mut cx: TypeCx, e: ExprId) {
+    let inst? = cx.view.store.instance_parts(e) else { return }
+    let d? = type_named(cx.names, inst.word) else { return }
+    let store = cx.view.decls.store(d)
+    let c? = store.component_parts(cx.view.decls.decl(d).stmt) else { return }
+    if !copies_events(store, c) { return }
+    let event? = c.events().first() else { return }
+    let declared: Span? = if event.holder.default == null { null } else { store.expr_span(event.holder.default!) }
+    cx
+        .emit(
+            refused_there(
+                cx.loc_of(e),
+                c.name,
+                event.name,
+                cx.view.decls.homed(cx.view.decls.decl(d).file, null, null, declared),
+            ),
+        )
 }
 
 /// A head spelled `Format` is `@std.meta`'s pattern: the instance read
@@ -327,6 +349,16 @@ fn copied_event(at: Loc?, word: string, event: string) -> Diag {
         "declared here",
         "declare `${event}` on a component that builds a record, one with no `expand`",
     )
+}
+
+fn refused_there(at: Loc?, word: string, event: string, declared: Loc?) -> Diag {
+    note(
+        "type.component_event",
+        at,
+        "`${word}`'s event `${event}` is refused where it is declared, so this instance is not built",
+        "met here",
+        "fix it where `${word}` declares `${event}`",
+    ) with { secondary: [Frame { label: "refused here", loc: declared }] }
 }
 
 fn misheard_event(at: Loc?, event: string, says: List<string>) -> Diag {
