@@ -24,9 +24,18 @@ use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
 use core.{DeclId, Span}
 use compiler.{Workspace}
 
-fn severity_flag(s: Severity) -> bool { s is .Error }
+fn severity_tag(s: Severity) -> int {
+    match s { .Error -> 0, .Warning -> 1, .Note -> 2 }
+}
 
-fn severity_of(flag: bool) -> Severity { if flag { Severity.Error } else { Severity.Warning } }
+fn severity_of(tag: int) -> Result<Severity, CodecFault> {
+    match tag {
+        0 -> Severity.Error,
+        1 -> Severity.Warning,
+        2 -> Severity.Note,
+        rest -> { fail CodecFault.NotFlag },
+    }
+}
 
 fn confidence_tag(c: Confidence) -> int {
     match c { .High -> 0, .Medium -> 1, .Low -> 2 }
@@ -136,7 +145,7 @@ impl Workspace {
     /// file's whole diagnostics/rule-findings row.
     fn written_diag_facts(w: Writer, d: DiagFacts) {
         w.text(d.kind)
-        w.bool(severity_flag(d.severity))
+        w.int(severity_tag(d.severity))
         self.written_frame(w, d.primary)
         written_list(w, d.secondary, (w: Writer, f: Frame) -> self.written_frame(w, f))
         written_list(w, d.cause_lines, (w: Writer, l: string) -> w.text(l))
@@ -150,7 +159,7 @@ impl Workspace {
     /// `written_diag_facts`'s inverse.
     fn read_diag_facts(r: Reader) -> Result<DiagFacts, CodecFault> {
         let kind = r.text()?
-        let severity = severity_of(r.bool()?)
+        let severity = severity_of(r.int()?)?
         let primary = self.read_frame(r)?
         let secn = r.count()?
         let secondary = [self.read_frame(r)? for _k in 0..secn]
