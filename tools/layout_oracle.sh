@@ -30,19 +30,23 @@ skip() {
 [ -x "$avra" ] || skip "no compiler at $avra"
 command -v node >/dev/null 2>&1 || skip "no \`node\` on this machine"
 node -e 'process.exit(typeof WebSocket === "function" ? 0 : 1)' || skip "this \`node\` has no WebSocket of its own (22 or later has)"
-node --input-type=module -e "import { firefoxBinary } from '$here/ui-board/firefox.mjs'; process.exit(firefoxBinary() ? 0 : 1)" || skip "no Firefox on this machine (FIREFOX names one)"
+case " ${LAYOUT_ORACLE_BROWSERS:-firefox} " in *" firefox "*) node --input-type=module -e "import { firefoxBinary } from '$here/ui-board/firefox.mjs'; process.exit(firefoxBinary() ? 0 : 1)" || skip "no Firefox on this machine (FIREFOX names one)" ;; esac
 
+. "$here/ui-board/playwright.sh"
+browsers=${LAYOUT_ORACLE_BROWSERS:-firefox}
 total=0
-for seed in $seeds; do
-    out=$(AVRA="$avra" node "$here/layout-oracle/oracle.mjs" --cases "$cases" --seed "$seed" --show 2 2>&1) || { echo "$out"; echo "layout-oracle: the solver and the browser disagree (seed $seed)"; exit 1; }
-    echo "$out" | tail -1
-    n=$(echo "$out" | tail -1 | sed -n 's/^layout-oracle: \([0-9]*\) of.*/\1/p')
-    total=$((total + ${n:-0}))
+for browser in $browsers; do
+    if [ "$browser" = webkit ]; then
+        log=$(mktemp "${TMPDIR:-/tmp}/avra-layout-playwright.XXXXXX")
+        playwright_ready "$tree" "$log" || skip "Playwright's WebKit did not install: $(tail -1 "$log")"
+    fi
+    for face in cell prop; do
+        for seed in $seeds; do
+            out=$(AVRA="$avra" node "$here/layout-oracle/oracle.mjs" --browser "$browser" --face "$face" --cases "$cases" --seed "$seed" --show 2 2>&1) || { echo "$out"; echo "layout-oracle: the solver and $browser disagree (face $face, seed $seed)"; exit 1; }
+            echo "$out" | tail -1
+            n=$(echo "$out" | tail -1 | sed -n 's/^layout-oracle: \([0-9]*\) of.*/\1/p')
+            total=$((total + ${n:-0}))
+        done
+    done
 done
-for seed in $seeds; do
-    out=$(AVRA="$avra" node "$here/layout-oracle/oracle.mjs" --face prop --cases "$cases" --seed "$seed" --show 2 2>&1) || { echo "$out"; echo "layout-oracle: the solver and the browser disagree over a proportional face (seed $seed)"; exit 1; }
-    echo "$out" | tail -1
-    n=$(echo "$out" | tail -1 | sed -n 's/^layout-oracle: \([0-9]*\) of.*/\1/p')
-    total=$((total + ${n:-0}))
-done
-echo "layout-oracle: $total trees agree between std-ui's solver and Firefox running the real html target"
+echo "layout-oracle: $total trees agree between std-ui's solver and the real html target in: $browsers"
