@@ -1,0 +1,140 @@
+use @std.json.{Json}
+use data.{as_value}
+use store.publish.{Publication, Record}
+
+export enum Operation {
+    Schema
+    Observe(id: string, payload: string)
+    Observation(id: string, revision: int)
+    Publish(publication: Publication)
+    Get(id: string)
+    Value(id: string)
+    Find(model: string, limit: int)
+    Edges(id: string, incoming: bool)
+    Traverse(id: string, depth: int, limit: int)
+    Explain(id: string, property: string)
+    Dirty
+}
+
+/// Protocol parsing knows operations; model data belongs to standard validation.
+export fn operation(j: Json) -> Result<Operation, string> {
+    let op = text(j, "op")?
+    match op {
+        "schema" -> {
+            closed(j, ["op"])?
+            Operation.Schema
+        },
+        "observe" -> {
+            closed(j, ["op", "id", "payload"])?
+            Operation.Observe(text(j, "id")?, text(j, "payload")?)
+        },
+        "observation" -> {
+            closed(j, ["op", "id", "revision"])?
+            Operation.Observation(text(j, "id")?, optional_int(j, "revision", 0)?)
+        },
+        "publish" -> {
+            closed(
+                j,
+                [
+                    "op",
+                    "id",
+                    "producer",
+                    "scope",
+                    "input",
+                    "input_revision",
+                    "schema",
+                    "expected_revision",
+                    "records",
+                ],
+            )?
+            Operation
+                .Publish(
+                    Publication {
+                        id: text(j, "id")?,
+                        producer: text(j, "producer")?,
+                        scope: text(j, "scope")?,
+                        input: text(j, "input")?,
+                        input_revision: integer(j, "input_revision")?,
+                        schema: text(j, "schema")?,
+                        expected_revision: integer(j, "expected_revision")?,
+                        records: [record(v)? for v in array(j, "records")?],
+                    },
+                )
+        },
+        "get" -> {
+            closed(j, ["op", "id"])?
+            Operation.Get(text(j, "id")?)
+        },
+        "value" -> {
+            closed(j, ["op", "id"])?
+            Operation.Value(text(j, "id")?)
+        },
+        "find" -> {
+            closed(j, ["op", "model", "limit"])?
+            Operation.Find(text(j, "model")?, optional_int(j, "limit", 100)?)
+        },
+        "edges" -> {
+            closed(j, ["op", "id", "incoming"])?
+            Operation.Edges(text(j, "id")?, optional_bool(j, "incoming", false)?)
+        },
+        "traverse" -> {
+            closed(j, ["op", "id", "depth", "limit"])?
+            Operation
+                .Traverse(text(j, "id")?, optional_int(j, "depth", 2)?, optional_int(j, "limit", 100)?)
+        },
+        "explain" -> {
+            closed(j, ["op", "id", "property"])?
+            Operation.Explain(text(j, "id")?, text(j, "property")?)
+        },
+        "dirty" -> {
+            closed(j, ["op"])?
+            Operation.Dirty
+        },
+        rest -> { fail "unknown operation: ${op}" },
+    }
+}
+
+fn record(j: Json) -> Result<Record, string> {
+    closed(j, ["id", "model", "value"])?
+    let value? = j.get("value") else { fail "record needs value" }
+    Record { id: text(j, "id")?, model: text(j, "model")?, value: as_value(value) }
+}
+
+fn closed(j: Json, allowed: List<string>) -> Result<int, string> {
+    match j {
+        .Obj(fields) -> {
+            for i, f in fields {
+                if !allowed.contains(f.key) { fail "unknown protocol field: ${f.key}" }
+                if fields.slice(0, i).any(it.key == f.key) { fail "duplicate protocol field: ${f.key}" }
+            }
+            0
+        },
+        rest -> { fail "request must be a JSON object" },
+    }
+}
+
+fn text(j: Json, key: string) -> Result<string, string> {
+    let value? = j.get(key)?.text() else { fail "${key} must be a string" }
+    value
+}
+
+fn integer(j: Json, key: string) -> Result<int, string> {
+    let value? = j.get(key)?.int() else { fail "${key} must be an integer" }
+    value
+}
+
+fn array(j: Json, key: string) -> Result<List<Json>, string> {
+    let value? = j.get(key) else { fail "${key} must be an array" }
+    match value { .Arr(items) -> items, rest -> { fail "${key} must be an array" } }
+}
+
+fn optional_int(j: Json, key: string, fallback: int) -> Result<int, string> {
+    if j.get(key) == null { return fallback }
+    integer(j, key)
+}
+
+fn optional_bool(j: Json, key: string, fallback: bool) -> Result<bool, string> {
+    if j.get(key) == null { return fallback }
+    let value? = j.get(key)?.truth() else { fail "${key} must be a boolean" }
+    value
+}

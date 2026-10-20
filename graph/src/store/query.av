@@ -1,0 +1,219 @@
+use @std.validate.{Value, Entry}
+use @std.json.{Json, parse, field}
+use store.open.{Graph, storage, cell_text, cell_int}
+use store.tables.{active}
+use data.{as_value, as_json}
+
+export type Candidate = { claim: int, value: Value }
+export type Selection = { property: string, candidates: List<Candidate> }
+export type Entity = { id: string, model: string, revision: int, fields: List<Selection> }
+export type Edge = { entity: string, property: string, target: string, path: string }
+
+impl Graph {
+    /// A source's current payload, or one immutable historical revision.
+    fn observation(id: string, revision: int = 0) -> Result<Json, string> {
+        if revision < 0 { fail "observation revision must be nonnegative" }
+        self.current()?
+        let rows = if revision == 0 {
+            self.rows("SELECT revision, payload FROM observations WHERE id=?", [.Text(id)])?
+        } else {
+            self
+                .rows(
+                    "SELECT revision, payload FROM observation_versions WHERE id=? AND revision=?",
+                    [.Text(id), .Int(revision)],
+                )?
+        }
+        if rows.is_empty() { fail "observation revision not found: ${id}/${revision}" }
+        Json
+            .Obj(
+                [
+                    field("id", Json.Str(id)),
+                    field("revision", Json.Int(cell_int(rows[0], 0)?)),
+                    field("payload", Json.Str(cell_text(rows[0], 1)?)),
+                ],
+            )
+    }
+
+    fn entity(id: string) -> Result<Entity, string> {
+        storage(self.db.begin_read())?
+        defer { let _ = self.db.finish() }
+        let revision = self.current()?
+        let named = self.rows("SELECT model FROM entities WHERE id=?", [.Text(id)])?
+        if named.is_empty() { fail "unknown entity: ${id}" }
+        let claims = self
+            .rows(
+                "SELECT id, property, value FROM (${active}) WHERE entity=? ORDER BY property, value",
+                [.Text(id)],
+            )?
+        mut selections: List<Selection> = []
+        for row in claims {
+            let property = cell_text(row, 1)?
+            if selections.any(it.property == property) { continue }
+            let candidates = [Candidate { claim: cell_int(r, 0)?, value: stored_value(cell_text(r, 2)?)? } for r in claims if cell_text(r, 1)? == property]
+            selections.push(Selection { property: property, candidates: candidates })
+        }
+        Entity { id: id, model: cell_text(named[0], 0)?, revision: revision, fields: selections }
+    }
+
+    /// A complete record only when every property has one supported answer.
+    fn value(id: string) -> Result<Value, string> {
+        let entity = self.entity(id)?
+        if entity.fields.is_empty() { fail "entity has no current support: ${id}" }
+        if entity.fields.any(it.candidates.length != 1) { fail "entity has competing statements: ${id}" }
+        let assembled = Value
+            .Map([Entry { key: f.property, value: f.candidates[0].value } for f in entity.fields])
+        let model = self.catalog.model(entity.model)?
+        match (model.check)(assembled) {
+            .Ok(value) -> value,
+            .Err(issues) -> { fail "entity is incomplete under the current model: ${issues.report()}" },
+        }
+    }
+
+    fn find(model: string, limit: int = 100) -> Result<List<string>, string> {
+        if limit < 1 || limit > 1000 { fail "limit must be between 1 and 1000" }
+        self.current()?
+        [cell_text(r, 0)? for r in self
+            .rows(
+                "SELECT DISTINCT e.id FROM entities e JOIN (${active}) a ON a.entity=e.id WHERE e.model=? ORDER BY e.id LIMIT ?",
+                [.Text(model), .Int(limit)],
+            )?]
+    }
+
+    fn edges(id: string, incoming: bool = false) -> Result<List<Edge>, string> {
+        self.current()?
+        let restriction = if incoming { "ed.target=?" } else { "a.entity=?" }
+        [Edge {
+            entity: cell_text(r, 0)?,
+            property: cell_text(r, 1)?,
+            target: cell_text(r, 2)?,
+            path: cell_text(r, 3)?,
+        } for r in self
+            .rows(
+                "SELECT DISTINCT a.entity, a.property, ed.target, ed.path FROM (${active}) a JOIN edges ed ON ed.claim=a.id WHERE ${restriction} ORDER BY a.entity, a.property, ed.path",
+                [.Text(id)],
+            )?]
+    }
+
+    /// Breadth-first reachability; a hard node budget bounds cyclic graphs.
+    fn traverse(id: string, depth: int = 2, limit: int = 100) -> Result<List<string>, string> {
+        if depth < 0 || depth > 20 || limit < 1 || limit > 1000 { fail "depth must be 0..20 and limit 1..1000" }
+        storage(self.db.begin_read())?
+        defer { let _ = self.db.finish() }
+        self.current()?
+        mut seen = [id]
+        mut frontier = [id]
+        for _level in 0..depth {
+            mut next: List<string> = []
+            for from in frontier {
+                for edge in self.edges(from)? {
+                    if !seen.contains(edge.target) {
+                        if seen.length >= limit { fail "traversal exceeded its node budget" }
+                        seen.push(edge.target)
+                        next.push(edge.target)
+                    }
+                }
+            }
+            frontier = next
+            if frontier.is_empty() { break }
+        }
+        seen
+    }
+
+    /// Every historical support, including why it no longer contributes.
+    fn explain(id: string, property: string) -> Result<Json, string> {
+        self.current()?
+        let rows = self
+            .rows(
+                "SELECT c.id, c.value, r.id, r.producer, r.scope, r.input_id, r.input_revision, r.schema, COALESCE(s.until_revision, 0), o.revision, r.revision FROM claims c JOIN supports s ON s.claim=c.id JOIN runs r ON r.id=s.run JOIN observations o ON o.id=r.input_id WHERE c.entity=? AND c.property=? ORDER BY c.id, r.revision",
+                [.Text(id), .Text(property)],
+            )?
+        Json
+            .Arr(
+                [Json
+                    .Obj(
+                        [
+                            field("claim", Json.Int(cell_int(r, 0)?)),
+                            field("value", as_json(stored_value(cell_text(r, 1)?)?)),
+                            field("run", Json.Str(cell_text(r, 2)?)),
+                            field("producer", Json.Str(cell_text(r, 3)?)),
+                            field("scope", Json.Str(cell_text(r, 4)?)),
+                            field("input", Json.Str(cell_text(r, 5)?)),
+                            field("input_revision", Json.Int(cell_int(r, 6)?)),
+                            field("schema", Json.Str(cell_text(r, 7)?)),
+                            field("until_revision", Json.Int(cell_int(r, 8)?)),
+                            field(
+                                "active",
+                                Json
+                                    .Bool(
+                                        cell_int(r, 8)? == 0 &&
+                                            cell_int(r, 6)? == cell_int(r, 9)? &&
+                                            cell_text(r, 7)? == self.catalog.fingerprint,
+                                    ),
+                            ),
+                            field("published_revision", Json.Int(cell_int(r, 10)?)),
+                        ],
+                    ) for r in rows],
+            )
+    }
+
+    /// Inputs whose last supported interpretation is out of date.
+    fn dirty() -> Result<Json, string> {
+        self.current()?
+        let rows = self
+            .rows(
+                "SELECT r.producer, r.scope, r.input_id, o.revision FROM runs r JOIN observations o ON o.id=r.input_id WHERE NOT EXISTS (SELECT 1 FROM runs newer WHERE newer.producer=r.producer AND newer.scope=r.scope AND newer.revision>r.revision) AND (r.input_revision<>o.revision OR r.schema<>?) ORDER BY r.producer, r.scope, r.input_id",
+                [.Text(self.catalog.fingerprint)],
+            )?
+        Json
+            .Arr(
+                [Json
+                    .Obj(
+                        [
+                            field("producer", Json.Str(cell_text(r, 0)?)),
+                            field("scope", Json.Str(cell_text(r, 1)?)),
+                            field("input", Json.Str(cell_text(r, 2)?)),
+                            field("input_revision", Json.Int(cell_int(r, 3)?)),
+                        ],
+                    ) for r in rows],
+            )
+    }
+}
+
+impl Entity {
+    fn json() -> Json {
+        Json
+            .Obj(
+                [
+                    field("id", Json.Str(self.id)),
+                    field("model", Json.Str(self.model)),
+                    field("revision", Json.Int(self.revision)),
+                    field(
+                        "fields",
+                        Json
+                            .Obj(
+                                [field(
+                                    f.property,
+                                    Json
+                                        .Arr(
+                                            [Json
+                                                .Obj(
+                                                    [
+                                                        field("claim", Json.Int(c.claim)),
+                                                        field("value", as_json(c.value)),
+                                                    ],
+                                                ) for c in f.candidates],
+                                        ),
+                                ) for f in self.fields],
+                            ),
+                    ),
+                ],
+            )
+    }
+}
+
+export fn stored_value(text: string) -> Result<Value, string> {
+    match parse(text) {
+        .Ok(j) -> as_value(j),
+        .Err(_) -> { fail "stored graph value is not JSON" },
+    }
+}
