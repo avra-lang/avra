@@ -19,7 +19,7 @@
 //! Not read: aspect and inset.
 use style.layout.{Axis, Align, Distribute, Wrap, Sizing, Edge}
 use tree.node.{Node, own_axis}
-use place.measure.{Measure, Extent}
+use place.measure.{Measure, Extent, fine}
 
 /// A box in the target's unit, from the root's top-left corner.
 export type Rect = { x: int, y: int, w: int, h: int }
@@ -78,7 +78,7 @@ const widest = 100000000
 /// Lengths are carried in sixtieths of a unit, as a browser carries them
 /// in sixtieths of a pixel: a share that does not divide keeps its fraction
 /// down the tree, and only the boxes handed back are snapped to whole units.
-const unit = 60
+const unit = fine
 
 /// The tree laid out in `width`, its height its content's.
 export fn place(root: Node, m: dyn Measure, width: int) -> Placed {
@@ -114,8 +114,7 @@ fn whole(p: Placed) -> Placed {
 
 /// A node's own content laid in `avail` across.
 fn own_of(cx: Ctx, n: Node, avail: int) -> Extent {
-    let e = cx.m.own(n, floor_div(avail, unit))
-    Extent { w: e.w * unit, h: e.h * unit }
+    cx.m.own_fine(n, avail)
 }
 
 fn kept_of(cx: Ctx, n: Node, path: string) -> int { cx.m.kept(n, path) * unit }
@@ -230,7 +229,7 @@ fn max_w(cx: Ctx, n: Node, path: string) -> int {
         "M${path}",
         () -> {
             let pad = sides(cx, n.box.layout.pad)
-            let own = cx.m.own(n, unbounded).w * unit
+            let own = cx.m.own_fine(n, unbounded * unit).w
             let kids = [margin_x(cx, c) + (fixed_w(cx, c) ?? max_w(cx, c, "${path}.${i}")) for i, c in n.children if cx.m.holds(n) && !cx.m.hidden(c)]
             let inside = if axis_of(n) is .Row { kids.sum() + gap_along(cx, n, .Row) * at_least_zero(kids.length - 1) } else { kids.max() ?? 0 }
             pad.start + pad.end + kept_of(cx, n, path) + bigger(own, inside)
@@ -246,7 +245,7 @@ fn min_w(cx: Ctx, n: Node, path: string) -> int {
         "N${path}",
         () -> {
             let pad = sides(cx, n.box.layout.pad)
-            let own = cx.m.min_own(n) * unit
+            let own = cx.m.min_own_fine(n)
             let kids = [margin_x(cx, c) + (fixed_w(cx, c) ?? min_w(cx, c, "${path}.${i}")) for i, c in n.children if cx.m.holds(n) && !cx.m.hidden(c)]
             let along = axis_of(n) is .Row && !wraps(n)
             let inside = if along { kids.sum() + gap_along(cx, n, .Row) * at_least_zero(kids.length - 1) } else { kids.max() ?? 0 }
