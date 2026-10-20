@@ -1,0 +1,57 @@
+use @std.json.{Json, field, parse, to_text}
+use @std.validate.{Value, Entry}
+use @std.hash.{blake3_hex}
+
+export fn as_value(j: Json) -> Value {
+    match j {
+        .Null -> Value.Null,
+        .Bool(b) -> Value.Bool(b),
+        .Int(n) -> Value.Int(n),
+        .Float(x) -> Value.Float(x),
+        .Str(s) -> Value.Text(s),
+        .Arr(xs) -> Value.List([as_value(x) for x in xs]),
+        .Obj(fs) -> Value.Map([Entry { key: f.key, value: as_value(f.value) } for f in fs]),
+    }
+}
+
+export fn as_json(v: Value) -> Json {
+    match v {
+        .Null -> Json.Null,
+        .Bool(b) -> Json.Bool(b),
+        .Int(n) -> Json.Int(n),
+        .Float(x) -> Json.Float(x),
+        .Text(s) -> Json.Str(s),
+        .List(xs) -> Json.Arr([as_json(x) for x in xs]),
+        .Map(fs) -> Json.Obj([field(f.key, as_json(f.value)) for f in ordered(fs)]),
+    }
+}
+
+export fn encoded(v: Value) -> string { to_text(as_json(v)) }
+
+export fn digest(text: string) -> string { blake3_hex(text.bytes()) }
+
+/// JSON has no representation for a non-finite number.
+export fn json_safe(v: Value) -> bool {
+    match v {
+        .Float(x) -> x - x == 0.0,
+        .Map(entries) -> entries.all(json_safe(it.value)),
+        .List(items) -> items.all(json_safe(it)),
+        .Null or .Bool(_) or .Int(_) or .Text(_) -> true,
+    }
+}
+
+export fn before(a: string, b: string) -> bool {
+    for i in 0..if a.length < b.length { a.length } else { b.length } {
+        if a.char_code(i) != b.char_code(i) { return a.char_code(i) < b.char_code(i) }
+    }
+    a.length < b.length
+}
+
+fn ordered(xs: List<Entry>) -> List<Entry> {
+    if xs.length < 2 { return xs }
+    let pivot = xs[0]
+    let tail = xs.slice(1, xs.length)
+    ordered([x for x in tail if before(x.key, pivot.key)])
+        .concat([pivot])
+        .concat(ordered([x for x in tail if !before(x.key, pivot.key)]))
+}

@@ -1,0 +1,220 @@
+use models.{models}
+use store.open.{Graph, stored}
+use store.engine.{EntityRow}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use store.merge.{Merge}
+use store.tombstone.{Tombstone}
+use store.identity.{Identity}
+use data.{encoded}
+
+fn whole(id: string, model: string, value: string) -> Result<Record, string> {
+    Record { id: id, model: model, value: stored_value(value)? }
+}
+
+fn claimed(id: string, model: string, value: string) -> Result<Record, string> {
+    Record { id: id, model: model, value: stored_value(value)?, mode: .Partial }
+}
+
+fn published(g: Graph, run: string, records: List<Record>) -> Result<Publication, string> {
+    Publication {
+        id: run,
+        producer: "agent",
+        scope: run,
+        input: "input:1",
+        input_revision: 1,
+        schema: g.catalog.fingerprint,
+        expected_revision: g.revision()?,
+        records: records,
+    }
+}
+
+fn gone(id: string, entity: string) -> Tombstone {
+    Tombstone { id: id, entity: entity, decider: "user" }
+}
+
+fn populated(mut g: Graph) -> Result<int, string> {
+    g
+        .publish(
+            published(
+                g,
+                "one",
+                [
+                    Record {
+                        id: "p1",
+                        model: "Person",
+                        value: stored_value("{\"name\":\"Ada\"}")?,
+                        identities: [Identity { namespace: "mail", external_key: "ada" }],
+                    },
+                ],
+            )?,
+        )?
+    g
+        .publish(
+            published(
+                g,
+                "two",
+                [
+                    whole(
+                        "m1",
+                        "Message",
+                        "{\"author\":\"p1\",\"recipients\":[],\"body\":\"hello\"}",
+                    )?,
+                ],
+            )?,
+        )?
+    g
+        .publish(
+            published(
+                g,
+                "three",
+                [claimed("w1", "WorkItem", "{\"title\":\"Review\",\"assignee\":\"p1\"}")?],
+            )?,
+        )
+}
+
+fn hides_reads() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    populated(g)?
+    g.tombstone(gone("t1", "p1"))?
+    let get = match g.entity("p1") { .Ok(_) -> false, .Err(_) -> true }
+    let value = match g.value("p1") { .Ok(_) -> false, .Err(_) -> true }
+    let find = (g.find("Person")?).is_empty()
+    let resolve = match g.resolve("mail", "ada") { .Ok(_) -> false, .Err(_) -> true }
+    let aliases = match g.aliases("p1") { .Ok(_) -> false, .Err(_) -> true }
+    get && value && find && resolve && aliases
+}
+
+fn history_survives() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    populated(g)?
+    g.tombstone(gone("t1", "p1"))?
+    let history = g.explain("p1", "name")?
+    history.items().length == 1 && history.item(0).member("value").text() ?? "" == "Ada"
+}
+
+fn references_do_not_surface() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    populated(g)?
+    g.tombstone(gone("t1", "p1"))?
+    (g.edges("m1")?).is_empty() &&
+        !(g.traverse("m1", depth: 2)?).contains("p1") &&
+        (g.edges("w1")?).is_empty()
+}
+
+fn publications_refused() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    populated(g)?
+    g.tombstone(gone("t1", "p1"))?
+    let revision = g.revision()?
+    let onto = match g
+        .publish(published(g, "four", [claimed("p1", "Person", "{\"email\":\"ada@example.com\"}")?])?) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    let at = match g
+        .publish(
+            published(
+                g,
+                "five",
+                [claimed("w2", "WorkItem", "{\"title\":\"Other\",\"assignee\":\"p1\"}")?],
+            )?,
+        ) { .Ok(_) -> false, .Err(_) -> true }
+    onto &&
+        at &&
+        g.revision()? == revision &&
+        (stored(EntityRow.where(g.db, name: "w2"))?).is_empty()
+}
+
+fn revive_restores() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    populated(g)?
+    g.tombstone(gone("t1", "p1"))?
+    g.revive("t1")?
+    let read = encoded(g.value("p1")?).contains("Ada")
+    let edges = (g.edges("m1")?).length == 1
+    let history = g.tombstones("p1")?
+    read && edges && history.length == 1 && !history[0].active() && history[0].until_revision > 0
+}
+
+fn group_hides_together() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    g.publish(published(g, "one", [claimed("p1", "Person", "{\"name\":\"Ada\"}")?])?)?
+    g.publish(published(g, "two", [claimed("p2", "Person", "{\"email\":\"ada@example.com\"}")?])?)?
+    g.merge(Merge { id: "m1", left: "p1", right: "p2", decider: "user" })?
+    g.tombstone(gone("t1", "p1"))?
+    let hidden = match g.entity("p2") { .Ok(_) -> false, .Err(_) -> true }
+    g.revive("t1")?
+    hidden && encoded(g.value("p2")?).contains("Ada")
+}
+
+fn decisions_replay() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    populated(g)?
+    let first = g.tombstone(gone("t1", "p1"))?
+    let replay = g.tombstone(gone("t1", "p1"))? == first
+    let moved = match g.tombstone(gone("t1", "m1")) { .Ok(_) -> false, .Err(_) -> true }
+    let twice = match g.tombstone(gone("t2", "p1")) { .Ok(_) -> false, .Err(_) -> true }
+    let unknown = match g.tombstone(gone("t3", "nobody")) { .Ok(_) -> false, .Err(_) -> true }
+    replay && moved && twice && unknown && g.revision()? == first
+}
+
+fn merge_refused_when_gone() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    g.publish(published(g, "one", [claimed("p1", "Person", "{\"name\":\"Ada\"}")?])?)?
+    g.publish(published(g, "two", [claimed("p2", "Person", "{\"email\":\"ada@example.com\"}")?])?)?
+    g.tombstone(gone("t1", "p1"))?
+    match g.merge(Merge { id: "m1", left: "p1", right: "p2", decider: "user" }) {
+        .Ok(_) -> false,
+        .Err(_) -> (g.merges("")?).is_empty(),
+    }
+}
+
+fn withdrawn_tombstone_refused() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    populated(g)?
+    g.tombstone(gone("t1", "p1"))?
+    g.revive("t1")?
+    let replay = match g.tombstone(gone("t1", "p1")) { .Ok(_) -> false, .Err(_) -> true }
+    let unknown = match g.revive("never") { .Ok(_) -> false, .Err(_) -> true }
+    replay && unknown && (g.tombstones("")?).length == 1
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "graph tombstones" {
+    given "an operator hides an entity without deleting its history" {
+        then "every live read refuses the entity" { passed(hides_reads()) }
+        then "explanations still show the evidence" { passed(history_survives()) }
+        then "references to it do not surface as live edges" { passed(references_do_not_surface()) }
+        then "publications onto or into it are refused atomically" { passed(publications_refused()) }
+        then "revival restores the reads and keeps the decision" { passed(revive_restores()) }
+        then "a merge group is hidden and revived as one" { passed(group_hides_together()) }
+        then "a decision id replays; a repeat or unknown target is refused" { passed(decisions_replay()) }
+        then "a tombstoned entity cannot merge" { passed(merge_refused_when_gone()) }
+        then "a revived decision cannot be replayed as if it still stood" { passed(withdrawn_tombstone_refused()) }
+    }
+}
