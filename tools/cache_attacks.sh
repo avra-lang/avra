@@ -948,6 +948,54 @@ printf '// edited\n' >> $R/vwa/src/main.av
 VW "vw: an app edit after the library's own suite wrote last judges by stamps" 0
 fi
 
+# A METHOD TABLE IS READ BY WHAT IT GATHERED AND BY WHO MAY JOIN IT: `read.av` calls
+# `bump` on `Pt`, which no impl declares, so it carries an error. An impl for `Pt` added
+# in ANOTHER file — one no kept row names — must clear it; and an impl body edited in
+# `Pt`'s home file, which the reader never calls, must leave it held.
+if section mi; then
+mkdir -p $R/mil/src $R/mi/src
+printf '[package]\nname = "@rt/mil"\nversion = "0.1.0"\n\n[lib]\nname = "rt-mil"\npath = "src/lib.av"\n' > $R/mil/avra.toml
+printf 'export type Pt = { v: int }\nimpl Pt { fn tick() -> int { self.v } }\n' > $R/mil/src/lib.av
+printf '[package]\nname = "rt-mi"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/mil" = { path = "../mil" }\n' > $R/mi/avra.toml
+printf 'use @rt.mil.{Pt}\nexport fn read() -> int {\n    let p = Pt { v: 1 }\n    p.bump()\n}\n' > $R/mi/src/read.av
+printf 'use @rt.mil.{Pt}\nexport fn other() -> int { Pt { v: 2 }.tick() }\n' > $R/mi/src/other.av
+printf 'println("mi ${read()} ${other()}")\n' > $R/mi/src/main.av
+MI() { # MI <label> <want: refused|clean>
+    steps=$((steps+1))
+    out=$(./avra check $R/mi 2>&1); st=$?
+    case "$2:$st" in refused:0) fails=$((fails+1)); echo "FAIL  $1: wanted the reader refused, it checked clean" ;; clean:[1-9]*) fails=$((fails+1)); echo "FAIL  $1: wanted clean, got: $(printf '%s' "$out" | grep -E '^error' | head -2 | tr '\n' ' ')" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $2" ;; esac
+}
+MI "mi: cold, a reader calls a method no impl declares" refused
+MI "mi: warm, the refusal stands" refused
+printf 'use lib.{Pt}\nimpl Pt { fn bump() -> int { 1 } }\n' > $R/mil/src/pt_bump.av
+MI "mi: an impl for Pt in a NEW file declares it — the reader's refusal clears" clean
+printf 'println("mi ${read()} ${other()}")\n' > $R/mi/src/main.av
+MIB() { # MIB <label> <path-substr> <want: held|read>
+    steps=$((steps+1))
+    out=$(./avra build --time $R/mi 2>&1); st=$?
+    if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  $1 did not build (status $st): $(printf '%s' "$out" | grep -vE '^watch:|^time:' | head -3 | tr '\n' ' ')"; return; fi
+    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
+    case "$out" in *"read:"*"$2"*) got=read ;; *) got=held ;; esac
+    if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1: $2 -> $got"; else fails=$((fails+1)); echo "FAIL  $1: $2 wanted $3, got $got: $(printf '%s' "$out" | grep -A6 '^read:' | tr '\n' ' ')"; fi
+}
+steps=$((steps+1)); ./avra build $R/mi >/dev/null 2>&1 || { fails=$((fails+1)); echo "FAIL  mi: the fixed reader did not build"; }
+ed $R/mil/src/lib.av "{ self.v } }" "{ self.v + 1 } }"
+MIB "mi: Pt's home file edits an impl body the reader never calls — read.av stays held" read.av held
+ed $R/mil/src/lib.av "{ self.v + 1 } }" "{ self.v } }"
+MIB "mi: and back" read.av held
+# A METHOD ADDED TO AN EXISTING IMPL BLOCK moves no signature of the block's own: `again.av`
+# calls `tock` on `Pt`, which `impl Pt` does not declare yet, so it carries an error; adding
+# `tock` to the SAME block must clear it, and a cold build must agree.
+printf 'use @rt.mil.{Pt}\nexport fn again() -> int {\n    let p = Pt { v: 1 }\n    p.tock()\n}\n' > $R/mi/src/again.av
+MI "mi: a reader calls a method its impl block does not declare — refused" refused
+ed $R/mil/src/lib.av "impl Pt { fn tick() -> int { self.v } }" "impl Pt {
+    fn tick() -> int { self.v }
+    fn tock() -> int { 2 }
+}"
+MI "mi: the method is added to the SAME impl block — the reader's refusal clears" clean
+MI "mi: and warm again" clean
+fi
+
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
     # THE COMPILER'S OWN BINARY is identified by a stamp-keyed record of its bytes' digest:
