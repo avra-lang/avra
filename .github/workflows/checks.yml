@@ -377,6 +377,22 @@ jobs:
           mkdir -p .avra-cache/proofs
           [ ! -d proofs-kept ] || cp -R proofs-kept/. .avra-cache/proofs/
           echo "proofs: $(ls .avra-cache/proofs | wc -l) kept row(s) handed down"
+      # THE SHARDS' STORE ROWS RIDE UP AND DOWN TOO. A store segment is one writer's frames and a reader
+      # merges every segment at open, so main's shards hand their segments up (`suite-timing` keeps
+      # the newest prints) and every run restores them here: a run whose compiler is main's (the same
+      # print) reads the rows each shard made, and any other print never reads them.
+      - if: steps.plan.outputs.build == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: store-segs-kept
+          key: store-segs-restore-only-${{ github.run_id }}
+          restore-keys: store-segs-
+      - if: steps.plan.outputs.build == '1'
+        name: place store segments
+        run: |
+          mkdir -p .avra-cache/store
+          [ ! -d store-segs-kept ] || cp -p store-segs-kept/seg-*.log .avra-cache/store/ 2>/dev/null || :
+          echo "store segments: $(ls .avra-cache/store | grep -c '^seg-') handed down"
       # THE CACHE'S MACHINE CODE IS BOUNDED BY SIZE. `.avra-cache/obj` and `bin` are
       # restored by prefix from the run before and saved again, and an entry keyed to
       # a compiler that no longer exists is never read, so they only grow (1.1 GB, 621 MB
@@ -906,7 +922,9 @@ jobs:
             t=$(date +%s)
             # The memory pass's L2 proof rides the suite run: a use-after-free
             # in the pass's own output fails the gate instead of hiding behind it.
-            python3 tools/step_cpu.py --state "$p" -- env AVRA_SOUND_CHECK=1 build/avra test --time $(python3 tools/shards.py --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
+            # On main the store keeps every frame in the segments (no seal folds them away), so the
+            # segments the shard hands up hold everything it wrote.
+            python3 tools/step_cpu.py --state "$p" -- env AVRA_SOUND_CHECK=1 $([ "${{ needs.prepare.outputs.main }}" != 1 ] || echo AVRA_STORE_SEAL_FRAMES=1000000000) build/avra test --time $(python3 tools/shards.py --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
             echo "::endgroup::"
             echo "$(echo "$p" | tr / _) $(( $(date +%s) - t ))s" | tee -a speed.log
             # What the packer learns from (tools/shards.py --merge-times): the suite's own seconds,
@@ -929,6 +947,14 @@ jobs:
         with:
           name: proofs-${{ strategy.job-index }}
           path: .avra-cache/proofs
+          include-hidden-files: true
+          retention-days: 1
+
+      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('.avra-cache/store/seg-*.log') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: store-segs-${{ strategy.job-index }}
+          path: .avra-cache/store/seg-*.log
           include-hidden-files: true
           retention-days: 1
 
@@ -1003,6 +1029,22 @@ jobs:
         with:
           path: proofs-kept
           key: proofs-${{ github.run_id }}
+      # THE STORE SEGMENTS every shard of a main run wrote, merged over the set kept before: the
+      # newest two prints and at most 150 MB (tools/store_segments.py), for every run's `prepare`.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { pattern: store-segs-*, path: store-segs-in, merge-multiple: true }
+      - uses: actions/cache/restore@v4
+        with:
+          path: store-segs-kept
+          key: store-segs-${{ github.run_id }}
+          restore-keys: store-segs-
+      - name: merge store segments
+        run: python3 tools/store_segments.py --merge store-segs-kept store-segs-in
+      - uses: actions/cache/save@v4
+        with:
+          path: store-segs-kept
+          key: store-segs-${{ github.run_id }}
   # THE COMPILER-FREE FLOOR ON A PULL REQUEST. The gate runs these too, but a
   # PR runs them FIRST and for nothing, so a keeper that reads only the tree
   # refuses on the PR instead of after the objects build. The set is
