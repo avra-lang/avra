@@ -23,10 +23,20 @@ type Note = {
     @soft_delete removed_at: int? = null,
 }
 
+@model
+type Reading = {
+    id: int = 0,
+    label: string?,
+    count: int?,
+    ratio: float?,
+    flag: bool?,
+}
+
 fn seeded() -> Result<Db, SqlError> {
     mut db = Db.memory()?
     Job.create_table(db)?
     Note.create_table(db)?
+    Reading.create_table(db)?
     db
 }
 
@@ -112,7 +122,32 @@ fn null_column() -> Result<string, ModelError> {
     "${live.removed_at == null}"
 }
 
+/// What one nullable column holds, absent or present.
+fn held(r: Reading) -> string {
+    "${r.label ?? "none"}|${r.count ?? -1}|${r.ratio ?? -1.0}|${r.flag ?? true}"
+}
+
+fn absent_row() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let r = Reading { label: null, count: null, ratio: null, flag: null }.insert(db)?
+    let back = modeled(Reading.find(db, r.id))?!
+    "${back.label == null} ${back.count == null} ${back.ratio == null} ${back.flag == null}"
+}
+
+fn spare_row() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let r = Reading { label: "", count: 0, ratio: 0.0, flag: false }.insert(db)?
+    let back = modeled(Reading.find(db, r.id))?!
+    "${back.label != null} ${back.count != null} ${back.ratio != null} ${back.flag != null} ${held(back)}"
+}
+
 spec "std/db queries" {
+    given "nullable columns" {
+        then "absence is read back as absence in every kind" { (absent_row() catch "") == "true true true true" }
+        then "the empty value of each kind is present, never absent" {
+            (spare_row() catch "") == "true true true true |0|0.0|false"
+        }
+    }
     given "an empty table" {
         then "all and where answer nothing" { (empty_table() catch "") == "0 0" }
     }
