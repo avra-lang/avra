@@ -1,0 +1,97 @@
+use @std.validate.{Value}
+use @std.sqlite.{Db}
+use data.{encoded, digest}
+use store.open.{Graph, stored, modeled}
+use store.engine.{EntityRow, RunRow, ClaimRow, SupportRow, EdgeRow, AliasRow}
+use store.identity.{Identity}
+use store.publish.{Link}
+
+impl Graph {
+    fn claimed(mut db: Db, entity: EntityRow, property: string, value: Value, schema: string) -> Result<
+        ClaimRow,
+        string,
+    > {
+        let text = encoded(value)
+        let key = stamp([entity.name, property, text, schema])
+        match stored(ClaimRow.where(db, stamp: key))? {
+            [one] -> one,
+            [] -> modeled(
+                ClaimRow {
+                    entity: entity,
+                    property: property,
+                    value: text,
+                    schema: schema,
+                    stamp: key,
+                }
+                    .insert(db),
+            )?,
+            rest -> { fail "claim stamp is not unique: ${key}" },
+        }
+    }
+
+    fn supported(mut db: Db, run: RunRow, claim: ClaimRow, locator: Value) -> Result<
+        SupportRow,
+        string,
+    > {
+        let key = stamp(["support", "${run.id}", "${claim.id}"])
+        match stored(SupportRow.where(db, stamp: key))? {
+            [one] -> one,
+            [] -> modeled(
+                SupportRow {
+                    run: run,
+                    claim: claim,
+                    locator: match locator { .Null -> null, found -> encoded(found) },
+                    stamp: key,
+                }
+                    .insert(db),
+            )?,
+            rest -> { fail "support stamp is not unique: ${key}" },
+        }
+    }
+
+    fn attained(link: Link) -> Result<int, string> {
+        let target = self.entity_named(link.target)?
+        if target.model != link.model { fail "${link.path} must refer to an existing ${link.model}: ${link.target}" }
+        if self.hidden(link.target)? { fail "reference targets a tombstoned entity: ${link.target}" }
+        0
+    }
+
+    fn referenced(mut db: Db, claim: ClaimRow, link: Link) -> Result<int, string> {
+        let target = self.entity_named(link.target)?
+        let key = stamp(["edge", "${claim.id}", target.name, link.path])
+        let found = stored(EdgeRow.where(db, stamp: key))?
+        if found.is_empty() {
+            let _ = modeled(
+                EdgeRow { claim: claim, target: target, path: link.path, stamp: key }.insert(db),
+            )?
+        }
+        0
+    }
+
+    fn named_by(mut db: Db, entity: EntityRow, identity: Identity, run: RunRow) -> Result<
+        int,
+        string,
+    > {
+        if (self.bound(identity.namespace, identity.external_key)?).any(it != entity.name) {
+            fail "identity already names another entity: ${identity.namespace}/${identity.external_key}"
+        }
+        let existing = stored(
+            AliasRow.where(db, run: run, namespace: identity.namespace, key: identity.external_key),
+        )?
+        if existing.is_empty() {
+            let _ = modeled(
+                AliasRow {
+                    entity: entity,
+                    namespace: identity.namespace,
+                    key: identity.external_key,
+                    run: run,
+                }
+                    .insert(db),
+            )?
+        }
+        0
+    }
+}
+
+/// A stamp is one derivation of the fields a composite key would name.
+fn stamp(parts: List<string>) -> string { digest(parts.join("\t")) }

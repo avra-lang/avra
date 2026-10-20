@@ -155,7 +155,7 @@ impl Graph {
                 .insert(db),
         )?
         self.withdrawn(db, p, run, revision + 1)?
-        for r in records { self.contribute(db, p, run, r, revision + 1)? }
+        for r in records { self.contribute(db, p, run, r)? }
         self.advanced()?
         stored(db.commit())?
         revision + 1
@@ -183,9 +183,11 @@ impl Graph {
                 if one.model != record.model { fail "an entity's model cannot change: ${record.id}" }
                 if self.hidden(record.id)? { fail "a tombstoned entity cannot receive publications: ${record.id}" }
             },
-            [] -> { let _ = modeled(
+            [] -> {
+                let _ = modeled(
                     EntityRow { name: record.id, model: record.model, born: revision }.insert(db),
-                )? },
+                )?
+            },
             rest -> { fail "entity name is not unique: ${record.id}" },
         }
         0
@@ -203,10 +205,7 @@ impl Graph {
         0
     }
 
-    fn contribute(mut db: Db, p: Publication, run: RunRow, r: Record, revision: int) -> Result<
-        int,
-        string,
-    > {
+    fn contribute(mut db: Db, p: Publication, run: RunRow, r: Record) -> Result<int, string> {
         let model = self.catalog.model(r.model)?
         let entity = self.entity_named(r.id)?
         for entry in r.value.entries() {
@@ -220,95 +219,7 @@ impl Graph {
         for a in r.identities { self.named_by(db, entity, a, run)? }
         0
     }
-
-    fn claimed(mut db: Db, entity: EntityRow, property: string, value: Value, schema: string) -> Result<
-        ClaimRow,
-        string,
-    > {
-        let text = encoded(value)
-        let key = stamp([entity.name, property, text, schema])
-        match stored(ClaimRow.where(db, stamp: key))? {
-            [one] -> one,
-            [] -> modeled(
-                ClaimRow {
-                    entity: entity,
-                    property: property,
-                    value: text,
-                    schema: schema,
-                    stamp: key,
-                }
-                    .insert(db),
-            )?,
-            rest -> { fail "claim stamp is not unique: ${key}" },
-        }
-    }
-
-    fn supported(mut db: Db, run: RunRow, claim: ClaimRow, locator: Value) -> Result<
-        SupportRow,
-        string,
-    > {
-        let key = stamp(["support", "${run.id}", "${claim.id}"])
-        match stored(SupportRow.where(db, stamp: key))? {
-            [one] -> one,
-            [] -> modeled(
-                SupportRow {
-                    run: run,
-                    claim: claim,
-                    locator: match locator { .Null -> null, found -> encoded(found) },
-                    stamp: key,
-                }
-                    .insert(db),
-            )?,
-            rest -> { fail "support stamp is not unique: ${key}" },
-        }
-    }
-
-    fn attained(link: Link) -> Result<int, string> {
-        let target = self.entity_named(link.target)?
-        if target.model != link.model { fail "${link.path} must refer to an existing ${link.model}: ${link.target}" }
-        if self.hidden(link.target)? { fail "reference targets a tombstoned entity: ${link.target}" }
-        0
-    }
-
-    fn referenced(mut db: Db, claim: ClaimRow, link: Link) -> Result<int, string> {
-        let target = self.entity_named(link.target)?
-        let key = stamp(["edge", "${claim.id}", target.name, link.path])
-        let found = stored(EdgeRow.where(db, stamp: key))?
-        if found.is_empty() {
-            let _ = modeled(
-                EdgeRow { claim: claim, target: target, path: link.path, stamp: key }.insert(db),
-            )?
-        }
-        0
-    }
-
-    fn named_by(mut db: Db, entity: EntityRow, identity: Identity, run: RunRow) -> Result<
-        int,
-        string,
-    > {
-        if (self.bound(identity.namespace, identity.external_key)?).any(it != entity.name) {
-            fail "identity already names another entity: ${identity.namespace}/${identity.external_key}"
-        }
-        let existing = stored(
-            AliasRow.where(db, run: run, namespace: identity.namespace, key: identity.external_key),
-        )?
-        if existing.is_empty() {
-            let _ = modeled(
-                AliasRow {
-                    entity: entity,
-                    namespace: identity.namespace,
-                    key: identity.external_key,
-                    run: run,
-                }
-                    .insert(db),
-            )?
-        }
-        0
-    }
 }
-
-/// A stamp is one derivation of the fields a composite key would name.
-fn stamp(parts: List<string>) -> string { digest(parts.join("\t")) }
 
 fn same_identity(a: Identity, b: Identity) -> bool {
     a.namespace == b.namespace && a.external_key == b.external_key
@@ -317,22 +228,4 @@ fn same_identity(a: Identity, b: Identity) -> bool {
 /// Defaults construct records; only supplied fields become evidence.
 fn observed(original: Value, normalized: Value) -> Value {
     Value.Map([e for e in normalized.entries() if original.entries().any(it.key == e.key)])
-}
-
-impl Shape {
-    fn links(catalog: Catalog, value: Value, path: string) -> Result<List<Link>, string> {
-        match self {
-            .Text or .Integer or .Number or .Boolean -> [],
-            .Reference(target) -> {
-                let id? = match value { .Text(id) -> id, rest -> null } else { fail "a reference must be text" }
-                [Link { target: id, model: target, path: path }]
-            },
-            .Optional(inner) -> if value is .Null { [] } else { inner.links(catalog, value, path)? },
-            .Many(inner) -> [link for i, v in value.items() for link in inner.links(catalog, v, "${path}[${i}]")?],
-            .Embedded(name) -> {
-                let model = catalog.model(name)?
-                [link for e in value.entries() for p in model.properties if p.name == e.key for link in p.shape.links(catalog, e.value, "${path}.${e.key}")?]
-            },
-        }
-    }
 }
