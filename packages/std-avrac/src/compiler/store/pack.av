@@ -41,7 +41,7 @@ extern fn avra_process_exit(code: int)
 extern fn avra_spawn_status(prog: string, args: List<string>) -> int
 
 const MAGIC: string = "AVRAPACK"
-const FORMAT_VERSION: int = 3
+const FORMAT_VERSION: int = 4
 
 const CONTENT_TAG: int = 1
 const ACTION_TAG: int = 2
@@ -797,7 +797,8 @@ fn pack_found(pack: Pack, family: string, key: string, read_only: bool) -> strin
     let at = record_key(family, key)
     if withdrawn(pack, at) { return null }
     let held? = record_of(pack, at) else { return null }
-    content_of(pack, held.digest)
+    let stored? = content_of(pack, held.digest) else { return null }
+    if cas_is_ref(stored) { cas_value(stored) } else { stored }
 }
 
 /// The reads a row was kept with, absent for a row not present or whose
@@ -944,10 +945,13 @@ fn kill_at_commit() {
 export fn pack_put(pack: Pack, family: string, key: string, value: string, read: List<string>) {
     opened_at(pack, false)
     pack.withdrawn.put(record_key(family, key), false)
-    let digest = content_digest(value)
+    // a value too big for the frames is stored as a reference to the shared blob
+    let stored = cas_put(value, dir_of(pack.dir)) ?? value
+    cas_register_if_named(stored, dir_of(pack.dir))
+    let digest = content_digest(stored)
     if content_of(pack, digest) == null {
-        append(pack, content_body(digest, value))
-        pack.content.put(digest, value)
+        append(pack, content_body(digest, stored))
+        pack.content.put(digest, stored)
     }
     // LICENSED input.store_clock: orders two writers' frames for one key, never an input of what is built
     let stamp = now_ns()
