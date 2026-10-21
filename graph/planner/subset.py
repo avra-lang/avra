@@ -316,7 +316,7 @@ def check(text, schema, params):
         for cond in chain["where"]:
             check_condition(cond, models, labels, nodes[0]["var"], params)
         lasts.append(nodes[-1]["var"])
-    aggregate = [it for it in q["items"] if it["fn"]]
+    aggregate = [it for it in q["items"] if it["fn"] in ("count", "sum")]
     if aggregate and len(q["items"]) > 1:
         raise Refusal("syntax", f"{aggregate[0]['fn']}(...) must be the only RETURN item")
     names = []

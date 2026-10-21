@@ -89,6 +89,7 @@ class Gate(unittest.TestCase):
             "MATCH (r:PersonalRelationship) WHERE r.subject = 'p:rowan' RETURN r.relation": "syntax",
             "MATCH (me:Person) WHERE id(me) = $speaker SET me.name = 'x' RETURN me.name": "mutation_refused",
             "MATCH (me:Person) WHERE id(me) = $speaker RETURN count(me) AS n, me.name": "syntax",
+            "MATCH (me:Person)<-[:assignee]-(t:PersonalTask) RETURN t.summary AS task, coalesce(t.confirmation_recorded, false) AS booked": None,
             "MATCH (me:Person)<-[r:subject]-(x:PersonalRelationship) RETURN x.relation": "relationship_variable",
             "MATCH (a:Person) MATCH (a:Person) RETURN a.name": "unused_match",
             "MATCH (a:Person)<-[:actor]-(c:Commitment) MATCH (a)<-[:subject]-(r:PersonalRelationship) RETURN r.relation": "unlabelled_node",

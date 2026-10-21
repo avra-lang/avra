@@ -22,7 +22,7 @@ Binding the question:
 - A relationship word (wife, mum, member of, ...) is never a relationship type. Walk the relationship record with the model's `pattern` line and filter its label property to one listed value.
 - To narrow by a topic the question mentions, use CONTAINS on a text property with one lowercase key word from the question.
 - Return the property that answers the question.
-- A yes/no boolean may be absent. If the question asks what has been RECORDED ("has a confirmation been recorded?", "is there a record of ..."), absence means no: return `coalesce(v.prop, false) AS name` as the only item. If it asks about the world ("is it booked?", "did it happen?"), return `v.prop` as is, so absence is reported as unknown."""
+- A yes/no boolean may be absent. If the question asks what has been RECORDED ("has a confirmation been recorded?", "is there a record of ..."), absence means no: return `coalesce(v.prop, false) AS name` (it may sit beside other items of the same last node). If it asks about the world ("is it booked?", "did it happen?"), return `v.prop` as is, so absence is reported as unknown."""
 
 EXAMPLE_SCHEMA = """(:Technician) A person who services devices.
   .name: string

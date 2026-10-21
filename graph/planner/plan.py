@@ -139,6 +139,28 @@ class Remote:
             return json.load(r)["choices"][0]["message"]["content"]
 
 
+def gated(cypher, schema, params):
+    """The graph's own check when PLANNER_CHECK names its CLI; else the subset copy."""
+    binary = os.environ.get("PLANNER_CHECK")
+    if not binary:
+        check(cypher, schema, params)
+        return
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as scratch:
+        request = pathlib.Path(scratch) / "check.json"
+        request.write_text(json.dumps({"op": "check", "cypher": cypher, "params": params}))
+        done = subprocess.run([binary, "request", "--db", str(pathlib.Path(scratch) / "check.db"), str(request)],
+                              text=True, capture_output=True, timeout=60)
+    answer = json.loads(done.stdout or "{}")
+    if answer.get("ok") is True:
+        return
+    if "code" not in answer:
+        raise SystemExit(f"planner: the graph's check op did not answer: {(done.stderr or done.stdout)[:300]}")
+    raise Refusal(answer["code"], answer.get("message", ""))
+
+
 def tries():
     """`--tries N` caps the drafts; a single pass measures the prompt alone."""
     args = sys.argv[1:]
@@ -162,7 +184,7 @@ def planned(llm, question, schema, context, limit=TRIES):
         started = time.time()
         cypher = drafted(llm.reply(turns))
         try:
-            check(cypher, schema, params)
+            gated(cypher, schema, params)
             bound(question, cypher, context)
             log(f"try {attempt} ok in {time.time() - started:.1f}s: {cypher}")
             return {"cypher": cypher, "params": params}
@@ -194,7 +216,7 @@ def composed(chooser, question, schema, context):
     started = time.time()
     params = params_of(context)
     cypher = structured.plan(chooser, question, schema, context)
-    check(cypher, schema, params)
+    gated(cypher, schema, params)
     log(f"composed in {time.time() - started:.1f}s: {cypher}")
     return {"cypher": cypher, "params": params}
 
