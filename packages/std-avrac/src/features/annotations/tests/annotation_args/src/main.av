@@ -1,0 +1,32 @@
+// proves: an annotation's arguments cross WHOLE — a list literal as its
+// source spelling (nested lists, quoted text, dotted variants), and each
+// `label: value` in `named`, at a field (from its marks) and at a
+// declaration (from its facts). A wrong crossing refuses here, which
+// fails the build.
+use @std.meta.{Fn, Diagnostic, refuse, derive}
+use @test.argsreader.{ArgsReader}
+
+fn ranged(_f: Fn, _xs: List<int>, min: int = 0, max: int = 0) -> List<Diagnostic> { [] }
+
+fn checked_fn(f: Fn) -> List<Diagnostic> {
+    let a = f.annotations[0]
+    let named = [n.label + "=" + n.value for n in a.named].join(",")
+    let ok = a.args.join(",") == "[1, 2]" && named == "min=1,max=9"
+    if ok { [] } else { [refuse("fn crossing: args=${a.args.join(",")} named=${named}")] }
+}
+
+@ranged([1, 2], min: 1, max: 9)
+@checked_fn
+fn add(a: int, b: int) -> int {
+    a + b
+}
+
+@derive(ArgsReader)
+type Task = {
+    @one_of(["open", "done"]) status: string,
+    @length(min: 1, max: 80) title: string,
+    @nested([[1, 2], []], [.Low, .High], ["say \"hi\""], tag: ["a", "b"]) rank: int,
+}
+
+let t = Task { status: "open", title: "x", rank: add(1, 2) }
+"${t.rank}: ${t.crossed()}"

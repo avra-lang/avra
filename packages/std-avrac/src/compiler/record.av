@@ -44,6 +44,7 @@ use features.{
     DeclFacts,
     AnnotationFact,
     LitArg,
+    NamedLit,
     LitKind,
     CancelReach,
 }
@@ -530,18 +531,19 @@ fn doc_of_wire(wire: string) -> List<string>? {
     [text_of_field(x) for x in parts.slice(1, parts.length)]
 }
 
-/// One `AnnotationFact` as a 4-item `packed` record: its escaped name, its arguments
+/// One `AnnotationFact` as a 5-item `packed` record: its escaped name, its arguments
 /// (each its escaped text and its kind, packed again — an argument's text is exactly as
-/// free), and its span's two wires.
+/// free), its span's two wires, and its named arguments (each its label beside its argument).
 fn annotation_wire(a: AnnotationFact) -> string {
     let slo = a.span?.lo ?? 0 - 1
     let shi = a.span?.hi ?? 0 - 1
     packed(
         [
             field_text(a.name),
-            packed([packed([field_text(x.text), lit_kind_word(x.kind)]) for x in a.args]),
+            packed([lit_arg_wire(x) for x in a.args]),
             "${slo}",
             "${shi}",
+            packed([packed([field_text(n.label), lit_arg_wire(n.arg)]) for n in a.named]),
         ],
     )
 }
@@ -552,7 +554,18 @@ fn annotation_of_wire(wire: string) -> AnnotationFact {
     let args = if p.length > 1 { [lit_arg_of_wire(x) for x in unpacked(p[1])] } else { [] }
     let slo = if p.length > 2 { wire_number(p[2]) ?? 0 - 1 } else { 0 - 1 }
     let shi = if p.length > 3 { wire_number(p[3]) ?? 0 - 1 } else { 0 - 1 }
-    AnnotationFact { name: name, args: args, span: span_of(slo, shi) }
+    let named = if p.length > 4 { [named_lit_of_wire(x) for x in unpacked(p[4])] } else { [] }
+    AnnotationFact { name: name, args: args, span: span_of(slo, shi), named: named }
+}
+
+fn lit_arg_wire(x: LitArg) -> string { packed([field_text(x.text), lit_kind_word(x.kind)]) }
+
+/// One named argument on the wire: its label, then its argument's wire.
+fn named_lit_of_wire(item: string) -> NamedLit {
+    let q = unpacked(item)
+    let label = if q.length > 0 { text_of_field(q[0]) } else { "" }
+    let arg = if q.length > 1 { lit_arg_of_wire(q[1]) } else { LitArg.codec_zero() }
+    NamedLit { label: label, arg: arg }
 }
 
 /// One literal argument on the wire: its text, then its kind's word.
