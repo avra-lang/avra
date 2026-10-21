@@ -50,6 +50,9 @@ At `checkpoint: 15`, ingest only s01..s15, in sequence. Do not preload later
 sources, gold facts or the complete final graph and pretend to rewind it.
 Use manifest context unless a question overrides it. A `valid_at` date
 asks about when a fact held; the checkpoint says what evidence was known.
+The question clock otherwise stays at `evaluation_time`. q24 explicitly
+selects `source_view: history` to read the first invoice after revision 2;
+current-view evidence cannot cite a superseded source revision.
 
 `expect.answer` is the normalized **required projection**, not exact prose
 or a requirement to expose these fixture IDs in production. The grader maps
@@ -57,8 +60,11 @@ real graph IDs to gold identities. Every field must be correct; objects
 allow additional supported fields, candidate lists compare as sets, and
 any extra contradictory or unsupported assertion is a failure. Other
 ordered lists retain order unless the contract explicitly says otherwise.
+q19's price-exclusion list is an unordered set, like candidate lists.
 Require all `evidence_all` sources and at least one `evidence_any` source
 when that list is present. Additional relevant evidence is allowed.
+`policy_all` names trusted interface policies, not source text. q49 needs
+`query.read_only` and may be refused before retrieving any document.
 
 `unknown` can carry a known partial answer and a missing-evidence reason.
 For example, EUR 270 is known but its GBP equivalent is not. Unknown must
@@ -82,6 +88,7 @@ spans, complete gold claims, Avra fixture models, extraction adapters,
 automatic workers, English query planning and an answer scorer are planned
 tasks, not existing features. The integrity checker cannot certify that an
 expected answer is semantically right or that an NLP model extracted it.
+The author self-audit and its corrections are recorded in [AUDIT.md](AUDIT.md).
 The entity dictionary covers identities needed by these questions; it is
 not exhaustive NER gold for every organization/place mentioned in the text.
 

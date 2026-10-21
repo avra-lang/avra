@@ -64,7 +64,7 @@ ready until dependencies have real outputs and acceptance receipts.
 
 | Wave | Task IDs | Coordination |
 | --- | --- | --- |
-| Fixture audit and interfaces | A01; then A02 and C01 | Freeze version 1 contracts before downstream implementation. |
+| Fixture audit and interfaces | A01 → C01 → A02 | Freeze coordinates/context before annotating spans. |
 | Application model declarations | M01; then M02 and M03 | Separate owned files; agree cross-model names through C01. |
 | Input/extraction plumbing | I01 → I02 → E01 | Use recorded proposals, not downloaded models, for contract tests. |
 | Identity and context | L01; then L02 and L03 | Share contracts, not ad hoc provider-specific types. |

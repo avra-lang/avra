@@ -120,10 +120,23 @@ def validate(data):
         require(expected["status"] in STATUSES, f"{label}: invalid answer status")
         require(isinstance(expected["answer"], dict), f"{label}: answer must be a projection object")
         evidence = expected.get("evidence_all", []) + expected.get("evidence_any", [])
-        require(bool(evidence), f"{label}: missing evidence requirements")
+        policies = expected.get("policy_all", [])
+        require(all(policy in manifest["trusted_policies"] for policy in policies),
+                f"{label}: unknown trusted policy")
+        require(bool(evidence) or expected["status"] == "refused" and bool(policies),
+                f"{label}: missing evidence requirements")
+        require(not set(expected.get("evidence_all", [])) & set(expected.get("evidence_any", [])),
+                f"{label}: redundant evidence alternatives")
+        source_view = question.get("source_view", "current")
+        require(source_view in {"current", "history"}, f"{label}: invalid source view")
         for source_id in evidence:
             require(source_id in source_map, f"{label}: unknown evidence {source_id}")
             require(source_map[source_id]["seq"] <= checkpoint, f"{label}: future evidence leak")
+            if source_view == "current":
+                source = source_map[source_id]
+                latest = max(s["revision"] for s in sources[:checkpoint]
+                             if s["observation"] == source["observation"])
+                require(source["revision"] == latest, f"{label}: superseded source in current view")
         for value in walk(expected["answer"]):
             if isinstance(value, str) and value.startswith(ENTITY_PREFIXES):
                 require(value in entity_map, f"{label}: unknown gold entity {value}")
@@ -161,6 +174,11 @@ def validate(data):
 
 
 def self_test(data):
+    def cyclic(altered):
+        for task in altered[4]:
+            task["state"] = "planned"
+        altered[4][0]["depends_on"] = ["A01"]
+
     mutations = [
         ("non-contiguous", lambda d: d[1][0].update(revision=2)),
         ("chronology", lambda d: d[1][1].update(received_at="2020-01-01T00:00:00Z")),
@@ -170,7 +188,11 @@ def self_test(data):
         ("unknown gold", lambda d: d[3][0]["expect"].update(answer={"person":"person:missing"})),
         ("integer minor", lambda d: d[3][0]["expect"].update(answer={"money":{"minor":1.2,"currency":"EUR"}})),
         ("unknown dependency", lambda d: d[4][0].update(depends_on=["missing"])),
-        ("dependency cycle", lambda d: (d[4][0].update(state="planned", depends_on=["A01"]), d[4][1].update(state="planned"))),
+        ("dependency cycle", cyclic),
+        ("superseded source", lambda d: d[3][47]["expect"].update(evidence_all=["s02"])),
+        ("missing evidence", lambda d: d[3][0]["expect"].update(evidence_all=[])),
+        ("unknown trusted policy", lambda d: d[3][48]["expect"].update(policy_all=["untrusted-document"])),
+        ("invalid source view", lambda d: d[3][0].update(source_view="future")),
     ]
     for number, (expected_error, mutate) in enumerate(mutations, 1):
         altered = copy.deepcopy(data)
