@@ -1,0 +1,200 @@
+// A byte range read where it lies (design §6.2 step 1): the length, a range
+// copied out, a range outside the file answering absent rather than trapping,
+// the commit marker digested a window at a time — and the WALK, which decodes
+// the codec's own encoding out of a mapping, held to the reader's answer on
+// the same octets, so the two spellings cannot drift.
+use @std.io.{write_text, write_bytes, make_dirs}
+use @std.time.{stamp}
+use @std.relation.stable.{writer, reader, Reader}
+use compiler.store.mapped.{
+    Mapped,
+    Window,
+    mapped,
+    mapped_at,
+    mapped_check,
+    mapped_close,
+    mapped_holds,
+    window_count,
+    window_done,
+    window_int,
+    window_octets,
+    window_of,
+    window_text,
+    window_under,
+}
+
+/// One directory per run, so no earlier run's file answers for this one.
+once fn base() -> string { "/tmp/avra-store-mapped/${stamp()}" }
+
+/// `text` written to a file of its own, mapped.
+fn map_of(name: string, text: string) -> Mapped {
+    let dir = base()
+    let _ = make_dirs(dir)
+    let path = "${dir}/${name}"
+    let _ = write_text(path, text)
+    mapped(path)!
+}
+
+/// OCTETS written to a file of its own, mapped — a stable-encoded section is
+/// not necessarily text.
+fn map_octets(name: string, octets: Bytes) -> Mapped {
+    let dir = base()
+    let _ = make_dirs(dir)
+    let path = "${dir}/${name}"
+    let _ = write_bytes(path, octets)
+    mapped(path)!
+}
+
+/// A read-set run as the reverse section writes one: `count`, then every
+/// ordinal as the codec's zigzagged number.
+fn run_octets(ordinals: List<int>) -> Bytes {
+    let w = writer()
+    w.count(ordinals.length)
+    for o in ordinals { w.int(o) }
+    w.bytes()
+}
+
+/// `count`, then a run a name, as a body's reverse section spells one.
+fn reverse_octets(names: List<string>, runs: List<List<int>>) -> Bytes {
+    let w = writer()
+    w.count(names.length)
+    for i, name in names {
+        w.text(name)
+        w.octets(run_octets(runs[i]))
+    }
+    w.bytes()
+}
+
+/// The reverse section the walk is held to: four names, an empty run among them.
+fn reverse() -> Bytes {
+    reverse_octets(
+        ["a.av", "b.av/units", "c.av", "d.av/units@0"],
+        [[0, 1, 2], [], [7], [0, 3, 5, 9, 11, 13]],
+    )
+}
+
+/// Numbers as the comma-joined text both sides of a walk are compared by.
+fn spelled(xs: List<int>) -> string { ["${v}" for v in xs].join(",") }
+
+fn ints_of(r: Reader) -> List<int> {
+    let n = match r.count() { .Ok(v) -> v, .Err(_) -> 0 }
+    mut out: List<int> = []
+    for _j in 0..n {
+        let at = match r.int() { .Ok(v) -> v, .Err(_) -> 0 }
+        out.push(at)
+    }
+    out
+}
+
+fn text_of(r: Reader) -> string {
+    match r.text() { .Ok(v) -> v, .Err(_) -> "" }
+}
+
+/// A reverse section walked by the READER: every name with its run. The
+/// oracle the window is held to.
+fn read_through(section: Bytes) -> string {
+    let r = reader(section)
+    let n = match r.count() { .Ok(v) -> v, .Err(_) -> 0 }
+    mut parts: List<string> = []
+    for _i in 0..n {
+        let name = text_of(r)
+        let octets = match r.octets() { .Ok(v) -> v, .Err(_) -> "".bytes() }
+        parts.push("${name}:${spelled(ints_of(reader(octets)))}")
+    }
+    if !r.done() { return "" }
+    parts.join(" ")
+}
+
+/// The same section walked by the MAPPING: the names, then each run read where
+/// it lies.
+fn walk_through(w: Window) -> string {
+    let n = window_count(w) ?? 0
+    mut parts: List<string> = []
+    for _i in 0..n {
+        let name = window_text(w) ?? ""
+        let length = window_count(w) ?? 0
+        let inner = window_under(w, length)!
+        let count = window_count(inner) ?? 0
+        mut run: List<int> = []
+        for _j in 0..count { run.push(window_int(inner) ?? 0) }
+        parts.push("${name}:${spelled(run)}")
+    }
+    parts.join(" ")
+}
+
+spec "compiler/store/mapped — a file read where it lies" {
+    given "a file of known octets" {
+        then "its length and a range inside it answer what was written" {
+            let m = map_of("five.txt", "hello")
+            let got = mapped_at(m, 1, 3)!
+            let said = "${m.len} ${got.text() ?? ""} ${mapped_holds(m, 0, 5)} ${mapped_holds(m, 4, 2)}"
+            mapped_close(m)
+            said == "5 ell true false"
+        }
+        then "a range outside the file answers absent, never a trap" {
+            let m = map_of("short.txt", "ab")
+            let past = mapped_at(m, 1, 2) == null
+            let behind = mapped_at(m, 0 - 1, 1) == null
+            let whole = mapped_at(m, 0, 2) != null
+            mapped_close(m)
+            past && behind && whole
+        }
+        then "an EMPTY file maps to a zero-length handle with an empty range" {
+            let m = map_of("empty.txt", "")
+            let none = mapped_at(m, 0, 0)!
+            let said = "${m.len} ${none.length}"
+            mapped_close(m)
+            said == "0 0"
+        }
+        then "the commit marker is the digest of the same octets, a window at a time" {
+            let text = ["abcdefgh" for _i in 0..20000].join("")
+            let m = map_of("big.txt", text)
+            let whole = mapped_check(m, 0, text.length)
+            let half = mapped_check(m, 0, 100000)
+            mapped_close(m)
+            whole != null && whole?.length == 16 && half != null && half != whole
+        }
+    }
+    given "a reverse section, as the store writes one" {
+        then "the window reads the names and runs the reader reads" {
+            let section = reverse()
+            let m = map_octets("reverse.bin", section)
+            let w = window_of(m, 0, section.length)!
+            let walked = walk_through(w)
+            mapped_close(m)
+            walked == read_through(section)
+        }
+        then "the walk spells the section's own runs and ends at its end" {
+            let section = reverse()
+            let m = map_octets("reverse-again.bin", section)
+            let w = window_of(m, 0, section.length)!
+            let said = "${walk_through(w)}|${window_done(w)}"
+            mapped_close(m)
+            said == "a.av:0,1,2 b.av/units: c.av:7 d.av/units@0:0,3,5,9,11,13|true"
+        }
+        then "a length past the run's own end is no length at all" {
+            let w = writer()
+            w.count(9)
+            w.text("only")
+            let section = w.bytes()
+            let m = map_octets("short.bin", section)
+            let w2 = window_of(m, 0, section.length)!
+            let over = window_octets(w2) == null
+            mapped_close(m)
+            over
+        }
+        then "a run of two-octet numbers reads back whole" {
+            let section = run_octets([1, 128, 300, 4608])
+            let m = map_octets("run.bin", section)
+            let walk = window_of(m, 0, section.length)!
+            let count = window_count(walk) ?? 0
+            mut got: List<int> = []
+            for _j in 0..count { got.push(window_int(walk) ?? 0) }
+            mapped_close(m)
+            spelled(got) == spelled(ints_of(reader(section))) && spelled(got) == "1,128,300,4608"
+        }
+    }
+    given "a file that is not there" {
+        then "no mapping answers absent" { mapped("${base()}/never.txt") == null }
+    }
+}

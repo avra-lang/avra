@@ -12,12 +12,32 @@
 //! lines; the line's position is the row's ORDINAL, which the reverse section names. An open
 //! reads the head and the index and decodes no row: a hit decodes the rows it asks
 //! for, each checked against the key it was asked by.
-use @std.io.{read_bytes, write_bytes, append_bytes, list_dir, open_beneath, remove, Opened}
+//!
+//! NOTHING OF THE FILE IS HELD (`compiler/store/mapped.av`): the body is mapped
+//! and every range — an index line, a row, a section — is copied out of the
+//! mapping as it is asked for, so an open costs a head and a bounded digest
+//! whatever the store's size.
+use @std.io.{write_bytes, append_bytes, list_dir, open_beneath, remove}
 use @std.path.{joined_path}
 use @std.relation.stable.{writer, reader, Writer, Reader}
 use @std.relation.engine.{list_cell, map_cell}
 use @std.text.{parse_int}
 use core.{flatten, sorted_by, text_before, digest_of_octets, distinct}
+use compiler.store.mapped.{
+    Mapped,
+    Window,
+    mapped,
+    mapped_at,
+    mapped_text,
+    mapped_check,
+    mapped_close,
+    window_of,
+    window_count,
+    window_int,
+    window_skip,
+    window_text,
+    window_under,
+}
 use core.debug.{qtrace, traced}
 
 const BODY_MAGIC: string = "AVRABODY"
@@ -349,15 +369,15 @@ fn reverse_section(reads: List<List<string>>) -> Bytes {
 /// Where a section stands in the file, and the check its head holds for it.
 type Place = { at: int, len: int, check: string }
 
-/// A sealed body, open and lazy: the file's handle, the head's facts, the index in memory
-/// and where each other section stands. No row is decoded until a lookup asks for it.
+/// A sealed body, open and lazy: the file's mapping, the head's facts and where
+/// each section stands. No row is decoded until a lookup asks for it.
 export type Sealed = {
-    o: Opened,
+    m: Mapped,
     rev: int,
     val_rev: int,
     print: string,
     count: int,
-    x: Bytes,
+    /// Where the head's frame ends, so every section's place counts from it.
     base: int,
     slots: Place,
     names: Place,
@@ -369,18 +389,17 @@ export type Sealed = {
 }
 
 /// The record keys of the sealed rows that read any of `moved`, from the body's reverse
-/// section and its row order; a row since overwritten is left to the live scan.
+/// section and its row order; a row since overwritten is left to the live scan. The
+/// section is WALKED where it lies: a run it does not ask for is skipped, never copied.
 export fn sealed_readers(pack: Pack, moved: Map<string, bool>) -> List<string> {
     let s? = pack.sealed.get().first() else { return [] }
-    let section? = section_of(s, s.reverse) else { return [] }
-    let r = reader(section)
-    let count = ok(r.count()) ?? 0
+    let w? = walk_of(s, s.reverse) else { return [] }
+    let count = window_count(w) ?? 0
     mut out: List<string> = []
     for _i in 0..count {
-        let name = ok(r.text()) ?? ""
-        let run? = ok(r.octets()) else { return out }
-        if moved.get(name) == null { continue }
-        for at in run_ordinals(run) {
+        let name = window_text(w) ?? ""
+        let wanted = moved.get(name) != null
+        for at in run_ordinals(w, wanted) {
             let h? = sealed_held_at(pack, s, at) else { continue }
             let key = record_key(h.family, h.key)
             if resident_held(pack, key, h) { out.push(key) }
@@ -389,12 +408,19 @@ export fn sealed_readers(pack: Pack, moved: Map<string, bool>) -> List<string> {
     out
 }
 
-/// The row ordinals one reverse run lists.
-fn run_ordinals(run: Bytes) -> List<int> {
-    let rr = reader(run)
-    let n = ok(rr.count()) ?? 0
+/// The row ordinals one reverse run lists at the window's place. A run the walk
+/// does not want is SKIPPED by its own length, never decoded: the section names
+/// every input, and a warm command wants the one it moved.
+fn run_ordinals(w: Window, wanted: bool) -> List<int> {
+    let length = window_count(w) ?? 0
+    if !wanted {
+        let _ = window_skip(w, length)
+        return []
+    }
+    let inner? = window_under(w, length) else { return [] }
+    let n = window_count(inner) ?? 0
     mut at: List<int> = []
-    for _j in 0..n { at.push(ok(rr.int()) ?? 0) }
+    for _j in 0..n { at.push(window_int(inner) ?? 0) }
     at
 }
 
@@ -443,29 +469,27 @@ fn first_from(pack: Pack, s: Sealed, want: string) -> int {
     lo
 }
 
-/// The leading key hex one index line holds, counted as a probe.
+/// The leading key hex one index line holds, counted as a probe and read
+/// where it lies.
 fn index_line_hex(pack: Pack, s: Sealed, ordinal: int) -> string {
     let t = pack.traffic.get()
     pack.traffic.set(t with { probes: t.probes + 1 })
-    let line = ordinal * LINE
-    s.x.slice(line + 1, line + 1 + KEY_HEX).text() ?? ""
+    let line = s.base + ordinal * LINE
+    mapped_text(s.m, line + 1, KEY_HEX) ?? ""
 }
 
 /// One row of the sealed body by ordinal, decoded from its span of the rows section; its
 /// value's place joins the open slots. Absent when the row does not decode.
 fn sealed_held_at(pack: Pack, s: Sealed, ordinal: int) -> Held? {
     if ordinal < 0 || ordinal >= s.count { return null }
-    let line = ordinal * LINE
-    let offset? = parse_int(
-        s.x.slice(line + 1 + KEY_HEX, line + 1 + KEY_HEX + OFFSET_WIDTH).text() ?? "",
-    ) else {
+    let line = s.base + ordinal * LINE
+    let offset? = parse_int(mapped_text(s.m, line + 1 + KEY_HEX, OFFSET_WIDTH) ?? "") else {
         return null
     }
-    let length? = parse_int(s.x.slice(line + 1 + KEY_HEX + OFFSET_WIDTH, line + LINE).text() ?? "") else { return null }
-    let raw = match s.o.span(s.base + s.rows.at + offset, length) {
-        .Ok(b) -> b,
-        .Err(_) -> { return null },
+    let length? = parse_int(mapped_text(s.m, line + 1 + KEY_HEX + OFFSET_WIDTH, LENGTH_WIDTH) ?? "") else {
+        return null
     }
+    let raw? = mapped_at(s.m, s.base + s.rows.at + offset, length) else { return null }
     let h? = decoded_row(reader(raw)) else { return null }
     if traced() { qtrace("Q\tstore\trow\t${ordinal}\n") }
     let t = pack.traffic.get()
@@ -521,13 +545,18 @@ fn slot_at(slot_lines: Bytes, k: int) -> ValueSlot? {
 
 /// A section of the sealed body, read whole from its place and held to the check its head
 /// holds for it — a damaged section answers absent.
-fn section_of(s: Sealed, place: Place) -> Bytes? { bytes_of(s.o, s.base, place) }
-
-/// A place's bytes, held to its check.
-fn bytes_of(o: Opened, base: int, place: Place) -> Bytes? {
-    let bytes = match o.span(base + place.at, place.len) { .Ok(b) -> b, .Err(_) -> { return null } }
+fn section_of(s: Sealed, place: Place) -> Bytes? {
+    let bytes? = mapped_at(s.m, s.base + place.at, place.len) else { return null }
     if place.check != "" && check_of(bytes) != place.check { return null }
     bytes
+}
+
+/// A section read as a walk, its check held before an octet of it is decoded:
+/// what a section is WALKED by (`sealed_readers`) is never held whole.
+fn walk_of(s: Sealed, place: Place) -> Window? {
+    let marker? = mapped_check(s.m, s.base + place.at, place.len) else { return null }
+    if place.check != "" && marker != place.check { return null }
+    window_of(s.m, s.base + place.at, place.len)
 }
 
 /// EVERY SEALED ROW LIFTED INTO THE OPEN INDEX, once: a seal folds all the rows, so a writer
@@ -537,10 +566,8 @@ fn materialized(pack: Pack) {
     pack.whole.set(true)
     let s? = pack.sealed.get().first() else { return }
     let _ = tables_of(pack)
-    let rows? = section_of(s, s.rows) else { return }
-    let r = reader(rows)
-    for _k in 0..s.count {
-        let h? = decoded_row(r) else { return }
+    for k in 0..s.count {
+        let h? = sealed_held_at(pack, s, k) else { return }
         let at = record_key(h.family, h.key)
         if pack.records.get().get(at) == null { pack.records.put(at, h) }
     }
@@ -591,33 +618,37 @@ fn named_ids(n: Names, read: List<string>) -> List<int> {
 /// How much of a body's start is read to find its head: the head is a few hundred octets.
 const HEAD_WINDOW: int = 16384
 
-/// A body opened lazily: its head and index read, nothing decoded. Absent for a file that is
-/// missing, torn, of another version, or whose index does not match what its head says.
+/// A body opened lazily: its head read and its index checked in place, nothing decoded.
+/// Absent for a file that is missing, torn, of another version, or whose index does not
+/// match what its head says.
 fn sealed_open(dir: string, name: string) -> Sealed? {
-    // LICENSED input.store_io: the store's own body, opened to read its head and index
-    let o = match open_beneath(dir, name) { .Ok(o) -> o, .Err(_) -> { return null } }
-    let size = o.size
-    let head = match o.span(0, if size < HEAD_WINDOW { size } else { HEAD_WINDOW }) {
-        .Ok(b) -> b,
-        .Err(_) -> {
-            o.close()
-            return null
-        },
+    let m? = body_mapped(dir, name) else { return null }
+    let head? = mapped_at(m, 0, if m.len < HEAD_WINDOW { m.len } else { HEAD_WINDOW }) else {
+        mapped_close(m)
+        return null
     }
     let framed_head = reader(head)
     let payload? = read_frame(framed_head) else {
-        o.close()
+        mapped_close(m)
         return null
     }
-    let s? = sealed_from(o, payload, framed_head.at.get(), size) else {
-        o.close()
+    let s? = sealed_from(m, payload, framed_head.at.get()) else {
+        mapped_close(m)
         return null
     }
     s
 }
 
-/// A head decoded and its index read and checked.
-fn sealed_from(o: Opened, payload: Bytes, base: int, size: int) -> Sealed? {
+/// A body's own file, mapped. A name that could leave the store's directory
+/// is no body: a mapping row takes a PATH, so the door `open_beneath` held is
+/// spelled here instead.
+fn body_mapped(dir: string, name: string) -> Mapped? {
+    if name.contains("/") || name.contains("..") { return null }
+    mapped(joined_path(dir, name))
+}
+
+/// A head decoded and its index checked where it lies.
+fn sealed_from(m: Mapped, payload: Bytes, base: int) -> Sealed? {
     let r = reader(payload)
     let magic? = ok(r.text()) else { return null }
     if magic != BODY_MAGIC { return null }
@@ -636,16 +667,17 @@ fn sealed_from(o: Opened, payload: Bytes, base: int, size: int) -> Sealed? {
     }
     if !r.done() { return null }
     let last = places[ROWS_AT]
-    if base + last.at + last.len > size { return null }
-    let x? = bytes_of(o, base, places[0]) else { return null }
-    if x.length != count * LINE { return null }
+    if !mapped_holds(m, base + last.at, last.len) { return null }
+    let index = places[0]
+    if index.len != count * LINE { return null }
+    let marker? = mapped_check(m, base + index.at, index.len) else { return null }
+    if marker != index.check { return null }
     Sealed {
-        o: o,
+        m: m,
         rev: rev,
         val_rev: val_rev,
         print: print,
         count: count,
-        x: x,
         base: base,
         slots: places[1],
         names: places[2],
@@ -661,7 +693,7 @@ fn sealed_count(pack: Pack) -> int { pack.sealed.get().first()?.count ?? 0 }
 
 /// The pack's one sealed body: its value file named, its rows lazy.
 fn adopted(pack: Pack, s: Sealed) {
-    for old in pack.sealed.get() { old.o.close() }
+    for old in pack.sealed.get() { mapped_close(old.m) }
     pack.sealed.set([s])
     pack.rev.set(s.rev)
     pack.val_rev.set(s.val_rev)
@@ -707,7 +739,7 @@ export fn body_scan(pack: Pack) {
             torn_at(pack, 0)
             continue
         }
-        if traced() { qtrace("Q\tstore\tbody\t${joined_path(pack.dir, name)}\t${s.x.length}\n") }
+        if traced() { qtrace("Q\tstore\tbody\t${joined_path(pack.dir, name)}\t${s.count * LINE}\n") }
         adopted(pack, s)
         return
     }
@@ -719,7 +751,7 @@ type BodyHead = { val_rev: int, print: string }
 
 fn head_of(dir: string, name: string) -> BodyHead? {
     let s? = sealed_open(dir, name) else { return null }
-    s.o.close()
+    mapped_close(s.m)
     BodyHead { val_rev: s.val_rev, print: s.print }
 }
 
