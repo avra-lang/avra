@@ -4,8 +4,9 @@ use @std.validate.{Value, Entry}
 use data.{as_value, encoded, digest}
 use schema.{Shape}
 use catalog.{Catalog}
-use store.open.{Graph, stored}
-use store.engine.{RunRow, RunTrailRow}
+use store.open.{Graph, stored, modeled}
+use store.engine.{RunRow, RunTrailRow, FailedRunRow}
+use ingest.extraction.{admit_extraction}
 use store.publish.{Publication, Record, RecordMode}
 use store.identity.{Identity, IdentityMatch}
 use store.evidence.{FieldEvidence, Voice, factuality_named, speech_act_named, normalization_json}
@@ -48,7 +49,18 @@ impl Placed {
     }
 }
 
-export type Admitted = { revision: int, run: string, replayed: bool, records: List<Placed> }
+/// Whether an admission published its records or recorded a failure.
+export enum Outcome { Published, Failed }
+
+/// A failed admission publishes nothing; `problems` are the extractor's own.
+export type Admitted = {
+    revision: int,
+    run: string,
+    replayed: bool,
+    records: List<Placed>,
+    outcome: Outcome = .Published,
+    problems: Json = Json.Arr([]),
+}
 
 type Target = { local_id: string, entity: string }
 
@@ -85,6 +97,12 @@ impl Admitted {
                     field("run", Json.Str(self.run)),
                     field("replayed", Json.Bool(self.replayed)),
                     field("records", Json.Arr([p.json() for p in self.records])),
+                    field(
+                        "status",
+                        Json
+                            .Str(match self.outcome { .Published -> "complete", .Failed -> "failed" }),
+                    ),
+                    field("problems", self.problems),
                 ],
             )
     }
@@ -111,15 +129,35 @@ impl Graph {
             [one] -> {
                 let same = (stored(RunTrailRow.where(self.db, run: one))?)
                     .any(it.request == fingerprint)
-                if !same { fail "this extraction request was already admitted with different content" }
+                if !same { fail readmitted() }
                 return Admitted { revision: one.revision, run: run, replayed: true, records: [] }
             },
             [] -> {},
             rest -> { fail "run id is not unique: ${run}" },
         }
+        match stored(FailedRunRow.where(self.db, name: run))? {
+            [one] -> {
+                let document = failure_document(one)?
+                if document.member("fingerprint").text() != fingerprint { fail readmitted() }
+                return Admitted {
+                    revision: document.member("revision").int() ?? 0,
+                    run: run,
+                    replayed: true,
+                    records: [],
+                    outcome: .Failed,
+                    problems: document.member("problems"),
+                }
+            },
+            [] -> {},
+            rest -> { fail "run id is not unique: ${run}" },
+        }
         let source = self.source(a.source.observation, a.source.revision)?
-        let linked = self
-            .link_exact(to_text(self.extraction_request(a, source)?), to_text(a.result))?
+        let request = to_text(self.extraction_request(a, source)?)
+        match admit_extraction(self.catalog, request, to_text(a.result))? {
+            .Failed(_, result) -> { return self.failed(a, run, fingerprint, result.extractor.producer) },
+            .Complete(_, _) -> {},
+        }
+        let linked = self.link_exact(request, to_text(a.result))?
         let producer = linked.result.extractor.producer
         let stream = [producer, a.scoped(), source.source.observation, "${source.source.revision}"]
             .join("\t")
@@ -145,6 +183,44 @@ impl Graph {
             run: run,
             replayed: false,
             records: placed,
+        }
+    }
+
+    /// Record a failed extraction for retry; nothing is published or withdrawn.
+    fn failed(a: Admission, run: string, fingerprint: string, producer: string) -> Result<
+        Admitted,
+        string,
+    > {
+        let revision = self.revision()? + 1
+        let problems = a.result.member("problems")
+        let document = Json
+            .Obj(
+                [
+                    field("input_revision", Json.Int(a.source.revision)),
+                    field("revision", Json.Int(revision)),
+                    field("fingerprint", Json.Str(fingerprint)),
+                    field("problems", problems),
+                ],
+            )
+        mut db = self.db
+        let _ = modeled(
+            FailedRunRow {
+                name: run,
+                producer: producer,
+                scope: a.scoped(),
+                input: self.observation_row(a.source.observation)?,
+                document: to_text(document),
+            }
+                .insert(db),
+        )?
+        self.advanced()?
+        Admitted {
+            revision: revision,
+            run: run,
+            replayed: false,
+            records: [],
+            outcome: .Failed,
+            problems: problems,
         }
     }
 
@@ -322,3 +398,9 @@ fn relinked(catalog: Catalog, shape: Shape, value: Value, targets: List<Target>)
         .Text or .Integer or .Number or .Boolean -> value,
     }
 }
+
+export fn failure_document(row: FailedRunRow) -> Result<Json, string> {
+    match parse(row.document) { .Ok(j) -> j, .Err(_) -> { fail "a stored failed run is not JSON" } }
+}
+
+fn readmitted() -> string { "this extraction request was already admitted with different content" }

@@ -247,8 +247,28 @@ fn failure_keeps_facts() -> Result<bool, string> {
     mut g = desk()?
     defer { let _ = g.close() }
     let first = g.admit(admission(extraction(g, [ana()]))?)?
-    let failed = g.admit(admission(extraction(g, [], "req:2", "enc", "failed"))?) is .Err
-    failed && g.revision()? == first.revision && (g.find("Clerk")?).contains(placed(first, "c1"))
+    let failure = admission(extraction(g, [], "req:2", "enc", "failed"))?
+    let failed = g.admit(failure)?
+    let pending = g.dirty()?
+    let kept = (g.explain(placed(first, "c1"), "label")?).item(0).member("active").truth() == true
+    let replay = g.admit(failure)?
+    let retried = g.admit(admission(extraction(g, [ana()], "req:3"))?)?
+    let cleared = !(g.dirty()?).items().any(it.member("failed").truth() == true)
+    failed.outcome is .Failed &&
+        failed.records.is_empty() &&
+        failed.revision == first.revision + 1 &&
+        failed.problems.item(0).member("code").text() == "timeout" &&
+        (g.find("Clerk")?).contains(placed(first, "c1")) &&
+        kept &&
+        pending
+            .items()
+            .any(it.member("failed").truth() == true && it.member("run").text() == failed.run) &&
+        replay.replayed &&
+        replay.revision == failed.revision &&
+        replay.outcome is .Failed &&
+        retried.outcome is .Published &&
+        cleared &&
+        g.admit(failure with { candidates: Json.Arr([Json.Str("x")]) }) is .Err
 }
 
 fn empty_replaces() -> Result<bool, string> {
@@ -338,7 +358,7 @@ spec "admit" {
         then "a declared key links a later extraction to the entity it created" { passed(links_existing()) }
         then "keys naming two entities publish a new local entity and merge nothing" { passed(stays_ambiguous()) }
         then "the same admission replays its revision; changed qualifiers under one request are refused" { passed(replays()) }
-        then "a failed extraction is refused and prior facts remain" { passed(failure_keeps_facts()) }
+        then "a failed extraction is recorded for retry, publishes and withdraws nothing, replays, and a later run clears it" { passed(failure_keeps_facts()) }
         then "an empty complete extraction replaces its producer's earlier admission" { passed(empty_replaces()) }
         then "an extraction of a superseded source revision is refused" { passed(stale_source()) }
         then "dangling references, unknown qualifiers and invented quotes refuse the whole admission" { passed(refuses_atomically()) }

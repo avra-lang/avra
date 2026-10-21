@@ -303,8 +303,10 @@ is rebuilt from the stored source, the installed catalog, the result's own
 and the `candidates` the caller offered. The run is one per producer and
 request id; replaying the same admission answers `replayed: true` with its
 revision, and changed content under that request id is refused. A failed
-result is refused and withdraws nothing; a complete empty one replaces the
-producer's earlier admission in that scope.
+result is recorded as a failed run (`status: "failed"` with its `problems`):
+nothing is published or withdrawn, and `dirty` lists it (`failed: true`)
+until a later run of that producer and scope succeeds. A complete empty one
+replaces the producer's earlier admission in that scope.
 
 Each record lands on an entity: `existing` (its keys name one), `new` or
 `unresolved` (a new local entity, stable per producer, scope, source revision
@@ -377,8 +379,8 @@ The engine models are `Meta`, `Schema`, `EntityRow`, `ObservationRow`,
 `ObservationVersionRow`, `RunRow`, `RunTrailRow`, `ClaimRow`, `SupportRow`,
 `EdgeRow`, `AliasRow`, `MergeRow`/`MergeEndRow`, and
 `TombstoneRow`/`TombstoneEndRow`, and `VoiceRow`, `EvidenceRow` and
-`SupersessionRow`, and `CorrectionRow`/`CorrectionEndRow` (storage format
-10; older formats upgrade by adding them). WAL, foreign keys, and immediate write
+`SupersessionRow`, `CorrectionRow`/`CorrectionEndRow` and `FailedRunRow`
+(storage format 11; older formats upgrade by adding them). WAL, foreign keys, and immediate write
 transactions are used. Failed publications roll back identities, support
 withdrawals, claims, references, aliases, and the revision together.
 Connections wait up to three seconds for lock contention. Public multi-query

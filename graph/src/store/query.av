@@ -12,6 +12,7 @@ use store.engine.{
     EvidenceRow,
     SupersessionRow,
     ConfidenceRow,
+    FailedRunRow,
 }
 use store.state.{Standing}
 use store.evidence.{Interval, optional_text}
@@ -367,11 +368,41 @@ impl Graph {
                                 field("scope", Json.Str(r.scope)),
                                 field("input", Json.Str(r.input.name)),
                                 field("input_revision", Json.Int(r.input.revision)),
+                                field("failed", Json.Bool(false)),
                             ],
                         ),
                 )
         }
-        Json.Arr(rows)
+        Json.Arr(rows.concat(self.unretried(runs)?))
+    }
+
+    /// Failed admissions no later run of their producer and scope replaced.
+    fn unretried(runs: List<RunRow>) -> Result<List<Json>, string> {
+        mut rows: List<Json> = []
+        for f in stored(FailedRunRow.all(self.db))? {
+            let document = match parse(f.document) {
+                .Ok(j) -> j,
+                .Err(_) -> { fail "a stored failed run is not JSON" },
+            }
+            let at = document.member("revision").int() ?? 0
+            if runs.any(it.producer == f.producer && it.scope == f.scope && it.revision > at) { continue }
+            rows
+                .push(
+                    Json
+                        .Obj(
+                            [
+                                field("producer", Json.Str(f.producer)),
+                                field("scope", Json.Str(f.scope)),
+                                field("input", Json.Str(f.input.name)),
+                                field("input_revision", document.member("input_revision")),
+                                field("failed", Json.Bool(true)),
+                                field("run", Json.Str(f.name)),
+                                field("problems", document.member("problems")),
+                            ],
+                        ),
+                )
+        }
+        rows
     }
 
     fn stale(r: RunRow, trails: List<RunTrailRow>, scheme: string) -> bool {

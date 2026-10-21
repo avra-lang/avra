@@ -30,6 +30,7 @@ use store.engine.{
     SupersessionRow,
     CorrectionRow,
     CorrectionEndRow,
+    FailedRunRow,
 }
 use data.{digest}
 
@@ -132,6 +133,7 @@ impl Graph {
         stored(SupersessionRow.create_table(db))?
         stored(CorrectionRow.create_table(db))?
         stored(CorrectionEndRow.create_table(db))?
+        stored(FailedRunRow.create_table(db))?
         0
     }
 
@@ -143,7 +145,7 @@ impl Graph {
         if !existing && self.has_table("graph_meta")? { fail "old hand-table graph store; migration is required; keep the original file" }
         if !existing && self.has_table("EntityRow")? { fail "graph storage is missing its metadata table" }
         let previous = if existing { self.meta("format")? } else { "" }
-        if existing && !["6", "7", "8", "9", "10"].contains(previous) {
+        if existing && !["6", "7", "8", "9", "10", "11"].contains(previous) {
             fail "unsupported graph storage format: ${previous}"
         }
         if existing {
@@ -154,7 +156,7 @@ impl Graph {
         if !existing {
             modeled(Meta { key: "revision", value: "0" }.insert(db))?
         }
-        // Formats 7 to 10 only add tables. Install them and advance the marker
+        // Formats 7 to 11 only add tables. Install them and advance the marker
         // atomically; never rewrite evidence or silently adopt a future format.
         if previous != format { put_meta(db, "format", format)? }
         if (stored(Schema.where(db, fingerprint: self.catalog.fingerprint))?).is_empty() {
@@ -283,7 +285,7 @@ impl Graph {
 }
 
 /// The storage format this engine writes.
-const format = "10"
+const format = "11"
 
 export fn put_meta(mut db: Db, key: string, value: string) -> Result<int, string> {
     match stored(Meta.where(db, key: key))? {
