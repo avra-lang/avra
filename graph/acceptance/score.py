@@ -409,7 +409,7 @@ def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, 
             plan = run_hook(hooks["planner"], {
                 "contract": 1, "request": "score-" + q["id"], "question": q["question"],
                 "context": context, "source_view": q.get("source_view", "current"),
-                "schema": schema})
+                "schema": schema, "graph": [str(app.binary), "request", "--db", str(app.db)]})
         answer = app.call(query_request(plan))
     except Exception as error:
         return {"status": "error", "reason": f"{type(error).__name__}: {error}"}
