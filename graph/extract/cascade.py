@@ -323,13 +323,12 @@ class Cascade:
                 labels[label] = f"{label} of a {name}: {gloss(self.plan.models[name])}"
         found = self.enc.mentions(self.t.s, labels)
         by_label = {m.lower(): m for m in self.plan.entities}
-        strongest = {}
+        typed = {}
         for l, xs in found.items():
             for x in xs:
-                key = (x["start"], x["end"])
-                if key not in strongest or x["confidence"] > strongest[key][3]:
-                    strongest[key] = (x["start"], x["end"], l, x["confidence"])
-        spans = sorted(strongest.values(), key=lambda x: (-(x[1] - x[0]), x[0]))
+                typed.setdefault((x["start"], x["end"]), []).append((l, x["confidence"]))
+        spans = sorted((a, b, *self.typed(a, b, ls, labels)) for (a, b), ls in typed.items())
+        spans.sort(key=lambda x: (-(x[1] - x[0]), x[0]))
         for a, b, label, conf in spans:
             if label not in by_label:
                 self.mentions.append({"start": a, "end": b, "kind": label, "record": None, "score": conf})
@@ -346,6 +345,15 @@ class Cascade:
             if rec is not None:
                 self.mentions.append({"start": a, "end": b, "kind": model, "record": rec["local_id"], "score": conf})
         self.attributes()
+
+    def typed(self, a, b, labels, glosses):
+        """A span the encoder gave several types: the LLM picks one of them."""
+        if len(labels) == 1:
+            return labels[0]
+        names = [l for l, _ in labels]
+        p = self.llm.pick(f'Mention: "{self.t.s[a:b]}" at character {a}.', f'In the text, what is "{self.t.s[a:b]}"?', [f"{l}: {glosses[l]}" for l in names])
+        k = max(range(len(names)), key=lambda i: p[i])
+        return names[k], labels[k][1]
 
     def new_entity(self, model, a, b, conf):
         texts = self.plan.entities[model]
@@ -599,6 +607,10 @@ class Cascade:
             log(f"drop {model} at {a}: no evidence for {missing}")
             return
         claim = f"{model} with " + ", ".join(f"{f['property']}={self.shown(f['value'])}" for f in fields)
+        check = self.llm.pick(ctx, f"Does the sentence itself state this record: {claim}?", ["yes, as written", "no, a field or the record kind is wrong"])
+        if check[0] < ACCEPT:
+            log(f"reject {model} at {a}: {claim}")
+            return
         q = self.qualifiers(a, b, claim)
         for f in fields:
             f.update(q)
