@@ -921,16 +921,20 @@ value). A process-wide armed hook is the remaining route and it forks: one proce
 than one workspace (`anew`, a derive's isolated run, `programs_workspace`), so the cell would
 answer for whichever was armed last.
 
-A second law is sharper. `Relation.start` maps a re-entry to `Reuse(cycle_value)`
-(`packages/std-relation/src/engine/answers.av:48`), whose missing value TRAPS —
+A second law is sharper. The wrapper the annotation writes has two arms — `MemoStart` is
+`Reuse` or `Compute` — and `Relation.start` folds a re-entry into `Reuse(cycle_value)`
+(`packages/std-relation/src/engine/answers.av:48`), whose missing value TRAPS:
 `avra_trap("defect: memo family … reused missing key")` (`answers.av:198`). So a `@query` has no
-cycle face. `settled_at` (`compiler/workspace_analysis.av:943`) answers a const that asks for
-its own value with `Unsettled.Trap("asks for its own value while settling")`, a SPOKEN law: a
-`@query` conversion would turn it into a compiler wreck.
+cycle face, and `settled_at` (`compiler/workspace_analysis.av:943`) must SPEAK
+`Unsettled.Trap("asks for its own value while settling")` for a const that asks for its own
+value. A `@query` conversion would turn that law into a compiler wreck.
 
 The Durable hooks are reachable without the annotation — `Answers<Settlement>` plus
-`ran_lasting` (`packages/std-relation/src/db.av:1037`) is the path a wrapper takes — and the
-three preconditions a saved answer owes are measurable, and hold:
+`ran_lasting` (`packages/std-relation/src/db.av:1037`) is the path a wrapper takes, and it
+COMPILES in the compiler's own package: `answers("Settled")`, a `KeptRecord` from
+`code_keyed(…, family_code_hash(Family.Settled))` with `settlement_enum_wire`/
+`settlement_enum_of_wire` (`compiler/family_wire.av`), `memo.ask` for the cycle, `ran_lasting`
+for the answer. The three preconditions a saved answer owes are measurable, and hold:
 
 | question | probe | answer |
 |---|---|---|
@@ -942,16 +946,19 @@ So the read list is not the blocker: a family answer IS a `Leaf` (`Leaf.Input`, 
 `answers_named`), and 93% of one family's leaves stand in a process that derived the program
 again. Three items the conversion owes, each its own rung:
 
-1. The self-value cycle law stays on `Relation.start`; the record is reached only on
-   `.Compute`, never on `.Cycle`.
+1. The self-value cycle law needs the `.Cycle` face `MemoStart` does not have: ask
+   `Relation.ask` (whose `MemoAsk` carries it) before the lasting call, and answer the spoken
+   `Unsettled.Trap` there.
 2. `answers_named()` is gated behind `AVRA_LEAVES`/`AVRA_DB_VERIFY`
    (`compiler/workspace.av:1159`), so a normal run names no family answer and nothing is
    kept. Ungating it arms every `AnswerRef`, the two `doc_rows` queries among them — DB 06's
    rule arriving early.
-3. The record's query name and codec: `family_code_hash(Family.Settled)`
-   (`compiler/workspace.av:2616`) beside the registry's wire (`settled_wire`/`reach_wire`,
-   `compiler/codecs.av`), and `named_consts("Settled", …)` (`compiler/leaves.av:242`) goes —
-   `Answers.placed` registers that name itself.
+3. The record's query name and codec are already paid: `family_code_hash(Family.Settled)`
+   (`compiler/workspace.av:2616`) for the name, and `codecs.av`'s registered pair
+   `settlement_enum_wire`/`settlement_enum_of_wire` (`compiler/family_wire.av`) for the wire.
+   `named_consts("Settled", …)` (`compiler/leaves.av:242`) goes — `Answers.placed` registers
+   that name itself — and `leaves_meter`'s `Settled` row must follow the answers' family, or
+   the meter quietly covers nothing.
 
 What does NOT shrink with it: the `r` line feeds the FILE's record (`read_by` → `record_runs`,
 `compiler/workspace_analysis.av:726`), which `forced_runs`/`ask_kept_reads` read to decide which
