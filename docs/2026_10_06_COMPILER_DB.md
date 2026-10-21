@@ -1194,7 +1194,7 @@ call sites read `.decl(…)` (PROBED by grep at `05fe643`).
 
 | question | rule |
 |---|---|
-| over which producers? | a derived relation's producer either takes no key (the relation is one answer) or names a query that lists its keys: `@query(over: icon_dirs)`. "Those asked so far" is never the answer — it would depend on who asked first. For `Decl` the list is the package's files |
+| over which producers? | a derived relation's producer either takes no key (the relation is one answer) or names a query that lists its keys: `@over(icon_dirs)` (on the producer; the lister is `@query`). "Those asked so far" is never the answer — it would depend on who asked first. For `Decl` the list is the package's files |
 | what does the read do? | reads the key list (a recorded read), brings every listed producer up to date (when warm, only suspect ones do any work), then reads the **bucket root** `(relation, index, value)` |
 | how is the root kept? | by the store, by delta. When a producer's answer is replaced, its old and new bucket parts are subtracted and added to the roots of exactly the values they touch. Cost: the rows that changed. Never a rebuild over all rows — that would be the O(program) step L8 forbids |
 | who becomes suspect? | readers of the roots whose digest moved. Not readers of other buckets |
