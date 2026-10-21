@@ -121,11 +121,22 @@ spec "fixture personal, event and task declarations" {
         then "conditional commitments remain explicit source-backed statements" {
             match Commitment
                 .from_json(
-                    "{\"actor\":\"person:elena\",\"recipient\":\"person:rowan\",\"task\":null,\"event\":\"event:launch\",\"action\":\"Keep the guest list to 40\",\"status\":\"requested\",\"when_ms\":null,\"condition\":\"until venue confirms capacity\"}",
+                    "{\"actor\":\"person:elena\",\"recipient\":\"person:rowan\",\"task\":null,\"event\":\"event:launch\",\"action\":\"Keep the guest list to 40\",\"speech_act\":\"request\",\"status\":\"open\",\"when_ms\":null,\"condition\":\"until venue confirms capacity\"}",
                 ) {
-                .Ok(c) -> c.status == "requested" && c.condition == "until venue confirms capacity",
+                .Ok(c) -> c.speech_act == "request" &&
+                    c.status == "open" &&
+                    c.condition == "until venue confirms capacity",
                 .Err(_) -> false,
             }
+        }
+        then "the act that made a commitment is not its lifecycle state" {
+            let base = "{\"actor\":\"person:rowan\",\"recipient\":null,\"task\":null,\"event\":null,\"action\":\"Book dinner\",\"speech_act\":\"promise\",\"status\":\"open\",\"when_ms\":null,\"condition\":null}"
+            Commitment.from_json(base) is .Ok &&
+                Commitment.from_json(base.replace("\"status\":\"open\"", "\"status\":\"promised\"")) is .Err &&
+                Commitment
+                    .from_json(base.replace("\"speech_act\":\"promise\"", "\"speech_act\":\"open\"")) is .Err &&
+                Commitment
+                    .from_json(base.replace("\"status\":\"open\"", "\"status\":\"fulfilled\"")) is .Ok
         }
         then "pet identity and source type validation are ordinary declarations" {
             Pet.from_json("{\"name\":\"Fig\",\"species\":\"cat\",\"owner\":\"person:rowan\"}") is .Ok &&
