@@ -9,7 +9,6 @@
 //! TimedOut>`: the body's answer, or the deadline it ran past.
 use features.{
     LanguageFeature,
-    BuilderRow,
     PropertyRow,
     MethodRow,
     ReceiverEffect,
@@ -23,18 +22,13 @@ use features.{
     void_answer,
 }
 use core.{Type}
-use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+// LICENSED modules.unused_import: `Fixed` and `Term` are named by GENERATED code, not by this
+// file — a rule that states a payload writes a `Fixed` literal, and one that builds a node in
+// place writes a `Term`. Resolve needs the names the source never spells.
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Term, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn tasks() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name          | build
-        "spawn"       | build_spawn
-        "within_expr" | build_within
-        "yield_stmt"  | build_yield
-        "produce"     | build_produce
-        "produce_cap" | build_produce_cap
-    }
     let properties = table<PropertyRow> {
         name    | takes   | check       | lower       | waits | view       | caught
         "await" | on_task | check_await | lower_await | true  | await_view | caught_await
@@ -63,14 +57,13 @@ export fn tasks() -> LanguageFeature {
     }
     LanguageFeature tasks {
         gram: grammar {
-            primary = "spawn" v:expression -> spawn(v)
-            primary = "within" l:expression b:block -> within_expr(l, b) @head(l)
-            stmt = "yield" v:expression END -> yield_stmt(v) @recover(sync_to: "END")
-            primary = "produce" "<" t:type ","? ">" "(" c:expression ")" b:block -> produce_cap(t, c, b)
-            primary = "produce" "<" t:type ","? ">" b:block -> produce(t, b)
+            primary = "spawn" body:expression -> Expr.Spawn(body = Expr.Lambda(body = body))
+            primary = "within" limit:expression body:block -> Expr.Within(limit = Expr.Prop(subject = limit, name = "ms"), body = body) @head(limit)
+            stmt = "yield" value:expression END -> Stmt.ExprStmt(value = Expr.Emit(value = value)) @recover(sync_to: "END")
+            primary = "produce" "<" elem:type ","? ">" "(" cap:expression ")" body:block -> Expr.Produce(elem = elem, cap = cap, body = Expr.Lambda(body = body))
+            primary = "produce" "<" elem:type ","? ">" body:block -> Expr.Produce(elem = elem, body = Expr.Lambda(body = body))
             primary = "channel" "<" elem:type ","? ">" "(" ( cap:expression )? ")" @expect(")", "`channel<T>(cap)` takes at most one capacity") -> Expr.Channel
         }
-        builders: rows
         properties: properties
         methods: methods
         diags: codes
