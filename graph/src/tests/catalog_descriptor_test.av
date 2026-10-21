@@ -1,0 +1,44 @@
+use schema.{Property, Shape}
+use catalog.{Catalog}
+use data.{digest}
+use models.{models}
+
+fn text_property(choices: string?) -> Property {
+    Property {
+        name: "status",
+        shape: Shape.Text,
+        description: "",
+        rules: [],
+        default_source: null,
+        choices_source: choices,
+    }
+}
+
+spec "catalog descriptor" {
+    given "a descriptor built from declarations alone" {
+        then "no compiler-specific hash enters the descriptor" {
+            match Catalog.collected(models) {
+                .Ok(c) -> !c.document.contains("validator_hash") && !c.document.contains("assertion_hash"),
+                .Err(_) -> false,
+            }
+        }
+        then "the fingerprint is a function of the descriptor text" {
+            match Catalog.collected(models) {
+                .Ok(c) -> c.fingerprint == digest(c.document),
+                .Err(_) -> false,
+            }
+        }
+        then "a one_of field lists its values as an enum" {
+            let described = text_property("[\"request\", \"promise\"]").describe()
+            described.member("enum").item(0).text() == "request" &&
+                described.member("enum").item(1).text() == "promise"
+        }
+        then "a field without one_of has no enum" {
+            text_property(null).describe().get("enum") == null
+        }
+        then "one_of values that are not text are read as no values" {
+            text_property("[1, 2]").choices().is_empty() &&
+                text_property("not json").choices().is_empty()
+        }
+    }
+}

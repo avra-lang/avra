@@ -1,5 +1,5 @@
 use schema.{Model, Shape, Property, Registration}
-use @std.json.{Json, field, to_text}
+use @std.json.{Json, field, to_text, parse}
 use data.{before, digest}
 use policy.{Derivation, DerivationRegistration, checked_derivations}
 
@@ -19,10 +19,11 @@ impl Catalog {
     ) -> Result<Catalog, string> {
         let models = ordered([r.make() for r in registrations])
         for i, m in models {
-            if m.validator_hash == null { fail "a durable model needs a compiler validation fingerprint: ${m.name}" }
-            if m.assertion_hash == null { fail "a durable model needs a compiler field-validation fingerprint: ${m.name}" }
             if models.slice(0, i).any(it.name == m.name) { fail "model names must be unique: ${m.name}" }
             for p in m.properties {
+                if !(p.choices_source ?? "").is_empty() && p.choices().is_empty() {
+                    fail "${m.name}.${p.name} declares one_of values that are not a list of text: ${p.choices_source!}"
+                }
                 for target in p.shape.targets() {
                     if !models.any(it.name == target) { fail "${m.name}.${p.name} names an unregistered model: ${target}" }
                 }
@@ -61,8 +62,6 @@ impl Model {
                     field("description", Json.Str(self.description)),
                     field("properties", Json.Arr([p.describe() for p in self.properties])),
                     field("rules", Json.Arr([Json.Str(r) for r in self.rules])),
-                    field("validator_hash", Json.Str(self.validator_hash ?? "")),
-                    field("assertion_hash", Json.Str(self.assertion_hash ?? "")),
                     field("semantics", self.semantics.describe()),
                 ],
             )
@@ -70,19 +69,31 @@ impl Model {
 }
 
 impl Property {
+    /// The allowed values of a `one_of` field, read from its declaration.
+    fn choices() -> List<string> {
+        let source? = self.choices_source else { return [] }
+        match parse(source) {
+            .Ok(list) -> [v.text()! for v in list.items() if v.text() != null],
+            .Err(_) -> [],
+        }
+    }
+
+    /// The property as a JSON Schema fragment plus the declaration's own
+    /// names: `enum` carries a `one_of` field's values.
     fn describe() -> Json {
+        let base = [
+            field("name", Json.Str(self.name)),
+            field("shape", self.shape.describe()),
+            field("description", Json.Str(self.description)),
+            field("rules", Json.Arr([Json.Str(r) for r in self.rules])),
+            field(
+                "default_source",
+                if self.default_source == null { Json.Null } else { Json.Str(self.default_source!) },
+            ),
+        ]
         Json
             .Obj(
-                [
-                    field("name", Json.Str(self.name)),
-                    field("shape", self.shape.describe()),
-                    field("description", Json.Str(self.description)),
-                    field("rules", Json.Arr([Json.Str(r) for r in self.rules])),
-                    field(
-                        "default_source",
-                        if self.default_source == null { Json.Null } else { Json.Str(self.default_source!) },
-                    ),
-                ],
+                if self.choices_source == null { base } else { base.concat([field("enum", Json.Arr([Json.Str(v) for v in self.choices()]))]) },
             )
     }
 }

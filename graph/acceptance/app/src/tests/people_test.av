@@ -5,6 +5,7 @@ use models.people.{
     Validity,
     PersonalRelationship,
     OrganizationRole,
+    Group,
     GroupMembership,
 }
 use @avra.graph.{Catalog, Graph, Ref, Record, Publication, Shape}
@@ -93,12 +94,14 @@ fn stored_relationships() -> Result<bool, string> {
             }
                 .graph_value(),
         },
+        Record { id: "crew", model: "Group", value: Group { name: "styling crew" }.graph_value() },
         Record {
             id: "sora-crew",
             model: "GroupMembership",
             value: GroupMembership {
                 person: Ref { id: "sora" },
-                group_name: "styling crew",
+                group: Ref { id: "crew" },
+                relation: "member",
                 is_member: false,
                 validity: unconstrained(),
             }
@@ -139,7 +142,7 @@ fn stored_relationships() -> Result<bool, string> {
 
 spec "fixture identity and relationship models" {
     given "only application declarations define the ontology" {
-        then "all six models collect into a closed catalog" {
+        then "all seven models collect into a closed catalog" {
             match Catalog.collected(models) {
                 .Ok(c) -> [
                     "Person",
@@ -147,6 +150,7 @@ spec "fixture identity and relationship models" {
                     "Validity",
                     "PersonalRelationship",
                     "OrganizationRole",
+                    "Group",
                     "GroupMembership",
                 ]
                     .all((name: string) -> c.models.any(it.name == name)),
@@ -209,7 +213,7 @@ spec "fixture identity and relationship models" {
         then "missing membership is not a negative membership" {
             GroupMembership
                 .from_json(
-                    "{\"person\":\"sora\",\"group_name\":\"styling crew\",\"validity\":{\"from_ms\":null,\"until_ms\":null}}",
+                    "{\"person\":\"sora\",\"group\":\"crew\",\"relation\":\"member\",\"validity\":{\"from_ms\":null,\"until_ms\":null}}",
                 ) is .Err
         }
         then "relationship labels are declared, not arbitrary classifier tags" {

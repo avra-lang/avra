@@ -96,14 +96,28 @@ export type OrganizationRole = {
     validity: Validity,
 }
 
-/// Explicit membership in a named group, such as the styling crew.
+/// A named group of people, such as a styling crew; its name is not a
+/// unique key.
+@model
+export type Group = {
+    @length(min: 1, max: 256) name: string,
+}
+
+/// Explicit membership of a person in a group.
 /// is_member=false is a source-backed denial, not absence of evidence;
 /// unknown membership must omit the assertion rather than invent false.
 /// A spouse's membership does not follow from the other spouse's job.
-@model(quote { Semantics { validity: ValidityBinding { from: ["validity", "from_ms"], until: ["validity", "until_ms"] } } })
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["person"], to: ["group"], label: ["relation"],
+        labels: [RelationLabel { value: "member", forward: ["member of", "on", "in"] }],
+    },
+    validity: ValidityBinding { from: ["validity", "from_ms"], until: ["validity", "until_ms"] },
+} })
 export type GroupMembership = {
     person: Ref<Person>,
-    @length(min: 1, max: 256) group_name: string,
+    group: Ref<Group>,
+    @one_of(["member"]) relation: string,
     is_member: bool,
     validity: Validity,
 }

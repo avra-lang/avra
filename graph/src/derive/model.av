@@ -4,6 +4,7 @@ use @std.meta.{
     Kind,
     Annotation,
     Code,
+    Node,
     Decls,
     Declared,
     Directive,
@@ -12,8 +13,6 @@ use @std.meta.{
     name,
     list_of,
     refuse_as_at,
-    applied,
-    code_hash,
 }
 use @std.validate.{Decode, Value, Entry, Issues}
 use schema.{Model, Property, Shape, registered}
@@ -91,9 +90,7 @@ fn factory(t: Type, semantics: Code) -> Decls {
                 properties: ${properties},
                 rules: ${rules([a for a in t.annotations if a.name != "model"])},
                 check: ${name(validator)},
-                validator_hash: code_hash(${name(validator)}),
                 check_fields: ${name(assertion_validator)},
-                assertion_hash: code_hash(${name(assertion_validator)}),
                 semantics: ${semantics},
             }
         }
@@ -142,14 +139,33 @@ fn property(f: Field) -> Code {
             description: ${literal(f.doc ?? "")},
             rules: ${rules(f.annotations)},
             default_source: ${default_source},
+            choices_source: ${choices_source(f.annotations)},
         }
     }
 }
 
+/// Each annotation as its call, arguments in source form.
 fn rules(annotations: List<Annotation>) -> Code {
-    list_of(
-        [literal(applied(a, name("value"))?.text() ?? "${a.name}(${a.args.join(",")})") for a in annotations],
-    )
+    list_of([literal("${a.name}(${call_args(a).join(", ")})") for a in annotations])
+}
+
+/// An annotation's argument sources: the call's fills after the value seat.
+fn call_args(a: Annotation) -> List<string> {
+    match a.call {
+        c? -> match c.node {
+            .Template(_, _, _, fills) -> [f.text() for f in fills.slice(1, fills.length)],
+            rest -> a.args,
+        }
+        null -> a.args
+    }
+}
+
+/// The source of a `one_of` annotation's allowed values, when the field has one.
+fn choices_source(annotations: List<Annotation>) -> Code {
+    match annotations.find(it.name == "one_of") {
+        found? -> literal(call_args(found).join(", "))
+        null -> quote { null }
+    }
 }
 
 fn shape(k: Kind) -> Code {
