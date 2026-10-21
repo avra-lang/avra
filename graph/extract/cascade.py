@@ -545,7 +545,10 @@ class Cascade:
 
         froms, tos = holders(ft, False), holders(tt, free is not None)
         ctx = f'Sentence: "{self.t.s[a:b]}"' + (f'\nIn this sentence "I"/"my"/"our" refer to {self.name(speaker)}.' if speaker else "")
-        question = f"{self.plan.models[name]['description']}\n\nWhich of these does the sentence itself explicitly state? Do not infer from other sentences or world knowledge."
+        question = (
+            f"{self.plan.models[name]['description']}\n\nEach option reads {frm} → {label} → {to}. "
+            "Which of these does the sentence itself explicitly state? Do not infer from other sentences or world knowledge."
+        )
         rel = self.plan.relations[name]
         if free:
             labels = [m for m in self.mentions if m["kind"] == free and a <= m["start"] and m["end"] <= b]
@@ -566,7 +569,7 @@ class Cascade:
                 readings = [(s, o, v["value"], v["forward"] or [v["value"]]) for v in rel["labels"] for s, o in ((x, y), (y, x)) if s in froms and o in tos]
                 if not readings:
                     continue
-                opts = [f"{self.name(s)}'s {self.worded(w)} is {self.name(o)}" for s, o, v, w in readings]
+                opts = [f"{self.name(s)} → {self.worded(w)} → {self.name(o)}" for s, o, v, w in readings]
                 p = self.llm.pick(ctx, question, opts, ["none of these is explicitly stated"])
                 best = max(range(len(p)), key=lambda k: p[k])
                 if best < len(readings) and p[best] >= ACCEPT:
