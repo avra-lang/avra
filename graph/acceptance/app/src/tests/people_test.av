@@ -1,0 +1,205 @@
+use models.people.{
+    models,
+    Person,
+    Organization,
+    Validity,
+    PersonalRelationship,
+    OrganizationRole,
+    GroupMembership,
+}
+use @avra.graph.{Catalog, Graph, Ref, Record, Publication, Shape}
+use @std.validate.{Value, Issues}
+
+fn decoded<T>(answer: Result<T, Issues>) -> Result<T, string> {
+    match answer { .Ok(value) -> value, .Err(e) -> { fail e.report() } }
+}
+
+fn unconstrained() -> Validity { Validity { from_ms: null, until_ms: null } }
+
+fn person(id: string, name: string) -> Record {
+    Record {
+        id: id,
+        model: "Person",
+        value: Person { name: name, email: null, phone: null }.graph_value(),
+    }
+}
+
+fn relative(id: string, subject: string, relation: string, target: string) -> Record {
+    Record {
+        id: id,
+        model: "PersonalRelationship",
+        value: PersonalRelationship {
+            subject: Ref { id: subject },
+            relation: relation,
+            relative: Ref { id: target },
+            validity: unconstrained(),
+        }
+            .graph_value(),
+    }
+}
+
+/// Oracle-fed model/store witness only. No text extraction or English parser.
+fn stored_relationships() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("test:people", "hand-authored model witness")?
+    let records = [
+        person("rowan", "Rowan Vale"),
+        person("elena", "Elena Vale"),
+        person("alex", "Alex Chen"),
+        person("sora", "Sora"),
+        person("june", "June"),
+        person("ruth", "Ruth"),
+        person("mina", "Mina Torres"),
+        Record {
+            id: "aster",
+            model: "Organization",
+            value: Organization { name: "Maison Aster" }.graph_value(),
+        },
+        relative("rowan-wife", "rowan", "wife", "elena"),
+        relative("alex-wife", "alex", "wife", "sora"),
+        relative("rowan-mother", "rowan", "mother", "june"),
+        relative("elena-mother", "elena", "mother", "ruth"),
+        Record {
+            id: "elena-role-old",
+            model: "OrganizationRole",
+            value: OrganizationRole {
+                person: Ref { id: "elena" },
+                organization: Ref { id: "aster" },
+                title: "creative director",
+                validity: Validity { from_ms: null, until_ms: 1792108800000 },
+            }
+                .graph_value(),
+        },
+        Record {
+            id: "elena-role-new",
+            model: "OrganizationRole",
+            value: OrganizationRole {
+                person: Ref { id: "elena" },
+                organization: Ref { id: "aster" },
+                title: "design adviser",
+                validity: Validity { from_ms: 1792108800000, until_ms: null },
+            }
+                .graph_value(),
+        },
+        Record {
+            id: "mina-role",
+            model: "OrganizationRole",
+            value: OrganizationRole {
+                person: Ref { id: "mina" },
+                organization: Ref { id: "aster" },
+                title: "interim creative director",
+                validity: Validity { from_ms: 1792108800000, until_ms: null },
+            }
+                .graph_value(),
+        },
+        Record {
+            id: "sora-crew",
+            model: "GroupMembership",
+            value: GroupMembership {
+                person: Ref { id: "sora" },
+                group_name: "styling crew",
+                is_member: false,
+                validity: unconstrained(),
+            }
+                .graph_value(),
+        },
+    ]
+    g
+        .publish(
+            Publication {
+                id: "people:1",
+                producer: "oracle-test",
+                scope: "test:people",
+                input: "test:people",
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: records,
+            },
+        )?
+    let rowan = decoded(PersonalRelationship.decode(g.value("rowan-wife")?))?
+    let alex = decoded(PersonalRelationship.decode(g.value("alex-wife")?))?
+    let mum = decoded(PersonalRelationship.decode(g.value("elena-mother")?))?
+    let old = decoded(OrganizationRole.decode(g.value("elena-role-old")?))?
+    let new = decoded(OrganizationRole.decode(g.value("mina-role")?))?
+    let crew = decoded(GroupMembership.decode(g.value("sora-crew")?))?
+    rowan.subject.id == "rowan" &&
+        rowan.relative.id == "elena" &&
+        alex.subject.id == "alex" &&
+        alex.relative.id == "sora" &&
+        mum.subject.id == "elena" &&
+        mum.relative.id == "ruth" &&
+        old.validity.until_ms == new.validity.from_ms &&
+        (g.find("OrganizationRole")?).length == 3 &&
+        (g.matching("GroupMembership", "is_member", Value.Bool(false))?).length == 1 &&
+        !crew.is_member &&
+        crew.person.id == "sora"
+}
+
+spec "fixture identity and relationship models" {
+    given "only application declarations define the ontology" {
+        then "all six models collect into a closed catalog" {
+            match Catalog.collected(models) {
+                .Ok(c) -> [
+                    "Person",
+                    "Organization",
+                    "Validity",
+                    "PersonalRelationship",
+                    "OrganizationRole",
+                    "GroupMembership",
+                ]
+                    .all((name: string) -> c.models.any(it.name == name)),
+                .Err(_) -> false,
+            }
+        }
+        then "the catalog exports direction and linguistic descriptions" {
+            match Catalog.collected(models) {
+                .Ok(c) -> c.document.contains("relative is subject's relation") &&
+                    c.document.contains("creative-director transition"),
+                .Err(_) -> false,
+            }
+        }
+        then "reference targets are generated from declarations" {
+            let relationship? = models.find(it.make().name == "PersonalRelationship") else { return false }
+            let subject? = relationship.make().properties.find(it.name == "subject") else { return false }
+            match subject.shape { .Reference(target) -> target == "Person", _ -> false }
+        }
+        then "a person has no permanent self or speaker alias" {
+            match Person.from_json("{\"name\":\"Rowan\",\"email\":null,\"phone\":null}") {
+                .Ok(p) -> p.aliases.is_empty(),
+                .Err(_) -> false,
+            }
+        }
+        then "contact validation uses the standard email rule" {
+            Person.from_json("{\"name\":\"Alex\",\"email\":\"not an email\",\"phone\":null}") is .Err
+        }
+        then "missing membership is not a negative membership" {
+            GroupMembership
+                .from_json(
+                    "{\"person\":\"sora\",\"group_name\":\"styling crew\",\"validity\":{\"from_ms\":null,\"until_ms\":null}}",
+                ) is .Err
+        }
+        then "relationship labels are declared, not arbitrary classifier tags" {
+            PersonalRelationship
+                .from_json(
+                    "{\"subject\":\"a\",\"relation\":\"invented\",\"relative\":\"b\",\"validity\":{\"from_ms\":null,\"until_ms\":null}}",
+                ) is .Err
+        }
+        then "unknown temporal bounds remain unknown" {
+            match Validity.from_json("{\"from_ms\":null,\"until_ms\":null}") {
+                .Ok(v) -> v.from_ms == null && v.until_ms == null,
+                .Err(_) -> false,
+            }
+        }
+        then "known temporal bounds are half-open" { Validity.from_json("{\"from_ms\":1,\"until_ms\":2}") is .Ok }
+        then "reversed intervals are refused" { Validity.from_json("{\"from_ms\":2,\"until_ms\":1}") is .Err }
+        then "empty intervals are refused" { Validity.from_json("{\"from_ms\":1,\"until_ms\":1}") is .Err }
+        then "separate speakers, mothers, roles and an explicit denial survive storage" {
+            stored_relationships() catch e -> {
+                println(e)
+                false
+            }
+        }
+    }
+}

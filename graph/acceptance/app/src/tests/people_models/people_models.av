@@ -1,0 +1,14 @@
+use models.people.{models, PersonalRelationship, Validity}
+use @avra.graph.{Catalog}
+
+let catalog = match Catalog.collected(models) {
+    .Ok(c) -> c.models.any(it.name == "PersonalRelationship") &&
+        c.document.contains("relative is subject's relation"),
+    .Err(_) -> false,
+}
+let relationship = match PersonalRelationship
+    .from_json(
+        "{\"subject\":\"caller\",\"relation\":\"wife\",\"relative\":\"partner\",\"validity\":{\"from_ms\":null,\"until_ms\":null}}",
+    ) { .Ok(r) -> r.subject.id == "caller" && r.relative.id == "partner", .Err(_) -> false }
+let reversed = Validity.from_json("{\"from_ms\":2,\"until_ms\":1}") is .Err
+"${catalog} ${relationship} ${reversed}"

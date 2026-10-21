@@ -73,8 +73,11 @@ walked from the decision table at read time.
 `@std/db`'s `@model` is the engine's current storage: one table per engine row,
 links and `Many<T>` for relationships, nullable `until` for history, and
 derived `where`/`in_<link>`/`with_<many>` reads. Existing rows were split
-for the old 6-field cap (`RunRow` + `RunTrailRow`); do not add further splits
-for that restriction while its separately owned fix proceeds. Composite identity is a
+for the old 6-field cap (`RunRow` + `RunTrailRow`). The cap removal landed as
+#1161 (`acef6dba`); this lane's older base still needs that change before new
+wide engine rows. Consolidating existing tables requires a compatible,
+verified storage migration, not just deleting their companion models.
+Do not add further splits for the restriction. Composite identity is a
 synthetic `@unique stamp` derived by one verb (`stamp`) so a later composite
 key can replace it without touching call sites. The graph reuses standard
 validation (`@derive(Decode)`) and carries its own descriptor derive; user

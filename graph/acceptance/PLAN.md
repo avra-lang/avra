@@ -192,9 +192,15 @@ scores for calibration; confidence is not truth-selection authority.
 
 ## Substrate and scope boundaries
 
-- Wider model rows: `avra-8sb5.59.44.19`, separately owned.
+- Wider model rows: `avra-8sb5.59.44.19`, landed in #1161 (`acef6dba`). This
+  lane still has the older base; integrate before new wide engine rows.
+  Consolidation of old companion tables is a separate tested migration,
+  not a reason to block model/codec/annotation work.
 - Composite uniqueness: `avra-8sb5.44.7`.
 - Indexed/bounded generated reads: `avra-8sb5.44.8`.
+- Isolated-consumer lint: `avra-8sb5.25.74`, public graph re-exports reported
+  unused when a consumer imports a subset. Reproduces in the old unrelated
+  consumer too. Keep the public API and baseline; report this gate honestly.
 - Structured field-level graph failures remain open; R01 defines the public
   boundary rather than treating today's error strings as sufficient.
 - `WORKERS.md` remains a provisional design. Do not implement its old

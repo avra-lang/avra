@@ -80,9 +80,11 @@ waiting, established reader snapshots, and a killed uncommitted writer.
 These are focused checks, not full concurrent/fuzz/soak coverage.
 
 The engine's tables are `@std/db` models with links, many-relations and
-nullable history columns; only user ontology rows are generic. The six-field
-cap is split (`RunRow`/`RunTrailRow`) and composite identity is a derived
-`@unique stamp`; both are filed as surface asks.
+nullable history columns; only user ontology rows are generic. The old
+six-field cap is removed in #1161 (`acef6dba`, not yet in this lane's base).
+Existing `RunRow`/`RunTrailRow` and `MergeRow`/`MergeEndRow` can be consolidated
+after integration, with migration/replay/history witnesses. Composite
+identity remains a derived `@unique stamp` and an open surface ask.
 
 The working API and operational instructions live in [README.md](README.md).
 Architecture and substrate receipts live in [DESIGN.md](DESIGN.md).
@@ -97,6 +99,8 @@ Status: local foundation verified; integration and hardening ongoing.
 - [ ] Fix package-rename invalidation of held generic/collection identities.
 - [ ] Add cold/warm rebuild tests for source model edits and schema changes.
 - [ ] Exercise concurrent connections, interrupted transactions, and recovery.
+- [ ] Integrate #1161 and consolidate old cap-driven row splits with a
+  compatible storage upgrade; retain restart/history/replay witnesses.
 
 Exit: fresh checkouts and warm rebuilds produce equivalent correct behavior;
 the required fixes are integrated, not merely present in one worktree.
@@ -247,10 +251,11 @@ derived. `@std/db`'s `@model` IS the graph engine's storage: one derived table p
 engine row, typed links, `Many<T>` batched reads, nullable `until` history,
 and `where`/`in_<link>`/`with_<many>` accessors. User ontology types never
 become tables; their claims are rows of `ClaimRow`. The remaining asks are
-surface: a 7+/8-field row without splitting (`RunRow`+`RunTrailRow`,
-`MergeRow`+`MergeEndRow`) and composite `@unique` (today a derived `stamp`).
-The field-ceiling fix is independently owned; graph correctness and NLP
-evaluation do not wait for it. Indexed/bounded generated reads are tracked
+surface: composite `@unique` (today a derived `stamp`). Wide rows are now
+supported by #1161; integrate it before wide-row tasks, without introducing
+new cap workarounds. Existing split tables need a tested migration.
+Graph correctness and NLP evaluation do not wait for that cleanup.
+Indexed/bounded generated reads are tracked
 in `avra-8sb5.44.8`; this milestone does not claim indexed query performance.
 
 Future substrate requests must identify a concrete wanting site and a
@@ -271,6 +276,12 @@ native consumer); see [contracts/HANDOFF.md](contracts/HANDOFF.md). Source
 ingestion/admission, worker execution and English planning remain future
 tasks. Provider replacement (V05) and ontology portability (V04) are separate
 release witnesses; neither is proved by codecs alone.
+
+M01's fixture identity/relationship declarations have 12 passing tests and
+one interpreter/native proof program. Isolated consumer lint still exposes
+the public-re-export false positive `avra-8sb5.25.74`; see
+[acceptance/app/M01-HANDOFF.md](acceptance/app/M01-HANDOFF.md). It is not a
+reason to remove the library API or grow the idiom baseline.
 
 Stabilize -> identity -> richer queries -> durable workers -> incremental
 derivations -> compatibility-aware evolution. Partial assertions, evidence
