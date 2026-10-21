@@ -8,10 +8,15 @@ phrases, enum values), the graph's own search over admitted facts, and the
 model's closed choices. A choice the evidence settles alone (one declared
 phrase spoken, one record the question names) is taken without the model.
 """
+import json
+import pathlib
 import re
 
 from subset import models_of, base_shape, reference_target, relation_ends
 from prompt import line
+
+PARAMS = json.loads((pathlib.Path(__file__).with_name("params.json")).read_text()) \
+    if pathlib.Path(__file__).with_name("params.json").exists() else {}
 
 # The choose op letters its options A-Z; longer lists run as heats.
 LETTERS = 26
@@ -289,6 +294,18 @@ def narrowed(chooser, trail, model, var, out, question, evidence):
         evidence.explain(w)
 
 
+def needed(chooser, trail, question):
+    """Yes when the debiased probability of yes reaches the fitted cut
+    (params.json, written by bench/calibrate.py); without one, the likelier answer."""
+    cut = PARAMS.get("property_yes")
+    if cut is None:
+        return best(chooser, trail, question, NEEDED) == 0
+    budget = getattr(chooser, "budget", None)
+    if budget:
+        budget.holds(trail, question, *NEEDED)
+    return debiased(chooser, trail, question, NEEDED)[0] >= cut
+
+
 def returns(chooser, trail, model, var, record=None):
     """The RETURN items: a count, one recorded status, or chosen values, read
     from the final node or from the relation record of the hop that reached it."""
@@ -307,7 +324,7 @@ def returns(chooser, trail, model, var, record=None):
     for i in readable:
         v, owner, p = props[i]
         about = f"{p['name']}" + (f" ({line(p['description'])})" if p.get("description") else "")
-        if best(chooser, trail, f"Does the answer need the {owner}'s {about}?", NEEDED) == 0:
+        if needed(chooser, trail, f"Does the answer need the {owner}'s {about}?"):
             picked.append(i)
     names = [props[i][2]["name"] for i in picked or [0]]
     return ", ".join(f"{props[i][0]}.{props[i][2]['name']} AS {props[i][2]['name']}"

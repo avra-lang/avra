@@ -64,7 +64,7 @@ def main():
         p = debiased(model, d["context"], d["question"], d["options"])
         pick = max(range(len(p)), key=p.__getitem__)
         done.append({"question_id": d["question_id"], "kind": kind(d["question"]), "gold": d["gold"],
-                     "pick": pick, "p_gold": p[d["gold"]], "ms": int((time.time() - started) * 1000)})
+                     "pick": pick, "p_gold": p[d["gold"]], "p": p, "ms": int((time.time() - started) * 1000)})
         out.write_text(json.dumps({"decisions": header, "commit": commit,
                                    "scored_at": datetime.datetime.now().isoformat(timespec="seconds"),
                                    "scored": done}, indent=1))
