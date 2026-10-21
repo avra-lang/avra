@@ -132,11 +132,17 @@ class Remote:
             return json.load(r)["choices"][0]["message"]["content"]
 
 
-def planned(llm, question, schema, context):
+def tries():
+    """`--tries N` caps the drafts; a single pass measures the prompt alone."""
+    args = sys.argv[1:]
+    return int(args[args.index("--tries") + 1]) if "--tries" in args else TRIES
+
+
+def planned(llm, question, schema, context, limit=TRIES):
     params = params_of(context)
     turns = messages(question, schema, context)
     last = None
-    for attempt in range(1, TRIES + 1):
+    for attempt in range(1, limit + 1):
         started = time.time()
         cypher = drafted(llm.reply(turns))
         try:
@@ -148,7 +154,7 @@ def planned(llm, question, schema, context):
             log(f"try {attempt} refused in {time.time() - started:.1f}s ({refusal}): {cypher}")
             turns = turns + [{"role": "assistant", "content": cypher},
                              {"role": "user", "content": f"The graph refuses that query: {refusal}. Write the corrected query only."}]
-    raise SystemExit(f"planner: no valid query after {TRIES} tries; last refusal {last}")
+    raise SystemExit(f"planner: no valid query after {limit} tries; last refusal {last}")
 
 
 def chosen():
@@ -167,7 +173,7 @@ def chosen():
 def main():
     llm = chosen()
     payload = json.load(sys.stdin)
-    print(json.dumps(planned(llm, payload["question"], payload["schema"], payload["context"])))
+    print(json.dumps(planned(llm, payload["question"], payload["schema"], payload["context"], tries())))
 
 
 def in_model_env():
