@@ -54,7 +54,7 @@ impl Graph {
 
     static fn admitted(db: Db, catalog: Catalog, mode: CatalogUse) -> Result<Graph, string> {
         let graph = Graph { db: db, catalog: catalog }
-        let outcome = match mode { .Install -> graph.initialize(), .Existing -> graph.current() }
+        let outcome = graph.prepared(mode)
         match outcome {
             .Ok(_) -> graph,
             .Err(e) -> {
@@ -65,6 +65,23 @@ impl Graph {
     }
 
     fn close() -> int { self.db.close() }
+
+    fn prepared(mode: CatalogUse) -> Result<int, string> {
+        stored(self.db.scalar(sql("PRAGMA busy_timeout=3000")))?
+        match mode { .Install -> self.initialize()?, .Existing -> self.current()? }
+        match stored(self.db.scalar(sql("PRAGMA journal_mode=WAL")))? {
+            .Text("wal") or .Text("memory") -> {},
+            rest -> { fail "graph storage could not enable WAL" },
+        }
+        self.revision()
+    }
+
+    /// Nested reads borrow their caller's transaction; only the owner ends it.
+    fn read_snapshot() -> Result<bool, string> {
+        if self.db.in_transaction() { return false }
+        stored(self.db.begin_read())?
+        true
+    }
 
     /// Every engine table is a model's own DDL; nothing here spells SQL.
     fn initialized() -> Result<int, string> {
@@ -94,19 +111,31 @@ impl Graph {
         mut db = self.db
         stored(db.begin())?
         defer { let _ = db.finish() }
-        if self.meta("format").is_empty() && self.legacy() { fail "old hand-table graph store; start a new file" }
-        self.initialized()?
-        if self.meta("format").is_empty() {
-            modeled(Meta { key: "revision", value: "0" }.insert(db))?
-            modeled(Meta { key: "format", value: "8" }.insert(db))?
+        let existing = self.has_table("Meta")?
+        if !existing && self.has_table("graph_meta")? { fail "old hand-table graph store; migration is required; keep the original file" }
+        if !existing && self.has_table("EntityRow")? { fail "graph storage is missing its metadata table" }
+        let previous = if existing { self.meta("format")? } else { "" }
+        if existing && previous != "6" && previous != "7" && previous != "8" {
+            fail "unsupported graph storage format: ${previous}"
         }
+        if existing {
+            self.revision()?
+            if (self.meta("schema")?).is_empty() { fail "graph storage is missing its catalog fingerprint" }
+        }
+        self.initialized()?
+        if !existing {
+            modeled(Meta { key: "revision", value: "0" }.insert(db))?
+        }
+        // Formats 7 and 8 only add tables. Install them and advance the marker
+        // atomically; never rewrite evidence or silently adopt a future format.
+        if previous != "8" { put_meta(db, "format", "8")? }
         if (stored(Schema.where(db, fingerprint: self.catalog.fingerprint))?).is_empty() {
             modeled(
                 Schema { fingerprint: self.catalog.fingerprint, document: self.catalog.document }
                     .insert(db),
             )?
         }
-        if self.meta("schema") != self.catalog.fingerprint {
+        if self.meta("schema")? != self.catalog.fingerprint {
             put_meta(db, "schema", self.catalog.fingerprint)?
             self.advanced()?
         }
@@ -115,28 +144,36 @@ impl Graph {
     }
 
     fn current() -> Result<int, string> {
-        if self.meta("format") != "8" { fail "graph storage is not a std-first store" }
-        if self.meta("schema") != self.catalog.fingerprint { fail "schema changed; reopen with the current models" }
+        let format = self.meta("format")?
+        if format != "8" { fail "unsupported graph storage format: ${format}; open with a compatible engine to upgrade" }
+        if self.meta("schema")? != self.catalog.fingerprint { fail "schema changed; reopen with the current models" }
         self.revision()
     }
 
-    /// The one shape check that has no model: an old hand-table store.
-    fn legacy() -> bool {
-        match self
-            .db
-            .scalar(sql("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='graph_meta'")) {
-            .Ok(value) -> match value { .Int(n) -> n > 0, rest -> false },
-            .Err(_) -> false,
+    /// Catalog inspection is infrastructure, never an ontology-specific query.
+    fn has_table(name: string) -> Result<bool, string> {
+        match stored(
+            self
+                .db
+                .scalar(
+                    sql(
+                        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?",
+                        [.Text(name)],
+                    ),
+                ),
+        )? { .Int(n) -> n > 0, rest -> { fail "storage catalog count is not an integer" } }
+    }
+
+    fn meta(key: string) -> Result<string, string> {
+        match stored(Meta.where(self.db, key: key))? {
+            [only] -> only.value,
+            [] -> "",
+            rest -> { fail "graph metadata key is not unique: ${key}" },
         }
     }
 
-    fn meta(key: string) -> string {
-        let found = match Meta.where(self.db, key: key) { .Ok(rows) -> rows, .Err(_) -> [] }
-        match found { [only] -> only.value, rest -> "" }
-    }
-
     fn revision() -> Result<int, string> {
-        let value? = parse_int(self.meta("revision")) else { fail "graph revision is not an integer" }
+        let value? = parse_int(self.meta("revision")?) else { fail "graph revision is not an integer" }
         value
     }
 

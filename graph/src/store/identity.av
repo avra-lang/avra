@@ -20,9 +20,10 @@ impl Identity {
 impl Graph {
     /// Active entities an external identity names, in entity order.
     fn bound(namespace: string, key: string) -> Result<List<string>, string> {
-        let aliases = stored(AliasRow.where(self.db, namespace: namespace, key: key))?
-        let trails = stored(RunTrailRow.in_run(self.db, aliases.map(it.run)))?
-        [a.entity.name for i, a in aliases if self.alias_stands(a, trails) && !aliases.slice(0, i).any(it.entity.name == a.entity.name)]
+        let rows = stored(AliasRow.where(self.db, namespace: namespace, key: key))?
+        let trails = stored(RunTrailRow.in_run(self.db, rows.map(it.run)))?
+        let aliases = [a for a in rows if self.alias_stands(a, trails)]
+        [a.entity.name for i, a in aliases if !aliases.slice(0, i).any(it.entity.name == a.entity.name)]
     }
 
     fn alias_stands(a: AliasRow, trails: List<RunTrailRow>) -> bool {
@@ -33,6 +34,8 @@ impl Graph {
 
     /// The one entity an external identity names.
     fn resolve(namespace: string, key: string) -> Result<string, string> {
+        let opened = self.read_snapshot()?
+        defer { let _ = self.db.finish_if_opened(opened) }
         self.current()?
         let hidden = self.hidden_members()?
         match self.bound(namespace, key)? {
@@ -44,12 +47,14 @@ impl Graph {
 
     /// The active external identities of an entity and its group.
     fn aliases(id: string) -> Result<List<Identity>, string> {
+        let opened = self.read_snapshot()?
+        defer { let _ = self.db.finish_if_opened(opened) }
         self.current()?
         if self.hidden(id)? { fail "entity is tombstoned: ${id}" }
         let entities = self.entities_named(self.group(id)?)?
-        let rows = stored(AliasRow.in_entity(self.db, entities))?
-        let trails = stored(RunTrailRow.in_run(self.db, rows.map(it.run)))?
-        [Identity { namespace: a.namespace, external_key: a.key } for i, a in rows if self.alias_stands(a, trails) &&
-            !rows.slice(0, i).any(it.namespace == a.namespace && it.key == a.key)]
+        let all = stored(AliasRow.in_entity(self.db, entities))?
+        let trails = stored(RunTrailRow.in_run(self.db, all.map(it.run)))?
+        let rows = [a for a in all if self.alias_stands(a, trails)]
+        [Identity { namespace: a.namespace, external_key: a.key } for i, a in rows if !rows.slice(0, i).any(it.namespace == a.namespace && it.key == a.key)]
     }
 }

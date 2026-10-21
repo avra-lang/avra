@@ -62,9 +62,11 @@ impl Graph {
     fn chosen(mut db: Db, choice: Choice, revision: int) -> Result<int, string> {
         let found = stored(ClaimRow.find(db, choice.claim))?
         let claim? = found else { fail "unknown claim: ${choice.claim}" }
+        if self.hidden(claim.entity.name)? { fail "a choice cannot name a tombstoned entity" }
         if (self.standing([claim])?).is_empty() { fail "a choice must name a standing claim" }
+        let members = self.group(claim.entity.name)?
         for other in self.standing_choices()? {
-            if other.claim.entity.id == claim.entity.id && other.claim.property == claim.property {
+            if members.contains(other.claim.entity.name) && other.claim.property == claim.property {
                 let _ = modeled(ChoiceEndRow { choice: other, until: revision }.insert(db))?
             }
         }
@@ -104,6 +106,8 @@ impl Graph {
     }
 
     fn choices(claim: int = 0) -> Result<List<Choice>, string> {
+        let opened = self.read_snapshot()?
+        defer { let _ = self.db.finish_if_opened(opened) }
         self.current()?
         let ended = stored(ChoiceEndRow.all(self.db))?
         [Choice {
@@ -118,11 +122,14 @@ impl Graph {
     /// The standing choice among these live claims, for one property.
     fn chosen_claim(live: List<Standing>, property: string) -> Result<ClaimRow?, string> {
         let standing = self.standing_choices()?
-        let chosen = standing
-            .find(
+        let choices = standing
+            .filter(
                 it.claim.property == property &&
                     live.any((s: Standing) -> s.claim.id == it.claim.id),
             )
+        // Joining groups does not make either group's prior choice authoritative.
+        let chosen = choices
+            .find((choice: ChoiceRow) -> choices.all(it.claim.value == choice.claim.value))
         match chosen {
             choice? -> choice.claim
             null -> null

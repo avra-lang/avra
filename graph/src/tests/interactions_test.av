@@ -1,0 +1,182 @@
+use models.{models, Person}
+use store.open.{Graph, stored}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use store.identity.{Identity}
+use store.choice.{Choice}
+use store.merge.{Merge}
+use store.tombstone.{Tombstone}
+
+fn person(id: string, name: string) -> Record {
+    Record {
+        id: id,
+        model: "Person",
+        value: Person { name: name, email: null }.graph_value(),
+        identities: [Identity { namespace: "mail", external_key: name }],
+    }
+}
+
+fn publication(g: Graph, run: string, records: List<Record>, producer: string = "extractor") -> Result<
+    Publication,
+    string,
+> {
+    Publication {
+        id: run,
+        producer: producer,
+        scope: "source",
+        input: "source",
+        input_revision: 1,
+        schema: g.catalog.fingerprint,
+        expected_revision: g.revision()?,
+        records: records,
+    }
+}
+
+fn retained_alias() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("source", "Ada")?
+    g.publish(publication(g, "one", [person("p1", "Ada")])?)?
+    g.publish(publication(g, "two", [person("p1", "Ada")])?)?
+    let resolved = g.resolve("mail", "Ada")? == "p1"
+    let aliases = (g.aliases("p1")?).length == 1
+    let refused = match g.publish(publication(g, "three", [person("p2", "Ada")], "other")?) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    resolved && aliases && refused
+}
+
+fn refreshed_alias() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("source", "Ada")?
+    g.publish(publication(g, "one", [person("p1", "Ada")])?)?
+    g.observe("source", "Ada revised")?
+    let next = publication(g, "two", [person("p1", "Ada")])? with { input_revision: 2 }
+    g.publish(next)?
+    g.resolve("mail", "Ada")? == "p1" && (g.aliases("p1")?).length == 1
+}
+
+fn claim(g: Graph, id: string) -> Result<int, string> {
+    let field? = (g.entity(id)?).fields.find(it.property == "name") else { fail "missing name" }
+    field.candidates[0].claim
+}
+
+fn choose(g: Graph, decision: string, claim: int) -> Result<int, string> {
+    g.choose(Choice { decision: decision, claim: claim, decider: "user" })
+}
+
+fn merged_choice() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("source", "Ada and Grace")?
+    g.publish(publication(g, "one", [person("p1", "Ada"), person("p2", "Grace")])?)?
+    let ada = claim(g, "p1")?
+    let grace = claim(g, "p2")?
+    choose(g, "ada", ada)?
+    g.merge(Merge { id: "merge", left: "p1", right: "p2", decider: "user" })?
+    choose(g, "grace", grace)?
+    let value = match Person.decode(g.value("p1")?) {
+        .Ok(person) -> person,
+        .Err(_) -> { fail "invalid person" },
+    }
+    value.name == "Grace" && (g.choices()?).filter(it.active()).length == 1
+}
+
+fn merging_conflicting_choices() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("source", "Ada and Grace")?
+    g.publish(publication(g, "one", [person("p1", "Ada"), person("p2", "Grace")])?)?
+    choose(g, "ada", claim(g, "p1")?)?
+    choose(g, "grace", claim(g, "p2")?)?
+    g.merge(Merge { id: "merge", left: "p1", right: "p2", decider: "user" })?
+    let refused = match g.value("p1") { .Ok(_) -> false, .Err(_) -> true }
+    let name? = (g.entity("p1")?).fields.find(it.property == "name") else { fail "missing name" }
+    g.split("merge")?
+    refused &&
+        name.candidates.all(!it.chosen) &&
+        (g.choices()?).all(it.active()) &&
+        (g.value("p1")?).entries().any(it.key == "name") &&
+        (g.value("p2")?).entries().any(it.key == "name")
+}
+
+fn historical_revision() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("source", "Ada")?
+    let record = person("p1", "Ada") with { locator: stored_value("{\"span\":[0,3]}")? }
+    g.publish(publication(g, "one", [record])?)?
+    g.observe("source", "Grace")?
+    let evidence = (g.explain("p1", "name")?).item(0)
+    evidence.member("input_revision").int() == 1 &&
+        evidence.member("active").truth() == false &&
+        (g.observation("source", 1)?).member("payload").text() == "Ada"
+}
+
+fn hidden_source_edges() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("source", "Ada said hello")?
+    let message = Record {
+        id: "m1",
+        model: "Message",
+        value: stored_value("{\"author\":\"p1\",\"recipients\":[],\"body\":\"hello\"}")?,
+    }
+    g.publish(publication(g, "one", [person("p1", "Ada"), message])?)?
+    g.tombstone(Tombstone { id: "hide", entity: "m1", decider: "user" })?
+    let hidden = (g.edges("p1", incoming: true)?).is_empty()
+    g.revive("hide")?
+    hidden && (g.edges("p1", incoming: true)?).length == 1
+}
+
+fn nested_snapshot() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("source", "Ada")?
+    g.publish(publication(g, "one", [person("p1", "Ada")])?)?
+    stored(g.db.begin_read())?
+    let _ = g.value("p1")?
+    let retained = g.db.in_transaction()
+    let _ = g.db.finish()
+    let _ = g.traverse("p1")?
+    let ended = !g.db.in_transaction()
+    let _ = g.entity("unknown")
+    retained && ended && !g.db.in_transaction()
+}
+
+fn page_overflow() -> Result<bool, string> {
+    let g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    let find = match g.find("Person", offset: 9223372036854775807) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    let filter = match g
+        .matching("Person", "name", stored_value("\"Ada\"")?, offset: 9223372036854775807) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    find && filter && !g.db.in_transaction()
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "graph feature interactions" {
+    given "replacement, grouping, history, and visibility interact" {
+        then "retained aliases resolve and still prevent conflicting bindings" { passed(retained_alias()) }
+        then "an alias survives reprocessing a changed observation" { passed(refreshed_alias()) }
+        then "a new choice replaces choices across the merged group" { passed(merged_choice()) }
+        then "merging competing choices creates a conflict, not an arbitrary winner" { passed(merging_conflicting_choices()) }
+        then "old evidence keeps the source revision its locator refers to" { passed(historical_revision()) }
+        then "incoming edges hide tombstoned sources and return on revival" { passed(hidden_source_edges()) }
+        then "nested reads preserve caller transactions and clean up their own" { passed(nested_snapshot()) }
+        then "page bounds refuse integer overflow without trapping or leaking a transaction" { passed(page_overflow()) }
+    }
+}
