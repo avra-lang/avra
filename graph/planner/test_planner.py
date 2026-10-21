@@ -50,11 +50,11 @@ SCHEMA = {"fingerprint": "f", "revision": 1, "models": [
      "semantics": {}},
 ]}
 
-PARAMS = {"asker": "p:rowan", "now": 1, "speaker": "p:rowan"}
+PARAMS = {"asker": "p:jonas", "now": 1, "speaker": "p:jonas"}
 
 SLICE = {
     "q01": "MATCH (me:Person)<-[:subject]-(r:PersonalRelationship)-[:relative]->(w:Person) WHERE id(me) = $speaker AND r.relation = 'wife' RETURN w.name AS person",
-    "q07": "MATCH (a:Person)<-[:subject]-(r:PersonalRelationship)-[:relative]->(w:Person)<-[:person]-(m:GroupMembership) WHERE a.name = 'Alex Chen' AND r.relation = 'wife' RETURN m.person AS person, m.is_member AS on_styling_crew",
+    "q07": "MATCH (a:Person)<-[:subject]-(r:PersonalRelationship)-[:relative]->(w:Person)<-[:person]-(m:GroupMembership) WHERE a.name = 'Dana Holm' AND r.relation = 'wife' RETURN m.person AS person, m.is_member AS on_styling_crew",
     "q16": "MATCH (me:Person)<-[:subject]-(r:PersonalRelationship)-[:relative]->(w:Person)<-[:actor]-(c:Commitment) WHERE id(me) = $speaker AND r.relation = 'wife' AND c.action CONTAINS 'guest' MATCH (c)-[:event]->(e:Event) RETURN c.actor AS speaker, c.speech_act AS speech_act, c.condition AS condition, e.requested_guest_limit AS requested_guest_limit",
     "q46": "MATCH (me:Person)<-[:subject]-(r:PersonalRelationship)-[:relative]->(w:Person)<-[:requested_by]-(t:PersonalTask) WHERE id(me) = $speaker AND r.relation = 'wife' AND t.summary CONTAINS 'dinner' RETURN t.requested_by AS requested_by, t.assignee AS assignee, t.requested_reservation_at_ms AS requested_reservation_at",
     "q47": "MATCH (me:Person)<-[:assignee]-(t:PersonalTask) WHERE id(me) = $speaker AND t.summary CONTAINS 'dinner' RETURN t.assignee AS promised_by, t.confirmation_recorded AS booking_confirmed",
@@ -89,10 +89,10 @@ class Gate(unittest.TestCase):
             "MATCH (me:Person)-[:cousin]->(w) RETURN w.name": "unknown_relationship",
             "MATCH (me:Person)-[:WIFE]->(w) WHERE id(me) = $speaker RETURN w.name": None,
             "MATCH (me:Person)-[:mum]->(m:Group) WHERE id(me) = $speaker RETURN m.name": "label_mismatch",
-            "MATCH (a:Person {name: 'Alex Chen'})-[r:wife]->(w)<-[:person]-(g:GroupMembership) RETURN g.is_member AS on_crew, r.relation AS relation": None,
+            "MATCH (a:Person {name: 'Dana Holm'})-[r:wife]->(w)<-[:person]-(g:GroupMembership) RETURN g.is_member AS on_crew, r.relation AS relation": None,
             "MATCH (a:Person {nickname: 'Al'}) RETURN a.name": "unknown_property",
             "MATCH (me:Person)<-[:person]-(m:GroupMembership) RETURN m.is_member": None,
-            "MATCH (r:PersonalRelationship) WHERE r.subject = 'p:rowan' RETURN r.relation": "syntax",
+            "MATCH (r:PersonalRelationship) WHERE r.subject = 'p:jonas' RETURN r.relation": "syntax",
             "MATCH (me:Person) WHERE id(me) = $speaker SET me.name = 'x' RETURN me.name": "mutation_refused",
             "MATCH (me:Person) WHERE id(me) = $speaker RETURN count(me) AS n, me.name": "syntax",
             "MATCH (me:Person)<-[:assignee]-(t:PersonalTask) RETURN t.summary AS task, coalesce(t.confirmation_recorded, false) AS booked": None,
@@ -106,7 +106,7 @@ class Gate(unittest.TestCase):
                 self.assertEqual(refused(text), code)
 
     def test_an_unbound_speaker_is_refused(self):
-        self.assertEqual(refused(SLICE["q01"], {"asker": "p:rowan", "now": 1}), "missing_parameter")
+        self.assertEqual(refused(SLICE["q01"], {"asker": "p:jonas", "now": 1}), "missing_parameter")
 
 
 class Prompt(unittest.TestCase):
@@ -131,9 +131,9 @@ class Prompt(unittest.TestCase):
 
 class Loop(unittest.TestCase):
     def test_params_bind_the_context(self):
-        context = {"principal": "p:rowan", "speaker": "p:alex", "question_at_ms": 9,
+        context = {"principal": "p:jonas", "speaker": "p:dana", "question_at_ms": 9,
                    "valid_at_ms": None, "known_revision": 3}
-        self.assertEqual(params_of(context), {"asker": "p:rowan", "now": 9, "speaker": "p:alex", "known_revision": 3})
+        self.assertEqual(params_of(context), {"asker": "p:jonas", "now": 9, "speaker": "p:dana", "known_revision": 3})
         self.assertNotIn("speaker", params_of({**context, "speaker": None}))
 
     def test_a_refused_draft_is_retried_with_its_refusal(self):
@@ -145,7 +145,7 @@ class Loop(unittest.TestCase):
                 seen.append(turns[-1]["content"])
                 return replies[len(seen) - 1]
 
-        context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
+        context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
         out = planned(Fake(), "Who is my wife?", SCHEMA, context)
         self.assertEqual(out["cypher"], SLICE["q01"])
         self.assertIn("unknown_property", seen[1])
@@ -162,7 +162,7 @@ class Loop(unittest.TestCase):
                 Fake.calls += 1
                 return replies[Fake.calls - 1]
 
-        context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
+        context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
         self.assertEqual(planned(Fake(), "Who is my wife?", SCHEMA, context)["cypher"], SLICE["q01"])
         self.assertEqual(Fake.calls, 2)
 
@@ -193,7 +193,7 @@ class Structured(unittest.TestCase):
     def test_choices_compose_a_query_the_gate_admits(self):
         import structured
 
-        context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
+        context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
         chooser = Scripted(["Person", "no narrowing", "yes", "value"], {"name"})
         cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, context)
         self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE id(n0) = $speaker RETURN n1.name AS name")
@@ -203,17 +203,17 @@ class Structured(unittest.TestCase):
     def test_a_declared_relation_word_in_the_question_is_the_hop(self):
         import structured
 
-        context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
-        chooser = Scripted(["Alex Chen", "Person", "no narrowing", "further", "GroupMembership records",
+        context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
+        chooser = Scripted(["Dana Holm", "Person", "no narrowing", "further", "GroupMembership records",
                             "yes", "value"], {"is_member"})
-        cypher = structured.plan(chooser, "Alex Chen said his wife was not on the crew. Who is she?", SCHEMA, context)
+        cypher = structured.plan(chooser, "Dana Holm said his wife was not on the crew. Who is she?", SCHEMA, context)
         self.assertTrue(cypher.startswith("MATCH (n0:Person)-[:wife]->(n1:Person)<-[:person]-(n2:GroupMembership)"))
         self.assertNotIn("Where next?", chooser.asked[2][0])
 
     def test_unanswered_words_lead_past_the_relation(self):
         import structured
 
-        context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
+        context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
         chooser = Scripted(["Person", "no narrowing", "no narrowing", "no narrowing",
                             "value"], {"requested_guest_limit"})
         cypher = structured.plan(chooser, "What guest limit did my wife set?", SCHEMA, context)
@@ -223,12 +223,12 @@ class Structured(unittest.TestCase):
     def test_a_word_only_the_data_holds_is_found_by_search(self):
         import structured
 
-        context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
+        context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
         searched = []
 
         def search(query):
             searched.append(query)
-            return [{"kind": "fact", "text": "PersonalTask summary: Book dinner for Elena and Rowan"},
+            return [{"kind": "fact", "text": "PersonalTask summary: Book dinner for Hana and Jonas"},
                     {"kind": "source", "text": "dinner at 19:30"}]
 
         chooser = Scripted(["Person", "assignee is this", "yes", "value"], {"confirmation_recorded"})
@@ -241,19 +241,19 @@ class Structured(unittest.TestCase):
     def test_hops_are_only_the_nodes_own(self):
         import structured
 
-        context = {"principal": "p:rowan", "speaker": None, "question_at_ms": 1}
-        chooser = Scripted(["Alex Chen", "Person", "subject is this", "any of them", "yes", "value"], {"relation"})
-        cypher = structured.plan(chooser, "Who are Alex Chen's relatives?", SCHEMA, context)
+        context = {"principal": "p:jonas", "speaker": None, "question_at_ms": 1}
+        chooser = Scripted(["Dana Holm", "Person", "subject is this", "any of them", "yes", "value"], {"relation"})
+        cypher = structured.plan(chooser, "Who are Dana Holm's relatives?", SCHEMA, context)
         hops = [h[2] for h in structured.hops(structured.models_of(SCHEMA), "Person")]
         self.assertIn("their mother (mum, mom): a Person", hops)
         self.assertNotIn("Group", " ".join(hops[:3]))
         self.assertIn("PersonalRelationship records whose subject is this Person", " ".join(chooser.asked[2][1]))
-        self.assertEqual(cypher, "MATCH (n0:Person)<-[:subject]-(n1:PersonalRelationship) WHERE n0.name = 'Alex Chen' RETURN n1.relation AS relation")
+        self.assertEqual(cypher, "MATCH (n0:Person)<-[:subject]-(n1:PersonalRelationship) WHERE n0.name = 'Dana Holm' RETURN n1.relation AS relation")
 
     def test_a_recorded_status_reads_absence_as_no(self):
         import structured
 
-        context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
+        context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
         chooser = Scripted(["Person", "assignee is this", "summary", "dinner", "yes",
                             "recorded", "confirmation_recorded"])
         cypher = structured.plan(chooser, "Has a confirmation of my dinner booking been recorded?", SCHEMA, context)

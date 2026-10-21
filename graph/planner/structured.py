@@ -14,6 +14,8 @@ import re
 from subset import models_of, base_shape, reference_target, relation_ends
 from prompt import line
 
+RECORD_WORDS = re.compile(r"\b(record\w*|logged|noted|on file|written down)\b", re.I)
+CONFIDENT = 0.75
 FIRST_PERSON = re.compile(r"\b(i|me|my|mine|myself)\b", re.I)
 MAX_HOPS = 4
 ARRIVED = ["yes: the question asks about this record", "no: the answer lies further along"]
@@ -158,7 +160,7 @@ def plan(chooser, question, schema, context, search=None):
         var = out.node(label)
         out.parts.append(f"({var}:{label})")
     came = None
-    words = set(re.findall(r"[a-z]+", question.lower()))
+    words = {w for w in re.findall(r"[a-z]+", question.lower()) if len(w) > 2 and w not in STOPWORDS}
     leftover = {stem(w) for w in topic_words(question)}
     spelled = {stem(w): w for w in topic_words(question)}
     for hop in range(MAX_HOPS):
@@ -168,9 +170,10 @@ def plan(chooser, question, schema, context, search=None):
             break
         said = [i for i, h in enumerate(options) if h[3] and words.intersection(h[3])]
         about = [i for i, h in enumerate(options) if leftover & mentions(models, h[1])]
-        held = [] if said or about else found_in_values(search, {spelled[s] for s in leftover}, models)
-        if held:
-            about = [i for i, h in enumerate(options) if any(m == h[1] for m, _, _ in held)]
+        held = [] if said or len(about) == 1 else found_in_values(search, {spelled[s] for s in leftover}, models)
+        holding = [i for i, h in enumerate(options) if any(m == h[1] for m, _, _ in held)]
+        if holding and (not about or set(holding) & set(about)):
+            about = [i for i in holding if not about or i in about]
         if len(said) == 1:
             pick = said[0]
             words.difference_update(options[pick][3])
@@ -260,9 +263,10 @@ def filtered(chooser, trail, model, var, out, question):
 
 def returns(chooser, trail, model, var, leftover=frozenset()):
     """The RETURN items: a count, one recorded status, or chosen values."""
-    modes = ["the value of one or more of their properties",
-             "whether a yes/no status has been recorded (absent counts as no)", "how many there are"]
-    mode = best(chooser, trail, "What does the question ask for?", modes)
+    modes = ["the value of one or more of their properties", "how many there are"]
+    if RECORD_WORDS.search(trail):
+        modes.append("whether a yes/no status has been recorded (absent counts as no)")
+    mode = [0, 2, 1][best(chooser, trail, "What does the question ask for?", modes)]
     props = model["properties"]
     if mode == 2:
         return f"count({var}) AS count"
@@ -278,6 +282,6 @@ def returns(chooser, trail, model, var, leftover=frozenset()):
         about = f"{p['name']}" + (f" ({line(p['description'], 80)})" if p.get("description") else "")
         if leftover & {stem(w) for w in re.findall(r"[A-Za-z]{3,}", about.replace("_", " "))}:
             picked.append(i)
-        elif best(chooser, trail, f"Does the answer need their {about}?", NEEDED) == 0:
+        elif chooser.choose(trail, f"Does the answer need their {about}?", NEEDED)[0] >= CONFIDENT:
             picked.append(i)
     return ", ".join(f"{var}.{props[i]['name']} AS {props[i]['name']}" for i in picked or [0])
