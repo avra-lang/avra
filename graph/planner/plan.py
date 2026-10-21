@@ -8,8 +8,9 @@ A local model drafts the query; `subset.check` holds it to the subset
 grammar and the catalog, and a refused draft is retried with the refusal
 quoted. Context binds as parameters, never as text in the query.
 
-Model: PLANNER_ENDPOINT (an OpenAI-compatible server already running) is
-used when set; otherwise Qwen3-4B loads in-process through mlx_lm from the
+Model, so only one copy is ever resident: the extraction service's shared
+`generate` op when its socket answers, else PLANNER_ENDPOINT (an
+OpenAI-compatible server), else Qwen3-4B in-process through mlx_lm from the
 extraction lane's venv. Timings and retries go to stderr.
 """
 import json
@@ -21,6 +22,7 @@ import time
 HERE = pathlib.Path(__file__).resolve().parent
 VENV_PYTHON = pathlib.Path.home() / ".cache/avra-graph-ml/venv/bin/python"
 MODEL = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
+SOCKET = pathlib.Path.home() / ".cache/avra-graph-ml/cascade.sock"
 TRIES = 3
 
 sys.path.insert(0, str(HERE))
@@ -73,6 +75,44 @@ class Local:
         return generate(self.model, self.tok, prompt=prompt, max_tokens=320, verbose=False)
 
 
+class Shared:
+    """The model the extraction service already holds, over its socket."""
+
+    def __init__(self, path):
+        self.path = path
+
+    def reply(self, turns):
+        import socket
+
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.connect(str(self.path))
+            s.sendall((json.dumps({"op": "generate", "messages": turns, "max_tokens": 320}) + "\n").encode())
+            data = b""
+            while not data.endswith(b"\n"):
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+        answer = json.loads(data)
+        if "error" in answer:
+            raise SystemExit(f"planner: shared model refused: {answer['error']}")
+        return answer["text"]
+
+
+def shared_socket(path=SOCKET):
+    """The extraction service's socket when something answers on it."""
+    import socket
+
+    if not path.exists():
+        return None
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.connect(str(path))
+    except OSError:
+        return None
+    return path
+
+
 class Remote:
     """A model already served on PLANNER_ENDPOINT."""
 
@@ -109,17 +149,25 @@ def planned(llm, question, schema, context):
     raise SystemExit(f"planner: no valid query after {TRIES} tries; last refusal {last}")
 
 
+def chosen():
+    """One resident model: the extraction service's, a named server, or this process's."""
+    path = shared_socket()
+    if path:
+        return Shared(path)
+    if os.environ.get("PLANNER_ENDPOINT"):
+        return Remote(os.environ["PLANNER_ENDPOINT"])
+    in_model_env()
+    return Local()
+
+
 def main():
+    llm = chosen()
     payload = json.load(sys.stdin)
-    endpoint = os.environ.get("PLANNER_ENDPOINT")
-    llm = Remote(endpoint) if endpoint else Local()
     print(json.dumps(planned(llm, payload["question"], payload["schema"], payload["context"])))
 
 
 def in_model_env():
     """Re-run under the extraction venv when this python lacks mlx_lm."""
-    if os.environ.get("PLANNER_ENDPOINT"):
-        return
     try:
         import mlx_lm  # noqa: F401
     except ImportError:
@@ -129,5 +177,4 @@ def in_model_env():
 
 
 if __name__ == "__main__":
-    in_model_env()
     main()

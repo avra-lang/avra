@@ -6,7 +6,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from plan import drafted, params_of, planned  # noqa: E402
+from plan import Shared, drafted, params_of, planned, shared_socket  # noqa: E402
 from prompt import render_schema  # noqa: E402
 from subset import Refusal, check  # noqa: E402
 
@@ -134,6 +134,41 @@ class Loop(unittest.TestCase):
 
     def test_drafts_lose_fences_and_prose(self):
         self.assertEqual(drafted("Here it is:\n```\nMATCH (a:Person)\nRETURN a.name\n```"), "MATCH (a:Person) RETURN a.name")
+
+
+class Socket(unittest.TestCase):
+    def test_the_shared_model_answers_one_line(self):
+        import socket
+        import tempfile
+        import threading
+
+        path = pathlib.Path(tempfile.mkdtemp()) / "s.sock"
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(path))
+        server.listen(2)
+        asked = []
+
+        def serve():
+            for _ in range(2):
+                conn, _ = server.accept()
+                with conn:
+                    data = b""
+                    while not data.endswith(b"\n"):
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
+                    if data:
+                        asked.append(json.loads(data))
+                        conn.sendall(b'{"text": "MATCH (a:Person) RETURN a.name"}\n')
+
+        threading.Thread(target=serve, daemon=True).start()
+        self.assertEqual(shared_socket(path), path)
+        text = Shared(path).reply([{"role": "user", "content": "q"}])
+        server.close()
+        self.assertEqual(text, "MATCH (a:Person) RETURN a.name")
+        self.assertEqual(asked[0]["op"], "generate")
+        self.assertIsNone(shared_socket(path.parent / "absent.sock"))
 
 
 if __name__ == "__main__":
