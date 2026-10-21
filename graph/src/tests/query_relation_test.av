@@ -58,10 +58,10 @@ fn family() -> Result<Graph, string> {
                 schema: g.catalog.fingerprint,
                 expected_revision: g.revision()?,
                 records: [
-                    record("h1", "Human", "{\"name\":\"Rowan\"}")?,
-                    record("h2", "Human", "{\"name\":\"Elena\"}")?,
-                    record("h3", "Human", "{\"name\":\"Alex\"}")?,
-                    record("h4", "Human", "{\"name\":\"Sora\"}")?,
+                    record("h1", "Human", "{\"name\":\"Jonas\"}")?,
+                    record("h2", "Human", "{\"name\":\"Hana\"}")?,
+                    record("h3", "Human", "{\"name\":\"Dana\"}")?,
+                    record("h4", "Human", "{\"name\":\"Marta\"}")?,
                     record("f1", "Firm", "{\"name\":\"Acme\"}")?,
                     record(
                         "k1",
@@ -91,7 +91,7 @@ fn family() -> Result<Graph, string> {
 
 fn ask(mut g: Graph, text: string, speaker: string) -> Result<Json, string> {
     let params = match parse(
-        "{\"asker\":\"u\",\"now\":1,\"speaker\":\"${speaker}\",\"n\":\"Rowan\"}",
+        "{\"asker\":\"u\",\"now\":1,\"speaker\":\"${speaker}\",\"n\":\"Jonas\"}",
     ) { .Ok(j) -> j, .Err(_) -> { fail "params are not JSON" } }
     g
         .dispatch(
@@ -123,10 +123,10 @@ fn reified_equals_virtual() -> Result<bool, string> {
     let rowan_r = ask(g, reified, "h1")?
     let alex_v = ask(g, virtual, "h3")?
     let alex_r = ask(g, reified, "h3")?
-    values(rowan_v) == "Elena" &&
-        values(rowan_r) == "Elena" &&
-        values(alex_v) == "Sora" &&
-        values(alex_r) == "Sora" &&
+    values(rowan_v) == "Hana" &&
+        values(rowan_r) == "Hana" &&
+        values(alex_v) == "Marta" &&
+        values(alex_r) == "Marta" &&
         rowan_v.member("fields").item(0).member("path").item(1).text() == "person" &&
         rowan_v.member("citations").items().length >= 2
 }
@@ -159,11 +159,11 @@ fn words_and_directions() -> Result<bool, string> {
         "MATCH (me:Human)-[:mum]->(m:Human) WHERE id(me) = \$speaker RETURN m.name AS person",
         "h2",
     )?
-    values(upper) == "Elena" &&
-        values(forward) == "Elena" &&
-        values(reverse) == "Rowan" &&
-        values(flipped) == "Rowan" &&
-        values(mother) == "Rowan"
+    values(upper) == "Hana" &&
+        values(forward) == "Hana" &&
+        values(reverse) == "Jonas" &&
+        values(flipped) == "Jonas" &&
+        values(mother) == "Jonas"
 }
 
 fn relation_record_properties() -> Result<bool, string> {
@@ -186,7 +186,7 @@ fn relation_record_properties() -> Result<bool, string> {
     )?
     since.member("fields").item(0).member("value").int() == 2010 &&
         since.member("fields").item(0).member("path").item(1).text() == "since" &&
-        values(narrowed) == "Elena" &&
+        values(narrowed) == "Hana" &&
         excluded.member("status").text() == "unknown"
 }
 
@@ -203,19 +203,19 @@ fn second_binding() -> Result<bool, string> {
         "MATCH (f:Firm)-[:manages]->(p:Human) WHERE id(f) = \$speaker RETURN p.name AS person",
         "f1",
     )?
-    values(boss) == "Acme" && values(managed) == "Rowan"
+    values(boss) == "Acme" && values(managed) == "Jonas"
 }
 
 fn property_maps() -> Result<bool, string> {
     mut g = family()?
     defer { let _ = g.close() }
-    let literal = ask(g, "MATCH (p:Human {name: 'Elena'}) RETURN p.name AS who", "h1")?
+    let literal = ask(g, "MATCH (p:Human {name: 'Hana'}) RETURN p.name AS who", "h1")?
     let parameter = ask(
         g,
         "MATCH (p:Human {name: \$n})-[:wife]->(w:Human) RETURN w.name AS person",
         "h1",
     )?
-    values(literal) == "Elena" && values(parameter) == "Elena"
+    values(literal) == "Hana" && values(parameter) == "Hana"
 }
 
 fn refusals_name_the_alternatives() -> Result<bool, string> {

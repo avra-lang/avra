@@ -6,6 +6,7 @@ use query.plan.{prepare_read, ReadNode, ReadOnlyPlan}
 use query.respond.{responded, refused}
 use query.relations.{Link, resolve_hop, unknown_label, check_property, model_named}
 use catalog.{Catalog}
+use semantics.{AbsenceBinding}
 
 /// A node's declared label, checked against the model its step reaches.
 type Label = { step: string, label: string }
@@ -47,7 +48,7 @@ type TotalWant = { who: string?, agg: Aggregate, out: string? }
 enum Wanted { Prop(want: PropWant), Total(want: TotalWant) }
 
 /// A query either becomes an admitted plan or is refused with a code.
-enum Admission {
+export enum Admission {
     Ready(plan: ReadOnlyPlan)
     Rejected(code: string, message: string)
 }
@@ -630,6 +631,16 @@ fn unsupported_return() -> CypherError {
 /// The plan's tail: what to return, from which chains.
 type Finished = { steps: List<Json>, output: string, joined: List<string> }
 
+/// The model's own reason for a missing property, else the generic one.
+fn absence_code(absences: List<AbsenceBinding>, prop: string) -> string {
+    absences.find(it.path.length == 1 && it.path[0] == prop)?.code ?? "null_result"
+}
+
+fn absences_of(catalog: Catalog, model: string?) -> List<AbsenceBinding> {
+    let home? = model else { return [] }
+    model_named(catalog, home)?.semantics?.absences ?? []
+}
+
 /// Where a returned variable's rows are: a path's last node or a bound relation record.
 type Anchor = { chain: int, step: string, model: string? }
 
@@ -667,7 +678,13 @@ fn finish(chains: List<Chain>, wanted: List<Wanted>, catalog: Catalog) -> Result
     for g, place in places {
         let mine = [p for k, p in props if anchors[k].step == place.step]
         if !mine.is_empty() {
-            let tail = returned("a${g}", place.step, chains[place.chain].optional, mine)
+            let tail = returned(
+                "a${g}",
+                place.step,
+                chains[place.chain].optional,
+                mine,
+                absences_of(catalog, place.model),
+            )
             steps = steps.concat(tail.steps)
             tails.push(tail.output)
         }
@@ -719,7 +736,13 @@ fn anchor_of(chains: List<Chain>, who: string) -> Result<Anchor, CypherError> {
     .Err(refuse("unknown_variable", "${who} is not a variable of any MATCH"))
 }
 
-fn returned(group: string, input: string, optional: bool, props: List<PropWant>) -> Finished {
+fn returned(
+    group: string,
+    input: string,
+    optional: bool,
+    props: List<PropWant>,
+    absences: List<AbsenceBinding>,
+) -> Finished {
     mut steps: List<Json> = []
     mut last = input
     if !optional {
@@ -733,7 +756,7 @@ fn returned(group: string, input: string, optional: bool, props: List<PropWant>)
                         last,
                         [
                             field("property", Json.Str(p.prop)),
-                            field("reason", Json.Str("null_result")),
+                            field("reason", Json.Str(absence_code(absences, p.prop))),
                         ],
                     ),
                 )
