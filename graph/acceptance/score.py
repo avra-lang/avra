@@ -249,6 +249,17 @@ def question_context(question, manifest, known_revision, previous):
     }
 
 
+def locator(app, entities):
+    """Gold person id -> the graph's entity for that email identity (the caller's own handle)."""
+    gold = {e["id"]: e["identity"] for e in entities if e["identity"]}
+
+    def locate(value):
+        identity = gold.get(value)
+        found = app.call({"op": "resolve", **identity}) if identity else {}
+        return found.get("entity", value) if isinstance(found, dict) else value
+    return locate
+
+
 def span_overlap(a, b):
     return a[0] < b[1] and b[0] < a[1]
 
@@ -370,15 +381,17 @@ def score_checkpoint(binary, checkpoint, questions, fixture, mode, hooks, scratc
         return {**rows, **{q["id"]: {"status": "error", "reason": failure} for q in runnable}}
     revision = app.call({"op": "schema"}).get("revision", 0)
     ids = Ids(id_map(app, entities, prefix, by_ref))
+    locate = locator(app, entities)
     answers = {}
     for q in runnable:
-        rows[q["id"]] = ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, superseded)
+        rows[q["id"]] = ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, superseded, locate)
     return rows
 
 
-def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, superseded):
+def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, superseded, locate):
     previous = answers.get(q.get("context", {}).get("previous_question"))
     context = question_context(q, manifest, revision, previous)
+    context = {**context, **{k: locate(context[k]) for k in ("principal", "speaker") if context[k]}}
     started = time.time()
     try:
         if q["id"] in plans:
