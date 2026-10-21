@@ -1,0 +1,163 @@
+use @std.sqlite.{sql, SqlValue}
+use @std.text.{from_codepoints}
+use ingest.chunks.{windows}
+use @avra.graph_contracts.{SourceEnvelope}
+use @std.validate.{Value}
+use store.engine.{ObservationRow}
+use store.open.{Graph, stored, put_meta}
+use data.{encoded}
+
+/// One indexed passage: source text, or a fact admitted from a source.
+export type Passage = {
+    kind: string,
+    observation: string,
+    revision: int,
+    start: int,
+    stop: int,
+    text: string,
+    rank: float,
+}
+
+/// The index tracks the graph revision it was built at.
+const index_revision_key = "search_revision"
+
+const index_table = "passage_index"
+
+impl Graph {
+    /// Passages ranked by BM25 over source text and admitted facts, best first.
+    /// The index is rebuilt when the graph has moved since it was built.
+    fn search(query: string, limit: int = 10) -> Result<List<Passage>, string> {
+        if limit < 1 || limit > 100 { fail "search limit must be 1..100" }
+        self.indexed()?
+        let match_text = fts_query(query)
+        if match_text.is_empty() { return [] }
+        let rows = stored(
+            self
+                .db
+                .all(
+                    sql(
+                        "SELECT kind, observation, revision, start, stop, text, bm25(${index_table}) FROM ${index_table} WHERE ${index_table} MATCH ? ORDER BY bm25(${index_table}), observation, start LIMIT ?",
+                        [.Text(match_text), .Int(limit)],
+                    ),
+                ),
+        )?
+        [Passage {
+            kind: stored(r.text(0))?,
+            observation: stored(r.text(1))?,
+            revision: stored(r.int(2))?,
+            start: stored(r.int(3))?,
+            stop: stored(r.int(4))?,
+            text: stored(r.text(5))?,
+            rank: stored(r.real(6))?,
+        } for r in rows]
+    }
+
+    /// Brings the index up to the graph's revision; a no-op when it is current.
+    fn indexed() -> Result<int, string> {
+        let revision = self.revision()?
+        if self.has_table(index_table)? && self.meta(index_revision_key)? == "${revision}" { return revision }
+        stored(self.db.begin())?
+        defer { let _ = self.db.finish() }
+        mut db = self.db
+        stored(
+            db
+                .exec(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS ${index_table} USING fts5(text, kind UNINDEXED, observation UNINDEXED, revision UNINDEXED, start UNINDEXED, stop UNINDEXED, tokenize = 'porter unicode61 remove_diacritics 2')",
+                ),
+        )?
+        stored(db.run(sql("DELETE FROM ${index_table}")))?
+        for p in (self.source_passages()?).concat(self.fact_passages()?) {
+            stored(
+                db
+                    .run(
+                        sql(
+                            "INSERT INTO ${index_table}(text, kind, observation, revision, start, stop) VALUES (?, ?, ?, ?, ?, ?)",
+                            [
+                                .Text(p.text),
+                                .Text(p.kind),
+                                .Text(p.observation),
+                                .Int(p.revision),
+                                .Int(p.start),
+                                .Int(p.stop),
+                            ],
+                        ),
+                    ),
+            )?
+        }
+        put_meta(db, index_revision_key, "${revision}")?
+        stored(db.commit())?
+        revision
+    }
+
+    /// Each observation's current text: envelope windows, or the raw text whole.
+    fn source_passages() -> Result<List<Passage>, string> {
+        let rows = stored(ObservationRow.all(self.db))?
+        let nested = [self.windowed(r)? for r in rows]
+        [p for run in nested for p in run]
+    }
+
+    fn windowed(r: ObservationRow) -> Result<List<Passage>, string> {
+        match SourceEnvelope.from_json(r.payload) {
+            .Ok(envelope) -> [Passage {
+                kind: "source",
+                observation: r.name,
+                revision: r.revision,
+                start: w.original.start,
+                stop: w.original.end,
+                text: w.original.text,
+                rank: 0.0,
+            } for w in windows(envelope)?],
+            .Err(_) -> [
+                Passage {
+                    kind: "source",
+                    observation: r.name,
+                    revision: r.revision,
+                    start: 0,
+                    stop: r.payload.bytes().length,
+                    text: r.payload,
+                    rank: 0.0,
+                },
+            ],
+        }
+    }
+
+    /// Every standing value, spelled `Model property: value`, filed under each source that supports it.
+    fn fact_passages() -> Result<List<Passage>, string> {
+        let nested = [self.facts_of(m.name, id)? for m in self.catalog.models for id in self.find(m.name, limit: 1000)?]
+        [p for run in nested for p in run]
+    }
+
+    fn facts_of(model: string, id: string) -> Result<List<Passage>, string> {
+        let entity = self.entity(id)?
+        [Passage {
+            kind: "fact",
+            observation: s.member("input").text() ?? "",
+            revision: s.member("input_revision").int() ?? 0,
+            start: 0,
+            stop: 0,
+            text: "${model} ${sel.property}: ${spelled(c.value)}",
+            rank: 0.0,
+        } for sel in entity.fields for c in sel.candidates for s in (self.explain(id, sel.property)?).items() if s.member("active").truth() == true && s.member("claim").int() == c.claim]
+    }
+}
+
+/// A text value as written; anything else as its JSON.
+fn spelled(v: Value) -> string {
+    match v {
+        .Text(s) -> s,
+        .Null or .Bool(_) or .Int(_) or .Float(_) or .List(_) or .Map(_) -> encoded(v),
+    }
+}
+
+/// A question as an FTS5 query: its words, quoted, any of which may match.
+fn fts_query(text: string) -> string {
+    let spaced = from_codepoints(
+        [if word_char(text.char_code(i)) { text.char_code(i) } else { 32 } for i in 0..text.length],
+    )
+    let words = [w for w in spaced.split(" ") if !w.is_empty()]
+    words.slice(0, if words.length > 32 { 32 } else { words.length }).map("\"${it}\"").join(" OR ")
+}
+
+fn word_char(c: int) -> bool {
+    c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122 || c >= 128
+}

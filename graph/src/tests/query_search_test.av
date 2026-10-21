@@ -1,0 +1,119 @@
+use derive.model.{model}
+use schema.{Registration}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+
+@model
+type Note = { subject: string, body: string }
+
+fn registrations() -> List<Registration> { [Registration { make: Note_graph_model }] }
+
+fn note(id: string, subject: string, body: string) -> Result<Record, string> {
+    Record {
+        id: id,
+        model: "Note",
+        value: stored_value("{\"subject\":\"${subject}\",\"body\":\"${body}\"}")?,
+    }
+}
+
+fn filed(mut g: Graph, id: string, records: List<Record>) -> Result<int, string> {
+    g
+        .publish(
+            Publication {
+                id: id,
+                producer: "agent",
+                scope: "in:1",
+                input: "in:1",
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: records,
+            },
+        )
+}
+
+fn notebook() -> Result<Graph, string> {
+    mut g = Graph.memory(registrations())?
+    g.observe("in:1", "Alex asked me to reserve a table for the Friday dinner.")?
+    g.observe("in:2", "The delivery of paint is due on Monday.")?
+    filed(g, "one", [note("n1", "dinner", "table for four")?])?
+    g
+}
+
+fn finds_source_text() -> Result<bool, string> {
+    mut g = notebook()?
+    defer { let _ = g.close() }
+    let hits = g.search("who reserved the dinner table?")?
+    hits[0].kind == "source" &&
+        hits[0].observation == "in:1" &&
+        hits[0].text.contains("Friday dinner") &&
+        hits[0].revision == 1
+}
+
+fn stems_words() -> Result<bool, string> {
+    mut g = notebook()?
+    defer { let _ = g.close() }
+    let hits = g.search("reserving tables")?
+    hits.any(it.observation == "in:1")
+}
+
+fn indexes_facts_under_their_source() -> Result<bool, string> {
+    mut g = notebook()?
+    defer { let _ = g.close() }
+    let facts = (g.search("Note subject dinner")?).filter(it.kind == "fact")
+    !facts.is_empty() &&
+        facts.all(it.observation == "in:1") &&
+        facts.any(it.text.contains("Note subject: dinner"))
+}
+
+fn hostile_queries_are_words() -> Result<bool, string> {
+    mut g = notebook()?
+    defer { let _ = g.close() }
+    let injected = g.search("\"; xyzzy' OR 1=1 --")?
+    let operators = g.search("dinner AND OR NOT * ( ) NEAR")?
+    let blank = g.search("  ?!  ")?
+    injected.is_empty() &&
+        blank.is_empty() &&
+        operators.any(it.observation == "in:1") &&
+        !(g.search("paint")?).is_empty()
+}
+
+fn follows_revisions() -> Result<bool, string> {
+    mut g = notebook()?
+    defer { let _ = g.close() }
+    let before = g.search("paint")?
+    g.observe("in:2", "The delivery of lumber is due on Monday.")?
+    let after = g.search("paint")?
+    let moved = g.search("lumber")?
+    !before.is_empty() &&
+        after.is_empty() &&
+        moved[0].observation == "in:2" &&
+        moved[0].revision == 2
+}
+
+fn limits_are_bounded() -> Result<bool, string> {
+    mut g = notebook()?
+    defer { let _ = g.close() }
+    let one = g.search("the", limit: 1)?
+    let refused = match g.search("dinner", limit: 0) { .Ok(_) -> false, .Err(_) -> true }
+    one.length == 1 && refused
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "keyword search" {
+    given "a graph with two sources and one admitted fact" {
+        then "source text is found by its words, best first" { passed(finds_source_text()) }
+        then "words match across stems" { passed(stems_words()) }
+        then "admitted facts are indexed under the source that supports them" { passed(indexes_facts_under_their_source()) }
+        then "a query is only words, whatever it contains" { passed(hostile_queries_are_words()) }
+        then "the index follows a source's new revision" { passed(follows_revisions()) }
+        then "the result count is bounded" { passed(limits_are_bounded()) }
+    }
+}
