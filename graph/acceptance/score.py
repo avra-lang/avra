@@ -174,7 +174,8 @@ def read_keys(answer, keys):
     for key, spec in keys.items():
         for field in answer.get("fields", []):
             if field["path"][1:] == spec["suffix"]:
-                out[key] = takes[spec["take"]](field)
+                got = takes[spec["take"]](field)
+                out[key] = spec.get("map", {}).get(got, got) if isinstance(got, str) else got
                 break
     return out
 
