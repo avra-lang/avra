@@ -134,6 +134,11 @@ def oracle_gold():
     return read_lines(path) if path.exists() else []
 
 
+def oracle_blocked():
+    path = ORACLE / "blocked.jsonl"
+    return {r["question"]: r["reason"] for r in read_lines(path)} if path.exists() else {}
+
+
 def oracle_readings():
     path = ORACLE / "readings.jsonl"
     return read_lines(path) if path.exists() else []
@@ -158,12 +163,18 @@ def nest(fields):
 
 
 def read_keys(answer, keys):
-    """Grader-side reading of generic [entity, property] fields into manifest keys."""
+    """Grader-side reading of generic [entity, name] fields into manifest keys."""
+    cited = {c["id"]: c["source"]["revision"] for c in answer.get("citations", [])}
+    takes = {
+        "entity": lambda f: f["path"][0],
+        "value": lambda f: f["value"],
+        "revision": lambda f: max(cited.get(c, 0) for c in f["citations"]),
+    }
     out = {}
     for key, spec in keys.items():
         for field in answer.get("fields", []):
             if field["path"][1:] == spec["suffix"]:
-                out[key] = field["path"][0] if spec["take"] == "entity" else field["value"]
+                out[key] = takes[spec["take"]](field)
                 break
     return out
 
@@ -297,6 +308,8 @@ def ready(mode, hooks, question, plans):
         missing.append("extractor")
     if mode == "oracle-facts" and not (ORACLE / "facts.jsonl").exists():
         missing.append("oracle/facts.jsonl")
+    if mode == "oracle-facts" and question["id"] in oracle_blocked():
+        return ["(blocked: " + oracle_blocked()[question["id"]] + ")"]
     if mode == "oracle-facts" and not hooks.get("planner") and question["id"] not in plans:
         return ["oracle plan"]
     if not hooks.get("planner") and question["id"] not in plans:
