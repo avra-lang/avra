@@ -229,6 +229,51 @@ def check_split(questions):
 
 
 PORTABILITY = ROOT / "portability"
+HARDCODE_BASELINE = ROOT / "hardcoding.baseline"
+HARDCODE_ROOTS = ("extract", "planner", "src")
+_STR = r"(?:\"[^\"\n]+\"|'[^'\n]+')"
+WORD_LIST = re.compile(r"[\[{(]\s*" + _STR + r"(?:\s*,\s*" + _STR + r"){3,}")
+THRESHOLD = re.compile(
+    r"(?:<=|>=|<|>|==)\s*-?\d+\.\d+|(?:<=|>=|<|>)\s*\d{2,}\b|^\s*[A-Z][A-Z_0-9]*\s*=\s*-?\d+(?:\.\d+)?\s*$"
+)
+
+
+def hardcoded_sites(root):
+    """Word lists and numeric thresholds in engine, extractor and planner code.
+
+    A calibrated-parameters file (its name says `parameters`) is the one place
+    such values may live; tests, benches and recordings are not code."""
+    found = []
+    for rel in HARDCODE_ROOTS:
+        for path in sorted((root / rel).rglob("*")):
+            parts = set(path.parts)
+            if (path.is_file() and path.suffix in (".py", ".av") and not {"bench", "recorded", "__pycache__", "tests"} & parts
+                    and not path.name.startswith("test_") and "parameters" not in path.name):
+                for line in path.read_text(errors="ignore").splitlines():
+                    if WORD_LIST.search(line) or THRESHOLD.search(line):
+                        found.append(f"{path.relative_to(root)} :: {line.strip()}")
+    return sorted(set(found))
+
+
+def check_hardcoding(root):
+    baseline = set(HARDCODE_BASELINE.read_text().splitlines()) if HARDCODE_BASELINE.exists() else set()
+    sites = hardcoded_sites(root)
+    new = [site for site in sites if site not in baseline]
+    require(not new, "hardcoded word lists or thresholds outside a parameters file (baseline only shrinks):\n  "
+            + "\n  ".join(new[:20]))
+    gone = len(baseline - set(sites))
+    return len(sites), gone
+
+
+def init_hardcoding_baseline(root):
+    require(not HARDCODE_BASELINE.exists(), "the hardcoding baseline exists; it only shrinks")
+    HARDCODE_BASELINE.write_text("".join(site + "\n" for site in hardcoded_sites(root)))
+
+
+def prune_hardcoding_baseline(root):
+    keep = set(hardcoded_sites(root))
+    old = HARDCODE_BASELINE.read_text().splitlines()
+    HARDCODE_BASELINE.write_text("".join(line + "\n" for line in old if line in keep))
 
 
 def check_portability(entities, sources):
@@ -292,11 +337,20 @@ def self_test(data):
         require(both.search(text), f"second-fixture leak witness missed: {text}")
     for text in ("a founder's spouse", "Dana Ferris", "mail dana@example.test"):
         require(not pattern.search(text), f"leak witness refused innocent text: {text}")
+    for text in ('words = ["a", "b", "c", "d"]', "if score >= 0.65:", "LIMIT = 40", "if n > 30 {"):
+        require(WORD_LIST.search(text) or THRESHOLD.search(text), f"hardcoding witness missed: {text}")
+    for text in ('names = ["a", "b"]', "if n > 3:", "x = items[0]"):
+        require(not (WORD_LIST.search(text) or THRESHOLD.search(text)), f"hardcoding refused innocent text: {text}")
     print(f"integrity self-test: {len(mutations)} invalid fixtures refused, leak pattern witnessed")
 
 
 def main():
-    require(sys.argv[1:] in ([], ["--self-test"]), "usage: validate.py [--self-test]")
+    require(sys.argv[1:] in ([], ["--self-test"], ["--hardcoding-init"], ["--hardcoding-prune"]),
+            "usage: validate.py [--self-test | --hardcoding-init | --hardcoding-prune]")
+    if sys.argv[1:] == ["--hardcoding-init"]:
+        return init_hardcoding_baseline(GRAPH)
+    if sys.argv[1:] == ["--hardcoding-prune"]:
+        return prune_hardcoding_baseline(GRAPH)
     manifest = json.loads((ROOT / "manifest.json").read_text())
     data = (manifest, *(load_lines(ROOT / manifest[key])
                         for key in ("sources", "entities", "questions", "tasks")))
@@ -307,10 +361,12 @@ def main():
     check_portability(data[2], data[1])
     leaked = leaks(GRAPH, leak_union([(data[2], data[1]), (p_entities, p_sources)]))
     require(not leaked, "fixture tokens outside the fixture:\n  " + "\n  ".join(leaked[:20]))
+    sites, gone = check_hardcoding(GRAPH)
     if sys.argv[1:]:
         self_test(data)
     print(f"fixture integrity: {len(data[1])} sources, {len(data[2])} gold entities, "
           f"{len(data[3])} questions, {len(data[4])} acyclic task briefs; NOT an NLP pass")
+    print(f"hardcoding audit: {sites} baseline sites, {gone} prunable")
 
 
 if __name__ == "__main__":
