@@ -24,12 +24,11 @@ HERE = pathlib.Path(__file__).resolve().parent
 VENV_PYTHON = pathlib.Path.home() / ".cache/avra-graph-ml/venv/bin/python"
 MODEL = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
 SOCKET = pathlib.Path.home() / ".cache/avra-graph-ml/cascade.sock"
-TRIES = 3
+TRIES = 1
 
 sys.path.insert(0, str(HERE))
 from prompt import messages  # noqa: E402
 from subset import Refusal, check  # noqa: E402
-from english import FIRST_PERSON  # noqa: E402
 
 
 def log(text):
@@ -192,10 +191,17 @@ def tries():
     return int(args[args.index("--tries") + 1]) if "--tries" in args else TRIES
 
 
-def bound(question, cypher, context):
-    """A question in the first person reads from the speaker, through $speaker."""
-    if context.get("speaker") and FIRST_PERSON.search(question) and "$speaker" not in cypher:
-        raise Refusal("unbound_speaker", "the question speaks as the speaker (my/I/me): start at (me:Person) WHERE id(me) = $speaker")
+SPEAKS = ["yes: it is about the person asking", "no: it is about someone or something else"]
+
+
+def bound(llm, question, cypher, context):
+    """A question about the person asking reads from the speaker, through $speaker.
+    Whether it is, is the model's closed choice; without one, nothing is refused."""
+    if not context.get("speaker") or "$speaker" in cypher or not hasattr(llm, "choose"):
+        return
+    p = llm.choose(f"Question: {question}", "Is the question about the person asking it?", SPEAKS)
+    if p[0] > p[1]:
+        raise Refusal("unbound_speaker", "the question is about the person asking: start at their node WHERE id(me) = $speaker")
 
 
 def planned(llm, question, schema, context, limit=TRIES, graph=None):
@@ -207,7 +213,7 @@ def planned(llm, question, schema, context, limit=TRIES, graph=None):
         cypher = drafted(llm.reply(turns))
         try:
             gated(cypher, schema, params, graph)
-            bound(question, cypher, context)
+            bound(llm, question, cypher, context)
             log(f"try {attempt} ok in {time.time() - started:.1f}s: {cypher}")
             return {"cypher": cypher, "params": params}
         except Refusal as refusal:
@@ -231,13 +237,13 @@ def chosen():
     return Local()
 
 
-def composed(chooser, question, schema, context, graph=None):
+def composed(chooser, question, schema, context, graph=None, depth=None):
     """The structured arm: closed choices composed into one query, then gated."""
     import structured
 
     started = time.time()
     params = params_of(context)
-    cypher = structured.plan(chooser, question, schema, context, graph.search if graph else None)
+    cypher = structured.plan(chooser, question, schema, context, graph.search if graph else None, depth)
     gated(cypher, schema, params, graph)
     log(f"composed in {time.time() - started:.1f}s: {cypher}")
     return {"cypher": cypher, "params": params}
@@ -249,7 +255,8 @@ def main():
     if "--structured" in sys.argv[1:]:
         if not hasattr(llm, "choose"):
             raise SystemExit("planner: the structured arm needs the shared model's choose op")
-        out = composed(llm, payload["question"], payload["schema"], payload["context"], graph_of(payload))
+        out = composed(llm, payload["question"], payload["schema"], payload["context"], graph_of(payload),
+                       (payload.get("budget") or {}).get("depth"))
     else:
         out = planned(llm, payload["question"], payload["schema"], payload["context"], tries(), graph_of(payload))
     print(json.dumps(out))

@@ -146,12 +146,12 @@ class Loop(unittest.TestCase):
                 return replies[len(seen) - 1]
 
         context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
-        out = planned(Fake(), "Who is my wife?", SCHEMA, context)
+        out = planned(Fake(), "Who is my wife?", SCHEMA, context, limit=2)
         self.assertEqual(out["cypher"], SLICE["q01"])
         self.assertIn("unknown_property", seen[1])
         json.dumps(out)
 
-    def test_a_first_person_question_must_read_from_the_speaker(self):
+    def test_a_question_about_the_asker_must_read_from_the_speaker(self):
         unbound = SLICE["q01"].replace("id(me) = $speaker AND ", "")
         replies = [unbound, SLICE["q01"]]
 
@@ -162,8 +162,11 @@ class Loop(unittest.TestCase):
                 Fake.calls += 1
                 return replies[Fake.calls - 1]
 
+            def choose(self, context, question, options):
+                return [0.9, 0.1]
+
         context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
-        self.assertEqual(planned(Fake(), "Who is my wife?", SCHEMA, context)["cypher"], SLICE["q01"])
+        self.assertEqual(planned(Fake(), "Who is my wife?", SCHEMA, context, limit=2)["cypher"], SLICE["q01"])
         self.assertEqual(Fake.calls, 2)
 
     def test_drafts_lose_fences_and_prose(self):
@@ -189,54 +192,44 @@ class Scripted:
         return [1.0 if i == hits[0] else 0.0 for i in range(len(options))]
 
 
+def facts(*rows):
+    """A search stub answering the given admitted facts for any query."""
+    return lambda query: [{"kind": "fact", "text": row} for row in rows]
+
+
+SPEAKER = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
+NOBODY = {"principal": "p:jonas", "speaker": None, "question_at_ms": 1}
+
+
 class Structured(unittest.TestCase):
     def test_choices_compose_a_query_the_gate_admits(self):
         import structured
 
-        context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
-        chooser = Scripted(["Person", "no narrowing", "yes", "value"], {"name"})
-        cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, context)
+        chooser = Scripted(["person asking", "Person", "yes", "value"], {"name"})
+        cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, SPEAKER)
         self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE id(n0) = $speaker RETURN n1.name AS name")
         check(cypher, SCHEMA, PARAMS)
         self.assertFalse(chooser.script)
 
-    def test_a_declared_relation_word_in_the_question_is_the_hop(self):
+    def test_a_record_the_question_names_comes_from_search(self):
         import structured
 
-        context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
-        chooser = Scripted(["Dana Holm", "Person", "no narrowing", "further", "GroupMembership records",
-                            "yes", "value"], {"is_member"})
-        cypher = structured.plan(chooser, "Dana Holm said his wife was not on the crew. Who is she?", SCHEMA, context)
-        self.assertTrue(cypher.startswith("MATCH (n0:Person)-[:wife]->(n1:Person)<-[:person]-(n2:GroupMembership)"))
-        self.assertNotIn("Where next?", chooser.asked[2][0])
+        chooser = Scripted(["Dana Holm", "yes", "value"], {"name"})
+        search = facts("Person name: Dana Holm", "Group name: night shift")
+        cypher = structured.plan(chooser, "Who is Dana Holm's wife?", SCHEMA, NOBODY, search)
+        self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE n0.name = 'Dana Holm' RETURN n1.name AS name")
+        self.assertEqual(chooser.asked[0][1], ["the Person whose name is 'Dana Holm'", "every record of one kind"])
 
-    def test_unanswered_words_lead_past_the_relation(self):
+    def test_facts_the_question_reaches_lead_the_walk_on(self):
         import structured
 
-        context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
-        chooser = Scripted(["Person", "no narrowing", "no narrowing", "no narrowing",
-                            "value"], {"requested_guest_limit"})
-        cypher = structured.plan(chooser, "What guest limit did my wife set?", SCHEMA, context)
+        chooser = Scripted(["person asking", "Person", "contains 'guest'", "contains 'launch'", "value"],
+                           {"requested_guest_limit"})
+        search = facts("Commitment action: keep the guest list short", "Event title: spring launch")
+        cypher = structured.plan(chooser, "What guest limit did my wife set for the launch?", SCHEMA, SPEAKER, search)
         self.assertTrue(cypher.startswith("MATCH (n0:Person)-[:wife]->(n1:Person)<-[:actor]-(n2:Commitment)-[:event]->(n3:Event)"), cypher)
-        self.assertFalse(any("Is the answer about this Person" in q for q, _ in chooser.asked))
-
-    def test_a_word_only_the_data_holds_is_found_by_search(self):
-        import structured
-
-        context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
-        searched = []
-
-        def search(query):
-            searched.append(query)
-            return [{"kind": "fact", "text": "PersonalTask summary: Book dinner for Hana and Jonas"},
-                    {"kind": "source", "text": "dinner at 19:30"}]
-
-        chooser = Scripted(["Person", "assignee is this", "yes", "value"], {"confirmation_recorded"})
-        cypher = structured.plan(chooser, "Did I actually book that Friday dinner?", SCHEMA, context, search)
-        self.assertIn("dinner", searched[0])
-        self.assertEqual(cypher, "MATCH (n0:Person)<-[:assignee]-(n1:PersonalTask) WHERE id(n0) = $speaker "
-                                 "AND n1.summary CONTAINS 'dinner' RETURN n1.confirmation_recorded AS confirmation_recorded")
-        check(cypher, SCHEMA, PARAMS)
+        self.assertIn("n2.action CONTAINS 'guest'", cypher)
+        self.assertFalse(any("Is the answer about" in q for q, _ in chooser.asked))
 
     def test_competing_declared_phrases_are_the_models_choice(self):
         import copy
@@ -246,10 +239,10 @@ class Structured(unittest.TestCase):
         membership = next(m for m in schema["models"] if m["name"] == "GroupMembership")
         membership["semantics"] = {"relation": {"from": ["person"], "to": ["group"], "label": [], "labels": [
             {"value": "member", "forward": ["member of", "on"], "reverse": []}]}}
-        context = {"principal": "p:jonas", "speaker": None, "question_at_ms": 1}
-        chooser = Scripted(["Dana Holm", "Person", "their wife", "no narrowing", "no narrowing", "yes", "value"], {"name"})
-        cypher = structured.plan(chooser, "Dana Holm said his wife was not on the crew. Who is she?", schema, context)
-        question, options = chooser.asked[2]
+        chooser = Scripted(["Dana Holm", "their wife", "yes", "value"], {"name"})
+        cypher = structured.plan(chooser, "Dana Holm said his wife was not on the crew. Who is she?", schema, NOBODY,
+                                 facts("Person name: Dana Holm"))
+        question, options = chooser.asked[1]
         self.assertEqual(question, "Which relation does the question mean?")
         self.assertEqual(len(options), 2)
         self.assertTrue(cypher.startswith("MATCH (n0:Person)-[:wife]->(n1:Person)"), cypher)
@@ -257,24 +250,31 @@ class Structured(unittest.TestCase):
     def test_hops_are_only_the_nodes_own(self):
         import structured
 
-        context = {"principal": "p:jonas", "speaker": None, "question_at_ms": 1}
-        chooser = Scripted(["Dana Holm", "Person", "subject is this", "any of them", "yes", "value"], {"relation"})
-        cypher = structured.plan(chooser, "Who are Dana Holm's relatives?", SCHEMA, context)
         hops = [h[2] for h in structured.hops(structured.models_of(SCHEMA), "Person")]
         self.assertIn("their mother (mum, mom): a Person", hops)
-        self.assertNotIn("Group", " ".join(hops[:3]))
-        self.assertIn("PersonalRelationship records whose subject is this Person", " ".join(chooser.asked[2][1]))
-        self.assertEqual(cypher, "MATCH (n0:Person)<-[:subject]-(n1:PersonalRelationship) WHERE n0.name = 'Dana Holm' RETURN n1.relation AS relation")
+        self.assertTrue(any("PersonalRelationship records whose subject is this Person" in h for h in hops))
+        self.assertFalse(any("Group" in h for h in hops[:3]))
 
-    def test_a_recorded_status_reads_absence_as_no(self):
+    def test_recorded_or_world_is_the_models_choice(self):
         import structured
 
-        context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
-        chooser = Scripted(["Person", "assignee is this", "summary", "dinner", "yes",
-                            "recorded", "confirmation_recorded"])
-        cypher = structured.plan(chooser, "Has a confirmation of my dinner booking been recorded?", SCHEMA, context)
-        self.assertTrue(cypher.endswith("RETURN coalesce(n1.confirmation_recorded, false) AS confirmation_recorded"))
+        search = facts("PersonalTask summary: book a table")
+        recorded = Scripted(["person asking", "Person", "assignee is this", "contains 'table'", "yes", "value",
+                             "recorded", "confirmation_recorded"])
+        cypher = structured.plan(recorded, "Is my table booking on record?", SCHEMA, SPEAKER, search)
+        self.assertTrue(cypher.endswith("RETURN coalesce(n1.confirmation_recorded, false) AS confirmation_recorded"), cypher)
+        world = Scripted(["person asking", "Person", "assignee is this", "contains 'table'", "yes", "value", "world"],
+                         {"confirmation_recorded"})
+        cypher = structured.plan(world, "Did I book the table?", SCHEMA, SPEAKER, search)
+        self.assertTrue(cypher.endswith("RETURN n1.confirmation_recorded AS confirmation_recorded"), cypher)
         check(cypher, SCHEMA, PARAMS)
+
+    def test_the_budget_caps_the_walk(self):
+        import structured
+
+        chooser = Scripted(["person asking", "Person", "value"], {"name"})
+        cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, SPEAKER, depth=0)
+        self.assertEqual(cypher, "MATCH (n0:Person) WHERE id(n0) = $speaker RETURN n0.name AS name")
 
 
 class Socket(unittest.TestCase):

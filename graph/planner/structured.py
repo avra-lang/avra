@@ -2,22 +2,23 @@
 query is composed from them, so it cannot invent a hop, drop the speaker or
 loop. Each choice is scored by next-token probability over lettered options.
 
-Choices, in order: what the question starts from (the speaker, an entity
-named in the question, or every record of one model); each hop, from the
-relationships the current node really has, or stop; on a relationship
-record, its declared label value; an optional topic word on one text
-property; the answer mode (values, a recorded status, a count); and the
-returned properties, from the final node's real property list.
+Nothing here names words of a language. Evidence comes from three places
+only: the catalog's declarations (models, references, declared relation
+phrases, enum values), the graph's own search over admitted facts, and the
+model's closed choices. A choice the evidence settles alone (one declared
+phrase spoken, one record the question names) is taken without the model.
 """
 import re
 
 from subset import models_of, base_shape, reference_target, relation_ends
 from prompt import line
-from english import FIRST_PERSON, RECORD_WORDS, FUNCTION_WORDS
 
-MAX_HOPS = 4
+# The choose op letters its options A-Z; longer lists run as heats.
+LETTERS = 26
 ARRIVED = ["yes: the question asks about this record", "no: the answer lies further along"]
 NEEDED = ["yes", "no"]
+RECORDED = ["what has been recorded about it (no record counts as no)",
+            "what is true or happened in the world (no record means unknown)"]
 
 
 class Plan:
@@ -38,49 +39,73 @@ class Plan:
         return f"{text} RETURN {returns}"
 
 
+class Evidence:
+    """What the graph's search says about the question: admitted facts as
+    (model, property, value), best first. Without a graph there is none."""
+
+    def __init__(self, search, question, models):
+        self.facts = []
+        for p in (search(question) if search else []):
+            if p.get("kind") != "fact":
+                continue
+            head, _, value = p["text"].partition(": ")
+            model, _, prop = head.partition(" ")
+            if model in models and any(q["name"] == prop for q in models[model]["properties"]):
+                self.facts.append((model, prop, value))
+        self.spent, self.used = set(), set()
+
+    def named(self, question):
+        """Facts whose whole value the question spells: records it names."""
+        return [f for f in self.facts if spoken(f[2], question.lower())]
+
+    def models(self):
+        """Models whose facts the question's words found and no hop has used yet."""
+        return {m for m, _, _ in self.facts} - self.spent
+
+    def about(self, model, question):
+        """(property, shared words) for this model's facts that share words with the question."""
+        words = set(tokens(question))
+        return [(prop, [w for w in tokens(value) if w in words]) for m, prop, value in self.facts
+                if m == model and (m, prop, value) not in self.used and words & set(tokens(value))]
+
+
 def quoted(text):
     return "'" + text.replace("'", "") + "'"
 
 
+def tokens(text):
+    return re.findall(r"\w+", text.lower())
+
+
+def spoken(phrase, text):
+    """Whether a phrase occurs in the text as whole words."""
+    return re.search(rf"\b{re.escape(phrase.lower())}\b", text) is not None
+
+
+def unsaid(phrases, text):
+    """The text without the phrases a hop has answered for."""
+    for p in phrases:
+        text = re.sub(rf"\b{re.escape(p.lower())}\b", " ", text)
+    return text
+
+
 def best(chooser, context, question, options):
-    """The likeliest option; one option is no choice, more than 26 run as heats."""
+    """The likeliest option; one option is no choice."""
     if not options:
         raise ValueError(f"no options for: {question}")
     if len(options) == 1:
         return 0
-    if len(options) > 26:
-        heats = [options[i:i + 25] for i in range(0, len(options), 25)]
+    if len(options) > LETTERS:
+        heats = [options[i:i + LETTERS - 1] for i in range(0, len(options), LETTERS - 1)]
         winners = [heat[best(chooser, context, question, heat)] for heat in heats]
         return options.index(winners[best(chooser, context, question, winners)])
     p = chooser.choose(context, question, options)
     return max(range(len(options)), key=lambda i: p[i])
 
 
-def names_in(question):
-    """Runs of capitalized words, the question's candidate proper names."""
-    words = [re.sub(r"['’]s$", "", w) for w in re.findall(r"[A-Za-z][A-Za-z'’-]*", question)]
-    runs, run = [], []
-    for i, w in enumerate(words):
-        if w[0].isupper() and (i > 0 or w.lower() not in FUNCTION_WORDS) and w.lower() not in ("i",):
-            run.append(w)
-        else:
-            if run:
-                runs.append(" ".join(run))
-            run = []
-    if run:
-        runs.append(" ".join(run))
-    return [r for r in runs if r.lower() not in FUNCTION_WORDS]
-
-
-def topic_words(question):
-    """Lowercase content words, without the proper names the question anchors on."""
-    named = {w.lower() for n in names_in(question) for w in n.split()}
-    return [w for w in dict.fromkeys(re.findall(r"[a-z]{3,}", question.lower())) if w not in FUNCTION_WORDS | named]
-
-
 def hops(models, label):
-    """Each relationship a node of `label` really has, as (cypher, target, words):
-    declared relation words first, then reference properties both ways."""
+    """Each relationship a node of `label` really has, as (cypher, target, words, phrases):
+    declared relation phrases first, then reference properties both ways."""
     out = []
     for m in models.values():
         ends = relation_ends(m)
@@ -106,144 +131,80 @@ def hops(models, label):
     return out
 
 
-def found_in_values(search, words, models):
-    """(model, property, word) for admitted facts that hold an unexplained word.
-
-    A fact passage reads "<Model> <property>: <value>"; only text properties of
-    catalog models count, and the word must appear in the value itself."""
-    if not search or not words:
-        return []
-    out = []
-    for p in search(" ".join(sorted(words))):
-        if p.get("kind") != "fact":
-            continue
-        head, _, value = p["text"].partition(": ")
-        model, _, prop = head.partition(" ")
-        if model not in models or not any(q["name"] == prop and base_shape(q["shape"]) == "string" and not q.get("enum")
-                                          for q in models[model]["properties"]):
-            continue
-        for w in sorted(words, key=lambda w: (-len(w), w)):
-            m = re.search(rf"\b{re.escape(w)}\w*", value, re.I)
-            if m:
-                out.append((model, prop, m.group(0)))
-    return list(dict.fromkeys(out))
-
-
-def plan(chooser, question, schema, context, search=None):
+def plan(chooser, question, schema, context, search=None, depth=None):
+    """One query composed from closed choices; `depth` caps the hops (the
+    request's budget), else the catalog's size bounds the walk."""
     models = models_of(schema)
     head = f"Question: {question}"
-    named = names_in(question)
-    speaks = bool(context.get("speaker")) and FIRST_PERSON.search(question) is not None
-    starts = [f"the one named {n!r} in the question" for n in named] + ["every record of one kind"]
-    start = "the speaker" if speaks else starts[best(chooser, head, "What does answering the question start from?", starts)]
+    evidence = Evidence(search, question, models)
     out = Plan()
-    if start == "the speaker":
-        label = person_like(chooser, head, identified(models), "Which kind of record is the speaker?")
-        var = out.node(label)
-        out.parts.append(f"({var}:{label})")
-        out.where.append(f"id({var}) = $speaker")
-    elif start.startswith("the one named"):
-        name = named[starts.index(start)]
-        label = person_like(chooser, head, models, f"Which kind of record is {name}?")
-        var = out.node(label)
-        out.parts.append(f"({var}:{label})")
-        out.where.append(f"{var}.{naming(models[label])} = {quoted(name)}")
-    else:
-        kinds = list(models)
-        label = kinds[best(chooser, head, "Which kind of record holds the answer?", [k + ": " + line(models[k].get("description", ""), 100) for k in kinds])]
-        var = out.node(label)
-        out.parts.append(f"({var}:{label})")
+    var, label = anchored(chooser, head, question, models, context, evidence, out)
     came = None
     phrasing = question.lower()
-    leftover = {stem(w) for w in topic_words(question)}
-    spelled = {stem(w): w for w in topic_words(question)}
-    for hop in range(MAX_HOPS):
+    for hop in range(depth if depth is not None else len(models)):
         options = [h for h in hops(models, label) if not came or (h[0], h[1]) != came]
         trail = f"{head}\nSo far: {' '.join(out.parts)} — now at a {label}."
         if not options:
             break
         said = [i for i, h in enumerate(options) if any(spoken(p, phrasing) for p in h[3])]
-        about = [i for i, h in enumerate(options) if leftover & mentions(models, h[1])]
-        held = [] if said or len(about) == 1 else found_in_values(search, {spelled[s] for s in leftover}, models)
-        holding = [i for i, h in enumerate(options) if any(m == h[1] for m, _, _ in held)]
-        if holding and (not about or set(holding) & set(about)):
-            about = [i for i in holding if not about or i in about]
+        onward = [i for i, h in enumerate(options) if h[1] in evidence.models()]
         if said:
             pick = said[0] if len(said) == 1 else said[best(chooser, trail, "Which relation does the question mean?",
                                                               [options[i][2] for i in said])]
             phrasing = unsaid(options[pick][3], phrasing)
-            leftover -= {stem(w) for p in options[pick][3] for w in p.split()}
         else:
-            if hop > 0 and not about and best(chooser, trail, f"Is the answer about this {label}?", ARRIVED) == 0:
+            if hop > 0 and not onward and best(chooser, trail, f"Is the answer about this {label}?", ARRIVED) == 0:
                 break
-            ranked = about or list(range(len(options)))
+            ranked = onward or list(range(len(options)))
             pick = ranked[best(chooser, trail, "Where next?", [options[i][2] for i in ranked])]
-            leftover -= mentions(models, options[pick][1], depth=0)
         arrow, target, _, _ = options[pick]
         back = ("<-" + arrow[1:-2] + "-" if arrow.endswith("->") else arrow[1:-1] + "->")
         var = out.node(target)
         out.parts.append(f"{arrow}({var}:{target})")
         came, label = (back, label), target
-        hit = [(prop, w) for m, prop, w in held if m == target]
-        if hit:
-            prop, w = hit[0]
-            out.where.append(f"{var}.{prop} CONTAINS {quoted(w)}")
-            leftover.discard(stem(w.lower()))
-            used = None
-        else:
-            used = filtered(chooser, trail, models[target], var, out, question)
-        if used:
-            leftover.discard(stem(used))
+        narrowed(chooser, trail, models[target], var, out, question, evidence)
+        evidence.spent.add(target)
     trail = f"{head}\nSo far: {' '.join(out.parts)} — the answer is about these {label} records."
-    return out.cypher(returns(chooser, trail, models[label], var, leftover))
+    return out.cypher(returns(chooser, trail, models[label], var))
 
 
-def spoken(phrase, text):
-    """Whether a declared relation phrase occurs in the text as whole words."""
-    return re.search(rf"\b{re.escape(phrase.lower())}\b", text) is not None
-
-
-def unsaid(phrases, text):
-    """The text without the phrases a hop has answered for."""
-    for p in phrases:
-        text = re.sub(rf"\b{re.escape(p.lower())}\b", " ", text)
-    return text
-
-
-def stem(word):
-    return word.lower()[:5]
-
-
-def mentions(models, label, depth=1):
-    """Stems of what a model is about: its name, description and property names,
-    and with depth 1 those of the models it references."""
-    seen = [label] + ([reference_target(p["shape"]) for p in models[label]["properties"] if reference_target(p["shape"])] if depth else [])
-    text = " ".join(f"{re.sub(r'(?<!^)(?=[A-Z])', ' ', m)} {models[m].get('description', '')} "
-                    + " ".join(p["name"].replace("_", " ") for p in models[m]["properties"]) for m in seen if m in models)
-    return {stem(w) for w in re.findall(r"[A-Za-z]{3,}", text)} - {stem(w) for w in FUNCTION_WORDS}
+def anchored(chooser, head, question, models, context, evidence, out):
+    """The first node: the speaker, a record the question names, or every record of a kind."""
+    named = evidence.named(question)
+    starts = (["the person asking or speaking"] if context.get("speaker") else []) \
+        + [f"the {m} whose {p} is {v!r}" for m, p, v in named] + ["every record of one kind"]
+    pick = best(chooser, head, "Who or what is the question about first?", starts)
+    speaker = 1 if context.get("speaker") else 0
+    if speaker and pick == 0:
+        keyed = identified(models)
+        label = keyed[best(chooser, head, "Which kind of record is the person asking?", keyed)]
+        var = out.node(label)
+        out.parts.append(f"({var}:{label})")
+        out.where.append(f"id({var}) = $speaker")
+    elif pick < speaker + len(named):
+        label, prop, value = named[pick - speaker]
+        evidence.used.add((label, prop, value))
+        var = out.node(label)
+        out.parts.append(f"({var}:{label})")
+        out.where.append(f"{var}.{prop} = {quoted(value)}")
+        evidence.spent.add(label)
+    else:
+        kinds = list(models)
+        label = kinds[best(chooser, head, "Which kind of record holds the answer?",
+                           [k + ": " + line(models[k].get("description", ""), 100) for k in kinds])]
+        var = out.node(label)
+        out.parts.append(f"({var}:{label})")
+    return var, label
 
 
 def identified(models):
     """Models whose records carry a declared identity: who a context id can name."""
-    keyed = {k: m for k, m in models.items() if ((m.get("semantics") or {}).get("identities"))}
-    return keyed or models
+    keyed = [k for k, m in models.items() if ((m.get("semantics") or {}).get("identities"))]
+    return keyed or list(models)
 
 
-def person_like(chooser, head, models, question):
-    named = [k for k, m in models.items() if naming(m)]
-    return named[best(chooser, head, question, named)]
-
-
-def naming(model):
-    """The text property a record is named by, if it has one."""
-    for p in model["properties"]:
-        if p["name"] in ("name", "title") and base_shape(p["shape"]) == "string":
-            return p["name"]
-    return None
-
-
-def filtered(chooser, trail, model, var, out, question):
-    """A relationship record's label value, then an optional topic word."""
+def narrowed(chooser, trail, model, var, out, question, evidence):
+    """A relationship record's declared label value, then a word its facts share with the question."""
     relation = ((model.get("semantics") or {}).get("relation")) or {}
     label = relation.get("label") or []
     props = {p["name"]: p for p in model["properties"]}
@@ -254,41 +215,34 @@ def filtered(chooser, trail, model, var, out, question):
         pick = best(chooser, trail, f"Which {label[0]} does the question mean?", options)
         if pick < len(values):
             out.where.append(f"{var}.{label[0]} = {quoted(values[pick])}")
-    texts = [p for p in model["properties"] if base_shape(p["shape"]) == "string" and not p.get("enum")
-             and p["name"] not in label]
-    words = topic_words(question)
-    if not texts or not words:
+    shared = [(prop, w) for prop, words in evidence.about(model["name"], question) for w in words
+              if base_shape(props[prop]["shape"]) == "string" and not props[prop].get("enum")]
+    shared = list(dict.fromkeys(shared))
+    if not shared:
         return
-    options = [f"narrow by its {p['name']}" for p in texts] + ["no narrowing"]
-    pick = best(chooser, trail, f"Does the question narrow these {model['name']} records by a topic word?", options)
-    if pick == len(texts):
-        return
-    word = words[best(chooser, trail, f"Which word must its {texts[pick]['name']} contain?", words)]
-    out.where.append(f"{var}.{texts[pick]['name']} CONTAINS {quoted(word)}")
-    return word
+    options = [f"its {prop} contains {w!r}" for prop, w in shared] + ["no narrowing"]
+    pick = best(chooser, trail, f"Which of these narrows the {model['name']} records to the ones the question means?", options)
+    if pick < len(shared):
+        prop, w = shared[pick]
+        out.where.append(f"{var}.{prop} CONTAINS {quoted(w)}")
 
 
-def returns(chooser, trail, model, var, leftover=frozenset()):
+def returns(chooser, trail, model, var):
     """The RETURN items: a count, one recorded status, or chosen values."""
-    modes = ["the value of one or more of their properties", "how many there are"]
-    if RECORD_WORDS.search(trail):
-        modes.append("whether a yes/no status has been recorded (absent counts as no)")
-    mode = [0, 2, 1][best(chooser, trail, "What does the question ask for?", modes)]
     props = model["properties"]
-    if mode == 2:
+    if best(chooser, trail, "What does the question ask for?",
+            ["the value of one or more of their properties", "how many there are"]) == 1:
         return f"count({var}) AS count"
-    if mode == 1:
-        flags = [p["name"] for p in props if base_shape(p["shape"]) == "boolean"]
-        if flags:
-            name = flags[best(chooser, trail, "Which recorded status?", flags)]
-            return f"coalesce({var}.{name}, false) AS {name}"
-    readable = [i for i, p in enumerate(props) if not (isinstance(base_shape(p["shape"]), dict) and "embedded" in base_shape(p["shape"]))]
+    flags = [p["name"] for p in props if base_shape(p["shape"]) == "boolean"]
+    if flags and best(chooser, trail, "Does the question ask about", RECORDED) == 0:
+        name = flags[best(chooser, trail, "Which recorded status?", flags)]
+        return f"coalesce({var}.{name}, false) AS {name}"
+    readable = [i for i, p in enumerate(props)
+                if not (isinstance(base_shape(p["shape"]), dict) and "embedded" in base_shape(p["shape"]))]
     picked = []
     for i in readable:
         p = props[i]
         about = f"{p['name']}" + (f" ({line(p['description'], 80)})" if p.get("description") else "")
-        if leftover & {stem(w) for w in re.findall(r"[A-Za-z]{3,}", about.replace("_", " "))}:
-            picked.append(i)
-        elif best(chooser, trail, f"Does the answer need their {about}?", NEEDED) == 0:
+        if best(chooser, trail, f"Does the answer need their {about}?", NEEDED) == 0:
             picked.append(i)
     return ", ".join(f"{var}.{props[i]['name']} AS {props[i]['name']}" for i in picked or [0])
