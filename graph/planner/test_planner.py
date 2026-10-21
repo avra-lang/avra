@@ -195,15 +195,21 @@ class Scripted:
     """Picks, call by call, the first option containing the next scripted word."""
 
     def __init__(self, script, wanted=()):
-        self.script, self.wanted, self.asked = list(script), set(wanted), []
+        self.script, self.wanted, self.asked, self.last = list(script), set(wanted), [], None
 
     def choose(self, context, question, options):
         need = re.match(r"Does the answer need their (\w+)", question)
         if need:
             self.asked.append((question, options))
-            return [1.0, 0.0] if need.group(1) in self.wanted else [0.0, 1.0]
-        want = self.script.pop(0)
-        self.asked.append((question, options))
+            answer = "yes" if need.group(1) in self.wanted else "no"
+            return [1.0 if o == answer else 0.0 for o in options]
+        again = self.asked and self.asked[-1][0] == question and sorted(self.asked[-1][1]) == sorted(options)
+        if again and self.last is not None:
+            want, self.last = self.last, None
+        else:
+            want = self.script.pop(0)
+            self.asked.append((question, options))
+            self.last = want
         hits = [i for i, o in enumerate(options) if want in o]
         if not hits:
             raise AssertionError(f"{want!r} is not among {options}")

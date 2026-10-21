@@ -127,8 +127,15 @@ def best(chooser, context, question, options):
         heats = [options[i:i + LETTERS - 1] for i in range(0, len(options), LETTERS - 1)]
         winners = [heat[best(chooser, context, question, heat)] for heat in heats]
         return options.index(winners[best(chooser, context, question, winners)])
-    p = chooser.choose(context, question, options)
-    return max(range(len(options)), key=lambda i: p[i])
+    return max(range(len(options)), key=debiased(chooser, context, question, options).__getitem__)
+
+
+def debiased(chooser, context, question, options):
+    """Each option's probability averaged over the listed order and its reverse,
+    so no option gains from where it is listed."""
+    forward = chooser.choose(context, question, options)
+    backward = chooser.choose(context, question, options[::-1])[::-1]
+    return [(a + b) / 2 for a, b in zip(forward, backward)]
 
 
 def hops(models, label):
