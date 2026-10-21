@@ -1,0 +1,187 @@
+use @std.json.{Json, field, to_text}
+use data.{as_json}
+use store.open.{Graph}
+use query.plan.{prepare_read}
+use query.execute.{ReadAnswer, ReadRow, ReadResult}
+
+/// A support that still counts, reduced to what a citation names.
+type Support = { id: string, claim: int, run: string, observation: string, revision: int }
+
+impl Graph {
+    /// A wire plan in, a contract `Answer` out. Refusal and abstention are
+    /// answers; only a defect is an error.
+    fn query(plan: Json) -> Result<Json, string> {
+        let request = plan.member("request").text() ?? "query"
+        let revision = self.revision()?
+        match prepare_read(self.catalog, to_text(plan)) {
+            .Err(m) -> refused(request, revision, "plan_refused", m),
+            .Ok(admitted) -> responded(request, self.read(admitted)?),
+        }
+    }
+}
+
+fn responded(request: string, result: ReadResult) -> Json {
+    match result.answer {
+        .Exceeded(limit) -> unresolved(request, result.revision, "budget_exceeded", limit),
+        .Rows(rows) -> {
+            let fields = [f for row in rows for f in row_fields(row)]
+            if fields.is_empty() {
+                unresolved(
+                    request,
+                    result.revision,
+                    "no_evidence",
+                    "the plan matched no cited rows",
+                )
+            } else {
+                answered(request, result.revision, fields, rows)
+            }
+        },
+        .Count(total, rows) -> {
+            let citations = distinct_supports(rows)
+            if citations.is_empty() {
+                unresolved(
+                    request,
+                    result.revision,
+                    "no_evidence",
+                    "the plan counted no cited rows",
+                )
+            } else {
+                answered(request, result.revision, [count_field(total, citations)], rows)
+            }
+        },
+    }
+}
+
+fn answered(request: string, revision: int, fields: List<Json>, rows: List<ReadRow>) -> Json {
+    document(
+        request,
+        "answered",
+        revision,
+        fields,
+        [citation(s) for s in distinct_supports(rows)],
+        [],
+        [],
+    )
+}
+
+fn unresolved(request: string, revision: int, code: string, message: string) -> Json {
+    document(request, "unknown", revision, [], [], [], [problem(code, message)])
+}
+
+fn refused(request: string, revision: int, code: string, message: string) -> Json {
+    document(request, "refused", revision, [], [], ["read_plan"], [problem(code, message)])
+}
+
+fn document(
+    request: string,
+    status: string,
+    revision: int,
+    fields: List<Json>,
+    citations: List<Json>,
+    policies: List<string>,
+    problems: List<Json>,
+) -> Json {
+    Json
+        .Obj(
+            [
+                field("contract", Json.Int(1)),
+                field("request", Json.Str(request)),
+                field("status", Json.Str(status)),
+                field("read_revision", Json.Int(revision)),
+                field("fields", Json.Arr(fields)),
+                field("candidates", Json.Arr([])),
+                field("citations", Json.Arr(citations)),
+                field("policies", Json.Arr([Json.Str(p) for p in policies])),
+                field("problems", Json.Arr(problems)),
+            ],
+        )
+}
+
+fn problem(code: string, message: string) -> Json {
+    Json
+        .Obj(
+            [
+                field("code", Json.Str(code)),
+                field("path", Json.Arr([])),
+                field("message", Json.Str(message)),
+            ],
+        )
+}
+
+/// Competing values of one property each get their own path; none is chosen.
+fn row_fields(row: ReadRow) -> List<Json> {
+    [f for sel in row.fields for i, c in sel.candidates for f in cited_field(
+        row,
+        if sel.candidates.length == 1 { [row.id, sel.property] } else { [row.id, sel.property, "candidates", "${i}"] },
+        c.claim,
+        as_json(c.value),
+    )]
+}
+
+/// A fact without a live support is not asserted.
+fn cited_field(row: ReadRow, path: List<string>, claim: int, value: Json) -> List<Json> {
+    let ids = [s.id for s in supports_of(row) if s.claim == claim]
+    if ids.is_empty() {
+        []
+    } else {
+        [
+            Json
+                .Obj(
+                    [
+                        field("path", Json.Arr([Json.Str(t) for t in path])),
+                        field("value", value),
+                        field("basis", Json.Str("observed")),
+                        field("citations", Json.Arr([Json.Str(id) for id in ids])),
+                    ],
+                ),
+        ]
+    }
+}
+
+fn count_field(total: int, supports: List<Support>) -> Json {
+    Json
+        .Obj(
+            [
+                field("path", Json.Arr([Json.Str("count")])),
+                field("value", Json.Int(total)),
+                field("basis", Json.Str("record_status")),
+                field("citations", Json.Arr([Json.Str(s.id) for s in supports])),
+            ],
+        )
+}
+
+fn citation(s: Support) -> Json {
+    Json
+        .Obj(
+            [
+                field("id", Json.Str(s.id)),
+                field(
+                    "source",
+                    Json
+                        .Obj(
+                            [
+                                field("observation", Json.Str(s.observation)),
+                                field("revision", Json.Int(s.revision)),
+                            ],
+                        ),
+                ),
+                field("claim", Json.Str("${s.claim}")),
+                field("run", Json.Str(s.run)),
+            ],
+        )
+}
+
+fn supports_of(row: ReadRow) -> List<Support> {
+    [Support {
+        id: "c${claim}:${run}",
+        claim: claim,
+        run: run,
+        observation: s.member("input").text() ?? "",
+        revision: s.member("input_revision").int() ?? 0,
+    } for ev in row.evidence for s in ev.supports.items() if s.member("active").truth() == true for claim in [s.member("claim").int() ?? 0] for run in [s.member("run").text() ?? ""]]
+}
+
+fn distinct_supports(rows: List<ReadRow>) -> List<Support> {
+    let all = [s for row in rows for s in supports_of(row)]
+    [s for i, s in all if !all.slice(0, i).any(it.id == s.id)]
+}

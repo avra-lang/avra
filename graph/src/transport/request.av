@@ -33,6 +33,7 @@ export enum Operation {
     Unchoose(decision: string)
     Choices(claim: int)
     Dirty
+    Query(plan: Json)
 }
 
 /// Protocol parsing knows operations; model data belongs to standard validation.
@@ -88,6 +89,11 @@ export fn operation(j: Json) -> Result<Operation, string> {
                         records: [record(v)? for v in array(j, "records")?],
                     },
                 )
+        },
+        "query" -> {
+            closed(j, ["op", "plan"])?
+            let plan? = j.get("plan") else { fail "query needs a read plan" }
+            Operation.Query(plan)
         },
         "get" -> {
             closed(j, ["op", "id"])?

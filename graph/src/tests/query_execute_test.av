@@ -3,6 +3,7 @@ use store.open.{Graph}
 use store.publish.{Record, Publication}
 use store.query.{stored_value}
 use query.plan.{prepare_read}
+use @std.json.{Json, field, parse}
 use query.execute.{ReadAnswer, ReadResult}
 
 fn record(id: string, model: string, json: string) -> Result<Record, string> {
@@ -89,6 +90,7 @@ fn evidenced(result: ReadResult) -> bool {
                         it.evidence.all(it.supports.item(0).member("claim").int() != null),
                 ),
         .Count(_, rows) -> rows.all(!it.evidence.is_empty()),
+        .Exceeded(_) -> false,
     }
 }
 
@@ -133,7 +135,7 @@ fn counts_with_rows() -> Result<bool, string> {
         [scan("a", "WorkItem"), status_is("b", "a", "done"), step("c", "count", "b", "")],
         "c",
     )?
-    let counted = match result.answer { .Count(n, _) -> n, .Rows(_) -> -1 }
+    let counted = match result.answer { .Count(n, _) -> n, .Rows(_) or .Exceeded(_) -> -1 }
     counted == 2 && row_ids(result).join(",") == "w2,w3" && evidenced(result)
 }
 
@@ -157,10 +159,9 @@ fn work_stops_execution() -> Result<bool, string> {
     defer { let _ = g.close() }
     seeded(g)?
     let before = g.revision()?
-    let refused = match ran(g, [scan("a", "WorkItem"), step("b", "count", "a", "")], "b", work: 2) {
-        .Ok(_) -> false,
-        .Err(e) -> e.contains("work budget"),
-    }
+    let refused = stopped(
+        ran(g, [scan("a", "WorkItem"), step("b", "count", "a", "")], "b", work: 2),
+    )
     let enough = row_ids(ran(g, [scan("a", "WorkItem")], "a", work: 50)?).length == 3
     refused && enough && g.revision()? == before && !g.db.in_transaction()
 }
@@ -169,10 +170,7 @@ fn rows_stop_execution() -> Result<bool, string> {
     mut g = Graph.memory(models)?
     defer { let _ = g.close() }
     seeded(g)?
-    let scanned = match ran(g, [scan("a", "WorkItem")], "a", rows: 2) {
-        .Ok(_) -> false,
-        .Err(e) -> e.contains("row budget"),
-    }
+    let scanned = stopped(ran(g, [scan("a", "WorkItem")], "a", rows: 2))
     let exact = row_ids(ran(g, [scan("a", "WorkItem")], "a", rows: 3)?).length == 3
     scanned && exact
 }
@@ -190,6 +188,40 @@ fn conflict_stays_open() -> Result<bool, string> {
     status.candidates.length == 2 && status.candidates.all(!it.chosen)
 }
 
+fn stopped(result: Result<ReadResult, string>) -> bool {
+    match result { .Ok(r) -> r.answer is .Exceeded, .Err(_) -> false }
+}
+
+fn asked(mut g: Graph, steps: List<string>, output: string, work: int = 100) -> Result<Json, string> {
+    let plan = match parse(plan(steps.join(","), output, g.catalog.fingerprint, work: work)) {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "plan is not JSON" },
+    }
+    g.dispatch(Json.Obj([field("op", Json.Str("query")), field("plan", plan)]))
+}
+
+fn answers_over_the_wire() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    let done = asked(g, [scan("a", "WorkItem"), status_is("b", "a", "done")], "b")?
+    let fields = done.member("fields").items()
+    let status_path = fields
+        .find(it.member("path").item(1).text() == "status" && it.member("path").item(0).text() == "w3")
+    let cited = done.member("citations").items().length > 0
+    let unknown = asked(g, [scan("a", "WorkItem"), status_is("b", "a", "archived")], "b")?
+    let bounded = asked(g, [scan("a", "WorkItem")], "a", work: 2)?
+    let refused = asked(g, [scan("a", "Nothing")], "a")?
+    done.member("status").text() == "answered" &&
+        status_path != null &&
+        cited &&
+        unknown.member("status").text() == "unknown" &&
+        unknown.member("problems").item(0).member("code").text() == "no_evidence" &&
+        bounded.member("problems").item(0).member("code").text() == "budget_exceeded" &&
+        refused.member("status").text() == "refused" &&
+        refused.member("policies").item(0).text() == "read_plan"
+}
+
 fn passed(answer: Result<bool, string>) -> bool {
     answer catch e -> {
         println(e)
@@ -205,6 +237,7 @@ spec "graph read execution" {
         then "a text search matches stored text" { passed(searches_text()) }
         then "the work budget stops execution, not the answer" { passed(work_stops_execution()) }
         then "the row budget refuses an oversized result" { passed(rows_stop_execution()) }
+        then "the query op answers a contract Answer, abstains and refuses" { passed(answers_over_the_wire()) }
         then "competing claims stay candidates with no chosen truth" { passed(conflict_stays_open()) }
     }
 }

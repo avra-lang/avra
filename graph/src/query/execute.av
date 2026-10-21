@@ -13,12 +13,13 @@ export type Evidence = { entity: string, property: string, supports: Json }
 /// A row never loses its evidence: every property that admitted it or is shown.
 export type ReadRow = { id: string, model: string, fields: List<Selection>, evidence: List<Evidence> }
 
-export enum ReadAnswer { Rows(rows: List<ReadRow>), Count(total: int, rows: List<ReadRow>) }
+/// Exceeded is a bound reached mid-run: no rows, and not a defect.
+export enum ReadAnswer { Rows(rows: List<ReadRow>), Count(total: int, rows: List<ReadRow>), Exceeded(limit: string) }
 
 impl ReadAnswer {
     /// The rows behind the answer, counted or returned.
     fn rows() -> List<ReadRow> {
-        match self { .Rows(rows) or .Count(_, rows) -> rows }
+        match self { .Rows(rows) or .Count(_, rows) -> rows, .Exceeded(_) -> [] }
     }
 }
 
@@ -29,7 +30,7 @@ type Hit = { id: string, model: string, fields: List<Selection>, known: List<str
 enum Flow { Hits(hits: List<Hit>), Total(count: int, hits: List<Hit>) }
 
 /// One execution: the store it reads and the work it has spent so far.
-type Run = { g: Graph, budget: Budget, spent: Cell<int> }
+type Run = { g: Graph, budget: Budget, spent: Cell<int>, exceeded: Cell<string?> }
 
 impl Graph {
     /// Executes an admitted plan over one read snapshot. Conflicting claims
@@ -38,30 +39,49 @@ impl Graph {
         if plan.source_view is .History { fail "a history read is not executed by the current-state engine" }
         let opened = self.read_snapshot()?
         defer { let _ = self.db.finish_if_opened(opened) }
-        let run = Run { g: self, budget: plan.budget, spent: Cell.new(0) }
+        let run = Run {
+            g: self,
+            budget: plan.budget,
+            spent: Cell.new(0),
+            exceeded: Cell.new(unexceeded()),
+        }
         let revision = self.revision()?
-        mut flows: List<Flow> = []
-        for node in plan.nodes.slice(0, plan.output + 1) {
-            flows.push(run.evaluated(flows, node.operation)?)
-        }
-        ReadResult {
-            revision: revision,
-            work: run.spent.get(),
-            answer: run.answered(flows[plan.output])?,
-        }
+        let answer = match run.walked(plan) { .Ok(done) -> done, .Err(m) -> run.stopped(m)? }
+        ReadResult { revision: revision, work: run.spent.get(), answer: answer }
     }
 }
 
 impl Run {
+    fn walked(plan: ReadOnlyPlan) -> Result<ReadAnswer, string> {
+        mut flows: List<Flow> = []
+        for node in plan.nodes.slice(0, plan.output + 1) {
+            flows.push(self.evaluated(flows, node.operation)?)
+        }
+        self.answered(flows[plan.output])
+    }
+
+    /// A bound reached is an answer; any other failure stays one.
+    fn stopped(m: string) -> Result<ReadAnswer, string> {
+        match self.exceeded.get() {
+            limit? -> ReadAnswer.Exceeded(limit)
+            null -> { fail m }
+        }
+    }
+
+    fn exceed(limit: string) -> Result<int, string> {
+        self.exceeded.set(limit)
+        fail limit
+    }
+
     fn charge(n: int) -> Result<int, string> {
         let total = self.spent.get() + n
-        if total > self.budget.work { fail "read exceeded its work budget" }
+        if total > self.budget.work { self.exceed(work_exceeded())? }
         self.spent.set(total)
         total
     }
 
     fn within_rows(hits: List<Hit>) -> Result<List<Hit>, string> {
-        if hits.length > self.budget.rows { fail rows_exceeded() }
+        if hits.length > self.budget.rows { self.exceed(rows_exceeded())? }
         hits
     }
 
@@ -104,7 +124,7 @@ impl Run {
         let ids = self.g.find(model, limit: self.budget.rows)?
         if ids.length == self.budget.rows &&
             !(self.g.find(model, limit: 1, offset: self.budget.rows)?).is_empty() {
-            fail rows_exceeded()
+            self.exceed(rows_exceeded())?
         }
         [self.hit(id, [])? for id in ids]
     }
@@ -253,4 +273,8 @@ fn distinct_proofs(proofs: List<Proof>) -> List<Proof> {
 
 fn unexecuted_sum() -> string { "a sum needs a currency-safe aggregate, which this engine does not execute" }
 
+fn work_exceeded() -> string { "read exceeded its work budget" }
+
 fn rows_exceeded() -> string { "read exceeded its row budget" }
+
+fn unexceeded() -> string? { null }
