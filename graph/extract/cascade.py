@@ -6,7 +6,8 @@ usage: python cascade.py [--catalog SCHEMA_JSON] [--local] [--no-prefix] < reque
 
 stdin is a C01 ExtractionRequest, or a bare I01 SourceEnvelope with
 --catalog naming the app's `{"op":"schema"}` answer. stdout is one C01
-ExtractionResult. Timings, peak RSS and skipped models go to stderr.
+ExtractionResult (contract 2: selectors, FactBank factuality, speech act,
+resolution). Timings, peak RSS and skipped models go to stderr.
 The ontology comes only from the catalog descriptor.
 """
 import json
@@ -25,14 +26,17 @@ MARGIN = 0.5
 ABSTAIN = object()
 SOCKET = os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
 FIRST_PERSON = re.compile(r"\b(I|I'm|I'll|I've|me|my|My|mine|we|We|our|Our|us)\b")
-MODALITIES = {
-    "asserted": "stated as a current fact by the speaker",
-    "reported": "reported as what someone else said",
-    "planned": "a plan or intention for the future",
-    "requested": "a request asked of someone",
-    "conditional": "holds only under a stated condition",
+SPEECH_ACTS = {
+    "assert": "stated as a current fact by the speaker",
+    "report": "reported as what someone else said",
+    "plan": "a plan or intention for the future",
+    "request": "a request asked of someone",
+    "condition": "holds only under a stated condition",
     "draft": "a draft or tentative value",
 }
+# FactBank value of an affirmed claim by speech act; a denied one is CT-.
+FACTUALITY = {"assert": "CT+", "report": "CT+", "plan": "Uu", "request": "Uu", "condition": "PS+", "draft": "PS+"}
+QUOTE_CONTEXT = 32
 
 os.environ.setdefault("HF_HOME", os.path.expanduser("~/.cache/avra-graph-ml/hf"))
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -272,6 +276,7 @@ class Cascade:
             rec = self.antecedent(model, a, b) if any(r["model"] == model for r in self.records) else None
             if rec is ABSTAIN:
                 log(f"abstain {model} {text!r}@{a}: no candidate with margin")
+                self.new_entity(model, a, b, conf)["resolution"] = {"kind": "abstain"}
                 continue
             if rec is None:
                 rec = self.new_entity(model, a, b, conf)
@@ -282,7 +287,7 @@ class Cascade:
     def new_entity(self, model, a, b, conf):
         texts = self.plan.entities[model]
         anchor = next(p for p in texts if required(p))["name"] if any(required(p) for p in texts) else texts[0]["name"]
-        rec = {"local_id": self.mint(), "model": model, "fields": [self.field(anchor, self.t.s[a:b], [(a, b)], score=conf)], "identities": [], "candidates": []}
+        rec = {"local_id": self.mint(), "model": model, "fields": [self.field(anchor, self.t.s[a:b], [(a, b)], score=conf)], "identities": [], "resolution": {"kind": "new"}}
         rec["_anchor"] = (a, b)
         self.records.append(rec)
         return rec
@@ -342,7 +347,7 @@ class Cascade:
         for key in self.plan.models[rec["model"]]["semantics"]["identities"]:
             f = next((f for f in rec["fields"] if [f["property"]] == key["path"]), None)
             if f:
-                rec["identities"].append({"identity": {"namespace": key["namespace"], "key": f["value"]}, "spans": f["spans"], "frame": f.get("frame")})
+                rec["identities"].append({"identity": {"namespace": key["namespace"], "key": f["value"]}, "evidence": f["evidence"], "frame": f.get("frame")})
 
     # Frames: chat turns and quotations; the LLM picks a quote's speaker.
 
@@ -478,8 +483,7 @@ class Cascade:
     def emit(self, name, frm, to, label, subj, obj, value, cue, score, a, b, claim):
         if any(r["model"] == name and self.same(r, frm, subj[0], to, obj[0], label, value) for r in self.records):
             return
-        modality, polarity = self.qualifiers(a, b, claim)
-        q = {"modality": modality, "polarity": polarity}
+        q = self.qualifiers(a, b, claim)
         fields = [
             self.field(frm, subj[0], [subj[1]], **q),
             self.field(label, value, [cue], score=score, **q),
@@ -488,7 +492,7 @@ class Cascade:
         for p in self.plan.models[name]["properties"]:
             if required(p) and p["name"] not in (frm, to, label):
                 fields.append(self.field(p["name"], {}, [cue], **q))
-        self.records.append({"local_id": self.mint(), "model": name, "fields": fields, "identities": [], "candidates": []})
+        self.records.append({"local_id": self.mint(), "model": name, "fields": fields, "identities": []})
 
     def same(self, r, frm, s, to, o, label, v):
         vals = {f["property"]: f["value"] for f in r["fields"]}
@@ -496,15 +500,22 @@ class Cascade:
 
     def qualifiers(self, a, b, claim):
         ctx = f'Sentence: "{self.t.s[a:b]}"'
-        keys = list(MODALITIES)
-        p = self.llm.choose(ctx, f"Consider only this claim: {claim}. How does the sentence present that claim itself (not other events in the sentence)?", [MODALITIES[k] for k in keys])
-        modality = keys[max(range(len(keys)), key=lambda i: p[i])]
+        keys = list(SPEECH_ACTS)
+        p = self.llm.choose(ctx, f"Consider only this claim: {claim}. How does the sentence present that claim itself (not other events in the sentence)?", [SPEECH_ACTS[k] for k in keys])
+        act = keys[max(range(len(keys)), key=lambda i: p[i])]
         q = self.llm.choose(ctx, f"Consider only this claim: {claim}. Does the sentence affirm that claim, or deny that claim itself (a negated event elsewhere in the sentence does not count)?", ["affirms the claim", "denies the claim"])
-        return modality, ("affirmed" if q[0] >= q[1] else "denied")
+        return {"speech_act": act, "factuality": FACTUALITY[act] if q[0] >= q[1] else "CT-"}
 
-    def field(self, prop, value, ranges, modality="asserted", polarity="affirmed", score=None):
-        spans = [self.t.span(a, b) for a, b in ranges]
-        f = {"property": prop, "value": value, "spans": spans, "polarity": polarity, "modality": modality}
+    def evidence(self, a, b):
+        """One passage: its code-point position and its quote with context."""
+        s = self.t.s
+        return {"selector": [
+            {"kind": "TextPositionSelector", "start": a, "end": b},
+            {"kind": "TextQuoteSelector", "exact": s[a:b], "prefix": s[max(0, a - QUOTE_CONTEXT) : a], "suffix": s[b : b + QUOTE_CONTEXT]},
+        ]}
+
+    def field(self, prop, value, ranges, speech_act="assert", factuality="CT+", score=None):
+        f = {"property": prop, "value": value, "evidence": [self.evidence(a, b) for a, b in ranges], "factuality": factuality, "speech_act": speech_act}
         frame = self.innermost(*ranges[0]) if hasattr(self, "frames") else None
         f["frame"] = frame["id"] if frame else None
         if score is not None:
@@ -522,15 +533,16 @@ def finish(records, frames):
 def reframe(cascade):
     for r in cascade.records:
         for f in r["fields"]:
-            fr = cascade.innermost(*char_range(cascade.t, f["spans"][0]))
+            fr = cascade.innermost(*position(f["evidence"][0]))
             f["frame"] = fr["id"] if fr else None
         for i in r["identities"]:
-            fr = cascade.innermost(*char_range(cascade.t, i["spans"][0]))
+            fr = cascade.innermost(*position(i["evidence"][0]))
             i["frame"] = fr["id"] if fr else None
 
 
-def char_range(t, span):
-    return t.byte.index(span["start"]), t.byte.index(span["end"])
+def position(evidence):
+    p = next(s for s in evidence["selector"] if s["kind"] == "TextPositionSelector")
+    return p["start"], p["end"]
 
 
 def requested(stdin, catalog_path):
@@ -555,7 +567,7 @@ def extract(req, models=None):
     """One C01 ExtractionResult; a failure is a result, never an exception."""
     LOG.clear()
     result = {
-        "contract": 1,
+        "contract": 2,
         "request": req["request"],
         "source": req["input"]["source"],
         "schema": req["catalog"]["fingerprint"],

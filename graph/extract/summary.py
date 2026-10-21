@@ -14,4 +14,5 @@ for x in r["records"]:
     parts = [f"{f['property']}={names.get(f['value'], f['value']) if isinstance(f['value'], str) else f['value']}" for f in x["fields"]]
     q = x["fields"][-1]
     score = next((f["score"] for f in x["fields"] if "score" in f), "")
-    print(f"  {x['local_id']} {x['model']}: {', '.join(parts)} [{q['modality']}/{q['polarity']}] {score}")
+    res = x.get("resolution", {}).get("kind", "")
+    print(f"  {x['local_id']} {x['model']}: {', '.join(parts)} [{q['factuality']}/{q['speech_act']}] {res} {score}")
