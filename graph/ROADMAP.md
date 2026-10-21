@@ -33,7 +33,7 @@ separate, evidence-grounded query layer; see [RESEARCH.md](RESEARCH.md).
 
 Branch `feat/graph-selection`, worktree
 `/Users/tristan/projects/tristanMatthias/avra-graph-v2`, rebased onto main
-`846e8a84` (batch #1152, incorporating #1141). `git log graph/` is the
+`3896b7c1` (batch R, including batch #1152/#1141). `git log graph/` is the
 receipt for each slice; the original foundation is `f87d7312`.
 
 The first slice is a usable model-driven evidence store, not yet an
@@ -81,7 +81,8 @@ These are focused checks, not full concurrent/fuzz/soak coverage.
 
 The engine's tables are `@std/db` models with links, many-relations and
 nullable history columns; only user ontology rows are generic. The old
-six-field cap is removed in #1161 (`acef6dba`, not yet in this lane's base).
+six-field cap is removed by the implementation in #1161 (`acef6dba`), whose
+PR is still open rather than merged at the last GitHub check.
 Existing `RunRow`/`RunTrailRow` and `MergeRow`/`MergeEndRow` can be consolidated
 after integration, with migration/replay/history witnesses. Composite
 identity remains a derived `@unique stamp` and an open surface ask.
@@ -252,7 +253,7 @@ engine row, typed links, `Many<T>` batched reads, nullable `until` history,
 and `where`/`in_<link>`/`with_<many>` accessors. User ontology types never
 become tables; their claims are rows of `ClaimRow`. The remaining asks are
 surface: composite `@unique` (today a derived `stamp`). Wide rows are now
-supported by #1161; integrate it before wide-row tasks, without introducing
+implemented in #1161; integrate it after landing before wide-row tasks, without introducing
 new cap workarounds. Existing split tables need a tested migration.
 Graph correctness and NLP evaluation do not wait for that cleanup.
 Indexed/bounded generated reads are tracked

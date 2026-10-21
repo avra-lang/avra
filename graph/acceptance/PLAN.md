@@ -8,7 +8,7 @@ The machine-readable task queue is [tasks.jsonl](tasks.jsonl). Its states
 are planning states, not automatically synchronized with the tasks DB.
 
 Current lane: `/Users/tristan/projects/tristanMatthias/avra-graph-v2`, branch
-`feat/graph-selection`, rebased onto main `846e8a84`. Stabilization and fixture
+`feat/graph-selection`, rebased onto main `3896b7c1` (batch R). Stabilization and fixture
 audit work is committed. Read `git status`, preserve unrelated changes, and do not
 start by resetting, cleaning, rebasing or replacing this worktree.
 `HANDOVER.md` is an older receipt, not the current operational authority.
@@ -86,7 +86,7 @@ ready until dependencies have real outputs and acceptance receipts.
 
 This is a work queue, not an instruction to launch every lane now. Start
 with A01 and C01, then choose one small end-to-end slice. The field-ceiling
-fix is separately owned: don't duplicate it, wait idly for it, or add new
+fix is separately owned (#1161, still open at the last GitHub check): don't duplicate it, wait idly for it, or add new
 six-field row workarounds. Most contracts, fixtures, adapters and query
 tests can proceed independently. A truly blocked row construction gets
 a dependency on the existing substrate task, not a graph-local hack.
@@ -192,8 +192,9 @@ scores for calibration; confidence is not truth-selection authority.
 
 ## Substrate and scope boundaries
 
-- Wider model rows: `avra-8sb5.59.44.19`, landed in #1161 (`acef6dba`). This
-  lane still has the older base; integrate before new wide engine rows.
+- Wider model rows: `avra-8sb5.59.44.19`, implemented in #1161 (`acef6dba`).
+  GitHub still reports the PR open, not merged; current main is `3896b7c1`.
+  Integrate after it lands, before new wide engine rows.
   Consolidation of old companion tables is a separate tested migration,
   not a reason to block model/codec/annotation work.
 - Composite uniqueness: `avra-8sb5.44.7`.
