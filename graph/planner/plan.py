@@ -10,7 +10,7 @@ quoted. Context binds as parameters, never as text in the query.
 
 Model, so only one copy is ever resident: the extraction service's shared
 `generate` op when its socket answers, else PLANNER_ENDPOINT (an
-OpenAI-compatible server), else — only with PLANNER_LOCAL=1 — Qwen3-4B
+OpenAI-compatible server), else — only with --local — Qwen3-4B
 in-process through mlx_lm from the extraction lane's venv. Timings and retries go to stderr.
 """
 import json
@@ -93,6 +93,8 @@ class Shared:
                 if not chunk:
                     break
                 data += chunk
+        if not data.strip():
+            raise SystemExit("planner: the shared model service went away mid-request; retry when it is back")
         answer = json.loads(data)
         if "error" in answer:
             raise SystemExit(f"planner: shared model refused: {answer['error']}")
@@ -156,8 +158,8 @@ def chosen():
         return Shared(path)
     if os.environ.get("PLANNER_ENDPOINT"):
         return Remote(os.environ["PLANNER_ENDPOINT"])
-    if os.environ.get("PLANNER_LOCAL") != "1":
-        raise SystemExit(f"planner: no shared model answers on {SOCKET}; start the extraction service, or set PLANNER_LOCAL=1 to load one here")
+    if "--local" not in sys.argv[1:]:
+        raise SystemExit(f"planner: no shared model answers on {SOCKET}; start the extraction service, or pass --local to load one here")
     in_model_env()
     return Local()
 
