@@ -1,0 +1,252 @@
+use @avra.graph_contracts.{ReadPlan, ReadStep, Budget, Context}
+use @std.validate.{Value}
+use catalog.{Catalog}
+use schema.{Shape, Property, Model}
+use semantics.{QuantityBinding}
+
+export enum Comparison { Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual }
+export enum Direction { Outgoing, Incoming }
+export enum SourceView { Current, History }
+
+/// Row identities and evidence survive projection; visible fields do not.
+export type ReadRows = { model: string, properties: List<Property> }
+export enum ReadShape { Rows(rows: ReadRows), Count, Quantity(binding: QuantityBinding) }
+
+export enum ReadOperation {
+    Scan(model: string)
+    Filter(input: int, property: Property, comparison: Comparison, literal: Value)
+    Follow(input: int, owner: string, property: Property, direction: Direction)
+    Search(input: int, property: Property, needle: string)
+    Project(input: int, properties: List<Property>)
+    Count(input: int)
+    Sum(input: int, property: Property, quantity: QuantityBinding)
+}
+
+export type ReadNode = { id: string, operation: ReadOperation, shape: ReadShape, depth: int }
+export type ReadOnlyPlan = {
+    request: string,
+    schema: string,
+    context: Context,
+    source_view: SourceView,
+    nodes: List<ReadNode>,
+    output: int,
+    budget: Budget,
+}
+
+/// Pure admission, not execution or authorization. The trusted caller supplies
+/// the catalog; untrusted planners supply only the bounded wire document.
+export fn prepare_read(catalog: Catalog, payload: string) -> Result<ReadOnlyPlan, string> {
+    if payload.bytes().length > 262144 { fail "read plan exceeds its byte budget" }
+    let wire = match ReadPlan.from_json(payload) {
+        .Ok(p) -> p,
+        .Err(issues) -> { fail "read plan: ${issues.report()}" },
+    }
+    if wire.schema != catalog.fingerprint { fail "read plan names a different catalog revision" }
+    if wire.steps.length > wire.budget.work { fail "read plan exceeds its minimum work budget" }
+    mut nodes: List<ReadNode> = []
+    for step in wire.steps {
+        let node = prepared_node(catalog, nodes, step)?
+        if node.depth > wire.budget.depth { fail "read plan exceeds its reference-depth budget" }
+        nodes.push(node)
+    }
+    let output = node_at(nodes, wire.output, "read plan output is absent")?
+    ReadOnlyPlan {
+        request: wire.request,
+        schema: wire.schema,
+        context: wire.context,
+        source_view: if wire.source_view == "current" { .Current } else { .History },
+        nodes: nodes,
+        output: output,
+        budget: wire.budget,
+    }
+}
+
+fn all_rows(model: Model) -> ReadShape {
+    .Rows(ReadRows { model: model.name, properties: model.properties })
+}
+
+fn node_at(nodes: List<ReadNode>, id: string, absent: string) -> Result<int, string> {
+    let at = nodes.map(it.id).index_of(id)
+    if at < 0 { fail absent }
+    at
+}
+
+fn visible(rows: ReadRows, name: string) -> Result<Property, string> {
+    let property? = rows.properties.find(it.name == name) else { fail "read property is unknown or not visible: ${rows.model}.${name}" }
+    property
+}
+
+fn row_shape(node: ReadNode) -> Result<ReadRows, string> {
+    match node.shape {
+        .Rows(rows) -> rows,
+        .Count or .Quantity(_) -> { fail "a scalar aggregate cannot be used as graph rows" },
+    }
+}
+
+fn unwrapped(shape: Shape) -> Shape {
+    match shape { .Optional(inner) -> unwrapped(inner), rest -> shape }
+}
+
+fn target(shape: Shape) -> string? {
+    match shape {
+        .Reference(model) -> model,
+        .Optional(inner) or .Many(inner) -> target(inner),
+        .Text or .Integer or .Number or .Boolean or .Embedded(_) -> null,
+    }
+}
+
+fn comparison(word: string) -> Result<Comparison, string> {
+    match word {
+        "eq" -> Comparison.Equal,
+        "ne" -> Comparison.NotEqual,
+        "lt" -> Comparison.Less,
+        "le" -> Comparison.LessEqual,
+        "gt" -> Comparison.Greater,
+        "ge" -> Comparison.GreaterEqual,
+        rest -> { fail "unknown comparison" },
+    }
+}
+
+fn checked_literal(property: Property, literal: Value, compare: Comparison) -> Result<Value, string> {
+    let equality = compare is .Equal || compare is .NotEqual
+    if literal is .Null {
+        if property.shape is .Optional && equality { return literal }
+        fail "null predicates require an optional property and equality comparison"
+    }
+    let compatible = match unwrapped(property.shape) {
+        .Text -> literal is .Text,
+        .Integer -> literal is .Int,
+        .Number -> literal is .Float,
+        .Boolean -> literal is .Bool && equality,
+        .Reference(_) -> literal is .Text && equality,
+        .Optional(_) or .Many(_) or .Embedded(_) -> false,
+    }
+    if !compatible { fail "read predicate has an incompatible literal or comparison" }
+    if !bounded(literal) { fail "read literal exceeds its text budget or is not finite" }
+    literal
+}
+
+fn bounded(literal: Value) -> bool {
+    match literal {
+        .Text(s) -> s.bytes().length <= 4096,
+        .Float(n) -> n - n == 0.0,
+        .Null or .Bool(_) or .Int(_) or .List(_) or .Map(_) -> true,
+    }
+}
+
+type ReverseBinding = { owner: string, property: Property }
+
+fn reverse_binding(catalog: Catalog, rows: ReadRows, property: string) -> Result<
+    ReverseBinding,
+    string,
+> {
+    let found = [ReverseBinding { owner: model.name, property: p } for model in catalog.models for p in model.properties if p.name == property && target(p.shape) == rows.model]
+    match found {
+        [only] -> only,
+        [] -> { fail "incoming read reference has no declared owner" },
+        rest -> { fail "incoming read reference has multiple declared owners" },
+    }
+}
+
+fn prepared_node(catalog: Catalog, nodes: List<ReadNode>, step: ReadStep) -> Result<
+    ReadNode,
+    string,
+> {
+    if step.op == "scan" {
+        let model = catalog.model(step.model!)?
+        return ReadNode {
+            id: step.id,
+            operation: .Scan(model.name),
+            shape: all_rows(model),
+            depth: 0,
+        }
+    }
+    let input = node_at(nodes, step.inputs[0], "read input must precede its consumer")?
+    let rows = row_shape(nodes[input])?
+    let depth = nodes[input].depth
+    match step.op {
+        "filter" -> {
+            let property = visible(rows, step.property!)?
+            let compare = comparison(step.comparison!)?
+            let literal = checked_literal(property, step.arguments[0].value, compare)?
+            ReadNode {
+                id: step.id,
+                operation: .Filter(input, property, compare, literal),
+                shape: .Rows(rows),
+                depth: depth,
+            }
+        },
+        "search" -> {
+            let property = visible(rows, step.property!)?
+            if !(unwrapped(property.shape) is .Text) { fail "search requires a declared text property" }
+            let needle = match step.arguments[0].value {
+                .Text(s) -> s,
+                rest -> { fail "search requires a text literal" },
+            }
+            if needle.is_empty() || needle.bytes().length > 4096 { fail "search text must be nonempty and bounded" }
+            ReadNode {
+                id: step.id,
+                operation: .Search(input, property, needle),
+                shape: .Rows(rows),
+                depth: depth,
+            }
+        },
+        "follow" -> {
+            let direction = if step.direction == "out" { Direction.Outgoing } else { Direction.Incoming }
+            let binding = match direction {
+                .Outgoing -> ReverseBinding { owner: rows.model, property: visible(rows, step.property!)? },
+                .Incoming -> reverse_binding(catalog, rows, step.property!)?,
+            }
+            let next = match direction {
+                .Outgoing -> {
+                    let destination? = target(binding.property.shape) else { fail "follow requires a declared reference property" }
+                    destination
+                },
+                .Incoming -> binding.owner,
+            }
+            let model = catalog.model(next)?
+            ReadNode {
+                id: step.id,
+                operation: .Follow(input, binding.owner, binding.property, direction),
+                shape: all_rows(model),
+                depth: depth + 1,
+            }
+        },
+        "project" -> {
+            for i, name in step.properties {
+                if step.properties.slice(0, i).contains(name) { fail "read projections must name distinct properties" }
+            }
+            let properties = [visible(rows, name)? for name in step.properties]
+            ReadNode {
+                id: step.id,
+                operation: .Project(input, properties),
+                shape: .Rows(ReadRows { model: rows.model, properties: properties }),
+                depth: depth,
+            }
+        },
+        "count" -> ReadNode { id: step.id, operation: .Count(input), shape: .Count, depth: depth },
+        "sum" -> {
+            let property = visible(rows, step.property!)?
+            let numeric = unwrapped(property.shape)
+            if !(numeric is .Integer || numeric is .Number) { fail "sum requires a numeric property" }
+            let model = catalog.model(rows.model)?
+            let quantity? = model
+                .semantics
+                .quantities
+                .find(it.amount.length == 1 && it.amount[0] == property.name) else {
+                fail "sum requires an explicit declared quantity/unit binding"
+            }
+            if quantity.unit is .Field(path) {
+                if path.length != 1 { fail "sum over an embedded unit path needs an explicit policy plan" }
+                let _ = visible(rows, path[0])?
+            }
+            ReadNode {
+                id: step.id,
+                operation: .Sum(input, property, quantity),
+                shape: .Quantity(quantity),
+                depth: depth,
+            }
+        },
+        rest -> { fail "unknown read operation" },
+    }
+}

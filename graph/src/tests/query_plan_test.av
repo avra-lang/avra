@@ -1,0 +1,153 @@
+use models.{models}
+use store.open.{Graph}
+use query.plan.{prepare_read, ReadOnlyPlan}
+
+fn plan(steps: string, output: string, fingerprint: string, work: int = 100) -> string {
+    "{\"contract\":1,\"request\":\"r\",\"schema\":\"${fingerprint}\",\"context\":{\"principal\":\"u\",\"question_at_ms\":1},\"source_view\":\"current\",\"steps\":[${steps}],\"output\":\"${output}\",\"budget\":{\"steps\":8,\"rows\":10,\"work\":${work},\"depth\":2,\"timeout_ms\":1000}}"
+}
+
+fn scan(id: string, model: string) -> string {
+    "{\"id\":\"${id}\",\"op\":\"scan\",\"model\":\"${model}\"}"
+}
+
+fn step(id: string, op: string, input: string, rest: string) -> string {
+    let tail = if rest.is_empty() { "" } else { ",${rest}" }
+    "{\"id\":\"${id}\",\"op\":\"${op}\",\"inputs\":[\"${input}\"]${tail}}"
+}
+
+fn admitted(payload: string) -> Result<ReadOnlyPlan, string> {
+    let g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    prepare_read(g.catalog, payload)
+}
+
+fn refused_with(payload: string, phrase: string) -> Result<bool, string> {
+    match admitted(payload) { .Ok(_) -> false, .Err(e) -> e.contains(phrase) }
+}
+
+fn fingerprint() -> Result<string, string> {
+    let g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.catalog.fingerprint
+}
+
+fn composes() -> Result<bool, string> {
+    let f = fingerprint()?
+    let steps = [
+        scan("a", "WorkItem"),
+        step(
+            "b",
+            "filter",
+            "a",
+            "\"property\":\"status\",\"comparison\":\"eq\",\"arguments\":[\"done\"]",
+        ),
+        step("c", "follow", "b", "\"property\":\"assignee\",\"direction\":\"out\""),
+        step("d", "project", "c", "\"properties\":[\"name\"]"),
+        step("e", "count", "d", ""),
+    ]
+    let p = admitted(plan(steps.join(","), "d", f))?
+    p.nodes.length == 5 && p.output == 3 && p.nodes[2].depth == 1
+}
+
+fn unknown_symbols_refused() -> Result<bool, string> {
+    let f = fingerprint()?
+    let model = refused_with(plan(scan("a", "Nothing"), "a", f), "unknown model")?
+    let property = refused_with(
+        plan(
+            "${scan("a", "WorkItem")},${step("b", "filter", "a", "\"property\":\"nope\",\"comparison\":\"eq\",\"arguments\":[\"x\"]")}",
+            "b",
+            f,
+        ),
+        "unknown or not visible",
+    )?
+    let output = refused_with(plan(scan("a", "WorkItem"), "zzz", f), "output")?
+    model && property && output
+}
+
+fn mutation_refused() -> Result<bool, string> {
+    let f = fingerprint()?
+    let g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    let before = g.revision()?
+    let bad = plan(
+        "${scan("a", "WorkItem")},${step("b", "delete", "a", "\"property\":\"status\"")}",
+        "b",
+        f,
+    )
+    let refused = match prepare_read(g.catalog, bad) { .Ok(_) -> false, .Err(_) -> true }
+    refused && g.revision()? == before
+}
+
+fn work_bounds_steps() -> Result<bool, string> {
+    let f = fingerprint()?
+    let two = "${scan("a", "WorkItem")},${step("b", "count", "a", "")}"
+    let tight = refused_with(plan(two, "b", f, work: 1), "work budget")?
+    let enough = (admitted(plan(two, "b", f, work: 2))?).nodes.length == 2
+    tight && enough
+}
+
+fn depth_bounded() -> Result<bool, string> {
+    let f = fingerprint()?
+    let steps = [
+        scan("a", "Message"),
+        step("b", "follow", "a", "\"property\":\"author\",\"direction\":\"out\""),
+        step("c", "follow", "b", "\"property\":\"author\",\"direction\":\"in\""),
+        step("d", "follow", "c", "\"property\":\"author\",\"direction\":\"out\""),
+    ]
+    refused_with(plan(steps.join(","), "d", f), "depth")
+}
+
+fn predicates_typed() -> Result<bool, string> {
+    let f = fingerprint()?
+    let numeric = refused_with(
+        plan(
+            "${scan("a", "WorkItem")},${step("b", "filter", "a", "\"property\":\"status\",\"comparison\":\"lt\",\"arguments\":[3]")}",
+            "b",
+            f,
+        ),
+        "incompatible",
+    )?
+    let null_required = refused_with(
+        plan(
+            "${scan("a", "WorkItem")},${step("b", "filter", "a", "\"property\":\"title\",\"comparison\":\"eq\",\"arguments\":[null]")}",
+            "b",
+            f,
+        ),
+        "null predicates",
+    )?
+    let sum_unbound = refused_with(
+        plan("${scan("a", "WorkItem")},${step("b", "sum", "a", "\"property\":\"title\"")}", "b", f),
+        "numeric",
+    )?
+    numeric && null_required && sum_unbound
+}
+
+fn stale_catalog_refused() -> Result<bool, string> {
+    refused_with(plan(scan("a", "WorkItem"), "a", "other"), "different catalog")
+}
+
+fn aggregates_are_terminal() -> Result<bool, string> {
+    let f = fingerprint()?
+    let steps = [scan("a", "WorkItem"), step("b", "count", "a", ""), step("c", "count", "b", "")]
+    refused_with(plan(steps.join(","), "c", f), "scalar aggregate")
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "read plan admission" {
+    given "a catalog and untrusted wire plans" {
+        then "a scan, filter, follow and projection compose with depth" { passed(composes()) }
+        then "unknown models, properties and outputs are refused" { passed(unknown_symbols_refused()) }
+        then "a mutation request is refused and the store is untouched" { passed(mutation_refused()) }
+        then "the work budget bounds the step count" { passed(work_bounds_steps()) }
+        then "reference depth is bounded" { passed(depth_bounded()) }
+        then "literals must fit the property" { passed(predicates_typed()) }
+        then "a plan for another catalog revision is refused" { passed(stale_catalog_refused()) }
+        then "a scalar aggregate cannot feed another step" { passed(aggregates_are_terminal()) }
+    }
+}
