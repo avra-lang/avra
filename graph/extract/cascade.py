@@ -847,10 +847,19 @@ def serve():
             data = received(conn)
             if not data.strip():
                 continue
+            started = time.time()
             try:
-                answer = answered(json.loads(data), models)
+                body = json.loads(data)
+                answer = answered(body, models)
             except Exception as e:
-                answer = {"error": f"{type(e).__name__}: {e}"}
+                body, answer = {}, {"error": f"{type(e).__name__}: {e}"}
+            op = body.get("op", "extract")
+            print(
+                f"{time.strftime('%H:%M:%S')} {op} bytes={len(data)} options={len(body.get('options', []))} "
+                f"s={time.time() - started:.2f} {answer.get('error', 'ok')}",
+                file=sys.stderr,
+                flush=True,
+            )
             try:
                 conn.sendall(json.dumps(answer, ensure_ascii=False).encode() + b"\n")
             except OSError as e:
