@@ -705,7 +705,7 @@ class Cascade:
             pr = self.llm.choose(ctx, f"For this {model}, is {name} true or false according to the sentence?", ["true", "false"] + optional)
             k = max(range(len(pr)), key=lambda i: pr[i])
             return self.field(name, k == 0, [(a, b)], score=pr[k]) if k < 2 and pr[k] >= ACCEPT else None
-        if kind == "number" and not name.endswith("_ms"):
+        if kind == "number" and not self.declared_time(model, name):
             nums = [(x.start(), x.end()) for x in re.finditer(r"\d[\d,]*", self.t.s[a:b])]
             nums = [(a + x, a + y) for x, y in nums]
             if not nums:
@@ -721,6 +721,12 @@ class Cascade:
     def named(self, x, y):
         """Whether a span is exactly an entity mention the cascade kept."""
         return any(m["record"] and m["start"] == x and m["end"] == y for m in self.mentions)
+
+    def declared_time(self, model, name):
+        """Whether the model declares this property as an encoded time, which
+        needs normalization, not a number read off the text."""
+        v = self.plan.models[model]["semantics"].get("validity") or {}
+        return any(p and p[-1] == name for p in (v.get("from"), v.get("until")))
 
     def clauses(self, a, b):
         """Candidate value spans: the sentence and its comma/conjunction parts."""
