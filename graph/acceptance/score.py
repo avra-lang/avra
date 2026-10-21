@@ -337,7 +337,7 @@ def publish_source(app, mode, hooks, source, schema, revision):
 
 def score_checkpoint(binary, checkpoint, questions, fixture, mode, hooks, scratch):
     manifest, sources, entities, _ = fixture
-    plans = oracle_plans()
+    plans = oracle_plans() if mode == "oracle-facts" else {}
     rows = {}
     runnable = []
     for q in questions:
@@ -381,7 +381,7 @@ def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, 
     context = question_context(q, manifest, revision, previous)
     started = time.time()
     try:
-        if q["id"] in plans and not hooks.get("planner"):
+        if q["id"] in plans:
             plan = complete_plan(plans[q["id"]], "score-" + q["id"], schema, context,
                                  q.get("source_view", "current"))
         else:
@@ -495,9 +495,34 @@ def self_test():
     print("score self-test passed: wrong fails, missing hooks not-run, cherry-picked prefix refused")
 
 
+SLICE = "q01,q06,q07,q16,q46,q47"
+SLICE_HOOKS = {
+    "extractor": ("graph/extract/cascade.py", "python3 graph/extract/cascade.py --catalog {schema}"),
+    "planner": ("graph/planner/plan.py", "python3 graph/planner/plan.py"),
+}
+
+
+def slice_hooks(args):
+    """Explicit flags win; otherwise a hook is on when its program exists."""
+    found = {k: cmd for k, (path, cmd) in SLICE_HOOKS.items() if (ROOT / path).exists()}
+    return {"extractor": args.extractor or found.get("extractor"), "planner": args.planner or found.get("planner")}
+
+
+def report(mode, hooks, results):
+    text, counts = table(results)
+    print(f"== {mode}  extractor={hooks['extractor']}  planner={hooks['planner']}")
+    print(text)
+    RESULTS.mkdir(exist_ok=True)
+    out = RESULTS / f"score-{mode}-{time.strftime('%Y%m%dT%H%M%S')}.json"
+    out.write_text(json.dumps({"mode": mode, "hooks": hooks, "counts": counts, "questions": results}, indent=2))
+    print("results:", out.relative_to(ROOT))
+    return counts
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("oracle-facts", "e2e"), default="e2e")
+    parser.add_argument("--slice", action="store_true", help=f"{SLICE} in both modes, default hooks when present")
     parser.add_argument("--extractor", help="command: source envelope JSON in, C01 extraction result JSON out")
     parser.add_argument("--planner", help="command: question + context JSON in, C01 ReadPlan JSON out")
     parser.add_argument("--only", help="comma-separated question ids")
@@ -512,18 +537,16 @@ def main():
         if built.returncode != 0:
             sys.exit("fixture app build failed")
     fixture = load_fixture()
-    hooks = {"extractor": args.extractor, "planner": args.planner}
-    with tempfile.TemporaryDirectory(prefix="graph-score-") as directory:
-        results = score(pathlib.Path(args.binary), fixture, args.mode, hooks, pathlib.Path(directory),
-                        set(args.only.split(",")) if args.only else None)
-    text, counts = table(results)
-    print(text)
-    RESULTS.mkdir(exist_ok=True)
-    stamp = time.strftime("%Y%m%dT%H%M%S")
-    out = RESULTS / f"score-{args.mode}-{stamp}.json"
-    out.write_text(json.dumps({"mode": args.mode, "hooks": hooks, "counts": counts, "questions": results}, indent=2))
-    print("results:", out.relative_to(ROOT))
-    sys.exit(0 if counts["pass"] == len(results) else 1)
+    only = set((SLICE if args.slice else args.only or "").split(",")) - {""} or None
+    runs = ("oracle-facts", "e2e") if args.slice else (args.mode,)
+    hooks = slice_hooks(args) if args.slice else {"extractor": args.extractor, "planner": args.planner}
+    failed = False
+    for mode in runs:
+        with tempfile.TemporaryDirectory(prefix="graph-score-") as directory:
+            results = score(pathlib.Path(args.binary), fixture, mode, hooks, pathlib.Path(directory), only)
+        counts = report(mode, hooks, results)
+        failed = failed or counts["pass"] != len(results)
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":
