@@ -1,0 +1,45 @@
+use models.people.{models}
+use @avra.graph.{Catalog, admit_extraction}
+use @std.io.{read_text, env}
+
+/// E01 over one recorded request/response pair: an outcome line per record,
+/// or the refusal that rejects the whole response.
+fn admitted(catalog: Catalog, request_path: string, response_path: string) -> Result<
+    List<string>,
+    string,
+> {
+    let request = match read_text(request_path) {
+        .Ok(t) -> t,
+        .Err(_) -> { fail "cannot read ${request_path}" },
+    }
+    let response = match read_text(response_path) {
+        .Ok(t) -> t,
+        .Err(_) -> { fail "cannot read ${response_path}" },
+    }
+    match admit_extraction(catalog, request, response)? {
+        .Complete(_, result) -> ["complete ${result.records.length} records"]
+            .concat(["  ${r.local_id} ${r.model} ${r.fields.length} fields" for r in result.records]),
+        .Failed(_, result) -> ["failed ${result.problems.length} problems"],
+    }
+}
+
+fn report(catalog: Catalog, request_path: string, response_path: string) -> List<string> {
+    match admitted(catalog, request_path, response_path) {
+        .Ok(lines) -> lines,
+        .Err(e) -> ["refused: ${e}"],
+    }
+}
+
+/// EXTRACT_ADMISSION names absolute `request,response` pairs separated by `;`.
+/// EXTRACT_CATALOG also prints this program's catalog, which requests must bind.
+let pairs = [it.split(",") for it in (env("EXTRACT_ADMISSION") ?? "").split(";")]
+let none: List<string> = []
+let lines = match Catalog.collected(models) {
+    .Ok(c) -> if env("EXTRACT_CATALOG") != null { ["catalog ${c.fingerprint}", c.document] } else { none }
+        .concat(
+            [report(c, p[0], p[1]) for p in pairs if p.length == 2]
+                .fold(none, (all: List<string>, some: List<string>) -> all.concat(some)),
+        ),
+    .Err(e) -> ["catalog: ${e}"],
+}
+"${lines.length} lines\n${lines.join("\n")}"
