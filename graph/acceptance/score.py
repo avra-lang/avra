@@ -318,9 +318,9 @@ def ready(mode, hooks, question, plans):
     missing = []
     if mode == "e2e" and not hooks.get("extractor"):
         missing.append("extractor")
-    if mode == "oracle-facts" and not (ORACLE / "facts.jsonl").exists():
+    if mode in ORACLE_FACTS and not (ORACLE / "facts.jsonl").exists():
         missing.append("oracle/facts.jsonl")
-    if mode == "oracle-facts" and question["id"] in oracle_blocked():
+    if mode in ORACLE_FACTS and question["id"] in oracle_blocked():
         return ["(blocked: " + oracle_blocked()[question["id"]] + ")"]
     if mode == "oracle-facts" and not hooks.get("planner") and question["id"] not in plans:
         return ["oracle plan"]
@@ -330,7 +330,7 @@ def ready(mode, hooks, question, plans):
 
 
 def publish_source(app, mode, hooks, source, schema, revision):
-    if mode == "oracle-facts":
+    if mode in ORACLE_FACTS:
         for body in oracle_facts(source) or []:
             current = app.call({"op": "schema"}).get("revision", revision)
             receipt = app.call({"op": "publish", "schema": schema["fingerprint"],
@@ -517,6 +517,8 @@ def self_test():
 
 
 SLICE = "q01,q06,q07,q16,q46,q47"
+# Modes publishing the oracle's facts: with the oracle's plans, or with the planner hook.
+ORACLE_FACTS = ("oracle-facts", "planner")
 SLICE_HOOKS = {
     "extractor": ("graph/extract/cascade.py", "python3 graph/extract/cascade.py --catalog {schema}"),
     "planner": ("graph/planner/plan.py", "python3 graph/planner/plan.py"),
@@ -542,7 +544,8 @@ def report(mode, hooks, results):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("oracle-facts", "e2e"), default="e2e")
+    parser.add_argument("--mode", choices=("oracle-facts", "planner", "e2e"), default="e2e",
+                        help="planner: the oracle's facts with the planner hook instead of the oracle's plans")
     parser.add_argument("--slice", action="store_true", help=f"{SLICE} in both modes, default hooks when present")
     parser.add_argument("--extractor", help="command: source envelope JSON in, C01 extraction result JSON out")
     parser.add_argument("--planner", help="command: question + context JSON in, C01 ReadPlan JSON out")
@@ -559,7 +562,7 @@ def main():
             sys.exit("fixture app build failed")
     fixture = load_fixture()
     only = set((SLICE if args.slice else args.only or "").split(",")) - {""} or None
-    runs = ("oracle-facts", "e2e") if args.slice else (args.mode,)
+    runs = ("oracle-facts", "planner", "e2e") if args.slice else (args.mode,)
     hooks = slice_hooks(args) if args.slice else {"extractor": args.extractor, "planner": args.planner}
     failed = False
     for mode in runs:
