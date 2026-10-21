@@ -215,6 +215,24 @@ class Structured(unittest.TestCase):
         self.assertTrue(cypher.startswith("MATCH (n0:Person)-[:wife]->(n1:Person)<-[:actor]-(n2:Commitment)-[:event]->(n3:Event)"), cypher)
         self.assertFalse(any("Is the answer about this Person" in q for q, _ in chooser.asked))
 
+    def test_a_word_only_the_data_holds_is_found_by_search(self):
+        import structured
+
+        context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
+        searched = []
+
+        def search(query):
+            searched.append(query)
+            return [{"kind": "fact", "text": "PersonalTask summary: Book dinner for Elena and Rowan"},
+                    {"kind": "source", "text": "dinner at 19:30"}]
+
+        chooser = Scripted(["Person", "assignee is this", "yes", "value", "confirmation_recorded", "nothing more"])
+        cypher = structured.plan(chooser, "Did I actually book that Friday dinner?", SCHEMA, context, search)
+        self.assertIn("dinner", searched[0])
+        self.assertEqual(cypher, "MATCH (n0:Person)<-[:assignee]-(n1:PersonalTask) WHERE id(n0) = $speaker "
+                                 "AND n1.summary CONTAINS 'dinner' RETURN n1.confirmation_recorded AS confirmation_recorded")
+        check(cypher, SCHEMA, PARAMS)
+
     def test_hops_are_only_the_nodes_own(self):
         import structured
 

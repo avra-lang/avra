@@ -18,6 +18,7 @@ import os
 import re
 import pathlib
 import sys
+import tempfile
 import time
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -139,25 +140,49 @@ class Remote:
             return json.load(r)["choices"][0]["message"]["content"]
 
 
-def gated(cypher, schema, params):
-    """The graph's own check when PLANNER_CHECK names its CLI; else the subset copy."""
+class Graph:
+    """Read-only requests to the graph the question runs against: an argv
+    prefix (`<binary> request --db <path>`) that takes one request file."""
+
+    def __init__(self, argv):
+        self.argv = argv
+
+    def call(self, body):
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as scratch:
+            request = pathlib.Path(scratch) / "request.json"
+            request.write_text(json.dumps(body))
+            done = subprocess.run([*self.argv, str(request)], text=True, capture_output=True, timeout=60)
+        try:
+            return json.loads(done.stdout)
+        except json.JSONDecodeError:
+            raise SystemExit(f"planner: the graph did not answer {body['op']}: {(done.stderr or done.stdout)[:300]}")
+
+    def search(self, query):
+        return self.call({"op": "search", "query": query, "limit": 10}).get("passages", [])
+
+
+def graph_of(payload):
+    """The question's graph from the payload, else PLANNER_CHECK's CLI on a scratch db."""
+    if payload.get("graph"):
+        return Graph(payload["graph"])
     binary = os.environ.get("PLANNER_CHECK")
-    if not binary:
+    if binary:
+        return Graph([binary, "request", "--db", str(pathlib.Path(tempfile.mkdtemp(prefix="planner-")) / "check.db")])
+    return None
+
+
+def gated(cypher, schema, params, graph=None):
+    """The graph's own check when a graph is at hand; else the subset copy."""
+    if graph is None:
         check(cypher, schema, params)
         return
-    import subprocess
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as scratch:
-        request = pathlib.Path(scratch) / "check.json"
-        request.write_text(json.dumps({"op": "check", "cypher": cypher, "params": params}))
-        done = subprocess.run([binary, "request", "--db", str(pathlib.Path(scratch) / "check.db"), str(request)],
-                              text=True, capture_output=True, timeout=60)
-    answer = json.loads(done.stdout or "{}")
+    answer = graph.call({"op": "check", "cypher": cypher, "params": params})
     if answer.get("ok") is True:
         return
     if "code" not in answer:
-        raise SystemExit(f"planner: the graph's check op did not answer: {(done.stderr or done.stdout)[:300]}")
+        raise SystemExit(f"planner: the graph's check op did not answer: {str(answer)[:300]}")
     raise Refusal(answer["code"], answer.get("message", ""))
 
 
@@ -176,7 +201,7 @@ def bound(question, cypher, context):
         raise Refusal("unbound_speaker", "the question speaks as the speaker (my/I/me): start at (me:Person) WHERE id(me) = $speaker")
 
 
-def planned(llm, question, schema, context, limit=TRIES):
+def planned(llm, question, schema, context, limit=TRIES, graph=None):
     params = params_of(context)
     turns = messages(question, schema, context)
     last = None
@@ -184,7 +209,7 @@ def planned(llm, question, schema, context, limit=TRIES):
         started = time.time()
         cypher = drafted(llm.reply(turns))
         try:
-            gated(cypher, schema, params)
+            gated(cypher, schema, params, graph)
             bound(question, cypher, context)
             log(f"try {attempt} ok in {time.time() - started:.1f}s: {cypher}")
             return {"cypher": cypher, "params": params}
@@ -209,14 +234,14 @@ def chosen():
     return Local()
 
 
-def composed(chooser, question, schema, context):
+def composed(chooser, question, schema, context, graph=None):
     """The structured arm: closed choices composed into one query, then gated."""
     import structured
 
     started = time.time()
     params = params_of(context)
-    cypher = structured.plan(chooser, question, schema, context)
-    gated(cypher, schema, params)
+    cypher = structured.plan(chooser, question, schema, context, graph.search if graph else None)
+    gated(cypher, schema, params, graph)
     log(f"composed in {time.time() - started:.1f}s: {cypher}")
     return {"cypher": cypher, "params": params}
 
@@ -227,9 +252,9 @@ def main():
     if "--structured" in sys.argv[1:]:
         if not hasattr(llm, "choose"):
             raise SystemExit("planner: the structured arm needs the shared model's choose op")
-        out = composed(llm, payload["question"], payload["schema"], payload["context"])
+        out = composed(llm, payload["question"], payload["schema"], payload["context"], graph_of(payload))
     else:
-        out = planned(llm, payload["question"], payload["schema"], payload["context"], tries())
+        out = planned(llm, payload["question"], payload["schema"], payload["context"], tries(), graph_of(payload))
     print(json.dumps(out))
 
 

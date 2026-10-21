@@ -111,7 +111,30 @@ def hops(models, label):
     return out
 
 
-def plan(chooser, question, schema, context):
+def found_in_values(search, words, models):
+    """(model, property, word) for admitted facts that hold an unexplained word.
+
+    A fact passage reads "<Model> <property>: <value>"; only text properties of
+    catalog models count, and the word must appear in the value itself."""
+    if not search or not words:
+        return []
+    out = []
+    for p in search(" ".join(sorted(words))):
+        if p.get("kind") != "fact":
+            continue
+        head, _, value = p["text"].partition(": ")
+        model, _, prop = head.partition(" ")
+        if model not in models or not any(q["name"] == prop and base_shape(q["shape"]) == "string" and "enum" not in q
+                                          for q in models[model]["properties"]):
+            continue
+        for w in sorted(words, key=lambda w: (-len(w), w)):
+            m = re.search(rf"\b{re.escape(w)}\w*", value, re.I)
+            if m:
+                out.append((model, prop, m.group(0)))
+    return list(dict.fromkeys(out))
+
+
+def plan(chooser, question, schema, context, search=None):
     models = models_of(schema)
     head = f"Question: {question}"
     named = names_in(question)
@@ -138,6 +161,7 @@ def plan(chooser, question, schema, context):
     came = None
     words = set(re.findall(r"[a-z]+", question.lower()))
     leftover = {stem(w) for w in topic_words(question)}
+    spelled = {stem(w): w for w in topic_words(question)}
     for hop in range(MAX_HOPS):
         options = [h for h in hops(models, label) if not came or (h[0], h[1]) != came]
         trail = f"{head}\nSo far: {' '.join(out.parts)} — now at a {label}."
@@ -145,6 +169,9 @@ def plan(chooser, question, schema, context):
             break
         said = [i for i, h in enumerate(options) if h[3] and words.intersection(h[3])]
         about = [i for i, h in enumerate(options) if leftover & mentions(models, h[1])]
+        held = [] if said or about else found_in_values(search, {spelled[s] for s in leftover}, models)
+        if held:
+            about = [i for i, h in enumerate(options) if any(m == h[1] for m, _, _ in held)]
         if len(said) == 1:
             pick = said[0]
             words.difference_update(options[pick][3])
@@ -160,7 +187,14 @@ def plan(chooser, question, schema, context):
         var = out.node(target)
         out.parts.append(f"{arrow}({var}:{target})")
         came, label = (back, label), target
-        used = filtered(chooser, trail, models[target], var, out, question)
+        hit = [(prop, w) for m, prop, w in held if m == target]
+        if hit:
+            prop, w = hit[0]
+            out.where.append(f"{var}.{prop} CONTAINS {quoted(w)}")
+            leftover.discard(stem(w.lower()))
+            used = None
+        else:
+            used = filtered(chooser, trail, models[target], var, out, question)
         if used:
             leftover.discard(stem(used))
     trail = f"{head}\nSo far: {' '.join(out.parts)} — the answer is about these {label} records."
