@@ -154,7 +154,7 @@ def plan(chooser, question, schema, context, search=None):
         var = out.node(label)
         out.parts.append(f"({var}:{label})")
     came = None
-    words = {w for w in re.findall(r"[a-z]+", question.lower()) if len(w) > 2 and w not in FUNCTION_WORDS}
+    phrasing = question.lower()
     leftover = {stem(w) for w in topic_words(question)}
     spelled = {stem(w): w for w in topic_words(question)}
     for hop in range(MAX_HOPS):
@@ -162,16 +162,17 @@ def plan(chooser, question, schema, context, search=None):
         trail = f"{head}\nSo far: {' '.join(out.parts)} — now at a {label}."
         if not options:
             break
-        said = [i for i, h in enumerate(options) if h[3] and words.intersection(h[3])]
+        said = [i for i, h in enumerate(options) if any(spoken(p, phrasing) for p in h[3])]
         about = [i for i, h in enumerate(options) if leftover & mentions(models, h[1])]
         held = [] if said or len(about) == 1 else found_in_values(search, {spelled[s] for s in leftover}, models)
         holding = [i for i, h in enumerate(options) if any(m == h[1] for m, _, _ in held)]
         if holding and (not about or set(holding) & set(about)):
             about = [i for i in holding if not about or i in about]
-        if len(said) == 1:
-            pick = said[0]
-            words.difference_update(options[pick][3])
-            leftover -= {stem(w) for w in options[pick][3]}
+        if said:
+            pick = said[0] if len(said) == 1 else said[best(chooser, trail, "Which relation does the question mean?",
+                                                              [options[i][2] for i in said])]
+            phrasing = unsaid(options[pick][3], phrasing)
+            leftover -= {stem(w) for p in options[pick][3] for w in p.split()}
         else:
             if hop > 0 and not about and best(chooser, trail, f"Is the answer about this {label}?", ARRIVED) == 0:
                 break
@@ -195,6 +196,18 @@ def plan(chooser, question, schema, context, search=None):
             leftover.discard(stem(used))
     trail = f"{head}\nSo far: {' '.join(out.parts)} — the answer is about these {label} records."
     return out.cypher(returns(chooser, trail, models[label], var, leftover))
+
+
+def spoken(phrase, text):
+    """Whether a declared relation phrase occurs in the text as whole words."""
+    return re.search(rf"\b{re.escape(phrase.lower())}\b", text) is not None
+
+
+def unsaid(phrases, text):
+    """The text without the phrases a hop has answered for."""
+    for p in phrases:
+        text = re.sub(rf"\b{re.escape(p.lower())}\b", " ", text)
+    return text
 
 
 def stem(word):

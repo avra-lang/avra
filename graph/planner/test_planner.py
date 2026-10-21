@@ -238,6 +238,22 @@ class Structured(unittest.TestCase):
                                  "AND n1.summary CONTAINS 'dinner' RETURN n1.confirmation_recorded AS confirmation_recorded")
         check(cypher, SCHEMA, PARAMS)
 
+    def test_competing_declared_phrases_are_the_models_choice(self):
+        import copy
+        import structured
+
+        schema = copy.deepcopy(SCHEMA)
+        membership = next(m for m in schema["models"] if m["name"] == "GroupMembership")
+        membership["semantics"] = {"relation": {"from": ["person"], "to": ["group"], "label": [], "labels": [
+            {"value": "member", "forward": ["member of", "on"], "reverse": []}]}}
+        context = {"principal": "p:jonas", "speaker": None, "question_at_ms": 1}
+        chooser = Scripted(["Dana Holm", "Person", "their wife", "no narrowing", "no narrowing", "yes", "value"], {"name"})
+        cypher = structured.plan(chooser, "Dana Holm said his wife was not on the crew. Who is she?", schema, context)
+        question, options = chooser.asked[2]
+        self.assertEqual(question, "Which relation does the question mean?")
+        self.assertEqual(len(options), 2)
+        self.assertTrue(cypher.startswith("MATCH (n0:Person)-[:wife]->(n1:Person)"), cypher)
+
     def test_hops_are_only_the_nodes_own(self):
         import structured
 
