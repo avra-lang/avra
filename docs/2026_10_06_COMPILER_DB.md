@@ -908,6 +908,57 @@ Open question for DB 09: validating `CallShape` means lowering the unit again. I
 more than it saves, the `u` line reads `Syntax(declaration)` in both cases and `CallShape`
 is not built.
 
+### A4.2 The `Settled` save: why it is no `@query` — MEASURED 2026-10-20
+
+`Settled` cannot be a `@query` over `Settlement`, and the reason is the annotation's own
+signature law, not the read list. A `@query`'s body is a fn of its Db and its seats: the first
+seat must be a type named `Db` (`packages/std-relation/src/query.av:216`), every other seat
+stably encoded (`query.av:203`), and the written fn IS the body the wrapper calls
+(`query.av:229`). The settlement run needs the whole Workspace — host reads, budgets, the hold,
+lowering, the evaluator — and a Db carries no owner slot to put it in
+(`packages/std-relation/src/db.av`'s `Db`: id, kernel, leaves, answer_refs, durable, and no user
+value). A process-wide armed hook is the remaining route and it forks: one process builds more
+than one workspace (`anew`, a derive's isolated run, `programs_workspace`), so the cell would
+answer for whichever was armed last.
+
+A second law is sharper. `Relation.start` maps a re-entry to `Reuse(cycle_value)`
+(`packages/std-relation/src/engine/answers.av:48`), whose missing value TRAPS —
+`avra_trap("defect: memo family … reused missing key")` (`answers.av:198`). So a `@query` has no
+cycle face. `settled_at` (`compiler/workspace_analysis.av:943`) answers a const that asks for
+its own value with `Unsettled.Trap("asks for its own value while settling")`, a SPOKEN law: a
+`@query` conversion would turn it into a compiler wreck.
+
+The Durable hooks are reachable without the annotation — `Answers<Settlement>` plus
+`ran_lasting` (`packages/std-relation/src/db.av:1037`) is the path a wrapper takes — and the
+three preconditions a saved answer owes are measurable, and hold:
+
+| question | probe | answer |
+|---|---|---|
+| is every read nameable? | `AVRA_LEAVES=1 ./avra check packages/std-avrac` | `leaves Settled: 549 of 549 answers stand on names` |
+| does a run file rows, which `made_lasting`'s `wrote` veto refuses (`db.av:1068`)? | a temporary probe in `kept_settle.av`'s `settle_run` reading `rows_db.written`'s delta | `settle-write: 549 runs, 549 filed no row, 0 filed at least one` |
+| do the leaves still hold in a second process? | `AVRA_DB_VERIFY=typed ./avra check packages/std-avrac`, then a FRESH derivation — `check packages/std-avrac/src/avrac.av`, the same store under another `check:` key | `typedsaid: 31606 settled, 31606 stand on names; valid 29419, recomputed 2178, unplaceable 9, mismatched 0` |
+
+So the read list is not the blocker: a family answer IS a `Leaf` (`Leaf.Input`, named by
+`answers_named`), and 93% of one family's leaves stand in a process that derived the program
+again. Three items the conversion owes, each its own rung:
+
+1. The self-value cycle law stays on `Relation.start`; the record is reached only on
+   `.Compute`, never on `.Cycle`.
+2. `answers_named()` is gated behind `AVRA_LEAVES`/`AVRA_DB_VERIFY`
+   (`compiler/workspace.av:1159`), so a normal run names no family answer and nothing is
+   kept. Ungating it arms every `AnswerRef`, the two `doc_rows` queries among them — DB 06's
+   rule arriving early.
+3. The record's query name and codec: `family_code_hash(Family.Settled)`
+   (`compiler/workspace.av:2616`) beside the registry's wire (`settled_wire`/`reach_wire`,
+   `compiler/codecs.av`), and `named_consts("Settled", …)` (`compiler/leaves.av:242`) goes —
+   `Answers.placed` registers that name itself.
+
+What does NOT shrink with it: the `r` line feeds the FILE's record (`read_by` → `record_runs`,
+`compiler/workspace_analysis.av:726`), which `forced_runs`/`ask_kept_reads` read to decide which
+held files an attempt must parse. A served answer replays its leaves into the KERNEL
+(`db.read_leaves`), never into that record. The `r` line is the hold's, so it goes with DB 07's
+hold, not here.
+
 ## A5. Attack cases carried
 
 From `origin/redteam/m3-witness-attacks` @ `a644ba4` (written against deleted code; "6 of 17
