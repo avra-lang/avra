@@ -1,4 +1,6 @@
 use schema.{Model, Shape}
+use parameters.{function_words}
+use @std.text.{ascii_lower}
 use @std.json.{Json, field}
 
 /// Identity normalization is explicit and domain-independent. It does not
@@ -22,11 +24,16 @@ export type RelationLabel = {
     reverse: List<string> = [],
     broader: List<string> = [],
 }
+/// `phrasing` reads one record of the relation as a sentence with the
+/// slots `{from}` and `{to}` (each exactly once) and optionally `{label}`.
+/// `language` names the function-word table that checks the trigger phrases.
 export type RelationBinding = {
     from: List<string>,
     to: List<string>,
     label: List<string>,
     labels: List<RelationLabel> = [],
+    phrasing: string = "",
+    language: string = "en",
 }
 
 /// These declare representation, not a date parser or temporal inference.
@@ -128,6 +135,23 @@ impl Semantics {
 }
 
 impl RelationBinding {
+    /// The phrasing is declared, and names its slots rightly.
+    fn phrased() -> Result<bool, string> {
+        if self.phrasing.is_empty() { fail "a relation declares its phrasing with {from} and {to} slots" }
+        for slot in ["{from}", "{to}"] {
+            if (self.phrasing.length - self.phrasing.replace(slot, "").length) / slot.length != 1 {
+                fail "a relation phrasing names ${slot} exactly once: ${self.phrasing}"
+            }
+        }
+        let leftover = self
+            .phrasing
+            .replace("{from}", "")
+            .replace("{to}", "")
+            .replace("{label}", "")
+        if leftover.contains("{") || leftover.contains("}") { fail "a relation phrasing has only {from}, {to} and {label} slots" }
+        true
+    }
+
     /// Whether `value` reaches `target` by following broader labels, or is it.
     fn generalizes(value: string, target: string, budget: int) -> bool {
         if value == target { return true }
@@ -138,12 +162,14 @@ impl RelationBinding {
 
     fn checked(models: List<Model>, owner: Model) -> Result<bool, string> {
         if same_path(self.from, self.to) { fail "a relation needs distinct endpoint bindings" }
+        self.phrased()?
         if !(path_shape(models, owner, self.from)? is .Reference) ||
             !(path_shape(models, owner, self.to)? is .Reference) {
             fail "relation endpoints must bind typed references"
         }
         if !(path_shape(models, owner, self.label)? is .Text) { fail "a relation label must bind a text property" }
         if self.labels.length > 128 { fail "relation labels exceed their budget" }
+        let closed = function_words(self.language)?
         for i, label in self.labels {
             if label.value.is_empty() || label.forward.is_empty() { fail "a relation label needs a value and forward phrases" }
             if self.labels.slice(0, i).any(it.value == label.value) { fail "relation label values must be unique" }
@@ -153,6 +179,11 @@ impl RelationBinding {
             }
             let phrases = label.forward.concat(label.reverse)
             if phrases.length > 128 || phrases.any(it.is_empty()) { fail "relation phrases must be nonempty and bounded" }
+            for phrase in phrases {
+                if closed.contains(ascii_lower(phrase)) {
+                    fail "a bare function word cannot trigger a relation: declare a multi-word phrase instead of `${phrase}`"
+                }
+            }
             for j, phrase in phrases {
                 if phrases.slice(0, j).contains(phrase) { fail "a relation phrase has one direction per label" }
                 if self
@@ -173,6 +204,8 @@ impl RelationBinding {
                     field("from", path_document(self.from)),
                     field("to", path_document(self.to)),
                     field("label", path_document(self.label)),
+                    field("phrasing", Json.Str(self.phrasing)),
+                    field("language", Json.Str(self.language)),
                     field(
                         "labels",
                         Json

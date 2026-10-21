@@ -21,6 +21,7 @@ type Instrument = { tag: string, links: List<Ref<Instrument>> = [] }
 @model(quote { Semantics {
     relation: RelationBinding {
         from: ["origin"], to: ["target"], label: ["kind"],
+        phrasing: "{from} aligns with {to}",
         labels: [RelationLabel { value: "aligned", forward: ["alignment"], reverse: ["aligns"] }],
     },
     validity: ValidityBinding { from: ["window", "start"], until: ["window", "end"] },
@@ -93,7 +94,7 @@ fn relation(
     to: List<string> = ["target"],
     label: List<string> = ["kind"],
 ) -> RelationBinding {
-    RelationBinding { from: from, to: to, label: label }
+    RelationBinding { from: from, to: to, label: label, phrasing: "{from} aligns with {to}" }
 }
 
 fn invalid_relation(r: RelationBinding) -> Result<bool, string> { changed(Semantics { relation: r }) is .Err }
@@ -154,6 +155,13 @@ fn label_hierarchy() -> Result<bool, string> {
         declared.fingerprint != plain.fingerprint
 }
 
+fn phrasing_exported() -> Result<bool, string> {
+    let a = changed(Semantics { relation: relation() })?
+    let b = changed(Semantics { relation: relation() with { phrasing: "{to} follows {from}" } })?
+    a.document.contains("\"phrasing\":\"{from} aligns with {to}\"") &&
+        a.fingerprint != b.fingerprint
+}
+
 fn passed(answer: Result<bool, string>) -> bool {
     answer catch e -> {
         println(e)
@@ -185,6 +193,35 @@ spec "typed model-declared graph semantics" {
                     ] },
                 ),
             )
+        }
+        then "a relation declares its phrasing with from and to slots, each once" {
+            passed(invalid_relation(relation() with { phrasing: "" })) &&
+                passed(invalid_relation(relation() with { phrasing: "{from} knows" })) &&
+                passed(invalid_relation(relation() with { phrasing: "{from} {from} {to}" })) &&
+                passed(invalid_relation(relation() with { phrasing: "{from} meets {to} on {day}" }))
+        }
+        then "a bare function word cannot trigger a relation" {
+            passed(
+                    invalid_relation(
+                        relation() with { labels: [RelationLabel { value: "a", forward: ["Of"] }] },
+                    ),
+                ) &&
+                passed(
+                    invalid_relation(
+                        relation() with { labels: [RelationLabel { value: "a", forward: ["next to"], reverse: ["on"] }] },
+                    ),
+                ) &&
+                passed(invalid_relation(relation() with { language: "xx" }))
+        }
+        then "a multi-word phrase and a content word trigger a relation" {
+            changed(
+                Semantics {
+                    relation: relation() with { labels: [RelationLabel { value: "a", forward: ["member of", "aligned"] }] },
+                },
+            ) is .Ok
+        }
+        then "phrasing and language are exported and fingerprinted" {
+            passed(phrasing_exported())
         }
         then "a broader relation label is declared in the binding and never cyclic" {
             passed(
