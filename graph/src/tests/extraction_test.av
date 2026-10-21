@@ -3,7 +3,7 @@ use ingest.envelope.{source_document}
 use catalog.{Catalog}
 use derive.model.{model}
 use schema.{Ref, Registration}
-use @avra.graph_contracts.{SourceEnvelope, SourceRef, Frame, Span}
+use @avra.graph_contracts.{SourceEnvelope, SourceRef, Frame}
 use @std.json.{to_text}
 use @std.validate.{length}
 use data.{encoded}
@@ -30,7 +30,7 @@ fn catalog() -> Result<Catalog, string> {
 
 fn source(frames: List<Frame> = []) -> SourceEnvelope {
     SourceEnvelope {
-        contract: 1,
+        contract: 2,
         source: SourceRef { observation: "note:1", revision: 1 },
         authored_at_ms: null,
         received_at_ms: 1,
@@ -44,7 +44,7 @@ fn source(frames: List<Frame> = []) -> SourceEnvelope {
 const version = "{\"producer\":\"encoder\",\"code\":\"code:1\",\"model\":\"weights:1\"}"
 const candidate = "{\"entity\":\"known:ada\",\"model\":\"Keeper\",\"label\":\"Ada\",\"score\":0.7}"
 const anchor_json = "{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":9,\"end\":15},{\"kind\":\"TextQuoteSelector\",\"exact\":\"review\"}]}"
-const frame_span = "{\"start\":9,\"end\":15,\"text\":\"review\"}"
+const frame_span = "{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":9,\"end\":15}]}"
 
 fn request(c: Catalog, s: SourceEnvelope = source(), candidates: string = "[]") -> string {
     "{\"contract\":1,\"request\":\"req:1\",\"input\":${to_text(source_document(s))},\"catalog\":{\"fingerprint\":\"${c.fingerprint}\",\"descriptor\":${c.document}},\"extractor\":${version},\"scope\":\"all\",\"candidates\":${candidates}}"
@@ -178,19 +178,19 @@ fn embedded_defaults() -> Result<bool, string> {
 
 fn quotation(explicit: bool, crossed: bool = false, proposed: bool = false) -> Result<bool, string> {
     let c = catalog()?
-    let frame = Frame {
-        id: "q",
-        span: Span { start: 9, end: 15, text: "review" },
-        speaker: "unlinked:voice",
-    }
+    let frame = quote_frame("q", 9, 15, "review", "unlinked:voice")
     let s = source(if proposed { [] } else { [frame] })
     let value = field(extra: if explicit { ",\"frame\":\"q\"" } else { "" })
-    let fields = if crossed { value
+    let fields = if crossed {
+        value
             .replace(
                 anchor_json,
                 "{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":4,\"end\":15}]}",
-            ) } else { value }
-    let extra = if proposed { ",\"proposed_frames\":[{\"id\":\"q\",\"span\":${frame_span},\"speaker\":\"unlinked:voice\"}]" } else { "" }
+            )
+    } else {
+        value
+    }
+    let extra = if proposed { ",\"proposed_frames\":[{\"id\":\"q\",\"passage\":${frame_span},\"speaker\":\"unlinked:voice\"}]" } else { "" }
     let result = admit_extraction(c, request(c, s), response(c, record(fields), extra))
     if !explicit || crossed { return result is .Err }
     match result? {
@@ -273,7 +273,7 @@ fn missing_frame() -> Result<bool, string> {
             response(
                 c,
                 record(),
-                ",\"proposed_frames\":[{\"id\":\"q\",\"parent\":\"invented\",\"span\":${frame_span}}]",
+                ",\"proposed_frames\":[{\"id\":\"q\",\"parent\":\"invented\",\"passage\":${frame_span}}]",
             ),
         ) is .Err
 }

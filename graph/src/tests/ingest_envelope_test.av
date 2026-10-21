@@ -2,10 +2,11 @@ use tests.support.{sample_models as models}
 use store.open.{Graph, stored}
 use store.engine.{ObservationRow, ObservationVersionRow}
 use ingest.envelope.{source_document}
-use @avra.graph_contracts.{SourceEnvelope}
+use @avra.graph_contracts.{SourceEnvelope, frame_spans}
 use @std.json.{Json, field, parse, to_text}
 
-const source_text = "{\"contract\":1,\"source\":{\"observation\":\"note:1\",\"revision\":1},\"authored_at_ms\":0,\"received_at_ms\":100,\"author\":\"actor:a\",\"participants\":[\"actor:a\",\"actor:b\"],\"conversation\":\"thread:1\",\"media_type\":\"text/plain\",\"content\":\"Aé🙂Z\",\"frames\":[{\"id\":\"quote\",\"span\":{\"start\":1,\"end\":7,\"text\":\"é🙂\"},\"parent\":null,\"speaker\":\"actor:b\"}]}"
+const source_text = "{\"contract\":2,\"source\":{\"observation\":\"note:1\",\"revision\":1},\"authored_at_ms\":0,\"received_at_ms\":100,\"author\":\"actor:a\",\"participants\":[\"actor:a\",\"actor:b\"],\"conversation\":\"thread:1\",\"media_type\":\"text/plain\",\"content\":\"Aé🙂Z\",\"frames\":[{\"id\":\"quote\",\"passage\":{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":1,\"end\":3},{\"kind\":\"TextQuoteSelector\",\"exact\":\"é🙂\"}]},\"parent\":null,\"speaker\":\"actor:b\"}]}"
+const source_text_v1 = "{\"contract\":1,\"source\":{\"observation\":\"note:1\",\"revision\":1},\"authored_at_ms\":0,\"received_at_ms\":100,\"author\":\"actor:a\",\"participants\":[\"actor:a\",\"actor:b\"],\"conversation\":\"thread:1\",\"media_type\":\"text/plain\",\"content\":\"Aé🙂Z\",\"frames\":[{\"id\":\"quote\",\"span\":{\"start\":1,\"end\":7,\"text\":\"é🙂\"},\"parent\":null,\"speaker\":\"actor:b\"}]}"
 
 fn updated() -> string {
     source_text.replace("\"revision\":1", "\"revision\":2").replace("Aé🙂Z", "Aé🙂Z updated")
@@ -27,8 +28,9 @@ fn first_admission() -> Result<bool, string> {
         source.conversation == "thread:1" &&
         source.content == "Aé🙂Z" &&
         source.frames[0].speaker == "actor:b" &&
-        source.frames[0].span.start == 1 &&
-        source.frames[0].span.end == 7 &&
+        source.frames[0].passage.selector[0].start == 1 &&
+        source.frames[0].passage.selector[0].end == 3 &&
+        frame_spans(source)?[0].end == 7 &&
         (g.find("Person")?).is_empty()
 }
 
@@ -104,6 +106,20 @@ fn legacy_payload() -> Result<bool, string> {
         (g.observation("note:1")?).member("payload").text() == "unstructured raw payload"
 }
 
+fn stored_version_one() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("note:1", source_text_v1)?
+    let source = g.source("note:1")?
+    let replay = g.ingest(source_text)?
+    source.contract == 2 &&
+        source.frames[0].passage.selector[0].start == 1 &&
+        source.frames[0].passage.selector[0].end == 3 &&
+        frame_spans(source)?[0].text == "é🙂" &&
+        !replay.changed &&
+        (g.observation("note:1")?).member("payload").text() == source_text_v1
+}
+
 fn mismatched_payload() -> Result<bool, string> {
     let g = Graph.memory(models)?
     defer { let _ = g.close() }
@@ -174,12 +190,18 @@ spec "structured source admission" {
         then "revision gaps cannot discard unobserved history" { passed(refused(updated().replace("\"revision\":2", "\"revision\":3"))) }
         then "historical exact replay cannot revive stale content" { passed(historical_replay(false)) }
         then "altered historical replay is refused" { passed(historical_replay(true)) }
-        then "fabricated source coordinates fail before writing" { passed(refused(source_text.replace("\"end\":7", "\"end\":3"), seed: false)) }
-        then "future contract versions fail before writing" { passed(refused(source_text.replace("\"contract\":1", "\"contract\":2"), seed: false)) }
+        then "fabricated source coordinates fail before writing" { passed(refused(source_text.replace("\"end\":3", "\"end\":2"), seed: false)) }
+        then "future and version-one envelopes fail before writing" {
+            passed(
+                    refused(source_text.replace("\"contract\":2", "\"contract\":3"), seed: false),
+                ) &&
+                passed(refused(source_text_v1, seed: false))
+        }
+        then "a stored version-one revision reads with code-point frames and replays unchanged" { passed(stored_version_one()) }
         then "gold answer fields are not an ingestion channel" {
             passed(
                 refused(
-                    source_text.replace("\"contract\":1", "\"gold_answers\":[],\"contract\":1"),
+                    source_text.replace("\"contract\":2", "\"gold_answers\":[],\"contract\":2"),
                     seed: false,
                 ),
             )

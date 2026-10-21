@@ -143,7 +143,7 @@ extracted facts. For example:
 {
   "op": "ingest",
   "source": {
-    "contract": 1,
+    "contract": 2,
     "source": {"observation": "note:example", "revision": 1},
     "authored_at_ms": null,
     "received_at_ms": 1792573200000,
@@ -172,7 +172,11 @@ existing reference instead of creating an empty revision. Changes to original
 text, authored time, author, participants, thread, media type or quoted frames
 are material. Participant/frame order is currently preserved and material.
 
-Spans are exact half-open UTF-8 byte coordinates in original content.
+Positions are W3C Web Annotation selectors: half-open Unicode code points of
+the original content, with an optional exact quote (a frame's `passage`, an
+extracted field's `evidence`). Envelope `contract` is 2; a stored
+version-one revision, whose frames held byte spans, reads as the same
+passages without its payload being rewritten.
 Quoted speakers are separate from source authors and confer no identity or
 authorization grant. Standard Decode rejects unsupported versions, unknown
 fields and invented coordinates before writing. There is no gold-answer or

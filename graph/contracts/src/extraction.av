@@ -1,8 +1,7 @@
 use @std.meta.{derive}
 use @std.validate.{Decode, range, length, items, one_of}
 use common.{JsonValue, SourceRef, IdentityKey, Candidate, Problem, confidence}
-use source.{SourceEnvelope, Frame}
-use answer.{Selector}
+use source.{SourceEnvelope, Frame, Passage}
 
 /// Descriptor is the engine-exported catalog, not an independently kept
 /// ontology. Admission must check it against the installed fingerprint.
@@ -30,19 +29,6 @@ export type ExtractionRequest = {
     @items(max: 64) candidates: List<Candidate> = [],
 }
 
-fn passage_coherent(e: Passage) -> Result<Passage, string> {
-    if e.selector.filter(it.kind == "TextPositionSelector").length != 1 { fail "a passage has exactly one position selector" }
-    if e.selector.filter(it.kind == "TextQuoteSelector").length > 1 { fail "a passage has at most one quote selector" }
-    e
-}
-
-/// One passage of the source revision, as W3C Web Annotation selectors that
-/// all name the same text: a position (Unicode code points, half-open) and,
-/// optionally, the quote it must hold.
-@derive(Decode)
-@passage_coherent
-export type Passage = { @items(min: 1, max: 2) selector: List<Selector> }
-
 fn normalization_coherent(n: Normalization) -> Result<Normalization, string> {
     if n.kind == "TIMEX3" {
         if n.timex_type == null ||
@@ -63,7 +49,9 @@ fn normalization_coherent(n: Normalization) -> Result<Normalization, string> {
         }
         let code = n.currency!
         if code.length != 3 ||
-            (0..3).any((i: int) -> code.char_code(i) < 65 || code.char_code(i) > 90) { fail "an ISO 4217 currency is three capital letters" }
+            (0..3).any((i: int) -> code.char_code(i) < 65 || code.char_code(i) > 90) {
+            fail "an ISO 4217 currency is three capital letters"
+        }
         if n.exponent! < 0 || n.exponent! > 4 { fail "an ISO 4217 exponent is 0..4" }
     }
     n

@@ -104,8 +104,8 @@ optional `prefix`/`suffix`, checked against the source); FactBank
 and an optional `normalization`: `{"kind":"TIMEX3","timex_type":"DATE|TIME|DURATION|SET","value":<ISO 8601>}`
 or `{"kind":"ISO4217","currency":"EUR","minor_units":1250,"exponent":2}`.
 A passage need not contain the value ("next Friday" normalized to a date).
-Every identity key also has its own passages. Quotation frames keep their
-byte `Span` (the I01 envelope's unit). Local IDs are unique within a
+Every identity key also has its own passages. A quotation frame names its
+quoted text the same way (`passage`), so one unit runs through a result. Local IDs are unique within a
 result; a record proposes each property once. Multiple source mentions can
 anchor the same field without creating multiple identities.
 
@@ -179,7 +179,7 @@ Each `AnswerField` has JSON-pointer path tokens, a literal value and basis:
 `observed`, `derived`, `record_status` or `policy`. Source-backed fields cite
 known citation IDs. Derived fields also name a **declared rule ID**, not
 untrusted executable code. Citation source revisions and optional claim/run,
-frame/speaker and byte spans trace multi-hop answers to original evidence.
+frame/speaker and Web Annotation selectors trace multi-hop answers to original evidence.
 
 `record_status` describes the bounded read view, e.g. confirmation is absent
 in the searched records. It must not be rendered as an unsupported global

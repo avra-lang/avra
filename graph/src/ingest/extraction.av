@@ -10,7 +10,10 @@ use @avra.graph_contracts.{
     SourceEnvelope,
     Span,
     Passage,
-    Selector,
+    code_points,
+    passage_span,
+    quote_holds,
+    frame_spans,
 }
 use @std.validate.{Value, Entry}
 use @std.json.{parse}
@@ -89,11 +92,12 @@ export fn admit_extraction(catalog: Catalog, request_json: string, response_json
     // The contract checks parent order, containment, siblings and quotes.
     let framed = request.input with { frames: frames }
     let checked_frames = checked_source(framed)?
-    for frame in checked_frames.frames { anchored(checked_frames, frame.span, frame.parent, true)? }
-    let bytes = checked_frames.content.bytes()
-    let points = [i for i in 0..bytes.length if bytes.at(i) < 128 || bytes.at(i) >= 192]
-        .concat([bytes.length])
-    let records = [checked_record(catalog, request, result.records, checked_frames, points, r)? for r in result.records]
+    let q = Quoting {
+        source: checked_frames,
+        points: code_points(checked_frames.content),
+        frames: frame_spans(checked_frames)?,
+    }
+    let records = [checked_record(catalog, request, result.records, q, r)? for r in result.records]
     ExtractionAdmission.Complete(request, result with { records: records })
 }
 
@@ -108,77 +112,32 @@ fn same_version(a: ExtractorVersion, b: ExtractorVersion) -> bool {
     a.producer == b.producer && a.code == b.code && a.model == b.model
 }
 
-fn anchored(source: SourceEnvelope, span: Span, frame: string?, frame_definition: bool = false) -> Result<
-    bool,
-    string,
-> {
-    let bytes = source.content.bytes()
-    if span.start < 0 || span.end <= span.start || span.end > bytes.length {
-        fail outside_source()
-    }
-    if bytes.at(span.start) >= 128 && bytes.at(span.start) < 192 ||
-        span.end < bytes.length && bytes.at(span.end) >= 128 && bytes.at(span.end) < 192 {
-        fail "an extraction anchor must use complete UTF-8 code points"
-    }
-    if source.content.substring(span.start, span.end) != span.text {
-        fail "an extraction anchor must quote the exact original source"
-    }
-    if frame_definition { return true }
-    for f in source.frames {
-        if f.span.start > span.start && f.span.start < span.end ||
-            f.span.end > span.start && f.span.end < span.end {
-            fail "an extraction anchor cannot cross a quotation boundary"
-        }
-    }
-    let active = source.frames.filter(it.span.start <= span.start && it.span.end >= span.end).last()
-    if active?.id != frame { fail "an extraction anchor must name its innermost quotation frame" }
-    true
-}
+/// The admitted source, its code-point index and each frame's bytes.
+type Quoting = { source: SourceEnvelope, points: List<int>, frames: List<Span> }
 
-/// A passage's byte span: its position selector's code points, checked
-/// against its quote selector and then anchored like any span.
-export fn located(source: SourceEnvelope, points: List<int>, p: Passage, frame: string?) -> Result<
-    Span,
-    string,
-> {
-    let position = p.selector.find(it.kind == "TextPositionSelector")!
-    let start = position.start ?? 0
-    let end = position.end ?? 0
-    if start < 0 || end <= start || end >= points.length { fail outside_source() }
-    let lo = points[start]
-    let hi = points[end]
-    let text = source.content.substring(lo, hi)
-    let said = p.selector.find(it.kind == "TextQuoteSelector")
-    if said != null { let _ = quoted(source, said!, text, lo, hi)? }
-    let span = Span { start: lo, end: hi, text: text }
-    anchored(source, span, frame)?
+/// A passage's original bytes, checked against its quote and placed in
+/// exactly its innermost quotation frame.
+fn located(q: Quoting, p: Passage, frame: string?) -> Result<Span, string> {
+    let content = q.source.content
+    let span? = passage_span(content, q.points, p) else { fail "an extraction anchor must stay inside the original source" }
+    if !quote_holds(content, p, span) { fail "an extraction anchor's quote must match the original source at its position" }
+    if q.frames.any(crosses(it, span)) { fail "an extraction anchor cannot cross a quotation boundary" }
+    let active = [q.source.frames[i].id for i, f in q.frames if f.start <= span.start && f.end >= span.end]
+        .last()
+    if active != frame { fail "an extraction anchor must name its innermost quotation frame" }
     span
 }
 
-/// A quote selector agrees with the positioned text and its surroundings.
-fn quoted(source: SourceEnvelope, said: Selector, text: string, lo: int, hi: int) -> Result<
-    bool,
-    string,
-> {
-    let size = source.content.bytes().length
-    let prefix = said.prefix ?? ""
-    let suffix = said.suffix ?? ""
-    if said.exact != text ||
-        prefix.bytes().length > lo ||
-        hi + suffix.bytes().length > size ||
-        source.content.substring(lo - prefix.bytes().length, lo) != prefix ||
-        source.content.substring(hi, hi + suffix.bytes().length) != suffix {
-        fail "an extraction anchor's quote must match the original source at its position"
-    }
-    true
+/// A frame boundary falls strictly inside the span.
+fn crosses(f: Span, span: Span) -> bool {
+    f.start > span.start && f.start < span.end || f.end > span.start && f.end < span.end
 }
 
 fn checked_record(
     catalog: Catalog,
     request: ExtractionRequest,
     records: List<ProposedRecord>,
-    source: SourceEnvelope,
-    points: List<int>,
+    q: Quoting,
     r: ProposedRecord,
 ) -> Result<ProposedRecord, string> {
     let model = catalog.model(r.model)?
@@ -188,12 +147,12 @@ fn checked_record(
         fail "a resolution must choose an offered candidate of the record's model"
     }
     for identity in r.identities {
-        for p in identity.evidence { located(source, points, p, identity.frame)? }
+        for p in identity.evidence { located(q, p, identity.frame)? }
     }
     for field in r.fields {
         if !model.properties.any(it.name == field.property) { fail "unknown extraction property: ${r.model}.${field.property}" }
         if !json_safe(field.value.value) { fail "extraction values must be finite" }
-        for p in field.evidence { located(source, points, p, field.frame)? }
+        for p in field.evidence { located(q, p, field.frame)? }
     }
     let value = Value.Map([Entry { key: f.property, value: f.value.value } for f in r.fields])
     let normalized = match (model.check_fields)(value) {
@@ -282,4 +241,3 @@ fn checked_value(
     }
 }
 
-fn outside_source() -> string { "an extraction anchor must stay inside the original source" }

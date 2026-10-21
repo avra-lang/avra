@@ -1,15 +1,15 @@
 use source.{SourceEnvelope, Context}
 use common.{SourceRef}
 
-const source_text = "{\"contract\":1,\"source\":{\"observation\":\"note:1\",\"revision\":1},\"authored_at_ms\":0,\"received_at_ms\":5,\"author\":\"entity:a\",\"media_type\":\"text/plain\",\"content\":\"Aé🙂Z\",\"frames\":[{\"id\":\"quote\",\"span\":{\"start\":1,\"end\":7,\"text\":\"é🙂\"},\"speaker\":\"entity:b\"}]}"
+const source_text = "{\"contract\":2,\"source\":{\"observation\":\"note:1\",\"revision\":1},\"authored_at_ms\":0,\"received_at_ms\":5,\"author\":\"entity:a\",\"media_type\":\"text/plain\",\"content\":\"Aé🙂Z\",\"frames\":[{\"id\":\"quote\",\"passage\":{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":1,\"end\":3},{\"kind\":\"TextQuoteSelector\",\"exact\":\"é🙂\"}]},\"speaker\":\"entity:b\"}]}"
 
 fn additional_frame(frame: string) -> string {
     source_text.replace("\"speaker\":\"entity:b\"}]", "\"speaker\":\"entity:b\"},${frame}]")
 }
 
-spec "v1 source and context contracts" {
+spec "v2 source and context contracts" {
     given "immutable source bytes and explicit discourse context" {
-        then "a UTF-8 byte span and quoted speaker decode" {
+        then "a code-point passage and quoted speaker decode" {
             match SourceEnvelope.from_json(source_text) {
                 .Ok(source) -> source.author == "entity:a" &&
                     source.frames[0].speaker == "entity:b" &&
@@ -21,15 +21,16 @@ spec "v1 source and context contracts" {
                 },
             }
         }
-        then "a code-point offset cannot masquerade as the byte span" {
-            SourceEnvelope.from_json(source_text.replace("\"end\":7", "\"end\":3")) is .Err
+        then "a byte offset cannot masquerade as the code-point position" {
+            SourceEnvelope.from_json(source_text.replace("\"end\":3", "\"end\":7")) is .Err &&
+                SourceEnvelope.from_json(source_text.replace("\"end\":3", "\"end\":4")) is .Err
         }
         then "fabricated frame text is refused" {
             SourceEnvelope
-                .from_json(source_text.replace("\"text\":\"é🙂\"", "\"text\":\"a🙂\"")) is .Err
+                .from_json(source_text.replace("\"exact\":\"é🙂\"", "\"exact\":\"a🙂\"")) is .Err
         }
         then "out-of-bounds spans are refused before indexing" {
-            SourceEnvelope.from_json(source_text.replace("\"end\":7", "\"end\":100")) is .Err
+            SourceEnvelope.from_json(source_text.replace("\"end\":3", "\"end\":100")) is .Err
         }
         then "frame self-parenting is refused" {
             SourceEnvelope
@@ -42,13 +43,14 @@ spec "v1 source and context contracts" {
                 ) is .Err
         }
         then "a future contract version is refused" {
-            SourceEnvelope.from_json(source_text.replace("\"contract\":1", "\"contract\":2")) is .Err
+            SourceEnvelope.from_json(source_text.replace("\"contract\":2", "\"contract\":3")) is .Err &&
+                SourceEnvelope.from_json(source_text.replace("\"contract\":2", "\"contract\":1")) is .Err
         }
         then "nested quoted speakers can share a contained span" {
             SourceEnvelope
                 .from_json(
                     additional_frame(
-                        "{\"id\":\"nested\",\"span\":{\"start\":3,\"end\":7,\"text\":\"🙂\"},\"parent\":\"quote\",\"speaker\":\"entity:c\"}",
+                        "{\"id\":\"nested\",\"passage\":{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":2,\"end\":3},{\"kind\":\"TextQuoteSelector\",\"exact\":\"🙂\"}]},\"parent\":\"quote\",\"speaker\":\"entity:c\"}",
                     ),
                 ) is .Ok
         }
@@ -56,7 +58,7 @@ spec "v1 source and context contracts" {
             SourceEnvelope
                 .from_json(
                     additional_frame(
-                        "{\"id\":\"nested\",\"span\":{\"start\":0,\"end\":1,\"text\":\"A\"},\"parent\":\"quote\"}",
+                        "{\"id\":\"nested\",\"passage\":{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":0,\"end\":1},{\"kind\":\"TextQuoteSelector\",\"exact\":\"A\"}]},\"parent\":\"quote\"}",
                     ),
                 ) is .Err
         }
@@ -64,17 +66,17 @@ spec "v1 source and context contracts" {
             SourceEnvelope
                 .from_json(
                     additional_frame(
-                        "{\"id\":\"other\",\"span\":{\"start\":3,\"end\":7,\"text\":\"🙂\"},\"speaker\":\"entity:c\"}",
+                        "{\"id\":\"other\",\"passage\":{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":2,\"end\":3}]},\"speaker\":\"entity:c\"}",
                     ),
                 ) is .Err
         }
         then "undeclared gold fields are refused" {
             SourceEnvelope
-                .from_json(source_text.replace("\"contract\":1", "\"gold_answers\":[],\"contract\":1")) is .Err
+                .from_json(source_text.replace("\"contract\":2", "\"gold_answers\":[],\"contract\":2")) is .Err
         }
         then "duplicate source keys are refused" {
             SourceEnvelope
-                .from_json(source_text.replace("\"contract\":1", "\"contract\":1,\"contract\":1")) is .Err
+                .from_json(source_text.replace("\"contract\":2", "\"contract\":2,\"contract\":2")) is .Err
         }
         then "a source revision is not a zero-based graph revision" {
             SourceRef.from_json("{\"observation\":\"note:1\",\"revision\":0}") is .Err

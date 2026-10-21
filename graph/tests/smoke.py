@@ -13,11 +13,13 @@ import urllib.request
 
 def structured_sources(call, identity):
     source = {
-        "contract": 1, "source": {"observation": identity, "revision": 1},
+        "contract": 2, "source": {"observation": identity, "revision": 1},
         "authored_at_ms": 0, "received_at_ms": 100, "author": "actor:a",
         "participants": ["actor:a", "actor:b"], "conversation": "thread:1",
         "media_type": "text/plain", "content": "Aé🙂Z",
-        "frames": [{"id": "quote", "span": {"start": 1, "end": 7, "text": "é🙂"},
+        "frames": [{"id": "quote", "passage": {"selector": [
+                        {"kind": "TextPositionSelector", "start": 1, "end": 3},
+                        {"kind": "TextQuoteSelector", "exact": "é🙂"}]},
                     "parent": None, "speaker": "actor:b"}],
     }
     admitted = call({"op": "ingest", "source": source})

@@ -1,5 +1,6 @@
-use @avra.graph_contracts.{SourceEnvelope, SourceRef, Frame, Span}
-use @std.json.{Json, Field, field, to_text}
+use @avra.graph_contracts.{SourceEnvelope, SourceRef, Frame, code_points}
+use @std.json.{Json, Field, field, to_text, parse}
+use store.evidence.{passage_json}
 use store.open.{Graph, stored}
 use store.engine.{ObservationRow}
 
@@ -45,23 +46,12 @@ export fn source_reference(s: SourceRef) -> Json {
         .Obj([field("observation", Json.Str(s.observation)), field("revision", Json.Int(s.revision))])
 }
 
-fn span_document(s: Span) -> Json {
-    Json
-        .Obj(
-            [
-                field("start", Json.Int(s.start)),
-                field("end", Json.Int(s.end)),
-                field("text", Json.Str(s.text)),
-            ],
-        )
-}
-
 fn frame_document(f: Frame) -> Json {
     Json
         .Obj(
             [
                 field("id", Json.Str(f.id)),
-                field("span", span_document(f.span)),
+                field("passage", passage_json(f.passage)),
                 field("parent", optional_text(f.parent)),
                 field("speaker", optional_text(f.speaker)),
             ],
@@ -152,11 +142,63 @@ impl Graph {
     fn source(id: string, revision: int = 0) -> Result<SourceEnvelope, string> {
         let raw = self.observation(id, revision)?
         let payload? = raw.member("payload").text() else { fail "an observation must contain a payload" }
-        let decoded = checked_source(payload)?
+        let decoded = stored_source(payload)?
         if decoded.source.observation != id ||
             decoded.source.revision != raw.member("revision").int() {
             fail "source identity and revision must match their observation"
         }
         decoded
     }
+}
+
+/// A stored revision. A version-one payload's byte-span frames read as the
+/// code-point passages they name; the stored payload is never rewritten.
+fn stored_source(payload: string) -> Result<SourceEnvelope, string> {
+    let j = match parse(payload) {
+        .Ok(found) -> found,
+        .Err(_) -> { fail "a stored source is not JSON" },
+    }
+    if j.member("contract").int() != 1 { return checked_source(payload) }
+    let points = code_points(j.member("content").text() ?? "")
+    let fields = match j { .Obj(fs) -> fs, rest -> { fail "a stored source is not a JSON object" } }
+    checked_source(
+        to_text(
+            Json
+                .Obj(
+                    [match f.key {
+                        "contract" -> field("contract", Json.Int(2)),
+                        "frames" -> field(
+                            "frames",
+                            Json.Arr([passaged(frame, points) for frame in f.value.items()]),
+                        ),
+                        rest -> f,
+                    } for f in fields],
+                ),
+        ),
+    )
+}
+
+/// A version-one frame, its byte span restated as a code-point position
+/// and the quote it held.
+fn passaged(frame: Json, points: List<int>) -> Json {
+    let span = frame.member("span")
+    let position = Json
+        .Obj(
+            [
+                field("kind", Json.Str("TextPositionSelector")),
+                field("start", Json.Int(points.index_of(span.member("start").int() ?? -1))),
+                field("end", Json.Int(points.index_of(span.member("end").int() ?? -1))),
+            ],
+        )
+    let said = Json
+        .Obj([field("kind", Json.Str("TextQuoteSelector")), field("exact", span.member("text"))])
+    Json
+        .Obj(
+            [
+                field("id", frame.member("id")),
+                field("passage", Json.Obj([field("selector", Json.Arr([position, said]))])),
+                field("parent", frame.member("parent")),
+                field("speaker", frame.member("speaker")),
+            ],
+        )
 }

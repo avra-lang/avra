@@ -1,45 +1,87 @@
 use @std.meta.{derive}
 use @std.validate.{Decode, range, length, items}
 use common.{SourceRef, Span}
+use answer.{Selector}
 
+fn passage_coherent(p: Passage) -> Result<Passage, string> {
+    if p.selector.filter(it.kind == "TextPositionSelector").length != 1 { fail "a passage has exactly one position selector" }
+    if p.selector.filter(it.kind == "TextQuoteSelector").length > 1 { fail "a passage has at most one quote selector" }
+    p
+}
+
+/// One passage of a source revision, as W3C Web Annotation selectors that
+/// all name the same text: a position (Unicode code points, half-open) and,
+/// optionally, the quote it must hold.
+@derive(Decode)
+@passage_coherent
+export type Passage = { @items(min: 1, max: 2) selector: List<Selector> }
+
+/// Each code point's first byte in `content`, then its byte length.
+export fn code_points(content: string) -> List<int> {
+    let bytes = content.bytes()
+    [i for i in 0..bytes.length if bytes.at(i) < 128 || bytes.at(i) >= 192].concat([bytes.length])
+}
+
+/// The original bytes a passage's position names, or null outside `content`.
+export fn passage_span(content: string, points: List<int>, p: Passage) -> Span? {
+    let at? = p.selector.find(it.kind == "TextPositionSelector") else { return null }
+    let start = at.start ?? 0
+    let end = at.end ?? 0
+    if start < 0 || end <= start || end >= points.length { return null }
+    Span {
+        start: points[start],
+        end: points[end],
+        text: content.substring(points[start], points[end]),
+    }
+}
+
+/// Whether a passage's quote selector, if any, holds the positioned text
+/// with its prefix just before and its suffix just after.
+export fn quote_holds(content: string, p: Passage, span: Span) -> bool {
+    let said? = p.selector.find(it.kind == "TextQuoteSelector") else { return true }
+    let prefix = (said.prefix ?? "").bytes().length
+    let suffix = (said.suffix ?? "").bytes().length
+    said.exact == span.text &&
+        prefix <= span.start &&
+        span.end + suffix <= content.bytes().length &&
+        content.substring(span.start - prefix, span.start) == said.prefix ?? "" &&
+        content.substring(span.end, span.end + suffix) == said.suffix ?? ""
+}
+
+/// A quotation frame: the passage quoted and, when known, who speaks it.
 @derive(Decode)
 export type Frame = {
     @length(min: 1, max: 128) id: string,
-    span: Span,
+    passage: Passage,
     parent: string? = null,
     speaker: string? = null,
 }
 
+/// The byte span of each frame, in frame order.
+export fn frame_spans(s: SourceEnvelope) -> Result<List<Span>, string> {
+    let points = code_points(s.content)
+    [framed(s.content, points, f)? for f in s.frames]
+}
+
+fn framed(content: string, points: List<int>, f: Frame) -> Result<Span, string> {
+    let span? = passage_span(content, points, f.passage) else { fail "a frame exceeds its source content" }
+    if !quote_holds(content, f.passage, span) { fail "a frame quote must match the original source" }
+    span
+}
+
 fn source_coherent(s: SourceEnvelope) -> Result<SourceEnvelope, string> {
-    let bytes = s.content.bytes()
-    if bytes.length > 1048576 { fail "source content exceeds its byte budget" }
+    if s.content.bytes().length > 1048576 { fail "source content exceeds its byte budget" }
+    let spans = frame_spans(s)?
     for i, frame in s.frames {
+        let span = spans[i]
         if s.frames.slice(0, i).any(it.id == frame.id) { fail "frame ids must be unique" }
         if frame.parent != null {
-            let parent? = s.frames.slice(0, i).find(it.id == frame.parent!) else { fail "a frame parent must precede its child" }
-            if frame.span.start < parent.span.start || frame.span.end > parent.span.end {
-                fail "a child frame must stay inside its parent"
-            }
+            let parent? = [spans[j] for j, f in s.frames if j < i && f.id == frame.parent!].first() else { fail "a frame parent must precede its child" }
+            if span.start < parent.start || span.end > parent.end { fail "a child frame must stay inside its parent" }
         }
-        if s
-            .frames
-            .slice(0, i)
-            .any(
-                it.parent == frame.parent &&
-                    it.span.start < frame.span.end &&
-                    frame.span.start < it.span.end,
-            ) {
+        if [j for j, f in s.frames if j < i && f.parent == frame.parent && spans[j].start < span.end && span.start < spans[j].end]
+            .length > 0 {
             fail "sibling frames cannot overlap"
-        }
-        if frame.span.end > bytes.length { fail "a frame exceeds its source content" }
-        let quoted = frame.span.text.bytes()
-        if quoted.length != frame.span.end - frame.span.start {
-            fail "a frame quote has a different byte length from its span"
-        }
-        for offset in 0..quoted.length {
-            if bytes.at(frame.span.start + offset) != quoted.at(offset) {
-                fail "a frame quote must match the original source bytes"
-            }
         }
     }
     s
@@ -48,7 +90,7 @@ fn source_coherent(s: SourceEnvelope) -> Result<SourceEnvelope, string> {
 @derive(Decode)
 @source_coherent
 export type SourceEnvelope = {
-    @range(1, 1) contract: int,
+    @range(2, 2) contract: int,
     source: SourceRef,
     authored_at_ms: int?,
     received_at_ms: int,

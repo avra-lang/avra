@@ -1,4 +1,4 @@
-use @avra.graph_contracts.{SourceEnvelope, SourceRef, Span}
+use @avra.graph_contracts.{SourceEnvelope, SourceRef, Span, frame_spans}
 use @std.json.{Json, to_text}
 use @std.text.{builder, chars, is_blank}
 use ingest.envelope.{source_document}
@@ -107,14 +107,14 @@ export fn windows(s: SourceEnvelope, policy: WindowPolicy = WindowPolicy {}) -> 
     }
     let bytes = source.content.bytes()
     if bytes.text() == null { fail "windowing needs valid UTF-8 source text" }
-    let boundaries = [bytes.length]
-        .concat([at for f in source.frames for at in [f.span.start, f.span.end]])
+    let spans = frame_spans(source)?
+    let boundaries = [bytes.length].concat([at for f in spans for at in [f.start, f.end]])
     mut out: List<TextWindow> = []
     mut cursor = 0
     mut total = 0
     while cursor < bytes.length {
         let end = [at for at in boundaries if at > cursor].min() ?? bytes.length
-        let frames = [f for f in source.frames if f.span.start <= cursor && f.span.end >= end]
+        let frames = [source.frames[i] for i, f in spans if f.start <= cursor && f.end >= end]
         let frame = frames.last()
         mut start = cursor
         while start < end {
