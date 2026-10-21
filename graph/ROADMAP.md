@@ -64,9 +64,10 @@ a record-level rule. These are foundation tests, not a production readiness
 claim.
 
 The engine's tables are `@std/db` models with links, many-relations and
-nullable history columns; only user ontology rows are generic. The six-field
-cap is split (`RunRow`/`RunTrailRow`) and composite identity is a derived
-`@unique stamp`; both are filed as surface asks.
+nullable history columns; only user ontology rows are generic. `@std/db`
+has no field-count ceiling — a row literal and a `where`'s parameters are
+both splices — so the split rows (`RunRow`/`RunTrailRow`) can merge;
+composite identity is a derived `@unique stamp` still.
 
 The working API and operational instructions live in [README.md](README.md).
 Architecture and substrate receipts live in [DESIGN.md](DESIGN.md).
@@ -228,8 +229,9 @@ derived. `@std/db`'s `@model` IS the graph engine's storage: one derived table p
 engine row, typed links, `Many<T>` batched reads, nullable `until` history,
 and `where`/`in_<link>`/`with_<many>` accessors. User ontology types never
 become tables; their claims are rows of `ClaimRow`. The remaining asks are
-surface: a 7+/8-field row without splitting (`RunRow`+`RunTrailRow`,
-`MergeRow`+`MergeEndRow`) and composite `@unique` (today a derived `stamp`).
+surface: composite `@unique` (today a derived `stamp`). A row of any width
+is no ask — `@model` splices its fields — so `RunRow`+`RunTrailRow` and
+`MergeRow`+`MergeEndRow` may merge whenever the read paths are paid.
 
 Future substrate requests must identify a concrete wanting site and a
 reproducer. Partial assertions and external identities have boundary tests;
