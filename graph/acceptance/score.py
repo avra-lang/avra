@@ -174,6 +174,9 @@ def projection(answer, keys=None):
     tree.update(read_keys(answer, keys or {}))
     if answer.get("candidates"):
         tree["candidates"] = [c["entity"] for c in answer["candidates"]]
+    if answer.get("conflicts"):
+        tree["conflicts"] = [{"path": c["path"], "values": sorted((r["value"] for r in c["rivals"]), key=json.dumps)}
+                             for c in answer["conflicts"]]
     if answer.get("clarify"):
         tree["clarify"] = answer["clarify"]
     if answer.get("problems") and "reason" not in tree:
