@@ -15,7 +15,6 @@ in-process through mlx_lm from the extraction lane's venv. Timings and retries g
 """
 import json
 import os
-import re
 import pathlib
 import sys
 import tempfile
@@ -30,6 +29,7 @@ TRIES = 3
 sys.path.insert(0, str(HERE))
 from prompt import messages  # noqa: E402
 from subset import Refusal, check  # noqa: E402
+from english import FIRST_PERSON  # noqa: E402
 
 
 def log(text):
@@ -190,9 +190,6 @@ def tries():
     """`--tries N` caps the drafts; a single pass measures the prompt alone."""
     args = sys.argv[1:]
     return int(args[args.index("--tries") + 1]) if "--tries" in args else TRIES
-
-
-FIRST_PERSON = re.compile(r"\b(i|me|my|mine|myself)\b", re.I)
 
 
 def bound(question, cypher, context):

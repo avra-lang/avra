@@ -13,17 +13,11 @@ import re
 
 from subset import models_of, base_shape, reference_target, relation_ends
 from prompt import line
+from english import FIRST_PERSON, RECORD_WORDS, FUNCTION_WORDS
 
-RECORD_WORDS = re.compile(r"\b(record\w*|logged|noted|on file|written down)\b", re.I)
-CONFIDENT = 0.75
-FIRST_PERSON = re.compile(r"\b(i|me|my|mine|myself)\b", re.I)
 MAX_HOPS = 4
 ARRIVED = ["yes: the question asks about this record", "no: the answer lies further along"]
 NEEDED = ["yes", "no"]
-STOPWORDS = {"what", "who", "when", "did", "does", "do", "is", "are", "was", "were", "the", "a", "an", "my",
-             "me", "i", "about", "for", "to", "of", "say", "said", "ask", "asked", "how", "many", "much",
-             "that", "his", "her", "she", "he", "it", "and", "or", "in", "on", "with", "could", "actually",
-             "have", "has", "had", "be", "this", "there", "which", "whose"}
 
 
 class Plan:
@@ -67,7 +61,7 @@ def names_in(question):
     words = [re.sub(r"['’]s$", "", w) for w in re.findall(r"[A-Za-z][A-Za-z'’-]*", question)]
     runs, run = [], []
     for i, w in enumerate(words):
-        if w[0].isupper() and (i > 0 or w.lower() not in STOPWORDS) and w.lower() not in ("i",):
+        if w[0].isupper() and (i > 0 or w.lower() not in FUNCTION_WORDS) and w.lower() not in ("i",):
             run.append(w)
         else:
             if run:
@@ -75,13 +69,13 @@ def names_in(question):
             run = []
     if run:
         runs.append(" ".join(run))
-    return [r for r in runs if r.lower() not in STOPWORDS]
+    return [r for r in runs if r.lower() not in FUNCTION_WORDS]
 
 
 def topic_words(question):
     """Lowercase content words, without the proper names the question anchors on."""
     named = {w.lower() for n in names_in(question) for w in n.split()}
-    return [w for w in dict.fromkeys(re.findall(r"[a-z]{3,}", question.lower())) if w not in STOPWORDS | named]
+    return [w for w in dict.fromkeys(re.findall(r"[a-z]{3,}", question.lower())) if w not in FUNCTION_WORDS | named]
 
 
 def hops(models, label):
@@ -160,7 +154,7 @@ def plan(chooser, question, schema, context, search=None):
         var = out.node(label)
         out.parts.append(f"({var}:{label})")
     came = None
-    words = {w for w in re.findall(r"[a-z]+", question.lower()) if len(w) > 2 and w not in STOPWORDS}
+    words = {w for w in re.findall(r"[a-z]+", question.lower()) if len(w) > 2 and w not in FUNCTION_WORDS}
     leftover = {stem(w) for w in topic_words(question)}
     spelled = {stem(w): w for w in topic_words(question)}
     for hop in range(MAX_HOPS):
@@ -213,7 +207,7 @@ def mentions(models, label, depth=1):
     seen = [label] + ([reference_target(p["shape"]) for p in models[label]["properties"] if reference_target(p["shape"])] if depth else [])
     text = " ".join(f"{re.sub(r'(?<!^)(?=[A-Z])', ' ', m)} {models[m].get('description', '')} "
                     + " ".join(p["name"].replace("_", " ") for p in models[m]["properties"]) for m in seen if m in models)
-    return {stem(w) for w in re.findall(r"[A-Za-z]{3,}", text)} - {stem(w) for w in STOPWORDS}
+    return {stem(w) for w in re.findall(r"[A-Za-z]{3,}", text)} - {stem(w) for w in FUNCTION_WORDS}
 
 
 def identified(models):
@@ -282,6 +276,6 @@ def returns(chooser, trail, model, var, leftover=frozenset()):
         about = f"{p['name']}" + (f" ({line(p['description'], 80)})" if p.get("description") else "")
         if leftover & {stem(w) for w in re.findall(r"[A-Za-z]{3,}", about.replace("_", " "))}:
             picked.append(i)
-        elif chooser.choose(trail, f"Does the answer need their {about}?", NEEDED)[0] >= CONFIDENT:
+        elif best(chooser, trail, f"Does the answer need their {about}?", NEEDED) == 0:
             picked.append(i)
     return ", ".join(f"{var}.{props[i]['name']} AS {props[i]['name']}" for i in picked or [0])
