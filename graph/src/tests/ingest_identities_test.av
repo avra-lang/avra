@@ -1,0 +1,513 @@
+use derive.model.{model}
+use semantics.{Semantics, IdentityBinding}
+use schema.{Registration}
+use store.open.{Graph, stored}
+use store.engine.{EntityRow, AliasRow, RunRow}
+use store.publish.{Record, Publication}
+use store.identity.{Identity}
+use store.merge.{Merge}
+use store.tombstone.{Tombstone}
+use ingest.identities.{LinkedExtraction, ExactLink, normalized_key}
+use ingest.envelope.{source_document}
+use @avra.graph_contracts.{SourceEnvelope, SourceRef}
+use @std.json.{Json, to_text}
+use @std.text.{from_codepoints}
+
+@model(quote { Semantics { identities: [
+    IdentityBinding { namespace: "directory", path: ["route"], normalization: .AsciiLowerTrim },
+    IdentityBinding { namespace: "opaque", path: ["token"], normalization: .Trim },
+] } })
+type Client = { label: string, route: string?, token: string? }
+
+@model(quote { Semantics { identities: [IdentityBinding { namespace: "directory", path: ["route"] }] } })
+type OtherClient = { route: string }
+
+@model
+type Card = { tag: string }
+
+@model(quote { Semantics { identities: [IdentityBinding { namespace: "nested", path: ["card", "tag"], normalization: .Trim }] } })
+type Cabinet = { card: Card? }
+
+fn registrations() -> List<Registration> {
+    [
+        Registration { make: Client_graph_model },
+        Registration { make: OtherClient_graph_model },
+        Registration { make: Card_graph_model },
+        Registration { make: Cabinet_graph_model },
+    ]
+}
+
+const content = "Alex Moreau alex@example.test token:old"
+const next_content = "Alexandre Moreau alex@example.test token:new"
+const version = "{\"producer\":\"encoder\",\"code\":\"code:1\",\"model\":\"weights:1\"}"
+
+fn source(id: string = "source:1", revision: int = 1, text: string = content) -> SourceEnvelope {
+    SourceEnvelope {
+        contract: 1,
+        source: SourceRef { observation: id, revision: revision },
+        authored_at_ms: null,
+        received_at_ms: 1,
+        author: "unlinked:author",
+        media_type: "text/plain",
+        content: text,
+    }
+}
+
+fn quote_text(text: string) -> string { to_text(Json.Str(text)) }
+
+fn request(
+    g: Graph,
+    s: SourceEnvelope,
+    producer: string = "encoder",
+    scope: string = "all",
+    candidates: string = "[]",
+) -> string {
+    "{\"contract\":1,\"request\":\"req:1\",\"input\":${to_text(source_document(s))},\"catalog\":{\"fingerprint\":\"${g.catalog.fingerprint}\",\"descriptor\":${g.catalog.document}},\"extractor\":${version.replace("encoder", producer)},\"scope\":${quote_text(scope)},\"candidates\":${candidates}}"
+}
+
+fn response(g: Graph, s: SourceEnvelope, records: string, producer: string = "encoder") -> string {
+    "{\"contract\":1,\"request\":\"req:1\",\"source\":{\"observation\":${quote_text(s.source.observation)},\"revision\":${s.source.revision}},\"schema\":\"${g.catalog.fingerprint}\",\"extractor\":${version.replace("encoder", producer)},\"status\":\"complete\",\"records\":[${records}]}"
+}
+
+fn field(
+    property: string,
+    value: string,
+    text: string = content,
+    modality: string = "asserted",
+    polarity: string = "affirmed",
+) -> string {
+    "{\"property\":${quote_text(property)},\"value\":${value},\"spans\":[{\"start\":0,\"end\":${text.bytes().length},\"text\":${quote_text(text)}}],\"polarity\":${quote_text(polarity)},\"modality\":${quote_text(modality)}}"
+}
+
+fn record(fields: string, id: string = "mention:1", model: string = "Client", extra: string = "") -> string {
+    "{\"local_id\":${quote_text(id)},\"model\":${quote_text(model)},\"fields\":[${fields}]${extra}}"
+}
+
+fn linked(
+    g: Graph,
+    records: string,
+    s: SourceEnvelope = source(),
+    producer: string = "encoder",
+    scope: string = "all",
+    candidates: string = "[]",
+) -> Result<LinkedExtraction, string> {
+    g.link_exact(request(g, s, producer, scope, candidates), response(g, s, records, producer))
+}
+
+fn seed(
+    g: Graph,
+    s: SourceEnvelope,
+    id: string,
+    route: string?,
+    token: string? = null,
+    label: string = "Alex Moreau",
+    producer: string = "encoder",
+    scope: string = "all",
+    run: string = "seed:1",
+) -> Result<int, string> {
+    let identities = if route == null { [] } else { [Identity { namespace: "directory", external_key: route! }] }
+        .concat(if token == null { [] } else { [Identity { namespace: "opaque", external_key: token! }] })
+    g
+        .publish(
+            Publication {
+                id: run,
+                producer: producer,
+                scope: scope,
+                input: s.source.observation,
+                input_revision: s.source.revision,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: [
+                    Record {
+                        id: id,
+                        model: "Client",
+                        value: Client { label: label, route: route, token: token }.graph_value(),
+                        identities: identities,
+                    },
+                ],
+            },
+        )
+}
+
+fn existing(result: LinkedExtraction, id: string, index: int = 0) -> bool {
+    match result.records[index].decision { .Existing(found) -> found == id, rest -> false }
+}
+
+fn new_group(result: LinkedExtraction, group: string, index: int = 0) -> bool {
+    match result.records[index].decision { .New(found) -> found == group, rest -> false }
+}
+
+fn exact_existing() -> Result<bool, string> {
+    let g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    let s = source()
+    g.ingest(to_text(source_document(s)))?
+    seed(g, s, "entity:alex", "alex@example.test", "token:old")?
+    seed(
+        g,
+        s,
+        "entity:chen",
+        "chen@example.test",
+        label: "Alex Chen",
+        scope: "chen",
+        run: "seed:chen",
+    )?
+    let before = g.revision()?
+    let result = linked(
+        g,
+        record(
+            field("route", quote_text(" ALEX@EXAMPLE.TEST ")) +
+                "," +
+                field("label", quote_text("Alexandre Moreau")),
+        ),
+    )?
+    existing(result, "entity:alex") &&
+        result.revision == before &&
+        result.records[0].keys[0].identity.key == "alex@example.test" &&
+        result.records[0].keys[0].path[0] == "route" &&
+        result.records[0].keys[0].spans[0].text == content &&
+        result.records[0].matches[0].source.revision == 1 &&
+        !result.records[0].matches[0].continuity &&
+        g.revision()? == before &&
+        (stored(EntityRow.all(g.db))?).length == 2 &&
+        (stored(AliasRow.all(g.db))?).length == 3 &&
+        (stored(RunRow.all(g.db))?).length == 2
+}
+
+fn revision_continuity(
+    producer: string = "encoder",
+    scope: string = "all",
+    other_source: bool = false,
+) -> Result<bool, string> {
+    let g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    let old = source()
+    g.ingest(to_text(source_document(old)))?
+    seed(g, old, "entity:alex", "alex@example.test", "token:old")?
+    let next = source(revision: 2, text: next_content)
+    g.ingest(to_text(source_document(next)))?
+    let s = if other_source { source("other:source", text: next_content) } else { next }
+    if other_source { g.ingest(to_text(source_document(s)))? }
+    let result = linked(
+        g,
+        record(field("route", quote_text("alex@example.test"), next_content)),
+        s,
+        producer,
+        scope,
+    )?
+    let can_continue = producer == "encoder" && scope == "all" && !other_source
+    if can_continue {
+            existing(result, "entity:alex") &&
+                result.records[0].matches.all(it.continuity && it.source.revision == 1)
+        } else {
+            new_group(result, "mention:1")
+        } &&
+        g.resolve("directory", "alex@example.test") is .Err &&
+        g.resolve("opaque", "token:old") is .Err
+}
+
+fn corrected_contact() -> Result<bool, string> {
+    let g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    let old = source()
+    g.ingest(to_text(source_document(old)))?
+    seed(g, old, "entity:alex", "alex@example.test", "token:old")?
+    let next = source(revision: 2, text: next_content)
+    g.ingest(to_text(source_document(next)))?
+    let result = linked(
+        g,
+        record(
+            field("route", quote_text("alex@example.test"), next_content) +
+                "," +
+                field("token", quote_text("token:new"), next_content),
+        ),
+        next,
+    )?
+    if !existing(result, "entity:alex") { return false }
+    // Manual storage witness, not the future E00/J03 worker publication path.
+    seed(
+        g,
+        next,
+        "entity:alex",
+        "alex@example.test",
+        "token:new",
+        "Alexandre Moreau",
+        run: "seed:2",
+    )?
+    let rows = stored(AliasRow.where(g.db, namespace: "opaque", key: "token:old"))?
+    g.resolve("opaque", "token:old") is .Err &&
+        g.resolve("opaque", "token:new")? == "entity:alex" &&
+        rows.length == 1 &&
+        rows[0].until != null &&
+        (g.source("source:1", 1)?).content == content &&
+        (g.find("Client")?).length == 1
+}
+
+fn withdrawn_key() -> Result<bool, string> {
+    let g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    let s = source()
+    g.ingest(to_text(source_document(s)))?
+    seed(g, s, "entity:alex", "alex@example.test")?
+    seed(g, s, "entity:alex", null, run: "seed:2")?
+    let next = source(revision: 2, text: next_content)
+    g.ingest(to_text(source_document(next)))?
+    new_group(
+        linked(g, record(field("route", quote_text("alex@example.test"), next_content)), next)?,
+        "mention:1",
+    )
+}
+
+fn shared_new_keys() -> Result<bool, string> {
+    let g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    g.ingest(to_text(source_document(source())))?
+    let records = [
+        record(field("route", quote_text("new:key")), "m:c"),
+        record(
+            field("route", quote_text("NEW:KEY")) + "," + field("token", quote_text("bridge")),
+            "m:b",
+        ),
+        record(field("token", quote_text(" bridge ")), "m:a"),
+        record(field("label", quote_text("Alex")), "m:d"),
+    ]
+    let forward = linked(g, records.join(","))?
+    let reverse = linked(g, [records[3], records[2], records[1], records[0]].join(","))?
+    new_group(forward, "m:a", 0) &&
+        new_group(forward, "m:a", 1) &&
+        new_group(forward, "m:a", 2) &&
+        forward.records[3].decision is .Unresolved &&
+        new_group(reverse, "m:a", 3) &&
+        (stored(EntityRow.all(g.db))?).is_empty()
+}
+
+fn conflicting_keys(merge: bool = false) -> Result<bool, string> {
+    let g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    let s = source()
+    g.ingest(to_text(source_document(s)))?
+    seed(g, s, "entity:a", "alex@example.test", scope: "one")?
+    seed(g, s, "entity:b", null, "token:old", scope: "two", run: "seed:2")?
+    if merge { g.merge(Merge { id: "explicit:1", left: "entity:a", right: "entity:b", decider: "owner" })? }
+    let before = g.revision()?
+    let result = linked(
+        g,
+        record(
+            field("route", quote_text("alex@example.test")) +
+                "," +
+                field("token", quote_text("token:old")),
+        ),
+    )?
+    let correct = if merge {
+        existing(result, "entity:a")
+    } else {
+        match result.records[0].decision {
+            .Ambiguous(ids) -> ids.length == 2 && ids.contains("entity:a") && ids.contains("entity:b"),
+            rest -> false,
+        }
+    }
+    correct && g.revision()? == before && (g.merges()?).length == if merge { 1 } else { 0 }
+}
+
+fn unqualified(modality: string, polarity: string = "affirmed") -> Result<bool, string> {
+    let g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    let s = source()
+    g.ingest(to_text(source_document(s)))?
+    seed(g, s, "entity:alex", "alex@example.test")?
+    let r = linked(
+        g,
+        record(
+            field("route", quote_text("alex@example.test"), modality: modality, polarity: polarity),
+        ),
+    )?
+    r.records[0].decision is .Unresolved && r.records[0].keys.is_empty()
+}
+
+fn weak_proposals() -> Result<bool, string> {
+    let g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    let s = source()
+    g.ingest(to_text(source_document(s)))?
+    seed(g, s, "entity:alex", "alex@example.test")?
+    let candidate = "{\"entity\":\"entity:alex\",\"model\":\"Client\",\"label\":\"Alex\",\"score\":1.0}"
+    let suggested = linked(
+        g,
+        record(field("label", quote_text("Alex")), extra: ",\"candidates\":[${candidate}]"),
+        candidates: "[${candidate}]",
+    )?
+    let identity = ",\"identities\":[{\"identity\":{\"namespace\":\"directory\",\"key\":\"alex@example.test\"},\"spans\":[{\"start\":0,\"end\":4,\"text\":\"Alex\"}]}]"
+    let only = linked(g, record("", extra: identity))?
+    suggested.records[0].decision is .Unresolved && only.records[0].decision is .Unresolved
+}
+
+fn bad_target(hidden: bool) -> Result<bool, string> {
+    let g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    let s = source()
+    g.ingest(to_text(source_document(s)))?
+    if hidden {
+        seed(g, s, "entity:alex", "alex@example.test")?
+        g.tombstone(Tombstone { id: "hide:1", entity: "entity:alex", decider: "owner" })?
+    } else {
+        g
+            .publish(
+                Publication {
+                    id: "seed:other",
+                    producer: "encoder",
+                    scope: "all",
+                    input: s.source.observation,
+                    input_revision: 1,
+                    schema: g.catalog.fingerprint,
+                    expected_revision: g.revision()?,
+                    records: [
+                        Record {
+                            id: "other",
+                            model: "OtherClient",
+                            value: OtherClient { route: "alex@example.test" }.graph_value(),
+                            identities: [
+                                Identity {
+                                    namespace: "directory",
+                                    external_key: "alex@example.test",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            )?
+    }
+    linked(g, record(field("route", quote_text("alex@example.test")))) is .Err
+}
+
+fn source_guards() -> Result<bool, string> {
+    let g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    let s = source()
+    g.ingest(to_text(source_document(s)))?
+    let records = record(field("route", quote_text("alex@example.test")))
+    let forged = linked(g, records, s with { author: "fabricated" }) is .Err
+    g.ingest(to_text(source_document(source(revision: 2, text: next_content))))?
+    forged && linked(g, records, s) is .Err
+}
+
+fn continuity_conflict() -> Result<bool, string> {
+    let g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    let old = source()
+    g.ingest(to_text(source_document(old)))?
+    seed(g, old, "entity:old", "alex@example.test")?
+    let next = source(revision: 2, text: next_content)
+    g.ingest(to_text(source_document(next)))?
+    seed(g, next, "entity:new", "alex@example.test", producer: "another", run: "seed:2")?
+    let result = linked(
+        g,
+        record(field("route", quote_text("alex@example.test"), next_content)),
+        next,
+    )?
+    match result.records[0].decision {
+        .Ambiguous(ids) -> ids.length == 2 &&
+            ids.contains("entity:old") &&
+            ids.contains("entity:new") &&
+            result.records[0].matches.any(it.continuity) &&
+            result.records[0].matches.any(!it.continuity),
+        rest -> false,
+    }
+}
+
+fn contradictory_proposal() -> Result<bool, string> {
+    let g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    g.ingest(to_text(source_document(source())))?
+    let identity = ",\"identities\":[{\"identity\":{\"namespace\":\"directory\",\"key\":\"someone:else\"},\"spans\":[{\"start\":0,\"end\":4,\"text\":\"Alex\"}]}]"
+    linked(g, record(field("route", quote_text("alex@example.test")), extra: identity)) is .Err &&
+        linked(g, record(field("route", quote_text("   ")))) is .Err &&
+        (linked(g, record(field("route", "null")))?).records[0].decision is .Unresolved
+}
+
+fn local_model_collision() -> Result<bool, string> {
+    let g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    g.ingest(to_text(source_document(source())))?
+    let records = record(field("route", quote_text("same:key")), "a") +
+        "," +
+        record(field("route", quote_text("same:key")), "b", "OtherClient")
+    linked(g, records) is .Err && (stored(EntityRow.all(g.db))?).is_empty()
+}
+
+fn borrowed_snapshot() -> Result<bool, string> {
+    let g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    g.ingest(to_text(source_document(source())))?
+    stored(g.db.begin_read())?
+    let result = linked(g, record(field("route", quote_text("new:key"))))?
+    let retained = g.db.in_transaction()
+    let _ = g.db.finish()
+    retained && !g.db.in_transaction() && new_group(result, "mention:1")
+}
+
+fn nested_key() -> Result<bool, string> {
+    let g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    g.ingest(to_text(source_document(source())))?
+    let result = linked(g, record(field("card", "{\"tag\":\" shelf:1 \"}"), model: "Cabinet"))?
+    result.records[0].keys[0].identity.key == "shelf:1" &&
+        result.records[0].keys[0].path.join("/") == "card/tag"
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "declared exact identity linking without graph mutation" {
+    given "recorded evidence and a real SQLite snapshot" {
+        then "normalization links changed display names without publishing or merging" { passed(exact_existing()) }
+        then "an unchanged exact key recovers same-stream revision continuity only" { passed(revision_continuity()) }
+        then "stale keys from other producers, scopes or sources are not identity authority" {
+            passed(revision_continuity("other")) &&
+                passed(revision_continuity(scope: "other")) &&
+                passed(revision_continuity(other_source: true))
+        }
+        then "a corrected contact replaces current support but preserves identity and history" { passed(corrected_contact()) }
+        then "withdrawn identities cannot be revived by continuity fallback" { passed(withdrawn_key()) }
+        then "shared keys form deterministic local groups, including transitive links" { passed(shared_new_keys()) }
+        then "keys pointing to different entities remain ambiguous without a merge" { passed(conflicting_keys()) }
+        then "current and same-stream historical keys cannot silently outvote each other" { passed(continuity_conflict()) }
+        then "explicitly merged entities resolve through their existing read group" { passed(conflicting_keys(true)) }
+        then "negated, planned and reported fields cannot grant exact identity authority" {
+            passed(unqualified("asserted", "denied")) &&
+                passed(unqualified("planned")) &&
+                passed(unqualified("reported"))
+        }
+        then "display names, score-one suggestions and unqualified identity-only proposals cannot merge" { passed(weak_proposals()) }
+        then "tombstoned and wrong-model exact matches are refused" { passed(bad_target(true)) && passed(bad_target(false)) }
+        then "the immutable admitted envelope and current revision are required" { passed(source_guards()) }
+        then "linking borrows and preserves an outer read transaction" { passed(borrowed_snapshot()) }
+        then "declared embedded paths work without domain property conventions" { passed(nested_key()) }
+        then "contradictory key proposals and empty canonical keys are refused while null stays unknown" { passed(contradictory_proposal()) }
+        then "a shared local key cannot join different model types" { passed(local_model_collision()) }
+        then "ASCII normalization is explicit and preserves non-ASCII capitals" {
+            match normalized_key(
+                IdentityBinding { namespace: "n", path: ["p"], normalization: .AsciiLowerTrim },
+                " ÉX@DOMAIN ",
+            ) { .Ok(k) -> k.key == "Éx@domain", .Err(_) -> false }
+        }
+        then "exact policy retains significant spaces and empty/NUL keys are refused" {
+            let b = IdentityBinding { namespace: "n", path: ["p"] }
+            match normalized_key(b, " A ") {
+                .Ok(k) -> k.key == " A " &&
+                    normalized_key(b, "") is .Err &&
+                    normalized_key(b, from_codepoints([65, 0, 66])) is .Err,
+                .Err(_) -> false,
+            }
+        }
+        then "key and namespace byte budgets are enforced before lookup" {
+            let b = IdentityBinding { namespace: "n", path: ["p"] }
+            normalized_key(b, ["a" for i in 0..1024].join("")) is .Ok &&
+                normalized_key(b, ["a" for i in 0..1025].join("")) is .Err &&
+                normalized_key(b with { namespace: from_codepoints([0]) }, "key") is .Err
+        }
+    }
+}

@@ -1,9 +1,22 @@
 use @std.json.{Json, field}
 use store.open.{Graph, stored}
 use store.engine.{AliasRow, RunTrailRow}
+use @avra.graph_contracts.{SourceRef}
 
 /// A producer's name for an entity, in its own namespace.
 export type Identity = { namespace: string, external_key: string }
+
+/// A historical association may establish continuity, never current facts.
+export type IdentityMatch = {
+    identity: Identity,
+    entity: string,
+    bound_entity: string,
+    source: SourceRef,
+    run: string,
+    continuity: bool,
+}
+
+export type IdentityScope = { source: SourceRef, producer: string, scope: string, schema: string }
 
 impl Identity {
     fn json() -> Json {
@@ -18,6 +31,47 @@ impl Identity {
 }
 
 impl Graph {
+    /// Exact keys only. The caller owns a read snapshot. Old support is
+    /// eligible only for the same still-unwithdrawn interpretation stream.
+    fn exact_identity_matches(identity: Identity, model: string, context: IdentityScope) -> Result<
+        List<IdentityMatch>,
+        string,
+    > {
+        if !self.db.in_transaction() { fail "identity lookup needs its caller's snapshot" }
+        let rows = stored(
+            AliasRow.where(self.db, namespace: identity.namespace, key: identity.external_key),
+        )?
+        if rows.length > 4096 { fail "identity alias history exceeds the linking row budget" }
+        let trails = stored(RunTrailRow.in_run(self.db, rows.map(it.run)))?
+        let hidden = self.hidden_members()?
+        mut matches: List<IdentityMatch> = []
+        for a in rows {
+            let trail? = self.trail_of(trails, a.run.id) else { fail "an identity binding has no interpretation trail" }
+            let current = self.alias_stands(a, trails)
+            let continuity = a.until == null &&
+                trail.schema == context.schema &&
+                a.run.producer == context.producer &&
+                a.run.scope == context.scope &&
+                a.run.input.name == context.source.observation &&
+                trail.input_revision < context.source.revision
+            if !current && !continuity { continue }
+            if a.entity.model != model { fail "an exact identity is bound to a different model" }
+            if hidden.contains(a.entity.name) { fail "an exact identity is bound to a tombstoned entity" }
+            matches
+                .push(
+                    IdentityMatch {
+                        identity: identity,
+                        entity: self.root(a.entity.name)?,
+                        bound_entity: a.entity.name,
+                        source: SourceRef { observation: a.run.input.name, revision: trail.input_revision },
+                        run: a.run.name,
+                        continuity: !current,
+                    },
+                )
+        }
+        matches
+    }
+
     /// Active entities an external identity names, in entity order.
     fn bound(namespace: string, key: string) -> Result<List<string>, string> {
         let rows = stored(AliasRow.where(self.db, namespace: namespace, key: key))?

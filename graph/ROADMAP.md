@@ -50,6 +50,8 @@ autonomous extraction or inference system.
 | Structured source envelopes, immutable context, revision admission | Working; I01, CLI/HTTP; no extraction side effect |
 | Bounded source windows and original-coordinate grounding | Working; I02; explicit quotation boundaries |
 | Provider-neutral extraction admission | Working; E01; recorded proposals only, no inference/publication |
+| Exact declared-key linking | Working; L01; read-only, ambiguity and same-stream continuity proofs |
+| Personal/event/task fixture application | Working; M03; model declarations and shared CLI startup, not NLP |
 | Atomic replacement, replay, stale input/schema/revision rejection | Working |
 | Independent support, conflicts, and explanations | Working |
 | Entity reads, model listing, edges, bounded breadth-first traversal | Working |
@@ -278,15 +280,17 @@ work queue, not a claim that extraction or English querying already works.
 A00 fixture integrity and A01 semantic audit are complete. C01 supplies an
 independently consumable boundary-contract library (55 passing tests and a
 native consumer); see [contracts/HANDOFF.md](contracts/HANDOFF.md). Source
-extraction admission, worker execution and English planning remain future
-tasks. Provider replacement (V05) and ontology portability (V04) are separate
+admission is now implemented by E01; worker execution and English planning
+remain future tasks. Provider replacement (V05) and ontology portability (V04) are separate
 release witnesses; neither is proved by codecs alone.
 
-M01's fixture identity/relationship declarations have 12 passing tests and
-one interpreter/native proof program. Isolated consumer lint still exposes
-the public-re-export false positive `avra-8sb5.25.74`; see
-[acceptance/app/M01-HANDOFF.md](acceptance/app/M01-HANDOFF.md). It is not a
-reason to remove the library API or grow the idiom baseline.
+M01's identity/relationship declarations and M03's personal plans now have
+30 passing application tests and two interpreter/native proof programs.
+The model-only application builds and starts the shared CLI; its native smoke
+test checks file-backed manual facts and preserves unknown outcomes.
+See [acceptance/app/M03-HANDOFF.md](acceptance/app/M03-HANDOFF.md).
+The public-re-export false positive `avra-8sb5.25.74` is fixed and verified;
+isolated consumer checks pass without removing API members or growing baselines.
 
 I01 admits structured sources through CLI/HTTP, preserving original text,
 timestamps, authors and quoted-speaker frames. Source revision replay and
@@ -294,8 +298,20 @@ metadata changes have 20 new witnesses (103 total graph tests), plus native
 transport/restart checks. See [src/ingest/I01-HANDOFF.md](src/ingest/I01-HANDOFF.md).
 I02 adds Unicode-safe, speaker-partitioned windows and normalized-coordinate
 grounding: 126 graph tests and one native/interpreter proof now pass. See
-[src/ingest/I02-HANDOFF.md](src/ingest/I02-HANDOFF.md). Extraction admission
-and automatic work remain the next slices.
+[src/ingest/I02-HANDOFF.md](src/ingest/I02-HANDOFF.md). E01 adds pure admission
+of recorded provider proposals, preserving qualifiers and exact anchors.
+P01 supplies checked model-declared semantics; L01 consumes identity bindings
+for snapshot-consistent exact linking, without publication or silent merges.
+The graph suite now has 185 passing tests and two native/interpreter proofs;
+a separate native embedding proves file-reopen identity continuity without
+persisted writes. See [src/ingest/L01-HANDOFF.md](src/ingest/L01-HANDOFF.md).
+
+This does not yet provide automatic extraction or English answers. The next
+vertical slice needs evidence-qualified persistence (E00), durable worker
+publication, real non-generative extraction and generic query execution.
+Q01's schema-checked read plans and A02's extraction annotations can proceed
+without pretending those missing components exist. Real model experiments
+require an agreed resource budget; no weights have been downloaded.
 
 Stabilize -> identity -> richer queries -> durable workers -> incremental
 derivations -> compatibility-aware evolution. Partial assertions, evidence

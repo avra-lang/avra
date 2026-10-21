@@ -25,6 +25,13 @@ The original request must come from the trusted caller, not the worker.
 See [the admission receipt](src/ingest/E01-HANDOFF.md) for limits and what
 still needs implementing before automatic extraction is usable.
 
+`graph.link_exact(original_request_json, worker_response_json)` additionally
+admits those proposals and resolves declared exact identity keys against one
+current read snapshot. It returns links, ambiguity and historical-continuity
+proofs without publishing or merging. Names and classifier scores never grant
+identity authority. See [the linking receipt](src/ingest/L01-HANDOFF.md) for
+scope and limits, including the remaining indexed-read substrate work.
+
 ## Application surface
 
 The models module declares ordinary types and collects their generated

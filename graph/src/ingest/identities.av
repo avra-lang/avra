@@ -1,0 +1,206 @@
+use @avra.graph_contracts.{IdentityKey, Span, ProposedRecord, ExtractionRequest, ExtractionResult}
+use @std.validate.{Value, Entry}
+use @std.text.{ascii_lower}
+use data.{as_value, encoded, before}
+use semantics.{IdentityBinding, KeyNormalization}
+use schema.{Model}
+use ingest.extraction.{admit_extraction}
+use ingest.envelope.{source_document}
+use store.open.{Graph}
+use store.identity.{Identity, IdentityMatch, IdentityScope}
+
+export type DeclaredKey = { identity: IdentityKey, path: List<string>, spans: List<Span>, frame: string? }
+
+/// New is a local equivalence group, NOT an allocated persistent entity.
+/// Candidates and name similarity cannot change any of these decisions.
+export enum ExactLink {
+    Unresolved
+    New(group: string)
+    Existing(entity: string)
+    Ambiguous(entities: List<string>)
+}
+
+export type LinkedRecord = { proposal: ProposedRecord, keys: List<DeclaredKey>, decision: ExactLink, matches: List<IdentityMatch> }
+export type LinkedExtraction = { revision: int, request: ExtractionRequest, result: ExtractionResult, records: List<LinkedRecord> }
+
+type KeyedRecord = { proposal: ProposedRecord, keys: List<DeclaredKey> }
+type KeyOwner = { identity: IdentityKey, model: string, record: int }
+type KeyMatches = { identity: IdentityKey, matches: List<IdentityMatch> }
+type CompleteInput = { request: ExtractionRequest, result: ExtractionResult }
+type GroupLink = { id: int, decision: ExactLink, matches: List<IdentityMatch> }
+
+/// Explicit application policy, not email/phone/Unicode guessing.
+export fn normalized_key(binding: IdentityBinding, raw: string) -> Result<IdentityKey, string> {
+    if raw.bytes().text() == null || binding.namespace.bytes().text() == null { fail "identity keys must be valid UTF-8" }
+    let key = match binding.normalization {
+        .Exact -> raw,
+        .Trim -> raw.trim(),
+        .AsciiLowerTrim -> ascii_lower(raw.trim()),
+    }
+    if binding.namespace.is_empty() ||
+        binding.namespace.bytes().length > 128 ||
+        contains_nul(binding.namespace) ||
+        key.is_empty() ||
+        key.bytes().length > 1024 ||
+        contains_nul(key) {
+        fail "a declared identity needs a bounded nonempty namespace and key without NUL"
+    }
+    IdentityKey { namespace: binding.namespace, key: key }
+}
+
+fn contains_nul(text: string) -> bool {
+    let bytes = text.bytes()
+    for i in 0..bytes.length {
+        if bytes.at(i) == 0 { return true }
+    }
+    false
+}
+
+fn same_key(a: IdentityKey, b: IdentityKey) -> bool { a.namespace == b.namespace && a.key == b.key }
+
+fn at_path(value: Value, path: List<string>) -> Value? {
+    mut current = value
+    for token in path {
+        let next? = current.entries().find(it.key == token) else { return null }
+        current = next.value
+    }
+    current
+}
+
+fn declared_keys(model: Model, r: ProposedRecord) -> Result<List<DeclaredKey>, string> {
+    mut keys: List<DeclaredKey> = []
+    let value = Value.Map([Entry { key: f.property, value: f.value.value } for f in r.fields])
+    for binding in model.semantics.identities {
+        let field? = r.fields.find(it.property == binding.path[0]) else { continue }
+        if field.polarity != "affirmed" || field.modality != "asserted" { continue }
+        let raw = at_path(value, binding.path)
+        if raw == null || raw! is .Null { continue }
+        let text = match raw! {
+            .Text(s) -> s,
+            rest -> { fail "a declared identity field is not text" },
+        }
+        let key = normalized_key(binding, text)?
+        for proposed in r.identities {
+            if proposed.identity.namespace == binding.namespace &&
+                !same_key(normalized_key(binding, proposed.identity.key)?, key) {
+                fail "an identity proposal contradicts its declared field evidence"
+            }
+        }
+        keys
+            .push(
+                DeclaredKey {
+                    identity: key,
+                    path: binding.path,
+                    spans: field.spans,
+                    frame: field.frame,
+                },
+            )
+    }
+    keys
+}
+
+/// Connected components of shared declared keys, without merging graph ids.
+fn key_groups(records: List<KeyedRecord>) -> Result<List<int>, string> {
+    mut groups = [i for i, r in records]
+    mut owners: List<KeyOwner> = []
+    for i, r in records {
+        for key in r.keys {
+            let owner = owners.find(same_key(it.identity, key.identity))
+            if owner == null {
+                owners.push(KeyOwner { identity: key.identity, model: r.proposal.model, record: i })
+            } else {
+                if owner!.model != r.proposal.model { fail "one declared identity cannot join different models" }
+                let from = groups[i]
+                let to = groups[owner!.record]
+                groups = [if g == from { to } else { g } for g in groups]
+            }
+        }
+    }
+    groups
+}
+
+impl Graph {
+    /// Validate provider output and prepare exact links against ONE snapshot.
+    /// No publication, alias mutation, merge or identity allocation occurs.
+    fn link_exact(request_json: string, response_json: string) -> Result<LinkedExtraction, string> {
+        let admitted = admit_extraction(self.catalog, request_json, response_json)?
+        let pair = match admitted {
+            .Complete(request, result) -> CompleteInput { request: request, result: result },
+            .Failed(_, _) -> { fail "failed extraction cannot prepare identity links" },
+        }
+        let opened = self.read_snapshot()?
+        defer { let _ = self.db.finish_if_opened(opened) }
+        let revision = self.current()?
+        let actual = self.source(pair.request.input.source.observation)?
+        if encoded(as_value(source_document(actual))) != encoded(as_value(source_document(pair.request.input))) {
+            fail "identity linking needs the exact current admitted source envelope"
+        }
+        let records = [KeyedRecord { proposal: r, keys: declared_keys(self.catalog.model(r.model)?, r)? } for r in pair.result.records]
+        if records.fold(0, (n: int, r: KeyedRecord) -> n + r.keys.length) > 2048 {
+            fail "identity linking exceeds its declared-key budget"
+        }
+        let groups = key_groups(records)?
+        let context = IdentityScope {
+            source: actual.source,
+            producer: pair.request.extractor.producer,
+            scope: pair.request.scope,
+            schema: self.catalog.fingerprint,
+        }
+        mut cache: List<KeyMatches> = []
+        mut total_matches = 0
+        for r in records {
+            for key in r.keys {
+                if cache.any(same_key(it.identity, key.identity)) { continue }
+                let matches = self
+                    .exact_identity_matches(
+                        Identity {
+                            namespace: key.identity.namespace,
+                            external_key: key.identity.key,
+                        },
+                        r.proposal.model,
+                        context,
+                    )?
+                total_matches = total_matches + matches.length
+                if total_matches > 8192 { fail "identity linking exceeds its match evidence budget" }
+                cache.push(KeyMatches { identity: key.identity, matches: matches })
+            }
+        }
+        let decisions = [resolved_group(records, groups, cache, i) for i, group in groups if !groups.slice(0, i).contains(group)]
+        let linked = [LinkedRecord {
+            proposal: r.proposal,
+            keys: r.keys,
+            decision: decisions.find(it.id == groups[i])!.decision,
+            matches: decisions.find(it.id == groups[i])!.matches,
+        } for i, r in records]
+        LinkedExtraction {
+            revision: revision,
+            request: pair.request,
+            result: pair.result,
+            records: linked,
+        }
+    }
+}
+
+fn resolved_group(
+    records: List<KeyedRecord>,
+    groups: List<int>,
+    cache: List<KeyMatches>,
+    index: int,
+) -> GroupLink {
+    let r = records[index]
+    let members = [member for i, member in records if groups[i] == groups[index]]
+    let keys = [k.identity for member in members for k in member.keys]
+    let matches = [m for entry in cache if keys.any(same_key(it, entry.identity)) for m in entry.matches]
+    let entities = [m.entity for i, m in matches if !matches.slice(0, i).any(it.entity == m.entity)]
+    mut group = r.proposal.local_id
+    for member in members {
+        if before(member.proposal.local_id, group) { group = member.proposal.local_id }
+    }
+    let decision = when {
+        keys.is_empty() -> ExactLink.Unresolved
+        entities.is_empty() -> ExactLink.New(group)
+        entities.length == 1 -> ExactLink.Existing(entities[0])
+        _ -> ExactLink.Ambiguous(entities)
+    }
+    GroupLink { id: groups[index], decision: decision, matches: matches }
+}

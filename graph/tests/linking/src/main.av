@@ -1,0 +1,100 @@
+use @avra.graph.{
+    model,
+    Graph,
+    Registration,
+    Semantics,
+    IdentityBinding,
+    Identity,
+    Record,
+    Publication,
+    source_document,
+}
+use @avra.graph_contracts.{SourceEnvelope, SourceRef}
+use @std.io.{env}
+use @std.json.{Json, to_text}
+use @std.process.{exit, Exit}
+
+@model(quote { Semantics { identities: [IdentityBinding {
+    namespace: "instrument-code", path: ["code"], normalization: .AsciiLowerTrim,
+}] } })
+type Instrument = { code: string, caption: string }
+
+fn text(s: string) -> string { to_text(Json.Str(s)) }
+
+fn envelope(revision: int) -> SourceEnvelope {
+    SourceEnvelope {
+        contract: 1,
+        source: SourceRef { observation: "sensor", revision: revision },
+        authored_at_ms: null,
+        author: null,
+        received_at_ms: revision,
+        media_type: "text/plain",
+        content: if revision == 1 { "Scope A-17" } else { "Renamed scope A-17" },
+    }
+}
+
+fn probe(g: Graph) -> Result<string, string> {
+    let source = g.source("sensor")?
+    let version = "{\"producer\":\"reader\",\"code\":\"1\",\"model\":\"1\"}"
+    let request = "{\"contract\":1,\"request\":\"probe\",\"input\":${to_text(source_document(source))},\"catalog\":{\"fingerprint\":${text(g.catalog.fingerprint)},\"descriptor\":${g.catalog.document}},\"extractor\":${version},\"scope\":\"all\",\"candidates\":[]}"
+    let response = "{\"contract\":1,\"request\":\"probe\",\"source\":{\"observation\":\"sensor\",\"revision\":${source.source.revision}},\"schema\":${text(g.catalog.fingerprint)},\"extractor\":${version},\"status\":\"complete\",\"records\":[{\"local_id\":\"mention\",\"model\":\"Instrument\",\"fields\":[{\"property\":\"code\",\"value\":\" A-17 \",\"spans\":[{\"start\":0,\"end\":${source.content.bytes().length},\"text\":${text(source.content)}}],\"polarity\":\"affirmed\",\"modality\":\"asserted\"}]}]}"
+    let before = g.revision()?
+    let linked = g.link_exact(request, response)?
+    let correct = match linked.records[0].decision {
+        .Existing(id) -> id == "instrument:1",
+        rest -> false,
+    }
+    if !correct || linked.records[0].matches.length != 1 || g.revision()? != before {
+        fail "linking changed state or lost its exact association"
+    }
+    "linked ${source.source.revision} ${linked.records[0].matches[0].continuity}"
+}
+
+fn witness() -> Result<string, string> {
+    let path? = env("GRAPH_LINK_DB") else { fail "GRAPH_LINK_DB is required" }
+    let stage? = env("GRAPH_LINK_STAGE") else { fail "GRAPH_LINK_STAGE is required" }
+    let models = [Registration { make: Instrument_graph_model }]
+    mut g = Graph.open(path, models)?
+    defer { let _ = g.close() }
+    match stage {
+        "seed" -> {
+            g.ingest(to_text(source_document(envelope(1))))?
+            g
+                .publish(
+                    Publication {
+                        id: "initial",
+                        producer: "reader",
+                        scope: "all",
+                        input: "sensor",
+                        input_revision: 1,
+                        schema: g.catalog.fingerprint,
+                        expected_revision: g.revision()?,
+                        records: [
+                            Record {
+                                id: "instrument:1",
+                                model: "Instrument",
+                                value: Instrument { code: "a-17", caption: "Scope" }.graph_value(),
+                                identities: [Identity { namespace: "instrument-code", external_key: "a-17" }],
+                            },
+                        ],
+                    },
+                )?
+            "seeded"
+        },
+        "revise" -> {
+            g.ingest(to_text(source_document(envelope(2))))?
+            "revised"
+        },
+        "probe" -> probe(g)?,
+        rest -> { fail "unknown witness stage" },
+    }
+}
+
+match witness() {
+    .Ok(result) -> println(result),
+    .Err(error) -> {
+        println(error)
+        exit(Exit.Code(1))
+    },
+}
+
