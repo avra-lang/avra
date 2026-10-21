@@ -1,0 +1,188 @@
+use @std.meta.{Named, Marker}
+use @std.validate.{Value, Issues}
+use @std.json.{Json, field}
+use schema.{Model}
+
+/// Why a derivation has no value: a code a caller can act on, never a guess.
+/// `known` is what the derivation could establish before it stopped.
+export type Unknown = { code: string, why: string, known: Value = Value.Null }
+
+/// What one parameter of a derivation takes from a read plan: one row, at
+/// most one row, every row of a node, or one literal argument.
+export enum Input {
+    One(model: string)
+    Maybe(model: string)
+    All(model: string)
+    Text
+    Integer
+    Boolean
+}
+
+export type Parameter = { name: string, input: Input }
+
+/// A typed fn declared beside the models, projected for the catalog. `run`
+/// takes one value per parameter and answers a value of the `output` model.
+export type Derivation = {
+    name: string,
+    description: string,
+    parameters: List<Parameter>,
+    output: string,
+    run: fn(List<Value>) -> Result<Value, Unknown>,
+    code_hash: string?,
+}
+
+export type DerivationRegistration = { make: fn() -> Derivation }
+
+export fn derivation_registered(_d: Named) -> Marker { Marker {} }
+
+/// `a - b` in one integer range; leaving it is unknown, never a wrapped number.
+export fn difference(a: int, b: int) -> Result<int, Unknown> {
+    if b > 0 && a < min_int() + b || b < 0 && a > max_int() + b { fail overflow() }
+    a - b
+}
+
+/// The sum of terms in one integer range.
+export fn total(terms: List<int>) -> Result<int, Unknown> {
+    mut sum = 0
+    for t in terms {
+        if t > 0 && sum > max_int() - t || t < 0 && sum < min_int() - t { fail overflow() }
+        sum = sum + t
+    }
+    sum
+}
+
+/// The one unit two quantities share; different units are never converted.
+export fn same_unit(a: string, b: string) -> Result<string, Unknown> {
+    if a != b { fail Unknown { code: "mixed_units", why: mixed_words() } }
+    a
+}
+
+/// Generated wrappers read their arguments through these.
+export fn rows_of(v: Value) -> List<Value> {
+    match v { .List(items) -> items, rest -> [] }
+}
+
+export fn text_argument(v: Value) -> Result<string, Unknown> {
+    match v { .Text(s) -> s, rest -> { fail argument_mismatch() } }
+}
+
+export fn int_argument(v: Value) -> Result<int, Unknown> {
+    match v { .Int(n) -> n, rest -> { fail argument_mismatch() } }
+}
+
+export fn bool_argument(v: Value) -> Result<bool, Unknown> {
+    match v { .Bool(b) -> b, rest -> { fail argument_mismatch() } }
+}
+
+/// A row that does not decode as its declared model is incomplete evidence.
+export fn incomplete(parameter: string, issues: Issues) -> Unknown {
+    Unknown {
+        code: "incomplete_input",
+        why: "`${parameter}` is not a complete record: ${issues.report()}",
+    }
+}
+
+impl Derivation {
+    /// Symbols resolve, seats are typed and the output is a registered model.
+    fn checked(models: List<Model>) -> Result<bool, string> {
+        if self.name.is_empty() { fail "a derivation needs a name" }
+        if self.parameters.length > 8 { fail "derivation `${self.name}` exceeds its parameter budget" }
+        if !models.any(it.name == self.output) { fail "derivation `${self.name}` answers an unregistered model: ${self.output}" }
+        for p in self.parameters {
+            let model? = p.input.model() else { continue }
+            if !models.any(it.name == model) { fail "derivation `${self.name}` reads an unregistered model: ${model}" }
+        }
+        true
+    }
+
+    /// The models whose rows this derivation reads.
+    fn reads() -> List<string> { [m for p in self.parameters for m in p.input.models()] }
+
+    fn describe() -> Json {
+        Json
+            .Obj(
+                [
+                    field("name", Json.Str(self.name)),
+                    field("description", Json.Str(self.description)),
+                    field(
+                        "parameters",
+                        Json
+                            .Arr(
+                                [Json
+                                    .Obj(
+                                        [
+                                            field("name", Json.Str(p.name)),
+                                            field("input", p.input.describe()),
+                                        ],
+                                    ) for p in self.parameters],
+                            ),
+                    ),
+                    field("output", Json.Str(self.output)),
+                    field("code_hash", Json.Str(self.code_hash ?? "")),
+                ],
+            )
+    }
+}
+
+impl Input {
+    fn model() -> string? {
+        match self { .One(m) or .Maybe(m) or .All(m) -> m, .Text or .Integer or .Boolean -> null }
+    }
+
+    fn models() -> List<string> {
+        match self.model() {
+            m? -> [m]
+            null -> []
+        }
+    }
+
+    /// Whether a plan fills this seat with rows rather than a literal.
+    fn rows() -> bool { self.model() != null }
+
+    fn describe() -> Json {
+        match self {
+            .One(m) -> Json.Obj([field("one", Json.Str(m))]),
+            .Maybe(m) -> Json.Obj([field("maybe", Json.Str(m))]),
+            .All(m) -> Json.Obj([field("all", Json.Str(m))]),
+            .Text -> Json.Str("string"),
+            .Integer -> Json.Str("integer"),
+            .Boolean -> Json.Str("boolean"),
+        }
+    }
+}
+
+/// Unique names and no derivation reaching its own output through others.
+export fn checked_derivations(models: List<Model>, derivations: List<Derivation>) -> Result<
+    bool,
+    string,
+> {
+    if derivations.length > 256 { fail "derivations exceed their budget" }
+    for i, d in derivations {
+        if derivations.slice(0, i).any(it.name == d.name) { fail "derivation names must be unique: ${d.name}" }
+        d.checked(models)?
+    }
+    for d in derivations {
+        if reaches(derivations, d.output, d.name, []) { fail "derivation `${d.name}` depends on its own output" }
+    }
+    true
+}
+
+/// Whether a derivation reading `model` leads, through producers, back to `origin`.
+fn reaches(derivations: List<Derivation>, model: string, origin: string, seen: List<string>) -> bool {
+    for consumer in derivations {
+        if !consumer.reads().contains(model) || seen.contains(consumer.name) { continue }
+        if consumer.name == origin { return true }
+        if reaches(derivations, consumer.output, origin, seen.concat([consumer.name])) { return true }
+    }
+    false
+}
+
+fn max_int() -> int { 9223372036854775807 }
+
+fn min_int() -> int { -9223372036854775807 - 1 }
+
+fn overflow() -> Unknown { Unknown { code: "overflow", why: "the arithmetic leaves the integer range" } }
+
+fn argument_mismatch() -> Unknown { Unknown { code: "argument_mismatch", why: "an argument does not have its declared type" } }
+
+fn mixed_words() -> string { "quantities in different units are not combined, and no conversion is assumed" }

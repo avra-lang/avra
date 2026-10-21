@@ -1,0 +1,178 @@
+use @std.meta.{
+    Fn,
+    Param,
+    Kind,
+    Code,
+    Decls,
+    Stmts,
+    Declared,
+    Directive,
+    Diagnostic,
+    literal,
+    name,
+    list_of,
+    refuse_as_at,
+    code_hash,
+}
+use @std.validate.{Value}
+use policy.{
+    Unknown,
+    Input,
+    Parameter,
+    Derivation,
+    derivation_registered,
+    rows_of,
+    text_argument,
+    int_argument,
+    bool_argument,
+    incomplete,
+}
+
+/// `@derived`: an ordinary typed fn over model records becomes a catalog
+/// derivation. Its parameters say what a plan supplies; its answer is a
+/// model record, or `Result<Model, Unknown>` where it may not know.
+export fn derived(f: Fn) -> Declared {
+    let problems = derivation_problems(f)
+    if !problems.is_empty() { return Declared { made: [], problems: problems } }
+    Declared {
+        made: [Directive { twin: "", name: f.name, at: f.at, source: reader(f, i) } for i, p in f.params if record_input(p.kind) != null]
+            .concat(
+                [
+                    Directive { twin: "", name: f.name, at: f.at, source: runner(f) },
+                    Directive { twin: "", name: f.name, at: f.at, source: descriptor(f) },
+                ],
+            ),
+    }
+}
+
+fn derivation_problems(f: Fn) -> List<Diagnostic> {
+    let answer = if output_model(f.answers) == null {
+        [
+            refuse_as_at(
+                "derived_answer",
+                f.at,
+                "a derivation answers a model record, or `Result<Model, Unknown>`",
+                null,
+            ),
+        ]
+    } else {
+        []
+    }
+    let seats = [refuse_as_at(
+        "derived_input",
+        p.at ?? f.at,
+        "`${p.name}` must be a model, an optional model, a list of a model, or a string, int or bool",
+        null,
+    ) for p in f.params if input_of(p.kind) == null || p.mutable]
+    let method = if f.owner == null {
+        []
+    } else {
+        [refuse_as_at("derived_method", f.at, "a derivation is a free fn, not a method", null)]
+    }
+    answer.concat(seats).concat(method)
+}
+
+/// The model a derivation answers, plain or inside a Result over `Unknown`.
+fn output_model(k: Kind) -> string? {
+    match k {
+        .Named(model, []) -> model,
+        .Result(.Named(model, []), .Named("Unknown", [])) -> model,
+        rest -> null,
+    }
+}
+
+fn input_of(k: Kind) -> Input? {
+    match k {
+        .Named(model, []) -> Input.One(model),
+        .Opt(.Named(model, [])) -> Input.Maybe(model),
+        .List(.Named(model, [])) -> Input.All(model),
+        .Str -> Input.Text,
+        .Int -> Input.Integer,
+        .Bool -> Input.Boolean,
+        rest -> null,
+    }
+}
+
+/// The model one row-fed parameter decodes.
+fn record_input(k: Kind) -> string? { input_of(k)?.model() }
+
+fn reader_name(f: Fn, i: int) -> string { "${f.name}_graph_input_${i}" }
+
+fn runner_name(f: Fn) -> string { "${f.name}_graph_derived" }
+
+/// Decodes one stored row as the parameter's model; a gap is incomplete evidence.
+fn reader(f: Fn, i: int) -> Decls {
+    let p = f.params[i]
+    let model = record_input(p.kind)!
+    quote {
+        fn ${reader_name(f, i)}(row: Value) -> Result<${model}, Unknown> {
+            match ${name(model)}.decode(row) {
+                .Ok(record) -> record,
+                .Err(issues) -> { fail incomplete(${literal(p.name)}, issues) },
+            }
+        }
+    }
+}
+
+fn runner(f: Fn) -> Decls {
+    let reads = [argument(f, i, p) for i, p in f.params]
+    let made = if f.answers is .Result {
+        quote { ${f.name}(..${reads})? }
+    } else {
+        quote { ${f.name}(..${reads}) }
+    }
+    quote {
+        fn ${runner_name(f)}(arguments: List<Value>) -> Result<Value, Unknown> {
+            let made = ${made}
+            made.graph_value()
+        }
+    }
+}
+
+/// One argument read as its parameter's declared type.
+fn argument(f: Fn, i: int, p: Param) -> Code {
+    let at = quote { arguments[${i}] }
+    match input_of(p.kind)! {
+        .One(_) -> quote { ${reader_name(f, i)}(${at})? },
+        .Maybe(_) -> quote {
+            if ${at} is .Null { null } else { ${reader_name(f, i)}(${at})? }
+        },
+        .All(_) -> quote { [${reader_name(f, i)}(row)? for row in rows_of(${at})] },
+        .Text -> quote { text_argument(${at})? },
+        .Integer -> quote { int_argument(${at})? },
+        .Boolean -> quote { bool_argument(${at})? },
+    }
+}
+
+fn descriptor(f: Fn) -> Decls {
+    let parameters = list_of([parameter(p) for p in f.params])
+    let factory = "${f.name}_graph_derivation"
+    quote {
+        @derivation_registered
+        export fn ${factory}() -> Derivation {
+            Derivation {
+                name: ${literal(f.name)},
+                description: ${literal(f.doc ?? "")},
+                parameters: ${parameters},
+                output: ${literal(output_model(f.answers)!)},
+                run: ${name(runner_name(f))},
+                code_hash: code_hash(${name(f.name)}),
+            }
+        }
+    }
+}
+
+fn parameter(p: Param) -> Code {
+    quote { Parameter { name: ${literal(p.name)}, input: ${input_code(input_of(p.kind)!)} } }
+}
+
+fn input_code(input: Input) -> Code {
+    match input {
+        .One(model) -> quote { Input.One(${literal(model)}) },
+        .Maybe(model) -> quote { Input.Maybe(${literal(model)}) },
+        .All(model) -> quote { Input.All(${literal(model)}) },
+        .Text -> quote { Input.Text },
+        .Integer -> quote { Input.Integer },
+        .Boolean -> quote { Input.Boolean },
+    }
+}

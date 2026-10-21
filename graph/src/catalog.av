@@ -1,11 +1,22 @@
 use schema.{Model, Shape, Property, Registration}
 use @std.json.{Json, field, to_text}
 use data.{before, digest}
+use policy.{Derivation, DerivationRegistration, checked_derivations}
 
-export type Catalog = { models: List<Model>, fingerprint: string, document: string }
+/// `document` describes the models; derivations, when declared, join the
+/// fingerprint as their own versioned section.
+export type Catalog = {
+    models: List<Model>,
+    fingerprint: string,
+    document: string,
+    derivations: List<Derivation> = [],
+}
 
 impl Catalog {
-    static fn collected(registrations: List<Registration>) -> Result<Catalog, string> {
+    static fn collected(
+        registrations: List<Registration>,
+        derived: List<DerivationRegistration> = [],
+    ) -> Result<Catalog, string> {
         let models = ordered([r.make() for r in registrations])
         for i, m in models {
             if m.validator_hash == null { fail "a durable model needs a compiler validation fingerprint: ${m.name}" }
@@ -18,12 +29,25 @@ impl Catalog {
             }
             m.semantics.checked(models, m)?
         }
-        let document = to_text(Json.Arr([m.describe() for m in models]))
-        Catalog { models: models, document: document, fingerprint: digest(document) }
+        let derivations = [r.make() for r in derived]
+        checked_derivations(models, derivations)?
+        let described = Json.Arr([m.describe() for m in models])
+        let document = to_text(described)
+        Catalog {
+            models: models,
+            document: document,
+            fingerprint: digest(identified(described, derivations)),
+            derivations: derivations,
+        }
     }
 
     fn model(name: string) -> Result<Model, string> {
         let found? = self.models.find(it.name == name) else { fail "unknown model: ${name}" }
+        found
+    }
+
+    fn derivation(name: string) -> Result<Derivation, string> {
+        let found? = self.derivations.find(it.name == name) else { fail "unknown derivation: ${name}" }
         found
     }
 }
@@ -84,6 +108,30 @@ impl Shape {
             .Reference(target) or .Embedded(target) -> [target],
         }
     }
+}
+
+/// The text a fingerprint covers: the model array alone, or an object
+/// holding it beside the versioned derivations — never equal to an array.
+fn identified(models: Json, derivations: List<Derivation>) -> string {
+    if derivations.is_empty() { return to_text(models) }
+    to_text(
+        Json
+            .Obj(
+                [
+                    field("models", models),
+                    field(
+                        "derivations",
+                        Json
+                            .Obj(
+                                [
+                                    field("version", Json.Int(1)),
+                                    field("declared", Json.Arr([d.describe() for d in derivations])),
+                                ],
+                            ),
+                    ),
+                ],
+            ),
+    )
 }
 
 fn ordered(xs: List<Model>) -> List<Model> {

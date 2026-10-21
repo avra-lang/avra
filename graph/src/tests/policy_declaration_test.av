@@ -1,0 +1,241 @@
+use derive.model.{model}
+use derive.policy.{derived}
+use schema.{Ref, Registration}
+use policy.{Unknown, Input, Derivation, DerivationRegistration, difference, total, same_unit}
+use catalog.{Catalog}
+use @std.validate.{Value, Entry}
+
+@model
+type Measure = { minor: int, unit: string }
+
+@model
+type Bill = { number: string, due: Measure }
+
+@model
+type Remittance = { bill: Ref<Bill>, paid: Measure, kind: string }
+
+@model
+type Owed = { remaining: Measure }
+
+@model
+type Bin = { item: string, kind: string, units: int }
+
+@model
+type Tally = { kind: string, units: int }
+
+/// What a bill still owes: its amount less every remittance against it.
+@derived
+fn remaining(bill: Bill, remittances: List<Remittance>) -> Result<Owed, Unknown> {
+    let unit = bill.due.unit
+    for r in remittances { let _ = same_unit(r.paid.unit, unit)? }
+    let paid = total([r.paid.minor for r in remittances])?
+    Owed { remaining: Measure { minor: difference(bill.due.minor, paid)?, unit: unit } }
+}
+
+/// Units held of one movement kind.
+@derived
+fn held(movements: List<Bin>, kind: string) -> Result<Tally, Unknown> {
+    Tally { kind: kind, units: total([m.units for m in movements if m.kind == kind])? }
+}
+
+/// A bill's own amount, which needs no evidence beyond the bill.
+@derived
+fn face(bill: Bill?) -> Owed { Owed { remaining: bill?.due ?? Measure { minor: 0, unit: "none" } } }
+
+fn models() -> List<Registration> {
+    [
+        Registration { make: Measure_graph_model },
+        Registration { make: Bill_graph_model },
+        Registration { make: Remittance_graph_model },
+        Registration { make: Owed_graph_model },
+        Registration { make: Bin_graph_model },
+        Registration { make: Tally_graph_model },
+    ]
+}
+
+fn derivations() -> List<DerivationRegistration> {
+    [
+        DerivationRegistration { make: remaining_graph_derivation },
+        DerivationRegistration { make: held_graph_derivation },
+        DerivationRegistration { make: face_graph_derivation },
+    ]
+}
+
+fn edited(name: string, change: fn(Derivation) -> Derivation) -> Result<Catalog, string> {
+    let registrations = [DerivationRegistration {
+        make: () -> {
+            let d = r.make()
+            if d.name == name { change(d) } else { d }
+        },
+    } for r in derivations()]
+    Catalog.collected(models(), registrations)
+}
+
+fn measure(minor: int, unit: string) -> Value {
+    Value
+        .Map(
+            [
+                Entry { key: "minor", value: Value.Int(minor) },
+                Entry { key: "unit", value: Value.Text(unit) },
+            ],
+        )
+}
+
+fn bill(minor: int, unit: string) -> Value {
+    Value
+        .Map(
+            [
+                Entry { key: "number", value: Value.Text("B-1") },
+                Entry { key: "due", value: measure(minor, unit) },
+            ],
+        )
+}
+
+fn remittance(minor: int, unit: string) -> Value {
+    Value
+        .Map(
+            [
+                Entry { key: "bill", value: Value.Text("b1") },
+                Entry { key: "paid", value: measure(minor, unit) },
+                Entry { key: "kind", value: Value.Text("deposit") },
+            ],
+        )
+}
+
+fn bin(kind: string, units: int) -> Value {
+    Value
+        .Map(
+            [
+                Entry { key: "item", value: Value.Text("lamp") },
+                Entry { key: "kind", value: Value.Text(kind) },
+                Entry { key: "units", value: Value.Int(units) },
+            ],
+        )
+}
+
+fn ran(name: string, arguments: List<Value>) -> Result<Result<Value, Unknown>, string> {
+    let c = Catalog.collected(models(), derivations())?
+    ((c.derivation(name)?).run)(arguments)
+}
+
+fn int_of(v: Value, field: string) -> int? {
+    let held? = v.entries().find(it.key == field) else { return null }
+    match held.value { .Int(n) -> n, rest -> null }
+}
+
+fn minor_of(v: Value, field: string) -> int? {
+    let held? = v.entries().find(it.key == field) else { return null }
+    int_of(held.value, "minor")
+}
+
+fn code_of(r: Result<Value, Unknown>) -> string {
+    match r { .Ok(_) -> "", .Err(u) -> u.code }
+}
+
+fn declared() -> Result<bool, string> {
+    let c = Catalog.collected(models(), derivations())?
+    let d = c.derivation("remaining")?
+    let plain = Catalog.collected(models())?
+    d.output == "Owed" &&
+        d.parameters.length == 2 &&
+        d.parameters[0].input is .One &&
+        d.parameters[1].input is .All &&
+        (c.derivation("held")?).parameters[1].input is .Text &&
+        (c.derivation("face")?).parameters[0].input is .Maybe &&
+        d.description.contains("still owes") &&
+        d.code_hash != null &&
+        c.document == plain.document &&
+        c.fingerprint != plain.fingerprint
+}
+
+fn same_unit_subtraction() -> Result<bool, string> {
+    let owed = ran(
+        "remaining",
+        [bill(5000, "EUR"), Value.List([remittance(1500, "EUR"), remittance(500, "EUR")])],
+    )?
+    let nothing_paid = ran("remaining", [bill(5000, "EUR"), Value.List([])])?
+    match owed { .Ok(v) -> minor_of(v, "remaining") == 3000, .Err(_) -> false } &&
+        match nothing_paid { .Ok(v) -> minor_of(v, "remaining") == 5000, .Err(_) -> false }
+}
+
+fn mixed_units_unknown() -> Result<bool, string> {
+    code_of(ran("remaining", [bill(5000, "EUR"), Value.List([remittance(1500, "GBP")])])?) == "mixed_units"
+}
+
+fn overflow_unknown() -> Result<bool, string> {
+    let huge = 9223372036854775807
+    code_of(ran("remaining", [bill(0 - huge, "EUR"), Value.List([remittance(huge, "EUR")])])?) == "overflow" &&
+        code_of(ran("held", [Value.List([bin("in", huge), bin("in", 1)]), Value.Text("in")])?) == "overflow"
+}
+
+fn incomplete_input() -> Result<bool, string> {
+    let partial = Value.Map([Entry { key: "number", value: Value.Text("B-1") }])
+    code_of(ran("remaining", [partial, Value.List([])])?) == "incomplete_input"
+}
+
+fn filtered_sum() -> Result<bool, string> {
+    let held = ran(
+        "held",
+        [Value.List([bin("in", 4), bin("quarantine", 1), bin("in", 3)]), Value.Text("in")],
+    )?
+    match held { .Ok(v) -> int_of(v, "units") == 7, .Err(_) -> false }
+}
+
+fn optional_input() -> Result<bool, string> {
+    match ran("face", [Value.Null])? {
+            .Ok(v) -> minor_of(v, "remaining") == 0,
+            .Err(_) -> false,
+        } &&
+        match ran("face", [bill(7, "EUR")])? {
+            .Ok(v) -> minor_of(v, "remaining") == 7,
+            .Err(_) -> false,
+        }
+}
+
+fn bad_symbols() -> Result<bool, string> {
+    edited("remaining", (d: Derivation) -> d with { output: "Nowhere" }) is .Err &&
+        edited(
+            "held",
+            (d: Derivation) -> d with { parameters: [d.parameters[0] with { input: Input.All("Ghost") }] },
+        ) is .Err &&
+        edited("face", (d: Derivation) -> d with { name: "held" }) is .Err
+}
+
+fn cycles_refused() -> Result<bool, string> {
+    // `held` reads Bin and answers Tally; a Tally reader answering Bin closes a loop.
+    let loop = edited(
+        "face",
+        (d: Derivation) -> d with { parameters: [d.parameters[0] with { input: Input.All("Tally") }], output: "Bin" },
+    )
+    let self_loop = edited("held", (d: Derivation) -> d with { output: "Bin" })
+    loop is .Err && self_loop is .Err
+}
+
+fn policy_identity() -> Result<bool, string> {
+    let c = Catalog.collected(models(), derivations())?
+    let described = edited("held", (d: Derivation) -> d with { description: "changed" })?
+    let rehashed = edited("held", (d: Derivation) -> d with { code_hash: "other" })?
+    c.fingerprint != described.fingerprint && c.fingerprint != rehashed.fingerprint
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "typed derivations declared beside models" {
+    given "an unrelated ledger and bin ontology" {
+        then "a derivation projects its typed inputs, output, description and code identity" { passed(declared()) }
+        then "same-unit subtraction answers in minor units" { passed(same_unit_subtraction()) }
+        then "different units are unknown, never converted" { passed(mixed_units_unknown()) }
+        then "arithmetic leaving the integer range is unknown" { passed(overflow_unknown()) }
+        then "an incomplete record is unknown evidence, not a default" { passed(incomplete_input()) }
+        then "a filtered sum is ordinary code over typed rows" { passed(filtered_sum()) }
+        then "an optional input accepts absence" { passed(optional_input()) }
+        then "unknown models and duplicate names are refused" { passed(bad_symbols()) }
+        then "derivation dependency cycles are refused" { passed(cycles_refused()) }
+        then "description and code edits change the catalog identity" { passed(policy_identity()) }
+    }
+}

@@ -5,6 +5,7 @@ use @std.errors.{Error}
 use @std.text.{parse_int}
 use catalog.{Catalog}
 use schema.{Registration}
+use policy.{DerivationRegistration}
 use store.engine.{
     Meta,
     Schema,
@@ -34,20 +35,31 @@ enum CatalogUse { Install, Existing }
 
 impl Graph {
     /// Attach without installing a model catalog; the tables must stand.
-    static fn attach(path: string, registrations: List<Registration>) -> Result<Graph, string> {
-        let catalog = Catalog.collected(registrations)?
+    static fn attach(
+        path: string,
+        registrations: List<Registration>,
+        derived: List<DerivationRegistration> = [],
+    ) -> Result<Graph, string> {
+        let catalog = Catalog.collected(registrations, derived)?
         let db = stored(Db.open_with(OpenConfig.config_at(path) with { mode: Mode.OpenExisting }))?
         Graph.admitted(db, catalog, CatalogUse.Existing)
     }
 
-    static fn memory(registrations: List<Registration>) -> Result<Graph, string> {
-        let catalog = Catalog.collected(registrations)?
+    static fn memory(registrations: List<Registration>, derived: List<DerivationRegistration> = []) -> Result<
+        Graph,
+        string,
+    > {
+        let catalog = Catalog.collected(registrations, derived)?
         let db = stored(Db.memory())?
         Graph.admitted(db, catalog, CatalogUse.Install)
     }
 
-    static fn open(path: string, registrations: List<Registration>) -> Result<Graph, string> {
-        let catalog = Catalog.collected(registrations)?
+    static fn open(
+        path: string,
+        registrations: List<Registration>,
+        derived: List<DerivationRegistration> = [],
+    ) -> Result<Graph, string> {
+        let catalog = Catalog.collected(registrations, derived)?
         let db = stored(Db.open(path))?
         Graph.admitted(db, catalog, CatalogUse.Install)
     }
