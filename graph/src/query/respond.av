@@ -25,7 +25,20 @@ impl Graph {
 fn responded(request: string, result: ReadResult) -> Json {
     match result.answer {
         .Exceeded(limit) -> unresolved(request, result.revision, "budget_exceeded", limit),
-        .Unmet(code, detail) -> unresolved(request, result.revision, code, detail),
+        .Unmet(code, detail, rows) -> known_unknown(request, result.revision, code, detail, rows),
+        .Status(name, held, rows) -> {
+            let citations = distinct_supports(rows)
+            if citations.is_empty() {
+                unresolved(
+                    request,
+                    result.revision,
+                    "no_evidence",
+                    "no cited rows stand behind the status",
+                )
+            } else {
+                answered(request, result.revision, [status_field(name, held, citations)], rows)
+            }
+        },
         .Rows(rows) -> {
             let fields = [f for row in rows for f in row_fields(row)]
             let conflicts = [c for row in rows for c in row_conflicts(row)]
@@ -89,6 +102,31 @@ fn ambiguous(
         [],
         [problem("conflicting_values", "competing supported values; none is selected")],
     )
+}
+
+/// An unknown that still shows what was found, each field cited.
+fn known_unknown(request: string, revision: int, code: string, message: string, rows: List<ReadRow>) -> Json {
+    document(
+        request,
+        "unknown",
+        revision,
+        [f for row in rows for f in row_fields(row)],
+        [citation(s) for s in distinct_supports(rows)],
+        [],
+        [problem(code, message)],
+    )
+}
+
+fn status_field(name: string, held: bool, supports: List<Support>) -> Json {
+    Json
+        .Obj(
+            [
+                field("path", Json.Arr([Json.Str(name)])),
+                field("value", Json.Bool(held)),
+                field("basis", Json.Str("record_status")),
+                field("citations", Json.Arr([Json.Str(s.id) for s in supports])),
+            ],
+        )
 }
 
 fn unresolved(request: string, revision: int, code: string, message: string) -> Json {

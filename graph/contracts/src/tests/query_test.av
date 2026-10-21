@@ -100,5 +100,26 @@ spec "v1 bounded read-only plans" {
                 ReadStep
                     .from_json("{\"id\":\"a\",\"op\":\"scan\",\"model\":\"M\",\"binding\":\"speaker\"}") is .Err
         }
+        then "a status names a property and exactly one output name" {
+            ReadStep
+                    .from_json(
+                        "{\"id\":\"a\",\"op\":\"holds\",\"inputs\":[\"b\"],\"property\":\"p\",\"names\":[\"x\"]}",
+                    ) is .Ok &&
+                ReadStep
+                    .from_json("{\"id\":\"a\",\"op\":\"holds\",\"inputs\":[\"b\"],\"property\":\"p\"}") is .Err &&
+                ReadStep
+                    .from_json(
+                        "{\"id\":\"a\",\"op\":\"holds\",\"inputs\":[\"b\"],\"property\":\"p\",\"names\":[\"x\",\"y\"]}",
+                    ) is .Err
+        }
+        then "a joined output must name a step" {
+            ReadPlan
+                    .from_json(plan_text.replace("\"output\":\"b\"", "\"output\":\"b\",\"joined\":[\"a\"]")) is .Ok &&
+                ReadPlan
+                    .from_json(
+                        plan_text
+                            .replace("\"output\":\"b\"", "\"output\":\"b\",\"joined\":[\"zz\"]"),
+                    ) is .Err
+        }
     }
 }

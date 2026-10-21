@@ -91,7 +91,7 @@ fn evidenced(result: ReadResult) -> bool {
                 ),
         .Count(_, rows) -> rows.all(!it.evidence.is_empty()),
         .Sum(_, _, rows) -> rows.all(!it.evidence.is_empty()),
-        .Unsummable(_, _) or .Unmet(_, _) or .Exceeded(_) -> false,
+        .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) or .Exceeded(_) -> false,
     }
 }
 
@@ -138,7 +138,7 @@ fn counts_with_rows() -> Result<bool, string> {
     )?
     let counted = match result.answer {
         .Count(n, _) -> n,
-        .Rows(_) or .Sum(_, _, _) or .Unsummable(_, _) or .Unmet(_, _) or .Exceeded(_) -> -1,
+        .Rows(_) or .Sum(_, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) or .Exceeded(_) -> -1,
     }
     counted == 2 && row_ids(result).join(",") == "w2,w3" && evidenced(result)
 }
@@ -268,7 +268,7 @@ fn named_and_expected() -> Result<bool, string> {
         held.member("status").text() == "answered" &&
         absent.member("status").text() == "unknown" &&
         absent.member("problems").item(0).member("code").text() == "no_due_date" &&
-        absent.member("fields").items().is_empty()
+        !absent.member("fields").items().is_empty()
 }
 
 fn conflict_is_ambiguous() -> Result<bool, string> {
@@ -345,6 +345,56 @@ fn context_seeds_the_question() -> Result<bool, string> {
         stranger.member("fields").items().is_empty()
 }
 
+fn partial_unknown_keeps_what_was_found() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    let answer = asked(
+        g,
+        [
+            scan("a", "WorkItem"),
+            status_is("b", "a", "open"),
+            step("c", "expect", "b", "\"property\":\"due_at\",\"reason\":\"no_due_date\""),
+        ],
+        "c",
+    )?
+    answer.member("status").text() == "unknown" &&
+        answer.member("problems").item(0).member("code").text() == "no_due_date" &&
+        answer.member("fields").items().any(it.member("path").item(0).text() == "w1") &&
+        answer.member("fields").items().all(it.member("citations").items().length > 0) &&
+        answer.member("citations").items().length > 0
+}
+
+fn joined_chains_answer_together() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    let steps = [
+        scan("a", "WorkItem"),
+        status_is("b", "a", "open"),
+        step("c", "project", "b", "\"properties\":[\"title\"],\"names\":[\"open_title\"]"),
+        scan("d", "Person"),
+        step(
+            "e",
+            "filter",
+            "d",
+            "\"property\":\"name\",\"comparison\":\"eq\",\"arguments\":[\"Ada\"]",
+        ),
+        step("f", "project", "e", "\"properties\":[\"name\"],\"names\":[\"who\"]"),
+    ]
+    let body = match parse(plan(steps.join(","), "c", g.catalog.fingerprint, joined: "\"f\"")) {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "plan is not JSON" },
+    }
+    let answer = g.dispatch(Json.Obj([field("op", Json.Str("query")), field("plan", body)]))?
+    let names = answer
+        .member("fields")
+        .items()
+        .map(it.member("path").item(1).text() ?? "")
+        .join(",")
+    names == "open_title,who"
+}
+
 fn passed(answer: Result<bool, string>) -> bool {
     answer catch e -> {
         println(e)
@@ -364,6 +414,8 @@ spec "graph read execution" {
         then "a named projection renames the output; an expectation turns absence into unknown" { passed(named_and_expected()) }
         then "unresolved competing values answer ambiguous with conflicts" { passed(conflict_is_ambiguous()) }
         then "one question asked by two speakers answers from each speaker, and an unbound or unknown speaker is unknown" { passed(context_seeds_the_question()) }
+        then "an unmet expectation is unknown but keeps the cited rows it found" { passed(partial_unknown_keeps_what_was_found()) }
+        then "two chains join into one answer" { passed(joined_chains_answer_together()) }
         then "competing claims stay candidates with no chosen truth" { passed(conflict_stays_open()) }
     }
 }

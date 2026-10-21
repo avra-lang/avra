@@ -1,0 +1,106 @@
+use derive.model.{model}
+use schema.{Registration}
+use @std.json.{Json, field, parse}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+
+@model
+type Booking = { venue: string, confirmed: bool }
+
+fn registrations() -> List<Registration> { [Registration { make: Booking_graph_model }] }
+
+fn booking(id: string, venue: string, confirmed: bool) -> Result<Record, string> {
+    Record {
+        id: id,
+        model: "Booking",
+        value: stored_value("{\"venue\":\"${venue}\",\"confirmed\":${confirmed}}")?,
+    }
+}
+
+fn filed(mut g: Graph, id: string, producer: string, records: List<Record>) -> Result<int, string> {
+    g
+        .publish(
+            Publication {
+                id: id,
+                producer: producer,
+                scope: "in:1",
+                input: "in:1",
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: records,
+            },
+        )
+}
+
+fn ledger(records: List<Record>) -> Result<Graph, string> {
+    mut g = Graph.memory(registrations())?
+    g.observe("in:1", "raw")?
+    filed(g, "one", "agent", records)?
+    g
+}
+
+fn status_of(mut g: Graph, venue: string) -> Result<Json, string> {
+    let steps = [
+        scan("a", "Booking"),
+        step(
+            "b",
+            "filter",
+            "a",
+            "\"property\":\"venue\",\"comparison\":\"eq\",\"arguments\":[\"${venue}\"]",
+        ),
+        step("c", "holds", "b", "\"property\":\"confirmed\",\"names\":[\"booking_confirmed\"]"),
+    ]
+    let body = match parse(plan(steps.join(","), "c", g.catalog.fingerprint)) {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "plan is not JSON" },
+    }
+    g.dispatch(Json.Obj([field("op", Json.Str("query")), field("plan", body)]))
+}
+
+fn held_of(answer: Json) -> bool? { answer.member("fields").item(0).member("value").truth() }
+
+fn declared_status() -> Result<bool, string> {
+    mut g = ledger([booking("b1", "Alder", true)?, booking("b2", "Birch", false)?])?
+    defer { let _ = g.close() }
+    let yes = status_of(g, "Alder")?
+    let no = status_of(g, "Birch")?
+    held_of(yes) == true &&
+        held_of(no) == false &&
+        no.member("fields").item(0).member("basis").text() == "record_status" &&
+        no.member("fields").item(0).member("citations").items().length > 0 &&
+        no.member("fields").item(0).member("path").item(0).text() == "booking_confirmed"
+}
+
+fn nothing_to_cite_is_unknown() -> Result<bool, string> {
+    mut g = ledger([booking("b1", "Alder", true)?])?
+    defer { let _ = g.close() }
+    let none = status_of(g, "Nowhere")?
+    none.member("status").text() == "unknown" &&
+        none.member("problems").item(0).member("code").text() == "no_evidence"
+}
+
+fn rivals_are_not_decided() -> Result<bool, string> {
+    mut g = ledger([booking("b1", "Alder", true)?])?
+    defer { let _ = g.close() }
+    filed(g, "two", "other", [booking("b1", "Alder", false)?])?
+    let rival = status_of(g, "Alder")?
+    rival.member("status").text() == "unknown" &&
+        rival.member("problems").item(0).member("code").text() == "conflicting_status"
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "declared status reads" {
+    given "bookings with a declared boolean" {
+        then "a status reads true, or false from the claims that exist, with citations" { passed(declared_status()) }
+        then "a status with no rows to cite is unknown, never false" { passed(nothing_to_cite_is_unknown()) }
+        then "competing claims leave the status undecided" { passed(rivals_are_not_decided()) }
+    }
+}

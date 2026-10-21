@@ -21,7 +21,8 @@ export enum ReadAnswer {
     Count(total: int, rows: List<ReadRow>)
     Sum(total: Quantity, terms: List<Term>, rows: List<ReadRow>)
     Unsummable(code: string, why: string)
-    Unmet(code: string, detail: string)
+    Unmet(code: string, detail: string, rows: List<ReadRow>)
+    Status(name: string, held: bool, rows: List<ReadRow>)
     Exceeded(limit: string)
 }
 
@@ -29,8 +30,8 @@ impl ReadAnswer {
     /// The rows behind the answer, counted or returned.
     fn rows() -> List<ReadRow> {
         match self {
-            .Rows(rows) or .Count(_, rows) or .Sum(_, _, rows) -> rows,
-            .Unsummable(_, _) or .Unmet(_, _) or .Exceeded(_) -> [],
+            .Rows(rows) or .Count(_, rows) or .Sum(_, _, rows) or .Unmet(_, _, rows) or .Status(_, _, rows) -> rows,
+            .Unsummable(_, _) or .Exceeded(_) -> [],
         }
     }
 }
@@ -52,7 +53,8 @@ enum Flow {
     Total(count: int, hits: List<Hit>)
     Summed(total: Quantity, terms: List<Term>, hits: List<Hit>)
     Unsummable(code: string, why: string)
-    Unmet(code: string, detail: string)
+    Unmet(code: string, detail: string, hits: List<Hit>)
+    Status(name: string, held: bool, hits: List<Hit>)
 }
 
 /// One execution: the store it reads and the work it has spent so far.
@@ -81,12 +83,25 @@ impl Graph {
 impl Run {
     fn walked(plan: ReadOnlyPlan) -> Result<ReadAnswer, string> {
         mut flows: List<Flow> = []
-        for node in plan.nodes.slice(0, plan.output + 1) {
+        let last = plan.joined.fold(plan.output, (far, at) -> if at > far { at } else { far })
+        for node in plan.nodes.slice(0, last + 1) {
             let flow = self.evaluated(flows, node.operation)?
             if flow is .Unmet { return self.answered(flow) }
             flows.push(flow)
         }
-        self.answered(flows[plan.output])
+        if plan.joined.is_empty() {
+            self.answered(flows[plan.output])
+        } else {
+            self
+                .answered(
+                    Flow
+                        .Hits(
+                            flatten_hits(
+                                [self.rows(flows, at)? for at in [plan.output].concat(plan.joined)],
+                            ),
+                        ),
+                )
+        }
     }
 
     /// A bound reached is an answer; any other failure stays one.
@@ -122,6 +137,7 @@ impl Run {
             .Search(input, property, needle) -> Flow.Hits(self.search(self.rows(flows, input)?, property.name, needle)?),
             .Follow(input, owner, property, direction) -> Flow.Hits(self.follow(self.rows(flows, input)?, owner, property.name, direction)?),
             .Project(input, properties, names) -> Flow.Hits(self.project(self.rows(flows, input)?, properties, names)),
+            .Holds(input, property, name) -> self.holds(self.rows(flows, input)?, property.name, name)?,
             .Expect(input, property, reason) -> self.expect(self.rows(flows, input)?, property.name, reason)?,
             .Count(input) -> {
                 let hits = self.rows(flows, input)?
@@ -134,7 +150,7 @@ impl Run {
     fn rows(flows: List<Flow>, input: int) -> Result<List<Hit>, string> {
         match flows[input] {
             .Hits(hits) -> hits,
-            .Total(_, _) or .Summed(_, _, _) or .Unsummable(_, _) or .Unmet(_, _) -> { fail "an aggregate has no rows to read" },
+            .Total(_, _) or .Summed(_, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) -> { fail "an aggregate has no rows to read" },
         }
     }
 
@@ -157,7 +173,8 @@ impl Run {
             .Speaker -> self.context.speaker,
             .Principal -> self.context.principal,
         } else {
-            return Flow.Unmet("unbound_context", "the request's context names no ${binding.word()}")
+            return Flow
+                .Unmet("unbound_context", "the request's context names no ${binding.word()}", [])
         }
         self.charge(1)?
         let found = match self.g.entity(bound) { .Ok(e) -> e.model == model, .Err(_) -> false }
@@ -168,6 +185,7 @@ impl Run {
                 .Unmet(
                     "unresolved_context",
                     "the context's ${binding.word()} is not a ${model} in the graph",
+                    [],
                 )
         }
     }
@@ -243,11 +261,21 @@ impl Run {
         [h with { fields: h.fields.filter((f) -> kept.contains(f.property)), names: aliases } for h in input]
     }
 
+    /// A declared boolean status: true when a row's only standing value is true,
+    /// false when none claims it; rivals are not decided.
+    fn holds(input: List<Hit>, property: string, name: string) -> Result<Flow, string> {
+        self.charge(input.length)?
+        let rivalry = input.any(it.rivals(property))
+        let held = input.any(it.sure(property))
+        let proved = [h.proved(h.id, property) for h in input]
+        if rivalry { Flow.Unmet("conflicting_status", "competing claims for ${property}", proved) } else { Flow.Status(name, held, proved) }
+    }
+
     /// Rows that hold the property pass; none holding it is the plan's declared unknown.
     fn expect(input: List<Hit>, property: string, reason: string) -> Result<Flow, string> {
         self.charge(input.length)?
         let held = [h.proved(h.id, property) for h in input if h.values(property).any(!(it is .Null))]
-        if held.is_empty() { Flow.Unmet(reason, "the expected ${property} is absent") } else { Flow.Hits(held) }
+        if held.is_empty() { Flow.Unmet(reason, "the expected ${property} is absent", input) } else { Flow.Hits(held) }
     }
 
     fn answered(flow: Flow) -> Result<ReadAnswer, string> {
@@ -256,7 +284,8 @@ impl Run {
             .Total(count, hits) -> ReadAnswer.Count(count, self.rows_of(hits)?),
             .Summed(total, terms, hits) -> ReadAnswer.Sum(total, terms, self.rows_of(hits)?),
             .Unsummable(code, why) -> ReadAnswer.Unsummable(code, why),
-            .Unmet(code, detail) -> ReadAnswer.Unmet(code, detail),
+            .Status(name, held, hits) -> ReadAnswer.Status(name, held, self.rows_of(hits)?),
+            .Unmet(code, detail, hits) -> ReadAnswer.Unmet(code, detail, self.rows_of(hits)?),
         }
     }
 
@@ -291,6 +320,17 @@ impl Hit {
     /// Standing values of a property; several mean competing claims.
     fn proved_all(entity: string, properties: List<string>) -> Hit {
         self with { proofs: self.proofs.concat([Proof { entity: entity, property: p } for p in properties]) }
+    }
+
+    /// Both truth values stand for the property.
+    fn rivals(property: string) -> bool {
+        self.values(property).any(encoded(it) == "true") &&
+            self.values(property).any(encoded(it) == "false")
+    }
+
+    /// The one standing value is true.
+    fn sure(property: string) -> bool {
+        self.values(property).length == 1 && self.values(property).any(encoded(it) == "true")
     }
 
     fn values(property: string) -> List<Value> {
@@ -367,3 +407,5 @@ fn work_exceeded() -> string { "read exceeded its work budget" }
 fn rows_exceeded() -> string { "read exceeded its row budget" }
 
 fn unexceeded() -> string? { null }
+
+fn flatten_hits(runs: List<List<Hit>>) -> List<Hit> { [h for run in runs for h in run] }
