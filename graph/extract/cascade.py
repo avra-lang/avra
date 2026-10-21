@@ -322,10 +322,13 @@ class Cascade:
                 labels[label] = f"{label} of a {name}: {gloss(self.plan.models[name])}"
         found = self.enc.mentions(self.t.s, labels)
         by_label = {m.lower(): m for m in self.plan.entities}
-        spans = sorted(
-            ((x["start"], x["end"], l, x["confidence"]) for l, xs in found.items() for x in xs),
-            key=lambda x: (-(x[1] - x[0]), x[0]),
-        )
+        strongest = {}
+        for l, xs in found.items():
+            for x in xs:
+                key = (x["start"], x["end"])
+                if key not in strongest or x["confidence"] > strongest[key][3]:
+                    strongest[key] = (x["start"], x["end"], l, x["confidence"])
+        spans = sorted(strongest.values(), key=lambda x: (-(x[1] - x[0]), x[0]))
         for a, b, label, conf in spans:
             if label not in by_label:
                 self.mentions.append({"start": a, "end": b, "kind": label, "record": None, "score": conf})
