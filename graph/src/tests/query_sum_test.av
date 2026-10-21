@@ -1,0 +1,164 @@
+use derive.model.{model}
+use schema.{Registration}
+use semantics.{Semantics, QuantityBinding}
+use @std.json.{Json, field, parse}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+
+@model(quote { Semantics { quantities: [QuantityBinding { amount: ["minor"], unit: .Field(["currency"]), decimal_places: 2 }] } })
+type Invoice = { minor: int, currency: string }
+
+@model(quote { Semantics { quantities: [QuantityBinding { amount: ["amount"], unit: .Constant("points") }] } })
+type Levy = { amount: int }
+
+fn registrations() -> List<Registration> {
+    [Registration { make: Invoice_graph_model }, Registration { make: Levy_graph_model }]
+}
+
+fn invoice(id: string, minor: int, currency: string) -> Result<Record, string> {
+    Record {
+        id: id,
+        model: "Invoice",
+        value: stored_value("{\"minor\":${minor},\"currency\":\"${currency}\"}")?,
+    }
+}
+
+fn levy(id: string, amount: int) -> Result<Record, string> {
+    Record { id: id, model: "Levy", value: stored_value("{\"amount\":${amount}}")? }
+}
+
+fn filed(mut g: Graph, id: string, producer: string, records: List<Record>) -> Result<int, string> {
+    g
+        .publish(
+            Publication {
+                id: id,
+                producer: producer,
+                scope: "in:1",
+                input: "in:1",
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: records,
+            },
+        )
+}
+
+fn ledger() -> Result<Graph, string> {
+    mut g = Graph.memory(registrations())?
+    g.observe("in:1", "raw")?
+    filed(
+        g,
+        "one",
+        "agent",
+        [
+            invoice("i1", 1050, "USD")?,
+            invoice("i2", 250, "USD")?,
+            invoice("i3", 900, "EUR")?,
+            levy("l1", 7)?,
+            levy("l2", 5)?,
+        ],
+    )?
+    g
+}
+
+fn asked_sum(mut g: Graph, model: string, property: string, where_currency: string?) -> Result<
+    Json,
+    string,
+> {
+    let narrowed = if where_currency == null {
+        [scan("a", model), step("s", "sum", "a", "\"property\":\"${property}\"")]
+    } else {
+        [
+            scan("a", model),
+            step(
+                "f",
+                "filter",
+                "a",
+                "\"property\":\"currency\",\"comparison\":\"eq\",\"arguments\":[\"${where_currency!}\"]",
+            ),
+            step("s", "sum", "f", "\"property\":\"${property}\""),
+        ]
+    }
+    let body = match parse(plan(narrowed.join(","), "s", g.catalog.fingerprint)) {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "plan is not JSON" },
+    }
+    g.dispatch(Json.Obj([field("op", Json.Str("query")), field("plan", body)]))
+}
+
+fn code_of(answer: Json) -> string? { answer.member("problems").item(0).member("code").text() }
+
+fn one_currency_adds() -> Result<bool, string> {
+    mut g = ledger()?
+    defer { let _ = g.close() }
+    let usd = asked_sum(g, "Invoice", "minor", "USD")?
+    let total = usd.member("fields").item(0)
+    let terms = usd.member("fields").items().length - 1
+    usd.member("status").text() == "answered" &&
+        total.member("value").member("minor").int() == 1300 &&
+        total.member("value").member("unit").text() == "USD" &&
+        total.member("value").member("decimal_places").int() == 2 &&
+        terms == 2 &&
+        usd.member("fields").items().all(it.member("citations").items().length > 0)
+}
+
+fn mixed_currency_refused() -> Result<bool, string> {
+    mut g = ledger()?
+    defer { let _ = g.close() }
+    let mixed = asked_sum(g, "Invoice", "minor", null)?
+    mixed.member("status").text() == "refused" &&
+        code_of(mixed) == "mixed_units" &&
+        mixed.member("fields").items().is_empty() &&
+        mixed.member("policies").item(0).text() == "quantity_policy"
+}
+
+fn constant_unit() -> Result<bool, string> {
+    mut g = ledger()?
+    defer { let _ = g.close() }
+    let points = asked_sum(g, "Levy", "amount", null)?
+    points.member("fields").item(0).member("value").member("minor").int() == 12 &&
+        points.member("fields").item(0).member("value").member("unit").text() == "points"
+}
+
+fn empty_is_not_zero() -> Result<bool, string> {
+    mut g = ledger()?
+    defer { let _ = g.close() }
+    let none = asked_sum(g, "Invoice", "minor", "GBP")?
+    none.member("status").text() == "refused" && code_of(none) == "no_terms"
+}
+
+fn conflict_is_not_resolved() -> Result<bool, string> {
+    mut g = ledger()?
+    defer { let _ = g.close() }
+    filed(g, "two", "agent-b", [invoice("i1", 1000, "USD")?])?
+    let usd = asked_sum(g, "Invoice", "minor", "USD")?
+    usd.member("status").text() == "refused" && code_of(usd) == "conflicting_amount"
+}
+
+fn overflow_refused() -> Result<bool, string> {
+    mut g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    g.observe("in:1", "raw")?
+    filed(g, "big", "agent", [invoice("a", 9223372036854775807, "USD")?, invoice("b", 1, "USD")?])?
+    let big = asked_sum(g, "Invoice", "minor", "USD")?
+    big.member("status").text() == "refused" && code_of(big) == "overflow"
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "unit-safe sums" {
+    given "invoices in two currencies and levies in a constant unit" {
+        then "a sum in one currency adds minor units and cites every summand" { passed(one_currency_adds()) }
+        then "a sum across currencies is refused with no exchange rate" { passed(mixed_currency_refused()) }
+        then "a constant unit needs no unit property" { passed(constant_unit()) }
+        then "a sum over no rows is not zero" { passed(empty_is_not_zero()) }
+        then "competing amounts are not resolved into a summand" { passed(conflict_is_not_resolved()) }
+        then "integer overflow is refused, not wrapped" { passed(overflow_refused()) }
+    }
+}

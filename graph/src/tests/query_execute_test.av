@@ -90,7 +90,8 @@ fn evidenced(result: ReadResult) -> bool {
                         it.evidence.all(it.supports.item(0).member("claim").int() != null),
                 ),
         .Count(_, rows) -> rows.all(!it.evidence.is_empty()),
-        .Exceeded(_) -> false,
+        .Sum(_, _, rows) -> rows.all(!it.evidence.is_empty()),
+        .Unsummable(_, _) or .Exceeded(_) -> false,
     }
 }
 
@@ -135,7 +136,10 @@ fn counts_with_rows() -> Result<bool, string> {
         [scan("a", "WorkItem"), status_is("b", "a", "done"), step("c", "count", "b", "")],
         "c",
     )?
-    let counted = match result.answer { .Count(n, _) -> n, .Rows(_) or .Exceeded(_) -> -1 }
+    let counted = match result.answer {
+        .Count(n, _) -> n,
+        .Rows(_) or .Sum(_, _, _) or .Unsummable(_, _) or .Exceeded(_) -> -1,
+    }
     counted == 2 && row_ids(result).join(",") == "w2,w3" && evidenced(result)
 }
 

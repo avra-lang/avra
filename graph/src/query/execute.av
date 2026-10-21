@@ -3,6 +3,8 @@ use @std.json.{Json}
 use @std.validate.{Value}
 use data.{encoded, before}
 use schema.{Property}
+use semantics.{QuantityBinding}
+use query.quantity.{Quantity, Term, Tally, Subject, tally}
 use store.open.{Graph}
 use store.query.{Selection}
 use query.plan.{ReadOnlyPlan, ReadOperation, Comparison, Direction, SourceView}
@@ -14,12 +16,21 @@ export type Evidence = { entity: string, property: string, supports: Json }
 export type ReadRow = { id: string, model: string, fields: List<Selection>, evidence: List<Evidence> }
 
 /// Exceeded is a bound reached mid-run: no rows, and not a defect.
-export enum ReadAnswer { Rows(rows: List<ReadRow>), Count(total: int, rows: List<ReadRow>), Exceeded(limit: string) }
+export enum ReadAnswer {
+    Rows(rows: List<ReadRow>)
+    Count(total: int, rows: List<ReadRow>)
+    Sum(total: Quantity, terms: List<Term>, rows: List<ReadRow>)
+    Unsummable(code: string, why: string)
+    Exceeded(limit: string)
+}
 
 impl ReadAnswer {
     /// The rows behind the answer, counted or returned.
     fn rows() -> List<ReadRow> {
-        match self { .Rows(rows) or .Count(_, rows) -> rows, .Exceeded(_) -> [] }
+        match self {
+            .Rows(rows) or .Count(_, rows) or .Sum(_, _, rows) -> rows,
+            .Unsummable(_, _) or .Exceeded(_) -> [],
+        }
     }
 }
 
@@ -27,7 +38,12 @@ export type ReadResult = { revision: int, work: int, answer: ReadAnswer }
 
 type Proof = { entity: string, property: string }
 type Hit = { id: string, model: string, fields: List<Selection>, known: List<string>, proofs: List<Proof> }
-enum Flow { Hits(hits: List<Hit>), Total(count: int, hits: List<Hit>) }
+enum Flow {
+    Hits(hits: List<Hit>)
+    Total(count: int, hits: List<Hit>)
+    Summed(total: Quantity, terms: List<Term>, hits: List<Hit>)
+    Unsummable(code: string, why: string)
+}
 
 /// One execution: the store it reads and the work it has spent so far.
 type Run = { g: Graph, budget: Budget, spent: Cell<int>, exceeded: Cell<string?> }
@@ -96,14 +112,14 @@ impl Run {
                 let hits = self.rows(flows, input)?
                 Flow.Total(hits.length, hits)
             },
-            .Sum(_, _, _) -> { fail unexecuted_sum() },
+            .Sum(input, property, quantity) -> self.sum(self.rows(flows, input)?, property.name, quantity)?,
         }
     }
 
     fn rows(flows: List<Flow>, input: int) -> Result<List<Hit>, string> {
         match flows[input] {
             .Hits(hits) -> hits,
-            .Total(_, _) -> { fail "a count has no rows to read" },
+            .Total(_, _) or .Summed(_, _, _) or .Unsummable(_, _) -> { fail "an aggregate has no rows to read" },
         }
     }
 
@@ -135,6 +151,20 @@ impl Run {
     > {
         self.charge(input.length)?
         [h.proved(h.id, property) for h in input if h.holds(property, compare, literal)]
+    }
+
+    fn sum(input: List<Hit>, amount: string, binding: QuantityBinding) -> Result<Flow, string> {
+        self.charge(input.length)?
+        match tally([Subject { id: h.id, fields: h.fields } for h in input], amount, binding) {
+            .Refused(code, why) -> Flow.Unsummable(code, why),
+            .Total(total, terms) -> Flow.Summed(total, terms, self.cited_sum(input, amount, binding)),
+        }
+    }
+
+    /// Each summand carries the amount and the unit that were read.
+    fn cited_sum(input: List<Hit>, amount: string, binding: QuantityBinding) -> List<Hit> {
+        let unit = if binding.unit is .Field(path) { path } else { [] }
+        [h.proved(h.id, amount).proved_all(h.id, unit) for h in input]
     }
 
     fn search(input: List<Hit>, property: string, needle: string) -> Result<List<Hit>, string> {
@@ -179,6 +209,8 @@ impl Run {
         match flow {
             .Hits(hits) -> ReadAnswer.Rows(self.rows_of(hits)?),
             .Total(count, hits) -> ReadAnswer.Count(count, self.rows_of(hits)?),
+            .Summed(total, terms, hits) -> ReadAnswer.Sum(total, terms, self.rows_of(hits)?),
+            .Unsummable(code, why) -> ReadAnswer.Unsummable(code, why),
         }
     }
 
@@ -202,6 +234,10 @@ impl Hit {
     }
 
     /// Standing values of a property; several mean competing claims.
+    fn proved_all(entity: string, properties: List<string>) -> Hit {
+        self with { proofs: self.proofs.concat([Proof { entity: entity, property: p } for p in properties]) }
+    }
+
     fn values(property: string) -> List<Value> {
         (self.fields.find(it.property == property)?.candidates ?? []).map(it.value)
     }
@@ -270,8 +306,6 @@ fn distinct(hits: List<Hit>) -> List<Hit> {
 fn distinct_proofs(proofs: List<Proof>) -> List<Proof> {
     [p for i, p in proofs if !proofs.slice(0, i).any(it.entity == p.entity && it.property == p.property)]
 }
-
-fn unexecuted_sum() -> string { "a sum needs a currency-safe aggregate, which this engine does not execute" }
 
 fn work_exceeded() -> string { "read exceeded its work budget" }
 

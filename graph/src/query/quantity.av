@@ -1,0 +1,82 @@
+use semantics.{QuantityBinding, UnitBinding}
+use store.query.{Selection}
+
+/// Integer minor units of one unit; `places` is the declared decimal scale.
+export type Quantity = { minor: int, unit: string, places: int }
+
+export type Term = { row: string, claim: int, minor: int }
+
+export type Subject = { id: string, fields: List<Selection> }
+
+/// A refusal names its reason as a code; no rate or default is ever guessed.
+export enum Tally { Total(total: Quantity, terms: List<Term>), Refused(code: string, why: string) }
+
+enum Reading { Got(term: Term, unit: string), Bad(code: string, why: string) }
+
+/// Sums one declared quantity across subjects, in one unit, with no loss.
+export fn tally(subjects: List<Subject>, amount: string, binding: QuantityBinding) -> Tally {
+    if subjects.is_empty() { return Tally.Refused("no_terms", "a sum over no rows has no unit and is not zero") }
+    mut terms: List<Term> = []
+    mut unit = ""
+    mut total = 0
+    for s in subjects {
+        match reading(s, amount, binding) {
+            .Bad(code, why) -> { return Tally.Refused(code, why) },
+            .Got(term, u) -> {
+                if !terms.is_empty() && unit != u { return Tally.Refused("mixed_units", mixed_words()) }
+                if overflows(total, term.minor) { return Tally.Refused("overflow", "the sum exceeds the integer range") }
+                unit = u
+                total = total + term.minor
+                terms.push(term)
+            },
+        }
+    }
+    Tally.Total(Quantity { minor: total, unit: unit, places: binding.decimal_places }, terms)
+}
+
+fn reading(s: Subject, amount: string, binding: QuantityBinding) -> Reading {
+    let held? = s.fields.find(it.property == amount) else { return missing("amount") }
+    if held.candidates.length != 1 { return Reading.Bad("conflicting_amount", conflict_words()) }
+    let unit = unit_of(s, binding.unit)
+    match held.candidates[0].value {
+        .Int(minor) -> match unit {
+            .Bad(code, why) -> Reading.Bad(code, why),
+            .Got(_, u) -> Reading.Got(Term { row: s.id, claim: held.candidates[0].claim, minor: minor }, u),
+        },
+        rest -> Reading.Bad("non_integer_amount", "an amount is integer minor units"),
+    }
+}
+
+/// The unit is a Got with a throwaway term slot: only its text is read.
+fn unit_of(s: Subject, unit: UnitBinding) -> Reading {
+    match unit {
+        .Constant(name) -> named(name),
+        .Field(path) -> {
+            let held? = s.fields.find(it.property == path[0]) else { return missing("unit") }
+            if held.candidates.length != 1 { return Reading.Bad("conflicting_unit", conflict_words()) }
+            match held.candidates[0].value {
+                .Text(name) -> named(name),
+                rest -> Reading.Bad("unknown_unit", "a unit is text"),
+            }
+        },
+    }
+}
+
+fn named(name: string) -> Reading {
+    if name.is_empty() {
+        Reading.Bad("unknown_unit", "a unit cannot be empty")
+    } else {
+        Reading.Got(Term { row: "", claim: 0, minor: 0 }, name)
+    }
+}
+
+fn missing(what: string) -> Reading { Reading.Bad("missing_${what}", "a missing ${what} is not a default") }
+
+fn overflows(total: int, next: int) -> bool {
+    next > 0 && total > 9223372036854775807 - next ||
+        next < 0 && total < -9223372036854775807 - 1 - next
+}
+
+fn mixed_words() -> string { "summands in different units are not added, and no exchange rate is assumed" }
+
+fn conflict_words() -> string { "competing claims are not resolved into a summand" }
