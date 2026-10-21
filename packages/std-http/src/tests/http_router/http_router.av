@@ -1,0 +1,89 @@
+// proves: a `router` is a named group of routes with no prefix, declared once and embedded by name — in a server, in a `group` (once or under two prefixes), and in another router
+use @std.net.{Conn, NetError, connect, timely}
+use @std.time.{ms, secs}
+use @std.http.http.{text}
+use @std.http.route.{get, post, group, router, faults, gathered}
+use @std.http.server.{server}
+
+export router tasks {
+    get "/" { _req -> "list" }
+    post "/" { req -> text(201, "made " + (req.body.text() ?? "?")) }
+    get "/{id}" { req -> "task " + req.params.id }
+}
+
+export router users {
+    get "/users" { _req -> "users" }
+}
+
+/// A router listing two others, in the order they answer: `users` first, since `tasks` takes any single segment.
+export router everything {
+    users
+    tasks
+}
+
+/// A table with a dead route: `/ideas/new` never runs, since the route
+/// above it takes any single segment.
+export router shadowed {
+    get "/ideas/{id}" { req -> "idea " + req.params.id }
+    get "/ideas/new" { _req -> "new" }
+}
+
+export server app {
+    port: 0
+    tasks
+    group "/api/tasks" { tasks }
+    group "/v2/tasks" { tasks }
+    group "/svc" { everything }
+}
+
+/// `sent` written, then read until the server closes or goes quiet.
+fn exchanged(c: Conn, sent: string) -> Result<string, NetError> {
+    c.write(sent.bytes())?
+    mut got = "".bytes()
+    while true {
+        match timely(within ms(300) { c.read(65536) }) {
+            .Ok(b) -> {
+                let more? = b else { break }
+                got = got.concat(more)
+            },
+            .Err(_) -> { break },
+        }
+    }
+    let parts = (got.text() ?? "?").split("\r\n\r\n")
+    let body = if parts.length > 1 { parts[1] } else { "" }
+    .Ok("${parts[0].split("\r\n").first() ?? "?"} ${body}")
+}
+
+fn asked(port: int, line: string) -> Result<string, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    exchanged(c, line + "\r\nHost: a\r\nConnection: close\r\nContent-Length: 4\r\n\r\nnote")
+}
+
+fn shown() -> Result<string, NetError> {
+    let s = app.listening()?
+    spawn s.run(1)
+    defer s.stop()
+    let port = s.listener.port
+    let lines = [
+        asked(port, "GET / HTTP/1.1")?,
+        asked(port, "POST / HTTP/1.1")?,
+        asked(port, "GET /7 HTTP/1.1")?,
+        asked(port, "GET /api/tasks/ HTTP/1.1")?,
+        asked(port, "GET /api/tasks/9 HTTP/1.1")?,
+        asked(port, "GET /v2/tasks/ HTTP/1.1")?,
+        asked(port, "GET /v2/tasks/4 HTTP/1.1")?,
+        asked(port, "GET /svc/ HTTP/1.1")?,
+        asked(port, "GET /svc/users HTTP/1.1")?,
+        asked(port, "GET /svc/5 HTTP/1.1")?,
+        asked(port, "GET /nope/1 HTTP/1.1")?,
+    ]
+    .Ok(lines.join("\n"))
+}
+
+// A bad table is refused in the library's own words, not by a compiler law:
+// this program compiles, and `faults` names the route that can never run.
+match shown() {
+    .Ok(t) -> t + "\n" + faults(gathered([shadowed])).join("\n"),
+    .Err(e) -> "failed: ${e.describe().message}",
+}
