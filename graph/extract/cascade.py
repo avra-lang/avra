@@ -884,12 +884,28 @@ def requested(stdin, catalog_path):
 
 
 class Models:
-    """Loaded once per process; a resident service keeps them warm."""
+    """The scorer stays loaded; the encoder is loaded for an extraction and
+    released after it, so a resident service holds one model between them."""
 
     def __init__(self):
         t = time.time()
-        self.enc, self.llm = Encoder(), Scorer()
+        self.llm, self._enc = Scorer(), None
         self.load_s = time.time() - t
+
+    @property
+    def enc(self):
+        if self._enc is None:
+            t = time.time()
+            self._enc = Encoder()
+            log(f"encoder_load_s={time.time() - t:.1f}")
+        return self._enc
+
+    def release(self):
+        """Drop the encoder and return its memory."""
+        import gc
+
+        self._enc = None
+        gc.collect()
 
 
 def extract(req, models=None):
@@ -943,8 +959,18 @@ def answered(body, models):
         return {"p": models.llm.choose(body["context"], body["question"], body["options"])}
     models.llm.prefix = body.get("prefix", True)
     os.environ["CASCADE_UNITS"] = body.get("units") or "statements"
-    result, logs = extract(body["request"], models)
+    try:
+        result, logs = extract(body["request"], models)
+    finally:
+        models.release()
     return {"result": result, "log": logs}
+
+
+def resident_mb():
+    """This process's resident memory now, as ps reports it."""
+    import subprocess
+
+    return int(subprocess.run(["ps", "-o", "rss=", "-p", str(os.getpid())], capture_output=True, text=True).stdout.strip() or 0) // 1024
 
 
 def serve():
@@ -978,7 +1004,7 @@ def serve():
             op = body.get("op", "extract")
             print(
                 f"{time.strftime('%H:%M:%S')} {op} bytes={len(data)} options={len(body.get('options', []))} "
-                f"s={time.time() - started:.2f} {answer.get('error', 'ok')}",
+                f"s={time.time() - started:.2f} rss_mb={resident_mb()} {answer.get('error', 'ok')}",
                 file=sys.stderr,
                 flush=True,
             )
