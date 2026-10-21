@@ -8,12 +8,12 @@ from subset import models_of, base_shape, reference_target
 RULES = """You translate a question about a personal knowledge graph into ONE read-only query in a small openCypher subset. Output only the query, no prose, no code fence.
 
 The subset:
-- One or more `MATCH pattern [WHERE conditions]` clauses, then `RETURN item [AS name], ...`. Each MATCH is its own chain: chains never share variables.
+- One or more `MATCH pattern [WHERE conditions]` clauses, then `RETURN item [AS name], ...`. A later MATCH may start from the LAST node of an earlier one, unlabelled and not filtered again, to reach more: `MATCH (c)-[:event]->(e:Event)`. No other variable is shared.
 - A node is `(var:Model)`; the first node of each MATCH needs its Model label.
 - `(a:A)-[:prop]->(b)` follows reference property `prop` of model A to its target. `(a)<-[:prop]-(b:B)` reaches the B records whose reference property `prop` points at a; label B there.
 - A relationship record (such as a family relation or a membership) is a NODE with its own label; reach it with `<-[:prop]-` and leave it with `-[:prop]->`.
 - WHERE joins conditions with AND only: `v.prop = 'text'`, `v.prop <> ...`, `< <= > >=` on numbers, `v.prop CONTAINS 'word'`, `v.prop IS NULL`, `v.prop IS NOT NULL`, and `id(v) = $speaker` on the first node of a MATCH. No OR, no NOT, no property maps, no relationship variables.
-- RETURN reads properties of the LAST node of a MATCH only. Name each item with AS in snake_case after what the question asks. `count(v)` or `sum(v.prop)` must be the only item.
+- RETURN reads properties of the LAST node of any MATCH only. Name each item with AS in snake_case after what the question asks. `count(v)` or `sum(v.prop)` must be the only item.
 - Compare a reference property by following it with a pattern, never `v.ref = 'id'`.
 
 Binding the question:

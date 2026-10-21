@@ -114,7 +114,7 @@ class Parser:
             self.i += 1
             self.take_op("[")
             if self.peek()[0] == "ident":
-                raise Refusal("unsupported_relationship_variable", "write `-[:type]->` with no variable")
+                raise Refusal("relationship_variable", "write `-[:type]->` with no variable")
             self.take_op(":")
             rel = self.ident()
             if self.op("*"):
@@ -277,15 +277,24 @@ def check(text, schema, params):
     labels, seen, lasts = {}, set(), []
     for chain in q["chains"]:
         nodes, rels = chain["nodes"], chain["rels"]
-        if not nodes[0]["label"]:
+        rebound = nodes[0]["var"] in lasts
+        if rebound and not rels:
+            raise Refusal("unused_match", "a rebound variable needs a hop to reach something new")
+        if not rebound and not nodes[0]["label"]:
             raise Refusal("unlabelled_node", f"the first node `{nodes[0]['var']}` of a MATCH needs a label")
-        for n in nodes:
+        if rebound and nodes[0]["label"] and nodes[0]["label"] != labels[nodes[0]["var"]]:
+            raise Refusal("label_mismatch", f"`{nodes[0]['var']}` is a {labels[nodes[0]['var']]}")
+        for n in nodes[1:] if rebound else nodes:
             if n["var"] in seen:
-                raise Refusal("unknown_variable", f"`{n['var']}` is bound twice; MATCH chains share no variables")
+                raise Refusal("duplicate_variable", f"a variable names one node: {n['var']} (only the last node of an earlier MATCH may start a later one)")
             seen.add(n["var"])
             if n["label"] and n["label"] not in models:
                 raise Refusal("label_mismatch", f"no model is named `{n['label']}`")
-        labels[nodes[0]["var"]] = nodes[0]["label"]
+        if rebound:
+            if any(c["kind"] != "id" and c["ref"][0] == nodes[0]["var"] for c in chain["where"]):
+                raise Refusal("unsupported_rebound_filter", "filter a rebound variable where it was first matched")
+        else:
+            labels[nodes[0]["var"]] = nodes[0]["label"]
         for i, rel in enumerate(rels):
             here, there = nodes[i], nodes[i + 1]
             if rel["incoming"]:

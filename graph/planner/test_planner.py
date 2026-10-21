@@ -54,7 +54,7 @@ PARAMS = {"asker": "p:rowan", "now": 1, "speaker": "p:rowan"}
 SLICE = {
     "q01": "MATCH (me:Person)<-[:subject]-(r:PersonalRelationship)-[:relative]->(w:Person) WHERE id(me) = $speaker AND r.relation = 'wife' RETURN w.name AS person",
     "q07": "MATCH (a:Person)<-[:subject]-(r:PersonalRelationship)-[:relative]->(w:Person)<-[:person]-(m:GroupMembership) WHERE a.name = 'Alex Chen' AND r.relation = 'wife' RETURN m.person AS person, m.is_member AS on_styling_crew",
-    "q16": "MATCH (me:Person)<-[:subject]-(r:PersonalRelationship)-[:relative]->(w:Person)<-[:actor]-(c:Commitment) WHERE id(me) = $speaker AND r.relation = 'wife' AND c.action CONTAINS 'guest' MATCH (e:Event) WHERE e.title CONTAINS 'launch' RETURN c.actor AS speaker, c.speech_act AS speech_act, c.condition AS condition, e.requested_guest_limit AS requested_guest_limit",
+    "q16": "MATCH (me:Person)<-[:subject]-(r:PersonalRelationship)-[:relative]->(w:Person)<-[:actor]-(c:Commitment) WHERE id(me) = $speaker AND r.relation = 'wife' AND c.action CONTAINS 'guest' MATCH (c)-[:event]->(e:Event) RETURN c.actor AS speaker, c.speech_act AS speech_act, c.condition AS condition, e.requested_guest_limit AS requested_guest_limit",
     "q46": "MATCH (me:Person)<-[:subject]-(r:PersonalRelationship)-[:relative]->(w:Person)<-[:requested_by]-(t:PersonalTask) WHERE id(me) = $speaker AND r.relation = 'wife' AND t.summary CONTAINS 'dinner' RETURN t.requested_by AS requested_by, t.assignee AS assignee, t.requested_reservation_at_ms AS requested_reservation_at",
     "q47": "MATCH (me:Person)<-[:assignee]-(t:PersonalTask) WHERE id(me) = $speaker AND t.summary CONTAINS 'dinner' RETURN t.assignee AS promised_by, t.confirmation_recorded AS booking_confirmed",
 }
@@ -89,8 +89,10 @@ class Gate(unittest.TestCase):
             "MATCH (r:PersonalRelationship) WHERE r.subject = 'p:rowan' RETURN r.relation": "syntax",
             "MATCH (me:Person) WHERE id(me) = $speaker SET me.name = 'x' RETURN me.name": "mutation_refused",
             "MATCH (me:Person) WHERE id(me) = $speaker RETURN count(me) AS n, me.name": "syntax",
-            "MATCH (me:Person)<-[r:subject]-(x:PersonalRelationship) RETURN x.relation": "unsupported_relationship_variable",
-            "MATCH (a:Person) MATCH (a:Person) RETURN a.name": "unknown_variable",
+            "MATCH (me:Person)<-[r:subject]-(x:PersonalRelationship) RETURN x.relation": "relationship_variable",
+            "MATCH (a:Person) MATCH (a:Person) RETURN a.name": "unused_match",
+            "MATCH (a:Person)<-[:actor]-(c:Commitment) MATCH (a)<-[:subject]-(r:PersonalRelationship) RETURN r.relation": "unlabelled_node",
+            "MATCH (a:Person)<-[:actor]-(c:Commitment) MATCH (c)-[:event]->(e:Event) WHERE c.action CONTAINS 'x' RETURN e.title": "unsupported_rebound_filter",
         }
         for text, code in cases.items():
             with self.subTest(text):
