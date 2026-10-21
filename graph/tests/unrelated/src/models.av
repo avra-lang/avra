@@ -1,0 +1,32 @@
+use @avra.graph.{model, Ref, Registration, registered}
+use @std.validate.{length, range}
+
+fn first_tag(tags: List<string>) -> Result<List<string>, string> {
+    tags.slice(0, if tags.is_empty() { 0 } else { 1 })
+}
+
+fn viable_score(specimen: Specimen) -> Result<Specimen, string> {
+    if specimen.viable && specimen.score < 50 { fail "a viable specimen needs a score of at least 50" }
+    specimen
+}
+
+@model
+export type Shelf = {
+    @length(min: 1) label: string,
+    next: Ref<Shelf>?,
+}
+
+@model
+@viable_score
+export type Specimen = {
+    name: string,
+    shelf: Ref<Shelf>,
+    @range(0, 100) score: int,
+    @first_tag tags: List<string>,
+    measured: float,
+    viable: bool,
+    notes: string?,
+    aliases: List<string>,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

@@ -1,0 +1,75 @@
+use models.{models, Person}
+use store.open.{Graph, stored}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use store.engine.{EntityRow, ClaimRow, SupportRow}
+use @std.io.{remove}
+use @std.time.{stamp}
+
+fn temp_base(name: string) -> string { "/tmp/avra-graph-${name}-${stamp()}.db" }
+
+fn recorded() -> Result<Record, string> {
+    Record { id: "p1", model: "Person", value: Person { name: "Ada", email: null }.graph_value() }
+}
+
+fn published(g: Graph) -> Result<Publication, string> {
+    Publication {
+        id: "one",
+        producer: "agent",
+        scope: "in:1",
+        input: "in:1",
+        input_revision: 1,
+        schema: g.catalog.fingerprint,
+        expected_revision: g.revision()?,
+        records: [recorded()?],
+    }
+}
+
+/// The generated accessors still answer the old rows; the store no longer
+/// counts them as standing, because their schema revision moved.
+fn schema_move_quarantines() -> Result<bool, string> {
+    let path = temp_base("schema")
+    let _ = remove(path)
+    let _ = remove(path + "-wal")
+    let _ = remove(path + "-shm")
+    mut g = Graph.open(path, models)?
+    g.observe("in:1", "raw")?
+    g.publish(published(g)?)?
+    let old = g.catalog.fingerprint
+    let _ = g.close()
+
+    let person? = models.find(it.make().name == "Person") else { fail "the fixture has no Person" }
+    let g2 = Graph.open(path, [person])?
+    defer {
+        let _ = g2.close()
+        let _ = remove(path)
+        let _ = remove(path + "-wal")
+        let _ = remove(path + "-shm")
+    }
+    let found = stored(EntityRow.where(g2.db, name: "p1"))?
+    let entity? = found.first() else { fail "the entity row vanished" }
+    let claims = [claim for claims in stored(EntityRow.with_claims(g2.db, [entity]))? for claim in claims]
+    let supports = stored(SupportRow.in_claim(g2.db, claims))?
+    let still_there = claims.length == 2 && supports.length == 2 && claims.all(it.schema == old)
+    let fields = (g2.entity("p1")?).fields
+    let value = match g2.value("p1") { .Ok(_) -> false, .Err(_) -> true }
+    let history = g2.explain("p1", "name")?
+    let inactive = history.items().length == 1 && history.item(0).member("active").truth() == false
+    let stale = (g2.dirty()?).items().length == 1
+    still_there && fields.is_empty() && value && inactive && stale
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "graph schema quarantine" {
+    given "a model catalog moves under a committed claim" {
+        then "the rows remain through the accessors and the store refuses them as standing" {
+            passed(schema_move_quarantines())
+        }
+    }
+}

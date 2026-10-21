@@ -1,0 +1,235 @@
+use @std.sqlite.{Db, OpenConfig, Mode, sql, SqlValue}
+use @std.sqlite.error.{SqlError}
+use @std.db.error.{ModelError}
+use @std.errors.{Error}
+use @std.text.{parse_int}
+use catalog.{Catalog}
+use schema.{Registration}
+use store.engine.{
+    Meta,
+    Schema,
+    EntityRow,
+    ObservationRow,
+    ObservationVersionRow,
+    RunRow,
+    RunTrailRow,
+    ClaimRow,
+    SupportRow,
+    EdgeRow,
+    AliasRow,
+    MergeRow,
+    MergeEndRow,
+    TombstoneRow,
+    TombstoneEndRow,
+}
+use data.{digest}
+
+/// One connection and the immutable model catalog this process was built with.
+export type Graph = { db: Db, catalog: Catalog }
+
+enum CatalogUse { Install, Existing }
+
+impl Graph {
+    /// Attach without installing a model catalog; the tables must stand.
+    static fn attach(path: string, registrations: List<Registration>) -> Result<Graph, string> {
+        let catalog = Catalog.collected(registrations)?
+        let db = stored(Db.open_with(OpenConfig.config_at(path) with { mode: Mode.OpenExisting }))?
+        Graph.admitted(db, catalog, CatalogUse.Existing)
+    }
+
+    static fn memory(registrations: List<Registration>) -> Result<Graph, string> {
+        let catalog = Catalog.collected(registrations)?
+        let db = stored(Db.memory())?
+        Graph.admitted(db, catalog, CatalogUse.Install)
+    }
+
+    static fn open(path: string, registrations: List<Registration>) -> Result<Graph, string> {
+        let catalog = Catalog.collected(registrations)?
+        let db = stored(Db.open(path))?
+        Graph.admitted(db, catalog, CatalogUse.Install)
+    }
+
+    static fn admitted(db: Db, catalog: Catalog, mode: CatalogUse) -> Result<Graph, string> {
+        let graph = Graph { db: db, catalog: catalog }
+        let outcome = match mode { .Install -> graph.initialize(), .Existing -> graph.current() }
+        match outcome {
+            .Ok(_) -> graph,
+            .Err(e) -> {
+                let _ = db.close()
+                fail e
+            },
+        }
+    }
+
+    fn close() -> int { self.db.close() }
+
+    /// Every engine table is a model's own DDL; nothing here spells SQL.
+    fn initialized() -> Result<int, string> {
+        mut db = self.db
+        stored(Meta.create_table(db))?
+        stored(Schema.create_table(db))?
+        stored(EntityRow.create_table(db))?
+        stored(ObservationRow.create_table(db))?
+        stored(ObservationVersionRow.create_table(db))?
+        stored(RunRow.create_table(db))?
+        stored(RunTrailRow.create_table(db))?
+        stored(ClaimRow.create_table(db))?
+        stored(SupportRow.create_table(db))?
+        stored(EdgeRow.create_table(db))?
+        stored(AliasRow.create_table(db))?
+        stored(MergeRow.create_table(db))?
+        stored(MergeEndRow.create_table(db))?
+        stored(TombstoneRow.create_table(db))?
+        stored(TombstoneEndRow.create_table(db))?
+        0
+    }
+
+    fn initialize() -> Result<int, string> {
+        mut db = self.db
+        stored(db.begin())?
+        defer { let _ = db.finish() }
+        if self.meta("format").is_empty() && self.legacy() { fail "old hand-table graph store; start a new file" }
+        self.initialized()?
+        if self.meta("format").is_empty() {
+            modeled(Meta { key: "revision", value: "0" }.insert(db))?
+            modeled(Meta { key: "format", value: "6" }.insert(db))?
+        }
+        if (stored(Schema.where(db, fingerprint: self.catalog.fingerprint))?).is_empty() {
+            modeled(
+                Schema { fingerprint: self.catalog.fingerprint, document: self.catalog.document }
+                    .insert(db),
+            )?
+        }
+        if self.meta("schema") != self.catalog.fingerprint {
+            put_meta(db, "schema", self.catalog.fingerprint)?
+            self.advanced()?
+        }
+        stored(db.commit())?
+        self.revision()
+    }
+
+    fn current() -> Result<int, string> {
+        if self.meta("format") != "6" { fail "graph storage is not a std-first store" }
+        if self.meta("schema") != self.catalog.fingerprint { fail "schema changed; reopen with the current models" }
+        self.revision()
+    }
+
+    /// The one shape check that has no model: an old hand-table store.
+    fn legacy() -> bool {
+        match self
+            .db
+            .scalar(sql("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='graph_meta'")) {
+            .Ok(value) -> match value { .Int(n) -> n > 0, rest -> false },
+            .Err(_) -> false,
+        }
+    }
+
+    fn meta(key: string) -> string {
+        let found = match Meta.where(self.db, key: key) { .Ok(rows) -> rows, .Err(_) -> [] }
+        match found { [only] -> only.value, rest -> "" }
+    }
+
+    fn revision() -> Result<int, string> {
+        let value? = parse_int(self.meta("revision")) else { fail "graph revision is not an integer" }
+        value
+    }
+
+    fn advanced() -> Result<int, string> {
+        mut db = self.db
+        let next = self.revision()? + 1
+        put_meta(db, "revision", "${next}")?
+        next
+    }
+
+    /// Identical input is a no-op; changed input invalidates its old interpretations.
+    fn observe(id: string, payload: string) -> Result<int, string> {
+        if id.is_empty() { fail "an observation needs a nonempty id" }
+        mut db = self.db
+        stored(db.begin())?
+        defer { let _ = db.finish() }
+        self.current()?
+        let old = stored(ObservationRow.where(db, name: id))?
+        let next = match old {
+            [only] -> {
+                if only.digest == digest(payload) { return only.revision }
+                let revision = only.revision + 1
+                modeled(
+                    (only with { revision: revision, payload: payload, digest: digest(payload) })
+                        .update(db),
+                )?
+                revision
+            },
+            [] -> {
+                let made = modeled(
+                    ObservationRow {
+                        name: id,
+                        revision: 1,
+                        payload: payload,
+                        digest: digest(payload),
+                    }
+                        .insert(db),
+                )?
+                modeled(
+                    ObservationVersionRow {
+                        observation: made,
+                        revision: 1,
+                        payload: payload,
+                        stamp: digest("${id}\t1"),
+                    }
+                        .insert(db),
+                )?
+                1
+            },
+            rest -> { fail "observation name is not unique: ${id}" },
+        }
+        if next > 1 {
+            let row = match stored(ObservationRow.where(db, name: id))? {
+                [only] -> only,
+                rest -> { fail "observation vanished" },
+            }
+            modeled(
+                ObservationVersionRow {
+                    observation: row,
+                    revision: next,
+                    payload: payload,
+                    stamp: digest("${id}\t${next}"),
+                }
+                    .insert(db),
+            )?
+        }
+        self.advanced()?
+        stored(db.commit())?
+        next
+    }
+}
+
+fn put_meta(mut db: Db, key: string, value: string) -> Result<int, string> {
+    match stored(Meta.where(db, key: key))? {
+        [only] -> { let _ = modeled((only with { value: value }).update(db))? },
+        [] -> { let _ = modeled(Meta { key: key, value: value }.insert(db))? },
+        rest -> { fail "graph metadata key is not unique: ${key}" },
+    }
+    0
+}
+
+export fn stored<T>(answer: Result<T, SqlError>) -> Result<T, string> {
+    match answer { .Ok(value) -> value, .Err(e) -> { fail why(e) } }
+}
+
+fn why(e: SqlError) -> string {
+    let at = match e.sql {
+        q? -> " — ${q}"
+        null -> ""
+    }
+    "storage: ${e.cause.kind()}: ${e.message}${at}"
+}
+
+export fn modeled<T>(answer: Result<T, ModelError>) -> Result<T, string> {
+    match answer {
+        .Ok(value) -> value,
+        .Err(.Other(sql)) or .Err(.Unique(_, _, sql)) or .Err(.Ambiguous(_, _, sql)) or .Err(.Referenced(_, sql)) -> {
+            fail why(sql)
+        },
+        .Err(.Invalid(issues)) -> { fail issues.report() },
+    }
+}
