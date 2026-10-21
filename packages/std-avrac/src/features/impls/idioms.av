@@ -17,14 +17,13 @@ use features.{Code, Fix, rule, Decl, Decls, NameFacts}
 ///
 /// A `Fix.Delete`, never a rewrite: the method — its own doc and
 /// trailing break included — is gone whole, never replaced by empty
-/// code standing in its place. The impl block matched stands FIRST
-/// in each example below: `example_root` reads only the file's FIRST
-/// statement, and a `keeps`/`fixes` whose trait sits ahead of its
-/// impl would never reach the impl's own method to test it at all.
+/// code standing in its place. The trait's default leads the example
+/// below and the impl it overrides follows it: the walk covers every
+/// top-level statement, so setup above the fn under test reaches it.
 // LICENSED compiler.duplicated_message: a fixture and its near-twin, held as strings under test — not a message that can drift
 @fixes("impl Greeter for Loud {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntrait Greeter {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}")
 // LICENSED compiler.duplicated_message: a fixture and its near-twin, held as strings under test — not a message that can drift
-@keeps("impl Greeter for Loud {\n    fn greet() -> string {\n        \"hey\"\n    }\n}\ntrait Greeter {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}")
+@keeps("trait Greeter {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\nimpl Greeter for Loud {\n    fn greet() -> string {\n        \"hey\"\n    }\n}\ntype Loud = {}")
 @keeps("impl Loud {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}")
 @law("an impl method identical to its trait's default answers the same as the default")
 export rule default_override { quote { ${m} } if overrides_default(m) -> Fix.Delete(some_list(m.declaring())) }

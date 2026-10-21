@@ -4,7 +4,15 @@
 //! DOGFOODING.md's generated block, and `--check-markdown <doc>` holds
 //! a doc's committed block to that one rendering.
 use @std.cli.{CliResult, Runnable, command, flag, option}
-use @std.avrac.compiler.{RuleEntry, rule_id, declared_law, rules as rule_table}
+use @std.avrac.compiler.{
+    RuleEntry,
+    rule_id,
+    declared_law,
+    rules as rule_table,
+    example_gaps,
+    example_gap_lines,
+    example_count,
+}
 use @std.json.{Json, field, to_text}
 
 type RulesCmd = {}
@@ -13,6 +21,7 @@ impl Runnable for RulesCmd {
     fn run(args: CliResult) -> int {
         let doc = args.option("check-markdown")
         if doc != "" { return markdown_said(doc, rule_table) }
+        if args.has_flag("check_examples") { return examples_said(rule_table) }
         println(
             when {
                 args.has_flag("json") -> to_text(Json.Arr([rule_json(r) for r in rule_table]))
@@ -131,10 +140,22 @@ fn markdown_said(path: string, entries: List<RuleEntry>) -> int {
     }
 }
 
+/// `rules --check-examples`: every rule example's walk must cover the
+/// whole source — a leading `type` or `impl` is setup, and a walk that
+/// stops at the first statement leaves the fn under test unexamined.
+fn examples_said(entries: List<RuleEntry>) -> int {
+    let gaps = example_gaps(entries)
+    let examined = example_count(entries)
+    for line in example_gap_lines(gaps) { eprintln(vacuous_example(line)) }
+    eprintln(examples_examined(examined, gaps.length))
+    if gaps.is_empty() { 0 } else { 1 }
+}
+
 export command rules {
     description: "Every rule the compiler carries, by identity — the ground truth a native idiom finding's kind is checked against"
     flag json { description: "one JSON array of {id, module, name, doc, law, says}" }
     flag markdown { description: "DOGFOODING.md's generated registry block: one bullet per documented rule" }
+    flag check_examples { description: "refuse any rule example whose walk does not cover its whole source" }
     option {
         name: "check-markdown"
         description: "hold a doc's generated registry block to the table's own rendering; refuse the first line that differs"
@@ -143,6 +164,17 @@ export command rules {
 }
 
 // ── Voices ──────────────────────────────────────────────────────
+
+fn vacuous_example(line: string) -> string {
+    "rules: VACUOUS example — ${line.replace("\t", " ")}: an example must be walked whole"
+}
+
+fn examples_examined(count: int, gaps: int) -> string {
+    when {
+        gaps == 0 -> "rules: ${count} rule example(s) examined, every walk covers its whole example"
+        _ -> "rules: ${gaps} of ${count} rule example(s) prove nothing — the walk must cover the whole example"
+    }
+}
 
 fn block_matches(path: string, n: int, total: int) -> string {
     "${path}: the generated block matches the rule table — ${n} documented rule(s) rendered and compared, of ${total}"
