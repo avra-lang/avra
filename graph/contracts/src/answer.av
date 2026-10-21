@@ -111,12 +111,27 @@ export type AnswerPassage = {
     @one_of(["source_passage"]) basis: string,
 }
 
+/// A property the question asked about that the graph holds no value for:
+/// the model's own reason code, never a false or zero value.
+@derive(Decode)
+export type Absence = {
+    @items(min: 1, max: 64) path: List<string>,
+    @length(min: 1, max: 128) code: string,
+}
+
 fn answer_coherent(a: Answer) -> Result<Answer, string> {
     if a.status == "answered" &&
         (a.fields.is_empty() || !a.problems.is_empty() || !a.candidates.is_empty()) {
         fail "answered needs fields and cannot report an unresolved problem"
     }
-    if a.status != "answered" && a.problems.is_empty() { fail "an unresolved answer needs a problem code" }
+    let absent_only = a.status == "unknown" && !a.absent.is_empty()
+    if a.status != "answered" && a.problems.is_empty() && !absent_only {
+        fail "an unresolved answer needs a problem code or the absent properties"
+    }
+    if !a.absent.is_empty() && !(a.status == "answered" || a.status == "unknown") {
+        fail "absent properties accompany an answered or unknown result only"
+    }
+    if a.absent.any((x) -> x.path.any((p) -> p.is_empty())) { fail "an absence path cannot contain empty tokens" }
     if a.status == "ambiguous" && a.candidates.length < 2 && a.conflicts.is_empty() {
         fail "ambiguity needs two candidate entities or a conflicting property"
     }
@@ -169,6 +184,7 @@ export type Answer = {
     @items(max: 64) candidates: List<Candidate> = [],
     @items(max: 16) conflicts: List<Conflict> = [],
     @items(max: 8) passages: List<AnswerPassage> = [],
+    @items(max: 64) absent: List<Absence> = [],
     @length(min: 1, max: 128) clarify: string? = null,
     @items(max: 256) citations: List<Citation> = [],
     @items(max: 16) policies: List<string> = [],

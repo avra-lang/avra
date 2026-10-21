@@ -96,6 +96,29 @@ spec "v1 structured answer contracts" {
                 Selector.from_json("{\"kind\":\"TextPositionSelector\",\"start\":3}") is .Err &&
                 Selector.from_json("{\"kind\":\"RangeSelector\",\"start\":0,\"end\":1}") is .Err
         }
+        then "an answered result may list the properties it has no value for" {
+            let absent = "\"absent\":[{\"path\":[\"entity:a\",\"confirmation\"],\"code\":\"no_confirmation\"}]"
+            Answer.from_json(grounded.replace("\"citations\":[{", absent + ",\"citations\":[{")) is .Ok &&
+                Answer.from_json(unknown.replace("\"problems\"", absent + ",\"problems\"")) is .Ok &&
+                Answer.from_json(refusal.replace("\"problems\"", absent + ",\"problems\"")) is .Err
+        }
+        then "an unknown result may rest on its absent properties alone" {
+            let absent = "\"absent\":[{\"path\":[\"a\",\"b\"],\"code\":\"gone\"}]"
+            Answer
+                    .from_json(
+                        "{\"contract\":1,\"request\":\"r\",\"status\":\"unknown\",\"read_revision\":1," +
+                            absent +
+                            "}",
+                    ) is .Ok &&
+                Answer
+                    .from_json(
+                        "{\"contract\":1,\"request\":\"r\",\"status\":\"unknown\",\"read_revision\":1}",
+                    ) is .Err &&
+                Answer
+                    .from_json(
+                        "{\"contract\":1,\"request\":\"r\",\"status\":\"unknown\",\"read_revision\":1,\"absent\":[{\"path\":[\"\"],\"code\":\"x\"}]}",
+                    ) is .Err
+        }
         then "an answered result requires supported fields" {
             Answer.from_json(unknown.replace("\"unknown\"", "\"answered\"")) is .Err
         }

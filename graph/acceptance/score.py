@@ -194,6 +194,8 @@ def projection(answer, keys=None):
                              for c in answer["conflicts"]]
     if answer.get("clarify"):
         tree["clarify"] = answer["clarify"]
+    if answer.get("absent") and "reason" not in tree:
+        tree["reason"] = answer["absent"][0]["code"]
     if answer.get("problems") and "reason" not in tree:
         tree["reason"] = answer["problems"][0]["code"]
     return tree
