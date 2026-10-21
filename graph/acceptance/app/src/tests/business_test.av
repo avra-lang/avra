@@ -1,0 +1,94 @@
+use models.people.{models}
+use models.business.{Invoice, Quote, Product, WholesaleProspect, StockMovement}
+use @avra.graph.{Catalog}
+
+const money = "{\"minor\":21000,\"currency\":\"EUR\"}"
+const offer = "{\"supplier\":\"velluto\",\"product\":\"nj01\",\"unit_price\":{\"minor\":21000,\"currency\":\"EUR\"},\"excludes\":[\"VAT\",\"freight\"],\"minimum_units\":60,\"deposit_percent\":30}"
+const invoice = "{\"number\":\"INV-204\",\"issuer\":\"velluto\",\"payer\":\"aster\",\"order\":\"po60\",\"unit_price\":{\"minor\":22500,\"currency\":\"EUR\"},\"goods_total\":{\"minor\":1350000,\"currency\":\"EUR\"},\"required_deposit\":{\"minor\":405000,\"currency\":\"EUR\"},\"deposit_due_on\":\"2026-10-14\"}"
+const prospect = "{\"buyer\":\"lune\",\"product\":\"nj01\",\"proposed_units\":24,\"status\":\"interested\"}"
+const movement = "{\"product\":\"nj01\",\"colour\":\"black\",\"kind\":\"return_quarantined\",\"units\":1,\"order\":\"r88\",\"recorded_at_ms\":null}"
+
+spec "fixture commercial declarations" {
+    given "the same generic catalog and standard model codecs" {
+        then "all commercial models collect" {
+            match Catalog.collected(models) {
+                .Ok(c) -> [
+                    "Money",
+                    "FibreShare",
+                    "Product",
+                    "Quote",
+                    "PurchaseOrder",
+                    "Invoice",
+                    "Payment",
+                    "WholesaleProspect",
+                    "SalesOrder",
+                    "StockMovement",
+                    "Refund",
+                ]
+                    .all((name: string) -> c.models.any(it.name == name)),
+                .Err(_) -> false,
+            }
+        }
+        then "a quote, an invoice and a retail price are different fields of different models" {
+            match Quote.from_json(offer) {
+                    .Ok(q) -> q.unit_price.minor == 21000 && q.excludes.length == 2,
+                    .Err(_) -> false,
+                } &&
+                match Invoice.from_json(invoice) {
+                    .Ok(i) -> i.unit_price.minor == 22500 && i.full_payment_confirmed == null,
+                    .Err(_) -> false,
+                }
+        }
+        then "an invoice requires its deposit amount and does not say it was paid" {
+            Invoice
+                .from_json(
+                    invoice
+                        .replace("\"required_deposit\":{\"minor\":405000,\"currency\":\"EUR\"},", ""),
+                ) is .Err
+        }
+        then "money needs a three-letter currency" {
+            Invoice.from_json(invoice.replace("\"currency\":\"EUR\"}", "\"currency\":\"EU\"}")) is .Err
+        }
+        then "a wholesale prospect supplies no price and is not an order" {
+            match WholesaleProspect.from_json(prospect) {
+                    .Ok(p) -> p.agreed_unit_price == null && p.status == "interested",
+                    .Err(_) -> false,
+                } &&
+                WholesaleProspect.from_json(prospect.replace("interested", "paid")) is .Err
+        }
+        then "a movement kind names what happened, not whether it is available" {
+            StockMovement.from_json(movement) is .Ok &&
+                StockMovement.from_json(movement.replace("return_quarantined", "available")) is .Err
+        }
+        then "every money and stock amount declares a unit" {
+            match Catalog.collected(models) {
+                .Ok(c) -> [
+                    "Product",
+                    "Quote",
+                    "PurchaseOrder",
+                    "Invoice",
+                    "Payment",
+                    "WholesaleProspect",
+                    "SalesOrder",
+                    "StockMovement",
+                    "Refund",
+                ]
+                    .all(
+                        (name: string) -> !c.models.find(it.name == name)!
+                            .semantics
+                            .quantities
+                            .is_empty(),
+                    ),
+                .Err(_) -> false,
+            }
+        }
+        then "a bare document number is no identity, a product code is" {
+            match Catalog.collected(models) {
+                .Ok(c) -> c.models.find(it.name == "Invoice")!.semantics.identities.is_empty() &&
+                    c.models.find(it.name == "PurchaseOrder")!.semantics.identities.is_empty() &&
+                    c.models.find(it.name == "Product")!.semantics.identities[0].namespace == "sku",
+                .Err(_) -> false,
+            }
+        }
+    }
+}

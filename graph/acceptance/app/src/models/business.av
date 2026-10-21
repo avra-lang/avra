@@ -1,0 +1,192 @@
+use @avra.graph.{model, Ref, Semantics, IdentityBinding, QuantityBinding, UnitBinding}
+use @std.validate.{length, one_of, range, items}
+use models.people.{Person, Organization}
+
+/// An integer amount of minor currency units with its currency. No exchange
+/// rate, tax, fee or rounding rule is implied by holding one.
+@model
+export type Money = {
+    minor: int,
+    @length(min: 3, max: 3) currency: string,
+}
+
+/// A share of one fibre in a garment's composition, in whole percent.
+@model
+export type FibreShare = {
+    @length(min: 1, max: 64) fibre: string,
+    @range(0, 100) percent: int,
+}
+
+/// A sellable product. planned_retail_price is intent, never a supplier
+/// quote, an invoiced cost or a sale price. A scarf and a jacket are
+/// different products even when one document mentions both.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "sku", path: ["code"], normalization: .Trim }],
+    quantities: [QuantityBinding {
+        amount: ["planned_retail_price", "minor"],
+        unit: UnitBinding.Field(["planned_retail_price", "currency"]),
+        decimal_places: 2,
+    }],
+} })
+export type Product = {
+    @length(min: 1, max: 64) code: string,
+    @length(min: 1, max: 256) name: string,
+    planned_retail_price: Money?,
+    shell_composition: List<FibreShare>?,
+    vegan: bool?,
+}
+
+/// A supplier's price offer. A quote is not an invoice, an order or a
+/// payment; excludes names what the price leaves out (VAT, freight).
+@model(quote { Semantics { quantities: [QuantityBinding {
+    amount: ["unit_price", "minor"],
+    unit: UnitBinding.Field(["unit_price", "currency"]),
+    decimal_places: 2,
+}] } })
+export type Quote = {
+    supplier: Ref<Organization>,
+    product: Ref<Product>,
+    unit_price: Money,
+    @items(max: 16) excludes: List<string> = [],
+    @range(1, 1000000) minimum_units: int?,
+    @range(0, 100) deposit_percent: int?,
+}
+
+/// A purchase order placed with a supplier. estimated_dispatch_on is the
+/// supplier's estimate; arrival_confirmed stays null until a source says so.
+/// Ordered units are not stock until a delivery movement exists. Its number
+/// is unique per buyer, so identity is producer-scoped, not a bare number.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["units"], unit: UnitBinding.Constant("jacket"), decimal_places: 0 }],
+} })
+export type PurchaseOrder = {
+    @length(min: 1, max: 64) number: string,
+    supplier: Ref<Organization>,
+    buyer: Ref<Organization>,
+    product: Ref<Product>,
+    @range(1, 1000000) units: int,
+    estimated_dispatch_on: string?,
+    arrival_confirmed: bool? = null,
+}
+
+/// A supplier invoice at its current terms. unit_price here is the invoiced
+/// price, distinct from a quote's and a retail price. required_deposit is a
+/// requirement, not a payment; full_payment_confirmed stays null until a
+/// source states it. A number is unique only per issuer, so no bare-number
+/// identity is declared: producers name it with an issuer-scoped key.
+@model(quote { Semantics {
+    quantities: [
+        QuantityBinding {
+            amount: ["unit_price", "minor"],
+            unit: UnitBinding.Field(["unit_price", "currency"]),
+            decimal_places: 2,
+        },
+        QuantityBinding {
+            amount: ["goods_total", "minor"],
+            unit: UnitBinding.Field(["goods_total", "currency"]),
+            decimal_places: 2,
+        },
+        QuantityBinding {
+            amount: ["required_deposit", "minor"],
+            unit: UnitBinding.Field(["required_deposit", "currency"]),
+            decimal_places: 2,
+        },
+    ],
+} })
+export type Invoice = {
+    @length(min: 1, max: 64) number: string,
+    issuer: Ref<Organization>,
+    payer: Ref<Organization>,
+    order: Ref<PurchaseOrder>,
+    unit_price: Money,
+    goods_total: Money,
+    @items(max: 16) excludes: List<string> = [],
+    required_deposit: Money,
+    deposit_due_on: string?,
+    full_payment_confirmed: bool? = null,
+}
+
+/// A recorded money movement. purpose keeps a deposit, a full payment and a
+/// refund apart; invoice is set only when the source ties it to one.
+@model(quote { Semantics { quantities: [QuantityBinding {
+    amount: ["amount", "minor"],
+    unit: UnitBinding.Field(["amount", "currency"]),
+    decimal_places: 2,
+}] } })
+export type Payment = {
+    payer: Ref<Organization>,
+    payee: Ref<Organization>,
+    amount: Money,
+    @one_of(["deposit", "full", "refund", "other"]) purpose: string,
+    invoice: Ref<Invoice>?,
+    settled_on: string?,
+    @length(min: 1, max: 256) reference: string?,
+}
+
+/// Interest from a prospective wholesale buyer. status separates interest
+/// from an order and an agreement; agreed_unit_price has no default.
+@model(quote { Semantics { quantities: [
+    QuantityBinding { amount: ["proposed_units"], unit: UnitBinding.Constant("jacket"), decimal_places: 0 },
+    QuantityBinding {
+        amount: ["agreed_unit_price", "minor"],
+        unit: UnitBinding.Field(["agreed_unit_price", "currency"]),
+        decimal_places: 2,
+    },
+] } })
+export type WholesaleProspect = {
+    buyer: Ref<Organization>,
+    product: Ref<Product>,
+    @range(1, 1000000) proposed_units: int,
+    @one_of(["interested", "ordered", "agreed", "declined"]) status: string,
+    agreed_unit_price: Money? = null,
+}
+
+/// A retail sale to a customer; unit_price is the sale price. A reported or
+/// hoped-for purchase is not a SalesOrder until a source confirms it.
+@model(quote { Semantics {
+    quantities: [
+        QuantityBinding { amount: ["units"], unit: UnitBinding.Constant("jacket"), decimal_places: 0 },
+        QuantityBinding {
+            amount: ["unit_price", "minor"],
+            unit: UnitBinding.Field(["unit_price", "currency"]),
+            decimal_places: 2,
+        },
+    ],
+} })
+export type SalesOrder = {
+    @length(min: 1, max: 64) number: string,
+    customer: Ref<Person>,
+    product: Ref<Product>,
+    @length(min: 1, max: 64) colour: string,
+    @length(min: 1, max: 16) size: string?,
+    @range(1, 1000) units: int,
+    unit_price: Money,
+    payment_settled: Money?,
+}
+
+/// One stock movement of a product colour. kind says what happened, never
+/// whether it counts as available: availability is a declared derivation
+/// over movements. Goods in quarantine and ordered goods are not on hand.
+@model(quote { Semantics { quantities: [QuantityBinding {
+    amount: ["units"], unit: UnitBinding.Constant("jacket"), decimal_places: 0,
+}] } })
+export type StockMovement = {
+    product: Ref<Product>,
+    @length(min: 1, max: 64) colour: string,
+    @one_of(["opening_count", "dispatch", "return_quarantined", "return_restocked", "delivery"]) kind: string,
+    @range(0, 1000000) units: int,
+    order: Ref<SalesOrder>?,
+    recorded_at_ms: int?,
+}
+
+/// A refund owed or paid on a sales order. status never defaults to paid.
+@model(quote { Semantics { quantities: [QuantityBinding {
+    amount: ["amount", "minor"],
+    unit: UnitBinding.Field(["amount", "currency"]),
+    decimal_places: 2,
+}] } })
+export type Refund = {
+    order: Ref<SalesOrder>,
+    amount: Money?,
+    @one_of(["not_issued", "pending", "paid"]) status: string,
+}
