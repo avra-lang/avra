@@ -25,7 +25,7 @@ use compiler.voices.{type_facts_fp, diag_fp, name_slice_fp, unit_fp_in}
 use features.{SettleRoot, SeatValue}
 use compiler.lower.{code_facts, code_facts_wire}
 use @std.relation.db.{AnswerRef, Leaf}
-use @std.relation.engine.{Key}
+use @std.relation.engine.{Key, edge_of}
 use compiler.families.{Family}
 
 impl Workspace {
@@ -40,6 +40,43 @@ impl Workspace {
             arg: (spelled: string) -> ws.decl_arg(spelled),
             hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
         }
+    }
+
+    /// The impl sets, spelled by their type: a set is the blocks aimed at it and their members, so
+    /// an impl joining or leaving, or a method added to a block that already stood, moves it. No
+    /// kernel key carries it.
+    fn named_impl_sets() -> AnswerRef {
+        let ws = self
+        AnswerRef {
+            name: "ImplSet",
+            family: () -> -1,
+            spelled: (arg: int) -> ws.spelled_decl(arg),
+            arg: (spelled: string) -> ws.decl_arg(spelled),
+            hash: (arg: int) -> ws.impl_set_hash(DeclId { index: arg }),
+        }
+    }
+
+    fn impl_set_hash(target: DeclId) -> int {
+        let blocks = self.method_blocks(target)
+        fp_str(
+            joined(
+                sorted_texts(
+                    [self.decl_ref(d) for d in blocks.concat(flatten([self.decls.children_of(b) for b in blocks]))],
+                ),
+                ",",
+            ),
+        )
+    }
+
+    /// A type's method table says what it stood on: the set of blocks aimed at it and their members,
+    /// which is what the table's own digest was (its method names). A reader of a member reads that
+    /// member's own signature.
+    fn note_methods(k: Key, target: DeclId) {
+        self
+            .decls
+            .rows_db
+            .get()
+            .noted(edge_of(k), [Leaf.Input("ImplSet", self.decl_ref(target), self.impl_set_hash(target))])
     }
 
     /// The signatures, spelled by declaration. A signature settled by no query (a held
@@ -62,7 +99,9 @@ impl Workspace {
     /// A signature's digest is its wire: types by their spelling, never by the interner's index.
     fn sig_digest(arg: int) -> int? {
         if arg < 0 || arg >= self.decls.sigs.get().length { return null }
-        let s? = self.decls.sigs.get()[arg] else { return fp_str("refused") }
+        let s? = self.decls.sigs.get()[arg] else {
+            return if self.is_held(self.decls.decl(DeclId { index: arg }).file) { null } else { fp_str("refused") }
+        }
         fp_str(self.decl_sig_wire(s))
     }
 
@@ -238,6 +277,7 @@ impl Workspace {
         let rdb = self.decls.rows_db.get()
         self.db.kernel.keep_folds()
         rdb.answer_known(self.named_sigs())
+        rdb.answer_known(self.named_impl_sets())
         rdb.answer_known(self.named_consts("ConstTyped", Family.ConstTyped))
         rdb.answer_known(self.named_consts("Settled", Family.Settled))
         let ws = self
@@ -278,9 +318,11 @@ impl Workspace {
         rdb.answer_known(self.named_by_file("Items", Family.Items))
         rdb.answer_known(self.named_by_file("Visible", Family.Visible))
         rdb.answer_known(self.named_by_file("Resolved", Family.Resolved))
+        rdb.answer_known(self.named_by_file("Expanded", Family.Expanded))
         rdb.answer_known(self.named_by_file("Analysis", Family.Analysis))
         rdb.answer_known(self.named_names())
         rdb.answer_known(self.named_by_module("Namespace", Family.Namespace))
+        rdb.answer_known(self.named_by_module("HeldSig", Family.HeldSig))
         rdb.answer_known(self.named_once("References", Family.References))
         rdb.answer_known(self.named_by_file("FileRefs", Family.FileRefs))
         rdb.answer_known(self.named_by_bucket())

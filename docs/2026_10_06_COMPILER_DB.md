@@ -908,6 +908,130 @@ Open question for DB 09: validating `CallShape` means lowering the unit again. I
 more than it saves, the `u` line reads `Syntax(declaration)` in both cases and `CallShape`
 is not built.
 
+### A4.2 `Settled`'s read lists, re-measured — and what gates the delete (2026-10-21)
+
+MEASURED on `b1e59ff3`, cold store, `python3 tools/read_lists.py` (which runs
+`./avra explain packages/cli --stats` over a set-aside store):
+
+| family | cells | edges | p50 | p99 | longest |
+|---|---|---|---|---|---|
+| `Settled` | 720 | 1,037,848 | 878 | 8,114 | **16,054** |
+| next longest (`FileRefs`) | 550 | 246,038 | 157 | 1,952 | 2,751 |
+
+The keeper's limit is 3,000 and `tools/read_lists.ceiling` holds `Settled 17399`, so it is
+the ONE family over the limit and the reason DB 09 exists: an edit anywhere re-verifies ONE
+answer that reads 16,054 of the 227,790 cells the whole check derives.
+
+THE LONG LIST IS NOT kept_settle's OWN. A run's reads are recorded in a verdict's `r` line,
+so they were counted too (`AVRA_DEBUG=1`, one line per settlement): 720 settlements, **14,323
+`r` entries in all, the longest 463, the mean 20**. The 16,054 are the settlement's KERNEL
+dependencies — cells its derivation asks — not the file reads it records. A deletion of the
+`r` line would therefore touch the wrong list, and A4's `c` line (`Settled(const)`) is one
+entry per const, not a shortening of the 16k.
+
+PROBED, then withdrawn: `settled_replay` copied each nested const's ENTIRE verdict read
+list into every reader above it (A4's `c` line reaching the wrong way). Dropping that copy
+(a `Settled(const)` read proves the nested verdict by its fingerprint, which `kept_settle`'s
+`c` line already records) removed 297 of the 14,323 entries — 2.1 % — and the compiler's own
+suite took the Sprite under its memory floor 24 minutes in, because a record that no longer
+lists its nested reads forces those files read again. Not landable alone; it rides the
+`@query` conversion below.
+
+WHAT GATES IT. Every replacement in A4's table is "the kernel's own read list", and the only
+place a saved answer's read list reaches the store is `compiler/answers.av` — the `Durable`
+hooks a `@query` keeps its `Leaf`s through. A `@family` answer is in-process only; that is
+the whole reason `kept_settle.av` exists, and why it persists a `Settlement` value through
+its own wire (`kept_wire`/`settled_from_wire`) with hand-written proof lines instead of the
+kernel's. So the first rung of DB 09 is not a line kind: it is `Settled` becoming a
+`@query` whose answer is a `Settlement`, and that value save is the `@codec` item A4.1
+measures. THE SAME BLOCKER GATES `Lifted`: a payload-enum answer saves no value until
+`decodable` reads one back. **The two halves are not separable — one landing unblocks both.**
+
+ORDER after `@codec`: (1) `Settled` as a `@query` over `Settlement`; (2) delete the
+write-time proof lines one kind per PR in A4's order (`u`, `f`, `c`, `m`, `b`, `e`, `l`),
+each already answered by a read, each its own branch of the record's judgment;
+(3) delete `kept_settle.av` (910 lines on `b1e59ff3`) and the `kept-settle` store family.
+
+### A4.3 The receipt harness, and what the comment case costs TODAY (2026-10-21)
+
+`tools/db_measure/generated_types.sh` is DB 09's receipt: 1,000 generated named types and one
+const that builds them all. It ASSERTS before it times — the cold value (`500500`), that a
+leading comment keeps it, and that a literal the const READS moves it — so a run that timed
+only would pass while the cache answered anything.
+
+MEASURED (`./avra-try`, main's tree, one Sprite run):
+
+| case | wall | where it goes |
+|---|---|---|
+| cold check, 1,000 types | 689 ms | ast 136 · parse 209 · analyze 312 · keep 172 |
+| cached no-op check | 51 ms | cache hit |
+| **a comment above them** | **603–612 ms** | ast 134 · admit 211 · analyze 104 · keep 197–212 |
+
+So a comment above 1,000 generated types costs 0.60 s, not the 0.25 s §5's table records, and
+it re-parses and re-analyses the file rather than standing on the declaration syntax A4's `u`
+and `f` lines are meant to early-cut-off on. `keep` alone is 0.20 s of it, and the record it
+writes there holds one `t` line per named type the settlement touched — the `t` line is not in
+A4's table at all, which is what makes it the first thing the `@query` conversion should
+retire. The harness above is how that is judged.
+
+### A4.2b The `Settled` save: why it is no `@query` — MEASURED 2026-10-20
+
+`Settled` cannot be a `@query` over `Settlement`, and the reason is the annotation's own
+signature law, not the read list. A `@query`'s body is a fn of its Db and its seats: the first
+seat must be a type named `Db` (`packages/std-relation/src/query.av:216`), every other seat
+stably encoded (`query.av:203`), and the written fn IS the body the wrapper calls
+(`query.av:229`). The settlement run needs the whole Workspace — host reads, budgets, the hold,
+lowering, the evaluator — and a Db carries no owner slot to put it in
+(`packages/std-relation/src/db.av`'s `Db`: id, kernel, leaves, answer_refs, durable, and no user
+value). A process-wide armed hook is the remaining route and it forks: one process builds more
+than one workspace (`anew`, a derive's isolated run, `programs_workspace`), so the cell would
+answer for whichever was armed last.
+
+A second law is sharper. The wrapper the annotation writes has two arms — `MemoStart` is
+`Reuse` or `Compute` — and `Relation.start` folds a re-entry into `Reuse(cycle_value)`
+(`packages/std-relation/src/engine/answers.av:48`), whose missing value TRAPS:
+`avra_trap("defect: memo family … reused missing key")` (`answers.av:198`). So a `@query` has no
+cycle face, and `settled_at` (`compiler/workspace_analysis.av:943`) must SPEAK
+`Unsettled.Trap("asks for its own value while settling")` for a const that asks for its own
+value. A `@query` conversion would turn that law into a compiler wreck.
+
+The Durable hooks are reachable without the annotation — `Answers<Settlement>` plus
+`ran_lasting` (`packages/std-relation/src/db.av:1037`) is the path a wrapper takes, and it
+COMPILES in the compiler's own package: `answers("Settled")`, a `KeptRecord` from
+`code_keyed(…, family_code_hash(Family.Settled))` with `settlement_enum_wire`/
+`settlement_enum_of_wire` (`compiler/family_wire.av`), `memo.ask` for the cycle, `ran_lasting`
+for the answer. The three preconditions a saved answer owes are measurable, and hold:
+
+| question | probe | answer |
+|---|---|---|
+| is every read nameable? | `AVRA_LEAVES=1 ./avra check packages/std-avrac` | `leaves Settled: 549 of 549 answers stand on names` |
+| does a run file rows, which `made_lasting`'s `wrote` veto refuses (`db.av:1068`)? | a temporary probe in `kept_settle.av`'s `settle_run` reading `rows_db.written`'s delta | `settle-write: 549 runs, 549 filed no row, 0 filed at least one` |
+| do the leaves still hold in a second process? | `AVRA_DB_VERIFY=typed ./avra check packages/std-avrac`, then a FRESH derivation — `check packages/std-avrac/src/avrac.av`, the same store under another `check:` key | `typedsaid: 31606 settled, 31606 stand on names; valid 29419, recomputed 2178, unplaceable 9, mismatched 0` |
+
+So the read list is not the blocker: a family answer IS a `Leaf` (`Leaf.Input`, named by
+`answers_named`), and 93% of one family's leaves stand in a process that derived the program
+again. Three items the conversion owes, each its own rung:
+
+1. The self-value cycle law needs the `.Cycle` face `MemoStart` does not have: ask
+   `Relation.ask` (whose `MemoAsk` carries it) before the lasting call, and answer the spoken
+   `Unsettled.Trap` there.
+2. `answers_named()` is gated behind `AVRA_LEAVES`/`AVRA_DB_VERIFY`
+   (`compiler/workspace.av:1159`), so a normal run names no family answer and nothing is
+   kept. Ungating it arms every `AnswerRef`, the two `doc_rows` queries among them — DB 06's
+   rule arriving early.
+3. The record's query name and codec are already paid: `family_code_hash(Family.Settled)`
+   (`compiler/workspace.av:2616`) for the name, and `codecs.av`'s registered pair
+   `settlement_enum_wire`/`settlement_enum_of_wire` (`compiler/family_wire.av`) for the wire.
+   `named_consts("Settled", …)` (`compiler/leaves.av:242`) goes — `Answers.placed` registers
+   that name itself — and `leaves_meter`'s `Settled` row must follow the answers' family, or
+   the meter quietly covers nothing.
+
+What does NOT shrink with it: the `r` line feeds the FILE's record (`read_by` → `record_runs`,
+`compiler/workspace_analysis.av:726`), which `forced_runs`/`ask_kept_reads` read to decide which
+held files an attempt must parse. A served answer replays its leaves into the KERNEL
+(`db.read_leaves`), never into that record. The `r` line is the hold's, so it goes with DB 07's
+hold, not here.
+
 ## A5. Attack cases carried
 
 From `origin/redteam/m3-witness-attacks` @ `a644ba4` (written against deleted code; "6 of 17
