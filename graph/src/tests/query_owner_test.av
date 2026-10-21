@@ -1,0 +1,62 @@
+use derive.model.{model}
+use schema.{Ref, Registration}
+use store.open.{Graph}
+use query.plan.{prepare_read}
+
+@model
+type Party = { name: string }
+
+@model
+type Membership = { party: Ref<Party> }
+
+@model
+type Role = { party: Ref<Party> }
+
+fn registrations() -> List<Registration> {
+    [
+        Registration { make: Party_graph_model },
+        Registration { make: Membership_graph_model },
+        Registration { make: Role_graph_model },
+    ]
+}
+
+fn incoming(owner: string?, fingerprint: string) -> string {
+    let named = if owner == null { "" } else { ",\"owner\":\"${owner!}\"" }
+    plan(
+        "${scan("a", "Party")},{\"id\":\"b\",\"op\":\"follow\",\"inputs\":[\"a\"],\"property\":\"party\",\"direction\":\"in\"${named}}",
+        "b",
+        fingerprint,
+    )
+}
+
+fn owner_resolves_ambiguity() -> Result<bool, string> {
+    let g = Graph.memory(registrations())?
+    defer { let _ = g.close() }
+    let f = g.catalog.fingerprint
+    let anonymous = match prepare_read(g.catalog, incoming(null, f)) {
+        .Ok(_) -> false,
+        .Err(e) -> e.contains("multiple declared owners"),
+    }
+    let named = match prepare_read(g.catalog, incoming("Membership", f)) {
+        .Ok(p) -> p.nodes.length == 2,
+        .Err(_) -> false,
+    }
+    let unknown = match prepare_read(g.catalog, incoming("Party", f)) {
+        .Ok(_) -> false,
+        .Err(e) -> e.contains("no declared owner"),
+    }
+    anonymous && unknown && named
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "incoming follow owners" {
+    given "two models referencing the same target by one property name" {
+        then "the plan must name the owner, and a wrong owner is refused" { passed(owner_resolves_ambiguity()) }
+    }
+}

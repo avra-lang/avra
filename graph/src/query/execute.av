@@ -21,6 +21,7 @@ export enum ReadAnswer {
     Count(total: int, rows: List<ReadRow>)
     Sum(total: Quantity, terms: List<Term>, rows: List<ReadRow>)
     Unsummable(code: string, why: string)
+    Unmet(code: string, property: string)
     Exceeded(limit: string)
 }
 
@@ -29,7 +30,7 @@ impl ReadAnswer {
     fn rows() -> List<ReadRow> {
         match self {
             .Rows(rows) or .Count(_, rows) or .Sum(_, _, rows) -> rows,
-            .Unsummable(_, _) or .Exceeded(_) -> [],
+            .Unsummable(_, _) or .Unmet(_, _) or .Exceeded(_) -> [],
         }
     }
 }
@@ -37,12 +38,21 @@ impl ReadAnswer {
 export type ReadResult = { revision: int, work: int, answer: ReadAnswer }
 
 type Proof = { entity: string, property: string }
-type Hit = { id: string, model: string, fields: List<Selection>, known: List<string>, proofs: List<Proof> }
+type Alias = { property: string, name: string }
+type Hit = {
+    id: string,
+    model: string,
+    fields: List<Selection>,
+    known: List<string>,
+    proofs: List<Proof>,
+    names: List<Alias>,
+}
 enum Flow {
     Hits(hits: List<Hit>)
     Total(count: int, hits: List<Hit>)
     Summed(total: Quantity, terms: List<Term>, hits: List<Hit>)
     Unsummable(code: string, why: string)
+    Unmet(code: string, property: string)
 }
 
 /// One execution: the store it reads and the work it has spent so far.
@@ -107,7 +117,8 @@ impl Run {
             .Filter(input, property, compare, literal) -> Flow.Hits(self.filter(self.rows(flows, input)?, property.name, compare, literal)?),
             .Search(input, property, needle) -> Flow.Hits(self.search(self.rows(flows, input)?, property.name, needle)?),
             .Follow(input, owner, property, direction) -> Flow.Hits(self.follow(self.rows(flows, input)?, owner, property.name, direction)?),
-            .Project(input, properties) -> Flow.Hits(self.project(self.rows(flows, input)?, properties)),
+            .Project(input, properties, names) -> Flow.Hits(self.project(self.rows(flows, input)?, properties, names)),
+            .Expect(input, property, reason) -> self.expect(self.rows(flows, input)?, property.name, reason)?,
             .Count(input) -> {
                 let hits = self.rows(flows, input)?
                 Flow.Total(hits.length, hits)
@@ -119,7 +130,7 @@ impl Run {
     fn rows(flows: List<Flow>, input: int) -> Result<List<Hit>, string> {
         match flows[input] {
             .Hits(hits) -> hits,
-            .Total(_, _) or .Summed(_, _, _) or .Unsummable(_, _) -> { fail "an aggregate has no rows to read" },
+            .Total(_, _) or .Summed(_, _, _) or .Unsummable(_, _) or .Unmet(_, _) -> { fail "an aggregate has no rows to read" },
         }
     }
 
@@ -132,6 +143,7 @@ impl Run {
             fields: e.fields,
             known: e.fields.map(it.property),
             proofs: proofs,
+            names: [],
         }
     }
 
@@ -200,9 +212,17 @@ impl Run {
 
     fn owned_by(owner: string, hits: List<Hit>) -> List<Hit> { hits.filter(it.model == owner) }
 
-    fn project(input: List<Hit>, properties: List<Property>) -> List<Hit> {
-        let names = properties.map(it.name)
-        [h with { fields: h.fields.filter((f) -> names.contains(f.property)) } for h in input]
+    fn project(input: List<Hit>, properties: List<Property>, names: List<string>) -> List<Hit> {
+        let kept = properties.map(it.name)
+        let aliases = [Alias { property: p.name, name: names[i] } for i, p in properties]
+        [h with { fields: h.fields.filter((f) -> kept.contains(f.property)), names: aliases } for h in input]
+    }
+
+    /// Rows that hold the property pass; none holding it is the plan's declared unknown.
+    fn expect(input: List<Hit>, property: string, reason: string) -> Result<Flow, string> {
+        self.charge(input.length)?
+        let held = [h.proved(h.id, property) for h in input if h.values(property).any(!(it is .Null))]
+        if held.is_empty() { Flow.Unmet(reason, property) } else { Flow.Hits(held) }
     }
 
     fn answered(flow: Flow) -> Result<ReadAnswer, string> {
@@ -211,6 +231,7 @@ impl Run {
             .Total(count, hits) -> ReadAnswer.Count(count, self.rows_of(hits)?),
             .Summed(total, terms, hits) -> ReadAnswer.Sum(total, terms, self.rows_of(hits)?),
             .Unsummable(code, why) -> ReadAnswer.Unsummable(code, why),
+            .Unmet(code, property) -> ReadAnswer.Unmet(code, property),
         }
     }
 
@@ -224,11 +245,16 @@ impl Run {
             property: p.property,
             supports: self.g.explain(p.entity, p.property)?,
         } for p in wanted]
-        ReadRow { id: h.id, model: h.model, fields: h.fields, evidence: evidence }
+        ReadRow { id: h.id, model: h.model, fields: h.shown(), evidence: evidence }
     }
 }
 
 impl Hit {
+    /// The fields under their output names; evidence keeps the stored ones.
+    fn shown() -> List<Selection> {
+        [f with { property: self.names.find(it.property == f.property)?.name ?? f.property } for f in self.fields]
+    }
+
     fn proved(entity: string, property: string) -> Hit {
         self with { proofs: self.proofs.concat([Proof { entity: entity, property: property }]) }
     }

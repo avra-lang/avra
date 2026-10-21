@@ -91,7 +91,7 @@ fn evidenced(result: ReadResult) -> bool {
                 ),
         .Count(_, rows) -> rows.all(!it.evidence.is_empty()),
         .Sum(_, _, rows) -> rows.all(!it.evidence.is_empty()),
-        .Unsummable(_, _) or .Exceeded(_) -> false,
+        .Unsummable(_, _) or .Unmet(_, _) or .Exceeded(_) -> false,
     }
 }
 
@@ -138,7 +138,7 @@ fn counts_with_rows() -> Result<bool, string> {
     )?
     let counted = match result.answer {
         .Count(n, _) -> n,
-        .Rows(_) or .Sum(_, _, _) or .Unsummable(_, _) or .Exceeded(_) -> -1,
+        .Rows(_) or .Sum(_, _, _) or .Unsummable(_, _) or .Unmet(_, _) or .Exceeded(_) -> -1,
     }
     counted == 2 && row_ids(result).join(",") == "w2,w3" && evidenced(result)
 }
@@ -226,6 +226,79 @@ fn answers_over_the_wire() -> Result<bool, string> {
         refused.member("policies").item(0).text() == "read_plan"
 }
 
+fn named_and_expected() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    let named = asked(
+        g,
+        [
+            scan("a", "WorkItem"),
+            status_is("b", "a", "open"),
+            step("c", "project", "b", "\"properties\":[\"title\"],\"names\":[\"headline\"]"),
+        ],
+        "c",
+    )?
+    let paths = named.member("fields").items().map(it.member("path").item(1).text() ?? "").join(",")
+    let held = asked(
+        g,
+        [
+            scan("a", "WorkItem"),
+            status_is("b", "a", "open"),
+            step("c", "expect", "b", "\"property\":\"status\",\"reason\":\"no_status\""),
+        ],
+        "c",
+    )?
+    let absent = asked(
+        g,
+        [
+            scan("a", "WorkItem"),
+            status_is("b", "a", "open"),
+            step("c", "expect", "b", "\"property\":\"due_at\",\"reason\":\"no_due_date\""),
+        ],
+        "c",
+    )?
+    paths == "headline" &&
+        named.member("status").text() == "answered" &&
+        held.member("status").text() == "answered" &&
+        absent.member("status").text() == "unknown" &&
+        absent.member("problems").item(0).member("code").text() == "no_due_date" &&
+        absent.member("fields").items().is_empty()
+}
+
+fn conflict_is_ambiguous() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    g.publish(publication(g, "two", "agent-a", [work_item("w4", "Four", "open", "p1")?])?)?
+    g.publish(publication(g, "three", "agent-b", [work_item("w4", "Four", "done", "p1")?])?)?
+    let answer = asked(
+        g,
+        [
+            scan("a", "WorkItem"),
+            step(
+                "b",
+                "filter",
+                "a",
+                "\"property\":\"title\",\"comparison\":\"eq\",\"arguments\":[\"Four\"]",
+            ),
+            step("c", "project", "b", "\"properties\":[\"status\"]"),
+        ],
+        "c",
+    )?
+    let conflict = answer.member("conflicts").item(0)
+    let known = answer.member("citations").items().map(it.member("id").text() ?? "")
+    answer.member("status").text() == "ambiguous" &&
+        conflict.member("path").items().map(it.text() ?? "").join(",") == "w4,status" &&
+        conflict.member("rivals").items().length == 2 &&
+        conflict
+            .member("rivals")
+            .items()
+            .all((r) -> r.member("citations").items().all((c) -> known.contains(c.text() ?? ""))) &&
+        answer.member("fields").items().is_empty() &&
+        answer.member("problems").item(0).member("code").text() == "conflicting_values"
+}
+
 fn passed(answer: Result<bool, string>) -> bool {
     answer catch e -> {
         println(e)
@@ -242,6 +315,8 @@ spec "graph read execution" {
         then "the work budget stops execution, not the answer" { passed(work_stops_execution()) }
         then "the row budget refuses an oversized result" { passed(rows_stop_execution()) }
         then "the query op answers a contract Answer, abstains and refuses" { passed(answers_over_the_wire()) }
+        then "a named projection renames the output; an expectation turns absence into unknown" { passed(named_and_expected()) }
+        then "unresolved competing values answer ambiguous with conflicts" { passed(conflict_is_ambiguous()) }
         then "competing claims stay candidates with no chosen truth" { passed(conflict_stays_open()) }
     }
 }

@@ -9,7 +9,7 @@ use source.{Context}
 @step_coherent
 export type ReadStep = {
     @length(min: 1, max: 128) id: string,
-    @one_of(["scan", "filter", "follow", "search", "project", "count", "sum"]) op: string,
+    @one_of(["scan", "filter", "follow", "search", "project", "count", "sum", "expect"]) op: string,
     @items(max: 1) inputs: List<string> = [],
     model: string? = null,
     property: string? = null,
@@ -17,6 +17,9 @@ export type ReadStep = {
     @one_of(["eq", "ne", "lt", "le", "gt", "ge"]) comparison: string? = null,
     @one_of(["out", "in"]) direction: string? = null,
     @items(max: 64) properties: List<string> = [],
+    @items(max: 64) names: List<string> = [],
+    @length(min: 1, max: 256) owner: string? = null,
+    @length(min: 1, max: 128) reason: string? = null,
 }
 
 fn step_coherent(s: ReadStep) -> Result<ReadStep, string> {
@@ -24,7 +27,11 @@ fn step_coherent(s: ReadStep) -> Result<ReadStep, string> {
     if s.inputs.length != if scan { 0 } else { 1 } { fail "a scan has no input; other steps take one" }
     if scan != (s.model != null) { fail "only a scan names a model" }
     if s.model == "" || s.property == "" { fail "schema symbols cannot be empty" }
-    let property = s.op == "filter" || s.op == "follow" || s.op == "search" || s.op == "sum"
+    let property = s.op == "filter" ||
+        s.op == "follow" ||
+        s.op == "search" ||
+        s.op == "sum" ||
+        s.op == "expect"
     if property != (s.property != null) { fail "this operation has the wrong property arguments" }
     let literal = s.op == "filter" || s.op == "search"
     if s.arguments.length != if literal { 1 } else { 0 } { fail "this operation has the wrong literal arguments" }
@@ -33,6 +40,10 @@ fn step_coherent(s: ReadStep) -> Result<ReadStep, string> {
     if (s.op == "follow") != (s.direction != null) { fail "only a follow names a direction" }
     if (s.op == "project") != !s.properties.is_empty() { fail "only a projection names output properties" }
     if s.properties.any(it.is_empty()) { fail "projection properties cannot be empty" }
+    if s.owner != null && !(s.op == "follow" && s.direction == "in") { fail "only an incoming follow names its owner model" }
+    if !s.names.is_empty() && (s.op != "project" || s.names.length != s.properties.length) { fail "output names pair one-to-one with a projection's properties" }
+    if s.names.any(it.is_empty()) { fail "output names cannot be empty" }
+    if (s.op == "expect") != (s.reason != null) { fail "only an expectation names its reason code" }
     s
 }
 

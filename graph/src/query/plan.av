@@ -17,7 +17,8 @@ export enum ReadOperation {
     Filter(input: int, property: Property, comparison: Comparison, literal: Value)
     Follow(input: int, owner: string, property: Property, direction: Direction)
     Search(input: int, property: Property, needle: string)
-    Project(input: int, properties: List<Property>)
+    Project(input: int, properties: List<Property>, names: List<string>)
+    Expect(input: int, property: Property, reason: string)
     Count(input: int)
     Sum(input: int, property: Property, quantity: QuantityBinding)
 }
@@ -136,15 +137,15 @@ fn bounded(literal: Value) -> bool {
 
 type ReverseBinding = { owner: string, property: Property }
 
-fn reverse_binding(catalog: Catalog, rows: ReadRows, property: string) -> Result<
+fn reverse_binding(catalog: Catalog, rows: ReadRows, property: string, owner: string?) -> Result<
     ReverseBinding,
     string,
 > {
-    let found = [ReverseBinding { owner: model.name, property: p } for model in catalog.models for p in model.properties if p.name == property && target(p.shape) == rows.model]
+    let found = [ReverseBinding { owner: model.name, property: p } for model in catalog.models for p in model.properties if p.name == property && target(p.shape) == rows.model && (owner == null || owner == model.name)]
     match found {
         [only] -> only,
         [] -> { fail "incoming read reference has no declared owner" },
-        rest -> { fail "incoming read reference has multiple declared owners" },
+        rest -> { fail "incoming read reference has multiple declared owners — name one" },
     }
 }
 
@@ -195,7 +196,7 @@ fn prepared_node(catalog: Catalog, nodes: List<ReadNode>, step: ReadStep) -> Res
             let direction = if step.direction == "out" { Direction.Outgoing } else { Direction.Incoming }
             let binding = match direction {
                 .Outgoing -> ReverseBinding { owner: rows.model, property: visible(rows, step.property!)? },
-                .Incoming -> reverse_binding(catalog, rows, step.property!)?,
+                .Incoming -> reverse_binding(catalog, rows, step.property!, step.owner)?,
             }
             let next = match direction {
                 .Outgoing -> {
@@ -217,12 +218,22 @@ fn prepared_node(catalog: Catalog, nodes: List<ReadNode>, step: ReadStep) -> Res
                 if step.properties.slice(0, i).contains(name) { fail "read projections must name distinct properties" }
             }
             let properties = [visible(rows, name)? for name in step.properties]
+            let names = if step.names.is_empty() { step.properties } else { step.names }
+            for i, name in names {
+                if names.slice(0, i).contains(name) { fail "read output names must be distinct" }
+            }
             ReadNode {
                 id: step.id,
-                operation: .Project(input, properties),
+                operation: .Project(input, properties, names),
                 shape: .Rows(ReadRows { model: rows.model, properties: properties }),
                 depth: depth,
             }
+        },
+        "expect" -> ReadNode {
+            id: step.id,
+            operation: .Expect(input, visible(rows, step.property!)?, step.reason!),
+            shape: .Rows(rows),
+            depth: depth,
         },
         "count" -> ReadNode { id: step.id, operation: .Count(input), shape: .Count, depth: depth },
         "sum" -> {

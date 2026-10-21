@@ -3,6 +3,7 @@ use data.{as_json}
 use store.open.{Graph}
 use query.plan.{prepare_read}
 use query.execute.{ReadAnswer, ReadRow, ReadResult}
+use store.query.{Selection, Candidate}
 use query.quantity.{Quantity, Term}
 
 /// A support that still counts, reduced to what a citation names.
@@ -24,9 +25,13 @@ impl Graph {
 fn responded(request: string, result: ReadResult) -> Json {
     match result.answer {
         .Exceeded(limit) -> unresolved(request, result.revision, "budget_exceeded", limit),
+        .Unmet(code, property) -> unresolved(request, result.revision, code, "the expected ${property} is absent"),
         .Rows(rows) -> {
             let fields = [f for row in rows for f in row_fields(row)]
-            if fields.is_empty() {
+            let conflicts = [c for row in rows for c in row_conflicts(row)]
+            if !conflicts.is_empty() {
+                ambiguous(request, result.revision, fields, conflicts, rows)
+            } else if fields.is_empty() {
                 unresolved(
                     request,
                     result.revision,
@@ -67,6 +72,25 @@ fn answered(request: string, revision: int, fields: List<Json>, rows: List<ReadR
     )
 }
 
+fn ambiguous(
+    request: string,
+    revision: int,
+    fields: List<Json>,
+    conflicts: List<Json>,
+    rows: List<ReadRow>,
+) -> Json {
+    held(
+        request,
+        "ambiguous",
+        revision,
+        fields,
+        conflicts,
+        [citation(s) for s in distinct_supports(rows)],
+        [],
+        [problem("conflicting_values", "competing supported values; none is selected")],
+    )
+}
+
 fn unresolved(request: string, revision: int, code: string, message: string) -> Json {
     document(request, "unknown", revision, [], [], [], [problem(code, message)])
 }
@@ -84,6 +108,19 @@ fn document(
     policies: List<string>,
     problems: List<Json>,
 ) -> Json {
+    held(request, status, revision, fields, [], citations, policies, problems)
+}
+
+fn held(
+    request: string,
+    status: string,
+    revision: int,
+    fields: List<Json>,
+    conflicts: List<Json>,
+    citations: List<Json>,
+    policies: List<string>,
+    problems: List<Json>,
+) -> Json {
     Json
         .Obj(
             [
@@ -93,6 +130,7 @@ fn document(
                 field("read_revision", Json.Int(revision)),
                 field("fields", Json.Arr(fields)),
                 field("candidates", Json.Arr([])),
+                field("conflicts", Json.Arr(conflicts)),
                 field("citations", Json.Arr(citations)),
                 field("policies", Json.Arr([Json.Str(p) for p in policies])),
                 field("problems", Json.Arr(problems)),
@@ -111,14 +149,41 @@ fn problem(code: string, message: string) -> Json {
         )
 }
 
-/// Competing values of one property each get their own path; none is chosen.
+/// Values that stand alone or were chosen; competing ones are conflicts.
 fn row_fields(row: ReadRow) -> List<Json> {
-    [f for sel in row.fields for i, c in sel.candidates for f in cited_field(
-        row,
-        if sel.candidates.length == 1 { [row.id, sel.property] } else { [row.id, sel.property, "candidates", "${i}"] },
-        c.claim,
-        as_json(c.value),
-    )]
+    [f for sel in row.fields for c in settled(sel) for f in cited_field(row, [row.id, sel.property], c.claim, as_json(c.value))]
+}
+
+fn settled(sel: Selection) -> List<Candidate> {
+    if sel.candidates.length == 1 { sel.candidates } else { sel.candidates.filter(it.chosen) }
+}
+
+/// Competing values of one property, none selected, each with its supports.
+fn row_conflicts(row: ReadRow) -> List<Json> {
+    [conflict for sel in row.fields if sel.candidates.length > 1 && settled(sel).length != 1 for conflict in conflict_of(row, sel)]
+}
+
+fn conflict_of(row: ReadRow, sel: Selection) -> List<Json> {
+    let rivals = [Json
+        .Obj(
+            [
+                field("value", as_json(c.value)),
+                field("citations", Json.Arr([Json.Str(id) for id in ids])),
+            ],
+        ) for c in sel.candidates for ids in [[s.id for s in supports_of(row) if s.claim == c.claim]] if !ids.is_empty()]
+    if rivals.length < 2 {
+        []
+    } else {
+        [
+            Json
+                .Obj(
+                    [
+                        field("path", Json.Arr([Json.Str(row.id), Json.Str(sel.property)])),
+                        field("rivals", Json.Arr(rivals)),
+                    ],
+                ),
+        ]
+    }
 }
 
 /// A fact without a live support is not asserted.

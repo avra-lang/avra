@@ -57,5 +57,39 @@ spec "v1 bounded read-only plans" {
                     "{\"id\":\"a\",\"op\":\"search\",\"inputs\":[\"b\"],\"property\":\"text\",\"arguments\":[{\"op\":\"delete\"}]}",
                 ) is .Err
         }
+        then "an expectation names its reason code, and only an expectation does" {
+            ReadStep
+                    .from_json(
+                        "{\"id\":\"a\",\"op\":\"expect\",\"inputs\":[\"b\"],\"property\":\"p\",\"reason\":\"no_p\"}",
+                    ) is .Ok &&
+                ReadStep
+                    .from_json("{\"id\":\"a\",\"op\":\"expect\",\"inputs\":[\"b\"],\"property\":\"p\"}") is .Err &&
+                ReadStep
+                    .from_json("{\"id\":\"a\",\"op\":\"count\",\"inputs\":[\"b\"],\"reason\":\"x\"}") is .Err
+        }
+        then "only an incoming follow names its owner" {
+            ReadStep
+                    .from_json(
+                        "{\"id\":\"a\",\"op\":\"follow\",\"inputs\":[\"b\"],\"property\":\"p\",\"direction\":\"in\",\"owner\":\"M\"}",
+                    ) is .Ok &&
+                ReadStep
+                    .from_json(
+                        "{\"id\":\"a\",\"op\":\"follow\",\"inputs\":[\"b\"],\"property\":\"p\",\"direction\":\"out\",\"owner\":\"M\"}",
+                    ) is .Err
+        }
+        then "output names pair with a projection's properties" {
+            ReadStep
+                    .from_json(
+                        "{\"id\":\"a\",\"op\":\"project\",\"inputs\":[\"b\"],\"properties\":[\"p\",\"q\"],\"names\":[\"x\",\"y\"]}",
+                    ) is .Ok &&
+                ReadStep
+                    .from_json(
+                        "{\"id\":\"a\",\"op\":\"project\",\"inputs\":[\"b\"],\"properties\":[\"p\",\"q\"],\"names\":[\"x\"]}",
+                    ) is .Err &&
+                ReadStep
+                    .from_json(
+                        "{\"id\":\"a\",\"op\":\"project\",\"inputs\":[\"b\"],\"properties\":[\"p\"],\"names\":[\"\"]}",
+                    ) is .Err
+        }
     }
 }
