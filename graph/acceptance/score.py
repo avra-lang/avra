@@ -21,6 +21,8 @@ ROOT = HERE.parent.parent
 BINARY = HERE / "app/src/main"
 ORACLE = HERE / "oracle"
 RESULTS = HERE / "results"
+HELDOUT_RESULTS = HERE / "heldout-results"
+SPLIT = HERE / "split.json"
 STATUSES = ("pass", "fail", "not-run", "error")
 SET_KEYS = {"candidates", "excluded"}
 MEDIA = {"csv": "text/csv"}
@@ -550,6 +552,32 @@ def slice_hooks(args):
     return {"extractor": args.extractor or found.get("extractor"), "planner": args.planner or found.get("planner")}
 
 
+def load_split():
+    return json.loads(SPLIT.read_text())
+
+
+def heldout_report(mode, hooks, results, extractions, categories):
+    """Held-out questions print as an aggregate; details go to a private file."""
+    counts = {s: sum(r["status"] == s for r in results.values()) for s in STATUSES}
+    by = {}
+    for qid, r in results.items():
+        got = by.setdefault(categories[qid], [0, 0])
+        got[0] += r["status"] == "pass"
+        got[1] += 1
+    print(f"== {mode} HELD-OUT  extractor={hooks['extractor']}  planner={hooks['planner']}")
+    print("held-out: " + " ".join(f"{s}={n}" for s, n in counts.items()) + f" of {len(results)}")
+    print("by category: " + ", ".join(f"{c} {p}/{n}" for c, (p, n) in sorted(by.items())))
+    HELDOUT_RESULTS.mkdir(mode=0o700, exist_ok=True)
+    out = HELDOUT_RESULTS / f"heldout-{mode}-{time.strftime('%Y%m%dT%H%M%S')}.json"
+    body = json.dumps({"mode": mode, "hooks": hooks, "counts": counts, "questions": results,
+                       "extractions": list(extractions)}, indent=2)
+    descriptor = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as handle:
+        handle.write(body)
+    print("details: private file in heldout-results/ (mode 0600, ignored by git)")
+    return counts
+
+
 def report(mode, hooks, results, extractions=()):
     text, counts = table(results)
     print(f"== {mode}  extractor={hooks['extractor']}  planner={hooks['planner']}")
@@ -569,7 +597,9 @@ def main():
     parser.add_argument("--slice", action="store_true", help=f"{SLICE} in both modes, default hooks when present")
     parser.add_argument("--extractor", help="command: source envelope JSON in, C01 extraction result JSON out")
     parser.add_argument("--planner", help="command: question + context JSON in, C01 ReadPlan JSON out")
-    parser.add_argument("--only", help="comma-separated question ids")
+    parser.add_argument("--only", help="comma-separated development question ids")
+    parser.add_argument("--heldout", action="store_true",
+                        help="run the held-out questions; prints an aggregate only")
     parser.add_argument("--binary", default=str(BINARY))
     parser.add_argument("--build", action="store_true", help="build the fixture app first")
     parser.add_argument("--self-test", action="store_true")
@@ -581,7 +611,15 @@ def main():
         if built.returncode != 0:
             sys.exit("fixture app build failed")
     fixture = load_fixture()
-    only = set((SLICE if args.slice else args.only or "").split(",")) - {""} or None
+    split = load_split()
+    held = set(split["heldout"])
+    named = set((SLICE if args.slice else args.only or "").split(",")) - {""}
+    if named & held:
+        sys.exit("held-out questions run only through --heldout: " + ", ".join(sorted(named & held)))
+    if args.heldout:
+        only = held
+    else:
+        only = named or {q["id"] for q in fixture[3]} - held
     runs = ("oracle-facts", "planner", "e2e") if args.slice else (args.mode,)
     hooks = slice_hooks(args) if args.slice else {"extractor": args.extractor, "planner": args.planner}
     failed = False
@@ -589,7 +627,8 @@ def main():
         with tempfile.TemporaryDirectory(prefix="graph-score-") as directory:
             extractions = []
             results = score(pathlib.Path(args.binary), fixture, mode, hooks, pathlib.Path(directory), only, extractions)
-        counts = report(mode, hooks, results, extractions)
+        counts = (heldout_report(mode, hooks, results, extractions, split["categories"]) if args.heldout
+                  else report(mode, hooks, results, extractions))
         failed = failed or counts["pass"] != len(results)
     sys.exit(1 if failed else 0)
 

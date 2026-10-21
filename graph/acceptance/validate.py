@@ -207,6 +207,21 @@ def leaks(root, pattern):
     return found
 
 
+SLICE_IDS = {"q01", "q06", "q07", "q16", "q46", "q47"}
+
+
+def check_split(questions):
+    split = json.loads((ROOT / "split.json").read_text())
+    ids = {q["id"] for q in questions}
+    held = set(split["heldout"])
+    require(held <= ids, "split: unknown held-out question")
+    require(set(split["categories"]) == ids, "split: every question has one category")
+    require(not held & SLICE_IDS, "split: slice questions stay in development")
+    categories = set(split["categories"].values())
+    require({split["categories"][q] for q in held} == categories - {"injection"},
+            "split: every multi-question category has a held-out member")
+
+
 def self_test(data):
     def cyclic(altered):
         for task in altered[4]:
@@ -251,6 +266,7 @@ def main():
     data = (manifest, *(load_lines(ROOT / manifest[key])
                         for key in ("sources", "entities", "questions", "tasks")))
     validate(data)
+    check_split(data[3])
     leaked = leaks(GRAPH, leak_pattern(data[2], data[1]))
     require(not leaked, "fixture tokens outside the fixture:\n  " + "\n  ".join(leaked[:20]))
     if sys.argv[1:]:
