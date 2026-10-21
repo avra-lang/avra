@@ -1,0 +1,169 @@
+use tests.support.{Person_graph_model, WorkItem_graph_model, Message_graph_model}
+use schema.{Registration}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use store.rank.{Tie, personalized}
+use store.walk.{WalkBudget, Channel}
+
+fn models() -> List<Registration> {
+    [
+        Registration { make: Person_graph_model },
+        Registration { make: Message_graph_model },
+        Registration { make: WorkItem_graph_model },
+    ]
+}
+
+fn near(a: float, b: float) -> bool { a - b < 0.000001 && b - a < 0.000001 }
+
+fn chain() -> List<Tie> {
+    [Tie { from: "A", to: "B" }, Tie { from: "B", to: "C" }, Tie { from: "D", to: "E" }]
+}
+
+fn ranks_by_closeness() -> bool {
+    let scored = personalized(["A"], chain(), 30, 0.85)
+    let total = scored.map(it.score).fold(0.0, (a, b) -> a + b)
+    scored.map(it.name).join(",") == "B,A,C" &&
+        near(total, 1.0) &&
+        scored[0].score > scored[1].score &&
+        scored[1].score > scored[2].score
+}
+
+fn stays_home_without_ties() -> bool {
+    let alone = personalized(["A"], [], 10, 0.85)
+    let none = personalized([], chain(), 10, 0.85)
+    alone.length == 1 && near(alone[0].score, 1.0) && none.is_empty()
+}
+
+fn restart_splits_across_seeds() -> bool {
+    let scored = personalized(["A", "D"], chain(), 0, 0.85)
+    scored.length == 2 &&
+        near(scored[0].score, 0.5) &&
+        near(scored[1].score, 0.5) &&
+        scored[0].name == "A" &&
+        scored[1].name == "D"
+}
+
+fn record(id: string, model: string, json: string) -> Result<Record, string> {
+    Record { id: id, model: model, value: stored_value(json)? }
+}
+
+fn filed(mut g: Graph, id: string, input: string, records: List<Record>) -> Result<int, string> {
+    g
+        .publish(
+            Publication {
+                id: id,
+                producer: "agent",
+                scope: input,
+                input: input,
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: records,
+            },
+        )
+}
+
+fn two_threads() -> Result<Graph, string> {
+    mut g = Graph.memory(models())?
+    g.observe("in:1", "Ada owns the first task.")?
+    g.observe("in:2", "Grace owns the second task.")?
+    filed(
+        g,
+        "one",
+        "in:1",
+        [
+            record("p1", "Person", "{\"name\":\"Ada\",\"email\":null}")?,
+            record(
+                "w1",
+                "WorkItem",
+                "{\"title\":\"One\",\"status\":\"open\",\"assignee\":\"p1\",\"messages\":[],\"due_at\":null}",
+            )?,
+        ],
+    )?
+    filed(
+        g,
+        "two",
+        "in:2",
+        [
+            record("p2", "Person", "{\"name\":\"Grace\",\"email\":null}")?,
+            record(
+                "w2",
+                "WorkItem",
+                "{\"title\":\"Two\",\"status\":\"open\",\"assignee\":\"p2\",\"messages\":[],\"due_at\":null}",
+            )?,
+        ],
+    )?
+    g
+}
+
+fn walk_reaches_its_neighbours_sources() -> Result<bool, string> {
+    mut g = two_threads()?
+    defer { let _ = g.close() }
+    let found = g.walked(["p1"])?
+    let facts = found.passages.filter(it.kind == "fact")
+    let sources = found.passages.filter(it.kind == "source")
+    found.name == "ppr" &&
+        !found.truncated &&
+        found.passages.all(it.observation == "in:1") &&
+        facts.any(it.entity == "p1") &&
+        facts.any(it.entity == "w1") &&
+        sources.length == 1 &&
+        sources[0].rank > 0.0 &&
+        found.passages[0].rank >= found.passages[found.passages.length - 1].rank
+}
+
+fn seeds_that_are_not_entities_are_reported() -> Result<bool, string> {
+    mut g = two_threads()?
+    defer { let _ = g.close() }
+    let found = g.walked(["nobody", "p2"])?
+    found.ignored.join(",") == "nobody" &&
+        found.passages.all(it.observation == "in:2") &&
+        !found.passages.is_empty()
+}
+
+fn budgets_stop_the_walk() -> Result<bool, string> {
+    mut g = two_threads()?
+    defer { let _ = g.close() }
+    let calls = g.walked(["w1"], WalkBudget { hops: 3, calls: 2 })?
+    let nodes = g.walked(["w1"], WalkBudget { hops: 3, nodes: 1 })?
+    let hops = g.walked(["w1"], WalkBudget { hops: 0 })?
+    let wide = g.walked(["w1"], WalkBudget { hops: 3 })?
+    let reaches = (c: Channel) -> c.passages.any(it.entity == "p1")
+    calls.truncated &&
+        nodes.truncated &&
+        !reaches(nodes) &&
+        !hops.truncated &&
+        !reaches(hops) &&
+        reaches(wide) &&
+        !wide.truncated
+}
+
+fn bad_budgets_are_refused() -> Result<bool, string> {
+    mut g = two_threads()?
+    defer { let _ = g.close() }
+    let hops = match g.walked(["p1"], WalkBudget { hops: 9 }) { .Ok(_) -> false, .Err(_) -> true }
+    let nodes = match g.walked(["p1"], WalkBudget { nodes: 0 }) { .Ok(_) -> false, .Err(_) -> true }
+    hops && nodes
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "personalized walk" {
+    given "the rank iteration alone" {
+        then "scores sum to one and the seed keeps more than a far neighbour" { ranks_by_closeness() }
+        then "a seed without ties keeps all the mass; no seeds score nothing" { stays_home_without_ties() }
+        then "with no rounds the restart splits evenly across seeds" { restart_splits_across_seeds() }
+    }
+    given "two threads in one graph" {
+        then "a walk scores neighbours' facts and the sources they came from" { passed(walk_reaches_its_neighbours_sources()) }
+        then "a seed that is not a live entity is reported, not used" { passed(seeds_that_are_not_entities_are_reported()) }
+        then "call, node and hop budgets stop the walk and say so" { passed(budgets_stop_the_walk()) }
+        then "an out-of-range budget is refused" { passed(bad_budgets_are_refused()) }
+    }
+}

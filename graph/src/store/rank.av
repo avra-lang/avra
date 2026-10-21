@@ -1,0 +1,74 @@
+use data.{before}
+use @std.text.{parse_float}
+
+/// An undirected tie between two entities.
+export type Tie = { from: string, to: string }
+
+export type Scored = { name: string, score: float }
+
+/// Personalized PageRank by power iteration over undirected links. The walk
+/// restarts at the seeds; mass at a dead end returns to them, so the scores
+/// always sum to one. Seeds with no links still score.
+export fn personalized(seeds: List<string>, links: List<Tie>, iterations: int, damping: float) -> List<
+    Scored,
+> {
+    let roots = distinct_names(seeds)
+    if roots.is_empty() { return [] }
+    let ties = neighbors(links)
+    let restart = 1.0 / as_float(roots.length)
+    let names = distinct_names(roots.concat(ties.keys()))
+    mut score: Map<string, float> = {}
+    for n in names { score.set(n, if roots.contains(n) { restart } else { 0.0 }) }
+    for _round in 0..iterations {
+        mut next: Map<string, float> = {}
+        for n in names { next.set(n, if roots.contains(n) { (1.0 - damping) * restart } else { 0.0 }) }
+        mut stranded = 0.0
+        for n in names {
+            let mass = score.get(n) ?? 0.0
+            let around = ties.get(n) ?? []
+            if around.is_empty() {
+                stranded = stranded + mass
+            } else {
+                let share = damping * mass / as_float(around.length)
+                for m in around { next.set(m, (next.get(m) ?? 0.0) + share) }
+            }
+        }
+        for r in roots { next.set(r, (next.get(r) ?? 0.0) + damping * stranded * restart) }
+        score = next
+    }
+    by_score(
+        [Scored { name: n, score: score.get(n) ?? 0.0 } for n in names if score.get(n) ?? 0.0 > 0.0],
+    )
+}
+
+/// Each name with the names it is tied to, both directions, in first-seen order.
+fn neighbors(links: List<Tie>) -> Map<string, List<string>> {
+    mut ties: Map<string, List<string>> = {}
+    for l in links {
+        if l.from == l.to { continue }
+        ties.set(l.from, distinct_names((ties.get(l.from) ?? []).concat([l.to])))
+        ties.set(l.to, distinct_names((ties.get(l.to) ?? []).concat([l.from])))
+    }
+    ties
+}
+
+fn distinct_names(names: List<string>) -> List<string> {
+    [n for i, n in names if !names.slice(0, i).contains(n)]
+}
+
+/// Best first; equal scores keep name order.
+fn by_score(xs: List<Scored>) -> List<Scored> {
+    if xs.length < 2 { return xs }
+    let pivot = xs[0]
+    let rest = xs.slice(1, xs.length)
+    by_score([x for x in rest if ahead(x, pivot)])
+        .concat([pivot])
+        .concat(by_score([x for x in rest if !ahead(x, pivot)]))
+}
+
+fn ahead(a: Scored, b: Scored) -> bool {
+    a.score > b.score || a.score == b.score && before(a.name, b.name)
+}
+
+/// An integer as a float; the language has no conversion, so the text reads back.
+fn as_float(n: int) -> float { parse_float("${n}.0") ?? 0.0 }

@@ -1,0 +1,124 @@
+use @std.sqlite.{SqlValue}
+use store.engine.{EntityRow}
+use store.open.{Graph, stored}
+use store.rank.{Tie, Scored, personalized}
+use store.search.{Passage}
+
+/// What a walk may spend: hops from the seeds, entities it may touch, edge
+/// reads, and rounds of the rank iteration.
+export type WalkBudget = { hops: int = 2, nodes: int = 200, calls: int = 400, iterations: int = 20 }
+
+/// One retrieval channel's answer: passages best first, whether its budget cut it short,
+/// and the seeds it could not use.
+export type Channel = { name: string, passages: List<Passage>, truncated: bool, ignored: List<string> }
+
+type Reach = { links: List<Tie>, truncated: bool }
+
+const damping = 0.85
+
+impl Graph {
+    /// Passages scored through the facts that cite them: personalized PageRank
+    /// from the seed entities over the claim graph, spread to each fact's
+    /// entity and from there to the sources the facts were admitted from.
+    fn walked(seeds: List<string>, budget: WalkBudget = WalkBudget {}) -> Result<Channel, string> {
+        if budget.hops < 0 ||
+            budget.hops > 6 ||
+            budget.nodes < 1 ||
+            budget.calls < 0 ||
+            budget.iterations < 0 ||
+            budget.iterations > 100 {
+            fail "walk budget is out of range"
+        }
+        let usable = [self.resolved(s)? for s in seeds]
+        let roots = [r for r in usable if r != ""]
+        let ignored = [s for i, s in seeds if usable[i] == ""]
+        if roots.is_empty() { return Channel { name: "ppr", passages: [], truncated: false, ignored: ignored } }
+        let reach = self.neighborhood(roots, budget)?
+        let scored = personalized(roots, reach.links, budget.iterations, damping)
+        Channel {
+            name: "ppr",
+            passages: self.spread(scored)?,
+            truncated: reach.truncated,
+            ignored: ignored,
+        }
+    }
+
+    /// A seed's root entity name, or "" when no live entity answers to it.
+    fn resolved(seed: string) -> Result<string, string> {
+        let known = stored(EntityRow.where(self.db, name: seed))?
+        if known.is_empty() || self.hidden(seed)? { return "" }
+        self.root(seed)?
+    }
+
+    /// Breadth-first from the seeds, both directions of every reference, within the budget.
+    fn neighborhood(seeds: List<string>, budget: WalkBudget) -> Result<Reach, string> {
+        mut seen = seeds
+        mut frontier = seeds
+        mut links: List<Tie> = []
+        mut calls = 0
+        mut truncated = false
+        for _hop in 0..budget.hops {
+            mut next: List<string> = []
+            for id in frontier {
+                if calls + 2 > budget.calls {
+                    truncated = true
+                    break
+                }
+                calls = calls + 2
+                for e in (self.edges(id)?).concat(self.edges(id, incoming: true)?) {
+                    let from = self.root(e.entity)?
+                    let to = self.root(e.target)?
+                    for other in [from, to] {
+                        if seen.contains(other) { continue }
+                        if seen.length >= budget.nodes {
+                            truncated = true
+                            continue
+                        }
+                        seen.push(other)
+                        next.push(other)
+                    }
+                    if seen.contains(from) && seen.contains(to) { links.push(Tie { from: from, to: to }) }
+                }
+            }
+            frontier = next
+            if frontier.is_empty() { break }
+        }
+        Reach { links: links, truncated: truncated }
+    }
+
+    /// Entity scores to passages: each entity's facts take its score, each source
+    /// the sum of the scores of the facts it supplied.
+    fn spread(scored: List<Scored>) -> Result<List<Passage>, string> {
+        let names = [s.name for s in scored if s.score > 0.0]
+        if names.is_empty() { return [] }
+        let holes = names.map((n) -> "?").join(", ")
+        let facts = self
+            .passages_where("kind = 'fact' AND entity IN (${holes})", [SqlValue.Text(n) for n in names])?
+        let scored_facts = [f with { rank: score_of(scored, f.entity) } for f in facts]
+        let cited = [f for i, f in scored_facts if !scored_facts.slice(0, i).any(it.observation == f.observation && it.revision == f.revision)]
+        let sources = [s with { rank: scored_facts
+            .filter(it.observation == s.observation && it.revision == s.revision)
+            .map(it.rank)
+            .fold(0.0, (a, b) -> a + b) } for c in cited for s in self
+            .passages_where(
+                "kind = 'source' AND observation = ? AND revision = ?",
+                [SqlValue.Text(c.observation), SqlValue.Int(c.revision)],
+            )?]
+        ranked(scored_facts.concat(sources))
+    }
+}
+
+fn score_of(scored: List<Scored>, name: string) -> float {
+    scored.find(it.name == name)?.score ?? 0.0
+}
+
+/// Best first; equal ranks keep index order.
+fn ranked(xs: List<Passage>) -> List<Passage> {
+    if xs.length < 2 { return xs }
+    let pivot = xs[0]
+    let rest = xs.slice(1, xs.length)
+    let ahead = (p: Passage) -> p.rank > pivot.rank || p.rank == pivot.rank && p.row < pivot.row
+    ranked([x for x in rest if ahead(x)])
+        .concat([pivot])
+        .concat(ranked([x for x in rest if !ahead(x)]))
+}
