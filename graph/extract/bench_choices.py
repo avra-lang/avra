@@ -1,6 +1,6 @@
 """Score one closed-choice decision set with one backend; one at a time.
 
-usage: python bench_choices.py qwen|jevk5 [decisions.jsonl] > scores.jsonl
+usage: python bench_choices.py service|qwen|jevk5 [decisions.jsonl] > scores.jsonl
 Prints accuracy and latency per decision kind to stderr. Probabilities are
 logged raw, for later calibration; they are not calibrated.
 """
@@ -22,6 +22,24 @@ def qwen():
 
     s = Scorer()
     return lambda d: s.choose(d["context"], d["question"], d["options"])
+
+
+def service():
+    """The resident cascade service's scorer, so no second model loads."""
+    import socket
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from cascade import SOCKET
+
+    def choose(d):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(SOCKET)
+        with s:
+            s.sendall(json.dumps({"op": "choose", "context": d["context"], "question": d["question"], "options": d["options"]}).encode() + b"\n")
+            out = b"".join(iter(lambda: s.recv(1 << 16), b""))
+        return json.loads(out)["p"]
+
+    return choose
 
 
 def jevk5():
@@ -70,7 +88,7 @@ def main():
     path = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(__file__), "bench", "decisions.jsonl")
     rows = [json.loads(l) for l in open(path)]
     t = time.time()
-    choose = {"qwen": qwen, "jevk5": jevk5}[backend]()
+    choose = {"qwen": qwen, "service": service, "jevk5": jevk5}[backend]()
     choose(rows[0])
     print(f"{backend} load+first_s={time.time() - t:.1f}", file=sys.stderr)
     by = defaultdict(lambda: [0, 0, 0.0])

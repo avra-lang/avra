@@ -616,6 +616,9 @@ def answered(body, models):
     """A generate op's text, or an extraction's result and log."""
     if body.get("op") == "generate":
         return {"text": models.llm.generate(body["messages"], int(body.get("max_tokens", 256)))}
+    if body.get("op") == "choose":
+        models.llm.source, models.llm.cache = "", None
+        return {"p": models.llm.choose(body["context"], body["question"], body["options"])}
     models.llm.prefix = body.get("prefix", True)
     result, logs = extract(body["request"], models)
     return {"result": result, "log": logs}
@@ -624,8 +627,8 @@ def answered(body, models):
 def serve():
     """A local Unix-socket service, served in order: one JSON line in, one
     JSON line out, per connection. `{"op":"generate","messages":[…],
-    "max_tokens":n}` answers `{"text":…}` (greedy); `{"request":…}` answers
-    an extraction. A failure answers `{"error":…}`."""
+    "max_tokens":n}` answers `{"text":…}` (greedy); `{"op":"choose","context","question","options"}` answers `{"p":[…]}`;
+    `{"request":…}` answers an extraction. A failure answers `{"error":…}`."""
     import socket
 
     models = Models()
