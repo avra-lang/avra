@@ -659,7 +659,7 @@ class Cascade:
         kind, name = route(p), p["name"]
         if self.plan.embeddable(p["shape"]):
             return self.field(name, {}, [(a, b)]) if required(p) else None
-        optional = [] if required(p) else ["not stated"]
+        optional = ["not stated"]
         if kind == "text":
             v = found.get(name)
             if v and self.named(a + v["start"], a + v["end"]):
