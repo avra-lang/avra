@@ -4,6 +4,9 @@ scores closed choices, and every proposal is an exact source anchor.
 usage: python cascade.py [--catalog SCHEMA_JSON] [--local] [--no-prefix] < request_or_envelope.json > result.json
        python cascade.py --serve   # keep both models resident behind a Unix socket
 
+Without a listening service it exits 1 ("service unavailable"); --local
+loads the models in this process instead.
+
 stdin is a C01 ExtractionRequest, or a bare I01 SourceEnvelope with
 --catalog naming the app's `{"op":"schema"}` answer. stdout is one C01
 ExtractionResult (contract 2: selectors, FactBank factuality, speech act,
@@ -976,10 +979,16 @@ def main():
         return serve()
     stdin = json.load(sys.stdin)
     req = requested(stdin, args[args.index("--catalog") + 1] if "--catalog" in args else None)
-    answer = None if "--local" in args else remote(req, "--no-prefix" not in args)
-    if answer is None:
+    if "--local" in args:
         result, logs = extract(req)
-    elif "error" in answer:
+        print("\n".join(logs), file=sys.stderr)
+        json.dump(result, sys.stdout, ensure_ascii=False)
+        return 0
+    answer = remote(req, "--no-prefix" not in args)
+    if answer is None:
+        print(f"service unavailable: nothing answers on {SOCKET}; start `cascade.py --serve`, or pass --local to load the models here", file=sys.stderr)
+        return 1
+    if "error" in answer:
         print(f"service: {answer['error']}", file=sys.stderr)
         return 1
     else:
