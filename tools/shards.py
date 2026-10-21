@@ -23,7 +23,10 @@ item per listed path (`std-avrac/src/features`), each proved by `avra test` on
 that path alone; a `cold` row runs first in a shard of its own among the cold
 ones, since its scope refuses to run after another suite on a warm store.
 `--check-splits` refuses a split package that carries a proof
-outside every listed path, which would otherwise run nowhere.
+outside every listed path, which would otherwise run nowhere. A caller
+that creates a proof which is not a suite may name its `package/path` in
+SHARDS_SKIP; the check says it did so, and refuses every other unlisted
+proof.
 
 A package's first suite on a shard pays its COMPILE, which its later suites there reuse
 (`std-avrac`: ~110 s). `.github/ci/suite-cold.txt` names it per package; `--merge-times`
@@ -187,9 +190,11 @@ def is_proof(path):
         return any(l.lstrip().startswith("spec ") or l.lstrip().startswith("spec(") for l in f)
 
 
-def unreached(root, table, groups=None):
-    """Proof files under a split package that no listed path holds."""
+def unreached(root, table, groups=None, skip=()):
+    """Proof files under a split package that no listed path holds. A `skip` item is a
+    `package/path` whose proofs the caller declared transient — not a suite."""
     gone = []
+    skip = [s.rstrip("/") for s in skip]
     for pkg, listed in table.items():
         listed_paths = [q for p in listed for q in ((groups or {})[f"{pkg}/{p}"] if p.startswith("@") else [p])]
         base = os.path.join(root, "packages", pkg)
@@ -219,7 +224,11 @@ def unreached(root, table, groups=None):
             rel = os.path.relpath(d, base)
             if any(rel == p or rel.startswith(p.rstrip("/") + "/") for p in paths):
                 continue
-            gone += [os.path.join(rel, f) for f in files if is_proof(os.path.join(d, f)) and os.path.join(rel, f) not in held]
+            for f in files:
+                item = f"{pkg}/{os.path.join(rel, f)}"
+                if is_proof(os.path.join(d, f)) and os.path.join(rel, f) not in held \
+                        and not any(item == s or item.startswith(s + "/") for s in skip):
+                    gone.append(os.path.join(rel, f))
     return gone
 
 
@@ -290,6 +299,14 @@ def self_test():
         assert unreached(d, {"p": ["@a", "@b"]}, g) == [], "two hands cover the directory"
         assert any("not listed" in x for x in unreached(d, {"p": ["@a"]}, g)), "a missing hand is named"
     with tempfile.TemporaryDirectory() as d:
+        for sub in ("u", "v"):
+            os.makedirs(os.path.join(d, "packages", "p", "src", sub))
+            with open(os.path.join(d, "packages", "p", "src", sub, "s_test.av"), "w") as fh:
+                fh.write("spec x {\n}\n")
+        assert any(x.endswith("u/s_test.av") for x in unreached(d, {"p": []})), "an unlisted proof is named"
+        assert not any("u/" in x for x in unreached(d, {"p": []}, None, ["p/src/u"])), "a declared transient is not sharded"
+        assert any("v/" in x for x in unreached(d, {"p": []}, None, ["p/src/u"])), "a skip names its own path only"
+    with tempfile.TemporaryDirectory() as d:
         os.makedirs(os.path.join(d, "a"))
         with open(os.path.join(d, "a", "suite-times.txt"), "w") as f:
             f.write("p/x 150 first\np/y 40\nq 7\nq/z 6\n")
@@ -318,7 +335,10 @@ if __name__ == "__main__":
         print(" ".join(item_paths(sys.argv[2], groups, root)))
         sys.exit(0)
     if sys.argv[1:] == ["--check-splits"]:
-        bad = unreached(root, table, groups)
+        skip = os.environ.get("SHARDS_SKIP", "").split()
+        for s in skip:
+            print(f"shards: {s} is declared transient — its proofs are not sharded")
+        bad = unreached(root, table, groups, skip)
         for b in bad:
             print(f"shards: {b} — outside every path in .github/ci/suite-splits.txt, so no shard proves it")
         if not bad:
