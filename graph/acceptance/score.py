@@ -96,16 +96,48 @@ def run_hook(command, payload, timeout=120):
     return json.loads(done.stdout)
 
 
-def oracle_facts(source_id):
+def anchor_span(source, anchor):
+    """Half-open UTF-8 byte span of the one occurrence of `anchor` in the source."""
+    text = source["content"]
+    if text.count(anchor) != 1:
+        raise ValueError(f"{source['id']}: anchor {anchor!r} occurs {text.count(anchor)} times")
+    start = text.index(anchor)
+    return [len(text[:start].encode()), len((text[:start] + anchor).encode())]
+
+
+def oracle_facts(source):
+    """Publication bodies for one source, or None when the oracle has no facts file."""
     path = ORACLE / "facts.jsonl"
     if not path.exists():
         return None
-    return [row for row in read_lines(path) if row["source"] == source_id]
+    out = []
+    for row in (r for r in read_lines(path) if r["source"] == source["id"]):
+        records = []
+        for rec in row["records"]:
+            value = {k: utc_ms(v) if k.endswith("_ms") and isinstance(v, str) else v
+                     for k, v in rec["value"].items()}
+            records.append({"id": rec["id"], "model": rec["model"], "mode": rec["mode"], "value": value,
+                            "identities": rec.get("identities", []),
+                            "locator": {"source": source["id"], "span": anchor_span(source, rec["anchor"])}})
+        out.append({"id": "oracle-" + source["id"], "producer": "oracle", "scope": source["id"],
+                    "input": source["observation"], "input_revision": source["revision"], "records": records})
+    return out
 
 
 def oracle_plans():
     path = ORACLE / "plans.jsonl"
-    return {row["question"]: row["plan"] for row in read_lines(path)} if path.exists() else {}
+    return {row["question"]: row for row in read_lines(path)} if path.exists() else {}
+
+
+def oracle_gold():
+    path = ORACLE / "gold.jsonl"
+    return read_lines(path) if path.exists() else []
+
+
+def complete_plan(row, request, schema, context, view):
+    return {"contract": 1, "request": request, "schema": schema["fingerprint"], "context": context,
+            "source_view": view, "steps": row["steps"], "output": row["output"],
+            "budget": {"steps": 32, "rows": 1000, "work": 100000, "depth": 4, "timeout_ms": 10000}}
 
 
 # ---- projection and grading -------------------------------------------------
@@ -184,19 +216,46 @@ def question_context(question, manifest, known_revision, previous):
     }
 
 
-def id_map(app, entities):
-    """Maps a production entity id to its gold id via the gold external identity."""
+def span_overlap(a, b):
+    return a[0] < b[1] and b[0] < a[1]
+
+
+def id_map(app, entities, sources, by_ref):
+    """Production entity id -> gold id, joined grader-side.
+
+    People carry a gold external identity (read through `aliases`); the rest
+    join on the source span that introduced them (read through `explain`
+    locators) against the grader's gold anchors."""
     cache = {}
     gold = {(e["identity"]["namespace"], e["identity"]["key"]): e["id"] for e in entities if e["identity"]}
+    by_source = {s["id"]: s for s in sources}
+    anchors = [(g["gold"], g["source"], anchor_span(by_source[g["source"]], g["anchor"]))
+               for g in oracle_gold() if g["source"] in by_source]
+
+    def by_alias(value):
+        aliases = app.call({"op": "aliases", "id": value})
+        for alias in aliases if isinstance(aliases, list) else aliases.get("aliases", []):
+            hit = gold.get((alias.get("namespace"), alias.get("key")))
+            if hit:
+                return hit
+        return None
+
+    def by_anchor(value):
+        fields = app.call({"op": "get", "id": value}).get("fields", {})
+        for prop in fields:
+            runs = app.call({"op": "explain", "id": value, "property": prop})
+            for run in runs if isinstance(runs, list) else []:
+                locator = run.get("locator") or {}
+                source = by_ref.get((run.get("input"), run.get("input_revision")))
+                span = locator.get("span") if isinstance(locator, dict) else None
+                for name, where, wanted in anchors:
+                    if span and source == where and span_overlap(span, wanted):
+                        return name
+        return None
 
     def lookup(value):
         if value not in cache:
-            cache[value] = None
-            aliases = app.call({"op": "aliases", "id": value}).get("aliases", [])
-            for alias in aliases:
-                hit = gold.get((alias.get("namespace"), alias.get("key")))
-                if hit:
-                    cache[value] = hit
+            cache[value] = by_alias(value) or by_anchor(value)
         return cache[value]
     return lookup
 
@@ -214,8 +273,10 @@ def ready(mode, hooks, question, plans):
     missing = []
     if mode == "e2e" and not hooks.get("extractor"):
         missing.append("extractor")
-    if mode == "oracle-facts" and oracle_facts("s01") is None:
+    if mode == "oracle-facts" and not (ORACLE / "facts.jsonl").exists():
         missing.append("oracle/facts.jsonl")
+    if mode == "oracle-facts" and not hooks.get("planner") and question["id"] not in plans:
+        return ["oracle plan"]
     if not hooks.get("planner") and question["id"] not in plans:
         missing.append("planner")
     return missing
@@ -223,9 +284,10 @@ def ready(mode, hooks, question, plans):
 
 def publish_source(app, mode, hooks, source, schema, revision):
     if mode == "oracle-facts":
-        for row in oracle_facts(source["id"]) or []:
+        for body in oracle_facts(source) or []:
+            current = app.call({"op": "schema"}).get("revision", revision)
             receipt = app.call({"op": "publish", "schema": schema["fingerprint"],
-                                "expected_revision": revision, **row["publish"]})
+                                "expected_revision": current, **body})
             if "error" in receipt:
                 return receipt["error"]
         return None
@@ -272,7 +334,7 @@ def score_checkpoint(binary, checkpoint, questions, fixture, mode, hooks, scratc
     if failure:
         return {**rows, **{q["id"]: {"status": "error", "reason": failure} for q in runnable}}
     revision = app.call({"op": "schema"}).get("revision", 0)
-    ids = Ids(id_map(app, entities))
+    ids = Ids(id_map(app, entities, prefix, by_ref))
     answers = {}
     for q in runnable:
         rows[q["id"]] = ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, superseded)
@@ -285,7 +347,8 @@ def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, 
     started = time.time()
     try:
         if q["id"] in plans and not hooks.get("planner"):
-            plan = plans[q["id"]]
+            plan = complete_plan(plans[q["id"]], "score-" + q["id"], schema, context,
+                                 q.get("source_view", "current"))
         else:
             plan = run_hook(hooks["planner"], {
                 "contract": 1, "request": "score-" + q["id"], "question": q["question"],

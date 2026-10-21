@@ -123,7 +123,10 @@ selection is refused), publishes facts, then asks each question through the
 planner and the graph's `query` op (plan in, C01 `Answer` out). Hooks read JSON
 on stdin: the extractor takes a bare source envelope (`{schema}` in its command expands to the app's schema file) and answers a C01 extraction
 result; the planner takes question, context, source view and schema and answers
-a `ReadPlan`. Oracle mode reads `oracle/facts.jsonl` (`{source, publish}`) and
-optional `oracle/plans.jsonl` (`{question, plan}`). A missing hook or oracle
+a `ReadPlan`. Oracle mode reads grader-only data from `oracle/`: `facts.jsonl`
+(`{source, records}`, each record anchored by source text that becomes its
+locator), `plans.jsonl` (`{question, steps, output}`) and `gold.jsonl`
+(source anchors that join null-identity entities to gold ids). Questions
+without an oracle plan are `not-run`. A missing hook or oracle
 file is `not-run`, never a pass. Columns: answer match, provenance, abstention
 (status). Results land in `results/` (ignored). Exit 0 only when all pass.
