@@ -88,9 +88,12 @@ class App:
         return body
 
 
-def run_hook(command, payload, timeout=120):
+def run_hook(command, payload, timeout=120, log=None):
+    """The hook's JSON answer; its stderr is appended to `log` when given."""
     done = subprocess.run(shlex.split(command), input=json.dumps(payload), text=True,
                           capture_output=True, timeout=timeout)
+    if log is not None:
+        log.append(done.stderr[-4000:])
     if done.returncode != 0:
         raise RuntimeError(f"hook exit {done.returncode}: {done.stderr.strip()[:300]}")
     return json.loads(done.stdout)
@@ -228,7 +231,9 @@ def grade(question, answer, ids, by_ref, superseded, keys=None):
     """Three independent verdicts for one structured answer."""
     expect = question["expect"]
     abstained = answer["status"] == expect["status"]
-    matched = abstained and contains(canonical(expect["answer"], ids), canonical(projection(answer, keys), ids))
+    actual = canonical(projection(answer, keys), ids)
+    wanted = {k: v for k, v in expect["answer"].items() if k not in expect.get("optional", []) or k in actual}
+    matched = abstained and contains(canonical(wanted, ids), actual)
     cited, unknown = cited_sources(answer, by_ref)
     need = set(expect.get("evidence_all", []))
     any_of = set(expect.get("evidence_any", []))
@@ -329,7 +334,7 @@ def ready(mode, hooks, question, plans):
     return missing
 
 
-def publish_source(app, mode, hooks, source, schema, revision):
+def publish_source(app, mode, hooks, source, schema, revision, trace=None):
     if mode in ORACLE_FACTS:
         for body in oracle_facts(source) or []:
             current = app.call({"op": "schema"}).get("revision", revision)
@@ -341,13 +346,20 @@ def publish_source(app, mode, hooks, source, schema, revision):
     try:
         schema_file = app.scratch / "schema.json"
         schema_file.write_text(json.dumps(schema))
-        result = run_hook(hooks["extractor"].replace("{schema}", str(schema_file)), envelope(source))
+        log = []
+        record = {"source": source["id"], "log": log}
+        if trace is not None:
+            trace.append(record)
+        result = run_hook(hooks["extractor"].replace("{schema}", str(schema_file)), envelope(source), log=log)
+        record["result"] = result
     except (RuntimeError, ValueError, subprocess.SubprocessError) as error:
         return f"extractor: {error}"
-    return app.call({"op": "admit", "source": envelope(source)["source"], "result": result}).get("error")
+    admitted = app.call({"op": "admit", "source": envelope(source)["source"], "result": result})
+    record["admit"] = admitted
+    return admitted.get("error")
 
 
-def score_checkpoint(binary, checkpoint, questions, fixture, mode, hooks, scratch):
+def score_checkpoint(binary, checkpoint, questions, fixture, mode, hooks, scratch, trace=None):
     manifest, sources, entities, _ = fixture
     plans = oracle_plans() if mode == "oracle-facts" else {}
     rows = {}
@@ -374,7 +386,7 @@ def score_checkpoint(binary, checkpoint, questions, fixture, mode, hooks, scratc
         if "error" in receipt:
             failure = f"ingest {s['id']}: {receipt['error']}"
             break
-        failure = publish_source(app, mode, hooks, s, schema, receipt.get("graph_revision", 0))
+        failure = publish_source(app, mode, hooks, s, schema, receipt.get("graph_revision", 0), trace)
         if failure:
             failure = f"publish {s['id']}: {failure}"
             break
@@ -401,28 +413,33 @@ def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, 
     context = question_context(q, manifest, revision, previous)
     context = {**context, **{k: locate(context[k]) for k in ("principal", "speaker") if context[k]}}
     started = time.time()
+    record = {}
     try:
         if q["id"] in plans:
             plan = complete_plan(plans[q["id"]], "score-" + q["id"], schema, context,
                                  q.get("source_view", "current"))
         else:
+            log = []
+            record["planner_log"] = log
             plan = run_hook(hooks["planner"], {
                 "contract": 1, "request": "score-" + q["id"], "question": q["question"],
                 "context": context, "source_view": q.get("source_view", "current"),
-                "schema": schema, "graph": [str(app.binary), "request", "--db", str(app.db)]})
+                "schema": schema, "graph": [str(app.binary), "request", "--db", str(app.db)]}, log=log)
+        record["planned"] = plan
         answer = app.call(query_request(plan))
+        record["answer"] = answer
     except Exception as error:
-        return {"status": "error", "reason": f"{type(error).__name__}: {error}"}
+        return {"status": "error", "reason": f"{type(error).__name__}: {error}", **record}
     if "error" in answer or "status" not in answer:
-        return {"status": "error", "reason": str(answer.get("error", "no answer"))[:300]}
+        return {"status": "error", "reason": str(answer.get("error", "no answer"))[:300], **record}
     answers[q["id"]] = answer.get("request")
     reading = {r["question"]: r["keys"] for r in oracle_readings()}.get(q["id"])
     verdict = grade(q, answer, ids, by_ref, superseded, reading)
     return {"status": "pass" if all(verdict.values()) else "fail", **verdict,
-            "ms": int((time.time() - started) * 1000), "got": answer["status"]}
+            "ms": int((time.time() - started) * 1000), "got": answer["status"], **record}
 
 
-def score(binary, fixture, mode, hooks, scratch, only=None):
+def score(binary, fixture, mode, hooks, scratch, only=None, trace=None):
     _, _, _, questions = fixture
     grouped = {}
     for q in questions:
@@ -430,7 +447,7 @@ def score(binary, fixture, mode, hooks, scratch, only=None):
             grouped.setdefault(q["checkpoint"], []).append(q)
     results = {}
     for checkpoint in sorted(grouped):
-        results.update(score_checkpoint(binary, checkpoint, grouped[checkpoint], fixture, mode, hooks, scratch))
+        results.update(score_checkpoint(binary, checkpoint, grouped[checkpoint], fixture, mode, hooks, scratch, trace))
     return {q["id"]: results[q["id"]] for q in questions if q["id"] in results}
 
 
@@ -531,13 +548,14 @@ def slice_hooks(args):
     return {"extractor": args.extractor or found.get("extractor"), "planner": args.planner or found.get("planner")}
 
 
-def report(mode, hooks, results):
+def report(mode, hooks, results, extractions=()):
     text, counts = table(results)
     print(f"== {mode}  extractor={hooks['extractor']}  planner={hooks['planner']}")
     print(text)
     RESULTS.mkdir(exist_ok=True)
     out = RESULTS / f"score-{mode}-{time.strftime('%Y%m%dT%H%M%S')}.json"
-    out.write_text(json.dumps({"mode": mode, "hooks": hooks, "counts": counts, "questions": results}, indent=2))
+    out.write_text(json.dumps({"mode": mode, "hooks": hooks, "counts": counts, "questions": results,
+                               "extractions": list(extractions)}, indent=2))
     print("results:", out.relative_to(ROOT))
     return counts
 
@@ -567,8 +585,9 @@ def main():
     failed = False
     for mode in runs:
         with tempfile.TemporaryDirectory(prefix="graph-score-") as directory:
-            results = score(pathlib.Path(args.binary), fixture, mode, hooks, pathlib.Path(directory), only)
-        counts = report(mode, hooks, results)
+            extractions = []
+            results = score(pathlib.Path(args.binary), fixture, mode, hooks, pathlib.Path(directory), only, extractions)
+        counts = report(mode, hooks, results, extractions)
         failed = failed or counts["pass"] != len(results)
     sys.exit(1 if failed else 0)
 
