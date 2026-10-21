@@ -28,6 +28,12 @@ Fine-grained claim/span gold remains A02; no extractor ran in this task.
    `booking_confirmed: false` means no confirmation is supported in the
    available records, not proof that no booking exists elsewhere. q38's
    negative is explicitly attributed to Avery's statement, not speculation.
+7. q46 marks `booking_confirmed` optional (`expect.optional`). The question
+   asks when the dinner was requested for; the unconfirmed state is
+   information it did not ask for. A present value must still equal false,
+   an absent one passes, and q47 remains the test that a missing confirmation
+   is stated. The rule is generic: any expected key may be listed optional,
+   and validate.py requires each to be a key of the expected answer.
 
 ## Answer-by-answer receipts
 

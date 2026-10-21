@@ -120,6 +120,8 @@ def validate(data):
         expected = question["expect"]
         require(expected["status"] in STATUSES, f"{label}: invalid answer status")
         require(isinstance(expected["answer"], dict), f"{label}: answer must be a projection object")
+        require(set(expected.get("optional", [])) <= set(expected["answer"]),
+                f"{question['id']}: optional keys must be keys of the expected answer")
         evidence = expected.get("evidence_all", []) + expected.get("evidence_any", [])
         policies = expected.get("policy_all", [])
         require(all(policy in manifest["trusted_policies"] for policy in policies),
