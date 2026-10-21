@@ -109,3 +109,21 @@ python3 graph/acceptance/validate.py --self-test
 
 The checks use only Python's standard library, no model weights or network.
 See [PLAN.md](PLAN.md) before assigning implementation work.
+
+## Score
+
+```sh
+python3 graph/acceptance/score.py --self-test
+python3 graph/acceptance/score.py --mode e2e --extractor <cmd> --planner <cmd> [--only q01,q02]
+python3 graph/acceptance/score.py --mode oracle-facts --planner <cmd>
+```
+
+Per checkpoint it builds a fresh db, ingests exactly sources 1..N (any other
+selection is refused), publishes facts, then asks each question through the
+planner and the graph's `query` op (plan in, C01 `Answer` out). Hooks read JSON
+on stdin: the extractor takes a source envelope and answers a C01 extraction
+result; the planner takes question, context, source view and schema and answers
+a `ReadPlan`. Oracle mode reads `oracle/facts.jsonl` (`{source, publish}`) and
+optional `oracle/plans.jsonl` (`{question, plan}`). A missing hook or oracle
+file is `not-run`, never a pass. Columns: answer match, provenance, abstention
+(status). Results land in `results/` (ignored). Exit 0 only when all pass.
