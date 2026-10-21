@@ -1,0 +1,13 @@
+use @avra.graph_contracts.{ProposedField, Answer, ReadStep}
+
+let field = ProposedField
+    .from_json(
+        "{\"property\":\"field\",\"value\":null,\"spans\":[{\"start\":0,\"end\":1,\"text\":\"A\"}],\"polarity\":\"affirmed\",\"modality\":\"reported\"}",
+    )
+let explicit_null = match field { .Ok(f) -> f.value.value is .Null, .Err(_) -> false }
+let refusal = Answer
+    .from_json(
+        "{\"contract\":1,\"request\":\"r\",\"status\":\"refused\",\"read_revision\":0,\"policies\":[\"query.read_only\"],\"problems\":[{\"code\":\"query.read_only\",\"message\":\"read-only\"}]}",
+    ) is .Ok
+let no_writes = ReadStep.from_json("{\"id\":\"s\",\"op\":\"delete\"}") is .Err
+"${explicit_null} ${refusal} ${no_writes}"

@@ -1,0 +1,61 @@
+use query.{ReadPlan, ReadStep}
+
+const plan_text = "{\"contract\":1,\"request\":\"request:1\",\"schema\":\"schema:1\",\"context\":{\"principal\":\"entity:a\",\"speaker\":\"entity:a\",\"question_at_ms\":0},\"source_view\":\"current\",\"steps\":[{\"id\":\"a\",\"op\":\"scan\",\"model\":\"Record\"},{\"id\":\"b\",\"op\":\"filter\",\"inputs\":[\"a\"],\"property\":\"field\",\"arguments\":[null],\"comparison\":\"eq\"}],\"output\":\"b\",\"budget\":{\"steps\":2,\"rows\":10,\"work\":100,\"depth\":2,\"timeout_ms\":1000}}"
+
+spec "v1 bounded read-only plans" {
+    given "wire plans are data, never arbitrary code or SQL" {
+        then "a scan and null filter decode" {
+            match ReadPlan.from_json(plan_text) {
+                .Ok(p) -> p.steps[1].arguments[0].value is .Null,
+                .Err(e) -> {
+                    println(e.report())
+                    false
+                },
+            }
+        }
+        then "mutating operations are not part of the grammar" {
+            ReadPlan.from_json(plan_text.replace("\"scan\"", "\"delete\"")) is .Err
+        }
+        then "unknown SQL fields are refused" {
+            ReadPlan
+                .from_json(
+                    plan_text
+                        .replace(
+                            "\"request\":\"request:1\"",
+                            "\"request\":\"request:1\",\"sql\":\"DELETE FROM records\"",
+                        ),
+                ) is .Err
+        }
+        then "a future input or self-reference is refused" {
+            ReadPlan.from_json(plan_text.replace("\"inputs\":[\"a\"]", "\"inputs\":[\"b\"]")) is .Err
+        }
+        then "an unknown output is refused" {
+            ReadPlan.from_json(plan_text.replace("\"output\":\"b\"", "\"output\":\"missing\"")) is .Err
+        }
+        then "a step budget is enforced during decoding" {
+            ReadPlan.from_json(plan_text.replace("\"steps\":2", "\"steps\":1")) is .Err
+        }
+        then "zero work is not an unbounded sentinel" {
+            ReadPlan.from_json(plan_text.replace("\"work\":100", "\"work\":0")) is .Err
+        }
+        then "a filter cannot omit its literal" {
+            ReadPlan.from_json(plan_text.replace("\"arguments\":[null]", "\"arguments\":[]")) is .Err
+        }
+        then "op-inappropriate arguments are refused" {
+            ReadStep
+                .from_json("{\"id\":\"a\",\"op\":\"count\",\"inputs\":[\"b\"],\"model\":\"Record\"}") is .Err
+        }
+        then "a follow explicitly names its direction" {
+            ReadStep
+                .from_json(
+                    "{\"id\":\"a\",\"op\":\"follow\",\"inputs\":[\"b\"],\"property\":\"link\",\"direction\":\"out\"}",
+                ) is .Ok
+        }
+        then "search accepts text, not a nested executable plan" {
+            ReadStep
+                .from_json(
+                    "{\"id\":\"a\",\"op\":\"search\",\"inputs\":[\"b\"],\"property\":\"text\",\"arguments\":[{\"op\":\"delete\"}]}",
+                ) is .Err
+        }
+    }
+}

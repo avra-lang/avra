@@ -1,6 +1,8 @@
 # Model-driven graph
 
 See [ROADMAP.md](ROADMAP.md) for the full implementation sequence and status.
+See [MODULARITY.md](MODULARITY.md) for replaceable boundaries, compatibility
+rules and the distinction between provider swaps and storage migrations.
 
 ## Scope
 

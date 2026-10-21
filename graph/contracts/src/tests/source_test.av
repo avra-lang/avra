@@ -1,0 +1,75 @@
+use source.{SourceEnvelope, Context}
+use common.{SourceRef}
+
+const source_text = "{\"contract\":1,\"source\":{\"observation\":\"note:1\",\"revision\":1},\"authored_at_ms\":0,\"received_at_ms\":5,\"author\":\"entity:a\",\"media_type\":\"text/plain\",\"content\":\"Aé🙂Z\",\"frames\":[{\"id\":\"quote\",\"span\":{\"start\":1,\"end\":7,\"text\":\"é🙂\"},\"speaker\":\"entity:b\"}]}"
+
+spec "v1 source and context contracts" {
+    given "immutable source bytes and explicit discourse context" {
+        then "a UTF-8 byte span and quoted speaker decode" {
+            match SourceEnvelope.from_json(source_text) {
+                .Ok(source) -> source.author == "entity:a" &&
+                    source.frames[0].speaker == "entity:b" &&
+                    source.authored_at_ms == 0 &&
+                    source.received_at_ms == 5,
+                .Err(e) -> {
+                    println(e.report())
+                    false
+                },
+            }
+        }
+        then "a code-point offset cannot masquerade as the byte span" {
+            SourceEnvelope.from_json(source_text.replace("\"end\":7", "\"end\":3")) is .Err
+        }
+        then "fabricated frame text is refused" {
+            SourceEnvelope
+                .from_json(source_text.replace("\"text\":\"é🙂\"", "\"text\":\"a🙂\"")) is .Err
+        }
+        then "out-of-bounds spans are refused before indexing" {
+            SourceEnvelope.from_json(source_text.replace("\"end\":7", "\"end\":100")) is .Err
+        }
+        then "frame self-parenting is refused" {
+            SourceEnvelope
+                .from_json(
+                    source_text
+                        .replace(
+                            "\"speaker\":\"entity:b\"",
+                            "\"speaker\":\"entity:b\",\"parent\":\"quote\"",
+                        ),
+                ) is .Err
+        }
+        then "a future contract version is refused" {
+            SourceEnvelope.from_json(source_text.replace("\"contract\":1", "\"contract\":2")) is .Err
+        }
+        then "undeclared gold fields are refused" {
+            SourceEnvelope
+                .from_json(source_text.replace("\"contract\":1", "\"gold_answers\":[],\"contract\":1")) is .Err
+        }
+        then "duplicate source keys are refused" {
+            SourceEnvelope
+                .from_json(source_text.replace("\"contract\":1", "\"contract\":1,\"contract\":1")) is .Err
+        }
+        then "a source revision is not a zero-based graph revision" {
+            SourceRef.from_json("{\"observation\":\"note:1\",\"revision\":0}") is .Err
+        }
+        then "unknown author and authored time remain null" {
+            SourceEnvelope
+                .from_json(
+                    source_text
+                        .replace("\"author\":\"entity:a\"", "\"author\":null")
+                        .replace("\"authored_at_ms\":0", "\"authored_at_ms\":null"),
+                ) is .Ok
+        }
+        then "a speaker does not replace the principal" {
+            match Context
+                .from_json(
+                    "{\"principal\":\"entity:a\",\"speaker\":\"entity:b\",\"question_at_ms\":0,\"known_revision\":0}",
+                ) {
+                .Ok(c) -> c.principal == "entity:a" && c.speaker == "entity:b" && c.known_revision == 0,
+                .Err(_) -> false,
+            }
+        }
+        then "missing required context and empty ids are refused" {
+            Context.from_json("{\"principal\":\"\",\"question_at_ms\":0}") is .Err
+        }
+    }
+}

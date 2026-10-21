@@ -25,6 +25,9 @@ separate, evidence-grounded query layer; see [RESEARCH.md](RESEARCH.md).
 - Confidence does not silently become authority.
 - Fundamental substrate gaps get tasks-db issues, not ontology-specific
   workarounds or a duplicate validation engine.
+- Extraction, linking, question parsing, execution, storage and presentation
+  stay replaceable at explicit boundaries; see [MODULARITY.md](MODULARITY.md).
+  Provider swaps retain safety checks; persistence swaps require migrations.
 
 ## Current checkpoint
 
@@ -261,6 +264,13 @@ The concrete acceptance scenario, gold answer projections and small
 dependency-ordered agent assignments live in
 [acceptance/PLAN.md](acceptance/PLAN.md). That plan is the next vertical-slice
 work queue, not a claim that extraction or English querying already works.
+
+A00 fixture integrity and A01 semantic audit are complete. C01 supplies an
+independently consumable boundary-contract library (52 passing tests and a
+native consumer); see [contracts/HANDOFF.md](contracts/HANDOFF.md). Source
+ingestion/admission, worker execution and English planning remain future
+tasks. Provider replacement (V05) and ontology portability (V04) are separate
+release witnesses; neither is proved by codecs alone.
 
 Stabilize -> identity -> richer queries -> durable workers -> incremental
 derivations -> compatibility-aware evolution. Partial assertions, evidence

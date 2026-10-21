@@ -1,0 +1,97 @@
+use @std.meta.{derive}
+use @std.validate.{Decode, range, length, items, one_of}
+use common.{JsonValue, SourceRef, Span, IdentityKey, Candidate, Problem, confidence}
+use source.{SourceEnvelope, Frame}
+
+/// Descriptor is the engine-exported catalog, not an independently kept
+/// ontology. Admission must check it against the installed fingerprint.
+@derive(Decode)
+export type CatalogBinding = {
+    @length(min: 1, max: 256) fingerprint: string,
+    descriptor: JsonValue,
+}
+
+@derive(Decode)
+export type ExtractorVersion = {
+    @length(min: 1, max: 256) producer: string,
+    @length(min: 1, max: 256) code: string,
+    @length(min: 1, max: 256) model: string,
+}
+
+@derive(Decode)
+export type ExtractionRequest = {
+    @range(1, 1) contract: int,
+    @length(min: 1, max: 512) request: string,
+    input: SourceEnvelope,
+    catalog: CatalogBinding,
+    extractor: ExtractorVersion,
+    @length(min: 1, max: 512) scope: string,
+    @items(max: 64) candidates: List<Candidate> = [],
+}
+
+@derive(Decode)
+export type ProposedField = {
+    @length(min: 1, max: 256) property: string,
+    value: JsonValue,
+    @items(min: 1, max: 64) spans: List<Span>,
+    frame: string? = null,
+    @one_of(["affirmed", "denied"]) polarity: string,
+    @one_of(["asserted", "reported", "planned", "requested", "conditional", "draft"]) modality: string,
+    @confidence score: float? = null,
+}
+
+fn record_coherent(r: ProposedRecord) -> Result<ProposedRecord, string> {
+    for i, field in r.fields {
+        if r.fields.slice(0, i).any(it.property == field.property) {
+            fail "a record proposes each property at most once"
+        }
+    }
+    if r.fields.is_empty() && r.identities.is_empty() { fail "a record needs evidence or an identity" }
+    r
+}
+
+@derive(Decode)
+export type ProposedIdentity = {
+    identity: IdentityKey,
+    @items(min: 1, max: 64) spans: List<Span>,
+    frame: string? = null,
+}
+
+@derive(Decode)
+@record_coherent
+export type ProposedRecord = {
+    @length(min: 1, max: 128) local_id: string,
+    @length(min: 1, max: 256) model: string,
+    @items(max: 512) fields: List<ProposedField> = [],
+    @items(max: 64) identities: List<ProposedIdentity> = [],
+    @items(max: 64) candidates: List<Candidate> = [],
+}
+
+fn result_coherent(r: ExtractionResult) -> Result<ExtractionResult, string> {
+    if r.status == "failed" && (!r.records.is_empty() || r.problems.is_empty()) {
+        fail "failed extraction needs problems and cannot publish records"
+    }
+    if r.status == "complete" && !r.problems.is_empty() {
+        fail "complete extraction cannot also report failure"
+    }
+    for i, record in r.records {
+        if r.records.slice(0, i).any(it.local_id == record.local_id) { fail "local record ids must be unique" }
+    }
+    r
+}
+
+/// Complete covers the whole requested scope, not just one successful
+/// window. Empty complete is meaningful; an empty failure is not success.
+@derive(Decode)
+@result_coherent
+export type ExtractionResult = {
+    @range(1, 1) contract: int,
+    @length(min: 1, max: 512) request: string,
+    source: SourceRef,
+    @length(min: 1, max: 256) schema: string,
+    extractor: ExtractorVersion,
+    @one_of(["complete", "failed"]) status: string,
+    @items(max: 1000) records: List<ProposedRecord> = [],
+    @items(max: 256) proposed_frames: List<Frame> = [],
+    @items(max: 128) problems: List<Problem> = [],
+}

@@ -1,0 +1,69 @@
+use @std.meta.{derive}
+use @std.validate.{Decode, Value, Decoding, Slot, range, length, items}
+
+/// An opaque JSON value, including explicit null. The standard decoder
+/// still owns object/list/scalar validation outside this literal leaf.
+export type JsonValue = { value: Value }
+
+impl JsonValue {
+    static fn decoded(mut d: Decoding, s: Slot) -> JsonValue? {
+        let found? = s.value else {
+            let _ = d.present(s)
+            return null
+        }
+        JsonValue { value: found }
+    }
+
+    static fn read_json(mut d: Decoding, depth: int, required: bool, secret: bool) -> JsonValue? {
+        let slot? = d.tree_slot(depth, required, secret) else { return null }
+        JsonValue.decoded(d, slot)
+    }
+}
+
+@derive(Decode)
+export type SourceRef = {
+    @length(min: 1, max: 512) observation: string,
+    @range(1, 9223372036854775807) revision: int,
+}
+
+fn span_order(s: Span) -> Result<Span, string> {
+    if s.end <= s.start { fail "a span must contain at least one UTF-8 byte" }
+    s
+}
+
+/// Half-open byte offsets into the original source content, never tokens,
+/// normalized text, UTF-16 positions or Unicode code-point offsets.
+@derive(Decode)
+@span_order
+export type Span = {
+    @range(0, 1048576) start: int,
+    @range(1, 1048576) end: int,
+    @length(min: 1) text: string,
+}
+
+@derive(Decode)
+export type IdentityKey = {
+    @length(min: 1, max: 128) namespace: string,
+    @length(min: 1, max: 1024) key: string,
+}
+
+export fn confidence(v: float) -> Result<float, string> {
+    if v - v != 0.0 || v < 0.0 || v > 1.0 { fail "confidence must be finite and in 0..1" }
+    v
+}
+
+@derive(Decode)
+export type Candidate = {
+    @length(min: 1, max: 512) entity: string,
+    @length(min: 1, max: 256) model: string,
+    @length(min: 1, max: 1024) label: string,
+    @confidence score: float? = null,
+}
+
+/// Path is JSON-pointer tokens, not a formatted error sentence.
+@derive(Decode)
+export type Problem = {
+    @length(min: 1, max: 128) code: string,
+    @items(max: 64) path: List<string> = [],
+    @length(min: 1, max: 4096) message: string,
+}

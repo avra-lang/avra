@@ -8,8 +8,8 @@ The machine-readable task queue is [tasks.jsonl](tasks.jsonl). Its states
 are planning states, not automatically synchronized with the tasks DB.
 
 Current lane: `/Users/tristan/projects/tristanMatthias/avra-graph-v2`, branch
-`feat/graph-selection`, rebased onto main `846e8a84`. There are pre-existing
-local stabilization changes. Read `git status`, preserve them, and do not
+`feat/graph-selection`, rebased onto main `846e8a84`. Stabilization and fixture
+audit work is committed. Read `git status`, preserve unrelated changes, and do not
 start by resetting, cleaning, rebasing or replacing this worktree.
 `HANDOVER.md` is an older receipt, not the current operational authority.
 Check current branch/main state before any eventual landing.
@@ -20,6 +20,7 @@ Read, in order:
 2. [manifest.json](manifest.json): source, answer, time and currency contract.
 3. Your one row in [tasks.jsonl](tasks.jsonl), plus its dependencies' outputs.
 4. [../DESIGN.md](../DESIGN.md) and [../RESEARCH.md](../RESEARCH.md).
+5. [../MODULARITY.md](../MODULARITY.md): replacement boundaries and versioning.
 
 ## Product contract
 
@@ -34,6 +35,15 @@ Ontology-specific names, relationships, linguistic labels, extraction hints
 and policies belong in application model declarations. Fixture text, gold
 answers and test assertions naturally mention their domain; generic engine,
 adapter and query code must not branch on that vocabulary.
+
+Keep extraction, linking, question interpretation, execution, storage and
+presentation independently replaceable at the boundaries in MODULARITY.md.
+Do not leak provider SDK types into the engine or couple codecs to SQLite.
+Introduce narrow seams when their consumers exist, not a speculative plugin
+framework. Provider replacement must preserve admission/safety checks and
+evidence semantics; storage replacement additionally requires migration and
+durability proofs. V05 tests provider replacement separately from V04's
+ontology portability.
 
 The existing `Person`, `Message`, `WorkItem` sample alone is insufficient
 for this acceptance suite. Add an independent fixture application under
@@ -72,7 +82,7 @@ ready until dependencies have real outputs and acceptance receipts.
 | Query execution | Q01 → Q02; Q03 after model declarations | Manual plans first; language understanding separately measured. |
 | Context/time/answers | Q04, Q05, R01 after their dependencies | Own separate modules; integration owner handles dispatch changes. |
 | Model experiments | E02 and E03 after contracts/annotations/models | Separate artifacts; serialize heavy runs on shared hardware. |
-| Evaluation/integration | V01 → V02 → V03; V04 when its deps stand | Preserve oracle separation and exercise another ontology. |
+| Evaluation/integration | V01 → V02 → V03; V04/V05 when their deps stand | Preserve oracle separation; test ontology and provider portability separately. |
 
 This is a work queue, not an instruction to launch every lane now. Start
 with A01 and C01, then choose one small end-to-end slice. The field-ceiling

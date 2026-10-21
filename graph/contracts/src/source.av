@@ -1,0 +1,61 @@
+use @std.meta.{derive}
+use @std.validate.{Decode, range, length, items}
+use common.{SourceRef, Span}
+
+@derive(Decode)
+export type Frame = {
+    @length(min: 1, max: 128) id: string,
+    span: Span,
+    parent: string? = null,
+    speaker: string? = null,
+}
+
+fn source_coherent(s: SourceEnvelope) -> Result<SourceEnvelope, string> {
+    let bytes = s.content.bytes()
+    if bytes.length > 1048576 { fail "source content exceeds its byte budget" }
+    for i, frame in s.frames {
+        if s.frames.slice(0, i).any(it.id == frame.id) { fail "frame ids must be unique" }
+        if frame.parent != null && !s.frames.slice(0, i).any(it.id == frame.parent!) {
+            fail "a frame parent must precede its child"
+        }
+        if frame.span.end > bytes.length { fail "a frame exceeds its source content" }
+        let quoted = frame.span.text.bytes()
+        if quoted.length != frame.span.end - frame.span.start {
+            fail "a frame quote has a different byte length from its span"
+        }
+        for offset in 0..quoted.length {
+            if bytes.at(frame.span.start + offset) != quoted.at(offset) {
+                fail "a frame quote must match the original source bytes"
+            }
+        }
+    }
+    s
+}
+
+@derive(Decode)
+@source_coherent
+export type SourceEnvelope = {
+    @range(1, 1) contract: int,
+    source: SourceRef,
+    authored_at_ms: int?,
+    received_at_ms: int,
+    author: string?,
+    @items(max: 256) participants: List<string> = [],
+    conversation: string? = null,
+    @length(min: 1, max: 128) media_type: string,
+    @length(min: 1) content: string,
+    @items(max: 256) frames: List<Frame> = [],
+}
+
+/// Principal is the authenticated caller. Speaker is a discourse binding,
+/// not a change of caller identity or an authorization grant.
+@derive(Decode)
+export type Context = {
+    @length(min: 1, max: 512) principal: string,
+    speaker: string?,
+    conversation: string? = null,
+    question_at_ms: int,
+    valid_at_ms: int? = null,
+    @range(0, 9223372036854775807) known_revision: int? = null,
+    previous_answer: string? = null,
+}

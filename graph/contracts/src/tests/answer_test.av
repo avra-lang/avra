@@ -1,0 +1,56 @@
+use answer.{Answer, AnswerField}
+
+const unknown = "{\"contract\":1,\"request\":\"request:1\",\"status\":\"unknown\",\"read_revision\":8,\"problems\":[{\"code\":\"answer.missing_evidence\",\"path\":[\"attendance\"],\"message\":\"No completion evidence in this read view\"}]}"
+const refusal = "{\"contract\":1,\"request\":\"request:1\",\"status\":\"refused\",\"read_revision\":8,\"policies\":[\"query.read_only\"],\"problems\":[{\"code\":\"query.read_only\",\"message\":\"This interface does not execute writes\"}]}"
+const ambiguous = "{\"contract\":1,\"request\":\"request:1\",\"status\":\"ambiguous\",\"read_revision\":8,\"candidates\":[{\"entity\":\"entity:a\",\"model\":\"Record\",\"label\":\"A\"},{\"entity\":\"entity:b\",\"model\":\"Record\",\"label\":\"B\"}],\"problems\":[{\"code\":\"reference.ambiguous\",\"message\":\"Which record?\"}]}"
+const grounded = "{\"contract\":1,\"request\":\"request:1\",\"status\":\"answered\",\"read_revision\":8,\"fields\":[{\"path\":[\"amount\"],\"value\":{\"minor\":27000,\"currency\":\"EUR\"},\"basis\":\"observed\",\"citations\":[\"e1\"]}],\"citations\":[{\"id\":\"e1\",\"source\":{\"observation\":\"note:1\",\"revision\":2}}]}"
+
+spec "v1 structured answer contracts" {
+    given "facts, uncertainty and policy refusals have separate representations" {
+        then "a bounded-view unknown is not a negative fact" {
+            match Answer.from_json(unknown) {
+                .Ok(a) -> a.fields.is_empty() && a.problems[0].path[0] == "attendance",
+                .Err(_) -> false,
+            }
+        }
+        then "policy can refuse before retrieving any document" {
+            match Answer.from_json(refusal) {
+                .Ok(a) -> a.citations.is_empty() && a.fields.is_empty(),
+                .Err(_) -> false,
+            }
+        }
+        then "a refusal cannot silently omit its policy" {
+            Answer
+                .from_json(refusal.replace("\"policies\":[\"query.read_only\"]", "\"policies\":[]")) is .Err
+        }
+        then "two distinct candidates carry ambiguity" { Answer.from_json(ambiguous) is .Ok }
+        then "duplicating one candidate is not ambiguity" {
+            Answer.from_json(ambiguous.replace("\"entity:b\"", "\"entity:a\"")) is .Err
+        }
+        then "an answered result requires supported fields" {
+            Answer.from_json(unknown.replace("\"unknown\"", "\"answered\"")) is .Err
+        }
+        then "a generic structured monetary literal retains its currency" {
+            Answer.from_json(grounded) is .Ok
+        }
+        then "a fact cannot invent a citation id" {
+            Answer
+                .from_json(grounded.replace("\"citations\":[\"e1\"]", "\"citations\":[\"missing\"]")) is .Err
+        }
+        then "derived fields name a declared derivation" {
+            Answer.from_json(grounded.replace("\"basis\":\"observed\"", "\"basis\":\"derived\"")) is .Err
+        }
+        then "observations cannot pretend to be policy" {
+            Answer.from_json(grounded.replace("\"basis\":\"observed\"", "\"basis\":\"policy\"")) is .Err
+        }
+        then "explicitly supported null is still a value" {
+            AnswerField
+                .from_json(
+                    "{\"path\":[\"field\"],\"value\":null,\"basis\":\"observed\",\"citations\":[\"e1\"]}",
+                ) is .Ok
+        }
+        then "missing evidence and missing values are refused" {
+            AnswerField.from_json("{\"path\":[\"field\"],\"basis\":\"observed\"}") is .Err
+        }
+    }
+}

@@ -1,0 +1,80 @@
+use @std.meta.{derive}
+use @std.validate.{Decode, range, length, items, one_of}
+use common.{JsonValue, SourceRef, Span, Candidate, Problem}
+
+@derive(Decode)
+export type Citation = {
+    @length(min: 1, max: 128) id: string,
+    source: SourceRef,
+    claim: string? = null,
+    run: string? = null,
+    frame: string? = null,
+    speaker: string? = null,
+    @items(max: 64) spans: List<Span> = [],
+}
+
+fn field_coherent(f: AnswerField) -> Result<AnswerField, string> {
+    if f.path.any(it.is_empty()) { fail "an answer path cannot contain empty tokens" }
+    if f.basis == "policy" {
+        if f.policies.is_empty() || !f.citations.is_empty() { fail "a policy field needs policy provenance only" }
+    } else {
+        if f.citations.is_empty() || !f.policies.is_empty() { fail "a fact needs source provenance" }
+    }
+    if (f.basis == "derived") != (f.derivation != null) { fail "only a derived field names a derivation" }
+    if f.derivation == "" { fail "a derivation needs its declared rule id" }
+    f
+}
+
+/// record_status describes the bounded evidence view, not global truth.
+@derive(Decode)
+@field_coherent
+export type AnswerField = {
+    @items(min: 1, max: 64) path: List<string>,
+    value: JsonValue,
+    @one_of(["observed", "derived", "record_status", "policy"]) basis: string,
+    @items(max: 64) citations: List<string> = [],
+    @items(max: 16) policies: List<string> = [],
+    derivation: string? = null,
+}
+
+fn answer_coherent(a: Answer) -> Result<Answer, string> {
+    if a.status == "answered" &&
+        (a.fields.is_empty() || !a.problems.is_empty() || !a.candidates.is_empty()) {
+        fail "answered needs fields and cannot report an unresolved problem"
+    }
+    if a.status != "answered" && a.problems.is_empty() { fail "an unresolved answer needs a problem code" }
+    if a.status == "ambiguous" && a.candidates.length < 2 { fail "ambiguity needs at least two candidates" }
+    if a.status == "refused" &&
+        (!a.fields.is_empty() || !a.candidates.is_empty() || a.policies.is_empty()) {
+        fail "a refusal needs policy provenance and cannot disclose fact fields"
+    }
+    for i, candidate in a.candidates {
+        if a.candidates.slice(0, i).any(it.entity == candidate.entity) { fail "candidate entities must be distinct" }
+    }
+    for i, citation in a.citations {
+        if a.citations.slice(0, i).any(it.id == citation.id) { fail "citation ids must be unique" }
+    }
+    for field in a.fields {
+        for citation in field.citations {
+            if !a.citations.any(it.id == citation) { fail "answer field names an unknown citation" }
+        }
+        for policy in field.policies {
+            if !a.policies.contains(policy) { fail "answer field names an unknown policy" }
+        }
+    }
+    a
+}
+
+@derive(Decode)
+@answer_coherent
+export type Answer = {
+    @range(1, 1) contract: int,
+    @length(min: 1, max: 512) request: string,
+    @one_of(["answered", "ambiguous", "unknown", "refused"]) status: string,
+    @range(0, 9223372036854775807) read_revision: int,
+    @items(max: 256) fields: List<AnswerField> = [],
+    @items(max: 64) candidates: List<Candidate> = [],
+    @items(max: 256) citations: List<Citation> = [],
+    @items(max: 16) policies: List<string> = [],
+    @items(max: 128) problems: List<Problem> = [],
+}

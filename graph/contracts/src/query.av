@@ -1,0 +1,71 @@
+use @std.meta.{derive}
+use @std.validate.{Decode, range, length, items, one_of}
+use common.{JsonValue}
+use source.{Context}
+
+/// Wire-only tags. Q01 lowers these to a typed internal AST; the executor
+/// never dispatches on domain model names or executes literal JSON.
+@derive(Decode)
+@step_coherent
+export type ReadStep = {
+    @length(min: 1, max: 128) id: string,
+    @one_of(["scan", "filter", "follow", "search", "project", "count", "sum"]) op: string,
+    @items(max: 1) inputs: List<string> = [],
+    model: string? = null,
+    property: string? = null,
+    @items(max: 1) arguments: List<JsonValue> = [],
+    @one_of(["eq", "ne", "lt", "le", "gt", "ge"]) comparison: string? = null,
+    @one_of(["out", "in"]) direction: string? = null,
+    @items(max: 64) properties: List<string> = [],
+}
+
+fn step_coherent(s: ReadStep) -> Result<ReadStep, string> {
+    let scan = s.op == "scan"
+    if s.inputs.length != if scan { 0 } else { 1 } { fail "a scan has no input; other steps take one" }
+    if scan != (s.model != null) { fail "only a scan names a model" }
+    if s.model == "" || s.property == "" { fail "schema symbols cannot be empty" }
+    let property = s.op == "filter" || s.op == "follow" || s.op == "search" || s.op == "sum"
+    if property != (s.property != null) { fail "this operation has the wrong property arguments" }
+    let literal = s.op == "filter" || s.op == "search"
+    if s.arguments.length != if literal { 1 } else { 0 } { fail "this operation has the wrong literal arguments" }
+    if s.op == "search" && !(s.arguments[0].value is .Text) { fail "a search argument must be text" }
+    if (s.op == "filter") != (s.comparison != null) { fail "only a filter names a comparison" }
+    if (s.op == "follow") != (s.direction != null) { fail "only a follow names a direction" }
+    if (s.op == "project") != !s.properties.is_empty() { fail "only a projection names output properties" }
+    if s.properties.any(it.is_empty()) { fail "projection properties cannot be empty" }
+    s
+}
+
+@derive(Decode)
+export type Budget = {
+    @range(1, 32) steps: int,
+    @range(1, 1000) rows: int,
+    @range(1, 1000000) work: int,
+    @range(0, 20) depth: int,
+    @range(1, 30000) timeout_ms: int,
+}
+
+fn plan_coherent(p: ReadPlan) -> Result<ReadPlan, string> {
+    if p.steps.length > p.budget.steps { fail "plan exceeds its step budget" }
+    for i, step in p.steps {
+        if p.steps.slice(0, i).any(it.id == step.id) { fail "step ids must be unique" }
+        for input in step.inputs {
+            if !p.steps.slice(0, i).any(it.id == input) { fail "a step input must precede its consumer" }
+        }
+    }
+    if !p.steps.any(it.id == p.output) { fail "the output must name a step" }
+    p
+}
+
+@derive(Decode)
+@plan_coherent
+export type ReadPlan = {
+    @range(1, 1) contract: int,
+    @length(min: 1, max: 512) request: string,
+    @length(min: 1, max: 256) schema: string,
+    context: Context,
+    @one_of(["current", "history"]) source_view: string,
+    @items(min: 1, max: 32) steps: List<ReadStep>,
+    @length(min: 1, max: 128) output: string,
+    budget: Budget,
+}
