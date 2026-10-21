@@ -147,6 +147,7 @@ def oracle_readings():
 def complete_plan(row, request, schema, context, view):
     return {"contract": 1, "request": request, "schema": schema["fingerprint"], "context": context,
             "source_view": view, "steps": row["steps"], "output": row["output"],
+            **({"joined": row["joined"]} if row.get("joined") else {}),
             "budget": {"steps": 32, "rows": 1000, "work": 100000, "depth": 4, "timeout_ms": 10000}}
 
 
@@ -173,7 +174,7 @@ def read_keys(answer, keys):
     out = {}
     for key, spec in keys.items():
         for field in answer.get("fields", []):
-            if field["path"][1:] == spec["suffix"]:
+            if (field["path"] if spec.get("bare") else field["path"][1:]) == spec["suffix"]:
                 out[key] = takes[spec["take"]](field)
                 break
     return out
