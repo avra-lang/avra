@@ -230,7 +230,9 @@ def publish_source(app, mode, hooks, source, schema, revision):
                 return receipt["error"]
         return None
     try:
-        result = run_hook(hooks["extractor"], {"contract": 1, "source": envelope(source), "schema": schema})
+        schema_file = app.scratch / "schema.json"
+        schema_file.write_text(json.dumps(schema))
+        result = run_hook(hooks["extractor"].replace("{schema}", str(schema_file)), envelope(source))
     except (RuntimeError, ValueError, subprocess.SubprocessError) as error:
         return f"extractor: {error}"
     return app.call({"op": "admit", "source": envelope(source)["source"], "result": result}).get("error")
