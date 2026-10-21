@@ -690,6 +690,17 @@ fn member_start(b: Bytes, j: int, why: Explain?) -> int {
     space(b, colon + 1)
 }
 
+/// The value at `at` of text `parse` accepts — what a typed reader shows of
+/// a value it refused. The scanner finds where the value ends, so a value
+/// inside a larger text is read as the one scanner reads every value.
+export fn value_at(text: string, at: int) -> Json {
+    let b = text.bytes()
+    let from = space(b, at)
+    let end = skip(b, from, MAX_DEPTH)
+    if end < 0 { return Json.Null }
+    match parse(text.substring(from, end)) { .Ok(v) -> v, .Err(_) -> Json.Null }
+}
+
 /// The text as one JSON value, whitespace around it allowed. The scanner
 /// validates it first; what passes is built without a second check, and
 /// what does not is scanned again for the words and the offset.
