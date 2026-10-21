@@ -908,6 +908,72 @@ Open question for DB 09: validating `CallShape` means lowering the unit again. I
 more than it saves, the `u` line reads `Syntax(declaration)` in both cases and `CallShape`
 is not built.
 
+### A4.2 `Settled`'s read lists, re-measured — and what gates the delete (2026-10-21)
+
+MEASURED on `b1e59ff3`, cold store, `python3 tools/read_lists.py` (which runs
+`./avra explain packages/cli --stats` over a set-aside store):
+
+| family | cells | edges | p50 | p99 | longest |
+|---|---|---|---|---|---|
+| `Settled` | 720 | 1,037,848 | 878 | 8,114 | **16,054** |
+| next longest (`FileRefs`) | 550 | 246,038 | 157 | 1,952 | 2,751 |
+
+The keeper's limit is 3,000 and `tools/read_lists.ceiling` holds `Settled 17399`, so it is
+the ONE family over the limit and the reason DB 09 exists: an edit anywhere re-verifies ONE
+answer that reads 16,054 of the 227,790 cells the whole check derives.
+
+THE LONG LIST IS NOT kept_settle's OWN. A run's reads are recorded in a verdict's `r` line,
+so they were counted too (`AVRA_DEBUG=1`, one line per settlement): 720 settlements, **14,323
+`r` entries in all, the longest 463, the mean 20**. The 16,054 are the settlement's KERNEL
+dependencies — cells its derivation asks — not the file reads it records. A deletion of the
+`r` line would therefore touch the wrong list, and A4's `c` line (`Settled(const)`) is one
+entry per const, not a shortening of the 16k.
+
+PROBED, then withdrawn: `settled_replay` copied each nested const's ENTIRE verdict read
+list into every reader above it (A4's `c` line reaching the wrong way). Dropping that copy
+(a `Settled(const)` read proves the nested verdict by its fingerprint, which `kept_settle`'s
+`c` line already records) removed 297 of the 14,323 entries — 2.1 % — and the compiler's own
+suite took the Sprite under its memory floor 24 minutes in, because a record that no longer
+lists its nested reads forces those files read again. Not landable alone; it rides the
+`@query` conversion below.
+
+WHAT GATES IT. Every replacement in A4's table is "the kernel's own read list", and the only
+place a saved answer's read list reaches the store is `compiler/answers.av` — the `Durable`
+hooks a `@query` keeps its `Leaf`s through. A `@family` answer is in-process only; that is
+the whole reason `kept_settle.av` exists, and why it persists a `Settlement` value through
+its own wire (`kept_wire`/`settled_from_wire`) with hand-written proof lines instead of the
+kernel's. So the first rung of DB 09 is not a line kind: it is `Settled` becoming a
+`@query` whose answer is a `Settlement`, and that value save is the `@codec` item A4.1
+measures. THE SAME BLOCKER GATES `Lifted`: a payload-enum answer saves no value until
+`decodable` reads one back. **The two halves are not separable — one landing unblocks both.**
+
+ORDER after `@codec`: (1) `Settled` as a `@query` over `Settlement`; (2) delete the
+write-time proof lines one kind per PR in A4's order (`u`, `f`, `c`, `m`, `b`, `e`, `l`),
+each already answered by a read, each its own branch of the record's judgment;
+(3) delete `kept_settle.av` (910 lines on `b1e59ff3`) and the `kept-settle` store family.
+
+### A4.3 The receipt harness, and what the comment case costs TODAY (2026-10-21)
+
+`tools/db_measure/generated_types.sh` is DB 09's receipt: 1,000 generated named types and one
+const that builds them all. It ASSERTS before it times — the cold value (`500500`), that a
+leading comment keeps it, and that a literal the const READS moves it — so a run that timed
+only would pass while the cache answered anything.
+
+MEASURED (`./avra-try`, main's tree, one Sprite run):
+
+| case | wall | where it goes |
+|---|---|---|
+| cold check, 1,000 types | 689 ms | ast 136 · parse 209 · analyze 312 · keep 172 |
+| cached no-op check | 51 ms | cache hit |
+| **a comment above them** | **603–612 ms** | ast 134 · admit 211 · analyze 104 · keep 197–212 |
+
+So a comment above 1,000 generated types costs 0.60 s, not the 0.25 s §5's table records, and
+it re-parses and re-analyses the file rather than standing on the declaration syntax A4's `u`
+and `f` lines are meant to early-cut-off on. `keep` alone is 0.20 s of it, and the record it
+writes there holds one `t` line per named type the settlement touched — the `t` line is not in
+A4's table at all, which is what makes it the first thing the `@query` conversion should
+retire. The harness above is how that is judged.
+
 ## A5. Attack cases carried
 
 From `origin/redteam/m3-witness-attacks` @ `a644ba4` (written against deleted code; "6 of 17
