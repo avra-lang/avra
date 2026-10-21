@@ -205,7 +205,9 @@ def bound(llm, question, cypher, context):
     Whether it is, is the model's closed choice; without one, nothing is refused."""
     if not context.get("speaker") or "$speaker" in cypher or not hasattr(llm, "choose"):
         return
-    p = llm.choose(f"Question: {question}", "Is the question about the person asking it?", SPEAKS)
+    from structured import debiased
+
+    p = debiased(llm, f"Question: {question}", "Is the question about the person asking it?", SPEAKS)
     if p[0] > p[1]:
         raise Refusal("unbound_speaker", "the question is about the person asking: start at their node WHERE id(me) = $speaker")
 
