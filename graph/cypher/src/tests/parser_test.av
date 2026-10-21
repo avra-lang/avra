@@ -124,3 +124,25 @@ spec "cypher/refusals" {
         }
     }
 }
+
+spec "cypher/property maps" {
+    given "a node pattern with a property map" {
+        then "keys and literal or parameter values read" {
+            match parse_cypher("MATCH (p:P {name: 'Ada', age: \$a,}) RETURN p.name") {
+                .Ok(q) -> q.matches[0].pattern.first.props.length == 2 &&
+                    q.matches[0].pattern.first.props[0].key == "name" &&
+                    render(q.matches[0].pattern.first.props[1].value) == "\$a",
+                .Err(e) -> {
+                    println(e.message)
+                    false
+                },
+            }
+        }
+        then "a node without a map has none" {
+            match parse_cypher("MATCH (p:P) RETURN p.name") {
+                .Ok(q) -> q.matches[0].pattern.first.props.is_empty(),
+                .Err(_) -> false,
+            }
+        }
+    }
+}

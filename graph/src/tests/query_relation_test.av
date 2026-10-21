@@ -1,0 +1,252 @@
+use derive.model.{model}
+use schema.{Ref, Registration}
+use semantics.{Semantics, RelationBinding, RelationLabel}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use @std.json.{Json, field, parse}
+
+@model
+type Human = { name: string }
+
+@model
+type Firm = { name: string }
+
+@model(quote { Semantics { relation: RelationBinding {
+    from: ["subject"],
+    to: ["relative"],
+    label: ["relation"],
+    labels: [
+        RelationLabel { value: "wife", forward: ["spouse"], reverse: ["husband"] },
+        RelationLabel { value: "mother", forward: ["mum"], reverse: ["child"] },
+    ],
+} } })
+type Kinship = { subject: Ref<Human>, relative: Ref<Human>, relation: string, since: int? }
+
+@model(quote { Semantics { relation: RelationBinding {
+    from: ["member"],
+    to: ["employer"],
+    label: ["role"],
+    labels: [RelationLabel { value: "manager", forward: ["boss"], reverse: ["manages"] }],
+} } })
+type Staff = { member: Ref<Human>, employer: Ref<Firm>, role: string }
+
+fn registrations() -> List<Registration> {
+    [
+        Registration { make: Human_graph_model },
+        Registration { make: Firm_graph_model },
+        Registration { make: Kinship_graph_model },
+        Registration { make: Staff_graph_model },
+    ]
+}
+
+fn record(id: string, model: string, json: string) -> Result<Record, string> {
+    Record { id: id, model: model, value: stored_value(json)? }
+}
+
+fn family() -> Result<Graph, string> {
+    mut g = Graph.memory(registrations())?
+    g.observe("in:1", "raw")?
+    g
+        .publish(
+            Publication {
+                id: "one",
+                producer: "agent",
+                scope: "in:1",
+                input: "in:1",
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: [
+                    record("h1", "Human", "{\"name\":\"Rowan\"}")?,
+                    record("h2", "Human", "{\"name\":\"Elena\"}")?,
+                    record("h3", "Human", "{\"name\":\"Alex\"}")?,
+                    record("h4", "Human", "{\"name\":\"Sora\"}")?,
+                    record("f1", "Firm", "{\"name\":\"Acme\"}")?,
+                    record(
+                        "k1",
+                        "Kinship",
+                        "{\"subject\":\"h1\",\"relative\":\"h2\",\"relation\":\"wife\",\"since\":2010}",
+                    )?,
+                    record(
+                        "k2",
+                        "Kinship",
+                        "{\"subject\":\"h3\",\"relative\":\"h4\",\"relation\":\"wife\",\"since\":null}",
+                    )?,
+                    record(
+                        "k3",
+                        "Kinship",
+                        "{\"subject\":\"h2\",\"relative\":\"h1\",\"relation\":\"mother\",\"since\":null}",
+                    )?,
+                    record(
+                        "s1",
+                        "Staff",
+                        "{\"member\":\"h1\",\"employer\":\"f1\",\"role\":\"manager\"}",
+                    )?,
+                ],
+            },
+        )?
+    g
+}
+
+fn ask(mut g: Graph, text: string, speaker: string) -> Result<Json, string> {
+    let params = match parse(
+        "{\"asker\":\"u\",\"now\":1,\"speaker\":\"${speaker}\",\"n\":\"Rowan\"}",
+    ) { .Ok(j) -> j, .Err(_) -> { fail "params are not JSON" } }
+    g
+        .dispatch(
+            Json
+                .Obj(
+                    [
+                        field("op", Json.Str("query")),
+                        field("cypher", Json.Str(text)),
+                        field("params", params),
+                    ],
+                ),
+        )
+}
+
+fn values(answer: Json) -> string {
+    answer.member("fields").items().map(it.member("value").text() ?? "?").join(",")
+}
+
+fn code_of(answer: Json) -> string { answer.member("problems").item(0).member("code").text() ?? "-" }
+
+fn message_of(answer: Json) -> string { answer.member("problems").item(0).member("message").text() ?? "" }
+
+fn reified_equals_virtual() -> Result<bool, string> {
+    mut g = family()?
+    defer { let _ = g.close() }
+    let virtual = "MATCH (me:Human)-[:wife]->(w:Human) WHERE id(me) = \$speaker RETURN w.name AS person"
+    let reified = "MATCH (me:Human)<-[:subject]-(r:Kinship)-[:relative]->(w:Human) WHERE id(me) = \$speaker AND r.relation = 'wife' RETURN w.name AS person"
+    let rowan_v = ask(g, virtual, "h1")?
+    let rowan_r = ask(g, reified, "h1")?
+    let alex_v = ask(g, virtual, "h3")?
+    let alex_r = ask(g, reified, "h3")?
+    values(rowan_v) == "Elena" &&
+        values(rowan_r) == "Elena" &&
+        values(alex_v) == "Sora" &&
+        values(alex_r) == "Sora" &&
+        rowan_v.member("fields").item(0).member("path").item(1).text() == "person" &&
+        rowan_v.member("citations").items().length >= 2
+}
+
+fn words_and_directions() -> Result<bool, string> {
+    mut g = family()?
+    defer { let _ = g.close() }
+    let upper = ask(
+        g,
+        "MATCH (me:Human)-[:WIFE]->(w:Human) WHERE id(me) = \$speaker RETURN w.name AS person",
+        "h1",
+    )?
+    let forward = ask(
+        g,
+        "MATCH (me:Human)-[:spouse]->(w:Human) WHERE id(me) = \$speaker RETURN w.name AS person",
+        "h1",
+    )?
+    let reverse = ask(
+        g,
+        "MATCH (w:Human)-[:husband]->(h:Human) WHERE id(w) = \$speaker RETURN h.name AS person",
+        "h2",
+    )?
+    let flipped = ask(
+        g,
+        "MATCH (w:Human)<-[:wife]-(h:Human) WHERE id(w) = \$speaker RETURN h.name AS person",
+        "h2",
+    )?
+    let mother = ask(
+        g,
+        "MATCH (me:Human)-[:mum]->(m:Human) WHERE id(me) = \$speaker RETURN m.name AS person",
+        "h2",
+    )?
+    values(upper) == "Elena" &&
+        values(forward) == "Elena" &&
+        values(reverse) == "Rowan" &&
+        values(flipped) == "Rowan" &&
+        values(mother) == "Rowan"
+}
+
+fn relation_record_properties() -> Result<bool, string> {
+    mut g = family()?
+    defer { let _ = g.close() }
+    let since = ask(
+        g,
+        "MATCH (a:Human)-[r:wife]->(b:Human) WHERE id(a) = \$speaker RETURN r.since AS since",
+        "h1",
+    )?
+    let narrowed = ask(
+        g,
+        "MATCH (a:Human)-[r:wife]->(b:Human) WHERE id(a) = \$speaker AND r.since > 2000 RETURN b.name AS person",
+        "h1",
+    )?
+    let excluded = ask(
+        g,
+        "MATCH (a:Human)-[r:wife]->(b:Human) WHERE id(a) = \$speaker AND r.since > 2020 RETURN b.name AS person",
+        "h1",
+    )?
+    since.member("fields").item(0).member("value").int() == 2010 &&
+        since.member("fields").item(0).member("path").item(1).text() == "since" &&
+        values(narrowed) == "Elena" &&
+        excluded.member("status").text() == "unknown"
+}
+
+fn second_binding() -> Result<bool, string> {
+    mut g = family()?
+    defer { let _ = g.close() }
+    let boss = ask(
+        g,
+        "MATCH (p:Human)-[:manager]->(f:Firm) WHERE id(p) = \$speaker RETURN f.name AS firm",
+        "h1",
+    )?
+    let managed = ask(
+        g,
+        "MATCH (f:Firm)-[:manages]->(p:Human) WHERE id(f) = \$speaker RETURN p.name AS person",
+        "f1",
+    )?
+    values(boss) == "Acme" && values(managed) == "Rowan"
+}
+
+fn property_maps() -> Result<bool, string> {
+    mut g = family()?
+    defer { let _ = g.close() }
+    let literal = ask(g, "MATCH (p:Human {name: 'Elena'}) RETURN p.name AS who", "h1")?
+    let parameter = ask(
+        g,
+        "MATCH (p:Human {name: \$n})-[:wife]->(w:Human) RETURN w.name AS person",
+        "h1",
+    )?
+    values(literal) == "Elena" && values(parameter) == "Elena"
+}
+
+fn refusals_name_the_alternatives() -> Result<bool, string> {
+    mut g = family()?
+    defer { let _ = g.close() }
+    let relation = ask(g, "MATCH (p:Human)-[:cousin]->(q:Human) RETURN q.name AS n", "h1")?
+    let label = ask(g, "MATCH (p:Person) RETURN p.name AS n", "h1")?
+    let property = ask(g, "MATCH (p:Human) RETURN p.nme AS n", "h1")?
+    code_of(relation) == "unknown_relationship" &&
+        message_of(relation).contains("wife") &&
+        message_of(relation).contains("subject") &&
+        code_of(label) == "unknown_label" &&
+        message_of(label).contains("Human") &&
+        code_of(property) == "unknown_property" &&
+        message_of(property).contains("name")
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "relation words as relationship types" {
+    given "two models carrying relation bindings" {
+        then "a virtual hop answers what the reified walk answers" { passed(reified_equals_virtual()) }
+        then "forward, reverse and uppercase words and both arrows resolve" { passed(words_and_directions()) }
+        then "a bound relationship exposes the relation record's properties" { passed(relation_record_properties()) }
+        then "another binding model works through the same path" { passed(second_binding()) }
+        then "a node's property map is an equality filter" { passed(property_maps()) }
+        then "a refusal names the labels, properties and types that exist" { passed(refusals_name_the_alternatives()) }
+    }
+}
