@@ -642,8 +642,11 @@ def serve():
     while True:
         conn, _ = s.accept()
         with conn:
+            data = received(conn)
+            if not data.strip():
+                continue
             try:
-                answer = answered(json.loads(received(conn)), models)
+                answer = answered(json.loads(data), models)
             except Exception as e:
                 answer = {"error": f"{type(e).__name__}: {e}"}
             try:
