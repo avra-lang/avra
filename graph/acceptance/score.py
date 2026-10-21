@@ -174,6 +174,8 @@ def projection(answer, keys=None):
     tree.update(read_keys(answer, keys or {}))
     if answer.get("candidates"):
         tree["candidates"] = [c["entity"] for c in answer["candidates"]]
+    if answer.get("clarify"):
+        tree["clarify"] = answer["clarify"]
     if answer.get("problems") and "reason" not in tree:
         tree["reason"] = answer["problems"][0]["code"]
     return tree

@@ -5,6 +5,8 @@ const refusal = "{\"contract\":1,\"request\":\"request:1\",\"status\":\"refused\
 const ambiguous = "{\"contract\":1,\"request\":\"request:1\",\"status\":\"ambiguous\",\"read_revision\":8,\"candidates\":[{\"entity\":\"entity:a\",\"model\":\"Record\",\"label\":\"A\"},{\"entity\":\"entity:b\",\"model\":\"Record\",\"label\":\"B\"}],\"problems\":[{\"code\":\"reference.ambiguous\",\"message\":\"Which record?\"}]}"
 const grounded = "{\"contract\":1,\"request\":\"request:1\",\"status\":\"answered\",\"read_revision\":8,\"fields\":[{\"path\":[\"amount\"],\"value\":{\"minor\":27000,\"currency\":\"EUR\"},\"basis\":\"observed\",\"citations\":[\"e1\"]}],\"citations\":[{\"id\":\"e1\",\"source\":{\"observation\":\"note:1\",\"revision\":2}}]}"
 
+const conflicted = "{\"contract\":1,\"request\":\"request:1\",\"status\":\"ambiguous\",\"read_revision\":8,\"conflicts\":[{\"path\":[\"entity:a\",\"phone\"],\"rivals\":[{\"value\":\"1\",\"citations\":[\"e1\"]},{\"value\":\"2\",\"citations\":[\"e2\"]}]}],\"citations\":[{\"id\":\"e1\",\"source\":{\"observation\":\"note:1\",\"revision\":1}},{\"id\":\"e2\",\"source\":{\"observation\":\"note:2\",\"revision\":1}}],\"problems\":[{\"code\":\"value.conflict\",\"message\":\"Two supported phones\"}]}"
+
 spec "v1 structured answer contracts" {
     given "facts, uncertainty and policy refusals have separate representations" {
         then "a bounded-view unknown is not a negative fact" {
@@ -26,6 +28,30 @@ spec "v1 structured answer contracts" {
         then "two distinct candidates carry ambiguity" { Answer.from_json(ambiguous) is .Ok }
         then "duplicating one candidate is not ambiguity" {
             Answer.from_json(ambiguous.replace("\"entity:b\"", "\"entity:a\"")) is .Err
+        }
+        then "competing values of one property carry ambiguity without a candidate entity" {
+            Answer.from_json(conflicted) is .Ok
+        }
+        then "a conflict needs two rival values" {
+            Answer.from_json(conflicted.replace(",{\"value\":\"2\",\"citations\":[\"e2\"]}", "")) is .Err
+        }
+        then "a rival cannot invent a citation id" {
+            Answer
+                .from_json(
+                    conflicted
+                        .replace("\"citations\":[\"e2\"]}]}],", "\"citations\":[\"nope\"]}]}],"),
+                ) is .Err
+        }
+        then "an answered result cannot hide a conflict" {
+            Answer.from_json(conflicted.replace("\"ambiguous\"", "\"answered\"")) is .Err
+        }
+        then "a clarification belongs to an ambiguous answer only" {
+            Answer
+                .from_json(ambiguous.replace("\"problems\"", "\"clarify\":\"which_person\",\"problems\"")) is .Ok
+        }
+        then "an unknown answer cannot carry a clarification" {
+            Answer
+                .from_json(unknown.replace("\"problems\"", "\"clarify\":\"which_person\",\"problems\"")) is .Err
         }
         then "an answered result requires supported fields" {
             Answer.from_json(unknown.replace("\"unknown\"", "\"answered\"")) is .Err

@@ -37,13 +37,40 @@ export type AnswerField = {
     derivation: string? = null,
 }
 
+/// One supported value among several that compete for the same property.
+@derive(Decode)
+export type Rival = {
+    value: JsonValue,
+    @items(min: 1, max: 64) citations: List<string>,
+}
+
+/// Competing values of one property of one entity; none is selected.
+@derive(Decode)
+export type Conflict = {
+    @items(min: 1, max: 64) path: List<string>,
+    @items(min: 2, max: 16) rivals: List<Rival>,
+}
+
 fn answer_coherent(a: Answer) -> Result<Answer, string> {
     if a.status == "answered" &&
         (a.fields.is_empty() || !a.problems.is_empty() || !a.candidates.is_empty()) {
         fail "answered needs fields and cannot report an unresolved problem"
     }
     if a.status != "answered" && a.problems.is_empty() { fail "an unresolved answer needs a problem code" }
-    if a.status == "ambiguous" && a.candidates.length < 2 { fail "ambiguity needs at least two candidates" }
+    if a.status == "ambiguous" && a.candidates.length < 2 && a.conflicts.is_empty() {
+        fail "ambiguity needs two candidate entities or a conflicting property"
+    }
+    if a.status != "ambiguous" && (!a.conflicts.is_empty() || a.clarify != null) {
+        fail "only an ambiguous answer carries conflicts or a clarification"
+    }
+    for conflict in a.conflicts {
+        if conflict.path.any(it.is_empty()) { fail "a conflict path cannot contain empty tokens" }
+        for rival in conflict.rivals {
+            for citation in rival.citations {
+                if !a.citations.any(it.id == citation) { fail "a competing value names an unknown citation" }
+            }
+        }
+    }
     if a.status == "refused" &&
         (!a.fields.is_empty() || !a.candidates.is_empty() || a.policies.is_empty()) {
         fail "a refusal needs policy provenance and cannot disclose fact fields"
@@ -74,6 +101,8 @@ export type Answer = {
     @range(0, 9223372036854775807) read_revision: int,
     @items(max: 256) fields: List<AnswerField> = [],
     @items(max: 64) candidates: List<Candidate> = [],
+    @items(max: 16) conflicts: List<Conflict> = [],
+    @length(min: 1, max: 128) clarify: string? = null,
     @items(max: 256) citations: List<Citation> = [],
     @items(max: 16) policies: List<string> = [],
     @items(max: 128) problems: List<Problem> = [],
