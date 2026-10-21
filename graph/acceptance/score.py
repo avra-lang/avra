@@ -446,7 +446,7 @@ def self_test():
         assert blocked["q01"]["status"] == "error" and "unknown op" in blocked["q01"]["reason"], blocked
         facts = scratch / "oracle"
         facts.mkdir()
-        (facts / "facts.jsonl").write_text(json.dumps({"source": "s01", "publish": {"id": "p"}}) + "\n")
+        (facts / "facts.jsonl").write_text(json.dumps({"source": "s01", "records": []}) + "\n")
         global ORACLE
         saved, ORACLE = ORACLE, facts
         try:
