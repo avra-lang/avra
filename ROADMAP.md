@@ -3380,6 +3380,21 @@ filed. Both carry an `Example:` and a `Callsite:`.
   that would rather choose than branch. To be filed as its own ask
   when the tasks server returns.
 
+The ask the mmap slice raised (db-05a, `store/mapped.av`) stands in the
+same way:
+
+- **A runtime row that answers a BOX without an evaluator arm.**
+  `features/fns/check.av`'s `answerable` refuses `Bytes` at any extern
+  whose row is `RtHost.Unhosted`, and `crossing_law` exempts only an
+  ARMED row — so the one door that hands a file's octets back as a
+  value can be declared only as `string` and viewed with `.bytes()`
+  (one header, no copy, but the declaration lies about what the octets
+  are). Arming it needs a seed that carries the arm, which is why the
+  slice took the `string` spelling instead of a placeholder arm.
+  `Example: extern fn avra_mmap_slice(h: ptr, lo: int, hi: int) -> Bytes`.
+  `Callsite:` `packages/std-avrac/src/compiler/store/mapped.av`'s
+  `mapped_at`, the store's whole in-place read.
+
 ### Deadline — the change log watches cells, never a whole collection
 
 A box is logged when a slot of it is written in place; length changes

@@ -1,0 +1,182 @@
+//! A SEALED BODY READ WHERE IT LIES (design §6.2 step 1). The file is
+//! mapped once, and every range a lookup asks for is copied out of the
+//! mapping as its own box — the whole section is never held, and nothing
+//! points into the file's pages. Pages are the file's, so what an open
+//! costs the heap is bounded by `WINDOW` whatever the store's size.
+//!
+//! THE ROW ANSWERS `string` and this file views it as octets: an extern
+//! with no evaluator arm may not answer `Bytes` (features/fns/check.av's
+//! `answerable`), and a text and an octet box are ONE header, so `bytes()`
+//! is that same box and no copy (ROADMAP's sugar backlog).
+use @std.hash.{hasher}
+
+extern fn avra_mmap_open(path: string) -> ptr?
+extern fn avra_mmap_len(h: ptr) -> int
+extern fn avra_mmap_slice(h: ptr, lo: int, hi: int) -> string
+extern fn avra_mmap_close(h: ptr)
+
+/// How much of the file is held at once while a range is digested or
+/// walked — a check and a walk cost this much, never the section's size.
+const WINDOW: int = 65536
+
+/// A commit marker's length, as `check_of` spells it.
+const CHECK_HEX: int = 16
+
+/// A file's octets, mapped: the handle the runtime answered and its length.
+export type Mapped = { h: ptr, len: int }
+
+/// The mapping of `path`, absent for a file that is missing, unreadable or
+/// not regular — which is what a store leaves behind for a body it evicted.
+export fn mapped(path: string) -> Mapped? {
+    // LICENSED input.store_io: the store's own body, mapped to read it where it lies
+    let h? = avra_mmap_open(path) else { return null }
+    Mapped { h: h, len: mapped_length(h) }
+}
+
+/// The octets a mapping covers.
+fn mapped_length(h: ptr) -> int {
+    // LICENSED input.store_io: the store's own body, its mapping measured
+    avra_mmap_len(h)
+}
+
+/// Unmapped. A handle is a native resource: reading or closing it again is
+/// the caller's own defect, as with any other.
+export fn mapped_close(m: Mapped) {
+    // LICENSED input.store_io: the store's own body, unmapped when the pack moves past it
+    avra_mmap_close(m.h)
+}
+
+/// Whether `at` for `n` octets lies inside the mapping.
+export fn mapped_holds(m: Mapped, at: int, n: int) -> bool {
+    at >= 0 && n >= 0 && at + n <= m.len
+}
+
+/// The octets at `at` for `n`, absent when they lie outside the mapping:
+/// an absent range is no answer here, never the runtime's trap.
+export fn mapped_at(m: Mapped, at: int, n: int) -> Bytes? {
+    if !mapped_holds(m, at, n) { return null }
+    // LICENSED input.store_io: the store's own body, a range copied out of the mapping
+    avra_mmap_slice(m.h, at, at + n).bytes()
+}
+
+/// The text at `at` for `n`, absent outside the mapping or when the octets
+/// there are not whole UTF-8.
+export fn mapped_text(m: Mapped, at: int, n: int) -> string? {
+    let octets? = mapped_at(m, at, n) else { return null }
+    octets.text()
+}
+
+/// The commit marker over `n` octets at `at`: the frame's truncated BLAKE3,
+/// digested a window at a time so the section is never held whole.
+export fn mapped_check(m: Mapped, at: int, n: int) -> string? {
+    if !mapped_holds(m, at, n) { return null }
+    mut h = hasher()
+    mut done = 0
+    while done < n {
+        let left = n - done
+        let piece? = mapped_at(m, at + done, if left < WINDOW { left } else { WINDOW }) else {
+            return null
+        }
+        h = h.update(piece)
+        done = done + piece.length
+    }
+    h.digest_hex().substring(0, CHECK_HEX)
+}
+
+// ── Reading the codec forward, one window at a time ──
+
+/// A position in a mapping, read forward. The octets between `at` and `end`
+/// are a stable-encoded run (`@std/relation.stable`), decoded here where they
+/// lie: a run of small fields costs a slice a window, not a slice a field.
+export type Window = { m: Mapped, at: Cell<int>, end: int, held: Cell<Bytes>, from: Cell<int> }
+
+/// A window over the `n` octets at `at`, absent outside the mapping.
+export fn window_of(m: Mapped, at: int, n: int) -> Window? {
+    if !mapped_holds(m, at, n) { return null }
+    Window { m: m, at: Cell.new(at), end: at + n, held: Cell.new("".bytes()), from: Cell.new(at) }
+}
+
+/// Whether every octet of the window's run has been read.
+export fn window_done(w: Window) -> bool { w.at.get() >= w.end }
+
+/// The next octet, absent at the run's end.
+fn octet(w: Window) -> int? {
+    let at = w.at.get()
+    if at >= w.end || !covering(w, at) { return null }
+    let v = w.held.get().at(at - w.from.get())
+    w.at.set(at + 1)
+    v
+}
+
+/// Point the held window at `at` unless it already covers it.
+fn covering(w: Window, at: int) -> bool {
+    let from = w.from.get()
+    if at >= from && at < from + w.held.get().length { return true }
+    let left = w.end - at
+    let fresh? = mapped_at(w.m, at, if left < WINDOW { left } else { WINDOW }) else { return false }
+    w.from.set(at)
+    w.held.set(fresh)
+    true
+}
+
+/// The codec's unsigned LEB128: seven octets at a time, low first, the tenth
+/// holding only bit 63, and no continuation ending in a zero octet.
+fn varint(w: Window) -> int? {
+    mut v = 0
+    for k in 0..10 {
+        let o? = octet(w) else { return null }
+        if k == 9 && o > 1 { return null }
+        v = v | ((o & 127) << 7 * k)
+        if o < 128 {
+            if k > 0 && o == 0 { return null }
+            return v
+        }
+    }
+    null
+}
+
+/// A count: a varint that never claims more octets than the run has left.
+export fn window_count(w: Window) -> int? {
+    let n? = varint(w) else { return null }
+    if n < 0 || n > w.end - w.at.get() { return null }
+    n
+}
+
+/// A zigzagged number, as the codec writes one.
+export fn window_int(w: Window) -> int? {
+    let z? = varint(w) else { return null }
+    (z >> 1) ^ 0 - (z & 1)
+}
+
+/// Advance past `n` octets of the run, leaving every octet of them unread —
+/// what a section's part a walk does not want costs, and no more.
+export fn window_skip(w: Window, n: int) -> bool {
+    let at = w.at.get()
+    if n < 0 || at + n > w.end { return false }
+    w.at.set(at + n)
+    true
+}
+
+/// The `n` octets at the window's place as a window of their own, the outer
+/// one read past them: a length-prefixed run inside a section.
+export fn window_under(w: Window, n: int) -> Window? {
+    let at = w.at.get()
+    if !window_skip(w, n) { return null }
+    window_of(w.m, at, n)
+}
+
+/// Length-prefixed octets, absent outside the run.
+export fn window_octets(w: Window) -> Bytes? {
+    let n? = window_count(w) else { return null }
+    let at = w.at.get()
+    if at + n > w.end { return null }
+    let octets? = mapped_at(w.m, at, n) else { return null }
+    w.at.set(at + n)
+    octets
+}
+
+/// Length-prefixed text: octets that are whole UTF-8, absent otherwise.
+export fn window_text(w: Window) -> string? {
+    let octets? = window_octets(w) else { return null }
+    octets.text()
+}

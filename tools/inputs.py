@@ -143,6 +143,8 @@ ROWS = {
     "avra_sched_runs_wanted": "env", "avra_sched_schedule_at": "env", "avra_case_clock_virtual": "env",
     "avra_cores_online": "env",
     "avra_selfhost_argc": "argv", "avra_selfhost_get_arg_cstr": "argv",
+    "avra_mmap_open": "read", "avra_mmap_len": "read", "avra_mmap_slice": "read",
+    "avra_mmap_word_at": "read", "avra_mmap_close": "write",
 }
 INERT_ROWS = re.compile(
     r"^(LLVM\w*|avra_(llvm|float|int|str|bytes|vtask|fiber|ffi)_\w+|avra_(debug|eputs|puts|"
