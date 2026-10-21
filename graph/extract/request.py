@@ -19,7 +19,7 @@ def epoch_ms(stamp):
 def envelope(row):
     """Source metadata only; fixture gold never enters the envelope."""
     return {
-        "contract": 1,
+        "contract": 2,
         "source": {"observation": row["observation"], "revision": row["revision"]},
         "authored_at_ms": None,
         "received_at_ms": epoch_ms(row["received_at"]),

@@ -300,7 +300,8 @@ class Cascade:
 
     def run(self, source):
         self.t = Text(source["content"])
-        self.records, self.frames, self.mentions, self.minted = [], [], [], 0
+        self.records, self.mentions, self.minted = [], [], 0
+        self.frames = [dict(f, _range=position(f["passage"]), _given=True) for f in source.get("frames", [])]
         clock = time.time()
         self.llm.begin(source["content"])
         prefix = time.time()
@@ -414,6 +415,7 @@ class Cascade:
     # Frames: chat turns and quotations; the LLM picks a quote's speaker.
 
     def frame_pass(self, source):
+        """Chat turns and quotations not already framed by the source."""
         people = [m for m in self.mentions if m["record"]]
         turns = []
         for m in people:
@@ -435,8 +437,9 @@ class Cascade:
             self.add_frame(a, b, parent["id"] if parent else None, speaker)
 
     def add_frame(self, a, b, parent, speaker):
-        f = {"id": f"f{len(self.frames) + 1}", "span": self.t.span(a, b), "parent": parent, "speaker": speaker, "_range": (a, b)}
-        self.frames.append(f)
+        taken = {f["id"] for f in self.frames}
+        fid = next(f"f{i}" for i in range(1, len(taken) + 2) if f"f{i}" not in taken)
+        self.frames.append({"id": fid, "passage": self.evidence(a, b), "parent": parent, "speaker": speaker, "_range": (a, b)})
 
     def innermost(self, a, b):
         inside = [f for f in self.frames if f["_range"][0] <= a and b <= f["_range"][1]]
@@ -736,9 +739,9 @@ class Cascade:
 
 
 def finish(records, frames):
-    """Frames are assigned once all frames exist; private keys are dropped."""
+    """Private keys are dropped; frames the source already gave are not proposed."""
     return [{k: v for k, v in r.items() if not k.startswith("_")} for r in records], [
-        {k: v for k, v in f.items() if not k.startswith("_")} for f in frames
+        {k: v for k, v in f.items() if not k.startswith("_")} for f in frames if not f.get("_given")
     ]
 
 
