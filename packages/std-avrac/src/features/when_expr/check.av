@@ -1,10 +1,92 @@
-//! The typing rule: every condition is a `bool`; every arm answers
-//! the `_` arm's type — the total arm anchors, since it always
+//! The typing rules. THE `_` LAW — a `when` is total: its `_` arm is
+//! written, written once, and written last — is judged here, where the
+//! arms carry spans; then every condition is a `bool`; every arm
+//! answers the `_` arm's type — the total arm anchors, since it always
 //! exists. Error absorbs everywhere.
-use core.{ExprId, TypeId}
+use core.{ExprId, TypeId, Span}
 use features.{TypeCx}
+use diagnostics.{Diag, refusal}
 
-fn arms_type(mut cx: TypeCx, e: ExprId, values: List<ExprId>, fallback: ExprId) -> TypeId {
+/// The FIRST law the arm set breaks is the one spoken, and it answers
+/// true — a `when` whose arms are unordered has no anchor to agree on.
+fn default_law(
+    mut cx: TypeCx,
+    e: ExprId,
+    conds: List<ExprId>,
+    values: List<ExprId>,
+    defaults: List<ExprId>,
+) -> bool {
+    if defaults.is_empty() {
+        cx.emit(no_total_arm(cx, e))
+        return true
+    }
+    if defaults.length > 1 {
+        cx.emit(one_total_arm(cx, defaults[1]))
+        return true
+    }
+    let after? = arm_after(cx, defaults[0], conds, values) else { return false }
+    cx.emit(total_arm_last(cx, after))
+    true
+}
+
+/// The arm written after the `_` arm, AS ITS CONDITION: a refusal about
+/// an arm points at the arm, never at its body. Null when `_` really
+/// does end the choice.
+fn arm_after(cx: TypeCx, total: ExprId, conds: List<ExprId>, values: List<ExprId>) -> ExprId? {
+    let at? = cx.view.store.expr_span(total) else { return null }
+    let body? = [v for v in values if starts_after(cx.view.store.expr_span(v), at)].first() else {
+        return null
+    }
+    let start? = cx.view.store.expr_span(body) else { return null }
+    [c for c in conds if ends_before(cx.view.store.expr_span(c), start)].last() ?? body
+}
+
+fn starts_after(span: Span?, at: Span) -> bool {
+    let s? = span else { return false }
+    s.lo > at.lo
+}
+
+fn ends_before(span: Span?, at: Span) -> bool {
+    let s? = span else { return false }
+    s.hi <= at.lo
+}
+
+/// Every arm answers the `_` arm's type, which anchors the join.
+fn arms_type(mut cx: TypeCx, e: ExprId, values: List<ExprId>, defaults: List<ExprId>) -> TypeId {
+    let fallback? = defaults.first() else { return cx.error_type }
     if cx.errored(fallback) { return cx.error_type }
     cx.arms_agree("type.mismatch", "when", "the `_` arm", e, fallback, values)
+}
+
+/// A `when` with no `_` arm has no arm that takes every value.
+fn no_total_arm(cx: TypeCx, e: ExprId) -> Diag {
+    refusal(
+        "type.when_arms",
+        cx.loc_of(e),
+        "a `when` needs its `_` arm",
+        "no arm here takes every value",
+        "add `_ -> …` as the last arm",
+    )
+}
+
+/// Two `_` arms: the first runs, so the second never does.
+fn one_total_arm(cx: TypeCx, arm: ExprId) -> Diag {
+    refusal(
+        "type.when_arms",
+        cx.loc_of(arm),
+        "a `when` has ONE `_` arm",
+        "a second `_` arm",
+        "drop it — the arms are tried top to bottom, so the second never runs",
+    )
+}
+
+/// The arms are tried top to bottom, so nothing may wait below `_`.
+fn total_arm_last(cx: TypeCx, arm: ExprId) -> Diag {
+    refusal(
+        "type.when_arms",
+        cx.loc_of(arm),
+        "the `_` arm ends a `when` — move it last",
+        "an arm waits after it",
+        "move `_` below every arm that waits",
+    )
 }

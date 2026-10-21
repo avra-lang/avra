@@ -1,31 +1,16 @@
 //! Parse-time lowering: parallel cond and value captures plus the
-//! `_` arm -> the When node. The grammar lets the `_` arm sit in
-//! any slot (each slot is an ordered choice, `_` first — a greedy
-//! star cannot be told to stop early); HERE is where totality and
-//! last-ness are the law.
-use core.{Expr, Span}
+//! `_` arms -> the When node. The grammar lets the `_` arm sit in any
+//! slot (each slot is an ordered choice, `_` first — a greedy star
+//! cannot be told to stop early); the arms' laws are the checker's,
+//! where they carry a span — the node keeps every `_` arm written.
+use core.{Expr}
 use features.{LangNode, Builder, zip_defect_of}
 
 fn build_when(b: Builder) -> Result<LangNode, string> {
     let conds = b.exprs(0)?
     let values = b.exprs(1)?
-    let defaults = b.exprs(2)?
     if conds.length != values.length {
         return .Err(zip_defect_of("when arms and values"))
     }
-    if defaults.is_empty() {
-        return .Err("a `when` needs its `_` arm")
-    }
-    if defaults.length > 1 {
-        return .Err("a `when` has ONE `_` arm")
-    }
-    let fallback = defaults[0]
-    let dspan: Span? = b.store.expr_span(fallback)
-    for v in values {
-        let vspan: Span? = b.store.expr_span(v)
-        if dspan != null && vspan != null && vspan!.lo > dspan!.lo {
-            return .Err("the `_` arm ends a `when` — move it last")
-        }
-    }
-    b.make_expr(Expr.When(conds, values, fallback))
+    b.make_expr(Expr.When(conds, values, b.exprs(2)?))
 }
