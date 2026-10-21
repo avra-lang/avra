@@ -68,10 +68,11 @@ explicit merge joins two entities into one read group without moving a row;
 split withdraws the decision, so the evidence is never rewritten. Groups are
 walked from the decision table at read time.
 
-`@std/db`'s `@model` IS the engine's storage: one table per engine row,
+`@std/db`'s `@model` is the engine's current storage: one table per engine row,
 links and `Many<T>` for relationships, nullable `until` for history, and
-derived `where`/`in_<link>`/`with_<many>` reads. The 6-field cap is handled
-by splitting rows (`RunRow` + `RunTrailRow`), and composite identity is a
+derived `where`/`in_<link>`/`with_<many>` reads. Existing rows were split
+for the old 6-field cap (`RunRow` + `RunTrailRow`); do not add further splits
+for that restriction while its separately owned fix proceeds. Composite identity is a
 synthetic `@unique stamp` derived by one verb (`stamp`) so a later composite
 key can replace it without touching call sites. The graph reuses standard
 validation (`@derive(Decode)`) and carries its own descriptor derive; user
@@ -90,20 +91,20 @@ recomputed; a projection waits until a measured query needs it.
 
 | Need | The library | What the graph still owns |
 | --- | --- | --- |
-| SQL access, rows, values | `@std/sqlite` — used directly | the engine's DDL, joins, and migrations |
-| Typed validation and decoders | `@std/validate` `@derive(Decode)` — used | partial-field projections (this slice) and descriptors |
-| Per-model rows and CRUD | `@std/db` `@model` — one flat table per record, `int` id, ≤6 scalar columns | not usable: claims, support, history, and composite keys are the storage |
+| SQL access, transactions, values | `@std/sqlite` — used directly | connection policy, snapshot ownership, admission/upgrades |
+| Typed validation and decoders | `@std/validate` `@derive(Decode)` and `Decode.fields` — used | graph descriptors and assertion admission |
+| Engine rows and CRUD | `@std/db` `@model` — used for generic infrastructure rows | publication, standing evidence, history and explicit decisions |
 | Indexed rows, owners, replacement, tombstones, dependency queries | `@std/relation` — in-memory under a `Db`; durable answers only | read projection and incremental rules (milestone 5); SQLite remains the authority |
 | SQL text parsing | `@std/sql` — a parser/resolver, not a query builder | parameterized statements |
 | CLI and HTTP | `@std/cli`, `@std/http` — used | the generic operation dispatch; enum `Decode` is still open (avra-8sb5.63.15) |
 
-The point of the engine is exactly the part no library owns: durable,
-multi-producer, temporal evidence. A derived row CRUD would store one current
-row per entity; it cannot say that two producers support the same value, that
-one scope withdrew its support, or that a value was interpreted under an
-older schema. That is why the write path is explicit SQL. The read path is a
-different matter: it is a projection, and it belongs on `@std/relation` once
-its workload is measured.
+The engine owns durable, multi-producer evidence semantics; derived CRUD
+alone does not provide them, but can store the infrastructure rows that do.
+Engine transactions compose those accessors. Catalog inspection and SQLite
+connection settings use SQL; an absolute no-SQL restriction is not a goal.
+Indexed, bounded reads remain a substrate gap (`avra-8sb5.44.8`), not a
+reason to call full scans production-ready. A relation projection waits
+for measured workloads and reconstructible correctness.
 
 ## Delivery sequence
 
@@ -124,7 +125,7 @@ its workload is measured.
 
 Task **avra-8sb5.63.23**: `Decode discards generic arguments when calling
 named field decoders`. Fixed on the parent branch; PR
-https://github.com/avra-lang/avra/pull/1132 is queued for integration.
+https://github.com/avra-lang/avra/pull/1132 is integrated on main.
 Related existing task: `avra-8sb5.63.15` covers broader generic derives,
 which are not required by the graph's manually defined generic `Ref<T>`.
 

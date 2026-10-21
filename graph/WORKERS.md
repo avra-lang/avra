@@ -1,5 +1,14 @@
 # Durable worker and classifier jobs
 
+Draft, not an implementation-ready contract. [RESEARCH.md](RESEARCH.md)
+records the updated direction: an ordinary automatic processing service,
+not a reasoning agent, and non-generative classifiers on ingestion.
+“Agent” below means the external coordinator role and does not require
+an LLM. Row layouts constrained by six fields are provisional; do not
+implement further field-ceiling workarounds from this draft. Resolve clock
+authority, engine-verified query dependencies, and schema changes before
+implementing multi-input jobs.
+
 This document designs milestone 4: durable processing and classifiers.
 The graph remains a generic evidence store. Classifiers, including a
 local NER model, are ordinary producers that read observations, do work
@@ -171,6 +180,11 @@ automatic for a known producer/scope without changing the job model.
 ### Stale results
 
 `complete` verifies before committing:
+
+First check for an already committed completion with the same job, attempt
+and full request identity. Return its original result even after lease
+expiry; conflicting replay content is refused. Only a new completion
+passes through the following live-lease/nonterminal checks.
 
 - the lease token still names the current attempt and `now` is within
   the deadline;

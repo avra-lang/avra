@@ -9,6 +9,14 @@ This is an executable first slice, not a completed inference platform.
 The full milestones, current checkpoint, and acceptance criteria are in
 [ROADMAP.md](ROADMAP.md).
 
+The non-generative ingestion pipeline, contextual references (such as
+“my wife”), research candidates and evaluation plan are in
+[RESEARCH.md](RESEARCH.md). They are direction, not implemented NLP features.
+
+A synthetic personal/luxury-fashion-business acceptance set (30 inputs,
+50 questions) and an agent-ready task queue start at
+[acceptance/PLAN.md](acceptance/PLAN.md).
+
 ## Application surface
 
 The models module declares ordinary types and collects their generated
@@ -74,7 +82,7 @@ option or CORS support. The database, observations, and explanations are
 plaintext personal data: restrict filesystem permissions; validation's
 `@secret` is not encryption or a read authorization system.
 
-## Agent protocol
+## Producer protocol
 
 CLI request files and HTTP use exactly the same JSON operations:
 
@@ -189,8 +197,9 @@ run-id/request pair returns its original committed revision. Reusing a
 run id with different content is refused.
 
 Jev or another classifier is an ordinary producer. No classifier SDK or
-model vocabulary belongs in the engine. The local feeding agent owns
-invocation, retries, scheduling, and the meaning of scopes.
+model vocabulary belongs in the engine. An ordinary local worker can own
+invocation, retries, scheduling, and the meaning of scopes; no reasoning
+agent or generative LLM is required. Automatic extraction is not yet built.
 
 ## Durable behavior
 
@@ -203,6 +212,14 @@ The engine models are `Meta`, `Schema`, `EntityRow`, `ObservationRow`,
 `TombstoneRow`/`TombstoneEndRow`. WAL, foreign keys, and immediate write
 transactions are used. Failed publications roll back identities, support
 withdrawals, claims, references, aliases, and the revision together.
+Connections wait up to three seconds for lock contention. Public multi-query
+reads use one deferred snapshot and preserve a caller-owned transaction.
+
+`open` upgrades formats 6 and 7 to 8 by adding the missing tables and
+updating the format marker atomically; existing evidence is not rewritten.
+`attach` requires the current format and never installs a catalog. Future,
+missing, and legacy hand-table formats are refused, not silently adopted.
+Preserve legacy files: converting the hand-table store still needs a migration.
 
 Claims and support are distinct. Two producers can support the same value
 without duplicating it. Replacing one scope cannot withdraw another
@@ -250,12 +267,14 @@ sh tools/watch.sh 3500 ./build/avra test graph/src/tests/storage_test.av
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/tombstone_test.av
 sh tools/watch.sh 3500 ./build/avra build graph
 python3 graph/tests/smoke.py
+python3 graph/tests/durability.py
 sh tools/watch.sh 3500 ./build/avra build graph/tests/unrelated/src/main.av
 graph/tests/unrelated/src/main
 ```
 
-The engine's rows are declared in `src/store/engine.av`; adding an engine
-need is a model plus its accessors, never hand SQL. User ontology types are
+The engine's rows are declared in `src/store/engine.av`; tables and CRUD
+come from models. Infrastructure catalog inspection and connection PRAGMAs
+use parameterized SQL. User ontology types are
 declared in a models module and never become tables — their claims are
 rows in `ClaimRow`.
 

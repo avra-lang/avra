@@ -4,9 +4,11 @@
 
 An embeddable, generic, self-updating personal knowledge graph. An
 application declares models, collects their generated descriptors, and
-starts the engine. A local agent supplies observations and may edit the
-model source and rebuild. Classifiers, including Jev, are interchangeable
-producers outside the engine.
+starts the engine. Local adapters/workers supply observations; an agent may
+edit the model source and rebuild. Classifiers, including Jev, are
+interchangeable producers outside the engine. Ingestion should not require
+a reasoning agent or generative LLM. Contextual English questions are a
+separate, evidence-grounded query layer; see [RESEARCH.md](RESEARCH.md).
 
 - Ontology-specific names and behavior belong in model declarations and
   their declarative validation/policy layer, never engine handlers.
@@ -26,9 +28,10 @@ producers outside the engine.
 
 ## Current checkpoint
 
-Branch `feat/generic-personal-graph`, worktree
-`/Users/tristan/projects/tristanMatthias/avra-graph`. `git log graph/` is the
-receipt for each slice; the foundation is `f87d7312`.
+Branch `feat/graph-selection`, worktree
+`/Users/tristan/projects/tristanMatthias/avra-graph-v2`, rebased onto main
+`846e8a84` (batch #1152, incorporating #1141). `git log graph/` is the
+receipt for each slice; the original foundation is `f87d7312`.
 
 The first slice is a usable model-driven evidence store, not yet an
 autonomous extraction or inference system.
@@ -65,6 +68,14 @@ unrelated library consumer with an eight-field model, a cyclic reference, and
 a record-level rule. These are foundation tests, not a production readiness
 claim.
 
+Stabilization adds interaction witnesses for retained/refreshed identities,
+group-wide choices, conflicting pre-merge choices, historical source
+revisions, tombstoned incoming sources, nested read snapshots and page
+overflow. Native durability witnesses cover additive formats 6/7→8,
+unsupported/missing-format refusal before catalog mutation, WAL, lock
+waiting, established reader snapshots, and a killed uncommitted writer.
+These are focused checks, not full concurrent/fuzz/soak coverage.
+
 The engine's tables are `@std/db` models with links, many-relations and
 nullable history columns; only user ontology rows are generic. The six-field
 cap is split (`RunRow`/`RunTrailRow`) and composite identity is a derived
@@ -79,7 +90,7 @@ Status: local foundation verified; integration and hardening ongoing.
 
 - [x] Fix generic static-owner inference for typed reference codecs.
 - [x] Fix collections gathering nested quoted template declarations.
-- [ ] Complete compiler-fix integration through the protected PR workflow.
+- [x] Complete compiler-fix integration through the protected PR workflow.
 - [ ] Fix package-rename invalidation of held generic/collection identities.
 - [ ] Add cold/warm rebuild tests for source model edits and schema changes.
 - [ ] Exercise concurrent connections, interrupted transactions, and recovery.
@@ -100,7 +111,7 @@ Substrate tracking:
 
 ## Milestone 1 — complete the assertion model
 
-Status: complete.
+Status: partial assertions work; structured validation errors remain open.
 
 - [x] Accept partial properties without constructing a complete record.
 - [x] Use standard validation for supplied field shapes and rules; never
@@ -110,7 +121,8 @@ Status: complete.
   independently, including sibling-dependent validation.
 - [x] Add generic evidence locators: source offsets, sections, attachments,
   or other source-native locations, linked to immutable input revisions.
-- [x] Expose useful machine-readable validation/incompleteness results.
+- [ ] Expose structured validation/incompleteness issues (codes and paths;
+  current public failures are formatted strings).
 
 Exit: an agent can publish incomplete knowledge honestly; a typed read either
 constructs a validated record or explains why it cannot. Evidence can be
@@ -234,6 +246,9 @@ and `where`/`in_<link>`/`with_<many>` accessors. User ontology types never
 become tables; their claims are rows of `ClaimRow`. The remaining asks are
 surface: a 7+/8-field row without splitting (`RunRow`+`RunTrailRow`,
 `MergeRow`+`MergeEndRow`) and composite `@unique` (today a derived `stamp`).
+The field-ceiling fix is independently owned; graph correctness and NLP
+evaluation do not wait for it. Indexed/bounded generated reads are tracked
+in `avra-8sb5.44.8`; this milestone does not claim indexed query performance.
 
 Future substrate requests must identify a concrete wanting site and a
 reproducer. Partial assertions and external identities have boundary tests;
@@ -241,6 +256,11 @@ do not assume relation invalidation or retraction is solved until its own
 boundary test passes.
 
 ## Execution order and progress discipline
+
+The concrete acceptance scenario, gold answer projections and small
+dependency-ordered agent assignments live in
+[acceptance/PLAN.md](acceptance/PLAN.md). That plan is the next vertical-slice
+work queue, not a claim that extraction or English querying already works.
 
 Stabilize -> identity -> richer queries -> durable workers -> incremental
 derivations -> compatibility-aware evolution. Partial assertions, evidence
