@@ -73,7 +73,7 @@ class Local:
         from mlx_lm import generate
 
         prompt = self.tok.apply_chat_template(turns, add_generation_prompt=True, tokenize=False)
-        return generate(self.model, self.tok, prompt=prompt, max_tokens=320, verbose=False)
+        return generate(self.model, self.tok, prompt=prompt, max_tokens=200, verbose=False)
 
 
 class Shared:
@@ -87,7 +87,7 @@ class Shared:
 
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.connect(str(self.path))
-            s.sendall((json.dumps({"op": "generate", "messages": turns, "max_tokens": 320}) + "\n").encode())
+            s.sendall((json.dumps({"op": "generate", "messages": turns, "max_tokens": 200}) + "\n").encode())
             data = b""
             while not data.endswith(b"\n"):
                 chunk = s.recv(65536)
@@ -126,7 +126,7 @@ class Remote:
         import urllib.request
 
         body = json.dumps({"model": os.environ.get("PLANNER_MODEL", MODEL), "messages": turns,
-                           "temperature": 0, "max_tokens": 320}).encode()
+                           "temperature": 0, "max_tokens": 200}).encode()
         req = urllib.request.Request(f"{self.endpoint}/v1/chat/completions", body,
                                      {"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=120) as r:
