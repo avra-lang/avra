@@ -49,3 +49,7 @@ Remaining: M02/M03 add business and personal declarations/startup; L01
 implements identity normalization. Q04/Q05 implement contextual and temporal
 evaluation generically through declared semantics; model descriptions are
 metadata, not an existing policy interpreter. A02 annotations remain ready.
+
+Update: the separate compiler issue is now fixed and verified with a rebuilt
+compiler; see [REEXPORT-FIX.md](REEXPORT-FIX.md). The nonzero outputs above
+remain the historical M01 receipt, not the latest source-fix status.
