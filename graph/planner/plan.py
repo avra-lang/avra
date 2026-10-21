@@ -24,10 +24,13 @@ HERE = pathlib.Path(__file__).resolve().parent
 VENV_PYTHON = pathlib.Path.home() / ".cache/avra-graph-ml/venv/bin/python"
 MODEL = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
 SOCKET = pathlib.Path.home() / ".cache/avra-graph-ml/cascade.sock"
+HUB = pathlib.Path.home() / ".cache/avra-graph-ml/hf/hub"
+# One Cypher query; a draft running past this is degenerate, not long.
+ANSWER_TOKENS = 200
 TRIES = 1
 
 sys.path.insert(0, str(HERE))
-from prompt import messages  # noqa: E402
+from prompt import Budget, declared_context, messages  # noqa: E402
 from subset import Refusal, check  # noqa: E402
 
 
@@ -73,7 +76,7 @@ class Local:
         from mlx_lm import generate
 
         prompt = self.tok.apply_chat_template(turns, add_generation_prompt=True, tokenize=False)
-        return generate(self.model, self.tok, prompt=prompt, max_tokens=200, verbose=False)
+        return generate(self.model, self.tok, prompt=prompt, max_tokens=ANSWER_TOKENS, verbose=False)
 
 
 class Shared:
@@ -83,7 +86,7 @@ class Shared:
         self.path = path
 
     def reply(self, turns):
-        return self.asked({"op": "generate", "messages": turns, "max_tokens": 200})["text"]
+        return self.asked({"op": "generate", "messages": turns, "max_tokens": ANSWER_TOKENS})["text"]
 
     def choose(self, context, question, options):
         return self.asked({"op": "choose", "context": context, "question": question, "options": options})["p"]
@@ -132,7 +135,7 @@ class Remote:
         import urllib.request
 
         body = json.dumps({"model": os.environ.get("PLANNER_MODEL", MODEL), "messages": turns,
-                           "temperature": 0, "max_tokens": 200}).encode()
+                           "temperature": 0, "max_tokens": ANSWER_TOKENS}).encode()
         req = urllib.request.Request(f"{self.endpoint}/v1/chat/completions", body,
                                      {"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=120) as r:
@@ -207,9 +210,12 @@ def bound(llm, question, cypher, context):
 def planned(llm, question, schema, context, limit=TRIES, graph=None):
     params = params_of(context)
     turns = messages(question, schema, context)
+    budget = getattr(llm, "budget", None)
     last = None
     for attempt in range(1, limit + 1):
         started = time.time()
+        if budget:
+            budget.holds(*[m["content"] for m in turns])
         cypher = drafted(llm.reply(turns))
         try:
             gated(cypher, schema, params, graph)
@@ -251,6 +257,7 @@ def composed(chooser, question, schema, context, graph=None, depth=None):
 
 def main():
     llm = chosen()
+    llm.budget = Budget(declared_context(MODEL, HUB), ANSWER_TOKENS)
     payload = json.load(sys.stdin)
     if "--structured" in sys.argv[1:]:
         if not hasattr(llm, "choose"):

@@ -91,6 +91,9 @@ def unsaid(phrases, text):
 
 def best(chooser, context, question, options):
     """The likeliest option; one option is no choice."""
+    budget = getattr(chooser, "budget", None)
+    if budget:
+        budget.holds(context, question, *options)
     if not options:
         raise ValueError(f"no options for: {question}")
     if len(options) == 1:
@@ -126,7 +129,7 @@ def hops(models, label):
     for owner, m in models.items():
         for p in m["properties"]:
             if reference_target(p["shape"]) == label:
-                about = line(m.get("description", ""), 80)
+                about = line(m.get("description", ""))
                 out.append((f"<-[:{p['name']}]-", owner, f"{owner} records whose {p['name']} is this {label}: {about}", []))
     return out
 
@@ -191,7 +194,7 @@ def anchored(chooser, head, question, models, context, evidence, out):
     else:
         kinds = list(models)
         label = kinds[best(chooser, head, "Which kind of record holds the answer?",
-                           [k + ": " + line(models[k].get("description", ""), 100) for k in kinds])]
+                           [k + ": " + line(models[k].get("description", "")) for k in kinds])]
         var = out.node(label)
         out.parts.append(f"({var}:{label})")
     return var, label
@@ -242,7 +245,7 @@ def returns(chooser, trail, model, var):
     picked = []
     for i in readable:
         p = props[i]
-        about = f"{p['name']}" + (f" ({line(p['description'], 80)})" if p.get("description") else "")
+        about = f"{p['name']}" + (f" ({line(p['description'])})" if p.get("description") else "")
         if best(chooser, trail, f"Does the answer need their {about}?", NEEDED) == 0:
             picked.append(i)
     return ", ".join(f"{var}.{props[i]['name']} AS {props[i]['name']}" for i in picked or [0])

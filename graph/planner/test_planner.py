@@ -129,6 +129,24 @@ class Prompt(unittest.TestCase):
             self.fail("an undeclared hop passed")
 
 
+class Budgeting(unittest.TestCase):
+    def test_the_budget_is_the_declared_context_less_the_answer(self):
+        import tempfile
+        from prompt import Budget, declared_context
+
+        hub = pathlib.Path(tempfile.mkdtemp())
+        snapshot = hub / "models--acme--tiny" / "snapshots" / "r1"
+        snapshot.mkdir(parents=True)
+        (snapshot / "config.json").write_text(json.dumps({"max_position_embeddings": 50}))
+        self.assertEqual(declared_context("acme/tiny", hub), 50)
+        self.assertIsNone(declared_context("acme/absent", hub))
+        budget = Budget(declared_context("acme/tiny", hub), 10)
+        budget.holds("x" * 40)
+        with self.assertRaises(SystemExit):
+            budget.holds("x" * 30, "y" * 11)
+        Budget(None, 10).holds("x" * 10_000)
+
+
 class Loop(unittest.TestCase):
     def test_params_bind_the_context(self):
         context = {"principal": "p:jonas", "speaker": "p:dana", "question_at_ms": 9,
