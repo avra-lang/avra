@@ -1,0 +1,450 @@
+//! The Cypher subset's PARSER grammar, assembled from its own builder
+//! functions: each rule's text lives on `@grammar_rule` beside the
+//! function that builds it. Keywords match case-insensitively.
+
+use @std.grammar.{
+    grammar_rule,
+    Grammar,
+    Rule,
+    Captured,
+    parse_grammar_text,
+    run_grammar,
+    ready,
+    RunOutcome,
+    LexToken,
+    Lexeme,
+    lex,
+    named_kinds,
+    want,
+}
+use @std.meta.{Annotation}
+use @std.errors.{Loc}
+use @std.text.{ascii_lower, parse_int}
+use lexicon.{CYPHER}
+
+export enum Expr {
+    /// `owner.name`
+    Prop(owner: string, name: string)
+    Var(name: string)
+    Num(text: string)
+    Str(text: string)
+    Bool(value: bool)
+    Null
+    Param(name: string)
+    Not(e: Expr)
+    /// `=`, `<>`, `<`, `<=`, `>`, `>=`, `CONTAINS`, `AND`, `OR`
+    Binary(op: string, lhs: Expr, rhs: Expr)
+    IsNull(e: Expr, negated: bool)
+    Call(name: string, args: List<Expr>)
+    /// The bare `*` argument of `count(*)`.
+    Star
+}
+
+export type NodePat = { name: string?, label: string? }
+
+/// `forward` is the arrow's direction as written; `var_length` is a `*` in the brackets.
+export type RelPat = { label: string, forward: bool, name: string?, var_length: bool }
+
+export type Hop = { rel: RelPat, node: NodePat }
+
+export type Pattern = { first: NodePat, hops: List<Hop> }
+
+export type MatchClause = { optional: bool, pattern: Pattern, where: Expr? }
+
+export type ReturnItem = { expr: Expr, name: string? }
+
+export type Query = { matches: List<MatchClause>, returns: List<ReturnItem>, limit: int? }
+
+/// The refusal a failed parse names. `code` is a stable problem code.
+export type CypherError = { code: string, message: string }
+
+enum CNode {
+    Ex(e: Expr)
+    Exs(items: List<Expr>)
+    Nd(n: NodePat)
+    Rl(r: RelPat)
+    Pat(p: Pattern)
+    Mc(m: MatchClause)
+    Ml(items: List<MatchClause>)
+    Ri(r: ReturnItem)
+    Q(q: Query)
+}
+
+alias Cap = Captured<LexToken, CNode>
+
+fn text_of(c: Cap) -> string {
+    match c { .Terminal(t) -> t.text, .Node(_) or .Many(_) or .Absent -> "" }
+}
+
+fn present(c: Cap) -> bool {
+    match c { .Absent -> false, .Terminal(_) or .Node(_) or .Many(_) -> true }
+}
+
+fn kind_of(c: Cap) -> string {
+    match c { .Terminal(t) -> t.kind, .Node(_) or .Many(_) or .Absent -> "" }
+}
+
+fn node_of(c: Cap) -> CNode? {
+    match c { .Node(n) -> n, rest -> null }
+}
+
+fn unquoted(text: string) -> string { text.substring(1, text.length - 1) }
+
+fn named(c: Cap) -> string? { if present(c) { text_of(c) } else { null } }
+
+impl CNode {
+    fn as_ex() -> Expr? { match self { .Ex(e) -> e, rest -> null } }
+    fn as_exs() -> List<Expr>? { match self { .Exs(items) -> items, rest -> null } }
+    fn as_node() -> NodePat? { match self { .Nd(n) -> n, rest -> null } }
+    fn as_rel() -> RelPat? { match self { .Rl(r) -> r, rest -> null } }
+    fn as_pattern() -> Pattern? { match self { .Pat(p) -> p, rest -> null } }
+    fn as_match() -> MatchClause? { match self { .Mc(m) -> m, rest -> null } }
+    fn as_item() -> ReturnItem? { match self { .Ri(r) -> r, rest -> null } }
+    fn as_matches() -> List<MatchClause>? { match self { .Ml(items) -> items, rest -> null } }
+    fn as_query() -> Query? { match self { .Q(q) -> q, rest -> null } }
+}
+
+fn ex_of(c: Cap) -> Expr? { node_of(c)?.as_ex() }
+
+fn node(n: CNode) -> Cap { Captured.Node(n) }
+
+fn exprs_of(c: Cap) -> Result<List<Expr>, string> {
+    match c {
+        .Many(items) -> .Ok([want(ex_of(i), "an operand")? for i in items]),
+        .Absent -> .Ok([]),
+        .Terminal(_) or .Node(_) -> .Err("expected a list of operands"),
+    }
+}
+
+fn nodes_of(c: Cap) -> Result<List<NodePat>, string> {
+    match c {
+        .Many(items) -> .Ok([want(node_of(i)?.as_node(), "a node")? for i in items]),
+        .Absent -> .Ok([]),
+        .Terminal(_) or .Node(_) -> .Err("expected a list of nodes"),
+    }
+}
+
+fn rels_of(c: Cap) -> Result<List<RelPat>, string> {
+    match c {
+        .Many(items) -> .Ok([want(node_of(i)?.as_rel(), "a relationship")? for i in items]),
+        .Absent -> .Ok([]),
+        .Terminal(_) or .Node(_) -> .Err("expected a list of relationships"),
+    }
+}
+
+fn matches_of(c: Cap) -> Result<List<MatchClause>, string> {
+    match c {
+        .Many(items) -> .Ok([want(node_of(i)?.as_match(), "a match clause")? for i in items]),
+        .Absent -> .Ok([]),
+        .Terminal(_) or .Node(_) -> .Err("expected a list of match clauses"),
+    }
+}
+
+fn items_of(c: Cap) -> Result<List<ReturnItem>, string> {
+    match c {
+        .Many(items) -> .Ok([want(node_of(i)?.as_item(), "a return item")? for i in items]),
+        .Absent -> .Ok([]),
+        .Terminal(_) or .Node(_) -> .Err("expected a list of return items"),
+    }
+}
+
+@grammar_rule("\"(\" (v:IDENT)? (\":\" l:IDENT)? \")\"")
+fn node_pat(caps: List<Cap>) -> Result<Cap, string> {
+    .Ok(node(CNode.Nd(NodePat { name: named(caps[0]), label: named(caps[1]) })))
+}
+
+@grammar_rule("\"-\" \"[\" (rv:IDENT)? \":\" t:IDENT (vl:\"*\" (NUMBER)? (\"..\" (NUMBER)?)?)? \"]\" \"->\"")
+fn rel_out(caps: List<Cap>) -> Result<Cap, string> {
+    .Ok(
+        node(
+            CNode
+                .Rl(
+                    RelPat {
+                        label: text_of(caps[1]),
+                        forward: true,
+                        name: named(caps[0]),
+                        var_length: present(caps[2]),
+                    },
+                ),
+        ),
+    )
+}
+
+@grammar_rule("\"<-\" \"[\" (rv:IDENT)? \":\" t:IDENT (vl:\"*\" (NUMBER)? (\"..\" (NUMBER)?)?)? \"]\" \"-\"")
+fn rel_in(caps: List<Cap>) -> Result<Cap, string> {
+    .Ok(
+        node(
+            CNode
+                .Rl(
+                    RelPat {
+                        label: text_of(caps[1]),
+                        forward: false,
+                        name: named(caps[0]),
+                        var_length: present(caps[2]),
+                    },
+                ),
+        ),
+    )
+}
+
+@grammar_rule("o:rel_out | i:rel_in")
+fn rel_pat(caps: List<Cap>) -> Result<Cap, string> { .Ok(caps[0]) }
+
+@grammar_rule("n:node_pat (r:rel_pat m:node_pat)*")
+fn pattern(caps: List<Cap>) -> Result<Cap, string> {
+    let first? = node_of(caps[0])?.as_node() else { return .Err("pattern: first node did not build") }
+    let rels = rels_of(caps[1])?
+    let nodes = nodes_of(caps[2])?
+    .Ok(
+        node(
+            CNode
+                .Pat(
+                    Pattern {
+                        first: first,
+                        hops: [Hop { rel: r, node: nodes[i] } for i, r in rels],
+                    },
+                ),
+        ),
+    )
+}
+
+@grammar_rule("\"WHERE\" e:or_expr")
+fn where_clause(caps: List<Cap>) -> Result<Cap, string> { .Ok(caps[0]) }
+
+@grammar_rule("(o:\"OPTIONAL\")? \"MATCH\" p:pattern (w:where_clause)?")
+fn match_clause(caps: List<Cap>) -> Result<Cap, string> {
+    let p? = node_of(caps[0])?.as_pattern() else { return .Err("match: pattern did not build") }
+    .Ok(
+        node(
+            CNode.Mc(MatchClause { optional: present(caps[1]), pattern: p, where: ex_of(caps[2]) }),
+        ),
+    )
+}
+
+@grammar_rule("l:and_expr (\"OR\" r:and_expr)*")
+fn or_expr(caps: List<Cap>) -> Result<Cap, string> {
+    let l? = ex_of(caps[0]) else { return .Err("or: left operand did not build") }
+    mut acc = l
+    for r in exprs_of(caps[1])? { acc = Expr.Binary("OR", acc, r) }
+    .Ok(node(CNode.Ex(acc)))
+}
+
+@grammar_rule("l:not_expr (\"AND\" r:not_expr)*")
+fn and_expr(caps: List<Cap>) -> Result<Cap, string> {
+    let l? = ex_of(caps[0]) else { return .Err("and: left operand did not build") }
+    mut acc = l
+    for r in exprs_of(caps[1])? { acc = Expr.Binary("AND", acc, r) }
+    .Ok(node(CNode.Ex(acc)))
+}
+
+@grammar_rule("(n:\"NOT\")? e:cmp_expr")
+fn not_expr(caps: List<Cap>) -> Result<Cap, string> {
+    let e? = ex_of(caps[0]) else { return .Err("not: operand did not build") }
+    .Ok(node(CNode.Ex(if present(caps[1]) { Expr.Not(e) } else { e })))
+}
+
+@grammar_rule("l:atom (op:(\"=\"|\"<\"|\">\"|\"<=\"|\">=\"|\"<>\") r:atom)? (ck:\"CONTAINS\" cr:atom)? (isk:\"IS\" (nn:\"NOT\")? \"NULL\")?")
+fn cmp_expr(caps: List<Cap>) -> Result<Cap, string> {
+    let l? = ex_of(caps[0]) else { return .Err("expr: left side did not build") }
+    if present(caps[1]) {
+        let r? = ex_of(caps[2]) else { return .Err("expr: right side did not build") }
+        return .Ok(node(CNode.Ex(Expr.Binary(text_of(caps[1]), l, r))))
+    }
+    if present(caps[3]) {
+        let r? = ex_of(caps[4]) else { return .Err("contains: right side did not build") }
+        return .Ok(node(CNode.Ex(Expr.Binary("CONTAINS", l, r))))
+    }
+    if present(caps[5]) { return .Ok(node(CNode.Ex(Expr.IsNull(l, present(caps[6]))))) }
+    .Ok(node(CNode.Ex(l)))
+}
+
+@grammar_rule("\"*\" | e:or_expr")
+fn call_arg(caps: List<Cap>) -> Result<Cap, string> {
+    match caps[0] {
+        .Terminal(_) -> .Ok(node(CNode.Ex(Expr.Star))),
+        .Node(_) or .Many(_) or .Absent -> .Ok(caps[0]),
+    }
+}
+
+@grammar_rule("a:call_arg (\",\" a:call_arg)*")
+fn call_args(caps: List<Cap>) -> Result<Cap, string> { .Ok(node(CNode.Exs(exprs_of(caps[0])?))) }
+
+@grammar_rule("\"(\" e:or_expr \")\"")
+fn paren_expr(caps: List<Cap>) -> Result<Cap, string> { .Ok(caps[0]) }
+
+@grammar_rule("\"-\" n:NUMBER")
+fn neg_number(caps: List<Cap>) -> Result<Cap, string> {
+    .Ok(node(CNode.Ex(Expr.Num("-${text_of(caps[0])}"))))
+}
+
+/// An IDENT-headed atom is a variable, a property read or a call; a
+/// bare `true`, `false` or `null` is its literal.
+@grammar_rule("p:paren_expr | ng:neg_number | NUMBER | STRING | PARAM | n:IDENT (\".\" m:IDENT)? (lp:\"(\" args:call_args? \")\")?")
+fn atom(caps: List<Cap>) -> Result<Cap, string> {
+    if caps.length == 4 {
+        let name = text_of(caps[0])
+        if present(caps[2]) {
+            let args = node_of(caps[3])?.as_exs() ?? []
+            return .Ok(node(CNode.Ex(Expr.Call(ascii_lower(name), args))))
+        }
+        if present(caps[1]) { return .Ok(node(CNode.Ex(Expr.Prop(name, text_of(caps[1]))))) }
+        return .Ok(
+            node(
+                CNode
+                    .Ex(
+                        match ascii_lower(name) {
+                            "true" -> Expr.Bool(true),
+                            "false" -> Expr.Bool(false),
+                            "null" -> Expr.Null,
+                            rest -> Expr.Var(name),
+                        },
+                    ),
+            ),
+        )
+    }
+    let built = node_of(caps[0])
+    if built != null {
+        let e? = built!.as_ex() else { return .Err("atom: grouped form did not build") }
+        return .Ok(node(CNode.Ex(e)))
+    }
+    let text = text_of(caps[0])
+    match kind_of(caps[0]) {
+        "NUMBER" -> .Ok(node(CNode.Ex(Expr.Num(text)))),
+        "STRING" -> .Ok(node(CNode.Ex(Expr.Str(unquoted(text))))),
+        rest -> .Ok(node(CNode.Ex(Expr.Param(text.substring(1, text.length))))),
+    }
+}
+
+@grammar_rule("e:or_expr (\"AS\" a:IDENT)?")
+fn return_item(caps: List<Cap>) -> Result<Cap, string> {
+    let e? = ex_of(caps[0]) else { return .Err("return item: did not build") }
+    .Ok(node(CNode.Ri(ReturnItem { expr: e, name: named(caps[1]) })))
+}
+
+@grammar_rule("m:match_clause (m:match_clause)*")
+fn match_list(caps: List<Cap>) -> Result<Cap, string> { .Ok(node(CNode.Ml(matches_of(caps[0])?))) }
+
+@grammar_rule("ms:match_list \"RETURN\" i:return_item (\",\" i:return_item)* (\"LIMIT\" lim:NUMBER)?")
+fn query(caps: List<Cap>) -> Result<Cap, string> {
+    let matches? = node_of(caps[0])?.as_matches() else { return .Err("query: matches did not build") }
+    let limit = if present(caps[2]) { parse_int(text_of(caps[2])) } else { null }
+    .Ok(node(CNode.Q(Query { matches: matches, returns: items_of(caps[1])?, limit: limit })))
+}
+
+type RuleSource = {
+    name: string,
+    mark: Annotation,
+    handler: fn(List<Cap>) -> Result<Cap, string>,
+}
+
+collect cypher_sources: List<RuleSource> = @grammar_rule in self as RuleSource { name: it.name, mark: it.mark, handler: it } by it.name
+
+impl RuleSource {
+    fn built() -> Rule {
+        let parsed = parse_grammar_text(self.name, self.mark.args[0]).built!
+        let r = parsed.rules[0]
+        r with { body: r.body.synthesized_build(self.name) }
+    }
+}
+
+/// The assembled parser grammar — one rule per `@grammar_rule`d function here.
+export fn cypher_parser_grammar() -> Grammar {
+    Grammar { name: "cypher_parser", start: "query", rules: [s.built() for s in cypher_sources] }
+}
+
+fn dispatch(name: string, caps: List<Cap>, _at: Loc?) -> Result<Cap, string> {
+    let found? = cypher_sources.find(it.name == name) else { return .Err("no rule named ${name}") }
+    found.handler(caps)
+}
+
+fn cypher_lexeme() -> Lexeme<LexToken> {
+    let kinds = named_kinds(CYPHER, ["EOF"])
+    Lexeme {
+        lit_matches: (t: LexToken, text: string) -> ascii_lower(t.text) == ascii_lower(text),
+        is_eof: (t: LexToken) -> t.kind == "EOF",
+        ends_statement: (t: LexToken) -> false,
+        kind_of: (term: string) -> kinds.index_of(term),
+        wears_kind: (t: LexToken, k: int) -> k >= 0 && t.kind == kinds[k],
+        text: (t: LexToken) -> t.text,
+        loc: (t: LexToken) -> t.loc,
+        stated: (text: string, loc: Loc?) -> LexToken {
+            kind: "STATED",
+            text: text,
+            loc: loc ?? Loc { file: null, lo: 0, hi: 0 },
+        },
+    }
+}
+
+const KNOWN_TERMINALS: List<string> = ["IDENT", "NUMBER", "STRING", "PARAM"]
+
+/// Words that name a clause this read-only surface will not run, each with
+/// the problem code its refusal carries.
+type Refusal = { word: string, code: string, law: string }
+
+const REFUSALS: List<Refusal> = [
+    Refusal { word: "create", code: "mutation_refused", law: write_law() },
+    Refusal { word: "merge", code: "mutation_refused", law: write_law() },
+    Refusal { word: "set", code: "mutation_refused", law: write_law() },
+    Refusal { word: "delete", code: "mutation_refused", law: write_law() },
+    Refusal { word: "detach", code: "mutation_refused", law: write_law() },
+    Refusal { word: "remove", code: "mutation_refused", law: write_law() },
+    Refusal { word: "drop", code: "mutation_refused", law: write_law() },
+    Refusal {
+        word: "call",
+        code: "procedure_refused",
+        law: "procedures are not run; a query only reads",
+    },
+    Refusal {
+        word: "load",
+        code: "procedure_refused",
+        law: "a query reads the graph, never a file",
+    },
+    Refusal {
+        word: "with",
+        code: "unsupported_clause",
+        law: "WITH pipelines are outside the subset",
+    },
+    Refusal { word: "order", code: "unsupported_clause", law: "ORDER BY is outside the subset" },
+    Refusal { word: "skip", code: "unsupported_clause", law: "SKIP is outside the subset" },
+    Refusal { word: "distinct", code: "unsupported_clause", law: "DISTINCT is outside the subset" },
+    Refusal { word: "union", code: "unsupported_clause", law: "UNION is outside the subset" },
+    Refusal { word: "unwind", code: "unsupported_clause", law: "UNWIND is outside the subset" },
+    Refusal { word: "foreach", code: "mutation_refused", law: write_law() },
+]
+
+fn write_law() -> string { "a query only reads; it cannot write the graph" }
+
+/// The first refused word in the source, in token order.
+fn refused_word(tokens: List<LexToken>) -> CypherError? {
+    [CypherError {
+        code: r.code,
+        message: "${t.text.substring(0, t.text.length)} is not accepted — ${r.law}",
+    } for t in tokens if t.kind == "IDENT" for r in REFUSALS if r.word == ascii_lower(t.text)]
+        .first()
+}
+
+/// Parses one query. A failure is a refusal with a stable code: a refused
+/// word, else `syntax`.
+export fn parse_cypher(source: string) -> Result<Query, CypherError> {
+    let lexed = lex(CYPHER, source, ["WS", "LINE_COMMENT"])
+    if !lexed.errors.is_empty() { return .Err(CypherError { code: "syntax", message: "unexpected character in the query" }) }
+    let outcome = run_grammar<LexToken, CNode>(
+        ready(cypher_parser_grammar(), KNOWN_TERMINALS),
+        lexed.tokens,
+        cypher_lexeme(),
+        dispatch,
+    )
+    let built? = outcome.result else { return .Err(refusal(lexed.tokens, outcome.diagnostics.first()?.message)) }
+    if !outcome.diagnostics.is_empty() { return .Err(refusal(lexed.tokens, outcome.diagnostics[0].message)) }
+    match node_of(built)?.as_query() {
+        q? -> .Ok(q)
+        null -> .Err(CypherError { code: "syntax", message: "the query did not build" })
+    }
+}
+
+fn refusal(tokens: List<LexToken>, message: string?) -> CypherError {
+    refused_word(tokens) ?? CypherError {
+        code: "syntax",
+        message: message ?? "the query did not parse",
+    }
+}

@@ -1,0 +1,19 @@
+use @avra.cypher.lexicon.{CYPHER}
+use @std.grammar.{lex}
+
+fn kinds_of(source: string) -> string {
+    [t.kind for t in lex(CYPHER, source, ["WS"]).tokens if t.kind != "EOF"].join(",")
+}
+
+spec "cypher/lexicon" {
+    given "the subset's token vocabulary" {
+        then "a single letter is an IDENT, not the alpha fragment" { kinds_of("a") == "IDENT" }
+        then "a parameter is one token" { kinds_of("\$speaker") == "PARAM" }
+        then "a relationship arrow tokenizes as its pieces" {
+            kinds_of("(a)-[:p]->(b)") == "OP,IDENT,OP,OP,OP,OP,IDENT,OP,OP,OP,IDENT,OP"
+        }
+        then "a back arrow is one operator" { kinds_of("<-") == "OP" }
+        then "both quotes make a STRING" { kinds_of("'a' \"b\"") == "STRING,STRING" }
+        then "a line comment is its own token" { kinds_of("// c\na") == "LINE_COMMENT,IDENT" }
+    }
+}
