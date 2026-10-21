@@ -38,6 +38,8 @@ MAX_OPTIONS = 26
 GENERATE_BUDGET = 4096
 ABSTAIN = object()
 SOCKET = os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
+STATEMENT = "statement"
+STATEMENT_GLOSS = "one complete statement, request or question, as a whole sentence"
 REFERENCE = "reference"
 REFERENCE_GLOSS = "a pronoun or possessive word that stands for a person, without the noun it modifies"
 SPEECH_ACTS = {
@@ -320,7 +322,7 @@ class Cascade:
 
     def run(self, source):
         self.t = Text(source["content"])
-        self.records, self.mentions, self.minted, self.resolved = [], [], 0, {}
+        self.records, self.mentions, self.minted, self.resolved, self._units = [], [], 0, {}, None
         self.frames = [dict(f, _range=position(f["passage"]), _given=True) for f in source.get("frames", [])]
         clock = time.time()
         self.llm.begin(source["content"])
@@ -383,6 +385,40 @@ class Cascade:
         rec["_anchor"] = (a, b)
         self.records.append(rec)
         return rec
+
+    def units(self):
+        """The spans choices are asked about, by CASCADE_UNITS:
+        statements — the encoder's statement spans (gaps between them kept);
+        windows — each frame, and the text outside frames, whole;
+        sentences — punctuation splitting, kept only as a measured baseline."""
+        if self._units is not None:
+            return self._units
+        mode = os.environ.get("CASCADE_UNITS", "statements")
+        if mode == "sentences":
+            self._units = self.t.units()
+        elif mode == "windows":
+            self._units = self.covering([f["_range"] for f in self.frames])
+        else:
+            found = self.enc.mentions(self.t.s, {STATEMENT: STATEMENT_GLOSS}).get(STATEMENT, [])
+            self._units = self.covering([(s["start"], s["end"]) for s in found])
+        return self._units
+
+    def covering(self, ranges):
+        """Non-overlapping ranges in order, longest kept on overlap, with the
+        uncovered stretches between them as ranges of their own."""
+        kept = []
+        for a, b in sorted(ranges, key=lambda r: r[0] - r[1]):
+            if all(b <= x or a >= y for x, y in kept):
+                kept.append((a, b))
+        kept.sort()
+        out, at = [], 0
+        for a, b in kept + [(len(self.t.s), len(self.t.s))]:
+            if self.t.s[at:a].strip():
+                out.append((at, a))
+            if b > a:
+                out.append((a, b))
+            at = max(at, b)
+        return [(a, b) for a, b in out if self.t.s[a:b].strip()]
 
     def mint(self):
         self.minted += 1
@@ -512,7 +548,7 @@ class Cascade:
             return None
         frame = self.innermost(x, y)
         spoken = f"\nThis passage is spoken by {self.name(frame['speaker'])}." if frame and frame["speaker"] else ""
-        unit = next(((u, v) for u, v in self.t.units() if u <= x and y <= v), (x, y))
+        unit = next(((u, v) for u, v in self.units() if u <= x and y <= v), (x, y))
         p = self.llm.pick(f'Passage: "{self.t.s[unit[0]:unit[1]]}"{spoken}', f'Who does "{self.t.s[x:y]}" at character {x} refer to?', [self.name(i) for i in ids], ["someone the text does not name", "cannot tell"])
         ranked = sorted(range(len(p)), key=lambda i: -p[i])
         return ids[ranked[0]] if ranked[0] < len(ids) and p[ranked[0]] - p[ranked[1]] >= MARGIN else None
@@ -536,7 +572,7 @@ class Cascade:
             frm, to, label = rel["from"][0], rel["to"][0], rel["label"][0]
             ft, tt = target(self.prop(name, frm)["shape"]), target(self.prop(name, to)["shape"])
             free = self.plan.free_labels(name)
-            for a, b in self.t.units():
+            for a, b in self.units():
                 for sub in self.sub_units(a, b):
                     self.relate(name, frm, to, label, ft, tt, free, *sub)
 
@@ -609,7 +645,7 @@ class Cascade:
         if not kinds:
             return
         opts = [f"{m}: {gloss(self.plan.models[m])}" for m in kinds]
-        for a, b in self.t.units():
+        for a, b in self.units():
             for x, y in self.sub_units(a, b):
                 x, y = self.trimmed(x, y)
                 if y <= x:
@@ -902,6 +938,7 @@ def answered(body, models):
         models.llm.source, models.llm.cache = "", None
         return {"p": models.llm.choose(body["context"], body["question"], body["options"])}
     models.llm.prefix = body.get("prefix", True)
+    os.environ["CASCADE_UNITS"] = body.get("units") or "statements"
     result, logs = extract(body["request"], models)
     return {"result": result, "log": logs}
 
@@ -947,7 +984,7 @@ def serve():
                 print(f"client gone: {e}", file=sys.stderr, flush=True)
 
 
-def remote(req, prefix=True):
+def remote(req, prefix=True, units=None):
     """The resident service's answer, or None when no service is listening."""
     import socket
 
@@ -959,7 +996,7 @@ def remote(req, prefix=True):
     except OSError:
         return None
     with s:
-        s.sendall(json.dumps({"request": req, "prefix": prefix}, ensure_ascii=False).encode() + b"\n")
+        s.sendall(json.dumps({"request": req, "prefix": prefix, "units": units}, ensure_ascii=False).encode() + b"\n")
         s.shutdown(socket.SHUT_WR)
         return json.loads(b"".join(iter(lambda: s.recv(1 << 16), b"")))
 
@@ -975,7 +1012,7 @@ def main():
         print("\n".join(logs), file=sys.stderr)
         json.dump(result, sys.stdout, ensure_ascii=False)
         return 0
-    answer = remote(req, "--no-prefix" not in args)
+    answer = remote(req, "--no-prefix" not in args, args[args.index("--units") + 1] if "--units" in args else None)
     if answer is None:
         print(f"service unavailable: nothing answers on {SOCKET}; start `cascade.py --serve`, or pass --local to load the models here", file=sys.stderr)
         return 1
