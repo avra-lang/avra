@@ -50,3 +50,12 @@ The catalog fingerprint folds compiler validator hashes, so a request must
 bind the catalog of the program that admits it (`EXTRACT_CATALOG` prints
 it); the app binary's `schema` answer differs. `recorded/` holds the slice's
 proposals as produced, bound to the app binary's catalog.
+
+## Choice bench
+
+`bench/decisions.jsonl` holds 42 hand-labelled closed choices from the slice:
+34 the cascade asked plus 8 harder ones (requests, promises, denials,
+cross-source names). `python bench_choices.py qwen|jevk5` scores one backend;
+keep only one model resident. jevk5 (ollaya) takes at most 16 options, so a
+labelled-pair choice is asked as label-or-none and then direction.
+Probabilities are logged raw for later calibration.

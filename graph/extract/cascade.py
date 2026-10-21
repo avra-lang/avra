@@ -184,6 +184,9 @@ class Scorer:
         ids = mx.array([self.tok.encode(l, add_special_tokens=False)[0] for l in letters])
         self.calls += 1
         p = mx.softmax(logits[ids].astype(mx.float32)).tolist()
+        if os.environ.get("CASCADE_DECISIONS"):
+            with open(os.environ["CASCADE_DECISIONS"], "a") as out:
+                out.write(json.dumps({"context": context, "question": question, "options": options, "p": p}) + "\n")
         if os.environ.get("CASCADE_TRACE"):
             log(f"? {question.splitlines()[-1]} | {context.splitlines()[-1][:100]}")
             for o, x in sorted(zip(options, p), key=lambda z: -z[1])[:3]:
