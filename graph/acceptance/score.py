@@ -134,6 +134,11 @@ def oracle_gold():
     return read_lines(path) if path.exists() else []
 
 
+def oracle_readings():
+    path = ORACLE / "readings.jsonl"
+    return read_lines(path) if path.exists() else []
+
+
 def complete_plan(row, request, schema, context, view):
     return {"contract": 1, "request": request, "schema": schema["fingerprint"], "context": context,
             "source_view": view, "steps": row["steps"], "output": row["output"],
@@ -152,9 +157,21 @@ def nest(fields):
     return tree
 
 
-def projection(answer):
+def read_keys(answer, keys):
+    """Grader-side reading of generic [entity, property] fields into manifest keys."""
+    out = {}
+    for key, spec in keys.items():
+        for field in answer.get("fields", []):
+            if field["path"][1:] == spec["suffix"]:
+                out[key] = field["path"][0] if spec["take"] == "entity" else field["value"]
+                break
+    return out
+
+
+def projection(answer, keys=None):
     """The actual answer as the same shape the manifest's expectations use."""
     tree = nest(answer.get("fields", []))
+    tree.update(read_keys(answer, keys or {}))
     if answer.get("candidates"):
         tree["candidates"] = [c["entity"] for c in answer["candidates"]]
     if answer.get("problems") and "reason" not in tree:
@@ -190,11 +207,11 @@ def cited_sources(answer, by_ref):
     return {by_ref[r] for r in refs if r in by_ref}, [r for r in refs if r not in by_ref]
 
 
-def grade(question, answer, ids, by_ref, superseded):
+def grade(question, answer, ids, by_ref, superseded, keys=None):
     """Three independent verdicts for one structured answer."""
     expect = question["expect"]
     abstained = answer["status"] == expect["status"]
-    matched = abstained and contains(canonical(expect["answer"], ids), canonical(projection(answer), ids))
+    matched = abstained and contains(canonical(expect["answer"], ids), canonical(projection(answer, keys), ids))
     cited, unknown = cited_sources(answer, by_ref)
     need = set(expect.get("evidence_all", []))
     any_of = set(expect.get("evidence_any", []))
@@ -360,7 +377,8 @@ def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, 
     if "error" in answer or "status" not in answer:
         return {"status": "error", "reason": str(answer.get("error", "no answer"))[:300]}
     answers[q["id"]] = answer.get("request")
-    verdict = grade(q, answer, ids, by_ref, superseded)
+    reading = {r["question"]: r["keys"] for r in oracle_readings()}.get(q["id"])
+    verdict = grade(q, answer, ids, by_ref, superseded, reading)
     return {"status": "pass" if all(verdict.values()) else "fail", **verdict,
             "ms": int((time.time() - started) * 1000), "got": answer["status"]}
 
