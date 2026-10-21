@@ -37,8 +37,8 @@ fn registrations() -> List<Registration> {
     ]
 }
 
-const content = "Alex Moreau alex@example.test token:old"
-const next_content = "Alexandre Moreau alex@example.test token:new"
+const content = "Dana Ferris alex@example.test token:old"
+const next_content = "Dominique Ferris alex@example.test token:new"
 const version = "{\"producer\":\"encoder\",\"code\":\"code:1\",\"model\":\"weights:1\"}"
 
 fn source(id: string = "source:1", revision: int = 1, text: string = content) -> SourceEnvelope {
@@ -100,7 +100,7 @@ fn seed(
     id: string,
     route: string?,
     token: string? = null,
-    label: string = "Alex Moreau",
+    label: string = "Dana Ferris",
     producer: string = "encoder",
     scope: string = "all",
     run: string = "seed:1",
@@ -148,7 +148,7 @@ fn exact_existing() -> Result<bool, string> {
         s,
         "entity:chen",
         "chen@example.test",
-        label: "Alex Chen",
+        label: "Dana Lowe",
         scope: "chen",
         run: "seed:chen",
     )?
@@ -158,7 +158,7 @@ fn exact_existing() -> Result<bool, string> {
         record(
             field("route", quote_text(" ALEX@EXAMPLE.TEST ")) +
                 "," +
-                field("label", quote_text("Alexandre Moreau")),
+                field("label", quote_text("Dominique Ferris")),
         ),
     )?
     existing(result, "entity:alex") &&
@@ -231,7 +231,7 @@ fn corrected_contact() -> Result<bool, string> {
         "entity:alex",
         "alex@example.test",
         "token:new",
-        "Alexandre Moreau",
+        "Dominique Ferris",
         run: "seed:2",
     )?
     let rows = stored(AliasRow.where(g.db, namespace: "opaque", key: "token:old"))?
@@ -269,7 +269,7 @@ fn shared_new_keys() -> Result<bool, string> {
             "m:b",
         ),
         record(field("token", quote_text(" bridge ")), "m:a"),
-        record(field("label", quote_text("Alex")), "m:d"),
+        record(field("label", quote_text("Dana")), "m:d"),
     ]
     let forward = linked(g, records.join(","))?
     let reverse = linked(g, [records[3], records[2], records[1], records[0]].join(","))?
@@ -330,13 +330,13 @@ fn weak_proposals() -> Result<bool, string> {
     let s = source()
     g.ingest(to_text(source_document(s)))?
     seed(g, s, "entity:alex", "alex@example.test")?
-    let candidate = "{\"entity\":\"entity:alex\",\"model\":\"Client\",\"label\":\"Alex\",\"score\":1.0}"
+    let candidate = "{\"entity\":\"entity:alex\",\"model\":\"Client\",\"label\":\"Dana\",\"score\":1.0}"
     let suggested = linked(
         g,
-        record(field("label", quote_text("Alex")), extra: ",\"candidates\":[${candidate}]"),
+        record(field("label", quote_text("Dana")), extra: ",\"candidates\":[${candidate}]"),
         candidates: "[${candidate}]",
     )?
-    let identity = ",\"identities\":[{\"identity\":{\"namespace\":\"directory\",\"key\":\"alex@example.test\"},\"spans\":[{\"start\":0,\"end\":4,\"text\":\"Alex\"}]}]"
+    let identity = ",\"identities\":[{\"identity\":{\"namespace\":\"directory\",\"key\":\"alex@example.test\"},\"spans\":[{\"start\":0,\"end\":4,\"text\":\"Dana\"}]}]"
     let only = linked(g, record("", extra: identity))?
     suggested.records[0].decision is .Unresolved && only.records[0].decision is .Unresolved
 }
@@ -418,7 +418,7 @@ fn contradictory_proposal() -> Result<bool, string> {
     let g = Graph.memory(registrations())?
     defer { let _ = g.close() }
     g.ingest(to_text(source_document(source())))?
-    let identity = ",\"identities\":[{\"identity\":{\"namespace\":\"directory\",\"key\":\"someone:else\"},\"spans\":[{\"start\":0,\"end\":4,\"text\":\"Alex\"}]}]"
+    let identity = ",\"identities\":[{\"identity\":{\"namespace\":\"directory\",\"key\":\"someone:else\"},\"spans\":[{\"start\":0,\"end\":4,\"text\":\"Dana\"}]}]"
     linked(g, record(field("route", quote_text("alex@example.test")), extra: identity)) is .Err &&
         linked(g, record(field("route", quote_text("   ")))) is .Err &&
         (linked(g, record(field("route", "null")))?).records[0].decision is .Unresolved

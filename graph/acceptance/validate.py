@@ -4,6 +4,7 @@ import copy
 import csv
 import io
 import json
+import re
 import pathlib
 import sys
 from datetime import date, datetime
@@ -173,6 +174,37 @@ def validate(data):
         visit(key)
 
 
+GRAPH = ROOT.parent
+GENERIC = {"Store", "Works", "Jacket"}
+PRIVATE_KINDS = {"Person", "Organization", "Product", "Pet"}
+SCANNED = ("acceptance/app/src/models", "extract", "planner", "cypher", "src")
+SKIPPED = {"bench", "recorded", "__pycache__", "build"}
+SUFFIXES = {".av", ".py", ".md", ".toml", ".json"}
+
+
+def leak_pattern(entities, sources):
+    """Fixture names, document identifiers and mail domains as one regex."""
+    words = {w for e in entities if e["kind"] in PRIVATE_KINDS for w in re.findall(r"[A-Z][a-z]+", e["label"])}
+    domains = {d for s in sources for d in re.findall(r"@([\w-]+\.example)", s["content"])}
+    parts = [r"\b(?:" + "|".join(sorted(words - GENERIC)) + r")\b", r"\b(?:INV|PO|R)-\d+\b", r"\bNJ-\d+\b"]
+    parts += [re.escape(d) for d in sorted(domains)]
+    return re.compile("|".join(parts))
+
+
+def leaks(root, pattern):
+    """Every fixture token the engine, extractor, planner and app declarations carry."""
+    found = []
+    for rel in SCANNED:
+        base = root / rel
+        for path in sorted(base.rglob("*")) if base.exists() else []:
+            if path.is_file() and path.suffix in SUFFIXES and not SKIPPED & set(path.parts):
+                for number, line in enumerate(path.read_text(errors="ignore").splitlines(), 1):
+                    hit = pattern.search(line)
+                    if hit:
+                        found.append(f"{path.relative_to(root)}:{number}: {hit.group(0)}")
+    return found
+
+
 def self_test(data):
     def cyclic(altered):
         for task in altered[4]:
@@ -203,7 +235,12 @@ def self_test(data):
             require(expected_error in str(error), f"negative witness {number} failed for the wrong reason: {error}")
             continue
         raise ValueError(f"negative witness {number} was incorrectly accepted")
-    print(f"integrity self-test: {len(mutations)} invalid fixtures refused")
+    pattern = leak_pattern(data[2], data[1])
+    for text in ("Rowan's wife Elena", "mail alex@velluto-works.example", "see INV-204", "NJ-01 jacket"):
+        require(pattern.search(text), f"leak witness missed: {text}")
+    for text in ("a founder's spouse", "Dana Ferris", "mail dana@example.test"):
+        require(not pattern.search(text), f"leak witness refused innocent text: {text}")
+    print(f"integrity self-test: {len(mutations)} invalid fixtures refused, leak pattern witnessed")
 
 
 def main():
@@ -212,6 +249,8 @@ def main():
     data = (manifest, *(load_lines(ROOT / manifest[key])
                         for key in ("sources", "entities", "questions", "tasks")))
     validate(data)
+    leaked = leaks(GRAPH, leak_pattern(data[2], data[1]))
+    require(not leaked, "fixture tokens outside the fixture:\n  " + "\n  ".join(leaked[:20]))
     if sys.argv[1:]:
         self_test(data)
     print(f"fixture integrity: {len(data[1])} sources, {len(data[2])} gold entities, "
