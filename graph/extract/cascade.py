@@ -603,7 +603,7 @@ class Cascade:
             for x, y in pairs:
                 if not labels:
                     break
-                opts = [f"{frm}={self.name(x)}, {to}={self.name(y)}, {label}={self.t.s[l['start']:l['end']]}" for l in labels]
+                opts = [self.phrased(rel, self.name(x), self.name(y), self.t.s[l["start"] : l["end"]]) for l in labels]
                 p = self.llm.pick(ctx, question, opts, ["none of these"])
                 best = max(range(len(p)), key=lambda i: p[i])
                 if best < len(labels) and p[best] >= ACCEPT:
@@ -616,13 +616,17 @@ class Cascade:
                 readings = [(s, o, v["value"], v["forward"] or [v["value"]]) for v in rel["labels"] for s, o in ((x, y), (y, x)) if s in froms and o in tos]
                 if not readings:
                     continue
-                opts = [f"{self.name(s)}'s {self.worded(w)} is {self.name(o)}" for s, o, v, w in readings]
+                opts = [self.phrased(rel, self.name(s), self.name(o), self.worded(w)) for s, o, v, w in readings]
                 p = self.llm.pick(ctx, question, opts, ["none of these is explicitly stated"])
                 best = max(range(len(p)), key=lambda k: p[k])
                 if best < len(readings) and p[best] >= ACCEPT:
                     s, o, v, _ = readings[best]
                     cue = self.cue(rel, v, a, b)
                     self.emit(name, frm, to, label, (s, {**froms, **tos}[s]), (o, {**froms, **tos}[o]), v, cue, p[best], a, b, opts[best])
+
+    def phrased(self, rel, frm, to, label):
+        """A reading in the binding's declared phrasing."""
+        return rel["phrasing"].replace("{from}", frm).replace("{to}", to).replace("{label}", label)
 
     def worded(self, words):
         """A closed label as its first declared word, with the others as aliases."""
