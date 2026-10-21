@@ -84,7 +84,12 @@ class Gate(unittest.TestCase):
             f"{base} RETURN w.age": "unknown_property",
             "MATCH (x:Spouse) RETURN x.name": "label_mismatch",
             "MATCH (x)-[:subject]->(y:Person) RETURN y.name": "unlabelled_node",
-            "MATCH (me:Person)-[:subject]->(r:PersonalRelationship) RETURN r.relation": "unknown_property",
+            "MATCH (me:Person)-[:subject]->(r:PersonalRelationship) RETURN r.relation": "unknown_relationship",
+            "MATCH (me:Person)-[:cousin]->(w) RETURN w.name": "unknown_relationship",
+            "MATCH (me:Person)-[:WIFE]->(w) WHERE id(me) = $speaker RETURN w.name": None,
+            "MATCH (me:Person)-[:mum]->(m:Group) WHERE id(me) = $speaker RETURN m.name": "label_mismatch",
+            "MATCH (a:Person {name: 'Alex Chen'})-[r:wife]->(w)<-[:person]-(g:GroupMembership) RETURN g.is_member AS on_crew, r.relation AS relation": None,
+            "MATCH (a:Person {nickname: 'Al'}) RETURN a.name": "unknown_property",
             "MATCH (me:Person)<-[:person]-(m:GroupMembership) RETURN m.is_member": None,
             "MATCH (r:PersonalRelationship) WHERE r.subject = 'p:rowan' RETURN r.relation": "syntax",
             "MATCH (me:Person) WHERE id(me) = $speaker SET me.name = 'x' RETURN me.name": "mutation_refused",
@@ -111,13 +116,14 @@ class Prompt(unittest.TestCase):
         self.assertIn("'mum' = 'mother'", text)
         self.assertIn(".requested_guest_limit: integer?", text)
         self.assertNotIn("'wife' = 'wife'", text)
-        self.assertIn("pattern: (a:Person)<-[:subject]-(r:PersonalRelationship)-[:relative]->(b:Person) WHERE r.relation = '<value>'", text)
+        self.assertIn("relationships: -[:wife]->(:Person), -[:mother]->(:Person), -[:mum]->(:Person)", text)
 
     def test_an_unknown_hop_names_the_hops_there_are(self):
         try:
-            check("MATCH (me:Person)-[:wife]->(w:Person) RETURN w.name", SCHEMA, PARAMS)
+            check("MATCH (me:Person)-[:cousin]->(w:Person) RETURN w.name", SCHEMA, PARAMS)
         except Refusal as r:
             self.assertIn("<-[:subject]-(:PersonalRelationship)", r.message)
+            self.assertIn("-[:wife]->(:Person)", r.message)
         else:
             self.fail("an undeclared hop passed")
 
@@ -183,11 +189,9 @@ class Structured(unittest.TestCase):
         import structured
 
         context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
-        chooser = Scripted(["speaker", "Person", "subject is this", "wife", "further", "relative", "no narrowing",
-                            "yes", "value", "name", "nothing more"])
+        chooser = Scripted(["speaker", "Person", "their wife", "no narrowing", "yes", "value", "name", "nothing more"])
         cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, context)
-        self.assertEqual(cypher, "MATCH (n0:Person)<-[:subject]-(n1:PersonalRelationship)-[:relative]->(n2:Person) "
-                                 "WHERE id(n0) = $speaker AND n1.relation = 'wife' RETURN n2.name AS name")
+        self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE id(n0) = $speaker RETURN n1.name AS name")
         check(cypher, SCHEMA, PARAMS)
         self.assertFalse(chooser.script)
 
@@ -198,7 +202,7 @@ class Structured(unittest.TestCase):
         chooser = Scripted(["Alex Chen", "Person", "subject is this", "any of them", "yes", "value", "relation", "nothing more"])
         cypher = structured.plan(chooser, "Who are Alex Chen's relatives?", SCHEMA, context)
         hops = chooser.asked[2][1]
-        self.assertTrue(all("wife" not in h for h in hops))
+        self.assertIn("their mother (mum, mom): a Person", hops)
         self.assertIn("PersonalRelationship records whose subject is this Person", " ".join(hops))
         self.assertEqual(cypher, "MATCH (n0:Person)<-[:subject]-(n1:PersonalRelationship) WHERE n0.name = 'Alex Chen' RETURN n1.relation AS relation")
 
