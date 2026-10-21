@@ -11,6 +11,34 @@ import urllib.error
 import urllib.request
 
 
+def structured_sources(call, identity):
+    source = {
+        "contract": 1, "source": {"observation": identity, "revision": 1},
+        "authored_at_ms": 0, "received_at_ms": 100, "author": "actor:a",
+        "participants": ["actor:a", "actor:b"], "conversation": "thread:1",
+        "media_type": "text/plain", "content": "Aé🙂Z",
+        "frames": [{"id": "quote", "span": {"start": 1, "end": 7, "text": "é🙂"},
+                    "parent": None, "speaker": "actor:b"}],
+    }
+    admitted = call({"op": "ingest", "source": source})
+    assert admitted["changed"] and admitted["source"] == source["source"]
+    replay = call({"op": "ingest", "source": {**source, "received_at_ms": 999}})
+    assert replay == {**admitted, "changed": False}
+    current = call({"op": "source", "id": identity})
+    assert current == source
+    changed = {**source, "source": {**source["source"], "revision": 2}, "author": "actor:c"}
+    updated = call({"op": "ingest", "source": changed})
+    assert updated["changed"] and updated["graph_revision"] == admitted["graph_revision"] + 1
+    assert call({"op": "source", "id": identity, "revision": 1}) == source
+    assert call({"op": "source", "id": identity}) == changed
+    historical = call({"op": "ingest", "source": source})
+    assert not historical["changed"] and historical["source"]["revision"] == 1
+    assert historical["graph_revision"] == updated["graph_revision"]
+    assert "error" in call({"op": "ingest", "source": {**source, "content": "altered"}}, success=False)
+    assert "error" in call({"op": "ingest", "source": {**changed, "gold_answers": []}}, success=False)
+    assert call({"op": "schema"})["revision"] == updated["graph_revision"]
+
+
 def main():
     binary = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "graph/src/main").resolve()
     with tempfile.TemporaryDirectory(prefix="avra-graph-") as directory:
@@ -177,6 +205,13 @@ def main():
             assert status == 200 and json.loads(body)["fields"]["assignee"][0]["value"] is None
             status, body = http({"op": "resolve", "namespace": "mail", "key": "ada@example.com"})
             assert status == 200 and json.loads(body)["entity"] == "p1"
+
+            def authenticated(request, success=True):
+                status, body = http(request)
+                assert (status == 200) == success, (status, body)
+                return json.loads(body)
+
+            structured_sources(authenticated, "http:structured")
         finally:
             server.terminate()
             try:
@@ -203,7 +238,8 @@ def main():
         assert len(decisions) == 1 and decisions[0]["active"] is False
         graves = cli({"op": "tombstones"})
         assert len(graves) == 1 and graves[0]["active"] is False
-    print("native smoke: persistence, partial assertions, evidence locators, external identities, merge/split, tombstones, std-first store, replay, validation, rollback, traversal, HTTP auth, and stale-input invalidation passed")
+        structured_sources(cli, "cli:structured")
+    print("native smoke: persistence, partial assertions, evidence locators, external identities, merge/split, tombstones, std-first store, replay, validation, rollback, traversal, HTTP auth, structured source revisions, and stale-input invalidation passed")
 
 
 if __name__ == "__main__":

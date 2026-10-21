@@ -186,11 +186,20 @@ impl Graph {
 
     /// Identical input is a no-op; changed input invalidates its old interpretations.
     fn observe(id: string, payload: string) -> Result<int, string> {
-        if id.is_empty() { fail "an observation needs a nonempty id" }
-        mut db = self.db
+        let db = self.db
         stored(db.begin())?
         defer { let _ = db.finish() }
         self.current()?
+        let next = self.observed(id, payload)?
+        stored(db.commit())?
+        next
+    }
+
+    /// Store an observation within its caller's write transaction.
+    fn observed(id: string, payload: string) -> Result<int, string> {
+        if !self.db.in_transaction() { fail "observation update needs its owner's transaction" }
+        if id.is_empty() { fail "an observation needs a nonempty id" }
+        mut db = self.db
         let old = stored(ObservationRow.where(db, name: id))?
         let next = match old {
             [only] -> {
@@ -241,7 +250,6 @@ impl Graph {
             )?
         }
         self.advanced()?
-        stored(db.commit())?
         next
     }
 }

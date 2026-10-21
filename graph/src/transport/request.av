@@ -1,4 +1,4 @@
-use @std.json.{Json}
+use @std.json.{Json, to_text}
 use @std.validate.{Value}
 use data.{as_value}
 use store.publish.{Publication, Record, RecordMode}
@@ -10,6 +10,8 @@ use store.choice.{Choice}
 export enum Operation {
     Schema
     Observe(id: string, payload: string)
+    Ingest(payload: string)
+    Source(id: string, revision: int)
     Observation(id: string, revision: int)
     Publish(publication: Publication)
     Get(id: string)
@@ -44,6 +46,15 @@ export fn operation(j: Json) -> Result<Operation, string> {
         "observe" -> {
             closed(j, ["op", "id", "payload"])?
             Operation.Observe(text(j, "id")?, text(j, "payload")?)
+        },
+        "ingest" -> {
+            closed(j, ["op", "source"])?
+            let source? = j.get("source") else { fail "ingest needs a source envelope" }
+            Operation.Ingest(to_text(source))
+        },
+        "source" -> {
+            closed(j, ["op", "id", "revision"])?
+            Operation.Source(text(j, "id")?, optional_int(j, "revision", 0)?)
         },
         "observation" -> {
             closed(j, ["op", "id", "revision"])?

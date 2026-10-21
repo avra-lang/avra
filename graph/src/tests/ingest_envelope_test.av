@@ -1,0 +1,191 @@
+use models.{models}
+use store.open.{Graph, stored}
+use store.engine.{ObservationRow, ObservationVersionRow}
+use ingest.envelope.{source_document}
+use @avra.graph_contracts.{SourceEnvelope}
+use @std.json.{Json, field, parse, to_text}
+
+const source_text = "{\"contract\":1,\"source\":{\"observation\":\"note:1\",\"revision\":1},\"authored_at_ms\":0,\"received_at_ms\":100,\"author\":\"actor:a\",\"participants\":[\"actor:a\",\"actor:b\"],\"conversation\":\"thread:1\",\"media_type\":\"text/plain\",\"content\":\"Aé🙂Z\",\"frames\":[{\"id\":\"quote\",\"span\":{\"start\":1,\"end\":7,\"text\":\"é🙂\"},\"parent\":null,\"speaker\":\"actor:b\"}]}"
+
+fn updated() -> string {
+    source_text.replace("\"revision\":1", "\"revision\":2").replace("Aé🙂Z", "Aé🙂Z updated")
+}
+
+fn first_admission() -> Result<bool, string> {
+    let g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    let before = g.revision()?
+    let admitted = g.ingest(source_text)?
+    let source = g.source("note:1")?
+    admitted.changed &&
+        admitted.source.revision == 1 &&
+        admitted.graph_revision == before + 1 &&
+        admitted.received_at_ms == 100 &&
+        source.authored_at_ms == 0 &&
+        source.author == "actor:a" &&
+        source.participants.join(",") == "actor:a,actor:b" &&
+        source.conversation == "thread:1" &&
+        source.content == "Aé🙂Z" &&
+        source.frames[0].speaker == "actor:b" &&
+        source.frames[0].span.start == 1 &&
+        source.frames[0].span.end == 7 &&
+        (g.find("Person")?).is_empty()
+}
+
+fn no_op(payload: string) -> Result<bool, string> {
+    let g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    let first = g.ingest(source_text)?
+    let replay = g.ingest(payload)?
+    !replay.changed &&
+        replay.source.revision == 1 &&
+        replay.received_at_ms == 100 &&
+        replay.graph_revision == first.graph_revision &&
+        g.revision()? == first.graph_revision &&
+        (g.source("note:1")?).received_at_ms == 100 &&
+        (stored(ObservationVersionRow.all(g.db))?).length == 1
+}
+
+fn revised(payload: string) -> Result<bool, string> {
+    let g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    let first = g.ingest(source_text)?
+    let next = g.ingest(payload)?
+    let original = g.source("note:1", 1)?
+    next.changed &&
+        next.source.revision == 2 &&
+        next.graph_revision == first.graph_revision + 1 &&
+        original.content == "Aé🙂Z" &&
+        original.author == "actor:a" &&
+        original.frames[0].speaker == "actor:b" &&
+        (g.source("note:1")?).source.revision == 2 &&
+        (stored(ObservationVersionRow.all(g.db))?).length == 2
+}
+
+fn refused(payload: string, seed: bool = true) -> Result<bool, string> {
+    let g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    if seed { g.ingest(source_text)? }
+    let expected = if seed { 1 } else { 0 }
+    let before = g.revision()?
+    let denied = g.ingest(payload) is .Err
+    denied &&
+        g.revision()? == before &&
+        (stored(ObservationRow.all(g.db))?).length == expected &&
+        (stored(ObservationVersionRow.all(g.db))?).length == expected
+}
+
+fn historical_replay(alter: bool) -> Result<bool, string> {
+    let g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.ingest(source_text)?
+    let latest = g.ingest(updated())?
+    let payload = if alter { source_text.replace("Aé🙂Z", "Aé🙂Z fabricated") } else { source_text }
+    let correct = match g.ingest(payload) {
+        .Ok(replay) -> !alter &&
+            !replay.changed &&
+            replay.source.revision == 1 &&
+            replay.graph_revision == latest.graph_revision,
+        .Err(_) -> alter,
+    }
+    correct &&
+        (g.source("note:1")?).content == "Aé🙂Z updated" &&
+        g.revision()? == latest.graph_revision
+}
+
+fn legacy_payload() -> Result<bool, string> {
+    let g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("note:1", "unstructured raw payload")?
+    let before = g.revision()?
+    let denied = g.ingest(source_text) is .Err
+    denied &&
+        g.revision()? == before &&
+        (g.observation("note:1")?).member("payload").text() == "unstructured raw payload"
+}
+
+fn mismatched_payload() -> Result<bool, string> {
+    let g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("wrong:id", source_text)?
+    g.source("wrong:id") is .Err
+}
+
+fn transported() -> Result<bool, string> {
+    let g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    let source = match parse(source_text) {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "invalid test fixture" },
+    }
+    let accepted = g.dispatch(Json.Obj([field("op", Json.Str("ingest")), field("source", source)]))?
+    let read = g
+        .dispatch(Json.Obj([field("op", Json.Str("source")), field("id", Json.Str("note:1"))]))?
+    accepted.member("changed").truth() == true &&
+        read.member("content").text() == "Aé🙂Z" &&
+        read.member("frames").item(0).member("speaker").text() == "actor:b"
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "structured source admission" {
+    given "immutable text, discourse metadata and consecutive revisions" {
+        then "source metadata survives without creating author entities" { passed(first_admission()) }
+        then "a source document round-trips through standard decoding" {
+            match SourceEnvelope.from_json(source_text) {
+                .Ok(s) -> SourceEnvelope.from_json(to_text(source_document(s))) is .Ok,
+                .Err(_) -> false,
+            }
+        }
+        then "identical input is a no-op" { passed(no_op(source_text)) }
+        then "JSON spelling does not create another revision" { passed(no_op(source_text.replace("{", "{ "))) }
+        then "later receipt time does not invalidate extraction" {
+            passed(no_op(source_text.replace("\"received_at_ms\":100", "\"received_at_ms\":200")))
+        }
+        then "an unchanged proposed next revision keeps its admitted identity" {
+            passed(no_op(source_text.replace("\"revision\":1", "\"revision\":2")))
+        }
+        then "changed content retains immutable earlier payloads" { passed(revised(updated())) }
+        then "an author correction is extraction-relevant" {
+            passed(
+                revised(
+                    source_text
+                        .replace("\"revision\":1", "\"revision\":2")
+                        .replace("\"author\":\"actor:a\"", "\"author\":\"actor:c\""),
+                ),
+            )
+        }
+        then "a quotation speaker correction is extraction-relevant" {
+            passed(
+                revised(
+                    source_text
+                        .replace("\"revision\":1", "\"revision\":2")
+                        .replace("\"speaker\":\"actor:b\"", "\"speaker\":\"actor:c\""),
+                ),
+            )
+        }
+        then "changed content cannot reuse the same revision" { passed(refused(source_text.replace("Aé🙂Z", "Aé🙂Z altered"))) }
+        then "new sources must start at revision one" { passed(refused(updated(), seed: false)) }
+        then "revision gaps cannot discard unobserved history" { passed(refused(updated().replace("\"revision\":2", "\"revision\":3"))) }
+        then "historical exact replay cannot revive stale content" { passed(historical_replay(false)) }
+        then "altered historical replay is refused" { passed(historical_replay(true)) }
+        then "fabricated source coordinates fail before writing" { passed(refused(source_text.replace("\"end\":7", "\"end\":3"), seed: false)) }
+        then "future contract versions fail before writing" { passed(refused(source_text.replace("\"contract\":1", "\"contract\":2"), seed: false)) }
+        then "gold answer fields are not an ingestion channel" {
+            passed(
+                refused(
+                    source_text.replace("\"contract\":1", "\"gold_answers\":[],\"contract\":1"),
+                    seed: false,
+                ),
+            )
+        }
+        then "raw observations are not silently adopted as structured envelopes" { passed(legacy_payload()) }
+        then "a source cannot lie about the identity of its stored observation" { passed(mismatched_payload()) }
+        then "the shared CLI and HTTP dispatch exposes ingestion and source reads" { passed(transported()) }
+    }
+}

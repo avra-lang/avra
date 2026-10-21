@@ -91,6 +91,8 @@ CLI request files and HTTP use exactly the same JSON operations:
 | `schema` | — | Fingerprint, graph revision, model metadata |
 | `observe` | `id`, `payload` string | Input revision and graph revision |
 | `observation` | `id`, optional `revision` | Current or historical raw payload |
+| `ingest` | `source`: v1 SourceEnvelope | Admitted source reference, graph revision, changed flag, first receipt time |
+| `source` | `id`, optional `revision` | Current or historical structured SourceEnvelope |
 | `publish` | See below | Committed graph revision |
 | `get` | `id` | Supported candidates per property, including conflicts |
 | `value` | `id` | Validated complete record, or refusal |
@@ -110,6 +112,61 @@ CLI request files and HTTP use exactly the same JSON operations:
 | `unchoose` | `decision` | Withdraw a choice; the property reads by its rule again |
 | `choices` | optional `claim` | Choice decisions, active or withdrawn |
 | `dirty` | — | Latest interpretations with stale input or schema |
+
+### Structured input
+
+`ingest` admits the provider-neutral envelope in
+[contracts/README.md](contracts/README.md). This stores source data, not
+extracted facts. For example:
+
+```json
+{
+  "op": "ingest",
+  "source": {
+    "contract": 1,
+    "source": {"observation": "note:example", "revision": 1},
+    "authored_at_ms": null,
+    "received_at_ms": 1792573200000,
+    "author": null,
+    "participants": [],
+    "conversation": null,
+    "media_type": "text/plain",
+    "content": "Original text, preserved verbatim.",
+    "frames": []
+  }
+}
+```
+
+Use observation IDs stable across updates. A new source proposes revision
+1; changed content/context proposes the next consecutive revision. This is
+the engine's admission revision, not a business document's version number.
+A changed payload cannot reuse a known revision or skip history. Exact
+replays of admitted revisions are no-ops, even after a newer revision exists;
+they never revive older content. A receipt carries the reference actually
+admitted and `changed`, not an assertion that new work ran.
+
+JSON whitespace/key order and later receipt timestamps do not reprocess an
+unchanged source. First receipt time stays immutable. A proposed next
+revision with identical extraction-relevant content/context returns the
+existing reference instead of creating an empty revision. Changes to original
+text, authored time, author, participants, thread, media type or quoted frames
+are material. Participant/frame order is currently preserved and material.
+
+Spans are exact half-open UTF-8 byte coordinates in original content.
+Quoted speakers are separate from source authors and confer no identity or
+authorization grant. Standard Decode rejects unsupported versions, unknown
+fields and invented coordinates before writing. There is no gold-answer or
+fixture-identity input channel.
+
+`source` reads admitted envelopes, including immutable historical revisions.
+Legacy `observe`/`observation` remain available for opaque producer payloads;
+do not mix the two formats under one observation ID. A structured read
+refuses raw or mismatched envelopes rather than guessing metadata. The
+HTTP bearer token still authorizes ingestion; source text never authorizes
+an operation. Automatic scheduling/extraction is a later task, not a side
+effect claimed by this ingestion receipt.
+
+### Publications
 
 A publication replaces one producer's whole contribution in one scope,
 whether its records are complete or partial. An empty `records` list

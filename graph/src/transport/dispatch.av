@@ -4,6 +4,7 @@ use store.publish.{Publication}
 use store.query.{Entity, Edge}
 use transport.request.{Operation, operation}
 use data.{as_json}
+use ingest.envelope.{source_document}
 
 impl Graph {
     fn dispatch(request: Json) -> Result<Json, string> {
@@ -28,6 +29,8 @@ impl Graph {
                         field("revision", Json.Int(self.revision()?)),
                     ],
                 ),
+            .Ingest(payload) -> (self.ingest(payload)?).document(),
+            .Source(id, revision) -> source_document(self.source(id, revision)?),
             .Observation(id, revision) -> self.observation(id, revision)?,
             .Publish(p) -> Json.Obj([field("revision", Json.Int(self.publish(p)?))]),
             .Get(id) -> (self.entity(id)?).json(),

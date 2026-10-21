@@ -1,0 +1,162 @@
+use @avra.graph_contracts.{SourceEnvelope, SourceRef, Frame, Span}
+use @std.json.{Json, Field, field, to_text}
+use store.open.{Graph, stored}
+use store.engine.{ObservationRow}
+
+export type Ingestion = {
+    source: SourceRef,
+    graph_revision: int,
+    changed: bool,
+    received_at_ms: int,
+}
+
+fn checked_source(payload: string) -> Result<SourceEnvelope, string> {
+    match SourceEnvelope.from_json(payload) {
+        .Ok(source) -> source,
+        .Err(e) -> { fail "source envelope: ${e.report()}" },
+    }
+}
+
+/// Receipt time is retained on first admission, not an extraction dependency.
+fn source_fields(s: SourceEnvelope) -> List<Field> {
+    [
+        field("authored_at_ms", optional_integer(s.authored_at_ms)),
+        field("author", optional_text(s.author)),
+        field("participants", Json.Arr([Json.Str(p) for p in s.participants])),
+        field("conversation", optional_text(s.conversation)),
+        field("media_type", Json.Str(s.media_type)),
+        field("content", Json.Str(s.content)),
+        field("frames", Json.Arr([frame_document(f) for f in s.frames])),
+    ]
+}
+
+fn optional_integer(n: int?) -> Json {
+    let found? = n else { return Json.Null }
+    Json.Int(found)
+}
+
+fn optional_text(s: string?) -> Json {
+    let found? = s else { return Json.Null }
+    Json.Str(found)
+}
+
+export fn source_reference(s: SourceRef) -> Json {
+    Json
+        .Obj([field("observation", Json.Str(s.observation)), field("revision", Json.Int(s.revision))])
+}
+
+fn span_document(s: Span) -> Json {
+    Json
+        .Obj(
+            [
+                field("start", Json.Int(s.start)),
+                field("end", Json.Int(s.end)),
+                field("text", Json.Str(s.text)),
+            ],
+        )
+}
+
+fn frame_document(f: Frame) -> Json {
+    Json
+        .Obj(
+            [
+                field("id", Json.Str(f.id)),
+                field("span", span_document(f.span)),
+                field("parent", optional_text(f.parent)),
+                field("speaker", optional_text(f.speaker)),
+            ],
+        )
+}
+
+export fn source_document(s: SourceEnvelope) -> Json {
+    Json
+        .Obj(
+            [
+                field("contract", Json.Int(s.contract)),
+                field("source", source_reference(s.source)),
+                field("received_at_ms", Json.Int(s.received_at_ms)),
+            ]
+                .concat(source_fields(s)),
+        )
+}
+
+impl Ingestion {
+    fn document() -> Json {
+        Json
+            .Obj(
+                [
+                    field("source", source_reference(self.source)),
+                    field("graph_revision", Json.Int(self.graph_revision)),
+                    field("changed", Json.Bool(self.changed)),
+                    field("received_at_ms", Json.Int(self.received_at_ms)),
+                ],
+            )
+    }
+}
+
+fn same_meaning(left: SourceEnvelope, right: SourceEnvelope) -> bool {
+    to_text(Json.Obj(source_fields(left))) == to_text(Json.Obj(source_fields(right)))
+}
+
+fn receipt(s: SourceEnvelope, graph_revision: int, changed: bool) -> Ingestion {
+    Ingestion {
+        source: s.source,
+        graph_revision: graph_revision,
+        changed: changed,
+        received_at_ms: s.received_at_ms,
+    }
+}
+
+impl Graph {
+    /// Validate and admit a structured source revision atomically.
+    fn ingest(payload: string) -> Result<Ingestion, string> {
+        let source = checked_source(payload)?
+        let db = self.db
+        stored(db.begin())?
+        defer { let _ = db.finish() }
+        self.current()?
+        let accepted = self.ingest_in_transaction(source)?
+        stored(db.commit())?
+        accepted
+    }
+
+    fn ingest_in_transaction(s: SourceEnvelope) -> Result<Ingestion, string> {
+        let current = match stored(ObservationRow.where(self.db, name: s.source.observation))? {
+            [only] -> only,
+            [] -> {
+                if s.source.revision != 1 { fail "a new source starts at revision 1" }
+                return self.write_source(s)
+            },
+            rest -> { fail "observation name is not unique" },
+        }
+        let known = self.source(s.source.observation, current.revision)?
+        if s.source.revision <= current.revision {
+            let original = self.source(s.source.observation, s.source.revision)?
+            if !same_meaning(s, original) { fail "source revision replay differs from its admitted content or context" }
+            return receipt(original, self.revision()?, false)
+        }
+        if current.revision == 9223372036854775807 || s.source.revision != current.revision + 1 {
+            fail "source revision must immediately follow the current revision"
+        }
+        if same_meaning(s, known) { return receipt(known, self.revision()?, false) }
+        self.write_source(s)
+    }
+
+    fn write_source(s: SourceEnvelope) -> Result<Ingestion, string> {
+        let assigned = self.observed(s.source.observation, to_text(source_document(s)))?
+        if assigned != s.source.revision { fail "source and observation revisions must agree" }
+        receipt(s, self.revision()?, true)
+    }
+
+    /// Decode one immutable source revision without consulting application models.
+    fn source(id: string, revision: int = 0) -> Result<SourceEnvelope, string> {
+        let raw = self.observation(id, revision)?
+        let payload? = raw.member("payload").text() else { fail "an observation must contain a payload" }
+        let decoded = checked_source(payload)?
+        if decoded.source.observation != id ||
+            decoded.source.revision != raw.member("revision").int() {
+            fail "source identity and revision must match their observation"
+        }
+        decoded
+    }
+}

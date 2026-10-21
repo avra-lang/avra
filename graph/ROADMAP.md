@@ -46,6 +46,7 @@ autonomous extraction or inference system.
 | Scalars, optionals, lists, embedded records, typed references | Working |
 | Std-first SQLite storage (`@std/db` engine models) | Working; format 8 |
 | Immutable observation history | Working |
+| Structured source envelopes, immutable context, revision admission | Working; I01, CLI/HTTP; no extraction side effect |
 | Atomic replacement, replay, stale input/schema/revision rejection | Working |
 | Independent support, conflicts, and explanations | Working |
 | Entity reads, model listing, edges, bounded breadth-first traversal | Working |
@@ -283,6 +284,12 @@ one interpreter/native proof program. Isolated consumer lint still exposes
 the public-re-export false positive `avra-8sb5.25.74`; see
 [acceptance/app/M01-HANDOFF.md](acceptance/app/M01-HANDOFF.md). It is not a
 reason to remove the library API or grow the idiom baseline.
+
+I01 admits structured sources through CLI/HTTP, preserving original text,
+timestamps, authors and quoted-speaker frames. Source revision replay and
+metadata changes have 20 new witnesses (103 total graph tests), plus native
+transport/restart checks. See [src/ingest/I01-HANDOFF.md](src/ingest/I01-HANDOFF.md).
+Windowing, extraction admission and automatic work remain the next slices.
 
 Stabilize -> identity -> richer queries -> durable workers -> incremental
 derivations -> compatibility-aware evolution. Partial assertions, evidence
