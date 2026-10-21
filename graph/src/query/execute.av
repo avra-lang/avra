@@ -1,0 +1,256 @@
+use @avra.graph_contracts.{Budget}
+use @std.json.{Json}
+use @std.validate.{Value}
+use data.{encoded, before}
+use schema.{Property}
+use store.open.{Graph}
+use store.query.{Selection}
+use query.plan.{ReadOnlyPlan, ReadOperation, Comparison, Direction, SourceView}
+
+/// The supports behind one property of one entity, as `explain` reports them.
+export type Evidence = { entity: string, property: string, supports: Json }
+
+/// A row never loses its evidence: every property that admitted it or is shown.
+export type ReadRow = { id: string, model: string, fields: List<Selection>, evidence: List<Evidence> }
+
+export enum ReadAnswer { Rows(rows: List<ReadRow>), Count(total: int, rows: List<ReadRow>) }
+
+impl ReadAnswer {
+    /// The rows behind the answer, counted or returned.
+    fn rows() -> List<ReadRow> {
+        match self { .Rows(rows) or .Count(_, rows) -> rows }
+    }
+}
+
+export type ReadResult = { revision: int, work: int, answer: ReadAnswer }
+
+type Proof = { entity: string, property: string }
+type Hit = { id: string, model: string, fields: List<Selection>, known: List<string>, proofs: List<Proof> }
+enum Flow { Hits(hits: List<Hit>), Total(count: int, hits: List<Hit>) }
+
+/// One execution: the store it reads and the work it has spent so far.
+type Run = { g: Graph, budget: Budget, spent: Cell<int> }
+
+impl Graph {
+    /// Executes an admitted plan over one read snapshot. Conflicting claims
+    /// stay candidates; nothing here selects a truth.
+    fn read(plan: ReadOnlyPlan) -> Result<ReadResult, string> {
+        if plan.source_view is .History { fail "a history read is not executed by the current-state engine" }
+        let opened = self.read_snapshot()?
+        defer { let _ = self.db.finish_if_opened(opened) }
+        let run = Run { g: self, budget: plan.budget, spent: Cell.new(0) }
+        let revision = self.revision()?
+        mut flows: List<Flow> = []
+        for node in plan.nodes.slice(0, plan.output + 1) {
+            flows.push(run.evaluated(flows, node.operation)?)
+        }
+        ReadResult {
+            revision: revision,
+            work: run.spent.get(),
+            answer: run.answered(flows[plan.output])?,
+        }
+    }
+}
+
+impl Run {
+    fn charge(n: int) -> Result<int, string> {
+        let total = self.spent.get() + n
+        if total > self.budget.work { fail "read exceeded its work budget" }
+        self.spent.set(total)
+        total
+    }
+
+    fn within_rows(hits: List<Hit>) -> Result<List<Hit>, string> {
+        if hits.length > self.budget.rows { fail rows_exceeded() }
+        hits
+    }
+
+    fn evaluated(flows: List<Flow>, op: ReadOperation) -> Result<Flow, string> {
+        match op {
+            .Scan(model) -> Flow.Hits(self.scan(model)?),
+            .Filter(input, property, compare, literal) -> Flow.Hits(self.filter(self.rows(flows, input)?, property.name, compare, literal)?),
+            .Search(input, property, needle) -> Flow.Hits(self.search(self.rows(flows, input)?, property.name, needle)?),
+            .Follow(input, owner, property, direction) -> Flow.Hits(self.follow(self.rows(flows, input)?, owner, property.name, direction)?),
+            .Project(input, properties) -> Flow.Hits(self.project(self.rows(flows, input)?, properties)),
+            .Count(input) -> {
+                let hits = self.rows(flows, input)?
+                Flow.Total(hits.length, hits)
+            },
+            .Sum(_, _, _) -> { fail unexecuted_sum() },
+        }
+    }
+
+    fn rows(flows: List<Flow>, input: int) -> Result<List<Hit>, string> {
+        match flows[input] {
+            .Hits(hits) -> hits,
+            .Total(_, _) -> { fail "a count has no rows to read" },
+        }
+    }
+
+    fn hit(id: string, proofs: List<Proof>) -> Result<Hit, string> {
+        self.charge(1)?
+        let e = self.g.entity(id)?
+        Hit {
+            id: id,
+            model: e.model,
+            fields: e.fields,
+            known: e.fields.map(it.property),
+            proofs: proofs,
+        }
+    }
+
+    fn scan(model: string) -> Result<List<Hit>, string> {
+        self.charge(1)?
+        let ids = self.g.find(model, limit: self.budget.rows)?
+        if ids.length == self.budget.rows &&
+            !(self.g.find(model, limit: 1, offset: self.budget.rows)?).is_empty() {
+            fail rows_exceeded()
+        }
+        [self.hit(id, [])? for id in ids]
+    }
+
+    fn filter(input: List<Hit>, property: string, compare: Comparison, literal: Value) -> Result<
+        List<Hit>,
+        string,
+    > {
+        self.charge(input.length)?
+        [h.proved(h.id, property) for h in input if h.holds(property, compare, literal)]
+    }
+
+    fn search(input: List<Hit>, property: string, needle: string) -> Result<List<Hit>, string> {
+        self.charge(input.length)?
+        [h.proved(h.id, property) for h in input if h.values(property).any(contains_text(it, needle))]
+    }
+
+    fn follow(input: List<Hit>, owner: string, property: string, direction: Direction) -> Result<
+        List<Hit>,
+        string,
+    > {
+        let reached = [x for h in input for x in self.reached(h, owner, property, direction)?]
+        self.within_rows(distinct(reached))
+    }
+
+    fn reached(from: Hit, owner: string, property: string, direction: Direction) -> Result<
+        List<Hit>,
+        string,
+    > {
+        self.charge(1)?
+        let edges = (self.g.edges(from.id, incoming: direction is .Incoming)?)
+            .filter(it.property == property)
+        self.charge(edges.length)?
+        match direction {
+            .Outgoing -> [self.hit(e.target, [Proof { entity: from.id, property: property }])? for e in edges],
+            .Incoming -> self
+                .owned_by(
+                    owner,
+                    [self.hit(e.entity, [Proof { entity: e.entity, property: property }])? for e in edges],
+                ),
+        }
+    }
+
+    fn owned_by(owner: string, hits: List<Hit>) -> List<Hit> { hits.filter(it.model == owner) }
+
+    fn project(input: List<Hit>, properties: List<Property>) -> List<Hit> {
+        let names = properties.map(it.name)
+        [h with { fields: h.fields.filter((f) -> names.contains(f.property)) } for h in input]
+    }
+
+    fn answered(flow: Flow) -> Result<ReadAnswer, string> {
+        match flow {
+            .Hits(hits) -> ReadAnswer.Rows(self.rows_of(hits)?),
+            .Total(count, hits) -> ReadAnswer.Count(count, self.rows_of(hits)?),
+        }
+    }
+
+    fn rows_of(hits: List<Hit>) -> Result<List<ReadRow>, string> { [self.row(h)? for h in hits] }
+
+    fn row(h: Hit) -> Result<ReadRow, string> {
+        let wanted = distinct_proofs(h.proofs.concat(h.basis()))
+        self.charge(wanted.length)?
+        let evidence = [Evidence {
+            entity: p.entity,
+            property: p.property,
+            supports: self.g.explain(p.entity, p.property)?,
+        } for p in wanted]
+        ReadRow { id: h.id, model: h.model, fields: h.fields, evidence: evidence }
+    }
+}
+
+impl Hit {
+    fn proved(entity: string, property: string) -> Hit {
+        self with { proofs: self.proofs.concat([Proof { entity: entity, property: property }]) }
+    }
+
+    /// Standing values of a property; several mean competing claims.
+    fn values(property: string) -> List<Value> {
+        (self.fields.find(it.property == property)?.candidates ?? []).map(it.value)
+    }
+
+    fn holds(property: string, compare: Comparison, literal: Value) -> bool {
+        let values = self.values(property)
+        let equal = if literal is .Null {
+            values.is_empty() || values.any(it is .Null)
+        } else {
+            values.any(encoded(it) == encoded(literal))
+        }
+        match compare {
+            .Equal -> equal,
+            .NotEqual -> !equal,
+            .Less or .LessEqual or .Greater or .GreaterEqual -> values.any(ordered_holds(it, compare, literal)),
+        }
+    }
+
+    /// What the row shows when no filter named a property: its own properties.
+    fn basis() -> List<Proof> {
+        [Proof { entity: self.id, property: p } for p in if self.proofs.is_empty() { self.known } else { self.fields.map(it.property) }]
+    }
+}
+
+fn contains_text(value: Value, needle: string) -> bool {
+    match value {
+        .Text(s) -> s.contains(needle),
+        .Null or .Bool(_) or .Int(_) or .Float(_) or .List(_) or .Map(_) -> false,
+    }
+}
+
+fn ordered_holds(value: Value, compare: Comparison, literal: Value) -> bool {
+    let order? = ordered(value, literal) else { return false }
+    match compare {
+        .Equal -> order == 0,
+        .NotEqual -> order != 0,
+        .Less -> order < 0,
+        .LessEqual -> order <= 0,
+        .Greater -> order > 0,
+        .GreaterEqual -> order >= 0,
+    }
+}
+
+/// A sign for same-typed numbers or text; null for anything incomparable.
+fn ordered(a: Value, b: Value) -> int? {
+    match a {
+        .Int(x) -> match b { .Int(y) -> sign(x < y, x > y), rest -> null },
+        .Float(x) -> match b { .Float(y) -> sign(x < y, x > y), rest -> null },
+        .Text(x) -> match b { .Text(y) -> sign(before(x, y), before(y, x)), rest -> null },
+        .Null or .Bool(_) or .List(_) or .Map(_) -> null,
+    }
+}
+
+fn sign(below: bool, above: bool) -> int {
+    when {
+        below -> -1
+        above -> 1
+        _ -> 0
+    }
+}
+
+fn distinct(hits: List<Hit>) -> List<Hit> {
+    [h for i, h in hits if !hits.slice(0, i).any(it.id == h.id)]
+}
+
+fn distinct_proofs(proofs: List<Proof>) -> List<Proof> {
+    [p for i, p in proofs if !proofs.slice(0, i).any(it.entity == p.entity && it.property == p.property)]
+}
+
+fn unexecuted_sum() -> string { "a sum needs a currency-safe aggregate, which this engine does not execute" }
+
+fn rows_exceeded() -> string { "read exceeded its row budget" }

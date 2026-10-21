@@ -1,0 +1,210 @@
+use models.{models}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use query.plan.{prepare_read}
+use query.execute.{ReadAnswer, ReadResult}
+
+fn record(id: string, model: string, json: string) -> Result<Record, string> {
+    Record { id: id, model: model, value: stored_value(json)? }
+}
+
+fn work_item(id: string, title: string, status: string, assignee: string) -> Result<Record, string> {
+    record(
+        id,
+        "WorkItem",
+        "{\"title\":\"${title}\",\"status\":\"${status}\",\"assignee\":\"${assignee}\",\"messages\":[],\"due_at\":null}",
+    )
+}
+
+fn person(id: string, name: string) -> Result<Record, string> {
+    record(id, "Person", "{\"name\":\"${name}\",\"email\":null}")
+}
+
+fn publication(g: Graph, id: string, producer: string, records: List<Record>) -> Result<
+    Publication,
+    string,
+> {
+    Publication {
+        id: id,
+        producer: producer,
+        scope: "in:1",
+        input: "in:1",
+        input_revision: 1,
+        schema: g.catalog.fingerprint,
+        expected_revision: g.revision()?,
+        records: records,
+    }
+}
+
+fn seeded(mut g: Graph) -> Result<int, string> {
+    g.observe("in:1", "raw")?
+    g
+        .publish(
+            publication(
+                g,
+                "one",
+                "agent",
+                [
+                    person("p1", "Ada")?,
+                    person("p2", "Grace")?,
+                    work_item("w1", "One", "open", "p1")?,
+                    work_item("w2", "Two", "done", "p1")?,
+                    work_item("w3", "Three", "done", "p2")?,
+                ],
+            )?,
+        )
+}
+
+fn ran(g: Graph, steps: List<string>, output: string, work: int = 100, rows: int = 10) -> Result<
+    ReadResult,
+    string,
+> {
+    g
+        .read(
+            prepare_read(
+                g.catalog,
+                plan(steps.join(","), output, g.catalog.fingerprint, work: work, rows: rows),
+            )?,
+        )
+}
+
+fn status_is(id: string, input: string, status: string) -> string {
+    step(
+        id,
+        "filter",
+        input,
+        "\"property\":\"status\",\"comparison\":\"eq\",\"arguments\":[\"${status}\"]",
+    )
+}
+
+fn row_ids(result: ReadResult) -> List<string> { result.answer.rows().map(it.id) }
+
+fn evidenced(result: ReadResult) -> bool {
+    match result.answer {
+        .Rows(rows) -> !rows.is_empty() &&
+            rows
+                .all(
+                    !it.evidence.is_empty() &&
+                        it.evidence.all(it.supports.item(0).member("claim").int() != null),
+                ),
+        .Count(_, rows) -> rows.all(!it.evidence.is_empty()),
+    }
+}
+
+fn joins_with_evidence() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    let steps = [
+        scan("a", "WorkItem"),
+        status_is("b", "a", "done"),
+        step("c", "follow", "b", "\"property\":\"assignee\",\"direction\":\"out\""),
+        step("d", "project", "c", "\"properties\":[\"name\"]"),
+    ]
+    let result = ran(g, steps, "d")?
+    row_ids(result).join(",") == "p1,p2" && evidenced(result) && result.work > 0
+}
+
+fn incoming_follow() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    let steps = [
+        scan("a", "Person"),
+        step(
+            "b",
+            "filter",
+            "a",
+            "\"property\":\"name\",\"comparison\":\"eq\",\"arguments\":[\"Ada\"]",
+        ),
+        step("c", "follow", "b", "\"property\":\"assignee\",\"direction\":\"in\""),
+    ]
+    let result = ran(g, steps, "c")?
+    row_ids(result).join(",") == "w1,w2" && evidenced(result)
+}
+
+fn counts_with_rows() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    let result = ran(
+        g,
+        [scan("a", "WorkItem"), status_is("b", "a", "done"), step("c", "count", "b", "")],
+        "c",
+    )?
+    let counted = match result.answer { .Count(n, _) -> n, .Rows(_) -> -1 }
+    counted == 2 && row_ids(result).join(",") == "w2,w3" && evidenced(result)
+}
+
+fn searches_text() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    let found = ran(
+        g,
+        [
+            scan("a", "WorkItem"),
+            step("b", "search", "a", "\"property\":\"title\",\"arguments\":[\"Th\"]"),
+        ],
+        "b",
+    )?
+    row_ids(found).join(",") == "w3"
+}
+
+fn work_stops_execution() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    let before = g.revision()?
+    let refused = match ran(g, [scan("a", "WorkItem"), step("b", "count", "a", "")], "b", work: 2) {
+        .Ok(_) -> false,
+        .Err(e) -> e.contains("work budget"),
+    }
+    let enough = row_ids(ran(g, [scan("a", "WorkItem")], "a", work: 50)?).length == 3
+    refused && enough && g.revision()? == before && !g.db.in_transaction()
+}
+
+fn rows_stop_execution() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    let scanned = match ran(g, [scan("a", "WorkItem")], "a", rows: 2) {
+        .Ok(_) -> false,
+        .Err(e) -> e.contains("row budget"),
+    }
+    let exact = row_ids(ran(g, [scan("a", "WorkItem")], "a", rows: 3)?).length == 3
+    scanned && exact
+}
+
+fn conflict_stays_open() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    g.publish(publication(g, "two", "agent-a", [work_item("w4", "Four", "open", "p1")?])?)?
+    g.publish(publication(g, "three", "agent-b", [work_item("w4", "Four", "done", "p1")?])?)?
+    let result = ran(g, [scan("a", "WorkItem"), status_is("b", "a", "done")], "b")?
+    let rows = result.answer.rows()
+    let w4? = rows.find(it.id == "w4") else { return false }
+    let status? = w4.fields.find(it.property == "status") else { return false }
+    status.candidates.length == 2 && status.candidates.all(!it.chosen)
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "graph read execution" {
+    given "an admitted plan over one read snapshot" {
+        then "a filter, follow and projection return rows with their supports" { passed(joins_with_evidence()) }
+        then "an incoming follow reaches the declared owner" { passed(incoming_follow()) }
+        then "a count keeps the rows it counted" { passed(counts_with_rows()) }
+        then "a text search matches stored text" { passed(searches_text()) }
+        then "the work budget stops execution, not the answer" { passed(work_stops_execution()) }
+        then "the row budget refuses an oversized result" { passed(rows_stop_execution()) }
+        then "competing claims stay candidates with no chosen truth" { passed(conflict_stays_open()) }
+    }
+}
