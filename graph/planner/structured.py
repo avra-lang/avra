@@ -47,7 +47,8 @@ class Evidence:
     informative in this graph: its
     document frequency (passages the search returns for it alone) is at most
     the median over the question's words. Facts on enum properties are
-    declared categories, matched by declarations, never by search. A word a
+    declared categories, matched by declarations, never by search; a
+    reference's value is an entity id, never a word. A word a
     declaration, an anchor or a narrowing has explained stops counting."""
 
     def __init__(self, search, question, models):
@@ -76,7 +77,7 @@ class Evidence:
         head, _, value = passage["text"].partition(": ")
         model, _, prop = head.partition(" ")
         declared = models.get(model, {}).get("properties", [])
-        if not any(q["name"] == prop and not q.get("enum") for q in declared):
+        if not any(q["name"] == prop and not q.get("enum") and not reference_target(q["shape"]) for q in declared):
             return None
         return model, prop, value
 
@@ -99,9 +100,11 @@ class Evidence:
         return hop[2] + ("; such records hold: " + "; ".join(repr(v) for v in held) if held else "")
 
     def about(self, model, question):
-        """(property, words) for this model's facts sharing unexplained informative words."""
-        return [(prop, [w for w in tokens(value) if w in self.words]) for m, prop, value in self.facts
-                if m == model and (m, prop, value) not in self.used and self.words & set(tokens(value))]
+        """(property, words) for this model's facts sharing words with the question:
+        every shared word is offered, and the model chooses which, if any, narrows."""
+        words = set(tokens(question))
+        return [(prop, [w for w in tokens(value) if w in words]) for m, prop, value in self.every
+                if m == model and (m, prop, value) not in self.used and words & set(tokens(value))]
 
 
 def quoted(text):
@@ -190,6 +193,7 @@ def plan(chooser, question, schema, context, search=None, depth=None):
     for hop in range(depth if depth is not None else len(models)):
         options = [h for h in hops(models, label) if not came or (h[0], h[1]) != came]
         trail = f"{head}\nSo far: {' '.join(out.parts)} — now at a {label}."
+        evidence.explain(" ".join(p["name"].replace("_", " ") for p in models[label]["properties"]))
         if not options:
             break
         said = [i for i, h in enumerate(options) if any(spoken(p, phrasing) for p in h[3])]
@@ -200,7 +204,7 @@ def plan(chooser, question, schema, context, search=None, depth=None):
             phrasing = unsaid(options[pick][3], phrasing)
             evidence.explain(" ".join(options[pick][3]))
         else:
-            if hop > 0 and not onward and best(chooser, trail, f"Is the answer about this {label}?", ARRIVED) == 0:
+            if not onward and best(chooser, trail, f"Is the answer about this {label}?", ARRIVED) == 0:
                 break
             ranked = onward or list(range(len(options)))
             pick = ranked[best(chooser, trail, "Where next?", [evidence.shown(options[i]) for i in ranked])]
@@ -246,6 +250,8 @@ def anchored(chooser, head, question, models, context, evidence, out):
                            [k + ": " + line(models[k].get("description", "")) for k in kinds])]
         var = out.node(label)
         out.parts.append(f"({var}:{label})")
+        narrowed(chooser, head, models[label], var, out, question, evidence)
+        evidence.spent.add(label)
     return var, label
 
 
@@ -285,7 +291,7 @@ def returns(chooser, trail, model, var, record=None):
     from the final node or from the relation record of the hop that reached it."""
     props = [(var, p) for p in model["properties"]]
     if record:
-        props += [(record[0], p) for p in record[1]["properties"] if not reference_target(p["shape"])]
+        props += [(record[0], p) for p in record[1]["properties"]]
     if best(chooser, trail, "What does the question ask for?",
             ["the value of one or more of their properties", "how many there are"]) == 1:
         return f"count({var}) AS count"
@@ -293,8 +299,7 @@ def returns(chooser, trail, model, var, record=None):
     if flags and best(chooser, trail, "What does the question want to know?", RECORDED) == 1:
         v, name = flags[best(chooser, trail, "Which recorded status?", [n for _, n in flags])]
         return f"coalesce({v}.{name}, false) AS {name}"
-    readable = [i for i, (_, p) in enumerate(props)
-                if not (isinstance(base_shape(p["shape"]), dict) and "embedded" in base_shape(p["shape"]))]
+    readable = range(len(props))
     picked = []
     for i in readable:
         v, p = props[i]
