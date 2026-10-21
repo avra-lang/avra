@@ -36,6 +36,7 @@ export enum Operation {
     Query(plan: Json)
     Cypher(text: string, params: Json)
     Check(text: string, params: Json)
+    Search(query: string, limit: int)
 }
 
 /// Protocol parsing knows operations; model data belongs to standard validation.
@@ -91,6 +92,10 @@ export fn operation(j: Json) -> Result<Operation, string> {
                         records: [record(v)? for v in array(j, "records")?],
                     },
                 )
+        },
+        "search" -> {
+            closed(j, ["op", "query", "limit"])?
+            Operation.Search(text(j, "query")?, optional_int(j, "limit", 10)?)
         },
         "check" -> {
             closed(j, ["op", "cypher", "params"])?

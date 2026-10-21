@@ -15,6 +15,8 @@ export type Passage = {
     start: int,
     stop: int,
     text: string,
+    claim: int,
+    run: string,
     rank: float,
 }
 
@@ -36,7 +38,7 @@ impl Graph {
                 .db
                 .all(
                     sql(
-                        "SELECT kind, observation, revision, start, stop, text, bm25(${index_table}) FROM ${index_table} WHERE ${index_table} MATCH ? ORDER BY bm25(${index_table}), observation, start LIMIT ?",
+                        "SELECT kind, observation, revision, start, stop, text, claim, run, bm25(${index_table}) FROM ${index_table} WHERE ${index_table} MATCH ? ORDER BY bm25(${index_table}), observation, start LIMIT ?",
                         [.Text(match_text), .Int(limit)],
                     ),
                 ),
@@ -48,7 +50,9 @@ impl Graph {
             start: stored(r.int(3))?,
             stop: stored(r.int(4))?,
             text: stored(r.text(5))?,
-            rank: stored(r.real(6))?,
+            claim: stored(r.int(6))?,
+            run: stored(r.text(7))?,
+            rank: stored(r.real(8))?,
         } for r in rows]
     }
 
@@ -62,7 +66,7 @@ impl Graph {
         stored(
             db
                 .exec(
-                    "CREATE VIRTUAL TABLE IF NOT EXISTS ${index_table} USING fts5(text, kind UNINDEXED, observation UNINDEXED, revision UNINDEXED, start UNINDEXED, stop UNINDEXED, tokenize = 'porter unicode61 remove_diacritics 2')",
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS ${index_table} USING fts5(text, kind UNINDEXED, observation UNINDEXED, revision UNINDEXED, start UNINDEXED, stop UNINDEXED, claim UNINDEXED, run UNINDEXED, tokenize = 'porter unicode61 remove_diacritics 2')",
                 ),
         )?
         stored(db.run(sql("DELETE FROM ${index_table}")))?
@@ -71,7 +75,7 @@ impl Graph {
                 db
                     .run(
                         sql(
-                            "INSERT INTO ${index_table}(text, kind, observation, revision, start, stop) VALUES (?, ?, ?, ?, ?, ?)",
+                            "INSERT INTO ${index_table}(text, kind, observation, revision, start, stop, claim, run) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                             [
                                 .Text(p.text),
                                 .Text(p.kind),
@@ -79,6 +83,8 @@ impl Graph {
                                 .Int(p.revision),
                                 .Int(p.start),
                                 .Int(p.stop),
+                                .Int(p.claim),
+                                .Text(p.run),
                             ],
                         ),
                     ),
@@ -105,6 +111,8 @@ impl Graph {
                 start: w.original.start,
                 stop: w.original.end,
                 text: w.original.text,
+                claim: 0,
+                run: "",
                 rank: 0.0,
             } for w in windows(envelope)?],
             .Err(_) -> [
@@ -115,6 +123,8 @@ impl Graph {
                     start: 0,
                     stop: r.payload.bytes().length,
                     text: r.payload,
+                    claim: 0,
+                    run: "",
                     rank: 0.0,
                 },
             ],
@@ -136,6 +146,8 @@ impl Graph {
             start: 0,
             stop: 0,
             text: "${model} ${sel.property}: ${spelled(c.value)}",
+            claim: c.claim,
+            run: s.member("run").text() ?? "",
             rank: 0.0,
         } for sel in entity.fields for c in sel.candidates for s in (self.explain(id, sel.property)?).items() if s.member("active").truth() == true && s.member("claim").int() == c.claim]
     }
