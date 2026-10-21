@@ -33,6 +33,10 @@ export type ValidityBinding = {
 export enum UnitBinding { Field(path: List<string>), Constant(name: string) }
 export type QuantityBinding = { amount: List<string>, unit: UnitBinding, decimal_places: int = 0 }
 
+/// The model's own reason code for a missing value at `path`: an unknown
+/// answer about an absent property carries it. The path must be optional.
+export type AbsenceBinding = { path: List<string>, code: string }
+
 /// Optional arguments to @model. All paths are property tokens, never SQL
 /// or source code. Paths may cross embedded records, not entity references
 /// or lists. A missing optional value is not an unbounded or zero value.
@@ -41,6 +45,7 @@ export type Semantics = {
     relation: RelationBinding? = null,
     validity: ValidityBinding? = null,
     quantities: List<QuantityBinding> = [],
+    absences: List<AbsenceBinding> = [],
 }
 
 impl Semantics {
@@ -73,6 +78,12 @@ impl Semantics {
                 },
             }
         }
+        for i, absence in self.absences {
+            if self.absences.slice(0, i).any(same_path(it.path, absence.path)) { fail "a property has one absence code" }
+            if !snake_token(absence.code) { fail "an absence code is a lowercase snake_case token: ${absence.code}" }
+            path_shape(models, owner, absence.path)?
+            if !path_optional(models, owner, absence.path)? { fail "an absence code binds an optional property" }
+        }
         true
     }
 
@@ -91,6 +102,19 @@ impl Semantics {
                         if self.validity == null { Json.Null } else { self.validity!.describe() },
                     ),
                     field("quantities", Json.Arr([q.describe() for q in self.quantities])),
+                    field(
+                        "absences",
+                        Json
+                            .Arr(
+                                [Json
+                                    .Obj(
+                                        [
+                                            field("path", path_document(a.path)),
+                                            field("code", Json.Str(a.code)),
+                                        ],
+                                    ) for a in self.absences],
+                            ),
+                    ),
                 ],
             )
     }
@@ -284,6 +308,32 @@ impl QuantityBinding {
 }
 
 fn path_document(path: List<string>) -> Json { Json.Arr([Json.Str(p) for p in path]) }
+
+/// Whether a value can be missing at the end of `path`: any optional step.
+fn path_optional(models: List<Model>, owner: Model, path: List<string>) -> Result<bool, string> {
+    mut current = owner
+    mut optional = false
+    for i, token in path {
+        let property? = current.properties.find(it.name == token) else { fail "unknown semantic property: ${current.name}.${token}" }
+        optional = optional || property.shape is .Optional
+        if i == path.length - 1 { return optional }
+        let target = match unwrapped(property.shape) {
+            .Embedded(name) -> name,
+            rest -> { fail "semantic paths may cross only embedded records" },
+        }
+        let next? = models.find(it.name == target) else { fail "unknown embedded semantic target: ${target}" }
+        current = next
+    }
+    fail "a semantic path must reach a property"
+}
+
+fn snake_token(code: string) -> bool {
+    let bytes = code.bytes()
+    if bytes.length == 0 || bytes.length > 64 { return false }
+    let lower = (b: int) -> b >= 97 && b <= 122
+    let tail = (b: int) -> lower(b) || b >= 48 && b <= 57 || b == 95
+    lower(bytes.at(0)) && (0..bytes.length).all((i) -> tail(bytes.at(i)))
+}
 
 fn unwrapped(shape: Shape) -> Shape {
     match shape { .Optional(inner) -> unwrapped(inner), rest -> shape }

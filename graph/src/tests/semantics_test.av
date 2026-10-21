@@ -7,6 +7,7 @@ use semantics.{
     RelationLabel,
     ValidityBinding,
     QuantityBinding,
+    AbsenceBinding,
     path_shape,
 }
 use catalog.{Catalog}
@@ -125,6 +126,19 @@ fn field_validation() -> Result<bool, string> {
         Instrument_graph_model().rules.is_empty()
 }
 
+fn absent(path: List<string>, code: string) -> AbsenceBinding { AbsenceBinding { path: path, code: code } }
+
+fn invalid_absences(a: List<AbsenceBinding>) -> Result<bool, string> { changed(Semantics { absences: a }) is .Err }
+
+fn absence_code() -> Result<bool, string> {
+    let declared = changed(Semantics { absences: [absent(["window", "start"], "no_start")] })?
+    let other = changed(Semantics { absences: [absent(["window", "start"], "no_beginning")] })?
+    declared
+            .document
+            .contains("\"absences\":[{\"path\":[\"window\",\"start\"],\"code\":\"no_start\"}]") &&
+        declared.fingerprint != other.fingerprint
+}
+
 fn passed(answer: Result<bool, string>) -> bool {
     answer catch e -> {
         println(e)
@@ -192,6 +206,20 @@ spec "typed model-declared graph semantics" {
         }
         then "constant units need no specially named property" { passed(constant_quantity()) }
         then "paths cannot cross entity/list boundaries or exceed their budget" { passed(invalid_paths()) }
+        then "an absence code is exported in the catalog and re-fingerprints the models" { passed(absence_code()) }
+        then "an absence code binds a real optional property" {
+            passed(invalid_absences([absent(["missing"], "gone")])) &&
+                passed(invalid_absences([absent(["amount"], "no_amount")]))
+        }
+        then "an absence code is a snake_case token, once per property" {
+            passed(invalid_absences([absent(["window", "start"], "No Start")])) &&
+                passed(invalid_absences([absent(["window", "start"], "")])) &&
+                passed(
+                    invalid_absences(
+                        [absent(["window", "start"], "a"), absent(["window", "start"], "b")],
+                    ),
+                )
+        }
         then "graph semantics remain separate from ordinary model validation" { passed(field_validation()) }
     }
 }
