@@ -5,7 +5,8 @@ use data.{encoded, before}
 use schema.{Property}
 use semantics.{QuantityBinding}
 use query.quantity.{Quantity, Term, Tally, Subject, tally}
-use store.open.{Graph}
+use store.open.{Graph, stored}
+use store.engine.{EntityRow}
 use store.query.{Selection}
 use query.plan.{Binding, ReadOnlyPlan, ReadOperation, Comparison, Direction, SourceView}
 
@@ -18,11 +19,12 @@ export type ReadRow = { id: string, model: string, fields: List<Selection>, evid
 /// Exceeded is a bound reached mid-run: no rows, and not a defect.
 export enum ReadAnswer {
     Rows(rows: List<ReadRow>)
-    Count(total: int, rows: List<ReadRow>)
-    Sum(total: Quantity, terms: List<Term>, rows: List<ReadRow>)
+    Count(total: int, rows: List<ReadRow>, name: string)
+    Sum(total: Quantity, terms: List<Term>, rows: List<ReadRow>, name: string)
     Unsummable(code: string, why: string)
     Unmet(code: string, detail: string, rows: List<ReadRow>)
     Status(name: string, held: bool, rows: List<ReadRow>)
+    Mixed(rows: List<ReadRow>, statuses: List<Held>)
     Exceeded(limit: string)
 }
 
@@ -30,11 +32,15 @@ impl ReadAnswer {
     /// The rows behind the answer, counted or returned.
     fn rows() -> List<ReadRow> {
         match self {
-            .Rows(rows) or .Count(_, rows) or .Sum(_, _, rows) or .Unmet(_, _, rows) or .Status(_, _, rows) -> rows,
+            .Mixed(rows, statuses) -> rows.concat([r for s in statuses for r in s.rows]),
+            .Rows(rows) or .Count(_, rows, _) or .Sum(_, _, rows, _) or .Unmet(_, _, rows) or .Status(_, _, rows) -> rows,
             .Unsummable(_, _) or .Exceeded(_) -> [],
         }
     }
 }
+
+/// A declared status beside row sets: its name, value and the rows it read.
+export type Held = { name: string, held: bool, rows: List<ReadRow> }
 
 export type ReadResult = { revision: int, work: int, answer: ReadAnswer }
 
@@ -50,8 +56,8 @@ type Hit = {
 }
 enum Flow {
     Hits(hits: List<Hit>)
-    Total(count: int, hits: List<Hit>)
-    Summed(total: Quantity, terms: List<Term>, hits: List<Hit>)
+    Total(count: int, hits: List<Hit>, name: string)
+    Summed(total: Quantity, terms: List<Term>, hits: List<Hit>, name: string)
     Unsummable(code: string, why: string)
     Unmet(code: string, detail: string, hits: List<Hit>)
     Status(name: string, held: bool, hits: List<Hit>)
@@ -90,18 +96,19 @@ impl Run {
             flows.push(flow)
         }
         if plan.joined.is_empty() {
-            self.answered(flows[plan.output])
+            self.answered(capped(flows[plan.output], plan.limit))
         } else {
-            self
-                .answered(
-                    Flow
-                        .Hits(
-                            flatten_hits(
-                                [self.rows(flows, at)? for at in [plan.output].concat(plan.joined)],
-                            ),
-                        ),
-                )
+            self.joined_answer([flows[at] for at in [plan.output].concat(plan.joined)], plan.limit)
         }
+    }
+
+    /// Row sets merge into one; each declared status keeps its own value.
+    fn joined_answer(flows: List<Flow>, limit: int?) -> Result<ReadAnswer, string> {
+        let hits = [h for f in flows for h in hits_in(f)]
+        let rows = self
+            .rows_of(match capped(Flow.Hits(hits), limit) { .Hits(kept) -> kept, rest -> hits })?
+        let statuses = [Held { name: st.name, held: st.held, rows: self.rows_of(st.hits)? } for f in flows for st in status_in(f)]
+        if statuses.is_empty() { ReadAnswer.Rows(rows) } else { ReadAnswer.Mixed(rows, statuses) }
     }
 
     /// A bound reached is an answer; any other failure stays one.
@@ -139,18 +146,18 @@ impl Run {
             .Project(input, properties, names) -> Flow.Hits(self.project(self.rows(flows, input)?, properties, names)),
             .Holds(input, property, name) -> self.holds(self.rows(flows, input)?, property.name, name)?,
             .Expect(input, property, reason) -> self.expect(self.rows(flows, input)?, property.name, reason)?,
-            .Count(input) -> {
+            .Count(input, name) -> {
                 let hits = self.rows(flows, input)?
-                Flow.Total(hits.length, hits)
+                Flow.Total(hits.length, hits, name)
             },
-            .Sum(input, property, quantity) -> self.sum(self.rows(flows, input)?, property.name, quantity)?,
+            .Sum(input, property, quantity, name) -> self.sum(self.rows(flows, input)?, property.name, quantity, name)?,
         }
     }
 
     fn rows(flows: List<Flow>, input: int) -> Result<List<Hit>, string> {
         match flows[input] {
             .Hits(hits) -> hits,
-            .Total(_, _) or .Summed(_, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) -> { fail "an aggregate has no rows to read" },
+            .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) -> { fail "an aggregate has no rows to read" },
         }
     }
 
@@ -177,7 +184,8 @@ impl Run {
                 .Unmet("unbound_context", "the request's context names no ${binding.word()}", [])
         }
         self.charge(1)?
-        let found = match self.g.entity(bound) { .Ok(e) -> e.model == model, .Err(_) -> false }
+        let named = stored(EntityRow.where(self.g.db, name: bound))?
+        let found = named.any(it.model == model) && !self.g.hidden(bound)?
         if found {
             Flow.Hits([self.hit(bound, [])?])
         } else {
@@ -208,11 +216,14 @@ impl Run {
         [h.proved(h.id, property) for h in input if h.holds(property, compare, literal)]
     }
 
-    fn sum(input: List<Hit>, amount: string, binding: QuantityBinding) -> Result<Flow, string> {
+    fn sum(input: List<Hit>, amount: string, binding: QuantityBinding, name: string) -> Result<
+        Flow,
+        string,
+    > {
         self.charge(input.length)?
         match tally([Subject { id: h.id, fields: h.fields } for h in input], amount, binding) {
             .Refused(code, why) -> Flow.Unsummable(code, why),
-            .Total(total, terms) -> Flow.Summed(total, terms, self.cited_sum(input, amount, binding)),
+            .Total(total, terms) -> Flow.Summed(total, terms, self.cited_sum(input, amount, binding), name),
         }
     }
 
@@ -244,11 +255,15 @@ impl Run {
             .filter(it.property == property)
         self.charge(edges.length)?
         match direction {
-            .Outgoing -> [self.hit(e.target, [Proof { entity: from.id, property: property }])? for e in edges],
+            .Outgoing -> [self.hit(e.target, from.proofs.concat([Proof { entity: from.id, property: property }]))? for e in edges],
             .Incoming -> self
                 .owned_by(
                     owner,
-                    [self.hit(e.entity, [Proof { entity: e.entity, property: property }])? for e in edges],
+                    [self
+                        .hit(
+                            e.entity,
+                            from.proofs.concat([Proof { entity: e.entity, property: property }]),
+                        )? for e in edges],
                 ),
         }
     }
@@ -281,8 +296,8 @@ impl Run {
     fn answered(flow: Flow) -> Result<ReadAnswer, string> {
         match flow {
             .Hits(hits) -> ReadAnswer.Rows(self.rows_of(hits)?),
-            .Total(count, hits) -> ReadAnswer.Count(count, self.rows_of(hits)?),
-            .Summed(total, terms, hits) -> ReadAnswer.Sum(total, terms, self.rows_of(hits)?),
+            .Total(count, hits, name) -> ReadAnswer.Count(count, self.rows_of(hits)?, name),
+            .Summed(total, terms, hits, name) -> ReadAnswer.Sum(total, terms, self.rows_of(hits)?, name),
             .Unsummable(code, why) -> ReadAnswer.Unsummable(code, why),
             .Status(name, held, hits) -> ReadAnswer.Status(name, held, self.rows_of(hits)?),
             .Unmet(code, detail, hits) -> ReadAnswer.Unmet(code, detail, self.rows_of(hits)?),
@@ -409,3 +424,30 @@ fn rows_exceeded() -> string { "read exceeded its row budget" }
 fn unexceeded() -> string? { null }
 
 fn flatten_hits(runs: List<List<Hit>>) -> List<Hit> { [h for run in runs for h in run] }
+
+/// A LIMIT keeps the first rows in stored order; an aggregate is unchanged.
+fn capped(flow: Flow, limit: int?) -> Flow {
+    match flow {
+        .Hits(hits) -> Flow
+            .Hits(
+                if limit == null { hits } else { hits.slice(0, if limit! < hits.length { limit! } else { hits.length }) },
+            ),
+        .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) -> flow,
+    }
+}
+
+fn hits_in(flow: Flow) -> List<Hit> {
+    match flow {
+        .Hits(hits) -> hits,
+        .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) -> [],
+    }
+}
+
+type Stated = { name: string, held: bool, hits: List<Hit> }
+
+fn status_in(flow: Flow) -> List<Stated> {
+    match flow {
+        .Status(name, held, hits) -> [Stated { name: name, held: held, hits: hits }],
+        .Hits(_) or .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) -> [],
+    }
+}

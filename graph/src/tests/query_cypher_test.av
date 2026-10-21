@@ -1,0 +1,255 @@
+use tests.support.{models}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use @std.json.{Json, field, parse}
+
+fn record(id: string, model: string, json: string) -> Result<Record, string> {
+    Record { id: id, model: model, value: stored_value(json)? }
+}
+
+fn person(id: string, name: string) -> Result<Record, string> {
+    record(id, "Person", "{\"name\":\"${name}\",\"email\":null}")
+}
+
+fn work_item(id: string, title: string, status: string, assignee: string) -> Result<Record, string> {
+    record(
+        id,
+        "WorkItem",
+        "{\"title\":\"${title}\",\"status\":\"${status}\",\"assignee\":\"${assignee}\",\"messages\":[],\"due_at\":null}",
+    )
+}
+
+fn seeded_graph() -> Result<Graph, string> {
+    mut g = Graph.memory(models)?
+    g.observe("in:1", "raw")?
+    g
+        .publish(
+            Publication {
+                id: "one",
+                producer: "agent",
+                scope: "in:1",
+                input: "in:1",
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: [
+                    person("p1", "Ada")?,
+                    person("p2", "Grace")?,
+                    work_item("w1", "One", "open", "p1")?,
+                    work_item("w2", "Two", "done", "p1")?,
+                    work_item("w3", "Three", "done", "p2")?,
+                ],
+            },
+        )?
+    g
+}
+
+fn params_json(speaker: string?) -> string {
+    let named = if speaker == null { "" } else { ",\"speaker\":\"${speaker!}\"" }
+    "{\"asker\":\"u\",\"now\":1${named},\"needle\":\"Th\"}"
+}
+
+fn bound_params(params: string) -> Result<Json, string> {
+    match parse(params) { .Ok(j) -> j, .Err(_) -> { fail "params are not JSON" } }
+}
+
+fn cypher(mut g: Graph, text: string, params: string) -> Result<Json, string> {
+    let bound = match parse(params) { .Ok(j) -> j, .Err(_) -> { fail "params are not JSON" } }
+    g
+        .dispatch(
+            Json
+                .Obj(
+                    [
+                        field("op", Json.Str("query")),
+                        field("cypher", Json.Str(text)),
+                        field("params", bound),
+                    ],
+                ),
+        )
+}
+
+fn code_of(answer: Json) -> string { answer.member("problems").item(0).member("code").text() ?? "-" }
+
+fn values(answer: Json) -> string {
+    answer.member("fields").items().map(it.member("value").text() ?? "?").join(",")
+}
+
+fn paths(answer: Json) -> string {
+    answer
+        .member("fields")
+        .items()
+        .map(it.member("path").items().map((p) -> p.text() ?? "").join("/"))
+        .join(",")
+}
+
+fn reads_and_names() -> Result<bool, string> {
+    mut g = seeded_graph()?
+    defer { let _ = g.close() }
+    let open = cypher(
+        g,
+        "MATCH (w:WorkItem) WHERE w.status = 'open' RETURN w.title AS headline",
+        params_json(null),
+    )?
+    let contains = cypher(
+        g,
+        "MATCH (w:WorkItem) WHERE w.title CONTAINS \$needle RETURN w.title",
+        params_json(null),
+    )?
+    let limited = cypher(g, "MATCH (w:WorkItem) RETURN w.title LIMIT 1", params_json(null))?
+    let outgoing = cypher(
+        g,
+        "MATCH (w:WorkItem)-[:assignee]->(p:Person) WHERE w.status = 'done' RETURN p.name AS who",
+        params_json(null),
+    )?
+    paths(open) == "w1/headline" &&
+        values(open) == "One" &&
+        values(contains) == "Three" &&
+        limited.member("fields").items().length == 1 &&
+        values(outgoing) == "Ada,Grace" &&
+        paths(outgoing) == "p1/who,p2/who"
+}
+
+fn speaker_binds_the_question() -> Result<bool, string> {
+    mut g = seeded_graph()?
+    defer { let _ = g.close() }
+    let mine = "MATCH (me:Person)<-[:assignee]-(w:WorkItem) WHERE id(me) = \$speaker RETURN w.title AS mine"
+    let ada = cypher(g, mine, params_json("p1"))?
+    let grace = cypher(g, mine, params_json("p2"))?
+    let nobody = cypher(g, mine, params_json(null))?
+    let stranger = cypher(g, mine, params_json("p9"))?
+    values(ada) == "One,Two" &&
+        values(grace) == "Three" &&
+        nobody.member("status").text() == "unknown" &&
+        code_of(nobody) == "unbound_context" &&
+        code_of(stranger) == "unresolved_context"
+}
+
+fn counts_and_nulls() -> Result<bool, string> {
+    mut g = seeded_graph()?
+    defer { let _ = g.close() }
+    let done = cypher(
+        g,
+        "MATCH (w:WorkItem) WHERE w.status = 'done' RETURN count(w) AS finished",
+        params_json(null),
+    )?
+    let due = cypher(
+        g,
+        "MATCH (w:WorkItem) WHERE w.status = 'open' RETURN w.due_at AS due, w.title AS title",
+        params_json(null),
+    )?
+    let counted = done.member("fields").item(0)
+    counted.member("path").item(0).text() == "finished" &&
+        counted.member("value").int() == 2 &&
+        due.member("status").text() == "unknown" &&
+        code_of(due) == "null_result" &&
+        !due.member("fields").items().is_empty()
+}
+
+fn joined_matches() -> Result<bool, string> {
+    mut g = seeded_graph()?
+    defer { let _ = g.close() }
+    let both = cypher(
+        g,
+        "MATCH (w:WorkItem) WHERE w.status = 'open' MATCH (p:Person) WHERE p.name = 'Ada' RETURN w.title AS item, p.name AS who",
+        params_json(null),
+    )?
+    paths(both) == "w1/item,p1/who"
+}
+
+fn code_for(mut g: Graph, text: string, params: string) -> Result<string, string> {
+    code_of(cypher(g, text, params)?)
+}
+
+fn refusals() -> Result<bool, string> {
+    mut g = seeded_graph()?
+    defer { let _ = g.close() }
+    let before = g.revision()?
+    let p = params_json(null)
+    let writes = [
+        code_for(g, "CREATE (n:Person {name: 'x'})", p)?,
+        code_for(g, "MATCH (w:WorkItem) SET w.status = 'x' RETURN w.title", p)?,
+        code_for(g, "MATCH (w:WorkItem) DETACH DELETE w", p)?,
+        code_for(g, "MERGE (n:Person)", p)?,
+    ]
+    let refused = cypher(g, "MATCH (w:WorkItem) DELETE w", p)?
+    writes.all(it == "mutation_refused") &&
+        refused.member("status").text() == "refused" &&
+        code_for(g, "CALL db.labels()", p)? == "procedure_refused" &&
+        code_for(
+            g,
+            "MATCH (w:WorkItem) WHERE w.status = 'open' OR w.status = 'done' RETURN w.title",
+            p,
+        )? == "unsupported_or" &&
+        code_for(g, "MATCH (w:WorkItem)-[:assignee*1..3]->(p:Person) RETURN p.name", p)? == "variable_length_path" &&
+        code_for(g, "MATCH (w) RETURN w.title", p)? == "unlabelled_node" &&
+        code_for(g, "MATCH (w:Nothing) RETURN w.x", p)? == "plan_refused" &&
+        code_for(g, "MATCH (w:WorkItem)-[:assignee]->(p:WorkItem) RETURN p.name", p)? == "label_mismatch" &&
+        code_for(g, "MATCH (w:WorkItem)-[:assignee]->(p:Person) RETURN w.title", p)? == "return_not_last" &&
+        code_for(g, "MATCH (w:WorkItem) WHERE w.title = \$nope RETURN w.title", p)? == "unbound_parameter" &&
+        code_for(g, "MATCH (w:WorkItem RETURN w.title", p)? == "syntax" &&
+        code_for(g, "MATCH (w:WorkItem) RETURN w.title", "{}")? == "missing_parameter" &&
+        g.revision()? == before
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "cypher reads" {
+    given "a graph and the openCypher subset" {
+        then "reads, named outputs, CONTAINS, LIMIT and outgoing hops compile and run" { passed(reads_and_names()) }
+        then "the same query answers for each \$speaker, and an unbound one is unknown" { passed(speaker_binds_the_question()) }
+        then "count() names its output and a null result is unknown with the rows found" { passed(counts_and_nulls()) }
+        then "writes, procedures and everything outside the subset are refused with a code" { passed(refusals()) }
+        then "a variable shared between MATCH clauses chains them, and a shared variable chains them" { passed(shared_variable_and_status()) }
+        then "check answers ok or the refusal without running" { passed(check_does_not_run()) }
+        then "two MATCH clauses join into one answer" { passed(joined_matches()) }
+    }
+}
+
+fn shared_variable_and_status() -> Result<bool, string> {
+    mut g = seeded_graph()?
+    defer { let _ = g.close() }
+    let shared = cypher(
+        g,
+        "MATCH (p:Person)<-[:assignee]-(w:WorkItem) WHERE p.name = 'Ada' MATCH (w)-[:assignee]->(q:Person) RETURN w.title AS item, q.name AS owner",
+        params_json(null),
+    )?
+    paths(shared) == "w1/item,w2/item,p1/owner" && shared.member("status").text() == "answered"
+}
+
+fn check_does_not_run() -> Result<bool, string> {
+    mut g = seeded_graph()?
+    defer { let _ = g.close() }
+    let before = g.revision()?
+    let ok = g
+        .dispatch(
+            Json
+                .Obj(
+                    [
+                        field("op", Json.Str("check")),
+                        field("cypher", Json.Str("MATCH (w:WorkItem) RETURN w.title")),
+                        field("params", bound_params(params_json(null))?),
+                    ],
+                ),
+        )?
+    let bad = g
+        .dispatch(
+            Json
+                .Obj(
+                    [
+                        field("op", Json.Str("check")),
+                        field("cypher", Json.Str("MATCH (w:WorkItem) DELETE w")),
+                        field("params", Json.Obj([])),
+                    ],
+                ),
+        )?
+    ok.member("ok").truth() == true &&
+        bad.member("ok").truth() == false &&
+        bad.member("code").text() == "mutation_refused" &&
+        g.revision()? == before
+}

@@ -23,8 +23,8 @@ export enum ReadOperation {
     Project(input: int, properties: List<Property>, names: List<string>)
     Expect(input: int, property: Property, reason: string)
     Holds(input: int, property: Property, name: string)
-    Count(input: int)
-    Sum(input: int, property: Property, quantity: QuantityBinding)
+    Count(input: int, name: string)
+    Sum(input: int, property: Property, quantity: QuantityBinding, name: string)
 }
 
 export type ReadNode = { id: string, operation: ReadOperation, shape: ReadShape, depth: int }
@@ -36,6 +36,7 @@ export type ReadOnlyPlan = {
     nodes: List<ReadNode>,
     output: int,
     joined: List<int>,
+    limit: int?,
     budget: Budget,
 }
 
@@ -57,8 +58,9 @@ export fn prepare_read(catalog: Catalog, payload: string) -> Result<ReadOnlyPlan
     }
     let output = node_at(nodes, wire.output, "read plan output is absent")?
     let joined = [node_at(nodes, id, "read plan joined output is absent")? for id in wire.joined]
-    if !joined.is_empty() && ![output].concat(joined).all(nodes[it].shape is .Rows) {
-        fail "joined outputs must all be row sets"
+    if !joined.is_empty() &&
+        ![output].concat(joined).all(nodes[it].shape is .Rows || nodes[it].shape is .Status) {
+        fail "joined outputs must be row sets or statuses"
     }
     ReadOnlyPlan {
         request: wire.request,
@@ -68,6 +70,7 @@ export fn prepare_read(catalog: Catalog, payload: string) -> Result<ReadOnlyPlan
         nodes: nodes,
         output: output,
         joined: joined,
+        limit: wire.limit,
         budget: wire.budget,
     }
 }
@@ -267,7 +270,12 @@ fn prepared_node(catalog: Catalog, nodes: List<ReadNode>, step: ReadStep) -> Res
                 depth: depth,
             }
         },
-        "count" -> ReadNode { id: step.id, operation: .Count(input), shape: .Count, depth: depth },
+        "count" -> ReadNode {
+            id: step.id,
+            operation: .Count(input, step.names.first() ?? "count"),
+            shape: .Count,
+            depth: depth,
+        },
         "sum" -> {
             let property = visible(rows, step.property!)?
             if !(unwrapped(property.shape) is .Integer) { fail "sum requires an integer property in minor units" }
@@ -284,7 +292,7 @@ fn prepared_node(catalog: Catalog, nodes: List<ReadNode>, step: ReadStep) -> Res
             }
             ReadNode {
                 id: step.id,
-                operation: .Sum(input, property, quantity),
+                operation: .Sum(input, property, quantity, step.names.first() ?? "sum"),
                 shape: .Quantity(quantity),
                 depth: depth,
             }

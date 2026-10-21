@@ -2,7 +2,7 @@ use @std.json.{Json, field, to_text}
 use data.{as_json}
 use store.open.{Graph}
 use query.plan.{prepare_read}
-use query.execute.{ReadAnswer, ReadRow, ReadResult}
+use query.execute.{ReadAnswer, ReadRow, ReadResult, Held}
 use store.query.{Selection, Candidate}
 use query.quantity.{Quantity, Term}
 
@@ -22,23 +22,17 @@ impl Graph {
     }
 }
 
-fn responded(request: string, result: ReadResult) -> Json {
+export fn responded(request: string, result: ReadResult) -> Json {
     match result.answer {
         .Exceeded(limit) -> unresolved(request, result.revision, "budget_exceeded", limit),
         .Unmet(code, detail, rows) -> known_unknown(request, result.revision, code, detail, rows),
-        .Status(name, held, rows) -> {
-            let citations = distinct_supports(rows)
-            if citations.is_empty() {
-                unresolved(
-                    request,
-                    result.revision,
-                    "no_evidence",
-                    "no cited rows stand behind the status",
-                )
-            } else {
-                answered(request, result.revision, [status_field(name, held, citations)], rows)
-            }
-        },
+        .Mixed(rows, statuses) -> mixed(request, result.revision, rows, statuses),
+        .Status(name, held, rows) -> answered(
+            request,
+            result.revision,
+            [status_field(name, held, distinct_supports(rows))],
+            rows,
+        ),
         .Rows(rows) -> {
             let fields = [f for row in rows for f in row_fields(row)]
             let conflicts = [c for row in rows for c in row_conflicts(row)]
@@ -56,8 +50,8 @@ fn responded(request: string, result: ReadResult) -> Json {
             }
         },
         .Unsummable(code, why) -> refused(request, result.revision, "quantity_policy", code, why),
-        .Sum(total, terms, rows) -> answered(request, result.revision, sum_fields(total, terms, rows), rows),
-        .Count(total, rows) -> {
+        .Sum(total, terms, rows, name) -> answered(request, result.revision, sum_fields(name, total, terms, rows), rows),
+        .Count(total, rows, name) -> {
             let citations = distinct_supports(rows)
             if citations.is_empty() {
                 unresolved(
@@ -67,7 +61,7 @@ fn responded(request: string, result: ReadResult) -> Json {
                     "the plan counted no cited rows",
                 )
             } else {
-                answered(request, result.revision, [count_field(total, citations)], rows)
+                answered(request, result.revision, [count_field(name, total, citations)], rows)
             }
         },
     }
@@ -133,7 +127,7 @@ fn unresolved(request: string, revision: int, code: string, message: string) -> 
     document(request, "unknown", revision, [], [], [], [problem(code, message)])
 }
 
-fn refused(request: string, revision: int, policy: string, code: string, message: string) -> Json {
+export fn refused(request: string, revision: int, policy: string, code: string, message: string) -> Json {
     document(request, "refused", revision, [], [], [policy], [problem(code, message)])
 }
 
@@ -226,8 +220,11 @@ fn conflict_of(row: ReadRow, sel: Selection) -> List<Json> {
 
 /// A fact without a live support is not asserted.
 fn cited_field(row: ReadRow, path: List<string>, claim: int, value: Json) -> List<Json> {
-    let ids = [s.id for s in supports_of(row) if s.claim == claim]
-    if ids.is_empty() {
+    let own = [s.id for s in supports_of(row) if s.claim == claim]
+    let shown = [c.claim for sel in row.fields for c in sel.candidates]
+    let selecting = [s.id for s in supports_of(row) if !shown.contains(s.claim)]
+    let ids = own.concat(selecting)
+    if own.is_empty() {
         []
     } else {
         [
@@ -244,11 +241,11 @@ fn cited_field(row: ReadRow, path: List<string>, claim: int, value: Json) -> Lis
     }
 }
 
-fn count_field(total: int, supports: List<Support>) -> Json {
+fn count_field(name: string, total: int, supports: List<Support>) -> Json {
     Json
         .Obj(
             [
-                field("path", Json.Arr([Json.Str("count")])),
+                field("path", Json.Arr([Json.Str(name)])),
                 field("value", Json.Int(total)),
                 field("basis", Json.Str("record_status")),
                 field("citations", Json.Arr([Json.Str(s.id) for s in supports])),
@@ -293,7 +290,7 @@ fn distinct_supports(rows: List<ReadRow>) -> List<Support> {
 }
 
 /// The total, then each summand with its own citations.
-fn sum_fields(total: Quantity, terms: List<Term>, rows: List<ReadRow>) -> List<Json> {
+fn sum_fields(name: string, total: Quantity, terms: List<Term>, rows: List<ReadRow>) -> List<Json> {
     let supports = distinct_supports(rows)
     let value = Json
         .Obj(
@@ -307,7 +304,7 @@ fn sum_fields(total: Quantity, terms: List<Term>, rows: List<ReadRow>) -> List<J
         Json
             .Obj(
                 [
-                    field("path", Json.Arr([Json.Str("sum")])),
+                    field("path", Json.Arr([Json.Str(name)])),
                     field("value", value),
                     field("basis", Json.Str("record_status")),
                     field(
@@ -319,6 +316,19 @@ fn sum_fields(total: Quantity, terms: List<Term>, rows: List<ReadRow>) -> List<J
             ),
     ]
         .concat(
-            [f for t in terms for row in rows if row.id == t.row for f in cited_field(row, ["sum", "terms", t.row], t.claim, Json.Int(t.minor))],
+            [f for t in terms for row in rows if row.id == t.row for f in cited_field(row, [name, "terms", t.row], t.claim, Json.Int(t.minor))],
         )
+}
+
+/// Row sets and declared statuses in one answer; each status stands on its own rows.
+fn mixed(request: string, revision: int, rows: List<ReadRow>, statuses: List<Held>) -> Json {
+    let fields = [f for row in rows for f in row_fields(row)]
+        .concat([status_field(s.name, s.held, distinct_supports(s.rows)) for s in statuses])
+    let conflicts = [c for row in rows for c in row_conflicts(row)]
+    let every = rows.concat([r for s in statuses for r in s.rows])
+    if conflicts.is_empty() {
+        answered(request, revision, fields, every)
+    } else {
+        ambiguous(request, revision, fields, conflicts, every)
+    }
 }

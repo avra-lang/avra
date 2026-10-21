@@ -34,6 +34,8 @@ export enum Operation {
     Choices(claim: int)
     Dirty
     Query(plan: Json)
+    Cypher(text: string, params: Json)
+    Check(text: string, params: Json)
 }
 
 /// Protocol parsing knows operations; model data belongs to standard validation.
@@ -90,10 +92,18 @@ export fn operation(j: Json) -> Result<Operation, string> {
                     },
                 )
         },
+        "check" -> {
+            closed(j, ["op", "cypher", "params"])?
+            Operation.Check(text(j, "cypher")?, j.get("params") ?? Json.Obj([]))
+        },
         "query" -> {
-            closed(j, ["op", "plan"])?
-            let plan? = j.get("plan") else { fail "query needs a read plan" }
-            Operation.Query(plan)
+            closed(j, ["op", "plan", "cypher", "params"])?
+            if (j.get("plan") == null) == (j.get("cypher") == null) { fail "query names a read plan or a cypher query, not both and not neither" }
+            if j.get("cypher") != null {
+                Operation.Cypher(text(j, "cypher")?, j.get("params") ?? Json.Obj([]))
+            } else {
+                Operation.Query(j.get("plan")!)
+            }
         },
         "get" -> {
             closed(j, ["op", "id"])?

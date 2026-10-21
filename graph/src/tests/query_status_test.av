@@ -73,12 +73,41 @@ fn declared_status() -> Result<bool, string> {
         no.member("fields").item(0).member("path").item(0).text() == "booking_confirmed"
 }
 
-fn nothing_to_cite_is_unknown() -> Result<bool, string> {
+fn absence_reads_false_uncited() -> Result<bool, string> {
     mut g = ledger([booking("b1", "Alder", true)?])?
     defer { let _ = g.close() }
     let none = status_of(g, "Nowhere")?
-    none.member("status").text() == "unknown" &&
-        none.member("problems").item(0).member("code").text() == "no_evidence"
+    none.member("status").text() == "answered" &&
+        held_of(none) == false &&
+        none.member("fields").item(0).member("basis").text() == "record_status" &&
+        none.member("fields").item(0).member("citations").items().is_empty()
+}
+
+fn status_beside_rows() -> Result<bool, string> {
+    mut g = ledger([booking("b1", "Alder", false)?])?
+    defer { let _ = g.close() }
+    let steps = [
+        scan("a", "Booking"),
+        step(
+            "b",
+            "filter",
+            "a",
+            "\"property\":\"venue\",\"comparison\":\"eq\",\"arguments\":[\"Alder\"]",
+        ),
+        step("c", "holds", "b", "\"property\":\"confirmed\",\"names\":[\"booking_confirmed\"]"),
+        step("d", "project", "b", "\"properties\":[\"venue\"],\"names\":[\"where\"]"),
+    ]
+    let body = match parse(plan(steps.join(","), "d", g.catalog.fingerprint, joined: "\"c\"")) {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "plan is not JSON" },
+    }
+    let answer = g.dispatch(Json.Obj([field("op", Json.Str("query")), field("plan", body)]))?
+    let shown = answer
+        .member("fields")
+        .items()
+        .map(it.member("path").items().map((p) -> p.text() ?? "").join("/"))
+        .join(",")
+    answer.member("status").text() == "answered" && shown == "b1/where,booking_confirmed"
 }
 
 fn rivals_are_not_decided() -> Result<bool, string> {
@@ -88,6 +117,35 @@ fn rivals_are_not_decided() -> Result<bool, string> {
     let rival = status_of(g, "Alder")?
     rival.member("status").text() == "unknown" &&
         rival.member("problems").item(0).member("code").text() == "conflicting_status"
+}
+
+fn coalesce_beside_rows() -> Result<bool, string> {
+    mut g = ledger([booking("b1", "Alder", false)?])?
+    defer { let _ = g.close() }
+    let bound = match parse("{\"asker\":\"u\",\"now\":1}") {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "params are not JSON" },
+    }
+    let text = "MATCH (b:Booking) WHERE b.venue = 'Alder' RETURN b.venue AS place, coalesce(b.confirmed, false) AS booking_confirmed"
+    let answer = g
+        .dispatch(
+            Json
+                .Obj(
+                    [
+                        field("op", Json.Str("query")),
+                        field("cypher", Json.Str(text)),
+                        field("params", bound),
+                    ],
+                ),
+        )?
+    let shown = answer
+        .member("fields")
+        .items()
+        .map(it.member("path").items().map((p) -> p.text() ?? "").join("/"))
+        .join(",")
+    answer.member("status").text() == "answered" &&
+        shown == "b1/place,booking_confirmed" &&
+        answer.member("fields").item(1).member("value").truth() == false
 }
 
 fn passed(answer: Result<bool, string>) -> bool {
@@ -100,7 +158,9 @@ fn passed(answer: Result<bool, string>) -> bool {
 spec "declared status reads" {
     given "bookings with a declared boolean" {
         then "a status reads true, or false from the claims that exist, with citations" { passed(declared_status()) }
-        then "a status with no rows to cite is unknown, never false" { passed(nothing_to_cite_is_unknown()) }
+        then "a status no row supports reads false, uncited, because the plan asked for it" { passed(absence_reads_false_uncited()) }
+        then "a status joins a row set in one answer" { passed(status_beside_rows()) }
+        then "Cypher coalesce(property, false) sits beside returned rows" { passed(coalesce_beside_rows()) }
         then "competing claims leave the status undecided" { passed(rivals_are_not_decided()) }
     }
 }

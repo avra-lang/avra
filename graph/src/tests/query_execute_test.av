@@ -1,4 +1,4 @@
-use models.{models}
+use tests.support.{models}
 use store.open.{Graph}
 use store.publish.{Record, Publication}
 use store.query.{stored_value}
@@ -89,8 +89,9 @@ fn evidenced(result: ReadResult) -> bool {
                     !it.evidence.is_empty() &&
                         it.evidence.all(it.supports.item(0).member("claim").int() != null),
                 ),
-        .Count(_, rows) -> rows.all(!it.evidence.is_empty()),
-        .Sum(_, _, rows) -> rows.all(!it.evidence.is_empty()),
+        .Count(_, rows, _) -> rows.all(!it.evidence.is_empty()),
+        .Mixed(rows, _) -> rows.all(!it.evidence.is_empty()),
+        .Sum(_, _, rows, _) -> rows.all(!it.evidence.is_empty()),
         .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) or .Exceeded(_) -> false,
     }
 }
@@ -137,8 +138,8 @@ fn counts_with_rows() -> Result<bool, string> {
         "c",
     )?
     let counted = match result.answer {
-        .Count(n, _) -> n,
-        .Rows(_) or .Sum(_, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) or .Exceeded(_) -> -1,
+        .Count(n, _, _) -> n,
+        .Rows(_) or .Mixed(_, _) or .Sum(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) or .Exceeded(_) -> -1,
     }
     counted == 2 && row_ids(result).join(",") == "w2,w3" && evidenced(result)
 }
@@ -395,6 +396,24 @@ fn joined_chains_answer_together() -> Result<bool, string> {
     names == "open_title,who"
 }
 
+fn selection_is_provenance() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    let answer = asked(
+        g,
+        [
+            scan("a", "WorkItem"),
+            status_is("b", "a", "open"),
+            step("c", "follow", "b", "\"property\":\"assignee\",\"direction\":\"out\""),
+            step("d", "project", "c", "\"properties\":[\"name\"],\"names\":[\"who\"]"),
+        ],
+        "d",
+    )?
+    let cited = answer.member("fields").item(0).member("citations").items().length
+    answer.member("status").text() == "answered" && cited >= 3
+}
+
 fn passed(answer: Result<bool, string>) -> bool {
     answer catch e -> {
         println(e)
@@ -416,6 +435,7 @@ spec "graph read execution" {
         then "one question asked by two speakers answers from each speaker, and an unbound or unknown speaker is unknown" { passed(context_seeds_the_question()) }
         then "an unmet expectation is unknown but keeps the cited rows it found" { passed(partial_unknown_keeps_what_was_found()) }
         then "two chains join into one answer" { passed(joined_chains_answer_together()) }
+        then "the supports that selected a row are cited beside its value" { passed(selection_is_provenance()) }
         then "competing claims stay candidates with no chosen truth" { passed(conflict_stays_open()) }
     }
 }

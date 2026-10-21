@@ -44,10 +44,10 @@ fn step_coherent(s: ReadStep) -> Result<ReadStep, string> {
     if (s.op == "project") != !s.properties.is_empty() { fail "only a projection names output properties" }
     if s.properties.any(it.is_empty()) { fail "projection properties cannot be empty" }
     if s.owner != null && !(s.op == "follow" && s.direction == "in") { fail "only an incoming follow names its owner model" }
-    if !s.names.is_empty() &&
-        (!(s.op == "project" || s.op == "holds") ||
-            s.op == "project" && s.names.length != s.properties.length) {
-        fail "output names pair one-to-one with a projection's properties; a status has one"
+    let paired = s.op == "project" && s.names.length == s.properties.length
+    let single = (s.op == "holds" || s.op == "count" || s.op == "sum") && s.names.length == 1
+    if !s.names.is_empty() && !(paired || single) {
+        fail "output names pair one-to-one with a projection's properties; a status, count or sum has one"
     }
     if s.op == "holds" && s.names.length != 1 { fail "a status names its output once" }
     if s.names.any(it.is_empty()) { fail "output names cannot be empty" }
@@ -88,5 +88,6 @@ export type ReadPlan = {
     @items(min: 1, max: 32) steps: List<ReadStep>,
     @length(min: 1, max: 128) output: string,
     @items(max: 8) joined: List<string> = [],
+    @range(1, 1000) limit: int? = null,
     budget: Budget,
 }
