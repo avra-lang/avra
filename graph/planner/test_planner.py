@@ -205,15 +205,26 @@ class Structured(unittest.TestCase):
         self.assertTrue(cypher.startswith("MATCH (n0:Person)-[:wife]->(n1:Person)<-[:person]-(n2:GroupMembership)"))
         self.assertNotIn("Where next?", chooser.asked[2][0])
 
+    def test_unanswered_words_lead_past_the_relation(self):
+        import structured
+
+        context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
+        chooser = Scripted(["Person", "no narrowing", "no narrowing", "no narrowing",
+                            "value", "requested_guest_limit", "nothing more"])
+        cypher = structured.plan(chooser, "What guest limit did my wife set?", SCHEMA, context)
+        self.assertTrue(cypher.startswith("MATCH (n0:Person)-[:wife]->(n1:Person)<-[:actor]-(n2:Commitment)-[:event]->(n3:Event)"), cypher)
+        self.assertFalse(any("Is the answer about this Person" in q for q, _ in chooser.asked))
+
     def test_hops_are_only_the_nodes_own(self):
         import structured
 
         context = {"principal": "p:rowan", "speaker": None, "question_at_ms": 1}
         chooser = Scripted(["Alex Chen", "Person", "subject is this", "any of them", "yes", "value", "relation", "nothing more"])
         cypher = structured.plan(chooser, "Who are Alex Chen's relatives?", SCHEMA, context)
-        hops = chooser.asked[2][1]
+        hops = [h[2] for h in structured.hops(structured.models_of(SCHEMA), "Person")]
         self.assertIn("their mother (mum, mom): a Person", hops)
-        self.assertIn("PersonalRelationship records whose subject is this Person", " ".join(hops))
+        self.assertNotIn("Group", " ".join(hops[:3]))
+        self.assertIn("PersonalRelationship records whose subject is this Person", " ".join(chooser.asked[2][1]))
         self.assertEqual(cypher, "MATCH (n0:Person)<-[:subject]-(n1:PersonalRelationship) WHERE n0.name = 'Alex Chen' RETURN n1.relation AS relation")
 
     def test_a_recorded_status_reads_absence_as_no(self):

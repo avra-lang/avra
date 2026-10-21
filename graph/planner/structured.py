@@ -137,23 +137,47 @@ def plan(chooser, question, schema, context):
         out.parts.append(f"({var}:{label})")
     came = None
     words = set(re.findall(r"[a-z]+", question.lower()))
+    leftover = {stem(w) for w in topic_words(question)}
     for hop in range(MAX_HOPS):
         options = [h for h in hops(models, label) if not came or (h[0], h[1]) != came]
         trail = f"{head}\nSo far: {' '.join(out.parts)} — now at a {label}."
-        if not options or hop > 0 and best(chooser, trail, f"Is the answer about this {label}?", ARRIVED) == 0:
+        if not options:
             break
         said = [i for i, h in enumerate(options) if h[3] and words.intersection(h[3])]
-        pick = said[0] if len(said) == 1 else best(chooser, trail, "Where next?", [h[2] for h in options])
+        about = [i for i, h in enumerate(options) if leftover & mentions(models, h[1])]
         if len(said) == 1:
+            pick = said[0]
             words.difference_update(options[pick][3])
+            leftover -= {stem(w) for w in options[pick][3]}
+        else:
+            if hop > 0 and not about and best(chooser, trail, f"Is the answer about this {label}?", ARRIVED) == 0:
+                break
+            ranked = about or list(range(len(options)))
+            pick = ranked[best(chooser, trail, "Where next?", [options[i][2] for i in ranked])]
+            leftover -= mentions(models, options[pick][1], depth=0)
         arrow, target, _, _ = options[pick]
         back = ("<-" + arrow[1:-2] + "-" if arrow.endswith("->") else arrow[1:-1] + "->")
         var = out.node(target)
         out.parts.append(f"{arrow}({var}:{target})")
         came, label = (back, label), target
-        filtered(chooser, trail, models[target], var, out, question)
+        used = filtered(chooser, trail, models[target], var, out, question)
+        if used:
+            leftover.discard(stem(used))
     trail = f"{head}\nSo far: {' '.join(out.parts)} — the answer is about these {label} records."
     return out.cypher(returns(chooser, trail, models[label], var))
+
+
+def stem(word):
+    return word.lower()[:5]
+
+
+def mentions(models, label, depth=1):
+    """Stems of what a model is about: its name, description and property names,
+    and with depth 1 those of the models it references."""
+    seen = [label] + ([reference_target(p["shape"]) for p in models[label]["properties"] if reference_target(p["shape"])] if depth else [])
+    text = " ".join(f"{re.sub(r'(?<!^)(?=[A-Z])', ' ', m)} {models[m].get('description', '')} "
+                    + " ".join(p["name"].replace("_", " ") for p in models[m]["properties"]) for m in seen if m in models)
+    return {stem(w) for w in re.findall(r"[A-Za-z]{3,}", text)} - {stem(w) for w in STOPWORDS}
 
 
 def identified(models):
@@ -198,6 +222,7 @@ def filtered(chooser, trail, model, var, out, question):
         return
     word = words[best(chooser, trail, f"Which word must its {texts[pick]['name']} contain?", words)]
     out.where.append(f"{var}.{texts[pick]['name']} CONTAINS {quoted(word)}")
+    return word
 
 
 def returns(chooser, trail, model, var):
