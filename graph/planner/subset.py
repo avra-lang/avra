@@ -257,7 +257,17 @@ def prop_of(models, label, name):
     for p in models[label]["properties"]:
         if p["name"] == name:
             return p
-    raise Refusal("unknown_property", f"{label} has no property `{name}`")
+    raise Refusal("unknown_property", f"{label} has no property `{name}`; {reachable(models, label)}")
+
+
+def reachable(models, label):
+    """The relationship types a node of `label` can take, as a retry hint."""
+    out = [f"-[:{p['name']}]->(:{reference_target(p['shape'])})" for p in models[label]["properties"]
+           if reference_target(p["shape"])]
+    into = [f"<-[:{p['name']}]-(:{owner})" for owner, m in models.items() for p in m["properties"]
+            if reference_target(p["shape"]) == label]
+    hops = out + into
+    return f"from (:{label}) you can go " + ", ".join(hops) if hops else f"(:{label}) has no relationships"
 
 
 def check(text, schema, params):

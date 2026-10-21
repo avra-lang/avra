@@ -108,6 +108,15 @@ class Prompt(unittest.TestCase):
         self.assertIn("'mum' = 'mother'", text)
         self.assertIn(".requested_guest_limit: integer?", text)
         self.assertNotIn("'wife' = 'wife'", text)
+        self.assertIn("pattern: (a:Person)<-[:subject]-(r:PersonalRelationship)-[:relative]->(b:Person) WHERE r.relation = '<value>'", text)
+
+    def test_an_unknown_hop_names_the_hops_there_are(self):
+        try:
+            check("MATCH (me:Person)-[:wife]->(w:Person) RETURN w.name", SCHEMA, PARAMS)
+        except Refusal as r:
+            self.assertIn("<-[:subject]-(:PersonalRelationship)", r.message)
+        else:
+            self.fail("an undeclared hop passed")
 
 
 class Loop(unittest.TestCase):
