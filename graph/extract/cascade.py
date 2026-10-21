@@ -23,6 +23,7 @@ MODEL_ID = f"{ENCODER}+{SCORER}"
 SPAN_THRESHOLD = 0.4
 ACCEPT = 0.5
 MARGIN = 0.5
+MAX_OPTIONS = 26
 ABSTAIN = object()
 SOCKET = os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
 FIRST_PERSON = re.compile(r"\b(I|I'm|I'll|I've|me|my|My|mine|we|We|our|Our|us)\b")
@@ -224,6 +225,27 @@ class Scorer:
         self.cache = make_prompt_cache(self.model)
         mx.eval(self.forward(self.tok.encode(head)))
 
+    def pick(self, context, question, options, tail=()):
+        """Probabilities over options + tail. Past MAX_OPTIONS the options run
+        in heats, each with the tail, and the heat winners meet in a final;
+        an option that lost its heat scores 0."""
+        options, tail = list(options), list(tail)
+        room = MAX_OPTIONS - len(tail)
+        if len(options) <= room:
+            return self.choose(context, question, options + tail)
+        winners = []
+        for i in range(0, len(options), room):
+            heat = options[i : i + room]
+            p = self.choose(context, question, heat + tail) if len(heat) + len(tail) >= 2 else [1.0]
+            winners.append(i + max(range(len(heat)), key=lambda k: p[k]))
+        final = self.pick(context, question, [options[w] for w in winners], tail)
+        out = [0.0] * (len(options) + len(tail))
+        for j, w in enumerate(winners):
+            out[w] = final[j]
+        for j in range(len(tail)):
+            out[len(options) + j] = final[len(winners) + j]
+        return out
+
     def generate(self, messages, max_tokens):
         """Greedy text for a chat; the extraction prefix cache is untouched."""
         from mlx_lm import generate
@@ -243,6 +265,8 @@ class Scorer:
         import mlx.core as mx
         from mlx_lm.models.cache import trim_prompt_cache
 
+        if not 2 <= len(options) <= MAX_OPTIONS:
+            raise ValueError(f"a choice takes 2 to {MAX_OPTIONS} options, got {len(options)}; split it into heats")
         letters = [chr(65 + i) for i in range(len(options))]
         body = f"{context}\n\n{question}\n" + "\n".join(f"{l}) {o}" for l, o in zip(letters, options)) + "\nAnswer with the letter only."
         text = f'Text: "{self.source}"\n\n' if self.source else ""
@@ -340,7 +364,7 @@ class Cascade:
         if any(r["fields"][0]["value"] == text for r in prior):
             return next(r for r in prior if r["fields"][0]["value"] == text)
         options = [r["fields"][0]["value"] for r in prior] + ["someone new, not listed", "cannot tell"]
-        p = self.llm.choose(f'Mention: "{text}" at character {a}.', f'In the text, who is "{text}" at character {a}?', options)
+        p = self.llm.pick(f'Mention: "{text}" at character {a}.', f'In the text, who is "{text}" at character {a}?', options[: len(prior)], options[len(prior) :])
         ranked = sorted(range(len(options)), key=lambda i: -p[i])
         if ranked[0] < len(prior) and p[ranked[0]] - p[ranked[1]] >= MARGIN:
             return prior[ranked[0]]
@@ -426,7 +450,7 @@ class Cascade:
         ids = list(people)
         options = [people[i] for i in ids] + ["the unnamed author of the text", "cannot tell"]
         what = "this quotation" if quoted else "this passage"
-        p = self.llm.choose(f'Passage: "{self.t.s[a:b]}"', f'Who is speaking in {what} (who do "I", "my" and "we" refer to)?', options)
+        p = self.llm.pick(f'Passage: "{self.t.s[a:b]}"', f'Who is speaking in {what} (who do "I", "my" and "we" refer to)?', options[: len(ids)], options[len(ids) :])
         best = max(range(len(options)), key=lambda i: p[i])
         return ids[best] if best < len(ids) and p[best] >= ACCEPT else None
 
@@ -489,7 +513,7 @@ class Cascade:
                 if not labels:
                     break
                 opts = [f"{frm}={self.name(x)}, {to}={self.name(y)}, {label}={self.t.s[l['start']:l['end']]}" for l in labels]
-                p = self.llm.choose(ctx, question, opts + ["none of these"])
+                p = self.llm.pick(ctx, question, opts, ["none of these"])
                 best = max(range(len(p)), key=lambda i: p[i])
                 if best < len(labels) and p[best] >= ACCEPT:
                     l = labels[best]
@@ -502,7 +526,7 @@ class Cascade:
                 if not readings:
                     continue
                 opts = [f"{self.name(s)}'s {w} is {self.name(o)}" for s, o, v, w in readings]
-                p = self.llm.choose(ctx, question, opts + ["none of these is explicitly stated"])
+                p = self.llm.pick(ctx, question, opts, ["none of these is explicitly stated"])
                 best = max(range(len(p)), key=lambda k: p[k])
                 if best < len(readings) and p[best] >= ACCEPT:
                     s, o, v, _ = readings[best]
@@ -525,13 +549,13 @@ class Cascade:
         kinds = list(self.plan.records)
         if not kinds:
             return
-        opts = [f"{m}: {gloss(self.plan.models[m])}" for m in kinds] + ["none of these"]
+        opts = [f"{m}: {gloss(self.plan.models[m])}" for m in kinds]
         for a, b in self.t.units():
             for x, y in self.sub_units(a, b):
                 x, y = self.trimmed(x, y)
                 if y <= x:
                     continue
-                p = self.llm.choose(f'Sentence: "{self.t.s[x:y]}"', "Which kind of record does this sentence itself state, if any?", opts)
+                p = self.llm.choose(f'Sentence: "{self.t.s[x:y]}"', "Which kind of record does this sentence itself state, if any?", opts, ["none of these"])
                 best = max(range(len(p)), key=lambda i: p[i])
                 if best < len(kinds) and p[best] >= ACCEPT:
                     self.fill(kinds[best], x, y, p[best])
@@ -586,7 +610,7 @@ class Cascade:
             if not required(p):
                 return None
             cands = self.clauses(a, b)
-            pr = self.llm.choose(ctx, f"In a {model}, which part of the sentence is the {name}?", [self.t.s[x:y] for x, y in cands] + ["not stated"])
+            pr = self.llm.pick(ctx, f"In a {model}, which part of the sentence is the {name}?", [self.t.s[x:y] for x, y in cands], ["not stated"])
             k = max(range(len(pr)), key=lambda i: pr[i])
             if k == len(cands) or pr[k] < ACCEPT:
                 return None
@@ -596,14 +620,14 @@ class Cascade:
             ids, where = self.offered(target(p["shape"]), a, b)
             if not ids:
                 return None
-            pr = self.llm.choose(ctx, f"In this {model}, who or what is the {name}?", [self.name(i) for i in ids] + optional)
+            pr = self.llm.pick(ctx, f"In this {model}, who or what is the {name}?", [self.name(i) for i in ids], optional)
             k = max(range(len(pr)), key=lambda i: pr[i])
             if k >= len(ids) or pr[k] < ACCEPT:
                 return None
             return self.field(name, ids[k], [where[ids[k]]], score=pr[k])
         if kind == "enum":
             vals = p["enum"]
-            pr = self.llm.choose(ctx, f"For this {model}, which {name} does the sentence state?", vals + optional)
+            pr = self.llm.pick(ctx, f"For this {model}, which {name} does the sentence state?", vals, optional)
             k = max(range(len(pr)), key=lambda i: pr[i])
             return self.field(name, vals[k], [(a, b)], score=pr[k]) if k < len(vals) and pr[k] >= ACCEPT else None
         if kind == "bool":
@@ -615,7 +639,7 @@ class Cascade:
             nums = [(a + x, a + y) for x, y in nums]
             if not nums:
                 return None
-            pr = self.llm.choose(ctx, f"In this {model}, which number is the {name}?", [self.t.s[x:y] for x, y in nums] + ["not stated"])
+            pr = self.llm.pick(ctx, f"In this {model}, which number is the {name}?", [self.t.s[x:y] for x, y in nums], ["not stated"])
             k = max(range(len(pr)), key=lambda i: pr[i])
             if k == len(nums) or pr[k] < ACCEPT:
                 return None
