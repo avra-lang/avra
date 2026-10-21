@@ -9,7 +9,7 @@ use source.{Context}
 @step_coherent
 export type ReadStep = {
     @length(min: 1, max: 128) id: string,
-    @one_of(["scan", "filter", "follow", "search", "project", "count", "sum", "expect", "seed"]) op: string,
+    @one_of(["scan", "filter", "follow", "search", "project", "count", "sum", "expect", "seed", "holds"]) op: string,
     @items(max: 1) inputs: List<string> = [],
     model: string? = null,
     property: string? = null,
@@ -33,7 +33,8 @@ fn step_coherent(s: ReadStep) -> Result<ReadStep, string> {
         s.op == "follow" ||
         s.op == "search" ||
         s.op == "sum" ||
-        s.op == "expect"
+        s.op == "expect" ||
+        s.op == "holds"
     if property != (s.property != null) { fail "this operation has the wrong property arguments" }
     let literal = s.op == "filter" || s.op == "search"
     if s.arguments.length != if literal { 1 } else { 0 } { fail "this operation has the wrong literal arguments" }
@@ -43,7 +44,12 @@ fn step_coherent(s: ReadStep) -> Result<ReadStep, string> {
     if (s.op == "project") != !s.properties.is_empty() { fail "only a projection names output properties" }
     if s.properties.any(it.is_empty()) { fail "projection properties cannot be empty" }
     if s.owner != null && !(s.op == "follow" && s.direction == "in") { fail "only an incoming follow names its owner model" }
-    if !s.names.is_empty() && (s.op != "project" || s.names.length != s.properties.length) { fail "output names pair one-to-one with a projection's properties" }
+    if !s.names.is_empty() &&
+        (!(s.op == "project" || s.op == "holds") ||
+            s.op == "project" && s.names.length != s.properties.length) {
+        fail "output names pair one-to-one with a projection's properties; a status has one"
+    }
+    if s.op == "holds" && s.names.length != 1 { fail "a status names its output once" }
     if s.names.any(it.is_empty()) { fail "output names cannot be empty" }
     if (s.op == "expect") != (s.reason != null) { fail "only an expectation names its reason code" }
     s
@@ -67,6 +73,7 @@ fn plan_coherent(p: ReadPlan) -> Result<ReadPlan, string> {
         }
     }
     if !p.steps.any(it.id == p.output) { fail "the output must name a step" }
+    if p.joined.any((id) -> !p.steps.any(it.id == id)) { fail "a joined output must name a step" }
     p
 }
 
@@ -80,5 +87,6 @@ export type ReadPlan = {
     @one_of(["current", "history"]) source_view: string,
     @items(min: 1, max: 32) steps: List<ReadStep>,
     @length(min: 1, max: 128) output: string,
+    @items(max: 8) joined: List<string> = [],
     budget: Budget,
 }

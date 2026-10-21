@@ -1,4 +1,4 @@
-use answer.{Answer, AnswerField}
+use answer.{Answer, AnswerField, Selector}
 
 const unknown = "{\"contract\":1,\"request\":\"request:1\",\"status\":\"unknown\",\"read_revision\":8,\"problems\":[{\"code\":\"answer.missing_evidence\",\"path\":[\"attendance\"],\"message\":\"No completion evidence in this read view\"}]}"
 const refusal = "{\"contract\":1,\"request\":\"request:1\",\"status\":\"refused\",\"read_revision\":8,\"policies\":[\"query.read_only\"],\"problems\":[{\"code\":\"query.read_only\",\"message\":\"This interface does not execute writes\"}]}"
@@ -52,6 +52,28 @@ spec "v1 structured answer contracts" {
         then "an unknown answer cannot carry a clarification" {
             Answer
                 .from_json(unknown.replace("\"problems\"", "\"clarify\":\"which_person\",\"problems\"")) is .Err
+        }
+        then "a citation locates its passage with Web Annotation selectors" {
+            Answer
+                .from_json(
+                    grounded
+                        .replace(
+                            "\"revision\":2}}]",
+                            "\"revision\":2},\"selectors\":[{\"kind\":\"TextQuoteSelector\",\"exact\":\"EUR 270\",\"prefix\":\"top-up \"},{\"kind\":\"TextPositionSelector\",\"start\":10,\"end\":17}]}]",
+                        ),
+                ) is .Ok
+        }
+        then "a quote selector cannot carry positions and a position selector cannot carry text" {
+            Selector
+                    .from_json("{\"kind\":\"TextQuoteSelector\",\"exact\":\"a\",\"start\":0,\"end\":1}") is .Err &&
+                Selector
+                    .from_json("{\"kind\":\"TextPositionSelector\",\"start\":0,\"end\":1,\"exact\":\"a\"}") is .Err &&
+                Selector.from_json("{\"kind\":\"TextQuoteSelector\"}") is .Err
+        }
+        then "a position selector covers at least one character and needs both ends" {
+            Selector.from_json("{\"kind\":\"TextPositionSelector\",\"start\":3,\"end\":3}") is .Err &&
+                Selector.from_json("{\"kind\":\"TextPositionSelector\",\"start\":3}") is .Err &&
+                Selector.from_json("{\"kind\":\"RangeSelector\",\"start\":0,\"end\":1}") is .Err
         }
         then "an answered result requires supported fields" {
             Answer.from_json(unknown.replace("\"unknown\"", "\"answered\"")) is .Err

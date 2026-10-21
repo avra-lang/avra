@@ -199,3 +199,15 @@ graph-local validators or a breaking change to `Counted.count`. Native
 consumer and library receipts are recorded in the task handoff. Freeze a
 contract revision only after tests pass; semantic admission/execution tasks
 must still supply their own negative witnesses.
+
+## Provenance vocabulary
+
+An `Answer` citation is a PROV-O entity: `source` is `prov:wasDerivedFrom`
+(one observation revision), `run` is `prov:wasGeneratedBy`, `speaker` is
+`prov:wasAttributedTo`. `selectors` are Web Annotation `TextQuoteSelector` and
+`TextPositionSelector` values locating the passage in that revision; their
+positions count Unicode code points, unlike extraction `Span` byte offsets.
+[jsonld/answer.context.jsonld](jsonld/answer.context.jsonld) maps every wire
+key to a PROV-O, Web Annotation or `avra.dev` term, so an answer is JSON-LD
+by adding `@context` with no rename (`kind` aliases `@type`).
+`jsonld/check.py` verifies that every key of given answer documents has a term.
