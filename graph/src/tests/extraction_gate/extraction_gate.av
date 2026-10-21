@@ -8,17 +8,17 @@ fn proof() -> Result<bool, string> {
     let source = "{\"observation\":\"note:1\",\"revision\":1}"
     let input = "{\"contract\":1,\"source\":${source},\"authored_at_ms\":null,\"received_at_ms\":1,\"author\":null,\"media_type\":\"text/plain\",\"content\":\"alpha\"}"
     let request = "{\"contract\":1,\"request\":\"req:1\",\"input\":${input},\"catalog\":{\"fingerprint\":\"${c.fingerprint}\",\"descriptor\":${c.document}},\"extractor\":${version},\"scope\":\"all\"}"
-    let field = "{\"property\":\"name\",\"value\":\"alpha\",\"spans\":[{\"start\":0,\"end\":5,\"text\":\"alpha\"}],\"polarity\":\"denied\",\"modality\":\"planned\"}"
-    let response = "{\"contract\":1,\"request\":\"req:1\",\"source\":${source},\"schema\":\"${c.fingerprint}\",\"extractor\":${version},\"status\":\"complete\",\"records\":[{\"local_id\":\"m1\",\"model\":\"Person\",\"fields\":[${field}]}]}"
+    let field = "{\"property\":\"name\",\"value\":\"alpha\",\"evidence\":[{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":0,\"end\":5},{\"kind\":\"TextQuoteSelector\",\"exact\":\"alpha\"}]}],\"factuality\":\"CT-\",\"speech_act\":\"plan\"}"
+    let response = "{\"contract\":2,\"request\":\"req:1\",\"source\":${source},\"schema\":\"${c.fingerprint}\",\"extractor\":${version},\"status\":\"complete\",\"records\":[{\"local_id\":\"m1\",\"model\":\"Person\",\"fields\":[${field}]}]}"
     match admit_extraction(c, request, response)? {
         .Complete(_, result) -> {
             let fields = result.records[0].fields
             let refused = admit_extraction(
                 c,
                 request,
-                response.replace("\"text\":\"alpha\"", "\"text\":\"bogus\""),
+                response.replace("\"exact\":\"alpha\"", "\"exact\":\"bogus\""),
             ) is .Err
-            println("${fields[0].modality} ${fields[0].polarity} ${fields.length} ${refused}")
+            println("${fields[0].speech_act} ${fields[0].factuality} ${fields.length} ${refused}")
             true
         },
         .Failed(_, _) -> { fail "the recorded completion was not admitted" },

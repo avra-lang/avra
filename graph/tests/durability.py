@@ -55,7 +55,7 @@ def upgrades(graph):
             raw.execute("UPDATE Meta SET value=? WHERE key='format'", (version,))
         assert graph.call({"op": "value", "id": "p1"})["name"] == "Ada"
         [legacy] = graph.call({"op": "explain", "id": "p1", "property": "name"})
-        assert (legacy["polarity"], legacy["modality"], legacy["anchor"], legacy["active"]) == ("affirmed", "asserted", None, True)
+        assert (legacy["factuality"], legacy["speech_act"], legacy["anchors"], legacy["active"]) == ("CT+", "assert", [], True)
         assert graph.call(publication) == committed
         with sqlite3.connect(graph.database) as raw:
             assert raw.execute("SELECT value FROM Meta WHERE key='format'").fetchone() == ("9",)

@@ -9,6 +9,8 @@ use @avra.graph_contracts.{
     Candidate,
     SourceEnvelope,
     Span,
+    Passage,
+    Selector,
 }
 use @std.validate.{Value, Entry}
 use @std.json.{parse}
@@ -78,8 +80,8 @@ export fn admit_extraction(catalog: Catalog, request_json: string, response_json
         .fold(
             0,
             (n: int, r: ProposedRecord) -> n +
-                r.fields.fold(0, (total: int, f: ProposedField) -> total + f.spans.length) +
-                r.identities.fold(0, (total: int, i: ProposedIdentity) -> total + i.spans.length),
+                r.fields.fold(0, (total: int, f: ProposedField) -> total + f.evidence.length) +
+                r.identities.fold(0, (total: int, i: ProposedIdentity) -> total + i.evidence.length),
         )
     if span_count > 16384 { fail "extraction exceeds its anchor budget" }
     let frames = request.input.frames.concat(result.proposed_frames)
@@ -88,7 +90,10 @@ export fn admit_extraction(catalog: Catalog, request_json: string, response_json
     let framed = request.input with { frames: frames }
     let checked_frames = checked_source(framed)?
     for frame in checked_frames.frames { anchored(checked_frames, frame.span, frame.parent, true)? }
-    let records = [checked_record(catalog, request, result.records, checked_frames, r)? for r in result.records]
+    let bytes = checked_frames.content.bytes()
+    let points = [i for i in 0..bytes.length if bytes.at(i) < 128 || bytes.at(i) >= 192]
+        .concat([bytes.length])
+    let records = [checked_record(catalog, request, result.records, checked_frames, points, r)? for r in result.records]
     ExtractionAdmission.Complete(request, result with { records: records })
 }
 
@@ -109,7 +114,7 @@ fn anchored(source: SourceEnvelope, span: Span, frame: string?, frame_definition
 > {
     let bytes = source.content.bytes()
     if span.start < 0 || span.end <= span.start || span.end > bytes.length {
-        fail "an extraction anchor must stay inside the original source"
+        fail outside_source()
     }
     if bytes.at(span.start) >= 128 && bytes.at(span.start) < 192 ||
         span.end < bytes.length && bytes.at(span.end) >= 128 && bytes.at(span.end) < 192 {
@@ -130,34 +135,65 @@ fn anchored(source: SourceEnvelope, span: Span, frame: string?, frame_definition
     true
 }
 
+/// A passage's byte span: its position selector's code points, checked
+/// against its quote selector and then anchored like any span.
+export fn located(source: SourceEnvelope, points: List<int>, p: Passage, frame: string?) -> Result<
+    Span,
+    string,
+> {
+    let position = p.selector.find(it.kind == "TextPositionSelector")!
+    let start = position.start ?? 0
+    let end = position.end ?? 0
+    if start < 0 || end <= start || end >= points.length { fail outside_source() }
+    let lo = points[start]
+    let hi = points[end]
+    let text = source.content.substring(lo, hi)
+    let said = p.selector.find(it.kind == "TextQuoteSelector")
+    if said != null { let _ = quoted(source, said!, text, lo, hi)? }
+    let span = Span { start: lo, end: hi, text: text }
+    anchored(source, span, frame)?
+    span
+}
+
+/// A quote selector agrees with the positioned text and its surroundings.
+fn quoted(source: SourceEnvelope, said: Selector, text: string, lo: int, hi: int) -> Result<
+    bool,
+    string,
+> {
+    let size = source.content.bytes().length
+    let prefix = said.prefix ?? ""
+    let suffix = said.suffix ?? ""
+    if said.exact != text ||
+        prefix.bytes().length > lo ||
+        hi + suffix.bytes().length > size ||
+        source.content.substring(lo - prefix.bytes().length, lo) != prefix ||
+        source.content.substring(hi, hi + suffix.bytes().length) != suffix {
+        fail "an extraction anchor's quote must match the original source at its position"
+    }
+    true
+}
+
 fn checked_record(
     catalog: Catalog,
     request: ExtractionRequest,
     records: List<ProposedRecord>,
     source: SourceEnvelope,
+    points: List<int>,
     r: ProposedRecord,
 ) -> Result<ProposedRecord, string> {
     let model = catalog.model(r.model)?
     if request.candidates.any(it.entity == r.local_id) { fail "local record ids cannot shadow candidate entity ids" }
-    for candidate in r.candidates {
-        if candidate.model != r.model ||
-            !request
-                .candidates
-                .any(
-                    it.entity == candidate.entity &&
-                        it.model == candidate.model &&
-                        it.label == candidate.label,
-                ) {
-            fail "proposed candidates must come from the requested model and candidate set"
-        }
+    let chosen = r.resolution?.entity
+    if chosen != null && !request.candidates.any(it.entity == chosen! && it.model == r.model) {
+        fail "a resolution must choose an offered candidate of the record's model"
     }
     for identity in r.identities {
-        for span in identity.spans { anchored(source, span, identity.frame)? }
+        for p in identity.evidence { located(source, points, p, identity.frame)? }
     }
     for field in r.fields {
         if !model.properties.any(it.name == field.property) { fail "unknown extraction property: ${r.model}.${field.property}" }
         if !json_safe(field.value.value) { fail "extraction values must be finite" }
-        for span in field.spans { anchored(source, span, field.frame)? }
+        for p in field.evidence { located(source, points, p, field.frame)? }
     }
     let value = Value.Map([Entry { key: f.property, value: f.value.value } for f in r.fields])
     let normalized = match (model.check_fields)(value) {
@@ -245,3 +281,5 @@ fn checked_value(
         .Text or .Integer or .Number or .Boolean -> value,
     }
 }
+
+fn outside_source() -> string { "an extraction anchor must stay inside the original source" }

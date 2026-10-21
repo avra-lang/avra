@@ -43,18 +43,19 @@ fn source(frames: List<Frame> = []) -> SourceEnvelope {
 
 const version = "{\"producer\":\"encoder\",\"code\":\"code:1\",\"model\":\"weights:1\"}"
 const candidate = "{\"entity\":\"known:ada\",\"model\":\"Keeper\",\"label\":\"Ada\",\"score\":0.7}"
-const anchor_json = "{\"start\":9,\"end\":15,\"text\":\"review\"}"
+const anchor_json = "{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":9,\"end\":15},{\"kind\":\"TextQuoteSelector\",\"exact\":\"review\"}]}"
+const frame_span = "{\"start\":9,\"end\":15,\"text\":\"review\"}"
 
 fn request(c: Catalog, s: SourceEnvelope = source(), candidates: string = "[]") -> string {
     "{\"contract\":1,\"request\":\"req:1\",\"input\":${to_text(source_document(s))},\"catalog\":{\"fingerprint\":\"${c.fingerprint}\",\"descriptor\":${c.document}},\"extractor\":${version},\"scope\":\"all\",\"candidates\":${candidates}}"
 }
 
 fn response(c: Catalog, records: string = "", extra: string = "") -> string {
-    "{\"contract\":1,\"request\":\"req:1\",\"source\":{\"observation\":\"note:1\",\"revision\":1},\"schema\":\"${c.fingerprint}\",\"extractor\":${version},\"status\":\"complete\",\"records\":[${records}]${extra}}"
+    "{\"contract\":2,\"request\":\"req:1\",\"source\":{\"observation\":\"note:1\",\"revision\":1},\"schema\":\"${c.fingerprint}\",\"extractor\":${version},\"status\":\"complete\",\"records\":[${records}]${extra}}"
 }
 
 fn field(property: string = "label", value: string = "\"review\"", extra: string = "") -> string {
-    "{\"property\":\"${property}\",\"value\":${value},\"spans\":[${anchor_json}],\"polarity\":\"affirmed\",\"modality\":\"planned\",\"score\":0.8${extra}}"
+    "{\"property\":\"${property}\",\"value\":${value},\"evidence\":[${anchor_json}],\"factuality\":\"Uu\",\"speech_act\":\"plan\",\"score\":0.8${extra}}"
 }
 
 fn record(
@@ -72,7 +73,7 @@ fn accepted(denied: bool = false) -> Result<bool, string> {
     match admit_extraction(
         c,
         request(c),
-        if denied { res.replace("affirmed", "denied") } else { res },
+        if denied { res.replace("\"Uu\"", "\"CT-\"") } else { res },
     )? {
         .Complete(req, result) -> {
             let fields = result.records[0].fields
@@ -82,9 +83,9 @@ fn accepted(denied: bool = false) -> Result<bool, string> {
                 result.source.revision == 1 &&
                 fields.length == 1 &&
                 fields[0].property == "label" &&
-                fields[0].modality == "planned" &&
-                fields[0].polarity == if denied { "denied" } else { "affirmed" } &&
-                fields[0].spans[0].text == "review" &&
+                fields[0].speech_act == "plan" &&
+                fields[0].factuality == if denied { "CT-" } else { "Uu" } &&
+                fields[0].evidence[0].selector[1].exact == "review" &&
                 fields[0].score == 0.8
         },
         .Failed(_, _) -> false,
@@ -153,12 +154,15 @@ fn offered_reference(invent: bool = false) -> Result<bool, string> {
 
 fn candidate_only(invent: bool = false) -> Result<bool, string> {
     let c = catalog()?
-    let selected = if invent { candidate.replace("known:ada", "another:id") } else { candidate }
-    let records = record(field(), "Keeper", extra: ",\"candidates\":[${selected}]")
+    let records = record(
+        field(),
+        "Keeper",
+        extra: ",\"resolution\":{\"kind\":\"candidate\",\"entity\":\"${if invent { "another:id" } else { "known:ada" }}\",\"score\":0.7}",
+    )
     let result = admit_extraction(c, request(c, candidates: "[${candidate}]"), response(c, records))
     if invent { return result is .Err }
     match result? {
-        .Complete(_, r) -> r.records[0].local_id == "local:one" && r.records[0].candidates[0].entity == "known:ada",
+        .Complete(_, r) -> r.records[0].local_id == "local:one" && r.records[0].resolution?.entity == "known:ada",
         .Failed(_, _) -> false,
     }
 }
@@ -181,8 +185,12 @@ fn quotation(explicit: bool, crossed: bool = false, proposed: bool = false) -> R
     }
     let s = source(if proposed { [] } else { [frame] })
     let value = field(extra: if explicit { ",\"frame\":\"q\"" } else { "" })
-    let fields = if crossed { value.replace(anchor_json, "{\"start\":4,\"end\":15,\"text\":\"said review\"}") } else { value }
-    let extra = if proposed { ",\"proposed_frames\":[{\"id\":\"q\",\"span\":${anchor_json},\"speaker\":\"unlinked:voice\"}]" } else { "" }
+    let fields = if crossed { value
+            .replace(
+                anchor_json,
+                "{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":4,\"end\":15}]}",
+            ) } else { value }
+    let extra = if proposed { ",\"proposed_frames\":[{\"id\":\"q\",\"span\":${frame_span},\"speaker\":\"unlinked:voice\"}]" } else { "" }
     let result = admit_extraction(c, request(c, s), response(c, record(fields), extra))
     if !explicit || crossed { return result is .Err }
     match result? {
@@ -195,12 +203,21 @@ fn quotation(explicit: bool, crossed: bool = false, proposed: bool = false) -> R
 fn unicode_anchor() -> Result<bool, string> {
     let c = catalog()?
     let s = source() with { content: "é🙂" }
-    let fields = field().replace(anchor_json, "{\"start\":2,\"end\":6,\"text\":\"🙂\"}")
+    let fields = field()
+        .replace(
+            anchor_json,
+            "{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":1,\"end\":2},{\"kind\":\"TextQuoteSelector\",\"exact\":\"🙂\",\"prefix\":\"é\"}]}",
+        )
     admit_extraction(c, request(c, s), response(c, record(fields))) is .Ok &&
         admit_extraction(
             c,
             request(c, s),
-            response(c, record(fields.replace("\"end\":6", "\"end\":5"))),
+            response(c, record(fields.replace("\"end\":2", "\"end\":3"))),
+        ) is .Err &&
+        admit_extraction(
+            c,
+            request(c, s),
+            response(c, record(fields.replace("\"prefix\":\"é\"", "\"prefix\":\"e\""))),
         ) is .Err
 }
 
@@ -216,14 +233,14 @@ fn duplicate_candidates() -> Result<bool, string> {
 
 fn identity_anchor(invented: bool = false) -> Result<bool, string> {
     let c = catalog()?
-    let identity = ",\"identities\":[{\"identity\":{\"namespace\":\"unverified:external\",\"key\":\"raw:key\"},\"spans\":[${anchor_json}]}]"
+    let identity = ",\"identities\":[{\"identity\":{\"namespace\":\"unverified:external\",\"key\":\"raw:key\"},\"evidence\":[${anchor_json}]}]"
     let records = record("", "Keeper", extra: identity)
     let result = admit_extraction(
         c,
         request(c),
         response(
             c,
-            if invented { records.replace("\"text\":\"review\"", "\"text\":\"invented\"") } else { records },
+            if invented { records.replace("\"exact\":\"review\"", "\"exact\":\"invented\"") } else { records },
         ),
     )
     if invented { return result is .Err }
@@ -256,7 +273,7 @@ fn missing_frame() -> Result<bool, string> {
             response(
                 c,
                 record(),
-                ",\"proposed_frames\":[{\"id\":\"q\",\"parent\":\"invented\",\"span\":${anchor_json}}]",
+                ",\"proposed_frames\":[{\"id\":\"q\",\"parent\":\"invented\",\"span\":${frame_span}}]",
             ),
         ) is .Err
 }
@@ -276,7 +293,9 @@ spec "provider-neutral extraction admission" {
         then "unknown models and properties are refused" { passed(refused(record(model: "Invented"))) && passed(refused(record(field("invented")))) }
         then "invented text and out-of-source anchors are refused" {
             passed(
-                    refused(record(field().replace("\"text\":\"review\"", "\"text\":\"invented\""))),
+                    refused(
+                        record(field().replace("\"exact\":\"review\"", "\"exact\":\"invented\"")),
+                    ),
                 ) &&
                 passed(refused(record(field().replace("\"end\":15", "\"end\":100"))))
         }
@@ -305,7 +324,7 @@ spec "provider-neutral extraction admission" {
         then "quoted evidence must name the innermost frame" { passed(quotation(true)) && passed(quotation(false)) }
         then "anchors cannot blend author and quotation contexts" { passed(quotation(true, true)) }
         then "proposed quotation speakers remain unlinked handles" { passed(quotation(true, proposed: true)) }
-        then "Unicode anchors use original bytes and complete scalars" { passed(unicode_anchor()) }
+        then "Unicode anchors count code points, map to original bytes and check their prefix" { passed(unicode_anchor()) }
         then "duplicate local ids and properties are refused" {
             passed(refused(record() + "," + record())) &&
                 passed(refused(record(field() + "," + field())))

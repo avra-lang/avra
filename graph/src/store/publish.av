@@ -19,7 +19,7 @@ use store.engine.{
     SupersessionRow,
 }
 use store.identity.{Identity}
-use store.evidence.{FieldEvidence, Voice, Interval, interval, audience_json, spans_json}
+use store.evidence.{FieldEvidence, Voice, Interval, interval, audience_json}
 use store.query.{stored_value}
 
 export enum RecordMode { Complete, Partial }
@@ -292,10 +292,10 @@ impl Graph {
         let _ = modeled(
             EvidenceRow {
                 support: support,
-                polarity: found.polarity.word(),
-                modality: found.modality.word(),
+                factuality: found.factuality.word(),
+                speech_act: found.speech_act.word(),
                 voice: voice,
-                anchors: to_text(spans_json(found.spans)),
+                evidence: to_text(Json.Obj(found.annotation())),
             }
                 .insert(db),
         )?
@@ -349,10 +349,7 @@ fn evidence_ok(r: Record, voices: List<Voice>) -> Result<int, string> {
     for i, f in r.fields {
         if r.fields.slice(0, i).any(it.property == f.property) { fail "a record gives each property's evidence once: ${r.id}.${f.property}" }
         if !r.value.entries().any(it.key == f.property) { fail "field evidence names a property the record does not supply: ${r.id}.${f.property}" }
-        if f.spans.is_empty() ||
-            f.spans.any(it.start < 0 || it.end <= it.start || it.text.is_empty()) {
-            fail "field evidence needs nonempty anchor spans: ${r.id}.${f.property}"
-        }
+        if f.evidence.is_empty() { fail "field evidence needs a passage: ${r.id}.${f.property}" }
         if !confident_ok(f.score) { fail unconfident() }
         if !voices.any(it.frame == f.frame) { fail "field evidence names an undeclared voice: ${r.id}.${f.property}" }
     }

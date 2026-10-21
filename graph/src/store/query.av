@@ -23,7 +23,7 @@ export type Candidate = { claim: int, value: Value, chosen: bool = false, denied
 export type Selection = { property: string, candidates: List<Candidate> }
 
 /// A standing statement that is not a plain fact: denied, planned, reported…
-export type Qualified = { claim: int, property: string, value: Value, polarity: string, modality: string }
+export type Qualified = { claim: int, property: string, value: Value, factuality: string, speech_act: string }
 
 /// `fields` are current plain facts; `qualified` never reads as a value.
 export type Entity = {
@@ -417,8 +417,8 @@ impl Entity {
                                             field("claim", Json.Int(q.claim)),
                                             field("property", Json.Str(q.property)),
                                             field("value", as_json(q.value)),
-                                            field("polarity", Json.Str(q.polarity)),
-                                            field("modality", Json.Str(q.modality)),
+                                            field("factuality", Json.Str(q.factuality)),
+                                            field("speech_act", Json.Str(q.speech_act)),
                                         ],
                                     ) for q in self.qualified],
                             ),
@@ -428,21 +428,31 @@ impl Entity {
     }
 }
 
-/// Legacy support is affirmed and asserted with no anchor or voice.
+/// Legacy support is asserted as certainly true, with no anchor or voice.
+/// Each of `anchors` is one passage in the Answer contract's Citation shape:
+/// its selectors are alternative descriptions of that one passage.
 fn qualifiers(evidence: EvidenceRow?, s: SupportRow, revision: int) -> Result<List<Field>, string> {
     let e? = evidence else {
         return [
-            field("polarity", Json.Str("affirmed")),
-            field("modality", Json.Str("asserted")),
-            field("anchor", Json.Null),
+            field("factuality", Json.Str("CT+")),
+            field("speech_act", Json.Str("assert")),
+            field("anchors", Json.Arr([])),
+            field("normalization", Json.Null),
             field("author", Json.Null),
             field("audience", Json.Null),
         ]
     }
-    let spans = match parse(e.anchors) {
+    let document = match parse(e.evidence) {
         .Ok(j) -> j,
-        .Err(_) -> { fail "stored anchors are not JSON" },
+        .Err(_) -> { fail "stored evidence is not JSON" },
     }
+    let source = Json
+        .Obj(
+            [
+                field("observation", Json.Str(s.run.input.name)),
+                field("revision", Json.Int(revision)),
+            ],
+        )
     let audience = match e.voice.audience {
         text? -> match parse(text) {
             .Ok(j) -> j,
@@ -451,29 +461,24 @@ fn qualifiers(evidence: EvidenceRow?, s: SupportRow, revision: int) -> Result<Li
         null -> Json.Null
     }
     [
-        field("polarity", Json.Str(e.polarity)),
-        field("modality", Json.Str(e.modality)),
+        field("factuality", Json.Str(e.factuality)),
+        field("speech_act", Json.Str(e.speech_act)),
         field(
-            "anchor",
+            "anchors",
             Json
-                .Obj(
-                    [
-                        field(
-                            "source",
-                            Json
-                                .Obj(
-                                    [
-                                        field("observation", Json.Str(s.run.input.name)),
-                                        field("revision", Json.Int(revision)),
-                                    ],
-                                ),
-                        ),
-                        field("frame", optional_text(e.voice.frame)),
-                        field("speaker", optional_text(e.voice.speaker)),
-                        field("spans", spans),
-                    ],
+                .Arr(
+                    [Json
+                        .Obj(
+                            [
+                                field("source", source),
+                                field("frame", optional_text(e.voice.frame)),
+                                field("speaker", optional_text(e.voice.speaker)),
+                                field("selectors", passage.member("selector")),
+                            ],
+                        ) for passage in document.member("evidence").items()],
                 ),
         ),
+        field("normalization", document.member("normalization")),
         field("author", optional_text(e.voice.author)),
         field("audience", audience),
     ]
@@ -490,12 +495,12 @@ fn qualified_of(standing: List<Standing>) -> Result<List<Qualified>, string> {
         claim: s.claim.id,
         property: s.claim.property,
         value: stored_value(s.claim.value)?,
-        polarity: e.polarity,
-        modality: e.modality,
+        factuality: e.factuality,
+        speech_act: e.speech_act,
     } for s in standing if !s.plain() for e in [s.evidence!]]
     [q for i, q in rows if !rows
         .slice(0, i)
-        .any(it.claim == q.claim && it.polarity == q.polarity && it.modality == q.modality)]
+        .any(it.claim == q.claim && it.factuality == q.factuality && it.speech_act == q.speech_act)]
 }
 
 export fn stored_value(text: string) -> Result<Value, string> {

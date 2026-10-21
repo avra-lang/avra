@@ -88,14 +88,24 @@ ontology. Admission checks descriptor/fingerprint against the installed
 catalog. The codec alone does not establish that authenticity.
 
 `ExtractionResult` echoes request, source revision, schema and extractor
-versions. It proposes local records, fields, anchored identities and optional
-frames/candidates. No `entity` assignment field lets a worker force an
-existing identity; exact-key resolution and candidate decisions belong to
-admission/linking. Scores never authorize a merge or select truth.
+versions (`contract: 2`). It proposes local records, fields, anchored
+identities, optional frames and, per record, an entity-resolution proposal
+(`resolution`: an offered `candidate`, `new` or `abstain`). No proposal
+forces an existing identity; exact-key resolution belongs to linking. Scores
+(raw producer probabilities) never authorize a merge or select truth.
 
-Each `ProposedField` has a value, source anchors, polarity and modality:
-`asserted`, `reported`, `planned`, `requested`, `conditional` or `draft`.
-Every identity key also has its own anchors. Local IDs are unique within a
+Each `ProposedField` has the normalized, model-shaped `value`; `evidence`,
+one or more passages, each a list of W3C Web Annotation selectors naming the
+same text — exactly one `TextPositionSelector` (Unicode code points of the
+source revision, half-open) and at most one `TextQuoteSelector` (`exact`,
+optional `prefix`/`suffix`, checked against the source); FactBank
+`factuality` (`CT+`, `CT-`, `PR+`, `PR-`, `PS+`, `PS-`, `Uu`); a separate
+`speech_act` (`assert`, `report`, `plan`, `request`, `condition`, `draft`);
+and an optional `normalization`: `{"kind":"TIMEX3","timex_type":"DATE|TIME|DURATION|SET","value":<ISO 8601>}`
+or `{"kind":"ISO4217","currency":"EUR","minor_units":1250,"exponent":2}`.
+A passage need not contain the value ("next Friday" normalized to a date).
+Every identity key also has its own passages. Quotation frames keep their
+byte `Span` (the I01 envelope's unit). Local IDs are unique within a
 result; a record proposes each property once. Multiple source mentions can
 anchor the same field without creating multiple identities.
 
@@ -116,7 +126,7 @@ Version-one has no streaming, half-success or implicit retry semantics.
 
 E01 must verify request/source/schema/code/model matches, frame graph,
 actual source anchors, schema symbols, all property rules and identity
-permissions together before publication. Preserve polarity/modality and
+permissions together before publication. Preserve factuality/speech act and
 source/speaker provenance: never flatten a draft, denial or future plan into
 an unconditional selected fact. If the current persistence/model path cannot
 carry that meaning, refuse the projection rather than discard it. C01 does

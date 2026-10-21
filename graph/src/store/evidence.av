@@ -1,104 +1,131 @@
 use @std.validate.{Value}
-use @std.json.{Json, field}
-use @avra.graph_contracts.{Span}
+use @std.json.{Json, Field, field}
+use @avra.graph_contracts.{Passage, Selector, Normalization}
 use semantics.{ValidityBinding, TimeEncoding}
 
-/// Whether a statement is asserted to hold or to not hold (C01).
-export enum Polarity { Affirmed, Denied }
+/// FactBank factuality: the source's commitment to a statement's truth.
+export enum Factuality {
+    CertainTrue
+    CertainFalse
+    ProbableTrue
+    ProbableFalse
+    PossibleTrue
+    PossibleFalse
+    Unknown
+}
 
-/// How a statement was put forward (C01). Only an asserted, affirmed
-/// statement is a plain fact.
-export enum Modality { Asserted, Reported, Planned, Requested, Conditional, Draft }
+/// What the source did with the statement. Only an assertion can be a fact.
+export enum SpeechAct { Assert, Report, Plan, Request, Condition, Draft }
 
-impl Polarity {
+impl Factuality {
     fn word() -> string {
-        match self { .Affirmed -> "affirmed", .Denied -> "denied" }
+        match self {
+            .CertainTrue -> "CT+",
+            .CertainFalse -> "CT-",
+            .ProbableTrue -> "PR+",
+            .ProbableFalse -> "PR-",
+            .PossibleTrue -> "PS+",
+            .PossibleFalse -> "PS-",
+            .Unknown -> "Uu",
+        }
     }
 }
 
-impl Modality {
+impl SpeechAct {
     fn word() -> string {
         match self {
-            .Asserted -> "asserted",
-            .Reported -> "reported",
-            .Planned -> "planned",
-            .Requested -> "requested",
-            .Conditional -> "conditional",
+            .Assert -> "assert",
+            .Report -> "report",
+            .Plan -> "plan",
+            .Request -> "request",
+            .Condition -> "condition",
             .Draft -> "draft",
         }
     }
 }
 
-export fn polarity_named(word: string) -> Result<Polarity, string> {
+export fn factuality_named(word: string) -> Result<Factuality, string> {
     match word {
-        "affirmed" -> Polarity.Affirmed,
-        "denied" -> Polarity.Denied,
-        rest -> { fail "unknown polarity: ${word}" },
+        "CT+" -> Factuality.CertainTrue,
+        "CT-" -> Factuality.CertainFalse,
+        "PR+" -> Factuality.ProbableTrue,
+        "PR-" -> Factuality.ProbableFalse,
+        "PS+" -> Factuality.PossibleTrue,
+        "PS-" -> Factuality.PossibleFalse,
+        "Uu" -> Factuality.Unknown,
+        rest -> { fail "unknown factuality: ${word}" },
     }
 }
 
-export fn modality_named(word: string) -> Result<Modality, string> {
+export fn speech_act_named(word: string) -> Result<SpeechAct, string> {
     match word {
-        "asserted" -> Modality.Asserted,
-        "reported" -> Modality.Reported,
-        "planned" -> Modality.Planned,
-        "requested" -> Modality.Requested,
-        "conditional" -> Modality.Conditional,
-        "draft" -> Modality.Draft,
-        rest -> { fail "unknown modality: ${word}" },
+        "assert" -> SpeechAct.Assert,
+        "report" -> SpeechAct.Report,
+        "plan" -> SpeechAct.Plan,
+        "request" -> SpeechAct.Request,
+        "condition" -> SpeechAct.Condition,
+        "draft" -> SpeechAct.Draft,
+        rest -> { fail "unknown speech act: ${word}" },
     }
 }
 
-/// The one test for a plain fact.
-export fn plain(polarity: Polarity, modality: Modality) -> bool {
-    let affirmed = match polarity { .Affirmed -> true, .Denied -> false }
-    let asserted = match modality {
-        .Asserted -> true,
-        .Reported or .Planned or .Requested or .Conditional or .Draft -> false,
-    }
-    affirmed && asserted
+/// A plain fact: asserted as certainly true.
+export fn plain(factuality: Factuality, act: SpeechAct) -> bool { asserted(act) && certain(factuality, true) }
+
+/// An asserted certain denial: a plain fact's contradiction, never a value.
+export fn denial(factuality: Factuality, act: SpeechAct) -> bool { asserted(act) && certain(factuality, false) }
+
+fn asserted(act: SpeechAct) -> bool {
+    match act { .Assert -> true, .Report or .Plan or .Request or .Condition or .Draft -> false }
 }
 
-/// An asserted denial: the plain fact's contradiction, never a value.
-export fn denial(polarity: Polarity, modality: Modality) -> bool {
-    let denied = match polarity { .Affirmed -> false, .Denied -> true }
-    let asserted = match modality {
-        .Asserted -> true,
-        .Reported or .Planned or .Requested or .Conditional or .Draft -> false,
+fn certain(factuality: Factuality, truth: bool) -> bool {
+    match factuality {
+        .CertainTrue -> truth,
+        .CertainFalse -> !truth,
+        .ProbableTrue or .ProbableFalse or .PossibleTrue or .PossibleFalse or .Unknown -> false,
     }
-    denied && asserted
 }
 
-/// One property's evidence: where the source says it, how, and in whose
-/// voice. The value it supports is the record's normalized value; anchors
-/// quote the source and need not contain it.
+/// One property's evidence: the passages it was read from, how the source
+/// committed to it, and in whose voice. The value it supports is the
+/// record's normalized value, which the passages need not contain.
 export type FieldEvidence = {
     property: string,
-    spans: List<Span>,
-    polarity: Polarity = .Affirmed,
-    modality: Modality = .Asserted,
+    evidence: List<Passage>,
+    factuality: Factuality = .CertainTrue,
+    speech_act: SpeechAct = .Assert,
     frame: string? = null,
+    normalization: Normalization? = null,
     score: float? = null,
 }
 
 impl FieldEvidence {
-    fn plain() -> bool { plain(self.polarity, self.modality) }
+    fn plain() -> bool { plain(self.factuality, self.speech_act) }
 
     fn json() -> Json {
         Json
             .Obj(
                 [
                     field("property", Json.Str(self.property)),
-                    field("spans", spans_json(self.spans)),
-                    field("polarity", Json.Str(self.polarity.word())),
-                    field("modality", Json.Str(self.modality.word())),
+                    field("factuality", Json.Str(self.factuality.word())),
+                    field("speech_act", Json.Str(self.speech_act.word())),
                     field("frame", optional_text(self.frame)),
                     field(
                         "score",
                         if self.score == null { Json.Null } else { Json.Float(self.score!) },
                     ),
-                ],
+                ]
+                    .concat(self.annotation()),
             )
+    }
+
+    /// The stored evidence document: passages and normalization.
+    fn annotation() -> List<Field> {
+        [
+            field("evidence", Json.Arr([passage_json(p) for p in self.evidence])),
+            field("normalization", normalization_json(self.normalization)),
+        ]
     }
 }
 
@@ -135,19 +162,37 @@ export fn optional_text(s: string?) -> Json {
     Json.Str(found)
 }
 
-/// Half-open byte spans, as C01 and a Citation spell them.
-export fn spans_json(spans: List<Span>) -> Json {
-    Json
-        .Arr(
-            [Json
-                .Obj(
-                    [
-                        field("start", Json.Int(s.start)),
-                        field("end", Json.Int(s.end)),
-                        field("text", Json.Str(s.text)),
-                    ],
-                ) for s in spans],
-        )
+fn optional_int(n: int?) -> Json {
+    let found? = n else { return Json.Null }
+    Json.Int(found)
+}
+
+/// A W3C Web Annotation selector; absent keys are omitted.
+export fn selector_json(s: Selector) -> Json {
+    let present = [
+        field("prefix", optional_text(s.prefix)),
+        field("exact", optional_text(s.exact)),
+        field("suffix", optional_text(s.suffix)),
+        field("start", optional_int(s.start)),
+        field("end", optional_int(s.end)),
+    ]
+    Json.Obj([field("kind", Json.Str(s.kind))].concat(present.filter(!(it.value is .Null))))
+}
+
+fn passage_json(p: Passage) -> Json {
+    Json.Obj([field("selector", Json.Arr([selector_json(s) for s in p.selector]))])
+}
+
+export fn normalization_json(n: Normalization?) -> Json {
+    let found? = n else { return Json.Null }
+    let present = [
+        field("timex_type", optional_text(found.timex_type)),
+        field("value", optional_text(found.value)),
+        field("currency", optional_text(found.currency)),
+        field("minor_units", optional_int(found.minor_units)),
+        field("exponent", optional_int(found.exponent)),
+    ]
+    Json.Obj([field("kind", Json.Str(found.kind))].concat(present.filter(!(it.value is .Null))))
 }
 
 /// When a record holds in the world, in Unix ms, half-open. Null is unknown.

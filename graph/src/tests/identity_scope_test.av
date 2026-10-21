@@ -55,7 +55,7 @@ fn source() -> SourceEnvelope {
 fn quoted(text: string) -> string { to_text(Json.Str(text)) }
 
 fn field(property: string, value: string) -> string {
-    "{\"property\":${quoted(property)},\"value\":${value},\"spans\":[{\"start\":0,\"end\":${content.bytes().length},\"text\":${quoted(content)}}],\"polarity\":\"affirmed\",\"modality\":\"asserted\"}"
+    "{\"property\":${quoted(property)},\"value\":${value},\"evidence\":[{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":0,\"end\":${content.length}},{\"kind\":\"TextQuoteSelector\",\"exact\":${quoted(content)}}]}],\"factuality\":\"CT+\",\"speech_act\":\"assert\"}"
 }
 
 fn record(id: string, model: string, fields: List<string>, extra: string = "") -> string {
@@ -81,7 +81,7 @@ fn linked(g: Graph, records: List<string>, candidates: string = "[]") -> Result<
 > {
     let s = source()
     let request = "{\"contract\":1,\"request\":\"req:1\",\"input\":${to_text(source_document(s))},\"catalog\":{\"fingerprint\":\"${g.catalog.fingerprint}\",\"descriptor\":${g.catalog.document}},\"extractor\":${version},\"scope\":\"all\",\"candidates\":${candidates}}"
-    let response = "{\"contract\":1,\"request\":\"req:1\",\"source\":{\"observation\":\"source:1\",\"revision\":1},\"schema\":\"${g.catalog.fingerprint}\",\"extractor\":${version},\"status\":\"complete\",\"records\":[${records.join(",")}]}"
+    let response = "{\"contract\":2,\"request\":\"req:1\",\"source\":{\"observation\":\"source:1\",\"revision\":1},\"schema\":\"${g.catalog.fingerprint}\",\"extractor\":${version},\"status\":\"complete\",\"records\":[${records.join(",")}]}"
     g.link_exact(request, response)
 }
 
@@ -187,7 +187,7 @@ fn text_scopes_are_injective() -> Result<bool, string> {
 fn contradicting_proposal() -> Result<bool, string> {
     let g = graph()?
     defer { let _ = g.close() }
-    let claimed = ",\"identities\":[{\"identity\":{\"namespace\":\"voucher\",\"key\":\"Acme/B-7\"},\"spans\":[{\"start\":0,\"end\":4,\"text\":\"Bill\"}]}]"
+    let claimed = ",\"identities\":[{\"identity\":{\"namespace\":\"voucher\",\"key\":\"Acme/B-7\"},\"evidence\":[{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":0,\"end\":4},{\"kind\":\"TextQuoteSelector\",\"exact\":\"Bill\"}]}]}]"
     match linked(g, [issuer("acme", "acme"), bill("b7", "B-7", "acme", claimed)]) {
         .Ok(_) -> false,
         .Err(m) -> m.contains("contradicts"),

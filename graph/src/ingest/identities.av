@@ -1,6 +1,6 @@
 use @avra.graph_contracts.{
     IdentityKey,
-    Span,
+    Passage,
     ProposedRecord,
     ProposedField,
     ExtractionRequest,
@@ -16,7 +16,7 @@ use ingest.envelope.{source_document}
 use store.open.{Graph}
 use store.identity.{Identity, IdentityMatch, IdentityScope}
 
-export type DeclaredKey = { identity: IdentityKey, path: List<string>, spans: List<Span>, frame: string? }
+export type DeclaredKey = { identity: IdentityKey, path: List<string>, evidence: List<Passage>, frame: string? }
 
 /// New is a local equivalence group, NOT an allocated persistent entity.
 /// Candidates and name similarity cannot change any of these decisions.
@@ -116,7 +116,7 @@ fn declared_keys(model: Model, r: ProposedRecord) -> Result<List<DeclaredKey>, s
                 DeclaredKey {
                     identity: key,
                     path: binding.path,
-                    spans: field.spans,
+                    evidence: field.evidence,
                     frame: field.frame,
                 },
             )
@@ -127,7 +127,7 @@ fn declared_keys(model: Model, r: ProposedRecord) -> Result<List<DeclaredKey>, s
 /// The supplied affirmed and asserted field a path starts at.
 fn asserted(r: ProposedRecord, path: List<string>) -> ProposedField? {
     let field? = r.fields.find(it.property == path[0]) else { return null }
-    if field.polarity != "affirmed" || field.modality != "asserted" { return null }
+    if field.factuality != "CT+" || field.speech_act != "assert" { return null }
     field
 }
 
@@ -263,7 +263,9 @@ impl Graph {
         mut keys: List<DeclaredKey> = []
         for binding in model.semantics.identities {
             if binding.scoped_by.is_empty() ||
-                r.keys.any(it.identity.namespace == binding.namespace) { continue }
+                r.keys.any(it.identity.namespace == binding.namespace) {
+                continue
+            }
             let raw? = text_at(r.proposal, binding.path)? else { continue }
             let choices = [self.scope_values(records, model.name, r.proposal, binding, scope)? for scope in binding.scoped_by]
             if choices.any(it.is_empty()) { continue }
@@ -281,7 +283,7 @@ impl Graph {
                         DeclaredKey {
                             identity: key,
                             path: binding.path,
-                            spans: [s for f in fields for s in f?.spans ?? []],
+                            evidence: [p for f in fields for p in f?.evidence ?? []],
                             frame: fields[0]?.frame,
                         },
                     )

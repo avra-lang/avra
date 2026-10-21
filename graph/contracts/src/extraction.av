@@ -1,7 +1,8 @@
 use @std.meta.{derive}
 use @std.validate.{Decode, range, length, items, one_of}
-use common.{JsonValue, SourceRef, Span, IdentityKey, Candidate, Problem, confidence}
+use common.{JsonValue, SourceRef, IdentityKey, Candidate, Problem, confidence}
 use source.{SourceEnvelope, Frame}
+use answer.{Selector}
 
 /// Descriptor is the engine-exported catalog, not an independently kept
 /// ontology. Admission must check it against the installed fingerprint.
@@ -29,14 +30,70 @@ export type ExtractionRequest = {
     @items(max: 64) candidates: List<Candidate> = [],
 }
 
+fn passage_coherent(e: Passage) -> Result<Passage, string> {
+    if e.selector.filter(it.kind == "TextPositionSelector").length != 1 { fail "a passage has exactly one position selector" }
+    if e.selector.filter(it.kind == "TextQuoteSelector").length > 1 { fail "a passage has at most one quote selector" }
+    e
+}
+
+/// One passage of the source revision, as W3C Web Annotation selectors that
+/// all name the same text: a position (Unicode code points, half-open) and,
+/// optionally, the quote it must hold.
+@derive(Decode)
+@passage_coherent
+export type Passage = { @items(min: 1, max: 2) selector: List<Selector> }
+
+fn normalization_coherent(n: Normalization) -> Result<Normalization, string> {
+    if n.kind == "TIMEX3" {
+        if n.timex_type == null ||
+            n.value == null ||
+            n.currency != null ||
+            n.minor_units != null ||
+            n.exponent != null {
+            fail "a TIMEX3 normalization carries timex_type and an ISO 8601 value only"
+        }
+        if !["DATE", "TIME", "DURATION", "SET"].contains(n.timex_type!) { fail "a TIMEX3 type is DATE, TIME, DURATION or SET" }
+    } else {
+        if n.currency == null ||
+            n.minor_units == null ||
+            n.exponent == null ||
+            n.timex_type != null ||
+            n.value != null {
+            fail "an ISO 4217 normalization carries currency, minor_units and exponent only"
+        }
+        let code = n.currency!
+        if code.length != 3 ||
+            (0..3).any((i: int) -> code.char_code(i) < 65 || code.char_code(i) > 90) { fail "an ISO 4217 currency is three capital letters" }
+        if n.exponent! < 0 || n.exponent! > 4 { fail "an ISO 4217 exponent is 0..4" }
+    }
+    n
+}
+
+/// How a value was normalized from its text: TIMEX3 (type plus ISO 8601
+/// value) or ISO 4217 money in integer minor units.
+@derive(Decode)
+@normalization_coherent
+export type Normalization = {
+    @one_of(["TIMEX3", "ISO4217"]) kind: string,
+    timex_type: string? = null,
+    @length(min: 1, max: 128) value: string? = null,
+    currency: string? = null,
+    minor_units: int? = null,
+    exponent: int? = null,
+}
+
+/// `value` is the normalized, model-shaped value; `evidence` locates the
+/// text it was read from, which need not contain it. A plain fact is
+/// factuality `CT+` (FactBank) with speech act `assert`.
 @derive(Decode)
 export type ProposedField = {
     @length(min: 1, max: 256) property: string,
     value: JsonValue,
-    @items(min: 1, max: 64) spans: List<Span>,
+    @items(min: 1, max: 64) evidence: List<Passage>,
     frame: string? = null,
-    @one_of(["affirmed", "denied"]) polarity: string,
-    @one_of(["asserted", "reported", "planned", "requested", "conditional", "draft"]) modality: string,
+    @one_of(["CT+", "CT-", "PR+", "PR-", "PS+", "PS-", "Uu"]) factuality: string,
+    @one_of(["assert", "report", "plan", "request", "condition", "draft"]) speech_act: string,
+    normalization: Normalization? = null,
     @confidence score: float? = null,
 }
 
@@ -53,8 +110,23 @@ fn record_coherent(r: ProposedRecord) -> Result<ProposedRecord, string> {
 @derive(Decode)
 export type ProposedIdentity = {
     identity: IdentityKey,
-    @items(min: 1, max: 64) spans: List<Span>,
+    @items(min: 1, max: 64) evidence: List<Passage>,
     frame: string? = null,
+}
+
+fn resolution_coherent(r: Resolution) -> Result<Resolution, string> {
+    if (r.kind == "candidate") != (r.entity != null) { fail "only a candidate resolution names an entity" }
+    r
+}
+
+/// The extractor's entity-resolution proposal: one offered candidate, a new
+/// entity, or abstention. A proposal, never an identity grant.
+@derive(Decode)
+@resolution_coherent
+export type Resolution = {
+    @one_of(["candidate", "new", "abstain"]) kind: string,
+    @length(min: 1, max: 512) entity: string? = null,
+    @confidence score: float? = null,
 }
 
 @derive(Decode)
@@ -64,7 +136,7 @@ export type ProposedRecord = {
     @length(min: 1, max: 256) model: string,
     @items(max: 512) fields: List<ProposedField> = [],
     @items(max: 64) identities: List<ProposedIdentity> = [],
-    @items(max: 64) candidates: List<Candidate> = [],
+    resolution: Resolution? = null,
 }
 
 fn result_coherent(r: ExtractionResult) -> Result<ExtractionResult, string> {
@@ -85,7 +157,7 @@ fn result_coherent(r: ExtractionResult) -> Result<ExtractionResult, string> {
 @derive(Decode)
 @result_coherent
 export type ExtractionResult = {
-    @range(1, 1) contract: int,
+    @range(2, 2) contract: int,
     @length(min: 1, max: 512) request: string,
     source: SourceRef,
     @length(min: 1, max: 256) schema: string,

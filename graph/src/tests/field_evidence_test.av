@@ -5,7 +5,7 @@ use store.open.{Graph}
 use store.publish.{Record, Publication}
 use store.evidence.{FieldEvidence, Voice}
 use store.query.{stored_value}
-use @avra.graph_contracts.{Span}
+use @avra.graph_contracts.{Passage, Selector}
 use data.{encoded}
 
 @model
@@ -42,9 +42,16 @@ fn graph() -> Result<Graph, string> {
 }
 
 /// The exact span of `quote` in the source text.
-fn at(said: string) -> Span {
+/// `said` as a Web Annotation passage; the source text is ASCII, so code
+/// points are bytes.
+fn at(said: string) -> Passage {
     let start = pets_source.index_of(said)
-    Span { start: start, end: start + said.length, text: said }
+    Passage {
+        selector: [
+            Selector { kind: "TextPositionSelector", start: start, end: start + said.length },
+            Selector { kind: "TextQuoteSelector", exact: said },
+        ],
+    }
 }
 
 fn own() -> Voice { Voice { author: "ada", speaker: "ada", audience: ["bob"] } }
@@ -86,19 +93,23 @@ fn pets(mut g: Graph) -> Result<int, string> {
                         "ada",
                         "Owner",
                         "{\"name\":\"Ada\"}",
-                        [FieldEvidence { property: "name", spans: [at("Ada")] }],
+                        [FieldEvidence { property: "name", evidence: [at("Ada")] }],
                     )?,
                     fielded(
                         "rex",
                         "Pet",
                         "{\"name\":\"Rex\",\"owner\":\"ada\",\"mood\":\"grumpy\"}",
                         [
-                            FieldEvidence { property: "name", spans: [at("Rex")] },
-                            FieldEvidence { property: "owner", spans: [at("Ada owns")], score: 0.9 },
+                            FieldEvidence { property: "name", evidence: [at("Rex")] },
+                            FieldEvidence {
+                                property: "owner",
+                                evidence: [at("Ada owns")],
+                                score: 0.9,
+                            },
                             FieldEvidence {
                                 property: "mood",
-                                spans: [at("grumpy")],
-                                modality: .Reported,
+                                evidence: [at("grumpy")],
+                                speech_act: .Report,
                                 frame: "q1",
                             },
                         ],
@@ -110,13 +121,13 @@ fn pets(mut g: Graph) -> Result<int, string> {
                         [
                             FieldEvidence {
                                 property: "name",
-                                spans: [at("Tom")],
-                                modality: .Planned,
+                                evidence: [at("Tom")],
+                                speech_act: .Plan,
                             },
                             FieldEvidence {
                                 property: "owner",
-                                spans: [at("plans to adopt")],
-                                modality: .Planned,
+                                evidence: [at("plans to adopt")],
+                                speech_act: .Plan,
                             },
                         ],
                     )?,
@@ -132,19 +143,21 @@ fn distinct_fields() -> Result<bool, string> {
     let name = (g.explain("rex", "name")?).item(0)
     let owner = (g.explain("rex", "owner")?).item(0)
     let mood = (g.explain("rex", "mood")?).item(0)
-    name.member("anchor").member("spans").item(0).member("text").text() == "Rex" &&
-        owner.member("anchor").member("spans").item(0).member("text").text() == "Ada owns" &&
+    name.member("anchors").item(0).member("selectors").item(1).member("exact").text() == "Rex" &&
+        name.member("anchors").item(0).member("selectors").item(0).member("kind").text() == "TextPositionSelector" &&
+        name.member("anchors").item(0).member("selectors").item(0).member("start").int() == 9 &&
+        owner.member("anchors").item(0).member("selectors").item(1).member("exact").text() == "Ada owns" &&
         owner.member("confidence").float() == 0.9 &&
-        name.member("anchor").member("frame") is .Null &&
-        name.member("anchor").member("speaker").text() == "ada" &&
+        name.member("anchors").item(0).member("frame") is .Null &&
+        name.member("anchors").item(0).member("speaker").text() == "ada" &&
         name.member("audience").item(0).text() == "bob" &&
-        mood.member("anchor").member("frame").text() == "q1" &&
-        mood.member("anchor").member("speaker").text() == "bob" &&
+        mood.member("anchors").item(0).member("frame").text() == "q1" &&
+        mood.member("anchors").item(0).member("speaker").text() == "bob" &&
         mood.member("author").text() == "ada" &&
         mood.member("audience") is .Null &&
-        mood.member("modality").text() == "reported" &&
-        mood.member("anchor").member("source").member("observation").text() == "src" &&
-        mood.member("anchor").member("source").member("revision").int() == 1
+        mood.member("speech_act").text() == "report" &&
+        mood.member("anchors").item(0).member("source").member("observation").text() == "src" &&
+        mood.member("anchors").item(0).member("source").member("revision").int() == 1
 }
 
 fn qualified_stay_qualified() -> Result<bool, string> {
@@ -155,7 +168,7 @@ fn qualified_stay_qualified() -> Result<bool, string> {
     let mood = (g.explain("rex", "mood")?).item(0)
     let planned_value = match g.value("tom") { .Ok(_) -> false, .Err(_) -> true }
     !rex.fields.any(it.property == "mood") &&
-        rex.qualified.any(it.property == "mood" && it.modality == "reported") &&
+        rex.qualified.any(it.property == "mood" && it.speech_act == "report") &&
         mood.member("active").truth() == false &&
         mood.member("standing").truth() == true &&
         !(g.find("Pet")?).contains("tom") &&
@@ -183,8 +196,8 @@ fn denial_contradicts() -> Result<bool, string> {
                         [
                             FieldEvidence {
                                 property: "name",
-                                spans: [at("Rex")],
-                                polarity: .Denied,
+                                evidence: [at("Rex")],
+                                factuality: .CertainFalse,
                             },
                         ],
                     )?,
@@ -197,26 +210,26 @@ fn denial_contradicts() -> Result<bool, string> {
     let refused = match g.value("rex") { .Ok(_) -> false, .Err(e) -> e.contains("denied") }
     name.candidates.length == 1 &&
         name.candidates[0].denied &&
-        rex.qualified.any(it.property == "name" && it.polarity == "denied") &&
+        rex.qualified.any(it.property == "name" && it.factuality == "CT-") &&
         refused
 }
 
 fn qualifier_replay() -> Result<bool, string> {
     mut g = graph()?
     defer { let _ = g.close() }
-    let fields = [FieldEvidence { property: "name", spans: [at("Ada")] }]
+    let fields = [FieldEvidence { property: "name", evidence: [at("Ada")] }]
     let p = reading(g, "one", [fielded("ada", "Owner", "{\"name\":\"Ada\"}", fields)?])?
     let revision = g.publish(p)?
     let replay = g.publish(p)? == revision
     let changed = [
-        p with { records: [fielded("ada", "Owner", "{\"name\":\"Ada\"}", [fields[0] with { modality: .Planned }])?] },
+        p with { records: [fielded("ada", "Owner", "{\"name\":\"Ada\"}", [fields[0] with { speech_act: .Plan }])?] },
         p with { records: [fielded("ada", "Owner", "{\"name\":\"Ada\"}", [fields[0] with { frame: "q1" }])?] },
         p with { records: [
             fielded(
                 "ada",
                 "Owner",
                 "{\"name\":\"Ada\"}",
-                [fields[0] with { spans: [at("Ada plans")] }],
+                [fields[0] with { evidence: [at("Ada plans")] }],
             )?,
         ] },
         p with { voices: [own() with { audience: null }, quoted()] },
@@ -232,10 +245,10 @@ fn history_survives_replacement() -> Result<bool, string> {
     let mood = (g.explain("rex", "mood")?).item(0)
     let name = g.explain("rex", "name")?
     mood.member("standing").truth() == false &&
-        mood.member("modality").text() == "reported" &&
-        mood.member("anchor").member("speaker").text() == "bob" &&
+        mood.member("speech_act").text() == "report" &&
+        mood.member("anchors").item(0).member("speaker").text() == "bob" &&
         name.items().length == 2 &&
-        name.item(1).member("anchor") is .Null &&
+        name.item(1).member("anchors").items().is_empty() &&
         name.item(1).member("active").truth() == true
 }
 
@@ -259,9 +272,9 @@ fn legacy_meaning() -> Result<bool, string> {
         )?
     let ada = (g.explain("ada", "name")?).item(0)
     ada.member("active").truth() == true &&
-        ada.member("modality").text() == "asserted" &&
-        ada.member("polarity").text() == "affirmed" &&
-        ada.member("anchor") is .Null &&
+        ada.member("speech_act").text() == "assert" &&
+        ada.member("factuality").text() == "CT+" &&
+        ada.member("anchors").items().is_empty() &&
         ada.member("locator").member("modality").text() == "planned" &&
         (g.value("ada")?).entries().length == 1
 }
@@ -270,14 +283,13 @@ fn malformed_evidence() -> Result<bool, string> {
     mut g = graph()?
     defer { let _ = g.close() }
     let before = g.revision()?
-    let name = FieldEvidence { property: "name", spans: [at("Ada")] }
+    let name = FieldEvidence { property: "name", evidence: [at("Ada")] }
     let bad = [
         [name with { property: "title" }],
         [name, name],
-        [name with { spans: [] }],
+        [name with { evidence: [] }],
         [name with { frame: "nowhere" }],
         [name with { score: 1.5 }],
-        [name with { spans: [Span { start: 4, end: 4, text: "x" }] }],
     ]
     let attempts = [reading(g, "bad", [fielded("ada", "Owner", "{\"name\":\"Ada\"}", fields)?])? for fields in bad]
     let voiceless = reading(g, "bad", [fielded("ada", "Owner", "{\"name\":\"Ada\"}", [name])?])? with { voices: [quoted()] }
@@ -360,13 +372,13 @@ fn plans_supersede_nothing() -> Result<bool, string> {
                         [
                             FieldEvidence {
                                 property: "city",
-                                spans: [at("plans")],
-                                modality: .Planned,
+                                evidence: [at("plans")],
+                                speech_act: .Plan,
                             },
                             FieldEvidence {
                                 property: "from_ms",
-                                spans: [at("plans")],
-                                modality: .Planned,
+                                evidence: [at("plans")],
+                                speech_act: .Plan,
                             },
                         ],
                     )?,

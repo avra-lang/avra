@@ -66,17 +66,24 @@ fn request(
 }
 
 fn response(g: Graph, s: SourceEnvelope, records: string, producer: string = "encoder") -> string {
-    "{\"contract\":1,\"request\":\"req:1\",\"source\":{\"observation\":${quote_text(s.source.observation)},\"revision\":${s.source.revision}},\"schema\":\"${g.catalog.fingerprint}\",\"extractor\":${version.replace("encoder", producer)},\"status\":\"complete\",\"records\":[${records}]}"
+    "{\"contract\":2,\"request\":\"req:1\",\"source\":{\"observation\":${quote_text(s.source.observation)},\"revision\":${s.source.revision}},\"schema\":\"${g.catalog.fingerprint}\",\"extractor\":${version.replace("encoder", producer)},\"status\":\"complete\",\"records\":[${records}]}"
 }
 
 fn field(
     property: string,
     value: string,
     text: string = content,
-    modality: string = "asserted",
-    polarity: string = "affirmed",
+    speech_act: string = "assert",
+    factuality: string = "CT+",
 ) -> string {
-    "{\"property\":${quote_text(property)},\"value\":${value},\"spans\":[{\"start\":0,\"end\":${text.bytes().length},\"text\":${quote_text(text)}}],\"polarity\":${quote_text(polarity)},\"modality\":${quote_text(modality)}}"
+    "{\"property\":${quote_text(property)},\"value\":${value},\"evidence\":[${passage(text)}],\"factuality\":${quote_text(factuality)},\"speech_act\":${quote_text(speech_act)}}"
+}
+
+/// The whole of `text` as a Web Annotation passage, in code points.
+fn passage(text: string) -> string {
+    let bytes = text.bytes()
+    let points = [i for i in 0..bytes.length if bytes.at(i) < 128 || bytes.at(i) >= 192].length
+    "{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":0,\"end\":${points}},{\"kind\":\"TextQuoteSelector\",\"exact\":${quote_text(text)}}]}"
 }
 
 fn record(fields: string, id: string = "mention:1", model: string = "Client", extra: string = "") -> string {
@@ -165,7 +172,7 @@ fn exact_existing() -> Result<bool, string> {
         result.revision == before &&
         result.records[0].keys[0].identity.key == "alex@example.test" &&
         result.records[0].keys[0].path[0] == "route" &&
-        result.records[0].keys[0].spans[0].text == content &&
+        result.records[0].keys[0].evidence[0].selector[1].exact == content &&
         result.records[0].matches[0].source.revision == 1 &&
         !result.records[0].matches[0].continuity &&
         g.revision()? == before &&
@@ -309,7 +316,7 @@ fn conflicting_keys(merge: bool = false) -> Result<bool, string> {
     correct && g.revision()? == before && (g.merges()?).length == if merge { 1 } else { 0 }
 }
 
-fn unqualified(modality: string, polarity: string = "affirmed") -> Result<bool, string> {
+fn unqualified(speech_act: string, factuality: string = "CT+") -> Result<bool, string> {
     let g = Graph.memory(registrations())?
     defer { let _ = g.close() }
     let s = source()
@@ -318,7 +325,12 @@ fn unqualified(modality: string, polarity: string = "affirmed") -> Result<bool, 
     let r = linked(
         g,
         record(
-            field("route", quote_text("alex@example.test"), modality: modality, polarity: polarity),
+            field(
+                "route",
+                quote_text("alex@example.test"),
+                speech_act: speech_act,
+                factuality: factuality,
+            ),
         ),
     )?
     r.records[0].decision is .Unresolved && r.records[0].keys.is_empty()
@@ -333,10 +345,13 @@ fn weak_proposals() -> Result<bool, string> {
     let candidate = "{\"entity\":\"entity:alex\",\"model\":\"Client\",\"label\":\"Dana\",\"score\":1.0}"
     let suggested = linked(
         g,
-        record(field("label", quote_text("Dana")), extra: ",\"candidates\":[${candidate}]"),
+        record(
+            field("label", quote_text("Dana")),
+            extra: ",\"resolution\":{\"kind\":\"candidate\",\"entity\":\"entity:alex\",\"score\":1.0}",
+        ),
         candidates: "[${candidate}]",
     )?
-    let identity = ",\"identities\":[{\"identity\":{\"namespace\":\"directory\",\"key\":\"alex@example.test\"},\"spans\":[{\"start\":0,\"end\":4,\"text\":\"Dana\"}]}]"
+    let identity = ",\"identities\":[{\"identity\":{\"namespace\":\"directory\",\"key\":\"alex@example.test\"},\"evidence\":[{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":0,\"end\":4},{\"kind\":\"TextQuoteSelector\",\"exact\":\"Dana\"}]}]}]"
     let only = linked(g, record("", extra: identity))?
     suggested.records[0].decision is .Unresolved && only.records[0].decision is .Unresolved
 }
@@ -418,7 +433,7 @@ fn contradictory_proposal() -> Result<bool, string> {
     let g = Graph.memory(registrations())?
     defer { let _ = g.close() }
     g.ingest(to_text(source_document(source())))?
-    let identity = ",\"identities\":[{\"identity\":{\"namespace\":\"directory\",\"key\":\"someone:else\"},\"spans\":[{\"start\":0,\"end\":4,\"text\":\"Dana\"}]}]"
+    let identity = ",\"identities\":[{\"identity\":{\"namespace\":\"directory\",\"key\":\"someone:else\"},\"evidence\":[{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":0,\"end\":4},{\"kind\":\"TextQuoteSelector\",\"exact\":\"Dana\"}]}]}]"
     linked(g, record(field("route", quote_text("alex@example.test")), extra: identity)) is .Err &&
         linked(g, record(field("route", quote_text("   ")))) is .Err &&
         (linked(g, record(field("route", "null")))?).records[0].decision is .Unresolved
@@ -476,10 +491,11 @@ spec "declared exact identity linking without graph mutation" {
         then "keys pointing to different entities remain ambiguous without a merge" { passed(conflicting_keys()) }
         then "current and same-stream historical keys cannot silently outvote each other" { passed(continuity_conflict()) }
         then "explicitly merged entities resolve through their existing read group" { passed(conflicting_keys(true)) }
-        then "negated, planned and reported fields cannot grant exact identity authority" {
-            passed(unqualified("asserted", "denied")) &&
-                passed(unqualified("planned")) &&
-                passed(unqualified("reported"))
+        then "denied, planned, reported and merely probable fields cannot grant exact identity authority" {
+            passed(unqualified("assert", "CT-")) &&
+                passed(unqualified("plan")) &&
+                passed(unqualified("report")) &&
+                passed(unqualified("assert", "PR+"))
         }
         then "display names, score-one suggestions and unqualified identity-only proposals cannot merge" { passed(weak_proposals()) }
         then "tombstoned and wrong-model exact matches are refused" { passed(bad_target(true)) && passed(bad_target(false)) }
