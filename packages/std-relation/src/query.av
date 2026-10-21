@@ -30,6 +30,7 @@ use @std.meta.{
     Diagnostic,
     Decls,
     Code,
+    Stmts,
     name,
     wrapped,
     literal,
@@ -72,6 +73,30 @@ export fn query(f: Fn) -> Declared {
         problems: [],
     }
 }
+
+/// The reader a record answer needs, bound beside the call: a TYPED LET
+/// PINS A LAMBDA'S ANSWER where a seat does not, and a `?` inside an
+/// inferred answer has no door to carry its failure through.
+fn answer_reader(f: Fn) -> List<Stmts> {
+    if !record_answer(f.answers) { return [] }
+    match f.answers {
+        .Named(ty, _) -> match named_shape(ty) {
+            .Record(fs) -> record_reader_let(reader_name(f), ty, f.answer, fs),
+            rest -> [],
+        },
+        rest -> [],
+    }
+}
+
+/// The answer read back: a record's own binding, every other kind's
+/// lambda.
+fn answer_read(f: Fn) -> Code {
+    if !record_answer(f.answers) { return read_each(f.answers, f.answer) }
+    name(reader_name(f))
+}
+
+/// The name a record answer's reader is bound under.
+fn reader_name(f: Fn) -> string { "${f.name}_reader" }
 
 /// `@over(lister)`: a `@query` whose calls are LISTED by `lister`, so
 /// the producer drives every key a reader has not asked yet — "those
@@ -191,7 +216,7 @@ fn wrapper(f: Fn) -> Decls {
     let body = quote { () -> ${wrapped(f)}(${..args}) }
     let again = quote { () -> ${f.name}(${..args}) }
     if decodable(f.answers) {
-        let record = quote { KeptRecord { query: code_keyed(${literal(durable_name(f))}, code_hash(${name(wrapped(f).name)})), args: ${args_hash(f)}, write: ${write_each(f.answers, f.answer)}, read: ${read_each(f.answers, f.answer)} } }
+        let record = quote { KeptRecord { query: code_keyed(${literal(durable_name(f))}, code_hash(${name(wrapped(f).name)})), args: ${args_hash(f)}, write: ${write_each(f.answers, f.answer)}, read: ${answer_read(f)} } }
         return quote {
             fn ${f.name}(..${seats}) -> ${f.answer} {
                 let held = ${kept_name(f)}().under(${db})
@@ -199,6 +224,7 @@ fn wrapper(f: Fn) -> Decls {
                 match held.memo.start(arg) {
                     .Reuse(value) -> value,
                     .Compute -> {
+                        ${answer_reader(f)}
                         let spelled = ${args_spelled(f)}
                         held.ran_lasting(${db}, arg, spelled, ${body}, ${again}, ${answer_hash(f)}, ${record})
                     },
