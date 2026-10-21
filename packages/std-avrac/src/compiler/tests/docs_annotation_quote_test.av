@@ -1,0 +1,50 @@
+use compiler.{parse_source}
+use core.{StmtStart}
+
+fn doc_on_owner(source: string, expected: string) -> bool {
+    let p = parse_source(source)
+    let owners = p
+        .store
+        .stmt_starts()
+        .filter((s: StmtStart) -> !p.store.annotations_of(s.stmt).is_empty())
+    owners.length == 1 && p.store.doc_comment(owners[0].stmt)?.join("\n") == expected
+}
+
+spec "documentation belongs to the annotation owner, not its quoted arguments" {
+    given "source-ordered declaration docs and statements inside quote expressions" {
+        then "a quoted annotation argument does not steal a type's doc" {
+            doc_on_owner(
+                "/// device docs\n@tag(quote {\n    1\n})\ntype Instrument = { tag: string }\n",
+                "device docs",
+            )
+        }
+        then "a quoted annotation argument does not steal a fn's doc" {
+            doc_on_owner(
+                "/// function docs\n@tag(quote {\n    let n = 1\n    n\n})\nfn answer() -> int { 1 }\n",
+                "function docs",
+            )
+        }
+        then "stacked annotations still open one documented declaration" {
+            doc_on_owner(
+                "/// stacked docs\n@tag(quote { 1 })\n@other\nexport type Instrument = { tag: string }\n",
+                "stacked docs",
+            )
+        }
+        then "a method's quoted annotation keeps its own prose" {
+            doc_on_owner(
+                "type Holder = { n: int }\nimpl Holder {\n    /// method docs\n    @tag(quote { 1 })\n    fn answer() -> int { self.n }\n}\n",
+                "method docs",
+            )
+        }
+        then "ordinary keyword-anchored docs still attach" {
+            let p = parse_source("/// ordinary docs\nexport type Instrument = { tag: string }\n")
+            p.store.doc_comment(p.stmts[0])?.join("\n") == "ordinary docs"
+        }
+        then "a field mark cannot donate its docs to the next function" {
+            let p = parse_source(
+                "type Holder = {\n    /// orphan mark docs\n    @flag n: int\n}\nfn next() -> int { 1 }\n",
+            )
+            p.store.doc_comment(p.stmts.last()!) == null
+        }
+    }
+}
