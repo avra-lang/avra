@@ -1,0 +1,110 @@
+use @avra.graph.{model, Ref, Semantics, IdentityBinding}
+use @std.validate.{length, one_of, range}
+use models.people.{Person}
+
+/// A named animal, not uniquely identified by its name or species alone.
+@model
+export type Pet = {
+    @length(min: 1, max: 256) name: string,
+    @length(min: 1, max: 128) species: string,
+    owner: Ref<Person>?,
+}
+
+/// A booking's scheduled time is not attendance or a clinical outcome.
+/// scheduled_at_ms is a known UTC Unix-millisecond instant. A rescheduled
+/// source replaces its previous slot; historical evidence keeps the old one.
+/// Null attendance/diagnosis/treatment means unrecorded, not false/healthy.
+@model
+export type Appointment = {
+    pet: Ref<Pet>,
+    @length(min: 1, max: 512) purpose: string,
+    provider: string?,
+    scheduled_at_ms: int?,
+    @one_of(["proposed", "confirmed", "cancelled", "completed"]) status: string,
+    attended: bool? = null,
+    diagnosis: string? = null,
+    treatment: string? = null,
+}
+
+/// A journey and its purpose, independent of its individual reservations.
+/// Date-only depart_on/return_on stay ISO calendar dates, not guessed times.
+/// Cancelling one hotel reservation does not cancel a flight or this trip.
+@model
+export type Trip = {
+    traveller: Ref<Person>,
+    @length(min: 1, max: 256) destination: string,
+    depart_on: string?,
+    return_on: string?,
+    purpose: string?,
+}
+
+/// Each hotel/flight/rail/car reservation has its own state. An omitted
+/// flight record is not a cancelled flight. A cancelled room does not imply
+/// a paid refund; refund_status stays unknown unless explicitly supplied.
+@model(quote { Semantics { identities: [IdentityBinding {
+    namespace: "travel-booking", path: ["reference"], normalization: .Trim,
+}] } })
+export type TravelBooking = {
+    trip: Ref<Trip>,
+    holder: Ref<Person>,
+    reference: string?,
+    @one_of(["hotel", "flight", "rail", "car"]) kind: string,
+    provider: string?,
+    @one_of(["proposed", "held", "confirmed", "cancelled", "completed"]) status: string,
+    @one_of(["pending", "paid", "not_due"]) refund_status: string? = null,
+}
+
+/// An event plan, not a venue approval. A requested guest limit is a
+/// separate assertion from the venue's confirmed capacity or booking.
+/// Date-only event_on and a precise starts_at_ms are not interchangeable.
+@model
+export type Event = {
+    @length(min: 1, max: 512) title: string,
+    host: Ref<Person>?,
+    event_on: string?,
+    starts_at_ms: int?,
+    venue: string?,
+    @one_of(["proposed", "confirmed", "cancelled", "held"]) status: string,
+    @range(0, 100000) requested_guest_limit: int?,
+    @range(0, 100000) venue_capacity: int? = null,
+    venue_confirmed: bool? = null,
+}
+
+fn task_completion(t: PersonalTask) -> Result<PersonalTask, string> {
+    if t.completed_at_ms != null && t.status != "completed" { fail "a completion time requires an explicitly completed task" }
+    t
+}
+
+/// Requests, promises and actual completion remain different states.
+/// due_on retains a date without inventing an hour. Precise reservation and
+/// completion instants use UTC Unix milliseconds. confirmation_recorded=false
+/// means no confirmation is recorded in the cited source, not proof that a
+/// reservation never happened. Unknown confirmation must stay null.
+@model
+@task_completion
+export type PersonalTask = {
+    @length(min: 1, max: 1024) summary: string,
+    requested_by: Ref<Person>?,
+    assignee: Ref<Person>?,
+    recipient: Ref<Person>?,
+    @one_of(["open", "promised", "completed", "cancelled"]) status: string,
+    due_on: string?,
+    requested_reservation_at_ms: int?,
+    completed_at_ms: int? = null,
+    confirmation_recorded: bool? = null,
+}
+
+/// A speaker's request or undertaking, attached to a task or event when
+/// known. Conditions remain text backed by source evidence. Neither an
+/// elapsed date nor a promise creates a fulfilled/completed assertion.
+@model
+export type Commitment = {
+    actor: Ref<Person>,
+    recipient: Ref<Person>?,
+    task: Ref<PersonalTask>?,
+    event: Ref<Event>?,
+    @length(min: 1, max: 1024) action: string,
+    @one_of(["requested", "promised", "fulfilled", "cancelled"]) status: string,
+    when_ms: int?,
+    condition: string?,
+}

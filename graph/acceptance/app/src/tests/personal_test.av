@@ -1,0 +1,135 @@
+use models.people.{models}
+use models.personal.{Pet, Appointment, Trip, TravelBooking, Event, PersonalTask, Commitment}
+use @avra.graph.{Catalog}
+
+const appointment = "{\"pet\":\"pet:fig\",\"purpose\":\"annual check-up\",\"provider\":\"Willow Vet Clinic\",\"scheduled_at_ms\":1792148400000,\"status\":\"confirmed\"}"
+const task = "{\"summary\":\"Book Friday dinner\",\"requested_by\":\"person:elena\",\"assignee\":\"person:rowan\",\"recipient\":null,\"status\":\"promised\",\"due_on\":\"2026-10-23\",\"requested_reservation_at_ms\":1792783800000}"
+const booking = "{\"trip\":\"trip:florence\",\"holder\":\"person:rowan\",\"reference\":\"F-19\",\"kind\":\"hotel\",\"provider\":\"Hotel Bellora\",\"status\":\"cancelled\"}"
+const event = "{\"title\":\"Nocturne launch\",\"host\":\"person:rowan\",\"event_on\":\"2026-10-29\",\"starts_at_ms\":null,\"venue\":null,\"status\":\"proposed\",\"requested_guest_limit\":40}"
+
+spec "fixture personal, event and task declarations" {
+    given "the same generic catalog and standard model codecs" {
+        then "all personal models collect with their reference targets" {
+            match Catalog.collected(models) {
+                .Ok(c) -> [
+                    "Pet",
+                    "Appointment",
+                    "Trip",
+                    "TravelBooking",
+                    "Event",
+                    "PersonalTask",
+                    "Commitment",
+                ]
+                    .all((name: string) -> c.models.any(it.name == name)),
+                .Err(_) -> false,
+            }
+        }
+        then "a past confirmed appointment does not invent attendance or treatment" {
+            match Appointment.from_json(appointment) {
+                .Ok(a) -> a.status == "confirmed" &&
+                    a.attended == null &&
+                    a.diagnosis == null &&
+                    a.treatment == null,
+                .Err(_) -> false,
+            }
+        }
+        then "a changed slot and explicit cancellation are representable independently" {
+            Appointment
+                    .from_json(
+                        appointment
+                            .replace("1792148400000", "1792050600000")
+                            .replace("confirmed", "cancelled"),
+                    ) is .Ok &&
+                Appointment.from_json(appointment) is .Ok
+        }
+        then "a pet name alone is not declared a unique identity" {
+            match Catalog.collected(models) {
+                .Ok(c) -> c.models.find(it.name == "Pet")!.semantics.identities.is_empty(),
+                .Err(_) -> false,
+            }
+        }
+        then "a cancelled hotel reservation does not claim a flight or refund" {
+            match TravelBooking.from_json(booking) {
+                .Ok(b) -> b.kind == "hotel" && b.status == "cancelled" && b.refund_status == null,
+                .Err(_) -> false,
+            }
+        }
+        then "booking references have a declared namespace rather than a name convention" {
+            match Catalog.collected(models) {
+                .Ok(c) -> c.models.find(it.name == "TravelBooking")!.semantics.identities[0].namespace == "travel-booking",
+                .Err(_) -> false,
+            }
+        }
+        then "requested guest limits are not confirmed venue capacity" {
+            match Event.from_json(event) {
+                .Ok(e) -> e.requested_guest_limit == 40 &&
+                    e.venue_capacity == null &&
+                    e.venue_confirmed == null,
+                .Err(_) -> false,
+            }
+        }
+        then "negative capacities and invented planning states are refused" {
+            Event
+                    .from_json(
+                        event
+                            .replace("\"requested_guest_limit\":40", "\"requested_guest_limit\":-1"),
+                    ) is .Err &&
+                Event.from_json(event.replace("proposed", "elapsed_so_completed")) is .Err
+        }
+        then "a dinner promise is neither completion nor a booking confirmation" {
+            match PersonalTask.from_json(task) {
+                .Ok(t) -> t.status == "promised" &&
+                    t.completed_at_ms == null &&
+                    t.confirmation_recorded == null,
+                .Err(_) -> false,
+            }
+        }
+        then "an explicit absence of source confirmation is distinct from unknown" {
+            match PersonalTask
+                .from_json(
+                    task
+                        .replace(
+                            "\"status\":\"promised\"",
+                            "\"confirmation_recorded\":false,\"status\":\"promised\"",
+                        ),
+                ) {
+                .Ok(t) -> t.confirmation_recorded == false && t.completed_at_ms == null,
+                .Err(_) -> false,
+            }
+        }
+        then "a promised task cannot carry an invented completion time" {
+            PersonalTask
+                .from_json(
+                    task
+                        .replace("\"status\":\"promised\"", "\"completed_at_ms\":1,\"status\":\"promised\""),
+                ) is .Err
+        }
+        then "completion can be known even when its exact time is not" {
+            PersonalTask.from_json(task.replace("promised", "completed")) is .Ok
+        }
+        then "missing task status and empty action text do not get guessed" {
+            PersonalTask.from_json(task.replace("\"status\":\"promised\",", "")) is .Err &&
+                PersonalTask.from_json(task.replace("Book Friday dinner", "")) is .Err
+        }
+        then "trip dates retain date-only precision and require a traveller" {
+            Trip
+                    .from_json(
+                        "{\"traveller\":\"person:rowan\",\"destination\":\"Florence\",\"depart_on\":\"2026-10-19\",\"return_on\":\"2026-10-21\",\"purpose\":\"supplier visit\"}",
+                    ) is .Ok &&
+                Trip.from_json("{\"destination\":\"Florence\"}") is .Err
+        }
+        then "conditional commitments remain explicit source-backed statements" {
+            match Commitment
+                .from_json(
+                    "{\"actor\":\"person:elena\",\"recipient\":\"person:rowan\",\"task\":null,\"event\":\"event:launch\",\"action\":\"Keep the guest list to 40\",\"status\":\"requested\",\"when_ms\":null,\"condition\":\"until venue confirms capacity\"}",
+                ) {
+                .Ok(c) -> c.status == "requested" && c.condition == "until venue confirms capacity",
+                .Err(_) -> false,
+            }
+        }
+        then "pet identity and source type validation are ordinary declarations" {
+            Pet.from_json("{\"name\":\"Fig\",\"species\":\"cat\",\"owner\":\"person:rowan\"}") is .Ok &&
+                Pet.from_json("{\"name\":\"\",\"species\":\"cat\",\"owner\":null}") is .Err
+        }
+    }
+}

@@ -1,0 +1,23 @@
+use models.people.{models}
+use models.personal.{Appointment, TravelBooking, PersonalTask}
+use @avra.graph.{Catalog}
+
+let catalog = match Catalog.collected(models) {
+    .Ok(c) -> ["Pet", "Appointment", "Trip", "TravelBooking", "Event", "PersonalTask", "Commitment"]
+            .all((name: string) -> c.models.any(it.name == name)) &&
+        c.document.contains("A speaker's request or undertaking"),
+    .Err(_) -> false,
+}
+let appointment = match Appointment
+    .from_json(
+        "{\"pet\":\"fig\",\"purpose\":\"check-up\",\"provider\":null,\"scheduled_at_ms\":1,\"status\":\"confirmed\"}",
+    ) { .Ok(a) -> a.attended == null && a.diagnosis == null, .Err(_) -> false }
+let booking = match TravelBooking
+    .from_json(
+        "{\"trip\":\"trip\",\"holder\":\"rowan\",\"reference\":\"F-19\",\"kind\":\"hotel\",\"provider\":null,\"status\":\"cancelled\"}",
+    ) { .Ok(b) -> b.refund_status == null, .Err(_) -> false }
+let task = match PersonalTask
+    .from_json(
+        "{\"summary\":\"Book dinner\",\"requested_by\":\"elena\",\"assignee\":\"rowan\",\"recipient\":null,\"status\":\"promised\",\"due_on\":null,\"requested_reservation_at_ms\":1}",
+    ) { .Ok(t) -> t.completed_at_ms == null && t.confirmation_recorded == null, .Err(_) -> false }
+"${catalog} ${appointment} ${booking} ${task}"

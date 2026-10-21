@@ -1,4 +1,4 @@
-# Fixture application: identity and relationships (M01)
+# Fixture application: identity, relationships and personal plans
 
 This package is the application ontology, not a second graph engine. M01
 adds declarations in [src/models/people.av](src/models/people.av): Person,
@@ -10,10 +10,26 @@ declarations. They are described in [../../MODEL-SEMANTICS.md](../../MODEL-SEMAN
 and verified in [../../P01-HANDOFF.md](../../P01-HANDOFF.md). Consumers still
 need to implement resolution and temporal evaluation.
 
-There is no person dictionary, relationship dispatcher, NLP provider or
-startup command here yet. M02 adds commercial declarations; M03 adds
-personal/event/task declarations and the minimal startup entry point.
-The existing engine under `graph/src` is unchanged by M01.
+M03 adds Pet, Appointment, Trip, TravelBooking, Event, PersonalTask and
+Commitment in [src/models/personal.av](src/models/personal.av). The same
+package collection includes them automatically. `Task` is an Avra built-in
+type, so the application uses `PersonalTask`. The executable is only shared
+CLI startup; there is no person dictionary, relationship dispatcher or NLP
+provider here. M02 still needs to add commercial declarations and policies.
+
+```sh
+sh tools/watch.sh 3500 ./build/avra build graph/acceptance/app
+graph/acceptance/app/src/main request --db /tmp/fixture-graph.db graph/examples/schema.json
+python3 graph/acceptance/app/smoke.py
+```
+
+The personal models separate scheduled/confirmed appointments from attendance
+and clinical outcomes, hotel cancellation from flight state, and requested
+guest limits from confirmed venue capacity. Promises do not become completed
+tasks when their dates pass. Unknown outcomes remain null; missing defaults
+are not observed assertions. Precise times are UTC Unix milliseconds, while
+date-only fields retain their original precision. Temporal normalization and
+question evaluation are separate, unimplemented consumers of this metadata.
 
 ## Representation choices
 
@@ -61,4 +77,7 @@ reference decoding and reversed-interval refusal. Tests also reject invalid
 email, undeclared relationship tags, absent membership booleans and empty
 intervals. They preserve unknown dates and expose generated descriptions.
 
-The task's verification receipt is [M01-HANDOFF.md](M01-HANDOFF.md).
+The task receipts are [M01-HANDOFF.md](M01-HANDOFF.md) and
+[M03-HANDOFF.md](M03-HANDOFF.md). The application now has 30 passing tests
+and two interpreter/native proof programs. The native smoke witness checks
+the real CLI and restarted file-backed reads of manual facts, not NLP.
