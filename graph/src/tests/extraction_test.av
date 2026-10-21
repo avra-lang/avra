@@ -1,0 +1,318 @@
+use ingest.extraction.{admit_extraction, ExtractionAdmission}
+use ingest.envelope.{source_document}
+use catalog.{Catalog}
+use derive.model.{model}
+use schema.{Ref, Registration}
+use @avra.graph_contracts.{SourceEnvelope, SourceRef, Frame, Span}
+use @std.json.{to_text}
+use @std.validate.{length}
+use data.{encoded}
+
+@model
+type Keeper = { @length(min: 1) label: string }
+
+@model
+type Details = { label: string, category: string = "plain" }
+
+@model
+type Artifact = { label: string, owner: Ref<Keeper>?, details: Details? }
+
+fn catalog() -> Result<Catalog, string> {
+    Catalog
+        .collected(
+            [
+                Registration { make: Keeper_graph_model },
+                Registration { make: Details_graph_model },
+                Registration { make: Artifact_graph_model },
+            ],
+        )
+}
+
+fn source(frames: List<Frame> = []) -> SourceEnvelope {
+    SourceEnvelope {
+        contract: 1,
+        source: SourceRef { observation: "note:1", revision: 1 },
+        authored_at_ms: null,
+        received_at_ms: 1,
+        author: "actor:author",
+        media_type: "text/plain",
+        content: "Ada said review",
+        frames: frames,
+    }
+}
+
+const version = "{\"producer\":\"encoder\",\"code\":\"code:1\",\"model\":\"weights:1\"}"
+const candidate = "{\"entity\":\"known:ada\",\"model\":\"Keeper\",\"label\":\"Ada\",\"score\":0.7}"
+const anchor_json = "{\"start\":9,\"end\":15,\"text\":\"review\"}"
+
+fn request(c: Catalog, s: SourceEnvelope = source(), candidates: string = "[]") -> string {
+    "{\"contract\":1,\"request\":\"req:1\",\"input\":${to_text(source_document(s))},\"catalog\":{\"fingerprint\":\"${c.fingerprint}\",\"descriptor\":${c.document}},\"extractor\":${version},\"scope\":\"all\",\"candidates\":${candidates}}"
+}
+
+fn response(c: Catalog, records: string = "", extra: string = "") -> string {
+    "{\"contract\":1,\"request\":\"req:1\",\"source\":{\"observation\":\"note:1\",\"revision\":1},\"schema\":\"${c.fingerprint}\",\"extractor\":${version},\"status\":\"complete\",\"records\":[${records}]${extra}}"
+}
+
+fn field(property: string = "label", value: string = "\"review\"", extra: string = "") -> string {
+    "{\"property\":\"${property}\",\"value\":${value},\"spans\":[${anchor_json}],\"polarity\":\"affirmed\",\"modality\":\"planned\",\"score\":0.8${extra}}"
+}
+
+fn record(
+    fields: string = field(),
+    model: string = "Artifact",
+    id: string = "local:one",
+    extra: string = "",
+) -> string {
+    "{\"local_id\":\"${id}\",\"model\":\"${model}\",\"fields\":[${fields}]${extra}}"
+}
+
+fn accepted(denied: bool = false) -> Result<bool, string> {
+    let c = catalog()?
+    let res = response(c, record())
+    match admit_extraction(
+        c,
+        request(c),
+        if denied { res.replace("affirmed", "denied") } else { res },
+    )? {
+        .Complete(req, result) -> {
+            let fields = result.records[0].fields
+            req.scope == "all" &&
+                result.extractor.code == "code:1" &&
+                result.extractor.model == "weights:1" &&
+                result.source.revision == 1 &&
+                fields.length == 1 &&
+                fields[0].property == "label" &&
+                fields[0].modality == "planned" &&
+                fields[0].polarity == if denied { "denied" } else { "affirmed" } &&
+                fields[0].spans[0].text == "review" &&
+                fields[0].score == 0.8
+        },
+        .Failed(_, _) -> false,
+    }
+}
+
+fn refused(records: string) -> Result<bool, string> {
+    let c = catalog()?
+    admit_extraction(c, request(c), response(c, records)) is .Err
+}
+
+fn stale(before: string, after: string, in_request: bool = false) -> Result<bool, string> {
+    let c = catalog()?
+    let req = request(c)
+    let res = response(c, record())
+    admit_extraction(
+        c,
+        if in_request { req.replace(before, after) } else { req },
+        if in_request { res } else { res.replace(before, after) },
+    ) is .Err
+}
+
+fn failure(empty: bool) -> Result<bool, string> {
+    let c = catalog()?
+    let failed = response(c).replace("\"complete\"", "\"failed\"")
+    let actual = if empty {
+        failed
+    } else {
+        failed
+            .replace(
+                "\"records\":[]",
+                "\"problems\":[{\"code\":\"worker.timeout\",\"message\":\"timed out\"}]",
+            )
+    }
+    let result = admit_extraction(c, request(c), actual)
+    if empty { return result is .Err }
+    match result? {
+        .Failed(req, res) -> req.request == "req:1" && res.problems[0].code == "worker.timeout" && res.records.is_empty(),
+        .Complete(_, _) -> false,
+    }
+}
+
+fn empty_success() -> Result<bool, string> {
+    let c = catalog()?
+    match admit_extraction(c, request(c), response(c))? {
+        .Complete(_, r) -> r.records.is_empty(),
+        .Failed(_, _) -> false,
+    }
+}
+
+fn local_reference(wrong: bool = false) -> Result<bool, string> {
+    let c = catalog()?
+    let records = record(field("owner", "\"local:keeper\"")) +
+        "," +
+        record(field(), if wrong { "Artifact" } else { "Keeper" }, "local:keeper")
+    let result = admit_extraction(c, request(c), response(c, records))
+    if wrong { result is .Err } else { result is .Ok }
+}
+
+fn offered_reference(invent: bool = false) -> Result<bool, string> {
+    let c = catalog()?
+    let records = record(field("owner", if invent { "\"unoffered:id\"" } else { "\"known:ada\"" }))
+    let result = admit_extraction(c, request(c, candidates: "[${candidate}]"), response(c, records))
+    if invent { result is .Err } else { result is .Ok }
+}
+
+fn candidate_only(invent: bool = false) -> Result<bool, string> {
+    let c = catalog()?
+    let selected = if invent { candidate.replace("known:ada", "another:id") } else { candidate }
+    let records = record(field(), "Keeper", extra: ",\"candidates\":[${selected}]")
+    let result = admit_extraction(c, request(c, candidates: "[${candidate}]"), response(c, records))
+    if invent { return result is .Err }
+    match result? {
+        .Complete(_, r) -> r.records[0].local_id == "local:one" && r.records[0].candidates[0].entity == "known:ada",
+        .Failed(_, _) -> false,
+    }
+}
+
+fn embedded_defaults() -> Result<bool, string> {
+    let c = catalog()?
+    let records = record(field("details", "{\"label\":\"review\"}"))
+    match admit_extraction(c, request(c), response(c, records))? {
+        .Complete(_, r) -> encoded(r.records[0].fields[0].value.value) == "{\"label\":\"review\"}",
+        .Failed(_, _) -> false,
+    }
+}
+
+fn quotation(explicit: bool, crossed: bool = false, proposed: bool = false) -> Result<bool, string> {
+    let c = catalog()?
+    let frame = Frame {
+        id: "q",
+        span: Span { start: 9, end: 15, text: "review" },
+        speaker: "unlinked:voice",
+    }
+    let s = source(if proposed { [] } else { [frame] })
+    let value = field(extra: if explicit { ",\"frame\":\"q\"" } else { "" })
+    let fields = if crossed { value.replace(anchor_json, "{\"start\":4,\"end\":15,\"text\":\"said review\"}") } else { value }
+    let extra = if proposed { ",\"proposed_frames\":[{\"id\":\"q\",\"span\":${anchor_json},\"speaker\":\"unlinked:voice\"}]" } else { "" }
+    let result = admit_extraction(c, request(c, s), response(c, record(fields), extra))
+    if !explicit || crossed { return result is .Err }
+    match result? {
+        .Complete(_, r) -> r.records[0].fields[0].frame == "q" &&
+            if proposed { r.proposed_frames[0].speaker == "unlinked:voice" } else { true },
+        .Failed(_, _) -> false,
+    }
+}
+
+fn unicode_anchor() -> Result<bool, string> {
+    let c = catalog()?
+    let s = source() with { content: "é🙂" }
+    let fields = field().replace(anchor_json, "{\"start\":2,\"end\":6,\"text\":\"🙂\"}")
+    admit_extraction(c, request(c, s), response(c, record(fields))) is .Ok &&
+        admit_extraction(
+            c,
+            request(c, s),
+            response(c, record(fields.replace("\"end\":6", "\"end\":5"))),
+        ) is .Err
+}
+
+fn duplicate_candidates() -> Result<bool, string> {
+    let c = catalog()?
+    admit_extraction(c, request(c, candidates: "[${candidate},${candidate}]"), response(c)) is .Err &&
+        admit_extraction(
+            c,
+            request(c, candidates: "[${candidate}]"),
+            response(c, record(id: "known:ada")),
+        ) is .Err
+}
+
+fn identity_anchor(invented: bool = false) -> Result<bool, string> {
+    let c = catalog()?
+    let identity = ",\"identities\":[{\"identity\":{\"namespace\":\"unverified:external\",\"key\":\"raw:key\"},\"spans\":[${anchor_json}]}]"
+    let records = record("", "Keeper", extra: identity)
+    let result = admit_extraction(
+        c,
+        request(c),
+        response(
+            c,
+            if invented { records.replace("\"text\":\"review\"", "\"text\":\"invented\"") } else { records },
+        ),
+    )
+    if invented { return result is .Err }
+    match result? {
+        .Complete(_, r) -> r.records[0].identities[0].identity.namespace == "unverified:external" &&
+            r.records[0].fields.is_empty(),
+        .Failed(_, _) -> false,
+    }
+}
+
+fn bounded_records() -> Result<bool, string> {
+    let c = catalog()?
+    let records = [record(id: "local:${i}") for i in 0..257].join(",")
+    match admit_extraction(c, request(c), response(c, records)) {
+        .Ok(_) -> false,
+        .Err(e) -> e.contains("record or field budget"),
+    }
+}
+
+fn missing_frame() -> Result<bool, string> {
+    let c = catalog()?
+    admit_extraction(
+            c,
+            request(c),
+            response(c, record(field(extra: ",\"frame\":\"invented\""))),
+        ) is .Err &&
+        admit_extraction(
+            c,
+            request(c),
+            response(
+                c,
+                record(),
+                ",\"proposed_frames\":[{\"id\":\"q\",\"parent\":\"invented\",\"span\":${anchor_json}}]",
+            ),
+        ) is .Err
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "provider-neutral extraction admission" {
+    given "recorded proposals over an unrelated declared catalog" {
+        then "versions, scope, anchors and qualifiers survive admission without filling missing fields" { passed(accepted()) }
+        then "a complete empty result is distinct from worker failure" { passed(empty_success()) && passed(failure(false)) }
+        then "an empty failure cannot become replacement success" { passed(failure(true)) }
+        then "unknown models and properties are refused" { passed(refused(record(model: "Invented"))) && passed(refused(record(field("invented")))) }
+        then "invented text and out-of-source anchors are refused" {
+            passed(
+                    refused(record(field().replace("\"text\":\"review\"", "\"text\":\"invented\""))),
+                ) &&
+                passed(refused(record(field().replace("\"end\":15", "\"end\":100"))))
+        }
+        then "reference objects are not string reference seats" { passed(refused(record(field("owner", "{\"id\":\"local:keeper\"}")))) }
+        then "forward local references work only for the declared target model" { passed(local_reference()) && passed(local_reference(true)) }
+        then "only explicitly offered existing references can be proposed" { passed(offered_reference()) && passed(offered_reference(true)) }
+        then "candidate suggestions do not select entities and cannot invent candidates" { passed(candidate_only()) && passed(candidate_only(true)) }
+        then "candidate ids are unique and cannot shadow local ids" { passed(duplicate_candidates()) }
+        then "embedded defaults do not become observed facts" { passed(embedded_defaults()) }
+        then "standard field validation remains authoritative" { passed(refused(record(field("label", "\"\""), "Keeper"))) }
+        then "non-finite and out-of-range scores are refused" {
+            passed(refused(record(field().replace("0.8", "1e309")))) &&
+                passed(refused(record(field().replace("0.8", "1.1"))))
+        }
+        then "request ids and source identities cannot be mixed" { passed(stale("req:1", "req:2")) && passed(stale("note:1", "note:2")) }
+        then "source revisions and every extractor version are bound" {
+            passed(stale("\"revision\":1", "\"revision\":2")) &&
+                passed(stale("encoder", "another")) &&
+                passed(stale("code:1", "code:2")) &&
+                passed(stale("weights:1", "weights:2"))
+        }
+        then "stale fingerprints and forged descriptors are refused" {
+            passed(stale("\"schema\":\"", "\"schema\":\"stale:")) &&
+                passed(stale("\"descriptor\":[", "\"descriptor\":[{} ,", true))
+        }
+        then "quoted evidence must name the innermost frame" { passed(quotation(true)) && passed(quotation(false)) }
+        then "anchors cannot blend author and quotation contexts" { passed(quotation(true, true)) }
+        then "proposed quotation speakers remain unlinked handles" { passed(quotation(true, proposed: true)) }
+        then "Unicode anchors use original bytes and complete scalars" { passed(unicode_anchor()) }
+        then "duplicate local ids and properties are refused" {
+            passed(refused(record() + "," + record())) &&
+                passed(refused(record(field() + "," + field())))
+        }
+        then "negation survives rather than being rewritten into affirmation" { passed(accepted(true)) }
+        then "identity-only proposals stay unverified but require exact anchors" { passed(identity_anchor()) && passed(identity_anchor(true)) }
+        then "record budget exhaustion refuses the entire result" { passed(bounded_records()) }
+        then "unknown field frames and dangling proposed parents are refused" { passed(missing_frame()) }
+    }
+}

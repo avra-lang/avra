@@ -17,6 +17,14 @@ A synthetic personal/luxury-fashion-business acceptance set (30 inputs,
 50 questions) and an agent-ready task queue start at
 [acceptance/PLAN.md](acceptance/PLAN.md).
 
+Embeddings can validate classifier proposals with
+`admit_extraction(catalog, original_request_json, worker_response_json)`.
+It returns distinct complete/failed outcomes, checks exact source anchors
+and versions, and preserves field qualifiers without publishing anything.
+The original request must come from the trusted caller, not the worker.
+See [the admission receipt](src/ingest/E01-HANDOFF.md) for limits and what
+still needs implementing before automatic extraction is usable.
+
 ## Application surface
 
 The models module declares ordinary types and collects their generated

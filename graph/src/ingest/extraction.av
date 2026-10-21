@@ -1,0 +1,247 @@
+use @avra.graph_contracts.{
+    ExtractionRequest,
+    ExtractionResult,
+    ExtractorVersion,
+    ProposedRecord,
+    ProposedField,
+    ProposedIdentity,
+    JsonValue,
+    Candidate,
+    SourceEnvelope,
+    Span,
+}
+use @std.validate.{Value, Entry}
+use @std.json.{parse}
+use catalog.{Catalog}
+use schema.{Shape}
+use data.{as_value, encoded, json_safe}
+use ingest.envelope.{source_document}
+
+/// Admission is not entity linking or publication. Failure has no records
+/// to accidentally treat as a successful empty replacement.
+export enum ExtractionAdmission {
+    Complete(request: ExtractionRequest, result: ExtractionResult)
+    Failed(request: ExtractionRequest, result: ExtractionResult)
+}
+
+/// The composition root supplies the authorized request, not the worker.
+/// This pure boundary has no database handle and cannot withdraw facts.
+export fn admit_extraction(catalog: Catalog, request_json: string, response_json: string) -> Result<
+    ExtractionAdmission,
+    string,
+> {
+    if request_json.bytes().length > 4194304 || response_json.bytes().length > 4194304 {
+        fail "extraction envelopes exceed the admission byte budget"
+    }
+    let request = match ExtractionRequest.from_json(request_json) {
+        .Ok(v) -> v,
+        .Err(e) -> { fail "invalid extraction request: ${e.report()}" },
+    }
+    let result = match ExtractionResult.from_json(response_json) {
+        .Ok(v) -> v,
+        .Err(e) -> { fail "invalid extraction response: ${e.report()}" },
+    }
+    if request.catalog.fingerprint != catalog.fingerprint || result.schema != catalog.fingerprint {
+        fail "extraction catalog is stale"
+    }
+    let descriptor = match parse(catalog.document) {
+        .Ok(v) -> as_value(v),
+        .Err(_) -> { fail "installed catalog document is invalid" },
+    }
+    if !json_safe(request.catalog.descriptor.value) ||
+        encoded(request.catalog.descriptor.value) != encoded(descriptor) {
+        fail "extraction descriptor does not match the installed catalog"
+    }
+    if result.request != request.request ||
+        result.source.observation != request.input.source.observation ||
+        result.source.revision != request.input.source.revision ||
+        !same_version(request.extractor, result.extractor) {
+        fail "extraction response does not belong to this request and version"
+    }
+    if request.input.content.bytes().text() == null { fail "extraction needs valid UTF-8 source text" }
+    for i, candidate in request.candidates {
+        let _ = catalog.model(candidate.model)?
+        if request.candidates.slice(0, i).any(it.entity == candidate.entity) {
+            fail "requested candidate ids must be unique"
+        }
+    }
+    if result.status == "failed" {
+        if !result.proposed_frames.is_empty() { fail "failed extraction cannot propose quotation frames" }
+        return ExtractionAdmission.Failed(request, result)
+    }
+    if result.records.length > 256 ||
+        result.records.fold(0, (n: int, r: ProposedRecord) -> n + r.fields.length) > 4096 {
+        fail "extraction exceeds its record or field budget"
+    }
+    let span_count = result
+        .records
+        .fold(
+            0,
+            (n: int, r: ProposedRecord) -> n +
+                r.fields.fold(0, (total: int, f: ProposedField) -> total + f.spans.length) +
+                r.identities.fold(0, (total: int, i: ProposedIdentity) -> total + i.spans.length),
+        )
+    if span_count > 16384 { fail "extraction exceeds its anchor budget" }
+    let frames = request.input.frames.concat(result.proposed_frames)
+    if frames.length > 256 { fail "extraction exceeds its quotation frame budget" }
+    // The contract checks parent order, containment, siblings and quotes.
+    let framed = request.input with { frames: frames }
+    let checked_frames = checked_source(framed)?
+    for frame in checked_frames.frames { anchored(checked_frames, frame.span, frame.parent, true)? }
+    let records = [checked_record(catalog, request, result.records, checked_frames, r)? for r in result.records]
+    ExtractionAdmission.Complete(request, result with { records: records })
+}
+
+fn checked_source(source: SourceEnvelope) -> Result<SourceEnvelope, string> {
+    match SourceEnvelope.decode(as_value(source_document(source))) {
+        .Ok(v) -> v,
+        .Err(e) -> { fail "invalid extraction frames: ${e.report()}" },
+    }
+}
+
+fn same_version(a: ExtractorVersion, b: ExtractorVersion) -> bool {
+    a.producer == b.producer && a.code == b.code && a.model == b.model
+}
+
+fn anchored(source: SourceEnvelope, span: Span, frame: string?, frame_definition: bool = false) -> Result<
+    bool,
+    string,
+> {
+    let bytes = source.content.bytes()
+    if span.start < 0 || span.end <= span.start || span.end > bytes.length {
+        fail "an extraction anchor must stay inside the original source"
+    }
+    if bytes.at(span.start) >= 128 && bytes.at(span.start) < 192 ||
+        span.end < bytes.length && bytes.at(span.end) >= 128 && bytes.at(span.end) < 192 {
+        fail "an extraction anchor must use complete UTF-8 code points"
+    }
+    if source.content.substring(span.start, span.end) != span.text {
+        fail "an extraction anchor must quote the exact original source"
+    }
+    if frame_definition { return true }
+    for f in source.frames {
+        if f.span.start > span.start && f.span.start < span.end ||
+            f.span.end > span.start && f.span.end < span.end {
+            fail "an extraction anchor cannot cross a quotation boundary"
+        }
+    }
+    let active = source.frames.filter(it.span.start <= span.start && it.span.end >= span.end).last()
+    if active?.id != frame { fail "an extraction anchor must name its innermost quotation frame" }
+    true
+}
+
+fn checked_record(
+    catalog: Catalog,
+    request: ExtractionRequest,
+    records: List<ProposedRecord>,
+    source: SourceEnvelope,
+    r: ProposedRecord,
+) -> Result<ProposedRecord, string> {
+    let model = catalog.model(r.model)?
+    if request.candidates.any(it.entity == r.local_id) { fail "local record ids cannot shadow candidate entity ids" }
+    for candidate in r.candidates {
+        if candidate.model != r.model ||
+            !request
+                .candidates
+                .any(
+                    it.entity == candidate.entity &&
+                        it.model == candidate.model &&
+                        it.label == candidate.label,
+                ) {
+            fail "proposed candidates must come from the requested model and candidate set"
+        }
+    }
+    for identity in r.identities {
+        for span in identity.spans { anchored(source, span, identity.frame)? }
+    }
+    for field in r.fields {
+        if !model.properties.any(it.name == field.property) { fail "unknown extraction property: ${r.model}.${field.property}" }
+        if !json_safe(field.value.value) { fail "extraction values must be finite" }
+        for span in field.spans { anchored(source, span, field.frame)? }
+    }
+    let value = Value.Map([Entry { key: f.property, value: f.value.value } for f in r.fields])
+    let normalized = match (model.check_fields)(value) {
+        .Ok(v) -> v,
+        .Err(e) -> { fail "invalid extraction fields for ${r.model}: ${e.report()}" },
+    }
+    if !json_safe(normalized) { fail "model normalization produced a non-finite value" }
+    let fields = [f with { value: JsonValue {
+        value: checked_value(
+            catalog,
+            model.properties.find(it.name == f.property)!.shape,
+            f.value.value,
+            normalized.entries().find(it.key == f.property)!.value,
+            records,
+            request.candidates,
+            0,
+        )?,
+    } } for f in r.fields]
+    r with { fields: fields }
+}
+
+/// Validate references against local proposals or explicitly offered graph
+/// candidates. Embedded decoder defaults are not observations either.
+fn checked_value(
+    catalog: Catalog,
+    shape: Shape,
+    original: Value,
+    value: Value,
+    records: List<ProposedRecord>,
+    candidates: List<Candidate>,
+    depth: int,
+) -> Result<Value, string> {
+    if depth > 64 { fail "extraction value nesting exceeds its budget" }
+    match shape {
+        .Optional(inner) -> if value is .Null {
+            value
+        } else {
+            checked_value(catalog, inner, original, value, records, candidates, depth + 1)?
+        },
+        .Many(inner) -> {
+            if original.items().length != value.items().length { fail "normalization cannot change an evidenced list's length" }
+            Value
+                .List(
+                    [checked_value(
+                        catalog,
+                        inner,
+                        original.items()[i],
+                        v,
+                        records,
+                        candidates,
+                        depth + 1,
+                    )? for i, v in value.items()],
+                )
+        },
+        .Reference(target) -> {
+            let id = match value {
+                .Text(s) -> s,
+                rest -> { fail "a reference must be an entity id or local record id" },
+            }
+            if id.is_empty() ||
+                !records.any(it.local_id == id && it.model == target) &&
+                    !candidates.any(it.entity == id && it.model == target) {
+                fail "a reference must name an offered candidate or local record of its declared target model"
+            }
+            value
+        },
+        .Embedded(target) -> {
+            let model = catalog.model(target)?
+            Value
+                .Map(
+                    [Entry {
+                        key: e.key,
+                        value: checked_value(
+                            catalog,
+                            model.properties.find(it.name == e.key)!.shape,
+                            original.entries().find(it.key == e.key)!.value,
+                            e.value,
+                            records,
+                            candidates,
+                            depth + 1,
+                        )?,
+                    } for e in value.entries() if original.entries().any(it.key == e.key)],
+                )
+        },
+        .Text or .Integer or .Number or .Boolean -> value,
+    }
+}

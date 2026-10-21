@@ -1,0 +1,31 @@
+use ingest.extraction.{admit_extraction}
+use catalog.{Catalog}
+use models.{models}
+
+fn proof() -> Result<bool, string> {
+    let c = Catalog.collected(models)?
+    let version = "{\"producer\":\"classifier\",\"code\":\"code:1\",\"model\":\"weights:1\"}"
+    let source = "{\"observation\":\"note:1\",\"revision\":1}"
+    let input = "{\"contract\":1,\"source\":${source},\"authored_at_ms\":null,\"received_at_ms\":1,\"author\":null,\"media_type\":\"text/plain\",\"content\":\"alpha\"}"
+    let request = "{\"contract\":1,\"request\":\"req:1\",\"input\":${input},\"catalog\":{\"fingerprint\":\"${c.fingerprint}\",\"descriptor\":${c.document}},\"extractor\":${version},\"scope\":\"all\"}"
+    let field = "{\"property\":\"name\",\"value\":\"alpha\",\"spans\":[{\"start\":0,\"end\":5,\"text\":\"alpha\"}],\"polarity\":\"denied\",\"modality\":\"planned\"}"
+    let response = "{\"contract\":1,\"request\":\"req:1\",\"source\":${source},\"schema\":\"${c.fingerprint}\",\"extractor\":${version},\"status\":\"complete\",\"records\":[{\"local_id\":\"m1\",\"model\":\"Person\",\"fields\":[${field}]}]}"
+    match admit_extraction(c, request, response)? {
+        .Complete(_, result) -> {
+            let fields = result.records[0].fields
+            let refused = admit_extraction(
+                c,
+                request,
+                response.replace("\"text\":\"alpha\"", "\"text\":\"bogus\""),
+            ) is .Err
+            println("${fields[0].modality} ${fields[0].polarity} ${fields.length} ${refused}")
+            true
+        },
+        .Failed(_, _) -> { fail "the recorded completion was not admitted" },
+    }
+}
+
+let _ = proof() catch e -> {
+    println(e)
+    false
+}

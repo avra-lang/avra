@@ -47,6 +47,8 @@ autonomous extraction or inference system.
 | Std-first SQLite storage (`@std/db` engine models) | Working; format 8 |
 | Immutable observation history | Working |
 | Structured source envelopes, immutable context, revision admission | Working; I01, CLI/HTTP; no extraction side effect |
+| Bounded source windows and original-coordinate grounding | Working; I02; explicit quotation boundaries |
+| Provider-neutral extraction admission | Working; E01; recorded proposals only, no inference/publication |
 | Atomic replacement, replay, stale input/schema/revision rejection | Working |
 | Independent support, conflicts, and explanations | Working |
 | Entity reads, model listing, edges, bounded breadth-first traversal | Working |
