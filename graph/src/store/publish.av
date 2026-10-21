@@ -1,7 +1,7 @@
 use @std.validate.{Value, Entry}
 use @std.json.{Json, Field, field, to_text}
 use @std.sqlite.{Db}
-use schema.{Shape}
+use schema.{Shape, Model}
 use catalog.{Catalog}
 use data.{as_json, encoded, digest, json_safe}
 use store.open.{Graph, stored, modeled}
@@ -14,8 +14,13 @@ use store.engine.{
     SupportRow,
     EdgeRow,
     AliasRow,
+    VoiceRow,
+    EvidenceRow,
+    SupersessionRow,
 }
 use store.identity.{Identity}
+use store.evidence.{FieldEvidence, Voice, Interval, interval, audience_json, spans_json}
+use store.query.{stored_value}
 
 export enum RecordMode { Complete, Partial }
 
@@ -27,6 +32,7 @@ export type Record = {
     locator: Value = Value.Null,
     identities: List<Identity> = [],
     confidence: float? = null,
+    fields: List<FieldEvidence> = [],
 }
 
 impl Record {
@@ -46,7 +52,8 @@ impl Record {
                     .concat(mode)
                     .concat(located(self.locator))
                     .concat(identified(self.identities))
-                    .concat(stated(self.confidence)),
+                    .concat(stated(self.confidence))
+                    .concat(evidenced(self.fields)),
             )
     }
 }
@@ -72,6 +79,11 @@ fn identified(identities: List<Identity>) -> List<Field> {
     if identities.is_empty() { [] } else { [field("identities", Json.Arr([i.json() for i in identities]))] }
 }
 
+/// No field evidence means no field, so a legacy run keeps its identity.
+fn evidenced(fields: List<FieldEvidence>) -> List<Field> {
+    if fields.is_empty() { [] } else { [field("fields", Json.Arr([f.json() for f in fields]))] }
+}
+
 /// A successful replacement of one producer's contribution in one scope.
 export type Publication = {
     id: string,
@@ -82,6 +94,7 @@ export type Publication = {
     schema: string,
     expected_revision: int,
     records: List<Record>,
+    voices: List<Voice> = [],
 }
 
 export type Link = { target: string, model: string, path: string }
@@ -101,24 +114,43 @@ impl Publication {
                             field("schema", Json.Str(self.schema)),
                             field("expected_revision", Json.Int(self.expected_revision)),
                             field("records", Json.Arr([r.request_value() for r in self.records])),
-                        ],
+                        ]
+                            .concat(voiced(self.voices)),
                     ),
             ),
         )
     }
 }
 
+/// No voice means no field, so a legacy run keeps its identity.
+fn voiced(voices: List<Voice>) -> List<Field> {
+    if voices.is_empty() { [] } else { [field("voices", Json.Arr([v.json() for v in voices]))] }
+}
+
 impl Graph {
     /// All validation, references, withdrawals, and inserts share one snapshot.
     fn publish(publication: Publication) -> Result<int, string> {
-        let p = publication
-        if p.records.any(!json_safe(it.value) || !json_safe(it.locator)) { fail "graph values must contain only finite numbers" }
-        if p.records.any(!confident_ok(it.confidence)) { fail "confidence must be a finite number between 0 and 1" }
-        if p.records.any(it.identities.any(it.namespace.is_empty() || it.external_key.is_empty())) { fail "an identity needs a nonempty namespace and key" }
-        if p.id.is_empty() || p.producer.is_empty() || p.scope.is_empty() { fail "run id, producer, and scope must be nonempty" }
-        mut db = self.db
+        let db = self.db
         stored(db.begin())?
         defer { let _ = db.finish() }
+        let revision = self.published(publication, publication.fingerprint())?
+        stored(db.commit())?
+        revision
+    }
+
+    /// Publish within the caller's write transaction. `request` is the
+    /// replay identity a reused run id must match.
+    fn published(p: Publication, request: string) -> Result<int, string> {
+        if !self.db.in_transaction() { fail "publication needs its owner's transaction" }
+        if p.records.any(!json_safe(it.value) || !json_safe(it.locator)) { fail "graph values must contain only finite numbers" }
+        if p.records.any(!confident_ok(it.confidence)) { fail unconfident() }
+        if p.records.any(it.identities.any(it.namespace.is_empty() || it.external_key.is_empty())) { fail "an identity needs a nonempty namespace and key" }
+        if p.id.is_empty() || p.producer.is_empty() || p.scope.is_empty() { fail "run id, producer, and scope must be nonempty" }
+        for i, v in p.voices {
+            if p.voices.slice(0, i).any(it.frame == v.frame) { fail "one publication declares each voice once" }
+        }
+        for r in p.records { evidence_ok(r, p.voices)? }
+        mut db = self.db
         let revision = self.current()?
         let previous = stored(RunRow.where(db, name: p.id))?
         match previous {
@@ -127,7 +159,7 @@ impl Graph {
                     [only] -> only,
                     rest -> { fail "a run has no trail: ${p.id}" },
                 }
-                if trail.request != p.fingerprint() { fail "run id was already used with a different publication" }
+                if trail.request != request { fail "run id was already used with a different publication" }
                 return one.revision
             },
             [] -> {},
@@ -163,15 +195,24 @@ impl Graph {
                 run: run,
                 input_revision: p.input_revision,
                 schema: p.schema,
-                request: p.fingerprint(),
+                request: request,
                 stamp: p.id,
             }
                 .insert(db),
         )?
         self.withdrawn(db, p, run, revision + 1)?
-        for r in records { self.contribute(db, p, run, r)? }
+        let voices = [modeled(
+            VoiceRow {
+                run: run,
+                frame: v.frame,
+                speaker: v.speaker,
+                author: v.author,
+                audience: if v.audience == null { null } else { to_text(audience_json(v.audience)) },
+            }
+                .insert(db),
+        )? for v in p.voices]
+        for r in records { self.contribute(db, p, run, r, voices)? }
         self.advanced()?
-        stored(db.commit())?
         revision + 1
     }
 
@@ -219,22 +260,106 @@ impl Graph {
         0
     }
 
-    fn contribute(mut db: Db, p: Publication, run: RunRow, r: Record) -> Result<int, string> {
+    fn contribute(mut db: Db, p: Publication, run: RunRow, r: Record, voices: List<VoiceRow>) -> Result<
+        int,
+        string,
+    > {
         let model = self.catalog.model(r.model)?
         let entity = self.entity_named(r.id)?
+        let span = interval(model.semantics.validity, r.value)?
         for entry in r.value.entries() {
             let property? = model.properties.find(it.name == entry.key) else { fail "validated property is absent from its model" }
             let links = property.shape.links(self.catalog, entry.value, entry.key)?
             for link in links { self.attained(link)? }
             let claim = self.claimed(db, entity, property.name, entry.value, p.schema)?
             let support = self.supported(db, run, claim, r.locator)?
-            if r.confidence != null { let _ = self.confided(db, support, r.confidence!)? }
+            let evidence = r.fields.find(it.property == entry.key)
+            let weight = evidence?.score ?? r.confidence
+            if weight != null { let _ = self.confided(db, support, weight!)? }
             for link in links { self.referenced(db, claim, link)? }
+            if evidence != null { let _ = self.evidenced(db, support, evidence!, voices)? }
+            if evidence?.plain() ?? true { let _ = self.superseding(db, support, span)? }
         }
         for a in r.identities { self.named_by(db, entity, a, run)? }
         0
     }
+
+    fn evidenced(mut db: Db, support: SupportRow, found: FieldEvidence, voices: List<VoiceRow>) -> Result<
+        int,
+        string,
+    > {
+        let voice? = voices.find(it.frame == found.frame) else { fail "field evidence names an undeclared voice" }
+        let _ = modeled(
+            EvidenceRow {
+                support: support,
+                polarity: found.polarity.word(),
+                modality: found.modality.word(),
+                voice: voice,
+                anchors: to_text(spans_json(found.spans)),
+            }
+                .insert(db),
+        )?
+        0
+    }
+
+    /// A plain claim with a later declared start closes an open earlier
+    /// rival at that start. Without both starts, rivals stay a contradiction.
+    fn superseding(mut db: Db, support: SupportRow, span: Interval) -> Result<int, string> {
+        let start? = span.from else { return 0 }
+        let entity = support.claim.entity
+        let model = self.catalog.model(entity.model)?
+        let claims = stored(ClaimRow.where(db, entity: entity, property: support.claim.property))?
+        for rival in self.standing(claims)? {
+            if rival.support.run.id == support.run.id ||
+                rival.claim.id == support.claim.id ||
+                !rival.plain() {
+                continue
+            }
+            let other = self.interval_of(rival.support.run, entity, model)?
+            let begun? = other.from else { continue }
+            if begun < start && other.open_at(start) {
+                let _ = modeled(
+                    SupersessionRow { old: rival.support, new: support, at: start }.insert(db),
+                )?
+            } else if start < begun && span.open_at(begun) {
+                let _ = modeled(
+                    SupersessionRow { old: support, new: rival.support, at: begun }.insert(db),
+                )?
+            }
+        }
+        0
+    }
+
+    /// The valid time one run declared for one entity's record.
+    fn interval_of(run: RunRow, entity: EntityRow, model: Model) -> Result<Interval, string> {
+        if model.semantics.validity == null { return Interval {} }
+        let held = [s for s in stored(SupportRow.in_run(self.db, [run]))? if s.claim.entity.id == entity.id]
+        interval(
+            model.semantics.validity,
+            Value
+                .Map(
+                    [Entry { key: s.claim.property, value: stored_value(s.claim.value)? } for s in held],
+                ),
+        )
+    }
 }
+
+/// Field evidence names supplied properties once each, with anchors and a voice.
+fn evidence_ok(r: Record, voices: List<Voice>) -> Result<int, string> {
+    for i, f in r.fields {
+        if r.fields.slice(0, i).any(it.property == f.property) { fail "a record gives each property's evidence once: ${r.id}.${f.property}" }
+        if !r.value.entries().any(it.key == f.property) { fail "field evidence names a property the record does not supply: ${r.id}.${f.property}" }
+        if f.spans.is_empty() ||
+            f.spans.any(it.start < 0 || it.end <= it.start || it.text.is_empty()) {
+            fail "field evidence needs nonempty anchor spans: ${r.id}.${f.property}"
+        }
+        if !confident_ok(f.score) { fail unconfident() }
+        if !voices.any(it.frame == f.frame) { fail "field evidence names an undeclared voice: ${r.id}.${f.property}" }
+    }
+    0
+}
+
+fn unconfident() -> string { "confidence must be a finite number between 0 and 1" }
 
 fn same_identity(a: Identity, b: Identity) -> bool {
     a.namespace == b.namespace && a.external_key == b.external_key

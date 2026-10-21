@@ -25,6 +25,9 @@ use store.engine.{
     ChoiceEndRow,
     TombstoneRow,
     TombstoneEndRow,
+    VoiceRow,
+    EvidenceRow,
+    SupersessionRow,
 }
 use data.{digest}
 
@@ -116,6 +119,9 @@ impl Graph {
         stored(ChoiceEndRow.create_table(db))?
         stored(TombstoneRow.create_table(db))?
         stored(TombstoneEndRow.create_table(db))?
+        stored(VoiceRow.create_table(db))?
+        stored(EvidenceRow.create_table(db))?
+        stored(SupersessionRow.create_table(db))?
         0
     }
 
@@ -127,7 +133,7 @@ impl Graph {
         if !existing && self.has_table("graph_meta")? { fail "old hand-table graph store; migration is required; keep the original file" }
         if !existing && self.has_table("EntityRow")? { fail "graph storage is missing its metadata table" }
         let previous = if existing { self.meta("format")? } else { "" }
-        if existing && previous != "6" && previous != "7" && previous != "8" {
+        if existing && !["6", "7", "8", "9"].contains(previous) {
             fail "unsupported graph storage format: ${previous}"
         }
         if existing {
@@ -138,9 +144,9 @@ impl Graph {
         if !existing {
             modeled(Meta { key: "revision", value: "0" }.insert(db))?
         }
-        // Formats 7 and 8 only add tables. Install them and advance the marker
+        // Formats 7 to 9 only add tables. Install them and advance the marker
         // atomically; never rewrite evidence or silently adopt a future format.
-        if previous != "8" { put_meta(db, "format", "8")? }
+        if previous != format { put_meta(db, "format", format)? }
         if (stored(Schema.where(db, fingerprint: self.catalog.fingerprint))?).is_empty() {
             modeled(
                 Schema { fingerprint: self.catalog.fingerprint, document: self.catalog.document }
@@ -156,8 +162,8 @@ impl Graph {
     }
 
     fn current() -> Result<int, string> {
-        let format = self.meta("format")?
-        if format != "8" { fail "unsupported graph storage format: ${format}; open with a compatible engine to upgrade" }
+        let found = self.meta("format")?
+        if found != format { fail "unsupported graph storage format: ${found}; open with a compatible engine to upgrade" }
         if self.meta("schema")? != self.catalog.fingerprint { fail "schema changed; reopen with the current models" }
         self.revision()
     }
@@ -265,6 +271,9 @@ impl Graph {
         next
     }
 }
+
+/// The storage format this engine writes.
+const format = "9"
 
 fn put_meta(mut db: Db, key: string, value: string) -> Result<int, string> {
     match stored(Meta.where(db, key: key))? {

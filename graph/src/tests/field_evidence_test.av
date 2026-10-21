@@ -1,0 +1,433 @@
+use derive.model.{model}
+use semantics.{Semantics, ValidityBinding}
+use schema.{Registration, Ref}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.evidence.{FieldEvidence, Voice}
+use store.query.{stored_value}
+use @avra.graph_contracts.{Span}
+use data.{encoded}
+
+@model
+type Owner = { name: string }
+
+@model
+type Pet = { name: string, owner: Ref<Owner>?, mood: string? }
+
+@model(quote { Semantics { validity: ValidityBinding { from: ["from_ms"], until: ["until_ms"] } } })
+type Residence = { city: string, from_ms: int?, until_ms: int? }
+
+@model(quote { Semantics { validity: ValidityBinding { from: ["day"], encoding: .IsoDate } } })
+type Daily = { mood: string, day: string? }
+
+@model(quote { Semantics { validity: ValidityBinding { from: ["at"], encoding: .IsoInstant } } })
+type Moment = { what: string, at: string? }
+
+fn evidence_models() -> List<Registration> {
+    [
+        Registration { make: Owner_graph_model },
+        Registration { make: Pet_graph_model },
+        Registration { make: Residence_graph_model },
+        Registration { make: Daily_graph_model },
+        Registration { make: Moment_graph_model },
+    ]
+}
+
+const pets_source = "Ada owns Rex. Bob said: \"Rex is grumpy\". Ada plans to adopt Tom."
+
+fn graph() -> Result<Graph, string> {
+    let g = Graph.memory(evidence_models())?
+    g.observe("src", pets_source)?
+    g
+}
+
+/// The exact span of `quote` in the source text.
+fn at(said: string) -> Span {
+    let start = pets_source.index_of(said)
+    Span { start: start, end: start + said.length, text: said }
+}
+
+fn own() -> Voice { Voice { author: "ada", speaker: "ada", audience: ["bob"] } }
+
+fn quoted() -> Voice { Voice { frame: "q1", speaker: "bob", author: "ada" } }
+
+fn fielded(id: string, model: string, value: string, fields: List<FieldEvidence> = []) -> Result<
+    Record,
+    string,
+> {
+    Record { id: id, model: model, value: stored_value(value)?, mode: .Partial, fields: fields }
+}
+
+fn reading(g: Graph, id: string, records: List<Record>, producer: string = "reader") -> Result<
+    Publication,
+    string,
+> {
+    Publication {
+        id: id,
+        producer: producer,
+        scope: "src",
+        input: "src",
+        input_revision: 1,
+        schema: g.catalog.fingerprint,
+        expected_revision: g.revision()?,
+        records: records,
+        voices: [own(), quoted()],
+    }
+}
+
+fn pets(mut g: Graph) -> Result<int, string> {
+    g
+        .publish(
+            reading(
+                g,
+                "one",
+                [
+                    fielded(
+                        "ada",
+                        "Owner",
+                        "{\"name\":\"Ada\"}",
+                        [FieldEvidence { property: "name", spans: [at("Ada")] }],
+                    )?,
+                    fielded(
+                        "rex",
+                        "Pet",
+                        "{\"name\":\"Rex\",\"owner\":\"ada\",\"mood\":\"grumpy\"}",
+                        [
+                            FieldEvidence { property: "name", spans: [at("Rex")] },
+                            FieldEvidence { property: "owner", spans: [at("Ada owns")], score: 0.9 },
+                            FieldEvidence {
+                                property: "mood",
+                                spans: [at("grumpy")],
+                                modality: .Reported,
+                                frame: "q1",
+                            },
+                        ],
+                    )?,
+                    fielded(
+                        "tom",
+                        "Pet",
+                        "{\"name\":\"Tom\",\"owner\":\"ada\"}",
+                        [
+                            FieldEvidence {
+                                property: "name",
+                                spans: [at("Tom")],
+                                modality: .Planned,
+                            },
+                            FieldEvidence {
+                                property: "owner",
+                                spans: [at("plans to adopt")],
+                                modality: .Planned,
+                            },
+                        ],
+                    )?,
+                ],
+            )?,
+        )
+}
+
+fn distinct_fields() -> Result<bool, string> {
+    mut g = graph()?
+    defer { let _ = g.close() }
+    pets(g)?
+    let name = (g.explain("rex", "name")?).item(0)
+    let owner = (g.explain("rex", "owner")?).item(0)
+    let mood = (g.explain("rex", "mood")?).item(0)
+    name.member("anchor").member("spans").item(0).member("text").text() == "Rex" &&
+        owner.member("anchor").member("spans").item(0).member("text").text() == "Ada owns" &&
+        owner.member("confidence").float() == 0.9 &&
+        name.member("anchor").member("frame") is .Null &&
+        name.member("anchor").member("speaker").text() == "ada" &&
+        name.member("audience").item(0).text() == "bob" &&
+        mood.member("anchor").member("frame").text() == "q1" &&
+        mood.member("anchor").member("speaker").text() == "bob" &&
+        mood.member("author").text() == "ada" &&
+        mood.member("audience") is .Null &&
+        mood.member("modality").text() == "reported" &&
+        mood.member("anchor").member("source").member("observation").text() == "src" &&
+        mood.member("anchor").member("source").member("revision").int() == 1
+}
+
+fn qualified_stay_qualified() -> Result<bool, string> {
+    mut g = graph()?
+    defer { let _ = g.close() }
+    pets(g)?
+    let rex = g.entity("rex")?
+    let mood = (g.explain("rex", "mood")?).item(0)
+    let planned_value = match g.value("tom") { .Ok(_) -> false, .Err(_) -> true }
+    !rex.fields.any(it.property == "mood") &&
+        rex.qualified.any(it.property == "mood" && it.modality == "reported") &&
+        mood.member("active").truth() == false &&
+        mood.member("standing").truth() == true &&
+        !(g.find("Pet")?).contains("tom") &&
+        (g.find("Pet")?).contains("rex") &&
+        planned_value &&
+        !(g.edges("ada", incoming: true)?).any(it.entity == "tom") &&
+        (g.edges("ada", incoming: true)?).any(it.entity == "rex") &&
+        (g.matching("Pet", "mood", stored_value("\"grumpy\"")?)?).is_empty()
+}
+
+fn denial_contradicts() -> Result<bool, string> {
+    mut g = graph()?
+    defer { let _ = g.close() }
+    pets(g)?
+    g
+        .publish(
+            reading(
+                g,
+                "doubt",
+                [
+                    fielded(
+                        "rex",
+                        "Pet",
+                        "{\"name\":\"Rex\"}",
+                        [
+                            FieldEvidence {
+                                property: "name",
+                                spans: [at("Rex")],
+                                polarity: .Denied,
+                            },
+                        ],
+                    )?,
+                ],
+                "skeptic",
+            )?,
+        )?
+    let rex = g.entity("rex")?
+    let name = rex.fields.find(it.property == "name")!
+    let refused = match g.value("rex") { .Ok(_) -> false, .Err(e) -> e.contains("denied") }
+    name.candidates.length == 1 &&
+        name.candidates[0].denied &&
+        rex.qualified.any(it.property == "name" && it.polarity == "denied") &&
+        refused
+}
+
+fn qualifier_replay() -> Result<bool, string> {
+    mut g = graph()?
+    defer { let _ = g.close() }
+    let fields = [FieldEvidence { property: "name", spans: [at("Ada")] }]
+    let p = reading(g, "one", [fielded("ada", "Owner", "{\"name\":\"Ada\"}", fields)?])?
+    let revision = g.publish(p)?
+    let replay = g.publish(p)? == revision
+    let changed = [
+        p with { records: [fielded("ada", "Owner", "{\"name\":\"Ada\"}", [fields[0] with { modality: .Planned }])?] },
+        p with { records: [fielded("ada", "Owner", "{\"name\":\"Ada\"}", [fields[0] with { frame: "q1" }])?] },
+        p with { records: [
+            fielded(
+                "ada",
+                "Owner",
+                "{\"name\":\"Ada\"}",
+                [fields[0] with { spans: [at("Ada plans")] }],
+            )?,
+        ] },
+        p with { voices: [own() with { audience: null }, quoted()] },
+    ]
+    replay && all_refused(g, changed) && g.revision()? == revision
+}
+
+fn history_survives_replacement() -> Result<bool, string> {
+    mut g = graph()?
+    defer { let _ = g.close() }
+    pets(g)?
+    g.publish(reading(g, "two", [fielded("rex", "Pet", "{\"name\":\"Rex\"}")?])?)?
+    let mood = (g.explain("rex", "mood")?).item(0)
+    let name = g.explain("rex", "name")?
+    mood.member("standing").truth() == false &&
+        mood.member("modality").text() == "reported" &&
+        mood.member("anchor").member("speaker").text() == "bob" &&
+        name.items().length == 2 &&
+        name.item(1).member("anchor") is .Null &&
+        name.item(1).member("active").truth() == true
+}
+
+fn legacy_meaning() -> Result<bool, string> {
+    mut g = graph()?
+    defer { let _ = g.close() }
+    g
+        .publish(
+            reading(
+                g,
+                "old",
+                [
+                    Record {
+                        id: "ada",
+                        model: "Owner",
+                        value: stored_value("{\"name\":\"Ada\"}")?,
+                        locator: stored_value("{\"modality\":\"planned\",\"polarity\":\"denied\"}")?,
+                    },
+                ],
+            )? with { voices: [] },
+        )?
+    let ada = (g.explain("ada", "name")?).item(0)
+    ada.member("active").truth() == true &&
+        ada.member("modality").text() == "asserted" &&
+        ada.member("polarity").text() == "affirmed" &&
+        ada.member("anchor") is .Null &&
+        ada.member("locator").member("modality").text() == "planned" &&
+        (g.value("ada")?).entries().length == 1
+}
+
+fn malformed_evidence() -> Result<bool, string> {
+    mut g = graph()?
+    defer { let _ = g.close() }
+    let before = g.revision()?
+    let name = FieldEvidence { property: "name", spans: [at("Ada")] }
+    let bad = [
+        [name with { property: "title" }],
+        [name, name],
+        [name with { spans: [] }],
+        [name with { frame: "nowhere" }],
+        [name with { score: 1.5 }],
+        [name with { spans: [Span { start: 4, end: 4, text: "x" }] }],
+    ]
+    let attempts = [reading(g, "bad", [fielded("ada", "Owner", "{\"name\":\"Ada\"}", fields)?])? for fields in bad]
+    let voiceless = reading(g, "bad", [fielded("ada", "Owner", "{\"name\":\"Ada\"}", [name])?])? with { voices: [quoted()] }
+    let twice = reading(g, "bad", [])? with { voices: [own(), own()] }
+    all_refused(g, attempts.concat([voiceless, twice])) && g.revision()? == before
+}
+
+fn residence(city: string, from: string, until: string = "null") -> string {
+    "{\"city\":\"${city}\",\"from_ms\":${from},\"until_ms\":${until}}"
+}
+
+fn moved(mut g: Graph, id: string, producer: string, value: string) -> Result<int, string> {
+    g.publish(reading(g, id, [fielded("home", "Residence", value)?], producer)?)
+}
+
+fn cities(g: Graph) -> Result<string, string> {
+    [encoded(c.value) for f in (g.entity("home")?).fields if f.property == "city" for c in f.candidates]
+        .join("|")
+}
+
+fn supersedes() -> Result<bool, string> {
+    mut g = graph()?
+    defer { let _ = g.close() }
+    moved(g, "a", "first", residence("Rome", "100"))?
+    moved(g, "b", "second", residence("Paris", "200"))?
+    let current = cities(g)? == "\"Paris\""
+    let rome = (g.explain("home", "city")?).items().find(it.member("value").text() == "Rome")!
+    let closed = rome.member("active").truth() == false &&
+        rome.member("standing").truth() == true &&
+        rome.member("valid_from").int() == 100 &&
+        rome.member("superseded_by").item(0).member("at").int() == 200 &&
+        rome.member("superseded_by").item(0).member("run").text() == "b"
+    moved(g, "b2", "second", residence("Paris", "null"))?
+    let reopened = (cities(g)?).contains("Rome")
+    current && closed && reopened
+}
+
+fn older_news_is_superseded() -> Result<bool, string> {
+    mut g = graph()?
+    defer { let _ = g.close() }
+    moved(g, "b", "second", residence("Paris", "200"))?
+    moved(g, "a", "first", residence("Rome", "100"))?
+    cities(g)? == "\"Paris\""
+}
+
+fn rivals_contradict() -> Result<bool, string> {
+    mut g = graph()?
+    defer { let _ = g.close() }
+    moved(g, "a", "first", residence("Rome", "100"))?
+    moved(g, "b", "second", residence("Paris", "100"))?
+    moved(g, "c", "third", residence("Oslo", "null"))?
+    let contradicted = (cities(g)?).split("|").length == 3
+    contradicted &&
+        (g.explain("home", "city")?).items().all(it.member("superseded_by").items().is_empty())
+}
+
+fn ended_needs_no_closing() -> Result<bool, string> {
+    mut g = graph()?
+    defer { let _ = g.close() }
+    moved(g, "a", "first", residence("Rome", "100", "150"))?
+    moved(g, "b", "second", residence("Paris", "200"))?
+    let rome = (g.explain("home", "city")?).items().find(it.member("value").text() == "Rome")!
+    rome.member("superseded_by").items().is_empty() && rome.member("valid_until").int() == 150
+}
+
+fn plans_supersede_nothing() -> Result<bool, string> {
+    mut g = graph()?
+    defer { let _ = g.close() }
+    moved(g, "a", "first", residence("Rome", "100"))?
+    g
+        .publish(
+            reading(
+                g,
+                "b",
+                [
+                    fielded(
+                        "home",
+                        "Residence",
+                        residence("Paris", "200"),
+                        [
+                            FieldEvidence {
+                                property: "city",
+                                spans: [at("plans")],
+                                modality: .Planned,
+                            },
+                            FieldEvidence {
+                                property: "from_ms",
+                                spans: [at("plans")],
+                                modality: .Planned,
+                            },
+                        ],
+                    )?,
+                ],
+                "second",
+            )?,
+        )?
+    cities(g)? == "\"Rome\""
+}
+
+fn iso_bounds() -> Result<bool, string> {
+    mut g = graph()?
+    defer { let _ = g.close() }
+    g
+        .publish(
+            reading(
+                g,
+                "a",
+                [
+                    fielded("d", "Daily", "{\"mood\":\"calm\",\"day\":\"2024-02-29\"}")?,
+                    fielded(
+                        "m",
+                        "Moment",
+                        "{\"what\":\"call\",\"at\":\"1970-01-02T01:00:00.5+01:00\"}",
+                    )?,
+                ],
+            )?,
+        )?
+    let day = (g.explain("d", "mood")?).item(0).member("valid_from").int()
+    let moment = (g.explain("m", "what")?).item(0).member("valid_from").int()
+    let days = [reading(g, "bad", [fielded("d2", "Daily", "{\"mood\":\"x\",\"day\":\"${d}\"}")?])? for d in ["2023-02-29", "next friday", "2024-2-1"]]
+    let moments = [reading(g, "bad", [fielded("m2", "Moment", "{\"what\":\"x\",\"at\":\"${m}\"}")?])? for m in ["1970-01-01T00:00:00", "1970-01-01T24:00:00Z", "1970-01-01 00:00:00Z"]]
+    day == 1709164800000 && moment == 86400500 && all_refused(g, days.concat(moments))
+}
+
+/// Every publication is refused.
+fn all_refused(mut g: Graph, ps: List<Publication>) -> bool { [p for p in ps if g.publish(p) is .Ok].is_empty() }
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "field-level evidence" {
+    given "qualifiers, anchors and voices travel with each published field" {
+        then "different fields in one record keep distinct anchors, frames, voices and qualifiers" { passed(distinct_fields()) }
+        then "reported and planned statements never read as current plain values" { passed(qualified_stay_qualified()) }
+        then "an asserted denial is kept beside the affirmed value and flagged, never resolved" { passed(denial_contradicts()) }
+        then "qualifiers, frames, anchors and voices are part of the replay identity" { passed(qualifier_replay()) }
+        then "withdrawn support keeps its qualifiers and voice in history" { passed(history_survives_replacement()) }
+        then "a legacy publication is a plain assertion and its locator stays opaque" { passed(legacy_meaning()) }
+        then "evidence for an unsupplied property, twice, unanchored, voiceless or out of range is refused" { passed(malformed_evidence()) }
+    }
+    given "declared valid time" {
+        then "a later declared start supersedes an open earlier rival, and withdrawing it reopens the rival" { passed(supersedes()) }
+        then "an earlier start published later is superseded on arrival" { passed(older_news_is_superseded()) }
+        then "tied or unknown starts stay a contradiction with no supersession" { passed(rivals_contradict()) }
+        then "a rival already ended before the new start is not superseded" { passed(ended_needs_no_closing()) }
+        then "a planned statement supersedes nothing" { passed(plans_supersede_nothing()) }
+        then "ISO date and instant bounds normalize to UTC milliseconds and malformed bounds are refused" { passed(iso_bounds()) }
+    }
+}

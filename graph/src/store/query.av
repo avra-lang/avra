@@ -1,5 +1,5 @@
 use @std.validate.{Value, Entry}
-use @std.json.{Json, parse, field}
+use @std.json.{Json, Field, parse, field}
 use store.open.{Graph, stored}
 use store.engine.{
     ObservationRow,
@@ -9,12 +9,30 @@ use store.engine.{
     SupportRow,
     RunRow,
     RunTrailRow,
+    EvidenceRow,
+    SupersessionRow,
+    ConfidenceRow,
 }
+use store.state.{Standing}
+use store.evidence.{Interval, optional_text}
 use data.{as_value, as_json, encoded}
 
-export type Candidate = { claim: int, value: Value, chosen: bool = false }
+/// `denied` marks a value a standing assertion also denies: a contradiction
+/// kept, never resolved here.
+export type Candidate = { claim: int, value: Value, chosen: bool = false, denied: bool = false }
 export type Selection = { property: string, candidates: List<Candidate> }
-export type Entity = { id: string, model: string, revision: int, fields: List<Selection> }
+
+/// A standing statement that is not a plain fact: denied, planned, reported…
+export type Qualified = { claim: int, property: string, value: Value, polarity: string, modality: string }
+
+/// `fields` are current plain facts; `qualified` never reads as a value.
+export type Entity = {
+    id: string,
+    model: string,
+    revision: int,
+    fields: List<Selection>,
+    qualified: List<Qualified> = [],
+}
 export type Edge = { entity: string, property: string, target: string, path: string }
 
 impl Graph {
@@ -58,7 +76,9 @@ impl Graph {
         let revision = self.current()?
         let named = self.entity_named(id)?
         if self.hidden(id)? { fail "entity is tombstoned: ${id}" }
-        let live = self.standing(self.claims_of(self.entities_named(self.group(id)?)?)?)?
+        let standing = self.standing(self.claims_of(self.entities_named(self.group(id)?)?)?)?
+        let live = self.held(standing)?
+        let denied = [s.claim.id for s in standing if s.denies()]
         mut selections: List<Selection> = []
         for s in live {
             if selections.any(it.property == s.claim.property) { continue }
@@ -74,12 +94,19 @@ impl Graph {
                             claim: other.claim.id,
                             value: value,
                             chosen: self.picked(chosen, value),
+                            denied: denied.contains(other.claim.id),
                         },
                     )
             }
             selections.push(Selection { property: s.claim.property, candidates: candidates })
         }
-        Entity { id: id, model: named.model, revision: revision, fields: selections }
+        Entity {
+            id: id,
+            model: named.model,
+            revision: revision,
+            fields: selections,
+            qualified: qualified_of(standing)?,
+        }
     }
 
     /// Whether a standing choice names this value.
@@ -104,6 +131,7 @@ impl Graph {
                 let chosen? = f.candidates.find(it.chosen) else { fail "entity has competing statements: ${id}" }
                 chosen
             }
+            if pick.denied && !pick.chosen { fail "entity has a denied statement: ${id}.${f.property}" }
             assembled.push(Entry { key: f.property, value: pick.value })
         }
         let assembled = Value.Map(assembled)
@@ -124,7 +152,7 @@ impl Graph {
         mut live: List<string> = []
         for e in candidates {
             if hidden.contains(e.name) { continue }
-            if !(self.standing(self.claims_of([e])?)?).is_empty() { live.push(e.name) }
+            if !(self.facts(self.claims_of([e])?)?).is_empty() { live.push(e.name) }
         }
         let roots = [self.root(name)? for name in live]
         [name for i, name in live if !roots.slice(0, i).contains(roots[i])]
@@ -147,7 +175,7 @@ impl Graph {
         mut live: List<string> = []
         for e in candidates {
             if hidden.contains(e.name) { continue }
-            let claims = self.standing(self.claims_of([e])?)?
+            let claims = self.facts(self.claims_of([e])?)?
             if claims.any(it.claim.property == property && it.claim.value == wanted) { live.push(e.name) }
         }
         let roots = [self.root(name)? for name in live]
@@ -166,11 +194,11 @@ impl Graph {
         if incoming {
             for e in stored(EdgeRow.in_target(self.db, members))? {
                 if hidden.contains(e.target.name) || hidden.contains(e.claim.entity.name) { continue }
-                if (self.standing([e.claim])?).is_empty() { continue }
+                if (self.facts([e.claim])?).is_empty() { continue }
                 found.push(self.edge_of(e))
             }
         } else {
-            let live = [s.claim for s in self.standing(self.claims_of(members)?)?]
+            let live = [s.claim for s in self.facts(self.claims_of(members)?)?]
             for e in stored(EdgeRow.in_claim(self.db, live))? {
                 if hidden.contains(e.target.name) { continue }
                 found.push(self.edge_of(e))
@@ -223,11 +251,23 @@ impl Graph {
         let supports = stored(SupportRow.in_claim(self.db, claims))?
         let trails = stored(RunTrailRow.in_run(self.db, supports.map(it.run)))?
         let confidence = stored(ConfidenceRow.in_support(self.db, supports))?
+        let evidence = stored(EvidenceRow.in_support(self.db, supports))?
+        let closings = stored(SupersessionRow.in_old(self.db, supports))?
+        let closers = stored(RunTrailRow.in_run(self.db, closings.map(it.new.run)))?
         let scheme = self.catalog.fingerprint
         mut rows: List<Json> = []
         for s in supports {
             if s.claim.property != property { continue }
             let trail? = self.trail_of(trails, s.run.id) else { fail "a run has no trail: ${s.run.name}" }
+            let held = Standing {
+                claim: s.claim,
+                support: s,
+                evidence: evidence.find(it.support.id == s.id),
+            }
+            let closed = [c for c in closings if c.old.id == s.id]
+            let standing = self.upheld(s, trails, scheme)
+            let open = !closed.any((c: SupersessionRow) -> self.upheld(c.new, closers, scheme))
+            let span = self.valid_time(s)?
             rows
                 .push(
                     Json
@@ -242,15 +282,49 @@ impl Graph {
                                 field("input_revision", Json.Int(trail.input_revision)),
                                 field("schema", Json.Str(s.claim.schema)),
                                 field("until_revision", Json.Int(s.until ?? 0)),
-                                field("active", Json.Bool(self.contributes(s, trails, scheme))),
+                                field("active", Json.Bool(standing && held.plain() && open)),
+                                field("standing", Json.Bool(standing)),
                                 field("published_revision", Json.Int(s.run.revision)),
                                 field("locator", self.locator(s)?),
                                 field("confidence", self.confidence_of(s, confidence)),
-                            ],
+                                field("valid_from", optional_int(span.from)),
+                                field("valid_until", optional_int(span.until)),
+                                field(
+                                    "superseded_by",
+                                    Json
+                                        .Arr(
+                                            [Json
+                                                .Obj(
+                                                    [
+                                                        field("claim", Json.Int(c.new.claim.id)),
+                                                        field("run", Json.Str(c.new.run.name)),
+                                                        field("at", Json.Int(c.at)),
+                                                        field(
+                                                            "standing",
+                                                            Json
+                                                                .Bool(
+                                                                    self
+                                                                        .upheld(c.new, closers, scheme),
+                                                                ),
+                                                        ),
+                                                    ],
+                                                ) for c in closed],
+                                        ),
+                                ),
+                            ]
+                                .concat(qualifiers(held.evidence, s, trail.input_revision)?),
                         ),
                 )
         }
         Json.Arr(rows)
+    }
+
+    /// A support's declared valid time; unknown when its model left the catalog.
+    fn valid_time(s: SupportRow) -> Result<Interval, string> {
+        match self.catalog.model(s.claim.entity.model) {
+            .Ok(model) -> self.interval_of(s.run, s.claim.entity, model)?,
+            .Err(_) -> Interval {},
+        }
     }
 
     fn confidence_of(s: SupportRow, rows: List<ConfidenceRow>) -> Json {
@@ -265,10 +339,6 @@ impl Graph {
             text? -> as_json(stored_value(text)?)
             null -> Json.Null
         }
-    }
-
-    fn contributes(s: SupportRow, trails: List<RunTrailRow>, scheme: string) -> bool {
-        s.until == null && s.claim.schema == scheme && self.stands(s, trails, scheme)
     }
 
     /// Inputs whose last supported interpretation is out of date.
@@ -330,15 +400,102 @@ impl Entity {
                                                         field("claim", Json.Int(c.claim)),
                                                         field("value", as_json(c.value)),
                                                         field("chosen", Json.Bool(c.chosen)),
+                                                        field("denied", Json.Bool(c.denied)),
                                                     ],
                                                 ) for c in f.candidates],
                                         ),
                                 ) for f in self.fields],
                             ),
                     ),
+                    field(
+                        "qualified",
+                        Json
+                            .Arr(
+                                [Json
+                                    .Obj(
+                                        [
+                                            field("claim", Json.Int(q.claim)),
+                                            field("property", Json.Str(q.property)),
+                                            field("value", as_json(q.value)),
+                                            field("polarity", Json.Str(q.polarity)),
+                                            field("modality", Json.Str(q.modality)),
+                                        ],
+                                    ) for q in self.qualified],
+                            ),
+                    ),
                 ],
             )
     }
+}
+
+/// Legacy support is affirmed and asserted with no anchor or voice.
+fn qualifiers(evidence: EvidenceRow?, s: SupportRow, revision: int) -> Result<List<Field>, string> {
+    let e? = evidence else {
+        return [
+            field("polarity", Json.Str("affirmed")),
+            field("modality", Json.Str("asserted")),
+            field("anchor", Json.Null),
+            field("author", Json.Null),
+            field("audience", Json.Null),
+        ]
+    }
+    let spans = match parse(e.anchors) {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "stored anchors are not JSON" },
+    }
+    let audience = match e.voice.audience {
+        text? -> match parse(text) {
+            .Ok(j) -> j,
+            .Err(_) -> { fail "stored audience is not JSON" },
+        }
+        null -> Json.Null
+    }
+    [
+        field("polarity", Json.Str(e.polarity)),
+        field("modality", Json.Str(e.modality)),
+        field(
+            "anchor",
+            Json
+                .Obj(
+                    [
+                        field(
+                            "source",
+                            Json
+                                .Obj(
+                                    [
+                                        field("observation", Json.Str(s.run.input.name)),
+                                        field("revision", Json.Int(revision)),
+                                    ],
+                                ),
+                        ),
+                        field("frame", optional_text(e.voice.frame)),
+                        field("speaker", optional_text(e.voice.speaker)),
+                        field("spans", spans),
+                    ],
+                ),
+        ),
+        field("author", optional_text(e.voice.author)),
+        field("audience", audience),
+    ]
+}
+
+fn optional_int(n: int?) -> Json {
+    let found? = n else { return Json.Null }
+    Json.Int(found)
+}
+
+/// Each distinct qualified statement once, in standing order.
+fn qualified_of(standing: List<Standing>) -> Result<List<Qualified>, string> {
+    let rows = [Qualified {
+        claim: s.claim.id,
+        property: s.claim.property,
+        value: stored_value(s.claim.value)?,
+        polarity: e.polarity,
+        modality: e.modality,
+    } for s in standing if !s.plain() for e in [s.evidence!]]
+    [q for i, q in rows if !rows
+        .slice(0, i)
+        .any(it.claim == q.claim && it.polarity == q.polarity && it.modality == q.modality)]
 }
 
 export fn stored_value(text: string) -> Result<Value, string> {

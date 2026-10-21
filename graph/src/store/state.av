@@ -10,13 +10,36 @@ use store.engine.{
     MergeEndRow,
     TombstoneRow,
     TombstoneEndRow,
+    EvidenceRow,
+    SupersessionRow,
 }
+use store.evidence.{Polarity, Modality, plain, denial, polarity_named, modality_named}
 
 /// Two entities an active merge joins.
 export type MergeEdge = { left: string, right: string }
 
-/// One claim standing under an active scheme and input revision.
-export type Standing = { claim: ClaimRow, support: SupportRow }
+/// One claim standing under an active scheme and input revision, with the
+/// field evidence it was published with; none is a legacy plain assertion.
+export type Standing = { claim: ClaimRow, support: SupportRow, evidence: EvidenceRow? }
+
+impl Standing {
+    /// Affirmed and asserted, the only kind a current read returns as a value.
+    fn plain() -> bool { judged(self.evidence, plain, true) }
+
+    /// An asserted denial of this claim.
+    fn denies() -> bool { judged(self.evidence, denial, false) }
+}
+
+/// A test of stored qualifiers. Legacy support answers `legacy`; stored
+/// words outside the vocabulary answer false.
+export fn judged(evidence: EvidenceRow?, test: fn(Polarity, Modality) -> bool, legacy: bool) -> bool {
+    let e? = evidence else { return legacy }
+    worded(e, test) catch false
+}
+
+fn worded(e: EvidenceRow, test: fn(Polarity, Modality) -> bool) -> Result<bool, string> {
+    test(polarity_named(e.polarity)?, modality_named(e.modality)?)
+}
 
 impl Graph {
     fn entity_named(name: string) -> Result<EntityRow, string> {
@@ -46,7 +69,31 @@ impl Graph {
         let supports = stored(SupportRow.in_claim(self.db, claims))?
         let trails = stored(RunTrailRow.in_run(self.db, supports.map(it.run)))?
         let scheme = self.catalog.fingerprint
-        [Standing { claim: s.claim, support: s } for s in supports if s.until == null && s.claim.schema == scheme && self.stands(s, trails, scheme)]
+        let live = [s for s in supports if self.upheld(s, trails, scheme)]
+        let evidence = stored(EvidenceRow.in_support(self.db, live))?
+        [Standing { claim: s.claim, support: s, evidence: evidence.find(it.support.id == s.id) } for s in live]
+    }
+
+    /// Current facts: standing plain claims no standing newer claim supersedes.
+    fn facts(claims: List<ClaimRow>) -> Result<List<Standing>, string> { self.held(self.standing(claims)?) }
+
+    /// The facts among standing claims.
+    fn held(live: List<Standing>) -> Result<List<Standing>, string> {
+        let closed = self.superseded(live.map(it.support))?
+        [s for s in live if s.plain() && !closed.contains(s.support.id)]
+    }
+
+    /// Supports a still-standing newer claim has closed, by support id.
+    fn superseded(supports: List<SupportRow>) -> Result<List<int>, string> {
+        let rows = stored(SupersessionRow.in_old(self.db, supports))?
+        let trails = stored(RunTrailRow.in_run(self.db, rows.map(it.new.run)))?
+        let scheme = self.catalog.fingerprint
+        [r.old.id for r in rows if self.upheld(r.new, trails, scheme)]
+    }
+
+    /// Not withdrawn, under the current schema and its run's current input.
+    fn upheld(s: SupportRow, trails: List<RunTrailRow>, scheme: string) -> bool {
+        s.until == null && s.claim.schema == scheme && self.stands(s, trails, scheme)
     }
 
     fn stands(s: SupportRow, trails: List<RunTrailRow>, scheme: string) -> bool {

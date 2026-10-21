@@ -42,17 +42,23 @@ class Graph:
 
 def upgrades(graph):
     publication, committed = graph.seed()
-    for version in ("6", "7"):
+    for version in ("6", "7", "8"):
         with sqlite3.connect(graph.database) as raw:
-            raw.execute("DROP TABLE ChoiceEndRow")
-            raw.execute("DROP TABLE ChoiceRow")
+            raw.execute("DROP TABLE SupersessionRow")
+            raw.execute("DROP TABLE EvidenceRow")
+            raw.execute("DROP TABLE VoiceRow")
+            if version != "8":
+                raw.execute("DROP TABLE ChoiceEndRow")
+                raw.execute("DROP TABLE ChoiceRow")
             if version == "6":
                 raw.execute("DROP TABLE ConfidenceRow")
             raw.execute("UPDATE Meta SET value=? WHERE key='format'", (version,))
         assert graph.call({"op": "value", "id": "p1"})["name"] == "Ada"
+        [legacy] = graph.call({"op": "explain", "id": "p1", "property": "name"})
+        assert (legacy["polarity"], legacy["modality"], legacy["anchor"], legacy["active"]) == ("affirmed", "asserted", None, True)
         assert graph.call(publication) == committed
         with sqlite3.connect(graph.database) as raw:
-            assert raw.execute("SELECT value FROM Meta WHERE key='format'").fetchone() == ("8",)
+            assert raw.execute("SELECT value FROM Meta WHERE key='format'").fetchone() == ("9",)
             assert raw.execute("PRAGMA journal_mode").fetchone() == ("wal",)
             assert raw.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
@@ -67,7 +73,7 @@ def upgrades(graph):
     with sqlite3.connect(graph.database) as raw:
         assert raw.execute("SELECT * FROM Meta ORDER BY id").fetchall() == before
         assert raw.execute("SELECT name FROM sqlite_master WHERE name='ConfidenceRow'").fetchone() is None
-        raw.execute("UPDATE Meta SET value='8' WHERE key='format'")
+        raw.execute("UPDATE Meta SET value='9' WHERE key='format'")
     # Missing metadata is not mistaken for a fresh store, either.
     with sqlite3.connect(graph.database) as raw:
         raw.execute("DELETE FROM Meta WHERE key='format'")
