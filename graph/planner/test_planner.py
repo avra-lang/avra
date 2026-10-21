@@ -1,6 +1,7 @@
 """Planner checks that need no model: the subset gate, the schema prompt,
 parameter binding and the retry loop (python3 -m unittest, from this dir)."""
 import json
+import re
 import pathlib
 import sys
 import unittest
@@ -172,10 +173,14 @@ class Loop(unittest.TestCase):
 class Scripted:
     """Picks, call by call, the first option containing the next scripted word."""
 
-    def __init__(self, script):
-        self.script, self.asked = list(script), []
+    def __init__(self, script, wanted=()):
+        self.script, self.wanted, self.asked = list(script), set(wanted), []
 
     def choose(self, context, question, options):
+        need = re.match(r"Does the answer need their (\w+)", question)
+        if need:
+            self.asked.append((question, options))
+            return [1.0, 0.0] if need.group(1) in self.wanted else [0.0, 1.0]
         want = self.script.pop(0)
         self.asked.append((question, options))
         hits = [i for i, o in enumerate(options) if want in o]
@@ -189,7 +194,7 @@ class Structured(unittest.TestCase):
         import structured
 
         context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
-        chooser = Scripted(["Person", "no narrowing", "yes", "value", "name"])
+        chooser = Scripted(["Person", "no narrowing", "yes", "value"], {"name"})
         cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, context)
         self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE id(n0) = $speaker RETURN n1.name AS name")
         check(cypher, SCHEMA, PARAMS)
@@ -200,7 +205,7 @@ class Structured(unittest.TestCase):
 
         context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
         chooser = Scripted(["Alex Chen", "Person", "no narrowing", "further", "GroupMembership records",
-                            "yes", "value", "is_member", "nothing more"])
+                            "yes", "value"], {"is_member"})
         cypher = structured.plan(chooser, "Alex Chen said his wife was not on the crew. Who is she?", SCHEMA, context)
         self.assertTrue(cypher.startswith("MATCH (n0:Person)-[:wife]->(n1:Person)<-[:person]-(n2:GroupMembership)"))
         self.assertNotIn("Where next?", chooser.asked[2][0])
@@ -210,7 +215,7 @@ class Structured(unittest.TestCase):
 
         context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
         chooser = Scripted(["Person", "no narrowing", "no narrowing", "no narrowing",
-                            "value", "requested_guest_limit", "nothing more"])
+                            "value"], {"requested_guest_limit"})
         cypher = structured.plan(chooser, "What guest limit did my wife set?", SCHEMA, context)
         self.assertTrue(cypher.startswith("MATCH (n0:Person)-[:wife]->(n1:Person)<-[:actor]-(n2:Commitment)-[:event]->(n3:Event)"), cypher)
         self.assertFalse(any("Is the answer about this Person" in q for q, _ in chooser.asked))
@@ -226,7 +231,7 @@ class Structured(unittest.TestCase):
             return [{"kind": "fact", "text": "PersonalTask summary: Book dinner for Elena and Rowan"},
                     {"kind": "source", "text": "dinner at 19:30"}]
 
-        chooser = Scripted(["Person", "assignee is this", "yes", "value", "confirmation_recorded", "nothing more"])
+        chooser = Scripted(["Person", "assignee is this", "yes", "value"], {"confirmation_recorded"})
         cypher = structured.plan(chooser, "Did I actually book that Friday dinner?", SCHEMA, context, search)
         self.assertIn("dinner", searched[0])
         self.assertEqual(cypher, "MATCH (n0:Person)<-[:assignee]-(n1:PersonalTask) WHERE id(n0) = $speaker "
@@ -237,7 +242,7 @@ class Structured(unittest.TestCase):
         import structured
 
         context = {"principal": "p:rowan", "speaker": None, "question_at_ms": 1}
-        chooser = Scripted(["Alex Chen", "Person", "subject is this", "any of them", "yes", "value", "relation", "nothing more"])
+        chooser = Scripted(["Alex Chen", "Person", "subject is this", "any of them", "yes", "value"], {"relation"})
         cypher = structured.plan(chooser, "Who are Alex Chen's relatives?", SCHEMA, context)
         hops = [h[2] for h in structured.hops(structured.models_of(SCHEMA), "Person")]
         self.assertIn("their mother (mum, mom): a Person", hops)

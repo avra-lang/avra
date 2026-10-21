@@ -16,9 +16,8 @@ from prompt import line
 
 FIRST_PERSON = re.compile(r"\b(i|me|my|mine|myself)\b", re.I)
 MAX_HOPS = 4
-MAX_PICKS = 4
 ARRIVED = ["yes: the question asks about this record", "no: the answer lies further along"]
-DONE = "nothing more"
+NEEDED = ["yes", "no"]
 STOPWORDS = {"what", "who", "when", "did", "does", "do", "is", "are", "was", "were", "the", "a", "an", "my",
              "me", "i", "about", "for", "to", "of", "say", "said", "ask", "asked", "how", "many", "much",
              "that", "his", "her", "she", "he", "it", "and", "or", "in", "on", "with", "could", "actually",
@@ -198,7 +197,7 @@ def plan(chooser, question, schema, context, search=None):
         if used:
             leftover.discard(stem(used))
     trail = f"{head}\nSo far: {' '.join(out.parts)} — the answer is about these {label} records."
-    return out.cypher(returns(chooser, trail, models[label], var))
+    return out.cypher(returns(chooser, trail, models[label], var, leftover))
 
 
 def stem(word):
@@ -259,7 +258,7 @@ def filtered(chooser, trail, model, var, out, question):
     return word
 
 
-def returns(chooser, trail, model, var):
+def returns(chooser, trail, model, var, leftover=frozenset()):
     """The RETURN items: a count, one recorded status, or chosen values."""
     modes = ["the value of one or more of their properties",
              "whether a yes/no status has been recorded (absent counts as no)", "how many there are"]
@@ -272,16 +271,13 @@ def returns(chooser, trail, model, var):
         if flags:
             name = flags[best(chooser, trail, "Which recorded status?", flags)]
             return f"coalesce({var}.{name}, false) AS {name}"
-    names = [p["name"] + (": " + line(p["description"], 80) if p.get("description") else "") for p in props]
+    readable = [i for i, p in enumerate(props) if not (isinstance(base_shape(p["shape"]), dict) and "embedded" in base_shape(p["shape"]))]
     picked = []
-    for _ in range(MAX_PICKS):
-        options = [n for i, n in enumerate(names) if i not in picked] + [DONE]
-        at = best(chooser, trail + ("\nAlready returned: " + ", ".join(props[i]["name"] for i in picked) if picked else ""),
-                  "Which property answers the question?" if not picked else "Which other property does the answer need?",
-                  options)
-        if at == len(options) - 1 and picked:
-            break
-        if at == len(options) - 1:
-            continue
-        picked.append(names.index(options[at]))
+    for i in readable:
+        p = props[i]
+        about = f"{p['name']}" + (f" ({line(p['description'], 80)})" if p.get("description") else "")
+        if leftover & {stem(w) for w in re.findall(r"[A-Za-z]{3,}", about.replace("_", " "))}:
+            picked.append(i)
+        elif best(chooser, trail, f"Does the answer need their {about}?", NEEDED) == 0:
+            picked.append(i)
     return ", ".join(f"{var}.{props[i]['name']} AS {props[i]['name']}" for i in picked or [0])
