@@ -48,6 +48,6 @@ if __name__ == "__main__":
     sid, catalog_path = sys.argv[1], sys.argv[2]
     sources = sys.argv[3] if len(sys.argv) > 3 else Path(__file__).parent.parent / "acceptance" / "sources.jsonl"
     row = next(r for r in map(json.loads, open(sources)) if r["id"] == sid)
-    from cascade import MODEL_ID
+    from pins import MODEL_ID
 
     json.dump(request(envelope(row), json.load(open(catalog_path)), MODEL_ID), sys.stdout)

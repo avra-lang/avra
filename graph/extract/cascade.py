@@ -17,12 +17,20 @@ import resource
 import sys
 import time
 
-ENCODER = "fastino/gliner2-large-v1@d7aa8a2850d175a9227ff80358ea380723d03ad2"
-SCORER = "mlx-community/Qwen3-4B-Instruct-2507-4bit@50d427756c6b1b2fe0c0a10f67fbda1fc8e82c1b"
-MODEL_ID = f"{ENCODER}+{SCORER}"
-SPAN_THRESHOLD = 0.4
-ACCEPT = 0.5
-MARGIN = 0.5
+from pins import ENCODER, MODEL_ID, SCORER
+
+PARAMS_FILE = os.environ.get("CASCADE_PARAMS", os.path.join(os.path.dirname(os.path.abspath(__file__)), "params.json"))
+
+
+def fitted(name):
+    """A decision parameter from the calibration file calibrate.py writes."""
+    return json.load(open(PARAMS_FILE))["params"][name]["value"]
+
+
+SPAN_THRESHOLD = fitted("span_threshold")
+ACCEPT = fitted("accept")
+MARGIN = fitted("margin")
+NEW_CEILING = fitted("new_ceiling")
 MAX_OPTIONS = 26
 GENERATE_BUDGET = 4096
 ABSTAIN = object()
@@ -389,7 +397,7 @@ class Cascade:
         ranked = sorted(range(len(options)), key=lambda i: -p[i])
         if ranked[0] < len(prior) and p[ranked[0]] - p[ranked[1]] >= MARGIN:
             return prior[ranked[0]]
-        if ranked[0] == len(prior) and max(p[: len(prior)]) <= 1 - ACCEPT - MARGIN / 2:
+        if ranked[0] == len(prior) and max(p[: len(prior)]) <= NEW_CEILING:
             return None
         return ABSTAIN
 
