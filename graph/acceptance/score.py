@@ -427,7 +427,7 @@ def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, 
                 "schema": schema, "graph": [str(app.binary), "request", "--db", str(app.db)]}, log=log)
         record["planned"] = plan
         answer = app.call(query_request(plan))
-        record["answer"] = answer
+        record["response"] = answer
     except Exception as error:
         return {"status": "error", "reason": f"{type(error).__name__}: {error}", **record}
     if "error" in answer or "status" not in answer:
