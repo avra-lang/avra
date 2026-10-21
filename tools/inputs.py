@@ -93,7 +93,7 @@ WORLD = {
     "http": {
         "get": "fetch", "server": E, "directory": "read", "event_stream": E,
         "compiled": P, "dispatch": P, "fixed": P, "framed": P, "limits": P, "text": P,
-        "quiet_default": P,
+        "mounted": P, "quiet_default": P,
         "Request": T, "Unrouted": T, "Response": T, "Pulled": T, "Header": T, "Route": T,
         "Event": T, "Next": T, "Source": T, "Resume": T, "Method": T, "Files": T, "Body": T,
     },
@@ -135,7 +135,7 @@ INERT = {
 ROWS = {
     "avra_host_env": "env", "avra_host_is_dir": "read", "avra_io_list": "read",
     "avra_selfhost_file_exists": "read", "avra_selfhost_read_file": "read",
-    "avra_fd_read": "read", "avra_fd_tty_size": "read", "avra_fd_tty_raw": "write", "avra_fd_exit_writes": "write", "avra_sig_raise": "write", "avra_ffi_open": "read", "avra_embed": "read", "avra_embed_octets": "read",
+    "avra_fd_read": "read", "avra_fd_tty_size": "read", "avra_fd_tty_raw": "write", "avra_fd_exit_writes": "write", "avra_sig_raise": "write", "avra_ffi_open": "read", "avra_embed": "read", "avra_embed_octets": "read", "avra_embed_digest": "read",
     "avra_spawn_in": "spawn", "avra_spawn_status": "spawn", "avra_exec_self": "spawn",
     "avra_self_dir": "tool", "avra_now_ns": "clock", "avra_file_touch": "write",
     "avra_own_pid": "pid", "avra_pid_alive": "pid",

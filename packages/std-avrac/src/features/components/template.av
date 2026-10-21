@@ -84,7 +84,7 @@ fn instance_at(tokens: List<Token>, i: int, words: List<ComponentWord>) -> Insta
 fn binds_name(c: ComponentWord) -> bool {
     match c.form {
         .Record(r) -> r.head.is_empty(),
-        .Template(_) or .Refused(_) or .Unread -> false,
+        .Template(_) or .Refused(_) or .Spoken or .Unread -> false,
     }
 }
 
@@ -93,7 +93,7 @@ fn binds_name(c: ComponentWord) -> bool {
 fn instancing(store: SyntaxArena, c: ComponentParts) -> Instancing {
     let expand? = expand_of(store, c) else { return Instancing.Record(record_of(store, c)) }
     let fields = c.fields()
-    if !c.events().is_empty() { return Instancing.Refused(template_hears(c.name)) }
+    if copies_events(store, c) { return Instancing.Spoken }
     if fields.is_empty() { return Instancing.Refused(no_block_field(c.name)) }
     if fields.length > 1 { return Instancing.Refused(many_fields(c.name, fields.length)) }
     let head = [p.name.of for p in c.head]
@@ -169,6 +169,12 @@ fn lists(p: Param) -> bool {
     p.ty?.name == "List"
 }
 
+/// Whether a component copies its `expand` and declares an event: copied
+/// code hears no event, so its declaration is refused.
+export fn copies_events(store: SyntaxArena, c: ComponentParts) -> bool {
+    expand_of(store, c) != null && !c.events().is_empty()
+}
+
 /// A component's `expand`, when it declares one.
 export fn expand_of(store: SyntaxArena, c: ComponentParts) -> FnParts? {
     member(store, c, "expand")
@@ -226,10 +232,6 @@ fn no_block_field(name: string) -> string {
 
 fn many_fields(name: string, n: int) -> string {
     "`${name}` declares ${n} fields beside its head, and an instance's block fills one"
-}
-
-fn template_hears(name: string) -> string {
-    "`${name}` copies its `expand` where an instance stands, and copied code hears no event — declare events on a component that builds a record"
 }
 
 fn computes(name: string) -> string {

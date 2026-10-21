@@ -1,0 +1,26 @@
+use @std.meta.{derive}
+use @std.validate.{Decode, Decoding, Slot}
+
+type Ref<T> = { id: string }
+
+impl Ref<T> {
+    static fn decoded(mut d: Decoding, s: Slot) -> Ref<T>? {
+        let id? = d.text(s) else { return null }
+        Ref { id: id }
+    }
+
+    static fn read_json(mut d: Decoding, depth: int, required: bool, secret: bool) -> Ref<T>? {
+        let id? = d.json_text(depth, required, secret) else { return null }
+        Ref { id: id }
+    }
+}
+
+type Person = { name: string }
+
+@derive(Decode)
+type Message = { author: Ref<Person>, body: string }
+
+match Message.from_json("{\"author\":\"p1\",\"body\":\"hello\"}") {
+    .Ok(m) -> m.author.id,
+    .Err(e) -> e.report(),
+}

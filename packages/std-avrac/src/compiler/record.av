@@ -20,6 +20,7 @@ use core.{
     hex,
     unhex,
     digest_of,
+    digest_of_octets,
     blake_key,
     joined,
     sorted_texts,
@@ -48,6 +49,7 @@ use features.{
 }
 use compiler.lower.{Body, program_symbol, FieldPlan}
 use compiler.store.{Store, Stored, Producer, node_key, producer_of}
+use compiler.host.{Host}
 use @std.meta.{code_hash}
 use @std.path.{relative_path}
 
@@ -65,24 +67,35 @@ impl Workspace {
 
     /// Where this compiler keeps record bodies, by module and interface.
     fn record_bodies() -> RecordBodies { RecordBodies { root: self.root, db: self.db } }
+
+    /// WHO MAY READ A MODULE'S RECORD: the code that produces it, the C that code runs,
+    /// the code that writes the record and the code that reads it back, each by its hash,
+    /// under the store's toolchain. A part the compiler cannot hash makes the rows its own.
+    fn sig_producer() -> Producer {
+        producer_of(
+            [
+                code_hash(held_sig_verified),
+                code_hash(keep_interfaces),
+                code_hash(record_cached),
+                code_hash(producers_of),
+                code_hash(producers_text),
+                code_hash(producers_read),
+                code_hash(iface_of),
+                code_hash(doc_of_wire),
+                runtime_bodies(self.host),
+            ],
+        )
+    }
 }
 
-/// WHO MAY READ A MODULE'S RECORD: the code that produces it, the code that writes it and
-/// the code that reads it back, each by its hash, under the store's toolchain. A part the
-/// compiler cannot hash makes the rows its own.
-export fn sig_producer() -> Producer {
-    producer_of(
-        [
-            code_hash(held_sig_verified),
-            code_hash(keep_interfaces),
-            code_hash(record_cached),
-            code_hash(producers_of),
-            code_hash(producers_text),
-            code_hash(producers_read),
-            code_hash(iface_of),
-            code_hash(doc_of_wire),
-        ],
-    )
+/// THE C A RECORD'S PRODUCER RUNS: the runtime archive a program links, as one digest
+/// over its bytes — beside the compiler in a checkout, and under `lib/avra` in an install.
+/// A C body changes what an answer says without moving the row that names it, so the
+/// producer's stamp folds the bytes themselves. Absent when the host cannot read them,
+/// which keeps the rows their writer's own.
+export fn runtime_bodies(host: Host) -> string? {
+    let octets? = host.runtime_archive() else { return null }
+    digest_of_octets(octets)
 }
 
 /// A MODULE'S RECORD IS KEPT BY ITS INTERFACE: the row under `record_key` holds

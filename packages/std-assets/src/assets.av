@@ -4,24 +4,42 @@
 //! these the octets of a file, and a handle is a settled value.
 
 use @std.text.{parse_int}
-use @std.meta.{Provider, Marker, Named}
+use @std.meta.{Provider, Marker, Named, sealed}
+use @std.url.{Url}
 
-/// Where a picture's pixels come from, and how big it draws.
+/// Where a picture's pixels come from, and how big it draws. SEALED: a
+/// bundled picture is what a kind's `provide` read from a file the build
+/// has, a remote one what `remote` accepted — so no value is a remote
+/// address the page may not load.
+@sealed
 export enum Picture {
-    /// A file the build has. `id` names it by its package-relative path
-    /// and never by a row number; `tone` is the dominant colour as
-    /// 0xRRGGBB, 0 until rasters are decoded.
-    Bundled(id: int, width: int, height: int, tone: int)
+    /// A file the build has. `name` is its public name: the content's
+    /// BLAKE3 (128 bits, hex) and the extension its media type implies, so
+    /// one name is one set of octets and may be cached forever. `octets`
+    /// are the file itself — a settled const's bytes are the binary's own
+    /// static data, so a tree holding the picture holds one pointer.
+    /// `tone` is the dominant colour as 0xRRGGBB, 0 until rasters are
+    /// decoded.
+    Bundled(name: string, width: int, height: int, tone: int, media: string, octets: Bytes)
     /// A name for bytes someone else has, sized by the author.
-    Remote(url: string, width: int, height: int)
+    Remote(url: Url, width: int, height: int)
+}
+
+/// A picture someone else serves: an http or https address, sized by the
+/// author (layout never jumps), never fetched, transformed or shipped. Absent
+/// for any other scheme and for a size that is not positive.
+export fn remote(url: Url, width: int, height: int) -> Picture? {
+    if url.scheme != "http" && url.scheme != "https" { return null }
+    if width < 1 || height < 1 { return null }
+    Picture.Remote(url, width, height)
 }
 
 /// The mark an `asset` declaration wears, so a `collect` over `@bundled`
 /// gathers every file a program bundles. Never run: a marker is data.
 export fn bundled(_d: Named) -> Marker { Marker {} }
 
-/// A file of no known kind: its size and where it came from.
-export type Blob = { id: int, length: int }
+/// A file of no known kind: its public name, media type and octets.
+export type Blob = { name: string, media: string, octets: Bytes }
 
 /// The width and height a header states.
 export type Size = { width: int, height: int }
@@ -29,26 +47,43 @@ export type Size = { width: int, height: int }
 /// Whether `head` opens a PNG, a JPEG or an SVG.
 export fn is_picture(head: Bytes) -> bool { png_size(head) != null || jpeg_size(head) != null || svg_size(head) != null }
 
-/// A picture from a file's octets and the package-relative path that
-/// names it; null when the octets are no picture this reads.
-export fn picture_of(path: string, octets: Bytes) -> Picture? {
+/// A picture from a file's octets and their BLAKE3 digest in hex; null when
+/// they are no picture this reads. THE CALLER HAS THE DIGEST: the compiler
+/// hands a provider one, and a test computes its own — so naming a picture
+/// alone never reaches a hash, and a target with no hash still draws one.
+export fn picture_of(octets: Bytes, digest: string) -> Picture? {
     let size? = size_of(octets) else { return null }
-    Picture.Bundled(id_of(path), size.width, size.height, 0)
+    let kind? = media_of(octets) else { return null }
+    Picture.Bundled(named(digest, kind.ext), size.width, size.height, 0, kind.media, octets)
 }
 
-/// A blob from a file's octets and its package-relative path.
-export fn blob_of(path: string, octets: Bytes) -> Blob { Blob { id: id_of(path), length: octets.length } }
+/// A blob from a file's octets and their BLAKE3 digest in hex.
+export fn blob_of(octets: Bytes, digest: string) -> Blob {
+    Blob { name: named(digest, "bin"), media: "application/octet-stream", octets: octets }
+}
+
+/// A media type and the extension its files carry.
+type Media = { media: string, ext: string }
+
+/// The media type a picture's header names.
+fn media_of(octets: Bytes) -> Media? {
+    if png_size(octets) != null { return Media { media: "image/png", ext: "png" } }
+    if jpeg_size(octets) != null { return Media { media: "image/jpeg", ext: "jpg" } }
+    if svg_size(octets) != null { return Media { media: "image/svg+xml", ext: "svg" } }
+    null
+}
+
+/// A public name: the first 128 bits of the content's BLAKE3, in hex, and
+/// an extension.
+fn named(digest: string, ext: string) -> string { "${digest.substring(0, 32)}.${ext}" }
+
+/// The name a bundled picture is served under; a remote one is its address.
+export fn served_name(p: Picture) -> string {
+    match p { .Bundled(name, _, _, _, _, _) -> name, .Remote(url, _, _) -> url.text() }
+}
 
 /// The size a PNG, JPEG or SVG header states.
 export fn size_of(octets: Bytes) -> Size? { png_size(octets) ?? jpeg_size(octets) ?? svg_size(octets) }
-
-/// A path's identity: a fold of its octets, so two builds agree on it.
-export fn id_of(path: string) -> int {
-    let b = path.bytes()
-    mut h = 1469598103
-    for i in 0..b.length { h = (h * 16777619 + b.at(i)) % 4294967291 }
-    h
-}
 
 const png_signature: List<int> = [137, 80, 78, 71, 13, 10, 26, 10]
 
@@ -118,10 +153,10 @@ fn be16(b: Bytes, at: int) -> int { b.at(at) * 256 + b.at(at + 1) }
 fn be32(b: Bytes, at: int) -> int { be16(b, at) * 65536 + be16(b, at + 2) }
 
 impl Provider for Picture {
-    static fn provide(path: string, octets: Bytes) -> Picture? { picture_of(path, octets) }
+    static fn provide(_path: string, octets: Bytes, digest: string) -> Picture? { picture_of(octets, digest) }
 }
 
 /// A blob reads every file, so it answers when no other kind does.
 impl Provider for Blob {
-    static fn provide(path: string, octets: Bytes) -> Blob? { blob_of(path, octets) }
+    static fn provide(_path: string, octets: Bytes, digest: string) -> Blob? { blob_of(octets, digest) }
 }

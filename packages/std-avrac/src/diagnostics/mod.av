@@ -5,7 +5,9 @@
 use core.{flatten, Span, inserted}
 use @std.errors.{Loc, Frame, Suggestion, Error, ErrorInfo, info}
 
-export enum Severity { Error, Warning }
+/// An error blocks; a warning and a note are said and read past. A note
+/// points at an error said elsewhere.
+export enum Severity { Error, Warning, Note }
 
 /// One diagnostic. The primary frame is always present — absence
 /// lives in ONE place: a problem with no source anchor carries a
@@ -149,6 +151,12 @@ export fn warning(kind: string, at: Loc?, message: string, label: string, help: 
     refusal(kind, at, message, label, help) with { severity: Severity.Warning }
 }
 
+/// A note in the refusal's shape: it points where an error said
+/// elsewhere is met, and blocks nothing.
+export fn note(kind: string, at: Loc?, message: string, label: string, help: string?) -> Diag {
+    refusal(kind, at, message, label, help) with { severity: Severity.Note }
+}
+
 /// Whether any diagnostic is an error — the one meaning of unclean;
 /// warnings render and never block.
 export fn has_errors(ds: List<Diag>) -> bool {
@@ -157,6 +165,11 @@ export fn has_errors(ds: List<Diag>) -> bool {
 
 export fn is_error(d: Diag) -> bool {
     d.severity is .Error
+}
+
+/// Whether a diagnostic points at an error said elsewhere.
+export fn is_note(d: Diag) -> bool {
+    match d.severity { .Note -> true, .Error or .Warning -> false }
 }
 
 /// A diagnostic's structured fixes as text — one `file: replacement`

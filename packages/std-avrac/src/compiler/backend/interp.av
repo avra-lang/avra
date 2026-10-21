@@ -13,6 +13,7 @@
 //! machine's own stack, never the host's.
 use core.{
     EmbedKind,
+    digest_of_octets,
     Ins,
     Reg,
     BinOp,
@@ -1122,6 +1123,18 @@ impl Machine {
         }
     }
 
+    /// `embed_digest`: the digest of the file `embed_octets` reads, read the same
+    /// way and recorded the same — the compiler's own BLAKE3, never package C.
+    fn embedded_digest(path: string) -> Val {
+        match self.embed_door(path, EmbedKind.Octets) {
+            .Ok(octets) -> {
+                self.embeds.push(path)
+                Val.S(digest_of_octets(octets))
+            },
+            .Err(why) -> self.trapped_text(why),
+        }
+    }
+
     /// The octets a read answered, as the value the kind's row answers.
     fn embedded_val(octets: Bytes, kind: EmbedKind) -> Val {
         match kind { .Text -> Val.S(octets.text() ?? ""), .Octets -> Val.Y(octets) }
@@ -1701,6 +1714,7 @@ impl Machine {
             .IoList -> self.io_list_val(vals),
             .Embed -> self.embedded(self.text_val(vals[0]), EmbedKind.Text),
             .EmbedOctets -> self.embedded(self.text_val(vals[0]), EmbedKind.Octets),
+            .EmbedDigest -> self.embedded_digest(self.text_val(vals[0])),
             .StrFromCodepoint -> Val.S(avra_str_from_codepoint(self.whole(vals[0]))),
             .ExecSelf -> self.exec_self_val(vals),
             .MapSetAt -> self.map_set_val([vals[0], vals[1], vals[3]]),

@@ -89,6 +89,7 @@ fn arm_binds(index: string, bind: string) -> List<string> {
 /// THE SELECT LAW: every arm that stays answers one type, and the
 /// `select` wears it.
 fn select_type(mut cx: TypeCx, e: ExprId, arms: List<ExprId>) -> TypeId {
+    if arms_law(cx, e, arms) { return cx.error_type }
     quiet_law(cx, arms)
     fresh_law(cx, arms)
     end_law(cx, arms)
@@ -96,6 +97,25 @@ fn select_type(mut cx: TypeCx, e: ExprId, arms: List<ExprId>) -> TypeId {
     let values = flatten([some_list(arm_value(cx, a)) for a in arms])
     let head? = values.find((v) -> cx.stays(v)) else { return cx.error_type }
     cx.arms_agree("flow.select", "select", "the first arm", e, head, values)
+}
+
+/// THE ARM-SET LAWS: a `select` waits, so at least one arm is not
+/// `else`; `else` is written once, and last. The first law an arm set
+/// breaks is the one spoken, and it answers true.
+fn arms_law(mut cx: TypeCx, e: ExprId, arms: List<ExprId>) -> bool {
+    let elses = [j for j, a in arms if is_else(cx, a)]
+    if elses.length == arms.length {
+        cx.emit(no_waiting_arm(cx, e))
+        return true
+    }
+    if elses.length > 1 {
+        cx.emit(else_twice(cx, arms[elses[1]]))
+        return true
+    }
+    let at? = elses.first() else { return false }
+    if at == arms.length - 1 { return false }
+    cx.emit(else_not_last(cx, arms[at]))
+    true
 }
 
 /// A `Quiet` is armed as the `select` is entered, and an `else` beside
@@ -568,6 +588,39 @@ fn guard_binder(cx: TypeCx, read: ExprId) -> Diag {
         "a guard is read before its arm's head, so it reads no name the arm binds",
         "bound by this arm",
         "test the value in the arm's body",
+    )
+}
+
+/// Every arm is `else`, so no arm waits and none is ever ready.
+fn no_waiting_arm(cx: TypeCx, e: ExprId) -> Diag {
+    refusal(
+        "flow.select",
+        cx.loc_of(e),
+        "a `select` needs an arm to wait on",
+        "every arm here is `else`",
+        "wait on a task, a source or a timer — `else` runs when no arm is ready",
+    )
+}
+
+/// `else` runs when no other arm is ready, so a second never runs.
+fn else_twice(cx: TypeCx, arm: ExprId) -> Diag {
+    refusal(
+        "flow.select",
+        cx.loc_of(arm),
+        "a `select` has ONE `else` arm",
+        "a second `else`",
+        "drop it — `else` runs when no arm is ready, so the second never runs",
+    )
+}
+
+/// The arms are scanned top to bottom, so nothing may wait below `else`.
+fn else_not_last(cx: TypeCx, arm: ExprId) -> Diag {
+    refusal(
+        "flow.select",
+        cx.loc_of(arm),
+        "the `else` arm ends a `select` — move it last",
+        "an arm waits after it",
+        "move `else` below every arm that waits",
     )
 }
 

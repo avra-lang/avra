@@ -1,0 +1,197 @@
+use models.{models}
+use store.open.{Graph, stored}
+use store.engine.{EntityRow}
+use store.publish.{Record, RecordMode, Publication}
+use store.query.{stored_value}
+use data.{encoded}
+
+fn partial(id: string, model: string, text: string) -> Result<Record, string> {
+    Record { id: id, model: model, value: stored_value(text)?, mode: .Partial }
+}
+
+fn publication(g: Graph, id: string, producer: string, records: List<Record>) -> Result<
+    Publication,
+    string,
+> {
+    Publication {
+        id: id,
+        producer: producer,
+        scope: "input:1",
+        input: "input:1",
+        input_revision: 1,
+        schema: g.catalog.fingerprint,
+        expected_revision: g.revision()?,
+        records: records,
+    }
+}
+
+fn incomplete_then_complete() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "task observations")?
+    g
+        .publish(
+            publication(
+                g,
+                "one",
+                "status-agent",
+                [partial("w1", "WorkItem", "{\"status\":\"done\"}")?],
+            )?,
+        )?
+    let incomplete = match g.value("w1") { .Ok(_) -> false, .Err(_) -> true }
+    let supplied_only = (g.entity("w1")?).fields.length == 1
+    g
+        .publish(
+            publication(
+                g,
+                "two",
+                "title-agent",
+                [partial("w1", "WorkItem", "{\"title\":\"Review\"}")?],
+            )?,
+        )?
+    let assembled = encoded(g.value("w1")?)
+    incomplete &&
+        supplied_only &&
+        assembled.contains("\"status\":\"done\"") &&
+        assembled.contains("\"title\":\"Review\"")
+}
+
+fn explicit_null() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "unknown assignee")?
+    g.publish(publication(g, "one", "agent", [partial("w1", "WorkItem", "{\"assignee\":null}")?])?)?
+    let fields = (g.entity("w1")?).fields
+    fields.length == 1 &&
+        fields[0].property == "assignee" &&
+        encoded(fields[0].candidates[0].value) == "null" &&
+        (g.edges("w1")?).is_empty()
+}
+
+fn invalid_partial() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "bad values")?
+    let before = g.revision()?
+    let email = match g
+        .publish(
+            publication(
+                g,
+                "email",
+                "agent",
+                [partial("p1", "Person", "{\"email\":\"not-an-email\"}")?],
+            )?,
+        ) { .Ok(_) -> false, .Err(_) -> true }
+    let null_default = match g
+        .publish(publication(g, "null", "agent", [partial("w1", "WorkItem", "{\"status\":null}")?])?) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    let empty_title = match g
+        .publish(publication(g, "title", "agent", [partial("w1", "WorkItem", "{\"title\":\"\"}")?])?) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    email &&
+        null_default &&
+        empty_title &&
+        g.revision()? == before &&
+        (stored(EntityRow.all(g.db))?).is_empty()
+}
+
+fn same_run_reference() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "assignment")?
+    g
+        .publish(
+            publication(
+                g,
+                "one",
+                "agent",
+                [
+                    partial("w1", "WorkItem", "{\"assignee\":\"p1\"}")?,
+                    partial("p1", "Person", "{\"email\":\"ada@example.com\"}")?,
+                ],
+            )?,
+        )?
+    (g.edges("p1", incoming: true)?).length == 1 && (g.entity("p1")?).fields.length == 1
+}
+
+fn bad_partial_reference() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "assignment")?
+    let before = g.revision()?
+    let rejected = match g
+        .publish(
+            publication(
+                g,
+                "one",
+                "agent",
+                [
+                    partial("w1", "WorkItem", "{\"assignee\":\"w2\"}")?,
+                    partial("w2", "WorkItem", "{\"title\":\"Wrong target model\"}")?,
+                ],
+            )?,
+        ) { .Ok(_) -> false, .Err(_) -> true }
+    rejected && g.revision()? == before && (stored(EntityRow.all(g.db))?).is_empty()
+}
+
+fn replacement_not_patch() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "task")?
+    g
+        .publish(
+            publication(
+                g,
+                "one",
+                "agent-a",
+                [partial("w1", "WorkItem", "{\"title\":\"Old\",\"due_at\":\"tomorrow\"}")?],
+            )?,
+        )?
+    g
+        .publish(publication(g, "two", "agent-b", [partial("w1", "WorkItem", "{\"status\":\"done\"}")?])?)?
+    g
+        .publish(publication(g, "three", "agent-a", [partial("w1", "WorkItem", "{\"title\":\"New\"}")?])?)?
+    let fields = (g.entity("w1")?).fields
+    fields.length == 2 &&
+        !fields.any(it.property == "due_at") &&
+        encoded(g.value("w1")?).contains("\"status\":\"done\"") &&
+        (g.explain("w1", "due_at")?).item(0).member("active").truth() == false
+}
+
+fn mode_is_part_of_replay() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "task")?
+    let record = partial("w1", "WorkItem", "{\"title\":\"Review\"}")?
+    let p = publication(g, "one", "agent", [record])?
+    let revision = g.publish(p)?
+    let replay = g.publish(p)? == revision
+    let collision = match g.publish(p with { records: [record with { mode: .Complete }] }) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    replay && collision && g.revision()? == revision
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "graph partial assertions" {
+    given "independent producers with incomplete knowledge" {
+        then "partial properties assemble only when enough evidence exists" { passed(incomplete_then_complete()) }
+        then "optional null is explicit evidence, not withdrawal" { passed(explicit_null()) }
+        then "supplied field rules and nonnullable null are enforced atomically" { passed(invalid_partial()) }
+        then "partial references can target identities in the same publication" { passed(same_run_reference()) }
+        then "wrong-model partial references roll back the whole run" { passed(bad_partial_reference()) }
+        then "partial records still replace a contribution, not patch it" { passed(replacement_not_patch()) }
+        then "replay distinguishes partial and complete validation" { passed(mode_is_part_of_replay()) }
+    }
+}

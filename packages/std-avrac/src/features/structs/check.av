@@ -341,7 +341,28 @@ fn lacked_field(mut cx: TypeCx, v: ExprId, name: string, f: string, sig: StructS
         )
 }
 
+/// A field's value of the wrong type: a setting that names an event
+/// holds the event's handler, and is refused as that.
 fn wrong_field_type(mut cx: TypeCx, v: ExprId, f: string, want: TypeId) {
+    let heard? = cx.view.store.on_handler(v) else { return wrong_field_value(cx, v, f, want) }
+    wrong_handler_type(cx, v, heard.event, want)
+}
+
+/// A setting that names an event holds the event's handler.
+fn wrong_handler_type(mut cx: TypeCx, v: ExprId, event: string, want: TypeId) {
+    cx
+        .emit(
+            refusal(
+                "type.component_event",
+                cx.loc_of(v),
+                "`${event}` is heard by a handler, `${cx.view.types.name_of(want)}`, and this is `${cx.name_at(v)}`",
+                "heard here",
+                "hear it with `on ${event} { … }`, or set a fn",
+            ),
+        )
+}
+
+fn wrong_field_value(mut cx: TypeCx, v: ExprId, f: string, want: TypeId) {
     let n = cx.name_at(v)
     cx
         .emit(

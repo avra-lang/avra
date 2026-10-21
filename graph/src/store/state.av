@@ -1,0 +1,107 @@
+use store.open.{Graph, stored}
+use data.{before}
+use store.engine.{
+    EntityRow,
+    ClaimRow,
+    SupportRow,
+    RunRow,
+    RunTrailRow,
+    MergeRow,
+    MergeEndRow,
+    TombstoneRow,
+    TombstoneEndRow,
+}
+
+/// Two entities an active merge joins.
+export type MergeEdge = { left: string, right: string }
+
+/// One claim standing under an active scheme and input revision.
+export type Standing = { claim: ClaimRow, support: SupportRow }
+
+impl Graph {
+    fn entity_named(name: string) -> Result<EntityRow, string> {
+        let found = stored(EntityRow.where(self.db, name: name))?
+        match found {
+            [only] -> only,
+            [] -> { fail "unknown entity: ${name}" },
+            rest -> { fail "entity name is not unique: ${name}" },
+        }
+    }
+
+    fn entities_named(names: List<string>) -> Result<List<EntityRow>, string> {
+        [e for name in names for e in stored(EntityRow.where(self.db, name: name))?]
+    }
+
+    fn claims_of(entities: List<EntityRow>) -> Result<List<ClaimRow>, string> {
+        [claim for claims in stored(EntityRow.with_claims(self.db, entities))? for claim in claims]
+    }
+
+    fn trail_of(trails: List<RunTrailRow>, run: int) -> RunTrailRow? {
+        trails.find(it.run.id == run)
+    }
+
+    /// Claims whose support still stands: not withdrawn, under the current
+    /// schema and the input revision the run actually read.
+    fn standing(claims: List<ClaimRow>) -> Result<List<Standing>, string> {
+        let supports = stored(SupportRow.in_claim(self.db, claims))?
+        let trails = stored(RunTrailRow.in_run(self.db, supports.map(it.run)))?
+        let scheme = self.catalog.fingerprint
+        [Standing { claim: s.claim, support: s } for s in supports if s.until == null && s.claim.schema == scheme && self.stands(s, trails, scheme)]
+    }
+
+    fn stands(s: SupportRow, trails: List<RunTrailRow>, scheme: string) -> bool {
+        let trail? = self.trail_of(trails, s.run.id) else { return false }
+        trail.schema == scheme && trail.input_revision == s.run.input.revision
+    }
+
+    /// The active merge decisions as undirected edges over entity names.
+    fn merge_edges() -> Result<List<MergeEdge>, string> {
+        let ended = stored(MergeEndRow.all(self.db))?
+        [MergeEdge { left: m.left.name, right: m.right.name } for m in stored(MergeRow.all(self.db))? if !ended.any(it.merge.id == m.id)]
+    }
+
+    fn merge_pair(a: string, b: string, edges: List<MergeEdge>) -> bool {
+        edges.any((e: MergeEdge) -> e.left == a && e.right == b || e.left == b && e.right == a)
+    }
+
+    /// Every entity the group holding `name` contains, `name` first.
+    fn group(name: string) -> Result<List<string>, string> {
+        let edges = self.merge_edges()?
+        self.reached([name], edges)
+    }
+
+    /// The group's stable name: its least entity name.
+    fn root(name: string) -> Result<string, string> {
+        mut least = name
+        for member in self.group(name)? {
+            if before(member, least) { least = member }
+        }
+        least
+    }
+
+    fn reached(seen: List<string>, edges: List<MergeEdge>) -> Result<List<string>, string> {
+        mut found = seen
+        mut frontier = seen
+        while !frontier.is_empty() {
+            let next = [other for from in frontier for e in edges if e.left == from || e.right == from for other in [if e.left == from { e.right } else { e.left }] if !found.contains(other)]
+            found = found.concat(next)
+            frontier = next
+        }
+        found
+    }
+
+    /// The active tombstone roots, by entity name.
+    fn tombstone_names() -> Result<List<string>, string> {
+        let ended = stored(TombstoneEndRow.all(self.db))?
+        [t.entity.name for t in stored(TombstoneRow.all(self.db))? if !ended.any(it.tombstone.id == t.id)]
+    }
+
+    /// Every entity a live tombstone hides, its group included.
+    fn hidden_members() -> Result<List<string>, string> {
+        self.reached(self.tombstone_names()?, self.merge_edges()?)
+    }
+
+    fn hidden(name: string) -> Result<bool, string> {
+        (self.hidden_members()?).contains(name)
+    }
+}

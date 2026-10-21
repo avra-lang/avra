@@ -2,8 +2,10 @@
 // defaults, and in its own module a literal fills the rest — every
 // refusal the struct law's.
 use @std.avrac.compiler.{Program}
+use @std.avrac.diagnostics.{is_error}
 use @std.avrac.testing.{
     Module,
+    said,
     shown,
     refused_with,
     refusals,
@@ -76,6 +78,11 @@ fn heard(block: string, after: string) -> Program {
         "use @x.c.{panel}\nstate n: int = 0\nstate said: string = \"\"\nfn v() -> string {\n    let x = 5\n    let a = panel ${block}\n    ${after}\n    \"\${n} \${said}\"\n}\nv()",
         panel(),
     )
+}
+
+/// A template that declares an event.
+fn lim() -> string {
+    "export component lim(n: Code) {\n    body: Code\n    on press\n    fn expand() -> Code { quote { \${self.body} } }\n}\n"
 }
 
 const press = "let f? = a.press else { return \"unheard\" }\n    f()"
@@ -225,14 +232,65 @@ spec "features/components — events" {
         }
     }
     given "an event on a component that copies its `expand`" {
-        then "is refused where an instance stands: copied code hears no event" {
+        then "is refused where it is declared, by the event law, with no instance written" {
+            let p = provided("use @x.c.{lim}\n0", lim())
             refused_in(
-                provided(
-                    "use @x.c.{lim}\nlim 1 { 2 }",
-                    "export component lim(n: Code) {\n    body: Code\n    on press\n    fn expand() -> Code { quote { \${self.body} } }\n}\n",
-                ),
-                "`lim` copies its `expand` where an instance stands, and copied code hears no event",
+                    p,
+                    "error[type.component_event]: `lim` copies its `expand` where an instance stands, and copied code hears no event — `press` is never heard",
+                ) &&
+                p.report().contains("c.av:4")
+        }
+        then "and each instance in another package points at it with a note: one error, at the declaration" {
+            let p = provided(
+                "use @x.c.{lim}\nlet a = lim 1 { 2 }\nlet b = lim 3 { 4 }\na + b",
+                lim(),
             )
+            let all = said(p)
+            let report = p.rendered(all)
+            all.length == 3 &&
+                [d for d in all if is_error(d)].length == 1 &&
+                report.contains("error[type.component_event]: `lim` copies its `expand`") &&
+                report
+                    .contains(
+                        "note[type.component_event]: `lim`'s event `press` is refused where it is declared",
+                    ) &&
+                report.contains("main.av:2") &&
+                report.contains("main.av:3") &&
+                report.contains("c.av:4") &&
+                !report.contains("build.failed")
+        }
+        then "and the report says the error before the notes that point at it" {
+            let report = provided(
+                "use @x.c.{lim}\nlet a = lim 1 { 2 }\nlet b = lim 3 { 4 }\na + b",
+                lim(),
+            )
+                .report()
+            report.index_of("error[type.component_event]") >= 0 &&
+                report.index_of("error[type.component_event]") < report.index_of("note[type.component_event]")
+        }
+        then "and the report a failed build prints shows each instance's note in its own file" {
+            let report = provided(
+                "use @x.c.{lim}\nlet a = lim 1 { 2 }\nlet b = lim 3 { 4 }\na + b",
+                lim(),
+            )
+                .report()
+            report.contains("error[type.component_event]: `lim` copies its `expand`") &&
+                report
+                    .contains(
+                        "note[type.component_event]: `lim`'s event `press` is refused where it is declared",
+                    ) &&
+                report.contains("main.av:2") &&
+                report.contains("main.av:3")
+        }
+    }
+    given "a setting that names an event, holding a value that is no handler" {
+        then "is refused as the event's handler, never as the field that holds it" {
+            let p = heard("{ press: 5 }", press)
+            refused_in(
+                    p,
+                    "error[type.component_event]: `press` is heard by a handler, `fn()?`, and this is `int`",
+                ) &&
+                !p.report().contains("field `press`")
         }
     }
     given "a mark on an event no derive claims" {

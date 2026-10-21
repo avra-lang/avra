@@ -1,6 +1,7 @@
 // proves: an `asset` statement's names are written where their libraries declare
 // them — this file's own `provided` and `bundled` are neither called nor taken for the mark
 use @std.assets.{Picture}
+use @std.hash.{blake3_hex}
 
 fn provided(path: string) -> int { 99 }
 
@@ -9,7 +10,15 @@ fn bundled() -> int { 98 }
 asset logo: Picture = "art/logo.png"
 
 fn drawn(p: Picture) -> string {
-    match p { .Bundled(_, w, h, _) -> "${w}x${h}", .Remote(_, w, h) -> "remote ${w}x${h}" }
+    match p { .Bundled(_, w, h, _, _, _) -> "${w}x${h}", .Remote(_, w, h) -> "remote ${w}x${h}" }
 }
 
-"${drawn(logo)} ${provided("x")} ${bundled()}"
+/// The name the compiler gave the file, against the digest `@std/hash` computes at run time.
+fn agrees(p: Picture) -> bool {
+    match p {
+        .Bundled(name, _, _, _, _, octets) -> name == "${blake3_hex(octets).substring(0, 32)}.png",
+        .Remote(_, _, _) -> false,
+    }
+}
+
+"${drawn(logo)} ${provided("x")} ${bundled()} ${agrees(logo)}"

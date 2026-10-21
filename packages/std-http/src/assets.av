@@ -1,0 +1,52 @@
+//! SERVED ASSETS — bytes a program holds, answered under a prefix by
+//! their content-hashed names. A response is IMMUTABLE: the name is the
+//! content's, so it carries its `ETag` and a year's `Cache-Control:
+//! immutable`, and a request whose `If-None-Match` names the tag is a
+//! 304 with no body. A name the list does not hold is a 404 and the
+//! disk is never touched — nothing undeclared is ever served. The bodies
+//! are the list's own `Bytes`, which for a settled const are the
+//! binary's static data: serving copies nothing.
+use @std.http_message.message.{Header, Method}
+use route.{Route, Reach}
+use validators.{tag_listed}
+
+/// One thing to serve: the name it is asked for by, its media type and
+/// its octets.
+export type Hosted = { name: string, media: string, octets: Bytes }
+
+/// The routes answering `held` under `prefix` (`/assets`): a GET and a
+/// HEAD of each name in it.
+export fn assets(prefix: string, held: List<Hosted>) -> List<Route> {
+    let base = if prefix.ends_with("/") { prefix.substring(0, prefix.length - 1) } else { prefix }
+    [asset_route(Method.Get, base, held), asset_route(Method.Head, base, held)]
+}
+
+fn asset_route(method: Method, base: string, held: List<Hosted>) -> Route {
+    let under = base.bytes()
+    Route {
+        method: method,
+        pattern: "${base}/{path...}",
+        reach: Reach.Rest,
+        serve: (q: Request<Unrouted>, t: Bytes) -> if falls_under(t, under) { answer(q, held, below(t, under.length)) } else { null },
+    }
+}
+
+/// The path past the prefix and its separator.
+fn below(t: Bytes, n: int) -> Bytes {
+    if t.length <= n + 1 { "".bytes() } else { t.slice(n + 1, t.length) }
+}
+
+/// The response for the name `rel` asks, exactly as the list spells it.
+fn answer(q: Request<Unrouted>, held: List<Hosted>, rel: Bytes) -> Response {
+    let name? = rel.text() else { return status(404) }
+    let found? = held.find(it.name == name) else { return status(404) }
+    let tag = "\"${found.name}\""
+    let fields = [
+        header_pair("content-type", found.media),
+        header_pair("etag", tag),
+        header_pair("cache-control", "public, max-age=31536000, immutable"),
+        header_pair("x-content-type-options", "nosniff"),
+    ]
+    if tag_listed(q.header("if-none-match"), tag) { return Response { status: 304, headers: fields } }
+    Response { headers: fields, body: found.octets }
+}
