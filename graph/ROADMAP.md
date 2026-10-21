@@ -273,9 +273,9 @@ dependency-ordered agent assignments live in
 work queue, not a claim that extraction or English querying already works.
 
 A00 fixture integrity and A01 semantic audit are complete. C01 supplies an
-independently consumable boundary-contract library (52 passing tests and a
+independently consumable boundary-contract library (55 passing tests and a
 native consumer); see [contracts/HANDOFF.md](contracts/HANDOFF.md). Source
-ingestion/admission, worker execution and English planning remain future
+extraction admission, worker execution and English planning remain future
 tasks. Provider replacement (V05) and ontology portability (V04) are separate
 release witnesses; neither is proved by codecs alone.
 
@@ -289,7 +289,10 @@ I01 admits structured sources through CLI/HTTP, preserving original text,
 timestamps, authors and quoted-speaker frames. Source revision replay and
 metadata changes have 20 new witnesses (103 total graph tests), plus native
 transport/restart checks. See [src/ingest/I01-HANDOFF.md](src/ingest/I01-HANDOFF.md).
-Windowing, extraction admission and automatic work remain the next slices.
+I02 adds Unicode-safe, speaker-partitioned windows and normalized-coordinate
+grounding: 126 graph tests and one native/interpreter proof now pass. See
+[src/ingest/I02-HANDOFF.md](src/ingest/I02-HANDOFF.md). Extraction admission
+and automatic work remain the next slices.
 
 Stabilize -> identity -> richer queries -> durable workers -> incremental
 derivations -> compatibility-aware evolution. Partial assertions, evidence

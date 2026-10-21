@@ -15,8 +15,21 @@ fn source_coherent(s: SourceEnvelope) -> Result<SourceEnvelope, string> {
     if bytes.length > 1048576 { fail "source content exceeds its byte budget" }
     for i, frame in s.frames {
         if s.frames.slice(0, i).any(it.id == frame.id) { fail "frame ids must be unique" }
-        if frame.parent != null && !s.frames.slice(0, i).any(it.id == frame.parent!) {
-            fail "a frame parent must precede its child"
+        if frame.parent != null {
+            let parent? = s.frames.slice(0, i).find(it.id == frame.parent!) else { fail "a frame parent must precede its child" }
+            if frame.span.start < parent.span.start || frame.span.end > parent.span.end {
+                fail "a child frame must stay inside its parent"
+            }
+        }
+        if s
+            .frames
+            .slice(0, i)
+            .any(
+                it.parent == frame.parent &&
+                    it.span.start < frame.span.end &&
+                    frame.span.start < it.span.end,
+            ) {
+            fail "sibling frames cannot overlap"
         }
         if frame.span.end > bytes.length { fail "a frame exceeds its source content" }
         let quoted = frame.span.text.bytes()

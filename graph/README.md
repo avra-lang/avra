@@ -166,6 +166,14 @@ HTTP bearer token still authorizes ingestion; source text never authorizes
 an operation. Automatic scheduling/extraction is a later task, not a side
 effect claimed by this ingestion receipt.
 
+Embedders can call `windows(source, WindowPolicy {})` to build bounded
+extraction inputs. Windows preserve original spans and quoted speakers;
+optional whitespace collapse keeps a coordinate map. `window.anchor(...)`
+converts a provider's declared UTF-8/code-point/UTF-16 span into original
+source bytes and verifies its text. `mention_key` deduplicates the same
+anchor across overlapping windows without assigning an entity. See
+[src/ingest/I02-HANDOFF.md](src/ingest/I02-HANDOFF.md) for limits and witnesses.
+
 ### Publications
 
 A publication replaces one producer's whole contribution in one scope,

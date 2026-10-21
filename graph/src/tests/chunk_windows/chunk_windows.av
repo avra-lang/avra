@@ -1,0 +1,20 @@
+use ingest.chunks.{windows, WindowPolicy, CoordinateUnit}
+use @avra.graph_contracts.{SourceEnvelope, SourceRef}
+
+fn proof() -> Result<string, string> {
+    let source = SourceEnvelope {
+        contract: 1,
+        source: SourceRef { observation: "note:native", revision: 1 },
+        authored_at_ms: null,
+        received_at_ms: 1,
+        author: null,
+        media_type: "text/plain",
+        content: "A\t \r\né🙂 Z",
+    }
+    let all = windows(source, WindowPolicy { collapse_whitespace: true })?
+    let span = all[0].anchor(2, 5, CoordinateUnit.Utf16, "é🙂")?
+    let invalid = all[0].anchor(3, 4, CoordinateUnit.Utf16, "🙂") is .Err
+    "${span.start} ${span.end} ${span.text} ${invalid}"
+}
+
+proof() catch e -> "failed: ${e}"

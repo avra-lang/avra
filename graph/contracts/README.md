@@ -66,7 +66,9 @@ not `[1,3)`. Wire frame validation checks bounds, byte length and content.
 I02 must preserve mappings through whitespace/normalization/chunk overlap.
 
 Frames identify quoted discourse: unique IDs, parents preceding children,
-with their own optional speaker. Envelope author is not automatically the
+with their own optional speaker. Children stay inside their parents;
+sibling frames (including roots) cannot overlap. This preserves an
+unambiguous innermost speaker at each source coordinate. Envelope author is not automatically the
 speaker of each quote. `Context.principal` identifies the authenticated
 caller; changing `speaker` never changes authentication/permissions. The
 source/candidate/frame IDs a worker proposes are not trusted identity grants.

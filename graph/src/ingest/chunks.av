@@ -1,0 +1,209 @@
+use @avra.graph_contracts.{SourceEnvelope, SourceRef, Span}
+use @std.json.{Json, to_text}
+use @std.text.{builder, chars, is_blank}
+use ingest.envelope.{source_document}
+use data.{digest}
+
+export enum CoordinateUnit { Utf8Bytes, CodePoints, Utf16 }
+
+export type WindowPolicy = {
+    max_bytes: int = 4096,
+    overlap_bytes: int = 128,
+    max_windows: int = 512,
+    max_total_bytes: int = 4194304,
+    collapse_whitespace: bool = false,
+}
+
+/// One normalized code-point boundary and its original byte coordinate.
+export type Boundary = { source_byte: int, utf8: int, utf16: int }
+
+export type TextWindow = {
+    id: string,
+    source: SourceRef,
+    original: Span,
+    frame: string?,
+    speaker: string?,
+    text: string,
+    boundaries: List<Boundary>,
+}
+
+type Normalized = { text: string, boundaries: List<Boundary> }
+
+fn checked_policy(p: WindowPolicy) -> Result<WindowPolicy, string> {
+    if p.max_bytes < 4 || p.max_bytes > 65536 { fail "window bytes must be in 4..65536" }
+    if p.overlap_bytes < 0 || p.overlap_bytes >= p.max_bytes { fail "window overlap must be nonnegative and smaller than a window" }
+    if p.max_windows < 1 || p.max_windows > 2048 { fail "window count must be in 1..2048" }
+    if p.max_total_bytes < 1 || p.max_total_bytes > 4194304 { fail "total window bytes must be in 1..4194304" }
+    p
+}
+
+fn continuation(bytes: Bytes, at: int) -> bool { bytes.at(at) >= 128 && bytes.at(at) < 192 }
+
+fn window_end(bytes: Bytes, start: int, boundary: int, max_bytes: int) -> int {
+    mut end = if boundary - start > max_bytes { start + max_bytes } else { boundary }
+    while end < boundary && continuation(bytes, end) { end = end - 1 }
+    end
+}
+
+fn next_start(bytes: Bytes, start: int, end: int, overlap: int) -> int {
+    mut next = if end - overlap > start { end - overlap } else { start + 1 }
+    while next < end && continuation(bytes, next) { next = next + 1 }
+    next
+}
+
+fn normalized(original: Span, collapse: bool) -> Normalized {
+    mut out = builder()
+    mut boundaries = [Boundary { source_byte: original.start, utf8: 0, utf16: 0 }]
+    mut previous_blank = false
+    mut at = original.start
+    mut utf8 = 0
+    mut utf16 = 0
+    for ch in chars(original.text) {
+        let width = ch.bytes().length
+        at = at + width
+        let blank = collapse && is_blank(ch)
+        if blank && previous_blank {
+            boundaries.set(boundaries.length - 1, boundaries.last()! with { source_byte: at })
+        } else {
+            out.push(if blank { " " } else { ch })
+            utf8 = utf8 + if blank { 1 } else { width }
+            utf16 = utf16 + if width == 4 { 2 } else { 1 }
+            boundaries.push(Boundary { source_byte: at, utf8: utf8, utf16: utf16 })
+        }
+        previous_blank = blank
+    }
+    Normalized { text: out.built(), boundaries: boundaries }
+}
+
+fn window_id(source: SourceRef, start: int, end: int, frame: string?, collapse: bool) -> string {
+    "window:" +
+        digest(
+            to_text(
+                Json
+                    .Arr(
+                        [
+                            Json.Str("window.v1"),
+                            Json.Str(source.observation),
+                            Json.Int(source.revision),
+                            Json.Int(start),
+                            Json.Int(end),
+                            Json.Str(frame ?? ""),
+                            Json.Bool(collapse),
+                        ],
+                    ),
+            ),
+        )
+}
+
+/// Partition before windowing so overlap cannot change a quoted speaker.
+export fn windows(s: SourceEnvelope, policy: WindowPolicy = WindowPolicy {}) -> Result<
+    List<TextWindow>,
+    string,
+> {
+    let p = checked_policy(policy)?
+    let source = match SourceEnvelope.from_json(to_text(source_document(s))) {
+        .Ok(valid) -> valid,
+        .Err(e) -> { fail e.report() },
+    }
+    let bytes = source.content.bytes()
+    if bytes.text() == null { fail "windowing needs valid UTF-8 source text" }
+    let boundaries = [bytes.length]
+        .concat([at for f in source.frames for at in [f.span.start, f.span.end]])
+    mut out: List<TextWindow> = []
+    mut cursor = 0
+    mut total = 0
+    while cursor < bytes.length {
+        let end = [at for at in boundaries if at > cursor].min() ?? bytes.length
+        let frames = [f for f in source.frames if f.span.start <= cursor && f.span.end >= end]
+        let frame = frames.last()
+        mut start = cursor
+        while start < end {
+            if out.length >= p.max_windows { fail "source exceeds its window count budget" }
+            let until = window_end(bytes, start, end, p.max_bytes)
+            total = total + until - start
+            if total > p.max_total_bytes { fail "source exceeds its total window byte budget" }
+            let original = Span {
+                start: start,
+                end: until,
+                text: source.content.substring(start, until),
+            }
+            let w = normalized(original, p.collapse_whitespace)
+            out
+                .push(
+                    TextWindow {
+                        id: window_id(source.source, start, until, frame?.id, p.collapse_whitespace),
+                        source: source.source,
+                        original: original,
+                        text: w.text,
+                        boundaries: w.boundaries,
+                        frame: frame?.id,
+                        speaker: if frame == null { source.author } else { frame!.speaker },
+                    },
+                )
+            if until == end { break }
+            start = next_start(bytes, start, until, p.overlap_bytes)
+        }
+        cursor = end
+    }
+    out
+}
+
+impl TextWindow {
+    fn boundary(position: int, unit: CoordinateUnit) -> Result<Boundary, string> {
+        if position < 0 { fail "a mention coordinate cannot be negative" }
+        let found = match unit {
+            .Utf8Bytes -> self.boundaries.find(it.utf8 == position),
+            .CodePoints -> if position < self.boundaries.length { self.boundaries[position] } else { null },
+            .Utf16 -> self.boundaries.find(it.utf16 == position),
+        }
+        let actual? = found else { fail "mention coordinates must land on a complete code-point boundary" }
+        actual
+    }
+
+    /// Convert model coordinates into an exact original-source anchor.
+    fn anchor(start: int, end: int, unit: CoordinateUnit, expected: string) -> Result<Span, string> {
+        if end <= start { fail "a mention must contain at least one complete code point" }
+        let first = self.boundary(start, unit)?
+        let last = self.boundary(end, unit)?
+        if self.text.substring(first.utf8, last.utf8) != expected { fail "a mention must match its model input" }
+        Span {
+            start: first.source_byte,
+            end: last.source_byte,
+            text: self
+                .original
+                .text
+                .substring(first.source_byte - self.original.start, last.source_byte - self.original.start),
+        }
+    }
+
+    /// Overlapping windows share a mention key, never an entity identity.
+    fn mention_key(span: Span) -> Result<string, string> {
+        if span.start < self.original.start ||
+            span.end > self.original.end ||
+            span.end <= span.start {
+            fail "a mention must stay inside its source window"
+        }
+        if self
+            .original
+            .text
+            .substring(span.start - self.original.start, span.end - self.original.start) != span.text {
+            fail "a mention anchor must match its original source"
+        }
+        "mention:" +
+            digest(
+                to_text(
+                    Json
+                        .Arr(
+                            [
+                                Json.Str("mention.v1"),
+                                Json.Str(self.source.observation),
+                                Json.Int(self.source.revision),
+                                Json.Int(span.start),
+                                Json.Int(span.end),
+                                Json.Str(self.frame ?? ""),
+                            ],
+                        ),
+                ),
+            )
+    }
+}
