@@ -21,6 +21,7 @@ Read, in order:
 3. Your one row in [tasks.jsonl](tasks.jsonl), plus its dependencies' outputs.
 4. [../DESIGN.md](../DESIGN.md) and [../RESEARCH.md](../RESEARCH.md).
 5. [../MODULARITY.md](../MODULARITY.md): replacement boundaries and versioning.
+6. [GAPS.md](GAPS.md): evidence for additional persistence/semantic-policy prerequisites.
 
 ## Product contract
 
@@ -77,8 +78,9 @@ ready until dependencies have real outputs and acceptance receipts.
 | Fixture audit and interfaces | A01 → C01 → A02 | Freeze coordinates/context before annotating spans. |
 | Application model declarations | M01; then M02 and M03 | Separate owned files; agree cross-model names through C01. |
 | Input/extraction plumbing | I01 → I02 → E01 | Use recorded proposals, not downloaded models, for contract tests. |
+| Model semantics and derivations | P01 → P02 → P03 (execution after Q02) | Metadata is not an interpreter; M02 declares policies after P02. |
 | Identity and context | L01; then L02 and L03 | Share contracts, not ad hoc provider-specific types. |
-| Durable processing | J01 → J02 → J03 → J04 | One writer lane: publication and transaction boundaries are sensitive. |
+| Durable processing | E00 plus J01 → J02 → J03 → J04 | Preserve field semantics before atomic worker publication; one storage writer lane. |
 | Query execution | Q01 → Q02; Q03 after model declarations | Manual plans first; language understanding separately measured. |
 | Context/time/answers | Q04, Q05, R01 after their dependencies | Own separate modules; integration owner handles dispatch changes. |
 | Model experiments | E02 and E03 after contracts/annotations/models | Separate artifacts; serialize heavy runs on shared hardware. |
