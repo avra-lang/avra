@@ -6,20 +6,35 @@
 // keeps its caret, that the keyboard reaches everything. Each claim is
 // CHECKED and one failure exits 1. `make ui-browser` builds and runs it.
 //
-//   node browser.mjs <page url> [--shots <directory>] [--source <the view's file>]
+//   node browser.mjs <page url> [--engine firefox|webkit] [--shots <directory>] [--source <the view's file>]
+//
+// `--engine webkit` runs the same claims in Playwright's WebKit (webkit.mjs), the engine
+// every iOS browser is; PLAYWRIGHT_DIR names the directory holding node_modules/playwright.
+// Exit 3 says WebKit could not launch here, and why.
 //
 // With `--source` the page is `avra dev`'s, and the loop is proven too: the
 // view's file is edited where it stands and the running page must follow.
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { openPage, firefoxBinary, KEY } from "./firefox.mjs";
+import { openPage as openWebkit, webkitLaunch } from "./webkit.mjs";
 import { outsidePresses } from "./dialog_claims.mjs";
 
 const [url, ...named_words] = process.argv.slice(2);
 const word = (name) => { const at = named_words.indexOf(name); return at < 0 ? null : named_words[at + 1]; };
 const shots = word("--shots");
 const source = word("--source");
-const page = await openPage(firefoxBinary(), url);
+const engine = word("--engine") ?? "firefox";
+// The page the claims are read from, in the engine asked for.
+async function opened() {
+  if (engine !== "webkit") return openPage(firefoxBinary(), url);
+  const loaded = await import(pathToFileURL(path.join(process.env.PLAYWRIGHT_DIR ?? ".", "node_modules/playwright/index.mjs")).href).catch((e) => ({ said: String(e.message).split("\n")[0] }));
+  const { browser, said } = loaded.webkit ? await webkitLaunch(loaded) : { said: loaded.said };
+  if (!browser) { console.log(`ui-browser: WebKit could not launch — ${said}`); process.exit(3); }
+  return openWebkit(browser, url, { device: process.env.UI_BROWSER_DEVICE ?? null, playwright: loaded });
+}
+const page = await opened();
 const { read, press, type, frame } = page;
 
 let failed = 0;
@@ -127,7 +142,8 @@ claim("Escape sends it away", await read(`${dialog}.open`) === false);
 await press(named("About"));
 claim("the program heard that: About opens it again", await read(`${dialog}.open`) && await read(`${dialog}.matches(":modal")`));
 await press(named("Light mode"));
-claim("a press outside it sends it away, and reaches nothing behind it", await read(`${dialog}.open`) === false && await read(`${named("Light mode")} !== undefined`));
+const stillOpen = await read(`${dialog}.open`);
+claim("a press outside it sends it away, and reaches nothing behind it", stillOpen === false && await read(`${named("Light mode")} !== undefined`), { open: stillOpen, closedby: await read(`${dialog}.getAttribute("closedby")`) });
 await press(named("About"));
 claim("and it opens again after that too", await read(`${dialog}.open`));
 await press(named("Close"));
@@ -198,12 +214,15 @@ await page.close();
 
 // ── an engine that does not send a dialog away on its own ───────
 // The same board where the browser knows no `closedby`: the page sends the
-// dialog away itself, by the same rule.
-const unaware = await openPage(firefoxBinary(), url, { prefs: { "dom.dialog.light-dismiss.enabled": false } });
-await unaware.read(`new Promise((ready) => { const look = setInterval(() => { if (document.querySelector("li")) { clearInterval(look); ready(1); } }, 20); })`);
-claim("this engine knows no `closedby`", await unaware.read(`!("closedBy" in HTMLDialogElement.prototype)`));
-await outsidePresses({ ...unaware, escape: () => unaware.type(KEY.escape) }, ", where the engine knows no `closedby`", claim, named);
-claim("nothing reached that page's console", unaware.complaints().length === 0, unaware.complaints());
-await unaware.close();
-console.log(failed === 0 ? "ui-browser: every claim holds" : `ui-browser: ${failed} claim(s) FAILED`);
+// dialog away itself, by the same rule. The pref is Firefox's, so this page
+// is that engine's alone.
+if (engine === "firefox") {
+  const unaware = await openPage(firefoxBinary(), url, { prefs: { "dom.dialog.light-dismiss.enabled": false } });
+  await unaware.read(`new Promise((ready) => { const look = setInterval(() => { if (document.querySelector("li")) { clearInterval(look); ready(1); } }, 20); })`);
+  claim("this engine knows no `closedby`", await unaware.read(`!("closedBy" in HTMLDialogElement.prototype)`));
+  await outsidePresses({ ...unaware, escape: () => unaware.type(KEY.escape) }, ", where the engine knows no `closedby`", claim, named);
+  claim("nothing reached that page's console", unaware.complaints().length === 0, unaware.complaints());
+  await unaware.close();
+}
+console.log(failed === 0 ? `ui-browser: every claim holds in ${engine}` : `ui-browser: ${failed} claim(s) FAILED in ${engine}`);
 process.exit(failed === 0 ? 0 : 1);

@@ -484,17 +484,17 @@ impl Page {
     }
 
     /// The page: the glue's own, titled, with the dev client and the
-    /// number of the module it is about to load.
+    /// number of the module it is about to load — or, while the last build
+    /// has failed, the failure itself under 503.
     fn page() -> Response {
+        let now = self.standing.get()
+        if now.failure != "" { return failed_page(now) }
         match read_text(joined_path(self.glue, "page.html")) {
             .Ok(html) -> unkept(
                 "text/html; charset=utf-8",
                 html
-                    .replace(
-                        "<!--TITLE-->",
-                        file_name(self.root).replace("&", "&amp;").replace("<", "&lt;"),
-                    )
-                    .replace("<!--DEV-->", dev_tags(self.standing.get().number))
+                    .replace("<!--TITLE-->", html_escaped(file_name(self.root)))
+                    .replace("<!--DEV-->", dev_tags(now.number))
                     .bytes(),
             ),
             .Err(e) -> text(500, e.describe().message),
@@ -529,6 +529,18 @@ fn unkept(kind: string, body: Bytes) -> Response {
         ],
         body: body,
     }
+}
+
+fn html_escaped(text: string) -> string { text.replace("&", "&amp;").replace("<", "&lt;") }
+
+/// What a page answers while its build has failed: the build's words, under 503,
+/// the module still standing, and a page that reloads itself when the next build lands.
+fn failed_page(now: Standing) -> Response {
+    unkept(
+        "text/html; charset=utf-8",
+        "<!doctype html><meta charset=\"utf-8\"><title>build failed</title>\n<meta name=\"avra-module\" content=\"${now.number}\">\n<pre>${html_escaped(now.failure)}</pre><script>new EventSource('/@dev/events').addEventListener('built', () => location.reload())</script>"
+            .bytes(),
+    ) with { status: 503 }
 }
 
 /// What the dev page carries that a production page does not.

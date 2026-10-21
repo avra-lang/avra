@@ -316,6 +316,8 @@ type Session = {
     broken_built: bool,
     broken: List<string>,
     broken_wasm_same: bool,
+    broken_page: Response,
+    mended_page_status: int,
     mended_id: string,
     mended_failure: string,
     numbers: List<string>,
@@ -348,9 +350,11 @@ once fn session() -> Session? {
     let broken_built = d.turn()
     let broken = standing(d)
     let still = got(d, "/app.wasm").body
+    let broken_page = got(d, "/")
     rewritten(d, page_source("two"))
     let _ = d.turn()
     let mended = standing(d)
+    let mended_page_status = got(d, "/").status
     Session {
         first_built: first_built,
         idle_built: idle_built,
@@ -365,6 +369,8 @@ once fn session() -> Session? {
         broken_built: broken_built,
         broken: broken,
         broken_wasm_same: still == good,
+        broken_page: broken_page,
+        mended_page_status: mended_page_status,
         mended_id: mended[0],
         mended_failure: failure_of(mended),
         numbers: [first[0], edited[0], broken[0], mended[0]],
@@ -436,10 +442,19 @@ spec "avra dev — the loop, turned by hand" {
         }
         then "the module's id stays the last good one" { seen((s) -> s.broken[0] == s.edited_id) }
         then "the last good module is still what is served" { seen((s) -> s.broken_wasm_same) }
+        then "the page answers 503 with what the build said" {
+            seen(
+                (s) -> s.broken_page.status == 503 &&
+                    (s.broken_page.body.text() ?? "").contains("src/main.av"),
+            )
+        }
     }
     given "the source mended" {
         then "the failure is gone and the good module stands" {
             seen((s) -> s.mended_failure == "" && s.mended_id == s.edited_id)
+        }
+        then "the page answers 200 again" {
+            seen((s) -> s.mended_page_status == 200)
         }
     }
     given "the module's number" {
