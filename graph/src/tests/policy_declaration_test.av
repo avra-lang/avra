@@ -143,7 +143,6 @@ fn declared() -> Result<bool, string> {
         (c.derivation("held")?).parameters[1].input is .Text &&
         (c.derivation("face")?).parameters[0].input is .Maybe &&
         d.description.contains("still owes") &&
-        d.code_hash != null &&
         c.document == plain.document &&
         c.fingerprint != plain.fingerprint
 }
@@ -214,8 +213,11 @@ fn cycles_refused() -> Result<bool, string> {
 fn policy_identity() -> Result<bool, string> {
     let c = Catalog.collected(models(), derivations())?
     let described = edited("held", (d: Derivation) -> d with { description: "changed" })?
-    let rehashed = edited("held", (d: Derivation) -> d with { code_hash: "other" })?
-    c.fingerprint != described.fingerprint && c.fingerprint != rehashed.fingerprint
+    let narrowed = edited(
+        "face",
+        (d: Derivation) -> d with { parameters: [d.parameters[0] with { input: Input.One("Bill") }] },
+    )?
+    c.fingerprint != described.fingerprint && c.fingerprint != narrowed.fingerprint
 }
 
 fn passed(answer: Result<bool, string>) -> bool {
@@ -227,7 +229,7 @@ fn passed(answer: Result<bool, string>) -> bool {
 
 spec "typed derivations declared beside models" {
     given "an unrelated ledger and bin ontology" {
-        then "a derivation projects its typed inputs, output, description and code identity" { passed(declared()) }
+        then "a derivation projects its typed inputs, output and description" { passed(declared()) }
         then "same-unit subtraction answers in minor units" { passed(same_unit_subtraction()) }
         then "different units are unknown, never converted" { passed(mixed_units_unknown()) }
         then "arithmetic leaving the integer range is unknown" { passed(overflow_unknown()) }
@@ -236,6 +238,6 @@ spec "typed derivations declared beside models" {
         then "an optional input accepts absence" { passed(optional_input()) }
         then "unknown models and duplicate names are refused" { passed(bad_symbols()) }
         then "derivation dependency cycles are refused" { passed(cycles_refused()) }
-        then "description and code edits change the catalog identity" { passed(policy_identity()) }
+        then "description and signature edits change the catalog identity" { passed(policy_identity()) }
     }
 }

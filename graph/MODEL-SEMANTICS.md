@@ -118,5 +118,7 @@ converted and no rate is assumed.
 
 The catalog refuses unknown models, duplicate names and dependency cycles
 (a derivation reading, through others, its own output). Each
-derivation's description and code hash join the fingerprint as a
-versioned section; a catalog with none keeps its model-only identity.
+derivation's name, description, inputs and output join the fingerprint as
+a versioned section; a catalog with none keeps its model-only identity.
+Like model validators, a body edit is not part of the fingerprint: a
+derived answer is never stored, so no persisted interpretation goes stale.
