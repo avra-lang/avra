@@ -20,6 +20,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 BINARY = HERE / "app/src/main"
 ORACLE = HERE / "oracle"
+FIXTURE = HERE
 RESULTS = HERE / "results"
 HELDOUT_RESULTS = HERE / "heldout-results"
 SPLIT = HERE / "split.json"
@@ -36,7 +37,17 @@ def read_lines(path):
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-def load_fixture(root=HERE):
+def configure(root):
+    """Points the harness at a fixture directory: its sources, oracle, split and app."""
+    global FIXTURE, BINARY, ORACLE, SPLIT
+    FIXTURE = root
+    BINARY = root / "app/src/main"
+    ORACLE = root / "oracle"
+    SPLIT = root / "split.json"
+
+
+def load_fixture(root=None):
+    root = root or FIXTURE
     manifest = json.loads((root / "manifest.json").read_text())
     return (manifest, read_lines(root / "sources.jsonl"),
             read_lines(root / "entities.jsonl"), read_lines(root / "questions.jsonl"))
@@ -552,8 +563,10 @@ def slice_hooks(args):
     return {"extractor": args.extractor or found.get("extractor"), "planner": args.planner or found.get("planner")}
 
 
-def load_split():
-    return json.loads(SPLIT.read_text())
+def load_split(questions):
+    if SPLIT.exists():
+        return json.loads(SPLIT.read_text())
+    return {"heldout": [], "categories": {q["id"]: "development" for q in questions}}
 
 
 def heldout_report(mode, hooks, results, extractions, categories):
@@ -600,18 +613,21 @@ def main():
     parser.add_argument("--only", help="comma-separated development question ids")
     parser.add_argument("--heldout", action="store_true",
                         help="run the held-out questions; prints an aggregate only")
-    parser.add_argument("--binary", default=str(BINARY))
+    parser.add_argument("--fixture", default=".", help="fixture directory under graph/acceptance (portability)")
+    parser.add_argument("--binary", default=None)
     parser.add_argument("--build", action="store_true", help="build the fixture app first")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
+    configure((HERE / args.fixture).resolve())
+    args.binary = args.binary or str(BINARY)
     if args.build or not pathlib.Path(args.binary).exists():
-        built = subprocess.run(["sh", "tools/watch.sh", "3500", "./build/avra", "build", "graph/acceptance/app"], cwd=ROOT)
+        built = subprocess.run(["sh", "tools/watch.sh", "3500", "./build/avra", "build", str(FIXTURE.relative_to(ROOT) / "app")], cwd=ROOT)
         if built.returncode != 0:
             sys.exit("fixture app build failed")
     fixture = load_fixture()
-    split = load_split()
+    split = load_split(fixture[3])
     held = set(split["heldout"])
     named = set((SLICE if args.slice else args.only or "").split(",")) - {""}
     if named & held:

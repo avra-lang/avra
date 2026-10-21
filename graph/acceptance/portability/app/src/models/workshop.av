@@ -1,0 +1,122 @@
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+}
+use @std.validate.{length, email, one_of, range}
+
+/// A person who lives, works or trades near the household. A name is not a
+/// unique key; the mail address is.
+@model(quote { Semantics { identities: [IdentityBinding { namespace: "mail", path: ["email"], normalization: .AsciiLowerTrim }] } })
+export type Resident = {
+    @length(min: 1, max: 256) name: string,
+    @email email: string?,
+    @length(min: 1, max: 128) side: string?,
+}
+
+/// A shop or nursery that sells to the household.
+@model
+export type Merchant = {
+    @length(min: 1, max: 256) name: string,
+}
+
+/// Something in the workshop that can be lent or repaired.
+@model
+export type Tool = {
+    @length(min: 1, max: 256) label: string,
+    @length(min: 1, max: 128) kind: string?,
+}
+
+/// An amount in minor currency units with its currency; no conversion or tax is implied.
+@model
+export type Cost = {
+    minor: int,
+    @length(min: 3, max: 3) currency: string,
+}
+
+/// A tool lent to a resident. due_on and returned_on stay empty until a
+/// source states them; a missing return date is not a return.
+@model(quote { Semantics { absences: [
+    AbsenceBinding { path: ["due_on"], code: "no_return_date" },
+    AbsenceBinding { path: ["returned_on"], code: "not_returned" },
+] } })
+export type Loan = {
+    tool: Ref<Tool>,
+    borrower: Ref<Resident>,
+    lent_on: string?,
+    due_on: string?,
+    returned_on: string?,
+    @one_of(["lent", "returned"]) state: string,
+}
+
+/// A plant that needs recurring care.
+@model
+export type Plant = {
+    @length(min: 1, max: 256) label: string,
+    @length(min: 1, max: 128) species: string?,
+}
+
+/// One recurring care action for a plant, as the household wrote it down.
+@model(quote { Semantics { quantities: [QuantityBinding {
+    amount: ["every_days"], unit: UnitBinding.Constant("day"), decimal_places: 0,
+}] } })
+export type CareRule = {
+    plant: Ref<Plant>,
+    @length(min: 1, max: 256) action: string,
+    @range(1, 3650) every_days: int?,
+    last_done_on: string?,
+    next_due_on: string?,
+}
+
+/// A purchase from a merchant. unit_cost is the quoted price per unit; paid
+/// stays unset until a source records a payment.
+@model(quote { Semantics {
+    quantities: [
+        QuantityBinding { amount: ["bags"], unit: UnitBinding.Constant("bag"), decimal_places: 0 },
+        QuantityBinding {
+            amount: ["unit_cost", "minor"],
+            unit: UnitBinding.Field(["unit_cost", "currency"]),
+            decimal_places: 2,
+        },
+    ],
+    absences: [AbsenceBinding { path: ["paid"], code: "no_payment_record" }],
+} })
+export type SupplyOrder = {
+    merchant: Ref<Merchant>,
+    @length(min: 1, max: 256) item: string,
+    @range(1, 100000) bags: int,
+    unit_cost: Cost,
+    expected_on: string?,
+    paid: bool? = null,
+}
+
+/// A repair booked for a tool. estimate and final_cost stay apart.
+@model(quote { Semantics { quantities: [
+    QuantityBinding {
+        amount: ["estimate", "minor"],
+        unit: UnitBinding.Field(["estimate", "currency"]),
+        decimal_places: 2,
+    },
+    QuantityBinding {
+        amount: ["final_cost", "minor"],
+        unit: UnitBinding.Field(["final_cost", "currency"]),
+        decimal_places: 2,
+    },
+] } })
+export type Repair = {
+    tool: Ref<Tool>,
+    repairer: Ref<Resident>?,
+    @length(min: 1, max: 512) fault: string,
+    booked_for: string?,
+    estimate: Cost?,
+    final_cost: Cost?,
+    @one_of(["booked", "done"]) state: string,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

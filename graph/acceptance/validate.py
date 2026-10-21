@@ -178,14 +178,20 @@ def validate(data):
 
 GRAPH = ROOT.parent
 GENERIC = {"Store", "Works", "Jacket"}
-PRIVATE_KINDS = {"Person", "Organization", "Product", "Pet"}
-SCANNED = ("acceptance/app/src/models", "extract", "planner", "cypher", "src")
+PRIVATE_KINDS = {"Person", "Organization", "Product", "Pet", "Resident", "Merchant"}
+SCANNED = ("acceptance/app/src/models", "acceptance/portability/app/src/models", "extract", "planner", "cypher", "src")
 SKIPPED = {"bench", "recorded", "__pycache__", "build"}
 SUFFIXES = {".av", ".py", ".md", ".toml", ".json"}
 
 
 def leak_pattern(entities, sources):
     """Fixture names, document identifiers and mail domains as one regex."""
+    return leak_union([(entities, sources)])
+
+
+def leak_union(fixtures):
+    entities = [e for ents, _ in fixtures for e in ents]
+    sources = [s for _, srcs in fixtures for s in srcs]
     words = {w for e in entities if e["kind"] in PRIVATE_KINDS for w in re.findall(r"[A-Z][a-z]+", e["label"])}
     domains = {d for s in sources for d in re.findall(r"@([\w-]+\.example)", s["content"])}
     parts = [r"\b(?:" + "|".join(sorted(words - GENERIC)) + r")\b", r"\b(?:INV|PO|R)-\d+\b", r"\bNJ-\d+\b"]
@@ -222,6 +228,32 @@ def check_split(questions):
             "split: every multi-question category has a held-out member")
 
 
+PORTABILITY = ROOT / "portability"
+
+
+def check_portability(entities, sources):
+    """The second fixture is well formed and shares no names or domains with the first."""
+    manifest = json.loads((PORTABILITY / "manifest.json").read_text())
+    p_sources = load_lines(PORTABILITY / "sources.jsonl")
+    p_entities = load_lines(PORTABILITY / "entities.jsonl")
+    p_questions = load_lines(PORTABILITY / "questions.jsonl")
+    require(len(p_sources) == manifest["source_count"], "portability: source count")
+    require(len(p_questions) == manifest["question_count"], "portability: question count")
+    seqs = {s["id"]: s["seq"] for s in p_sources}
+    gold = {e["id"] for e in p_entities}
+    for q in p_questions:
+        require(q["checkpoint"] <= len(p_sources), f"portability {q['id']}: checkpoint past the sources")
+        for ev in q["expect"].get("evidence_all", []):
+            require(ev in seqs and seqs[ev] <= q["checkpoint"], f"portability {q['id']}: evidence {ev} is not known at its checkpoint")
+        for token in json.dumps(q["expect"]["answer"]).replace('"', " ").split():
+            if token.startswith(("resident:", "tool:", "plant:", "order:", "repair:", "merchant:", "loan:")):
+                require(token.strip(",:}]") in gold, f"portability {q['id']}: unknown gold {token}")
+    first = leak_union([(entities, sources)])
+    texts = [e["label"] for e in p_entities] + [s["content"] for s in p_sources]
+    shared = sorted({m.group(0) for t in texts for m in first.finditer(t)})
+    require(not shared, "portability shares fixture tokens with the first fixture: " + ", ".join(shared))
+
+
 def self_test(data):
     def cyclic(altered):
         for task in altered[4]:
@@ -255,6 +287,9 @@ def self_test(data):
     pattern = leak_pattern(data[2], data[1])
     for text in ("Rowan's wife Elena", "mail alex@velluto-works.example", "see INV-204", "NJ-01 jacket"):
         require(pattern.search(text), f"leak witness missed: {text}")
+    both = leak_union([(data[2], data[1]), (load_lines(PORTABILITY / "entities.jsonl"), load_lines(PORTABILITY / "sources.jsonl"))])
+    for text in ("Teodor lent the auger", "mail odalys@larkspur.example", "Greenholt Nursery"):
+        require(both.search(text), f"second-fixture leak witness missed: {text}")
     for text in ("a founder's spouse", "Dana Ferris", "mail dana@example.test"):
         require(not pattern.search(text), f"leak witness refused innocent text: {text}")
     print(f"integrity self-test: {len(mutations)} invalid fixtures refused, leak pattern witnessed")
@@ -267,7 +302,10 @@ def main():
                         for key in ("sources", "entities", "questions", "tasks")))
     validate(data)
     check_split(data[3])
-    leaked = leaks(GRAPH, leak_pattern(data[2], data[1]))
+    p_entities = load_lines(PORTABILITY / "entities.jsonl")
+    p_sources = load_lines(PORTABILITY / "sources.jsonl")
+    check_portability(data[2], data[1])
+    leaked = leaks(GRAPH, leak_union([(data[2], data[1]), (p_entities, p_sources)]))
     require(not leaked, "fixture tokens outside the fixture:\n  " + "\n  ".join(leaked[:20]))
     if sys.argv[1:]:
         self_test(data)
