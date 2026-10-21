@@ -181,7 +181,7 @@ class Loop(unittest.TestCase):
                 return replies[Fake.calls - 1]
 
             def choose(self, context, question, options):
-                return [0.9, 0.1]
+                return [0.9 if o.startswith("yes") else 0.1 for o in options]
 
         context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
         self.assertEqual(planned(Fake(), "Who is my wife?", SCHEMA, context, limit=2)["cypher"], SLICE["q01"])
