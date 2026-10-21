@@ -40,7 +40,7 @@ def structured_sources(call, identity):
 
 
 def main():
-    binary = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "graph/src/main").resolve()
+    binary = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "graph/examples/notes/src/main").resolve()
     with tempfile.TemporaryDirectory(prefix="avra-graph-") as directory:
         root = pathlib.Path(directory)
         database = root / "graph.db"

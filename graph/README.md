@@ -83,15 +83,15 @@ From the worktree root, using its compiler:
 ```sh
 # Rebuild first if the standing compiler predates this branch's language fixes:
 sh tools/watch.sh 3500 make avra
-sh tools/watch.sh 3500 ./build/avra build graph
-graph/src/main request --db /tmp/personal-graph.db graph/examples/schema.json
-graph/src/main request --db /tmp/personal-graph.db graph/examples/observe.json
+sh tools/watch.sh 3500 ./build/avra build graph/examples/notes
+graph/examples/notes/src/main request --db /tmp/personal-graph.db graph/examples/schema.json
+graph/examples/notes/src/main request --db /tmp/personal-graph.db graph/examples/observe.json
 ```
 
 For HTTP, provide a private token file containing at least 24 bytes:
 
 ```sh
-graph/src/main serve --db /tmp/personal-graph.db --port 7331 --token-file /path/to/private-token
+graph/examples/notes/src/main serve --db /tmp/personal-graph.db --port 7331 --token-file /path/to/private-token
 ```
 
 The only endpoint is authenticated `POST /graph` on `127.0.0.1`.
@@ -349,7 +349,7 @@ sh tools/watch.sh 3500 ./build/avra test graph/src/tests/merge_test.av
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/partial_test.av
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/storage_test.av
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/tombstone_test.av
-sh tools/watch.sh 3500 ./build/avra build graph
+sh tools/watch.sh 3500 ./build/avra build graph/examples/notes
 python3 graph/tests/smoke.py
 python3 graph/tests/durability.py
 sh tools/watch.sh 3500 ./build/avra build graph/tests/unrelated/src/main.av

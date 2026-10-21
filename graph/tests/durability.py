@@ -137,7 +137,7 @@ time.sleep(30)
 
 
 def main():
-    binary = str(pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "graph/src/main").resolve())
+    binary = str(pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "graph/examples/notes/src/main").resolve())
     for witness in (upgrades, contention, crash):
         with tempfile.TemporaryDirectory(prefix="avra-graph-durable-") as directory:
             witness(Graph(pathlib.Path(directory), binary))
