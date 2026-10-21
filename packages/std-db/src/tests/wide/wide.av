@@ -1,0 +1,66 @@
+// proves: a TEN-field @model — its row literal and its `where` seats are
+// runs, so every generated CRUD verb and filter works with no arity arm.
+use @std.db.{model}
+use @std.db.error.{ModelError, modeled}
+use @std.sqlite.{Db}
+use @std.sqlite.error.{SqlError}
+
+@model
+type Wide10 = {
+    id: int = 0,
+    @unique a: string,
+    @unique b: string,
+    @unique c: string,
+    @unique d: string,
+    @unique e: string,
+    @unique f: string,
+    n: int,
+    ratio: float,
+    note: string?,
+}
+
+fn seeded() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    Wide10.create_table(db)?
+    db
+}
+
+fn put(mut db: Db, tag: string, n: int, note: string?) -> Result<Wide10, ModelError> {
+    Wide10 { a: tag, b: tag, c: tag, d: tag, e: tag, f: tag, n: n, ratio: 2.5, note: note }
+        .insert(db)
+}
+
+fn held(r: Wide10) -> string {
+    "${r.a} ${r.b} ${r.c} ${r.d} ${r.e} ${r.f} ${r.n} ${r.ratio} ${r.note ?? "none"}"
+}
+
+fn tags(rows: List<Wide10>) -> string { [r.a for r in rows].join(",") }
+
+fn story() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let made = put(db, "one", 7, null)?
+    let _ = put(db, "two", 8, "note")?
+    let found = modeled(Wide10.find(db, made.id))?
+    let read = match found {
+        row? -> held(row)
+        null -> "gone"
+    }
+    let by_a = tags(modeled(Wide10.where(db, a: "two"))?)
+    let by_n = tags(modeled(Wide10.where(db, n: 7))?)
+    let absent = tags(modeled(Wide10.where(db, note: .Is(null)))?)
+    let present = tags(modeled(Wide10.where(db, note: .Is("note")))?)
+    let _ = (made with { f: "six", note: "now" }).update(db)?
+    let changed = modeled(Wide10.find(db, made.id))?
+    let again = match changed {
+        row? -> "${row.f} ${row.note ?? "none"}"
+        null -> "gone"
+    }
+    let gone = made.remove(db)?
+    "read ${read}\nwhere a ${by_a}\nwhere n ${by_n}\nabsent ${absent}\npresent ${present}\nchanged ${again}\nremoved ${gone} ${(modeled(Wide10.all(db))?).length}"
+}
+
+fn told() -> string {
+    match story() { .Ok(s) -> s, .Err(e) -> "FAILED ${e.describe().kind}: ${e.describe().message}" }
+}
+
+told()

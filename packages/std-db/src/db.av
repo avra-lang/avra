@@ -86,7 +86,6 @@ export fn model(t: Type) -> Declared {
 fn shape_problems(t: Type) -> List<Diagnostic> {
     if t.variants.length > 0 { return [enum_not_supported(t)] }
     if !has_id_field(t) { return [no_id_field(t)] }
-    if t.fields.length > MAX_FIELDS { return [too_many_fields(t)] }
     [soft_delete_kind(f) for f in t.fields if is_mark(f, "soft_delete") && !nullable_int(f.kind)]
         .concat([auto_kind(f) for f in t.fields if is_mark(f, "auto") && !plain_int(f.kind)])
 }
@@ -106,25 +105,13 @@ fn plain_int(k: Kind) -> bool {
     match k { .Int -> true, rest -> false }
 }
 
-/// The widest row this derive can build a constructor for — `row_ctor`
-/// hand-spells one arm per count, the same shape `core/rebuild_derive.av`
-/// already carries for the identical reason (no seat splices a struct
-/// literal's field list); the flagged fifth argument, "the compiler
-/// wants a construct the language lacks," names this site too.
-const MAX_FIELDS: int = 6
-
 /// The same question `shape_problems` answers as diagnostics, asked
 /// here as a bool: `generated` builds NOTHING over a shape this
 /// fails, rather than an `impl` whose every method mistypes against a
 /// shape it was never built for. `shape_problems` is what SPEAKS the
 /// refusal; this is what stops a second, silent, unrelated pile of
 /// errors from speaking over it.
-fn shape_ok(t: Type) -> bool {
-    t.variants.is_empty() &&
-        has_id_field(t) &&
-        t.fields.length <= MAX_FIELDS &&
-        shape_problems(t).is_empty()
-}
+fn shape_ok(t: Type) -> bool { t.variants.is_empty() && has_id_field(t) && shape_problems(t).is_empty() }
 
 /// The annotations a model owns — its marks and its own — which are no
 /// rule of the validation it brings.
@@ -284,16 +271,14 @@ fn inserted_row(t: Type) -> Code {
 /// row. A soft-delete model's reads skip what was removed. A nullable
 /// field filters by its value; null names no filter.
 fn where_decl(t: Type) -> Decls {
-    let fs = stored(t)
-    match fs.length {
-        1 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        2 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}, ${fs[1].name}: ${param_type(t, fs[1])} = ${param_default(fs[1])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        3 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}, ${fs[1].name}: ${param_type(t, fs[1])} = ${param_default(fs[1])}, ${fs[2].name}: ${param_type(t, fs[2])} = ${param_default(fs[2])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        4 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}, ${fs[1].name}: ${param_type(t, fs[1])} = ${param_default(fs[1])}, ${fs[2].name}: ${param_type(t, fs[2])} = ${param_default(fs[2])}, ${fs[3].name}: ${param_type(t, fs[3])} = ${param_default(fs[3])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        5 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}, ${fs[1].name}: ${param_type(t, fs[1])} = ${param_default(fs[1])}, ${fs[2].name}: ${param_type(t, fs[2])} = ${param_default(fs[2])}, ${fs[3].name}: ${param_type(t, fs[3])} = ${param_default(fs[3])}, ${fs[4].name}: ${param_type(t, fs[4])} = ${param_default(fs[4])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        6 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}, ${fs[1].name}: ${param_type(t, fs[1])} = ${param_default(fs[1])}, ${fs[2].name}: ${param_type(t, fs[2])} = ${param_default(fs[2])}, ${fs[3].name}: ${param_type(t, fs[3])} = ${param_default(fs[3])}, ${fs[4].name}: ${param_type(t, fs[4])} = ${param_default(fs[4])}, ${fs[5].name}: ${param_type(t, fs[5])} = ${param_default(fs[5])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        rest -> quote { static fn a_model_with_more_than_six_fields_needs_a_wider_where() { } },
-    }
+    let seats = [where_seat(t, f) for f in stored(t)]
+    quote { static fn where(db: Db, ..${seats}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } }
+}
+
+/// One filter seat — the shape the parameter list splices, its own name
+/// and type holes read off the field.
+fn where_seat(t: Type, f: Field) -> Decls {
+    quote { fn _(${f.name}: ${param_type(t, f)} = ${param_default(f)}) {} }
 }
 
 /// A filter's seat. A column that cannot hold null filters by its value,
@@ -539,15 +524,6 @@ fn first_field_words(t: Type) -> string {
     "declares `${t.fields[0].name}: ${t.fields[0].ty}` first"
 }
 
-fn too_many_fields(t: Type) -> Diagnostic {
-    refuse_as_at(
-        "too_many_fields",
-        t.at,
-        "`@model` constructs a row from at most ${MAX_FIELDS} fields, and `${t.name}` has ${t.fields.length}",
-        "split `${t.name}` into a model and a related type, or narrow it to ${MAX_FIELDS} fields",
-    )
-}
-
 fn soft_delete_kind(f: Field) -> Diagnostic {
     refuse_as_at(
         "soft_delete_kind",
@@ -718,21 +694,11 @@ fn is_unique(f: Field) -> bool { f.marks.any(it.name == "unique") }
 /// into `insert`/`update`'s generated body so a constraint violation
 /// resolves back through the schema the moment it happens — never a
 /// second lookup against `t` at run time, which the derive has no
-/// reason to keep around. Hand-spelled per count, the same law and
-/// remedy as `row_ctor`: a list literal has no expression position for
-/// a variable-width splice, and `non_id_fields(t)` is already capped
-/// at `MAX_FIELDS - 1`.
+/// reason to keep around. The list's elements are a run, so no arity is
+/// known here.
 fn unique_fields_code(t: Type) -> Code {
     let fs = [f for f in non_id_fields(t) if is_unique(f)]
-    match fs.length {
-        0 -> quote { [] },
-        1 -> quote { [${unique_field_code(fs[0])}] },
-        2 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}] },
-        3 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}] },
-        4 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}, ${unique_field_code(fs[3])}] },
-        5 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}, ${unique_field_code(fs[3])}, ${unique_field_code(fs[4])}] },
-        rest -> quote { a_model_with_more_than_five_unique_fields_needs_a_wider_list_literal() },
-    }
+    quote { [..${[unique_field_code(f) for f in fs]}] }
 }
 
 fn unique_field_code(f: Field) -> Code {
@@ -913,19 +879,10 @@ fn read_kind(k: Kind, i: int) -> Code {
     }
 }
 
-/// The one place a struct literal's field list needs its whole arity
-/// known at the file's OWN parse time — hand-spelled per count, same
-/// law and same remedy as `core/rebuild_derive.av`'s constructor arms.
-/// Wired into `find`, above.
-fn row_ctor(t: Type) -> Code {
-    let fs = t.fields
-    match fs.length {
-        1 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)} } },
-        2 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)}, ${fs[1].name}: ${field_value(t, 1)} } },
-        3 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)}, ${fs[1].name}: ${field_value(t, 1)}, ${fs[2].name}: ${field_value(t, 2)} } },
-        4 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)}, ${fs[1].name}: ${field_value(t, 1)}, ${fs[2].name}: ${field_value(t, 2)}, ${fs[3].name}: ${field_value(t, 3)} } },
-        5 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)}, ${fs[1].name}: ${field_value(t, 1)}, ${fs[2].name}: ${field_value(t, 2)}, ${fs[3].name}: ${field_value(t, 3)}, ${fs[4].name}: ${field_value(t, 4)} } },
-        6 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)}, ${fs[1].name}: ${field_value(t, 1)}, ${fs[2].name}: ${field_value(t, 2)}, ${fs[3].name}: ${field_value(t, 3)}, ${fs[4].name}: ${field_value(t, 4)}, ${fs[5].name}: ${field_value(t, 5)} } },
-        rest -> quote { a_model_with_more_than_six_fields_needs_a_wider_row_constructor() },
-    }
-}
+/// The row literal a column read fills: one entry per field, spliced as
+/// a run, so no arity is known here. Wired into `find` and the reads,
+/// above.
+fn row_ctor(t: Type) -> Code { quote { ${t} { ..${[row_init(t, f, j) for j, f in t.fields]} } } }
+
+/// One literal entry, named off the field it reads.
+fn row_init(t: Type, f: Field, j: int) -> Code { quote { W { ${f.name}: ${field_value(t, j)} } } }
