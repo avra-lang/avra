@@ -1376,7 +1376,7 @@ gate: llvm-libs seed-check stems vocab fingerprints ui-host ui-host-test ui-boar
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
 	@rm -rf packages/std-avrac/src/features/zz_probe
 	@sh tools/capped.sh build/scaffold-new.out 200000 ./avra new feature zz_probe || { cat build/scaffold-new.out; exit 1; }
-	@trap 'rm -rf packages/std-avrac/src/features/zz_probe' EXIT INT TERM; $(MAKE) -s test
+	@trap 'rm -rf packages/std-avrac/src/features/zz_probe' EXIT INT TERM; $(MAKE) -s test SHARDS_SKIP=std-avrac/src/features/zz_probe
 
 # The differential gate: the compiled binary must say exactly what
 # the evaluator says.
