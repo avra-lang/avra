@@ -559,7 +559,7 @@ class Cascade:
                 x, y = self.trimmed(x, y)
                 if y <= x:
                     continue
-                p = self.llm.choose(f'Sentence: "{self.t.s[x:y]}"', "Which kind of record does this sentence itself state, if any?", opts, ["none of these"])
+                p = self.llm.pick(f'Sentence: "{self.t.s[x:y]}"', "Which kind of record does this sentence itself state, if any?", opts, ["none of these"])
                 best = max(range(len(p)), key=lambda i: p[i])
                 if best < len(kinds) and p[best] >= ACCEPT:
                     self.fill(kinds[best], x, y, p[best])
