@@ -88,6 +88,11 @@ class Evidence:
         """Models whose facts hold a still unexplained informative word."""
         return {m for m, _, value in self.facts if self.words & set(tokens(value))} - self.spent
 
+    def shown(self, hop):
+        """A hop's words, with the facts of its target that hold unexplained words."""
+        held = [value for m, _, value in self.facts if m == hop[1] and self.words & set(tokens(value))]
+        return hop[2] + ("; such records hold: " + "; ".join(repr(v) for v in held) if held else "")
+
     def about(self, model, question):
         """(property, words) for this model's facts sharing unexplained informative words."""
         return [(prop, [w for w in tokens(value) if w in self.words]) for m, prop, value in self.facts
@@ -192,7 +197,7 @@ def plan(chooser, question, schema, context, search=None, depth=None):
             if hop > 0 and not onward and best(chooser, trail, f"Is the answer about this {label}?", ARRIVED) == 0:
                 break
             ranked = onward or list(range(len(options)))
-            pick = ranked[best(chooser, trail, "Where next?", [options[i][2] for i in ranked])]
+            pick = ranked[best(chooser, trail, "Where next?", [evidence.shown(options[i]) for i in ranked])]
         arrow, target, _, _ = options[pick]
         back = ("<-" + arrow[1:-2] + "-" if arrow.endswith("->") else arrow[1:-1] + "->")
         var = out.node(target)
@@ -208,7 +213,7 @@ def anchored(chooser, head, question, models, context, evidence, out):
     """The first node: the speaker, a record the question names, or every record of a kind."""
     named = evidence.named(question)
     starts = (["the person asking or speaking"] if context.get("speaker") else []) \
-        + [f"the {m} whose {p} is {v!r}" for m, p, v in named] + ["every record of one kind"]
+        + [f"the {m} whose {p} is {v!r}, named in the question" for m, p, v in named] + ["every record of one kind"]
     pick = best(chooser, head, "Who or what is the question about first?", starts)
     speaker = 1 if context.get("speaker") else 0
     if speaker and pick == 0:

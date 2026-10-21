@@ -242,7 +242,7 @@ class Structured(unittest.TestCase):
         search = facts("Person name: Dana Holm", "Group name: night shift")
         cypher = structured.plan(chooser, "Who is Dana Holm's wife?", SCHEMA, NOBODY, search)
         self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE n0.name = 'Dana Holm' RETURN n1.name AS name")
-        self.assertEqual(chooser.asked[0][1], ["the Person whose name is 'Dana Holm'", "every record of one kind"])
+        self.assertEqual(chooser.asked[0][1], ["the Person whose name is 'Dana Holm', named in the question", "every record of one kind"])
 
     def test_facts_the_question_reaches_lead_the_walk_on(self):
         import structured
@@ -285,6 +285,16 @@ class Structured(unittest.TestCase):
         cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, SPEAKER, search)
         self.assertEqual(chooser.asked[0][1], ["the person asking or speaking", "every record of one kind"])
         self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE id(n0) = $speaker RETURN n1.name AS name")
+
+    def test_a_hop_shows_the_facts_that_point_to_it(self):
+        import structured
+
+        models = structured.models_of(SCHEMA)
+        evidence = structured.Evidence(facts("Commitment action: keep the guest list short"), "the guest list", models)
+        hop = next(h for h in structured.hops(models, "Person") if h[1] == "Commitment")
+        self.assertIn("such records hold: 'keep the guest list short'", evidence.shown(hop))
+        other = next(h for h in structured.hops(models, "Person") if h[1] == "PersonalTask")
+        self.assertEqual(evidence.shown(other), other[2])
 
     def test_hops_are_only_the_nodes_own(self):
         import structured
