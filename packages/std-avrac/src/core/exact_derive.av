@@ -30,7 +30,7 @@ use @std.meta.{
     Arms,
     Kind,
     Held,
-    payload_of,
+    held_of,
     type_exported,
     name,
 }
@@ -105,23 +105,22 @@ fn eq_through(t: MetaType, k: Kind, a: Code, b: Code, inside: List<string>) -> C
     }
 }
 
-/// A declared record's fields compared in order, or an enum's variants
-/// paired.
+/// A payload's declaration compared: a NAMED type through the shape it
+/// stands over (`type Scoped = string`, read through `.of`), a record
+/// field by field, an enum variant by variant.
 fn declared_eq(t: MetaType, n: string, a: Code, b: Code, inside: List<string>) -> Code {
     let unread = quote { a_payload_type_the_exact_derive_has_no_row_for() }
     if inside.contains(n) { return unread }
-    let held? = payload_of(t, n) else { return unread }
+    let declared? = type_exported(t.module, n) else { return unread }
     let entered = inside.concat([n])
-    let over? = named_over(t, n) else { return held_eq(t, held, a, b, entered) }
-    eq_through(t, over, quote { ${a}.of }, quote { ${b}.of }, entered)
+    match declared.over {
+        .Unspelled(_) -> held_eq(t, held_of(declared), a, b, entered),
+        shape -> eq_through(t, shape, quote { ${a}.of }, quote { ${b}.of }, entered),
+    }
 }
 
-/// The kind a named type stands over (`type Scoped = string`), absent for a record or an enum.
-fn named_over(t: MetaType, n: string) -> Kind? {
-    let declared? = type_exported(t.module, n) else { return null }
-    match declared.over { .Unspelled(_) -> null, rest -> declared.over }
-}
-
+/// A held shape compared: a record's fields `&&`-ed in order, an enum
+/// paired variant by variant.
 fn held_eq(t: MetaType, held: Held, a: Code, b: Code, entered: List<string>) -> Code {
     match held {
         .Record(fields) -> anded(

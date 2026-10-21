@@ -517,6 +517,14 @@ export enum Held {
     Enum(variants: List<Variant>)
 }
 
+/// What a DECLARATION holds: a record's fields or an enum's variants.
+/// A NAMED type holds neither — `type Code = string` declares no
+/// fields, and its shape is `Type.over`'s, the door to read it.
+export fn held_of(t: Type) -> Held {
+    if t.variants.is_empty() { return Held.Record(t.fields) }
+    Held.Enum(t.variants)
+}
+
 /// What the type `name` holds, for a derive that reads a payload
 /// type's declaration instead of keeping a row for it. `owner` is the
 /// type being derived: the lookup is that type's MODULE's export of
@@ -526,8 +534,7 @@ export enum Held {
 /// declares.
 export fn payload_of(owner: Type, name: string) -> Held? {
     let t? = type_exported(owner.module, name) else { return null }
-    if t.variants.is_empty() { return Held.Record(t.fields) }
-    Held.Enum(t.variants)
+    held_of(t)
 }
 
 /// Whether a payload kind's declaration graph holds a type `atom`
