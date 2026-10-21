@@ -522,16 +522,20 @@ class Cascade:
         ids = sorted(set(froms) | set(tos))
         for i, x in enumerate(ids):
             for y in ids[i + 1 :]:
-                readings = [(s, o, v["value"], w) for v in rel["labels"] for w in v["forward"][:1] or [v["value"]] for s, o in ((x, y), (y, x)) if s in froms and o in tos]
+                readings = [(s, o, v["value"], v["forward"] or [v["value"]]) for v in rel["labels"] for s, o in ((x, y), (y, x)) if s in froms and o in tos]
                 if not readings:
                     continue
-                opts = [f"{self.name(s)}'s {w} is {self.name(o)}" for s, o, v, w in readings]
+                opts = [f"{self.name(s)}'s {self.worded(w)} is {self.name(o)}" for s, o, v, w in readings]
                 p = self.llm.pick(ctx, question, opts, ["none of these is explicitly stated"])
                 best = max(range(len(p)), key=lambda k: p[k])
                 if best < len(readings) and p[best] >= ACCEPT:
                     s, o, v, _ = readings[best]
                     cue = self.cue(rel, v, a, b)
                     self.emit(name, frm, to, label, (s, {**froms, **tos}[s]), (o, {**froms, **tos}[o]), v, cue, p[best], a, b, opts[best])
+
+    def worded(self, words):
+        """A closed label as its first declared word, with the others as aliases."""
+        return words[0] + (f" ({', '.join(words[1:])})" if len(words) > 1 else "")
 
     def cue(self, rel, value, a, b):
         """The declared linguistic label that evidences a closed label, else the sentence."""
