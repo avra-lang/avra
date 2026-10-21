@@ -14,7 +14,8 @@ export enum Operation {
     Publish(publication: Publication)
     Get(id: string)
     Value(id: string)
-    Find(model: string, limit: int)
+    Find(model: string, limit: int, offset: int)
+    Where(model: string, property: string, value: Value, limit: int, offset: int)
     Edges(id: string, incoming: bool)
     Traverse(id: string, depth: int, limit: int)
     Explain(id: string, property: string)
@@ -86,8 +87,21 @@ export fn operation(j: Json) -> Result<Operation, string> {
             Operation.Value(text(j, "id")?)
         },
         "find" -> {
-            closed(j, ["op", "model", "limit"])?
-            Operation.Find(text(j, "model")?, optional_int(j, "limit", 100)?)
+            closed(j, ["op", "model", "limit", "offset"])?
+            Operation
+                .Find(text(j, "model")?, optional_int(j, "limit", 100)?, optional_int(j, "offset", 0)?)
+        },
+        "where" -> {
+            closed(j, ["op", "model", "property", "value", "limit", "offset"])?
+            let value? = j.get("value") else { fail "where needs a value" }
+            Operation
+                .Where(
+                    text(j, "model")?,
+                    text(j, "property")?,
+                    as_value(value),
+                    optional_int(j, "limit", 100)?,
+                    optional_int(j, "offset", 0)?,
+                )
         },
         "edges" -> {
             closed(j, ["op", "id", "incoming"])?

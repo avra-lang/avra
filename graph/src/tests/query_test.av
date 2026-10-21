@@ -1,0 +1,106 @@
+use models.{models, WorkItem}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.tombstone.{Tombstone}
+use @std.validate.{Value}
+
+fn item(id: string, title: string, status: string) -> Result<Record, string> {
+    Record {
+        id: id,
+        model: "WorkItem",
+        value: WorkItem { title: title, status: status, assignee: null, due_at: null }.graph_value(),
+    }
+}
+
+fn publication(g: Graph, id: string, producer: string, records: List<Record>) -> Result<
+    Publication,
+    string,
+> {
+    Publication {
+        id: id,
+        producer: producer,
+        scope: "in:1",
+        input: "in:1",
+        input_revision: 1,
+        schema: g.catalog.fingerprint,
+        expected_revision: g.revision()?,
+        records: records,
+    }
+}
+
+fn seeded(mut g: Graph) -> Result<int, string> {
+    g.observe("in:1", "raw")?
+    g
+        .publish(
+            publication(
+                g,
+                "one",
+                "agent",
+                [
+                    item("w1", "One", "open")?,
+                    item("w2", "Two", "done")?,
+                    item("w3", "Three", "done")?,
+                ],
+            )?,
+        )
+}
+
+fn filters_by_value() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    let done = g.matching("WorkItem", "status", Value.Text("done"))?
+    let open = g.matching("WorkItem", "status", Value.Text("open"))?
+    let none = g.matching("WorkItem", "status", Value.Text("active"))?
+    done.join(",") == "w2,w3" && open.join(",") == "w1" && none.is_empty()
+}
+
+fn pages() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    let first = g.matching("WorkItem", "status", Value.Text("done"), limit: 1, offset: 0)?
+    let second = g.matching("WorkItem", "status", Value.Text("done"), limit: 1, offset: 1)?
+    let past = g.matching("WorkItem", "status", Value.Text("done"), limit: 1, offset: 2)?
+    let found = g.find("WorkItem", limit: 1, offset: 1)?
+    first.join(",") == "w2" &&
+        second.join(",") == "w3" &&
+        past.is_empty() &&
+        found.join(",") == "w2"
+}
+
+fn conflicts_match_both_ways() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    g.publish(publication(g, "two", "agent-a", [item("w4", "Four", "open")?])?)?
+    g.publish(publication(g, "three", "agent-b", [item("w4", "Four", "done")?])?)?
+    let done = g.matching("WorkItem", "status", Value.Text("done"))?
+    let open = g.matching("WorkItem", "status", Value.Text("open"))?
+    done.contains("w4") && open.contains("w4")
+}
+
+fn tombstones_are_not_matched() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    g.tombstone(Tombstone { id: "t1", entity: "w2", decider: "user" })?
+    let done = g.matching("WorkItem", "status", Value.Text("done"))?
+    done.join(",") == "w3" && !(g.find("WorkItem")?).contains("w2")
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "graph filtered queries" {
+    given "a model with several held values" {
+        then "a property filter matches the exact value" { passed(filters_by_value()) }
+        then "limit and offset page a result" { passed(pages()) }
+        then "a conflict matches under each value" { passed(conflicts_match_both_ways()) }
+        then "a tombstoned entity is not matched" { passed(tombstones_are_not_matched()) }
+    }
+}

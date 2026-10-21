@@ -108,8 +108,8 @@ impl Graph {
         }
     }
 
-    fn find(model: string, limit: int = 100) -> Result<List<string>, string> {
-        if limit < 1 || limit > 1000 { fail "limit must be between 1 and 1000" }
+    fn find(model: string, limit: int = 100, offset: int = 0) -> Result<List<string>, string> {
+        if limit < 1 || limit > 1000 || offset < 0 { fail "limit must be 1..1000 and offset nonnegative" }
         self.current()?
         let hidden = self.hidden_members()?
         let candidates = stored(EntityRow.where(self.db, model: model))?
@@ -119,7 +119,30 @@ impl Graph {
             if !(self.standing(self.claims_of([e])?)?).is_empty() { live.push(e.name) }
         }
         let roots = [self.root(name)? for name in live]
-        [name for i, name in live if !roots.slice(0, i).contains(roots[i])].slice(0, limit)
+        [name for i, name in live if !roots.slice(0, i).contains(roots[i])]
+            .slice(offset, offset + limit)
+    }
+
+    /// Entities whose named property currently has this exact value.
+    fn matching(model: string, property: string, value: Value, limit: int = 100, offset: int = 0) -> Result<
+        List<string>,
+        string,
+    > {
+        if property.is_empty() { fail "a filter needs a property name" }
+        if limit < 1 || limit > 1000 || offset < 0 { fail "limit must be 1..1000 and offset nonnegative" }
+        self.current()?
+        let hidden = self.hidden_members()?
+        let wanted = encoded(value)
+        let candidates = stored(EntityRow.where(self.db, model: model))?
+        mut live: List<string> = []
+        for e in candidates {
+            if hidden.contains(e.name) { continue }
+            let claims = self.standing(self.claims_of([e])?)?
+            if claims.any(it.claim.property == property && it.claim.value == wanted) { live.push(e.name) }
+        }
+        let roots = [self.root(name)? for name in live]
+        [name for i, name in live if !roots.slice(0, i).contains(roots[i])]
+            .slice(offset, offset + limit)
     }
 
     fn edges(id: string, incoming: bool = false) -> Result<List<Edge>, string> {
