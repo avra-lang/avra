@@ -21,7 +21,8 @@ Binding the question:
 - A person named in the question is matched by name: `p.name = 'Their Name'`.
 - A relationship word (wife, mum, member of, ...) becomes the declared label value of the relation property, as listed in the schema below; use only listed values.
 - To narrow by a topic the question mentions, use CONTAINS on a text property with one lowercase key word from the question.
-- Return the property that answers the question. When a recorded status could be absent, return it as is: absence is reported as unknown, never as false."""
+- Return the property that answers the question.
+- A yes/no boolean may be absent. If the question asks what has been RECORDED ("has a confirmation been recorded?", "is there a record of ..."), absence means no: return `coalesce(v.prop, false) AS name` as the only item. If it asks about the world ("is it booked?", "did it happen?"), return `v.prop` as is, so absence is reported as unknown."""
 
 EXAMPLE_SCHEMA = """(:Technician) A person who services devices.
   .name: string
@@ -42,6 +43,8 @@ EXAMPLES = [
      "MATCH (me:Technician)<-[:technician]-(a:Assignment)-[:device]->(d:Device) WHERE id(me) = $speaker AND a.relation = 'keeper' RETURN d.tag AS device"),
     ("Has the calibration visit on Kim Ito's device been completed?",
      "MATCH (t:Technician)<-[:owner]-(d:Device)<-[:device]-(s:Service) WHERE t.name = 'Kim Ito' AND s.note CONTAINS 'calibration' RETURN s.completed AS completed"),
+    ("Is there a recorded completion for the calibration visit on my device?",
+     "MATCH (me:Technician)<-[:owner]-(d:Device)<-[:device]-(s:Service) WHERE id(me) = $speaker AND s.note CONTAINS 'calibration' RETURN coalesce(s.completed, false) AS completion_recorded"),
     ("How many services did my devices get?",
      "MATCH (me:Technician)<-[:owner]-(d:Device)<-[:device]-(s:Service) WHERE id(me) = $speaker RETURN count(s) AS services"),
 ]
