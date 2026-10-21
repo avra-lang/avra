@@ -1,0 +1,354 @@
+use derive.model.{model}
+use semantics.{Semantics, IdentityBinding}
+use schema.{Registration, Ref}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.identity.{Identity}
+use store.query.{stored_value}
+use ingest.admit.{Admission, Admitted}
+use ingest.envelope.{source_document}
+use @avra.graph_contracts.{SourceEnvelope, SourceRef, Frame, Span}
+use @std.json.{Json, parse, to_text}
+
+@model(quote { Semantics { identities: [
+    IdentityBinding { namespace: "staff", path: ["handle"] },
+    IdentityBinding { namespace: "badge", path: ["badge"] },
+] } })
+type Clerk = { label: string?, handle: string?, badge: string?, status: string? }
+
+@model
+type Errand = { title: string, clerk: Ref<Clerk>? }
+
+fn clerk_models() -> List<Registration> {
+    [Registration { make: Clerk_graph_model }, Registration { make: Errand_graph_model }]
+}
+
+const memo_text = "Ana (ana@x, badge 7) will fix the printer. Bo said: \"Ana is out today\"."
+
+fn memo(revision: int = 1, content: string = memo_text) -> SourceEnvelope {
+    let quoted = "Ana is out today"
+    let start = content.index_of(quoted)
+    SourceEnvelope {
+        contract: 1,
+        source: SourceRef { observation: "memo", revision: revision },
+        authored_at_ms: null,
+        received_at_ms: 1,
+        author: "ana",
+        participants: ["ana", "bo"],
+        media_type: "text/plain",
+        content: content,
+        frames: if start < 0 {
+            []
+        } else {
+            [
+                Frame {
+                    id: "q1",
+                    span: Span { start: start, end: start + quoted.length, text: quoted },
+                    speaker: "bo",
+                },
+            ]
+        },
+    }
+}
+
+fn desk() -> Result<Graph, string> {
+    let g = Graph.memory(clerk_models())?
+    g.ingest(to_text(source_document(memo())))?
+    g
+}
+
+fn spoken(said: string) -> string {
+    let start = memo_text.index_of(said)
+    "[{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":${start},\"end\":${start + said.length}},{\"kind\":\"TextQuoteSelector\",\"exact\":${to_text(Json.Str(said))}}]}]"
+}
+
+fn proposed(
+    property: string,
+    value: string,
+    said: string,
+    speech_act: string = "assert",
+    factuality: string = "CT+",
+    frame: string = "",
+) -> string {
+    let framed = if frame.is_empty() { "" } else { ",\"frame\":\"${frame}\"" }
+    "{\"property\":\"${property}\",\"value\":${value},\"evidence\":${spoken(said)},\"factuality\":\"${factuality}\",\"speech_act\":\"${speech_act}\"${framed}}"
+}
+
+fn proposal(local: string, model: string, fields: List<string>, extra: string = "") -> string {
+    "{\"local_id\":\"${local}\",\"model\":\"${model}\",\"fields\":[${fields.join(",")}]${extra}}"
+}
+
+fn extraction(
+    g: Graph,
+    records: List<string>,
+    request: string = "req:1",
+    producer: string = "enc",
+    status: string = "complete",
+    revision: int = 1,
+) -> string {
+    let problems = if status == "failed" { ",\"problems\":[{\"code\":\"timeout\",\"message\":\"worker timed out\"}]" } else { "" }
+    "{\"contract\":2,\"request\":\"${request}\",\"source\":{\"observation\":\"memo\",\"revision\":${revision}},\"schema\":\"${g.catalog.fingerprint}\",\"extractor\":{\"producer\":\"${producer}\",\"code\":\"c1\",\"model\":\"w1\"},\"status\":\"${status}\",\"records\":[${records.join(",")}]${problems}}"
+}
+
+fn admission(result: string, revision: int = 1) -> Result<Admission, string> {
+    let json = match parse(result) { .Ok(j) -> j, .Err(_) -> { fail "test result is not JSON" } }
+    Admission { source: SourceRef { observation: "memo", revision: revision }, result: json }
+}
+
+fn ana() -> string {
+    proposal(
+        "c1",
+        "Clerk",
+        [proposed("handle", "\"ana@x\"", "ana@x"), proposed("label", "\"Ana\"", "Ana (")],
+    )
+}
+
+fn errand() -> string {
+    proposal(
+        "e1",
+        "Errand",
+        [
+            proposed("title", "\"fix the printer\"", "will fix the printer", "plan", "Uu"),
+            proposed("clerk", "\"c1\"", "Ana ("),
+        ],
+    )
+}
+
+fn placed(a: Admitted, local: string) -> string { a.records.find(it.local_id == local)?.entity ?? "" }
+
+fn link_of(a: Admitted, local: string) -> string { a.records.find(it.local_id == local)?.link ?? "" }
+
+fn admits_fields() -> Result<bool, string> {
+    mut g = desk()?
+    defer { let _ = g.close() }
+    let a = g.admit(admission(extraction(g, [ana(), errand()]))?)?
+    let clerk = placed(a, "c1")
+    let job = placed(a, "e1")
+    let entity = g.entity(job)?
+    let title = (g.explain(job, "title")?).item(0)
+    link_of(a, "c1") == "new" &&
+        link_of(a, "e1") == "unresolved" &&
+        !a.replayed &&
+        entity.fields.any(it.property == "clerk") &&
+        !entity.fields.any(it.property == "title") &&
+        entity.qualified.any(it.property == "title" && it.speech_act == "plan") &&
+        title.member("anchors").item(0).member("selectors").item(1).member("exact").text() == "will fix the printer" &&
+        title.member("anchors").item(0).member("speaker").text() == "ana" &&
+        title.member("audience").item(0).text() == "bo" &&
+        (g.edges(clerk, incoming: true)?).any(it.entity == job) &&
+        g.resolve("staff", "ana@x")? == clerk
+}
+
+fn quoted_voice() -> Result<bool, string> {
+    mut g = desk()?
+    defer { let _ = g.close() }
+    let a = g
+        .admit(
+            admission(
+                extraction(
+                    g,
+                    [
+                        proposal(
+                            "c1",
+                            "Clerk",
+                            [
+                                proposed("handle", "\"ana@x\"", "ana@x"),
+                                proposed("status", "\"out\"", "out today", "report", "CT+", "q1"),
+                            ],
+                        ),
+                    ],
+                ),
+            )?,
+        )?
+    let status = (g.explain(placed(a, "c1"), "status")?).item(0)
+    status.member("anchors").item(0).member("frame").text() == "q1" &&
+        status.member("anchors").item(0).member("speaker").text() == "bo" &&
+        status.member("author").text() == "ana" &&
+        status.member("audience") is .Null &&
+        status.member("active").truth() == false
+}
+
+fn links_existing() -> Result<bool, string> {
+    mut g = desk()?
+    defer { let _ = g.close() }
+    let first = g.admit(admission(extraction(g, [ana()]))?)?
+    let second = g.admit(admission(extraction(g, [ana()], "req:2", "other"))?)?
+    link_of(second, "c1") == "existing" &&
+        placed(second, "c1") == placed(first, "c1") &&
+        (g.explain(placed(first, "c1"), "label")?).items().length == 2
+}
+
+fn clerk_seeded(mut g: Graph, id: string, namespace: string, key: string) -> Result<int, string> {
+    g
+        .publish(
+            Publication {
+                id: "seed:${id}",
+                producer: "seed:${id}",
+                scope: "seed",
+                input: "memo",
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: [
+                    Record {
+                        id: id,
+                        model: "Clerk",
+                        value: stored_value("{\"label\":\"${id}\"}")?,
+                        mode: .Partial,
+                        identities: [Identity { namespace: namespace, external_key: key }],
+                    },
+                ],
+            },
+        )
+}
+
+fn stays_ambiguous() -> Result<bool, string> {
+    mut g = desk()?
+    defer { let _ = g.close() }
+    clerk_seeded(g, "clerk:a", "staff", "ana@x")?
+    clerk_seeded(g, "clerk:b", "badge", "7")?
+    let a = g
+        .admit(
+            admission(
+                extraction(
+                    g,
+                    [
+                        proposal(
+                            "c1",
+                            "Clerk",
+                            [
+                                proposed("handle", "\"ana@x\"", "ana@x"),
+                                proposed("badge", "\"7\"", "7"),
+                            ],
+                        ),
+                    ],
+                ),
+            )?,
+        )?
+    let mention = a.records.find(it.local_id == "c1")!
+    mention.link == "ambiguous" &&
+        mention.candidates.length == 2 &&
+        mention.entity != "clerk:a" &&
+        mention.entity != "clerk:b" &&
+        (g.merges("")?).is_empty() &&
+        g.resolve("staff", "ana@x")? == "clerk:a" &&
+        g.resolve("badge", "7")? == "clerk:b"
+}
+
+fn replays() -> Result<bool, string> {
+    mut g = desk()?
+    defer { let _ = g.close() }
+    let first = g.admit(admission(extraction(g, [ana(), errand()]))?)?
+    let again = g.admit(admission(extraction(g, [ana(), errand()]))?)?
+    let changed = errand().replace("\"plan\"", "\"assert\"")
+    let refused = g.admit(admission(extraction(g, [ana(), changed]))?) is .Err
+    again.replayed &&
+        again.revision == first.revision &&
+        again.run == first.run &&
+        refused &&
+        g.revision()? == first.revision
+}
+
+fn failure_keeps_facts() -> Result<bool, string> {
+    mut g = desk()?
+    defer { let _ = g.close() }
+    let first = g.admit(admission(extraction(g, [ana()]))?)?
+    let failed = g.admit(admission(extraction(g, [], "req:2", "enc", "failed"))?) is .Err
+    failed && g.revision()? == first.revision && (g.find("Clerk")?).contains(placed(first, "c1"))
+}
+
+fn empty_replaces() -> Result<bool, string> {
+    mut g = desk()?
+    defer { let _ = g.close() }
+    let first = g.admit(admission(extraction(g, [ana()]))?)?
+    g.admit(admission(extraction(g, [], "req:2"))?)?
+    (g.find("Clerk")?).is_empty() &&
+        (g.explain(placed(first, "c1"), "label")?).item(0).member("standing").truth() == false
+}
+
+fn stale_source() -> Result<bool, string> {
+    mut g = desk()?
+    defer { let _ = g.close() }
+    g.ingest(to_text(source_document(memo(2, memo_text + " Later."))))?
+    let before = g.revision()?
+    g.admit(admission(extraction(g, [ana()]))?) is .Err && g.revision()? == before
+}
+
+fn refuses_atomically() -> Result<bool, string> {
+    mut g = desk()?
+    defer { let _ = g.close() }
+    let before = g.revision()?
+    let dangling = proposal(
+        "e1",
+        "Errand",
+        [proposed("title", "\"fix\"", "fix"), proposed("clerk", "\"nobody\"", "Ana (")],
+    )
+    let odd = ana().replace("\"assert\"", "\"rumored\"")
+    let invented = proposal("c1", "Clerk", [proposed("handle", "\"ana@x\"", "nowhere to be found")])
+    let attempts = [admission(r)? for r in [extraction(g, [ana(), dangling]), extraction(g, [odd]), extraction(g, [invented])]]
+    [a for a in attempts if g.admit(a) is .Ok].is_empty() &&
+        g.revision()? == before &&
+        (g.find("Clerk")?).is_empty()
+}
+
+fn resolution_recorded() -> Result<bool, string> {
+    mut g = desk()?
+    defer { let _ = g.close() }
+    clerk_seeded(g, "clerk:a", "staff", "someone@x")?
+    let offered = match parse("[{\"entity\":\"clerk:a\",\"model\":\"Clerk\",\"label\":\"Ana\"}]") {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "test candidates are not JSON" },
+    }
+    let chosen = proposal(
+        "c1",
+        "Clerk",
+        [proposed("label", "\"Ana\"", "Ana (")],
+        ",\"resolution\":{\"kind\":\"candidate\",\"entity\":\"clerk:a\",\"score\":0.9}",
+    )
+    let unoffered = g.admit(admission(extraction(g, [chosen], "req:0"))?) is .Err
+    let a = g.admit(admission(extraction(g, [chosen]))? with { candidates: offered })?
+    let mention = a.records[0]
+    unoffered &&
+        mention.link == "unresolved" &&
+        mention.entity != "clerk:a" &&
+        mention.resolution?.kind == "candidate" &&
+        mention.resolution?.entity == "clerk:a"
+}
+
+fn dispatched() -> Result<bool, string> {
+    mut g = desk()?
+    defer { let _ = g.close() }
+    let request = "{\"op\":\"admit\",\"source\":{\"observation\":\"memo\",\"revision\":1},\"scope\":\"inbox\",\"result\":${extraction(g, [ana()])}}"
+    let json = match parse(request) { .Ok(j) -> j, .Err(_) -> { fail "test request is not JSON" } }
+    let answer = g.dispatch(json)?
+    let unknown = match parse(
+        "{\"op\":\"admit\",\"source\":{\"observation\":\"memo\",\"revision\":1},\"result\":{},\"extra\":1}",
+    ) { .Ok(j) -> g.dispatch(j) is .Err, .Err(_) -> false }
+    answer.member("replayed").truth() == false &&
+        answer.member("records").item(0).member("link").text() == "new" &&
+        (answer.member("run").text() ?? "").starts_with("admit:") &&
+        unknown
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "admit" {
+    given "an extraction result for an ingested source" {
+        then "fields publish with their qualifiers, anchors and voice; planned values stay qualified" { passed(admits_fields()) }
+        then "a field inside a quotation frame speaks with the frame's speaker" { passed(quoted_voice()) }
+        then "a declared key links a later extraction to the entity it created" { passed(links_existing()) }
+        then "keys naming two entities publish a new local entity and merge nothing" { passed(stays_ambiguous()) }
+        then "the same admission replays its revision; changed qualifiers under one request are refused" { passed(replays()) }
+        then "a failed extraction is refused and prior facts remain" { passed(failure_keeps_facts()) }
+        then "an empty complete extraction replaces its producer's earlier admission" { passed(empty_replaces()) }
+        then "an extraction of a superseded source revision is refused" { passed(stale_source()) }
+        then "dangling references, unknown qualifiers and invented quotes refuse the whole admission" { passed(refuses_atomically()) }
+        then "an extractor's candidate choice is recorded, never applied, and must have been offered" { passed(resolution_recorded()) }
+        then "admit runs through the shared op dispatch, closed to unknown fields" { passed(dispatched()) }
+    }
+}

@@ -1,0 +1,324 @@
+use @avra.graph_contracts.{SourceRef, SourceEnvelope, ProposedField, Resolution}
+use @std.json.{Json, field, parse, to_text}
+use @std.validate.{Value, Entry}
+use data.{as_value, encoded, digest}
+use schema.{Shape}
+use catalog.{Catalog}
+use store.open.{Graph, stored}
+use store.engine.{RunRow, RunTrailRow}
+use store.publish.{Publication, Record, RecordMode}
+use store.identity.{Identity, IdentityMatch}
+use store.evidence.{FieldEvidence, Voice, factuality_named, speech_act_named, normalization_json}
+use ingest.identities.{LinkedRecord, ExactLink}
+use ingest.envelope.{source_document, source_reference}
+
+/// A C01 extraction result for one ingested source revision. `scope` is the
+/// replacement unit (the source by default); `candidates` are the graph
+/// entities the trusted caller offered the extractor.
+export type Admission = {
+    source: SourceRef,
+    result: Json,
+    scope: string? = null,
+    candidates: Json = Json.Arr([]),
+}
+
+/// Where one proposed record landed. `candidates` names the entities an
+/// ambiguous record could be; none was chosen. `resolution` is the
+/// extractor's own proposal, recorded and never applied.
+export type Placed = {
+    local_id: string,
+    entity: string,
+    link: string,
+    candidates: List<string> = [],
+    resolution: Resolution? = null,
+}
+
+impl Placed {
+    fn json() -> Json {
+        Json
+            .Obj(
+                [
+                    field("local_id", Json.Str(self.local_id)),
+                    field("entity", Json.Str(self.entity)),
+                    field("link", Json.Str(self.link)),
+                    field("candidates", Json.Arr([Json.Str(c) for c in self.candidates])),
+                    field("resolution", resolution_json(self.resolution)),
+                ],
+            )
+    }
+}
+
+export type Admitted = { revision: int, run: string, replayed: bool, records: List<Placed> }
+
+type Target = { local_id: string, entity: string }
+
+impl Admission {
+    fn json() -> Json {
+        Json
+            .Obj(
+                [
+                    field("source", source_reference(self.source)),
+                    field("result", self.result),
+                    field("scope", Json.Str(self.scoped())),
+                    field("candidates", self.candidates),
+                ],
+            )
+    }
+
+    fn scoped() -> string { self.scope ?? self.source.observation }
+
+    /// The run an extractor's request publishes as; one per producer and request.
+    fn run() -> Result<string, string> {
+        let producer = self.result.member("extractor").member("producer").text() ?? ""
+        let request = self.result.member("request").text() ?? ""
+        if producer.is_empty() || request.is_empty() { fail "admit needs a result naming its request and extractor producer" }
+        "admit:${digest([producer, request].join("\t"))}"
+    }
+}
+
+impl Admitted {
+    fn json() -> Json {
+        Json
+            .Obj(
+                [
+                    field("revision", Json.Int(self.revision)),
+                    field("run", Json.Str(self.run)),
+                    field("replayed", Json.Bool(self.replayed)),
+                    field("records", Json.Arr([p.json() for p in self.records])),
+                ],
+            )
+    }
+}
+
+impl Graph {
+    /// Admit, link exactly and publish one extraction in one transaction.
+    /// Replaying the same admission answers its committed revision.
+    fn admit(a: Admission) -> Result<Admitted, string> {
+        let db = self.db
+        stored(db.begin())?
+        defer { let _ = db.finish() }
+        let admitted = self.received(a)?
+        stored(db.commit())?
+        admitted
+    }
+
+    /// Admit within the caller's write transaction.
+    fn received(a: Admission) -> Result<Admitted, string> {
+        self.current()?
+        let run = a.run()?
+        let fingerprint = digest(encoded(as_value(a.json())))
+        match stored(RunRow.where(self.db, name: run))? {
+            [one] -> {
+                let same = (stored(RunTrailRow.where(self.db, run: one))?)
+                    .any(it.request == fingerprint)
+                if !same { fail "this extraction request was already admitted with different content" }
+                return Admitted { revision: one.revision, run: run, replayed: true, records: [] }
+            },
+            [] -> {},
+            rest -> { fail "run id is not unique: ${run}" },
+        }
+        let source = self.source(a.source.observation, a.source.revision)?
+        let linked = self
+            .link_exact(to_text(self.extraction_request(a, source)?), to_text(a.result))?
+        let producer = linked.result.extractor.producer
+        let stream = [producer, a.scoped(), source.source.observation, "${source.source.revision}"]
+            .join("\t")
+        let placed = [placement(r, stream) for r in linked.records if !r.proposal.fields.is_empty()]
+        let targets = [Target { local_id: p.local_id, entity: p.entity } for p in placed]
+        let entities = [p.entity for i, p in placed if !placed.slice(0, i).any(it.entity == p.entity)]
+        let records = [self.merged(entity, linked.records, placed, targets)? for entity in entities]
+        let frames = source.frames.concat(linked.result.proposed_frames)
+        let publication = Publication {
+            id: run,
+            producer: producer,
+            scope: a.scoped(),
+            input: source.source.observation,
+            input_revision: source.source.revision,
+            schema: self.catalog.fingerprint,
+            expected_revision: linked.revision,
+            records: records,
+            voices: [own_voice(source)]
+                .concat([Voice { frame: f.id, speaker: f.speaker, author: source.author } for f in frames]),
+        }
+        Admitted {
+            revision: self.published(publication, fingerprint)?,
+            run: run,
+            replayed: false,
+            records: placed,
+        }
+    }
+
+    /// The request the trusted caller stands behind: the stored source, the
+    /// installed catalog and the result's own extractor and request id.
+    fn extraction_request(a: Admission, source: SourceEnvelope) -> Result<Json, string> {
+        let descriptor = match parse(self.catalog.document) {
+            .Ok(j) -> j,
+            .Err(_) -> { fail "installed catalog document is invalid" },
+        }
+        Json
+            .Obj(
+                [
+                    field("contract", Json.Int(1)),
+                    field("request", a.result.member("request")),
+                    field("input", source_document(source)),
+                    field(
+                        "catalog",
+                        Json
+                            .Obj(
+                                [
+                                    field("fingerprint", Json.Str(self.catalog.fingerprint)),
+                                    field("descriptor", descriptor),
+                                ],
+                            ),
+                    ),
+                    field("extractor", a.result.member("extractor")),
+                    field("scope", Json.Str(a.scoped())),
+                    field("candidates", a.candidates),
+                ],
+            )
+    }
+
+    /// Every linked record placed on one entity, as one partial record.
+    /// Records sharing an entity may repeat a property only with identical
+    /// value and qualifiers; their anchors then join.
+    fn merged(
+        entity: string,
+        linked: List<LinkedRecord>,
+        placed: List<Placed>,
+        targets: List<Target>,
+    ) -> Result<Record, string> {
+        let members = [r for r in linked if placed.any(it.local_id == r.proposal.local_id && it.entity == entity)]
+        let model = members[0].proposal.model
+        if members.any(it.proposal.model != model) { fail "records placed on one entity must share a model: ${entity}" }
+        let shapes = self.catalog.model(model)?
+        let proposals = [f for r in members for f in r.proposal.fields]
+        mut fields: List<ProposedField> = []
+        for f in proposals {
+            let same? = fields.find(it.property == f.property) else {
+                fields.push(f)
+                continue
+            }
+            if encoded(same.value.value) != encoded(f.value.value) ||
+                same.factuality != f.factuality ||
+                same.speech_act != f.speech_act ||
+                same.frame != f.frame ||
+                to_text(normalization_json(same.normalization)) != to_text(normalization_json(f.normalization)) {
+                fail "records placed on one entity propose ${model}.${f.property} twice with different evidence"
+            }
+            fields = [if g.property == f.property { g with { evidence: g.evidence.concat(f.evidence) } } else { g } for g in fields]
+        }
+        let keys = [k for r in members if bindable(r.decision) for k in r.keys if !r.matches.any(current_match(it, k.identity.namespace, k.identity.key))]
+        Record {
+            id: entity,
+            model: model,
+            mode: RecordMode.Partial,
+            value: Value
+                .Map(
+                    [Entry {
+                        key: f.property,
+                        value: relinked(
+                            self.catalog,
+                            shapes.properties.find(it.name == f.property)!.shape,
+                            f.value.value,
+                            targets,
+                        ),
+                    } for f in fields],
+                ),
+            identities: [Identity { namespace: k.identity.namespace, external_key: k.identity.key } for i, k in keys if !keys
+                .slice(0, i)
+                .any(
+                    it.identity.namespace == k.identity.namespace &&
+                        it.identity.key == k.identity.key,
+                )],
+            fields: [FieldEvidence {
+                property: f.property,
+                evidence: f.evidence,
+                factuality: factuality_named(f.factuality)?,
+                speech_act: speech_act_named(f.speech_act)?,
+                frame: f.frame,
+                normalization: f.normalization,
+                score: f.score,
+            } for f in fields],
+        }
+    }
+}
+
+/// An entity for each linked record: the one its keys name, or a new local
+/// one. Ambiguity is never resolved here.
+fn placement(r: LinkedRecord, stream: string) -> Placed {
+    let id = r.proposal.local_id
+    let landed = match r.decision {
+        .Existing(entity) -> Placed { local_id: id, entity: entity, link: "existing" },
+        .New(group) -> Placed { local_id: id, entity: local_entity(stream, group), link: "new" },
+        .Unresolved -> Placed { local_id: id, entity: local_entity(stream, id), link: "unresolved" },
+        .Ambiguous(entities) -> Placed {
+            local_id: id,
+            entity: local_entity(stream, id),
+            link: "ambiguous",
+            candidates: entities,
+        },
+    }
+    landed with { resolution: r.proposal.resolution }
+}
+
+fn resolution_json(r: Resolution?) -> Json {
+    let found? = r else { return Json.Null }
+    Json
+        .Obj(
+            [
+                field("kind", Json.Str(found.kind)),
+                field(
+                    "entity",
+                    if found.entity == null { Json.Null } else { Json.Str(found.entity!) },
+                ),
+                field(
+                    "score",
+                    if found.score == null { Json.Null } else { Json.Float(found.score!) },
+                ),
+            ],
+        )
+}
+
+/// A new entity's id, stable for one producer, scope and source revision.
+fn local_entity(stream: string, key: string) -> string { "local:${digest("${stream}\t${key}")}" }
+
+/// Exact keys bind only where they decided the entity.
+fn bindable(decision: ExactLink) -> bool {
+    match decision { .Existing(_) or .New(_) -> true, .Unresolved or .Ambiguous(_) -> false }
+}
+
+fn current_match(m: IdentityMatch, namespace: string, key: string) -> bool {
+    !m.continuity && m.identity.namespace == namespace && m.identity.external_key == key
+}
+
+/// The source's own voice: its author speaks to every other participant.
+fn own_voice(source: SourceEnvelope) -> Voice {
+    let author? = source.author else { return Voice {} }
+    Voice { speaker: author, author: author, audience: source.participants.filter(it != author) }
+}
+
+/// Local record ids in reference positions become their placed entity ids.
+fn relinked(catalog: Catalog, shape: Shape, value: Value, targets: List<Target>) -> Value {
+    match shape {
+        .Optional(inner) -> if value is .Null { value } else { relinked(catalog, inner, value, targets) },
+        .Many(inner) -> Value.List([relinked(catalog, inner, v, targets) for v in value.items()]),
+        .Reference(_) -> match value {
+            .Text(id) -> Value.Text(targets.find(it.local_id == id)?.entity ?? id),
+            rest -> value,
+        },
+        .Embedded(target) -> match catalog.model(target) {
+            .Ok(model) -> Value
+                .Map(
+                    [Entry {
+                        key: e.key,
+                        value: match model.properties.find(it.name == e.key) {
+                            p? -> relinked(catalog, p.shape, e.value, targets)
+                            null -> e.value
+                        },
+                    } for e in value.entries()],
+                ),
+            .Err(_) -> value,
+        },
+        .Text or .Integer or .Number or .Boolean -> value,
+    }
+}

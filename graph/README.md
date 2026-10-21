@@ -113,12 +113,13 @@ CLI request files and HTTP use exactly the same JSON operations:
 | `ingest` | `source`: v1 SourceEnvelope | Admitted source reference, graph revision, changed flag, first receipt time |
 | `source` | `id`, optional `revision` | Current or historical structured SourceEnvelope |
 | `publish` | See below | Committed graph revision |
-| `get` | `id` | Supported candidates per property, including conflicts |
+| `admit` | `source`: SourceRef, `result`: C01 v2 ExtractionResult, optional `scope`, `candidates` | Committed revision, run id, replay flag, each record's entity, link and the extractor's resolution |
+| `get` | `id` | Current plain candidates per property, including conflicts; `qualified` statements apart |
 | `value` | `id` | Validated complete record, or refusal |
 | `find` | `model`, optional `limit` | Live entity ids, one per merge group |
 | `edges` | `id`, optional `incoming` | Typed reference paths |
 | `traverse` | `id`, optional `depth`, `limit` | Breadth-first reachable ids |
-| `explain` | `id`, `property` | All historical supporting runs and their locators |
+| `explain` | `id`, `property` | Every historical support: locator, qualifiers, anchor, voice, valid time, supersession |
 | `resolve` | `namespace`, `key` | `{"entity": …}` for the one entity that name means |
 | `aliases` | `id` | The entity's active external names as `{namespace, key}` |
 | `merge` | `id`, `left`, `right`, `decider` | Committed graph revision |
@@ -285,6 +286,61 @@ model vocabulary belongs in the engine. An ordinary local worker can own
 invocation, retries, scheduling, and the meaning of scopes; no reasoning
 agent or generative LLM is required. Automatic extraction is not yet built.
 
+### Extraction admission
+
+`admit` takes a C01 `ExtractionResult` for an ingested source revision and,
+in one transaction, admits it (E01: exact anchors, catalog, versions), links
+declared identity keys exactly (L01) and publishes it. The trusted request
+is rebuilt from the stored source, the installed catalog, the result's own
+`extractor` and `request`, `scope` (default: the source's observation id)
+and the `candidates` the caller offered. The run is one per producer and
+request id; replaying the same admission answers `replayed: true` with its
+revision, and changed content under that request id is refused. A failed
+result is refused and withdraws nothing; a complete empty one replaces the
+producer's earlier admission in that scope.
+
+Each record lands on an entity: `existing` (its keys name one), `new` or
+`unresolved` (a new local entity, stable per producer, scope, source revision
+and local id), or `ambiguous` (keys name several; a new local entity, the
+`candidates` listed, nothing merged and no key rebound). An extractor's
+`resolution` (an offered candidate, `new` or `abstain`) is echoed, never
+applied: only declared exact keys grant identity. Local ids in reference
+positions become those entity ids. Records sharing an entity may repeat a
+property only with identical value, qualifiers and normalization.
+
+### Field evidence and valid time
+
+A field published through `admit` keeps its evidence passages, FactBank
+`factuality` (`CT+`, `CT-`, `PR+`, `PR-`, `PS+`, `PS-`, `Uu`), `speech_act`
+(`assert`, `report`, `plan`, `request`, `condition`, `draft`), optional
+`normalization` (TIMEX3 type and ISO 8601 value, or ISO 4217 currency and
+minor units) and voice: the quotation frame's speaker, else the source
+author, with the author and (unquoted) the other participants as audience.
+A null speaker or audience is unknown. All of it is part of the run's replay
+identity. `get`, `value`, `find`, `where`, `edges` and `traverse` read only
+plain facts: `CT+` and `assert`, standing and not superseded. Other standing
+statements appear under `qualified`; an asserted `CT-` of a value marks that
+candidate `denied`, and `value` refuses it unless chosen. `explain` keeps
+everything, with `standing` (transaction time) and `active` (counts as a
+current fact).
+
+Each of a support's `anchors` in `explain` is one passage in the Answer
+contract's Citation shape:
+`{"source": {"observation", "revision"}, "frame", "speaker", "selectors": [...]}`,
+its W3C Web Annotation selectors being alternative descriptions of that one
+passage: a `TextPositionSelector` (Unicode code points of that source
+revision, half-open) and, when the extractor gave one, its `TextQuoteSelector`. The
+normalized value ("next Friday" as a date) is the claim; its passages need
+not contain it. Legacy publications have no anchor and read as plain
+asserted statements; their opaque `locator` is never interpreted.
+
+Valid time comes only from a model's declared validity binding, as UTC
+milliseconds (`valid_from`, `valid_until`, half-open). When two plain
+standing claims for one entity property differ and both declare a start, the
+later start supersedes the earlier claim from that instant if it was still
+open; `superseded_by` records it and it applies while the superseding support
+stands. Tied or unknown starts stay a contradiction: both remain candidates.
+
 ## Durable behavior
 
 SQLite is the authority. Every engine row is an `@std/db` model — its DDL
@@ -293,7 +349,8 @@ become SQL columns: user ontology values land in the generic `ClaimRow`.
 The engine models are `Meta`, `Schema`, `EntityRow`, `ObservationRow`,
 `ObservationVersionRow`, `RunRow`, `RunTrailRow`, `ClaimRow`, `SupportRow`,
 `EdgeRow`, `AliasRow`, `MergeRow`/`MergeEndRow`, and
-`TombstoneRow`/`TombstoneEndRow`. WAL, foreign keys, and immediate write
+`TombstoneRow`/`TombstoneEndRow`, and `VoiceRow`, `EvidenceRow` and
+`SupersessionRow` (storage format 9; older formats upgrade by adding them). WAL, foreign keys, and immediate write
 transactions are used. Failed publications roll back identities, support
 withdrawals, claims, references, aliases, and the revision together.
 Connections wait up to three seconds for lock contention. Public multi-query

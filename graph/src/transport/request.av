@@ -6,6 +6,8 @@ use store.identity.{Identity}
 use store.merge.{Merge}
 use store.tombstone.{Tombstone}
 use store.choice.{Choice}
+use ingest.admit.{Admission}
+use @avra.graph_contracts.{SourceRef}
 
 export enum Operation {
     Schema
@@ -37,6 +39,7 @@ export enum Operation {
     Cypher(text: string, params: Json)
     Check(text: string, params: Json)
     Search(query: string, limit: int)
+    Admit(admission: Admission)
 }
 
 /// Protocol parsing knows operations; model data belongs to standard validation.
@@ -109,6 +112,24 @@ export fn operation(j: Json) -> Result<Operation, string> {
             } else {
                 Operation.Query(j.get("plan")!)
             }
+        },
+        "admit" -> {
+            closed(j, ["op", "source", "result", "scope", "candidates"])?
+            let source? = j.get("source") else { fail "admit needs a source reference" }
+            let result? = j.get("result") else { fail "admit needs an extraction result" }
+            let reference = match SourceRef.from_json(to_text(source)) {
+                .Ok(s) -> s,
+                .Err(e) -> { fail "admit source: ${e.report()}" },
+            }
+            Operation
+                .Admit(
+                    Admission {
+                        source: reference,
+                        result: result,
+                        scope: if j.get("scope") == null { null } else { text(j, "scope")? },
+                        candidates: j.get("candidates") ?? Json.Arr([]),
+                    },
+                )
         },
         "get" -> {
             closed(j, ["op", "id"])?
