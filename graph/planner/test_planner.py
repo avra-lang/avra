@@ -263,7 +263,7 @@ class Structured(unittest.TestCase):
         membership = next(m for m in schema["models"] if m["name"] == "GroupMembership")
         membership["semantics"] = {"relation": {"from": ["person"], "to": ["group"], "label": [], "labels": [
             {"value": "member", "forward": ["member of", "on"], "reverse": []}]}}
-        chooser = Scripted(["Dana Holm", "their wife", "yes", "value"], {"name"})
+        chooser = Scripted(["Dana Holm", "their wife", "yes", "value", "content"], {"name"})
         cypher = structured.plan(chooser, "Dana Holm said his wife was not on the crew. Who is she?", schema, NOBODY,
                                  facts("Person name: Dana Holm"))
         question, options = chooser.asked[1]
@@ -295,6 +295,18 @@ class Structured(unittest.TestCase):
         self.assertIn("such records hold: 'keep the guest list short'", evidence.shown(hop))
         other = next(h for h in structured.hops(models, "Person") if h[1] == "PersonalTask")
         self.assertEqual(evidence.shown(other), other[2])
+
+    def test_a_relation_records_own_properties_can_answer(self):
+        import copy
+        import structured
+
+        schema = copy.deepcopy(SCHEMA)
+        membership = next(m for m in schema["models"] if m["name"] == "GroupMembership")
+        membership["semantics"] = {"relation": {"from": ["person"], "to": ["group"], "label": [], "labels": [
+            {"value": "member", "forward": ["member of"], "reverse": []}]}}
+        chooser = Scripted(["Dana Holm", "value", "content"], {"is_member"})
+        cypher = structured.plan(chooser, "Is Dana Holm a member of the crew?", schema, NOBODY, facts("Person name: Dana Holm"), depth=1)
+        self.assertEqual(cypher, "MATCH (n0:Person)-[r1:member]->(n1:Group) WHERE n0.name = 'Dana Holm' RETURN r1.is_member AS is_member")
 
     def test_hops_are_only_the_nodes_own(self):
         import structured

@@ -42,14 +42,16 @@ class Plan:
 class Evidence:
     """What the graph's own search says about the question.
 
-    A word is evidence only where it is informative in this graph: its
+    A record the question names is found by its whole value, whatever its
+    words' frequency. Otherwise a word is evidence only where it is
+    informative in this graph: its
     document frequency (passages the search returns for it alone) is at most
     the median over the question's words. Facts on enum properties are
     declared categories, matched by declarations, never by search. A word a
     declaration, an anchor or a narrowing has explained stops counting."""
 
     def __init__(self, search, question, models):
-        self.facts, self.words, self.spent = [], set(), set()
+        self.facts, self.every, self.words, self.spent = [], [], set(), set()
         self.used = set()
         if not search:
             return
@@ -59,10 +61,12 @@ class Evidence:
             return
         median = counts[(len(counts) - 1) // 2]
         self.words = {w for w, hits in found.items() if hits and len(hits) <= median}
-        for w in self.words:
-            for p in found[w]:
+        for w, hits in found.items():
+            for p in hits:
                 fact = self.fact(p, models)
-                if fact and fact not in self.facts:
+                if fact and fact not in self.every:
+                    self.every.append(fact)
+                if fact and w in self.words and fact not in self.facts:
                     self.facts.append(fact)
 
     @staticmethod
@@ -81,8 +85,9 @@ class Evidence:
         self.words -= set(tokens(text))
 
     def named(self, question):
-        """Facts whose whole value the question spells: records it names."""
-        return [f for f in self.facts if spoken(f[2], question.lower())]
+        """Facts whose whole value the question spells: records it names. A name
+        is evidence however common its words are, since the whole value matches."""
+        return [f for f in self.every if spoken(f[2], question.lower())]
 
     def models(self):
         """Models whose facts hold a still unexplained informative word."""
@@ -144,10 +149,11 @@ def debiased(chooser, context, question, options):
 
 
 def hops(models, label):
-    """Each relationship a node of `label` really has, as (cypher, target, words, phrases):
-    declared relation phrases first, then reference properties both ways."""
+    """Each relationship a node of `label` really has, as (cypher, target, words,
+    phrases, record): declared relation phrases first, whose record model is
+    named, then reference properties both ways."""
     out = []
-    for m in models.values():
+    for name, m in models.items():
         ends = relation_ends(m)
         relation = ((m.get("semantics") or {}).get("relation")) or {}
         for l in (relation.get("labels", []) if ends else []):
@@ -155,19 +161,19 @@ def hops(models, label):
                 also = [w for w in l.get("forward", []) if w != l["value"]]
                 said = f" ({', '.join(also)})" if also else ""
                 out.append((f"-[:{l['value']}]->", ends[1], f"their {l['value']}{said}: a {ends[1]}",
-                            [l["value"], *also]))
+                            [l["value"], *also], name))
             if ends[1] == label:
                 for w in l.get("reverse", []):
-                    out.append((f"-[:{w}]->", ends[0], f"their {w}: a {ends[0]}", [w]))
+                    out.append((f"-[:{w}]->", ends[0], f"their {w}: a {ends[0]}", [w], name))
     for p in models[label]["properties"]:
         target = reference_target(p["shape"])
         if target:
-            out.append((f"-[:{p['name']}]->", target, f"follow its {p['name']} to a {target}", []))
+            out.append((f"-[:{p['name']}]->", target, f"follow its {p['name']} to a {target}", [], None))
     for owner, m in models.items():
         for p in m["properties"]:
             if reference_target(p["shape"]) == label:
                 about = line(m.get("description", ""))
-                out.append((f"<-[:{p['name']}]-", owner, f"{owner} records whose {p['name']} is this {label}: {about}", []))
+                out.append((f"<-[:{p['name']}]-", owner, f"{owner} records whose {p['name']} is this {label}: {about}", [], None))
     return out
 
 
@@ -179,7 +185,7 @@ def plan(chooser, question, schema, context, search=None, depth=None):
     evidence = Evidence(search, question, models)
     out = Plan()
     var, label = anchored(chooser, head, question, models, context, evidence, out)
-    came = None
+    came, held = None, None
     phrasing = question.lower()
     for hop in range(depth if depth is not None else len(models)):
         options = [h for h in hops(models, label) if not came or (h[0], h[1]) != came]
@@ -198,15 +204,19 @@ def plan(chooser, question, schema, context, search=None, depth=None):
                 break
             ranked = onward or list(range(len(options)))
             pick = ranked[best(chooser, trail, "Where next?", [evidence.shown(options[i]) for i in ranked])]
-        arrow, target, _, _ = options[pick]
+        arrow, target, _, _, record = options[pick]
         back = ("<-" + arrow[1:-2] + "-" if arrow.endswith("->") else arrow[1:-1] + "->")
         var = out.node(target)
+        held = (f"r{len(out.vars) - 1}", record, len(out.parts)) if record else None
         out.parts.append(f"{arrow}({var}:{target})")
         came, label = (back, label), target
         narrowed(chooser, trail, models[target], var, out, question, evidence)
         evidence.spent.add(target)
     trail = f"{head}\nSo far: {' '.join(out.parts)} — the answer is about these {label} records."
-    return out.cypher(returns(chooser, trail, models[label], var))
+    items = returns(chooser, trail, models[label], var, held and (held[0], models[held[1]]))
+    if held and f"{held[0]}." in items:
+        out.parts[held[2]] = out.parts[held[2]].replace("-[:", f"-[{held[0]}:", 1)
+    return out.cypher(items)
 
 
 def anchored(chooser, head, question, models, context, evidence, out):
@@ -270,22 +280,28 @@ def narrowed(chooser, trail, model, var, out, question, evidence):
         evidence.explain(w)
 
 
-def returns(chooser, trail, model, var):
-    """The RETURN items: a count, one recorded status, or chosen values."""
-    props = model["properties"]
+def returns(chooser, trail, model, var, record=None):
+    """The RETURN items: a count, one recorded status, or chosen values, read
+    from the final node or from the relation record of the hop that reached it."""
+    props = [(var, p) for p in model["properties"]]
+    if record:
+        props += [(record[0], p) for p in record[1]["properties"] if not reference_target(p["shape"])]
     if best(chooser, trail, "What does the question ask for?",
             ["the value of one or more of their properties", "how many there are"]) == 1:
         return f"count({var}) AS count"
-    flags = [p["name"] for p in props if base_shape(p["shape"]) == "boolean"]
+    flags = [(v, p["name"]) for v, p in props if base_shape(p["shape"]) == "boolean"]
     if flags and best(chooser, trail, "What does the question want to know?", RECORDED) == 1:
-        name = flags[best(chooser, trail, "Which recorded status?", flags)]
-        return f"coalesce({var}.{name}, false) AS {name}"
-    readable = [i for i, p in enumerate(props)
+        v, name = flags[best(chooser, trail, "Which recorded status?", [n for _, n in flags])]
+        return f"coalesce({v}.{name}, false) AS {name}"
+    readable = [i for i, (_, p) in enumerate(props)
                 if not (isinstance(base_shape(p["shape"]), dict) and "embedded" in base_shape(p["shape"]))]
     picked = []
     for i in readable:
-        p = props[i]
+        v, p = props[i]
         about = f"{p['name']}" + (f" ({line(p['description'])})" if p.get("description") else "")
         if best(chooser, trail, f"Does the answer need their {about}?", NEEDED) == 0:
             picked.append(i)
-    return ", ".join(f"{var}.{props[i]['name']} AS {props[i]['name']}" for i in picked or [0])
+    names = [props[i][1]["name"] for i in picked or [0]]
+    return ", ".join(f"{props[i][0]}.{props[i][1]['name']} AS {props[i][1]['name']}"
+                     + ("" if names.count(props[i][1]["name"]) == 1 else f"_{props[i][0]}")
+                     for i in picked or [0])
