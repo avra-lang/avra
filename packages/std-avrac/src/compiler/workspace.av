@@ -1156,7 +1156,7 @@ fn built(
             Family.Named.ordinal,
             (f: FileId) -> ws.held_sig_dep(f),
         )
-    if leaves_traced() || db_verified() { ws.answers_named() }
+    ws.answers_named()
     ws.decls.arm_namespace((f: FileId) -> ws.visible(f))
     ws.decls.arm_apart((f: FileId) -> ws.namespace(ws.decls.file(f).module_id).apart)
     ws.decls.arm_composers((f: FileId) -> ws.composers(f))
@@ -2204,6 +2204,17 @@ impl Workspace {
         self.db.settle(hk, fp_str(text))
     }
 
+    /// The declarations a type's method table gathers from: its own members and every impl
+    /// block aimed at it.
+    fn method_blocks(target: DeclId) -> List<DeclId> {
+        self
+            .decls
+            .children_of(target)
+            .concat(
+                [b for b in self.decls.impls_named(self.decls.decl(target).name) if self.aims_at(b, target)],
+            )
+    }
+
     /// A type's method table, filled from its own members and every
     /// impl block that names it — asked through the table's read, so a
     /// body depends on exactly the impls it dispatches through. Asked
@@ -2227,12 +2238,7 @@ impl Workspace {
         let home = self.decls.decl(target).file
         if !self.is_held(home) { let _ = self.resolved(home) }
         self.decls.hold_named(self.decls.decl(target).name)
-        let blocks = self
-            .decls
-            .children_of(target)
-            .concat(
-                [b for b in self.decls.impls_named(self.decls.decl(target).name) if self.aims_at(b, target)],
-            )
+        let blocks = self.method_blocks(target)
         // A table that cannot be COMPLETED is not the table, and must
         // not be memoized: an impl still registering, or an impl in a
         // file whose resolve is in flight (a lifted call runs inside
@@ -2250,6 +2256,7 @@ impl Workspace {
             if self.is_held(self.decls.decl(b).file) { self.held_methods(target, b) } else { touch(self.sig(b)) }
         }
         let out = self.decls.registered_methods(target)
+        self.note_methods(k, target)
         self.method_clashes.keep(target.index, self.decls.method_clashes(target))
         self.db.settle(k, fp_str(joined([self.decls.decl(m).name for m in out], ",")))
         out
