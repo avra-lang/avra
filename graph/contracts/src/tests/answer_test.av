@@ -1,4 +1,4 @@
-use answer.{Answer, AnswerField, Selector}
+use answer.{Answer, AnswerField, Selector, Citation}
 
 const unknown = "{\"contract\":1,\"request\":\"request:1\",\"status\":\"unknown\",\"read_revision\":8,\"problems\":[{\"code\":\"answer.missing_evidence\",\"path\":[\"attendance\"],\"message\":\"No completion evidence in this read view\"}]}"
 const refusal = "{\"contract\":1,\"request\":\"request:1\",\"status\":\"refused\",\"read_revision\":8,\"policies\":[\"query.read_only\"],\"problems\":[{\"code\":\"query.read_only\",\"message\":\"This interface does not execute writes\"}]}"
@@ -69,6 +69,27 @@ spec "v1 structured answer contracts" {
                 Selector
                     .from_json("{\"kind\":\"TextPositionSelector\",\"start\":0,\"end\":1,\"exact\":\"a\"}") is .Err &&
                 Selector.from_json("{\"kind\":\"TextQuoteSelector\"}") is .Err
+        }
+        then "a citation's selectors describe one passage: a position and at most one quote" {
+            let both = "{\"kind\":\"TextPositionSelector\",\"start\":0,\"end\":1},{\"kind\":\"TextQuoteSelector\",\"exact\":\"a\"}"
+            let cite = "{\"id\":\"c\",\"source\":{\"observation\":\"o\",\"revision\":1},\"selectors\":[SEL]}"
+            Citation.from_json(cite.replace("SEL", both)) is .Ok &&
+                Citation.from_json(cite.replace("SEL", both + "," + both)) is .Err &&
+                Citation
+                    .from_json(cite.replace("SEL", "{\"kind\":\"TextQuoteSelector\",\"exact\":\"a\"}")) is .Err
+        }
+        then "retrieved passages accompany an unresolved answer and cite a known citation" {
+            let passage = "\"passages\":[{\"id\":\"p1\",\"text\":\"quoted\",\"citation\":\"e1\",\"rank\":0.5,\"basis\":\"source_passage\"}]"
+            let held = unknown
+                .replace(
+                    "\"problems\"",
+                    "\"citations\":[{\"id\":\"e1\",\"source\":{\"observation\":\"note:1\",\"revision\":2}}]," +
+                        passage +
+                        ",\"problems\"",
+                )
+            Answer.from_json(held) is .Ok &&
+                Answer.from_json(held.replace("\"unknown\"", "\"answered\"")) is .Err &&
+                Answer.from_json(held.replace("\"citation\":\"e1\"", "\"citation\":\"nope\"")) is .Err
         }
         then "a position selector covers at least one character and needs both ends" {
             Selector.from_json("{\"kind\":\"TextPositionSelector\",\"start\":3,\"end\":3}") is .Err &&
