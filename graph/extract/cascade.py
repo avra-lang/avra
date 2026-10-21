@@ -26,6 +26,7 @@ MARGIN = 0.5
 MAX_OPTIONS = 26
 ABSTAIN = object()
 SOCKET = os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
+THIRD_PERSON = re.compile(r"\b(she|She|he|He|her|Her|him|Him|they|They|them|Them)\b")
 FIRST_PERSON = re.compile(r"\b(I|I'm|I'll|I've|me|my|My|mine|we|We|our|Our|us)\b")
 SPEECH_ACTS = {
     "assert": "stated as a current fact by the speaker",
@@ -468,6 +469,28 @@ class Cascade:
         best = max(range(len(options)), key=lambda i: p[i])
         return ids[best] if best < len(ids) and p[best] >= ACCEPT else None
 
+    def model_of(self, rid):
+        return next(r["model"] for r in self.records if r["local_id"] == rid)
+
+    def referent(self, a, b):
+        """Who a third-person pronoun in this sentence names: one of the people
+        named in it or the two sentences before, or None (abstain)."""
+        hit = THIRD_PERSON.search(self.t.s, a, b)
+        if not hit:
+            return None
+        units = [u for u in self.t.units() if u[0] <= a]
+        lo = units[-3][0] if len(units) >= 3 else 0
+        near = [m for m in self.mentions if m["record"] and m["kind"] in self.person_models() and lo <= m["start"] < b and m["start"] < hit.start()]
+        ids = list(dict.fromkeys(m["record"] for m in reversed(near)))
+        if not ids:
+            return None
+        context = f'Passage: "{self.t.s[lo:b]}"'
+        p = self.llm.pick(context, f'Who does "{hit.group()}" at character {hit.start()} refer to?', [self.name(i) for i in ids], ["someone not named here", "cannot tell"])
+        ranked = sorted(range(len(p)), key=lambda i: -p[i])
+        if ranked[0] < len(ids) and p[ranked[0]] - p[ranked[1]] >= MARGIN:
+            return ids[ranked[0]], (hit.start(), hit.end())
+        return None
+
     def person_models(self):
         return {self.plan.relations[n]["from"] and target(self.prop(n, self.plan.relations[n]["from"][0])["shape"]) for n in self.plan.relations}
 
@@ -509,11 +532,15 @@ class Cascade:
         speaker = self.speaker_of(a, b) if FIRST_PERSON.search(self.t.s[a:b]) else None
         pronoun = FIRST_PERSON.search(self.t.s, a, b) if speaker else None
 
+        referent = self.referent(a, b)
+
         def holders(model, anywhere):
             pool = self.mentions if anywhere else local
             ids = {m["record"]: (m["start"], m["end"]) for m in pool if m["kind"] == model and m["record"]}
             if speaker and model in self.person_models() and pronoun:
                 ids.setdefault(speaker, (pronoun.start(), pronoun.end()))
+            if referent and self.model_of(referent[0]) == model:
+                ids.setdefault(*referent)
             return ids
 
         froms, tos = holders(ft, False), holders(tt, free is not None)
@@ -606,11 +633,19 @@ class Cascade:
         if missing:
             log(f"drop {model} at {a}: no evidence for {missing}")
             return
+        kept = []
+        for f in fields:
+            if f["value"] == {}:
+                kept.append(f)
+                continue
+            said = self.llm.pick(ctx, f"In a {model}, does the sentence itself state that {f['property']} is {self.shown(f['value'])}?", ["yes", "no"])
+            if said[0] - said[1] >= MARGIN:
+                kept.append(f)
+            elif required(self.prop(model, f["property"])):
+                log(f"reject {model} at {a}: {f['property']}={self.shown(f['value'])} is not stated")
+                return
+        fields = kept
         claim = f"{model} with " + ", ".join(f"{f['property']}={self.shown(f['value'])}" for f in fields)
-        check = self.llm.pick(ctx, f"Does the sentence itself state this record: {claim}?", ["yes, as written", "no, a field or the record kind is wrong"])
-        if check[0] < ACCEPT:
-            log(f"reject {model} at {a}: {claim}")
-            return
         q = self.qualifiers(a, b, claim)
         for f in fields:
             f.update(q)
@@ -693,6 +728,9 @@ class Cascade:
         pronoun = FIRST_PERSON.search(self.t.s, a, b)
         if speaker and pronoun and any(r["local_id"] == speaker and r["model"] == model for r in self.records):
             where[speaker] = (pronoun.start(), pronoun.end())
+        referent = self.referent(a, b)
+        if referent and self.model_of(referent[0]) == model:
+            where[referent[0]] = referent[1]
         for r in self.records:
             if r["model"] == model and r["local_id"] not in where:
                 where[r["local_id"]] = None
@@ -717,8 +755,18 @@ class Cascade:
             self.field(to, obj[0], [obj[1]], **q),
         ]
         for p in self.plan.models[name]["properties"]:
-            if required(p) and p["name"] not in (frm, to, label):
-                fields.append(self.field(p["name"], {}, [cue], **q))
+            if not required(p) or p["name"] in (frm, to, label):
+                continue
+            if route(p) == "bool":
+                said = self.llm.pick(f'Sentence: "{self.t.s[a:b]}"', f"Consider: {claim}. Is {p['name']} true or false according to the sentence?", ["true", "false"])
+                value = said[0] >= said[1]
+                if not value and q["factuality"] == "CT-":
+                    q = dict(q, factuality="CT+")
+                fields.append(self.field(p["name"], value, [cue], score=max(said)))
+            else:
+                fields.append(self.field(p["name"], {}, [cue]))
+        for f in fields:
+            f.update(q)
         self.records.append({"local_id": self.mint(), "model": name, "fields": fields, "identities": []})
 
     def same(self, r, frm, s, to, o, label, v):
