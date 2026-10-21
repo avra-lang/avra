@@ -15,6 +15,7 @@ in-process through mlx_lm from the extraction lane's venv. Timings and retries g
 """
 import json
 import os
+import re
 import pathlib
 import sys
 import time
@@ -138,6 +139,15 @@ def tries():
     return int(args[args.index("--tries") + 1]) if "--tries" in args else TRIES
 
 
+FIRST_PERSON = re.compile(r"\b(i|me|my|mine|myself)\b", re.I)
+
+
+def bound(question, cypher, context):
+    """A question in the first person reads from the speaker, through $speaker."""
+    if context.get("speaker") and FIRST_PERSON.search(question) and "$speaker" not in cypher:
+        raise Refusal("unbound_speaker", "the question speaks as the speaker (my/I/me): start at (me:Person) WHERE id(me) = $speaker")
+
+
 def planned(llm, question, schema, context, limit=TRIES):
     params = params_of(context)
     turns = messages(question, schema, context)
@@ -147,6 +157,7 @@ def planned(llm, question, schema, context, limit=TRIES):
         cypher = drafted(llm.reply(turns))
         try:
             check(cypher, schema, params)
+            bound(question, cypher, context)
             log(f"try {attempt} ok in {time.time() - started:.1f}s: {cypher}")
             return {"cypher": cypher, "params": params}
         except Refusal as refusal:

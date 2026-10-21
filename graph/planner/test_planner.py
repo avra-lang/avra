@@ -141,6 +141,21 @@ class Loop(unittest.TestCase):
         self.assertIn("unknown_property", seen[1])
         json.dumps(out)
 
+    def test_a_first_person_question_must_read_from_the_speaker(self):
+        unbound = SLICE["q01"].replace("id(me) = $speaker AND ", "")
+        replies = [unbound, SLICE["q01"]]
+
+        class Fake:
+            calls = 0
+
+            def reply(self, turns):
+                Fake.calls += 1
+                return replies[Fake.calls - 1]
+
+        context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
+        self.assertEqual(planned(Fake(), "Who is my wife?", SCHEMA, context)["cypher"], SLICE["q01"])
+        self.assertEqual(Fake.calls, 2)
+
     def test_drafts_lose_fences_and_prose(self):
         self.assertEqual(drafted("Here it is:\n```\nMATCH (a:Person)\nRETURN a.name\n```"), "MATCH (a:Person) RETURN a.name")
 
