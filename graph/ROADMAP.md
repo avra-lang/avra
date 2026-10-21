@@ -42,6 +42,7 @@ autonomous extraction or inference system.
 | Area | Baseline state |
 | --- | --- |
 | Model-only ontology; generated registration | Working |
+| Typed identity/relation/time/unit bindings in model definitions | Working; P01 metadata, not their execution |
 | Standard validation and generated codecs | Working |
 | Scalars, optionals, lists, embedded records, typed references | Working |
 | Std-first SQLite storage (`@std/db` engine models) | Working; format 8 |

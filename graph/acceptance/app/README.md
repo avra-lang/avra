@@ -5,6 +5,10 @@ adds declarations in [src/models/people.av](src/models/people.av): Person,
 Organization, embedded Validity, PersonalRelationship, OrganizationRole and
 GroupMembership. Registrations are generated with `@model` and `collect`;
 validation uses standard rules plus one model-local interval rule.
+P01 adds typed identity, relationship and validity bindings to those same
+declarations. They are described in [../../MODEL-SEMANTICS.md](../../MODEL-SEMANTICS.md)
+and verified in [../../P01-HANDOFF.md](../../P01-HANDOFF.md). Consumers still
+need to implement resolution and temporal evaluation.
 
 There is no person dictionary, relationship dispatcher, NLP provider or
 startup command here yet. M02 adds commercial declarations; M03 adds

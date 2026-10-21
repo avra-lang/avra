@@ -17,9 +17,10 @@ use @std.meta.{
 }
 use @std.validate.{Decode, Value, Entry, Issues}
 use schema.{Model, Property, Shape, registered}
+use semantics.{Semantics}
 
 /// The declaration supplies validation, serialization, and graph metadata.
-export fn model(t: Type) -> Declared {
+export fn model(t: Type, semantics: Code = quote { Semantics {} }) -> Declared {
     let problems = shape_problems(t)
     if !problems.is_empty() { return Declared { made: [], problems: problems } }
     let clean = t with { annotations: [a for a in t.annotations if a.name != "model"] }
@@ -32,7 +33,7 @@ export fn model(t: Type) -> Declared {
                     Directive { twin: "", name: t.name, at: t.at, source: generated(t) },
                     Directive { twin: "", name: t.name, at: t.at, source: checked(t) },
                     Directive { twin: "", name: t.name, at: t.at, source: fields_checked(t) },
-                    Directive { twin: "", name: t.name, at: t.at, source: factory(t) },
+                    Directive { twin: "", name: t.name, at: t.at, source: factory(t, semantics) },
                 ],
             ),
     }
@@ -76,7 +77,7 @@ fn generated(t: Type) -> Decls {
     }
 }
 
-fn factory(t: Type) -> Decls {
+fn factory(t: Type, semantics: Code) -> Decls {
     let descriptor = "${t.name}_graph_model"
     let validator = "${t.name}_graph_checked"
     let assertion_validator = "${t.name}_graph_fields_checked"
@@ -93,6 +94,7 @@ fn factory(t: Type) -> Decls {
                 validator_hash: code_hash(${name(validator)}),
                 check_fields: ${name(assertion_validator)},
                 assertion_hash: code_hash(${name(assertion_validator)}),
+                semantics: ${semantics},
             }
         }
     }

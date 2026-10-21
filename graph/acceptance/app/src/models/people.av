@@ -1,10 +1,23 @@
-use @avra.graph.{model, Ref, Registration, registered}
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+}
 use @std.validate.{length, email, one_of, items}
 
 /// A person, independent of their employment, family or speaking context.
 /// A display name or alias is not a unique identity. "My" is bound to the
 /// utterance speaker by the caller's Context, never a permanent alias here.
-@model
+@model(quote { Semantics { identities: [
+    IdentityBinding { namespace: "email", path: ["email"], normalization: .AsciiLowerTrim },
+    IdentityBinding { namespace: "phone", path: ["phone"], normalization: .Trim },
+] } })
 export type Person = {
     @length(min: 1, max: 256) name: string,
     @items(max: 64) aliases: List<string> = [],
@@ -31,7 +44,7 @@ fn chronological(v: Validity) -> Result<Validity, string> {
 /// unspecified bound, not evidence that a relationship held for all time.
 /// For this fixture, a source's date-only inclusive end becomes next-day
 /// midnight UTC; original wording and date precision remain in the source.
-@model
+@model(quote { Semantics { validity: ValidityBinding { from: ["from_ms"], until: ["until_ms"] } } })
 @chronological
 export type Validity = {
     from_ms: int?,
@@ -44,7 +57,23 @@ export type Validity = {
 /// wife/husband/spouse describe a partnership; mum/mom are mother labels.
 /// This declaration does not assert an inverse relationship, gender of the
 /// subject, employment, or a global meaning for "my wife"/"my mum".
-@model
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["subject"], to: ["relative"], label: ["relation"],
+        labels: [
+            RelationLabel { value: "wife", forward: ["wife"] },
+            RelationLabel { value: "husband", forward: ["husband"] },
+            RelationLabel { value: "spouse", forward: ["spouse"] },
+            RelationLabel { value: "mother", forward: ["mother", "mum", "mom"] },
+            RelationLabel { value: "father", forward: ["father", "dad"] },
+            RelationLabel { value: "parent", forward: ["parent"] },
+            RelationLabel { value: "sister", forward: ["sister"] },
+            RelationLabel { value: "brother", forward: ["brother"] },
+            RelationLabel { value: "sibling", forward: ["sibling"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["validity", "from_ms"], until: ["validity", "until_ms"] },
+} })
 export type PersonalRelationship = {
     subject: Ref<Person>,
     @one_of(["wife", "husband", "spouse", "mother", "father", "parent", "sister", "brother", "sibling"]) relation: string,
@@ -56,7 +85,10 @@ export type PersonalRelationship = {
 /// title retains qualifications such as "interim creative director";
 /// a creative-director transition changes this role, not family relations.
 /// A title is neither a permanent Person property nor a unique identity.
-@model
+@model(quote { Semantics {
+    relation: RelationBinding { from: ["person"], to: ["organization"], label: ["title"] },
+    validity: ValidityBinding { from: ["validity", "from_ms"], until: ["validity", "until_ms"] },
+} })
 export type OrganizationRole = {
     person: Ref<Person>,
     organization: Ref<Organization>,
@@ -68,7 +100,7 @@ export type OrganizationRole = {
 /// is_member=false is a source-backed denial, not absence of evidence;
 /// unknown membership must omit the assertion rather than invent false.
 /// A spouse's membership does not follow from the other spouse's job.
-@model
+@model(quote { Semantics { validity: ValidityBinding { from: ["validity", "from_ms"], until: ["validity", "until_ms"] } } })
 export type GroupMembership = {
     person: Ref<Person>,
     @length(min: 1, max: 256) group_name: string,

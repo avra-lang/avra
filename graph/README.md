@@ -56,6 +56,8 @@ calls its methods. The library package is `@avra/graph`, physically here
 under `graph/`, not under `packages/`.
 
 `@model` composes `std.validate.Decode` with a value writer and metadata.
+Optional typed identity, relation, time and unit bindings belong beside
+these same declarations; see [MODEL-SEMANTICS.md](MODEL-SEMANTICS.md).
 Validation annotations remain ordinary standard/custom validators.
 `Ref<T>` reads a string entity id; a nested model is an embedded value.
 Scalars, optional values, ordered lists, typed references, and nested
@@ -72,6 +74,8 @@ closure collections intentionally exclude the program entry.
 From the worktree root, using its compiler:
 
 ```sh
+# Rebuild first if the standing compiler predates this branch's language fixes:
+sh tools/watch.sh 3500 make avra
 sh tools/watch.sh 3500 ./build/avra build graph
 graph/src/main request --db /tmp/personal-graph.db graph/examples/schema.json
 graph/src/main request --db /tmp/personal-graph.db graph/examples/observe.json

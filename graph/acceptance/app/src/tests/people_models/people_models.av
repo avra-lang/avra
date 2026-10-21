@@ -3,7 +3,23 @@ use @avra.graph.{Catalog}
 
 let catalog = match Catalog.collected(models) {
     .Ok(c) -> c.models.any(it.name == "PersonalRelationship") &&
-        c.document.contains("relative is subject's relation"),
+        c.document.contains("relative is subject's relation") &&
+        c
+            .models
+            .any(
+                it.name == "Person" &&
+                    it
+                        .semantics
+                        .identities
+                        .any(it.namespace == "email" && it.normalization is .AsciiLowerTrim),
+            ) &&
+        c
+            .models
+            .any(
+                it.name == "PersonalRelationship" &&
+                    it.semantics.relation != null &&
+                    it.semantics.relation!.from.join("/") == "subject",
+            ),
     .Err(_) -> false,
 }
 let relationship = match PersonalRelationship

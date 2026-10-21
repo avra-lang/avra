@@ -28,6 +28,7 @@ the 3500 MB watchdog; those are resource failures, not red semantic tests.
 The remote successful CLI gate completed in 95 seconds and reported at
 least 6290 MB available throughout. No desktop memory cap was raised.
 
-The desktop standing `./build/avra` has not been replaced. Running isolated
-consumer lint with that old binary can still reproduce the old diagnostic;
-the passing receipt above deliberately identifies the rebuilt compiler.
+At this fix's verification the desktop standing `./build/avra` had not been
+replaced. It has since been rebuilt with this fix and the annotation fixes;
+[the P01 receipt](../../P01-HANDOFF.md) records native consumer verification.
+The earlier passing receipt above deliberately identifies its own compiler.

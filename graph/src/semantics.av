@@ -1,0 +1,260 @@
+use schema.{Model, Shape}
+use @std.json.{Json, field}
+
+/// Identity normalization is explicit and domain-independent. It does not
+/// infer a namespace from a property name or turn display names into keys.
+export enum KeyNormalization { Exact, Trim, AsciiLowerTrim }
+export type IdentityBinding = { namespace: string, path: List<string>, normalization: KeyNormalization = .Exact }
+
+export type RelationLabel = { value: string, forward: List<string>, reverse: List<string> = [] }
+export type RelationBinding = {
+    from: List<string>,
+    to: List<string>,
+    label: List<string>,
+    labels: List<RelationLabel> = [],
+}
+
+/// These declare representation, not a date parser or temporal inference.
+export enum TimeEncoding { UnixMillis, IsoDate, IsoInstant }
+export type ValidityBinding = {
+    from: List<string>? = null,
+    until: List<string>? = null,
+    encoding: TimeEncoding = .UnixMillis,
+}
+
+export enum UnitBinding { Field(path: List<string>), Constant(name: string) }
+export type QuantityBinding = { amount: List<string>, unit: UnitBinding, decimal_places: int = 0 }
+
+/// Optional arguments to @model. All paths are property tokens, never SQL
+/// or source code. Paths may cross embedded records, not entity references
+/// or lists. A missing optional value is not an unbounded or zero value.
+export type Semantics = {
+    identities: List<IdentityBinding> = [],
+    relation: RelationBinding? = null,
+    validity: ValidityBinding? = null,
+    quantities: List<QuantityBinding> = [],
+}
+
+impl Semantics {
+    fn checked(models: List<Model>, owner: Model) -> Result<bool, string> {
+        if self.identities.length > 64 || self.quantities.length > 64 { fail "model semantic bindings exceed their budget" }
+        for i, identity in self.identities {
+            if identity.namespace.is_empty() { fail "an identity binding needs an explicit namespace" }
+            if self
+                .identities
+                .slice(0, i)
+                .any(it.namespace == identity.namespace || same_path(it.path, identity.path)) {
+                fail "identity namespaces and paths must have unambiguous bindings"
+            }
+            if !(path_shape(models, owner, identity.path)? is .Text) { fail "an identity key must bind a text property" }
+        }
+        if self.relation != null { self.relation!.checked(models, owner)? }
+        if self.validity != null { self.validity!.checked(models, owner)? }
+        for i, quantity in self.quantities {
+            if self.quantities.slice(0, i).any(same_path(it.amount, quantity.amount)) { fail "a quantity amount has one unit binding" }
+            if quantity.decimal_places < 0 || quantity.decimal_places > 18 { fail "quantity decimal places must be in 0..18" }
+            let shape = path_shape(models, owner, quantity.amount)?
+            if !(shape is .Integer || shape is .Number) { fail "a quantity amount must bind a numeric property" }
+            match quantity.unit {
+                .Field(path) -> {
+                    if !(path_shape(models, owner, path)? is .Text) { fail "a quantity unit must bind a text property" }
+                },
+                .Constant(name) -> {
+                    if name.is_empty() { fail "a constant unit cannot be empty" }
+                },
+            }
+        }
+        true
+    }
+
+    fn describe() -> Json {
+        Json
+            .Obj(
+                [
+                    field("version", Json.Int(1)),
+                    field("identities", Json.Arr([i.describe() for i in self.identities])),
+                    field(
+                        "relation",
+                        if self.relation == null { Json.Null } else { self.relation!.describe() },
+                    ),
+                    field(
+                        "validity",
+                        if self.validity == null { Json.Null } else { self.validity!.describe() },
+                    ),
+                    field("quantities", Json.Arr([q.describe() for q in self.quantities])),
+                ],
+            )
+    }
+}
+
+impl RelationBinding {
+    fn checked(models: List<Model>, owner: Model) -> Result<bool, string> {
+        if same_path(self.from, self.to) { fail "a relation needs distinct endpoint bindings" }
+        if !(path_shape(models, owner, self.from)? is .Reference) ||
+            !(path_shape(models, owner, self.to)? is .Reference) {
+            fail "relation endpoints must bind typed references"
+        }
+        if !(path_shape(models, owner, self.label)? is .Text) { fail "a relation label must bind a text property" }
+        if self.labels.length > 128 { fail "relation labels exceed their budget" }
+        for i, label in self.labels {
+            if label.value.is_empty() || label.forward.is_empty() { fail "a relation label needs a value and forward phrases" }
+            if self.labels.slice(0, i).any(it.value == label.value) { fail "relation label values must be unique" }
+            let phrases = label.forward.concat(label.reverse)
+            if phrases.length > 128 || phrases.any(it.is_empty()) { fail "relation phrases must be nonempty and bounded" }
+            for j, phrase in phrases {
+                if phrases.slice(0, j).contains(phrase) { fail "a relation phrase has one direction per label" }
+                if self
+                    .labels
+                    .slice(0, i)
+                    .any(it.forward.contains(phrase) || it.reverse.contains(phrase)) {
+                    fail "a relation phrase has one declared label binding"
+                }
+            }
+        }
+        true
+    }
+
+    fn describe() -> Json {
+        Json
+            .Obj(
+                [
+                    field("from", path_document(self.from)),
+                    field("to", path_document(self.to)),
+                    field("label", path_document(self.label)),
+                    field(
+                        "labels",
+                        Json
+                            .Arr(
+                                [Json
+                                    .Obj(
+                                        [
+                                            field("value", Json.Str(label.value)),
+                                            field("forward", path_document(label.forward)),
+                                            field("reverse", path_document(label.reverse)),
+                                        ],
+                                    ) for label in self.labels],
+                            ),
+                    ),
+                ],
+            )
+    }
+}
+
+impl ValidityBinding {
+    fn checked(models: List<Model>, owner: Model) -> Result<bool, string> {
+        if self.from == null && self.until == null { fail "a validity binding needs a bound" }
+        if self.from != null && self.until != null && same_path(self.from!, self.until!) { fail "validity bounds need distinct paths" }
+        for path in [self.from, self.until] {
+            if path != null {
+                let shape = path_shape(models, owner, path!)?
+                let valid = match self.encoding {
+                    .UnixMillis -> shape is .Integer,
+                    .IsoDate or .IsoInstant -> shape is .Text,
+                }
+                if !valid { fail "a validity bound has the wrong declared time representation" }
+            }
+        }
+        true
+    }
+
+    fn describe() -> Json {
+        Json
+            .Obj(
+                [
+                    field(
+                        "from",
+                        if self.from == null { Json.Null } else { path_document(self.from!) },
+                    ),
+                    field(
+                        "until",
+                        if self.until == null { Json.Null } else { path_document(self.until!) },
+                    ),
+                    field(
+                        "encoding",
+                        Json
+                            .Str(
+                                match self.encoding {
+                                    .UnixMillis -> "unix_millis",
+                                    .IsoDate -> "iso_date",
+                                    .IsoInstant -> "iso_instant",
+                                },
+                            ),
+                    ),
+                    field("interval", Json.Str("half_open")),
+                ],
+            )
+    }
+}
+
+impl IdentityBinding {
+    fn describe() -> Json {
+        Json
+            .Obj(
+                [
+                    field("namespace", Json.Str(self.namespace)),
+                    field("path", path_document(self.path)),
+                    field(
+                        "normalization",
+                        Json
+                            .Str(
+                                match self.normalization {
+                                    .Exact -> "exact",
+                                    .Trim -> "trim",
+                                    .AsciiLowerTrim -> "ascii_lower_trim",
+                                },
+                            ),
+                    ),
+                ],
+            )
+    }
+}
+
+impl QuantityBinding {
+    fn describe() -> Json {
+        Json
+            .Obj(
+                [
+                    field("amount", path_document(self.amount)),
+                    field(
+                        "unit",
+                        match self.unit {
+                            .Field(path) -> Json.Obj([field("path", path_document(path))]),
+                            .Constant(name) -> Json.Obj([field("constant", Json.Str(name))]),
+                        },
+                    ),
+                    field("decimal_places", Json.Int(self.decimal_places)),
+                ],
+            )
+    }
+}
+
+fn path_document(path: List<string>) -> Json { Json.Arr([Json.Str(p) for p in path]) }
+
+fn unwrapped(shape: Shape) -> Shape {
+    match shape { .Optional(inner) -> unwrapped(inner), rest -> shape }
+}
+
+fn same_path(a: List<string>, b: List<string>) -> bool {
+    if a.length != b.length { return false }
+    for i, token in a {
+        if token != b[i] { return false }
+    }
+    true
+}
+
+export fn path_shape(models: List<Model>, owner: Model, path: List<string>) -> Result<Shape, string> {
+    if path.is_empty() || path.length > 16 || path.any(it.is_empty()) { fail "semantic paths need 1..16 nonempty property tokens" }
+    mut current = owner
+    for i, token in path {
+        let property? = current.properties.find(it.name == token) else { fail "unknown semantic property: ${current.name}.${token}" }
+        let shape = unwrapped(property.shape)
+        if i == path.length - 1 { return shape }
+        let target = match shape {
+            .Embedded(name) -> name,
+            rest -> { fail "semantic paths may cross only embedded records" },
+        }
+        let next? = models.find(it.name == target) else { fail "unknown embedded semantic target: ${target}" }
+        current = next
+    }
+    fail "a semantic path must reach a property"
+}

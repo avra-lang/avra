@@ -165,6 +165,38 @@ spec "fixture identity and relationship models" {
             let subject? = relationship.make().properties.find(it.name == "subject") else { return false }
             match subject.shape { .Reference(target) -> target == "Person", _ -> false }
         }
+        then "identity bindings are typed data rather than property-name conventions" {
+            match Catalog.collected(models) {
+                .Ok(c) -> {
+                    let person? = c.models.find(it.name == "Person") else { return false }
+                    person
+                            .semantics
+                            .identities
+                            .any(
+                                it.namespace == "email" &&
+                                    it.path.join("/") == "email" &&
+                                    it.normalization is .AsciiLowerTrim,
+                            ) &&
+                        !person.semantics.identities.any(it.path.join("/") == "name")
+                },
+                .Err(_) -> false,
+            }
+        }
+        then "relationship phrases, direction and time paths come from the models" {
+            match Catalog.collected(models) {
+                .Ok(c) -> {
+                    let relationship? = c.models.find(it.name == "PersonalRelationship") else { return false }
+                    let relation? = relationship.semantics.relation else { return false }
+                    let validity? = relationship.semantics.validity else { return false }
+                    relation.from.join("/") == "subject" &&
+                        relation.to.join("/") == "relative" &&
+                        relation.labels.any(it.value == "mother" && it.forward.contains("mum")) &&
+                        validity.from!.join("/") == "validity/from_ms" &&
+                        validity.encoding is .UnixMillis
+                },
+                .Err(_) -> false,
+            }
+        }
         then "a person has no permanent self or speaker alias" {
             match Person.from_json("{\"name\":\"Rowan\",\"email\":null,\"phone\":null}") {
                 .Ok(p) -> p.aliases.is_empty(),

@@ -1,0 +1,199 @@
+use derive.model.{model}
+use schema.{Ref, Registration}
+use semantics.{
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    path_shape,
+}
+use catalog.{Catalog}
+
+@model
+type Window = { start: int?, end: int? }
+
+@model(quote { Semantics { identities: [IdentityBinding { namespace: "device:registry", path: ["tag"], normalization: .Trim }] } })
+type Instrument = { tag: string, links: List<Ref<Instrument>> = [] }
+
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["origin"], to: ["target"], label: ["kind"],
+        labels: [RelationLabel { value: "aligned", forward: ["alignment"], reverse: ["aligns"] }],
+    },
+    validity: ValidityBinding { from: ["window", "start"], until: ["window", "end"] },
+    quantities: [QuantityBinding { amount: ["amount"], unit: .Field(["unit"]), decimal_places: 3 }],
+} })
+type Calibration = {
+    origin: Ref<Instrument>,
+    target: Ref<Instrument>,
+    kind: string,
+    window: Window,
+    amount: int,
+    unit: string,
+}
+
+fn models() -> List<Registration> {
+    [
+        Registration { make: Window_graph_model },
+        Registration { make: Instrument_graph_model },
+        Registration { make: Calibration_graph_model },
+    ]
+}
+
+fn changed(s: Semantics, target: string = "Calibration") -> Result<Catalog, string> {
+    let registrations = [Registration {
+        make: () -> {
+            let m = r.make()
+            m with { semantics: if m.name == target { s } else { m.semantics } }
+        },
+    } for r in models()]
+    Catalog.collected(registrations)
+}
+
+fn projected() -> Result<bool, string> {
+    let c = Catalog.collected(models())?
+    let instrument = c.model("Instrument")?
+    let calibration = c.model("Calibration")?
+    let relation = calibration.semantics.relation!
+    instrument.semantics.identities[0].namespace == "device:registry" &&
+        instrument.semantics.identities[0].normalization is .Trim &&
+        relation.from.join("/") == "origin" &&
+        relation.to.join("/") == "target" &&
+        relation.labels[0].forward[0] == "alignment" &&
+        relation.labels[0].reverse[0] == "aligns" &&
+        calibration.semantics.validity!.from!.join("/") == "window/start" &&
+        calibration.semantics.quantities[0].decimal_places == 3 &&
+        (c.model("Window")?).semantics.identities.is_empty() &&
+        c.document.contains("\"version\":1") &&
+        c.document.contains("\"semantics\"")
+}
+
+fn metadata_identity() -> Result<bool, string> {
+    let c = Catalog.collected(models())?
+    let old = c.model("Instrument")?
+    let updated = changed(
+        old.semantics with { identities: [old.semantics.identities[0] with { normalization: .Exact }] },
+        "Instrument",
+    )?
+    let next = updated.model("Instrument")?
+    c.fingerprint != updated.fingerprint &&
+        old.validator_hash == next.validator_hash &&
+        old.assertion_hash == next.assertion_hash
+}
+
+fn invalid_identity(path: List<string>, duplicate: bool = false) -> Result<bool, string> {
+    let binding = IdentityBinding { namespace: "external:registry", path: path }
+    let identities = if duplicate { [binding, binding with { path: ["unit"] }] } else { [binding] }
+    changed(Semantics { identities: identities }) is .Err
+}
+
+fn relation(
+    from: List<string> = ["origin"],
+    to: List<string> = ["target"],
+    label: List<string> = ["kind"],
+) -> RelationBinding {
+    RelationBinding { from: from, to: to, label: label }
+}
+
+fn invalid_relation(r: RelationBinding) -> Result<bool, string> { changed(Semantics { relation: r }) is .Err }
+
+fn invalid_time(v: ValidityBinding) -> Result<bool, string> { changed(Semantics { validity: v }) is .Err }
+
+fn invalid_quantity(q: QuantityBinding) -> Result<bool, string> { changed(Semantics { quantities: [q] }) is .Err }
+
+fn constant_quantity() -> Result<bool, string> {
+    changed(
+        Semantics {
+            quantities: [QuantityBinding { amount: ["amount"], unit: .Constant("micrometre") }],
+        },
+    ) is .Ok
+}
+
+fn invalid_paths() -> Result<bool, string> {
+    let c = Catalog.collected(models())?
+    let owner = c.model("Instrument")?
+    path_shape(c.models, owner, ["links", "tag"]) is .Err &&
+        path_shape(c.models, owner, [""]) is .Err &&
+        path_shape(c.models, owner, ["tag" for i in 0..17]) is .Err
+}
+
+fn field_validation() -> Result<bool, string> {
+    // Metadata does not add fields, rewrite the standard decoder or
+    // turn a normalized identity into an asserted relationship.
+    Instrument.from_json("{\"tag\":\" A \"}") is .Ok &&
+        Instrument.from_json("{\"invented\":\"A\"}") is .Err &&
+        Instrument_graph_model().rules.is_empty()
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "typed model-declared graph semantics" {
+    given "an unrelated instrument/calibration ontology" {
+        then "quoted typed metadata is projected and bare models keep empty metadata" { passed(projected()) }
+        then "a semantic edit changes the catalog without changing validation code" { passed(metadata_identity()) }
+        then "unknown, empty and numeric identity bindings are refused" {
+            passed(invalid_identity(["missing"])) &&
+                passed(invalid_identity([])) &&
+                passed(invalid_identity(["amount"]))
+        }
+        then "one namespace cannot have conflicting key bindings" { passed(invalid_identity(["kind"], true)) }
+        then "endpoint bindings must be distinct typed references" {
+            passed(invalid_relation(relation(["kind"]))) &&
+                passed(invalid_relation(relation(to: ["origin"])))
+        }
+        then "a relation label is text rather than a reference or number" { passed(invalid_relation(relation(label: ["amount"]))) }
+        then "relation phrase bindings cannot conflict" {
+            passed(
+                invalid_relation(
+                    relation() with { labels: [
+                        RelationLabel { value: "a", forward: ["same"] },
+                        RelationLabel { value: "b", forward: ["same"] },
+                    ] },
+                ),
+            )
+        }
+        then "validity needs distinct bounds with an explicit matching encoding" {
+            passed(invalid_time(ValidityBinding {})) &&
+                passed(
+                    invalid_time(
+                        ValidityBinding { from: ["window", "start"], until: ["window", "start"] },
+                    ),
+                ) &&
+                passed(invalid_time(ValidityBinding { from: ["kind"] }))
+        }
+        then "a numeric amount cannot borrow a numeric unit" {
+            passed(
+                invalid_quantity(QuantityBinding { amount: ["amount"], unit: .Field(["amount"]) }),
+            )
+        }
+        then "a textual amount and an empty constant unit are refused" {
+            passed(
+                    invalid_quantity(QuantityBinding { amount: ["kind"], unit: .Field(["unit"]) }),
+                ) &&
+                passed(
+                    invalid_quantity(QuantityBinding { amount: ["amount"], unit: .Constant("") }),
+                )
+        }
+        then "quantity scale is explicit and bounded" {
+            passed(
+                invalid_quantity(
+                    QuantityBinding {
+                        amount: ["amount"],
+                        unit: .Field(["unit"]),
+                        decimal_places: 19,
+                    },
+                ),
+            )
+        }
+        then "constant units need no specially named property" { passed(constant_quantity()) }
+        then "paths cannot cross entity/list boundaries or exceed their budget" { passed(invalid_paths()) }
+        then "graph semantics remain separate from ordinary model validation" { passed(field_validation()) }
+    }
+}

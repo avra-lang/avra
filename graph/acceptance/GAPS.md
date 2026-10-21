@@ -5,6 +5,9 @@ the fixture declarations. They supplement the original task queue without
 narrowing the text-to-facts product. Owned integration points remain one
 writer lane even where two tasks touch them.
 
+Status: P01 is now implemented and verified; see
+[P01-HANDOFF.md](../P01-HANDOFF.md). E00 and P02/P03 remain requirements.
+
 ## E00: preserve field semantics through persistence
 
 C01 proposals have per-field anchors, polarity, modality and frame. The
@@ -29,9 +32,9 @@ formats need an explicit tested upgrade, not reinterpretation of old rows.
 
 ## P01: machine-readable model semantics
 
-`graph/src/schema.av` currently exposes shapes, descriptions, validation
+Before P01, `graph/src/schema.av` exposed shapes, descriptions, validation
 rule source strings and decoder functions. `derive/model.av` projects those
-from the declarations. It does not yet expose typed bindings for identity
+from the declarations. It did not expose typed bindings for identity
 keys, relation endpoints/labels, valid-time fields or quantity/unit fields.
 M01's descriptions explain these concepts, but do not execute them.
 
