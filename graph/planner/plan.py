@@ -83,11 +83,17 @@ class Shared:
         self.path = path
 
     def reply(self, turns):
+        return self.asked({"op": "generate", "messages": turns, "max_tokens": 200})["text"]
+
+    def choose(self, context, question, options):
+        return self.asked({"op": "choose", "context": context, "question": question, "options": options})["p"]
+
+    def asked(self, body):
         import socket
 
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.connect(str(self.path))
-            s.sendall((json.dumps({"op": "generate", "messages": turns, "max_tokens": 200}) + "\n").encode())
+            s.sendall((json.dumps(body) + "\n").encode())
             data = b""
             while not data.endswith(b"\n"):
                 chunk = s.recv(65536)
@@ -99,7 +105,7 @@ class Shared:
         answer = json.loads(data)
         if "error" in answer:
             raise SystemExit(f"planner: shared model refused: {answer['error']}")
-        return answer["text"]
+        return answer
 
 
 def shared_socket(path=SOCKET):
@@ -181,10 +187,28 @@ def chosen():
     return Local()
 
 
+def composed(chooser, question, schema, context):
+    """The structured arm: closed choices composed into one query, then gated."""
+    import structured
+
+    started = time.time()
+    params = params_of(context)
+    cypher = structured.plan(chooser, question, schema, context)
+    check(cypher, schema, params)
+    log(f"composed in {time.time() - started:.1f}s: {cypher}")
+    return {"cypher": cypher, "params": params}
+
+
 def main():
     llm = chosen()
     payload = json.load(sys.stdin)
-    print(json.dumps(planned(llm, payload["question"], payload["schema"], payload["context"], tries())))
+    if "--structured" in sys.argv[1:]:
+        if not hasattr(llm, "choose"):
+            raise SystemExit("planner: the structured arm needs the shared model's choose op")
+        out = composed(llm, payload["question"], payload["schema"], payload["context"])
+    else:
+        out = planned(llm, payload["question"], payload["schema"], payload["context"], tries())
+    print(json.dumps(out))
 
 
 def in_model_env():

@@ -160,6 +160,56 @@ class Loop(unittest.TestCase):
         self.assertEqual(drafted("Here it is:\n```\nMATCH (a:Person)\nRETURN a.name\n```"), "MATCH (a:Person) RETURN a.name")
 
 
+class Scripted:
+    """Picks, call by call, the first option containing the next scripted word."""
+
+    def __init__(self, script):
+        self.script, self.asked = list(script), []
+
+    def choose(self, context, question, options):
+        want = self.script.pop(0)
+        self.asked.append((question, options))
+        hits = [i for i, o in enumerate(options) if want in o]
+        if not hits:
+            raise AssertionError(f"{want!r} is not among {options}")
+        return [1.0 if i == hits[0] else 0.0 for i in range(len(options))]
+
+
+class Structured(unittest.TestCase):
+    def test_choices_compose_a_query_the_gate_admits(self):
+        import structured
+
+        context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
+        chooser = Scripted(["speaker", "Person", "subject is it", "wife", "relative", "no narrowing",
+                            "stop", "value", "name", "nothing more"])
+        cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, context)
+        self.assertEqual(cypher, "MATCH (n0:Person)<-[:subject]-(n1:PersonalRelationship)-[:relative]->(n2:Person) "
+                                 "WHERE id(n0) = $speaker AND n1.relation = 'wife' RETURN n2.name AS name")
+        check(cypher, SCHEMA, PARAMS)
+        self.assertFalse(chooser.script)
+
+    def test_hops_are_only_the_nodes_own(self):
+        import structured
+
+        context = {"principal": "p:rowan", "speaker": None, "question_at_ms": 1}
+        chooser = Scripted(["Alex Chen", "Person", "stop", "value", "name", "nothing more"])
+        cypher = structured.plan(chooser, "Who is Alex Chen?", SCHEMA, context)
+        hops = chooser.asked[2][1]
+        self.assertTrue(all("wife" not in h for h in hops))
+        self.assertIn("go to PersonalRelationship records whose subject is it", " ".join(hops))
+        self.assertEqual(cypher, "MATCH (n0:Person) WHERE n0.name = 'Alex Chen' RETURN n0.name AS name")
+
+    def test_a_recorded_status_reads_absence_as_no(self):
+        import structured
+
+        context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
+        chooser = Scripted(["speaker", "Person", "assignee is it", "summary", "dinner", "stop",
+                            "recorded", "confirmation_recorded"])
+        cypher = structured.plan(chooser, "Has a confirmation of my dinner booking been recorded?", SCHEMA, context)
+        self.assertTrue(cypher.endswith("RETURN coalesce(n1.confirmation_recorded, false) AS confirmation_recorded"))
+        check(cypher, SCHEMA, PARAMS)
+
+
 class Socket(unittest.TestCase):
     def test_the_shared_model_answers_one_line(self):
         import socket
