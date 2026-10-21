@@ -189,7 +189,7 @@ class Structured(unittest.TestCase):
         import structured
 
         context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
-        chooser = Scripted(["speaker", "Person", "their wife", "no narrowing", "yes", "value", "name", "nothing more"])
+        chooser = Scripted(["speaker", "Person", "their wife", "no narrowing", "yes", "value", "name"])
         cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, context)
         self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE id(n0) = $speaker RETURN n1.name AS name")
         check(cypher, SCHEMA, PARAMS)
