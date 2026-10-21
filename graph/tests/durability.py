@@ -42,12 +42,15 @@ class Graph:
 
 def upgrades(graph):
     publication, committed = graph.seed()
-    for version in ("6", "7", "8"):
+    for version in ("6", "7", "8", "9"):
         with sqlite3.connect(graph.database) as raw:
-            raw.execute("DROP TABLE SupersessionRow")
-            raw.execute("DROP TABLE EvidenceRow")
-            raw.execute("DROP TABLE VoiceRow")
-            if version != "8":
+            raw.execute("DROP TABLE CorrectionEndRow")
+            raw.execute("DROP TABLE CorrectionRow")
+            if version != "9":
+                raw.execute("DROP TABLE SupersessionRow")
+                raw.execute("DROP TABLE EvidenceRow")
+                raw.execute("DROP TABLE VoiceRow")
+            if version not in ("8", "9"):
                 raw.execute("DROP TABLE ChoiceEndRow")
                 raw.execute("DROP TABLE ChoiceRow")
             if version == "6":
@@ -58,7 +61,7 @@ def upgrades(graph):
         assert (legacy["factuality"], legacy["speech_act"], legacy["anchors"], legacy["active"]) == ("CT+", "assert", [], True)
         assert graph.call(publication) == committed
         with sqlite3.connect(graph.database) as raw:
-            assert raw.execute("SELECT value FROM Meta WHERE key='format'").fetchone() == ("9",)
+            assert raw.execute("SELECT value FROM Meta WHERE key='format'").fetchone() == ("10",)
             assert raw.execute("PRAGMA journal_mode").fetchone() == ("wal",)
             assert raw.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
@@ -73,7 +76,7 @@ def upgrades(graph):
     with sqlite3.connect(graph.database) as raw:
         assert raw.execute("SELECT * FROM Meta ORDER BY id").fetchall() == before
         assert raw.execute("SELECT name FROM sqlite_master WHERE name='ConfidenceRow'").fetchone() is None
-        raw.execute("UPDATE Meta SET value='9' WHERE key='format'")
+        raw.execute("UPDATE Meta SET value='10' WHERE key='format'")
     # Missing metadata is not mistaken for a fresh store, either.
     with sqlite3.connect(graph.database) as raw:
         raw.execute("DELETE FROM Meta WHERE key='format'")
@@ -136,12 +139,33 @@ time.sleep(30)
     assert graph.call({"op": "value", "id": "p1"})["name"] == "Ada"
 
 
+def corrections(graph):
+    graph.seed()
+    wrong = {"op": "correct", "id": "c1", "decider": "user", "kind": "wrong",
+             "entity": "p1", "property": "name", "value": "Ada"}
+    first = graph.call(wrong)
+    assert graph.call(wrong) == first, "a correction replays by id across processes"
+    [ada] = graph.call({"op": "get", "id": "p1"})["fields"]["name"]
+    assert ada["denied"] is True
+    assert "denied" in graph.call({"op": "value", "id": "p1"}, success=False)["error"]
+    graph.call({"op": "uncorrect", "id": "c1"})
+    [ada] = graph.call({"op": "get", "id": "p1"})["fields"]["name"]
+    assert ada["denied"] is False
+    [logged] = graph.call({"op": "corrections"})
+    assert logged["kind"] == "wrong" and logged["until_revision"] > 0
+    assert logged["request"]["value"] == "Ada" and logged["effects"]["run"] == "correct:c1"
+    assert "undone" in graph.call(wrong, success=False)["error"]
+    with sqlite3.connect(graph.database) as raw:
+        assert raw.execute("SELECT count(*) FROM CorrectionRow").fetchone() == (1,)
+        assert raw.execute("SELECT count(*) FROM CorrectionEndRow").fetchone() == (1,)
+
+
 def main():
     binary = str(pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "graph/examples/notes/src/main").resolve())
-    for witness in (upgrades, contention, crash):
+    for witness in (upgrades, contention, crash, corrections):
         with tempfile.TemporaryDirectory(prefix="avra-graph-durable-") as directory:
             witness(Graph(pathlib.Path(directory), binary))
-    print("durability: additive upgrades, future/missing-format refusal, WAL, writer wait, reader snapshot, and killed-transaction rollback passed")
+    print("durability: additive upgrades, corrections across processes, future/missing-format refusal, WAL, writer wait, reader snapshot, and killed-transaction rollback passed")
 
 
 if __name__ == "__main__":

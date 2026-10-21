@@ -1,0 +1,323 @@
+use @std.json.{Json, field, parse, to_text}
+use @std.validate.{Value, Entry}
+use @std.sqlite.{Db}
+use data.{as_json, as_value}
+use store.open.{Graph, stored, modeled}
+use store.engine.{CorrectionRow, CorrectionEndRow, MergeRow, MergeEndRow}
+use store.merge.{Merge}
+use store.publish.{Publication, Record, RecordMode}
+use store.evidence.{FieldEvidence, Voice, Factuality}
+
+/// What a correction says: two entities are one, or are not; a value is
+/// wrong, or is true.
+export enum Amendment {
+    Same(left: string, right: string)
+    Different(left: string, right: string)
+    Wrong(entity: string, property: string, value: Value)
+    Right(entity: string, property: string, value: Value)
+}
+
+/// A decider's correction. Its effects are evidence and decisions, read
+/// under the decider's declared authority, and undone by `uncorrect`.
+export type Correction = { id: string, decider: string, amendment: Amendment }
+
+/// A separated pair: the merges a `Different` ended, rejoined on undo.
+type Bridge = { decision: string, left: string, right: string, decider: string }
+
+impl Amendment {
+    fn kind() -> string {
+        match self {
+            .Same(_, _) -> "same",
+            .Different(_, _) -> "different",
+            .Wrong(_, _, _) -> "wrong",
+            .Right(_, _, _) -> "true",
+        }
+    }
+}
+
+impl Correction {
+    /// The request as asked; part of the replay identity.
+    fn json() -> Json {
+        let subject = match self.amendment {
+            .Same(left, right) or .Different(left, right) -> [field("left", Json.Str(left)), field("right", Json.Str(right))],
+            .Wrong(entity, property, value) or .Right(entity, property, value) -> [
+                field("entity", Json.Str(entity)),
+                field("property", Json.Str(property)),
+                field("value", as_json(value)),
+            ],
+        }
+        Json
+            .Obj(
+                [
+                    field("id", Json.Str(self.id)),
+                    field("decider", Json.Str(self.decider)),
+                    field("kind", Json.Str(self.amendment.kind())),
+                ]
+                    .concat(subject),
+            )
+    }
+}
+
+impl Graph {
+    /// Apply one correction atomically; its id replays it.
+    fn correct(c: Correction) -> Result<int, string> {
+        if c.id.is_empty() || c.decider.is_empty() { fail "a correction needs an id and a decider" }
+        mut db = self.db
+        stored(db.begin())?
+        defer { let _ = db.finish() }
+        let revision = self.current()?
+        let request = c.json()
+        match stored(CorrectionRow.where(db, decision: c.id))? {
+            [one] -> {
+                if to_text((document_of(one)?).member("request")) != to_text(request) { fail "correction id was already used with a different correction" }
+                if !(stored(CorrectionEndRow.where(db, correction: one))?).is_empty() {
+                    fail "correction was undone; use a new correction id: ${c.id}"
+                }
+                return one.revision
+            },
+            [] -> {},
+            rest -> { fail "correction id is not unique: ${c.id}" },
+        }
+        let effects = self.amended(db, c, request, revision)?
+        if self.revision()? == revision { self.advanced()? }
+        let _ = modeled(
+            CorrectionRow {
+                decision: c.id,
+                kind: c.amendment.kind(),
+                decider: c.decider,
+                revision: self.revision()?,
+                document: to_text(Json.Obj([field("request", request), field("effects", effects)])),
+            }
+                .insert(db),
+        )?
+        stored(db.commit())?
+        self.revision()
+    }
+
+    fn amended(mut db: Db, c: Correction, request: Json, revision: int) -> Result<Json, string> {
+        match c.amendment {
+            .Same(left, right) -> {
+                self
+                    .made(db, Merge { id: c.id, left: left, right: right, decider: c.decider }, revision)?
+                Json.Obj([field("merge", Json.Str(c.id))])
+            },
+            .Different(left, right) -> {
+                if left == right { fail "an entity cannot be different from itself" }
+                let _ = self.entity_named(left)?
+                let _ = self.entity_named(right)?
+                let cut = self.separated(db, left, right, revision + 1)?
+                Json.Obj([field("ended", Json.Arr([bridge_json(b) for b in cut]))])
+            },
+            .Wrong(entity, property, value) -> self.stated(c, request, entity, property, value, .CertainFalse)?,
+            .Right(entity, property, value) -> self.stated(c, request, entity, property, value, .CertainTrue)?,
+        }
+    }
+
+    /// A value the decider asserts or denies, published as its own run over
+    /// an observation of the correction itself.
+    fn stated(
+        c: Correction,
+        request: Json,
+        entity: string,
+        property: string,
+        value: Value,
+        factuality: Factuality,
+    ) -> Result<Json, string> {
+        let row = self.entity_named(entity)?
+        if self.hidden(entity)? { fail "a tombstoned entity cannot be corrected: ${entity}" }
+        let input = correction_input(c.id)
+        self.observed(input, to_text(request))?
+        let run = "correct:${c.id}"
+        let p = Publication {
+            id: run,
+            producer: c.decider,
+            scope: input,
+            input: input,
+            input_revision: 1,
+            schema: self.catalog.fingerprint,
+            expected_revision: self.revision()?,
+            records: [
+                Record {
+                    id: entity,
+                    model: row.model,
+                    value: Value.Map([Entry { key: property, value: value }]),
+                    mode: RecordMode.Partial,
+                    fields: [FieldEvidence { property: property, evidence: [], factuality: factuality }],
+                },
+            ],
+            voices: [Voice { speaker: c.decider, author: c.decider }],
+        }
+        self.published(p, p.fingerprint())?
+        Json.Obj([field("run", Json.Str(run)), field("input", Json.Str(input))])
+    }
+
+    /// End merges until `left` and `right` read apart: each time, the merge
+    /// that reaches `right` on a shortest path from `left`.
+    fn separated(mut db: Db, left: string, right: string, until: int) -> Result<
+        List<Bridge>,
+        string,
+    > {
+        let ended = stored(MergeEndRow.all(db))?
+        mut open = [m for m in stored(MergeRow.all(db))? if !ended.any(it.merge.id == m.id)]
+        mut cut: List<Bridge> = []
+        while true {
+            let edge? = bridge(open, left, right) else { break }
+            let _ = modeled(MergeEndRow { merge: edge, until: until }.insert(db))?
+            cut
+                .push(
+                    Bridge {
+                        decision: edge.decision,
+                        left: edge.left.name,
+                        right: edge.right.name,
+                        decider: edge.decider,
+                    },
+                )
+            open = open.filter(it.id != edge.id)
+        }
+        cut
+    }
+
+    /// Undo one correction; what it did is reversed as new evidence and
+    /// decisions, and the correction stays readable as undone.
+    fn uncorrect(id: string) -> Result<int, string> {
+        mut db = self.db
+        stored(db.begin())?
+        defer { let _ = db.finish() }
+        let revision = self.current()?
+        let row = match stored(CorrectionRow.where(db, decision: id))? {
+            [only] -> only,
+            [] -> { fail "unknown correction: ${id}" },
+            rest -> { fail "correction id is not unique: ${id}" },
+        }
+        if !(stored(CorrectionEndRow.where(db, correction: row))?).is_empty() { return revision }
+        let document = document_of(row)?
+        let _ = modeled(CorrectionEndRow { correction: row, until: revision + 1 }.insert(db))?
+        match row.kind {
+            "same" -> {
+                let merge = match stored(MergeRow.where(db, decision: id))? {
+                    [only] -> only,
+                    rest -> { fail "a same correction has no merge: ${id}" },
+                }
+                if (stored(MergeEndRow.where(db, merge: merge))?).is_empty() {
+                    let _ = modeled(MergeEndRow { merge: merge, until: revision + 1 }.insert(db))?
+                }
+            },
+            "different" -> {
+                for b in document.member("effects").member("ended").items() {
+                    let left = b.member("left").text() ?? ""
+                    let right = b.member("right").text() ?? ""
+                    if !(self.group(left)?).contains(right) {
+                        self
+                            .made(
+                                db,
+                                Merge {
+                                    id: "${b.member("decision").text() ?? ""}~${id}",
+                                    left: left,
+                                    right: right,
+                                    decider: b.member("decider").text() ?? "",
+                                },
+                                revision,
+                            )?
+                    }
+                }
+            },
+            "wrong" or "true" -> {
+                let input = correction_input(id)
+                let p = Publication {
+                    id: "undo:${id}",
+                    producer: row.decider,
+                    scope: input,
+                    input: input,
+                    input_revision: 1,
+                    schema: self.catalog.fingerprint,
+                    expected_revision: revision,
+                    records: [],
+                }
+                let _ = self.published(p, p.fingerprint())?
+            },
+            rest -> { fail "unknown correction kind: ${row.kind}" },
+        }
+        if self.revision()? == revision { self.advanced()? }
+        stored(db.commit())?
+        self.revision()
+    }
+
+    /// Every correction in commit order: what was asked, what it did, and
+    /// whether it was undone. Each is a labelled example for training.
+    fn corrections() -> Result<Json, string> {
+        let opened = self.read_snapshot()?
+        defer { let _ = self.db.finish_if_opened(opened) }
+        self.current()?
+        let ended = stored(CorrectionEndRow.all(self.db))?
+        Json
+            .Arr(
+                [Json
+                    .Obj(
+                        [
+                            field("id", Json.Str(r.decision)),
+                            field("kind", Json.Str(r.kind)),
+                            field("decider", Json.Str(r.decider)),
+                            field("revision", Json.Int(r.revision)),
+                            field(
+                                "until_revision",
+                                Json.Int(ended.find(it.correction.id == r.id)?.until ?? 0),
+                            ),
+                            field("request", (document_of(r)?).member("request")),
+                            field("effects", (document_of(r)?).member("effects")),
+                        ],
+                    ) for r in stored(CorrectionRow.all(self.db))?],
+            )
+    }
+
+    /// Whether an active `different` correction keeps two groups apart.
+    fn kept_apart(left: List<string>, right: List<string>) -> Result<bool, string> {
+        let ended = stored(CorrectionEndRow.all(self.db))?
+        let live = [r for r in stored(CorrectionRow.where(self.db, kind: "different"))? if !ended.any(it.correction.id == r.id)]
+        let pairs = [(document_of(r)?).member("request") for r in live]
+        pairs.any(apart(it, left, right))
+    }
+}
+
+fn apart(request: Json, left: List<string>, right: List<string>) -> bool {
+    let a = request.member("left").text() ?? ""
+    let b = request.member("right").text() ?? ""
+    left.contains(a) && right.contains(b) || left.contains(b) && right.contains(a)
+}
+
+/// The merge reaching `to` on a shortest path from `from`, if they are joined.
+fn bridge(edges: List<MergeRow>, from: string, to: string) -> MergeRow? {
+    mut seen = [from]
+    mut frontier = [from]
+    while !frontier.is_empty() {
+        mut next: List<string> = []
+        for at in frontier {
+            for e in edges {
+                let other = if e.left.name == at { e.right.name } else if e.right.name == at { e.left.name } else { "" }
+                if other.is_empty() || seen.contains(other) { continue }
+                if other == to { return e }
+                seen.push(other)
+                next.push(other)
+            }
+        }
+        frontier = next
+    }
+    null
+}
+
+fn bridge_json(b: Bridge) -> Json {
+    Json
+        .Obj(
+            [
+                field("decision", Json.Str(b.decision)),
+                field("left", Json.Str(b.left)),
+                field("right", Json.Str(b.right)),
+                field("decider", Json.Str(b.decider)),
+            ],
+        )
+}
+
+fn correction_input(id: string) -> string { "correction:${id}" }
+
+fn document_of(r: CorrectionRow) -> Result<Json, string> {
+    match parse(r.document) { .Ok(j) -> j, .Err(_) -> { fail "a stored correction is not JSON" } }
+}

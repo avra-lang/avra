@@ -28,11 +28,19 @@ use store.engine.{
     VoiceRow,
     EvidenceRow,
     SupersessionRow,
+    CorrectionRow,
+    CorrectionEndRow,
 }
 use data.{digest}
 
-/// One connection and the immutable model catalog this process was built with.
-export type Graph = { db: Db, catalog: Catalog }
+/// One connection, the immutable model catalog this process was built with,
+/// and the declared authority of producers over current reads.
+export type Graph = { db: Db, catalog: Catalog, authority: List<Authority> = [] }
+
+/// A producer's declared rank. Among standing statements of one property,
+/// only the highest-ranked plain ones read as current; an undeclared
+/// producer ranks 0.
+export type Authority = { producer: string, rank: int }
 
 enum CatalogUse { Install, Existing }
 
@@ -122,6 +130,8 @@ impl Graph {
         stored(VoiceRow.create_table(db))?
         stored(EvidenceRow.create_table(db))?
         stored(SupersessionRow.create_table(db))?
+        stored(CorrectionRow.create_table(db))?
+        stored(CorrectionEndRow.create_table(db))?
         0
     }
 
@@ -133,7 +143,7 @@ impl Graph {
         if !existing && self.has_table("graph_meta")? { fail "old hand-table graph store; migration is required; keep the original file" }
         if !existing && self.has_table("EntityRow")? { fail "graph storage is missing its metadata table" }
         let previous = if existing { self.meta("format")? } else { "" }
-        if existing && !["6", "7", "8", "9"].contains(previous) {
+        if existing && !["6", "7", "8", "9", "10"].contains(previous) {
             fail "unsupported graph storage format: ${previous}"
         }
         if existing {
@@ -144,7 +154,7 @@ impl Graph {
         if !existing {
             modeled(Meta { key: "revision", value: "0" }.insert(db))?
         }
-        // Formats 7 to 9 only add tables. Install them and advance the marker
+        // Formats 7 to 10 only add tables. Install them and advance the marker
         // atomically; never rewrite evidence or silently adopt a future format.
         if previous != format { put_meta(db, "format", format)? }
         if (stored(Schema.where(db, fingerprint: self.catalog.fingerprint))?).is_empty() {
@@ -273,7 +283,7 @@ impl Graph {
 }
 
 /// The storage format this engine writes.
-const format = "9"
+const format = "10"
 
 export fn put_meta(mut db: Db, key: string, value: string) -> Result<int, string> {
     match stored(Meta.where(db, key: key))? {

@@ -3,11 +3,11 @@ use @std.io.{read_text}
 use @std.json.{parse, to_text}
 use @std.text.{parse_int}
 use schema.{Registration}
-use store.open.{Graph}
+use store.open.{Graph, Authority}
 use transport.dispatch.{failure}
 use transport.server.{serve}
 
-type Command = { models: List<Registration> }
+type Command = { models: List<Registration>, authority: List<Authority> }
 
 impl Runnable for Command {
     fn run(args: CliResult) -> int {
@@ -26,22 +26,23 @@ impl Command {
         if args.command == "serve" {
             let token = (file_text(args.option("token-file"))?).trim()
             let port? = parse_int(args.option("port")) else { fail "port must be an integer" }
-            return serve(args.option("db"), self.models, port, token)
+            return serve(args.option("db"), self.models, port, token, self.authority)
         }
         let request = match parse(file_text(args.arg("file"))?) {
             .Ok(j) -> j,
             .Err(_) -> { fail "request file must contain JSON" },
         }
-        mut graph = Graph.open(args.option("db"), self.models)?
+        mut graph = Graph.open(args.option("db"), self.models)? with { authority: self.authority }
         defer { let _ = graph.close() }
         println(to_text(graph.dispatch(request)?))
         0
     }
 }
 
-/// A host's entire executable layer is `run(models)`.
-export fn run(models: List<Registration>) -> int {
-    let handler = Command { models: models }
+/// A host's entire executable layer is `run(models)`, with the authority
+/// it declares for its producers (a user's corrections, say).
+export fn run(models: List<Registration>, authority: List<Authority> = []) -> int {
+    let handler = Command { models: models, authority: authority }
     let request = command {
         name: "request"
         description: "Execute one generic JSON graph request"

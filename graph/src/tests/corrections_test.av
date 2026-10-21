@@ -1,0 +1,232 @@
+use derive.model.{model}
+use schema.{Registration}
+use store.open.{Graph, Authority}
+use store.publish.{Record, Publication}
+use store.merge.{Merge}
+use store.correct.{Correction, Amendment}
+use store.query.{stored_value}
+use data.{encoded}
+use @std.validate.{length}
+use @std.json.{parse}
+
+@model
+type Patron = { @length(min: 1) name: string, phone: string? }
+
+fn patron_models() -> List<Registration> { [Registration { make: Patron_graph_model }] }
+
+/// A desk where the user's corrections outrank the reader's extractions.
+fn patron_desk(ranked: bool = true) -> Result<Graph, string> {
+    let g = Graph.memory(patron_models())?
+    g.observe("inbox", "notes")?
+    if ranked { g with { authority: [Authority { producer: "user", rank: 10 }] } } else { g }
+}
+
+fn patrons(mut g: Graph, run: string, records: List<string>) -> Result<int, string> {
+    g
+        .publish(
+            Publication {
+                id: run,
+                producer: "reader",
+                scope: run,
+                input: "inbox",
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: [Record {
+                    id: r,
+                    model: "Patron",
+                    value: stored_value("{\"name\":\"${r}\",\"phone\":\"1\"}")?,
+                    mode: .Partial,
+                } for r in records],
+            },
+        )
+}
+
+fn phones(g: Graph, id: string) -> Result<string, string> {
+    [encoded(c.value) for f in (g.entity(id)?).fields if f.property == "phone" for c in f.candidates]
+        .join("|")
+}
+
+fn said(id: string, kind: string, entity: string, value: string) -> Result<Correction, string> {
+    let v = stored_value(value)?
+    Correction {
+        id: id,
+        decider: "user",
+        amendment: if kind == "wrong" { Amendment.Wrong(entity, "phone", v) } else { Amendment.Right(entity, "phone", v) },
+    }
+}
+
+fn wrong_outranks() -> Result<bool, string> {
+    mut g = patron_desk()?
+    defer { let _ = g.close() }
+    patrons(g, "seed", ["p1"])?
+    g.correct(said("c1", "wrong", "p1", "\"1\"")?)?
+    let hidden = phones(g, "p1")? == ""
+    let history = g.explain("p1", "phone")?
+    let reader = history.items().find(it.member("authority").int() == 0)!
+    let user = history.items().find(it.member("authority").int() == 10)!
+    let value = (g.value("p1")?).entries().any(it.key == "phone" && !(it.value is .Null))
+    g.uncorrect("c1")?
+    hidden &&
+        reader.member("active").truth() == false &&
+        reader.member("standing").truth() == true &&
+        user.member("factuality").text() == "CT-" &&
+        user.member("speech_act").text() == "assert" &&
+        !value &&
+        phones(g, "p1")? == "\"1\"" &&
+        (g.explain("p1", "phone")?).items().length == 2
+}
+
+fn equal_rank_contradicts() -> Result<bool, string> {
+    mut g = patron_desk(false)?
+    defer { let _ = g.close() }
+    patrons(g, "seed", ["p1"])?
+    g.correct(said("c1", "wrong", "p1", "\"1\"")?)?
+    let phone = (g.entity("p1")?).fields.find(it.property == "phone")!
+    phone.candidates.length == 1 && phone.candidates[0].denied && g.value("p1") is .Err
+}
+
+fn true_outranks() -> Result<bool, string> {
+    mut g = patron_desk()?
+    defer { let _ = g.close() }
+    patrons(g, "seed", ["p1"])?
+    g.correct(said("c1", "true", "p1", "\"2\"")?)?
+    let corrected = phones(g, "p1")? == "\"2\"" &&
+        (g.value("p1")?).entries().any(encoded(it.value) == "\"2\"")
+    let outranked = (g.explain("p1", "phone")?).items().find(it.member("value").text() == "1")!
+        .member("active")
+        .truth() == false
+    g.uncorrect("c1")?
+    corrected && outranked && phones(g, "p1")? == "\"1\""
+}
+
+fn same_and_undo() -> Result<bool, string> {
+    mut g = patron_desk()?
+    defer { let _ = g.close() }
+    patrons(g, "seed", ["p1", "p2"])?
+    g.correct(Correction { id: "c1", decider: "user", amendment: Amendment.Same("p1", "p2") })?
+    let joined = (g.group("p1")?).contains("p2")
+    g.uncorrect("c1")?
+    joined && !(g.group("p1")?).contains("p2") && g.merges("p1")?[0].until_revision > 0
+}
+
+fn different_and_undo() -> Result<bool, string> {
+    mut g = patron_desk()?
+    defer { let _ = g.close() }
+    patrons(g, "seed", ["p1", "p2", "p3"])?
+    g.merge(Merge { id: "m1", left: "p1", right: "p2", decider: "linker" })?
+    g.merge(Merge { id: "m2", left: "p2", right: "p3", decider: "linker" })?
+    g.correct(Correction { id: "c1", decider: "user", amendment: Amendment.Different("p1", "p3") })?
+    let apart = (g.group("p1")?).contains("p2") && !(g.group("p1")?).contains("p3")
+    let refused = g.merge(Merge { id: "m3", left: "p1", right: "p3", decider: "linker" }) is .Err &&
+        g.merge(Merge { id: "m4", left: "p2", right: "p3", decider: "linker" }) is .Err
+    g.uncorrect("c1")?
+    let rejoined = (g.group("p1")?).contains("p3") &&
+        (g.merges("p3")?).any(it.id == "m2~c1" && it.decider == "linker" && it.active())
+    apart &&
+        refused &&
+        rejoined &&
+        g.merge(Merge { id: "m5", left: "p1", right: "p3", decider: "linker" }) is .Err
+}
+
+fn correction_replays() -> Result<bool, string> {
+    mut g = patron_desk()?
+    defer { let _ = g.close() }
+    patrons(g, "seed", ["p1"])?
+    let c = said("c1", "wrong", "p1", "\"1\"")?
+    let revision = g.correct(c)?
+    let again = g.correct(c)? == revision && g.revision()? == revision
+    let changed = g.correct(said("c1", "true", "p1", "\"1\"")?) is .Err
+    g.uncorrect("c1")?
+    let undone = g.revision()?
+    let twice = g.uncorrect("c1")? == undone
+    let revived = g.correct(c) is .Err
+    again && changed && twice && revived
+}
+
+fn refusals_are_atomic() -> Result<bool, string> {
+    mut g = patron_desk()?
+    defer { let _ = g.close() }
+    patrons(g, "seed", ["p1"])?
+    let before = g.revision()?
+    let invalid = g
+        .correct(
+            Correction {
+                id: "c1",
+                decider: "user",
+                amendment: Amendment.Right("p1", "name", stored_value("\"\"")?),
+            },
+        ) is .Err
+    let unknown = g.correct(said("c2", "wrong", "nobody", "\"1\"")?) is .Err
+    let itself = g
+        .correct(Correction { id: "c3", decider: "user", amendment: Amendment.Different("p1", "p1") }) is .Err
+    let anonymous = g.correct(said("c4", "wrong", "p1", "\"1\"")? with { decider: "" }) is .Err
+    invalid &&
+        unknown &&
+        itself &&
+        anonymous &&
+        g.revision()? == before &&
+        (g.corrections()?).items().is_empty()
+}
+
+fn exported() -> Result<bool, string> {
+    mut g = patron_desk()?
+    defer { let _ = g.close() }
+    patrons(g, "seed", ["p1"])?
+    g.correct(said("c1", "wrong", "p1", "\"1\"")?)?
+    g.correct(said("c2", "true", "p1", "\"2\"")?)?
+    g.uncorrect("c1")?
+    let all = g.corrections()?
+    all.items().length == 2 &&
+        all.item(0).member("kind").text() == "wrong" &&
+        all.item(0).member("until_revision").int() ?? 0 > 0 &&
+        all.item(0).member("request").member("value").text() == "1" &&
+        all.item(0).member("effects").member("run").text() == "correct:c1" &&
+        all.item(1).member("until_revision").int() == 0 &&
+        all.item(1).member("decider").text() == "user"
+}
+
+fn corrections_dispatched() -> Result<bool, string> {
+    mut g = patron_desk()?
+    defer { let _ = g.close() }
+    patrons(g, "seed", ["p1", "p2"])?
+    let wrong = match parse(
+        "{\"op\":\"correct\",\"id\":\"c1\",\"decider\":\"user\",\"kind\":\"wrong\",\"entity\":\"p1\",\"property\":\"phone\",\"value\":\"1\"}",
+    ) { .Ok(j) -> g.dispatch(j) is .Ok, .Err(_) -> false }
+    let same = match parse(
+        "{\"op\":\"correct\",\"id\":\"c2\",\"decider\":\"user\",\"kind\":\"same\",\"left\":\"p1\",\"right\":\"p2\"}",
+    ) { .Ok(j) -> g.dispatch(j) is .Ok, .Err(_) -> false }
+    let odd = match parse(
+        "{\"op\":\"correct\",\"id\":\"c3\",\"decider\":\"user\",\"kind\":\"maybe\",\"left\":\"p1\",\"right\":\"p2\"}",
+    ) { .Ok(j) -> g.dispatch(j) is .Err, .Err(_) -> false }
+    let undo = match parse("{\"op\":\"uncorrect\",\"id\":\"c2\"}") {
+        .Ok(j) -> g.dispatch(j) is .Ok,
+        .Err(_) -> false,
+    }
+    let listed = match parse("{\"op\":\"corrections\"}") {
+        .Ok(j) -> match g.dispatch(j) { .Ok(all) -> all.items().length == 2, .Err(_) -> false },
+        .Err(_) -> false,
+    }
+    wrong && same && odd && undo && listed && phones(g, "p1")? == ""
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "corrections" {
+    given "a user whose declared authority outranks the extractor" {
+        then "a wrong claim stops reading as current, keeps its history, and undo restores it" { passed(wrong_outranks()) }
+        then "at equal authority a denial is a flagged contradiction, not a removal" { passed(equal_rank_contradicts()) }
+        then "a true value outranks a lower-ranked rival until undone" { passed(true_outranks()) }
+        then "same merges two entities and undo splits them" { passed(same_and_undo()) }
+        then "different ends the merges joining two entities, refuses rejoining them, and undo restores the merges" { passed(different_and_undo()) }
+        then "a correction replays by id, refuses changed content, undo is idempotent and an undone id cannot be reused" { passed(correction_replays()) }
+        then "invalid values, unknown entities, self-difference and anonymous deciders refuse atomically" { passed(refusals_are_atomic()) }
+        then "every correction exports with its request, effects and undo revision" { passed(exported()) }
+        then "correct, uncorrect and corrections run through the shared op dispatch" { passed(corrections_dispatched()) }
+    }
+}

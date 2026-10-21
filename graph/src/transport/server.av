@@ -5,16 +5,19 @@ use @std.http.frame.{limits}
 use @std.http_message.message.{Method}
 use @std.json.{Json}
 use schema.{Registration}
-use store.open.{Graph}
+use store.open.{Graph, Authority}
 use transport.dispatch.{failure}
 
-type Service = { path: string, token: string }
+type Service = { path: string, token: string, authority: List<Authority> }
 
 /// Only loopback, authenticated JSON requests, and bounded request bodies.
-export fn serve(path: string, models: List<Registration>, port: int, token: string) -> Result<
-    int,
-    string,
-> {
+export fn serve(
+    path: string,
+    models: List<Registration>,
+    port: int,
+    token: string,
+    authority: List<Authority> = [],
+) -> Result<int, string> {
     if port < 1 || port > 65535 { fail "port must be 1..65535" }
     if token.length < 24 { fail "the bearer token must contain at least 24 bytes" }
     let graph = Graph.open(path, models)?
@@ -23,7 +26,12 @@ export fn serve(path: string, models: List<Registration>, port: int, token: stri
         .Ok(l) -> l,
         .Err(e) -> { fail "listen: ${e.errno}" },
     }
-    let server = served(listener, () -> Service { path: path, token: token }, limits(), timing()) { service, request ->
+    let server = served(
+        listener,
+        () -> Service { path: path, token: token, authority: authority },
+        limits(),
+        timing(),
+    ) { service, request ->
         answer(service, models, request)
     }
     println("graph listening on 127.0.0.1:${port}")
@@ -34,14 +42,14 @@ fn answer(service: Service, models: List<Registration>, request: Request<Unroute
     if request.header("authorization") != "Bearer ${service.token}" { return text(401, "bearer token required") }
     if request.method() != Method.Post || request.target() != "/graph" { return text(404, "POST /graph") }
     let body = match request.json() { .Ok(j) -> j, .Err(response) -> { return response } }
-    match dispatched(service.path, models, body) {
+    match dispatched(service, models, body) {
         .Ok(response) -> response,
         .Err(e) -> Response.json(failure(e)) with { status: 409 },
     }
 }
 
-fn dispatched(path: string, models: List<Registration>, body: Json) -> Result<Response, string> {
-    mut graph = Graph.attach(path, models)?
+fn dispatched(service: Service, models: List<Registration>, body: Json) -> Result<Response, string> {
+    mut graph = Graph.attach(service.path, models)? with { authority: service.authority }
     defer { let _ = graph.close() }
     match graph.dispatch(body) {
         .Ok(j) -> Response.json(j),

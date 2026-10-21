@@ -255,18 +255,13 @@ impl Graph {
         let closings = stored(SupersessionRow.in_old(self.db, supports))?
         let closers = stored(RunTrailRow.in_run(self.db, closings.map(it.new.run)))?
         let scheme = self.catalog.fingerprint
+        let current = (self.facts(claims)?).map(it.support.id)
         mut rows: List<Json> = []
         for s in supports {
             if s.claim.property != property { continue }
             let trail? = self.trail_of(trails, s.run.id) else { fail "a run has no trail: ${s.run.name}" }
-            let held = Standing {
-                claim: s.claim,
-                support: s,
-                evidence: evidence.find(it.support.id == s.id),
-            }
             let closed = [c for c in closings if c.old.id == s.id]
             let standing = self.upheld(s, trails, scheme)
-            let open = !closed.any((c: SupersessionRow) -> self.upheld(c.new, closers, scheme))
             let span = self.valid_time(s)?
             rows
                 .push(
@@ -282,7 +277,8 @@ impl Graph {
                                 field("input_revision", Json.Int(trail.input_revision)),
                                 field("schema", Json.Str(s.claim.schema)),
                                 field("until_revision", Json.Int(s.until ?? 0)),
-                                field("active", Json.Bool(standing && held.plain() && open)),
+                                field("active", Json.Bool(current.contains(s.id))),
+                                field("authority", Json.Int(self.rank(s.run.producer))),
                                 field("standing", Json.Bool(standing)),
                                 field("published_revision", Json.Int(s.run.revision)),
                                 field("locator", self.locator(s)?),
@@ -312,7 +308,13 @@ impl Graph {
                                         ),
                                 ),
                             ]
-                                .concat(qualifiers(held.evidence, s, trail.input_revision)?),
+                                .concat(
+                                    qualifiers(
+                                        evidence.find(it.support.id == s.id),
+                                        s,
+                                        trail.input_revision,
+                                    )?,
+                                ),
                         ),
                 )
         }

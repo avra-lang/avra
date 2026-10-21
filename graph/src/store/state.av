@@ -80,7 +80,26 @@ impl Graph {
     /// The facts among standing claims.
     fn held(live: List<Standing>) -> Result<List<Standing>, string> {
         let closed = self.superseded(live.map(it.support))?
-        [s for s in live if s.plain() && !closed.contains(s.support.id)]
+        let open = [s for s in live if !closed.contains(s.support.id)]
+        [s for s in open if s.plain() && self.prevails(s, open)]
+    }
+
+    /// A producer's declared rank.
+    fn rank(producer: string) -> int { self.authority.find(it.producer == producer)?.rank ?? 0 }
+
+    /// The highest rank among statements that pass `test`, or -1.
+    fn top(live: List<Standing>, test: fn(Standing) -> bool) -> int {
+        [self.rank(s.support.run.producer) for s in live if test(s)].max() ?? -1
+    }
+
+    /// A plain claim prevails when its best support ranks with the property's
+    /// best plain support and no denial of it ranks higher.
+    fn prevails(s: Standing, live: List<Standing>) -> bool {
+        let best = self.top(live, (o: Standing) -> o.claim.id == s.claim.id && o.plain())
+        let property = self
+            .top(live, (o: Standing) -> o.claim.property == s.claim.property && o.plain())
+        let denied = self.top(live, (o: Standing) -> o.claim.id == s.claim.id && o.denies())
+        best == property && denied <= best
     }
 
     /// Supports a still-standing newer claim has closed, by support id.

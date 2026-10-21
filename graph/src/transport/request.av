@@ -7,6 +7,7 @@ use store.merge.{Merge}
 use store.tombstone.{Tombstone}
 use store.choice.{Choice}
 use ingest.admit.{Admission}
+use store.correct.{Correction, Amendment}
 use @avra.graph_contracts.{SourceRef}
 
 export enum Operation {
@@ -40,6 +41,9 @@ export enum Operation {
     Check(text: string, params: Json)
     Search(query: string, limit: int)
     Admit(admission: Admission)
+    Correct(correction: Correction)
+    Uncorrect(id: string)
+    Corrections
 }
 
 /// Protocol parsing knows operations; model data belongs to standard validation.
@@ -112,6 +116,28 @@ export fn operation(j: Json) -> Result<Operation, string> {
             } else {
                 Operation.Query(j.get("plan")!)
             }
+        },
+        "correct" -> {
+            closed(
+                j,
+                ["op", "id", "decider", "kind", "left", "right", "entity", "property", "value"],
+            )?
+            Operation
+                .Correct(
+                    Correction {
+                        id: text(j, "id")?,
+                        decider: text(j, "decider")?,
+                        amendment: amendment(j)?,
+                    },
+                )
+        },
+        "uncorrect" -> {
+            closed(j, ["op", "id"])?
+            Operation.Uncorrect(text(j, "id")?)
+        },
+        "corrections" -> {
+            closed(j, ["op"])?
+            Operation.Corrections
         },
         "admit" -> {
             closed(j, ["op", "source", "result", "scope", "candidates"])?
@@ -241,6 +267,23 @@ export fn operation(j: Json) -> Result<Operation, string> {
         },
         rest -> { fail "unknown operation: ${op}" },
     }
+}
+
+/// Entity pairs take `left` and `right`; values take `entity`, `property` and `value`.
+fn amendment(j: Json) -> Result<Amendment, string> {
+    let kind = text(j, "kind")?
+    match kind {
+        "same" -> Amendment.Same(text(j, "left")?, text(j, "right")?),
+        "different" -> Amendment.Different(text(j, "left")?, text(j, "right")?),
+        "wrong" -> Amendment.Wrong(text(j, "entity")?, text(j, "property")?, corrected_value(j)?),
+        "true" -> Amendment.Right(text(j, "entity")?, text(j, "property")?, corrected_value(j)?),
+        rest -> { fail "a correction kind is same, different, wrong or true: ${kind}" },
+    }
+}
+
+fn corrected_value(j: Json) -> Result<Value, string> {
+    let value? = j.get("value") else { fail "a value correction needs a value" }
+    as_value(value)
 }
 
 fn record(j: Json) -> Result<Record, string> {
