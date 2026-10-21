@@ -33,6 +33,19 @@ spec "catalog descriptor" {
             described.member("enum").item(0).text() == "request" &&
                 described.member("enum").item(1).text() == "promise"
         }
+        then "a declared one_of reaches the catalog as an enum with its call in the rules" {
+            match Catalog.collected(models) {
+                .Ok(c) -> {
+                    let status = c.models.find(it.name == "WorkItem")!
+                        .properties
+                        .find(it.name == "status")!
+                    status.choices().join(",") == "open,active,done" &&
+                        status.rules[0] == "one_of([\"open\", \"active\", \"done\"])" &&
+                        c.document.contains("\"enum\":[\"open\",\"active\",\"done\"]")
+                },
+                .Err(_) -> false,
+            }
+        }
         then "a field without one_of has no enum" {
             text_property(null).describe().get("enum") == null
         }
