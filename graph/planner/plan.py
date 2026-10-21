@@ -25,6 +25,8 @@ VENV_PYTHON = pathlib.Path.home() / ".cache/avra-graph-ml/venv/bin/python"
 MODEL = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
 SOCKET = pathlib.Path.home() / ".cache/avra-graph-ml/cascade.sock"
 HUB = pathlib.Path.home() / ".cache/avra-graph-ml/hf/hub"
+# The graph's search op declares a limit of 1..100 passages.
+SEARCH_LIMIT = 100
 # One Cypher query; a draft running past this is degenerate, not long.
 ANSWER_TOKENS = 200
 TRIES = 1
@@ -162,7 +164,8 @@ class Graph:
             raise SystemExit(f"planner: the graph did not answer {body['op']}: {(done.stderr or done.stdout)[:300]}")
 
     def search(self, query):
-        return self.call({"op": "search", "query": query, "limit": 10}).get("passages", [])
+        """Every passage the search op will return for the query, up to its declared maximum."""
+        return self.call({"op": "search", "query": query, "limit": SEARCH_LIMIT}).get("passages", [])
 
 
 def graph_of(payload):

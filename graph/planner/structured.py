@@ -17,8 +17,8 @@ from prompt import line
 LETTERS = 26
 ARRIVED = ["yes: the question asks about this record", "no: the answer lies further along"]
 NEEDED = ["yes", "no"]
-RECORDED = ["what has been recorded about it (no record counts as no)",
-            "what is true or happened in the world (no record means unknown)"]
+RECORDED = ["the content of the records: values, words, dates, people (missing means unknown)",
+            "only whether a yes/no status has been recorded (no record counts as no)"]
 
 
 class Plan:
@@ -40,33 +40,58 @@ class Plan:
 
 
 class Evidence:
-    """What the graph's search says about the question: admitted facts as
-    (model, property, value), best first. Without a graph there is none."""
+    """What the graph's own search says about the question.
+
+    A word is evidence only where it is informative in this graph: its
+    document frequency (passages the search returns for it alone) is at most
+    the median over the question's words. Facts on enum properties are
+    declared categories, matched by declarations, never by search. A word a
+    declaration, an anchor or a narrowing has explained stops counting."""
 
     def __init__(self, search, question, models):
-        self.facts = []
-        for p in (search(question) if search else []):
-            if p.get("kind") != "fact":
-                continue
-            head, _, value = p["text"].partition(": ")
-            model, _, prop = head.partition(" ")
-            if model in models and any(q["name"] == prop for q in models[model]["properties"]):
-                self.facts.append((model, prop, value))
-        self.spent, self.used = set(), set()
+        self.facts, self.words, self.spent = [], set(), set()
+        self.used = set()
+        if not search:
+            return
+        found = {w: search(w) for w in dict.fromkeys(tokens(question))}
+        counts = sorted(len(v) for v in found.values() if v)
+        if not counts:
+            return
+        median = counts[(len(counts) - 1) // 2]
+        self.words = {w for w, hits in found.items() if hits and len(hits) <= median}
+        for w in self.words:
+            for p in found[w]:
+                fact = self.fact(p, models)
+                if fact and fact not in self.facts:
+                    self.facts.append(fact)
+
+    @staticmethod
+    def fact(passage, models):
+        if passage.get("kind") != "fact":
+            return None
+        head, _, value = passage["text"].partition(": ")
+        model, _, prop = head.partition(" ")
+        declared = models.get(model, {}).get("properties", [])
+        if not any(q["name"] == prop and not q.get("enum") for q in declared):
+            return None
+        return model, prop, value
+
+    def explain(self, text):
+        """Words some declaration or choice now accounts for."""
+        self.words -= set(tokens(text))
 
     def named(self, question):
         """Facts whose whole value the question spells: records it names."""
         return [f for f in self.facts if spoken(f[2], question.lower())]
 
     def models(self):
-        """Models whose facts the question's words found and no hop has used yet."""
-        return {m for m, _, _ in self.facts} - self.spent
+        """Models whose facts hold a still unexplained informative word."""
+        return {m for m, _, value in self.facts if self.words & set(tokens(value))} - self.spent
 
     def about(self, model, question):
-        """(property, shared words) for this model's facts that share words with the question."""
-        words = set(tokens(question))
-        return [(prop, [w for w in tokens(value) if w in words]) for m, prop, value in self.facts
-                if m == model and (m, prop, value) not in self.used and words & set(tokens(value))]
+        """(property, words) for this model's facts sharing unexplained informative words."""
+        return [(prop, [w for w in tokens(value) if w in self.words]) for m, prop, value in self.facts
+                if m == model and (m, prop, value) not in self.used and self.words & set(tokens(value))]
 
 
 def quoted(text):
@@ -155,6 +180,7 @@ def plan(chooser, question, schema, context, search=None, depth=None):
             pick = said[0] if len(said) == 1 else said[best(chooser, trail, "Which relation does the question mean?",
                                                               [options[i][2] for i in said])]
             phrasing = unsaid(options[pick][3], phrasing)
+            evidence.explain(" ".join(options[pick][3]))
         else:
             if hop > 0 and not onward and best(chooser, trail, f"Is the answer about this {label}?", ARRIVED) == 0:
                 break
@@ -187,6 +213,7 @@ def anchored(chooser, head, question, models, context, evidence, out):
     elif pick < speaker + len(named):
         label, prop, value = named[pick - speaker]
         evidence.used.add((label, prop, value))
+        evidence.explain(value)
         var = out.node(label)
         out.parts.append(f"({var}:{label})")
         out.where.append(f"{var}.{prop} = {quoted(value)}")
@@ -228,6 +255,7 @@ def narrowed(chooser, trail, model, var, out, question, evidence):
     if pick < len(shared):
         prop, w = shared[pick]
         out.where.append(f"{var}.{prop} CONTAINS {quoted(w)}")
+        evidence.explain(w)
 
 
 def returns(chooser, trail, model, var):
@@ -237,7 +265,7 @@ def returns(chooser, trail, model, var):
             ["the value of one or more of their properties", "how many there are"]) == 1:
         return f"count({var}) AS count"
     flags = [p["name"] for p in props if base_shape(p["shape"]) == "boolean"]
-    if flags and best(chooser, trail, "Does the question ask about", RECORDED) == 0:
+    if flags and best(chooser, trail, "What does the question want to know?", RECORDED) == 1:
         name = flags[best(chooser, trail, "Which recorded status?", flags)]
         return f"coalesce({var}.{name}, false) AS {name}"
     readable = [i for i, p in enumerate(props)

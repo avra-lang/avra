@@ -265,6 +265,21 @@ class Structured(unittest.TestCase):
         self.assertEqual(len(options), 2)
         self.assertTrue(cypher.startswith("MATCH (n0:Person)-[:wife]->(n1:Person)"), cypher)
 
+    def test_a_category_is_not_a_name_and_a_common_word_is_not_evidence(self):
+        import structured
+
+        def search(word):
+            common = [{"kind": "source", "text": f"text {i}"} for i in range(9)]
+            hits = {"wife": [{"kind": "fact", "text": "PersonalRelationship relation: wife"}],
+                    "is": common + [{"kind": "fact", "text": "Group name: is club"}],
+                    "my": common, "who": common}
+            return hits.get(word, [])
+
+        chooser = Scripted(["person asking", "Person", "yes", "value"], {"name"})
+        cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, SPEAKER, search)
+        self.assertEqual(chooser.asked[0][1], ["the person asking or speaking", "every record of one kind"])
+        self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE id(n0) = $speaker RETURN n1.name AS name")
+
     def test_hops_are_only_the_nodes_own(self):
         import structured
 
@@ -281,7 +296,7 @@ class Structured(unittest.TestCase):
                              "recorded", "confirmation_recorded"])
         cypher = structured.plan(recorded, "Is my table booking on record?", SCHEMA, SPEAKER, search)
         self.assertTrue(cypher.endswith("RETURN coalesce(n1.confirmation_recorded, false) AS confirmation_recorded"), cypher)
-        world = Scripted(["person asking", "Person", "assignee is this", "contains 'table'", "yes", "value", "world"],
+        world = Scripted(["person asking", "Person", "assignee is this", "contains 'table'", "yes", "value", "content"],
                          {"confirmation_recorded"})
         cypher = structured.plan(world, "Did I book the table?", SCHEMA, SPEAKER, search)
         self.assertTrue(cypher.endswith("RETURN n1.confirmation_recorded AS confirmation_recorded"), cypher)
