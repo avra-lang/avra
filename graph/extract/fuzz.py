@@ -14,7 +14,7 @@ class Enc:
         import re
         ls = list(labels)
         for m in re.finditer(r"[A-Z][\w-]*(?: [A-Z][\w-]*)*", text):
-            for l in random.sample(ls, random.choice([1, 1, 2])):
+            for l in random.sample(ls, min(len(ls), random.choice([1, 1, 2]))):
                 out[l].append({"start": m.start(), "end": m.end(), "confidence": random.random()})
         return out
     def records(self, text, model, anchor, fields):

@@ -683,7 +683,10 @@ class Cascade:
                 return self.field(name, v["text"], [(a + v["start"], a + v["end"])], score=v["confidence"])
             if not required(p):
                 return None
-            cands = self.clauses(a, b)
+            found_spans = self.enc.mentions(self.t.s[a:b], {name: f"the {name} of a {model}: {gloss(self.plan.models[model])}"}).get(name, [])
+            cands = [(a + s["start"], a + s["end"]) for s in found_spans if not self.named(a + s["start"], a + s["end"])]
+            if not cands:
+                return None
             pr = self.llm.pick(ctx, f"In a {model}, which part of the sentence is the {name}?", [self.t.s[x:y] for x, y in cands], ["not stated"])
             k = max(range(len(pr)), key=lambda i: pr[i])
             if k == len(cands) or pr[k] < ACCEPT:
@@ -730,18 +733,6 @@ class Cascade:
         needs normalization, not a number read off the text."""
         v = self.plan.models[model]["semantics"].get("validity") or {}
         return any(p and p[-1] == name for p in (v.get("from"), v.get("until")))
-
-    def clauses(self, a, b):
-        """Candidate value spans: the sentence and its comma/conjunction parts."""
-        s, out = self.t.s, {(a, b)}
-        cuts = [a] + [a + m.end() for m in re.finditer(r",\s*|;\s*|\s+(?:and|but|until|so|then)\s+", s[a:b])] + [b]
-        for x, y in zip(cuts, cuts[1:]):
-            y2 = y
-            while y2 > x and s[y2 - 1] in " ,;.?!":
-                y2 -= 1
-            if y2 > x:
-                out.add((x, y2))
-        return sorted(out)[:15]
 
     def offered(self, model, a, b):
         """Records of a model this sentence can refer to, with where each is evidenced."""
