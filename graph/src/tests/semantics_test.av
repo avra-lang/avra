@@ -139,6 +139,21 @@ fn absence_code() -> Result<bool, string> {
         declared.fingerprint != other.fingerprint
 }
 
+fn label_hierarchy() -> Result<bool, string> {
+    let narrow = relation() with { labels: [
+        RelationLabel { value: "spouse", forward: ["spouse"] },
+        RelationLabel { value: "wife", forward: ["wife"], broader: ["spouse"] },
+    ] }
+    let flat = relation() with { labels: [
+        RelationLabel { value: "spouse", forward: ["spouse"] },
+        RelationLabel { value: "wife", forward: ["wife"] },
+    ] }
+    let declared = changed(Semantics { relation: narrow })?
+    let plain = changed(Semantics { relation: flat })?
+    declared.document.contains("\"broader\":[\"spouse\"]") &&
+        declared.fingerprint != plain.fingerprint
+}
+
 fn passed(answer: Result<bool, string>) -> bool {
     answer catch e -> {
         println(e)
@@ -171,6 +186,27 @@ spec "typed model-declared graph semantics" {
                 ),
             )
         }
+        then "a broader relation label is declared in the binding and never cyclic" {
+            passed(
+                    invalid_relation(
+                        relation() with { labels: [RelationLabel { value: "a", forward: ["x"], broader: ["missing"] }] },
+                    ),
+                ) &&
+                passed(
+                    invalid_relation(
+                        relation() with { labels: [
+                            RelationLabel { value: "a", forward: ["x"], broader: ["b"] },
+                            RelationLabel { value: "b", forward: ["y"], broader: ["a"] },
+                        ] },
+                    ),
+                ) &&
+                passed(
+                    invalid_relation(
+                        relation() with { labels: [RelationLabel { value: "a", forward: ["x"], broader: ["a"] }] },
+                    ),
+                )
+        }
+        then "a relation label hierarchy is exported and fingerprinted" { passed(label_hierarchy()) }
         then "validity needs distinct bounds with an explicit matching encoding" {
             passed(invalid_time(ValidityBinding {})) &&
                 passed(

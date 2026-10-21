@@ -14,7 +14,14 @@ export type IdentityBinding = {
     scoped_by: List<List<string>> = [],
 }
 
-export type RelationLabel = { value: string, forward: List<string>, reverse: List<string> = [] }
+/// `broader` names labels of the same binding that this one specializes: a
+/// query for the broader relation also covers this one.
+export type RelationLabel = {
+    value: string,
+    forward: List<string>,
+    reverse: List<string> = [],
+    broader: List<string> = [],
+}
 export type RelationBinding = {
     from: List<string>,
     to: List<string>,
@@ -121,6 +128,14 @@ impl Semantics {
 }
 
 impl RelationBinding {
+    /// Whether `value` reaches `target` by following broader labels, or is it.
+    fn generalizes(value: string, target: string, budget: int) -> bool {
+        if value == target { return true }
+        if budget == 0 { return false }
+        let label? = self.labels.find(it.value == value) else { return false }
+        label.broader.any((w) -> self.generalizes(w, target, budget - 1))
+    }
+
     fn checked(models: List<Model>, owner: Model) -> Result<bool, string> {
         if same_path(self.from, self.to) { fail "a relation needs distinct endpoint bindings" }
         if !(path_shape(models, owner, self.from)? is .Reference) ||
@@ -132,6 +147,10 @@ impl RelationBinding {
         for i, label in self.labels {
             if label.value.is_empty() || label.forward.is_empty() { fail "a relation label needs a value and forward phrases" }
             if self.labels.slice(0, i).any(it.value == label.value) { fail "relation label values must be unique" }
+            for wider in label.broader {
+                if !self.labels.any(it.value == wider) { fail "a broader relation label is declared in the same binding: ${wider}" }
+                if self.generalizes(wider, label.value, self.labels.length) { fail "relation label hierarchies have no cycles: ${label.value}" }
+            }
             let phrases = label.forward.concat(label.reverse)
             if phrases.length > 128 || phrases.any(it.is_empty()) { fail "relation phrases must be nonempty and bounded" }
             for j, phrase in phrases {
@@ -164,6 +183,7 @@ impl RelationBinding {
                                             field("value", Json.Str(label.value)),
                                             field("forward", path_document(label.forward)),
                                             field("reverse", path_document(label.reverse)),
+                                            field("broader", path_document(label.broader)),
                                         ],
                                     ) for label in self.labels],
                             ),
