@@ -197,6 +197,13 @@ class Scorer:
         self.cache = make_prompt_cache(self.model)
         mx.eval(self.forward(self.tok.encode(head)))
 
+    def generate(self, messages, max_tokens):
+        """Greedy text for a chat; the extraction prefix cache is untouched."""
+        from mlx_lm import generate
+
+        prompt = self.tok.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+        return generate(self.model, self.tok, prompt, max_tokens=max(1, min(max_tokens, 4096)), verbose=False)
+
     def render(self, body):
         return self.tok.apply_chat_template([{"role": "user", "content": body}], add_generation_prompt=True, tokenize=False)
 
@@ -594,8 +601,31 @@ def extract(req, models=None):
     return result, list(LOG)
 
 
+def received(conn):
+    """One request: bytes up to the first newline, or to end of stream."""
+    data = b""
+    while b"\n" not in data:
+        chunk = conn.recv(1 << 16)
+        if not chunk:
+            break
+        data += chunk
+    return data.split(b"\n", 1)[0]
+
+
+def answered(body, models):
+    """A generate op's text, or an extraction's result and log."""
+    if body.get("op") == "generate":
+        return {"text": models.llm.generate(body["messages"], int(body.get("max_tokens", 256)))}
+    models.llm.prefix = body.get("prefix", True)
+    result, logs = extract(body["request"], models)
+    return {"result": result, "log": logs}
+
+
 def serve():
-    """A local Unix-socket service: one request per connection, served in order."""
+    """A local Unix-socket service, served in order: one JSON line in, one
+    JSON line out, per connection. `{"op":"generate","messages":[…],
+    "max_tokens":n}` answers `{"text":…}` (greedy); `{"request":…}` answers
+    an extraction. A failure answers `{"error":…}`."""
     import socket
 
     models = Models()
@@ -609,15 +639,12 @@ def serve():
     while True:
         conn, _ = s.accept()
         with conn:
-            data = b"".join(iter(lambda: conn.recv(1 << 16), b""))
             try:
-                body = json.loads(data)
-                models.llm.prefix = body.get("prefix", True)
-                result, logs = extract(body["request"], models)
+                answer = answered(json.loads(received(conn)), models)
             except Exception as e:
-                result, logs = None, [f"bad request: {type(e).__name__}: {e}"]
+                answer = {"error": f"{type(e).__name__}: {e}"}
             try:
-                conn.sendall(json.dumps({"result": result, "log": logs}, ensure_ascii=False).encode())
+                conn.sendall(json.dumps(answer, ensure_ascii=False).encode() + b"\n")
             except OSError as e:
                 print(f"client gone: {e}", file=sys.stderr, flush=True)
 
@@ -634,7 +661,7 @@ def remote(req, prefix=True):
     except OSError:
         return None
     with s:
-        s.sendall(json.dumps({"request": req, "prefix": prefix}, ensure_ascii=False).encode())
+        s.sendall(json.dumps({"request": req, "prefix": prefix}, ensure_ascii=False).encode() + b"\n")
         s.shutdown(socket.SHUT_WR)
         return json.loads(b"".join(iter(lambda: s.recv(1 << 16), b"")))
 
@@ -648,8 +675,8 @@ def main():
     answer = None if "--local" in args else remote(req, "--no-prefix" not in args)
     if answer is None:
         result, logs = extract(req)
-    elif answer["result"] is None:
-        print("\n".join(answer["log"]), file=sys.stderr)
+    elif "error" in answer:
+        print(f"service: {answer['error']}", file=sys.stderr)
         return 1
     else:
         result, logs = answer["result"], ["served"] + answer["log"]

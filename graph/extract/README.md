@@ -15,7 +15,12 @@ python graph/extract/cascade.py --serve                                # keep bo
 With a service listening on `~/.cache/avra-graph-ml/cascade.sock`, cascade.py is a
 thin client; without one it runs in-process (`--local` forces that). Every
 choice about one source reuses the source text as a cached KV prefix
-(`--no-prefix` turns it off). An antecedent links only with a 0.5 margin;
+(`--no-prefix` turns it off).
+
+The socket speaks one JSON line in, one out, per connection:
+`{"op":"generate","messages":[…],"max_tokens":n}` answers `{"text":…}`
+(greedy), so other local tools share the one resident model; `{"request":…}`
+answers an extraction; a failure answers `{"error":…}`. An antecedent links only with a 0.5 margin;
 it becomes a new entity only when no candidate is plausible, else abstains.
 
 `schema.json` is the app's `{"op":"schema"}` answer. stdout is always one
