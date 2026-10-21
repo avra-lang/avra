@@ -183,8 +183,8 @@ class Structured(unittest.TestCase):
         import structured
 
         context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
-        chooser = Scripted(["speaker", "Person", "subject is it", "wife", "relative", "no narrowing",
-                            "stop", "value", "name", "nothing more"])
+        chooser = Scripted(["speaker", "Person", "subject is this", "wife", "further", "relative", "no narrowing",
+                            "yes", "value", "name", "nothing more"])
         cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, context)
         self.assertEqual(cypher, "MATCH (n0:Person)<-[:subject]-(n1:PersonalRelationship)-[:relative]->(n2:Person) "
                                  "WHERE id(n0) = $speaker AND n1.relation = 'wife' RETURN n2.name AS name")
@@ -195,18 +195,18 @@ class Structured(unittest.TestCase):
         import structured
 
         context = {"principal": "p:rowan", "speaker": None, "question_at_ms": 1}
-        chooser = Scripted(["Alex Chen", "Person", "stop", "value", "name", "nothing more"])
-        cypher = structured.plan(chooser, "Who is Alex Chen?", SCHEMA, context)
+        chooser = Scripted(["Alex Chen", "Person", "subject is this", "any of them", "yes", "value", "relation", "nothing more"])
+        cypher = structured.plan(chooser, "Who are Alex Chen's relatives?", SCHEMA, context)
         hops = chooser.asked[2][1]
         self.assertTrue(all("wife" not in h for h in hops))
-        self.assertIn("go to PersonalRelationship records whose subject is it", " ".join(hops))
-        self.assertEqual(cypher, "MATCH (n0:Person) WHERE n0.name = 'Alex Chen' RETURN n0.name AS name")
+        self.assertIn("PersonalRelationship records whose subject is this Person", " ".join(hops))
+        self.assertEqual(cypher, "MATCH (n0:Person)<-[:subject]-(n1:PersonalRelationship) WHERE n0.name = 'Alex Chen' RETURN n1.relation AS relation")
 
     def test_a_recorded_status_reads_absence_as_no(self):
         import structured
 
         context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
-        chooser = Scripted(["speaker", "Person", "assignee is it", "summary", "dinner", "stop",
+        chooser = Scripted(["speaker", "Person", "assignee is this", "summary", "dinner", "yes",
                             "recorded", "confirmation_recorded"])
         cypher = structured.plan(chooser, "Has a confirmation of my dinner booking been recorded?", SCHEMA, context)
         self.assertTrue(cypher.endswith("RETURN coalesce(n1.confirmation_recorded, false) AS confirmation_recorded"))
