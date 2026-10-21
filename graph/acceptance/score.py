@@ -389,6 +389,13 @@ def score_checkpoint(binary, checkpoint, questions, fixture, mode, hooks, scratc
     return rows
 
 
+def query_request(planned):
+    """A planner answers {cypher, params}; an oracle or legacy hook answers a ReadPlan."""
+    if "cypher" in planned:
+        return {"op": "query", "cypher": planned["cypher"], "params": planned.get("params", {})}
+    return {"op": "query", "plan": planned}
+
+
 def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, superseded, locate):
     previous = answers.get(q.get("context", {}).get("previous_question"))
     context = question_context(q, manifest, revision, previous)
@@ -403,7 +410,7 @@ def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, 
                 "contract": 1, "request": "score-" + q["id"], "question": q["question"],
                 "context": context, "source_view": q.get("source_view", "current"),
                 "schema": schema})
-        answer = app.call({"op": "query", "plan": plan})
+        answer = app.call(query_request(plan))
     except Exception as error:
         return {"status": "error", "reason": f"{type(error).__name__}: {error}"}
     if "error" in answer or "status" not in answer:
