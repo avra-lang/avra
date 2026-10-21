@@ -189,11 +189,21 @@ class Structured(unittest.TestCase):
         import structured
 
         context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
-        chooser = Scripted(["speaker", "Person", "their wife", "no narrowing", "yes", "value", "name"])
+        chooser = Scripted(["Person", "no narrowing", "yes", "value", "name"])
         cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, context)
         self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE id(n0) = $speaker RETURN n1.name AS name")
         check(cypher, SCHEMA, PARAMS)
         self.assertFalse(chooser.script)
+
+    def test_a_declared_relation_word_in_the_question_is_the_hop(self):
+        import structured
+
+        context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
+        chooser = Scripted(["Alex Chen", "Person", "no narrowing", "further", "GroupMembership records",
+                            "yes", "value", "is_member", "nothing more"])
+        cypher = structured.plan(chooser, "Alex Chen said his wife was not on the crew. Who is she?", SCHEMA, context)
+        self.assertTrue(cypher.startswith("MATCH (n0:Person)-[:wife]->(n1:Person)<-[:person]-(n2:GroupMembership)"))
+        self.assertNotIn("Where next?", chooser.asked[2][0])
 
     def test_hops_are_only_the_nodes_own(self):
         import structured
@@ -210,7 +220,7 @@ class Structured(unittest.TestCase):
         import structured
 
         context = {"principal": "p:rowan", "speaker": "p:rowan", "question_at_ms": 1}
-        chooser = Scripted(["speaker", "Person", "assignee is this", "summary", "dinner", "yes",
+        chooser = Scripted(["Person", "assignee is this", "summary", "dinner", "yes",
                             "recorded", "confirmation_recorded"])
         cypher = structured.plan(chooser, "Has a confirmation of my dinner booking been recorded?", SCHEMA, context)
         self.assertTrue(cypher.endswith("RETURN coalesce(n1.confirmation_recorded, false) AS confirmation_recorded"))

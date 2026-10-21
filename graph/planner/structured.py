@@ -14,6 +14,7 @@ import re
 from subset import models_of, base_shape, reference_target, relation_ends
 from prompt import line
 
+FIRST_PERSON = re.compile(r"\b(i|me|my|mine|myself)\b", re.I)
 MAX_HOPS = 4
 MAX_PICKS = 4
 ARRIVED = ["yes: the question asks about this record", "no: the answer lies further along"]
@@ -77,7 +78,9 @@ def names_in(question):
 
 
 def topic_words(question):
-    return [w for w in dict.fromkeys(re.findall(r"[a-z]{3,}", question.lower())) if w not in STOPWORDS]
+    """Lowercase content words, without the proper names the question anchors on."""
+    named = {w.lower() for n in names_in(question) for w in n.split()}
+    return [w for w in dict.fromkeys(re.findall(r"[a-z]{3,}", question.lower())) if w not in STOPWORDS | named]
 
 
 def hops(models, label):
@@ -91,19 +94,20 @@ def hops(models, label):
             if ends[0] == label:
                 also = [w for w in l.get("forward", []) if w != l["value"]]
                 said = f" ({', '.join(also)})" if also else ""
-                out.append((f"-[:{l['value']}]->", ends[1], f"their {l['value']}{said}: a {ends[1]}"))
+                out.append((f"-[:{l['value']}]->", ends[1], f"their {l['value']}{said}: a {ends[1]}",
+                            [l["value"], *also]))
             if ends[1] == label:
                 for w in l.get("reverse", []):
-                    out.append((f"-[:{w}]->", ends[0], f"their {w}: a {ends[0]}"))
+                    out.append((f"-[:{w}]->", ends[0], f"their {w}: a {ends[0]}", [w]))
     for p in models[label]["properties"]:
         target = reference_target(p["shape"])
         if target:
-            out.append((f"-[:{p['name']}]->", target, f"follow its {p['name']} to a {target}"))
+            out.append((f"-[:{p['name']}]->", target, f"follow its {p['name']} to a {target}", []))
     for owner, m in models.items():
         for p in m["properties"]:
             if reference_target(p["shape"]) == label:
                 about = line(m.get("description", ""), 80)
-                out.append((f"<-[:{p['name']}]-", owner, f"{owner} records whose {p['name']} is this {label}: {about}"))
+                out.append((f"<-[:{p['name']}]-", owner, f"{owner} records whose {p['name']} is this {label}: {about}", []))
     return out
 
 
@@ -111,17 +115,17 @@ def plan(chooser, question, schema, context):
     models = models_of(schema)
     head = f"Question: {question}"
     named = names_in(question)
-    starts = (["the speaker of the question (I, me, my)"] if context.get("speaker") else []) \
-        + [f"the one named {n!r} in the question" for n in named] + ["every record of one kind"]
-    start = starts[best(chooser, head, "What does answering the question start from?", starts)]
+    speaks = bool(context.get("speaker")) and FIRST_PERSON.search(question) is not None
+    starts = [f"the one named {n!r} in the question" for n in named] + ["every record of one kind"]
+    start = "the speaker" if speaks else starts[best(chooser, head, "What does answering the question start from?", starts)]
     out = Plan()
-    if start.startswith("the speaker"):
-        label = person_like(chooser, head, models, "Which kind of record is the speaker?")
+    if start == "the speaker":
+        label = person_like(chooser, head, identified(models), "Which kind of record is the speaker?")
         var = out.node(label)
         out.parts.append(f"({var}:{label})")
         out.where.append(f"id({var}) = $speaker")
     elif start.startswith("the one named"):
-        name = named[starts.index(start) - (1 if context.get("speaker") else 0)]
+        name = named[starts.index(start)]
         label = person_like(chooser, head, models, f"Which kind of record is {name}?")
         var = out.node(label)
         out.parts.append(f"({var}:{label})")
@@ -132,13 +136,17 @@ def plan(chooser, question, schema, context):
         var = out.node(label)
         out.parts.append(f"({var}:{label})")
     came = None
+    words = set(re.findall(r"[a-z]+", question.lower()))
     for hop in range(MAX_HOPS):
         options = [h for h in hops(models, label) if not came or (h[0], h[1]) != came]
         trail = f"{head}\nSo far: {' '.join(out.parts)} — now at a {label}."
         if not options or hop > 0 and best(chooser, trail, f"Is the answer about this {label}?", ARRIVED) == 0:
             break
-        pick = best(chooser, trail, "Where next?", [h[2] for h in options])
-        arrow, target, _ = options[pick]
+        said = [i for i, h in enumerate(options) if h[3] and words.intersection(h[3])]
+        pick = said[0] if len(said) == 1 else best(chooser, trail, "Where next?", [h[2] for h in options])
+        if len(said) == 1:
+            words.difference_update(options[pick][3])
+        arrow, target, _, _ = options[pick]
         back = ("<-" + arrow[1:-2] + "-" if arrow.endswith("->") else arrow[1:-1] + "->")
         var = out.node(target)
         out.parts.append(f"{arrow}({var}:{target})")
@@ -146,6 +154,12 @@ def plan(chooser, question, schema, context):
         filtered(chooser, trail, models[target], var, out, question)
     trail = f"{head}\nSo far: {' '.join(out.parts)} — the answer is about these {label} records."
     return out.cypher(returns(chooser, trail, models[label], var))
+
+
+def identified(models):
+    """Models whose records carry a declared identity: who a context id can name."""
+    keyed = {k: m for k, m in models.items() if ((m.get("semantics") or {}).get("identities"))}
+    return keyed or models
 
 
 def person_like(chooser, head, models, question):
