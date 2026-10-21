@@ -9,7 +9,14 @@ python graph/extract/cascade.py < request.json > result.json          # C01 Extr
 python graph/extract/cascade.py --catalog schema.json < envelope.json  # or a bare I01 envelope
 python graph/extract/request.py s01 schema.json > request.json         # request from a fixture row
 python graph/extract/summary.py result.json                            # one line per record
+python graph/extract/cascade.py --serve                                # keep both models resident
 ```
+
+With a service listening on `~/.cache/avra-graph-ml/cascade.sock`, cascade.py is a
+thin client; without one it runs in-process (`--local` forces that). Every
+choice about one source reuses the source text as a cached KV prefix
+(`--no-prefix` turns it off). An antecedent links only with a 0.5 margin;
+it becomes a new entity only when no candidate is plausible, else abstains.
 
 `schema.json` is the app's `{"op":"schema"}` answer. stdout is always one
 C01 ExtractionResult (`failed` with a problem when the models cannot load);

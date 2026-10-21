@@ -1,7 +1,8 @@
 """Local extraction cascade: an encoder proposes spans, a small LLM only
 scores closed choices, and every proposal is an exact source anchor.
 
-usage: python cascade.py [--catalog SCHEMA_JSON] < request_or_envelope.json > result.json
+usage: python cascade.py [--catalog SCHEMA_JSON] [--local] [--no-prefix] < request_or_envelope.json > result.json
+       python cascade.py --serve   # keep both models resident behind a Unix socket
 
 stdin is a C01 ExtractionRequest, or a bare I01 SourceEnvelope with
 --catalog naming the app's `{"op":"schema"}` answer. stdout is one C01
@@ -20,6 +21,9 @@ SCORER = "mlx-community/Qwen3-4B-Instruct-2507-4bit@50d427756c6b1b2fe0c0a10f67fb
 MODEL_ID = f"{ENCODER}+{SCORER}"
 SPAN_THRESHOLD = 0.4
 ACCEPT = 0.5
+MARGIN = 0.5
+ABSTAIN = object()
+SOCKET = os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
 FIRST_PERSON = re.compile(r"\b(I|I'm|I'll|I've|me|my|My|mine|we|We|our|Our|us)\b")
 MODALITIES = {
     "asserted": "stated as a current fact by the speaker",
@@ -34,8 +38,11 @@ os.environ.setdefault("HF_HOME", os.path.expanduser("~/.cache/avra-graph-ml/hf")
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 
+LOG = []
+
+
 def log(*parts):
-    print(*parts, file=sys.stderr)
+    LOG.append(" ".join(str(p) for p in parts))
 
 
 # ---------------------------------------------------------------- catalog
@@ -172,18 +179,46 @@ class Scorer:
         from mlx_lm import load
 
         self.model, self.tok = load(SCORER.split("@")[0])
-        self.calls = 0
+        self.calls, self.source, self.cache, self.prefix = 0, "", None, True
+
+    def begin(self, source):
+        """Every choice about one source shares its text as a cached prefix."""
+        import mlx.core as mx
+        from mlx_lm.models.cache import make_prompt_cache
+
+        self.source, self.cache = source, None
+        if not self.prefix or os.environ.get("CASCADE_PREFIX") == "0":
+            return
+        head = self.render(f'Text: "{source}"\n\n\x00').split("\x00")[0]
+        self.cache = make_prompt_cache(self.model)
+        mx.eval(self.forward(self.tok.encode(head)))
+
+    def render(self, body):
+        return self.tok.apply_chat_template([{"role": "user", "content": body}], add_generation_prompt=True, tokenize=False)
+
+    def forward(self, ids):
+        import mlx.core as mx
+
+        return self.model(mx.array(ids)[None], cache=self.cache)[0, -1]
 
     def choose(self, context, question, options):
         import mlx.core as mx
+        from mlx_lm.models.cache import trim_prompt_cache
 
         letters = [chr(65 + i) for i in range(len(options))]
         body = f"{context}\n\n{question}\n" + "\n".join(f"{l}) {o}" for l, o in zip(letters, options)) + "\nAnswer with the letter only."
-        prompt = self.tok.apply_chat_template([{"role": "user", "content": body}], add_generation_prompt=True, tokenize=False)
-        logits = self.model(mx.array(self.tok.encode(prompt))[None])[0, -1]
+        text = f'Text: "{self.source}"\n\n' if self.source else ""
+        prompt = self.render(text + body)
         ids = mx.array([self.tok.encode(l, add_special_tokens=False)[0] for l in letters])
+        if self.cache is None:
+            logits = self.model(mx.array(self.tok.encode(prompt))[None])[0, -1]
+            p = mx.softmax(logits[ids].astype(mx.float32)).tolist()
+        else:
+            head = self.render(text + "\x00").split("\x00")[0]
+            tail = self.tok.encode(prompt[len(head) :], add_special_tokens=False)
+            p = mx.softmax(self.forward(tail)[ids].astype(mx.float32)).tolist()
+            trim_prompt_cache(self.cache, len(tail))
         self.calls += 1
-        p = mx.softmax(logits[ids].astype(mx.float32)).tolist()
         if os.environ.get("CASCADE_DECISIONS"):
             with open(os.environ["CASCADE_DECISIONS"], "a") as out:
                 out.write(json.dumps({"context": context, "question": question, "options": options, "p": p}) + "\n")
@@ -204,9 +239,14 @@ class Cascade:
     def run(self, source):
         self.t = Text(source["content"])
         self.records, self.frames, self.mentions, self.minted = [], [], [], 0
+        clock = time.time()
+        self.llm.begin(source["content"])
+        prefix = time.time()
         self.entity_pass()
+        spans = time.time()
         self.frame_pass(source)
         self.relation_pass()
+        log(f"prefix_s={prefix - clock:.2f} entities_s={spans - prefix:.2f} choices_s={time.time() - spans:.2f}")
         return self.records, self.frames
 
     # Entities: encoder spans, LLM picks the antecedent for partial names.
@@ -230,6 +270,9 @@ class Cascade:
             model = by_label[label]
             text = self.t.s[a:b]
             rec = self.antecedent(model, a, b) if any(r["model"] == model for r in self.records) else None
+            if rec is ABSTAIN:
+                log(f"abstain {model} {text!r}@{a}: no candidate with margin")
+                continue
             if rec is None:
                 rec = self.new_entity(model, a, b, conf)
             if rec is not None:
@@ -256,11 +299,14 @@ class Cascade:
             return None
         if any(r["fields"][0]["value"] == text for r in prior):
             return next(r for r in prior if r["fields"][0]["value"] == text)
-        options = [r["fields"][0]["value"] for r in prior] + ["someone else, not listed"]
-        ctx = f'Text: "{self.t.s}"'
-        p = self.llm.choose(ctx, f'In the text, who is "{text}" at character {a}?', options)
-        best = max(range(len(options)), key=lambda i: p[i])
-        return prior[best] if best < len(prior) and p[best] >= ACCEPT else None
+        options = [r["fields"][0]["value"] for r in prior] + ["someone new, not listed", "cannot tell"]
+        p = self.llm.choose(f'Mention: "{text}" at character {a}.', f'In the text, who is "{text}" at character {a}?', options)
+        ranked = sorted(range(len(options)), key=lambda i: -p[i])
+        if ranked[0] < len(prior) and p[ranked[0]] - p[ranked[1]] >= MARGIN:
+            return prior[ranked[0]]
+        if max(p[: len(prior)]) <= 1 - ACCEPT - MARGIN / 2:
+            return None
+        return ABSTAIN
 
     def attributes(self):
         """Other text fields and identity keys of entity records, by structure."""
@@ -340,7 +386,7 @@ class Cascade:
         ids = list(people)
         options = [people[i] for i in ids] + ["the unnamed author of the text", "cannot tell"]
         what = "this quotation" if quoted else "this passage"
-        p = self.llm.choose(f'Text: "{self.t.s}"\n\nPassage: "{self.t.s[a:b]}"', f'Who is speaking in {what} (who do "I", "my" and "we" refer to)?', options)
+        p = self.llm.choose(f'Passage: "{self.t.s[a:b]}"', f'Who is speaking in {what} (who do "I", "my" and "we" refer to)?', options)
         best = max(range(len(options)), key=lambda i: p[i])
         return ids[best] if best < len(ids) and p[best] >= ACCEPT else None
 
@@ -390,7 +436,7 @@ class Cascade:
             return ids
 
         froms, tos = holders(ft, False), holders(tt, free is not None)
-        ctx = f'Text: "{self.t.s}"\n\nSentence: "{self.t.s[a:b]}"' + (f'\nIn this sentence "I"/"my"/"our" refer to {self.name(speaker)}.' if speaker else "")
+        ctx = f'Sentence: "{self.t.s[a:b]}"' + (f'\nIn this sentence "I"/"my"/"our" refer to {self.name(speaker)}.' if speaker else "")
         question = f"{self.plan.models[name]['description']}\n\nWhich of these does the sentence itself explicitly state? Do not infer from other sentences or world knowledge."
         rel = self.plan.relations[name]
         if free:
@@ -487,17 +533,27 @@ def char_range(t, span):
     return t.byte.index(span["start"]), t.byte.index(span["end"])
 
 
-def main():
-    args = sys.argv[1:]
-    stdin = json.load(sys.stdin)
+def requested(stdin, catalog_path):
     if "input" in stdin:
-        req = stdin
-    else:
-        catalog = json.load(open(args[args.index("--catalog") + 1]))
-        sys.path.insert(0, os.path.dirname(__file__))
-        from request import request
+        return stdin
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from request import request
 
-        req = request(stdin, catalog, MODEL_ID)
+    return request(stdin, json.load(open(catalog_path)), MODEL_ID)
+
+
+class Models:
+    """Loaded once per process; a resident service keeps them warm."""
+
+    def __init__(self):
+        t = time.time()
+        self.enc, self.llm = Encoder(), Scorer()
+        self.load_s = time.time() - t
+
+
+def extract(req, models=None):
+    """One C01 ExtractionResult; a failure is a result, never an exception."""
+    LOG.clear()
     result = {
         "contract": 1,
         "request": req["request"],
@@ -505,25 +561,90 @@ def main():
         "schema": req["catalog"]["fingerprint"],
         "extractor": req["extractor"],
     }
-    started = time.time()
+    stage = "extractor.setup"
     try:
         plan = Plan(req["catalog"]["descriptor"])
         for m, why in plan.blocked.items():
             log(f"skip {m}: {why}")
-        enc, llm = Encoder(), Scorer()
-        loaded = time.time()
-        c = Cascade(plan, enc, llm)
+        models = models or Models()
+        stage = "extractor.run"
+        started, calls = time.time(), models.llm.calls
+        c = Cascade(plan, models.enc, models.llm)
         c.run(req["input"])
         reframe(c)
         records, frames = finish(c.records, c.frames)
         result.update(status="complete", records=records, proposed_frames=frames)
-        log(f"load_s={loaded - started:.1f} extract_s={time.time() - loaded:.1f} llm_calls={llm.calls} records={len(records)} frames={len(frames)}")
+        log(f"load_s={models.load_s:.1f} extract_s={time.time() - started:.1f} llm_calls={models.llm.calls - calls} records={len(records)} frames={len(frames)}")
     except Exception as e:
-        result.update(status="failed", records=[], problems=[{"code": "extractor.setup" if "loaded" not in dir() else "extractor.run", "message": f"{type(e).__name__}: {e}"[:4096]}])
+        result.update(status="failed", records=[], problems=[{"code": stage, "message": f"{type(e).__name__}: {e}"[:4096]}])
         log(f"failed: {type(e).__name__}: {e}")
     log(f"maxrss_mb={resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6:.0f}")
+    return result, list(LOG)
+
+
+def serve():
+    """A local Unix-socket service: one request per connection, served in order."""
+    import socket
+
+    models = Models()
+    if os.path.exists(SOCKET):
+        os.replace(SOCKET, SOCKET + ".stale")
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(SOCKET)
+    os.chmod(SOCKET, 0o600)
+    s.listen(4)
+    print(f"cascade serving on {SOCKET} (load_s={models.load_s:.1f})", file=sys.stderr, flush=True)
+    while True:
+        conn, _ = s.accept()
+        with conn:
+            data = b"".join(iter(lambda: conn.recv(1 << 16), b""))
+            try:
+                body = json.loads(data)
+                models.llm.prefix = body.get("prefix", True)
+                result, logs = extract(body["request"], models)
+            except Exception as e:
+                result, logs = None, [f"bad request: {type(e).__name__}: {e}"]
+            try:
+                conn.sendall(json.dumps({"result": result, "log": logs}, ensure_ascii=False).encode())
+            except OSError as e:
+                print(f"client gone: {e}", file=sys.stderr, flush=True)
+
+
+def remote(req, prefix=True):
+    """The resident service's answer, or None when no service is listening."""
+    import socket
+
+    if not os.path.exists(SOCKET):
+        return None
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect(SOCKET)
+    except OSError:
+        return None
+    with s:
+        s.sendall(json.dumps({"request": req, "prefix": prefix}, ensure_ascii=False).encode())
+        s.shutdown(socket.SHUT_WR)
+        return json.loads(b"".join(iter(lambda: s.recv(1 << 16), b"")))
+
+
+def main():
+    args = sys.argv[1:]
+    if "--serve" in args:
+        return serve()
+    stdin = json.load(sys.stdin)
+    req = requested(stdin, args[args.index("--catalog") + 1] if "--catalog" in args else None)
+    answer = None if "--local" in args else remote(req, "--no-prefix" not in args)
+    if answer is None:
+        result, logs = extract(req)
+    elif answer["result"] is None:
+        print("\n".join(answer["log"]), file=sys.stderr)
+        return 1
+    else:
+        result, logs = answer["result"], ["served"] + answer["log"]
+    print("\n".join(logs), file=sys.stderr)
     json.dump(result, sys.stdout, ensure_ascii=False)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
