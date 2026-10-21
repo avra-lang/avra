@@ -72,6 +72,27 @@ def gloss(model):
     return model["description"].split("\n")[0].strip() or model["name"]
 
 
+def is_enum(p):
+    return any(r.startswith("one_of(") for r in p["rules"])
+
+
+def route(p):
+    """How a property's value can be evidenced, or None when it cannot."""
+    shape = p["shape"]
+    inner = shape.get("optional") if isinstance(shape, dict) and "optional" in shape else shape
+    if is_enum(p):
+        return "enum" if p.get("enum") else None
+    if inner == "string":
+        return "text"
+    if inner == "boolean":
+        return "bool"
+    if inner == "integer":
+        return "number"
+    if target(inner):
+        return "ref"
+    return None
+
+
 class Plan:
     """What the descriptor lets this adapter propose, and what it cannot."""
 
@@ -79,35 +100,41 @@ class Plan:
         self.models = {m["name"]: m for m in descriptor}
         refs = {target(p["shape"]) for m in descriptor for p in m["properties"]} - {None}
         embedded = {p["shape"]["embedded"] for m in descriptor for p in m["properties"] if isinstance(p["shape"], dict) and "embedded" in p["shape"]}
-        self.entities, self.relations, self.blocked = {}, {}, {}
+        self.entities, self.relations, self.records, self.blocked = {}, {}, {}, {}
         for m in descriptor:
             rel = m["semantics"].get("relation")
             if rel:
                 why = self.relation_gap(m, rel)
                 (self.blocked.__setitem__(m["name"], why) if why else self.relations.__setitem__(m["name"], rel))
-            elif m["name"] in refs:
-                texts = [p for p in m["properties"] if p["shape"] in ("string", {"optional": "string"}) and "one_of(value)" not in p["rules"]]
-                gaps = [p["name"] for p in m["properties"] if required(p) and p not in texts]
-                if gaps or not texts:
-                    self.blocked[m["name"]] = f"required non-text fields {gaps}"
-                else:
-                    self.entities[m["name"]] = texts
+            elif m["name"] in refs and self.nameable(m):
+                self.entities[m["name"]] = [p for p in m["properties"] if route(p) == "text"]
             elif m["name"] not in embedded:
-                self.blocked[m["name"]] = "no relation binding and not a reference target"
+                gaps = self.gaps(m, ())
+                if gaps:
+                    self.blocked[m["name"]] = f"required fields without an evidence route: {gaps}"
+                else:
+                    self.records[m["name"]] = m
+
+    def nameable(self, m):
+        """A referenced model a span names: a required text anchor, and every
+        other required field text too."""
+        req = [p for p in m["properties"] if required(p)]
+        return bool(req) and route(req[0]) == "text" and all(route(p) == "text" for p in req)
+
+    def gaps(self, m, handled):
+        return [
+            p["name"] for p in m["properties"]
+            if required(p) and p["name"] not in handled and route(p) is None and not self.embeddable(p["shape"])
+        ]
 
     def relation_gap(self, m, rel):
         props = {p["name"]: p for p in m["properties"]}
         if len(rel["from"]) != 1 or len(rel["to"]) != 1 or len(rel["label"]) != 1:
             return "relation paths deeper than one property"
-        label = props[rel["label"][0]]
-        if "one_of(value)" in label["rules"] and not rel["labels"]:
+        if is_enum(props[rel["label"][0]]) and not rel["labels"]:
             return "label one_of values are not in the descriptor"
-        for p in m["properties"]:
-            if p["name"] in (rel["from"][0], rel["to"][0], rel["label"][0]) or not required(p):
-                continue
-            if not self.embeddable(p["shape"]):
-                return f"required field {p['name']} has no evidence route"
-        return None
+        gaps = self.gaps(m, (rel["from"][0], rel["to"][0], rel["label"][0]))
+        return f"required fields without an evidence route: {gaps}" if gaps else None
 
     def embeddable(self, shape):
         """An embedded value whose every field may be absent."""
@@ -257,6 +284,7 @@ class Cascade:
         spans = time.time()
         self.frame_pass(source)
         self.relation_pass()
+        self.record_pass()
         log(f"prefix_s={prefix - clock:.2f} entities_s={spans - prefix:.2f} choices_s={time.time() - spans:.2f}")
         return self.records, self.frames
 
@@ -409,7 +437,10 @@ class Cascade:
         return next(p for p in self.plan.models[model]["properties"] if p["name"] == name)
 
     def name(self, rid):
-        return next(r for r in self.records if r["local_id"] == rid)["fields"][0]["value"]
+        """A record's readable label: its first text value that is no reference."""
+        ids = {r["local_id"] for r in self.records}
+        r = next(r for r in self.records if r["local_id"] == rid)
+        return next((f["value"] for f in r["fields"] if isinstance(f["value"], str) and f["value"] not in ids), rid)
 
     def speaker_of(self, a, b):
         f = self.innermost(a, b)
@@ -486,6 +517,149 @@ class Cascade:
             if m:
                 return (a + m.start(), a + m.end())
         return (a, b)
+
+    # Records: the LLM names which declared record a sentence states, then
+    # fills each field from spans, offered entities or declared values.
+
+    def record_pass(self):
+        kinds = list(self.plan.records)
+        if not kinds:
+            return
+        opts = [f"{m}: {gloss(self.plan.models[m])}" for m in kinds] + ["none of these"]
+        for a, b in self.t.units():
+            for x, y in self.sub_units(a, b):
+                x, y = self.trimmed(x, y)
+                if y <= x:
+                    continue
+                p = self.llm.choose(f'Sentence: "{self.t.s[x:y]}"', "Which kind of record does this sentence itself state, if any?", opts)
+                best = max(range(len(p)), key=lambda i: p[i])
+                if best < len(kinds) and p[best] >= ACCEPT:
+                    self.fill(kinds[best], x, y, p[best])
+
+    def trimmed(self, a, b):
+        """A sentence without its chat-turn speaker prefix."""
+        for f in self.frames:
+            if f["_range"][0] == a and f["speaker"]:
+                colon = self.t.s.find(":", a, b)
+                if colon >= 0:
+                    a = colon + 1
+        while a < b and self.t.s[a] in " '\"“‘":
+            a += 1
+        return a, b
+
+    def fill(self, model, a, b, chosen):
+        m = self.plan.models[model]
+        ctx = f'Sentence: "{self.t.s[a:b]}"'
+        texts = [p["name"] for p in m["properties"] if route(p) == "text"]
+        spans = self.enc.records(self.t.s[a:b], model, texts[0], texts) if texts else []
+        found = spans[0] if spans else {}
+        fields, missing = [], []
+        for p in m["properties"]:
+            value = self.value_of(model, p, found, ctx, a, b)
+            if value is None:
+                if required(p) and not self.plan.embeddable(p["shape"]):
+                    missing.append(p["name"])
+                continue
+            fields.append(value)
+        if missing:
+            log(f"drop {model} at {a}: no evidence for {missing}")
+            return
+        claim = f"{model} with " + ", ".join(f"{f['property']}={self.shown(f['value'])}" for f in fields)
+        q = self.qualifiers(a, b, claim)
+        for f in fields:
+            f.update(q)
+        self.records.append({"local_id": self.mint(), "model": model, "fields": fields, "identities": [], "resolution": {"kind": "new"}, "_score": chosen})
+
+    def shown(self, v):
+        return self.name(v) if isinstance(v, str) and any(r["local_id"] == v for r in self.records) else v
+
+    def value_of(self, model, p, found, ctx, a, b):
+        """One field proposal, or None when the sentence does not state it."""
+        kind, name = route(p), p["name"]
+        if self.plan.embeddable(p["shape"]):
+            return self.field(name, {}, [(a, b)]) if required(p) else None
+        optional = [] if required(p) else ["not stated"]
+        if kind == "text":
+            v = found.get(name)
+            if v and v.get("confidence", 0) >= SPAN_THRESHOLD:
+                return self.field(name, v["text"], [(a + v["start"], a + v["end"])], score=v["confidence"])
+            if not required(p):
+                return None
+            cands = self.clauses(a, b)
+            pr = self.llm.choose(ctx, f"In a {model}, which part of the sentence is the {name}?", [self.t.s[x:y] for x, y in cands] + ["not stated"])
+            k = max(range(len(pr)), key=lambda i: pr[i])
+            if k == len(cands) or pr[k] < ACCEPT:
+                return None
+            x, y = cands[k]
+            return self.field(name, self.t.s[x:y], [(x, y)], score=pr[k])
+        if kind == "ref":
+            ids, where = self.offered(target(p["shape"]), a, b)
+            if not ids:
+                return None
+            pr = self.llm.choose(ctx, f"In this {model}, who or what is the {name}?", [self.name(i) for i in ids] + optional)
+            k = max(range(len(pr)), key=lambda i: pr[i])
+            if k >= len(ids) or pr[k] < ACCEPT:
+                return None
+            return self.field(name, ids[k], [where[ids[k]]], score=pr[k])
+        if kind == "enum":
+            vals = p["enum"]
+            pr = self.llm.choose(ctx, f"For this {model}, which {name} does the sentence state?", vals + optional)
+            k = max(range(len(pr)), key=lambda i: pr[i])
+            return self.field(name, vals[k], [(a, b)], score=pr[k]) if k < len(vals) and pr[k] >= ACCEPT else None
+        if kind == "bool":
+            pr = self.llm.choose(ctx, f"For this {model}, is {name} true or false according to the sentence?", ["true", "false"] + optional)
+            k = max(range(len(pr)), key=lambda i: pr[i])
+            return self.field(name, k == 0, [(a, b)], score=pr[k]) if k < 2 and pr[k] >= ACCEPT else None
+        if kind == "number" and not name.endswith("_ms"):
+            nums = [(x.start(), x.end()) for x in re.finditer(r"\d[\d,]*", self.t.s[a:b])]
+            nums = [(a + x, a + y) for x, y in nums]
+            if not nums:
+                return None
+            pr = self.llm.choose(ctx, f"In this {model}, which number is the {name}?", [self.t.s[x:y] for x, y in nums] + ["not stated"])
+            k = max(range(len(pr)), key=lambda i: pr[i])
+            if k == len(nums) or pr[k] < ACCEPT:
+                return None
+            x, y = nums[k]
+            return self.field(name, int(self.t.s[x:y].replace(",", "")), [(x, y)], score=pr[k])
+        return None
+
+    def clauses(self, a, b):
+        """Candidate value spans: the sentence and its comma/conjunction parts."""
+        s, out = self.t.s, {(a, b)}
+        cuts = [a] + [a + m.end() for m in re.finditer(r",\s*|;\s*|\s+(?:and|but|until|so|then)\s+", s[a:b])] + [b]
+        for x, y in zip(cuts, cuts[1:]):
+            y2 = y
+            while y2 > x and s[y2 - 1] in " ,;.?!":
+                y2 -= 1
+            if y2 > x:
+                out.add((x, y2))
+        return sorted(out)[:15]
+
+    def offered(self, model, a, b):
+        """Records of a model this sentence can refer to, with where each is evidenced."""
+        where = {}
+        for m in self.mentions:
+            if m["record"] and m["kind"] == model:
+                inside = a <= m["start"] and m["end"] <= b
+                if inside or m["record"] not in where:
+                    where[m["record"]] = (m["start"], m["end"]) if inside else None
+        speaker = self.speaker_of(a, b) if FIRST_PERSON.search(self.t.s[a:b]) else None
+        pronoun = FIRST_PERSON.search(self.t.s, a, b)
+        if speaker and pronoun and any(r["local_id"] == speaker and r["model"] == model for r in self.records):
+            where[speaker] = (pronoun.start(), pronoun.end())
+        for r in self.records:
+            if r["model"] == model and r["local_id"] not in where:
+                where[r["local_id"]] = None
+        ids = [i for i in where if where[i] is not None] + [i for i in where if where[i] is None]
+        return ids, {i: where[i] or self.evidence_range(i) for i in ids}
+
+    def evidence_range(self, rid):
+        """Where a record is named, for a reference made outside its own mention."""
+        m = next((m for m in self.mentions if m["record"] == rid), None)
+        if m:
+            return (m["start"], m["end"])
+        r = next(r for r in self.records if r["local_id"] == rid)
+        return position(r["fields"][0]["evidence"][0])
 
     def emit(self, name, frm, to, label, subj, obj, value, cue, score, a, b, claim):
         if any(r["model"] == name and self.same(r, frm, subj[0], to, obj[0], label, value) for r in self.records):
