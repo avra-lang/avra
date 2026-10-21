@@ -198,7 +198,7 @@ class Scripted:
         self.script, self.wanted, self.asked, self.last = list(script), set(wanted), [], None
 
     def choose(self, context, question, options):
-        need = re.match(r"Does the answer need their (\w+)", question)
+        need = re.match(r"Does the answer need the \w+'s (\w+)", question)
         if need:
             self.asked.append((question, options))
             answer = "yes" if need.group(1) in self.wanted else "no"

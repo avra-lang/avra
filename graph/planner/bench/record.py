@@ -41,7 +41,7 @@ class Gold:
             gold = self.pending[2]
             self.pending = None
             return [1.0 if o == gold else 0.0 for o in options]
-        need = re.match(r"Does the answer need their (\w+)", question)
+        need = re.match(r"Does the answer need the \w+'s (\w+)", question)
         if need:
             gold = "yes" if need.group(1) in self.needed else "no"
         else:
@@ -96,8 +96,8 @@ def main():
             locate = score.locator(app, fixture[2])
             context = {**context, **{k: locate(context[k]) for k in ("principal", "speaker") if context[k]}}
             chooser = Gold(row["id"], row["choices"], row.get("needed", []))
-            cypher = structured.plan(chooser, q["question"], schema, context,
-                                     Graph([str(app.binary), "request", "--db", str(app.db)]).search)
+            graph = Graph([str(app.binary), "request", "--db", str(app.db)])
+            cypher = structured.plan(chooser, q["question"], schema, context, graph.search, None, graph.model_of)
             if chooser.labels:
                 raise SystemExit(f"{row['id']}: labels left unused: {chooser.labels}\n  composed: {cypher}")
             if row.get("cypher") and row["cypher"] != cypher:

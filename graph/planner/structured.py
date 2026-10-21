@@ -180,14 +180,14 @@ def hops(models, label):
     return out
 
 
-def plan(chooser, question, schema, context, search=None, depth=None):
+def plan(chooser, question, schema, context, search=None, depth=None, model_of=None):
     """One query composed from closed choices; `depth` caps the hops (the
     request's budget), else the catalog's size bounds the walk."""
     models = models_of(schema)
     head = f"Question: {question}"
     evidence = Evidence(search, question, models)
     out = Plan()
-    var, label = anchored(chooser, head, question, models, context, evidence, out)
+    var, label = anchored(chooser, head, question, models, context, evidence, out, model_of)
     came, held = None, None
     phrasing = question.lower()
     for hop in range(depth if depth is not None else len(models)):
@@ -223,7 +223,7 @@ def plan(chooser, question, schema, context, search=None, depth=None):
     return out.cypher(items)
 
 
-def anchored(chooser, head, question, models, context, evidence, out):
+def anchored(chooser, head, question, models, context, evidence, out, model_of=None):
     """The first node: the speaker, a record the question names, or every record of a kind."""
     named = evidence.named(question)
     starts = (["the person asking or speaking"] if context.get("speaker") else []) \
@@ -231,8 +231,11 @@ def anchored(chooser, head, question, models, context, evidence, out):
     pick = best(chooser, head, "Who or what is the question about first?", starts)
     speaker = 1 if context.get("speaker") else 0
     if speaker and pick == 0:
-        keyed = identified(models)
-        label = keyed[best(chooser, head, "Which kind of record is the person asking?", keyed)]
+        # The speaker is a graph entity: its model is a fact the graph holds.
+        label = model_of(context["speaker"]) if model_of else None
+        if label not in models:
+            keyed = identified(models)
+            label = keyed[best(chooser, head, "Which kind of record is the person asking?", keyed)]
         var = out.node(label)
         out.parts.append(f"({var}:{label})")
         out.where.append(f"id({var}) = $speaker")
@@ -289,24 +292,24 @@ def narrowed(chooser, trail, model, var, out, question, evidence):
 def returns(chooser, trail, model, var, record=None):
     """The RETURN items: a count, one recorded status, or chosen values, read
     from the final node or from the relation record of the hop that reached it."""
-    props = [(var, p) for p in model["properties"]]
+    props = [(var, model["name"], p) for p in model["properties"]]
     if record:
-        props += [(record[0], p) for p in record[1]["properties"]]
+        props += [(record[0], record[1]["name"], p) for p in record[1]["properties"]]
     if best(chooser, trail, "What does the question ask for?",
             ["the value of one or more of their properties", "how many there are"]) == 1:
         return f"count({var}) AS count"
-    flags = [(v, p["name"]) for v, p in props if base_shape(p["shape"]) == "boolean"]
+    flags = [(v, p["name"]) for v, _, p in props if base_shape(p["shape"]) == "boolean"]
     if flags and best(chooser, trail, "What does the question want to know?", RECORDED) == 1:
         v, name = flags[best(chooser, trail, "Which recorded status?", [n for _, n in flags])]
         return f"coalesce({v}.{name}, false) AS {name}"
     readable = range(len(props))
     picked = []
     for i in readable:
-        v, p = props[i]
+        v, owner, p = props[i]
         about = f"{p['name']}" + (f" ({line(p['description'])})" if p.get("description") else "")
-        if best(chooser, trail, f"Does the answer need their {about}?", NEEDED) == 0:
+        if best(chooser, trail, f"Does the answer need the {owner}'s {about}?", NEEDED) == 0:
             picked.append(i)
-    names = [props[i][1]["name"] for i in picked or [0]]
-    return ", ".join(f"{props[i][0]}.{props[i][1]['name']} AS {props[i][1]['name']}"
-                     + ("" if names.count(props[i][1]["name"]) == 1 else f"_{props[i][0]}")
+    names = [props[i][2]["name"] for i in picked or [0]]
+    return ", ".join(f"{props[i][0]}.{props[i][2]['name']} AS {props[i][2]['name']}"
+                     + ("" if names.count(props[i][2]["name"]) == 1 else f"_{props[i][0]}")
                      for i in picked or [0])

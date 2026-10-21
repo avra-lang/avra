@@ -38,7 +38,7 @@ def kind(question):
                          ("What does the question ask for", "mode"),
                          ("What does the question want to know", "recorded"),
                          ("Which recorded status", "status"),
-                         ("Does the answer need their", "property")):
+                         ("Does the answer need the", "property")):
         if question.startswith(prefix):
             return name
     return "other"
