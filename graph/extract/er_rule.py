@@ -15,7 +15,7 @@ def decide(p, n):
     ranked = sorted(range(len(p)), key=lambda i: -p[i])
     if ranked[0] < n and p[ranked[0]] - p[ranked[1]] >= MARGIN:
         return ranked[0]
-    return "new" if max(p[:n]) <= NEW_CEILING else "abstain"
+    return "new" if ranked[0] == n and max(p[:n]) <= NEW_CEILING else "abstain"
 
 
 def outcome(choice, gold, n):

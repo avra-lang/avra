@@ -1,7 +1,8 @@
 """Score one closed-choice decision set with one backend; one at a time.
 
 usage: python bench_choices.py service|qwen|jevk5 [decisions.jsonl] > scores.jsonl
-Prints accuracy and latency per decision kind to stderr. Probabilities are
+Prints accuracy and latency per decision kind to stderr. BENCH_NATIVE=1 asks
+a labelled-pair choice whole, for a backend without an option budget. Probabilities are
 logged raw, for later calibration; they are not calibrated.
 """
 import json
@@ -70,7 +71,7 @@ def split(d):
 
 def decided(choose, d):
     """Answer a decision; a labelled-pair one is asked as two."""
-    if d["kind"] != "relation" or len(d["options"]) <= 16:
+    if d["kind"] != "relation" or len(d["options"]) <= 16 or os.environ.get("BENCH_NATIVE"):
         p = choose(d)
         return max(range(len(p)), key=lambda i: p[i]), p
     label, words, x, y = split(d)

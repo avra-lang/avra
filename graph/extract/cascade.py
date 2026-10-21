@@ -316,7 +316,7 @@ class Cascade:
         ranked = sorted(range(len(options)), key=lambda i: -p[i])
         if ranked[0] < len(prior) and p[ranked[0]] - p[ranked[1]] >= MARGIN:
             return prior[ranked[0]]
-        if max(p[: len(prior)]) <= 1 - ACCEPT - MARGIN / 2:
+        if ranked[0] == len(prior) and max(p[: len(prior)]) <= 1 - ACCEPT - MARGIN / 2:
             return None
         return ABSTAIN
 
