@@ -9,7 +9,7 @@ use source.{Context}
 @step_coherent
 export type ReadStep = {
     @length(min: 1, max: 128) id: string,
-    @one_of(["scan", "filter", "follow", "search", "project", "count", "sum", "expect"]) op: string,
+    @one_of(["scan", "filter", "follow", "search", "project", "count", "sum", "expect", "seed"]) op: string,
     @items(max: 1) inputs: List<string> = [],
     model: string? = null,
     property: string? = null,
@@ -20,12 +20,14 @@ export type ReadStep = {
     @items(max: 64) names: List<string> = [],
     @length(min: 1, max: 256) owner: string? = null,
     @length(min: 1, max: 128) reason: string? = null,
+    @one_of(["speaker", "principal"]) binding: string? = null,
 }
 
 fn step_coherent(s: ReadStep) -> Result<ReadStep, string> {
-    let scan = s.op == "scan"
-    if s.inputs.length != if scan { 0 } else { 1 } { fail "a scan has no input; other steps take one" }
-    if scan != (s.model != null) { fail "only a scan names a model" }
+    let scan = s.op == "scan" || s.op == "seed"
+    if s.inputs.length != if scan { 0 } else { 1 } { fail "a scan or seed has no input; other steps take one" }
+    if scan != (s.model != null) { fail "only a scan or seed names a model" }
+    if (s.op == "seed") != (s.binding != null) { fail "only a seed names its context binding" }
     if s.model == "" || s.property == "" { fail "schema symbols cannot be empty" }
     let property = s.op == "filter" ||
         s.op == "follow" ||

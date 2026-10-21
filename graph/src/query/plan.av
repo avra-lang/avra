@@ -6,6 +6,8 @@ use semantics.{QuantityBinding}
 
 export enum Comparison { Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual }
 export enum Direction { Outgoing, Incoming }
+/// Which party of the request a seed starts from.
+export enum Binding { Speaker, Principal }
 export enum SourceView { Current, History }
 
 /// Row identities and evidence survive projection; visible fields do not.
@@ -14,6 +16,7 @@ export enum ReadShape { Rows(rows: ReadRows), Count, Quantity(binding: QuantityB
 
 export enum ReadOperation {
     Scan(model: string)
+    Seed(model: string, binding: Binding)
     Filter(input: int, property: Property, comparison: Comparison, literal: Value)
     Follow(input: int, owner: string, property: Property, direction: Direction)
     Search(input: int, property: Property, needle: string)
@@ -158,6 +161,18 @@ fn prepared_node(catalog: Catalog, nodes: List<ReadNode>, step: ReadStep) -> Res
         return ReadNode {
             id: step.id,
             operation: .Scan(model.name),
+            shape: all_rows(model),
+            depth: 0,
+        }
+    }
+    if step.op == "seed" {
+        let model = catalog.model(step.model!)?
+        return ReadNode {
+            id: step.id,
+            operation: .Seed(
+                model.name,
+                if step.binding == "speaker" { Binding.Speaker } else { Binding.Principal },
+            ),
             shape: all_rows(model),
             depth: 0,
         }

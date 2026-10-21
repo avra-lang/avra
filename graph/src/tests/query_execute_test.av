@@ -196,11 +196,16 @@ fn stopped(result: Result<ReadResult, string>) -> bool {
     match result { .Ok(r) -> r.answer is .Exceeded, .Err(_) -> false }
 }
 
-fn asked(mut g: Graph, steps: List<string>, output: string, work: int = 100) -> Result<Json, string> {
-    let plan = match parse(plan(steps.join(","), output, g.catalog.fingerprint, work: work)) {
-        .Ok(j) -> j,
-        .Err(_) -> { fail "plan is not JSON" },
-    }
+fn asked(
+    mut g: Graph,
+    steps: List<string>,
+    output: string,
+    work: int = 100,
+    context: string = "{\"principal\":\"u\",\"question_at_ms\":1}",
+) -> Result<Json, string> {
+    let plan = match parse(
+        plan(steps.join(","), output, g.catalog.fingerprint, work: work, context: context),
+    ) { .Ok(j) -> j, .Err(_) -> { fail "plan is not JSON" } }
     g.dispatch(Json.Obj([field("op", Json.Str("query")), field("plan", plan)]))
 }
 
@@ -299,6 +304,47 @@ fn conflict_is_ambiguous() -> Result<bool, string> {
         answer.member("problems").item(0).member("code").text() == "conflicting_values"
 }
 
+fn mine(mut g: Graph, speaker: string?) -> Result<Json, string> {
+    let named = if speaker == null { "" } else { ",\"speaker\":\"${speaker!}\"" }
+    asked(
+        g,
+        [
+            "{\"id\":\"a\",\"op\":\"seed\",\"model\":\"Person\",\"binding\":\"speaker\"}",
+            step(
+                "b",
+                "follow",
+                "a",
+                "\"property\":\"assignee\",\"direction\":\"in\",\"owner\":\"WorkItem\"",
+            ),
+            step("c", "project", "b", "\"properties\":[\"title\"],\"names\":[\"mine\"]"),
+        ],
+        "c",
+        context: "{\"principal\":\"u\",\"question_at_ms\":1${named}}",
+    )
+}
+
+fn titles(answer: Json) -> string {
+    answer.member("fields").items().map(it.member("value").text() ?? "").join(",")
+}
+
+fn context_seeds_the_question() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    seeded(g)?
+    let ada = mine(g, "p1")?
+    let grace = mine(g, "p2")?
+    let nobody = mine(g, null)?
+    let stranger = mine(g, "p9")?
+    let wrong_kind = mine(g, "w1")?
+    titles(ada) == "One,Two" &&
+        titles(grace) == "Three" &&
+        nobody.member("status").text() == "unknown" &&
+        nobody.member("problems").item(0).member("code").text() == "unbound_context" &&
+        stranger.member("problems").item(0).member("code").text() == "unresolved_context" &&
+        wrong_kind.member("problems").item(0).member("code").text() == "unresolved_context" &&
+        stranger.member("fields").items().is_empty()
+}
+
 fn passed(answer: Result<bool, string>) -> bool {
     answer catch e -> {
         println(e)
@@ -317,6 +363,7 @@ spec "graph read execution" {
         then "the query op answers a contract Answer, abstains and refuses" { passed(answers_over_the_wire()) }
         then "a named projection renames the output; an expectation turns absence into unknown" { passed(named_and_expected()) }
         then "unresolved competing values answer ambiguous with conflicts" { passed(conflict_is_ambiguous()) }
+        then "one question asked by two speakers answers from each speaker, and an unbound or unknown speaker is unknown" { passed(context_seeds_the_question()) }
         then "competing claims stay candidates with no chosen truth" { passed(conflict_stays_open()) }
     }
 }

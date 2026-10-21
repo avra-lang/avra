@@ -1,4 +1,4 @@
-use @avra.graph_contracts.{Budget}
+use @avra.graph_contracts.{Budget, Context}
 use @std.json.{Json}
 use @std.validate.{Value}
 use data.{encoded, before}
@@ -7,7 +7,7 @@ use semantics.{QuantityBinding}
 use query.quantity.{Quantity, Term, Tally, Subject, tally}
 use store.open.{Graph}
 use store.query.{Selection}
-use query.plan.{ReadOnlyPlan, ReadOperation, Comparison, Direction, SourceView}
+use query.plan.{Binding, ReadOnlyPlan, ReadOperation, Comparison, Direction, SourceView}
 
 /// The supports behind one property of one entity, as `explain` reports them.
 export type Evidence = { entity: string, property: string, supports: Json }
@@ -21,7 +21,7 @@ export enum ReadAnswer {
     Count(total: int, rows: List<ReadRow>)
     Sum(total: Quantity, terms: List<Term>, rows: List<ReadRow>)
     Unsummable(code: string, why: string)
-    Unmet(code: string, property: string)
+    Unmet(code: string, detail: string)
     Exceeded(limit: string)
 }
 
@@ -52,11 +52,11 @@ enum Flow {
     Total(count: int, hits: List<Hit>)
     Summed(total: Quantity, terms: List<Term>, hits: List<Hit>)
     Unsummable(code: string, why: string)
-    Unmet(code: string, property: string)
+    Unmet(code: string, detail: string)
 }
 
 /// One execution: the store it reads and the work it has spent so far.
-type Run = { g: Graph, budget: Budget, spent: Cell<int>, exceeded: Cell<string?> }
+type Run = { g: Graph, budget: Budget, context: Context, spent: Cell<int>, exceeded: Cell<string?> }
 
 impl Graph {
     /// Executes an admitted plan over one read snapshot. Conflicting claims
@@ -68,6 +68,7 @@ impl Graph {
         let run = Run {
             g: self,
             budget: plan.budget,
+            context: plan.context,
             spent: Cell.new(0),
             exceeded: Cell.new(unexceeded()),
         }
@@ -81,7 +82,9 @@ impl Run {
     fn walked(plan: ReadOnlyPlan) -> Result<ReadAnswer, string> {
         mut flows: List<Flow> = []
         for node in plan.nodes.slice(0, plan.output + 1) {
-            flows.push(self.evaluated(flows, node.operation)?)
+            let flow = self.evaluated(flows, node.operation)?
+            if flow is .Unmet { return self.answered(flow) }
+            flows.push(flow)
         }
         self.answered(flows[plan.output])
     }
@@ -114,6 +117,7 @@ impl Run {
     fn evaluated(flows: List<Flow>, op: ReadOperation) -> Result<Flow, string> {
         match op {
             .Scan(model) -> Flow.Hits(self.scan(model)?),
+            .Seed(model, binding) -> self.seed(model, binding)?,
             .Filter(input, property, compare, literal) -> Flow.Hits(self.filter(self.rows(flows, input)?, property.name, compare, literal)?),
             .Search(input, property, needle) -> Flow.Hits(self.search(self.rows(flows, input)?, property.name, needle)?),
             .Follow(input, owner, property, direction) -> Flow.Hits(self.follow(self.rows(flows, input)?, owner, property.name, direction)?),
@@ -144,6 +148,27 @@ impl Run {
             known: e.fields.map(it.property),
             proofs: proofs,
             names: [],
+        }
+    }
+
+    /// The entity a context names, or the declared reason it cannot be had.
+    fn seed(model: string, binding: Binding) -> Result<Flow, string> {
+        let bound? = match binding {
+            .Speaker -> self.context.speaker,
+            .Principal -> self.context.principal,
+        } else {
+            return Flow.Unmet("unbound_context", "the request's context names no ${binding.word()}")
+        }
+        self.charge(1)?
+        let found = match self.g.entity(bound) { .Ok(e) -> e.model == model, .Err(_) -> false }
+        if found {
+            Flow.Hits([self.hit(bound, [])?])
+        } else {
+            Flow
+                .Unmet(
+                    "unresolved_context",
+                    "the context's ${binding.word()} is not a ${model} in the graph",
+                )
         }
     }
 
@@ -222,7 +247,7 @@ impl Run {
     fn expect(input: List<Hit>, property: string, reason: string) -> Result<Flow, string> {
         self.charge(input.length)?
         let held = [h.proved(h.id, property) for h in input if h.values(property).any(!(it is .Null))]
-        if held.is_empty() { Flow.Unmet(reason, property) } else { Flow.Hits(held) }
+        if held.is_empty() { Flow.Unmet(reason, "the expected ${property} is absent") } else { Flow.Hits(held) }
     }
 
     fn answered(flow: Flow) -> Result<ReadAnswer, string> {
@@ -231,7 +256,7 @@ impl Run {
             .Total(count, hits) -> ReadAnswer.Count(count, self.rows_of(hits)?),
             .Summed(total, terms, hits) -> ReadAnswer.Sum(total, terms, self.rows_of(hits)?),
             .Unsummable(code, why) -> ReadAnswer.Unsummable(code, why),
-            .Unmet(code, property) -> ReadAnswer.Unmet(code, property),
+            .Unmet(code, detail) -> ReadAnswer.Unmet(code, detail),
         }
     }
 
@@ -247,6 +272,10 @@ impl Run {
         } for p in wanted]
         ReadRow { id: h.id, model: h.model, fields: h.shown(), evidence: evidence }
     }
+}
+
+impl Binding {
+    fn word() -> string { match self { .Speaker -> "speaker", .Principal -> "principal" } }
 }
 
 impl Hit {
