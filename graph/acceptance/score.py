@@ -48,7 +48,7 @@ def utc_ms(text):
 def envelope(source):
     ms = utc_ms(source["received_at"])
     return {
-        "contract": 1,
+        "contract": 2,
         "source": {"observation": source["observation"], "revision": source["revision"]},
         "authored_at_ms": ms, "received_at_ms": ms, "author": source["author"],
         "participants": [], "conversation": source["thread"],
