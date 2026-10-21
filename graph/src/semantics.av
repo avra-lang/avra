@@ -4,7 +4,15 @@ use @std.json.{Json, field}
 /// Identity normalization is explicit and domain-independent. It does not
 /// infer a namespace from a property name or turn display names into keys.
 export enum KeyNormalization { Exact, Trim, AsciiLowerTrim }
-export type IdentityBinding = { namespace: string, path: List<string>, normalization: KeyNormalization = .Exact }
+/// `scoped_by` scopes a key by other properties of the same record: text, or a
+/// reference whose target's own declared keys stand for it. An invoice
+/// number within its issuer is one binding, never a producer-spelled key.
+export type IdentityBinding = {
+    namespace: string,
+    path: List<string>,
+    normalization: KeyNormalization = .Exact,
+    scoped_by: List<List<string>> = [],
+}
 
 export type RelationLabel = { value: string, forward: List<string>, reverse: List<string> = [] }
 export type RelationBinding = {
@@ -47,6 +55,7 @@ impl Semantics {
                 fail "identity namespaces and paths must have unambiguous bindings"
             }
             if !(path_shape(models, owner, identity.path)? is .Text) { fail "an identity key must bind a text property" }
+            identity.scoped(models, owner)?
         }
         if self.relation != null { self.relation!.checked(models, owner)? }
         if self.validity != null { self.validity!.checked(models, owner)? }
@@ -187,7 +196,21 @@ impl ValidityBinding {
 }
 
 impl IdentityBinding {
+    /// Scope paths are distinct text or references to models with keys of
+    /// their own, and no chain of scopes returns to the owner.
+    fn scoped(models: List<Model>, owner: Model) -> Result<bool, string> {
+        if self.scoped_by.length > 4 { fail "an identity has at most four scope paths" }
+        for i, scope in self.scoped_by {
+            if same_path(scope, self.path) || self.scoped_by.slice(0, i).any(same_path(it, scope)) {
+                fail "identity scope paths must be distinct from the key and each other"
+            }
+            scope_checked(models, owner, scope)?
+        }
+        true
+    }
+
     fn describe() -> Json {
+        let scoped = if self.scoped_by.is_empty() { [] } else { [field("scoped_by", Json.Arr([path_document(p) for p in self.scoped_by]))] }
         Json
             .Obj(
                 [
@@ -204,9 +227,41 @@ impl IdentityBinding {
                                 },
                             ),
                     ),
-                ],
+                ]
+                    .concat(scoped),
             )
     }
+}
+
+fn scope_checked(models: List<Model>, owner: Model, scope: List<string>) -> Result<bool, string> {
+    match path_shape(models, owner, scope)? {
+        .Text -> true,
+        .Reference(target) -> {
+            let model? = models.find(it.name == target) else { fail "unknown identity scope target: ${target}" }
+            if model.semantics.identities.is_empty() { fail "an identity scoped by `${target}` needs `${target}` to declare an identity" }
+            if scope_reaches(models, model, owner.name, 0) { fail "identity scopes cannot form a cycle through `${target}`" }
+            true
+        },
+        rest -> { fail "an identity scope must bind text or a reference" },
+    }
+}
+
+/// Whether `model`'s identity scopes lead, through references, to `owner`.
+fn scope_reaches(models: List<Model>, model: Model, owner: string, depth: int) -> bool {
+    if model.name == owner { return true }
+    if depth > 16 { return true }
+    for identity in model.semantics.identities {
+        for scope in identity.scoped_by {
+            let target? = scope_target(models, model, scope) else { continue }
+            let next? = models.find(it.name == target) else { continue }
+            if scope_reaches(models, next, owner, depth + 1) { return true }
+        }
+    }
+    false
+}
+
+fn scope_target(models: List<Model>, model: Model, scope: List<string>) -> string? {
+    match path_shape(models, model, scope) { .Ok(.Reference(target)) -> target, rest -> null }
 }
 
 impl QuantityBinding {

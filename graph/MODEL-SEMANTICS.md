@@ -33,6 +33,15 @@ the metadata expression is not passed to the value decoder as a rule.
   identity unless the application explicitly declares it one. The ASCII
   policy is not Unicode case folding, email canonicalization or phone
   parsing. L01 implements resolution using these declarations.
+  `scoped_by` lists up to four paths that scope the key: text, or a
+  reference whose target declares keys of its own. An invoice number
+  within its issuer is `IdentityBinding { namespace: "invoice", path:
+  ["number"], scoped_by: [["issuer"]] }`. The key is one JSON array of
+  the scope values and the normalized key, so no two splits collide; a
+  reference stands for each declared `[namespace, key]` its target holds,
+  and a target with no key yet leaves the record unkeyed. Scope chains
+  that return to their owner are refused. Producers never spell scoped
+  keys by hand; one that contradicts the declared key is refused.
 - `RelationBinding`: distinct `from`/`to` reference paths and a text `label`
   path. `RelationLabel` maps a stored value to declared forward/reverse
   phrases. Empty label mappings leave an open vocabulary; they do not
@@ -79,3 +88,35 @@ annotation dialect or an instruction to add empty arguments to every model.
 Preserving descriptions above quoted arguments also requires
 `avra-8sb5.11.389`. Both fixes are in this branch and its rebuilt compiler;
 comments need not move away from their normal declaration-leading position.
+
+## Derivations
+
+A derived answer is an ordinary typed fn declared beside the models:
+
+```avra
+use @avra.graph.{derived, Unknown, difference, total, same_unit}
+
+/// The deposit still owed on an invoice.
+@derived
+export fn deposit_top_up(invoice: Invoice, payments: List<Payment>) -> Result<TopUp, Unknown> { … }
+```
+
+Parameters say what a read plan supplies: `T` one row of model `T`,
+`T?` at most one, `List<T>` every row of a plan node, and `string`,
+`int` or `bool` one literal argument. The answer is a registered model,
+or `Result<Model, Unknown>`. The plan wires its inputs, so which payments
+belong to an invoice is the plan's typed `follow`, not a second
+declaration. The engine decodes each row with its model's standard
+decoder (a gap or a competing claim is unknown, never a default), calls
+the fn on one snapshot, checks the output against its model and cites
+every input row's support.
+
+Integer `+` and `-` wrap; derivations use `difference`, `total` and
+`same_unit`, which answer `Unknown` (`overflow`, `mixed_units`) instead.
+`Unknown.known` carries what was established before stopping. No unit is
+converted and no rate is assumed.
+
+The catalog refuses unknown models, duplicate names and dependency cycles
+(a derivation reading, through others, its own output). Each
+derivation's description and code hash join the fingerprint as a
+versioned section; a catalog with none keeps its model-only identity.

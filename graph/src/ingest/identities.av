@@ -1,8 +1,15 @@
-use @avra.graph_contracts.{IdentityKey, Span, ProposedRecord, ExtractionRequest, ExtractionResult}
+use @avra.graph_contracts.{
+    IdentityKey,
+    Span,
+    ProposedRecord,
+    ProposedField,
+    ExtractionRequest,
+    ExtractionResult,
+}
 use @std.validate.{Value, Entry}
 use @std.text.{ascii_lower}
 use data.{as_value, encoded, before}
-use semantics.{IdentityBinding, KeyNormalization}
+use semantics.{IdentityBinding, KeyNormalization, path_shape}
 use schema.{Model}
 use ingest.extraction.{admit_extraction}
 use ingest.envelope.{source_document}
@@ -32,11 +39,29 @@ type GroupLink = { id: int, decision: ExactLink, matches: List<IdentityMatch> }
 /// Explicit application policy, not email/phone/Unicode guessing.
 export fn normalized_key(binding: IdentityBinding, raw: string) -> Result<IdentityKey, string> {
     if raw.bytes().text() == null || binding.namespace.bytes().text() == null { fail "identity keys must be valid UTF-8" }
-    let key = match binding.normalization {
+    bounded_key(binding, normalized_text(binding, raw))
+}
+
+/// A scoped key: each scope value and the key, as one JSON array, so no two
+/// scope/key splits spell the same text.
+export fn scoped_key(binding: IdentityBinding, raw: string, scopes: List<Value>) -> Result<
+    IdentityKey,
+    string,
+> {
+    let key = normalized_key(binding, raw)?
+    if scopes.is_empty() { return key }
+    bounded_key(binding, encoded(Value.List(scopes.concat([Value.Text(key.key)]))))
+}
+
+fn normalized_text(binding: IdentityBinding, raw: string) -> string {
+    match binding.normalization {
         .Exact -> raw,
         .Trim -> raw.trim(),
         .AsciiLowerTrim -> ascii_lower(raw.trim()),
     }
+}
+
+fn bounded_key(binding: IdentityBinding, key: string) -> Result<IdentityKey, string> {
     if binding.namespace.is_empty() ||
         binding.namespace.bytes().length > 128 ||
         contains_nul(binding.namespace) ||
@@ -69,10 +94,10 @@ fn at_path(value: Value, path: List<string>) -> Value? {
 
 fn declared_keys(model: Model, r: ProposedRecord) -> Result<List<DeclaredKey>, string> {
     mut keys: List<DeclaredKey> = []
-    let value = Value.Map([Entry { key: f.property, value: f.value.value } for f in r.fields])
+    let value = record_value(r)
     for binding in model.semantics.identities {
-        let field? = r.fields.find(it.property == binding.path[0]) else { continue }
-        if field.polarity != "affirmed" || field.modality != "asserted" { continue }
+        if !binding.scoped_by.is_empty() { continue }
+        let field? = asserted(r, binding.path) else { continue }
         let raw = at_path(value, binding.path)
         if raw == null || raw! is .Null { continue }
         let text = match raw! {
@@ -83,7 +108,7 @@ fn declared_keys(model: Model, r: ProposedRecord) -> Result<List<DeclaredKey>, s
         for proposed in r.identities {
             if proposed.identity.namespace == binding.namespace &&
                 !same_key(normalized_key(binding, proposed.identity.key)?, key) {
-                fail "an identity proposal contradicts its declared field evidence"
+                fail contradicted_identity()
             }
         }
         keys
@@ -97,6 +122,36 @@ fn declared_keys(model: Model, r: ProposedRecord) -> Result<List<DeclaredKey>, s
             )
     }
     keys
+}
+
+/// The supplied affirmed and asserted field a path starts at.
+fn asserted(r: ProposedRecord, path: List<string>) -> ProposedField? {
+    let field? = r.fields.find(it.property == path[0]) else { return null }
+    if field.polarity != "affirmed" || field.modality != "asserted" { return null }
+    field
+}
+
+/// The text at a path of an asserted field; absent when not asserted.
+fn text_at(r: ProposedRecord, path: List<string>) -> Result<string?, string> {
+    let raw = if asserted(r, path) == null { Value.Null } else { at_path(record_value(r), path) ?? Value.Null }
+    let text: string? = match raw {
+        .Null -> null,
+        .Text(s) -> s,
+        rest -> { fail "a declared identity field is not text" },
+    }
+    text
+}
+
+fn record_value(r: ProposedRecord) -> Value { Value.Map([Entry { key: f.property, value: f.value.value } for f in r.fields]) }
+
+/// Every combination of one value per scope, within the key budget.
+fn combinations(choices: List<List<Value>>) -> Result<List<List<Value>>, string> {
+    mut made: List<List<Value>> = [[]]
+    for options in choices {
+        made = [prefix.concat([o]) for prefix in made for o in options]
+        if made.length > 16 { fail "a scoped identity exceeds its key-combination budget" }
+    }
+    made
 }
 
 /// Connected components of shared declared keys, without merging graph ids.
@@ -135,7 +190,10 @@ impl Graph {
         if encoded(as_value(source_document(actual))) != encoded(as_value(source_document(pair.request.input))) {
             fail "identity linking needs the exact current admitted source envelope"
         }
-        let records = [KeyedRecord { proposal: r, keys: declared_keys(self.catalog.model(r.model)?, r)? } for r in pair.result.records]
+        let records = self
+            .scoped(
+                [KeyedRecord { proposal: r, keys: declared_keys(self.catalog.model(r.model)?, r)? } for r in pair.result.records],
+            )?
         if records.fold(0, (n: int, r: KeyedRecord) -> n + r.keys.length) > 2048 {
             fail "identity linking exceeds its declared-key budget"
         }
@@ -181,6 +239,84 @@ impl Graph {
     }
 }
 
+impl Graph {
+    /// Adds scoped keys in rounds: a scope over a reference waits until the
+    /// referenced record has keys, so chains settle within one round each.
+    fn scoped(records: List<KeyedRecord>) -> Result<List<KeyedRecord>, string> {
+        mut current = records
+        for _round in 0..records.length + 1 {
+            let next = [r with { keys: r.keys.concat(self.scoped_keys(current, r)?) } for r in current]
+            if next
+                .all(
+                    (r: KeyedRecord) -> r.keys.length == current.find(it.proposal.local_id == r.proposal.local_id)!.keys.length,
+                ) {
+                return next
+            }
+            current = next
+        }
+        current
+    }
+
+    /// The scoped keys a record can name now and does not hold yet.
+    fn scoped_keys(records: List<KeyedRecord>, r: KeyedRecord) -> Result<List<DeclaredKey>, string> {
+        let model = self.catalog.model(r.proposal.model)?
+        mut keys: List<DeclaredKey> = []
+        for binding in model.semantics.identities {
+            if binding.scoped_by.is_empty() ||
+                r.keys.any(it.identity.namespace == binding.namespace) { continue }
+            let raw? = text_at(r.proposal, binding.path)? else { continue }
+            let choices = [self.scope_values(records, model.name, r.proposal, binding, scope)? for scope in binding.scoped_by]
+            if choices.any(it.is_empty()) { continue }
+            let made = [scoped_key(binding, raw, scopes)? for scopes in combinations(choices)?]
+            for proposed in r.proposal.identities {
+                if proposed.identity.namespace == binding.namespace &&
+                    !made.any(same_key(it, proposed.identity)) {
+                    fail contradicted_identity()
+                }
+            }
+            let fields = [asserted(r.proposal, p) for p in [binding.path].concat(binding.scoped_by)]
+            for key in made {
+                keys
+                    .push(
+                        DeclaredKey {
+                            identity: key,
+                            path: binding.path,
+                            spans: [s for f in fields for s in f?.spans ?? []],
+                            frame: fields[0]?.frame,
+                        },
+                    )
+            }
+        }
+        keys
+    }
+
+    /// What one scope path stands for: its normalized text, or each declared
+    /// key its referenced record holds. Nothing yet means no key yet.
+    fn scope_values(
+        records: List<KeyedRecord>,
+        owner: string,
+        r: ProposedRecord,
+        binding: IdentityBinding,
+        scope: List<string>,
+    ) -> Result<List<Value>, string> {
+        let text? = text_at(r, scope)? else { return [] }
+        let owner_model = self.catalog.model(owner)?
+        if !(path_shape(self.catalog.models, owner_model, scope)? is .Reference) {
+            return [Value.Text((normalized_key(binding, text)?).key)]
+        }
+        let keys = match records.find(it.proposal.local_id == text) {
+            local? -> local.keys.map(it.identity)
+            null -> [IdentityKey { namespace: a.namespace, key: a.external_key } for a in self.aliases(text)?]
+        }
+        let target = match path_shape(self.catalog.models, owner_model, scope)? {
+            .Reference(name) -> self.catalog.model(name)?,
+            rest -> { fail "an identity scope lost its reference shape" },
+        }
+        let declared = target.semantics.identities.map(it.namespace)
+        [Value.List([Value.Text(k.namespace), Value.Text(k.key)]) for k in keys if declared.contains(k.namespace)]
+    }
+}
+
 fn resolved_group(
     records: List<KeyedRecord>,
     groups: List<int>,
@@ -204,3 +340,5 @@ fn resolved_group(
     }
     GroupLink { id: groups[index], decision: decision, matches: matches }
 }
+
+fn contradicted_identity() -> string { "an identity proposal contradicts its declared field evidence" }

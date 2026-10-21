@@ -1,0 +1,295 @@
+use derive.model.{model}
+use semantics.{Semantics, IdentityBinding}
+use schema.{Ref, Registration, Property, Shape}
+use catalog.{Catalog}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.identity.{Identity}
+use ingest.identities.{LinkedExtraction, scoped_key}
+use ingest.envelope.{source_document}
+use @avra.graph_contracts.{SourceEnvelope, SourceRef}
+use @std.json.{Json, to_text}
+use @std.validate.{Value}
+
+@model(quote { Semantics { identities: [IdentityBinding { namespace: "registry", path: ["code"], normalization: .AsciiLowerTrim }] } })
+type Issuer = { name: string, code: string? }
+
+@model(quote { Semantics { identities: [IdentityBinding {
+    namespace: "voucher",
+    path: ["number"],
+    normalization: .Trim,
+    scoped_by: [["issuer"]],
+}] } })
+type Voucher = { number: string, issuer: Ref<Issuer>, amount: int? }
+
+@model(quote { Semantics { identities: [IdentityBinding { namespace: "lot", path: ["serial"], scoped_by: [["batch"]] }] } })
+type Lot = { serial: string, batch: string }
+
+@model
+type Note = { text: string }
+
+fn registrations() -> List<Registration> {
+    [
+        Registration { make: Issuer_graph_model },
+        Registration { make: Voucher_graph_model },
+        Registration { make: Lot_graph_model },
+        Registration { make: Note_graph_model },
+    ]
+}
+
+const content = "Bill B-7 from Acme; bill B-7 from Zenith; lot x/y z"
+const version = "{\"producer\":\"encoder\",\"code\":\"code:1\",\"model\":\"weights:1\"}"
+
+fn source() -> SourceEnvelope {
+    SourceEnvelope {
+        contract: 1,
+        source: SourceRef { observation: "source:1", revision: 1 },
+        authored_at_ms: null,
+        received_at_ms: 1,
+        author: "unlinked:author",
+        media_type: "text/plain",
+        content: content,
+    }
+}
+
+fn quoted(text: string) -> string { to_text(Json.Str(text)) }
+
+fn field(property: string, value: string) -> string {
+    "{\"property\":${quoted(property)},\"value\":${value},\"spans\":[{\"start\":0,\"end\":${content.bytes().length},\"text\":${quoted(content)}}],\"polarity\":\"affirmed\",\"modality\":\"asserted\"}"
+}
+
+fn record(id: string, model: string, fields: List<string>, extra: string = "") -> string {
+    "{\"local_id\":${quoted(id)},\"model\":${quoted(model)},\"fields\":[${fields.join(",")}]${extra}}"
+}
+
+fn issuer(id: string, code: string?) -> string {
+    record(
+        id,
+        "Issuer",
+        [field("name", quoted(id))]
+            .concat(if code == null { [] } else { [field("code", quoted(code!))] }),
+    )
+}
+
+fn bill(id: string, number: string, issuer: string, extra: string = "") -> string {
+    record(id, "Voucher", [field("number", quoted(number)), field("issuer", quoted(issuer))], extra)
+}
+
+fn linked(g: Graph, records: List<string>, candidates: string = "[]") -> Result<
+    LinkedExtraction,
+    string,
+> {
+    let s = source()
+    let request = "{\"contract\":1,\"request\":\"req:1\",\"input\":${to_text(source_document(s))},\"catalog\":{\"fingerprint\":\"${g.catalog.fingerprint}\",\"descriptor\":${g.catalog.document}},\"extractor\":${version},\"scope\":\"all\",\"candidates\":${candidates}}"
+    let response = "{\"contract\":1,\"request\":\"req:1\",\"source\":{\"observation\":\"source:1\",\"revision\":1},\"schema\":\"${g.catalog.fingerprint}\",\"extractor\":${version},\"status\":\"complete\",\"records\":[${records.join(",")}]}"
+    g.link_exact(request, response)
+}
+
+fn graph() -> Result<Graph, string> {
+    let g = Graph.memory(registrations())?
+    g.ingest(to_text(source_document(source())))?
+    g
+}
+
+fn bill_binding(g: Graph) -> Result<IdentityBinding, string> { (g.catalog.model("Voucher")?).semantics.identities[0] }
+
+fn issuer_scope(code: string) -> Value { Value.List([Value.Text("registry"), Value.Text(code)]) }
+
+fn keyed(result: LinkedExtraction, id: string) -> List<string> {
+    (result.records.find(it.proposal.local_id == id)?.keys ?? []).map(it.identity.key)
+}
+
+fn key_text(result: LinkedExtraction, id: string) -> string { keyed(result, id).join("\n") }
+
+fn scoped_by_local_issuer() -> Result<bool, string> {
+    let g = graph()?
+    defer { let _ = g.close() }
+    let result = linked(g, [issuer("acme", " ACME "), bill("b7", " B-7 ", "acme")])?
+    let expected = scoped_key(bill_binding(g)?, "B-7", [issuer_scope("acme")])?
+    key_text(result, "b7") == expected.key && expected.key == "[[\"registry\",\"acme\"],\"B-7\"]"
+}
+
+fn issuers_keep_numbers_apart() -> Result<bool, string> {
+    let g = graph()?
+    defer { let _ = g.close() }
+    let result = linked(
+        g,
+        [
+            issuer("acme", "acme"),
+            issuer("zenith", "zenith"),
+            bill("b1", "B-7", "acme"),
+            bill("b2", "B-7", "zenith"),
+        ],
+    )?
+    let first = result.records.find(it.proposal.local_id == "b1")!
+    let second = result.records.find(it.proposal.local_id == "b2")!
+    first.decision is .New &&
+        second.decision is .New &&
+        key_text(result, "b1") != key_text(result, "b2")
+}
+
+fn unkeyed_scope_waits() -> Result<bool, string> {
+    let g = graph()?
+    defer { let _ = g.close() }
+    let result = linked(g, [issuer("acme", null), bill("b7", "B-7", "acme")])?
+    keyed(result, "b7").is_empty() &&
+        result.records.find(it.proposal.local_id == "b7")!.decision is .Unresolved
+}
+
+fn existing_scope_and_record() -> Result<bool, string> {
+    let g = graph()?
+    defer { let _ = g.close() }
+    let key = scoped_key(bill_binding(g)?, "B-7", [issuer_scope("acme")])?
+    g
+        .publish(
+            Publication {
+                id: "seed:1",
+                producer: "encoder",
+                scope: "all",
+                input: "source:1",
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: [
+                    Record {
+                        id: "entity:acme",
+                        model: "Issuer",
+                        value: Issuer { name: "Acme", code: "acme" }.graph_value(),
+                        identities: [Identity { namespace: "registry", external_key: "acme" }],
+                    },
+                    Record {
+                        id: "entity:b7",
+                        model: "Voucher",
+                        value: Voucher { number: "B-7", issuer: Ref { id: "entity:acme" }, amount: null }
+                            .graph_value(),
+                        identities: [Identity { namespace: "voucher", external_key: key.key }],
+                    },
+                ],
+            },
+        )?
+    let candidate = "{\"entity\":\"entity:acme\",\"model\":\"Issuer\",\"label\":\"Acme\",\"score\":1.0}"
+    let result = linked(g, [bill("b7", "B-7", "entity:acme")], "[${candidate}]")?
+    match result.records[0].decision { .Existing(found) -> found == "entity:b7", rest -> false }
+}
+
+fn text_scopes_are_injective() -> Result<bool, string> {
+    let g = graph()?
+    defer { let _ = g.close() }
+    let lot = (id: string, batch: string, serial: string) -> record(
+        id,
+        "Lot",
+        [field("batch", quoted(batch)), field("serial", quoted(serial))],
+    )
+    let result = linked(g, [lot("l1", "x", "y/z"), lot("l2", "x/y", "z")])?
+    keyed(result, "l1").length == 1 && key_text(result, "l1") != key_text(result, "l2")
+}
+
+fn contradicting_proposal() -> Result<bool, string> {
+    let g = graph()?
+    defer { let _ = g.close() }
+    let claimed = ",\"identities\":[{\"identity\":{\"namespace\":\"voucher\",\"key\":\"Acme/B-7\"},\"spans\":[{\"start\":0,\"end\":4,\"text\":\"Bill\"}]}]"
+    match linked(g, [issuer("acme", "acme"), bill("b7", "B-7", "acme", claimed)]) {
+        .Ok(_) -> false,
+        .Err(m) -> m.contains("contradicts"),
+    }
+}
+
+fn edited(model: string, binding: IdentityBinding) -> Result<Catalog, string> {
+    let registrations = [Registration {
+        make: () -> {
+            let m = r.make()
+            if m.name == model { m with { semantics: Semantics { identities: [binding] } } } else { m }
+        },
+    } for r in registrations()]
+    Catalog.collected(registrations)
+}
+
+fn refused_scopes() -> Result<bool, string> {
+    let base = IdentityBinding { namespace: "voucher", path: ["number"] }
+    edited("Voucher", base with { scoped_by: [["amount"]] }) is .Err &&
+        edited("Voucher", base with { scoped_by: [["number"]] }) is .Err &&
+        edited("Voucher", base with { scoped_by: [["issuer"], ["issuer"]] }) is .Err &&
+        edited("Voucher", base with { scoped_by: [["missing"]] }) is .Err &&
+        edited(
+            "Issuer",
+            IdentityBinding { namespace: "registry", path: ["code"], scoped_by: [["name"]] },
+        ) is .Ok
+}
+
+fn unkeyed_target_refused() -> Result<bool, string> {
+    let plain = [Registration {
+        make: () -> {
+            let m = r.make()
+            if m.name == "Issuer" { m with { semantics: Semantics {} } } else { m }
+        },
+    } for r in registrations()]
+    Catalog.collected(plain) is .Err
+}
+
+fn cycle_refused() -> Result<bool, string> {
+    // An issuer keyed within its own bill, while the bill is keyed within the issuer.
+    let cyclic = [Registration {
+        make: () -> {
+            let m = r.make()
+            if m.name == "Issuer" {
+                m with { properties: m.properties.concat([home()]), semantics: Semantics {
+                    identities: [
+                        IdentityBinding {
+                            namespace: "registry",
+                            path: ["name"],
+                            scoped_by: [["home"]],
+                        },
+                    ],
+                } }
+            } else {
+                m
+            }
+        },
+    } for r in registrations()]
+    Catalog.collected(cyclic) is .Err
+}
+
+fn home() -> Property {
+    Property {
+        name: "home",
+        shape: Shape.Reference("Voucher"),
+        description: "",
+        rules: [],
+        default_source: null,
+    }
+}
+
+fn issuer_scope_text() -> string { "\"scoped_by\":[[\"issuer\"]]" }
+
+fn scope_identity() -> Result<bool, string> {
+    let c = Catalog.collected(registrations())?
+    let unscoped = edited(
+        "Voucher",
+        IdentityBinding { namespace: "voucher", path: ["number"], normalization: .Trim },
+    )?
+    c.fingerprint != unscoped.fingerprint &&
+        c.document.contains(issuer_scope_text()) &&
+        !unscoped.document.contains(issuer_scope_text())
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "identities scoped by other properties" {
+    given "issuer-scoped bill numbers and batch-scoped serials" {
+        then "a local issuer's declared key scopes its bill's number" { passed(scoped_by_local_issuer()) }
+        then "one number under two issuers names two records" { passed(issuers_keep_numbers_apart()) }
+        then "an issuer with no key leaves its bill unkeyed, not guessed" { passed(unkeyed_scope_waits()) }
+        then "an existing issuer's alias scopes a key that finds the stored bill" { passed(existing_scope_and_record()) }
+        then "scope and key boundaries cannot be moved into each other" { passed(text_scopes_are_injective()) }
+        then "a producer-spelled key contradicting the scoped key is refused" { passed(contradicting_proposal()) }
+        then "scopes are distinct text or references, never numbers or the key" { passed(refused_scopes()) }
+        then "a reference scope needs a target with its own key" { passed(unkeyed_target_refused()) }
+        then "scope chains cannot return to their owner" { passed(cycle_refused()) }
+        then "scopes join the catalog identity; unscoped bindings keep theirs" { passed(scope_identity()) }
+    }
+}
