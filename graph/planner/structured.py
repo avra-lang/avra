@@ -123,7 +123,7 @@ def found_in_values(search, words, models):
             continue
         head, _, value = p["text"].partition(": ")
         model, _, prop = head.partition(" ")
-        if model not in models or not any(q["name"] == prop and base_shape(q["shape"]) == "string" and "enum" not in q
+        if model not in models or not any(q["name"] == prop and base_shape(q["shape"]) == "string" and not q.get("enum")
                                           for q in models[model]["properties"]):
             continue
         for w in sorted(words, key=lambda w: (-len(w), w)):
@@ -237,14 +237,14 @@ def filtered(chooser, trail, model, var, out, question):
     relation = ((model.get("semantics") or {}).get("relation")) or {}
     label = relation.get("label") or []
     props = {p["name"]: p for p in model["properties"]}
-    if len(label) == 1 and "enum" in props.get(label[0], {}):
+    if len(label) == 1 and props.get(label[0], {}).get("enum"):
         values = props[label[0]]["enum"]
         words = {l["value"]: l.get("forward", []) for l in relation.get("labels", [])}
         options = [f"{v} ({', '.join(words.get(v, [v]))})" for v in values] + ["any of them"]
         pick = best(chooser, trail, f"Which {label[0]} does the question mean?", options)
         if pick < len(values):
             out.where.append(f"{var}.{label[0]} = {quoted(values[pick])}")
-    texts = [p for p in model["properties"] if base_shape(p["shape"]) == "string" and "enum" not in p
+    texts = [p for p in model["properties"] if base_shape(p["shape"]) == "string" and not p.get("enum")
              and p["name"] not in label]
     words = topic_words(question)
     if not texts or not words:

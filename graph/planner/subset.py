@@ -459,5 +459,5 @@ def check_condition(cond, models, labels, first, params):
     expected = {"string": "text", "integer": "number", "number": "number", "boolean": "bool"}.get(shape)
     if expected != kind:
         raise Refusal("syntax", f"{labels[var]}.{name} is {shape}, compared with a {kind} literal")
-    if cond["kind"] == "compare" and "enum" in p and value not in p["enum"]:
+    if cond["kind"] == "compare" and p.get("enum") and value not in p["enum"]:
         raise Refusal("syntax", f"{labels[var]}.{name} is one of {', '.join(p['enum'])}; {value!r} is not")

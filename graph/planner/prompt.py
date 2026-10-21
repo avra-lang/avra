@@ -94,7 +94,7 @@ def render_schema(schema):
             target = reference_target(p["shape"])
             if target:
                 text = f"  .{p['name']} -> (:{target})"
-            elif "enum" in p:
+            elif p.get("enum"):
                 text = f"  .{p['name']}: one of " + ", ".join(f"'{v}'" for v in p["enum"])
                 if label_path == [p["name"]]:
                     synonyms = [f"'{w}' = '{v}'" for v, ws in words.items() for w in ws]
