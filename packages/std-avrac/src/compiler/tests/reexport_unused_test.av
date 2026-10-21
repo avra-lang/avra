@@ -1,0 +1,31 @@
+use @std.avrac.testing.{test_workspace}
+use compiler.host.{memory_host}
+use core.{At, StmtId}
+
+fn unused(main: string) -> List<string> {
+    let ws = test_workspace(
+        memory_host(
+            {
+                "/w/src/main.av": main,
+                "/w/src/lib.av": "export fn helper() -> int { 1 }\nexport fn other() -> int { 2 }\n",
+            },
+            ["/w/src/main.av", "/w/src/lib.av"],
+        ),
+        "/w",
+    )
+    let a = ws.program("/w/src/main.av").entry_file()!
+    let u = a.view.store.stmt_ids().find((s: StmtId) -> a.view.store.stmt(s) is .Use)!
+    a.code_at(At.Stmt(u)).unused_imports()
+}
+
+spec "compiler/references — a re-export is a public use" {
+    given "a facade whose own code never calls its imported functions" {
+        then "an exported binding is retained without a local caller" { unused("export use lib.{helper}\n1\n").is_empty() }
+        then "an exported alias is retained without a local caller" { unused("export use lib.{helper as public_helper}\n1\n").is_empty() }
+        then "every name on an exported use line stays public" { unused("export use lib.{helper, other}\n1\n").is_empty() }
+        then "a private unused import is still diagnosed" {
+            let dead = unused("use lib.{helper}\n1\n")
+            dead.length == 1 && dead.first() == "helper"
+        }
+    }
+}
