@@ -24,6 +24,7 @@ SPAN_THRESHOLD = 0.4
 ACCEPT = 0.5
 MARGIN = 0.5
 MAX_OPTIONS = 26
+GENERATE_BUDGET = 4096
 ABSTAIN = object()
 SOCKET = os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
 THIRD_PERSON = re.compile(r"\b(she|She|he|He|her|Her|him|Him|they|They|them|Them)\b")
@@ -247,12 +248,19 @@ class Scorer:
             out[len(options) + j] = final[len(winners) + j]
         return out
 
-    def generate(self, messages, max_tokens):
-        """Greedy text for a chat; the extraction prefix cache is untouched."""
-        from mlx_lm import generate
+    def generate(self, messages, max_tokens, stop=()):
+        """Greedy text for a chat, ended before the first stop string; the
+        extraction prefix cache is untouched."""
+        from mlx_lm import stream_generate
 
         prompt = self.tok.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
-        return generate(self.model, self.tok, prompt, max_tokens=max(1, min(max_tokens, 4096)), verbose=False)
+        text = ""
+        for part in stream_generate(self.model, self.tok, prompt, max_tokens=max(1, min(max_tokens, GENERATE_BUDGET))):
+            text += part.text
+            cut = min((text.find(s) for s in stop if s and s in text), default=-1)
+            if cut >= 0:
+                return text[:cut]
+        return text
 
     def render(self, body):
         return self.tok.apply_chat_template([{"role": "user", "content": body}], add_generation_prompt=True, tokenize=False)
@@ -890,7 +898,7 @@ def received(conn):
 def answered(body, models):
     """A generate op's text, or an extraction's result and log."""
     if body.get("op") == "generate":
-        return {"text": models.llm.generate(body["messages"], int(body.get("max_tokens", 256)))}
+        return {"text": models.llm.generate(body["messages"], int(body.get("max_tokens", GENERATE_BUDGET)), [str(s) for s in body.get("stop", [])])}
     if body.get("op") == "choose":
         models.llm.source, models.llm.cache = "", None
         return {"p": models.llm.choose(body["context"], body["question"], body["options"])}
@@ -902,7 +910,8 @@ def answered(body, models):
 def serve():
     """A local Unix-socket service, served in order: one JSON line in, one
     JSON line out, per connection. `{"op":"generate","messages":[…],
-    "max_tokens":n}` answers `{"text":…}` (greedy); `{"op":"choose","context","question","options"}` answers `{"p":[…]}`;
+    "max_tokens":n,"stop":[…]}` answers `{"text":…}` (greedy, ended before
+    the first stop string); `{"op":"choose","context","question","options"}` answers `{"p":[…]}`;
     `{"request":…}` answers an extraction. A failure answers `{"error":…}`."""
     import socket
 

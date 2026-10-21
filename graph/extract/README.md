@@ -18,7 +18,7 @@ choice about one source reuses the source text as a cached KV prefix
 (`--no-prefix` turns it off).
 
 The socket speaks one JSON line in, one out, per connection:
-`{"op":"generate","messages":[…],"max_tokens":n}` answers `{"text":…}`
+`{"op":"generate","messages":[…],"max_tokens":n,"stop":[…]}` answers `{"text":…}`, ended before the first stop string
 (greedy), so other local tools share the one resident model; `{"request":…}`
 answers an extraction; a failure answers `{"error":…}`. An antecedent links only with a 0.5 margin;
 it becomes a new entity only when no candidate is plausible, else abstains.
