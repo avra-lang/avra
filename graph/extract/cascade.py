@@ -662,6 +662,9 @@ class Cascade:
         optional = [] if required(p) else ["not stated"]
         if kind == "text":
             v = found.get(name)
+            if v and self.named(a + v["start"], a + v["end"]):
+                log(f"skip {model}.{name}: {v['text']!r} names an entity, not text")
+                v = None
             if v and v.get("confidence", 0) >= SPAN_THRESHOLD:
                 return self.field(name, v["text"], [(a + v["start"], a + v["end"])], score=v["confidence"])
             if not required(p):
@@ -703,6 +706,10 @@ class Cascade:
             x, y = nums[k]
             return self.field(name, int(self.t.s[x:y].replace(",", "")), [(x, y)], score=pr[k])
         return None
+
+    def named(self, x, y):
+        """Whether a span is exactly an entity mention the cascade kept."""
+        return any(m["record"] and m["start"] == x and m["end"] == y for m in self.mentions)
 
     def clauses(self, a, b):
         """Candidate value spans: the sentence and its comma/conjunction parts."""
