@@ -8,9 +8,7 @@
 //! (assembly + dispatch), coherence.av (feature/grammar agreement).
 use core.{
     ExprId,
-    cover_of,
     StmtId,
-    Span,
     TypeRef,
     Type,
     TypeId,
@@ -58,51 +56,9 @@ export enum LangNode {
     NVariant(variant: Variant)
 }
 
-/// One builder registration: the name grammar text calls, the fn
-/// that answers it, the payloads the model declares for the node it
-/// builds — what lets its body ask by NAME instead of by index — and the
-/// payload that ANCHORS it when one is marked.
-export type BuilderRow = { name: string, build: fn(mut Builder) -> Result<LangNode, string>, payloads: List<Field> = [], anchor: string? = null }
-
-impl LangNode {
-    /// The extent the built value occupies: the span the arena holds for
-    /// a node, and the record's own for a value carried as data. A
-    /// variant with no single written extent answers null.
-    fn extent(store: SyntaxArena) -> Span? {
-        match self {
-            .NExpr(id) -> store.expr_span(id),
-            .NStmt(id) -> store.stmt_span(id),
-            .NPat(id) -> store.pat_span(id),
-            .NType(written) -> written.span,
-            .NParam(param) -> store.param_id_span(param.id),
-            .NVariant(variant) -> variant.span,
-            .NMark(mark) -> mark.span,
-            .NArm(arm) -> arm_extent(store, arm),
-            .NCompClause(clause) -> clause_extent(store, clause),
-            .NCases(cases) -> cover_of([c.span! for c in cases if c.span != null]),
-        }
-    }
-}
-
-/// An arm's extent: a pattern's start to its value's end.
-fn arm_extent(store: SyntaxArena, arm: Arm) -> Span? {
-    let start: Span? = if arm.pats.is_empty() { null } else { store.pat_span(arm.pats[0]) }
-    let end: Span? = store.expr_span(arm.value)
-    let from? = start else { return end }
-    from.cover(end ?? from)
-}
-
-/// A comprehension clause's extent: its head's source through its `hi`, or
-/// its filter's condition.
-fn clause_extent(store: SyntaxArena, clause: CompClause) -> Span? {
-    match clause {
-        .Head(_, _, source, hi) -> {
-            let from? = store.expr_span(source) else { return null }
-            from.cover(store.expr_span(hi ?? source) ?? from)
-        },
-        .Filter(cond) -> store.expr_span(cond),
-    }
-}
+/// One builder registration: the name grammar text calls, and the fn
+/// that answers it.
+export type BuilderRow = { name: string, build: fn(mut Builder) -> Result<LangNode, string>, payloads: List<Field> = [] }
 
 /// A keyword's own remedy when it is written as a NAME — the
 /// feature that claims the word says what to write instead.

@@ -2,7 +2,6 @@
 //! world, and its methods are the whole vocabulary a feature needs.
 use core.{
     ArenaMarks,
-    cover_of,
     SyntaxArena,
     void_ref,
     Means,
@@ -43,7 +42,7 @@ use grammar.{Token}
 /// matched, and the source being parsed — a template keeps its
 /// runs of source as its printing projection. Builders read
 /// arguments and make nodes through this.
-export type Builder = { store: SyntaxArena, args: List<Captured<Token, LangNode>>, span: Span?, text: string = "", words: BlockWords = BlockWords {}, payloads: List<Field> = [], anchor: string? = null }
+export type Builder = { store: SyntaxArena, args: List<Captured<Token, LangNode>>, span: Span?, text: string = "", words: BlockWords = BlockWords {}, payloads: List<Field> = [] }
 
 /// A sublanguage the file imports: its block word, its grammar
 /// readied, and the file whose fns its actions name.
@@ -217,12 +216,6 @@ impl Slots for Builder {
         if !self.present_of(label)? { return .Ok(false) }
         .Ok(self.text_of(label)? != "false")
     }
-
-    /// The span the payload `label` was written at: the span of the
-    /// token it captured, or of the node its rule built.
-    fn at_of(label: string) -> Result<Span?, string> {
-        .Ok(extent_of_run(list_at(self.args, self.slot_of(label)?), self.store))
-    }
 }
 
 impl Builder {
@@ -328,11 +321,11 @@ impl Builder {
         items.slice(0, at).concat([self.store.alloc_stmt(Stmt.ExprStmt(node), span)])
     }
 
-    /// A new pattern node, at the span its anchor names or the matched
-    /// branch's. A `@facet` field has no pattern side table, so it is
-    /// refused here rather than silently dropped.
+    /// A new pattern node, spanning the matched branch. A `@facet`
+    /// field has no pattern side table, so it is refused here rather
+    /// than silently dropped.
     fn make_pat(p: Pat) -> Result<LangNode, string> {
-        let f? = self.payloads.find(facet_table(it) != null) else { return .Ok(LangNode.NPat(self.store.alloc_pat(p, self.node_span()))) }
+        let f? = self.payloads.find(facet_table(it) != null) else { return .Ok(LangNode.NPat(self.store.alloc_pat(p, self.span))) }
         .Err(facet_not_a_pattern(f.name))
     }
 
@@ -346,11 +339,11 @@ impl Builder {
         .Ok(LangNode.NCompClause(c))
     }
 
-    /// A new statement node, at the span its anchor names or the matched
-    /// branch's. A `@facet` field the rule's payload carries is written to
-    /// its side table here, keyed by the node just allocated.
+    /// A new statement node, spanning the matched branch. A `@facet`
+    /// field the rule's payload carries is written to its side table
+    /// here, keyed by the node just allocated.
     fn make_stmt(s: Stmt) -> Result<LangNode, string> {
-        let id = self.store.alloc_stmt(s, self.node_span())
+        let id = self.store.alloc_stmt(s, self.span)
         self.faceted_stmt(id)
     }
 
@@ -367,11 +360,10 @@ impl Builder {
         .Ok(LangNode.NStmt(id))
     }
 
-    /// A new expression node, at the span its anchor names or the matched
-    /// branch's, its facet fields written to their side tables like a
-    /// statement's.
+    /// A new expression node, spanning the matched branch, its facet
+    /// fields written to their side tables like a statement's.
     fn make_expr(e: Expr) -> Result<LangNode, string> {
-        let id = self.store.alloc_expr(e, self.node_span())
+        let id = self.store.alloc_expr(e, self.span)
         for f in self.payloads {
             let side? = facet_table(f) else { continue }
             if !self.flag_of(f.name)? { continue }
@@ -381,19 +373,10 @@ impl Builder {
         .Ok(LangNode.NExpr(id))
     }
 
-    /// A new expression node at its anchor's span or the matched
-    /// branch's, as its id — for a builder that nests one node inside
-    /// another.
+    /// A new expression node spanning the matched branch, as its id
+    /// — for a builder that nests one node inside another.
     fn expr_node(e: Expr) -> ExprId {
-        self.store.alloc_expr(e, self.node_span())
-    }
-
-    /// The span a node this rule builds wears: its ANCHOR payload's
-    /// written span, or the branch's when nothing anchors it. Read once
-    /// per build, from the label the declaration marked.
-    fn node_span() -> Span? {
-        let label? = self.anchor else { return self.span }
-        match self.at_of(label) { .Ok(span) -> span, .Err(_) -> null } ?? self.span
+        self.store.alloc_expr(e, self.span)
     }
 
     /// A written type as this build's result — no arena, no id.
@@ -480,23 +463,6 @@ impl Builder {
 // plus an index: a Captured<Token, LangNode> passed by itself as a fn
 // argument misreads in the callee (see the subset note), while
 // list-carried values stay intact. ──
-
-/// The extent a run of captures covers — its first item's start to its
-/// last item's end, in written order.
-fn extent_of_run(items: List<Captured<Token, LangNode>>, store: SyntaxArena) -> Span? {
-    cover_of([s! for s in [extent_of_capture(c, store) for c in items] if s != null])
-}
-
-/// The extent one capture occupies: its token's, or the node its rule
-/// built.
-fn extent_of_capture(c: Captured<Token, LangNode>, store: SyntaxArena) -> Span? {
-    match c {
-        .Terminal(t) -> t.span,
-        .Node(n) -> n.extent(store),
-        .Many(items) -> extent_of_run(items, store),
-        .Absent -> null,
-    }
-}
 
 /// The expression id at `args[i]`, when that capture is one.
 export fn expr_id_at(args: List<Captured<Token, LangNode>>, i: int) -> ExprId? {
