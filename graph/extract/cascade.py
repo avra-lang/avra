@@ -78,6 +78,19 @@ def log(*parts):
     LOG.append(" ".join(str(p) for p in parts))
 
 
+def taken(stage, what, p, options, threshold):
+    """The index of the best of `options` when it clears `threshold`, else
+    None. A refusal is logged with its stage, subject, scores and threshold."""
+    k = max(range(len(p)), key=lambda i: p[i])
+    if k < len(options) and p[k] >= threshold:
+        return k
+    best = max(range(len(options)), key=lambda i: p[i]) if options else None
+    leader = "abstention" if k >= len(options) else "below threshold"
+    runner = f"; best option {str(options[best])[:60]!r} p={p[best]:.3f}" if best is not None else ""
+    log(f"gate {stage} {what}: {leader} (top p={p[k]:.3f}, threshold={threshold}){runner}")
+    return None
+
+
 # ---------------------------------------------------------------- catalog
 
 
@@ -593,8 +606,8 @@ class Cascade:
         options = [people[i] for i in ids] + ["the unnamed author of the text", "cannot tell"]
         what = "this quotation" if quoted else "this passage"
         p = self.llm.pick(f'Passage: "{self.t.s[a:b]}"', f'Who is speaking in {what} (who do "I", "my" and "we" refer to)?', options[: len(ids)], options[len(ids) :])
-        best = max(range(len(options)), key=lambda i: p[i])
-        return ids[best] if best < len(ids) and p[best] >= ACCEPT_SPEAKER else None
+        best = taken("speaker", f"of {self.t.s[a:b][:40]!r}", p, options[: len(ids)], ACCEPT_SPEAKER)
+        return None if best is None else ids[best]
 
     def model_of(self, rid):
         return next(r["model"] for r in self.records if r["local_id"] == rid)
@@ -676,8 +689,8 @@ class Cascade:
                     break
                 opts = [self.phrased(rel, self.name(x), self.name(y), self.t.s[l["start"] : l["end"]]) for l in labels]
                 p = self.llm.pick(ctx, question, opts, ["none of these"])
-                best = max(range(len(p)), key=lambda i: p[i])
-                if best < len(labels) and p[best] >= ACCEPT:
+                best = taken("relation", f"{name} {self.name(x)} - {self.name(y)}", p, opts, ACCEPT)
+                if best is not None:
                     l = labels[best]
                     self.emit(name, frm, to, label, (x, froms[x]), (y, tos[y]), self.t.s[l["start"] : l["end"]], (l["start"], l["end"]), p[best], a, b, opts[best])
             return
@@ -689,8 +702,8 @@ class Cascade:
                     continue
                 opts = [self.phrased(rel, self.name(s), self.name(o), self.worded(w)) for s, o, v, w in readings]
                 p = self.llm.pick(ctx, question, opts, ["none of these is explicitly stated"])
-                best = max(range(len(p)), key=lambda k: p[k])
-                if best < len(readings) and p[best] >= ACCEPT:
+                best = taken("relation", f"{name} {self.name(x)} - {self.name(y)}", p, opts, ACCEPT)
+                if best is not None:
                     s, o, v, _ = readings[best]
                     cue = self.cue(rel, v, a, b)
                     self.emit(name, frm, to, label, (s, {**froms, **tos}[s]), (o, {**froms, **tos}[o]), v, cue, p[best], a, b, opts[best])
@@ -726,8 +739,8 @@ class Cascade:
                 if y <= x:
                     continue
                 p = self.llm.pick(f'Sentence: "{self.t.s[x:y]}"', "Which kind of record does this sentence itself state, if any?", opts, ["none of these"])
-                best = max(range(len(p)), key=lambda i: p[i])
-                if best < len(kinds) and p[best] >= ACCEPT_RECORD:
+                best = taken("record", f"kind of {self.t.s[x:y][:50]!r}", p, opts, ACCEPT_RECORD)
+                if best is not None:
                     self.fill(kinds[best], x, y, p[best])
 
     def trimmed(self, a, b):
@@ -749,7 +762,7 @@ class Cascade:
         for p in m["properties"]:
             value = self.value_of(model, p, found, ctx, a, b)
             if value is None:
-                if required(p) and not self.plan.embeddable(m, p):
+                if required(p) and (self.plan.quantity(m, p) or not self.plan.embeddable(m, p)):
                     missing.append(p["name"])
                 continue
             fields.append(value)
@@ -764,7 +777,9 @@ class Cascade:
             said = self.llm.pick(ctx, f"In a {model}, does the sentence itself state that {f['property']} is {self.shown(f['value'])}?", ["yes", "no"])
             if said[0] - said[1] >= MARGIN:
                 kept.append(f)
-            elif required(self.prop(model, f["property"])):
+            else:
+                log(f"gate field {model}.{f['property']}: stated-check margin {said[0] - said[1]:.3f} below {MARGIN}")
+            if said[0] - said[1] < MARGIN and required(self.prop(model, f["property"])):
                 log(f"reject {model} at {a}: {f['property']}={self.shown(f['value'])} is not stated")
                 return
         fields = kept
@@ -800,8 +815,8 @@ class Cascade:
             if not cands:
                 return None
             pr = self.llm.pick(ctx, f"In a {model}, which part of the sentence is the {name}?", [self.t.s[x:y] for x, y in cands], ["not stated"])
-            k = max(range(len(pr)), key=lambda i: pr[i])
-            if k == len(cands) or pr[k] < ACCEPT_RECORD:
+            k = taken("field", f"{model}.{name}", pr, [self.t.s[x:y] for x, y in cands], ACCEPT_RECORD)
+            if k is None:
                 return None
             x, y = cands[k]
             return self.field(name, self.t.s[x:y], [(x, y)], score=pr[k])
@@ -810,19 +825,19 @@ class Cascade:
             if not ids:
                 return None
             pr = self.llm.pick(ctx, f"In this {model}, who or what is the {name}?", [self.name(i) for i in ids], optional)
-            k = max(range(len(pr)), key=lambda i: pr[i])
-            if k >= len(ids) or pr[k] < ACCEPT_RECORD:
+            k = taken("field", f"{model}.{name}", pr, [self.name(i) for i in ids], ACCEPT_RECORD)
+            if k is None:
                 return None
             return self.field(name, ids[k], [where[ids[k]]], score=pr[k])
         if kind == "enum":
             vals = p["enum"]
             pr = self.llm.pick(ctx, f"For this {model}, which {name} does the sentence state?", vals, optional)
-            k = max(range(len(pr)), key=lambda i: pr[i])
-            return self.field(name, vals[k], [(a, b)], score=pr[k]) if k < len(vals) and pr[k] >= ACCEPT_RECORD else None
+            k = taken("field", f"{model}.{name}", pr, vals, ACCEPT_RECORD)
+            return None if k is None else self.field(name, vals[k], [(a, b)], score=pr[k])
         if kind == "bool":
             pr = self.llm.choose(ctx, f"For this {model}, is {name} true or false according to the sentence?", ["true", "false"] + optional)
-            k = max(range(len(pr)), key=lambda i: pr[i])
-            return self.field(name, k == 0, [(a, b)], score=pr[k]) if k < 2 and pr[k] >= ACCEPT_RECORD else None
+            k = taken("field", f"{model}.{name}", pr, ["true", "false"], ACCEPT_RECORD)
+            return None if k is None else self.field(name, k == 0, [(a, b)], score=pr[k])
         if kind == "time":
             return self.time_field(model, p, ctx, a, b)
         if kind == "number" and not self.declared_time(model, name):
@@ -831,8 +846,8 @@ class Cascade:
             if not nums:
                 return None
             pr = self.llm.pick(ctx, f"In this {model}, which number is the {name}?", [self.t.s[x:y] for x, y in nums], ["not stated"])
-            k = max(range(len(pr)), key=lambda i: pr[i])
-            if k == len(nums) or pr[k] < ACCEPT_RECORD:
+            k = taken("field", f"{model}.{name}", pr, [self.t.s[x:y] for x, y in nums], ACCEPT_RECORD)
+            if k is None:
                 return None
             x, y = nums[k]
             return self.field(name, int(self.t.s[x:y].replace(",", "")), [(x, y)], score=pr[k])
@@ -847,8 +862,8 @@ class Cascade:
         if not pairs:
             return None
         pr = self.llm.pick(ctx, f"In this {model}, which amount is the {p['name']}?", [self.t.s[x:y] for x, y, _, _ in pairs], ["not stated"])
-        k = max(range(len(pr)), key=lambda i: pr[i])
-        if k == len(pairs) or pr[k] < ACCEPT_RECORD:
+        k = taken("field", f"{model}.{p['name']}", pr, [self.t.s[x:y] for x, y, _, _ in pairs], ACCEPT_RECORD)
+        if k is None:
             return None
         x, y, number, word = pairs[k]
         scaled = decimal.Decimal(number.replace(",", "")).scaleb(places)
@@ -879,8 +894,8 @@ class Cascade:
         if not found:
             return None
         pr = self.llm.pick(ctx, f"In this {model}, which words give the {name}?", [self.t.s[x:y] for x, y in found], ["not stated"])
-        k = max(range(len(pr)), key=lambda i: pr[i])
-        if k == len(found) or pr[k] < ACCEPT_RECORD:
+        k = taken("time", f"{model}.{name} words", pr, [self.t.s[x:y] for x, y in found], ACCEPT_RECORD)
+        if k is None:
             return None
         x, y = found[k]
         source = self.request["input"]
@@ -889,10 +904,12 @@ class Cascade:
         written = next(o["label"] for o in options if o["normalization"] and o["normalization"]["timex_type"] == "TIME")
         labels = [o["label"] for o in options]
         pt = self.llm.pick(ctx + f"\nThe text was written {written}.", f'Which date or time does "{self.t.s[x:y]}" mean?', labels[:-2], labels[-2:])
-        j = max(range(len(pt)), key=lambda i: pt[i])
-        norm = timex.chosen(options, j)
-        value = self.encoded_time(p["time"]["encoding"], norm) if norm and pt[j] >= ACCEPT_RECORD else None
+        j = taken("time", f"{model}.{name} meaning of {self.t.s[x:y]!r}", pt, labels[:-2], ACCEPT_RECORD)
+        norm = None if j is None else timex.chosen(options, j)
+        value = self.encoded_time(p["time"]["encoding"], norm) if norm else None
         if value is None:
+            if norm:
+                log(f"gate time {model}.{name}: {norm['timex_type']} value does not fit the {p['time']['encoding']} encoding")
             return None
         f = self.field(name, value, [(x, y)], score=pr[k] * pt[j])
         f["normalization"] = norm
@@ -1316,7 +1333,7 @@ def streamed(reqs, args):
             return 1
         if "index" in line:
             print("\n".join(line.get("log", [])), file=sys.stderr)
-            print(json.dumps({"index": line["index"], "result": line["result"]}, ensure_ascii=False), flush=True)
+            print(json.dumps({"index": line["index"], "result": line["result"], "log": line.get("log", [])}, ensure_ascii=False), flush=True)
     return 0
 
 

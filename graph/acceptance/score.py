@@ -614,6 +614,7 @@ def publish_source(app, mode, hooks, source, schema, revision, trace=None):
             record["ms"] = int((time.time() - started) * 1000)
             if CACHE and result.get("status") == "complete":
                 CACHE.put("extractions", key, result)
+                CACHE.put("logs", key, "".join(log).splitlines())
         record["result"] = result
     except (RuntimeError, ValueError, subprocess.SubprocessError) as error:
         return f"extractor: {error}"
@@ -739,7 +740,7 @@ def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, 
 def streamed(command, payloads, timeout=None, log=None):
     """Runs a batch hook (`--stream`: a JSON array in, one JSON line
     {"index", "result"} out per payload as it completes) and yields each
-    (index, result) as it arrives, so a cut run keeps what finished."""
+    (index, result, log lines) as it arrives, so a cut run keeps what finished."""
     process = subprocess.Popen(shlex.split(command) + ["--stream"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True)
     process.stdin.write(json.dumps(payloads))
@@ -749,7 +750,7 @@ def streamed(command, payloads, timeout=None, log=None):
         for line in process.stdout:
             if line.strip():
                 answer = json.loads(line)
-                yield answer["index"], answer["result"]
+                yield answer["index"], answer["result"], answer.get("log", [])
             if deadline and time.time() > deadline:
                 raise subprocess.TimeoutExpired(command, timeout)
         stderr = process.stderr.read()
@@ -781,11 +782,12 @@ def prefill(binary, fixture, mode, hooks, scratch, checkpoint, trace=None):
     record = {"kind": "batch", "batch": [s["id"] for _, s in missing], "log": log}
     if trace is not None:
         trace.append(record)
-    for index, result in streamed(hooks["extractor"].replace("{schema}", str(schema_file)),
+    for index, result, lines in streamed(hooks["extractor"].replace("{schema}", str(schema_file)),
                                   [envelope(s) for _, s in missing],
                                   timeout=per_source * len(missing) if per_source else None, log=log):
         if result.get("status") == "complete":
             CACHE.put("extractions", missing[index][0], result)
+            CACHE.put("logs", missing[index][0], lines)
             complete += 1
         record.update(batch_ms=int((time.time() - started) * 1000), complete=complete)
 
