@@ -1,0 +1,789 @@
+//! FACTS — the values every context and facade reads: the
+//! language's registries once (`LanguageRows`), a file's view
+//! (`FileView`), and the pass values that are pure data with the
+//! verbs that read and write their own columns. The reads that
+//! cross values, and the contexts' forwarders, live in contexts.av.
+use core.{
+    FileId,
+    DeclId,
+    StmtId,
+    ExprId,
+    TypeId,
+    PatId,
+    Type,
+    Span,
+    SyntaxArena,
+    TypeRegistry,
+    Binding,
+    Param,
+    Reg,
+    Ins,
+    dst_of,
+    rt_sig_of,
+}
+use core.{SeatMark, SideTable, side_table, side_table_of, ParamId, Fingerprint}
+use diagnostics.{SourceFile, DiagCode, Diag, Voices, no_voices, loc_at, refusal, defect_at}
+use @std.errors.{Loc}
+use @std.relation.db.{Db as RelDb}
+use @std.meta.{derive}
+
+/// The language's registries, once — never copied into a program.
+export type LanguageRows = { methods: List<MethodRow>, types: List<TypeRow>, properties: List<PropertyRow>, codes: List<DiagCode>, remedies: List<KeywordRemedy> }
+
+/// The remedy a feature wrote for its keyword, when one did.
+export fn remedy_for(rows: LanguageRows, word: string) -> string? {
+    let row? = rows.remedies.find(it.word == word) else { return null }
+    row.help
+}
+
+/// An empty `owner_spans` Cell — `file_view`'s own mint, kept here
+/// since `OwnerSpan` is this module's own name, unreachable through
+/// `features.{…}` from outside it.
+export fn no_owner_spans() -> Cell<List<OwnerSpan>?> { Cell.new(null) }
+
+/// An empty `assign_roots` Cell — `file_view`'s own mint.
+export fn no_assign_roots() -> Cell<RelDb?> { Cell.new(null) }
+
+/// What every context and facade reads of a file: its identity, its
+/// nodes, its text, the declaration table, the type registry, and
+/// the language's rows. `owner_spans`/`assign_roots` are this file's
+/// own indexes, filed lazily and held for this ANALYSIS alone — a
+/// fresh `FileView` carries a fresh, empty Cell, so nothing survives
+/// into a later one.
+export type FileView = {
+    file: FileId,
+    store: SyntaxArena,
+    stmts: List<StmtId>,
+    source: SourceFile,
+    decls: Decls,
+    types: TypeRegistry,
+    lang: LanguageRows,
+    owner_spans: Cell<List<OwnerSpan>?>,
+    assign_roots: Cell<RelDb?>,
+}
+
+impl FileView {
+    /// Where an expression is — THE source position, every context
+    /// forwards here. A GENERATED node is homed: a template's run
+    /// points into the file that wrote the quote, a hole's at the
+    /// annotation that asked for the code.
+    fn loc_of(e: ExprId) -> Loc? {
+        self
+            .decls
+            .homed(
+                self.file,
+                self.spanned_of(e),
+                self.decls.generation_of(self.file, e),
+                self.store.expr_span(e),
+            )
+    }
+
+    fn pat_loc(p: PatId) -> Loc? {
+        self
+            .decls
+            .homed(
+                self.file,
+                self.spanned_of_pat(p),
+                self.decls.generation_of_pat(self.file, p),
+                self.store.pat_span(p),
+            )
+    }
+
+    fn stmt_loc(s: StmtId) -> Loc? {
+        self
+            .decls
+            .homed(
+                self.file,
+                self.spanned_of_stmt(s),
+                self.decls.generation_of_stmt(self.file, s),
+                self.store.stmt_span(s),
+            )
+    }
+
+    /// The file a generated node's own NAME resolves in, when it is
+    /// another than this one — a template's own node. Null for a
+    /// written node and for one whose name came through a hole: both
+    /// resolve here. NEVER for span-homing — `spanned_of` answers
+    /// that, since a holed node's span still indexes its template.
+    fn origin_of(e: ExprId) -> FileId? { self.decls.origin_of_expr(self.file, e) }
+
+    fn origin_of_stmt(s: StmtId) -> FileId? { self.decls.origin_of_stmt(self.file, s) }
+
+    fn origin_of_pat(p: PatId) -> FileId? { self.decls.origin_of_pat(self.file, p) }
+
+    /// Whether a seat's name came through a hole.
+    fn holed_param(p: ParamId) -> bool { self.decls.holed_param(self.file, p) }
+
+    /// The file whose TEXT a generated node's span indexes — a
+    /// written node's template, and a HOLED node's too: its name may
+    /// resolve here, but `Rebuilder` never rewrites its span, so its
+    /// offset is still the template's.
+    fn spanned_of(e: ExprId) -> FileId? { self.decls.spanned_expr_of(self.file, e) }
+
+    fn spanned_of_stmt(s: StmtId) -> FileId? { self.decls.spanned_stmt_of(self.file, s) }
+
+    fn spanned_of_pat(p: PatId) -> FileId? { self.decls.spanned_pat_of(self.file, p) }
+
+    /// The module this file belongs to.
+    fn module() -> string { self.decls.module_name(self.decls.file(self.file).module_id) }
+    fn package() -> string { self.decls.package_named(self.module()) }
+
+    /// This file's owner spans, filed once — `enclosing_decl`'s every
+    /// ask past the first reads the same list, never `Decls.owner_spans`
+    /// fresh.
+    fn owner_spans() -> List<OwnerSpan> {
+        let held = self.owner_spans.get()
+        if held != null { return held! }
+        let spans = self.decls.owner_spans(self.file)
+        self.owner_spans.set(spans)
+        spans
+    }
+
+    /// This file's assignment-root index, filed once — `write_roots`'
+    /// every ask past the first reads the same `Db`, never rewalks the
+    /// arena (`filed_assign_roots`, features/code.av).
+    fn assign_roots() -> RelDb {
+        let held = self.assign_roots.get()
+        if held != null { return held! }
+        let db = filed_assign_roots(self)
+        self.assign_roots.set(db)
+        db
+    }
+}
+
+/// A lambda's captures: the names it reached outside itself and the
+/// binding each came from — creation packs sources[j] into slot 1+j,
+/// and the lifted body reads the same lanes.
+@derive(Fingerprint)
+export type Cap = { names: List<string>, sources: List<Binding> }
+
+/// A file's names: what each expression's name resolves to, each
+/// lambda's captures, the namespace they were resolved in, and the
+/// voices resolving earned.
+///
+/// A COLUMN RELATION OVER THE FILE (COMPILER DB townhall §6.11): the
+/// `SideTable`s stay dense, born total over the file's expression
+/// range. Two doors (compiler/workspace.av): `resolved(f)`, the file's
+/// own passes', one edge on `(Resolved, f)`; and `names_of(d)`, a
+/// FOREIGN reader's, one edge on `(Names, d)` — `d`'s range and the
+/// namespace, cut off per declaration. Once held, a field read
+/// (`.binding(e)`) is one load and records nothing.
+export type NameFacts = { bindings: SideTable<Binding?>, captures: SideTable<Cap?>, mut_reads: SideTable<bool>, state_reads: SideTable<bool>, settled_reads: SideTable<bool>, names: Namespace, voices: Voices }
+
+/// Born total over the file's expressions: nothing bound, nothing
+/// captured, no seat read yet.
+export fn new_name_facts(exprs: int, names: Namespace) -> NameFacts {
+    NameFacts {
+        bindings: side_table<Binding?>("bindings", 0, exprs, null),
+        captures: side_table<Cap?>("captures", 0, exprs, null),
+        mut_reads: side_table("mut_reads", 0, exprs, false),
+        state_reads: side_table("state_reads", 0, exprs, false),
+        settled_reads: side_table("settled_reads", 0, exprs, false),
+        names: names,
+        voices: no_voices(),
+    }
+}
+
+impl NameFacts {
+    fn binding(e: ExprId) -> Binding? { self.bindings.get(e.index) }
+
+    /// A bare-name pattern that COMPARES: the read resolve walked
+    /// because the name is a const's. Absent for a name that binds.
+    fn compared(store: SyntaxArena, p: PatId) -> ExprId? {
+        let read? = store.name_read(p) else { return null }
+        if self.bindings.get(read.index) == null { null } else { read }
+    }
+
+    /// Whether this parameter read names a `mut` seat — the
+    /// resolver marks it as it binds.
+    fn reads_mut_seat(e: ExprId) -> bool { self.mut_reads.get(e.index) }
+
+    fn mark_mut_read(e: ExprId) {
+        self.mut_reads.set(e.index, true)
+    }
+
+    /// Whether this parameter read names a `state` seat — a place the
+    /// whole-assignment law exempts, marked the way `mut` is.
+    fn reads_state_seat(e: ExprId) -> bool { self.state_reads.get(e.index) }
+
+    fn mark_state_read(e: ExprId) {
+        self.state_reads.set(e.index, true)
+    }
+
+    /// Whether this parameter read names a `const` (settled) seat —
+    /// the resolver marks it as it binds, the way it marks `mut`.
+    fn reads_settled_seat(e: ExprId) -> bool { self.settled_reads.get(e.index) }
+
+    fn mark_settled_read(e: ExprId) {
+        self.settled_reads.set(e.index, true)
+    }
+
+    fn capture(lam: ExprId) -> Cap? { self.captures.get(lam.index) }
+}
+
+/// What a nullable was asked, for lowering: the subject, and whether
+/// the branch runs on presence.
+@derive(Fingerprint)
+export type Asked = { subject: ExprId, on_present: bool }
+
+/// A body's typing facts — columns dense over its expression RANGE
+/// [lo, hi) (a declaration's body occupies one), and over the
+/// file's statements for what a binding declared. `widens` names the
+/// expressions a boundary LIFTED into a nullable; `narrows` the
+/// reads a presence test proved; `substs` the instantiations mono
+/// specializes; the want columns are the expected-type channel.
+///
+/// A COLUMN RELATION OVER THE DECLARATION (COMPILER DB townhall
+/// §6.11): dense `SideTable`s, born total over one declaration's own
+/// [lo, hi) — no `@relation` storage, since a column here holds a
+/// `TypeId?`/`Sub?`/`List<TypeId>?` the derive cannot carry yet. The
+/// ONE door in is `Workspace.typed(d)` (compiler/workspace.av): a
+/// `Relation<T>` family accessor keyed by the DECLARATION, so a
+/// FOREIGN reader of another declaration's facts (`Workspace.
+/// const_type_at`'s `touch(self.typed(dv))` reads one this way)
+/// records exactly one Kernel edge on `(Typed, d)`, never a whole
+/// file and never per node. `folded(f)` absorbs every `typed(d)` in a
+/// file into one FILE-grain table (`Family.Folded`) for a reader that
+/// genuinely needs the whole file at once (`references()`, `Analysis`)
+/// — the coarsest grain such a reader could use regardless, not an
+/// escape from the per-declaration door. A `TypeFacts` VALUE's own
+/// field reads (`.type_at(e)`, `.widened_at(e)`) are plain local
+/// methods once a caller holds it, never a second Kernel ask.
+/// The enclosing fn's parameter types — a hungry node's typing scope.
+@derive(Fingerprint)
+export type ParamScope = { params: List<TypeId> }
+
+/// A dot-call whose member is chosen at RUN: argument `seat` is a
+/// `dyn` value, and its type's tag picks among `members`.
+@derive(Fingerprint)
+export type RunChoice = { seat: int, members: List<DeclId> }
+
+/// How a list method participates in a chain: an adapter the lowering
+/// folds into one pipeline. Written by typing (`check_map` /
+/// `check_filter`), read by lowering — checking's one answer, lowering's
+/// one read.
+@derive(Fingerprint)
+export enum PipeStage {
+    Keep
+    Map
+    Take
+    Drop
+    TakeWhile
+    DropWhile
+    FilterMap
+    FlatMap
+    Flatten
+    Chars
+}
+
+export type TypeFacts = {
+    of_expr: SideTable<TypeId>,
+    widens: SideTable<TypeId?>,
+    narrows: SideTable<TypeId?>,
+    asks: SideTable<Asked?>,
+    substs: SideTable<Sub?>,
+    lambda_params: SideTable<List<TypeId>?>,
+    // the seat CONTRACTS those seats wear — written, or heard from the slot
+    lambda_marks: SideTable<List<SeatMark>?>,
+    // what each lambda CAPTURED, typed in lane order — the type a
+    // capture read wears, wherever the lane is read
+    captures: SideTable<List<TypeId>?>,
+    wants: SideTable<TypeId?>,
+    hungry: SideTable<bool>,
+    starved: SideTable<TypeId?>,
+    // the parameter scope a hungry node was typed under — what its
+    // rule runs under again when fed or starving
+    scopes: SideTable<ParamScope?>,
+    pattern_types: SideTable<List<TypeId>>,
+    binding_types: SideTable<TypeId?>,
+    // a paired head's INDEX binder — `int` for a list, the key's own
+    // type under a map
+    index_types: SideTable<TypeId?>,
+    // a plain `let`'s declaring statement, marked when it is a
+    // writing method's non-`mut` receiver — its seed is boxed into
+    // a cell, thawed, the same way a `mut` local's is
+    boxed_locals: SideTable<bool>,
+    // a use whose declaration's warnings were already spoken — one
+    // voice per use, however often the node is typed
+    warned: SideTable<bool>,
+    // a place written through a bare `mut` local — one copied from a
+    // place, or a path rooted at one — a writing call's receiver, a
+    // `mut` seat's argument (F2106, `copy_laws`); lowering reads it unique
+    alias_copies: SideTable<bool>,
+    thaws: SideTable<bool>,
+    // a writing method's receiver with no cell behind it (a
+    // parameter, or a value with no binding), thawed once at the call
+    plain_thaws: SideTable<bool>,
+    // a value a `collect` keeps — checking's one answer, lowering's one read
+    gathered: SideTable<bool>,
+    // each `collect`'s kept values, so a re-typed one never re-walks its body
+    collections: SideTable<List<ExprId>?>,
+    // a lambda that takes its seat's record by FIELD NAME — checking's
+    // one answer, lowering's one read
+    offers: SideTable<bool>,
+    // a kept LIST a `collect` spreads, element by element
+    spreads: SideTable<bool>,
+    // a trailing-arms-sugar Match left with an uncovered variant
+    // under a nullable seat — checking's one answer, lowering's one
+    // read: the missing case answers `null`
+    null_tails: SideTable<bool>,
+    // the method a dot-call chose among a generic trait's impls
+    chosen: SideTable<DeclId?>,
+    // the members a dot-call dispatches among at run, by one `dyn` argument
+    dispatches: SideTable<RunChoice?>,
+    // an adapter's place in a method chain — checking's one answer,
+    // lowering's one read
+    stages: SideTable<PipeStage?>,
+    voices: Voices,
+}
+
+/// Born total: every expression in the range pre-typed as the hole.
+/// THE WINDOW IS THE TABLE'S — the expression columns run over
+/// [lo, hi) and the statement columns over the whole file, so no
+/// reader subtracts anything.
+export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFacts {
+    let no_types: List<TypeId> = []
+    TypeFacts {
+        of_expr: side_table("of_expr", lo, hi, hole),
+        widens: side_table<TypeId?>("widens", lo, hi, null),
+        narrows: side_table<TypeId?>("narrows", lo, hi, null),
+        asks: side_table<Asked?>("asks", lo, hi, null),
+        substs: side_table<Sub?>("substs", lo, hi, null),
+        lambda_params: side_table<List<TypeId>?>("lambda_params", lo, hi, null),
+        lambda_marks: side_table<List<SeatMark>?>("lambda_marks", lo, hi, null),
+        captures: side_table<List<TypeId>?>("captures", lo, hi, null),
+        wants: side_table<TypeId?>("wants", lo, hi, null),
+        hungry: side_table("hungry", lo, hi, false),
+        warned: side_table("warned", lo, hi, false),
+        alias_copies: side_table("alias_copies", lo, hi, false),
+        thaws: side_table("thaws", lo, hi, false),
+        plain_thaws: side_table("plain_thaws", lo, hi, false),
+        gathered: side_table("gathered", lo, hi, false),
+        collections: side_table<List<ExprId>?>("collections", lo, hi, null),
+        offers: side_table("offers", lo, hi, false),
+        spreads: side_table("spreads", lo, hi, false),
+        null_tails: side_table("null_tails", lo, hi, false),
+        chosen: side_table<DeclId?>("chosen", lo, hi, null),
+        dispatches: side_table<RunChoice?>("dispatches", lo, hi, null),
+        stages: side_table<PipeStage?>("stages", lo, hi, null),
+        starved: side_table<TypeId?>("starved", lo, hi, null),
+        scopes: side_table<ParamScope?>("scopes", lo, hi, null),
+        pattern_types: side_table_of("pattern_types", lo, empty_lists_ty(hi - lo), no_types),
+        binding_types: side_table<TypeId?>("binding_types", 0, stmts, null),
+        index_types: side_table<TypeId?>("index_types", 0, stmts, null),
+        boxed_locals: side_table("boxed_locals", 0, stmts, false),
+        voices: no_voices(),
+    }
+}
+
+impl TypeFacts {
+    fn type_at(e: ExprId) -> TypeId { self.of_expr.get(e.index) }
+    /// Whether this table's window holds the expression — an
+    /// expression is typed by the body that OWNS it, never another.
+    fn owns(e: ExprId) -> bool { self.of_expr.holds(e.index) }
+
+    fn hungry_at(e: ExprId) -> bool { self.hungry.get(e.index) }
+
+    /// The hungry expressions, in window order.
+    fn hungry_ones() -> List<ExprId> {
+        [ExprId { index: i } for i in self.hungry.ids(is_hungry)]
+    }
+
+    /// The seat a starved expression wanted, when it was starved.
+    fn starved_at(e: ExprId) -> TypeId? { self.starved.get(e.index) }
+
+    fn set_type(e: ExprId, ty: TypeId) {
+        self.of_expr.set(e.index, ty)
+    }
+
+    fn widen(v: ExprId, ty: TypeId) {
+        self.widens.set(v.index, ty)
+    }
+
+    fn widened_at(e: ExprId) -> TypeId? { self.widens.get(e.index) }
+
+    fn narrow(e: ExprId, opt: TypeId) {
+        self.narrows.set(e.index, opt)
+    }
+
+    fn narrowed_at(e: ExprId) -> TypeId? { self.narrows.get(e.index) }
+
+    fn record_ask(e: ExprId, subject: ExprId, on_present: bool) {
+        self.asks.set(e.index, Asked { subject: subject, on_present: on_present })
+    }
+
+    fn ask_of(e: ExprId) -> Asked? { self.asks.get(e.index) }
+
+    fn record_subst(e: ExprId, target: DeclId, targs: List<TypeId>, consts: List<string>) {
+        self.substs.set(e.index, Sub { target: target, args: targs, consts: consts })
+    }
+
+    fn subst_at(e: ExprId) -> Sub? { self.substs.get(e.index) }
+
+    /// The impl member a dot-call chose, when its receiver's type
+    /// holds several of one name (a generic trait at several arguments).
+    fn record_chosen(e: ExprId, m: DeclId) { self.chosen.set(e.index, m) }
+
+    fn chosen_at(e: ExprId) -> DeclId? { self.chosen.get(e.index) }
+
+    fn record_dispatch(e: ExprId, d: RunChoice) { self.dispatches.set(e.index, d) }
+
+    fn dispatch_at(e: ExprId) -> RunChoice? { self.dispatches.get(e.index) }
+
+    /// An adapter's place in a method chain, when typing seated one.
+    fn stage_at(e: ExprId) -> PipeStage? { self.stages.get(e.index) }
+
+    fn mark_stage(e: ExprId, s: PipeStage) { self.stages.set(e.index, s) }
+
+    fn set_want(e: ExprId, ty: TypeId) {
+        self.wants.set(e.index, ty)
+    }
+
+    fn want_at(e: ExprId) -> TypeId? { self.wants.get(e.index) }
+
+    fn go_hungry(e: ExprId) {
+        self.hungry.set(e.index, true)
+    }
+
+    fn remember_scope(e: ExprId, params: List<TypeId>) {
+        self.scopes.set(e.index, ParamScope { params: params })
+    }
+
+    fn scope_at(e: ExprId) -> List<TypeId>? { self.scopes.get(e.index)?.params }
+
+    fn absorb_hunger(e: ExprId) {
+        self.hungry.set(e.index, false)
+    }
+
+    /// A hungry expression starved of the seat it wanted; true when
+    /// it was hungry.
+    fn starve(e: ExprId, want: TypeId) -> bool {
+        if !self.hungry.get(e.index) { return false }
+        self.starved.set(e.index, want)
+        true
+    }
+
+    /// An arm's binds, typed in pattern order.
+    fn bind_types(v: ExprId, tys: List<TypeId>) {
+        self.pattern_types.set(v.index, tys)
+    }
+
+    /// The arm's Nth bind, when the arm's owner spoke it.
+    fn pattern_type(v: ExprId, j: int) -> TypeId? {
+        let tys = self.pattern_types.get(v.index)
+        if j >= tys.length { return null }
+        tys[j]
+    }
+
+    fn record_binding(s: StmtId, ty: TypeId) {
+        self.binding_types.set(s.index, ty)
+    }
+
+    /// Whether this use already spoke its declaration's warnings.
+    fn spoke_warning(e: ExprId) -> bool { self.warned.get(e.index) }
+
+    fn mark_warned(e: ExprId) {
+        self.warned.set(e.index, true)
+    }
+
+    /// Whether this place is written through a bare `mut` local that
+    /// must not share — checking's one answer, lowering's one read; the
+    /// derivation lives at `copy_laws` alone.
+    fn wants_alias_copy(e: ExprId) -> bool { self.alias_copies.get(e.index) }
+
+    fn mark_alias_copy(e: ExprId) {
+        self.alias_copies.set(e.index, true)
+    }
+
+    /// Whether this place is a bare `mut` local seeded fresh, written
+    /// whole: opened only when its box is the binary's own data.
+    fn wants_thaw(e: ExprId) -> bool { self.thaws.get(e.index) }
+
+    fn mark_thaw(e: ExprId) {
+        self.thaws.set(e.index, true)
+    }
+
+    /// Whether this writing method's receiver was thawed at the
+    /// call, with no cell behind it.
+    fn wants_plain_thaw(e: ExprId) -> bool { self.plain_thaws.get(e.index) }
+
+    fn mark_plain_thaw(e: ExprId) {
+        self.plain_thaws.set(e.index, true)
+    }
+
+    /// Whether a `collect` keeps this discarded value.
+    fn keeps(e: ExprId) -> bool { self.gathered.get(e.index) }
+
+    fn mark_kept(e: ExprId) {
+        self.gathered.set(e.index, true)
+    }
+
+    /// Whether a `collect` spreads this kept list — checking's one
+    /// answer, lowering's one read.
+    fn spreads_at(e: ExprId) -> bool { self.spreads.get(e.index) }
+
+    fn spread(e: ExprId, spreads: bool) {
+        self.spreads.set(e.index, spreads)
+    }
+
+    /// Whether a sugar match's uncovered variants answer `null` —
+    /// checking's one answer, lowering's one read.
+    fn has_null_tail(e: ExprId) -> bool { self.null_tails.get(e.index) }
+
+    fn mark_null_tail(e: ExprId) {
+        self.null_tails.set(e.index, true)
+    }
+
+    /// Whether a lambda takes its seat's record by field name.
+    fn takes_by_name(lam: ExprId) -> bool { self.offers.get(lam.index) }
+
+    fn offer(lam: ExprId) {
+        self.offers.set(lam.index, true)
+    }
+
+    /// What a `collect` kept, once its body has been walked.
+    fn collection(e: ExprId) -> List<ExprId>? { self.collections.get(e.index) }
+
+    fn collected(e: ExprId, values: List<ExprId>) {
+        self.collections.set(e.index, values)
+    }
+
+    /// Another body's facts laid into this table over its range,
+    /// and every binding it declared — the per-file fold. The
+    /// hunger columns (`hungry`, `starved`) are a body's own
+    /// working state, spoken before its facts settle; the voices
+    /// fold at the workspace, in source order.
+    fn absorb(other: TypeFacts) {
+        // EACH COLUMN THROUGH ITS FIELD: a fn handed the table could
+        // only fill a copy, and the fold runs once per body. The
+        // OFFSET is the tables' own — each window knows where it sits.
+        // LICENSED loops.push_loop: seventeen named columns, one lay each
+        self.of_expr.lay(other.of_expr)
+        self.widens.lay(other.widens)
+        self.narrows.lay(other.narrows)
+        self.asks.lay(other.asks)
+        self.substs.lay(other.substs)
+        self.lambda_params.lay(other.lambda_params)
+        self.lambda_marks.lay(other.lambda_marks)
+        self.captures.lay(other.captures)
+        self.wants.lay(other.wants)
+        self.pattern_types.lay(other.pattern_types)
+        self.alias_copies.lay(other.alias_copies)
+        self.thaws.lay(other.thaws)
+        self.plain_thaws.lay(other.plain_thaws)
+        self.gathered.lay(other.gathered)
+        self.collections.lay(other.collections)
+        self.offers.lay(other.offers)
+        self.spreads.lay(other.spreads)
+        self.null_tails.lay(other.null_tails)
+        self.chosen.lay(other.chosen)
+        self.dispatches.lay(other.dispatches)
+        self.stages.lay(other.stages)
+        self.binding_types.lay_named(other.binding_types, is_typed)
+        self.index_types.lay_named(other.index_types, is_typed)
+        // a WHOLE-FILE column: a named lay, never plain, keeps one
+        // declaration's `true` from being stomped by another's
+        // untouched `false` — the same law `binding_types` pays
+        self.boxed_locals.lay_named(other.boxed_locals, marked_boxed)
+    }
+
+    fn declared_binding(s: StmtId) -> TypeId? { self.binding_types.get(s.index) }
+
+    fn index_type(s: StmtId) -> TypeId? { self.index_types.get(s.index) }
+
+    fn record_index_type(s: StmtId, ty: TypeId) { self.index_types.set(s.index, ty) }
+
+    fn wants_boxed_local(s: StmtId) -> bool { self.boxed_locals.get(s.index) }
+
+    fn mark_boxed_local(s: StmtId) { self.boxed_locals.set(s.index, true) }
+
+    fn seat_lambda(lam: ExprId, tys: List<TypeId>, marks: List<SeatMark>) {
+        self.lambda_params.set(lam.index, tys)
+        self.lambda_marks.set(lam.index, marks)
+    }
+
+    fn heard_marks(lam: ExprId) -> List<SeatMark>? { self.lambda_marks.get(lam.index) }
+
+    fn lambda_seats(lam: ExprId) -> List<TypeId>? { self.lambda_params.get(lam.index) }
+
+    fn seat_captures(lam: ExprId, tys: List<TypeId>) {
+        self.captures.set(lam.index, tys)
+    }
+
+    /// The type the lambda's Nth capture wears — the CAPTURED
+    /// binding's, never the lambda's or a reading node's.
+    fn capture_type(lam: ExprId, j: int) -> TypeId? {
+        let held: List<TypeId>? = self.captures.get(lam.index)
+        if held == null || j >= held!.length { return null }
+        held![j]
+    }
+
+    fn speak(d: Diag) { self.voices.speak(d) }
+
+}
+
+impl Decls {
+    fn decl_named(f: DeclId, mname: string) -> bool {
+        let n: string? = self.fn_name(f)
+        n == mname
+    }
+}
+
+/// A body's instruction list under construction: registers mint in
+/// instruction order, `give` is the mint-order law, and a runtime
+/// callee must have its row in the registry. `decls` rides along for
+/// one reason: `mint_ty` is the ONE place a type is fixed to a
+/// register (every `mint_shape`/`result`/`mint_like` reaches it), so
+/// it is the one place to force a struct or enum's own declaration
+/// before anything downstream — the interpreter's `bare_reg` and
+/// `const_int_val` included — reads that register's layout.
+export type Emitter = { ins: List<Ins>, reg_types: List<TypeId>, defined: List<Reg>, voices: Voices, externs: List<string>, decls: Decls }
+
+/// An emitter over a program whose externs it may call by name.
+export fn new_emitter(externs: List<string>, decls: Decls) -> Emitter {
+    Emitter {
+        ins: [],
+        reg_types: [],
+        defined: [],
+        voices: no_voices(),
+        externs: externs,
+        decls: decls,
+    }
+}
+
+impl Emitter {
+    /// THE defect phrase, worded once — the compiler blaming itself
+    /// for a shape the gate should have refused.
+    fn defect(what: string) { self.record("defect: ${what}") }
+
+    fn mint_ty(ty: TypeId) -> Reg {
+        self.decls.declared_first(ty)
+        self.reg_types.push(ty)
+        Reg { index: self.reg_types.length - 1 }
+    }
+
+    fn type_of_reg(r: Reg) -> TypeId { self.reg_types[r.index] }
+
+    /// A callee neither the registry nor the program's externs name.
+    fn unknown_callee(name: string) -> bool {
+        rt_sig_of(name) == null && !self.externs.contains(name)
+    }
+
+    fn give(i: Ins) {
+        // A new CALLING instruction must decide whether the runtime
+        // registry validates it; the arms make that unavoidable.
+        let callee: string? = match i {
+            .CallRt(_, c, _) or .CallRtVoid(c, _) -> c,
+            .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .Call(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .OnceRead(_, _) or .OnceCommit(_, _) or .CallPtr(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .RetVal(_) or .FnExit(_) or .Ret(_) -> null,
+        }
+        if callee != null && self.unknown_callee(callee!) {
+            self.defect("unknown runtime callee `${callee!}` — add its row to runtime_api.av")
+        }
+        self.defined_in_order(i)
+        self.ins.push(i)
+    }
+
+    fn defined_in_order(i: Ins) {
+        let dst? = dst_of(i) else { return }
+        let expected = self.defined.length
+        // LICENSED structs.index_compared: REGISTER identity — a mint index, not a type
+        if dst.index != expected {
+            self
+                .defect(
+                    "register r${dst.index} defines out of mint order — r${expected} is next (mint operands first, the answer last)",
+                )
+        }
+        self.defined.push(dst)
+    }
+
+    /// The params are registers 0..N-1, defined before any instruction.
+    fn seeded() {
+        // LICENSED loops.push_loop: the register IS its index
+        for j in 0..self.reg_types.length { self.defined.push(Reg { index: j }) }
+    }
+
+    fn record(msg: string) { self.voices.speak(defect_at(null, msg)) }
+}
+
+/// A body's per-node registers: each expression's, each binding's
+/// slot (a cell when boxed), each pattern bind's, each pairing
+/// loop's index.
+export type BodyRegs = { regs: SideTable<Reg?>, slots: SideTable<Reg?>, boxed: SideTable<bool>, pattern_regs: SideTable<List<Reg>>, index_regs: SideTable<Reg?>, test_regs: SideTable<List<Reg>> }
+
+export fn new_body_regs(exprs: int, stmts: int, pats: int) -> BodyRegs {
+    let no_regs: List<Reg> = []
+    BodyRegs {
+        regs: side_table<Reg?>("regs", 0, exprs, null),
+        slots: side_table<Reg?>("slots", 0, stmts, null),
+        boxed: side_table("boxed", 0, stmts, false),
+        pattern_regs: side_table_of("pattern_regs", 0, empty_lists_reg(exprs), no_regs),
+        index_regs: side_table<Reg?>("index_regs", 0, stmts, null),
+        test_regs: side_table_of("test_regs", 0, empty_lists_reg(pats), no_regs),
+    }
+}
+
+impl BodyRegs {
+    fn reg_at(e: ExprId) -> Reg? { self.regs.get(e.index) }
+    fn set_reg(e: ExprId, r: Reg) {
+        self.regs.set(e.index, r)
+    }
+    fn slot_of(s: StmtId) -> Reg? { self.slots.get(s.index) }
+    fn set_slot(s: StmtId, r: Reg) {
+        self.slots.set(s.index, r)
+    }
+    fn bind_slot(s: StmtId, cell: Reg) {
+        self.boxed.set(s.index, true)
+        self.set_slot(s, cell)
+    }
+    fn is_boxed(s: StmtId) -> bool { self.boxed.get(s.index) }
+    fn pattern_reg(v: ExprId, j: int) -> Reg? {
+        let regs = self.pattern_regs.get(v.index)
+        if j >= regs.length { return null }
+        regs[j]
+    }
+    fn bind_patterns(v: ExprId, regs: List<Reg>) {
+        self.pattern_regs.set(v.index, regs)
+    }
+    fn index_reg(s: StmtId) -> Reg? { self.index_regs.get(s.index) }
+    /// WHAT A PATTERN'S TEST PRODUCED FOR ITS BINDS. Enums' protocol
+    /// is TEST then BIND — the test emits OUTSIDE an arm's region so
+    /// an untaken arm reads nothing, the binds inside — and a
+    /// pattern whose test IS its bind would otherwise run its scan
+    /// twice. Keyed by the PATTERN, so a nested one finds its own
+    /// and no caller threads it through the recursion.
+    fn test_regs_of(p: PatId) -> List<Reg> { self.test_regs.get(p.index) }
+    fn bind_test(p: PatId, regs: List<Reg>) {
+        self.test_regs.set(p.index, regs)
+    }
+    fn bind_index(s: StmtId, r: Reg) {
+        self.index_regs.set(s.index, r)
+    }
+}
+
+/// A column's fold reads only what the body actually recorded.
+fn is_typed(t: TypeId?) -> bool { t != null }
+fn is_hungry(h: bool) -> bool { h }
+fn marked_boxed(b: bool) -> bool { b }
+
+/// `n` empty type lists — spelled without the generic fill: a test
+/// shard instantiating a list-writing generic at a list-of-lists
+/// type loses its writes (CLAUDE.md).
+fn empty_lists_ty(n: int) -> List<List<TypeId>> {
+    mut out: List<List<TypeId>> = []
+    mut i = 0
+    while i < n {
+        out.push([])
+        i = i + 1
+    }
+    out
+}
+
+fn empty_lists_reg(n: int) -> List<List<Reg>> {
+    mut out: List<List<Reg>> = []
+    mut i = 0
+    while i < n {
+        out.push([])
+        i = i + 1
+    }
+    out
+}

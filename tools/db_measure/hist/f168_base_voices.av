@@ -1,0 +1,1213 @@
+//! Workspace diagnostics and the small shared projections they read.
+//! Moved out of the workspace god-object.
+use core.{
+    StmtId,
+    Span,
+    Param,
+    Mark,
+    TypeRegistry,
+    SyntaxArena,
+    ModulePath,
+    FileId,
+    ExprId,
+    fp,
+    fp_list,
+    fp_str,
+    mix_final,
+    joined,
+    flatten,
+    sorted_texts,
+    TypeId,
+    Type,
+    same_file,
+    TypeRef,
+    spelled,
+    Binding,
+    SeatMark,
+    Static,
+    StaticBox,
+    DeclId,
+}
+use compiler.families.{Family}
+use features.{
+    Unsettled,
+    Settlement,
+    MetaVal,
+    MetaHeap,
+    nothing,
+    FileView,
+    spelled_type,
+    BlockGrammar,
+    Namespace,
+    BoundNames,
+    NameFacts,
+    TypeFacts,
+    Cap,
+    Asked as NullableAsk,
+    ParamScope,
+    Sub,
+    RunChoice,
+    PipeStage,
+    Wanted,
+    SeatValue,
+    Instanced,
+}
+use features.{no_kind, ComponentWord, Instancing}
+use @std.meta.{
+    Node,
+    Field as MetaField,
+    Param as MetaParam,
+    Mark as MetaMark,
+    Kind,
+    Annotation as MetaAnnotation,
+    Code as MetaCode,
+    Diagnostic as MetaDiagnostic,
+}
+use core.{StmtId, Stmt, Arm, HoleKind, Inits, Unplaced, is_name_cont, digest_of, new_node_store}
+use @std.grammar.{ready}
+use grammar.{parse_grammar, avra_known_terminals, lex_source, Token, TokenKind}
+use diagnostics.{defect_at}
+use diagnostics.{Diag, refusal, Severity, DiagFacts, diag_facts_of, Voices}
+use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
+use @std.testing.{words}
+use compiler.store.{Store, Stored}
+use compiler.lower.{Unit}
+
+// ── voices ──
+
+/// A dependency's `[link.raw]`, refused. The whole point of the
+/// typed rows is that a package nobody read cannot put an option on
+/// the linker's line; the hatch is the program's own.
+fn borrowed_raw(pkg: Package) -> Diag {
+    refusal(
+        "manifest.borrowed_raw",
+        pkg.at,
+        "`${pkg.key}` asks for raw linker options, and `[link.raw]` is the program's own",
+        "this dependency",
+        "a dependency names what it needs — `objects`, `search`, `libs` under `[link]`; a raw option belongs in the manifest of the program being built",
+    )
+}
+
+fn package_form(at: Loc?, m: ModulePath) -> Diag {
+    refusal(
+        "resolve.package_form",
+        at,
+        "`${m.text()}` names no package — a package is `@scope.name`",
+        "in this use",
+        "write the scope and the name, then the module: `@scope.name.a.{x}`",
+    )
+}
+
+fn no_module(at: Loc?, m: ModulePath) -> Diag {
+    refusal(
+        "resolve.no_module",
+        at,
+        "no module `${m.text()}` under the package's source root",
+        "in this use",
+        "a module is a directory of `.av` files or one `.av` file, named from `src/` — `${m.dir_under("")}` was looked for",
+    )
+}
+
+fn reexport_unreached(at: Loc?, m: ModulePath, item: string) -> Diag {
+    refusal(
+        "resolve.reexport_unreached",
+        at,
+        "`${m.text()}` re-exports `${item}`, and no declaration stands behind it",
+        "in this use",
+        "a re-export names a declaration — import `${item}` from the module that declares it, or break the re-export cycle",
+    )
+}
+
+fn reexport_cycle(at: Loc?, home: string, other: string) -> Diag {
+    refusal(
+        "resolve.reexport_cycle",
+        at,
+        "`${other}` already uses `${home}`, so re-exporting from it here would close a package cycle",
+        "in this use",
+        "packages never depend in a cycle — re-export both from a FACADE package above them, one made of `export use` lines",
+    )
+}
+
+fn reexport_twice(at: Loc?, name: string) -> Diag {
+    refusal(
+        "resolve.reexport_twice",
+        at,
+        "`${name}` is already on this module's surface",
+        "re-exported here",
+        "a module exports each name once — re-export this one under another name with `as`",
+    )
+}
+
+/// `own_test` says the asker is one of `m`'s own tests, which reads the
+/// module's private names too — so the name is declared there at all.
+fn not_exported(at: Loc?, m: ModulePath, item: string, exports: List<string>, own_test: bool) -> Diag {
+    refusal(
+        "resolve.not_exported",
+        at,
+        if own_test { "`${m.text()}` declares no `${item}`, exported or private" } else { "`${m.text()}` does not export `${item}`" },
+        "in this use",
+        if own_test { "a module's own tests read its private names as well as its exports: ${joined(exports, ", ")}" } else { "its exports: ${joined(exports, ", ")}" },
+    )
+}
+
+fn private_apart(at: Loc?, m: ModulePath, item: string, files: List<string>) -> Diag {
+    refusal(
+        "resolve.private_apart",
+        at,
+        "`${item}` is private to each of ${joined(["`${f}`" for f in files], " and ")} in `${m.text()}` — a test reads a private name its module declares once",
+        "in this use",
+        "rename one declaration, or test each through a name its own file exports",
+    )
+}
+
+fn module_ambiguous(at: Loc?, m: ModulePath) -> Diag {
+    refusal(
+        "resolve.module_ambiguous",
+        at,
+        "`${m.text()}` is both a directory and a file under the root",
+        "in this use",
+        "a module is one or the other — keep `${m.dir_under("")}/` or `${m.dir_under("")}.av`",
+    )
+}
+
+fn listed_twice(at: Loc?, item: string) -> Diag {
+    refusal("resolve.import_clash", at, "`${item}` is listed twice", "in this use", null)
+}
+
+fn unpackaged_use(at: Loc?) -> Diag {
+    refusal(
+        "resolve.unpackaged",
+        at,
+        "this file is not in a package — `use` needs a root",
+        "this use",
+        "put an `avra.toml` at the package root, with this file under its `src/` — modules are named from there",
+    )
+}
+
+/// The instructions one settlement may run before it is refused.
+
+/// An annotation answer's structural fingerprint for early cutoff.
+fn lift_hash(r: LiftResult) -> int {
+    match r {
+        .Crossed(c) -> fp(77, [meta_hash(c.heap, c.answer)]),
+        .Refused(why) -> fp(47, [unsettled_hash(why)]),
+    }
+}
+
+/// A crossed value's structural fingerprint, the heap followed — what
+/// the evaluator's fingerprinting is to a recalculation's early cutoff.
+fn meta_hash(heap: MetaHeap, v: MetaVal) -> int {
+    match v {
+        .Int(n) -> fp(74, [n]),
+        .Float(bits) -> fp(75, [bits]),
+        .Bool(b) -> fp(76, [if b { 1 } else { 0 }]),
+        .Text(s) -> fp(78, [fp_str(s)]),
+        .Node(id) -> fp(79, [meta_hash(heap, x) for x in heap.nodes[id]]),
+        .Map(id) -> fp(
+            81,
+            [
+                fp_list([fp_str(k) for k in heap.maps[id].keys]),
+                fp_list([meta_hash(heap, x) for x in heap.maps[id].values]),
+            ],
+        ),
+        .Absent -> fp(83, []),
+        .Gone -> fp(124, []),
+        .Octets(xs) -> fp(125, [fp_list(xs)]),
+    }
+}
+
+fn settlement_hash(s: Settlement) -> int {
+    match s {
+        .Held(value) -> fp(41, [value.fingerprint]),
+        .Refused(why) -> fp(73, [unsettled_hash(why)]),
+    }
+}
+
+fn unsettled_hash(why: Unsettled) -> int {
+    match why {
+        .Reach(words) -> fp(59, [fp_str(words)]),
+        .Budget(words) -> fp(61, [fp_str(words)]),
+        .Trap(words) -> fp(67, [fp_str(words)]),
+        .Param(words) -> fp(84, [fp_str(words)]),
+        .Spoken -> fp(71, []),
+        .Recursive -> fp(123, []),
+    }
+}
+
+/// A shape by position — unspelled past the signature's end, which
+/// is a declaration the crossing reached before its own sig.
+fn kinds_at(rows: List<List<Kind>>, j: int) -> List<Kind> {
+    if j >= rows.length { return [] }
+    rows[j]
+}
+
+fn kind_at(kinds: List<Kind>, j: int) -> Kind {
+    if j >= kinds.length { return no_kind() }
+    kinds[j]
+}
+
+/// A DECLARED PARAMETER AS A `Field`. A record's field and an enum
+/// payload are the SAME shape crossing, so one writer makes both —
+/// a payload's name, its spelling and its shape cannot come from two
+/// places and disagree, which is the property the crossing suite
+/// asserts positionally.
+fn crossed_field(v: FileView, p: Param, kind: Kind) -> MetaField {
+    MetaField {
+        name: p.name.of,
+        ty: written_spelling(p.ty),
+        at: placed(v, v.store.param_id_span(p.id)),
+        kind: kind,
+        marks: crossed_marks(v, p.marks),
+        doc: null,
+        annotations: crossed_annotations(v, p.marks),
+        defaulted: p.default != null,
+        says: crossed_says(v, p, kind),
+        state: p.state,
+    }
+}
+
+/// A declared seat as a `Param`: its name, its type's spelling AND ITS
+/// SHAPE, its `mut` and `const` marks.
+fn crossed_param(v: FileView, p: Param, k: Kind) -> MetaParam {
+    MetaParam {
+        name: p.name.of,
+        ty: written_spelling(p.ty),
+        mutable: p.promises.mutable,
+        settled: p.promises.settled,
+        at: placed(v, v.store.param_id_span(p.id)),
+        kind: k,
+    }
+}
+
+/// What an event says: the seats its handler is told, each shaped by
+/// the handler's own type. Absent for a member that is no event.
+fn crossed_says(v: FileView, p: Param, kind: Kind) -> List<MetaParam>? {
+    let says? = p.says else { return null }
+    let kinds = told_kinds(kind)
+    [crossed_param(v, s, kind_at(kinds, j)) for j, s in says]
+}
+
+/// The seats a handler's type takes — an event's member holds a
+/// handler that may be absent.
+fn told_kinds(kind: Kind) -> List<Kind> {
+    match kind { .Opt(.Fn(seats, _)) -> [s.kind for s in seats], rest -> [] }
+}
+
+/// A member's marks as the derive reads them — the word, its words,
+/// and where it stands.
+fn crossed_marks(v: FileView, ms: List<Mark>) -> List<MetaMark> {
+    [MetaMark { name: m.name, args: m.args, at: placed(v, m.span) } for m in ms]
+}
+
+/// A member's marks again, as its OWN `annotations` — `crossed_marks`'s
+/// twin: the same `@word`s, read through the general door every
+/// member shares with a declaration rather than the claimed-by-a-derive
+/// one. A field or a variant has no `///` of its own yet — no grammar
+/// attaches one — so its `doc` reads null until one does.
+fn crossed_annotations(v: FileView, ms: List<Mark>) -> List<MetaAnnotation> {
+    [MetaAnnotation {
+        name: m.name,
+        args: m.args,
+        at: placed(v, m.span),
+        call: call_at(v, m.name, m.span),
+    } for m in ms]
+}
+
+/// The annotation written at `sp` as the template of its call — the
+/// quote its builder marked where the `@` stands.
+export fn call_at(v: FileView, name: string, sp: Span?) -> MetaCode? {
+    if sp == null { return null }
+    MetaCode { node: Node.Template(v.source.file, sp!.lo, ["${name}(", ")"], []) }
+}
+
+/// A source span as the place a meta value names.
+fn placed(v: FileView, sp: Span?) -> Loc? {
+    if sp == null { return null }
+    Loc { file: v.source.file, lo: sp!.lo, hi: sp!.hi }
+}
+
+/// A type reference as the program WROTE it, "" for a written absence.
+fn written_spelling(t: TypeRef?) -> string {
+    if t == null { return "" }
+    spelled(t!)
+}
+
+/// A claim set that is KNOWN and EMPTY, which is not the same value
+/// as an unknown one — and the empty literal does not adopt a
+/// nullable aggregate's want, so it is bound at its own type here and
+/// the two answers read as the two facts they are.
+fn claims_nothing() -> List<string> {
+    let none: List<string> = []
+    none
+}
+
+/// EVERY PART OR NONE — claim sets folded into one union, absent when
+/// any part is absent. An unanswerable claim set POISONS the union
+/// rather than shrinking it: shrinking would say "nothing reads this"
+/// where the truth is "we cannot say yet", and refuse a mark that is
+/// perfectly well claimed.
+fn all_claims(each: List<List<string>?>) -> List<string>? {
+    if each.any(it == null) { return null }
+    flatten([c! for c in each])
+}
+
+/// A list type's element, or null for any other shape.
+fn elem_of(types: TypeRegistry, ty: TypeId) -> TypeId? {
+    match types.shape_of(ty) { .List(e) -> e, _ -> null }
+}
+
+/// The arenas' counts now.
+/// A named grammar statement readied for its block word, with the
+/// file whose fns its actions name; null for any other statement or a
+/// notation that does not parse.
+fn readied_grammar(p: Parsed, s: StmtId, path: string) -> BlockGrammar? {
+    let notation? = p.store.syntax_parts(s) else { return null }
+    let gp = parse_grammar(notation.text)
+    if gp.built == null { return null }
+    BlockGrammar {
+        word: notation.name,
+        ready: ready(gp.built!, avra_known_terminals()),
+        origin: path,
+    }
+}
+
+/// A template's body copied: its statements, or its arms.
+type Copied = { stmts: List<StmtId>, arms: List<Arm>, params: List<Param> = [], inits: Inits = no_inits() }
+
+impl Workspace {
+    /// A copied node whose source a sublanguage minted wears that
+    /// sublanguage's library.
+    fn note_foreign_origin(f: FileId, src: SyntaxArena, from: ExprId, id: ExprId) {
+        let range? = src.foreign_of(from) else { return }
+        let origin = self.file_id(range.path)
+        if !same_file(origin, f) { self.decls.note_origins(f, [id], [], [], origin) }
+    }
+}
+
+impl Workspace {
+    /// A body of nothing but holes, in the seat it is put in.
+    fn holes_copied(f: FileId, fills: List<Node>, seat: HoleKind) -> Copied {
+        match seat {
+            .Arm -> Copied { stmts: [], arms: flatten([self.spliced_arms(f, x) for x in fills]) },
+            .Fields -> Copied {
+                stmts: [],
+                arms: [],
+                params: flatten([self.spliced_params(f, x) for x in fills]),
+            },
+            .Inits -> Copied {
+                stmts: [],
+                arms: [],
+                inits: joined_inits([self.spliced_inits(f, x) for x in fills]),
+            },
+            .Expression or .Statement or .Name or .Binder or .Type or .Run -> Copied { stmts: flatten([self.spliced_stmts(f, x) for x in fills]), arms: [] },
+        }
+    }
+}
+
+/// Where a directive's code was written: its first template's file
+/// and offset — the outer template when templates nest.
+fn template_site(node: Node) -> Loc? {
+    match node {
+        .Template(file, at, _, _) -> Loc { file: file, lo: at, hi: at },
+        .Many(items) -> {
+            let first: Node? = items.first()
+            if first == null { null } else { template_site(first!) }
+        },
+        .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> null,
+    }
+}
+
+fn nothing_copied() -> Copied { Copied { stmts: [], arms: [] } }
+
+/// What a field or record-field seat took from its template.
+type Lift = { lifts: bool, params: List<Param>, inits: Inits }
+
+/// A statement's fields when it declares some — a type's, or a fn's
+/// parameters.
+fn fields_of(s: Stmt) -> List<Param>? {
+    match s {
+        .StructDecl(_, _, fields) -> fields,
+        .FnDecl(_, _, params, _, _) -> params,
+        .ExprStmt(_) or .Discard(_) or .IfStmt(_, _, _) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+    }
+}
+
+/// A run whose template has nothing to lift, in the unplaceable
+/// channel's words.
+fn unliftable(template: string, at: int, why: string) -> Diag {
+    refusal(
+        "annotation.unplaceable",
+        at_template(template, at),
+        "a hole was filled with something no seat can hold",
+        why,
+        "a fill the compiler cannot place is spoken, never spliced",
+    )
+}
+
+fn no_inits() -> Inits { Inits { names: [], values: [] } }
+
+/// Several literals' fields as one run, in order.
+fn joined_inits(parts: List<Inits>) -> Inits {
+    Inits {
+        names: flatten([i.names for i in parts]),
+        values: flatten([i.values for i in parts]),
+        spoiled: parts.any(it.spoiled),
+    }
+}
+
+fn no_fields(template: string) -> string {
+    "a field run takes `type _ = { … }` or `fn _(…)` templates, and the one from ${template} carries no fields"
+}
+
+fn no_literal(template: string) -> string {
+    "a record-field run takes `W { … }` templates, and the one from ${template} is not a record literal"
+}
+
+fn misfit_defect(template: string, at: int, k: int) -> Diag {
+    defect_at(
+        at_template(template, at),
+        "defect: hole ${k} of the template at offset ${at} was filled with a shape its seat does not take",
+    )
+}
+
+/// A template's own offset as a place — a template has no line.
+fn at_template(template: string, at: int) -> Loc {
+    Loc { file: template, lo: at, hi: at }
+}
+
+/// The words for a fill no seat can hold — the FILL's own, since the
+/// splice cannot re-derive why a shape had nowhere to go.
+fn unplaceable_fill(template: string, at: int, u: Unplaced) -> Diag { unliftable(template, at, u.why) }
+
+/// A `List<Code>` — a run of templates — in a seat that holds ONE
+/// value.
+fn many_in_expression() -> string {
+    "a list of templates has no expression position — splice it where a run belongs (statements, arms, binders), or fold the list into one template before the hole"
+}
+
+/// A generated declaration's name is already the file's — the
+/// annotation is asked to choose another.
+/// An annotation that could not run — the DECLARING path's voice,
+/// the validating path's words.
+/// A mark no reader on this declaration claims. THE LAW LINE
+/// OUTLIVES ITS MECHANISM: it says a mark is read by something that
+/// CLAIMS it, never "by a derive" — a derive is who claims today, and
+/// a law worded after its implementation goes stale the moment the
+/// implementation moves. The mechanism belongs in the HELP, beside
+/// the claims that ARE standing, so a typo reads as a typo.
+/// `gatherer` is the enum a gathered member's mark is held to — named,
+/// since another enum gathering the same member may read it.
+fn unclaimed_mark(m: Mark, claimed: List<string>, gatherer: string?, at: Loc?) -> Diag {
+    refusal(
+        "annotation.unread_mark",
+        at,
+        "every mark is read by something that claims it",
+        unread_label(m, gatherer),
+        claims_help(claimed),
+    )
+}
+
+fn unread_label(m: Mark, gatherer: string?) -> string {
+    let g? = gatherer else { return "`@${m.name}` — nothing on this declaration reads it" }
+    "`@${m.name}` — nothing on `${g}`, which gathers this, reads it"
+}
+
+fn claims_help(claimed: List<string>) -> string {
+    if claimed.is_empty() { return "a mark is read by a `@derive` whose trait declares `marks`" }
+    "the marks read here are ${joined(["`@${c}`" for c in sorted_texts(claimed)], ", ")}"
+}
+
+fn lift_failed(label: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.unsettled",
+        at,
+        "an annotation could not run",
+        label,
+        "an annotation runs at compile time from pure computation alone",
+    )
+}
+
+/// A DECLARING annotation's argument is a literal or a const naming
+/// one: its generated names are made before any value is computed.
+fn unspelled_const(ann: string, name: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.seats",
+        at,
+        "`@${ann}` generates declarations, so `${name}` must name a literal",
+        "names a value the source does not spell",
+        "a declaring annotation's argument is a literal, or a const whose value is one",
+    )
+}
+
+/// THE PACKAGE'S OWN VOICE for a moved `@std/meta` — spoken whether
+/// or not any annotation was reached, because the cascade that
+/// follows a refused boundary can reach a file the crossing never
+/// touched. The words are the annotation door's, so a reader who has
+/// seen one has seen both.
+fn foreign_package(moved: string) -> Diag {
+    refusal(
+        "annotation.meta",
+        null,
+        "the compiler crosses `@std/meta`'s own shapes",
+        "the compiler was built against another `@std/meta` — ${moved}",
+        "build against the `@std/meta` this compiler ships",
+    )
+}
+
+fn generated_taken(ann: string, name: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.generated_taken",
+        at,
+        "`@${ann}` generates `${name}`, which this file already declares",
+        "asked here",
+        "rename the written declaration, or the generated one",
+    )
+}
+
+/// A WRAP directive whose `source` names no fn matching the
+/// annotated one — nothing to move the written body behind.
+fn wrap_missing(ann: string, name: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.wrap_missing",
+        at,
+        "`@${ann}` asks to wrap `${name}`, and its `source` declares no fn of that name",
+        "asked here",
+        "a WRAP directive's `source` writes the wrapper under the annotated fn's own name",
+    )
+}
+
+/// A WRAP directive over a declaration with no body — an extern, a
+/// trait member — has no written code to move behind the wrapper.
+fn wrap_bodiless(ann: string, name: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.wrap_bodiless",
+        at,
+        "`@${ann}` asks to wrap `${name}`, which has no body to move",
+        "asked here",
+        "WRAP moves a written body behind its wrapper — an extern or a trait member has none",
+    )
+}
+
+/// A WRAP directive over a declaration no call reaches by name.
+fn wrap_kind(ann: string, name: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.wrap_kind",
+        at,
+        "`@${ann}` asks to wrap `${name}`, which is neither a fn nor a method",
+        "asked here",
+        "WRAP moves a fn's or a method's body behind its wrapper",
+    )
+}
+
+/// A WRAP directive's wrapper redeclares a DIFFERENT signature than
+/// the fn it wraps — params, marks, defaults and the answer type all
+/// carry the contract every caller already compiled against.
+fn wrap_mismatch(ann: string, name: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.wrap_mismatch",
+        at,
+        "`@${ann}`'s wrapper for `${name}` does not redeclare its exact signature",
+        "asked here",
+        "match the `static`/`mut fn` word, the params (marks and defaults included) and the answer type, word for word",
+    )
+}
+
+/// REGISTER A UNIT under its name. THE SEAT IS MUT so the write lands in the workspace's
+/// own table — a plain seat would copy the map, and a copy-on-write that runs once per
+/// minted unit turns the walk quadratic.
+/// WHETHER A MODULE'S RECORD NAMES A BLOCK WORD THE `use` LINE TAKES — read from the
+/// persisted interface alone, never a parse. The tree's own on-disk store answers this,
+/// not `ws.store` (armed only inside a build's hold): a query that only reads never
+/// waits for a write it may never see, and a cache built by an earlier `check` still
+/// answers a later `fmt`'s question. WITH NO RECORD YET (a tree no `check` has ever
+/// touched), the caller does not fall back to reading the provider outright — `files`
+/// is lexed first (`maybe_declares_grammar`), so a module none of whose files ever
+/// spell the word cannot cost a parse it has no chance of needing.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn module_names_block_word(ws: Workspace, m: ModulePath, files: List<string>, items: List<string>) -> bool {
+    let named? = module_block_names(ws, m) else { return maybe_declares_block(ws, files) }
+    items.any((k) -> named.contains(k))
+}
+
+/// The names `m`'s record marks as block words, read once per build — or
+/// null when there is no record to read them from.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn module_block_names(ws: Workspace, m: ModulePath) -> List<string>? {
+    let known = ws.records.block_named.get().get(m.text())
+    if known != null { return known! }
+    let rows? = module_block_rows(ws, m) else { return null }
+    let named = [r.name for r in rows if names_block_word(r)]
+    ws.records.block_named.put(m.text(), named)
+    named
+}
+
+/// A module's record lines, decoded once per build — or null when there is no record
+/// to read. Every reader of a record's block words shares this one decode.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn module_block_rows(ws: Workspace, m: ModulePath) -> List<Row>? {
+    let known = ws.records.block_rows.get().get(m.text())
+    if known != null { return known! }
+    let store = ws.opened_store()
+    let iface? = ws.db.sig(store, ws.record_key(m)) else { return null }
+    let rec? = ws.record_bodies().body(store, m.text(), iface) else { return null }
+    let rows = [r! for line in rec.split("\n") for r in [read_row(read_fields(line))] if r != null]
+    ws.records.block_rows.put(m.text(), rows)
+    rows
+}
+
+/// The exported instances a module's record marks, each with the component word it
+/// instances — read off `facts.word`, a block name whose form is no part of the
+/// record. Null when the record is absent, so a cold tree still parses.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn module_block_instances(ws: Workspace, m: ModulePath) -> List<Instanced>? {
+    let rows? = module_block_rows(ws, m) else { return null }
+    flatten([record_instance(r) for r in rows])
+}
+
+fn record_instance(r: Row) -> List<Instanced> {
+    if !r.exported { return [] }
+    let f? = facts_unblocked(r.facts) else { return [] }
+    if !f.instance { return [] }
+    let w? = f.word else { return [] }
+    [Instanced { name: r.name, declared: w }]
+}
+
+/// Whether a module's record marks a block name whose FORM must be read from a parse
+/// — a named grammar, or a record that is a component. An absent record answers true,
+/// since nothing but a parse can say.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn module_has_forms(ws: Workspace, m: ModulePath) -> bool {
+    let rows? = module_block_rows(ws, m) else { return true }
+    rows.any((r) -> r.kind == "syntax" || facts_unblocked(r.facts)?.is_component ?? false)
+}
+
+/// A LEX-LEVEL PRE-FILTER, never a parse: the compiler's OWN source
+/// says `grammar` as an ordinary field, type and parameter name in
+/// hundreds of files that declare none, so a bare word match barely
+/// cuts anything here — the two forms either grammar-declaring rule
+/// spells (and a `component`, which opens its own word) are `grammar { …` (an expression) and `grammar NAME { …`
+/// (a statement), and nothing else opens either way. A file that
+/// does not OPEN one this way is never read past its own text.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn maybe_declares_block(ws: Workspace, files: List<string>) -> bool {
+    files.any(file_lexes_block(ws, it))
+}
+
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn file_lexes_block(ws: Workspace, path: string) -> bool {
+    scan_flag(
+        ws
+            .relation(Family.BlockScan)
+            .demand(
+                ws.text_key(path),
+                () -> {
+                    let text = ws.listed_text(path)
+                    // THE DB ANSWERS BEFORE THE LEXER: the verdict is the text's own, so a
+                    // row under its digest holds for every process that reads these bytes —
+                    // but the VERDICT also depends on which keywords THIS compiler's
+                    // assembled grammar opens a block with, so the compiler's own print
+                    // joins the key too. So what the store answers is a function of the
+                    // input this query already read: its read records nothing more.
+                    let store = ws.opened_store()
+                    let key = digest_of("scan\n${ws.compiler_id()}\n${text}")
+                    let kept = ws.db.scan(store, key)
+                    let found = if kept != null { kept! == "1" } else { text_opens_block(text, ws.lang.keywords) }
+                    if kept == null { ws.db.insert_scan(store, key, if found { "1" } else { "0" }) }
+                    DbRow.Flag(found)
+                },
+                flag_print,
+            ),
+    )
+}
+
+/// Whether a file declares a component — `component NAME`, then its
+/// block or its head — read off its tokens. A SCAN IS A QUERY OVER ITS
+/// TEXT: a reader depends on the answer, so an edit that leaves the
+/// answer standing leaves the reader standing.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn file_declares_component(ws: Workspace, path: string) -> bool {
+    scan_flag(
+        ws
+            .relation(Family.ComponentScan)
+            .demand(
+                ws.text_key(path),
+                () -> DbRow.Flag(declares_a_component(ws.listed_text(path))),
+                flag_print,
+            ),
+    )
+}
+
+fn declares_a_component(text: string) -> bool {
+    text.contains("component") && declares_component(lex_source(text).tokens)
+}
+
+/// The names a file's `component NAME` declarations wear — read off its
+/// tokens.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn component_names(ws: Workspace, path: string) -> List<string> {
+    scan_words(
+        ws
+            .relation(Family.ComponentNames)
+            .demand(
+                ws.text_key(path),
+                () -> DbRow.Words(components_named(ws.listed_text(path))),
+                words_print,
+            ),
+    )
+}
+
+fn components_named(text: string) -> List<string> {
+    let tokens = lex_source(text).tokens
+    [tokens[j + 1].text for j in 0..tokens.length - 2 if tokens[j].lit_matches("component") &&
+        tokens[j + 1].kind == TokenKind.Name &&
+        (tokens[j + 2].lit_matches("{") || tokens[j + 2].lit_matches("("))]
+}
+
+fn flag_print(r: DbRow) -> int { if scan_flag(r) { 1 } else { 0 } }
+
+fn words_print(r: DbRow) -> int { fp_str(joined(scan_words(r), "\n")) }
+
+/// A component word known by its name alone: its instance parses as
+/// one and stands as a hole.
+fn unread_word(name: string, origin: string) -> ComponentWord {
+    ComponentWord {
+        word: name,
+        declared: name,
+        form: Instancing.Unread,
+        store: new_node_store(origin),
+        origin: origin,
+        own: true,
+    }
+}
+
+/// Whether a stream holds a component's declaration: `component NAME`
+/// before its block or its head.
+fn declares_component(tokens: List<Token>) -> bool {
+    [i for i in 0..tokens.length - 2]
+        .any(
+            tokens[it].lit_matches("component") &&
+                tokens[it + 1].kind == TokenKind.Name &&
+                (tokens[it + 2].lit_matches("{") || tokens[it + 2].lit_matches("(")),
+        )
+}
+
+/// Whether a file's text may declare a block word. THE CHEAPEST GATE
+/// FIRST: no `grammar`/`component`/`export` substring anywhere, no token
+/// stream worth building.
+fn text_opens_block(text: string, keywords: List<string>) -> bool {
+    (text.contains("grammar") || text.contains("component") || text.contains("export")) &&
+        opens_block(lex_source(text).tokens, keywords)
+}
+
+/// Whether the stream may declare a block word: a `grammar` token
+/// followed by `{` or by a NAME then `{`, any `component` keyword (a
+/// component's word opens a block where it is imported), or an
+/// exported named instance (a body lists it by name). A `grammar`
+/// used as a plain identifier is followed by neither.
+fn opens_block(tokens: List<Token>, keywords: List<string>) -> bool {
+    [i for i in 0..tokens.length]
+        .any(
+            tokens[it].lit_matches("component") ||
+                tokens[it].lit_matches("grammar") && grammar_opens_at(tokens, it) ||
+                exports_instance_at(tokens, it, keywords),
+        )
+}
+
+/// `export word name` where `word` is no keyword — a component's.
+fn exports_instance_at(tokens: List<Token>, i: int, keywords: List<string>) -> bool {
+    if i + 2 >= tokens.length || !tokens[i].lit_matches("export") { return false }
+    tokens[i + 1].kind == TokenKind.Name &&
+        !keywords.contains(tokens[i + 1].text) &&
+        tokens[i + 2].kind == TokenKind.Name
+}
+
+fn grammar_opens_at(tokens: List<Token>, i: int) -> bool {
+    if i + 1 >= tokens.length { return false }
+    if tokens[i + 1].lit_matches("{") { return true }
+    tokens[i + 1].kind == TokenKind.Name && i + 2 < tokens.length && tokens[i + 2].lit_matches("{")
+}
+
+/// A row whose name opens a block where it is imported — a named
+/// grammar's, or a component's — or that a body lists by name: an
+/// exported named instance.
+fn names_block_word(row: Row) -> bool {
+    let facts = facts_unblocked(row.facts)
+    row.kind == "syntax" || facts?.is_component ?? false || facts?.instance ?? false
+}
+
+/// The name a parse failure stands on, and the one just before it.
+fn names_near(text: string, at: int) -> List<string> {
+    mut back = at
+    while back > 0 && text.char_code(back - 1) == 32 { back = back - 1 }
+    mut start = back
+    while start > 0 && is_name_cont(text.char_code(start - 1)) { start = start - 1 }
+    mut end = at
+    while end < text.length && is_name_cont(text.char_code(end)) { end = end + 1 }
+    [text.substring(at, end), text.substring(start, back)]
+}
+
+/// A component word nobody imported, and the `use` that brings it.
+fn import_it(spelled: string) -> string {
+    "a component's word opens its block only where it is imported — `use ${spelled}`"
+}
+
+// ── EARLY-CUTOFF CONTENT FINGERPRINTS (avra-8sb5.57.106) ──
+// `Visible`, `Resolved`, `Typed`, `Folded`, `Analysis` and `Lowered`
+// once settled on `self.db.revision()` — a build-wide counter — so
+// an edit anywhere read as "changed" through them and every
+// dependent recomputed. These fold the WHOLE value each family
+// actually produces, the law `sig_hash`/`parsed_fingerprint` already
+// keep. Every helper below has exactly one literal `fp(` site, so a
+// shape folded from more than one place (an absent/present pair, a
+// bound name entry) is named once and called, never re-spelled.
+
+fn bool_fp(b: bool) -> int {
+    if b { 1 } else { 0 }
+}
+
+fn opt_type_fp(t: TypeId?) -> int {
+    if t == null { fp(126, []) } else { fp(127, [t!.fingerprint()]) }
+}
+
+fn type_list_fp(xs: List<TypeId>) -> int {
+    fp_list([x.fingerprint() for x in xs])
+}
+
+fn opt_type_list_fp(xs: List<TypeId>?) -> int {
+    if xs == null { fp(128, []) } else { fp(129, [type_list_fp(xs!)]) }
+}
+
+fn opt_seat_marks_fp(ms: List<SeatMark>?) -> int {
+    if ms == null { fp(130, []) } else { fp(131, [fp_list([m.fingerprint() for m in ms!])]) }
+}
+
+fn opt_asked_fp(a: NullableAsk?) -> int {
+    if a == null { fp(132, []) } else { fp(133, [a!.fingerprint()]) }
+}
+
+fn opt_decl_fp(d: DeclId?) -> int {
+    if d == null { fp(183, []) } else { fp(184, [d!.fingerprint()]) }
+}
+
+fn opt_dispatch_fp(d: RunChoice?) -> int {
+    if d == null { fp(185, []) } else { fp(186, [d!.fingerprint()]) }
+}
+
+fn opt_pipe_stage_fp(s: PipeStage?) -> int {
+    if s == null { fp(313, []) } else { fp(314, [s!.fingerprint()]) }
+}
+
+fn opt_sub_fp(s: Sub?) -> int {
+    if s == null { fp(134, []) } else { fp(135, [s!.fingerprint()]) }
+}
+
+fn opt_param_scope_fp(s: ParamScope?) -> int {
+    if s == null { fp(136, []) } else { fp(137, [s!.fingerprint()]) }
+}
+
+fn opt_expr_list_fp(xs: List<ExprId>?) -> int {
+    if xs == null { fp(138, []) } else { fp(139, [fp_list([x.fingerprint() for x in xs!])]) }
+}
+
+fn opt_binding_fp(b: Binding?) -> int {
+    if b == null { fp(140, []) } else { fp(141, [b!.fingerprint()]) }
+}
+
+fn opt_cap_fp(c: Cap?) -> int {
+    if c == null { fp(142, []) } else { fp(143, [c!.fingerprint()]) }
+}
+
+/// A file's typing table, folded field by field — every SideTable's
+/// own placement and cells, and the voices it earned. `hungry` and
+/// `starved` are a body's own working state, spoken before its facts
+/// settle (`absorb`'s own comment); folding them anyway costs
+/// nothing and keeps this ONE fold honest about covering the WHOLE
+/// returned value rather than a hand-picked subset of it.
+export fn type_facts_fp(t: TypeFacts) -> int {
+    fp(
+        144,
+        [
+            t.of_expr.folded((v: TypeId) -> v.fingerprint()),
+            t.widens.folded(opt_type_fp),
+            t.narrows.folded(opt_type_fp),
+            t.asks.folded(opt_asked_fp),
+            t.substs.folded(opt_sub_fp),
+            t.lambda_params.folded(opt_type_list_fp),
+            t.lambda_marks.folded(opt_seat_marks_fp),
+            t.captures.folded(opt_type_list_fp),
+            t.wants.folded(opt_type_fp),
+            t.hungry.folded(bool_fp),
+            t.starved.folded(opt_type_fp),
+            t.scopes.folded(opt_param_scope_fp),
+            t.pattern_types.folded(type_list_fp),
+            t.binding_types.folded(opt_type_fp),
+            t.boxed_locals.folded(bool_fp),
+            t.warned.folded(bool_fp),
+            t.alias_copies.folded(bool_fp),
+            t.thaws.folded(bool_fp),
+            t.plain_thaws.folded(bool_fp),
+            t.gathered.folded(bool_fp),
+            t.collections.folded(opt_expr_list_fp),
+            t.offers.folded(bool_fp),
+            t.spreads.folded(bool_fp),
+            t.null_tails.folded(bool_fp),
+            t.chosen.folded(opt_decl_fp),
+            t.dispatches.folded(opt_dispatch_fp),
+            t.stages.folded(opt_pipe_stage_fp),
+            voices_fp(t.voices),
+        ],
+    )
+}
+
+/// A file's name resolution, folded field by field: what each
+/// expression bound to, what each lambda captured, the two per-expr
+/// read marks, the namespace it resolved in, and its voices.
+export fn name_facts_fp(n: NameFacts) -> int {
+    fp(
+        145,
+        [
+            n.bindings.folded(opt_binding_fp),
+            n.captures.folded(opt_cap_fp),
+            n.mut_reads.folded(bool_fp),
+            n.state_reads.folded(bool_fp),
+            n.settled_reads.folded(bool_fp),
+            namespace_fp(n.names),
+            voices_fp(n.voices),
+        ],
+    )
+}
+
+/// One declaration's slice of a file's names: every expression in
+/// [lo, hi) over its five columns, ONE linear fold end to end (order
+/// alone tells two expressions' columns apart — the columns never
+/// repeat a value across expressions the way two SEQUENCES could),
+/// avalanched once. The cells alone: the namespace is the file's, and
+/// `Visible` fingerprints it once per file — never the file's voices,
+/// never a neighbour's cells.
+export fn name_slice_fp(n: NameFacts, lo: int, hi: int) -> int {
+    fp(181, [mix_final(fp(182, [name_cell_col(n, lo, j) for j in 0..(hi - lo) * 5]))])
+}
+
+/// The `j`th of a slice's `5 * (hi - lo)` raw columns, `j`'s own low
+/// bits naming which — ONE flat comprehension over every
+/// expression's five columns, never a list per expression concat'd
+/// into it: a sub-list per cell paid for a flatten pass that cost
+/// more than the finalizer calls it was buying back.
+fn name_cell_col(n: NameFacts, lo: int, j: int) -> int {
+    let i = lo + j / 5
+    if j % 5 == 0 { return opt_binding_fp(n.bindings.get(i)) }
+    if j % 5 == 1 { return opt_cap_fp(n.captures.get(i)) }
+    if j % 5 == 2 { return bool_fp(n.mut_reads.get(i)) }
+    if j % 5 == 3 { return bool_fp(n.state_reads.get(i)) }
+    bool_fp(n.settled_reads.get(i))
+}
+
+/// A bound-name table's content: each table's ordered *_names list
+/// names the keys — a `Map`'s own iteration order never reaches
+/// output — paired with the id it bound.
+fn named_id_fp(name: string, id: int) -> int {
+    fp(146, [fp_str(name), id])
+}
+
+export fn bound_names_fp(b: BoundNames) -> int {
+    fp(
+        147,
+        [
+            fp_list([named_id_fp(n, b.fns.get(n)?.index ?? -1) for n in b.fn_names]),
+            fp_list([named_id_fp(n, b.types.get(n)?.index ?? -1) for n in b.type_names]),
+            fp_list([named_id_fp(n, b.syntaxes.get(n)?.index ?? -1) for n in b.syntax_names]),
+        ],
+    )
+}
+
+fn opt_bound_names_fp(b: BoundNames?) -> int {
+    if b == null { fp(148, []) } else { fp(149, [bound_names_fp(b!)]) }
+}
+
+/// A namespace's bound content: what `fn_decl`/`type_decl`/`syntax_decl`
+/// read — the module's shared winners (`base`) plus this file's own
+/// tables. NEVER `reads`: that Cell holds a durable witness's own
+/// audit trail, mutated fresh at every ask, not program content a
+/// dependent reads back.
+export fn namespace_fp(ns: Namespace) -> int {
+    fp(
+        150,
+        [
+            opt_bound_names_fp(ns.base),
+            bound_names_fp(
+                BoundNames {
+                    fns: ns.fns,
+                    types: ns.types,
+                    syntaxes: ns.syntaxes,
+                    syntax_names: ns.syntax_names,
+                    fn_names: ns.fn_names,
+                    type_names: ns.type_names,
+                },
+            ),
+            fp_list([d.index for d in ns.apart]),
+            voices_fp(ns.voices),
+        ],
+    )
+}
+
+fn severity_fp(s: Severity) -> int {
+    match s { .Error -> fp(151, []), .Warning -> fp(152, []) }
+}
+
+fn opt_str_fp(s: string?) -> int {
+    if s == null { fp(153, []) } else { fp(154, [fp_str(s!)]) }
+}
+
+fn loc_fp(l: Loc) -> int {
+    fp(155, [opt_str_fp(l.file), l.lo, l.hi])
+}
+
+fn opt_loc_fp(l: Loc?) -> int {
+    if l == null { fp(156, []) } else { fp(157, [loc_fp(l!)]) }
+}
+
+fn frame_fp(f: Frame) -> int {
+    fp(158, [opt_str_fp(f.label), opt_loc_fp(f.loc)])
+}
+
+fn edit_fp(e: Edit) -> int {
+    fp(159, [loc_fp(e.loc), fp_str(e.replacement)])
+}
+
+fn confidence_fp(c: Confidence) -> int {
+    match c { .High -> fp(160, []), .Medium -> fp(161, []), .Low -> fp(162, []) }
+}
+
+fn suggestion_fp(s: Suggestion) -> int {
+    fp(
+        163,
+        [confidence_fp(s.confidence), fp_str(s.description), fp_list([edit_fp(e) for e in s.edits])],
+    )
+}
+
+/// A live `Diag`'s content, through its wire-safe twin — `cause`,
+/// the one field `Diag` cannot fold (a `dyn Error?` has no
+/// `fingerprint()`), is already flattened there into the same lines
+/// the renderer would print for it.
+export fn diag_fp(d: Diag) -> int {
+    let df = diag_facts_of(d)
+    fp(
+        164,
+        [
+            fp_str(df.kind),
+            severity_fp(df.severity),
+            frame_fp(df.primary),
+            fp_list([frame_fp(fr) for fr in df.secondary]),
+            fp_list([fp_str(s) for s in df.cause_lines]),
+            fp_str(df.message),
+            opt_str_fp(df.help),
+            fp_list([suggestion_fp(s) for s in df.suggestions]),
+        ],
+    )
+}
+
+export fn voices_fp(v: Voices) -> int {
+    fp(165, [fp_list([diag_fp(d) for d in v.list])])
+}
+
+/// A declaration's use-site warnings, every field folded — its place
+/// included, since a use speaks it there.
+export fn use_warnings_fp(ws: List<MetaDiagnostic>) -> int {
+    fp_list([use_warning_fp(w) for w in ws])
+}
+
+fn use_warning_fp(w: MetaDiagnostic) -> int {
+    fp(
+        185,
+        [
+            fp_str(w.message),
+            opt_str_fp(w.help),
+            opt_loc_fp(w.at),
+            bool_fp(w.warning),
+            opt_str_fp(w.kind),
+        ],
+    )
+}
+
+fn opt_decl_id_fp(d: DeclId?) -> int {
+    if d == null { fp(166, []) } else { fp(167, [d!.fingerprint()]) }
+}
+
+fn opt_expr_id_fp(e: ExprId?) -> int {
+    if e == null { fp(168, []) } else { fp(169, [e!.fingerprint()]) }
+}
+
+/// A compile-time seat value's content: `fp` is already the seat's
+/// own canonical fingerprint string (`settle_symbol`'s currency), so
+/// this adds only what that string does not carry — the type it
+/// wears and the crossed value itself, walked through its heap.
+fn seat_value_fp(v: SeatValue) -> int {
+    fp(170, [v.index, fp_str(v.fp), v.ty.fingerprint(), meta_hash(v.heap, v.value)])
+}
+
+fn wanted_fp(w: Wanted) -> int {
+    fp(
+        171,
+        [
+            w.file.fingerprint(),
+            opt_decl_id_fp(w.decl),
+            fp_str(w.name),
+            opt_sub_fp(w.sub),
+            fp_list([seat_value_fp(s) for s in w.seats]),
+            opt_expr_id_fp(w.root),
+        ],
+    )
+}
+
+/// A settled aggregate's octets, walked byte by byte — bounded by
+/// the blob's own size, which is what laying it out already cost.
+fn bytes_fp(b: Bytes) -> int {
+    fp_list([b.at(i) for i in 0..b.length])
+}
+
+fn static_box_fp(b: StaticBox) -> int {
+    match b {
+        .Slots(cells) -> fp(172, [fp_list([c.fingerprint() for c in cells])]),
+        .Table(keys, values) -> fp(173, [fp_list([fp_str(k) for k in keys]), fp_list([v.fingerprint() for v in values])]),
+        .Octets(o) -> fp(174, [bytes_fp(o)]),
+    }
+}
+
+fn opt_file_id_fp(f: FileId?) -> int {
+    if f == null { fp(175, []) } else { fp(176, [f!.fingerprint()]) }
+}
+
+fn static_fp(s: Static) -> int {
+    fp(177, [fp_str(s.name), fp_list([static_box_fp(b) for b in s.boxes]), opt_file_id_fp(s.file)])
+}
+
+/// One lowered unit's content: its bodies (`Body` already derives
+/// `Fingerprint`), the instantiations it asked for, its voices, and
+/// the static data it laid out.
+export fn unit_fp(u: Unit) -> int {
+    fp(
+        178,
+        [
+            fp_list([b.fingerprint() for b in u.bodies]),
+            fp_list([wanted_fp(w) for w in u.wants]),
+            voices_fp(u.voices),
+            fp_list([static_fp(s) for s in u.statics]),
+        ],
+    )
+}
+
+/// A dependency's own settled hash, read back for a DERIVED fold
+/// (Folded's over each body's Typed, Analysis's over Resolved and
+/// Folded) — arity-distinguished from absence, never coalesced into a
+/// plain int a real fold could also answer (CLAUDE.md, "an encoding
+/// spends the empty value"). Absence here means one of two things,
+/// neither worth telling apart at this reader: no cell yet, or a
+/// cell `settle_lazy` wrote whose OWN fold nothing has asked for
+/// before now — the DERIVED fold reads it anyway, since folding "a
+/// dependency changed and I do not yet know its shape" IS what
+/// asking the cutoff question means, and the query kernel's own
+/// discipline (ask before compute) guarantees the dependency was
+/// asked, hence settled, before this read runs.
+export fn dep_hash_fp(h: int?) -> int {
+    if h == null { fp(179, []) } else { fp(180, [h!]) }
+}
