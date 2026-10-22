@@ -110,7 +110,8 @@ impl Db {
     fn compiled(sql: string) -> Result<Stmt, SqlError> {
         mut handle: ptr? = null
         mut tail: ptr? = null
-        let rc = sqlite3_prepare_v3(self.raw.get(), sql.bytes(), sql.length, 0, handle, tail)
+        let conn: ptr? = self.live()
+        let rc = sqlite3_prepare_v3(conn, sql.bytes(), sql.length, 0, handle, tail)
         if rc != 0 { fail failed_at(self, rc, sql) }
         // rc = SQLITE_OK WITH A NULL STATEMENT is SQLite's "nothing to run"
         // — the text was a comment, or blank (T37). The splitter does NOT
@@ -123,7 +124,7 @@ impl Db {
             fail SqlError
                 .refused(Cause.NoStatement, "the text holds no statement — it is a comment, or blank")
         }
-        Stmt { raw: Cell.new(handle), conn: Cell.new(self.raw.get()) }
+        Stmt { raw: Cell.new(handle), conn: Cell.new(conn) }
     }
 }
 
@@ -208,7 +209,7 @@ impl Stmt {
             fail SqlError
                 .refused(Cause.RowsDiscarded, "this statement answered a row where none was expected")
         }
-        sqlite3_changes64(db.raw.get())
+        sqlite3_changes64(db.live())
     }
 
     // ── Binding values into the slots ───────────────────────────
@@ -495,7 +496,7 @@ fn failed_at(db: Db, rc: int, sql: string?) -> SqlError {
 }
 
 fn offset_of(db: Db) -> Loc? {
-    let n = sqlite3_error_offset(db.raw.get())
+    let n = sqlite3_error_offset(db.live())
     if n < 0 { return null }
     Loc { file: null, lo: n, hi: n }
 }
