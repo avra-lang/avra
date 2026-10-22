@@ -23,10 +23,10 @@
 //! The nesting depth and a list's length are bounded before anything
 //! below them is read.
 use validate.{Refusal, nearest}
-use issue.{Issue, Issues, Path, root}
+use issue.{Issue, Issues, root}
 use value.{Value, Entry}
 use @std.text.{parse_int}
-use @std.json.typed.{Reader, no_reader}
+use @std.json.typed.{Path, Reader, no_reader}
 
 /// How a value may be read as another kind.
 export enum Coercion {
@@ -67,14 +67,13 @@ impl Obj {
 
 /// A decode in flight: its policy, its bounds, every issue so far,
 /// and — reading JSON text directly — the reader that walks it
-/// (aside once the direct reader steps aside). `order` files
-/// each issue in its record's order: a field's index, or past them
-/// for a key the record does not name.
+/// (aside once the direct reader steps aside), which also files
+/// each issue's place: its record's order — a field's index, or past
+/// them for a key the record does not name — and its steps.
 export type Decoding = {
     coercion: Coercion = Coercion.Strict,
     limits: Limits = Limits {},
     issues: List<Issue> = [],
-    order: List<int> = [],
     json: Reader = no_reader(),
 }
 
@@ -97,7 +96,7 @@ export fn decode<T>(
 
 /// A finished decoding's answer: its value, or every issue it found.
 export fn answered<T>(d: Decoding, got: T?) -> Result<T, Issues> {
-    if !d.issues.is_empty() { fail Issues { all: d.issues } }
+    if !d.issues.is_empty() { fail Issues { all: d.placed() } }
     let answer? = got else { fail Issues { all: [Issue { path: root(), rule: "decode", message: unanswered() }] } }
     answer
 }
@@ -109,9 +108,26 @@ impl Decoding {
 
     /// An issue filed at `order` in its record: a field's index, or
     /// past them for a key the record does not name.
-    mut fn noted(i: Issue, order: int) {
+    mut fn noted(i: Issue, order: int) { self.noted_at(i, order, -1) }
+
+    /// An issue filed at `order` whose received value is the JSON the
+    /// text holds from offset `at` (-1 for none).
+    mut fn noted_at(i: Issue, order: int, at: int) {
         self.issues.push(i)
-        self.order.push(order)
+        self.json.placed(order, at)
+    }
+
+    /// Every issue with its place applied: under the steps its containers
+    /// filed, showing what the text held where it names one.
+    fn placed() -> List<Issue> { [self.issue_at(i) for i in 0..self.count()] }
+
+    fn issue_at(i: int) -> Issue {
+        let issue = self.issues[i]
+        if self.json.places[i].up.is_empty() && self.json.places[i].received_at < 0 { return issue }
+        let p = self.json.places[i]
+        let up = if p.up.is_empty() { issue.path } else { Path { up: issue.path.up.concat(p.up) } }
+        let got = if p.received_at < 0 { issue.received } else { self.value_from(p.received_at) }
+        issue with { path: up, received: got }
     }
 
     /// A rule's refusal at the slot it read: under the slot's path,
