@@ -753,8 +753,9 @@ def streamed(command, payloads, timeout=None, log=None):
     """Runs a batch hook (`--stream`: a JSON array in, one JSON line
     {"index", "result"} out per payload as it completes) and yields each
     (index, result, log lines) as it arrives, so a cut run keeps what finished."""
+    errors = tempfile.TemporaryFile("w+")
     process = subprocess.Popen(shlex.split(command) + ["--stream"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, text=True)
+                               stderr=errors, text=True)
     process.stdin.write(json.dumps(payloads))
     process.stdin.close()
     deadline = time.time() + timeout if timeout else None
@@ -765,7 +766,8 @@ def streamed(command, payloads, timeout=None, log=None):
                 yield answer["index"], answer["result"], answer.get("log", [])
             if deadline and time.time() > deadline:
                 raise subprocess.TimeoutExpired(command, timeout)
-        stderr = process.stderr.read()
+        errors.seek(0)
+        stderr = errors.read()
         if log is not None:
             log.append(stderr[-4000:])
         if process.wait() != 0:
