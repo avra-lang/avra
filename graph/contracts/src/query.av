@@ -21,6 +21,7 @@ export type ReadStep = {
         "seed",
         "holds",
         "derive",
+        "resolve",
     ]) op: string,
     @items(max: 8) inputs: List<string> = [],
     model: string? = null,
@@ -33,6 +34,7 @@ export type ReadStep = {
     @items(max: 64) reasons: List<string> = [],
     @length(min: 1, max: 256) owner: string? = null,
     @length(min: 1, max: 128) reason: string? = null,
+    @length(min: 1, max: 128) clarify: string? = null,
     @one_of(["speaker", "principal"]) binding: string? = null,
     @length(min: 1, max: 128) derivation: string? = null,
 }
@@ -71,7 +73,8 @@ fn step_coherent(s: ReadStep) -> Result<ReadStep, string> {
     if s.reasons.any(it.is_empty()) { fail "an absence reason cannot be empty" }
     if s.op == "holds" && s.names.length != 1 { fail "a status names its output once" }
     if s.names.any(it.is_empty()) { fail "output names cannot be empty" }
-    if (s.op == "expect") != (s.reason != null) { fail "only an expectation names its reason code" }
+    if (s.op == "expect" || s.op == "resolve") != (s.reason != null) { fail "only an expectation or a resolution names its reason code" }
+    if (s.op == "resolve") != (s.clarify != null) { fail "only a resolution names its clarification code" }
     s
 }
 

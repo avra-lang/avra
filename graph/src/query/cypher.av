@@ -9,11 +9,19 @@ use @avra.cypher.parser.{
     CypherError,
 }
 use @std.json.{Json, Field, field, to_text}
-use @std.text.{parse_int, parse_float}
+use @std.text.{parse_int, parse_float, from_codepoints}
 use store.open.{Graph}
 use query.plan.{prepare_read, ReadNode, ReadOnlyPlan}
 use query.respond.{responded, refused}
-use parameters.{read_only_policy, plan_policy}
+use parameters.{
+    read_only_policy,
+    plan_policy,
+    ascii_upper_a,
+    ascii_upper_z,
+    ascii_case_gap,
+    ascii_underscore,
+    unspecified_absence,
+}
 use query.relations.{Link, resolve_hop, unknown_label, check_property, model_named}
 use catalog.{Catalog}
 use semantics.{AbsenceBinding}
@@ -285,6 +293,11 @@ fn chain_of(i: int, clause: MatchClause, args: Args, anchors: List<Slot>, catalo
                 last = step_id
             }
         }
+        if names_one_entity(catalog, model, mine) {
+            let step_id = "${id}r"
+            steps.push(resolve_step(step_id, last, snake_case(model ?? "")))
+            last = step_id
+        }
         slots.push(Slot { name: n.name, step: last, model: model })
     }
     .Ok(
@@ -341,6 +354,46 @@ fn relation_steps(
     }
     steps.push(follow_json(id, last, far, true, null))
     .Ok(Crossed { steps: steps, record_step: last })
+}
+
+/// A node pinned by equality or CONTAINS on a declared identity property is a mention of one entity.
+fn names_one_entity(catalog: Catalog, model: string?, conditions: List<Placed>) -> bool {
+    let home? = model else { return false }
+    let found? = model_named(catalog, home) else { return false }
+    let identities = [i.path[0] for i in found.semantics.identities if i.path.length == 1]
+    conditions.any(pins(it.cond, identities))
+}
+
+fn pins(c: Cond, identities: List<string>) -> bool {
+    match c {
+        .Filter(prop, comparison, _) -> comparison == "eq" && identities.contains(prop),
+        .Search(prop, _) -> identities.contains(prop),
+        .Nullness(_, _) or .Seat(_) -> false,
+    }
+}
+
+/// A mention must name exactly one entity: no match and several matches each have their code.
+fn resolve_step(id: string, input: string, kind: string) -> Json {
+    step_json(
+        id,
+        "resolve",
+        input,
+        [field("reason", Json.Str("no_such_${kind}")), field("clarify", Json.Str("which_${kind}"))],
+    )
+}
+
+/// `PersonalRelationship` as `personal_relationship`.
+fn snake_case(name: string) -> string {
+    from_codepoints([c for i in 0..name.length for c in spaced(name.char_code(i), i)])
+}
+
+fn spaced(c: int, at: int) -> List<int> {
+    if c >= ascii_upper_a && c <= ascii_upper_z {
+        let lower = c + ascii_case_gap
+        if at == 0 { [lower] } else { [ascii_underscore, lower] }
+    } else {
+        [c]
+    }
 }
 
 fn placed_for(placed: List<Placed>, name: string?) -> List<Placed> {
@@ -695,7 +748,7 @@ type Finished = { steps: List<Json>, output: string, joined: List<string> }
 
 /// The model's own reason for a missing property, else the generic one.
 fn absence_code(absences: List<AbsenceBinding>, prop: string) -> string {
-    absences.find(it.path.length == 1 && it.path[0] == prop)?.code ?? "null_result"
+    absences.find(it.path.length == 1 && it.path[0] == prop)?.code ?? unspecified_absence
 }
 
 fn absences_of(catalog: Catalog, model: string?) -> List<AbsenceBinding> {

@@ -1,0 +1,134 @@
+use derive.model.{model}
+use schema.{Registration}
+use semantics.{Semantics, IdentityBinding}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use @std.json.{Json, field, parse}
+
+@model(quote { Semantics { identities: [IdentityBinding { namespace: "contact:name", path: ["name"] }] } })
+type Contact = { name: string, email: string? }
+
+@model(quote { Semantics { identities: [IdentityBinding { namespace: "note:title", path: ["title"] }] } })
+type ProjectNote = { title: string, body: string? }
+
+fn registrations() -> List<Registration> {
+    [Registration { make: Contact_graph_model }, Registration { make: ProjectNote_graph_model }]
+}
+
+fn record(id: string, model: string, json: string) -> Result<Record, string> {
+    Record { id: id, model: model, value: stored_value(json)? }
+}
+
+fn directory() -> Result<Graph, string> {
+    mut g = Graph.memory(registrations())?
+    g.observe("in:1", "raw")?
+    g
+        .publish(
+            Publication {
+                id: "one",
+                producer: "agent",
+                scope: "in:1",
+                input: "in:1",
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: [
+                    record(
+                        "c1",
+                        "Contact",
+                        "{\"name\":\"Dana Rivera\",\"email\":\"dana@example.org\"}",
+                    )?,
+                    record(
+                        "c2",
+                        "Contact",
+                        "{\"name\":\"Danielle Ortiz\",\"email\":\"danielle@example.org\"}",
+                    )?,
+                    record("c3", "Contact", "{\"name\":\"Marta Quinn\",\"email\":null}")?,
+                    record("n1", "ProjectNote", "{\"title\":\"Launch plan\",\"body\":null}")?,
+                    record("n2", "ProjectNote", "{\"title\":\"Launch budget\",\"body\":null}")?,
+                ],
+            },
+        )?
+    g
+}
+
+fn ask(mut g: Graph, text: string) -> Result<Json, string> {
+    let params = match parse("{\"asker\":\"u\",\"now\":1}") {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "params are not JSON" },
+    }
+    g
+        .dispatch(
+            Json
+                .Obj(
+                    [
+                        field("op", Json.Str("query")),
+                        field("cypher", Json.Str(text)),
+                        field("params", params),
+                    ],
+                ),
+        )
+}
+
+fn labels(answer: Json) -> string {
+    answer.member("candidates").items().map(it.member("label").text() ?? "").join(" | ")
+}
+
+fn a_mention_with_two_matches_is_ambiguous() -> Result<bool, string> {
+    mut g = directory()?
+    defer { let _ = g.close() }
+    let answer = ask(g, "MATCH (c:Contact) WHERE c.name CONTAINS 'Dan' RETURN c.email AS email")?
+    answer.member("status").text() == "ambiguous" &&
+        answer.member("clarify").text() == "which_contact" &&
+        answer.member("candidates").items().map(it.member("entity").text() ?? "").join(",") == "c1,c2" &&
+        labels(answer).contains("name: Dana Rivera") &&
+        labels(answer).contains("email: danielle@example.org") &&
+        answer.member("fields").items().is_empty() &&
+        answer.member("citations").items().length > 0
+}
+
+fn one_match_answers_and_none_is_unknown() -> Result<bool, string> {
+    mut g = directory()?
+    defer { let _ = g.close() }
+    let exact = ask(g, "MATCH (c:Contact {name: 'Dana Rivera'}) RETURN c.email AS email")?
+    let none = ask(g, "MATCH (c:Contact) WHERE c.name CONTAINS 'Zed' RETURN c.email AS email")?
+    exact.member("status").text() == "answered" &&
+        exact.member("fields").item(0).member("value").text() == "dana@example.org" &&
+        none.member("status").text() == "unknown" &&
+        none.member("problems").item(0).member("code").text() == "no_such_contact"
+}
+
+fn a_set_query_returns_rows() -> Result<bool, string> {
+    mut g = directory()?
+    defer { let _ = g.close() }
+    let both = ask(g, "MATCH (c:Contact) WHERE c.email IS NOT NULL RETURN c.name AS name")?
+    both.member("status").text() == "answered" && both.member("fields").items().length == 2
+}
+
+fn the_clarify_code_follows_the_model() -> Result<bool, string> {
+    mut g = directory()?
+    defer { let _ = g.close() }
+    let notes = ask(
+        g,
+        "MATCH (n:ProjectNote) WHERE n.title CONTAINS 'Launch' RETURN n.body AS body",
+    )?
+    notes.member("status").text() == "ambiguous" &&
+        notes.member("clarify").text() == "which_project_note"
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "mentions of one entity" {
+    given "contacts and notes whose names are declared identities" {
+        then "a mention matching several entities is ambiguous, shown by their own values" { passed(a_mention_with_two_matches_is_ambiguous()) }
+        then "one match answers; none is unknown with its own code" { passed(one_match_answers_and_none_is_unknown()) }
+        then "a query not pinned on an identity is a set and returns rows" { passed(a_set_query_returns_rows()) }
+        then "the clarification code is derived from the model's name" { passed(the_clarify_code_follows_the_model()) }
+    }
+}

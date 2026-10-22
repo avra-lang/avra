@@ -33,6 +33,7 @@ export enum ReadAnswer {
     Sum(total: Quantity, terms: List<Term>, rows: List<ReadRow>, name: string)
     Unsummable(code: string, why: string)
     Unmet(code: string, detail: string, rows: List<ReadRow>)
+    Ambiguous(clarify: string, rows: List<ReadRow>)
     Status(name: string, held: bool, rows: List<ReadRow>)
     Derived(name: string, derivation: string, anchor: string, outcome: Outcome, rows: List<ReadRow>)
     Mixed(rows: List<ReadRow>, statuses: List<Held>)
@@ -44,7 +45,7 @@ impl ReadAnswer {
     fn rows() -> List<ReadRow> {
         match self {
             .Mixed(rows, statuses) -> rows.concat([r for s in statuses for r in s.rows]),
-            .Rows(rows) or .Count(_, rows, _) or .Sum(_, _, rows, _) or .Unmet(_, _, rows) or .Status(_, _, rows) or .Derived(_, _, _, _, rows) -> rows,
+            .Rows(rows) or .Count(_, rows, _) or .Sum(_, _, rows, _) or .Unmet(_, _, rows) or .Ambiguous(_, rows) or .Status(_, _, rows) or .Derived(_, _, _, _, rows) -> rows,
             .Unsummable(_, _) or .Exceeded(_) -> [],
         }
     }
@@ -72,6 +73,7 @@ enum Flow {
     Summed(total: Quantity, terms: List<Term>, hits: List<Hit>, name: string)
     Unsummable(code: string, why: string)
     Unmet(code: string, detail: string, hits: List<Hit>)
+    Ambiguous(clarify: string, hits: List<Hit>)
     Status(name: string, held: bool, hits: List<Hit>)
     Derived(name: string, derivation: string, anchor: string, outcome: Outcome, hits: List<Hit>)
 }
@@ -105,7 +107,7 @@ impl Run {
         let last = plan.joined.fold(plan.output, (far, at) -> if at > far { at } else { far })
         for node in plan.nodes.slice(0, last + 1) {
             let flow = self.evaluated(flows, node.operation)?
-            if flow is .Unmet { return self.answered(flow) }
+            if flow is .Unmet || flow is .Ambiguous { return self.answered(flow) }
             flows.push(flow)
         }
         if plan.joined.is_empty() {
@@ -158,6 +160,7 @@ impl Run {
             .Follow(input, owner, property, direction) -> Flow.Hits(self.follow(self.rows(flows, input)?, owner, property.name, direction)?),
             .Project(input, properties, names, reasons) -> Flow.Hits(self.project(self.rows(flows, input)?, properties, names, reasons)),
             .Holds(input, property, name) -> self.holds(self.rows(flows, input)?, property.name, name)?,
+            .Resolve(input, reason, clarify) -> self.resolved(self.rows(flows, input)?, reason, clarify)?,
             .Expect(input, property, reason) -> self.expect(self.rows(flows, input)?, property.name, reason)?,
             .Count(input, name) -> {
                 let hits = self.rows(flows, input)?
@@ -171,7 +174,7 @@ impl Run {
     fn rows(flows: List<Flow>, input: int) -> Result<List<Hit>, string> {
         match flows[input] {
             .Hits(hits) -> hits,
-            .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) or .Derived(_, _, _, _, _) -> { fail "an aggregate has no rows to read" },
+            .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Ambiguous(_, _) or .Status(_, _, _) or .Derived(_, _, _, _, _) -> { fail "an aggregate has no rows to read" },
         }
     }
 
@@ -306,6 +309,15 @@ impl Run {
         if rivalry { Flow.Unmet("conflicting_status", "competing claims for ${property}", proved) } else { Flow.Status(name, held, proved) }
     }
 
+    /// A mention names one entity: none is the plan's reason, several is a clarification.
+    fn resolved(input: List<Hit>, reason: string, clarify: string) -> Result<Flow, string> {
+        self.charge(input.length)?
+        let ones = distinct(input)
+        if ones.is_empty() { return Flow.Unmet(reason, "no entity answers to the mention", []) }
+        if ones.length > 1 { return Flow.Ambiguous(clarify, ones) }
+        Flow.Hits(ones)
+    }
+
     /// Rows that hold the property pass; none holding it is the plan's declared unknown.
     fn expect(input: List<Hit>, property: string, reason: string) -> Result<Flow, string> {
         self.charge(input.length)?
@@ -354,6 +366,7 @@ impl Run {
             .Status(name, held, hits) -> ReadAnswer.Status(name, held, self.rows_of(hits)?),
             .Derived(name, derivation, anchor, outcome, hits) -> ReadAnswer.Derived(name, derivation, anchor, outcome, self.rows_of(hits)?),
             .Unmet(code, detail, hits) -> ReadAnswer.Unmet(code, detail, self.rows_of(hits)?),
+            .Ambiguous(clarify, hits) -> ReadAnswer.Ambiguous(clarify, self.rows_of(hits)?),
         }
     }
 
@@ -488,14 +501,14 @@ fn capped(flow: Flow, limit: int?) -> Flow {
             .Hits(
                 if limit == null { hits } else { hits.slice(0, if limit! < hits.length { limit! } else { hits.length }) },
             ),
-        .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) or .Derived(_, _, _, _, _) -> flow,
+        .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Ambiguous(_, _) or .Status(_, _, _) or .Derived(_, _, _, _, _) -> flow,
     }
 }
 
 fn hits_in(flow: Flow) -> List<Hit> {
     match flow {
         .Hits(hits) -> hits,
-        .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) or .Derived(_, _, _, _, _) -> [],
+        .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Ambiguous(_, _) or .Status(_, _, _) or .Derived(_, _, _, _, _) -> [],
     }
 }
 
@@ -504,6 +517,6 @@ type Stated = { name: string, held: bool, hits: List<Hit> }
 fn status_in(flow: Flow) -> List<Stated> {
     match flow {
         .Status(name, held, hits) -> [Stated { name: name, held: held, hits: hits }],
-        .Hits(_) or .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Derived(_, _, _, _, _) -> [],
+        .Hits(_) or .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Ambiguous(_, _) or .Derived(_, _, _, _, _) -> [],
     }
 }

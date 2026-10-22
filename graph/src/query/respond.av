@@ -1,9 +1,10 @@
 use @std.json.{Json, field, to_text}
-use data.{as_json}
+use data.{as_json, encoded}
 use query.policies.{Derived as Outcome}
 use @std.validate.{Value}
 use store.open.{Graph}
 use query.plan.{prepare_read}
+use parameters.{candidate_label_fields}
 use query.execute.{ReadAnswer, ReadRow, ReadResult, Held, Absent}
 use store.query.{Selection, Candidate}
 use query.quantity.{Quantity, Term}
@@ -28,6 +29,7 @@ export fn responded(request: string, result: ReadResult) -> Json {
     match result.answer {
         .Exceeded(limit) -> unresolved(request, result.revision, "budget_exceeded", limit),
         .Unmet(code, detail, rows) -> known_unknown(request, result.revision, code, detail, rows),
+        .Ambiguous(clarify, rows) -> mention_ambiguous(request, result.revision, clarify, rows),
         .Derived(_, derivation, anchor, outcome, rows) -> derived_answer(request, result.revision, derivation, anchor, outcome, rows),
         .Mixed(rows, statuses) -> mixed(request, result.revision, rows, statuses),
         .Status(name, held, rows) -> answered(
@@ -259,6 +261,8 @@ fn held(
     policies: List<string>,
     problems: List<Json>,
     absent: List<Json> = [],
+    candidates: List<Json> = [],
+    clarify: string? = null,
 ) -> Json {
     Json
         .Obj(
@@ -268,13 +272,14 @@ fn held(
                 field("status", Json.Str(status)),
                 field("read_revision", Json.Int(revision)),
                 field("fields", Json.Arr(fields)),
-                field("candidates", Json.Arr([])),
+                field("candidates", Json.Arr(candidates)),
                 field("conflicts", Json.Arr(conflicts)),
                 field("citations", Json.Arr(citations)),
                 field("policies", Json.Arr([Json.Str(p) for p in policies])),
                 field("problems", Json.Arr(problems)),
                 field("absent", Json.Arr(absent)),
-            ],
+            ]
+                .concat(if clarify == null { [] } else { [field("clarify", Json.Str(clarify!))] }),
         )
 }
 
@@ -438,5 +443,56 @@ fn mixed(request: string, revision: int, rows: List<ReadRow>, statuses: List<Hel
         answered(request, revision, fields, every)
     } else {
         ambiguous(request, revision, fields, conflicts, every)
+    }
+}
+
+/// A mention that names several entities: no row is answered, each candidate is shown by
+/// its own declared values so the asker can choose.
+fn mention_ambiguous(request: string, revision: int, clarify: string, rows: List<ReadRow>) -> Json {
+    held(
+        request,
+        "ambiguous",
+        revision,
+        [],
+        [],
+        [citation(s) for s in distinct_supports(rows)],
+        [],
+        [problem(clarify, "the mention names several entities; none is chosen")],
+        [],
+        [candidate(row) for row in rows],
+        clarify,
+    )
+}
+
+fn candidate(row: ReadRow) -> Json {
+    Json
+        .Obj(
+            [
+                field("entity", Json.Str(row.id)),
+                field("model", Json.Str(row.model)),
+                field("label", Json.Str(label_of(row))),
+            ],
+        )
+}
+
+/// The row's single-valued declared properties, as `property: value`.
+fn label_of(row: ReadRow) -> string {
+    let shown = ["${f.property}: ${spelled(f.candidates[0].value)}" for f in row.fields if f.candidates.length == 1]
+    if shown.is_empty() {
+        row.id
+    } else {
+        shown
+            .slice(
+                0,
+                if shown.length > candidate_label_fields { candidate_label_fields } else { shown.length },
+            )
+            .join("; ")
+    }
+}
+
+fn spelled(v: Value) -> string {
+    match v {
+        .Text(s) -> s,
+        .Null or .Bool(_) or .Int(_) or .Float(_) or .List(_) or .Map(_) -> encoded(v),
     }
 }
