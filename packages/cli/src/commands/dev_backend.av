@@ -94,6 +94,7 @@ impl Backend {
     /// the program it wrote, or everything the build said.
     fn built() -> Result<string, string> {
         let asked = cmd(self.compiler, ["build", self.root]) with { env: inherited() }
+        // LICENSED input.live_process: dev builds the server it runs, and no compile answer reads it
         let o = match asked.outcome() {
             .Ok(o) -> o,
             .Err(e) -> { return .Err(e.describe().message) },
@@ -108,6 +109,7 @@ impl Backend {
     fn restarted(binary: string) {
         self.stopped()
         let run = cmd(tool_at("server", binary), []) with { env: Env.Inherit([EnvPair { name: "PORT", value: "${self.port}" }]), streams: .Inherited }
+        // LICENSED input.live_process: the server dev runs is a child, and no compile answer reads it
         match run.start(Ready.Started, secs(5)) {
             .Ok(c) -> {
                 self.child.set(c)
@@ -119,8 +121,11 @@ impl Backend {
 
     /// Whether the server's port takes a connection within five seconds.
     fn listening() -> bool {
+        // LICENSED input.clock: how long dev waits for its server is timing, never an input of what is built
         let deadline = now_ms() + 5000
+        // LICENSED input.clock: how long dev waits for its server is timing, never an input of what is built
         while now_ms() < deadline {
+            // LICENSED input.live_process: whether dev's server listens yet, which no compile answer reads
             match connect("127.0.0.1", self.port, ms(200)) {
                 .Ok(c) -> {
                     let _ = c.close()
@@ -148,6 +153,7 @@ impl Backend {
         let body = q.body.octets() ?? "".bytes()
         let payload = if body.length == 0 { Payload.Empty } else { Payload.Octets(body, q.header("content-type") ?? "application/octet-stream") }
         let sent = options() with { headers: [h for h in fields_of(q) if passes(h.name)], redirects: Redirects.Stop }
+        // LICENSED input.live_process: a request dev forwards to its server, which no compile answer reads
         match fetch(q.method(), "http://127.0.0.1:${self.port}${target}", payload, sent) {
             .Ok(a) -> Response {
                 status: a.status,
@@ -184,6 +190,7 @@ fn glued(m: Method, t: Bytes, glue: List<string>) -> bool {
 
 /// The paths of the files a glue directory holds, as a page asks for them.
 export fn glue_files(dir: string) -> List<string> {
+    // LICENSED input.live_process: the glue files dev serves, never an input of what is built
     ["/${f}" for f in list_dir(dir) catch []]
 }
 

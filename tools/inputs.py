@@ -89,13 +89,14 @@ WORLD = {
         "argv": "argv", "cli": "argv",
         "command": P, "arg": P, "flag": P, "option": P, "CliResult": T, "Runnable": T,
     },
-    "net": {"Bell": T, "Listener": T},
+    "net": {"Bell": T, "Listener": T, "listen": E, "connect": "fetch"},
     "http": {
-        "get": "fetch", "server": E, "directory": "read", "event_stream": E,
+        "get": "fetch", "fetch": "fetch", "server": E, "directory": "read", "event_stream": E,
         "compiled": P, "dispatch": P, "fixed": P, "framed": P, "limits": P, "text": P,
-        "mounted": P, "quiet_default": P,
+        "mounted": P, "quiet_default": P, "options": P,
         "Request": T, "Unrouted": T, "Response": T, "Pulled": T, "Header": T, "Route": T,
         "Event": T, "Next": T, "Source": T, "Resume": T, "Method": T, "Files": T, "Body": T,
+        "Payload": T, "Redirects": T, "Reach": T,
     },
 }
 
