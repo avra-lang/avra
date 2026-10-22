@@ -11,6 +11,7 @@ use compiler.{
     one_shot_let_go,
 }
 use compiler.host.{Host, memory_host}
+use testing.std_sources.{StdFile, StdPkg, std_sources}
 use @std.avrac.diagnostics.{Diag}
 use @std.avrac.core.{flatten}
 use @std.meta.{embed}
@@ -104,12 +105,6 @@ const meta_real: string = embed("@std/meta/src/meta.av")
 
 const errors_real: string = embed("@std/errors/src/errors.av")
 
-// LICENSED input.compile_embed: the package's own source, read when the compiler is built
-const errors_to_int_src: string = embed("@std/errors/src/to_int.av")
-
-// LICENSED input.compile_embed: the package's own source, read when the compiler is built
-const meta_rule_src: string = embed("@std/meta/src/rule.av")
-
 /// The real `@std/meta` and the `@std/errors` it rests on, added to a
 /// memory host's files. The paths are `vendored_meta_paths()`.
 export fn vendored_meta(files: Map<string, string>) -> Map<string, string> {
@@ -197,110 +192,67 @@ export fn vendored_prelude(files: Map<string, string>) -> Map<string, string> {
     out
 }
 
-// LICENSED input.compile_embed: the package's own source, read when the compiler is built
-const task_src: string = embed("@std/task/src/task.av")
-
-// LICENSED input.compile_embed: the package's own source, read when the compiler is built
-const time_src: string = embed("@std/time/src/time.av")
-
-// LICENSED input.compile_embed: the package's own source, read when the compiler is built
-const text_src: string = embed("@std/text/src/text.av")
-
-// LICENSED input.compile_embed: the package's own source, read when the compiler is built
-const display_src: string = embed("@std/text/src/display.av")
-
-// LICENSED input.compile_embed: the package's own source, read when the compiler is built
-const json_src: string = embed("@std/json/src/json.av")
-
-// LICENSED input.compile_embed: the package's own source, read when the compiler is built
-const json_codec_src: string = embed("@std/json/src/codec/codec.av")
-
-// LICENSED input.compile_embed: the package's own source, read when the compiler is built
-const json_typed_src: string = embed("@std/json/src/typed/typed.av")
-
-// LICENSED input.compile_embed: the package's own source, read when the compiler is built
-const derive_src: string = embed("@std/derive/src/derive.av")
-
-// LICENSED input.compile_embed: the package's own source, read when the compiler is built
-const unicode_src: string = embed("@std/text/src/unicode.av")
-
-/// A source file of a std package, named as the package ships it.
-type StdFile = { name: string, text: string }
-
-/// One package of the toolchain's std root: its name and every file it
-/// holds. A PACKAGE IS ITS FILES — `@std/text`'s `display.av` declares
-/// the `cells` its `text.av` reads, so a host carrying one carries all.
-type StdPkg = { name: string, files: List<StdFile> }
-
-/// `files` with the real `@std/task` laid out beside the prelude under the
-/// std root, with `@std/meta` and `@std/errors` it rests on.
-export fn vendored_task(files: Map<string, string>) -> Map<string, string> {
-    vendored_beside(files, [std_pkg("task", [std_file("task.av", task_src)])])
+/// The package `name` and every std package its closure names, each whole,
+/// read from the generated std sources.
+fn closure(name: string) -> List<StdPkg> {
+    let all = std_sources()
+    let names = reach(name, all, [])
+    [p for p in all if names.contains(p.name)]
 }
 
-/// `vendored_task`'s twin for the real `@std/time`, and the whole
-/// `@std/text` its ISO-8601 rests on.
+/// `seen` with `name` and each package it depends on, dependencies first.
+fn reach(name: string, all: List<StdPkg>, seen: List<string>) -> List<string> {
+    if seen.contains(name) { return seen }
+    let p? = all.find(it.name == name) else { return seen }
+    mut acc = seen.concat([name])
+    for d in p.deps { acc = reach(d, all, acc) }
+    acc
+}
+
+/// `files` with the real `@std/task` and its closure laid out beside the prelude.
+export fn vendored_task(files: Map<string, string>) -> Map<string, string> {
+    vendored_beside(files, closure("task"))
+}
+
+/// `vendored_task`'s twin for the real `@std/time` and its closure.
 export fn vendored_time(files: Map<string, string>) -> Map<string, string> {
-    mut out = vendored_beside(
-        files,
-        [
-            std_pkg(
-                "text",
-                [
-                    std_file("text.av", text_src),
-                    std_file("display.av", display_src),
-                    std_file("unicode.av", unicode_src),
-                ],
-            ),
-            std_pkg("time", [std_file("time.av", time_src)]),
-            std_pkg(
-                "json",
-                [
-                    std_file("json.av", json_src),
-                    std_file("codec/codec.av", json_codec_src),
-                    std_file("typed/typed.av", json_typed_src),
-                ],
-            ),
-            std_pkg("derive", [std_file("derive.av", derive_src)]),
-        ],
-    )
-    out
-        .set(
-            "/std/std-time/avra.toml",
-            "[package]\nname = \"@std/time\"\nversion = \"0.0.1\"\n\n[dependencies]\n\"@std/json\" = { path = \"../std-json\" }\n",
-        )
-    out
+    vendored_beside(files, closure("time"))
+}
+
+/// `vendored_task`'s twin for the real `@std/db` and its closure.
+export fn vendored_db(files: Map<string, string>) -> Map<string, string> {
+    vendored_beside(files, closure("db"))
 }
 
 /// The packages every vendored host carries: what the toolchain's own
 /// std packages rest on.
-fn shared_pkgs() -> List<StdPkg> {
-    [
-        std_pkg("meta", [std_file("meta.av", meta_real), std_file("rule.av", meta_rule_src)]),
-        std_pkg(
-            "errors",
-            [std_file("errors.av", errors_real), std_file("to_int.av", errors_to_int_src)],
-        ),
-    ]
+fn shared_pkgs() -> List<StdPkg> { closure("meta").concat(closure("errors")) }
+
+fn manifest(p: StdPkg) -> string {
+    let rows = ["\n\"@std/${d}\" = { path = \"../std-${d}\" }" for d in p.deps].join("")
+    let deps = if p.deps.is_empty() { "" } else { "\n[dependencies]${rows}\n" }
+    "[package]\nname = \"@std/${p.name}\"\nversion = \"0.0.1\"\n${deps}"
 }
 
-fn std_pkg(name: string, files: List<StdFile>) -> StdPkg { StdPkg { name: name, files: files } }
-
-fn std_file(name: string, text: string) -> StdFile { StdFile { name: name, text: text } }
-
 /// `files` with the prelude, `@std/meta`, `@std/errors` and the packages
-/// `beside` named laid out under the std root.
+/// `beside` named laid out under the std root, each with its manifest.
 fn vendored_beside(files: Map<string, string>, beside: List<StdPkg>) -> Map<string, string> {
     mut out = vendored_prelude(files)
     for p in beside.concat(shared_pkgs()) {
-        out
-            .set(
-                "/std/std-${p.name}/avra.toml",
-                "[package]\nname = \"@std/${p.name}\"\nversion = \"0.0.1\"\n",
-            )
+        out.set("/std/std-${p.name}/avra.toml", manifest(p))
         for f in p.files { out.set("/std/std-${p.name}/src/${f.name}", f.text) }
     }
     out
+}
+
+/// A program at `/w` that uses the real `@std/db`, with its closure vendored
+/// beside the prelude — the program a model's own law is judged in.
+export fn beside_db(main: string) -> Program {
+    let files = vendored_db(
+        {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": main},
+    )
+    test_workspace(memory_host(files, files.keys()) with { std_root: "/std" }, "/w")
+        .program("/w/src/main.av")
 }
 
 /// A program at `/w` whose toolchain carries the real `@std/prelude`
