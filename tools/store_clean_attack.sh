@@ -23,7 +23,7 @@ export AVRA_WATCH_HELD=1
 export AVRA_MAX_COMPILES=0
 AVRA=${AVRA:-./avra}
 
-R=build/store-clean; fails=0; steps=0
+R=build/store-clean
 rm -rf "$R" .avra-cache && mkdir -p $R/p/src
 cat > $R/p/avra.toml <<'TOML'
 [package]
@@ -50,8 +50,8 @@ printf '[package]\nname = "sg-big"\nversion = "0.1.0"\n' > $R/big/avra.toml
     echo "fn main() { println(\"\${$body}\") }" >> $R/big/src/main.av
 }
 
-say() { steps=$((steps + 1)); echo "store-clean: $1"; }
-fail() { fails=$((fails + 1)); echo "store-clean: FAILED — $1"; }
+who=store-clean
+. tools/lib/steps.sh
 bodies() { ls .avra-cache/store/body-*.pack 2>/dev/null | wc -l | tr -d ' '; }
 revs() { $AVRA cache log 2>/dev/null | sed -n 's/^rev \([0-9]*\).*/\1/p' | tr '\n' ' '; }
 # The live answer: the program's own output, which no store may change.
@@ -201,5 +201,4 @@ AVRA_STORE_MAX_MB=1 AVRA_STORE_REVISIONS=100 $AVRA cache clean > $R/size.out 2>&
 $AVRA run $R/big > $R/size-live.out 2>&1
 [ "$?" = 0 ] || fail "the big program did not run after a size reclaim"
 
-echo "store-clean: $steps attack(s), $fails failure(s)"
-[ "$fails" = 0 ]
+verdict

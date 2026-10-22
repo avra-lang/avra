@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: --self-test
 # A HOST FN'S FILE EDITED AND REBUILT WARM BUILDS WHAT A COLD BUILD DOES. A host
 # fn is a root: it lowers even where its file is held, beside the held stub of
 # the same symbol, so a derivation owing instantiations met one symbol twice and
