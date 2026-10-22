@@ -1,0 +1,163 @@
+use derive.model.{model}
+use derive.policy.{derived}
+use schema.{Registration}
+use semantics.{Semantics}
+use policy.{Unknown, DerivationRegistration}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use @std.json.{Json, field, parse}
+
+@model(quote { Semantics { label: ["name"] } })
+type Dweller = { name: string, side: string? }
+
+@model
+type Holds = { holds: bool }
+
+@model
+type Size = { letters: int }
+
+/// Whether the dweller has a side recorded.
+@derived
+fn is_neighbour(dweller: Dweller) -> Result<Holds, Unknown> { Holds { holds: dweller.side != null } }
+
+/// Whether the dweller is recorded on the given side.
+@derived
+fn lives_on(dweller: Dweller, side: string) -> Result<Holds, Unknown> { Holds { holds: dweller.side == side } }
+
+/// Not a predicate: it answers a number.
+@derived
+fn name_size(dweller: Dweller) -> Result<Size, Unknown> { Size { letters: dweller.name.length } }
+
+fn registrations() -> List<Registration> {
+    [
+        Registration { make: Dweller_graph_model },
+        Registration { make: Holds_graph_model },
+        Registration { make: Size_graph_model },
+    ]
+}
+
+fn derivations() -> List<DerivationRegistration> {
+    [
+        DerivationRegistration { make: is_neighbour_graph_derivation },
+        DerivationRegistration { make: lives_on_graph_derivation },
+        DerivationRegistration { make: name_size_graph_derivation },
+    ]
+}
+
+fn dweller(id: string, name: string, side: string?) -> Result<Record, string> {
+    let held = if side == null { "null" } else { "\"${side!}\"" }
+    Record {
+        id: id,
+        model: "Dweller",
+        value: stored_value("{\"name\":\"${name}\",\"side\":${held}}")?,
+    }
+}
+
+fn street(sides: List<string?>) -> Result<Graph, string> {
+    mut g = Graph.memory(registrations(), derivations())?
+    g.observe("in:1", "raw")?
+    let names = ["Ines Valdez", "Piet Lindqvist", "Marit Soto"]
+    g
+        .publish(
+            Publication {
+                id: "one",
+                producer: "agent",
+                scope: "in:1",
+                input: "in:1",
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: [dweller("d${i}", names[i], sides[i])? for i in 0..sides.length],
+            },
+        )?
+    g
+}
+
+fn ask(mut g: Graph, text: string) -> Result<Json, string> {
+    let params = match parse("{\"asker\":\"u\",\"now\":1}") {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "params are not JSON" },
+    }
+    g
+        .dispatch(
+            Json
+                .Obj(
+                    [
+                        field("op", Json.Str("query")),
+                        field("cypher", Json.Str(text)),
+                        field("params", params),
+                    ],
+                ),
+        )
+}
+
+fn code_of(answer: Json) -> string { answer.member("problems").item(0).member("code").text() ?? "-" }
+
+fn a_predicate_pins_a_mention() -> Result<bool, string> {
+    mut g = street(["next door", "behind the fence", null])?
+    defer { let _ = g.close() }
+    let answer = ask(g, "MATCH (d:Dweller) WHERE is_neighbour(d) RETURN d.name AS who")?
+    answer.member("status").text() == "ambiguous" &&
+        answer.member("clarify").text() == "which_dweller" &&
+        answer.member("candidates").items().map(it.member("entity").text() ?? "").join(",") == "d0,d1" &&
+        answer.member("fields").items().is_empty()
+}
+
+fn one_match_answers_and_none_is_unknown() -> Result<bool, string> {
+    mut one = street(["next door", null, null])?
+    defer { let _ = one.close() }
+    mut none = street([null, null, null])?
+    defer { let _ = none.close() }
+    let found = ask(one, "MATCH (d:Dweller) WHERE is_neighbour(d) RETURN d.name AS who")?
+    let missing = ask(none, "MATCH (d:Dweller) WHERE is_neighbour(d) RETURN d.name AS who")?
+    found.member("status").text() == "answered" &&
+        found.member("fields").item(0).member("value").text() == "Ines Valdez" &&
+        found.member("fields").item(0).member("citations").items().length > 0 &&
+        missing.member("status").text() == "unknown" &&
+        code_of(missing) == "no_such_dweller"
+}
+
+fn literal_arguments_and_other_conditions() -> Result<bool, string> {
+    mut g = street(["next door", "behind the fence", null])?
+    defer { let _ = g.close() }
+    let on_side = ask(
+        g,
+        "MATCH (d:Dweller) WHERE lives_on(d, 'behind the fence') RETURN d.name AS who",
+    )?
+    let both = ask(
+        g,
+        "MATCH (d:Dweller) WHERE d.name CONTAINS 'Piet' AND is_neighbour(d) RETURN d.name AS who",
+    )?
+    on_side.member("fields").item(0).member("value").text() == "Piet Lindqvist" &&
+        both.member("fields").item(0).member("value").text() == "Piet Lindqvist"
+}
+
+fn refusals_speak() -> Result<bool, string> {
+    mut g = street(["next door", null, null])?
+    defer { let _ = g.close() }
+    let arity = ask(g, "MATCH (d:Dweller) WHERE lives_on(d) RETURN d.name AS who")?
+    let not_a_node = ask(g, "MATCH (d:Dweller) WHERE lives_on('x', 'y') RETURN d.name AS who")?
+    let not_boolean = ask(g, "MATCH (d:Dweller) WHERE name_size(d) RETURN d.name AS who")?
+    let unknown = ask(g, "MATCH (d:Dweller) WHERE no_such_fn(d) RETURN d.name AS who")?
+    code_of(arity) == "derivation_arity" &&
+        code_of(not_a_node) == "derivation_argument" &&
+        code_of(not_boolean) == "plan_refused" &&
+        code_of(unknown) == "unsupported_predicate"
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "derivations as conditions" {
+    given "dwellers, a predicate derivation and a literal-taking one" {
+        then "a node pinned by a predicate is a mention: several matches are ambiguous" { passed(a_predicate_pins_a_mention()) }
+        then "one match answers; none is unknown with its own code" { passed(one_match_answers_and_none_is_unknown()) }
+        then "a predicate takes literals and combines with other conditions" { passed(literal_arguments_and_other_conditions()) }
+        then "a wrong arity, a non-node argument and a non-boolean derivation are refused" { passed(refusals_speak()) }
+    }
+}

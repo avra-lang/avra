@@ -1,8 +1,9 @@
-use @avra.graph_contracts.{ReadPlan, ReadStep, Budget, Context}
+use @avra.graph_contracts.{ReadPlan, ReadStep, Budget, Context, JsonValue}
 use @std.validate.{Value}
 use catalog.{Catalog}
 use schema.{Shape, Property, Model}
 use semantics.{QuantityBinding}
+use policy.{Parameter}
 use parameters.{plan_document_bytes, plan_text_bytes, float_zero}
 
 export enum Comparison { Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual }
@@ -24,6 +25,7 @@ export enum ReadOperation {
     Project(input: int, properties: List<Property>, names: List<string>, reasons: List<string>)
     Expect(input: int, property: Property, reason: string)
     Resolve(input: int, reason: string, clarify: string)
+    Satisfy(input: int, derivation: string, literals: List<Value>)
     Holds(input: int, property: Property, name: string)
     Count(input: int, name: string)
     Derive(inputs: List<int>, derivation: string, literals: List<Value>, name: string)
@@ -259,6 +261,7 @@ fn prepared_node(catalog: Catalog, nodes: List<ReadNode>, step: ReadStep) -> Res
                 depth: depth,
             }
         },
+        "satisfy" -> satisfied_node(catalog, input, rows, depth, step)?,
         "resolve" -> ReadNode {
             id: step.id,
             operation: .Resolve(input, step.reason!, step.clarify!),
@@ -335,17 +338,7 @@ fn derived_node(catalog: Catalog, nodes: List<ReadNode>, step: ReadStep) -> Resu
         if nodes[at].depth > depth { depth = nodes[at].depth }
         inputs.push(at)
     }
-    for i, seat in literal_seats {
-        let value = step.arguments[i].value
-        let fits = match seat.input {
-            .Text -> value is .Text,
-            .Integer -> value is .Int,
-            .Boolean -> value is .Bool,
-            .One(_) or .Maybe(_) or .All(_) -> false,
-        }
-        if !fits { fail "derivation `${derivation.name}` takes a different literal for `${seat.name}`" }
-        if !bounded(value) { fail "read literal exceeds its text budget or is not finite" }
-    }
+    let _ = literals_fit(derivation.name, literal_seats, step.arguments)?
     ReadNode {
         id: step.id,
         operation: .Derive(
@@ -355,6 +348,55 @@ fn derived_node(catalog: Catalog, nodes: List<ReadNode>, step: ReadStep) -> Resu
             step.names.first() ?? derivation.name,
         ),
         shape: .Derived,
+        depth: depth,
+    }
+}
+
+/// Each literal argument fits its seat's declared kind and the text budget.
+fn literals_fit(name: string, seats: List<Parameter>, arguments: List<JsonValue>) -> Result<
+    int,
+    string,
+> {
+    for i, seat in seats {
+        let value = arguments[i].value
+        let fits = match seat.input {
+            .Text -> value is .Text,
+            .Integer -> value is .Int,
+            .Boolean -> value is .Bool,
+            .One(_) or .Maybe(_) or .All(_) -> false,
+        }
+        if !fits { fail "derivation `${name}` takes a different literal for `${seat.name}`" }
+        if !bounded(value) { fail "read literal exceeds its text budget or is not finite" }
+    }
+    seats.length
+}
+
+/// A predicate derivation keeps the rows it holds for: one row seat of the
+/// filtered node, literals for the rest, and a single boolean answer.
+fn satisfied_node(catalog: Catalog, input: int, rows: ReadRows, depth: int, step: ReadStep) -> Result<
+    ReadNode,
+    string,
+> {
+    let derivation = catalog.derivation(step.derivation!)?
+    let row_seats = derivation.parameters.filter(it.input.rows())
+    let literal_seats = derivation.parameters.filter(!it.input.rows())
+    if row_seats.length != 1 ||
+        !row_seats[0].input.anchors() ||
+        row_seats[0].input.model()! != rows.model {
+        fail "predicate `${derivation.name}` reads one ${rows.model} row"
+    }
+    if step.arguments.length != literal_seats.length {
+        fail "predicate `${derivation.name}` takes ${literal_seats.length} literal arguments, this step gives ${step.arguments.length}"
+    }
+    let _ = literals_fit(derivation.name, literal_seats, step.arguments)?
+    let answer = (catalog.model(derivation.output)?).properties
+    if answer.length != 1 || !(unwrapped(answer[0].shape) is .Boolean) {
+        fail "predicate `${derivation.name}` must answer one boolean"
+    }
+    ReadNode {
+        id: step.id,
+        operation: .Satisfy(input, derivation.name, [a.value for a in step.arguments]),
+        shape: .Rows(rows),
         depth: depth,
     }
 }

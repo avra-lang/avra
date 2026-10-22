@@ -39,7 +39,7 @@ type Label = { step: string, label: string }
 type Compiled = { plan: Json, labels: List<Label> }
 
 /// The query's seats: its parameters, read by name.
-type Args = { params: Json }
+type Args = { params: Json, catalog: Catalog }
 
 /// What a WHERE conjunct asks of one node variable.
 enum Cond {
@@ -47,6 +47,8 @@ enum Cond {
     Search(prop: string, needle: Json)
     Nullness(prop: string, negated: bool)
     Seat(binding: string)
+    /// A declared predicate over the node, with its literal arguments.
+    Satisfies(derivation: string, literals: List<Json>)
 }
 
 type Placed = { name: string, cond: Cond }
@@ -137,7 +139,7 @@ fn policy_of(kind: RefusalKind) -> string {
 
 export fn compiled(text: string, params: Json, catalog: Catalog) -> Result<Compiled, CypherError> {
     let q = parse_cypher(text)?
-    let args = Args { params: params }
+    let args = Args { params: params, catalog: catalog }
     mut chains: List<Chain> = []
     for i, m in q.matches {
         let anchors = [c.slots[c.slots.length - 1] for c in chains]
@@ -375,6 +377,7 @@ fn pins(c: Cond, identities: List<string>) -> bool {
     match c {
         .Filter(prop, comparison, _) -> comparison == "eq" && identities.contains(prop),
         .Search(prop, _) -> identities.contains(prop),
+        .Satisfies(_, _) -> true,
         .Nullness(_, _) or .Seat(_) -> false,
     }
 }
@@ -415,7 +418,7 @@ fn map_conditions(n: NodePat, args: Args) -> Result<List<Placed>, CypherError> {
 fn check_cond(catalog: Catalog, model: string?, c: Cond) -> Result<string, CypherError> {
     match c {
         .Filter(prop, _, _) or .Search(prop, _) or .Nullness(prop, _) -> check_property(catalog, model, prop),
-        .Seat(_) -> .Ok(""),
+        .Seat(_) or .Satisfies(_, _) -> .Ok(""),
     }
 }
 
@@ -451,7 +454,7 @@ fn arrival(id: string, label: string, mine: List<Placed>) -> Result<Json, Cypher
 fn seat_of(c: Cond) -> List<string> {
     match c {
         .Seat(binding) -> [binding],
-        .Filter(_, _, _) or .Search(_, _) or .Nullness(_, _) -> [],
+        .Filter(_, _, _) or .Search(_, _) or .Nullness(_, _) or .Satisfies(_, _) -> [],
     }
 }
 
@@ -480,6 +483,12 @@ fn narrowing(c: Cond, id: string, input: string) -> Json? {
                     field("arguments", Json.Arr([needle])),
                 ],
             ),
+        .Satisfies(derivation, literals) -> step_json(
+            id,
+            "satisfy",
+            input,
+            [field("derivation", Json.Str(derivation)), field("arguments", Json.Arr(literals))],
+        ),
         .Seat(_) -> null,
     }
 }
@@ -523,8 +532,38 @@ fn placement(e: Expr, args: Args) -> Result<Placed, CypherError> {
             rest -> .Err(unsupported_predicate()),
         },
         .Not(_) -> .Err(refuse("unsupported_not", "NOT is outside the subset; state the comparison directly")),
+        .Call(name, arguments) -> predicate_placement(name, arguments, args),
         rest -> .Err(unsupported_predicate()),
     }
+}
+
+/// A declared derivation used as a condition: it takes the node it filters
+/// and literals or parameters, and answers one boolean.
+fn predicate_placement(name: string, arguments: List<Expr>, args: Args) -> Result<
+    Placed,
+    CypherError,
+> {
+    let declared? = args.catalog.derivations.find(same_word(it.name, name)) else { return .Err(unsupported_predicate()) }
+    if arguments.length != declared.parameters.length {
+        return .Err(
+            refuse(
+                "derivation_arity",
+                "${declared.name} takes ${declared.parameters.length} arguments",
+            ),
+        )
+    }
+    let nodes = [n for k, n in arguments if declared.parameters[k].input.rows()]
+    let named = nodes.map(var_of(it))
+    if nodes.length != 1 || named[0] == null {
+        return .Err(
+            refuse(
+                "derivation_argument",
+                "${declared.name} as a condition reads one node of the pattern",
+            ),
+        )
+    }
+    let literals = [literal(a, args)? for k, a in arguments if !declared.parameters[k].input.rows()]
+    .Ok(Placed { name: named[0]!, cond: Cond.Satisfies(declared.name, literals) })
 }
 
 fn binary_placement(op: string, lhs: Expr, rhs: Expr, args: Args) -> Result<Placed, CypherError> {

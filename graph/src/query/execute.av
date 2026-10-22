@@ -4,6 +4,7 @@ use @std.validate.{Value}
 use data.{encoded, before}
 use schema.{Property}
 use semantics.{QuantityBinding}
+use policy.{Derivation}
 use query.quantity.{Quantity, Term, Tally, Subject, tally}
 use store.open.{Graph, stored}
 use store.engine.{EntityRow}
@@ -160,6 +161,7 @@ impl Run {
             .Follow(input, owner, property, direction) -> Flow.Hits(self.follow(self.rows(flows, input)?, owner, property.name, direction)?),
             .Project(input, properties, names, reasons) -> Flow.Hits(self.project(self.rows(flows, input)?, properties, names, reasons)),
             .Holds(input, property, name) -> self.holds(self.rows(flows, input)?, property.name, name)?,
+            .Satisfy(input, derivation, literals) -> Flow.Hits(self.satisfy(self.rows(flows, input)?, derivation, literals)?),
             .Resolve(input, reason, clarify) -> self.resolved(self.rows(flows, input)?, reason, clarify)?,
             .Expect(input, property, reason) -> self.expect(self.rows(flows, input)?, property.name, reason)?,
             .Count(input, name) -> {
@@ -307,6 +309,35 @@ impl Run {
         let held = input.any(it.sure(property))
         let proved = [h.proved(h.id, property) for h in input]
         if rivalry { Flow.Unmet("conflicting_status", "competing claims for ${property}", proved) } else { Flow.Status(name, held, proved) }
+    }
+
+    /// Rows a predicate derivation holds for; a derivation with no value keeps nothing.
+    fn satisfy(input: List<Hit>, derivation: string, literals: List<Value>) -> Result<
+        List<Hit>,
+        string,
+    > {
+        let declared = self.g.catalog.derivation(derivation)?
+        self.charge(input.length + 1)?
+        let held = [h for h in input if self.holds_for(declared, h, literals)?]
+        [h.proved_all(h.id, h.known) for h in held]
+    }
+
+    fn holds_for(declared: Derivation, h: Hit, literals: List<Value>) -> Result<bool, string> {
+        mut supplied: List<Supplied> = []
+        mut taken = 0
+        for seat in declared.parameters {
+            if seat.input.rows() {
+                supplied.push(Supplied.Rows([Row { id: h.id, fields: h.fields }]))
+            } else {
+                supplied.push(Supplied.Literal(literals[taken]))
+                taken = taken + 1
+            }
+        }
+        let outcome = run_derived(self.g.catalog, declared, supplied)?
+        match outcome {
+            .Made(value) -> value.entries().any(encoded(it.value) == "true"),
+            .Unknown(_) -> false,
+        }
     }
 
     /// A mention names one entity: none is the plan's reason, several is a clarification.

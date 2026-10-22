@@ -22,6 +22,7 @@ export type ReadStep = {
         "holds",
         "derive",
         "resolve",
+        "satisfy",
     ]) op: string,
     @items(max: 8) inputs: List<string> = [],
     model: string? = null,
@@ -42,8 +43,9 @@ export type ReadStep = {
 fn step_coherent(s: ReadStep) -> Result<ReadStep, string> {
     let scan = s.op == "scan" || s.op == "seed"
     let derive = s.op == "derive"
+    let satisfy = s.op == "satisfy"
     if !derive && s.inputs.length != if scan { 0 } else { 1 } { fail "a scan or seed has no input; other steps take one" }
-    if derive != (s.derivation != null) { fail "only a derive step names its derivation" }
+    if (derive || satisfy) != (s.derivation != null) { fail "only a derive or satisfy step names its derivation" }
     if derive && s.inputs.any(it.is_empty()) { fail "a derive input names a step" }
     if scan != (s.model != null) { fail "only a scan or seed names a model" }
     if (s.op == "seed") != (s.binding != null) { fail "only a seed names its context binding" }
@@ -56,7 +58,7 @@ fn step_coherent(s: ReadStep) -> Result<ReadStep, string> {
         s.op == "holds"
     if property != (s.property != null) { fail "this operation has the wrong property arguments" }
     let literal = s.op == "filter" || s.op == "search"
-    if !derive && s.arguments.length != if literal { 1 } else { 0 } { fail "this operation has the wrong literal arguments" }
+    if !derive && !satisfy && s.arguments.length != if literal { 1 } else { 0 } { fail "this operation has the wrong literal arguments" }
     if s.op == "search" && !(s.arguments[0].value is .Text) { fail "a search argument must be text" }
     if (s.op == "filter") != (s.comparison != null) { fail "only a filter names a comparison" }
     if (s.op == "follow") != (s.direction != null) { fail "only a follow names a direction" }
