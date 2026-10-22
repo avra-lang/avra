@@ -1,4 +1,16 @@
 use schema.{Model, Shape}
+use parameters.{
+    binding_limit,
+    label_limit,
+    path_limit,
+    decimal_places_limit,
+    code_length_limit,
+    ascii_a,
+    ascii_z,
+    ascii_zero,
+    ascii_nine,
+    ascii_underscore,
+}
 use @std.json.{Json, field}
 
 /// Identity normalization is explicit and domain-independent. It does not
@@ -60,7 +72,9 @@ export type Semantics = {
 
 impl Semantics {
     fn checked(models: List<Model>, owner: Model) -> Result<bool, string> {
-        if self.identities.length > 64 || self.quantities.length > 64 { fail "model semantic bindings exceed their budget" }
+        if self.identities.length > binding_limit ||
+            self.quantities.length > binding_limit ||
+            self.absences.length > binding_limit { fail "model semantic bindings exceed their budget" }
         for i, identity in self.identities {
             if identity.namespace.is_empty() { fail "an identity binding needs an explicit namespace" }
             if self
@@ -76,7 +90,7 @@ impl Semantics {
         if self.validity != null { self.validity!.checked(models, owner)? }
         for i, quantity in self.quantities {
             if self.quantities.slice(0, i).any(same_path(it.amount, quantity.amount)) { fail "a quantity amount has one unit binding" }
-            if quantity.decimal_places < 0 || quantity.decimal_places > 18 { fail "quantity decimal places must be in 0..18" }
+            if quantity.decimal_places < 0 || quantity.decimal_places > decimal_places_limit { fail "quantity decimal places are within the declared limit" }
             let shape = path_shape(models, owner, quantity.amount)?
             if !(shape is .Integer || shape is .Number) { fail "a quantity amount must bind a numeric property" }
             match quantity.unit {
@@ -164,7 +178,7 @@ impl RelationBinding {
             fail "relation endpoints must bind typed references"
         }
         if !(path_shape(models, owner, self.label)? is .Text) { fail "a relation label must bind a text property" }
-        if self.labels.length > 128 { fail "relation labels exceed their budget" }
+        if self.labels.length > label_limit { fail "relation labels exceed their budget" }
         for i, label in self.labels {
             if label.value.is_empty() || label.forward.is_empty() { fail "a relation label needs a value and forward phrases" }
             if self.labels.slice(0, i).any(it.value == label.value) { fail "relation label values must be unique" }
@@ -173,7 +187,7 @@ impl RelationBinding {
                 if self.generalizes(wider, label.value, self.labels.length) { fail "relation label hierarchies have no cycles: ${label.value}" }
             }
             let phrases = label.forward.concat(label.reverse)
-            if phrases.length > 128 || phrases.any(it.is_empty()) { fail "relation phrases must be nonempty and bounded" }
+            if phrases.length > label_limit || phrases.any(it.is_empty()) { fail "relation phrases must be nonempty and bounded" }
             for j, phrase in phrases {
                 if phrases.slice(0, j).contains(phrase) { fail "a relation phrase has one direction per label" }
                 if self
@@ -315,7 +329,7 @@ fn scope_checked(models: List<Model>, owner: Model, scope: List<string>) -> Resu
 /// Whether `model`'s identity scopes lead, through references, to `owner`.
 fn scope_reaches(models: List<Model>, model: Model, owner: string, depth: int) -> bool {
     if model.name == owner { return true }
-    if depth > 16 { return true }
+    if depth > path_limit { return true }
     for identity in model.semantics.identities {
         for scope in identity.scoped_by {
             let target? = scope_target(models, model, scope) else { continue }
@@ -371,9 +385,9 @@ fn path_optional(models: List<Model>, owner: Model, path: List<string>) -> Resul
 
 fn snake_token(code: string) -> bool {
     let bytes = code.bytes()
-    if bytes.length == 0 || bytes.length > 64 { return false }
-    let lower = (b: int) -> b >= 97 && b <= 122
-    let tail = (b: int) -> lower(b) || b >= 48 && b <= 57 || b == 95
+    if bytes.length == 0 || bytes.length > code_length_limit { return false }
+    let lower = (b: int) -> b >= ascii_a && b <= ascii_z
+    let tail = (b: int) -> lower(b) || b >= ascii_zero && b <= ascii_nine || b == ascii_underscore
     lower(bytes.at(0)) && (0..bytes.length).all((i) -> tail(bytes.at(i)))
 }
 
@@ -390,7 +404,7 @@ fn same_path(a: List<string>, b: List<string>) -> bool {
 }
 
 export fn path_shape(models: List<Model>, owner: Model, path: List<string>) -> Result<Shape, string> {
-    if path.is_empty() || path.length > 16 || path.any(it.is_empty()) { fail "semantic paths need 1..16 nonempty property tokens" }
+    if path.is_empty() || path.length > path_limit || path.any(it.is_empty()) { fail "semantic paths need nonempty property tokens within the declared limit" }
     mut current = owner
     for i, token in path {
         let property? = current.properties.find(it.name == token) else { fail "unknown semantic property: ${current.name}.${token}" }
