@@ -1,0 +1,56 @@
+# .lanes — the DB/NODES lead's board (pi)
+
+**MODEL RULE (absolute): every lane runs `deepseek/deepseek-v4.1-flash`.**
+
+**THE ANTI-STUCK LAW.** A pi lane runs exactly ONE task and returns a report; a stopped lane is
+SILENT. So: answer every report with the next task in the same turn; keep 5–8 lanes live; before
+ending a turn, `intercom list` and respawn what died.
+
+Board written 2026-10-13T20:2xZ by the resumed DB/NODES lead after the Claude session (72a9dd4b)
+hit its weekly limit at 12:19Z. Durable process: `docs/2026_10_11_THE_PIPELINE.md`, `.lead/CI_RULE.md`,
+`.lead/HANDOVER_2026-10-13.md`, `.lead/NIGHT_LOG.md`, `.lead/SMALL_WINS.md`.
+
+## STATE
+- main `707ab829` = CHANNELS' #710 (`within` flip + SEED REFRESH) MERGED 23:21Z. **FREEZE LIFTED.**
+- **#727 (batch 12) READY + ARMED** 23:23Z, head 22f35823 rebased onto 707ab829, full run 38483868419. One landing at a time.
+- Landing order after #727: #742 -> #735 -> #730 -> #711 -> (update #716, rerun) -> #721. CHANNELS' batch 5 comes after #727 by agreement.
+- **Every lane landing to main must BOOTSTRAP** from the refreshed seed (a post-flip tree cannot be built by a pre-flip compiler = mergebase exit 70). Lanes still on `db-registrations` (pre-flip base) are unaffected.
+- The 21:26Z workflow_dispatch failure on b0d98c49 was the known std-net flake, not a gate red.
+- DISK: host hit 0 free mid-cycle (2 lanes died on ENOSPC). Freed ~1.1 GB; compiler at `build/avra.pree`. Keep caches lean.
+
+## LIVE LANES (update every turn)
+| lane | worktree / branch | Sprite | task now | state |
+|---|---|---|---|---|
+| db06 | ../avra-db06 / db06-seal | avra-07d | seal PR + rebase #725/#726/#728/#731/#670/#633 | running |
+| slow-gen1 | ../avra-lower-regress / settle-literal-fastpath | avra-sgate | fix ask_kept_reads quadratic (dedupe seen_first) | running |
+| op-rule | ../avra-op-rule / op-rule | avra-measure-ref | build_grammar_lit refusal + suffix is + PR3 plan | running |
+| items-kept | ../avra-items-kept / db-slice | avra-rb524 | on-demand holding() load; d2 records-moved | running |
+| store-tw | ../avra-store-tw / explain-served | avra-code-hash | finish explain-served draft PR + CancelReach plan | running |
+| edit-path | ../avra-edit-path / refs-per-name | avra-keepers-a | entry-unit read fix (stale-serve hazard) | running |
+| lower-cold | ../avra-db05-land / lower-cold-parsecut | avra-poison2 | placed(d) family + stale-serve test + stale tests | running |
+
+## DONE THIS CYCLE (drafts, unarmed unless noted)
+- **decl-lower**: `lead-exact` @ 3b8e4804 (parse-before-judge). attack.av literal 34.8s/2att/1disc -> 26.9s/1/0; callee sig 69.5/4/3 -> 60.0/3/2; full cache-attacks 390 builds 0 failed. Remaining d2=items-kept, d3=slow-gen1.
+- **batcher**: #727 batch 12 (d09b4d00, now 22f35823) ARMED.
+- **squeeze**: #742 @ 090deebf (Ir -5.22%, wire identical); #735 @ 954190b5. K1 GO, K2 NO-GO (RuleIndex already exists).
+- **nodes-self**: #721 @ b22887fe (CI SUCCESS); #711 @ e4482cd2 (ALL PASS); #716 @ 89000fed BLOCKED on #700 (=batch 12).
+- **tools-fix**: #748 draft bootstrap fallback; #730 @ af3b0e33 CI PASS.
+- **lower-cold-2**: steps 1-2 probe works (Typed standing 16228 -> 16243 exactly); placed(d) still needed; new trap: syntax() not total for a comment-only module.
+- **edit-path**: refs-per-name @ 5f49d9a4; body-edit re-lower 11,525 -> 56; entry-unit stale-serve hazard found.
+- **op-rule**: the drop was the seed predating @operators + build_grammar_lit silently accepting a partial parse; table grammar ast -38%/-30%, net ~ -200 lines.
+
+## FREED SPRITES (for CHANNELS, 20:2xZ)
+- `avra-dev` (was ../avra-db-store, lane done)
+- `avra-poison` (was ../avra-suite-poison, lane done)
+Next candidates: `avra-vd` (../avra-nodes4), `avra-poison2` (../avra-db05-land).
+
+## NOT OURS — never touch
+CHANNELS' worktrees/PRs: `flow-*`, `avra-flow-*`.
+
+## REMAINING EPIC WORK
+- DB: decl-lower's exact post-parse judgement (d1/d2/d3) is the central blocker; items-kept's
+  not-loaded standing files is the wall-clock win. Then design steps 08–11; KeyParts/key_of_parts
+  deletion (~600 lines).
+- Nodes: #721 re-entrant Expanded; then #711/#716/#639; step 5 (record marks) next.
+- Land queue (after #710): #727 batch 12; nodes #711/#716/#639; db06 #725/#726/#728/#731/#670;
+  squeeze #735/#742; tools #730.

@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How the compiler store works</title>
+<style>
+  :root{
+    --bg:#fbfbf9; --ink:#16161a; --muted:#6d6d78; --rule:#e6e6e0;
+    --blue:#2b6cb0; --amber:#b7791f; --green:#2f855a; --red:#c53030;
+    --violet:#6b46c1; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:17px/1.7 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  .wrap{max-width:760px;margin:0 auto;padding:0 24px}
+  header{padding:14vh 0 6vh}
+  header h1{font-size:clamp(30px,5vw,46px);line-height:1.12;letter-spacing:-.02em;margin:0 0 18px;font-weight:640}
+  header p{font-size:20px;color:var(--muted);margin:0;max-width:620px}
+  .kicker{font:600 12px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--blue);margin:0 0 20px}
+  section{padding:7vh 0;border-top:1px solid var(--rule);opacity:.25;transform:translateY(14px);transition:opacity .7s ease,transform .7s ease}
+  section.in{opacity:1;transform:none}
+  h2{font-size:clamp(23px,3.2vw,30px);letter-spacing:-.015em;line-height:1.2;margin:0 0 16px;font-weight:640}
+  h2 .n{font:600 13px/1 var(--mono);color:var(--blue);display:block;margin-bottom:12px;letter-spacing:.1em}
+  p{margin:0 0 18px}
+  code{font:14px/1.5 var(--mono);background:#f0f0ea;border:1px solid var(--rule);padding:1px 5px;border-radius:5px}
+  em{font-style:normal;background:linear-gradient(transparent 62%,#ffe9a8 62%);padding:0 1px}
+  figure{margin:30px 0;padding:26px 22px 18px;background:#fff;border:1px solid var(--rule);border-radius:14px;box-shadow:0 1px 2px rgba(0,0,0,.03),0 10px 30px -18px rgba(0,0,0,.15)}
+  figcaption{font-size:14px;color:var(--muted);margin-top:16px;line-height:1.55}
+  svg{display:block;width:100%;height:auto;overflow:visible}
+  .ctrl{display:flex;flex-wrap:wrap;gap:14px 22px;align-items:center;margin-top:16px;font-size:14px;color:var(--muted)}
+  button{font:inherit;font-size:14px;border:1px solid var(--rule);background:#fff;border-radius:8px;padding:7px 13px;cursor:pointer;color:var(--ink);transition:.15s}
+  button:hover{border-color:#c9c9c2;background:#f7f7f3}
+  button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+  label.sw{display:flex;gap:8px;align-items:center;cursor:pointer;user-select:none}
+  input[type=range]{width:150px;accent-color:var(--blue)}
+  .mono{font-family:var(--mono);font-size:13.5px}
+  .tag{display:inline-block;font:600 11px/1 var(--mono);letter-spacing:.06em;padding:4px 7px;border-radius:6px;background:#eef2f7;color:var(--blue)}
+  .tag.g{background:#e9f6ee;color:var(--green)} .tag.a{background:#fdf3e2;color:var(--amber)}
+  .tag.r{background:#fdecec;color:var(--red)} .tag.v{background:#f1ecfb;color:var(--violet)}
+  ul{padding-left:20px;margin:0 0 18px} li{margin:0 0 9px}
+  .lede{font-size:19px;color:#3a3a44}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:640px){.two{grid-template-columns:1fr}}
+  .card{border:1px solid var(--rule);border-radius:11px;padding:14px 15px;background:#fff}
+  .card h4{margin:0 0 6px;font-size:14px;letter-spacing:.02em}
+  .card p{font-size:14.5px;color:var(--muted);margin:0}
+  footer{padding:10vh 0 14vh;color:var(--muted);font-size:14px;border-top:1px solid var(--rule)}
+  .badge{font:600 11px/1 var(--mono);color:var(--muted);letter-spacing:.1em;text-transform:uppercase}
+  .fade{opacity:0;transition:opacity .5s,transform .5s;transform:translateY(4px)}
+  .fade.in{opacity:1;transform:none}
+  .hashbox{font-family:var(--mono);font-size:12.5px;word-break:break-all;background:#f7f7f3;border:1px solid var(--rule);border-radius:8px;padding:9px 11px;color:#3a3a44}
+</style>
+</head>
+<body>
+
+<header class="wrap">
+  <p class="kicker">the compiler DB · DB 05</p>
+  <h1>How the compiler remembers its work</h1>
+  <p class="lede">A compiler answers thousands of small questions — <em>what type is this?</em>, <em>what does this file declare?</em> — and when you edit one line it should only redo the work that line touched. This is the place those answers are kept.</p>
+</header>
+
+<main>
+
+<!-- 1 -->
+<section class="wrap" id="s1">
+  <h2><span class="n">STEP 1</span>One question, one answer</h2>
+  <p>Think of a library card catalogue. Every card has a <strong>key</strong> (the title) and a <strong>reference</strong> (where the book sits). The store has exactly the same two halves, and keeping them apart is the whole design.</p>
+  <p>The first half is the <strong>action table</strong>: <code>key → a short fingerprint</code>. The second is the <strong>content store</strong>: <code>fingerprint → the bytes</code>.</p>
+  <figure>
+    <svg viewBox="0 0 700 300" id="fig-tiers" aria-label="Two tiers">
+      <text x="0" y="16" font-size="12" fill="#6d6d78" font-family="ui-monospace" letter-spacing="1">ACTION TABLE</text>
+      <g id="tiers-rows"></g>
+      <text x="360" y="16" font-size="12" fill="#6d6d78" font-family="ui-monospace" letter-spacing="1">CONTENT STORE</text>
+      <g id="tiers-content"></g>
+      <g id="tiers-link"></g>
+    </svg>
+    <div class="ctrl">
+      <span>Click a key to follow its reference →</span>
+      <span id="tiers-hint" class="mono" style="color:#2b6cb0"></span>
+    </div>
+    <figcaption>The key never contains a file path, a machine name, a timestamp, or a store-local number — <em>content only</em>. That is what lets a second machine, or a remote cache later, answer the same question.</figcaption>
+  </figure>
+</section>
+
+<!-- 2 -->
+<section class="wrap" id="s2">
+  <h2><span class="n">STEP 2</span>The key is itself a hash</h2>
+  <p>A key is not the question in plain words. It is a fingerprint of four things, so a change to any one of them is a different question with its own answer.</p>
+  <figure>
+    <svg viewBox="0 0 700 132" id="fig-key" aria-label="The action key">
+      <g id="key-parts"></g>
+      <g id="key-gate"></g>
+    </svg>
+    <div class="ctrl">
+      <button class="kpart on" data-k="0">family name</button>
+      <button class="kpart on" data-k="1">family code hash</button>
+      <button class="kpart on" data-k="2">codec shape</button>
+      <button class="kpart on" data-k="3">the key's encoding</button>
+    </div>
+    <div class="hashbox" id="key-hash" style="margin-top:14px"></div>
+    <figcaption>Turn a part off and the key changes — that is the point. The <strong>code hash</strong> means a compiler rebuild keeps every answer whose query code did not change. The <strong>codec shape</strong> means an answer written by an older format is never misread; it is simply a miss.</figcaption>
+  </figure>
+</section>
+
+<!-- 3 -->
+<section class="wrap" id="s3">
+  <h2><span class="n">STEP 3</span>On disk</h2>
+  <div class="two" style="margin:22px 0">
+    <div class="card"><h4>.avra-cache/obj/ · bin/</h4><p>Object files and linked binaries stay ordinary files, named by content.</p></div>
+    <div class="card"><h4>.avra-cache/store/</h4><p>One store per tree, for every compiler — because an answer says which compiler built it.</p></div>
+  </div>
+  <figure>
+    <svg viewBox="0 0 700 250" id="fig-disk" aria-label="Store layout">
+      <g id="disk-tree"></g>
+      <g id="disk-note"></g>
+    </svg>
+    <figcaption>Hover a file. The two kinds of file are the crux: <span class="tag">body</span> is <em>sealed</em> — written once, indexed, never appended to; <span class="tag a">seg</span> is a <em>live tail</em> each running compiler appends to. A reader merges them.</figcaption>
+  </figure>
+</section>
+
+<!-- 4 -->
+<section class="wrap" id="s4">
+  <h2><span class="n">STEP 4</span>Writing: frames, and a full stop</h2>
+  <p>Answers are appended to the live segment as <strong>frames</strong>. The last thing in every frame is a <strong>commit marker</strong>: the frame's length and a truncated hash of its bytes. A frame is only believed once its marker checks out.</p>
+  <figure>
+    <svg viewBox="0 0 700 170" id="fig-append" aria-label="Appending frames">
+      <g id="append-frames"></g>
+      <g id="append-marker"></g>
+    </svg>
+    <div class="ctrl">
+      <button id="append-run">▶ append three answers</button>
+      <button id="append-reset">reset</button>
+      <span class="mono" id="append-say" style="color:#6d6d78"></span>
+    </div>
+    <figcaption>Why a marker at all? Because a program can die at any instant — and the next run has to know exactly which bytes were a complete thought.</figcaption>
+  </figure>
+</section>
+
+<!-- 5 -->
+<section class="wrap" id="s5">
+  <h2><span class="n">STEP 5</span>A crash, mid-sentence</h2>
+  <p>Kill the compiler while it is writing and the last frame may be <em>short</em>, or complete except for its marker. Either way it is a <strong>torn frame</strong>, and that segment is read up to — not including — it.</p>
+  <figure>
+    <svg viewBox="0 0 700 150" id="fig-kill" aria-label="A torn frame">
+      <g id="kill-frames"></g>
+    </svg>
+    <div class="ctrl">
+      <button id="kill-go">✂ kill mid-append</button>
+      <button id="kill-reset">reset</button>
+      <span class="mono" id="kill-say" style="color:#6d6d78"></span>
+    </div>
+    <figcaption>Nothing earlier is lost, and nothing later is guessed: every complete frame before the tear still stands. The next command reads the good prefix and simply recomputes what the torn frame was carrying.</figcaption>
+  </figure>
+</section>
+
+<!-- 6 -->
+<section class="wrap" id="s6">
+  <h2><span class="n">STEP 6</span>Two compilers at once</h2>
+  <p>There is no lock between writers. Each process appends to <strong>its own segment</strong>, so two runs never contend. A reader, opening the store, merges every segment into one picture.</p>
+  <figure>
+    <svg viewBox="0 0 700 210" id="fig-two" aria-label="Two writers">
+      <g id="two-writers"></g>
+    </svg>
+    <div class="ctrl">
+      <button id="two-run">▶ let both write, then open</button>
+      <button id="two-reset">reset</button>
+    </div>
+    <figcaption>The one place a lock appears is <strong>compaction</strong> — the only step that rewrites, asked for by name in the file layout as <code>lock</code>. A process that cannot take it does not compact, and says so.</figcaption>
+  </figure>
+</section>
+
+<!-- 7 -->
+<section class="wrap" id="s7">
+  <h2><span class="n">STEP 7</span>Finding a needle</h2>
+  <p>Scanning a segment for one key would cost as much as the work it saves. So each <strong>sealed body</strong> carries an index: a 256-way fan-out, then sorted key fingerprints, then offsets. It is built <em>once</em>, when the body is sealed — never re-built when a reader opens it, and never touched by the live tail.</p>
+  <figure>
+    <svg viewBox="0 0 700 220" id="fig-idx" aria-label="The index">
+      <g id="idx-g"></g>
+    </svg>
+    <div class="ctrl">
+      <label class="sw">key <input type="range" id="idx-s" min="0" max="12" value="7"><span class="mono" id="idx-k"></span></label>
+    </div>
+    <figcaption>Inside a store an id is just an offset. The fan-out narrows thousands of keys to a handful; the sorted run finds the exact one; the offset jumps to the record.</figcaption>
+  </figure>
+</section>
+
+<!-- 8 -->
+<section class="wrap" id="s8">
+  <h2><span class="n">STEP 8</span>Is the answer still true?</h2>
+  <p>An answer is only as good as the inputs it read. So each record carries <strong>what it read</strong>, and each input has a small <strong>revision</strong> that moves when it changes. Checking is three rules:</p>
+  <ul>
+    <li><strong>push-dirty</strong> — when an input changes, everything that read it becomes <em>suspect</em> (ids only; nothing is decoded yet).</li>
+    <li><strong>pull-verify</strong> — a suspect answer re-checks itself, root-down, before it is trusted.</li>
+    <li><strong>early cutoff</strong> — if a recomputed answer comes out <em>identical</em>, its readers never wake up. Work stops where the change stops mattering.</li>
+  </ul>
+  <figure>
+    <svg viewBox="0 0 700 230" id="fig-valid" aria-label="Validity">
+      <g id="valid-g"></g>
+    </svg>
+    <div class="ctrl">
+      <button id="valid-go">✎ edit the deep input</button>
+      <button id="valid-reset">reset</button>
+      <span class="mono" id="valid-say" style="color:#6d6d78"></span>
+    </div>
+    <figcaption>Two shortcuts make it cheap. <strong>Durability tiers</strong> — standard-library inputs are HIGH and move rarely, so “has anything of yours changed?” is one comparison. And an identical <strong>read set</strong> is interned once, so a thousand questions sharing it share one check.</figcaption>
+  </figure>
+</section>
+
+<!-- 9 -->
+<section class="wrap" id="s9">
+  <h2><span class="n">STEP 9</span>Housekeeping, and going back in time</h2>
+  <p>Left alone, the segments would grow forever. <strong>Compaction</strong> folds a sealed body plus every live segment into one new, clean body — and while it copies, it decides what is worth keeping.</p>
+  <figure>
+    <svg viewBox="0 0 700 250" id="fig-compact" aria-label="Compaction and gc">
+      <g id="compact-g"></g>
+    </svg>
+    <div class="ctrl">
+      <button id="compact-go">▶ compact &amp; collect</button>
+      <button id="compact-reset">reset</button>
+    </div>
+    <figcaption>A record survives if it is <strong>reachable</strong> from something you still care about — a verdict, a built binary, a passing suite. (Until those exist, the latest command's answers stand in.) Unreachable records are dropped. The last <em>N</em> revisions are kept so the compiler can still say <em>what changed</em>.</figcaption>
+  </figure>
+</section>
+
+<!-- 10 -->
+<section class="wrap" id="s10">
+  <h2><span class="n">STEP 10</span>The part that keeps it honest</h2>
+  <p>None of this is trusted because it looks right. It is trusted because it is attacked. Ten attacks, each a way a cache is normally wrong, run against a cold build as the oracle:</p>
+  <div id="attacks" style="margin-top:22px"></div>
+  <p style="margin-top:22px">Three still fail today — and each failure is a <em>named</em> piece of work, not a mystery: <span class="tag r">no body content yet</span> a flipped byte inside a sealed body has nothing to flip until compaction writes bodies; <span class="tag r">whole-store miss</span> a rebuild recomputes everything until the per-query code hash lands; <span class="tag r">no conflict line</span> two different answers for one key is not reported yet.</p>
+</section>
+
+<footer class="wrap">
+  <p><strong>The shape, in one breath.</strong> Content-only keys → two tiers → an append-only live tail with commit markers → a sealed, indexed body → verification by revisions with early cutoff → compaction that collects what is reachable and keeps a window of history. Nothing in it needs a daemon, and every file is a file you can look at by hand.</p>
+  <p>Adapted from the compiler DB design (§6, decisions S1–S8). Interactive companion — every figure above is live.</p>
+</footer>
+
+</main>
+
+<script>
+const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const NS="http://www.w3.org/2000/svg";
+const el=(t,a={},p)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);if(p)p.appendChild(e);return e};
+const txt=(x,y,s,a={})=>{const e=el("text",Object.assign({x,y,"font-size":13,"font-family":"ui-monospace,Menlo,monospace",fill:"#16161a"},a));e.textContent=s;return e};
+const rect=(x,y,w,h,a={})=>el("rect",Object.assign({x,y,width:w,height:h,rx:6},a));
+const line=(x1,y1,x2,y2,a={})=>el("line",Object.assign({x1,y1,x2,y2,stroke:"#c9c9c2","stroke-width":1.4},a));
+
+/* scroll reveal */
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting)e.target.classList.add("in")}),{threshold:.12});
+$$("section").forEach(s=>io.observe(s));
+
+/* tiny stable hash for display only */
+function h(s){let x=2166136261;for(let i=0;i<s.length;i++){x^=s.charCodeAt(i);x=Math.imul(x,16777619)}let o="";for(let i=0;i<4;i++){o+=(x>>>0).toString(16).padStart(8,"0");x=Math.imul(x,2246822519)}return o}
+
+/* ---------- FIG 1 : two tiers ---------- */
+(function(){
+  const rows=[["family «shape» ▸ TypeId 12","a4f2"],["family «sig» ▸ decl 41","7c19"],["family «read» ▸ file a.av","e08b"]];
+  const content=[["a4f2","record 12 bytes"],["7c19","record 64 bytes"],["e08b","record 9 bytes"],["5d10","record 22 bytes"]];
+  const g1=$("#tiers-rows"),g2=$("#tiers-content"),gl=$("#tiers-link");
+  const rowY=i=>40+i*54, cY=i=>40+i*54;
+  rows.forEach(([k,d],i)=>{
+    const g=el("g",{class:"row",style:"cursor:pointer"},g1);
+    g.appendChild(rect(0,rowY(i),250,42,{fill:"#fff",stroke:"#e6e6e0"}));
+    g.appendChild(txt(12,rowY(i)+18,k,{"font-size":12}));
+    g.appendChild(txt(12,rowY(i)+34,"→ "+d,{"font-size":12,fill:"#2b6cb0"}));
+    g.dataset.d=d;
+    g.addEventListener("click",()=>pick(d));
+  });
+  content.forEach(([d,t],i)=>{
+    const g=el("g",{id:"c-"+d},g2);
+    g.appendChild(rect(370,cY(i),270,42,{fill:"#fff",stroke:"#e6e6e0"}));
+    g.appendChild(txt(384,cY(i)+18,d,{"font-size":12,fill:"#6b46c1"}));
+    g.appendChild(txt(384,cY(i)+34,t,{"font-size":12,fill:"#6d6d78"}));
+  });
+  function pick(d){
+    $$("#tiers-rows .row rect").forEach(r=>r.setAttribute("stroke","#e6e6e0"));
+    $$("#tiers-content g rect").forEach(r=>r.setAttribute("stroke","#e6e6e0"));
+    const i=rows.findIndex(r=>r[1]===d);
+    g1.children[i*2+1+0]; // keep
+    $("#tiers-rows").children[i].children[0].setAttribute("stroke","#2b6cb0");
+    gl.innerHTML="";
+    const x1=250,y1=rowY(i)+21,x2=370,y2=cY(content.findIndex(c=>c[0]===d))+21;
+    gl.appendChild(el("path",{d:`M${x1} ${y1} C ${x1+60} ${y1}, ${x2-60} ${y2}, ${x2} ${y2}`,fill:"none",stroke:"#2b6cb0","stroke-width":1.6,"stroke-dasharray":"5 4"}));
+    $("#c-"+d)?.firstChild.setAttribute("stroke","#6b46c1");
+    $("#tiers-hint").textContent="key → "+d+" → its bytes";
+  }
+  pick("a4f2");
+})();
+
+/* ---------- FIG 2 : the key ---------- */
+(function(){
+  const parts=[["family name","shape"],["family code hash","b7e1…9f"],["codec shape","0011"],["key's encoding","00a ▸ 0x12"]];
+  const on=[true,true,true,true];
+  const g=$("#key-parts");
+  function draw(){
+    g.innerHTML="";
+    let x=0;
+    parts.forEach(([label,val],i)=>{
+      const w=Math.max(96,label.length*7.4+22);
+      const r=rect(x,26,w,54,{fill:on[i]?"#eef2f7":"#f4f4f0",stroke:on[i]?"#bcd2e8":"#e0e0da"});
+      g.appendChild(r);
+      g.appendChild(txt(x+11,48,label,{"font-size":11,fill:on[i]?"#2b6cb0":"#a0a09a"}));
+      g.appendChild(txt(x+11,66,val,{"font-size":12,fill:on[i]?"#16161a":"#c2c2bc"}));
+      x+=w+6;
+    });
+    g.appendChild(txt(0,16,"…joined, then hashed →",{"font-size":12,fill:"#6d6d78"}));
+    const key=parts.filter((_,i)=>on[i]).map(p=>p[1]).join("·");
+    $("#key-hash").innerHTML="BLAKE3( <span style='color:#2b6cb0'>"+ (key||"—") +"</span> ) &nbsp;=&nbsp; <strong>"+h(key)+"</strong>";
+  }
+  $$(".kpart").forEach(b=>b.addEventListener("click",()=>{
+    const i=+b.dataset.k;on[i]=!on[i];b.classList.toggle("on",on[i]);draw();
+  }));
+  draw();
+})();
+
+/* ---------- FIG 3 : disk ---------- */
+(function(){
+  const g=$("#disk-tree"),note=$("#disk-note");
+  const items=[
+    ["dir","store/","",0,0],
+    ["b","body-07.pack","sealed: header · names · sets · per-family meta|values · footer",1,56],
+    ["i","body-07.idx","action key → record offset: fan-out[256] · keys · offsets",1,92],
+    ["s","seg-4821.log","live tail, append-only — this writer's",1,128],
+    ["s","seg-7710.log","another writer's tail",1,164],
+    ["l","lock","taken by compaction only — the one lock",1,200],
+    ["dir2","obj/  bin/","object files and binaries, named by content",0,236],
+  ];
+  const col={b:"#2b6cb0",i:"#6b46c1",s:"#b7791f",l:"#c53030",dir:"#16161a",dir2:"#6d6d78"};
+  items.forEach(([t,name,desc],idx)=>{
+    const y=14+idx*34;
+    const gx=el("g",{style:"cursor:default"},g);
+    const dot=el("circle",{cx:8,cy:y,r:4,fill:col[t]},gx);
+    gx.appendChild(dot);
+    gx.appendChild(txt(20,y+4,name,{"font-size":13,fill:t==="s"||t==="l"?col[t]:"#16161a"}));
+    gx.addEventListener("mouseenter",()=>{note.innerHTML="";note.appendChild(txt(0,0,desc,{"font-size":12.5,fill:"#3a3a44"}))});
+    gx.addEventListener("mouseleave",()=>{note.innerHTML="";note.appendChild(txt(0,0,"hover a file…",{"font-size":12.5,fill:"#a0a09a"}))});
+  });
+  note.appendChild(txt(0,0,"hover a file…",{"font-size":12.5,fill:"#a0a09a"}));
+})();
+
+/* ---------- FIG 4 : appending ---------- */
+(function(){
+  const g=$("#append-frames"),mk=$("#append-marker"),say=$("#append-say");
+  const data=["shape ▸ int","sig ▸ fn a","read ▸ a.av"];let n=0,timer=null;
+  function frame(x,i,done){
+    const gr=el("g",{},g);
+    gr.appendChild(rect(x,34,148,56,{fill:done?"#fff":"#fdf3e2",stroke:done?"#2b6cb0":"#b7791f"}));
+    gr.appendChild(txt(x+11,56,data[i],{"font-size":12}));
+    gr.appendChild(txt(x+11,74,"answer bytes",{"font-size":11,fill:"#6d6d78"}));
+    gr.appendChild(rect(x+154,40,26,44,{fill:done?"#e9f6ee":"#fdecec",stroke:done?"#2f855a":"#c53030"}));
+    gr.appendChild(txt(x+158,67,"✓",{"font-size":14,fill:done?"#2f855a":"#c53030"}));
+    gr.appendChild(txt(x,26,done?"frame "+(i+1)+" · committed":"frame "+(i+1)+" · uncommitted",{"font-size":10.5,fill:done?"#2b6cb0":"#c53030"}));
+  }
+  function draw(){g.innerHTML="";for(let i=0;i<data.length;i++){if(i<n-1)frame(i*186,i,true);else if(i===n-1)frame(i*186,i,true)}}
+  function reset(){n=0;g.innerHTML="";say.textContent="";}
+  $("#append-run").onclick=()=>{reset();let i=0;timer=setInterval(()=>{
+     if(i<data.length){frame(i*186,i,true);i++;say.textContent="appended, marker wrote last";}
+     else{clearInterval(timer);say.textContent="three answers stored; the marker is what the next run believes";}
+  },520);};
+  $("#append-reset").onclick=reset;reset();
+})();
+
+/* ---------- FIG 5 : kill ---------- */
+(function(){
+  const g=$("#fig-kill");const say=$("#kill-say");
+  const labels=["answer 1","answer 2","answer 3 (torn)"];
+  function reset(){g.innerHTML="";say.textContent="";labels.forEach((L,i)=>{
+     const x=14+i*232, torn=i===2;
+     const gr=el("g",{},g);
+     gr.appendChild(rect(x,40,150,54,{fill:"#fff",stroke:torn?"#c53030":"#2b6cb0"}));
+     gr.appendChild(txt(x+11,62,L,{"font-size":12}));
+     gr.appendChild(txt(x+11,80,torn?"half a frame":"complete",{"font-size":11,fill:torn?"#c53030":"#6d6d78"}));
+     const mr=rect(x+156,46,26,42,{fill:torn?"#fdecec":"#e9f6ee",stroke:torn?"#c53030":"#2f855a"});
+     gr.appendChild(mr);gr.appendChild(txt(x+160,72,torn?"✗":"✓",{"font-size":14,fill:torn?"#c53030":"#2f855a"}));
+     if(torn)mr.setAttribute("transform",`rotate(-8 ${x+169} 67)`);
+  });}
+  $("#kill-go").onclick=()=>{reset();say.textContent="✂ killed between a frame and its marker — the tear ends the read; 1 and 2 stand.";};
+  $("#kill-reset").onclick=reset;reset();
+})();
+
+/* ---------- FIG 6 : two writers ---------- */
+(function(){
+  const g=$("#fig-two");
+  function reset(){
+    g.innerHTML="";
+    [["writer A  seg-4821.log",["a4f2","e08b"],0],["writer B  seg-7710.log",["7c19"],110]].forEach(([L,keys,y],wi)=>{
+      const gr=el("g",{},g);
+      gr.appendChild(txt(0,y+24,L,{"font-size":12,fill:wi?"#b7791f":"#2b6cb0"}));
+      keys.forEach((k,i)=>{
+        const x=250+i*118;
+        gr.appendChild(rect(x,y+6,106,30,{fill:"#fff",stroke:wi?"#b7791f":"#2b6cb0"}));
+        gr.appendChild(txt(x+12,y+26,k,{"font-size":12}));
+      });
+      gr.appendChild(txt(250+keys.length*118+6,y+26,"…",{"font-size":13,fill:"#a0a09a"}));
+    });
+    g.appendChild(txt(0,198,"open → merge every segment into one picture:  a4f2 · e08b · 7c19",{"font-size":12.5,fill:"#6d6d78"}));
+  }
+  $("#two-run").onclick=()=>{reset();};
+  $("#two-reset").onclick=reset;reset();
+})();
+
+/* ---------- FIG 7 : the index ---------- */
+(function(){
+  const g=$("#idx-g"),ks=$("#idx-k");
+  const buckets=Array.from({length:8},(_,i)=>i);
+  function draw(k){
+    g.innerHTML="";
+    g.appendChild(txt(0,14,"fan-out[256] — we look in bucket k",{"font-size":12,fill:"#6d6d78"}));
+    const b=Math.floor(k/2)%8;
+    buckets.forEach(i=>{
+      const x=6+i*86,on=i===b;
+      g.appendChild(rect(x,26,78,26,{fill:on?"#eef2f7":"#fff",stroke:on?"#2b6cb0":"#e6e6e0"}));
+      g.appendChild(txt(x+30,43,i,{"font-size":12,fill:on?"#2b6cb0":"#a0a09a"}));
+    });
+    g.appendChild(txt(0,84,"then the sorted fingerprints in that bucket",{"font-size":12,fill:"#6d6d78"}));
+    const start=b*3+2;
+    for(let j=0;j<5;j++){
+      const val=start+j, x=6+j*118, on=val===k;
+      g.appendChild(rect(x,96,108,26,{fill:on?"#f1ecfb":"#fff",stroke:on?"#6b46c1":"#e6e6e0"}));
+      g.appendChild(txt(x+14,113,"…"+h("k"+val).slice(0,5),{"font-size":11.5,fill:on?"#6b46c1":"#b4b4ae"}));
+    }
+    const hitX=6+(k-start)*118;
+    g.appendChild(el("path",{d:`M${hitX+54} 122 L ${hitX+54} 150 L 360 150 L 360 178`,fill:"none",stroke:"#6b46c1","stroke-width":1.6,"stroke-dasharray":"5 4"}));
+    g.appendChild(rect(300,178,120,30,{fill:"#fff",stroke:"#6b46c1"}));
+    g.appendChild(txt(312,198,"record @ offset",{"font-size":12,fill:"#6b46c1"}));
+    ks.textContent="k = "+k;
+  }
+  $("#idx-s").addEventListener("input",e=>draw(+e.target.value));
+  draw(7);
+})();
+
+/* ---------- FIG 8 : validity ---------- */
+(function(){
+  const g=$("#fig-valid"),say=$("#valid-say");
+  const nodes=[["input  a.av",30,150],["answer  read(a.av)",210,150],["answer  shape(int)",390,150],["you ask",560,150]];
+  const edges=[[0,1],[1,2],[2,3]];
+  function draw(o){
+    g.innerHTML="";
+    edges.forEach(([a,b])=>{
+      const x1=nodes[a][1],y1=nodes[a][2],x2=nodes[b][1],y2=nodes[b][2];
+      const hot=o.suspect>0&&b>=o.suspect;
+      g.appendChild(el("path",{d:`M${x1+120} ${y1+18} L ${x2} ${y2+18}`,fill:"none",stroke:hot?"#c53030":"#c9c9c2","stroke-width":1.6,"stroke-dasharray":hot?"7 5":"none"}));
+    });
+    nodes.forEach(([L,x,y],i)=>{
+      const hot=o.suspect>0&&i>=o.suspect;
+      g.appendChild(rect(x,y,120,36,{fill:i===0&&o.edited?"#fdf3e2":hot?"#fdecec":"#fff",stroke:i===0&&o.edited?"#b7791f":hot?"#c53030":"#e6e6e0"}));
+      g.appendChild(txt(x+11,y+23,L,{"font-size":11.5,fill:hot?"#c53030":"#16161a"}));
+    });
+    g.appendChild(txt(0,26,"push-dirty marks readers suspect \u00b7 pull-verify checks root-down \u00b7 early cutoff stops where nothing changed again",{"font-size":11.5,fill:"#6d6d78"}));
+  }
+  $("#valid-go").onclick=()=>{
+    draw({edited:true,suspect:1});
+    say.textContent="a.av changed \u2192 answers 1,2 suspect \u2026";
+    setTimeout(()=>{
+      draw({edited:true,suspect:4});
+      g.appendChild(txt(0,206,"re-typed a.av's answer \u2026 identical \u21e2 readers never wake up (early cutoff)",{"font-size":12,fill:"#2f855a"}));
+      say.textContent="stopped at the first unchanged answer.";
+    },1300);
+  };
+  $("#valid-reset").onclick=()=>{draw({edited:false,suspect:0});say.textContent="";};
+  draw({edited:false,suspect:0});
+})();
+
+/* ---------- FIG 9 : compaction ---------- */
+(function(){
+  const g=$("#compact-g");
+  function draw(done){
+    g.innerHTML="";
+    const gx=(x,w,h,fill,stroke)=>{g.appendChild(rect(x,20,w,h,{fill,stroke}))};
+    g.appendChild(txt(0,12,"before",{"font-size":12,fill:"#6d6d78",'text-anchor':"start"}));
+    g.appendChild(rect(0,20,200,80,{fill:"#eef2f7",stroke:"#bcd2e8"}));
+    g.appendChild(txt(14,48,"body (sealed)",{"font-size":12,fill:"#2b6cb0"}));
+    g.appendChild(txt(14,70,"many records",{"font-size":11,fill:"#6d6d78"}));
+    g.appendChild(rect(0,108,120,40,{fill:"#fdf3e2",stroke:"#e8cfa0"}));
+    g.appendChild(txt(12,132,"seg A",{"font-size":12,fill:"#b7791f"}));
+    g.appendChild(rect(128,108,120,40,{fill:"#fdf3e2",stroke:"#e8cfa0"}));
+    g.appendChild(txt(140,132,"seg B",{"font-size":12,fill:"#b7791f"}));
+    g.appendChild(txt(0,178,"· some records are unreachable — nothing points at them",{"font-size":11.5,fill:"#a0a09a"}));
+    g.appendChild(rect(268,60,20,52,{fill:done?"#e9f6ee":"#f7f7f3",stroke:done?"#2f855a":"#e0e0da"}));
+    g.appendChild(txt(300,92,done?"fold ⇢ keep only what is reachable":"fold",{"font-size":12,fill:done?"#2f855a":"#a0a09a"}));
+    g.appendChild(txt(470,12,"after",{"font-size":12,fill:"#6d6d78"}));
+    g.appendChild(rect(470,20,210,80,{fill:done?"#e9f6ee":"#f7f7f3",stroke:done?"#2f855a":"#e0e0da"}));
+    g.appendChild(txt(484,48,done?"one clean body":"body-08.pack",{"font-size":12,fill:done?"#2f855a":"#a0a09a"}));
+    g.appendChild(txt(484,70,done?"unreachable gone · old N kept":"(pending)",{"font-size":11,fill:"#6d6d78"}));
+  }
+  $("#compact-go").onclick=()=>draw(true);
+  $("#compact-reset").onclick=()=>draw(false);
+  draw(false);
+})();
+
+/* ---------- FIG 10 : attacks ---------- */
+(function(){
+  const at=[
+    ["one store","the directory holds store, obj, bin — and nothing else",true],
+    ["one open","a no-op run maps the store exactly once",true],
+    ["kill mid-append","a writer killed between a frame and its marker leaves every earlier frame",true],
+    ["two writers","two runs at once both answer correctly, and both segments stand",true],
+    ["compaction contended","the process without the lock says it did not compact",true],
+    ["a flipped byte","a bit flipped in the live tail is seen as torn and recomputed",true],
+    ["another compiler","a record whose producer hash differs is never read",true],
+    ["mid-body flip","a bit flipped inside a sealed body is seen as torn",false],
+    ["one-query rebuild","only the queries whose code changed recompute",false],
+    ["a claim conflict","two different answers for one key are reported",false],
+  ];
+  const host=$("#attacks");
+  at.forEach(([t,d,ok])=>{
+    const row=document.createElement("div");
+    row.className="fade in";
+    row.style.cssText="display:flex;gap:14px;align-items:flex-start;padding:11px 0;border-bottom:1px solid #eee";
+    row.innerHTML=`<span class="tag ${ok?"g":"r"}" style="flex:none;margin-top:2px">${ok?"pass":"owed"}</span>
+      <span><strong style="font-size:15px">${t}</strong><br><span style="color:var(--muted);font-size:14px">${d}</span></span>`;
+    host.appendChild(row);
+  });
+})();
+</script>
+</body>
+</html>

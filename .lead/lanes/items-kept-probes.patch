@@ -1,0 +1,191 @@
+diff --git a/packages/std-avrac/src/compiler/derive.av b/packages/std-avrac/src/compiler/derive.av
+index 893a5a97..7e8b247b 100644
+--- a/packages/std-avrac/src/compiler/derive.av
++++ b/packages/std-avrac/src/compiler/derive.av
+@@ -548,8 +548,12 @@ impl Workspace {
+                 // it computed; the keys asked HERE must be resolved too, or a reader
+                 // whose reads all stand is forced read as if they had moved.
+                 let held = held_paths(self)
++                let u0 = self.clock()
+                 for path in held { let _ = self.held_okey(store, path) }
++                let u1 = self.clock()
+                 let _ = self.resolve_pending_reads(store)
++                let u2 = self.clock()
++                qtrace("PROBE unruled okeys ${(u1 - u0) / 1000000} ms; pending ${(u2 - u1) / 1000000} ms\n")
+                 [ReadFile { path: path, why: Reads.Unruled } for path in held if !ruled(store, self.held_okey(store, path))]
+             },
+             .Binary -> [],
+@@ -623,10 +627,17 @@ impl Workspace {
+         let homes = if at.homes { self.known_homes(store, at) } else { [] }
+         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
+         if at.hold {
+-            for m in held_modules(self, store, built_entry(at)) { load_interface(self, store, m, at.entry, at.want) }
++            let t0 = self.clock()
++            let hm = held_modules(self, store, built_entry(at))
++            let t1 = self.clock()
++            for m in hm { load_interface(self, store, m, at.entry, at.want) }
++            let t2 = self.clock()
++            qtrace("PROBE held_modules ${(t1 - t0) / 1000000} ms (${hm.length}); load_interface ${(t2 - t1) / 1000000} ms\n")
+             // a home whose text moved moves what lowers from it: the homes are read from the start
+             if !at.homes && self.known_homes(store, at).any((path) -> self.home_moved(store, path)) { fail Turn.Again(at with { homes: true }) }
++            let t3 = self.clock()
+             self.settle_holds(store, at.want)
++            qtrace("PROBE settle_holds ${(self.clock() - t3) / 1000000} ms\n")
+         }
+         self.host.reads_ahead(self.reads_ahead())
+         self.hold.holds_settled.set(true)
+diff --git a/packages/std-avrac/src/compiler/record.av b/packages/std-avrac/src/compiler/record.av
+index e6867736..32c42980 100644
+--- a/packages/std-avrac/src/compiler/record.av
++++ b/packages/std-avrac/src/compiler/record.av
+@@ -13,6 +13,7 @@
+ use @std.text.{parse_int}
+ use core.{
+     CollectKind,
++    qtrace,
+     Plain,
+     wire_fields,
+     some_list,
+@@ -650,12 +651,15 @@ fn load_named(
+     // A MODULE HELD NOTHING FOR IS READ, and a read file is one the workspace MET:
+     // a module whose importers are all held is met nowhere else, and a file never
+     // met is neither parsed nor linked.
++    let c0 = ws.clock()
+     let text = record_cached(ws, store, m)
++    let c1 = ws.clock()
+     if text == "" {
+         ws.met_all(named)
+         return
+     }
+     let fields = record_fields(ws, store, m)
++    let c2 = ws.clock()
+     // FAIL CLOSED: a record the decoder cannot rebuild WHOLE holds NOTHING, and
+     // its files parse. A partial hold is how a declaration goes missing — the
+     // cache must be a miss rather than a lie.
+@@ -686,7 +690,9 @@ fn load_named(
+         ws.met_all(named)
+         return
+     }
++    let c3 = ws.clock()
+     if first { load_imports(ws, store, m, fields, entry, want) }
++    let c4 = ws.clock()
+     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
+     // this same module finds it.
+     let places = record_places(ws, store, m)
+@@ -699,8 +705,8 @@ fn load_named(
+             meet_file(ws, store, m, f, places.get(f), entry, want)
+         }
+     }
+-    // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
+-    // pass only REMEMBERS the module for the shape pass. One parser, one minter.
++    let c5 = ws.clock()
++    qtrace("PROBE mod cached ${(c1 - c0) / 1000} fields ${(c2 - c1) / 1000} fault ${(c3 - c2) / 1000} imports(incl rec) ${(c4 - c3) / 1000} meet ${(c5 - c4) / 1000} us\n")
+ }
+ 
+ /// WHAT A MODULE'S RECORD SEES, loaded before its own files are met: the prelude, every
+@@ -882,10 +888,12 @@ fn meet_file(
+     let is_entry = entry != null && f == entry!
+     let why: Reads? = read_why(ws, store, m, f, at, is_entry, want)
+     if why == null {
++        let h0 = ws.clock()
+         ws.hold.hold_asked.push(f)
+         for p in ws.hold.pending_reads.get() {
+             if p.reader == f { ws.hold.read_with.set(ws.hold.read_with.get().concat([p.read.path])) }
+         }
++        qtrace("PROBE tail ${(ws.clock() - h0) / 1000} us\n")
+         return
+     }
+     ws.hold.read_files.push(ReadFile { path: f, why: why! })
+@@ -961,12 +969,22 @@ fn read_why(
+     if is_entry { return Reads.Entry }
+     let forced: Reads? = ws.hold.forced.get().get(f)
+     if forced != null { return forced! }
+-    if !written_from(at, ws.text_digest(f)) { return Reads.Moved }
+-    if ws.reads_pending(store, m, f) { return null }
+-    if !ws.stands_in(store, obj_key_cached(ws, store, m, f), want) { return Reads.Unkept }
++    let r0 = ws.clock()
++    let dg = ws.text_digest(f)
++    let r1 = ws.clock()
++    if !written_from(at, dg) { return Reads.Moved }
++    let pend = ws.reads_pending(store, m, f)
++    let r2 = ws.clock()
++    if pend { return null }
++    let kept = ws.stands_in(store, obj_key_cached(ws, store, m, f), want)
++    let r3 = ws.clock()
++    if !kept { return Reads.Unkept }
+     let rows = file_rows(record_fields(ws, store, m), at)
+-    if !ws.const_rows_ready(store, m, f, rows) { return Reads.Consts }
++    let ready = ws.const_rows_ready(store, m, f, rows)
++    let r4 = ws.clock()
++    if !ready { return Reads.Consts }
+     if !holdable(rows) { return Reads.Unholdable }
++    qtrace("PROBE why digest ${(r1 - r0) / 1000} pending ${(r2 - r1) / 1000} stands ${(r3 - r2) / 1000} consts ${(r4 - r3) / 1000} us\n")
+     null
+ }
+ 
+@@ -1263,16 +1281,17 @@ export type SeenPart = { module: string, bytes_key: string, files: int }
+ impl Workspace {
+     /// A file's key parts, derived.
+     fn key_parts(store: Store, m: ModulePath, path: string) -> KeyParts {
+-        KeyParts {
+-            module: m.text(),
+-            path: path,
+-            text: if path == "" { "" } else { self.text_digest(path) },
+-            // an object that bakes a compile-time run's answer in reads the TEXT the run read
+-            runs: [self.read_token(path, read) for read in kept_runs(record_places(self, store, m).get(path))],
+-            // an object that bakes a collect's members in reads the set it gathered
+-            gathered: self.gathered_said(store, m, path),
+-            seen: self.view_parts(store, m),
+-        }
++        let k0 = self.clock()
++        let text = if path == "" { "" } else { self.text_digest(path) }
++        let k1 = self.clock()
++        let runs = [self.read_token(path, read) for read in kept_runs(record_places(self, store, m).get(path))]
++        let k2 = self.clock()
++        let gathered = self.gathered_said(store, m, path)
++        let k3 = self.clock()
++        let seen = self.view_parts(store, m)
++        let k4 = self.clock()
++        qtrace("PROBE kp text ${(k1 - k0) / 1000} runs ${(k2 - k1) / 1000} gathered ${(k3 - k2) / 1000} view ${(k4 - k3) / 1000} us\n")
++        KeyParts { module: m.text(), path: path, text: text, runs: runs, gathered: gathered, seen: seen }
+     }
+ 
+     /// What a file's package-wide collects gathered, as its record names it — read
+@@ -1333,7 +1352,9 @@ impl Workspace {
+         let known: List<SeenPart>? = self.keys.view_parts.get().get(m.text())
+         if known != null { return known! }
+         let r = self.reach(store, m)
++        let v0 = self.clock()
+         let made = [if dep == m.text() { self.seen_part_of(store, m) } else { self.reached_part(store, dep, r.files_of(dep)) } for dep in sorted_texts([m.text()].concat(r.mods))]
++        qtrace("PROBE parts ${(self.clock() - v0) / 1000} us\n")
+         self.keys.view_parts.put(m.text(), made)
+         made
+     }
+@@ -1345,7 +1366,9 @@ impl Workspace {
+     /// places it among the modules this one sees, never the package table, which
+     /// grows as packages are admitted.
+     fn reach(store: Store, m: ModulePath) -> Reach {
++        let q0 = self.clock()
+         let sees = self.sees_records(store, m)
++        let q1 = self.clock()
+         mut r = Reach {
+             home: m.text(),
+             sees: {},
+@@ -1362,7 +1385,9 @@ impl Workspace {
+         // a name reached through a re-export references its original's file, so the
+         // file that re-exports it is reached too: re-pointing the name moves that file
+         r.add_all(flatten([self.reexporting_files(store, d) for d in sees]))
++        let q2 = self.clock()
+         r.indexes = [self.typed_named(store, d) for d in r.mods]
++        let q3 = self.clock()
+         r.late = []
+         // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
+         mut at = 0
+@@ -1378,6 +1403,7 @@ impl Workspace {
+                 for g in r.files.slice(0, at) { r.add_all(index.get(g) ?? []) }
+             }
+         }
++        qtrace("PROBE reach sees ${(q1 - q0) / 1000} refs ${(q2 - q1) / 1000} indexes ${(q3 - q2) / 1000} walk ${(self.clock() - q3) / 1000} files ${r.files.length} mods ${r.mods.length} us\n")
+         r
+     }
+ 
