@@ -1,0 +1,27 @@
+//! Reads every field annotation's arguments and answers them as a
+//! method, so the program shows exactly what crossed.
+use @std.meta.{Type, Field, Annotation, Directive, literal}
+
+export trait ArgsReader {
+    static fn derive(t: Type) -> List<Directive> {
+        let shown = [field_shown(f) for f in t.fields if !f.annotations.is_empty()].join(" | ")
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote { impl ${t} { fn crossed() -> string { ${literal(shown)} } } },
+            },
+        ]
+    }
+
+    /// The words this derive reads off a field.
+    static fn marks(t: Type) -> List<string> { ["one_of", "length", "nested"] }
+}
+
+fn field_shown(f: Field) -> string { [shown(f.name, a) for a in f.annotations].join(" | ") }
+
+/// A field's annotation as `field.name(positional; label=value)`.
+fn shown(field: string, a: Annotation) -> string {
+    "${field}.${a.name}(${a.args.join(", ")}; ${[n.label + "=" + n.value for n in a.named].join(", ")})"
+}

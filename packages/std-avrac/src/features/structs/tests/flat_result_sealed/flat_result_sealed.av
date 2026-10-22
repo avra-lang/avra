@@ -1,0 +1,48 @@
+// proves: a one-field record answered as a `Result` BEFORE the impl that
+// boxes it is read — a `mut fn`, a method taking a `mut` seat, a plain
+// method assigning through `self` — keeps one layout: the read signs the
+// impl first, so the seal lands before the flatness is decided.
+type Bumped = { units: int }
+type Seated = { units: int }
+type Assigned = { units: int }
+
+fn bumped(n: int) -> Result<Bumped, string> { Bumped { units: n } }
+fn seated(n: int) -> Result<Seated, string> { Seated { units: n } }
+fn assigned(n: int) -> Result<Assigned, string> { Assigned { units: n } }
+
+impl Bumped {
+    mut fn bump() { self.units = self.units + 1 }
+}
+
+impl Seated {
+    static fn made(mut xs: List<int>) -> Seated {
+        xs.push(0)
+        Seated { units: xs.length }
+    }
+}
+
+impl Assigned {
+    fn reset() { self.units = 0 }
+}
+
+fn bumped_units(r: Result<Bumped, string>) -> int {
+    match r { .Ok(b) -> b.units, .Err(_) -> 0 - 1 }
+}
+
+fn seated_units(r: Result<Seated, string>) -> int {
+    match r { .Ok(s) -> s.units, .Err(_) -> 0 - 1 }
+}
+
+fn bumped_twice(n: int) -> int {
+    mut b = Bumped { units: n }
+    b.bump()
+    b.bump()
+    b.units
+}
+
+fn made_from(n: int) -> int {
+    mut xs = [n, n]
+    Seated.made(xs).units
+}
+
+"${bumped_units(bumped(2))} ${bumped_twice(2)} ${seated_units(seated(4))} ${made_from(1)} ${assigned(5) is .Ok}"

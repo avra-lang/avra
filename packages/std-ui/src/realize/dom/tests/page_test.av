@@ -172,6 +172,32 @@ spec "an app on a live page" {
                 host.frames.get().length == 3
         }
     }
+    given "a handler that traps" {
+        then "the app's own door catches it: the notice is sent beside the view and the next echo still runs" {
+            let host = Host {}
+            let count: Cell<int> = Cell.new(0)
+            let on = paged(
+                () -> column {
+                    text "${count.get()}"
+                    button "Raise" {
+                        on press {
+                            count.set(count.get() + 1)
+                            if count.get() == 1 { count.set([5][3]) }
+                        }
+                    }
+                },
+                plain,
+                live(),
+                (sent: Bytes) -> host.frames.push(sent),
+            )
+            on.app.paint()
+            let _ = press(on, "Raise")
+            let noticed = host.frames.get().length == 2 &&
+                host.frames.get()[1].text_lossy().contains("index 3 is out of bounds")
+            let _ = press(on, "Raise")
+            noticed && count.get() == 2
+        }
+    }
 }
 
 /// How many `define` records a frame holds.

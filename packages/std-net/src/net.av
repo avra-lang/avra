@@ -260,7 +260,7 @@ fn no_host<T>(verb: string, host: string, port: int) -> Result<T, NetError> {
 }
 
 fn no_budget_for<T>(verb: string, subject: string, timeout: Duration) -> Result<T, NetError> {
-    failed(verb, "${subject} within ${timeout.ms} ms", 0 - avra_errno_invalid())
+    failed(verb, "${subject} within ${timeout.ms()} ms", 0 - avra_errno_invalid())
 }
 
 /// A BUDGET ALREADY SPENT: present and negative. Absence is not spent
@@ -620,7 +620,7 @@ export fn resolver_for(ttl: Duration) -> Resolver {
 }
 
 /// The process's resolver: every `connect` shares its answers.
-once fn resolver() -> Resolver { resolver_for(Duration { ms: 30000 }) }
+once fn resolver() -> Resolver { resolver_for(ms(30000)) }
 
 /// The addresses `host` names, within `timeout`, from the process's
 /// resolver.
@@ -634,7 +634,7 @@ impl Resolver {
     /// until the answer or `timeout`.
     fn resolve(host: string, timeout: Duration) -> Result<List<Address>, NetError> {
         if !names_a_host(host) { return failed("resolve", "\"${host}\"", 0 - avra_errno_invalid()) }
-        if timeout.ms < 0 { return no_budget_for("resolve", host, timeout) }
+        if timeout.ms() < 0 { return no_budget_for("resolve", host, timeout) }
         let hit? = self.fresh(host) else { return self.looked_up(host, timeout) }
         .Ok(hit)
     }
@@ -658,7 +658,7 @@ impl Resolver {
             let none: Map<string, Resolved> = {}
             self.held.set(none)
         }
-        self.held.put(host, Resolved { addresses: addresses, until: now_ms() + self.ttl.ms })
+        self.held.put(host, Resolved { addresses: addresses, until: now_ms() + self.ttl.ms() })
     }
 
     /// A connection to host:port within `timeout`: resolved here, the
@@ -670,8 +670,8 @@ impl Resolver {
         NetError,
     > {
         if !names_a_host(host) { return no_host("connect", host, port) }
-        if timeout.ms < 0 { return no_budget_for("connect", "${host}:${port}", timeout) }
-        let deadline = now_ms() + timeout.ms
+        if timeout.ms() < 0 { return no_budget_for("connect", "${host}:${port}", timeout) }
+        let deadline = now_ms() + timeout.ms()
         let addresses = self.resolve(host, timeout)?
         if !admission.judges() { return streamed(raced(addresses, port, deadline), "connect", "${host}:${port}") }
         let admitted = [a for a in addresses if admission.admits(a)]
@@ -699,7 +699,7 @@ fn looked_up(host: string, timeout: Duration) -> Result<List<Address>, NetError>
     let h = avra_net_lookup(host)
     if h < 0 { return failed("resolve", host, h) }
     defer avra_net_lookup_close(h)
-    if awaited(h, now_ms() + timeout.ms) { answered(host, h) } else { outran("resolve", host) }
+    if awaited(h, now_ms() + timeout.ms()) { answered(host, h) } else { outran("resolve", host) }
 }
 
 /// Whether lookup `h` answered by `deadline`, the task parked on its
@@ -859,7 +859,7 @@ impl Attempts {
 fn raced(addresses: List<Address>, port: int, deadline: int) -> int {
     let order = interleaved(addresses)
     let left = deadline - now_ms()
-    let limit = after(Duration { ms: if left < 0 { 0 } else { left } })
+    let limit = after(ms(if left < 0 { 0 } else { left }))
     mut due = after(ms(0))
     mut next = 0
     mut last = 0 - avra_errno_invalid()
@@ -1110,7 +1110,7 @@ impl Bell {
     /// the wait `timed_out()`. The deadline of a `within` around it
     /// cuts the wait. A ring answers -1: a bell has no descriptor.
     fn waited(timeout: Duration?) -> Result<int, NetError> {
-        let budget = timeout?.ms
+        let budget = timeout?.ms()
         if spent(budget) { return outran("wait", "a bell") }
         self.waiting.set(self.waiting.get() + 1)
         defer self.waiting.set(self.waiting.get() - 1)

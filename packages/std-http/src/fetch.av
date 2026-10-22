@@ -182,7 +182,7 @@ export type Aim = { origin: string, secure: bool, host: string, port: int, field
 
 /// `method` to `url` with `body`, under `o`.
 export fn fetch(method: Method, url: string, body: Payload, o: Options) -> Fetched {
-    let deadline = now_ms() + o.timeouts.total.ms
+    let deadline = now_ms() + o.timeouts.total.ms()
     let answer = within o.timeouts.total { followed(Hop { method: method, url: url, body: body, via: [] }, o, deadline) }
     overran(in_stage(.Total, answer), deadline)
 }
@@ -200,7 +200,7 @@ fn followed(q: Hop, o: Options, deadline: int) -> Fetched {
     let aim = aimed(q.url)?
     if aim.secure && o.tls == null { return .Err(.NoTls) }
     let wire = wire_of(q.method, aim, q.body, o.headers.concat(jarred(o, aim)))?
-    let a = tried(q, wire, aim, o, deadline, Try { n: 1, wait: o.retry.backoff.ms })?
+    let a = tried(q, wire, aim, o, deadline, Try { n: 1, wait: o.retry.backoff.ms() })?
     remembered(o, aim, a)
     let max? = following(o.redirects) else { return .Ok(a) }
     let next? = rewritten(a.status, q) else { return .Ok(a) }

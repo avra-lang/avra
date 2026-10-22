@@ -25,7 +25,11 @@ export enum Rounding { Floor, Ceil, Nearest, Trunc }
 /// Whether two unary ops are the same op: a payload op compares its
 /// rounding, which is payload-free and compares by variant.
 export fn same_un(a: UnOp, b: UnOp) -> bool {
-    match a { .Not -> b is .Not, .ToInt(r) -> match b { .ToInt(s) -> r == s, rest -> false } }
+    match a {
+        .Not -> b is .Not,
+        .ToFloat -> b is .ToFloat,
+        .ToInt(r) -> match b { .ToInt(s) -> r == s, .Not or .ToFloat -> false },
+    }
 }
 
 /// The one number each rounding is keyed by, in the evaluator's C body
@@ -36,8 +40,9 @@ export fn rounding_code(r: Rounding) -> int {
 
 /// The unary operators. `ToInt` rounds a float to the int it names; the
 /// lowering checks the range before it runs, so the conversion is defined.
+/// `ToFloat` is an int's nearest float, ties to even — total, exact to 2^53.
 @derive(Fingerprint)
-export enum UnOp { Not, ToInt(Rounding) }
+export enum UnOp { Not, ToInt(Rounding), ToFloat }
 
 /// A byte the runtime keeps about the running task, which compiled code
 /// reads in place: its unwind bit, and the tick the source sets so a
@@ -59,6 +64,7 @@ export fn flag_word(f: RtFlag) -> string {
 export fn un_symbol(op: UnOp) -> string {
     match op {
         .Not -> "!",
+        .ToFloat -> "float",
         .ToInt(r) -> match r {
             .Floor -> "floor_int",
             .Ceil -> "ceil_int",

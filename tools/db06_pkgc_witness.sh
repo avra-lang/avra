@@ -56,8 +56,8 @@ for m in packages/*/avra.toml; do
     n=$(find "$p" -name '*.c' -not -path '*/vendor/*' | wc -l | tr -d ' ')
     v=$(find "$p" -name '*.c' -path '*/vendor/*' | wc -l | tr -d ' ')
     [ "$n" = 0 ] && [ "$v" = 0 ] && continue
-    row=$(sed -n 's/^objects *= *\[ *"\([^"]*\)".*/\1/p' "$m" | head -1)
-    wrow=$(sed -n 's/^wasm_objects *= *\[ *"\([^"]*\)".*/\1/p' "$m" | head -1)
+    row=$(sh tools/manifest_objects.sh --rows objects "$m" | head -1)
+    wrow=$(sh tools/manifest_objects.sh --rows wasm_objects "$m" | head -1)
     if [ -z "$row" ]; then
         printf '%-16s %-28s %s\n' "${p#packages/}" "- none -" "no program links this C (${n} src, ${v} vendor)"
         continue
@@ -94,16 +94,16 @@ now=$(shasum -a 256 "$(tail -1 $R/moved.out)" | cut -d' ' -f1 | cut -c1-16)
 
 echo
 echo "=== 3. the gap: does the query code hash see a C body under an unchanged name?"
-moved_hash=$(./avra run $R/p/src/main.av 2>/dev/null | tail -1)
+moved_hash=$(sh tools/capped.sh --last ./avra run $R/p/src/main.av 2>/dev/null) || moved_hash="(status $?)"
 restore
-restored_hash=$(./avra run $R/p/src/main.av 2>/dev/null | tail -1)
+restored_hash=$(sh tools/capped.sh --last ./avra run $R/p/src/main.av 2>/dev/null) || restored_hash="(status $?)"
 echo "C moved:    $moved_hash"
 echo "C restored: $restored_hash"
 # THE INSTRUMENT'S OWN CONTROL: a hash that moved for nothing would make the line above say
 # nothing. One word of the FN's OWN body changes, and the hash must move.
 cp $R/p/src/main.av $R/main.av.kept
 sed -i.bak 's/now_ms() }/now_ms() + 1 }/' $R/p/src/main.av
-source_hash=$(./avra run $R/p/src/main.av 2>/dev/null | tail -1)
+source_hash=$(sh tools/capped.sh --last ./avra run $R/p/src/main.av 2>/dev/null) || source_hash="(status $?)"
 cp $R/main.av.kept $R/p/src/main.av
 echo "Avra moved: $source_hash  (the control)"
 

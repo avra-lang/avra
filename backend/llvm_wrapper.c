@@ -524,6 +524,20 @@ int64_t avra_float_to_int_raw(int64_t bits, int64_t mode) {
     }
 }
 
+/// The evaluator's ToFloat: an int's nearest double (ties to even), as bits.
+int64_t avra_int_to_float_raw(int64_t n) {
+    double d = (double)n;
+    int64_t bits;
+    memcpy(&bits, &d, sizeof bits);
+    return bits;
+}
+
+/// An i64 converted to its nearest double, inline.
+LLVMValueRef avra_llvm_build_to_float(LLVMBuilderRef b, LLVMValueRef val, const char* name) {
+    LLVMContextRef ctx = LLVMGetTypeContext(LLVMTypeOf(val));
+    return LLVMBuildSIToFP(b, val, LLVMDoubleTypeInContext(ctx), name);
+}
+
 /// A float rounded by `mode` (the code `rounding_code` gives) and converted
 /// to an i64: the LLVM rounding intrinsic, then the convert. Both inline.
 LLVMValueRef avra_llvm_build_to_int(LLVMBuilderRef b, LLVMValueRef val, int64_t mode, const char* name) {

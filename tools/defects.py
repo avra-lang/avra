@@ -17,14 +17,21 @@ a user's malformed program like any other, but its `run` is judged by
 voices alone — a mutant's own runtime trap or loop is the program's — and
 happens only where every std package it imports is a pure one.
 
+`--timings FILE` writes one `name<TAB>seconds` line per program (check, run and
+build together), and the log ends with the five slowest. `--previous FILE` is
+the timings of the last green run: a program that times out names the seconds
+it took there, so a timeout reads against what it normally costs.
+
 usage: defects.py [--avra PATH] [--only NAME] [--list] [--show]
-                  [--generate N] [--seed S]
+                  [--generate N] [--seed S] [--timings FILE] [--previous FILE]
+       defects.py --self-test
 """
 import argparse
 import glob
 import os
 import random
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -188,7 +195,10 @@ def generated(n, seed):
 # One watchdog holds the whole keeper, so each compile skips the shim's
 # per-run lock (`AVRA_WATCH_HELD`) and the cases run side by side.
 WORKERS = int(os.environ.get("AVRA_DEFECT_WORKERS", "4"))
-ENV = dict(os.environ, AVRA_WATCH_HELD="1")
+# The compile slots (AVRA_MAX_COMPILES, default 3, polled unfairly every 0.2 s) are a second limiter
+# beside the watchdog's: with more workers than slots a compile can wait past the clock, which is a
+# program's seconds spent queueing. The one watchdog bounds the keeper, so the slots are off here.
+ENV = dict(os.environ, AVRA_WATCH_HELD="1", AVRA_MAX_COMPILES="0")
 
 
 def run(avra, verb, package):
@@ -198,8 +208,45 @@ def run(avra, verb, package):
     return code, out
 
 
-def timed(avra, verb, package):
-    """(exit, output, seconds) of one run."""
+# A run still going after this many seconds is looked at once while it lives.
+STALL = int(os.environ.get("AVRA_DEFECT_STALL", "10"))
+
+
+# The last look taken at each program that stalled, by name: the notes quote it.
+DUMPS = {}
+
+
+def sh_out(argv, limit=40):
+    """The first `limit` lines a diagnostic tool answers, or why it could not run."""
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        return ["(%s: %s)" % (argv[0], e)]
+    return (r.stdout + r.stderr).strip().split("\n")[:limit]
+
+
+def stalled(pid):
+    """What a run past STALL seconds is doing, as report lines: the machine's load, the process
+    group, what each waits on, its open files (a lock or a half-written entry shows here) and its
+    stack (gdb where there is one, `sample` on macOS)."""
+    lines = ["load: " + (open("/proc/loadavg").read().strip() if os.path.exists("/proc/loadavg") else " ".join(sh_out(["uptime"], 1)))]
+    lines += sh_out(["ps", "-o", "pid,ppid,stat,etime,time,command", "-g", str(pid)], 12)
+    if os.path.isdir("/proc/%d" % pid):
+        for name in ("wchan", "stack"):
+            try:
+                lines.append("%s: %s" % (name, open("/proc/%d/%s" % (pid, name)).read().strip()[:300]))
+            except OSError as e:
+                lines.append("%s: (%s)" % (name, e.strerror))
+        lines += ["fd: " + l for l in sh_out(["ls", "-l", "/proc/%d/fd" % pid], 30)]
+        lines += sh_out(["gdb", "-p", str(pid), "-batch", "-ex", "thread apply all bt 25"], 80) if shutil.which("gdb") else ["(no gdb on this machine)"]
+    else:
+        lines += ["fd: " + l for l in sh_out(["lsof", "-p", str(pid)], 30)]
+        lines += sh_out(["sample", str(pid), "2", "-file", "/dev/stdout"], 60)
+    return lines
+
+
+def timed(avra, verb, package, name=""):
+    """(exit, output, seconds) of one run; one past STALL seconds is dumped once while it lives."""
     began = time.time()
     p = subprocess.Popen(
         [avra, verb, package],
@@ -209,9 +256,22 @@ def timed(avra, verb, package):
         start_new_session=True,
     )
     try:
-        out, _ = p.communicate(timeout=TIMEOUT)
+        try:
+            out, _ = p.communicate(timeout=min(STALL, TIMEOUT))
+        except subprocess.TimeoutExpired:
+            if STALL >= TIMEOUT:
+                raise
+            dump = stalled(p.pid)
+            DUMPS[name] = dump
+            print("defects: STALLED %s (%s) past %ds:\n    %s" % (name, verb, STALL, "\n    ".join(dump)), flush=True)
+            out, _ = p.communicate(timeout=TIMEOUT - STALL)
     except subprocess.TimeoutExpired:
-        os.killpg(p.pid, signal.SIGKILL)
+        # the stack at the kill names the frame it was blocked in
+        DUMPS[name] = stalled(p.pid)
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            p.kill()
         p.communicate()
         return 124, "timed out after %ds" % TIMEOUT, time.time() - began
     return p.returncode, out.decode("utf-8", "replace"), time.time() - began
@@ -234,9 +294,10 @@ def verdict(code, out, lenient=False):
 
 
 def self_test():
-    """The retry's two paths and its neighbours, against a fake `avra` that hangs on demand."""
+    """The retry's two paths and its neighbours, against a fake `avra` that hangs on demand, and
+    the timings report against a fake that is slow by program."""
     global TIMEOUT
-    TIMEOUT = 1
+    TIMEOUT = 3
     d = tempfile.mkdtemp(prefix="avra-defects-self-")
 
     def fake(name, body):
@@ -248,19 +309,56 @@ def self_test():
 
     work = [("probe", ["check"], "1\n", False, False)]
     count = os.path.join(d, "count")
-    once = fake("once", 'n=$(cat "%s" 2>/dev/null || echo 0); echo $((n+1)) > "%s"; [ "$n" = 0 ] && sleep 4; exit 0' % (count, count))
+    once = fake("once", 'n=$(cat "%s" 2>/dev/null || echo 0); echo $((n+1)) > "%s"; [ "$n" = 0 ] && sleep 8; exit 0' % (count, count))
     bad, notes = survey(once, work, 1)
-    assert not bad and len(notes) == 1 and "finished alone — not a hang" in notes[0], (bad, notes)
-    hangs = fake("hangs", "sleep 4")
+    assert not bad and len(notes) == 1 and "POOL STALL probe (check)" in notes[0] and "finished in" in notes[0] and "alone" in notes[0] and "load:" in notes[0], (bad, notes)
+    hangs = fake("hangs", "sleep 8")
     bad, notes = survey(hangs, work, 1)
     assert [b[0] for b in bad] == ["probe"] and "timed out twice" in bad[0][1] and not notes, (bad, notes)
+    # warming: a fake that is cold (4 s) until its worker dir holds a marker the warm-up leaves,
+    # and warm (instant) after it; the warm programs are checked in the worker's own dir first
+    cold = fake("cold", 'if [ -f "$2/.warm" ]; then exit 0; fi; case "$(cat "$2/src/main.av")" in use*) : > "$2/.warm"; exit 0;; esac; sleep 8')
+    saved = TIMEOUT
+    try:
+        globals()["TIMEOUT"] = 3
+        bad, notes = survey(cold, work, 1)
+        assert [b[0] for b in bad] == ["probe"], ("without warming the first program meets the cold store", bad, notes)
+        taken = {}
+        bad, notes = survey(cold, work, 1, taken=taken, warmup=[("json", "use @std.json.{parse}\n1\n")])
+        assert not bad and not notes and taken["probe"] < 1, ("warmed, the program's seconds are its own", bad, notes, taken)
+    finally:
+        globals()["TIMEOUT"] = saved
     quick = fake("quick", "exit 0")
     assert survey(quick, work, 1) == ([], []), "a program that finishes was retried or refused"
     voiced = fake("voiced", "echo 'language.defect: a row without its seat survived typing'; exit 0")
     bad, notes = survey(voiced, work, 1)
     assert {b[0] for b in bad} == {"probe"} and all("voice" in b[1] for b in bad) and not notes, (bad, notes)
-    print("defects: self-test passed — a timeout finishing alone stands down, one that hangs twice fails with both durations, a voice still fails")
+    assert timings_self_test() == 0, "the timings report failed"
+    dump = stalled(os.getpid())
+    assert dump[0].startswith("load: ") and len(dump) > 2 and any(l.startswith(("fd: ", "wchan: ")) for l in dump), dump
+    print("defects: self-test passed — a timeout finishing alone stands down, one that hangs twice fails with both durations, a voice still fails, and the slowest, the timings file and the last green seconds hold")
     return 0
+
+
+def read_timings(path):
+    """{name: seconds} from a timings file; empty when there is none."""
+    try:
+        rows = (line.rstrip("\n").split("\t") for line in open(path, encoding="utf-8") if "\t" in line)
+        return {name: float(sec) for name, sec in rows}
+    except (OSError, ValueError):
+        return {}
+
+
+def timeout_words(name, previous):
+    """The words of a program that ran out the clock, against its last green seconds when known."""
+    last = previous.get(name)
+    return "timed out after %ds (last green run: %s)" % (TIMEOUT, "%.1fs" % last if last is not None else "not known")
+
+
+def slowest(taken, n=5):
+    """The n slowest programs as report lines, slowest first."""
+    return ["defects: slowest %d. %s %.1fs" % (i + 1, name, sec)
+            for i, (name, sec) in enumerate(sorted(taken.items(), key=lambda kv: (-kv[1], kv[0]))[:n])]
 
 
 def main():
@@ -274,10 +372,15 @@ def main():
     ap.add_argument("--progress", type=int, default=0, metavar="K", help="say where it is every K programs")
     ap.add_argument("--show", action="store_true", help="print every run's output")
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--timings", metavar="FILE", help="write one name<TAB>seconds line per program")
+    ap.add_argument("--previous", metavar="FILE", help="the last green run's timings")
+    ap.add_argument("--corpus", default=CORPUS, metavar="FILE")
     a = ap.parse_args()
     if a.self_test:
         return self_test()
-    all_cases = cases(open(CORPUS, encoding="utf-8").read())
+    previous = read_timings(a.previous) if a.previous else {}
+    taken = {}
+    all_cases = cases(open(a.corpus, encoding="utf-8").read())
     work = []
     for name, flags, body in all_cases:
         verbs = ["check"] if "@check" in flags else ["check", "run"]
@@ -303,15 +406,24 @@ def main():
         return 1
     started = time.time()
     jobs = max(1, min(WORKERS, len(work)))
-    bad, notes = survey(a.avra, work, jobs, a.progress, a.show)
+    bad, notes = survey(a.avra, work, jobs, a.progress, a.show, previous, taken, warm_programs() if os.environ.get("AVRA_DEFECT_WARM") == "1" else None)
     for line in notes:
         print(line, flush=True)
+    print("defects: %d pool stall(s)" % len(notes), flush=True)
+    if taken:
+        print("\n".join(slowest(taken)))
+        print("defects: peak program %.1fs now%s" % (max(taken.values()), "" if not previous else ", %.1fs on the last green run" % max(previous.values())))
+    if a.timings:
+        os.makedirs(os.path.dirname(os.path.abspath(a.timings)), exist_ok=True)
+        with open(a.timings, "w", encoding="utf-8") as f:
+            f.write("".join("%s\t%.2f\n" % (n, sec) for n, sec in sorted(taken.items())))
+        print("defects: %d program timing(s) in %s" % (len(taken), a.timings))
     print("defects: %d worker(s), %.0fs" % (jobs, time.time() - started))
     print("defects: %d program(s) examined, %d answered with a defect voice or a trap" % (len(work), len({n for n, _ in bad})))
     return 1 if bad else 0
 
 
-def examine(avra, d, k, case, alone, say):
+def examine(avra, d, k, case, alone, say, count=None):
     """Every verb over one program: ([(verb, why, output)] for each refusal, the run that passed
     the clock or None). A run past the clock abandons the program; a program that runs ALONE keeps
     the refusals it had earned before the verb that hung."""
@@ -324,7 +436,9 @@ def examine(avra, d, k, case, alone, say):
     for verb in verbs + ["build"]:
         if verb == "build" and not (clean and (not mutant or k % BUILD_EVERY == 0)):
             continue
-        code, out, secs = timed(avra, verb, d)
+        code, out, secs = timed(avra, verb, d, n)
+        if count:
+            count(n, secs)
         if code == 124:
             return ([] if not alone else refused), (verb, secs)
         clean = clean or (verb == "check" and code == 0)
@@ -335,10 +449,59 @@ def examine(avra, d, k, case, alone, say):
     return refused, None
 
 
-def survey(avra, work, jobs, progress=0, show=False):
-    """(refusals, notes) over every program. A program that timed out beside the other workers is
-    run again ALONE after they finish: a timeout there is the verdict, named with both durations,
-    and one that finishes stands the first down (a loaded runner's queue is no defect)."""
+USE_LINE = re.compile(r"^use @std\.(\w+)[^\n]*$", re.M)
+
+
+def warm_programs():
+    """One program per std package the tree's program tests import: their own `use` lines, so a
+    package's modules are all read. A compile of any mutant then finds its std dependencies analysed
+    already, and its seconds are its own."""
+    by = {}
+    for f in program_tests():
+        for m in USE_LINE.finditer(open(f, encoding="utf-8").read()):
+            if ".tests." not in m.group(0):
+                by.setdefault(m.group(1), set()).add(m.group(0))
+    return [(pkg, "\n".join(sorted(lines)) + "\n1\n") for pkg, lines in sorted(by.items())]
+
+
+def warm(avra, d, programs):
+    """Check each warm program once in worker dir `d`, whose `.avra-cache` then holds every std
+    dependency the pool will meet (a cache serves only its own directory). Best effort and outside
+    the clock the programs are judged by: a package that will not check cold is left cold. Seconds."""
+    began = time.time()
+    os.makedirs(os.path.join(d, "src"), exist_ok=True)
+    with open(os.path.join(d, "avra.toml"), "w", encoding="utf-8") as f:
+        f.write(MANIFEST)
+    for _, text in programs:
+        with open(os.path.join(d, "src", "main.av"), "w", encoding="utf-8") as f:
+            f.write(text)
+        try:
+            subprocess.run([avra, "check", d], env=ENV, capture_output=True, timeout=WARM_CLOCK, start_new_session=True)
+        except subprocess.TimeoutExpired:
+            pass
+    return time.time() - began
+
+
+WARM_CLOCK = int(os.environ.get("AVRA_DEFECT_WARM_CLOCK", "300"))
+
+
+def stall_words(name, verb, first, jobs, alone):
+    """The loud note for a program that timed out in the pool and finished alone: both seconds and
+    the last look taken at it while it stalled. It passes the job (the alone run proved the program
+    right) and is counted, never silent."""
+    lines = ["defects: POOL STALL %s (%s): timed out after %.0fs beside %d workers, finished in %.1fs alone — the program is correct; the compile stalled in the pool"
+             % (name, verb, first, jobs, alone)]
+    lines += ["    " + l for l in DUMPS.get(name, ["(no dump was taken)"])]
+    return "\n".join(lines)
+
+
+def survey(avra, work, jobs, progress=0, show=False, previous=None, taken=None, warmup=None):
+    """(refusals, notes) over every program, filling `taken` with the seconds each spent. A program
+    that timed out beside the other workers is run again ALONE after they finish: a timeout there is
+    the verdict, named with both durations, and one that finishes stands the first down (a loaded
+    runner's queue is no defect)."""
+    previous = previous or {}
+    taken = {} if taken is None else taken
     bad, notes, retry = [], [], []
     lock = threading.Lock()
     queue = list(reversed(list(enumerate(work))))
@@ -350,13 +513,21 @@ def survey(avra, work, jobs, progress=0, show=False):
             if show:
                 print("== %s (%s) exit %d\n%s" % (n, verb, code, out.strip()))
 
+    def count(n, secs):
+        with lock:
+            taken[n] = taken.get(n, 0.0) + secs
+
     def refuse(n, verb, why, out):
         with lock:
             bad.append((n, why))
             print("defects: %s (%s) — %s" % (n, verb, why), flush=True)
             print("    " + "\n    ".join(out.strip().split("\n")[:6]), flush=True)
 
+    warmed = []
+
     def attack(d):
+        if warmup:
+            warmed.append(warm(avra, d, warmup))
         while True:
             with lock:
                 if not queue:
@@ -364,7 +535,7 @@ def survey(avra, work, jobs, progress=0, show=False):
                 k, case = queue.pop()
                 if progress and k % progress == 0:
                     print("defects: %d/%d" % (k, len(work)), flush=True)
-            refused, timed_out = examine(avra, d, k, case, False, say)
+            refused, timed_out = examine(avra, d, k, case, False, say, count)
             if timed_out:
                 with lock:
                     retry.append((k, case, timed_out))
@@ -377,15 +548,75 @@ def survey(avra, work, jobs, progress=0, show=False):
             t.start()
         for t in threads:
             t.join()
+        if warmed:
+            print("defects: warmed %d worker store(s) over %d std package(s) before the pool: %.0fs each at most, outside every program's clock"
+                  % (len(warmed), len(warmup), max(warmed)), flush=True)
+        retried = False
         for k, case, (verb, first) in sorted(retry, key=lambda r: r[0]):
-            refused, hung = examine(avra, os.path.join(root, "alone"), k, case, True, say)
+            if warmup and not retried:
+                warmed.append(warm(avra, os.path.join(root, "alone"), warmup))
+            retried = True
+            before = taken.get(case[0], 0.0)
+            refused, hung = examine(avra, os.path.join(root, "alone"), k, case, True, say, count)
+            alone = taken.get(case[0], 0.0) - before
             for v, why, out in refused:
                 refuse(case[0], v, why, out)
             if hung:
-                refuse(case[0], hung[0], "timed out twice — %.0fs beside %d workers, %.0fs alone" % (first, jobs, hung[1]), "")
+                refuse(case[0], hung[0], "%s — timed out twice: %.0fs beside %d workers, %.0fs alone"
+                       % (timeout_words(case[0], previous), first, jobs, hung[1]), "")
             else:
-                notes.append("defects: %s (%s) timed out after %.0fs beside %d workers and finished alone — not a hang" % (case[0], verb, first, jobs))
+                notes.append(stall_words(case[0], verb, first, jobs, alone))
     return bad, notes
+
+
+def timings_self_test():
+    """A fake `avra` that is slow for some programs and never answers for one: the log must list
+    the slowest, the timings file must hold every program, and the timeout must name its last green seconds."""
+    d = tempfile.mkdtemp(prefix="avra-defects-self-")
+    try:
+        fake = os.path.join(d, "avra")
+        with open(fake, "w", encoding="utf-8") as f:
+            f.write('#!/bin/sh\nm=$(cat "$2/src/main.av")\ncase "$m" in\n'
+                    '*hang*) sleep 30 ;;\n*slow*) sleep 1 ;;\n*medium*) sleep 0.4 ;;\nesac\nexit 0\n')
+        os.chmod(fake, 0o755)
+        corpus = os.path.join(d, "corpus.txt")
+        with open(corpus, "w", encoding="utf-8") as f:
+            f.write("### quick\nquick\n### medium\nmedium\n### slow\nslow\n### hang\nhang\n")
+        prev = os.path.join(d, "prev.tsv")
+        with open(prev, "w", encoding="utf-8") as f:
+            f.write("hang\t0.40\nquick\t0.01\n")
+        out_file = os.path.join(d, "timings.tsv")
+        got = subprocess.run(
+            [sys.executable, os.path.abspath(__file__), "--avra", fake, "--corpus", corpus,
+             "--timings", out_file, "--previous", prev],
+            env=dict(os.environ, AVRA_DEFECT_TIMEOUT="2"), capture_output=True, text=True)
+        text = got.stdout + got.stderr
+        rows = read_timings(out_file)
+        fails = []
+        if got.returncode != 1:
+            fails.append("a timeout is a refusal (exit %d)" % got.returncode)
+        if "hang (check) — timed out after 2s (last green run: 0.4s)" not in text:
+            fails.append("the timeout does not name its last green seconds")
+        order = [l.split()[3] for l in text.split("\n") if l.startswith("defects: slowest")]
+        if order != ["hang", "slow", "medium", "quick"]:
+            fails.append("the slowest list is %r" % order)
+        if sorted(rows) != ["hang", "medium", "quick", "slow"] or not (rows["hang"] >= 2.0 and rows["slow"] >= 3.0):
+            fails.append("the timings file holds %r" % rows)
+        # a program with no earlier green timing says so
+        none = subprocess.run(
+            [sys.executable, os.path.abspath(__file__), "--avra", fake, "--corpus", corpus, "--only", "hang"],
+            env=dict(os.environ, AVRA_DEFECT_TIMEOUT="2"), capture_output=True, text=True)
+        if "last green run: not known" not in none.stdout + none.stderr:
+            fails.append("a timeout with no earlier timing does not say so")
+        for m in fails:
+            print("defects self-test: FAILED — " + m)
+        if fails:
+            print(text)
+            return 1
+        print("defects self-test: slowest list, timings file and timeout comparison hold on a slow fake check")
+        return 0
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":

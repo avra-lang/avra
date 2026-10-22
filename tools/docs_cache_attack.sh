@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 export AVRA_WATCH_HELD=1
 export AVRA_MAX_COMPILES=0
 BIN="$(pwd)/build/avra"
-R="$(pwd)/build/docs-cache-attack"; fails=0; steps=0
+R="$(pwd)/build/docs-cache-attack"
 rm -rf "$R" && mkdir -p "$R/p/src/util" "$R/dep/src/sub" && git init -q "$R"
 cat > "$R/p/avra.toml" <<'TOML'
 [package]
@@ -38,8 +38,8 @@ printf '%s\n' "export fn other() -> int { 2 }" > "$R/p/src/util/b.av"
 printf '%s\n' "use a.{target}" "use @da.dep.{shared}" "println(\"\${target() + shared()}\")" > "$R/p/src/main.av"
 write_a "doc one"
 
-say() { steps=$((steps + 1)); echo "docs-cache-attack: $1"; }
-fail() { fails=$((fails + 1)); echo "docs-cache-attack: FAILED — $1"; }
+who=docs-cache-attack
+. tools/lib/steps.sh
 ask() { (cd "$1" && AVRA_QTRACE=1 AVRA_CWD="$1" "$BIN" docs "${2:-target}" 2>"$R/trace" | tr '\n' ' '); }
 parsed() { grep -c 'Q	parse' "$R/trace"; }
 # the oracle: a copy in a repo of its own, so no store answers
@@ -79,5 +79,4 @@ expect "the dependency's new file removed" miss shared
 rm "$R/p/src/a.av"; printf '%s\n' "use util.{other}" "println(\"\${other()}\")" > "$R/p/src/main.av"
 expect "the declaration's file removed" miss
 
-[ $fails -eq 0 ] || { echo "docs-cache-attack: $fails of $steps FAILED"; exit 1; }
-echo "docs-cache-attack: $steps steps passed"
+verdict

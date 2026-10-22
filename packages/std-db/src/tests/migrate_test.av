@@ -1,0 +1,197 @@
+// The diff between a recorded shape and a declared one, over shape texts alone:
+// what grows by itself, and what moves and needs an author. Every expected
+// statement and word is written by hand from the law.
+use @std.db.{model}
+use @std.db.shape.{Shape, shape_read, shape_text}
+use @std.db.migrate.{Plan, Renamed, Moving, diff, grows_alone, statements, refusals}
+
+@model
+type Note = {
+    id: int = 0,
+    title: string,
+    @unique slug: string,
+}
+
+const KEY: string = "id|INTEGER|null|key|-|-|-|-"
+const VERSION: string = "__avra_version__|INTEGER|notnull|-|-|1|-|-"
+const TITLE: string = "title|TEXT|notnull|-|-|-|-|-"
+
+fn shape(lines: List<string>) -> Shape { shape_read("t\n${lines.join("\n")}")! }
+
+fn base() -> List<string> { [KEY, VERSION, TITLE] }
+
+/// The plan from the base shape plus `before` to the base shape plus `after`.
+fn plan(after: List<string>) -> Plan { diff(shape(base()), shape(after), []) }
+
+fn plan_from(before: List<string>, after: List<string>) -> Plan { diff(shape(before), shape(after), []) }
+
+fn kind(m: Moving) -> string {
+    match m {
+        .Dropped(c) -> "dropped:${c}",
+        .Retyped(c, _, _) -> "retyped:${c}",
+        .Rekeyed(c) -> "rekeyed:${c}",
+        .Required(c) -> "required:${c}",
+        .Tightened(c) -> "tightened:${c}",
+        .Loosened(c) -> "loosened:${c}",
+        .Uniqued(c) -> "uniqued:${c}",
+        .Ununiqued(c) -> "ununiqued:${c}",
+        .Defaulted(c) -> "defaulted:${c}",
+        .Relinked(c) -> "relinked:${c}",
+    }
+}
+
+fn moves(p: Plan) -> string { [kind(m) for m in p.moving].join(",") }
+
+fn sql(p: Plan) -> string { statements(p).join(";") }
+
+fn without_title() -> List<string> { [KEY, VERSION] }
+
+spec "std/db migrate" {
+    given "a model with no table" {
+        then "is created from its declared columns" {
+            sql(diff(null, shape(base()), [])) == "CREATE TABLE IF NOT EXISTS \"t\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"__avra_version__\" INTEGER NOT NULL DEFAULT 1, \"title\" TEXT NOT NULL)"
+        }
+        then "and that is growth" { grows_alone(diff(null, shape(base()), [])) }
+    }
+    given "a declared shape equal to the recorded one" {
+        then "plans nothing" { sql(plan(base())) == "" && moves(plan(base())) == "" }
+        then "whatever order the lines are in" { sql(plan([TITLE, VERSION, KEY])) == "" && moves(plan([TITLE, VERSION, KEY])) == "" }
+    }
+    given "growth" {
+        then "a new optional column is added" {
+            sql(plan(base().concat(["note|TEXT|null|-|-|-|-|-"]))) == "ALTER TABLE \"t\" ADD COLUMN \"note\" TEXT"
+        }
+        then "a new required column that carries a default is added" {
+            sql(plan(base().concat(["n|INTEGER|notnull|-|-|0|-|-"]))) == "ALTER TABLE \"t\" ADD COLUMN \"n\" INTEGER NOT NULL DEFAULT 0"
+        }
+        then "a new optional link is added with its reference" {
+            sql(plan(base().concat(["owner|INTEGER|null|-|-|-|Parent|SET NULL"]))) == "ALTER TABLE \"t\" ADD COLUMN \"owner\" INTEGER REFERENCES \"Parent\"(\"id\") ON DELETE SET NULL"
+        }
+        then "none of these moves anything" {
+            grows_alone(
+                plan(base().concat(["note|TEXT|null|-|-|-|-|-", "n|INTEGER|notnull|-|-|0|-|-"])),
+            )
+        }
+        then "a column renamed under a hint is renamed in place" {
+            sql(
+                diff(
+                    shape(base()),
+                    shape([KEY, VERSION, "name|TEXT|notnull|-|-|-|-|-"]),
+                    [Renamed { from: "title", to: "name" }],
+                ),
+            ) == "ALTER TABLE \"t\" RENAME COLUMN \"title\" TO \"name\""
+        }
+        then "and moves nothing" {
+            grows_alone(
+                diff(
+                    shape(base()),
+                    shape([KEY, VERSION, "name|TEXT|notnull|-|-|-|-|-"]),
+                    [Renamed { from: "title", to: "name" }],
+                ),
+            )
+        }
+    }
+    given "a rename" {
+        then "without its hint is a dropped column and a new one" {
+            let p = plan([KEY, VERSION, "name|TEXT|null|-|-|-|-|-"])
+            moves(p) == "dropped:title" && sql(p) == "ALTER TABLE \"t\" ADD COLUMN \"name\" TEXT"
+        }
+        then "whose hint names no recorded column is no rename" {
+            let p = diff(
+                shape(base()),
+                shape([KEY, VERSION, "name|TEXT|null|-|-|-|-|-"]),
+                [Renamed { from: "ghost", to: "name" }],
+            )
+            moves(p) == "dropped:title" && sql(p) == "ALTER TABLE \"t\" ADD COLUMN \"name\" TEXT"
+        }
+        then "whose hint names no recorded column leaves a recorded column of the new name alone" {
+            let p = diff(shape(base()), shape(base()), [Renamed { from: "ghost", to: "title" }])
+            moves(p) == "" && sql(p) == ""
+        }
+        then "that also changes a fact renames, and the change moves" {
+            let p = diff(
+                shape(base()),
+                shape([KEY, VERSION, "name|TEXT|null|-|-|-|-|-"]),
+                [Renamed { from: "title", to: "name" }],
+            )
+            moves(p) == "loosened:name" &&
+                sql(p) == "ALTER TABLE \"t\" RENAME COLUMN \"title\" TO \"name\""
+        }
+    }
+    given "a new column the rows already there cannot answer" {
+        then "a required one with no default is refused" { moves(plan(base().concat(["n|INTEGER|notnull|-|-|-|-|-"]))) == "required:n" }
+        then "nothing is applied for it" { sql(plan(base().concat(["n|INTEGER|notnull|-|-|-|-|-"]))) == "" }
+        then "a required link is refused, default or none" {
+            moves(plan(base().concat(["owner|INTEGER|notnull|-|-|-|Parent|NO ACTION"]))) == "required:owner" &&
+                moves(plan(base().concat(["owner|INTEGER|notnull|-|-|1|Parent|NO ACTION"]))) == "required:owner"
+        }
+        then "a unique one is refused" { moves(plan(base().concat(["u|TEXT|null|-|unique|-|-|-"]))) == "uniqued:u" }
+        then "a second key is refused" { moves(plan(base().concat(["k|INTEGER|null|key|-|-|-|-"]))) == "rekeyed:k" }
+    }
+    given "a column that changes" {
+        then "its type moves" { moves(plan([KEY, VERSION, "title|INTEGER|notnull|-|-|-|-|-"])) == "retyped:title" }
+        then "loosening to optional moves" { moves(plan([KEY, VERSION, "title|TEXT|null|-|-|-|-|-"])) == "loosened:title" }
+        then "gaining NOT NULL moves" {
+            moves(plan_from([KEY, VERSION, "title|TEXT|null|-|-|-|-|-"], base())) == "tightened:title"
+        }
+        then "gaining a unique moves" { moves(plan([KEY, VERSION, "title|TEXT|notnull|-|unique|-|-|-"])) == "uniqued:title" }
+        then "losing a unique moves" {
+            moves(plan_from([KEY, VERSION, "title|TEXT|notnull|-|unique|-|-|-"], base())) == "ununiqued:title"
+        }
+        then "its default moves" { moves(plan([KEY, "__avra_version__|INTEGER|notnull|-|-|2|-|-", TITLE])) == "defaulted:__avra_version__" }
+        then "its link target moves" {
+            moves(
+                plan_from(
+                    base().concat(["o|INTEGER|null|-|-|-|A|NO ACTION"]),
+                    base().concat(["o|INTEGER|null|-|-|-|B|NO ACTION"]),
+                ),
+            ) == "relinked:o"
+        }
+        then "its on-delete action moves" {
+            moves(
+                plan_from(
+                    base().concat(["o|INTEGER|null|-|-|-|A|NO ACTION"]),
+                    base().concat(["o|INTEGER|null|-|-|-|A|CASCADE"]),
+                ),
+            ) == "relinked:o"
+        }
+        then "its key moves" { moves(plan(["id|INTEGER|null|-|-|-|-|-", VERSION, TITLE])) == "rekeyed:id" }
+        then "a column no longer declared moves" { moves(plan(without_title())) == "dropped:title" }
+        then "and is not applied" { sql(plan(without_title())) == "" }
+    }
+    given "several changes at once" {
+        then "each is its own refusal, in declared order" {
+            moves(
+                plan_from(
+                    base().concat(["a|TEXT|null|-|-|-|-|-"]),
+                    [KEY, VERSION, "title|INTEGER|notnull|-|-|-|-|-", "z|TEXT|notnull|-|-|-|-|-"],
+                ),
+            ) == "retyped:title,required:z,dropped:a"
+        }
+    }
+    given "a refusal in words" {
+        then "a dropped column names the table, the column and the way out" {
+            refusals(plan(without_title()))[0] == "`t.title` is recorded and no longer declared — dropping a column loses its values; say `@renamed_from(\"title\")` on the field that continues it, or migrate by hand"
+        }
+        then "a tightened column says what would break" {
+            refusals(plan_from([KEY, VERSION, "title|TEXT|null|-|-|-|-|-"], base()))[0] == "`t.title` was optional and is required now — rows holding nothing in it would break the table; fill them, then migrate"
+        }
+    }
+    given "a shape text" {
+        then "that has no columns is no shape" { shape_read("t") == null }
+        then "with a line of seven facts is no shape" { shape_read("t\nid|INTEGER|null|key|-|-|-") == null }
+        then "with a flag that is neither word is no shape" { shape_read("t\nid|INTEGER|maybe|key|-|-|-|-") == null }
+        then "with one unreadable line among good ones is no shape" { shape_read("t\n${KEY}\nbroken\n${VERSION}") == null }
+        then "read back from a model keeps every column fact" {
+            let s = shape_read(Note.shape())!
+            s.name == "Note" &&
+                s.columns.length == 4 &&
+                s.columns.find(it.name == "slug")!.unique &&
+                s.columns.find(it.name == "id")!.key
+        }
+        then "and renders to the very text it was read from" {
+            let s = shape_read(Note.shape())!
+            shape_text(s.name, s.columns) == Note.shape()
+        }
+    }
+}

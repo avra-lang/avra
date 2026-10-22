@@ -21,35 +21,12 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 cd "$here"
 if [ "${1:-}" = --path ]; then want_path=1; shift; else want_path=0; fi
 
-# The std packages the `use` lines under a directory name, test files aside.
-uses() {
-    find "$1" -name '*.av' -not -path '*/tests/*' -exec sed -n 's/^\(export \)\{0,1\}use @std\.\([a-z_]*\).*/\2/p' {} + | sort -u
-}
-
-# The objects the `[link]` rows of every std package tools/src reaches name.
-link_objects() {
-    seen=" "
-    todo=$(uses tools/src)
-    while [ -n "$todo" ]; do
-        set -- $todo
-        p=$1
-        shift
-        todo="$*"
-        case "$seen" in *" $p "*) continue ;; esac
-        seen="$seen$p "
-        [ -d "packages/std-$p/src" ] && todo="$todo $(uses "packages/std-$p/src")"
-    done
-    for p in $seen; do
-        sed -n 's/.*objects *= *\[\(.*\)\].*/\1/p' "packages/std-$p/avra.toml" 2>/dev/null
-    done | tr ',' '\n' | tr -d ' "' | sed -n 's|.*/|build/|p' | sort -u
-}
-
 # A COMPILER FINDS ITS STD ROOT AND ITS TOOLCHAIN BESIDE ITSELF (`<self>/../packages`),
 # so it builds from a copy standing in the tree's build/, after the runtime library
 # and the reached packages' objects it links. A failed build says why, on stderr.
 build_tools() {
     cp "$1" build/avra-tools-compiler
-    make -s build/libavra_runtime.a $(link_objects) >&2 || { echo "avra_tools: the runtime library or a std object did not build" >&2; return 1; }
+    make -s build/libavra_runtime.a $(sh tools/manifest_objects.sh --closure tools) >&2 || { echo "avra_tools: the runtime library or a std object did not build" >&2; return 1; }
     if out=$(build/avra-tools-compiler build tools 2>&1); then
         cp "$(printf '%s\n' "$out" | tail -n 1)" "$bin" && chmod +x "$bin"
     else

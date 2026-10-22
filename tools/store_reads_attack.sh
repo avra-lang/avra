@@ -11,10 +11,10 @@ cd "$(dirname "$0")/.."
 export AVRA_WATCH_HELD=1
 export AVRA_MAX_COMPILES=0
 T=packages/std-avrac/src/compiler/tests/store_reads_process_test.av
-D="$(pwd)/build/store-reads-attack"; fails=0; steps=0
+D="$(pwd)/build/store-reads-attack"
 rm -rf "$D" && mkdir -p "$D"
-say() { steps=$((steps + 1)); echo "store-reads-attack: $1"; }
-fail() { fails=$((fails + 1)); echo "store-reads-attack: FAILED — $1"; }
+who=store-reads-attack
+. tools/lib/steps.sh
 phase() { AVRA_READS_PHASE=$1 AVRA_READS_DIR=$D AVRA_CLOCK=real build/avra test $T 2>&1; }
 
 printf 'v1' > "$D/input"
@@ -31,5 +31,4 @@ rm -rf "$D/store"
 phase fill | grep -q "1/1 tests passed" || fail "70,000 records were not kept"
 out=$(phase cost); echo "$out" | grep "store-reads:"
 echo "$out" | grep -q "1/1 tests passed" && say "priced" || fail "the cost phase did not pass"
-[ $fails -eq 0 ] || { echo "store-reads-attack: $fails of $steps FAILED"; exit 1; }
-echo "store-reads-attack: $steps steps passed"
+verdict

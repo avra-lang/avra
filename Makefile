@@ -109,32 +109,32 @@ TREE_STEM_LAW = $(if $(TREE_CLASH),$(error A STEM NAMES ITS OBJECT, \
 # never built — twice, the trampoline and then @std/io's own C.
 #
 # COMPILER_OBJS is what `build/avra` itself links: the runtime every
-# program carries, plus the compiler's own foreign machinery, plus
-# every package in the cli's dependency closure whose manifest names
-# an object. The bootstrap's clang line takes this same variable, so
-# the two can never be a list and its copy. @std/io's object is here
-# because the SEED-BUILT compiler links it — a compiler that cannot
-# open a file cannot compile the tree it was built for — so a package
-# object in the compiler's own closure is BOTH a package object and a
-# compiler one, and belongs here the day its package lands.
+# program carries, plus every object a manifest names in the cli's
+# closure — the cli and each @std package its sources `use`, asked of
+# tools/manifest_objects.sh, the one reader of a `[link]` row. The
+# bootstrap's clang line takes this same variable, so the two can never
+# be a list and its copy. A package object in the compiler's own closure
+# (@std/io's: a compiler that cannot open a file cannot compile the tree)
+# is BOTH a package object and a compiler one, and joins here the day its
+# package's `use` lands. An archive brings its members (MEMBERS_<name>),
+# which a seed links in its place.
 # The runtime's objects are GLOBBED, one per runtime/*.c, so a new
 # runtime file joins the library without a line here.
 RUNTIME_OBJS = $(patsubst runtime/%.c,build/%.o,$(wildcard runtime/*.c)) build/avra_tick.o
 RUNTIME_LIB = build/libavra_runtime.a
 
-COMPILER_OBJS = $(TREE_STEM_LAW)$(RUNTIME_OBJS) $(RUNTIME_LIB) build/llvm_wrapper.o \
-                build/ffi.o build/std_io.o build/std_io_watch.o build/std_process.o build/std_time.o build/std_net.o \
-                build/std_hash.a $(HASH_OBJS)
+COMPILER_PACKAGE_OBJS := $(shell sh tools/manifest_objects.sh --closure cli)
+COMPILER_ARCHIVES = $(filter %.a,$(COMPILER_PACKAGE_OBJS))
+COMPILER_OBJS = $(TREE_STEM_LAW)$(RUNTIME_OBJS) $(RUNTIME_LIB) $(COMPILER_PACKAGE_OBJS) \
+                $(foreach a,$(COMPILER_ARCHIVES),$(MEMBERS_$(notdir $(a))))
 
-# A seed names the hash rows itself, so its link takes them once: the objects, not also their archive.
-SEED_LINK_OBJS = $(filter-out build/std_hash.a,$(COMPILER_OBJS))
+# A seed names an archive's rows itself, so its link takes them once: the members, not also their archive.
+SEED_LINK_OBJS = $(filter-out $(COMPILER_ARCHIVES),$(COMPILER_OBJS))
 
 # PACKAGE_OBJS is every object a package's `[link]` row names — what a
 # target that RUNS programs may need, since any package's suite or
 # program tests can link its own C.
-PACKAGE_OBJS = $(TREE_STEM_LAW)$(sort $(foreach o,$(shell sed -n \
-  's/.*objects *= *\[\(.*\)\].*/\1/p' packages/*/avra.toml | tr ',' '\n' \
-  | tr -d ' "'),build/$(notdir $(o))))
+PACKAGE_OBJS := $(TREE_STEM_LAW)$(shell sh tools/manifest_objects.sh)
 
 # PER-OBJECT FLAGS, by stem. The LLVM binding needs its headers; the
 # vendored amalgamation takes its author's whole flag set, which its
@@ -169,7 +169,8 @@ MBEDTLS_FLAGS := -I$(MBEDTLS_DIR)/include -I$(MBEDTLS_DIR)/tf-psa-crypto/include
 TLS_OBJS := $(patsubst packages/std-tls/src/c/%.c,build/%.o,$(wildcard packages/std-tls/src/c/*.c)) $(MBEDTLS_OBJS)
 $(foreach o,$(TLS_OBJS),$(eval CFLAGS_$(basename $(notdir $(o))) := $(MBEDTLS_FLAGS)))
 
-build/std_tls.a: $(TLS_OBJS)
+MEMBERS_std_tls.a = $(TLS_OBJS)
+build/std_tls.a: $(MEMBERS_std_tls.a)
 	@rm -f $@
 	ar rcs $@ $^
 
@@ -184,7 +185,8 @@ COMPRESS_OBJS := build/std_compress.o $(patsubst packages/std-compress/vendor/%.
 $(foreach o,$(filter build/brotli_%,$(COMPRESS_OBJS)),$(eval CFLAGS_$(basename $(notdir $(o))) := $(BROTLI_INCLUDE)))
 CFLAGS_std_compress := -Ipackages/std-compress/vendor $(BROTLI_INCLUDE)
 
-build/std_compress.a: $(COMPRESS_OBJS)
+MEMBERS_std_compress.a = $(COMPRESS_OBJS)
+build/std_compress.a: $(MEMBERS_std_compress.a)
 	@rm -f $@
 	ar rcs $@ $^
 
@@ -203,7 +205,8 @@ CFLAGS_b3_blake3_sse41 += -msse4.1
 CFLAGS_b3_blake3_avx2 += -mavx2
 CFLAGS_b3_blake3_avx512 += -mavx512f -mavx512vl
 
-build/std_hash.a: $(HASH_OBJS)
+MEMBERS_std_hash.a = $(HASH_OBJS)
+build/std_hash.a: $(MEMBERS_std_hash.a)
 	@rm -f $@
 	ar rcs $@ $^
 
@@ -309,7 +312,7 @@ build/wasm32/%.o: runtime/%.c build/%.sha
 # A PACKAGE'S C FOR WASM, from the paths its manifest's `wasm_objects` names.
 # A package opts in by naming its wasm objects; one that names none is refused
 # by the build, never compiled here.
-WASM_PACKAGE_OBJS := $(sort $(foreach o,$(shell sed -n 's/.*wasm_objects *= *\[\(.*\)\].*/\1/p' packages/*/avra.toml 2>/dev/null | tr ',' '\n' | tr -d ' "'),build/wasm32/$(notdir $(o))))
+WASM_PACKAGE_OBJS := $(shell sh tools/manifest_objects.sh --wasm)
 
 build/wasm32/%.o: %.c build/%.sha
 	@mkdir -p build/wasm32
@@ -481,6 +484,30 @@ avra: $(COMPILER_OBJS)
 	@sh tools/work built-from . > build/.avra-built-from 2>/dev/null || rm -f build/.avra-built-from
 	@sh tools/work deposit . || true
 	@echo "avra: build/avra"
+
+# WHAT A COMPILER BUILD LEAVES, one path a line: the binary, its hot leaves
+# and every object it links with each object's stamp and dependency list.
+# A cache of built compilers (tools/sprite-remote.sh) keeps exactly these.
+compiler-files:
+	@printf '%s\n' build/avra build/avra_hot.bc build/avra_hot.inc $(sort $(COMPILER_OBJS) \
+	  $(patsubst %.o,%.sha,$(filter %.o,$(COMPILER_OBJS))) $(patsubst %.o,%.d,$(filter %.o,$(COMPILER_OBJS))))
+
+# THE COMPILER FROM WHATEVER STANDS: the standing binary builds this tree
+# twice (one `make avra` advances one generation), and where none stands or
+# it cannot read the tree — new syntax, a refusal about its own source — the
+# seed bootstraps it, a FULL build, so a source wrong for real still dies.
+# GEN_BOUND bounds each build in seconds (tools/bounded.sh names the cause);
+# STORE_ASIDE is where an older compiler's store goes before the bootstrap,
+# since a store is one compiler's.
+GEN_BOUND ?=
+STORE_ASIDE ?=
+BOUNDED = $(if $(GEN_BOUND),sh tools/bounded.sh $(GEN_BOUND) )
+compiler:
+	@if [ -x build/avra ] && $(BOUNDED)$(MAKE) -s avra && $(BOUNDED)$(MAKE) -s avra; then :; else \
+	  if [ -n "$(STORE_ASIDE)" ] && [ -d .avra-cache ]; then mv .avra-cache "$(STORE_ASIDE)"; fi; \
+	  echo "compiler: the standing compiler did not build this tree — bootstrapping from the seed"; \
+	  $(BOUNDED)$(MAKE) -s bootstrap; \
+	fi
 
 # THE EDIT LOOP: the source built by the STANDING compiler into
 # build/avra-try, never over it — so the builder's print, and every row its
@@ -679,6 +706,7 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/dep_tests_listing_attack.sh
 	@sh tools/cancel_cache_attack.sh
 	@sh tools/writes_attack.sh
+	@sh tools/file_module_attack.sh
 	@sh tools/cancel_bits_attack.sh
 	@sh tools/readfound_attack.sh
 	@sh tools/durable_symbol_attack.sh
@@ -1006,10 +1034,14 @@ attack:
 # in tools/defects/corpus.txt, and every mutation of its bases, is checked
 # and run, and one answered with a defect voice or a trap refuses. A SEEDED
 # SET of mutants of the tree's own program tests rides beside them; more is
-# `python3 tools/defects.py --only gen: --generate 500 --seed <n>`.
+# `python3 tools/defects.py --only gen: --generate 500 --seed <n>`. Every program's
+# seconds land in build/defects-timings.tsv (the job uploads it), and a timeout names
+# the seconds the last green run took (build/defects-timings.prev.tsv, fetched by
+# tools/defects_previous.py).
 defects:
 	@python3 tools/defects.py --self-test
-	@sh tools/watch.sh 6000 python3 tools/defects.py --generate 40 --seed 0
+	@python3 tools/defects_previous.py --self-test
+	@sh tools/watch.sh 6000 python3 tools/defects.py --generate 40 --seed 0 --timings build/defects-timings.tsv $$([ -f build/defects-timings.prev.tsv ] && echo --previous build/defects-timings.prev.tsv)
 
 # The IR vocabulary's guarantee: every Ins consumer stays exhaustive,
 # so a new instruction cannot ship half-implemented.
@@ -1130,41 +1162,26 @@ KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness f
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
 KEEPERS_B = tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board ui-browser ui-browser-skip wasm-host-check tool-witnesses footprint tick-object no-threads \
-            ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml
+            ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
 	@sh tools/keepers_loop.sh "$(MAKE) -s -o avra" $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a1,$@),$(KEEPERS_A1),$(if $(filter keepers-a2,$@),$(KEEPERS_A2),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS))))))
 
-# THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
-# on, proved on its fixtures — none reads the compiler.
-# One witness per line, so a lane adding an instrument appends a line.
-TOOL_WITNESSES = stamps.sh\ --self-test \
-                 llvm_link.sh\ --self-test \
-                 capped.sh\ --self-test \
-                 failed_tail_test.sh \
-                 host_fn_edit_attack.sh\ --self-test \
-                 gate_receipt.sh\ --self-test \
-                 watch.sh\ --self-test \
-                 memcap.sh\ --self-test \
-                 seed_is_tree.sh\ --self-test \
-                 witness_fmt_changed.sh \
-                 witness_gate_changed.sh \
-                 witness_work_wait.sh \
-                 witness_work_run.sh \
-                 witness_compiler_release.sh \
-                 ci_wall.sh\ --self-test \
-                 witness_warm_edit.sh \
-                 shim_guard_test.sh \
-                 work_test.sh \
-                 reclaim_test.sh \
-                 keepers_loop.sh\ --self-test \
-                 rungs.sh\ --self-test \
-                 ladder.sh\ --self-test \
-                 pr_body.sh\ --self-test
+# THE TOOLS' OWN WITNESSES, DERIVED (tools/tool_witnesses.sh): every
+# witness_*.sh and *_test.sh, and every tool declaring `# tool-witness:
+# --self-test`, that no other keeper declares it runs; a self-test nobody
+# runs is refused. None reads the compiler. `sh tools/tool_witnesses.sh list`
+# shows who runs each.
 tool-witnesses:
-	@python3 tools/pipeline_status.py --self-test
-	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
-	 [ -z "$$fail" ] || { echo "tool-witnesses: refused —$$fail"; exit 1; }
+	@sh tools/tool_witnesses.sh --self-test
+	@sh tools/tool_witnesses.sh run
+
+# THE STORE'S WITNESSES: package builds under the memory cap, each over a cold
+# then a warm store, so they ride with the cache attacks.
+STORE_WITNESSES = $(shell grep -l '^\# tool-witness: run by make store-witnesses' tools/*.sh)
+store-witnesses: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@fail=""; for w in $(STORE_WITNESSES); do MEMCAP=tools/memcap.sh sh $$w || fail="$$fail [$$w]"; done; \
+	 [ -z "$$fail" ] || { echo "store-witnesses: refused —$$fail"; exit 1; }
 
 # THE CI STRUCTURE RATCHET: the release path, the compiler-free keepers a
 # PR must reach and the watcher's fixtures are held before a green PR can
@@ -1199,6 +1216,12 @@ pr-watcher:
 pipeline-doc:
 	@python3 tools/pipeline_doc.py
 
+# A BUILD'S STATUS NEVER DIES IN A PIPE: no build, run, make or node is
+# piped into `tail` outside `tools/capped.sh --last` (tools/tail_status.sh).
+tail-status:
+	@sh tools/tail_status.sh --self-test
+	@sh tools/tail_status.sh
+
 # THE ONE-LINE BLOCKER: why nothing is landing, in a handful of lines.
 # Read-only and safe any time — `main`'s SHA and age; the last runs'
 # failures COUNTED BY JOB; each open PR's blocker in one word; whether the
@@ -1216,8 +1239,8 @@ pipeline-status:
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml
-.PHONY: keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc pipeline-status ci-invariants ci-verdict pr-watcher
+KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status
+.PHONY: compiler compiler-files store-witnesses keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc tail-status pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@sh tools/keepers_loop.sh "$(MAKE) -s" $(KEEPERS_STATIC)
