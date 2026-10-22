@@ -6,13 +6,24 @@
 # this proves what only an engine can — and the dev loop: the view's file is
 # edited and the running page must follow.
 #
-# It needs what `make ui-board` needs, and Firefox (FIREFOX names one that is
+# It needs what `make ui-board` needs, Firefox (and, where it is asked for, Playwright's WebKit) (FIREFOX names one that is
 # not in a usual place). Where one is absent this FAILS, naming what is
 # missing: a run that examined nothing is no pass. Only a hand-set
 # UI_BROWSER_SKIP=<reason> stands it down on a local machine, loudly; on the
 # checks' machine (CI=true) nothing does. UI_BOARD_TARGET names one wasm triple (default `wasm`);
-# UI_BROWSER_SHOTS names a directory the run leaves screenshots in.
+# UI_BROWSER_SHOTS names a directory the run leaves screenshots in. UI_BROWSER_ENGINES names the engines
+# to run, in order (default `firefox`; the checks name `firefox webkit`); UI_BROWSER_DEVICE names a Playwright device
+# ("iPhone 15") for the WebKit run: a touch screen and a phone's window.
 set -eu
+
+# Whether a browser stands at the path `$1`.
+webkit_stands() { [ -e "$1" ]; }
+
+# THE PATH THE LAUNCHER RUNS, as Playwright's own module names it: the guard
+# and the launch read one answer, so no cache can stand for a browser it lacks.
+webkit_exe() {
+    PW_PREFIX=$1 node --input-type=module -e 'const { webkit } = await import(process.env.PW_PREFIX + "/node_modules/playwright/index.mjs"); process.stdout.write(webkit.executablePath());'
+}
 
 # `--self-test`: both surfaces of the skip contract, run against a compiler that
 # is not there (the first thing a run needs), so no browser is touched.
@@ -24,7 +35,27 @@ if [ "${1:-}" = --self-test ]; then
     out=$(ran UI_BROWSER_SKIP=no-firefox-here) || { echo "ui-browser self-test: UI_BROWSER_SKIP did not stand it down"; exit 1; }
     case $out in *"STOOD DOWN"*no-firefox-here*) ;; *) echo "ui-browser self-test: a stand-down is not spoken with its reason"; exit 1;; esac
     out=$(env CI=true UI_BROWSER_SKIP=no-firefox-here AVRA=/nonexistent sh "$me" 2>&1) && { echo "ui-browser self-test: CI stood down"; exit 1; }
-    echo "ui-browser self-test: a missing machine fails, only UI_BROWSER_SKIP stands it down, CI never does"
+    # BOTH SURFACES OF THE GUARD, asked of a Playwright module that names its
+    # own executable: a path with a browser is read as standing, and a path
+    # with none is read as missing — the case a restored cache used to pass at
+    # once, and the reason a cache is validated rather than assumed.
+    command -v node >/dev/null 2>&1 || { echo "ui-browser self-test: no \`node\` to ask Playwright's module"; exit 1; }
+    d=$(mktemp -d "${TMPDIR:-/tmp}/avra-webkit-guard.XXXXXX")
+    mkdir -p "$d/module/node_modules/playwright" "$d/standing"
+    printf '%s\n' 'export const webkit = { executablePath: () => process.env.PW_ANSWER };' >"$d/module/node_modules/playwright/index.mjs"
+    : >"$d/standing/pw_run.sh"
+    if [ "$(PW_ANSWER="$d/standing/pw_run.sh" webkit_exe "$d/module")" != "$d/standing/pw_run.sh" ]; then
+        echo "ui-browser self-test: the guard did not read the launcher's own answer"
+        find "$d" -delete
+        exit 1
+    fi
+    if webkit_stands "$(PW_ANSWER="$d/gone/pw_run.sh" webkit_exe "$d/module")"; then
+        echo "ui-browser self-test: a path with no browser was read as standing"
+        find "$d" -delete
+        exit 1
+    fi
+    find "$d" -delete
+    echo "ui-browser self-test: a missing machine fails, only UI_BROWSER_SKIP stands it down, CI never does; the guard reads the path the launcher names"
     exit 0
 fi
 
@@ -104,7 +135,56 @@ done
 hydrated=$(sed -n 's/^serving \(http[^ ]*\).*$/\1/p' "$work/serve.out" | head -1)
 torn=$(sed -n 's/^serving \(http[^ ]*\).*$/\1/p' "$work/serve--tampered.out" | head -1)
 
-if ! out=$(node "$here/ui-board/browser.mjs" "$url" --source "$work/tools/ui-board/src/board.av" --hydrated "$hydrated" --tampered "$torn" ${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"} 2>&1); then
-    echo "$out" | grep -v '^ok ' ; echo "ui-browser: the board failed in the browser"; exit 1
-fi
-echo "ui-browser: ran $(echo "$out" | grep -c '^ok ') claims, all hold, in Firefox, served by \`avra dev\` at $url"
+# THE ENGINES: Firefox, and WebKit — the engine every iOS browser is, which reads what Firefox
+# tolerates differently (a `showModal` on a dialog already open, an import encoding Firefox
+# reads and WebKit does not). A lane's own run proves Firefox; the checks' job names both
+# (UI_BROWSER_ENGINES="firefox webkit webkit-iphone", the last being WebKit on a phone profile). WebKit comes from Playwright, pinned, installed on first
+# use; one that cannot launch is a missing browser like any other: it fails unless stood down by
+# name (`skip`), and says where its libraries come from.
+engines=${UI_BROWSER_ENGINES:-firefox}
+playwright_version=1.64.1
+case " $engines " in
+    *" webkit "* | *" webkit-iphone "*)
+        playwright=${PLAYWRIGHT_DIR:-$tree/build/playwright}
+        # THE BROWSER STANDS WHERE THIS GUARD LOOKS. `playwright install`
+        # honours PLAYWRIGHT_BROWSERS_PATH, so the directory the checks cache
+        # holds the browser too, and a restored cache is VALIDATED rather than
+        # assumed: one that carries the node module and no browser installs it
+        # instead of failing at launch.
+        browsers=$playwright/browsers
+        export PLAYWRIGHT_BROWSERS_PATH="$browsers"
+        if [ ! -d "$playwright/node_modules/playwright" ]; then
+            mkdir -p "$playwright"
+            # a machine with no npm (the checks' image) takes the one in the pinned Node (.github/ci/install_node.sh)
+            command -v npm >/dev/null 2>&1 || PATH=/opt/node-jspi/bin:$PATH
+            npm install --prefix "$playwright" --no-audit --no-fund "playwright@$playwright_version" >"$work/npm.out" 2>&1 ||
+                skip "Playwright did not install: $(tail -1 "$work/npm.out")"
+        fi
+        exe=$(webkit_exe "$playwright") || skip "Playwright's module named no WebKit executable"
+        if ! webkit_stands "$exe"; then
+            "$playwright/node_modules/.bin/playwright" install webkit >>"$work/npm.out" 2>&1 ||
+                skip "Playwright's WebKit did not install: $(tail -1 "$work/npm.out")"
+            exe=$(webkit_exe "$playwright") || skip "Playwright's module named no WebKit executable after install"
+            webkit_stands "$exe" || skip "Playwright's WebKit is not at $exe after install"
+        fi
+        export PLAYWRIGHT_DIR="$playwright"
+        ;;
+esac
+
+shots=${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"}
+for engine in $engines; do
+    status=0
+    began=$(date +%s)
+    # `webkit-iphone` is WebKit under a phone's touch screen and window: the owner's real target
+    device=${UI_BROWSER_DEVICE:-}
+    run_engine=$engine
+    if [ "$engine" = webkit-iphone ]; then run_engine=webkit; device="iPhone 15"; fi
+    out=$(UI_BROWSER_DEVICE=$device node "$here/ui-board/browser.mjs" "$url" --engine "$run_engine" --source "$work/tools/ui-board/src/board.av" --hydrated "$hydrated" --tampered "$torn" $shots 2>&1) || status=$?
+    [ "$status" -ne 3 ] || skip "$(echo "$out" | tail -1) — WebKit's host libraries are .github/ci/packages-browser.txt; on a Sprite, \`sh tools/work run --browser …\` installs them"
+    if [ "$status" -ne 0 ]; then
+        echo "$out" | grep -v '^ok '; echo "ui-browser: the board failed in $engine"; exit 1
+    fi
+    echo "$out" | grep '^skipped in ' || :
+    left=$(echo "$out" | grep -c '^skipped in ' || :)
+    echo "ui-browser: ran $(echo "$out" | grep -c '^ok ') claims, all hold, in $engine$([ -z "$device" ] || echo " ($device)")$([ "$left" = 0 ] || echo ", $left skipped by name above"), $(($(date +%s) - began))s, served by \`avra dev\` at $url"
+done

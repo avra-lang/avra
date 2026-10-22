@@ -56,6 +56,9 @@ git -C "$pk/lane" remote add origin "$pk/origin.git" && git -C "$pk/lane" push -
 printf 'shared\nlocalonly\n' > "$pk/lane/.github/ci/packages.txt"
 pkg_lists() { (here="$pk/lane/tools"; . "$here/sprite-lib.sh"; printf '%s|%s' "$(sprite_packages_list | tr ' ' '\n' | sort | tr '\n' ' ')" "$(health_packages_list | tr ' ' '\n' | sort | tr '\n' ' ')"); }
 check "$(pkg_lists)" "frommain localonly shared |frommain shared " "packages: a run installs main's list plus the checkout's own; health judges main's alone, never the checkout's stale or extra lines"
+printf 'webkitlib\n' > "$pk/lane/.github/ci/packages-browser.txt"
+browser_list() { (here="$pk/lane/tools"; . "$here/sprite-lib.sh"; browser_packages_list | tr ' ' '\n' | sort | tr '\n' ' '); }
+check "$(browser_list)" "webkitlib " "packages: the browser leg's libraries are a list of their own, never part of a run's or of health's"
 
 cat > "$scratch/sprite" <<'STUB'
 #!/bin/sh
