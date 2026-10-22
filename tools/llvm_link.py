@@ -2,11 +2,12 @@
 """THE COMPILER'S LLVM LINK, named once: `packages/std-avrac/avra.toml`'s `[link]`
 rows. The compiler links LLVM statically (docs/2026_10_18_STATIC_LLVM.md), so
 that row lists the static component libraries, and the hand-written clang lines
-(`make recover`, `make seed-check`) take the SAME words from here instead of a
+(`make recover`, `make seed-check`) take the SAME words from there instead of a
 second spelling.
 
-  llvm_link.py --words    the `-L`/`-l` words, the environment's holes filled
-  llvm_link.py --twin     the compiler's platform defaults (whole.av) and this file's agree
+  llvm_link.sh --words    the `-L`/`-l` words, the environment's holes filled (plain shell: the
+                          Makefile reads it while it parses, before any interpreter is owed)
+  llvm_link.py --twin     the compiler's platform defaults (whole.av) and llvm_link.sh's agree
   llvm_link.py --check    the row names every component the wrapper needs, as
                           `llvm-config --link-static` lists them, and each is on disk
 
@@ -31,41 +32,15 @@ def link_row():
         return tomllib.load(f).get("link", {})
 
 
-def platform_hole(name):
-    """What a hole means on this platform when the environment names nothing: the compiler's
-    own `platform_hole` (compiler/whole.av), spelled again because this reader is Python — keep
-    the two in step (`make llvm-libs` runs both answers over the same row)."""
-    darwin = sys.platform == "darwin"
-    if name == "AVRA_CXX_RUNTIME":
-        return "c++" if darwin else "stdc++"
-    if name == "AVRA_SYS_SEARCH":
-        for d in PY_DIRS["darwin" if darwin else "linux"]:
-            if any(os.path.exists(os.path.join(d, f"libzstd.{ext}")) for ext in ("a", "so", "dylib")):
-                return d
-    return ""
-
-
-def expanded(flag):
-    """`${NAME}` filled from the environment, else the platform's answer, as the compiler fills it."""
-    out, i = [], 0
-    while i < len(flag):
-        if flag.startswith("${", i):
-            close = flag.find("}", i)
-            if close < 0:
-                out.append(flag[i:])
-                break
-            name = flag[i + 2:close]
-            out.append(os.environ[name] if name in os.environ else platform_hole(name))
-            i = close + 1
-        else:
-            out.append(flag[i])
-            i += 1
-    return "".join(out)
-
-
 WHOLE = os.path.join(ROOT, "packages", "std-avrac", "src", "compiler", "whole.av")
-PY_DIRS = {"darwin": ["/opt/homebrew/lib", "/usr/local/lib"],
-           "linux": ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64", "/usr/lib"]}
+SHELL = os.path.join(ROOT, "tools", "llvm_link.sh")
+
+
+def shell_dirs():
+    """The directories llvm_link.sh's `hole` looks in: the darwin list, then the linux list."""
+    import re
+    lists = re.findall(r'dirs="([^"]+)"', open(SHELL).read())
+    return {"darwin": lists[0].split(), "linux": lists[1].split()}
 
 
 def twin():
@@ -80,20 +55,14 @@ def twin():
     bad = []
     if not runtime or (runtime[1], runtime[2]) != ("c++", "stdc++"):
         bad.append(f"the C++ runtime names differ: compiler {runtime and runtime.groups()} vs c++/stdc++")
-    if got != [PY_DIRS["darwin"], PY_DIRS["linux"]]:
-        bad.append(f"the system library directories differ: compiler {got} vs {[PY_DIRS['darwin'], PY_DIRS['linux']]}")
+    dirs = shell_dirs()
+    if got != [dirs["darwin"], dirs["linux"]]:
+        bad.append(f"the system library directories differ: compiler {got} vs {[dirs['darwin'], dirs['linux']]}")
     for b in bad:
         print("llvm-link: " + b, file=sys.stderr)
     if not bad:
-        print("llvm-link: the compiler's platform defaults and llvm_link.py's agree")
+        print("llvm-link: the compiler's platform defaults and llvm_link.sh's agree")
     return 1 if bad else 0
-
-
-def words():
-    link = link_row()
-    return [letter + w
-            for key, letter in (("search", "-L"), ("libs", "-l"))
-            for w in (expanded(r) for r in link.get(key, [])) if w]
 
 
 def check():
@@ -122,18 +91,9 @@ def check():
 
 
 if __name__ == "__main__":
-    # the platform's answers, as the shim and the Makefile give them
-    os.environ.setdefault("LLVM_PREFIX", "/opt/homebrew/opt/llvm")
-    mac = sys.platform == "darwin"
-    os.environ.setdefault("AVRA_CXX_RUNTIME", "c++" if mac else "stdc++")
-    if mac:
-        os.environ.setdefault("AVRA_SYS_SEARCH", "/opt/homebrew/lib")
-    if len(sys.argv) == 2 and sys.argv[1] == "--words":
-        print(" ".join(words()))
-        sys.exit(0)
     if len(sys.argv) == 2 and sys.argv[1] == "--twin":
         sys.exit(twin())
     if len(sys.argv) == 2 and sys.argv[1] == "--check":
         sys.exit(check())
-    print("usage: llvm_link.py --words | --check | --twin", file=sys.stderr)
+    print("usage: llvm_link.py --check | --twin", file=sys.stderr)
     sys.exit(2)
