@@ -55,5 +55,6 @@ builds spawn || fail=1
 builds io || fail=1
 builds unreached || fail=1
 builds time || fail=1
+builds model_text || fail=1
 [ "$fail" -eq 0 ] || exit 1
 say "refusals speak, and a wasm-named package links"
