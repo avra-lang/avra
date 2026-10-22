@@ -1,0 +1,359 @@
+diff --git a/packages/std-avrac/src/compiler/memory/memory.av b/packages/std-avrac/src/compiler/memory/memory.av
+index 43fc829..5ee4a83 100644
+--- a/packages/std-avrac/src/compiler/memory/memory.av
++++ b/packages/std-avrac/src/compiler/memory/memory.av
+@@ -191,6 +191,7 @@ fn memory_ins(
+     let last = last_reads(reg_types.length, ins)
+     let defs = def_sites(reg_types.length, ins)
+     let next_barrier = barrier_positions(ins)
++    let twins = twin_table(defs, next_barrier, types, reg_types, ins)
+     let life = Lives {
+         types: types,
+         reg_types: reg_types,
+@@ -198,11 +199,12 @@ fn memory_ins(
+         last: last,
+         defs: defs,
+         next_barrier: next_barrier,
++        twins: twins,
+         viewed: viewed_regs(types, reg_types, ins),
+-        death: death_points(defs, next_barrier, types, reg_types, ins, last),
++        death: death_points(twins, ins, last),
+     }
+     for at, raw in ins {
+-        let i = owned_form(defs, next_barrier, types, reg_types, ins, at, raw)
++        let i = owned_form(twins, types, reg_types, at, raw)
+         match i {
+             .ScopeEnter(tier) -> {
+                 // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
+@@ -335,7 +337,18 @@ fn memory_ins(
+             .Load(dst, slot) -> {
+                 out.push(i)
+                 if is_managed(types, reg_types[dst.index]) &&
+-                    borrow_outlives(defs, next_barrier, types, reg_types, ins, at, dst, slot, false) {
++                    borrow_outlives(
++                        twins,
++                        defs,
++                        next_barrier,
++                        types,
++                        reg_types,
++                        ins,
++                        at,
++                        dst,
++                        slot,
++                        false,
++                    ) {
+                     out.push(Ins.Retain(dst))
+                     manages(types, reg_types, open_scopes, i)
+                 }
+@@ -431,6 +444,7 @@ fn memory_ins(
+ /// before this pass counted uses. A row that keeps without
+ /// retaining is a dangling store whether the read owns or not.
+ fn borrow_outlives(
++    twins: List<bool>,
+     defs: List<int>,
+     next_barrier: List<int>,
+     types: TypeRegistry,
+@@ -451,9 +465,7 @@ fn borrow_outlives(
+             last = j
+             let d: Reg? = view_of(i)
+             // a child that takes its OWN reference rides nobody's
+-            if d != null &&
+-                is_managed(types, reg_types[d!.index]) &&
+-                !takes_twin(defs, next_barrier, types, reg_types, ins, j, i) {
++            if d != null && is_managed(types, reg_types[d!.index]) && !twins[j] {
+                 views.push(d!)
+             }
+         }
+@@ -635,9 +647,39 @@ fn writes_arg(callee: string, args: List<Reg>, slot: Reg) -> bool {
+ /// argument, but this call's OWN first seat traces back to the SAME
+ /// box `slot` does. Every writing row in the registry names its
+ /// subject at seat 0, so that is the one seat this asks about.
++///
++/// A WRITE INTO A BOX HELD BELOW `slot` changes that box, never `slot`'s
++/// own slots: `c.set_at(i, v)` writes the list the cell holds, and the
++/// cell's reference to that list stands through it. What the write
++/// releases is the box's OLD ELEMENT, which reaches `slot` only by a
++/// cycle — and the chain above `slot` still holds it then.
+ fn aliased_write(defs: List<int>, ins: List<Ins>, callee: string, args: List<Reg>, slot: Reg) -> bool {
+     let box? = args.first() else { return false }
+-    rt_writes(callee, 0) && same_reg(cell_root(defs, ins, slot), cell_root(defs, ins, box))
++    rt_writes(callee, 0) &&
++        same_reg(cell_root(defs, ins, slot), cell_root(defs, ins, box)) &&
++        !held_below(defs, ins, box, slot)
++}
++
++/// Whether `r` is a box held, at any depth, BELOW `from`: its provenance
++/// reaches `from` through at least one step that reads a PART — an
++/// `Extract` or a lending row. Every other step may answer the box it was
++/// handed (`avra_box_thawed`), so it keeps the depth.
++fn held_below(defs: List<int>, ins: List<Ins>, r: Reg, from: Reg) -> bool {
++    below_from(defs, ins, r, from, false)
++}
++
++fn below_from(defs: List<int>, ins: List<Ins>, r: Reg, from: Reg, deeper: bool) -> bool {
++    let d = defs[r.index]
++    if d < 0 { return false }
++    let src? = view_source(ins[d]) else { return false }
++    let lower = deeper || reads_part(ins[d])
++    if same_reg(src, from) { return lower }
++    below_from(defs, ins, src, from, lower)
++}
++
++/// Whether `i` answers a part of its subject's box, never the box itself.
++fn reads_part(i: Ins) -> bool {
++    match i { .Extract(_, _, _) -> true, .CallRt(_, callee, _) -> rt_lends(callee), rest -> false }
+ }
+ 
+ /// THE STABLE IDENTITY `r` WAS ULTIMATELY READ FROM: walked through a
+@@ -927,15 +969,7 @@ fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
+ /// managed becomes an owned +1 read — each by the registry's OWNED
+ /// TWIN column. Lowering never chooses; ownership stays this
+ /// pass's one concern, and no runtime name is spelled here.
+-fn owned_form(
+-    defs: List<int>,
+-    next_barrier: List<int>,
+-    types: TypeRegistry,
+-    reg_types: List<TypeId>,
+-    ins: List<Ins>,
+-    at: int,
+-    i: Ins,
+-) -> Ins {
++fn owned_form(twins: List<bool>, types: TypeRegistry, reg_types: List<TypeId>, at: int, i: Ins) -> Ins {
+     // a pre-filter — the caller's dispatch is exhaustive
+     // over Ins; this rewrite touches only the runtime call shapes
+     match i {
+@@ -943,15 +977,37 @@ fn owned_form(
+             let twin: string? = rt_owned_twin(callee)
+             if twin != null && pushes_managed(types, reg_types, args) { Ins.CallRtVoid(twin!, args) } else { i }
+         },
+-        .CallRt(dst, callee, args) if takes_twin(defs, next_barrier, types, reg_types, ins, at, i) -> Ins.CallRt(dst, rt_owned_twin(callee) ?? callee, args),
++        .CallRt(dst, callee, args) if twins[at] -> Ins.CallRt(dst, rt_owned_twin(callee) ?? callee, args),
+         rest -> i,
+     }
+ }
+ 
++/// WHETHER EACH READ TAKES ITS OWNED TWIN, by position, once per body. A
++/// read's answer asks only about the reads AFTER it, so a reverse walk has
++/// every answer it needs in hand.
++fn twin_table(
++    defs: List<int>,
++    next_barrier: List<int>,
++    types: TypeRegistry,
++    reg_types: List<TypeId>,
++    ins: List<Ins>,
++) -> List<bool> {
++    mut out = [false for j in 0..ins.length]
++    // LICENSED loops.index_walk: a REVERSE walk — a read's answer reads the answers after it
++    mut k = ins.length - 1
++    while k >= 0 {
++        if takes_twin(out, defs, next_barrier, types, reg_types, ins, k, ins[k]) { out.set(k, true) }
++        k = k - 1
++    }
++    out
++}
++
+ /// WHETHER A READ TAKES ITS OWNED TWIN — its answer its own +1, riding nobody's
+ /// reference: a managed answer of a row that has a twin, which a LENDING row
+-/// declines only while the child stays a borrow.
++/// declines only while the child stays a borrow. `twins` answers every
++/// position after `at`.
+ fn takes_twin(
++    twins: List<bool>,
+     defs: List<int>,
+     next_barrier: List<int>,
+     types: TypeRegistry,
+@@ -964,7 +1020,7 @@ fn takes_twin(
+         .CallRt(dst, callee, args) -> rt_owned_twin(callee) != null &&
+             is_managed(types, reg_types[dst.index]) &&
+             (!rt_lends(callee) ||
+-                read_outlives(defs, next_barrier, types, reg_types, ins, at, dst, args)),
++                read_outlives(twins, defs, next_barrier, types, reg_types, ins, at, dst, args)),
+         rest -> false,
+     }
+ }
+@@ -981,6 +1037,7 @@ fn takes_twin(
+ /// cell standing. A borrow whose chain reaches a cell, read past any user
+ /// call, owns: the callee may reach that cell, by a seat or a capture.
+ fn read_outlives(
++    twins: List<bool>,
+     defs: List<int>,
+     next_barrier: List<int>,
+     types: TypeRegistry,
+@@ -992,6 +1049,7 @@ fn read_outlives(
+ ) -> bool {
+     let subject? = args.first() else { return true }
+     borrow_outlives(
++        twins,
+         defs,
+         next_barrier,
+         types,
+@@ -1092,6 +1150,7 @@ type Lives = {
+     last: List<int>,
+     defs: List<int>,
+     next_barrier: List<int>,
++    twins: List<bool>,
+     viewed: List<bool>,
+     death: List<int>,
+ }
+@@ -1158,15 +1217,7 @@ impl Lives {
+             if d != null &&
+                 family.any(reads_reg(i, it)) &&
+                 is_managed(self.types, self.reg_types[d!.index]) &&
+-                !takes_twin(
+-                    self.defs,
+-                    self.next_barrier,
+-                    self.types,
+-                    self.reg_types,
+-                    self.ins,
+-                    j,
+-                    i,
+-                ) {
++                !self.twins[j] {
+                 family.push(d!)
+             }
+             j = j + 1
+@@ -1201,6 +1252,7 @@ impl Lives {
+         if d < 0 { return null }
+         let slot? = loaded_slot(self.ins[d]) else { return null }
+         if borrow_outlives(
++            self.twins,
+             self.defs,
+             self.next_barrier,
+             self.types,
+@@ -1346,21 +1398,14 @@ fn last_reads(count: int, ins: List<Ins>) -> List<int> {
+ /// reverse walk has folded the view's own riders in before it. A view
+ /// of ANY type rides: an enum's payload word is typed as a scalar and
+ /// may still point into the box.
+-fn death_points(
+-    defs: List<int>,
+-    next_barrier: List<int>,
+-    types: TypeRegistry,
+-    reg_types: List<TypeId>,
+-    ins: List<Ins>,
+-    last: List<int>,
+-) -> List<int> {
++fn death_points(twins: List<bool>, ins: List<Ins>, last: List<int>) -> List<int> {
+     mut out = [t for t in last]
+     // LICENSED loops.index_walk: a REVERSE walk — a view's riders fold in before it does
+     mut j = ins.length - 1
+     while j >= 0 {
+         let i = ins[j]
+         let d: Reg? = view_of(i)
+-        if d != null && !takes_twin(defs, next_barrier, types, reg_types, ins, j, i) {
++        if d != null && !twins[j] {
+             let dies = out[d!.index]
+             for r in reads_of(i) {
+                 if dies > out[r.index] { out.set(r.index, dies) }
+diff --git a/packages/std-avrac/src/compiler/tests/lower_test.av b/packages/std-avrac/src/compiler/tests/lower_test.av
+index d4ec2b0..7001ad2 100644
+--- a/packages/std-avrac/src/compiler/tests/lower_test.av
++++ b/packages/std-avrac/src/compiler/tests/lower_test.av
+@@ -221,6 +221,15 @@ spec "compiler/lower" {
+         then "a Cell's content read past ANY user call owns — the callee may replace it" {
+             all_ins(ir_of(cell_read("clear()"))).any(is_owned_get(it))
+         }
++        then "a `set_at` of an int through a Cell writes the held list as a VIEW — no reference of its own" {
++            !all_ins(ir_of(cell_set_at("int", "i * 2", "0"))).any(is_owned_get(it))
++        }
++        then "a `set_at` of a string through a Cell writes the held list as a VIEW — no reference of its own" {
++            !all_ins(ir_of(cell_set_at("string", "\"s\" + \"t\"", "\"a\""))).any(is_owned_get(it))
++        }
++        then "a field read past a write of that field through a thawed `self` owns — the thaw answers the same box" {
++            all_ins(ir_of(field_replaced())).any(is_owned_get(it))
++        }
+     }
+     given "`!` on a niche nullable" {
+         then "a foreign pointer's is a null test, never the retaining insist" {
+@@ -486,6 +495,17 @@ fn cell_read(between: string) -> string {
+     "once fn shared() -> Cell<List<string>> { Cell.new([\"a\" + \"b\"]) }\nfn clear() { shared().set([]) }\nfn at(i: int) -> int {\n    let xs = shared().get()\n    ${between}\n    xs[i].length\n}\nat(0)"
+ }
+ 
++/// `n` writes of `value` into the list of `elem` a Cell holds, seeded
++/// with one `seed`.
++fn cell_set_at(elem: string, value: string, seed: string) -> string {
++    "fn fill(c: Cell<List<${elem}>>, n: int) {\n    for i in 0..n { c.set_at(i, ${value}) }\n}\nfill(Cell.new([${seed}]), 1)"
++}
++
++/// A method reads a field, replaces it through `self`, then reads the old value.
++fn field_replaced() -> string {
++    "type H = { items: List<string>, tag: int }\nimpl H {\n    mut fn swapped(next: List<string>) -> int {\n        let old = self.items\n        self.items = next\n        old.length\n    }\n}\nmut h = H { items: [\"a\"], tag: 1 }\nh.swapped([\"b\"])"
++}
++
+ /// No `@lent` seat of any call in the slice is retained: each stands.
+ fn no_call_seat_counted(ins: List<Ins>) -> bool {
+     let calls = [i for i in ins if i is .Call]
+diff --git a/packages/std-avrac/src/features/cells/tests/set_at/set_at.av b/packages/std-avrac/src/features/cells/tests/set_at/set_at.av
+new file mode 100644
+index 0000000..34bbc7a
+--- /dev/null
++++ b/packages/std-avrac/src/features/cells/tests/set_at/set_at.av
+@@ -0,0 +1,35 @@
++// proves: set_at through a cell writes the held list in place, for ints
++// and strings, and a value read out of the list before a write keeps it.
++type Node = { name: string, kids: Cell<List<Node>> }
++
++fn no_kids() -> Cell<List<Node>> { Cell.new([]) }
++
++fn fill(c: Cell<List<int>>, n: int) {
++    for i in 0..n { c.set_at(i, i * 2) }
++}
++
++fn rename(c: Cell<List<string>>, n: int) {
++    for i in 0..n { c.set_at(i, "s${i}") }
++}
++
++fn kept(c: Cell<List<string>>) -> string {
++    let before = c.get()[0]
++    c.set_at(0, "gone")
++    before
++}
++
++fn again(c: Cell<List<string>>) {
++    c.set_at(1, c.get()[1])
++}
++
++let ints = Cell.new([0, 0, 0, 0])
++fill(ints, 4)
++let words = Cell.new(["a" + "x", "b" + "x", "c" + "x"])
++rename(words, 3)
++let was = kept(words)
++again(words)
++let leaf = Node { name: "leaf", kids: no_kids() }
++let root = Node { name: "root", kids: Cell.new([leaf]) }
++root.kids.set_at(0, Node { name: "new", kids: Cell.new([leaf]) })
++root.kids.get()[0].kids.set_at(0, Node { name: "deep", kids: no_kids() })
++"${ints.get()[3]} ${words.get()[0]} ${words.get()[1]} ${words.get()[2]} ${was} ${root.kids.get()[0].name} ${root.kids.get()[0].kids.get()[0].name} ${leaf.name}"
+diff --git a/packages/std-avrac/src/features/cells/tests/set_at/set_at.expected b/packages/std-avrac/src/features/cells/tests/set_at/set_at.expected
+new file mode 100644
+index 0000000..e797c3f
+--- /dev/null
++++ b/packages/std-avrac/src/features/cells/tests/set_at/set_at.expected
+@@ -0,0 +1 @@
++6 gone s1 s2 s0 new deep leaf
+diff --git a/packages/std-avrac/src/features/impls/tests/field_replaced_under_read/field_replaced_under_read.av b/packages/std-avrac/src/features/impls/tests/field_replaced_under_read/field_replaced_under_read.av
+new file mode 100644
+index 0000000..c69b81e
+--- /dev/null
++++ b/packages/std-avrac/src/features/impls/tests/field_replaced_under_read/field_replaced_under_read.av
+@@ -0,0 +1,14 @@
++// proves: a field read stays its own while the method replaces that field through self.
++type Holder = { items: List<string>, tag: int }
++
++impl Holder {
++    mut fn swapped(next: List<string>) -> int {
++        let old = self.items
++        self.items = next
++        old.length + old[0].length
++    }
++}
++
++mut h = Holder { items: ["a" + "bc", "d"], tag: 1 }
++let n = h.swapped(["x" + "y"])
++"${n} ${h.items[0]}"
+diff --git a/packages/std-avrac/src/features/impls/tests/field_replaced_under_read/field_replaced_under_read.expected b/packages/std-avrac/src/features/impls/tests/field_replaced_under_read/field_replaced_under_read.expected
+new file mode 100644
+index 0000000..40eefcd
+--- /dev/null
++++ b/packages/std-avrac/src/features/impls/tests/field_replaced_under_read/field_replaced_under_read.expected
+@@ -0,0 +1 @@
++5 xy
