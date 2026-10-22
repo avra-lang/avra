@@ -43,6 +43,7 @@ SPAN_THRESHOLD = fitted("span_threshold")
 ACCEPT = fitted("accept")
 ACCEPT_SPEAKER = fitted("accept_speaker")
 ACCEPT_RECORD = fitted("accept_record")
+RECORD_FRAMING = fitted("record_framing")
 MARGIN = fitted("margin")
 NEW_CEILING = fitted("new_ceiling")
 MAX_OPTIONS = len(string.ascii_uppercase)
@@ -112,6 +113,27 @@ def required(p):
 
 def gloss(model):
     return model["description"].split("\n")[0].strip() or model["name"]
+
+
+def first_sentence(model):
+    """A declaration's first sentence, its wrapped lines joined."""
+    text = " ".join(model["description"].split())
+    end = re.search(r"[.!?](\s|$)", text)
+    return (text[: end.end()].strip() if end else text) or model["name"]
+
+
+def field_names(model):
+    return ", ".join(p["name"].replace("_", " ") for p in model["properties"])
+
+
+# How a record kind is worded as an option; bench_records.py picks the one
+# that reads best on dev decisions.
+FRAMINGS = {
+    "line": lambda m: f"{m['name']}: {gloss(m)}",
+    "sentence": lambda m: f"{m['name']}: {first_sentence(m)}",
+    "fields": lambda m: f"{m['name']} with {field_names(m)}",
+    "sentence+fields": lambda m: f"{m['name']}: {first_sentence(m)} Fields: {field_names(m)}.",
+}
 
 
 def is_enum(p):
@@ -191,6 +213,11 @@ class Plan:
         absent, or the model declares it a quantity its required fields fill."""
         value = self.embedded(p)
         return value is not None and (not any(required(x) for x in self.models[value]["properties"]) or self.quantity(m, p) is not None)
+
+    def validity(self, p):
+        """The valid-time bounds an embedded property's value type declares, or None."""
+        value = self.embedded(p)
+        return None if value is None else self.models[value]["semantics"].get("validity")
 
     def quantity(self, m, p):
         """(amount field, unit field, decimal places) when the model's declared
@@ -732,7 +759,7 @@ class Cascade:
         kinds = list(self.plan.records)
         if not kinds:
             return
-        opts = [f"{m}: {gloss(self.plan.models[m])}" for m in kinds]
+        opts = [FRAMINGS[RECORD_FRAMING](self.plan.models[m]) for m in kinds]
         for a, b in self.units():
             for x, y in self.sub_units(a, b):
                 x, y = self.trimmed(x, y)
@@ -813,6 +840,7 @@ class Cascade:
             found_spans = self.spans.get("fields", {}).get(f"{model}.{name}", [])
             cands = [(s["start"], s["end"]) for s in found_spans if a <= s["start"] and s["end"] <= b and not self.named(s["start"], s["end"])]
             if not cands:
+                log(f"gate field {model}.{name}: no encoder span in the sentence")
                 return None
             pr = self.llm.pick(ctx, f"In a {model}, which part of the sentence is the {name}?", [self.t.s[x:y] for x, y in cands], ["not stated"])
             k = taken("field", f"{model}.{name}", pr, [self.t.s[x:y] for x, y in cands], ACCEPT_RECORD)
@@ -823,6 +851,7 @@ class Cascade:
         if kind == "ref":
             ids, where = self.offered(target(p["shape"]), a, b)
             if not ids:
+                log(f"gate field {model}.{name}: no {target(p['shape'])} mentioned or referred to")
                 return None
             pr = self.llm.pick(ctx, f"In this {model}, who or what is the {name}?", [self.name(i) for i in ids], optional)
             k = taken("field", f"{model}.{name}", pr, [self.name(i) for i in ids], ACCEPT_RECORD)
@@ -844,6 +873,7 @@ class Cascade:
             nums = [(x.start(), x.end()) for x in re.finditer(r"\d[\d,]*", self.t.s[a:b])]
             nums = [(a + x, a + y) for x, y in nums]
             if not nums:
+                log(f"gate field {model}.{name}: no number in the sentence")
                 return None
             pr = self.llm.pick(ctx, f"In this {model}, which number is the {name}?", [self.t.s[x:y] for x, y in nums], ["not stated"])
             k = taken("field", f"{model}.{name}", pr, [self.t.s[x:y] for x, y in nums], ACCEPT_RECORD)
@@ -860,6 +890,7 @@ class Cascade:
         found = self.spans.get("fields", {}).get(f"{model}.{p['name']}.{unit}", [])
         pairs = [x for x in (self.beside_number(s["start"], s["end"]) for s in found if a <= s["start"] and s["end"] <= b) if x]
         if not pairs:
+            log(f"gate field {model}.{p['name']}: no {unit} span with a number beside it in the sentence")
             return None
         pr = self.llm.pick(ctx, f"In this {model}, which amount is the {p['name']}?", [self.t.s[x:y] for x, y, _, _ in pairs], ["not stated"])
         k = taken("field", f"{model}.{p['name']}", pr, [self.t.s[x:y] for x, y, _, _ in pairs], ACCEPT_RECORD)
@@ -892,28 +923,89 @@ class Cascade:
         name = p["name"]
         found = [(x["start"], x["end"]) for x in self.spans.get("times", {}).get(TIME_EXPRESSION, []) if a <= x["start"] and x["end"] <= b]
         if not found:
+            log(f"gate time {model}.{name}: no time expression in the sentence")
             return None
         pr = self.llm.pick(ctx, f"In this {model}, which words give the {name}?", [self.t.s[x:y] for x, y in found], ["not stated"])
         k = taken("time", f"{model}.{name} words", pr, [self.t.s[x:y] for x, y in found], ACCEPT_RECORD)
         if k is None:
             return None
         x, y = found[k]
+        norm, meant = self.meaning(ctx, f"{model}.{name}", x, y)
+        value = self.encoded_time(p["time"]["encoding"], norm) if norm else None
+        if value is None:
+            if norm:
+                log(f"gate time {model}.{name}: {norm['timex_type']} value does not fit the {p['time']['encoding']} encoding")
+            return None
+        f = self.field(name, value, [(x, y)], score=pr[k] * meant)
+        f["normalization"] = norm
+        return f
+
+    def meaning(self, ctx, what, x, y):
+        """(TIMEX3 normalization, score) of the time expression at [x, y): the
+        scorer picks among calendar candidates around the source's anchor, or
+        (None, 0) when it picks a non-time."""
+        import timex
+
         source = self.request["input"]
         anchor = source.get("authored_at_ms") or source["received_at_ms"]
         options = timex.candidates(anchor, timex.zone_for(self.request))
         written = next(o["label"] for o in options if o["normalization"] and o["normalization"]["timex_type"] == "TIME")
         labels = [o["label"] for o in options]
         pt = self.llm.pick(ctx + f"\nThe text was written {written}.", f'Which date or time does "{self.t.s[x:y]}" mean?', labels[:-2], labels[-2:])
-        j = taken("time", f"{model}.{name} meaning of {self.t.s[x:y]!r}", pt, labels[:-2], ACCEPT_RECORD)
-        norm = None if j is None else timex.chosen(options, j)
-        value = self.encoded_time(p["time"]["encoding"], norm) if norm else None
-        if value is None:
-            if norm:
-                log(f"gate time {model}.{name}: {norm['timex_type']} value does not fit the {p['time']['encoding']} encoding")
-            return None
-        f = self.field(name, value, [(x, y)], score=pr[k] * pt[j])
-        f["normalization"] = norm
-        return f
+        j = taken("time", f"{what} meaning of {self.t.s[x:y]!r}", pt, labels[:-2], ACCEPT_RECORD)
+        return (None, 0.0) if j is None else (timex.chosen(options, j), pt[j])
+
+    def valued(self, model, p, claim, a, b, cue):
+        """A required embedded value of a relation: the valid-time bounds its
+        value type declares, read from the sentence, else empty."""
+        spec = self.plan.validity(p)
+        if spec is None:
+            return self.field(p["name"], {}, [cue])
+        value, ranges = {}, []
+        found = [(x["start"], x["end"]) for x in self.spans.get("times", {}).get(TIME_EXPRESSION, []) if a <= x["start"] and x["end"] <= b]
+        ctx = f'Sentence: "{self.t.s[a:b]}"'
+        for side, words in (("from", "starts to hold"), ("until", "stops holding")):
+            name = spec[side][0]
+            if not found:
+                log(f"gate time {model}.{p['name']}.{name}: no time expression in the sentence")
+                continue
+            pr = self.llm.pick(ctx, f"Consider this claim: {claim}. Which words give the time it {words}?", [self.t.s[x:y] for x, y in found], ["not stated"])
+            k = taken("time", f"{model}.{p['name']}.{name} words", pr, [self.t.s[x:y] for x, y in found], ACCEPT_RECORD)
+            if k is None:
+                continue
+            x, y = found[k]
+            norm, _ = self.meaning(ctx, f"{model}.{p['name']}.{name}", x, y)
+            ms = None if norm is None else self.bound_ms(side, spec, norm, ctx, x, y)
+            if ms is not None:
+                value[name] = self.encoded_instant(spec["encoding"], ms)
+                ranges.append((x, y))
+        return self.field(p["name"], value, ranges or [cue])
+
+    def bound_ms(self, side, spec, norm, ctx, x, y):
+        """Epoch milliseconds of a bound. A date starts at its midnight; under a
+        half-open interval a date that ends the span is also asked whether the
+        whole day is in, and then ends at the next midnight."""
+        import datetime
+        import timex
+
+        zone = timex.zone_of(timex.zone_for(self.request)) or datetime.timezone.utc
+        if norm["timex_type"] == "TIME":
+            at = datetime.datetime.fromisoformat(norm["value"].replace("Z", "+00:00"))
+        else:
+            at = datetime.datetime.combine(datetime.date.fromisoformat(norm["value"]), datetime.time(), tzinfo=zone)
+            if side == "until" and spec["interval"] == "half_open":
+                inside = self.llm.pick(ctx, f'Is the whole day "{self.t.s[x:y]}" part of the time the claim holds?', ["the whole day is included", "it ends when that day begins"])
+                if inside[0] >= inside[1]:
+                    at += datetime.timedelta(days=1)
+        return int(at.timestamp() * 1000)
+
+    @staticmethod
+    def encoded_instant(encoding, ms):
+        import datetime
+
+        if encoding == "unix_millis":
+            return ms
+        return datetime.datetime.fromtimestamp(ms / 1000, tz=datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
     def encoded_time(self, encoding, norm):
         """A TIMEX3 value in a field's declared encoding, or None when the two
@@ -987,7 +1079,7 @@ class Cascade:
                     q = dict(q, factuality="CT+")
                 fields.append(self.field(p["name"], value, [cue], score=max(said)))
             else:
-                fields.append(self.field(p["name"], {}, [cue]))
+                fields.append(self.valued(name, p, claim, a, b, cue))
         for f in fields:
             f.update(q)
         self.records.append({"local_id": self.mint(), "model": name, "fields": fields, "identities": []})
