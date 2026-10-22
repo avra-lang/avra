@@ -1,0 +1,140 @@
+//! `@crud` — a model whose doors are a router. It is `@model` and more: the
+//! type keeps every method `@model` derives, and gains
+//!
+//!     Task.routes(db)                       // list, find, create, update, remove
+//!     Task.routes(db, without: [.Remove])   // a read-and-write API that never deletes
+//!
+//! which answers a `Mounted` — routes mounted like any other, in a `group` or a
+//! `server`:
+//!
+//!     @crud
+//!     type Task = { id: int = 0, title: string, done: bool = false }
+//!
+//!     server app { port: 8080
+//!         group "/tasks" { Task.routes(db) }
+//!     }
+//!
+//! A `@soft_delete` model also gets `GET /trash` and `POST /{id}/restore`, and
+//! its remove keeps the row. Stands ALONE with `@std/meta` and `@std/db`, per
+//! the derive-isolation law: the runtime is `routes.av`.
+use @std.meta.{
+    Type,
+    Field,
+    Kind,
+    Declared,
+    Directive,
+    Diagnostic,
+    Code,
+    Decls,
+    literal,
+    name,
+    refuse_as_at,
+}
+use @std.db.{model}
+use routes.{Door, Wire, empty, crud_routes, listed, found, made, changed, dropped, revived}
+
+/// `@crud` — the library's own name for the derive, so the annotation reads
+/// `@crud` with nothing imported but this.
+export fn crud(t: Type) -> Declared {
+    let base = model(t)
+    Declared {
+        made: base.made.concat([Directive { twin: "", name: t.name, at: t.at, source: doors(t) }]),
+        problems: base.problems.concat([unshown(f) for f in t.fields if shown(f) == null]),
+    }
+}
+
+fn doors(t: Type) -> Decls {
+    if t.fields.any(shown(it) == null) { return quote { impl ${t} { } } }
+    let entries = [entry_code(f) for f in t.fields]
+    quote {
+        impl ${t} {
+            /// The row as JSON, every field under its own name.
+            fn crud_json() -> Json { json_obj([..${entries}]) }
+
+            /// The model's doors as routes, over this database.
+            static fn routes(db: Db, without: List<Door> = []) -> Mounted {
+                let held = Cell.new(db)
+                crud_routes(
+                    Wire {
+                        soft: ${soft(t)},
+                        list: () -> listed(${name(t.name)}.all(held.get()), (r: ${t}) -> r.crud_json()),
+                        find: (id: int) -> found(${name(t.name)}.find(held.get(), id), (r: ${t}) -> r.crud_json()),
+                        create: (body: string) -> made(${name(t.name)}.from_json(body), (r: ${t}) -> {
+                                mut d = held.get()
+                                r.insert(d)
+                            }, (r: ${t}) -> r.crud_json()),
+                        update: (id: int, body: string) -> changed(
+                            ${name(t.name)}.from_json(body),
+                            (r: ${t}) -> {
+                                mut d = held.get()
+                                (r with { id: id }).update(d)
+                            },
+                            (r: ${t}) -> (r with { id: id }).crud_json(),
+                        ),
+                        remove: (id: int) -> dropped(${name(t.name)}.find(held.get(), id), (r: ${t}) -> {
+                                mut d = held.get()
+                                r.remove(d)
+                            }),
+                        trash: ${trash_code(t)},
+                        restore: ${restore_code(t)},
+                    },
+                    without,
+                )
+            }
+        }
+    }
+}
+
+fn soft(t: Type) -> bool { t.fields.any(is_soft(it)) }
+
+fn is_soft(f: Field) -> bool { f.marks.any(it.name == "soft_delete") }
+
+/// The trash door's reader: the removed rows, for a soft-delete model; nothing
+/// for any other, whose door is never opened.
+fn trash_code(t: Type) -> Code {
+    if !soft(t) { return quote { () -> empty() } }
+    quote { () -> listed(${name(t.name)}.trash(held.get()), (r: ${t}) -> r.crud_json()) }
+}
+
+fn restore_code(t: Type) -> Code {
+    if !soft(t) { return quote { (id: int) -> empty() } }
+    quote {
+        (id: int) -> revived(
+            ${name(t.name)}.trash(held.get()),
+            id,
+            (r: ${t}) -> r.id,
+            (r: ${t}) -> {
+                mut d = held.get()
+                r.restore(d)
+            },
+            (r: ${t}) -> r.crud_json(),
+        )
+    }
+}
+
+/// One field of the row as a JSON member, under its own name.
+fn entry_code(f: Field) -> Code { quote { entry(${literal(f.name)}, ${shown(f)!}) } }
+
+/// The field's value as JSON; absent for a kind JSON has no plain word for.
+fn shown(f: Field) -> Code? {
+    match f.kind {
+        .Int -> quote { jint(self.${f.name}) },
+        .Str -> quote { jstr(self.${f.name}) },
+        .Bool -> quote { jbool(self.${f.name}) },
+        .Float -> quote { jfloat(self.${f.name}) },
+        .Opt(.Int) -> quote { jint_opt(self.${f.name}) },
+        .Opt(.Str) -> quote { jstr_opt(self.${f.name}) },
+        .Opt(.Bool) -> quote { jbool_opt(self.${f.name}) },
+        .Opt(.Float) -> quote { jfloat_opt(self.${f.name}) },
+        rest -> null,
+    }
+}
+
+fn unshown(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "unserved_field",
+        f.at,
+        "`@crud` serves a field that is a number, text or a flag, or one of those optional, and `${f.name}` is none of them",
+        "leave `${f.name}` out of the served model, or serve the row through a type of your own",
+    )
+}
