@@ -14,6 +14,8 @@ use core.{
     TypeId,
     Reg,
     TypeRegistry,
+    ResSides,
+    SyntaxArena,
     PatId,
     Case,
     Arm,
@@ -132,7 +134,38 @@ export type TypeArgs = { parts: List<TypeId> }
 /// its REGISTER too — the chain holds a carried value and no
 /// subject node, and one registry answers both readers. `waits`: the
 /// read may switch the task out — a cancel point, as a row's is.
-export type PropertyRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, ExprId, TypeId) -> TypeId, lower: fn(mut LowerCx, ExprId, Reg, TypeId) -> Reg, waits: bool = false }
+export type PropertyRow = {
+    name: string,
+    takes: fn(Type) -> bool,
+    check: fn(mut TypeCx, ExprId, TypeId) -> TypeId,
+    lower: fn(mut LowerCx, ExprId, Reg, TypeId) -> Reg,
+    waits: bool = false,
+    /// The failure a READ of this property carries, when it is not a
+    /// `Result`'s: the sides `catch` recovers from. `await` declares
+    /// `(T, Cancelled)` — a subject whose cancel is seen only by `catch`.
+    view: fn(TypeCx, TypeId) -> ResSides? = no_view,
+}
+
+/// A property with no failure view — its read carries none `catch` sees.
+// LICENSED fns.dead_parameter: a row's rule wears the row's signature
+// LICENSED compiler.free_state_verb: a property ROW holds this fn as a value, and a method is none
+export fn no_view(_cx: TypeCx, _ty: TypeId) -> ResSides? { null }
+
+/// The property row a subject READ selected, when the subject IS a
+/// property read — `catch`'s door to a row's own failure view. Null
+/// for every other expression; `read` answers a subject's type.
+export fn property_prop(
+    types: TypeRegistry,
+    rows: List<PropertyRow>,
+    store: SyntaxArena,
+    e: ExprId,
+    read: fn(ExprId) -> TypeId,
+) -> PropertyRow? {
+    match store.expr(e) {
+        .Prop(s, name) -> property_of(types, rows, name.of, read(s)),
+        rest -> null,
+    }
+}
 
 /// The constructor a name selects; null when the language owns none.
 export fn type_row(rows: List<TypeRow>, name: string) -> TypeRow? {

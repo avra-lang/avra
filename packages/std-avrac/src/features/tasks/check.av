@@ -1,12 +1,26 @@
 //! The typing rules: `spawn e` is a `Task` of what `e` answers, and
 //! `.await` answers it back; `.done` is a `bool`.
-use core.{ExprId, TypeId, Type}
+use core.{ExprId, TypeId, Type, ResSides}
 use features.{TypeCx, MethodCall, this_is}
 use diagnostics.{refusal}
 
 fn task_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) { .Spawn(body) -> spawned(cx, body), rest -> cx.error_type }
+}
+
+/// `within limit { body }` answers what the body answers. The limit is
+/// a field read (`Duration.ms`), typed with the body so a limit that is
+/// no span refuses in the member law's own words.
+fn within_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
+    match cx.view.store.expr(e) {
+        .Within(limit, body) -> {
+            let _ = cx.walk_type(limit)
+            if cx.errored(limit) { return cx.error_type }
+            cx.walk_type(body)
+        },
+        rest -> cx.error_type,
+    }
 }
 
 /// The body is hidden from the walk — its lambda lowers only as the
@@ -20,11 +34,32 @@ fn spawned(mut cx: TypeCx, body: ExprId) -> TypeId {
     cx.view.types.intern(Type.Task(arrow.answer))
 }
 
-fn check_await(mut cx: TypeCx, _e: ExprId, ty: TypeId) -> TypeId {
+fn check_await(cx: TypeCx, _e: ExprId, ty: TypeId) -> TypeId {
     cx.view.types.task_answer(ty) ?? cx.error_type
 }
 
+/// A caught `await` recovers the task's answer or, when its end was a
+/// cancel, the `Cancelled` record — the failure view `catch` reads.
+fn await_view(cx: TypeCx, answer: TypeId) -> ResSides? {
+    ResSides { ok: answer, err: cancelled_type(cx) }
+}
+
+/// The `Cancelled` record `@std/errors` declares — who asked, where the
+/// cancel was met. Error when the program loads no `@std/errors`.
+fn cancelled_type(cx: TypeCx) -> TypeId {
+    let decl? = cx.view.decls.package_decl("@std.errors", "Cancelled") else { return cx.error_type }
+    let _ = cx.view.decls.sig(decl)
+    cx.view.types.intern(Type.Struct(decl, "Cancelled"))
+}
+
 fn check_done(cx: TypeCx, _e: ExprId, _ty: TypeId) -> TypeId { cx.type(bool) }
+
+/// `t.cancel()` — the task ends cancelled at its next cancel point; its
+/// answer is nobody's.
+fn check_cancel(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    if !cx.seated(mc, "Task.cancel", []) { return cx.error_type }
+    cx.type(void)
+}
 
 /// `Tasks.new()` — an empty owner.
 fn check_new(mut cx: TypeCx, mc: MethodCall) -> TypeId {

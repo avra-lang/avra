@@ -121,6 +121,7 @@ static void* counter(void* self) { for (int64_t i = 0; i < cap(self, 0); i++) av
 
 // ── a trap, in a child: its words and its status ────────────────
 
+static char g_trap_words[4096];
 static void trapped(const char* what, void (*body)(void), const char* words) {
     int out[2];
     if (pipe(out) != 0) { perror("pipe"); exit(1); }
@@ -132,7 +133,7 @@ static void trapped(const char* what, void (*body)(void), const char* words) {
         _exit(0);
     }
     close(out[1]);
-    char buf[256] = {0};
+    char buf[sizeof g_trap_words] = {0};
     // TO END OF FILE: a trap writes its words in more than one write,
     // and a pipe closed after the first kills the child with SIGPIPE
     size_t got = 0;
@@ -145,6 +146,7 @@ static void trapped(const char* what, void (*body)(void), const char* words) {
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 2, label);
     snprintf(label, sizeof label, "%s says \"%s\"", what, words);
     CHECK(strstr(buf, words) != NULL, label);
+    snprintf(g_trap_words, sizeof g_trap_words, "%s", buf);
 }
 
 static void deadlock(void) {
@@ -156,6 +158,21 @@ static void deadlock(void) {
 static void joins_itself(void) {
     g_a = spawn1(self_join, 0);
     avra_task_join(g_a);
+}
+
+// A task parked on a gate nobody will claim, and the spawner waiting on
+// its end: nobody is ready, no timer or descriptor is filed — the bare
+// trap. The report must name both tasks.
+static void* waits_on_a_gate(void* self) {
+    (void)self;
+    avra_wait_gate(g_a, 0, 0);
+    avra_wait_park();
+    return NULL;
+}
+static void stuck(void) {
+    g_a = avra_gate_new();
+    void* t = spawn1(waits_on_a_gate, 0);
+    avra_task_join(t);
 }
 
 static void overflows(void) {
@@ -174,6 +191,13 @@ int main(void) {
     trapped("two tasks joined on each other", deadlock, "tasks join each other in a ring — deadlock");
     trapped("a task joined on itself", joins_itself, "a task joined itself — deadlock");
     trapped("a recursion past the stack", overflows, "a task's stack overflowed");
+
+    // the bare deadlock names every task and what it waits on
+    trapped("a task parked on a gate nobody claims", stuck, "every task is waiting — deadlock");
+    CHECK(strstr(g_trap_words, "every task is waiting, and nothing can wake one") != NULL, "a deadlock is headed");
+    CHECK(strstr(g_trap_words, "task 0, the program's own run") != NULL, "the program's own run is named");
+    CHECK(strstr(g_trap_words, "task 1,") != NULL && strstr(g_trap_words, "spawned at 0x") != NULL, "the task and its spawn site are named");
+    CHECK(strstr(g_trap_words, " joins task 1") != NULL && strstr(g_trap_words, " waits on gate 0x") != NULL, "and what each waits on");
 
     int64_t live = avra_mem_live();
 

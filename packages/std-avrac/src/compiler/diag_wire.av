@@ -7,9 +7,22 @@
 //! the one place that spells their bytes — one `written_`/`read_` pair
 //! per shape, folded by `written_list`/a counted comprehension, never by
 //! hand at the call site.
-use @std.relation.stable.{Writer, Reader, written_list, CodecFault}
+//!
+//! A `Loc` crosses as `(anchor declaration, lo offset, hi offset)`: the
+//! smallest declaration of its file whose span holds the WHOLE loc,
+//! named by `decl_wire` (its path travels with the name, so a
+//! cross-file span anchors in that file), plus each end's distance from
+//! the declaration's start. Moving the declaration moves the span with
+//! it, so an edit above it changes no stored diagnostic's bytes. A span
+//! no single declaration holds — one past its declaration's end — is
+//! REFUSED: `loc_of_wire` answers null rather than clamp a position to
+//! somewhere it never pointed. A loc with no file has no declaration to
+//! anchor in and keeps its absolute offsets.
+use @std.relation.stable.{Writer, Reader, writer, decoded_with, written_list, CodecFault}
 use @std.avrac.diagnostics.{DiagFacts, Severity}
 use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
+use core.{DeclId, Span}
+use compiler.{Workspace}
 
 fn severity_flag(s: Severity) -> bool { s is .Error }
 
@@ -28,101 +41,162 @@ fn confidence_of(tag: int) -> Result<Confidence, CodecFault> {
     }
 }
 
-fn written_loc(w: Writer, l: Loc) {
-    let has_file = l.file != null
-    w.present(has_file)
-    if has_file { w.text(l.file!) }
-    w.int(l.lo)
-    w.int(l.hi)
-}
+impl Workspace {
+    /// The declaration a `Loc` anchors to — the smallest declaration of
+    /// its file whose span holds the whole loc. Absence is a loc no one
+    /// declaration holds, refused by `written_loc`.
+    fn loc_anchor(l: Loc) -> DeclId? {
+        let path? = l.file else { return null }
+        let f? = self.decls.known_file_id(path) else { return null }
+        self.decls.innermost(self.decls.owner_spans(f), Span { lo: l.lo, hi: l.hi })
+    }
 
-fn read_loc(r: Reader) -> Result<Loc, CodecFault> {
-    let has_file = r.present()?
-    let file = if has_file { r.text()? } else { null }
-    let lo = r.int()?
-    let hi = r.int()?
-    Loc { file: file, lo: lo, hi: hi }
-}
+    fn written_loc(w: Writer, l: Loc) {
+        match self.loc_anchor(l) {
+            a? -> {
+                w.present(true)
+                w.text(self.decls.decl_wire(a))
+                let start = self.decls.decl_span(a)!.lo
+                w.int(l.lo - start)
+                w.int(l.hi - start)
+            }
+            null -> {
+                w.present(false)
+                let has_file = l.file != null
+                w.present(has_file)
+                if has_file { return }
+                w.int(l.lo)
+                w.int(l.hi)
+            }
+        }
+    }
 
-fn written_frame(w: Writer, f: Frame) {
-    let has_label = f.label != null
-    w.present(has_label)
-    if has_label { w.text(f.label!) }
-    let has_loc = f.loc != null
-    w.present(has_loc)
-    if has_loc { written_loc(w, f.loc!) }
-}
+    fn read_loc(r: Reader) -> Result<Loc, CodecFault> {
+        if !r.present()? {
+            let has_file = r.present()?
+            if has_file { fail CodecFault.NotVariant }
+            let lo = r.int()?
+            let hi = r.int()?
+            return Loc { file: null, lo: lo, hi: hi }
+        }
+        let anchor? = self.decl_from_ref(r.text()?) else { fail CodecFault.NotVariant }
+        let span? = self.decls.decl_span(anchor) else { fail CodecFault.NotVariant }
+        let lo = r.int()?
+        let hi = r.int()?
+        Loc {
+            file: self.decls.file(self.decls.decl(anchor).file).path,
+            lo: span.lo + lo,
+            hi: span.lo + hi,
+        }
+    }
 
-fn read_frame(r: Reader) -> Result<Frame, CodecFault> {
-    let has_label = r.present()?
-    let label = if has_label { r.text()? } else { null }
-    let has_loc = r.present()?
-    let loc = if has_loc { read_loc(r)? } else { null }
-    Frame { label: label, loc: loc }
-}
+    fn written_frame(w: Writer, f: Frame) {
+        let has_label = f.label != null
+        w.present(has_label)
+        if has_label { w.text(f.label!) }
+        let has_loc = f.loc != null
+        w.present(has_loc)
+        if has_loc { self.written_loc(w, f.loc!) }
+    }
 
-fn written_edit(w: Writer, e: Edit) {
-    written_loc(w, e.loc)
-    w.text(e.replacement)
-}
+    fn read_frame(r: Reader) -> Result<Frame, CodecFault> {
+        let has_label = r.present()?
+        let label = if has_label { r.text()? } else { null }
+        let has_loc = r.present()?
+        let loc = if has_loc { self.read_loc(r)? } else { null }
+        Frame { label: label, loc: loc }
+    }
 
-fn read_edit(r: Reader) -> Result<Edit, CodecFault> {
-    let loc = read_loc(r)?
-    let replacement = r.text()?
-    Edit { loc: loc, replacement: replacement }
-}
+    fn written_edit(w: Writer, e: Edit) {
+        self.written_loc(w, e.loc)
+        w.text(e.replacement)
+    }
 
-fn written_suggestion(w: Writer, s: Suggestion) {
-    w.int(confidence_tag(s.confidence))
-    w.text(s.description)
-    written_list(w, s.edits, written_edit)
-}
+    fn read_edit(r: Reader) -> Result<Edit, CodecFault> {
+        let loc = self.read_loc(r)?
+        let replacement = r.text()?
+        Edit { loc: loc, replacement: replacement }
+    }
 
-fn read_suggestion(r: Reader) -> Result<Suggestion, CodecFault> {
-    let confidence = confidence_of(r.int()?)?
-    let description = r.text()?
-    let n = r.count()?
-    let edits = [read_edit(r)? for _k in 0..n]
-    Suggestion { confidence: confidence, description: description, edits: edits }
-}
+    fn written_suggestion(w: Writer, s: Suggestion) {
+        w.int(confidence_tag(s.confidence))
+        w.text(s.description)
+        written_list(w, s.edits, (w: Writer, e: Edit) -> self.written_edit(w, e))
+    }
 
-/// One `DiagFacts` written — the unit `written_list` folds for a
-/// file's whole diagnostics/rule-findings row.
-fn written_diag_facts(w: Writer, d: DiagFacts) {
-    w.text(d.kind)
-    w.bool(severity_flag(d.severity))
-    written_frame(w, d.primary)
-    written_list(w, d.secondary, written_frame)
-    written_list(w, d.cause_lines, (w: Writer, l: string) -> w.text(l))
-    w.text(d.message)
-    let has_help = d.help != null
-    w.present(has_help)
-    if has_help { w.text(d.help!) }
-    written_list(w, d.suggestions, written_suggestion)
-}
+    fn read_suggestion(r: Reader) -> Result<Suggestion, CodecFault> {
+        let confidence = confidence_of(r.int()?)?
+        let description = r.text()?
+        let n = r.count()?
+        let edits = [self.read_edit(r)? for _k in 0..n]
+        Suggestion { confidence: confidence, description: description, edits: edits }
+    }
 
-/// `written_diag_facts`'s inverse.
-fn read_diag_facts(r: Reader) -> Result<DiagFacts, CodecFault> {
-    let kind = r.text()?
-    let severity = severity_of(r.bool()?)
-    let primary = read_frame(r)?
-    let secn = r.count()?
-    let secondary = [read_frame(r)? for _k in 0..secn]
-    let causen = r.count()?
-    let cause_lines = [r.text()? for _k in 0..causen]
-    let message = r.text()?
-    let has_help = r.present()?
-    let help = if has_help { r.text()? } else { null }
-    let sn = r.count()?
-    let suggestions = [read_suggestion(r)? for _k in 0..sn]
-    DiagFacts {
-        kind: kind,
-        severity: severity,
-        primary: primary,
-        secondary: secondary,
-        cause_lines: cause_lines,
-        message: message,
-        help: help,
-        suggestions: suggestions,
+    /// One `DiagFacts` written — the unit `written_list` folds for a
+    /// file's whole diagnostics/rule-findings row.
+    fn written_diag_facts(w: Writer, d: DiagFacts) {
+        w.text(d.kind)
+        w.bool(severity_flag(d.severity))
+        self.written_frame(w, d.primary)
+        written_list(w, d.secondary, (w: Writer, f: Frame) -> self.written_frame(w, f))
+        written_list(w, d.cause_lines, (w: Writer, l: string) -> w.text(l))
+        w.text(d.message)
+        let has_help = d.help != null
+        w.present(has_help)
+        if has_help { w.text(d.help!) }
+        written_list(w, d.suggestions, (w: Writer, s: Suggestion) -> self.written_suggestion(w, s))
+    }
+
+    /// `written_diag_facts`'s inverse.
+    fn read_diag_facts(r: Reader) -> Result<DiagFacts, CodecFault> {
+        let kind = r.text()?
+        let severity = severity_of(r.bool()?)
+        let primary = self.read_frame(r)?
+        let secn = r.count()?
+        let secondary = [self.read_frame(r)? for _k in 0..secn]
+        let causen = r.count()?
+        let cause_lines = [r.text()? for _k in 0..causen]
+        let message = r.text()?
+        let has_help = r.present()?
+        let help = if has_help { r.text()? } else { null }
+        let sn = r.count()?
+        let suggestions = [self.read_suggestion(r)? for _k in 0..sn]
+        DiagFacts {
+            kind: kind,
+            severity: severity,
+            primary: primary,
+            secondary: secondary,
+            cause_lines: cause_lines,
+            message: message,
+            help: help,
+            suggestions: suggestions,
+        }
+    }
+
+    /// A `Loc` as bytes — the pair `tools/codecs.py` reads by name.
+    fn loc_wire(l: Loc) -> Bytes {
+        let w = writer()
+        self.written_loc(w, l)
+        w.bytes()
+    }
+
+    /// `loc_wire`'s inverse; a refused span (one no declaration holds)
+    /// answers null.
+    fn loc_of_wire(b: Bytes) -> Loc? {
+        let back = decoded_with(b, (r: Reader) -> self.read_loc(r))
+        match back { .Ok(l) -> l, .Err(e) -> null }
+    }
+
+    /// A whole diagnostic row as bytes.
+    fn diag_facts_wire(d: DiagFacts) -> Bytes {
+        let w = writer()
+        self.written_diag_facts(w, d)
+        w.bytes()
+    }
+
+    /// `diag_facts_wire`'s inverse.
+    fn diag_facts_of_wire(b: Bytes) -> DiagFacts? {
+        let back = decoded_with(b, (r: Reader) -> self.read_diag_facts(r))
+        match back { .Ok(d) -> d, .Err(e) -> null }
     }
 }

@@ -9,7 +9,7 @@
 //! -> … } else { cx -> … }`), so a site cannot open a bracket it
 //! does not close; the open/arm/close verbs remain for the folds and
 //! switches whose arms are not two.
-use core.{Reg, Ins, Type, TypeId, ExprId, StmtId, BinOp, UnOp, RtSig, same_type}
+use core.{Reg, Ins, Type, TypeId, ExprId, StmtId, BinOp, UnOp, RtSig, RtFlag, same_type}
 use features.{MethodCall, LoopMark}
 
 // ── Constants ───────────────────────────────────────────────────
@@ -126,6 +126,7 @@ impl LowerCx {
     mut fn call_decl(ret: TypeId, callee: string, args: List<Reg>) -> Reg {
         let dst = self.mint_ty(ret)
         self.emit(Ins.Call(dst, callee, args))
+        self.unwound_after(self.body_reaches(callee))
         dst
     }
 
@@ -133,14 +134,16 @@ impl LowerCx {
     mut fn call_decl_at(e: ExprId, callee: string, args: List<Reg>) -> Reg {
         let dst = self.result(e)
         self.emit(Ins.Call(dst, callee, args))
+        self.unwound_after(self.body_reaches(callee))
         dst
     }
 
     /// A call THROUGH a register holding code — a closure or a `dyn`
-    /// box's method.
+    /// box's method. Its callee may be any fn, so it may reach.
     mut fn call_ptr(ret: TypeId, f: Reg, args: List<Reg>) -> Reg {
         let dst = self.mint_ty(ret)
         self.emit(Ins.CallPtr(dst, f, args))
+        self.unwound_after(true)
         dst
     }
 
@@ -148,7 +151,51 @@ impl LowerCx {
     mut fn call_ptr_at(e: ExprId, f: Reg, args: List<Reg>) -> Reg {
         let dst = self.result(e)
         self.emit(Ins.CallPtr(dst, f, args))
+        self.unwound_after(true)
         dst
+    }
+
+    // ── The test after a call ───────────────────────────────────
+    // A CALL THAT MAY REACH A CANCEL POINT is followed by one read of
+    // the running task's unwind bit; set, the fn leaves at once — every
+    // open frame's deferred calls run, innermost first, and it answers
+    // a hollow its caller never reads, since the caller tests in turn.
+    // A deferred body runs whole: a call inside one carries no test.
+
+    mut fn unwound_after(may: bool) {
+        if !may || self.deferring { return }
+        self.void_region(self.flag_read(RtFlag.Unwinding)) { cx -> cx.unwinds() }
+    }
+
+    /// The bit read in place: one load, no call.
+    mut fn flag_read(flag: RtFlag) -> Reg {
+        let r = self.mint_shape(Type.Bool)
+        self.emit(Ins.FlagRead(r, flag))
+        r
+    }
+
+    /// The fn leaves unwinding: what a failure runs, then the exit.
+    mut fn unwinds() {
+        self.failing()
+        self.emit(Ins.FnExit(self.exit_answer()))
+    }
+
+    /// What the cold exit answers. A task's answer rides a CELL, so it
+    /// leaves an EMPTY one — never a null a joiner could read as a
+    /// value. Every other fn answers a hollow no caller reads, since
+    /// the caller tests in turn.
+    fn exit_answer() -> Reg {
+        let cell? = self.exit else { return self.hollow_of(self.fn_ret ?? self.type(void)) }
+        self.array_new(self.view.types.shape_of(cell))
+    }
+
+    /// Whether a call to the body `callee` names may reach a cancel
+    /// point — its declaration's bits. A body no declaration names
+    /// cannot be judged, so it MAY reach and is tested: a compiler
+    /// unit's call site must never silently omit the test.
+    fn body_reaches(callee: string) -> bool {
+        let d? = self.jobs.callees.get(callee) else { return true }
+        self.view.decls.cancel_bits(d)?.may() ?? true
     }
 
     // ── Runtime calls ───────────────────────────────────────────
@@ -172,6 +219,7 @@ impl LowerCx {
     mut fn call_void(row: RtSig, args: List<Reg>) {
         let seats = [self.crossing(a) for a in args]
         self.emit(Ins.CallRtVoid(row.name, seats))
+        self.unwound_after(row.waits)
     }
 
     /// A row's answer at `ty`. A VALUE RECORD crosses every row BOXED:
@@ -182,10 +230,12 @@ impl LowerCx {
         if !self.view.types.travels_wide(ty) {
             let dst = self.mint_ty(ty)
             self.emit(Ins.CallRt(dst, row.name, seats))
+            self.unwound_after(row.waits)
             return dst
         }
         let held = self.mint_ty(self.type(List<int>))
         self.emit(Ins.CallRt(held, row.name, seats))
+        self.unwound_after(row.waits)
         self.unboxed(held, ty)
     }
 

@@ -5,7 +5,7 @@
 use compiler.{analyze_source, fix_applied}
 
 /// A store and its relation, modelled on `@std/relation`'s own members.
-const relation_prelude: string = "type Db = { n: int }\ntype ExprId = { index: int }\ntype DeclId = { index: int }\ntype FileView = { db: Db }\ntype Site = { owner: DeclId, within: ExprId? }\nimpl Site {\n    static fn all(db: Db) -> List<Site> { [] }\n    static fn by_owner(db: Db, owner: DeclId) -> List<Site> { [] }\n}\nfn within_is(w: ExprId?, c: ExprId) -> bool { (w?.index ?? -1) == c.index }\n"
+const relation_prelude: string = "type Db = { n: int }\ntype ExprId = { index: int }\ntype DeclId = { index: int }\ntype FileView = { db: Db }\ntype Site = { owner: DeclId, holder: ExprId? }\nimpl Site {\n    static fn all(db: Db) -> List<Site> { [] }\n    static fn by_owner(db: Db, owner: DeclId) -> List<Site> { [] }\n}\nfn holder_is(w: ExprId?, c: ExprId) -> bool { (w?.index ?? -1) == c.index }\n"
 
 fn relation_fires(body: string) -> bool {
     findings_of_source(relation_prelude + body + "0\n")
@@ -32,43 +32,43 @@ spec "compiler.file_id_across_relation" {
     given "an arena id tested across every row of a store" {
         then "a comprehension over `T.all(db)` fires" {
             relation_fires(
-                "fn inside(db: Db, c: ExprId) -> List<Site> {\n    [s for s in Site.all(db) if within_is(s.within, c)]\n}\n",
+                "fn inside(db: Db, c: ExprId) -> List<Site> {\n    [s for s in Site.all(db) if holder_is(s.holder, c)]\n}\n",
             )
         }
         then "a `find` over `T.all(db)` fires" {
             relation_fires(
-                "fn inside(db: Db, c: ExprId) -> Site? {\n    Site.all(db).find((s) -> within_is(s.within, c))\n}\n",
+                "fn inside(db: Db, c: ExprId) -> Site? {\n    Site.all(db).find((s) -> holder_is(s.holder, c))\n}\n",
             )
         }
         then "an `any` over `T.all(db)` fires" {
             relation_fires(
-                "fn inside(db: Db, c: ExprId) -> bool {\n    Site.all(db).any((s) -> within_is(s.within, c))\n}\n",
+                "fn inside(db: Db, c: ExprId) -> bool {\n    Site.all(db).any((s) -> holder_is(s.holder, c))\n}\n",
             )
         }
     }
     given "the rows narrowed by a global column" {
         then "reading through `by_owner`, then filtering, is clean" {
             !relation_fires(
-                "fn inside(db: Db, d: DeclId, c: ExprId) -> List<Site> {\n    [s for s in Site.by_owner(db, d) if within_is(s.within, c)]\n}\n",
+                "fn inside(db: Db, d: DeclId, c: ExprId) -> List<Site> {\n    [s for s in Site.by_owner(db, d) if holder_is(s.holder, c)]\n}\n",
             )
         }
         then "a `DeclId` column tested beside the id is clean" {
             !relation_fires(
-                "fn inside(db: Db, d: DeclId, c: ExprId) -> List<Site> {\n    [s for s in Site.all(db) if s.owner == d && within_is(s.within, c)]\n}\n",
+                "fn inside(db: Db, d: DeclId, c: ExprId) -> List<Site> {\n    [s for s in Site.all(db) if s.owner == d && holder_is(s.holder, c)]\n}\n",
             )
         }
     }
     given "a store built per file" {
         then "a `db` read off a `FileView` is clean" {
             !relation_fires(
-                "fn inside(view: FileView, c: ExprId) -> List<Site> {\n    [s for s in Site.all(view.db) if within_is(s.within, c)]\n}\n",
+                "fn inside(view: FileView, c: ExprId) -> List<Site> {\n    [s for s in Site.all(view.db) if holder_is(s.holder, c)]\n}\n",
             )
         }
     }
     given "a per-file store bound to a local first" {
         then "it reads as a workspace store and fires — the site takes a license" {
             relation_fires(
-                "fn inside(view: FileView, c: ExprId) -> List<Site> {\n    let db = view.db\n    [s for s in Site.all(db) if within_is(s.within, c)]\n}\n",
+                "fn inside(view: FileView, c: ExprId) -> List<Site> {\n    let db = view.db\n    [s for s in Site.all(db) if holder_is(s.holder, c)]\n}\n",
             )
         }
     }

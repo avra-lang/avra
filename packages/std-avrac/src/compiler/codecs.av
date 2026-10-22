@@ -28,7 +28,8 @@ use features.{
     Unsettled,
     Settlement,
 }
-use diagnostics.{SourceFile}
+use diagnostics.{SourceFile, DiagFacts, Severity}
+use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
 use compiler.{avra, new_workspace, Workspace}
 use compiler.host.{memory_host}
 use compiler.lower.{CodeFacts, FactNode, code_facts_wire, code_facts_from_wire}
@@ -157,8 +158,9 @@ fn codec_workspace() -> Workspace {
             {
                 "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
                 "/w/src/main.av": "fn a() { 1 }\n",
+                "/w/src/other.av": "fn b() { 2 }\n",
             },
-            ["/w/avra.toml", "/w/src/main.av"],
+            ["/w/avra.toml", "/w/src/main.av", "/w/src/other.av"],
         ),
         "/w",
         avra(),
@@ -276,6 +278,64 @@ impl Workspace {
                 (x, y) -> self.decls.type_wire(x) == self.decls.type_wire(y),
             )
     }
+
+    /// `Loc`s anchored to the fixture's real declarations: a loc with
+    /// no file, a span at its declaration's start, a span inside it,
+    /// and a cross-file span anchored in the other file.
+    fn codec_loc_exemplars() -> List<Loc> {
+        let a = self.codec_decl_exemplars().find((d) -> self.decls.decl(d).name == "a")!
+        let b = self
+            .items(self.file_id("/w/src/other.av"))
+            .find((d) -> self.decls.decl(d).name == "b")!
+        let sa = self.decls.decl_span(a)!
+        let sb = self.decls.decl_span(b)!
+        [
+            Loc { file: null, lo: 3, hi: 7 },
+            Loc { file: "/w/src/main.av", lo: sa.lo, hi: sa.lo },
+            Loc { file: "/w/src/main.av", lo: sa.lo + 1, hi: sa.hi },
+            Loc { file: "/w/src/other.av", lo: sb.lo, hi: sb.hi },
+        ]
+    }
+
+    fn codec_loc_labels() -> List<string> {
+        ["no file", "at its declaration's start", "inside its declaration", "cross-file"]
+    }
+
+    /// A `DiagFacts` bearing each loc shape, so the row's own `Loc`s
+    /// are exercised beside the pair's.
+    fn codec_diag_exemplars() -> List<DiagFacts> {
+        let at = self.codec_loc_exemplars()[2]
+        [
+            DiagFacts {
+                kind: "t.plain",
+                severity: Severity.Warning,
+                primary: Frame { label: null, loc: null },
+                secondary: [],
+                cause_lines: [],
+                message: "no source",
+                help: null,
+                suggestions: [],
+            },
+            DiagFacts {
+                kind: "t.rich",
+                severity: Severity.Error,
+                primary: Frame { label: "here", loc: at },
+                secondary: [Frame { label: null, loc: at }],
+                cause_lines: ["caused by: x"],
+                message: "a message",
+                help: "a help",
+                suggestions: [
+                    Suggestion {
+                        confidence: Confidence.High,
+                        description: "a fix",
+                        edits: [Edit { loc: at, replacement: "z" }],
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn codec_diag_labels() -> List<string> { ["an unlocated warning", "an error with a frame and a fix"] }
 }
 
 fn type_exemplar_labels() -> List<string> {
@@ -637,11 +697,54 @@ fn same_opt_bool(a: bool?, b: bool?) -> bool {
     (a == null) == (b == null) && (a == null || a! == b!)
 }
 
+// ── The `Loc` and `DiagFacts` wires — a span crosses anchored to its
+// declaration, its offsets relative to that declaration's start. ──
+
+fn same_loc(a: Loc, b: Loc) -> bool { a.file == b.file && a.lo == b.lo && a.hi == b.hi }
+
+fn same_loc_opt(a: Loc?, b: Loc?) -> bool {
+    (a == null) == (b == null) && (a == null || same_loc(a!, b!))
+}
+
+fn same_frame(a: Frame, b: Frame) -> bool { a.label == b.label && same_loc_opt(a.loc, b.loc) }
+
+fn same_frame_list(a: List<Frame>, b: List<Frame>) -> bool { list_eq(a, b, same_frame) }
+
+fn same_edit(a: Edit, b: Edit) -> bool { same_loc(a.loc, b.loc) && a.replacement == b.replacement }
+
+fn same_suggestion(a: Suggestion, b: Suggestion) -> bool {
+    a.confidence == b.confidence &&
+        a.description == b.description &&
+        list_eq(a.edits, b.edits, same_edit)
+}
+
+fn same_diag_facts(a: DiagFacts, b: DiagFacts) -> bool {
+    a.kind == b.kind &&
+        a.severity == b.severity &&
+        same_frame(a.primary, b.primary) &&
+        same_frame_list(a.secondary, b.secondary) &&
+        list_eq(a.cause_lines, b.cause_lines, (x, y) -> x == y) &&
+        a.message == b.message &&
+        a.help == b.help &&
+        list_eq(a.suggestions, b.suggestions, same_suggestion)
+}
+
 // ── THE REGISTRY ─────────────────────────────────────────────────────
 
 /// The fixture workspace's declaration names — the receipt that the
 /// id-writing codecs name a real `DeclId` rather than an empty list.
 export fn codec_fixture_decl_names() -> List<string> { codec_workspace().codec_decl_labels() }
+
+/// The refusal law, exercised: a span no single declaration holds whole
+/// — one byte past its declaration's end — is refused, so a position
+/// that pointed outside its declaration never decodes to a moved one.
+export fn codec_loc_past_end_refused() -> bool {
+    let ws = codec_workspace()
+    let a = ws.codec_decl_exemplars().find((d) -> ws.decls.decl(d).name == "a")!
+    let sp = ws.decls.decl_span(a)!
+    let past = Loc { file: "/w/src/main.av", lo: sp.lo, hi: sp.hi + 1 }
+    ws.loc_of_wire(ws.loc_wire(past)) == null
+}
 
 export fn codec_pairs() -> List<CodecCheck> {
     let ws = codec_workspace()
@@ -877,6 +980,22 @@ export fn codec_pairs() -> List<CodecCheck> {
             (r) -> ws.raised_wire(r),
             (w) -> ws.raised_of_wire(w),
             (x, y) -> ws.codec_same_raised(x, y),
+        ),
+        derived(
+            "codec.loc_wire/loc_of_wire",
+            ws.codec_loc_exemplars(),
+            ws.codec_loc_labels(),
+            (l) -> ws.loc_wire(l),
+            (b) -> ws.loc_of_wire(b),
+            same_loc,
+        ),
+        derived(
+            "codec.diag_facts_wire/diag_facts_of_wire",
+            ws.codec_diag_exemplars(),
+            ws.codec_diag_labels(),
+            (d) -> ws.diag_facts_wire(d),
+            (b) -> ws.diag_facts_of_wire(b),
+            same_diag_facts,
         ),
         derived(
             "interface.type_wire/read_type_wire",

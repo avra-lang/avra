@@ -56,6 +56,7 @@ jobs:
       changed: ${{ steps.plan.outputs.changed }}
       packages: ${{ steps.plan.outputs.packages }}
       build: ${{ steps.plan.outputs.build }}
+      runtime: ${{ steps.plan.outputs.runtime }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 20 }
@@ -76,9 +77,18 @@ jobs:
           pkgs=""
           compiler=1
           build=1
+          runtime=0
           if [ "$event" != push ] && [ -z "${{ inputs.only }}" ]; then
             changed=$(git diff --name-only --diff-filter=d origin/main HEAD -- '*.av' | tr '\n' ' ')
           fi
+          # A DIFF UNDER runtime/ OWES THE LATENCY GATE: the scheduler's
+          # transition rows, which no suite catches (#490's tick cost a
+          # getpid() a transition, silently). Held over every event, main's
+          # own push included (against its parent), so the gate is the
+          # runtime path's, not a PR's own invention.
+          runtime_base=origin/main
+          if [ "$event" = push ]; then runtime_base=HEAD~1; fi
+          if git diff --name-only "$runtime_base" HEAD -- 'runtime/' | grep -q .; then runtime=1; fi
           if [ "$event" = merge_group ]; then
             pkgs=$(sh tools/affected_packages.sh origin/main HEAD "$PWD")
           fi
@@ -103,10 +113,11 @@ jobs:
             echo "changed=${changed}"
             echo "packages=$(echo $pkgs)"
             echo "build=${build}"
+            echo "runtime=${runtime}"
             echo "key=avrac-${key}"
             echo "shards=${shards}"
           } >> "$GITHUB_OUTPUT"
-          echo "plan: $event — build=$build compiler-changed=$compiler packages: $(echo $pkgs)"
+          echo "plan: $event — build=$build compiler-changed=$compiler runtime=$runtime packages: $(echo $pkgs)"
       # THE KEEPERS THAT NEED NO COMPILER, on every PR and before anything is
       # built: a refusal one of them would speak stops here, in half a minute,
       # rather than on a train. The train runs every keeper regardless.
@@ -355,6 +366,24 @@ jobs:
       - name: PR keepers
         run: make -s -o avra keepers-pr
 
+  # THE LATENCY GATE A RUNTIME CHANGE OWES: the scheduler's transition
+  # rows against the recorded baseline, on the runner the checks' image
+  # gives every job. A diff under runtime/ that costs a transition is
+  # refused here, on the PR or on the train, before it can land silently.
+  # Not a required check name of its own — `test` aggregates it — but it
+  # fires only when runtime/ moved, so a compiler-only PR pays nothing.
+  flow-gate:
+    needs: [prepare]
+    if: needs.prepare.outputs.runtime == '1'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: flow gate
+        run: make -s flow-gate FLOW_GATE_ARGS=--require
   suites:
     needs: [prepare]
     if: github.event_name != 'push' && needs.prepare.outputs.packages != ''
@@ -417,7 +446,7 @@ jobs:
   # iff each of them succeeded or was skipped (`always()` so it still reports
   # when a needed job failed, rather than being skipped itself).
   test:
-    needs: [prepare, keepers, pr-keepers, cache-attacks, gate, suites]
+    needs: [prepare, keepers, pr-keepers, flow-gate, cache-attacks, gate, suites]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

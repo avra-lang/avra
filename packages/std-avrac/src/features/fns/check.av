@@ -63,6 +63,7 @@ fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>
         if pp.promises.mutable && !inout_able(pp.ty) { seat_not_inout_able(cx, s, hname, j, pp) }
     }
     crossing_law(cx, s, hname, hparams)
+    callback_law(cx, s, hname, hparams)
     let row? = rt_sigs().find(it.name == hname) else { return }
     row_shape_law(cx, s, row, hparams, hret)
     row_absence_law(cx, s, hname, hparams)
@@ -123,6 +124,36 @@ fn crossing_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) 
         if !hparams[j].promises.mutable && !crossable(cx.view.types, p) { seat_cannot_cross(cx, s, hname, j, p) }
     }
     if !answerable(cx.view.types, sig.ret) { answer_cannot_cross(cx, s, hname, sig.ret) }
+}
+
+/// THE CALLBACK LAW (spec law 26): a C frame between two Avra frames is
+/// not unwound, so a callback under a cancel answers zero — and C that
+/// follows the pointer it was handed reads the null page. A seat typed
+/// as a fn whose answer RIDES A POINTER is refused at the declaration.
+fn callback_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
+    let sig? = cx.stmt_sig(s) else { return nothing() }
+    for j, ty in sig.params {
+        let answer? = fn_answer_of(cx.view.types, ty) else { continue }
+        if cx.view.types.rides_pointer(answer) { callback_pointer(cx, s, hname, hparams[j].name.of) }
+    }
+}
+
+/// The answer of a fn-typed shape, absent for every other shape.
+fn fn_answer_of(types: TypeRegistry, ty: TypeId) -> TypeId? {
+    match types.shape_of(ty) { .Fn(_, _, ret) -> ret, rest -> null }
+}
+
+fn callback_pointer(mut cx: TypeCx, s: StmtId, hname: string, seat: string) {
+    cx
+        .emit(
+            refusal(
+                "flow.callback_pointer",
+                cx.stmt_loc(s),
+                "seat `${seat}` of `${hname}` is a callback under a cancel, and it answers a pointer the C would follow",
+                "declared here",
+                "a callback under a cancel answers zero — answer a word, or read nothing on the C side when it does",
+            ),
+        )
 }
 
 /// WHAT A PLAIN EXTERN SEAT MAY WEAR: a machine word, or ONE pointer

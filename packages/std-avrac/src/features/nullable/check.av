@@ -150,6 +150,9 @@ fn propagate_type(mut cx: TypeCx, v: ExprId) -> TypeId {
     if cx.errored(v) { return cx.error_type }
     let sides: ResSides? = cx.view.types.res_parts(cx.type_at(v))
     if sides != null { return propagate_res_type(cx, v, sides!) }
+    // A property's failure view (`await`): its cancel already passes
+    // through the awaiter, so `?` has nothing it could promise.
+    if cx.failure_view(v) != null { return cancel_passes(cx, v) }
     let held: TypeId? = cx.view.types.carried(cx.type_at(v))
     if held == null {
         return not_absent_able(
@@ -259,6 +262,22 @@ fn not_absent_able(
                 "${asks} a nullable, this is `${n}`",
                 this_is(n),
                 "`${n}` is a guarantee — it is never absent",
+            ),
+        )
+}
+
+/// `?` on a failure view that is not a `Result` — its cancel leaves
+/// by passing through, so there is no failure for `?` to promise.
+fn cancel_passes(mut cx: TypeCx, v: ExprId) -> TypeId {
+    let n = cx.name_at(v)
+    cx
+        .spoken(
+            refusal(
+                "type.propagate",
+                cx.loc_of(v),
+                "`?` cannot promise the failure a `${n}` carries — a cancel passes through the awaiter",
+                this_is(n),
+                "catch it where it is seen — `t.await catch c -> …` — or drop the `?`",
             ),
         )
 }

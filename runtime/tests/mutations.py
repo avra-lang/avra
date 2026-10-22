@@ -192,7 +192,7 @@ MUTATIONS = [
     ("a stopped task says nothing of why", "    if (f == g_case_spinner) { fputs(", "    if (0) { fputs("),
     ("a program prints what it likes", "    int64_t same = ended && avra_streq(got, g_program_expected);", "    int64_t same = ended;"),
     ("a program's schedules share one process", "    int told[2];\n    if (pipe(told) != 0)", "    { avra_capture_begin(); scheduled(schedule, choices, program_body_called); const char* g = avra_capture_end(); int64_t s = avra_streq(g, g_program_expected); avra_rc_release((void*)g); return s; }\n    int told[2];\n    if (pipe(told) != 0)"),
-    ("an evaluated deadlock ends the process", "    if (!next) return 0;\n", ""),
+    ("an evaluated deadlock ends the process", "    if (!next) { deadlock_reported(); return 0; }", "    if (!next) { deadlock_reported(); }"),
     ("a program runs off the schedules", "    return over_schedules(\"program \", label, program_under);", "    int64_t c = 0;\n    return program_under(0, &c);"),
     ("the evaluated leg reads schedule i whatever is replayed", "    return g_sched_only >= 0 ? g_sched_only : i;", "    return i;"),
     ("the evaluated leg reads one schedule whatever is set", "    return g_sched_only >= 0 ? 1 : g_sched_runs;", "    return 1;"),
@@ -219,6 +219,9 @@ MUTATIONS = [
     ("the handler's line is stamped with no time", "    k += digits_put(line + k, (long long)now_ns());", "    line[k++] = '0';"),
     ("a task that has not run is listed as parked", "    for (uint32_t i = 0; i < f->held_n; i++) waiter_listed(out, now, f, &f->held[i]);", "    if (!f->sp) fprintf(out, \"ts=%lld park id=%lld src=at arm=0:0\\n\", (long long)now, id);\n    for (uint32_t i = 0; i < f->held_n; i++) waiter_listed(out, now, f, &f->held[i]);"),
     ("the door is never opened", "    guard_handler_install();\n    tasks_door_opened();", "    guard_handler_install();"),
+    ("a compiled deadlock lists no task", "            deadlock_reported();\n            avra_trap(\"every task is waiting — deadlock\");", "            avra_trap(\"every task is waiting — deadlock\");"),
+    ("an evaluated deadlock lists no task", "    if (!next) { deadlock_reported(); return 0; }", "    if (!next) { return 0; }"),
+    ("a deadlock's report names no wait", "        task_said(stderr, process_id, f);\n        waits_said(stderr, process_id, f);", "        task_said(stderr, process_id, f);"),
 ]
 DOOR_MUTATIONS = [
     ("a door directory others may write is a door", " && (st.st_mode & 077) == 0) return dfd;", ") return dfd;"),
@@ -246,6 +249,13 @@ HOST_MUTATIONS = [
     ("the source never sets the byte", "            __atomic_store_n(&avra_tick, 1, __ATOMIC_RELAXED);\n", ""),
     ("the source ignores its period", "    if (us < 0) us = 0;\n", "    if (us < 0) us = 0;\n    us = 0;\n"),
     ("a parked source is never woken", "        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();\n", ""),
+    ("a forked child keeps its parent's source", "        pthread_atfork(NULL, NULL, tick_after_fork);\n", "        if (0) pthread_atfork(NULL, NULL, tick_after_fork);\n"),
+    ("a forked child is armed under its parent's pid", "static void tick_after_fork(void) { g_owner = 0; }", "static void tick_after_fork(void) { }"),
+    ("the hot arm reads the process id again", "    if (g_started && g_owner) {\n        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();", "    if (g_started && g_owner == this_pid()) {\n        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();"),
+    ("the arm ignores the owner", "    if (g_started && g_owner) {\n        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();", "    if (g_started) {\n        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();"),
+    ("the stood-down arm reads the process id again", "void avra_tick_stood_down(void) {\n    if (g_started && g_owner) wake_once();\n}", "void avra_tick_stood_down(void) {\n    if (g_started && g_owner == this_pid()) wake_once();\n}"),
+    ("a cold arm never records the pid", "    g_owner = this_pid();\n    __atomic_store_n(&g_parked, 0, __ATOMIC_RELAXED);", "    g_owner = 0;\n    __atomic_store_n(&g_parked, 0, __ATOMIC_RELAXED);"),
+    ("the pid read is never counted", "    pid_t pid = getpid();\n    __atomic_add_fetch(&g_pid_reads, 1, __ATOMIC_RELAXED);\n    return pid;", "    return getpid();"),
 ]
 TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test", "tick_test"]
 BOUND = 60

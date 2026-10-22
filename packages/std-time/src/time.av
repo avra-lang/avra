@@ -2,21 +2,31 @@
 //! that wants one cannot be handed a number that meant something
 //! else; the clock is monotonic milliseconds, what a deadline is
 //! made of. Two readings differ by the time between them and mean
-//! nothing alone. `within d { … }` gives a block a deadline.
+//! nothing alone. `within d { … }` gives a block a deadline; the
+//! `TimedOut` a block answers when it runs past one is here.
 //!
 //! TWO CLOCKS, NEVER CROSSED: `now_ms` bounds things and `wall_secs`
 //! dates them. The wall clock is the host's, and it may step either
 //! way, so no deadline is ever read from it.
-use @std.meta.{Code}
+use @std.errors.{Frame}
 
 extern fn avra_now_ns() -> int
 extern fn avra_time_wall_s() -> int
 extern fn avra_fiber_sleep(ms: int)
-extern fn avra_fiber_within(ms: int) -> int
-extern fn avra_fiber_within_end(scope: int)
 
 /// A span of time, in whole milliseconds.
 export type Duration = { ms: int }
+
+/// The deadline a block ran past: `after` is the span it was given
+/// and `at` the frames the task stood in when it fired.
+export type TimedOut = { after: Duration, at: List<Frame> }
+
+/// Re-raise a caught deadline as the failure the caller hears — the
+/// fold a `within … catch` arm uses where a waiting verb's own
+/// timeout error stood.
+export fn late<T>(t: TimedOut) -> Result<T, TimedOut> {
+    fail t
+}
 
 export fn ms(n: int) -> Duration {
     Duration { ms: n }
@@ -53,24 +63,6 @@ export fn wall_secs() -> int {
 /// ready task run once, then goes on.
 export fn sleep(d: Duration) {
     avra_fiber_sleep(d.ms)
-}
-
-/// `within limit { … }` — the block answers as written, and every
-/// park inside it (in this task, or one it spawns) ends by `limit`
-/// from now. The task's outer deadline comes back however the block
-/// ends.
-export component within(limit: Code) {
-    body: Code
-    fn expand() -> Code {
-        quote {
-            {
-                let limit: Duration = ${self.limit}
-                let scope = avra_fiber_within(limit.ms)
-                defer avra_fiber_within_end(scope)
-                ${self.body}
-            }
-        }
-    }
 }
 
 impl Duration {
