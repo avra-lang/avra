@@ -15,7 +15,7 @@
 //! A body is JSON and is decoded by the model's own rules: a row that breaks
 //! one is refused with all of them (422), never one at a time.
 use @std.errors.{Error}
-use @std.http_message.message.{Method}
+use @std.http_message.message.{Header, Method}
 use @std.http.http.{Request, Unrouted, Response, text, status}
 use @std.http.route.{Route, Mounted, fixed, routed, mounted}
 use @std.json.{Json, Field, field, to_text}
@@ -72,7 +72,7 @@ fn opened(w: Wire) -> List<Opened> {
         },
         Opened {
             door: .Create,
-            route: fixed(Method.Post, "/", (q: Request<Unrouted>) -> bodied(q, w.create)),
+            route: fixed(Method.Post, "/", (q: Request<Unrouted>) -> created(q, w.create)),
         },
         Opened {
             door: .Find,
@@ -136,6 +136,29 @@ fn removed_answer(r: Result<int, Failure>) -> Response {
 /// A door that reads a JSON body: the body's text goes to the model's reader.
 fn bodied<P>(q: Request<P>, read: fn(string) -> Result<Json, Failure>) -> Response {
     match q.json() { .Ok(doc) -> answered(read(to_text(doc))), .Err(refusal) -> refusal }
+}
+
+/// A door that makes a row: the body read as the row, answered 201 with the
+/// new row's address under the path it was posted to.
+fn created<P>(q: Request<P>, read: fn(string) -> Result<Json, Failure>) -> Response {
+    match q.json() { .Ok(doc) -> located(q, read(to_text(doc))), .Err(refusal) -> refusal }
+}
+
+fn located<P>(q: Request<P>, r: Result<Json, Failure>) -> Response {
+    match r { .Ok(row) -> placed(row, q.path()?.text() ?? "/"), .Err(f) -> refused(f) }
+}
+
+fn placed(row: Json, path: string) -> Response {
+    let at = if path.ends_with("/") { path } else { "${path}/" }
+    let key = keyed(row.get("id"))
+    let body = Response.json(row)
+    body with { status: 201, headers: body.headers.concat([Header { name: "location", value: at + key }]) }
+}
+
+/// A row's key as the text an address ends in; empty for a row with none.
+fn keyed(id: Json?) -> string {
+    let held? = id else { return "" }
+    match held { .Int(n) -> "${n}", rest -> "" }
 }
 
 fn refused(f: Failure) -> Response {
