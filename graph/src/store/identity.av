@@ -43,11 +43,12 @@ impl Graph {
         )?
         if rows.length > self.policy.linking.aliases { fail "identity alias history exceeds the linking row budget" }
         let trails = stored(RunTrailRow.in_run(self.db, rows.map(it.run)))?
+        let live = self.live_schemas()?
         let hidden = self.hidden_members()?
         mut matches: List<IdentityMatch> = []
         for a in rows {
             let trail? = self.trail_of(trails, a.run.id) else { fail "an identity binding has no interpretation trail" }
-            let current = self.alias_stands(a, trails)
+            let current = self.alias_stands(a, trails, live)
             let continuity = a.until == null &&
                 trail.schema == context.schema &&
                 a.run.producer == context.producer &&
@@ -76,14 +77,15 @@ impl Graph {
     fn bound(namespace: string, key: string) -> Result<List<string>, string> {
         let rows = stored(AliasRow.where(self.db, namespace: namespace, key: key))?
         let trails = stored(RunTrailRow.in_run(self.db, rows.map(it.run)))?
-        let aliases = [a for a in rows if self.alias_stands(a, trails)]
+        let live = self.live_schemas()?
+        let aliases = [a for a in rows if self.alias_stands(a, trails, live)]
         [a.entity.name for i, a in aliases if !aliases.slice(0, i).any(it.entity.name == a.entity.name)]
     }
 
-    fn alias_stands(a: AliasRow, trails: List<RunTrailRow>) -> bool {
+    fn alias_stands(a: AliasRow, trails: List<RunTrailRow>, live: List<string>) -> bool {
         if a.until != null { return false }
         let trail? = self.trail_of(trails, a.run.id) else { return false }
-        trail.schema == self.catalog.fingerprint && trail.input_revision == a.run.input.revision
+        live.contains(trail.schema) && trail.input_revision == a.run.input.revision
     }
 
     /// The one entity an external identity names.
@@ -108,7 +110,8 @@ impl Graph {
         let entities = self.entities_named(self.group(id)?)?
         let all = stored(AliasRow.in_entity(self.db, entities))?
         let trails = stored(RunTrailRow.in_run(self.db, all.map(it.run)))?
-        let rows = [a for a in all if self.alias_stands(a, trails)]
+        let live = self.live_schemas()?
+        let rows = [a for a in all if self.alias_stands(a, trails, live)]
         [Identity { namespace: a.namespace, external_key: a.key } for i, a in rows if !rows.slice(0, i).any(it.namespace == a.namespace && it.key == a.key)]
     }
 }

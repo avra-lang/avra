@@ -32,6 +32,8 @@ use store.engine.{
     CorrectionEndRow,
     FailedRunRow,
     InputEpochRow,
+    SchemaEdgeRow,
+    ClaimRetiredRow,
 }
 use data.{digest}
 use store.policy.{EnginePolicy}
@@ -61,33 +63,39 @@ impl Graph {
         path: string,
         registrations: List<Registration>,
         derived: List<DerivationRegistration> = [],
+        policy: EnginePolicy = EnginePolicy {},
     ) -> Result<Graph, string> {
         let catalog = Catalog.collected(registrations, derived)?
         let db = stored(Db.open_with(OpenConfig.config_at(path) with { mode: Mode.OpenExisting }))?
-        Graph.admitted(db, catalog, CatalogUse.Existing)
+        Graph.admitted(db, catalog, CatalogUse.Existing, policy)
     }
 
-    static fn memory(registrations: List<Registration>, derived: List<DerivationRegistration> = []) -> Result<
-        Graph,
-        string,
-    > {
+    static fn memory(
+        registrations: List<Registration>,
+        derived: List<DerivationRegistration> = [],
+        policy: EnginePolicy = EnginePolicy {},
+    ) -> Result<Graph, string> {
         let catalog = Catalog.collected(registrations, derived)?
         let db = stored(Db.memory())?
-        Graph.admitted(db, catalog, CatalogUse.Install)
+        Graph.admitted(db, catalog, CatalogUse.Install, policy)
     }
 
     static fn open(
         path: string,
         registrations: List<Registration>,
         derived: List<DerivationRegistration> = [],
+        policy: EnginePolicy = EnginePolicy {},
     ) -> Result<Graph, string> {
         let catalog = Catalog.collected(registrations, derived)?
         let db = stored(Db.open(path))?
-        Graph.admitted(db, catalog, CatalogUse.Install)
+        Graph.admitted(db, catalog, CatalogUse.Install, policy)
     }
 
-    static fn admitted(db: Db, catalog: Catalog, mode: CatalogUse) -> Result<Graph, string> {
-        let graph = Graph { db: db, catalog: catalog }
+    static fn admitted(db: Db, catalog: Catalog, mode: CatalogUse, policy: EnginePolicy) -> Result<
+        Graph,
+        string,
+    > {
+        let graph = Graph { db: db, catalog: catalog, policy: policy }
         let outcome = graph.prepared(mode)
         match outcome {
             .Ok(_) -> graph,
@@ -145,6 +153,8 @@ impl Graph {
         stored(CorrectionEndRow.create_table(db))?
         stored(FailedRunRow.create_table(db))?
         stored(InputEpochRow.create_table(db))?
+        stored(SchemaEdgeRow.create_table(db))?
+        stored(ClaimRetiredRow.create_table(db))?
         0
     }
 
@@ -167,7 +177,7 @@ impl Graph {
         if !existing {
             modeled(Meta { key: "revision", value: "0" }.insert(db))?
         }
-        // Formats 7 to 12 only add tables. Install them and advance the marker
+        // Formats 7 to 13 only add tables. Install them and advance the marker
         // atomically; never rewrite evidence or silently adopt a future format.
         if previous != format { put_meta(db, "format", format)? }
         if (stored(Schema.where(db, fingerprint: self.catalog.fingerprint))?).is_empty() {
@@ -176,7 +186,9 @@ impl Graph {
                     .insert(db),
             )?
         }
-        if self.meta("schema")? != self.catalog.fingerprint {
+        let installed = self.meta("schema")?
+        if installed != self.catalog.fingerprint {
+            if existing { self.evolved(db, installed)? }
             put_meta(db, "schema", self.catalog.fingerprint)?
             self.advanced()?
         }

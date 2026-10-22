@@ -3,6 +3,7 @@ use store.open.{Graph, stored}
 use store.publish.{Record, Publication}
 use store.query.{stored_value}
 use store.engine.{EntityRow, ClaimRow, SupportRow}
+use store.policy.{EnginePolicy, Migration}
 use @std.io.{remove}
 use @std.time.{stamp}
 
@@ -25,9 +26,10 @@ fn published(g: Graph) -> Result<Publication, string> {
     }
 }
 
-/// The generated accessors still answer the old rows; the store no longer
-/// counts them as standing, because their schema revision moved.
-fn schema_move_quarantines() -> Result<bool, string> {
+/// Removing models is an incompatible catalog change: refused without a
+/// declared migration, leaving the store as it was; with one, unchanged
+/// models keep reading and nothing is quarantined.
+fn schema_move_needs_migration() -> Result<bool, string> {
     let path = temp_base("schema")
     let _ = remove(path)
     let _ = remove(path + "-wal")
@@ -39,7 +41,12 @@ fn schema_move_quarantines() -> Result<bool, string> {
     let _ = g.close()
 
     let person? = models.find(it.make().name == "Person") else { fail "the fixture has no Person" }
-    let g2 = Graph.open(path, [person])?
+    let refused = match Graph.open(path, [person]) {
+        .Ok(_) -> false,
+        .Err(e) -> e.contains("needs a declared migration") && e.contains("Message model_removed"),
+    }
+    let migrations = [Migration.RemoveModel("Message"), Migration.RemoveModel("WorkItem")]
+    let g2 = Graph.open(path, [person], policy: EnginePolicy { migrations: migrations })?
     defer {
         let _ = g2.close()
         let _ = remove(path)
@@ -49,14 +56,15 @@ fn schema_move_quarantines() -> Result<bool, string> {
     let found = stored(EntityRow.where(g2.db, name: "p1"))?
     let entity? = found.first() else { fail "the entity row vanished" }
     let claims = [claim for claims in stored(EntityRow.with_claims(g2.db, [entity]))? for claim in claims]
-    let supports = stored(SupportRow.in_claim(g2.db, claims))?
-    let still_there = claims.length == 2 && supports.length == 2 && claims.all(it.schema == old)
+    let kept = claims.all(it.schema == old) && g2.catalog.fingerprint != old
     let fields = (g2.entity("p1")?).fields
-    let value = match g2.value("p1") { .Ok(_) -> false, .Err(_) -> true }
     let history = g2.explain("p1", "name")?
-    let inactive = history.items().length == 1 && history.item(0).member("active").truth() == false
-    let stale = (g2.dirty()?).items().length == 1
-    still_there && fields.is_empty() && value && inactive && stale
+    refused &&
+        kept &&
+        fields.any(it.property == "name") &&
+        g2.value("p1") is .Ok &&
+        history.item(0).member("active").truth() == true &&
+        (g2.dirty()?).items().is_empty()
 }
 
 fn passed(answer: Result<bool, string>) -> bool {
@@ -66,10 +74,10 @@ fn passed(answer: Result<bool, string>) -> bool {
     }
 }
 
-spec "graph schema quarantine" {
+spec "graph catalog changes" {
     given "a model catalog moves under a committed claim" {
-        then "the rows remain through the accessors and the store refuses them as standing" {
-            passed(schema_move_quarantines())
+        then "a removed model is refused without a migration and, with one, unchanged models keep reading" {
+            passed(schema_move_needs_migration())
         }
     }
 }

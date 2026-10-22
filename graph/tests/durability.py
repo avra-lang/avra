@@ -10,8 +10,8 @@ import time
 
 
 class Graph:
-    def __init__(self, root, binary):
-        self.root, self.binary = root, binary
+    def __init__(self, root, binary, bare=None):
+        self.root, self.binary, self.bare = root, binary, bare
         self.database = root / "graph.db"
         self.request = root / "request.json"
 
@@ -42,19 +42,22 @@ class Graph:
 
 def upgrades(graph):
     publication, committed = graph.seed()
-    for version in ("6", "7", "8", "9", "10", "11"):
+    for version in ("6", "7", "8", "9", "10", "11", "12"):
         with sqlite3.connect(graph.database) as raw:
-            raw.execute("DROP TABLE InputEpochRow")
-            if version != "11":
+            raw.execute("DROP TABLE ClaimRetiredRow")
+            raw.execute("DROP TABLE SchemaEdgeRow")
+            if version != "12":
+                raw.execute("DROP TABLE InputEpochRow")
+            if version not in ("11", "12"):
                 raw.execute("DROP TABLE FailedRunRow")
-            if version not in ("10", "11"):
+            if version not in ("10", "11", "12"):
                 raw.execute("DROP TABLE CorrectionEndRow")
                 raw.execute("DROP TABLE CorrectionRow")
-            if version not in ("9", "10", "11"):
+            if version not in ("9", "10", "11", "12"):
                 raw.execute("DROP TABLE SupersessionRow")
                 raw.execute("DROP TABLE EvidenceRow")
                 raw.execute("DROP TABLE VoiceRow")
-            if version not in ("8", "9", "10", "11"):
+            if version not in ("8", "9", "10", "11", "12"):
                 raw.execute("DROP TABLE ChoiceEndRow")
                 raw.execute("DROP TABLE ChoiceRow")
             if version == "6":
@@ -66,7 +69,7 @@ def upgrades(graph):
         assert graph.call(publication) == committed
         assert graph.call({"op": "value", "id": "p1", "as_of": {"revision": committed["revision"]}})["name"] == "Ada"
         with sqlite3.connect(graph.database) as raw:
-            assert raw.execute("SELECT value FROM Meta WHERE key='format'").fetchone() == ("12",)
+            assert raw.execute("SELECT value FROM Meta WHERE key='format'").fetchone() == ("13",)
             assert raw.execute("PRAGMA journal_mode").fetchone() == ("wal",)
             assert raw.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
@@ -81,7 +84,7 @@ def upgrades(graph):
     with sqlite3.connect(graph.database) as raw:
         assert raw.execute("SELECT * FROM Meta ORDER BY id").fetchall() == before
         assert raw.execute("SELECT name FROM sqlite_master WHERE name='ConfidenceRow'").fetchone() is None
-        raw.execute("UPDATE Meta SET value='12' WHERE key='format'")
+        raw.execute("UPDATE Meta SET value='13' WHERE key='format'")
     # Missing metadata is not mistaken for a fresh store, either.
     with sqlite3.connect(graph.database) as raw:
         raw.execute("DELETE FROM Meta WHERE key='format'")
@@ -167,12 +170,28 @@ def corrections(graph):
         assert raw.execute("SELECT count(*) FROM CorrectionEndRow").fetchone() == (1,)
 
 
+def evolution(graph):
+    """A catalog that drops every model, with no migration declared, is
+    refused by another process and leaves the store exactly as it was."""
+    graph.seed()
+    with sqlite3.connect(graph.database) as raw:
+        before = raw.execute("SELECT key, value FROM Meta ORDER BY key").fetchall()
+    bare = Graph(graph.root, graph.bare)
+    refused = bare.call({"op": "schema"}, success=False)
+    assert "needs a declared migration" in refused["error"], refused
+    with sqlite3.connect(graph.database) as raw:
+        assert raw.execute("SELECT key, value FROM Meta ORDER BY key").fetchall() == before
+        assert raw.execute("SELECT count(*) FROM SchemaEdgeRow").fetchone() == (0,)
+    assert graph.call({"op": "value", "id": "p1"})["name"] == "Ada"
+
+
 def main():
     binary = str(pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "graph/examples/notes/src/main").resolve())
-    for witness in (upgrades, contention, crash, corrections):
+    bare = str(pathlib.Path(sys.argv[2] if len(sys.argv) > 2 else "graph/src/main").resolve())
+    for witness in (upgrades, contention, crash, corrections, evolution):
         with tempfile.TemporaryDirectory(prefix="avra-graph-durable-") as directory:
-            witness(Graph(pathlib.Path(directory), binary))
-    print("durability: additive upgrades, corrections across processes, future/missing-format refusal, WAL, writer wait, reader snapshot, and killed-transaction rollback passed")
+            witness(Graph(pathlib.Path(directory), binary, bare))
+    print("durability: additive upgrades, corrections across processes, refused catalog drops, future/missing-format refusal, WAL, writer wait, reader snapshot, and killed-transaction rollback passed")
 
 
 if __name__ == "__main__":

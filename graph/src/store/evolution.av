@@ -1,0 +1,339 @@
+use @std.json.{Json, field, parse, to_text}
+use @std.validate.{Value, Entry, Issues}
+use @std.sqlite.{Db}
+use schema.{Model, Property}
+use data.{as_json}
+use store.open.{Graph, stored, modeled}
+use store.engine.{
+    ClaimRow,
+    SupportRow,
+    EvidenceRow,
+    ConfidenceRow,
+    EntityRow,
+    Schema,
+    SchemaEdgeRow,
+    ClaimRetiredRow,
+}
+use store.policy.{Migration}
+use store.query.{stored_value}
+
+/// What one catalog change does to a model or property.
+export enum ChangeKind {
+    ModelAdded
+    ModelRemoved
+    PropertyAdded
+    PropertyRemoved
+    /// The shape became optional around the old one; old values still fit.
+    ShapeWidened
+    ShapeChanged
+    /// Validation rules, allowed values or defaults changed.
+    RulesChanged
+}
+
+export type Change = { model: string, property: string? = null, kind: ChangeKind }
+
+impl ChangeKind {
+    fn word() -> string {
+        match self {
+            .ModelAdded -> "model_added",
+            .ModelRemoved -> "model_removed",
+            .PropertyAdded -> "property_added",
+            .PropertyRemoved -> "property_removed",
+            .ShapeWidened -> "shape_widened",
+            .ShapeChanged -> "shape_changed",
+            .RulesChanged -> "rules_changed",
+        }
+    }
+}
+
+impl Change {
+    fn json() -> Json {
+        Json
+            .Obj(
+                [
+                    field("model", Json.Str(self.model)),
+                    field(
+                        "property",
+                        if self.property == null { Json.Null } else { Json.Str(self.property!) },
+                    ),
+                    field("kind", Json.Str(self.kind.word())),
+                ],
+            )
+    }
+
+    fn at(model: string, property: string) -> bool { self.model == model && self.property == property }
+}
+
+/// Every change between a stored catalog document and the declared models.
+/// Descriptions and semantics are not changes to stored claims.
+export fn changes(older: Json, models: List<Model>) -> List<Change> {
+    let added = [Change { model: m.name, kind: .ModelAdded } for m in models if !named(older, m.name)]
+    let removed = [Change { model: o.member("name").text() ?? "", kind: .ModelRemoved } for o in older.items() if !models.any(it.name == o.member("name").text() ?? "")]
+    let altered = [c for m in models for o in older.items() if o.member("name").text() == m.name for c in property_changes(o, m)]
+    added.concat(removed).concat(altered)
+}
+
+fn named(older: Json, model: string) -> bool { older.items().any(it.member("name").text() == model) }
+
+fn property_changes(older: Json, m: Model) -> List<Change> {
+    let before = older.member("properties").items()
+    let added = [Change { model: m.name, property: p.name, kind: .PropertyAdded } for p in m.properties if !before.any(it.member("name").text() == p.name)]
+    let removed = [Change { model: m.name, property: o.member("name").text(), kind: .PropertyRemoved } for o in before if !m.properties.any(it.name == o.member("name").text() ?? "")]
+    let altered = [Change { model: m.name, property: p.name, kind: k } for p in m.properties for o in before if o.member("name").text() == p.name for k in altered_kind(o, p)]
+    added.concat(removed).concat(altered)
+}
+
+/// How one kept property changed, if it did.
+fn altered_kind(older: Json, p: Property) -> List<ChangeKind> {
+    let now = p.describe()
+    let shape = to_text(older.member("shape"))
+    if shape != to_text(now.member("shape")) {
+        let widened = to_text(Json.Obj([field("optional", older.member("shape"))])) == to_text(now.member("shape"))
+        return [if widened { ChangeKind.ShapeWidened } else { ChangeKind.ShapeChanged }]
+    }
+    let ruled = ["rules", "enum", "default_source"]
+        .any((k: string) -> to_text(older.member(k)) != to_text(now.member(k)))
+    if ruled { [ChangeKind.RulesChanged] } else { [] }
+}
+
+/// The incompatible changes no declared migration answers.
+export fn unanswered(found: List<Change>, migrations: List<Migration>) -> List<Change> {
+    found.filter((c: Change) -> !answered(c, found, migrations))
+}
+
+fn answered(c: Change, found: List<Change>, migrations: List<Migration>) -> bool {
+    match c.kind {
+        .ModelAdded or .PropertyAdded or .ShapeWidened or .RulesChanged -> true,
+        .ModelRemoved -> migrations.any((m: Migration) -> removes_model(m, c.model)),
+        .PropertyRemoved -> migrations.any((m: Migration) -> removes(m, c) || renames_into_added(m, c, found)),
+        .ShapeChanged -> migrations.any((m: Migration) -> removes(m, c)),
+    }
+}
+
+fn removes_model(m: Migration, model: string) -> bool {
+    match m { .RemoveModel(name) -> name == model, .Rename(_, _, _) or .Remove(_, _) -> false }
+}
+
+fn removes(m: Migration, c: Change) -> bool {
+    match m {
+        .Remove(model, property) -> c.at(model, property),
+        .Rename(_, _, _) or .RemoveModel(_) -> false,
+    }
+}
+
+fn renames_into_added(m: Migration, c: Change, found: List<Change>) -> bool {
+    match m {
+        .Rename(model, from, to) -> c.at(model, from) && found.any(adds(it, model, to)),
+        .Remove(_, _) or .RemoveModel(_) -> false,
+    }
+}
+
+/// Whether a change adds this property.
+fn adds(c: Change, model: string, property: string) -> bool {
+    match c.kind {
+        .PropertyAdded -> c.at(model, property),
+        .ModelAdded or .ModelRemoved or .PropertyRemoved or .ShapeWidened or .ShapeChanged or .RulesChanged -> false,
+    }
+}
+
+/// The new name a migration gives this change's property, if any.
+fn renamed_to(m: Migration, c: Change) -> string? {
+    match m {
+        .Rename(model, from, to) -> if c.at(model, from) { to } else { null },
+        .Remove(_, _) or .RemoveModel(_) -> null,
+    }
+}
+
+fn migration_json(m: Migration) -> Json {
+    match m {
+        .Rename(model, from, to) -> Json
+            .Obj(
+                [
+                    field("rename", Json.Str(model)),
+                    field("from", Json.Str(from)),
+                    field("to", Json.Str(to)),
+                ],
+            ),
+        .Remove(model, property) -> Json.Obj([field("remove", Json.Str(model)), field("property", Json.Str(property))]),
+        .RemoveModel(model) -> Json.Obj([field("remove_model", Json.Str(model))]),
+    }
+}
+
+impl Graph {
+    /// Accept the declared catalog over the one installed as `older`: claims
+    /// keep reading unless a rule change invalidates them or a migration
+    /// renames or removes them. An unanswered incompatible change refuses.
+    fn evolved(mut db: Db, older: string) -> Result<int, string> {
+        let document = match stored(Schema.where(db, fingerprint: older))? {
+            [only] -> only.document,
+            rest -> { fail "the installed catalog's document is missing: ${older}" },
+        }
+        let before = match parse(document) {
+            .Ok(j) -> j,
+            .Err(_) -> { fail "the installed catalog's document is not JSON" },
+        }
+        let found = changes(before, self.catalog.models)
+        let open = unanswered(found, self.policy.migrations)
+        if !open.is_empty() {
+            fail "this catalog change needs a declared migration: ${[describe_change(c) for c in open].join(", ")}"
+        }
+        let lineage = self.lineage(older)?
+        let newer = self.catalog.fingerprint
+        mut retired = 0
+        for c in found {
+            let count = match c.kind {
+                .ModelRemoved -> self
+                    .retire_all(db, self.model_claims(c.model, lineage)?, "model removed by migration")?,
+                .RulesChanged or .ShapeWidened -> self
+                    .revalidated(db, c.model, c.property!, self.property_claims(c.model, c.property!, lineage)?)?,
+                .ShapeChanged -> self
+                    .retire_all(
+                        db,
+                        self.property_claims(c.model, c.property!, lineage)?,
+                        "removed by migration: its shape changed",
+                    )?,
+                .PropertyRemoved -> self.migrated(db, c, self.property_claims(c.model, c.property!, lineage)?)?,
+                .ModelAdded or .PropertyAdded -> 0,
+            }
+            retired = retired + count
+        }
+        let _ = modeled(
+            SchemaEdgeRow {
+                older: older,
+                newer: newer,
+                document: to_text(
+                    Json
+                        .Obj(
+                            [
+                                field("changes", Json.Arr([c.json() for c in found])),
+                                field(
+                                    "migrations",
+                                    Json.Arr([migration_json(m) for m in self.policy.migrations]),
+                                ),
+                                field("retired", Json.Int(retired)),
+                            ],
+                        ),
+                ),
+                revision: self.revision()? + 1,
+            }
+                .insert(db),
+        )?
+        0
+    }
+
+    /// `from` and every schema an accepted change led to it from.
+    fn lineage(from: string) -> Result<List<string>, string> {
+        let edges = stored(SchemaEdgeRow.all(self.db))?
+        mut found = [from]
+        mut frontier = [from]
+        while !frontier.is_empty() {
+            let next = [e.older for e in edges if frontier.contains(e.newer) && !found.contains(e.older)]
+            found = found.concat([s for i, s in next if !next.slice(0, i).contains(s)])
+            frontier = next
+        }
+        found
+    }
+
+    /// Schemas whose claims read under the installed one.
+    fn live_schemas() -> Result<List<string>, string> { self.lineage(self.catalog.fingerprint) }
+
+    /// Claims among these that a change under a live schema retired.
+    fn retired_claims(claims: List<ClaimRow>, live: List<string>) -> Result<List<int>, string> {
+        [r.claim.id for r in stored(ClaimRetiredRow.in_claim(self.db, claims))? if live.contains(r.schema)]
+    }
+
+    fn property_claims(model: string, property: string, lineage: List<string>) -> Result<
+        List<ClaimRow>,
+        string,
+    > {
+        let claims = [c for c in stored(ClaimRow.where(self.db, property: property))? if c.entity.model == model && lineage.contains(c.schema)]
+        let gone = self.retired_claims(claims, lineage)?
+        [c for c in claims if !gone.contains(c.id)]
+    }
+
+    fn model_claims(model: string, lineage: List<string>) -> Result<List<ClaimRow>, string> {
+        let entities = stored(EntityRow.where(self.db, model: model))?
+        let claims = [c for c in self.claims_of(entities)? if lineage.contains(c.schema)]
+        let gone = self.retired_claims(claims, lineage)?
+        [c for c in claims if !gone.contains(c.id)]
+    }
+
+    fn retire_all(mut db: Db, claims: List<ClaimRow>, reason: string) -> Result<int, string> {
+        for c in claims {
+            let _ = modeled(
+                ClaimRetiredRow { claim: c, schema: self.catalog.fingerprint, reason: reason }
+                    .insert(db),
+            )?
+        }
+        claims.length
+    }
+
+    /// Claims whose value no longer passes the property's new rules retire.
+    fn revalidated(mut db: Db, model: string, property: string, claims: List<ClaimRow>) -> Result<
+        int,
+        string,
+    > {
+        let declared = self.catalog.model(model)?
+        mut retired = 0
+        for c in claims {
+            let value = Value.Map([Entry { key: property, value: stored_value(c.value)? }])
+            let issues? = failed_check((declared.check_fields)(value)) else { continue }
+            let _ = modeled(
+                ClaimRetiredRow {
+                    claim: c,
+                    schema: self.catalog.fingerprint,
+                    reason: "invalid under the new rules: ${issues}",
+                }
+                    .insert(db),
+            )?
+            retired = retired + 1
+        }
+        retired
+    }
+
+    /// A removed property's claims: carried to the new name with every
+    /// unwithdrawn support, or retired.
+    fn migrated(mut db: Db, c: Change, claims: List<ClaimRow>) -> Result<int, string> {
+        let targets = [to! for m in self.policy.migrations for to in [renamed_to(m, c)] if to != null]
+        let to? = targets.first() else { return self.retire_all(db, claims, "removed by migration") }
+        for claim in claims { self.carried(db, claim, to)? }
+        self.retire_all(db, claims, "renamed by migration to ${c.model}.${to}")
+    }
+
+    /// One claim restated under a new property name, supported by the same
+    /// runs with the same evidence, confidence and references.
+    fn carried(mut db: Db, old: ClaimRow, to: string) -> Result<int, string> {
+        let model = self.catalog.model(old.entity.model)?
+        let declared? = model.properties.find(it.name == to) else { fail "a renamed property is absent from its model: ${to}" }
+        let value = stored_value(old.value)?
+        let claim = self.claimed(db, old.entity, to, value, self.catalog.fingerprint)?
+        let links = declared.shape.links(self.catalog, value, to)?
+        for link in links { self.referenced(db, claim, link)? }
+        let supports = [s for s in stored(SupportRow.in_claim(db, [old]))? if s.until == null]
+        let evidence = stored(EvidenceRow.in_support(db, supports))?
+        let weights = stored(ConfidenceRow.in_support(db, supports))?
+        for s in supports {
+            let locator = match s.locator {
+                text? -> stored_value(text)?
+                null -> Value.Null
+            }
+            let carried = self.supported(db, s.run, claim, locator)?
+            for e in evidence.filter(it.support.id == s.id) {
+                let _ = modeled((e with { id: 0, support: carried }).insert(db))?
+            }
+            let w = weights.find(it.support.id == s.id)
+            if w != null { let _ = self.confided(db, carried, w!.value)? }
+        }
+        0
+    }
+}
+
+/// A failed check's report; null when it passed.
+fn failed_check(checked: Result<Value, Issues>) -> string? {
+    match checked { .Ok(_) -> null, .Err(issues) -> issues.report() }
+}
+
+fn describe_change(c: Change) -> string {
+    let at = if c.property == null { c.model } else { "${c.model}.${c.property!}" }
+    "${at} ${c.kind.word()}"
+}

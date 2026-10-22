@@ -23,7 +23,7 @@ export fn serve(
 ) -> Result<int, string> {
     if port < 1 || port > 65535 { fail "port must be 1..65535" }
     if token.length < 24 { fail "the bearer token must contain at least 24 bytes" }
-    let graph = Graph.open(path, models, derived)?
+    let graph = Graph.open(path, models, derived, policy)?
     let _ = graph.close()
     let listener = match listen("127.0.0.1", port) {
         .Ok(l) -> l,
@@ -62,7 +62,7 @@ fn dispatched(
     derived: List<DerivationRegistration>,
     body: Json,
 ) -> Result<Response, string> {
-    mut graph = Graph.attach(service.path, models, derived)? with { policy: service.policy }
+    mut graph = Graph.attach(service.path, models, derived, service.policy)?
     defer { let _ = graph.close() }
     match graph.dispatch(body) {
         .Ok(j) -> Response.json(j),

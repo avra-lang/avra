@@ -26,8 +26,14 @@ use store.evidence.{
 }
 
 /// What a support's standing is judged against: its run's trail, the
-/// input revisions current in the view, and the installed schema.
-export type Footing = { trails: List<RunTrailRow>, epochs: List<InputEpochRow>, scheme: string }
+/// input revisions current in the view, the schemas whose claims read under
+/// the installed one, and the claims a catalog change retired.
+export type Footing = {
+    trails: List<RunTrailRow>,
+    epochs: List<InputEpochRow>,
+    live: List<string>,
+    retired: List<int>,
+}
 
 /// Two entities an active merge joins.
 export type MergeEdge = { left: string, right: string }
@@ -82,7 +88,7 @@ impl Graph {
     /// current.
     fn standing(claims: List<ClaimRow>) -> Result<List<Standing>, string> {
         let supports = stored(SupportRow.in_claim(self.db, claims))?
-        let footing = self.footing(supports.map(it.run))?
+        let footing = self.footing(supports)?
         let live = [s for s in supports if self.upheld(s, footing)]
         let evidence = stored(EvidenceRow.in_support(self.db, live))?
         [Standing { claim: s.claim, support: s, evidence: evidence.find(it.support.id == s.id) } for s in live]
@@ -125,13 +131,15 @@ impl Graph {
     /// In a valid-time view, only once the closing claim's start has come.
     fn superseded(supports: List<SupportRow>) -> Result<List<int>, string> {
         let rows = stored(SupersessionRow.in_old(self.db, supports))?
-        let footing = self.footing(rows.map(it.new.run))?
+        let footing = self.footing(rows.map(it.new))?
         let closing = [r for r in rows if self.upheld(r.new, footing)]
         if self.view.valid_at == null { return closing.map(it.old.id) }
         [r.old.id for r in closing for span in [self.valid_time(r.new)?] if self.begun_in_view(span)]
     }
 
-    fn footing(runs: List<RunRow>) -> Result<Footing, string> {
+    fn footing(supports: List<SupportRow>) -> Result<Footing, string> {
+        let runs = supports.map(it.run)
+        let live = self.live_schemas()?
         let epochs = if self.view.revision == null {
             []
         } else {
@@ -140,18 +148,22 @@ impl Graph {
         Footing {
             trails: stored(RunTrailRow.in_run(self.db, runs))?,
             epochs: epochs,
-            scheme: self.catalog.fingerprint,
+            live: live,
+            retired: self.retired_claims(supports.map(it.claim), live)?,
         }
     }
 
-    /// Standing in the view, under the installed schema and its run's input.
+    /// Standing in the view, under a live schema, unretired, on its run's input.
     fn upheld(s: SupportRow, f: Footing) -> bool {
-        self.in_view(s.run.revision, s.until) && s.claim.schema == f.scheme && self.stands(s, f)
+        self.in_view(s.run.revision, s.until) &&
+            f.live.contains(s.claim.schema) &&
+            !f.retired.contains(s.claim.id) &&
+            self.stands(s, f)
     }
 
     fn stands(s: SupportRow, f: Footing) -> bool {
         let trail? = self.trail_of(f.trails, s.run.id) else { return false }
-        trail.schema == f.scheme &&
+        f.live.contains(trail.schema) &&
             trail.input_revision == self.input_revision(s.run.input, f.epochs)
     }
 

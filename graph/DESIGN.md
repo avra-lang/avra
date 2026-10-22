@@ -174,8 +174,9 @@ producer-owned external identities, explicit reversible merges and
 tombstones, validated record reads, bounded traversal, explanations, and a
 shared CLI/HTTP protocol.
 
-Schema installation conservatively invalidates all older interpretations;
-it preserves their claims, support, and source payloads. `dirty` exposes
-reprocessing work but does not run a classifier. Declared selection policy,
-compatibility-aware migrations, multi-input derivations,
-and relation-backed incremental projections remain separate slices. `README.md` describes the actual protocol and guarantees.
+A catalog change is classified against the stored descriptors: additive
+changes invalidate nothing, rule changes revalidate only the affected
+claims, and incompatible changes need a declared migration or are refused;
+older schemas stay readable in history. `dirty` exposes reprocessing work
+but does not run a classifier. Multi-input derivations and relation-backed
+incremental projections remain separate slices. `README.md` describes the actual protocol and guarantees.

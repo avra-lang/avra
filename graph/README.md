@@ -383,6 +383,29 @@ always hold. A write under `as_of` is refused. Reads interpret history under
 the installed schema; input revisions observed before format 12 count as
 current for their observation's earliest recorded epoch.
 
+### Model evolution
+
+Opening a store under a changed catalog classifies the change by diffing
+the stored model descriptors against the declared ones:
+
+| Change | Effect |
+| --- | --- |
+| model or property added | nothing; every claim keeps reading |
+| shape made optional around the old one | claims are revalidated |
+| rules, allowed values or default changed | claims of that property are revalidated; those that fail retire |
+| property removed | refused, unless `Migration.Remove(model, property)` retires its claims or `Migration.Rename(model, from, to)` carries them to an added property |
+| shape changed otherwise | refused, unless `Migration.Remove` retires its claims |
+| model removed | refused, unless `Migration.RemoveModel(model)` retires its claims |
+
+Migrations are declared in `EnginePolicy.migrations`. A rename restates each
+claim under the new name, supported by the same runs with the same evidence,
+confidence and references; nothing is rewritten. A refused change leaves the
+store untouched. Each accepted change is a `SchemaEdgeRow`; claims under any
+schema it leads from keep reading unless retired, and `explain` shows a
+retired claim's `retired` reason under its own `schema`. Changes made before
+storage format 13 left no edge, so claims under those older catalogs do not
+read.
+
 ### Engine policy
 
 Every rule and bound a host may choose is one value, `EnginePolicy`
@@ -395,6 +418,7 @@ default reproduces the behaviour described above.
 | `default_rank` | `0` | Rank of an undeclared producer |
 | `denial` | `.Outranks` | A denial removes a claim only when ranked strictly above its best support (`.Matches`: at or above); otherwise it is a flagged contradiction |
 | `supersession` | `.LaterStart` | A strictly later declared start closes an earlier open rival (`.Never`: rivals stay a contradiction) |
+| `migrations` | `[]` | Declared answers to incompatible catalog changes (see Model evolution) |
 | `admission` | `AdmissionBudget {}` | Per-admission bounds: `envelope_bytes` 4 MiB, `records` 256, `fields` 4096, `passages` 16384, `frames` 256, `value_depth` 64 |
 
 Valid times are exact: `valid_from`/`valid_until` are normalized ISO 8601
@@ -411,8 +435,9 @@ The engine models are `Meta`, `Schema`, `EntityRow`, `ObservationRow`,
 `ObservationVersionRow`, `RunRow`, `RunTrailRow`, `ClaimRow`, `SupportRow`,
 `EdgeRow`, `AliasRow`, `MergeRow`/`MergeEndRow`, and
 `TombstoneRow`/`TombstoneEndRow`, and `VoiceRow`, `EvidenceRow` and
-`SupersessionRow`, `CorrectionRow`/`CorrectionEndRow`, `FailedRunRow` and
-`InputEpochRow` (storage format 12; older formats upgrade by adding them). WAL, foreign keys, and immediate write
+`SupersessionRow`, `CorrectionRow`/`CorrectionEndRow`, `FailedRunRow`,
+`InputEpochRow`, `SchemaEdgeRow` and `ClaimRetiredRow` (storage format 13;
+older formats upgrade by adding them). WAL, foreign keys, and immediate write
 transactions are used. Failed publications roll back identities, support
 withdrawals, claims, references, aliases, and the revision together.
 Connections wait up to three seconds for lock contention. Public multi-query

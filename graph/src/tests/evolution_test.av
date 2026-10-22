@@ -1,0 +1,222 @@
+use derive.model.{model}
+use schema.{Registration, Model}
+use store.open.{Graph, stored}
+use store.engine.{SchemaEdgeRow}
+use store.publish.{Record, Publication}
+use store.evidence.{FieldEvidence, Voice}
+use store.policy.{EnginePolicy, Migration}
+use store.query.{stored_value}
+use data.{encoded}
+use @std.validate.{length}
+use @std.io.{remove}
+use @std.time.{stamp}
+use @std.json.{parse}
+
+@model
+type Ward = { @length(min: 1) label: string, bed: string?, grade: string?, note: string? }
+
+@model
+type WardGrown = { @length(min: 1) label: string, bed: string?, grade: string?, note: string?, wing: string? }
+
+@model
+type WardStrict = { @length(min: 3) label: string, bed: string?, grade: string?, note: string? }
+
+@model
+type WardRenamed = { @length(min: 1) label: string, cot: string?, grade: string?, note: string? }
+
+@model
+type WardTrimmed = { @length(min: 1) label: string, bed: string?, grade: string? }
+
+@model
+type WardRetyped = { @length(min: 1) label: string, bed: string?, grade: int?, note: string? }
+
+fn named_ward(m: Model) -> Model { m with { name: "Ward" } }
+
+fn grown() -> Model { named_ward(WardGrown_graph_model()) }
+
+fn strict() -> Model { named_ward(WardStrict_graph_model()) }
+
+fn renamed() -> Model { named_ward(WardRenamed_graph_model()) }
+
+fn trimmed() -> Model { named_ward(WardTrimmed_graph_model()) }
+
+fn retyped() -> Model { named_ward(WardRetyped_graph_model()) }
+
+fn ward_path(name: string) -> string { "/tmp/avra-graph-evolve-${name}-${stamp()}.db" }
+
+fn cleared(path: string) -> bool {
+    let _ = remove(path)
+    let _ = remove(path + "-wal")
+    let _ = remove(path + "-shm")
+    true
+}
+
+/// Two wards under the first catalog; `w1`'s bed carries field evidence.
+fn seeded(path: string) -> Result<string, string> {
+    cleared(path)
+    mut g = Graph.open(path, [Registration { make: Ward_graph_model }])?
+    g.observe("intake", "notes")?
+    g
+        .publish(
+            Publication {
+                id: "r1",
+                producer: "intake",
+                scope: "intake",
+                input: "intake",
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: [
+                    Record {
+                        id: "w1",
+                        model: "Ward",
+                        value: stored_value(
+                            "{\"label\":\"Alice\",\"bed\":\"B1\",\"grade\":\"g\",\"note\":\"n\"}",
+                        )?,
+                        mode: .Partial,
+                        confidence: 0.7,
+                        fields: [FieldEvidence { property: "bed", evidence: [], speech_act: .Report }],
+                    },
+                    Record {
+                        id: "w2",
+                        model: "Ward",
+                        value: stored_value("{\"label\":\"Al\"}")?,
+                        mode: .Partial,
+                    },
+                ],
+                voices: [Voice { author: "nurse" }],
+            },
+        )?
+    let old = g.catalog.fingerprint
+    let _ = g.close()
+    old
+}
+
+fn reopened(path: string, make: fn() -> Model, migrations: List<Migration> = []) -> Result<
+    Graph,
+    string,
+> {
+    Graph.open(path, [Registration { make: make }], policy: EnginePolicy { migrations: migrations })
+}
+
+fn values(g: Graph, id: string, property: string) -> Result<string, string> {
+    [encoded(c.value) for f in (g.entity(id)?).fields if f.property == property for c in f.candidates]
+        .join("|")
+}
+
+fn additive_keeps_everything() -> Result<bool, string> {
+    let path = ward_path("grown")
+    let old = seeded(path)?
+    let g = reopened(path, grown)?
+    defer { let _ = g.close() }
+    let edge = stored(SchemaEdgeRow.all(g.db))?
+    let document = match parse(edge[0].document) {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "an edge document is not JSON" },
+    }
+    let kept = values(g, "w1", "label")? == "\"Alice\"" &&
+        values(g, "w2", "label")? == "\"Al\"" &&
+        g.value("w1") is .Ok
+    let ok = kept &&
+        edge.length == 1 &&
+        edge[0].older == old &&
+        document.member("changes").item(0).member("kind").text() == "property_added" &&
+        document.member("retired").int() == 0 &&
+        (g.dirty()?).items().is_empty()
+    cleared(path) && ok
+}
+
+fn rules_revalidate() -> Result<bool, string> {
+    let path = ward_path("strict")
+    seeded(path)?
+    let g = reopened(path, strict)?
+    defer { let _ = g.close() }
+    let retired = (g.explain("w2", "label")?).item(0)
+    let ok = values(g, "w1", "label")? == "\"Alice\"" &&
+        values(g, "w2", "label")? == "" &&
+        retired.member("active").truth() == false &&
+        (retired.member("retired").text() ?? "").contains("invalid under the new rules")
+    cleared(path) && ok
+}
+
+fn rename_carries_support() -> Result<bool, string> {
+    let path = ward_path("renamed")
+    seeded(path)?
+    let refused = reopened(path, renamed) is .Err
+    let g = reopened(path, renamed, [Migration.Rename("Ward", "bed", "cot")])?
+    defer { let _ = g.close() }
+    let cot = (g.explain("w1", "cot")?).item(0)
+    let bed = (g.explain("w1", "bed")?).item(0)
+    let ok = refused &&
+        cot.member("run").text() == "r1" &&
+        cot.member("producer").text() == "intake" &&
+        cot.member("speech_act").text() == "report" &&
+        cot.member("confidence").float() == 0.7 &&
+        cot.member("value").text() == "B1" &&
+        bed.member("active").truth() == false &&
+        (bed.member("retired").text() ?? "").contains("renamed") &&
+        !(g.entity("w1")?).fields.any(it.property == "bed") &&
+        (g.entity("w1")?).qualified.any(it.property == "cot")
+    cleared(path) && ok
+}
+
+fn removal_needs_migration() -> Result<bool, string> {
+    let path = ward_path("trimmed")
+    seeded(path)?
+    let refused = match reopened(path, trimmed) {
+        .Ok(_) -> false,
+        .Err(e) -> e.contains("Ward.note property_removed"),
+    }
+    let unchanged = reopened(path, Ward_graph_model)?
+    let still = values(unchanged, "w1", "note")? == "\"n\""
+    let _ = unchanged.close()
+    let g = reopened(path, trimmed, [Migration.Remove("Ward", "note")])?
+    defer { let _ = g.close() }
+    let ok = refused &&
+        still &&
+        !(g.entity("w1")?).fields.any(it.property == "note") &&
+        values(g, "w1", "label")? == "\"Alice\"" &&
+        (g.explain("w1", "note")?).items().length == 1
+    cleared(path) && ok
+}
+
+fn retype_needs_migration() -> Result<bool, string> {
+    let path = ward_path("retyped")
+    seeded(path)?
+    let refused = match reopened(path, retyped) {
+        .Ok(_) -> false,
+        .Err(e) -> e.contains("Ward.grade shape_changed"),
+    }
+    let g = reopened(path, retyped, [Migration.Remove("Ward", "grade")])?
+    defer { let _ = g.close() }
+    let ok = refused && values(g, "w1", "grade")? == "" && values(g, "w1", "label")? == "\"Alice\""
+    cleared(path) && ok
+}
+
+fn history_reads_old_schema() -> Result<bool, string> {
+    let path = ward_path("history")
+    let old = seeded(path)?
+    let g = reopened(path, trimmed, [Migration.Remove("Ward", "note")])?
+    defer { let _ = g.close() }
+    let note = (g.explain("w1", "note")?).item(0)
+    let ok = note.member("schema").text() == old && note.member("value").text() == "n"
+    cleared(path) && ok
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "safe model evolution" {
+    given "a store written under one catalog and opened under another" {
+        then "an additive change keeps every claim reading and records its edge" { passed(additive_keeps_everything()) }
+        then "a rule change retires only the claims that no longer validate" { passed(rules_revalidate()) }
+        then "a declared rename carries each claim's supports, evidence and confidence to the new name" { passed(rename_carries_support()) }
+        then "a removal is refused without a migration and retires the property's claims with one" { passed(removal_needs_migration()) }
+        then "a type change is refused unless a migration removes the property" { passed(retype_needs_migration()) }
+        then "retired claims stay readable in history under their own schema" { passed(history_reads_old_schema()) }
+    }
+}

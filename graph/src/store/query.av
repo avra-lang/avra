@@ -13,6 +13,7 @@ use store.engine.{
     SupersessionRow,
     ConfidenceRow,
     FailedRunRow,
+    ClaimRetiredRow,
 }
 use store.state.{Standing}
 use store.evidence.{Interval, Instant, optional_text}
@@ -259,8 +260,9 @@ impl Graph {
         let confidence = stored(ConfidenceRow.in_support(self.db, supports))?
         let evidence = stored(EvidenceRow.in_support(self.db, supports))?
         let closings = stored(SupersessionRow.in_old(self.db, supports))?
-        let footing = self.footing(supports.map(it.run))?
-        let closers = self.footing(closings.map(it.new.run))?
+        let footing = self.footing(supports)?
+        let closers = self.footing(closings.map(it.new))?
+        let retirements = [r for r in stored(ClaimRetiredRow.in_claim(self.db, claims))? if footing.live.contains(r.schema)]
         let current = (self.facts(claims)?).map(it.support.id)
         mut rows: List<Json> = []
         for s in supports {
@@ -286,6 +288,12 @@ impl Graph {
                                 field("active", Json.Bool(current.contains(s.id))),
                                 field("authority", Json.Int(self.rank(s.run.producer))),
                                 field("standing", Json.Bool(standing)),
+                                field(
+                                    "retired",
+                                    optional_text(
+                                        retirements.find(it.claim.id == s.claim.id)?.reason,
+                                    ),
+                                ),
                                 field("published_revision", Json.Int(s.run.revision)),
                                 field("locator", self.locator(s)?),
                                 field("confidence", self.confidence_of(s, confidence)),
@@ -357,14 +365,14 @@ impl Graph {
         self.current()?
         let runs = stored(RunRow.all(self.db))?
         let trails = stored(RunTrailRow.in_run(self.db, runs))?
-        let scheme = self.catalog.fingerprint
+        let live = self.live_schemas()?
         mut rows: List<Json> = []
         for r in runs {
             if runs
                 .any(it.producer == r.producer && it.scope == r.scope && it.revision > r.revision) {
                 continue
             }
-            if !self.stale(r, trails, scheme) { continue }
+            if !self.stale(r, trails, live) { continue }
             rows
                 .push(
                     Json
@@ -411,9 +419,9 @@ impl Graph {
         rows
     }
 
-    fn stale(r: RunRow, trails: List<RunTrailRow>, scheme: string) -> bool {
+    fn stale(r: RunRow, trails: List<RunTrailRow>, live: List<string>) -> bool {
         let trail? = self.trail_of(trails, r.id) else { return true }
-        trail.schema != scheme || trail.input_revision != r.input.revision
+        !live.contains(trail.schema) || trail.input_revision != r.input.revision
     }
 }
 
