@@ -53,6 +53,7 @@ export function parseFrame(bytes) {
     else if (op === OP.call) patches.push({ op, id: id(), verb: str() });
     else if (op === OP.set_var) patches.push({ op, id: id(), property: str(), value: str() });
     else if (op === OP.drop_var) patches.push({ op, id: id(), property: str() });
+    else if (op === OP.adopt) patches.push({ op, words: int(), kinds: Array.from({ length: int() }, str) });
     else throw new Error(`unknown patch op ${op}`);
   }
   return patches;
@@ -153,9 +154,48 @@ export function dialogPresses(doc, sends) {
   }, true);
 }
 
+// THE PAGE A SERVER SENT IS ADOPTED, never drawn over: its nodes, taken in
+// document order, are the elements the program counted out under the same
+// numbers. Markers (comments) are the writer's, between texts a parser would
+// join. A page that is not the program's elements is emptied, loudly, and the
+// program draws from nothing.
+const nameOf = (n) => String(n.nodeName ?? n.tagName).toLowerCase();
+const marker = (n) => nameOf(n) === "#comment";
+// A text is its octets' length too: a parser that drops a leading newline or
+// folds a line ending holds other words than the program drew.
+const kindOf = nameOf;
+
+// Every element a mount holds, in document order, markers left out.
+export function standingOf(mount) {
+  const out = [];
+  const walk = (parent) => {
+    for (const n of Array.from(parent.childNodes || [])) {
+      if (marker(n)) continue;
+      out.push(n);
+      walk(n);
+    }
+  };
+  walk(mount);
+  return out;
+}
+
+// One number over the words of every text, in document order, folded as the
+// program folds its own (`words_of`, realize/html/print.av): a parser or a
+// proxy that dropped a newline or rewrote a word holds other words than the
+// program drew.
+const PRIME = 1000000007;
+const BASE = 131;
+const mixed = (acc, text) => {
+  const octets = new TextEncoder().encode(text);
+  let at = acc;
+  for (const b of octets) at = (at * BASE + b + 1) % PRIME;
+  return (at * BASE + octets.length + 1) % PRIME;
+};
+export const wordsOf = (list) => list.filter((n) => nameOf(n) === "#text").reduce((acc, n) => mixed(acc, n.textContent), 7) + 1;
+
 // Build the applier over one document (a real one in a browser, a stub in a
 // test) and one mount element. `send(id, kind, said)` is the echo.
-export function createApplier(doc, mount, send = () => {}, styleEl = null) {
+export function createApplier(doc, mount, send = () => {}, styleEl = null, repair = () => {}) {
   dialogPresses(doc, !knowsClosedby(doc));
   // THE PAGE'S TABLES ARE KEYED BY ID, AND IDS ARE DENSE: `nodes[id]` is the
   // element, `hears[id]` what it hears — the shared definition of its one
@@ -201,6 +241,47 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
   };
   let chording = false;
   const listed = (id) => { const mine = hears[id]; return mine === undefined ? [] : Array.isArray(mine) ? mine : [mine]; };
+  const emptied = () => {
+    nodes.length = 0;
+    hears.length = 0;
+    while (mount.childNodes.length > 0) mount.removeChild(mount.childNodes[0]);
+  };
+  let broken = false;
+  // The elements the last adoption took, whose controls may hold what a user
+  // typed before the program could hear it.
+  let taken = [];
+  const adopt = (kinds, words) => {
+    const stood = standingOf(mount);
+    if (kinds.length === 0) {
+      if (stood.length > 0) { console.warn("avra: the page held elements this program does not draw — emptied"); emptied(); }
+      return;
+    }
+    if (stood.length !== kinds.length || stood.some((n, j) => kindOf(n) !== kinds[j]) || wordsOf(stood) !== words) {
+      console.warn("avra: the page held is not the one this program draws — drawn again from nothing");
+      emptied();
+      broken = true;
+      return;
+    }
+    stood.forEach((n, j) => keep(j, n));
+    taken = stood;
+  };
+  // A control that holds more than its markup seeded was typed in before the
+  // program stood: it says so once, through the echo the program bound, and its
+  // handler learns what the page already shows. One saying per control: the
+  // first seat that reads the property.
+  const replay = () => {
+    const stood = taken;
+    taken = [];
+    for (const el of stood) {
+      for (const def of listed(el.__avra_id)) {
+        if (!def.reads || el[def.reads] === undefined) continue;
+        const seeded = def.reads === "checked" ? el.getAttribute("checked") !== null : el.getAttribute(def.reads) ?? "";
+        if (el[def.reads] === seeded) continue;
+        send(el.__avra_id, def.kind, saidBy(el, def.says, def.reads));
+        break;
+      }
+    }
+  };
   const need = (id) => {
     const el = nodes[id];
     if (!el) throw new Error(`a patch names element ${id}, which is not on the page`);
@@ -236,6 +317,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
   };
 
   const apply = {
+    [OP.adopt]: (p) => adopt(p.kinds, p.words),
     [OP.create]: (p) => keep(p.id, doc.createElement(p.tag)),
     [OP.create_text]: (p) => keep(p.id, doc.createTextNode(p.content)),
     // A NODE THAT MOVES IS THE SAME NODE, with all the page keeps on it. One
@@ -300,7 +382,12 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
   };
 
   const applyFrame = (bytes) => {
-    for (const p of parseFrame(bytes)) apply[p.op](p);
+    for (const p of parseFrame(bytes)) {
+      apply[p.op](p);
+      if (broken) break;
+    }
+    if (broken) { broken = false; queueMicrotask(repair); return; }
+    replay();
   };
   // What each element hears, for a reader of the page to inspect.
   applyFrame.ears = (id) => listed(id).map((def) => [def.kind, def]);
@@ -492,6 +579,13 @@ export function createFrames(raf, painted) {
   };
 }
 
+// The print a server stamped on the mount, none (0) for a page it did not
+// send: the program compares it against the page it would draw itself.
+export function printOf(mount) {
+  const text = mount.getAttribute ? mount.getAttribute("data-avra-print") : null;
+  return /^[1-9][0-9]{0,15}$/.test(text ?? "") ? Number(text) : 0;
+}
+
 // RUN AN APP ON A PAGE: load the module, apply each frame it sends to
 // `mount`, echo what the user does, then run the program's own statements
 // — its `mount(view)` paints the first frame. `document`, `mount` and
@@ -506,7 +600,7 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
   const frames = createFrames(raf, into(() => mod[HOST.painted]()));
   const fetches = createFetches(fetchFn, into((token, status, octets) => sendAnswer(mod, token, status, octets)), clock);
   const windows = createWindows(document, mount, into((path, from, to, extent, pin) => sendScrolled(mod, path, from, to, extent, pin)));
-  const apply = createApplier(document, mount, into((who, what, said) => sendEvent(mod, who, what, said)), style);
+  const apply = createApplier(document, mount, into((who, what, said) => sendEvent(mod, who, what, said)), style, into(() => mod[HOST.repaired]()));
   mod = await instantiate(source, {
     wasi: wasi(() => mod.memory),
     // The seat is a Bytes: the pointer names its box, and the LENGTH comes
@@ -518,6 +612,7 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
       [ROWS.get]: (token, ptr) => fetches.get(token, frameOf(mod.memory, ptr, mod.avra_bytes_len).slice()),
       [ROWS.abort]: fetches.abort,
       [ROWS.next_paint]: frames.next,
+      [ROWS.stood]: () => BigInt(printOf(mount)),
     },
   });
   const lacks = Object.values(HOST).filter((name) => typeof mod[name] !== "function");
@@ -529,6 +624,8 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
   mod._initialize();
   const code = mod[HOST.entry]();
   if (code !== 0) throw new Error(`the program's statements answered ${code}`);
+  // Said last: a reader of the page knows the module stands and has painted.
+  if (document.documentElement) document.documentElement.setAttribute("data-avra", "ready");
   return { mod, ears: apply.ears };
 }
 
