@@ -54,6 +54,22 @@ def balanced(rows, rng):
     return out
 
 
+def stratified(rows, n, rng):
+    """A fixed sample balanced over (decision kind, domain): rounds take one
+    example from each group in turn until n are taken."""
+    groups = collections.defaultdict(list)
+    for x in rows:
+        groups[(x["kind"], x["domain"])].append(x)
+    for g in groups.values():
+        rng.shuffle(g)
+    keys, out = sorted(groups), []
+    while len(out) < n and any(groups.values()):
+        for k in keys:
+            if groups[k] and len(out) < n:
+                out.append(groups[k].pop())
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("decisions", nargs="+")
@@ -77,7 +93,9 @@ def main():
     for part, xs in split.items():
         rng.shuffle(xs)
         (out / f"{part}.jsonl").write_text("".join(json.dumps(x, ensure_ascii=False) + "\n" for x in xs))
-    manifest = {"decisions": args.decisions, "examples": {p: len(xs) for p, xs in split.items()},
+    sample = stratified(split["valid"], PARAMS["val_sample"], rng)
+    (out / "valid_sample.jsonl").write_text("".join(json.dumps(x, ensure_ascii=False) + "\n" for x in sample))
+    manifest = {"valid_sample": len(sample), "decisions": args.decisions, "examples": {p: len(xs) for p, xs in split.items()},
                 "domains": {p: sorted({x["domain"] for x in xs}) for p, xs in split.items()},
                 "by_kind": {f"{p}/{k}": n for (p, k), n in sorted(counts.items())}}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1))

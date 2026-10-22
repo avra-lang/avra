@@ -176,6 +176,7 @@ def main():
     import mlx_lm.tuner.trainer as trainer
     from mlx_lm import load
     from mlx_lm.lora import CONFIG_DEFAULTS, train_model
+    from mlx_lm.tuner.datasets import CacheDataset
 
     mx.set_memory_limit(int(PARAMS["mlx_memory_limit_gb"] * 2**30))
     mx.set_cache_limit(int(PARAMS["mlx_cache_limit_gb"] * 2**30))
@@ -189,8 +190,9 @@ def main():
     every = PARAMS["steps_per_eval"]
     try:
         model, tok = load(SCORER.split("@")[0])
-        train, valid = Letters(pathlib.Path(a.data) / "train.jsonl", tok), Letters(pathlib.Path(a.data) / "valid.jsonl", tok)
-        longest = max(len(d.process(d[i])[0]) for d in (train, valid) for i in range(len(d)))
+        train, valid = Letters(pathlib.Path(a.data) / "train.jsonl", tok), Letters(pathlib.Path(a.data) / "valid_sample.jsonl", tok)
+        full = Letters(pathlib.Path(a.data) / "valid.jsonl", tok)
+        longest = max(len(d.process(d[i])[0]) for d in (train, full) for i in range(len(d)))
         args = types.SimpleNamespace(**{**CONFIG_DEFAULTS, "model": SCORER, "train": True, "seed": PARAMS["seed"],
                                         "num_layers": a.layers, "batch_size": 1, "grad_accumulation_steps": a.accumulate,
                                         "iters": a.iters, "val_batches": -1, "learning_rate": a.lr,
@@ -208,6 +210,9 @@ def main():
         metrics.failed(f"{type(e).__name__}: {e}"[:500])
         raise SystemExit(f"train: {type(e).__name__}: {e}")
     saved = [(it, loss) for it, loss in metrics.val if (out / f"{it:07d}_adapters.safetensors").exists()]
+    if not saved:
+        metrics.write("done", None, note="no evaluated adapter was saved")
+        return
     it, loss = min(saved, key=lambda x: x[1])
     best = {"step": it, "val_loss": loss, "adapter": f"{it:07d}_adapters.safetensors", "val": metrics.val,
             "base_val_loss": metrics.val[0][1] if metrics.val and metrics.val[0][0] == 1 else None}
@@ -215,7 +220,12 @@ def main():
     (out / "best").mkdir(exist_ok=True)
     shutil.copy(out / best["adapter"], out / "best" / "adapters.safetensors")
     shutil.copy(out / "adapter_config.json", out / "best" / "adapter_config.json")
-    metrics.write("done", a.iters, val_loss=loss, note=f"best step {it}")
+    model.load_weights(str(out / "best" / "adapters.safetensors"), strict=False)
+    whole = evaluate(model=model, dataset=CacheDataset(full), loss=letter_loss,
+                     batch_size=PARAMS["val_batch"], num_batches=-1, max_seq_length=longest)
+    best["full_heldout_loss"] = float(whole)
+    (out / "best.json").write_text(json.dumps(best, indent=1))
+    metrics.write("done", a.iters, val_loss=float(whole), note=f"best step {it}; val_loss here is the full held-out set ({len(full)}) on the best adapter; sample loss {loss:.4f}")
 
 
 if __name__ == "__main__":
