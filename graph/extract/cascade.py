@@ -1092,6 +1092,28 @@ def received(conn):
     return data.split(b"\n", 1)[0]
 
 
+def gone(conn):
+    """True when the peer has closed its end: a client keeps its end open
+    until it has its answer, so end-of-stream after the request is a departure."""
+    import socket
+
+    try:
+        return conn.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b""
+    except BlockingIOError:
+        return False
+    except OSError:
+        return True
+
+
+def until_cancelled(lines, cancelled):
+    """The lines of a streamed answer, ending after the one in hand once the
+    client has gone."""
+    for line in lines:
+        yield line
+        if cancelled.is_set():
+            return
+
+
 def answered(body, models):
     """A generate op's text, or an extraction's result and log. A request
     that names the identity it expects is answered only by a service that
@@ -1144,12 +1166,15 @@ def serve():
 
     def worker():
         while True:
-            body, arrived, position, done = work.get()
+            body, arrived, position, done, conn, cancelled = work.get()
             started = time.time()
             try:
+                if gone(conn):
+                    cancelled.set()
+                    raise RuntimeError("the client left before its request was computed; dropped")
                 answer = answered(body, models)
                 if not isinstance(answer, dict):
-                    for line in answer:
+                    for line in until_cancelled(answer, cancelled):
                         done.put(line)
                     answer = {"end": True}
             except Exception as e:
@@ -1168,15 +1193,15 @@ def serve():
             except ValueError:
                 body, answer = {}, {"error": f"the client closed before its request was complete ({len(data)} bytes arrived)"}
             else:
-                done = queue.Queue()
+                done, cancelled = queue.Queue(), threading.Event()
                 position = work.qsize()
-                work.put((body, arrived, position, done))
+                work.put((body, arrived, position, done, conn, cancelled))
                 answer = done.get()
                 while "queue" not in answer:
                     try:
                         conn.sendall(json.dumps(answer, ensure_ascii=False).encode() + b"\n")
                     except OSError:
-                        pass
+                        cancelled.set()
                     answer = done.get()
             q = answer.get("queue", {})
             print(
@@ -1216,7 +1241,6 @@ def remote(body):
         return None
     with s:
         s.sendall(json.dumps(body, ensure_ascii=False).encode() + b"\n")
-        s.shutdown(socket.SHUT_WR)
         return json.loads(b"".join(iter(lambda: s.recv(parameter("socket_read_bytes")), b"")))
 
 
@@ -1254,7 +1278,6 @@ def remote_lines(body):
     def lines():
         with s:
             s.sendall(json.dumps(body, ensure_ascii=False).encode() + b"\n")
-            s.shutdown(socket.SHUT_WR)
             for raw in s.makefile("rb"):
                 if raw.strip():
                     yield json.loads(raw)

@@ -89,9 +89,17 @@ class Shared:
         return self.asked({"op": "choose", "context": context, "question": question, "options": options})["p"]
 
     def asked(self, body):
+        started = time.time()
+        try:
+            return self.exchanged(body)
+        finally:
+            log(f"call op={body['op']} ms={int((time.time() - started) * 1000)}")
+
+    def exchanged(self, body):
         import socket
 
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(float(os.environ["PLANNER_CALL_TIMEOUT_S"]) if "PLANNER_CALL_TIMEOUT_S" in os.environ else None)
             s.connect(str(self.path))
             s.sendall((json.dumps(body) + "\n").encode())
             data = b""

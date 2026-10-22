@@ -106,10 +106,11 @@ class App:
         return body
 
 
-def run_hook(command, payload, timeout=None, log=None):
+def run_hook(command, payload, timeout=None, log=None, env=None):
     """The hook's JSON answer; its stderr is appended to `log` when given."""
     done = subprocess.run(shlex.split(command), input=json.dumps(payload), text=True,
-                          capture_output=True, timeout=timeout)
+                          capture_output=True, timeout=timeout,
+                          env={**os.environ, **env} if env else None)
     if log is not None:
         log.append(done.stderr[-4000:])
     if done.returncode != 0:
@@ -460,20 +461,42 @@ def extract_timeout():
     return fitted("extract_timeout_s")
 
 
+def plan_calls(question):
+    """Milliseconds of each model call a planned question made, from the
+    planner's own `call op=… ms=…` log lines."""
+    lines = (l for chunk in question.get("planner_log", []) for l in chunk.splitlines())
+    return [int(l.rsplit("ms=", 1)[1]) for l in lines if l.startswith("planner: call ") and "ms=" in l]
+
+
+def evidence_keys(trace, prefix):
+    """The extraction keys a checkpoint's prefix was admitted on; the trace
+    also holds batch records, which name no single source."""
+    ids = {s["id"] for s in prefix}
+    return [r["key"] for r in trace or [] if r.get("kind") == "source" and r["source"] in ids]
+
+
 def fit_timeout(paths):
     """Each hook's slowest measured run, doubled: a call may take as long again
     as the slowest one seen before it is called stuck."""
     runs = [json.loads(pathlib.Path(p).read_text()) for p in paths]
     extractions = [e["ms"] for r in runs for e in r.get("extractions", [])
                    if "ms" in e and (e.get("result") or {}).get("status") == "complete"]
-    questions = [q["ms"] for r in runs for q in r.get("questions", {}).values()
-                 if "ms" in q and q.get("planned") and not q.get("cached")]
+    asked = [q for r in runs for q in r.get("questions", {}).values() if q.get("planned") and not q.get("cached")]
+    questions = [q["ms"] for q in asked if "ms" in q]
+    calls = [plan_calls(q) for q in asked]
     out = {"fitted": {"rule": "twice the slowest measured complete run of each hook",
                       "on": [pathlib.Path(p).name for p in paths], "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                       "extractions": len(extractions), "questions": len(questions)}}
     if extractions:
         out["extract_timeout_s"] = 2 * max(extractions) / 1000
-    if questions:
+    timed = [ms for c in calls for ms in c]
+    if timed:
+        out["plan_call_timeout_s"] = 2 * max(timed) / 1000
+        out["plan_timeout_s"] = out["plan_call_timeout_s"] * max(len(c) for c in calls)
+        out["fitted"]["plan_rule"] = ("a planner's model call: twice the slowest measured call; a question: that bound "
+                                      "times the most calls any measured question made")
+        out["fitted"]["plan_calls"] = len(timed)
+    elif questions:
         out["plan_timeout_s"] = 2 * max(questions) / 1000
     if len(out) == 1:
         sys.exit("no measured hook run in those results")
@@ -531,7 +554,7 @@ def publish_source(app, mode, hooks, source, schema, revision, trace=None):
         schema_file = app.scratch / "schema.json"
         schema_file.write_text(json.dumps(schema))
         log = []
-        record = {"source": source["id"], "log": log}
+        record = {"kind": "source", "source": source["id"], "log": log}
         if trace is not None:
             trace.append(record)
         key = extraction_key(source, schema, hooks)
@@ -591,7 +614,7 @@ def score_checkpoint(binary, checkpoint, questions, fixture, mode, hooks, scratc
     ids = Ids(id_map(app, entities, prefix, by_ref))
     locate = locator(app, entities)
     answers = {}
-    evidence = ([r["key"] for r in (trace or []) if r["source"] in {s["id"] for s in prefix}] if mode == "e2e"
+    evidence = (evidence_keys(trace, prefix) if mode == "e2e"
                 else [file_digest(ORACLE / "facts.jsonl"), file_digest(ORACLE / "plans.jsonl")])
     for q in runnable:
         key = Cache.key(mode, q["id"], checkpoint, file_digest(pathlib.Path(binary)), schema["fingerprint"],
@@ -649,7 +672,8 @@ def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, 
                 "contract": 1, "request": "score-" + q["id"], "question": q["question"],
                 "context": context, "source_view": q.get("source_view", "current"),
                 "schema": schema, "graph": [str(app.binary), "request", "--db", str(app.db)]},
-                timeout=fitted("plan_timeout_s"), log=log)
+                timeout=fitted("plan_timeout_s"), log=log,
+                env={"PLANNER_CALL_TIMEOUT_S": str(fitted("plan_call_timeout_s"))} if fitted("plan_call_timeout_s") else None)
         record["planned"] = plan
         answer = app.call(query_request(plan))
         record["response"] = answer
@@ -706,7 +730,7 @@ def prefill(binary, fixture, mode, hooks, scratch, checkpoint, trace=None):
         return
     per_source = extract_timeout()
     log, started, complete = [], time.time(), 0
-    record = {"batch": [s["id"] for _, s in missing], "log": log}
+    record = {"kind": "batch", "batch": [s["id"] for _, s in missing], "log": log}
     if trace is not None:
         trace.append(record)
     for index, result in streamed(hooks["extractor"].replace("{schema}", str(schema_file)),
@@ -828,6 +852,10 @@ def self_test():
     IDENTITIES["x"] = {"params": "b"}
     assert base != extraction_key(src, schema, hooks), "extractor identity unseen"
     IDENTITIES.clear()
+    shown = [{"kind": "batch", "batch": ["s01"], "log": []}, {"kind": "source", "source": "s01", "key": "k1", "log": []},
+             {"kind": "source", "source": "s99", "key": "k9", "log": []}]
+    assert evidence_keys(shown, [{"id": "s01"}]) == ["k1"], "a batch record broke the evidence read"
+    assert plan_calls({"planner_log": ["planner: call op=generate ms=900\nnoise\nplanner: call op=choose ms=12"]}) == [900, 12]
     print("score self-test passed: wrong fails, missing hooks not-run, cherry-picked prefix refused, extraction key sees text, catalog and extractor")
 
 
