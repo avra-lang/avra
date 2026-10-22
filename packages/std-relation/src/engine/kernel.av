@@ -86,8 +86,6 @@ type Asker = {
     /// The edge the innermost open query appended last, `no_edge`
     /// when it has appended none since it began or resumed.
     last: Cell<int>,
-    /// Whether the innermost open query reads rows whole.
-    whole: Cell<bool>,
 }
 
 fn new_asker() -> Asker {
@@ -99,7 +97,6 @@ fn new_asker() -> Asker {
         readers: list_cell(),
         reader: Cell.new(0),
         last: Cell.new(no_edge()),
-        whole: Cell.new(false),
     }
 }
 
@@ -246,8 +243,6 @@ export type Kernel = {
     inners: Cell<List<int>>,
     /// Nanoseconds spent inside each family's frames, children excluded.
     spent: Cell<List<int>>,
-    /// Each family's GRAIN — whether its queries read rows whole.
-    whole_families: Cell<List<bool>>,
     /// Each family's name for the trace, where its owner gave one; a family
     /// without one is named by its number.
     family_names: Cell<List<string>>,
@@ -297,7 +292,6 @@ export fn new_kernel() -> Kernel {
         starts: list_cell(),
         inners: list_cell(),
         spent: list_cell(),
-        whole_families: list_cell(),
         family_names: list_cell(),
         folds: map_cell(),
         folds_kept: Cell.new(false),
@@ -713,26 +707,8 @@ impl Kernel {
         self.asker.readers.push(reader)
         self.asker.reader.set(reader)
         self.asker.last.set(no_edge())
-        self.asker.whole.set(self.family_whole(key.family))
         if self.timing { self.frame_opened() }
     }
-
-    /// Whether `family`'s queries read rows whole.
-    fn family_whole(family: int) -> bool {
-        family >= 0 &&
-            family < self.whole_families.get().length &&
-            self.whole_families.get()[family]
-    }
-
-    /// Queries of `family` read rows WHOLE: a reader offered a fine edge and a
-    /// coarse one records the coarse one inside them.
-    fn reads_whole(family: int) {
-        while self.whole_families.get().length <= family { self.whole_families.push(false) }
-        self.whole_families.set_at(family, true)
-    }
-
-    /// Whether the innermost open query reads rows whole.
-    fn reading_whole() -> bool { self.asker.whole.get() }
 
     fn settle(key: Key, value_hash: int) {
         let began = self.asker.began.get().last() ?? self.rev.get()
@@ -791,7 +767,6 @@ impl Kernel {
         dropped(self.asker.readers)
         self.asker.reader.set(self.asker.readers.get().last() ?? 0)
         self.asker.last.set(no_edge())
-        self.asker.whole.set(self.family_whole(family_of(self.asker.open.get().last() ?? 0 - 1)))
         if restored != null { for r in restored!.get() { self.stamped(family_of(r.edge), arg_of(r.edge), r.previous) } }
         edges.slice(0, edges.length)
     }
