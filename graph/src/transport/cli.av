@@ -9,7 +9,9 @@ use store.policy.{EnginePolicy}
 use transport.dispatch.{failure}
 use transport.server.{serve}
 use mcp.tools.{Door, tools}
-use @std.mcp.{serve_stdio}
+use @std.mcp.{serve_stdio, server, server_faults}
+use @std.action.{Mandate}
+use @std.time.{wall_secs}
 
 /// The program's own invocation path: the planner reaches this graph through it.
 extern fn avra_selfhost_get_arg_cstr(i: int) -> string
@@ -39,7 +41,11 @@ impl Command {
                 extractor: words(args.option("extractor")),
                 graph: [avra_selfhost_get_arg_cstr(0), "request", "--db", args.option("db")],
             }
-            serve_stdio(tools(door)?)
+            let offered = tools(door)?
+            let granted = granted(args)?
+            let faults = server_faults(server(offered, granted))
+            if !faults.is_empty() { fail faults.join("; ") }
+            serve_stdio(offered, granted)
             return 0
         }
         if args.command == "serve" {
@@ -96,6 +102,26 @@ export fn run(
             default: ""
             description: "The command that reads a source (offered as `ingest` when set); {schema} names the catalog file"
         }
+        option grant {
+            default: ""
+            description: "Tools the agent may run unattended, comma-separated (e.g. ingest,correct); each write records the grant"
+        }
+        option grantor {
+            default: ""
+            description: "Who grants them: recorded with every write made under the grant"
+        }
+        option agent {
+            default: ""
+            description: "Who the grant is for: recorded with every write made under the grant"
+        }
+        option budget {
+            default: ""
+            description: "How many writes the grant covers; unbounded when unset"
+        }
+        option minutes {
+            default: ""
+            description: "How long the grant lasts from launch; until the door closes when unset"
+        }
         run: handler
     }
     let app = cli {
@@ -110,6 +136,35 @@ export fn run(
 }
 
 /// A command line's words: split at spaces, no quoting.
+/// The mandate a host grants at launch, or none when it grants nothing.
+fn granted(args: CliResult) -> Result<List<Mandate>, string> {
+    let actions = [w.trim() for w in args.option("grant").split(",") if !w.trim().is_empty()]
+    if actions.is_empty() { return [] }
+    let grantor = args.option("grantor")
+    let agent = args.option("agent")
+    if grantor.is_empty() || agent.is_empty() { fail "a grant names its grantor and its agent: --grantor and --agent" }
+    let now = wall_secs() * 1000
+    let minutes = bounded(args.option("minutes"), "minutes")?
+    [
+        Mandate {
+            id: "${grantor}:${agent}:${now}",
+            issuer: grantor,
+            subject: agent,
+            actions: actions,
+            granted_ms: now,
+            expires_ms: if minutes == null { null } else { now + minutes! * 60000 },
+            budget: bounded(args.option("budget"), "budget")?,
+        },
+    ]
+}
+
+/// An optional whole-number option: absent when unset.
+fn bounded(text: string, name: string) -> Result<int?, string> {
+    if text.is_empty() { return .Ok(null) }
+    let n? = parse_int(text) else { fail "--${name} must be a whole number" }
+    .Ok(n)
+}
+
 fn words(line: string) -> List<string> { [w for w in line.split(" ") if !w.is_empty()] }
 
 fn file_text(path: string) -> Result<string, string> {

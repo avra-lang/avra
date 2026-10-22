@@ -10,6 +10,7 @@ use ingest.admit.{Admission}
 use store.correct.{Correction, Amendment, correction_kind}
 use store.proposals.{Verdict, verdict_named}
 use @avra.graph_contracts.{SourceRef}
+use ingest.envelope.{source_of}
 
 export enum Operation {
     Schema
@@ -49,7 +50,29 @@ export enum Operation {
     Proposals
     Decide(id: string, verdict: Verdict, decider: string)
     Decisions
+    /// A write made under a delegation mandate: the grant as its door showed it, the op's word, the write.
+    Mandated(mandate: Json, word: string, request: Operation)
+    Mandates
 }
+
+/// The decision or source a write names, so a mandate's record can point
+/// at it and its undo; a read names none.
+export fn written(op: Operation) -> Result<string?, string> {
+    match op {
+        .Observe(id, _) or .Split(id) or .Revive(id) or .Unchoose(id) or .Uncorrect(id) -> .Ok(id),
+        .Ingest(payload) -> .Ok(source_key(source_of(payload)?)),
+        .Publish(p) -> .Ok(p.id),
+        .Merge(m) -> .Ok(m.id),
+        .Tombstone(t) -> .Ok(t.id),
+        .Choose(c) -> .Ok(c.decision),
+        .Admit(a) -> .Ok(source_key(a.source)),
+        .Correct(c) -> .Ok(c.id),
+        .Decide(id, _, _) -> .Ok(id),
+        .Schema or .Source(_, _) or .Observation(_, _) or .Get(_) or .Value(_) or .Find(_, _, _) or .Where(_, _, _, _, _) or .Edges(_, _) or .Traverse(_, _, _) or .Explain(_, _) or .Resolve(_, _) or .Aliases(_) or .Merges(_) or .Tombstones(_) or .Choices(_) or .Dirty or .Warnings or .Query(_) or .Cypher(_, _) or .Check(_, _) or .Search(_, _) or .Corrections or .Proposals or .Decisions or .Mandated(_, _, _) or .Mandates -> .Ok(null),
+    }
+}
+
+fn source_key(s: SourceRef) -> string { "${s.observation}@${s.revision}" }
 
 /// Protocol parsing knows operations; model data belongs to standard validation.
 export fn operation(j: Json) -> Result<Operation, string> {
@@ -167,6 +190,16 @@ export fn operation(j: Json) -> Result<Operation, string> {
         "corrections" -> {
             closed(j, ["op"])?
             Operation.Corrections
+        },
+        "mandated" -> {
+            closed(j, ["op", "mandate", "request"])?
+            let mandate? = j.get("mandate") else { fail "mandated needs the mandate it runs under" }
+            let request? = j.get("request") else { fail "mandated needs the request it authorizes" }
+            Operation.Mandated(mandate, text(request, "op")?, operation(request)?)
+        },
+        "mandates" -> {
+            closed(j, ["op"])?
+            Operation.Mandates
         },
         "admit" -> {
             closed(j, ["op", "source", "result", "scope", "candidates"])?

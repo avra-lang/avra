@@ -6,7 +6,8 @@
 Builds a graph from the acceptance oracle's facts (as the scorer does),
 starts `<app> mcp` on it as a stdio MCP server, and speaks MCP to it:
 initialize, tools/list, then schema, search, explain and (with --ask, when
-the shared model service is up) ask. Prints each exchange; exits 1 on a
+the shared model service is up) ask; then again under a launch grant,
+checking the grant is listed and the write is audited under it. Prints each exchange; exits 1 on a
 protocol or tool error.
 """
 import argparse
@@ -90,6 +91,19 @@ def main():
             print("ask:", answer["cypher"])
             print("   ->", json.dumps({k: answer["answer"].get(k) for k in ("status", "fields", "problems")})[:400])
         client.close()
+        granted = Client(argv + ["--grant", "uncorrect", "--grantor", "roundtrip-owner", "--agent", "roundtrip"])
+        granted.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                    "clientInfo": {"name": "roundtrip", "version": "1"}})
+        listed = next(t for t in granted.call("tools/list")["tools"] if t["name"] == "uncorrect")
+        grant = listed["_meta"]["avra/mandates"][0]
+        print("granted:", grant["issuer"], "->", grant["subject"], grant["actions"])
+        tried = granted.call("tools/call", {"name": "uncorrect", "arguments": {"id": "none"}})
+        if "requires a mandate" in tried["content"][0]["text"]:
+            raise SystemExit("uncorrect: refused under its grant")
+        audit = granted.tool("mandates")
+        write = next(w for m in audit if m["mandate"]["id"] == grant["id"] for w in m["writes"])
+        print("audit:", grant["id"], write)
+        granted.close()
         print("round trip ok; fact seen:", fact["text"][:50], "; entity search hits:", len(entity["passages"]))
 
 

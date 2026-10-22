@@ -1,0 +1,79 @@
+//! Writes under delegation mandates: each grant once, and every write
+//! begun under it, so a reviewer can audit what a mandate did and undo it.
+use @std.json.{Json, field, to_text, parse}
+use store.open.{Graph, stored, modeled}
+use store.engine.{MandateRow, MandatedRow}
+
+impl Graph {
+    /// Records that `op` begins writing `target` under `mandate`, atomically.
+    fn mandated(mandate: Json, op: string, target: string) -> Result<int, string> {
+        let id? = mandate.get("id")?.text() else { fail "a mandate names its id" }
+        let issuer? = mandate.get("issuer")?.text() else { fail "mandate `${id}` names no issuer" }
+        let subject? = mandate.get("subject")?.text() else { fail "mandate `${id}` names no subject" }
+        if id.is_empty() || issuer.is_empty() || subject.is_empty() { fail "a mandate names its id, its issuer and its subject" }
+        if self.view.revision != null || self.view.valid_at != null { fail "a historical view cannot write" }
+        mut db = self.db
+        stored(db.begin())?
+        defer { let _ = db.finish() }
+        let revision = self.current()?
+        let grant = match stored(MandateRow.where(db, mandate: id))? {
+            [one] -> {
+                if one.document != to_text(mandate) { fail "mandate id `${id}` was already recorded with a different grant" }
+                one
+            },
+            [] -> modeled(
+                MandateRow {
+                    mandate: id,
+                    issuer: issuer,
+                    subject: subject,
+                    document: to_text(mandate),
+                }
+                    .insert(db),
+            )?,
+            rest -> { fail "mandate id is not unique: ${id}" },
+        }
+        let _ = modeled(
+            MandatedRow { mandate: grant, op: op, target: target, revision: revision }.insert(db),
+        )?
+        stored(db.commit())?
+        revision
+    }
+
+    /// Every recorded mandate, as granted, with the writes begun under it.
+    fn mandates() -> Result<Json, string> {
+        let opened = self.read_snapshot()?
+        defer { let _ = self.db.finish_if_opened(opened) }
+        let writes = stored(MandatedRow.all(self.db))?
+        Json
+            .Arr(
+                [Json
+                    .Obj(
+                        [
+                            field("mandate", grant_of(m)?),
+                            field(
+                                "writes",
+                                Json.Arr([write_of(w) for w in writes if w.mandate.id == m.id]),
+                            ),
+                        ],
+                    ) for m in stored(MandateRow.all(self.db))?],
+            )
+    }
+}
+
+fn grant_of(m: MandateRow) -> Result<Json, string> {
+    match parse(m.document) {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "mandate `${m.mandate}` holds no JSON" },
+    }
+}
+
+fn write_of(w: MandatedRow) -> Json {
+    Json
+        .Obj(
+            [
+                field("op", Json.Str(w.op)),
+                field("target", Json.Str(w.target)),
+                field("revision", Json.Int(w.revision)),
+            ],
+        )
+}
