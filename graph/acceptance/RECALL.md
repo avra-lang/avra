@@ -158,3 +158,16 @@ Cross-source resolution (extract/resolve.py) links entities of models that decla
 records (`OrganizationRole`: person + organization + title) have none, so two roles stating the same thing remain two
 entities, and q48 returns the one merged person twice. A declared identity over a model's reference fields would let
 the engine treat them as one. Not built.
+
+## After the extraction fixes (dev e2e 2/36, results/score-e2e-20261022T102354.json)
+
+Measured on the 21 dev-cited sources with `measure.py`-style counts over the oracle records (68 owed).
+
+| Cause | Before | After |
+| --- | --- | --- |
+| 1 record pass silent | records 119 (2 non-entity); oracle records with the model present 30/68 | records 150; present 47/68; some field equal 27 -> 41 |
+| 3 Money blocked | 0 money fields, 7 models blocked | 8 money fields, 0 models blocked |
+| validity | 0 of 25 relations | 2 of 25 (s18 until 2026-10-16 exact; others abstain) |
+| 2 entity merge | unchanged here: ER is graph-er's resolver stage | resolver run: see e2e |
+
+Remaining gate evidence (cache `logs/`): 127 "no candidate" field gates (organizations in invoice lines the encoder never marks), 97 relation abstentions, 78 field abstentions; PersonalTask/Commitment `summary`/`action` have no encoder span.
