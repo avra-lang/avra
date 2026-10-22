@@ -1704,10 +1704,12 @@ impl Reach {
     fn files_of(d: string) -> List<string> { [f for i, f in self.files if self.owners[i] == d] }
 }
 
-/// A module name and every module enclosing it, outermost first.
+/// A module name and every module enclosing it, outermost first — the root package's
+/// own root `""` among them, since its record places the files beside `src/`.
 fn enclosings(name: string) -> List<string> {
     let segments = name.split(".")
-    [joined(segments.slice(0, k), ".") for k in 1..segments.length + 1]
+    let from = if module_path(segments).packaged() { 1 } else { 0 }
+    [joined(segments.slice(0, k), ".") for k in from..segments.length + 1]
 }
 
 /// The key a file's parts digest to — BLAKE3 over an arity-folded encoding of every
