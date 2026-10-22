@@ -36,10 +36,7 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
     // (docs/2026_09_22_COLLECTIONS.md §4.2) — a cycle regardless of
     // scope: the collect's own value is THIS declaration's synthesis,
     // not yet built while this declaration's value is what is being
-    // typed. Checked before the closure-fold law below, which would
-    // otherwise catch the same read under the wrong, less specific
-    // voice — a self-read is refused whether or not the collect that
-    // gathers it is closure-scoped.
+    // typed.
     let cycled: DeclId? = self_collect_read(cx, s, v)
     if cycled != null {
         let _ = cx
@@ -51,14 +48,6 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
                     cycled!,
                 ),
             )
-        return
-    }
-    // OPEN WORLD CLOSES AT LINK (docs/2026_09_22_COLLECTIONS.md §4.1):
-    // a value read straight by NAME, so a helper fn hiding the read is
-    // outside what this catches cheaply — the reachable, common case.
-    let folded: DeclId? = closure_collect_read(cx, v)
-    if folded != null && !cx.view.decls.is_program() {
-        let _ = cx.spoken(closure_fold_refused(cx, cx.loc_of(v), folded!))
         return
     }
     if cx.refuses_void_value(v) { return }
@@ -130,18 +119,8 @@ fn parts_of(cx: TypeCx, ty: TypeId) -> List<TypeId> {
     fields.concat(flatten(cx.variants_of(ty)?.payloads ?? []))
 }
 
-/// A closure-scoped collect this value reads BY NAME, directly.
-fn closure_collect_read(cx: TypeCx, root: ExprId) -> DeclId? {
-    decl_refs(cx, root).find(closure_collect(cx, it))
-}
-
 fn decl_refs(cx: TypeCx, root: ExprId) -> List<DeclId> {
     flatten([some_list(bound_decl_of(cx.names, node)) for node in cx.view.store.every_expr(root)])
-}
-
-fn closure_collect(cx: TypeCx, d: DeclId) -> bool {
-    let p? = collect_parts_of(cx, d) else { return false }
-    p.scope is .Closure
 }
 
 /// A collect gathering THIS declaration's own word, read by name —
@@ -175,16 +154,6 @@ fn collect_parts_of(cx: TypeCx, d: DeclId) -> CollectParts? {
 }
 
 // ── The voices ──
-
-fn closure_fold_refused(cx: TypeCx, at: Loc?, d: DeclId) -> Diag {
-    refusal(
-        "collect.closure_fold",
-        at,
-        "`${cx.view.decls.decl(d).name}` is closed only when a program links — read it at run time",
-        "folded here",
-        "read it from a fn's body, never from a const's compile-time value",
-    )
-}
 
 fn self_read_refused(cx: TypeCx, at: Loc?, name: string, d: DeclId) -> Diag {
     let coll = cx.view.decls.decl(d).name

@@ -173,7 +173,10 @@ impl Workspace {
         let id = self.spec_id(w)
         let u = self.lowered_for_eval(id)
         let top = self.hold.settle_frames.get().last()
-        if top != null { top!.push(self.kept_unit_line(w, u)) }
+        if top != null {
+            top!.push(self.kept_unit_line(w, u))
+            top!.push(self.kept_gathered_line(w))
+        }
         let d = w.decl ?? self.root_decl(w)
         if d != null { self.note_decl_types(d!) }
         for ask in self.asks_of(id) { let _ = self.settled_replay(ask.file, ask.root, ask.seats) }
@@ -203,6 +206,14 @@ impl Workspace {
             bodies: [b.name for b in u.bodies],
             wire: if w.decl != null && w.root == null { self.wanted_list_wire([w]) } else { "" },
         }
+    }
+
+    /// A unit's file's gathered sets, when it holds a cross-file collect: a
+    /// collect's value is its members, which its file's text does not show.
+    fn kept_gathered_line(w: Wanted) -> KeptLine {
+        let path = self.decls.file(w.file).path
+        let sets = self.gathered_sets(path)
+        plain_kept(if sets.is_empty() { "" } else { joined(["g", path, sets.join(",")], "\t") })
     }
 
     /// A const a settlement read, noted in the open frame: by its file and
@@ -330,6 +341,7 @@ impl Workspace {
             "f" -> self.kept_file_stands(r),
             "b" -> r.length == 2 && budget_line(self.budgets()) == joined(r, "\t"),
             "e" -> r.length == 3 && self.embed_said(r[1]) == r[2],
+            "g" -> r.length == 3 && self.gathered_sets(r[1]).join(",") == r[2],
             "r" or "n" or "s" -> true,
             rest -> false,
         }

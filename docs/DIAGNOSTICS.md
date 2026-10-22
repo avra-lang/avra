@@ -2973,35 +2973,6 @@ error[collect.dense]: `it.mark.args[0]` is not unique and gap-free from 0
 help: every ordinal 0, 1, 2 … appears exactly once
 ```
 
-## collect.closure_fold
-
-a library folds a closure collection at compile time
-
-```
-// /w/avra.toml
-[package]
-name = "app"
-version = "0.1.0"
-
-[lib]
-
-// /w/src/lib.av
-type Entry = { name: string }
-collect xs: List<Entry> = @tag in closure as Entry { name: it.name } by it.name
-const n: int = xs.length
-
-```
-
-```
-error[collect.closure_fold]: `xs` is closed only when a program links — read it at run time
-  ╭─[/w/src/lib.av:3:16]
-3 │ const n: int = xs.length
-  ·                ┬
-  ·                ╰── folded here
-──╯
-help: read it from a fn's body, never from a const's compile-time value
-```
-
 ## collect.self_read
 
 a member reads its own collection while compiling

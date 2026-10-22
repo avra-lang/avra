@@ -26,6 +26,7 @@ use core.{
     user_kind,
     is_kind_word,
     key_spelled,
+    sorted_texts,
 }
 use @std.path.{under_dir, joined_path, normalized, dir_of}
 use features.{
@@ -243,6 +244,19 @@ impl Workspace {
     fn gathered_set(g: Gathering, owner: FileId) -> string {
         let members = ordered_collect_members(self.decls, g.kind, g.scope, g.order, owner)
         digest_of(fields_wire([self.member_print(g, m) for m in members]))
+    }
+
+    /// WHAT A FILE'S CROSS-FILE COLLECTS GATHER NOW, each as `gathered_set`'s digest:
+    /// a read file's from its parse, a held one's from its record — a held
+    /// collector is one whose sets did not move.
+    fn gathered_sets(path: string) -> List<string> {
+        let f = self.file_id(path)
+        let sets = if self.is_held(f) {
+            [g.digest for g in self.hold.gathered.get() if g.collector == path]
+        } else {
+            [self.gathered_set(g, f) for g in self.gatherings(path)]
+        }
+        sorted_texts(distinct(sets))
     }
 
     /// One member as its collect sees it: where it is declared, its name, the mark
