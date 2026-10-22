@@ -39,6 +39,9 @@ lists and refuses by name:
                    runs that remain give one verdict.
   dup-run          a `labeled` run waits for the full run on its head and mirrors its verdict;
                    it never runs a second gate beside it (tools/ci_dup_run.py).
+  one-spelling     a shape the workflows share has ONE home — a composite
+                   action under .github/actions or a tool — and no workflow
+                   spells it again (ONE_SPELLING names each and its home).
   warm-edit        WHERE the DB 07 warm-edit gate exists (Makefile target
                    `warm-edit`), it is one of `KEEPERS` and its measurement
                    skips with a word on a cold store — a claim with no gate
@@ -495,6 +498,32 @@ def check_warm_edit(make_text, bench=None, ratchet=None):
     return refusals, []
 
 
+# Each shape the workflows share: what spelling it again looks like, and its one home.
+ONE_SPELLING = (
+    (r"\btools/speed_note\.sh\b", "./.github/actions/speed-note"),
+)
+
+
+def check_one_spelling(workflows, rules=ONE_SPELLING):
+    """{file: text} -> (refusals, words). No workflow re-spells a shape whose
+    home is a composite action or a tool."""
+    refusals = []
+    for name, text in sorted(workflows.items()):
+        for n, line in enumerate(text.splitlines(), 1):
+            code = line.split("#", 1)[0]
+            refusals += ["%s:%d spells what `%s` holds — use it" % (name, n, home)
+                         for pat, home in rules if re.search(pat, code)]
+    if refusals:
+        return refusals, []
+    return [], ["one-spelling: %d shared shape(s), each spelled once, at its home" % len(rules)]
+
+
+def workflow_texts():
+    d = os.path.join(ROOT, ".github", "workflows")
+    return {f: open(os.path.join(d, f), encoding="utf-8").read()
+            for f in os.listdir(d) if f.endswith(".yml")}
+
+
 def run(make_text=None, workflow_text=None):
     """Every check over the real tree. Answers the number of refusals."""
     if make_text is None:
@@ -516,7 +545,8 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_path_gate(workflow_text),
                   lambda: check_dup_run(workflow_text),
                   lambda: check_ready_race(__import__("pr_mode")),
-                  lambda: check_warm_edit(make_text)):
+                  lambda: check_warm_edit(make_text),
+                  lambda: check_one_spelling(workflow_texts())):
         r, w = check()
         refusals += r
         words += w
@@ -754,8 +784,14 @@ rt-header:
     assert no_seed != real_remote
     assert any("seed" in x for x in check_compiler_route(real_work, no_seed)[0]), check_compiler_route(real_work, no_seed)
 
+    # ── one-spelling: the home is used; a second spelling is refused, a comment is not one ──
+    used = "      - uses: ./.github/actions/speed-note\n      # tools/speed_note.sh lives there\n"
+    assert check_one_spelling({"a.yml": used})[0] == [], check_one_spelling({"a.yml": used})
+    again = "        run: sh tools/speed_note.sh collect speed.log\n"
+    assert check_one_spelling({"a.yml": again})[0], "a second spelling must be refused"
+
     print("ci_invariants self-test: release-order, keeper-coverage, watcher-fixtures, "
-          "light-draft, run-mode, race-split, compiler-route, path-gate, dup-run, ready-race, warm-edit held on fixtures")
+          "light-draft, run-mode, race-split, compiler-route, path-gate, dup-run, ready-race, warm-edit, one-spelling held on fixtures")
     return 0
 
 
