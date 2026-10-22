@@ -996,6 +996,34 @@ MI "mi: the method is added to the SAME impl block — the reader's refusal clea
 MI "mi: and warm again" clean
 fi
 
+if section ot; then
+# `ot` is the tree's own packages, copied: tree 1 as they stand, tree 2 with every source
+# file given a new exported fn, so no kept record of tree 1 stands for any file of tree 2.
+# The package checked is a real one — its components, derives and instantiations are what
+# a stale record is held for. Each stale record found one batch at a time throws the whole
+# attempt away; at the compiler's own size that is minutes per turn.
+ot=$R/ot; ot_pkg=std-http
+ot_discarded() { # ot_discarded: the attempts a check of the copy discarded
+    steps=$((steps+1))
+    ./avra check --time $ot/packages/$ot_pkg 2>&1 | grep -oE 'discarded [0-9]+' | head -1 | tr -dc '0-9'
+}
+ot_moved() { # ot_moved: every source file of the copy gains an exported fn of its own
+    n=0
+    for f in $(find $ot/packages -path '*/src/*' -name '*.av' -not -path '*/tests/*'); do
+        n=$((n+1)); printf '\nexport fn ot_marker_%s() -> int { %s }\n' $n $n >> $f
+    done
+}
+mv $ot "$R/ot.old.$$" 2>/dev/null; mv .avra-cache "$R/ot.store.$$" 2>/dev/null
+mkdir -p $ot && cp -R packages $ot/packages
+ot_discarded > /dev/null
+ot_moved
+ot_warm=$(ot_discarded); ot_warm=${ot_warm:-0}
+mv .avra-cache "$R/ot.warm.$$"
+ot_cold=$(ot_discarded); ot_cold=${ot_cold:-0}
+[ -z "${VERBOSE:-}" ] || echo "ot: warm discarded $ot_warm, cold $ot_cold"
+if [ "$ot_warm" -gt "$ot_cold" ]; then fails=$((fails+1)); echo "FAIL  ot: a store left by another tree discarded $ot_warm attempts where the cold check of the same tree discarded $ot_cold"; fi
+fi
+
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
     # THE COMPILER'S OWN BINARY is identified by a stamp-keyed record of its bytes' digest:
