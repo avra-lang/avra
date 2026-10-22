@@ -39,7 +39,8 @@ impl Error for MigrateError {
 /// What the whole program's migration needs of one model.
 export type Entry = {
     name: string,
-    declared_at: string,
+    claimant: string,
+    relative: string,
     shape: string,
     renamed_to: List<string>,
     renamed_from: List<string>,
@@ -51,7 +52,7 @@ export fn migrated_all(mut db: Db, entries: List<Entry>) -> Result<int, MigrateE
     mut steps = 0
     // LICENSED loops.push_loop: tables go one after another, and the first refusal stops the rest
     for e in entries {
-        let _ = lifted(claim_table(db, e.name, e.declared_at, e.shape))?
+        let _ = lifted(claim_table(db, e.name, e.claimant, e.relative, e.shape))?
         steps = steps + grown(db, e.shape, e.renamed_to, e.renamed_from)?
     }
     .Ok(steps)
@@ -60,7 +61,7 @@ export fn migrated_all(mut db: Db, entries: List<Entry>) -> Result<int, MigrateE
 /// The registry's claim on a table name, and the table made if it is not
 /// there. A second model of the same name declared elsewhere is refused,
 /// naming the file that claimed it first.
-export fn claim_table(mut db: Db, name: string, declared_at: string, shape: string) -> Result<
+export fn claim_table(mut db: Db, name: string, claimant: string, relative: string, shape: string) -> Result<
     int,
     SqlError,
 > {
@@ -74,10 +75,13 @@ export fn claim_table(mut db: Db, name: string, declared_at: string, shape: stri
     match claim {
         row? -> {
             let held = row.text(0)?
-            if held != declared_at { fail SqlError.defect(collision_voice(name) + held) }
+            if held != claimant {
+                if !moved_claim(held, relative) { fail SqlError.defect(collision_voice(name) + held) }
+                let _ = db.run(sql(claim_rekey_sql(), [.Text(claimant), .Text(name)]))?
+            }
         }
         null -> {
-            let _ = db.run(sql(claim_insert_sql(), [.Text(name), .Text(declared_at), .Text(shape)]))?
+            let _ = db.run(sql(claim_insert_sql(), [.Text(name), .Text(claimant), .Text(shape)]))?
         }
     }
     db.run(sql(create_sql(read.name, read.columns)))
@@ -227,6 +231,17 @@ fn shape_column_add_sql() -> string { "ALTER TABLE \"__avra_models__\" ADD COLUM
 
 fn claim_select_sql() -> string {
     "SELECT \"declared_at\" FROM \"__avra_models__\" WHERE \"table_name\" = ?"
+}
+
+fn claim_rekey_sql() -> string {
+    "UPDATE \"__avra_models__\" SET \"declared_at\" = ? WHERE \"table_name\" = ?"
+}
+
+/// A claim recorded as an absolute path before claimants were named by
+/// module: the same declaration when that path ends in this file's
+/// package-relative path, so only the checkout's location differs.
+fn moved_claim(recorded: string, relative: string) -> bool {
+    recorded.starts_with("/") && recorded.ends_with("/${relative}")
 }
 
 fn claim_insert_sql() -> string {

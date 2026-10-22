@@ -159,8 +159,12 @@ fn generated(t: Type) -> Decls {
             /// name order — what the registry records when it is created.
             static fn shape() -> string { ${literal(shape_text_of(t))} }
 
+            /// Who claims the table: the declaring module and file, never
+            /// where the checkout happens to stand.
+            static fn claimant() -> string { ${literal(claimant_of(t))} }
+
             static fn create_table(mut db: Db) -> Result<int, SqlError> {
-                claim_table(db, ${literal(table_name_of(t))}, ${literal(declared_at_of(t))}, ${literal(shape_text_of(t))})
+                claim_table(db, ${literal(table_name_of(t))}, ${literal(claimant_of(t))}, ${literal(relative_file_of(t))}, ${literal(shape_text_of(t))})
             }
 
             /// The table made if it is not there, and grown to this model's
@@ -771,18 +775,28 @@ fn delete_sql_of(t: Type) -> string {
 export fn model_entry(t: Type) -> Entry {
     Entry {
         name: table_name_of(t),
-        declared_at: declared_at_of(t),
+        claimant: claimant_of(t),
+        relative: relative_file_of(t),
         shape: shape_text_of(t),
         renamed_to: [column_of(f) for f in stored(t) if old_name(f) != null],
         renamed_from: [old_name(f)! for f in stored(t) if old_name(f) != null],
     }
 }
 
-/// The declaring type's own file, its one honest fully-qualified name
-/// — `@std/meta` hands a `Type` no module or package field, but every
-/// declaration's `Loc` names the file it stands in, and two DIFFERENT
-/// files are the only thing a bare type name can never make equal.
-fn declared_at_of(t: Type) -> string { t.at?.file ?? "?" }
+/// The declaring module, fully qualified with its package, and the file's
+/// own name: the same in every checkout of the package, and different for
+/// two types of one bare name in two modules or two files of one module.
+fn claimant_of(t: Type) -> string { "${t.module}:${file_name(t)}" }
+
+fn file_name(t: Type) -> string { (t.at?.file ?? "?").split("/").last() ?? "?" }
+
+/// The file's path inside its package's source root: the module's own
+/// segments after the package's, then the file's name.
+fn relative_file_of(t: Type) -> string {
+    let segments = t.module.split(".")
+    let package = if t.module.starts_with("@") { 2 } else { 1 }
+    segments.slice(package, segments.length).concat([file_name(t)]).join("/")
+}
 
 // ── Binding a field OUT (a value crossing to SQLite) and reading one
 // IN (a column crossing back) — one exhaustive dispatch each way. ──

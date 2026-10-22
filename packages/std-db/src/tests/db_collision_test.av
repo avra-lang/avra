@@ -82,7 +82,66 @@ fn table_keeps_first_claimants_columns() -> Result<int, ModelError> {
     modeled(v.int())
 }
 
+/// A registry whose `Shared` claim was recorded as an absolute path by an
+/// older std/db, as a checkout at `/elsewhere/checkout` would have.
+fn recorded_at(path: string) -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    db
+        .run(
+            sql(
+                "CREATE TABLE \"__avra_models__\" (\"table_name\" TEXT PRIMARY KEY, \"declared_at\" TEXT, \"shape\" TEXT)",
+            ),
+        )?
+    db.run(sql("INSERT INTO \"__avra_models__\" VALUES ('Shared', ?, NULL)").args([.Text(path)]))?
+    db
+}
+
+fn claimed_by(db: Db) -> Result<string, SqlError> {
+    (db.scalar(sql("select declared_at from \"__avra_models__\" where table_name = 'Shared'"))?)
+        .text()?
+}
+
+/// The same declaration opened from another checkout: re-keyed, then usable.
+fn moved_checkout_rekeys() -> Result<string, ModelError> {
+    mut db = modeled(recorded_at("/elsewhere/checkout/packages/std-db/src/tests/collide_a/mod.av"))?
+    modeled(SharedA.create_table(db))?
+    let a = SharedA { id: 0, email: "a@x.com" }.insert(db)?
+    "${modeled(claimed_by(db))? == SharedA.claimant()}|${a.id}"
+}
+
+/// A recorded path of another module or file stays another claimant.
+fn moved_elsewhere_refuses(path: string) -> string {
+    match moved_create(path) { .Ok(_) -> "no refusal", .Err(e) -> e.cause.kind() }
+}
+
+fn moved_create(path: string) -> Result<int, SqlError> {
+    mut db = recorded_at(path)?
+    SharedA.create_table(db)?
+    0
+}
+
+fn claimants_are_portable() -> bool {
+    let a = SharedA.claimant()
+    !a.starts_with("/") &&
+        a.ends_with("collide_a:mod.av") &&
+        a.starts_with("@std.db") &&
+        a != SharedB.claimant()
+}
+
 spec "std/db @model table-name collisions" {
+    given "a claim recorded by the same declaration in another checkout" {
+        then "a claimant names its package, module and file, never a path" { claimants_are_portable() }
+        then "an older path claim re-keys when only the checkout prefix differs" { (moved_checkout_rekeys() catch "?") == "true|1" }
+        then "a recorded path of another module still refuses" {
+            moved_elsewhere_refuses(
+                "/elsewhere/checkout/packages/std-db/src/tests/collide_b/mod.av",
+            ) == "sqlite.defect"
+        }
+        then "a recorded path of another file or a relative path still refuses" {
+            moved_elsewhere_refuses("/elsewhere/other.av") == "sqlite.defect" &&
+                moved_elsewhere_refuses("tests/collide_a/mod.av") == "sqlite.defect"
+        }
+    }
     given "the same type's create_table called more than once" {
         then "it stays a harmless no-op, never a false collision" { (same_type_recreate_is_fine() catch 0 - 1) == 1 }
     }
