@@ -11,7 +11,7 @@ use place.metrics.{Metrics, run_width_in, line_height, subunits}
 
 /// A target of pixels (or any unit a face is drawn in): `metrics` measures
 /// the text, `theme` gives the spacing, and `rest` answers for what is not text.
-export type Text = { metrics: dyn Metrics, theme: Theme, rest: dyn Measure }
+export type Text = { metrics: dyn Metrics, theme: Theme, rest: dyn Measure, quantum: int = fine }
 
 /// `n` in a ratio of `to` parts per `from`, halves up.
 fn rescaled(n: int, to: int, from: int) -> int { (n * to + from / 2) / from }
@@ -20,10 +20,15 @@ impl Measure for Text {
     fn own(n: Node, avail: int) -> Extent {
         if !(n.prim is .Text) { return self.rest.own(n, avail) }
         let m = self.metrics
-        let wide = (s: string) -> run_width_in(m, s, fine)
-        let ls = lines_in(n.words(), if avail < fine { fine } else { avail }, wide)
+        let q = self.quantum
+        let wide = (s: string) -> run_width_in(m, s, q)
+        let ls = lines_in(
+            n.words(),
+            rescaled(if avail < fine { fine } else { avail }, q, fine),
+            wide,
+        )
         Extent {
-            w: [wide(l) for l in ls].max() ?? 0,
+            w: rescaled([wide(l) for l in ls].max() ?? 0, fine, q),
             h: rescaled(ls.length * line_height(m), fine, subunits),
         }
     }
@@ -35,7 +40,8 @@ impl Measure for Text {
     fn min_own(n: Node) -> int {
         if !(n.prim is .Text) { return self.rest.min_own(n) }
         let m = self.metrics
-        longest_in(n.words(), (s: string) -> run_width_in(m, s, fine))
+        let q = self.quantum
+        rescaled(longest_in(n.words(), (s: string) -> run_width_in(m, s, q)), fine, q)
     }
 
     fn gap_x(z: Size) -> int { self.theme.space_of(z) }
