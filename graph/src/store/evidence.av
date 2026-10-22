@@ -243,6 +243,15 @@ impl Instant {
 export type Interval = { from: Instant? = null, until: Instant? = null }
 
 impl Interval {
+    /// Whether the instant lies within; an unknown bound is open.
+    fn holds(at: Instant) -> bool {
+        let started = match self.from {
+            start? -> !at.before(start)
+            null -> true
+        }
+        started && self.open_at(at)
+    }
+
     /// Whether this interval is still open at `at`.
     fn open_at(at: Instant) -> bool {
         let end? = self.until else { return true }
@@ -283,6 +292,11 @@ fn at_path(value: Value, path: List<string>) -> Value? {
         current = next.value
     }
     current
+}
+
+/// An ISO 8601 date (its UTC start) or instant.
+export fn instant_named(t: string) -> Result<Instant, string> {
+    if t.length == 10 { iso_date(t) } else { iso_instant(t) }
 }
 
 fn from_millis(ms: int) -> Instant {

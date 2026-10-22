@@ -370,6 +370,19 @@ rule decides when a denial removes a claim. `explain` shows each support's
 `authority`. `corrections` exports every correction with what was asked,
 what it did, and the graph's reading before and after, for training.
 
+### As-of reads
+
+Any read takes `"as_of": {"revision": n, "valid_at": "<ISO 8601>"}` (either
+or both). `revision` reads the graph as it stood at that graph revision
+(transaction time): supports published by then and not yet withdrawn, under
+the input revision then current, with merges, tombstones, choices and
+entity births as they stood. `valid_at` keeps only statements whose declared
+valid time holds at that instant, and a supersession closes a claim only
+once the superseding start has come. Statements of unknown valid time
+always hold. A write under `as_of` is refused. Reads interpret history under
+the installed schema; input revisions observed before format 12 count as
+current for their observation's earliest recorded epoch.
+
 ### Engine policy
 
 Every rule and bound a host may choose is one value, `EnginePolicy`
@@ -398,8 +411,8 @@ The engine models are `Meta`, `Schema`, `EntityRow`, `ObservationRow`,
 `ObservationVersionRow`, `RunRow`, `RunTrailRow`, `ClaimRow`, `SupportRow`,
 `EdgeRow`, `AliasRow`, `MergeRow`/`MergeEndRow`, and
 `TombstoneRow`/`TombstoneEndRow`, and `VoiceRow`, `EvidenceRow` and
-`SupersessionRow`, `CorrectionRow`/`CorrectionEndRow` and `FailedRunRow`
-(storage format 11; older formats upgrade by adding them). WAL, foreign keys, and immediate write
+`SupersessionRow`, `CorrectionRow`/`CorrectionEndRow`, `FailedRunRow` and
+`InputEpochRow` (storage format 12; older formats upgrade by adding them). WAL, foreign keys, and immediate write
 transactions are used. Failed publications roll back identities, support
 withdrawals, claims, references, aliases, and the revision together.
 Connections wait up to three seconds for lock contention. Public multi-query

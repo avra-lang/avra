@@ -1,0 +1,174 @@
+use derive.model.{model}
+use semantics.{Semantics, ValidityBinding}
+use schema.{Registration}
+use store.open.{Graph, ReadView}
+use store.publish.{Record, Publication}
+use store.merge.{Merge}
+use store.tombstone.{Tombstone}
+use store.query.{stored_value}
+use store.evidence.{instant_named}
+use data.{encoded}
+use @std.json.{parse, to_text}
+
+@model
+type Tenant = { name: string, city: string? }
+
+@model(quote { Semantics { validity: ValidityBinding { from: ["from_ms"] } } })
+type Lease = { city: string, from_ms: int? }
+
+fn tenancy_models() -> List<Registration> {
+    [Registration { make: Tenant_graph_model }, Registration { make: Lease_graph_model }]
+}
+
+fn registry() -> Result<Graph, string> {
+    let g = Graph.memory(tenancy_models())?
+    g.observe("ledger", "v1")?
+    g
+}
+
+fn lodged(
+    mut g: Graph,
+    run: string,
+    id: string,
+    model: string,
+    value: string,
+    producer: string = "clerk",
+) -> Result<int, string> {
+    g
+        .publish(
+            Publication {
+                id: run,
+                producer: producer,
+                scope: "ledger",
+                input: "ledger",
+                input_revision: (g.observation("ledger")?).member("revision").int() ?? 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: [Record { id: id, model: model, value: stored_value(value)?, mode: .Partial }],
+            },
+        )
+}
+
+fn tenant_cities(g: Graph, id: string) -> Result<string, string> {
+    [encoded(c.value) for f in (g.entity(id)?).fields if f.property == "city" for c in f.candidates]
+        .join("|")
+}
+
+fn as_of_rev(g: Graph, revision: int) -> Graph { g with { view: ReadView { revision: revision } } }
+
+fn transaction_time() -> Result<bool, string> {
+    mut g = registry()?
+    defer { let _ = g.close() }
+    let before = g.revision()?
+    let first = lodged(g, "r1", "t1", "Tenant", "{\"name\":\"T\",\"city\":\"Rome\"}")?
+    let second = lodged(g, "r2", "t1", "Tenant", "{\"name\":\"T\",\"city\":\"Paris\"}")?
+    tenant_cities(as_of_rev(g, first), "t1")? == "\"Rome\"" &&
+        tenant_cities(as_of_rev(g, second), "t1")? == "\"Paris\"" &&
+        tenant_cities(g, "t1")? == "\"Paris\"" &&
+        as_of_rev(g, before).entity("t1") is .Err &&
+        (as_of_rev(g, before).find("Tenant")?).is_empty() &&
+        (as_of_rev(g, first).explain("t1", "city")?).item(0).member("active").truth() == true &&
+        (g.explain("t1", "city")?).item(0).member("active").truth() == false
+}
+
+fn stale_input_as_of() -> Result<bool, string> {
+    mut g = registry()?
+    defer { let _ = g.close() }
+    let first = lodged(g, "r1", "t1", "Tenant", "{\"name\":\"T\",\"city\":\"Rome\"}")?
+    g.observe("ledger", "v2")?
+    let gone = match g.entity("t1") { .Ok(e) -> e.fields.is_empty(), .Err(_) -> true }
+    gone && tenant_cities(as_of_rev(g, first), "t1")? == "\"Rome\""
+}
+
+fn decisions() -> Result<bool, string> {
+    mut g = registry()?
+    defer { let _ = g.close() }
+    lodged(g, "r1", "t1", "Tenant", "{\"name\":\"A\"}")?
+    lodged(g, "r2", "t2", "Tenant", "{\"name\":\"B\"}", "other")?
+    let joined = g.merge(Merge { id: "m1", left: "t1", right: "t2", decider: "user" })?
+    let apart = g.split("m1")?
+    let hidden = g.tombstone(Tombstone { id: "x1", entity: "t2", decider: "user" })?
+    (as_of_rev(g, joined).group("t1")?).contains("t2") &&
+        !(as_of_rev(g, apart).group("t1")?).contains("t2") &&
+        as_of_rev(g, apart).entity("t2") is .Ok &&
+        as_of_rev(g, hidden).entity("t2") is .Err &&
+        g.entity("t2") is .Err
+}
+
+fn valid_time() -> Result<bool, string> {
+    mut g = registry()?
+    defer { let _ = g.close() }
+    lodged(g, "r1", "l1", "Lease", "{\"city\":\"Rome\",\"from_ms\":100}")?
+    lodged(g, "r2", "l1", "Lease", "{\"city\":\"Paris\",\"from_ms\":200}", "other")?
+    let earlier = g with { view: ReadView { valid_at: instant_named("1970-01-01T00:00:00.15Z")? } }
+    let later = g with { view: ReadView { valid_at: instant_named("1970-01-01T00:00:00.25Z")? } }
+    let early = g with { view: ReadView { valid_at: instant_named("1970-01-01")? } }
+    tenant_cities(earlier, "l1")? == "\"Rome\"" &&
+        tenant_cities(later, "l1")? == "\"Paris\"" &&
+        tenant_cities(g, "l1")? == "\"Paris\"" &&
+        tenant_cities(early, "l1")? == ""
+}
+
+fn read_only() -> Result<bool, string> {
+    mut g = registry()?
+    defer { let _ = g.close() }
+    let first = lodged(g, "r1", "t1", "Tenant", "{\"name\":\"T\",\"city\":\"Rome\"}")?
+    let before = g.revision()?
+    mut past = as_of_rev(g, first)
+    let refused = past.observe("ledger", "v2") is .Err &&
+        lodged(past, "r2", "t1", "Tenant", "{\"name\":\"U\"}") is .Err
+    refused && g.revision()? == before
+}
+
+fn ask_graph(mut g: Graph, text: string) -> Result<string, string> {
+    let j = match parse(text) {
+        .Ok(found) -> found,
+        .Err(_) -> { fail "test request is not JSON" },
+    }
+    match g.dispatch(j) { .Ok(answer) -> to_text(answer), .Err(e) -> { fail e } }
+}
+
+fn as_of_dispatched() -> Result<bool, string> {
+    mut g = registry()?
+    defer { let _ = g.close() }
+    let first = lodged(g, "r1", "t1", "Tenant", "{\"name\":\"T\",\"city\":\"Rome\"}")?
+    lodged(g, "r2", "t1", "Tenant", "{\"name\":\"T\",\"city\":\"Paris\"}")?
+    let past_answer = ask_graph(
+        g,
+        "{\"op\":\"get\",\"id\":\"t1\",\"as_of\":{\"revision\":${first}}}",
+    )?
+    let write = ask_graph(
+        g,
+        "{\"op\":\"observe\",\"id\":\"ledger\",\"payload\":\"v3\",\"as_of\":{\"revision\":${first}}}",
+    ) is .Err
+    let future = ask_graph(g, "{\"op\":\"get\",\"id\":\"t1\",\"as_of\":{\"revision\":999}}") is .Err
+    let odd = ask_graph(g, "{\"op\":\"get\",\"id\":\"t1\",\"as_of\":{\"when\":1}}") is .Err
+    let instant = ask_graph(
+        g,
+        "{\"op\":\"get\",\"id\":\"t1\",\"as_of\":{\"valid_at\":\"next friday\"}}",
+    ) is .Err
+    past_answer.contains("Rome") &&
+        !past_answer.contains("Paris") &&
+        write &&
+        future &&
+        odd &&
+        instant
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "as-of reads" {
+    given "a graph that changed over revisions and declares valid time" {
+        then "a revision view reads values, births and activity as they stood" { passed(transaction_time()) }
+        then "a support stands as of a revision when its input was current then" { passed(stale_input_as_of()) }
+        then "merges, splits and tombstones read as they stood" { passed(decisions()) }
+        then "a valid-time view keeps what held at that instant, supersession included" { passed(valid_time()) }
+        then "a historical view refuses every write" { passed(read_only()) }
+        then "as_of rides any read through dispatch, bounded and closed" { passed(as_of_dispatched()) }
+    }
+}

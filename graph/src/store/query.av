@@ -75,8 +75,10 @@ impl Graph {
     fn entity(id: string) -> Result<Entity, string> {
         let opened = self.read_snapshot()?
         defer { let _ = self.db.finish_if_opened(opened) }
-        let revision = self.current()?
+        let installed = self.current()?
+        let revision = self.view.revision ?? installed
         let named = self.entity_named(id)?
+        if !self.in_view(named.born, null) { fail "unknown entity: ${id}" }
         if self.hidden(id)? { fail "entity is tombstoned: ${id}" }
         let standing = self.standing(self.claims_of(self.entities_named(self.group(id)?)?)?)?
         let live = self.held(standing)?
@@ -150,7 +152,7 @@ impl Graph {
         page_ok(limit, offset)?
         self.current()?
         let hidden = self.hidden_members()?
-        let candidates = stored(EntityRow.where(self.db, model: model))?
+        let candidates = [e for e in stored(EntityRow.where(self.db, model: model))? if self.in_view(e.born, null)]
         mut live: List<string> = []
         for e in candidates {
             if hidden.contains(e.name) { continue }
@@ -173,7 +175,7 @@ impl Graph {
         self.current()?
         let hidden = self.hidden_members()?
         let wanted = encoded(value)
-        let candidates = stored(EntityRow.where(self.db, model: model))?
+        let candidates = [e for e in stored(EntityRow.where(self.db, model: model))? if self.in_view(e.born, null)]
         mut live: List<string> = []
         for e in candidates {
             if hidden.contains(e.name) { continue }
@@ -257,15 +259,15 @@ impl Graph {
         let confidence = stored(ConfidenceRow.in_support(self.db, supports))?
         let evidence = stored(EvidenceRow.in_support(self.db, supports))?
         let closings = stored(SupersessionRow.in_old(self.db, supports))?
-        let closers = stored(RunTrailRow.in_run(self.db, closings.map(it.new.run)))?
-        let scheme = self.catalog.fingerprint
+        let footing = self.footing(supports.map(it.run))?
+        let closers = self.footing(closings.map(it.new.run))?
         let current = (self.facts(claims)?).map(it.support.id)
         mut rows: List<Json> = []
         for s in supports {
             if s.claim.property != property { continue }
             let trail? = self.trail_of(trails, s.run.id) else { fail "a run has no trail: ${s.run.name}" }
             let closed = [c for c in closings if c.old.id == s.id]
-            let standing = self.upheld(s, trails, scheme)
+            let standing = self.upheld(s, footing)
             let span = self.valid_time(s)?
             rows
                 .push(
@@ -306,11 +308,7 @@ impl Graph {
                                                         ),
                                                         field(
                                                             "standing",
-                                                            Json
-                                                                .Bool(
-                                                                    self
-                                                                        .upheld(c.new, closers, scheme),
-                                                                ),
+                                                            Json.Bool(self.upheld(c.new, closers)),
                                                         ),
                                                     ],
                                                 ) for c in closed],

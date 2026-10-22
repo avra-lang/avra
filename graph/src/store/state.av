@@ -12,8 +12,22 @@ use store.engine.{
     TombstoneEndRow,
     EvidenceRow,
     SupersessionRow,
+    ObservationRow,
+    InputEpochRow,
 }
-use store.evidence.{Factuality, SpeechAct, plain, denial, factuality_named, speech_act_named}
+use store.evidence.{
+    Factuality,
+    SpeechAct,
+    Interval,
+    plain,
+    denial,
+    factuality_named,
+    speech_act_named,
+}
+
+/// What a support's standing is judged against: its run's trail, the
+/// input revisions current in the view, and the installed schema.
+export type Footing = { trails: List<RunTrailRow>, epochs: List<InputEpochRow>, scheme: string }
 
 /// Two entities an active merge joins.
 export type MergeEdge = { left: string, right: string }
@@ -63,13 +77,13 @@ impl Graph {
         trails.find(it.run.id == run)
     }
 
-    /// Claims whose support still stands: not withdrawn, under the current
-    /// schema and the input revision the run actually read.
+    /// Claims whose support stands in the view: published by then, not yet
+    /// withdrawn, under the installed schema and the input revision then
+    /// current.
     fn standing(claims: List<ClaimRow>) -> Result<List<Standing>, string> {
         let supports = stored(SupportRow.in_claim(self.db, claims))?
-        let trails = stored(RunTrailRow.in_run(self.db, supports.map(it.run)))?
-        let scheme = self.catalog.fingerprint
-        let live = [s for s in supports if self.upheld(s, trails, scheme)]
+        let footing = self.footing(supports.map(it.run))?
+        let live = [s for s in supports if self.upheld(s, footing)]
         let evidence = stored(EvidenceRow.in_support(self.db, live))?
         [Standing { claim: s.claim, support: s, evidence: evidence.find(it.support.id == s.id) } for s in live]
     }
@@ -80,7 +94,12 @@ impl Graph {
     /// The facts among standing claims.
     fn held(live: List<Standing>) -> Result<List<Standing>, string> {
         let closed = self.superseded(live.map(it.support))?
-        let open = [s for s in live if !closed.contains(s.support.id)]
+        let unclosed = [s for s in live if !closed.contains(s.support.id)]
+        let open = if self.view.valid_at == null {
+            unclosed
+        } else {
+            [s for s in unclosed for span in [self.valid_time(s.support)?] if self.valid_in_view(span)]
+        }
         [s for s in open if s.plain() && self.prevails(s, open)]
     }
 
@@ -103,27 +122,72 @@ impl Graph {
     }
 
     /// Supports a still-standing newer claim has closed, by support id.
+    /// In a valid-time view, only once the closing claim's start has come.
     fn superseded(supports: List<SupportRow>) -> Result<List<int>, string> {
         let rows = stored(SupersessionRow.in_old(self.db, supports))?
-        let trails = stored(RunTrailRow.in_run(self.db, rows.map(it.new.run)))?
-        let scheme = self.catalog.fingerprint
-        [r.old.id for r in rows if self.upheld(r.new, trails, scheme)]
+        let footing = self.footing(rows.map(it.new.run))?
+        let closing = [r for r in rows if self.upheld(r.new, footing)]
+        if self.view.valid_at == null { return closing.map(it.old.id) }
+        [r.old.id for r in closing for span in [self.valid_time(r.new)?] if self.begun_in_view(span)]
     }
 
-    /// Not withdrawn, under the current schema and its run's current input.
-    fn upheld(s: SupportRow, trails: List<RunTrailRow>, scheme: string) -> bool {
-        s.until == null && s.claim.schema == scheme && self.stands(s, trails, scheme)
+    fn footing(runs: List<RunRow>) -> Result<Footing, string> {
+        let epochs = if self.view.revision == null {
+            []
+        } else {
+            stored(InputEpochRow.in_observation(self.db, runs.map(it.input)))?
+        }
+        Footing {
+            trails: stored(RunTrailRow.in_run(self.db, runs))?,
+            epochs: epochs,
+            scheme: self.catalog.fingerprint,
+        }
     }
 
-    fn stands(s: SupportRow, trails: List<RunTrailRow>, scheme: string) -> bool {
-        let trail? = self.trail_of(trails, s.run.id) else { return false }
-        trail.schema == scheme && trail.input_revision == s.run.input.revision
+    /// Standing in the view, under the installed schema and its run's input.
+    fn upheld(s: SupportRow, f: Footing) -> bool {
+        self.in_view(s.run.revision, s.until) && s.claim.schema == f.scheme && self.stands(s, f)
+    }
+
+    fn stands(s: SupportRow, f: Footing) -> bool {
+        let trail? = self.trail_of(f.trails, s.run.id) else { return false }
+        trail.schema == f.scheme &&
+            trail.input_revision == self.input_revision(s.run.input, f.epochs)
+    }
+
+    /// Whether something decided at `from` and ended at `until` (null: never)
+    /// stands in the view.
+    fn in_view(from: int, until: int?) -> bool {
+        let at? = self.view.revision else { return until == null }
+        from <= at && (until == null || until! > at)
+    }
+
+    /// An input's revision current in the view. Revisions observed before
+    /// epochs were recorded count from before the earliest recorded one.
+    fn input_revision(input: ObservationRow, epochs: List<InputEpochRow>) -> int {
+        let at? = self.view.revision else { return input.revision }
+        let known = epochs.filter(it.observation.id == input.id)
+        if known.is_empty() { return input.revision }
+        [e.revision for e in known if e.at <= at].max() ?? (known.map(it.revision).min() ?? 1) - 1
+    }
+
+    /// Whether a declared interval holds the view's valid-time instant.
+    fn valid_in_view(span: Interval) -> bool {
+        let t? = self.view.valid_at else { return true }
+        span.holds(t)
+    }
+
+    /// Whether a declared start has come by the view's valid-time instant.
+    fn begun_in_view(span: Interval) -> bool {
+        let t? = self.view.valid_at else { return true }
+        let start? = span.from else { return true }
+        !t.before(start)
     }
 
     /// The active merge decisions as undirected edges over entity names.
     fn merge_edges() -> Result<List<MergeEdge>, string> {
         let ended = stored(MergeEndRow.all(self.db))?
-        [MergeEdge { left: m.left.name, right: m.right.name } for m in stored(MergeRow.all(self.db))? if !ended.any(it.merge.id == m.id)]
+        [MergeEdge { left: m.left.name, right: m.right.name } for m in stored(MergeRow.all(self.db))? if self.in_view(m.revision, ended.find(it.merge.id == m.id)?.until)]
     }
 
     fn merge_pair(a: string, b: string, edges: List<MergeEdge>) -> bool {
@@ -159,7 +223,7 @@ impl Graph {
     /// The active tombstone roots, by entity name.
     fn tombstone_names() -> Result<List<string>, string> {
         let ended = stored(TombstoneEndRow.all(self.db))?
-        [t.entity.name for t in stored(TombstoneRow.all(self.db))? if !ended.any(it.tombstone.id == t.id)]
+        [t.entity.name for t in stored(TombstoneRow.all(self.db))? if self.in_view(t.revision, ended.find(it.tombstone.id == t.id)?.until)]
     }
 
     /// Every entity a live tombstone hides, its group included.

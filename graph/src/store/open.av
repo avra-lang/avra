@@ -31,14 +31,27 @@ use store.engine.{
     CorrectionRow,
     CorrectionEndRow,
     FailedRunRow,
+    InputEpochRow,
 }
 use data.{digest}
 use store.policy.{EnginePolicy}
+use store.evidence.{Instant}
 use parameters.{storage_formats}
 
 /// One connection, the immutable model catalog this process was built with,
-/// and the policy its host declares.
-export type Graph = { db: Db, catalog: Catalog, policy: EnginePolicy = EnginePolicy {} }
+/// the policy its host declares, and the view reads take: current unless
+/// it names an earlier graph revision or a valid-time instant.
+export type Graph = {
+    db: Db,
+    catalog: Catalog,
+    policy: EnginePolicy = EnginePolicy {},
+    view: ReadView = ReadView {},
+}
+
+/// What a read sees. `revision` reads the graph as it stood then
+/// (transaction time); `valid_at` keeps only statements valid at that
+/// instant (valid time). Both null is the current view.
+export type ReadView = { revision: int? = null, valid_at: Instant? = null }
 
 enum CatalogUse { Install, Existing }
 
@@ -131,6 +144,7 @@ impl Graph {
         stored(CorrectionRow.create_table(db))?
         stored(CorrectionEndRow.create_table(db))?
         stored(FailedRunRow.create_table(db))?
+        stored(InputEpochRow.create_table(db))?
         0
     }
 
@@ -153,7 +167,7 @@ impl Graph {
         if !existing {
             modeled(Meta { key: "revision", value: "0" }.insert(db))?
         }
-        // Formats 7 to 11 only add tables. Install them and advance the marker
+        // Formats 7 to 12 only add tables. Install them and advance the marker
         // atomically; never rewrite evidence or silently adopt a future format.
         if previous != format { put_meta(db, "format", format)? }
         if (stored(Schema.where(db, fingerprint: self.catalog.fingerprint))?).is_empty() {
@@ -205,6 +219,7 @@ impl Graph {
     }
 
     fn advanced() -> Result<int, string> {
+        if self.view.revision != null || self.view.valid_at != null { fail "a historical view cannot write" }
         mut db = self.db
         let next = self.revision()? + 1
         put_meta(db, "revision", "${next}")?
@@ -277,6 +292,10 @@ impl Graph {
             )?
         }
         self.advanced()?
+        let made = self.observation_row(id)?
+        let _ = modeled(
+            InputEpochRow { observation: made, revision: next, at: self.revision()? }.insert(db),
+        )?
         next
     }
 }

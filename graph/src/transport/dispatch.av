@@ -1,5 +1,6 @@
 use @std.json.{Json, field, parse}
-use store.open.{Graph}
+use store.open.{Graph, ReadView}
+use store.evidence.{instant_named}
 use store.publish.{Publication}
 use store.query.{Entity, Edge}
 use transport.request.{Operation, operation}
@@ -12,7 +13,42 @@ use query.triggers.{Trigger}
 use store.search.{Passage}
 
 impl Graph {
+    /// One request. An `as_of` member reads the graph as of a revision
+    /// and/or a valid-time instant; a write under it is refused.
     fn dispatch(request: Json) -> Result<Json, string> {
+        let as_of? = request.get("as_of") else { return self.operated(request) }
+        let view = self.view_of(as_of)?
+        (self with { view: view }).operated(without(request, "as_of"))
+    }
+
+    fn view_of(as_of: Json) -> Result<ReadView, string> {
+        let fields = match as_of { .Obj(fs) -> fs, rest -> { fail "as_of must be an object" } }
+        if fields.any(it.key != "revision" && it.key != "valid_at") { fail "as_of takes revision and valid_at only" }
+        let revision = as_of.get("revision")
+        let at = as_of.get("valid_at")
+        if revision == null && at == null { fail "as_of needs a revision or a valid_at" }
+        let opened = self.read_snapshot()?
+        defer { let _ = self.db.finish_if_opened(opened) }
+        let installed = self.current()?
+        let pinned = match revision {
+            r? -> {
+                let n? = r.int() else { fail "as_of revision must be an integer" }
+                if n < 0 || n > installed { fail "as_of revision must be 0..${installed}" }
+                n
+            }
+            null -> null
+        }
+        let instant = match at {
+            a? -> {
+                let text? = a.text() else { fail "as_of valid_at must be an ISO 8601 date or instant" }
+                instant_named(text)?
+            }
+            null -> null
+        }
+        ReadView { revision: pinned, valid_at: instant }
+    }
+
+    fn operated(request: Json) -> Result<Json, string> {
         match operation(request)? {
             .Schema -> {
                 let opened = self.read_snapshot()?
@@ -86,4 +122,8 @@ fn edge_json(e: Edge) -> Json {
                 field("path", Json.Str(e.path)),
             ],
         )
+}
+
+fn without(j: Json, key: string) -> Json {
+    match j { .Obj(fields) -> Json.Obj(fields.filter(it.key != key)), rest -> j }
 }
