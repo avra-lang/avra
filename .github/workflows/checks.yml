@@ -378,32 +378,27 @@ jobs:
         timeout-minutes: 50
         run: |
           s=$(date +%s)
-          # THE LADDER, when the run carries rungs: the starting compiler builds rung 1, its product
-          # rung 2, and so on; the last product then builds HEAD twice below, as for any tree. A
-          # failing rung is a hard stop that names itself — the seed cannot read a rung either.
+          # THE LADDER rides `make compiler` (its RUNGS). A cached product for these rungs
+          # stands in for the ladder; a built one is kept for the next push.
           rungs="${{ steps.rungs.outputs.list }}"
-          if [ -n "$rungs" ]; then
-            if [ "${{ steps.rungcache.outputs.cache-hit }}" = true ] && [ -x .rung-product/avra ]; then
-              echo "ladder: the rung product is cached for these rungs"
-              cp .rung-product/avra build/avra
-            else
-              [ -x build/avra ] || { echo "::error::the ladder has no starting compiler (the release fetch found none)"; exit 1; }
-              # each rung is replayed on the base this tree is judged against, never on its own stale tree
-              lbase=origin/main
-              [ "${{ github.event_name }}" != push ] || lbase=HEAD~1
-              product=$(AVRA_LADDER_BASE=$(git rev-parse "$lbase") AVRA_LADDER_S=900 sh tools/ladder.sh build/avra $rungs) || { echo "::error::the ladder failed: a rung did not build with the compiler of the rung before it"; exit 1; }
-              mkdir -p .rung-product && cp "$product" .rung-product/avra
-              cp "$product" build/avra
-              echo "built=1" >> "$GITHUB_OUTPUT"
-            fi
-            echo "speed ladder $(( $(date +%s) - s ))" >> speed.log
+          if [ -n "$rungs" ] && [ "${{ steps.rungcache.outputs.cache-hit }}" = true ] && [ -x .rung-product/avra ]; then
+            echo "ladder: the rung product is cached for these rungs"
+            cp .rung-product/avra build/avra
+            rungs=""
           fi
           # A RELEASED COMPILER OLDER THAN THIS TREE CANNOT READ IT, and its
           # failed generation is the expected shape here: `make compiler` falls
           # back to the seed, a full build that forgives a compiler too old,
           # never a source wrong.
-          make -s compiler GEN_BOUND=1500 STORE_ASIDE="${RUNNER_TEMP:-/tmp}/avra-cache-of-an-older-compiler" \
-            || { echo "::error::the compiler did not build, from the standing compiler nor from the seed"; exit 1; }
+          # each rung is replayed on the base this tree is judged against, never on its own stale tree
+          lbase=origin/main
+          [ "${{ github.event_name }}" != push ] || lbase=HEAD~1
+          make -s compiler RUNGS="$rungs" LADDER_BASE="$(git rev-parse "$lbase")" GEN_BOUND=1500 STORE_ASIDE="${RUNNER_TEMP:-/tmp}/avra-cache-of-an-older-compiler" \
+            || { echo "::error::the compiler did not build"; exit 1; }
+          if [ -n "$rungs" ]; then
+            mkdir -p .rung-product && cp build/avra-ladder .rung-product/avra
+            echo "built=1" >> "$GITHUB_OUTPUT"
+          fi
           echo "speed compiler $(( $(date +%s) - s ))" >> speed.log
           echo "compiler: built from source in $(( $(date +%s) - s ))s (starting compiler: ${{ steps.release.outputs.source || 'cache' }})"
       - if: steps.compiler.outputs.built == '1' && github.event_name == 'pull_request'
@@ -691,25 +686,31 @@ jobs:
         with:
           key: speed-main-keepers
           save: ${{ job.status == 'success' && needs.prepare.outputs.main == '1' }}
-  # THE SECOND HALF, alone on its own runner. It needs only the lowercase
-  # build artifact, and it shares the Makefile's one list with keepers-a —
-  # never a second list kept in step by hand.
+  # THE SECOND HALF AND THE WASM PROOF, each alone on its own runner. Each
+  # runs one of the Makefile's lists (KEEPERS_B, KEEPERS_WASM) — never a
+  # second list kept in step by hand.
   keepers-b:
     needs: [prepare]
     if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container: *ci-image
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        list: ['b', 'wasm']
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/handed-down
       # gdb: the defects keeper dumps the stack of a compile that stalls, while it lives.
-      - name: debugger for stalls
+      - if: matrix.list == 'b'
+        name: debugger for stalls
         continue-on-error: true
         env:
           DEBIAN_FRONTEND: noninteractive
         run: apt-get update -qq && apt-get install -y -qq --no-install-recommends gdb
-      - name: gdb attaches
+      - if: matrix.list == 'b'
+        name: gdb attaches
         continue-on-error: true
         run: |
           sleep 60 &
@@ -721,7 +722,8 @@ jobs:
           fi
           kill "$pid" 2>/dev/null || true
       # THE DEFECTS KEEPER'S SECONDS AGAINST THE LAST GREEN RUN: a timeout names what the program took there.
-      - name: earlier defect timings
+      - if: matrix.list == 'b'
+        name: earlier defect timings
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -762,8 +764,8 @@ jobs:
           # CI always proves both engines; a lane's own run proves Firefox unless it asks for more
           UI_BROWSER_ENGINES: "firefox webkit webkit-iphone"
         run: |
-          python3 tools/step_cpu.py keepers-b -- make -s -o avra keepers-b || exit 1
-      - if: always()
+          python3 tools/step_cpu.py keepers-${{ matrix.list }} -- make -s -o avra keepers-${{ matrix.list }} || exit 1
+      - if: always() && matrix.list == 'b'
         uses: actions/upload-artifact@v4
         with:
           name: defects-timings
@@ -874,7 +876,6 @@ jobs:
         timeout-minutes: 20
         run: |
           args="--files ${{ needs.prepare.outputs.changed }} --packages ${{ needs.prepare.outputs.packages }} --no-keepers"
-          [ "${{ github.event_name }}" != pull_request ] || args="$args --pr-minimum"
           sh tools/bounded.sh 900 sh tools/gate_changed.sh $args || exit 1
 
   # THE LATENCY GATE A RUNTIME CHANGE OWES: the scheduler's transition

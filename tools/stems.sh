@@ -104,10 +104,13 @@ for obj in $(sh tools/manifest_objects.sh); do
 done
 
 # A [link] ROW HAS ONE READER, tools/manifest_objects.sh: a second sed of
-# `objects = [` is a second definition that can disagree with the first.
+# `objects = [`, or a TOML reader's `.get("objects")`, is a second definition
+# that can disagree with the first.
 rows=$((rows + 1))
-for f in $(grep -lE 'objects \*= \*\\\[' Makefile tools/*.sh tools/*.py 2>/dev/null); do
+for f in $(grep -lE "objects \\*= \\*\\\\\\[|\\.get\\(['\"](wasm_)?objects['\"]" Makefile tools/*.sh tools/*.py 2>/dev/null); do
     [ "$f" = tools/manifest_objects.sh ] && continue
+    # this keeper's link-row check reads the declaration on its own, to hold the tools to it
+    [ "$f" = tools/stems.sh ] && continue
     echo "stems: $f reads a manifest's [link] row itself — ask tools/manifest_objects.sh"
     fails=$((fails + 1))
 done

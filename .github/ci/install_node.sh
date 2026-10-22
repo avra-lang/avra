@@ -8,6 +8,7 @@
 #
 #   sh .github/ci/install_node.sh
 set -eu
+. "$(dirname "$0")/fetch_pinned.sh"
 
 version=24.18.0
 sha256=55aa7153f9d88f28d765fcdad5ae6945b5c0f98a36881703817e4c450fa76742
@@ -17,13 +18,8 @@ if [ -x /opt/node-jspi/bin/node ] && [ "$(/opt/node-jspi/bin/node --version 2>/d
     exit 0
 fi
 
-work=$(mktemp -d)
-trap 'find "$work" -delete' EXIT
-curl -fsSL -o "$work/node.tar.xz" "https://nodejs.org/dist/v$version/node-v$version-linux-x64.tar.xz"
-[ "$(sha256sum "$work/node.tar.xz" | awk '{print $1}')" = "$sha256" ] \
-    || { echo "install_node: the tarball for $version is not the one pinned" >&2; exit 1; }
-tar -xJf "$work/node.tar.xz" -C "$work"
+fetch_pinned install_node "https://nodejs.org/dist/v$version/node-v$version-linux-x64.tar.xz" "$sha256"
 SUDO=""; [ "$(id -u)" = 0 ] || SUDO=sudo
-$SUDO mv "$work/node-v$version-linux-x64" /opt/node-jspi
+$SUDO mv "$pinned/node-v$version-linux-x64" /opt/node-jspi
 $SUDO ln -sf /opt/node-jspi/bin/node /usr/local/bin/node-jspi
 echo "install_node: Node $version at /usr/local/bin/node-jspi"

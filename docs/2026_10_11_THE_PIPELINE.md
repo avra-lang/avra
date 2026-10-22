@@ -466,14 +466,13 @@ whole job with nothing said.
 owes", shared by a lane and a PR's own check so they can never be two
 instruments:
 
-    sh tools/gate_changed.sh --refs <base> <head> [--no-keepers] [--pr-minimum]
-    sh tools/gate_changed.sh --files <f…> --packages <p…> [--pr-minimum]
+    sh tools/gate_changed.sh --refs <base> <head> [--no-keepers]
+    sh tools/gate_changed.sh --files <f…> --packages <p…> [--no-keepers]
 
-It runs the keepers (unless `--no-keepers`), `fmt --check` on the changed
-`.av`, `check <pkg> --baseline tools/idioms.baseline` on each affected
-package, and — where a wasm toolchain stands — the wasm target's proof.
-`--pr-minimum` is a fast floor: fmt and idioms only, skipping the wasm
-proof. A lane runs it as
+It runs the keepers (unless `--no-keepers`) — the wasm target's proof is
+among them, in `keepers-b` — then `fmt --check` on the changed `.av` and
+`check <pkg> --baseline tools/idioms.baseline` on each affected package. A
+lane runs it as
 `sh tools/work run sh tools/gate_changed.sh --files … --packages …`.
 
 ### The lane's pre-push scope
