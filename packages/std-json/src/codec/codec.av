@@ -38,6 +38,9 @@ use @std.meta.{
     name,
     refuse_as_at,
     type_named,
+    stored_scalar,
+    flat,
+    flat_field,
 }
 use @std.derive.{record_of}
 use @std.json.{
@@ -334,7 +337,7 @@ fn read(kind: Kind, v: Code, p: Code, depth: int) -> Code {
         .Opt(inner) -> read_present(inner, v, p, depth),
         .List(elem) -> read_items(elem, v, p, depth),
         .Map(_, elem) -> read_members(elem, v, p, depth),
-        .Named(n, _) -> quote { ${name(n)}.decode_json(${v}, ${p})? },
+        .Named(n, _) -> if flat(n) { quote { ${n} { ${flat_field(n)}: ${read(stored_scalar(n)!, v, p, depth)} } } } else { quote { ${name(n)}.decode_json(${v}, ${p})? } },
         rest -> quote { unreadable() },
     }
 }
@@ -537,7 +540,7 @@ fn kind_schema(kind: Kind) -> Code {
         .Opt(inner) -> quote { Json.Obj([field("anyOf", Json.Arr([${kind_schema(inner)}, ${typed("null")}]))]) },
         .List(elem) -> quote { Json.Obj([field("type", Json.Str("array")), field("items", ${kind_schema(elem)})]) },
         .Map(_, elem) -> quote { Json.Obj([field("type", Json.Str("object")), field("additionalProperties", ${kind_schema(elem)})]) },
-        .Named(n, _) -> quote { Json.Obj([field("$ref", Json.Str(${literal("#/components/schemas/" + n)}))]) },
+        .Named(n, _) -> if flat(n) { kind_schema(stored_scalar(n)!) } else { quote { Json.Obj([field("$ref", Json.Str(${literal("#/components/schemas/" + n)}))]) } },
         rest -> quote { unwritable() },
     }
 }
@@ -582,7 +585,7 @@ fn fields_of(t: Type?) -> List<Field> {
 /// its own `@json`.
 fn records_read(k: Kind) -> List<string> {
     match k {
-        .Named(n, _) -> [n],
+        .Named(n, _) -> if stored_scalar(n) == null { [n] } else { [] },
         .Opt(held) or .List(held) or .Map(_, held) -> records_read(held),
         rest -> [],
     }

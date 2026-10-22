@@ -1,0 +1,23 @@
+// A record of one scalar field stores as that scalar: a `Time` field is an integer
+// column, read back as the same instant.
+use @std.db.{model}
+use @std.db.error.{ModelError}
+use @std.sqlite.error.{SqlError}
+use @std.sqlite.{Db}
+use @std.time.{Time, parse_iso}
+
+@model
+type Stamp = {
+    id: int = 0,
+    at: Time,
+}
+
+fn round_trip() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    Stamp.create_table(db)?
+    let _ = Stamp { at: parse_iso("2001-09-09T01:46:40.000000123Z")! }.insert(db)
+    let row = Stamp.all(db)?[0]
+    row.at.iso()
+}
+
+round_trip() catch _ -> "failed"

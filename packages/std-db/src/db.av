@@ -36,13 +36,16 @@ use @std.meta.{
     name,
     literal,
     type_named,
+    stored_scalar,
+    flat,
+    flat_field,
     refuse_as_at,
 }
 use @std.errors.{Loc}
 use @std.sqlite.{Db, SqlValue, sql, prepared}
 use @std.sqlite.error.{SqlError}
 use @std.validate.{Checked, Issues, checker, decoder, stripped}
-use @std.time.{now_ms}
+use @std.time.{now}
 use apply.{Entry, MigrateError, claim_table, grown, lifted}
 use shape.{ColumnFacts, create_sql, quoted, shape_text}
 use scope.{Where, scope_clause, scope_text, scope_args}
@@ -92,6 +95,33 @@ fn shape_problems(t: Type) -> List<Diagnostic> {
     if !has_id_field(t) { return [no_id_field(t)] }
     [soft_delete_kind(f) for f in t.fields if is_mark(f, "soft_delete") && !nullable_int(f.kind)]
         .concat([auto_kind(f) for f in t.fields if is_mark(f, "auto") && !plain_int(f.kind)])
+        .concat([record_not_stored(f) for f in t.fields if unstored_record(f.kind)])
+}
+
+/// A record-typed field is a `@model` link, or a flat record that stores as its one
+/// scalar. Any other record has no column to store it in, so it is refused here.
+fn unstored_record(k: Kind) -> bool {
+    match k {
+        .Named(n, args) -> args.is_empty() && n != "Many" && link_target_name(n) == null && stored_scalar(n) == null,
+        .Opt(inner) -> unstored_record(inner),
+        rest -> false,
+    }
+}
+
+/// The name of a `@model` record, or null when the name is not one.
+fn link_target_name(n: string) -> string? {
+    let t? = type_named(n) else { return null }
+    if t.annotations.any(it.name == "model") { return n }
+    null
+}
+
+fn record_not_stored(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "record_not_stored",
+        f.at,
+        "a record field is stored only as a `@model` link or as one scalar: `${f.name}` is a record with neither",
+        "make `${f.name}` a `@model` record, or a record of one scalar field, or store its fields",
+    )
 }
 
 // ── The shape a model must have ──────────────────────────────────
@@ -102,10 +132,19 @@ fn has_id_field(t: Type) -> bool {
 }
 
 fn nullable_int(k: Kind) -> bool {
-    match k { .Opt(.Int) -> true, rest -> false }
+    match k { .Opt(inner) -> plain_int(inner), rest -> false }
 }
 
+/// A plain integer column: the kind itself, or a record that stores as one.
 fn plain_int(k: Kind) -> bool {
+    match k {
+        .Int -> true,
+        .Named(n, args) -> args.is_empty() && stored_scalar(n) != null && is_int_kind(stored_scalar(n)!),
+        rest -> false,
+    }
+}
+
+fn is_int_kind(k: Kind) -> bool {
     match k { .Int -> true, rest -> false }
 }
 
@@ -162,7 +201,7 @@ fn generated(t: Type) -> Decls {
             fn insert(db: Db) -> Result<${t}, ModelError> {
                 let _ = or_invalid(self.check())?
                 mut args: List<SqlValue> = []
-                ${[push_bound(f) for f in written_fields(t)]}
+                ${[push_inserted(f) for f in inserted_fields(t)]}
                 or_attributed(db.run(sql(${literal(insert_sql_of(t))}, args)), ${literal(table_name_of(t))}, ${unique_fields_code(t)})?
                 ${inserted_row(t)}
             }
@@ -224,6 +263,10 @@ fn generated(t: Type) -> Decls {
 /// database sets.
 fn written_fields(t: Type) -> List<Field> { [f for f in non_id_fields(t) if !is_mark(f, "auto") && !is_many(f)] }
 
+/// The columns an insert writes: the written ones, and each `@auto` column, which
+/// is bound from the program's clock rather than left to a SQL default.
+fn inserted_fields(t: Type) -> List<Field> { [f for f in non_id_fields(t) if !is_many(f)] }
+
 // ── Relations. A field of another model's type is a LINK: the column
 // `<field>_id` holds its key, and a read fetches the parent. `Many<T>` is
 // the other end: no column, an accessor over the child's link. ──
@@ -231,7 +274,7 @@ fn written_fields(t: Type) -> List<Field> { [f for f in non_id_fields(t) if !is_
 /// The model a link field points at, null for any other field.
 fn link_target(f: Field) -> string? {
     match f.kind {
-        .Named(n, args) or .Opt(.Named(n, args)) -> if n != "Many" && args.is_empty() { n } else { null },
+        .Named(n, args) or .Opt(.Named(n, args)) -> if n != "Many" && args.is_empty() { link_target_name(n) } else { null },
         rest -> null,
     }
 }
@@ -414,8 +457,6 @@ fn nullable_filter(f: Field) -> Stmts {
     }
 }
 
-/// What `remove` does: a soft-delete model stamps the time and keeps
-/// the row; any other deletes it.
 // ── The other end of a link. ──
 
 /// The child model a `Many` field names.
@@ -462,7 +503,7 @@ fn removal(t: Type) -> Code {
         let opened = modeled(db.begin_unless_open())?
         defer db.finish_if_opened(opened)
         ${[cascade_held(f) for f in cascading(t)]}
-        let changed = modeled(db.run(sql(${literal(soft_remove_sql_of(t))} + scope_text(scope), scope_args([.Int(now_ms()), .Int(self.id)], scope))))?
+        let changed = modeled(db.run(sql(${literal(soft_remove_sql_of(t))} + scope_text(scope), scope_args([.Int(now().ns), .Int(self.id)], scope))))?
         if changed != 0 {
             ${[cascade_stmt(f) for f in cascading(t)]}
         }
@@ -693,7 +734,7 @@ fn on_delete(f: Field) -> string {
 fn shape_text_of(t: Type) -> string { shape_text(table_name_of(t), table_columns(t)) }
 
 /// Milliseconds since the epoch, as the database reads its own clock.
-fn auto_default() -> string { "(CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER))" }
+fn auto_default() -> string { "0" }
 
 fn is_unique(f: Field) -> bool { f.marks.any(it.name == "unique") }
 
@@ -740,7 +781,7 @@ fn sql_type_of(k: Kind) -> string {
 /// list SQLite will accept — `INSERT INTO t () VALUES ()` is a syntax
 /// error, so the zero-column case is its own, still-honest SQL.
 fn insert_sql_of(t: Type) -> string {
-    let fs = written_fields(t)
+    let fs = inserted_fields(t)
     if fs.is_empty() { return "INSERT INTO ${quoted_table(t)} DEFAULT VALUES" }
     let names = [quoted(column_of(f)) for f in fs].join(", ")
     let marks = ["?" for f in fs].join(", ")
@@ -837,13 +878,20 @@ fn bound_value(k: Kind, v: Code) -> Code {
         .Float -> quote { .Real(${v}) },
         .Str -> quote { .Text(${v}) },
         .Opt(inner) -> quote { if ${v} == null { .Null } else { ${bound_value(inner, quote { ${v}! })} } },
-        .Named(_, _) -> quote { .Int(${v}.id) },
+        .Named(n, _) -> if flat(n) { bound_value(stored_scalar(n)!, quote { ${v}.${flat_field(n)} }) } else { quote { .Int(${v}.id) } },
         rest -> quote { a_model_field_kind_this_derive_does_not_bind_yet() },
     }
 }
 
 fn push_bound(f: Field) -> Code {
     quote { args.push(${bound(f)}) }
+}
+
+/// An insert's value for a column: an `@auto` column is the program's clock in
+/// nanoseconds, every other column is what the row holds.
+fn push_inserted(f: Field) -> Code {
+    if is_mark(f, "auto") { return quote { args.push(.Int(now().ns)) } }
+    push_bound(f)
 }
 
 /// A column read straight off the STANDING statement — never through
@@ -872,6 +920,7 @@ fn read_kind(k: Kind, i: int) -> Code {
         .Float -> quote { s.real_at(${i})? },
         .Str -> quote { s.text_at(${i})? },
         .Opt(inner) -> quote { if s.class_at(${i})? is .Null { null } else { ${read_kind(inner, i)} } },
+        .Named(n, _) -> quote { ${n} { ${flat_field(n)}: ${read_kind(stored_scalar(n)!, i)} } },
         rest -> quote { a_model_field_kind_this_derive_does_not_read_yet() },
     }
 }
