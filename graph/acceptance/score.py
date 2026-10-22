@@ -102,7 +102,7 @@ class App:
         return body
 
 
-def run_hook(command, payload, timeout=120, log=None):
+def run_hook(command, payload, timeout=None, log=None):
     """The hook's JSON answer; its stderr is appended to `log` when given."""
     done = subprocess.run(shlex.split(command), input=json.dumps(payload), text=True,
                           capture_output=True, timeout=timeout)
@@ -394,6 +394,38 @@ class Cache:
 
 
 CACHE = None
+TIMINGS = HERE / "timings.json"
+
+
+def fitted(name):
+    """Seconds a hook may take: fitted from measured runs (timings.json, written
+    by --fit-timeout), or unbounded before any measurement."""
+    return json.loads(TIMINGS.read_text()).get(name) if TIMINGS.exists() else None
+
+
+def extract_timeout():
+    return fitted("extract_timeout_s")
+
+
+def fit_timeout(paths):
+    """Each hook's slowest measured run, doubled: a call may take as long again
+    as the slowest one seen before it is called stuck."""
+    runs = [json.loads(pathlib.Path(p).read_text()) for p in paths]
+    extractions = [e["ms"] for r in runs for e in r.get("extractions", [])
+                   if "ms" in e and (e.get("result") or {}).get("status") == "complete"]
+    questions = [q["ms"] for r in runs for q in r.get("questions", {}).values()
+                 if "ms" in q and q.get("planned") and not q.get("cached")]
+    out = {"fitted": {"rule": "twice the slowest measured complete run of each hook",
+                      "on": [pathlib.Path(p).name for p in paths], "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                      "extractions": len(extractions), "questions": len(questions)}}
+    if extractions:
+        out["extract_timeout_s"] = 2 * max(extractions) / 1000
+    if questions:
+        out["plan_timeout_s"] = 2 * max(questions) / 1000
+    if len(out) == 1:
+        sys.exit("no measured hook run in those results")
+    TIMINGS.write_text(json.dumps(out, indent=1) + "\n")
+    print({k: v for k, v in out.items() if k != "fitted"}, "->", TIMINGS.relative_to(ROOT))
 
 
 def file_digest(path):
@@ -422,7 +454,10 @@ def publish_source(app, mode, hooks, source, schema, revision, trace=None):
         result = CACHE.get("extractions", key) if CACHE else None
         record["cached"] = result is not None
         if result is None:
-            result = run_hook(hooks["extractor"].replace("{schema}", str(schema_file)), envelope(source), log=log)
+            started = time.time()
+            result = run_hook(hooks["extractor"].replace("{schema}", str(schema_file)), envelope(source),
+                              timeout=extract_timeout(), log=log)
+            record["ms"] = int((time.time() - started) * 1000)
             if CACHE and result.get("status") == "complete":
                 CACHE.put("extractions", key, result)
         record["result"] = result
@@ -510,7 +545,8 @@ def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, 
             plan = run_hook(hooks["planner"], {
                 "contract": 1, "request": "score-" + q["id"], "question": q["question"],
                 "context": context, "source_view": q.get("source_view", "current"),
-                "schema": schema, "graph": [str(app.binary), "request", "--db", str(app.db)]}, log=log)
+                "schema": schema, "graph": [str(app.binary), "request", "--db", str(app.db)]},
+                timeout=fitted("plan_timeout_s"), log=log)
         record["planned"] = plan
         answer = app.call(query_request(plan))
         record["response"] = answer
@@ -688,11 +724,15 @@ def main():
     parser.add_argument("--binary", default=None)
     parser.add_argument("--build", action="store_true", help="build the fixture app first")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--fit-timeout", nargs="+", metavar="RESULTS",
+                        help="fit the extraction timeout from e2e results files, then exit")
     parser.add_argument("--resume", action="store_true",
                         help="reuse extractions and graded questions a cut run already paid for (never held-out)")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
+    if args.fit_timeout:
+        return fit_timeout(args.fit_timeout)
     configure((HERE / args.fixture).resolve())
     global CACHE
     CACHE = Cache(FIXTURE.name if args.fixture != "." else "acceptance") if args.resume and not args.heldout else None
