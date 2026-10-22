@@ -155,6 +155,20 @@ fn as_of_dispatched() -> Result<bool, string> {
         instant
 }
 
+fn as_of_query() -> Result<bool, string> {
+    mut g = registry()?
+    defer { let _ = g.close() }
+    let first = lodged(g, "r1", "t1", "Tenant", "{\"name\":\"T\",\"city\":\"Rome\"}")?
+    lodged(g, "r2", "t1", "Tenant", "{\"name\":\"T\",\"city\":\"Paris\"}")?
+    let question = "\"op\":\"query\",\"cypher\":\"MATCH (t:Tenant) RETURN t.city\",\"params\":{\"asker\":\"x\",\"now\":0}"
+    let past = ask_graph(g, "{${question},\"as_of\":{\"revision\":${first}}}")?
+    let now = ask_graph(g, "{${question}}")?
+    past.contains("Rome") &&
+        !past.contains("Paris") &&
+        now.contains("Paris") &&
+        past.contains("\"read_revision\":${first}")
+}
+
 fn passed(answer: Result<bool, string>) -> bool {
     answer catch e -> {
         println(e)
@@ -170,5 +184,6 @@ spec "as-of reads" {
         then "a valid-time view keeps what held at that instant, supersession included" { passed(valid_time()) }
         then "a historical view refuses every write" { passed(read_only()) }
         then "as_of rides any read through dispatch, bounded and closed" { passed(as_of_dispatched()) }
+        then "a Cypher question reads as of a revision and says which" { passed(as_of_query()) }
     }
 }
