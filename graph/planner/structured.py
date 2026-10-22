@@ -196,7 +196,7 @@ def arrival(models, label, options):
             f"no: the answer is on related records ({onward})"]
 
 
-def plan(chooser, question, schema, context, search=None, depth=None, model_of=None):
+def plan(chooser, question, schema, context, search=None, depth=None, read=None):
     """One query composed from closed choices; `depth` caps the hops (the
     request's budget), else the catalog's size bounds the walk."""
     derived = derivations_of(schema)
@@ -205,7 +205,7 @@ def plan(chooser, question, schema, context, search=None, depth=None, model_of=N
     head = f"Question: {question}"
     evidence = Evidence(search, question, models)
     out = Plan()
-    var, label = anchored(chooser, head, question, models, context, evidence, out, model_of)
+    var, label = anchored(chooser, head, question, models, context, evidence, out, read)
     came, held = None, None
     phrasing = question.lower()
     for hop in range(depth if depth is not None else len(models)):
@@ -243,24 +243,36 @@ def plan(chooser, question, schema, context, search=None, depth=None, model_of=N
     return out.cypher(items)
 
 
-def anchored(chooser, head, question, models, context, evidence, out, model_of=None):
+def speaking(chooser, head, models, context, read):
+    """Whether the question is about the speaker or what is theirs: a closed
+    yes/no, framed with the speaker's own declared label when the graph holds one."""
+    entity = read(context["speaker"]) if read else {}
+    path = (((models.get(entity.get("model")) or {}).get("semantics")) or {}).get("label") or []
+    values = (entity.get("fields") or {}).get(path[0], []) if len(path) == 1 else []
+    who = next((v["value"] for v in sorted(values, key=lambda v: not v.get("chosen"))), None)
+    ask = f"Is the question about {who}, the one asking, or about what belongs to {who}?" if who \
+        else "Is the question about the one asking, or about what belongs to them?"
+    p = debiased(chooser, f"{head}\nAsked by {who}." if who else head, ask, ["yes", "no"])
+    return p[0] > p[1]
+
+
+def anchored(chooser, head, question, models, context, evidence, out, read=None):
     """The first node: the speaker, a record the question names, or every record of a kind."""
     named = evidence.named(question)
-    starts = (["the person asking or speaking"] if context.get("speaker") else []) \
-        + [f"the {m} whose {p} is {v!r}, named in the question" for m, p, v in named] + ["every record of one kind"]
-    pick = best(chooser, head, "Who or what is the question about first?", starts)
-    speaker = 1 if context.get("speaker") else 0
-    if speaker and pick == 0:
+    if context.get("speaker") and speaking(chooser, head, models, context, read):
         # The speaker is a graph entity: its model is a fact the graph holds.
-        label = model_of(context["speaker"]) if model_of else None
+        label = (read(context["speaker"]) if read else {}).get("model")
         if label not in models:
             keyed = identified(models)
             label = keyed[best(chooser, head, "Which kind of record is the person asking?", keyed)]
         var = out.node(label)
         out.parts.append(f"({var}:{label})")
         out.where.append(f"id({var}) = $speaker")
-    elif pick < speaker + len(named):
-        label, prop, value = named[pick - speaker]
+        return var, label
+    starts = [f"the {m} whose {p} is {v!r}, named in the question" for m, p, v in named] + ["every record of one kind"]
+    pick = best(chooser, head, "Who or what is the question about first?", starts)
+    if pick < len(named):
+        label, prop, value = named[pick]
         evidence.used.add((label, prop, value))
         evidence.explain(value)
         var = out.node(label)

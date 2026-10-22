@@ -111,9 +111,9 @@ class Graph:
         except json.JSONDecodeError:
             raise SystemExit(f"planner: the graph did not answer {body['op']}: {(done.stderr or done.stdout)[:300]}")
 
-    def model_of(self, entity):
-        """The model of an entity the graph holds, or None."""
-        return self.call({"op": "get", "id": entity}).get("model")
+    def read(self, entity):
+        """The entity as the graph holds it: its model and its fields."""
+        return self.call({"op": "get", "id": entity})
 
     def search(self, query):
         """Every passage the search op will return for the query, up to its declared maximum."""
@@ -176,7 +176,7 @@ def composed(chooser, question, schema, context, graph=None, depth=None):
     started = time.time()
     params = params_of(context)
     cypher = structured.plan(chooser, question, schema, context, graph.search if graph else None, depth,
-                             graph.model_of if graph else None)
+                             graph.read if graph else None)
     gated(cypher, schema, params, graph)
     log(f"composed in {time.time() - started:.1f}s: {cypher}")
     return {"cypher": cypher, "params": params, "as_of": viewed(chooser, question, context)}

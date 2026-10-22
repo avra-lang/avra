@@ -36,10 +36,10 @@ class Labelled:
         return [1.0 if o == gold else 0.0 for o in options]
 
 
-def walk(question, schema, context, label, search=None, depth=None, model_of=None):
+def walk(question, schema, context, label, search=None, depth=None, read=None):
     """(cypher, decisions): the query the labelled choices compose, and every decision on the way."""
     chooser = Labelled(label)
-    cypher = structured.plan(chooser, question, schema, context, search, depth, model_of)
+    cypher = structured.plan(chooser, question, schema, context, search, depth, read)
     return cypher, chooser.decisions
 
 

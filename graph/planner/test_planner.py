@@ -76,8 +76,8 @@ class FakeGraph:
     def search(self, query):
         return []
 
-    def model_of(self, entity):
-        return None
+    def read(self, entity):
+        return {}
 
 
 class Gate(unittest.TestCase):
@@ -137,6 +137,25 @@ class Derived(unittest.TestCase):
         self.assertEqual(cypher, "MATCH (n0:Invoice) MATCH (n0)<-[:invoice]-(n1:Payment) "
                                  "RETURN payment_status(n0, collect(n1)) AS payment_status")
         self.assertNotIn("PaymentStatus", [o for q, os in chooser.asked for o in os if q.startswith("Which kind")])
+
+
+class Speaker(unittest.TestCase):
+    def test_the_gate_is_framed_with_the_speakers_declared_label(self):
+        import structured
+
+        schema = json.loads(json.dumps(SCHEMA))
+        schema["models"][0]["semantics"] = {"label": ["name"]}
+        seen = []
+
+        class Asks:
+            def choose(self, context, question, options):
+                seen.append((context, question))
+                return [0.2, 0.8]
+
+        read = lambda entity: {"model": "Person", "fields": {"name": [{"value": "Jonas Berg", "chosen": False}]}}
+        self.assertFalse(structured.speaking(Asks(), "Question: Who is Dana?", structured.models_of(schema), SPEAKER, read))
+        self.assertEqual(seen[0][0], "Question: Who is Dana?\nAsked by Jonas Berg.")
+        self.assertIn("about Jonas Berg, the one asking", seen[0][1])
 
 
 class Reading(unittest.TestCase):
@@ -263,7 +282,7 @@ class Structured(unittest.TestCase):
     def test_choices_compose_a_query_the_gate_admits(self):
         import structured
 
-        chooser = Scripted(["person asking", "Person", "yes", "value"], {"name"})
+        chooser = Scripted(["yes", "Person", "yes", "value"], {"name"})
         cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, SPEAKER)
         self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE id(n0) = $speaker RETURN n1.name AS name")
         self.assertFalse(chooser.script)
@@ -280,7 +299,7 @@ class Structured(unittest.TestCase):
     def test_facts_the_question_reaches_lead_the_walk_on(self):
         import structured
 
-        chooser = Scripted(["person asking", "Person", "contains 'guest'", "contains 'launch'", "value"],
+        chooser = Scripted(["yes", "Person", "contains 'guest'", "contains 'launch'", "value"],
                            {"requested_guest_limit"})
         search = facts("Commitment action: keep the guest list short", "Event title: spring launch")
         cypher = structured.plan(chooser, "What guest limit did my wife set for the launch?", SCHEMA, SPEAKER, search)
@@ -314,9 +333,9 @@ class Structured(unittest.TestCase):
                     "my": common, "who": common}
             return hits.get(word, [])
 
-        chooser = Scripted(["person asking", "Person", "yes", "value"], {"name"})
+        chooser = Scripted(["yes", "Person", "yes", "value"], {"name"})
         cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, SPEAKER, search)
-        self.assertEqual(chooser.asked[0][1], ["the person asking or speaking", "every record of one kind"])
+        self.assertEqual(chooser.asked[0][1], ["yes", "no"])
         self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE id(n0) = $speaker RETURN n1.name AS name")
 
     def test_a_hop_shows_the_facts_that_point_to_it(self):
@@ -382,11 +401,11 @@ class Structured(unittest.TestCase):
         import structured
 
         search = facts("PersonalTask summary: book a table")
-        recorded = Scripted(["person asking", "Person", "assignee is this", "contains 'table'", "yes", "value",
+        recorded = Scripted(["yes", "Person", "assignee is this", "contains 'table'", "yes", "value",
                              "recorded", "confirmation_recorded"])
         cypher = structured.plan(recorded, "Is my table booking on record?", SCHEMA, SPEAKER, search)
         self.assertTrue(cypher.endswith("RETURN coalesce(n1.confirmation_recorded, false) AS confirmation_recorded"), cypher)
-        world = Scripted(["person asking", "Person", "assignee is this", "contains 'table'", "yes", "value", "content"],
+        world = Scripted(["yes", "Person", "assignee is this", "contains 'table'", "yes", "value", "content"],
                          {"confirmation_recorded"})
         cypher = structured.plan(world, "Did I book the table?", SCHEMA, SPEAKER, search)
         self.assertTrue(cypher.endswith("RETURN n1.confirmation_recorded AS confirmation_recorded"), cypher)
@@ -394,7 +413,7 @@ class Structured(unittest.TestCase):
     def test_the_budget_caps_the_walk(self):
         import structured
 
-        chooser = Scripted(["person asking", "Person", "value"], {"name"})
+        chooser = Scripted(["yes", "Person", "value"], {"name"})
         cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, SPEAKER, depth=0)
         self.assertEqual(cypher, "MATCH (n0:Person) WHERE id(n0) = $speaker RETURN n0.name AS name")
 
@@ -404,7 +423,7 @@ class Choices(unittest.TestCase):
         import choices
 
         def label(context, question, options):
-            for want in ("person asking", "Person", "yes", "value", "name"):
+            for want in ("yes", "Person", "yes", "value", "name"):
                 hits = [i for i, o in enumerate(options) if want in o]
                 if hits:
                     return hits[0]
@@ -414,7 +433,7 @@ class Choices(unittest.TestCase):
         self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE id(n0) = $speaker RETURN n1.name AS name")
         first = choices.prompts(decisions[0])
         self.assertEqual([gold for _, gold in first], ["A", "B"])
-        self.assertTrue(first[0][0].startswith("Question: Who is my wife?\n\nWho or what is the question about first?\nA) the person asking"))
+        self.assertTrue(first[0][0].startswith("Question: Who is my wife?\n\nIs the question about the one asking, or about what belongs to them?\nA) yes"))
         self.assertTrue(first[0][0].endswith("Answer with the letter only."))
 
 
