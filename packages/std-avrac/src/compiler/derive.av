@@ -603,9 +603,9 @@ impl Workspace {
                 // A HELD FILE'S OWN KEY MAY OPEN A PENDING READ: one of its runs read
                 // a file whose text moved, and `read_token` holds the key at
                 // `?<print>` until the read file is parsed and the read declaration
-                // judged (`resolve_pending_reads`). The keys asked HERE open their own,
-                // so they are resolved too, or a reader whose reads all stand is forced
-                // read as if they had moved.
+                // judged (`resolve_pending_reads`). `settle_holds` resolved the keys
+                // it computed; the keys asked HERE must be resolved too, or a reader
+                // whose reads all stand is forced read as if they had moved.
                 let held = held_paths(self)
                 for path in held { let _ = self.held_okey(store, path) }
                 let _ = self.resolve_pending_reads(store)
@@ -721,21 +721,7 @@ impl Workspace {
             // a home whose text moved moves what lowers from it: the homes are read from the start
             if !at.homes && self.known_homes(store, at).any((path) -> self.home_moved(store, path)) { fail Turn.Again(at with { homes: true }) }
             let settling = self.clock()
-            // A PENDING READ IS JUDGED FIRST: a held file's key may open one, and the
-            // reader it names is read unless its key stands after the judgement.
-            let pending = self.clock()
-            self.read_unkept(store, self.resolve_pending_reads(store), at.want)
-            self.timed("pending", pending)
-            // WHAT THE WALK MET AND DID NOT READ IS HELD, once the read set stands: the
-            // files whose record rows still answer are the ones no read reaches.
-            let settled = self.clock()
-            let candidates = self.met_unread()
-            self.read_runs(store, candidates)
-            for path in candidates {
-                if self.read_counted(path) { continue }
-                self.hold_only(path)
-            }
-            self.timed("runs", settled)
+            self.settle_holds(store, at.want)
             self.timed("settle", settling)
         }
         self.hold.warm.set(!held_paths(self).is_empty())
@@ -1133,10 +1119,7 @@ impl Workspace {
         if pending.is_empty() { return [] }
         for p in pending {
             let key = pending_key(p.reader, p.read)
-            // JUDGING THE READ PARSES ITS FILE, so that file is read: its record's rows
-            // no longer stand in for it, whatever the reader's own hold comes to.
             self.declared(self.file_id(p.read.path))
-            self.force_read(p.read.path, Reads.RunBy(relative_path(self.root, p.reader)))
             let d = self.decl_from_ref(p.read.ref)
             if d == null {
                 self.hold.pending_resolved.put(key, self.run_said(p.read.path))
@@ -1184,41 +1167,62 @@ impl Workspace {
         if self.has_declares(f) || self.has_marks(f) { let _ = self.resolved(f) } else { touch(self.items(f)) }
     }
 
-    /// A file this attempt now reads, its reason standing with it: the one door a read
-    /// enters by, so the read set names every file the attempt took a text of.
+    /// A file this attempt now reads, its reason standing beside the holds it turns.
     fn force_read(path: string, why: Reads) {
         self.hold.forced.put(path, why)
+        self.hold.read_with.set(self.hold.read_with.get().concat([path]))
         if !self.hold.read_files.get().any(it.path == path) {
             self.hold.read_files.push(ReadFile { path: path, why: why })
         }
     }
 
-    /// THE READ SET, CLOSED OVER THE COMPILE-TIME RUNS IT PERFORMS: a run lowers a body,
-    /// so the file it reads is read, and what THAT file's runs read with it. A held
-    /// candidate the closure reaches is read like any other — its record's rows cannot
-    /// stand in for a body another file is about to run.
-    // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
-    fn read_runs(store: Store, candidates: List<string>) {
-        mut read: List<string> = [rf.path for rf in self.hold.read_files.get()]
+    /// THE HOLDS, SETTLED: every hold asked for, but a file a read file's
+    /// compile-time runs read — and what THAT file's runs read, since it runs too.
+    /// A CANDIDATE EXCLUDED THIS WAY NAMES WHY, seeded or discovered alike: the
+    /// seed already carries its own `RunBy` (record.av's `load_interface`), so
+    /// the noting below is the same one the worklist does for what IT finds,
+    /// never a second law.
+    fn settle_holds(store: Store, want: Want) {
+        let pending = self.clock()
+        self.read_unkept(store, self.resolve_pending_reads(store), want)
+        self.timed("pending", pending)
+        // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
+        mut reads: List<string> = distinct(self.hold.read_with.get())
+        for rf in self.hold.read_seeds.get() {
+            if self.hold.hold_asked.get().contains(rf.path) &&
+                !self.hold.read_files.get().any(it.path == rf.path) {
+                self.hold.read_files.push(rf)
+            }
+        }
         mut at = 0
-        while at < read.length {
-            let of = read[at]
-            for path in self.forced_runs(store, of) {
-                if read.contains(path) { continue }
-                read.push(path)
-                if candidates.contains(path) { self.force_read(path, Reads.RunBy(relative_path(self.root, of))) }
+        while at < reads.length {
+            for path in self.forced_runs(store, reads[at]) {
+                if !reads.contains(path) {
+                    reads.push(path)
+                    if self.hold.hold_asked.get().contains(path) {
+                        self
+                            .hold
+                            .read_files
+                            .push(
+                                ReadFile {
+                                    path: path,
+                                    why: Reads.RunBy(relative_path(self.root, reads[at])),
+                                },
+                            )
+                    }
+                }
             }
             at = at + 1
         }
+        // a held file's row exists before any query reads the relation — minting it
+        // parses nothing, and a module walk inside a query then only finds it
+        for path in self.hold.hold_asked.get() {
+            if !reads.contains(path) {
+                self.hold_only(path)
+                let _ = self.file_id(path)
+            }
+        }
     }
-
-    /// THE FILES A MODULE MET AND NO READ STANDS FOR: the hold's candidates, each held
-    /// unless the read set reaches it. Derived from the walk that met them, so no list
-    /// is kept beside it.
-    fn met_unread() -> List<string> { [path for path in self.records.met_files.get().keys() if !self.read_counted(path)] }
-
-    /// Whether this attempt counts `path` among the files it reads.
-    fn read_counted(path: string) -> bool { self.hold.read_files.get().any(it.path == path) }
 
     /// WHAT THE PROGRAM'S INSTANTIATIONS ARE A FUNCTION OF: its root asks, and the
     /// key of every home it has lowered from — a home's text, and the interfaces

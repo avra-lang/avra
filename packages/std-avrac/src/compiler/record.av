@@ -826,9 +826,8 @@ fn load_gathered(
         for m in [module_path(name.split(".")) for name in distinct([ws.module_of(path) for path in files])] { load_named(ws, store, m, ws.module_files(m), entry, want, meet) }
     }
     let held? = line else {
-        // NO LINE STANDS FOR THE COLLECT, so its collector is read: nothing recorded what
-        // it gathers, and a held file has no body to gather with.
-        ws.force_read(parts[2], Reads.GathersUnread)
+        ws.hold.read_with.push(parts[2])
+        ws.hold.read_seeds.push(ReadFile { path: parts[2], why: Reads.GathersUnread })
         return
     }
     if !ws.hold.gathered.get().any(it.collector == held.collector && it.digest == held.digest) { ws.hold.gathered.push(held) }
@@ -950,8 +949,9 @@ fn kept_gathers(ws: Workspace, line: string) -> bool {
 }
 
 /// ONE FILE OF A RECORDED MODULE, MET: registered, held or not — a file the workspace
-/// never met is neither parsed nor linked — and read where the record's rows no longer
-/// stand in for it. A file it holds is marked by the hold once the whole read set stands.
+/// never met is neither parsed nor linked — and its hold ASKED, settled once every
+/// module is met: a file that will be read runs bodies at compile time, and those
+/// files are read with it.
 // LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a file in.
 fn meet_file(
     ws: Workspace,
@@ -964,8 +964,27 @@ fn meet_file(
 ) {
     let _ = ws.file_id(f)
     let is_entry = entry != null && f == entry!
-    let read? = read_why(ws, store, m, f, at, is_entry, want) else { return }
-    ws.force_read(f, read)
+    let why: Reads? = read_why(ws, store, m, f, at, is_entry, want)
+    if why == null {
+        ws.hold.hold_asked.push(f)
+        for p in ws.hold.pending_reads.get() {
+            if p.reader == f { ws.hold.read_with.set(ws.hold.read_with.get().concat([p.read.path])) }
+        }
+        return
+    }
+    ws.hold.read_files.push(ReadFile { path: f, why: why! })
+    let runs = ws.forced_runs(store, f)
+    ws.hold.read_with.set(ws.hold.read_with.get().concat(runs))
+    // WHY a run's own reads are excluded rides with them from birth,
+    // beside `read_with` rather than inside it: a candidate seeded
+    // straight into `reads` this way never passes through
+    // `settle_holds`'s own worklist, so a reason recorded only there
+    // would never reach it.
+    let carries = Reads.RunBy(relative_path(ws.root, f))
+    ws
+        .hold
+        .read_seeds
+        .set(ws.hold.read_seeds.get().concat([ReadFile { path: p, why: carries } for p in runs]))
 }
 
 /// WHY A FILE IS READ and not held — a thin hold says so itself under `--time`.
