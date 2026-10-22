@@ -9,6 +9,7 @@ use tree.standing.{Standing, standing}
 use tree.view.{View, rooted}
 use realize.html.element.{Element, lowered}
 use realize.html.print.{kinds_of, print_of, words_of}
+use realize.dom.snapshot.{Page, said as said_page}
 use realize.html.css.{CssRule, distinct_rules, page_sheet, root_vars, rules_of}
 use realize.dom.patch.{Patch, Heard, Held, diff, held_as, listening_of}
 use realize.html.tags.{HtmlAttrName}
@@ -25,7 +26,8 @@ type Bound = { id: NodeId, action: Action, ordered: bool }
 /// the sheet was last written with, the handlers its elements bound, and
 /// what the user was heard to do to it since. `stood` is the print of the page
 /// a server sent, none when it sent none, and `adopting` the elements the
-/// first frame tells the host it keeps.
+/// first frame tells the host it keeps. `sheet` is the sheet the host
+/// holds, and `handed` the page a module that stood down said.
 export type Live = {
     page: Cell<List<Element>> = Cell.new([]),
     next: Cell<int> = Cell.new(0),
@@ -41,6 +43,8 @@ export type Live = {
     stands: Standing = standing(),
     stood: Cell<int> = Cell.new(0),
     adopting: Cell<Patch?> = Cell.new(null),
+    sheet: Cell<string> = Cell.new(""),
+    handed: Cell<Page?> = Cell.new(null),
 }
 
 /// A page nothing was painted on.
@@ -111,6 +115,7 @@ impl Live {
     /// over this page's `stands` is a snapshot: it is painted whole and the
     /// page stops watching, so the exact path never answers for it.
     fn patches(root: Node, theme: Theme, notice: Node? = null) -> List<Patch> {
+        self.take_handed(root, theme)
         let adopted = self.adopted(root, theme)
         let full = self.painted(root, theme, notice)
         self.unwatched()
@@ -121,6 +126,7 @@ impl Live {
     /// walk an app opens, or `paint_view` — whose instances are the ones the
     /// page's readings watch. The exact path may answer for it.
     fn patches_drawn(root: Node, theme: Theme, notice: Node? = null) -> List<Patch> {
+        self.take_handed(root, theme)
         let adopted = self.adopted(root, theme)
         adopted.concat(self.drawn_turn(root, theme, notice))
     }
@@ -212,16 +218,47 @@ impl Live {
     fn adopt(root: Node, theme: Theme, print: int) {
         let run = lowered(root)
         let rules = distinct_rules(rules_of(root))
-        if print_of(run, page_sheet(rules, theme, [])) != print {
+        let css = page_sheet(rules, theme, [])
+        if print_of(run, css) != print {
             self.adopting.set(Patch.Adopt([], 0))
             return
         }
+        self.sheet.set(css)
         let placed = diff([], run, [], 0)
         self.page.set([unheard(e) for e in placed.page])
         self.next.set(placed.next)
         self.rules.set(rules)
         self.worn.set(root_vars(theme))
         self.adopting.set(Patch.Adopt(kinds_of(placed.page), words_of(placed.page)))
+    }
+
+    /// The page a module left, taken over once: the first paint only.
+    fn take_handed(root: Node, theme: Theme) {
+        let left? = self.handed.get() else { return }
+        self.handed.set(null)
+        self.take_over(left, root, theme)
+    }
+
+    /// THE PAGE A MODULE LEFT, TAKEN OVER: the elements the host holds stand
+    /// as the module that stood down said them, under their numbers, hearing
+    /// nothing yet — so the first paint is a diff against them: what an edit
+    /// changed, and the listeners this module binds. The sheet is kept when
+    /// this tree's classes write the same one, and sent again when they do not.
+    fn take_over(left: Page, root: Node, theme: Theme) {
+        self.page.set([unheard(e) for e in left.elements])
+        self.next.set(left.next)
+        let rules = distinct_rules(rules_of(root))
+        if page_sheet(rules, theme, []) != left.sheet { return }
+        self.rules.set(rules)
+        self.worn.set(root_vars(theme))
+        self.sheet.set(left.sheet)
+    }
+
+    /// The page as it stands, said for a module that takes over.
+    fn said() -> Bytes {
+        said_page(
+            Page { elements: self.page.get(), next: self.next.get(), sheet: self.sheet.get() },
+        )
     }
 
     /// The full paint, as it always was.
@@ -267,6 +304,8 @@ impl Live {
         self.told.set([])
         self.adopting.set(null)
         self.stood.set(0)
+        self.sheet.set("")
+        self.handed.set(null)
     }
 
     /// A page that has nothing: a new connection to the same app.
@@ -287,7 +326,9 @@ impl Live {
         if rules.length == self.rules.get().length && self.worn.get() == vars { return [] }
         self.rules.set(rules)
         self.worn.set(vars)
-        [Patch.Style(page_sheet(rules, theme, []))]
+        let css = page_sheet(rules, theme, [])
+        self.sheet.set(css)
+        [Patch.Style(css)]
     }
 
     /// `patches`, as the frame a host applies.

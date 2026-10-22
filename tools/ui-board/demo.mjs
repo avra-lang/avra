@@ -249,12 +249,33 @@ spent();
 
 // ── a server's page, adopted ──
 const serverPrint = process.argv[3];
+// What a request decided, shipped beside the server's page: the module starts
+// from it, so the page it draws is the one the server drew.
+const shipped = new TextEncoder().encode(process.argv[6] ?? "");
+const withState = async () => {
+  const doc = stubDocument();
+  const at = stubElement("root");
+  await run(new Uint8Array(fs.readFileSync(process.argv[2])), {
+    document: doc,
+    mount: at,
+    style: { textContent: "" },
+    wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(`the program exited ${code}`); }),
+    clock,
+    fetch: fetchFn,
+    raf: (cb) => rafs.push(cb),
+    state: shipped,
+  });
+  await settle();
+  return at.childNodes.map((n) => copied(n, stubDocument()));
+};
+const servedPaint = await withState();
+claim("a module started from the shipped state draws another page than its own default", servedPaint.map(shape).join() !== firstPaint.map(shape).join());
 const serverBytes = Number(process.argv[4]);
 const adopting = async (print, early = null) => {
   const doc = stubDocument();
   const at = stubElement("root");
   at.setAttribute("data-avra-print", print);
-  const placed = firstPaint.map((n) => copied(n, doc));
+  const placed = servedPaint.map((n) => copied(n, doc));
   for (const n of placed) at.insertBefore(n, null);
   if (early !== null) every(at, (n) => n.attrs["aria-label"] === "New task")[0].value = early;
   const sentFrames = [];
@@ -270,6 +291,7 @@ const adopting = async (print, early = null) => {
     clock,
     fetch: fetchFn,
     raf: (cb) => rafs.push(cb),
+    state: shipped,
   });
   await settle();
   console.warn = quiet;
@@ -282,7 +304,7 @@ claim("the server's print is the number the module folds from the same view", fi
 claim("an adopted page builds nothing", all.filter((p) => p.op === OP.create || p.op === OP.create_text).length === 0, `${all.length} patch(es)`);
 claim("the first paint over an adopted page is the adoption, then define and listen only", first.length > 1 && first.slice(1).every((p) => p.op === OP.listen || p.op === OP.define), first.map((p) => p.op).join(","));
 claim("the server's nodes are the page the module stands on", kept.at.childNodes.length === kept.placed.length && kept.placed.every((n, j) => kept.at.childNodes[j] === n));
-claim("the adopted page is the page the module drew itself", kept.at.childNodes.map(shape).join() === firstPaint.map(shape).join());
+claim("the adopted page is the page the module drew itself", kept.at.childNodes.map(shape).join() === servedPaint.map(shape).join());
 claim("the first frame over an adopted page is under 1500 bytes (9326 without a server page)", kept.sizes[0] < 1500, `${kept.sizes[0]}`);
 claim(`the server's page is ${serverBytes} bytes of HTML`, serverBytes > 0);
 const early = await adopting(serverPrint, "typed early");
@@ -292,11 +314,86 @@ const early = await adopting(serverPrint, "typed early");
   dispatch(early.at, add, ear.event, { bubbles: false });
   frame();
   await settle();
+  const all = every(early.at, (n) => n.attrs["aria-label"] === "All" && early.heard(n.__avra_id).length > 0)[0];
+  const [, all_ear] = early.heard(all.__avra_id)[0];
+  dispatch(early.at, all, all_ear.event, { bubbles: false });
+  frame();
+  await settle();
   claim("text typed before the program stood is the program's when it adds the task", textOf(early.at).includes("typed early"), textOf(early.at).slice(0, 60));
 }
 const torn = await adopting(String(Number(serverPrint) + 1));
 const tornCreates = torn.sentFrames.flat().filter((p) => p.op === OP.create).length;
-claim("a print that is not the module's empties the page and draws it again", torn.sentFrames[0][0].kinds.length === 0 && tornCreates > 0 && torn.at.childNodes.map(shape).join() === firstPaint.map(shape).join());
+claim("a print that is not the module's empties the page and draws it again", torn.sentFrames[0][0].kinds.length === 0 && tornCreates > 0 && torn.at.childNodes.map(shape).join() === servedPaint.map(shape).join());
+
+// ── a module swapped under the page ──
+const editedWasm = process.argv[5];
+const swapping = async () => {
+  const doc = stubDocument();
+  const at = stubElement("root");
+  const sentFrames = [];
+  const timers = new Map();
+  const own = {
+    setTimeout: (fn, ms) => { const h = timers.size + 1; timers.set(h, fn); return h; },
+    setInterval: (fn, ms) => { const h = timers.size + 1; timers.set(h, fn); return h; },
+    clearTimeout: (h) => timers.delete(h),
+    clearInterval: (h) => timers.delete(h),
+  };
+  const frames2 = [];
+  let swap = null;
+  const { ears: heard } = await run(new Uint8Array(fs.readFileSync(process.argv[2])), {
+    document: doc,
+    mount: at,
+    style: { textContent: "" },
+    wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(`the program exited ${code}`); }),
+    sent: (bytes) => sentFrames.push(parseFrame(bytes)),
+    clock: own,
+    fetch: fetchFn,
+    raf: (cb) => frames2.push(cb),
+    hot: (s) => { swap = s; },
+  });
+  await settle();
+  return { at, heard, sentFrames, swap: (path) => swap(new Uint8Array(fs.readFileSync(path))), timers, frames2 };
+};
+const nodesOf = (n) => [n, ...n.childNodes.flatMap(nodesOf)];
+{
+  const s = await swapping();
+  const before = s.at.childNodes.flatMap(nodesOf);
+  const shapeBefore = s.at.childNodes.map(shape).join();
+  s.sentFrames.length = 0;
+  await s.swap(process.argv[2]);
+  await settle();
+  const ops = s.sentFrames.flat();
+  const after = s.at.childNodes.flatMap(nodesOf);
+  claim("a swap to the same module keeps every element the page holds", before.length === after.length && before.every((n, j) => after[j] === n), `${before.length} vs ${after.length}`);
+  claim("a swap to the same module says define and listen and nothing built", ops.length > 0 && ops.every((p) => p.op === OP.listen || p.op === OP.define), ops.map((p) => p.op).join(","));
+  claim("and the page it leaves is the page it had", s.at.childNodes.map(shape).join() === shapeBefore);
+}
+{
+  const s = await swapping();
+  const remind = every(s.at, (n) => n.attrs["aria-label"] === "Remind me" && s.heard(n.__avra_id).length > 0)[0];
+  const [, ear] = s.heard(remind.__avra_id)[0];
+  dispatch(s.at, remind, ear.event, { bubbles: false });
+  for (const cb of s.frames2.splice(0)) cb();
+  await settle();
+  const armedBefore = s.timers.size;
+  await s.swap(process.argv[2]);
+  await settle();
+  claim("a swap lets go of the timers the module that stood down armed", armedBefore > 0 && s.timers.size === 0, `${armedBefore} then ${s.timers.size}`);
+  claim("a swap starts the module from its own state over the page the host holds", s.at.childNodes.map(shape).join() === firstPaint.map(shape).join());
+}
+{
+  const s = await swapping();
+  const before = s.at.childNodes.flatMap(nodesOf);
+  s.sentFrames.length = 0;
+  await s.swap(editedWasm);
+  await settle();
+  const ops = s.sentFrames.flat();
+  const texts = ops.filter((p) => p.op === OP.set_text);
+  const built = ops.filter((p) => [OP.create, OP.create_text, OP.remove, OP.place].includes(p.op));
+  const after = s.at.childNodes.flatMap(nodesOf);
+  claim("an edited view is applied as one set_text and nothing built", texts.length === 1 && texts[0].content === "Tasks today" && built.length === 0, ops.map((p) => p.op).join(","));
+  claim("and every element the page held stands", before.length === after.length && before.every((n, j) => after[j] === n));
+}
 
 console.log(failed === 0 ? "ui-board: every claim holds" : `ui-board: ${failed} claim(s) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

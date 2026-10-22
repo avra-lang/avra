@@ -2,7 +2,7 @@
 // and decides nothing: the frames below say what moved, what is a property
 // and what an event says. Op numbers come from the generated table, so a
 // wire the program changed is the wire this test speaks.
-import { printOf, wordsOf, standingOf, createApplier, createFetches, createFrames, createTimers, guarded, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
+import { stateOf, printOf, wordsOf, standingOf, createApplier, createFetches, createFrames, createTimers, guarded, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
 import { AFTER, NO_ID, OP, SAYS, TAGS } from "./wire.gen.js";
 import v8 from "node:v8";
 import vm from "node:vm";
@@ -580,6 +580,14 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   const read = (text) => { m.setAttribute("data-avra-print", text); return printOf(m); };
   check("a mount's print is the number the server stamped, none otherwise", [none, stamped, printOf(m)], [0, 12345, 0]);
   check("only a plain positive number is a print", ["0", "-5", "1e3", " 7", "0x10", "7.5", "", "99999999999999999999"].map(read), [0, 0, 0, 0, 0, 0, 0, 0]);
+}
+
+// ── shipped state ──
+{
+  const block = { textContent: '{"a":{"shape":"int","value":1}}' };
+  const withBlock = { getElementById: (id) => (id === "avra-state" ? block : null) };
+  check("the state a server shipped is the page's block, as octets", new TextDecoder().decode(stateOf(withBlock)), block.textContent);
+  check("a page with no block ships nothing", [stateOf({ getElementById: () => null }).length, stateOf({}).length, stateOf(null).length], [0, 0, 0]);
 }
 
 // ── a page runs a program that mounts ──

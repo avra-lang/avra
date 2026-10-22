@@ -4,6 +4,7 @@
 //! parsed as. No new instruction.
 use core.{
     ExprId,
+    SyntaxArena,
     Reg,
     DeclId,
     PatId,
@@ -163,6 +164,7 @@ fn meta_call(mut cx: LowerCx, e: ExprId, verb: string, args: List<Reg>, ret: Typ
 export fn quote_pat_accepts(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: TypeId) -> Reg {
     if cx.view.decls.meta_type(vty, "Subject") { return uncalled(cx) }
     let root? = quote_pat_root(cx.view.store, body) else { return no_root(cx) }
+    if binds_whole(cx.view.store, body) { return cx.const_bool(true) }
     let holes = quote_pat_holes(cx.view.store, body)
     let names = quote_pat_names(holes)
     let shape = quote_pat_shape(cx.view.store, root, holes, names)
@@ -177,6 +179,21 @@ export fn quote_pat_accepts(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty
     let answer = avrac_call(cx, "matched_runs", [subj.store, subj.at, s], runs.ret)
     cx.bind_test(p, [answer])
     cx.presence_of(answer, runs.ret)
+}
+
+/// Whether the pattern is ONE code binder standing for the whole subject — `quote { ${x} }`:
+/// it takes every subject and binds the subject itself, so no match runs.
+fn binds_whole(store: SyntaxArena, body: ExprId) -> bool {
+    let root? = quote_pat_root(store, body) else { return false }
+    let holes = quote_pat_holes(store, body)
+    let names = quote_pat_names(holes)
+    if names.length != 1 { return false }
+    let n = names[0]
+    if quote_pat_is_text(holes, n) || quote_pat_is_run(holes, n) || quote_pat_is_type(holes, n) { return false }
+    match quote_pat_shape(store, root, holes, names) {
+        .Hole(_) -> true,
+        .Run(_) or .TypedNode(_, _, _) -> false,
+    }
 }
 
 // ── a package's rule: matched by the compiler, never called ──
@@ -245,6 +262,7 @@ fn subject_of(mut cx: LowerCx, v: Reg, code_ty: TypeId) -> Subject {
 /// unwrapping one element.
 export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: TypeId) -> List<Reg> {
     if cx.view.decls.meta_type(vty, "Subject") { return uncalled_binds(cx, body, v, vty) }
+    if binds_whole(cx.view.store, body) { return [v] }
     let regs = cx.test_regs_of(p)
     if regs.length != 1 { return untested(cx) }
     let answer = regs[0]

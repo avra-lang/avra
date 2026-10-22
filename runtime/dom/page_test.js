@@ -22,6 +22,7 @@ const stage = () => {
   const document = {
     createElement: () => element(),
     getElementById: () => ({}),
+    querySelector: () => null,
     body: { prepend: (el) => alerts.push(el) },
   };
   return { alerts, listeners, document, addEventListener: (type, fn) => { listeners[type] = fn; } };
