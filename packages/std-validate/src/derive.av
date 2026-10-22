@@ -25,22 +25,7 @@
 //! fields in declaration order — absence, then each rule — so a rule
 //! naming a sibling reads it as the tree path does.
 use @std.text.{admits}
-use @std.meta.{
-    Type,
-    Field,
-    Kind,
-    Annotation,
-    Directive,
-    Code,
-    Decls,
-    Stmts,
-    name,
-    literal,
-    applied,
-    stored_scalar,
-    flat,
-    flat_field,
-}
+use @std.meta.{Type, Field, Kind, Annotation, Directive, Code, Decls, Stmts, name, literal, applied}
 use decode.{
     Decoding,
     Slot,
@@ -410,7 +395,7 @@ fn reader(k: Kind) -> Code {
             let each? = element(elem) else { return unread(k) }
             quote { list(d, at, ${each}) }
         },
-        .Named(n, _) -> if flat(n) { quote { ${n} { ${flat_field(n)}: ${reader(stored_scalar(n)!)}! } } } else { quote { ${name(n)}.decoded(d, at) } },
+        .Named(n, _) -> quote { ${name(n)}.decoded(d, at) },
         .Opt(k2) -> reader(k2),
         .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> unread(k),
     }
@@ -685,7 +670,7 @@ fn reading(k: Kind, depth: Code, required: Code, secret: Code) -> Code {
             let each? = json_element(elem) else { return unread_json(k, depth) }
             quote { json_list(d, ${depth}, ${required}, ${secret}, ${each}) }
         },
-        .Named(n, _) -> if flat(n) { quote { ${n} { ${flat_field(n)}: ${reading(stored_scalar(n)!, depth, required, secret)}! } } } else { quote { ${name(n)}.read_json(d, ${depth}, ${required}, ${secret}) } },
+        .Named(n, _) -> quote { ${name(n)}.read_json(d, ${depth}, ${required}, ${secret}) },
         .Opt(k2) -> reading(k2, depth, required, secret),
         .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> unread_json(k, depth),
     }
