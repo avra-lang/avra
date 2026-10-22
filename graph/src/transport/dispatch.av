@@ -3,7 +3,7 @@ use store.open.{Graph, ReadView}
 use store.evidence.{instant_named}
 use store.publish.{Publication}
 use store.query.{Entity, Edge}
-use transport.request.{Operation, operation}
+use transport.request.{Operation, operation, written}
 use data.{as_json}
 use ingest.envelope.{source_document}
 use query.cypher.{compiled}
@@ -48,8 +48,10 @@ impl Graph {
         ReadView { revision: pinned, valid_at: instant }
     }
 
-    fn operated(request: Json) -> Result<Json, string> {
-        match operation(request)? {
+    fn operated(request: Json) -> Result<Json, string> { self.performed(operation(request)?) }
+
+    fn performed(op: Operation) -> Result<Json, string> {
+        match op {
             .Schema -> {
                 let opened = self.read_snapshot()?
                 defer { let _ = self.db.finish_if_opened(opened) }
@@ -109,6 +111,12 @@ impl Graph {
             .Proposals -> Json.Arr([p.json() for p in self.proposals()?]),
             .Decide(id, verdict, decider) -> Json.Obj([field("revision", Json.Int(self.decide(id, verdict, decider)?))]),
             .Decisions -> self.decisions()?,
+            .Mandated(mandate, word, request) -> {
+                let target? = written(request)? else { fail "a mandate covers writes, and `${word}` only reads" }
+                self.mandated(mandate, word, target)?
+                self.performed(request)?
+            },
+            .Mandates -> self.mandates()?,
         }
     }
 }

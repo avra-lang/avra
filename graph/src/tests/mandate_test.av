@@ -1,0 +1,70 @@
+use tests.support.{sample_models as models}
+use store.open.{Graph}
+use @std.json.{Json, parse}
+
+const source_text = "{\"contract\":2,\"source\":{\"observation\":\"note:1\",\"revision\":1},\"authored_at_ms\":0,\"received_at_ms\":100,\"author\":\"actor:a\",\"participants\":[\"actor:a\"],\"conversation\":null,\"media_type\":\"text/plain\",\"content\":\"A note\",\"frames\":[]}"
+
+const grant = "{\"id\":\"m1\",\"issuer\":\"owner\",\"subject\":\"agent\",\"actions\":[\"ingest\"]}"
+
+fn json(text: string) -> Result<Json, string> {
+    match parse(text) { .Ok(j) -> j, .Err(_) -> { fail "test JSON does not parse" } }
+}
+
+fn mandated(mandate: string, request: string) -> Result<Json, string> {
+    json("{\"op\":\"mandated\",\"mandate\":${mandate},\"request\":${request}}")
+}
+
+fn ingest_request() -> string { "{\"op\":\"ingest\",\"source\":${source_text}}" }
+
+fn a_write_names_its_grant() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.dispatch(mandated(grant, ingest_request())?)?
+    let listed = g.dispatch(json("{\"op\":\"mandates\"}")?)?
+    let first = listed.item(0)
+    (g.source("note:1")?).content == "A note" &&
+        first.member("mandate").member("issuer").text() == "owner" &&
+        first.member("writes").item(0).member("op").text() == "ingest" &&
+        first.member("writes").item(0).member("target").text() == "note:1@1"
+}
+
+fn a_read_is_not_mandated() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    refusal(g.dispatch(mandated(grant, "{\"op\":\"schema\"}")?)).contains("only reads")
+}
+
+fn one_id_names_one_grant() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.dispatch(mandated(grant, ingest_request())?)?
+    let other = grant.replace("\"owner\"", "\"someone else\"")
+    refusal(g.dispatch(mandated(other, ingest_request())?)).contains("different grant")
+}
+
+fn an_unnamed_grant_is_refused() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    refusal(g.dispatch(mandated("{\"id\":\"m1\"}", ingest_request())?)).contains("issuer")
+}
+
+/// What a request was refused with, or nothing when it was answered.
+fn refusal(answer: Result<Json, string>) -> string {
+    match answer { .Err(e) -> e, .Ok(_) -> "" }
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "writes under a mandate" {
+    given "a graph" {
+        then "a mandated write is made and lists under its grant" { passed(a_write_names_its_grant()) }
+        then "a mandate over a read is refused" { passed(a_read_is_not_mandated()) }
+        then "a mandate id never names a different grant" { passed(one_id_names_one_grant()) }
+        then "a grant with no issuer is refused" { passed(an_unnamed_grant_is_refused()) }
+    }
+}

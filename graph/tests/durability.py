@@ -42,25 +42,28 @@ class Graph:
 
 def upgrades(graph):
     publication, committed = graph.seed()
-    for version in ("6", "7", "8", "9", "10", "11", "12", "13"):
+    for version in ("6", "7", "8", "9", "10", "11", "12", "13", "14"):
         with sqlite3.connect(graph.database) as raw:
-            raw.execute("DROP TABLE ProposalDecisionRow")
-            raw.execute("DROP TABLE UnplacedRow")
-            if version != "13":
+            raw.execute("DROP TABLE MandatedRow")
+            raw.execute("DROP TABLE MandateRow")
+            if version != "14":
+                raw.execute("DROP TABLE ProposalDecisionRow")
+                raw.execute("DROP TABLE UnplacedRow")
+            if version not in ("13", "14"):
                 raw.execute("DROP TABLE ClaimRetiredRow")
                 raw.execute("DROP TABLE SchemaEdgeRow")
-            if version not in ("12", "13"):
+            if version not in ("12", "13", "14"):
                 raw.execute("DROP TABLE InputEpochRow")
-            if version not in ("11", "12", "13"):
+            if version not in ("11", "12", "13", "14"):
                 raw.execute("DROP TABLE FailedRunRow")
-            if version not in ("10", "11", "12", "13"):
+            if version not in ("10", "11", "12", "13", "14"):
                 raw.execute("DROP TABLE CorrectionEndRow")
                 raw.execute("DROP TABLE CorrectionRow")
-            if version not in ("9", "10", "11", "12", "13"):
+            if version not in ("9", "10", "11", "12", "13", "14"):
                 raw.execute("DROP TABLE SupersessionRow")
                 raw.execute("DROP TABLE EvidenceRow")
                 raw.execute("DROP TABLE VoiceRow")
-            if version not in ("8", "9", "10", "11", "12", "13"):
+            if version not in ("8", "9", "10", "11", "12", "13", "14"):
                 raw.execute("DROP TABLE ChoiceEndRow")
                 raw.execute("DROP TABLE ChoiceRow")
             if version == "6":
@@ -72,7 +75,7 @@ def upgrades(graph):
         assert graph.call(publication) == committed
         assert graph.call({"op": "value", "id": "p1", "as_of": {"revision": committed["revision"]}})["name"] == "Ada"
         with sqlite3.connect(graph.database) as raw:
-            assert raw.execute("SELECT value FROM Meta WHERE key='format'").fetchone() == ("14",)
+            assert raw.execute("SELECT value FROM Meta WHERE key='format'").fetchone() == ("15",)
             assert raw.execute("PRAGMA journal_mode").fetchone() == ("wal",)
             assert raw.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
@@ -87,7 +90,7 @@ def upgrades(graph):
     with sqlite3.connect(graph.database) as raw:
         assert raw.execute("SELECT * FROM Meta ORDER BY id").fetchall() == before
         assert raw.execute("SELECT name FROM sqlite_master WHERE name='ConfidenceRow'").fetchone() is None
-        raw.execute("UPDATE Meta SET value='14' WHERE key='format'")
+        raw.execute("UPDATE Meta SET value='15' WHERE key='format'")
     # Missing metadata is not mistaken for a fresh store, either.
     with sqlite3.connect(graph.database) as raw:
         raw.execute("DELETE FROM Meta WHERE key='format'")
@@ -173,6 +176,29 @@ def corrections(graph):
         assert raw.execute("SELECT count(*) FROM CorrectionEndRow").fetchone() == (1,)
 
 
+def mandates(graph):
+    """A write under a mandate is recorded with its grant before it is made,
+    across processes; a grant id names one grant; a historical view records nothing."""
+    graph.seed()
+    grant = {"id": "m1", "issuer": "owner", "subject": "agent", "actions": ["correct", "uncorrect"]}
+    wrong = {"op": "correct", "id": "c1", "decider": "user", "kind": "wrong",
+             "entity": "p1", "property": "name", "value": "Ada"}
+    graph.call({"op": "mandated", "mandate": grant, "request": wrong})
+    graph.call({"op": "mandated", "mandate": grant, "request": {"op": "uncorrect", "id": "c1"}})
+    [listed] = graph.call({"op": "mandates"})
+    assert listed["mandate"] == grant
+    assert [(w["op"], w["target"]) for w in listed["writes"]] == [("correct", "c1"), ("uncorrect", "c1")]
+    forged = dict(grant, issuer="someone else")
+    assert "different grant" in graph.call({"op": "mandated", "mandate": forged, "request": wrong}, success=False)["error"]
+    assert "only reads" in graph.call({"op": "mandated", "mandate": grant, "request": {"op": "corrections"}},
+                                      success=False)["error"]
+    past = {"op": "mandated", "mandate": grant, "request": dict(wrong, id="c2"), "as_of": {"revision": 1}}
+    assert "historical view" in graph.call(past, success=False)["error"]
+    with sqlite3.connect(graph.database) as raw:
+        assert raw.execute("SELECT count(*) FROM MandateRow").fetchone() == (1,)
+        assert raw.execute("SELECT count(*) FROM MandatedRow").fetchone() == (2,)
+
+
 def evolution(graph):
     """A catalog that drops every model, with no migration declared, is
     refused by another process and leaves the store exactly as it was."""
@@ -191,10 +217,10 @@ def evolution(graph):
 def main():
     binary = str(pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "graph/examples/notes/src/main").resolve())
     bare = str(pathlib.Path(sys.argv[2] if len(sys.argv) > 2 else "graph/src/main").resolve())
-    for witness in (upgrades, contention, crash, corrections, evolution):
+    for witness in (upgrades, contention, crash, corrections, mandates, evolution):
         with tempfile.TemporaryDirectory(prefix="avra-graph-durable-") as directory:
             witness(Graph(pathlib.Path(directory), binary, bare))
-    print("durability: additive upgrades, corrections across processes, refused catalog drops, future/missing-format refusal, WAL, writer wait, reader snapshot, and killed-transaction rollback passed")
+    print("durability: additive upgrades, corrections across processes, mandated writes, refused catalog drops, future/missing-format refusal, WAL, writer wait, reader snapshot, and killed-transaction rollback passed")
 
 
 if __name__ == "__main__":

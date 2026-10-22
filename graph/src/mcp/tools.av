@@ -2,8 +2,8 @@
 //! call into an existing operation or hook — the graph's own request ops,
 //! the host's planner and extractor commands — and adds no logic of its
 //! own. Descriptions name the host's declared models, never a domain.
-use @std.mcp.{Tool, ToolParam, ParamKind}
-use @std.action.{routine, reversible}
+use @std.mcp.{Tool, ToolParam, ParamKind, Invocation, mandate_json}
+use @std.action.{Mandate, routine, reversible}
 use @std.json.{Json, Field, field, parse, to_text}
 use @std.io.{write_text}
 use @std.process.{cmd, tool, Stdin, inherited}
@@ -38,7 +38,14 @@ export fn tools(door: Door) -> Result<List<Tool>, string> {
             description: "The declared models of this graph (${models}): their properties, references and relation words.",
             params: [],
             impact: routine,
-            call: (args: Json) -> door.requested(Json.Obj([field("op", Json.Str("schema"))])),
+            call: (_i) -> door.requested(Json.Obj([field("op", Json.Str("schema"))])),
+        },
+        Tool {
+            name: "mandates",
+            description: "Every mandate this graph's writes ran under, as granted, with the writes each began — what to audit, and what to undo.",
+            params: [],
+            impact: routine,
+            call: (_i) -> door.requested(Json.Obj([field("op", Json.Str("mandates"))])),
         },
         Tool {
             name: "search",
@@ -48,16 +55,16 @@ export fn tools(door: Door) -> Result<List<Tool>, string> {
                 ToolParam { name: "limit", kind: .Integer, required: false },
             ],
             impact: routine,
-            call: (args: Json) -> door
-                .requested(Json.Obj([field("op", Json.Str("search"))].concat(fields_of(args)))),
+            call: (i) -> door
+                .requested(Json.Obj([field("op", Json.Str("search"))].concat(fields_of(i.args)))),
         },
         Tool {
             name: "explain",
             description: "Every piece of evidence behind one property of one entity: which source said it, and when.",
             params: [text("id", "an entity id from an answer"), text("property", "one of its properties")],
             impact: routine,
-            call: (args: Json) -> door
-                .requested(Json.Obj([field("op", Json.Str("explain"))].concat(fields_of(args)))),
+            call: (i) -> door
+                .requested(Json.Obj([field("op", Json.Str("explain"))].concat(fields_of(i.args)))),
         },
     ]
     let asking = if door.planner.is_empty() {
@@ -78,7 +85,7 @@ export fn tools(door: Door) -> Result<List<Tool>, string> {
                     },
                 ],
                 impact: routine,
-                call: (args: Json) -> door.asked(args),
+                call: (i) -> door.asked(i.args),
             },
         ]
     }
@@ -88,15 +95,18 @@ export fn tools(door: Door) -> Result<List<Tool>, string> {
             description: "Record a person's correction of the graph, as the graph's correct operation takes it (JSON).",
             params: [text("correction", "the correct operation's fields as a JSON object")],
             impact: reversible,
-            call: (args: Json) -> door.requested_with("correct", args.member("correction").text()),
+            call: (i) -> door.requested_with("correct", i.args.member("correction").text(), i.mandate),
         },
         Tool {
             name: "uncorrect",
             description: "Withdraw a recorded correction by its id.",
             params: [text("id", "the correction's id")],
             impact: reversible,
-            call: (args: Json) -> door
-                .requested(Json.Obj([field("op", Json.Str("uncorrect"))].concat(fields_of(args)))),
+            call: (i) -> door
+                .under(
+                    i.mandate,
+                    Json.Obj([field("op", Json.Str("uncorrect"))].concat(fields_of(i.args))),
+                ),
         },
     ]
     let ingesting = if door.extractor.is_empty() {
@@ -108,7 +118,7 @@ export fn tools(door: Door) -> Result<List<Tool>, string> {
                 description: "Take a source (a message, note or document, as a source envelope in JSON), extract what it says about ${models}, and admit what its text supports.",
                 params: [text("source", "the source envelope as a JSON object")],
                 impact: reversible,
-                call: (args: Json) -> door.ingested(args.member("source").text()),
+                call: (i) -> door.ingested(i.args.member("source").text(), i.mandate),
             },
         ]
     }
@@ -129,12 +139,28 @@ impl Door {
         graph.dispatch(request)
     }
 
-    fn requested_with(op: string, body: string?) -> Result<Json, string> {
+    /// One write to the graph, recorded under the mandate it ran under.
+    fn under(mandate: Mandate?, request: Json) -> Result<Json, string> {
+        let m? = mandate else { return self.requested(request) }
+        self
+            .requested(
+                Json
+                    .Obj(
+                        [
+                            field("op", Json.Str("mandated")),
+                            field("mandate", mandate_json(m)),
+                            field("request", request),
+                        ],
+                    ),
+            )
+    }
+
+    fn requested_with(op: string, body: string?, mandate: Mandate?) -> Result<Json, string> {
         let fields = match parse(body ?? "") {
             .Ok(.Obj(fs)) -> fs,
             rest -> { fail "`${op}` takes its fields as one JSON object" },
         }
-        self.requested(Json.Obj([field("op", Json.Str(op))].concat(fields)))
+        self.under(mandate, Json.Obj([field("op", Json.Str(op))].concat(fields)))
     }
 
     /// The planner drafts a query for the question over this graph; the graph answers it.
@@ -180,20 +206,21 @@ impl Door {
     }
 
     /// The source is recorded, the extractor reads it against this catalog, and the graph admits what it may.
-    fn ingested(body: string?) -> Result<Json, string> {
+    fn ingested(body: string?, mandate: Mandate?) -> Result<Json, string> {
         let envelope = match parse(body ?? "") {
             .Ok(j) -> j,
             .Err(_) -> { fail "`ingest` takes its source envelope as JSON" },
         }
         let receipt = self
-            .requested(Json.Obj([field("op", Json.Str("ingest")), field("source", envelope)]))?
+            .under(mandate, Json.Obj([field("op", Json.Str("ingest")), field("source", envelope)]))?
         let schema = self.requested(Json.Obj([field("op", Json.Str("schema"))]))?
         let catalog = "${self.scratch}/graph-mcp-schema.json"
         if write_text(catalog, to_text(schema)) is .Err { fail "the catalog could not be written for the extractor" }
         let argv = [w.replace("{schema}", catalog) for w in self.extractor]
         let result = ran(argv, to_text(envelope))?
         let admitted = self
-            .requested(
+            .under(
+                mandate,
                 Json
                     .Obj(
                         [

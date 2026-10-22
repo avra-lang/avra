@@ -1,7 +1,8 @@
 use derive.model.{model}
 use schema.{Registration}
 use mcp.tools.{Door, tools}
-use @std.mcp.{handle}
+use @std.mcp.{handle, handle_on, server}
+use @std.action.{Mandate}
 use @std.json.{Json, parse}
 
 /// A lamp on a shelf.
@@ -18,11 +19,11 @@ fn door(planner: List<string> = []) -> Door {
 
 fn named(d: Door) -> Result<List<string>, string> { (tools(d)?).map(it.name) }
 
-fn called(name: string, arguments: string) -> Result<Json, string> {
+fn called(name: string, arguments: string, mandates: List<Mandate> = []) -> Result<Json, string> {
     let request = match parse(
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"${name}\",\"arguments\":${arguments}}}",
     ) { .Ok(j) -> j, .Err(_) -> { fail "test request is not JSON" } }
-    let reply? = handle(tools(door())?, request) else { fail "no reply" }
+    let reply? = handle_on(server(tools(door())?, mandates), request) else { fail "no reply" }
     reply.member("result")
 }
 
@@ -53,6 +54,22 @@ fn writes_need_a_mandate() -> Result<bool, string> {
         (result.member("content").item(0).member("text").text() ?? "").contains("mandate")
 }
 
+fn a_granted_write_is_recorded_under_its_grant() -> Result<bool, string> {
+    let grant = Mandate {
+        id: "door-test",
+        issuer: "owner",
+        subject: "agent",
+        actions: ["uncorrect"],
+        granted_ms: 0,
+    }
+    let undone = called("uncorrect", "{\"id\":\"never-made\"}", [grant])?
+    let listed = called("mandates", "{}")?
+    let words = undone.member("content").item(0).member("text").text() ?? ""
+    !words.contains("requires a mandate") &&
+        (listed.member("content").item(0).member("text").text() ?? "")
+            .contains("\"target\":\"never-made\"")
+}
+
 fn passed(answer: Result<bool, string>) -> bool {
     answer catch e -> {
         println(e)
@@ -66,5 +83,8 @@ spec "the graph's agent door" {
         then "descriptions name the declared models" { passed(described_from_the_catalog()) }
         then "the schema tool answers the graph's own schema op" { passed(schema_answers()) }
         then "a write waits for a mandate" { passed(writes_need_a_mandate()) }
+        then "a granted write reaches the graph, recorded under its grant" {
+            passed(a_granted_write_is_recorded_under_its_grant())
+        }
     }
 }
