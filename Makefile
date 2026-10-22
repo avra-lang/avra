@@ -1001,10 +1001,14 @@ attack:
 # in tools/defects/corpus.txt, and every mutation of its bases, is checked
 # and run, and one answered with a defect voice or a trap refuses. A SEEDED
 # SET of mutants of the tree's own program tests rides beside them; more is
-# `python3 tools/defects.py --only gen: --generate 500 --seed <n>`.
+# `python3 tools/defects.py --only gen: --generate 500 --seed <n>`. Every program's
+# seconds land in build/defects-timings.tsv (the job uploads it), and a timeout names
+# the seconds the last green run took (build/defects-timings.prev.tsv, fetched by
+# tools/defects_previous.py).
 defects:
 	@python3 tools/defects.py --self-test
-	@sh tools/watch.sh 6000 python3 tools/defects.py --generate 40 --seed 0
+	@python3 tools/defects_previous.py --self-test
+	@sh tools/watch.sh 6000 python3 tools/defects.py --generate 40 --seed 0 --timings build/defects-timings.tsv $$([ -f build/defects-timings.prev.tsv ] && echo --previous build/defects-timings.prev.tsv)
 
 # The IR vocabulary's guarantee: every Ins consumer stays exhaustive,
 # so a new instruction cannot ship half-implemented.

@@ -744,6 +744,8 @@ jobs:
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
       credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      # the defects keeper reads a stalled compile's stack with gdb, which needs ptrace
+      options: --cap-add=SYS_PTRACE
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -753,6 +755,29 @@ jobs:
         with: { name: avra-build }
       - name: built
         run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
+      # gdb: the defects keeper dumps the stack of a compile that stalls, while it lives.
+      - name: debugger for stalls
+        continue-on-error: true
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends gdb
+      - name: gdb attaches
+        continue-on-error: true
+        run: |
+          sleep 60 &
+          pid=$!
+          if gdb -p "$pid" -batch -ex "bt 3" > /tmp/gdb-attach.out 2>&1; then
+            echo "gdb attaches: yes (pid $pid)"; head -4 /tmp/gdb-attach.out
+          else
+            echo "gdb attaches: NO — a stalled compile will report no stack"; head -6 /tmp/gdb-attach.out
+          fi
+          kill "$pid" 2>/dev/null || true
+      # THE DEFECTS KEEPER'S SECONDS AGAINST THE LAST GREEN RUN: a timeout names what the program took there.
+      - name: earlier defect timings
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 tools/defects_previous.py --repo "${{ github.repository }}" --out build/defects-timings.prev.tsv
       - name: keepers
         timeout-minutes: 30
         env:
@@ -768,6 +793,13 @@ jobs:
             python3 tools/step_cpu.py "$peak_label" -- "$@"
           }
           peak keepers-b make -s -o avra keepers-b || exit 1
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: defects-timings
+          path: build/defects-timings.tsv
+          retention-days: 14
+          if-no-files-found: ignore
   # THE COMMITTED SEED STILL BUILDS THIS TREE — a compiler build, the
   # heaviest single keeper. It stands ALONE: run beside the two halves it was
   # the third compiler process on one runner, and the OOM killed the whole
