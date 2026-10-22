@@ -27,6 +27,15 @@ def derivations_of(schema):
     return schema.get("derivations", []) if isinstance(schema, dict) else []
 
 
+def embedded_in(shape):
+    """The models a property shape embeds in its record, however nested."""
+    if isinstance(shape, dict):
+        if "embedded" in shape:
+            yield shape["embedded"]
+        for part in shape.values():
+            yield from embedded_in(part)
+
+
 def seat_of(parameter):
     """(how many rows, model) a derivation parameter takes, or None for a literal seat."""
     seat = parameter["input"]

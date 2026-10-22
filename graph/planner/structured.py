@@ -10,7 +10,7 @@ phrase spoken, one record the question names) is taken without the model.
 """
 import re
 
-from catalog import PARAMETERS, derivations_of, models_of, base_shape, reference_target, relation_ends, seat_of
+from catalog import PARAMETERS, derivations_of, embedded_in, models_of, base_shape, reference_target, relation_ends, seat_of
 from prompt import line
 
 
@@ -200,8 +200,9 @@ def plan(chooser, question, schema, context, search=None, depth=None, read=None)
     """One query composed from closed choices; `depth` caps the hops (the
     request's budget), else the catalog's size bounds the walk."""
     derived = derivations_of(schema)
-    outputs = {d["output"] for d in derived}
-    models = {k: m for k, m in models_of(schema).items() if k not in outputs}
+    declared = models_of(schema)
+    held = {d["output"] for d in derived} | {e for m in declared.values() for p in m["properties"] for e in embedded_in(p["shape"])}
+    models = {k: m for k, m in declared.items() if k not in held}
     head = f"Question: {question}"
     evidence = Evidence(search, question, models)
     out = Plan()
