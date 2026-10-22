@@ -740,6 +740,8 @@ jobs:
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
       credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      # the defects keeper reads a stalled compile's stack with gdb, which needs ptrace
+      options: --cap-add=SYS_PTRACE
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -755,6 +757,17 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: apt-get update -qq && apt-get install -y -qq --no-install-recommends gdb
+      - name: gdb attaches
+        continue-on-error: true
+        run: |
+          sleep 60 &
+          pid=$!
+          if gdb -p "$pid" -batch -ex "bt 3" > /tmp/gdb-attach.out 2>&1; then
+            echo "gdb attaches: yes (pid $pid)"; head -4 /tmp/gdb-attach.out
+          else
+            echo "gdb attaches: NO — a stalled compile will report no stack"; head -6 /tmp/gdb-attach.out
+          fi
+          kill "$pid" 2>/dev/null || true
       # THE DEFECTS KEEPER'S SECONDS AGAINST THE LAST GREEN RUN: a timeout names what the program took there.
       - name: earlier defect timings
         continue-on-error: true
