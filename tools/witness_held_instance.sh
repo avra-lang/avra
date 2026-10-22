@@ -1,5 +1,5 @@
 #!/bin/sh
-# tool-witness: run by make store-witnesses
+# tool-witness: owed by store-probe — the fn it moves is gone from compiler/cache_walk.av; repoint it at a live fn
 # `MEMCAP=<memcap.sh> sh tools/witness_held_instance.sh [<test file>]`
 #
 # A HELD FILE'S DECLARED INSTANCES, READ BY A MODULE THAT MOVED. `compiler.rules`

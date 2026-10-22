@@ -5,7 +5,8 @@
 # Makefile's object lists and the keepers ask here, never a sed of their own.
 #
 #   sh tools/manifest_objects.sh [--wasm]                  every package's objects
-#   sh tools/manifest_objects.sh [--wasm] <pkg>            one package's
+#   sh tools/manifest_objects.sh [--wasm] <pkg>            one package's (a name under packages/,
+#                                                          or a directory holding an avra.toml)
 #   sh tools/manifest_objects.sh [--wasm] --closure <pkg>  <pkg>'s and every @std package
 #                                                          its sources `use`, tests aside
 #   sh tools/manifest_objects.sh --rows <key> <manifest>   one manifest's row as written
@@ -28,15 +29,25 @@ objects() {
     rows "$key" "$@" | sed 's|.*/||' | sed "s|^|$prefix|" | LC_ALL=C sort -u
 }
 
-# closure <pkg>: the package and every @std package its non-test sources use, transitively.
+# dir <pkg>: a package's directory under the root — `packages/<pkg>`, or <pkg> itself
+# when it is a directory holding an avra.toml (`tools`, `packages/cli`).
+dir() {
+    if [ -f "$root/packages/$1/avra.toml" ]; then echo "packages/$1"
+    elif [ -f "$root/${1%/}/avra.toml" ]; then echo "${1%/}"
+    else echo "manifest_objects: no package \`$1\` (neither packages/$1 nor $1 holds an avra.toml)" >&2; return 1
+    fi
+}
+
+# closure <dir>: the package and every @std package its non-test sources use, transitively,
+# as directories. `use @std.x_y` is packages/std-x_y — the name is the directory's.
 # One grep over every package's sources; the walk is awk's.
 closure() {
     grep -roE --include='*.av' --exclude-dir=tests \
-        '^[[:space:]]*(export[[:space:]]+)?use[[:space:]]+@std\.[a-z_]+' "$root"/packages/*/src 2>/dev/null |
-    awk -v start="$1" '{
-            n = split($0, path, "/packages/"); split(path[n], part, "/")
-            d = $0; sub(/.*@std\./, "", d); gsub(/_/, "-", d)
-            uses[part[1]] = uses[part[1]] " std-" d
+        '^[[:space:]]*(export[[:space:]]+)?use[[:space:]]+@std\.[a-z_]+' "$root/$1/src" "$root"/packages/*/src 2>/dev/null |
+    awk -v start="$1" -v root="$root/" '{
+            p = substr($0, length(root) + 1); sub(/\/src\/.*/, "", p)
+            d = $0; sub(/.*@std\./, "", d)
+            uses[p] = uses[p] " packages/std-" d
         }
         END {
             seen[start] = 1; todo[1] = start; n = 1
@@ -48,7 +59,7 @@ closure() {
         }'
 }
 
-manifests() { for p in "$@"; do [ ! -f "$root/packages/$p/avra.toml" ] || echo "$root/packages/$p/avra.toml"; done; }
+manifests() { for d in "$@"; do [ ! -f "$root/$d/avra.toml" ] || echo "$root/$d/avra.toml"; done; }
 
 self_test() {
     t=$(mktemp -d) || exit 1
@@ -74,19 +85,25 @@ self_test() {
     [ "$one" = "build/io.o build/io_watch.o " ] || bad "one package: got '$one'"
     wcl=$(MANIFEST_ROOT=$t sh "$0" --wasm --closure app | tr '\n' ' ')
     [ "$wcl" = "build/wasm32/io_wasm.c " ] || bad "a closure's wasm objects: got '$wcl'"
+    mk std-x_y '[link]\nobjects = ["../../build/xy.o"]\n'
+    mkdir -p "$t/kit/src"; printf '[package]\nname = "kit"\n' > "$t/kit/avra.toml"
+    printf 'use @std.x_y\nuse @std.io\n' > "$t/kit/src/main.av"
+    kit=$(MANIFEST_ROOT=$t sh "$0" --closure kit | tr '\n' ' ')
+    [ "$kit" = "build/deep.a build/io.o build/io_watch.o build/xy.o " ] || bad "a package directory outside packages/, an underscored name: got '$kit'"
+    MANIFEST_ROOT=$t sh "$0" --closure nowhere > /dev/null 2>&1 && bad "a package that does not exist answered"
     rw=$(MANIFEST_ROOT=$t sh "$0" --rows objects "$t/packages/std-io/avra.toml" | tr '\n' ' ')
     [ "$rw" = "../../build/io.o ../../build/io_watch.o " ] || bad "one manifest's rows as written: got '$rw'"
     [ "$fails" = 0 ] || exit 1
-    echo "manifest_objects: self-test passed — 6 fixtures (every manifest, wasm, one package, a transitive closure with tests and unreached packages aside, a closure's wasm, rows as written)"
+    echo "manifest_objects: self-test passed — 8 fixtures (every manifest, wasm, one package, a transitive closure with tests and unreached packages aside, a closure's wasm, a package directory outside packages/ with an underscored @std name, an unknown package refused, rows as written)"
 }
 
 key=objects prefix=build/
 if [ "$1" = --wasm ]; then key=wasm_objects prefix=build/wasm32/; shift; fi
 case "$1" in
     --self-test) self_test ;;
-    --closure) objects $key $prefix $(manifests $(closure "$2")) ;;
+    --closure) d=$(dir "$2") || exit 1; objects $key $prefix $(manifests $(closure "$d")) ;;
     --rows) rows "$2" "$3" ;;
     "") objects $key $prefix "$root"/packages/*/avra.toml ;;
     -*) echo "usage: sh tools/manifest_objects.sh [--wasm] [<pkg> | --closure <pkg>] | --rows <key> <manifest> | --self-test" >&2; exit 2 ;;
-    *) objects $key $prefix $(manifests "$1") ;;
+    *) d=$(dir "$1") || exit 1; objects $key $prefix $(manifests "$d") ;;
 esac
