@@ -250,11 +250,13 @@ impl Workspace {
         }
     }
 
-    /// The declarations a name means: by `Owner.name`, or by its name alone.
+    /// The declarations a name means — its canonical spelling, `Owner.name`, or its name alone.
+    /// The name index files plain names, so a canonical name searches by the last part.
     fn decls_named(name: string) -> List<Decl> {
-        let last = name.split(".").last() ?? name
-        let filed = if last == name { self.decls.named_rows(name) } else { self.decls.named_rows(name).concat(self.decls.named_rows(last)) }
-        let spelled = if name.starts_with("@") { name } else { "@${name}" }
+        let plain = if name.starts_with("@") { name.substring(1, name.length) } else { name }
+        let last = plain.split(".").last() ?? plain
+        let filed = if last == plain { self.decls.named_rows(plain) } else { self.decls.named_rows(plain).concat(self.decls.named_rows(last)) }
+        let spelled = "@${plain}"
         [d for d in filed if d.name == name || "${d.owner}.${d.name}" == name || self.decls.canonical_name(d) == spelled]
     }
 
