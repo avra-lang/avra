@@ -5,7 +5,7 @@
 //! any pass that needs a body's shapes without paying for a full
 //! type-check — receivers.av's writer inference, and the error-union
 //! fixpoint (failures.av).
-use core.{DeclId, ExprId, StmtId, TypeId, Type, Arrow, SyntaxArena, MethodParts}
+use core.{DeclId, ExprId, StmtId, TypeId, Type, Arrow, ResSides, SyntaxArena, MethodParts}
 use features.{NameFacts, Decls, bound_decl_of, method_row, declared_decl, state_slot}
 
 /// One fn's own view: its seats' declared types (the receiver's when
@@ -71,6 +71,8 @@ impl DeclaredTypes {
     fn value_type(value: ExprId) -> TypeId? {
         let placed: TypeId? = self.place_type(value)
         if placed != null { return placed }
+        let propagated: TypeId? = self.propagated_type(value)
+        if propagated != null { return propagated }
         let called: TypeId? = self.called_type(value)
         if called != null { return called }
         let m? = self.store.method_parts(value) else { return self.constructed_type(value) }
@@ -82,6 +84,21 @@ impl DeclaredTypes {
             .Row(_, answer) -> answer,
             .None -> null,
         }
+    }
+
+    /// What a `?` yields: the ok side of a `Result`, or the value of a nullable.
+    fn propagated_type(v: ExprId) -> TypeId? {
+        match self.store.expr(v) {
+            .Propagate(inner) -> self.ok_side(self.value_type(inner)),
+            _ -> null,
+        }
+    }
+
+    fn ok_side(holder: TypeId?) -> TypeId? {
+        if holder == null { return null }
+        let sides: ResSides? = self.decls.types.res_parts(holder!)
+        if sides != null { return sides!.ok }
+        self.decls.types.carried(holder!)
     }
 
     /// A named call's declared answer — null when the name is no fn,

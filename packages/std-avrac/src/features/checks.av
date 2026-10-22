@@ -1805,8 +1805,8 @@ impl TypeCx {
 
     /// Whether a root is a lambda's CAPTURE — a copy, never a place.
     fn captured(root: ExprId) -> bool {
-        let b: Binding? = self.names.binding(root)
-        b != null && b! is .Capture
+        let b? = self.names.binding(root) else { return false }
+        b is .Capture && !shares_place(self.view, self.names, b)
     }
 
     /// THE ALIAS-COPY LAW: a `mut` place already passes
@@ -1851,8 +1851,17 @@ impl TypeCx {
     /// A write through `place` (rooted at the `mut` `root`) judged by
     /// both copy laws: the local that is a copy, then the path.
     mut fn copy_laws(e: ExprId, place: ExprId, root: ExprId) {
+        self.state_root_law(place, root)
         self.alias_copy_law(e, place, root)
         self.path_copy_law(e, place, root)
+    }
+
+    /// A write through a place rooted at a `state` — an identity — opens
+    /// the box it holds IN the state's cell, where every reader looks.
+    mut fn state_root_law(place: ExprId, root: ExprId) {
+        let b? = self.names.binding(root) else { return }
+        if !shares_place(self.view, self.names, b) { return }
+        if self.view.types.rides_pointer(self.type_at(place)) { self.facts.mark_alias_copy(place) }
     }
 
     /// THE ROOT DECIDES: a write through a PATH opens the path's boxes

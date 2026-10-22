@@ -1,0 +1,63 @@
+// A LOOKUP NEVER MUTATES THE PROGRAM. The import remedy looks for a component's
+// home across every package in reach and asks records and tokens alone, so a
+// parse refusal registers and analyses exactly what its clean twin does.
+use @std.avrac.testing.{test_workspace}
+use @std.avrac.compiler.{Program}
+use compiler.host.{memory_host}
+use compiler.{Workspace}
+
+const manifest: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/widgets\" = { path = \"vendor/widgets\" }\n"
+const widgets_manifest: string = "[package]\nname = \"@x/widgets\"\nversion = \"0.1.0\"\n"
+const widget: string = "export component Widget {\n    label: string\n}\n"
+const unused: string = "export fn far() -> int { 1 }\n"
+const widget_test: string = "use @x.widgets.{Widget}\nspec \"w\" { given \"g\" { then \"t\" { true } } }\n"
+
+fn workspace_of(main: string) -> Workspace {
+    let files: Map<string, string> = {
+        "/w/avra.toml": manifest,
+        "/w/vendor/widgets/avra.toml": widgets_manifest,
+        "/w/vendor/widgets/src/widget.av": widget,
+        "/w/vendor/widgets/src/far/far.av": unused,
+        "/w/vendor/widgets/src/tests/widget_test.av": widget_test,
+        "/w/src/main.av": main,
+    }
+    test_workspace(memory_host(files, files.keys()), "/w")
+}
+
+fn program_of(main: string) -> Program { workspace_of(main).program("/w/src/main.av") }
+
+/// The files a program's check analysed.
+fn analysed(main: string) -> int { program_of(main).files.length }
+
+/// The files the workspace registered while making the program.
+fn files_met(main: string) -> int {
+    let ws = workspace_of(main)
+    let _ = ws.program("/w/src/main.av")
+    ws.program_files()
+}
+
+fn report_of(main: string) -> string { program_of(main).report() }
+
+spec "compiler/parse refusal" {
+    given "a parse error beside a name no package exports as a component" {
+        then "the program analyses as many files as its clean twin" {
+            analysed("use @x.widgets.{Widget}\nlet x y = 1\n") == analysed("use @x.widgets.{Widget}\nlet x = 1\n")
+        }
+        then "the workspace registers as many files as its clean twin" {
+            files_met("use @x.widgets.{Widget}\nlet x y = 1\n") == files_met("use @x.widgets.{Widget}\nlet x = 1\n")
+        }
+        then "a dependency's unreached module and its tests stay out" {
+            !program_of("use @x.widgets.{Widget}\nlet x y = 1\n")
+                .source_paths()
+                .any(it.contains("/far/") || it.contains("/tests/"))
+        }
+    }
+    given "a parse error beside a component word nobody imported" {
+        then "the help names the `use` that brings it" {
+            report_of("Widget w { label: \"a\" }\n").contains("`use @x.widgets.{Widget}`")
+        }
+        then "the remedy's search adds no file to the program" {
+            !program_of("Widget w { label: \"a\" }\n").source_paths().any(it.contains("/widgets/"))
+        }
+    }
+}

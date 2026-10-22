@@ -29,6 +29,21 @@ fn record(mark: string, field: string) -> string {
         "type R = { ${mark} ${field} }\n"
 }
 
+/// A provider whose derive reports, for each annotation on the type, whether
+/// it carries a call, beside a declaring annotation `stamped`.
+fn reporter() -> string {
+    "use @std.meta.{Type, Directive, Declared, literal}\n" +
+        "export trait Calls {\n" +
+        "    static fn derive(t: Type) -> List<Directive> {\n" +
+        "        let said = [\"\${a.name}=\${a.call != null}\" for a in t.annotations].join(\" \")\n" +
+        "        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn calls() -> string { \${literal(said)} } } } }]\n" +
+        "    }\n" +
+        "}\n" +
+        "export fn stamped(t: Type) -> Declared {\n" +
+        "    Declared { made: [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn stamp() -> string { \${literal(t.name)} } } } }] }\n" +
+        "}\n"
+}
+
 spec "features/annotations — rule annotations" {
     given "a rule on a field" {
         then "is called over the field's value" {
@@ -69,6 +84,23 @@ spec "features/annotations — rule annotations" {
         then "a misspelled rule is refused at the annotation" {
             let p = provided(record("@lnog(3)", "s: string") + "0", checker())
             refused_in(p, "no `fn lnog` is defined") && p.report().contains("main.av:5:12]")
+        }
+    }
+    given "what carries a call" {
+        then "a rule does, a declaring and a deriving annotation do not" {
+            answered(
+                provided(
+                    "use @std.meta.{derive}\nuse @x.c.{Calls, stamped}\nfn sane(r: R) -> bool { r.n >= 0 }\n@derive(Calls)\n@stamped\n@sane\ntype R = { n: int }\nR { n: 1 }.calls()",
+                    reporter(),
+                ),
+            ) == "derive=false stamped=false sane=true"
+        }
+        then "a declaring annotation standing in its own file is refused by name" {
+            let p = provided(
+                "use @std.meta.{Type, Directive, Declared}\nfn here(t: Type) -> Declared { Declared { made: [] } }\n@here\ntype R = { n: int }\n0",
+                reporter(),
+            )
+            refused_in(p, "`here` generates declarations and stands in this file")
         }
     }
 }

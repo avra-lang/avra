@@ -131,40 +131,11 @@ impl LowerCx {
         self.view.types.cell_inner(sig.types[slot])
     }
 
-    /// A root's place: a `state` root is the value its cell HOLDS, so a
-    /// write lands in the cell's one slot; every other root writes its
-    /// own box whole.
+    /// A root's place. THE ROOT LAW: a `state` is an identity, so a path
+    /// rooted at one is written IN its cell's one slot, where every reader
+    /// looks; every other root writes its own box whole.
     fn root_place(e: ExprId) -> Place? {
-        let b? = self.names.binding(e) else { return self.cell_place(e) }
-        match b {
-            .Def(s) if self.view.store.is_state_stmt(s) -> self.state_place(e, s),
-            .Capture(l, j) -> if self.state_capture(l, j) != null { self.state_capture_place(l, j) } else { self.cell_place(e) },
-            .Decl(d) if self.view.decls.decl(d).kind is .State -> self.state_decl_place(d),
-            .Param(i) if self.state_seat(i) -> self.state_param_place(i),
-            rest -> self.cell_place(e),
-        }
-    }
-
-    /// A `state` CAPTURE's place: the env holds the cell, so a write
-    /// assigns what it holds — the lambda shares the caller's place.
-    fn state_capture_place(l: ExprId, j: int) -> Place? {
-        let cell? = self.state_capture_cell(l, j) else { return null }
-        Place.Proved(cell, self.const_int(0))
-    }
-
-    /// A module-level state's place: the shared cell's one slot, so a
-    /// write lands where every other reader's read looks.
-    fn state_decl_place(d: DeclId) -> Place? {
-        Place.Proved(self.state_decl_cell(d), self.const_int(0))
-    }
-    /// A `state` seat's place: the seat register IS the caller's cell,
-    /// so a whole assignment lands in what it holds.
-    fn state_param_place(i: int) -> Place? {
-        Place.Proved(self.param_reg(i), self.const_int(0))
-    }
-
-    fn state_place(e: ExprId, s: StmtId) -> Place? {
-        let cell? = self.defined_reg(e, s, self.def_ty(s)) else { return null }
+        let cell? = self.state_root_cell(e) else { return self.cell_place(e) }
         Place.Proved(cell, self.const_int(0))
     }
 
@@ -199,18 +170,19 @@ impl LowerCx {
         let step? = self.view.store.place_step(s) else { return self.lower_defect(s, "a mutation through a value survived resolve") }
         match step {
             .Root(_) -> {
+                // a `state` root's box is the one its cell holds, opened in place
+                let held: Reg? = self.state_root_cell(s)
+                if held != null { return self.slot_opened(s, held!, self.const_int(0)) }
                 let cell: Reg? = self.cell_of(s)
                 // a cell opens unique — copy-on-write
                 if cell != null { return self.cell_unique(self.shape_at(s), cell!) }
                 self.captured_box(s) ?? self.borrowed_box(s)
             },
             .Field(subject, name) -> {
-                // A `state` field's cell OWNS the value it holds, so a
-                // write through it is the held value's, never a clone.
-                let held = self.state_field_held(subject, name.of)
-                if held != null {
+                // a `state` field's box is the one its cell holds, opened in place
+                if self.state_field_held(subject, name.of) != null {
                     let cell = self.state_field_cell(subject, name.of)
-                    return self.proven_read(cell!, 0, held!)
+                    return self.slot_opened(s, cell!, self.const_int(0))
                 }
                 self.slot_opened(s, self.unique_box(subject), self.field_slot(subject, name.of))
             },

@@ -10,6 +10,7 @@ use core.debug.{db_verified_files}
 use core.{
     distinct,
     flatten,
+    some_list,
     joined,
     sorted_texts,
     digest_of,
@@ -36,6 +37,13 @@ use compiler.findings.{Finding, findings_read, findings_text, file_findings}
 /// What a command wants of a program. A file's warnings stand in for it
 /// always; its object and its asks too when the want LINKS.
 export enum Want { Diagnostics, Binary }
+
+impl Want {
+    /// Whether the want links: a binary does, and only a link reads a program's code hashes.
+    fn links() -> bool {
+        match self { .Binary -> true, .Diagnostics -> false }
+    }
+}
 
 /// ONE ATTEMPT AT A PROGRAM: what it derives and for what, the files it reads
 /// whatever the store holds, whether it reads the program's instantiation HOMES,
@@ -184,11 +192,11 @@ export type Said = { path: string, warnings: string, cases: List<CaseCall>, find
 /// ran in.
 ///
 /// AN INSTANTIATION LOWERS FROM ITS GENERIC'S BODY, and a held home has none. So
-/// `unlowered` are the instantiations this derivation asked for and did not
-/// lower, and `asked` names what they and every other would lower to: the
+/// `owed` counts the instantiations this derivation asked for and did not lower —
+/// `unlowered` resolves them for a link — and `asked` names what they and every other would lower to: the
 /// program's root asks, and the key of every home it has ever lowered from. The
 /// same `asked` is the same instantiations, whoever lowered them.
-export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, held: int, files: int, turns: int, turned: int = 0, spans: List<Phase>, read: List<ReadFile>, refused: int = 0, left: List<Left> = [] }
+export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, owed: int, asked: string, held: int, files: int, turns: int, turned: int = 0, spans: List<Phase>, read: List<ReadFile>, refused: int = 0, left: List<Left> = [] }
 
 /// One file's hold: held, or read with why (null for a file no record
 /// knows), the stored rows a read-for-want-of-rows file lacks, and what
@@ -242,7 +250,7 @@ impl Derived {
         Left {
             spans: self.program.phases.concat(self.spans),
             ns: spent(self.spans),
-            turn: "reads the homes ${self.unlowered.length} instantiations it owes lower from",
+            turn: "reads the homes ${self.owed} instantiations it owes lower from",
         }
     }
 }
@@ -465,7 +473,7 @@ impl Workspace {
     /// having given back what it derived.
     fn stood_first(at: Attempt, owes: fn(Derived) -> bool) -> Result<Stood, string> {
         let d = self.under_hold(at)?
-        if d.unlowered.is_empty() || !owes(d) { return Stood.Kept(d) }
+        if d.owed == 0 || !owes(d) { return Stood.Kept(d) }
         d.program.ws.discarded()
         Stood
             .Owing(
@@ -524,7 +532,7 @@ impl Workspace {
     /// The derivation with every instantiation lowered: the homes read, and
     /// `parse` with them.
     fn whole(d: Derived, parse: List<ReadFile>) -> Result<Derived, string> {
-        if d.unlowered.is_empty() { return d }
+        if d.owed == 0 { return d }
         self.again(Attempt { entry: d.entry, want: d.want, parse: parse, homes: true })
     }
 
@@ -700,7 +708,8 @@ impl Workspace {
                 .get()
                 .keys()
                 .concat(if at.entry != null { [at.entry!] } else { [] })
-            let unstood = [fi.path for fi in self.decls.files_standing() if !self.file_rows_stand(store, fi.path, at.want) || must_read.contains(fi.path)]
+            let asked = self.holds_asked(store, at.entry, at.want)
+            let unstood = [fi.path for fi in self.decls.files_standing() if self.hold_asks(store, fi.path, at.want, must_read, asked)]
             self.timed("rows stand", standing)
             let reading = self.clock()
             for path in unstood { self.declarers_registered(path) }
@@ -841,10 +850,10 @@ impl Workspace {
         let p = self.program(at.entry, built_entry(at))
         at.having_read(self.bodies_asked())?
         // a held collector judged against what it gathers now, before a stale set is refused
-        at.having_read(self.gathered_moved())?
+        at.having_read(self.gathered_moved([a.view.file for a in p.files]))?
         if !p.clean() { fail Turn.Refused(p.report()) }
         self.layouts_judged(at, store, p)?
-        at.having_read(self.read_held_asks(store))?
+        at.having_read(self.read_held_asks(store, at.want.links()))?
         at.having_read(self.read_held_codes(store))?
         p
     }
@@ -854,9 +863,13 @@ impl Workspace {
     /// lowered from are remembered; one that is held all the same is new, and the
     /// next attempt reads it.
     fn bodies_lowered(at: Attempt, store: Store, p: Program) -> Result<Lowered, Turn> {
-        let lowered = p.files_checked()
+        let lowered = p.files_checked(at.want.links())
         self.settle_consts(p)
         at.having_read(self.bodies_asked())?
+        at
+            .having_read(
+                [ReadFile { path: path, why: Reads.AsksUnread } for path in distinct(self.hold.asks_lost.get())],
+            )?
         let lo = or_refused(lowered)?
         remember(
             store,
@@ -893,16 +906,11 @@ impl Workspace {
 
     /// What one read file's bodies ask, kept under the file's key.
     fn keep_asks(store: Store, lo: Lowered, a: Analysis) {
-        let asks = [k.want for k in lo.asks if same_file(k.by, a.view.file)]
+        let asks = self.held_asks_wire([k.want for k in lo.asks if same_file(k.by, a.view.file)])
         let _ = store
-            .keep_once(
-                Stored.Unit,
-                self.asks_key(self.held_okey(store, a.view.source.file)),
-                self.wanted_list_wire(asks),
-            )
+            .keep_once(Stored.Unit, self.asks_key(self.held_okey(store, a.view.source.file)), asks)
         let path = a.view.source.file
-        self
-            .keep_file_row(store, path, Stored.Unit, self.asks_row(path), self.wanted_list_wire(asks))
+        self.keep_file_row(store, path, Stored.Unit, self.asks_row(path), asks)
     }
 
     /// Each fresh instantiation's code, kept under its own key — what a held
@@ -963,14 +971,22 @@ impl Workspace {
         said: List<Said>,
         spans: List<Phase>,
     ) -> Derived {
-        let roots = self.hold.held_wants.get().concat([k.want for k in lo.asks])
-        let asked = self.asked_print(store, self.known_as(at), roots)
-        let unlowered = [w for w in roots if self.is_held(w.file)]
-        if unlowered.is_empty() { let _ = store.keep_once(Stored.Unit, clean_key(asked), "") }
+        let fresh = [k.want for k in lo.asks]
+        let held = self.hold.held_asks.get()
+        let asked = self.asked_print(store, self.known_as(at), held, fresh)
+        let owed_fresh = [w for w in fresh if self.is_held(w.file)]
+        let owed_held = [h for h in held if self.home_held(h)]
+        let unlowered = owed_fresh
+            .concat(
+                if at.want.links() { flatten([some_list(self.asked_want(h)) for h in owed_held]) } else { [] },
+            )
+        let owed = owed_fresh.length + owed_held.length
+        if owed == 0 { let _ = store.keep_once(Stored.Unit, clean_key(asked), "") }
         if db_verified() {
             self.lowered_said_pass(store)
             self.typed_said_pass(store)
         }
+        if at.want is .Diagnostics { self.keep_held_set(store, at.entry, at.want, held_paths(self)) }
         store.settle()
         Derived {
             entry: at.entry,
@@ -981,6 +997,7 @@ impl Workspace {
             said: said,
             warnings: spoken([p.warned(p.voices)].concat([s.warnings for s in said])),
             unlowered: unlowered,
+            owed: owed,
             asked: asked,
             held: held_paths(self).length,
             files: self.decls.file_count(),
@@ -1224,11 +1241,13 @@ impl Workspace {
     /// key of every home it has lowered from — a home's text, and the interfaces
     /// it sees. An ask a home's own body makes is that home's content. A home the
     /// tree no longer has is gone from the print, so the print moves with it.
-    fn asked_print(store: Store, known_as: string, roots: List<Wanted>) -> string {
+    fn asked_print(store: Store, known_as: string, held: List<HeldAsk>, fresh: List<Wanted>) -> string {
         let homes = [path for path in sorted_texts(remembered(store, homes_key(known_as))) if !path.is_empty() && self.there(path)]
         digest_of(
             joined(
-                sorted_texts(distinct([self.wanted_wire(w) for w in roots]))
+                sorted_texts(
+                    distinct([h.wire for h in held].concat([self.wanted_wire(w) for w in fresh])),
+                )
                     .concat(["${path}\t${self.held_okey(store, path)}" for path in homes]),
                 "\n",
             ),

@@ -61,6 +61,7 @@ use features.{
     Import,
     bound_decl_of,
     declaring_decl,
+    LANGUAGE_HOME,
 }
 use compiler.families.{Family}
 use compiler.store.{Store}
@@ -176,19 +177,23 @@ impl Workspace {
         0
     }
 
-    /// The references held files' bodies once made to anything a read file or the language
-    /// holds, read back off their modules' kept records (`ref` lines, written by `record_of`
-    /// the last time each file was fresh) — never re-scanned, since a held file has no body to
-    /// walk. A held file's reference to another held declaration arrives on the ask that
-    /// names the declaration (`held_refs_to`), so no held module is minted for it and no
+    /// The references held files' bodies once made to anything a read file holds, read back
+    /// off their modules' kept records (`ref` lines, written by `record_of` the last time each
+    /// file was fresh) — never re-scanned, since a held file has no body to walk. A held
+    /// file's reference to another held declaration or to the language's arrives on the ask
+    /// that names the declaration (`held_refs_to`), so no held module is minted for it and no
     /// record line of a module nothing reads is decoded. A line naming a declaration this
     /// attempt cannot find (a stale row from before a name moved) answers no row rather than
     /// a wrong one; the record it came from is validated whole elsewhere (`record_complete`).
     fn restored_refs(store: Store) -> List<Ref> {
         flatten(
-            [self.refs_into(store, target) for target in self.hold.refs_by_target.get().keys() if !self.decls.held.get().has(target)],
+            [self.refs_into(store, target) for target in self.hold.refs_by_target.get().keys() if self.read_target(target)],
         )
     }
+
+    /// Whether a target's held references are restored whole: a read file's are, while a held
+    /// file's and the language's wait for the ask that names their declaration.
+    fn read_target(target: string) -> bool { target != LANGUAGE_HOME && !self.decls.held.get().has(target) }
 
     /// The references held files make to `target`, a path no held file answers to.
     fn refs_into(store: Store, target: string) -> List<Ref> {
@@ -214,12 +219,18 @@ impl Workspace {
     /// The references held files make to `d`, restored from their records.
     fn held_refs_to(d: DeclId) -> List<Ref> {
         let store? = self.store.get() else { return [] }
-        if !self.decls.file_held(self.decls.decl(d).file) { return [] }
-        let target = self.decls.file(self.decls.decl(d).file).path
+        let target? = self.held_target(d) else { return [] }
         let known: List<Ref>? = self.hold.held_refs.get().get(target)
         let into = known ?? self.refs_into(store, target)
         if known == null { self.hold.held_refs.put(target, into) }
         [r for r in into if same_decl(r.decl, d)]
+    }
+
+    /// The target whose held references name `d` on its own ask: the language's, or a held file.
+    fn held_target(d: DeclId) -> string? {
+        if self.decls.is_builtin(d) { return LANGUAGE_HOME }
+        let f = self.decls.decl(d).file
+        if self.decls.file_held(f) { self.decls.file(f).path } else { null }
     }
 
     /// A file's `ref` lines, as its module's kept record holds them.

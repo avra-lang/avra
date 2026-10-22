@@ -996,6 +996,98 @@ MI "mi: the method is added to the SAME impl block — the reader's refusal clea
 MI "mi: and warm again" clean
 fi
 
+if section hs; then
+# THE HELD SET, and the reverse index that feeds it. A derivation remembers the files
+# whose holds it confirmed standing; the next one asks a file only when that set does
+# not name it, or when a row of it read an input that moved. A file nothing moved near
+# must not be asked, and a hold that could serve a stale answer must be broken.
+mkdir -p $R/hs/src/f $R/hs/src/x $R/hs/src/y
+printf '[package]\nname = "rt-hs"\nversion = "0.1.0"\n' > $R/hs/avra.toml
+printf 'export fn twice(n: int) -> int { n * 2 }\n' > $R/hs/src/y/calc.av
+printf 'use y.{twice}\nexport fn mid() -> int { twice(5) }\n' > $R/hs/src/x/mid.av
+printf 'export fn alone(n: int) -> int { n + 1 }\n' > $R/hs/src/f/leaf.av
+printf 'use x.{mid}\nuse f.{alone}\nprintln("${mid()} ${alone(1)}")\n' > $R/hs/src/main.av
+S "hs: built cold" hs
+S "hs: warm, the binary kept" hs
+steps=$((steps+1)); ./avra check $R/hs >/dev/null 2>&1
+ed $R/hs/src/y/calc.av "n * 2" "n * 3"
+steps=$((steps+1)); hs_out=$(AVRA_QTRACE=1 ./avra check --time $R/hs 2>&1)
+hs_holds=$(printf '%s\n' "$hs_out" | grep -a 'Q	holds' | tail -1)
+hs_asked=$(printf '%s\n' "$hs_holds" | cut -f3 | cut -d' ' -f1)
+hs_files=$(printf '%s\n' "$hs_holds" | cut -f4 | cut -d' ' -f1)
+hs_read=$(printf '%s\n' "$hs_out" | sed -n '/^read:/,$p')
+case "$hs_asked" in ""|0) fails=$((fails+1)); echo "FAIL  hs: the held set was not read, so every file was asked (holds: '$hs_holds')" ;; esac
+[ -n "$hs_asked" ] && [ -n "$hs_files" ] && [ "$hs_asked" -lt "$hs_files" ] && [ "$hs_asked" -gt 0 ] || { fails=$((fails+1)); echo "FAIL  hs: a file whose hold stood and read nothing that moved was asked anyway (asked '$hs_asked' of '$hs_files')"; }
+case "$hs_read" in *"f/leaf.av"*) fails=$((fails+1)); echo "FAIL  hs: a file that reads nothing the edit moved was read all the same" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    hs: the file that reads nothing of it was not asked (asked '$hs_asked' of '$hs_files')" ;; esac
+S "hs: the binary follows the edit" hs
+steps=$((steps+1)); hs_again=$(AVRA_QTRACE=1 ./avra check --time $R/hs 2>&1)
+case "$hs_again" in *"cache hit"*) [ -n "${VERBOSE:-}" ] && echo "ok    hs: the unchanged check after it is a hit" ;; *) fails=$((fails+1)); echo "FAIL  hs: the check after it was no hit: $(printf '%s' "$hs_again" | grep -aE '^time:' | tail -1 | cut -c1-200)" ;; esac
+# NO FEWER: the callee's name is gone, and the reader that holds over it must be asked
+# again — a set trusted past its inputs would serve the old answer and compile clean.
+ed $R/hs/src/y/calc.av "fn twice(n: int)" "fn thrice(n: int)"
+steps=$((steps+1)); hs_stale=$(./avra check $R/hs 2>&1); hs_st=$?
+[ "$hs_st" -ne 0 ] && printf '%s' "$hs_stale" | grep -q "twice" || { fails=$((fails+1)); echo "FAIL  hs: the callee was renamed and the reader's hold stood all the same (exit $hs_st): $(printf '%s' "$hs_stale" | grep -aE '^error|twice' | head -3 | tr '\n' ' ' | cut -c1-200)"; }
+[ -n "${VERBOSE:-}" ] && [ "$hs_st" -ne 0 ] && echo "ok    hs: the renamed callee broke the hold"
+fi
+
+if section st; then
+# A STAMP IS A CLAIM ABOUT BYTES, AND THE BYTES DECIDE. `st`'s manifest keeps each
+# input's digest with the stamp its bytes wore (`avra_io_stamp`: size, times and
+# inode folded; zero for a file that moved inside the window two writes can wear one
+# time), and an unchanged run trusts the stamp instead of reading. Two things are
+# held here, and the second is what tests the first. ONE: `--verify` reads every
+# input anyway, so a doubt about a kept stamp is settled by the bytes — measured as
+# `inputs` growing against the fast run's, which is also the witness that the fast
+# run really skipped the reads. TWO: an edit of the SAME WIDTH whose mtime is put
+# back moves no size and no mtime, and must still be read — its ctime moved, so its
+# stamp cannot match. A check that served the kept answer here would be a cache hit
+# answering for bytes it never read.
+mkdir -p $R/st/src
+printf '[package]\nname = "rt-st"\nversion = "0.1.0"\n' > $R/st/avra.toml
+i=0
+while [ $i -lt 40 ]; do
+    i=$((i + 1))
+    printf 'export const V%02d: int = %d\n' "$i" "$((i * 10))" > $R/st/src/f$(printf '%02d' "$i").av
+done
+printf 'export const V01: int = 101\n' > $R/st/src/f01.av
+printf 'use f01.{V01}\nprintln("N=${V01}")\n' > $R/st/src/main.av
+# THE FILES MUST BE OLDER THAN THE STAMP'S WINDOW, or the record keeps no stamp and
+# every step below would pass without the fast path ever engaging.
+sleep 3
+S "st: cold" st
+steps=$((steps+1)); st_got=$($R/st/src/main 2>&1)
+[ "$st_got" = "N=101" ] || { fails=$((fails+1)); echo "FAIL  st: the cold build printed '$st_got', wanted 'N=101'"; }
+# A BUILD AND A CHECK KEEP THEIR OWN RECORDS (`build:` and `check:`), so the check's
+# first run here is a miss that writes the record every assertion below reads.
+steps=$((steps+1)); ./avra check $R/st >/dev/null 2>&1 || { fails=$((fails+1)); echo "FAIL  st: the first check of the fixture refused"; }
+st_us() { printf '%s\n' "$1" | grep -oE 'inputs [0-9]+us' | head -1 | grep -oE '[0-9]+'; }
+steps=$((steps+1)); st_out=$(./avra check --time $R/st 2>&1); st_fast=$(st_us "$st_out")
+case "$st_out" in *"cache hit"*) [ -n "${VERBOSE:-}" ] && echo "ok    st: an unchanged check is a hit, its inputs ${st_fast}us" ;; *) fails=$((fails+1)); echo "FAIL  st: an unchanged check after a build is not a cache hit: $(printf '%s' "$st_out" | grep '^time:' | cut -c1-200)" ;; esac
+steps=$((steps+1)); st_out=$(./avra check --verify --time $R/st 2>&1); st_verify=$(st_us "$st_out")
+case "$st_out" in *"cache hit"*) ;; *) fails=$((fails+1)); echo "FAIL  st: --verify answered a different verdict: $(printf '%s' "$st_out" | grep '^time:' | cut -c1-200)" ;; esac
+# THE FAST RUN SKIPPED READS AND THE VERIFIED ONE DID NOT — a ratio, so no machine's
+# speed is written down here. A tree whose record kept no stamp reads both times and
+# fails, which is the vacuity this section exists to refuse.
+if [ -n "$st_verify" ] && [ "$st_verify" -gt 0 ] && [ "${st_fast:-0}" -ge 0 ] && [ "$st_verify" -ge $((3 * ${st_fast:-0} + 50)) ]; then
+    [ -n "${VERBOSE:-}" ] && echo "ok    st: --verify reads every input (${st_verify}us against the fast run's ${st_fast}us)"
+else
+    fails=$((fails+1)); echo "FAIL  st: --verify did not read what the fast run skipped: inputs ${st_verify:-none}us vs ${st_fast:-none}us"
+fi
+cp -p $R/st/src/f01.av $R/st.ref
+steps=$((steps+1)); st_size=$(wc -c < $R/st/src/f01.av)
+ed $R/st/src/f01.av "101" "102"
+touch -r $R/st.ref $R/st/src/f01.av
+[ "$(wc -c < $R/st/src/f01.av)" = "$st_size" ] || { fails=$((fails+1)); echo "FAIL  st: the attack changed the file's size, which no stamp could miss"; }
+# WAIT THE WINDOW OUT: a write inside it is refused a stamp, and refusing is the easy
+# way to pass. The attack must meet a stamp that EXISTS and differs.
+sleep 3
+steps=$((steps+1)); st_out=$(./avra check --time $R/st 2>&1)
+case "$st_out" in *"cache hit"*) fails=$((fails+1)); echo "FAIL  st: size and mtime both preserved, and the check served the kept answer: $(printf '%s' "$st_out" | grep '^time:' | cut -c1-200)" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    st: size and mtime preserved -> the check read the bytes" ;; esac
+S "st: and the binary follows" st
+steps=$((steps+1)); st_got=$($R/st/src/main 2>&1)
+[ "$st_got" = "N=102" ] || { fails=$((fails+1)); echo "FAIL  st: the kept answer stood: printed '$st_got', wanted 'N=102'"; }
+fi
+
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
     # THE COMPILER'S OWN BINARY is identified by a stamp-keyed record of its bytes' digest:

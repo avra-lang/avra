@@ -25,6 +25,8 @@ once fn rule_ns_tally() -> Cell<int> { Cell.new(0) }
 
 once fn rule_runs_tally() -> Cell<int> { Cell.new(0) }
 
+once fn asks_tally() -> Cell<int> { Cell.new(0) }
+
 fn bumped(tally: Cell<int>) { tally.set(tally.get() + 1) }
 
 /// A file's text read from disk.
@@ -54,6 +56,9 @@ export fn work_rule_ns(ns: int) { rule_ns_tally().set(rule_ns_tally().get() + ns
 /// A rule tried at a node.
 export fn work_rule_run() { bumped(rule_runs_tally()) }
 
+/// A held body's ask resolved into the want it names, its home's declarations minted.
+export fn work_ask_resolved() { bumped(asks_tally()) }
+
 /// The program's size, as the last check that derived it stood on it.
 once fn sizes_tally() -> Cell<List<int>> { Cell.new([0, 0, 0]) }
 
@@ -64,7 +69,7 @@ export fn work_sized(files: int, modules: int, decls: int) { sizes_tally().set([
 /// grows is not refused for doing more work on more program. 0 for no program.
 fn per_million(n: int, size: int) -> int { if size > 0 { n * 1000000 / size } else { 0 } }
 
-/// The run's counts as one line. The gated ones — `files_loaded`, `files_parsed`, `whole_reads`, `judge_fallbacks`, and the
+/// The run's counts as one line. The gated ones — `files_loaded`, `files_parsed`, `whole_reads`, `judge_fallbacks`, `asks_resolved`, and the
 /// `_ppm` ratios of work to program size — come first; `program_*` and the raw counts follow
 /// and are only reported (tools/work_ratchet.py).
 export fn work_counts() -> string {
@@ -73,7 +78,7 @@ export fn work_counts() -> string {
     let minted_modules = modules_tally().get()
     let queries = queries_computed()
     let rows = store_rows_written()
-    "counts: files_loaded=${loaded_tally().get()} files_parsed=${parsed_tally().get()} files_minted_ppm=${per_million(minted_files, size[0])} modules_minted_ppm=${per_million(minted_modules, size[1])} queries_computed_ppm=${per_million(queries, size[2])} whole_reads=${whole_reads()} judge_fallbacks=${fallbacks_tally().get()} store_rows_ppm=${per_million(rows, size[2])} program_files=${size[0]} program_modules=${size[1]} program_decls=${size[2]} spell_lookups=${spells_tally().get()} rule_nodes=${rule_nodes_tally().get()} rule_runs=${rule_runs_tally().get()} rule_ms=${rule_ns_tally().get() / 1000000} files_minted=${minted_files} modules_minted=${minted_modules} queries_computed=${queries} store_rows_written=${rows}"
+    "counts: files_loaded=${loaded_tally().get()} files_parsed=${parsed_tally().get()} files_minted_ppm=${per_million(minted_files, size[0])} modules_minted_ppm=${per_million(minted_modules, size[1])} queries_computed_ppm=${per_million(queries, size[2])} whole_reads=${whole_reads()} judge_fallbacks=${fallbacks_tally().get()} store_rows_ppm=${per_million(rows, size[2])} asks_resolved=${asks_tally().get()} program_files=${size[0]} program_modules=${size[1]} program_decls=${size[2]} spell_lookups=${spells_tally().get()} rule_nodes=${rule_nodes_tally().get()} rule_runs=${rule_runs_tally().get()} rule_ms=${rule_ns_tally().get() / 1000000} files_minted=${minted_files} modules_minted=${minted_modules} queries_computed=${queries} store_rows_written=${rows}"
 }
 
 /// Who read which whole relation, one line each, counted: the query open at the read (or none),

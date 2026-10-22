@@ -150,10 +150,10 @@ type ExternNames = { decls: int, names: List<string> }
 /// cannot move mid-process). Cleared piecemeal by `keep_interfaces`: `object_keys` and
 /// `object_parts` every record write, the rest only when a record's SEEN part (its
 /// interface or imports) moved.
-type Suspects = { files: int, rows: Map<string, bool> }
+type Suspects = { files: int, rows: Map<string, bool>, paths: Map<string, bool> }
 
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string>, one_shot: Cell<bool> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, text_stamps: Cell<Map<string, int>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string>, one_shot: Cell<bool> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -165,6 +165,7 @@ fn new_keys() -> Keys {
     let no_object: Map<string, string> = {}
     let no_parts: Map<string, KeyParts> = {}
     let no_digests: Map<string, string> = {}
+    let no_stamps: Map<string, int> = {}
     let no_tokens: Map<string, Spelling> = {}
     let no_views: Map<string, SeenView> = {}
     let no_named: Map<string, int> = {}
@@ -182,9 +183,10 @@ fn new_keys() -> Keys {
         object_keys: Cell.new(no_object),
         object_parts: Cell.new(no_parts),
         text_digests: Cell.new(no_digests),
+        text_stamps: Cell.new(no_stamps),
         file_tokens: Cell.new(no_tokens),
         seen_views: Cell.new(no_views),
-        suspects: Cell.new(Suspects { files: -1, rows: {} }),
+        suspects: Cell.new(Suspects { files: -1, rows: {}, paths: {} }),
         name_index: Cell.new(no_named),
         name_seen: Cell.new(no_seen),
         viewed: Cell.new(no_viewed),
@@ -200,7 +202,7 @@ fn new_keys() -> Keys {
 
 /// WHAT IS HELD THIS BUILD: the files a build must parse, each with why
 /// (`forced` — a home an instantiation lowers from, a file a run reaches,
-/// one whose stored asks or rule findings could not be read); the instantiations held files' bodies demand (`held_wants`); the
+/// one whose stored asks or rule findings could not be read); what held files' bodies ask, by name (`held_asks`), and the held files whose asks name a declaration that no longer resolves (`asks_lost`); the
 /// held files whose bodies this build asked for — a compile-time run reads
 /// a body, and a held file has none (`body_asks`, a Cell: the ask comes
 /// from inside a query); what each file's compile-time runs read
@@ -246,7 +248,8 @@ type ViewStand = { files: int, asks: int, stands: bool }
 @identity
 type Hold = {
     forced: Cell<Map<string, Reads>>,
-    held_wants: Cell<List<Wanted>>,
+    held_asks: Cell<List<HeldAsk>>,
+    asks_lost: Cell<List<string>>,
     held_codes: Cell<List<CodeFacts>>,
     body_asks: Cell<List<string>>,
     runs: Cell<Map<string, List<RunRead>>>,
@@ -322,6 +325,11 @@ type PendingRead = { reader: string, read: RunRead }
 
 /// A held file's `collect` that gathers across files: the file, the package's source,
 /// what it gathers, and the set it gathered when it was last read.
+/// WHAT A HELD BODY ASKS, AS A NAME: the held file that asks, the want's symbol and home, whether
+/// it roams (an instantiation, lowered wherever it is wanted), and its own wire — resolved into a
+/// want only when a reader needs its declaration.
+type HeldAsk = { by: string, name: string, home: string, roams: bool, wire: string }
+
 type HeldGather = { collector: string, package: string, gathering: Gathering, digest: string }
 
 /// What a `collect` gathers by, from where, the order it gathers in, and what it reads of each
@@ -336,7 +344,7 @@ type KeptLine = { line: string, unit: bool, path: string, bodies: List<string>, 
 
 fn new_hold() -> Hold {
     let no_forced: Map<string, Reads> = {}
-    let no_wants: List<Wanted> = []
+    let no_asks: List<HeldAsk> = []
     let no_runs: Map<string, List<RunRead>> = {}
     let no_read_files: List<ReadFile> = []
     let no_minted: Map<string, bool> = {}
@@ -346,7 +354,8 @@ fn new_hold() -> Hold {
     let no_reexports: Map<string, List<Reexport>> = {}
     Hold {
         forced: Cell.new(no_forced),
-        held_wants: Cell.new(no_wants),
+        held_asks: Cell.new(no_asks),
+        asks_lost: list_cell(),
         held_codes: Cell.new(no_codes()),
         body_asks: Cell.new(no_paths()),
         runs: Cell.new(no_runs),
@@ -1667,26 +1676,46 @@ impl Workspace {
     fn import_remedy(p: Parsed, d: Diag, words: BlockWords) -> Diag {
         let at? = d.primary.loc else { return d }
         let near = names_near(p.source.text, at.lo)
-        let own = self.module_at(p.source.file)
+        let own = self.module_of(p.source.file)
         let homes = flatten(
-            [some_list(self.component_home(w, own)) for w in near if !w.is_empty() && !words.components.any(it.word == w)],
+            [some_list(self.component_home(w, own)) for w in near if self.unimported_word(w, words)],
         )
         let home? = homes.first() else { return d }
         d with { help: import_it(home) }
     }
 
+    /// A name that could be a component's word this file does not import: a
+    /// keyword never is one.
+    fn unimported_word(w: string, words: BlockWords) -> bool {
+        !w.is_empty() && !self.lang.keywords.contains(w) && !words.components.any(it.word == w)
+    }
+
     /// Another module, in a package in reach, that exports a component
-    /// by this name — as `use` spells it with the word.
+    /// by this name — as `use` spells it with the word. ASKED OF RECORDS AND
+    /// TOKENS ALONE: a remedy never admits a file into the program, so a
+    /// refusal types exactly what the program it refuses would.
     fn component_home(word: string, own: string) -> string? {
-        let paths = flatten([self.all_files(pkg.src) for pkg in self.packages()])
+        let paths = flatten([self.all_files_no_tests(pkg.src) for pkg in self.packages()])
         let path? = paths
-            .find(
-                (path: string) -> self.module_at(path) != own &&
-                    self.provided_words(path).components.any(it.word == word),
-            ) else {
+            .find((path: string) -> self.module_of(path) != own && self.exports_component(path, word)) else {
             return null
         }
-        "${self.module_at(path)}.{${word}}"
+        "${self.module_of(path)}.{${word}}"
+    }
+
+    /// Whether a file's module exports a component by this name: its record
+    /// says, or — with no record — the file's own tokens do.
+    fn exports_component(path: string, word: string) -> bool {
+        let rows? = module_block_rows(self, self.module_path_of(path)) else {
+            return file_declares_component(self, path) &&
+                exports_component_named(self.listed_text(path), word)
+        }
+        rows
+            .any(
+                (r: Row) -> r.exported &&
+                    r.name == word &&
+                    facts_unblocked(r.facts)?.is_component ?? false,
+            )
     }
 
     /// A provider read as it parses — under its OWN block words, since a
@@ -1697,9 +1726,6 @@ impl Workspace {
         if self.db.active(self.relation(Family.Parsed).query_key(f.index)) { return self.plain_parsed(f) }
         self.parsed(f)
     }
-
-    /// The module a source path belongs to, by name.
-    fn module_at(path: string) -> string { self.decls.module_name(self.decls.file(self.file_id(path)).module_id) }
 
     /// The block words a file stands under: each item its `use` lines
     /// take that a provider module declares as a named grammar

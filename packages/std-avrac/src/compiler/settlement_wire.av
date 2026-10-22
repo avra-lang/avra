@@ -3,6 +3,7 @@
 use features.{Settled, MetaVal, MetaHeap, MetaMap}
 use core.{ExprId, is_digit, joined}
 use compiler.store.{cas_big, cas_blob, cas_ref_of, cas_value}
+use compiler.work.{work_ask_resolved}
 
 fn wire_field(s: string) -> string { "${s.length}:${s}" }
 
@@ -287,59 +288,104 @@ impl Workspace {
         let count? = r.number() else { return null }
         if count < 0 { return null }
         mut out: List<Wanted> = []
+        // LICENSED loops.push_loop: a parse that refuses at the first unreadable want
         for i in 0..count {
-            let name? = r.field() else { return null }
-            let file_path? = r.field() else { return null }
-            let decl_raw? = r.field() else { return null }
-            let root_mark? = r.field() else { return null }
-            let sub_mark? = r.field() else { return null }
-            let f? = self.decls.known_file_id(file_path) else { return null }
-            let decl = self.decl_from_ref(decl_raw)
-            let root: ExprId? = if root_mark == "+" {
-                let d? = decl else { return null }
-                self.decls.declared_unit(d).root
-            } else {
-                null
-            }
-            let sub: Sub? = if sub_mark == "+" {
-                let target_raw? = r.field() else { return null }
-                let target? = self.decl_from_ref(target_raw) else { return null }
-                let arg_count? = r.number() else { return null }
-                if arg_count < 0 { return null }
-                mut args: List<TypeId> = []
-                for j in 0..arg_count {
-                    let tw? = r.field() else { return null }
-                    let ty? = self.type_from_wire(tw) else { return null }
-                    args.push(ty)
-                }
-                let const_count? = r.number() else { return null }
-                if const_count < 0 { return null }
-                mut consts: List<string> = []
-                for j in 0..const_count {
-                    let c? = r.field() else { return null }
-                    consts.push(c)
-                }
-                Sub { target: target, args: args, consts: consts }
-            } else {
-                null
-            }
-            let seat_count? = r.number() else { return null }
-            if seat_count < 0 { return null }
-            mut seats: List<SeatValue> = []
-            for j in 0..seat_count {
-                let index? = r.number() else { return null }
-                let fp? = r.field() else { return null }
-                let tw? = r.field() else { return null }
-                let ty = self.type_from_wire(tw)
-                if ty == null { return null }
-                let value? = r.value() else { return null }
-                let heap? = heap_from_wire(r) else { return null }
-                seats.push(SeatValue { index: index, fp: fp, ty: ty!, value: value, heap: heap })
-            }
-            out.push(Wanted { file: f, decl: decl, name: name, sub: sub, seats: seats, root: root })
+            let w? = self.wanted_read(r) else { return null }
+            out.push(w)
         }
         if r.pos != raw.length { return null }
         out
+    }
+
+    /// One want, read where `r` stands: its name, home and declaration resolved.
+    fn wanted_read(mut r: WireReader) -> Wanted? {
+        let name? = r.field() else { return null }
+        let file_path? = r.field() else { return null }
+        let decl_raw? = r.field() else { return null }
+        let root_mark? = r.field() else { return null }
+        let sub_mark? = r.field() else { return null }
+        let f? = self.decls.known_file_id(file_path) else { return null }
+        let decl = self.decl_from_ref(decl_raw)
+        let root: ExprId? = if root_mark == "+" {
+            let d? = decl else { return null }
+            self.decls.declared_unit(d).root
+        } else {
+            null
+        }
+        let sub: Sub? = if sub_mark == "+" {
+            let target_raw? = r.field() else { return null }
+            let target? = self.decl_from_ref(target_raw) else { return null }
+            let arg_count? = r.number() else { return null }
+            if arg_count < 0 { return null }
+            mut args: List<TypeId> = []
+            for j in 0..arg_count {
+                let tw? = r.field() else { return null }
+                let ty? = self.type_from_wire(tw) else { return null }
+                args.push(ty)
+            }
+            let const_count? = r.number() else { return null }
+            if const_count < 0 { return null }
+            mut consts: List<string> = []
+            for j in 0..const_count {
+                let c? = r.field() else { return null }
+                consts.push(c)
+            }
+            Sub { target: target, args: args, consts: consts }
+        } else {
+            null
+        }
+        let seat_count? = r.number() else { return null }
+        if seat_count < 0 { return null }
+        mut seats: List<SeatValue> = []
+        for j in 0..seat_count {
+            let index? = r.number() else { return null }
+            let fp? = r.field() else { return null }
+            let tw? = r.field() else { return null }
+            let ty = self.type_from_wire(tw)
+            if ty == null { return null }
+            let value? = r.value() else { return null }
+            let heap? = heap_from_wire(r) else { return null }
+            seats.push(SeatValue { index: index, fp: fp, ty: ty!, value: value, heap: heap })
+        }
+        Wanted { file: f, decl: decl, name: name, sub: sub, seats: seats, root: root }
+    }
+
+    /// A held file's asks as NAMES: each want's own wire kept whole, one field apiece behind
+    /// its roaming mark, so a reader takes its name, home and whether it roams without
+    /// resolving a declaration.
+    fn held_asks_wire(xs: List<Wanted>) -> string {
+        "W3" +
+            wire_field("${xs.length}") +
+            joined(
+                [wire_field(if self.decls.instantiated(w) { "+" } else { "-" } + self.wanted_wire(w)) for w in xs],
+                "",
+            )
+    }
+
+    /// `held_asks_wire`, read back for the held file `by`: nothing minted.
+    fn held_asks_from_wire(by: string, raw: string) -> List<HeldAsk>? {
+        if !raw.starts_with("W3") { return null }
+        mut r = wire_reader(raw)
+        let count? = r.number() else { return null }
+        if count < 0 { return null }
+        mut out: List<HeldAsk> = []
+        // LICENSED loops.push_loop: a parse that refuses at the first unreadable ask
+        for i in 0..count {
+            let field? = r.field() else { return null }
+            let ask? = held_ask_of(by, field) else { return null }
+            out.push(ask)
+        }
+        if r.pos != raw.length { return null }
+        out
+    }
+
+    /// A held ask resolved into the want it names; null when its declaration no longer resolves.
+    fn held_ask_wanted(h: HeldAsk) -> Wanted? {
+        work_ask_resolved()
+        mut r = WireReader { raw: h.wire, pos: 0 }
+        let w? = self.wanted_read(r) else { return null }
+        if r.pos != h.wire.length { return null }
+        w
     }
 
     fn wanted_list_wire(xs: List<Wanted>) -> string {
@@ -370,4 +416,15 @@ fn octets_of(data: string) -> MetaVal? {
         out.push(n)
     }
     MetaVal.Octets(out)
+}
+
+/// One held ask's field: its roaming mark, then the want's own wire, whose first two fields
+/// are its name and its home.
+fn held_ask_of(by: string, field: string) -> HeldAsk? {
+    if field.is_empty() { return null }
+    let wire = field.substring(1, field.length)
+    mut r = WireReader { raw: wire, pos: 0 }
+    let name? = r.field() else { return null }
+    let home? = r.field() else { return null }
+    HeldAsk { by: by, name: name, home: home, roams: field.starts_with("+"), wire: wire }
 }

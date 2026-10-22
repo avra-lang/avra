@@ -498,7 +498,7 @@ impl Program {
         let x? = store.expansion_of(e) else { return "" }
         let word? = store.instance_word(e) else { return "" }
         let home: string? = store.foreign_of(x)?.path
-        let module = if home == null { "" } else { " (from ${self.ws.decls.module_name(self.ws.decls.file(self.ws.file_id(home!)).module_id)})" }
+        let module = if home == null { "" } else { " (from ${self.ws.module_of(home!)})" }
         let lines = ["// `${word}`${module} expands to:"]
             .concat(["//     ${l}" for l in render_expression(store, x).split("\n")])
         joined(lines, "\n")
@@ -628,7 +628,7 @@ impl Program {
     /// reaches — or, with no entry, every declared body; `every`
     /// asks for every declared body under an entry too.
     fn lowered_from(entry: int?, every: bool) -> Lowered {
-        self.lowered_as(entry, every, false)
+        self.lowered_as(entry, every, false, true)
     }
 
     /// WHAT THE ENTRY REACHES, lowered: the lowering from the entry, for a
@@ -636,7 +636,7 @@ impl Program {
     /// every declared body (the build's objects are the files'). A QUERY: it
     /// settles nothing — the scheduler bit stands as the build settled it, so
     /// the units it asks are the ones the build already holds.
-    fn reached() -> Lowered { self.lowered_bodies(self.entry?.at, false, false) }
+    fn reached() -> Lowered { self.lowered_bodies(self.entry?.at, false, false, true) }
 
     /// Whether the program's ROOT waits: the entry file's own
     /// expressions, or every file's when a `programs` binary runs them
@@ -660,7 +660,7 @@ impl Program {
         ws.decls.record_schedulers(ws.members_link_scheduler() || self.root_links(entry, programs))
     }
 
-    fn lowered_bodies(entry: int?, every: bool, programs: bool) -> Lowered {
+    fn lowered_bodies(entry: int?, every: bool, programs: bool, hashed: bool) -> Lowered {
         let ws = self.ws
         // Every file this program reaches is typed by now (the
         // driver's own law: analysis before lowering). Settle the
@@ -679,7 +679,8 @@ impl Program {
                     entry,
                     every,
                     programs,
-                    ws.hold.held_wants.get(),
+                    hashed,
+                    ws.held_wants(hashed),
                     ws.hold.held_codes.get(),
                     (w: Wanted) -> ws.lowered(ws.spec_id(w)),
                     (f: FileId) -> ws.is_held(f),
@@ -696,9 +697,9 @@ impl Program {
 
     /// A program lowered, with what its host fns owe the program beyond
     /// their own declarations.
-    fn lowered_as(entry: int?, every: bool, programs: bool) -> Lowered {
+    fn lowered_as(entry: int?, every: bool, programs: bool, hashed: bool) -> Lowered {
         self.settle_schedulers(entry, programs)
-        let lo = self.lowered_bodies(entry, every, programs)
+        let lo = self.lowered_bodies(entry, every, programs, hashed)
         lo with { diagnostics: lo.diagnostics.concat(self.ws.host_fn_voices([a.view.file for a in self.files])) }
     }
 
@@ -715,9 +716,9 @@ impl Program {
     /// file's top level as a body under its program symbol — the same whatever
     /// program asks, so the object is the file's. The entry's law still speaks:
     /// a module file runs nothing, and a program file is none.
-    fn files_checked() -> Result<Lowered, string> {
+    fn files_checked(hashed: bool) -> Result<Lowered, string> {
         if !self.clean() { return .Err(self.report()) }
-        let lo = self.lowered_as(null, true, true)
+        let lo = self.lowered_as(null, true, true, hashed)
         let stale = self.layout_report()
         if stale != null { return .Err(stale!) }
         let ws = self.ws

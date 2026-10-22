@@ -262,6 +262,14 @@ impl Workspace {
     /// The fixture's declared instance.
     fn codec_instance() -> DeclId { self.items(self.file_id("/w/src/other.av")).find((d) -> self.decls.decl(d).name == "twice")! }
 
+    /// A held asks row read back and every ask resolved — null when one does not.
+    fn codec_held_asks(raw: string) -> List<Wanted>? {
+        let asks? = self.held_asks_from_wire("/w/src/main.av", raw) else { return null }
+        let wants = [self.held_ask_wanted(h) for h in asks]
+        if wants.any(it == null) { return null }
+        [w! for w in wants]
+    }
+
     fn codec_same_wanted(a: Wanted, b: Wanted) -> bool {
         a.root == b.root && self.wanted_wire(a) == self.wanted_wire(b)
     }
@@ -858,6 +866,13 @@ export fn codec_loc_past_end_refused() -> bool {
     ws.loc_of_wire(ws.loc_wire(past)) == null
 }
 
+/// A store written before held asks were names: its W2 asks row reads as unread — the file is
+/// parsed for one cold run — never as asks, and never a crash.
+export fn codec_w2_asks_unread() -> bool {
+    let ws = codec_workspace()
+    ws.held_asks_from_wire("/w/src/main.av", ws.wanted_list_wire(ws.codec_wanted_exemplars())) == null
+}
+
 export fn codec_pairs() -> List<CodecCheck> {
     let ws = codec_workspace()
     [
@@ -1011,6 +1026,14 @@ export fn codec_pairs() -> List<CodecCheck> {
             wanted_batch_labels(),
             (xs) -> ws.wanted_list_wire(xs),
             (w) -> ws.wanted_list_from_wire(w),
+            (xs, ys) -> list_eq(xs, ys, (x, y) -> ws.codec_same_wanted(x, y)),
+        ),
+        derived(
+            "settlement_wire.held_asks_wire/held_asks_from_wire",
+            ws.codec_wanted_batches(),
+            wanted_batch_labels(),
+            (xs) -> ws.held_asks_wire(xs),
+            (w) -> ws.codec_held_asks(w),
             (xs, ys) -> list_eq(xs, ys, (x, y) -> ws.codec_same_wanted(x, y)),
         ),
         derived(

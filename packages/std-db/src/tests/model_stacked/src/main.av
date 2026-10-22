@@ -1,0 +1,27 @@
+// proves: `@model` stands beside another declaring annotation in either order:
+// an annotation run at compile time carries no call, so the model's rules never
+// read it as one, while a field's rule still refuses what it should.
+use @std.db.{model}
+use @std.sqlite.{Db}
+use @std.sqlite.error.{SqlError}
+use @std.validate.{range}
+
+@model
+@stamped
+type Before = { id: int = 0, title: string }
+
+@stamped
+@model
+type After = { id: int = 0, @range(1, 9) n: int }
+
+fn kept() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    let _ = Before.create_table(db)?
+    let _ = After.create_table(db)?
+    let b = match Before { title: "b" }.insert(db) { .Ok(r) -> "${r.id}", .Err(_) -> "refused" }
+    let a = match After { n: 3 }.insert(db) { .Ok(r) -> "${r.id}", .Err(_) -> "refused" }
+    let wide = match After { n: 30 }.insert(db) { .Ok(_) -> "kept", .Err(_) -> "refused" }
+    "${Before.stamp()} ${b} ${After.stamp()} ${a} ${wide}"
+}
+
+println(match kept() { .Ok(said) -> said, .Err(e) -> e.describe().message })

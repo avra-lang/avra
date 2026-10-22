@@ -1,0 +1,52 @@
+// proves: a module `state` is an identity, so every write along a path rooted
+// at it lands in its one cell — a field, a nested field, a `mut` seat, a
+// writing method and a push, from a fn body, at the top level and in a lambda
+// that captures it — while a `mut` copy of it stays local.
+type In = { k: int }
+
+type T = { n: int, inner: In, xs: List<int> }
+
+impl T {
+    mut fn grow() { self.n = self.n + 1 }
+}
+
+state t: T = T { n: 0, inner: In { k: 0 }, xs: [] }
+
+fn seat(mut x: T) { x.n = x.n + 1 }
+
+fn said() -> string { "${t.n} ${t.inner.k} ${t.xs.length}" }
+
+fn field() { t.n = t.n + 1 }
+
+fn nested() { t.inner.k = t.inner.k + 1 }
+
+fn seated() { seat(t) }
+
+fn method() { t.grow() }
+
+fn pushed() { t.xs.push(1) }
+
+field()
+nested()
+seated()
+method()
+pushed()
+let in_fns = said()
+t.n = t.n + 1
+t.inner.k = t.inner.k + 1
+seat(t)
+t.grow()
+t.xs.push(1)
+let at_top = said()
+let f = () -> {
+    t.n = t.n + 1
+    t.inner.k = t.inner.k + 1
+    seat(t)
+    t.grow()
+    t.xs.push(1)
+}
+f()
+let in_lambda = said()
+mut c = t
+c.n = 100
+"${in_fns} | ${at_top} | ${in_lambda} | copy ${c.n}, state ${said()}"

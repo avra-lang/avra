@@ -6,7 +6,7 @@
 //! field lands in that field's cell and asks nothing of the root
 //! (`owed_root`, read by the typing law).
 use core.{StmtId, ExprId, DeclId, Binding, same_expr}
-use features.{ResolveCx, FileView, NameFacts}
+use features.{ResolveCx, FileView, NameFacts, shares_place}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
 
@@ -49,6 +49,7 @@ fn waits_for_fields(b: Binding, whole: bool) -> bool {
 /// The refusal a root's binding earns for the target `t` — absent
 /// when the root is a place.
 fn root_refusal(view: FileView, names: NameFacts, t: ExprId, r: ExprId, b: Binding, at: Loc?) -> Diag? {
+    if shares_place(view, names, b) { return null }
     let n = root_word(view, r)
     match b {
         // a method writes through its receiver: a PATH under `self`,
@@ -65,7 +66,7 @@ fn root_refusal(view: FileView, names: NameFacts, t: ExprId, r: ExprId, b: Bindi
         .Index(_) -> immutable_index(n, at),
         .Def(s) -> if view.store.stmt(s) is .MutLet { null } else { not_mut(view, s, n, at) },
         .Pattern(_, _) -> immutable_bind(n, at),
-        .Capture(l, j) -> if captures_state(view, names, l, j) { null } else { captured_copy(n, at) },
+        .Capture(_, _) -> captured_copy(n, at),
         .Decl(d) -> declared_place(view, d, n, at),
     }
 }
@@ -74,14 +75,6 @@ fn root_refusal(view: FileView, names: NameFacts, t: ExprId, r: ExprId, b: Bindi
 fn root_word(view: FileView, r: ExprId) -> string {
     let step? = view.store.place_step(r) else { return "this name" }
     match step { .Root(name) -> name.of, _ -> "this name" }
-}
-
-/// Whether a capture's source is a `state` binding — a PLACE the lambda
-/// shares, so assigning through it reaches the cell, never a copy.
-fn captures_state(view: FileView, names: NameFacts, l: ExprId, j: int) -> bool {
-    let cap? = names.capture(l) else { return false }
-    if j >= cap.sources.length { return false }
-    match cap.sources[j] { .Def(s) -> view.store.is_state_stmt(s), rest -> false }
 }
 
 /// A declaration is never a place: a fn and a const each refuse in

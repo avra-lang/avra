@@ -286,14 +286,37 @@ impl Workspace {
     /// EVERY HELD COLLECTOR WHOSE SET MOVED, to be read: what it gathers now, from
     /// held members' records and moved members' fresh declarations, against what
     /// its record says it gathered.
-    fn gathered_moved() -> List<ReadFile> {
-        [ReadFile { path: g.collector, why: Reads.Gathered(g.package) } for g in self.hold.gathered.get() if self.gathered_away(g)]
+    fn gathered_moved(read: List<FileId>) -> List<ReadFile> {
+        [ReadFile { path: g.collector, why: Reads.Gathered(g.package) } for g in self.hold.gathered.get() if self.gathered_away(g, read)]
     }
 
     /// Whether a held collector's set moved since its record was written.
-    fn gathered_away(g: HeldGather) -> bool {
+    fn gathered_away(g: HeldGather, read: List<FileId>) -> bool {
         let f = self.file_id(g.collector)
-        self.is_held(f) && self.gathered_set(g.gathering, f) != g.digest
+        self.is_held(f) &&
+            self.gathering_read(g.gathering.kind, read) &&
+            self.gathered_set(g.gathering, f) != g.digest
+    }
+
+    /// Whether a file this attempt does not hold gathers by `kind`, now or when its record was
+    /// written: a set gathered from held files alone stands as its collector's record says.
+    fn gathering_read(kind: CollectKind, read: List<FileId>) -> bool {
+        self.producers_of(kind).any((path) -> !self.held_path(path)) ||
+            read.any((f) -> self.gathers_in(kind, f))
+    }
+
+    /// The files a module record says produce what `kind` gathers by.
+    fn producers_of(kind: CollectKind) -> List<string> {
+        match kind {
+            .Component(w) -> self.hold.worded_by.get().get(w) ?? [],
+            .Annotated(w) -> self.hold.marked_by.get().get(w) ?? [],
+            .UnknownKind(_) -> [],
+        }
+    }
+
+    /// Whether a read file declares something `kind` gathers by.
+    fn gathers_in(kind: CollectKind, f: FileId) -> bool {
+        self.decls.decls_of_file(f).any((d) -> gathered_by(kind, self.decls.decl(d)))
     }
 
     /// WHAT A PROGRAM'S HOST FNS OWE IT. A host fn defines a symbol for
@@ -876,4 +899,13 @@ fn index_of_file(files: List<Analysis>, path: string) -> int? {
         if a.view.source.file == path { return i }
     }
     null
+}
+
+/// Whether `kind` gathers `d`: an instance of its component word, or a declaration wearing its mark.
+fn gathered_by(kind: CollectKind, d: Decl) -> bool {
+    match kind {
+        .Component(w) -> d.word == w,
+        .Annotated(w) -> d.marks.contains(w),
+        .UnknownKind(_) -> false,
+    }
 }
