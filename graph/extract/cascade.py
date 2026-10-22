@@ -364,6 +364,7 @@ class Scorer:
             p = mx.softmax(self.forward(tail)[ids].astype(mx.float32)).tolist()
             trim_prompt_cache(self.cache, len(tail))
         self.calls += 1
+        mx.clear_cache()
         if os.environ.get("CASCADE_DECISIONS"):
             with open(os.environ["CASCADE_DECISIONS"], "a") as out:
                 out.write(json.dumps({"context": context, "question": question, "options": options, "p": p}) + "\n")
