@@ -12,7 +12,7 @@ use @std.sqlite.{Db, sql}
 use @std.sqlite.error.{SqlError}
 
 fn same_type_recreate_is_fine() -> Result<int, ModelError> {
-    mut db = modeled(Db.memory())?
+    let db = modeled(Db.memory())?
     modeled(SharedA.create_table(db))?
     modeled(SharedA.create_table(db))?
     let a = SharedA { id: 0, email: "a@x.com" }.insert(db)?
@@ -24,14 +24,14 @@ fn colliding_types_refuse() -> string {
 }
 
 fn colliding_create() -> Result<int, SqlError> {
-    mut db = Db.memory()?
+    let db = Db.memory()?
     SharedA.create_table(db)?
     SharedB.create_table(db)?
     0
 }
 
 fn colliding_types_never_silently_merge_data() -> Result<int, ModelError> {
-    mut db = modeled(Db.memory())?
+    let db = modeled(Db.memory())?
     modeled(SharedA.create_table(db))?
     let _ = SharedA { id: 0, email: "a@x.com" }.insert(db)?
     // SharedB's create_table refuses before touching the real table —
@@ -41,15 +41,15 @@ fn colliding_types_never_silently_merge_data() -> Result<int, ModelError> {
     modeled(v.int())
 }
 
-fn colliding_second_insert(mut db: Db) -> Result<int, ModelError> {
+fn colliding_second_insert(db: Db) -> Result<int, ModelError> {
     modeled(SharedB.create_table(db))?
     let b = SharedB { id: 0, email: "b@x.com" }.insert(db)?
     b.id
 }
 
 fn independent_databases_never_collide() -> Result<string, ModelError> {
-    mut db1 = modeled(Db.memory())?
-    mut db2 = modeled(Db.memory())?
+    let db1 = modeled(Db.memory())?
+    let db2 = modeled(Db.memory())?
     modeled(SharedA.create_table(db1))?
     modeled(SharedB.create_table(db2))?
     let a = SharedA { id: 0, email: "a@x.com" }.insert(db1)?
@@ -67,14 +67,14 @@ fn colliding_different_shape_refuses() -> string {
 }
 
 fn colliding_different_shape_create() -> Result<int, SqlError> {
-    mut db = Db.memory()?
+    let db = Db.memory()?
     SharedA.create_table(db)?
     SharedC.create_table(db)?
     0
 }
 
 fn table_keeps_first_claimants_columns() -> Result<int, ModelError> {
-    mut db = modeled(Db.memory())?
+    let db = modeled(Db.memory())?
     modeled(SharedA.create_table(db))?
     let _ = SharedA { id: 0, email: "a@x.com" }.insert(db)?
     let attempted = SharedC.create_table(db)
@@ -85,7 +85,7 @@ fn table_keeps_first_claimants_columns() -> Result<int, ModelError> {
 // A registry written when a claim was the declaring file's absolute
 // path: no owner column, a path that no longer exists.
 fn legacy_db(shape: string?) -> Result<Db, SqlError> {
-    mut db = Db.memory()?
+    let db = Db.memory()?
     db
         .run(
             sql(
@@ -103,7 +103,7 @@ fn legacy_db(shape: string?) -> Result<Db, SqlError> {
 }
 
 fn moved_project_reopens(shape: string?) -> Result<int, SqlError> {
-    mut db = legacy_db(shape)?
+    let db = legacy_db(shape)?
     SharedA.create_table(db)?
     SharedA.create_table(db)?
     0
@@ -118,7 +118,7 @@ fn adopted_claim_still_refuses_another_module() -> string {
 }
 
 fn adopted_then_collide() -> Result<int, SqlError> {
-    mut db = legacy_db(null)?
+    let db = legacy_db(null)?
     SharedA.create_table(db)?
     SharedB.create_table(db)?
     0

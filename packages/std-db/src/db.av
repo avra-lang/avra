@@ -146,7 +146,7 @@ fn generated(t: Type) -> Decls {
             /// name order — what the registry records when it is created.
             static fn shape() -> string { ${literal(shape_text_of(t))} }
 
-            static fn create_table(mut db: Db) -> Result<int, SqlError> {
+            static fn create_table(db: Db) -> Result<int, SqlError> {
                 db.run(sql("PRAGMA foreign_keys = ON"))?
                 db.run(sql(${literal(claim_registry_sql())}))?
                 if (db.scalar(sql(${literal(shape_column_probe_sql())}))?).int()? == 0 {
@@ -176,12 +176,12 @@ fn generated(t: Type) -> Decls {
             /// The table made if it is not there, and grown to this model's
             /// shape if it is; a change that moves is refused with its words.
             /// Answers how many steps it took.
-            static fn migrate(mut db: Db) -> Result<int, MigrateError> {
+            static fn migrate(db: Db) -> Result<int, MigrateError> {
                 let _ = lifted(${name(t.name)}.create_table(db))?
                 grown(db, ${name(t.name)}.shape(), [..${renamed_to(t)}], [..${renamed_from(t)}])
             }
 
-            fn insert(mut db: Db) -> Result<${t}, ModelError> {
+            fn insert(db: Db) -> Result<${t}, ModelError> {
                 let _ = or_invalid(self.check())?
                 mut args: List<SqlValue> = []
                 ${[push_bound(f) for f in written_fields(t)]}
@@ -196,7 +196,7 @@ fn generated(t: Type) -> Decls {
                 if s.step()? { ${row_ctor(t)} } else { null }
             }
 
-            fn update(mut db: Db) -> Result<int, ModelError> {
+            fn update(db: Db) -> Result<int, ModelError> {
                 let _ = or_invalid(self.check())?
                 mut args: List<SqlValue> = []
                 ${[push_bound(f) for f in written_fields(t)]}
@@ -211,7 +211,7 @@ fn generated(t: Type) -> Decls {
 
             ${where_decl(t)}
 
-            fn remove(mut db: Db) -> Result<int, ModelError> {
+            fn remove(db: Db) -> Result<int, ModelError> {
                 ${removal(t)}
             }
 
@@ -515,7 +515,7 @@ fn soft_decls(t: Type) -> List<Decls> {
             }
 
             /// A removed row, back among the living.
-            fn restore(mut db: Db) -> Result<int, SqlError> {
+            fn restore(db: Db) -> Result<int, SqlError> {
                 db.run(sql(${literal(restore_sql_of(t))}, [.Int(self.id)]))
             }
         },
