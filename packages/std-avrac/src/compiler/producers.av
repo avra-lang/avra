@@ -456,13 +456,14 @@ impl Workspace {
         digest_of("${seen}\n${joined(self.module_files(m), "\n")}")
     }
 
-    /// The compile-time-run tokens of a file, off its module's row.
+    /// The compile-time-run tokens of a file, off its module's row. A pending token is no
+    /// answer yet: it is kept only once every read is judged.
     fn lite_runs(pr: Producers, path: string) -> List<string> {
         let known: List<string>? = self.hold.lite_runs.get().get(path)
         if known != null { return known! }
         let line? = pr.files.find(it[1] == path) else { return [] }
         let made = [self.read_token(path, read) for read in runs_of(line) ?? []]
-        self.hold.lite_runs.put(path, made)
+        if !made.any(it.starts_with("?")) { self.hold.lite_runs.put(path, made) }
         made
     }
 
