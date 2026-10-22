@@ -996,6 +996,40 @@ MI "mi: the method is added to the SAME impl block — the reader's refusal clea
 MI "mi: and warm again" clean
 fi
 
+if section hs; then
+# THE HELD SET, and the reverse index that feeds it. A derivation remembers the files
+# whose holds it confirmed standing; the next one asks a file only when that set does
+# not name it, or when a row of it read an input that moved. A file nothing moved near
+# must not be asked, and a hold that could serve a stale answer must be broken.
+mkdir -p $R/hs/src/f $R/hs/src/x $R/hs/src/y
+printf '[package]\nname = "rt-hs"\nversion = "0.1.0"\n' > $R/hs/avra.toml
+printf 'export fn twice(n: int) -> int { n * 2 }\n' > $R/hs/src/y/calc.av
+printf 'use y.{twice}\nexport fn mid() -> int { twice(5) }\n' > $R/hs/src/x/mid.av
+printf 'export fn alone(n: int) -> int { n + 1 }\n' > $R/hs/src/f/leaf.av
+printf 'use x.{mid}\nuse f.{alone}\nprintln("${mid()} ${alone(1)}")\n' > $R/hs/src/main.av
+S "hs: built cold" hs
+S "hs: warm, the binary kept" hs
+steps=$((steps+1)); ./avra check $R/hs >/dev/null 2>&1
+ed $R/hs/src/y/calc.av "n * 2" "n * 3"
+steps=$((steps+1)); hs_out=$(AVRA_QTRACE=1 ./avra check --time $R/hs 2>&1)
+hs_holds=$(printf '%s\n' "$hs_out" | grep -a 'Q	holds' | tail -1)
+hs_asked=$(printf '%s\n' "$hs_holds" | cut -f3 | cut -d' ' -f1)
+hs_files=$(printf '%s\n' "$hs_holds" | cut -f4 | cut -d' ' -f1)
+hs_read=$(printf '%s\n' "$hs_out" | sed -n '/^read:/,$p')
+case "$hs_asked" in ""|0) fails=$((fails+1)); echo "FAIL  hs: the held set was not read, so every file was asked (holds: '$hs_holds')" ;; esac
+[ -n "$hs_asked" ] && [ -n "$hs_files" ] && [ "$hs_asked" -lt "$hs_files" ] && [ "$hs_asked" -gt 0 ] || { fails=$((fails+1)); echo "FAIL  hs: a file whose hold stood and read nothing that moved was asked anyway (asked '$hs_asked' of '$hs_files')"; }
+case "$hs_read" in *"f/leaf.av"*) fails=$((fails+1)); echo "FAIL  hs: a file that reads nothing the edit moved was read all the same" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    hs: the file that reads nothing of it was not asked (asked '$hs_asked' of '$hs_files')" ;; esac
+S "hs: the binary follows the edit" hs
+steps=$((steps+1)); hs_again=$(AVRA_QTRACE=1 ./avra check --time $R/hs 2>&1)
+case "$hs_again" in *"cache hit"*) [ -n "${VERBOSE:-}" ] && echo "ok    hs: the unchanged check after it is a hit" ;; *) fails=$((fails+1)); echo "FAIL  hs: the check after it was no hit: $(printf '%s' "$hs_again" | grep -aE '^time:' | tail -1 | cut -c1-200)" ;; esac
+# NO FEWER: the callee's name is gone, and the reader that holds over it must be asked
+# again — a set trusted past its inputs would serve the old answer and compile clean.
+ed $R/hs/src/y/calc.av "fn twice(n: int)" "fn thrice(n: int)"
+steps=$((steps+1)); hs_stale=$(./avra check $R/hs 2>&1); hs_st=$?
+[ "$hs_st" -ne 0 ] && printf '%s' "$hs_stale" | grep -q "twice" || { fails=$((fails+1)); echo "FAIL  hs: the callee was renamed and the reader's hold stood all the same (exit $hs_st): $(printf '%s' "$hs_stale" | grep -aE '^error|twice' | head -3 | tr '\n' ' ' | cut -c1-200)"; }
+[ -n "${VERBOSE:-}" ] && [ "$hs_st" -ne 0 ] && echo "ok    hs: the renamed callee broke the hold"
+fi
+
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
     # THE COMPILER'S OWN BINARY is identified by a stamp-keyed record of its bytes' digest:

@@ -5,7 +5,17 @@
 //! hand-folded key and judged beside it under `AVRA_DB_VERIFY`: the two must agree on
 //! which files hold.
 use @std.text.{parse_int}
-use core.{digest_of, joined, qtrace, traced, ModulePath, module_path, distinct, flatten}
+use core.{
+    digest_of,
+    joined,
+    sorted_texts,
+    qtrace,
+    traced,
+    ModulePath,
+    module_path,
+    distinct,
+    flatten,
+}
 use core.debug.{db_verified_files}
 use compiler.{Want}
 use compiler.store.{Store, Stored, Reading, node_key, read_name, read_spelled}
@@ -149,12 +159,15 @@ impl Workspace {
     /// reader of its module. The on-demand load's gate: a file whose rows so stand is never met.
     fn file_rows_stand(store: Store, path: string, want: Want) -> bool {
         let suspects = self.suspect_rows(store)
-        let said = store.unsuspected(Stored.Warn, self.said_row(path), suspects) ||
-            self.file_judged(store, path, Stored.Warn, self.said_row(path))
-        let asks = store.unsuspected(Stored.Unit, self.asks_row(path), suspects) ||
-            self.file_judged(store, path, Stored.Unit, self.asks_row(path))
-        let codes = store.unsuspected(Stored.Unit, self.codes_row(path), suspects) ||
-            self.file_judged(store, path, Stored.Unit, self.codes_row(path))
+        let said_key = self.said_row(path)
+        let asks_key = self.asks_row(path)
+        let codes_key = self.codes_row(path)
+        let said = store.unsuspected(Stored.Warn, said_key, suspects) ||
+            self.file_judged(store, path, Stored.Warn, said_key)
+        let asks = store.unsuspected(Stored.Unit, asks_key, suspects) ||
+            self.file_judged(store, path, Stored.Unit, asks_key)
+        let codes = store.unsuspected(Stored.Unit, codes_key, suspects) ||
+            self.file_judged(store, path, Stored.Unit, codes_key)
         if want is .Diagnostics {
             said && asks && codes && self.file_ruled(store, path)
         } else {
@@ -315,13 +328,78 @@ impl Workspace {
                 moved.push(self.seen_name(p))
             }
         }
+        let suspect = distinct([row_of.get(r) ?? "" for r in rows.keys()]).filter(it != "")
+        mut suspect_set: Map<string, bool> = {}
+        for p in suspect { suspect_set.set(p, true) }
         if traced() {
             qtrace(
-                "Q\tsuspects\t${edited.length} edited\t${rows.keys().length} rows\t${paths.length} files\n",
+                "Q\tsuspects\t${edited.length} edited\t${rows.keys().length} rows\t${suspect.length} suspect files\t${paths.length} files\n",
             )
         }
-        self.keys.suspects.set(Suspects { files: paths.length, rows: rows })
+        self.keys.suspects.set(Suspects { files: paths.length, rows: rows, paths: suspect_set })
         rows
+    }
+
+    /// THE FILES THE REVERSE INDEX NAMES: every file with a row that read an input that moved.
+    fn suspect_files(store: Store) -> Map<string, bool> {
+        let _ = self.suspect_rows(store)
+        self.keys.suspects.get().paths
+    }
+
+    /// THE HELD SET: the files whose holds a derivation of this program confirmed standing
+    /// under this name and want — one line a file, so it is bounded by the program's own
+    /// files and rewritten only when the set moves.
+    fn held_set_key(entry: string?, want: Want) -> string {
+        node_key(Stored.Fp, ["held-set", self.root, entry ?? "", want_word(want)])
+    }
+
+    /// The files the last derivation confirmed standing; null for one never confirmed, which
+    /// trusts no file.
+    fn held_set(store: Store, entry: string?, want: Want) -> Map<string, bool>? {
+        let row? = store.get(Stored.Fp, self.held_set_key(entry, want)) else { return null }
+        mut set: Map<string, bool> = {}
+        for line in row.split("\n") { if line != "" { set.set(line, true) } }
+        set
+    }
+
+    /// REMEMBER THE HELD SET. A row that stands on nothing is never suspect, so it is
+    /// rewritten only when the set itself moves — never an action frame per derivation.
+    fn keep_held_set(store: Store, entry: string?, want: Want, paths: List<string>) {
+        let text = joined(sorted_texts(distinct(paths)), "\n")
+        let key = self.held_set_key(entry, want)
+        if store.get(Stored.Fp, key) == text { return }
+        let _ = store.keep(Stored.Fp, key, text, [])
+    }
+
+    /// WHICH FILES A DERIVATION MUST ASK: every file the held set does not confirm standing,
+    /// and every file the reverse index names as having read an input that moved. A file that
+    /// is neither asks nothing and stands untouched.
+    fn holds_asked(store: Store, entry: string?, want: Want) -> Map<string, bool> {
+        let trusted = if want is .Binary { null } else { self.held_set(store, entry, want) }
+        let suspects = self.suspect_files(store)
+        mut asked: Map<string, bool> = {}
+        for fi in self.decls.files_standing() {
+            if trusted?.get(fi.path) == null || suspects.get(fi.path) != null { asked.set(fi.path, true) }
+        }
+        if traced() {
+            qtrace(
+                "Q\tholds\t${asked.keys().length} asked\t${self.decls.files_standing().length} files\n",
+            )
+        }
+        asked
+    }
+
+    /// Whether one file's hold is asked: a file the held set does not confirm standing, or one
+    /// the reverse index names, and whose rows do not stand. A file no one asks stands as it was.
+    fn hold_asks(
+        store: Store,
+        path: string,
+        want: Want,
+        must_read: List<string>,
+        asked: Map<string, bool>,
+    ) -> bool {
+        must_read.contains(path) ||
+            asked.get(path) != null && !self.file_rows_stand(store, path, want)
     }
 
     /// The read a file's module is seen through.
@@ -334,6 +412,11 @@ impl Workspace {
         let line? = lines.find(read_name(it) == read) else { return true }
         line.substring(0, line.index_of(" ")) != digest_of(self.text_digest(path))
     }
+}
+
+/// A want as the word its held set is filed under.
+fn want_word(want: Want) -> string {
+    match want { .Diagnostics -> "diagnostics", .Binary -> "binary" }
 }
 
 fn cheap_unsound(path: string) -> string {
