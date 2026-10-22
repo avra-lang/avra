@@ -98,9 +98,12 @@ impl Runnable for DevCmd {
                     p.routes(),
                     () -> p.turn(),
                     if args.has_flag("no_watch") {
-                        untended
+                        (stop: Task<bool>) -> p.ended_by(stop)
                     } else {
-                        (stop: Task<bool>) -> p.tended(looked_every(args), stop)
+                        (stop: Task<bool>) -> {
+                            p.tended(looked_every(args), stop)
+                            p.backend?.stopped()
+                        }
                     },
                 ),
                 .Err(code) -> code,
@@ -279,6 +282,8 @@ export type Page = {
     standing: Cell<Standing>,
     watched: Cell<List<Watched>>,
     moved: Bell,
+    backend: Backend? = null,
+    glue_files: List<string> = [],
 }
 
 /// The page glue beside the compiler: `runtime/dom` in a checkout,
@@ -292,10 +297,14 @@ fn page_at(root: string, target: string) -> Result<Page, int> {
     let tools = toolchain(lister, target, true, false, true)?
     let glue? = glue_dir() else { return .Err(unequipped(no_glue())) }
     let own? = own_binary() else { return .Err(unequipped(no_compiler())) }
-    match tool(own) {
-        .Ok(compiler) -> page_of(lister, tools, compiler, glue),
-        .Err(e) -> .Err(refused_by_host(e)),
+    let compiler = match tool(own) { .Ok(c) -> c, .Err(e) -> { return .Err(refused_by_host(e)) } }
+    let backend = match backend_of(root, compiler) {
+        .Ok(b) -> b,
+        .Err(why) -> { return .Err(unequipped(why)) },
     }
+    .Ok(
+        page_of(lister, tools, compiler, glue) with { backend: backend, glue_files: glue_files(glue) },
+    )
 }
 
 /// The page of the package `lister` stands over, built by `compiler` for
@@ -345,8 +354,9 @@ impl Page {
     /// ran is seen by the next turn; a file the build newly reached is
     /// marked as it stands after.
     export fn turn() -> bool {
+        let served = self.backend?.turn() ?? false
         let now = self.looked()
-        if self.still(now) { return false }
+        if self.still(now) { return served }
         self.build()
         mut at: Map<string, Mark> = {}
         for w in now { at.set(w.path, w.mark) }
@@ -369,6 +379,12 @@ impl Page {
             return
         }
         self.clocked(pause, stop)
+    }
+
+    /// The stop signal waited on, and the server stopped after it.
+    fn ended_by(stop: Task<bool>) {
+        let _ = stop.await
+        self.backend?.stopped()
     }
 
     /// The watch as the select's arm: the host says when a file moved.
@@ -398,7 +414,7 @@ impl Page {
     /// The build's inputs aimed at and the page built when one moved.
     fn tending(w: Watch) {
         let _ = self.turn()
-        let _ = w.only([f.path for f in self.watched.get()])
+        let _ = w.only([f.path for f in self.watched.get()].concat(self.backend?.paths() ?? []))
     }
 
     /// `--interval`'s clock, opted into: a turn every `pause`, and a stop
@@ -516,8 +532,15 @@ impl Page {
             fixed(Method.Get, "/app.wasm", (_q: Request<Unrouted>) -> self.module()),
             fixed(Method.Get, "/@dev/events", (_q: Request<Unrouted>) -> self.events()),
         ]
+            .concat(forwarded(self.backend, self.glue_files))
             .concat(directory("/", fresh_files(self.glue)))
     }
+}
+
+/// What the page's server answers, when the page has one.
+fn forwarded(backend: Backend?, glue: List<string>) -> List<Route> {
+    let b? = backend else { return [] }
+    b.routes(glue)
 }
 
 /// An answer no cache keeps: the next ask reads what stands then.

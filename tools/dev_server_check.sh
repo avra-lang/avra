@@ -18,7 +18,7 @@ printf '[package]\nname = "dev-page"\nversion = "0.1.0"\n\n[dev]\nserver = "serv
 printf 'use @std.ui.components.{text}\nuse @std.ui.web.{mount}\n\nmount(() -> text "page")\n' > "$work/page/src/main.av"
 printf '[package]\nname = "dev-server"\nversion = "0.1.0"\n' > "$work/page/server/avra.toml"
 served() {
-    printf 'use @std.io.{env}\nuse @std.text.{parse_int}\nuse @std.http.route.{get, post}\nuse @std.http.server.{server}\n\nserver api {\n    port: parse_int(env("PORT") ?? "") ?? 0\n    get "/hello" { _req -> "%s" }\n    post "/echo" { req -> "echo " + (req.body.text() ?? "?") }\n}\napi.run()\n' "$1" > "$work/page/server/src/main.av"
+    printf 'use @std.io.{env}\nuse @std.text.{parse_int}\nuse @std.http.route.{get, post}\nuse @std.http.server.{server}\n\nserver api {\n    port: parse_int(env("PORT") ?? "") ?? 0\n    get "/hello" { _req -> "%s" }\n    post "/echo" { req -> "echo " + (req.body.text() ?? "?") }\n}\nlet _ = api.run()\n' "$1" > "$work/page/server/src/main.av"
 }
 served "one"
 
@@ -34,11 +34,12 @@ tries=0
 until grep -q '^dev: server .* runs on' "$work/dev.out" 2>/dev/null; do
     kill -0 "$dev" 2>/dev/null || { cat "$work/dev.err" "$work/dev.out"; say "avra dev ended before its server ran"; exit 1; }
     tries=$((tries + 1))
-    [ "$tries" -lt 450 ] || { cat "$work/dev.out"; say "FAILED avra dev never ran the server the page names (90 s)"; exit 1; }
+    [ "$tries" -lt 450 ] || { cat "$work/dev.out" "$work/dev.err"; say "FAILED avra dev never ran the server the page names (90 s)"; exit 1; }
     sleep 0.2
 done
 grep '^dev: server' "$work/dev.out" | tail -1
 
+[ -n "${DEV_SERVER_DEBUG:-}" ] && { curl -si "${url}hello" | head -12; port=$(sed -n 's/^dev: server .* runs on 127.0.0.1:\([0-9]*\).*$/\1/p' "$work/dev.out" | tail -1); echo "--- the child itself on $port:"; curl -si "http://127.0.0.1:$port/hello" | head -8; cat "$work/dev.err" | tail -5; }
 got=$(curl -s "${url}hello")
 [ "$got" = "one" ] && say "ok    a route the page does not own is the server's: GET /hello -> $got" || fail "GET /hello answered '$got', wanted 'one'"
 got=$(curl -s -X POST --data "sent" "${url}echo")
