@@ -4,6 +4,7 @@ use ingest.envelope.{source_document}
 use catalog.{Catalog}
 use derive.model.{model}
 use schema.{Ref, Registration}
+use semantics.{Semantics, TimeBinding}
 use @avra.graph_contracts.{SourceEnvelope, SourceRef, Frame}
 use @std.json.{to_text}
 use @std.validate.{length}
@@ -18,6 +19,13 @@ type Details = { label: string, category: string = "plain" }
 @model
 type Artifact = { label: string, owner: Ref<Keeper>?, details: Details? }
 
+@model(quote { Semantics { times: [
+    TimeBinding { path: ["due"], encoding: .IsoDate },
+    TimeBinding { path: ["at"], encoding: .IsoInstant },
+    TimeBinding { path: ["at_ms"], encoding: .UnixMillis },
+] } })
+type Engagement = { label: string?, due: string?, at: string?, at_ms: int? }
+
 fn catalog() -> Result<Catalog, string> {
     Catalog
         .collected(
@@ -25,6 +33,7 @@ fn catalog() -> Result<Catalog, string> {
                 Registration { make: Keeper_graph_model },
                 Registration { make: Details_graph_model },
                 Registration { make: Artifact_graph_model },
+                Registration { make: Engagement_graph_model },
             ],
         )
 }
@@ -252,11 +261,22 @@ fn identity_anchor(invented: bool = false) -> Result<bool, string> {
     }
 }
 
-fn timex(timex_type: string, value: string, reference: string = "2026-10-20T09:00:00Z") -> string {
+fn timex(
+    timex_type: string,
+    value: string,
+    reference: string = "2026-10-20T09:00:00Z",
+    property: string = "",
+    held: string = "",
+) -> string {
+    let target = if property.is_empty() { if timex_type == "DATE" { "due" } else { "at" } } else { property }
+    let stored = if held.is_empty() { "\"${value}\"" } else { held }
     record(
         field(
-            extra: ",\"normalization\":{\"kind\":\"TIMEX3\",\"timex_type\":\"${timex_type}\",\"value\":\"${value}\",\"reference\":\"${reference}\"}",
+            target,
+            stored,
+            ",\"normalization\":{\"kind\":\"TIMEX3\",\"timex_type\":\"${timex_type}\",\"value\":\"${value}\",\"reference\":\"${reference}\"}",
         ),
+        "Engagement",
     )
 }
 
@@ -271,6 +291,34 @@ fn timex_admission() -> Result<bool, string> {
         !admits(timex("TIME", "2026-10-23T17:00:00")) &&
         !admits(timex("DURATION", "P3D")) &&
         !admits(timex("DATE", "2026-10-23", "2026-10-20"))
+}
+
+fn declared_times() -> Result<bool, string> {
+    let c = catalog()?
+    let admits = (r: string) -> admit_extraction(c, request(c), response(c, r)) is .Ok
+    admits(
+            timex("TIME", "2026-10-23T17:00:00.250+02:00", property: "at_ms", held: "1792767600250"),
+        ) &&
+        admits(
+            timex(
+                "TIME",
+                "2026-10-23T15:00:00Z",
+                property: "at",
+                held: "\"2026-10-23T17:00:00+02:00\"",
+            ),
+        ) &&
+        !admits(timex("DATE", "2026-10-23", property: "label")) &&
+        !admits(timex("TIME", "2026-10-23T17:00:00+02:00", property: "due")) &&
+        !admits(timex("DATE", "2026-10-23", held: "\"2026-10-24\"")) &&
+        !admits(timex("TIME", "2026-10-23T17:00:00+02:00", property: "at_ms", held: "1")) &&
+        !admits(
+            timex(
+                "TIME",
+                "2026-10-23T17:00:00.2501+02:00",
+                property: "at_ms",
+                held: "1792767600250",
+            ),
+        )
 }
 
 fn declared_budget() -> Result<bool, string> {
@@ -365,6 +413,7 @@ spec "provider-neutral extraction admission" {
         then "record budget exhaustion refuses the entire result" { passed(bounded_records()) }
         then "admission bounds are a declared budget" { passed(declared_budget()) }
         then "a TIMEX3 normalization is a valid ISO 8601 date or instant with an instant reference" { passed(timex_admission()) }
+        then "a time normalization lands only on a property declaring a time encoding it agrees with" { passed(declared_times()) }
         then "unknown field frames and dangling proposed parents are refused" { passed(missing_frame()) }
     }
 }
