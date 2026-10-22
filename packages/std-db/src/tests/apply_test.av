@@ -27,6 +27,12 @@ type Pet = {
     owner: Owner,
 }
 
+@model
+type Memo = {
+    id: int = 0,
+    @renamed_from("body") text: string,
+}
+
 /// The line a new optional column adds to a shape text.
 const EXTRA: string = "\nnote|TEXT|null|-|-|-|-|-"
 
@@ -58,7 +64,7 @@ fn grown_once() -> Result<string, SqlError> {
     mut db = Db.memory()?
     let _ = kind_of(Note.migrate(db))
     let _ = db.run(sql("INSERT INTO \"Note\" (title) VALUES ('kept')"))?
-    let steps = kind_of(grown(db, Note.shape() + EXTRA))
+    let steps = kind_of(grown(db, Note.shape() + EXTRA, [], []))
     let held = (db.scalar(sql("SELECT title FROM \"Note\""))?).text()?
     let blank = (db.scalar(sql("SELECT note IS NULL FROM \"Note\""))?).int()?
     "${steps} ${columns(db, "Note")?} ${held} ${blank} ${(recorded(db, "Note")?).contains("note|TEXT|null")}"
@@ -67,8 +73,8 @@ fn grown_once() -> Result<string, SqlError> {
 fn then_nothing_to_do() -> Result<string, SqlError> {
     mut db = Db.memory()?
     let _ = kind_of(Note.migrate(db))
-    let _ = kind_of(grown(db, Note.shape() + EXTRA))
-    "${kind_of(grown(db, Note.shape() + EXTRA))} ${kind_of(Note.migrate(db))}"
+    let _ = kind_of(grown(db, Note.shape() + EXTRA, [], []))
+    "${kind_of(grown(db, Note.shape() + EXTRA, [], []))} ${kind_of(Note.migrate(db))}"
 }
 
 fn refused_move() -> Result<string, SqlError> {
@@ -76,7 +82,7 @@ fn refused_move() -> Result<string, SqlError> {
     let _ = kind_of(Note.migrate(db))
     let before = recorded(db, "Note")?
     let dropped = "Note\nid|INTEGER|null|key|-|-|-|-\n__avra_version__|INTEGER|notnull|-|-|1|-|-"
-    let r = grown(db, dropped)
+    let r = grown(db, dropped, [], [])
     let kept = columns(db, "Note")? == 3 && recorded(db, "Note")? == before
     "${kind_of(r)} ${kept} ${said(r)}"
 }
@@ -85,7 +91,7 @@ fn unrecorded() -> Result<string, SqlError> {
     mut db = Db.memory()?
     let _ = kind_of(Note.migrate(db))
     let _ = db.run(sql("UPDATE \"__avra_models__\" SET shape = NULL"))?
-    kind_of(grown(db, Note.shape()))
+    kind_of(grown(db, Note.shape(), [], []))
 }
 
 fn copied_first() -> Result<string, SqlError> {
@@ -95,7 +101,7 @@ fn copied_first() -> Result<string, SqlError> {
     let _ = kind_of(Note.migrate(db))
     let _ = db.run(sql("INSERT INTO \"Note\" (title) VALUES ('before')"))?
     let none = (list_dir(dir) catch []).filter(it.ends_with(".bak")).length
-    let steps = kind_of(grown(db, Note.shape() + EXTRA))
+    let steps = kind_of(grown(db, Note.shape() + EXTRA, [], []))
     let baks = (list_dir(dir) catch []).filter(it.ends_with(".bak"))
     let copy = Db.open_read("${dir}/${baks[0]}")?
     let had = (copy.scalar(sql("SELECT count(*) FROM pragma_table_info('Note')"))?).int()?
@@ -118,8 +124,30 @@ fn rolled_back() -> Result<string, SqlError> {
     let _ = kind_of(Pet.migrate(db))
     let _ = db.run(sql("PRAGMA foreign_keys = OFF"))?
     let _ = db.run(sql("INSERT INTO \"Pet\" (owner_id) VALUES (99)"))?
-    let r = grown(db, Pet.shape() + EXTRA)
+    let r = grown(db, Pet.shape() + EXTRA, [], [])
     "${kind_of(r)} ${columns(db, "Pet")?} ${(recorded(db, "Pet")?).contains("note")}"
+}
+
+/// A Memo table as an earlier declaration left it: the column still called `body`.
+fn memo_as_it_was() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    let _ = kind_of(Memo.migrate(db))
+    let _ = db.run(sql("INSERT INTO \"Memo\" (text) VALUES ('kept')"))?
+    let _ = db.run(sql("ALTER TABLE \"Memo\" RENAME COLUMN \"text\" TO \"body\""))?
+    let old = (recorded(db, "Memo")?).replace("text|TEXT", "body|TEXT")
+    let _ = db
+        .run(sql("UPDATE \"__avra_models__\" SET shape = ? WHERE table_name = 'Memo'", [.Text(old)]))?
+    db
+}
+
+fn renamed() -> Result<string, SqlError> {
+    mut db = memo_as_it_was()?
+    let r = kind_of(Memo.migrate(db))
+    let held = (db.scalar(sql("SELECT text FROM \"Memo\""))?).text()?
+    let old = (db.scalar(sql("SELECT count(*) FROM pragma_table_info('Memo') WHERE name = 'body'"))?)
+        .int()?
+    let again = kind_of(Memo.migrate(db))
+    "${r} ${held} ${old} ${again} ${(recorded(db, "Memo")?).contains("text|TEXT")}"
 }
 
 fn shown(r: Result<string, SqlError>) -> string {
@@ -138,6 +166,11 @@ spec "std/db apply" {
         }
         then "and a table already at that shape has nothing to do" {
             shown(then_nothing_to_do()) == "ok 0 db.migrate.moving"
+        }
+    }
+    given "a field that says what it was called" {
+        then "continues the old column under its new name, rows and all, and records it" {
+            shown(renamed()) == "ok 1 kept 0 ok 0 true"
         }
     }
     given "a change that moves" {
