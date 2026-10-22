@@ -1113,41 +1113,52 @@ def settled():
 
 
 def serve():
-    """A local Unix-socket service, served in order: one JSON line in, one
-    JSON line out, per connection. `{"op":"generate","messages":[…],
-    "max_tokens":n,"stop":[…]}` answers `{"text":…}` (greedy, ended before
-    the first stop string); `{"op":"choose","context","question","options"}` answers `{"p":[…]}`;
-    `{"request":…}` answers an extraction. A failure answers `{"error":…}`."""
+    """A local Unix-socket service: one JSON line in, one JSON line out, per
+    connection. Every connection is read on its own thread, so no client
+    waits to be read; model work runs one request at a time, in arrival
+    order, and each answer carries its queue position, wait and compute time.
+    `{"op":"generate","messages":[…],"max_tokens":n,"stop":[…]}` answers
+    `{"text":…}` (greedy, ended before the first stop string);
+    `{"op":"choose","context","question","options"}` answers `{"p":[…]}`;
+    `{"request":…}` or `{"requests":[…]}` answers extractions. A failure
+    answers `{"error":…}`."""
+    import queue
     import socket
+    import threading
 
     models = Models()
-    if os.path.exists(SOCKET):
-        os.replace(SOCKET, SOCKET + ".stale")
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.bind(SOCKET)
-    os.chmod(SOCKET, 0o600)
-    s.listen(4)
-    print(f"cascade serving on {SOCKET} (load_s={models.load_s:.1f})", file=sys.stderr, flush=True)
-    while True:
-        conn, _ = s.accept()
+    work = queue.Queue()
+
+    def worker():
+        while True:
+            body, arrived, position, done = work.get()
+            started = time.time()
+            try:
+                answer = answered(body, models)
+            except Exception as e:
+                answer = {"error": f"{type(e).__name__}: {e}"}
+            answer["queue"] = {"position": position, "wait_s": round(started - arrived, 2), "compute_s": round(time.time() - started, 2)}
+            done.put(answer)
+
+    def client(conn):
         with conn:
             data = received(conn)
             if not data.strip():
-                continue
-            started = time.time()
+                return
+            arrived = time.time()
             try:
                 body = json.loads(data)
             except ValueError:
-                body, answer = {}, {"error": f"the client closed before its request was complete ({len(data)} bytes arrived); a request waits in the socket while another is served"}
+                body, answer = {}, {"error": f"the client closed before its request was complete ({len(data)} bytes arrived)"}
             else:
-                try:
-                    answer = answered(body, models)
-                except Exception as e:
-                    answer = {"error": f"{type(e).__name__}: {e}"}
-            op = body.get("op", "extract")
+                done = queue.Queue()
+                position = work.qsize()
+                work.put((body, arrived, position, done))
+                answer = done.get()
+            q = answer.get("queue", {})
             print(
-                f"{time.strftime('%H:%M:%S')} {op} bytes={len(data)} options={len(body.get('options', []))} "
-                f"s={time.time() - started:.2f} {settled()} {answer.get('error', 'ok')}",
+                f"{time.strftime('%H:%M:%S')} {body.get('op', 'extract')} bytes={len(data)} options={len(body.get('options', []))} "
+                f"position={q.get('position')} wait_s={q.get('wait_s')} compute_s={q.get('compute_s')} {settled()} {answer.get('error', 'ok')}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -1155,6 +1166,18 @@ def serve():
                 conn.sendall(json.dumps(answer, ensure_ascii=False).encode() + b"\n")
             except OSError as e:
                 print(f"client gone: {e}", file=sys.stderr, flush=True)
+
+    if os.path.exists(SOCKET):
+        os.replace(SOCKET, SOCKET + ".stale")
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(SOCKET)
+    os.chmod(SOCKET, 0o600)
+    s.listen(parameter("socket_backlog"))
+    threading.Thread(target=worker, daemon=True).start()
+    print(f"cascade serving on {SOCKET}", file=sys.stderr, flush=True)
+    while True:
+        conn, _ = s.accept()
+        threading.Thread(target=client, args=(conn,), daemon=True).start()
 
 
 def remote(body):
