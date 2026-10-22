@@ -4,7 +4,8 @@
 // writes for the same tree. Every box must agree; a mismatch is shrunk to a
 // small tree and printed with both answers.
 //
-//   node tools/layout-oracle/oracle.mjs [--cases N] [--seed S] [--show K] [--width W]
+//   node tools/layout-oracle/oracle.mjs [--cases N] [--seed S] [--show K] [--width W] [--css RULES]
+// `--css` adds rules to the page's style (mark them !important to beat the realizer's), to ask what a property would change.
 //
 // Leaves are empty boxes of a given size (or of none, which stretch or grow),
 // or text of random words. The page is set in a font whose every character is
@@ -470,7 +471,7 @@ function solved(cases, work) {
 
 // ── the browser's side ───────────────────────────────────────────
 
-const PAGE = `<!doctype html><meta charset=utf-8><style>@font-face{font-family:cell;src:url(data:font/ttf;base64,${cellFontBase64(PROP ? FACE : {})})}body{margin:0;font:1px/${PROP ? LINE : 1}px cell${PROP ? ";font-kerning:none;font-variant-ligatures:none" : ""}}</style><body></body>`;
+const PAGE = `<!doctype html><meta charset=utf-8><style>@font-face{font-family:cell;src:url(data:font/ttf;base64,${cellFontBase64(PROP ? FACE : {})})}body{margin:0;font:1px/${PROP ? LINE : 1}px cell${PROP ? ";font-kerning:none;font-variant-ligatures:none" : ""}}${args.css ?? ""}</style><body></body>`;
 
 // The page the realizer wrote is laid in a host WIDTH wide. Each box is read
 // as the browser paints it: its edges, from the root's corner, snapped to the
