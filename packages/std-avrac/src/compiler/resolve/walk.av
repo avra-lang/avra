@@ -269,7 +269,10 @@ impl ResolveCx {
         let origin: FileId? = self.view.origin_of(e)
         let names = self.names_in(origin)
         let found: DeclId? = names.type_decl(name)
-        if found != null {
+        // A language declaration binds LAST: a template's name that the
+        // file it lands in declares itself is that file's.
+        let own = found != null && !self.view.decls.is_builtin(found!)
+        if own {
             self.bind_use(e, Binding.Decl(found!))
             return
         }
@@ -287,6 +290,10 @@ impl ResolveCx {
         let here: DeclId? = self.type_here(name, origin)
         if here != null {
             self.bind_use(e, Binding.Decl(here!))
+            return
+        }
+        if found != null {
+            self.bind_use(e, Binding.Decl(found!))
             return
         }
         if self.refused_read(names, [NameKind.Type], name, self.loc_of(e)) { return }
