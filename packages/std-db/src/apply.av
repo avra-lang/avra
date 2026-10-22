@@ -1,0 +1,187 @@
+//! The runner: a recorded shape and a declared one, diffed, and a plan of
+//! GROWTH applied — never a moving change. Before any write to a file
+//! database a copy is taken with `VACUUM INTO` and read back whole; the
+//! steps and the registry's new shape then go in one transaction that is
+//! checked before it commits, so a plan that breaks the database is never
+//! kept. Forward only: to go back, restore the copy.
+use @std.errors.{Error, ErrorInfo, info}
+use @std.sqlite.{Db, SqlValue, sql}
+use @std.sqlite.error.{SqlError}
+use @std.time.{now_ms}
+use migrate.{Plan, Renamed, diff, refusals, statements}
+use shape.{Shape, shape_read, shape_text}
+
+/// Why a table was not migrated.
+export enum MigrateError {
+    Sql(e: SqlError)
+    /// The plan holds changes that need an author: nothing was written.
+    Moving(plan: Plan)
+    /// The table has no recorded shape — an older claim — so nothing can be diffed.
+    Unrecorded(name: string)
+    /// The copy taken before writing could not be made or did not read back whole.
+    Backup(why: string)
+    /// The plan was applied and broke the database, so it was rolled back.
+    Broken(name: string, why: string)
+}
+
+impl Error for MigrateError {
+    fn describe() -> ErrorInfo {
+        match self {
+            .Sql(e) -> e.describe(),
+            .Moving(plan) -> info("db.migrate.moving", moving_voice(plan)),
+            .Unrecorded(name) -> info("db.migrate.unrecorded", unrecorded_voice(name)),
+            .Backup(why) -> info("db.migrate.backup", backup_voice(why)),
+            .Broken(name, why) -> info("db.migrate.broken", broken_voice(name, why)),
+        }
+    }
+}
+
+/// A table brought to the shape a model's text declares, answering how many
+/// steps it took; a text that is no shape is a defect of the caller.
+export fn grown(mut db: Db, declared: string) -> Result<int, MigrateError> {
+    let shape? = shape_read(declared) else { return .Err(.Sql(SqlError.defect("a model's shape text did not read back"))) }
+    let plan = migrated(db, shape, [])?
+    .Ok(plan.steps.length)
+}
+
+/// One table brought to its declared shape. Answers the plan it applied;
+/// a plan with nothing to do writes nothing, and one that moves is refused.
+export fn migrated(mut db: Db, declared: Shape, renames: List<Renamed>) -> Result<
+    Plan,
+    MigrateError,
+> {
+    let held = lifted(recorded(db, declared.name))?
+    let stored? = held else { return .Err(.Unrecorded(declared.name)) }
+    let plan = diff(stored, declared, renames)
+    if !plan.moving.is_empty() { return .Err(.Moving(plan)) }
+    if plan.steps.is_empty() { return .Ok(plan) }
+    let _ = copied(db)?
+    let _ = applied(db, plan, declared)?
+    .Ok(plan)
+}
+
+/// A driver failure as this runner's own.
+export fn lifted<T>(r: Result<T, SqlError>) -> Result<T, MigrateError> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Sql(e)) }
+}
+
+/// A scalar's text; empty for any other class.
+fn texted(v: SqlValue) -> string {
+    match v { .Text(t) -> t, .Int(_) or .Real(_) or .Blob(_) or .Null -> "" }
+}
+
+/// The shape the registry holds for a table; absent when it holds none.
+fn recorded(db: Db, name: string) -> Result<Shape?, SqlError> {
+    let row? = db.first(sql(recorded_sql(), [.Text(name)]))? else { return .Ok(null) }
+    .Ok(shape_read(texted(row.values[0])))
+}
+
+// ── The copy ────────────────────────────────────────────────────
+
+/// A verified copy of a file database; nothing for one that lives in memory.
+fn copied(mut db: Db) -> Result<int, MigrateError> {
+    let path = texted(lifted(db.scalar(sql(file_sql())))?)
+    if path.is_empty() { return .Ok(0) }
+    let copy = "${path}.${now_ms()}.bak"
+    let _ = lifted(db.run(sql(vacuum_sql(), [.Text(copy)])))?
+    let said = whole(copy)
+    if said != "ok" { return .Err(.Backup("${copy} read back as ${said}")) }
+    .Ok(1)
+}
+
+/// What a database file says when asked whether it is whole.
+fn whole(path: string) -> string {
+    let opened = Db.open_read(path)
+    match opened {
+        .Err(e) -> e.message,
+        .Ok(b) -> {
+            let said = match b.scalar(sql(integrity_sql())) {
+                .Ok(v) -> texted(v),
+                .Err(e) -> e.message,
+            }
+            let _ = b.close()
+            said
+        },
+    }
+}
+
+// ── The write ───────────────────────────────────────────────────
+
+/// The plan's steps and the registry's new shape, in one transaction that
+/// commits only when the database checks out.
+fn applied(mut db: Db, plan: Plan, declared: Shape) -> Result<int, MigrateError> {
+    let _ = lifted(db.begin())?
+    match written(db, plan, declared) {
+        .Ok(_) -> kept(db),
+        .Err(e) -> {
+            let _ = db.finish()
+            .Err(e)
+        },
+    }
+}
+
+fn kept(mut db: Db) -> Result<int, MigrateError> {
+    match lifted(db.commit()) {
+        .Ok(n) -> .Ok(n),
+        .Err(e) -> {
+            let _ = db.finish()
+            .Err(e)
+        },
+    }
+}
+
+fn written(mut db: Db, plan: Plan, declared: Shape) -> Result<int, MigrateError> {
+    // LICENSED loops.push_loop: each statement runs once, in order, and the first refusal stops them
+    for s in statements(plan) {
+        let _ = lifted(db.run(sql(s)))?
+    }
+    let _ = lifted(
+        db
+            .run(
+                sql(
+                    restamp_sql(),
+                    [.Text(shape_text(declared.name, declared.columns)), .Text(declared.name)],
+                ),
+            ),
+    )?
+    checked(db, declared.name)
+}
+
+/// Whether the database, as the plan left it, is whole and its links hold.
+fn checked(db: Db, name: string) -> Result<int, MigrateError> {
+    let said = texted(lifted(db.scalar(sql(integrity_sql())))?)
+    if said != "ok" { return .Err(.Broken(name, said)) }
+    let loose = lifted(db.first(sql(links_sql())))?
+    if loose != null { return .Err(.Broken(name, "a row points at a row that is not there")) }
+    .Ok(0)
+}
+
+// ── SQL ─────────────────────────────────────────────────────────
+
+fn recorded_sql() -> string { "SELECT \"shape\" FROM \"__avra_models__\" WHERE \"table_name\" = ?" }
+
+fn restamp_sql() -> string { "UPDATE \"__avra_models__\" SET \"shape\" = ? WHERE \"table_name\" = ?" }
+
+fn file_sql() -> string { "SELECT file FROM pragma_database_list WHERE name = 'main'" }
+
+fn vacuum_sql() -> string { "VACUUM INTO ?" }
+
+fn integrity_sql() -> string { "PRAGMA integrity_check" }
+
+fn links_sql() -> string { "PRAGMA foreign_key_check" }
+
+// ── Voices ──────────────────────────────────────────────────────
+
+fn moving_voice(plan: Plan) -> string {
+    "`${plan.name}` cannot be migrated by itself: ${refusals(plan).join("; ")}"
+}
+
+fn unrecorded_voice(name: string) -> string {
+    "`${name}` has no recorded shape — its table was claimed before shapes were kept, so there is nothing to compare the model with"
+}
+
+fn backup_voice(why: string) -> string { "no copy of the database could be taken, so nothing was changed: ${why}" }
+
+fn broken_voice(name: string, why: string) -> string {
+    "migrating `${name}` left the database unsound (${why}) and was rolled back"
+}

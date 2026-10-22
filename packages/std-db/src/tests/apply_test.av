@@ -1,0 +1,162 @@
+// The runner over real databases: growth is applied and recorded, a moving
+// change is refused with nothing written, a file database is copied before
+// it is written, and a plan that leaves the database unsound is rolled back.
+use @std.db.{model}
+use @std.db.apply.{MigrateError, grown}
+use @std.errors.{Error}
+use @std.io.{list_dir, make_dirs}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+use @std.time.{stamp}
+
+@model
+type Note = {
+    id: int = 0,
+    title: string,
+}
+
+@model
+type Owner = {
+    id: int = 0,
+    name: string,
+}
+
+@model
+type Pet = {
+    id: int = 0,
+    owner: Owner,
+}
+
+/// The line a new optional column adds to a shape text.
+const EXTRA: string = "\nnote|TEXT|null|-|-|-|-|-"
+
+fn kind_of(r: Result<int, MigrateError>) -> string {
+    match r { .Ok(n) -> "ok ${n}", .Err(e) -> e.describe().kind }
+}
+
+fn said(r: Result<int, MigrateError>) -> string {
+    match r { .Ok(n) -> "ok ${n}", .Err(e) -> e.describe().message }
+}
+
+fn columns(db: Db, tname: string) -> Result<int, SqlError> {
+    (db.scalar(sql("SELECT count(*) FROM pragma_table_info(?)", [.Text(tname)]))?).int()
+}
+
+fn recorded(db: Db, tname: string) -> Result<string, SqlError> {
+    (db.scalar(sql("SELECT shape FROM \"__avra_models__\" WHERE table_name = ?", [.Text(tname)]))?)
+        .text()
+}
+
+fn made() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    let first = kind_of(Note.migrate(db))
+    let again = kind_of(Note.migrate(db))
+    "${first} ${again} ${columns(db, "Note")?}"
+}
+
+fn grown_once() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    let _ = kind_of(Note.migrate(db))
+    let _ = db.run(sql("INSERT INTO \"Note\" (title) VALUES ('kept')"))?
+    let steps = kind_of(grown(db, Note.shape() + EXTRA))
+    let held = (db.scalar(sql("SELECT title FROM \"Note\""))?).text()?
+    let blank = (db.scalar(sql("SELECT note IS NULL FROM \"Note\""))?).int()?
+    "${steps} ${columns(db, "Note")?} ${held} ${blank} ${(recorded(db, "Note")?).contains("note|TEXT|null")}"
+}
+
+fn then_nothing_to_do() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    let _ = kind_of(Note.migrate(db))
+    let _ = kind_of(grown(db, Note.shape() + EXTRA))
+    "${kind_of(grown(db, Note.shape() + EXTRA))} ${kind_of(Note.migrate(db))}"
+}
+
+fn refused_move() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    let _ = kind_of(Note.migrate(db))
+    let before = recorded(db, "Note")?
+    let dropped = "Note\nid|INTEGER|null|key|-|-|-|-\n__avra_version__|INTEGER|notnull|-|-|1|-|-"
+    let r = grown(db, dropped)
+    let kept = columns(db, "Note")? == 3 && recorded(db, "Note")? == before
+    "${kind_of(r)} ${kept} ${said(r)}"
+}
+
+fn unrecorded() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    let _ = kind_of(Note.migrate(db))
+    let _ = db.run(sql("UPDATE \"__avra_models__\" SET shape = NULL"))?
+    kind_of(grown(db, Note.shape()))
+}
+
+fn copied_first() -> Result<string, SqlError> {
+    let dir = "/tmp/avra-db-apply-test/${stamp()}"
+    let _ = make_dirs(dir)
+    mut db = Db.open("${dir}/app.db")?
+    let _ = kind_of(Note.migrate(db))
+    let _ = db.run(sql("INSERT INTO \"Note\" (title) VALUES ('before')"))?
+    let none = (list_dir(dir) catch []).filter(it.ends_with(".bak")).length
+    let steps = kind_of(grown(db, Note.shape() + EXTRA))
+    let baks = (list_dir(dir) catch []).filter(it.ends_with(".bak"))
+    let copy = Db.open_read("${dir}/${baks[0]}")?
+    let had = (copy.scalar(sql("SELECT count(*) FROM pragma_table_info('Note')"))?).int()?
+    let rows = (copy.scalar(sql("SELECT count(*) FROM \"Note\""))?).int()?
+    "${none} ${steps} ${baks.length} ${had} ${rows}"
+}
+
+fn untouched_when_copy_is_not_needed() -> Result<string, SqlError> {
+    let dir = "/tmp/avra-db-apply-test/${stamp()}"
+    let _ = make_dirs(dir)
+    mut db = Db.open("${dir}/app.db")?
+    let _ = kind_of(Note.migrate(db))
+    let _ = kind_of(Note.migrate(db))
+    "${(list_dir(dir) catch []).filter(it.ends_with(".bak")).length}"
+}
+
+fn rolled_back() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    let _ = kind_of(Owner.migrate(db))
+    let _ = kind_of(Pet.migrate(db))
+    let _ = db.run(sql("PRAGMA foreign_keys = OFF"))?
+    let _ = db.run(sql("INSERT INTO \"Pet\" (owner_id) VALUES (99)"))?
+    let r = grown(db, Pet.shape() + EXTRA)
+    "${kind_of(r)} ${columns(db, "Pet")?} ${(recorded(db, "Pet")?).contains("note")}"
+}
+
+fn shown(r: Result<string, SqlError>) -> string {
+    match r { .Ok(t) -> t, .Err(e) -> "failed: ${e.message}" }
+}
+
+spec "std/db apply" {
+    given "a model with no table" {
+        then "migrate makes it, grows nothing, and a second run does nothing" {
+            shown(made()) == "ok 0 ok 0 3"
+        }
+    }
+    given "a declared column the table lacks" {
+        then "is added, the rows stay, the new column is empty for them, and the registry records it" {
+            shown(grown_once()) == "ok 1 4 kept 1 true"
+        }
+        then "and a table already at that shape has nothing to do" {
+            shown(then_nothing_to_do()) == "ok 0 db.migrate.moving"
+        }
+    }
+    given "a change that moves" {
+        then "is refused in its own words, and nothing is written" {
+            shown(refused_move()) == "db.migrate.moving true `Note` cannot be migrated by itself: `Note.title` is recorded and no longer declared — dropping a column loses its values; say `@renamed_from(\"title\")` on the field that continues it, or migrate by hand"
+        }
+    }
+    given "a table the registry holds no shape for" {
+        then "is refused, never guessed" { shown(unrecorded()) == "db.migrate.unrecorded" }
+    }
+    given "a file database" {
+        then "is copied whole before the first write, and the copy holds the old shape and the rows" {
+            shown(copied_first()) == "0 ok 1 1 3 1"
+        }
+        then "and a run that writes nothing takes no copy" { shown(untouched_when_copy_is_not_needed()) == "0" }
+    }
+    given "a plan that leaves the database unsound" {
+        then "is rolled back whole: no column, no new shape" {
+            shown(rolled_back()) == "db.migrate.broken 3 false"
+        }
+    }
+}
