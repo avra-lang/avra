@@ -134,7 +134,7 @@ SEED_LINK_OBJS = $(filter-out $(COMPILER_ARCHIVES),$(COMPILER_OBJS))
 # PACKAGE_OBJS is every object a package's `[link]` row names — what a
 # target that RUNS programs may need, since any package's suite or
 # program tests can link its own C.
-PACKAGE_OBJS = $(TREE_STEM_LAW)$(shell sh tools/manifest_objects.sh)
+PACKAGE_OBJS := $(TREE_STEM_LAW)$(shell sh tools/manifest_objects.sh)
 
 # PER-OBJECT FLAGS, by stem. The LLVM binding needs its headers; the
 # vendored amalgamation takes its author's whole flag set, which its
