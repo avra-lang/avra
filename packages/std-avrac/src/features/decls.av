@@ -62,6 +62,7 @@ use core.{
     Mark,
     CollectKind,
     db_verified,
+    quoted_text,
 }
 use @std.relation.db.{Db, Durable, durable_db, transient}
 use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
@@ -178,7 +179,7 @@ fn run_named(f: FileId, maker: string) -> string { "${f.index} ${maker}" }
 /// a `by` key compares the kind, never the text), and where it was written.
 @derive(Fingerprint)
 @derive(Exemplar)
-export type AnnotationFact = { name: string, args: List<LitArg>, span: Span? }
+export type AnnotationFact = { name: string, args: List<LitArg>, span: Span?, named: List<NamedLit> = [] }
 
 impl AnnotationFact {
     /// `@derive(Exemplar)`'s seed.
@@ -203,14 +204,46 @@ impl LitArg {
     static fn codec_zero() -> LitArg { LitArg { text: "", kind: LitKind.Text } }
 }
 
+/// An argument written `label: value`: its label and its literal.
+@derive(Fingerprint)
+@derive(Exemplar)
+export type NamedLit = { label: string, arg: LitArg }
+
+impl NamedLit {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> NamedLit { NamedLit { label: "", arg: LitArg.codec_zero() } }
+}
+
 /// An argument's literal text, when it has one — a computed expression answers "".
+/// A list is its source spelling, each element as source writes it.
 export fn arg_text(store: SyntaxArena, e: ExprId) -> string {
     let expr = store.expr(e)
     match expr {
         .VariantLit(name, _) -> name.of,
+        _ -> scalar_text(expr) ?? list_text(store, expr) ?? store.ident_name(e) ?? "",
+    }
+}
+
+/// A text, int or bool literal's text.
+fn scalar_text(e: Expr) -> string? {
+    let t? = e.text_of() else { return int_text(e) ?? bool_text(e) }
+    t
+}
+
+/// A list literal as source spells it.
+fn list_text(store: SyntaxArena, e: Expr) -> string? {
+    let xs? = e.elems_of() else { return null }
+    "[" + [source_text(store, x) for x in xs].join(", ") + "]"
+}
+
+/// A literal inside a list, as source spells it: text quoted, a variant dotted.
+fn source_text(store: SyntaxArena, e: ExprId) -> string {
+    let expr = store.expr(e)
+    match expr {
+        .VariantLit(name, _) -> ".${name.of}",
         _ -> {
-            let t? = expr.text_of() else { return int_text(expr) ?? bool_text(expr) ?? store.ident_name(e) ?? "" }
-            t
+            let t? = expr.text_of() else { return arg_text(store, e) }
+            quoted_text(t)
         },
     }
 }
@@ -233,12 +266,7 @@ fn bool_lit(e: Expr) -> LitArg? {
     LitArg { text: "${b}", kind: LitKind.Bool }
 }
 
-fn other_lit(store: SyntaxArena, e: ExprId) -> LitArg {
-    match store.expr(e) {
-        .VariantLit(name, _) -> LitArg { text: name.of, kind: LitKind.Other },
-        _ -> LitArg { text: store.ident_name(e) ?? "", kind: LitKind.Other },
-    }
-}
+fn other_lit(store: SyntaxArena, e: ExprId) -> LitArg { LitArg { text: arg_text(store, e), kind: LitKind.Other } }
 
 fn int_text(e: Expr) -> string? {
     let n? = e.int_of() else { return null }
@@ -253,7 +281,18 @@ fn bool_text(e: Expr) -> string? {
 /// A parsed `Annotation` as the fact a declaration keeps: its callee's args
 /// re-read as typed literals, since the fact outlives the store a held file has none of.
 fn annotation_fact(store: SyntaxArena, a: Annotation) -> AnnotationFact {
-    AnnotationFact { name: a.name, args: [arg_lit(store, e) for e in a.args], span: a.span }
+    AnnotationFact {
+        name: a.name,
+        args: [arg_lit(store, e) for e in a.args if store.arg_label(e) == null],
+        span: a.span,
+        named: flatten([some_list(named_lit(store, e)) for e in a.args]),
+    }
+}
+
+/// An argument written `label: value`, as the fact keeps it.
+fn named_lit(store: SyntaxArena, e: ExprId) -> NamedLit? {
+    let label? = store.arg_label(e) else { return null }
+    NamedLit { label: label, arg: arg_lit(store, store.unnamed(e)) }
 }
 
 /// THE FINGERPRINT IS THE CODEC'S CHECKSUM: the derived fold covers EVERY field, so the
