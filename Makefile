@@ -664,7 +664,7 @@ db-corpus: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 cache-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # The two shards are one job each on CI, one runner each, so the store they clear
 # is their own; locally they run in order.
-cache-attacks: cache-attacks-a cache-attacks-b
+cache-attacks: cache-attacks-a cache-attacks-b cache-attacks-w
 cache-attacks-a: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/cache_attacks.sh
 
@@ -1177,8 +1177,10 @@ tool-witnesses:
 	@sh tools/tool_witnesses.sh run
 
 # THE STORE'S WITNESSES: package builds under the memory cap, each over a cold
-# then a warm store, so they ride with the cache attacks.
+# then a warm store — a cache-attacks shard of their own (w), since one alone
+# outlasts a minute.
 STORE_WITNESSES = $(shell grep -l '^\# tool-witness: run by make store-witnesses' tools/*.sh)
+cache-attacks-w: store-witnesses
 store-witnesses: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@fail=""; for w in $(STORE_WITNESSES); do MEMCAP=tools/memcap.sh sh $$w || fail="$$fail [$$w]"; done; \
 	 [ -z "$$fail" ] || { echo "store-witnesses: refused —$$fail"; exit 1; }
@@ -1240,7 +1242,7 @@ pipeline-status:
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
 KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status
-.PHONY: compiler compiler-files store-witnesses keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc tail-status pipeline-status ci-invariants ci-verdict pr-watcher
+.PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc tail-status pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@sh tools/keepers_loop.sh "$(MAKE) -s" $(KEEPERS_STATIC)
