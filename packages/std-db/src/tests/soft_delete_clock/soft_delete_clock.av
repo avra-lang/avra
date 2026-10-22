@@ -1,0 +1,37 @@
+// `@soft_delete` stamps the removal with the wall clock, so the stamp lies between
+// two wall readings taken around the removal. A monotonic reading counts from
+// boot and is orders of magnitude below a wall reading, so it fails this check.
+use @std.db.{model}
+use @std.sqlite.{Db}
+use @std.db.error.{ModelError, modeled}
+use @std.sqlite.error.{SqlError}
+use @std.time.{Time, now}
+
+@model
+type Note = {
+    id: int = 0,
+    text: string,
+    @soft_delete removed_at: Time? = null,
+}
+
+fn removal_between() -> Result<string, ModelError> {
+    mut db = modeled(Db.memory())?
+    modeled(Note.create_table(db))?
+    let kept = Note { text: "a" }.insert(db)?
+    let before = now()
+    let _ = kept.remove(db)?
+    let after = now()
+    let rows = modeled(Note.trash(db))?
+    let row = rows[0]
+    let stamp = row.removed_at
+    let s? = stamp else { return .Ok("absent") }
+    if s.ns >= before.ns && s.ns <= after.ns { .Ok("between") } else { .Ok("outside") }
+}
+
+spec "std/db — the soft-delete stamp is the wall clock" {
+    given "a removal" {
+        then "the stamp lies between the two wall readings around it" {
+            (removal_between() catch _ -> "failed") == "between"
+        }
+    }
+}

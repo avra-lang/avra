@@ -1,0 +1,33 @@
+// `@auto` is set on insert from the program's wall clock, so a stamp lies between
+// two wall readings taken around the insert. A monotonic reading counts from boot
+// and is orders of magnitude below a wall reading, so it fails this check.
+use @std.db.{model}
+use @std.db.error.{ModelError, modeled}
+use @std.sqlite.{Db}
+use @std.time.{Time, now}
+
+@model
+type Note = {
+    id: int = 0,
+    text: string,
+    @auto created: Time,
+}
+
+fn stamp_between() -> Result<string, ModelError> {
+    mut db = modeled(Db.memory())?
+    modeled(Note.create_table(db))?
+    let before = now()
+    let _ = Note { text: "a", created: Time { ns: 0 } }.insert(db)?
+    let after = now()
+    let rows = modeled(Note.all(db))?
+    let stamp = rows[0].created
+    if stamp.ns >= before.ns && stamp.ns <= after.ns { .Ok("between") } else { .Ok("outside") }
+}
+
+spec "std/db — the @auto stamp is the wall clock" {
+    given "an insert" {
+        then "the stamp lies between the two wall readings around it" {
+            (stamp_between() catch _ -> "failed") == "between"
+        }
+    }
+}
