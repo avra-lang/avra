@@ -19,7 +19,7 @@ import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 MODEL = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
-SOCKET = pathlib.Path.home() / ".cache/avra-graph-ml/cascade.sock"
+SOCKET = pathlib.Path(os.environ.get("PLANNER_SOCKET") or pathlib.Path.home() / ".cache/avra-graph-ml/cascade.sock")
 HUB = pathlib.Path.home() / ".cache/avra-graph-ml/hf/hub"
 
 sys.path.insert(0, str(HERE))
