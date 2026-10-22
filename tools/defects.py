@@ -31,6 +31,7 @@ import glob
 import os
 import random
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -204,8 +205,41 @@ def run(avra, verb, package):
     return code, out
 
 
-def timed(avra, verb, package):
-    """(exit, output, seconds) of one run."""
+# A run still going after this many seconds is looked at once while it lives.
+STALL = int(os.environ.get("AVRA_DEFECT_STALL", "10"))
+
+
+def sh_out(argv, limit=40):
+    """The first `limit` lines a diagnostic tool answers, or why it could not run."""
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        return ["(%s: %s)" % (argv[0], e)]
+    return (r.stdout + r.stderr).strip().split("\n")[:limit]
+
+
+def stalled(pid):
+    """What a run past STALL seconds is doing, as report lines: the machine's load, the process
+    group, what each waits on, its open files (a lock or a half-written entry shows here) and its
+    stack (gdb where there is one, `sample` on macOS)."""
+    lines = ["load: " + (open("/proc/loadavg").read().strip() if os.path.exists("/proc/loadavg") else " ".join(sh_out(["uptime"], 1)))]
+    lines += sh_out(["ps", "-o", "pid,ppid,stat,etime,time,command", "-g", str(pid)], 12)
+    if os.path.isdir("/proc/%d" % pid):
+        for name in ("wchan", "stack"):
+            try:
+                lines.append("%s: %s" % (name, open("/proc/%d/%s" % (pid, name)).read().strip()[:300]))
+            except OSError as e:
+                lines.append("%s: (%s)" % (name, e.strerror))
+        lines += ["fd: " + l for l in sh_out(["ls", "-l", "/proc/%d/fd" % pid], 30)]
+        lines += sh_out(["gdb", "-p", str(pid), "-batch", "-ex", "thread apply all bt 25"], 80) if shutil.which("gdb") else ["(no gdb on this machine)"]
+    else:
+        lines += ["fd: " + l for l in sh_out(["lsof", "-p", str(pid)], 30)]
+        lines += sh_out(["sample", str(pid), "2", "-file", "/dev/stdout"], 60)
+    return lines
+
+
+def timed(avra, verb, package, name=""):
+    """(exit, output, seconds) of one run; one past STALL seconds is dumped once while it lives."""
     began = time.time()
     p = subprocess.Popen(
         [avra, verb, package],
@@ -215,7 +249,13 @@ def timed(avra, verb, package):
         start_new_session=True,
     )
     try:
-        out, _ = p.communicate(timeout=TIMEOUT)
+        try:
+            out, _ = p.communicate(timeout=min(STALL, TIMEOUT))
+        except subprocess.TimeoutExpired:
+            if STALL >= TIMEOUT:
+                raise
+            print("defects: STALLED %s (%s) past %ds:\n    %s" % (name, verb, STALL, "\n    ".join(stalled(p.pid))), flush=True)
+            out, _ = p.communicate(timeout=TIMEOUT - STALL)
     except subprocess.TimeoutExpired:
         os.killpg(p.pid, signal.SIGKILL)
         p.communicate()
@@ -267,6 +307,8 @@ def self_test():
     bad, notes = survey(voiced, work, 1)
     assert {b[0] for b in bad} == {"probe"} and all("voice" in b[1] for b in bad) and not notes, (bad, notes)
     assert timings_self_test() == 0, "the timings report failed"
+    dump = stalled(os.getpid())
+    assert dump[0].startswith("load: ") and any("python" in l.lower() or str(os.getpid()) in l for l in dump), dump
     print("defects: self-test passed — a timeout finishing alone stands down, one that hangs twice fails with both durations, a voice still fails, and the slowest, the timings file and the last green seconds hold")
     return 0
 
@@ -365,7 +407,7 @@ def examine(avra, d, k, case, alone, say, count=None):
     for verb in verbs + ["build"]:
         if verb == "build" and not (clean and (not mutant or k % BUILD_EVERY == 0)):
             continue
-        code, out, secs = timed(avra, verb, d)
+        code, out, secs = timed(avra, verb, d, n)
         if count:
             count(n, secs)
         if code == 124:
@@ -442,7 +484,6 @@ def survey(avra, work, jobs, progress=0, show=False, previous=None, taken=None):
 def timings_self_test():
     """A fake `avra` that is slow for some programs and never answers for one: the log must list
     the slowest, the timings file must hold every program, and the timeout must name its last green seconds."""
-    import shutil
     d = tempfile.mkdtemp(prefix="avra-defects-self-")
     try:
         fake = os.path.join(d, "avra")
