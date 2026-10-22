@@ -129,6 +129,16 @@ const sizeBound = (n, axis, parent, parentSize, parentRoom, shrinks) => {
 };
 
 /// Every box's bounds [left, top, width, height] in the page's pre-order, from the node's own `layout`.
+// The share of a container's free room an item's offset carries, as `spanned` in place/solve.av
+// computes it: the free room (`spare`) times the running sum of the distribution's space weights
+// (`spaces_of`) up to the item, over their total. The room is the container's own size less its
+// items, so the container's size bound enters at this share.
+function spare_share(dist, i, n) {
+  const weights = { Start: [], End: [1], Center: [1], SpaceBetween: n < 2 ? [] : [0, ...Array(n - 1).fill(1)], SpaceAround: [1, ...Array(n - 1).fill(2)], SpaceEvenly: Array(n + 1).fill(1) }[dist] ?? [];
+  const full = { Start: 0, End: 1, Center: 2, SpaceBetween: Math.max(n - 1, 0), SpaceAround: 2 * n, SpaceEvenly: n + 1 }[dist] ?? 0;
+  return full === 0 ? 0 : weights.slice(0, i + 1).reduce((a, b) => a + b, 0) / full;
+}
+
 function bounds_of(spec) {
   const out = [];
   const walk = (n, parent, parentPos, parentSize, parentRoom, parentDefinite, before) => {
@@ -145,7 +155,7 @@ function bounds_of(spec) {
       // the free room a distribution cuts is the container's room less EVERY item, so it carries
       // every item's uncertainty, wherever the item stands
       const everyone = dist === "Start" ? 0 : sum(parent.kids.map((k) => sizeBound(k, main, parent, parentSize[main], parentRoom, shrinks)));
-      pos[main] = parentPos[main] + sum(before.map((k) => sizeBound(k, main, parent, parentSize[main], parentRoom, shrinks))) + spaces * SHARE + everyone;
+      pos[main] = parentPos[main] + sum(before.map((k) => sizeBound(k, main, parent, parentSize[main], parentRoom, shrinks))) + spaces * SHARE + everyone + spare_share(dist, index, parent.kids.length) * parentSize[main];
       const align = parent.layout.align ?? "Stretch";
       // a wrapped container shares its spare cross room among its lines, at most one line per item before this one
       const wraps = (parent.layout.wrap ?? "NoWrap") !== "NoWrap";
