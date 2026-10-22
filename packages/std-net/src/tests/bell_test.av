@@ -1,7 +1,7 @@
 // A BELL IS A GATE: every waiter wakes at one ring, a wait nobody rings
 // ends at its own timeout or its task's `within`, a ring nobody waits
-// for is kept by nobody, a negative budget is spent and a budget past
-// spelling waits, and every copy is the one bell.
+// for is kept by nobody, a negative budget is spent and a budget at the
+// farthest spelling waits, and every copy is the one bell.
 use @std.net.{Bell, bell}
 use @std.time.{ms, sleep, now_ms}
 
@@ -94,11 +94,13 @@ fn bl_made() -> string {
     "${waiter.await} ${bl_waited(b, 20)}"
 }
 
-/// A budget past what nanoseconds spell is a wait for ever, never one
-/// already due: its waiter is still parked when the ring comes.
+/// A budget at the farthest a millisecond span reaches is a wait for
+/// ever, never one already due: its waiter is still parked when the ring
+/// comes. `9223372036854` ms is the largest whole-millisecond budget
+/// `ms()` holds — 9223372036854000000 ns, about 292 years.
 fn bl_huge() -> string {
     let b = Bell {}
-    let waiter = spawn bl_waited(b, 9000000000000000)
+    let waiter = spawn bl_waited(b, 9223372036854)
     sleep(ms(20))
     let counted = b.waiting.get()
     b.ring()
@@ -185,7 +187,7 @@ spec "std.net bell" {
     }
     given "copies and budgets" {
         then "a bell copied twice is one wake set" { bl_one_wake_set() == "3 3 3 | woken woken woken | 1" }
-        then "a budget past spelling in nanoseconds waits" { bl_huge() == "1 woken" }
+        then "a budget at the farthest nanosecond spelling waits" { bl_huge() == "1 woken" }
     }
     given "degenerate budgets and late waiters" {
         then "a zero budget times out at once" { bl_zero() == "timed out true" }

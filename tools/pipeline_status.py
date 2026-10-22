@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# tool-witness: --self-test
 """THE ONE-LINE BLOCKER: why nothing is landing, in a handful of lines.
 
 Many different causes read as one symptom — "nothing lands" — and each

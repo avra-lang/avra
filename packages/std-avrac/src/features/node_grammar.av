@@ -18,7 +18,7 @@
 //! `Field.kind` answers "is this a list", "is this text-filled"
 //! structurally, so the answer holds under renaming and cannot forget
 //! the next declared type the way a string table would.
-use core.{flatten, joined, PayloadRow, row_for, binop_of, facet_table}
+use core.{flatten, joined, PayloadRow, row_for, binop_of, facet_table, has_anchor, anchor_word}
 use @std.meta.{Field, Kind}
 use @std.grammar.{
     Grammar,
@@ -43,8 +43,25 @@ export type NodeBinding = { g: Grammar, defects: List<Diagnostic> }
 export fn bind_nodes(g: Grammar, rows: List<PayloadRow>) -> NodeBinding {
     NodeBinding {
         g: g with { rules: [r with { body: bound_alt(r.name, r.body, rows) } for r in g.rules] },
-        defects: flatten([alt_defects(r.name, r.body, rows) for r in g.rules]),
+        defects: flatten([alt_defects(r.name, r.body, rows) for r in g.rules])
+            .concat(flatten([anchor_defects(r) for r in rows])),
     }
+}
+
+/// A node's ANCHOR, judged where it is declared: ONE payload is the
+/// place a node begins, and only a payload that carries a written place
+/// at all — a `bool` is a presence, never a span.
+fn anchor_defects(row: PayloadRow) -> List<Diagnostic> {
+    let anchored = [p for p in row.payloads if has_anchor(p)]
+    [anchor_takes_nothing(row) for p in anchored if argued(p)]
+        .concat([two_anchors(row, anchored[0].name, p.name) for p in anchored.drop(1)])
+        .concat([anchor_is_presence(row, p) for p in anchored if is_bool(p.kind)])
+}
+
+/// Whether the mark was written with an argument.
+fn argued(p: Field) -> bool {
+    let m? = p.marks.find(it.name == anchor_word) else { return false }
+    !m.args.is_empty()
 }
 
 /// A rule body's branches, each judged by ITS OWN labels — the top of
@@ -234,10 +251,30 @@ fn judged(
     top: bool,
 ) -> List<Diagnostic> {
     stranger_defects(rname, s, row, fixed, top)
+        .concat(anchor_stated_defects(rname, s, row, fixed))
         .concat(unfilled_defects(rname, s, row, fixed))
         .concat(shape_defects(rname, s, row, fixed))
         .concat(truth_defects(rname, s, row, fixed))
         .concat(nested_defects(rname, s, row, fixed, rows))
+}
+
+/// An anchor names a payload the rule CAPTURES: a term the rule states
+/// was never written, so it has no place for the node to begin at — a
+/// stated word that IS the branch's own label is that capture, not a
+/// value.
+fn anchor_stated_defects(rname: string, s: Seq, row: PayloadRow, fixed: List<Fixed>) -> List<
+    Diagnostic,
+> {
+    let anchor? = row.payloads.find(has_anchor(it)) else { return [] }
+    let held? = fixed.find(it.name == anchor.name) else { return [] }
+    if reads_a_capture(held.stated(), s) { return [] }
+    [node_refusal(rname, anchor_stated(row, anchor.name))]
+}
+
+/// Whether a stated term is the branch's own capture — a word the
+/// branch labels reads as that label's value.
+fn reads_a_capture(t: Term, s: Seq) -> bool {
+    match t { .Text(text) -> s.labels().contains(text), .Node(_) or .List(_) -> false }
 }
 
 /// Each node a stated payload builds in place: it must be the kind of value
@@ -519,6 +556,27 @@ fn truth_from_node(row: PayloadRow, p: Field) -> string {
 fn names_no_operator(row: PayloadRow, word: string) -> string {
     "builds `${row.owner}.${row.variant}` for the word `${word}`, which spells no operator"
 }
+
+fn anchor_stated(row: PayloadRow, name: string) -> string {
+    "states `${name}`, which anchors `${node_name(row)}` — an anchor names a payload the rule CAPTURES"
+}
+
+fn anchor_takes_nothing(row: PayloadRow) -> Diagnostic {
+    defect(
+        node_name(row),
+        "`@anchor` takes no argument — the payload it marks IS the place a node begins",
+    )
+}
+
+fn two_anchors(row: PayloadRow, first: string, second: string) -> Diagnostic {
+    defect(node_name(row), "anchored at `${first}` and `${second}` — a node begins in ONE place")
+}
+
+fn anchor_is_presence(row: PayloadRow, p: Field) -> Diagnostic {
+    defect(node_name(row), "anchored at `${p.name}: ${p.ty}` — a presence is no place to begin")
+}
+
+fn node_name(row: PayloadRow) -> string { "${row.owner}.${row.variant}" }
 
 fn node_refusal(rname: string, message: string) -> Diagnostic {
     defect(rname, "rule `${rname}` ${message}")

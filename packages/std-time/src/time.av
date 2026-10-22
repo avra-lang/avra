@@ -16,6 +16,7 @@
 //! suspend falls due late on the first and at once on the second.
 use @std.errors.{Frame}
 use @std.meta.{sealed}
+use @std.text.{codepoints, parse_int, repeat}
 
 extern fn avra_now_ns() -> int
 extern fn avra_time_wall_s() -> int
@@ -24,8 +25,10 @@ extern fn avra_wait_until(at_ns: int, arm: int, member: int)
 extern fn avra_wait_park() -> int
 extern fn avra_trap(message: string)
 
-/// A span of time, in whole milliseconds.
-export type Duration = { ms: int }
+/// A span of time, in nanoseconds. SEALED: `ms`, `secs` and `mins` are
+/// its doors, and a span past the range they hold traps.
+@sealed
+export type Duration = { ns: int }
 
 /// The deadline a block ran past: `after` is the span it was given
 /// and `at` the frames the task stood in when it fired.
@@ -39,15 +42,21 @@ export fn late<T>(t: TimedOut) -> Result<T, TimedOut> {
 }
 
 export fn ms(n: int) -> Duration {
-    Duration { ms: n }
+    scaled(n, ns_per_ms, "ms")
 }
 
 export fn secs(n: int) -> Duration {
-    Duration { ms: n * 1000 }
+    scaled(n, 1000000000, "secs")
 }
 
 export fn mins(n: int) -> Duration {
-    Duration { ms: n * 60000 }
+    scaled(n, 60000000000, "mins")
+}
+
+/// `n` units of `unit` nanoseconds; a count past the range traps.
+fn scaled(n: int, unit: int, word: string) -> Duration {
+    if n > farthest / unit || n < 0 - farthest / unit { avra_trap("a span of ${n} ${word} is past the range of @std.time.Duration") }
+    Duration { ns: n * unit }
 }
 
 /// The monotonic clock, in milliseconds since an origin nobody is
@@ -84,20 +93,38 @@ export fn wall_secs() -> int {
 /// with none simply waits. Under a millisecond it lets every other
 /// ready task run once, then goes on.
 export fn sleep(d: Duration) {
-    avra_fiber_sleep(d.ms)
+    avra_fiber_sleep(d.ms())
 }
 
 impl Duration {
     fn plus(other: Duration) -> Duration {
-        Duration { ms: self.ms + other.ms }
+        Duration { ns: add_ns(self.ns, other.ns) }
+    }
+    /// The whole milliseconds, rounded down: the sub-millisecond part is
+    /// dropped, so `ms(1)` less one nanosecond reads `0` and one
+    /// nanosecond before zero reads `-1`.
+    fn ms() -> int {
+        floor_div(self.ns, ns_per_ms)
     }
     fn is_zero() -> bool {
-        self.ms == 0
+        self.ns == 0
     }
     /// The span as a human reads it: `340ms`, `1.2s`, `2m05s`.
     fn text() -> string {
-        duration_text(self.ms)
+        duration_text(self.ms())
     }
+}
+
+/// `a + b` in nanoseconds; a result past the int range traps.
+fn add_ns(a: int, b: int) -> int {
+    if b > 0 && a > farthest - b || b < 0 && a < 0 - farthest - 1 - b { avra_trap(out_of_range("a sum of spans")) }
+    a + b
+}
+
+/// `a - b` in nanoseconds; a result past the int range traps.
+fn sub_ns(a: int, b: int) -> int {
+    if b < 0 && a > farthest + b || b > 0 && a < 0 - farthest - 1 + b { avra_trap(out_of_range("a difference of instants")) }
+    a - b
 }
 
 /// Milliseconds as text, at the unit a human would pick.
@@ -115,16 +142,6 @@ export fn duration_text(total: int) -> string {
 const farthest: int = 9223372036854775807
 
 const ns_per_ms: int = 1000000
-
-/// `d` in nanoseconds — the largest count there is, either way, when
-/// that is past spelling.
-fn span_ns(d: Duration) -> int {
-    when {
-        d.ms > farthest / ns_per_ms -> farthest
-        d.ms < 0 - farthest / ns_per_ms -> 0 - farthest
-        _ -> d.ms * ns_per_ms
-    }
-}
 
 /// The instant `ns` after `at`: never before the clock's origin, and
 /// the farthest when that is past spelling.
@@ -154,13 +171,13 @@ export type Deadline = { at: int }
 /// The instant `d` from now. Bound once, it is one budget for
 /// everything that waits on it.
 export fn after(d: Duration) -> Deadline {
-    Deadline { at: later(avra_now_ns(), span_ns(d)) }
+    Deadline { at: later(avra_now_ns(), d.ns) }
 }
 
 impl Deadline {
     /// The instant `span` after this one.
     fn plus(span: Duration) -> Deadline {
-        Deadline { at: later(self.at, span_ns(span)) }
+        Deadline { at: later(self.at, span.ns) }
     }
 
     fn due() -> bool {
@@ -171,13 +188,14 @@ impl Deadline {
     /// exactly when it is due.
     fn left() -> Duration {
         let ns = self.at - avra_now_ns()
-        Duration { ms: if ns <= 0 { 0 } else { (ns - 1) / ns_per_ms + 1 } }
+        Duration { ns: if ns <= 0 { 0 } else { ((ns - 1) / ns_per_ms + 1) * ns_per_ms } }
     }
 
-    /// How far past it the clock is — zero until it is due.
+    /// How far past it the clock is, in whole milliseconds rounded down —
+    /// zero until it is due.
     fn late() -> Duration {
         let ns = avra_now_ns() - self.at
-        Duration { ms: if ns <= 0 { 0 } else { ns / ns_per_ms } }
+        Duration { ns: if ns <= 0 { 0 } else { ns / ns_per_ms * ns_per_ms } }
     }
 
     /// The calling task parked until the instant, the others running
@@ -211,8 +229,8 @@ export type Every = { period: Duration, next: Cell<int>, skipped: Cell<int> }
 /// after the last DUE instant, whatever was done between them. A period
 /// of nothing traps.
 export fn every(d: Duration) -> Every {
-    if d.ms <= 0 { avra_trap("a period of ${d.ms} ms is no period — `every` takes one longer than nothing") }
-    Every { period: d, next: Cell.new(later(avra_now_ns(), span_ns(d))), skipped: Cell.new(0) }
+    if d.ns <= 0 { avra_trap("a period of ${d.ms()} ms is no period — `every` takes one longer than nothing") }
+    Every { period: d, next: Cell.new(later(avra_now_ns(), d.ns)), skipped: Cell.new(0) }
 }
 
 impl Every {
@@ -222,7 +240,7 @@ impl Every {
     fn passed() -> bool {
         let behind = avra_now_ns() - self.next.get()
         if behind < 0 { return false }
-        let period = span_ns(self.period)
+        let period = self.period.ns
         let gone = behind / period
         self.skipped.set(self.skipped.get() + gone)
         self.next.set(later(self.next.get(), later(gone * period, period)))
@@ -240,4 +258,139 @@ impl Every {
         parked_until(self.next.get())
         let _ = self.passed()
     }
+}
+
+// ── Instants ────────────────────────────────────────────────────
+
+/// An instant on the wall clock: nanoseconds since 1970-01-01T00:00:00Z.
+/// Its range is 1677 to 2262; a span past it is refused, never wrapped.
+export type Time = { ns: int }
+
+/// 1970-01-01T00:00:00Z.
+export fn epoch() -> Time {
+    Time { ns: 0 }
+}
+
+/// Seconds past the epoch the range holds, as a magnitude.
+const reach: int = 9223372036
+
+impl Time {
+    /// This instant moved by `d`; a move past the range traps.
+    fn plus(d: Duration) -> Time {
+        Time { ns: add_ns(self.ns, d.ns) }
+    }
+    /// The span from `earlier` to this instant, exact; two instants more
+    /// than the range apart trap.
+    fn minus(earlier: Time) -> Duration {
+        Duration { ns: sub_ns(self.ns, earlier.ns) }
+    }
+    fn before(other: Time) -> bool {
+        self.ns < other.ns
+    }
+    fn after(other: Time) -> bool {
+        self.ns > other.ns
+    }
+    /// The instant as ISO-8601 UTC, with all nine fraction digits:
+    /// `YYYY-MM-DDTHH:MM:SS.sssssssssZ`.
+    fn iso() -> string {
+        let secs = floor_div(self.ns, 1000000000)
+        let part = self.ns % 1000000000
+        let frac = if part < 0 { part + 1000000000 } else { part }
+        let days = floor_div(secs, 86400)
+        let of_day = secs - days * 86400
+        let date = civil(days)
+        "${digits(date.y, 4)}-${digits(date.m, 2)}-${digits(date.d, 2)}T${digits(of_day / 3600, 2)}:${digits(of_day % 3600 / 60, 2)}:${digits(of_day % 60, 2)}.${digits(frac, 9)}Z"
+    }
+}
+
+/// The instant an ISO-8601 UTC text names, in the shape `iso` writes
+/// with the fraction optional (up to nine digits). Null for any other
+/// text, including an out-of-range date or a zone other than `Z`.
+export fn parse_iso(s: string) -> Time? {
+    let b = s.bytes()
+    if b.length < 20 || b.length > 30 || b.at(b.length - 1) != 90 { return null }
+    if b.at(4) != 45 || b.at(7) != 45 || b.at(10) != 84 || b.at(13) != 58 || b.at(16) != 58 { return null }
+    let y = field(b, 0, 4)?
+    let m = field(b, 5, 7)?
+    let d = field(b, 8, 10)?
+    let h = field(b, 11, 13)?
+    let mi = field(b, 14, 16)?
+    let sec = field(b, 17, 19)?
+    let frac = fraction(b)?
+    if m < 1 || m > 12 || d < 1 || d > days_in(m, y) || h > 23 || mi > 59 || sec > 59 { return null }
+    let secs = days_from(y, m, d) * 86400 + h * 3600 + mi * 60 + sec
+    if secs > reach || secs < 0 - reach - 1 { return null }
+    Time {
+        ns: if secs < 0 { (secs + 1) * 1000000000 + (frac - 1000000000) } else { secs * 1000000000 + frac },
+    }
+}
+
+/// The nanoseconds a `.` and its digits name, nine places, or zero when
+/// the text has no fraction; null when the text is not exactly that.
+fn fraction(b: Bytes) -> int? {
+    if b.length == 20 { return 0 }
+    if b.at(19) != 46 || b.length == 20 { return null }
+    let digits = b.slice(20, b.length - 1).text()?
+    if digits.length > 9 { return null }
+    let n = parse_int(digits)?
+    n * pow10(9 - digits.length)
+}
+
+fn field(b: Bytes, from: int, to: int) -> int? {
+    let text = b.slice(from, to).text()?
+    if !codepoints(text).all(it >= 48 && it <= 57) { return null }
+    parse_int(text)
+}
+
+fn pow10(n: int) -> int {
+    if n == 0 { 1 } else { 10 * pow10(n - 1) }
+}
+
+fn floor_div(a: int, b: int) -> int {
+    let q = a / b
+    if a % b != 0 && a < 0 { q - 1 } else { q }
+}
+
+fn days_in(m: int, y: int) -> int {
+    when {
+        m == 2 -> if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 29 } else { 28 }
+        m == 4 || m == 6 || m == 9 || m == 11 -> 30
+        _ -> 31
+    }
+}
+
+/// Days since 1970-01-01 of a civil date (proleptic Gregorian).
+fn days_from(y: int, m: int, d: int) -> int {
+    let yy = if m <= 2 { y - 1 } else { y }
+    let era = floor_div(yy, 400)
+    let yoe = yy - era * 400
+    let mp = if m > 2 { m - 3 } else { m + 9 }
+    let doy = (153 * mp + 2) / 5 + d - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    era * 146097 + doe - 719468
+}
+
+/// The civil date of a day count since 1970-01-01.
+fn civil(days: int) -> Civil {
+    let z = days + 719468
+    let era = floor_div(z, 146097)
+    let doe = z - era * 146097
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp = (5 * doy + 2) / 153
+    let d = doy - (153 * mp + 2) / 5 + 1
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 }
+    Civil { y: y, m: m, d: d }
+}
+
+type Civil = { y: int, m: int, d: int }
+
+fn digits(n: int, width: int) -> string {
+    let t = "${n}"
+    repeat("0", width - t.length) + t
+}
+
+fn out_of_range(what: string) -> string {
+    "${what} is past the int range of nanoseconds: 1677 to 2262 for instants, about 292 years for spans"
 }

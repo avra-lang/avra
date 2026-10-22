@@ -1,0 +1,185 @@
+//! The difference between the shape a table is recorded under and the shape
+//! its model declares, as a PLAN: the steps that apply by themselves and the
+//! moving changes that need an author. Strings in, plan out — nothing here
+//! opens a database.
+//!
+//! GROWTH applies by itself: a model with no table, a new column that is
+//! nullable or that carries a default, a column renamed under a hint.
+//! MOVING never does: a dropped column, a changed type, a tightened or
+//! loosened NOT NULL, a changed default, link or key, a new column that must
+//! hold a value yet has none to give the rows already there, and a new
+//! `UNIQUE` (the rows already there may break it — a runner that has looked at
+//! them may call it growth).
+use shape.{ColumnFacts, Shape, column_ddl, create_sql, quoted}
+
+/// A column whose name changed: the old name, the new one.
+export type Renamed = { from: string, to: string }
+
+/// What applies without anyone's say.
+export enum Step {
+    Create(shape: Shape)
+    Add(column: ColumnFacts)
+    Rename(from: string, to: string)
+}
+
+/// What an author must decide.
+export enum Moving {
+    Dropped(column: string)
+    Retyped(column: string, was: string, now: string)
+    Rekeyed(column: string)
+    Required(column: string)
+    Tightened(column: string)
+    Loosened(column: string)
+    Uniqued(column: string)
+    Ununiqued(column: string)
+    Defaulted(column: string)
+    Relinked(column: string)
+}
+
+/// One table's migration: what grows and what moves.
+export type Plan = { name: string, steps: List<Step>, moving: List<Moving> }
+
+/// Whether a plan applies by itself.
+export fn grows_alone(p: Plan) -> bool { p.moving.is_empty() }
+
+/// The plan taking a table from its recorded shape (absent: no table yet) to
+/// its declared one. A rename applies only where the hint names a recorded
+/// column and the declared column carries the new name.
+export fn diff(stored: Shape?, declared: Shape, renames: List<Renamed>) -> Plan {
+    let had? = stored else { return Plan { name: declared.name, steps: [.Create(declared)], moving: [] } }
+    let pairs = [paired(had, d, renames) for d in declared.columns]
+    Plan {
+        name: declared.name,
+        steps: [step for p in pairs for step in steps_of(p)],
+        moving: [m for p in pairs for m in moves_of(p)].concat(dropped(had, pairs)),
+    }
+}
+
+/// A declared column and the recorded one it continues, if any.
+type Pair = { now: ColumnFacts, was: ColumnFacts?, renamed: bool }
+
+fn paired(had: Shape, d: ColumnFacts, renames: List<Renamed>) -> Pair {
+    let hint = renames.find(it.to == d.name && has(had, it.from))
+    let was = had.columns.find(it.name == hint?.from ?? d.name)
+    Pair { now: d, was: was, renamed: hint != null }
+}
+
+fn has(s: Shape, column: string) -> bool { s.columns.any(it.name == column) }
+
+fn steps_of(p: Pair) -> List<Step> {
+    let was? = p.was else { return if grows(p.now) { [.Add(p.now)] } else { [] } }
+    if p.renamed { [.Rename(was.name, p.now.name)] } else { [] }
+}
+
+/// Whether a column new to a table can be added to the rows already there:
+/// it may be empty for them, or it states what they hold. A key, a unique
+/// or a link that must hold a value is not that.
+fn grows(c: ColumnFacts) -> bool {
+    !c.key && !c.unique && (!c.not_null || c.default != null && c.refs == null)
+}
+
+fn moves_of(p: Pair) -> List<Moving> {
+    let was? = p.was else { return if grows(p.now) { [] } else { [new_trouble(p.now)] } }
+    changes(was, p.now)
+}
+
+/// Why a new column cannot simply be added.
+fn new_trouble(c: ColumnFacts) -> Moving {
+    when {
+        c.key -> .Rekeyed(c.name)
+        c.unique -> .Uniqued(c.name)
+        _ -> .Required(c.name)
+    }
+}
+
+/// What differs between a recorded column and the declared one it continues.
+fn changes(was: ColumnFacts, now: ColumnFacts) -> List<Moving> {
+    let n = now.name
+    let found: List<Moving?> = [
+        if was.sql_type != now.sql_type { .Retyped(n, was.sql_type, now.sql_type) } else { null },
+        if was.key != now.key { .Rekeyed(n) } else { null },
+        if !was.not_null && now.not_null { .Tightened(n) } else { null },
+        if was.not_null && !now.not_null { .Loosened(n) } else { null },
+        if !was.unique && now.unique { .Uniqued(n) } else { null },
+        if was.unique && !now.unique { .Ununiqued(n) } else { null },
+        if was.default != now.default { .Defaulted(n) } else { null },
+        if was.refs != now.refs || was.on_delete != now.on_delete { .Relinked(n) } else { null },
+    ]
+    [m! for m in found if m != null]
+}
+
+/// The recorded columns no declared column continues.
+fn dropped(had: Shape, pairs: List<Pair>) -> List<Moving> {
+    [.Dropped(c.name) for c in had.columns if !pairs.any(it.was != null && it.was!.name == c.name)]
+}
+
+/// The statements applying a plan's steps, in order.
+export fn statements(p: Plan) -> List<string> { [statement(p.name, s) for s in p.steps] }
+
+fn statement(name: string, s: Step) -> string {
+    match s {
+        .Create(shape) -> create_sql(shape.name, shape.columns),
+        .Add(c) -> "ALTER TABLE ${quoted(name)} ADD COLUMN ${column_ddl(c)}",
+        .Rename(from, to) -> "ALTER TABLE ${quoted(name)} RENAME COLUMN ${quoted(from)} TO ${quoted(to)}",
+    }
+}
+
+/// A plan's moving changes in words, one per change.
+export fn refusals(p: Plan) -> List<string> { [told(p.name, m) for m in p.moving] }
+
+// ── Voices ──────────────────────────────────────────────────────
+
+fn told(name: string, m: Moving) -> string {
+    match m {
+        .Dropped(c) -> dropped_voice(name, c),
+        .Retyped(c, was, now) -> retyped_voice(name, c, was, now),
+        .Rekeyed(c) -> rekeyed_voice(name, c),
+        .Required(c) -> required_voice(name, c),
+        .Tightened(c) -> tightened_voice(name, c),
+        .Loosened(c) -> loosened_voice(name, c),
+        .Uniqued(c) -> uniqued_voice(name, c),
+        .Ununiqued(c) -> ununiqued_voice(name, c),
+        .Defaulted(c) -> defaulted_voice(name, c),
+        .Relinked(c) -> relinked_voice(name, c),
+    }
+}
+
+fn dropped_voice(name: string, c: string) -> string {
+    "`${name}.${c}` is recorded and no longer declared — dropping a column loses its values; say `@renamed_from(\"${c}\")` on the field that continues it, or migrate by hand"
+}
+
+fn retyped_voice(name: string, c: string, was: string, now: string) -> string {
+    "`${name}.${c}` was ${was} and is declared ${now} — a type change needs a migration over the rows, never a guessed cast"
+}
+
+fn rekeyed_voice(name: string, c: string) -> string {
+    "`${name}.${c}` changes whether it is the table's key — a table's key cannot be altered in place"
+}
+
+fn required_voice(name: string, c: string) -> string {
+    "`${name}.${c}` is new and must hold a value, and the rows already there have none — give it a default, make it optional, or migrate by hand"
+}
+
+fn tightened_voice(name: string, c: string) -> string {
+    "`${name}.${c}` was optional and is required now — rows holding nothing in it would break the table; fill them, then migrate"
+}
+
+fn loosened_voice(name: string, c: string) -> string {
+    "`${name}.${c}` was required and is optional now — a column cannot be loosened in place; rebuild the table"
+}
+
+fn uniqued_voice(name: string, c: string) -> string {
+    "`${name}.${c}` is new and unique — the rows already there may repeat a value; it applies only when they are known to be clean"
+}
+
+fn ununiqued_voice(name: string, c: string) -> string {
+    "`${name}.${c}` was unique and is not now — a constraint cannot be dropped in place; rebuild the table"
+}
+
+fn defaulted_voice(name: string, c: string) -> string {
+    "`${name}.${c}` changes its default — a default cannot be altered in place; rebuild the table"
+}
+
+fn relinked_voice(name: string, c: string) -> string {
+    "`${name}.${c}` changes the table it points at or what removing that row does — a link cannot be altered in place"
+}

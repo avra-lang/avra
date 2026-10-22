@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by make store-witnesses
 # `MEMCAP=<memcap.sh> sh tools/witness_settled_wire.sh`
 #
 # A HELD CONST'S VALUE ROUND-TRIPS THE WIRE, for the three shapes a

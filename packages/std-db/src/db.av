@@ -39,10 +39,12 @@ use @std.meta.{
     refuse_as_at,
 }
 use @std.errors.{Loc}
-use @std.sqlite.{Db, SqlValue, sql, prepared}
+use @std.sqlite.{Db, Row, SqlValue, sql, prepared}
 use @std.sqlite.error.{SqlError}
 use @std.validate.{Checked, Issues, checker, decoder, stripped}
 use @std.time.{now_ms}
+use apply.{MigrateError, grown, lifted}
+use shape.{ColumnFacts, create_sql, quoted, shape_text}
 use error.{ModelError, UniqueField, or_attributed, or_invalid, modeled, parent_of, removed}
 
 /// The phantom a one-to-many relation is held as. `cards: Many<Card>`
@@ -66,8 +68,9 @@ export trait Model {
     /// The marks this derive reads: `@unique` makes a column unique,
     /// `@soft_delete` makes `remove` keep the row, `@auto` makes a column
     /// the database's to set, `@cascade` and `@set_null` say what removing a
-    /// parent does to a child, `@via(field)` names a `Many`'s link.
-    static fn marks(t: Type) -> List<string> { ["unique", "soft_delete", "auto", "cascade", "set_null", "via"] }
+    /// parent does to a child, `@via(field)` names a `Many`'s link, and
+    /// `@renamed_from("old")` says a field continues a column of that name.
+    static fn marks(t: Type) -> List<string> { ["unique", "soft_delete", "auto", "cascade", "set_null", "via", "renamed_from"] }
 }
 
 /// `@model` — the library's own name for `@derive(Model)`, so the
@@ -86,7 +89,6 @@ export fn model(t: Type) -> Declared {
 fn shape_problems(t: Type) -> List<Diagnostic> {
     if t.variants.length > 0 { return [enum_not_supported(t)] }
     if !has_id_field(t) { return [no_id_field(t)] }
-    if t.fields.length > MAX_FIELDS { return [too_many_fields(t)] }
     [soft_delete_kind(f) for f in t.fields if is_mark(f, "soft_delete") && !nullable_int(f.kind)]
         .concat([auto_kind(f) for f in t.fields if is_mark(f, "auto") && !plain_int(f.kind)])
 }
@@ -106,25 +108,13 @@ fn plain_int(k: Kind) -> bool {
     match k { .Int -> true, rest -> false }
 }
 
-/// The widest row this derive can build a constructor for — `row_ctor`
-/// hand-spells one arm per count, the same shape `core/rebuild_derive.av`
-/// already carries for the identical reason (no seat splices a struct
-/// literal's field list); the flagged fifth argument, "the compiler
-/// wants a construct the language lacks," names this site too.
-const MAX_FIELDS: int = 6
-
 /// The same question `shape_problems` answers as diagnostics, asked
 /// here as a bool: `generated` builds NOTHING over a shape this
 /// fails, rather than an `impl` whose every method mistypes against a
 /// shape it was never built for. `shape_problems` is what SPEAKS the
 /// refusal; this is what stops a second, silent, unrelated pile of
 /// errors from speaking over it.
-fn shape_ok(t: Type) -> bool {
-    t.variants.is_empty() &&
-        has_id_field(t) &&
-        t.fields.length <= MAX_FIELDS &&
-        shape_problems(t).is_empty()
-}
+fn shape_ok(t: Type) -> bool { t.variants.is_empty() && has_id_field(t) && shape_problems(t).is_empty() }
 
 /// The annotations a model owns — its marks and its own — which are no
 /// rule of the validation it brings.
@@ -162,19 +152,33 @@ fn generated(t: Type) -> Decls {
                 if (db.scalar(sql(${literal(shape_column_probe_sql())}))?).int()? == 0 {
                     let _ = db.run(sql(${literal(shape_column_add_sql())}))?
                 }
+                if (db.scalar(sql(${literal(owner_column_probe_sql())}))?).int()? == 0 {
+                    let _ = db.run(sql(${literal(owner_column_add_sql())}))?
+                }
                 let claim = db.first(sql(${literal(claim_select_sql())}, [.Text(${literal(table_name_of(t))})]))?
                 match claim {
                     null -> {
-                        let _ = db.run(sql(${literal(claim_insert_sql())}, [.Text(${literal(table_name_of(t))}), .Text(${literal(declared_at_of(t))}), .Text(${literal(shape_text_of(t))})]))?
+                        let _ = db.run(sql(${literal(claim_insert_sql())}, [.Text(${literal(table_name_of(t))}), .Text(${literal(declared_at_of(t))}), .Text(${literal(shape_text_of(t))}), .Text(${literal(owner_of(t))})]))?
                     }
                     row? -> {
-                        let claimed_by = row.text(0)?
-                        if claimed_by != ${literal(declared_at_of(t))} {
-                            fail SqlError.defect(${literal(collision_message(t))} + claimed_by)
+                        let owner = text_or_null(row, 0)
+                        let shape = text_or_null(row, 1)
+                        if owner == null && (shape == null || shape == ${literal(shape_text_of(t))}) {
+                            let _ = db.run(sql(${literal(claim_adopt_sql())}, [.Text(${literal(owner_of(t))}), .Text(${literal(table_name_of(t))})]))?
+                        } else if owner != ${literal(owner_of(t))} {
+                            fail SqlError.defect(${literal(collision_message(t))} + (owner ?? shape_conflict_word()))
                         }
                     }
                 }
                 db.run(sql(${literal(create_table_sql_of(t))}))
+            }
+
+            /// The table made if it is not there, and grown to this model's
+            /// shape if it is; a change that moves is refused with its words.
+            /// Answers how many steps it took.
+            static fn migrate(mut db: Db) -> Result<int, MigrateError> {
+                let _ = lifted(${name(t.name)}.create_table(db))?
+                grown(db, ${name(t.name)}.shape(), [..${renamed_to(t)}], [..${renamed_from(t)}])
             }
 
             fn insert(mut db: Db) -> Result<${t}, ModelError> {
@@ -284,16 +288,14 @@ fn inserted_row(t: Type) -> Code {
 /// row. A soft-delete model's reads skip what was removed. A nullable
 /// field filters by its value; null names no filter.
 fn where_decl(t: Type) -> Decls {
-    let fs = stored(t)
-    match fs.length {
-        1 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        2 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}, ${fs[1].name}: ${param_type(t, fs[1])} = ${param_default(fs[1])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        3 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}, ${fs[1].name}: ${param_type(t, fs[1])} = ${param_default(fs[1])}, ${fs[2].name}: ${param_type(t, fs[2])} = ${param_default(fs[2])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        4 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}, ${fs[1].name}: ${param_type(t, fs[1])} = ${param_default(fs[1])}, ${fs[2].name}: ${param_type(t, fs[2])} = ${param_default(fs[2])}, ${fs[3].name}: ${param_type(t, fs[3])} = ${param_default(fs[3])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        5 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}, ${fs[1].name}: ${param_type(t, fs[1])} = ${param_default(fs[1])}, ${fs[2].name}: ${param_type(t, fs[2])} = ${param_default(fs[2])}, ${fs[3].name}: ${param_type(t, fs[3])} = ${param_default(fs[3])}, ${fs[4].name}: ${param_type(t, fs[4])} = ${param_default(fs[4])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        6 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}, ${fs[1].name}: ${param_type(t, fs[1])} = ${param_default(fs[1])}, ${fs[2].name}: ${param_type(t, fs[2])} = ${param_default(fs[2])}, ${fs[3].name}: ${param_type(t, fs[3])} = ${param_default(fs[3])}, ${fs[4].name}: ${param_type(t, fs[4])} = ${param_default(fs[4])}, ${fs[5].name}: ${param_type(t, fs[5])} = ${param_default(fs[5])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        rest -> quote { static fn a_model_with_more_than_six_fields_needs_a_wider_where() { } },
-    }
+    let seats = [where_seat(t, f) for f in stored(t)]
+    quote { static fn where(db: Db, ..${seats}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } }
+}
+
+/// One filter seat — the shape the parameter list splices, its own name
+/// and type holes read off the field.
+fn where_seat(t: Type, f: Field) -> Decls {
+    quote { fn _(${f.name}: ${param_type(t, f)} = ${param_default(f)}) {} }
 }
 
 /// A filter's seat. A column that cannot hold null filters by its value,
@@ -402,6 +404,19 @@ fn many_child(f: Field) -> string? {
         .Named(n, args) -> if n == "Many" && args.length == 1 { args[0].spelled() } else { null },
         rest -> null,
     }
+}
+
+/// The columns a `@renamed_from("old")` field continues, and the names they had:
+/// two lists of one length, a column and its old name at each index.
+fn renamed_to(t: Type) -> List<Code> { [literal(column_of(f)) for f in stored(t) if old_name(f) != null] }
+
+fn renamed_from(t: Type) -> List<Code> { [literal(old_name(f)!) for f in stored(t) if old_name(f) != null] }
+
+/// The name a field's column had before, as `@renamed_from("name")` says it.
+fn old_name(f: Field) -> string? {
+    let mark? = f.marks.find(it.name == "renamed_from") else { return null }
+    let word? = mark.args.first() else { return null }
+    if word.starts_with("\"") && word.ends_with("\"") && word.length >= 2 { word.substring(1, word.length - 1) } else { word }
 }
 
 /// The child's field that links back: `@via(field)` when written, else the
@@ -539,15 +554,6 @@ fn first_field_words(t: Type) -> string {
     "declares `${t.fields[0].name}: ${t.fields[0].ty}` first"
 }
 
-fn too_many_fields(t: Type) -> Diagnostic {
-    refuse_as_at(
-        "too_many_fields",
-        t.at,
-        "`@model` constructs a row from at most ${MAX_FIELDS} fields, and `${t.name}` has ${t.fields.length}",
-        "split `${t.name}` into a model and a related type, or narrow it to ${MAX_FIELDS} fields",
-    )
-}
-
 fn soft_delete_kind(f: Field) -> Diagnostic {
     refuse_as_at(
         "soft_delete_kind",
@@ -570,11 +576,6 @@ fn auto_kind(f: Field) -> Diagnostic {
 // derive time, never a quote hole (a run of columns has no expression
 // position to splice into; a string is just a value). ──
 
-/// Every identifier this derive writes into SQL text is double-quoted,
-/// unconditionally — a field or type named after a SQL keyword
-/// (`order`, `group`, `table`) is a real Avra name and must stay one.
-fn quoted(name: string) -> string { "\"${name}\"" }
-
 fn table_name_of(t: Type) -> string { t.name }
 
 fn quoted_table(t: Type) -> string { quoted(table_name_of(t)) }
@@ -590,25 +591,11 @@ fn non_id_fields(t: Type) -> List<Field> { t.fields.slice(1, t.fields.length) }
 /// can read or write from Phase 1.
 const VERSION_COLUMN: string = "__avra_version__"
 
-fn create_table_sql_of(t: Type) -> string {
-    let cols = [column_ddl(column_facts(f)) for f in stored(t)]
-        .concat([column_ddl(version_facts())])
-    "CREATE TABLE IF NOT EXISTS ${quoted_table(t)} (${cols.join(", ")})"
-}
+fn create_table_sql_of(t: Type) -> string { create_sql(table_name_of(t), table_columns(t)) }
 
-/// EVERYTHING THE DATABASE IS TOLD ABOUT ONE COLUMN — the single source
-/// of its DDL and of the shape text a table is recorded under, so the two
-/// cannot say different things.
-type ColumnFacts = {
-    name: string,
-    sql_type: string,
-    not_null: bool = false,
-    key: bool = false,
-    unique: bool = false,
-    default: string? = null,
-    refs: string? = null,
-    on_delete: string? = null,
-}
+/// A model's columns as the database holds them: its stored fields, then the
+/// hidden version column.
+fn table_columns(t: Type) -> List<ColumnFacts> { [column_facts(f) for f in stored(t)].concat([version_facts()]) }
 
 fn version_facts() -> ColumnFacts {
     ColumnFacts { name: VERSION_COLUMN, sql_type: "INTEGER", not_null: true, default: "1" }
@@ -655,59 +642,7 @@ fn on_delete(f: Field) -> string {
     }
 }
 
-fn column_ddl(c: ColumnFacts) -> string {
-    let key = if c.key { " PRIMARY KEY AUTOINCREMENT" } else { "" }
-    let required = if c.not_null { " NOT NULL" } else { "" }
-    let fallback = if c.default == null { "" } else { " DEFAULT ${c.default!}" }
-    let distinct = if c.unique { " UNIQUE" } else { "" }
-    let link = if c.refs == null { "" } else { " REFERENCES ${quoted(c.refs!)}(${quoted("id")}) ON DELETE ${c.on_delete ?? "NO ACTION"}" }
-    "${quoted(c.name)} ${c.sql_type}${key}${required}${fallback}${distinct}${link}"
-}
-
-// ── The SHAPE TEXT: a table's columns as the database holds them, one
-// line each, in column-name order, so it is the same for the same model
-// however its fields are ordered and changes when any column fact does. ──
-
-fn shape_text_of(t: Type) -> string {
-    let lines = [shape_line(column_facts(f)) for f in stored(t)]
-        .concat([shape_line(version_facts())])
-    "${table_name_of(t)}\n${ordered(lines).join("\n")}"
-}
-
-fn shape_line(c: ColumnFacts) -> string {
-    let facts = [
-        c.name,
-        c.sql_type,
-        if c.not_null { "notnull" } else { "null" },
-        if c.key { "key" } else { "-" },
-        if c.unique { "unique" } else { "-" },
-        c.default ?? "-",
-        c.refs ?? "-",
-        c.on_delete ?? "-",
-    ]
-    facts.join("|")
-}
-
-/// Texts in byte order, each placed after those that come before it.
-fn ordered(xs: List<string>) -> List<string> {
-    mut out: List<string> = []
-    for x in xs {
-        let at = [y for y in out if before(y, x)].length
-        out = out.slice(0, at).concat([x]).concat(out.slice(at, out.length))
-    }
-    out
-}
-
-/// Whether `a` comes before `b` by their octets; a prefix comes first.
-fn before(a: string, b: string) -> bool {
-    let x = a.bytes()
-    let y = b.bytes()
-    let shared = if x.length < y.length { x.length } else { y.length }
-    for i in 0..shared {
-        if x.at(i) != y.at(i) { return x.at(i) < y.at(i) }
-    }
-    x.length < y.length
-}
+fn shape_text_of(t: Type) -> string { shape_text(table_name_of(t), table_columns(t)) }
 
 /// Milliseconds since the epoch, as the database reads its own clock.
 fn auto_default() -> string { "(CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER))" }
@@ -718,21 +653,11 @@ fn is_unique(f: Field) -> bool { f.marks.any(it.name == "unique") }
 /// into `insert`/`update`'s generated body so a constraint violation
 /// resolves back through the schema the moment it happens — never a
 /// second lookup against `t` at run time, which the derive has no
-/// reason to keep around. Hand-spelled per count, the same law and
-/// remedy as `row_ctor`: a list literal has no expression position for
-/// a variable-width splice, and `non_id_fields(t)` is already capped
-/// at `MAX_FIELDS - 1`.
+/// reason to keep around. The list's elements are a run, so no arity is
+/// known here.
 fn unique_fields_code(t: Type) -> Code {
     let fs = [f for f in non_id_fields(t) if is_unique(f)]
-    match fs.length {
-        0 -> quote { [] },
-        1 -> quote { [${unique_field_code(fs[0])}] },
-        2 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}] },
-        3 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}] },
-        4 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}, ${unique_field_code(fs[3])}] },
-        5 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}, ${unique_field_code(fs[3])}, ${unique_field_code(fs[4])}] },
-        rest -> quote { a_model_with_more_than_five_unique_fields_needs_a_wider_list_literal() },
-    }
+    quote { [..${[unique_field_code(f) for f in fs]}] }
 }
 
 fn unique_field_code(f: Field) -> Code {
@@ -842,23 +767,44 @@ fn shape_column_probe_sql() -> string {
 
 fn shape_column_add_sql() -> string { "ALTER TABLE \"__avra_models__\" ADD COLUMN \"shape\" TEXT" }
 
+/// A registry made before owners were recorded lacks the column: it is
+/// added, and an older claim's owner stays NULL until a model whose shape
+/// agrees adopts it.
+fn owner_column_probe_sql() -> string {
+    "SELECT count(*) FROM pragma_table_info('__avra_models__') WHERE name = 'owner'"
+}
+
+fn owner_column_add_sql() -> string { "ALTER TABLE \"__avra_models__\" ADD COLUMN \"owner\" TEXT" }
+
 fn claim_select_sql() -> string {
-    "SELECT \"declared_at\" FROM \"__avra_models__\" WHERE \"table_name\" = ?"
+    "SELECT \"owner\", \"shape\" FROM \"__avra_models__\" WHERE \"table_name\" = ?"
 }
 
 fn claim_insert_sql() -> string {
-    "INSERT INTO \"__avra_models__\" (\"table_name\", \"declared_at\", \"shape\") VALUES (?, ?, ?)"
+    "INSERT INTO \"__avra_models__\" (\"table_name\", \"declared_at\", \"shape\", \"owner\") VALUES (?, ?, ?, ?)"
 }
 
-/// The declaring type's own file, its one honest fully-qualified name
-/// — `@std/meta` hands a `Type` no module or package field, but every
-/// declaration's `Loc` names the file it stands in, and two DIFFERENT
-/// files are the only thing a bare type name can never make equal.
+fn claim_adopt_sql() -> string {
+    "UPDATE \"__avra_models__\" SET \"owner\" = ? WHERE \"table_name\" = ?"
+}
+
+/// A model's identity: its package-qualified module. It survives moving
+/// or recloning the project, which a file path does not.
+fn owner_of(t: Type) -> string { t.module }
+
+/// The declaring file, kept in the registry for a reader only.
 fn declared_at_of(t: Type) -> string { t.at?.file ?? "?" }
 
 fn collision_message(t: Type) -> string {
-    "table \"${table_name_of(t)}\" is already claimed by a @model declared at "
+    "table \"${table_name_of(t)}\" is already claimed by a @model of module "
 }
+
+/// A column's text, or null where it holds NULL.
+fn text_or_null(r: Row, i: int) -> string? {
+    match r.values[i] { .Text(v) -> v, _ -> null }
+}
+
+fn shape_conflict_word() -> string { "an earlier version with another shape" }
 
 // ── Binding a field OUT (a value crossing to SQLite) and reading one
 // IN (a column crossing back) — one exhaustive dispatch each way. ──
@@ -913,19 +859,10 @@ fn read_kind(k: Kind, i: int) -> Code {
     }
 }
 
-/// The one place a struct literal's field list needs its whole arity
-/// known at the file's OWN parse time — hand-spelled per count, same
-/// law and same remedy as `core/rebuild_derive.av`'s constructor arms.
-/// Wired into `find`, above.
-fn row_ctor(t: Type) -> Code {
-    let fs = t.fields
-    match fs.length {
-        1 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)} } },
-        2 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)}, ${fs[1].name}: ${field_value(t, 1)} } },
-        3 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)}, ${fs[1].name}: ${field_value(t, 1)}, ${fs[2].name}: ${field_value(t, 2)} } },
-        4 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)}, ${fs[1].name}: ${field_value(t, 1)}, ${fs[2].name}: ${field_value(t, 2)}, ${fs[3].name}: ${field_value(t, 3)} } },
-        5 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)}, ${fs[1].name}: ${field_value(t, 1)}, ${fs[2].name}: ${field_value(t, 2)}, ${fs[3].name}: ${field_value(t, 3)}, ${fs[4].name}: ${field_value(t, 4)} } },
-        6 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)}, ${fs[1].name}: ${field_value(t, 1)}, ${fs[2].name}: ${field_value(t, 2)}, ${fs[3].name}: ${field_value(t, 3)}, ${fs[4].name}: ${field_value(t, 4)}, ${fs[5].name}: ${field_value(t, 5)} } },
-        rest -> quote { a_model_with_more_than_six_fields_needs_a_wider_row_constructor() },
-    }
-}
+/// The row literal a column read fills: one entry per field, spliced as
+/// a run, so no arity is known here. Wired into `find` and the reads,
+/// above.
+fn row_ctor(t: Type) -> Code { quote { ${t} { ..${[row_init(t, f, j) for j, f in t.fields]} } } }
+
+/// One literal entry, named off the field it reads.
+fn row_init(t: Type, f: Field, j: int) -> Code { quote { W { ${f.name}: ${field_value(t, j)} } } }

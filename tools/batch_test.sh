@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by make ci-invariants
 # FIXTURES FOR tools/batch.sh — no network and no GitHub: a scratch origin
 # (a bare repository) with real branches to merge, and AVRA_GH standing in
 # for `gh`. The fake answers `pr view`, `pr list`, `run view` from JSON files

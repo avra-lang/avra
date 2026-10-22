@@ -260,10 +260,10 @@ ends THAT TURN, never the app.
    the page as it stood; the patch stream is never half-applied. The
    notice is a paint of its own, drawn from the state as it stands.
 
-The door is `App.turn`'s `guard`: it runs the action and answers whether
-it ran or the failure's words. A test injects a failure there
-(`Screen.guarded`); the mechanism that makes a real trap a failure is the runtime's, and
-the door is the only place it is read.
+The door is `App.turn`'s `guard`, and the default guard is `contained`
+(`@std/meta`): it runs the action under the runtime's guarded run and
+answers whether it ran, or the failure's words. A test may install its
+own (`Screen.guarded`) to inject a failure without a trap.
 
 ## Layout is one algorithm on every surface
 
