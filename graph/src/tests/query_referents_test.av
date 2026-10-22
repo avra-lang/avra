@@ -1,0 +1,129 @@
+use derive.model.{model}
+use schema.{Registration}
+use semantics.{Semantics}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use store.merge.{Merge}
+use @std.json.{Json, field}
+
+@model(quote { Semantics { label: ["name"] } })
+type Contact = { name: string, phone: string? }
+
+@model
+type Memo = { subject: string }
+
+fn registrations() -> List<Registration> {
+    [Registration { make: Contact_graph_model }, Registration { make: Memo_graph_model }]
+}
+
+fn contact(id: string, name: string) -> Result<Record, string> {
+    Record { id: id, model: "Contact", value: stored_value("{\"name\":\"${name}\"}")? }
+}
+
+fn directory() -> Result<Graph, string> {
+    mut g = Graph.memory(registrations())?
+    g.observe("in:1", "contacts")?
+    g
+        .publish(
+            Publication {
+                id: "one",
+                producer: "agent",
+                scope: "in:1",
+                input: "in:1",
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: [
+                    contact("c1", "Elena Vale")?,
+                    contact("c2", "Elena")?,
+                    contact("c3", "Rowan Vale")?,
+                    Record {
+                        id: "m1",
+                        model: "Memo",
+                        value: stored_value("{\"subject\":\"Elena\"}")?,
+                    },
+                ],
+            },
+        )?
+    g
+}
+
+fn finds_by_declared_label() -> Result<bool, string> {
+    let g = directory()?
+    defer { let _ = g.close() }
+    let found = g.referents("Contact", "Elena", "")?
+    found.length == 2 &&
+        found.all(it.entity == "c1" || it.entity == "c2") &&
+        found.any(it.label == "Elena Vale")
+}
+
+fn never_offers_the_mention_itself() -> Result<bool, string> {
+    let g = directory()?
+    defer { let _ = g.close() }
+    let found = g.referents("Contact", "Elena", "c2")?
+    found.length == 1 && found[0].entity == "c1"
+}
+
+fn offers_a_merged_group_once() -> Result<bool, string> {
+    let g = directory()?
+    defer { let _ = g.close() }
+    g.merge(Merge { id: "m", left: "c1", right: "c2", decider: "test" })?
+    let found = g.referents("Contact", "Elena", "c3")?
+    found.length == 1
+}
+
+fn refuses_a_model_without_a_label() -> Result<bool, string> {
+    let g = directory()?
+    defer { let _ = g.close() }
+    match g.referents("Memo", "Elena", "") {
+        .Ok(_) -> false,
+        .Err(e) -> e.contains("declares no label"),
+    }
+}
+
+fn limits_are_bounded() -> Result<bool, string> {
+    let g = directory()?
+    defer { let _ = g.close() }
+    let one = g.referents("Contact", "Vale Elena Rowan", "", limit: 1)?
+    let refused = match g.referents("Contact", "Elena", "", limit: 0) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    one.length == 1 && refused
+}
+
+fn the_op_answers_entities() -> Result<bool, string> {
+    let g = directory()?
+    defer { let _ = g.close() }
+    let found = g
+        .dispatch(
+            Json
+                .Obj(
+                    [
+                        field("op", Json.Str("referents")),
+                        field("model", Json.Str("Contact")),
+                        field("mention", Json.Str("Rowan")),
+                    ],
+                ),
+        )?
+    found.items().length == 1 && found.item(0).member("entity").text() == "c3"
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "referents" {
+    given "a directory whose model declares a label" {
+        then "entities are found by the declared label's words" { passed(finds_by_declared_label()) }
+        then "the mention's own entity is never offered" { passed(never_offers_the_mention_itself()) }
+        then "a merge group is offered once" { passed(offers_a_merged_group_once()) }
+        then "a model without a label is refused" { passed(refuses_a_model_without_a_label()) }
+        then "the count is bounded" { passed(limits_are_bounded()) }
+        then "the op answers entity, label and rank" { passed(the_op_answers_entities()) }
+    }
+}

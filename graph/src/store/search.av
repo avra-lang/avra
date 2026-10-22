@@ -42,6 +42,9 @@ export type Passage = {
     rank: float,
 }
 
+/// An entity that a mention of its model may refer to, found by the model's declared label.
+export type Referent = { entity: string, label: string, rank: float }
+
 /// The index tracks the graph revision it was built at.
 const index_revision_key = "search_revision"
 
@@ -69,6 +72,45 @@ impl Graph {
                 ),
         )?
         [passage_of(r, stored(r.real(13))?)? for r in rows]
+    }
+
+    /// Entities of `model` whose declared label shares words with `mention`,
+    /// best first, each merge group once and never the group of `exclude`.
+    fn referents(model: string, mention: string, exclude: string, limit: int = search_limit_default) -> Result<
+        List<Referent>,
+        string,
+    > {
+        if limit < 1 || limit > search_limit_max { fail "referent limit must be 1..${search_limit_max}" }
+        let label? = (self.catalog.model(model)?).semantics.label else { fail "${model} declares no label to find its entities by" }
+        self.indexed()?
+        let match_text = fts_query(mention)
+        if match_text.is_empty() { return [] }
+        let prefix = "${model} ${label[0]}: "
+        let rows = stored(
+            self
+                .db
+                .all(
+                    sql(
+                        "SELECT entity, substr(text, ?), bm25(${index_table}) FROM ${index_table} WHERE ${index_table} MATCH ? AND kind = 'fact' AND substr(text, 1, ?) = ? ORDER BY bm25(${index_table}), entity LIMIT ?",
+                        [
+                            .Int(prefix.length + 1),
+                            .Text(match_text),
+                            .Int(prefix.length),
+                            .Text(prefix),
+                            .Int(search_limit_max),
+                        ],
+                    ),
+                ),
+        )?
+        let own = if exclude.is_empty() { [] } else { self.group(exclude)? }
+        mut found: List<Referent> = []
+        for r in rows {
+            let entity = stored(r.text(0))?
+            if own.contains(entity) || found.any(it.entity == entity) { continue }
+            found
+                .push(Referent { entity: entity, label: stored(r.text(1))?, rank: stored(r.real(2))? })
+        }
+        found.slice(0, limit)
     }
 
     /// Indexed rows by predicate over the unindexed columns, in index order.

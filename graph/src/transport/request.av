@@ -43,6 +43,7 @@ export enum Operation {
     Cypher(text: string, params: Json)
     Check(text: string, params: Json)
     Search(query: string, limit: int)
+    Referents(model: string, mention: string, exclude: string, limit: int)
     Admit(admission: Admission)
     Correct(correction: Correction)
     Uncorrect(id: string)
@@ -68,7 +69,7 @@ export fn written(op: Operation) -> Result<string?, string> {
         .Admit(a) -> .Ok(source_key(a.source)),
         .Correct(c) -> .Ok(c.id),
         .Decide(id, _, _) -> .Ok(id),
-        .Schema or .Source(_, _) or .Observation(_, _) or .Get(_) or .Value(_) or .Find(_, _, _) or .Where(_, _, _, _, _) or .Edges(_, _) or .Traverse(_, _, _) or .Explain(_, _) or .Resolve(_, _) or .Aliases(_) or .Merges(_) or .Tombstones(_) or .Choices(_) or .Dirty or .Warnings or .Query(_) or .Cypher(_, _) or .Check(_, _) or .Search(_, _) or .Corrections or .Proposals or .Decisions or .Mandated(_, _, _) or .Mandates -> .Ok(null),
+        .Schema or .Source(_, _) or .Observation(_, _) or .Get(_) or .Value(_) or .Find(_, _, _) or .Where(_, _, _, _, _) or .Edges(_, _) or .Traverse(_, _, _) or .Explain(_, _) or .Resolve(_, _) or .Aliases(_) or .Merges(_) or .Tombstones(_) or .Choices(_) or .Dirty or .Warnings or .Query(_) or .Cypher(_, _) or .Check(_, _) or .Search(_, _) or .Referents(_, _, _, _) or .Corrections or .Proposals or .Decisions or .Mandated(_, _, _) or .Mandates -> .Ok(null),
     }
 }
 
@@ -131,6 +132,16 @@ export fn operation(j: Json) -> Result<Operation, string> {
         "search" -> {
             closed(j, ["op", "query", "limit"])?
             Operation.Search(text(j, "query")?, optional_int(j, "limit", 10)?)
+        },
+        "referents" -> {
+            closed(j, ["op", "model", "mention", "exclude", "limit"])?
+            Operation
+                .Referents(
+                    text(j, "model")?,
+                    text(j, "mention")?,
+                    optional_text(j, "exclude", "")?,
+                    optional_int(j, "limit", 10)?,
+                )
         },
         "check" -> {
             closed(j, ["op", "cypher", "params"])?

@@ -72,6 +72,32 @@ keep only one model resident. jevk5 (ollaya) takes at most 16 options, so a
 labelled-pair choice is asked as label-or-none and then direction.
 Probabilities are logged raw for later calibration.
 
+## Cross-source entity resolution
+
+The cascade resolves a mention only inside its own source (the antecedent
+step). Linking across sources is a separate stage run after each admission,
+outside the extraction cache's code closure, so it re-runs without
+re-extracting: `resolve.py` (hook `--resolver`, default on for `--slice`).
+
+For each admitted entity of a model that declares a `label`, the engine's
+`referents` op (declared label, FTS, each merge group once, never the
+mention's own group) offers the graph's existing entities of that model. The
+local model makes one closed choice over them, each described by what the
+graph holds (names, identities, the sentence that introduced it), plus
+"someone new" and "cannot tell". A link needs `margin`, "new" needs
+`new_ceiling` (er_params.json, fitted on `bench/er_cross.jsonl` with
+provenance). A link is an explicit `merge` (reversible by `split`, decider
+`er:<scorer>`); entities of one source are never merged with each other.
+Merged mentions that spell the name differently are then settled by a second
+closed choice (`name_margin`) that `choose`s the claim the entity is shown
+under; below the margin the rivals stay and a read reports the conflict.
+
+`bench_er.py` replays the cached extractions: `--rows` writes the dev
+choices as they arise when every earlier one was right (`bench/er_gold.json`
+labels each mention), `--score`/`--fit` score and fit them, and with no flag
+or `--resolve` it reports live entities per real thing and wrong merges.
+`python test_resolve.py` witnesses the stage on a scripted graph.
+
 ## Time candidates
 
 `timex.candidates(anchor_ms)` enumerates what a time expression in a source

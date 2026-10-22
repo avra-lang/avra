@@ -858,6 +858,34 @@ def answer_for(person, source=("profile:rowan", 1)):
             "policies": [], "problems": [], "candidates": []}
 
 
+def bound_cases():
+    """Plausible wrong answers still fail; right ones pass whatever their output names."""
+    def field(name, value, entity="e:1"):
+        return {"path": [entity, name], "value": value, "citations": []}
+
+    reading = {"who": {"take": "entity"}, "age": {"take": "value"}, "kind": {"take": "value"}}
+    want = {"who": "person:a", "age": 7, "kind": "x"}
+    ids = {"e:1": "person:a", "e:2": "person:b"}
+
+    class Ids(dict):
+        get = lambda self, v, default=None: ids.get(v, default)
+
+    def ok(fields, wanted=want, answer=None):
+        return bound(wanted, {"fields": fields, **(answer or {})}, Ids(), reading)
+
+    good = [field("a", 7), field("b", "x")]
+    assert ok(good), "right values pass under any output name"
+    assert not ok([field("a", 8), field("b", "x")]), "a wrong value fails"
+    assert not ok([field("a", 7), field("b", "y")]), "a wrong second value fails"
+    assert not ok([field("a", 7, "e:2"), field("b", "x", "e:2")]), "a wrong entity fails"
+    assert not ok(good[:1]), "a missing member fails"
+    assert not ok([field("a", 7)] * 2), "one field serves one value member"
+    assert not ok([field("a", True), field("b", "x")], {**want, "age": 1}), "a bool is not an int"
+    assert bound({"reason": "contains_silk"}, {"fields": [field("reason", "contains_silk")]}, Ids(), {"reason": {"take": "value"}})
+    assert not bound({"reason": "contains_silk"}, {"fields": [field("reason", "other")]}, Ids(), {"reason": {"take": "value"}})
+    assert not bound({"reason": "no_such"}, {"fields": [], "absent": [{"code": "other"}]}, Ids(), {})
+
+
 def self_test():
     fixture = load_fixture()
     q01 = fixture[3][0]
@@ -872,6 +900,7 @@ def self_test():
     assert not grade(q01, {**renamed, "fields": []}, {}, by_ref, set())["answer"], "no field binds the value"
     assert not grade(q01, answer_for("person:elena", ("other", 1)), {}, by_ref, set())["provenance"]
     assert not grade(q01, answer_for("person:elena"), {}, by_ref, {"s01"})["provenance"]
+    bound_cases()
     try:
         prefix_of(fixture[1], 5, picked=["s01", "s03", "s04", "s05", "s06"])
         raise AssertionError("cherry-picked prefix was accepted")
