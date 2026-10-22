@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
-"""The std-avrac witness fixtures vendor std packages: each one's files must
-be the files its manifest closure names on disk, no more and no fewer.
+"""The std-avrac witness fixtures vendor std packages from their own sources.
 
-The closure of a vendored package is its `[dependencies]` std rows plus the
-`use @std.X` lines of its own sources, followed recursively. A fixture file
-is an `embed("@std/<pkg>/src/<path>")` constant bound by a `std_file(...)`.
+`packages/std-avrac/src/testing/std_sources.av` is GENERATED from the packages on disk:
+every package in the closure of ROOTS, each src file embedded and each package's
+dependencies listed. A package's closure is its `[dependencies]` std rows plus the
+`use @std.X` lines of its own sources, followed recursively.
+
+`--write` regenerates the file; the default run refuses a file that is not what the
+packages say, so a source added or an import changed is seen here, not in a witness.
 """
 import pathlib
 import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-FIXTURE = ROOT / "packages/std-avrac/src/testing/mod.av"
+GENERATED = ROOT / "packages/std-avrac/src/testing/std_sources.av"
+ROOTS = ["time", "task", "db"]
 
-EMBED = re.compile(r'^const (\w+): string = embed\("@std/([\w-]+)/src/([\w/.-]+)"\)', re.M)
-PKG = re.compile(r'std_pkg\(\s*"([\w-]+)",\s*\[(.*?)\]\s*,?\s*\)', re.S)
-FILE = re.compile(r'std_file\(\s*"([\w/.-]+)",\s*(\w+)\s*\)')
-USE = re.compile(r"^use @std\.([\w]+)", re.M)
 ROW = re.compile(r'^"@std/([\w-]+)"\s*=', re.M)
+USE = re.compile(r"^use @std\.([\w]+)", re.M)
 
 
 def package_dir(name):
@@ -26,11 +27,20 @@ def package_dir(name):
 
 def sources(name):
     base = package_dir(name) / "src"
-    return {
+    return sorted(
         str(p.relative_to(base))
         for p in base.rglob("*.av")
         if "tests" not in p.relative_to(base).parts
-    }
+    )
+
+
+def deps_of(name):
+    manifest = package_dir(name) / "avra.toml"
+    rows = set(ROW.findall(manifest.read_text())) if manifest.exists() else set()
+    base = package_dir(name) / "src"
+    for rel in sources(name):
+        rows |= set(USE.findall((base / rel).read_text()))
+    return sorted(d for d in rows if package_dir(d).is_dir())
 
 
 def closure_of(name, seen=None):
@@ -38,73 +48,65 @@ def closure_of(name, seen=None):
     if name in seen:
         return seen
     seen.add(name)
-    manifest = package_dir(name) / "avra.toml"
-    deps = set(ROW.findall(manifest.read_text())) if manifest.exists() else set()
-    base = package_dir(name) / "src"
-    for p in base.rglob("*.av"):
-        if "tests" not in p.relative_to(base).parts:
-            deps |= set(USE.findall(p.read_text()))
-    for dep in sorted(deps):
-        if package_dir(dep).is_dir():
-            closure_of(dep, seen)
+    for dep in deps_of(name):
+        closure_of(dep, seen)
     return seen
 
 
-def fixture_packages(text):
-    consts = {name: (pkg, path) for name, pkg, path in EMBED.findall(text)}
-    packages = {}
-    for pkg_name, body in PKG.findall(text):
-        files = packages.setdefault(pkg_name, set())
-        for rel, const in FILE.findall(body):
-            if const in consts:
-                files.add((consts[const][0], consts[const][1]))
-    return packages
+def const_name(pkg, rel):
+    return "src_" + pkg + "_" + re.sub(r"[^\w]", "_", rel)
 
 
-def problems(text):
-    packages = fixture_packages(text)
-    wanted = set()
-    for name in packages:
-        wanted |= closure_of(name)
-    out = []
-    for name in sorted(wanted):
-        if name not in packages:
-            out.append(f"the fixture vendors no @std/{name}, which its closure needs")
-            continue
-        have = {path for pkg, path in packages[name] if pkg == name}
-        for rel in sorted(sources(name) - have):
-            out.append(f"the fixture lacks @std/{name}/src/{rel}")
-    for name, entries in sorted(packages.items()):
-        for pkg, path in sorted(entries):
-            if pkg == name and not (package_dir(name) / "src" / path).exists():
-                out.append(f"the fixture names @std/{name}/src/{path}, which is gone from disk")
-    return out
-
-
-def self_test():
-    text = (
-        'const a_src: string = embed("@std/alpha/src/a.av")\n'
-        'std_pkg("alpha", [std_file("a.av", a_src)])\n'
-        'std_pkg("meta", [])\n'
+def generated():
+    names = sorted(set().union(*[closure_of(r) for r in ROOTS]))
+    consts, pkgs = [], []
+    for pkg in names:
+        entries = []
+        for rel in sources(pkg):
+            const = const_name(pkg, rel)
+            consts.append(f'const {const}: string = embed("@std/{pkg}/src/{rel}")')
+            entries.append(f'StdFile {{ name: "{rel}", text: {const} }}')
+        deps = ", ".join(f'"{d}"' for d in deps_of(pkg))
+        if len(entries) == 1:
+            files = f"files: [{entries[0]}],"
+        else:
+            files = "files: [\n" + "".join(f"                {e},\n" for e in entries) + "            ],"
+        pkgs.append(
+            "        StdPkg {\n"
+            f'            name: "{pkg}",\n'
+            f"            deps: [{deps}],\n"
+            f"            {files}\n"
+            "        },"
+        )
+    head = (
+        "// GENERATED by tools/vendored_fixture.py from the std packages on disk. Do not edit:\n"
+        "// run `python3 tools/vendored_fixture.py --write`.\n"
+        "\n"
+        "use @std.meta.{embed}\n"
+        "\n"
+        "export type StdFile = { name: string, text: string }\n"
+        "\n"
+        "export type StdPkg = { name: string, files: List<StdFile>, deps: List<string> = [] }\n"
+        "\n"
     )
-    assert fixture_packages(text) == {"alpha": {("alpha", "a.av")}, "meta": set()}
-    lacking = [p for p in problems(text) if "lacks @std/meta/src/rule.av" in p]
-    assert lacking, problems(text)
-    return ["fixture_packages reads the bound files", "a vendored package missing a source names it"]
+    body = "\n".join(
+        f"// LICENSED input.compile_embed: the package's own source, read when the compiler is built\n{c}"
+        for c in consts
+    )
+    fn = "\n\nexport fn std_sources() -> List<StdPkg> {\n    [\n" + "\n".join(pkgs) + "\n    ]\n}\n"
+    return head + body + fn
 
 
 def main(argv):
-    if "--self-test" in argv:
-        for line in self_test():
-            print(f"vendored_fixture: self-test {line}")
+    text = generated()
+    if "--write" in argv:
+        GENERATED.write_text(text)
+        print(f"vendored_fixture: wrote {GENERATED.relative_to(ROOT)}")
         return 0
-    out = problems(FIXTURE.read_text())
-    for line in out:
-        print(f"vendored_fixture: {line}")
-    if out:
-        print(f"vendored_fixture: REFUSED — {len(out)} problem(s): the fixture is not its closure")
+    if GENERATED.read_text() != text:
+        print("vendored_fixture: REFUSED — std_sources.av is not what the packages say; run `python3 tools/vendored_fixture.py --write`")
         return 1
-    print(f"vendored_fixture: clean — {len(fixture_packages(FIXTURE.read_text()))} vendored package(s) match their closure")
+    print(f"vendored_fixture: clean — {len(closure_of(ROOTS[0]) | closure_of(ROOTS[1]) | closure_of(ROOTS[2]))} package(s) generated from disk")
     return 0
 
 
