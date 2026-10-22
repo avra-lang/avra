@@ -44,7 +44,8 @@ lists and refuses by name:
   one-spelling     a shape the workflows share has ONE home — a composite
                    action under .github/actions or a tool — and no workflow
                    spells it again (ONE_SPELLING names each and its home:
-                   the hand-down's download and tar, the speed note).
+                   the hand-down's download and tar, the speed note,
+                   the compiler built from whatever stands).
   warm-edit        WHERE the DB 07 warm-edit gate exists (Makefile target
                    `warm-edit`), it is one of `KEEPERS` and its measurement
                    skips with a word on a cold store — a claim with no gate
@@ -201,7 +202,7 @@ def check_release_order(jobs):
     prepare = jobs.get("prepare", "")
     steps = parse_steps(prepare)
     fetch = next((i for i, s in enumerate(steps) if "compiler_release.py fetch" in s), None)
-    build = next((i for i, s in enumerate(steps) if "make -s avra" in s or "make -s bootstrap" in s), None)
+    build = next((i for i, s in enumerate(steps) if any(m in s for m in ("make -s avra", "make -s bootstrap", "make -s compiler"))), None)
     if fetch is None:
         return ["no `prepare` step fetches the compiler from the release asset"], []
     if build is None:
@@ -526,6 +527,7 @@ ONE_SPELLING = (
     (r"name:\s*avra-build\b", "download-artifact", "./.github/actions/handed-down"),
     (r"\btar\s+-?[a-z]*[xc][a-z]*f?\b.*avra-build", None, "tools/hand_down.sh"),
     (r"\btools/speed_note\.sh\b", None, "./.github/actions/speed-note"),
+    (r"\bmake -s avra\b.*&&.*\bmake -s avra\b", None, "make compiler"),
 )
 
 
