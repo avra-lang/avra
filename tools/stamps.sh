@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: --self-test
 # THE CONTENT STAMPS, ONE PROCESS FOR A MAKE. Make hands every stamp as three words — the stamp,
 # the sources it hashes, the flags it was asked to compile under; the stamp's file is the digest
 # of all three, and it is WRITTEN ONLY WHEN IT DIFFERS — an unchanged stamp keeps its mtime, so

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# tool-witness: run by witness_compiler_release.sh
 """THE COMPILER, PUBLISHED WHERE EVERY REF CAN REACH IT.
 
 A GitHub Actions cache restores only from the run's own ref and the default
