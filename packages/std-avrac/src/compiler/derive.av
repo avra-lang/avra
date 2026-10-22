@@ -37,6 +37,13 @@ use compiler.findings.{Finding, findings_read, findings_text, file_findings}
 /// always; its object and its asks too when the want LINKS.
 export enum Want { Diagnostics, Binary }
 
+impl Want {
+    /// Whether the want links: a binary does, and only a link reads a program's code hashes.
+    fn links() -> bool {
+        match self { .Binary -> true, .Diagnostics -> false }
+    }
+}
+
 /// ONE ATTEMPT AT A PROGRAM: what it derives and for what, the files it reads
 /// whatever the store holds, whether it reads the program's instantiation HOMES,
 /// whether it holds anything, how many times the records moved under it, and
@@ -840,7 +847,7 @@ impl Workspace {
     /// lowered from are remembered; one that is held all the same is new, and the
     /// next attempt reads it.
     fn bodies_lowered(at: Attempt, store: Store, p: Program) -> Result<Lowered, Turn> {
-        let lowered = p.files_checked()
+        let lowered = p.files_checked(at.want.links())
         self.settle_consts(p)
         at.having_read(self.bodies_asked())?
         let lo = or_refused(lowered)?

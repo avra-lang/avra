@@ -309,6 +309,7 @@ export fn lower(a: Analysis) -> Lowered {
             0,
             false,
             false,
+            true,
             [],
             [],
             (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross),
@@ -446,12 +447,14 @@ impl Decls {
     /// `program_symbol`, which no `module_symbol` can ever spell.
     /// A HOST FN IS A ROOT: a host reaches it by name, so a program
     /// lowers it even when nothing inside calls it. An `export` is a
-    /// module's visibility and roots nothing.
+    /// module's visibility and roots nothing. `hashed` says whether the
+    /// program's code hashes are owed: unowed, no held code is read for them.
     fn union(
         files: List<Analysis>,
         entry: int?,
         every: bool,
         programs: bool,
+        hashed: bool,
         held_asks: List<Wanted>,
         held_codes: List<CodeFacts>,
         unit_of: fn(Wanted) -> Unit,
@@ -503,22 +506,26 @@ impl Decls {
             (w: Wanted) -> self.instantiated(w),
             (w: Wanted) -> self.unlowered_stub(w),
             (w: Wanted) -> instance_of(self, w),
-            kept_instance,
+            if hashed { kept_instance } else { no_kept },
         )
         fns = fns.concat(d.fns)
         spoken = spoken.concat(d.spoken)
         let laid_out = distinct_statics(statics.concat(d.statics))
         let asked = hashes.concat(d.hashes)
         let unmanaged = fns
-        let answered = code_hashes(
-            self,
-            fns.concat([entry_body]),
-            laid_out,
-            d.held,
-            [h.target for h in asked],
-            held_codes.concat(d.kept),
-            [r.name for r in rt_sigs()].concat(self.extern_names()),
-        )
+        let answered = if hashed {
+            code_hashes(
+                self,
+                fns.concat([entry_body]),
+                laid_out,
+                d.held,
+                [h.target for h in asked],
+                held_codes.concat(d.kept),
+                [r.name for r in rt_sigs()].concat(self.extern_names()),
+            )
+        } else {
+            CodeHashes { bodies: [], keys: [] }
+        }
         fns = fns.concat(answered.bodies)
         let every_body = fns.concat([entry_body])
         spoken = spoken.concat(minted_pointers(self.types, every_body))
