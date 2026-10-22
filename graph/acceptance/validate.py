@@ -309,6 +309,15 @@ def prune_hardcoding_baseline(root):
     HARDCODE_BASELINE.write_text("".join(line + "\n" for line in old if line in keep))
 
 
+def check_zones():
+    """Each fixture app's declared default zone is the fixture's own contract."""
+    for base in (ROOT, PORTABILITY):
+        declared = json.loads((base / "manifest.json").read_text()).get("default_timezone")
+        host = (base / "app/src/main.av").read_text()
+        found = re.search(r'timezone:\s*"([^"]+)"', host)
+        require(declared and found and found.group(1) == declared, f"{base.name}: the app's policy zone differs from the manifest's")
+
+
 def check_portability(entities, sources):
     """The second fixture is well formed and shares no names or domains with the first."""
     manifest = json.loads((PORTABILITY / "manifest.json").read_text())
@@ -400,6 +409,7 @@ def main():
     p_entities = load_lines(PORTABILITY / "entities.jsonl")
     p_sources = load_lines(PORTABILITY / "sources.jsonl")
     check_portability(data[2], data[1])
+    check_zones()
     leaked = leaks(GRAPH, leak_union([(data[2], data[1]), (p_entities, p_sources)]))
     require(not leaked, "fixture tokens outside the fixture:\n  " + "\n  ".join(leaked[:20]))
     sites, gone = check_hardcoding(GRAPH)

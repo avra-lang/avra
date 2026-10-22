@@ -46,6 +46,12 @@ Fine-grained claim/span gold remains A02; no extractor ran in this task.
    arrival is the recorded-versus-world caveat, not the answer. Each stays
    checked when the engine states it: a stated `arrival_confirmed` must still
    equal false.
+10. Each fixture declares `default_timezone` in its manifest, and its app's
+   `EnginePolicy.timezone` states the same zone (validate.py compares them);
+   scorer envelopes carry it as the source timezone. This fixture's manifest
+   already says every explicit clock time is UTC, so its zone is UTC. The
+   portability fixture names none, so its stories imply one: a United Kingdom
+   household with GBP prices, hence Europe/London, recorded in its manifest.
 
 ## Answer-by-answer receipts
 

@@ -22,6 +22,7 @@ ROOT = HERE.parent.parent
 BINARY = HERE / "app/src/main"
 ORACLE = HERE / "oracle"
 FIXTURE = HERE
+ZONE = json.loads((HERE / "manifest.json").read_text()).get("default_timezone")
 RESULTS = HERE / "results"
 HELDOUT_RESULTS = HERE / "heldout-results"
 SPLIT = HERE / "split.json"
@@ -40,8 +41,9 @@ def read_lines(path):
 
 def configure(root):
     """Points the harness at a fixture directory: its sources, oracle, split and app."""
-    global FIXTURE, BINARY, ORACLE, SPLIT
+    global FIXTURE, BINARY, ORACLE, SPLIT, ZONE
     FIXTURE = root
+    ZONE = json.loads((root / "manifest.json").read_text()).get("default_timezone")
     BINARY = root / "app/src/main"
     ORACLE = root / "oracle"
     SPLIT = root / "split.json"
@@ -68,6 +70,7 @@ def envelope(source):
         "participants": [], "conversation": source["thread"],
         "media_type": MEDIA.get(source["kind"], "text/plain"),
         "content": source["content"], "frames": [],
+        **({"timezone": ZONE} if ZONE else {}),
     }
 
 
