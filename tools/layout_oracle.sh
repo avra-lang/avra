@@ -8,9 +8,8 @@
 # sweep whose failures are read elsewhere). Every face runs on every browser
 # (LAYOUT_ORACLE_BROWSERS, LAYOUT_ORACLE_FACES): the counts all print, and the
 # status is a failure if any face in any browser disagreed.
-# A tree licensed BY NAME in oracle.mjs (a break the engines themselves differ
-# on, WebKit only, capped at two) prints its own two answers, is named in the
-# table, and is not counted as agreeing: the COUNT is exact in every other tree.
+# Every box is judged against a bound derived from its own tree and the engine's layout
+# quantum (oracle.mjs); a line count is exact. No tree is licensed by name.
 #
 # It needs the compiler and Firefox (FIREFOX names one that is not in a usual
 # place). Where one is absent the run FAILS, naming what is missing: a run that
