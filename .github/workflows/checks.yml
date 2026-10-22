@@ -62,10 +62,14 @@ concurrency:
 permissions:
   contents: read
   packages: read
+  pull-requests: read
 
-# The PR body, for the speed gates' one waiver line (`SPEED_ACCEPT: <reason>`).
+# The PR body, for the speed gates' one waiver line (`SPEED_ACCEPT: <reason>`): the payload's, frozen
+# at the run's start, is the fallback; tools/pr_body.sh asks the API for the body as it is now.
 env:
   PR_BODY: ${{ github.event.pull_request.body }}
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   prepare:
@@ -683,7 +687,7 @@ jobs:
         run: |
           a=0
           # THE ONE WAY TO LET A PR COST MORE: `SPEED_ACCEPT: <reason>` in its body (the squash keeps it).
-          SPEED_ACCEPT=$(printf '%s\n' "$PR_BODY" | sed -n 's/^SPEED_ACCEPT: *//p' | head -n 1)
+          SPEED_ACCEPT=$(sh tools/pr_body.sh | sed -n 's/^SPEED_ACCEPT: *//p' | head -n 1)
           export SPEED_ACCEPT
           # A CONTAINER STEP'S SHELL IS `sh`, WHICH HAS NO time BUILTIN and no
           # TIMEFORMAT — a first cut wrote `time ... %M` and every make was
@@ -1236,7 +1240,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if python3 tools/ci_wall.py collect > wall.metrics 2>/dev/null; then
+          if sh tools/ci_wall.sh collect > wall.metrics 2>/dev/null; then
             python3 tools/speed_ratchet.py --wall --raw wall.metrics
           else
             echo "::notice title=wall budget::the run's wall time could not be read from the jobs API — not gated"
