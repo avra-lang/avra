@@ -131,12 +131,17 @@ impl Workspace {
     /// one, with the names it declares — the words `unread_words` hands its parse. A sibling
     /// that renames, adds or drops a component moves every file of the module.
     fn words_at(path: string) -> string {
-        digest_of(
+        let dir = dir_of(path)
+        let known: string? = self.hold.words.get().get(dir)
+        if known != null { return known! }
+        let made = digest_of(
             joined(
                 ["${s}\t${joined(component_names(self, s), ",")}" for s in self.declaring_siblings(path)],
                 "\n",
             ),
         )
+        self.hold.words.put(dir, made)
+        made
     }
 
     /// What each module a file reads stood as when its answer was kept — its frame and its plain
