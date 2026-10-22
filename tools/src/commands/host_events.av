@@ -1,0 +1,239 @@
+//! `avra-tools host_events` — the web's event vocabulary is DERIVED, never kept by hand.
+//!
+//! packages/std-ui/assets/webref_events.json is w3c/webref's ed/events.json at the commit PIN
+//! names; tree/dom_event.av is `DomEvent`, the enum a seat's `@host(web: .Click)` is checked
+//! against, written from that file. A host event that is not in the file is not in the enum.
+//!
+//!   host_events              the keeper: asset == pin, enum == the asset's
+//!   host_events --write      regenerate the enum from the asset
+//!   host_events --fetch SHA  pin a new webref commit, then --write
+use @std.cli.{CliResult, Runnable, command, flag, option}
+use @std.hash.{blake3_hex}
+use @std.io.{read_bytes, read_text, write_text}
+use @std.json.{Json, parse}
+use @std.process.{tool, cmd}
+use @std.text.{codepoints, from_codepoint}
+
+const PIN: string = "b5dd81b5400206d36f17ae1929e4096cc89ca28e"
+const DIGEST: string = "c226e9384a6a1b34d356f1709449f2182156aea06cac578804e657e4a1d6bf07"
+const WIDTH: int = 101
+const ASSET: string = "packages/std-ui/assets/webref_events.json"
+const OUT: string = "packages/std-ui/src/tree/dom_event.av"
+
+type HostEventsCmd = {}
+
+impl Runnable for HostEventsCmd {
+    fn run(args: CliResult) -> int {
+        let sha = args.option("fetch")
+        if sha != "" { return fetched(sha) }
+        let data = read_bytes(ASSET) catch "".bytes()
+        if blake3_hex(data) != DIGEST {
+            eprintln(
+                "host-events: the webref asset is not the pinned file — it is fetched (--fetch SHA), never edited",
+            )
+            return 1
+        }
+        let entries = entries_of(data.text() ?? "")
+        let text = generated(entries)
+        if args.has_flag("write") {
+            let _ = write_text(OUT, text)
+            println("host-events: wrote ${OUT}")
+            return 0
+        }
+        if (read_text(OUT) catch "") != text {
+            eprintln(
+                "host-events: tree/dom_event.av is not what the pinned webref says — it is generated: sh tools/avra_tools.sh host_events --write",
+            )
+            return 1
+        }
+        println(
+            "host-events: DomEvent is the pinned webref's (${rows(entries).length} event types)",
+        )
+        0
+    }
+}
+
+export command host_events {
+    description: "Keep `DomEvent` equal to the pinned webref's events: check it, `--write` it, or `--fetch SHA` a new pin"
+    flag write { description: "regenerate the enum from the asset" }
+    option fetch { description: "pin this webref commit, then regenerate" }
+    run: HostEventsCmd {}
+}
+
+/// One event type: the interface its event objects implement and every element it fires at.
+type Row = { event: string, interface: string, targets: List<string> }
+
+fn field_of(v: Json, key: string) -> Json {
+    match v { .Obj(fields) -> fields.find(it.key == key)?.value ?? Json.Null, rest -> Json.Null }
+}
+
+fn text_of(v: Json) -> string {
+    match v { .Str(s) -> s, rest -> "" }
+}
+
+fn items_of(v: Json) -> List<Json> {
+    match v { .Arr(items) -> items, rest -> [] }
+}
+
+fn entries_of(text: string) -> List<Json> {
+    items_of(parse(text) catch Json.Null)
+}
+
+/// Code-point order, as the platform spells the types.
+fn before(a: string, b: string) -> bool {
+    let x = codepoints(a)
+    let y = codepoints(b)
+    let at = (0..shorter(x, y)).find((i) -> x[i] != y[i])
+    match at {
+        i? -> x[i] < y[i]
+        null -> x.length < y.length
+    }
+}
+
+fn shorter(x: List<int>, y: List<int>) -> int { if x.length < y.length { x.length } else { y.length } }
+
+fn sorted_texts(xs: List<string>) -> List<string> {
+    let pivot? = xs.first() else { return [] }
+    let rest = xs.drop(1)
+    sorted_texts([x for x in rest if before(x, pivot)])
+        .concat([pivot])
+        .concat(sorted_texts([x for x in rest if !before(x, pivot)]))
+}
+
+/// One row per event type, in code-point order of the type: the first interface seen and every
+/// target in the order first seen.
+fn rows(entries: List<Json>) -> List<Row> {
+    mut by: Map<string, Row> = {}
+    for e in entries {
+        let t = text_of(field_of(e, "type"))
+        let seen = by.get(t)
+        let targets = [text_of(field_of(x, "target")) for x in items_of(field_of(e, "targets"))]
+        by
+            .set(
+                t,
+                Row {
+                    event: t,
+                    interface: seen?.interface ?? text_of(field_of(e, "interface")),
+                    targets: targets
+                        .fold(
+                            seen?.targets ?? [],
+                            (acc, x) -> if acc.contains(x) { acc } else { acc.concat([x]) },
+                        ),
+                },
+            )
+    }
+    [by.get(t)! for t in sorted_texts(by.keys())]
+}
+
+fn variant(t: string) -> string {
+    let cs = codepoints(t)
+    let head = cs.first() ?? 0
+    from_codepoint(if head >= 97 && head <= 122 { head - 32 } else { head }) +
+        from_codepoints_of(cs.drop(1))
+}
+
+fn from_codepoints_of(cs: List<int>) -> string {
+    cs.map((c) -> from_codepoint(c)).join("")
+}
+
+fn quoted(s: string) -> string {
+    "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+}
+
+/// `targets` on one line when it fits the formatter's width, else one item a line.
+fn targets_line(items: List<string>) -> List<string> {
+    let one = "        targets: [${items.join(", ")}],"
+    if one.length <= WIDTH + 2 { return [one] }
+    ["        targets: ["].concat(["            ${i}," for i in items]).concat(["        ],"])
+}
+
+fn row_lines(r: Row) -> List<string> {
+    let items = [quoted(x) for x in r.targets]
+    let flat = "    DomRow { event: .${variant(r.event)}, interface: ${quoted(r.interface)}, targets: [${items.join(", ")}] },"
+    if flat.length <= WIDTH { return [flat] }
+    [
+        "    DomRow {",
+        "        event: .${variant(r.event)},",
+        "        interface: ${quoted(r.interface)},",
+    ]
+        .concat(targets_line(items))
+        .concat(["    },"])
+}
+
+/// The enum's source, from the rows.
+export fn generated_from(json_text: string) -> string { generated(entries_of(json_text)) }
+
+fn generated(entries: List<Json>) -> string {
+    let types = rows(entries)
+    let head = [
+        "//! `tree/dom_event.av` — THE WEB'S EVENTS, generated from w3c/webref @ ${PIN.substring(0, 12)}",
+        "//! (tools/src/commands/host_events.av, `make host-events`): never edited. A variant is an event",
+        "//! type with its first letter capitalised; `word` is the type the DOM spells it with.",
+        "",
+        "/// An event the web platform fires.",
+        "export enum DomEvent {",
+    ]
+    let variants = ["    ${variant(r.event)}" for r in types]
+    let mid = [
+        "}",
+        "",
+        "/// What the platform says of one event: the interface its event objects",
+        "/// implement and every interface it fires at.",
+        "type DomRow = { event: DomEvent, interface: string, targets: List<string> }",
+        "",
+        "const dom_rows: List<DomRow> = [",
+    ]
+    let body = [l for r in types for l in row_lines(r)]
+    let words = ["            .${variant(r.event)} -> ${quoted(r.event)}," for r in types]
+    let tail = [
+        "]",
+        "",
+        "impl DomEvent {",
+        "    /// The event type as the DOM names it.",
+        "    fn word() -> string {",
+        "        match self {",
+    ]
+    let close = [
+        "        }",
+        "    }",
+        "",
+        "    /// The interface its event objects implement.",
+        "    fn interface() -> string { dom_rows.find(it.event == self)!.interface }",
+        "",
+        "    /// The interfaces it fires at.",
+        "    fn targets() -> List<string> { dom_rows.find(it.event == self)!.targets }",
+        "}",
+        "",
+    ]
+    head
+        .concat(variants)
+        .concat(mid)
+        .concat(body)
+        .concat(tail)
+        .concat(words)
+        .concat(close)
+        .join("\n")
+}
+
+/// Pin a new webref commit: fetched with curl, written to the asset, and its digest said.
+fn fetched(sha: string) -> int {
+    let url = "https://raw.githubusercontent.com/w3c/webref/${sha}/ed/events.json"
+    let got = match tool("curl") {
+        .Ok(curl) -> cmd(curl, ["-fsSL", "--max-time", "60", url]).run(),
+        .Err(e) -> .Err(e),
+    }
+    match got {
+        .Ok(o) -> {
+            let _ = write_text(ASSET, o.stdout)
+            println(
+                "host-events: pinned ${sha}; set PIN and DIGEST in tools/src/commands/host_events.av to:",
+            )
+            println("PIN = \"${sha}\"\nDIGEST = \"${blake3_hex(o.stdout.bytes())}\"")
+            0
+        },
+        .Err(_) -> {
+            eprintln("host-events: ${url} could not be fetched")
+            1
+        },
+    }
+}
