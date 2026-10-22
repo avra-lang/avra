@@ -1,0 +1,286 @@
+//! The doors of a model as routes. A model's derive (`@crud`) builds a `Wire`
+//! of closures over its own concrete operations; this file turns a `Wire` into
+//! the routes, so the HTTP reading and the answers are written once.
+//!
+//! The doors, mounted under a prefix:
+//!
+//!     GET    /              list          200, every row
+//!     POST   /              create        200, the row; 422 with every issue
+//!     GET    /{id}          find          200, the row; 404
+//!     PATCH  /{id}          update        200, the row; 422; 404
+//!     DELETE /{id}          remove        204; 404
+//!     GET    /trash         trash         only for `@soft_delete`
+//!     POST   /{id}/restore  restore       only for `@soft_delete`
+//!
+//! A body is JSON and is decoded by the model's own rules: a row that breaks
+//! one is refused with all of them (422), never one at a time.
+use @std.errors.{Error}
+use @std.http_message.message.{Method}
+use @std.http.http.{Request, Unrouted, Response, text, status}
+use @std.http.route.{Route, Mounted, fixed, routed, mounted}
+use @std.json.{Json, Field, field, to_text}
+use @std.db.error.{ModelError}
+use @std.sqlite.error.{SqlError}
+use @std.validate.{Issue, Issues}
+
+grammar Whole = "/{id: int}"
+grammar Restored = "/{id: int}/restore"
+
+/// One of a model's doors: what `without:` names.
+export enum Door {
+    List
+    Find
+    Create
+    Update
+    Remove
+    Trash
+    Restore
+}
+
+/// Why a door answered no row.
+export enum Failure {
+    Invalid(issues: Issues)
+    Missing
+    Conflict(why: string)
+    Broken(why: string)
+}
+
+/// A model's operations as closures, each already over its database.
+export type Wire = {
+    soft: bool,
+    list: fn() -> Result<Json, Failure>,
+    find: fn(int) -> Result<Json, Failure>,
+    create: fn(string) -> Result<Json, Failure>,
+    update: fn(int, string) -> Result<Json, Failure>,
+    remove: fn(int) -> Result<int, Failure>,
+    trash: fn() -> Result<Json, Failure>,
+    restore: fn(int) -> Result<Json, Failure>,
+}
+
+type Opened = { door: Door, route: Route }
+
+/// The routes of a model's doors, but the ones left out.
+export fn crud_routes(w: Wire, without: List<Door>) -> Mounted {
+    mounted([d.route for d in opened(w) if !without.any(it == d.door)])
+}
+
+fn opened(w: Wire) -> List<Opened> {
+    [
+        Opened {
+            door: .List,
+            route: fixed(Method.Get, "/", (q: Request<Unrouted>) -> answered(w.list())),
+        },
+        Opened {
+            door: .Create,
+            route: fixed(Method.Post, "/", (q: Request<Unrouted>) -> bodied(q, w.create)),
+        },
+        Opened {
+            door: .Find,
+            route: routed<Whole>(
+                Method.Get,
+                "/{id: int}",
+                (t: Bytes) -> Whole.parse(t),
+                (q: Request<Whole>) -> answered(w.find(q.params.id)),
+            ),
+        },
+        Opened {
+            door: .Update,
+            route: routed<Whole>(
+                Method.Patch,
+                "/{id: int}",
+                (t: Bytes) -> Whole.parse(t),
+                (q: Request<Whole>) -> bodied(q, (body: string) -> w.update(q.params.id, body)),
+            ),
+        },
+        Opened {
+            door: .Remove,
+            route: routed<Whole>(
+                Method.Delete,
+                "/{id: int}",
+                (t: Bytes) -> Whole.parse(t),
+                (q: Request<Whole>) -> removed_answer(w.remove(q.params.id)),
+            ),
+        },
+    ]
+        .concat(if w.soft { soft_doors(w) } else { [] })
+}
+
+fn soft_doors(w: Wire) -> List<Opened> {
+    [
+        Opened {
+            door: .Trash,
+            route: fixed(Method.Get, "/trash", (q: Request<Unrouted>) -> answered(w.trash())),
+        },
+        Opened {
+            door: .Restore,
+            route: routed<Restored>(
+                Method.Post,
+                "/{id: int}/restore",
+                (t: Bytes) -> Restored.parse(t),
+                (q: Request<Restored>) -> answered(w.restore(q.params.id)),
+            ),
+        },
+    ]
+}
+
+// ── Answers ─────────────────────────────────────────────────────
+
+fn answered(r: Result<Json, Failure>) -> Response {
+    match r { .Ok(j) -> Response.json(j), .Err(f) -> refused(f) }
+}
+
+fn removed_answer(r: Result<int, Failure>) -> Response {
+    match r { .Ok(_) -> status(204), .Err(f) -> refused(f) }
+}
+
+/// A door that reads a JSON body: the body's text goes to the model's reader.
+fn bodied<P>(q: Request<P>, read: fn(string) -> Result<Json, Failure>) -> Response {
+    match q.json() { .Ok(doc) -> answered(read(to_text(doc))), .Err(refusal) -> refusal }
+}
+
+fn refused(f: Failure) -> Response {
+    match f {
+        .Invalid(issues) -> Response.json(issues_json(issues)) with { status: 422 },
+        .Missing -> status(404),
+        .Conflict(why) -> text(409, why),
+        .Broken(why) -> text(500, why),
+    }
+}
+
+fn issues_json(all: Issues) -> Json {
+    Json.Obj([field("issues", Json.Arr([issue_json(i) for i in all.all]))])
+}
+
+fn issue_json(i: Issue) -> Json {
+    Json
+        .Obj(
+            [
+                field("path", Json.Str(i.path.text())),
+                field("rule", Json.Str(i.rule)),
+                field("message", Json.Str(i.message)),
+            ],
+        )
+}
+
+// ── What a model's derive calls ─────────────────────────────────
+
+/// Every row, as JSON.
+export fn listed<T>(r: Result<List<T>, SqlError>, show: fn(T) -> Json) -> Result<Json, Failure> {
+    match r {
+        .Ok(rows) -> .Ok(Json.Arr([show(row) for row in rows])),
+        .Err(e) -> .Err(sql_failure(e)),
+    }
+}
+
+/// One row, as JSON; missing when there is none.
+export fn found<T>(r: Result<T?, SqlError>, show: fn(T) -> Json) -> Result<Json, Failure> {
+    match r { .Ok(row) -> shown_or_missing(row, show), .Err(e) -> .Err(sql_failure(e)) }
+}
+
+fn shown_or_missing<T>(row: T?, show: fn(T) -> Json) -> Result<Json, Failure> {
+    let r? = row else { return .Err(.Missing) }
+    .Ok(show(r))
+}
+
+/// A body read and written as a new row.
+export fn made<T>(read: Result<T, Issues>, put: fn(T) -> Result<T, ModelError>, show: fn(T) -> Json) -> Result<
+    Json,
+    Failure,
+> {
+    match read { .Ok(row) -> written(put(row), show), .Err(issues) -> .Err(.Invalid(issues)) }
+}
+
+fn written<T>(r: Result<T, ModelError>, show: fn(T) -> Json) -> Result<Json, Failure> {
+    match r { .Ok(row) -> .Ok(show(row)), .Err(e) -> .Err(model_failure(e)) }
+}
+
+/// A body read and written over an existing row: no row changed is missing.
+export fn changed<T>(
+    read: Result<T, Issues>,
+    put: fn(T) -> Result<int, ModelError>,
+    show: fn(T) -> Json,
+) -> Result<Json, Failure> {
+    match read { .Ok(row) -> kept(put(row), row, show), .Err(issues) -> .Err(.Invalid(issues)) }
+}
+
+fn kept<T>(r: Result<int, ModelError>, row: T, show: fn(T) -> Json) -> Result<Json, Failure> {
+    match r {
+        .Ok(0) -> .Err(.Missing),
+        .Ok(_) -> .Ok(show(row)),
+        .Err(e) -> .Err(model_failure(e)),
+    }
+}
+
+/// A row removed; missing when there is none.
+export fn dropped<T>(r: Result<T?, SqlError>, drop: fn(T) -> Result<int, ModelError>) -> Result<
+    int,
+    Failure,
+> {
+    match r { .Ok(row) -> dropped_row(row, drop), .Err(e) -> .Err(sql_failure(e)) }
+}
+
+fn dropped_row<T>(row: T?, drop: fn(T) -> Result<int, ModelError>) -> Result<int, Failure> {
+    let r? = row else { return .Err(.Missing) }
+    counted(drop(r))
+}
+
+fn counted(r: Result<int, ModelError>) -> Result<int, Failure> {
+    match r { .Ok(n) -> .Ok(n), .Err(e) -> .Err(model_failure(e)) }
+}
+
+/// A removed row brought back; missing when the trash holds none by this key.
+export fn revived<T>(
+    r: Result<List<T>, SqlError>,
+    id: int,
+    key: fn(T) -> int,
+    back: fn(T) -> Result<int, SqlError>,
+    show: fn(T) -> Json,
+) -> Result<Json, Failure> {
+    match r {
+        .Ok(rows) -> restored(rows.find(key(it) == id), back, show),
+        .Err(e) -> .Err(sql_failure(e)),
+    }
+}
+
+fn restored<T>(row: T?, back: fn(T) -> Result<int, SqlError>, show: fn(T) -> Json) -> Result<
+    Json,
+    Failure,
+> {
+    let r? = row else { return .Err(.Missing) }
+    match back(r) { .Ok(_) -> .Ok(show(r)), .Err(e) -> .Err(sql_failure(e)) }
+}
+
+fn sql_failure(e: SqlError) -> Failure { .Broken(e.describe().message) }
+
+fn model_failure(e: ModelError) -> Failure {
+    match e {
+        .Invalid(issues) -> .Invalid(issues),
+        .Unique(_, _, _) or .Ambiguous(_, _, _) or .Referenced(_, _) -> .Conflict(e.describe().message),
+        .Other(sql) -> .Broken(e.describe().message),
+    }
+}
+
+// ── Json of a row's fields ──────────────────────────────────────
+
+/// What a door answers on a model that has no such door: never read.
+export fn empty() -> Result<Json, Failure> { .Ok(Json.Arr([])) }
+
+export fn json_obj(fields: List<Field>) -> Json { Json.Obj(fields) }
+
+export fn entry(key: string, value: Json) -> Field { field(key, value) }
+
+export fn jint(n: int) -> Json { Json.Int(n) }
+
+export fn jstr(s: string) -> Json { Json.Str(s) }
+
+export fn jbool(b: bool) -> Json { Json.Bool(b) }
+
+export fn jfloat(x: float) -> Json { Json.Float(x) }
+
+export fn jint_opt(n: int?) -> Json { if n == null { Json.Null } else { Json.Int(n!) } }
+
+export fn jstr_opt(s: string?) -> Json { if s == null { Json.Null } else { Json.Str(s!) } }
+
+export fn jbool_opt(b: bool?) -> Json { if b == null { Json.Null } else { Json.Bool(b!) } }
+
+export fn jfloat_opt(x: float?) -> Json { if x == null { Json.Null } else { Json.Float(x!) } }
