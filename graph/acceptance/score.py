@@ -605,10 +605,36 @@ def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, 
             "ms": int((time.time() - started) * 1000), "got": answer["status"], **record}
 
 
+def streamed(command, payloads, timeout=None, log=None):
+    """Runs a batch hook (`--stream`: a JSON array in, one JSON line
+    {"index", "result"} out per payload as it completes) and yields each
+    (index, result) as it arrives, so a cut run keeps what finished."""
+    process = subprocess.Popen(shlex.split(command) + ["--stream"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True)
+    process.stdin.write(json.dumps(payloads))
+    process.stdin.close()
+    deadline = time.time() + timeout if timeout else None
+    try:
+        for line in process.stdout:
+            if line.strip():
+                answer = json.loads(line)
+                yield answer["index"], answer["result"]
+            if deadline and time.time() > deadline:
+                raise subprocess.TimeoutExpired(command, timeout)
+        stderr = process.stderr.read()
+        if log is not None:
+            log.append(stderr[-4000:])
+        if process.wait() != 0:
+            raise RuntimeError(f"hook exit {process.returncode}: {stderr.strip()[:300]}")
+    finally:
+        if process.poll() is None:
+            process.kill()
+
+
 def prefill(binary, fixture, mode, hooks, scratch, checkpoint, trace=None):
     """Extracts every source the checkpoints read that the cache lacks, in one
-    call of the extractor over a JSON array, so a resumed run pays its model
-    loads once; each complete result is cached under the key scoring asks."""
+    streamed call of the extractor, so a resumed run pays its model loads once;
+    each complete result is cached, under the key scoring asks, as it arrives."""
     if mode in ORACLE_FACTS or not CACHE or not hooks.get("extractor"):
         return
     app = App(binary, scratch / "prefill.db", scratch)
@@ -621,15 +647,17 @@ def prefill(binary, fixture, mode, hooks, scratch, checkpoint, trace=None):
     if not missing:
         return
     per_source = extract_timeout()
-    log, started = [], time.time()
-    results = run_hook(hooks["extractor"].replace("{schema}", str(schema_file)), [envelope(s) for _, s in missing],
-                       timeout=per_source * len(missing) if per_source else None, log=log)
-    for (k, _), result in zip(missing, results):
-        if result.get("status") == "complete":
-            CACHE.put("extractions", k, result)
+    log, started, complete = [], time.time(), 0
+    record = {"batch": [s["id"] for _, s in missing], "log": log}
     if trace is not None:
-        trace.append({"batch": [s["id"] for _, s in missing], "batch_ms": int((time.time() - started) * 1000),
-                      "complete": sum(r.get("status") == "complete" for r in results), "log": log})
+        trace.append(record)
+    for index, result in streamed(hooks["extractor"].replace("{schema}", str(schema_file)),
+                                  [envelope(s) for _, s in missing],
+                                  timeout=per_source * len(missing) if per_source else None, log=log):
+        if result.get("status") == "complete":
+            CACHE.put("extractions", missing[index][0], result)
+            complete += 1
+        record.update(batch_ms=int((time.time() - started) * 1000), complete=complete)
 
 
 def score(binary, fixture, mode, hooks, scratch, only=None, trace=None):
