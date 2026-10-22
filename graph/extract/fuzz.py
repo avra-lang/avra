@@ -22,8 +22,7 @@ class Enc:
 class Sc:
     calls = 0
     def begin(self, s): pass
-    def pick(self, ctx, q, opts, tail=()):
-        return self.choose(ctx, q, list(opts) + list(tail))
+    pick = c.Scorer.pick
     def choose(self, ctx, q, opts):
         if not 2 <= len(opts) <= c.MAX_OPTIONS: raise ValueError(f"{len(opts)} options for {q[:60]}")
         self.calls += 1

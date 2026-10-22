@@ -44,6 +44,8 @@ MAX_OPTIONS = len(string.ascii_uppercase)
 GENERATE_BUDGET = parameter("generate_budget")
 ABSTAIN = object()
 SOCKET = os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
+TIME_EXPRESSION = "time expression"
+TIME_GLOSS = "a date, day or time the text names"
 QUOTATION = "quotation"
 QUOTATION_GLOSS = "words quoted from someone, inside quotation marks, without the marks"
 STATEMENT = "statement"
@@ -100,6 +102,8 @@ def is_enum(p):
 
 def route(p):
     """How a property's value can be evidenced, or None when it cannot."""
+    if p.get("time"):
+        return "time"
     shape = p["shape"]
     inner = shape.get("optional") if isinstance(shape, dict) and "optional" in shape else shape
     if is_enum(p):
@@ -203,6 +207,8 @@ class Plan:
                     fields[f"{model}.{p['name']}"] = f"the {p['name']} of a {model}: {gloss(self.models[model])}"
         if fields:
             q["fields"] = ("mentions", text, fields)
+        if any(route(p) == "time" for m in self.records for p in self.models[m]["properties"]):
+            q["times"] = ("mentions", text, {TIME_EXPRESSION: TIME_GLOSS})
         return q
 
     def free_labels(self, name):
@@ -786,6 +792,8 @@ class Cascade:
             pr = self.llm.choose(ctx, f"For this {model}, is {name} true or false according to the sentence?", ["true", "false"] + optional)
             k = max(range(len(pr)), key=lambda i: pr[i])
             return self.field(name, k == 0, [(a, b)], score=pr[k]) if k < 2 and pr[k] >= ACCEPT_RECORD else None
+        if kind == "time":
+            return self.time_field(model, p, ctx, a, b)
         if kind == "number" and not self.declared_time(model, name):
             nums = [(x.start(), x.end()) for x in re.finditer(r"\d[\d,]*", self.t.s[a:b])]
             nums = [(a + x, a + y) for x, y in nums]
@@ -798,6 +806,48 @@ class Cascade:
             x, y = nums[k]
             return self.field(name, int(self.t.s[x:y].replace(",", "")), [(x, y)], score=pr[k])
         return None
+
+    def time_field(self, model, p, ctx, a, b):
+        """A declared time field: the scorer picks the time expression, then
+        what it means among calendar candidates around the source's anchor.
+        The model never writes a date; the field holds the declared encoding."""
+        import timex
+
+        name = p["name"]
+        found = [(x["start"], x["end"]) for x in self.spans.get("times", {}).get(TIME_EXPRESSION, []) if a <= x["start"] and x["end"] <= b]
+        if not found:
+            return None
+        pr = self.llm.pick(ctx, f"In this {model}, which words give the {name}?", [self.t.s[x:y] for x, y in found], ["not stated"])
+        k = max(range(len(pr)), key=lambda i: pr[i])
+        if k == len(found) or pr[k] < ACCEPT_RECORD:
+            return None
+        x, y = found[k]
+        source = self.request["input"]
+        anchor = source.get("authored_at_ms") or source["received_at_ms"]
+        options = timex.candidates(anchor, timex.zone_for(self.request))
+        written = next(o["label"] for o in options if o["normalization"] and o["normalization"]["timex_type"] == "TIME")
+        labels = [o["label"] for o in options]
+        pt = self.llm.pick(ctx + f"\nThe text was written {written}.", f'Which date or time does "{self.t.s[x:y]}" mean?', labels[:-2], labels[-2:])
+        j = max(range(len(pt)), key=lambda i: pt[i])
+        norm = timex.chosen(options, j)
+        value = self.encoded_time(p["time"]["encoding"], norm) if norm and pt[j] >= ACCEPT_RECORD else None
+        if value is None:
+            return None
+        f = self.field(name, value, [(x, y)], score=pr[k] * pt[j])
+        f["normalization"] = norm
+        return f
+
+    def encoded_time(self, encoding, norm):
+        """A TIMEX3 value in a field's declared encoding, or None when the
+        normalization does not say enough (a day is no instant)."""
+        import datetime
+
+        if encoding == "iso_date":
+            return norm["value"][:10]
+        if norm["timex_type"] != "TIME":
+            return None
+        at = datetime.datetime.fromisoformat(norm["value"].replace("Z", "+00:00"))
+        return int(at.timestamp() * 1000) if encoding == "unix_millis" else norm["value"]
 
     def within(self, record, a, b):
         """Whether every span a structure record found lies in [a, b)."""
@@ -1012,6 +1062,7 @@ def extract(req, models, spans):
         llm = models.llm
         started, calls = time.time(), llm.calls
         c = Cascade(plan, spans, llm)
+        c.request = req
         c.run(req["input"])
         reframe(c)
         records, frames = finish(c.records, c.frames)
