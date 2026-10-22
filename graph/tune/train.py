@@ -130,6 +130,16 @@ class Metrics:
         if now - self.started > PARAMS["max_hours"] * 3600:
             raise Stop(f"time cap of {PARAMS['max_hours']} h")
 
+    def heartbeat(self, total):
+        """An evaluation's progress, one line per tenth of its batches, so a long one reads as alive."""
+        done = [0]
+
+        def advance(*_):
+            done[0] += 1
+            if done[0] % max(1, total // 10) == 0:
+                self.write("eval", None, note=f"evaluating: batch {done[0]}/{total}")
+        return advance
+
     def counted(self, iterate):
         """mlx-lm's batch iterator, counting every token a training step reads."""
         def batches(*args, **kw):
@@ -185,7 +195,8 @@ def main():
 
     trainer.maybe_set_recommended_wired_limit = lambda: None  # wiring memory would take it from the other work
     evaluate = trainer.evaluate
-    trainer.evaluate = lambda **kw: evaluate(**{**kw, "batch_size": PARAMS["val_batch"], "num_batches": -1})
+    trainer.evaluate = lambda **kw: evaluate(**{**kw, "batch_size": PARAMS["val_batch"], "num_batches": -1,
+                                                "progress_callback": metrics.heartbeat(len(kw["dataset"]) // PARAMS["val_batch"])})
     lora.train = functools.partial(trainer.train, loss=letter_loss, iterate_batches=metrics.counted(trainer.iterate_batches))
     every = PARAMS["steps_per_eval"]
     try:
@@ -222,7 +233,8 @@ def main():
     shutil.copy(out / "adapter_config.json", out / "best" / "adapter_config.json")
     model.load_weights(str(out / "best" / "adapters.safetensors"), strict=False)
     whole = evaluate(model=model, dataset=CacheDataset(full), loss=letter_loss,
-                     batch_size=PARAMS["val_batch"], num_batches=-1, max_seq_length=longest)
+                     batch_size=PARAMS["val_batch"], num_batches=-1, max_seq_length=longest,
+                     progress_callback=metrics.heartbeat(len(full) // PARAMS["val_batch"]))
     best["full_heldout_loss"] = float(whole)
     (out / "best.json").write_text(json.dumps(best, indent=1))
     metrics.write("done", a.iters, val_loss=float(whole), note=f"best step {it}; val_loss here is the full held-out set ({len(full)}) on the best adapter; sample loss {loss:.4f}")
