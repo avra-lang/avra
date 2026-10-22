@@ -117,11 +117,8 @@ pages, benchmarks, fuzz targets, scheduled jobs.
 2. **A member never reads its own collection at compile time** (a cycle).
    `error: \`meta\` is collected into \`rules\`, so it cannot read \`rules\` while compiling`
 3. **Order is declared.** `error: a collection declares its order — \`by …\``
-4. **Across packages, exported declarations only — except the root's.**
-   `closure` is the closure of the ROOT being built, wherever the collect is
-   declared, so a library's collect gathers the program's private members; a
-   dependency's privates stay its own. A library checked alone is its own root
-   and gathers its own closure. `in self`/`in package` may see private ones.
+4. **Across packages, exported declarations only.** `in self`/`in package`
+   may see private ones.
 5. **Keys are unique** under `keyed`, naming both files.
 6. **Coherence, as the orphan-impl law already holds for impls:** only the
    package that declares a collection, or the one declaring the item's type,
