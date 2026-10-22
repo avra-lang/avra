@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 export AVRA_WATCH_HELD=1
 export AVRA_MAX_COMPILES=0
 BIN="$(pwd)/build/avra"
-R="$(pwd)/build/db-corpus"; fails=0; steps=0
+R="$(pwd)/build/db-corpus"
 rm -rf "$R" && mkdir -p "$R/p/src/util" "$R/dep/src/sub" && git init -q "$R"
 cat > "$R/p/avra.toml" <<'TOML'
 [package]
@@ -37,8 +37,8 @@ printf '%s\n' "/// target doc" "export fn target() -> int { 1 }" "export fn help
 printf '%s\n' "export fn other() -> int { 2 }" > "$R/p/src/util/b.av"
 printf '%s\n' "use a.{target, helper}" "use @dc.dep.{shared}" "println(\"\${target() + helper() + shared()}\")" > "$R/p/src/main.av"
 
-say() { steps=$((steps + 1)); echo "db-corpus: $1"; }
-fail() { fails=$((fails + 1)); echo "db-corpus: FAILED — $1"; }
+who=db-corpus
+. tools/lib/steps.sh
 # a tree built: its binary's defined symbols (sorted), what the program prints and its status
 built() {
     rm -f "$1/src/main"
@@ -104,5 +104,4 @@ step "a body edited beside a held module that carries a host fn"
 rm "$R/p/src/host.av"
 step "and the host fn removed"
 
-[ $fails -eq 0 ] || { echo "db-corpus: $fails of $steps FAILED"; exit 1; }
-echo "db-corpus: $steps steps, the warm answers equal the cold ones"
+verdict "the warm answers equal the cold ones"

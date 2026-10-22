@@ -29,6 +29,10 @@ fn same_tree(source: string, projected: string) -> bool {
     true
 }
 
+// Canonical input in the printer's block layout: fmt of each is itself.
+const WITHIN_SECS: string = "use @std.time.{secs}\nlet w = within secs(10) {\n    1\n}\nw"
+const WITHIN_MS: string = "use @std.time.{ms}\nlet w = within ms(5) {\n    1\n}\nw"
+
 spec "source text" {
     given "a host fn — an `extern fn` with a body" {
         then "it prints as it was written" {
@@ -56,6 +60,14 @@ spec "source text" {
         }
         then "beside an import, each keeps its own form" {
             stable("use util.{twice}\n\nexport use util.{heavy}\n")
+        }
+    }
+    given "a within limit is spelled as written" {
+        then "a span call is canonical: fmt of it is itself" {
+            projected(WITHIN_SECS) == WITHIN_SECS
+        }
+        then "a millisecond span is canonical: fmt of it is itself" {
+            projected(WITHIN_MS) == WITHIN_MS
         }
     }
     given "a small program" {
@@ -466,6 +478,18 @@ let one_when = when { _ -> 1 }
             kept(
                 "fn wrapped(t: int) -> int {\n    quote {\n        fn f() -> int { \${t} }\n        // a trailing remark\n    }\n}",
             )
+        }
+    }
+    given "a `within` — its limit as written" {
+
+        then "a method-call limit prints whole, never the receiver it hangs on" {
+            kept("let x = within bounds.narrower(2) { f() }")
+        }
+        then "a field-read limit prints whole, never the record it hangs on" {
+            kept("let x = within self.timing.idle { f() }")
+        }
+        then "the printed form is the same tree, so formatting twice moves nothing" {
+            stable("let x = within bounds.narrower(2) { f() }")
         }
     }
     given "the width layout — a construct with no written form of its own decides against canonical_width" {

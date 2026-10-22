@@ -36,7 +36,7 @@ cd "$(dirname "$0")/.."
 export AVRA_WATCH_HELD=1
 export AVRA_MAX_COMPILES=0
 
-R=build/store-attacks; fails=0; steps=0
+R=build/store-attacks
 rm -rf "$R" .avra-cache && mkdir -p $R/p/src
 cat > $R/p/avra.toml <<'TOML'
 [package]
@@ -58,8 +58,8 @@ cat > $R/p/src/more.av <<'AV'
 export fn helper() -> int { 4 }
 AV
 
-say() { steps=$((steps + 1)); echo "store-attacks: $1"; }
-fail() { fails=$((fails + 1)); echo "store-attacks: FAILED — $1"; }
+who=store-attacks
+. tools/lib/steps.sh
 
 # A run's own words: no trace, and none of the shim's — its `watch:` reports
 # and the warning a shell with no terminal prints for job control.
@@ -247,11 +247,10 @@ say "§6.8 another compiler (a one-query rebuild recomputes that query only)"
 fail "the families are keyed per FAMILY (sig by its producer's code hashes, every other by the compiler's print), so a rebuild that changed one query rewrites the whole store — the per-query recompute is S2's, DB 05b's receipt"
 
 say "§6.8 another compiler, another C: a compiler whose runtime C differs reads none of the first one's module records"
-steps=$((steps+1))
 if sh tools/db06_step5_witness.sh > "$R/step5.log" 2>&1; then
-    [ "$(tail -1 "$R/step5.log")" = PASS ] || { fails=$((fails+1)); echo "FAIL  §6.8 another compiler, another C: the witness ended without its verdict"; }
+    [ "$(tail -1 "$R/step5.log")" = PASS ] || fail "§6.8 another compiler, another C: the witness ended without its verdict"
 else
-    fails=$((fails+1)); echo "FAIL  §6.8 another compiler, another C: $(tail -1 "$R/step5.log")"
+    fail "§6.8 another compiler, another C: $(tail -1 "$R/step5.log")"
 fi
 
 # ── §6.8 a claim conflict ──
@@ -290,5 +289,4 @@ checked cc_read
 agrees cc_read "after a claim conflict"
 [ "$(heard cc_read claim-conflict)" -ge 1 ] || fail "a claim conflict was not reported when two segments held different values for one key"
 
-echo "store-attacks: $steps attack(s), $fails failure(s)"
-[ "$fails" = 0 ]
+verdict

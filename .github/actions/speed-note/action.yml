@@ -1,0 +1,39 @@
+# A JOB'S SPEED, NOTED AGAINST MAIN'S: this run's `speed.log` collected and
+# compared with the baseline main's last run kept under `key`, and — on main,
+# when the job passed — merged into that baseline and kept for the next run
+# (tools/speed_note.sh). Runs last, under `if: always()`.
+name: speed-note
+description: Compare a job's speed.log with main's baseline, and keep the merge on main.
+inputs:
+  key:
+    description: the baseline's cache key stem, one per job (and per shard)
+    required: true
+  save:
+    description: "'true' on main's own run when the job passed"
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: speed baseline
+      uses: actions/cache/restore@v4
+      continue-on-error: true
+      with:
+        path: speed-base.metrics
+        key: ${{ inputs.key }}-${{ github.sha }}
+        restore-keys: ${{ inputs.key }}-
+    - name: speed note
+      shell: sh
+      run: |
+        sh tools/speed_note.sh collect speed.log > speed-now.metrics
+        sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
+    - if: inputs.save == 'true' && hashFiles('speed-now.metrics') != ''
+      name: speed baseline copy
+      continue-on-error: true
+      shell: sh
+      run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
+    - if: inputs.save == 'true' && hashFiles('speed-base.metrics') != ''
+      uses: actions/cache/save@v4
+      continue-on-error: true
+      with:
+        path: speed-base.metrics
+        key: ${{ inputs.key }}-${{ github.sha }}

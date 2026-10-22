@@ -62,6 +62,7 @@ use core.{
     Mark,
     CollectKind,
     db_verified,
+    quoted_text,
 }
 use @std.relation.db.{Db, Durable, durable_db, transient}
 use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
@@ -178,7 +179,7 @@ fn run_named(f: FileId, maker: string) -> string { "${f.index} ${maker}" }
 /// a `by` key compares the kind, never the text), and where it was written.
 @derive(Fingerprint)
 @derive(Exemplar)
-export type AnnotationFact = { name: string, args: List<LitArg>, span: Span? }
+export type AnnotationFact = { name: string, args: List<LitArg>, span: Span?, named: List<NamedLit> = [] }
 
 impl AnnotationFact {
     /// `@derive(Exemplar)`'s seed.
@@ -203,14 +204,46 @@ impl LitArg {
     static fn codec_zero() -> LitArg { LitArg { text: "", kind: LitKind.Text } }
 }
 
+/// An argument written `label: value`: its label and its literal.
+@derive(Fingerprint)
+@derive(Exemplar)
+export type NamedLit = { label: string, arg: LitArg }
+
+impl NamedLit {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> NamedLit { NamedLit { label: "", arg: LitArg.codec_zero() } }
+}
+
 /// An argument's literal text, when it has one — a computed expression answers "".
+/// A list is its source spelling, each element as source writes it.
 export fn arg_text(store: SyntaxArena, e: ExprId) -> string {
     let expr = store.expr(e)
     match expr {
         .VariantLit(name, _) -> name.of,
+        _ -> scalar_text(expr) ?? list_text(store, expr) ?? store.ident_name(e) ?? "",
+    }
+}
+
+/// A text, int or bool literal's text.
+fn scalar_text(e: Expr) -> string? {
+    let t? = e.text_of() else { return int_text(e) ?? bool_text(e) }
+    t
+}
+
+/// A list literal as source spells it.
+fn list_text(store: SyntaxArena, e: Expr) -> string? {
+    let xs? = e.elems_of() else { return null }
+    "[" + [source_text(store, x) for x in xs].join(", ") + "]"
+}
+
+/// A literal inside a list, as source spells it: text quoted, a variant dotted.
+fn source_text(store: SyntaxArena, e: ExprId) -> string {
+    let expr = store.expr(e)
+    match expr {
+        .VariantLit(name, _) -> ".${name.of}",
         _ -> {
-            let t? = expr.text_of() else { return int_text(expr) ?? bool_text(expr) ?? store.ident_name(e) ?? "" }
-            t
+            let t? = expr.text_of() else { return arg_text(store, e) }
+            quoted_text(t)
         },
     }
 }
@@ -233,12 +266,7 @@ fn bool_lit(e: Expr) -> LitArg? {
     LitArg { text: "${b}", kind: LitKind.Bool }
 }
 
-fn other_lit(store: SyntaxArena, e: ExprId) -> LitArg {
-    match store.expr(e) {
-        .VariantLit(name, _) -> LitArg { text: name.of, kind: LitKind.Other },
-        _ -> LitArg { text: store.ident_name(e) ?? "", kind: LitKind.Other },
-    }
-}
+fn other_lit(store: SyntaxArena, e: ExprId) -> LitArg { LitArg { text: arg_text(store, e), kind: LitKind.Other } }
 
 fn int_text(e: Expr) -> string? {
     let n? = e.int_of() else { return null }
@@ -253,7 +281,18 @@ fn bool_text(e: Expr) -> string? {
 /// A parsed `Annotation` as the fact a declaration keeps: its callee's args
 /// re-read as typed literals, since the fact outlives the store a held file has none of.
 fn annotation_fact(store: SyntaxArena, a: Annotation) -> AnnotationFact {
-    AnnotationFact { name: a.name, args: [arg_lit(store, e) for e in a.args], span: a.span }
+    AnnotationFact {
+        name: a.name,
+        args: [arg_lit(store, e) for e in a.args if store.arg_label(e) == null],
+        span: a.span,
+        named: flatten([some_list(named_lit(store, e)) for e in a.args]),
+    }
+}
+
+/// An argument written `label: value`, as the fact keeps it.
+fn named_lit(store: SyntaxArena, e: ExprId) -> NamedLit? {
+    let label? = store.arg_label(e) else { return null }
+    NamedLit { label: label, arg: arg_lit(store, store.unnamed(e)) }
 }
 
 /// THE FINGERPRINT IS THE CODEC'S CHECKSUM: the derived fold covers EVERY field, so the
@@ -390,7 +429,7 @@ fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
         },
         doc: if owns { store.doc_comment(x.stmt) } else { null },
         annotations: if owns { [annotation_fact(store, a) for a in store.annotations_of(x.stmt)] } else { [] },
-        mut_seats: if readable && x.kind is .Fn { mut_seat_names(store, x.stmt) } else { [] },
+        mut_seats: if readable { sealed_names(store, x) } else { [] },
         trait_args: if readable && x.kind is .Impl { [spelled(a) for a in store.trait_args_of(x.stmt)] } else { [] },
         hosted: readable && x.kind is .Fn && store.is_host_fn(x.stmt),
         variadic: if owns { [j for j, p in store.fn_parts(x.stmt)?.params ?? [] if p.variadic].first() } else { null },
@@ -412,6 +451,42 @@ fn told_of(f: DeclFacts, path: string) -> int {
 /// The type names a fn's own `mut` parameters write, from its parse.
 fn mut_seat_names(store: SyntaxArena, s: StmtId) -> List<string> {
     [pp.ty!.name for pp in store.fn_parts(s)?.params ?? [] if pp.promises.mutable && pp.ty != null]
+}
+
+/// The record names a declaration may seal boxed, so a read of their flatness
+/// signs it first: a fn's `mut` seats, and an impl's target when a method may
+/// write through `self` — a superset of the impl law's own judgement, never less.
+fn sealed_names(store: SyntaxArena, x: Decl) -> List<string> {
+    match x.kind {
+        .Fn -> mut_seat_names(store, x.stmt),
+        .Impl -> if impl_may_seal(store, x.stmt) { some_list(store.impl_parts(x.stmt)?.target) } else { [] },
+        .Record or .Named or .Alias or .Enum or .Method or .Default or .Case or .CollectEnum or .Const or .Collect or .State or .Trait or .Syntax or .Main or .Builtin -> [],
+    }
+}
+
+/// Whether an impl's method is a `mut fn`, takes a `mut` seat, or assigns
+/// through `self` anywhere the impl spans.
+fn impl_may_seal(store: SyntaxArena, s: StmtId) -> bool {
+    (store.impl_parts(s)?.fns ?? []).any((f: StmtId) -> method_seals(store, f)) ||
+        assigns_self_within(store, store.stmt_span(s))
+}
+
+/// Whether a method is a `mut fn` or takes a `mut` seat.
+fn method_seals(store: SyntaxArena, f: StmtId) -> bool {
+    store.is_mutating(f) || (store.fn_parts(f)?.params ?? []).any(it.promises.mutable)
+}
+
+/// Whether an assignment rooted at `self` stands inside `at`.
+fn assigns_self_within(store: SyntaxArena, at: Span?) -> bool {
+    let outer? = at else { return false }
+    store.stmt_ids().any((a: StmtId) -> self_assign_inside(store, a, outer))
+}
+
+fn self_assign_inside(store: SyntaxArena, a: StmtId, outer: Span) -> bool {
+    let t? = store.assign_target(a) else { return false }
+    let root? = store.place_root(t) else { return false }
+    let sp? = store.stmt_span(a) else { return false }
+    store.expr(root) is .Receiver && sp.lo >= outer.lo && sp.hi <= outer.hi
 }
 
 /// The facts a declaration minted with no store wears: a synthetic or builtin body has no
@@ -1994,23 +2069,28 @@ impl Decls {
     }
 
     /// A REGISTRY match over `CollectScope`: `self` is the owner's own
-    /// file, `package` the owner's own package, `closure` everything
-    /// admitted — ACROSS PACKAGES, EXPORTED DECLARATIONS ONLY
-    /// (docs/2026_09_22_COLLECTIONS.md §4.4): a declaration in the
-    /// owner's OWN package is seen either way, private ones included,
-    /// the same as `self`/`package` already see; one a DIFFERENT
-    /// package holds must have said `export`, or a dependency could
-    /// silently hand a program its own unexported internals. An
-    /// unknown scope was already refused at `check_collect` — it
-    /// gathers nothing, honestly.
+    /// file, `package` the owner's own package, `closure` the closure of
+    /// the ROOT being built, wherever the collect is declared
+    /// (docs/2026_09_22_COLLECTIONS.md §4.4). Across packages it sees
+    /// EXPORTED declarations, plus every declaration of the owner's own
+    /// package and of the ROOT's: the closure is the root's, so a
+    /// library's collect gathers the program's private members, while a
+    /// DEPENDENCY's privates stay its own. A library checked alone is its
+    /// own root, so it gathers its own closure. An unknown scope was
+    /// already refused at `check_collect` — it gathers nothing, honestly.
     fn in_scope(d: Decl, scope: CollectScope, owner: FileId) -> bool {
         match scope {
             .Self -> same_file(d.file, owner),
             .Package -> self.package_of_file(d.file) == self.package_of_file(owner),
-            .Closure -> d.exported || self.package_of_file(d.file) == self.package_of_file(owner),
+            .Closure -> d.exported ||
+                self.of_root(d.file) ||
+                self.package_of_file(d.file) == self.package_of_file(owner),
             .UnknownScope(_) -> false,
         }
     }
+
+    /// Whether `f` is the root package's own: its module carries no package prefix.
+    fn of_root(f: FileId) -> bool { package_of_module(self.module_name(self.file(f).module_id)).is_empty() }
 
     fn package_of_file(f: FileId) -> string {
         self.package_named(self.module_name(self.file(f).module_id))
@@ -3098,7 +3178,9 @@ impl Decls {
         if self.is_extern(d) { return x.name }
         let local_name = match x.kind {
             .Method -> "${x.owner}.${self.method_key(d)}",
-            .Default -> "${x.owner}.${x.name}\$default",
+            // A default inherits its actual parent's complete identity:
+            // private-file separation and a method's own key included.
+            .Default -> { return "${self.symbol(x.parent!)}.${x.name}\$default" },
             .Case -> "${stem_of(self.file(x.file).path)}\$case${x.root?.index ?? x.stmt.index}",
             .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin or .Collect or .CollectEnum or .State -> x.name,
         }
@@ -3117,7 +3199,8 @@ impl Decls {
         let apart = (self.apart_of.get())(x.file)
         if apart.is_empty() { return false }
         match x.kind {
-            .Method or .Default -> apart.any((o) -> self.owns_member(o, x)),
+            .Default -> x.parent != null && self.apart_here(x.parent!),
+            .Method -> apart.any((o) -> self.owns_member(o, x)),
             .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Case or .Builtin or .Collect or .CollectEnum or .State -> apart.any(same_decl(it, d)),
         }
     }

@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by make store-witnesses
 # `MEMCAP=<memcap.sh> sh tools/witness_callee_edit.sh`
 #
 # A CALLER'S OBJECT FOLLOWS ITS CALLEE'S BODY. `main` settles a constant from `f`, a

@@ -1,0 +1,86 @@
+// `parse` against the reader it was rebuilt from (tests/support/old_parse.av,
+// frozen), over every prefix, every single-octet deletion and every single-octet
+// replacement of a fixed corpus: the same value, or the same words and offset.
+// A change to the scanner meets this before it meets anyone else. There is no
+// seed: the corpus and the replacements are fixed lists, so a run is the same
+// every time.
+use @std.json.{parse, to_text}
+use @std.json.tests.support.{old_parse, old_text}
+
+const docs: List<string> = [
+    "{\"a\":[1,2.5,-3e2,true,false,null],\"b\":{\"c\":\"x\\ny\\u0041\\ud83d\\ude00\"},\"d\":[]}",
+    "[{},[],\"\",0,-0,1E5,0.5,{\"k\":{\"k\":[[]]}}]",
+    " \t\n{ \"a\" : 1 , \"b\" : [ 1 , 2 ] } \n",
+    "\"plain\"",
+    "123456789012345678901",
+    "1.5e999",
+    "[\"\\q\"]",
+    "{\"a\":01}",
+    "nulll",
+    "tru",
+    "[\"é😀\",{\"é\":\"\\ud800\"}]",
+    "é",
+    "[1,é]",
+    "{\"a\":\"é\nx\"}",
+]
+
+const swaps: List<string> = [
+    "{",
+    "}",
+    "[",
+    "]",
+    ",",
+    ":",
+    "\"",
+    "\\",
+    "0",
+    "-",
+    "+",
+    "e",
+    ".",
+    "t",
+    "n",
+    "x",
+    " ",
+    "\n",
+]
+
+fn now(text: string) -> string {
+    match parse(text) { .Ok(j) -> "ok " + to_text(j), .Err(e) -> "err " + e.describe().message }
+}
+
+fn before(text: string) -> string {
+    match old_parse(text) {
+        .Ok(j) -> "ok " + old_text(j),
+        .Err(e) -> "err " + e.describe().message,
+    }
+}
+
+/// Whether every octet is ASCII: an error naming a lone octet of a multi-byte
+/// character is the one place the rebuilt parse is deliberately better (the whole character).
+fn ascii(s: string) -> bool {
+    let b = s.bytes()
+    (0..b.length).all((k) -> b.at(k) < 128)
+}
+
+fn variants(d: string) -> List<string> {
+    [d.substring(0, j) for j in 0..d.length]
+        .concat([d.substring(0, j) + d.substring(j + 1, d.length) for j in 0..d.length])
+        .concat([d.substring(0, j) + s + d.substring(j + 1, d.length) for j in 0..d.length for s in swaps])
+        .concat([d])
+}
+
+fn disagreements() -> List<string> {
+    [v for d in docs for v in variants(d) if v.bytes().text() != null &&
+        now(v) != before(v) &&
+        (now(v).starts_with("ok") || before(v).starts_with("ok") || ascii(now(v)))]
+}
+
+spec "std/json — the rebuilt parse reads and refuses as the one it replaces" {
+    given "a corpus of cut, deleted and replaced documents" {
+        then "agrees on every one" {
+            let first = disagreements().first() ?? "{}"
+            first + " => " + now(first) == first + " => " + before(first)
+        }
+    }
+}

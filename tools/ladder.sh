@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: --self-test
 # BUILDS A LADDER: each rung's tree, in a worktree of its own, with the compiler of the rung before it, and
 # answers the last product's path. The one definition CI's prepare and a lane's Sprite both call.
 #

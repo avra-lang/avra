@@ -1,0 +1,123 @@
+//! A table's SHAPE: the facts the database is told about each column, and
+//! the two texts they become — the column's DDL and its line in the shape
+//! text a table is recorded under. One definition renders both and reads
+//! the second back, so DDL, recorded shape and a diff between shapes
+//! cannot say different things.
+//!
+//! A shape text is the table's name, then one line per column in column-name
+//! byte order: `name|TYPE|null|key|unique|default|ref|on_delete`, `-` for
+//! an absent fact, so the text is the same for the same model however its
+//! fields are ordered and changes when any column fact does.
+
+/// EVERYTHING THE DATABASE IS TOLD ABOUT ONE COLUMN.
+export type ColumnFacts = {
+    name: string,
+    sql_type: string,
+    not_null: bool = false,
+    key: bool = false,
+    unique: bool = false,
+    default: string? = null,
+    refs: string? = null,
+    on_delete: string? = null,
+}
+
+/// A table as recorded: its name and its columns.
+export type Shape = { name: string, columns: List<ColumnFacts> }
+
+/// Every identifier written into SQL text is double-quoted,
+/// unconditionally — a field or type named after a SQL keyword
+/// (`order`, `group`, `table`) is a real Avra name and must stay one.
+export fn quoted(name: string) -> string { "\"${name}\"" }
+
+export fn column_ddl(c: ColumnFacts) -> string {
+    let key = if c.key { " PRIMARY KEY AUTOINCREMENT" } else { "" }
+    let required = if c.not_null { " NOT NULL" } else { "" }
+    let fallback = if c.default == null { "" } else { " DEFAULT ${c.default!}" }
+    let distinct = if c.unique { " UNIQUE" } else { "" }
+    let link = if c.refs == null { "" } else { " REFERENCES ${quoted(c.refs!)}(${quoted("id")}) ON DELETE ${c.on_delete ?? "NO ACTION"}" }
+    "${quoted(c.name)} ${c.sql_type}${key}${required}${fallback}${distinct}${link}"
+}
+
+/// The statement that makes a table of these columns, if it is not there.
+export fn create_sql(name: string, columns: List<ColumnFacts>) -> string {
+    "CREATE TABLE IF NOT EXISTS ${quoted(name)} (${[column_ddl(c) for c in columns].join(", ")})"
+}
+
+export fn shape_line(c: ColumnFacts) -> string {
+    let facts = [
+        c.name,
+        c.sql_type,
+        if c.not_null { "notnull" } else { "null" },
+        if c.key { "key" } else { "-" },
+        if c.unique { "unique" } else { "-" },
+        c.default ?? "-",
+        c.refs ?? "-",
+        c.on_delete ?? "-",
+    ]
+    facts.join("|")
+}
+
+/// The text a table is recorded under.
+export fn shape_text(name: string, columns: List<ColumnFacts>) -> string {
+    "${name}\n${ordered([shape_line(c) for c in columns]).join("\n")}"
+}
+
+/// A shape text read back; absent for text that is no shape.
+export fn shape_read(text: string) -> Shape? {
+    let lines = text.split("\n")
+    if lines.length < 2 { return null }
+    let read = [column_read(l) for l in lines.slice(1, lines.length)]
+    if read.any(it == null) { return null }
+    Shape { name: lines[0], columns: [c! for c in read] }
+}
+
+fn column_read(line: string) -> ColumnFacts? {
+    let p = line.split("|")
+    if p.length != 8 { return null }
+    let not_null? = flag(p[2], "notnull", "null") else { return null }
+    let key? = flag(p[3], "key", "-") else { return null }
+    let unique? = flag(p[4], "unique", "-") else { return null }
+    ColumnFacts {
+        name: p[0],
+        sql_type: p[1],
+        not_null: not_null,
+        key: key,
+        unique: unique,
+        default: stated(p[5]),
+        refs: stated(p[6]),
+        on_delete: stated(p[7]),
+    }
+}
+
+/// Which of two words a flag column holds; absent for any other.
+fn flag(word: string, yes: string, no: string) -> bool? {
+    when {
+        word == yes -> true
+        word == no -> false
+        _ -> null
+    }
+}
+
+/// A fact column's value, absent when it holds the absent mark.
+fn stated(word: string) -> string? { if word == "-" { null } else { word } }
+
+/// Texts in byte order, each placed after those that come before it.
+fn ordered(xs: List<string>) -> List<string> {
+    mut out: List<string> = []
+    for x in xs {
+        let at = [y for y in out if before(y, x)].length
+        out = out.slice(0, at).concat([x]).concat(out.slice(at, out.length))
+    }
+    out
+}
+
+/// Whether `a` comes before `b` by their octets; a prefix comes first.
+fn before(a: string, b: string) -> bool {
+    let x = a.bytes()
+    let y = b.bytes()
+    let shared = if x.length < y.length { x.length } else { y.length }
+    for i in 0..shared {
+        if x.at(i) != y.at(i) { return x.at(i) < y.at(i) }
+    }
+    x.length < y.length
+}

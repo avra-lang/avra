@@ -7,7 +7,7 @@
 //!
 //! `impact` is REQUIRED and is a profile over the record below; a
 //! mixed case is `destructive with { recovery: .Trash(days(30)) }`.
-use @std.time.{Duration}
+use @std.time.{Duration, ms}
 
 /// What may be shown before the authoritative receipt.
 export enum Presentation {
@@ -54,7 +54,7 @@ export const routine: Impact = Impact {
 
 export const reversible: Impact = Impact {
     presentation: .Speculative,
-    recovery: Recovery.Undo(Duration { ms: 7 * 24 * 3600 * 1000 }),
+    recovery: Recovery.Undo(ms(7 * 24 * 3600 * 1000)),
     commitment: .Authoritative,
     safeguard: .Undo,
 }
@@ -105,3 +105,48 @@ fn unguarded_loss(i: Impact) -> string? {
         null
     }
 }
+
+// ── Mandates: runtime delegation (§9.1, §11).
+
+/// What one principal may invoke unattended, granted by an issuer: the
+/// actions it covers, its window and its budget of invocations. No signing
+/// exists yet, so a mandate is a LOCAL grant (§9.3): `endorsed` stays false
+/// until a trust root signs one, and nothing here mints a release from it.
+export type Mandate = {
+    id: string,
+    issuer: string,
+    subject: string,
+    actions: List<string>,
+    granted_ms: int,
+    expires_ms: int? = null,
+    budget: int? = null,
+    endorsed: bool = false,
+}
+
+/// Whether the mandate covers `action` at `now_ms` with `spent` invocations used.
+export fn covers(m: Mandate, action: string, now_ms: int, spent: int) -> bool {
+    m.actions.contains(action) &&
+        now_ms >= m.granted_ms &&
+        (m.expires_ms == null || now_ms < m.expires_ms!) &&
+        (m.budget == null || spent < m.budget!)
+}
+
+/// Every way a mandate contradicts itself. Empty means sound.
+export fn mandate_faults(m: Mandate) -> List<string> {
+    present(
+        [
+            if m.id.is_empty() || m.issuer.is_empty() || m.subject.is_empty() { unnamed_mandate() } else { null },
+            if m.actions.is_empty() { empty_mandate(m.id) } else { null },
+            if m.expires_ms != null && m.expires_ms! <= m.granted_ms { expired_at_grant(m.id) } else { null },
+            if m.budget != null && m.budget! < 1 { spent_at_grant(m.id) } else { null },
+        ],
+    )
+}
+
+fn unnamed_mandate() -> string { "a mandate names its id, its issuer and its subject" }
+
+fn empty_mandate(id: string) -> string { "mandate `${id}` covers no action" }
+
+fn expired_at_grant(id: string) -> string { "mandate `${id}` expires before it is granted" }
+
+fn spent_at_grant(id: string) -> string { "mandate `${id}` has no budget to spend" }

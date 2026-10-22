@@ -6,12 +6,13 @@ set -u
 cd "$(dirname "$0")/.."
 A=${AVRA_BIN:-build/avra}
 export AVRA_MAX_COMPILES=0
-R=build/writes-attack; fails=0
+R=build/writes-attack
 T=build/aside/wa.$$; mkdir -p $T
 [ -e "$R" ] && mv "$R" $T/wa
 P=$R/wr; mkdir -p $P/src
 printf '[package]\nname = "wr"\nversion = "0.1.0"\n' > $P/avra.toml
-fail() { fails=$((fails + 1)); echo "FAIL  $1"; }
+who=writes-attack
+. tools/lib/steps.sh
 {
     printf 'export type C = { n: int }\nimpl C {\n'
     for i in 1 2 3 4 5 6; do printf '    export fn m%s() -> int { self.n + %s }\n' $i $i; done
@@ -25,5 +26,4 @@ sed 's/export fn m3() -> int { self.n + 3 }/export fn m3() -> int {\n        sel
 $A check $P > $T/after 2>&1
 grep -q "r3" $T/after || fail "the reader of the fn that began writing was not told"
 for i in 1 2 4 5 6; do grep -q "r$i" $T/after && fail "a reader of a fn that did not move was told: r$i"; done
-echo "writes-attack: one fn began writing, only its reader was told, $fails failed"
-[ "$fails" = 0 ]
+verdict "one fn began writing, only its reader was told"

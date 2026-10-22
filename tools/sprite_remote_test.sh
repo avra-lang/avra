@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by work_test.sh
 # FIXTURES FOR tools/sprite-remote.sh's runs — the supervisor, attach at an
 # offset, the status a run leaves, its bound, stop. They need Linux (/proc,
 # setsid) and no Sprite: AVRA_SPRITE_HOME moves every run record under

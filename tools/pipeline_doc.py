@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# tool-witness: --self-test
 """THE PIPELINE DOCUMENT'S COMMANDS RESOLVE.
 
 `docs/2026_10_11_THE_PIPELINE.md` is the one place the landing path,
