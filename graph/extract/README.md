@@ -41,7 +41,7 @@ timings, peak RSS and skipped models go to stderr.
    labelled reading of each candidate pair (both directions, every declared
    label, or "none"), modality and polarity.
 4. **Anchors**: every field quotes exact UTF-8 bytes and names its innermost
-   proposed frame (chat turns, quotations).
+   proposed frame (encoder-proposed quotations, each with a chosen speaker).
 
 ## Environment
 
