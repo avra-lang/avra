@@ -93,6 +93,10 @@ class App:
         self.calls = 0
         self.after = {}
 
+    @property
+    def argv(self):
+        return [str(self.binary), "request", "--db", str(self.db)]
+
     def call(self, request):
         self.calls += 1
         path = self.scratch / f"req-{self.calls}.json"
@@ -248,9 +252,11 @@ def bound(wanted, answer, ids, keys):
     spoken = canonical(extras(answer), ids)
     rest = {}
     for key, want in wanted.items():
-        if key in SPOKEN:
-            if key not in spoken or not contains(canonical(want, ids), spoken[key]):
+        if key in spoken:
+            if not contains(canonical(want, ids), spoken[key]):
                 return False
+        elif key in SPOKEN and not keys.get(key):
+            return False
         else:
             rest[key] = canonical(want, ids)
     options = {}
@@ -620,6 +626,12 @@ def publish_source(app, mode, hooks, source, schema, revision, trace=None):
         return f"extractor: {error}"
     admitted = app.call({"op": "admit", "source": envelope(source)["source"], "result": result})
     record["admit"] = admitted
+    if hooks.get("resolver") and "error" not in admitted:
+        try:
+            record["resolve"] = run_hook(hooks["resolver"], {"graph": app.argv, "source": envelope(source), "receipt": admitted},
+                                         timeout=extract_timeout(), log=log)
+        except (RuntimeError, ValueError, subprocess.SubprocessError) as error:
+            return f"resolver: {error}"
     return admitted.get("error")
 
 
@@ -665,7 +677,7 @@ def score_checkpoint(binary, checkpoint, questions, fixture, mode, hooks, scratc
                 else [file_digest(ORACLE / "facts.jsonl"), file_digest(ORACLE / "plans.jsonl")])
     for q in runnable:
         key = Cache.key(mode, q["id"], checkpoint, file_digest(pathlib.Path(binary)), schema["fingerprint"],
-                        hooks.get("planner"), Cache.code(hooks.get("planner")), evidence, file_digest(HERE / "score.py"))
+                        hooks.get("planner"), Cache.code(hooks.get("planner")), hooks.get("resolver"), Cache.code(hooks.get("resolver")), evidence, file_digest(HERE / "score.py"))
         follows = q.get("context", {}).get("previous_question")
         kept = CACHE.get("questions", key) if CACHE and not follows else None
         if kept:
@@ -920,6 +932,7 @@ ORACLE_FACTS = ("oracle-facts", "planner")
 SLICE_HOOKS = {
     "extractor": ("graph/extract/cascade.py", "python3 graph/extract/cascade.py --catalog {schema}"),
     "planner": ("graph/planner/plan.py", "python3 graph/planner/plan.py"),
+    "resolver": ("graph/extract/resolve.py", "python3 graph/extract/resolve.py"),
 }
 
 
@@ -940,7 +953,8 @@ def slice_ids(name):
 def slice_hooks(args):
     """Explicit flags win; otherwise a hook is on when its program exists."""
     found = {k: cmd for k, (path, cmd) in SLICE_HOOKS.items() if (ROOT / path).exists()}
-    return {"extractor": args.extractor or found.get("extractor"), "planner": args.planner or found.get("planner")}
+    return {"extractor": args.extractor or found.get("extractor"), "planner": args.planner or found.get("planner"),
+            "resolver": args.resolver or found.get("resolver")}
 
 
 def load_split(questions):
@@ -992,6 +1006,7 @@ def main():
                              "in every mode, default hooks when present")
     parser.add_argument("--extractor", help="command: source envelope JSON in, C01 extraction result JSON out")
     parser.add_argument("--planner", help="command: question + context JSON in, C01 ReadPlan JSON out")
+    parser.add_argument("--resolver", help="command: after each admission, {graph, source, receipt} in; links entities across sources by `merge`")
     parser.add_argument("--regrade", metavar="RESULTS",
                         help="grade a results file's recorded plans again with this grader (no planner runs; "
                              "extractions come from the cache); writes a new results file and prints what flipped")
@@ -1040,7 +1055,7 @@ def main():
     else:
         only = named or {q["id"] for q in fixture[3]} - held
     runs = ("oracle-facts", "planner", "e2e") if args.slice else (args.mode,)
-    hooks = slice_hooks(args) if args.slice else {"extractor": args.extractor, "planner": args.planner}
+    hooks = slice_hooks(args) if args.slice else {"extractor": args.extractor, "planner": args.planner, "resolver": args.resolver}
     before = {}
     if args.regrade:
         if args.heldout:
@@ -1048,7 +1063,9 @@ def main():
         old = json.loads(pathlib.Path(args.regrade).read_text())
         before = old["questions"]
         REPLAY.update({q: r["planned"] for q, r in before.items() if r.get("planned")})
-        runs, hooks = (old["mode"],), {**old["hooks"], "planner": "replay " + pathlib.Path(args.regrade).name}
+        runs = (old["mode"],)
+        hooks = {**old["hooks"], **{k: getattr(args, k) for k in ("extractor", "resolver") if getattr(args, k)},
+                 "planner": "replay " + pathlib.Path(args.regrade).name}
         only = only & set(REPLAY)
     failed = False
     for mode in runs:
