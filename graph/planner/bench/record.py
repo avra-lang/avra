@@ -12,6 +12,7 @@ options it was offered, so labels are written against what the planner
 actually asks. Held-out questions are refused. No model is loaded.
 """
 import argparse
+import hashlib
 import datetime
 import json
 import pathlib
@@ -25,41 +26,31 @@ ROOT = HERE.parent.parent.parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(ROOT / "graph/acceptance"))
 import score  # noqa: E402
-import structured  # noqa: E402
+from choices import walk  # noqa: E402
 from plan import Graph  # noqa: E402
 
 
-class Gold:
-    """Takes the option holding the next label; records every decision."""
+def labeller(question_id, labels, needed):
+    """The gold option for each decision: the option holding the next label, or
+    for a property choice the next needed property (then "nothing else")."""
+    labels, needed = list(labels), set(needed)
 
-    def __init__(self, question_id, labels, needed):
-        self.id, self.labels, self.needed = question_id, list(labels), set(needed)
-        self.decisions, self.pending = [], None
-
-    def choose(self, context, question, options):
-        if self.pending and self.pending[0] == question and sorted(self.pending[1]) == sorted(options):
-            gold = self.pending[2]
-            self.pending = None
-            return [1.0 if o == gold else 0.0 for o in options]
-        need = re.match(r"Does the answer need the \w+'s (\w+)", question)
-        if need:
-            gold = "yes" if need.group(1) in self.needed else "no"
-        elif question.startswith(("Which property does", "Which other property")):
+    def label(context, question, options):
+        if question.startswith(("Which property does", "Which other property")):
             given = set(re.findall(r"the \w+'s (\w+)", context.partition("Already answering with:")[2]))
-            wanted = [o for o in options if (m := re.match(r"the \w+'s (\w+)", o)) and m.group(1) in self.needed - given]
-            gold = wanted[0] if wanted else next((o for o in options if not re.match(r"the \w+'s ", o)), options[0])
-        else:
-            if not self.labels:
-                raise SystemExit(f"{self.id}: no label left for: {question}\n  options: {options}")
-            label = self.labels.pop(0)
-            hits = [o for o in options if label in o]
-            if len(hits) != 1:
-                raise SystemExit(f"{self.id}: label {label!r} matches {len(hits)} of: {question}\n  options: {options}")
-            gold = hits[0]
-        self.decisions.append({"question_id": self.id, "context": context, "question": question,
-                               "options": options, "gold": options.index(gold)})
-        self.pending = (question, options, gold)
-        return [1.0 if o == gold else 0.0 for o in options]
+            wanted = [i for i, o in enumerate(options)
+                      if (m := re.match(r"the \w+'s (\w+)", o)) and m.group(1) in needed - given]
+            return wanted[0] if wanted else next(i for i, o in enumerate(options) if not re.match(r"the \w+'s ", o))
+        if not labels:
+            raise SystemExit(f"{question_id}: no label left for: {question}\n  options: {options}")
+        hits = [i for i, o in enumerate(options) if labels[0] in o]
+        if len(hits) != 1:
+            raise SystemExit(f"{question_id}: label {labels[0]!r} matches {len(hits)} of: {question}\n  options: {options}")
+        labels.pop(0)
+        return hits[0]
+
+    label.unused = labels
+    return label
 
 
 def graph_at(checkpoint, scratch, fixture):
@@ -99,18 +90,18 @@ def main():
             context = score.question_context(q, manifest, schema.get("revision", 0), None)
             locate = score.locator(app, fixture[2])
             context = {**context, **{k: locate(context[k]) for k in ("principal", "speaker") if context[k]}}
-            chooser = Gold(row["id"], row["choices"], row.get("needed", []))
+            label = labeller(row["id"], row["choices"], row.get("needed", []))
             graph = Graph([str(app.binary), "request", "--db", str(app.db)])
-            cypher = structured.plan(chooser, q["question"], schema, context, graph.search, None, graph.model_of)
-            if chooser.labels:
-                raise SystemExit(f"{row['id']}: labels left unused: {chooser.labels}\n  composed: {cypher}")
+            cypher, made = walk(q["question"], schema, context, label, graph.search, None, graph.model_of)
+            if label.unused:
+                raise SystemExit(f"{row['id']}: labels left unused: {label.unused}\n  composed: {cypher}")
             if row.get("cypher") and row["cypher"] != cypher:
                 raise SystemExit(f"{row['id']}: gold walk composed\n  {cypher}\n  not\n  {row['cypher']}")
-            print(f"{row['id']}: {len(chooser.decisions)} decisions: {cypher}")
-            decisions += chooser.decisions
+            print(f"{row['id']}: {len(made)} decisions: {cypher}")
+            decisions += [{"question_id": row["id"], **d} for d in made]
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, text=True, capture_output=True).stdout.strip()
     header = {"recorded": datetime.datetime.now().isoformat(timespec="seconds"), "commit": commit,
-              "binary": str(score.BINARY),
+              "binary": str(score.BINARY), "binary_sha256": hashlib.sha256(score.BINARY.read_bytes()).hexdigest(),
               "questions": sorted({d["question_id"] for d in decisions})}
     out = HERE / "decisions.jsonl"
     out.write_text("\n".join(json.dumps(r) for r in [header, *decisions]) + "\n")
