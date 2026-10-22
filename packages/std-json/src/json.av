@@ -720,7 +720,12 @@ export fn parse(text: string) -> Result<Json, JsonError> {
 /// The character whose first octet is at `i`, whole.
 fn character_at(b: Bytes, i: int) -> string {
     let lead = b.at(i)
-    let width = if lead >= 240 { 4 } else if lead >= 224 { 3 } else if lead >= 192 { 2 } else { 1 }
+    let width = when {
+        lead >= 240 -> 4
+        lead >= 224 -> 3
+        lead >= 192 -> 2
+        _ -> 1
+    }
     let end = if i + width > b.length { b.length } else { i + width }
     b.slice(i, end).text() ?? b.slice(i, i + 1).text() ?? "?"
 }
@@ -782,7 +787,11 @@ fn built(text: string, b: Bytes, i: int, past: Cell<int>) -> Built {
         return Built { json: Json.Float(x), next: end }
     }
     let end = word_end(b, i)
-    let json = if c == 116 { Json.Bool(true) } else if c == 102 { Json.Bool(false) } else { Json.Null }
+    let json = when {
+        c == 116 -> Json.Bool(true)
+        c == 102 -> Json.Bool(false)
+        _ -> Json.Null
+    }
     Built { json: json, next: end }
 }
 

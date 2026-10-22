@@ -30,6 +30,8 @@ use @std.json.{
     int_of,
     skip,
     value_at,
+    Explain,
+    Refusal as JsonRefusal,
     MAX_DEPTH,
 }
 use @std.text.{parse_float}
@@ -83,7 +85,7 @@ impl Decoding {
     /// allows below `depth`; false where the text is not JSON.
     mut fn skipped(depth: int) -> bool {
         if self.pos < 0 { return false }
-        self.pos = skip(self.bytes, self.pos, MAX_DEPTH - depth)
+        self.pos = skip(self.bytes, self.pos, MAX_DEPTH - depth, judging())
         self.pos >= 0
     }
 
@@ -144,7 +146,7 @@ impl Decoding {
         let at = self.pos
         let c = self.here()
         if c == 116 || c == 102 {
-            let end = skip(self.bytes, at, 0)
+            let end = skip(self.bytes, at, 0, judging())
             if end == at + 4 && c == 116 || end == at + 5 {
                 self.pos = end
                 return end == at + 4
@@ -160,7 +162,7 @@ impl Decoding {
         let at = self.pos
         let c = self.here()
         if c == 45 || is_digit(c) {
-            let end = number_end(self.bytes, at)
+            let end = number_end(self.bytes, at, judging())
             if end >= 0 && int_end(self.bytes, at) < 0 {
                 self.pos = end
                 return parse_float(self.text.substring(at, end))
@@ -410,3 +412,12 @@ export fn json_read_float(mut d: Decoding, depth: int, required: bool, secret: b
 export fn json_read_bool(mut d: Decoding, depth: int, required: bool, secret: bool) -> bool? {
     d.json_bool(depth, required, secret)
 }
+
+/// A scan that judges a float's range, as `parse` does: a number past the
+/// largest float is not JSON here either.
+fn judging() -> Explain {
+    let found: Cell<JsonRefusal?> = Cell.new(null)
+    Explain { found: found, floats: fits_float }
+}
+
+fn fits_float(t: string) -> bool { parse_float(t) != null }
