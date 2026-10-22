@@ -1,18 +1,11 @@
 //! An instance's semantics: its EXPANSION is the node every pass
 //! reads — typing answers its type, lowering its register. Nothing of
 //! the component survives to the IR.
-use core.{ExprId, StmtId, TypeId, Reg, Kids}
+use core.{ExprId, StmtId, TypeId, Reg}
 use core.stmt.{ComponentDecl}
-use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx, Meaning, nothing}
+use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx, MeanCx, Meaning, nothing}
 
 use core.expr.{Component}
-
-impl Kids for Component {
-    fn kids() -> List<ExprId> {
-        // a check reads the literal, so walking it walks the expansion once
-        match self.view { .Expanded(x) -> [self.check ?? x], rest -> [] }
-    }
-}
 
 impl StmtSemantics for ComponentDecl {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId) { resolve_component(cx, s) }
@@ -25,7 +18,7 @@ impl Meaning for Component {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        let x? = self.view.expansion() else { return cx.error_type }
+        let x? = cx.view.store.expansion_of(e) else { return cx.error_type }
         if head_law(cx, e) { return cx.error_type }
         event_law(cx, e)
         refused_there_law(cx, e, x)
@@ -34,8 +27,10 @@ impl Meaning for Component {
         typed
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        let x? = self.view.expansion() else { return cx.lower_defect(e, "an instance that never expanded") }
-        if self.check != null { checked(cx, e, self.check!) }
+        let x? = cx.view.store.expansion_of(e) else { return cx.lower_defect(e, "an instance that never expanded") }
+        let check = cx.view.store.checked_by(e)
+        if check != null { checked(cx, e, check!) }
         augmented(cx, e, x, cx.reg_of(x))
     }
+    fn minted(cx: MeanCx) -> Result<List<ExprId>, string> { minted_instance(cx, self) }
 }
