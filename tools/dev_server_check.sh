@@ -3,7 +3,9 @@
 # `[dev] server = "server"` is served with its server beside it on one origin —
 # a route the page does not own is answered by the server's program, built for
 # this machine — and a save to the server's source is answered by the server
-# built again, with no restart of `avra dev`.
+# built again, with no restart of `avra dev`. The server writes no port: a
+# `server` with none listens on `PORT` (how dev hands it one), else 8080, and a
+# written `port` wins over `PORT`.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 tree=$(cd "$here/.." && pwd)
@@ -18,7 +20,7 @@ printf '[package]\nname = "dev-page"\nversion = "0.1.0"\n\n[dev]\nserver = "serv
 printf 'use @std.ui.components.{text}\nuse @std.ui.web.{mount}\n\nmount(() -> text "page")\n' > "$work/page/src/main.av"
 printf '[package]\nname = "dev-server"\nversion = "0.1.0"\n' > "$work/page/server/avra.toml"
 served() {
-    printf 'use @std.io.{env}\nuse @std.text.{parse_int}\nuse @std.http.route.{get, post}\nuse @std.http.server.{server}\n\nserver api {\n    port: parse_int(env("PORT") ?? "") ?? 0\n    get "/hello" { _req -> "%s" }\n    post "/echo" { req -> "echo " + (req.body.text() ?? "?") }\n}\nlet _ = api.run()\n' "$1" > "$work/page/server/src/main.av"
+    printf 'use @std.http.route.{get, post}\nuse @std.http.server.{server}\n\nserver api {\n    %s\n    get "/hello" { _req -> "%s" }\n    post "/echo" { req -> "echo " + (req.body.text() ?? "?") }\n}\nlet ran = api.run()\nif ran is .Err(e) { eprintln(e.describe().message) }\n' "${2:-}" "$1" > "${3:-$work/page/server}/src/main.av"
 }
 served "one"
 
@@ -59,6 +61,37 @@ done
 got=$(curl -s "${url}hello")
 [ "$got" = "two" ] && say "ok    a save to the server's source is served without restarting dev: GET /hello -> $got" || fail "after the save GET /hello answered '$got', wanted 'two'"
 kill -0 "$dev" 2>/dev/null && say "ok    the same dev process served both" || fail "dev ended"
+kill "$dev" 2>/dev/null || true
+
+# The same program outside dev: no PORT is 8080, a PORT that is no port is
+# refused, and a written port wins over PORT.
+answered() { tries=0; until got=$(curl -s "http://127.0.0.1:$1/hello") && [ -n "$got" ]; do tries=$((tries + 1)); [ "$tries" -lt 100 ] || return 1; sleep 0.1; done; echo "$got"; }
+bin=$("$avra" build "$work/page/server" 2>"$work/build.err" | tail -1)
+if curl -s -o /dev/null "http://127.0.0.1:8080/" 2>/dev/null; then
+    fail "something already answers on 8080, so the default cannot be witnessed"
+else
+    env -u PORT "$bin" > /dev/null 2>&1 &
+    plain=$!
+    got=$(answered 8080 || echo "nothing")
+    kill "$plain" 2>/dev/null || true
+    [ "$got" = "two" ] && say "ok    with no PORT a server that writes no port listens on 8080" || fail "with no PORT, 127.0.0.1:8080 answered '$got'"
+fi
+PORT=abc "$bin" > /dev/null 2> "$work/bad.err" &
+bad=$!
+sleep 1
+if kill -0 "$bad" 2>/dev/null; then kill "$bad"; fail "a PORT that is no port was served anyway"
+elif grep -q "PORT=abc" "$work/bad.err"; then say "ok    a PORT that is no port is refused: $(head -1 "$work/bad.err")"
+else fail "a bad PORT ended the server without saying so: $(cat "$work/bad.err")"; fi
+mkdir -p "$work/written/src"
+printf '[package]\nname = "written"\nversion = "0.1.0"\n' > "$work/written/avra.toml"
+written=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+served "written" "port: $written" "$work/written"
+wbin=$("$avra" build "$work/written" 2>"$work/build.err" | tail -1)
+PORT=1 "$wbin" > /dev/null 2>&1 &
+w=$!
+got=$(answered "$written" || echo "nothing")
+kill "$w" 2>/dev/null || true
+[ "$got" = "written" ] && say "ok    a written port wins over PORT: :$written answered, PORT=1 ignored" || fail "a server writing port $written answered '$got'"
 
 [ "$fails" -eq 0 ] && { say "every claim holds"; exit 0; }
 say "$fails claim(s) FAILED"; exit 1
