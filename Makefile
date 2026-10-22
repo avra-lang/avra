@@ -1134,37 +1134,21 @@ KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
 	@sh tools/keepers_loop.sh "$(MAKE) -s -o avra" $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a1,$@),$(KEEPERS_A1),$(if $(filter keepers-a2,$@),$(KEEPERS_A2),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS))))))
 
-# THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
-# on, proved on its fixtures — none reads the compiler.
-# One witness per line, so a lane adding an instrument appends a line.
-TOOL_WITNESSES = stamps.sh\ --self-test \
-                 llvm_link.sh\ --self-test \
-                 capped.sh\ --self-test \
-                 hand_down.sh\ --self-test \
-                 failed_tail_test.sh \
-                 host_fn_edit_attack.sh\ --self-test \
-                 gate_receipt.sh\ --self-test \
-                 watch.sh\ --self-test \
-                 memcap.sh\ --self-test \
-                 seed_is_tree.sh\ --self-test \
-                 witness_fmt_changed.sh \
-                 witness_gate_changed.sh \
-                 witness_work_wait.sh \
-                 witness_work_run.sh \
-                 witness_compiler_release.sh \
-                 ci_wall.sh\ --self-test \
-                 witness_warm_edit.sh \
-                 shim_guard_test.sh \
-                 work_test.sh \
-                 reclaim_test.sh \
-                 keepers_loop.sh\ --self-test \
-                 rungs.sh\ --self-test \
-                 ladder.sh\ --self-test \
-                 pr_body.sh\ --self-test
+# THE TOOLS' OWN WITNESSES, DERIVED (tools/tool_witnesses.sh): every
+# witness_*.sh and *_test.sh, and every tool declaring `# tool-witness:
+# --self-test`, that no other keeper declares it runs; a self-test nobody
+# runs is refused. None reads the compiler. `sh tools/tool_witnesses.sh list`
+# shows who runs each.
 tool-witnesses:
-	@python3 tools/pipeline_status.py --self-test
-	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
-	 [ -z "$$fail" ] || { echo "tool-witnesses: refused —$$fail"; exit 1; }
+	@sh tools/tool_witnesses.sh --self-test
+	@sh tools/tool_witnesses.sh run
+
+# THE STORE'S WITNESSES: package builds under the memory cap, each over a cold
+# then a warm store, so they ride with the cache attacks.
+STORE_WITNESSES = $(shell grep -l '^\# tool-witness: run by make store-witnesses' tools/*.sh)
+store-witnesses: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@fail=""; for w in $(STORE_WITNESSES); do MEMCAP=tools/memcap.sh sh $$w || fail="$$fail [$$w]"; done; \
+	 [ -z "$$fail" ] || { echo "store-witnesses: refused —$$fail"; exit 1; }
 
 # THE CI STRUCTURE RATCHET: the release path, the compiler-free keepers a
 # PR must reach and the watcher's fixtures are held before a green PR can
@@ -1217,7 +1201,7 @@ pipeline-status:
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
 KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc
-.PHONY: keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc pipeline-status ci-invariants ci-verdict pr-watcher
+.PHONY: store-witnesses keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@sh tools/keepers_loop.sh "$(MAKE) -s" $(KEEPERS_STATIC)

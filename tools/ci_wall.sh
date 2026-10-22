@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: --self-test
 # THE WALL-CLOCK MEASUREMENT.
 #
 # One PR check's wall time, per job and whole, read from the run's own jobs as GitHub reports

@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: --self-test
 # Runs each named keeper through a make command, says when one refuses, and ENDS with one line naming
 # every refusal: a keeper that refuses mid-stream scrolls away under the ones after it, and the
 # last lines of a log are what a reader (and a `tail`) sees.
