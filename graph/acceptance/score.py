@@ -602,12 +602,41 @@ def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, 
             "ms": int((time.time() - started) * 1000), "got": answer["status"], **record}
 
 
+def prefill(binary, fixture, mode, hooks, scratch, checkpoint, trace=None):
+    """Extracts every source the checkpoints read that the cache lacks, in one
+    call of the extractor over a JSON array, so a resumed run pays its model
+    loads once; each complete result is cached under the key scoring asks."""
+    if mode in ORACLE_FACTS or not CACHE or not hooks.get("extractor"):
+        return
+    app = App(binary, scratch / "prefill.db", scratch)
+    schema = app.call({"op": "schema"})
+    schema_file = scratch / "prefill-schema.json"
+    schema_file.write_text(json.dumps(schema))
+    keyed = [(Cache.key(s["id"], s["observation"], s["revision"], schema["fingerprint"], hooks["extractor"],
+                        Cache.code(hooks["extractor"])), s) for s in fixture[1][:checkpoint]]
+    missing = [(k, s) for k, s in keyed if CACHE.get("extractions", k) is None]
+    if not missing:
+        return
+    per_source = extract_timeout()
+    log, started = [], time.time()
+    results = run_hook(hooks["extractor"].replace("{schema}", str(schema_file)), [envelope(s) for _, s in missing],
+                       timeout=per_source * len(missing) if per_source else None, log=log)
+    for (k, _), result in zip(missing, results):
+        if result.get("status") == "complete":
+            CACHE.put("extractions", k, result)
+    if trace is not None:
+        trace.append({"batch": [s["id"] for _, s in missing], "batch_ms": int((time.time() - started) * 1000),
+                      "complete": sum(r.get("status") == "complete" for r in results), "log": log})
+
+
 def score(binary, fixture, mode, hooks, scratch, only=None, trace=None):
     _, _, _, questions = fixture
     grouped = {}
     for q in questions:
         if not only or q["id"] in only:
             grouped.setdefault(q["checkpoint"], []).append(q)
+    if grouped:
+        prefill(binary, fixture, mode, hooks, scratch, max(grouped), trace)
     results = {}
     for checkpoint in sorted(grouped):
         results.update(score_checkpoint(binary, checkpoint, grouped[checkpoint], fixture, mode, hooks, scratch, trace))
