@@ -1,0 +1,61 @@
+// proves: a walk verb's literal lambda that CAPTURES lowers in place
+// and answers as its boxed form did — each capture read once, before
+// the walk, as the box would have packed it; an early exit stops the
+// walk at the first hit; a `state` capture reads the shared place; a
+// lambda nested inside reads the outer lambda's param and capture.
+type Item = { label: string, n: int }
+
+fn has_label(xs: List<Item>, label: string) -> bool { xs.any(it.label == label) }
+
+fn all_over(xs: List<Item>, floor: int) -> bool { xs.all(it.n > floor) }
+
+fn named(xs: List<Item>, label: string) -> int { xs.find(it.label == label)?.n ?? -1 }
+
+fn place(xs: List<Item>, label: string) -> int { xs.find_index(it.label == label) ?? -1 }
+
+fn scaled(xs: List<int>, k: int, floor: int) -> List<int> { xs.filter(it > floor).map(it * k) }
+
+fn total(xs: List<int>, k: int) -> int { xs.fold(0, (acc, x) -> acc + x * k) }
+
+fn nearest(xs: List<int>, to: int) -> int? { xs.min_by(if it > to { it - to } else { to - it }) }
+
+fn lead(xs: List<int>, cap: int) -> List<int> { xs.take_while(it < cap) }
+
+fn tail(xs: List<int>, cap: int) -> List<int> { xs.drop_while(it < cap) }
+
+fn picked(xs: List<int>, floor: int) -> List<int> { xs.filter_map((x) -> if x > floor { x * 10 } else { null }) }
+
+fn spread(xs: List<int>, k: int) -> List<int> { xs.flat_map((x) -> [x, x + k]) }
+
+fn nested(xss: List<List<int>>, k: int) -> bool { xss.any((xs) -> xs.any((x) -> x == xs.length + k)) }
+
+fn mapped_first(xs: List<int>, k: int) -> int? { xs.find_map((x) -> if x > k { x + k } else { null }) }
+
+fn last_hit(xs: List<int>, k: int) -> int? { xs.find_last(it < k) }
+
+fn stop_early(xs: List<int>, at: int) -> bool { xs.any((x) -> x == at) }
+
+let items = [Item { label: "a", n: 3 }, Item { label: "b", n: 5 }, Item { label: "c", n: 7 }]
+let nums = [4, 9, 1, 6, 12]
+let k = 3
+state floor: int = 5
+floor = 8
+let lines = [
+    "${has_label(items, "b")} ${has_label(items, "z")}",
+    "${all_over(items, 2)} ${all_over(items, 4)}",
+    "${named(items, "c")} ${named(items, "q")}",
+    "${place(items, "b")} ${place(items, "q")}",
+    scaled(nums, k, 4).map("${it}").join(","),
+    "${total(nums, k)}",
+    "${nearest(nums, 8) ?? -1}",
+    lead(nums, 10).map("${it}").join(","),
+    tail(nums, 5).map("${it}").join(","),
+    picked(nums, 5).map("${it}").join(","),
+    spread([1, 2], k).map("${it}").join(","),
+    "${nested([[1, 2], [3, 9]], 7)} ${nested([[1]], 7)}",
+    "${mapped_first(nums, 5) ?? -1} ${last_hit(nums, 5) ?? -1}",
+    "${stop_early(nums, 9)} ${stop_early([], 9)}",
+    "${nums.any(it == k + 3)} ${nums.filter(it % k == 0).length}",
+    "${nums.filter(it > floor).length} ${nums.any(it == floor)}",
+]
+lines.join(" | ")
