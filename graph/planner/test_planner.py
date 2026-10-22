@@ -167,6 +167,68 @@ class Loop(unittest.TestCase):
         self.assertEqual(drafted("Here it is:\n```\nMATCH (a:Person)\nRETURN a.name\n```"), "MATCH (a:Person) RETURN a.name")
 
 
+class Picking:
+    """Picks, call by call, the option containing the next scripted text."""
+
+    def __init__(self, script):
+        self.script, self.asked = list(script), []
+
+    def choose(self, context, question, options):
+        self.asked.append((context, question, options))
+        want = self.script[0]
+        if question == getattr(self, "last", None) and options == self.seen[::-1]:
+            self.script.pop(0)
+        self.last, self.seen = question, options
+        return [1.0 if want in o else 0.0 for o in options]
+
+
+class When(unittest.TestCase):
+    """A question's time by calendar containment, anchored on a fixed asking instant."""
+
+    # Wednesday 21 October 2026, 15:00 UTC.
+    NOW = 1792594800000
+
+    def test_now_is_no_span(self):
+        import when
+
+        self.assertIsNone(when.asked_time(Picking(["now"]), "Who is our creative director now?", self.NOW))
+
+    def test_a_named_day_narrows_through_its_month_and_week(self):
+        import when
+
+        got = when.asked_time(Picking(["2026", "October", "12 October", "Wednesday"]),
+                              "Who was our creative director on 14 October?", self.NOW)
+        self.assertEqual(got["value"], "2026-10-14")
+        self.assertEqual(got["end_ms"] - got["start_ms"], 86400000)
+
+    def test_a_week_is_an_iso_week_in_the_asking_zone(self):
+        import when
+
+        got = when.asked_time(Picking(["2026", "October", "19 October", "all of"]),
+                              "Am I still booked into the hotel this week?", self.NOW, "Europe/Paris")
+        self.assertEqual(got["value"], "2026-W43")
+        self.assertEqual(got["start_ms"], 1792360800000)  # Monday 19 October 2026 00:00 Paris (UTC+2)
+
+    def test_a_whole_year(self):
+        import when
+
+        got = when.asked_time(Picking(["2025", "all of"]), "What did we ship last year?", self.NOW)
+        self.assertEqual(got["value"], "2025")
+
+    def test_a_month_spans_its_days(self):
+        import when
+
+        got = when.asked_time(Picking(["2026", "December", "all of"]), "What launched in December?", self.NOW)
+        self.assertEqual((got["value"], got["end_ms"]), ("2026-12", 1798761600000))
+
+    def test_the_asking_day_is_in_the_trail(self):
+        import when
+
+        chooser = Picking(["now"])
+        when.asked_time(chooser, "Anything due?", self.NOW)
+        self.assertIn("Wednesday 21 October 2026", chooser.asked[0][0])
+
+
 class Scripted:
     """Picks, call by call, the first option containing the next scripted word."""
 
