@@ -507,14 +507,14 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   const drew = wordsOf(standingOf(s.mount));
   apply(frame(adopt(drew, "div", "#text", "b"), setAttr(1, "title", "t")));
   check("an adopted page keeps its elements and numbers them in document order", [s.mount.childNodes[0] === s.div, s.div.attrs.title === undefined, s.text.attrs.title], [true, true, "t"]);
-  apply(frame(setText(1, "yo"), create(3, "i"), place(3, 0, 2)));
-  check("a patch after adoption reaches the adopted nodes", [s.text.textContent, tags(s.div)], ["yo", ["#text", "#comment", "b", "i"]]);
+  apply(frame(setText(1, "yo"), create(3, "li"), place(3, 0, 2)));
+  check("a patch after adoption reaches the adopted nodes", [s.text.textContent, tags(s.div)], ["yo", ["#text", "#comment", "b", "li"]]);
 
   const warn = console.warn;
   console.warn = () => {};
   const t = served(doc);
   const apply2 = createApplier(doc, t.mount, () => {}, null, () => repairs++);
-  apply2(frame(adopt(wordsOf(standingOf(t.mount)), "div", "b"), create(5, "p")));
+  apply2(frame(adopt(wordsOf(standingOf(t.mount)), "div", "b"), create(5, "ul")));
   await Promise.resolve();
   check("a page that is not the program's is emptied, the rest of the frame skipped, and the program asked to draw again", [t.mount.childNodes.length, repairs], [0, 1]);
 
@@ -533,14 +533,14 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
     typed.insertBefore(form, null);
     const heardBy = [];
     const applyT = createApplier(doc, typed, (who, kind, said) => heardBy.push([who, kind, said]), null, () => {});
-    applyT(frame(adoptWith(words(), "div", "input", "input", "input"), listen(1, 2, "input", SAYS.text, "value", false), listen(2, 2, "input", SAYS.text, "value", false), listen(3, 3, "change", SAYS.flag, "checked", false)));
+    applyT(frame(adopt(wordsOf(standingOf(typed)), "div", "input", "input", "input"), listen(1, 2, "input", SAYS.text, "value", false), listen(2, 2, "input", SAYS.text, "value", false), listen(3, 3, "change", SAYS.flag, "checked", false)));
     check("a control typed in before the program stood says so once adopted; one left alone says nothing", heardBy, [[1, 2, { says: SAYS.text, value: "abc" }], [3, 3, { says: SAYS.flag, value: true }]]);
   }
 
   const w = stubElement("root");
   const apply5 = createApplier(doc, w, () => {}, null, () => repairs++);
   const before = repairs;
-  apply5(frame(adopt(0, "div"), create(9, "p")));
+  apply5(frame(adopt(0, "div"), create(9, "ul")));
   await Promise.resolve();
   check("an adoption over a page that holds nothing is drawn again, never numbered over nothing", [w.childNodes.length, repairs - before], [0, 1]);
 
@@ -553,8 +553,8 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
 
   const u = served(doc);
   const apply3 = createApplier(doc, u.mount, () => {}, null, () => repairs++);
-  apply3(frame(adopt(0), create(0, "p"), place(0, NO_ID, NO_ID)));
-  check("an empty adoption empties what the server sent and the frame draws on", [u.mount.childNodes.length, u.mount.childNodes[0].tagName, repairs], [1, "p", 3]);
+  apply3(frame(adopt(0), create(0, "ul"), place(0, NO_ID, NO_ID)));
+  check("an empty adoption empties what the server sent and the frame draws on", [u.mount.childNodes.length, u.mount.childNodes[0].tagName, repairs], [1, "ul", 3]);
   console.warn = warn;
 }
 
