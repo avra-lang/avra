@@ -55,7 +55,8 @@ fail() { fails=$((fails + 1)); echo "store-clean: FAILED — $1"; }
 bodies() { ls .avra-cache/store/body-*.pack 2>/dev/null | wc -l | tr -d ' '; }
 revs() { $AVRA cache log 2>/dev/null | sed -n 's/^rev \([0-9]*\).*/\1/p' | tr '\n' ' '; }
 # The live answer: the program's own output, which no store may change.
-run_live() { $AVRA run $R/p 2>&1 | tail -1; }
+# a failed run answers a line no other answer equals, so every comparison it reaches fails
+run_live() { sh tools/capped.sh --last sh -c '"$@" 2>&1' _ $AVRA run $R/p || echo "(run failed: status $?, $(od -An -N4 -tu4 /dev/urandom))"; }
 # The oracle: a cold check's own report, set aside so nothing reads the store.
 cold_check() { rm -rf .avra-cache; $AVRA check $R/p > $R/oracle.out 2>&1; echo "status $?" >> $R/oracle.out; }
 agrees() { $AVRA check $R/p > $R/$1.out 2>&1; echo "status $?" >> $R/$1.out; cmp -s $R/oracle.out $R/$1.out || { fail "$2: the answer differs from the oracle"; diff $R/oracle.out $R/$1.out | head -8; }; }
