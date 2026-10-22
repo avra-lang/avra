@@ -39,7 +39,7 @@ use @std.meta.{
     refuse_as_at,
 }
 use @std.errors.{Loc}
-use @std.sqlite.{Db, SqlValue, sql, prepared}
+use @std.sqlite.{Db, Row, SqlValue, sql, prepared}
 use @std.sqlite.error.{SqlError}
 use @std.validate.{Checked, Issues, checker, decoder, stripped}
 use @std.time.{now_ms}
@@ -150,15 +150,21 @@ fn generated(t: Type) -> Decls {
                 if (db.scalar(sql(${literal(shape_column_probe_sql())}))?).int()? == 0 {
                     let _ = db.run(sql(${literal(shape_column_add_sql())}))?
                 }
+                if (db.scalar(sql(${literal(owner_column_probe_sql())}))?).int()? == 0 {
+                    let _ = db.run(sql(${literal(owner_column_add_sql())}))?
+                }
                 let claim = db.first(sql(${literal(claim_select_sql())}, [.Text(${literal(table_name_of(t))})]))?
                 match claim {
                     null -> {
-                        let _ = db.run(sql(${literal(claim_insert_sql())}, [.Text(${literal(table_name_of(t))}), .Text(${literal(declared_at_of(t))}), .Text(${literal(shape_text_of(t))})]))?
+                        let _ = db.run(sql(${literal(claim_insert_sql())}, [.Text(${literal(table_name_of(t))}), .Text(${literal(declared_at_of(t))}), .Text(${literal(shape_text_of(t))}), .Text(${literal(owner_of(t))})]))?
                     }
                     row? -> {
-                        let claimed_by = row.text(0)?
-                        if claimed_by != ${literal(declared_at_of(t))} {
-                            fail SqlError.defect(${literal(collision_message(t))} + claimed_by)
+                        let owner = text_or_null(row, 0)
+                        let shape = text_or_null(row, 1)
+                        if owner == null && (shape == null || shape == ${literal(shape_text_of(t))}) {
+                            let _ = db.run(sql(${literal(claim_adopt_sql())}, [.Text(${literal(owner_of(t))}), .Text(${literal(table_name_of(t))})]))?
+                        } else if owner != ${literal(owner_of(t))} {
+                            fail SqlError.defect(${literal(collision_message(t))} + (owner ?? shape_conflict_word()))
                         }
                     }
                 }
@@ -738,23 +744,44 @@ fn shape_column_probe_sql() -> string {
 
 fn shape_column_add_sql() -> string { "ALTER TABLE \"__avra_models__\" ADD COLUMN \"shape\" TEXT" }
 
+/// A registry made before owners were recorded lacks the column: it is
+/// added, and an older claim's owner stays NULL until a model whose shape
+/// agrees adopts it.
+fn owner_column_probe_sql() -> string {
+    "SELECT count(*) FROM pragma_table_info('__avra_models__') WHERE name = 'owner'"
+}
+
+fn owner_column_add_sql() -> string { "ALTER TABLE \"__avra_models__\" ADD COLUMN \"owner\" TEXT" }
+
 fn claim_select_sql() -> string {
-    "SELECT \"declared_at\" FROM \"__avra_models__\" WHERE \"table_name\" = ?"
+    "SELECT \"owner\", \"shape\" FROM \"__avra_models__\" WHERE \"table_name\" = ?"
 }
 
 fn claim_insert_sql() -> string {
-    "INSERT INTO \"__avra_models__\" (\"table_name\", \"declared_at\", \"shape\") VALUES (?, ?, ?)"
+    "INSERT INTO \"__avra_models__\" (\"table_name\", \"declared_at\", \"shape\", \"owner\") VALUES (?, ?, ?, ?)"
 }
 
-/// The declaring type's own file, its one honest fully-qualified name
-/// — `@std/meta` hands a `Type` no module or package field, but every
-/// declaration's `Loc` names the file it stands in, and two DIFFERENT
-/// files are the only thing a bare type name can never make equal.
+fn claim_adopt_sql() -> string {
+    "UPDATE \"__avra_models__\" SET \"owner\" = ? WHERE \"table_name\" = ?"
+}
+
+/// A model's identity: its package-qualified module. It survives moving
+/// or recloning the project, which a file path does not.
+fn owner_of(t: Type) -> string { t.module }
+
+/// The declaring file, kept in the registry for a reader only.
 fn declared_at_of(t: Type) -> string { t.at?.file ?? "?" }
 
 fn collision_message(t: Type) -> string {
-    "table \"${table_name_of(t)}\" is already claimed by a @model declared at "
+    "table \"${table_name_of(t)}\" is already claimed by a @model of module "
 }
+
+/// A column's text, or null where it holds NULL.
+fn text_or_null(r: Row, i: int) -> string? {
+    match r.values[i] { .Text(v) -> v, _ -> null }
+}
+
+fn shape_conflict_word() -> string { "an earlier version with another shape" }
 
 // ── Binding a field OUT (a value crossing to SQLite) and reading one
 // IN (a column crossing back) — one exhaustive dispatch each way. ──
