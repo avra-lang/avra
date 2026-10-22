@@ -1085,7 +1085,7 @@ ui-board:
 # `[dev] server` is served with that package's program on one origin, and a
 # save to the server's source is served without a restart (tools/dev_server_check.sh).
 dev-server:
-	@sh tools/dev_server_check.sh
+	@sh tools/bounded.sh 600 sh tools/dev_server_check.sh
 
 # THE BOARD IN A REAL BROWSER: the same module served over an HTTP origin and
 # driven in headless Firefox, each claim checked (tools/ui-board/browser.mjs).

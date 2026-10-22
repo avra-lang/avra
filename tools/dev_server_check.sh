@@ -26,28 +26,31 @@ served "one"
 "$avra" dev --port 0 "$work/page" > "$work/dev.out" 2> "$work/dev.err" &
 dev=$!
 trap 'kill "$dev" 2>/dev/null || true' EXIT
+tries=0
 until grep -q '^dev: .* at http' "$work/dev.out" 2>/dev/null; do
-    kill -0 "$dev" 2>/dev/null || { cat "$work/dev.err" "$work/dev.out"; say "avra dev ended before it served"; exit 1; }
+    kill -0 "$dev" 2>/dev/null || { cat "$work/dev.err" "$work/dev.out"; fail "avra dev ended before it served"; verdict; exit 1; }
+    tries=$((tries + 1))
+    [ "$tries" -lt 450 ] || { cat "$work/dev.out" "$work/dev.err"; fail "avra dev never served the page (90 s)"; verdict; exit 1; }
     sleep 0.2
 done
 url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/dev.out" | head -1)
 tries=0
 until grep -q '^dev: server .* runs on' "$work/dev.out" 2>/dev/null; do
-    kill -0 "$dev" 2>/dev/null || { cat "$work/dev.err" "$work/dev.out"; say "avra dev ended before its server ran"; exit 1; }
+    kill -0 "$dev" 2>/dev/null || { cat "$work/dev.err" "$work/dev.out"; fail "avra dev ended before its server ran"; verdict; exit 1; }
     tries=$((tries + 1))
     [ "$tries" -lt 450 ] || { cat "$work/dev.out" "$work/dev.err"; fail "avra dev never ran the server the page names (90 s)"; verdict; exit 1; }
     sleep 0.2
 done
 grep '^dev: server' "$work/dev.out" | tail -1
 
-[ -n "${DEV_SERVER_DEBUG:-}" ] && { curl -si "${url}hello" | head -12; port=$(sed -n 's/^dev: server .* runs on 127.0.0.1:\([0-9]*\).*$/\1/p' "$work/dev.out" | tail -1); echo "--- the child itself on $port:"; curl -si "http://127.0.0.1:$port/hello" | head -8; cat "$work/dev.err" | tail -5; }
-got=$(curl -s "${url}hello")
+[ -n "${DEV_SERVER_DEBUG:-}" ] && { curl -s --max-time 10i "${url}hello" | head -12; port=$(sed -n 's/^dev: server .* runs on 127.0.0.1:\([0-9]*\).*$/\1/p' "$work/dev.out" | tail -1); echo "--- the child itself on $port:"; curl -s --max-time 10i "http://127.0.0.1:$port/hello" | head -8; cat "$work/dev.err" | tail -5; }
+got=$(curl -s --max-time 10 "${url}hello")
 [ "$got" = "one" ] && say "a route the page does not own is the server's: GET /hello -> $got" || fail "GET /hello answered '$got', wanted 'one'"
-got=$(curl -s -X POST --data "sent" "${url}echo")
+got=$(curl -s --max-time 10 -X POST --data "sent" "${url}echo")
 [ "$got" = "echo sent" ] && say "a POST and its body reach the server: $got" || fail "POST /echo answered '$got', wanted 'echo sent'"
-page=$(curl -s "$url")
+page=$(curl -s --max-time 10 "$url")
 case "$page" in *app.wasm*|*bootstrap.js*) say "the page is still the page's" ;; *) fail "GET / is not the page: $(echo "$page" | head -c 80)";; esac
-glue=$(curl -s -o /dev/null -w '%{http_code}' "${url}bootstrap.js")
+glue=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "${url}bootstrap.js")
 [ "$glue" = "200" ] && say "the page's glue is still the page's" || fail "GET /bootstrap.js answered $glue"
 
 runs=$(grep -c '^dev: server .* runs on' "$work/dev.out")
@@ -57,16 +60,16 @@ until [ "$(grep -c '^dev: server .* runs on' "$work/dev.out")" -gt "$runs" ]; do
     tries=$((tries + 1)); [ "$tries" -lt 600 ] || { fail "a save to the server's source was never built"; break; }
     sleep 0.2
 done
-got=$(curl -s "${url}hello")
+got=$(curl -s --max-time 10 "${url}hello")
 [ "$got" = "two" ] && say "a save to the server's source is served without restarting dev: GET /hello -> $got" || fail "after the save GET /hello answered '$got', wanted 'two'"
 kill -0 "$dev" 2>/dev/null && say "the same dev process served both" || fail "dev ended"
 kill "$dev" 2>/dev/null || true
 
 # The same program outside dev: no PORT is 8080, a PORT that is no port is
 # refused, and a written port wins over PORT.
-answered() { tries=0; until got=$(curl -s "http://127.0.0.1:$1/hello") && [ -n "$got" ]; do tries=$((tries + 1)); [ "$tries" -lt 100 ] || return 1; sleep 0.1; done; echo "$got"; }
+answered() { tries=0; until got=$(curl -s --max-time 2 "http://127.0.0.1:$1/hello") && [ -n "$got" ]; do tries=$((tries + 1)); [ "$tries" -lt 100 ] || return 1; sleep 0.1; done; echo "$got"; }
 bin=$(sh "$here/capped.sh" --last "$avra" build "$work/page/server" 2>"$work/build.err") || fail "the page server did not build: $(tail -3 "$work/build.err")"
-if curl -s -o /dev/null "http://127.0.0.1:8080/" 2>/dev/null; then
+if curl -s --max-time 10 -o /dev/null "http://127.0.0.1:8080/" 2>/dev/null; then
     fail "something already answers on 8080, so the default cannot be witnessed"
 else
     env -u PORT "$bin" > /dev/null 2>&1 &
