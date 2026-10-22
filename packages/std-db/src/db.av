@@ -43,6 +43,7 @@ use @std.sqlite.{Db, SqlValue, sql, prepared}
 use @std.sqlite.error.{SqlError}
 use @std.validate.{Checked, Issues, checker, decoder, stripped}
 use @std.time.{now_ms}
+use shape.{ColumnFacts, create_sql, quoted, shape_text}
 use error.{ModelError, UniqueField, or_attributed, or_invalid, modeled, parent_of, removed}
 
 /// The phantom a one-to-many relation is held as. `cards: Many<Card>`
@@ -546,11 +547,6 @@ fn auto_kind(f: Field) -> Diagnostic {
 // derive time, never a quote hole (a run of columns has no expression
 // position to splice into; a string is just a value). ──
 
-/// Every identifier this derive writes into SQL text is double-quoted,
-/// unconditionally — a field or type named after a SQL keyword
-/// (`order`, `group`, `table`) is a real Avra name and must stay one.
-fn quoted(name: string) -> string { "\"${name}\"" }
-
 fn table_name_of(t: Type) -> string { t.name }
 
 fn quoted_table(t: Type) -> string { quoted(table_name_of(t)) }
@@ -566,25 +562,11 @@ fn non_id_fields(t: Type) -> List<Field> { t.fields.slice(1, t.fields.length) }
 /// can read or write from Phase 1.
 const VERSION_COLUMN: string = "__avra_version__"
 
-fn create_table_sql_of(t: Type) -> string {
-    let cols = [column_ddl(column_facts(f)) for f in stored(t)]
-        .concat([column_ddl(version_facts())])
-    "CREATE TABLE IF NOT EXISTS ${quoted_table(t)} (${cols.join(", ")})"
-}
+fn create_table_sql_of(t: Type) -> string { create_sql(table_name_of(t), table_columns(t)) }
 
-/// EVERYTHING THE DATABASE IS TOLD ABOUT ONE COLUMN — the single source
-/// of its DDL and of the shape text a table is recorded under, so the two
-/// cannot say different things.
-type ColumnFacts = {
-    name: string,
-    sql_type: string,
-    not_null: bool = false,
-    key: bool = false,
-    unique: bool = false,
-    default: string? = null,
-    refs: string? = null,
-    on_delete: string? = null,
-}
+/// A model's columns as the database holds them: its stored fields, then the
+/// hidden version column.
+fn table_columns(t: Type) -> List<ColumnFacts> { [column_facts(f) for f in stored(t)].concat([version_facts()]) }
 
 fn version_facts() -> ColumnFacts {
     ColumnFacts { name: VERSION_COLUMN, sql_type: "INTEGER", not_null: true, default: "1" }
@@ -631,59 +613,7 @@ fn on_delete(f: Field) -> string {
     }
 }
 
-fn column_ddl(c: ColumnFacts) -> string {
-    let key = if c.key { " PRIMARY KEY AUTOINCREMENT" } else { "" }
-    let required = if c.not_null { " NOT NULL" } else { "" }
-    let fallback = if c.default == null { "" } else { " DEFAULT ${c.default!}" }
-    let distinct = if c.unique { " UNIQUE" } else { "" }
-    let link = if c.refs == null { "" } else { " REFERENCES ${quoted(c.refs!)}(${quoted("id")}) ON DELETE ${c.on_delete ?? "NO ACTION"}" }
-    "${quoted(c.name)} ${c.sql_type}${key}${required}${fallback}${distinct}${link}"
-}
-
-// ── The SHAPE TEXT: a table's columns as the database holds them, one
-// line each, in column-name order, so it is the same for the same model
-// however its fields are ordered and changes when any column fact does. ──
-
-fn shape_text_of(t: Type) -> string {
-    let lines = [shape_line(column_facts(f)) for f in stored(t)]
-        .concat([shape_line(version_facts())])
-    "${table_name_of(t)}\n${ordered(lines).join("\n")}"
-}
-
-fn shape_line(c: ColumnFacts) -> string {
-    let facts = [
-        c.name,
-        c.sql_type,
-        if c.not_null { "notnull" } else { "null" },
-        if c.key { "key" } else { "-" },
-        if c.unique { "unique" } else { "-" },
-        c.default ?? "-",
-        c.refs ?? "-",
-        c.on_delete ?? "-",
-    ]
-    facts.join("|")
-}
-
-/// Texts in byte order, each placed after those that come before it.
-fn ordered(xs: List<string>) -> List<string> {
-    mut out: List<string> = []
-    for x in xs {
-        let at = [y for y in out if before(y, x)].length
-        out = out.slice(0, at).concat([x]).concat(out.slice(at, out.length))
-    }
-    out
-}
-
-/// Whether `a` comes before `b` by their octets; a prefix comes first.
-fn before(a: string, b: string) -> bool {
-    let x = a.bytes()
-    let y = b.bytes()
-    let shared = if x.length < y.length { x.length } else { y.length }
-    for i in 0..shared {
-        if x.at(i) != y.at(i) { return x.at(i) < y.at(i) }
-    }
-    x.length < y.length
-}
+fn shape_text_of(t: Type) -> string { shape_text(table_name_of(t), table_columns(t)) }
 
 /// Milliseconds since the epoch, as the database reads its own clock.
 fn auto_default() -> string { "(CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER))" }
