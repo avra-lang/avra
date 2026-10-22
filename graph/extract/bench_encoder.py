@@ -1,11 +1,10 @@
 """Entity-span precision and recall of one encoder on the slice, with load
 time, per-source time and peak memory. One encoder per process.
 
-usage: CASCADE_ENCODER=base|large python bench_encoder.py CATALOG_JSON
+usage: CASCADE_ENCODER=base|large CASCADE_ENCODER_DEVICE=cpu|mps CASCADE_ENCODER_HALF=0|1 python bench_encoder.py CATALOG_JSON
 """
 import json
 import os
-import resource
 import sys
 import time
 
@@ -23,6 +22,7 @@ labels = {m.lower(): c.gloss(plan.models[m]) for m in plan.entities}
 t = time.time()
 enc = c.Encoder()
 load_s = time.time() - t
+loaded = enc.ask(op="footprint")["footprint"]
 tp = fp = fn = 0
 per = []
 for sid, want in gold.items():
@@ -36,7 +36,10 @@ for sid, want in gold.items():
     want = {tuple(w) for w in want}
     tp += len(got & want); fp += len(got - want); fn += len(want - got)
     print(sid, "WRONG", sorted(got - want), "missed", sorted(want - got), file=sys.stderr)
-print(json.dumps({"encoder": ENCODER, "tp": tp, "fp": fp, "fn": fn,
+end = enc.ask(op="footprint")["footprint"]
+enc.close()
+print(json.dumps({"encoder": ENCODER, "device": os.environ.get("CASCADE_ENCODER_DEVICE", "cpu"),
+                  "half": os.environ.get("CASCADE_ENCODER_HALF") == "1", "footprint_loaded": loaded, "footprint_end": end, "tp": tp, "fp": fp, "fn": fn,
                   "precision": round(tp / (tp + fp), 3) if tp + fp else 0, "recall": round(tp / (tp + fn), 3),
                   "load_s": round(load_s, 1), "source_s": per,
-                  "maxrss_mb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6)}))
+                  }))

@@ -201,24 +201,35 @@ class Text:
 
 
 class Encoder:
-    def __init__(self):
-        from gliner2 import GLiNER2
+    """The span encoder, run in a child process that ends with close()."""
 
-        self.m = GLiNER2.from_pretrained(ENCODER.split("@")[0])
+    def __init__(self):
+        import subprocess
+
+        self.p = subprocess.Popen(
+            [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "encoder_worker.py")],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+        hello = json.loads(self.p.stdout.readline() or "{}")
+        if not hello.get("ready"):
+            raise RuntimeError("the encoder process did not start")
+        log(f"encoder_footprint_loaded={hello['footprint']}")
+
+    def ask(self, **q):
+        self.p.stdin.write(json.dumps(q) + "\n")
+        self.p.stdin.flush()
+        return json.loads(self.p.stdout.readline())
 
     def mentions(self, text, labels):
-        if not labels:
-            return {}
-        r = self.m.extract(text, self.m.create_schema().entities(labels), threshold=SPAN_THRESHOLD, include_confidence=True, include_spans=True)
-        return r["entities"]
+        return self.ask(op="mentions", text=text, labels=labels, threshold=SPAN_THRESHOLD)["value"] if labels else {}
 
     def records(self, text, model, anchor, fields):
-        s = self.m.create_schema()
-        b = s.structure(model, mode="natural", anchor=anchor)
-        for f in fields:
-            b = b.field(f, dtype="str")
-        r = self.m.extract(text, s, threshold=SPAN_THRESHOLD, include_confidence=True, include_spans=True)
-        return r.get(model) or []
+        return self.ask(op="records", text=text, model=model, anchor=anchor, fields=fields, threshold=SPAN_THRESHOLD)["value"]
+
+    def close(self):
+        print(f"encoder_footprint_end={self.ask(op='footprint')['footprint']}", file=sys.stderr, flush=True)
+        self.p.stdin.close()
+        self.p.wait()
 
 
 def choice_prompt(context, question, options, source=""):
@@ -911,11 +922,10 @@ class Models:
         return self._enc
 
     def release(self):
-        """Drop the encoder and return its memory."""
-        import gc
-
+        """End the encoder's process, which returns all of its memory."""
+        if self._enc is not None:
+            self._enc.close()
         self._enc = None
-        gc.collect()
 
 
 def extract(req, models=None):
