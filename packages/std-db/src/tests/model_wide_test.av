@@ -1,0 +1,103 @@
+// A model of any width: a row literal splices its entries as a run and
+// `where` splices its filter seats the same way, so a ten-field model's
+// generated reads, writes and filters all work — six of its columns
+// `@unique`, so the constraint list is a run too.
+use @std.db.{model}
+use @std.db.error.{ModelError, modeled}
+use @std.sqlite.{Db}
+use @std.sqlite.error.{SqlError}
+
+@model
+type Wide10 = {
+    id: int = 0,
+    @unique a: string,
+    @unique b: string,
+    @unique c: string,
+    @unique d: string,
+    @unique e: string,
+    @unique f: string,
+    n: int,
+    ratio: float,
+    note: string?,
+}
+
+fn seeded() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    Wide10.create_table(db)?
+    db
+}
+
+fn put(mut db: Db, tag: string, n: int, note: string?) -> Result<Wide10, ModelError> {
+    let row = Wide10 {
+        a: tag,
+        b: tag,
+        c: tag,
+        d: tag,
+        e: tag,
+        f: tag,
+        n: n,
+        ratio: 1.5,
+        note: note,
+    }
+    row.insert(db)
+}
+
+fn tags(rows: List<Wide10>) -> string { [r.a for r in rows].join(",") }
+
+fn held(r: Wide10) -> string {
+    "${r.a}|${r.b}|${r.c}|${r.d}|${r.e}|${r.f}|${r.n}|${r.ratio}|${r.note ?? "none"}"
+}
+
+fn read_back() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let made = put(db, "one", 7, null)?
+    let found = modeled(Wide10.find(db, made.id))?
+    match found {
+        row? -> held(row)
+        null -> "gone"
+    }
+}
+
+fn filtered() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let _ = put(db, "one", 7, null)?
+    let _ = put(db, "two", 8, "note")?
+    let by_a = tags(modeled(Wide10.where(db, a: "two"))?)
+    let by_n = tags(modeled(Wide10.where(db, n: 7))?)
+    let absent = tags(modeled(Wide10.where(db, note: .Is(null)))?)
+    let present = tags(modeled(Wide10.where(db, note: .Is("note")))?)
+    "${by_a}|${by_n}|${absent}|${present}"
+}
+
+fn changed() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let made = put(db, "one", 7, null)?
+    let _ = (made with { f: "six", b: "two", note: "now" }).update(db)?
+    let found = modeled(Wide10.find(db, made.id))?
+    match found {
+        row? -> "${row.b}|${row.f}|${row.note ?? "none"}"
+        null -> "gone"
+    }
+}
+
+fn removed() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let made = put(db, "one", 7, null)?
+    let gone = made.remove(db)?
+    "${gone} ${(modeled(Wide10.all(db))?).length}"
+}
+
+spec "std/db a wide model" {
+    given "a ten-field row" {
+        then "find reads every column back through one row literal" {
+            (read_back() catch "failed") == "one|one|one|one|one|one|7|1.5|none"
+        }
+        then "where splices a seat per column, named and nullable alike" {
+            (filtered() catch "failed") == "two|one|one|two"
+        }
+        then "update writes through six unique columns and reads back" {
+            (changed() catch "failed") == "two|six|now"
+        }
+        then "remove takes the row away" { (removed() catch "failed") == "1 0" }
+    }
+}
