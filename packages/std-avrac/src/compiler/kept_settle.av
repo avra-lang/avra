@@ -34,12 +34,13 @@ use core.{
     fp_str,
     distinct,
     flatten,
+    some_list,
     joined,
     sorted_texts,
 }
 use features.{Unsettled, Settled, Wanted, SettleRoot, SeatValue, Budgets}
 use compiler.backend.{reaches_world}
-use compiler.store.{Store, Stored, node_key}
+use compiler.store.{Store, Stored, Reading, node_key}
 use compiler.work.{work_spell_lookup}
 use compiler.lower.{Unit, type_shape_key}
 use core.{Type}
@@ -202,6 +203,7 @@ impl Workspace {
             path: path,
             bodies: [b.name for b in u.bodies],
             wire: if w.decl != null && w.root == null { self.wanted_list_wire([w]) } else { "" },
+            read: if d == null { null } else { self.collect_read(d!) },
         }
     }
 
@@ -258,7 +260,7 @@ impl Workspace {
             )
             .concat([joined(["e", path, self.embed_said(path)], "\t") for path in distinct(embedded)])
         self.view_kept(store, view)
-        let _ = store.keep(Stored.Unit, key, value!, [])
+        if !store.keep_reading(Stored.Unit, key, value!, frame_reads(frame)) { return }
         let _ = store.keep(Stored.Unit, "${key}#lines", joined(lines, "\n"), [])
     }
 
@@ -271,7 +273,7 @@ impl Workspace {
         Unsettled,
     >? {
         let store? = self.store.get() else { return null }
-        let value? = store.get(Stored.Unit, key) else { return null }
+        let value? = store.get_valid(Stored.Unit, key, (name) -> self.collect_read_now(name)) else { return null }
         let lines? = store.get(Stored.Unit, "${key}#lines") else { return null }
         let said = lines.split("\n")
         if !said.contains(layout) { return null }
@@ -861,8 +863,14 @@ fn finished_line(k: KeptLine, ran: List<string>) -> string {
 /// Whether a declaration of this kind speaks to bodies outside it: all but a
 /// body's own statements, which a unit line answers for.
 /// A kept line that names no unit, path or body.
+/// The named reads a frame's lines carry, each once.
+fn frame_reads(frame: List<KeptLine>) -> List<Reading> {
+    let reads = flatten([some_list(k.read) for k in frame])
+    [r for i, r in reads if !reads.slice(0, i).any(it.name == r.name)]
+}
+
 fn plain_kept(line: string) -> KeptLine {
-    KeptLine { line: line, unit: false, path: "", bodies: [], wire: "" }
+    KeptLine { line: line, unit: false, path: "", bodies: [], wire: "", read: null }
 }
 
 /// Whether a declaration's name is one a module's namespace binds: not a default, a method,
