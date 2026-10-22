@@ -1,19 +1,26 @@
 //! `when { c -> a, c -> b, _ -> d }` — multi-way choice as an
 //! expression. Subjectless, comma-separated, and TOTAL: the `_` arm
-//! is grammar, not convention. The `when` keyword anchor merges
-//! ahead of the spine's NAME branch.
+//! is the checker's law, spoken where the arms carry spans, so the
+//! node keeps every `_` arm the rule wrote. The `when` keyword anchor
+//! merges ahead of the spine's NAME branch.
 use features.{LanguageFeature, BuilderRow}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
 export fn when_expr() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name        | build
         "when_expr" | build_when
+    }
+    let codes = table<DiagCode> {
+        kind             | summary
+        "type.when_arms" | "a `when` ends on its one `_` arm"
     }
     LanguageFeature when_expr {
         gram: grammar {
             primary = "when" "{" ( BREAK | "," | "_" "->" d:expression | c:expression "->" v:expression )* "}" @expect("}", "expected `}` to close the `when`") -> when_expr(c, v, d)
         }
         builders: rows
+        diags: codes
     }
     when_expr
 }
