@@ -44,6 +44,10 @@ class Gold:
         need = re.match(r"Does the answer need the \w+'s (\w+)", question)
         if need:
             gold = "yes" if need.group(1) in self.needed else "no"
+        elif question.startswith(("Which property does", "Which other property")):
+            given = set(re.findall(r"the \w+'s (\w+)", context.partition("Already answering with:")[2]))
+            wanted = [o for o in options if (m := re.match(r"the \w+'s (\w+)", o)) and m.group(1) in self.needed - given]
+            gold = wanted[0] if wanted else next((o for o in options if not re.match(r"the \w+'s ", o)), options[0])
         else:
             if not self.labels:
                 raise SystemExit(f"{self.id}: no label left for: {question}\n  options: {options}")
@@ -75,6 +79,8 @@ def graph_at(checkpoint, scratch, fixture):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--only", help="comma-separated question ids")
+    parser.add_argument("--select", choices=("compare", "each"), default="compare",
+                        help="how the planner chooses returned properties")
     args = parser.parse_args()
     fixture = score.load_fixture()
     questions = {q["id"]: q for q in fixture[3]}
@@ -97,17 +103,19 @@ def main():
             context = {**context, **{k: locate(context[k]) for k in ("principal", "speaker") if context[k]}}
             chooser = Gold(row["id"], row["choices"], row.get("needed", []))
             graph = Graph([str(app.binary), "request", "--db", str(app.db)])
-            cypher = structured.plan(chooser, q["question"], schema, context, graph.search, None, graph.model_of)
+            cypher = structured.plan(chooser, q["question"], schema, context, graph.search, None, graph.model_of,
+                                     args.select)
             if chooser.labels:
                 raise SystemExit(f"{row['id']}: labels left unused: {chooser.labels}\n  composed: {cypher}")
-            if row.get("cypher") and row["cypher"] != cypher:
+            if row.get("cypher", {}).get(args.select) and row["cypher"][args.select] != cypher:
                 raise SystemExit(f"{row['id']}: gold walk composed\n  {cypher}\n  not\n  {row['cypher']}")
             print(f"{row['id']}: {len(chooser.decisions)} decisions: {cypher}")
             decisions += chooser.decisions
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, text=True, capture_output=True).stdout.strip()
     header = {"recorded": datetime.datetime.now().isoformat(timespec="seconds"), "commit": commit,
-              "binary": str(score.BINARY), "questions": sorted({d["question_id"] for d in decisions})}
-    out = HERE / "decisions.jsonl"
+              "binary": str(score.BINARY), "select": args.select,
+              "questions": sorted({d["question_id"] for d in decisions})}
+    out = HERE / f"decisions.{args.select}.jsonl"
     out.write_text("\n".join(json.dumps(r) for r in [header, *decisions]) + "\n")
     print(f"{len(decisions)} decisions -> {out.relative_to(ROOT)}")
 

@@ -22,6 +22,7 @@ PARAMS = json.loads((pathlib.Path(__file__).with_name("params.json")).read_text(
 LETTERS = 26
 ARRIVED = ["yes: the question asks about this record", "no: the answer lies further along"]
 NEEDED = ["yes", "no"]
+ENOUGH = "nothing else: the answer is complete"
 RECORDED = ["the content of the records: values, words, dates, people (missing means unknown)",
             "only whether a yes/no status has been recorded (no record counts as no)"]
 
@@ -98,6 +99,11 @@ class Evidence:
     def models(self):
         """Models whose facts hold a still unexplained informative word."""
         return {m for m, _, value in self.facts if self.words & set(tokens(value))} - self.spent
+
+    def points_at(self, prop):
+        """Whether unexplained informative words of the question name this property."""
+        text = prop["name"].replace("_", " ") + " " + prop.get("description", "")
+        return bool(self.words & set(tokens(text)))
 
     def shown(self, hop):
         """A hop's words, with the facts of its target that hold unexplained words."""
@@ -185,7 +191,7 @@ def hops(models, label):
     return out
 
 
-def plan(chooser, question, schema, context, search=None, depth=None, model_of=None):
+def plan(chooser, question, schema, context, search=None, depth=None, model_of=None, select="compare"):
     """One query composed from closed choices; `depth` caps the hops (the
     request's budget), else the catalog's size bounds the walk."""
     models = models_of(schema)
@@ -222,7 +228,7 @@ def plan(chooser, question, schema, context, search=None, depth=None, model_of=N
         narrowed(chooser, trail, models[target], var, out, question, evidence)
         evidence.spent.add(target)
     trail = f"{head}\nSo far: {' '.join(out.parts)} — the answer is about these {label} records."
-    items = returns(chooser, trail, models[label], var, held and (held[0], models[held[1]]))
+    items = returns(chooser, trail, models[label], var, held and (held[0], models[held[1]]), evidence, select)
     if held and f"{held[0]}." in items:
         out.parts[held[2]] = out.parts[held[2]].replace("-[:", f"-[{held[0]}:", 1)
     return out.cypher(items)
@@ -306,12 +312,15 @@ def needed(chooser, trail, question):
     return debiased(chooser, trail, question, NEEDED)[0] >= cut
 
 
-def returns(chooser, trail, model, var, record=None):
-    """The RETURN items: a count, one recorded status, or chosen values, read
-    from the final node or from the relation record of the hop that reached it."""
+def returns(chooser, trail, model, var, record=None, evidence=None, select="compare"):
+    """The RETURN items: a count, one recorded status, or chosen values. The
+    final node's properties are candidates; a relation record passed on the
+    way is a path, so its own fields are candidates only where unexplained
+    informative words of the question point at them."""
     props = [(var, model["name"], p) for p in model["properties"]]
     if record:
-        props += [(record[0], record[1]["name"], p) for p in record[1]["properties"]]
+        props += [(record[0], record[1]["name"], p) for p in record[1]["properties"]
+                  if evidence and evidence.points_at(p)]
     if best(chooser, trail, "What does the question ask for?",
             ["the value of one or more of their properties", "how many there are"]) == 1:
         return f"count({var}) AS count"
@@ -319,14 +328,30 @@ def returns(chooser, trail, model, var, record=None):
     if flags and best(chooser, trail, "What does the question want to know?", RECORDED) == 1:
         v, name = flags[best(chooser, trail, "Which recorded status?", [n for _, n in flags])]
         return f"coalesce({v}.{name}, false) AS {name}"
-    readable = range(len(props))
-    picked = []
-    for i in readable:
-        v, owner, p = props[i]
-        about = f"{p['name']}" + (f" ({line(p['description'])})" if p.get("description") else "")
-        if needed(chooser, trail, f"Does the answer need the {owner}'s {about}?"):
-            picked.append(i)
-    names = [props[i][2]["name"] for i in picked or [0]]
+    shown = [f"the {owner}'s {p['name']}" + (f" ({line(p['description'])})" if p.get("description") else "")
+             for _, owner, p in props]
+    picked = compared(chooser, trail, shown) if select == "compare" else each(chooser, trail, shown)
+    names = [props[i][2]["name"] for i in picked]
     return ", ".join(f"{props[i][0]}.{props[i][2]['name']} AS {props[i][2]['name']}"
                      + ("" if names.count(props[i][2]["name"]) == 1 else f"_{props[i][0]}")
-                     for i in picked or [0])
+                     for i in picked)
+
+
+def compared(chooser, trail, shown):
+    """One property chosen against the others, then more while the answer needs them."""
+    picked = [best(chooser, trail, "Which property does the question ask for?", shown)]
+    while len(picked) < len(shown):
+        rest = [i for i in range(len(shown)) if i not in picked]
+        asked = trail + "\nAlready answering with: " + "; ".join(shown[i] for i in picked)
+        at = best(chooser, asked, "Which other property does the answer also need?",
+                  [shown[i] for i in rest] + [ENOUGH])
+        if at == len(rest):
+            break
+        picked.append(rest[at])
+    return picked
+
+
+def each(chooser, trail, shown):
+    """Every property asked on its own, yes or no."""
+    picked = [i for i, s in enumerate(shown) if needed(chooser, trail, f"Does the answer need {s}?")]
+    return picked or [0]

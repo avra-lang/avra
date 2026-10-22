@@ -38,7 +38,9 @@ def kind(question):
                          ("What does the question ask for", "mode"),
                          ("What does the question want to know", "recorded"),
                          ("Which recorded status", "status"),
-                         ("Does the answer need the", "property")):
+                         ("Does the answer need", "property"),
+                         ("Which property does", "property"),
+                         ("Which other property", "property more")):
         if question.startswith(prefix):
             return name
     return "other"
@@ -47,11 +49,12 @@ def kind(question):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resume", help="a partial results file to continue")
+    parser.add_argument("--decisions", default=str(HERE / "decisions.compare.jsonl"), help="recorded decisions to score")
     args = parser.parse_args()
     if not shared_socket():
         raise SystemExit(f"bench: no shared model answers on {SOCKET}")
     model = Shared(SOCKET)
-    rows = [json.loads(l) for l in (HERE / "decisions.jsonl").read_text().splitlines() if l.strip()]
+    rows = [json.loads(l) for l in pathlib.Path(args.decisions).read_text().splitlines() if l.strip()]
     header, decisions = rows[0], rows[1:]
     out = pathlib.Path(args.resume) if args.resume else \
         HERE / "results" / f"bench-{time.strftime('%Y%m%dT%H%M%S')}.json"

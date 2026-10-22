@@ -198,6 +198,14 @@ class Scripted:
         self.script, self.wanted, self.asked, self.last = list(script), set(wanted), [], None
 
     def choose(self, context, question, options):
+        if question.startswith(("Which property does", "Which other property")):
+            self.asked.append((question, options))
+            given = set(re.findall(r"the \w+'s (\w+)", context.partition("Already answering with:")[2]))
+            named = [re.match(r"the \w+'s (\w+)", o) for o in options]
+            hits = [i for i, m in enumerate(named) if m and m.group(1) in self.wanted - given]
+            done = [i for i, m in enumerate(named) if not m]
+            pick = hits[0] if hits else (done or [0])[0]
+            return [1.0 if i == pick else 0.0 for i in range(len(options))]
         need = re.match(r"Does the answer need the \w+'s (\w+)", question)
         if need:
             self.asked.append((question, options))

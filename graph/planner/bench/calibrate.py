@@ -36,7 +36,7 @@ def property_yes(decisions, scored):
 def main():
     results = pathlib.Path(sys.argv[1])
     scored = json.loads(results.read_text())["scored"]
-    decisions = [json.loads(l) for l in (HERE / "decisions.jsonl").read_text().splitlines() if l.strip()][1:]
+    decisions = [json.loads(l) for l in (HERE / "decisions.each.jsonl").read_text().splitlines() if l.strip()][1:]
     cut, right, argmax, n = property_yes(decisions[:len(scored)], scored)
     params = {"property_yes": cut,
               "fitted": {"on": str(results.name), "at": datetime.datetime.now().isoformat(timespec="seconds"),
