@@ -40,7 +40,7 @@ def deps_of(name):
     base = package_dir(name) / "src"
     for rel in sources(name):
         rows |= set(USE.findall((base / rel).read_text()))
-    return sorted(d for d in rows if package_dir(d).is_dir())
+    return sorted(d for d in rows if d != name and package_dir(d).is_dir())
 
 
 def closure_of(name, seen=None):
