@@ -16,6 +16,13 @@ def ranking_prompt(context, question, shown):
     return f"{context}\n\n{question}\n" + "\n".join(f"- {text}" for text in shown) + "\nAnswer with the name of one option only."
 
 
+def logprobs(logits):
+    import mlx.core as mx
+
+    x = logits.astype(mx.float32)
+    return x - mx.logsumexp(x, axis=-1, keepdims=True)
+
+
 def rank(scorer, context, question, shown, keys):
     """For each key, the summed log-probability of its tokens and the turn's
     end given the prompt, and its token count. Every option competes in one
@@ -28,13 +35,13 @@ def rank(scorer, context, question, shown, keys):
         raise ValueError("ranked keys must be distinct")
     end = tok.convert_tokens_to_ids("<|im_end|>")
     cache = make_prompt_cache(model)
-    first = mx.log_softmax(model(mx.array(tok.encode(scorer.render(ranking_prompt(context, question, shown))))[None], cache=cache)[0, -1].astype(mx.float32))
+    first = logprobs(model(mx.array(tok.encode(scorer.render(ranking_prompt(context, question, shown))))[None], cache=cache)[0, -1])
     out = []
     for key in keys:
         ids = tok.encode(key, add_special_tokens=False) + [end]
         total = first[ids[0]].item()
         if len(ids) > 1:
-            after = mx.log_softmax(model(mx.array(ids[:-1])[None], cache=cache)[0].astype(mx.float32), axis=-1)
+            after = logprobs(model(mx.array(ids[:-1])[None], cache=cache)[0])
             total += sum(after[i, ids[i + 1]].item() for i in range(len(ids) - 1))
             trim_prompt_cache(cache, len(ids) - 1)
         out.append({"logp": total, "tokens": len(ids)})
