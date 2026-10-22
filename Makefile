@@ -1154,7 +1154,8 @@ TOOL_WITNESSES = stamps.sh\ --self-test \
                  reclaim_test.sh \
                  keepers_loop.sh\ --self-test \
                  rungs.sh\ --self-test \
-                 ladder.sh\ --self-test
+                 ladder.sh\ --self-test \
+                 pr_body.sh\ --self-test
 tool-witnesses:
 	@python3 tools/pipeline_status.py --self-test
 	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
