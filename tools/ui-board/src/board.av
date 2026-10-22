@@ -46,7 +46,7 @@ enum Show { All, Active, Done }
 
 /// One task. `id` is the item key; `done` is its state.
 @json
-type Todo = { id: string, title: string, done: bool }
+type Task = { id: string, title: string, done: bool }
 
 /// The board's heading.
 fn title() -> string { "Tasks" }
@@ -62,11 +62,11 @@ state synced: Fetch<int> = fetch()
 state started: Fetch<int> = fetch()
 state seq: int = 5
 state pending: string = ""
-state tasks: List<Todo> = [
-    Todo { id: "t1", title: "Draft the spec", done: true },
-    Todo { id: "t2", title: "Wire the event channel", done: false },
-    Todo { id: "t3", title: "Land the wasm board", done: false },
-    Todo { id: "t4", title: "Write the tour", done: true },
+state tasks: List<Task> = [
+    Task { id: "t1", title: "Draft the spec", done: true },
+    Task { id: "t2", title: "Wire the event channel", done: false },
+    Task { id: "t3", title: "Land the wasm board", done: false },
+    Task { id: "t4", title: "Write the tour", done: true },
 ]
 
 // ── the state a page carries ────────────────────────────────────
@@ -79,7 +79,7 @@ export fn ship_state() {
     ship("seq", "int", () -> int_text(seq), (j: string) -> seq_written(j))
     ship(
         "tasks",
-        "[${Todo.json_shape()}]",
+        "[${Task.json_shape()}]",
         () -> array_of([t.json_text() for t in tasks]),
         (j: string) -> tasks_written(j),
     )
@@ -132,8 +132,8 @@ fn tasks_written(j: string) -> bool {
     }
 }
 
-fn todos_of(j: string) -> Result<List<Todo>, string> {
-    [Todo.from_json_text(entry)? for entry in elements(j)?]
+fn todos_of(j: string) -> Result<List<Task>, string> {
+    [Task.from_json_text(entry)? for entry in elements(j)?]
 }
 
 /// The counts are DERIVED from the list, never stored beside it.
@@ -141,7 +141,7 @@ fn done_count() -> int { [t for t in tasks if t.done].length }
 
 fn open_count() -> int { [t for t in tasks if !t.done].length }
 
-fn admits(t: Todo) -> bool {
+fn admits(t: Task) -> bool {
     match filter { .All -> true, .Active -> !t.done, .Done -> t.done }
 }
 
@@ -150,13 +150,13 @@ export fn theme() -> Theme { if dark { dark_theme } else { default_theme } }
 /// `title` becomes the next task — none, when it says nothing.
 fn add(title: string) {
     if title == "" { return }
-    tasks = tasks.concat([Todo { id: "t${seq}", title: title, done: false }])
+    tasks = tasks.concat([Task { id: "t${seq}", title: title, done: false }])
     seq = seq + 1
 }
 
 /// This task with its state as given when it is the named one, unchanged
 /// otherwise.
-fn marked(t: Todo, id: string, done: bool) -> Todo {
+fn marked(t: Task, id: string, done: bool) -> Task {
     if t.id == id { t with { done: done } } else { t }
 }
 
@@ -244,7 +244,7 @@ component new_task {
 
 /// One task's row. Its key is the task's id, so its node goes where the
 /// task goes.
-component task_row(task: Todo) {
+component task_row(task: Task) {
     item {
         checkbox self.task.title {
             checked: self.task.done
@@ -272,7 +272,7 @@ component task_rows {
 
 /// The tasks the filter admits, in the order the board shows them. The
 /// rows are keyed, so turning the order CARRIES each row: none is made.
-fn visible() -> List<Todo> {
+fn visible() -> List<Task> {
     let admitted = [t for t in tasks if admits(t)]
     if newest_first { [admitted[admitted.length - 1 - j] for j, t in admitted] } else { admitted }
 }
@@ -300,13 +300,13 @@ fn remind_now() -> bool {
 
 /// Whether the server keeps the task: its `id` is then the server's own
 /// numeric key, where a task made on this page wears `t<n>`.
-fn held(t: Todo) -> bool { parse_int(t.id) != null }
+fn held(t: Task) -> bool { parse_int(t.id) != null }
 
 /// A task as the server writes it: `{"id":1,"title":"…","done":false}`.
-fn todo_of(j: Json) -> Todo? {
+fn todo_of(j: Json) -> Task? {
     let key? = j.get("id")?.int() else { return null }
     let title? = j.get("title")?.text() else { return null }
-    Todo { id: "${key}", title: title, done: j.get("done")?.truth() ?? false }
+    Task { id: "${key}", title: title, done: j.get("done")?.truth() ?? false }
 }
 
 /// The reply's body as JSON, or why it is not.
