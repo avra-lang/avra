@@ -107,7 +107,11 @@ A TIMEX3 normalization may carry `reference`, the ISO 8601 instant a
 relative expression was resolved against (the source's anchor time).
 Admission accepts a DATE value that is an ISO 8601 calendar date and a TIME
 value that is an instant with its offset; DURATION and SET are not admitted
-yet. A passage need not contain the value ("next Friday" normalized to a date).
+yet. A TIMEX3 normalization lands only on a property whose
+model declares a time encoding for it (`Semantics.times`), and must agree
+with the value the field holds: a DATE equals an `iso_date` value, and a
+TIME is the same instant as an `iso_instant` value or, to the millisecond,
+a `unix_millis` one. A passage need not contain the value ("next Friday" normalized to a date).
 A result may also carry `unplaced` statements: anchored passages stating
 what no declared model or property holds, with the extractor's best guess
 (`kind` `property` with its `model`, or `model`; a `label`; an optional

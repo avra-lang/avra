@@ -20,12 +20,13 @@ use @avra.graph_contracts.{
 use @std.validate.{Value, Entry}
 use @std.json.{parse}
 use catalog.{Catalog}
-use schema.{Shape}
+use schema.{Shape, Model}
 use data.{as_value, encoded, json_safe}
 use ingest.envelope.{source_document}
 use store.policy.{AdmissionBudget}
-use store.evidence.{instant_named}
-use parameters.{iso_date_length}
+use store.evidence.{instant_named, Instant}
+use semantics.{TimeEncoding, encoding_word}
+use parameters.{iso_date_length, millis_digits}
 
 /// Admission is not entity linking or publication. Failure has no records
 /// to accidentally treat as a successful empty replacement.
@@ -164,6 +165,46 @@ fn timex_ok(n: Normalization) -> Result<bool, string> {
     true
 }
 
+/// A time normalization lands only on a property that declares a time
+/// encoding, and agrees with the value the field holds in it.
+fn declared_time(model: Model, f: ProposedField) -> Result<bool, string> {
+    let n = f.normalization!
+    if n.kind != "TIMEX3" { return true }
+    let binding? = model.semantics.times.find(it.path.length == 1 && it.path[0] == f.property) else {
+        fail "${model.name}.${f.property} carries a time normalization but declares no time encoding"
+    }
+    if !(agrees(binding.encoding, f.value.value, n) catch false) {
+        fail "${model.name}.${f.property} holds ${encoding_word(binding.encoding)}, and its value and normalization do not agree"
+    }
+    true
+}
+
+/// A DATE equals an `iso_date` value; a TIME is the same instant as an
+/// `iso_instant` value or, to the millisecond, a `unix_millis` one.
+fn agrees(encoding: TimeEncoding, value: Value, n: Normalization) -> Result<bool, string> {
+    let timex = n.timex_type ?? ""
+    let normalized = n.value ?? ""
+    match encoding {
+        .IsoDate -> timex == "DATE" && text_of(value) == normalized,
+        .IsoInstant -> timex == "TIME" &&
+            same_instant(instant_named(text_of(value) ?? "")?, instant_named(normalized)?),
+        .UnixMillis -> {
+            let at = instant_named(normalized)?
+            timex == "TIME" && at.fraction.length <= millis_digits && int_of(value) == at.millis()
+        },
+    }
+}
+
+fn text_of(v: Value) -> string? {
+    match v { .Text(s) -> s, rest -> null }
+}
+
+fn int_of(v: Value) -> int? {
+    match v { .Int(n) -> n, rest -> null }
+}
+
+fn same_instant(a: Instant, b: Instant) -> bool { a.seconds == b.seconds && a.fraction == b.fraction }
+
 /// An unplaced statement is anchored like a field and names only what exists.
 fn checked_unplaced(
     catalog: Catalog,
@@ -201,7 +242,10 @@ fn checked_record(
         if !model.properties.any(it.name == field.property) { fail "unknown extraction property: ${r.model}.${field.property}" }
         if !json_safe(field.value.value) { fail not_finite() }
         for p in field.evidence { located(q, p, field.frame)? }
-        if field.normalization != null { timex_ok(field.normalization!)? }
+        if field.normalization != null {
+            timex_ok(field.normalization!)?
+            declared_time(model, field)?
+        }
     }
     let value = Value.Map([Entry { key: f.property, value: f.value.value } for f in r.fields])
     let normalized = match (model.check_fields)(value) {
