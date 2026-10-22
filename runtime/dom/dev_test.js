@@ -70,5 +70,16 @@ test("a mended build of another module reloads", broke.reloads === 1);
   test("a swap that fails reloads the page", failing.reloads === 1);
 }
 
+// The module that stands is named on the document element, so a reader can wait on a swap.
+{
+  const swapping = client(async () => {});
+  swapping.doc.documentElement = stubElement("html");
+  watch({ doc: swapping.doc, mine: "abc", events: swapping.events, reload: () => {}, swap: async () => {} });
+  const named = () => swapping.doc.documentElement.attrs["data-avra-module"];
+  const before = named();
+  await swapping.events.say("built", "xyz");
+  test("a page names its module at start and again once a swap lands", before === "abc" && named() === "xyz");
+}
+
 console.log(`dev: ${passed}/${passed + failed}`);
 process.exit(failed === 0 ? 0 : 1);
