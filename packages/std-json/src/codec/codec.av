@@ -58,6 +58,8 @@ use @std.json.{
     want_members,
     map_from,
     Member,
+    parse,
+    to_text,
 }
 use @std.json.typed.{
     Entry,
@@ -87,6 +89,61 @@ export fn json(t: Type) -> Declared {
     let problems = shape_problems(t)
     if !problems.is_empty() { return refused(problems) }
     Declared { made: [Directive { twin: "", name: t.name, at: t.at, source: codec(t) }] }
+}
+
+/// `@json_text("write", "read")` — a value type that crosses JSON as ONE
+/// string: `write` names the method that writes it (`self.write()`), and
+/// `read` the free fn that reads its text, answering the value or null.
+export fn json_text(t: Type, write: string, read: string) -> Declared {
+    Declared {
+        made: [Directive { twin: "", name: t.name, at: t.at, source: text_codec(t, write, read) }],
+    }
+}
+
+fn text_codec(t: Type, write: string, read: string) -> Decls {
+    quote {
+        impl ${t} {
+            /// This value as JSON: its text.
+            fn to_json() -> Json { Json.Str(self.${write}()) }
+
+            /// This value as JSON text.
+            fn json_text() -> string { to_text(self.to_json()) }
+
+            /// This value read from the value at `at`: its text read back, or a
+            /// `DecodeError` naming `at` when the text reads as no value.
+            static fn decode_json(v: Json?, at: string) -> Result<${t}, DecodeError> {
+                let text = want_text(v, at)?
+                let value? = ${read}(text) else {
+                    return .Err(DecodeError { at: at, wanted: ${literal("a text that reads as " + t.name)}, found: text })
+                }
+                .Ok(value)
+            }
+
+            /// This value read from a JSON document.
+            static fn from_json(j: Json) -> Result<${t}, DecodeError> { ${name(t.name)}.decode_json(j, "") }
+
+            /// This value read from JSON text, as `decode_json` reads a value.
+            static fn from_json_text(raw: string) -> Result<${t}, string> {
+                match parse(raw) {
+                    .Ok(j) -> match ${name(t.name)}.decode_json(j, "") {
+                        .Ok(value) -> .Ok(value),
+                        .Err(e) -> .Err(e.wanted),
+                    },
+                    .Err(_) -> .Err("not JSON text"),
+                }
+            }
+
+            /// A string schema: the text this value crosses as.
+            static fn json_schema() -> Json { Json.Obj([field("type", Json.Str("string"))]) }
+
+            /// No component: a text value is written inline.
+            static fn json_schemas() -> Json { Json.Obj([]) }
+
+            static fn json_shape() -> string { ${name(t.name)}.shape_in([]) }
+
+            static fn shape_in(_seen: List<string>) -> string { ${literal(t.name)} }
+        }
+    }
 }
 
 fn codec(t: Type) -> Decls {

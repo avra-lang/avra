@@ -25,7 +25,20 @@
 //! fields in declaration order — absence, then each rule — so a rule
 //! naming a sibling reads it as the tree path does.
 use @std.text.{admits}
-use @std.meta.{Type, Field, Kind, Annotation, Directive, Code, Decls, Stmts, name, literal, applied}
+use @std.meta.{
+    Type,
+    Field,
+    Kind,
+    Annotation,
+    Directive,
+    Code,
+    Decls,
+    Stmts,
+    name,
+    literal,
+    applied,
+    type_named,
+}
 use decode.{
     Decoding,
     Slot,
@@ -33,6 +46,7 @@ use decode.{
     Limits,
     decode,
     ruled,
+    json_of,
     list,
     read_text,
     read_int,
@@ -43,6 +57,7 @@ use json.{
     decode_json,
     not_yet,
     json_list,
+    json_read_protocol,
     json_by_tree,
     ruled_json,
     json_read_text,
@@ -50,6 +65,7 @@ use json.{
     json_read_float,
     json_read_bool,
 }
+use @std.json.{Json}
 use value.{Value, Entry}
 use issue.{Issues, root}
 use check.{Checking, filed}
@@ -385,6 +401,12 @@ const judged: string = "judged\$"
 const hidden: string = "hidden\$"
 
 /// The reader for a shape at `at`.
+/// Whether a named type answers std-json's protocol: it carries `@json` or `@json_text`.
+fn json_typed(n: string) -> bool {
+    let t? = type_named(n) else { return false }
+    t.annotations.any(it.name == "json" || it.name == "json_text")
+}
+
 fn reader(k: Kind) -> Code {
     match k {
         .Str -> quote { d.text(at) },
@@ -395,7 +417,11 @@ fn reader(k: Kind) -> Code {
             let each? = element(elem) else { return unread(k) }
             quote { list(d, at, ${each}) }
         },
-        .Named(n, _) -> quote { ${name(n)}.decoded(d, at) },
+        .Named(n, _) -> if json_typed(n) {
+            quote { ruled(d, at, "json", ${name(n)}.decode_json(json_of(at.value), at.at.text())) }
+        } else {
+            quote { ${name(n)}.decoded(d, at) }
+        },
         .Opt(k2) -> reader(k2),
         .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> unread(k),
     }
@@ -670,7 +696,11 @@ fn reading(k: Kind, depth: Code, required: Code, secret: Code) -> Code {
             let each? = json_element(elem) else { return unread_json(k, depth) }
             quote { json_list(d, ${depth}, ${required}, ${secret}, ${each}) }
         },
-        .Named(n, _) -> quote { ${name(n)}.read_json(d, ${depth}, ${required}, ${secret}) },
+        .Named(n, _) -> if json_typed(n) {
+            quote { json_read_protocol(d, ${depth}, ${required}, ${secret}, (v: Json?, at: string) -> ${name(n)}.decode_json(v, at)) }
+        } else {
+            quote { ${name(n)}.read_json(d, ${depth}, ${required}, ${secret}) }
+        },
         .Opt(k2) -> reading(k2, depth, required, secret),
         .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> unread_json(k, depth),
     }

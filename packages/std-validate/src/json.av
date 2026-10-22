@@ -21,6 +21,8 @@
 //! read the tree's way — shown as a `Value` and handed to the tree
 //! reader — so a refusal says what the tree path says.
 use @std.json.{
+    Json,
+    DecodeError,
     space,
     plain_end,
     string_end,
@@ -34,7 +36,7 @@ use @std.json.{
     MAX_DEPTH,
 }
 use @std.text.{parse_float}
-use decode.{Decoding, Decoder, Slot, Coercion, Limits, decode, answered}
+use decode.{Decoding, Decoder, Slot, Coercion, Limits, decode, answered, ruled, json_of}
 use formats.{from_json, json_value}
 use issue.{Issue, Issues, Path, Step, root}
 use value.{Value}
@@ -400,6 +402,19 @@ export fn ruled_json<T, E: Refusal>(
 export fn not_yet<T>() -> T? { null }
 
 /// Each scalar reader as a direct reader, for a list of them.
+/// A field whose type answers std-json's protocol, read from JSON text: its value is
+/// read at the cursor as one tree, then decoded by the type's own `decode_json`.
+export fn json_read_protocol<T>(
+    mut d: Decoding,
+    depth: int,
+    required: bool,
+    secret: bool,
+    read: fn(Json?, string) -> Result<T, DecodeError>,
+) -> T? {
+    let s? = d.tree_slot(depth, required, secret) else { return null }
+    ruled(d, s, "json", read(json_of(s.value), s.at.text()))
+}
+
 export fn json_read_text(mut d: Decoding, depth: int, required: bool, secret: bool) -> string? {
     d.json_text(depth, required, secret)
 }

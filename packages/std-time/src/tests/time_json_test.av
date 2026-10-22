@@ -1,0 +1,42 @@
+// A Time crosses JSON as its ISO-8601 UTC text: the text it writes, the
+// text it reads back, a model's field of it, and a malformed one refused.
+use @std.meta.{derive}
+use @std.time.{Time}
+use @std.validate.{Decode, from_json}
+
+@derive(Decode)
+type Event = {
+    at: Time,
+    label: string,
+}
+
+spec "std/time — a Time is its ISO text in JSON" {
+    given "an instant" {
+        then "its JSON text is its ISO-8601 UTC text" {
+            Time { ns: 1000000000 }.json_text() == "\"1970-01-01T00:00:01.000000000Z\""
+        }
+        then "the text reads back to the instant" {
+            match Time.from_json_text("\"1970-01-01T00:00:01.000000000Z\"") {
+                .Ok(t) -> t.ns == 1000000000,
+                .Err(_) -> false,
+            }
+        }
+        then "a text that is no ISO time is refused" {
+            match Time.from_json_text("\"nope\"") { .Ok(_) -> false, .Err(_) -> true }
+        }
+    }
+    given "a model with a Time field" {
+        then "its field decodes from the ISO text" {
+            match Event.from_json("{\"at\": \"1970-01-01T00:00:01.000000000Z\", \"label\": \"x\"}") {
+                .Ok(e) -> e.at.ns == 1000000000 && e.label == "x",
+                .Err(_) -> false,
+            }
+        }
+        then "a malformed time is an issue at its field" {
+            match Event.from_json("{\"at\": \"nope\", \"label\": \"x\"}") {
+                .Ok(_) -> false,
+                .Err(e) -> e.all.length == 1,
+            }
+        }
+    }
+}

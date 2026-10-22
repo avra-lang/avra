@@ -3214,6 +3214,15 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### A declaring annotation takes a fn name as an argument
+
+`@json_text("iso", "parse_iso")` on `Time` (`packages/std-time/src/time.av`) spells the
+write and read fns as STRING literals, because a declaring annotation's arguments are
+literals and a bare fn name is refused ("a hole in name position takes a `string`"). A
+misspelled name is not caught at the annotation: the derive cannot ask whether `isoo`
+is a method, so the error appears in generated code. The want: a declaring annotation
+takes a fn name, checked where it is written.
+
 ### Interim record — `Cell<T>` has no spelled form in a pass
 
 A type in a pass is spelled (`cx.type(List<string?>)`), but `types.type(Cell<ty>)` is
