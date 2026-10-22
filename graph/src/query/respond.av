@@ -1,5 +1,7 @@
 use @std.json.{Json, field, to_text}
 use data.{as_json}
+use query.policies.{Derived as Outcome}
+use @std.validate.{Value}
 use store.open.{Graph}
 use query.plan.{prepare_read}
 use query.execute.{ReadAnswer, ReadRow, ReadResult, Held}
@@ -26,6 +28,7 @@ export fn responded(request: string, result: ReadResult) -> Json {
     match result.answer {
         .Exceeded(limit) -> unresolved(request, result.revision, "budget_exceeded", limit),
         .Unmet(code, detail, rows) -> known_unknown(request, result.revision, code, detail, rows),
+        .Derived(_, derivation, anchor, outcome, rows) -> derived_answer(request, result.revision, derivation, anchor, outcome, rows),
         .Mixed(rows, statuses) -> mixed(request, result.revision, rows, statuses),
         .Status(name, held, rows) -> answered(
             request,
@@ -109,6 +112,60 @@ fn known_unknown(request: string, revision: int, code: string, message: string, 
         [],
         [problem(code, message)],
     )
+}
+
+/// A derivation's value as derived fields, or its unknown with what it knew.
+fn derived_answer(
+    request: string,
+    revision: int,
+    derivation: string,
+    anchor: string,
+    outcome: Outcome,
+    rows: List<ReadRow>,
+) -> Json {
+    let supports = distinct_supports(rows)
+    let cites = [Json.Str(s.id) for s in supports]
+    let citations = [citation(s) for s in supports]
+    match outcome {
+        .Made(value) -> if supports.is_empty() {
+            unresolved(request, revision, "no_evidence", "the derivation read no cited rows")
+        } else {
+            document(
+                request,
+                "answered",
+                revision,
+                derived_fields(anchor, derivation, value, cites),
+                citations,
+                [],
+                [],
+            )
+        },
+        .Unknown(u) -> document(
+            request,
+            "unknown",
+            revision,
+            if supports.is_empty() { [] } else { derived_fields(anchor, derivation, u.known, cites) },
+            if supports.is_empty() { [] } else { citations },
+            [],
+            [problem(u.code, u.why)],
+        ),
+    }
+}
+
+fn derived_fields(anchor: string, derivation: string, value: Value, cites: List<Json>) -> List<Json> {
+    match value {
+        .Map(entries) -> [Json
+            .Obj(
+                [
+                    field("path", Json.Arr([Json.Str(anchor), Json.Str(e.key)])),
+                    field("value", as_json(e.value)),
+                    field("basis", Json.Str("derived")),
+                    field("citations", Json.Arr(cites)),
+                    field("derivation", Json.Str(derivation)),
+                ],
+            ) for e in entries],
+        .Null or .Bool(_) or .Int(_) or .Float(_) or .Text(_) or .List(_) -> [],
+    }
 }
 
 fn status_field(name: string, held: bool, supports: List<Support>) -> Json {

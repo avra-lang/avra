@@ -1,0 +1,258 @@
+use derive.model.{model}
+use derive.policy.{derived}
+use schema.{Ref, Registration}
+use policy.{Unknown, DerivationRegistration, difference, total, same_unit}
+use catalog.{Catalog}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use query.policies.{Row, Supplied, Derived, derived as run_derived}
+use @std.validate.{Value, Entry, range}
+use @std.json.{Json, parse, to_text}
+use @avra.graph_contracts.{Answer}
+
+@model
+type Sum = { minor: int, unit: string }
+
+@model
+type Charge = { label: string, amount: Sum }
+
+@model
+type Settlement = { charge: Ref<Charge>, paid: Sum }
+
+@model
+type Balance = { label: string, @range(0, 1000000) owed: int, unit: string }
+
+/// What a charge still owes after its settlements.
+@derived
+fn balance(charge: Charge, settlements: List<Settlement>) -> Result<Balance, Unknown> {
+    for s in settlements { let _ = same_unit(s.paid.unit, charge.amount.unit)? }
+    let paid = total([s.paid.minor for s in settlements])?
+    let owed = difference(charge.amount.minor, paid)?
+    if owed < 0 {
+        fail Unknown {
+            code: "overpaid",
+            why: "settlements exceed the charge",
+            known: Value.Map([Entry { key: "paid", value: Value.Int(paid) }]),
+        }
+    }
+    Balance { label: charge.label, owed: owed, unit: charge.amount.unit }
+}
+
+/// A charge's amount as a balance, unchecked against settlements.
+@derived
+fn raw_balance(charge: Charge) -> Balance {
+    Balance { label: charge.label, owed: charge.amount.minor, unit: charge.amount.unit }
+}
+
+fn registrations() -> List<Registration> {
+    [
+        Registration { make: Sum_graph_model },
+        Registration { make: Charge_graph_model },
+        Registration { make: Settlement_graph_model },
+        Registration { make: Balance_graph_model },
+    ]
+}
+
+fn derivations() -> List<DerivationRegistration> {
+    [
+        DerivationRegistration { make: balance_graph_derivation },
+        DerivationRegistration { make: raw_balance_graph_derivation },
+    ]
+}
+
+fn sum(minor: int, unit: string) -> Sum { Sum { minor: minor, unit: unit } }
+
+fn filed(mut g: Graph, run: string, producer: string, records: List<Record>) -> Result<int, string> {
+    g
+        .publish(
+            Publication {
+                id: run,
+                producer: producer,
+                scope: "in:1",
+                input: "in:1",
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: records,
+            },
+        )
+}
+
+fn charge(id: string, minor: int) -> Record {
+    Record {
+        id: id,
+        model: "Charge",
+        value: Charge { label: id, amount: sum(minor, "EUR") }.graph_value(),
+    }
+}
+
+fn settlement(id: string, charge: string, minor: int, unit: string = "EUR") -> Record {
+    Record {
+        id: id,
+        model: "Settlement",
+        value: Settlement { charge: Ref { id: charge }, paid: sum(minor, unit) }.graph_value(),
+    }
+}
+
+fn ledger() -> Result<Graph, string> {
+    mut g = Graph.memory(registrations(), derivations())?
+    g.observe("in:1", "raw")?
+    filed(
+        g,
+        "one",
+        "agent",
+        [
+            charge("c1", 5000),
+            settlement("s1", "c1", 1500),
+            settlement("s2", "c1", 500),
+            charge("c2", 100),
+            settlement("s3", "c2", 300),
+            settlement("s4", "c2", 50, "GBP"),
+        ],
+    )?
+    g
+}
+
+fn rows(g: Graph, ids: List<string>) -> Result<Supplied, string> {
+    Supplied.Rows([Row { id: id, fields: (g.entity(id)?).fields } for id in ids])
+}
+
+fn ran(g: Graph, name: string, supplied: List<Supplied>) -> Result<Derived, string> {
+    run_derived(g.catalog, g.catalog.derivation(name)?, supplied)
+}
+
+fn int_of(v: Value, key: string) -> int? {
+    let held? = v.entries().find(it.key == key) else { return null }
+    match held.value { .Int(n) -> n, rest -> null }
+}
+
+fn owed(d: Derived) -> int? {
+    match d { .Made(v) -> int_of(v, "owed"), .Unknown(_) -> null }
+}
+
+fn code(d: Derived) -> string {
+    match d { .Made(_) -> "", .Unknown(u) -> u.code }
+}
+
+fn remainder() -> Result<bool, string> {
+    let g = ledger()?
+    defer { let _ = g.close() }
+    owed(ran(g, "balance", [rows(g, ["c1"])?, rows(g, ["s1", "s2"])?])?) == 3000 &&
+        owed(ran(g, "balance", [rows(g, ["c1"])?, rows(g, [])?])?) == 5000
+}
+
+fn unit_and_sign_unknown() -> Result<bool, string> {
+    let g = ledger()?
+    defer { let _ = g.close() }
+    let over = ran(g, "balance", [rows(g, ["c2"])?, rows(g, ["s3"])?])?
+    let known_paid = match over { .Unknown(u) -> int_of(u.known, "paid") == 300, .Made(_) -> false }
+    code(over) == "overpaid" &&
+        known_paid &&
+        code(ran(g, "balance", [rows(g, ["c2"])?, rows(g, ["s4"])?])?) == "mixed_units"
+}
+
+fn row_counts_unknown() -> Result<bool, string> {
+    let g = ledger()?
+    defer { let _ = g.close() }
+    code(ran(g, "balance", [rows(g, [])?, rows(g, [])?])?) == "missing_input" &&
+        code(ran(g, "balance", [rows(g, ["c1", "c2"])?, rows(g, [])?])?) == "ambiguous_input"
+}
+
+fn competing_claims_unknown() -> Result<bool, string> {
+    mut g = ledger()?
+    defer { let _ = g.close() }
+    filed(g, "two", "other", [charge("c1", 7000)])?
+    code(ran(g, "balance", [rows(g, ["c1"])?, rows(g, [])?])?) == "conflicting_input"
+}
+
+fn output_checked() -> Result<bool, string> {
+    mut g = ledger()?
+    defer { let _ = g.close() }
+    filed(g, "big", "agent", [charge("c9", 2000000)])?
+    code(ran(g, "raw_balance", [rows(g, ["c9"])?])?) == "invalid_output"
+}
+
+fn mismatched_supply_is_a_defect() -> Result<bool, string> {
+    let g = ledger()?
+    defer { let _ = g.close() }
+    ran(g, "balance", [rows(g, ["c1"])?]) is .Err &&
+        ran(g, "balance", [Supplied.Literal(Value.Text("c1")), rows(g, [])?]) is .Err
+}
+
+fn asked(g: Graph, text: string) -> Result<Json, string> {
+    let params = match parse("{\"asker\":\"u\",\"now\":1,\"which\":\"c1\"}") {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "params are not JSON" },
+    }
+    g.cypher(text, params)
+}
+
+const call = "MATCH (c:Charge) WHERE c.label = \$which OPTIONAL MATCH (c)<-[:charge]-(s:Settlement) RETURN balance(c, collect(s)) AS owing"
+
+fn derived_in_cypher() -> Result<bool, string> {
+    let g = ledger()?
+    defer { let _ = g.close() }
+    let answer = asked(g, call)?
+    let decoded = match Answer.from_json(to_text(answer)) {
+        .Ok(a) -> a,
+        .Err(e) -> { fail e.report() },
+    }
+    let owed = decoded.fields.find(it.path.join("/") == "c1/owed")
+    decoded.status == "answered" &&
+        owed != null &&
+        owed!.basis == "derived" &&
+        owed!.derivation == "balance" &&
+        !owed!.citations.is_empty() &&
+        decoded.fields.length == 3
+}
+
+fn unknown_in_cypher() -> Result<bool, string> {
+    let g = ledger()?
+    defer { let _ = g.close() }
+    let params = "{\"asker\":\"u\",\"now\":1,\"which\":\"c2\"}"
+    let parsed = match parse(params) { .Ok(j) -> j, .Err(_) -> { fail "params are not JSON" } }
+    let decoded = match Answer.from_json(to_text(g.cypher(call, parsed)?)) {
+        .Ok(a) -> a,
+        .Err(e) -> { fail e.report() },
+    }
+    decoded.status == "unknown" && decoded.problems[0].code == "mixed_units"
+}
+
+fn call_shapes_refused() -> Result<bool, string> {
+    let g = ledger()?
+    defer { let _ = g.close() }
+    let params = match parse("{\"asker\":\"u\",\"now\":1}") {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "params are not JSON" },
+    }
+    let short = to_text(g.check_cypher("MATCH (c:Charge) RETURN balance(c)", params))
+    let wrong = to_text(
+        g
+            .check_cypher(
+                "MATCH (c:Charge) MATCH (c)<-[:charge]-(s:Settlement) RETURN balance(collect(c), collect(s))",
+                params,
+            ),
+    )
+    short.contains("derivation_arity") && wrong.contains("derivation_argument")
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "declared derivations over one snapshot" {
+    given "an unrelated charge and settlement ledger" {
+        then "a same-unit remainder is computed from standing rows" { passed(remainder()) }
+        then "mixed units and a fn's own refusal stay unknown, carrying what is known" { passed(unit_and_sign_unknown()) }
+        then "a missing or doubled single input is unknown" { passed(row_counts_unknown()) }
+        then "competing unchosen claims never become a number" { passed(competing_claims_unknown()) }
+        then "an output breaking its model's rules is unknown" { passed(output_checked()) }
+        then "a derivation called in RETURN answers derived fields citing everything it read" { passed(derived_in_cypher()) }
+        then "a derivation's unknown is an unknown answer carrying its code" { passed(unknown_in_cypher()) }
+        then "a call that does not fit the signature is refused at admission" { passed(call_shapes_refused()) }
+        then "a supply that does not match the signature is a defect" { passed(mismatched_supply_is_a_defect()) }
+    }
+}

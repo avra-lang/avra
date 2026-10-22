@@ -9,11 +9,23 @@ use source.{Context}
 @step_coherent
 export type ReadStep = {
     @length(min: 1, max: 128) id: string,
-    @one_of(["scan", "filter", "follow", "search", "project", "count", "sum", "expect", "seed", "holds"]) op: string,
-    @items(max: 1) inputs: List<string> = [],
+    @one_of([
+        "scan",
+        "filter",
+        "follow",
+        "search",
+        "project",
+        "count",
+        "sum",
+        "expect",
+        "seed",
+        "holds",
+        "derive",
+    ]) op: string,
+    @items(max: 8) inputs: List<string> = [],
     model: string? = null,
     property: string? = null,
-    @items(max: 1) arguments: List<JsonValue> = [],
+    @items(max: 8) arguments: List<JsonValue> = [],
     @one_of(["eq", "ne", "lt", "le", "gt", "ge"]) comparison: string? = null,
     @one_of(["out", "in"]) direction: string? = null,
     @items(max: 64) properties: List<string> = [],
@@ -21,11 +33,15 @@ export type ReadStep = {
     @length(min: 1, max: 256) owner: string? = null,
     @length(min: 1, max: 128) reason: string? = null,
     @one_of(["speaker", "principal"]) binding: string? = null,
+    @length(min: 1, max: 128) derivation: string? = null,
 }
 
 fn step_coherent(s: ReadStep) -> Result<ReadStep, string> {
     let scan = s.op == "scan" || s.op == "seed"
-    if s.inputs.length != if scan { 0 } else { 1 } { fail "a scan or seed has no input; other steps take one" }
+    let derive = s.op == "derive"
+    if !derive && s.inputs.length != if scan { 0 } else { 1 } { fail "a scan or seed has no input; other steps take one" }
+    if derive != (s.derivation != null) { fail "only a derive step names its derivation" }
+    if derive && s.inputs.any(it.is_empty()) { fail "a derive input names a step" }
     if scan != (s.model != null) { fail "only a scan or seed names a model" }
     if (s.op == "seed") != (s.binding != null) { fail "only a seed names its context binding" }
     if s.model == "" || s.property == "" { fail "schema symbols cannot be empty" }
@@ -37,7 +53,7 @@ fn step_coherent(s: ReadStep) -> Result<ReadStep, string> {
         s.op == "holds"
     if property != (s.property != null) { fail "this operation has the wrong property arguments" }
     let literal = s.op == "filter" || s.op == "search"
-    if s.arguments.length != if literal { 1 } else { 0 } { fail "this operation has the wrong literal arguments" }
+    if !derive && s.arguments.length != if literal { 1 } else { 0 } { fail "this operation has the wrong literal arguments" }
     if s.op == "search" && !(s.arguments[0].value is .Text) { fail "a search argument must be text" }
     if (s.op == "filter") != (s.comparison != null) { fail "only a filter names a comparison" }
     if (s.op == "follow") != (s.direction != null) { fail "only a follow names a direction" }
@@ -45,7 +61,8 @@ fn step_coherent(s: ReadStep) -> Result<ReadStep, string> {
     if s.properties.any(it.is_empty()) { fail "projection properties cannot be empty" }
     if s.owner != null && !(s.op == "follow" && s.direction == "in") { fail "only an incoming follow names its owner model" }
     let paired = s.op == "project" && s.names.length == s.properties.length
-    let single = (s.op == "holds" || s.op == "count" || s.op == "sum") && s.names.length == 1
+    let single = (s.op == "holds" || s.op == "count" || s.op == "sum" || derive) &&
+        s.names.length == 1
     if !s.names.is_empty() && !(paired || single) {
         fail "output names pair one-to-one with a projection's properties; a status, count or sum has one"
     }

@@ -189,6 +189,18 @@ def nest(fields):
     return tree
 
 
+def reshaped(value, spec):
+    """Generic projections of a structured value: one element, one member, or a list of records as a map."""
+    if "index" in spec and isinstance(value, list):
+        value = value[spec["index"]]
+    if "pick" in spec and isinstance(value, dict):
+        value = value[spec["pick"]]
+    if "map_by" in spec and isinstance(value, list):
+        key, member = spec["map_by"]["key"], spec["map_by"]["value"]
+        value = {item[key]: item[member] for item in value}
+    return value
+
+
 def read_keys(answer, keys):
     """Grader-side reading of generic [entity, name] fields into manifest keys."""
     cited = {c["id"]: c["source"]["revision"] for c in answer.get("citations", [])}
@@ -201,8 +213,7 @@ def read_keys(answer, keys):
     for key, spec in keys.items():
         for field in answer.get("fields", []):
             if (field["path"] if spec.get("bare") else field["path"][1:]) == spec["suffix"]:
-                got = takes[spec["take"]](field)
-                out[key] = got[spec["index"]] if "index" in spec and isinstance(got, list) else got
+                out[key] = reshaped(takes[spec["take"]](field), spec)
                 break
     return out
 

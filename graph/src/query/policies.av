@@ -1,0 +1,98 @@
+use @std.validate.{Value, Entry}
+use catalog.{Catalog}
+use policy.{Derivation, Input, Unknown}
+use store.query.{Selection, Candidate}
+
+/// One row as read: its entity id and its standing selections.
+export type Row = { id: string, fields: List<Selection> }
+
+/// What a plan hands one parameter: rows of a node, or a literal argument.
+export enum Supplied { Rows(rows: List<Row>), Literal(value: Value) }
+
+/// A derivation's value checked against its output model, or why there is none.
+export enum Derived { Made(value: Value), Unknown(unknown: Unknown) }
+
+/// Runs a declared derivation over rows of one snapshot. Rows become values
+/// only when each property has one standing answer; the fn sees nothing else.
+export fn derived(catalog: Catalog, derivation: Derivation, supplied: List<Supplied>) -> Result<
+    Derived,
+    string,
+> {
+    if supplied.length != derivation.parameters.length { fail "a derivation needs one supply per parameter" }
+    mut arguments: List<Value> = []
+    for i, p in derivation.parameters {
+        match argument(p.name, p.input, supplied[i])? {
+            .Got(v) -> arguments.push(v),
+            .Missing(u) -> { return Derived.Unknown(u) },
+        }
+    }
+    let made = match (derivation.run)(arguments) {
+        .Ok(v) -> v,
+        .Err(u) -> { return Derived.Unknown(u) },
+    }
+    match ((catalog.model(derivation.output)?).check)(made) {
+        .Ok(v) -> Derived.Made(v),
+        .Err(issues) -> Derived.Unknown(Unknown { code: "invalid_output", why: issues.report() }),
+    }
+}
+
+enum Arg { Got(value: Value), Missing(unknown: Unknown) }
+
+/// One parameter's value; an absent, extra or competing row is unknown.
+fn argument(name: string, input: Input, supplied: Supplied) -> Result<Arg, string> {
+    match supplied {
+        .Literal(value) -> {
+            if input.rows() { fail "a row parameter was given a literal: ${name}" }
+            Arg.Got(value)
+        },
+        .Rows(rows) -> match input {
+            .One(_) -> when {
+                rows.is_empty() -> missing("missing_input", "no row supplies `${name}`")
+                rows.length > 1 -> missing("ambiguous_input", "several rows supply `${name}`")
+                _ -> assembled(rows[0])
+            },
+            .Maybe(_) -> when {
+                rows.is_empty() -> Arg.Got(Value.Null)
+                rows.length > 1 -> missing("ambiguous_input", "several rows supply `${name}`")
+                _ -> assembled(rows[0])
+            },
+            .All(_) -> listed([assembled(r) for r in rows]),
+            .Text or .Integer or .Boolean -> { fail "a literal parameter was given rows: ${name}" },
+        },
+    }
+}
+
+/// The rows as one list, unless one of them is unknown.
+fn listed(args: List<Arg>) -> Arg {
+    mut values: List<Value> = []
+    for a in args {
+        match a { .Got(v) -> values.push(v), .Missing(_) -> { return a } }
+    }
+    Arg.Got(Value.List(values))
+}
+
+/// A row's record: each property's one standing value, or the one chosen
+/// among competing claims. Anything else is not a value to compute with.
+fn assembled(row: Row) -> Arg {
+    mut entries: List<Entry> = []
+    for s in row.fields {
+        let pick? = standing(s) else {
+            return missing(
+                "conflicting_input",
+                "`${row.id}.${s.property}` has competing values; none is selected",
+            )
+        }
+        entries.push(Entry { key: s.property, value: pick.value })
+    }
+    Arg.Got(Value.Map(entries))
+}
+
+/// The one candidate that stands, alone or chosen.
+fn standing(s: Selection) -> Candidate? {
+    if s.candidates.length == 1 { return s.candidates[0] }
+    let chosen = s.candidates.filter(it.chosen)
+    if chosen.length == 1 { return chosen[0] }
+    null
+}
+
+fn missing(code: string, why: string) -> Arg { Arg.Missing(Unknown { code: code, why: why }) }

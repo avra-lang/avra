@@ -8,6 +8,7 @@ use query.quantity.{Quantity, Term, Tally, Subject, tally}
 use store.open.{Graph, stored}
 use store.engine.{EntityRow}
 use store.query.{Selection}
+use query.policies.{Row, Supplied, Derived as Outcome, derived as run_derived}
 use query.plan.{Binding, ReadOnlyPlan, ReadOperation, Comparison, Direction, SourceView}
 
 /// The supports behind one property of one entity, as `explain` reports them.
@@ -24,6 +25,7 @@ export enum ReadAnswer {
     Unsummable(code: string, why: string)
     Unmet(code: string, detail: string, rows: List<ReadRow>)
     Status(name: string, held: bool, rows: List<ReadRow>)
+    Derived(name: string, derivation: string, anchor: string, outcome: Outcome, rows: List<ReadRow>)
     Mixed(rows: List<ReadRow>, statuses: List<Held>)
     Exceeded(limit: string)
 }
@@ -33,7 +35,7 @@ impl ReadAnswer {
     fn rows() -> List<ReadRow> {
         match self {
             .Mixed(rows, statuses) -> rows.concat([r for s in statuses for r in s.rows]),
-            .Rows(rows) or .Count(_, rows, _) or .Sum(_, _, rows, _) or .Unmet(_, _, rows) or .Status(_, _, rows) -> rows,
+            .Rows(rows) or .Count(_, rows, _) or .Sum(_, _, rows, _) or .Unmet(_, _, rows) or .Status(_, _, rows) or .Derived(_, _, _, _, rows) -> rows,
             .Unsummable(_, _) or .Exceeded(_) -> [],
         }
     }
@@ -61,6 +63,7 @@ enum Flow {
     Unsummable(code: string, why: string)
     Unmet(code: string, detail: string, hits: List<Hit>)
     Status(name: string, held: bool, hits: List<Hit>)
+    Derived(name: string, derivation: string, anchor: string, outcome: Outcome, hits: List<Hit>)
 }
 
 /// One execution: the store it reads and the work it has spent so far.
@@ -150,6 +153,7 @@ impl Run {
                 let hits = self.rows(flows, input)?
                 Flow.Total(hits.length, hits, name)
             },
+            .Derive(inputs, derivation, literals, name) -> self.derive(flows, inputs, derivation, literals, name)?,
             .Sum(input, property, quantity, name) -> self.sum(self.rows(flows, input)?, property.name, quantity, name)?,
         }
     }
@@ -157,7 +161,7 @@ impl Run {
     fn rows(flows: List<Flow>, input: int) -> Result<List<Hit>, string> {
         match flows[input] {
             .Hits(hits) -> hits,
-            .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) -> { fail "an aggregate has no rows to read" },
+            .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) or .Derived(_, _, _, _, _) -> { fail "an aggregate has no rows to read" },
         }
     }
 
@@ -293,6 +297,38 @@ impl Run {
         if held.is_empty() { Flow.Unmet(reason, "the expected ${property} is absent", input) } else { Flow.Hits(held) }
     }
 
+    /// A declared derivation over the supplied row sets and literals. Its rows
+    /// are everything it read, so the answer cites all of it.
+    fn derive(
+        flows: List<Flow>,
+        inputs: List<int>,
+        derivation: string,
+        literals: List<Value>,
+        name: string,
+    ) -> Result<Flow, string> {
+        let declared = self.g.catalog.derivation(derivation)?
+        mut supplied: List<Supplied> = []
+        mut read: List<Hit> = []
+        mut anchor = declared.name
+        mut rows_taken = 0
+        mut literals_taken = 0
+        for seat in declared.parameters {
+            if seat.input.rows() {
+                let hits = self.rows(flows, inputs[rows_taken])?
+                rows_taken = rows_taken + 1
+                read = read.concat(hits)
+                supplied.push(Supplied.Rows([Row { id: h.id, fields: h.fields } for h in hits]))
+                if anchor == declared.name && seat.input.anchors() && !hits.is_empty() { anchor = hits[0].id }
+            } else {
+                supplied.push(Supplied.Literal(literals[literals_taken]))
+                literals_taken = literals_taken + 1
+            }
+        }
+        self.charge(read.length + 1)?
+        Flow
+            .Derived(name, declared.name, anchor, run_derived(self.g.catalog, declared, supplied)?, read)
+    }
+
     fn answered(flow: Flow) -> Result<ReadAnswer, string> {
         match flow {
             .Hits(hits) -> ReadAnswer.Rows(self.rows_of(hits)?),
@@ -300,6 +336,7 @@ impl Run {
             .Summed(total, terms, hits, name) -> ReadAnswer.Sum(total, terms, self.rows_of(hits)?, name),
             .Unsummable(code, why) -> ReadAnswer.Unsummable(code, why),
             .Status(name, held, hits) -> ReadAnswer.Status(name, held, self.rows_of(hits)?),
+            .Derived(name, derivation, anchor, outcome, hits) -> ReadAnswer.Derived(name, derivation, anchor, outcome, self.rows_of(hits)?),
             .Unmet(code, detail, hits) -> ReadAnswer.Unmet(code, detail, self.rows_of(hits)?),
         }
     }
@@ -432,14 +469,14 @@ fn capped(flow: Flow, limit: int?) -> Flow {
             .Hits(
                 if limit == null { hits } else { hits.slice(0, if limit! < hits.length { limit! } else { hits.length }) },
             ),
-        .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) -> flow,
+        .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) or .Derived(_, _, _, _, _) -> flow,
     }
 }
 
 fn hits_in(flow: Flow) -> List<Hit> {
     match flow {
         .Hits(hits) -> hits,
-        .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) -> [],
+        .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Status(_, _, _) or .Derived(_, _, _, _, _) -> [],
     }
 }
 
@@ -448,6 +485,6 @@ type Stated = { name: string, held: bool, hits: List<Hit> }
 fn status_in(flow: Flow) -> List<Stated> {
     match flow {
         .Status(name, held, hits) -> [Stated { name: name, held: held, hits: hits }],
-        .Hits(_) or .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) -> [],
+        .Hits(_) or .Total(_, _, _) or .Summed(_, _, _, _) or .Unsummable(_, _) or .Unmet(_, _, _) or .Derived(_, _, _, _, _) -> [],
     }
 }

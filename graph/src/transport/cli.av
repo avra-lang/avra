@@ -2,13 +2,14 @@ use @std.cli.{cli, command, option, arg, Runnable, CliResult}
 use @std.io.{read_text}
 use @std.json.{parse, to_text}
 use @std.text.{parse_int}
+use policy.{DerivationRegistration}
 use schema.{Registration}
 use store.open.{Graph}
 use store.policy.{EnginePolicy}
 use transport.dispatch.{failure}
 use transport.server.{serve}
 
-type Command = { models: List<Registration>, policy: EnginePolicy }
+type Command = { models: List<Registration>, derived: List<DerivationRegistration>, policy: EnginePolicy }
 
 impl Runnable for Command {
     fn run(args: CliResult) -> int {
@@ -27,13 +28,13 @@ impl Command {
         if args.command == "serve" {
             let token = (file_text(args.option("token-file"))?).trim()
             let port? = parse_int(args.option("port")) else { fail "port must be an integer" }
-            return serve(args.option("db"), self.models, port, token, self.policy)
+            return serve(args.option("db"), self.models, port, token, self.policy, self.derived)
         }
         let request = match parse(file_text(args.arg("file"))?) {
             .Ok(j) -> j,
             .Err(_) -> { fail "request file must contain JSON" },
         }
-        mut graph = Graph.open(args.option("db"), self.models)? with { policy: self.policy }
+        mut graph = Graph.open(args.option("db"), self.models, self.derived)? with { policy: self.policy }
         defer { let _ = graph.close() }
         println(to_text(graph.dispatch(request)?))
         0
@@ -41,9 +42,13 @@ impl Command {
 }
 
 /// A host's entire executable layer is `run(models)`, with the policy it
-/// declares (its producers' authority, say).
-export fn run(models: List<Registration>, policy: EnginePolicy = EnginePolicy {}) -> int {
-    let handler = Command { models: models, policy: policy }
+/// declares (its producers' authority, say) and the derivations it offers.
+export fn run(
+    models: List<Registration>,
+    policy: EnginePolicy = EnginePolicy {},
+    derived: List<DerivationRegistration> = [],
+) -> int {
+    let handler = Command { models: models, derived: derived, policy: policy }
     let request = command {
         name: "request"
         description: "Execute one generic JSON graph request"

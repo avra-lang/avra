@@ -1,0 +1,140 @@
+use models.people.{models}
+use models.business.{Money, Invoice, Payment, PurchaseOrder, SalesOrder, StockMovement, Product}
+use models.personal.{Event}
+use models.derived.{
+    derivations,
+    deposit_top_up,
+    deposit_top_up_in,
+    payment_status,
+    arrival_before,
+    available_stock,
+    return_status,
+}
+use @avra.graph.{Catalog, Ref, Unknown}
+
+const invoice = "{\"number\":\"INV-204\",\"issuer\":\"velluto\",\"payer\":\"aster\",\"order\":\"po60\",\"unit_price\":{\"minor\":22500,\"currency\":\"EUR\"},\"goods_total\":{\"minor\":1350000,\"currency\":\"EUR\"},\"required_deposit\":{\"minor\":405000,\"currency\":\"EUR\"},\"deposit_due_on\":\"2026-10-14\"}"
+const order = "{\"number\":\"PO-60\",\"supplier\":\"velluto\",\"buyer\":\"aster\",\"product\":\"nj01\",\"units\":60,\"estimated_dispatch_on\":\"2026-11-02\"}"
+const launch = "{\"title\":\"Nocturne launch\",\"event_on\":\"2026-11-06\",\"status\":\"proposed\"}"
+const sale = "{\"number\":\"R-88\",\"customer\":\"avery\",\"product\":\"nj01\",\"colour\":\"black\",\"size\":\"M\",\"units\":2,\"unit_price\":{\"minor\":148000,\"currency\":\"GBP\"}}"
+
+fn eur(minor: int) -> Money { Money { minor: minor, currency: "EUR" } }
+
+fn paid(minor: int, purpose: string = "deposit", currency: string = "EUR") -> Payment {
+    Payment {
+        payer: Ref { id: "aster" },
+        payee: Ref { id: "velluto" },
+        amount: Money { minor: minor, currency: currency },
+        purpose: purpose,
+        invoice: Ref { id: "inv204" },
+        settled_on: null,
+        reference: null,
+    }
+}
+
+fn moved(colour: string, kind: string, units: int) -> StockMovement {
+    StockMovement {
+        product: Ref { id: "nj01" },
+        colour: colour,
+        kind: kind,
+        units: units,
+        order: null,
+        recorded_at_ms: null,
+    }
+}
+
+fn stock() -> List<StockMovement> {
+    [
+        moved("black", "opening_count", 18),
+        moved("midnight navy", "opening_count", 12),
+        moved("black", "dispatch", 2),
+        moved("black", "return_quarantined", 1),
+    ]
+}
+
+fn revised() -> Result<Invoice, string> {
+    match Invoice.from_json(invoice) { .Ok(i) -> i, .Err(e) -> { fail e.report() } }
+}
+
+fn top_up() -> Result<bool, string> {
+    let d = known(deposit_top_up(revised()?, [paid(378000), paid(1000, "refund")]))?
+    d.deposit_top_up.minor == 27000 &&
+        d.deposit_top_up.currency == "EUR" &&
+        d.paid.minor == 378000 &&
+        d.required_deposit.minor == 405000
+}
+
+fn not_confirmed() -> Result<bool, string> {
+    let s = known(payment_status(revised()?, [paid(378000)]))?
+    !s.full_payment_confirmed && s.recorded_payment.minor == 378000
+}
+
+fn known<T>(r: Result<T, Unknown>) -> Result<T, string> {
+    match r { .Ok(v) -> v, .Err(u) -> { fail u.why } }
+}
+
+fn unknown_code<T>(r: Result<T, Unknown>) -> string {
+    match r { .Ok(_) -> "", .Err(u) -> u.code }
+}
+
+fn no_rate() -> Result<bool, string> {
+    let pounds = deposit_top_up_in(revised()?, [paid(378000)], "GBP")
+    let euros = deposit_top_up_in(revised()?, [paid(378000)], "EUR")
+    unknown_code(pounds) == "missing_exchange_rate" && euros is .Ok
+}
+
+fn mixed_payment() -> Result<bool, string> {
+    unknown_code(deposit_top_up(revised()?, [paid(378000), paid(10, currency: "GBP")])) == "mixed_units"
+}
+
+fn arrival() -> Result<bool, string> {
+    let po = match PurchaseOrder.from_json(order) { .Ok(p) -> p, .Err(e) -> { fail e.report() } }
+    let event = match Event.from_json(launch) { .Ok(e) -> e, .Err(e) -> { fail e.report() } }
+    unknown_code(arrival_before(po, event)) == "arrival_not_confirmed"
+}
+
+fn available() -> Result<bool, string> {
+    let nj01 = match Product
+        .from_json(
+            "{\"code\":\"NJ-01\",\"name\":\"Nocturne Jacket\",\"planned_retail_price\":null,\"shell_composition\":null,\"vegan\":null}",
+        ) { .Ok(p) -> p, .Err(e) -> { fail e.report() } }
+    let a = known(available_stock(nj01, stock()))?
+    let black = known(available_stock(nj01, [m for m in stock() if m.colour == "black"]))?
+    a.available_units == 28 &&
+        a.by_colour.find(it.colour == "black")?.units == 16 &&
+        a.by_colour.find(it.colour == "midnight navy")?.units == 12 &&
+        black.available_units == 16
+}
+
+fn returned() -> Result<bool, string> {
+    let r88 = match SalesOrder.from_json(sale) { .Ok(s) -> s, .Err(e) -> { fail e.report() } }
+    let mine = [moved("black", "dispatch", 2), moved("black", "return_quarantined", 1)]
+    let r = known(return_status(r88, mine))?
+    r.quarantined_units == 1 &&
+        r.returned_available_units == 0 &&
+        r.units_remaining_with_customer == 1
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "fixture derivations" {
+    given "the commercial models and their declared derivations" {
+        then "every derivation collects into the catalog" {
+            match Catalog.collected(models, derivations) {
+                .Ok(c) -> c.derivations.length == 6 && c.derivation("deposit_top_up") is .Ok,
+                .Err(_) -> false,
+            }
+        }
+        then "the revised deposit less the deposit paid is the top-up" { passed(top_up()) }
+        then "full payment stays unconfirmed beside what was recorded" { passed(not_confirmed()) }
+        then "another currency is unknown without a declared rate" { passed(no_rate()) }
+        then "a payment in another currency is not added" { passed(mixed_payment()) }
+        then "an estimated dispatch is not a confirmed arrival" { passed(arrival()) }
+        then "quarantined returns and dispatches are not available stock" { passed(available()) }
+        then "a quarantined return is neither restocked nor still with the customer" { passed(returned()) }
+    }
+}

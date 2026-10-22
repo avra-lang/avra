@@ -45,7 +45,12 @@ type PropWant = { who: string, prop: string, out: string }
 
 type TotalWant = { who: string?, agg: Aggregate, out: string? }
 
-enum Wanted { Prop(want: PropWant), Total(want: TotalWant) }
+/// What fills one derivation seat: a path's rows, every row of a path, or a literal.
+enum DeriveArg { Row(who: string), Many(who: string), Lit(value: Json) }
+
+type DeriveWant = { name: string, args: List<DeriveArg>, out: string? }
+
+enum Wanted { Prop(want: PropWant), Total(want: TotalWant), Derive(want: DeriveWant) }
 
 /// A query either becomes an admitted plan or is refused with a code.
 export enum Admission {
@@ -109,7 +114,7 @@ export fn compiled(text: string, params: Json, catalog: Catalog) -> Result<Compi
         let anchors = [c.slots[c.slots.length - 1] for c in chains]
         chains.push(chain_of(i, m, args, anchors, catalog)?)
     }
-    let wanted = [wanted_of(r)? for r in q.returns]
+    let wanted = [wanted_of(r, args, catalog)? for r in q.returns]
     let finished = finish(chains, wanted, catalog)?
     .Ok(
         Compiled {
@@ -567,11 +572,53 @@ fn missing_parameter(name: string, meaning: string) -> CypherError {
 
 /// ---- RETURN ----
 
-fn wanted_of(r: ReturnItem) -> Result<Wanted, CypherError> {
+fn wanted_of(r: ReturnItem, params: Args, catalog: Catalog) -> Result<Wanted, CypherError> {
     match r.expr {
         .Prop(owner, name) -> .Ok(Wanted.Prop(PropWant { who: owner, prop: name, out: r.name ?? name })),
-        .Call(name, args) -> aggregate_of(name, args, r.name),
+        .Call(name, args) -> if catalog.derivations.any(it.name == name) {
+            derive_of(name, args, r.name, params)
+        } else {
+            aggregate_of(name, args, r.name)
+        },
         rest -> .Err(unsupported_return()),
+    }
+}
+
+/// A declared derivation called in RETURN: node variables and `collect(node)`
+/// fill row seats, literals and parameters fill the rest, in declared order.
+fn derive_of(name: string, args: List<Expr>, out: string?, params: Args) -> Result<
+    Wanted,
+    CypherError,
+> {
+    mut filled: List<DeriveArg> = []
+    for a in args { filled.push(derive_arg(a, params)?) }
+    .Ok(Wanted.Derive(DeriveWant { name: name, args: filled, out: out }))
+}
+
+fn derive_arg(a: Expr, params: Args) -> Result<DeriveArg, CypherError> {
+    match a {
+        .Var(v) -> .Ok(DeriveArg.Row(v)),
+        .Call(function, inner) -> collected(function, inner),
+        .Prop(_, _) or .Num(_) or .Str(_) or .Bool(_) or .Null or .Param(_) or .Not(_) or .Binary(_, _, _) or .IsNull(_, _) or .Star -> .Ok(DeriveArg.Lit(literal(a, params)?)),
+    }
+}
+
+/// `collect(node)` hands a seat every row of a path.
+fn collected(function: string, inner: List<Expr>) -> Result<DeriveArg, CypherError> {
+    if function != "collect" {
+        return .Err(
+            refuse(
+                "unsupported_function",
+                "a derivation argument is a node, collect(node), a literal or a parameter",
+            ),
+        )
+    }
+    match inner {
+        [only] -> match only {
+            .Var(v) -> .Ok(DeriveArg.Many(v)),
+            rest -> .Err(refuse("unsupported_function", "collect() takes a node variable")),
+        },
+        rest -> .Err(refuse("unsupported_function", "collect() takes one node variable")),
     }
 }
 
@@ -648,6 +695,8 @@ fn finish(chains: List<Chain>, wanted: List<Wanted>, catalog: Catalog) -> Result
     Finished,
     CypherError,
 > {
+    let derives = [d for w in wanted for d in derive_wants(w)]
+    if !derives.is_empty() { return derive_plan(chains, wanted, derives[0], catalog) }
     let totals = [t for w in wanted for t in total_want(w)]
     let props = [p for w in wanted for p in prop_want(w)]
     let sole = [t for t in totals if !is_holds(t)]
@@ -698,6 +747,93 @@ fn finish(chains: List<Chain>, wanted: List<Wanted>, catalog: Catalog) -> Result
     .Ok(Finished { steps: steps, output: tails[0], joined: tails.slice(1, tails.length) })
 }
 
+/// A derivation call is the only item of its RETURN; its row seats read the
+/// paths its variables name.
+fn derive_plan(chains: List<Chain>, wanted: List<Wanted>, d: DeriveWant, catalog: Catalog) -> Result<
+    Finished,
+    CypherError,
+> {
+    if wanted.length != 1 {
+        return .Err(
+            refuse("unsupported_aggregate_mix", "a derivation call is the only item of its RETURN"),
+        )
+    }
+    let derivation = match catalog.derivation(d.name) {
+        .Ok(found) -> found,
+        .Err(e) -> { return .Err(refuse("unsupported_function", e)) },
+    }
+    if d.args.length != derivation.parameters.length {
+        return .Err(
+            refuse(
+                "derivation_arity",
+                "${d.name} takes ${derivation.parameters.length} arguments, this call gives ${d.args.length}",
+            ),
+        )
+    }
+    mut inputs: List<Anchor> = []
+    mut literals: List<Json> = []
+    for k, arg in d.args {
+        let seat = derivation.parameters[k]
+        match arg {
+            .Row(who) -> {
+                if !seat.input.rows() || seat.input.many() {
+                    return .Err(
+                        refuse(
+                            "derivation_argument",
+                            "${seat.name} of ${d.name} is not one row: pass collect(...) for every row",
+                        ),
+                    )
+                }
+                inputs.push(anchor_of(chains, who)?)
+            },
+            .Many(who) -> {
+                if !seat.input.many() {
+                    return .Err(
+                        refuse(
+                            "derivation_argument",
+                            "${seat.name} of ${d.name} takes one row, not collect(...)",
+                        ),
+                    )
+                }
+                inputs.push(anchor_of(chains, who)?)
+            },
+            .Lit(value) -> {
+                if seat.input.rows() {
+                    return .Err(
+                        refuse(
+                            "derivation_argument",
+                            "${seat.name} of ${d.name} takes rows, not a literal",
+                        ),
+                    )
+                }
+                literals.push(value)
+            },
+        }
+    }
+    for i, c in chains {
+        if !inputs.any(it.chain == i) { return .Err(refuse("unused_match", "every MATCH contributes to the RETURN")) }
+    }
+    let id = "r0d"
+    let step = Json
+        .Obj(
+            [
+                field("id", Json.Str(id)),
+                field("op", Json.Str("derive")),
+                field("inputs", Json.Arr([Json.Str(a.step) for a in inputs])),
+                field("derivation", Json.Str(d.name)),
+                field("arguments", Json.Arr(literals)),
+                field("names", Json.Arr([Json.Str(d.out ?? d.name)])),
+            ],
+        )
+    .Ok(
+        Finished {
+            steps: [s for c in chains for s in c.steps].concat([step]),
+            output: id,
+            joined: [],
+        },
+    )
+}
+
 fn is_holds(t: TotalWant) -> bool {
     match t.agg { .Holds(_) -> true, .Count(_) or .Sum(_) -> false }
 }
@@ -713,9 +849,11 @@ fn status_step(id: string, input: string, t: TotalWant) -> Json {
     )
 }
 
-fn total_want(w: Wanted) -> List<TotalWant> { match w { .Total(t) -> [t], .Prop(_) -> [] } }
+fn total_want(w: Wanted) -> List<TotalWant> { match w { .Total(t) -> [t], .Prop(_) or .Derive(_) -> [] } }
 
-fn prop_want(w: Wanted) -> List<PropWant> { match w { .Prop(p) -> [p], .Total(_) -> [] } }
+fn prop_want(w: Wanted) -> List<PropWant> { match w { .Prop(p) -> [p], .Total(_) or .Derive(_) -> [] } }
+
+fn derive_wants(w: Wanted) -> List<DeriveWant> { match w { .Derive(d) -> [d], .Prop(_) or .Total(_) -> [] } }
 
 fn tail_name(c: Chain) -> string? { c.slots[c.slots.length - 1].name }
 
@@ -841,5 +979,5 @@ fn mislabelled(labels: List<Label>, nodes: List<ReadNode>) -> string? {
 }
 
 fn model_of(n: ReadNode) -> string {
-    match n.shape { .Rows(rows) -> rows.model, .Status or .Count or .Quantity(_) -> "" }
+    match n.shape { .Rows(rows) -> rows.model, .Status or .Count or .Quantity(_) or .Derived -> "" }
 }

@@ -4,6 +4,7 @@ use @std.http.server.{served, timing}
 use @std.http.frame.{limits}
 use @std.http_message.message.{Method}
 use @std.json.{Json}
+use policy.{DerivationRegistration}
 use schema.{Registration}
 use store.open.{Graph}
 use store.policy.{EnginePolicy}
@@ -18,10 +19,11 @@ export fn serve(
     port: int,
     token: string,
     policy: EnginePolicy = EnginePolicy {},
+    derived: List<DerivationRegistration> = [],
 ) -> Result<int, string> {
     if port < 1 || port > 65535 { fail "port must be 1..65535" }
     if token.length < 24 { fail "the bearer token must contain at least 24 bytes" }
-    let graph = Graph.open(path, models)?
+    let graph = Graph.open(path, models, derived)?
     let _ = graph.close()
     let listener = match listen("127.0.0.1", port) {
         .Ok(l) -> l,
@@ -33,24 +35,34 @@ export fn serve(
         limits(),
         timing(),
     ) { service, request ->
-        answer(service, models, request)
+        answer(service, models, derived, request)
     }
     println("graph listening on 127.0.0.1:${port}")
     match server.run(cores: 1) { .Ok(count) -> count, .Err(e) -> { fail "server: ${e.errno}" } }
 }
 
-fn answer(service: Service, models: List<Registration>, request: Request<Unrouted>) -> Response {
+fn answer(
+    service: Service,
+    models: List<Registration>,
+    derived: List<DerivationRegistration>,
+    request: Request<Unrouted>,
+) -> Response {
     if request.header("authorization") != "Bearer ${service.token}" { return text(401, "bearer token required") }
     if request.method() != Method.Post || request.target() != "/graph" { return text(404, "POST /graph") }
     let body = match request.json() { .Ok(j) -> j, .Err(response) -> { return response } }
-    match dispatched(service, models, body) {
+    match dispatched(service, models, derived, body) {
         .Ok(response) -> response,
         .Err(e) -> Response.json(failure(e)) with { status: 409 },
     }
 }
 
-fn dispatched(service: Service, models: List<Registration>, body: Json) -> Result<Response, string> {
-    mut graph = Graph.attach(service.path, models)? with { policy: service.policy }
+fn dispatched(
+    service: Service,
+    models: List<Registration>,
+    derived: List<DerivationRegistration>,
+    body: Json,
+) -> Result<Response, string> {
+    mut graph = Graph.attach(service.path, models, derived)? with { policy: service.policy }
     defer { let _ = graph.close() }
     match graph.dispatch(body) {
         .Ok(j) -> Response.json(j),

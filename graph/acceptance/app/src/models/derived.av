@@ -1,0 +1,166 @@
+use @avra.graph.{
+    model,
+    Ref,
+    derived,
+    Unknown,
+    DerivationRegistration,
+    derivation_registered,
+    difference,
+    total,
+    same_unit,
+}
+use models.business.{Money, Invoice, Payment, PurchaseOrder, SalesOrder, StockMovement, Product}
+use models.people.{Person}
+use models.personal.{Event}
+
+/// What a deposit still needs: the required deposit less deposit payments.
+@model
+export type DepositTopUp = { required_deposit: Money, paid: Money, deposit_top_up: Money }
+
+/// A top-up in another currency is not known without a declared rate.
+@model
+export type ConversionGap = { known_top_up: Money, requested_currency: string }
+
+/// Whether full payment is confirmed, beside what was recorded as paid.
+@model
+export type PaymentStatus = { full_payment_confirmed: bool, recorded_payment: Money }
+
+/// The dates an arrival question turns on when arrival is not confirmed.
+@model
+export type ArrivalGap = { estimated_dispatch: string?, launch_date: string? }
+
+/// Available units of one colour.
+@model
+export type ColourStock = { colour: string, units: int }
+
+/// Stock available to sell: counts, deliveries and restocked returns less
+/// dispatches. Quarantined returns and ordered goods are not on hand.
+@model
+export type StockAvailability = { sku: string, available_units: int, by_colour: List<ColourStock> }
+
+/// Where a sales order's dispatched units are now.
+@model
+export type ReturnStatus = {
+    order: string,
+    customer: Ref<Person>,
+    quarantined_units: int,
+    returned_available_units: int,
+    units_remaining_with_customer: int,
+}
+
+/// The deposit top-up still owed on an invoice. Only deposit payments count.
+@derived
+export fn deposit_top_up(invoice: Invoice, payments: List<Payment>) -> Result<DepositTopUp, Unknown> {
+    let required = invoice.required_deposit
+    let paid = sum_in(required.currency, [p.amount for p in payments if p.purpose == "deposit"])?
+    let owed = difference(required.minor, paid.minor)?
+    DepositTopUp {
+        required_deposit: required,
+        paid: paid,
+        deposit_top_up: Money { minor: if owed < 0 { 0 } else { owed }, currency: required.currency },
+    }
+}
+
+/// The deposit top-up in a requested currency. No exchange rate is declared,
+/// so another currency is unknown, carrying the top-up that is known.
+@derived
+export fn deposit_top_up_in(invoice: Invoice, payments: List<Payment>, currency: string) -> Result<
+    DepositTopUp,
+    Unknown,
+> {
+    let known = deposit_top_up(invoice, payments)?
+    if currency != known.deposit_top_up.currency {
+        fail Unknown {
+            code: "missing_exchange_rate",
+            why: "no exchange rate is declared",
+            known: ConversionGap { known_top_up: known.deposit_top_up, requested_currency: currency }
+                .graph_value(),
+        }
+    }
+    known
+}
+
+/// Full payment is confirmed only when a source states it; recorded
+/// payments are every payment except refunds.
+@derived
+export fn payment_status(invoice: Invoice, payments: List<Payment>) -> Result<
+    PaymentStatus,
+    Unknown,
+> {
+    PaymentStatus {
+        full_payment_confirmed: invoice.full_payment_confirmed ?? false,
+        recorded_payment: sum_in(
+            invoice.required_deposit.currency,
+            [p.amount for p in payments if p.purpose != "refund"],
+        )?,
+    }
+}
+
+/// An order arrives before a launch only on a confirmed arrival; an estimated
+/// dispatch date is not one.
+@derived
+export fn arrival_before(order: PurchaseOrder, launch: Event) -> Result<ArrivalGap, Unknown> {
+    let dates = ArrivalGap {
+        estimated_dispatch: order.estimated_dispatch_on,
+        launch_date: launch.event_on,
+    }
+    let code = if order.arrival_confirmed == true { "arrival_date_unknown" } else { "arrival_not_confirmed" }
+    fail Unknown {
+        code: code,
+        why: "no confirmed arrival date is recorded",
+        known: dates.graph_value(),
+    }
+}
+
+/// Units available to sell, per colour and in total.
+@derived
+export fn available_stock(product: Product, movements: List<StockMovement>) -> Result<
+    StockAvailability,
+    Unknown,
+> {
+    let colours = [m.colour for i, m in movements if !movements.slice(0, i).any(it.colour == m.colour)]
+    let by_colour = [ColourStock { colour: c, units: on_hand([m for m in movements if m.colour == c])? } for c in colours]
+    StockAvailability {
+        sku: product.code,
+        available_units: total(by_colour.map(it.units))?,
+        by_colour: by_colour,
+    }
+}
+
+/// A sales order's dispatched units: quarantined, restocked, or still out.
+@derived
+export fn return_status(order: SalesOrder, movements: List<StockMovement>) -> Result<
+    ReturnStatus,
+    Unknown,
+> {
+    let quarantined = units_of(movements, "return_quarantined")?
+    let restocked = units_of(movements, "return_restocked")?
+    let returned = total([quarantined, restocked])?
+    ReturnStatus {
+        order: order.number,
+        customer: order.customer,
+        quarantined_units: quarantined,
+        returned_available_units: restocked,
+        units_remaining_with_customer: difference(units_of(movements, "dispatch")?, returned)?,
+    }
+}
+
+export collect derivations: List<DerivationRegistration> = @derivation_registered in package as DerivationRegistration { make: it } by it.name
+
+fn on_hand(movements: List<StockMovement>) -> Result<int, Unknown> {
+    let added = total([m.units for m in movements if adds_stock(m.kind)])?
+    difference(added, units_of(movements, "dispatch")?)
+}
+
+fn adds_stock(kind: string) -> bool {
+    match kind { "opening_count" or "delivery" or "return_restocked" -> true, rest -> false }
+}
+
+fn units_of(movements: List<StockMovement>, kind: string) -> Result<int, Unknown> {
+    total([m.units for m in movements if m.kind == kind])
+}
+
+fn sum_in(currency: string, amounts: List<Money>) -> Result<Money, Unknown> {
+    for m in amounts { let _ = same_unit(m.currency, currency)? }
+    Money { minor: total(amounts.map(it.minor))?, currency: currency }
+}

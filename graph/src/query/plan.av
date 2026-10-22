@@ -12,7 +12,7 @@ export enum SourceView { Current, History }
 
 /// Row identities and evidence survive projection; visible fields do not.
 export type ReadRows = { model: string, properties: List<Property> }
-export enum ReadShape { Rows(rows: ReadRows), Status, Count, Quantity(binding: QuantityBinding) }
+export enum ReadShape { Rows(rows: ReadRows), Status, Count, Quantity(binding: QuantityBinding), Derived }
 
 export enum ReadOperation {
     Scan(model: string)
@@ -24,6 +24,7 @@ export enum ReadOperation {
     Expect(input: int, property: Property, reason: string)
     Holds(input: int, property: Property, name: string)
     Count(input: int, name: string)
+    Derive(inputs: List<int>, derivation: string, literals: List<Value>, name: string)
     Sum(input: int, property: Property, quantity: QuantityBinding, name: string)
 }
 
@@ -93,7 +94,7 @@ fn visible(rows: ReadRows, name: string) -> Result<Property, string> {
 fn row_shape(node: ReadNode) -> Result<ReadRows, string> {
     match node.shape {
         .Rows(rows) -> rows,
-        .Count or .Status or .Quantity(_) -> { fail "a scalar aggregate cannot be used as graph rows" },
+        .Count or .Status or .Quantity(_) or .Derived -> { fail "a scalar aggregate or derived value cannot be used as graph rows" },
     }
 }
 
@@ -188,6 +189,7 @@ fn prepared_node(catalog: Catalog, nodes: List<ReadNode>, step: ReadStep) -> Res
             depth: 0,
         }
     }
+    if step.op == "derive" { return derived_node(catalog, nodes, step) }
     let input = node_at(nodes, step.inputs[0], "read input must precede its consumer")?
     let rows = row_shape(nodes[input])?
     let depth = nodes[input].depth
@@ -299,5 +301,52 @@ fn prepared_node(catalog: Catalog, nodes: List<ReadNode>, step: ReadStep) -> Res
             }
         },
         rest -> { fail "unknown read operation" },
+    }
+}
+
+/// A declared derivation over earlier row sets and literals: one input per
+/// row seat in order, one argument per literal seat in order.
+fn derived_node(catalog: Catalog, nodes: List<ReadNode>, step: ReadStep) -> Result<ReadNode, string> {
+    let derivation = catalog.derivation(step.derivation!)?
+    let row_seats = derivation.parameters.filter(it.input.rows())
+    let literal_seats = derivation.parameters.filter(!it.input.rows())
+    if step.inputs.length != row_seats.length {
+        fail "derivation `${derivation.name}` reads ${row_seats.length} row sets, this step gives ${step.inputs.length}"
+    }
+    if step.arguments.length != literal_seats.length {
+        fail "derivation `${derivation.name}` takes ${literal_seats.length} literal arguments, this step gives ${step.arguments.length}"
+    }
+    mut depth = 0
+    mut inputs: List<int> = []
+    for i, seat in row_seats {
+        let at = node_at(nodes, step.inputs[i], "read input must precede its consumer")?
+        let rows = row_shape(nodes[at])?
+        if rows.model != seat.input.model()! {
+            fail "derivation `${derivation.name}` reads ${seat.input.model()!} for `${seat.name}`, this step gives ${rows.model}"
+        }
+        if nodes[at].depth > depth { depth = nodes[at].depth }
+        inputs.push(at)
+    }
+    for i, seat in literal_seats {
+        let value = step.arguments[i].value
+        let fits = match seat.input {
+            .Text -> value is .Text,
+            .Integer -> value is .Int,
+            .Boolean -> value is .Bool,
+            .One(_) or .Maybe(_) or .All(_) -> false,
+        }
+        if !fits { fail "derivation `${derivation.name}` takes a different literal for `${seat.name}`" }
+        if !bounded(value) { fail "read literal exceeds its text budget or is not finite" }
+    }
+    ReadNode {
+        id: step.id,
+        operation: .Derive(
+            inputs,
+            derivation.name,
+            [a.value for a in step.arguments],
+            step.names.first() ?? derivation.name,
+        ),
+        shape: .Derived,
+        depth: depth,
     }
 }
