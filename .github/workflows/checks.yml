@@ -627,8 +627,13 @@ jobs:
     needs: [prepare, test]
     if: always() && needs.prepare.outputs.main == '1' && needs.prepare.outputs.build == '1' && needs.test.result == 'success'
     runs-on: ubuntu-latest
+    # the tools build links the runtime library and package objects, made here
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
     permissions:
       contents: write
+      packages: read
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -647,7 +652,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          built=$(build/avra build tools | tail -n 1)
+          built=$(AVRA_TOOLS_COMPILER=build/avra sh tools/avra_tools.sh --path)
           python3 tools/compiler_release.py --asset avra-tools publish "tools-$(sh tools/tools_key.sh)" "$built"
 
   keepers-a:
