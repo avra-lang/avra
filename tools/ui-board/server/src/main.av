@@ -1,0 +1,40 @@
+//! The task board's server: its tasks as a model and the model's doors as
+//! routes, over a database file kept under `.avra/`. `avra dev` runs this
+//! beside the page (`[dev] server = "server"`) and forwards every path the
+//! page does not own, so the page asks `/tasks` of its own origin.
+use @std.crud.{crud}
+use @std.crud.routes.{Door}
+use @std.errors.{Error}
+use @std.http.route.{group, Mounted}
+use @std.http.server.{server}
+use @std.io.{env_or, make_dirs}
+use @std.json.{Json}
+use @std.sqlite.{Db}
+
+/// A task. `Todo` and not `Task`, which is a built-in name.
+@crud
+type Todo = { id: int = 0, title: string, done: bool = false }
+
+/// The database file, made and brought to the model's shape.
+fn opened() -> Result<Db, string> {
+    let path = env_or("BOARD_DB", ".avra/board.db")
+    let _ = make_dirs(".avra")
+    let db = match Db.open(path) {
+        .Ok(d) -> d,
+        .Err(e) -> { return .Err("cannot open ${path}: ${e.message}") },
+    }
+    match Todo.migrate(db) {
+        .Ok(_) -> .Ok(db),
+        .Err(e) -> .Err("cannot prepare ${path}: ${e.describe().message}"),
+    }
+}
+
+fn serving() -> Result<int, string> {
+    let db = opened()?
+    server board {
+        group "/tasks" { Todo.routes(db) }
+    }
+    match board.run() { .Ok(n) -> .Ok(n), .Err(e) -> .Err(e.describe().message) }
+}
+
+match serving() { .Ok(n) -> "served ${n} connections", .Err(why) -> "ui-board-server: ${why}" }
