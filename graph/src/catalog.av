@@ -1,4 +1,5 @@
 use schema.{Model, Shape, Property, Registration}
+use semantics.{Semantics, encoding_word}
 use @std.json.{Json, field, to_text, parse}
 use data.{before, digest}
 use policy.{Derivation, DerivationRegistration, checked_derivations}
@@ -60,7 +61,10 @@ impl Model {
                 [
                     field("name", Json.Str(self.name)),
                     field("description", Json.Str(self.description)),
-                    field("properties", Json.Arr([p.describe() for p in self.properties])),
+                    field(
+                        "properties",
+                        Json.Arr([p.describe_in(self.semantics) for p in self.properties]),
+                    ),
                     field("rules", Json.Arr([Json.Str(r) for r in self.rules])),
                     field("semantics", self.semantics.describe()),
                 ],
@@ -75,6 +79,35 @@ impl Property {
         match parse(source) {
             .Ok(list) -> [v.text()! for v in list.items() if v.text() != null],
             .Err(_) -> [],
+        }
+    }
+
+    /// The property with its declared time encoding, when the model binds one.
+    fn describe_in(semantics: Semantics) -> Json {
+        let base = self.describe()
+        match semantics.times.find(it.path.length == 1 && it.path[0] == self.name) {
+            t? -> Json
+                .Obj(
+                    base
+                        .fields()
+                        .concat(
+                            [
+                                field(
+                                    "time",
+                                    Json
+                                        .Obj(
+                                            [
+                                                field(
+                                                    "encoding",
+                                                    Json.Str(encoding_word(t.encoding)),
+                                                ),
+                                            ],
+                                        ),
+                                ),
+                            ],
+                        ),
+                )
+            null -> base
         }
     }
 

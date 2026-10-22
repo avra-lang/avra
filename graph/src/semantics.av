@@ -52,6 +52,10 @@ export type ValidityBinding = {
     encoding: TimeEncoding = .UnixMillis,
 }
 
+/// A property that holds a time, and how: a declared encoding, never a name
+/// suffix or a description. Only a top-level property can be bound.
+export type TimeBinding = { path: List<string>, encoding: TimeEncoding }
+
 export enum UnitBinding { Field(path: List<string>), Constant(name: string) }
 export type QuantityBinding = { amount: List<string>, unit: UnitBinding, decimal_places: int = 0 }
 
@@ -68,13 +72,16 @@ export type Semantics = {
     validity: ValidityBinding? = null,
     quantities: List<QuantityBinding> = [],
     absences: List<AbsenceBinding> = [],
+    times: List<TimeBinding> = [],
 }
 
 impl Semantics {
     fn checked(models: List<Model>, owner: Model) -> Result<bool, string> {
         if self.identities.length > binding_limit ||
             self.quantities.length > binding_limit ||
-            self.absences.length > binding_limit { fail "model semantic bindings exceed their budget" }
+            self.absences.length > binding_limit {
+            fail "model semantic bindings exceed their budget"
+        }
         for i, identity in self.identities {
             if identity.namespace.is_empty() { fail "an identity binding needs an explicit namespace" }
             if self
@@ -102,6 +109,16 @@ impl Semantics {
                 },
             }
         }
+        for i, time in self.times {
+            if time.path.length != 1 { fail "a time binding names a top-level property" }
+            if self.times.slice(0, i).any(same_path(it.path, time.path)) { fail "a property has one time encoding" }
+            let shape = path_shape(models, owner, time.path)?
+            let fits = match time.encoding {
+                .UnixMillis -> shape is .Integer,
+                .IsoDate or .IsoInstant -> shape is .Text,
+            }
+            if !fits { fail "a time binding has the wrong declared representation: ${time.path[0]}" }
+        }
         for i, absence in self.absences {
             if self.absences.slice(0, i).any(same_path(it.path, absence.path)) { fail "a property has one absence code" }
             if !snake_token(absence.code) { fail "an absence code is a lowercase snake_case token: ${absence.code}" }
@@ -126,6 +143,19 @@ impl Semantics {
                         if self.validity == null { Json.Null } else { self.validity!.describe() },
                     ),
                     field("quantities", Json.Arr([q.describe() for q in self.quantities])),
+                    field(
+                        "times",
+                        Json
+                            .Arr(
+                                [Json
+                                    .Obj(
+                                        [
+                                            field("path", path_document(t.path)),
+                                            field("encoding", Json.Str(encoding_word(t.encoding))),
+                                        ],
+                                    ) for t in self.times],
+                            ),
+                    ),
                     field(
                         "absences",
                         Json
@@ -258,21 +288,16 @@ impl ValidityBinding {
                         "until",
                         if self.until == null { Json.Null } else { path_document(self.until!) },
                     ),
-                    field(
-                        "encoding",
-                        Json
-                            .Str(
-                                match self.encoding {
-                                    .UnixMillis -> "unix_millis",
-                                    .IsoDate -> "iso_date",
-                                    .IsoInstant -> "iso_instant",
-                                },
-                            ),
-                    ),
+                    field("encoding", Json.Str(encoding_word(self.encoding))),
                     field("interval", Json.Str("half_open")),
                 ],
             )
     }
+}
+
+/// The wire word of a time encoding.
+export fn encoding_word(e: TimeEncoding) -> string {
+    match e { .UnixMillis -> "unix_millis", .IsoDate -> "iso_date", .IsoInstant -> "iso_instant" }
 }
 
 impl IdentityBinding {

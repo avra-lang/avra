@@ -8,6 +8,8 @@ use semantics.{
     ValidityBinding,
     QuantityBinding,
     AbsenceBinding,
+    TimeBinding,
+    TimeEncoding,
     path_shape,
 }
 use catalog.{Catalog}
@@ -162,6 +164,24 @@ fn phrasing_exported() -> Result<bool, string> {
         a.fingerprint != b.fingerprint
 }
 
+fn timed(path: List<string>, encoding: TimeEncoding) -> TimeBinding { TimeBinding { path: path, encoding: encoding } }
+
+fn invalid_times(times: List<TimeBinding>) -> Result<bool, string> { changed(Semantics { times: times }) is .Err }
+
+fn time_exported() -> Result<bool, string> {
+    let c = changed(
+        Semantics { times: [timed(["amount"], .UnixMillis), timed(["kind"], .IsoDate)] },
+    )?
+    let calibration = c.models.find(it.name == "Calibration")!
+    let amount = calibration.properties.find(it.name == "amount")!
+        .describe_in(calibration.semantics)
+    let kind = calibration.properties.find(it.name == "kind")!.describe_in(calibration.semantics)
+    let plain = calibration.properties.find(it.name == "unit")!.describe_in(calibration.semantics)
+    amount.member("time").member("encoding").text() == "unix_millis" &&
+        kind.member("time").member("encoding").text() == "iso_date" &&
+        plain.get("time") == null
+}
+
 fn passed(answer: Result<bool, string>) -> bool {
     answer catch e -> {
         println(e)
@@ -259,6 +279,14 @@ spec "typed model-declared graph semantics" {
         }
         then "constant units need no specially named property" { passed(constant_quantity()) }
         then "paths cannot cross entity/list boundaries or exceed their budget" { passed(invalid_paths()) }
+        then "a declared time encoding is exported beside the property" { passed(time_exported()) }
+        then "a time binding fits its property's representation, once" {
+            passed(invalid_times([timed(["amount"], .IsoDate)])) &&
+                passed(invalid_times([timed(["kind"], .UnixMillis)])) &&
+                passed(invalid_times([timed(["missing"], .IsoDate)])) &&
+                passed(invalid_times([timed(["window", "start"], .UnixMillis)])) &&
+                passed(invalid_times([timed(["kind"], .IsoDate), timed(["kind"], .IsoInstant)]))
+        }
         then "an absence code is exported in the catalog and re-fingerprints the models" { passed(absence_code()) }
         then "an absence code binds a real optional property" {
             passed(invalid_absences([absent(["missing"], "gone")])) &&

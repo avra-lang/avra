@@ -1,4 +1,4 @@
-use @avra.graph.{model, Ref, Semantics, IdentityBinding, AbsenceBinding}
+use @avra.graph.{model, Ref, Semantics, IdentityBinding, AbsenceBinding, TimeBinding}
 use @std.validate.{length, one_of, range}
 use models.people.{Person}
 
@@ -14,7 +14,7 @@ export type Pet = {
 /// scheduled_at_ms is a known UTC Unix-millisecond instant. A rescheduled
 /// source replaces its previous slot; historical evidence keeps the old one.
 /// Null attendance/diagnosis/treatment means unrecorded, not false/healthy.
-@model
+@model(quote { Semantics { times: [TimeBinding { path: ["scheduled_at_ms"], encoding: .UnixMillis }] } })
 export type Appointment = {
     pet: Ref<Pet>,
     @length(min: 1, max: 512) purpose: string,
@@ -29,7 +29,7 @@ export type Appointment = {
 /// A journey and its purpose, independent of its individual reservations.
 /// Date-only depart_on/return_on stay ISO calendar dates, not guessed times.
 /// Cancelling one hotel reservation does not cancel a flight or this trip.
-@model
+@model(quote { Semantics { times: [TimeBinding { path: ["depart_on"], encoding: .IsoDate }, TimeBinding { path: ["return_on"], encoding: .IsoDate }] } })
 export type Trip = {
     traveller: Ref<Person>,
     @length(min: 1, max: 256) destination: string,
@@ -57,7 +57,9 @@ export type TravelBooking = {
 /// An event plan, not a venue approval. A requested guest limit is a
 /// separate assertion from the venue's confirmed capacity or booking.
 /// Date-only event_on and a precise starts_at_ms are not interchangeable.
-@model(quote { Semantics { absences: [AbsenceBinding { path: ["venue_capacity"], code: "not_confirmed" }] } })
+@model(quote { Semantics { absences: [AbsenceBinding { path: ["venue_capacity"], code: "not_confirmed" }],
+    times: [TimeBinding { path: ["event_on"], encoding: .IsoDate }, TimeBinding { path: ["starts_at_ms"], encoding: .UnixMillis }],
+} })
 export type Event = {
     @length(min: 1, max: 512) title: string,
     host: Ref<Person>?,
@@ -82,7 +84,9 @@ fn task_completion(t: PersonalTask) -> Result<PersonalTask, string> {
 /// reservation never happened. Unknown confirmation must stay null.
 @model(quote { Semantics { absences: [AbsenceBinding {
     path: ["confirmation_recorded"], code: "no_booking_confirmation",
-}] } })
+}],
+    times: [TimeBinding { path: ["due_on"], encoding: .IsoDate }, TimeBinding { path: ["due_at_ms"], encoding: .UnixMillis }, TimeBinding { path: ["requested_reservation_at_ms"], encoding: .UnixMillis }, TimeBinding { path: ["completed_at_ms"], encoding: .UnixMillis }],
+} })
 @task_completion
 export type PersonalTask = {
     @length(min: 1, max: 1024) summary: string,
@@ -102,7 +106,7 @@ export type PersonalTask = {
 /// and never says which act. Conditions remain text backed by source
 /// evidence. Neither an elapsed date nor a promise creates a fulfilled
 /// assertion.
-@model
+@model(quote { Semantics { times: [TimeBinding { path: ["when_ms"], encoding: .UnixMillis }] } })
 export type Commitment = {
     actor: Ref<Person>,
     recipient: Ref<Person>?,
