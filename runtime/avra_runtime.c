@@ -1230,6 +1230,18 @@ int64_t avra_int_shr(int64_t a, int64_t b) {
     return a >> b;
 }
 
+/* WHETHER THE EXACT ANSWER FITS: 1 when `a op b` has no int, 0 when it
+   does. `checked_*` answers absence on a 1; one body serves both engines.
+   A shift fits when its count is 0..63 and no set bit leaves the word. */
+int64_t avra_int_add_overflows(int64_t a, int64_t b) { int64_t r; return __builtin_add_overflow(a, b, &r); }
+int64_t avra_int_sub_overflows(int64_t a, int64_t b) { int64_t r; return __builtin_sub_overflow(a, b, &r); }
+int64_t avra_int_mul_overflows(int64_t a, int64_t b) { int64_t r; return __builtin_mul_overflow(a, b, &r); }
+int64_t avra_int_shl_overflows(int64_t a, int64_t b) {
+    if (b < 0 || b >= 64) { return 1; }
+    int64_t r = (int64_t)((uint64_t)a << (uint64_t)b);
+    return (r >> b) != a;
+}
+
 int64_t avra_int_mod(int64_t a, int64_t b) {
     if (b == 0) { avra_trap("division by zero"); }
     if (b == -1) { return 0; }
