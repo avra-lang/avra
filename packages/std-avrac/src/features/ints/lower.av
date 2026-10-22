@@ -1,0 +1,45 @@
+//! Meaning: a wrapping verb is the operator's own low 64 bits; a checked
+//! verb asks the runtime whether the exact answer fits, and answers
+//! absence or that same wrapped answer, present.
+use core.{Reg, BinOp, Type}
+use features.{LowerCx, MethodCall}
+
+fn lower_wrapping_add(mut cx: LowerCx, mc: MethodCall) -> Reg { wrapped(cx, mc, BinOp.Add) }
+fn lower_wrapping_sub(mut cx: LowerCx, mc: MethodCall) -> Reg { wrapped(cx, mc, BinOp.Sub) }
+fn lower_wrapping_mul(mut cx: LowerCx, mc: MethodCall) -> Reg { wrapped(cx, mc, BinOp.Mul) }
+fn lower_wrapping_shl(mut cx: LowerCx, mc: MethodCall) -> Reg { wrapped(cx, mc, BinOp.Shl) }
+
+fn lower_checked_add(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let a = cx.reg_of(mc.subject)
+    let b = cx.reg_of(mc.args[0])
+    fitted(cx, mc, cx.int_add_overflows(Type.Int, a, b), BinOp.Add, a, b)
+}
+
+fn lower_checked_sub(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let a = cx.reg_of(mc.subject)
+    let b = cx.reg_of(mc.args[0])
+    fitted(cx, mc, cx.int_sub_overflows(Type.Int, a, b), BinOp.Sub, a, b)
+}
+
+fn lower_checked_mul(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let a = cx.reg_of(mc.subject)
+    let b = cx.reg_of(mc.args[0])
+    fitted(cx, mc, cx.int_mul_overflows(Type.Int, a, b), BinOp.Mul, a, b)
+}
+
+fn lower_checked_shl(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let a = cx.reg_of(mc.subject)
+    let b = cx.reg_of(mc.args[0])
+    fitted(cx, mc, cx.int_shl_overflows(Type.Int, a, b), BinOp.Shl, a, b)
+}
+
+/// The operator over the receiver and the one argument, at the node's own type.
+fn wrapped(mut cx: LowerCx, mc: MethodCall, op: BinOp) -> Reg { cx.bin_at(mc.e, op, cx.reg_of(mc.subject), cx.reg_of(mc.args[0])) }
+
+/// Absence where the runtime says the answer does not fit, else the answer, present.
+fn fitted(mut cx: LowerCx, mc: MethodCall, over: Reg, op: BinOp, a: Reg, b: Reg) -> Reg {
+    let opt = cx.type_at(mc.e)
+    let fits = cx.bin(Type.Bool, BinOp.Eq, over, cx.const_int(0))
+    cx
+        .region(fits, mc.e) { cx -> cx.adopted(opt, false, cx.bin(Type.Int, op, a, b)) } else { cx -> cx.absent_of(opt) }
+}
