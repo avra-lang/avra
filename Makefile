@@ -1125,7 +1125,7 @@ KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness f
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
 KEEPERS_B = fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board ui-browser ui-browser-skip wasm-host-check tool-witnesses footprint tick-object no-threads \
-            ci-invariants ci-verdict pr-watcher pipeline-doc
+            ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
 	@sh tools/keepers_loop.sh "$(MAKE) -s -o avra" $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a1,$@),$(KEEPERS_A1),$(if $(filter keepers-a2,$@),$(KEEPERS_A2),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS))))))
