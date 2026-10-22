@@ -1678,26 +1678,46 @@ impl Workspace {
     fn import_remedy(p: Parsed, d: Diag, words: BlockWords) -> Diag {
         let at? = d.primary.loc else { return d }
         let near = names_near(p.source.text, at.lo)
-        let own = self.module_at(p.source.file)
+        let own = self.module_of(p.source.file)
         let homes = flatten(
-            [some_list(self.component_home(w, own)) for w in near if !w.is_empty() && !words.components.any(it.word == w)],
+            [some_list(self.component_home(w, own)) for w in near if self.unimported_word(w, words)],
         )
         let home? = homes.first() else { return d }
         d with { help: import_it(home) }
     }
 
+    /// A name that could be a component's word this file does not import: a
+    /// keyword never is one.
+    fn unimported_word(w: string, words: BlockWords) -> bool {
+        !w.is_empty() && !self.lang.keywords.contains(w) && !words.components.any(it.word == w)
+    }
+
     /// Another module, in a package in reach, that exports a component
-    /// by this name — as `use` spells it with the word.
+    /// by this name — as `use` spells it with the word. ASKED OF RECORDS AND
+    /// TOKENS ALONE: a remedy never admits a file into the program, so a
+    /// refusal types exactly what the program it refuses would.
     fn component_home(word: string, own: string) -> string? {
-        let paths = flatten([self.all_files(pkg.src) for pkg in self.packages()])
+        let paths = flatten([self.all_files_no_tests(pkg.src) for pkg in self.packages()])
         let path? = paths
-            .find(
-                (path: string) -> self.module_at(path) != own &&
-                    self.provided_words(path).components.any(it.word == word),
-            ) else {
+            .find((path: string) -> self.module_of(path) != own && self.exports_component(path, word)) else {
             return null
         }
-        "${self.module_at(path)}.{${word}}"
+        "${self.module_of(path)}.{${word}}"
+    }
+
+    /// Whether a file's module exports a component by this name: its record
+    /// says, or — with no record — the file's own tokens do.
+    fn exports_component(path: string, word: string) -> bool {
+        let rows? = module_block_rows(self, self.module_path_of(path)) else {
+            return file_declares_component(self, path) &&
+                exports_component_named(self.listed_text(path), word)
+        }
+        rows
+            .any(
+                (r: Row) -> r.exported &&
+                    r.name == word &&
+                    facts_unblocked(r.facts)?.is_component ?? false,
+            )
     }
 
     /// A provider read as it parses — under its OWN block words, since a
@@ -1708,9 +1728,6 @@ impl Workspace {
         if self.db.active(self.relation(Family.Parsed).query_key(f.index)) { return self.plain_parsed(f) }
         self.parsed(f)
     }
-
-    /// The module a source path belongs to, by name.
-    fn module_at(path: string) -> string { self.decls.module_name(self.decls.file(self.file_id(path)).module_id) }
 
     /// The block words a file stands under: each item its `use` lines
     /// take that a provider module declares as a named grammar
