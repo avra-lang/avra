@@ -6,6 +6,7 @@ accepted), publish facts (oracle or extracted), then ask each question
 through a planner and the graph's `query` op. Missing hooks score `not-run`.
 """
 import argparse
+import hashlib
 import datetime
 import json
 import os
@@ -349,6 +350,46 @@ def ready(mode, hooks, question, plans):
     return missing
 
 
+class Cache:
+    """Results a cut run already paid for, outside the repository, keyed by
+    everything they depend on: an extraction by source revision, catalog
+    fingerprint, extractor command and the extractor's code; a graded
+    question by mode, question, checkpoint, app binary, catalog, the planner
+    command and code, and the evidence it was asked over (the checkpoint's
+    extraction keys, or the oracle's files). Held-out runs never use it.
+    Failures are never kept, so a resumed run retries them."""
+
+    def __init__(self, fixture):
+        self.root = pathlib.Path.home() / ".cache/avra-graph-score" / fixture
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def key(*parts):
+        return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
+
+    @staticmethod
+    def code(command):
+        """A digest of the program files a hook command names."""
+        files = [ROOT / w for w in shlex.split(command or "") if w.endswith(".py") and (ROOT / w).exists()]
+        texts = [p.read_bytes() for f in files for p in sorted(f.parent.glob("*.py"))]
+        return hashlib.sha256(b"".join(texts)).hexdigest()
+
+    def get(self, kind, key):
+        path = self.root / kind / f"{key}.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def put(self, kind, key, value):
+        (self.root / kind).mkdir(exist_ok=True)
+        (self.root / kind / f"{key}.json").write_text(json.dumps(value))
+
+
+CACHE = None
+
+
+def file_digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+
+
 def publish_source(app, mode, hooks, source, schema, revision, trace=None):
     if mode in ORACLE_FACTS:
         for body in oracle_facts(source) or []:
@@ -365,7 +406,15 @@ def publish_source(app, mode, hooks, source, schema, revision, trace=None):
         record = {"source": source["id"], "log": log}
         if trace is not None:
             trace.append(record)
-        result = run_hook(hooks["extractor"].replace("{schema}", str(schema_file)), envelope(source), log=log)
+        key = Cache.key(source["id"], source["observation"], source["revision"], schema["fingerprint"],
+                        hooks["extractor"], Cache.code(hooks["extractor"]))
+        record["key"] = key
+        result = CACHE.get("extractions", key) if CACHE else None
+        record["cached"] = result is not None
+        if result is None:
+            result = run_hook(hooks["extractor"].replace("{schema}", str(schema_file)), envelope(source), log=log)
+            if CACHE and result.get("status") == "complete":
+                CACHE.put("extractions", key, result)
         record["result"] = result
     except (RuntimeError, ValueError, subprocess.SubprocessError) as error:
         return f"extractor: {error}"
@@ -411,8 +460,20 @@ def score_checkpoint(binary, checkpoint, questions, fixture, mode, hooks, scratc
     ids = Ids(id_map(app, entities, prefix, by_ref))
     locate = locator(app, entities)
     answers = {}
+    evidence = ([r["key"] for r in (trace or []) if r["source"] in {s["id"] for s in prefix}] if mode == "e2e"
+                else [file_digest(ORACLE / "facts.jsonl"), file_digest(ORACLE / "plans.jsonl")])
     for q in runnable:
+        key = Cache.key(mode, q["id"], checkpoint, file_digest(pathlib.Path(binary)), schema["fingerprint"],
+                        hooks.get("planner"), Cache.code(hooks.get("planner")), evidence)
+        follows = q.get("context", {}).get("previous_question")
+        kept = CACHE.get("questions", key) if CACHE and not follows else None
+        if kept:
+            rows[q["id"]] = {**kept, "cached": True}
+            answers[q["id"]] = (kept.get("response") or {}).get("request")
+            continue
         rows[q["id"]] = ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, superseded, locate)
+        if CACHE and rows[q["id"]]["status"] in ("pass", "fail"):
+            CACHE.put("questions", key, rows[q["id"]])
     return rows
 
 
@@ -617,10 +678,14 @@ def main():
     parser.add_argument("--binary", default=None)
     parser.add_argument("--build", action="store_true", help="build the fixture app first")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--resume", action="store_true",
+                        help="reuse extractions and graded questions a cut run already paid for (never held-out)")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
     configure((HERE / args.fixture).resolve())
+    global CACHE
+    CACHE = Cache(FIXTURE.name if args.fixture != "." else "acceptance") if args.resume and not args.heldout else None
     args.binary = args.binary or str(BINARY)
     if args.build or not pathlib.Path(args.binary).exists():
         built = subprocess.run(["sh", "tools/watch.sh", "3500", "./build/avra", "build", str(FIXTURE.relative_to(ROOT) / "app")], cwd=ROOT)
