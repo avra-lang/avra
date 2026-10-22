@@ -280,7 +280,7 @@ const all = kept.sentFrames.flat();
 const first = kept.sentFrames[0] ?? [];
 claim("the server's print is the number the module folds from the same view", first[0]?.op === OP.adopt && first[0].kinds.length > 0, serverPrint);
 claim("an adopted page builds nothing", all.filter((p) => p.op === OP.create || p.op === OP.create_text).length === 0, `${all.length} patch(es)`);
-claim("the first paint over an adopted page is the adoption and its listeners", first.length > 1 && first.slice(1).every((p) => p.op === OP.listen || p.op === OP.define), first.map((p) => p.op).join(","));
+claim("the first paint over an adopted page is the adoption, then define and listen only", first.length > 1 && first.slice(1).every((p) => p.op === OP.listen || p.op === OP.define), first.map((p) => p.op).join(","));
 claim("the server's nodes are the page the module stands on", kept.at.childNodes.length === kept.placed.length && kept.placed.every((n, j) => kept.at.childNodes[j] === n));
 claim("the adopted page is the page the module drew itself", kept.at.childNodes.map(shape).join() === firstPaint.map(shape).join());
 claim("the first frame over an adopted page is under 1500 bytes (9326 without a server page)", kept.sizes[0] < 1500, `${kept.sizes[0]}`);
