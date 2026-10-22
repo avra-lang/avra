@@ -966,11 +966,15 @@ def answered(body, models):
     return {"result": result, "log": logs}
 
 
-def resident_mb():
-    """This process's resident memory now, as ps reports it."""
-    import subprocess
+def settled():
+    """Return MLX's freed buffers to the system after a request, and say how
+    much it holds: buffers it keeps cached otherwise grow into swap."""
+    import mlx.core as mx
 
-    return int(subprocess.run(["ps", "-o", "rss=", "-p", str(os.getpid())], capture_output=True, text=True).stdout.strip() or 0) // 1024
+    peak = mx.get_peak_memory() // 2**20
+    mx.clear_cache()
+    mx.reset_peak_memory()
+    return f"mlx_active_mb={mx.get_active_memory() // 2**20} mlx_peak_mb={peak}"
 
 
 def serve():
@@ -1004,7 +1008,7 @@ def serve():
             op = body.get("op", "extract")
             print(
                 f"{time.strftime('%H:%M:%S')} {op} bytes={len(data)} options={len(body.get('options', []))} "
-                f"s={time.time() - started:.2f} rss_mb={resident_mb()} {answer.get('error', 'ok')}",
+                f"s={time.time() - started:.2f} {settled()} {answer.get('error', 'ok')}",
                 file=sys.stderr,
                 flush=True,
             )
