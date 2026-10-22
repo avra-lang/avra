@@ -29,6 +29,7 @@ from structured import debiased  # noqa: E402
 def kind(question):
     """The decision's kind, read from its question's fixed wording."""
     for prefix, name in (("Who or what is the question about first", "anchor"),
+                         ("Is the question about", "speaker gate"),
                          ("Which kind of record is the person asking", "speaker model"),
                          ("Which kind of record holds the answer", "kind"),
                          ("Which relation does the question mean", "relation"),

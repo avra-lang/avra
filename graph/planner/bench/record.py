@@ -48,7 +48,7 @@ def labeller(question_id, labels, needed):
                 raise SystemExit(f"{question_id}: no label left for: {question}\n  options: {options}")
             seen[(context, question)] = labels.pop(0)
         word = seen[(context, question)]
-        hits = [i for i, o in enumerate(options) if word in o]
+        hits = [i for i, o in enumerate(options) if o.startswith(word + ":")] or [i for i, o in enumerate(options) if word in o]
         if len(hits) > 1:
             raise SystemExit(f"{question_id}: label {word!r} matches {len(hits)} of: {question}\n  options: {options}")
         met.update([word] if hits else [])
@@ -98,7 +98,7 @@ def main():
             context = {**context, **{k: locate(context[k]) for k in ("principal", "speaker") if context[k]}}
             label = labeller(row["id"], row["choices"], row.get("needed", []))
             graph = Graph([str(app.binary), "request", "--db", str(app.db)])
-            cypher, made = walk(q["question"], schema, context, label, graph.search, None, graph.model_of)
+            cypher, made = walk(q["question"], schema, context, label, graph.search, None, graph.read)
             if label.missed():
                 raise SystemExit(f"{row['id']}: labels matching no option: {label.missed()}\n  composed: {cypher}")
             if label.unused:
