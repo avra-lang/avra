@@ -334,6 +334,25 @@ class Structured(unittest.TestCase):
         self.assertEqual(cypher, "MATCH (n0:Person) WHERE id(n0) = $speaker RETURN n0.name AS name")
 
 
+class Choices(unittest.TestCase):
+    def test_a_walk_returns_its_decisions_and_their_runtime_prompts(self):
+        import choices
+
+        def label(context, question, options):
+            for want in ("person asking", "Person", "yes", "value", "name"):
+                hits = [i for i, o in enumerate(options) if want in o]
+                if hits:
+                    return hits[0]
+            return len(options) - 1
+
+        cypher, decisions = choices.walk("Who is my wife?", SCHEMA, SPEAKER, label)
+        self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE id(n0) = $speaker RETURN n1.name AS name")
+        first = choices.prompts(decisions[0])
+        self.assertEqual([gold for _, gold in first], ["A", "B"])
+        self.assertTrue(first[0][0].startswith("Question: Who is my wife?\n\nWho or what is the question about first?\nA) the person asking"))
+        self.assertTrue(first[0][0].endswith("Answer with the letter only."))
+
+
 class Socket(unittest.TestCase):
     def test_the_shared_model_answers_one_line(self):
         import socket
