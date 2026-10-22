@@ -104,6 +104,12 @@ const meta_real: string = embed("@std/meta/src/meta.av")
 
 const errors_real: string = embed("@std/errors/src/errors.av")
 
+// LICENSED input.compile_embed: the package's own source, read when the compiler is built
+const errors_to_int_src: string = embed("@std/errors/src/to_int.av")
+
+// LICENSED input.compile_embed: the package's own source, read when the compiler is built
+const meta_rule_src: string = embed("@std/meta/src/rule.av")
+
 /// The real `@std/meta` and the `@std/errors` it rests on, added to a
 /// memory host's files. The paths are `vendored_meta_paths()`.
 export fn vendored_meta(files: Map<string, string>) -> Map<string, string> {
@@ -204,6 +210,18 @@ const text_src: string = embed("@std/text/src/text.av")
 const display_src: string = embed("@std/text/src/display.av")
 
 // LICENSED input.compile_embed: the package's own source, read when the compiler is built
+const json_src: string = embed("@std/json/src/json.av")
+
+// LICENSED input.compile_embed: the package's own source, read when the compiler is built
+const json_codec_src: string = embed("@std/json/src/codec/codec.av")
+
+// LICENSED input.compile_embed: the package's own source, read when the compiler is built
+const json_typed_src: string = embed("@std/json/src/typed/typed.av")
+
+// LICENSED input.compile_embed: the package's own source, read when the compiler is built
+const derive_src: string = embed("@std/derive/src/derive.av")
+
+// LICENSED input.compile_embed: the package's own source, read when the compiler is built
 const unicode_src: string = embed("@std/text/src/unicode.av")
 
 /// A source file of a std package, named as the package ships it.
@@ -223,7 +241,7 @@ export fn vendored_task(files: Map<string, string>) -> Map<string, string> {
 /// `vendored_task`'s twin for the real `@std/time`, and the whole
 /// `@std/text` its ISO-8601 rests on.
 export fn vendored_time(files: Map<string, string>) -> Map<string, string> {
-    vendored_beside(
+    mut out = vendored_beside(
         files,
         [
             std_pkg(
@@ -235,16 +253,34 @@ export fn vendored_time(files: Map<string, string>) -> Map<string, string> {
                 ],
             ),
             std_pkg("time", [std_file("time.av", time_src)]),
+            std_pkg(
+                "json",
+                [
+                    std_file("json.av", json_src),
+                    std_file("codec/codec.av", json_codec_src),
+                    std_file("typed/typed.av", json_typed_src),
+                ],
+            ),
+            std_pkg("derive", [std_file("derive.av", derive_src)]),
         ],
     )
+    out
+        .set(
+            "/std/std-time/avra.toml",
+            "[package]\nname = \"@std/time\"\nversion = \"0.0.1\"\n\n[dependencies]\n\"@std/json\" = { path = \"../std-json\" }\n",
+        )
+    out
 }
 
 /// The packages every vendored host carries: what the toolchain's own
 /// std packages rest on.
 fn shared_pkgs() -> List<StdPkg> {
     [
-        std_pkg("meta", [std_file("meta.av", meta_real)]),
-        std_pkg("errors", [std_file("errors.av", errors_real)]),
+        std_pkg("meta", [std_file("meta.av", meta_real), std_file("rule.av", meta_rule_src)]),
+        std_pkg(
+            "errors",
+            [std_file("errors.av", errors_real), std_file("to_int.av", errors_to_int_src)],
+        ),
     ]
 }
 
