@@ -39,6 +39,13 @@ Fine-grained claim/span gold remains A02; no extractor ran in this task.
    reason code is the engine's own word, and `side_effects: []` is a claim no
    read can make. The earlier `reason` and `side_effects` keys named neither
    a policy nor evidence.
+9. q19 marks `price_kind` optional and q27 marks `arrival_confirmed`
+   optional, on the q46 rule: neither key answers what the question asked.
+   q19 asks the quoted unit price, and the word "quote" in the question names
+   the record kind; q27 asks the estimated dispatch date, and an unconfirmed
+   arrival is the recorded-versus-world caveat, not the answer. Each stays
+   checked when the engine states it: a stated `arrival_confirmed` must still
+   equal false.
 
 ## Answer-by-answer receipts
 

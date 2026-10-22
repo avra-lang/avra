@@ -142,9 +142,20 @@ def oracle_facts(source):
     return out
 
 
+def sealed(rows, what):
+    """Oracle data keyed to a held-out question is refused: the held-out set stays unseen."""
+    if not SPLIT.exists():
+        return rows
+    held = set(json.loads(SPLIT.read_text())["heldout"])
+    keyed = sorted({r["question"] for r in rows if r["question"] in held})
+    if keyed:
+        raise ValueError(f"oracle {what} keyed to held-out questions: {', '.join(keyed)}")
+    return rows
+
+
 def oracle_plans():
     path = ORACLE / "plans.jsonl"
-    return {row["question"]: row for row in read_lines(path)} if path.exists() else {}
+    return {row["question"]: row for row in sealed(read_lines(path), "plans")} if path.exists() else {}
 
 
 def oracle_gold():
@@ -154,12 +165,12 @@ def oracle_gold():
 
 def oracle_blocked():
     path = ORACLE / "blocked.jsonl"
-    return {r["question"]: r["reason"] for r in read_lines(path)} if path.exists() else {}
+    return {r["question"]: r["reason"] for r in sealed(read_lines(path), "blockers")} if path.exists() else {}
 
 
 def oracle_readings():
     path = ORACLE / "readings.jsonl"
-    return read_lines(path) if path.exists() else []
+    return sealed(read_lines(path), "readings") if path.exists() else []
 
 
 def cypher_params(context):
@@ -682,6 +693,13 @@ def self_test():
                 assert got["q01"]["status"] == status, got
         finally:
             ORACLE = saved
+    held = json.loads(SPLIT.read_text())["heldout"][0]
+    try:
+        sealed([{"question": held}], "plans")
+        raise AssertionError("oracle data keyed to a held-out question was accepted")
+    except ValueError:
+        pass
+    assert sealed([{"question": "q01"}], "plans")
     print("score self-test passed: wrong fails, missing hooks not-run, cherry-picked prefix refused")
 
 

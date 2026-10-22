@@ -218,6 +218,18 @@ def leaks(root, pattern):
 SLICE_IDS = {"q01", "q06", "q07", "q16", "q46", "q47"}
 
 
+def oracle_offences(rows_by_file, held):
+    """Oracle plans, readings and blockers keyed to a held-out question."""
+    return sorted(f"{name}: {r['question']}" for name, rows in rows_by_file.items() for r in rows if r["question"] in held)
+
+
+def check_oracle_sealed():
+    held = set(json.loads((ROOT / "split.json").read_text())["heldout"])
+    found = {name: load_lines(ROOT / "oracle" / f"{name}.jsonl") for name in ("plans", "readings", "blocked")}
+    offences = oracle_offences(found, held)
+    require(not offences, "oracle data keyed to held-out questions: " + ", ".join(offences))
+
+
 def check_split(questions):
     split = json.loads((ROOT / "split.json").read_text())
     ids = {q["id"] for q in questions}
@@ -334,6 +346,8 @@ def self_test(data):
     pattern = leak_pattern(data[2], data[1])
     for text in ("Rowan's wife Elena", "mail alex@velluto-works.example", "see INV-204", "NJ-01 jacket"):
         require(pattern.search(text), f"leak witness missed: {text}")
+    require(oracle_offences({"plans": [{"question": "q05"}]}, {"q05"}) == ["plans: q05"], "held-out witness missed")
+    require(not oracle_offences({"plans": [{"question": "q01"}]}, {"q05"}), "held-out witness refused development")
     both = leak_union([(data[2], data[1]), (load_lines(PORTABILITY / "entities.jsonl"), load_lines(PORTABILITY / "sources.jsonl"))])
     for text in ("Teodor lent the auger", "mail odalys@larkspur.example", "Greenholt Nursery"):
         require(both.search(text), f"second-fixture leak witness missed: {text}")
@@ -358,6 +372,7 @@ def main():
                         for key in ("sources", "entities", "questions", "tasks")))
     validate(data)
     check_split(data[3])
+    check_oracle_sealed()
     p_entities = load_lines(PORTABILITY / "entities.jsonl")
     p_sources = load_lines(PORTABILITY / "sources.jsonl")
     check_portability(data[2], data[1])
