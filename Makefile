@@ -364,10 +364,12 @@ wasm-cache:
 	sh tools/wasm-cache-attacks.sh
 
 # THE FLOOR: what the smallest wasm program carries, section by section.
+# not a keeper — report
 wasm-size:
 	sh tools/wasm-size.sh
 
 # THE ONE DECLARATION: RtSig.wasm and the archive exclusion agree.
+# keeper owed by UI/ui-escape — wasm rows guarded by __wasm32__ vs the keeper's law (fiber/cores only)
 wasm-body:
 	sh tools/wasm-body.sh
 
@@ -376,6 +378,7 @@ wasm-size-guard:
 	sh tools/wasm-size-guard.sh
 
 # Re-accept the footprint deliberately (the guard prints the rise first).
+# not a keeper — re-accepts the wasm footprint deliberately
 wasm-size-accept:
 	sh tools/wasm-size-guard.sh --accept
 
@@ -558,6 +561,7 @@ install: avra
 # A Sprite is a stock Ubuntu image; `make sprite` provisions the machine
 # it runs on — LLVM 22, the tree's paths, and a compiler. On macOS it is
 # a no-op.
+# not a keeper — provisions the machine it runs on
 sprite:
 	@sh tools/sprite-provision.sh
 
@@ -884,6 +888,7 @@ read-lists:
 # THE SAVED-ANSWER METER MAY ONLY IMPROVE. A settled answer can be saved only if every
 # read it made has a name that outlives the process; tools/leaves.sh counts, per blocking
 # family, the answers a read of which cannot be named, and the baseline only falls.
+# keeper owed by dry-sweep — timing under investigation
 leaves:
 	@sh tools/leaves.sh --check
 
@@ -1088,6 +1093,7 @@ ui-host-test: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # THE DIFF'S LAW, AT LENGTH: trees grown and edited by chance, each repaint
 # applied to a modelled host and held to the page its tree is
 # (tools/ui_fuzz.sh). UI_FUZZ_SEED, UI_FUZZ_SEEDS and UI_FUZZ_CASES size it.
+# keeper: nightly (orders) — 530 s, too long for every pull request
 ui-fuzz: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/ui_fuzz.sh
 
@@ -1182,12 +1188,17 @@ KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A1 = speed-ratchet census-gate fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns witnesses dogfooding-rules rule-examples attack voices defects \
-            ui-host host-events ui-host-test ui-board dev-server ui-browser ui-browser-skip wasm-host-check tool-witnesses footprint tick-object no-threads \
+KEEPERS_B = libscope h2spec tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns witnesses dogfooding-rules rule-examples attack voices defects \
+            ui-host host-events ui-host-test ui-board dev-server ui-browser ui-browser-skip tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status
-KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
-keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
-	@sh tools/keepers_loop.sh "$(MAKE) -s -o avra" $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a1,$@),$(KEEPERS_A1),$(if $(filter keepers-a2,$@),$(KEEPERS_A2),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS))))))
+# KEEPERS_WASM is the wasm target's proof — the fixtures native and wasm32 alike, the seam,
+# the refusals, the hosted scheduler broken on purpose, the store across targets, the
+# archive's law and the size receipt — a CI
+# runner of its own, so its minutes ride beside the halves rather than after one.
+KEEPERS_WASM = wasm-host-check wasm-check wasm-seam wasm-refuses wasm-tasks-mutations wasm-cache wasm-archive wasm-size-guard
+KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B) $(KEEPERS_WASM)
+keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm:
+	@sh tools/keepers_loop.sh "$(MAKE) -s -o avra" $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a1,$@),$(KEEPERS_A1),$(if $(filter keepers-a2,$@),$(KEEPERS_A2),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(if $(filter keepers-wasm,$@),$(KEEPERS_WASM),$(KEEPERS)))))))
 
 # THE TOOLS' OWN WITNESSES, DERIVED (tools/tool_witnesses.sh): every
 # witness_*.sh and *_test.sh, and every tool declaring `# tool-witness:
@@ -1199,10 +1210,10 @@ tool-witnesses:
 	@sh tools/tool_witnesses.sh run
 
 # THE STORE'S WITNESSES: package builds under the memory cap, each over a cold
-# then a warm store — a cache-attacks shard of their own (w), since one alone
-# outlasts a minute.
+# then a warm store, and the edit corpus's warm answers held to a cold copy's —
+# a cache-attacks shard of their own (w), since one alone outlasts a minute.
 STORE_WITNESSES = $(shell grep -l '^\# tool-witness: run by make store-witnesses' tools/*.sh)
-cache-attacks-w: store-witnesses
+cache-attacks-w: store-witnesses db-corpus
 store-witnesses: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@fail=""; for w in $(STORE_WITNESSES); do MEMCAP=tools/memcap.sh sh $$w || fail="$$fail [$$w]"; done; \
 	 [ -z "$$fail" ] || { echo "store-witnesses: refused —$$fail"; exit 1; }
@@ -1255,6 +1266,7 @@ tail-status:
 # verdict is a pure function over a state, proved on synthetic fixtures
 # with no network (`--self-test`, held by `make tool-witnesses`);
 # `ARGS=--witness` prints each verdict firing.
+# not a keeper — a report: why nothing is landing, read-only
 pipeline-status:
 	@python3 tools/pipeline_status.py $(ARGS)
 
@@ -1264,7 +1276,7 @@ pipeline-status:
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
 KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status
-.PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc tail-status pipeline-status ci-invariants ci-verdict pr-watcher
+.PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr pipeline-doc tail-status pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@sh tools/keepers_loop.sh "$(MAKE) -s" $(KEEPERS_STATIC)
@@ -1277,6 +1289,7 @@ keepers-static:
 # instead of failing a train. Each is one of KEEPERS, which the train runs
 # whole.
 KEEPERS_PR = rt-header rt-ns witnesses dogfooding-rules footprint attack speed-ratchet warm-edit
+# not a keeper — a lane's quick subset of KEEPERS before pushing; CI runs every keeper
 keepers-pr:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_PR))"; [ -z "$$left" ] || { echo "keepers-pr: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@sh tools/keepers_loop.sh "$(MAKE) -s -o avra" $(KEEPERS_PR)
@@ -1457,6 +1470,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here.
+# not a keeper — a lane's local union of keepers; CI runs each in its own job
 gate: llvm-libs seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families-left layers hooks-released codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
 	@sh tools/gate_receipt.sh write || true
 
@@ -1477,6 +1491,7 @@ native-check: $(COMPILER_OBJS)
 	@diff build/native-check-eval.out build/native-check-native.out && echo "native == eval"
 
 # The measured curve: the suites' wall time.
+# not a keeper — a report: the suites' wall time
 bench: $(COMPILER_OBJS)
 	@sh tools/bench.sh
 
@@ -1514,6 +1529,7 @@ h2spec: $(COMPILER_OBJS)
 # representation-selection opportunity list.
 #   make census-types PROGRAM=tools/bench/request/src/main.av
 PROGRAM ?= tools/bench/request/src/main.av
+# not a keeper — a report: one program's representation opportunities
 census-types:
 	@sh tools/census_types.sh $(PROGRAM)
 
@@ -1524,6 +1540,7 @@ census-types:
 # what it calls, never for what it imports.
 #   make sizes BEFORE=build/avra.pre
 REACH := hello limits plain unreached tls sign
+# not a keeper — a report: what each reach program carries
 sizes:
 	@build/avra build tools/bench/request/src/main.av >/dev/null
 	@python3 tools/symsize.py build/avra $(BEFORE)
@@ -1536,6 +1553,7 @@ sizes:
 	    echo "| $$p | $$(wc -c < tools/bench/reach/$$p/src/main | tr -d ' ') |"; done
 
 # Mutated program tests through `avra check`: diagnose, never crash.
+# keeper: nightly (orders) — 465 s, too long for every pull request
 fuzz: $(COMPILER_OBJS)
 	@sh tools/fuzz.sh
 
@@ -1543,12 +1561,14 @@ fuzz: $(COMPILER_OBJS)
 # 180): the corpus and every kept finding replayed, libFuzzer over the
 # C rows, then the seeded mutation fuzzer — a trap bisected to its one
 # mutant and kept in packages/std-http-fuzz/crashes.
+# keeper: nightly (orders) — 192 s, too long for every pull request
 fuzz-http: build/libavra_runtime.a
 	@sh tools/fuzz_http.sh
 
 # THE HTTP SERVER SOAKED: 10k keep-alive connections on every core for
 # SOAK_HTTP_SECONDS (default 600, ten minutes), the reset law looped 1000x
 # under that load; prints the load, memory, descriptors and resets it saw.
+# not a keeper — a ten-minute load report, read by a person
 soak-http: build/libavra_runtime.a
 	@sh tools/soak_http.sh
 

@@ -46,6 +46,13 @@ lists and refuses by name:
                    spells it again (ONE_SPELLING names each and its home:
                    the hand-down's download and tar, the speed note,
                    the compiler built from whatever stands).
+  keeper-reach     every Makefile target whose recipe runs a tools/ script is
+                   reached from a KEEPERS_* list or a workflow (through
+                   prerequisites, `$(MAKE)` calls and the scripts a workflow
+                   runs), or says at its line what it is instead: `# not a
+                   keeper — <what>`, `# keeper: nightly (orders) — <why>` or
+                   `# keeper owed by <owner> — <reason>`.
+                   A keeper nothing runs is one nobody runs.
   warm-edit        WHERE the DB 07 warm-edit gate exists (Makefile target
                    `warm-edit`), it is one of `KEEPERS` and its measurement
                    skips with a word on a cold store — a claim with no gate
@@ -558,10 +565,115 @@ def check_one_spelling(workflows, rules=ONE_SPELLING):
     return [], ["one-spelling: %d shared shape(s), each spelled once, at its home" % len(rules)]
 
 
+def _tool_text(name):
+    path = os.path.join(ROOT, "tools", name)
+    return open(path, encoding="utf-8", errors="replace").read() if os.path.isfile(path) else None
+
+
 def workflow_texts():
     d = os.path.join(ROOT, ".github", "workflows")
     return {f: open(os.path.join(d, f), encoding="utf-8").read()
             for f in os.listdir(d) if f.endswith(".yml")}
+
+
+NOT_A_KEEPER = re.compile(r"^#\s*(not a keeper|keeper owed by \S+|keeper: nightly \(orders\))\s+—\s+\S")
+
+
+def make_rules(text):
+    """{target: (prerequisites, recipe, declaration)}, variables expanded; the
+    declaration is the `# not a keeper — …`/`# keeper owed by … — …` line
+    directly above the rule, or None."""
+    vals = parse_make_vars(text)
+    rules, cur, prev = {}, [], ""
+    for line in text.splitlines():
+        m = re.match(r"^([A-Za-z0-9_.%/$()-][A-Za-z0-9_.%/$() -]*?)\s*:(?!=)\s*(.*)$", line)
+        if m and not line.startswith(("\t", ".PHONY")):
+            cur = _expand(vals, m.group(1), set()).split()
+            pre = _expand(vals, m.group(2).split("#")[0], set()).split()
+            decl = prev if NOT_A_KEEPER.match(prev) else None
+            for n in cur:
+                old = rules.get(n, ([], "", None))
+                rules[n] = (old[0] + pre, old[1], old[2] or decl)
+        elif cur and line.startswith("\t"):
+            for n in cur:
+                rules[n] = (rules[n][0], rules[n][1] + line + "\n", rules[n][2])
+        elif line and not line[0].isspace():
+            cur = []
+        prev = line
+    return rules
+
+
+def made_targets(text, matrix=None):
+    """Every target a shell text asks `make`/`$(MAKE)` for; a `${{ matrix.x }}`
+    stands for each of the job's values."""
+    out = set()
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        variants = [line]
+        for name, values in (matrix or {}).items():
+            pat = re.compile(r"\$\{\{\s*matrix\.%s\s*\}\}" % name)
+            variants = [pat.sub(v, x) for x in variants for v in values] if any(pat.search(x) for x in variants) else variants
+        for v in variants:
+            for m in re.finditer(r"(?:\bmake\b|\$\(MAKE\))([^;|&\n]*)", v):
+                out |= {tok for tok in m.group(1).split()
+                        if not tok.startswith("-") and "=" not in tok and re.match(r"^[A-Za-z0-9_.-]+$", tok)}
+    return out
+
+
+def run_tools(text):
+    return set(re.findall(r"\btools/([A-Za-z0-9_.-]+\.(?:sh|py))", text))
+
+
+def check_keeper_reach(make_text, workflows, tool_text):
+    """Every keeper-shaped target runs somewhere CI reaches, or declares itself.
+    `tool_text(name)` answers a tools/ script's text (None when absent)."""
+    rules = make_rules(make_text)
+    roots, wtools, nightly = set(), set(), set()
+    for s in keeper_lists(make_text).values():
+        roots |= s
+    for name, text in workflows.items():
+        for block in parse_jobs(text).values():
+            code = "\n".join(l for l in block.splitlines() if not l.lstrip().startswith("#"))
+            matrix = {k: re.findall(r"'([^']+)'", v) for k, v in re.findall(r"^\s+(\w+): \[(.*)\]\s*$", block, re.M)}
+            made = made_targets(code, matrix)
+            roots |= made
+            if name == "orders.yml":
+                nightly |= made
+            wtools |= run_tools(code)
+    todo, ran = list(wtools), set()
+    while todo:
+        name = todo.pop()
+        body = None if name in ran else tool_text(name)
+        if body is None:
+            continue
+        ran.add(name)
+        roots |= made_targets(body)
+        todo += list(run_tools(body))
+    reached, todo = set(), list(roots)
+    while todo:
+        tgt = todo.pop()
+        if tgt in reached:
+            continue
+        reached.add(tgt)
+        pre, recipe, _ = rules.get(tgt, ([], "", None))
+        todo += pre + list(made_targets(recipe))
+    for tgt in reached:
+        ran |= run_tools(rules.get(tgt, ([], "", None))[1])
+    shaped = {n: r for n, r in rules.items() if run_tools(r[1]) and not re.search(r"[%/$]", n)}
+    loose = sorted(n for n, (pre, recipe, decl) in shaped.items()
+                   if n not in reached and decl is None and not run_tools(recipe) <= ran)
+    false_nightly = sorted(n for n, (pre, recipe, decl) in shaped.items()
+                           if decl and "nightly (orders)" in decl and n not in nightly)
+    if false_nightly:
+        return ["`make %s` says it runs nightly, and orders.yml runs no `make %s`" % (n, n) for n in false_nightly], []
+    if loose:
+        return ["`make %s` runs a tool and nothing CI runs reaches it — wire it into a KEEPERS_* list or a job, "
+                "or declare it above its rule (`# not a keeper — <what>` / `# keeper owed by <owner> — <reason>`)" % n
+                for n in loose], []
+    owed = sorted(n for n, r in shaped.items() if r[2] and "owed" in r[2])
+    return [], ["keeper-reach: %d tool-running target(s), each reached by CI or declared%s"
+                % (len(shaped), "; owed: " + ", ".join(owed) if owed else "")]
 
 
 def run(make_text=None, workflow_text=None):
@@ -586,6 +698,7 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_dup_run(workflow_text),
                   lambda: check_ready_race(__import__("pr_mode")),
                   lambda: check_warm_edit(make_text),
+                  lambda: check_keeper_reach(make_text, workflow_texts(), _tool_text),
                   lambda: check_ci_image(workflow_texts()),
                   lambda: check_one_spelling(workflow_texts())):
         r, w = check()
@@ -855,8 +968,32 @@ rt-header:
     again = "        run: sh tools/speed_note.sh collect speed.log\n"
     assert check_one_spelling({"a.yml": again})[0], "a second spelling must be refused"
 
+    # ── keeper-reach: a keeper reached through a list, a job's matrix, a workflow's
+    # script or a prerequisite passes; a tool-running target nothing reaches is
+    # refused unless it declares itself ──
+    mk = ("KEEPERS_B = kb\n"
+          "kb: dep\n\t@sh tools/kb.sh\n\t@$(MAKE) -s inner\n"
+          "inner:\n\t@sh tools/inner.sh\n"
+          "dep:\n\t@sh tools/dep.sh\n"
+          "shard-x:\n\t@sh tools/sx.sh\n"
+          "viascript:\n\t@sh tools/vs.sh\n"
+          "# not a keeper — prints a report\nbench:\n\t@sh tools/bench.sh\n"
+          "alias:\n\t@sh tools/dep.sh\n"
+          "loose:\n\t@sh tools/loose.sh\n")
+    wf = {"c.yml": "jobs:\n  j:\n    strategy:\n      matrix:\n        shard: ['x']\n    steps:\n"
+                   "      - run: make -s shard-${{ matrix.shard }}\n      - run: sh tools/runner.sh\n"}
+    texts = {"runner.sh": "make -s viascript\n"}
+    bad = check_keeper_reach(mk, wf, texts.get)[0]
+    assert bad and all("loose" in b for b in bad) and len(bad) == 1, bad
+    assert check_keeper_reach(mk.replace("loose:", "# keeper owed by lane — its fixture moved\nloose:"), wf, texts.get)[0] == []
+    assert check_keeper_reach(mk.replace("loose:", "# not a keeper\nloose:"), wf, texts.get)[0], "a declaration with no words is none"
+    night = mk.replace("loose:", "# keeper: nightly (orders) — long\nloose:")
+    assert check_keeper_reach(night, wf, texts.get)[0], "a nightly claim orders.yml does not keep must be refused"
+    kept = dict(wf, **{"orders.yml": "jobs:\n  n:\n    steps:\n      - run: make -s loose\n"})
+    assert check_keeper_reach(night, kept, texts.get)[0] == [], check_keeper_reach(night, kept, texts.get)
+
     print("ci_invariants self-test: release-order, keeper-coverage, watcher-fixtures, "
-          "light-draft, run-mode, race-split, compiler-route, path-gate, dup-run, ready-race, warm-edit, ci-image, one-spelling held on fixtures")
+          "light-draft, run-mode, race-split, compiler-route, path-gate, dup-run, ready-race, warm-edit, ci-image, one-spelling, keeper-reach held on fixtures")
     return 0
 
 

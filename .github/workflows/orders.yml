@@ -133,3 +133,48 @@ jobs:
           LAYOUT_ORACLE_CASES: "300"
           CI: "true"
         run: sh tools/layout_oracle.sh
+
+  # THE KEEPERS TOO LONG FOR EVERY PULL REQUEST, run each night: the mutation
+  # fuzzer over the program tests, the UI diff's law over random trees, and the
+  # HTTP fuzzer. Each target says so above its rule (`# keeper: nightly (orders)`).
+  nightly-keepers:
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    container: *ci-image
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        keeper: ['fuzz', 'ui-fuzz', 'fuzz-http']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/handed-down
+      - name: keeper
+        timeout-minutes: 20
+        run: make -s -o avra ${{ matrix.keeper }}
+
+  # A NIGHTLY FAILURE IS NEVER SILENT: it opens the `nightly` issue, or adds the
+  # run to the open one, naming every job that failed.
+  report:
+    needs: [suites, layout-sweep, nightly-keepers]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      actions: read
+    steps:
+      - name: open or ping the nightly issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          failed=$(gh run view "${{ github.run_id }}" --json jobs --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")')
+          body="The nightly run failed: ${failed:-a job}. $RUN"
+          n=$(gh issue list --state open --label nightly --json number --jq '.[0].number // empty')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "$body"
+          else
+            gh label create nightly --color B60205 --description "the nightly orders run failed" 2>/dev/null || :
+            gh issue create --title "nightly: the orders run failed" --label nightly --body "$body"
+          fi

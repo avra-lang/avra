@@ -686,25 +686,31 @@ jobs:
         with:
           key: speed-main-keepers
           save: ${{ job.status == 'success' && needs.prepare.outputs.main == '1' }}
-  # THE SECOND HALF, alone on its own runner. It needs only the lowercase
-  # build artifact, and it shares the Makefile's one list with keepers-a —
-  # never a second list kept in step by hand.
+  # THE SECOND HALF AND THE WASM PROOF, each alone on its own runner. Each
+  # runs one of the Makefile's lists (KEEPERS_B, KEEPERS_WASM) — never a
+  # second list kept in step by hand.
   keepers-b:
     needs: [prepare]
     if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container: *ci-image
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        list: ['b', 'wasm']
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/handed-down
       # gdb: the defects keeper dumps the stack of a compile that stalls, while it lives.
-      - name: debugger for stalls
+      - if: matrix.list == 'b'
+        name: debugger for stalls
         continue-on-error: true
         env:
           DEBIAN_FRONTEND: noninteractive
         run: apt-get update -qq && apt-get install -y -qq --no-install-recommends gdb
-      - name: gdb attaches
+      - if: matrix.list == 'b'
+        name: gdb attaches
         continue-on-error: true
         run: |
           sleep 60 &
@@ -716,7 +722,8 @@ jobs:
           fi
           kill "$pid" 2>/dev/null || true
       # THE DEFECTS KEEPER'S SECONDS AGAINST THE LAST GREEN RUN: a timeout names what the program took there.
-      - name: earlier defect timings
+      - if: matrix.list == 'b'
+        name: earlier defect timings
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -727,8 +734,8 @@ jobs:
           # the landing tool's supervisor checks need a machine with an init
           AVRA_NO_SUPERVISOR_TESTS: "1"
         run: |
-          python3 tools/step_cpu.py keepers-b -- make -s -o avra keepers-b || exit 1
-      - if: always()
+          python3 tools/step_cpu.py keepers-${{ matrix.list }} -- make -s -o avra keepers-${{ matrix.list }} || exit 1
+      - if: always() && matrix.list == 'b'
         uses: actions/upload-artifact@v4
         with:
           name: defects-timings
@@ -839,7 +846,6 @@ jobs:
         timeout-minutes: 20
         run: |
           args="--files ${{ needs.prepare.outputs.changed }} --packages ${{ needs.prepare.outputs.packages }} --no-keepers"
-          [ "${{ github.event_name }}" != pull_request ] || args="$args --pr-minimum"
           sh tools/bounded.sh 900 sh tools/gate_changed.sh $args || exit 1
 
   # THE LATENCY GATE A RUNTIME CHANGE OWES: the scheduler's transition
