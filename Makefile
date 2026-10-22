@@ -387,7 +387,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell sh tools/avra_tools.sh suites 2>/dev/null)
 
-.PHONY: tools-suite census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
+.PHONY: tools-suite dev-server census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -1048,6 +1048,12 @@ ui-fuzz: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 ui-board:
 	@sh tools/ui_board.sh
 
+# A PAGE'S SERVER RUNS BESIDE IT UNDER `avra dev`: a page package naming
+# `[dev] server` is served with that package's program on one origin, and a
+# save to the server's source is served without a restart (tools/dev_server_check.sh).
+dev-server:
+	@sh tools/dev_server_check.sh
+
 # THE BOARD IN A REAL BROWSER: the same module served over an HTTP origin and
 # driven in headless Firefox, each claim checked (tools/ui-board/browser.mjs).
 # Where Firefox, node or a wasm toolchain is absent it FAILS, unless
@@ -1128,7 +1134,7 @@ KEEPERS_A1 = speed-ratchet census-gate fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
 KEEPERS_B = tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns witnesses dogfooding-rules rule-examples attack voices defects \
-            ui-host host-events ui-host-test ui-board ui-browser ui-browser-skip wasm-host-check tool-witnesses footprint tick-object no-threads \
+            ui-host host-events ui-host-test ui-board dev-server ui-browser ui-browser-skip wasm-host-check tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
