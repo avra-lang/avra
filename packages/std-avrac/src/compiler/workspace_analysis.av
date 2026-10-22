@@ -631,14 +631,11 @@ impl Workspace {
         // runtime carries no fiber and no thread, so the tick has no body
         // there — a program that really parks fails on the row it parks at.
         let checks = !self.comptime_active() && !self.wasm_target() && self.scheduler_linked()
-        let analysis = if w.decl == null {
-            self.analysis(w.file)
-        } else if self.lowers_from_own_range(w.decl!) {
-            self.ranged_analysis(w.file, w.decl!)
-        } else if self.comptime_active() {
-            self.analyzed_decl(w.file, w.decl!)
-        } else {
-            self.analysis(w.file)
+        let analysis = when {
+            w.decl == null -> self.analysis(w.file)
+            self.lowers_from_own_range(w.decl!) -> self.ranged_analysis(w.file, w.decl!)
+            self.comptime_active() -> self.analyzed_decl(w.file, w.decl!)
+            _ -> self.analysis(w.file)
         }
         lower_unit(analysis, self.extern_symbols(), w, settle, cross, checks)
     }
