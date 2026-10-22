@@ -49,27 +49,36 @@ link_objects() {
 # and the reached packages' objects it links. A failed build says why, on stderr.
 build_tools() {
     cp "$1" build/avra-tools-compiler
-    make -s build/libavra_runtime.a $(link_objects) >&2 || return 1
+    make -s build/libavra_runtime.a $(link_objects) >&2 || { echo "avra_tools: the runtime library or a std object did not build" >&2; return 1; }
     if out=$(build/avra-tools-compiler build tools 2>&1); then
         cp "$(printf '%s\n' "$out" | tail -n 1)" "$bin" && chmod +x "$bin"
     else
         printf '%s\n' "$out" | tail -n 20 >&2
+        echo "avra_tools: the tools package did not build" >&2
         return 1
     fi
 }
+
+# Main's compiler, installed beside (never over) the standing build/avra: main's own
+# key, else the newest published (main's key is unpublished until its run proves it).
+# A checkout of the PR's ref alone holds no origin/main, so it is fetched first.
+main_compiler() {
+    git rev-parse -q --verify origin/main >/dev/null 2>&1 ||
+        git fetch -q --depth 1 origin main:refs/remotes/origin/main >&2 || true
+    FETCH_BUILD="$dir/compiler" sh tools/fetch_compiler.sh >&2 && return 0
+    mkdir -p "$dir/compiler"
+    python3 tools/compiler_release.py latest "$dir/compiler/avra" >&2 && chmod +x "$dir/compiler/avra"
+}
+
 key=$(sh tools/tools_key.sh)
 dir=build/avra-tools/$key
 bin=$dir/avra-tools
 if [ ! -x "$bin" ]; then
     mkdir -p "$dir"
-    python3 tools/compiler_release.py --asset avra-tools fetch "tools-$key" "$bin" >/dev/null 2>&1 && chmod +x "$bin" || true
+    python3 tools/compiler_release.py --asset avra-tools fetch "tools-$key" "$bin" >&2 && chmod +x "$bin" || true
 fi
 if [ ! -x "$bin" ] && [ -z "${AVRA_TOOLS_COMPILER:-}" ]; then
-    # no compiler named: main's published one, installed beside (never over) the standing build/avra;
-    # a checkout of the PR's ref alone holds no origin/main, so it is fetched first
-    git rev-parse -q --verify origin/main >/dev/null 2>&1 ||
-        git fetch -q --depth 1 origin main:refs/remotes/origin/main >&2 || true
-    FETCH_BUILD="$dir/compiler" sh tools/fetch_compiler.sh >&2 && AVRA_TOOLS_COMPILER="$dir/compiler/avra" || true
+    main_compiler && AVRA_TOOLS_COMPILER="$dir/compiler/avra" || true
 fi
 if [ ! -x "$bin" ] && [ -n "${AVRA_TOOLS_COMPILER:-}" ] && [ -x "$AVRA_TOOLS_COMPILER" ]; then
     build_tools "$AVRA_TOOLS_COMPILER" || true
@@ -78,5 +87,6 @@ if [ "$want_path" = 1 ]; then [ -x "$bin" ] && echo "$bin" || exit 1; exit 0; fi
 if [ -x "$bin" ]; then exec "$bin" "$@"; fi
 cmd=$(printf '%s' "${1:?avra_tools: a command}" | tr - _)
 shift
+[ -f "tools/$cmd.py" ] || { echo "avra_tools: no avra-tools for key $key, and no Python $cmd to answer — the reasons are above" >&2; exit 1; }
 echo "avra_tools: no avra-tools for key $key — the Python $cmd answers" >&2
 exec python3 "tools/$cmd.py" "$@"

@@ -256,6 +256,15 @@ jobs:
             echo "shards=${shards}"
           } >> "$GITHUB_OUTPUT"
           echo "plan: $event — full=$full build=$build compiler-changed=$compiler runtime=$runtime cache=$cache codecs=$codecs packages: $(echo $pkgs)"
+      # THE TOOLS THE PLAN BUILT OR FETCHED, HANDED DOWN: keepers-static runs them and builds none.
+      - name: avra-tools for keepers-static
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: avra-tools
+          path: build/avra-tools/*/avra-tools
+          if-no-files-found: error
+          retention-days: 1
       # THE RUNGS OF THIS RUN: commits carrying a `Rung: <why>` trailer (tools/rungs.sh). A PR reads
       # them off its own commits; main's own run, whose squash dropped them, reads the landed PR's
       # head ref (`(#N)` in the title, refs/pull/N/head stays fetchable) so it replays the same
@@ -557,7 +566,7 @@ jobs:
           # gzip -1 (in the image) rides the tar: the store is text-heavy and the budget is the bytes a job downloads.
           # Downstream jobs read the analysis (`store`); machine code is each job's own to make.
           dirs=build; [ ! -d .avra-cache ] || dirs="build .avra-cache"
-          tar -cf - --exclude=build/avra --exclude=.avra-cache/obj --exclude=.avra-cache/bin $dirs | gzip -1 > avra-build.tar.gz
+          tar -cf - --exclude=build/avra --exclude=build/avra-tools-compiler --exclude='build/avra-tools/*/compiler' --exclude=.avra-cache/obj --exclude=.avra-cache/bin $dirs | gzip -1 > avra-build.tar.gz
           raw=$(du -sb $dirs | awk '{s+=$1} END {print s}')
           size=$(wc -c < avra-build.tar.gz)
           echo "hand-down: avra-build.tar.gz is $(( size / 1048576 )) MB compressed ($(( raw / 1048576 )) MB of files before excludes)"
@@ -1106,8 +1115,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-tools, path: build/avra-tools }
       - name: keepers-static
-        run: make -s keepers-static
+        run: |
+          chmod +x build/avra-tools/*/avra-tools
+          make -s keepers-static
   # THE RUNTIME KEEPERS HELD TO A CLOCK, ALONE ON THEIR OWN RUNNER. The
   # scheduler's own C tests, then the mutation run that breaks one line of
   # the scheduler at a time and demands a test fail for each — the longest
