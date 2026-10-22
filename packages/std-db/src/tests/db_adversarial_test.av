@@ -28,6 +28,18 @@ type Wide = {
     e: string,
 }
 
+@model
+type Wider = {
+    id: int = 0,
+    a: string,
+    b: string,
+    c: string,
+    d: string,
+    e: string,
+    f: string,
+    g: string,
+}
+
 fn solo_db() -> Result<Db, SqlError> {
     mut db = Db.memory()?
     Solo.create_table(db)?
@@ -91,6 +103,24 @@ fn wide_find() -> Result<string, ModelError> {
     let f = modeled(Wide.find(db, w.id))?
     match f {
         w2? -> "${w2.a}|${w2.b}|${w2.c}|${w2.d}|${w2.e}"
+        null -> "not found"
+    }
+}
+
+fn wider_db() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    Wider.create_table(db)?
+    db
+}
+
+/// Every field holds a value no other field could hold, so a row
+/// rebuilt in the wrong order reads differently rather than alike.
+fn wider_find() -> Result<string, ModelError> {
+    mut db = modeled(wider_db())?
+    let w = Wider { id: 0, a: "aa", b: "bb", c: "cc", d: "dd", e: "ee", f: "ff", g: "gg" }.insert(db)?
+    let found = modeled(Wider.find(db, w.id))?
+    match found {
+        w2? -> "${w2.a}|${w2.b}|${w2.c}|${w2.d}|${w2.e}|${w2.f}|${w2.g}"
         null -> "not found"
     }
 }
@@ -182,7 +212,7 @@ spec "std/db @model adversarial" {
         then "insert still works" { (solo_insert() catch 0 - 1) == 1 }
         then "update still works despite an empty SET clause risk" { (solo_update() catch 0 - 1) == 1 }
         then "a second create_table is a harmless no-op" { (solo_create_twice() catch 0 - 1) == 1 }
-        then "find reconstructs the one-field row through the narrowest row_ctor arm" { (solo_find() catch false) == true }
+        then "find reconstructs a row whose only field is the id" { (solo_find() catch false) == true }
         then "find on a missing id answers null, not an error" { (solo_find_missing() catch false) == true }
         then "the hidden version column still bumps on an all-id update" { (solo_version_bumps() catch "?") == "1|2" }
     }
@@ -191,10 +221,15 @@ spec "std/db @model adversarial" {
         then "the generated DDL and DML still work" { (reserved_round_trip() catch 0 - 1) == 1 }
         then "find reads the keyword-named columns back correctly" { (reserved_find() catch "?") == "x|y" }
     }
-    given "a model at exactly the arity cap" {
+    given "a model of six fields" {
 
         then "it still compiles and its table name is right" { Wide.table_name() == "Wide" }
-        then "find reconstructs all six fields through the widest row_ctor arm" { (wide_find() catch "?") == "1|2|3|4|5" }
+        then "find reconstructs every field, in declaration order" { (wide_find() catch "?") == "1|2|3|4|5" }
+    }
+    given "a model wider than the constructor once spelled an arm for" {
+
+        then "it compiles and its table name is right" { Wider.table_name() == "Wider" }
+        then "find reconstructs all seven non-id fields, in declaration order" { (wider_find() catch "?") == "aa|bb|cc|dd|ee|ff|gg" }
     }
     given "update or delete against an id nothing has" {
 
