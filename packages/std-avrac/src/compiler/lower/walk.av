@@ -389,7 +389,7 @@ impl LowerCx {
     mut fn run_entry(d: Deferred, answer: Reg?) {
         if answer != null && d.work.settles(answer!) { return }
         if !d.on_error {
-            self.run_deferred(d)
+            self.exited(d)
             return
         }
         if answer != null { self.run_if_failed(d, answer!) }
@@ -399,16 +399,49 @@ impl LowerCx {
     /// when the fn fails.
     mut fn at_exit(box: Reg, on_error: bool) {
         self
-            .deferred
-            .push(Deferred { work: Deferral.Call(box), depth: self.depth, on_error: on_error })
+            .registered(Deferred { work: Deferral.Call(box), depth: self.depth, on_error: on_error })
     }
 
     /// A call to make when the scope ends, its arguments already in
     /// hand — or, `on_error`, only when the fn fails.
     mut fn call_at_exit(call: DirectCall, on_error: bool) {
         self
-            .deferred
-            .push(Deferred { work: Deferral.Direct(call), depth: self.depth, on_error: on_error })
+            .registered(Deferred { work: Deferral.Direct(call), depth: self.depth, on_error: on_error })
+    }
+
+    /// An entry joins its frame. One that calls a deferred body opens a CLEANUP
+    /// REGION where it stands: the landing a trap unwinding from here to the
+    /// scope's end enters, whose body is the very emission every exit makes.
+    mut fn registered(entry: Deferred) {
+        if !entry.work.calls() {
+            self.deferred.push(entry)
+            return
+        }
+        let d = entry with { cleanup: self.cleanups }
+        self.cleanups = self.cleanups + 1
+        self.deferred.push(d)
+        self.cleanup_open(d.cleanup)
+        self.run_deferred(d)
+        self.cleanup_close()
+    }
+
+    /// The cleanup region of `id` opens: normal flow skips to its close.
+    mut fn cleanup_open(id: int) {
+        self.out.give(Ins.Cleanup(id))
+    }
+
+    mut fn cleanup_close() {
+        self.out.give(Ins.ScopeExit(null))
+    }
+
+    /// An exit is about to run `d` itself: its cleanup ends here, an EMPTY
+    /// region of its `id`, so a trap in the call finds it no longer open.
+    mut fn exited(d: Deferred) {
+        if d.cleanup >= 0 {
+            self.cleanup_open(d.cleanup)
+            self.cleanup_close()
+        }
+        self.run_deferred(d)
     }
 
     /// A `within` scope's end to make when the frame closes: the scope
@@ -464,7 +497,7 @@ impl LowerCx {
     /// An early exit that FAILS: every open frame's `defer`s AND
     /// `errdefer`s run, innermost first.
     mut fn failing() {
-        for d in reversed(self.deferred) { self.run_deferred(d) }
+        for d in reversed(self.deferred) { self.exited(d) }
     }
 
     /// An `errdefer` behind the answer's tag: a `Result` answering
@@ -474,7 +507,7 @@ impl LowerCx {
         if !(self.view.types.shape_of(self.out.reg_types[answer.index]) is .Res) { return }
         self.out.give(Ins.IfStart(self.okness_of(answer)))
         self.void_arm()
-        self.run_deferred(d)
+        self.exited(d)
         self.void_close()
     }
 

@@ -63,8 +63,18 @@ spec "compiler/lower — the test after a call" {
                     ],
                 ),
         )
-        // the deferred closure runs at the scope's close and again in the arm
-        times(text, "= callptr ") == 2 && times(text, "return r") >= 1
+        // ONE emission, not a copy per exit: the deferred call stands inside the
+        // defer's own cleanup region, and each exit retires that region empty and
+        // then runs the call itself. So the defer site and the two exits are the
+        // three calls, and the arm's own is the one between the shield's enter
+        // and leave — retired first, then run, then the frame leaves.
+        let entered = text.split("call avra_fiber_shield_enter()")
+        let arm = if entered.length == 2 { entered[1].split("call avra_fiber_shield_leave()")[0] } else { "" }
+        times(text, "cleanup 0 {") == 3 &&
+            times(text, "= callptr ") == 3 &&
+            times(arm, "cleanup 0 {") == 1 &&
+            times(arm, "= callptr ") == 1 &&
+            times(text, "return r") >= 1
     }
     then "the call that runs a `defer` carries no test; the deferred closure's own call is its own" {
         // nap's row call, the closure's call to nap, and the entry's call to work

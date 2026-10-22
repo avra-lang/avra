@@ -37,6 +37,7 @@ use core.{
     fp_str,
     StaticBox,
     Slot,
+    cleanups_open,
     debug,
 }
 use @std.path.{joined_path, normalized}
@@ -148,6 +149,9 @@ type Machine = {
     // `avra_guard_run` just asked the loop to begin under one; `resume`
     // is where a caught trap sends the loop; `caught` the trap's words.
     guards: List<Guard>,
+    // the unwinds in progress, innermost last: a trap a guard caught, whose frames'
+    // cleanup regions run before the guarded call answers
+    unwinding: List<Unwinding> = [],
     entering: Val?,
     resume: Place?,
     caught: string,
@@ -273,9 +277,22 @@ type Resume = { place: Place, dst: Reg }
 /// stack stood at once the guarded closure was entered.
 type Guard = { task: int, depth: int }
 
+/// One cleanup region an unwind still has to run: the frame whose registers it
+/// reads, its body, the first instruction inside it and its closing `ScopeExit`.
+type Pending = { frame: int, body: Body, pc: int, end: int }
+
+/// A caught trap's unwind: the regions still to run, innermost frame first and
+/// newest first, the one running now, the guarded call's caller to resume when
+/// they are done, the depth the stack drops to then, and the trap's words,
+/// which the guarded call keeps whatever a guard inside a cleanup catches meanwhile.
+type Unwinding = { pending: List<Pending>, current: Pending?, back: Resume, floor: int, words: string }
+
+/// The place in `body` at `pc`.
+fn place_at(body: Body, pc: int) -> Place { Place { body: body, pc: pc } }
+
 /// The caller waiting at `pc` in `body` for a call answering into `dst`.
 fn resumed_at(body: Body, pc: int, dst: Reg) -> Resume {
-    Resume { place: Place { body: body, pc: pc }, dst: dst }
+    Resume { place: place_at(body, pc), dst: dst }
 }
 
 /// The register the call instruction at `pc` answers into.
@@ -782,7 +799,7 @@ impl Machine {
         mut pc = 0
         mut answer: Val? = null
         mut going = true
-        while going && (self.failures.is_empty() || self.caught_into()) {
+        while going && (self.failures.is_empty() || self.caught_into(body, pc)) {
             if self.resume != null {
                 let landed = self.resume!
                 self.resume = null
@@ -945,23 +962,95 @@ impl Machine {
         Val.I(0)
     }
 
-    /// A trap stands: when a guard this task opened is open, the stack
-    /// drops to the guard's call, the words are kept, the trap is over and
-    /// the loop resumes past the guarded call with status 1.
-    fn caught_into() -> bool {
+    /// A trap stands: when a guard this task opened is open, every frame from
+    /// the trap's to the guard's runs the cleanup regions its scopes had open,
+    /// innermost first, and then the guarded call answers status 1 with the
+    /// trap's words kept and the trap over. `body` and `pc` are where the
+    /// trapping frame stood. A trap in a cleanup that no guard inside it catches
+    /// ends the run: the unwind it interrupted has no one to answer.
+    fn caught_into(body: Body, pc: int) -> bool {
         let opened = [j for j, g in self.guards if g.task == self.running]
-        let at? = opened.last() else { return false }
-        let g = self.guards[at]
-        self.guards = self.guards.slice(0, at)
-        let back = self.callers[g.depth - 1]
-        self.unwound(g.depth - 1)
-        self.caught = self.failures.first() ?? ""
-        self.failures = []
-        self.resume = Place {
-            body: back.place.body,
-            pc: self.put_at(back.dst, Val.I(1), back.place.pc),
+        let held: Guard? = if opened.is_empty() { null } else { self.guards[opened.last()!] }
+        if self.trapped_in_cleanup(held) {
+            self.failures = [
+                "a deferred call trapped while a trap was unwinding: ${self.failures.first() ?? ""}",
+            ]
+            self.unwinding = []
+            return false
         }
+        let g? = held else { return false }
+        self.guards = self.guards.slice(0, opened.last()!)
+        self
+            .unwinding
+            .push(
+                Unwinding {
+                    pending: self.cleanup_regions(g.depth, body, pc),
+                    current: null,
+                    back: self.callers[g.depth - 1],
+                    floor: g.depth - 1,
+                    words: self.failures.first() ?? "",
+                },
+            )
+        self.failures = []
+        self.resume = self.unwind_next()
         true
+    }
+
+    /// Whether the trap stands inside the cleanup an unwind is running, with no guard
+    /// opened inside that cleanup to take it.
+    fn trapped_in_cleanup(g: Guard?) -> bool {
+        let u? = self.unwinding.last() else { return false }
+        let r? = u.current else { return false }
+        match g {
+            held? -> held.depth <= r.frame
+            null -> true
+        }
+    }
+
+    /// The cleanup regions the frames above a guard run, innermost frame first
+    /// and each frame's newest first. `body` and `pc` are the trapping frame's
+    /// place; a caller's is the one it resumes at.
+    fn cleanup_regions(floor: int, body: Body, pc: int) -> List<Pending> {
+        flatten(
+            [self
+                .regions_open(
+                    k,
+                    if k == self.callers.length { place_at(body, pc) } else { self.callers[k].place },
+                ) for k in reversed([j for j in floor..self.frames.length])],
+        )
+    }
+
+    fn regions_open(frame: int, at: Place) -> List<Pending> {
+        [Pending { frame: frame, body: at.body, pc: j + 1, end: at.body.cleanup_close(j) } for j in reversed(cleanups_open(at.body.ins)[at.pc])]
+    }
+
+    /// The unwind in progress moves on: the next region's frame is the top of
+    /// the stack and the loop resumes inside it — or, when none is left, the
+    /// stack drops to the guard's caller, which resumes past the guarded call.
+    fn unwind_next() -> Place {
+        let at = self.unwinding.length - 1
+        let u = self.unwinding[at]
+        let r? = u.pending.first() else {
+            let _ = self.unwinding.pop()
+            self.caught = u.words
+            self.unwound(u.floor)
+            return Place {
+                body: u.back.place.body,
+                pc: self.put_at(u.back.dst, Val.I(1), u.back.place.pc),
+            }
+        }
+        self.unwinding.set(at, u with { pending: u.pending.drop(1), current: r })
+        self.unwound(r.frame)
+        Place { body: r.body, pc: r.pc }
+    }
+
+    /// A `ScopeExit`: when it closes the cleanup region an unwind is running, the
+    /// unwind moves on.
+    fn region_ended(b: Body, pc: int) -> int {
+        let u? = self.unwinding.last() else { return pc + 1 }
+        let r? = u.current else { return pc + 1 }
+        if r.frame == self.callers.length && r.end == pc && r.body.name == b.name { self.resume = self.unwind_next() }
+        pc + 1
     }
 
     /// A stack a trap left mid-call dropped back to where this run began.
@@ -1000,7 +1089,9 @@ impl Machine {
             .Alloca(d) -> self.put_at(d, self.slot_cell(d), pc),
             .Load(d, slot) -> self.put_at(d, self.cell_read(slot), pc),
             .Store(slot, src) -> self.store_step(slot, src, pc),
-            .ScopeEnter(_) or .ScopeExit(_) -> pc + 1,
+            .ScopeEnter(_) -> pc + 1,
+            .ScopeExit(_) -> self.region_ended(b, pc),
+            .Cleanup(_) -> b.past_cleanup(pc),
             .Retain(r) -> {
                 self.retain_reg(r)
                 pc + 1
