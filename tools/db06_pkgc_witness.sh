@@ -56,8 +56,8 @@ for m in packages/*/avra.toml; do
     n=$(find "$p" -name '*.c' -not -path '*/vendor/*' | wc -l | tr -d ' ')
     v=$(find "$p" -name '*.c' -path '*/vendor/*' | wc -l | tr -d ' ')
     [ "$n" = 0 ] && [ "$v" = 0 ] && continue
-    row=$(sed -n 's/^objects *= *\[ *"\([^"]*\)".*/\1/p' "$m" | head -1)
-    wrow=$(sed -n 's/^wasm_objects *= *\[ *"\([^"]*\)".*/\1/p' "$m" | head -1)
+    row=$(sh tools/link_objects.sh --rows objects "$m" | head -1)
+    wrow=$(sh tools/link_objects.sh --rows wasm_objects "$m" | head -1)
     if [ -z "$row" ]; then
         printf '%-16s %-28s %s\n' "${p#packages/}" "- none -" "no program links this C (${n} src, ${v} vendor)"
         continue
