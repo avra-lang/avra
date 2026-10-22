@@ -1549,3 +1549,5 @@ scaffold-check: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # THE STAMPS SETTLE LAST, once every flag they read is defined (see
 # `stamp_args`, above): an earlier settling would hash a flag still empty.
 STAMPS_SETTLED := $(shell sh tools/stamps.sh $(foreach c,$(TREE_C),$(call stamp_args,$(basename $(notdir $(c))),$(c))))
+
+# witness: a change that owes a build
