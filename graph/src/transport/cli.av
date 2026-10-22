@@ -1,4 +1,4 @@
-use @std.cli.{cli, command, option, arg, Runnable, CliResult}
+use @std.cli.{cli, command, option, arg, Runnable, CliResult, argv}
 use @std.io.{read_text}
 use @std.json.{parse, to_text}
 use @std.text.{parse_int}
@@ -8,6 +8,8 @@ use store.open.{Graph}
 use store.policy.{EnginePolicy}
 use transport.dispatch.{failure}
 use transport.server.{serve}
+use mcp.tools.{Door, tools}
+use @std.mcp.{serve_stdio}
 
 type Command = { models: List<Registration>, derived: List<DerivationRegistration>, policy: EnginePolicy }
 
@@ -25,6 +27,18 @@ impl Runnable for Command {
 
 impl Command {
     fn execute(args: CliResult) -> Result<int, string> {
+        if args.command == "mcp" {
+            let door = Door {
+                db: args.option("db"),
+                models: self.models,
+                policy: self.policy,
+                planner: words(args.option("planner")),
+                extractor: words(args.option("extractor")),
+                graph: [argv()[0], "request", "--db", args.option("db")],
+            }
+            serve_stdio(tools(door)?)
+            return 0
+        }
         if args.command == "serve" {
             let token = (file_text(args.option("token-file"))?).trim()
             let port? = parse_int(args.option("port")) else { fail "port must be an integer" }
@@ -67,15 +81,33 @@ export fn run(
         }
         run: handler
     }
+    let door = command {
+        name: "mcp"
+        description: "Serve the graph's tools to an agent over MCP on stdin and stdout"
+        option db { default: "graph.db" }
+        option planner {
+            default: ""
+            description: "The command that plans a question (offered as `ask` when set)"
+        }
+        option extractor {
+            default: ""
+            description: "The command that reads a source (offered as `ingest` when set); {schema} names the catalog file"
+        }
+        run: handler
+    }
     let app = cli {
         name: "graph"
         version: "0.1.0"
         description: "Model-driven personal evidence graph"
         request
         server
+        door
     }
     app.run()
 }
+
+/// A command line's words: split at spaces, no quoting.
+fn words(line: string) -> List<string> { [w for w in line.split(" ") if !w.is_empty()] }
 
 fn file_text(path: string) -> Result<string, string> {
     match read_text(path) {
