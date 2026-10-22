@@ -36,6 +36,8 @@ def fitted(name):
 
 SPAN_THRESHOLD = fitted("span_threshold")
 ACCEPT = fitted("accept")
+ACCEPT_SPEAKER = fitted("accept_speaker")
+ACCEPT_RECORD = fitted("accept_record")
 MARGIN = fitted("margin")
 NEW_CEILING = fitted("new_ceiling")
 MAX_OPTIONS = len(string.ascii_uppercase)
@@ -581,7 +583,7 @@ class Cascade:
         what = "this quotation" if quoted else "this passage"
         p = self.llm.pick(f'Passage: "{self.t.s[a:b]}"', f'Who is speaking in {what} (who do "I", "my" and "we" refer to)?', options[: len(ids)], options[len(ids) :])
         best = max(range(len(options)), key=lambda i: p[i])
-        return ids[best] if best < len(ids) and p[best] >= ACCEPT else None
+        return ids[best] if best < len(ids) and p[best] >= ACCEPT_SPEAKER else None
 
     def model_of(self, rid):
         return next(r["model"] for r in self.records if r["local_id"] == rid)
@@ -651,7 +653,7 @@ class Cascade:
                     ids.setdefault(rid, span)
             return ids
 
-        froms, tos = holders(ft, False), holders(tt, free is not None)
+        froms, tos = holders(ft, False), holders(tt, False) or (holders(tt, True) if free else {})
         ctx = f'Sentence: "{self.t.s[a:b]}"' + "".join(f'\n"{self.t.s[x:y]}" here refers to {self.name(rid)}.' for rid, (x, y) in referred)
         question = f"{self.plan.models[name]['description']}\n\nWhich of these does the sentence itself explicitly state? Do not infer from other sentences or world knowledge."
         rel = self.plan.relations[name]
@@ -714,7 +716,7 @@ class Cascade:
                     continue
                 p = self.llm.pick(f'Sentence: "{self.t.s[x:y]}"', "Which kind of record does this sentence itself state, if any?", opts, ["none of these"])
                 best = max(range(len(p)), key=lambda i: p[i])
-                if best < len(kinds) and p[best] >= ACCEPT:
+                if best < len(kinds) and p[best] >= ACCEPT_RECORD:
                     self.fill(kinds[best], x, y, p[best])
 
     def trimmed(self, a, b):
@@ -785,7 +787,7 @@ class Cascade:
                 return None
             pr = self.llm.pick(ctx, f"In a {model}, which part of the sentence is the {name}?", [self.t.s[x:y] for x, y in cands], ["not stated"])
             k = max(range(len(pr)), key=lambda i: pr[i])
-            if k == len(cands) or pr[k] < ACCEPT:
+            if k == len(cands) or pr[k] < ACCEPT_RECORD:
                 return None
             x, y = cands[k]
             return self.field(name, self.t.s[x:y], [(x, y)], score=pr[k])
@@ -795,18 +797,18 @@ class Cascade:
                 return None
             pr = self.llm.pick(ctx, f"In this {model}, who or what is the {name}?", [self.name(i) for i in ids], optional)
             k = max(range(len(pr)), key=lambda i: pr[i])
-            if k >= len(ids) or pr[k] < ACCEPT:
+            if k >= len(ids) or pr[k] < ACCEPT_RECORD:
                 return None
             return self.field(name, ids[k], [where[ids[k]]], score=pr[k])
         if kind == "enum":
             vals = p["enum"]
             pr = self.llm.pick(ctx, f"For this {model}, which {name} does the sentence state?", vals, optional)
             k = max(range(len(pr)), key=lambda i: pr[i])
-            return self.field(name, vals[k], [(a, b)], score=pr[k]) if k < len(vals) and pr[k] >= ACCEPT else None
+            return self.field(name, vals[k], [(a, b)], score=pr[k]) if k < len(vals) and pr[k] >= ACCEPT_RECORD else None
         if kind == "bool":
             pr = self.llm.choose(ctx, f"For this {model}, is {name} true or false according to the sentence?", ["true", "false"] + optional)
             k = max(range(len(pr)), key=lambda i: pr[i])
-            return self.field(name, k == 0, [(a, b)], score=pr[k]) if k < 2 and pr[k] >= ACCEPT else None
+            return self.field(name, k == 0, [(a, b)], score=pr[k]) if k < 2 and pr[k] >= ACCEPT_RECORD else None
         if kind == "number" and not self.declared_time(model, name):
             nums = [(x.start(), x.end()) for x in re.finditer(r"\d[\d,]*", self.t.s[a:b])]
             nums = [(a + x, a + y) for x, y in nums]
@@ -814,7 +816,7 @@ class Cascade:
                 return None
             pr = self.llm.pick(ctx, f"In this {model}, which number is the {name}?", [self.t.s[x:y] for x, y in nums], ["not stated"])
             k = max(range(len(pr)), key=lambda i: pr[i])
-            if k == len(nums) or pr[k] < ACCEPT:
+            if k == len(nums) or pr[k] < ACCEPT_RECORD:
                 return None
             x, y = nums[k]
             return self.field(name, int(self.t.s[x:y].replace(",", "")), [(x, y)], score=pr[k])

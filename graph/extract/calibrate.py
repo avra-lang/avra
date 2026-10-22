@@ -52,8 +52,11 @@ def main():
     out = args[0]
     choices = args[args.index("--choices") + 1 : args.index("--choices") + 3]
     er = args[args.index("--er") + 1 : args.index("--er") + 3]
-    relation = [(r, p) for r, p in loaded(*choices) if r["kind"] == "relation" and r["options"][-1].startswith("none")]
+    rows = loaded(*choices)
+    relation = [(r, p) for r, p in rows if r["kind"] == "relation" and r["options"][-1].startswith("none")]
+    speaker = [(r, p) for r, p in rows if r["kind"] == "speaker"]
     accept = max(GRID, key=lambda t: (accept_score(relation, t), t))
+    accept_speaker = max(GRID, key=lambda t: (accept_score(speaker, t), t))
     ers = loaded(*er)
     # A wrong merge is the worst error: none first, then the most right answers.
     fits = []
@@ -66,6 +69,8 @@ def main():
         "accept": {"value": accept, "fitted": True, "objective": "relation-choice accuracy", "dev_accuracy": round(accept_score(relation, accept), 3), "n": len(relation)},
         "margin": {"value": margin, "fitted": True, "objective": "no wrong merge, then most right, then fewest duplicates", "dev_wrong": wrong, "dev_right": -right, "n": len(ers)},
         "new_ceiling": {"value": ceiling, "fitted": True, "objective": "joint with margin", "n": len(ers)},
+        "accept_speaker": {"value": accept_speaker, "fitted": True, "objective": "speaker-choice accuracy ('cannot tell' when below)", "dev_accuracy": round(accept_score(speaker, accept_speaker), 3), "n": len(speaker)},
+        "accept_record": {"value": accept, "fitted": False, "prior": "borrowed from the relation fit; no labelled record-pass decisions yet"},
         "span_threshold": {"value": 0.5, "fitted": False, "prior": "GLiNER2 library default threshold; no labelled span data yet"},
     }
     json.dump({
