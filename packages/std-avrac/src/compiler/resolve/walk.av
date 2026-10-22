@@ -6,14 +6,16 @@ use core.{SeatMark}
 use diagnostics.{Diag, error_at, pointed, refusal, unread_behind}
 use features.{ResolveCx, SelfSeat, self_word, Cap, Namespace, NameKind, remedy_for, nothing, Bound}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
-use compiler.typing.{builtin_type_name}
+use compiler.typing.{shape_type_name}
 
 impl ResolveCx {
     /// The naming law over this file's declarations: keywords and
-    /// reserved words refuse as names, and a built-in type name
-    /// refuses at its declaration — it resolves to its SHAPE in
-    /// annotations and to the declaration everywhere else, one name
-    /// with two meanings. The scope already bound the names.
+    /// reserved words refuse as names, and a name of the language's own
+    /// shapes refuses at its declaration — it would resolve to its SHAPE
+    /// in annotations and to the declaration everywhere else, one name
+    /// with two meanings. A constructor row's bare name (`Task`) binds
+    /// weakly: the file's declaration wins, and `Task<T>` still reaches
+    /// the row. The scope already bound the names.
     fn name_laws() {
         for s in self.view.stmts {
             let fname: string? = self.view.store.fn_parts(s)?.name
@@ -26,7 +28,7 @@ impl ResolveCx {
     fn type_name_law(name: string, s: StmtId) {
         let at = self.stmt_loc(s)
         if self.refused_binder(name, at) { return }
-        if builtin_type_name(self.view.lang.types, name) {
+        if shape_type_name(name) {
             self
                 .emit(
                     refusal(
@@ -267,7 +269,10 @@ impl ResolveCx {
         let origin: FileId? = self.view.origin_of(e)
         let names = self.names_in(origin)
         let found: DeclId? = names.type_decl(name)
-        if found != null {
+        // A language declaration binds LAST: a template's name that the
+        // file it lands in declares itself is that file's.
+        let own = found != null && !self.view.decls.is_builtin(found!)
+        if own {
             self.bind_use(e, Binding.Decl(found!))
             return
         }
@@ -285,6 +290,10 @@ impl ResolveCx {
         let here: DeclId? = self.type_here(name, origin)
         if here != null {
             self.bind_use(e, Binding.Decl(here!))
+            return
+        }
+        if found != null {
+            self.bind_use(e, Binding.Decl(found!))
             return
         }
         if self.refused_read(names, [NameKind.Type], name, self.loc_of(e)) { return }
