@@ -847,9 +847,11 @@ class Cascade:
         self.records.append({"local_id": self.mint(), "model": model, "fields": fields, "identities": [], "resolution": {"kind": "new"}, "_score": chosen})
 
     def grounds(self, model, field):
-        """Whether a field states something the sentence says: any value but a
-        bare reference to another record, which only links."""
-        return field["value"] != {} and route(self.prop(model, field["property"])) != "ref"
+        """Whether a field states something the sentence says: a text, a number,
+        a time, a quantity or a declared value. A bare reference only links
+        and a lone true/false says nothing of what it is about."""
+        p = self.prop(model, field["property"])
+        return field["value"] != {} and route(p) not in ("ref", "bool")
 
     def stated(self, f):
         """A field's value as the sentence words it: a time or a quantity by the
