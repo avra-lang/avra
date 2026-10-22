@@ -187,7 +187,7 @@ jobs:
             # a compiler change moves how often the store settles, which the attacks count
             if [ "$compiler" = 1 ]; then cache=1; fi
             # a file a PR keeper holds to the compiler wants one built to hold it to
-            if ! git diff --quiet origin/main...HEAD -- docs/DIAGNOSTICS.md DOGFOODING.md Makefile 'tools/footprint*' tools/attack.sh; then build=1; fi
+            if ! git diff --quiet origin/main...HEAD -- docs/DIAGNOSTICS.md DOGFOODING.md Makefile 'tools/footprint*' tools/attack.sh tools/ui_board_browser.sh 'tools/ui-board/*.mjs' .github/ci/packages-browser.txt; then build=1; fi
           fi
           # The attacks need a compiler and its objects: a run that owes them
           # owes the build, even when the diff itself is only the harness.
@@ -726,11 +726,41 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 tools/defects_previous.py --repo "${{ github.repository }}" --out build/defects-timings.prev.tsv
+      # THE BROWSER LEG'S LIBRARIES, here and nowhere else: `make ui-browser` also runs the board in
+      # Playwright's WebKit, whose host libraries (.github/ci/packages-browser.txt) no other job needs.
+      # This costs about 40-60 s of apt per run of this job, by design: the image stays lean and the
+      # job that proves the board in a browser carries the browser.
+      - name: browser libraries
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends $(grep -v '^#' .github/ci/packages-browser.txt | tr '\n' ' ')
+      # npm: the image carries the distro's node alone, and the pinned Node ships npm.
+      - name: node for the browser leg
+        timeout-minutes: 5
+        run: sh .github/ci/install_node.sh
+      # Playwright and its WebKit build are fetched once per pinned version, never per run: the pin is
+      # the one `tools/ui_board_browser.sh` installs by, and the key names the browser the guard reads
+      # as well as the module, so a hit holds both.
+      - name: playwright pin
+        id: playwright
+        run: |
+          v=$(sed -n 's/^playwright_version=//p' tools/ui_board_browser.sh)
+          [ -n "$v" ] || { echo "::error::tools/ui_board_browser.sh names no playwright_version, so the cache would be keyed by nothing"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: build/playwright
+          key: playwright-${{ steps.playwright.outputs.version }}-webkit-browsers
       - name: keepers
         timeout-minutes: 30
         env:
           # the landing tool's supervisor checks need a machine with an init
           AVRA_NO_SUPERVISOR_TESTS: "1"
+          # CI always proves both engines; a lane's own run proves Firefox unless it asks for more
+          UI_BROWSER_ENGINES: "firefox webkit webkit-iphone"
         run: |
           python3 tools/step_cpu.py keepers-b -- make -s -o avra keepers-b || exit 1
       - if: always()
