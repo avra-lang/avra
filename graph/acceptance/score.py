@@ -161,7 +161,16 @@ def oracle_readings():
     return read_lines(path) if path.exists() else []
 
 
+def cypher_params(context):
+    """The request context as Cypher parameters: asker, now, and what is set."""
+    names = {"asker": "principal", "now": "question_at_ms", "speaker": "speaker", "valid_at": "valid_at_ms",
+             "known_revision": "known_revision", "conversation": "conversation", "previous_answer": "previous_answer"}
+    return {param: context[key] for param, key in names.items() if context.get(key) is not None}
+
+
 def complete_plan(row, request, schema, context, view):
+    if "cypher" in row:
+        return {"cypher": row["cypher"], "params": {**row.get("params", {}), **cypher_params(context)}}
     return {"contract": 1, "request": request, "schema": schema["fingerprint"], "context": context,
             "source_view": view, "steps": row["steps"], "output": row["output"],
             **({"joined": row["joined"]} if row.get("joined") else {}),
@@ -192,7 +201,8 @@ def read_keys(answer, keys):
     for key, spec in keys.items():
         for field in answer.get("fields", []):
             if (field["path"] if spec.get("bare") else field["path"][1:]) == spec["suffix"]:
-                out[key] = takes[spec["take"]](field)
+                got = takes[spec["take"]](field)
+                out[key] = got[spec["index"]] if "index" in spec and isinstance(got, list) else got
                 break
     return out
 

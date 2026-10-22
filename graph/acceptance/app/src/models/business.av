@@ -1,4 +1,12 @@
-use @avra.graph.{model, Ref, Semantics, IdentityBinding, QuantityBinding, UnitBinding}
+use @avra.graph.{
+    model,
+    Ref,
+    Semantics,
+    IdentityBinding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+}
 use @std.validate.{length, one_of, range, items}
 use models.people.{Person, Organization}
 
@@ -125,20 +133,46 @@ export type Payment = {
 
 /// Interest from a prospective wholesale buyer. status separates interest
 /// from an order and an agreement; agreed_unit_price has no default.
-@model(quote { Semantics { quantities: [
-    QuantityBinding { amount: ["proposed_units"], unit: UnitBinding.Constant("jacket"), decimal_places: 0 },
-    QuantityBinding {
-        amount: ["agreed_unit_price", "minor"],
-        unit: UnitBinding.Field(["agreed_unit_price", "currency"]),
-        decimal_places: 2,
-    },
-] } })
+@model(quote { Semantics {
+    quantities: [
+        QuantityBinding { amount: ["proposed_units"], unit: UnitBinding.Constant("jacket"), decimal_places: 0 },
+        QuantityBinding { amount: ["ordered_units"], unit: UnitBinding.Constant("jacket"), decimal_places: 0 },
+        QuantityBinding {
+            amount: ["agreed_unit_price", "minor"],
+            unit: UnitBinding.Field(["agreed_unit_price", "currency"]),
+            decimal_places: 2,
+        },
+    ],
+    absences: [
+        AbsenceBinding { path: ["ordered_units"], code: "no_confirmed_order" },
+        AbsenceBinding { path: ["agreed_unit_price"], code: "not_agreed" },
+    ],
+} })
 export type WholesaleProspect = {
     buyer: Ref<Organization>,
     product: Ref<Product>,
     @range(1, 1000000) proposed_units: int,
     @one_of(["interested", "ordered", "agreed", "declined"]) status: string,
+    ordered_units: int? = null,
     agreed_unit_price: Money? = null,
+}
+
+/// A person's offer to work for a day rate. includes_assistant is stated, not
+/// assumed; booked stays unset until a source confirms the booking.
+@model(quote { Semantics {
+    quantities: [QuantityBinding {
+        amount: ["day_rate", "minor"],
+        unit: UnitBinding.Field(["day_rate", "currency"]),
+        decimal_places: 2,
+    }],
+    absences: [AbsenceBinding { path: ["booked"], code: "no_booking_confirmation" }],
+} })
+export type ServiceOffer = {
+    provider: Ref<Person>,
+    day_rate: Money,
+    includes_assistant: bool?,
+    proposed_on: string?,
+    booked: bool? = null,
 }
 
 /// A retail sale to a customer; unit_price is the sale price. A reported or

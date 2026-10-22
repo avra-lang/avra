@@ -34,6 +34,11 @@ Fine-grained claim/span gold remains A02; no extractor ran in this task.
    an absent one passes, and q47 remains the test that a missing confirmation
    is stated. The rule is generic: any expected key may be listed optional,
    and validate.py requires each to be a key of the expected answer.
+8. q49 and the portability refusal p15 expect an empty answer. A refusal is
+   judged by its status and its trusted policy (`query.read_only`): the
+   reason code is the engine's own word, and `side_effects: []` is a claim no
+   read can make. The earlier `reason` and `side_effects` keys named neither
+   a policy nor evidence.
 
 ## Answer-by-answer receipts
 

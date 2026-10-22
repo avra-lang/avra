@@ -21,6 +21,7 @@ spec "fixture commercial declarations" {
                     "Invoice",
                     "Payment",
                     "WholesaleProspect",
+                    "ServiceOffer",
                     "SalesOrder",
                     "StockMovement",
                     "Refund",
@@ -60,6 +61,21 @@ spec "fixture commercial declarations" {
             StockMovement.from_json(movement) is .Ok &&
                 StockMovement.from_json(movement.replace("return_quarantined", "available")) is .Err
         }
+        then "a missing order, price or booking carries the model's own reason" {
+            match Catalog.collected(models) {
+                .Ok(c) -> {
+                    let codes = (name: string) -> c.models.find(it.name == name)!
+                        .semantics
+                        .absences
+                        .map(it.code)
+                        .join(",")
+                    codes("WholesaleProspect") == "no_confirmed_order,not_agreed" &&
+                        codes("ServiceOffer") == "no_booking_confirmation" &&
+                        codes("Event") == "not_confirmed"
+                },
+                .Err(_) -> false,
+            }
+        }
         then "every money and stock amount declares a unit" {
             match Catalog.collected(models) {
                 .Ok(c) -> [
@@ -69,6 +85,7 @@ spec "fixture commercial declarations" {
                     "Invoice",
                     "Payment",
                     "WholesaleProspect",
+                    "ServiceOffer",
                     "SalesOrder",
                     "StockMovement",
                     "Refund",
