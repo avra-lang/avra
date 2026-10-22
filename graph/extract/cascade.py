@@ -1,14 +1,15 @@
 """Local extraction cascade: an encoder proposes spans, a small LLM only
 scores closed choices, and every proposal is an exact source anchor.
 
-usage: python cascade.py [--catalog SCHEMA_JSON] [--local] [--no-prefix] [--units M] < in.json > out.json
+usage: python cascade.py [--catalog SCHEMA_JSON] [--local] [--stream] [--no-prefix] [--units M] < in.json > out.json
        python cascade.py --serve   # keep both models resident behind a Unix socket
 
 Without a listening service it exits 1 ("service unavailable"); --local
 loads the models in this process instead.
 
 stdin is one request, or a JSON array of them for a batch (one encoder
-load and one scorer load for the whole batch; the answer is then an array).
+load and one scorer load for the whole batch; the answer is then an array,
+or with --stream one {"index", "result"} line per request as each finishes).
 A request is a C01 ExtractionRequest, or a bare I01 SourceEnvelope with
 --catalog naming the app's `{"op":"schema"}` answer. stdout is one C01
 ExtractionResult (contract 2: selectors, FactBank factuality, speech act,
@@ -1026,19 +1027,21 @@ def encoded(reqs, models):
     return out
 
 
-def extract_batch(reqs, models=None):
-    """C01 ExtractionResults for a batch: encoder pass for all, then every
-    choice for all. A failure is a result, never an exception."""
+def extracted(reqs, models=None):
+    """(result, log) per request, yielded as each finishes: the encoder pass
+    for the whole batch first, then each request's choices. A failure is a
+    result, never an exception."""
     LOG.clear()
     models = models or Models()
     phase_one = encoded(reqs, models)
     head = list(LOG)
-    answers = []
     for req, spans in zip(reqs, phase_one):
-        LOG.clear()
-        answers.append(extract(req, models, spans))
-        answers[-1] = (answers[-1][0], head + answers[-1][1])
-    return answers
+        result, logs = extract(req, models, spans)
+        yield result, head + logs
+
+
+def extract_batch(reqs, models=None):
+    return list(extracted(reqs, models))
 
 
 def extract(req, models, spans):
@@ -1095,6 +1098,8 @@ def answered(body, models):
     models.llm.prefix = body.get("prefix", True)
     os.environ["CASCADE_UNITS"] = body.get("units") or "statements"
     os.environ["CASCADE_TRACE"] = "1" if body.get("trace") else ""
+    if "requests" in body and body.get("stream"):
+        return ({"index": i, "result": r, "log": l} for i, (r, l) in enumerate(extracted(body["requests"], models)))
     if "requests" in body:
         return {"results": [{"result": r, "log": l} for r, l in extract_batch(body["requests"], models)]}
     result, logs = extract_batch([body["request"]], models)[0]
@@ -1135,6 +1140,10 @@ def serve():
             started = time.time()
             try:
                 answer = answered(body, models)
+                if not isinstance(answer, dict):
+                    for line in answer:
+                        done.put(line)
+                    answer = {"end": True}
             except Exception as e:
                 answer = {"error": f"{type(e).__name__}: {e}"}
             answer["queue"] = {"position": position, "wait_s": round(started - arrived, 2), "compute_s": round(time.time() - started, 2)}
@@ -1155,6 +1164,12 @@ def serve():
                 position = work.qsize()
                 work.put((body, arrived, position, done))
                 answer = done.get()
+                while "queue" not in answer:
+                    try:
+                        conn.sendall(json.dumps(answer, ensure_ascii=False).encode() + b"\n")
+                    except OSError:
+                        pass
+                    answer = done.get()
             q = answer.get("queue", {})
             print(
                 f"{time.strftime('%H:%M:%S')} {body.get('op', 'extract')} bytes={len(data)} options={len(body.get('options', []))} "
@@ -1197,6 +1212,48 @@ def remote(body):
         return json.loads(b"".join(iter(lambda: s.recv(parameter("socket_read_bytes")), b"")))
 
 
+def streamed(reqs, args):
+    """One stdout line per request as it finishes: {"index", "result"}."""
+    if "--local" in args:
+        lines = ({"index": i, "result": r, "log": l} for i, (r, l) in enumerate(extracted(reqs)))
+    else:
+        lines = remote_lines({"requests": reqs, "stream": True, "prefix": "--no-prefix" not in args, "trace": "--trace" in args})
+        if lines is None:
+            print(f"service unavailable: nothing answers on {SOCKET}; start `cascade.py --serve`, or pass --local to load the models here", file=sys.stderr)
+            return 1
+    for line in lines:
+        if "error" in line:
+            print(f"service: {line['error']}", file=sys.stderr)
+            return 1
+        if "index" in line:
+            print("\n".join(line.get("log", [])), file=sys.stderr)
+            print(json.dumps({"index": line["index"], "result": line["result"]}, ensure_ascii=False), flush=True)
+    return 0
+
+
+def remote_lines(body):
+    """The service's answer lines as they arrive, or None when nothing listens."""
+    import socket
+
+    if not os.path.exists(SOCKET):
+        return None
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect(SOCKET)
+    except OSError:
+        return None
+
+    def lines():
+        with s:
+            s.sendall(json.dumps(body, ensure_ascii=False).encode() + b"\n")
+            s.shutdown(socket.SHUT_WR)
+            for raw in s.makefile("rb"):
+                if raw.strip():
+                    yield json.loads(raw)
+
+    return lines()
+
+
 def main():
     args = sys.argv[1:]
     if "--serve" in args:
@@ -1205,6 +1262,8 @@ def main():
     catalog = args[args.index("--catalog") + 1] if "--catalog" in args else None
     batch = isinstance(stdin, list)
     reqs = [requested(s, catalog) for s in (stdin if batch else [stdin])]
+    if "--stream" in args:
+        return streamed(reqs, args)
     if "--local" in args:
         answers = extract_batch(reqs)
     else:
