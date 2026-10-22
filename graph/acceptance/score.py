@@ -86,6 +86,7 @@ class App:
     def __init__(self, binary, db, scratch):
         self.binary, self.db, self.scratch = binary, db, scratch
         self.calls = 0
+        self.after = {}
 
     def call(self, request):
         self.calls += 1
@@ -510,6 +511,7 @@ def score_checkpoint(binary, checkpoint, questions, fixture, mode, hooks, scratc
         if failure:
             failure = f"publish {s['id']}: {failure}"
             break
+        app.after[s["id"]] = app.call({"op": "schema"}).get("revision", 0)
     if failure:
         return {**rows, **{q["id"]: {"status": "error", "reason": failure} for q in runnable}}
     revision = app.call({"op": "schema"}).get("revision", 0)
@@ -533,11 +535,26 @@ def score_checkpoint(binary, checkpoint, questions, fixture, mode, hooks, scratc
     return rows
 
 
+def iso_instant(ms):
+    return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def as_of_for(spec, context, after):
+    """The read's view: valid time of the question, transaction time after a named source."""
+    view = {}
+    if spec.get("valid") == "question":
+        view["valid_at"] = iso_instant(context.get("valid_at_ms") or context["question_at_ms"])
+    if spec.get("after_source"):
+        view["revision"] = after[spec["after_source"]]
+    return view
+
+
 def query_request(planned):
     """A planner answers {cypher, params}; an oracle or legacy hook answers a ReadPlan."""
+    seen = {"as_of": planned["as_of"]} if planned.get("as_of") else {}
     if "cypher" in planned:
-        return {"op": "query", "cypher": planned["cypher"], "params": planned.get("params", {})}
-    return {"op": "query", "plan": planned}
+        return {"op": "query", "cypher": planned["cypher"], "params": planned.get("params", {}), **seen}
+    return {"op": "query", "plan": planned, **seen}
 
 
 def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, superseded, locate):
@@ -550,6 +567,8 @@ def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, 
         if q["id"] in plans:
             plan = complete_plan(plans[q["id"]], "score-" + q["id"], schema, context,
                                  q.get("source_view", "current"))
+            if plans[q["id"]].get("as_of"):
+                plan = {**plan, "as_of": as_of_for(plans[q["id"]]["as_of"], context, app.after)}
         else:
             log = []
             record["planner_log"] = log
