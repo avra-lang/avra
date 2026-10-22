@@ -9,6 +9,7 @@ use @avra.graph_contracts.{
 use @std.validate.{Value, Entry}
 use @std.text.{ascii_lower}
 use data.{as_value, encoded, before}
+use parameters.{identity_namespace_bytes, identity_key_bytes}
 use semantics.{IdentityBinding, KeyNormalization, path_shape}
 use schema.{Model}
 use ingest.extraction.{admit_extraction}
@@ -63,10 +64,10 @@ fn normalized_text(binding: IdentityBinding, raw: string) -> string {
 
 fn bounded_key(binding: IdentityBinding, key: string) -> Result<IdentityKey, string> {
     if binding.namespace.is_empty() ||
-        binding.namespace.bytes().length > 128 ||
+        binding.namespace.bytes().length > identity_namespace_bytes ||
         contains_nul(binding.namespace) ||
         key.is_empty() ||
-        key.bytes().length > 1024 ||
+        key.bytes().length > identity_key_bytes ||
         contains_nul(key) {
         fail "a declared identity needs a bounded nonempty namespace and key without NUL"
     }
@@ -145,11 +146,11 @@ fn text_at(r: ProposedRecord, path: List<string>) -> Result<string?, string> {
 fn record_value(r: ProposedRecord) -> Value { Value.Map([Entry { key: f.property, value: f.value.value } for f in r.fields]) }
 
 /// Every combination of one value per scope, within the key budget.
-fn combinations(choices: List<List<Value>>) -> Result<List<List<Value>>, string> {
+fn combinations(choices: List<List<Value>>, limit: int) -> Result<List<List<Value>>, string> {
     mut made: List<List<Value>> = [[]]
     for options in choices {
         made = [prefix.concat([o]) for prefix in made for o in options]
-        if made.length > 16 { fail "a scoped identity exceeds its key-combination budget" }
+        if made.length > limit { fail "a scoped identity exceeds its key-combination budget" }
     }
     made
 }
@@ -199,7 +200,7 @@ impl Graph {
             .scoped(
                 [KeyedRecord { proposal: r, keys: declared_keys(self.catalog.model(r.model)?, r)? } for r in pair.result.records],
             )?
-        if records.fold(0, (n: int, r: KeyedRecord) -> n + r.keys.length) > 2048 {
+        if records.fold(0, (n: int, r: KeyedRecord) -> n + r.keys.length) > self.policy.linking.keys {
             fail "identity linking exceeds its declared-key budget"
         }
         let groups = key_groups(records)?
@@ -224,7 +225,7 @@ impl Graph {
                         context,
                     )?
                 total_matches = total_matches + matches.length
-                if total_matches > 8192 { fail "identity linking exceeds its match evidence budget" }
+                if total_matches > self.policy.linking.matches { fail "identity linking exceeds its match evidence budget" }
                 cache.push(KeyMatches { identity: key.identity, matches: matches })
             }
         }
@@ -274,7 +275,7 @@ impl Graph {
             let raw? = text_at(r.proposal, binding.path)? else { continue }
             let choices = [self.scope_values(records, model.name, r.proposal, binding, scope)? for scope in binding.scoped_by]
             if choices.any(it.is_empty()) { continue }
-            let made = [scoped_key(binding, raw, scopes)? for scopes in combinations(choices)?]
+            let made = [scoped_key(binding, raw, scopes)? for scopes in combinations(choices, self.policy.linking.combinations)?]
             for proposed in r.proposal.identities {
                 if proposed.identity.namespace == binding.namespace &&
                     !made.any(same_key(it, proposed.identity)) {

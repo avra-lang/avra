@@ -3,6 +3,14 @@ use @std.json.{Json, to_text}
 use @std.text.{builder, chars, is_blank}
 use ingest.envelope.{source_document}
 use data.{digest}
+use parameters.{
+    utf8_continuation_low,
+    utf8_lead_low,
+    window_bytes_floor,
+    window_bytes_limit,
+    window_total_limit,
+    window_count_limit,
+}
 
 export enum CoordinateUnit { Utf8Bytes, CodePoints, Utf16 }
 
@@ -30,14 +38,14 @@ export type TextWindow = {
 type Normalized = { text: string, boundaries: List<Boundary> }
 
 fn checked_policy(p: WindowPolicy) -> Result<WindowPolicy, string> {
-    if p.max_bytes < 4 || p.max_bytes > 65536 { fail "window bytes must be in 4..65536" }
+    if p.max_bytes < window_bytes_floor || p.max_bytes > window_bytes_limit { fail "window bytes must be in ${window_bytes_floor}..${window_bytes_limit}" }
     if p.overlap_bytes < 0 || p.overlap_bytes >= p.max_bytes { fail "window overlap must be nonnegative and smaller than a window" }
-    if p.max_windows < 1 || p.max_windows > 2048 { fail "window count must be in 1..2048" }
-    if p.max_total_bytes < 1 || p.max_total_bytes > 4194304 { fail "total window bytes must be in 1..4194304" }
+    if p.max_windows < 1 || p.max_windows > window_count_limit { fail "window count must be in 1..${window_count_limit}" }
+    if p.max_total_bytes < 1 || p.max_total_bytes > window_total_limit { fail "total window bytes must be in 1..${window_total_limit}" }
     p
 }
 
-fn continuation(bytes: Bytes, at: int) -> bool { bytes.at(at) >= 128 && bytes.at(at) < 192 }
+fn continuation(bytes: Bytes, at: int) -> bool { bytes.at(at) >= utf8_continuation_low && bytes.at(at) < utf8_lead_low }
 
 fn window_end(bytes: Bytes, start: int, boundary: int, max_bytes: int) -> int {
     mut end = if boundary - start > max_bytes { start + max_bytes } else { boundary }

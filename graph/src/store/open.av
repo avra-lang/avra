@@ -34,6 +34,7 @@ use store.engine.{
 }
 use data.{digest}
 use store.policy.{EnginePolicy}
+use parameters.{storage_formats}
 
 /// One connection, the immutable model catalog this process was built with,
 /// and the policy its host declares.
@@ -141,7 +142,7 @@ impl Graph {
         if !existing && self.has_table("graph_meta")? { fail "old hand-table graph store; migration is required; keep the original file" }
         if !existing && self.has_table("EntityRow")? { fail "graph storage is missing its metadata table" }
         let previous = if existing { self.meta("format")? } else { "" }
-        if existing && !["6", "7", "8", "9", "10", "11"].contains(previous) {
+        if existing && !storage_formats.contains(previous) {
             fail "unsupported graph storage format: ${previous}"
         }
         if existing {
@@ -281,7 +282,7 @@ impl Graph {
 }
 
 /// The storage format this engine writes.
-const format = "11"
+const format = storage_formats.last()!
 
 export fn put_meta(mut db: Db, key: string, value: string) -> Result<int, string> {
     match stored(Meta.where(db, key: key))? {

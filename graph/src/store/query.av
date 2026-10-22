@@ -17,6 +17,7 @@ use store.engine.{
 use store.state.{Standing}
 use store.evidence.{Interval, Instant, optional_text}
 use data.{as_value, as_json, encoded}
+use parameters.{traverse_depth_limit, page_limit, int_max}
 
 /// `denied` marks a value a standing assertion also denies: a contradiction
 /// kept, never resolved here.
@@ -221,7 +222,9 @@ impl Graph {
     fn traverse(id: string, depth: int = 2, limit: int = 100) -> Result<List<string>, string> {
         let opened = self.read_snapshot()?
         defer { let _ = self.db.finish_if_opened(opened) }
-        if depth < 0 || depth > 20 || limit < 1 || limit > 1000 { fail "depth must be 0..20 and limit 1..1000" }
+        if depth < 0 || depth > traverse_depth_limit || limit < 1 || limit > page_limit {
+            fail "depth must be 0..${traverse_depth_limit} and limit 1..${page_limit}"
+        }
         self.current()?
         mut seen = [id]
         mut frontier = [id]
@@ -550,7 +553,7 @@ export fn stored_value(text: string) -> Result<Value, string> {
 }
 
 fn page_ok(limit: int, offset: int) -> Result<int, string> {
-    if limit < 1 || limit > 1000 || offset < 0 { fail "limit must be 1..1000 and offset nonnegative" }
-    if offset > 9223372036854775807 - limit { fail "page end exceeds the integer range" }
+    if limit < 1 || limit > page_limit || offset < 0 { fail "limit must be 1..${page_limit} and offset nonnegative" }
+    if offset > int_max - limit { fail "page end exceeds the integer range" }
     0
 }
