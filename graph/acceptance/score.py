@@ -286,6 +286,13 @@ def grade(question, answer, ids, by_ref, superseded, keys=None):
     actual = canonical(projection(answer, keys), ids)
     wanted = {k: v for k, v in expect["answer"].items() if k not in expect.get("optional", []) or k in actual}
     matched = abstained and contains(canonical(wanted, ids), actual)
+    for wanted_absence in expect.get("absent", []):
+        found = any(
+            a["code"] == wanted_absence["code"]
+            and (wanted_absence.get("entity") is None or ids.get(a["path"][0], a["path"][0]) == wanted_absence["entity"])
+            for a in answer.get("absent", [])
+        )
+        matched = matched and found
     cited, unknown = cited_sources(answer, by_ref)
     need = set(expect.get("evidence_all", []))
     any_of = set(expect.get("evidence_any", []))

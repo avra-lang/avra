@@ -148,6 +148,8 @@ def validate(data):
                 require(value.get("currency") in {"EUR", "GBP"}, f"{label}: missing/unknown currency")
         if expected["status"] == "ambiguous":
             require(len(set(expected["answer"].get("candidates", []))) >= 2, "ambiguity needs candidates")
+        for gone in expected.get("absent", []):
+            require(bool(gone.get("code")), f"{question['id']}: an expected absence names its declared code")
         if expected["status"] == "unknown":
             require(bool(expected["answer"].get("reason")), "an unknown needs a reason")
         if expected["status"] == "refused":

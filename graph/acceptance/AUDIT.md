@@ -52,6 +52,13 @@ Fine-grained claim/span gold remains A02; no extractor ran in this task.
    already says every explicit clock time is UTC, so its zone is UTC. The
    portability fixture names none, so its stories imply one: a United Kingdom
    household with GBP prices, hence Europe/London, recorded in its manifest.
+11. q15, q17, q34 and q47 migrate from a top-level `unknown` to the per-field
+   contract: the answer is `answered` with the known context fields, and the
+   asked-for property must appear in `absent` with the model's declared code
+   (`expect.absent`, matched by code and, where the entity has a gold id, by
+   entity). This is a stricter check, not a relaxation: the right field and the
+   right code, beside the right known values, instead of one status word.
+   q43 stays `unknown`, since nothing it asks for is known.
 
 ## Answer-by-answer receipts
 
