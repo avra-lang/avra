@@ -1,0 +1,110 @@
+// proves: `@crud` turns a model into its doors — list, find, create, update, remove — mounted in a `group`
+// of a `server`, bodies decoded by the model's own rules (422 with the issue), a missing row 404, a door left
+// out by `without:` is no route, and a `@soft_delete` model keeps its removed rows in the trash and restores them
+use @std.crud.{crud}
+use @std.crud.routes.{Door}
+use @std.http.route.{group, Mounted}
+use @std.http.server.{server}
+use @std.json.{Json, field}
+use @std.net.{Conn, NetError, connect, timely}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+use @std.time.{ms, secs}
+use @std.validate.{length}
+
+@crud
+type Job = {
+    id: int = 0,
+    @length(min: 1, max: 20) title: string,
+    done: bool = false,
+}
+
+@crud
+type Note = {
+    id: int = 0,
+    text: string,
+    @soft_delete removed_at: int? = null,
+}
+
+/// `sent` written, then read until the server closes or goes quiet.
+fn exchanged(c: Conn, sent: string) -> Result<string, NetError> {
+    c.write(sent.bytes())?
+    mut got = "".bytes()
+    while true {
+        match timely(within ms(300) { c.read(65536) }) {
+            .Ok(b) -> {
+                let more? = b else { break }
+                got = got.concat(more)
+            },
+            .Err(_) -> { break },
+        }
+    }
+    let parts = (got.text() ?? "?").split("\r\n\r\n")
+    let body = if parts.length > 1 { parts[1] } else { "" }
+    let placed = parts[0].split("\r\n").find(it.starts_with("location: "))
+    .Ok(
+        "${parts[0].split("\r\n").first() ?? "?"} ${body}${if placed == null { "" } else { " @" + placed!.replace("location: ", "") }}",
+    )
+}
+
+fn asked(port: int, method: string, path: string, body: string) -> Result<string, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    exchanged(
+        c,
+        "${method} ${path} HTTP/1.1\r\nHost: a\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\n\r\n${body}",
+    )
+}
+
+/// An answer's status line, and whether its body carries `needle` — for an
+/// answer holding a clock reading, which no golden can pin.
+fn gist(answer: string, needle: string) -> string {
+    "${answer.split(" ").slice(0, 3).join(" ")} ${answer.contains(needle)}"
+}
+
+/// A setup failure, in the one error this program speaks.
+fn refused(why: string) -> NetError { NetError { verb: "setup", subject: why, errno: 1 } }
+
+fn shown() -> Result<string, NetError> {
+    let db = match Db.memory() {
+        .Ok(opened) -> opened,
+        .Err(e) -> { return .Err(refused(e.message)) },
+    }
+    let _ = Job.create_table(db)
+    let _ = Note.create_table(db)
+    server app {
+        port: 0
+        group "/jobs" { Job.routes(db) }
+        group "/ro" { Job.routes(db, without: [.Create, .Update, .Remove]) }
+        group "/notes" { Note.routes(db) }
+    }
+    let s = match app.listening() {
+        .Ok(up) -> up,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    spawn s.run(1)
+    defer s.stop()
+    let p = s.listener.port
+    let lines = [
+        asked(p, "GET", "/jobs/", "")?,
+        asked(p, "POST", "/jobs/", "{\"title\":\"write\"}")?,
+        asked(p, "POST", "/jobs/", "{\"title\":\"\"}")?,
+        asked(p, "GET", "/jobs/1", "")?,
+        asked(p, "GET", "/jobs/9", "")?,
+        asked(p, "PATCH", "/jobs/1", "{\"title\":\"write more\",\"done\":true}")?,
+        asked(p, "GET", "/jobs/", "")?,
+        asked(p, "DELETE", "/jobs/1", "")?,
+        asked(p, "GET", "/jobs/1", "")?,
+        asked(p, "POST", "/ro/", "{\"title\":\"x\"}")?,
+        asked(p, "GET", "/ro/", "")?,
+        asked(p, "POST", "/notes/", "{\"text\":\"keep\"}")?,
+        asked(p, "DELETE", "/notes/1", "")?,
+        asked(p, "GET", "/notes/", "")?,
+        gist(asked(p, "GET", "/notes/trash", "")?, "\"text\":\"keep\""),
+        gist(asked(p, "POST", "/notes/1/restore", "")?, "\"text\":\"keep\""),
+        asked(p, "GET", "/notes/", "")?,
+    ]
+    .Ok(lines.join("\n"))
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
