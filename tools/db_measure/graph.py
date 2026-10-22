@@ -96,6 +96,11 @@ def label_of(table, f):
     return table[f][0] if f in table else "relation#%d" % f
 
 
+def family_word(table, word):
+    """A trace's family field: its name, or a rank spelled before families were named."""
+    return label_of(table, int(word)) if word.isdigit() else word
+
+
 def key_of(table, f):
     return table[f][1] if f in table else "cell"
 
@@ -239,9 +244,9 @@ def qtrace(path, table):
             if part[0] != "Q" or len(part) < 3:
                 continue
             if part[1] == "ask" and len(part) >= 5:
-                asks[int(part[2])][part[4]] += 1
+                asks[family_word(table, part[2])][part[4]] += 1
             elif part[1] == "settle":
-                settles[int(part[2])] += 1
+                settles[family_word(table, part[2])] += 1
             elif part[1] == "parse":
                 parsed += 1
     print("%-14s %9s %9s %7s %9s" % ("family", "reuse", "compute", "cycle", "settle"))
@@ -250,7 +255,7 @@ def qtrace(path, table):
         row = (asks[f]["reuse"], asks[f]["compute"], asks[f]["cycle"], settles[f])
         for i, v in enumerate(row):
             total[i] += v
-        print("%-14s %9d %9d %7d %9d" % ((label_of(table, f),) + row))
+        print("%-14s %9d %9d %7d %9d" % ((f,) + row))
     print("%-14s %9d %9d %7d %9d" % (("TOTAL",) + tuple(total[i] for i in range(4))))
     print("files parsed: %d" % parsed)
 
