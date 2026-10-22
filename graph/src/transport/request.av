@@ -8,6 +8,7 @@ use store.tombstone.{Tombstone}
 use store.choice.{Choice}
 use ingest.admit.{Admission}
 use store.correct.{Correction, Amendment, correction_kind}
+use store.proposals.{Verdict, verdict_named}
 use @avra.graph_contracts.{SourceRef}
 
 export enum Operation {
@@ -45,6 +46,9 @@ export enum Operation {
     Correct(correction: Correction)
     Uncorrect(id: string)
     Corrections
+    Proposals
+    Decide(id: string, verdict: Verdict, decider: string)
+    Decisions
 }
 
 /// Protocol parsing knows operations; model data belongs to standard validation.
@@ -146,6 +150,19 @@ export fn operation(j: Json) -> Result<Operation, string> {
         "uncorrect" -> {
             closed(j, ["op", "id"])?
             Operation.Uncorrect(text(j, "id")?)
+        },
+        "proposals" -> {
+            closed(j, ["op"])?
+            Operation.Proposals
+        },
+        "decide" -> {
+            closed(j, ["op", "id", "verdict", "decider"])?
+            Operation
+                .Decide(text(j, "id")?, verdict_named(text(j, "verdict")?)?, text(j, "decider")?)
+        },
+        "decisions" -> {
+            closed(j, ["op"])?
+            Operation.Decisions
         },
         "corrections" -> {
             closed(j, ["op"])?

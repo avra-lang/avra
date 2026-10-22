@@ -1,0 +1,231 @@
+use derive.model.{model}
+use schema.{Registration}
+use store.open.{Graph}
+use store.policy.{EnginePolicy, ProposalPolicy}
+use store.proposals.{Verdict, Proposal}
+use ingest.admit.{Admission}
+use ingest.envelope.{source_document}
+use @avra.graph_contracts.{SourceEnvelope, SourceRef}
+use @std.json.{Json, parse, to_text}
+
+@model
+type Patient = { name: string }
+
+fn ward_models() -> List<Registration> { [Registration { make: Patient_graph_model }] }
+
+const chart_text = "Ann is allergic to penicillin. Ben is allergic to latex. Cat likes jazz. Ann has a pet called Rex. Ben's pet name is Tom."
+
+fn chart(revision: int = 1) -> SourceEnvelope {
+    SourceEnvelope {
+        contract: 2,
+        source: SourceRef { observation: "chart", revision: revision },
+        authored_at_ms: null,
+        received_at_ms: 1,
+        author: "nurse",
+        media_type: "text/plain",
+        content: chart_text,
+    }
+}
+
+fn clinic(policy: EnginePolicy = EnginePolicy {}) -> Result<Graph, string> {
+    let g = Graph.memory(ward_models(), policy: policy)?
+    g.ingest(to_text(source_document(chart())))?
+    g
+}
+
+fn passage_of(said: string) -> string {
+    let start = chart_text.index_of(said)
+    "[{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":${start},\"end\":${start + said.length}},{\"kind\":\"TextQuoteSelector\",\"exact\":${to_text(Json.Str(said))}}]}]"
+}
+
+fn patient(local: string, name: string) -> string {
+    "{\"local_id\":\"${local}\",\"model\":\"Patient\",\"fields\":[{\"property\":\"name\",\"value\":\"${name}\",\"evidence\":${passage_of(name)},\"factuality\":\"CT+\",\"speech_act\":\"assert\"}]}"
+}
+
+fn unplaced(kind: string, label: string, said: string, value: string, record: string = "") -> string {
+    let about = if kind == "property" { ",\"model\":\"Patient\"" } else { "" }
+    let subject = if record.is_empty() { "" } else { ",\"record\":\"${record}\"" }
+    "{\"evidence\":${passage_of(said)},\"kind\":\"${kind}\",\"label\":\"${label}\",\"value\":${value}${about}${subject}}"
+}
+
+fn chart_result(g: Graph, statements: List<string>, request: string = "req:1") -> string {
+    "{\"contract\":2,\"request\":\"${request}\",\"source\":{\"observation\":\"chart\",\"revision\":1},\"schema\":\"${g.catalog.fingerprint}\",\"extractor\":{\"producer\":\"reader\",\"code\":\"c\",\"model\":\"m\"},\"status\":\"complete\",\"records\":[${patient("ann", "Ann")},${patient("ben", "Ben")}],\"unplaced\":[${statements.join(",")}]}"
+}
+
+fn admitted_chart(mut g: Graph, statements: List<string>, request: string = "req:1") -> Result<
+    int,
+    string,
+> {
+    let json = match parse(chart_result(g, statements, request)) {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "test result is not JSON" },
+    }
+    (g.admit(Admission { source: SourceRef { observation: "chart", revision: 1 }, result: json })?)
+        .revision
+}
+
+fn all_statements() -> List<string> {
+    [
+        unplaced("property", "allergy", "allergic to penicillin", "\"penicillin\"", "ann"),
+        unplaced("property", "Allergy", "allergic to latex", "\"latex\"", "ben"),
+        unplaced("model", "music taste", "likes jazz", "\"jazz\""),
+        unplaced("model", "pet", "a pet called Rex", "{\"name\":\"Rex\"}"),
+        unplaced("model", "pet name", "pet name is Tom", "{\"name\":\"Tom\",\"owner\":\"Ben\"}"),
+    ]
+}
+
+fn proposal_named(all: List<Proposal>, name: string) -> Proposal? { all.find(it.name == name) }
+
+fn clusters_rank() -> Result<bool, string> {
+    mut g = clinic()?
+    defer { let _ = g.close() }
+    admitted_chart(g, all_statements())?
+    let all = g.proposals()?
+    let allergy = proposal_named(all, "allergy")!
+    let pet = proposal_named(all, "pet")!
+    let json = allergy.json()
+    all.length == 2 &&
+        all[0].name == "allergy" &&
+        allergy.model == "Patient" &&
+        allergy.fields[0].type_name == "string" &&
+        allergy.members.length == 2 &&
+        json.member("diff").text() == " @model type Patient = {\n+    allergy: string?," &&
+        json
+            .member("examples")
+            .item(0)
+            .member("evidence")
+            .item(0)
+            .member("selector")
+            .item(1)
+            .member("exact")
+            .text() == "allergic to penicillin" &&
+        json
+            .member("examples")
+            .items()
+            .all((e: Json) -> (e.member("subject").text() ?? "").starts_with("local:")) &&
+        pet.model == "Pet" &&
+        pet.fields.length == 2 &&
+        pet.fields.any(it.name == "owner" && it.optional) &&
+        (pet.json().member("diff").text() ?? "").contains("+export type Pet = {") &&
+        proposal_named(all, "music_taste") == null
+}
+
+fn accept_marks_dirty() -> Result<bool, string> {
+    mut g = clinic()?
+    defer { let _ = g.close() }
+    admitted_chart(g, all_statements())?
+    let allergy = proposal_named(g.proposals()?, "allergy")!
+    let revision = g.decide(allergy.id, .Accepted, "owner")?
+    let dirty = g.dirty()?
+    let flagged = dirty
+        .items()
+        .any(it.member("proposal").text() == allergy.id && it.member("input").text() == "chart")
+    let gone = proposal_named(g.proposals()?, "allergy") == null
+    let replay = g.decide(allergy.id, .Accepted, "owner")? == revision
+    let changed = g.decide(allergy.id, .Rejected, "owner") is .Err
+    admitted_chart(g, [], "req:2")?
+    let cleared = !(g.dirty()?).items().any(it.member("proposal").text() == allergy.id)
+    flagged && gone && replay && changed && cleared
+}
+
+fn reject_retires() -> Result<bool, string> {
+    mut g = clinic()?
+    defer { let _ = g.close() }
+    admitted_chart(g, all_statements())?
+    let pet = proposal_named(g.proposals()?, "pet")!
+    g.decide(pet.id, .Rejected, "owner")?
+    let after = g.proposals()?
+    let listed = g.decisions()?
+    proposal_named(after, "pet") == null &&
+        proposal_named(after, "allergy") != null &&
+        listed.item(0).member("verdict").text() == "rejected" &&
+        listed.item(0).member("proposal").member("name").text() == "pet" &&
+        !(g.dirty()?).items().any(it.member("proposal").text() == pet.id) &&
+        g.decide("proposal:none", .Accepted, "owner") is .Err
+}
+
+fn never_facts() -> Result<bool, string> {
+    mut g = clinic()?
+    defer { let _ = g.close() }
+    admitted_chart(g, all_statements())?
+    let ann = proposal_named(g.proposals()?, "allergy")!.members[0].row.subject!
+    let entity = g.entity(ann)?
+    entity.fields.length == 1 &&
+        entity.fields[0].property == "name" &&
+        entity.qualified.is_empty() &&
+        (g.find("Pet")?).is_empty()
+}
+
+fn replaced_runs_drop_out() -> Result<bool, string> {
+    mut g = clinic()?
+    defer { let _ = g.close() }
+    admitted_chart(g, all_statements())?
+    admitted_chart(g, [], "req:2")?
+    (g.proposals()?).is_empty()
+}
+
+fn declared_cutoffs() -> Result<bool, string> {
+    mut strict = clinic(EnginePolicy { proposals: ProposalPolicy { similarity: 1.0 } })?
+    defer { let _ = strict.close() }
+    admitted_chart(strict, all_statements())?
+    mut loose = clinic(EnginePolicy { proposals: ProposalPolicy { min_examples: 1 } })?
+    defer { let _ = loose.close() }
+    admitted_chart(loose, all_statements())?
+    let split = proposal_named(strict.proposals()?, "pet") == null &&
+        proposal_named(strict.proposals()?, "allergy") != null
+    split && proposal_named(loose.proposals()?, "music_taste") != null
+}
+
+fn unplaced_admission() -> Result<bool, string> {
+    mut g = clinic()?
+    defer { let _ = g.close() }
+    let before = g.revision()?
+    let modelless = unplaced("property", "allergy", "allergic to latex", "\"latex\"")
+        .replace(",\"model\":\"Patient\"", "")
+    let wrong_record = unplaced("property", "allergy", "allergic to latex", "\"latex\"", "nobody")
+    let invented = unplaced("model", "pet", "a pet called Rex", "\"Rex\"")
+        .replace("\"exact\":\"a pet called Rex\"", "\"exact\":\"a cat called Rex\"")
+    let unknown_model = unplaced("property", "allergy", "allergic to latex", "\"latex\"")
+        .replace("\"model\":\"Patient\"", "\"model\":\"Invented\"")
+    let refused = [s for s in [modelless, wrong_record, invented, unknown_model] if admitted_chart(g, [s]) is .Ok]
+        .is_empty()
+    refused && g.revision()? == before
+}
+
+fn decided_by_dispatch() -> Result<bool, string> {
+    mut g = clinic()?
+    defer { let _ = g.close() }
+    admitted_chart(g, all_statements())?
+    let listed = match parse("{\"op\":\"proposals\"}") {
+        .Ok(j) -> g.dispatch(j)?,
+        .Err(_) -> { fail "bad JSON" },
+    }
+    let id = listed.item(0).member("id").text() ?? ""
+    let decided = match parse(
+        "{\"op\":\"decide\",\"id\":\"${id}\",\"verdict\":\"accepted\",\"decider\":\"owner\"}",
+    ) { .Ok(j) -> g.dispatch(j) is .Ok, .Err(_) -> false }
+    let odd = match parse(
+        "{\"op\":\"decide\",\"id\":\"${id}\",\"verdict\":\"maybe\",\"decider\":\"owner\"}",
+    ) { .Ok(j) -> g.dispatch(j) is .Err, .Err(_) -> false }
+    listed.items().length == 2 && decided && odd
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "proposed model changes" {
+    given "extractions that state what no declared model holds" {
+        then "similar unplaced statements cluster into ranked property and model proposals with examples and diffs" { passed(clusters_rank()) }
+        then "accepting a proposal puts its sources on dirty until they are extracted again" { passed(accept_marks_dirty()) }
+        then "rejecting a proposal retires its statements and is listed with the proposal as offered" { passed(reject_retires()) }
+        then "unplaced statements never read as facts" { passed(never_facts()) }
+        then "a replaced run's statements stop counting" { passed(replaced_runs_drop_out()) }
+        then "cluster cutoffs are declared policy" { passed(declared_cutoffs()) }
+        then "unplaced statements are anchored and name only declared models and local records" { passed(unplaced_admission()) }
+        then "proposals and verdicts run through the shared op dispatch" { passed(decided_by_dispatch()) }
+    }
+}

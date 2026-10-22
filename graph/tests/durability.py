@@ -42,22 +42,25 @@ class Graph:
 
 def upgrades(graph):
     publication, committed = graph.seed()
-    for version in ("6", "7", "8", "9", "10", "11", "12"):
+    for version in ("6", "7", "8", "9", "10", "11", "12", "13"):
         with sqlite3.connect(graph.database) as raw:
-            raw.execute("DROP TABLE ClaimRetiredRow")
-            raw.execute("DROP TABLE SchemaEdgeRow")
-            if version != "12":
+            raw.execute("DROP TABLE ProposalDecisionRow")
+            raw.execute("DROP TABLE UnplacedRow")
+            if version != "13":
+                raw.execute("DROP TABLE ClaimRetiredRow")
+                raw.execute("DROP TABLE SchemaEdgeRow")
+            if version not in ("12", "13"):
                 raw.execute("DROP TABLE InputEpochRow")
-            if version not in ("11", "12"):
+            if version not in ("11", "12", "13"):
                 raw.execute("DROP TABLE FailedRunRow")
-            if version not in ("10", "11", "12"):
+            if version not in ("10", "11", "12", "13"):
                 raw.execute("DROP TABLE CorrectionEndRow")
                 raw.execute("DROP TABLE CorrectionRow")
-            if version not in ("9", "10", "11", "12"):
+            if version not in ("9", "10", "11", "12", "13"):
                 raw.execute("DROP TABLE SupersessionRow")
                 raw.execute("DROP TABLE EvidenceRow")
                 raw.execute("DROP TABLE VoiceRow")
-            if version not in ("8", "9", "10", "11", "12"):
+            if version not in ("8", "9", "10", "11", "12", "13"):
                 raw.execute("DROP TABLE ChoiceEndRow")
                 raw.execute("DROP TABLE ChoiceRow")
             if version == "6":
@@ -69,7 +72,7 @@ def upgrades(graph):
         assert graph.call(publication) == committed
         assert graph.call({"op": "value", "id": "p1", "as_of": {"revision": committed["revision"]}})["name"] == "Ada"
         with sqlite3.connect(graph.database) as raw:
-            assert raw.execute("SELECT value FROM Meta WHERE key='format'").fetchone() == ("13",)
+            assert raw.execute("SELECT value FROM Meta WHERE key='format'").fetchone() == ("14",)
             assert raw.execute("PRAGMA journal_mode").fetchone() == ("wal",)
             assert raw.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
@@ -84,7 +87,7 @@ def upgrades(graph):
     with sqlite3.connect(graph.database) as raw:
         assert raw.execute("SELECT * FROM Meta ORDER BY id").fetchall() == before
         assert raw.execute("SELECT name FROM sqlite_master WHERE name='ConfidenceRow'").fetchone() is None
-        raw.execute("UPDATE Meta SET value='13' WHERE key='format'")
+        raw.execute("UPDATE Meta SET value='14' WHERE key='format'")
     # Missing metadata is not mistaken for a fresh store, either.
     with sqlite3.connect(graph.database) as raw:
         raw.execute("DELETE FROM Meta WHERE key='format'")

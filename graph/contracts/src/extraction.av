@@ -127,9 +127,32 @@ export type ProposedRecord = {
     resolution: Resolution? = null,
 }
 
+fn unplaced_coherent(u: UnplacedStatement) -> Result<UnplacedStatement, string> {
+    if (u.kind == "property") != (u.model != null) { fail "only an unplaced property names the model it would belong to" }
+    if u.record != null && u.model == null { fail "an unplaced statement about a record names that record's model" }
+    u
+}
+
+/// Something the source states that no declared model or property can
+/// hold: the extractor's best guess at what is missing, anchored like any
+/// field. Never a fact; the engine only clusters these into proposals.
+@derive(Decode)
+@unplaced_coherent
+export type UnplacedStatement = {
+    @items(min: 1, max: 64) evidence: List<Passage>,
+    frame: string? = null,
+    @one_of(["property", "model"]) kind: string,
+    @length(min: 1, max: 256) label: string,
+    @length(min: 1, max: 256) model: string? = null,
+    @length(min: 1, max: 128) record: string? = null,
+    value: JsonValue? = null,
+    @confidence score: float? = null,
+}
+
 fn result_coherent(r: ExtractionResult) -> Result<ExtractionResult, string> {
-    if r.status == "failed" && (!r.records.is_empty() || r.problems.is_empty()) {
-        fail "failed extraction needs problems and cannot publish records"
+    if r.status == "failed" &&
+        (!r.records.is_empty() || !r.unplaced.is_empty() || r.problems.is_empty()) {
+        fail "failed extraction needs problems and cannot publish records or unplaced statements"
     }
     if r.status == "complete" && !r.problems.is_empty() {
         fail "complete extraction cannot also report failure"
@@ -154,4 +177,5 @@ export type ExtractionResult = {
     @items(max: 1000) records: List<ProposedRecord> = [],
     @items(max: 256) proposed_frames: List<Frame> = [],
     @items(max: 128) problems: List<Problem> = [],
+    @items(max: 1000) unplaced: List<UnplacedStatement> = [],
 }

@@ -132,6 +132,9 @@ CLI request files and HTTP use exactly the same JSON operations:
 | `unchoose` | `decision` | Withdraw a choice; the property reads by its rule again |
 | `choices` | optional `claim` | Choice decisions, active or withdrawn |
 | `dirty` | — | Latest interpretations with stale input or schema |
+| `proposals` | — | Ranked proposed model changes from unplaced statements |
+| `decide` | `id`, `verdict` (`accepted`/`rejected`), `decider` | Committed graph revision |
+| `decisions` | — | Every verdict with the proposal as offered |
 | `correct` | `id`, `decider`, `kind` (`same`, `different`: `left`, `right`; `wrong`, `true`: `entity`, `property`, `value`) | Committed graph revision |
 | `uncorrect` | `id` | Undo one correction; committed graph revision |
 | `corrections` | — | Every correction: kind, decider, request, effects, revisions |
@@ -406,6 +409,25 @@ retired claim's `retired` reason under its own `schema`. Changes made before
 storage format 13 left no edge, so claims under those older catalogs do not
 read.
 
+### Proposed model changes
+
+An extraction may report `unplaced` statements: anchored passages stating
+something no declared model or property holds, each with the extractor's
+best guess (`kind` property or model, a `label`, the `model` and `record`
+it is about, an optional `value`). They are never facts. `proposals`
+clusters the unplaced statements of current runs (same kind and model, label
+words overlapping by at least `EnginePolicy.proposals.similarity`, at least
+`min_examples` of them) into ranked proposals: a new property or a new
+model, its fields and types inferred from the values, every example with
+its anchors and source, and the `@model` edit as diff text. Nothing is
+applied. `decide` records `accepted` or `rejected` for a proposal as
+currently offered; either removes its statements from later proposals, and
+an accepted one lists its sources on `dirty` (`proposal`) until its
+producer runs again there — after the owner edits the models and rebuilds
+(see Model evolution). `decisions` lists every verdict with the proposal as
+it was offered. Labels cluster lexically today; the similarity is a fitted
+parameter, not a rule.
+
 ### Engine policy
 
 Every rule and bound a host may choose is one value, `EnginePolicy`
@@ -418,6 +440,7 @@ default reproduces the behaviour described above.
 | `default_rank` | `0` | Rank of an undeclared producer |
 | `denial` | `.Outranks` | A denial removes a claim only when ranked strictly above its best support (`.Matches`: at or above); otherwise it is a flagged contradiction |
 | `supersession` | `.LaterStart` | A strictly later declared start closes an earlier open rival (`.Never`: rivals stay a contradiction) |
+| `proposals` | `ProposalPolicy {}` | `similarity` 0.5 (label-word Jaccard) and `min_examples` 2 for clustering unplaced statements |
 | `migrations` | `[]` | Declared answers to incompatible catalog changes (see Model evolution) |
 | `admission` | `AdmissionBudget {}` | Per-admission bounds: `envelope_bytes` 4 MiB, `records` 256, `fields` 4096, `passages` 16384, `frames` 256, `value_depth` 64 |
 
@@ -436,8 +459,9 @@ The engine models are `Meta`, `Schema`, `EntityRow`, `ObservationRow`,
 `EdgeRow`, `AliasRow`, `MergeRow`/`MergeEndRow`, and
 `TombstoneRow`/`TombstoneEndRow`, and `VoiceRow`, `EvidenceRow` and
 `SupersessionRow`, `CorrectionRow`/`CorrectionEndRow`, `FailedRunRow`,
-`InputEpochRow`, `SchemaEdgeRow` and `ClaimRetiredRow` (storage format 13;
-older formats upgrade by adding them). WAL, foreign keys, and immediate write
+`InputEpochRow`, `SchemaEdgeRow`, `ClaimRetiredRow`, `UnplacedRow` and
+`ProposalDecisionRow` (storage format 14; older formats upgrade by adding
+them). WAL, foreign keys, and immediate write
 transactions are used. Failed publications roll back identities, support
 withdrawals, claims, references, aliases, and the revision together.
 Connections wait up to three seconds for lock contention. Public multi-query

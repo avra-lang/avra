@@ -10,6 +10,7 @@ use @avra.graph_contracts.{
     SourceEnvelope,
     Span,
     Passage,
+    UnplacedStatement,
     code_points,
     passage_span,
     quote_holds,
@@ -83,13 +84,16 @@ export fn admit_extraction(
         fail "extraction exceeds its record or field budget"
     }
     let span_count = result
-        .records
-        .fold(
-            0,
-            (n: int, r: ProposedRecord) -> n +
-                r.fields.fold(0, (total: int, f: ProposedField) -> total + f.evidence.length) +
-                r.identities.fold(0, (total: int, i: ProposedIdentity) -> total + i.evidence.length),
-        )
+            .records
+            .fold(
+                0,
+                (n: int, r: ProposedRecord) -> n +
+                    r.fields.fold(0, (total: int, f: ProposedField) -> total + f.evidence.length) +
+                    r
+                        .identities
+                        .fold(0, (total: int, i: ProposedIdentity) -> total + i.evidence.length),
+            ) +
+        result.unplaced.fold(0, (n: int, u: UnplacedStatement) -> n + u.evidence.length)
     if span_count > budget.passages { fail "extraction exceeds its anchor budget" }
     let frames = request.input.frames.concat(result.proposed_frames)
     if frames.length > budget.frames { fail "extraction exceeds its quotation frame budget" }
@@ -102,6 +106,7 @@ export fn admit_extraction(
         frames: frame_spans(checked_frames)?,
     }
     let records = [checked_record(catalog, request, result.records, q, r, budget.value_depth)? for r in result.records]
+    for u in result.unplaced { checked_unplaced(catalog, result.records, q, u)? }
     ExtractionAdmission.Complete(request, result with { records: records })
 }
 
@@ -137,6 +142,22 @@ fn crosses(f: Span, span: Span) -> bool {
     f.start > span.start && f.start < span.end || f.end > span.start && f.end < span.end
 }
 
+/// An unplaced statement is anchored like a field and names only what exists.
+fn checked_unplaced(
+    catalog: Catalog,
+    records: List<ProposedRecord>,
+    q: Quoting,
+    u: UnplacedStatement,
+) -> Result<bool, string> {
+    if u.model != null { let _ = catalog.model(u.model!)? }
+    if u.record != null && !records.any(it.local_id == u.record! && it.model == u.model) {
+        fail "an unplaced statement's record must be a local record of its model"
+    }
+    if u.value != null && !json_safe(u.value!.value) { fail not_finite() }
+    for p in u.evidence { located(q, p, u.frame)? }
+    true
+}
+
 fn checked_record(
     catalog: Catalog,
     request: ExtractionRequest,
@@ -156,7 +177,7 @@ fn checked_record(
     }
     for field in r.fields {
         if !model.properties.any(it.name == field.property) { fail "unknown extraction property: ${r.model}.${field.property}" }
-        if !json_safe(field.value.value) { fail "extraction values must be finite" }
+        if !json_safe(field.value.value) { fail not_finite() }
         for p in field.evidence { located(q, p, field.frame)? }
     }
     let value = Value.Map([Entry { key: f.property, value: f.value.value } for f in r.fields])
@@ -246,3 +267,4 @@ fn checked_value(
     }
 }
 
+fn not_finite() -> string { "extraction values must be finite" }

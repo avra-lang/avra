@@ -5,7 +5,7 @@ use data.{as_value, encoded, digest}
 use schema.{Shape}
 use catalog.{Catalog}
 use store.open.{Graph, stored, modeled}
-use store.engine.{RunRow, RunTrailRow, FailedRunRow}
+use store.engine.{RunRow, RunTrailRow, FailedRunRow, UnplacedRow}
 use ingest.extraction.{admit_extraction}
 use store.publish.{Publication, Record, RecordMode}
 use store.identity.{Identity, IdentityMatch}
@@ -185,12 +185,30 @@ impl Graph {
                     } for f in frames],
                 ),
         }
-        Admitted {
-            revision: self.published(publication, fingerprint)?,
-            run: run,
-            replayed: false,
-            records: placed,
+        let revision = self.published(publication, fingerprint)?
+        self.unplaced_kept(run, a.result.member("unplaced").items(), placed)?
+        Admitted { revision: revision, run: run, replayed: false, records: placed }
+    }
+
+    /// The run's unplaced statements, each about the entity its record landed on.
+    fn unplaced_kept(run: string, statements: List<Json>, placed: List<Placed>) -> Result<
+        int,
+        string,
+    > {
+        if statements.is_empty() { return 0 }
+        let row = match stored(RunRow.where(self.db, name: run))? {
+            [only] -> only,
+            rest -> { fail "an admitted run vanished: ${run}" },
         }
+        mut db = self.db
+        for s in statements {
+            let local = s.member("record").text()
+            let subject = if local == null { null } else { placed.find(it.local_id == local!)?.entity }
+            let _ = modeled(
+                UnplacedRow { run: row, subject: subject, document: to_text(s) }.insert(db),
+            )?
+        }
+        statements.length
     }
 
     /// Record a failed extraction for retry; nothing is published or withdrawn.

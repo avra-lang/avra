@@ -1,0 +1,399 @@
+use @std.json.{Json, Field, field, parse, to_text}
+use @std.validate.{Value}
+use @std.text.{ascii_lower, from_codepoint, parse_float}
+use data.{as_value, as_json, digest, before}
+use store.open.{Graph, stored, modeled}
+use store.engine.{UnplacedRow, ProposalDecisionRow, RunRow, RunTrailRow}
+use parameters.{ascii_a, ascii_z, ascii_upper_a, ascii_zero, ascii_nine, utf8_continuation_low}
+
+/// What a cluster proposes adding to the declared models.
+export enum Addition { Property, Model }
+
+/// An owner's verdict on a proposal.
+export enum Verdict { Accepted, Rejected }
+
+/// One stored unplaced statement, read back for clustering.
+export type Statement = { row: UnplacedRow, document: Json, words: List<string> }
+
+type Cluster = { addition: Addition, model: string, words: List<string>, members: List<Statement> }
+
+/// A field a proposal infers from its examples' values.
+export type Guess = { name: string, type_name: string, optional: bool }
+
+/// A proposed model change, ranked by how much evidence it rests on.
+/// Nothing applies it; the owner edits the models and rebuilds.
+export type Proposal = {
+    id: string,
+    addition: Addition,
+    model: string,
+    name: string,
+    fields: List<Guess>,
+    members: List<Statement>,
+}
+
+impl Addition {
+    fn word() -> string {
+        match self { .Property -> "property", .Model -> "model" }
+    }
+}
+
+impl Verdict {
+    fn word() -> string {
+        match self { .Accepted -> "accepted", .Rejected -> "rejected" }
+    }
+}
+
+export fn verdict_named(word: string) -> Result<Verdict, string> {
+    match word {
+        "accepted" -> Verdict.Accepted,
+        "rejected" -> Verdict.Rejected,
+        rest -> { fail "a verdict is accepted or rejected: ${word}" },
+    }
+}
+
+impl Proposal {
+    /// Distinct source revisions the examples come from.
+    fn sources() -> List<string> {
+        let all = [m.row.run.input.name for m in self.members]
+        [s for i, s in all if !all.slice(0, i).contains(s)]
+    }
+
+    fn json() -> Json {
+        Json
+            .Obj(
+                [
+                    field("id", Json.Str(self.id)),
+                    field("kind", Json.Str(self.addition.word())),
+                    field("model", Json.Str(self.model)),
+                    field("name", Json.Str(self.name)),
+                    field(
+                        "fields",
+                        Json
+                            .Arr(
+                                [Json
+                                    .Obj(
+                                        [
+                                            field("name", Json.Str(g.name)),
+                                            field("type", Json.Str(g.type_name)),
+                                            field("optional", Json.Bool(g.optional)),
+                                        ],
+                                    ) for g in self.fields],
+                            ),
+                    ),
+                    field("count", Json.Int(self.members.length)),
+                    field("sources", Json.Int(self.sources().length)),
+                    field("examples", Json.Arr([example(m) for m in self.members])),
+                    field("diff", Json.Str(self.diff())),
+                ],
+            )
+    }
+
+    /// The declaration edit that would hold these statements, as diff text.
+    fn diff() -> string {
+        let lines = [g for g in self.fields]
+            .map("+    ${it.name}: ${it.type_name}${if it.optional { "?" } else { "" }},")
+        match self.addition {
+            .Property -> [" @model type ${self.model} = {"].concat(lines).join("\n"),
+            .Model -> ["+@model", "+export type ${self.model} = {"].concat(lines).concat(["+}"]).join("\n"),
+        }
+    }
+}
+
+fn example(m: Statement) -> Json {
+    Json
+        .Obj(
+            [
+                field("statement", Json.Int(m.row.id)),
+                field("run", Json.Str(m.row.run.name)),
+                field("source", Json.Str(m.row.run.input.name)),
+                field(
+                    "subject",
+                    if m.row.subject == null { Json.Null } else { Json.Str(m.row.subject!) },
+                ),
+                field("label", m.document.member("label")),
+                field("value", m.document.member("value")),
+                field("evidence", m.document.member("evidence")),
+                field("frame", m.document.member("frame")),
+            ],
+        )
+}
+
+impl Graph {
+    /// Ranked proposals over the unplaced statements of current runs no
+    /// verdict has taken. Read-only.
+    fn proposals() -> Result<List<Proposal>, string> {
+        let opened = self.read_snapshot()?
+        defer { let _ = self.db.finish_if_opened(opened) }
+        self.current()?
+        let p = self.policy.proposals
+        let clusters = clustered(self.undecided()?, p.similarity)
+        let offered = [proposed(c) for c in clusters if c.members.length >= p.min_examples]
+        ranked(offered)
+    }
+
+    /// Record a verdict on a proposal as currently offered. Accepting puts
+    /// its sources on `dirty` for re-extraction; rejecting retires its
+    /// statements from later proposals. Nothing in the catalog changes.
+    fn decide(id: string, verdict: Verdict, decider: string) -> Result<int, string> {
+        if id.is_empty() || decider.is_empty() { fail "a verdict needs a proposal id and a decider" }
+        mut db = self.db
+        stored(db.begin())?
+        defer { let _ = db.finish() }
+        let revision = self.current()?
+        match stored(ProposalDecisionRow.where(db, proposal: id))? {
+            [one] -> {
+                if one.verdict != verdict.word() || one.decider != decider { fail "this proposal already has a different verdict" }
+                return one.revision
+            },
+            [] -> {},
+            rest -> { fail "proposal decision is not unique: ${id}" },
+        }
+        let offered? = (self.proposals()?).find(it.id == id) else { fail "no proposal is currently offered under this id: ${id}" }
+        let document = Json
+            .Obj(
+                [
+                    field("proposal", offered.json()),
+                    field("members", Json.Arr([Json.Int(m.row.id) for m in offered.members])),
+                ],
+            )
+        let _ = modeled(
+            ProposalDecisionRow {
+                proposal: id,
+                verdict: verdict.word(),
+                decider: decider,
+                revision: revision + 1,
+                document: to_text(document),
+            }
+                .insert(db),
+        )?
+        self.advanced()?
+        stored(db.commit())?
+        revision + 1
+    }
+
+    /// Every verdict, with the proposal as it was offered.
+    fn decisions() -> Result<Json, string> {
+        let opened = self.read_snapshot()?
+        defer { let _ = self.db.finish_if_opened(opened) }
+        self.current()?
+        Json
+            .Arr(
+                [Json
+                    .Obj(
+                        [
+                            field("id", Json.Str(d.proposal)),
+                            field("verdict", Json.Str(d.verdict)),
+                            field("decider", Json.Str(d.decider)),
+                            field("revision", Json.Int(d.revision)),
+                            field("proposal", (decision_document(d)?).member("proposal")),
+                        ],
+                    ) for d in stored(ProposalDecisionRow.all(self.db))?],
+            )
+    }
+
+    /// Accepted proposals whose runs no later run of their producer and
+    /// scope has replaced: sources to extract again under the new models.
+    fn reextract() -> Result<List<Json>, string> {
+        let runs = stored(RunRow.all(self.db))?
+        mut rows: List<Json> = []
+        for d in stored(ProposalDecisionRow.where(self.db, verdict: Verdict.Accepted.word()))? {
+            let members = [n.int() ?? 0 for n in (decision_document(d)?).member("members").items()]
+            let statements = [s! for id in members for s in [stored(UnplacedRow.find(self.db, id))?] if s != null]
+            for s in statements {
+                let r = s.run
+                if runs
+                    .any(it.producer == r.producer && it.scope == r.scope && it.revision > d.revision) { continue }
+                if rows
+                    .any(
+                        it.member("run").text() == r.name &&
+                            it.member("proposal").text() == d.proposal,
+                    ) { continue }
+                rows
+                    .push(
+                        Json
+                            .Obj(
+                                [
+                                    field("producer", Json.Str(r.producer)),
+                                    field("scope", Json.Str(r.scope)),
+                                    field("input", Json.Str(r.input.name)),
+                                    field("input_revision", Json.Int(r.input.revision)),
+                                    field("failed", Json.Bool(false)),
+                                    field("run", Json.Str(r.name)),
+                                    field("proposal", Json.Str(d.proposal)),
+                                ],
+                            ),
+                    )
+            }
+        }
+        rows
+    }
+
+    /// Unplaced statements of current runs that no verdict has taken.
+    fn undecided() -> Result<List<Statement>, string> {
+        let rows = stored(UnplacedRow.all(self.db))?
+        let runs = stored(RunRow.all(self.db))?
+        let trails = stored(RunTrailRow.in_run(self.db, rows.map(it.run)))?
+        let taken = [n.int() ?? 0 for d in stored(ProposalDecisionRow.all(self.db))? for n in (decision_document(d)?).member("members").items()]
+        [statement(r)? for r in rows if !taken.contains(r.id) && current_run(r.run, runs, trails)]
+    }
+}
+
+/// The latest run of its producer and scope, on its input's current revision.
+fn current_run(r: RunRow, runs: List<RunRow>, trails: List<RunTrailRow>) -> bool {
+    if runs.any(it.producer == r.producer && it.scope == r.scope && it.revision > r.revision) { return false }
+    let trail? = trails.find(it.run.id == r.id) else { return false }
+    trail.input_revision == r.input.revision
+}
+
+fn statement(row: UnplacedRow) -> Result<Statement, string> {
+    let document = match parse(row.document) {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "a stored unplaced statement is not JSON" },
+    }
+    Statement { row: row, document: document, words: words(document.member("label").text() ?? "") }
+}
+
+/// Lower-case word tokens: runs of ASCII letters and digits, or non-ASCII.
+fn words(label: string) -> List<string> {
+    let text = ascii_lower(label)
+    mut found: List<string> = []
+    mut start = -1
+    for i in 0..text.length + 1 {
+        let inside = i < text.length && word_byte(text.char_code(i))
+        if inside && start < 0 { start = i }
+        if !inside && start >= 0 {
+            found.push(text.substring(start, i))
+            start = -1
+        }
+    }
+    found
+}
+
+fn word_byte(c: int) -> bool {
+    c >= ascii_a && c <= ascii_z || c >= ascii_zero && c <= ascii_nine || c >= utf8_continuation_low
+}
+
+/// Shared distinct words over all distinct words.
+fn overlap(a: List<string>, b: List<string>) -> float {
+    let union = a.concat([w for w in b if !a.contains(w)])
+    if union.is_empty() { return 0.0 }
+    let shared = [w for w in union if a.contains(w) && b.contains(w)].length
+    widened(shared) / widened(union.length)
+}
+
+/// An int as a float. The language has no conversion yet, so it reads the
+/// int's decimal text, which always parses.
+fn widened(n: int) -> float { parse_float("${n}")! }
+
+/// The C01 `kind` word; admission allowed only these two.
+fn addition_of(s: Statement) -> Addition {
+    match s.document.member("kind").text() ?? "" {
+        "property" -> Addition.Property,
+        rest -> Addition.Model,
+    }
+}
+
+/// Greedy, in statement order: each joins the first cluster of its kind and
+/// model whose first label it overlaps enough, else starts one.
+fn clustered(statements: List<Statement>, similarity: float) -> List<Cluster> {
+    mut clusters: List<Cluster> = []
+    for s in statements {
+        let addition = addition_of(s)
+        let model = s.document.member("model").text() ?? ""
+        let homes = [i for i, c in clusters if c.addition == addition && c.model == model && overlap(c.words, s.words) >= similarity]
+        let home = homes.first() ?? -1
+        if home < 0 {
+            clusters
+                .push(Cluster { addition: addition, model: model, words: s.words, members: [s] })
+        } else {
+            clusters = [if i == home { c with { members: c.members.concat([s]) } } else { c } for i, c in clusters]
+        }
+    }
+    clusters
+}
+
+fn proposed(c: Cluster) -> Proposal {
+    let name = most_common([s.words.join("_") for s in c.members])
+    let values = [v for s in c.members for v in [s.document.member("value")]]
+    let fields = match c.addition {
+        .Property -> [Guess { name: name, type_name: type_of(values), optional: true }],
+        .Model -> model_fields(values),
+    }
+    let model = match c.addition { .Property -> c.model, .Model -> pascal(name) }
+    Proposal {
+        id: "proposal:${digest([c.addition.word(), model, name].concat(c.members.map("${it.row.id}")).join("\t"))}",
+        addition: c.addition,
+        model: model,
+        name: name,
+        fields: fields,
+        members: c.members,
+    }
+}
+
+/// An object value's keys become fields; anything else is one `value`.
+fn model_fields(values: List<Json>) -> List<Guess> {
+    let objects = [v for v in values if v is .Obj]
+    if objects.is_empty() { return [Guess { name: "value", type_name: type_of(values), optional: true }] }
+    let keys = [f.key for o in objects for f in members(o)]
+    let distinct = [k for i, k in keys if !keys.slice(0, i).contains(k)]
+    [Guess { name: k, type_name: type_of([o.member(k) for o in objects]), optional: true } for k in distinct]
+}
+
+fn members(o: Json) -> List<Field> {
+    match o { .Obj(fields) -> fields, rest -> [] }
+}
+
+/// The narrowest Avra type every present value fits; text when they disagree.
+fn type_of(values: List<Json>) -> string {
+    let present = [v for v in values if !(v is .Null)]
+    when {
+        present.is_empty() -> "string"
+        present.all(it is .Int) -> "int"
+        present.all(it is .Int || it is .Float) -> "float"
+        present.all(it is .Bool) -> "bool"
+        _ -> "string"
+    }
+}
+
+/// The most frequent spelling; the least by byte order among ties.
+fn most_common(names: List<string>) -> string {
+    mut best = names[0]
+    for n in names {
+        let count = names.filter(it == n).length
+        let top = names.filter(it == best).length
+        if count > top || count == top && before(n, best) { best = n }
+    }
+    best
+}
+
+fn pascal(name: string) -> string {
+    [if w.is_empty() { w } else { ascii_upper_first(w) } for w in name.split("_")].join("")
+}
+
+fn ascii_upper_first(w: string) -> string {
+    let c = w.char_code(0)
+    if c >= ascii_a && c <= ascii_z { from_codepoint(c - ascii_a + ascii_upper_a) + w.substring(1, w.length) } else { w }
+}
+
+/// More examples first, then more distinct sources, then by name.
+fn ranked(proposals: List<Proposal>) -> List<Proposal> {
+    if proposals.length < 2 { return proposals }
+    let pivot = proposals[0]
+    let tail = proposals.slice(1, proposals.length)
+    ranked([p for p in tail if ahead(p, pivot)])
+        .concat([pivot])
+        .concat(ranked([p for p in tail if !ahead(p, pivot)]))
+}
+
+fn ahead(a: Proposal, b: Proposal) -> bool {
+    if a.members.length != b.members.length { return a.members.length > b.members.length }
+    if a.sources().length != b.sources().length { return a.sources().length > b.sources().length }
+    before(a.name, b.name)
+}
+
+fn decision_document(d: ProposalDecisionRow) -> Result<Json, string> {
+    match parse(d.document) {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "a stored proposal decision is not JSON" },
+    }
+}

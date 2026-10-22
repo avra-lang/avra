@@ -231,7 +231,7 @@ def main():
 
         import sqlite3
         with sqlite3.connect(database) as raw:
-            assert raw.execute("SELECT value FROM Meta WHERE key='format'").fetchone()[0] == "13"
+            assert raw.execute("SELECT value FROM Meta WHERE key='format'").fetchone()[0] == "14"
             for table in ("Meta", "EntityRow", "RunRow", "ClaimRow", "SupportRow", "AliasRow", "MergeRow", "TombstoneRow"):
                 assert raw.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
         assert cli({"op": "explain", "id": "p1", "property": "name"})[0]["locator"] is None
