@@ -486,6 +486,12 @@ export type Refusal = { cause: Cause, at: int }
 /// themselves name no float parser and a page that only reads text links none.
 export type Explain = { found: Cell<Refusal?>, floats: fn(string) -> bool }
 
+/// The explaining scan's seat: refusals recorded in `found`, a float's range
+/// judged by `parse_float`.
+fn judging(found: Cell<Refusal?>) -> Explain {
+    Explain { found: found, floats: (t: string) -> parse_float(t) != null }
+}
+
 /// Record a refusal in `why` — the first only, the one nearest the start —
 /// and answer -1. A scan given no `why` just answers -1.
 fn refused(why: Explain?, cause: Cause, at: int) -> int {
@@ -684,7 +690,7 @@ export fn skip(b: Bytes, i: int, room: int, why: Explain? = null) -> int {
 /// refuses what the tree reader refuses.
 export fn skip_judged(b: Bytes, i: int, room: int) -> int {
     let found: Cell<Refusal?> = Cell.new(null)
-    skip(b, i, room, Explain { found: found, floats: (t: string) -> parse_float(t) != null })
+    skip(b, i, room, judging(found))
 }
 
 /// Past an object member's name and its colon, where its value starts; -1,
@@ -728,7 +734,12 @@ export fn parse(text: string) -> Result<Json, JsonError> {
 /// The character whose first octet is at `i`, whole.
 fn character_at(b: Bytes, i: int) -> string {
     let lead = b.at(i)
-    let width = if lead >= 240 { 4 } else if lead >= 224 { 3 } else if lead >= 192 { 2 } else { 1 }
+    let width = when {
+        lead >= 240 -> 4
+        lead >= 224 -> 3
+        lead >= 192 -> 2
+        _ -> 1
+    }
     let end = if i + width > b.length { b.length } else { i + width }
     b.slice(i, end).text() ?? b.slice(i, i + 1).text() ?? "?"
 }
@@ -743,7 +754,7 @@ fn unexpected_at(b: Bytes, i: int, wanted: string) -> JsonError {
 /// say so, and the words made here.
 fn explained(b: Bytes, from: int) -> JsonError {
     let found: Cell<Refusal?> = Cell.new(null)
-    let why = Explain { found: found, floats: (t: string) -> parse_float(t) != null }
+    let why = judging(found)
     let _ = skip(b, from, MAX_DEPTH, why)
     let r? = found.get() else { return JsonError.Unexpected(from, "the end of the text") }
     match r.cause {
@@ -790,7 +801,11 @@ fn built(text: string, b: Bytes, i: int, past: Cell<int>) -> Built {
         return Built { json: Json.Float(x), next: end }
     }
     let end = word_end(b, i)
-    let json = if c == 116 { Json.Bool(true) } else if c == 102 { Json.Bool(false) } else { Json.Null }
+    let json = when {
+        c == 116 -> Json.Bool(true)
+        c == 102 -> Json.Bool(false)
+        _ -> Json.Null
+    }
     Built { json: json, next: end }
 }
 
