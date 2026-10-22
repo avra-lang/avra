@@ -236,8 +236,16 @@ def main():
                      batch_size=PARAMS["val_batch"], num_batches=-1, max_seq_length=longest,
                      progress_callback=metrics.heartbeat(len(full) // PARAMS["val_batch"]))
     best["full_heldout_loss"] = float(whole)
+    metrics.write("eval", None, val_loss=float(whole), note=f"full held-out set ({len(full)}), best adapter (step {it})")
+    from mlx.utils import tree_flatten
+
+    model.load_weights([(k, mx.zeros_like(v)) for k, v in tree_flatten(model.trainable_parameters()) if k.endswith("lora_b")], strict=False)
+    base = evaluate(model=model, dataset=CacheDataset(full), loss=letter_loss, batch_size=PARAMS["val_batch"], num_batches=-1,
+                    max_seq_length=longest, progress_callback=metrics.heartbeat(len(full) // PARAMS["val_batch"]))
+    best["full_heldout_base_loss"] = float(base)
     (out / "best.json").write_text(json.dumps(best, indent=1))
-    metrics.write("done", a.iters, val_loss=float(whole), note=f"best step {it}; val_loss here is the full held-out set ({len(full)}) on the best adapter; sample loss {loss:.4f}")
+    metrics.write("done", a.iters, val_loss=float(whole),
+                  note=f"best step {it}: full held-out loss {float(whole):.4f} vs base {float(base):.4f}; sample {loss:.4f}")
 
 
 if __name__ == "__main__":
