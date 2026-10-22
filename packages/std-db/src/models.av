@@ -1,0 +1,23 @@
+//! Every `@model` the program reaches, gathered once, and the one verb that
+//! brings a database to all of them — what a deployed program calls at start.
+//!
+//!     use @std.db.models.{migrate_all}
+//!
+//!     migrate_all(db, models)?
+use @std.sqlite.{Db}
+use @std.meta.{Type}
+use apply.{MigrateError, migrated_all}
+use db.{model_entry}
+
+/// A gathered model: the declaration itself, and its table's name.
+export type Found = { model: Type, name: string }
+
+/// Every model's table made, and grown to its declaration; answers how many
+/// steps it took in all. A change that moves refuses it, naming the table.
+/// The program gathers its own models — a collect reads the program that
+/// declares it:
+///
+///     collect models: List<Found> = @model in closure as Found { model: it, name: it.name } by it.name
+export fn migrate_all(mut db: Db, models: List<Found>) -> Result<int, MigrateError> {
+    migrated_all(db, [model_entry(f.model) for f in models])
+}
