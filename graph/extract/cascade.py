@@ -469,7 +469,7 @@ class Cascade:
 
     def run(self, source):
         self.t = Text(source["content"])
-        self.records, self.mentions, self.minted, self.resolved, self._units = [], [], 0, {}, None
+        self.records, self.mentions, self.minted, self.resolved, self._units, self._timed = [], [], 0, {}, None, {}
         self.frames = [dict(f, _range=position(f["passage"]), _given=True) for f in source.get("frames", [])]
         clock = time.time()
         self.llm.begin(source["content"])
@@ -958,30 +958,45 @@ class Cascade:
         return None
 
     def time_field(self, model, p, ctx, a, b):
-        """A declared time field: the scorer picks the time expression, then
-        what it means among calendar candidates around the source's anchor.
-        The model never writes a date; the field holds the declared encoding."""
-        import timex
-
+        """A declared time field: the time expression the sentence gives it (one
+        expression serves one field of a record), then what that means among
+        calendar candidates around the source's anchor. The model never writes a
+        date; the field holds the declared encoding."""
         name = p["name"]
         found = [(x["start"], x["end"]) for x in self.spans.get("times", {}).get(TIME_EXPRESSION, []) if a <= x["start"] and x["end"] <= b]
         if not found:
             log(f"gate time {model}.{name}: no time expression in the sentence")
             return None
-        pr = self.llm.pick(ctx, f"In this {model}, which words give the {name}?", [self.t.s[x:y] for x, y in found], ["not stated"])
-        k = taken("time", f"{model}.{name} words", pr, [self.t.s[x:y] for x, y in found], ACCEPT_FIELD)
-        if k is None:
+        span = self.timed(model, ctx, a, b, found).get(name)
+        if span is None:
+            log(f"gate time {model}.{name}: no time expression in the sentence gives it")
             return None
-        x, y = found[k]
+        x, y = span
         norm, meant = self.meaning(ctx, f"{model}.{name}", x, y, p["time"]["encoding"] != "iso_date")
         value = self.encoded_time(p["time"]["encoding"], norm) if norm else None
         if value is None:
             if norm:
                 log(f"gate time {model}.{name}: {norm['timex_type']} value does not fit the {p['time']['encoding']} encoding")
             return None
-        f = self.field(name, value, [(x, y)], score=pr[k] * meant)
+        f = self.field(name, value, [(x, y)], score=meant)
         f["normalization"] = norm
         return f
+
+    def timed(self, model, ctx, a, b, found):
+        """{time property: (start, end)}: which of a model's time fields each
+        expression of the sentence gives, if any; asked once per sentence."""
+        cache = self.__dict__.setdefault("_timed", {})
+        if (model, a, b) not in cache:
+            props = [q for q in self.plan.models[model]["properties"] if route(q) == "time"]
+            options = [f"{q['name'].replace('_', ' ')} ({'a date' if q['time']['encoding'] == 'iso_date' else 'a date and time'})" for q in props]
+            out = {}
+            for x, y in found:
+                pr = self.llm.pick(ctx, f'In this {model}, which time does "{self.t.s[x:y]}" give?', options, ["none of these"])
+                k = taken("time", f"{model} which time {self.t.s[x:y]!r} gives", pr, options, ACCEPT_FIELD)
+                if k is not None:
+                    out.setdefault(props[k]["name"], (x, y))
+            cache[(model, a, b)] = out
+        return cache[(model, a, b)]
 
     def meaning(self, ctx, what, x, y, instant=False):
         """(TIMEX3 normalization, score) of the time expression at [x, y): the

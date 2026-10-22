@@ -81,5 +81,45 @@ class Bounds(unittest.TestCase):
         self.assertIn("no time expression", cascade.LOG[0])
 
 
+class Assignment(unittest.TestCase):
+    def cascade_over(self, text, times, answers):
+        c = cascade.Cascade.__new__(cascade.Cascade)
+        c.plan = cascade.Plan([
+            model("Job", [prop("label", "string"), dict(prop("due_on", {"optional": "string"}), time={"encoding": "iso_date"}), dict(prop("due_at_ms", {"optional": "integer"}), time={"encoding": "unix_millis"})]),
+        ])
+        c.t = cascade.Text(text)
+        c.frames = []
+        c.request = {"input": {"received_at_ms": ANCHOR}}
+        c.spans = {"times": {cascade.TIME_EXPRESSION: [{"start": x, "end": y} for x, y in times]}}
+        script = list(answers)
+
+        def pick(ctx, question, options, tail=()):
+            want = script.pop(0)
+            out = [0.0] * (len(options) + len(tail))
+            out[len(options) if want is None else want] = 1.0
+            return out
+
+        c.llm = type("L", (), {"pick": staticmethod(pick)})()
+        return c
+
+    def test_one_expression_gives_one_field_of_the_record(self):
+        text = "Send it by 16 October 2026."
+        x = text.index("16 October 2026")
+        c = self.cascade_over(text, [(x, x + 15)], [0])
+        job = c.plan.models["Job"]
+        got = c.time_field("Job", job["properties"][1], "", 0, len(text))
+        self.assertEqual(got["value"], "2026-10-16")
+        self.assertIsNone(c.time_field("Job", job["properties"][2], "", 0, len(text)))
+
+    def test_an_expression_no_field_wants_gives_nothing(self):
+        text = "Send it by 16 October 2026."
+        x = text.index("16 October 2026")
+        c = self.cascade_over(text, [(x, x + 15)], [None])
+        job = c.plan.models["Job"]
+        cascade.LOG.clear()
+        self.assertIsNone(c.time_field("Job", job["properties"][1], "", 0, len(text)))
+        self.assertTrue(any("gives it" in l for l in cascade.LOG))
+
+
 if __name__ == "__main__":
     unittest.main()
