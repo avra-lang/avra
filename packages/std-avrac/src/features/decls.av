@@ -3139,7 +3139,9 @@ impl Decls {
         if self.is_extern(d) { return x.name }
         let local_name = match x.kind {
             .Method -> "${x.owner}.${self.method_key(d)}",
-            .Default -> "${x.owner}.${x.name}\$default",
+            // A default inherits its actual parent's complete identity:
+            // private-file separation and a method's own key included.
+            .Default -> { return "${self.symbol(x.parent!)}.${x.name}\$default" },
             .Case -> "${stem_of(self.file(x.file).path)}\$case${x.root?.index ?? x.stmt.index}",
             .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin or .Collect or .CollectEnum or .State -> x.name,
         }
@@ -3158,7 +3160,8 @@ impl Decls {
         let apart = (self.apart_of.get())(x.file)
         if apart.is_empty() { return false }
         match x.kind {
-            .Method or .Default -> apart.any((o) -> self.owns_member(o, x)),
+            .Default -> x.parent != null && self.apart_here(x.parent!),
+            .Method -> apart.any((o) -> self.owns_member(o, x)),
             .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Case or .Builtin or .Collect or .CollectEnum or .State -> apart.any(same_decl(it, d)),
         }
     }
