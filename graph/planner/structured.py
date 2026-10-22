@@ -10,7 +10,7 @@ phrase spoken, one record the question names) is taken without the model.
 """
 import re
 
-from catalog import PARAMETERS, models_of, base_shape, reference_target, relation_ends
+from catalog import PARAMETERS, derivations_of, models_of, base_shape, reference_target, relation_ends, seat_of
 from prompt import line
 
 
@@ -23,8 +23,9 @@ RECORDED = ["the content of the records: values, words, dates, people (missing m
 class Plan:
     """The composed query, built one choice at a time."""
 
-    def __init__(self):
-        self.parts, self.where, self.vars = [], [], []
+    def __init__(self, vars=None):
+        self.parts, self.where, self.vars = [], [], [] if vars is None else vars
+        self.later = []
 
     def node(self, label):
         var = f"n{len(self.vars)}"
@@ -35,7 +36,7 @@ class Plan:
         text = "MATCH " + "".join(self.parts)
         if self.where:
             text += " WHERE " + " AND ".join(self.where)
-        return f"{text} RETURN {returns}"
+        return " ".join([text, *self.later, f"RETURN {returns}"])
 
 
 class Evidence:
@@ -198,7 +199,9 @@ def arrival(models, label, options):
 def plan(chooser, question, schema, context, search=None, depth=None, model_of=None):
     """One query composed from closed choices; `depth` caps the hops (the
     request's budget), else the catalog's size bounds the walk."""
-    models = models_of(schema)
+    derived = derivations_of(schema)
+    outputs = {d["output"] for d in derived}
+    models = {k: m for k, m in models_of(schema).items() if k not in outputs}
     head = f"Question: {question}"
     evidence = Evidence(search, question, models)
     out = Plan()
@@ -232,7 +235,9 @@ def plan(chooser, question, schema, context, search=None, depth=None, model_of=N
         narrowed(chooser, trail, models[target], var, out, question, evidence)
         evidence.spent.add(target)
     trail = f"{head}\nSo far: {' '.join(out.parts)} — the answer is about these {label} records."
-    items = returns(chooser, trail, models[label], var, held and (held[0], models[held[1]]), evidence)
+    offers = [d for d in derived if offered(d, label)]
+    items = returns(chooser, trail, models[label], var, held and (held[0], models[held[1]]), evidence, offers,
+                    lambda d: derivation_call(chooser, trail, d, out, var, label, models, evidence, question))
     if held and f"{held[0]}." in items:
         out.parts[held[2]] = out.parts[held[2]].replace("-[:", f"-[{held[0]}:", 1)
     return out.cypher(items)
@@ -304,7 +309,49 @@ def narrowed(chooser, trail, model, var, out, question, evidence):
         evidence.explain(w)
 
 
-def returns(chooser, trail, model, var, record=None, evidence=None):
+def offered(derivation, label):
+    """Whether a derivation reads only records and one of its seats is this model."""
+    seats = [seat_of(p) for p in derivation["parameters"]]
+    return None not in seats and any(model == label for _, model in seats)
+
+
+def derivation_call(chooser, trail, d, out, var, label, models, evidence, question):
+    """A declared derivation called on the walk's end, whose records fill a seat of
+    their model (a single-row one first): each other seat is filled
+    by a further MATCH from the previous seat's records, through a reference
+    they share, else from a record of its model the question names, else from
+    every record of it."""
+    seats = [seat_of(p) for p in d["parameters"]]
+    first = min((i for i, (_, model) in enumerate(seats) if model == label), key=lambda i: seats[i][0] == "all")
+    bound, at = {first: var}, (var, label)
+    for i, (how, model) in enumerate(seats):
+        if i in bound:
+            continue
+        sub, v = Plan(out.vars), out.node(model)
+        links = [h for h in hops(models, at[1]) if h[1] == model and h[4] is None]
+        if links:
+            link = links[best(chooser, trail, f"Which relation takes the {at[1]} records to the {model} records?",
+                              [h[2] for h in links])]
+            sub.parts.append(f"({at[0]}){link[0]}({v}:{model})")
+        else:
+            sub.parts.append(f"({v}:{model})")
+            if how != "all":
+                named = [f for f in evidence.named(question) if f[0] == model]
+                options = [f"the {m} whose {p} is {val!r}, named in the question" for m, p, val in named] + ["any of them"]
+                pick = best(chooser, trail, f"Which {model} record does the question mean?", options)
+                if pick < len(named):
+                    evidence.used.add(named[pick])
+                    evidence.explain(named[pick][2])
+                    sub.where.append(f"{v}.{named[pick][1]} = {quoted(named[pick][2])}")
+        if how != "all":
+            narrowed(chooser, trail, models[model], v, sub, question, evidence)
+        out.later.append("MATCH " + "".join(sub.parts) + (" WHERE " + " AND ".join(sub.where) if sub.where else ""))
+        bound[i], at = v, (v, model)
+    args = ", ".join(f"collect({bound[i]})" if how == "all" else bound[i] for i, (how, _) in enumerate(seats))
+    return f"{d['name']}({args}) AS {d['name']}"
+
+
+def returns(chooser, trail, model, var, record=None, evidence=None, offers=(), compose=None):
     """The RETURN items: a count, one recorded status, or chosen values. The
     final node's properties are candidates; a relation record passed on the
     way is a path, so its own fields are candidates only where unexplained
@@ -314,8 +361,12 @@ def returns(chooser, trail, model, var, record=None, evidence=None):
     if record:
         props += [(record[0], record[1]["name"], p) for p in record[1]["properties"]
                   if evidence and evidence.points_at(p)]
-    if best(chooser, trail, "What does the question ask for?",
-            ["the value of one or more of their properties", "how many there are"]) == 1:
+    asked = best(chooser, trail, "What does the question ask for?",
+                 ["the value of one or more of their properties", "how many there are"]
+                 + [f"the declared computation {d['name']}: {line(d['description'])}" for d in offers])
+    if asked >= 2:
+        return compose(offers[asked - 2])
+    if asked == 1:
         return f"count({var}) AS count"
     flags = [(v, p["name"]) for v, _, p in props if base_shape(p["shape"]) == "boolean"]
     if record:

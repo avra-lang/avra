@@ -34,22 +34,28 @@ def labeller(question_id, labels, needed):
     """The gold option for each decision: the option holding the next label, or
     for a property choice the next needed property (then "nothing else")."""
     labels, needed = list(labels), set(needed)
+    seen, met = {}, set()
 
     def label(context, question, options):
+        print("Q:", question[:60], "|", context.splitlines()[-1][:160]) if __import__("os").environ.get("REC_DEBUG") else None
         if question.startswith(("Which property does", "Which other property")):
             given = set(re.findall(r"the \w+'s (\w+)", context.partition("Already answering with:")[2]))
             wanted = [i for i, o in enumerate(options)
                       if (m := re.match(r"the \w+'s (\w+)", o)) and m.group(1) in needed - given]
             return wanted[0] if wanted else next(i for i, o in enumerate(options) if not re.match(r"the \w+'s ", o))
-        if not labels:
-            raise SystemExit(f"{question_id}: no label left for: {question}\n  options: {options}")
-        hits = [i for i, o in enumerate(options) if labels[0] in o]
-        if len(hits) != 1:
-            raise SystemExit(f"{question_id}: label {labels[0]!r} matches {len(hits)} of: {question}\n  options: {options}")
-        labels.pop(0)
-        return hits[0]
+        if (context, question) not in seen:
+            if not labels:
+                raise SystemExit(f"{question_id}: no label left for: {question}\n  options: {options}")
+            seen[(context, question)] = labels.pop(0)
+        word = seen[(context, question)]
+        hits = [i for i, o in enumerate(options) if word in o]
+        if len(hits) > 1:
+            raise SystemExit(f"{question_id}: label {word!r} matches {len(hits)} of: {question}\n  options: {options}")
+        met.update([word] if hits else [])
+        return hits[0] if hits else 0
 
     label.unused = labels
+    label.missed = lambda: [w for w in seen.values() if w not in met]
     return label
 
 
@@ -93,6 +99,8 @@ def main():
             label = labeller(row["id"], row["choices"], row.get("needed", []))
             graph = Graph([str(app.binary), "request", "--db", str(app.db)])
             cypher, made = walk(q["question"], schema, context, label, graph.search, None, graph.model_of)
+            if label.missed():
+                raise SystemExit(f"{row['id']}: labels matching no option: {label.missed()}\n  composed: {cypher}")
             if label.unused:
                 raise SystemExit(f"{row['id']}: labels left unused: {label.unused}\n  composed: {cypher}")
             if row.get("cypher") and row["cypher"] != cypher:

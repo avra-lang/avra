@@ -119,6 +119,26 @@ class Loop(unittest.TestCase):
         self.assertNotIn("speaker", params_of({**context, "speaker": None}))
 
 
+class Derived(unittest.TestCase):
+    SCHEMA = {"fingerprint": "f", "revision": 1, "models": [
+        {"name": "Invoice", "description": "A bill.", "properties": [prop("number", "string")], "semantics": {}},
+        {"name": "Payment", "description": "Money paid.", "properties": [prop("invoice", ref("Invoice")), prop("amount", "integer")],
+         "semantics": {}},
+        {"name": "PaymentStatus", "description": "", "properties": [prop("settled", "boolean")], "semantics": {}},
+    ], "derivations": [{"name": "payment_status", "description": "Whether an invoice is settled.", "output": "PaymentStatus",
+                        "parameters": [{"name": "invoice", "input": {"one": "Invoice"}},
+                                       {"name": "payments", "input": {"all": "Payment"}}]}]}
+
+    def test_a_declared_derivation_is_composed_from_its_seats(self):
+        import structured
+
+        chooser = Scripted(["Invoice", "yes", "payment_status"])
+        cypher = structured.plan(chooser, "Is it paid?", self.SCHEMA, NOBODY)
+        self.assertEqual(cypher, "MATCH (n0:Invoice) MATCH (n0)<-[:invoice]-(n1:Payment) "
+                                 "RETURN payment_status(n0, collect(n1)) AS payment_status")
+        self.assertNotIn("PaymentStatus", [o for q, os in chooser.asked for o in os if q.startswith("Which kind")])
+
+
 class Reading(unittest.TestCase):
     def test_a_bound_valid_instant_is_the_views_without_a_choice(self):
         context = {"question_at_ms": 5, "valid_at_ms": 86_400_000}

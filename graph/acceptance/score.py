@@ -28,6 +28,8 @@ HELDOUT_RESULTS = HERE / "heldout-results"
 SPLIT = HERE / "split.json"
 STATUSES = ("pass", "fail", "not-run", "error")
 SET_KEYS = {"candidates", "excluded"}
+VALUE = {"take": "value"}
+SPOKEN = ("candidates", "conflicts", "clarify", "reason")
 MEDIA = {"csv": "text/csv"}
 
 
@@ -195,16 +197,6 @@ def complete_plan(row, request, schema, context, view):
 
 # ---- projection and grading -------------------------------------------------
 
-def nest(fields):
-    tree = {}
-    for field in fields:
-        node = tree
-        for token in field["path"][:-1]:
-            node = node.setdefault(token, {})
-        node[field["path"][-1]] = field["value"]
-    return tree
-
-
 def reshaped(value, spec):
     """Generic projections of a structured value: one element, one member, or a list of records as a map."""
     if "index" in spec and isinstance(value, list):
@@ -217,27 +209,22 @@ def reshaped(value, spec):
     return value
 
 
-def read_keys(answer, keys):
-    """Grader-side reading of generic [entity, name] fields into manifest keys."""
+def terms(answer, spec):
+    """What each field of the answer binds for one expected key, by the kind of
+    binding the reading names (the entity, the value or the revision it rests
+    on) and never by the spelling of the field's output name."""
     cited = {c["id"]: c["source"]["revision"] for c in answer.get("citations", [])}
     takes = {
         "entity": lambda f: f["path"][0],
         "value": lambda f: f["value"],
         "revision": lambda f: max(cited.get(c, 0) for c in f["citations"]),
     }
-    out = {}
-    for key, spec in keys.items():
-        for field in answer.get("fields", []):
-            if (field["path"] if spec.get("bare") else field["path"][1:]) == spec["suffix"]:
-                out[key] = reshaped(takes[spec["take"]](field), spec)
-                break
-    return out
+    return [reshaped(takes[spec["take"]](f), spec) for f in answer.get("fields", [])]
 
 
-def projection(answer, keys=None):
-    """The actual answer as the same shape the manifest's expectations use."""
-    tree = nest(answer.get("fields", []))
-    tree.update(read_keys(answer, keys or {}))
+def extras(answer):
+    """The answer's engine-spoken members: candidates, conflicts, a clarification, a reason."""
+    tree = {}
     if answer.get("candidates"):
         tree["candidates"] = [c["entity"] for c in answer["candidates"]]
     if answer.get("conflicts"):
@@ -245,11 +232,44 @@ def projection(answer, keys=None):
                              for c in answer["conflicts"]]
     if answer.get("clarify"):
         tree["clarify"] = answer["clarify"]
-    if answer.get("absent") and "reason" not in tree:
+    if answer.get("absent"):
         tree["reason"] = answer["absent"][0]["code"]
     if answer.get("problems") and "reason" not in tree:
         tree["reason"] = answer["problems"][0]["code"]
     return tree
+
+
+def bound(wanted, answer, ids, keys):
+    """Whether every expected member is bound by the answer. An engine-spoken
+    member is read by its name; any other by what a field binds: the keys'
+    reading says whether it is the entity, the value or the revision, and one
+    field binds at most one expected value. Scalars, units, booleans and
+    absence compare exactly."""
+    spoken = canonical(extras(answer), ids)
+    rest = {}
+    for key, want in wanted.items():
+        if key in SPOKEN:
+            if key not in spoken or not contains(canonical(want, ids), spoken[key]):
+                return False
+        else:
+            rest[key] = canonical(want, ids)
+    options = {}
+    for key, want in rest.items():
+        spec = keys.get(key, VALUE)
+        options[key] = [i for i, t in enumerate(canonical(terms(answer, spec), ids)) if contains(want, t)]
+        if not options[key]:
+            return False
+    return distinct(list(options.items()), keys, set())
+
+
+def distinct(pending, keys, used):
+    """An assignment of fields to the expected values they bind in which no value-bound field serves two."""
+    if not pending:
+        return True
+    (key, hits), rest = pending[0], pending[1:]
+    if keys.get(key, VALUE)["take"] != "value":
+        return distinct(rest, keys, used)
+    return any(distinct(rest, keys, used | {i}) for i in hits if i not in used)
 
 
 def canonical(value, ids, key=None):
@@ -284,9 +304,9 @@ def grade(question, answer, ids, by_ref, superseded, keys=None):
     """Three independent verdicts for one structured answer."""
     expect = question["expect"]
     abstained = answer["status"] == expect["status"]
-    actual = canonical(projection(answer, keys), ids)
-    wanted = {k: v for k, v in expect["answer"].items() if k not in expect.get("optional", []) or k in actual}
-    matched = abstained and contains(canonical(wanted, ids), actual)
+    wanted = {k: v for k, v in expect["answer"].items()
+              if k not in expect.get("optional", []) or bound({k: v}, answer, ids, keys or {})}
+    matched = abstained and bound(wanted, answer, ids, keys or {})
     for wanted_absence in expect.get("absent", []):
         found = any(
             a["code"] == wanted_absence["code"]
@@ -447,6 +467,7 @@ class Cache:
 
 
 CACHE = None
+REPLAY = {}
 IDENTITIES = {}
 TIMINGS = HERE / "timings.json"
 
@@ -630,7 +651,7 @@ def score_checkpoint(binary, checkpoint, questions, fixture, mode, hooks, scratc
                 else [file_digest(ORACLE / "facts.jsonl"), file_digest(ORACLE / "plans.jsonl")])
     for q in runnable:
         key = Cache.key(mode, q["id"], checkpoint, file_digest(pathlib.Path(binary)), schema["fingerprint"],
-                        hooks.get("planner"), Cache.code(hooks.get("planner")), evidence)
+                        hooks.get("planner"), Cache.code(hooks.get("planner")), evidence, file_digest(HERE / "score.py"))
         follows = q.get("context", {}).get("previous_question")
         kept = CACHE.get("questions", key) if CACHE and not follows else None
         if kept:
@@ -677,6 +698,8 @@ def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, 
                                  q.get("source_view", "current"))
             if plans[q["id"]].get("as_of"):
                 plan = {**plan, "as_of": as_of_for(plans[q["id"]]["as_of"], context, app.after)}
+        elif q["id"] in REPLAY:
+            plan = REPLAY[q["id"]]
         else:
             log = []
             record["planner_log"] = log
@@ -816,6 +839,10 @@ def self_test():
     assert all(right.values()), right
     wrong = grade(q01, answer_for("person:sora"), {}, by_ref, set())
     assert not wrong["answer"], wrong
+    renamed = answer_for("person:elena")
+    renamed["fields"][0]["path"] = ["any_alias_at_all"]
+    assert grade(q01, renamed, {}, by_ref, set())["answer"], "an output name is not part of the answer"
+    assert not grade(q01, {**renamed, "fields": []}, {}, by_ref, set())["answer"], "no field binds the value"
     assert not grade(q01, answer_for("person:elena", ("other", 1)), {}, by_ref, set())["provenance"]
     assert not grade(q01, answer_for("person:elena"), {}, by_ref, {"s01"})["provenance"]
     try:
@@ -950,6 +977,9 @@ def main():
                              "in every mode, default hooks when present")
     parser.add_argument("--extractor", help="command: source envelope JSON in, C01 extraction result JSON out")
     parser.add_argument("--planner", help="command: question + context JSON in, C01 ReadPlan JSON out")
+    parser.add_argument("--regrade", metavar="RESULTS",
+                        help="grade a results file's recorded plans again with this grader (no planner runs; "
+                             "extractions come from the cache); writes a new results file and prints what flipped")
     parser.add_argument("--only", help="comma-separated development question ids")
     parser.add_argument("--heldout", action="store_true",
                         help="run the held-out questions; prints an aggregate only")
@@ -996,6 +1026,15 @@ def main():
         only = named or {q["id"] for q in fixture[3]} - held
     runs = ("oracle-facts", "planner", "e2e") if args.slice else (args.mode,)
     hooks = slice_hooks(args) if args.slice else {"extractor": args.extractor, "planner": args.planner}
+    before = {}
+    if args.regrade:
+        if args.heldout:
+            sys.exit("--regrade reads a development results file")
+        old = json.loads(pathlib.Path(args.regrade).read_text())
+        before = old["questions"]
+        REPLAY.update({q: r["planned"] for q, r in before.items() if r.get("planned")})
+        runs, hooks = (old["mode"],), {**old["hooks"], "planner": "replay " + pathlib.Path(args.regrade).name}
+        only = only & set(REPLAY)
     failed = False
     for mode in runs:
         with tempfile.TemporaryDirectory(prefix="graph-score-") as directory:
@@ -1004,6 +1043,9 @@ def main():
         counts = (heldout_report(mode, hooks, results, extractions, split["categories"]) if args.heldout
                   else report(mode, hooks, results, extractions))
         failed = failed or counts["pass"] != len(results)
+        for q, r in results.items():
+            if before and before[q]["status"] != r["status"]:
+                print(f"flipped {q}: {before[q]['status']} -> {r['status']}")
     sys.exit(1 if failed else 0)
 
 

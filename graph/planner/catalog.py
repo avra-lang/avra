@@ -22,6 +22,17 @@ def models_of(schema):
     return {m["name"]: m for m in models}
 
 
+def derivations_of(schema):
+    """The catalog's declared derivations, from a `schema` op answer."""
+    return schema.get("derivations", []) if isinstance(schema, dict) else []
+
+
+def seat_of(parameter):
+    """(how many rows, model) a derivation parameter takes, or None for a literal seat."""
+    seat = parameter["input"]
+    return next(((how, seat[how]) for how in ("one", "maybe", "all") if isinstance(seat, dict) and how in seat), None)
+
+
 def base_shape(shape):
     while isinstance(shape, dict) and "optional" in shape:
         shape = shape["optional"]
