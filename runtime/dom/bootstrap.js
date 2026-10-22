@@ -667,7 +667,7 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
       return start(next, said);
     });
   }
-  return first;
+  return { mod: first, ears: apply.ears };
 }
 
 // EVERY WAY THE PAGE ENTERS THE MODULE — an event, a timer, a frame, an
