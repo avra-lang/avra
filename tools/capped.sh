@@ -18,7 +18,11 @@
 # Those redirects are justified at their sites and stay uncapped.
 #
 #   sh tools/capped.sh <file> <bytes> <command> [args...]
+#   sh tools/capped.sh --last <command> [args...]   # its last stdout line, and its status
 #   sh tools/capped.sh --self-test
+#
+# `--last` is what `$(command | tail -n 1)` means, without losing the status:
+# a build's binary path, a run's answer. Stderr passes through untouched.
 set -e
 
 if [ "$1" = "--self-test" ]; then
@@ -46,8 +50,27 @@ if [ "$1" = "--self-test" ]; then
     sh "$self" "$t/c.out" 4096 sh -c 'i=0; while [ $i -lt 20000 ]; do echo "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; i=$((i+1)); done'
     size="$(wc -c < "$t/c.out" | tr -d " ")"
     [ "$size" -le 4096 ] || { echo "capped: no ceiling — $size bytes"; exit 1; }
-    echo "capped: self-test passed — 3 fixtures (content, status, ceiling at $size bytes)"
+    [ "$(sh "$self" --last printf 'a\nb\n')" = b ] || { echo "capped: --last lost the last line"; exit 1; }
+    [ "$(sh "$self" --last printf 'a\nb')" = b ] || { echo "capped: --last lost a line with no newline"; exit 1; }
+    st=0
+    got=$(sh "$self" --last sh -c 'echo path; exit 4') || st=$?
+    [ "$st" = 4 ] && [ "$got" = path ] || { echo "capped: --last answered $st, '$got'"; exit 1; }
+    [ "$(sh "$self" --last sh -c 'echo out; echo err >&2' 2>/dev/null)" = out ] || { echo "capped: --last read stderr"; exit 1; }
+    echo "capped: self-test passed — 7 fixtures (content, status, ceiling at $size bytes; --last's line, unterminated line, status and stdout alone)"
     exit 0
+fi
+
+if [ "$1" = "--last" ]; then
+    shift
+    # the marker rides behind the last line, so two lines hold both, in bounded memory
+    last=$({ set +e; "$@"; echo "__capped_status=$?"; } | tail -n 2)
+    status="${last##*__capped_status=}"
+    body="${last%__capped_status=*}"
+    body="${body%
+}"
+    [ -z "$body" ] || printf '%s\n' "${body##*
+}"
+    exit "$status"
 fi
 
 out="$1"; bytes="$2"; shift 2
