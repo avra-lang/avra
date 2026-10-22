@@ -1137,9 +1137,13 @@ def serve():
             started = time.time()
             try:
                 body = json.loads(data)
-                answer = answered(body, models)
-            except Exception as e:
-                body, answer = {}, {"error": f"{type(e).__name__}: {e}"}
+            except ValueError:
+                body, answer = {}, {"error": f"the client closed before its request was complete ({len(data)} bytes arrived); a request waits in the socket while another is served"}
+            else:
+                try:
+                    answer = answered(body, models)
+                except Exception as e:
+                    answer = {"error": f"{type(e).__name__}: {e}"}
             op = body.get("op", "extract")
             print(
                 f"{time.strftime('%H:%M:%S')} {op} bytes={len(data)} options={len(body.get('options', []))} "
