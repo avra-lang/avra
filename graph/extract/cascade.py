@@ -2,6 +2,7 @@
 scores closed choices, and every proposal is an exact source anchor.
 
 usage: python cascade.py [--catalog SCHEMA_JSON] [--local] [--stream] [--no-prefix] [--units M] < in.json > out.json
+       python cascade.py --identity   # what decides the results (identity.py), as JSON
        python cascade.py --serve   # keep both models resident behind a Unix socket
 
 Without a listening service it exits 1 ("service unavailable"); --local
@@ -25,6 +26,7 @@ import time
 
 import string
 
+from identity import identity
 from pins import ENCODER, MODEL_ID, SCORER, parameter
 
 PARAMS_FILE = os.environ.get("CASCADE_PARAMS", os.path.join(os.path.dirname(os.path.abspath(__file__)), "params.json"))
@@ -35,6 +37,7 @@ def fitted(name):
     return json.load(open(PARAMS_FILE))["params"][name]["value"]
 
 
+LOADED = identity()
 SPAN_THRESHOLD = fitted("span_threshold")
 ACCEPT = fitted("accept")
 ACCEPT_SPEAKER = fitted("accept_speaker")
@@ -1090,7 +1093,11 @@ def received(conn):
 
 
 def answered(body, models):
-    """A generate op's text, or an extraction's result and log."""
+    """A generate op's text, or an extraction's result and log. A request
+    that names the identity it expects is answered only by a service that
+    loaded exactly that."""
+    if "identity" in body and body["identity"] != LOADED:
+        raise RuntimeError("this service loaded a different cascade than the client's; restart `cascade.py --serve`")
     if body.get("op") == "generate":
         return {"text": models.llm.generate(body["messages"], int(body.get("max_tokens", GENERATE_BUDGET)), [str(s) for s in body.get("stop", [])])}
     if body.get("op") == "choose":
@@ -1218,7 +1225,7 @@ def streamed(reqs, args):
     if "--local" in args:
         lines = ({"index": i, "result": r, "log": l} for i, (r, l) in enumerate(extracted(reqs)))
     else:
-        lines = remote_lines({"requests": reqs, "stream": True, "prefix": "--no-prefix" not in args, "trace": "--trace" in args})
+        lines = remote_lines({"identity": LOADED, "requests": reqs, "stream": True, "prefix": "--no-prefix" not in args, "trace": "--trace" in args})
         if lines is None:
             print(f"service unavailable: nothing answers on {SOCKET}; start `cascade.py --serve`, or pass --local to load the models here", file=sys.stderr)
             return 1
@@ -1257,6 +1264,9 @@ def remote_lines(body):
 
 def main():
     args = sys.argv[1:]
+    if "--identity" in args:
+        print(json.dumps(LOADED, sort_keys=True))
+        return 0
     if "--serve" in args:
         return serve()
     stdin = json.load(sys.stdin)
@@ -1269,7 +1279,7 @@ def main():
         answers = extract_batch(reqs)
     else:
         units = args[args.index("--units") + 1] if "--units" in args else None
-        answer = remote({"requests": reqs, "prefix": "--no-prefix" not in args, "units": units, "trace": "--trace" in args})
+        answer = remote({"identity": LOADED, "requests": reqs, "prefix": "--no-prefix" not in args, "units": units, "trace": "--trace" in args})
         if answer is None:
             print(f"service unavailable: nothing answers on {SOCKET}; start `cascade.py --serve`, or pass --local to load the models here", file=sys.stderr)
             return 1

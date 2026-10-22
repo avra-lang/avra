@@ -400,7 +400,12 @@ class Cache:
     question by mode, question, checkpoint, app binary, catalog, the planner
     command and code, and the evidence it was asked over (the checkpoint's
     extraction keys, or the oracle's files). Held-out runs never use it.
-    Failures are never kept, so a resumed run retries them."""
+    Failures are never kept, so a resumed run retries them.
+
+    An extraction is keyed by `extraction_key`: the whole source envelope,
+    the catalog fingerprint, the extractor command and the extractor's own
+    identity (models, fitted parameters, bounds, environment, code), so an
+    entry is served only to the extractor that would produce it."""
 
     def __init__(self, fixture):
         self.root = pathlib.Path.home() / ".cache/avra-graph-score" / fixture
@@ -417,6 +422,20 @@ class Cache:
         texts = [p.read_bytes() for f in files for p in sorted(f.parent.glob("*.py"))]
         return hashlib.sha256(b"".join(texts)).hexdigest()
 
+    @staticmethod
+    def identity(command):
+        """What the extractor says decides its results (`--identity`), or, for
+        a hook that cannot say, a digest of the programs beside it."""
+        if command not in IDENTITIES:
+            argv = shlex.split(command.replace("{schema}", os.devnull)) + ["--identity"]
+            try:
+                done = subprocess.run(argv, capture_output=True, text=True, cwd=ROOT)
+                said = json.loads(done.stdout) if done.returncode == 0 else None
+            except (OSError, ValueError):
+                said = None
+            IDENTITIES[command] = said if isinstance(said, dict) else {"unreported": Cache.code(command)}
+        return IDENTITIES[command]
+
     def get(self, kind, key):
         path = self.root / kind / f"{key}.json"
         return json.loads(path.read_text()) if path.exists() else None
@@ -427,6 +446,7 @@ class Cache:
 
 
 CACHE = None
+IDENTITIES = {}
 TIMINGS = HERE / "timings.json"
 
 
@@ -461,6 +481,39 @@ def fit_timeout(paths):
     print({k: v for k, v in out.items() if k != "fitted"}, "->", TIMINGS.relative_to(ROOT))
 
 
+def extraction_key(source, schema, hooks):
+    return Cache.key("extraction/2", envelope(source), schema["fingerprint"], hooks["extractor"],
+                     Cache.identity(hooks["extractor"]))
+
+
+def legacy_key(source, schema, hooks):
+    """The key extractions were kept under before `extraction_key`: it did not
+    see the source text, the fitted parameters or the models."""
+    return Cache.key(source["id"], source["observation"], source["revision"], schema["fingerprint"],
+                     hooks["extractor"], Cache.code(hooks["extractor"]))
+
+
+def adopt_legacy(fixture, hooks, binary, scratch):
+    """Copies the extractions kept under the legacy key to the current key,
+    leaving the originals, and logs each in adopted.jsonl. The legacy key did
+    not see the fitted parameters, so an adoption is the caller's word that
+    they have not changed since those entries were made."""
+    app = App(binary, scratch / "adopt.db", scratch)
+    schema = app.call({"op": "schema"})
+    adopted = []
+    for s in fixture[1]:
+        old, new = legacy_key(s, schema, hooks), extraction_key(s, schema, hooks)
+        kept = CACHE.get("extractions", old)
+        if kept is not None and CACHE.get("extractions", new) is None:
+            CACHE.put("extractions", new, kept)
+            adopted.append({"source": s["id"], "legacy": old, "key": new})
+    with (CACHE.root / "adopted.jsonl").open("a") as log:
+        for row in adopted:
+            log.write(json.dumps({**row, "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                  "identity": Cache.identity(hooks["extractor"])}) + "\n")
+    print(f"adopted {len(adopted)} of {len(fixture[1])} legacy extractions (originals kept)")
+
+
 def file_digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
 
@@ -481,8 +534,7 @@ def publish_source(app, mode, hooks, source, schema, revision, trace=None):
         record = {"source": source["id"], "log": log}
         if trace is not None:
             trace.append(record)
-        key = Cache.key(source["id"], source["observation"], source["revision"], schema["fingerprint"],
-                        hooks["extractor"], Cache.code(hooks["extractor"]))
+        key = extraction_key(source, schema, hooks)
         record["key"] = key
         result = CACHE.get("extractions", key) if CACHE else None
         record["cached"] = result is not None
@@ -648,8 +700,7 @@ def prefill(binary, fixture, mode, hooks, scratch, checkpoint, trace=None):
     schema = app.call({"op": "schema"})
     schema_file = scratch / "prefill-schema.json"
     schema_file.write_text(json.dumps(schema))
-    keyed = [(Cache.key(s["id"], s["observation"], s["revision"], schema["fingerprint"], hooks["extractor"],
-                        Cache.code(hooks["extractor"])), s) for s in fixture[1][:checkpoint]]
+    keyed = [(extraction_key(s, schema, hooks), s) for s in fixture[1][:checkpoint]]
     missing = [(k, s) for k, s in keyed if CACHE.get("extractions", k) is None]
     if not missing:
         return
@@ -767,16 +818,41 @@ def self_test():
     except ValueError:
         pass
     assert sealed([{"question": "q01"}], "plans")
-    print("score self-test passed: wrong fails, missing hooks not-run, cherry-picked prefix refused")
+    src = read_lines(FIXTURE / "sources.jsonl")[0]
+    schema, hooks = {"fingerprint": "f"}, {"extractor": "x"}
+    IDENTITIES["x"] = {"params": "a"}
+    base = extraction_key(src, schema, hooks)
+    assert base == extraction_key(dict(src), schema, hooks)
+    assert base != extraction_key({**src, "content": src["content"] + " "}, schema, hooks), "text unseen"
+    assert base != extraction_key(src, {"fingerprint": "g"}, hooks), "catalog unseen"
+    IDENTITIES["x"] = {"params": "b"}
+    assert base != extraction_key(src, schema, hooks), "extractor identity unseen"
+    IDENTITIES.clear()
+    print("score self-test passed: wrong fails, missing hooks not-run, cherry-picked prefix refused, extraction key sees text, catalog and extractor")
 
 
 SLICE = "q01,q06,q07,q16,q46,q47"
+SLICES = HERE / "slices.json"
 # Modes publishing the oracle's facts: with the oracle's plans, or with the planner hook.
 ORACLE_FACTS = ("oracle-facts", "planner")
 SLICE_HOOKS = {
     "extractor": ("graph/extract/cascade.py", "python3 graph/extract/cascade.py --catalog {schema}"),
     "planner": ("graph/planner/plan.py", "python3 graph/planner/plan.py"),
 }
+
+
+def slice_ids(name):
+    """A slice's question ids; a named slice is refused once the fixture it was
+    derived from has moved."""
+    if name == "demo":
+        return SLICE
+    recorded = json.loads(SLICES.read_text()) if SLICES.exists() else {}
+    if name not in recorded or name == "provenance":
+        sys.exit(f"no slice {name!r}: " + ", ".join(["demo"] + [k for k in recorded if k != "provenance"]))
+    moved = [n for n, d in recorded["provenance"]["inputs"].items() if file_digest(FIXTURE / n) != d]
+    if moved:
+        sys.exit(f"slice {name!r} is stale ({', '.join(moved)} changed): run select_slice.py")
+    return ",".join(recorded[name])
 
 
 def slice_hooks(args):
@@ -829,7 +905,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("oracle-facts", "planner", "e2e"), default="e2e",
                         help="planner: the oracle's facts with the planner hook instead of the oracle's plans")
-    parser.add_argument("--slice", action="store_true", help=f"{SLICE} in both modes, default hooks when present")
+    parser.add_argument("--slice", nargs="?", const="demo", metavar="NAME",
+                        help=f"demo ({SLICE}) or a slice named in slices.json (fast: derived by select_slice.py), "
+                             "in every mode, default hooks when present")
     parser.add_argument("--extractor", help="command: source envelope JSON in, C01 extraction result JSON out")
     parser.add_argument("--planner", help="command: question + context JSON in, C01 ReadPlan JSON out")
     parser.add_argument("--only", help="comma-separated development question ids")
@@ -841,6 +919,8 @@ def main():
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--fit-timeout", nargs="+", metavar="RESULTS",
                         help="fit the extraction timeout from e2e results files, then exit")
+    parser.add_argument("--adopt-legacy", action="store_true",
+                        help="copy extractions kept under the legacy key to the current key (originals stay), then exit")
     parser.add_argument("--resume", action="store_true",
                         help="reuse extractions and graded questions a cut run already paid for (never held-out)")
     args = parser.parse_args()
@@ -857,9 +937,14 @@ def main():
         if built.returncode != 0:
             sys.exit("fixture app build failed")
     fixture = load_fixture()
+    if args.adopt_legacy:
+        if not CACHE:
+            sys.exit("--adopt-legacy needs --resume")
+        with tempfile.TemporaryDirectory(prefix="graph-score-") as directory:
+            return adopt_legacy(fixture, slice_hooks(args), pathlib.Path(args.binary), pathlib.Path(directory))
     split = load_split(fixture[3])
     held = set(split["heldout"])
-    named = set((SLICE if args.slice else args.only or "").split(",")) - {""}
+    named = set((slice_ids(args.slice) if args.slice else args.only or "").split(",")) - {""}
     if named & held:
         sys.exit("held-out questions run only through --heldout: " + ", ".join(sorted(named & held)))
     if args.heldout:
