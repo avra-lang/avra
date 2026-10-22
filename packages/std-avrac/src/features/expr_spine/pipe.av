@@ -1,8 +1,8 @@
 //! THE PIPE: `x |> f(a)` IS `f(x, a)` — application, and nothing
-//! else. The parse desugars into the call it names, so no pass
-//! learns a node: typing, both engines and every idiom rule read an
-//! ordinary call, and only the printer reads the mark that spells it
-//! back.
+//! else. The node means the call it names (`Pipe`'s `minted`), so
+//! typing, both engines and every idiom rule read an ordinary call,
+//! and only the printer reads the node that spells it back. A stage
+//! that is no call means nothing, and says why (`Pipe`'s `minted`).
 //!
 //! A STAGE IS A CALL, and the value becomes its FIRST argument:
 //!
@@ -42,21 +42,7 @@
 //!
 //! LINES: a line may END in `|>`. One that begins with it starts a
 //! statement, as every continuing operator does, and is refused.
-use core.{Expr, ExprId, BinOp, op_symbol}
 use features.{LangNode, Builder}
-
-/// `l |> r` — the climb grouped the pair, so `x |> f |> g` arrives as
-/// `(x |> f) |> g`. The node keeps what was written; the call it means is
-/// minted beside it, and a stage that is no call means nothing and is refused.
-fn build_pipe(b: Builder) -> Result<LangNode, string> {
-    let value = b.expr(0)?
-    let stage = b.expr(2)?
-    let sugar = b.expr_node(Expr.Pipe(value, stage))
-    if b.store.mean(sugar, pipe_means(b.source_of(sugar)), b.words.door).is_empty() {
-        return .Err(no_stage(b, stage))
-    }
-    b.wrap_expr(sugar)
-}
 
 /// A line that begins with `|>`.
 fn build_leading_pipe(_b: Builder) -> Result<LangNode, string> {
@@ -64,29 +50,6 @@ fn build_leading_pipe(_b: Builder) -> Result<LangNode, string> {
 }
 
 // ── voices ──
-
-fn pipe_means(written: string) -> string {
-    "`${written}` calls the stage with the piped value as its first argument"
-}
-
-/// The refusal a right side that is no call hears — an operator's
-/// run names the group that pipes first.
-fn no_stage(b: Builder, stage: ExprId) -> string {
-    let op? = stage_operator(b, stage) else { return stage_is_a_call() }
-    operator_after_stage(op_symbol(op))
-}
-
-fn stage_operator(b: Builder, stage: ExprId) -> BinOp? {
-    match b.store.expr(stage) { .Binary(op, _, _) -> op, _ -> null }
-}
-
-fn stage_is_a_call() -> string {
-    "a pipe's right side is a call, and the piped value becomes its first argument — `x |> f`, `x |> f(a)`, `x |> a.m(b)`, `x |> ((v) -> …)`; a method on the value itself is `x.m()`"
-}
-
-fn operator_after_stage(op: string) -> string {
-    "a pipe's right side is a call, and `|>` binds looser than `${op}` — write `(x |> f) ${op} …` to pipe first"
-}
 
 fn leading_pipe() -> string {
     "a line never begins with `|>` — a continuing operator ends the line it continues, so end the previous line with `|>`"

@@ -46,7 +46,6 @@ export fn expr_spine() -> LanguageFeature {
         name                 | build
         "int_lit"            | build_int_lit
         "unmixed_bitwise"    | build_unmixed_bitwise
-        "bitnot_expr"        | build_bitnot
         "compare"            | build_compare
         "neg_expr"           | build_neg
         "type_link"          | build_type_link
@@ -55,7 +54,6 @@ export fn expr_spine() -> LanguageFeature {
         "chained_call_link"  | build_chained_call_link
         "chained_apply_link" | build_chained_apply_link
         "trailed_link"       | build_trailed_link
-        "pipe"               | build_pipe
         "leading_pipe"       | build_leading_pipe
         "catch_any"          | build_catch
         "trailing"           | build_trailing
@@ -82,14 +80,14 @@ export fn expr_spine() -> LanguageFeature {
                 left "&&"
                 none "==" "!=" "<=" ">=" "<" ">" suffix "is" asked -> compare(left, op, right)
                 left "??" -> Expr.Coalesce
-                left "|>" -> pipe(left, op, right)
+                left "|>" -> Expr.Pipe(value = left, stage = right)
                 unmixed(unmixed_bitwise) "|" "^" "&" "<<" (">" ">")
             } -> Expr.Binary
             additive = left:unary @operators {
                 left "+" "-"
                 left "*" "/" "%"
             } -> Expr.Binary
-            unary = "!" value:unary -> Expr.Not | "-" v:unary -> neg_expr(v) | "~" v:unary -> bitnot_expr(v) | withed
+            unary = "!" value:unary -> Expr.Not | "-" v:unary -> neg_expr(v) | "~" value:unary -> Expr.Bitnot | withed
             withed = subject:postfix "with" "{" BREAK? fields:NAME ":" values:expression ( "," BREAK? fields:NAME ":" values:expression )* ","? BREAK? "}" -> Expr.With | v:postfix
             postfix = subject:primary ( "." "type" "(" ty:type ")" @expect(")", "expected `)` to close the type literal") -> type_link(subject, ty) | "?." "type" "(" ty:type ")" @expect(")", "expected `)` to close the chained type literal") -> chained_type_link(subject, ty) | "." name:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" -> method_link(subject, name, args) | "." name:NAME -> Expr.Prop | "?." name:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" -> chained_call_link(subject, name, args) | "?." name:NAME -> Expr.Chain | "?." "(" ( args:argument ( "," args:argument )* ","? )? ")" -> chained_apply_link(subject, args) | "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.CallValue | "[" index:expression "]" @expect("]", "expected `]` to close the index") -> Expr.Index | "!" -> Expr.Force | "?" -> Expr.Propagate | blocks:trailing ( "else" else_block:trailing )? @trailer(blocks) -> trailed_link(subject, blocks, else_block) )* @fold(subject) -> subject
             primary = v:NUMBER -> int_lit(v) | name:NAME -> Expr.Ident | "(" e:expression ")" @expect(")", "expected `)` to close the group") -> e
