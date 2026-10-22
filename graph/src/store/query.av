@@ -15,7 +15,7 @@ use store.engine.{
     FailedRunRow,
 }
 use store.state.{Standing}
-use store.evidence.{Interval, optional_text}
+use store.evidence.{Interval, Instant, optional_text}
 use data.{as_value, as_json, encoded}
 
 /// `denied` marks a value a standing assertion also denies: a contradiction
@@ -284,8 +284,8 @@ impl Graph {
                                 field("published_revision", Json.Int(s.run.revision)),
                                 field("locator", self.locator(s)?),
                                 field("confidence", self.confidence_of(s, confidence)),
-                                field("valid_from", optional_int(span.from)),
-                                field("valid_until", optional_int(span.until)),
+                                field("valid_from", instant_json(span.from)),
+                                field("valid_until", instant_json(span.until)),
                                 field(
                                     "superseded_by",
                                     Json
@@ -295,7 +295,12 @@ impl Graph {
                                                     [
                                                         field("claim", Json.Int(c.new.claim.id)),
                                                         field("run", Json.Str(c.new.run.name)),
-                                                        field("at", Json.Int(c.at)),
+                                                        field(
+                                                            "at",
+                                                            instant_json(
+                                                                (self.valid_time(c.new)?).from,
+                                                            ),
+                                                        ),
                                                         field(
                                                             "standing",
                                                             Json
@@ -517,9 +522,10 @@ fn qualifiers(evidence: EvidenceRow?, s: SupportRow, revision: int) -> Result<Li
     ]
 }
 
-fn optional_int(n: int?) -> Json {
-    let found? = n else { return Json.Null }
-    Json.Int(found)
+/// Normalized ISO 8601 in UTC, or null when unknown.
+fn instant_json(at: Instant?) -> Json {
+    let found? = at else { return Json.Null }
+    Json.Str(found.iso())
 }
 
 /// Each distinct qualified statement once, in standing order.

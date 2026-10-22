@@ -25,7 +25,7 @@ fn clerk_models() -> List<Registration> {
 
 const memo_text = "Ana (ana@x, badge 7) will fix the printer. Bo said: \"Ana is out today\"."
 
-fn memo(revision: int = 1, content: string = memo_text) -> SourceEnvelope {
+fn memo(revision: int = 1, content: string = memo_text, audience: List<string>? = ["bo"]) -> SourceEnvelope {
     let quoted = "Ana is out today"
     let start = content.index_of(quoted)
     SourceEnvelope {
@@ -35,6 +35,7 @@ fn memo(revision: int = 1, content: string = memo_text) -> SourceEnvelope {
         received_at_ms: 1,
         author: "ana",
         participants: ["ana", "bo"],
+        audience: audience,
         media_type: "text/plain",
         content: content,
         frames: if start < 0 {
@@ -45,10 +46,18 @@ fn memo(revision: int = 1, content: string = memo_text) -> SourceEnvelope {
     }
 }
 
-fn desk() -> Result<Graph, string> {
+fn desk(audience: List<string>? = ["bo"]) -> Result<Graph, string> {
     let g = Graph.memory(clerk_models())?
-    g.ingest(to_text(source_document(memo())))?
+    g.ingest(to_text(source_document(memo(audience: audience))))?
     g
+}
+
+fn undeclared_audience() -> Result<bool, string> {
+    mut g = desk(null)?
+    defer { let _ = g.close() }
+    let a = g.admit(admission(extraction(g, [ana()]))?)?
+    let label = (g.explain(placed(a, "c1"), "label")?).item(0)
+    label.member("audience") is .Null && label.member("author").text() == "ana"
 }
 
 fn spoken(said: string) -> string {
@@ -355,6 +364,7 @@ spec "admit" {
     given "an extraction result for an ingested source" {
         then "fields publish with their qualifiers, anchors and voice; planned values stay qualified" { passed(admits_fields()) }
         then "a field inside a quotation frame speaks with the frame's speaker" { passed(quoted_voice()) }
+        then "an audience the source does not declare is unknown, never inferred from participants" { passed(undeclared_audience()) }
         then "a declared key links a later extraction to the entity it created" { passed(links_existing()) }
         then "keys naming two entities publish a new local entity and merge nothing" { passed(stays_ambiguous()) }
         then "the same admission replays its revision; changed qualifiers under one request are refused" { passed(replays()) }

@@ -1,6 +1,7 @@
 use derive.model.{model}
 use schema.{Registration}
-use store.open.{Graph, Authority}
+use store.open.{Graph}
+use store.policy.{EnginePolicy, Authority}
 use store.publish.{Record, Publication}
 use store.merge.{Merge}
 use store.correct.{Correction, Amendment}
@@ -18,7 +19,7 @@ fn patron_models() -> List<Registration> { [Registration { make: Patron_graph_mo
 fn patron_desk(ranked: bool = true) -> Result<Graph, string> {
     let g = Graph.memory(patron_models())?
     g.observe("inbox", "notes")?
-    if ranked { g with { authority: [Authority { producer: "user", rank: 10 }] } } else { g }
+    if ranked { g with { policy: EnginePolicy { authority: [Authority { producer: "user", rank: 10 }] } } } else { g }
 }
 
 fn patrons(mut g: Graph, run: string, records: List<string>) -> Result<int, string> {
@@ -86,6 +87,20 @@ fn equal_rank_contradicts() -> Result<bool, string> {
     phone.candidates.length == 1 && phone.candidates[0].denied && g.value("p1") is .Err
 }
 
+fn declared_rules() -> Result<bool, string> {
+    mut equal = patron_desk(false)?
+    defer { let _ = equal.close() }
+    equal = equal with { policy: EnginePolicy { denial: .Matches } }
+    patrons(equal, "seed", ["p1"])?
+    equal.correct(said("c1", "wrong", "p1", "\"1\"")?)?
+    mut low = patron_desk(false)?
+    defer { let _ = low.close() }
+    low = low with { policy: EnginePolicy { authority: [Authority { producer: "user", rank: 1 }], default_rank: 5 } }
+    patrons(low, "seed", ["p1"])?
+    low.correct(said("c1", "wrong", "p1", "\"1\"")?)?
+    phones(equal, "p1")? == "" && phones(low, "p1")? == "\"1\""
+}
+
 fn true_outranks() -> Result<bool, string> {
     mut g = patron_desk()?
     defer { let _ = g.close() }
@@ -116,17 +131,46 @@ fn different_and_undo() -> Result<bool, string> {
     patrons(g, "seed", ["p1", "p2", "p3"])?
     g.merge(Merge { id: "m1", left: "p1", right: "p2", decider: "linker" })?
     g.merge(Merge { id: "m2", left: "p2", right: "p3", decider: "linker" })?
-    g.correct(Correction { id: "c1", decider: "user", amendment: Amendment.Different("p1", "p3") })?
+    let transitive = g
+        .correct(Correction { id: "c0", decider: "user", amendment: Amendment.Different("p1", "p3", []) }) is .Err
+    let unknown = g
+        .correct(
+            Correction {
+                id: "c9",
+                decider: "user",
+                amendment: Amendment.Different("p1", "p3", ["m9"]),
+            },
+        ) is .Err
+    g
+        .correct(
+            Correction {
+                id: "c1",
+                decider: "user",
+                amendment: Amendment.Different("p1", "p3", ["m2"]),
+            },
+        )?
     let apart = (g.group("p1")?).contains("p2") && !(g.group("p1")?).contains("p3")
     let refused = g.merge(Merge { id: "m3", left: "p1", right: "p3", decider: "linker" }) is .Err &&
         g.merge(Merge { id: "m4", left: "p2", right: "p3", decider: "linker" }) is .Err
     g.uncorrect("c1")?
     let rejoined = (g.group("p1")?).contains("p3") &&
         (g.merges("p3")?).any(it.id == "m2~c1" && it.decider == "linker" && it.active())
-    apart &&
+    transitive &&
+        unknown &&
+        apart &&
         refused &&
         rejoined &&
         g.merge(Merge { id: "m5", left: "p1", right: "p3", decider: "linker" }) is .Err
+}
+
+fn direct_difference() -> Result<bool, string> {
+    mut g = patron_desk()?
+    defer { let _ = g.close() }
+    patrons(g, "seed", ["p1", "p2"])?
+    g.merge(Merge { id: "m1", left: "p1", right: "p2", decider: "linker" })?
+    g
+        .correct(Correction { id: "c1", decider: "user", amendment: Amendment.Different("p2", "p1", []) })?
+    !(g.group("p1")?).contains("p2") && !g.merges("p1")?[0].active()
 }
 
 fn correction_replays() -> Result<bool, string> {
@@ -159,7 +203,7 @@ fn refusals_are_atomic() -> Result<bool, string> {
         ) is .Err
     let unknown = g.correct(said("c2", "wrong", "nobody", "\"1\"")?) is .Err
     let itself = g
-        .correct(Correction { id: "c3", decider: "user", amendment: Amendment.Different("p1", "p1") }) is .Err
+        .correct(Correction { id: "c3", decider: "user", amendment: Amendment.Different("p1", "p1", []) }) is .Err
     let anonymous = g.correct(said("c4", "wrong", "p1", "\"1\"")? with { decider: "" }) is .Err
     invalid &&
         unknown &&
@@ -241,9 +285,11 @@ spec "corrections" {
     given "a user whose declared authority outranks the extractor" {
         then "a wrong claim stops reading as current, keeps its history, and undo restores it" { passed(wrong_outranks()) }
         then "at equal authority a denial is a flagged contradiction, not a removal" { passed(equal_rank_contradicts()) }
+        then "a declared denial rule and default rank decide what a denial removes" { passed(declared_rules()) }
         then "a true value outranks a lower-ranked rival until undone" { passed(true_outranks()) }
         then "same merges two entities and undo splits them" { passed(same_and_undo()) }
-        then "different ends the merges joining two entities, refuses rejoining them, and undo restores the merges" { passed(different_and_undo()) }
+        then "different ends only named merges when the pair is joined through others, refuses rejoining, and undo restores them" { passed(different_and_undo()) }
+        then "different between directly merged entities ends that merge" { passed(direct_difference()) }
         then "a correction replays by id, refuses changed content, undo is idempotent and an undone id cannot be reused" { passed(correction_replays()) }
         then "invalid values, unknown entities, self-difference and anonymous deciders refuse atomically" { passed(refusals_are_atomic()) }
         then "every correction exports self-contained: request, effects, belief before and after, and undo revision" { passed(exported()) }

@@ -353,22 +353,41 @@ stands. Tied or unknown starts stay a contradiction: both remain candidates.
 ### Corrections
 
 A correction is evidence and decisions, never an edit. `same` is a merge
-decision; `different` ends the merges that join the two entities and keeps
-them apart (a later merge rejoining them is refused); `wrong` and `true`
+decision; `different` ends the merges the request names in `ends`, or else
+those joining the two directly, and refuses when they would still read as
+one group, so the decider says which merges were wrong. It keeps them apart
+(a later merge rejoining them is refused). `wrong` and `true`
 publish the decider's own denial or assertion (`CT-`/`CT+`, `assert`) as a
 run over an observation of the correction itself. `uncorrect` reverses it
 the same way — splitting, rejoining the ended merges under new decision
 ids, or withdrawing the run — and the correction stays listed as undone.
 An id replays its correction; changed content or an undone id is refused.
 
-Which statements read as current depends on declared authority, not on who
-wrote them: the host passes `run(models, [Authority { producer: "user",
-rank: 10 }])` (undeclared producers rank 0). Among standing statements of a
-property, only plain claims whose best support ranks with the property's
-best read as current, and a denial ranked above a claim's best support
-removes it; at equal rank a denial is a flagged contradiction. `explain`
-shows each support's `authority`. `corrections` is the export of every
-correction with what was asked and what it did, for training.
+Which statements read as current depends on declared policy, not on who
+wrote them. Among standing statements of a property, only plain claims whose
+best support ranks with the property's best read as current, and the denial
+rule decides when a denial removes a claim. `explain` shows each support's
+`authority`. `corrections` exports every correction with what was asked,
+what it did, and the graph's reading before and after, for training.
+
+### Engine policy
+
+Every rule and bound a host may choose is one value, `EnginePolicy`
+(`src/store/policy.av`), passed as `run(models, EnginePolicy { … })`; each
+default reproduces the behaviour described above.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `authority` | `[]` | `Authority { producer, rank }` per producer |
+| `default_rank` | `0` | Rank of an undeclared producer |
+| `denial` | `.Outranks` | A denial removes a claim only when ranked strictly above its best support (`.Matches`: at or above); otherwise it is a flagged contradiction |
+| `supersession` | `.LaterStart` | A strictly later declared start closes an earlier open rival (`.Never`: rivals stay a contradiction) |
+| `admission` | `AdmissionBudget {}` | Per-admission bounds: `envelope_bytes` 4 MiB, `records` 256, `fields` 4096, `passages` 16384, `frames` 256, `value_depth` 64 |
+
+Valid times are exact: `valid_from`/`valid_until` are normalized ISO 8601
+in UTC, keeping every fractional digit given; an instant may carry `Z` or
+an offset `±HH`, `±HHMM` or `±HH:MM`. An audience is only what the envelope
+(`audience`) or a frame declares; otherwise it is unknown.
 
 ## Durable behavior
 

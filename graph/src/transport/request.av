@@ -121,7 +121,18 @@ export fn operation(j: Json) -> Result<Operation, string> {
         "correct" -> {
             closed(
                 j,
-                ["op", "id", "decider", "kind", "left", "right", "entity", "property", "value"],
+                [
+                    "op",
+                    "id",
+                    "decider",
+                    "kind",
+                    "left",
+                    "right",
+                    "ends",
+                    "entity",
+                    "property",
+                    "value",
+                ],
             )?
             Operation
                 .Correct(
@@ -278,10 +289,21 @@ export fn operation(j: Json) -> Result<Operation, string> {
 fn amendment(j: Json) -> Result<Amendment, string> {
     match correction_kind(text(j, "kind")?)? {
         .Same -> Amendment.Same(text(j, "left")?, text(j, "right")?),
-        .Different -> Amendment.Different(text(j, "left")?, text(j, "right")?),
+        .Different -> Amendment.Different(text(j, "left")?, text(j, "right")?, texts(j, "ends")?),
         .Wrong -> Amendment.Wrong(text(j, "entity")?, text(j, "property")?, corrected_value(j)?),
         .Right -> Amendment.Right(text(j, "entity")?, text(j, "property")?, corrected_value(j)?),
     }
+}
+
+/// An optional array of strings; absent is empty.
+fn texts(j: Json, key: string) -> Result<List<string>, string> {
+    if j.get(key) == null { return [] }
+    [string_item(item, key)? for item in array(j, key)?]
+}
+
+fn string_item(item: Json, key: string) -> Result<string, string> {
+    let found? = item.text() else { fail "${key} must be an array of strings" }
+    found
 }
 
 fn corrected_value(j: Json) -> Result<Value, string> {

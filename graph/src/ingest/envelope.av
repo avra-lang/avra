@@ -29,6 +29,14 @@ fn source_fields(s: SourceEnvelope) -> List<Field> {
         field("content", Json.Str(s.content)),
         field("frames", Json.Arr([frame_document(f) for f in s.frames])),
     ]
+        .concat(declared_audience(s.audience))
+}
+
+/// No declared audience means no field, so an envelope without one keeps
+/// its document.
+fn declared_audience(audience: List<string>?) -> List<Field> {
+    let found? = audience else { return [] }
+    [field("audience", Json.Arr([Json.Str(a) for a in found]))]
 }
 
 fn optional_integer(n: int?) -> Json {
@@ -54,7 +62,8 @@ fn frame_document(f: Frame) -> Json {
                 field("passage", passage_json(f.passage)),
                 field("parent", optional_text(f.parent)),
                 field("speaker", optional_text(f.speaker)),
-            ],
+            ]
+                .concat(declared_audience(f.audience)),
         )
 }
 

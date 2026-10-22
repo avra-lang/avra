@@ -2,6 +2,7 @@ use derive.model.{model}
 use semantics.{Semantics, ValidityBinding}
 use schema.{Registration, Ref}
 use store.open.{Graph}
+use store.policy.{EnginePolicy}
 use store.publish.{Record, Publication}
 use store.evidence.{FieldEvidence, Voice}
 use store.query.{stored_value}
@@ -318,12 +319,21 @@ fn supersedes() -> Result<bool, string> {
     let rome = (g.explain("home", "city")?).items().find(it.member("value").text() == "Rome")!
     let closed = rome.member("active").truth() == false &&
         rome.member("standing").truth() == true &&
-        rome.member("valid_from").int() == 100 &&
-        rome.member("superseded_by").item(0).member("at").int() == 200 &&
+        rome.member("valid_from").text() == "1970-01-01T00:00:00.1Z" &&
+        rome.member("superseded_by").item(0).member("at").text() == "1970-01-01T00:00:00.2Z" &&
         rome.member("superseded_by").item(0).member("run").text() == "b"
     moved(g, "b2", "second", residence("Paris", "null"))?
     let reopened = (cities(g)?).contains("Rome")
     current && closed && reopened
+}
+
+fn never_supersedes() -> Result<bool, string> {
+    mut g = graph()?
+    defer { let _ = g.close() }
+    g = g with { policy: EnginePolicy { supersession: .Never } }
+    moved(g, "a", "first", residence("Rome", "100"))?
+    moved(g, "b", "second", residence("Paris", "200"))?
+    (cities(g)?).split("|").length == 2
 }
 
 fn older_news_is_superseded() -> Result<bool, string> {
@@ -351,7 +361,8 @@ fn ended_needs_no_closing() -> Result<bool, string> {
     moved(g, "a", "first", residence("Rome", "100", "150"))?
     moved(g, "b", "second", residence("Paris", "200"))?
     let rome = (g.explain("home", "city")?).items().find(it.member("value").text() == "Rome")!
-    rome.member("superseded_by").items().is_empty() && rome.member("valid_until").int() == 150
+    rome.member("superseded_by").items().is_empty() &&
+        rome.member("valid_until").text() == "1970-01-01T00:00:00.15Z"
 }
 
 fn plans_supersede_nothing() -> Result<bool, string> {
@@ -403,14 +414,33 @@ fn iso_bounds() -> Result<bool, string> {
                         "Moment",
                         "{\"what\":\"call\",\"at\":\"1970-01-02T01:00:00.5+01:00\"}",
                     )?,
+                    fielded(
+                        "n",
+                        "Moment",
+                        "{\"what\":\"fine\",\"at\":\"2024-01-01T00:00:00.123456789120+0530\"}",
+                    )?,
+                    fielded("o", "Moment", "{\"what\":\"west\",\"at\":\"1969-12-31T16:00:00-08\"}")?,
                 ],
             )?,
         )?
-    let day = (g.explain("d", "mood")?).item(0).member("valid_from").int()
-    let moment = (g.explain("m", "what")?).item(0).member("valid_from").int()
+    let day = (g.explain("d", "mood")?).item(0).member("valid_from").text()
+    let moment = (g.explain("m", "what")?).item(0).member("valid_from").text()
+    let fine = (g.explain("n", "what")?).item(0).member("valid_from").text()
+    let west = (g.explain("o", "what")?).item(0).member("valid_from").text()
     let days = [reading(g, "bad", [fielded("d2", "Daily", "{\"mood\":\"x\",\"day\":\"${d}\"}")?])? for d in ["2023-02-29", "next friday", "2024-2-1"]]
-    let moments = [reading(g, "bad", [fielded("m2", "Moment", "{\"what\":\"x\",\"at\":\"${m}\"}")?])? for m in ["1970-01-01T00:00:00", "1970-01-01T24:00:00Z", "1970-01-01 00:00:00Z"]]
-    day == 1709164800000 && moment == 86400500 && all_refused(g, days.concat(moments))
+    let moments = [reading(g, "bad", [fielded("m2", "Moment", "{\"what\":\"x\",\"at\":\"${m}\"}")?])? for m in [
+        "1970-01-01T00:00:00",
+        "1970-01-01T24:00:00Z",
+        "1970-01-01 00:00:00Z",
+        "1970-01-01T00:00:00.Z",
+        "1970-01-01T00:00:00+5",
+        "1970-01-01T00:00:00+05:3",
+    ]]
+    day == "2024-02-29T00:00:00Z" &&
+        moment == "1970-01-02T00:00:00.5Z" &&
+        fine == "2023-12-31T18:30:00.12345678912Z" &&
+        west == "1970-01-01T00:00:00Z" &&
+        all_refused(g, days.concat(moments))
 }
 
 /// Every publication is refused.
@@ -436,9 +466,10 @@ spec "field-level evidence" {
     given "declared valid time" {
         then "a later declared start supersedes an open earlier rival, and withdrawing it reopens the rival" { passed(supersedes()) }
         then "an earlier start published later is superseded on arrival" { passed(older_news_is_superseded()) }
+        then "a policy declaring no supersession keeps rivals as a contradiction" { passed(never_supersedes()) }
         then "tied or unknown starts stay a contradiction with no supersession" { passed(rivals_contradict()) }
         then "a rival already ended before the new start is not superseded" { passed(ended_needs_no_closing()) }
         then "a planned statement supersedes nothing" { passed(plans_supersede_nothing()) }
-        then "ISO date and instant bounds normalize to UTC milliseconds and malformed bounds are refused" { passed(iso_bounds()) }
+        then "ISO date and instant bounds normalize to UTC ISO 8601 at full precision, any offset form, and malformed bounds are refused" { passed(iso_bounds()) }
     }
 }

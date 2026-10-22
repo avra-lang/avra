@@ -5,10 +5,11 @@ use @std.http.frame.{limits}
 use @std.http_message.message.{Method}
 use @std.json.{Json}
 use schema.{Registration}
-use store.open.{Graph, Authority}
+use store.open.{Graph}
+use store.policy.{EnginePolicy}
 use transport.dispatch.{failure}
 
-type Service = { path: string, token: string, authority: List<Authority> }
+type Service = { path: string, token: string, policy: EnginePolicy }
 
 /// Only loopback, authenticated JSON requests, and bounded request bodies.
 export fn serve(
@@ -16,7 +17,7 @@ export fn serve(
     models: List<Registration>,
     port: int,
     token: string,
-    authority: List<Authority> = [],
+    policy: EnginePolicy = EnginePolicy {},
 ) -> Result<int, string> {
     if port < 1 || port > 65535 { fail "port must be 1..65535" }
     if token.length < 24 { fail "the bearer token must contain at least 24 bytes" }
@@ -28,7 +29,7 @@ export fn serve(
     }
     let server = served(
         listener,
-        () -> Service { path: path, token: token, authority: authority },
+        () -> Service { path: path, token: token, policy: policy },
         limits(),
         timing(),
     ) { service, request ->
@@ -49,7 +50,7 @@ fn answer(service: Service, models: List<Registration>, request: Request<Unroute
 }
 
 fn dispatched(service: Service, models: List<Registration>, body: Json) -> Result<Response, string> {
-    mut graph = Graph.attach(service.path, models)? with { authority: service.authority }
+    mut graph = Graph.attach(service.path, models)? with { policy: service.policy }
     defer { let _ = graph.close() }
     match graph.dispatch(body) {
         .Ok(j) -> Response.json(j),

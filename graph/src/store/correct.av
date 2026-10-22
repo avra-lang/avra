@@ -12,7 +12,7 @@ use store.evidence.{FieldEvidence, Voice, Factuality}
 /// wrong, or is true.
 export enum Amendment {
     Same(left: string, right: string)
-    Different(left: string, right: string)
+    Different(left: string, right: string, ends: List<string>)
     Wrong(entity: string, property: string, value: Value)
     Right(entity: string, property: string, value: Value)
 }
@@ -52,7 +52,7 @@ impl Amendment {
     fn kind() -> CorrectionKind {
         match self {
             .Same(_, _) -> CorrectionKind.Same,
-            .Different(_, _) -> CorrectionKind.Different,
+            .Different(_, _, _) -> CorrectionKind.Different,
             .Wrong(_, _, _) -> CorrectionKind.Wrong,
             .Right(_, _, _) -> CorrectionKind.Right,
         }
@@ -63,7 +63,12 @@ impl Correction {
     /// The request as asked; part of the replay identity.
     fn json() -> Json {
         let subject = match self.amendment {
-            .Same(left, right) or .Different(left, right) -> [field("left", Json.Str(left)), field("right", Json.Str(right))],
+            .Same(left, right) -> [field("left", Json.Str(left)), field("right", Json.Str(right))],
+            .Different(left, right, ends) -> [
+                field("left", Json.Str(left)),
+                field("right", Json.Str(right)),
+                field("ends", Json.Arr([Json.Str(e) for e in ends])),
+            ],
             .Wrong(entity, property, value) or .Right(entity, property, value) -> [
                 field("entity", Json.Str(entity)),
                 field("property", Json.Str(property)),
@@ -136,11 +141,11 @@ impl Graph {
                     .made(db, Merge { id: c.id, left: left, right: right, decider: c.decider }, revision)?
                 Json.Obj([field("merge", Json.Str(c.id))])
             },
-            .Different(left, right) -> {
+            .Different(left, right, ends) -> {
                 if left == right { fail "an entity cannot be different from itself" }
                 let _ = self.entity_named(left)?
                 let _ = self.entity_named(right)?
-                let cut = self.separated(db, left, right, revision + 1)?
+                let cut = self.separated(db, left, right, ends, revision + 1)?
                 Json.Obj([field("ended", Json.Arr([bridge_json(b) for b in cut]))])
             },
             .Wrong(entity, property, value) -> self.stated(c, request, entity, property, value, .CertainFalse)?,
@@ -186,30 +191,29 @@ impl Graph {
         Json.Obj([field("run", Json.Str(run)), field("input", Json.Str(input))])
     }
 
-    /// End merges until `left` and `right` read apart: each time, the merge
-    /// that reaches `right` on a shortest path from `left`.
-    fn separated(mut db: Db, left: string, right: string, until: int) -> Result<
+    /// End the merges the request names, or else every merge joining the
+    /// two directly. If they still read as one group, the decider must name
+    /// which merges to end; nothing is chosen for them.
+    fn separated(mut db: Db, left: string, right: string, ends: List<string>, until: int) -> Result<
         List<Bridge>,
         string,
     > {
         let ended = stored(MergeEndRow.all(db))?
-        mut open = [m for m in stored(MergeRow.all(db))? if !ended.any(it.merge.id == m.id)]
-        mut cut: List<Bridge> = []
-        while true {
-            let edge? = bridge(open, left, right) else { break }
-            let _ = modeled(MergeEndRow { merge: edge, until: until }.insert(db))?
-            cut
-                .push(
-                    Bridge {
-                        decision: edge.decision,
-                        left: edge.left.name,
-                        right: edge.right.name,
-                        decider: edge.decider,
-                    },
-                )
-            open = open.filter(it.id != edge.id)
+        let open = [m for m in stored(MergeRow.all(db))? if !ended.any(it.merge.id == m.id)]
+        let chosen = if ends.is_empty() {
+            [m for m in open if joins(m, left, right)]
+        } else {
+            [m for m in open if ends.contains(m.decision)]
         }
-        cut
+        if !ends.is_empty() &&
+            chosen.length != [e for i, e in ends if !ends.slice(0, i).contains(e)].length {
+            fail "a named merge is unknown, ended or named twice"
+        }
+        for m in chosen { let _ = modeled(MergeEndRow { merge: m, until: until }.insert(db))? }
+        if (self.group(left)?).contains(right) {
+            fail "${left} and ${right} are joined through other merges; name the merges to end"
+        }
+        [Bridge { decision: m.decision, left: m.left.name, right: m.right.name, decider: m.decider } for m in chosen]
     }
 
     /// Undo one correction; what it did is reversed as new evidence and
@@ -311,7 +315,7 @@ impl Graph {
     /// hidden or unknown entity reads as null.
     fn belief(amendment: Amendment) -> Result<Json, string> {
         match amendment {
-            .Same(left, right) or .Different(left, right) -> Json.Obj([field("left", self.believed(left)?), field("right", self.believed(right)?)]),
+            .Same(left, right) or .Different(left, right, _) -> Json.Obj([field("left", self.believed(left)?), field("right", self.believed(right)?)]),
             .Wrong(entity, property, _) or .Right(entity, property, _) -> Json
                 .Obj(
                     [
@@ -358,28 +362,9 @@ fn apart(request: Json, left: List<string>, right: List<string>) -> bool {
     left.contains(a) && right.contains(b) || left.contains(b) && right.contains(a)
 }
 
-/// The merge reaching `to` on a shortest path from `from`, if they are joined.
-fn bridge(edges: List<MergeRow>, from: string, to: string) -> MergeRow? {
-    mut seen = [from]
-    mut frontier = [from]
-    while !frontier.is_empty() {
-        mut next: List<string> = []
-        for at in frontier {
-            for e in edges {
-                let other = when {
-                    e.left.name == at -> e.right.name
-                    e.right.name == at -> e.left.name
-                    _ -> ""
-                }
-                if other.is_empty() || seen.contains(other) { continue }
-                if other == to { return e }
-                seen.push(other)
-                next.push(other)
-            }
-        }
-        frontier = next
-    }
-    null
+/// A merge directly between the two entities.
+fn joins(m: MergeRow, a: string, b: string) -> bool {
+    m.left.name == a && m.right.name == b || m.left.name == b && m.right.name == a
 }
 
 fn bridge_json(b: Bridge) -> Json {

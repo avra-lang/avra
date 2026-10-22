@@ -104,7 +104,8 @@ optional `prefix`/`suffix`, checked against the source); FactBank
 and an optional `normalization`: `{"kind":"TIMEX3","timex_type":"DATE|TIME|DURATION|SET","value":<ISO 8601>}`
 or `{"kind":"ISO4217","currency":"EUR","minor_units":1250,"exponent":2}`.
 A passage need not contain the value ("next Friday" normalized to a date).
-Every identity key also has its own passages. A quotation frame names its
+An envelope and each frame may declare an `audience`; absent is unknown,
+never inferred from `participants`. Every identity key also has its own passages. A quotation frame names its
 quoted text the same way (`passage`), so one unit runs through a result. Local IDs are unique within a
 result; a record proposes each property once. Multiple source mentions can
 anchor the same field without creating multiple identities.

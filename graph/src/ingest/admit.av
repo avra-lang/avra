@@ -153,7 +153,7 @@ impl Graph {
         }
         let source = self.source(a.source.observation, a.source.revision)?
         let request = to_text(self.extraction_request(a, source)?)
-        match admit_extraction(self.catalog, request, to_text(a.result))? {
+        match admit_extraction(self.catalog, request, to_text(a.result), self.policy.admission)? {
             .Failed(_, result) -> { return self.failed(a, run, fingerprint, result.extractor.producer) },
             .Complete(_, _) -> {},
         }
@@ -176,7 +176,14 @@ impl Graph {
             expected_revision: linked.revision,
             records: records,
             voices: [own_voice(source)]
-                .concat([Voice { frame: f.id, speaker: f.speaker, author: source.author } for f in frames]),
+                .concat(
+                    [Voice {
+                        frame: f.id,
+                        speaker: f.speaker,
+                        author: source.author,
+                        audience: f.audience,
+                    } for f in frames],
+                ),
         }
         Admitted {
             revision: self.published(publication, fingerprint)?,
@@ -367,10 +374,9 @@ fn current_match(m: IdentityMatch, namespace: string, key: string) -> bool {
     !m.continuity && m.identity.namespace == namespace && m.identity.external_key == key
 }
 
-/// The source's own voice: its author speaks to every other participant.
+/// The source's own voice: its author, to the audience it declares.
 fn own_voice(source: SourceEnvelope) -> Voice {
-    let author? = source.author else { return Voice {} }
-    Voice { speaker: author, author: author, audience: source.participants.filter(it != author) }
+    Voice { speaker: source.author, author: source.author, audience: source.audience }
 }
 
 /// Local record ids in reference positions become their placed entity ids.

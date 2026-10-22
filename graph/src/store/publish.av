@@ -306,6 +306,7 @@ impl Graph {
     /// rival at that start. Without both starts, rivals stay a contradiction.
     fn superseding(mut db: Db, support: SupportRow, span: Interval) -> Result<int, string> {
         let start? = span.from else { return 0 }
+        match self.policy.supersession { .Never -> { return 0 }, .LaterStart -> {} }
         let entity = support.claim.entity
         let model = self.catalog.model(entity.model)?
         let claims = stored(ClaimRow.where(db, entity: entity, property: support.claim.property))?
@@ -317,13 +318,15 @@ impl Graph {
             }
             let other = self.interval_of(rival.support.run, entity, model)?
             let begun? = other.from else { continue }
-            if begun < start && other.open_at(start) {
+            if begun.before(start) && other.open_at(start) {
                 let _ = modeled(
-                    SupersessionRow { old: rival.support, new: support, at: start }.insert(db),
+                    SupersessionRow { old: rival.support, new: support, at: start.millis() }
+                        .insert(db),
                 )?
-            } else if start < begun && span.open_at(begun) {
+            } else if start.before(begun) && span.open_at(begun) {
                 let _ = modeled(
-                    SupersessionRow { old: support, new: rival.support, at: begun }.insert(db),
+                    SupersessionRow { old: support, new: rival.support, at: begun.millis() }
+                        .insert(db),
                 )?
             }
         }

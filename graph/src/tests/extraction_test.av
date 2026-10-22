@@ -1,4 +1,5 @@
 use ingest.extraction.{admit_extraction, ExtractionAdmission}
+use store.policy.{AdmissionBudget}
 use ingest.envelope.{source_document}
 use catalog.{Catalog}
 use derive.model.{model}
@@ -251,6 +252,15 @@ fn identity_anchor(invented: bool = false) -> Result<bool, string> {
     }
 }
 
+fn declared_budget() -> Result<bool, string> {
+    let c = catalog()?
+    let tight = AdmissionBudget { records: 1 }
+    let two = record() + "," + record(id: "local:two")
+    admit_extraction(c, request(c), response(c, two)) is .Ok &&
+        admit_extraction(c, request(c), response(c, two), tight) is .Err &&
+        admit_extraction(c, request(c), response(c, record()), AdmissionBudget { passages: 0 }) is .Err
+}
+
 fn bounded_records() -> Result<bool, string> {
     let c = catalog()?
     let records = [record(id: "local:${i}") for i in 0..257].join(",")
@@ -332,6 +342,7 @@ spec "provider-neutral extraction admission" {
         then "negation survives rather than being rewritten into affirmation" { passed(accepted(true)) }
         then "identity-only proposals stay unverified but require exact anchors" { passed(identity_anchor()) && passed(identity_anchor(true)) }
         then "record budget exhaustion refuses the entire result" { passed(bounded_records()) }
+        then "admission bounds are a declared budget" { passed(declared_budget()) }
         then "unknown field frames and dangling proposed parents are refused" { passed(missing_frame()) }
     }
 }

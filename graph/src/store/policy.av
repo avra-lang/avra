@@ -1,0 +1,51 @@
+/// The engine's declared policy: every rule and bound a host may choose,
+/// in one place. Each default reproduces the documented behaviour.
+export type EnginePolicy = {
+    authority: List<Authority> = [],
+    default_rank: int = 0,
+    denial: DenialRule = .Outranks,
+    supersession: SupersessionRule = .LaterStart,
+    admission: AdmissionBudget = AdmissionBudget {},
+}
+
+/// A producer's declared rank. Among standing statements of one property,
+/// only the highest-ranked plain ones read as current.
+export type Authority = { producer: string, rank: int }
+
+/// When a standing asserted denial removes a claim from current reads.
+export enum DenialRule {
+    /// Only when ranked strictly above the claim's best support; at equal
+    /// rank the claim stays, flagged as denied.
+    Outranks
+    /// When ranked at or above the claim's best support.
+    Matches
+}
+
+/// Whether a plain claim's declared valid start closes a rival's validity.
+export enum SupersessionRule {
+    /// A strictly later declared start closes an earlier rival still open
+    /// at that instant; tied or unknown starts stay a contradiction.
+    LaterStart
+    /// Nothing supersedes; differing values stay a contradiction.
+    Never
+}
+
+/// Bounds on one extraction admission; exceeding any refuses it whole.
+export type AdmissionBudget = {
+    envelope_bytes: int = 4194304,
+    records: int = 256,
+    fields: int = 4096,
+    passages: int = 16384,
+    frames: int = 256,
+    value_depth: int = 64,
+}
+
+impl EnginePolicy {
+    /// A producer's declared rank, or the default.
+    fn rank(producer: string) -> int { self.authority.find(it.producer == producer)?.rank ?? self.default_rank }
+
+    /// Whether a denial of this rank removes a claim whose best support has `best`.
+    fn removes(denied: int, best: int) -> bool {
+        match self.denial { .Outranks -> denied > best, .Matches -> denied >= best }
+    }
+}
