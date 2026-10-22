@@ -10,7 +10,9 @@
 use @std.io.{make_dirs, write_text}
 use @std.time.{stamp}
 use @std.relation.engine.{map_cell}
-use compiler.host.{Host, memory_host_at}
+use compiler.host.{Host, memory_host, memory_host_at}
+use compiler.{Want, Workspace}
+use @std.avrac.testing.{test_workspace}
 use compiler.record.{runtime_bodies}
 use compiler.store.{
     Keeping,
@@ -39,6 +41,59 @@ fn toolchain_host(compiler: string?, at: List<string>, body: string) -> Host {
 
 /// A store of one spec's own, so two specs cannot see each other's rows.
 fn at(name: string) -> Store { store_at("${store_base()}/${name}") }
+
+/// A workspace over two sources, so a held set has a root and a program to be written for.
+fn held_ws() -> Workspace {
+    test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "export fn one() -> int { 1 }\none()\n",
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+    )
+}
+
+spec "compiler/hold set — the files a derivation confirmed standing" {
+    given "the held set a derivation writes" {
+        then "a set read back is the set that was written" {
+            let s = at("held-set")
+            let ws = held_ws()
+            ws.keep_held_set(s, null, Want.Diagnostics, ["/w/src/b.av", "/w/src/a.av"])
+            let back = ws.held_set(s, null, Want.Diagnostics)
+            back != null &&
+                back!.get("/w/src/a.av") != null &&
+                back!.get("/w/src/b.av") != null &&
+                back!.get("/w/src/c.av") == null
+        }
+        then "the set is distinct and sorted, so the same files are one row" {
+            let s = at("held-set-sorted")
+            let ws = held_ws()
+            ws
+                .keep_held_set(s, null, Want.Diagnostics, ["/w/src/b.av", "/w/src/a.av", "/w/src/b.av"])
+            s.get(Stored.Fp, ws.held_set_key(null, Want.Diagnostics)) == "/w/src/a.av\n/w/src/b.av"
+        }
+        then "a want's set is its own, so a build never trusts a check's" {
+            let s = at("held-set-wants")
+            let ws = held_ws()
+            ws.keep_held_set(s, null, Want.Diagnostics, ["/w/src/a.av"])
+            ws.held_set(s, null, Want.Binary) == null &&
+                ws.held_set(s, null, Want.Diagnostics) != null
+        }
+        then "a program's set is its own, so a check never trusts a build's" {
+            let s = at("held-set-programs")
+            let ws = held_ws()
+            ws.keep_held_set(s, "/w/src/main.av", Want.Diagnostics, ["/w/src/a.av"])
+            ws.held_set(s, null, Want.Diagnostics) == null
+        }
+        then "a set never written trusts no file" {
+            let s = at("held-set-absent")
+            held_ws().held_set(s, null, Want.Diagnostics) == null
+        }
+    }
+}
 
 spec "store" {
     given "a key names content, and the family separates" {

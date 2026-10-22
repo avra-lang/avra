@@ -615,7 +615,7 @@ impl Workspace {
             .concat(
                 [ManifestEntry.Listing(c.split("\t")[0], self.listing_word(c.split("\t")[0])) for c in covered],
             )
-            .concat([ManifestEntry.Input(f, self.input_line(f)) for f in inputs])
+            .concat([self.input_entry(f) for f in inputs])
             .concat([ManifestEntry.Embed(f, self.embed_line(f)) for f in self.embeds(inputs)])
             .concat(
                 [ManifestEntry.Object(o, self.object_line(o)) for o in self.reached_objects(under.named)],
@@ -663,11 +663,40 @@ impl Workspace {
         match e {
             .Covered(_) -> true,
             .Listing(dir, word) -> self.listing_word(dir) == word,
-            .Input(path, line) -> self.input_line(path) == line,
+            .Input(path, line, stamp) -> self.input_stands(path, line, stamp),
             .Embed(path, line) -> self.embed_line(path) == line,
             .Object(path, line) -> self.object_line(path) == line,
         }
     }
+
+    /// An input's manifest entry: the line of the key it stands for, then the
+    /// stamp its bytes wore when that line's digest was taken. The line comes
+    /// first, because taking the digest is what takes the stamp.
+    fn input_entry(path: string) -> ManifestEntry {
+        let line = self.input_line(path)
+        ManifestEntry.Input(path, line, self.text_stamp(path))
+    }
+
+    /// Whether an input still stands: the stamp it was recorded with, when the
+    /// host gives the same one now, and the bytes themselves for every other
+    /// answer. A stamp that moved says nothing about the bytes — it only says
+    /// they must be read — so only an equal stamp skips the digest.
+    fn input_stands(path: string, line: string, stamp: string) -> bool {
+        if !stamp.is_empty() && stamp == self.held_stamp(path) { return true }
+        self.input_line(path) == line
+    }
+
+    /// A file's stamp as it stands now, in the same spelling a record keeps —
+    /// empty where the host will not make the claim.
+    fn held_stamp(path: string) -> string {
+        let mark = self.file_stamp(path)
+        if mark == 0 { "" } else { "${mark}" }
+    }
+
+    /// A file's stamp: its size, times and inode as the host folds them, and
+    /// zero for a file that moved inside the window where two writes can wear
+    /// one time.
+    fn file_stamp(path: string) -> int { self.host.confirming_stamp(path) }
 
     /// A directory's files as one word, as a walk lists them now — the files `source_inputs`
     /// reads of it: a dependency's tests are no input, so they are never walked.
@@ -744,10 +773,11 @@ impl Workspace {
     /// and nothing here keeps a memo across the one key this answers.
     fn object_line(path: string) -> string { "${relative_path(self.root, path)}\t${digest_of_binary(path) ?? "-"}" }
 
-    /// A file's text as one digest, through its Text input: kept per read
-    /// of that input, so a turn that reads the file again digests the text
-    /// it read. Never a stamp — a stamp match is a claim about the bytes,
-    /// never the bytes.
+    /// A file's text as one digest, through its Text input: kept per read of
+    /// that input, so a turn that reads the file again digests the text it read.
+    /// The stamp those bytes wore is kept BESIDE the digest, taken in the same
+    /// breath: a stamp on its own is a claim about bytes nobody hashed, and a
+    /// digest with no stamp cannot be confirmed without reading.
     fn text_digest(path: string) -> string {
         let octets = self.listed_octets(path)
         let at = "${self.octets_word(path)}\t${path}"
@@ -755,7 +785,17 @@ impl Workspace {
         if known != null { return known! }
         let made = "${octets.length}.${digest_of_octets(octets)}"
         self.keys.text_digests.put(at, made)
+        self.keys.text_stamps.put(at, self.file_stamp(path))
         made
+    }
+
+    /// The stamp the digest of `path` was taken with, empty where nothing here
+    /// hashed it or the host would not make the claim. Never a stamp on its
+    /// own: a stamp is only worth what the bytes it was taken beside.
+    fn text_stamp(path: string) -> string {
+        let at = "${self.octets_word(path)}\t${path}"
+        let mark? = self.keys.text_stamps.get().get(at) else { return "" }
+        if mark == 0 { "" } else { "${mark}" }
     }
 
     /// Whether a body's home cannot emit it: the home is held, so its object
@@ -1201,7 +1241,10 @@ fn wasm_unsupported(names: List<string>) -> string {
 enum ManifestEntry {
     Covered(line: string)
     Listing(dir: string, word: string)
-    Input(path: string, line: string)
+    /// An input: its path, the line of the key it stands for, and the stamp its
+    /// bytes wore when that line's digest was taken — empty when the host would
+    /// not make that claim, and then its bytes are read again.
+    Input(path: string, line: string, stamp: string)
     Embed(path: string, line: string)
     Object(path: string, line: string)
 }
@@ -1212,7 +1255,10 @@ impl ManifestEntry {
         match self {
             .Covered(line) -> "C\t${line}",
             .Listing(dir, word) -> "L\t${dir}\t${word}",
-            .Input(path, line) -> "I\t${path}\t${line}",
+            // `S` carries the stamp its digest was taken with; `I` (a record
+            // older than stamps, or one whose host would not give one) carries
+            // the digest alone and is always read again.
+            .Input(path, line, stamp) -> if stamp.is_empty() { "I\t${path}\t${line}" } else { "S\t${path}\t${stamp}\t${line}" },
             .Embed(path, line) -> "E\t${path}\t${line}",
             .Object(path, line) -> "O\t${path}\t${line}",
         }
@@ -1223,7 +1269,7 @@ impl ManifestEntry {
         match self {
             .Covered(_) -> "covered",
             .Listing(_, _) -> "listings",
-            .Input(_, _) -> "inputs",
+            .Input(_, _, _) -> "inputs",
             .Embed(_, _) -> "embeds",
             .Object(_, _) -> "objects",
         }
@@ -1233,7 +1279,7 @@ impl ManifestEntry {
     fn covered() -> List<string> {
         match self {
             .Covered(line) -> [line],
-            .Listing(_, _) or .Input(_, _) or .Embed(_, _) or .Object(_, _) -> [],
+            .Listing(_, _) or .Input(_, _, _) or .Embed(_, _) or .Object(_, _) -> [],
         }
     }
 }
@@ -1251,7 +1297,16 @@ fn read_entry(line: string) -> ManifestEntry? {
     let second = rest.substring(cut + 1, rest.length)
     when {
         tag == "L" -> ManifestEntry.Listing(first, second)
-        tag == "I" -> ManifestEntry.Input(first, second)
+        tag == "I" -> ManifestEntry.Input(first, second, "")
+        tag == "S" -> {
+            let mark = second.index_of("\t")
+            if mark < 1 {
+                null
+            } else {
+                ManifestEntry
+                    .Input(first, second.substring(mark + 1, second.length), second.substring(0, mark))
+            }
+        }
         tag == "E" -> ManifestEntry.Embed(first, second)
         tag == "O" -> ManifestEntry.Object(first, second)
         _ -> null

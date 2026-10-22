@@ -31,7 +31,7 @@ fn disk_host() -> Host {
         list: (dir: string) -> list_dir(dir) catch [],
         write: (p: string, text: string) -> write_file(p, text),
         is_dir: (dir: string) -> is_dir(dir),
-        stamp: (p: string) -> stamp(p),
+        stamp: (p: string) -> stamped(p),
         reads_ahead: (files: int) -> light_or_leave(files),
         env: process_env,
         print: own_print,
@@ -41,6 +41,20 @@ fn disk_host() -> Host {
         cwd: env("PWD") ?? ".",
         compiler: own_binary(),
     }
+}
+
+/// `--verify`'s own: whether a run may trust a file's stamp instead of reading
+/// its bytes. A doubt about a kept stamp is settled by turning this off, which
+/// reads every input and so compares the bytes to the digest they were kept with.
+once fn stamp_trusted() -> Cell<bool> { Cell.new(true) }
+
+/// Ask this run to read every input, or to trust the stamps again.
+export fn trusting_stamps(carefully: bool) { stamp_trusted().set(carefully) }
+
+/// A file's stamp, and none where the run was asked not to trust one.
+fn stamped(path: string) -> int? {
+    if !stamp_trusted().get() { return null }
+    stamp(path)
 }
 
 /// Whether a directory stands at `path` — the door's listing, asked for

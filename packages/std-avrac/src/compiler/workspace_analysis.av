@@ -21,6 +21,7 @@ use core.{
     fp,
     fp_list,
     joined,
+    some_list,
 }
 use @std.path.{dir_of}
 use features.{
@@ -68,6 +69,7 @@ use compiler.lower.{
     Instance,
     CodeFacts,
     KeptInstance,
+    HeldWants,
     lower_unit,
     code_facts_from_wire,
 }
@@ -510,18 +512,55 @@ impl Workspace {
     /// FILE-SAID: a file's asks, keyed by PATH under the program's root — written beside the object-keyed row.
     fn asks_row(path: string) -> string { node_key(Stored.Unit, ["asks-row", self.root, path]) }
 
-    /// EVERY INSTANTIATION THE HELD FILES' BODIES DEMAND, read where the bodies are
-    /// not — kept for the lowering — and the held files whose row could NOT be read.
+    /// EVERY ASK THE HELD FILES' BODIES MAKE, read by name where the bodies are not —
+    /// kept for the lowering, nothing resolved — and the held files whose row could NOT be read.
     /// An unread row is a file that must parse: holding it would link a program
     /// missing whatever its bodies ask for.
-    fn read_held_asks(s: Store) -> List<ReadFile> {
+    /// A link resolves every ask up front, as it lowers their instantiations from the store.
+    fn read_held_asks(s: Store, links: bool) -> List<ReadFile> {
         mut unread: List<ReadFile> = []
+        mut asks: List<HeldAsk> = []
         for path in held_paths(self) {
-            let wants = self
-                .wanted_list_from_wire(s.get(Stored.Unit, self.asks_key(self.held_okey(s, path))) ?? "")
-            if wants == null { unread.push(ReadFile { path: path, why: Reads.AsksUnread }) } else { self.hold.held_wants.set(self.hold.held_wants.get().concat(wants!)) }
+            let held = self
+                .held_asks_from_wire(path, s.get(Stored.Unit, self.asks_key(self.held_okey(s, path))) ?? "")
+            if held == null || !held!.all((h) -> self.ask_stands(h, links)) { unread.push(ReadFile { path: path, why: Reads.AsksUnread }) } else { asks = asks.concat(held!) }
         }
+        self.hold.held_asks.set(asks)
         unread
+    }
+
+    /// Whether a held ask names a file here — and, for a link, a declaration that resolves.
+    fn ask_stands(h: HeldAsk, links: bool) -> bool {
+        self.ask_home(h) != null && (!links || self.held_ask_wanted(h) != null)
+    }
+
+    /// A held ask's home, as this attempt knows it.
+    fn ask_home(h: HeldAsk) -> FileId? { self.decls.known_file_id(h.home) }
+
+    /// Whether a held ask's home is held: its body is the store's.
+    fn home_held(h: HeldAsk) -> bool {
+        let f? = self.ask_home(h) else { return false }
+        self.is_held(f)
+    }
+
+    /// A held ask resolved; one whose declaration no longer resolves sends its asking file to be read.
+    fn asked_want(h: HeldAsk) -> Wanted? {
+        let w = self.held_ask_wanted(h)
+        if w == null { self.hold.asks_lost.push(h.by) }
+        w
+    }
+
+    /// WHAT HELD BODIES ASK, for the lowering: an ask homed in a read file resolved — it lowers
+    /// here — and the rest by name, resolved only where it roams and a link owes code hashes.
+    fn held_wants(hashed: bool) -> HeldWants {
+        let asks = self.hold.held_asks.get()
+        let stored = [h for h in asks if self.home_held(h)]
+        HeldWants {
+            read: flatten([some_list(self.asked_want(h)) for h in asks if !self.home_held(h)]),
+            names: [h.name for h in stored],
+            homes: [self.ask_home(h)! for h in stored if h.roams],
+            roaming: if hashed { flatten([some_list(self.asked_want(h)) for h in stored if h.roams]) } else { [] },
+        }
     }
 
     /// Where a file's code lives: beside its object, under the object's key.
