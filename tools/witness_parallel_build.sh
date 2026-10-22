@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by make store-witnesses
 # `MEMCAP=<memcap.sh> sh tools/witness_parallel_build.sh [<package> <package>]`
 #
 # THREE claims about concurrent runs over ONE tree, each a run of its own:

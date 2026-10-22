@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: --self-test
 # THE HAND-DOWN: what one CI job built, carried to the jobs that run it.
 # `pack` tars `build/` and the store's rows beside it — never the compiler
 # (its own artifact) nor the store's machine code (each job's own to make)

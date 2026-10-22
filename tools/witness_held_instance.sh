@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by make store-witnesses
 # `MEMCAP=<memcap.sh> sh tools/witness_held_instance.sh [<test file>]`
 #
 # A HELD FILE'S DECLARED INSTANCES, READ BY A MODULE THAT MOVED. `compiler.rules`

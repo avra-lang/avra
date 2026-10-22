@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: --self-test
 # THE RUNGS OF A BRANCH: its commits that carry a `Rung: <why>` trailer, oldest first, HEAD excluded
 # (HEAD is built by the last rung's product whatever it says). A row and its first reader ride one
 # landing as two commits; the first is marked `Rung:`, and CI builds the tree at each mark with the

@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: --self-test
 # THE WATCHDOG AND THE BUILD LOCK: `sh tools/watch.sh <cap_mb> <cmd…>`
 # runs one heavy step — a gate, a suite, a whole-package check —
 # and polls the footprint of it and every descendant twice a second,
