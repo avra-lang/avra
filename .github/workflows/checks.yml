@@ -570,28 +570,11 @@ jobs:
           compression-level: 0
           retention-days: 1
 
-      - name: speed baseline
-        uses: actions/cache/restore@v4
-        continue-on-error: true
-        with:
-          path: speed-base.metrics
-          key: speed-main-prepare-${{ github.sha }}
-          restore-keys: speed-main-prepare-
       - if: always()
-        name: speed note
-        run: |
-          sh tools/speed_note.sh collect speed.log > speed-now.metrics
-          sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: success() && steps.plan.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
-        name: speed baseline copy
-        continue-on-error: true
-        run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
-      - if: success() && steps.plan.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
-        uses: actions/cache/save@v4
-        continue-on-error: true
+        uses: ./.github/actions/speed-note
         with:
-          path: speed-base.metrics
-          key: speed-main-prepare-${{ github.sha }}
+          key: speed-main-prepare
+          save: ${{ job.status == 'success' && steps.plan.outputs.main == '1' }}
   # THE COMPILER MAIN BUILT AND PROVED, PUBLISHED WHERE A PR CAN READ IT. Only a
   # run on `main` reaches this job, and only once that run's `test` verdict is
   # green: every PR falls back to the newest published compiler, so a compiler
@@ -678,13 +661,6 @@ jobs:
           [ "$a" = 0 ] || echo "::error::a keeper in keepers-a${{ matrix.group }} refused"
           exit "$a"
 
-      - name: speed baseline
-        uses: actions/cache/restore@v4
-        continue-on-error: true
-        with:
-          path: speed-base.metrics
-          key: speed-main-keepers-${{ github.sha }}
-          restore-keys: speed-main-keepers-
       - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('build/census-now.txt') != ''
         name: census counts kept for main
         run: cp build/census-now.txt census-main.txt
@@ -695,20 +671,10 @@ jobs:
           path: census-main.txt
           key: census-main-${{ github.sha }}
       - if: always()
-        name: speed note
-        run: |
-          sh tools/speed_note.sh collect speed.log > speed-now.metrics
-          sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
-        name: speed baseline copy
-        continue-on-error: true
-        run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
-      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
-        uses: actions/cache/save@v4
-        continue-on-error: true
+        uses: ./.github/actions/speed-note
         with:
-          path: speed-base.metrics
-          key: speed-main-keepers-${{ github.sha }}
+          key: speed-main-keepers
+          save: ${{ job.status == 'success' && needs.prepare.outputs.main == '1' }}
   # THE SECOND HALF, alone on its own runner. It needs only the lowercase
   # build artifact, and it shares the Makefile's one list with keepers-a —
   # never a second list kept in step by hand.
@@ -792,28 +758,11 @@ jobs:
         timeout-minutes: 15
         run: make -s -o avra code-hash-attacks
 
-      - name: speed baseline
-        uses: actions/cache/restore@v4
-        continue-on-error: true
-        with:
-          path: speed-base.metrics
-          key: speed-main-cache-attacks-${{ github.sha }}
-          restore-keys: speed-main-cache-attacks-
       - if: always()
-        name: speed note
-        run: |
-          sh tools/speed_note.sh collect speed.log > speed-now.metrics
-          sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
-        name: speed baseline copy
-        continue-on-error: true
-        run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
-      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
-        uses: actions/cache/save@v4
-        continue-on-error: true
+        uses: ./.github/actions/speed-note
         with:
-          path: speed-base.metrics
-          key: speed-main-cache-attacks-${{ github.sha }}
+          key: speed-main-cache-attacks
+          save: ${{ job.status == 'success' && needs.prepare.outputs.main == '1' }}
   # THE CODEC SCAN ON A PR WHOSE DIFF REACHES THE COMPILER'S SOURCE. It
   # reads the tree alone — no compiler, no objects, no artifacts — so it is
   # seconds, and it names an unregistered encoder/decoder pair before the
@@ -941,28 +890,11 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
-      - name: speed baseline
-        uses: actions/cache/restore@v4
-        continue-on-error: true
-        with:
-          path: speed-base.metrics
-          key: speed-main-suites-${{ strategy.job-index }}-${{ github.sha }}
-          restore-keys: speed-main-suites-${{ strategy.job-index }}-
       - if: always()
-        name: speed note
-        run: |
-          sh tools/speed_note.sh collect speed.log > speed-now.metrics
-          sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
-        name: speed baseline copy
-        continue-on-error: true
-        run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
-      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
-        uses: actions/cache/save@v4
-        continue-on-error: true
+        uses: ./.github/actions/speed-note
         with:
-          path: speed-base.metrics
-          key: speed-main-suites-${{ strategy.job-index }}-${{ github.sha }}
+          key: speed-main-suites-${{ strategy.job-index }}
+          save: ${{ job.status == 'success' && needs.prepare.outputs.main == '1' }}
   # THE SUITE WEIGHTS, MEASURED. Main's own run times every suite; this job merges those
   # timings into the weights a later `prepare` packs the shards by, so the packer never
   # reads a hand-kept file that went stale (`cli` sat at 120 s while it ran 417). The
