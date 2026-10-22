@@ -245,8 +245,10 @@ impl Error for ServeError {
 
 /// What a server of routes keeps between requests: nothing.
 export type Stateless = {}
-
 impl server {
+    /// The listener on this server's host and port.
+    fn bound() -> Result<Listener, NetError> { listen(self.host, given_port(self.port)?) }
+
     /// This server bound and ready: its routes compiled once into the
     /// table every connection dispatches through. A table with a fault
     /// never binds.
@@ -254,11 +256,7 @@ impl server {
         let all = gathered(self.routes)
         let found = route_faults(all)
         if !found.is_empty() { return .Err(.Routes(found)) }
-        let bound = match given_port(self.port) {
-            .Ok(port) -> listen(self.host, port),
-            .Err(e) -> .Err(e),
-        }
-        let l = match bound { .Ok(l) -> l, .Err(e) -> { return .Err(.Net(e)) } }
+        let l = match self.bound() { .Ok(l) -> l, .Err(e) -> { return .Err(.Net(e)) } }
         let routed = compiled(all)
         let handled = through(self.layers, (q: Request<Unrouted>) -> dispatch(routed, q))
         let plain = served(l, () -> Stateless {}, limits(), timing()) { _none, q -> handled(q) }
@@ -273,15 +271,15 @@ impl server {
     }
 }
 
-/// The port a server with none written listens on: `PORT` from the
-/// environment, as a host hands one to its program, else 8080. A `PORT`
-/// that is no port is refused, never read as the default.
 /// The port written, else the environment's.
 fn given_port(written: int?) -> Result<int, NetError> {
     let port? = written else { return env_port() }
     .Ok(port)
 }
 
+/// The port a server with none written listens on: `PORT` from the
+/// environment, as a host hands one to its program, else 8080. A `PORT`
+/// that is no port is refused, never read as the default.
 fn env_port() -> Result<int, NetError> {
     let said? = env("PORT") else { return .Ok(8080) }
     let n? = parse_int(said) else { return .Err(not_a_port(said)) }
