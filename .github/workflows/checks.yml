@@ -176,10 +176,7 @@ jobs:
           # Asked for by hand, the run is a train's over EVERY package: the
           # whole gate on any branch, without a queue entry.
           if { [ "$event" = workflow_dispatch ] && [ -z "${{ inputs.only }}" ]; } || [ "$event" = push ]; then
-            for d in packages/*/; do
-              [ -d "${d}src" ] || { echo "::error::${d} has no src — a whole train would pass it by untested"; exit 1; }
-            done
-            pkgs=$(ls packages)
+            pkgs=$(sh tools/packages.sh) || exit 1
           fi
           if [ "$event" = pull_request ]; then
             if git diff --quiet origin/main...HEAD -- $(sh tools/compiler_paths.sh) ':(exclude,glob)**/tests/**'; then compiler=0; fi
@@ -303,7 +300,7 @@ jobs:
         uses: actions/cache/restore@v4
         id: cache
         with:
-          path: |
+          path: &compiler-paths |
             build/avra
             .avra-cache
           key: ${{ steps.plan.outputs.key }}
@@ -478,9 +475,7 @@ jobs:
       - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && steps.release.outputs.hit != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/cache/save@v4
         with:
-          path: |
-            build/avra
-            .avra-cache
+          path: *compiler-paths
           key: ${{ steps.plan.outputs.key }}
       # THE STORE RIDES DOWN TO THE JOBS THAT RUN PROGRAMS. The prepare job's
       # `.avra-cache` is the tree's own compiler's, so a `check` or suite in
@@ -523,10 +518,10 @@ jobs:
         uses: actions/cache/restore@v4
         id: objcache
         with:
-          path: |
+          path: &objs-paths |
             build/*.o
             build/*.a
-          key: objs-${{ hashFiles('backend/**', 'runtime/**', 'packages/**/src/c/**', 'packages/**/vendor/**', 'Makefile') }}
+          key: &objs-key objs-${{ hashFiles('backend/**', 'runtime/**', 'packages/**/src/c/**', 'packages/**/vendor/**', 'Makefile') }}
           restore-keys: objs-
       - if: steps.plan.outputs.build == '1' && steps.plan.outputs.full == '1'
         name: objects and libs
@@ -567,10 +562,8 @@ jobs:
       - if: steps.plan.outputs.build == '1' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/cache/save@v4
         with:
-          path: |
-            build/*.o
-            build/*.a
-          key: objs-${{ hashFiles('backend/**', 'runtime/**', 'packages/**/src/c/**', 'packages/**/vendor/**', 'Makefile') }}
+          path: *objs-paths
+          key: *objs-key
       - if: steps.plan.outputs.build == '1' && steps.plan.outputs.full == '1'
         uses: actions/upload-artifact@v4
         with:
@@ -689,16 +682,8 @@ jobs:
           # THE ONE WAY TO LET A PR COST MORE: `SPEED_ACCEPT: <reason>` in its body (the squash keeps it).
           SPEED_ACCEPT=$(sh tools/pr_body.sh | sed -n 's/^SPEED_ACCEPT: *//p' | head -n 1)
           export SPEED_ACCEPT
-          # A CONTAINER STEP'S SHELL IS `sh`, WHICH HAS NO time BUILTIN and no
-          # TIMEFORMAT — a first cut wrote `time ... %M` and every make was
-          # skipped with "time: not found". The peak is read from the finished
-          # tree's rusage, which needs nothing from the shell.
-          peak() {
-            peak_label="$1"; shift
-            python3 tools/step_cpu.py "$peak_label" -- "$@"
-          }
           ta=$(date +%s)
-          peak keepers-a${{ matrix.group }} make -s -o avra keepers-a${{ matrix.group }} || a=1
+          python3 tools/step_cpu.py keepers-a${{ matrix.group }} -- make -s -o avra keepers-a${{ matrix.group }} || a=1
           echo "speed keepers-a${{ matrix.group }} $(( $(date +%s) - ta ))" >> speed.log
           [ "$a" = 0 ] || echo "::error::a keeper in keepers-a${{ matrix.group }} refused"
           exit "$a"
@@ -759,15 +744,7 @@ jobs:
           # the landing tool's supervisor checks need a machine with an init
           AVRA_NO_SUPERVISOR_TESTS: "1"
         run: |
-          # A CONTAINER STEP'S SHELL IS `sh`, WHICH HAS NO time BUILTIN and no
-          # TIMEFORMAT — a first cut wrote `time ... %M` and every make was
-          # skipped with "time: not found". The peak is read from the finished
-          # tree's rusage, which needs nothing from the shell.
-          peak() {
-            peak_label="$1"; shift
-            python3 tools/step_cpu.py "$peak_label" -- "$@"
-          }
-          peak keepers-b make -s -o avra keepers-b || exit 1
+          python3 tools/step_cpu.py keepers-b -- make -s -o avra keepers-b || exit 1
   # THE COMMITTED SEED STILL BUILDS THIS TREE — a compiler build, the
   # heaviest single keeper. It stands ALONE: run beside the two halves it was
   # the third compiler process on one runner, and the OOM killed the whole
@@ -803,7 +780,7 @@ jobs:
             echo "seed-check: SKIPPED, SPOKEN — this run carries Rung commit(s) (${{ needs.prepare.outputs.rungs }}); the seed cannot build a tree whose reader needs the row it lacks, and the seed refresh is owed after this lands"
             exit 0
           fi
-          python3 -c 'import re,resource,subprocess,sys; rc=subprocess.call(sys.argv[1:]); print("seed-check: peak %d KB max RSS" % resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss); sys.exit(rc)' make -s -o avra seed-check
+          python3 tools/step_cpu.py seed-check -- make -s -o avra seed-check
   # THE BUILD CACHE, ATTACKED. Its own job: it clears the store it builds
   # through, and it runs beside the gate. It runs on the train, on main's own
   # push, and on a PR that reaches the store or the attacks — the three places
