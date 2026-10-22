@@ -90,16 +90,26 @@ make -n test >/dev/null 2>&1 || { echo "stems: the tree's own stems clash"; fail
 # line, read as the rule, names no prerequisite at all.
 prereqs_of() { make -p -n "$1" 2>/dev/null | grep -m1 "^$1:[^=]*$" | sed "s/^$1://"; }
 
-# EVERY OBJECT A MANIFEST NAMES IS A PACKAGE OBJECT.
+# EVERY OBJECT A MANIFEST NAMES IS A PACKAGE OBJECT, read by the one
+# reader, which proves itself first.
+sh tools/manifest_objects.sh --self-test > /dev/null || { echo "stems: tools/manifest_objects.sh fails its own fixtures"; exit 1; }
 rows=$((rows + 1))
 package_objs=" $(prereqs_of test) "
-for obj in $(sed -n 's/.*objects *= *\[\(.*\)\].*/\1/p' packages/*/avra.toml \
-             | tr ',' '\n' | tr -d ' "' | sed 's|.*/||' | sort -u); do
+for obj in $(sh tools/manifest_objects.sh); do
     case "$package_objs" in
-        *" build/$obj "*) ;;
-        *) echo "stems: a manifest names build/$obj and no target that runs programs depends on it"
+        *" $obj "*) ;;
+        *) echo "stems: a manifest names $obj and no target that runs programs depends on it"
            fails=$((fails + 1)) ;;
     esac
+done
+
+# A [link] ROW HAS ONE READER, tools/manifest_objects.sh: a second sed of
+# `objects = [` is a second definition that can disagree with the first.
+rows=$((rows + 1))
+for f in $(grep -lE 'objects \*= \*\\\[' Makefile tools/*.sh tools/*.py 2>/dev/null); do
+    [ "$f" = tools/manifest_objects.sh ] && continue
+    echo "stems: $f reads a manifest's [link] row itself — ask tools/manifest_objects.sh"
+    fails=$((fails + 1))
 done
 
 # EVERY OBJECT THE COMPILER TOOK IS A COMPILER OBJECT — asked of the
