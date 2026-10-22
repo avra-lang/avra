@@ -12,8 +12,11 @@
 //!
 //! The board names no target. A page mounts it (`web/`) and so does a
 //! terminal (`term/`).
+use @std.json.codec.{json}
+use @std.json.typed.{array_of, as_bool, as_int, bool_text, elements, int_text}
 use @std.time.{ms}
 use @std.ui.app.{Async, Fetch, fetch, fetched, later}
+use @std.ui.shipped.{ship}
 use @std.http_message.message.{Body, Reply, Request}
 use @std.ui.components.{
     button,
@@ -36,10 +39,15 @@ use @std.ui.style.style.{Style}
 use @std.ui.style.theme.{Theme, dark_theme, default_theme}
 
 /// Which tasks the board shows.
+@json
 enum Show { All, Active, Done }
 
 /// One task. `id` is the item key; `done` is its state.
+@json
 type Todo = { id: string, title: string, done: bool }
+
+/// The board's heading.
+fn title() -> string { "Tasks" }
 
 // ── state ───────────────────────────────────────────────────────
 
@@ -56,6 +64,73 @@ state tasks: List<Todo> = [
     Todo { id: "t3", title: "Land the wasm board", done: false },
     Todo { id: "t4", title: "Write the tour", done: true },
 ]
+
+// ── the state a page carries ────────────────────────────────────
+
+/// Name the states a server's page carries to the module: what the view
+/// reads and a request decides. A state not named here is never shipped.
+export fn ship_state() {
+    ship("filter", Show.json_shape(), () -> filter.json_text(), (j: string) -> filter_written(j))
+    ship("dark", "bool", () -> bool_text(dark), (j: string) -> dark_written(j))
+    ship("seq", "int", () -> int_text(seq), (j: string) -> seq_written(j))
+    ship(
+        "tasks",
+        "[${Todo.json_shape()}]",
+        () -> array_of([t.json_text() for t in tasks]),
+        (j: string) -> tasks_written(j),
+    )
+}
+
+/// What a request for the done tasks in the dark decides, as a server's
+/// handler would before it draws the page.
+export fn requested() {
+    filter = .Done
+    dark = true
+}
+
+fn filter_written(j: string) -> bool {
+    match Show.from_json_text(j) {
+        .Ok(shown) -> {
+            filter = shown
+            true
+        },
+        .Err(_) -> false,
+    }
+}
+
+fn dark_written(j: string) -> bool {
+    match as_bool(j) {
+        .Ok(on) -> {
+            dark = on
+            true
+        },
+        .Err(_) -> false,
+    }
+}
+
+fn seq_written(j: string) -> bool {
+    match as_int(j) {
+        .Ok(n) -> {
+            seq = n
+            true
+        },
+        .Err(_) -> false,
+    }
+}
+
+fn tasks_written(j: string) -> bool {
+    match todos_of(j) {
+        .Ok(read) -> {
+            tasks = read
+            true
+        },
+        .Err(_) -> false,
+    }
+}
+
+fn todos_of(j: string) -> Result<List<Todo>, string> {
+    [Todo.from_json_text(entry)? for entry in elements(j)?]
+}
 
 /// The counts are DERIVED from the list, never stored beside it.
 fn done_count() -> int { [t for t in tasks if t.done].length }
@@ -114,7 +189,7 @@ component header {
         layout: spread_layout()
         column {
             layout: Layout { gap: .Xs }
-            heading "Tasks" { rank: 1 }
+            heading title() { rank: 1 }
             text "Every task is a value; the screen is a function of state." { style: Style { color: .Muted } }
         }
         button theme_label() {
