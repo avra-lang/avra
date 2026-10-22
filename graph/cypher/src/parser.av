@@ -59,7 +59,10 @@ export type ReturnItem = { expr: Expr, name: string? }
 export type Query = { matches: List<MatchClause>, returns: List<ReturnItem>, limit: int? }
 
 /// The refusal a failed parse names. `code` is a stable problem code.
-export type CypherError = { code: string, message: string }
+/// What kind of law a refusal states: a write, a procedure, or the subset's own limit.
+export enum RefusalKind { Write, Procedure, Subset }
+
+export type CypherError = { code: string, message: string, kind: RefusalKind = RefusalKind.Subset }
 
 enum CNode {
     Ex(e: Expr)
@@ -395,37 +398,65 @@ const KNOWN_TERMINALS: List<string> = ["IDENT", "NUMBER", "STRING", "PARAM"]
 
 /// Words that name a clause this read-only surface will not run, each with
 /// the problem code its refusal carries.
-type Refusal = { word: string, code: string, law: string }
+type Refusal = { word: string, code: string, kind: RefusalKind, law: string }
 
 const REFUSALS: List<Refusal> = [
-    Refusal { word: "create", code: "mutation_refused", law: write_law() },
-    Refusal { word: "merge", code: "mutation_refused", law: write_law() },
-    Refusal { word: "set", code: "mutation_refused", law: write_law() },
-    Refusal { word: "delete", code: "mutation_refused", law: write_law() },
-    Refusal { word: "detach", code: "mutation_refused", law: write_law() },
-    Refusal { word: "remove", code: "mutation_refused", law: write_law() },
-    Refusal { word: "drop", code: "mutation_refused", law: write_law() },
+    Refusal { word: "create", code: "mutation_refused", kind: RefusalKind.Write, law: write_law() },
+    Refusal { word: "merge", code: "mutation_refused", kind: RefusalKind.Write, law: write_law() },
+    Refusal { word: "set", code: "mutation_refused", kind: RefusalKind.Write, law: write_law() },
+    Refusal { word: "delete", code: "mutation_refused", kind: RefusalKind.Write, law: write_law() },
+    Refusal { word: "detach", code: "mutation_refused", kind: RefusalKind.Write, law: write_law() },
+    Refusal { word: "remove", code: "mutation_refused", kind: RefusalKind.Write, law: write_law() },
+    Refusal { word: "drop", code: "mutation_refused", kind: RefusalKind.Write, law: write_law() },
     Refusal {
         word: "call",
         code: "procedure_refused",
+        kind: RefusalKind.Procedure,
         law: "procedures are not run; a query only reads",
     },
     Refusal {
         word: "load",
         code: "procedure_refused",
+        kind: RefusalKind.Procedure,
         law: "a query reads the graph, never a file",
     },
     Refusal {
         word: "with",
         code: "unsupported_clause",
+        kind: RefusalKind.Subset,
         law: "WITH pipelines are outside the subset",
     },
-    Refusal { word: "order", code: "unsupported_clause", law: "ORDER BY is outside the subset" },
-    Refusal { word: "skip", code: "unsupported_clause", law: "SKIP is outside the subset" },
-    Refusal { word: "distinct", code: "unsupported_clause", law: "DISTINCT is outside the subset" },
-    Refusal { word: "union", code: "unsupported_clause", law: "UNION is outside the subset" },
-    Refusal { word: "unwind", code: "unsupported_clause", law: "UNWIND is outside the subset" },
-    Refusal { word: "foreach", code: "mutation_refused", law: write_law() },
+    Refusal {
+        word: "order",
+        code: "unsupported_clause",
+        kind: RefusalKind.Subset,
+        law: "ORDER BY is outside the subset",
+    },
+    Refusal {
+        word: "skip",
+        code: "unsupported_clause",
+        kind: RefusalKind.Subset,
+        law: "SKIP is outside the subset",
+    },
+    Refusal {
+        word: "distinct",
+        code: "unsupported_clause",
+        kind: RefusalKind.Subset,
+        law: "DISTINCT is outside the subset",
+    },
+    Refusal {
+        word: "union",
+        code: "unsupported_clause",
+        kind: RefusalKind.Subset,
+        law: "UNION is outside the subset",
+    },
+    Refusal {
+        word: "unwind",
+        code: "unsupported_clause",
+        kind: RefusalKind.Subset,
+        law: "UNWIND is outside the subset",
+    },
+    Refusal { word: "foreach", code: "mutation_refused", kind: RefusalKind.Write, law: write_law() },
 ]
 
 fn write_law() -> string { "a query only reads; it cannot write the graph" }
@@ -434,6 +465,7 @@ fn write_law() -> string { "a query only reads; it cannot write the graph" }
 fn refused_word(tokens: List<LexToken>) -> CypherError? {
     [CypherError {
         code: r.code,
+        kind: r.kind,
         message: "${t.text.substring(0, t.text.length)} is not accepted — ${r.law}",
     } for t in tokens if t.kind == "IDENT" for r in REFUSALS if r.word == ascii_lower(t.text)]
         .first()

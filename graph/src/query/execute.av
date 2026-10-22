@@ -15,7 +15,16 @@ use query.plan.{Binding, ReadOnlyPlan, ReadOperation, Comparison, Direction, Sou
 export type Evidence = { entity: string, property: string, supports: Json }
 
 /// A row never loses its evidence: every property that admitted it or is shown.
-export type ReadRow = { id: string, model: string, fields: List<Selection>, evidence: List<Evidence> }
+/// A returned column the row has no value for, with the reason its plan gave.
+export type Absent = { name: string, code: string }
+
+export type ReadRow = {
+    id: string,
+    model: string,
+    fields: List<Selection>,
+    absent: List<Absent>,
+    evidence: List<Evidence>,
+}
 
 /// Exceeded is a bound reached mid-run: no rows, and not a defect.
 export enum ReadAnswer {
@@ -55,6 +64,7 @@ type Hit = {
     known: List<string>,
     proofs: List<Proof>,
     names: List<Alias>,
+    lacks: List<Absent>,
 }
 enum Flow {
     Hits(hits: List<Hit>)
@@ -146,7 +156,7 @@ impl Run {
             .Filter(input, property, compare, literal) -> Flow.Hits(self.filter(self.rows(flows, input)?, property.name, compare, literal)?),
             .Search(input, property, needle) -> Flow.Hits(self.search(self.rows(flows, input)?, property.name, needle)?),
             .Follow(input, owner, property, direction) -> Flow.Hits(self.follow(self.rows(flows, input)?, owner, property.name, direction)?),
-            .Project(input, properties, names) -> Flow.Hits(self.project(self.rows(flows, input)?, properties, names)),
+            .Project(input, properties, names, reasons) -> Flow.Hits(self.project(self.rows(flows, input)?, properties, names, reasons)),
             .Holds(input, property, name) -> self.holds(self.rows(flows, input)?, property.name, name)?,
             .Expect(input, property, reason) -> self.expect(self.rows(flows, input)?, property.name, reason)?,
             .Count(input, name) -> {
@@ -175,6 +185,7 @@ impl Run {
             known: e.fields.map(it.property),
             proofs: proofs,
             names: [],
+            lacks: [],
         }
     }
 
@@ -274,10 +285,15 @@ impl Run {
 
     fn owned_by(owner: string, hits: List<Hit>) -> List<Hit> { hits.filter(it.model == owner) }
 
-    fn project(input: List<Hit>, properties: List<Property>, names: List<string>) -> List<Hit> {
+    fn project(
+        input: List<Hit>,
+        properties: List<Property>,
+        names: List<string>,
+        reasons: List<string>,
+    ) -> List<Hit> {
         let kept = properties.map(it.name)
         let aliases = [Alias { property: p.name, name: names[i] } for i, p in properties]
-        [h with { fields: h.fields.filter((f) -> kept.contains(f.property)), names: aliases } for h in input]
+        [h with { fields: h.fields.filter((f) -> kept.contains(f.property) && h.has_value(f.property)), names: aliases, lacks: [Absent { name: names[i], code: reasons[i] } for i, p in properties if !reasons.is_empty() && !h.has_value(p.name)] } for h in input]
     }
 
     /// A declared boolean status: true when a row's only standing value is true,
@@ -351,7 +367,7 @@ impl Run {
             property: p.property,
             supports: self.g.explain(p.entity, p.property)?,
         } for p in wanted]
-        ReadRow { id: h.id, model: h.model, fields: h.shown(), evidence: evidence }
+        ReadRow { id: h.id, model: h.model, fields: h.shown(), absent: h.lacks, evidence: evidence }
     }
 }
 
@@ -373,6 +389,9 @@ impl Hit {
     fn proved_all(entity: string, properties: List<string>) -> Hit {
         self with { proofs: self.proofs.concat([Proof { entity: entity, property: p } for p in properties]) }
     }
+
+    /// Whether any non-null value stands for the property.
+    fn has_value(property: string) -> bool { self.values(property).any(!(it is .Null)) }
 
     /// Both truth values stand for the property.
     fn rivals(property: string) -> bool {

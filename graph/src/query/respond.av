@@ -4,7 +4,7 @@ use query.policies.{Derived as Outcome}
 use @std.validate.{Value}
 use store.open.{Graph}
 use query.plan.{prepare_read}
-use query.execute.{ReadAnswer, ReadRow, ReadResult, Held}
+use query.execute.{ReadAnswer, ReadRow, ReadResult, Held, Absent}
 use store.query.{Selection, Candidate}
 use query.quantity.{Quantity, Term}
 
@@ -39,8 +39,11 @@ export fn responded(request: string, result: ReadResult) -> Json {
         .Rows(rows) -> {
             let fields = [f for row in rows for f in row_fields(row)]
             let conflicts = [c for row in rows for c in row_conflicts(row)]
+            let absent = [absence(row, a) for row in rows for a in row.absent]
             if !conflicts.is_empty() {
                 ambiguous(request, result.revision, fields, conflicts, rows)
+            } else if fields.is_empty() && !absent.is_empty() {
+                known_absent(request, result.revision, absent, rows)
             } else if fields.is_empty() {
                 unresolved(
                     request,
@@ -49,7 +52,7 @@ export fn responded(request: string, result: ReadResult) -> Json {
                     "the plan matched no cited rows",
                 )
             } else {
-                answered(request, result.revision, fields, rows)
+                answered_with(request, result.revision, fields, rows, absent)
             }
         },
         .Unsummable(code, why) -> refused(request, result.revision, "quantity_policy", code, why),
@@ -68,6 +71,52 @@ export fn responded(request: string, result: ReadResult) -> Json {
             }
         },
     }
+}
+
+/// An answer whose asked-for values are known except those listed absent, each with its model's reason.
+fn answered_with(
+    request: string,
+    revision: int,
+    fields: List<Json>,
+    rows: List<ReadRow>,
+    absent: List<Json>,
+) -> Json {
+    held(
+        request,
+        "answered",
+        revision,
+        fields,
+        [],
+        [citation(s) for s in distinct_supports(rows)],
+        [],
+        [],
+        absent,
+    )
+}
+
+/// Nothing asked for is known: unknown, resting on the reasons each value is missing.
+fn known_absent(request: string, revision: int, absent: List<Json>, rows: List<ReadRow>) -> Json {
+    held(
+        request,
+        "unknown",
+        revision,
+        [],
+        [],
+        [citation(s) for s in distinct_supports(rows)],
+        [],
+        [],
+        absent,
+    )
+}
+
+fn absence(row: ReadRow, a: Absent) -> Json {
+    Json
+        .Obj(
+            [
+                field("path", Json.Arr([Json.Str(row.id), Json.Str(a.name)])),
+                field("code", Json.Str(a.code)),
+            ],
+        )
 }
 
 fn answered(request: string, revision: int, fields: List<Json>, rows: List<ReadRow>) -> Json {
@@ -209,6 +258,7 @@ fn held(
     citations: List<Json>,
     policies: List<string>,
     problems: List<Json>,
+    absent: List<Json> = [],
 ) -> Json {
     Json
         .Obj(
@@ -223,6 +273,7 @@ fn held(
                 field("citations", Json.Arr(citations)),
                 field("policies", Json.Arr([Json.Str(p) for p in policies])),
                 field("problems", Json.Arr(problems)),
+                field("absent", Json.Arr(absent)),
             ],
         )
 }

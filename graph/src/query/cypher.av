@@ -1,9 +1,19 @@
-use @avra.cypher.parser.{parse_cypher, Query, Expr, MatchClause, NodePat, ReturnItem, CypherError}
+use @avra.cypher.parser.{
+    RefusalKind,
+    parse_cypher,
+    Query,
+    Expr,
+    MatchClause,
+    NodePat,
+    ReturnItem,
+    CypherError,
+}
 use @std.json.{Json, Field, field, to_text}
 use @std.text.{parse_int, parse_float}
 use store.open.{Graph}
 use query.plan.{prepare_read, ReadNode, ReadOnlyPlan}
 use query.respond.{responded, refused}
+use parameters.{read_only_policy, plan_policy}
 use query.relations.{Link, resolve_hop, unknown_label, check_property, model_named}
 use catalog.{Catalog}
 use semantics.{AbsenceBinding}
@@ -55,7 +65,7 @@ enum Wanted { Prop(want: PropWant), Total(want: TotalWant), Derive(want: DeriveW
 /// A query either becomes an admitted plan or is refused with a code.
 export enum Admission {
     Ready(plan: ReadOnlyPlan)
-    Rejected(code: string, message: string)
+    Rejected(code: string, message: string, kind: RefusalKind)
 }
 
 impl Graph {
@@ -64,7 +74,7 @@ impl Graph {
         let request = if text.length > 512 { text.substring(0, 512) } else { text }
         let revision = self.read_revision()?
         match self.admission(text, params) {
-            .Rejected(code, message) -> refused(request, revision, "read_plan", code, message),
+            .Rejected(code, message, kind) -> refused(request, revision, policy_of(kind), code, message),
             .Ready(admitted) -> responded(request, self.read(admitted)?),
         }
     }
@@ -72,7 +82,7 @@ impl Graph {
     /// Whether a query would run: `{"ok": true}`, or the refusal's code and words. Nothing executes.
     fn check_cypher(text: string, params: Json) -> Json {
         match self.admission(text, params) {
-            .Rejected(code, message) -> Json
+            .Rejected(code, message, _) -> Json
                 .Obj(
                     [
                         field("ok", Json.Bool(false)),
@@ -88,22 +98,27 @@ impl Graph {
     /// The one door from Cypher text to a plan the executor accepts.
     fn admission(text: string, params: Json) -> Admission {
         match compiled(text, params, self.catalog) {
-            .Err(e) -> Admission.Rejected(e.code, e.message),
+            .Err(e) -> Admission.Rejected(e.code, e.message, e.kind),
             .Ok(c) -> self.labelled(c, prepare_read(self.catalog, to_text(c.plan))),
         }
     }
 
     fn labelled(c: Compiled, admitted: Result<ReadOnlyPlan, string>) -> Admission {
         match admitted {
-            .Err(m) -> Admission.Rejected("plan_refused", m),
+            .Err(m) -> Admission.Rejected("plan_refused", m, RefusalKind.Subset),
             .Ok(plan) -> self.labels_hold(c.labels, plan),
         }
     }
 
     fn labels_hold(labels: List<Label>, plan: ReadOnlyPlan) -> Admission {
         let wrong = mislabelled(labels, plan.nodes)
-        if wrong != null { Admission.Rejected("label_mismatch", wrong!) } else { Admission.Ready(plan) }
+        if wrong != null { Admission.Rejected("label_mismatch", wrong!, RefusalKind.Subset) } else { Admission.Ready(plan) }
     }
+}
+
+/// The policy a refusal cites: the read-only law for writes and procedures, else the plan's own.
+fn policy_of(kind: RefusalKind) -> string {
+    match kind { .Write or .Procedure -> read_only_policy, .Subset -> plan_policy }
 }
 
 export fn compiled(text: string, params: Json, catalog: Catalog) -> Result<Compiled, CypherError> {
@@ -881,40 +896,19 @@ fn returned(
     props: List<PropWant>,
     absences: List<AbsenceBinding>,
 ) -> Finished {
-    mut steps: List<Json> = []
-    mut last = input
-    if !optional {
-        for k, p in props {
-            let id = "${group}e${k}"
-            steps
-                .push(
-                    step_json(
-                        id,
-                        "expect",
-                        last,
-                        [
-                            field("property", Json.Str(p.prop)),
-                            field("reason", Json.Str(absence_code(absences, p.prop))),
-                        ],
-                    ),
-                )
-            last = id
-        }
-    }
     let id = "${group}p"
-    steps
-        .push(
-            step_json(
-                id,
-                "project",
-                last,
-                [
-                    field("properties", Json.Arr([Json.Str(p.prop) for p in props])),
-                    field("names", Json.Arr([Json.Str(p.out) for p in props])),
-                ],
-            ),
-        )
-    Finished { steps: steps, output: id, joined: [] }
+    let reasons = if optional { [] } else { [absence_code(absences, p.prop) for p in props] }
+    let step = step_json(
+        id,
+        "project",
+        input,
+        [
+            field("properties", Json.Arr([Json.Str(p.prop) for p in props])),
+            field("names", Json.Arr([Json.Str(p.out) for p in props])),
+            field("reasons", Json.Arr([Json.Str(r) for r in reasons])),
+        ],
+    )
+    Finished { steps: [step], output: id, joined: [] }
 }
 
 fn step_json(id: string, op: string, input: string, rest: List<Field>) -> Json {

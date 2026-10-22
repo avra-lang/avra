@@ -141,9 +141,10 @@ fn counts_and_nulls() -> Result<bool, string> {
     let counted = done.member("fields").item(0)
     counted.member("path").item(0).text() == "finished" &&
         counted.member("value").int() == 2 &&
-        due.member("status").text() == "unknown" &&
-        code_of(due) == "null_result" &&
-        !due.member("fields").items().is_empty()
+        due.member("status").text() == "answered" &&
+        due.member("absent").item(0).member("code").text() == "null_result" &&
+        due.member("absent").item(0).member("path").item(1).text() == "due" &&
+        due.member("fields").items().map(it.member("path").item(1).text() ?? "").join(",") == "title"
 }
 
 fn joined_matches() -> Result<bool, string> {
@@ -175,6 +176,7 @@ fn refusals() -> Result<bool, string> {
     let refused = cypher(g, "MATCH (w:WorkItem) DELETE w", p)?
     writes.all(it == "mutation_refused") &&
         refused.member("status").text() == "refused" &&
+        refused.member("policies").item(0).text() == "query.read_only" &&
         code_for(g, "CALL db.labels()", p)? == "procedure_refused" &&
         code_for(
             g,

@@ -30,6 +30,7 @@ export type ReadStep = {
     @one_of(["out", "in"]) direction: string? = null,
     @items(max: 64) properties: List<string> = [],
     @items(max: 64) names: List<string> = [],
+    @items(max: 64) reasons: List<string> = [],
     @length(min: 1, max: 256) owner: string? = null,
     @length(min: 1, max: 128) reason: string? = null,
     @one_of(["speaker", "principal"]) binding: string? = null,
@@ -66,6 +67,8 @@ fn step_coherent(s: ReadStep) -> Result<ReadStep, string> {
     if !s.names.is_empty() && !(paired || single) {
         fail "output names pair one-to-one with a projection's properties; a status, count or sum has one"
     }
+    if !s.reasons.is_empty() && !(s.op == "project" && s.reasons.length == s.properties.length) { fail "reasons pair one-to-one with a projection's properties" }
+    if s.reasons.any(it.is_empty()) { fail "an absence reason cannot be empty" }
     if s.op == "holds" && s.names.length != 1 { fail "a status names its output once" }
     if s.names.any(it.is_empty()) { fail "output names cannot be empty" }
     if (s.op == "expect") != (s.reason != null) { fail "only an expectation names its reason code" }
