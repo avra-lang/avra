@@ -216,6 +216,14 @@ def in_the_image(objects, host):
     return "split"
 
 
+def manifest_rows(key, manifest):
+    """One manifest's `key = [...]` row as written, from the one reader of a
+    [link] row (tools/manifest_objects.sh)."""
+    out = subprocess.run(["sh", os.path.join(ROOT, "tools", "manifest_objects.sh"), "--rows", key, manifest],
+                         capture_output=True, text=True, check=True).stdout
+    return out.split()
+
+
 def libraries():
     """Every package that needs a library: name, output path, objects, words.
 
@@ -229,7 +237,7 @@ def libraries():
         with open(path, "rb") as f:
             manifest = tomllib.load(f)
         link = manifest.get("link", {})
-        objects = link.get("objects", [])
+        objects = manifest_rows("objects", path)
         if not objects:
             continue
         pkg = manifest.get("package", {}).get("name")
