@@ -29,10 +29,15 @@ class Sc:
         self.calls += 1
         k = random.randrange(len(opts))
         return [1.0 if i == k else 0.0 for i in range(len(opts))]
-class M: enc, llm, load_s = Enc(), Sc(), 0.0
+class M:
+    llm, load_s = Sc(), 0.0
+    def drop_llm(self): pass
+    def encoder(self):
+        e = Enc(); e.close = lambda: None
+        return e
 for seed in range(10):
     random.seed(seed)
-    res, logs = c.extract(req, M())
+    res, logs = c.extract_batch([req], M())[0]
     if res["status"] != "complete":
         print(seed, res["problems"]); break
 else:

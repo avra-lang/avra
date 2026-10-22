@@ -1,13 +1,15 @@
 """Local extraction cascade: an encoder proposes spans, a small LLM only
 scores closed choices, and every proposal is an exact source anchor.
 
-usage: python cascade.py [--catalog SCHEMA_JSON] [--local] [--no-prefix] < request_or_envelope.json > result.json
+usage: python cascade.py [--catalog SCHEMA_JSON] [--local] [--no-prefix] [--units M] < in.json > out.json
        python cascade.py --serve   # keep both models resident behind a Unix socket
 
 Without a listening service it exits 1 ("service unavailable"); --local
 loads the models in this process instead.
 
-stdin is a C01 ExtractionRequest, or a bare I01 SourceEnvelope with
+stdin is one request, or a JSON array of them for a batch (one encoder
+load and one scorer load for the whole batch; the answer is then an array).
+A request is a C01 ExtractionRequest, or a bare I01 SourceEnvelope with
 --catalog naming the app's `{"op":"schema"}` answer. stdout is one C01
 ExtractionResult (contract 2: selectors, FactBank factuality, speech act,
 resolution). Timings, peak RSS and skipped models go to stderr.
@@ -159,6 +161,44 @@ class Plan:
         if not (isinstance(shape, dict) and "embedded" in shape):
             return False
         return not any(required(p) for p in self.models[shape["embedded"]]["properties"])
+
+    def anchor(self, model):
+        """The text field an entity record is named by."""
+        texts = self.entities[model]
+        return next((p["name"] for p in texts if required(p)), texts[0]["name"])
+
+    def entity_labels(self):
+        """Encoder labels for entity mentions, references and free relation labels."""
+        labels = {m.lower(): gloss(self.models[m]) for m in self.entities}
+        labels[REFERENCE] = REFERENCE_GLOSS
+        for name in self.relations:
+            label = self.free_labels(name)
+            if label:
+                labels[label] = f"{label} of a {name}: {gloss(self.models[name])}"
+        return labels
+
+    def texts(self, model):
+        return [p["name"] for p in self.models[model]["properties"] if route(p) == "text"]
+
+    def encoder_queries(self, text):
+        """Every encoder pass an extraction of this text can use. None depends
+        on a choice, so all of them run before any choice is made."""
+        q = {"entities": ("mentions", text, self.entity_labels()), "statements": ("mentions", text, {STATEMENT: STATEMENT_GLOSS})}
+        for model, texts in self.entities.items():
+            extra = [p["name"] for p in texts if p["name"] != self.anchor(model)]
+            if extra:
+                q[f"attributes:{model}"] = ("records", text, model, self.anchor(model), [self.anchor(model)] + extra)
+        fields = {}
+        for model in self.records:
+            texts = self.texts(model)
+            if texts:
+                q[f"record:{model}"] = ("records", text, model, texts[0], texts)
+            for p in self.models[model]["properties"]:
+                if route(p) == "text" and required(p):
+                    fields[f"{model}.{p['name']}"] = f"the {p['name']} of a {model}: {gloss(self.models[model])}"
+        if fields:
+            q["fields"] = ("mentions", text, fields)
+        return q
 
     def free_labels(self, name):
         rel = self.relations[name]
@@ -338,8 +378,10 @@ class Scorer:
 
 
 class Cascade:
-    def __init__(self, plan, encoder, scorer):
-        self.plan, self.enc, self.llm = plan, encoder, scorer
+    """Phase two of an extraction: every choice, over spans phase one found."""
+
+    def __init__(self, plan, spans, scorer):
+        self.plan, self.spans, self.llm = plan, spans, scorer
 
     def run(self, source):
         self.t = Text(source["content"])
@@ -359,13 +401,8 @@ class Cascade:
     # Entities: encoder spans, LLM picks the antecedent for partial names.
 
     def entity_pass(self):
-        labels = {m.lower(): gloss(self.plan.models[m]) for m in self.plan.entities}
-        labels[REFERENCE] = REFERENCE_GLOSS
-        for name in self.plan.relations:
-            label = self.plan.free_labels(name)
-            if label:
-                labels[label] = f"{label} of a {name}: {gloss(self.plan.models[name])}"
-        found = self.enc.mentions(self.t.s, labels)
+        labels = self.plan.entity_labels()
+        found = self.spans["entities"]
         by_label = {m.lower(): m for m in self.plan.entities}
         typed = {}
         for l, xs in found.items():
@@ -400,8 +437,7 @@ class Cascade:
         return names[k], labels[k][1]
 
     def new_entity(self, model, a, b, conf):
-        texts = self.plan.entities[model]
-        anchor = next(p for p in texts if required(p))["name"] if any(required(p) for p in texts) else texts[0]["name"]
+        anchor = self.plan.anchor(model)
         rec = {"local_id": self.mint(), "model": model, "fields": [self.field(anchor, self.t.s[a:b], [(a, b)], score=conf)], "identities": [], "resolution": {"kind": "new"}}
         rec["_anchor"] = (a, b)
         self.records.append(rec)
@@ -420,7 +456,7 @@ class Cascade:
         elif mode == "windows":
             self._units = self.covering([f["_range"] for f in self.frames])
         else:
-            found = self.enc.mentions(self.t.s, {STATEMENT: STATEMENT_GLOSS}).get(STATEMENT, [])
+            found = self.spans["statements"].get(STATEMENT, [])
             self._units = self.covering([(s["start"], s["end"]) for s in found])
         return self._units
 
@@ -470,7 +506,7 @@ class Cascade:
                 continue
             anchor = recs[0]["fields"][0]["property"]
             extra = [p["name"] for p in texts if p["name"] != anchor]
-            got = self.enc.records(self.t.s, model, anchor, [anchor] + extra) if extra else []
+            got = self.spans.get(f"attributes:{model}", [])
             for g in got:
                 head = g.get(anchor)
                 rec = head and next((r for r in recs if r["_anchor"][0] <= head["start"] < r["_anchor"][1] or self.points_to(r, head)), None)
@@ -694,9 +730,7 @@ class Cascade:
     def fill(self, model, a, b, chosen):
         m = self.plan.models[model]
         ctx = f'Sentence: "{self.t.s[a:b]}"'
-        texts = [p["name"] for p in m["properties"] if route(p) == "text"]
-        spans = self.enc.records(self.t.s[a:b], model, texts[0], texts) if texts else []
-        found = spans[0] if spans else {}
+        found = next((r for r in self.spans.get(f"record:{model}", []) if self.within(r, a, b)), {})
         fields, missing = [], []
         for p in m["properties"]:
             value = self.value_of(model, p, found, ctx, a, b)
@@ -737,15 +771,15 @@ class Cascade:
         optional = ["not stated"]
         if kind == "text":
             v = found.get(name)
-            if v and self.named(a + v["start"], a + v["end"]):
+            if v and self.named(v["start"], v["end"]):
                 log(f"skip {model}.{name}: {v['text']!r} names an entity, not text")
                 v = None
             if v and v.get("confidence", 0) >= SPAN_THRESHOLD:
-                return self.field(name, v["text"], [(a + v["start"], a + v["end"])], score=v["confidence"])
+                return self.field(name, v["text"], [(v["start"], v["end"])], score=v["confidence"])
             if not required(p):
                 return None
-            found_spans = self.enc.mentions(self.t.s[a:b], {name: f"the {name} of a {model}: {gloss(self.plan.models[model])}"}).get(name, [])
-            cands = [(a + s["start"], a + s["end"]) for s in found_spans if not self.named(a + s["start"], a + s["end"])]
+            found_spans = self.spans.get("fields", {}).get(f"{model}.{name}", [])
+            cands = [(s["start"], s["end"]) for s in found_spans if a <= s["start"] and s["end"] <= b and not self.named(s["start"], s["end"])]
             if not cands:
                 return None
             pr = self.llm.pick(ctx, f"In a {model}, which part of the sentence is the {name}?", [self.t.s[x:y] for x, y in cands], ["not stated"])
@@ -784,6 +818,11 @@ class Cascade:
             x, y = nums[k]
             return self.field(name, int(self.t.s[x:y].replace(",", "")), [(x, y)], score=pr[k])
         return None
+
+    def within(self, record, a, b):
+        """Whether every span a structure record found lies in [a, b)."""
+        spans = [v for v in record.values() if isinstance(v, dict) and "start" in v]
+        return bool(spans) and all(a <= v["start"] and v["end"] <= b for v in spans)
 
     def named(self, x, y):
         """Whether a span is exactly an entity mention the cascade kept."""
@@ -905,31 +944,75 @@ def requested(stdin, catalog_path):
 
 
 class Models:
-    """The scorer stays loaded; the encoder is loaded for an extraction and
-    released after it, so a resident service holds one model between them."""
+    """At most one model is held at a time: the encoder for phase one, the
+    scorer for phase two and for choose/generate requests."""
 
     def __init__(self):
-        t = time.time()
-        self.llm, self._enc = Scorer(), None
-        self.load_s = time.time() - t
+        self._llm, self.load_s = None, 0.0
 
     @property
-    def enc(self):
-        if self._enc is None:
+    def llm(self):
+        if self._llm is None:
             t = time.time()
-            self._enc = Encoder()
-            log(f"encoder_load_s={time.time() - t:.1f}")
-        return self._enc
+            self._llm = Scorer()
+            self.load_s = time.time() - t
+        return self._llm
 
-    def release(self):
-        """End the encoder's process, which returns all of its memory."""
-        if self._enc is not None:
-            self._enc.close()
-        self._enc = None
+    def drop_llm(self):
+        """Release the scorer's weights before the encoder loads."""
+        if self._llm is not None:
+            import gc
+
+            import mlx.core as mx
+
+            self._llm = None
+            gc.collect()
+            mx.clear_cache()
+
+    def encoder(self):
+        return Encoder()
 
 
-def extract(req, models=None):
-    """One C01 ExtractionResult; a failure is a result, never an exception."""
+def encoded(reqs, models):
+    """Phase one: every encoder pass for every request, in one encoder
+    process, with no scorer loaded beside it."""
+    models.drop_llm()
+    t = time.time()
+    enc = models.encoder()
+    out = []
+    try:
+        for req in reqs:
+            try:
+                plan = Plan(req["catalog"]["descriptor"])
+                spans = {}
+                for key, (op, *args) in plan.encoder_queries(req["input"]["content"]).items():
+                    spans[key] = enc.mentions(*args) if op == "mentions" else enc.records(*args)
+                out.append(spans)
+            except Exception as e:
+                out.append(e)
+    finally:
+        enc.close()
+    log(f"phase1_s={time.time() - t:.1f} sources={len(reqs)}")
+    return out
+
+
+def extract_batch(reqs, models=None):
+    """C01 ExtractionResults for a batch: encoder pass for all, then every
+    choice for all. A failure is a result, never an exception."""
+    LOG.clear()
+    models = models or Models()
+    phase_one = encoded(reqs, models)
+    head = list(LOG)
+    answers = []
+    for req, spans in zip(reqs, phase_one):
+        LOG.clear()
+        answers.append(extract(req, models, spans))
+        answers[-1] = (answers[-1][0], head + answers[-1][1])
+    return answers
+
+
+def extract(req, models, spans):
+    """Phase two for one request over its phase-one spans."""
     LOG.clear()
     result = {
         "contract": 2,
@@ -940,22 +1023,23 @@ def extract(req, models=None):
     }
     stage = "extractor.setup"
     try:
+        if isinstance(spans, Exception):
+            raise spans
         plan = Plan(req["catalog"]["descriptor"])
         for m, why in plan.blocked.items():
             log(f"skip {m}: {why}")
-        models = models or Models()
         stage = "extractor.run"
-        started, calls = time.time(), models.llm.calls
-        c = Cascade(plan, models.enc, models.llm)
+        llm = models.llm
+        started, calls = time.time(), llm.calls
+        c = Cascade(plan, spans, llm)
         c.run(req["input"])
         reframe(c)
         records, frames = finish(c.records, c.frames)
         result.update(status="complete", records=records, proposed_frames=frames)
-        log(f"load_s={models.load_s:.1f} extract_s={time.time() - started:.1f} llm_calls={models.llm.calls - calls} records={len(records)} frames={len(frames)}")
+        log(f"scorer_load_s={models.load_s:.1f} phase2_s={time.time() - started:.1f} llm_calls={llm.calls - calls} records={len(records)} frames={len(frames)}")
     except Exception as e:
         result.update(status="failed", records=[], problems=[{"code": stage, "message": f"{type(e).__name__}: {e}"[:4096]}])
         log(f"failed: {type(e).__name__}: {e}")
-    log(f"maxrss_mb={resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6:.0f}")
     return result, list(LOG)
 
 
@@ -979,10 +1063,9 @@ def answered(body, models):
         return {"p": models.llm.choose(body["context"], body["question"], body["options"])}
     models.llm.prefix = body.get("prefix", True)
     os.environ["CASCADE_UNITS"] = body.get("units") or "statements"
-    try:
-        result, logs = extract(body["request"], models)
-    finally:
-        models.release()
+    if "requests" in body:
+        return {"results": [{"result": r, "log": l} for r, l in extract_batch(body["requests"], models)]}
+    result, logs = extract_batch([body["request"]], models)[0]
     return {"result": result, "log": logs}
 
 
@@ -1038,8 +1121,8 @@ def serve():
                 print(f"client gone: {e}", file=sys.stderr, flush=True)
 
 
-def remote(req, prefix=True, units=None):
-    """The resident service's answer, or None when no service is listening."""
+def remote(body):
+    """The resident service's answer to one body, or None when nothing listens."""
     import socket
 
     if not os.path.exists(SOCKET):
@@ -1050,7 +1133,7 @@ def remote(req, prefix=True, units=None):
     except OSError:
         return None
     with s:
-        s.sendall(json.dumps({"request": req, "prefix": prefix, "units": units}, ensure_ascii=False).encode() + b"\n")
+        s.sendall(json.dumps(body, ensure_ascii=False).encode() + b"\n")
         s.shutdown(socket.SHUT_WR)
         return json.loads(b"".join(iter(lambda: s.recv(parameter("socket_read_bytes")), b"")))
 
@@ -1060,23 +1143,25 @@ def main():
     if "--serve" in args:
         return serve()
     stdin = json.load(sys.stdin)
-    req = requested(stdin, args[args.index("--catalog") + 1] if "--catalog" in args else None)
+    catalog = args[args.index("--catalog") + 1] if "--catalog" in args else None
+    batch = isinstance(stdin, list)
+    reqs = [requested(s, catalog) for s in (stdin if batch else [stdin])]
     if "--local" in args:
-        result, logs = extract(req)
-        print("\n".join(logs), file=sys.stderr)
-        json.dump(result, sys.stdout, ensure_ascii=False)
-        return 0
-    answer = remote(req, "--no-prefix" not in args, args[args.index("--units") + 1] if "--units" in args else None)
-    if answer is None:
-        print(f"service unavailable: nothing answers on {SOCKET}; start `cascade.py --serve`, or pass --local to load the models here", file=sys.stderr)
-        return 1
-    if "error" in answer:
-        print(f"service: {answer['error']}", file=sys.stderr)
-        return 1
+        answers = extract_batch(reqs)
     else:
-        result, logs = answer["result"], ["served"] + answer["log"]
-    print("\n".join(logs), file=sys.stderr)
-    json.dump(result, sys.stdout, ensure_ascii=False)
+        units = args[args.index("--units") + 1] if "--units" in args else None
+        answer = remote({"requests": reqs, "prefix": "--no-prefix" not in args, "units": units})
+        if answer is None:
+            print(f"service unavailable: nothing answers on {SOCKET}; start `cascade.py --serve`, or pass --local to load the models here", file=sys.stderr)
+            return 1
+        if "error" in answer:
+            print(f"service: {answer['error']}", file=sys.stderr)
+            return 1
+        answers = [(a["result"], ["served"] + a["log"]) for a in answer["results"]]
+    for _, logs in answers:
+        print("\n".join(logs), file=sys.stderr)
+    results = [r for r, _ in answers]
+    json.dump(results if batch else results[0], sys.stdout, ensure_ascii=False)
     return 0
 
 
