@@ -195,7 +195,10 @@ def generated(n, seed):
 # One watchdog holds the whole keeper, so each compile skips the shim's
 # per-run lock (`AVRA_WATCH_HELD`) and the cases run side by side.
 WORKERS = int(os.environ.get("AVRA_DEFECT_WORKERS", "4"))
-ENV = dict(os.environ, AVRA_WATCH_HELD="1")
+# The compile slots (AVRA_MAX_COMPILES, default 3, polled unfairly every 0.2 s) are a second limiter
+# beside the watchdog's: with more workers than slots a compile can wait past the clock, which is a
+# program's seconds spent queueing. The one watchdog bounds the keeper, so the slots are off here.
+ENV = dict(os.environ, AVRA_WATCH_HELD="1", AVRA_MAX_COMPILES="0")
 
 
 def run(avra, verb, package):
@@ -294,7 +297,7 @@ def self_test():
     """The retry's two paths and its neighbours, against a fake `avra` that hangs on demand, and
     the timings report against a fake that is slow by program."""
     global TIMEOUT
-    TIMEOUT = 1
+    TIMEOUT = 3
     d = tempfile.mkdtemp(prefix="avra-defects-self-")
 
     def fake(name, body):
@@ -306,18 +309,18 @@ def self_test():
 
     work = [("probe", ["check"], "1\n", False, False)]
     count = os.path.join(d, "count")
-    once = fake("once", 'n=$(cat "%s" 2>/dev/null || echo 0); echo $((n+1)) > "%s"; [ "$n" = 0 ] && sleep 4; exit 0' % (count, count))
+    once = fake("once", 'n=$(cat "%s" 2>/dev/null || echo 0); echo $((n+1)) > "%s"; [ "$n" = 0 ] && sleep 8; exit 0' % (count, count))
     bad, notes = survey(once, work, 1)
     assert not bad and len(notes) == 1 and "POOL STALL probe (check)" in notes[0] and "finished in" in notes[0] and "alone" in notes[0] and "load:" in notes[0], (bad, notes)
-    hangs = fake("hangs", "sleep 4")
+    hangs = fake("hangs", "sleep 8")
     bad, notes = survey(hangs, work, 1)
     assert [b[0] for b in bad] == ["probe"] and "timed out twice" in bad[0][1] and not notes, (bad, notes)
     # warming: a fake that is cold (4 s) until its worker dir holds a marker the warm-up leaves,
     # and warm (instant) after it; the warm programs are checked in the worker's own dir first
-    cold = fake("cold", 'if [ -f "$2/.warm" ]; then exit 0; fi; case "$(cat "$2/src/main.av")" in use*) : > "$2/.warm"; exit 0;; esac; sleep 4')
+    cold = fake("cold", 'if [ -f "$2/.warm" ]; then exit 0; fi; case "$(cat "$2/src/main.av")" in use*) : > "$2/.warm"; exit 0;; esac; sleep 8')
     saved = TIMEOUT
     try:
-        globals()["TIMEOUT"] = 2
+        globals()["TIMEOUT"] = 3
         bad, notes = survey(cold, work, 1)
         assert [b[0] for b in bad] == ["probe"], ("without warming the first program meets the cold store", bad, notes)
         taken = {}
