@@ -10,12 +10,11 @@ phrase spoken, one record the question names) is taken without the model.
 """
 import re
 
-from subset import models_of, base_shape, reference_target, relation_ends
+from catalog import PARAMETERS, models_of, base_shape, reference_target, relation_ends
 from prompt import line
 
 
-# The choose op letters its options A-Z; longer lists run as heats.
-LETTERS = 26
+LETTERS = PARAMETERS["choice_letters"]
 ARRIVED = ["yes: the question asks about this record", "no: the answer lies further along"]
 ENOUGH = "nothing else: the answer is complete"
 RECORDED = ["the content of the records: values, words, dates, people (missing means unknown)",

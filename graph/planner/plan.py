@@ -4,7 +4,7 @@
 stdin:  {contract, request, question, context, source_view, schema}
 stdout: {"cypher": "...", "params": {...}}
 
-A local model drafts the query; `subset.check` holds it to the subset
+A local model drafts the query; the graph's own `check` op holds it to the subset
 grammar and the catalog, and a refused draft is retried with the refusal
 quoted. Context binds as parameters, never as text in the query.
 
@@ -25,15 +25,10 @@ VENV_PYTHON = pathlib.Path.home() / ".cache/avra-graph-ml/venv/bin/python"
 MODEL = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
 SOCKET = pathlib.Path.home() / ".cache/avra-graph-ml/cascade.sock"
 HUB = pathlib.Path.home() / ".cache/avra-graph-ml/hf/hub"
-# The graph's search op declares a limit of 1..100 passages.
-SEARCH_LIMIT = 100
-# One Cypher query; a draft running past this is degenerate, not long.
-ANSWER_TOKENS = 200
-TRIES = 1
 
 sys.path.insert(0, str(HERE))
 from prompt import Budget, declared_context, messages  # noqa: E402
-from subset import Refusal, check  # noqa: E402
+from catalog import PARAMETERS, Refusal  # noqa: E402
 
 
 def log(text):
@@ -78,7 +73,7 @@ class Local:
         from mlx_lm import generate
 
         prompt = self.tok.apply_chat_template(turns, add_generation_prompt=True, tokenize=False)
-        return generate(self.model, self.tok, prompt=prompt, max_tokens=ANSWER_TOKENS, verbose=False)
+        return generate(self.model, self.tok, prompt=prompt, max_tokens=PARAMETERS["answer_tokens"], verbose=False).split("\n")[0]
 
 
 class Shared:
@@ -88,7 +83,7 @@ class Shared:
         self.path = path
 
     def reply(self, turns):
-        return self.asked({"op": "generate", "messages": turns, "max_tokens": ANSWER_TOKENS})["text"]
+        return self.asked({"op": "generate", "messages": turns, "stop": ["\n"]})["text"]
 
     def choose(self, context, question, options):
         return self.asked({"op": "choose", "context": context, "question": question, "options": options})["p"]
@@ -137,7 +132,7 @@ class Remote:
         import urllib.request
 
         body = json.dumps({"model": os.environ.get("PLANNER_MODEL", MODEL), "messages": turns,
-                           "temperature": 0, "max_tokens": ANSWER_TOKENS}).encode()
+                           "temperature": 0, "stop": ["\n"]}).encode()
         req = urllib.request.Request(f"{self.endpoint}/v1/chat/completions", body,
                                      {"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=120) as r:
@@ -169,7 +164,7 @@ class Graph:
 
     def search(self, query):
         """Every passage the search op will return for the query, up to its declared maximum."""
-        return self.call({"op": "search", "query": query, "limit": SEARCH_LIMIT}).get("passages", [])
+        return self.call({"op": "search", "query": query, "limit": PARAMETERS["search_limit"]}).get("passages", [])
 
 
 def graph_of(payload):
@@ -183,9 +178,10 @@ def graph_of(payload):
 
 
 def gated(cypher, schema, params, graph=None):
-    """The graph's own check when a graph is at hand; else the subset copy."""
+    """The graph's own check; without a graph at hand a draft goes unchecked
+    to whoever runs it, and the graph refuses it there."""
     if graph is None:
-        check(cypher, schema, params)
+        log("no graph at hand: the draft is not checked here")
         return
     answer = graph.call({"op": "check", "cypher": cypher, "params": params})
     if answer.get("ok") is True:
@@ -198,7 +194,7 @@ def gated(cypher, schema, params, graph=None):
 def tries():
     """`--tries N` caps the drafts; a single pass measures the prompt alone."""
     args = sys.argv[1:]
-    return int(args[args.index("--tries") + 1]) if "--tries" in args else TRIES
+    return int(args[args.index("--tries") + 1]) if "--tries" in args else PARAMETERS["draft_tries"]
 
 
 SPEAKS = ["yes: it is about the person asking", "no: it is about someone or something else"]
@@ -216,11 +212,12 @@ def bound(llm, question, cypher, context):
         raise Refusal("unbound_speaker", "the question is about the person asking: start at their node WHERE id(me) = $speaker")
 
 
-def planned(llm, question, schema, context, limit=TRIES, graph=None):
+def planned(llm, question, schema, context, limit=None, graph=None):
     params = params_of(context)
     turns = messages(question, schema, context)
     budget = getattr(llm, "budget", None)
     last = None
+    limit = limit or PARAMETERS["draft_tries"]
     for attempt in range(1, limit + 1):
         started = time.time()
         if budget:
@@ -267,7 +264,7 @@ def composed(chooser, question, schema, context, graph=None, depth=None):
 
 def main():
     llm = chosen()
-    llm.budget = Budget(declared_context(MODEL, HUB), ANSWER_TOKENS)
+    llm.budget = Budget(declared_context(MODEL, HUB), PARAMETERS["answer_tokens"])
     payload = json.load(sys.stdin)
     if "--structured" in sys.argv[1:]:
         if not hasattr(llm, "choose"):

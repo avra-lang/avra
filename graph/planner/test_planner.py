@@ -9,7 +9,8 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from plan import Shared, drafted, params_of, planned, shared_socket  # noqa: E402
 from prompt import render_schema  # noqa: E402
-from subset import Refusal, check  # noqa: E402
+from catalog import Refusal  # noqa: E402
+from plan import gated  # noqa: E402
 
 
 def prop(name, shape, description="", enum=None):
@@ -61,52 +62,36 @@ SLICE = {
 }
 
 
-def refused(text, params=PARAMS):
-    try:
-        check(text, SCHEMA, params)
-    except Refusal as r:
-        return r.code
-    return None
+class FakeGraph:
+    """Answers the check op as the graph does: ok, or a refusal with its code."""
+
+    def __init__(self, refusing=None):
+        self.refusing, self.checked = refusing, []
+
+    def call(self, body):
+        self.checked.append(body)
+        if self.refusing and self.refusing in body["cypher"]:
+            return {"ok": False, "code": "unknown_property", "message": f"no `{self.refusing}`"}
+        return {"ok": True, "steps": 1}
+
+    def search(self, query):
+        return []
+
+    def model_of(self, entity):
+        return None
 
 
 class Gate(unittest.TestCase):
-    def test_slice_shapes_pass(self):
-        for q, text in SLICE.items():
-            with self.subTest(q):
-                self.assertIsNone(refused(text))
+    def test_the_graphs_check_op_is_the_gate(self):
+        graph = FakeGraph(refusing="age")
+        gated(SLICE["q01"], SCHEMA, PARAMS, graph)
+        with self.assertRaises(Refusal) as refused:
+            gated("MATCH (me:Person) RETURN me.age", SCHEMA, PARAMS, graph)
+        self.assertEqual(refused.exception.code, "unknown_property")
+        self.assertEqual(graph.checked[0], {"op": "check", "cypher": SLICE["q01"], "params": PARAMS})
 
-    def test_refusals_name_the_graphs_codes(self):
-        base = "MATCH (me:Person)<-[:subject]-(r:PersonalRelationship)-[:relative]->(w:Person) WHERE id(me) = $speaker"
-        cases = {
-            f"{base} AND r.relation = 'mum' RETURN w.name": "syntax",
-            f"{base} OR r.relation = 'wife' RETURN w.name": "unsupported_or",
-            f"{base} AND NOT r.relation = 'wife' RETURN w.name": "unsupported_not",
-            f"{base} RETURN r.relation": "return_not_last",
-            f"{base} RETURN w.age": "unknown_property",
-            "MATCH (x:Spouse) RETURN x.name": "label_mismatch",
-            "MATCH (x)-[:subject]->(y:Person) RETURN y.name": "unlabelled_node",
-            "MATCH (me:Person)-[:subject]->(r:PersonalRelationship) RETURN r.relation": "unknown_relationship",
-            "MATCH (me:Person)-[:cousin]->(w) RETURN w.name": "unknown_relationship",
-            "MATCH (me:Person)-[:WIFE]->(w) WHERE id(me) = $speaker RETURN w.name": None,
-            "MATCH (me:Person)-[:mum]->(m:Group) WHERE id(me) = $speaker RETURN m.name": "label_mismatch",
-            "MATCH (a:Person {name: 'Dana Holm'})-[r:wife]->(w)<-[:person]-(g:GroupMembership) RETURN g.is_member AS on_crew, r.relation AS relation": None,
-            "MATCH (a:Person {nickname: 'Al'}) RETURN a.name": "unknown_property",
-            "MATCH (me:Person)<-[:person]-(m:GroupMembership) RETURN m.is_member": None,
-            "MATCH (r:PersonalRelationship) WHERE r.subject = 'p:jonas' RETURN r.relation": "syntax",
-            "MATCH (me:Person) WHERE id(me) = $speaker SET me.name = 'x' RETURN me.name": "mutation_refused",
-            "MATCH (me:Person) WHERE id(me) = $speaker RETURN count(me) AS n, me.name": "syntax",
-            "MATCH (me:Person)<-[:assignee]-(t:PersonalTask) RETURN t.summary AS task, coalesce(t.confirmation_recorded, false) AS booked": None,
-            "MATCH (me:Person)<-[r:subject]-(x:PersonalRelationship) RETURN x.relation": "relationship_variable",
-            "MATCH (a:Person) MATCH (a:Person) RETURN a.name": "unused_match",
-            "MATCH (a:Person)<-[:actor]-(c:Commitment) MATCH (a)<-[:subject]-(r:PersonalRelationship) RETURN r.relation": "unlabelled_node",
-            "MATCH (a:Person)<-[:actor]-(c:Commitment) MATCH (c)-[:event]->(e:Event) WHERE c.action CONTAINS 'x' RETURN e.title": "unsupported_rebound_filter",
-        }
-        for text, code in cases.items():
-            with self.subTest(text):
-                self.assertEqual(refused(text), code)
-
-    def test_an_unbound_speaker_is_refused(self):
-        self.assertEqual(refused(SLICE["q01"], {"asker": "p:jonas", "now": 1}), "missing_parameter")
+    def test_without_a_graph_nothing_is_refused_here(self):
+        gated("not cypher at all", SCHEMA, PARAMS, None)
 
 
 class Prompt(unittest.TestCase):
@@ -118,15 +103,6 @@ class Prompt(unittest.TestCase):
         self.assertIn(".requested_guest_limit: integer?", text)
         self.assertNotIn("'wife' = 'wife'", text)
         self.assertIn("relationships: -[:wife]->(:Person), -[:mother]->(:Person), -[:mum]->(:Person)", text)
-
-    def test_an_unknown_hop_names_the_hops_there_are(self):
-        try:
-            check("MATCH (me:Person)-[:cousin]->(w:Person) RETURN w.name", SCHEMA, PARAMS)
-        except Refusal as r:
-            self.assertIn("<-[:subject]-(:PersonalRelationship)", r.message)
-            self.assertIn("-[:wife]->(:Person)", r.message)
-        else:
-            self.fail("an undeclared hop passed")
 
 
 class Budgeting(unittest.TestCase):
@@ -164,7 +140,7 @@ class Loop(unittest.TestCase):
                 return replies[len(seen) - 1]
 
         context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
-        out = planned(Fake(), "Who is my wife?", SCHEMA, context, limit=2)
+        out = planned(Fake(), "Who is my wife?", SCHEMA, context, limit=2, graph=FakeGraph(refusing="age"))
         self.assertEqual(out["cypher"], SLICE["q01"])
         self.assertIn("unknown_property", seen[1])
         json.dumps(out)
@@ -184,7 +160,7 @@ class Loop(unittest.TestCase):
                 return [0.9 if o.startswith("yes") else 0.1 for o in options]
 
         context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
-        self.assertEqual(planned(Fake(), "Who is my wife?", SCHEMA, context, limit=2)["cypher"], SLICE["q01"])
+        self.assertEqual(planned(Fake(), "Who is my wife?", SCHEMA, context, limit=2, graph=FakeGraph())["cypher"], SLICE["q01"])
         self.assertEqual(Fake.calls, 2)
 
     def test_drafts_lose_fences_and_prose(self):
@@ -240,7 +216,6 @@ class Structured(unittest.TestCase):
         chooser = Scripted(["person asking", "Person", "yes", "value"], {"name"})
         cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, SPEAKER)
         self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE id(n0) = $speaker RETURN n1.name AS name")
-        check(cypher, SCHEMA, PARAMS)
         self.assertFalse(chooser.script)
 
     def test_a_record_the_question_names_comes_from_search(self):
@@ -350,7 +325,6 @@ class Structured(unittest.TestCase):
                          {"confirmation_recorded"})
         cypher = structured.plan(world, "Did I book the table?", SCHEMA, SPEAKER, search)
         self.assertTrue(cypher.endswith("RETURN n1.confirmation_recorded AS confirmation_recorded"), cypher)
-        check(cypher, SCHEMA, PARAMS)
 
     def test_the_budget_caps_the_walk(self):
         import structured

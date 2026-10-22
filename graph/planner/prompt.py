@@ -3,7 +3,7 @@
 Everything domain-specific comes from the catalog the graph reports; the
 worked examples use an unrelated ontology so they teach syntax, not answers.
 """
-from subset import models_of, base_shape, reference_target, relation_ends, relation_words
+from catalog import models_of, base_shape, reference_target, relation_ends, relation_words
 
 RULES = """You translate a question about a personal knowledge graph into ONE read-only query in a small openCypher subset. Output only the query, no prose, no code fence.
 
