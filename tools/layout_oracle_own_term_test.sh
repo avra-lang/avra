@@ -8,7 +8,12 @@ tree=$(cd "$here/.." && pwd)
 bad() { echo "layout-oracle own-term self-test: $1"; exit 1; }
 . "$here/ui-board/playwright.sh"
 log=$(mktemp "${TMPDIR:-/tmp}/avra-layout-playwright.XXXXXX")
-playwright_ready "$tree" "$log" || { echo "layout-oracle own-term self-test: SKIPPED: no WebKit"; exit 0; }
+playwright_ready "$tree" "$log" || {
+    # a checks' machine without WebKit is broken, and a gate that skips there runs nothing
+    [ "${CI:-}" = true ] && bad "ran 0 trees — FAILED: Playwright's WebKit did not install: $(tail -1 "$log")"
+    echo "layout-oracle own-term self-test: ran 0 trees — SKIPPED: Playwright's WebKit did not install: $(tail -1 "$log")"
+    exit 0
+}
 run() { node "$here/layout-oracle/oracle.mjs" --browser webkit --face cell --seed 3 --cases 20 --show 0 "$@" 2>&1; }
 run | grep -q "25 of 25 trees agree" || bad "the term did not make the tree agree"
 run --without-own-term 1 | grep -q "24 of 25 trees agree" || bad "without the term the tree was not refused"
