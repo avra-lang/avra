@@ -65,8 +65,11 @@ if [ ! -x "$bin" ]; then
     python3 tools/compiler_release.py --asset avra-tools fetch "tools-$key" "$bin" >/dev/null 2>&1 && chmod +x "$bin" || true
 fi
 if [ ! -x "$bin" ] && [ -z "${AVRA_TOOLS_COMPILER:-}" ]; then
-    # no compiler named: main's published one, installed beside (never over) the standing build/avra
-    FETCH_BUILD="$dir/compiler" sh tools/fetch_compiler.sh >/dev/null 2>&1 && AVRA_TOOLS_COMPILER="$dir/compiler/avra" || true
+    # no compiler named: main's published one, installed beside (never over) the standing build/avra;
+    # a checkout of the PR's ref alone holds no origin/main, so it is fetched first
+    git rev-parse -q --verify origin/main >/dev/null 2>&1 ||
+        git fetch -q --depth 1 origin main:refs/remotes/origin/main >&2 || true
+    FETCH_BUILD="$dir/compiler" sh tools/fetch_compiler.sh >&2 && AVRA_TOOLS_COMPILER="$dir/compiler/avra" || true
 fi
 if [ ! -x "$bin" ] && [ -n "${AVRA_TOOLS_COMPILER:-}" ] && [ -x "$AVRA_TOOLS_COMPILER" ]; then
     build_tools "$AVRA_TOOLS_COMPILER" || true
