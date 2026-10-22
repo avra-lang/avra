@@ -5,7 +5,18 @@
 //! and a derived writer (`json_text`) writes its fields straight to text. A
 //! program that decodes a few types therefore links these scans and its own
 //! decoders, never the general value, its parser or its writer.
-use @std.json.{MAX_DEPTH, int_end, int_of, skip, space, string_end, text_of}
+use @std.json.{
+    MAX_DEPTH,
+    int_end,
+    int_of,
+    number_end,
+    plain_end,
+    skip,
+    skip_judged,
+    space,
+    string_end,
+    text_of,
+}
 use @std.text.{parse_float}
 
 /// One member of an object read: its decoded key, and its value as written.
@@ -169,3 +180,167 @@ export fn bool_text(b: bool) -> string { if b { "true" } else { "false" } }
 
 /// A float written as JSON does: infinity and NaN write `null`.
 export fn float_text(x: float) -> string { if x - x == 0.0 { "${x}" } else { "null" } }
+
+// ── the cursor ──────────────────────────────────────────────────
+
+/// A cursor over JSON text that reads each value where it stands: the
+/// text, its octets, and where it is — -1 once it stepped aside, so a
+/// reader that cannot go on hands the text to one that can.
+export type Reader = { text: string, bytes: Bytes, pos: int }
+
+/// A reader at the first value `text` holds.
+export fn reader_of(text: string) -> Reader {
+    let b = text.bytes()
+    Reader { text: text, bytes: b, pos: space(b, 0) }
+}
+
+/// A reader of nothing, already aside.
+export fn no_reader() -> Reader { Reader { text: "", bytes: "".bytes(), pos: -1 } }
+
+impl Reader {
+    /// The reader stops here.
+    mut fn aside() { self.pos = -1 }
+
+    /// The octet at the cursor, or -1 past the text or aside.
+    fn here() -> int { if self.pos >= 0 && self.pos < self.bytes.length { self.bytes.at(self.pos) } else { -1 } }
+
+    /// Whether the octet at the cursor is `c`.
+    fn at_byte(c: int) -> bool { self.here() == c }
+
+    /// Whether every value the text holds was read, and nothing follows.
+    fn finished() -> bool { self.pos >= 0 && space(self.bytes, self.pos) == self.bytes.length }
+
+    /// Past the value at the cursor, nested at most `room` deeper; false
+    /// where the text is not JSON.
+    mut fn skipped(room: int) -> bool {
+        if self.pos < 0 { return false }
+        self.pos = skip_judged(self.bytes, self.pos, room)
+        self.pos >= 0
+    }
+
+    /// Past the opener `c` at the cursor; false when another value stands there.
+    mut fn opened(c: int) -> bool {
+        if !self.at_byte(c) { return false }
+        self.pos = self.pos + 1
+        true
+    }
+
+    /// Just past an opener: whether an item follows, the cursor at it.
+    /// At `close` the cursor passes it.
+    mut fn first(close: int) -> bool {
+        if self.pos < 0 { return false }
+        let j = space(self.bytes, self.pos)
+        if j < self.bytes.length && self.bytes.at(j) == close {
+            self.pos = j + 1
+            return false
+        }
+        self.pos = j
+        true
+    }
+
+    /// Just past an item: whether another follows, the cursor at it. At
+    /// `close` the cursor passes it; anything else steps aside.
+    mut fn next(close: int) -> bool {
+        if self.pos < 0 { return false }
+        let b = self.bytes
+        let j = space(b, self.pos)
+        let c = if j < b.length { b.at(j) } else { -1 }
+        if c == 44 {
+            self.pos = space(b, j + 1)
+            return true
+        }
+        if c == close { self.pos = j + 1 } else { self.aside() }
+        false
+    }
+
+    /// The key at the cursor read and the cursor left at its value: past
+    /// the key's closing quote, or -1 where the text holds no key.
+    mut fn key() -> int {
+        if !self.at_byte(34) {
+            self.aside()
+            return -1
+        }
+        let b = self.bytes
+        let plain = plain_end(b, self.pos)
+        let end = if plain >= 0 { plain } else { string_end(b, self.pos) }
+        let colon = if end < 0 { end } else { space(b, end) }
+        if colon < 0 || colon >= b.length || b.at(colon) != 58 {
+            self.aside()
+            return -1
+        }
+        self.pos = space(b, colon + 1)
+        end
+    }
+
+    /// Whether the key whose quote is at `at` spells `name` exactly — asked
+    /// once its length is known to be `name`'s.
+    fn key_is(at: int, name: string) -> bool { self.bytes.eq_at(at + 1, at + 1 + name.length, name.bytes()) }
+
+    /// The text of the key whose quotes stand at `at` and `end`.
+    fn key_text(at: int, end: int) -> string { text_of(self.text, self.bytes, at, end) }
+
+    /// The field an ESCAPED key names among `names` — a key with no escape
+    /// was matched by its octets already, so it names none.
+    fn key_index(at: int, end: int, names: List<string>) -> int {
+        if end < 0 { return -1 }
+        let key = self.key_text(at, end)
+        if key.length == end - at - 2 { -1 } else { names.index_of(key) }
+    }
+
+    /// The string at the cursor, the cursor past it; null when none stands there.
+    mut fn string_here() -> string? {
+        if !self.at_byte(34) { return null }
+        let at = self.pos
+        let b = self.bytes
+        let plain = plain_end(b, at)
+        if plain >= 0 {
+            self.pos = plain
+            return self.text.substring(at + 1, plain - 1)
+        }
+        let end = string_end(b, at)
+        if end < 0 { return null }
+        self.pos = end
+        text_of(self.text, b, at, end)
+    }
+
+    /// The integer at the cursor, the cursor past it; null when none stands there.
+    mut fn int_here() -> int? {
+        let at = self.pos
+        let c = self.here()
+        if c != 45 && !is_digit(c) { return null }
+        let end = int_end(self.bytes, at)
+        if end < 0 { return null }
+        self.pos = end
+        int_of(self.text, self.bytes, at, end)
+    }
+
+    /// The truth at the cursor, the cursor past it; null when none stands there.
+    mut fn bool_here() -> bool? {
+        let at = self.pos
+        let c = self.here()
+        if c != 116 && c != 102 { return null }
+        let end = skip(self.bytes, at, 0)
+        if !(end == at + 4 && c == 116 || end == at + 5) { return null }
+        self.pos = end
+        end == at + 4
+    }
+
+    /// The number with a fraction or an exponent at the cursor, the cursor
+    /// past it; null when none stands there — an integer is not one, and one
+    /// past what a float holds steps aside.
+    mut fn float_here() -> float? {
+        let at = self.pos
+        let c = self.here()
+        if c != 45 && !is_digit(c) { return null }
+        let end = number_end(self.bytes, at)
+        if end < 0 || int_end(self.bytes, at) >= 0 { return null }
+        self.pos = end
+        let x? = parse_float(self.text.substring(at, end)) else {
+            self.aside()
+            return null
+        }
+        x
+    }
+}
+
+fn is_digit(c: int) -> bool { c >= 48 && c <= 57 }
