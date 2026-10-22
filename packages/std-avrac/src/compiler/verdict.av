@@ -1,0 +1,90 @@
+//! THE CHECK VERDICT, A NAMED ROOT. What `check` said of a program is kept under
+//! a key that names the program (its root and entry) and no input, with the reads
+//! it stood on — each read's name and the digest of exactly what was seen. The
+//! verdict stands while every read still digests the same, so what a program
+//! reads is recorded as it was read and never folded into the key by hand.
+//!
+//! A read is named by its kind, a tab and the path it was asked by, as the
+//! program spells it — never resolved: a source file's text, a covered
+//! directory's listing, a file a compile-time run embedded, a package's object,
+//! and `compiler` alone, the compiler's own print.
+use core.{digest_of, joined}
+use compiler.store.{Store, Stored, Reading, node_key}
+
+/// What a verdict's read asks of the world.
+enum VerdictRead { Source, Listing, Embedded, Object }
+
+impl VerdictRead {
+    /// The word a read's name begins with.
+    fn word() -> string {
+        match self {
+            .Source -> "in",
+            .Listing -> "ls",
+            .Embedded -> "em",
+            .Object -> "ob",
+        }
+    }
+}
+
+/// The kind a name's word spells, absent for a word no read begins with.
+fn verdict_read_of(word: string) -> VerdictRead? {
+    [VerdictRead.Source, VerdictRead.Listing, VerdictRead.Embedded, VerdictRead.Object].find(it.word() == word)
+}
+
+impl Workspace {
+    /// Where the verdict of `under` is kept: the program's name, never an input.
+    fn verdict_key(under: Keyed) -> string {
+        node_key(Stored.Unit, ["verdict", self.root, under.named, joined(under.beside, "\t")])
+    }
+
+    /// The verdict's reads written, after the answer they vouch for: a read list never
+    /// stands in front of an answer that was not kept.
+    fn keep_verdict(store: Store, under: Keyed) {
+        let _ = store.keep_reading(Stored.Unit, self.verdict_key(under), "verdict", self.verdict_reads(under))
+    }
+
+    /// What the last derivation of `under` read — the closure AS THE ANALYSED PROGRAM
+    /// HOLDS IT, never a remembered row: its inputs, each covered directory's
+    /// listing, the files its compile-time runs embedded, its packages' objects, and the
+    /// compiler.
+    fn verdict_reads(under: Keyed) -> List<Reading> {
+        let closure = ["${p.src}\t${p.root}" for p in self.packages()]
+        let inputs = self.sources_of(closure).concat(under.beside)
+        let dirs = [p.src for p in self.packages()]
+        [Reading { name: "compiler", digest: digest_of(self.compiler_id()) }]
+            .concat([self.read_named(VerdictRead.Source, f) for f in inputs])
+            .concat([self.read_named(VerdictRead.Listing, d) for d in dirs])
+            .concat([self.read_named(VerdictRead.Embedded, f) for f in self.embeds(inputs)])
+            .concat([self.read_named(VerdictRead.Object, o) for o in self.objects_of(closure)])
+    }
+
+    /// The read of `path` as `kind` asks, named by the path.
+    fn read_named(kind: VerdictRead, path: string) -> Reading {
+        Reading { name: "${kind.word()}\t${path}", digest: self.verdict_digest(kind, path) }
+    }
+
+    /// What one named read digests to now, absent for a name this does not know or a
+    /// source that is gone.
+    fn verdict_now(name: string) -> string? {
+        if name == "compiler" { return digest_of(self.compiler_id()) }
+        let at = name.index_of("\t")
+        if at < 1 { return null }
+        let kind? = verdict_read_of(name.substring(0, at)) else { return null }
+        let path = name.substring(at + 1, name.length)
+        match kind {
+            .Source -> if self.there(path) { self.verdict_digest(kind, path) } else { null },
+            .Listing or .Embedded or .Object -> self.verdict_digest(kind, path),
+        }
+    }
+
+    /// The digest of `path` read as `kind`: a source's text, a directory's listing, an
+    /// embedded file's text or why it cannot be read, an object's bytes.
+    fn verdict_digest(kind: VerdictRead, path: string) -> string {
+        match kind {
+            .Source -> self.text_digest(path),
+            .Listing -> self.listing_word(path),
+            .Embedded -> digest_of(self.embed_said(path)),
+            .Object -> digest_of_binary(path) ?? "-",
+        }
+    }
+}

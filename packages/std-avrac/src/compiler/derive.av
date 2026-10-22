@@ -371,12 +371,13 @@ impl Workspace {
         self.timed("open", opening)
         let under = Keyed { named: "check:${entry ?? ""}", beside: [] }
         let judging = self.clock()
-        let key0 = self.confirmed_key(store, under)
+        let key = self.verdict_key(under)
+        let standing = store.get_valid(Stored.Unit, key, (name) -> self.verdict_now(name)) != null
         self.timed("judge", judging)
         let loading = self.clock()
-        let kept: string? = self.db.warn(store, key0)
-        let found: string? = self.db.findings(store, key0)
-        let licensed: string? = self.db.licenses(store, key0)
+        let kept: string? = if standing { self.db.warn(store, key) } else { null }
+        let found: string? = if standing { self.db.findings(store, key) } else { null }
+        let licensed: string? = if standing { self.db.licenses(store, key) } else { null }
         self.timed("load", loading)
         // A missing row is UNKNOWN, never EMPTY: no hit.
         if kept != null && found != null && licensed != null {
@@ -392,15 +393,12 @@ impl Workspace {
             }
         }
         let d = self.derived(entry, Want.Diagnostics)?
-        // a check derives the same answer for every target: the target rides
-        // the key only when a binary or an object is what is kept
-        let key = d.program.ws.kept_key(under)
-        d.program.ws.keep_manifest(store, under, key)
         let licenses = stale_license_lines(d.program)
         let found = flatten([s.findings for s in d.said])
         self.db.insert_warn(store, key, d.warnings)
         self.db.insert_licenses(store, key, licenses)
         self.db.insert_findings(store, key, findings_text(found))
+        d.program.ws.keep_verdict(store, under)
         work_sized(
             d.program.ws.decls.file_count(),
             d.program.ws.decls.module_count(),

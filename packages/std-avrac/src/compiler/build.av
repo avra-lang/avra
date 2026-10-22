@@ -580,76 +580,6 @@ impl Workspace {
     /// An embedded file's line of the key.
     fn embed_line(path: string) -> string { "${relative_path(self.root, path)}\t${self.embed_said(path)}" }
 
-    /// THE INPUT MANIFEST: what the last derivation of a program read — its closure, each
-    /// covered directory's listing, and every input, embed and object with its line of the
-    /// key — kept as ONE record beside the key it produced. An unchanged run confirms the
-    /// record by recomputing those lines and reads the key off it, instead of rebuilding the
-    /// input set (the closure walk, the embeds of every record, the reached objects).
-    fn manifest_key(under: Keyed) -> string {
-        node_key(Stored.Fp, ["manifest", self.root, under.named, joined(under.beside, "\t")])
-    }
-
-    fn keep_manifest(store: Store, under: Keyed, key: string) {
-        let inputs = self.source_inputs(under.named).concat(under.beside)
-        let covered = self.closure(under.named)
-        let entries = [ManifestEntry.Covered(c) for c in covered]
-            .concat(
-                [ManifestEntry.Listing(c.split("\t")[0], self.listing_word(c.split("\t")[0])) for c in covered],
-            )
-            .concat([ManifestEntry.Input(f, self.input_line(f)) for f in inputs])
-            .concat([ManifestEntry.Embed(f, self.embed_line(f)) for f in self.embeds(inputs)])
-            .concat(
-                [ManifestEntry.Object(o, self.object_line(o)) for o in self.reached_objects(under.named)],
-            )
-        let _ = store
-            .keep(
-                Stored.Fp,
-                self.manifest_key(under),
-                joined([key].concat([e.spelled() for e in entries]), "\n"),
-                [],
-            )
-    }
-
-    /// The key of a run: the manifest's, when every line it holds still stands; else folded.
-    fn confirmed_key(store: Store, under: Keyed) -> string {
-        let reading = self.clock()
-        let row = store.get(Stored.Fp, self.manifest_key(under))
-        self.timed("manifest read", reading)
-        if row != null {
-            let parsing = self.clock()
-            let lines = row!.split("\n")
-            let entries = [read_entry(l) for l in lines.slice(1, lines.length)]
-            self.timed("manifest parse", parsing)
-            if !entries.any(it == null) && self.manifest_stands(under, [e! for e in entries]) { return lines[0] }
-        }
-        self.program_key(under.named, under.beside)
-    }
-
-    fn manifest_stands(under: Keyed, entries: List<ManifestEntry>) -> bool {
-        let closing = self.clock()
-        let same = joined(self.closure(under.named), "\n") == joined([c for e in entries for c in e.covered()], "\n")
-        self.timed("closure", closing)
-        same && entries.all((e) -> self.entry_timed(e))
-    }
-
-    /// One entry confirmed, its time kept under what kind of input it is.
-    fn entry_timed(e: ManifestEntry) -> bool {
-        let confirming = self.clock()
-        let stands = self.entry_stands(e)
-        self.timed(e.kind_word(), confirming)
-        stands
-    }
-
-    fn entry_stands(e: ManifestEntry) -> bool {
-        match e {
-            .Covered(_) -> true,
-            .Listing(dir, word) -> self.listing_word(dir) == word,
-            .Input(path, line) -> self.input_line(path) == line,
-            .Embed(path, line) -> self.embed_line(path) == line,
-            .Object(path, line) -> self.object_line(path) == line,
-        }
-    }
-
     /// A directory's files as one word, as a walk lists them now — the files `source_inputs`
     /// reads of it: a dependency's tests are no input, so they are never walked.
     fn listing_word(dir: string) -> string {
@@ -706,8 +636,11 @@ impl Workspace {
     /// analysed, where nothing has admitted a package yet — `closure` is
     /// what already survives that (its own remembered half), `packages()`
     /// here would answer empty every first ask.
-    fn reached_objects(named: string) -> List<string> {
-        let roots = [at[1] for at in [line.split("\t") for line in self.closure(named)] if at.length > 1]
+    fn reached_objects(named: string) -> List<string> { self.objects_of(self.closure(named)) }
+
+    /// `reached_objects` over a closure given: `src<TAB>root` lines.
+    fn objects_of(closure: List<string>) -> List<string> {
+        let roots = [at[1] for at in [line.split("\t") for line in closure] if at.length > 1]
         distinct(flatten([self.manifest_objects(root) for root in roots]))
     }
 
@@ -1164,67 +1097,6 @@ fn module_unreadable(path: string) -> string {
 
 fn wasm_unsupported(names: List<string>) -> string {
     "avra: a wasm module has no body for ${names.join(", ")} — a fiber, a core and a package's C are not available on this target"
-}
-
-/// One line of an input manifest.
-enum ManifestEntry {
-    Covered(line: string)
-    Listing(dir: string, word: string)
-    Input(path: string, line: string)
-    Embed(path: string, line: string)
-    Object(path: string, line: string)
-}
-
-impl ManifestEntry {
-    /// The entry as a manifest spells it: a tag, then its fields, tab-apart.
-    fn spelled() -> string {
-        match self {
-            .Covered(line) -> "C\t${line}",
-            .Listing(dir, word) -> "L\t${dir}\t${word}",
-            .Input(path, line) -> "I\t${path}\t${line}",
-            .Embed(path, line) -> "E\t${path}\t${line}",
-            .Object(path, line) -> "O\t${path}\t${line}",
-        }
-    }
-
-    /// What kind of input the entry confirms, as a phase's name.
-    fn kind_word() -> string {
-        match self {
-            .Covered(_) -> "covered",
-            .Listing(_, _) -> "listings",
-            .Input(_, _) -> "inputs",
-            .Embed(_, _) -> "embeds",
-            .Object(_, _) -> "objects",
-        }
-    }
-
-    /// The closure line this entry stands for, none for any other.
-    fn covered() -> List<string> {
-        match self {
-            .Covered(line) -> [line],
-            .Listing(_, _) or .Input(_, _) or .Embed(_, _) or .Object(_, _) -> [],
-        }
-    }
-}
-
-/// An entry read back; none for a line that is no entry.
-fn read_entry(line: string) -> ManifestEntry? {
-    let at = line.index_of("\t")
-    if at < 1 { return null }
-    let tag = line.substring(0, at)
-    let rest = line.substring(at + 1, line.length)
-    if tag == "C" { return ManifestEntry.Covered(rest) }
-    let cut = rest.index_of("\t")
-    if cut < 0 { return null }
-    let first = rest.substring(0, cut)
-    let second = rest.substring(cut + 1, rest.length)
-    when {
-        tag == "L" -> ManifestEntry.Listing(first, second)
-        tag == "I" -> ManifestEntry.Input(first, second)
-        tag == "E" -> ManifestEntry.Embed(first, second)
-        tag == "O" -> ManifestEntry.Object(first, second)
-        _ -> null
-    }
 }
 
 /// Whether `wasm-opt` ran clean over `words`.
