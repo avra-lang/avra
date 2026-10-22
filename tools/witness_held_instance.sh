@@ -1,5 +1,6 @@
 #!/bin/sh
 # `MEMCAP=<memcap.sh> sh tools/witness_held_instance.sh [<test file>]`
+# tool-witnesses: by hand — builds packages with the compiler under MEMCAP; a standalone witness, never a gate step
 #
 # A HELD FILE'S DECLARED INSTANCES, READ BY A MODULE THAT MOVED. `compiler.rules`
 # collects every `rule` instance in the program, and the instances live in

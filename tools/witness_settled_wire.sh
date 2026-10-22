@@ -1,5 +1,6 @@
 #!/bin/sh
 # `MEMCAP=<memcap.sh> sh tools/witness_settled_wire.sh`
+# tool-witnesses: by hand — builds packages with the compiler under MEMCAP; a standalone witness, never a gate step
 #
 # A HELD CONST'S VALUE ROUND-TRIPS THE WIRE, for the three shapes a
 # component instance takes: DATA that settles (a `flag`/`option`

@@ -1,5 +1,6 @@
 #!/bin/sh
 # `MEMCAP=<memcap.sh> sh tools/witness_parallel_build.sh [<package> <package>]`
+# tool-witnesses: by hand — builds packages with the compiler under MEMCAP; a standalone witness, never a gate step
 #
 # THREE claims about concurrent runs over ONE tree, each a run of its own:
 #

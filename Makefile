@@ -1131,35 +1131,13 @@ keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
 	@sh tools/keepers_loop.sh "$(MAKE) -s -o avra" $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a1,$@),$(KEEPERS_A1),$(if $(filter keepers-a2,$@),$(KEEPERS_A2),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS))))))
 
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
-# on, proved on its fixtures — none reads the compiler.
-# One witness per line, so a lane adding an instrument appends a line.
-TOOL_WITNESSES = stamps.sh\ --self-test \
-                 llvm_link.sh\ --self-test \
-                 capped.sh\ --self-test \
-                 failed_tail_test.sh \
-                 host_fn_edit_attack.sh\ --self-test \
-                 gate_receipt.sh\ --self-test \
-                 watch.sh\ --self-test \
-                 memcap.sh\ --self-test \
-                 seed_is_tree.sh\ --self-test \
-                 witness_fmt_changed.sh \
-                 witness_gate_changed.sh \
-                 witness_work_wait.sh \
-                 witness_work_run.sh \
-                 witness_compiler_release.sh \
-                 ci_wall.sh\ --self-test \
-                 witness_warm_edit.sh \
-                 shim_guard_test.sh \
-                 work_test.sh \
-                 reclaim_test.sh \
-                 keepers_loop.sh\ --self-test \
-                 rungs.sh\ --self-test \
-                 ladder.sh\ --self-test \
-                 pr_body.sh\ --self-test
+# on, proved on its fixtures — none reads the compiler. The set is DERIVED
+# (tools/tool_witnesses.py): every witness_*.sh, *_test.sh and tool that
+# answers --self-test that no other keeper already runs, or that says at its
+# site it runs by hand. `python3 tools/tool_witnesses.py list` shows who runs each.
 tool-witnesses:
-	@python3 tools/pipeline_status.py --self-test
-	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
-	 [ -z "$$fail" ] || { echo "tool-witnesses: refused —$$fail"; exit 1; }
+	@python3 tools/tool_witnesses.py --self-test
+	@python3 tools/tool_witnesses.py run
 
 # THE CI STRUCTURE RATCHET: the release path, the compiler-free keepers a
 # PR must reach and the watcher's fixtures are held before a green PR can

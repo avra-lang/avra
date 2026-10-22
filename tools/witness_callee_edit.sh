@@ -1,5 +1,6 @@
 #!/bin/sh
 # `MEMCAP=<memcap.sh> sh tools/witness_callee_edit.sh`
+# tool-witnesses: by hand — builds packages with the compiler under MEMCAP; a standalone witness, never a gate step
 #
 # A CALLER'S OBJECT FOLLOWS ITS CALLEE'S BODY. `main` settles a constant from `f`, a
 # fn in another module: the constant's value is a function of `f`'s body, and lands in

@@ -190,7 +190,7 @@ def self_test():
         os.chmod(f, 0o755)
     ns = argparse.Namespace(a=same, b=same, shard="0/1", mutant_stride=400, mutant_every=50,
                             check_every=10**9, work=os.path.join(tmp, "work"), report=None, show=5,
-                            walk=False, mutants=False, corpus="packages")
+                            walk=False, mutants=False, corpus="packages/std-prelude")
     equal = run_shard(ns, same, same)
     ns.shard = "0/1"
     unequal = run_shard(ns, same, other)
