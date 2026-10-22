@@ -1,0 +1,47 @@
+use store.open.{Graph}
+use store.search.{Passage}
+use store.walk.{Channel}
+
+const earliest = -9223372036854775807
+
+const latest = 9223372036854775807
+
+impl Graph {
+    /// Passages whose observed time falls in `from..=to` (Unix ms), or whose fact
+    /// holds in the world at some point of it; newest first. Either bound may be
+    /// open. A source with no recorded time never matches.
+    fn timed(from: int?, to: int?, limit: int = 100) -> Result<Channel, string> {
+        if from == null && to == null { fail "a time range needs a bound" }
+        if limit < 1 || limit > 1000 { fail "time range limit must be 1..1000" }
+        let lo = from ?? earliest
+        let hi = to ?? latest
+        if lo > hi { fail "a time range starts before it ends" }
+        let found = self
+            .passages_where(
+                "observed_at >= ? AND observed_at <= ? OR valid_from IS NOT NULL AND valid_from <= ? AND (valid_until IS NULL OR valid_until > ?)",
+                [.Int(lo), .Int(hi), .Int(hi), .Int(lo)],
+            )?
+        let newest = newest_first(found)
+        Channel {
+            name: "time",
+            passages: newest.slice(0, if newest.length > limit { limit } else { newest.length }),
+            truncated: newest.length > limit,
+            ignored: [],
+        }
+    }
+}
+
+/// The time a passage is filed under: when it was observed, else when its fact begins.
+fn stamp(p: Passage) -> int { p.observed ?? p.valid_from ?? earliest }
+
+/// Newest first; equal times keep index order.
+fn newest_first(xs: List<Passage>) -> List<Passage> {
+    if xs.length < 2 { return xs }
+    let pivot = xs[0]
+    let rest = xs.slice(1, xs.length)
+    let ahead = (p: Passage) -> stamp(p) > stamp(pivot) ||
+        stamp(p) == stamp(pivot) && p.row < pivot.row
+    newest_first([x for x in rest if ahead(x)])
+        .concat([pivot])
+        .concat(newest_first([x for x in rest if !ahead(x)]))
+}

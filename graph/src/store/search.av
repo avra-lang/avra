@@ -2,7 +2,10 @@ use @std.sqlite.{sql, SqlValue, Row}
 use @std.text.{from_codepoints}
 use ingest.chunks.{windows}
 use @avra.graph_contracts.{SourceEnvelope}
-use @std.validate.{Value}
+use @std.validate.{Value, Entry}
+use catalog.{Catalog}
+use store.query.{Entity}
+use store.evidence.{Interval, interval}
 use store.engine.{ObservationRow}
 use store.open.{Graph, stored, put_meta}
 use data.{encoded}
@@ -19,6 +22,9 @@ export type Passage = {
     claim: int,
     run: string,
     entity: string,
+    observed: int?,
+    valid_from: int?,
+    valid_until: int?,
     rank: float,
 }
 
@@ -28,7 +34,7 @@ const index_revision_key = "search_revision"
 const index_table = "passage_index"
 
 /// What a result row reads, in order.
-const columns = "rowid, kind, observation, revision, start, stop, text, claim, run, entity"
+const columns = "rowid, kind, observation, revision, start, stop, text, claim, run, entity, observed_at, valid_from, valid_until"
 
 impl Graph {
     /// Passages ranked by BM25 over source text and admitted facts, best first.
@@ -48,7 +54,7 @@ impl Graph {
                     ),
                 ),
         )?
-        [passage_of(r, stored(r.real(10))?)? for r in rows]
+        [passage_of(r, stored(r.real(13))?)? for r in rows]
     }
 
     /// Indexed rows by predicate over the unindexed columns, in index order.
@@ -98,16 +104,16 @@ impl Graph {
         stored(
             db
                 .exec(
-                    "CREATE VIRTUAL TABLE IF NOT EXISTS ${index_table} USING fts5(text, kind UNINDEXED, observation UNINDEXED, revision UNINDEXED, start UNINDEXED, stop UNINDEXED, claim UNINDEXED, run UNINDEXED, entity UNINDEXED, tokenize = 'porter unicode61 remove_diacritics 2')",
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS ${index_table} USING fts5(text, kind UNINDEXED, observation UNINDEXED, revision UNINDEXED, start UNINDEXED, stop UNINDEXED, claim UNINDEXED, run UNINDEXED, entity UNINDEXED, observed_at UNINDEXED, valid_from UNINDEXED, valid_until UNINDEXED, tokenize = 'porter unicode61 remove_diacritics 2')",
                 ),
         )?
         stored(db.run(sql("DELETE FROM ${index_table}")))?
-        for p in (self.source_passages()?).concat(self.fact_passages()?) {
+        for p in self.indexable()? {
             stored(
                 db
                     .run(
                         sql(
-                            "INSERT INTO ${index_table}(text, kind, observation, revision, start, stop, claim, run, entity) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            "INSERT INTO ${index_table}(text, kind, observation, revision, start, stop, claim, run, entity, observed_at, valid_from, valid_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             [
                                 .Text(p.text),
                                 .Text(p.kind),
@@ -118,6 +124,9 @@ impl Graph {
                                 .Int(p.claim),
                                 .Text(p.run),
                                 .Text(p.entity),
+                                maybe(p.observed),
+                                maybe(p.valid_from),
+                                maybe(p.valid_until),
                             ],
                         ),
                     ),
@@ -126,6 +135,12 @@ impl Graph {
         put_meta(db, index_revision_key, "${revision}")?
         stored(db.commit())?
         revision
+    }
+
+    /// Every row the index holds: source text, then the facts admitted from it.
+    fn indexable() -> Result<List<Passage>, string> {
+        let sources = self.source_passages()?
+        sources.concat(self.fact_passages(sources)?)
     }
 
     /// Each observation's current text: envelope windows, or the raw text whole.
@@ -148,6 +163,9 @@ impl Graph {
                 claim: 0,
                 run: "",
                 entity: "",
+                observed: envelope.authored_at_ms ?? envelope.received_at_ms,
+                valid_from: null,
+                valid_until: null,
                 rank: 0.0,
             } for w in windows(envelope)?],
             .Err(_) -> [
@@ -162,6 +180,9 @@ impl Graph {
                     claim: 0,
                     run: "",
                     entity: "",
+                    observed: null,
+                    valid_from: null,
+                    valid_until: null,
                     rank: 0.0,
                 },
             ],
@@ -169,13 +190,14 @@ impl Graph {
     }
 
     /// Every standing value, spelled `Model property: value`, filed under each source that supports it.
-    fn fact_passages() -> Result<List<Passage>, string> {
-        let nested = [self.facts_of(m.name, id)? for m in self.catalog.models for id in self.find(m.name, limit: 1000)?]
+    fn fact_passages(sources: List<Passage>) -> Result<List<Passage>, string> {
+        let nested = [self.facts_of(m.name, id, sources)? for m in self.catalog.models for id in self.find(m.name, limit: 1000)?]
         [p for run in nested for p in run]
     }
 
-    fn facts_of(model: string, id: string) -> Result<List<Passage>, string> {
+    fn facts_of(model: string, id: string, sources: List<Passage>) -> Result<List<Passage>, string> {
         let entity = self.entity(id)?
+        let held = valid_time(self.catalog, model, entity)?
         [Passage {
             row: 0,
             kind: "fact",
@@ -187,6 +209,9 @@ impl Graph {
             claim: c.claim,
             run: s.member("run").text() ?? "",
             entity: id,
+            observed: observed_of(sources, s.member("input").text() ?? ""),
+            valid_from: held.from,
+            valid_until: held.until,
             rank: 0.0,
         } for sel in entity.fields for c in sel.candidates for s in (self.explain(id, sel.property)?).items() if s.member("active").truth() == true && s.member("claim").int() == c.claim]
     }
@@ -231,6 +256,38 @@ fn passage_of(r: Row, rank: float) -> Result<Passage, string> {
         claim: stored(r.int(7))?,
         run: stored(r.text(8))?,
         entity: stored(r.text(9))?,
+        observed: nullable(r.values[10]),
+        valid_from: nullable(r.values[11]),
+        valid_until: nullable(r.values[12]),
         rank: rank,
     }
+}
+
+fn maybe(n: int?) -> SqlValue {
+    match n {
+        v? -> SqlValue.Int(v)
+        null -> SqlValue.Null
+    }
+}
+
+fn nullable(v: SqlValue) -> int? {
+    match v { .Int(n) -> n, .Real(_) or .Text(_) or .Blob(_) or .Null -> null }
+}
+
+/// The interval a fact holds in the world, read through its model's validity binding.
+fn valid_time(catalog: Catalog, model: string, entity: Entity) -> Result<Interval, string> {
+    let binding = catalog.models.find(it.name == model)?.semantics?.validity
+    interval(
+        binding,
+        Value
+            .Map(
+                [Entry { key: sel.property, value: sel.candidates[0].value } for sel in entity.fields if !sel.candidates.is_empty()],
+            ),
+    )
+}
+
+/// When the named source was authored (else received), if it is a structured source.
+fn observed_of(sources: List<Passage>, observation: string) -> int? {
+    let found = sources.find(it.observation == observation)
+    if found == null { null } else { found!.observed }
 }

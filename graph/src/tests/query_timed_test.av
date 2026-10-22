@@ -1,0 +1,127 @@
+use derive.model.{model}
+use schema.{Registration}
+use semantics.{Semantics, ValidityBinding}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use @avra.graph_contracts.{SourceEnvelope, SourceRef}
+use @std.json.{to_text}
+use ingest.envelope.{source_document}
+
+@model(quote { Semantics { validity: ValidityBinding { from: ["starts"], until: ["ends"] } } })
+type Visit = { title: string, starts: int?, ends: int? }
+
+fn registrations() -> List<Registration> { [Registration { make: Visit_graph_model }] }
+
+fn source(id: string, at: int?, text: string) -> SourceEnvelope {
+    SourceEnvelope {
+        contract: 2,
+        source: SourceRef { observation: id, revision: 1 },
+        authored_at_ms: at,
+        received_at_ms: 9000000,
+        author: "actor:a",
+        media_type: "text/plain",
+        content: text,
+    }
+}
+
+fn calendar() -> Result<Graph, string> {
+    mut g = Graph.memory(registrations())?
+    g.observe("s1", to_text(source_document(source("s1", 1000, "The dentist visit was moved."))))?
+    g.observe("s2", to_text(source_document(source("s2", 5000, "Gym session on Tuesday."))))?
+    g.observe("s3", "A note with no recorded time.")?
+    g
+        .publish(
+            Publication {
+                id: "one",
+                producer: "agent",
+                scope: "s1",
+                input: "s1",
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: [
+                    Record {
+                        id: "v1",
+                        model: "Visit",
+                        value: stored_value("{\"title\":\"Dentist\",\"starts\":20000,\"ends\":21000}")?,
+                    },
+                ],
+            },
+        )?
+    g
+}
+
+fn observed_time_selects_sources() -> Result<bool, string> {
+    mut g = calendar()?
+    defer { let _ = g.close() }
+    let early = g.timed(500, 2000)?
+    let late = g.timed(4000, 6000)?
+    let none = g.timed(100000, 200000)?
+    early.passages.any(it.kind == "source" && it.observation == "s1") &&
+        !early.passages.any(it.observation == "s2") &&
+        late.passages.map(it.observation).join(",") == "s2" &&
+        none.passages.is_empty() &&
+        !early.passages.concat(late.passages).concat(none.passages).any(it.observation == "s3")
+}
+
+fn valid_time_selects_facts() -> Result<bool, string> {
+    mut g = calendar()?
+    defer { let _ = g.close() }
+    let inside = g.timed(20500, 20600)?
+    let before = g.timed(19000, 19999)?
+    let after = g.timed(21000, 22000)?
+    inside.passages.length == 3 &&
+        inside.passages.all(it.kind == "fact") &&
+        inside.passages[0].valid_from == 20000 &&
+        before.passages.is_empty() &&
+        after.passages.is_empty()
+}
+
+fn open_bounds_and_order() -> Result<bool, string> {
+    mut g = calendar()?
+    defer { let _ = g.close() }
+    let since = g.timed(4000, null)?
+    let until = g.timed(null, 1500)?
+    let all = g.timed(0, 100000)?
+    let stamps = all.passages.map(it.observed ?? it.valid_from ?? 0)
+    since.passages.any(it.observation == "s2") &&
+        since.passages.any(it.kind == "fact") &&
+        until.passages.all(it.observation == "s1") &&
+        stamps.length >= 3 &&
+        stamps[0] >= stamps[1] &&
+        stamps[1] >= stamps[2]
+}
+
+fn the_limit_truncates() -> Result<bool, string> {
+    mut g = calendar()?
+    defer { let _ = g.close() }
+    let one = g.timed(0, 100000, limit: 1)?
+    one.passages.length == 1 && one.truncated && !(g.timed(0, 100000)?).truncated
+}
+
+fn bad_ranges_are_refused() -> Result<bool, string> {
+    mut g = calendar()?
+    defer { let _ = g.close() }
+    let unbounded = match g.timed(null, null) { .Ok(_) -> false, .Err(_) -> true }
+    let backwards = match g.timed(10, 5) { .Ok(_) -> false, .Err(_) -> true }
+    let limit = match g.timed(0, 5, limit: 0) { .Ok(_) -> false, .Err(_) -> true }
+    unbounded && backwards && limit
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "time range" {
+    given "sources with authored times and a fact with a valid interval" {
+        then "a range selects sources by when they were observed" { passed(observed_time_selects_sources()) }
+        then "a range selects facts that hold at some point of it" { passed(valid_time_selects_facts()) }
+        then "open bounds work and results run newest first" { passed(open_bounds_and_order()) }
+        then "the limit truncates and says so" { passed(the_limit_truncates()) }
+        then "an unbounded, backwards or oversized range is refused" { passed(bad_ranges_are_refused()) }
+    }
+}
