@@ -9,7 +9,8 @@
 # (LAYOUT_ORACLE_BROWSERS, LAYOUT_ORACLE_FACES): the counts all print, and the
 # status is a failure if any face in any browser disagreed.
 # Every box is judged against a bound derived from its own tree and the engine's layout
-# quantum (oracle.mjs); a line count is exact. No tree is licensed by name.
+# quantum (oracle.mjs); a line count is exact. WebKit alone holds licences (oracle.mjs: a family
+# for a word wider than its box, and named trees); where Firefox and the solver disagree the solver is wrong.
 #
 # It needs the compiler and Firefox (FIREFOX names one that is not in a usual
 # place). Where one is absent this SKIPS, spoken, naming what is missing. On the
