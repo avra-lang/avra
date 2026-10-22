@@ -37,10 +37,18 @@ impl Error for MigrateError {
 }
 
 /// A table brought to the shape a model's text declares, answering how many
-/// steps it took; a text that is no shape is a defect of the caller.
-export fn grown(mut db: Db, declared: string) -> Result<int, MigrateError> {
+/// steps it took; a text that is no shape is a defect of the caller. A column and its old
+/// name sit at one index of the two rename lists.
+export fn grown(mut db: Db, declared: string, renamed_to: List<string>, renamed_from: List<string>) -> Result<
+    int,
+    MigrateError,
+> {
     let shape? = shape_read(declared) else { return .Err(.Sql(SqlError.defect("a model's shape text did not read back"))) }
-    let plan = migrated(db, shape, [])?
+    let plan = migrated(
+        db,
+        shape,
+        [Renamed { from: renamed_from[i], to: renamed_to[i] } for i in 0..renamed_to.length],
+    )?
     .Ok(plan.steps.length)
 }
 
