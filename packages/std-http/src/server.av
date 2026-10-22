@@ -62,6 +62,8 @@ use @std.http_message.message.{Method}
 use @std.errors.{Error, ErrorInfo, info}
 use @std.net.{Listener, Conn, NetError, Bell, bell, listen}
 use @std.time.{Duration, ms, secs, sleep, now_ms}
+use @std.io.{env}
+use @std.text.{parse_int}
 use frame.{Head, Limits, ReplyBody, RequestBody, framed, status_of, limits, no_bytes}
 use body.{Body, BodyError, measured, chunked_from, whole}
 use http.{
@@ -196,15 +198,15 @@ export fn served<A>(
 
 // ── A server as a declaration ───────────────────────────────────
 
-/// `server app { port: 8080  get "/" { … } }` — routes served at an
-/// address, over TLS when `tls` is set (`@std/https`'s `over_tls`): the settings
+/// `server app { get "/" { … } }` — routes served at an
+/// address (a written `port`, else `PORT` from the environment, else 8080), over TLS when `tls` is set (`@std/https`'s `over_tls`): the settings
 /// by name, each route line collected in the order written (the order
 /// that answers first), and each layer — written in place, or a named
 /// one listed by its name — wrapped around them all, the first
 /// outermost.
 export component server {
     host: string = "127.0.0.1"
-    port: int = 8080
+    port: int? = null
     tls: Secure? = null
     layers: List<layer> = []
     routes: List<dyn Routes> = []
@@ -243,8 +245,10 @@ impl Error for ServeError {
 
 /// What a server of routes keeps between requests: nothing.
 export type Stateless = {}
-
 impl server {
+    /// The listener on this server's host and port.
+    fn bound() -> Result<Listener, NetError> { listen(self.host, given_port(self.port)?) }
+
     /// This server bound and ready: its routes compiled once into the
     /// table every connection dispatches through. A table with a fault
     /// never binds.
@@ -252,10 +256,7 @@ impl server {
         let all = gathered(self.routes)
         let found = route_faults(all)
         if !found.is_empty() { return .Err(.Routes(found)) }
-        let l = match listen(self.host, self.port) {
-            .Ok(l) -> l,
-            .Err(e) -> { return .Err(.Net(e)) },
-        }
+        let l = match self.bound() { .Ok(l) -> l, .Err(e) -> { return .Err(.Net(e)) } }
         let routed = compiled(all)
         let handled = through(self.layers, (q: Request<Unrouted>) -> dispatch(routed, q))
         let plain = served(l, () -> Stateless {}, limits(), timing()) { _none, q -> handled(q) }
@@ -269,6 +270,24 @@ impl server {
         match (self.listening()?).run() { .Ok(n) -> .Ok(n), .Err(e) -> .Err(.Net(e)) }
     }
 }
+
+/// The port written, else the environment's.
+fn given_port(written: int?) -> Result<int, NetError> {
+    let port? = written else { return env_port() }
+    .Ok(port)
+}
+
+/// The port a server with none written listens on: `PORT` from the
+/// environment, as a host hands one to its program, else 8080. A `PORT`
+/// that is no port is refused, never read as the default.
+fn env_port() -> Result<int, NetError> {
+    let said? = env("PORT") else { return .Ok(8080) }
+    let n? = parse_int(said) else { return .Err(not_a_port(said)) }
+    if n < 0 || n > 65535 { return .Err(not_a_port(said)) }
+    .Ok(n)
+}
+
+fn not_a_port(said: string) -> NetError { NetError { verb: "listen", subject: "on PORT=${said}", errno: 22 } }
 
 /// Every core this process may run on: where `run` serves unless told.
 export fn every_core() -> int { avra_cores_online() }

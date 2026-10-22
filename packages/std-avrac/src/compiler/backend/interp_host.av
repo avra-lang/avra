@@ -78,6 +78,23 @@ impl Body {
         self.ahead(from, opens_region, closes_region, (i: Ins) -> i is .ArmEnd) + 1
     }
 
+    /// From a `Cleanup`: the pc just past its region's `ScopeExit` — normal flow
+    /// skips the region.
+    fn past_cleanup(from: int) -> int {
+        self.cleanup_close(from) + 1
+    }
+
+    /// The `ScopeExit` closing the cleanup region opened at `from`.
+    fn cleanup_close(from: int) -> int {
+        self
+            .ahead(
+                from,
+                (i: Ins) -> i is .ScopeEnter || i is .Cleanup,
+                (i: Ins) -> i is .ScopeExit,
+                (i: Ins) -> i is .ScopeExit,
+            )
+    }
+
     /// From a false LoopCond: the pc just past the matching LoopEnd.
     fn past_loop(from: int) -> int {
         self.loop_close(from, 0) + 1

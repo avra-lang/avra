@@ -251,10 +251,11 @@ build/%.o: %.c build/%.sha
 # then written into backend/llvm_wrapper.c's include, so every module can
 # inline the leaves and the compiler's own digest covers them — a changed
 # leaf retires every cached object. An LLVM without clang carries none,
-# and the leaves stay calls.
+# and the leaves stay calls. THE LEAVES MAY UNWIND (-fexceptions): a trap inside
+# one, inlined under a call with a cleanup region open, reaches that region.
 build/avra_hot.bc: runtime/avra_hot.c runtime/avra_hot.h runtime/avra_box.h
 	@mkdir -p build
-	@if [ -x $(LLVM_PREFIX)/bin/clang ]; then $(LLVM_PREFIX)/bin/clang -c -emit-llvm -O2 -fPIC -Iruntime -o $@ runtime/avra_hot.c; else rm -f $@; touch $@; fi
+	@if [ -x $(LLVM_PREFIX)/bin/clang ]; then $(LLVM_PREFIX)/bin/clang -c -emit-llvm -O2 -fPIC -fexceptions -Iruntime -o $@ runtime/avra_hot.c; else rm -f $@; touch $@; fi
 
 build/avra_hot.inc: build/avra_hot.bc
 	@python3 -c "import sys; d=open(sys.argv[1],'rb').read(); print('static const unsigned char avra_hot_bc[] = {' + (','.join(str(b) for b in d) or '0') + '};'); print('static const unsigned long avra_hot_bc_len = %d;' % len(d))" $< > $@
@@ -390,7 +391,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell sh tools/avra_tools.sh suites 2>/dev/null)
 
-.PHONY: tools-suite census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
+.PHONY: tools-suite dev-server census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -663,7 +664,7 @@ db-corpus: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 cache-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # The two shards are one job each on CI, one runner each, so the store they clear
 # is their own; locally they run in order.
-cache-attacks: cache-attacks-a cache-attacks-b
+cache-attacks: cache-attacks-a cache-attacks-b cache-attacks-w
 cache-attacks-a: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/cache_attacks.sh
 
@@ -980,7 +981,7 @@ census-gate:
 	@python3 tools/census_ratchet.py --self-test >/dev/null
 	@sh tools/speed_note.sh --self-test >/dev/null
 	@sh tools/census.sh check --counts packages/cli > build/census-gate.out 2>&1 || { tail -20 build/census-gate.out; exit 1; }
-	@python3 tools/census_ratchet.py --raw build/census-gate.out --main $${CENSUS_MAIN:-census-main.txt}
+	@python3 tools/census_ratchet.py --raw build/census-gate.out --main $${CENSUS_MAIN:-census-main.txt} --main-sites $${CENSUS_SITES_MAIN:-census-sites-main.txt}
 census-accept:
 	@sh tools/census.sh check --counts packages/cli > build/census-gate.out 2>&1 || { tail -20 build/census-gate.out; exit 1; }
 	@python3 tools/census_ratchet.py --accept --raw build/census-gate.out
@@ -1080,6 +1081,12 @@ ui-fuzz: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 ui-board:
 	@sh tools/ui_board.sh
 
+# A PAGE'S SERVER RUNS BESIDE IT UNDER `avra dev`: a page package naming
+# `[dev] server` is served with that package's program on one origin, and a
+# save to the server's source is served without a restart (tools/dev_server_check.sh).
+dev-server:
+	@sh tools/bounded.sh 600 sh tools/dev_server_check.sh
+
 # THE BOARD IN A REAL BROWSER: the same module served over an HTTP origin and
 # driven in headless Firefox, each claim checked (tools/ui-board/browser.mjs).
 # Where Firefox, node or a wasm toolchain is absent it FAILS, unless
@@ -1160,8 +1167,8 @@ KEEPERS_A1 = speed-ratchet census-gate fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
 KEEPERS_B = tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns witnesses dogfooding-rules rule-examples attack voices defects \
-            ui-host host-events ui-host-test ui-board ui-browser ui-browser-skip wasm-host-check tool-witnesses footprint tick-object no-threads \
-            ci-invariants ci-verdict pr-watcher pipeline-doc tail-status
+            ui-host host-events ui-host-test ui-board dev-server ui-browser ui-browser-skip wasm-host-check tool-witnesses footprint tick-object no-threads \
+            ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
 	@sh tools/keepers_loop.sh "$(MAKE) -s -o avra" $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a1,$@),$(KEEPERS_A1),$(if $(filter keepers-a2,$@),$(KEEPERS_A2),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS))))))
@@ -1176,8 +1183,10 @@ tool-witnesses:
 	@sh tools/tool_witnesses.sh run
 
 # THE STORE'S WITNESSES: package builds under the memory cap, each over a cold
-# then a warm store, so they ride with the cache attacks.
+# then a warm store — a cache-attacks shard of their own (w), since one alone
+# outlasts a minute.
 STORE_WITNESSES = $(shell grep -l '^\# tool-witness: run by make store-witnesses' tools/*.sh)
+cache-attacks-w: store-witnesses
 store-witnesses: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@fail=""; for w in $(STORE_WITNESSES); do MEMCAP=tools/memcap.sh sh $$w || fail="$$fail [$$w]"; done; \
 	 [ -z "$$fail" ] || { echo "store-witnesses: refused —$$fail"; exit 1; }
@@ -1238,8 +1247,8 @@ pipeline-status:
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc tail-status
-.PHONY: compiler compiler-files store-witnesses keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc tail-status pipeline-status ci-invariants ci-verdict pr-watcher
+KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status
+.PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc tail-status pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@sh tools/keepers_loop.sh "$(MAKE) -s" $(KEEPERS_STATIC)
@@ -1344,6 +1353,12 @@ voices-accept:
 # that wrong answer, so a program test cannot catch it.
 externs:
 	@python3 tools/externs.py
+
+# THE WORKFLOW PARSE KEEPER: every workflow file reads as YAML. A file that does not parse
+# runs with no jobs, so the check it was meant to run examines nothing (tools/workflows_yaml.py).
+workflows-yaml:
+	@python3 tools/workflows_yaml.py --self-test >/dev/null
+	@python3 tools/workflows_yaml.py
 
 # THE TRAPS COLUMN'S KEEPER: a row marked `traps: false` reaches no trap the
 # language raises (tools/traps.py).

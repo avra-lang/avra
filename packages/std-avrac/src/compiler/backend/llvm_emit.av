@@ -1,6 +1,6 @@
 //! The instruction emitter: `impl Emit`, one arm per IR instruction.
 //! The module/declaration/entry machinery lives in llvm.av.
-use core.{Ins, Reg, BinOp, UnOp, RtFlag, flag_symbol, rounding_code, TypeId, RtKind, RtSig}
+use core.{Ins, Reg, BinOp, UnOp, RtFlag, flag_symbol, rounding_code, TypeId, RtKind, RtSig, retires}
 use features.{nothing, absent_tag}
 
 /// LLVMRealPredicate codes (llvm-c/Core.h), by name. `!=` is UNE: unordered,
@@ -47,14 +47,65 @@ impl Emit {
             )
         }
         let fp = avra_llvm_cast_to_type(self.b, self.vals[f.index], avra_llvm_pointer_type(self.lc))
-        avra_llvm_build_call(self.b, fty, fp, vargs, args.length, "")
+        self.emitted(fty, fp, vargs, args.length)
     }
 
     fn call(name: string, args: List<ptr>) -> ptr {
         let f = avra_llvm_get_named_function(self.m, name)
         let arr = avra_llvm_value_array_new(args.length)
         for i, a in args { avra_llvm_value_array_set(arr, i, a) }
-        avra_llvm_build_call(self.b, avra_llvm_fn_type_of(f), f, arr, args.length, "")
+        self.emitted(avra_llvm_fn_type_of(f), f, arr, args.length)
+    }
+
+    /// A call as the position demands: plain where no cleanup region is open, or
+    /// the callee cannot unwind; else one that may, landing on the block that runs
+    /// the open regions and hands the unwind on.
+    fn emitted(fty: ptr, f: ptr, args: ptr, n: int) -> ptr {
+        if !self.unwinds { return avra_llvm_build_call(self.b, fty, f, args, n, "") }
+        let open = self.open[self.at]
+        if open.is_empty() || avra_llvm_is_nounwind(f) != 0 { return avra_llvm_build_call(self.b, fty, f, args, n, "") }
+        avra_llvm_build_invoke(self.b, fty, f, args, n, self.landing(open.last()!))
+    }
+
+    /// The block an unwind through a call lands on, built once per newest open
+    /// region: the pad keeps the unwind, and the regions run from that one inward.
+    fn landing(newest: int) -> ptr {
+        let key = "landing${newest}"
+        let held = self.blocks.get(key)
+        if held != null { return held! }
+        let here = avra_llvm_get_insert_block(self.b)
+        let slot = self.slot()
+        let block = self.appended(key)
+        avra_llvm_build_landing(self.m, self.b, slot)
+        let _ = avra_llvm_build_br(self.b, self.blocks.get("region${newest}")!)
+        avra_llvm_position_at_end(self.b, here)
+        block
+    }
+
+    /// Where the fn keeps the unwind in flight, made at its entry the first time a
+    /// landing needs it.
+    fn slot() -> ptr {
+        let held = self.blocks.get("slot")
+        if held != null { return held! }
+        let slot = avra_llvm_unwind_slot(self.m, self.b)
+        self.blocks.set("slot", slot)
+        slot
+    }
+
+    /// The block where the unwind ends: what the landing kept goes on to the
+    /// caller's unwinder.
+    fn resume_block() -> ptr {
+        let block = self.appended("resume")
+        avra_llvm_build_resume_slot(self.b, self.blocks.get("slot")!)
+        block
+    }
+
+    /// A block of its own, named `key` and held under it, which the builder now stands in.
+    fn appended(key: string) -> ptr {
+        let block = avra_llvm_append_basic_block(self.lc, self.fn_val, key)
+        self.blocks.set(key, block)
+        avra_llvm_position_at_end(self.b, block)
+        block
     }
 
     /// The slot's first write: settle the keyed table (unchanged —
@@ -134,7 +185,9 @@ impl Emit {
             .LoopCond(c) -> self.loop_cond(c),
             .LoopEnd -> self.loop_end(),
             .LoopJump(outward, again) -> self.loop_jump(outward, again),
-            .ScopeEnter(_) or .ScopeExit(_) -> nothing(),
+            .ScopeEnter(_) -> self.scopes.push(Open.Plain),
+            .Cleanup(_) -> self.cleanup_open(),
+            .ScopeExit(_) -> self.scope_closed(),
         }
     }
 
@@ -191,6 +244,52 @@ impl Emit {
     /// The next register's value — registers mint in instruction order.
     fn define(v: ptr) {
         self.vals.push(v)
+    }
+
+    /// A cleanup region: its instructions are emitted for real, into a block of
+    /// their own — the body of the landing a trap's unwind enters — and the walk
+    /// returns to where it stood when the region closes. An empty region, which
+    /// only retires an entry, has no block.
+    fn cleanup_open() {
+        if retires(self.ins, self.at) {
+            self.scopes.push(Open.Plain)
+            return
+        }
+        self.scopes.push(Open.Cleanup(avra_llvm_get_insert_block(self.b), self.at))
+        let _ = self.appended("region${self.at}")
+    }
+
+    /// A scope closes. A cleanup region's last block waits to be ended — see
+    /// `finished` — and the walk goes back to the block it left.
+    fn scope_closed() {
+        match self.scopes.pop() {
+            .Plain -> nothing(),
+            .Cleanup(resume, at) -> {
+                self.ends.push(Closing { block: avra_llvm_get_insert_block(self.b), at: at })
+                avra_llvm_position_at_end(self.b, resume)
+            },
+        }
+    }
+
+    /// The fn is emitted: each cleanup region's last block goes on to the next
+    /// older region the unwind found open, or ends the unwind, when anything
+    /// unwinds into regions at all; else nothing enters them and they end
+    /// unreachable, and the fn names no personality.
+    fn finished() {
+        let landed = self.blocks.get("slot") != null
+        let resume = if landed { self.resume_block() } else { avra_llvm_get_insert_block(self.b) }
+        for end in self.ends {
+            avra_llvm_position_at_end(self.b, end.block)
+            if !landed {
+                let _ = avra_llvm_build_unreachable(self.b)
+            } else {
+                let older = self.open[end.at].last()
+                let _ = avra_llvm_build_br(
+                    self.b,
+                    if older == null { resume } else { self.blocks.get("region${older!}")! },
+                )
+            }
+        }
     }
 
     /// icmp predicates by number: 32 eq, 33 ne, 38 sgt, 39 sge, 40 slt,

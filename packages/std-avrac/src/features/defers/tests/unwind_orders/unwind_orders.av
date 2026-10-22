@@ -1,0 +1,74 @@
+// proves: a trap caught by `contained` runs the deferred calls of every frame
+// between the trap and the guard — innermost frame first, and inside a frame the
+// newest first, a `defer` and an `errdefer` alike, in either order they were
+// written — while a path that does not trap runs only its `defer`s; both engines
+use @std.meta.{contained}
+
+state log: List<string> = []
+
+fn note(s: string) { log = log.concat([s]) }
+
+fn boom() -> int {
+    let xs = [1]
+    let i = 4
+    xs[i]
+}
+
+fn inner_errdefer_first(trap: bool) -> Result<int, string> {
+    errdefer note("inner errdefer")
+    defer note("inner defer")
+    if trap { return .Ok(boom()) }
+    .Ok(7)
+}
+
+fn inner_defer_first(trap: bool) -> Result<int, string> {
+    defer note("inner defer")
+    errdefer note("inner errdefer")
+    if trap { return .Ok(boom()) }
+    .Ok(7)
+}
+
+fn outer_errdefer_first(trap: bool) -> Result<int, string> {
+    errdefer note("outer errdefer")
+    defer note("outer defer")
+    let n = inner_errdefer_first(trap)?
+    .Ok(n + 1)
+}
+
+fn outer_defer_first(trap: bool) -> Result<int, string> {
+    defer note("outer defer")
+    errdefer note("outer errdefer")
+    let n = inner_defer_first(trap)?
+    .Ok(n + 1)
+}
+
+fn built_before(name: string) -> Result<int, string> {
+    let label = "closed ${name}"
+    defer note(label)
+    .Ok(boom())
+}
+
+fn built_when_run(name: string) -> Result<int, string> {
+    defer note("closed ${name}")
+    .Ok(boom())
+}
+
+fn worded(r: Result<int, string>) -> string {
+    match r { .Ok(n) -> "ok ${n}", .Err(w) -> "err ${w}" }
+}
+
+fn flat(r: Result<Result<int, string>, string>) -> Result<int, string> {
+    match r { .Ok(inner) -> inner, .Err(w) -> .Err(w) }
+}
+
+fn shown(what: string, r: Result<Result<int, string>, string>) {
+    println("${what}: ${worded(flat(r))} | ${log.join(",")}")
+    log = []
+}
+
+shown("errdefer written first", contained(() -> outer_errdefer_first(true)))
+shown("defer written first", contained(() -> outer_defer_first(true)))
+shown("a string built before the defer", contained(() -> built_before("a")))
+shown("a string built when the defer runs", contained(() -> built_when_run("b")))
+shown("no trap, errdefer first", contained(() -> outer_errdefer_first(false)))
+shown("no trap, defer first", contained(() -> outer_defer_first(false)))

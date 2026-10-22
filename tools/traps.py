@@ -41,7 +41,8 @@ KEYWORDS = {"if", "while", "for", "switch", "return", "sizeof", "defined", "__bu
 # params (`text`, `source`) that only ever name C fns. A callee not here and not
 # defined in the runtime is a call out, which may trap.
 SAFE = set("""
-__atomic_add_fetch __atomic_load_n __atomic_store_n __builtin_memcpy __builtin_return_address
+__atomic_add_fetch __atomic_load_n __atomic_store_n __builtin_add_overflow __builtin_memcpy
+__builtin_mul_overflow __builtin_return_address __builtin_sub_overflow
 _dyld_get_image_header _dyld_get_image_vmaddr_slide atoi calloc clock_gettime close closedir
 dirfd dl_iterate_phdr epoll_wait fclose fcntl fflush fopen fork fprintf fputc fputs fread free
 fseek fstat ftell fwrite getenv getpid getsectiondata isfinite kevent longjmp mallinfo2 malloc

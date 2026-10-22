@@ -11,7 +11,8 @@
 // page was told to attach, never a synthetic event, so it proves the same
 // path the page takes.
 import fs from "node:fs";
-import { run } from "../../runtime/dom/bootstrap.js";
+import { run, parseFrame } from "../../runtime/dom/bootstrap.js";
+import { OP } from "../../runtime/dom/wire.gen.js";
 import { wasiPreview1 } from "../../runtime/dom/wasi.js";
 import { dispatch, stubDocument, stubElement, textOf } from "../../runtime/dom/stub_dom.js";
 
@@ -45,6 +46,16 @@ const { mod, ears } = await run(new Uint8Array(fs.readFileSync(process.argv[2]))
   fetch: fetchFn,
   raf: (cb) => rafs.push(cb),
 });
+
+// The page as the first paint left it, copied before anything is done to it:
+// what a server's HTML stands as before the module runs.
+const copied = (n, doc) => {
+  const c = n.tagName === "#text" ? doc.createTextNode(n.textContent) : doc.createElement(n.tagName);
+  for (const [k, v] of Object.entries(n.attrs)) c.setAttribute(k, v);
+  for (const k of n.childNodes) c.insertBefore(copied(k, doc), null);
+  return c;
+};
+const firstPaint = mount.childNodes.map((n) => copied(n, stubDocument()));
 
 const shape = (n) => {
   if (n.tagName === "#text") return `"${n.textContent}"`;
@@ -235,6 +246,57 @@ claim("a press after a pending answer shows the answer first, then its own chang
 frame();
 claim("and the press's own frame follows at the display's frame", walks() - walked === 2 && named("Dark mode").length + named("Light mode").length === 1, `${walks() - walked}`);
 spent();
+
+// ── a server's page, adopted ──
+const serverPrint = process.argv[3];
+const serverBytes = Number(process.argv[4]);
+const adopting = async (print, early = null) => {
+  const doc = stubDocument();
+  const at = stubElement("root");
+  at.setAttribute("data-avra-print", print);
+  const placed = firstPaint.map((n) => copied(n, doc));
+  for (const n of placed) at.insertBefore(n, null);
+  if (early !== null) every(at, (n) => n.attrs["aria-label"] === "New task")[0].value = early;
+  const sentFrames = [];
+  const sizes = [];
+  const quiet = console.warn;
+  console.warn = () => {};
+  const { ears: heard } = await run(new Uint8Array(fs.readFileSync(process.argv[2])), {
+    document: doc,
+    mount: at,
+    style: { textContent: "" },
+    wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(`the program exited ${code}`); }),
+    sent: (bytes) => { sizes.push(bytes.length); sentFrames.push(parseFrame(bytes)); },
+    clock,
+    fetch: fetchFn,
+    raf: (cb) => rafs.push(cb),
+  });
+  await settle();
+  console.warn = quiet;
+  return { at, placed, sentFrames, sizes, heard };
+};
+const kept = await adopting(serverPrint);
+const all = kept.sentFrames.flat();
+const first = kept.sentFrames[0] ?? [];
+claim("the server's print is the number the module folds from the same view", first[0]?.op === OP.adopt && first[0].kinds.length > 0, serverPrint);
+claim("an adopted page builds nothing", all.filter((p) => p.op === OP.create || p.op === OP.create_text).length === 0, `${all.length} patch(es)`);
+claim("the first paint over an adopted page is the adoption, then define and listen only", first.length > 1 && first.slice(1).every((p) => p.op === OP.listen || p.op === OP.define), first.map((p) => p.op).join(","));
+claim("the server's nodes are the page the module stands on", kept.at.childNodes.length === kept.placed.length && kept.placed.every((n, j) => kept.at.childNodes[j] === n));
+claim("the adopted page is the page the module drew itself", kept.at.childNodes.map(shape).join() === firstPaint.map(shape).join());
+claim("the first frame over an adopted page is under 1500 bytes (9326 without a server page)", kept.sizes[0] < 1500, `${kept.sizes[0]}`);
+claim(`the server's page is ${serverBytes} bytes of HTML`, serverBytes > 0);
+const early = await adopting(serverPrint, "typed early");
+{
+  const add = every(early.at, (n) => n.attrs["aria-label"] === "Add" && early.heard(n.__avra_id).length > 0)[0];
+  const [, ear] = early.heard(add.__avra_id)[0];
+  dispatch(early.at, add, ear.event, { bubbles: false });
+  frame();
+  await settle();
+  claim("text typed before the program stood is the program's when it adds the task", textOf(early.at).includes("typed early"), textOf(early.at).slice(0, 60));
+}
+const torn = await adopting(String(Number(serverPrint) + 1));
+const tornCreates = torn.sentFrames.flat().filter((p) => p.op === OP.create).length;
+claim("a print that is not the module's empties the page and draws it again", torn.sentFrames[0][0].kinds.length === 0 && tornCreates > 0 && torn.at.childNodes.map(shape).join() === firstPaint.map(shape).join());
 
 console.log(failed === 0 ? "ui-board: every claim holds" : `ui-board: ${failed} claim(s) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

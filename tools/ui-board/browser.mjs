@@ -19,6 +19,8 @@ const [url, ...named_words] = process.argv.slice(2);
 const word = (name) => { const at = named_words.indexOf(name); return at < 0 ? null : named_words[at + 1]; };
 const shots = word("--shots");
 const source = word("--source");
+const hydrated = word("--hydrated");
+const tampered = word("--tampered");
 const page = await openPage(firefoxBinary(), url);
 const { read, press, type, frame } = page;
 
@@ -205,5 +207,33 @@ claim("this engine knows no `closedby`", await unaware.read(`!("closedBy" in HTM
 await outsidePresses({ ...unaware, escape: () => unaware.type(KEY.escape) }, ", where the engine knows no `closedby`", claim, named);
 claim("nothing reached that page's console", unaware.complaints().length === 0, unaware.complaints());
 await unaware.close();
+
+// The module has run and painted: the page says so itself.
+const standing = async (p) => { for (let i = 0; i < 200; i++) { if (await p.read(`document.documentElement.getAttribute("data-avra") === "ready"`).catch(() => false)) { await p.frame(); return true; } await new Promise((go) => setTimeout(go, 100)); } return false; };
+
+// ── a server's page, adopted by the module ──────────────────────
+// The elements the server drew are marked before the module runs.
+if (hydrated) {
+  const adopted = await openPage(firefoxBinary(), hydrated);
+  const asked = adopted.read;
+  const ready = `document.querySelector("#app button") !== null && [...document.querySelectorAll("#app *")].length > 0`;
+  claim("a server's page stands before the module runs", await asked(`[...document.querySelectorAll("#app *")].every((el) => el.__served === true) && ${ready}`));
+  claim("the module stands on it", await standing(adopted));
+  const total = await asked(`document.querySelectorAll("#app *").length`);
+  const kept = await asked(`[...document.querySelectorAll("#app *")].filter((el) => el.__served === true).length`);
+  claim("the module took the server's elements over and built none", kept === total, `${kept} of ${total}`);
+  await adopted.press(`document.querySelector('[aria-label="Dark mode"]')`);
+  claim("and the page answers a press through the adopted elements", await asked(`document.querySelector('[aria-label="Light mode"]') !== null`));
+  claim("nothing reached the console while the server's page was adopted", adopted.complaints().length === 0, adopted.complaints());
+  await adopted.close();
+}
+if (tampered) {
+  const torn = await openPage(firefoxBinary(), tampered);
+  await standing(torn);
+  claim("a page the module did not draw is drawn again whole", await torn.read(`document.querySelectorAll('#app [aria-label]').length >= 5 && document.querySelector('[aria-label="Dark mode"]') !== null`));
+  await torn.press(`document.querySelector('[aria-label="Dark mode"]')`);
+  claim("and it answers a press", await torn.read(`document.querySelector('[aria-label="Light mode"]') !== null`));
+  await torn.close();
+}
 console.log(failed === 0 ? "ui-browser: every claim holds" : `ui-browser: ${failed} claim(s) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

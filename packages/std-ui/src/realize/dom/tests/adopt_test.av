@@ -1,0 +1,139 @@
+//! A page a server sent is ADOPTED: the print a server stamps is the one the
+//! module folds from the tree it draws first, a match leaves only listeners
+//! to say, and anything else is drawn again from nothing.
+use @std.ui.components.{button, column, text}
+use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.dom.patch.{Patch}
+use @std.ui.realize.dom.tests.support.{records}
+use @std.ui.realize.dom.wire.{frame}
+use @std.ui.realize.html.element.{lowered}
+use @std.ui.realize.html.html.{hydration}
+use @std.ui.realize.html.print.{kinds_of, words_of}
+use @std.ui.realize.html.writer.{HtmlOp, source}
+use @std.ui.style.theme.{default_theme}
+use @std.ui.tree.node.{Node}
+use @std.ui.tree.view.{tree_of}
+
+fn counting(n: int) -> Node {
+    tree_of(
+        column {
+            text "${n}"
+            button "Raise" { on press {} }
+        },
+    )
+}
+
+/// The patches of a first paint over a server's page that stamped `print`.
+fn adopted_over(print: int, root: Node) -> List<Patch> {
+    let page = live()
+    page.stood.set(print)
+    page.patches(root, default_theme)
+}
+
+fn is_listen(p: Patch) -> bool {
+    match p {
+        .Listen(_, _) -> true,
+        .Create(_, _) or .CreateText(_, _) or .Place(_, _, _) or .Remove(_) or .SetAttr(_, _, _) or .DropAttr(_, _) or .SetProp(_, _, _) or .SetText(_, _) or .Unlisten(_, _) or .Style(_) or .Call(_, _) or .SetVar(_, _, _) or .DropVar(_, _) or .Adopt(_, _) -> false,
+    }
+}
+
+fn kept_kinds(p: Patch?) -> List<string>? {
+    let first? = p else { return null }
+    match first { .Adopt(names, _) -> names, _ -> null }
+}
+
+spec "std/ui dom — a server's page, adopted" {
+    given "the print" {
+        then "the same tree folds to the same print" {
+            hydration(counting(1), default_theme).print == hydration(counting(1), default_theme).print
+        }
+        then "a word that differs folds to another print" {
+            hydration(counting(1), default_theme).print != hydration(counting(2), default_theme).print
+        }
+        then "a print is never zero, which is the word for none" { hydration(counting(1), default_theme).print > 0 }
+    }
+    given "a page whose print the tree draws" {
+        then "the first paint is the adoption and listeners alone" {
+            let h = hydration(counting(1), default_theme)
+            let patches = adopted_over(h.print, counting(1))
+            let names = kept_kinds(patches.first()) ?? []
+            names.length > 3 &&
+                patches.length > 1 &&
+                patches.slice(1, patches.length).all(is_listen(it))
+        }
+        then "the next paint of the same tree says nothing" {
+            let h = hydration(counting(1), default_theme)
+            let page = live()
+            page.stood.set(h.print)
+            let _ = page.patches(counting(1), default_theme)
+            page.patches(counting(1), default_theme).is_empty()
+        }
+        then "the next paint of a changed tree says only the change" {
+            let h = hydration(counting(1), default_theme)
+            let page = live()
+            page.stood.set(h.print)
+            let _ = page.patches(counting(1), default_theme)
+            page.patches(counting(2), default_theme).length == 1
+        }
+    }
+    given "a page whose print the tree does not draw" {
+        then "the first paint empties what the host holds and draws it all" {
+            let h = hydration(counting(1), default_theme)
+            let patches = adopted_over(h.print, counting(2))
+            let names = kept_kinds(patches.first())
+            names != null && names!.is_empty() && patches.length > 10
+        }
+    }
+    given "a page a host asked to draw again" {
+        then "it is drawn whole, with no adoption in the frame" {
+            let h = hydration(counting(1), default_theme)
+            let page = live()
+            page.stood.set(h.print)
+            let _ = page.patches(counting(1), default_theme)
+            page.reset()
+            let patches = page.patches(counting(1), default_theme)
+            kept_kinds(patches.first()) == null && patches.length > 10
+        }
+        then "it says again what the host was told of each seat, whose first frame the host dropped" {
+            let page = live()
+            let _ = page.paint(counting(1), default_theme)
+            let told = !page.told.get().is_empty()
+            page.reset()
+            told && page.told.get().is_empty()
+        }
+    }
+    given "words that differ only past ASCII" {
+        then "fold to different prints" {
+            let a = hydration(tree_of(text "café"), default_theme).print
+            let b = hydration(tree_of(text "cafe"), default_theme).print
+            a != b
+        }
+    }
+    given "the writer's marker" {
+        then "stands between two texts so a parser keeps them two" {
+            source([HtmlOp.Text("a"), HtmlOp.Marker, HtmlOp.Text("b")]) == "a<!---->b"
+        }
+    }
+    given "the wire" {
+        then "an adoption is its elements' kinds, in order" {
+            records(frame([Patch.Adopt(["div", "#text", "b"], 7)])).join(";") == "adopt div,#text,b"
+        }
+        then "an empty adoption is no kinds" { records(frame([Patch.Adopt([], 0)])).join(";") == "adopt " }
+    }
+    given "the words a host folds" {
+        then "differ for a word of the same length" {
+            words_of(lowered(tree_of(text "ab"))) != words_of(lowered(tree_of(text "ac")))
+        }
+        then "are the same for the same words" {
+            words_of(lowered(counting(1))) == words_of(lowered(counting(1)))
+        }
+        then "differ for a first newline dropped" {
+            words_of(lowered(tree_of(text "\nab"))) != words_of(lowered(tree_of(text "ab")))
+        }
+    }
+    given "the kinds a host checks" {
+        then "a text is named by its kind alone" {
+            kinds_of(lowered(counting(1))).any(it == "#text")
+        }
+    }
+}

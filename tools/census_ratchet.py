@@ -65,6 +65,24 @@ def per_decl(got, decls):
     return {k: got[k] // decls for k in COUNTERS if k in got}
 
 
+def read_sites(text):
+    """The per-caller lines (`copy|push|retain: <caller> <count>`) -> {(label, caller): count}.
+    The `type:` table is a share breakdown, not a caller, so it is not read here."""
+    out = {}
+    for line in text.splitlines():
+        m = re.match(r"^(copy|push|retain): (\S+) (\d+)$", line.strip())
+        if m:
+            out[(m[1], m[2])] = int(m[3])
+    return out
+
+
+def gained(now, main, top=10):
+    """The `top` sites whose count rose against main's table, biggest first, as (site, was, is)."""
+    rises = [(k, main.get(k, 0), v) for k, v in now.items() if v > main.get(k, 0)]
+    rises.sort(key=lambda r: r[2] - r[1], reverse=True)
+    return rises[:top]
+
+
 def read_budget(text):
     out = {}
     for line in text.splitlines():
@@ -139,6 +157,13 @@ def main(argv):
     if bad:
         for b in bad:
             print("census_ratchet: REFUSED — " + b)
+        sites_path = argv[argv.index("--main-sites") + 1] if "--main-sites" in argv else ""
+        if sites_path and os.path.exists(sites_path):
+            raw_path = argv[argv.index("--raw") + 1]
+            now_sites = read_sites(open(raw_path, errors="replace").read())
+            main_sites = read_sites(open(sites_path).read())
+            for (label, site), was, is_ in gained(now_sites, main_sites):
+                print(f"census_ratchet: gained {label} {site}: {was} -> {is_} (+{is_ - was})")
         print("census_ratchet: a PR that must cost more says `SPEED_ACCEPT: <reason>` in its body")
         return 1
     print("census_ratchet: held — %d counters within their ceilings (%d decls)" % (len(now), decls))
@@ -188,7 +213,11 @@ def self_test():
         assert main(["--raw", empty]) == 1, "no counts must refuse"
         open(empty, "w").write("rc: 1 retains, 2 releases, 3 reclaims\nrc: 4 list reads, 5 list writes\nstore: 6 bytes\n")
         assert main(["--raw", empty]) == 1, "counts with no program size must refuse"
-    print("census_ratchet: self-test passed — 14 fixtures")
+    main_sites = read_sites("retain: f_a 100\ncopy: f_b 40\npush: f_c 9\n")
+    now_sites = read_sites("retain: f_a 130\ncopy: f_b 40\npush: f_c 9\ncopy: f_d 25\nretain: f_e 7\n")
+    assert gained(now_sites, main_sites) == [(("retain", "f_a"), 100, 130), (("copy", "f_d"), 0, 25), (("retain", "f_e"), 0, 7)], gained(now_sites, main_sites)
+    assert gained(now_sites, now_sites) == [], "an equal table gains nothing"
+    print("census_ratchet: self-test passed — 15 fixtures")
     return 0
 
 

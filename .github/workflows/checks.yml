@@ -626,7 +626,9 @@ jobs:
         uses: actions/cache/restore@v4
         continue-on-error: true
         with:
-          path: census-main.txt
+          path: |
+            census-main.txt
+            census-sites-main.txt
           key: census-main-${{ github.sha }}
           restore-keys: census-main-
       # THE RUNTIME KEEPERS HELD TO A CLOCK (KEEPERS_ALONE: runtime-tests,
@@ -663,12 +665,24 @@ jobs:
       - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('build/census-now.txt') != ''
         name: census counts kept for main
         run: cp build/census-now.txt census-main.txt
+      - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('build/census-gate.out') != ''
+        name: per-caller tables kept for main
+        run: "grep -E '^(copy|push|retain): ' build/census-gate.out > census-sites-main.txt || :"
       - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('census-main.txt') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
-          path: census-main.txt
+          path: |
+            census-main.txt
+            census-sites-main.txt
           key: census-main-${{ github.sha }}
+      - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('census-sites-main.txt') != ''
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: census-sites-main
+          path: census-sites-main.txt
+          retention-days: 30
       - if: always()
         uses: ./.github/actions/speed-note
         with:
@@ -764,7 +778,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['a', 'b1', 'b2']
+        shard: ['a', 'b1', 'b2', 'w']
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/handed-down

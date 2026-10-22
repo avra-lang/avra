@@ -310,6 +310,18 @@ void avra_llvm_set_cold(LLVMValueRef fn) {
     LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, enum_attr(ctx, "minsize"));
 }
 
+// A fn that cannot unwind: a call of it needs no unwind edge.
+void avra_llvm_set_nounwind(LLVMValueRef fn) {
+    LLVMContextRef ctx = LLVMGetModuleContext(LLVMGetGlobalParent(fn));
+    LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, enum_attr(ctx, "nounwind"));
+}
+
+int avra_llvm_is_nounwind(LLVMValueRef fn) {
+    if (!LLVMIsAFunction(fn)) { return 0; }
+    unsigned kind = LLVMGetEnumAttributeKindForName("nounwind", 8);
+    return LLVMGetEnumAttributeAtIndex(fn, LLVMAttributeFunctionIndex, kind) != NULL;
+}
+
 // A global the linker keeps though no code names it: `llvm.used`, grown
 // by one.
 static void kept_whole(LLVMModuleRef m, LLVMValueRef g) {
@@ -978,6 +990,63 @@ LLVMValueRef avra_llvm_build_call(LLVMBuilderRef b, LLVMTypeRef fn_type, LLVMVal
     return result;
 }
 
+// A CALL THAT MAY UNWIND: the normal path continues in a block of its own,
+// the unwind path lands on `landing`. The builder stands in the continuation.
+LLVMValueRef avra_llvm_build_invoke(LLVMBuilderRef b, LLVMTypeRef fn_type, LLVMValueRef fn_val, LLVMValueRef* args, int count, LLVMBasicBlockRef landing) {
+    LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(b));
+    LLVMContextRef ctx = LLVMGetModuleContext(LLVMGetGlobalParent(fn));
+    LLVMBasicBlockRef cont = LLVMAppendBasicBlockInContext(ctx, fn, "cont");
+    int is_void = LLVMGetTypeKind(LLVMGetReturnType(fn_type)) == LLVMVoidTypeKind;
+    LLVMValueRef result = LLVMBuildInvoke2(b, fn_type, fn_val, args, (unsigned)count, cont, landing, "");
+    LLVMPositionBuilderAtEnd(b, cont);
+    if (is_void) { return LLVMConstInt(LLVMInt64TypeInContext(ctx), 0, 0); }
+    return result;
+}
+
+static LLVMTypeRef unwind_type(LLVMContextRef ctx) {
+    LLVMTypeRef parts[2] = { LLVMPointerTypeInContext(ctx, 0), LLVMInt32TypeInContext(ctx) };
+    return LLVMStructTypeInContext(ctx, parts, 2, 0);
+}
+
+static LLVMValueRef personality_of(LLVMModuleRef m) {
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMValueRef personality = LLVMGetNamedFunction(m, "__gcc_personality_v0");
+    if (!personality) {
+        personality = LLVMAddFunction(m, "__gcc_personality_v0", LLVMFunctionType(LLVMInt32TypeInContext(ctx), NULL, 0, 1));
+    }
+    return personality;
+}
+
+// The slot a fn keeps its in-flight unwind in, at the start of its entry block:
+// the cleanup regions chain by branches, so the value `resume` hands on lives in
+// memory, not in a register that only one landing dominates.
+LLVMValueRef avra_llvm_unwind_slot(LLVMModuleRef m, LLVMBuilderRef b) {
+    LLVMBasicBlockRef here = LLVMGetInsertBlock(b);
+    LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(here));
+    LLVMValueRef first = LLVMGetFirstInstruction(entry);
+    if (first) { LLVMPositionBuilderBefore(b, first); } else { LLVMPositionBuilderAtEnd(b, entry); }
+    LLVMValueRef slot = LLVMBuildAlloca(b, unwind_type(LLVMGetModuleContext(m)), "unwinding");
+    LLVMPositionBuilderAtEnd(b, here);
+    return slot;
+}
+
+// THE UNWIND LANDING: a cleanup-only pad in the current fn, whose personality is
+// the C one (cleanups, no catches), named by the fn the first time it has one.
+// The pad's value is kept in `slot`.
+void avra_llvm_build_landing(LLVMModuleRef m, LLVMBuilderRef b, LLVMValueRef slot) {
+    LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(b));
+    LLVMSetPersonalityFn(fn, personality_of(m));
+    LLVMValueRef pad = LLVMBuildLandingPad(b, unwind_type(LLVMGetModuleContext(m)), personality_of(m), 0, "unwound");
+    LLVMSetCleanup(pad, 1);
+    LLVMBuildStore(b, pad, slot);
+}
+
+// The unwind goes on: what the landing kept is handed to the caller's unwinder.
+void avra_llvm_build_resume_slot(LLVMBuilderRef b, LLVMValueRef slot) {
+    LLVMContextRef ctx = LLVMGetModuleContext(LLVMGetGlobalParent(LLVMGetBasicBlockParent(LLVMGetInsertBlock(b))));
+    LLVMBuildResume(b, LLVMBuildLoad2(b, unwind_type(ctx), slot, "pending"));
+}
+
 // ── Control flow ──
 
 LLVMValueRef avra_llvm_build_br(LLVMBuilderRef b, LLVMBasicBlockRef bb) {
@@ -998,6 +1067,10 @@ LLVMValueRef avra_llvm_build_switch(LLVMBuilderRef b, LLVMValueRef selector,
 
 void avra_llvm_add_case(LLVMValueRef switch_val, LLVMValueRef on_val, LLVMBasicBlockRef dest) {
     LLVMAddCase(switch_val, on_val, dest);
+}
+
+LLVMValueRef avra_llvm_build_unreachable(LLVMBuilderRef b) {
+    return LLVMBuildUnreachable(b);
 }
 
 LLVMValueRef avra_llvm_build_ret(LLVMBuilderRef b, LLVMValueRef val) {
@@ -1358,7 +1431,11 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level, cons
         // pass marks its merges with a COMDAT, and WebAssembly accepts only
         // SelectionKind::Any — lowering refuses the module outright.
         if (!off_host) LLVMPassBuilderOptionsSetMergeFunctions(opts, 1);
-        LLVMErrorRef ran = LLVMRunPasses(m, passes, tm, opts);
+        // Equal exit tails merge before the pipeline hoists them: an unwinding
+        // call (`invoke`) keeps each tail apart until its callee is known
+        // nounwind, and the default order hoists first.
+        LLVMErrorRef ran = LLVMRunPasses(m, "cgscc(function-attrs),function(simplifycfg<sink-common-insts>)", tm, opts);
+        if (!ran) ran = LLVMRunPasses(m, passes, tm, opts);
         LLVMDisposePassBuilderOptions(opts);
         if (ran) {
             char* why = LLVMGetErrorMessage(ran);

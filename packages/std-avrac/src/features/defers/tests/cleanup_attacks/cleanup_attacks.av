@@ -1,0 +1,59 @@
+use @std.meta.{contained}
+state log: List<string> = []
+fn note(s: string) { log = log.concat([s]) }
+fn boom() -> int {
+    let xs = [1]
+    let i = 4
+    xs[i]
+}
+fn words(r: Result<int, string>) -> string {
+    match r { .Ok(n) -> "ok ${n}", .Err(w) -> "err ${w}" }
+}
+fn show(what: string, r: Result<int, string>) {
+    println("${what}: ${words(r)} | ${log.join(",")}")
+    log = []
+}
+fn bad_cleanup() { let _ = boom() }
+// proves, against the grain: a guard inside a cleanup catches its own trap and
+// the outer unwind goes on; a deferred call that traps at a NORMAL exit finds
+// the entries already run retired and the older ones still open, so each runs
+// exactly once; a deferred call of an extern row is a cleanup like any other;
+// and 3000 frames unwind one cleanup each; both engines
+extern fn avra_puts(s: string)
+
+fn tidy() {
+    let inner = contained(boom)
+    note("tidy saw ${words(inner)}")
+}
+
+fn nested() -> int {
+    defer note("outer")
+    defer tidy()
+    boom()
+}
+
+fn at_exit() -> int {
+    defer note("older")
+    defer bad_cleanup()
+    defer note("newer")
+    7
+}
+
+fn closing(label: string) -> int {
+    defer avra_puts(label)
+    boom()
+}
+
+fn deep(n: int) -> int {
+    defer note("d")
+    if n == 0 { return boom() }
+    deep(n - 1) + 1
+}
+
+show("nested guard in a cleanup", contained(nested))
+show("a trap at a normal exit", contained(at_exit))
+show("an extern row deferred", contained(() -> closing("extern cleanup ran")))
+match contained(() -> deep(3000)) {
+    .Ok(n) -> println("deep ok ${n}"),
+    .Err(w) -> println("deep: ${w} cleanups=${log.length}"),
+}
