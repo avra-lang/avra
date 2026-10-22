@@ -12,12 +12,12 @@ cd "$(dirname "$0")/.."
 export AVRA_WATCH_HELD=1
 export AVRA_MAX_COMPILES=0
 T=packages/std-avrac/src/compiler/tests/cas_phase_test.av
-D="$(pwd)/build/cas-attack"; fails=0; steps=0
+D="$(pwd)/build/cas-attack"
 [ -d "$D" ] && find "$D" -depth -delete
 mkdir -p "$D/stores"
 export AVRA_CACHE_DIR="$D/cache" AVRA_CAS_DIR="$D/stores"
-say() { steps=$((steps + 1)); echo "cas-attack: $1"; }
-fail() { fails=$((fails + 1)); echo "cas-attack: FAILED — $1"; }
+who=cas-attack
+. tools/lib/steps.sh
 phase() { AVRA_CAS_PHASE=$1 AVRA_CLOCK=real build/avra test $T 2>&1; }
 # the 5 MB value's blob, and the registrations of its two roots: the build's own store may share too
 blobs() { find "$D/cache/cas" -mindepth 2 -maxdepth 2 -type f -size 5242880c 2>/dev/null | wc -l | tr -d ' '; }
@@ -52,7 +52,7 @@ for w in a b; do
 done
 mkdir -p "$E/c/src"; cp "$E/a/avra.toml" "$E/c/avra.toml"; cp "$E/a/src/big.txt" "$E/c/src/big.txt"
 printf 'use @std.meta.{embed}\nconst B: Bytes = embed("big.txt").bytes()\nprintln("${B.length}")\n// %s\n' "$stamp" > "$E/c/src/main.av"
-built() { AVRA_CACHE_DIR="$E/cache" AVRA_CLOCK=real build/avra build "$E/$1" 2>&1; "$E/$1/src/main"; }
+built() { AVRA_CACHE_DIR="$E/cache" AVRA_CLOCK=real build/avra build "$E/$1" 2>&1 && "$E/$1/src/main"; }
 [ "$(built a | tail -1)" = 5242880 ] && [ "$(built b | tail -1)" = 5242880 ] && say "both worktrees build the embedding program" || fail "an embedding program did not build"
 n=$(find "$E/cache/cas" -mindepth 2 -maxdepth 2 -type f -size +1000k | wc -l | tr -d ' ')
 [ "$n" = 1 ] && say "two worktrees' 5 MB embed is ONE blob" || fail "$n blobs over 1 MB for one embedded file"
@@ -61,10 +61,9 @@ find "$E/cache/cas" -mindepth 2 -maxdepth 2 -type f -size +1000k -delete
 [ "$(built b | tail -1)" = 5242880 ] && say "an embed whose blob is gone is rebuilt, never wrong" || fail "a missing embed blob broke the build"
 # The same file settled as `Bytes` in two worktrees: its octets are ONE blob.
 cp -R "$E/c" "$E/d"
-sized() { AVRA_CACHE_DIR="$E/cache2" AVRA_CLOCK=real build/avra build "$E/$1" 2>&1; "$E/$1/src/main"; }
+sized() { AVRA_CACHE_DIR="$E/cache2" AVRA_CLOCK=real build/avra build "$E/$1" 2>&1 && "$E/$1/src/main"; }
 [ "$(sized c | tail -1)" = 5242880 ] && [ "$(sized d | tail -1)" = 5242880 ] && say "both worktrees build the Bytes program" || fail "a Bytes program did not build"
 n=$(find "$E/cache2/cas" -mindepth 2 -maxdepth 2 -type f -size +1000k | wc -l | tr -d ' ')
 [ "$n" = 1 ] && say "two worktrees' Bytes const is ONE blob of its octets" || fail "$n blobs over 1 MB for one Bytes const"
 [ "$(sized c | tail -1)" = 5242880 ] && say "a warm build reads the octets back through the blob" || fail "the warm Bytes build did not answer"
-[ $fails -eq 0 ] || { echo "cas-attack: $fails of $steps FAILED"; exit 1; }
-echo "cas-attack: $steps steps passed"
+verdict

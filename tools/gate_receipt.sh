@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: --self-test
 # THE GATE'S RECEIPT NAMES THE TREE IT PROVED. A green gate is a fact
 # about one tree, and the integrator used to re-establish that fact
 # for a tree it already had a receipt for: when main has not moved

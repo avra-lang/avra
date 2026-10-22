@@ -82,7 +82,57 @@ fn table_keeps_first_claimants_columns() -> Result<int, ModelError> {
     modeled(v.int())
 }
 
+// A registry written when a claim was the declaring file's absolute
+// path: no owner column, a path that no longer exists.
+fn legacy_db(shape: string?) -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    db
+        .run(
+            sql(
+                "CREATE TABLE \"__avra_models__\" (\"table_name\" TEXT PRIMARY KEY, \"declared_at\" TEXT, \"shape\" TEXT)",
+            ),
+        )?
+    db
+        .run(
+            sql(
+                "INSERT INTO \"__avra_models__\" VALUES ('Shared', '/old/checkout/collide_a/mod.av', ?)",
+                [if shape == null { .Null } else { .Text(shape!) }],
+            ),
+        )?
+    db
+}
+
+fn moved_project_reopens(shape: string?) -> Result<int, SqlError> {
+    mut db = legacy_db(shape)?
+    SharedA.create_table(db)?
+    SharedA.create_table(db)?
+    0
+}
+
+fn moved_project_opens() -> bool { moved_project_reopens(null) is .Ok }
+
+fn moved_project_opens_when_shapes_agree() -> bool { moved_project_reopens(SharedA.shape()) is .Ok }
+
+fn adopted_claim_still_refuses_another_module() -> string {
+    match adopted_then_collide() { .Ok(_) -> "no refusal", .Err(e) -> e.cause.kind() }
+}
+
+fn adopted_then_collide() -> Result<int, SqlError> {
+    mut db = legacy_db(null)?
+    SharedA.create_table(db)?
+    SharedB.create_table(db)?
+    0
+}
+
+fn legacy_claim_of_another_shape_refuses() -> bool { moved_project_reopens("Shared\nother") is .Err }
+
 spec "std/db @model table-name collisions" {
+    given "a database claimed under a declaring file path that has since moved" {
+        then "a legacy claim of unknown shape is adopted" { moved_project_opens() }
+        then "a legacy claim of the same shape is adopted" { moved_project_opens_when_shapes_agree() }
+        then "a legacy claim of another shape still refuses" { legacy_claim_of_another_shape_refuses() }
+        then "the adopted claim belongs to its module alone" { adopted_claim_still_refuses_another_module() == "sqlite.defect" }
+    }
     given "the same type's create_table called more than once" {
         then "it stays a harmless no-op, never a false collision" { (same_type_recreate_is_fine() catch 0 - 1) == 1 }
     }

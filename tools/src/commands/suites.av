@@ -1,0 +1,184 @@
+//! `avra-tools suites` — THE GATE'S SUITES, DERIVED. Every package under `packages/` whose tree
+//! holds a spec file (`*_test.av`) or a program test (an `.av` beside its `.expected`) is a suite,
+//! and its manifest's `[dependencies]` — plus the `@std/*` its own sources import — order it after
+//! what it depends on. A hand-kept list is a registry that silently forgets its next member: a
+//! package that joined the tree with a suite would run none of it while the gate reported green.
+//!
+//! Prints the suites in dependency order, one per line; `--report` counts them on one line. Exit 1
+//! names a cycle, a dependency path that is not a package, or a directory holding tests with no
+//! manifest. (A symlinked package is refused by tools/suites_links.sh: std-io cannot see a link.)
+use @std.cli.{CliResult, Runnable, command, flag}
+use @std.io.{read_text, list_dir, is_dir, exists}
+use @std.path.{joined_path, normalized, file_name}
+
+const PACKAGES: string = "packages"
+
+type SuitesCmd = {}
+
+impl Runnable for SuitesCmd {
+    fn run(args: CliResult) -> int {
+        match suites_under(".") {
+            .Err(said) -> {
+                eprintln(said)
+                1
+            },
+            .Ok(found) -> {
+                if args.has_flag("report") {
+                    println(
+                        "suites: ${found.length} package(s) carry tests, ordered by their manifests — ${found.join(" ")}",
+                    )
+                } else {
+                    println(found.join("\n"))
+                }
+                0
+            },
+        }
+    }
+}
+
+export command suites {
+    description: "The packages that carry tests, in dependency order"
+    flag report { description: "one line: how many, and which" }
+    run: SuitesCmd {}
+}
+
+/// Files under a directory, hidden names skipped, as a glob does.
+fn files_under(dir: string) -> List<string> {
+    let names = [n for n in list_dir(dir) catch [] if !n.starts_with(".")]
+    flatten_texts([files_of(joined_path(dir, n)) for n in names])
+}
+
+fn files_of(path: string) -> List<string> {
+    if is_dir(path) { files_under(path) } else { [path] }
+}
+
+fn flatten_texts(xss: List<List<string>>) -> List<string> {
+    xss.fold([], (acc, xs) -> acc.concat(xs))
+}
+
+fn has_tests(pkg: string) -> bool {
+    files_under(pkg).any(it.ends_with("_test.av") || it.ends_with(".expected"))
+}
+
+/// Lines of a manifest's `[dependencies]` sections.
+fn dependency_lines(manifest: string) -> List<string> {
+    mut inside = false
+    mut out: List<string> = []
+    for line in manifest.split("\n") {
+        if line.starts_with("[") && line.contains("]") {
+            inside = line.starts_with("[dependencies]")
+        } else if inside {
+            out.push(line)
+        }
+    }
+    out
+}
+
+/// The path of a `"@name" = { path = "…"` row, or null for any other line.
+export fn dep_path(line: string) -> string? {
+    let t = line.trim()
+    if !t.starts_with("\"@") { return null }
+    let close = t.substring(1, t.length).index_of("\"")
+    if close < 0 { return null }
+    let rest = t.substring(close + 2, t.length).replace(" ", "").replace("\t", "")
+    if !rest.starts_with("={path=\"") { return null }
+    let value = rest.substring(8, rest.length)
+    let end = value.index_of("\"")
+    if end <= 0 { return null }
+    value.substring(0, end)
+}
+
+/// The `@std/*` name a `use @std.<name>.` or `use @std.<name>{` line imports, or null.
+export fn std_use(line: string) -> string? {
+    if !line.starts_with("use @std.") { return null }
+    let rest = line.substring(9, line.length)
+    let stop = [rest.index_of("."), rest.index_of("{")]
+        .filter(it >= 0)
+        .fold(rest.length, (acc, k) -> if k < acc { k } else { acc })
+    if stop == rest.length || stop == 0 { return null }
+    let name = rest.substring(0, stop)
+    if name.length == 0 { return null }
+    name
+}
+
+/// The `@std/*` packages a package's own library sources import, as `packages/` directories.
+fn std_imports(pkg: string, root: string) -> List<string> {
+    let here = file_name(pkg)
+    let names = flatten_texts(
+        [std_names_in(f) for f in files_under(joined_path(pkg, "src")) if f.ends_with(".av") && !f.contains("/tests/")],
+    )
+    sorted_distinct(
+        ["${PACKAGES}/std-${n}" for n in names if "std-${n}" != here && exists(joined_path(root, "${PACKAGES}/std-${n}/avra.toml"))],
+    )
+}
+
+fn std_names_in(path: string) -> List<string> {
+    [n! for line in (read_text(path) catch "").split("\n") for n in [std_use(line)] if n != null]
+}
+
+fn before(a: string, b: string) -> bool {
+    let x = a.bytes()
+    let y = b.bytes()
+    let shared = if x.length < y.length { x.length } else { y.length }
+    let at = (0..shared).find((i) -> x.at(i) != y.at(i))
+    match at {
+        i? -> x.at(i) < y.at(i)
+        null -> x.length < y.length
+    }
+}
+
+fn sorted_distinct(xs: List<string>) -> List<string> {
+    let pivot? = xs.first() else { return [] }
+    let rest = xs.drop(1)
+    sorted_distinct([x for x in rest if before(x, pivot)])
+        .concat([pivot])
+        .concat(sorted_distinct([x for x in rest if before(pivot, x)]))
+}
+
+/// What a package's LIBRARY reaches: its `[dependencies]` rows and the `@std/*` its sources import.
+/// TESTS ORDER NOTHING: a package's tests may point UP, and an edge from them would close a cycle
+/// that is not there.
+fn deps(pkg: string, root: string) -> List<string> {
+    let manifest = read_text(joined_path(root, joined_path(pkg, "avra.toml"))) catch ""
+    let rows = [normalized(joined_path(pkg, p!)) for line in dependency_lines(manifest) for p in [dep_path(line)] if p != null]
+    rows.concat(std_imports(pkg, root))
+}
+
+/// The depth-first walk: what is done, in order.
+type Walk = { done: List<string> }
+
+fn visit(pkg: string, trail: List<string>, walk: Walk, root: string) -> Result<Walk, string> {
+    if walk.done.contains(pkg) { return .Ok(walk) }
+    if trail.contains(pkg) { return .Err("suites: a cycle — ${trail.concat([pkg]).join(" -> ")}") }
+    if !exists(joined_path(root, joined_path(pkg, "avra.toml"))) {
+        return .Err("suites: ${pkg} is named as a dependency and is not a package")
+    }
+    mut now = walk
+    for d in sorted_distinct(deps(pkg, root)) {
+        now = visit(d, trail.concat([pkg]), now, root)?
+    }
+    .Ok(Walk { done: now.done.concat([pkg]) })
+}
+
+fn ordered(packages: List<string>, root: string) -> Result<List<string>, string> {
+    mut walk = Walk { done: [] }
+    for pkg in sorted_distinct(packages) {
+        walk = visit(pkg, [], walk, root)?
+    }
+    .Ok(walk.done)
+}
+
+export fn suites_under(root: string) -> Result<List<string>, string> {
+    let dirs = sorted_distinct(
+        [joined_path(PACKAGES, n) for n in list_dir(joined_path(root, PACKAGES)) catch [] if is_dir(joined_path(root, joined_path(PACKAGES, n)))],
+    )
+    for d in dirs {
+        if has_tests(joined_path(root, d)) &&
+            !exists(joined_path(root, joined_path(d, "avra.toml"))) {
+            return .Err("suites: ${d} holds tests and no avra.toml — nothing would ever run them")
+        }
+    }
+    let carrying = [d for d in dirs if has_tests(joined_path(root, d))]
+    let order = ordered(carrying, root)?
+    .Ok([p for p in order if carrying.contains(p)])
+}

@@ -23,7 +23,7 @@ lists and refuses by name:
                    run unconditionally; every other leg the `test` aggregate
                    owes names `needs.prepare.outputs.full` in its `if:`, and
                    the aggregate refuses a light run by name.
-  run-mode         a PR's run mode is read from the API at run time (tools/pr_mode.py),
+  run-mode         a PR's run mode is read from the API at run time (tools/avra_tools.sh pr_mode),
                    never from the event payload; a light run whose compiler is not
                    the published one skips the gate and says so.
   compiler-route   a Sprite run's prep installs a published compiler (or the merge-base's)
@@ -31,7 +31,7 @@ lists and refuses by name:
                    comes last, and a merge-base compiler too old to read the tree
                    falls back to the seed (`make bootstrap`).
   path-gate        `runtime-keep` and `layout-oracle` run on a PR only when prepare's path gate
-                   (tools/ci_path_gate.py) says a path it reads changed; main's
+                   (tools/src/commands/ci_path_gate.av) says a path it reads changed; main's
                    push and a hand-run owe it always.
   race-split       a `labeled` run never shares its concurrency group with the other
                    pull_request runs, so the label and the open of one PR cannot
@@ -39,6 +39,13 @@ lists and refuses by name:
                    runs that remain give one verdict.
   dup-run          a `labeled` run waits for the full run on its head and mirrors its verdict;
                    it never runs a second gate beside it (tools/ci_dup_run.py).
+  ci-image         every job container is the image ci-image.yml pushes, named
+                   ONCE per workflow (a YAML anchor) and aliased everywhere else.
+  one-spelling     a shape the workflows share has ONE home — a composite
+                   action under .github/actions or a tool — and no workflow
+                   spells it again (ONE_SPELLING names each and its home:
+                   the hand-down's download and tar, the speed note,
+                   the compiler built from whatever stands).
   warm-edit        WHERE the DB 07 warm-edit gate exists (Makefile target
                    `warm-edit`), it is one of `KEEPERS` and its measurement
                    skips with a word on a cold store — a claim with no gate
@@ -195,7 +202,7 @@ def check_release_order(jobs):
     prepare = jobs.get("prepare", "")
     steps = parse_steps(prepare)
     fetch = next((i for i, s in enumerate(steps) if "compiler_release.py fetch" in s), None)
-    build = next((i for i, s in enumerate(steps) if "make -s avra" in s or "make -s bootstrap" in s), None)
+    build = next((i for i, s in enumerate(steps) if any(m in s for m in ("make -s avra", "make -s bootstrap", "make -s compiler"))), None)
     if fetch is None:
         return ["no `prepare` step fetches the compiler from the release asset"], []
     if build is None:
@@ -226,8 +233,8 @@ def check_path_gate(workflow_text):
         cond = re.search(r"^    if:\s*(.+)$", jobs.get(job, ""), re.M)
         if not cond or "needs.prepare.outputs.%s == '1'" % output not in cond.group(1):
             refusals.append("`%s` is not gated on `needs.prepare.outputs.%s`" % (job, output))
-        if "tools/ci_path_gate.py %s" % job not in jobs.get("prepare", ""):
-            refusals.append("`prepare` does not ask tools/ci_path_gate.py whether %s is owed" % job)
+        if "tools/avra_tools.sh ci_path_gate %s" % job not in jobs.get("prepare", ""):
+            refusals.append("`prepare` does not ask `avra_tools.sh ci_path_gate` whether %s is owed" % job)
     if refusals:
         return refusals, []
     return [], ["path-gate: %s run on the path gate's decision" % ", ".join(job for job, _ in GATED)]
@@ -242,7 +249,7 @@ def check_race_split(workflow_text):
         refusals.append("the workflow names no concurrency group")
     elif "github.event.action == 'labeled'" not in m.group(1):
         refusals.append("the concurrency group does not split `labeled` runs: a label and an open cancel each other")
-    if "tools/pr_mode.py" not in workflow_text:
+    if "tools/avra_tools.sh pr_mode" not in workflow_text:
         refusals.append("the run mode is not read at run time")
     if refusals:
         return refusals, []
@@ -282,14 +289,14 @@ def check_ready_race(pr_mode_mod):
 
 
 def check_run_mode(workflow_text):
-    """The run mode is decided by tools/pr_mode.py on the PR's API answer, not by
+    """The run mode is decided by `avra-tools pr_mode` on the PR's API answer, not by
     the event payload, and a light gate on an unpublished compiler is skipped.
     Answers (refusals, words)."""
     jobs = parse_jobs(workflow_text)
     refusals = []
     plan = jobs.get("prepare", "")
-    if "tools/pr_mode.py" not in plan:
-        refusals.append("`prepare` does not read the PR's mode through tools/pr_mode.py")
+    if "tools/avra_tools.sh pr_mode" not in plan:
+        refusals.append("`prepare` does not read the PR's mode through tools/avra_tools.sh pr_mode")
     if "github.event.pull_request.draft" in plan:
         refusals.append("`prepare` decides the run mode from the event payload's draft flag")
     if "compiler_source: ${{ steps.release.outputs.source }}" not in plan:
@@ -495,6 +502,59 @@ def check_warm_edit(make_text, bench=None, ratchet=None):
     return refusals, []
 
 
+def check_ci_image(workflows):
+    """{file: text} -> (refusals, words). The image ci-image.yml pushes is the
+    one every workflow runs in, and a workflow spells it once."""
+    pushed = re.findall(r"^\s*tags:\s*(\S+)\s*$", workflows.get("ci-image.yml", ""), re.M)
+    if len(pushed) != 1:
+        return ["ci-image.yml pushes %d tag(s), not one" % len(pushed)], []
+    refusals, aliases = [], 0
+    for name, text in sorted(workflows.items()):
+        images = re.findall(r"^\s*image:\s*(\S+)\s*$", text, re.M)
+        refusals += ["%s runs `%s`, not the pushed `%s`" % (name, i, pushed[0]) for i in images if i != pushed[0]]
+        if len(images) > 1:
+            refusals.append("%s spells its image %d times — name it once and alias it (`container: *ci-image`)"
+                            % (name, len(images)))
+        aliases += len(re.findall(r"^\s*container:\s*\*", text, re.M))
+    if refusals:
+        return refusals, []
+    return [], ["ci-image: one image (%s), spelled once per workflow, %d alias(es)" % (pushed[0], aliases)]
+
+
+# Each shape the workflows share: what spelling it again looks like (a line, and the
+# `uses:` of the step it must stand in, or None for any line), and its one home.
+ONE_SPELLING = (
+    (r"name:\s*avra-build\b", "download-artifact", "./.github/actions/handed-down"),
+    (r"\btar\s+-?[a-z]*[xc][a-z]*f?\b.*avra-build", None, "tools/hand_down.sh"),
+    (r"\btools/speed_note\.sh\b", None, "./.github/actions/speed-note"),
+    (r"\bmake -s avra\b.*&&.*\bmake -s avra\b", None, "make compiler"),
+)
+
+
+def check_one_spelling(workflows, rules=ONE_SPELLING):
+    """{file: text} -> (refusals, words). No workflow re-spells a shape whose
+    home is a composite action or a tool."""
+    refusals = []
+    for name, text in sorted(workflows.items()):
+        step = ""
+        for n, line in enumerate(text.splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if re.match(r"\s*- ", code):
+                step = code
+            refusals += ["%s:%d spells what `%s` holds — use it" % (name, n, home)
+                         for pat, within, home in rules
+                         if re.search(pat, code) and (within is None or within in step)]
+    if refusals:
+        return refusals, []
+    return [], ["one-spelling: %d shared shape(s), each spelled once, at its home" % len(rules)]
+
+
+def workflow_texts():
+    d = os.path.join(ROOT, ".github", "workflows")
+    return {f: open(os.path.join(d, f), encoding="utf-8").read()
+            for f in os.listdir(d) if f.endswith(".yml")}
+
+
 def run(make_text=None, workflow_text=None):
     """Every check over the real tree. Answers the number of refusals."""
     if make_text is None:
@@ -516,7 +576,9 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_path_gate(workflow_text),
                   lambda: check_dup_run(workflow_text),
                   lambda: check_ready_race(__import__("pr_mode")),
-                  lambda: check_warm_edit(make_text)):
+                  lambda: check_warm_edit(make_text),
+                  lambda: check_ci_image(workflow_texts()),
+                  lambda: check_one_spelling(workflow_texts())):
         r, w = check()
         refusals += r
         words += w
@@ -712,9 +774,10 @@ rt-header:
 
     real_wf = open(CHECKS, encoding="utf-8").read()
     assert check_run_mode(real_wf)[0] == [], check_run_mode(real_wf)
-    payload = real_wf.replace("tools/pr_mode.py", "tools/mode_by_hand.py")
+    payload = real_wf.replace("sh tools/avra_tools.sh pr_mode)\" = light ] && full=0",
+                              "true)\" = true ] && full=0")
     assert payload != real_wf
-    assert any("tools/pr_mode.py" in x for x in check_run_mode(payload)[0]), check_run_mode(payload)
+    assert any("avra_tools.sh pr_mode" in x for x in check_run_mode(payload)[0]), check_run_mode(payload)
     ungated_gate = real_wf.replace(" && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')", "")
     assert ungated_gate != real_wf
     assert any("`gate`" in x for x in check_run_mode(ungated_gate)[0]), check_run_mode(ungated_gate)
@@ -754,8 +817,34 @@ rt-header:
     assert no_seed != real_remote
     assert any("seed" in x for x in check_compiler_route(real_work, no_seed)[0]), check_compiler_route(real_work, no_seed)
 
+    # ── one-spelling, the hand-down: the composite passes; a by-hand download or tar is refused ──
+    taker = "    steps:\n      - uses: ./.github/actions/handed-down\n"
+    upload = "      - uses: actions/upload-artifact@v4\n        with:\n          name: avra-build\n"
+    assert check_one_spelling({"a.yml": taker + upload})[0] == [], check_one_spelling({"a.yml": taker + upload})
+    by_hand = "      - uses: actions/download-artifact@v4\n        with: { name: avra-build }\n"
+    assert check_one_spelling({"a.yml": by_hand})[0], "a by-hand download must be refused"
+    untar = "        run: tar -xzf avra-build.tar.gz && chmod +x build/avra\n"
+    assert check_one_spelling({"a.yml": untar})[0], "a by-hand untar must be refused"
+    pack = "          tar -cf - build | gzip -1 > avra-build.tar.gz\n"
+    assert check_one_spelling({"a.yml": pack})[0], "a by-hand pack must be refused"
+
+    # ── ci-image: one pushed tag, spelled once per workflow ──
+    push = {"ci-image.yml": "          tags: ghcr.io/x/ci:1\n"}
+    once = "    container: &ci-image\n      image: ghcr.io/x/ci:1\n  b:\n    container: *ci-image\n"
+    assert check_ci_image(dict(push, **{"a.yml": once}))[0] == [], check_ci_image(dict(push, **{"a.yml": once}))
+    twice = once.replace("container: *ci-image", "container:\n      image: ghcr.io/x/ci:1")
+    assert check_ci_image(dict(push, **{"a.yml": twice}))[0], "a second spelling must be refused"
+    other = once.replace("ci:1", "ci:0")
+    assert check_ci_image(dict(push, **{"a.yml": other}))[0], "an image the recipe does not push must be refused"
+
+    # ── one-spelling: the home is used; a second spelling is refused, a comment is not one ──
+    used = "      - uses: ./.github/actions/speed-note\n      # tools/speed_note.sh lives there\n"
+    assert check_one_spelling({"a.yml": used})[0] == [], check_one_spelling({"a.yml": used})
+    again = "        run: sh tools/speed_note.sh collect speed.log\n"
+    assert check_one_spelling({"a.yml": again})[0], "a second spelling must be refused"
+
     print("ci_invariants self-test: release-order, keeper-coverage, watcher-fixtures, "
-          "light-draft, run-mode, race-split, compiler-route, path-gate, dup-run, ready-race, warm-edit held on fixtures")
+          "light-draft, run-mode, race-split, compiler-route, path-gate, dup-run, ready-race, warm-edit, ci-image, one-spelling held on fixtures")
     return 0
 
 

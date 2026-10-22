@@ -67,8 +67,9 @@ walked from the decision table at read time.
 
 `@std/db`'s `@model` IS the engine's storage: one table per engine row,
 links and `Many<T>` for relationships, nullable `until` for history, and
-derived `where`/`in_<link>`/`with_<many>` reads. The 6-field cap is handled
-by splitting rows (`RunRow` + `RunTrailRow`), and composite identity is a
+derived `where`/`in_<link>`/`with_<many>` reads. `@std/db` sets no
+field-count ceiling, so a split row (`RunRow` + `RunTrailRow`) may merge
+into one wider model; composite identity is a
 synthetic `@unique stamp` derived by one verb (`stamp`) so a later composite
 key can replace it without touching call sites. The graph reuses standard
 validation (`@derive(Decode)`) and carries its own descriptor derive; user

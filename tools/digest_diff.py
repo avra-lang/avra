@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# tool-witness: --self-test
 """Compare the digests two fresh processes gave the same named answers.
 
 Each input is the stderr of `AVRA_LEAVES=1 avra check <pkg>`, whose

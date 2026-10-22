@@ -41,7 +41,7 @@ footprint() { # dir mode [entry]
     [ "$mode" = reactor ] && flag=--wasm_reactor
     rm -rf "$work/pkg"
     cp -R "$dir" "$work/pkg"
-    w=$("$avra" build --target "$target" $flag "$work/pkg/$entry" 2>/dev/null | tail -1)
+    w=$(sh "$here/capped.sh" --last "$avra" build --target "$target" $flag "$work/pkg/$entry" 2>/dev/null) || w=""
     [ -f "$w" ] || { echo ""; return; }
     bytes=$(stat -c%s "$w" 2>/dev/null || stat -f%z "$w")
     # A FAILED EMIT IS NOT ZERO GLOBALS: it prints nothing, and `grep -c`

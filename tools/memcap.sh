@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: --self-test
 # Run a command with a resident-memory ceiling over its whole process tree.
 # Polls every second; past the cap the tree is killed and the exit is 137.
 # Usage: sh memcap.sh <cap-MB> <command> [args...]

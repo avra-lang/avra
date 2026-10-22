@@ -10,12 +10,13 @@ set -u
 cd "$(dirname "$0")/.."
 A=${AVRA_BIN:-build/avra}
 export AVRA_MAX_COMPILES=0
-R=build/readfound-attack; fails=0
+R=build/readfound-attack
 T=build/aside/rf.$$; mkdir -p $T
 [ -e "$R" ] && mv "$R" $T/rf
 P=$R/rf; mkdir -p $P/src/lib
 printf '[package]\nname = "rf"\nversion = "0.1.0"\n' > $P/avra.toml
-fail() { fails=$((fails + 1)); echo "FAIL  $1"; }
+who=readfound-attack
+. tools/lib/steps.sh
 for i in 1 2 3; do
     printf 'export fn f%s(s: string) -> string { s }\nexport fn c%s(s: string) -> string { f%s(s) }\n' $i $i $i > $P/src/lib/m$i.av
 done
@@ -37,5 +38,4 @@ printf '%s' "$second" | grep -q "mismatched 0" || fail "a valid kept unit differ
 printf '%s' "$second" | grep -q "ReadFound" && fail "an unrelated signature edit moved a ReadFound answer: $second"
 printf '%s' "$second" | grep -q "References moved" && fail "a signature edit re-lowered on the whole-program references relation: $second"
 [ "${n:-99}" -le 5 ] || fail "a signature edit in one file re-lowered $n units: $second"
-echo "readfound-attack: an entry's own body edit re-lowers it, another file's signature edit leaves it standing, $fails failed"
-[ "$fails" = 0 ]
+verdict "an entry's own body edit re-lowers it, another file's signature edit leaves it standing"
