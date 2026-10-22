@@ -308,7 +308,7 @@ fn propagate_value(store: SyntaxArena, e: ExprId) -> List<ExprId> {
 fn catch_sites(store: SyntaxArena, lo: int, hi: int) -> List<ExprId> { store.exprs_by_kind(lo, hi, catch_tag(store)) }
 
 /// `Catch`'s own tag; the payload is a placeholder `tag_expr` never reads.
-fn catch_tag(store: SyntaxArena) -> int { store.tag_expr(Expr.Catch(ExprId { index: 0 }, [], [], [])) }
+fn catch_tag(store: SyntaxArena) -> int { store.tag_expr(Expr.Catch(ExprId { index: 0 }, [])) }
 
 /// M6 PREP: one catch arm's OWN source span — the whole text a re-raise
 /// nested anywhere inside it (an `if`, a `match`, any depth) still falls
@@ -324,7 +324,7 @@ fn arm_owners(store: SyntaxArena, catches: List<ExprId>) -> List<ArmOwner> {
 
 fn catch_arm_owners(store: SyntaxArena, c: ExprId) -> List<ArmOwner> {
     match store.expr(c) {
-        .Catch(_, _, _, values) -> flatten([some_list(arm_owner(store, c, arm)) for arm in values]),
+        .Catch(_, arms) -> flatten([some_list(arm_owner(store, c, a.value)) for a in arms]),
         rest -> [],
     }
 }
@@ -413,7 +413,7 @@ fn catch_error_site(
     enclosing: ExprId?,
 ) -> ErrorSite {
     match store.expr(c) {
-        .Catch(subject, _, _, _) -> {
+        .Catch(subject, _) -> {
             let contribution = result_error_contribution(fs, decls, subject)
             ErrorSite {
                 at: c,
