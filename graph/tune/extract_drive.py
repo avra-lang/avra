@@ -74,16 +74,24 @@ class Encoder:
         return out
 
     def records(self, text, model, anchor, fields):
-        fact = self.oracle.current
-        if not fact or fact["model"] != model:
+        """Each gold record of this model, its text fields placed in its own sentence."""
+        if text != self.g.t:
             return []
-        found = {}
-        for f in fields:
-            v = fact.get("fields", {}).get(f)
-            if isinstance(v, str) and v not in self.g.ents and v in text:
-                at = text.index(v)
-                found[f] = {"text": v, "start": at, "end": at + len(v), "confidence": CONFIDENCE}
-        return [found] if found else []
+        units = cascade.Text(text).units()
+        out = []
+        for f in self.g.facts:
+            if f["model"] != model:
+                continue
+            lo, hi = next(((a, b) for a, b in units if a <= f["_span"][0] < b), (0, len(text)))
+            found = {}
+            for name in fields:
+                v = f.get("fields", {}).get(name)
+                at = text.find(v, lo, hi) if isinstance(v, str) and v not in self.g.ents else -1
+                if at >= 0:
+                    found[name] = {"text": v, "start": at, "end": at + len(v), "confidence": CONFIDENCE}
+            if found:
+                out.append(found)
+        return out
 
 
 class Oracle(cascade.Scorer):
@@ -235,7 +243,10 @@ def drive(domain, out):
     for m in domain["messages"]:
         gold = Gold(domain, m)
         oracle = Oracle(gold, out)
-        c = cascade.Cascade(plan, Encoder(gold, oracle), oracle)
+        enc = Encoder(gold, oracle)
+        spans = {k: enc.mentions(*q) if op == "mentions" else enc.records(*q)
+                 for k, (op, *q) in plan.encoder_queries(m["text"]).items()}
+        c = cascade.Cascade(plan, spans, oracle)
         c.run({"content": m["text"], "frames": []})
 
 
