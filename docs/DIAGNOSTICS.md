@@ -4187,24 +4187,6 @@ error[resolve.block_word]: `work` is a block word here, and nothing else in this
 help: rename it, or import the word under another name
 ```
 
-## type.when_arms
-
-a `when` ends on its one `_` arm
-
-```avra
-when { 1 < 2 -> 1 }
-```
-
-```
-error[type.when_arms]: a `when` needs its `_` arm
-  ╭─[witness.av:1:1]
-1 │ when { 1 < 2 -> 1 }
-  · ┬
-  · ╰── no arm here takes every value
-──╯
-help: add `_ -> …` as the last arm
-```
-
 ## type.spread_list
 
 a list literal spreads lists

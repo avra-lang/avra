@@ -1348,8 +1348,8 @@ impl SourceText {
                 parent,
             ),
             .If(cond, yes, no) -> grouped(self.if_group(cond, yes, no, id, depth, c), atom_tier, parent),
-            .When(conds, values, defaults) -> grouped(
-                self.when_expr(conds, values, defaults, end_of(self.store.expr_span(id)), depth),
+            .When(conds, values, fallback) -> grouped(
+                self.when_expr(conds, values, fallback, end_of(self.store.expr_span(id)), depth),
                 atom_tier,
                 parent,
             ),
@@ -2052,7 +2052,7 @@ impl SourceText {
     mut fn when_expr(
         conds: List<ExprId>,
         values: List<ExprId>,
-        defaults: List<ExprId>,
+        fallback: ExprId,
         end: int,
         depth: int,
     ) -> string {
@@ -2061,23 +2061,12 @@ impl SourceText {
                 .trivia_before(start_of(self.store.expr_span(c)), depth + 1)
                 .concat([self.when_arm(c, values[j], depth)]) for j, c in conds],
         )
-        let tail = self.trivia_before(end, depth + 1).concat(self.total_arms(defaults, depth))
+        let fallback_head = "_ -> "
+        let fallback_line = "${source_line(depth + 1, "${fallback_head}${self.expression(fallback, 0, depth + 1, col_after(fallback_head, (depth + 1) * 4))}")}"
+        let tail = self
+            .trivia_before(end, depth + 1)
+            .concat(["${fallback_line}${self.trailing_of(fallback)}"])
         "when {\n${joined(arms.concat(tail), "\n")}\n${source_line(depth, "}")}"
-    }
-
-    /// Every `_` arm, as the arms before it were written — the law that
-    /// one of them ends the choice is the checker's, so the printer
-    /// spells back whatever the arm set held.
-    mut fn total_arms(defaults: List<ExprId>, depth: int) -> List<string> {
-        [self.total_arm(d, j == defaults.length - 1, depth) for j, d in defaults]
-    }
-
-    /// One `_` arm's line; the last wears the block's trailing comma
-    /// and comment, since it ends the choice.
-    mut fn total_arm(value: ExprId, last: bool, depth: int) -> string {
-        let head = "_ -> "
-        let line = "${source_line(depth + 1, "${head}${self.expression(value, 0, depth + 1, col_after(head, (depth + 1) * 4))}")}"
-        if last { "${line}${self.trailing_of(value)}" } else { line }
     }
 
     /// A `select` always breaks, one arm a line, as a `when` does.
