@@ -1,0 +1,200 @@
+//! `realize/dom/snapshot.av` — a page, said and read back. A module that
+//! stands down says its page (every element's number, seat, tag, attributes
+//! and words, the sheet it wears and the next number it will give); the
+//! module that takes over reads it into its own `Live`, so its first paint
+//! is a diff against the page that stands. Listeners are not said: a
+//! closure belongs to the module that made it, and the new module binds its
+//! own.
+use tree.identity.{NodeId}
+use realize.html.element.{Element, Tagged, Worded}
+use realize.html.tags.{HtmlAttr, HtmlAttrName, HtmlTag}
+use realize.dom.buf.{Buf, buf}
+
+/// What a snapshot holds: the elements, the next number to give, and the
+/// sheet the page wears.
+export type Page = { elements: List<Element>, next: int, sheet: string }
+
+/// The snapshot's first byte; a reader of another version reads nothing.
+export const snapshot_version = 1
+
+const text_mark = 0
+
+const tag_mark = 1
+
+// ── saying ──────────────────────────────────────────────────────
+
+impl Buf {
+    fn push_node(id: NodeId) { self.push_int(id.n) }
+
+    fn push_element(e: Element) {
+        match e {
+            .Text(run) -> {
+                self.push_byte(text_mark)
+                self.push_node(run.id)
+                self.push_str(run.seat)
+                self.push_str(run.reads)
+                self.push_str(run.content)
+            },
+            .Tag(el) -> self.push_tagged(el),
+        }
+    }
+
+    fn push_tagged(el: Tagged) {
+        self.push_byte(tag_mark)
+        self.push_node(el.id)
+        self.push_str(el.seat)
+        self.push_str(el.reads)
+        self.push_str(el.tag.word())
+        self.push_int(el.attrs.length)
+        for a in el.attrs {
+            self.push_str(a.name.word())
+            self.push_str(a.value)
+        }
+        self.push_int(el.rests.length)
+        for r in el.rests { self.push_str(r.word()) }
+        self.push_int(el.kids.length)
+        for k in el.kids { self.push_element(k) }
+    }
+}
+
+/// A page as bytes.
+export fn said(p: Page) -> Bytes {
+    let b = buf()
+    b.push_byte(snapshot_version)
+    b.push_int(p.next)
+    b.push_str(p.sheet)
+    b.push_int(p.elements.length)
+    for e in p.elements { b.push_element(e) }
+    b.take()
+}
+
+// ── reading ─────────────────────────────────────────────────────
+
+/// Bytes being read, and whether any read ran past them or named a word
+/// the vocabulary lacks. A fault answers zero and empty, so a reader walks
+/// to its end and asks once.
+type Cursor = { bytes: Bytes, at: Cell<int> = Cell.new(0), faulted: Cell<bool> = Cell.new(false) }
+
+impl Cursor {
+    fn fault() { self.faulted.set(true) }
+
+    /// The next `count` bytes, as where they start — or nowhere, with the
+    /// fault set, when fewer remain.
+    fn take(count: int) -> int {
+        let from = self.at.get()
+        if count < 0 || from + count > self.bytes.length {
+            self.fault()
+            return self.bytes.length
+        }
+        self.at.set(from + count)
+        from
+    }
+
+    fn byte() -> int {
+        let from = self.take(1)
+        if from >= self.bytes.length { 0 } else { self.bytes.at(from) }
+    }
+
+    /// Four little-endian bytes, signed.
+    fn int() -> int {
+        let from = self.take(4)
+        if from + 4 > self.bytes.length { return 0 }
+        let w = [self.bytes.at(from + j) << 8 * j for j in 0..4].sum()
+        if w >= 2147483648 { w - 4294967296 } else { w }
+    }
+
+    fn text() -> string {
+        let length = self.int()
+        let from = self.take(length)
+        if self.faulted.get() { return "" }
+        let t? = self.bytes.slice(from, from + length).text() else {
+            self.fault()
+            return ""
+        }
+        t
+    }
+
+    fn id() -> NodeId { NodeId { n: self.int() } }
+
+    /// A count of things each at least a byte wide: more than the bytes
+    /// left is a fault, so a lie about a length never loops.
+    fn count() -> int {
+        let n = self.int()
+        if n < 0 || n > self.bytes.length - self.at.get() {
+            self.fault()
+            return 0
+        }
+        n
+    }
+
+    fn element() -> Element {
+        let mark = self.byte()
+        if mark == tag_mark { return self.tagged() }
+        if mark != text_mark { self.fault() }
+        self.worded()
+    }
+
+    fn worded() -> Element {
+        let id = self.id()
+        let seat = self.text()
+        let reads = self.text()
+        Element.Text(Worded { id: id, seat: seat, reads: reads, content: self.text() })
+    }
+
+    fn tagged() -> Element {
+        let id = self.id()
+        let seat = self.text()
+        let reads = self.text()
+        let tag = self.tag()
+        let attrs = [self.attr() for j in 0..self.count()]
+        let rests = [self.attr_name() for j in 0..self.count()]
+        let kids = [self.element() for j in 0..self.count()]
+        Element
+            .Tag(
+                Tagged {
+                    id: id,
+                    seat: seat,
+                    reads: reads,
+                    tag: tag,
+                    attrs: attrs,
+                    rests: rests,
+                    kids: kids,
+                },
+            )
+    }
+
+    fn tag() -> HtmlTag {
+        let word = self.text()
+        let t? = HtmlTag.worded(word) else {
+            self.fault()
+            return HtmlTag.Div
+        }
+        t
+    }
+
+    fn attr_name() -> HtmlAttrName {
+        let word = self.text()
+        let n? = HtmlAttrName.worded(word) else {
+            self.fault()
+            return HtmlAttrName.Class
+        }
+        n
+    }
+
+    fn attr() -> HtmlAttr {
+        let name = self.attr_name()
+        HtmlAttr { name: name, value: self.text() }
+    }
+}
+
+/// A page read back from `bytes`: none for bytes of another version, a
+/// truncated run, a word the vocabulary lacks or anything left over.
+export fn taken(bytes: Bytes) -> Page? {
+    let c = Cursor { bytes: bytes }
+    if c.byte() != snapshot_version { return null }
+    let next = c.int()
+    let sheet = c.text()
+    let elements = [c.element() for j in 0..c.count()]
+    if c.faulted.get() || c.at.get() != bytes.length { return null }
+    Page { elements: elements, next: next, sheet: sheet }
+}

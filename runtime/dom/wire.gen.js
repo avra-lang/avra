@@ -5,5 +5,5 @@ export const OP = { create: 1, create_text: 2, place: 3, remove: 4, set_attr: 5,
 export const SAYS = { nothing: 0, number: 1, flag: 2, text: 3 };
 export const TAGS = ["span", "button", "div", "a", "img", "input", "dialog", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "ul", "li", "article", "progress", "form", "label"];
 export const AFTER = { first: 0, append: 1, sibling: 2 };
-export const HOST = { entry: "avra_main", event: "avra_ui_event", seat: "avra_ui_seat", fired: "avra_ui_fired", answered: "avra_ui_answered", painted: "avra_ui_painted", repaired: "avra_ui_repaired", walks: "avra_ui_walks", scrolled: "avra_ui_scrolled" };
+export const HOST = { entry: "avra_main", event: "avra_ui_event", seat: "avra_ui_seat", fired: "avra_ui_fired", answered: "avra_ui_answered", painted: "avra_ui_painted", repaired: "avra_ui_repaired", said: "avra_ui_said", took: "avra_ui_took", walks: "avra_ui_walks", scrolled: "avra_ui_scrolled" };
 export const ROWS = { frame: "avra_dom_frame", arm: "avra_ui_arm", disarm: "avra_ui_disarm", stood: "avra_ui_stood", get: "avra_ui_get", abort: "avra_ui_abort", next_paint: "avra_ui_next_paint" };
