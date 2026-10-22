@@ -170,12 +170,15 @@ def route(p):
 class Plan:
     """What the descriptor lets this adapter propose, and what it cannot."""
 
-    def __init__(self, descriptor):
+    def __init__(self, descriptor, derivations=()):
         self.models = {m["name"]: m for m in descriptor}
+        self.derived = {d["output"] for d in derivations}
         refs = {target(p["shape"]) for m in descriptor for p in m["properties"]} - {None}
         embedded = {p["shape"]["embedded"] for m in descriptor for p in m["properties"] if isinstance(p["shape"], dict) and "embedded" in p["shape"]}
         self.entities, self.relations, self.records, self.blocked = {}, {}, {}, {}
         for m in descriptor:
+            if m["name"] in self.derived:
+                continue
             rel = m["semantics"].get("relation")
             if rel:
                 why = self.relation_gap(m, rel)
@@ -767,16 +770,24 @@ class Cascade:
         kinds = list(self.plan.records)
         if not kinds:
             return
-        opts = [FRAMINGS[RECORD_FRAMING](self.plan.models[m]) for m in kinds]
+        opts = {m: FRAMINGS[RECORD_FRAMING](self.plan.models[m]) for m in kinds}
         for a, b in self.units():
             for x, y in self.sub_units(a, b):
                 x, y = self.trimmed(x, y)
-                if y <= x:
-                    continue
-                p = self.llm.pick(f'Sentence: "{self.t.s[x:y]}"', "Which kind of record does this sentence itself state, if any?", opts, ["none of these"])
-                best = taken("record", f"kind of {self.t.s[x:y][:50]!r}", p, opts, lambda i: ACCEPT_KIND.get(kinds[i], ACCEPT_RECORD) if i < len(kinds) else ACCEPT_RECORD)
-                if best is not None:
-                    self.fill(kinds[best], x, y, p[best])
+                if y > x:
+                    self.sentence_records(kinds, opts, x, y)
+
+    def sentence_records(self, kinds, opts, x, y):
+        """Every kind of record a sentence states: the kinds are asked again
+        without each one taken, until none is left to state."""
+        left = list(kinds)
+        while left:
+            p = self.llm.pick(f'Sentence: "{self.t.s[x:y]}"', "Which kind of record does this sentence itself state, if any?" if len(left) == len(kinds) else "Which other kind of record does this sentence itself state, if any?", [opts[m] for m in left], ["none of these"])
+            best = taken("record", f"kind of {self.t.s[x:y][:50]!r}", p, [opts[m] for m in left], lambda i: ACCEPT_KIND.get(left[i], ACCEPT_RECORD) if i < len(left) else ACCEPT_RECORD)
+            if best is None:
+                return
+            kind = left.pop(best)
+            self.fill(kind, x, y, p[best])
 
     def trimmed(self, a, b):
         """A sentence without its chat-turn speaker prefix."""
@@ -1195,7 +1206,7 @@ def encoded(reqs, models):
     try:
         for req in reqs:
             try:
-                plan = Plan(req["catalog"]["descriptor"])
+                plan = Plan(req["catalog"]["descriptor"], req["catalog"].get("derivations", ()))
                 spans = {}
                 for key, (op, *args) in plan.encoder_queries(req["input"]["content"]).items():
                     spans[key] = enc.mentions(*args) if op == "mentions" else enc.records(*args)
@@ -1239,7 +1250,7 @@ def extract(req, models, spans):
     try:
         if isinstance(spans, Exception):
             raise spans
-        plan = Plan(req["catalog"]["descriptor"])
+        plan = Plan(req["catalog"]["descriptor"], req["catalog"].get("derivations", ()))
         for m, why in plan.blocked.items():
             log(f"skip {m}: {why}")
         stage = "extractor.run"

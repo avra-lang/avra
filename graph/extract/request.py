@@ -37,7 +37,7 @@ def request(source, catalog, model_id):
         "contract": 1,
         "request": f"extract:{source['source']['observation']}:{source['source']['revision']}",
         "input": source,
-        "catalog": {"fingerprint": catalog["fingerprint"], "descriptor": catalog["models"]},
+        "catalog": {"fingerprint": catalog["fingerprint"], "descriptor": catalog["models"], "derivations": catalog.get("derivations", [])},
         "extractor": {"producer": PRODUCER, "code": CODE, "model": model_id},
         "scope": "all",
         "candidates": [],

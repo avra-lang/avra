@@ -1,11 +1,13 @@
 """Record-kind decisions on dev sources: how a kind is worded, and where to accept it.
 
-usage: python bench_records.py ENVELOPES.json CATALOG.json ORACLE_FACTS.jsonl OUT_PREFIX
+usage: python bench_records.py ENVELOPES.json CATALOG.json ORACLE_FACTS.jsonl OUT_PREFIX [--rescore]
 ENVELOPES is a JSON array of {"id", "envelope"} for the dev sources. The cascade runs over them
 with record acceptance off, so every record-kind choice it would ask is
 captured as asked. Each is labelled from the oracle facts whose anchor lies in
 the sentence (a set: one sentence can state several records) and re-scored
-under every framing in cascade.FRAMINGS. Writes OUT_PREFIX.decisions.jsonl,
+under every framing in cascade.FRAMINGS. --rescore keeps the captured
+sentences of OUT_PREFIX.decisions.jsonl and scores them again over the plan's
+current record kinds (no cascade run). Writes OUT_PREFIX.decisions.jsonl,
 OUT_PREFIX.<framing>.scores.jsonl and prints accuracy per framing. One model
 at a time; run it alone.
 """
@@ -30,6 +32,26 @@ def labelled(sentence, source, facts, kinds):
     return sorted({r["model"] for r in facts.get(source, []) if r["model"] in kinds and r["anchor"].lower() in text})
 
 
+def captured(envs, reqs, models, facts, by_text, kinds):
+    """Every record-kind choice the cascade asks over the sources, labelled."""
+    decisions = tempfile.mktemp(suffix=".jsonl")
+    os.environ["CASCADE_DECISIONS"] = decisions
+    cascade.ACCEPT_RECORD = 2.0
+    cascade.ACCEPT_KIND = {}
+    for _ in cascade.extracted(reqs, models):
+        pass
+    asked = [json.loads(l) for l in open(decisions)]
+    asked = [d for d in asked if d["question"] == QUESTION and d["context"].startswith('Sentence: "')]
+    rows = []
+    for i, d in enumerate(asked):
+        sentence = sentence_of(d["context"])
+        source = next((s for s, t in by_text.items() if sentence in t), None)
+        gold = labelled(sentence, source, facts, set(r["model"] for rs in facts.values() for r in rs))
+        rows.append({"id": f"rk{i}", "source": source, "kind": "record", "context": d["context"], "question": QUESTION,
+                     "options": kinds, "gold_models": gold, "gold": [kinds.index(g) for g in gold if g in kinds]})
+    return rows
+
+
 def main():
     envelopes, catalog, oracle, out = sys.argv[1:5]
     envs = json.load(open(envelopes))
@@ -38,24 +60,17 @@ def main():
         row = json.loads(line)
         facts[row["source"]] = row["records"]
     by_text = {e["id"]: e["envelope"]["content"] for e in envs}
-    decisions = tempfile.mktemp(suffix=".jsonl")
-    os.environ["CASCADE_DECISIONS"] = decisions
-    cascade.ACCEPT_RECORD = 2.0
-    models = cascade.Models()
     reqs = [cascade.requested(e["envelope"], catalog) for e in envs]
-    for _ in cascade.extracted(reqs, models):
-        pass
-    plan = cascade.Plan(reqs[0]["catalog"]["descriptor"])
+    plan = cascade.Plan(reqs[0]["catalog"]["descriptor"], reqs[0]["catalog"].get("derivations", ()))
     kinds = list(plan.records)
-    asked = [json.loads(l) for l in open(decisions)]
-    asked = [d for d in asked if d["question"] == QUESTION and d["context"].startswith('Sentence: "')]
-    rows = []
-    for i, d in enumerate(asked):
-        sentence = sentence_of(d["context"])
-        source = next((s for s, t in by_text.items() if sentence in t), None)
-        gold = labelled(sentence, source, facts, kinds)
-        rows.append({"id": f"rk{i}", "source": source, "kind": "record", "context": d["context"], "question": QUESTION,
-                     "options": kinds, "gold": [kinds.index(g) for g in gold]})
+    models = cascade.Models()
+    if "--rescore" in sys.argv:
+        rows = [json.loads(l) for l in open(f"{out}.decisions.jsonl")]
+        for r in rows:
+            r["options"] = kinds
+            r["gold"] = [kinds.index(g) for g in r["gold_models"] if g in kinds]
+    else:
+        rows = captured(envs, reqs, models, facts, by_text, kinds)
     with open(f"{out}.decisions.jsonl", "w") as f:
         for r in rows:
             f.write(json.dumps(r) + "\n")

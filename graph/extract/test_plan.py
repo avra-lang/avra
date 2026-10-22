@@ -79,5 +79,48 @@ class Reading(unittest.TestCase):
         self.assertIsNone(self.read("price EUR 1.005 now", "EUR"))
 
 
+class Derived(unittest.TestCase):
+    def test_a_derivations_output_is_never_proposed_from_text(self):
+        d = descriptor() + [model("Total", [prop("label", "string")])]
+        self.assertIn("Total", cascade.Plan(d).records)
+        plan = cascade.Plan(d, [{"name": "sum", "output": "Total"}])
+        self.assertNotIn("Total", plan.records)
+        self.assertNotIn("Total", plan.blocked)
+
+
+class Sentence(unittest.TestCase):
+    def cascade_over(self, text, script):
+        c = cascade.Cascade.__new__(cascade.Cascade)
+        c.plan = cascade.Plan(descriptor())
+        c.t = cascade.Text(text)
+        c.frames = []
+        c.filled = []
+        c.fill = lambda kind, x, y, chosen: c.filled.append(kind)
+        asked = []
+        script = list(script)
+
+        def pick(ctx, question, options, tail=()):
+            asked.append(list(options))
+            want = script.pop(0)
+            out = [0.0] * (len(options) + len(tail))
+            out[len(options) if want is None else options.index(want)] = 1.0
+            return out
+
+        c.llm = type("L", (), {"pick": staticmethod(pick)})()
+        return c, asked
+
+    def test_every_kind_a_sentence_states_is_taken_in_turn_and_not_asked_again(self):
+        c, asked = self.cascade_over("A and B.", ["Cash: x", "Sale: y", None])
+        opts = {"Cash": "Cash: x", "Sale": "Sale: y", "Pair": "Pair: z"}
+        c.sentence_records(["Cash", "Sale", "Pair"], opts, 0, 8)
+        self.assertEqual(c.filled, ["Cash", "Sale"])
+        self.assertEqual([len(a) for a in asked], [3, 2, 1])
+
+    def test_a_sentence_that_states_nothing_is_asked_once(self):
+        c, asked = self.cascade_over("Nothing.", [None])
+        c.sentence_records(["Cash"], {"Cash": "Cash: x"}, 0, 8)
+        self.assertEqual((c.filled, len(asked)), ([], 1))
+
+
 if __name__ == "__main__":
     unittest.main()
