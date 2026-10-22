@@ -39,7 +39,7 @@ fn log_shr(x: int, s: int) -> int {
 
 /// A 64-bit rotate left; `r` is nonzero at every call.
 fn rotl(x: int, r: int) -> int {
-    (x << r) | log_shr(x, 64 - r)
+    x.wrapping_shl(r) | log_shr(x, 64 - r)
 }
 
 /// Lanes start apart, so a digest that absorbed nothing still differs from one that
@@ -52,10 +52,10 @@ export fn new_digest() -> Digest {
 /// constant, so the four lanes stay independent.
 fn fold_word(d: Digest, w: int) -> Digest {
     Digest {
-        a: rotl(d.a ^ w * P1, 31) * P2,
-        b: rotl(d.b ^ w * P2, 27) * P3,
-        c: rotl(d.c ^ w * P3, 33) * P4,
-        d: rotl(d.d ^ w * P4, 29) * P1,
+        a: rotl(d.a ^ w.wrapping_mul(P1), 31).wrapping_mul(P2),
+        b: rotl(d.b ^ w.wrapping_mul(P2), 27).wrapping_mul(P3),
+        c: rotl(d.c ^ w.wrapping_mul(P3), 33).wrapping_mul(P4),
+        d: rotl(d.d ^ w.wrapping_mul(P4), 29).wrapping_mul(P1),
     }
 }
 
@@ -100,7 +100,7 @@ export fn digest_bytes(d: Digest, b: Bytes) -> Digest {
 
 /// Eight octets as one little-endian word.
 fn word_at(b: Bytes, at: int) -> int {
-    b.at(at) | (b.at(at + 1) << 8) | (b.at(at + 2) << 16) | (b.at(at + 3) << 24) | (b.at(at + 4) << 32) | (b.at(at + 5) << 40) | (b.at(at + 6) << 48) | (b.at(at + 7) << 56)
+    b.at(at) | (b.at(at + 1) << 8) | (b.at(at + 2) << 16) | (b.at(at + 3) << 24) | (b.at(at + 4) << 32) | (b.at(at + 5) << 40) | (b.at(at + 6) << 48) | b.at(at + 7).wrapping_shl(56)
 }
 
 /// A lane's final avalanche (splitmix64's), so every output bit depends on every input
@@ -110,9 +110,9 @@ fn word_at(b: Bytes, at: int) -> int {
 export fn mix_final(x: int) -> int {
     mut h = x
     h = h ^ log_shr(h, 30)
-    h = h * M1
+    h = h.wrapping_mul(M1)
     h = h ^ log_shr(h, 27)
-    h = h * M2
+    h = h.wrapping_mul(M2)
     h ^ log_shr(h, 31)
 }
 
