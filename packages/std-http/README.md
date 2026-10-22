@@ -8,7 +8,6 @@ use @std.http.route.{get}
 use @std.http.server.{server}
 
 export server app {
-    port: 8080
     get "/health" { _req -> "ok" }
     get "/ideas/{id}" { req -> "idea " + req.params.id }
 }
@@ -147,7 +146,7 @@ The six the sections below detail are `frame`, `http`, `query`, `route`,
 
 | Export | What it is |
 |---|---|
-| `server` | Component: `server app { port: 8080  get "/" { … } }`. `listening()` binds it, `run()` serves it. |
+| `server` | Component: `server app { get "/" { … } }`. It listens on a written `port`, else `PORT` from the environment, else 8080; a `PORT` that is no port is refused. `listening()` binds it, `run()` serves it. |
 | `layer` | Component: `layer auth { req, next -> … }`, a fn every request passes through. |
 | `Timing` | The deadlines: `handshake`, `head`, `body`, `idle`, `requests`; and `handshakes`, the TLS handshakes a core runs at once (past them a connection is closed before its opener runs). |
 | `timing()` | The default deadlines. |
