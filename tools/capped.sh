@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: --self-test
 # A BUILD LOG WITH NO CEILING IS A FULL DISK. `make avra` wrote its
 # whole build into `build/avra-build.out` while only the last 200 KB
 # was ever read; a looping build wrote 43 GB twice in one day and

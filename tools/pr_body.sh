@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: --self-test
 # THE PR'S BODY, READ FRESH. `github.event.pull_request.body` is the payload frozen when the run
 # started, so a waiver line (`SPEED_ACCEPT: <reason>`) added afterwards is invisible even to a
 # re-run of the job. This asks the API for the PR as it is now (PR_NUMBER and GH_TOKEN), and

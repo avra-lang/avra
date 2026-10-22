@@ -10,13 +10,14 @@ cd "$(dirname "$0")/.."
 export AVRA_WATCH_HELD=1
 export AVRA_MAX_COMPILES=0
 
-R=build/fn-add; fails=0; steps=0
+R=build/fn-add
 T=build/aside/fa.$$; mkdir -p $T
 [ -e "$R" ] && mv "$R" $T/fn-add
 [ -e .avra-cache ] && mv .avra-cache $T/cache
 P=$R/fa
 mkdir -p $P/src/m/tests $P/src/n $P/src/w
-fail() { fails=$((fails + 1)); echo "FAIL  $1"; }
+who=fn-add-attack
+. tools/lib/steps.sh
 printf '[package]\nname = "fa"\nversion = "0.1.0"\n' > $P/avra.toml
 printf 'export fn f() -> int { 1 }\nfn p() -> int { 2 }\nexport type T = { n: int }\n' > $P/src/m/a.av
 printf 'export fn gb() -> int { f() + 1 }\n' > $P/src/m/b.av
@@ -163,5 +164,4 @@ sed 's/export fn f()/export fn f2()/' $P/src/m/a.av > $T/a.new && mv $T/a.new $P
 vstate; [ "$V" != "stood " ] || fail "a renamed fn left the verdict of a const calling it standing"
 back; chk
 
-echo "fn-add-attack: $steps checks, $fails failed"
-[ "$fails" = 0 ]
+verdict

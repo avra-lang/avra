@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by make ui-host-test
 # THE JS HOST'S OWN PROOF, in two halves. runtime/dom/bootstrap_test.js
 # applies every patch op to a stub document and checks the echo, and
 # runtime/dom/dev_test.js runs the dev server's client over one.

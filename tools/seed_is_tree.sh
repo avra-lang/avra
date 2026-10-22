@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: --self-test
 # WHETHER THE COMMITTED SEED IS THIS TREE'S COMPILER: the tree's own
 # source hash against the hash `make seed` recorded beside the seed.
 #

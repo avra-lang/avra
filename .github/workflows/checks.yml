@@ -74,9 +74,12 @@ env:
 jobs:
   prepare:
     runs-on: ubuntu-latest
-    container:
+    # THE CHECKS' MACHINE, named once: every other job's `container` is this alias.
+    container: &ci-image
       image: ghcr.io/avra-lang/avra-ci:llvm22
       credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      # the defects keeper reads a stalled compile's stack with gdb, which needs ptrace
+      options: --cap-add=SYS_PTRACE
     # Backstop above the compiler (50) and objects (15) step bounds; a hang in
     # either heavy step dies there with its own name, not here.
     timeout-minutes: 65
@@ -176,10 +179,7 @@ jobs:
           # Asked for by hand, the run is a train's over EVERY package: the
           # whole gate on any branch, without a queue entry.
           if { [ "$event" = workflow_dispatch ] && [ -z "${{ inputs.only }}" ]; } || [ "$event" = push ]; then
-            for d in packages/*/; do
-              [ -d "${d}src" ] || { echo "::error::${d} has no src — a whole train would pass it by untested"; exit 1; }
-            done
-            pkgs=$(ls packages)
+            pkgs=$(sh tools/packages.sh) || exit 1
           fi
           if [ "$event" = pull_request ]; then
             if git diff --quiet origin/main...HEAD -- $(sh tools/compiler_paths.sh) ':(exclude,glob)**/tests/**'; then compiler=0; fi
@@ -303,7 +303,7 @@ jobs:
         uses: actions/cache/restore@v4
         id: cache
         with:
-          path: |
+          path: &compiler-paths |
             build/avra
             .avra-cache
           key: ${{ steps.plan.outputs.key }}
@@ -369,15 +369,6 @@ jobs:
         timeout-minutes: 50
         run: |
           s=$(date +%s)
-          # The status names the cause: 124 is the bound, 137 a kill (the memory cap or the bound's -k), anything else a failure.
-          said() { case $1 in 124) echo "::error::$2 ran past its 1500 s bound" ;; 137) echo "::error::$2 was killed (exit 137: the memory cap or a kill; see the watch: peak line)" ;; *) echo "::error::$2 failed (exit $1)" ;; esac; }
-          # A RELEASED COMPILER OLDER THAN THIS TREE CANNOT READ IT: `gen` prints
-          # the branch's new syntax as parse errors and `said` names a failed
-          # generation. That is the expected shape here, not a broken tree — the
-          # seed recovery is the answer, and it is a FULL build (gen-1 by the seed,
-          # gen-2 by gen-1), so a source broken for real still dies there. The
-          # fallback forgives a compiler too old, never a source wrong.
-          gen() { timeout -k 10 1500 make -s avra; rc=$?; [ "$rc" = 0 ] || { said "$rc" "a compiler generation"; return 1; }; }
           # THE LADDER, when the run carries rungs: the starting compiler builds rung 1, its product
           # rung 2, and so on; the last product then builds HEAD twice below, as for any tree. A
           # failing rung is a hard stop that names itself — the seed cannot read a rung either.
@@ -395,11 +386,12 @@ jobs:
             fi
             echo "speed ladder $(( $(date +%s) - s ))" >> speed.log
           fi
-          if [ -x build/avra ] && gen && gen; then :; else
-            # a store is one compiler's: the recovery starts without the one the older compiler left
-            [ -d .avra-cache ] && mv .avra-cache "${RUNNER_TEMP:-/tmp}/avra-cache-of-an-older-compiler"
-            timeout -k 10 1500 make -s bootstrap; rc=$?; [ "$rc" = 0 ] || { said "$rc" "the bootstrap"; exit 1; }
-          fi
+          # A RELEASED COMPILER OLDER THAN THIS TREE CANNOT READ IT, and its
+          # failed generation is the expected shape here: `make compiler` falls
+          # back to the seed, a full build that forgives a compiler too old,
+          # never a source wrong.
+          make -s compiler GEN_BOUND=1500 STORE_ASIDE="${RUNNER_TEMP:-/tmp}/avra-cache-of-an-older-compiler" \
+            || { echo "::error::the compiler did not build, from the standing compiler nor from the seed"; exit 1; }
           echo "speed compiler $(( $(date +%s) - s ))" >> speed.log
           echo "compiler: built from source in $(( $(date +%s) - s ))s (starting compiler: ${{ steps.release.outputs.source || 'cache' }})"
       - if: steps.compiler.outputs.built == '1' && github.event_name == 'pull_request'
@@ -478,9 +470,7 @@ jobs:
       - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && steps.release.outputs.hit != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/cache/save@v4
         with:
-          path: |
-            build/avra
-            .avra-cache
+          path: *compiler-paths
           key: ${{ steps.plan.outputs.key }}
       # THE STORE RIDES DOWN TO THE JOBS THAT RUN PROGRAMS. The prepare job's
       # `.avra-cache` is the tree's own compiler's, so a `check` or suite in
@@ -523,10 +513,10 @@ jobs:
         uses: actions/cache/restore@v4
         id: objcache
         with:
-          path: |
+          path: &objs-paths |
             build/*.o
             build/*.a
-          key: objs-${{ hashFiles('backend/**', 'runtime/**', 'packages/**/src/c/**', 'packages/**/vendor/**', 'Makefile') }}
+          key: &objs-key objs-${{ hashFiles('backend/**', 'runtime/**', 'packages/**/src/c/**', 'packages/**/vendor/**', 'Makefile') }}
           restore-keys: objs-
       - if: steps.plan.outputs.build == '1' && steps.plan.outputs.full == '1'
         name: objects and libs
@@ -547,30 +537,17 @@ jobs:
             # them, so the build below is from source and what SAVES is sound.
             rm -f build/*.o build/*.a
           fi
-          timeout -k 10 900 make -s -j"$(nproc)" -o avra objects libs \
-            || timeout -k 10 900 make -s -o avra objects libs \
-            || { echo "::error::objects and libs exceeded their 900 s bound or failed"; exit 1; }
+          sh tools/bounded.sh 900 make -s -j"$(nproc)" -o avra objects libs \
+            || sh tools/bounded.sh 900 make -s -o avra objects libs || exit 1
           # The store rides the same hand-down the objects do, so a keeper or
           # suite reads what prepare's self-compile already analysed.
-          # the store reclaims by its own rule before it rides to every job
-          [ ! -d .avra-cache ] || { build/avra cache clean || echo "::warning::avra cache clean failed"; du -sh .avra-cache/* 2>/dev/null; }
-          # gzip -1 (in the image) rides the tar: the store is text-heavy and the budget is the bytes a job downloads.
-          # Downstream jobs read the analysis (`store`); machine code is each job's own to make.
-          dirs=build; [ ! -d .avra-cache ] || dirs="build .avra-cache"
-          tar -cf - --exclude=build/avra --exclude=.avra-cache/obj --exclude=.avra-cache/bin $dirs | gzip -1 > avra-build.tar.gz
-          raw=$(du -sb $dirs | awk '{s+=$1} END {print s}')
-          size=$(wc -c < avra-build.tar.gz)
-          echo "hand-down: avra-build.tar.gz is $(( size / 1048576 )) MB compressed ($(( raw / 1048576 )) MB of files before excludes)"
-          [ "$size" -le 314572800 ] || echo "::warning::avra-build.tar.gz is $(( size / 1048576 )) MB; every downstream job downloads it (2.4 GB cost 3-5 min a job)"
-          [ "$size" -le 1073741824 ] || { echo "::error::avra-build.tar.gz is $(( size / 1048576 )) MB, over the 1 GB budget every downstream job downloads"; exit 1; }
+          sh tools/hand_down.sh pack
           echo "objects: ${{ steps.objcache.outputs.cache-hit == 'true' && 'restored from cache' || 'built' }}"
       - if: steps.plan.outputs.build == '1' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/cache/save@v4
         with:
-          path: |
-            build/*.o
-            build/*.a
-          key: objs-${{ hashFiles('backend/**', 'runtime/**', 'packages/**/src/c/**', 'packages/**/vendor/**', 'Makefile') }}
+          path: *objs-paths
+          key: *objs-key
       - if: steps.plan.outputs.build == '1' && steps.plan.outputs.full == '1'
         uses: actions/upload-artifact@v4
         with:
@@ -579,28 +556,11 @@ jobs:
           compression-level: 0
           retention-days: 1
 
-      - name: speed baseline
-        uses: actions/cache/restore@v4
-        continue-on-error: true
-        with:
-          path: speed-base.metrics
-          key: speed-main-prepare-${{ github.sha }}
-          restore-keys: speed-main-prepare-
       - if: always()
-        name: speed note
-        run: |
-          sh tools/speed_note.sh collect speed.log > speed-now.metrics
-          sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: success() && steps.plan.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
-        name: speed baseline copy
-        continue-on-error: true
-        run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
-      - if: success() && steps.plan.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
-        uses: actions/cache/save@v4
-        continue-on-error: true
+        uses: ./.github/actions/speed-note
         with:
-          path: speed-base.metrics
-          key: speed-main-prepare-${{ github.sha }}
+          key: speed-main-prepare
+          save: ${{ job.status == 'success' && steps.plan.outputs.main == '1' }}
   # THE COMPILER MAIN BUILT AND PROVED, PUBLISHED WHERE A PR CAN READ IT. Only a
   # run on `main` reaches this job, and only once that run's `test` verdict is
   # green: every PR falls back to the newest published compiler, so a compiler
@@ -629,9 +589,7 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -639,16 +597,7 @@ jobs:
         group: ['1', '2']
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      # Handed-down objects stand newer than this checkout's sources, so no
-      # job rebuilds what prepare built from the same commit.
-      - name: built
-        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
-      # WHAT THE RUNNER HAD: the cgroup's ceiling is the number a 137 is
-      # measured against, and it is not the VM's published spec.
+      - uses: ./.github/actions/handed-down
       # MAIN'S LAST COLD-COMPILE COUNTS, restored for the census gate (tools/census_ratchet.py):
       # a PR is held to the less of the committed ceiling and main's last run, so the ceiling
       # tightens by itself. Only group 1 runs the gate.
@@ -659,11 +608,6 @@ jobs:
           path: census-main.txt
           key: census-main-${{ github.sha }}
           restore-keys: census-main-
-      - name: room
-        run: |
-          echo "room: cpu=$(nproc)"
-          awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{printf "room: memory total %d MB, available %d MB\n", t/1024, a/1024}' /proc/meminfo
-          printf 'room: cgroup memory.max %s B\n' "$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
       # THE RUNTIME KEEPERS HELD TO A CLOCK (KEEPERS_ALONE: runtime-tests,
       # runtime-mutations) ARE NOT THIS JOB'S: a runner that held them beside
       # this half was killed mid-mutation. They have their own job
@@ -689,27 +633,12 @@ jobs:
           # THE ONE WAY TO LET A PR COST MORE: `SPEED_ACCEPT: <reason>` in its body (the squash keeps it).
           SPEED_ACCEPT=$(sh tools/pr_body.sh | sed -n 's/^SPEED_ACCEPT: *//p' | head -n 1)
           export SPEED_ACCEPT
-          # A CONTAINER STEP'S SHELL IS `sh`, WHICH HAS NO time BUILTIN and no
-          # TIMEFORMAT — a first cut wrote `time ... %M` and every make was
-          # skipped with "time: not found". The peak is read from the finished
-          # tree's rusage, which needs nothing from the shell.
-          peak() {
-            peak_label="$1"; shift
-            python3 tools/step_cpu.py "$peak_label" -- "$@"
-          }
           ta=$(date +%s)
-          peak keepers-a${{ matrix.group }} make -s -o avra keepers-a${{ matrix.group }} || a=1
+          python3 tools/step_cpu.py keepers-a${{ matrix.group }} -- make -s -o avra keepers-a${{ matrix.group }} || a=1
           echo "speed keepers-a${{ matrix.group }} $(( $(date +%s) - ta ))" >> speed.log
           [ "$a" = 0 ] || echo "::error::a keeper in keepers-a${{ matrix.group }} refused"
           exit "$a"
 
-      - name: speed baseline
-        uses: actions/cache/restore@v4
-        continue-on-error: true
-        with:
-          path: speed-base.metrics
-          key: speed-main-keepers-${{ github.sha }}
-          restore-keys: speed-main-keepers-
       - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('build/census-now.txt') != ''
         name: census counts kept for main
         run: cp build/census-now.txt census-main.txt
@@ -720,20 +649,10 @@ jobs:
           path: census-main.txt
           key: census-main-${{ github.sha }}
       - if: always()
-        name: speed note
-        run: |
-          sh tools/speed_note.sh collect speed.log > speed-now.metrics
-          sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
-        name: speed baseline copy
-        continue-on-error: true
-        run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
-      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
-        uses: actions/cache/save@v4
-        continue-on-error: true
+        uses: ./.github/actions/speed-note
         with:
-          path: speed-base.metrics
-          key: speed-main-keepers-${{ github.sha }}
+          key: speed-main-keepers
+          save: ${{ job.status == 'success' && needs.prepare.outputs.main == '1' }}
   # THE SECOND HALF, alone on its own runner. It needs only the lowercase
   # build artifact, and it shares the Makefile's one list with keepers-a —
   # never a second list kept in step by hand.
@@ -741,20 +660,11 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
-      # the defects keeper reads a stalled compile's stack with gdb, which needs ptrace
-      options: --cap-add=SYS_PTRACE
+    container: *ci-image
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      - name: built
-        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
+      - uses: ./.github/actions/handed-down
       # gdb: the defects keeper dumps the stack of a compile that stalls, while it lives.
       - name: debugger for stalls
         continue-on-error: true
@@ -784,15 +694,7 @@ jobs:
           # the landing tool's supervisor checks need a machine with an init
           AVRA_NO_SUPERVISOR_TESTS: "1"
         run: |
-          # A CONTAINER STEP'S SHELL IS `sh`, WHICH HAS NO time BUILTIN and no
-          # TIMEFORMAT — a first cut wrote `time ... %M` and every make was
-          # skipped with "time: not found". The peak is read from the finished
-          # tree's rusage, which needs nothing from the shell.
-          peak() {
-            peak_label="$1"; shift
-            python3 tools/step_cpu.py "$peak_label" -- "$@"
-          }
-          peak keepers-b make -s -o avra keepers-b || exit 1
+          python3 tools/step_cpu.py keepers-b -- make -s -o avra keepers-b || exit 1
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -811,20 +713,11 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      # Handed-down objects stand newer than this checkout's sources, so make
-      # rebuilds none of what prepare built from the same commit.
-      - name: built
-        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
+      - uses: ./.github/actions/handed-down
       # A BRANCH WITH RUNGS IS NOT THE SEED'S TO BUILD: the committed seed cannot read a row's first
       # reader, by construction, so the check is spoken as skipped here and the seed is refreshed after
       # the landing (main's run owes it). A rung-free tree is judged as ever.
@@ -835,7 +728,7 @@ jobs:
             echo "seed-check: SKIPPED, SPOKEN — this run carries Rung commit(s) (${{ needs.prepare.outputs.rungs }}); the seed cannot build a tree whose reader needs the row it lacks, and the seed refresh is owed after this lands"
             exit 0
           fi
-          python3 -c 'import re,resource,subprocess,sys; rc=subprocess.call(sys.argv[1:]); print("seed-check: peak %d KB max RSS" % resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss); sys.exit(rc)' make -s -o avra seed-check
+          python3 tools/step_cpu.py seed-check -- make -s -o avra seed-check
   # THE BUILD CACHE, ATTACKED. Its own job: it clears the store it builds
   # through, and it runs beside the gate. It runs on the train, on main's own
   # push, and on a PR that reaches the store or the attacks — the three places
@@ -845,9 +738,7 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.cache == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -855,14 +746,7 @@ jobs:
         shard: ['a', 'b1', 'b2']
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      # Handed-down objects stand newer than this checkout's sources, so no
-      # job rebuilds what prepare built from the same commit.
-      - name: built
-        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
+      - uses: ./.github/actions/handed-down
       - name: cache-attacks
         timeout-minutes: 15
         run: |
@@ -874,28 +758,11 @@ jobs:
         timeout-minutes: 15
         run: make -s -o avra code-hash-attacks
 
-      - name: speed baseline
-        uses: actions/cache/restore@v4
-        continue-on-error: true
-        with:
-          path: speed-base.metrics
-          key: speed-main-cache-attacks-${{ github.sha }}
-          restore-keys: speed-main-cache-attacks-
       - if: always()
-        name: speed note
-        run: |
-          sh tools/speed_note.sh collect speed.log > speed-now.metrics
-          sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
-        name: speed baseline copy
-        continue-on-error: true
-        run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
-      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
-        uses: actions/cache/save@v4
-        continue-on-error: true
+        uses: ./.github/actions/speed-note
         with:
-          path: speed-base.metrics
-          key: speed-main-cache-attacks-${{ github.sha }}
+          key: speed-main-cache-attacks
+          save: ${{ job.status == 'success' && needs.prepare.outputs.main == '1' }}
   # THE CODEC SCAN ON A PR WHOSE DIFF REACHES THE COMPILER'S SOURCE. It
   # reads the tree alone — no compiler, no objects, no artifacts — so it is
   # seconds, and it names an unregistered encoder/decoder pair before the
@@ -904,9 +771,7 @@ jobs:
     needs: [prepare]
     if: github.event_name == 'pull_request' && needs.prepare.outputs.codecs == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -919,9 +784,7 @@ jobs:
     # idioms would run an older compiler over this tree's source. Skipped, not passed.
     if: (needs.prepare.outputs.changed != '' || needs.prepare.outputs.packages != '') && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -944,11 +807,7 @@ jobs:
         run: |
           args="--files ${{ needs.prepare.outputs.changed }} --packages ${{ needs.prepare.outputs.packages }} --no-keepers"
           [ "${{ github.event_name }}" != pull_request ] || args="$args --pr-minimum"
-          timeout -k 10 900 sh tools/gate_changed.sh $args || {
-            rc=$?
-            if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then echo "::error::the gate exceeded its 900 s bound"; else echo "::error::the gate refused (exit $rc)"; fi
-            exit 1
-          }
+          sh tools/bounded.sh 900 sh tools/gate_changed.sh $args || exit 1
 
   # THE LATENCY GATE A RUNTIME CHANGE OWES: the scheduler's transition
   # rows against the recorded baseline, on the runner the checks' image
@@ -960,9 +819,7 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.runtime == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -976,9 +833,7 @@ jobs:
     # the combination, which no single PR's tree can. A PR pays fmt + idioms.
     if: needs.prepare.outputs.packages != '' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -986,14 +841,7 @@ jobs:
         shard: ${{ fromJSON(needs.prepare.outputs.shards) }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      # Handed-down objects stand newer than this checkout's sources, so no
-      # job rebuilds what prepare built from the same commit.
-      - name: built
-        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
+      - uses: ./.github/actions/handed-down
       - name: suites
         timeout-minutes: 50
         run: |
@@ -1038,28 +886,11 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
-      - name: speed baseline
-        uses: actions/cache/restore@v4
-        continue-on-error: true
-        with:
-          path: speed-base.metrics
-          key: speed-main-suites-${{ strategy.job-index }}-${{ github.sha }}
-          restore-keys: speed-main-suites-${{ strategy.job-index }}-
       - if: always()
-        name: speed note
-        run: |
-          sh tools/speed_note.sh collect speed.log > speed-now.metrics
-          sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
-        name: speed baseline copy
-        continue-on-error: true
-        run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
-      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
-        uses: actions/cache/save@v4
-        continue-on-error: true
+        uses: ./.github/actions/speed-note
         with:
-          path: speed-base.metrics
-          key: speed-main-suites-${{ strategy.job-index }}-${{ github.sha }}
+          key: speed-main-suites-${{ strategy.job-index }}
+          save: ${{ job.status == 'success' && needs.prepare.outputs.main == '1' }}
   # THE SUITE WEIGHTS, MEASURED. Main's own run times every suite; this job merges those
   # timings into the weights a later `prepare` packs the shards by, so the packer never
   # reads a hand-kept file that went stale (`cli` sat at 120 s while it ran 417). The
@@ -1070,9 +901,7 @@ jobs:
     runs-on: ubuntu-latest
     # Prepare's own image: a cache's version includes how it was compressed, so the job that
     # saves the weights and the one that restores them must share a toolchain.
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1118,9 +947,7 @@ jobs:
     needs: [prepare]
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -1141,9 +968,7 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.runtime_keep == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 60
     # THE BREAKS RUN IN TWO PARTS (runtime/tests/mutations.py, MUTATION_SHARD): the scheduler's
     # mutations were 10 of this job's 11 minutes, so each runner owns every other one.
@@ -1153,21 +978,7 @@ jobs:
         part: ['0/2', '1/2']
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      # Handed-down objects stand newer than this checkout's sources, so no
-      # job rebuilds what prepare built from the same commit.
-      - name: built
-        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
-      # WHAT THE RUNNER HAD: the cgroup's ceiling is the number a 137 is
-      # measured against, and it is not the VM's published spec.
-      - name: room
-        run: |
-          echo "room: cpu=$(nproc)"
-          awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{printf "room: memory total %d MB, available %d MB\n", t/1024, a/1024}' /proc/meminfo
-          printf 'room: cgroup memory.max %s B\n' "$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
+      - uses: ./.github/actions/handed-down
       - name: keepers held to a clock
         env:
           # the landing tool's supervisor checks need a machine with an init
@@ -1200,18 +1011,11 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.layout_oracle == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      - name: built
-        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
+      - uses: ./.github/actions/handed-down
       - name: layout oracle
         run: sh tools/layout_oracle.sh
   # THE ONE REQUIRED CHECK. Every other job is a shard or a step; this passes

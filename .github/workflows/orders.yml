@@ -26,7 +26,8 @@ permissions:
 jobs:
   prepare:
     runs-on: ubuntu-latest
-    container:
+    # THE CHECKS' MACHINE, named once: every other job's `container` is this alias.
+    container: &ci-image
       image: ghcr.io/avra-lang/avra-ci:llvm22
       credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
     timeout-minutes: 60
@@ -37,11 +38,9 @@ jobs:
       - id: plan
         name: plan
         run: |
-          for d in packages/*/; do
-            [ -d "${d}src" ] || { echo "::error::${d} has no src — a nightly run would pass it by untested"; exit 1; }
-          done
+          pkgs=$(sh tools/packages.sh) || exit 1
           echo "key=avrac-$(sh tools/compiler_paths.sh --key)" >> "$GITHUB_OUTPUT"
-          echo "shards=$(ls packages | python3 tools/shards.py 4)" >> "$GITHUB_OUTPUT"
+          echo "shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py 4)" >> "$GITHUB_OUTPUT"
       # The compiler main's own checks cached, or built as they build it.
       - uses: actions/cache/restore@v4
         id: cache
@@ -52,23 +51,27 @@ jobs:
             avrac-
       - if: steps.cache.outputs.cache-hit != 'true'
         name: compiler
-        run: if [ -x build/avra ] && make -s avra && make -s avra; then :; else make -s bootstrap; fi
+        run: make -s compiler
       - name: objects and libs
         run: |
           make -s -j"$(nproc)" -o avra objects libs || make -s -o avra objects libs
-          tar -cf avra-build.tar build
+          sh tools/hand_down.sh pack
       - uses: actions/upload-artifact@v4
         with:
-          name: orders-build
-          path: avra-build.tar
+          name: avra-compiler
+          path: build/avra
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: avra-build
+          path: avra-build.tar.gz
+          compression-level: 0
           retention-days: 1
 
   suites:
     needs: [prepare]
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -76,10 +79,7 @@ jobs:
         shard: ${{ fromJSON(needs.prepare.outputs.shards) }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: orders-build }
-      - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+      - uses: ./.github/actions/handed-down
       - name: eight orders
         env:
           AVRA_SCHED_RUNS: "8"
@@ -114,16 +114,11 @@ jobs:
   layout-sweep:
     needs: [prepare]
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: orders-build }
-      - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+      - uses: ./.github/actions/handed-down
       - name: nine seeds
         env:
           LAYOUT_ORACLE_SEEDS: "1 2 3 4 5 6 7 8 9"
