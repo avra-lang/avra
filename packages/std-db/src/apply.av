@@ -48,7 +48,7 @@ export type Entry = {
 
 /// Every model's table made and grown, in the order given; answers how many
 /// steps it took in all. The first refusal stops the rest.
-export fn migrated_all(mut db: Db, entries: List<Entry>) -> Result<int, MigrateError> {
+export fn migrated_all(db: Db, entries: List<Entry>) -> Result<int, MigrateError> {
     mut steps = 0
     // LICENSED loops.push_loop: tables go one after another, and the first refusal stops the rest
     for e in entries {
@@ -61,7 +61,7 @@ export fn migrated_all(mut db: Db, entries: List<Entry>) -> Result<int, MigrateE
 /// The registry's claim on a table name, and the table made if it is not
 /// there. A second model of the same name declared elsewhere is refused,
 /// naming the file that claimed it first.
-export fn claim_table(mut db: Db, name: string, owner: string, declared_at: string, shape: string) -> Result<
+export fn claim_table(db: Db, name: string, owner: string, declared_at: string, shape: string) -> Result<
     int,
     SqlError,
 > {
@@ -101,7 +101,7 @@ export fn claim_table(mut db: Db, name: string, owner: string, declared_at: stri
 /// A table brought to the shape a model's text declares, answering how many
 /// steps it took; a text that is no shape is a defect of the caller. A column and its old
 /// name sit at one index of the two rename lists.
-export fn grown(mut db: Db, declared: string, renamed_to: List<string>, renamed_from: List<string>) -> Result<
+export fn grown(db: Db, declared: string, renamed_to: List<string>, renamed_from: List<string>) -> Result<
     int,
     MigrateError,
 > {
@@ -116,10 +116,7 @@ export fn grown(mut db: Db, declared: string, renamed_to: List<string>, renamed_
 
 /// One table brought to its declared shape. Answers the plan it applied;
 /// a plan with nothing to do writes nothing, and one that moves is refused.
-export fn migrated(mut db: Db, declared: Shape, renames: List<Renamed>) -> Result<
-    Plan,
-    MigrateError,
-> {
+export fn migrated(db: Db, declared: Shape, renames: List<Renamed>) -> Result<Plan, MigrateError> {
     let held = lifted(recorded(db, declared.name))?
     let stored? = held else { return .Err(.Unrecorded(declared.name)) }
     let plan = diff(stored, declared, renames)
@@ -149,7 +146,7 @@ fn recorded(db: Db, name: string) -> Result<Shape?, SqlError> {
 // ── The copy ────────────────────────────────────────────────────
 
 /// A verified copy of a file database; nothing for one that lives in memory.
-fn copied(mut db: Db) -> Result<int, MigrateError> {
+fn copied(db: Db) -> Result<int, MigrateError> {
     let path = texted(lifted(db.scalar(sql(file_sql())))?)
     if path.is_empty() { return .Ok(0) }
     let copy = "${path}.${now_ms()}.bak"
@@ -179,7 +176,7 @@ fn whole(path: string) -> string {
 
 /// The plan's steps and the registry's new shape, in one transaction that
 /// commits only when the database checks out.
-fn applied(mut db: Db, plan: Plan, declared: Shape) -> Result<int, MigrateError> {
+fn applied(db: Db, plan: Plan, declared: Shape) -> Result<int, MigrateError> {
     let _ = lifted(db.begin())?
     match written(db, plan, declared) {
         .Ok(_) -> kept(db),
@@ -200,7 +197,7 @@ fn kept(db: Db) -> Result<int, MigrateError> {
     }
 }
 
-fn written(mut db: Db, plan: Plan, declared: Shape) -> Result<int, MigrateError> {
+fn written(db: Db, plan: Plan, declared: Shape) -> Result<int, MigrateError> {
     // LICENSED loops.push_loop: each statement runs once, in order, and the first refusal stops them
     for s in statements(plan) {
         let _ = lifted(db.run(sql(s)))?
