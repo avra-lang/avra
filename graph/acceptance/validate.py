@@ -148,8 +148,10 @@ def validate(data):
                 require(value.get("currency") in {"EUR", "GBP"}, f"{label}: missing/unknown currency")
         if expected["status"] == "ambiguous":
             require(len(set(expected["answer"].get("candidates", []))) >= 2, "ambiguity needs candidates")
-        if expected["status"] in {"unknown", "refused"}:
-            require(bool(expected["answer"].get("reason")), "abstention needs a reason")
+        if expected["status"] == "unknown":
+            require(bool(expected["answer"].get("reason")), "an unknown needs a reason")
+        if expected["status"] == "refused":
+            require(bool(expected.get("policy_all")), "a refusal names its trusted policy")
     for task in tasks:
         require(task["state"] in {"done", "ready", "planned"}, "unknown task state")
         require(task["owns"] and task["deliverable"] and task["acceptance"], "incomplete task brief")
