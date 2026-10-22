@@ -80,26 +80,29 @@ const widest = 100000000
 /// down the tree, and only the boxes handed back are snapped to whole units.
 const unit = fine
 
-/// The tree laid out in `width`, its height its content's.
-export fn place(root: Node, m: dyn Measure, width: int) -> Placed {
+/// The tree laid out in `width`, its height its content's, every box snapped to
+/// whole units.
+export fn place(root: Node, m: dyn Measure, width: int) -> Placed { whole(place_fine(root, m, width)) }
+
+/// The same placement before any box is snapped: every number in sixtieths of a
+/// unit, as the solver carries it.
+export fn place_fine(root: Node, m: dyn Measure, width: int) -> Placed {
     let cx = Ctx { m: m, known: no_sizes() }
-    whole(
-        arrange(
-            cx,
-            root,
-            "0",
-            0,
-            0,
-            fixed_w(cx, root) ?? smaller(at_least_zero(width), widest) * unit,
-            null,
-            false,
-        ),
+    arrange(
+        cx,
+        root,
+        "0",
+        0,
+        0,
+        fixed_w(cx, root) ?? smaller(at_least_zero(width), widest) * unit,
+        null,
+        false,
     )
 }
 
 /// The placement with every box snapped to whole units: each edge, from
 /// the root's corner, to the nearest unit, halves up.
-fn whole(p: Placed) -> Placed {
+export fn whole(p: Placed) -> Placed {
     let r = p.rect
     Placed {
         rect: Rect {

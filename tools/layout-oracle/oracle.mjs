@@ -38,63 +38,51 @@ const PROP = args.face === "prop";
 // The engine the boxes are read from: firefox (default) or webkit (Playwright's, PLAYWRIGHT_DIR).
 const ENGINE = args.browser ?? "firefox";
 
-// How far a browser's box may stand from ours, in the currency of what is CONTENDED. One output
-// pixel is 60 of `fine`'s sixtieths, since a solver box is whole pixels, rounded once at its edge.
-//
-// COUNT is always exact: a line more or fewer is a breaker defect.
-//
-// POSITION may stand one pixel apart EVERYWHERE: a box's position derives from its siblings' sizes,
-// and a hug anywhere up the chain makes it a contended quantity too.
-//
-// SIZE is exact when the LAYOUT decides it — a fixed, fill or distributed box is arithmetic both
-// engines do on the same numbers — and one pixel on an axis the node HUGS, READ from the node's own
-// `layout` and never inferred from the mismatch: a hugged size is the extent the engine MEASURES,
-// and engines measure in their own quantum (Gecko 1/60 px a glyph, WebKit 1/64). Naming the
-// contended quantity is what keeps the decided size strict without failing the measured one.
-const TOLERANCE = 1;
-const hugOn = (n, axis) => {
-  const s = n.layout[axis];
-  return s === undefined || s === "Hug" || (typeof s === "object" && s.percent !== undefined);
-};
-/// A size the layout DERIVES from room it was given: a box that fills, or takes a grow share, on
-/// that parent axis. Its size is decided from numbers that may themselves be contended.
-const derivesOn = (n, axis, parent) =>
-  n.layout[axis] === "Fill" || (parent !== null && (parent.prim === "Row" ? "width" : "height") === axis && (n.layout.grow ?? 0) > 0);
+// HOW A BROWSER'S BOX MAY STAND FROM OURS, judged BEFORE rounding. The solver carries a length in
+// sixtieths of a pixel (`fine`), the unit a browser lays a length out in (Gecko 1/60, WebKit 1/64).
+// So the page is read as it is laid out — fractional `getBoundingClientRect` — and every number of a
+// box (left, top, width, height) must agree with the solver's sixtieths within ONE SOLVER UNIT,
+// 1/60 px. A whole-pixel tolerance would hide the very defect this oracle exists to find: a fraction
+// lost before a box is made. A text's LINE COUNT is a count, exact.
+const UNIT = 1; // one solver unit, in sixtieths of a pixel
+const SLACK = 1e-6; // float noise in the page's numbers, never a tolerance on the layout
 
-/// Each box's contended axes, in the page's own pre-order, read from the node's own `layout`:
-/// a HUG axis is contended (its size is the extent the engine measures), and so is a DERIVED size
-/// that reads a contended number — its parent's size on that axis, or a sibling that hugs there.
-/// That second half is safe only because the LINE COUNT is compared as a count, at 0: a line more
-/// or fewer is refused before any size is read, so a measured extent's 1px can be licensed without
-/// licensing the defect it could otherwise hide.
-function contended_tree(spec) {
-  const flags = [];
-  const visit = (n, parent, parentContended) => {
-    const pair = ["width", "height"].map((axis) => {
-      const hug = hugOn(n, axis);
-      const siblingHug = parent !== null && parent.kids.some((k) => k !== n && hugOn(k, axis));
-      return hug || (parentContended !== null && parentContended[axis === "width" ? 0 : 1]) || (derivesOn(n, axis, parent) && siblingHug);
+// THE BOUNDARY RULE. A box is also handed back snapped to whole pixels, each EDGE rounded halves up,
+// and two numbers within a unit can round apart when a rounding boundary (k + 1/2 px) lies between
+// them. The rounded boxes may differ by one pixel on an edge ONLY when that edge's fine value is
+// within one unit of such a boundary; every such edge is named in the run. Anywhere else a rounded
+// difference is a defect, because the fine numbers it comes from agreed.
+const near_boundary = (sixtieths) => {
+  const r = (((sixtieths - 30) % 60) + 60) % 60;
+  return r <= UNIT || r >= 60 - UNIT;
+};
+
+/// A box is [left, top, width, height, lines, fx, fy, fw, fh]: the first four whole pixels, the
+/// last four the fractional page numbers (browser) or sixtieths (solver). Returns whether the
+/// browser's box stands within the law, with the boundary edges it found and its widest fine gap.
+function judge(got, want) {
+  const notes = [];
+  let gap = 0;
+  if (got.length !== want.length) return { ok: false, notes, gap };
+  let ok = true;
+  got.forEach((b, i) => {
+    const w = want[i];
+    if (b[4] !== w[4]) ok = false;
+    for (let q = 0; q < 4; q++) {
+      const d = Math.abs(w[5 + q] - b[5 + q] * 60);
+      gap = Math.max(gap, d);
+      if (d > UNIT + SLACK) ok = false;
+    }
+    // each edge, solver sixtieths against the browser's whole pixel: left, right, top, bottom
+    const edges = [[w[0], w[5], b[0]], [w[0] + w[2], w[5] + w[7], b[0] + b[2]], [w[1], w[6], b[1]], [w[1] + w[3], w[6] + w[8], b[1] + b[3]]];
+    edges.forEach(([wholeSolver, fine, wholeBrowser], e) => {
+      if (wholeSolver === wholeBrowser) return;
+      if (near_boundary(fine)) notes.push(`box ${i} ${["left", "right", "top", "bottom"][e]}: fine ${fine}/60 px sits within a unit of a rounding boundary — solver rounds to ${wholeSolver}, browser to ${wholeBrowser}`);
+      else ok = false;
     });
-    flags.push(pair);
-    for (const k of n.kids) visit(k, n, pair);
-  };
-  visit(spec, null, null);
-  flags[0][0] = false;
-  return flags;
+  });
+  return { ok, notes, gap };
 }
-const within = (a, b, hug) => (hug ? Math.abs(a - b) <= TOLERANCE : a === b);
-/// A box is [x, y, w, h, lines]: position may stand a pixel apart, size by the contended law, and
-/// the LINE COUNT is a count — exact, on every face.
-const agrees = (got, want, flags) =>
-  got.length === want.length &&
-  got.every(
-    (b, i) =>
-      Math.abs(b[0] - want[i][0]) <= TOLERANCE &&
-      Math.abs(b[1] - want[i][1]) <= TOLERANCE &&
-      within(b[2], want[i][2], flags[i][0]) &&
-      within(b[3], want[i][3], flags[i][1]) &&
-      b[4] === want[i][4],
-  );
 
 // ── the trees the ENGINES break differently ─────────────────────
 // A licence names ONE tree — engine, face, seed, case index and host width, all five, so
@@ -269,7 +257,7 @@ use @std.ui.place.measure.{Measure, Extent, Cells, fine}
 use @std.ui.place.metrics.{Table, run_width_in}
 use @std.ui.place.lines.{lines_in}
 use @std.ui.place.text.{Text}
-use @std.ui.place.solve.{place, Placed}
+use @std.ui.place.solve.{place_fine, whole, Placed}
 use @std.ui.realize.tui.layout.{own_lines}
 use @std.ui.realize.html.html.{render}
 use @std.ui.realize.tests.support.{boxed, placed, text_node}
@@ -338,8 +326,11 @@ fn show(i: int, n: Node) {
     let seen: Cell<Map<string, int>> = Cell.new({})
     let at: Cell<string> = Cell.new("")
     let c = Counting { inner: ${PROP ? "typeface()" : "Pixels { theme: Env {}.theme }"}, seen: seen, at: at }
+    let fine_boxes = place_fine(n, c, ${WIDTH})
     println("case \${i}")
-    for l in rows_of(place(n, c, ${WIDTH})) { println(l) }
+    for l in rows_of(whole(fine_boxes)) { println(l) }
+    println("fine \${i}")
+    for l in rows_of(fine_boxes) { println(l) }
     println("lines \${i}")
     println(["\${v}" for v in counts(c, n, "0")].join(" "))
     println("html \${i}")
@@ -358,19 +349,22 @@ function solved(cases, work) {
   const avra = process.env.AVRA ?? path.join(tree, "build/avra");
   const ran = spawnSync(avra, ["run", work], { encoding: "utf8", maxBuffer: 1 << 28 });
   if (ran.status !== 0) { console.error(ran.stdout.slice(-2000), ran.stderr.slice(-4000)); process.exit(2); }
-  const out = [], pages = [], counts = [];
+  const out = [], pages = [], counts = [], fines = [];
   let reading = null;
   for (const l of ran.stdout.split("\n")) {
     if (l.startsWith("case ")) { out.push([]); reading = "rects"; }
+    else if (l.startsWith("fine ")) { fines.push([]); reading = "fine"; }
     else if (l.startsWith("lines ")) reading = "lines";
     else if (l.startsWith("html ")) reading = "html";
     else if (l.startsWith("end ")) reading = null;
     else if (reading === "rects" && /^-?\d/.test(l)) out[out.length - 1].push(l.split(" ").map(Number));
+    else if (reading === "fine" && /^-?\d/.test(l)) fines[fines.length - 1].push(l.split(" ").map(Number));
     else if (reading === "lines" && /^-?\d/.test(l)) counts.push(l.split(" ").map(Number));
     else if (reading === "html") pages.push(l);
   }
-  // The solver's line count joins its box as the fifth number, read beside the browser's own.
-  out.forEach((boxes, i) => boxes.forEach((b, k) => b.push(counts[i]?.[k] ?? 0)));
+  // The solver's line count joins its box as the fifth number, read beside the browser's own, and its
+  // fine rect (sixtieths, before any snapping) as the last four.
+  out.forEach((boxes, i) => boxes.forEach((b, k) => b.push(counts[i]?.[k] ?? 0, ...(fines[i]?.[k] ?? [0, 0, 0, 0]))));
   return { out, pages };
 }
 
@@ -408,7 +402,7 @@ const BROWSER = `(html, widthPx) => {
   const walk = (el) => {
     const r = el.getBoundingClientRect();
     const l = Math.round(r.x - origin.x), t = Math.round(r.y - origin.y);
-    out.push([l, t, Math.round(r.x + r.width - origin.x) - l, Math.round(r.y + r.height - origin.y) - t, lineCount(el)]);
+    out.push([l, t, Math.round(r.x + r.width - origin.x) - l, Math.round(r.y + r.height - origin.y) - t, lineCount(el), r.x - origin.x, r.y - origin.y, r.width, r.height]);
     for (const k of el.children) walk(k);
   };
   walk(root);
@@ -416,12 +410,20 @@ const BROWSER = `(html, widthPx) => {
   return out;
 }`;
 
-async function compare(cases, browser, work) {
+/// What a run saw beyond agree/disagree: every boundary edge, and the widest fine gap.
+const SEEN = { boundary: [], gap: 0 };
+
+async function compare(cases, browser, work, note = false) {
   const { out, pages } = solved(cases, work);
   const results = [];
   for (let i = 0; i < cases.length; i++) {
     const got = await browser.read(`(${BROWSER})(${JSON.stringify(pages[i])}, ${WIDTH})`);
-    results.push(agrees(got, out[i], contended_tree(cases[i])) ? null : { got, want: out[i] });
+    const verdict = judge(got, out[i]);
+    if (note) {
+      SEEN.gap = Math.max(SEEN.gap, verdict.gap);
+      for (const n of verdict.notes) SEEN.boundary.push(`case ${i}: ${n}`);
+    }
+    results.push(verdict.ok ? null : { got, want: out[i] });
   }
   return results;
 }
@@ -478,14 +480,15 @@ async function opened(url) {
 }
 
 /// A tree's two answers, box by box: the solver's, the browser's, and a mark on every box that
-/// disagrees under the contended law.
+/// disagrees under the fine law.
 async function printed(label, spec, v) {
   console.log(`${label}\n${JSON.stringify(spec)}`);
-  const flags = contended_tree(spec);
   for (let k = 0; k < Math.max(v.got.length, v.want.length); k++) {
-    const rect = (b) => `[${b.slice(0, 4).join(",")}] lines ${b[4]}`;
-    const holds = v.want[k] && v.got[k] && agrees([v.got[k]], [v.want[k]], [flags[k] ?? [false, false]]);
-    console.log(`  box ${k}: solver ${rect(v.want[k])}  browser ${rect(v.got[k])}${holds ? "" : "   <--"}`);
+    const px = (x) => (x / 60).toFixed(3);
+    const solver = (b) => `[${b.slice(0, 4).join(",")}] lines ${b[4]} fine ${b.slice(5).map(px).join(" ")}`;
+    const browser = (b) => `[${b.slice(0, 4).join(",")}] lines ${b[4]} fine ${b.slice(5).map((x) => x.toFixed(3)).join(" ")}`;
+    const holds = v.want[k] && v.got[k] && judge([v.got[k]], [v.want[k]]).ok;
+    console.log(`  box ${k}: solver ${solver(v.want[k])}  browser ${browser(v.got[k])}${holds ? "" : "   <--"}`);
   }
 }
 
@@ -505,7 +508,7 @@ async function main() {
   fs.writeFileSync(path.join(page, "index.html"), PAGE);
   const browser = await opened("file://" + path.join(page, "index.html"));
   await browser.read('document.fonts.load("1px cell").then((faces) => faces.length)');
-  const verdicts = await compare(cases, browser, work);
+  const verdicts = await compare(cases, browser, work, true);
   const failing = verdicts.map((v, i) => (v ? i : -1)).filter((i) => i >= 0);
   const licensed = licensed_here(cases.length);
   const kept = failing.filter((i) => licensed.includes(i));
@@ -524,6 +527,8 @@ async function main() {
     await printed(`MISMATCH case ${i} (seed ${SEED}), shrunk:`, small, v);
   }
   await browser.close();
+  for (const n of SEEN.boundary) console.log(`BOUNDARY ${FACE_NAME} seed ${SEED} ${n}`);
+  console.log(`layout-oracle: widest fine gap ${SEEN.gap.toFixed(3)}/60 px (law: ${UNIT}/60); ${SEEN.boundary.length} edge(s) rounded apart at a boundary`);
   console.log(`layout-oracle: ${cases.length - failing.length} of ${cases.length} trees agree in ${ENGINE} (seed ${SEED}, width ${WIDTH})`);
   if (kept.length) console.log(`layout-oracle: licensed ${kept.length} (${FACE_NAME} seed ${SEED} cases ${kept.join(", ")}) — the count is exact in every other tree`);
   process.exit(refused.length === 0 ? 0 : 1);
