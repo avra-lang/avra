@@ -97,6 +97,8 @@ refuse() {
 
 # The batch the members would make, merged in memory: each step is a
 # merge-tree over commits made with commit-tree, so no ref and no remote moves.
+# A step carries the member's head as its second parent, as the build's merge
+# does, so every later step resolves against the ancestry the build will have.
 plan_merges() {
     pn=$1; shift
     base=$(git rev-parse origin/main)
@@ -106,7 +108,7 @@ plan_merges() {
         git fetch -q origin "+refs/heads/$head:refs/remotes/origin/$head" || die "fetch of $head failed"
         if out=$(git merge-tree --write-tree --name-only "$base" "origin/$head" 2>/dev/null); then
             tree=$(printf '%s\n' "$out" | head -n 1)
-            base=$(git commit-tree "$tree" -p "$base" -m "plan: batch-$pn with #$pr")
+            base=$(git commit-tree "$tree" -p "$base" -p "origin/$head" -m "plan: batch-$pn with #$pr")
             echo "plan: #$pr ($head) merges cleanly"
         else
             files=$(printf '%s\n' "$out" | tail -n +2 | grep -v '^$' | tr '\n' ' ')
