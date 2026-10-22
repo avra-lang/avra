@@ -953,7 +953,7 @@ census-gate:
 	@python3 tools/census_ratchet.py --self-test >/dev/null
 	@sh tools/speed_note.sh --self-test >/dev/null
 	@sh tools/census.sh check --counts packages/cli > build/census-gate.out 2>&1 || { tail -20 build/census-gate.out; exit 1; }
-	@python3 tools/census_ratchet.py --raw build/census-gate.out --main $${CENSUS_MAIN:-census-main.txt}
+	@python3 tools/census_ratchet.py --raw build/census-gate.out --main $${CENSUS_MAIN:-census-main.txt} --main-sites $${CENSUS_SITES_MAIN:-census-sites-main.txt}
 census-accept:
 	@sh tools/census.sh check --counts packages/cli > build/census-gate.out 2>&1 || { tail -20 build/census-gate.out; exit 1; }
 	@python3 tools/census_ratchet.py --accept --raw build/census-gate.out
