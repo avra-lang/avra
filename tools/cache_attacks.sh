@@ -188,7 +188,7 @@ kq_ran() { # kq_ran <label> <want>: the verdicts the next check ran, counted
     if [ "$n" -eq "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    kq: $1 -> $n verdicts ran"; else fails=$((fails+1)); echo "FAIL  kq: $1 ran $n verdicts, wanted $2"; fi
 }
 kq_prints() { # kq_prints <label> <want>: the native binary's line
-    steps=$((steps+1)); out=$(./avra build $R/kq 2>/dev/null); bin=$(printf '%s\n' "$out" | tail -1); got=$("$bin" 2>&1)
+    steps=$((steps+1)); bin=$(sh tools/capped.sh --last ./avra build $R/kq 2>/dev/null) || bin=""; got=$("$bin" 2>&1)
     [ "$got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  kq: $1 printed '$got', wanted '$2'"; }
 }
 HR "cold kq" check kq 0
@@ -711,7 +711,7 @@ vd_case() { # vd_case <label> <ran|stood> <const module> <edit command>: warm, e
   got=$(awk -F'\t' -v m="^x\\.$3" '$1 == "Q" && $2 == "const_verdict" && $3 ~ m { if (v != "ran") v = $4 } END { print v }' $R/vd.out)
   if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the check failed (status $st)"; failed_tail $R/vd.out
   elif [ "$got" != "$2" ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the $3 verdict was '$got', wanted '$2'"
-  elif [ -n "${5:-}" ] && [ "$(./avra run $R/vdc/vd 2>/dev/null | tail -1)" != "$5" ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the program printed '$(./avra run $R/vdc/vd 2>/dev/null | tail -1)', wanted '$5'"
+  elif [ -n "${5:-}" ] && { vd_said=$(sh tools/capped.sh --last ./avra run $R/vdc/vd 2>/dev/null) || vd_said="(status $?) $vd_said"; [ "$vd_said" != "$5" ]; }; then fails=$((fails+1)); echo "FAIL  vd: $1: the program printed '$vd_said', wanted '$5'"
   else [ -n "${VERBOSE:-}" ] && echo "ok    vd: $1 -> $got"; fi
 }
 vd_case "a: a field of a type the const reads is added" ran mid 'ed $R/vdc/vd/src/y/calc.av "export type Cfg = { a: int, d: Deep }" "export type Cfg = { a: int, d: Deep, b: int = 0 }"'
@@ -896,7 +896,7 @@ if section rx; then
 # the original holds it (avra-8sb5.64.10.1).
 RX() { # RX <label> <path-substr> <want: held|read> <printed>
     steps=$((steps+1))
-    out=$(./avra build --time $R/rx 2>&1)
+    out=$(./avra build --time $R/rx 2>&1) || { fails=$((fails+1)); echo "FAIL  $1: the build failed: $(printf '%s' "$out" | tail -n 3 | tr '\n' ' ')"; return; }
     case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; *"held 0/"*) [ "$3" = held ] && { fails=$((fails+1)); echo "FAIL  $1: a derivation held nothing, so a file staying held was never examined"; } ;; esac
     case "$out" in *"read:"*"$2"*) got=read ;; *) got=held ;; esac
     if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $1 wanted $3, got $got: $(printf '%s' "$out" | grep -A5 '^read:' | tr '\n' ' ')"; fi
@@ -2649,7 +2649,7 @@ rm -rf $gm
 # in one order either way and attacks nothing.
 eo=packages/std-http-soak
 eo_built() { # eo_built <label>: the program built, its binary kept under the label
-    out=$(./avra build $eo 2>/dev/null); bin=$(printf '%s\n' "$out" | tail -1)
+    bin=$(sh tools/capped.sh --last ./avra build $eo 2>/dev/null) || bin=""
     if [ -x "$bin" ]; then cp "$bin" $R/eo.$1; rm -f "$bin" "$bin.av.ll"; fi
 }
 steps=$((steps+1)); rm -rf .avra-cache $R/eo.cold $R/eo.warm; eo_built cold

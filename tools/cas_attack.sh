@@ -52,7 +52,7 @@ for w in a b; do
 done
 mkdir -p "$E/c/src"; cp "$E/a/avra.toml" "$E/c/avra.toml"; cp "$E/a/src/big.txt" "$E/c/src/big.txt"
 printf 'use @std.meta.{embed}\nconst B: Bytes = embed("big.txt").bytes()\nprintln("${B.length}")\n// %s\n' "$stamp" > "$E/c/src/main.av"
-built() { AVRA_CACHE_DIR="$E/cache" AVRA_CLOCK=real build/avra build "$E/$1" 2>&1; "$E/$1/src/main"; }
+built() { AVRA_CACHE_DIR="$E/cache" AVRA_CLOCK=real build/avra build "$E/$1" 2>&1 && "$E/$1/src/main"; }
 [ "$(built a | tail -1)" = 5242880 ] && [ "$(built b | tail -1)" = 5242880 ] && say "both worktrees build the embedding program" || fail "an embedding program did not build"
 n=$(find "$E/cache/cas" -mindepth 2 -maxdepth 2 -type f -size +1000k | wc -l | tr -d ' ')
 [ "$n" = 1 ] && say "two worktrees' 5 MB embed is ONE blob" || fail "$n blobs over 1 MB for one embedded file"
@@ -61,7 +61,7 @@ find "$E/cache/cas" -mindepth 2 -maxdepth 2 -type f -size +1000k -delete
 [ "$(built b | tail -1)" = 5242880 ] && say "an embed whose blob is gone is rebuilt, never wrong" || fail "a missing embed blob broke the build"
 # The same file settled as `Bytes` in two worktrees: its octets are ONE blob.
 cp -R "$E/c" "$E/d"
-sized() { AVRA_CACHE_DIR="$E/cache2" AVRA_CLOCK=real build/avra build "$E/$1" 2>&1; "$E/$1/src/main"; }
+sized() { AVRA_CACHE_DIR="$E/cache2" AVRA_CLOCK=real build/avra build "$E/$1" 2>&1 && "$E/$1/src/main"; }
 [ "$(sized c | tail -1)" = 5242880 ] && [ "$(sized d | tail -1)" = 5242880 ] && say "both worktrees build the Bytes program" || fail "a Bytes program did not build"
 n=$(find "$E/cache2/cas" -mindepth 2 -maxdepth 2 -type f -size +1000k | wc -l | tr -d ' ')
 [ "$n" = 1 ] && say "two worktrees' Bytes const is ONE blob of its octets" || fail "$n blobs over 1 MB for one Bytes const"
