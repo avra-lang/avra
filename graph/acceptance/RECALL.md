@@ -7,7 +7,7 @@ Oracle = `oracle/facts.jsonl`; extracted = the 30 cached results plus their admi
 ## Headline
 
 - Admission is not the loss: all 30 sources admitted every extracted record, `problems: []`, 0 refusals.
-- The loss is upstream. Across 30 sources the cascade emitted 117 records: Person 55, Organization 25,
+- The loss is upstream. Across 30 sources the cascade emitted 119 records: Person 55, Organization 25,
   OrganizationRole 22, Product 6, Pet 3, PersonalRelationship 3, Group 3, FibreShare 1, VeganStatus 1.
   The oracle expects 25 models; 18 of the 25 never appear at all.
 - Where the text is right but the answer still fails (q01), the entity is not the gold one: no name-based merge happens.
@@ -25,7 +25,7 @@ role relation not emitted (q02, q04, q07); encoder label noise (4 facts).
 
 ### 1. Record pass is silent (20 questions)
 
-12 of 18 plannable record models are exactly the ones the dev questions need, and 0 of their records appear.
+Of the 18 plannable record models, 16 are needed by dev questions and none of their records appear.
 Only `FibreShare` (s03, a draft label) and `VeganStatus` (s26) came out, 2 records in 30 sources.
 Mechanism in `cascade.py`: `record_pass` asks the scorer, per sentence, which of 18 kinds it states and accepts only
 at `p >= ACCEPT_RECORD` (0.95, `fitted: false`, "borrowed from the relation fit; no labelled record-pass decisions yet");
@@ -44,7 +44,7 @@ Wrong-kind evidence (the encoder entity pass wins the span instead):
 
 ### 2. Entity resolution is identity-keys only (12 questions)
 
-All 88 entity records admitted as `resolution.kind: new` with `candidates: []`; the only merges (11) are shared
+All 92 entity records admitted as `resolution.kind: new` with `candidates: []`; the only merges (11) are shared
 email/phone identities. Person 55 records -> 45 entities (oracle: about 12 people), Organization 25 -> 25 (about 6).
 Cached extractions are requested without graph candidates, so a mention can only be linked inside its own source.
 
