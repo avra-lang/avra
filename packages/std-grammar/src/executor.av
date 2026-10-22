@@ -495,7 +495,7 @@ fn match_alt<T, N>(
     origin: int,
 ) -> MatchResult<T, N> {
     mut farthest: FarthestFailure? = null
-    mut fb_diags: List<Failure>? = null
+    mut broken: List<List<Failure>> = []
     let tok = cx.tokens[cursor]
     for br in a.branches {
         if cannot_take(cx.lex, cx.kinds, cx.masks, cursor, br.start, tok) {
@@ -506,11 +506,11 @@ fn match_alt<T, N>(
             if r.status == MatchStatus.Hit || r.status == MatchStatus.Fatal {
                 return r with { farthest: farthest }
             }
-            if r.status == MatchStatus.Broke && fb_diags == null { fb_diags = r.diagnostics }
+            if r.status == MatchStatus.Broke && broken.is_empty() { broken.push(r.diagnostics) }
         }
     }
-    if fb_diags == null { return missed<T, N>(cx, cursor, bindings, cx.silence, farthest) }
-    broke<T, N>(cx, cursor, bindings, fb_diags!, farthest)
+    let first? = broken.first() else { return missed<T, N>(cx, cursor, bindings, cx.silence, farthest) }
+    broke<T, N>(cx, cursor, bindings, first, farthest)
 }
 
 /// "expected A, B or C while parsing `rule`" from a farthest point.
