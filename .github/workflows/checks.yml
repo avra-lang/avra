@@ -561,17 +561,7 @@ jobs:
             || { echo "::error::objects and libs exceeded their 900 s bound or failed"; exit 1; }
           # The store rides the same hand-down the objects do, so a keeper or
           # suite reads what prepare's self-compile already analysed.
-          # the store reclaims by its own rule before it rides to every job
-          [ ! -d .avra-cache ] || { build/avra cache clean || echo "::warning::avra cache clean failed"; du -sh .avra-cache/* 2>/dev/null; }
-          # gzip -1 (in the image) rides the tar: the store is text-heavy and the budget is the bytes a job downloads.
-          # Downstream jobs read the analysis (`store`); machine code is each job's own to make.
-          dirs=build; [ ! -d .avra-cache ] || dirs="build .avra-cache"
-          tar -cf - --exclude=build/avra --exclude=build/avra-tools-compiler --exclude='build/avra-tools/*/compiler' --exclude=.avra-cache/obj --exclude=.avra-cache/bin $dirs | gzip -1 > avra-build.tar.gz
-          raw=$(du -sb $dirs | awk '{s+=$1} END {print s}')
-          size=$(wc -c < avra-build.tar.gz)
-          echo "hand-down: avra-build.tar.gz is $(( size / 1048576 )) MB compressed ($(( raw / 1048576 )) MB of files before excludes)"
-          [ "$size" -le 314572800 ] || echo "::warning::avra-build.tar.gz is $(( size / 1048576 )) MB; every downstream job downloads it (2.4 GB cost 3-5 min a job)"
-          [ "$size" -le 1073741824 ] || { echo "::error::avra-build.tar.gz is $(( size / 1048576 )) MB, over the 1 GB budget every downstream job downloads"; exit 1; }
+          sh tools/hand_down.sh pack
           echo "objects: ${{ steps.objcache.outputs.cache-hit == 'true' && 'restored from cache' || 'built' }}"
       - if: steps.plan.outputs.build == '1' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/cache/save@v4
@@ -662,16 +652,7 @@ jobs:
         group: ['1', '2']
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      # Handed-down objects stand newer than this checkout's sources, so no
-      # job rebuilds what prepare built from the same commit.
-      - name: built
-        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
-      # WHAT THE RUNNER HAD: the cgroup's ceiling is the number a 137 is
-      # measured against, and it is not the VM's published spec.
+      - uses: ./.github/actions/handed-down
       # MAIN'S LAST COLD-COMPILE COUNTS, restored for the census gate (tools/census_ratchet.py):
       # a PR is held to the less of the committed ceiling and main's last run, so the ceiling
       # tightens by itself. Only group 1 runs the gate.
@@ -682,11 +663,6 @@ jobs:
           path: census-main.txt
           key: census-main-${{ github.sha }}
           restore-keys: census-main-
-      - name: room
-        run: |
-          echo "room: cpu=$(nproc)"
-          awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{printf "room: memory total %d MB, available %d MB\n", t/1024, a/1024}' /proc/meminfo
-          printf 'room: cgroup memory.max %s B\n' "$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
       # THE RUNTIME KEEPERS HELD TO A CLOCK (KEEPERS_ALONE: runtime-tests,
       # runtime-mutations) ARE NOT THIS JOB'S: a runner that held them beside
       # this half was killed mid-mutation. They have their own job
@@ -770,12 +746,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      - name: built
-        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
+      - uses: ./.github/actions/handed-down
       - name: keepers
         timeout-minutes: 30
         env:
@@ -808,14 +779,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      # Handed-down objects stand newer than this checkout's sources, so make
-      # rebuilds none of what prepare built from the same commit.
-      - name: built
-        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
+      - uses: ./.github/actions/handed-down
       # A BRANCH WITH RUNGS IS NOT THE SEED'S TO BUILD: the committed seed cannot read a row's first
       # reader, by construction, so the check is spoken as skipped here and the seed is refreshed after
       # the landing (main's run owes it). A rung-free tree is judged as ever.
@@ -846,14 +810,7 @@ jobs:
         shard: ['a', 'b1', 'b2']
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      # Handed-down objects stand newer than this checkout's sources, so no
-      # job rebuilds what prepare built from the same commit.
-      - name: built
-        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
+      - uses: ./.github/actions/handed-down
       - name: cache-attacks
         timeout-minutes: 15
         run: |
@@ -977,14 +934,7 @@ jobs:
         shard: ${{ fromJSON(needs.prepare.outputs.shards) }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      # Handed-down objects stand newer than this checkout's sources, so no
-      # job rebuilds what prepare built from the same commit.
-      - name: built
-        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
+      - uses: ./.github/actions/handed-down
       - name: suites
         timeout-minutes: 50
         run: |
@@ -1148,21 +1098,7 @@ jobs:
         part: ['0/2', '1/2']
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      # Handed-down objects stand newer than this checkout's sources, so no
-      # job rebuilds what prepare built from the same commit.
-      - name: built
-        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
-      # WHAT THE RUNNER HAD: the cgroup's ceiling is the number a 137 is
-      # measured against, and it is not the VM's published spec.
-      - name: room
-        run: |
-          echo "room: cpu=$(nproc)"
-          awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{printf "room: memory total %d MB, available %d MB\n", t/1024, a/1024}' /proc/meminfo
-          printf 'room: cgroup memory.max %s B\n' "$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
+      - uses: ./.github/actions/handed-down
       - name: keepers held to a clock
         env:
           # the landing tool's supervisor checks need a machine with an init
@@ -1201,12 +1137,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      - name: built
-        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
+      - uses: ./.github/actions/handed-down
       - name: layout oracle
         run: sh tools/layout_oracle.sh
   # THE ONE REQUIRED CHECK. Every other job is a shard or a step; this passes

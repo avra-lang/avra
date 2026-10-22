@@ -1140,6 +1140,7 @@ keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
 TOOL_WITNESSES = stamps.sh\ --self-test \
                  llvm_link.sh\ --self-test \
                  capped.sh\ --self-test \
+                 hand_down.sh\ --self-test \
                  failed_tail_test.sh \
                  host_fn_edit_attack.sh\ --self-test \
                  gate_receipt.sh\ --self-test \

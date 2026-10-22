@@ -39,6 +39,10 @@ lists and refuses by name:
                    runs that remain give one verdict.
   dup-run          a `labeled` run waits for the full run on its head and mirrors its verdict;
                    it never runs a second gate beside it (tools/ci_dup_run.py).
+  hand-down        a job takes what prepare built only through the one
+                   composite action (.github/actions/handed-down), and the
+                   tar is packed and unpacked only by tools/hand_down.sh —
+                   never a second spelling in a workflow.
   warm-edit        WHERE the DB 07 warm-edit gate exists (Makefile target
                    `warm-edit`), it is one of `KEEPERS` and its measurement
                    skips with a word on a cold store — a claim with no gate
@@ -495,6 +499,37 @@ def check_warm_edit(make_text, bench=None, ratchet=None):
     return refusals, []
 
 
+HAND_DOWN_ACTION = "./.github/actions/handed-down"
+
+
+def check_hand_down(workflows):
+    """{file: text} -> (refusals, words). No workflow re-spells the hand-down:
+    the build artifact is downloaded and the tar packed or unpacked only by
+    the composite action and tools/hand_down.sh."""
+    refusals, takers = [], 0
+    for name, text in sorted(workflows.items()):
+        step = ""
+        for n, line in enumerate(text.splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if re.match(r"\s*- ", code):
+                step = code
+            if re.search(r"name:\s*avra-build\b", code) and "download-artifact" in step:
+                refusals.append("%s:%d downloads `avra-build` by hand — use `%s`" % (name, n, HAND_DOWN_ACTION))
+            if re.search(r"\btar\s+-?[a-z]*[xc][a-z]*f?\b.*avra-build", code):
+                refusals.append("%s:%d spells the hand-down tar — use tools/hand_down.sh" % (name, n))
+            if "uses: %s" % HAND_DOWN_ACTION in code:
+                takers += 1
+    if refusals:
+        return refusals, []
+    return [], ["hand-down: %d job(s) take what prepare built through %s" % (takers, HAND_DOWN_ACTION)]
+
+
+def workflow_texts():
+    d = os.path.join(ROOT, ".github", "workflows")
+    return {f: open(os.path.join(d, f), encoding="utf-8").read()
+            for f in os.listdir(d) if f.endswith(".yml")}
+
+
 def run(make_text=None, workflow_text=None):
     """Every check over the real tree. Answers the number of refusals."""
     if make_text is None:
@@ -516,7 +551,8 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_path_gate(workflow_text),
                   lambda: check_dup_run(workflow_text),
                   lambda: check_ready_race(__import__("pr_mode")),
-                  lambda: check_warm_edit(make_text)):
+                  lambda: check_warm_edit(make_text),
+                  lambda: check_hand_down(workflow_texts())):
         r, w = check()
         refusals += r
         words += w
@@ -755,8 +791,19 @@ rt-header:
     assert no_seed != real_remote
     assert any("seed" in x for x in check_compiler_route(real_work, no_seed)[0]), check_compiler_route(real_work, no_seed)
 
+    # ── hand-down: the composite passes; a by-hand download or tar is refused ──
+    taker = "    steps:\n      - uses: ./.github/actions/handed-down\n"
+    upload = "      - uses: actions/upload-artifact@v4\n        with:\n          name: avra-build\n"
+    assert check_hand_down({"a.yml": taker + upload})[0] == [], check_hand_down({"a.yml": taker + upload})
+    by_hand = "      - uses: actions/download-artifact@v4\n        with: { name: avra-build }\n"
+    assert check_hand_down({"a.yml": by_hand})[0], "a by-hand download must be refused"
+    untar = "        run: tar -xzf avra-build.tar.gz && chmod +x build/avra\n"
+    assert check_hand_down({"a.yml": untar})[0], "a by-hand untar must be refused"
+    pack = "          tar -cf - build | gzip -1 > avra-build.tar.gz\n"
+    assert check_hand_down({"a.yml": pack})[0], "a by-hand pack must be refused"
+
     print("ci_invariants self-test: release-order, keeper-coverage, watcher-fixtures, "
-          "light-draft, run-mode, race-split, compiler-route, path-gate, dup-run, ready-race, warm-edit held on fixtures")
+          "light-draft, run-mode, race-split, compiler-route, path-gate, dup-run, ready-race, warm-edit, hand-down held on fixtures")
     return 0
 
 
