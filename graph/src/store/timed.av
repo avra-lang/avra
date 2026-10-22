@@ -1,20 +1,17 @@
+use parameters.{time_limit_max, time_limit_default, earliest_ms, latest_ms}
 use store.open.{Graph}
 use store.search.{Passage}
 use store.walk.{Channel}
-
-const earliest = -9223372036854775807
-
-const latest = 9223372036854775807
 
 impl Graph {
     /// Passages whose observed time falls in `from..=to` (Unix ms), or whose fact
     /// holds in the world at some point of it; newest first. Either bound may be
     /// open. A source with no recorded time never matches.
-    fn timed(from: int?, to: int?, limit: int = 100) -> Result<Channel, string> {
+    fn timed(from: int?, to: int?, limit: int = time_limit_default) -> Result<Channel, string> {
         if from == null && to == null { fail "a time range needs a bound" }
-        if limit < 1 || limit > 1000 { fail "time range limit must be 1..1000" }
-        let lo = from ?? earliest
-        let hi = to ?? latest
+        if limit < 1 || limit > time_limit_max { fail "time range limit must be 1..${time_limit_max}" }
+        let lo = from ?? earliest_ms
+        let hi = to ?? latest_ms
         if lo > hi { fail "a time range starts before it ends" }
         let found = self
             .passages_where(
@@ -32,7 +29,7 @@ impl Graph {
 }
 
 /// The time a passage is filed under: when it was observed, else when its fact begins.
-fn stamp(p: Passage) -> int { p.observed ?? p.valid_from ?? earliest }
+fn stamp(p: Passage) -> int { p.observed ?? p.valid_from ?? earliest_ms }
 
 /// Newest first; equal times keep index order.
 fn newest_first(xs: List<Passage>) -> List<Passage> {

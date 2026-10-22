@@ -356,12 +356,13 @@ fn relation_steps(
     .Ok(Crossed { steps: steps, record_step: last })
 }
 
-/// A node pinned by equality or CONTAINS on a declared identity property is a mention of one entity.
+/// A node pinned by equality or CONTAINS on the property its model declares as its label is a mention of one entity.
 fn names_one_entity(catalog: Catalog, model: string?, conditions: List<Placed>) -> bool {
     let home? = model else { return false }
     let found? = model_named(catalog, home) else { return false }
-    let identities = [i.path[0] for i in found.semantics.identities if i.path.length == 1]
-    conditions.any(pins(it.cond, identities))
+    let path = found.semantics.label ?? []
+    let mentioned = if path.length == 1 { path } else { [] }
+    conditions.any(pins(it.cond, mentioned))
 }
 
 fn pins(c: Cond, identities: List<string>) -> bool {
