@@ -206,7 +206,14 @@ def check_release_order(jobs):
     cond = step_if(steps[build]) or ""
     if "steps.release.outputs.hit" not in cond:
         return ["the compiler-build step is not conditional on the release fetch having MISSED"], []
-    return [], ["release-order: fetch before build, build conditional on the fetch miss"]
+    # A build starts from main's compiler or the seed and nothing else: a cached or
+    # newest-published binary may come from a tree that already knows this one's features.
+    start = steps[fetch]
+    if "find build/avra -delete" not in start.split("compiler_release.py fetch")[0]:
+        return ["the release step keeps a prefix-restored compiler — a build may start from another tree's binary"], []
+    if "tools/fetch_compiler.sh" not in start or re.search(r"compiler_release\.py\s+latest|releases\?per_page", start):
+        return ["a release miss does not fall back to main's own compiler (tools/fetch_compiler.sh) — or reaches for another"], []
+    return [], ["release-order: fetch before build, build on the fetch miss, from main's compiler or the seed alone"]
 
 
 # The legs a draft's light run still owes: the compiler (`prepare`), the
@@ -295,7 +302,7 @@ def check_run_mode(workflow_text):
     if "compiler_source: ${{ steps.release.outputs.source }}" not in plan:
         refusals.append("`prepare` does not expose the compiler's source")
     gate = jobs.get("gate", "")
-    if "needs.prepare.outputs.compiler_source == 'latest'" not in gate:
+    if "needs.prepare.outputs.compiler_source == 'main'" not in gate:
         refusals.append("`gate` runs on a light run whose compiler is not the published one")
     if "light gate: compiler steps skipped" not in jobs.get("test", ""):
         refusals.append("`test` does not say why a light gate's compiler steps were skipped")
@@ -546,7 +553,9 @@ jobs:
       - if: %s
         id: release
         name: compiler from release
-        run: python3 tools/compiler_release.py fetch key build/avra
+        run: |
+          find build/avra -delete 2>/dev/null || :
+          python3 tools/compiler_release.py fetch key build/avra || FETCH_BUILD=build sh tools/fetch_compiler.sh origin/main
       - if: %s
         name: compiler
         run: make -s avra
@@ -556,6 +565,11 @@ jobs:
                    "steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' "
                    "&& steps.release.outputs.hit != 'true'")
     assert check_release_order(parse_jobs(good))[0] == [], check_release_order(parse_jobs(good))
+    # a start from the newest release, or one that keeps a prefix-restored binary, is refused
+    newest = good.replace("FETCH_BUILD=build sh tools/fetch_compiler.sh origin/main", "python3 tools/compiler_release.py latest build/avra")
+    assert check_release_order(parse_jobs(newest))[0], "a newest-release start must be refused"
+    kept = good.replace("find build/avra -delete 2>/dev/null || :", ":")
+    assert check_release_order(parse_jobs(kept))[0], "a kept prefix-restored binary must be refused"
     # the build WITHOUT the release-miss condition is refused
     bad_cond = prepare("steps.plan.outputs.build == '1'", "steps.plan.outputs.build == '1'")
     assert any("MISSED" in r for r in check_release_order(parse_jobs(bad_cond))[0]), \
@@ -716,7 +730,7 @@ rt-header:
                               "true)\" = true ] && full=0")
     assert payload != real_wf
     assert any("avra_tools.sh pr_mode" in x for x in check_run_mode(payload)[0]), check_run_mode(payload)
-    ungated_gate = real_wf.replace(" && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')", "")
+    ungated_gate = real_wf.replace(" && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'main')", "")
     assert ungated_gate != real_wf
     assert any("`gate`" in x for x in check_run_mode(ungated_gate)[0]), check_run_mode(ungated_gate)
 

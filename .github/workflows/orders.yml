@@ -34,6 +34,7 @@ jobs:
       shards: ${{ steps.plan.outputs.shards }}
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }
       - id: plan
         name: plan
         run: |
@@ -42,17 +43,19 @@ jobs:
           done
           echo "key=avrac-$(sh tools/compiler_paths.sh --key)" >> "$GITHUB_OUTPUT"
           echo "shards=$(ls packages | python3 tools/shards.py 4)" >> "$GITHUB_OUTPUT"
-      # The compiler main's own checks cached, or built as they build it.
+      # The compiler main's own checks cached for this tree, else built from the
+      # commit before it (main's compiler) or the seed — never from a prefix match,
+      # which may be another tree's.
       - uses: actions/cache/restore@v4
         id: cache
         with:
           path: build/avra
           key: ${{ steps.plan.outputs.key }}
-          restore-keys: |
-            avrac-
       - if: steps.cache.outputs.cache-hit != 'true'
         name: compiler
-        run: if [ -x build/avra ] && make -s avra && make -s avra; then :; else make -s bootstrap; fi
+        run: |
+          FETCH_BUILD=build sh tools/fetch_compiler.sh HEAD~1 || :
+          if [ -x build/avra ] && make -s avra && make -s avra; then :; else make -s bootstrap; fi
       - name: objects and libs
         run: |
           make -s -j"$(nproc)" -o avra objects libs || make -s -o avra objects libs
