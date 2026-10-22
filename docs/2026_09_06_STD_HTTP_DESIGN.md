@@ -65,6 +65,15 @@ expansion mechanism belongs to the compiler; HTTP grammar and policy belong
 to the library. Error-to-status mappings belong to the HTTP contract, not
 to a compiler list of application errors.
 
+The ROUTER is one of these library components, and the split is what keeps
+it there: a body of routes lists anything that is `Routes` — a trait a
+route, a group and a named `router` each implement — so composition is
+ordinary typing and the compiler holds no rule per shape. A router is
+declared once, carries no prefix (a `group` supplies one), and is listed by
+name wherever routes go; specificity decides among them before written
+order does. `2026_09_30_HTTP_ROUTES_DX.md` §6 states the surface,
+`2026_09_06_STD_HTTP_TYPED_ROUTES.md` the specificity ladder.
+
 Remote calls retain their boundary: a generated client answers a result
 that distinguishes declared application errors from transport and decoding
 failures. Connection loss after sending a mutation may mean its outcome is

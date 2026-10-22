@@ -712,8 +712,7 @@ rt-header:
 
     real_wf = open(CHECKS, encoding="utf-8").read()
     assert check_run_mode(real_wf)[0] == [], check_run_mode(real_wf)
-    payload = real_wf.replace("python3 tools/pr_mode.py)\" = light ] && full=0",
-                              "true)\" = true ] && full=0")
+    payload = real_wf.replace("tools/pr_mode.py", "tools/mode_by_hand.py")
     assert payload != real_wf
     assert any("tools/pr_mode.py" in x for x in check_run_mode(payload)[0]), check_run_mode(payload)
     ungated_gate = real_wf.replace(" && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')", "")

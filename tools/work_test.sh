@@ -526,6 +526,23 @@ STUB
     lines='i=0; while [ $i -lt 8 ]; do i=$((i + 1)); echo "line $i"; sleep 1; done'
     want="line 1 line 2 line 3 line 4 line 5 line 6 line 7 line 8 "
 
+    # WHAT A SPRITE IS PROVISIONED FROM: a run provisions again when the recorded hash differs from the
+    # tree's, and skips when it is the same.
+    phash() { (here="$main/tools" && . "$here/sprite-lib.sh" && provision_hash); }
+    stamp="$AVRA_SPRITE_HOME/.avra-provisioned"
+    timeout 90 sh "$work" run true > "$scratch/out" 2> "$scratch/err"
+    check "$?|$(grep -c 'provisioning again' "$scratch/err")|$(cat "$stamp" 2>/dev/null)" "0|1|$(phash)" \
+        "provision hash: a Sprite with no record provisions again before the command, and records the tree's hash" "$scratch/err"
+    timeout 90 sh "$work" run true > "$scratch/out" 2> "$scratch/err"
+    check "$?|$(grep -c 'provisioning again' "$scratch/err")" "0|0" \
+        "provision hash: a Sprite whose record is the tree's skips provisioning" "$scratch/err"
+    old=$(phash)
+    echo "# changed" >> "$main/tools/sprite-provision.sh"
+    timeout 90 sh "$work" run true > "$scratch/out" 2> "$scratch/err"
+    check "$?|$(grep -c "provisioned from $old" "$scratch/err")|$([ "$(cat "$stamp")" = "$(phash)" ] && [ "$(phash)" != "$old" ] && echo moved)" "0|1|moved" \
+        "provision hash: a changed provisioning script is provisioned from again, and the record moves" "$scratch/err"
+    find "$main/tools" -name sprite-provision.sh -delete
+
     echo 3 > "$E2E/drop"
     timeout 90 sh "$work" run "$lines; exit 7" > "$scratch/out" 2> "$scratch/err"
     check "$?|$(grep '^line' "$scratch/out" | tr '\n' ' ')|$(grep -c '^work: CONNECTION — dropped (1 so far' "$scratch/err")|$(grep -c '^work: COMMAND — exit 7' "$scratch/err")|$(quiet 10)" "7|$want|1|1|0" \

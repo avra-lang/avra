@@ -32,7 +32,7 @@ on:
   # A DRAFT runs the light gate (see `full` in prepare). Readying it, or
   # labelling it `full-ci`, is what starts the whole run.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   # A QUEUE'S EVENT IS STILL ACCEPTED, so a repo that re-enables one needs no
   # edit here.
   merge_group:
@@ -217,9 +217,16 @@ jobs:
           # A LABELED RUN NEVER DOUBLES A GATE: when another run on this head is or was the
           # full one, this run waits for it and mirrors its verdict (tools/ci_dup_run.py).
           mirror=
-          if [ "$event" = pull_request ] && [ "${{ github.event.action }}" = labeled ]; then
+          # A label other than `full-ci` changes nothing: its run restates the head's standing verdict.
+          dupflag=
+          lab=plain
+          if [ "$event" = pull_request ]; then
+            lab=$(python3 tools/pr_mode.py --label-event "${{ github.event.action }}" "${{ github.event.label.name }}")
+          fi
+          [ "$lab" = ignore ] && dupflag=--any
+          if [ "$lab" != plain ]; then
             dup=$(GH_TOKEN="$GH_TOKEN" python3 tools/ci_dup_run.py --repo "${{ github.repository }}" \
-              --sha "${{ github.event.pull_request.head.sha }}" --run "${{ github.run_id }}") || dup=work
+              --sha "${{ github.event.pull_request.head.sha }}" --run "${{ github.run_id }}" $dupflag) || dup=work
             case "$dup" in
                 mirror\ *) mirror=${dup#mirror }; full=0; build=0; changed=; pkgs=; codecs=0; cache=0; runtime=0; runtime_keep=0; layout_oracle=0 ;;
             esac
@@ -1212,12 +1219,12 @@ jobs:
       # THE VERDICT NAMES ITS ARITHMETIC: the `test` job's own `needs:` is the
       # expected set and the run's `needs` JSON is what happened, so a skipped
       # leg BY DESIGN is green, a failure is refused by name, and a job the
-      # gate owed but the run did not report is refused too (tools/ci_verdict.py).
+      # gate owed but the run did not report is refused too (tools/ci_verdict.sh).
       - if: needs.prepare.outputs.full != '0'
         name: verdict
         run: |
           echo '${{ toJSON(needs) }}' > needs.json
-          python3 tools/ci_verdict.py --needs needs.json --workflow .github/workflows/checks.yml --job test
+          sh tools/ci_verdict.sh --needs needs.json --workflow .github/workflows/checks.yml --job test
       # THE WALL-CLOCK BUDGET: this PR check's per-job and whole wall time,
       # ratcheted in tools/speed.budget. It reads the run's own jobs as GitHub
       # reports them, so the queue and the hand-downs count; a ceiling may only

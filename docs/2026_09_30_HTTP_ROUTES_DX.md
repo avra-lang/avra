@@ -1,7 +1,8 @@
 # HTTP routes: typed functions, one import, no ceremony
 
-**Status:** design, 2026-09-30, not scheduled. Sub-epic of the HTTP
-epic `avra-8sb5.1`. Validation is `docs/2026_09_30_STD_VALIDATE.md`.
+**Status:** design, 2026-09-30. Sub-epic of the HTTP epic `avra-8sb5.1`.
+The router (§6) is implemented; the typed-fn route surface is not
+scheduled. Validation is `docs/2026_09_30_STD_VALIDATE.md`.
 
 ## 1. The shape
 
@@ -86,7 +87,65 @@ verified TLS. `Options` only when you mean it.
 `limits(), timing()`, `netted`, `tls_carried`, `json_body(req, T.from_json)`,
 `Response.json(v.to_json())`, six submodule imports.
 
-## 6. Prerequisites
+## 6. A router is a library component
+
+A router is a named group of routes with no prefix of its own, declared once
+and listed by name wherever routes go:
+
+```avra
+router tasks {
+    get "/" { _ -> tasks_all() }
+    post "/" { req -> tasks_add(req.params) }
+}
+
+server site {
+    routes: [tasks, admin]          // by name, in written order
+}
+
+group "/api" { tasks }              // the same router under a prefix
+group "/v2" { tasks }               // and under another
+```
+
+A body of routes lists anything that is `Routes` — a route, a group (already
+under its prefix), a router — so the slot is `List<dyn Routes>` and the trait
+is the whole of the surface:
+
+```avra
+trait Routes { fn routes() -> List<Route> }
+impl Routes for Route { … }         // one route stands for itself
+impl Routes for Mounted { … }       // a group's routes, prefix already applied
+impl Routes for router { … }        // a router gathers its own lines
+
+fn mounted(routes: List<Route>) -> Mounted    // a list, as one item of a body
+```
+
+THE ELEMENT BEING A TRAIT AND NOT A COMPONENT IS WHAT KEEPS THE COMPILER OUT
+OF IT, and that is why the router is a library component rather than language
+surface. A component slot would need the compiler to route each component's
+lines into the slot, and it cannot even see a component declared in another
+file (`avra-8sb5.57.297`); a slot over a trait is ordinary typing, so a
+router is declared once and listed wherever it is in scope — under one
+prefix, two prefixes, or another router — with no language rule per shape.
+
+What falls out:
+
+- WRITTEN ORDER IS THE ORDER across routers, groups and routes in one slot —
+  and specificity decides before it, so embedding a router never changes
+  which route answers (`2026_09_06_STD_HTTP_TYPED_ROUTES.md`, "Routing is
+  decided by specificity").
+- A ROUTER CARRIES NO PREFIX. Prefixing is `group`'s; one router mounts at
+  `/api/tasks` and `/v2/tasks` as two groups and its own lines are unchanged.
+- A ROUTER IS A VALUE, BUILT ONCE at startup, so the `dyn` box costs nothing
+  a request sees. `mounted(routes)` is how a list a fn built joins a body as
+  one item, so no caller spells a wrapper type by name.
+
+The `server`'s `routes` slot is `List<dyn Routes>` for the same reason, and a
+caller that reads it back walks `gathered(web.routes)`. Implemented in
+`packages/std-http/src/route.av` (PR #1103, `http-router`); witness
+`tests/http_router` — a router at the server root, the same router under two
+prefixes, a router nested in a router, and a miss answering 404.
+
+## 7. Prerequisites
 
 - `export use` (avra-8sb5.10.6), for `use @std.http`.
 - Trait impls over generic types (F2031), for `Respond` on `Created<T>`,

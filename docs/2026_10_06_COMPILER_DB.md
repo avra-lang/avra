@@ -1032,6 +1032,49 @@ held files an attempt must parse. A served answer replays its leaves into the KE
 (`db.read_leaves`), never into that record. The `r` line is the hold's, so it goes with DB 07's
 hold, not here.
 
+### A4.1 The `LiftResult` value save (DB 09) — MEASURED 2026-10-21
+
+`LiftResult`'s wire exists and round-trips: `compiler/family_wire.av`'s
+`lift_result_wire`/`lift_result_of_wire` (over the one heap wire `settled_wire` shares) is
+registered in `compiler/codecs.av`'s ONE registry as a `derived(...)` row over
+`LiftResult.exemplars()` (`@derive(Exemplar)`), and `make codecs` passes it. `LiftResult`'s
+own codec — the item `.lead/lanes/db-old-prs.md:163` files under DB 03 c — is PAID, not owed.
+
+What is owed is DB 03 b ("the codec grows payload enums and recursive records"). The only
+door on main that keeps a value past the process is a `@query`, and a query's answer carries
+its own codec helpers. Its
+answer-hash walk spells `<Answer>.hash_<type>(…)` (`std-relation/src/relation.av:1021`),
+and those helpers are emitted only on a `@relation` ROW (`codec_helper_members`); a query's
+answer type has no such owner. Probed with `@query fn kept_lift(db, name) -> LiftResult`
+and every payload type imported:
+
+    error[type.unknown_prop]: `LiftResult` has no variant `hash_lift_result`
+      ╭─[packages/std-relation/src/relation.av:1021:21]
+      ·  built here
+    help: the variants are `Crossed`, `Refused`
+
+A payload-free enum answer compiles and is saved as a value (`tests/durable`'s `Mood`:
+`0` runs in the next process). A RECORD answer compiles and is NOT saved — SUPERSEDED, see below: `#1148` landed record decoding in batch Q, so `decodable` now reads `.Named(.Record(_))` back where every field carries. What remains undecodable is `Opt<Record>`/`List<Record>`, and `decodable`
+(`relation.av:361`) refuses `.Named(.Record(_))` as well as `.Named(.Payload(_))`, so the
+wrapper takes the digest-only `ran` path — which `tests/durable`'s `Pair` measures (two
+runs across two processes). So even with hashing expressible, `LiftResult` would save no
+value until `decodable` can read a payload answer back.
+
+The generator that expresses it is `@codec` ("one generator for any record or enum"):
+merged as #1028 (`79f8948b`) and reverted by `f0d774c8`; it lives on `origin/codec-pr`, and
+`origin/db-07b-typed` already saves `TypeFacts` rows through it. DB 09's `Lifted` save
+therefore sits where its sibling `Typed` save sits: on `@codec` landing. Hand-writing the
+helpers on `LiftResult` is the SECOND codec the one-registry law refuses.
+
+**CORRECTION (batch Q, `846e8a84`):** the record half of this section no longer holds.
+`#1148` taught `decodable` to read a record — readable when every field carries, none is
+`@local`, it does not reach itself, and it is read at a field of its own, never a sequence's
+element. `tests/durable`'s `paired` (`Pair = {a: int, b: int}`) now runs ONCE across two
+processes. `#1150` restored `@codec` so a payload-enum answer saves too, and `@query ->
+LiftResult` compiles, saves and answers the same value in a second process. The ask below
+stands only for `Opt<Record>` and `List<Record>`.
+
+
 ## A5. Attack cases carried
 
 From `origin/redteam/m3-witness-attacks` @ `a644ba4` (written against deleted code; "6 of 17
@@ -1194,7 +1237,7 @@ call sites read `.decl(…)` (PROBED by grep at `05fe643`).
 
 | question | rule |
 |---|---|
-| over which producers? | a derived relation's producer either takes no key (the relation is one answer) or names a query that lists its keys: `@query(over: icon_dirs)`. "Those asked so far" is never the answer — it would depend on who asked first. For `Decl` the list is the package's files |
+| over which producers? | a derived relation's producer either takes no key (the relation is one answer) or names a query that lists its keys: `@over(icon_dirs)` (on the producer; the lister is `@query`). "Those asked so far" is never the answer — it would depend on who asked first. For `Decl` the list is the package's files |
 | what does the read do? | reads the key list (a recorded read), brings every listed producer up to date (when warm, only suspect ones do any work), then reads the **bucket root** `(relation, index, value)` |
 | how is the root kept? | by the store, by delta. When a producer's answer is replaced, its old and new bucket parts are subtracted and added to the roots of exactly the values they touch. Cost: the rows that changed. Never a rebuild over all rows — that would be the O(program) step L8 forbids |
 | who becomes suspect? | readers of the roots whose digest moved. Not readers of other buckets |

@@ -7,7 +7,9 @@ A labeled run waits for the other runs on its head, and then mirrors the verdict
 one that did the work, so the head's required check states exactly one result. A run
 that did no full work (a light run) is not a verdict: the labeled run does the work.
 
-    ci_dup_run.py --repo <owner/repo> --sha <head> --run <own run id>
+    ci_dup_run.py --repo <owner/repo> --sha <head> --run <own run id> [--any]
+
+`--any` counts a light run's verdict too: a label other than `full-ci` only restates it.
     ci_dup_run.py --self-test
 
 Prints `work`, or `mirror <conclusion> <run id>`.
@@ -19,24 +21,40 @@ import time
 import urllib.request
 
 WORKFLOW = "checks"
-FULL_JOB = "keepers-a"  # a full run runs this job; a light run does not
+VERDICT_STEP = "verdict"  # `test` reaches this step only for a run that planned the full gate
 WAIT_S = 30
 GIVE_UP_S = 45 * 60
 
 
-def decide(own, others):
+def decide(own, others, any_run=False):
     """`others`: the other runs on the head, each {id, status, conclusion, full}.
-    `work` when no run carries the verdict, `wait` while one is live, else the mirror."""
-    if any(o["status"] != "completed" for o in others):
+    `work` when no run carries the verdict, `wait` while an EARLIER one is live, else the mirror."""
+    # A RUN WAITS ONLY ON THE RUNS THAT STARTED BEFORE IT. A `labeled` and an `unlabeled` run sit in
+    # different concurrency groups, so the two can be live together; a wait on a LATER sibling is a
+    # wait on a run that is itself waiting on this one, and the pair stalls until both give up.
+    # Ids are a total order, so the earliest run decides first and nothing cycles.
+    if any(o["status"] != "completed" and o["id"] < own["id"] for o in others):
         return "wait"
     # a cancelled (or skipped, or never-concluded) run carries no verdict: only a run that reached
     # success or failure does, so a run that finds only cancelled siblings does the work itself
-    done = sorted((o for o in others if o["full"] and o["conclusion"] in ("success", "failure")),
+    done = sorted((o for o in others if (o["full"] or any_run) and o["conclusion"] in ("success", "failure")),
                   key=lambda o: o["id"], reverse=True)
     if not done:
         return "work"
     newest = done[0]
     return "mirror %s %s" % (newest["conclusion"], newest["id"])
+
+
+def ran_full(jobs):
+    """A run gave the full gate when its `test` job reached the `verdict` step: a light run's `test`
+    refuses it in `light draft` instead, and a mirrored one never reaches it at all.
+
+    NO HEAVY LEG CAN ANSWER THIS. A run whose diff owes no compiler plans full=1 and still skips
+    `keepers-a` (it is gated on the build too), so a leg's skip says nothing about the mode. The
+    question is asked of `test`, which is the one job that reads `full`. A renamed step leaves this
+    answering False, which spends a gate rather than mirroring a light run's refusal."""
+    return any(s.get("name") == VERDICT_STEP and s.get("conclusion") != "skipped"
+               for j in jobs if j.get("name") == "test" for s in j.get("steps") or [])
 
 
 def fetch(url, token):
@@ -56,19 +74,20 @@ def others_on(repo, sha, own, token):
         jobs = fetch("https://api.github.com/repos/%s/actions/runs/%d/jobs?per_page=100"
                      % (repo, r["id"]), token).get("jobs", [])
         rows.append({"id": r["id"], "status": r["status"], "conclusion": r.get("conclusion") or "",
-                     "full": any(j["name"].startswith(FULL_JOB) for j in jobs)})
+                     "full": ran_full(jobs)})
     return rows
 
 
 def main(argv):
     if "--self-test" in argv:
         return self_test()
-    args = dict(zip(argv[::2], argv[1::2]))
+    any_run = "--any" in argv
+    args = dict(zip([a for a in argv if a != "--any"][::2], [a for a in argv if a != "--any"][1::2]))
     repo, sha, own = args["--repo"], args["--sha"], int(args["--run"])
     token = os.environ.get("GH_TOKEN", "")
     waited = 0
     while True:
-        verdict = decide({"id": own}, others_on(repo, sha, own, token))
+        verdict = decide({"id": own}, others_on(repo, sha, own, token), any_run)
         if verdict != "wait" or waited >= GIVE_UP_S:
             print("work" if verdict == "wait" else verdict)
             return 0
@@ -97,12 +116,50 @@ def self_test():
          [{"id": 4, "status": "completed", "conclusion": "success", "full": True},
           {"id": 5, "status": "completed", "conclusion": "cancelled", "full": True}], "mirror success 4"),
     ]
-    bad = [(name, got, want) for name, rows, want in cases for got in [decide({"id": 9}, rows)] if got != want]
+    restated = [
+        ("another label restates a light run's verdict too",
+         [{"id": 5, "status": "completed", "conclusion": "success", "full": False}], "mirror success 5"),
+        ("another label with no finished run does the work",
+         [{"id": 5, "status": "completed", "conclusion": "cancelled", "full": False}], "work"),
+    ]
+    late = [
+        ("two label runs live together: the later one is not waited for, so the pair cannot stall",
+         [{"id": 12, "status": "in_progress", "conclusion": "", "full": False}], "work"),
+        ("an earlier live run is waited for and a later one is not",
+         [{"id": 4, "status": "in_progress", "conclusion": "", "full": False},
+          {"id": 12, "status": "in_progress", "conclusion": "", "full": False}], "wait"),
+    ]
+    jobs_cases = [
+        ("a light run's test refuses it in `light draft`: not a full run",
+         [{"name": "test", "conclusion": "failure", "steps": [
+             {"name": "mirror", "conclusion": "skipped"},
+             {"name": "light draft", "conclusion": "failure"},
+             {"name": "verdict", "conclusion": "skipped"}]}], False),
+        ("a run that owed no compiler gave the full gate anyway: keepers-a skipped, verdict ran",
+         [{"name": "prepare", "conclusion": "success"},
+          {"name": "keepers-a", "conclusion": "skipped"},
+          {"name": "test", "conclusion": "success", "steps": [
+              {"name": "light draft", "conclusion": "skipped"},
+              {"name": "verdict", "conclusion": "success"}]}], True),
+        ("a mirrored run carries a verdict but gave no gate: not a full run",
+         [{"name": "test", "conclusion": "failure", "steps": [
+             {"name": "mirror", "conclusion": "failure"},
+             {"name": "verdict", "conclusion": "skipped"}]}], False),
+        ("a verdict still running counts as the full run's",
+         [{"name": "test", "conclusion": None, "steps": [{"name": "verdict", "conclusion": None}]}], True),
+        ("no test job at all: not a full run",
+         [{"name": "prepare", "conclusion": "success"}], False),
+    ]
+    bad = [(name, got, want) for name, jobs, want in jobs_cases for got in [ran_full(jobs)] if got != want]
+    bad += [(name, got, want) for name, rows, want in restated for got in [decide({"id": 9}, rows, True)] if got != want]
+    bad += [(name, got, want) for name, rows, want in late for got in [decide({"id": 9}, rows)] if got != want]
+    bad += [(name, got, want) for name, rows, want in cases for got in [decide({"id": 9}, rows)] if got != want]
     for name, got, want in bad:
         print("ci_dup_run: FAILED — %s: got %r, wanted %r" % (name, got, want))
     if bad:
         return 1
-    print("ci_dup_run: self-test clean — %d case(s)" % len(cases))
+    print("ci_dup_run: self-test clean — %d case(s)"
+          % (len(cases) + len(jobs_cases) + len(restated) + len(late)))
     return 0
 
 

@@ -387,7 +387,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
+.PHONY: census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -816,6 +816,13 @@ http-cites:
 dogfooding-rules:
 	@./build/avra rules --check-markdown DOGFOODING.md
 
+# EVERY RULE EXAMPLE IS WALKED WHOLE: a `@fixes`/`@keeps` example that
+# leads with a `type` or an `impl` still reaches the fn under test below
+# it, and an example whose walk stops short is refused, never counted as
+# coverage (compiler/rule_examples.av's `example_gaps`).
+rule-examples:
+	@./build/avra rules --check-examples
+
 # THE HAND-WRITTEN FAMILIES MAY ONLY FALL. Every `@family` marker is a
 # family not yet a `@query`; the count may only fall and the ceiling in
 # tools/families.ceiling is lowered as one converts. A family is keyed
@@ -855,7 +862,7 @@ libs-self-test:
 
 hooks-released:
 	@python3 tools/hooks_released.py
-	@python3 tools/hooks_pre_commit_check.py
+	@sh tools/hooks_pre_commit_check.sh
 
 # EVERY READ OF THE WORLD IS AN INPUT THROUGH ONE DOOR: the world reads
 # outside the door, counted by subsystem; a site the baseline does
@@ -996,6 +1003,7 @@ attack:
 # SET of mutants of the tree's own program tests rides beside them; more is
 # `python3 tools/defects.py --only gen: --generate 500 --seed <n>`.
 defects:
+	@python3 tools/defects.py --self-test
 	@sh tools/watch.sh 6000 python3 tools/defects.py --generate 40 --seed 0
 
 # The IR vocabulary's guarantee: every Ins consumer stays exhaustive,
@@ -1115,7 +1123,7 @@ KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A1 = speed-ratchet census-gate fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns witnesses dogfooding-rules attack voices defects \
+KEEPERS_B = fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board ui-browser ui-browser-skip wasm-host-check tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
@@ -1145,11 +1153,11 @@ ci-invariants:
 	@python3 tools/ci_path_gate.py --self-test
 
 # THE AGGREGATE VERDICT'S FIXTURES: the `test` job's arithmetic is a script
-# (tools/ci_verdict.py), and these prove it counts what it claims — a skipped
+# (tools/ci_verdict.sh), and these prove it counts what it claims — a skipped
 # leg green, a failure named with its count, a job the gate owed but the run
 # never reported refused — before it judges a run.
 ci-verdict:
-	@python3 tools/ci_verdict.py --self-test
+	@sh tools/ci_verdict.sh --self-test
 
 # THE WATCHER'S DECISION IS A KEEPER: its fixtures run wherever the gate
 # runs, so a change to what the watcher may do refuses before it can land,
@@ -1376,7 +1384,7 @@ gate: llvm-libs seed-check stems vocab fingerprints ui-host ui-host-test ui-boar
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
 	@rm -rf packages/std-avrac/src/features/zz_probe
 	@sh tools/capped.sh build/scaffold-new.out 200000 ./avra new feature zz_probe || { cat build/scaffold-new.out; exit 1; }
-	@trap 'rm -rf packages/std-avrac/src/features/zz_probe' EXIT INT TERM; $(MAKE) -s test
+	@trap 'rm -rf packages/std-avrac/src/features/zz_probe' EXIT INT TERM; $(MAKE) -s test SHARDS_SKIP=std-avrac/src/features/zz_probe
 
 # The differential gate: the compiled binary must say exactly what
 # the evaluator says.

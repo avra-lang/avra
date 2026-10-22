@@ -23,6 +23,25 @@ grep -q "no warm store" "$tmp/fail.err" \
 grep -q "FAILURE" "$tmp/fail.err" \
     || { echo "witness_warm_edit: the refusal does not say FAILURE" >&2; cat "$tmp/fail.err" >&2; exit 1; }
 
+# 1b. a measurement whose subshell dies is a NAMED refusal, never an unbound `$1`.
+mkdir -p "$tmp/m/tools" "$tmp/m/build" "$tmp/m/packages/cli/src/commands" "$tmp/m/.avra-cache"
+cp "$root/tools/warm_edit_bench.sh" "$tmp/m/tools/warm_edit_bench.sh"
+printf 'x · memo y\n' > "$tmp/m/packages/cli/src/commands/shared.av"
+: > "$tmp/m/build/libavra_runtime.a"
+cat > "$tmp/m/build/avra" <<'DIES'
+#!/bin/sh
+kill -KILL $PPID
+DIES
+chmod +x "$tmp/m/build/avra"
+if SPEED_LOCAL=1 SPEED_ROUNDS=1 AVRA_SPEED_BIN="$tmp/m/build/avra" sh "$tmp/m/tools/warm_edit_bench.sh" >"$tmp/dead.stdout" 2>"$tmp/dead.err"; then
+    echo "witness_warm_edit: the bench PASSED with a measurement that never answered" >&2
+    exit 1
+fi
+grep -q "not measured" "$tmp/dead.err" \
+    || { echo "witness_warm_edit: a dead measurement was not a named refusal" >&2; cat "$tmp/dead.err" >&2; exit 1; }
+! grep -qE "unbound variable|parameter not set" "$tmp/dead.err" \
+    || { echo "witness_warm_edit: a dead measurement is an unbound parameter" >&2; cat "$tmp/dead.err" >&2; exit 1; }
+
 # 2. the hand-set opt-out: SKIP, loudly, status 0.
 WARM_EDIT_SKIP=1 SPEED_LOCAL=1 sh "$tmp/tools/warm_edit_bench.sh" \
     >"$tmp/skip.stdout" 2>"$tmp/skip.err" \

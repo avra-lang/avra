@@ -11,6 +11,10 @@
 # with, and every recovery that rebuilds needs the memory and disk the
 # census run just spent.
 #
+# CENSUS_EDIT MEASURES A WARM EDIT: the command runs once cold to fill the store,
+# then CENSUS_EDIT edits the tree, and only the run after it is counted.
+#   CENSUS_EDIT='sh tools/db_measure/edit_literal.sh' sh tools/census.sh check packages/cli
+#
 # A CENSUS THAT PRINTS NO COUNTS FAILS. A check that examined nothing
 # is not a check that passed: no `rc:` line means the binary carried no
 # census, and the run exits 1 saying so.
@@ -53,6 +57,10 @@ nm "$census" | grep -Eq '[ _]note_retain$' || { echo "census: $census carries no
 # THE FILTER DROPS `mem:`, IT DOES NOT SELECT LABELS: an allowlist of
 # census labels is a second registry of them, and goes stale silently.
 rm -rf .avra-cache
+if [ -n "${CENSUS_EDIT:-}" ]; then
+    sh tools/memcap.sh 4000 "$census" "$@" > build/census-cold.out 2>&1 || { tail -5 build/census-cold.out; echo "census: the cold run failed"; exit 1; }
+    sh -c "$CENSUS_EDIT"
+fi
 out="$(AVRA_MEM_STATS=1 AVRA_CENSUS_SITES=1 sh tools/memcap.sh 4000 "$census" "$@" 2>&1 >/dev/null \
     | grep -Ev '^(mem:|memcap:)' || true)"
 printf '%s\n' "$out" | grep -q '^rc:' || { printf '%s\n' "$out" | tail -5; echo "census: the run printed no counts"; exit 1; }
