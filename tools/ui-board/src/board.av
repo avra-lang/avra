@@ -15,6 +15,7 @@
 use @std.time.{ms}
 use @std.ui.app.{Async, Fetch, fetch, fetched, later}
 use @std.http_message.message.{Body, Reply, Request}
+use @std.json.{Json, field as member, parse, to_text}
 use @std.ui.components.{
     button,
     card,
@@ -38,8 +39,9 @@ use @std.ui.style.theme.{Theme, dark_theme, default_theme}
 /// Which tasks the board shows.
 enum Show { All, Active, Done }
 
-/// One task. `id` is the item key; `done` is its state.
-type Todo = { id: string, title: string, done: bool }
+/// One task. `id` is the item key; `done` is its state; `held` says the server
+/// keeps it (its `id` is then the server's key) and not only this page.
+type Todo = { id: string, title: string, done: bool, held: bool = false }
 
 // ── state ───────────────────────────────────────────────────────
 
@@ -49,7 +51,9 @@ state newest_first: bool = false
 state dialog_open: bool = false
 state reminded: bool = false
 state synced: Fetch<int> = fetch()
+state started: Fetch<int> = fetch()
 state seq: int = 5
+state pending: string = ""
 state tasks: List<Todo> = [
     Todo { id: "t1", title: "Draft the spec", done: true },
     Todo { id: "t2", title: "Wire the event channel", done: false },
@@ -219,18 +223,55 @@ fn remind_now() -> bool {
     true
 }
 
-/// What the server said, as a count of tasks.
-fn counted(r: Reply) -> Result<int, string> {
-    if r.status == 200 { .Ok(r.body.length) } else { .Err("status ${r.status}") }
+/// A task as the server writes it: `{"id":1,"title":"…","done":false}`.
+fn todo_of(j: Json) -> Todo? {
+    let key? = j.get("id")?.int() else { return null }
+    let title? = j.get("title")?.text() else { return null }
+    Todo { id: "${key}", title: title, done: j.get("done")?.truth() ?? false, held: true }
 }
 
-/// The tasks are asked for: one request, whatever target sends it.
+/// The reply's body as JSON, or why it is not.
+fn document(r: Reply) -> Result<Json, string> {
+    if r.status != 200 { return .Err("status ${r.status}") }
+    let words? = r.body.text() else { return .Err("not text") }
+    match parse(words) { .Ok(j) -> .Ok(j), .Err(e) -> .Err(e.describe().message) }
+}
+
+/// The server's tasks replace the board's when it holds any; answers how
+/// many it holds.
+fn loaded(r: Reply) -> Result<int, string> {
+    let doc = document(r)?
+    let rows = [t! for t in [todo_of(j) for j in doc.items()] if t != null]
+    if !rows.is_empty() { tasks = rows }
+    .Ok(rows.length)
+}
+
+/// The task the server kept stands where the pending one did; answers how
+/// many tasks the server now holds.
+fn kept(r: Reply) -> Result<int, string> {
+    let doc = document(r)?
+    let made? = todo_of(doc) else { return .Err("the server's task is unreadable") }
+    tasks = [if t.id == pending { made } else { t } for t in tasks]
+    .Ok([t for t in tasks if t.held].length)
+}
+
+/// The tasks are asked for at start: one request, whatever target sends it,
+/// its progress kept apart from the footer's Sync words.
+fn load() {
+    let _ = fetched(started, Request.get("/tasks"), loaded)
+}
+
+/// Sync sends the first task the server does not hold; with none to send it
+/// asks for the server's again.
 fn sync() {
-    let _ = fetched(
-        synced,
-        Request.post("/tasks", Body.Json("[1,2]")).header("x-board", "1"),
-        counted,
-    )
+    let unsent? = tasks.find(!it.held) else {
+        let _ = fetched(synced, Request.get("/tasks"), loaded)
+        return
+    }
+    pending = unsent.id
+    let body = Json
+        .Obj([member("title", Json.Str(unsent.title)), member("done", Json.Bool(unsent.done))])
+    let _ = fetched(synced, Request.post("/tasks", Body.Json(to_text(body))), kept)
 }
 
 /// How the last sync stands, in words.
