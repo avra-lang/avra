@@ -10,9 +10,19 @@ A=${AVRA_BIN:-build/avra}
 mode=${1:-}
 out=${TMPDIR:-/tmp}/leaves.$$
 : > "$out"
+# The store is the tree root's one `.avra-cache`: the run's own is cold and the tree's own is
+# put back, however the run ends.
+held=${TMPDIR:-/tmp}/leaves-held.$$
+mkdir -p "$held"
+[ -d .avra-cache ] && mv .avra-cache "$held/kept"
+restore() {
+    [ -d .avra-cache ] && mv .avra-cache "$held/used.last"
+    [ -d "$held/kept" ] && mv "$held/kept" .avra-cache
+    find "$held" -delete
+}
+trap restore EXIT
 for pkg in packages/cli packages/std-avrac; do
-    n=0
-    for d in $(find . -name .avra-cache -type d -prune); do n=$((n + 1)); mv "$d" "/tmp/avra-cache-old-$$-$(date +%s)-$n"; done
+    [ -d .avra-cache ] && mv .avra-cache "$held/used.first"
     lines=$(AVRA_LEAVES=1 "$A" check "$pkg" 2>&1 | grep -a '^leaves ')
     [ -n "$lines" ] || { echo "leaves: $pkg answered no meter line"; exit 1; }
     echo "$lines" | while IFS= read -r line; do echo "$pkg $line" >> "$out"; done

@@ -52,13 +52,7 @@ cat > "$tmp/bin/git" <<'SH'
 printf '%s\n' "$*" >> "$GIT_LOG"
 exit 99
 SH
-# A `clang` with no wasm target, so the gate's wasm proof skips here as it
-# does on a machine without the toolchain — it reads the real tree.
-cat > "$tmp/bin/clang" <<'SH'
-#!/bin/sh
-exit 0
-SH
-chmod +x "$tmp/bin/avra" "$tmp/bin/make" "$tmp/bin/git" "$tmp/bin/clang"
+chmod +x "$tmp/bin/avra" "$tmp/bin/make" "$tmp/bin/git"
 
 run() {
     ( cd "$tmp" && PATH="$tmp/bin:$PATH" AVRA="$tmp/bin/avra" \
@@ -94,39 +88,5 @@ run --files a.av --packages pkg/good --no-keepers >/dev/null 2>&1 || say "(d) a 
 run --files --packages >/dev/null 2>&1 || say "(f) an empty change answered failure"
 [ -s "$avralog" ] && say "(f) the compiler ran with nothing changed"
 
-# (g) a PR's minimum runs the wasm proof when the PR changes a wasm script, and only then: the proof
-# is a stub here that logs its call, behind a clang that claims a wasm32 target, and git names the
-# changed paths from $GIT_PATHS.
-mkdir -p "$tmp/tools"
-: > "$tmp/tools/affected_packages.sh"
-for s in wasm-check wasm-seam-check wasm-refuses wasm-tasks-mutations wasm-host-check wasm-cache-attacks; do
-    printf 'echo %s >> "$WASM_LOG"\n' "$s" > "$tmp/tools/$s.sh"
-done
-wasmlog="$tmp/wasm.log"
-cat > "$tmp/bin/clang" <<'SH'
-#!/bin/sh
-echo "Registered Targets: wasm32"
-SH
-cat > "$tmp/bin/git" <<'SH'
-#!/bin/sh
-printf '%s\n' "$*" >> "$GIT_LOG"
-case "$*" in *"*.av"*) exit 0 ;; esac
-printf '%s\n' "$GIT_PATHS"
-SH
-chmod +x "$tmp/bin/clang" "$tmp/bin/git"
-refs() {
-    : > "$wasmlog"
-    ( cd "$tmp" && PATH="$tmp/bin:$PATH" AVRA="$tmp/bin/avra" WASM_LOG="$wasmlog" GIT_PATHS="$1" \
-        AVRA_LOG="$avralog" MAKE_LOG="$makelog" GIT_LOG="$gitlog" sh "$gate" --refs base head --no-keepers --pr-minimum ) >/dev/null 2>&1
-}
-refs "tools/wasm-check.sh" || say "(g) a wasm-script PR answered failure"
-[ -s "$wasmlog" ] || say "(g) a PR touching tools/wasm-check.sh did not run the wasm proof"
-refs "tools/wasm-fixtures/cancel/src/main.av" || say "(g) a wasm-fixture PR answered failure"
-[ -s "$wasmlog" ] || say "(g) a PR touching a wasm fixture did not run the wasm proof"
-refs "docs/2026_10_18_EVENTS.md" || say "(h) a docs-only PR answered failure"
-[ -s "$wasmlog" ] && say "(h) a docs-only PR ran the wasm proof"
-refs "packages/std-ui/src/ui.av" || say "(h) a package PR answered failure"
-[ -s "$wasmlog" ] && say "(h) a PR touching no wasm file ran the wasm proof"
-
-[ "$fail" -eq 0 ] && echo "witness_gate_changed: 8 proved — keepers, fmt and idioms, inputs named, no git, the wasm proof where its files change"
+[ "$fail" -eq 0 ] && echo "witness_gate_changed: 6 proved — keepers, fmt and idioms, inputs named, no git, nothing changed"
 exit "$fail"

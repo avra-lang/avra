@@ -76,7 +76,7 @@ avra_ffi_symbol("sqlite3_libversion") == 0
 #    and the refusal names the symbol. This row does NOT test the
 #    flag — nothing opened the library in this process either way —
 #    it tests that the image fallback did not quietly widen.
-scoped undeclared "avra: \`sqlite3_libversion\` is extern and this image does not carry it — build natively" "" 'extern fn sqlite3_libversion() -> string
+scoped undeclared "avra: \`sqlite3_libversion\` is extern and this image does not carry it — build natively where a library defines it; where only a host does, build for that host or answer it here with \`extern fn sqlite3_libversion(…) { … }\`" "" 'extern fn sqlite3_libversion() -> string
 sqlite3_libversion().length > 0
 '
 

@@ -24,9 +24,7 @@ command -v clang >/dev/null 2>&1 || skip "clang not on PATH"
 clang --print-targets 2>/dev/null | grep -q wasm32 || skip "clang has no wasm32 target"
 command -v wasm-opt >/dev/null 2>&1 || skip "wasm-opt (binaryen) not on PATH"
 
-if [ ! -f "$tree/build/wasm32/libavra_runtime.a" ]; then
-    ( cd "$tree" && make -s wasm-runtime ) || skip "the wasm runtime archive did not build"
-fi
+( cd "$tree" && make -s wasm-runtime wasm-packages ) || skip "the wasm runtime archive did not build"
 # each fixture is built for the host too, and a gate job may hold only the compiler: the host
 # runtime AND the package C objects and archives a fixture's `[link]` rows name (std_time.o)
 sh "$here/wasm-host-objects.sh" "$tree"

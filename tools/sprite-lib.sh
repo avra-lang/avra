@@ -42,6 +42,10 @@ provision_hash() {
     done | LC_ALL=C sort | xargs shasum -a 256 ) | shasum -a 256 | cut -d' ' -f1
 }
 
+# What a run that drives a browser adds (`work run --browser`): the browser leg's host libraries, which
+# no other run installs.
+browser_packages_list() { { main_packages .github/ci/packages-browser.txt; local_list .github/ci/packages-browser.txt; } | packages_of | unioned; }
+
 # sx <sprite> <seconds> <command...>
 sx() {
     sx_s=$1 sx_b=$2
