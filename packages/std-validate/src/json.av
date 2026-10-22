@@ -29,6 +29,7 @@ use @std.json.{
     int_end,
     int_of,
     skip,
+    skip_judged,
     value_at,
     MAX_DEPTH,
 }
@@ -83,7 +84,7 @@ impl Decoding {
     /// allows below `depth`; false where the text is not JSON.
     mut fn skipped(depth: int) -> bool {
         if self.pos < 0 { return false }
-        self.pos = skip(self.bytes, self.pos, MAX_DEPTH - depth)
+        self.pos = skip_judged(self.bytes, self.pos, MAX_DEPTH - depth)
         self.pos >= 0
     }
 
@@ -163,7 +164,11 @@ impl Decoding {
             let end = number_end(self.bytes, at)
             if end >= 0 && int_end(self.bytes, at) < 0 {
                 self.pos = end
-                return parse_float(self.text.substring(at, end))
+                let x? = parse_float(self.text.substring(at, end)) else {
+                    self.aside()
+                    return null
+                }
+                return x
             }
         }
         let s? = self.tree_slot(depth, required, secret) else { return null }
