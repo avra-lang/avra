@@ -63,6 +63,7 @@ mkdir -p "$work/tools"
 cp -R "$tree/tools/ui-board" "$work/tools/ui-board"
 "$avra" dev --target "$target" --port 0 "$work/tools/ui-board" >"$work/dev.out" 2>"$work/dev.err" &
 dev=$!
+servers=""
 trap 'kill "$dev" 2>/dev/null || true' EXIT
 tries=0
 until grep -q '^dev: .* at http' "$work/dev.out" 2>/dev/null; do
@@ -77,7 +78,33 @@ until grep -q '^dev: .* at http' "$work/dev.out" 2>/dev/null; do
 done
 url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/dev.out" | head -1)
 
-if ! out=$(node "$here/ui-board/browser.mjs" "$url" --source "$work/tools/ui-board/src/board.av" ${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"} 2>&1); then
+# THE SERVER'S PAGE, drawn natively from the board's own package, served with
+# the module and the glue — once as drawn, once with an element gone before the
+# module runs. The module is built from a copy of its own.
+mkdir -p "$work/server/tools" "$work/served/tools"
+cp -R "$tree/tools/ui-board" "$work/server/tools/ui-board"
+cp "$tree/tools/ui-board/hydrate/main.av" "$work/server/tools/ui-board/src/main.av"
+"$avra" run "$work/server/tools/ui-board" 2>"$work/hydrate.err" | sed -n '3,$p' > "$work/document.html"
+grep -q "^<!doctype html>" "$work/document.html" || { cat "$work/hydrate.err"; echo "ui-browser: the server's page did not draw"; exit 1; }
+cp -R "$tree/tools/ui-board" "$work/served/tools/ui-board"
+"$avra" build --target "$target" --wasm_reactor "$work/served/tools/ui-board" >"$work/served.out" 2>"$work/served.err" || { cat "$work/served.err"; echo "ui-browser: the board did not build for the served page"; exit 1; }
+served=$(tail -1 "$work/served.out")
+for mode in "" "--tampered"; do
+    node "$here/ui-board/serve_hydrated.mjs" "$work/document.html" "$served" "$tree/runtime/dom" $mode >"$work/serve$mode.out" 2>&1 &
+    servers="$servers $!"
+done
+trap 'kill "$dev" $servers 2>/dev/null || true' EXIT
+for mode in "" "--tampered"; do
+    tries=0
+    until grep -q '^serving http' "$work/serve$mode.out" 2>/dev/null; do
+        tries=$((tries + 1)); [ "$tries" -lt 100 ] || { cat "$work/serve$mode.out"; echo "ui-browser: the served page never came up"; exit 1; }
+        sleep 0.1
+    done
+done
+hydrated=$(sed -n 's/^serving \(http[^ ]*\).*$/\1/p' "$work/serve.out" | head -1)
+torn=$(sed -n 's/^serving \(http[^ ]*\).*$/\1/p' "$work/serve--tampered.out" | head -1)
+
+if ! out=$(node "$here/ui-board/browser.mjs" "$url" --source "$work/tools/ui-board/src/board.av" --hydrated "$hydrated" --tampered "$torn" ${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"} 2>&1); then
     echo "$out" | grep -v '^ok ' ; echo "ui-browser: the board failed in the browser"; exit 1
 fi
 echo "ui-browser: ran $(echo "$out" | grep -c '^ok ') claims, all hold, in Firefox, served by \`avra dev\` at $url"

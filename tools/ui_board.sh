@@ -47,7 +47,16 @@ carried=$(node -e 'const m = new WebAssembly.Module(require("fs").readFileSync(p
 shrunk="unshrunk (no wasm-opt on PATH)"
 command -v "${WASM_OPT:-wasm-opt}" >/dev/null 2>&1 && shrunk="shrunk by ${WASM_OPT:-wasm-opt}"
 
-if ! out=$(node "$tree/tools/ui-board/demo.mjs" "$wasm" 2>&1); then
+# THE SERVER'S FIRST PAGE, drawn natively from the same view: the print the
+# module is held to and the bytes of HTML a page carries.
+mkdir -p "$work/server/tools"
+cp -R "$tree/tools/ui-board" "$work/server/tools/ui-board"
+cp "$tree/tools/ui-board/hydrate/main.av" "$work/server/tools/ui-board/src/main.av"
+if ! sent=$("$avra" run "$work/server/tools/ui-board" 2>"$work/hydrate.err"); then
+    cat "$work/hydrate.err"; echo "ui-board: the server's page did not draw"; exit 1
+fi
+
+if ! out=$(node "$tree/tools/ui-board/demo.mjs" "$wasm" "$(echo "$sent" | sed -n 1p)" "$(echo "$sent" | sed -n 2p)" 2>&1); then
     echo "$out" | grep -v '^ok ' ; echo "ui-board: the board failed on the page"; exit 1
 fi
 # WHAT THE HOST MAY CALL, and whose word each is: the module's host fns.
