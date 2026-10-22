@@ -7,8 +7,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from plan import Shared, drafted, params_of, planned, shared_socket  # noqa: E402
-from prompt import render_schema  # noqa: E402
+from plan import Shared, composed, params_of, shared_socket, viewed  # noqa: E402
 from catalog import Refusal  # noqa: E402
 from plan import gated  # noqa: E402
 
@@ -94,17 +93,6 @@ class Gate(unittest.TestCase):
         gated("not cypher at all", SCHEMA, PARAMS, None)
 
 
-class Prompt(unittest.TestCase):
-    def test_schema_comes_from_the_catalog(self):
-        text = render_schema(SCHEMA)
-        self.assertIn("(:PersonalRelationship) relative is subject's relation.", text)
-        self.assertIn(".subject -> (:Person)", text)
-        self.assertIn("'mum' = 'mother'", text)
-        self.assertIn(".requested_guest_limit: integer?", text)
-        self.assertNotIn("'wife' = 'wife'", text)
-        self.assertIn("relationships: -[:wife]->(:Person), -[:mother]->(:Person), -[:mum]->(:Person)", text)
-
-
 class Budgeting(unittest.TestCase):
     def test_the_budget_is_the_declared_context_less_the_answer(self):
         import tempfile
@@ -130,41 +118,21 @@ class Loop(unittest.TestCase):
         self.assertEqual(params_of(context), {"asker": "p:jonas", "now": 9, "speaker": "p:dana", "known_revision": 3})
         self.assertNotIn("speaker", params_of({**context, "speaker": None}))
 
-    def test_a_refused_draft_is_retried_with_its_refusal(self):
-        replies = ["```cypher\nMATCH (me:Person) WHERE id(me) = $speaker RETURN me.age\n```", SLICE["q01"]]
-        seen = []
 
-        class Fake:
-            def reply(self, turns):
-                seen.append(turns[-1]["content"])
-                return replies[len(seen) - 1]
+class Reading(unittest.TestCase):
+    def test_a_bound_valid_instant_is_the_views_without_a_choice(self):
+        context = {"question_at_ms": 5, "valid_at_ms": 86_400_000}
+        self.assertEqual(viewed(None, "q", context), {"valid_at": "1970-01-02T00:00:00Z"})
 
-        context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
-        out = planned(Fake(), "Who is my wife?", SCHEMA, context, limit=2, graph=FakeGraph(refusing="age"))
-        self.assertEqual(out["cypher"], SLICE["q01"])
-        self.assertIn("unknown_property", seen[1])
-        json.dumps(out)
-
-    def test_a_question_about_the_asker_must_read_from_the_speaker(self):
-        unbound = SLICE["q01"].replace("id(me) = $speaker AND ", "")
-        replies = [unbound, SLICE["q01"]]
-
-        class Fake:
-            calls = 0
-
-            def reply(self, turns):
-                Fake.calls += 1
-                return replies[Fake.calls - 1]
-
+    def test_a_refused_composition_carries_the_graphs_reason(self):
+        class Takes:
             def choose(self, context, question, options):
-                return [0.9 if o.startswith("yes") else 0.1 for o in options]
+                return [1.0] + [0.0] * (len(options) - 1)
 
         context = {"principal": "p:jonas", "speaker": "p:jonas", "question_at_ms": 1}
-        self.assertEqual(planned(Fake(), "Who is my wife?", SCHEMA, context, limit=2, graph=FakeGraph())["cypher"], SLICE["q01"])
-        self.assertEqual(Fake.calls, 2)
-
-    def test_drafts_lose_fences_and_prose(self):
-        self.assertEqual(drafted("Here it is:\n```\nMATCH (a:Person)\nRETURN a.name\n```"), "MATCH (a:Person) RETURN a.name")
+        with self.assertRaises(Refusal) as refused:
+            composed(Takes(), "Who is my wife?", SCHEMA, context, FakeGraph(refusing="Person"))
+        self.assertIn("unknown_property", str(refused.exception))
 
 
 class Picking:
@@ -454,14 +422,14 @@ class Socket(unittest.TestCase):
                         data += chunk
                     if data:
                         asked.append(json.loads(data))
-                        conn.sendall(b'{"text": "MATCH (a:Person) RETURN a.name"}\n')
+                        conn.sendall(b'{"p": [0.25, 0.75]}\n')
 
         threading.Thread(target=serve, daemon=True).start()
         self.assertEqual(shared_socket(path), path)
-        text = Shared(path).reply([{"role": "user", "content": "q"}])
+        p = Shared(path).choose("c", "q", ["a", "b"])
         server.close()
-        self.assertEqual(text, "MATCH (a:Person) RETURN a.name")
-        self.assertEqual(asked[0]["op"], "generate")
+        self.assertEqual(p, [0.25, 0.75])
+        self.assertEqual(asked[0]["op"], "choose")
         self.assertIsNone(shared_socket(path.parent / "absent.sock"))
 
 

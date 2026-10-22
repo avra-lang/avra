@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """Question planner: English + context in, one Cypher-subset query out.
 
-stdin:  {contract, request, question, context, source_view, schema}
+stdin:  {contract, request, question, context, source_view, schema, graph}
 stdout: {"cypher": "...", "params": {...}}
 
-A local model drafts the query; the graph's own `check` op holds it to the subset
-grammar and the catalog, and a refused draft is retried with the refusal
-quoted. Context binds as parameters, never as text in the query.
-
-Model, so only one copy is ever resident: the extraction service's shared
-`generate` op when its socket answers, else PLANNER_ENDPOINT (an
-OpenAI-compatible server), else — only with --local — Qwen3-4B
-in-process through mlx_lm from the extraction lane's venv. Timings and retries go to stderr.
+The query is composed from closed choices the shared model makes (structured.py)
+and held to the subset grammar and the catalog by the graph's own `check` op.
+Context binds as parameters, never as text in the query. The model is the
+extraction service's shared one, reached over its socket; its calls and every
+refusal, with the refusal's reason, go to stderr.
 """
 import json
 import os
@@ -21,13 +18,12 @@ import tempfile
 import time
 
 HERE = pathlib.Path(__file__).resolve().parent
-VENV_PYTHON = pathlib.Path.home() / ".cache/avra-graph-ml/venv/bin/python"
 MODEL = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
 SOCKET = pathlib.Path.home() / ".cache/avra-graph-ml/cascade.sock"
 HUB = pathlib.Path.home() / ".cache/avra-graph-ml/hf/hub"
 
 sys.path.insert(0, str(HERE))
-from prompt import Budget, declared_context, messages  # noqa: E402
+from prompt import Budget, declared_context  # noqa: E402
 from catalog import PARAMETERS, Refusal  # noqa: E402
 
 
@@ -45,45 +41,11 @@ def params_of(context):
     return out
 
 
-def drafted(text):
-    """The query in a reply: no fence, no prose before MATCH."""
-    text = text.strip().strip("`").strip()
-    if text.lower().startswith("cypher"):
-        text = text[6:]
-    at = text.upper().find("MATCH")
-    start = text.upper().find("OPTIONAL MATCH")
-    if 0 <= start < at:
-        at = start
-    return " ".join(text[at:].split()) if at >= 0 else text.strip()
-
-
-class Local:
-    """Qwen3-4B in this process, loaded once per run."""
-
-    def __init__(self):
-        os.environ.setdefault("HF_HOME", str(pathlib.Path.home() / ".cache/avra-graph-ml/hf"))
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
-        from mlx_lm import load
-
-        started = time.time()
-        self.model, self.tok = load(MODEL)
-        log(f"loaded {MODEL} in {time.time() - started:.1f}s")
-
-    def reply(self, turns):
-        from mlx_lm import generate
-
-        prompt = self.tok.apply_chat_template(turns, add_generation_prompt=True, tokenize=False)
-        return generate(self.model, self.tok, prompt=prompt, max_tokens=PARAMETERS["answer_tokens"], verbose=False).split("\n")[0]
-
-
 class Shared:
     """The model the extraction service already holds, over its socket."""
 
     def __init__(self, path):
         self.path = path
-
-    def reply(self, turns):
-        return self.asked({"op": "generate", "messages": turns, "stop": ["\n"]})["text"]
 
     def choose(self, context, question, options):
         return self.asked({"op": "choose", "context": context, "question": question, "options": options})["p"]
@@ -128,23 +90,6 @@ def shared_socket(path=SOCKET):
     except OSError:
         return None
     return path
-
-
-class Remote:
-    """A model already served on PLANNER_ENDPOINT."""
-
-    def __init__(self, endpoint):
-        self.endpoint = endpoint.rstrip("/")
-
-    def reply(self, turns):
-        import urllib.request
-
-        body = json.dumps({"model": os.environ.get("PLANNER_MODEL", MODEL), "messages": turns,
-                           "temperature": 0, "stop": ["\n"]}).encode()
-        req = urllib.request.Request(f"{self.endpoint}/v1/chat/completions", body,
-                                     {"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=120) as r:
-            return json.load(r)["choices"][0]["message"]["content"]
 
 
 class Graph:
@@ -199,66 +144,33 @@ def gated(cypher, schema, params, graph=None):
     raise Refusal(answer["code"], answer.get("message", ""))
 
 
-def tries():
-    """`--tries N` caps the drafts; a single pass measures the prompt alone."""
-    args = sys.argv[1:]
-    return int(args[args.index("--tries") + 1]) if "--tries" in args else PARAMETERS["draft_tries"]
-
-
-SPEAKS = ["yes: it is about the person asking", "no: it is about someone or something else"]
-
-
-def bound(llm, question, cypher, context):
-    """A question about the person asking reads from the speaker, through $speaker.
-    Whether it is, is the model's closed choice; without one, nothing is refused."""
-    if not context.get("speaker") or "$speaker" in cypher or not hasattr(llm, "choose"):
-        return
-    from structured import debiased
-
-    p = debiased(llm, f"Question: {question}", "Is the question about the person asking it?", SPEAKS)
-    if p[0] > p[1]:
-        raise Refusal("unbound_speaker", "the question is about the person asking: start at their node WHERE id(me) = $speaker")
-
-
-def planned(llm, question, schema, context, limit=None, graph=None):
-    params = params_of(context)
-    turns = messages(question, schema, context)
-    budget = getattr(llm, "budget", None)
-    last = None
-    limit = limit or PARAMETERS["draft_tries"]
-    for attempt in range(1, limit + 1):
-        started = time.time()
-        if budget:
-            budget.holds(*[m["content"] for m in turns])
-        cypher = drafted(llm.reply(turns))
-        try:
-            gated(cypher, schema, params, graph)
-            bound(llm, question, cypher, context)
-            log(f"try {attempt} ok in {time.time() - started:.1f}s: {cypher}")
-            return {"cypher": cypher, "params": params}
-        except Refusal as refusal:
-            last = refusal
-            log(f"try {attempt} refused in {time.time() - started:.1f}s ({refusal}): {cypher}")
-            turns = turns + [{"role": "assistant", "content": cypher},
-                             {"role": "user", "content": f"The graph refuses that query: {refusal}. Write the corrected query only."}]
-    raise SystemExit(f"planner: no valid query after {limit} tries; last refusal {last}")
-
-
 def chosen():
-    """One resident model: the extraction service's, a named server, or this process's."""
+    """The extraction service's resident model."""
     path = shared_socket()
-    if path:
-        return Shared(path)
-    if os.environ.get("PLANNER_ENDPOINT"):
-        return Remote(os.environ["PLANNER_ENDPOINT"])
-    if "--local" not in sys.argv[1:]:
-        raise SystemExit(f"planner: no shared model answers on {SOCKET}; start the extraction service, or pass --local to load one here")
-    in_model_env()
-    return Local()
+    if not path:
+        raise SystemExit(f"planner: no shared model answers on {SOCKET}; start the extraction service")
+    return Shared(path)
+
+
+def instant(ms):
+    import datetime
+
+    return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def viewed(chooser, question, context):
+    """The read's valid-time view: the context's own instant when it binds one,
+    else the calendar span the model chooses (the asking instant when none)."""
+    if context.get("valid_at_ms") is not None:
+        return {"valid_at": instant(context["valid_at_ms"])}
+    import when
+
+    span = when.asked_time(chooser, question, context["question_at_ms"])
+    return {"valid_at": instant(span["start_ms"] if span else context["question_at_ms"])}
 
 
 def composed(chooser, question, schema, context, graph=None, depth=None):
-    """The structured arm: closed choices composed into one query, then gated."""
+    """The closed choices composed into one query, gated, with the time it is read at."""
     import structured
 
     started = time.time()
@@ -267,31 +179,19 @@ def composed(chooser, question, schema, context, graph=None, depth=None):
                              graph.model_of if graph else None)
     gated(cypher, schema, params, graph)
     log(f"composed in {time.time() - started:.1f}s: {cypher}")
-    return {"cypher": cypher, "params": params}
+    return {"cypher": cypher, "params": params, "as_of": viewed(chooser, question, context)}
 
 
 def main():
     llm = chosen()
     llm.budget = Budget(declared_context(MODEL, HUB), PARAMETERS["answer_tokens"])
     payload = json.load(sys.stdin)
-    if "--structured" in sys.argv[1:]:
-        if not hasattr(llm, "choose"):
-            raise SystemExit("planner: the structured arm needs the shared model's choose op")
+    try:
         out = composed(llm, payload["question"], payload["schema"], payload["context"], graph_of(payload),
                        (payload.get("budget") or {}).get("depth"))
-    else:
-        out = planned(llm, payload["question"], payload["schema"], payload["context"], tries(), graph_of(payload))
+    except Refusal as refusal:
+        raise SystemExit(f"planner: the graph refuses the composed query ({refusal})")
     print(json.dumps(out))
-
-
-def in_model_env():
-    """Re-run under the extraction venv when this python lacks mlx_lm."""
-    try:
-        import mlx_lm  # noqa: F401
-    except ImportError:
-        if VENV_PYTHON.exists() and pathlib.Path(sys.executable).resolve() != VENV_PYTHON.resolve():
-            os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), *sys.argv])
-        raise SystemExit(f"planner: mlx_lm is missing and {VENV_PYTHON} does not exist")
 
 
 if __name__ == "__main__":

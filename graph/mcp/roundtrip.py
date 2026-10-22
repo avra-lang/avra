@@ -54,7 +54,7 @@ def main():
     parser.add_argument("--ask")
     parser.add_argument("--principal", default="")
     parser.add_argument("--speaker")
-    parser.add_argument("--planner", default="python3 graph/planner/plan.py --structured")
+    parser.add_argument("--planner", default="python3 graph/planner/plan.py")
     args = parser.parse_args()
     fixture = score.load_fixture()
     with tempfile.TemporaryDirectory(prefix="graph-mcp-") as scratch:

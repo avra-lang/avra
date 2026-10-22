@@ -15,7 +15,6 @@ from prompt import line
 
 
 LETTERS = PARAMETERS["choice_letters"]
-ARRIVED = ["yes: the question asks about this record", "no: the answer lies further along"]
 ENOUGH = "nothing else: the answer is complete"
 RECORDED = ["the content of the records: values, words, dates, people (missing means unknown)",
             "only whether a yes/no status has been recorded (no record counts as no)"]
@@ -187,6 +186,15 @@ def hops(models, label):
     return out
 
 
+def arrival(models, label, options):
+    """Stay or go on, each side showing what it holds: this record's own
+    properties, or the records reached from it."""
+    held = ", ".join(p["name"].replace("_", " ") for p in models[label]["properties"])
+    onward = ", ".join(dict.fromkeys(h[1] for h in options))
+    return [f"yes: the answer is among this {label}'s own properties ({held})",
+            f"no: the answer is on related records ({onward})"]
+
+
 def plan(chooser, question, schema, context, search=None, depth=None, model_of=None):
     """One query composed from closed choices; `depth` caps the hops (the
     request's budget), else the catalog's size bounds the walk."""
@@ -210,7 +218,7 @@ def plan(chooser, question, schema, context, search=None, depth=None, model_of=N
                                                               [options[i][2] for i in said])]
             evidence.explain(" ".join(options[pick][3]))
         else:
-            if not onward and best(chooser, trail, f"Is the answer about this {label}?", ARRIVED) == 0:
+            if not onward and best(chooser, trail, f"Is the answer about this {label}?", arrival(models, label, options)) == 0:
                 break
             ranked = onward or list(range(len(options)))
             pick = ranked[best(chooser, trail, "Where next?", [evidence.shown(options[i]) for i in ranked])]

@@ -36,7 +36,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True)
     parser.add_argument("--db", required=True)
-    parser.add_argument("--planner", default="python3 graph/planner/plan.py --structured")
+    parser.add_argument("--planner", default="python3 graph/planner/plan.py")
     parser.add_argument("--extractor", default="python3 graph/extract/cascade.py --catalog {schema}")
     args = parser.parse_args()
     fixture = score.load_fixture()

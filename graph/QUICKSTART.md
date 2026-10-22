@@ -47,7 +47,7 @@ Claude Code:
 
 ```sh
 claude mcp add graph -- "$PWD/graph/examples/quickstart/src/main" mcp --db "$HOME/graph.db" \
-  --planner "python3 graph/planner/plan.py --structured" \
+  --planner "python3 graph/planner/plan.py" \
   --extractor "python3 graph/extract/cascade.py --catalog {schema}" \
   --grantor owner --agent claude --grant ingest,correct
 ```
@@ -57,7 +57,7 @@ Any MCP client (stdio), same command:
 ```json
 { "mcpServers": { "graph": { "command": "/abs/path/graph/examples/quickstart/src/main",
   "args": ["mcp", "--db", "/abs/path/graph.db",
-           "--planner", "python3 graph/planner/plan.py --structured",
+           "--planner", "python3 graph/planner/plan.py",
            "--extractor", "python3 graph/extract/cascade.py --catalog {schema}",
            "--grantor", "owner", "--agent", "assistant", "--grant", "ingest,correct"] } } }
 ```
