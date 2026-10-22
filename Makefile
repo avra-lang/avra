@@ -496,14 +496,30 @@ compiler-files:
 # twice (one `make avra` advances one generation), and where none stands or
 # it cannot read the tree — new syntax, a refusal about its own source — the
 # seed bootstraps it, a FULL build, so a source wrong for real still dies.
-# GEN_BOUND bounds each build in seconds (tools/bounded.sh names the cause);
-# STORE_ASIDE is where an older compiler's store goes before the bootstrap,
-# since a store is one compiler's.
+# RUNGS are the tree's `Rung:` commits, oldest first (tools/rungs.sh): each is
+# built by the product of the one before (tools/ladder.sh), starting from the
+# standing compiler or the seed as linked, and HEAD by the last; a laddered
+# tree never falls back to the seed, which cannot read a rung. The last rung's
+# product stays at build/avra-ladder. LADDER_BASE is the base each rung is
+# replayed on (tools/ladder.sh's AVRA_LADDER_BASE). GEN_BOUND bounds each build in seconds
+# (tools/bounded.sh names the cause), LADDER_BOUND the whole ladder; STORE_ASIDE
+# is where an older compiler's store goes before the bootstrap, since a store is
+# one compiler's.
+RUNGS ?=
+LADDER_BASE ?=
 GEN_BOUND ?=
+LADDER_BOUND ?= 900
 STORE_ASIDE ?=
 BOUNDED = $(if $(GEN_BOUND),sh tools/bounded.sh $(GEN_BOUND) )
 compiler:
-	@if [ -x build/avra ] && $(BOUNDED)$(MAKE) -s avra && $(BOUNDED)$(MAKE) -s avra; then :; else \
+	@if [ -n "$(strip $(RUNGS))" ]; then \
+	  [ -x build/avra ] || $(MAKE) -s recover || { echo "compiler: the ladder has no start — none stands and the seed did not link"; exit 1; }; \
+	  product=$$(AVRA_LADDER_BASE=$(LADDER_BASE) AVRA_LADDER_S=$(LADDER_BOUND) sh tools/ladder.sh build/avra $(RUNGS)) \
+	    || { echo "compiler: the ladder failed — a rung did not build with the compiler of the rung before it"; exit 1; }; \
+	  cp "$$product" build/avra-ladder && cp "$$product" build/avra; \
+	  $(BOUNDED)$(MAKE) -s avra && $(BOUNDED)$(MAKE) -s avra \
+	    || { echo "compiler: the ladder's product did not build this tree — no seed can read a rung"; exit 1; }; \
+	elif [ -x build/avra ] && $(BOUNDED)$(MAKE) -s avra && $(BOUNDED)$(MAKE) -s avra; then :; else \
 	  if [ -n "$(STORE_ASIDE)" ] && [ -d .avra-cache ]; then mv .avra-cache "$(STORE_ASIDE)"; fi; \
 	  echo "compiler: the standing compiler did not build this tree — bootstrapping from the seed"; \
 	  $(BOUNDED)$(MAKE) -s bootstrap; \

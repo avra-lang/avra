@@ -345,7 +345,7 @@ def check_hold_label(auto_merge_text):
     if "github.event.pull_request.labels" in auto_merge_text:
         bad.append("auto-merge.yml judges labels from the event payload, which a later label misses")
     return bad, ([] if bad else ["hold-label: auto-merge reads the label fresh, reruns on `labeled`, and disarms"])
-def check_ladder(workflow_text):
+def check_ladder(workflow_text, make_text=None, others=None):
     """A run's rungs reach the compiler step, and the seed check speaks when they do: `prepare` reads the
     rungs, the compiler step builds them through tools/ladder.sh before HEAD, and `seed-check` says it
     skipped (spoken), never silently. Answers (refusals, words)."""
@@ -354,8 +354,17 @@ def check_ladder(workflow_text):
     if "steps.rungs.outputs.list" not in jobs.get("prepare", "") or "tools/rungs.sh" not in jobs.get("prepare", ""):
         bad.append("`prepare` does not read the run's rungs (tools/rungs.sh)")
     comp = re.search(r"name: compiler\n        id: compiler\n.*?(?=\n      - |\n  [a-z])", jobs.get("prepare", ""), re.S)
-    if not comp or "tools/ladder.sh" not in comp.group(0):
-        bad.append("the compiler step does not build a run's rungs through tools/ladder.sh")
+    if not comp or not re.search(r"make -s compiler RUNGS=", comp.group(0)):
+        bad.append("the compiler step does not hand the run's rungs to `make compiler RUNGS=…`")
+    if make_text is not None and "tools/ladder.sh" not in make_targets(make_text).get("compiler", ""):
+        bad.append("`make compiler` does not build RUNGS through tools/ladder.sh")
+    # every workflow that builds the compiler gives the ladder its rungs: one built without them
+    # meets a rung's readers in one step and fails where the ladder passes
+    for name, text in sorted((others or {}).items()):
+        for n, line in enumerate(text.splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if re.search(r"\bmake -s compiler\b", code) and "RUNGS=" not in code:
+                bad.append("%s:%d builds the compiler with no RUNGS — a laddered tree fails there" % (name, n))
     seed = jobs.get("seed-check", "")
     if "needs.prepare.outputs.rungs" not in seed or "SKIPPED, SPOKEN" not in seed:
         bad.append("`seed-check` does not speak when the run carries rungs")
@@ -567,7 +576,7 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_watcher_wired(make_text),
                   lambda: check_light_draft(workflow_text),
                   lambda: check_hold_label(open(os.path.join(ROOT, ".github", "workflows", "auto-merge.yml"), encoding="utf-8").read()),
-                  lambda: check_ladder(workflow_text),
+                  lambda: check_ladder(workflow_text, make_text, workflow_texts()),
                   lambda: check_run_mode(workflow_text),
                   lambda: check_race_split(workflow_text),
                   lambda: check_compiler_route(
@@ -757,7 +766,10 @@ rt-header:
     assert any("never disarms" in x for x in check_hold_label(am.replace("--disable-auto", ""))[0])
     assert any("payload" in x for x in check_hold_label(am + "\n# ${{ github.event.pull_request.labels }}")[0])
     assert check_ladder(real)[0] == [], check_ladder(real)
-    assert any("tools/ladder.sh" in x for x in check_ladder(real.replace("tools/ladder.sh", "tools/other.sh"))[0])
+    assert any("RUNGS" in x for x in check_ladder(real.replace("make -s compiler RUNGS=", "make -s compiler X="))[0])
+    real_make = open(MAKEFILE, encoding="utf-8").read()
+    assert any("ladder.sh" in x for x in check_ladder(real, real_make.replace("tools/ladder.sh", "tools/other.sh"))[0])
+    assert any("o.yml:1" in x for x in check_ladder(real, None, {"o.yml": "        run: make -s compiler\n"})[0])
     assert any("seed-check" in x for x in check_ladder(real.replace("SKIPPED, SPOKEN", "skipped"))[0])
     assert any("rungs" in x for x in check_ladder(real.replace("tools/rungs.sh", "tools/none.sh"))[0])
     ungated = real.replace("    if: needs.prepare.outputs.cache == '1' && needs.prepare.outputs.full == '1'",

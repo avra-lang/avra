@@ -49,9 +49,17 @@ jobs:
           key: ${{ steps.plan.outputs.key }}
           restore-keys: |
             avrac-
+      # A pull request's Rung: commits are its ladder (tools/rungs.sh), as on the checks.
       - if: steps.cache.outputs.cache-hit != 'true'
         name: compiler
-        run: make -s compiler
+        run: |
+          rungs=""
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            git fetch -q --depth=200 origin main "${{ github.event.pull_request.head.sha }}" 2>/dev/null || :
+            base=$(git merge-base origin/main "${{ github.event.pull_request.head.sha }}" 2>/dev/null || :)
+            [ -z "$base" ] || rungs=$(sh tools/rungs.sh "$base" "${{ github.event.pull_request.head.sha }}" | tr '\n' ' ')
+          fi
+          make -s compiler RUNGS="$rungs" LADDER_BASE="${base:-}"
       - name: objects and libs
         run: |
           make -s -j"$(nproc)" -o avra objects libs || make -s -o avra objects libs
