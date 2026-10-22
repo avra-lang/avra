@@ -1599,496 +1599,86 @@ registry is the idiom engine's spec, written by dogfooding.
 
 ## The subset today
 
-What our compiler REFUSES that the language will want. Each entry
-is a sugar-backlog candidate, not a trap to write around: write the
-form the compiler's help names, and when a site wants the missing
-form, add the ask to the ROADMAP's sugar backlog naming the site.
-Every entry was probed with `./avra check` on a scratch file and
-quotes the refusal, so a re-probe is cheap; an entry the compiler
-starts accepting is deleted. THIS SECTION IS A CACHE, and a
-fifth of this file — every entry is a fact the COMPILER can answer,
-which is why entries go stale unseen until a re-probe (nine moved in
-one audit). RECORDED TRIGGER: when the docs campaign's
-`lang/subset/*.av` lands as gate-verified program tests, this section
-becomes a POINTER to them and stops being a hand-kept list. Laws that SPEAK are not listed —
-reserved words (F3002 names the word and its status), a mutating
-method on a non-`mut` binding (F2034), a lambda assigning to a
-capture (F3005: captures are copies), a fn body reading a top-level
-`let` (F3020: the const law), an extra method inside an `impl Trait
-for` (F2032), an exported name declared twice across a module's
-files (F3017 names both files), a pattern or construction with the wrong payload count
-(F2015), a `DeclId` handed to a `StmtId` seat (F2000) — the
-compiler's help is the note.
+What our compiler REFUSES that the language will want. THE SECTION IS
+EXECUTABLE: every refusal below is a case in
+`packages/std-avrac/src/compiler/tests/subset/` pinning its kind, its
+words and its message count, and every fact under "Runtime facts" is a
+case that runs the program. An entry the compiler starts accepting
+turns its case red — delete the case and its line together. A new entry
+lands WITH its case; a line without one says so. Each entry is a
+sugar-backlog candidate, not a trap to write around: write the form the
+compiler's help names, and when a site wants the missing form, add the
+ask to the ROADMAP's sugar backlog naming the site. Laws that SPEAK are
+not listed — reserved words (F3002), a mutating method on a non-`mut`
+binding (F2034), a lambda assigning to a capture (F3005), a fn body
+reading a top-level `let` (F3020), an extra method inside an `impl
+Trait for` (F2032), an exported name declared twice across a module's
+files (F3017), a wrong payload count (F2015), a `DeclId` in a `StmtId`
+seat (F2000): the compiler's help is the note.
 
 Syntax the grammar lacks:
-- AN IMPORT IS SPELLED WITH DOTS, and this file writes package names
-  with a SLASH throughout (`@std/io`, `@std/text`) because that is the
-  package's name in prose. The `use` line is not:
-
-      use @std.io.{read_text, write_text}
-      use @std.text.{from_codepoint}
-
-  `use @std/io.{…}` is F0100 "expected `.` while parsing `stmt`", at the
-  slash. This is the ONLY spelling a reader of this file was given until
-  now, and a cold-start measurement recorded it as the single failure of
-  a subject that had read nothing else.
-- `|` between or-pattern alternatives: "expected `}` to close the
-  `match`" — the spelling is `or`, IN A PATTERN ONLY. As a BOOLEAN it
-  does not parse: `true or false` is F0100 at the `or`, and `and`/`not`
-  fail alike. The boolean operators are `&&`, `||`, `!`.
-- Destructuring `enumerate()` in a comprehension (`[i for (i, m)
-  in xs.enumerate()]`): F2005 "`enumerate` pairs only under a paired
-  `for` head — pairs as values arrive with tuples". The head IS the
-  `for` statement's: `[f(i, x) for i, x in xs]` pairs, `[f(i) for i
-  in lo..hi]` counts.
-- A DOUBLE `?` on a type (`int??`): F0100 at the FIRST `?`, wording
-  by position ("expected `)`" in a parameter seat, "expected `=`"
-  under a `let`, "expected BREAK" under a `type` alias) — the type
-  grammar takes one `?` per name, so it has no spelling anywhere.
-  It is REACHED through a generic all the same — `T?` over `T =
-  string?` is a `string??`, a pair that keeps a PRESENT null apart
-  from absence in every slot, and `??` unwraps one level
-  (features/nullable/tests/nested_slots).
-- A `table` literal without its row type: a bare `table { id: 1 }`
-  reads as a STRUCT LITERAL of a type named `table` — F3000 "no `type
-  table` is declared", with no hint that the row type is missing. The
-  form is `table<Row>`, and its body is a PIPE-DELIMITED header plus one
-  line per row, not struct syntax:
-
-      let rows = table<Row> {
-          id | name
-          1  | "a"
-          2  | "b"
-      }
-- A RECORD LITERAL AS A COMPONENT INSTANCE'S HEAD STANDS IN
-  PARENTHESES: after a component's word, a name and then a brace is the
-  head and the instance's block, so `counter id { key: id }` is
-  `counter` over `id`. `tally Span { n: 2 } { extra: 3 }` is
-  `build.failed` "the brace after an instance's head opens the
-  instance's block, so `Span { … }` is no record literal here — a
-  record literal as the head stands in parentheses: `tally (Span { …
-  })`", and with no block after it `type.component_head` says the same
-  — followed by `type.struct_fields` "`tally` has no field `n`", the
-  block having been read as settings. A module's OWN component word
-  before a parenthesis is a CALL (`type.lambda` "`nest` is a component,
-  and a parenthesis after its word is read as a call"): its head is
-  written bare (`nest self.depth - 1`) or bound first. Every other head
-  (`if`, `while`, `for`, `match`, `if let`, `let … else`) takes a
-  literal bare.
-- A SEMICOLON between statements (`let a = 1; a + 1`): F0001
-  "unexpected character" at the `;` — a statement ends at a line
-  break, and a one-line body is `{ a }` with one statement. A
-  TEMPLATE that spells `;` is refused at its own line (S4r homing).
-- A RANGE TAKES METHODS — `(0..n).any(it == 2)`, `(0..n).find(it
-  == 2)`, `(0..3).map((i) -> i * 2)` and `(0..n).all(it < 5)` all
-  parse and run (avra-8sb5.65.3.4, eval == native) — but `.length`
-  is `no property `length` on `Range``. The scan verbs faulted with
-  `language.defect: a row without its seat survived typing` until
-  that commit landed; the idiom bar's "scan with `any`/`find`"
-  reaches a range directly now.
-- A `once fn` with TYPE PARAMETERS (`once fn f<T>() -> List<T>`):
-  "expected `(` while parsing `stmt`" — the once grammar takes a
-  name and a parameter list only, and a `T` no argument can pin has
-  nothing to answer anyway.
-- A `once fn` answering a SCALAR (`once fn seed() -> int { 7 }`):
-  F2055 "`once fn seed` answers `int`, which the runtime cannot
-  keep" — the answer must be MANAGED, and `-> string` and
-  `-> List<int>` both land. Its sibling law speaks too: parameters
-  are F2055 "takes arguments — a `once` answer is one value for the
-  whole process", and that refusal reaches the mistake whether or
-  not the parameter carries a `mut`.
-- A TRAILING BLOCK IN A HEAD: `if f(a) { x -> x } { … }` is F0100
-  "expected BREAK" at the `->` — a head (`if`, `while`, `for`, `match`,
-  `if let`, `let … else`) keeps its brace, so a call wanting a block
-  there is parenthesised: `if (f(a) { x -> x }) { … }`. Everywhere
-  else `f(a) { x -> body }` is `f(a, (x) -> body)`, a postfix like the
-  rest (`xs.find { it > 1 } ?? 0`), and `else { … }` fills the next fn
-  seat — provisionally: sugar 5 retires the word for the seat's name
-  (`other: { … }`), since `else` reads as a branch whatever the seat is. Two shapes it does not reach: `a?.m { … }` (the chain lowers
-  to a match — the block goes in the parentheses), and `(f(a)) { … }`
-  widens `f(a)` (a paren group mints no node) where `f(a)() { … }`
-  applies the answer.
-- A SEAT DEFAULT (`fn f(a: int, n: int = 1)`) lands on a `fn`, `mut
-  fn` and `static fn` seat and NOWHERE ELSE: `extern fn g(a: int = 1)`
-  and a trait's `fn m(a: int = 1)` are F0100 at the `=` ("expected
-  `)`" / "expected `}`"), a lambda's `(a: int = 1) -> a` is "expected
-  `)` to close the group", and none of them says a default is what
-  it refused. A NAMED argument skips any defaulted seat (`f(1, c:
-  9)`), and a default reads no param beside it — `b: int =
-  a` is F3000 "`a` is not defined". A fn VALUE of a defaulted fn
-  wears every seat, so `let f = add` then `f(1)` is the ordinary
-  arity refusal — its seats carry no names either (F2105).
-- A GENERIC FN AS A VALUE: the PINNED spelling (`let f: fn(int) -> int
-  = ident<int>`) is F0100 "expected BREAK while parsing `stmt`" — a
-  pinned call is a CALL, so it wants arguments. The BARE spelling
-  SPEAKS: F2033 "a generic fn is not a value — no single signature to
-  wear", whose help writes the wrapper. Genericity is all of it — a
-  non-generic `mut`-seat fn fills `fn(mut Cx) -> int` clean.
-- INSTANTIATION IS A STATEMENT: as a fn's tail an instance
-  (`Cfg d { depth: 8 }`) answers `void` ("the body answers `void`
-  but `made` declares `Cfg`") — bind, then return the name. The bare
-  form `Cfg d { … }` parses (the old `component Cfg d { … }` is
-  "expected `{`"), and its block is `key: value` — `Cfg d { depth =
-  8 }` is `build.failed` "`Cfg` declares no `List` field, so its
-  block holds settings only — `key: value`".
-- A SHELL `${VAR}` INSIDE AN AVRA STRING IS AVRA'S INTERPOLATION.
-  `"echo ${HOME}"` is F3000 "`HOME` is not defined" when no binding
-  has that name — and SILENT when one does: with `let HOME = "/tmp/
-  not-your-home"` above it, the same line compiles clean and the
-  command becomes `echo /tmp/not-your-home`. Spell a shell variable
-  `$VAR`, which Avra leaves alone.
-- `_` IS A PARAMETER NAME NOWHERE, and `let _ = f()` everywhere.
-  `fn f(_: int)` is F3002 "`_` is a keyword — cannot be a name", help
-  "pick another name", while `let _ = g()` and `.Bind(_)` are the
-  ordinary spellings. A parameter a SEAT owns and the body never reads
-  is `_q` — a leading underscore is a name, it compiles, and the idiom
-  bar has always read that prefix as "unread by contract" (style.dead_parameter).
-- A MAP'S KEYS ARE STRINGS ONLY: `Map<int, int>` is F2019 "a map's
-  keys are strings, not `int`", help "key by text — `Map<string, …>`".
-  It kills the obvious trie-node shape; key by the text.
-- `++` IS NOT A LIST OPERATOR: `xs ++ ys` is F0100 "expected BREAK
-  while parsing `stmt`" AT the `++`, and that is the WHOLE refusal —
-  the fn draws no type complaint of its own, and typing is not
-  suppressed here (a sibling fn's error reports in the same run).
-  `xs.concat(ys)` is a spelling, and `[..xs, ..ys]` is the other
-  (one box, sized once).
-- A SPREAD'S REFUSALS ARE LAWS, not pending sugar (`..` is one spelling in
-  a record literal, a list, a map, a variadic seat, a call's named seats and
-  a pattern; probed, both engines):
-  - A RECORD SPREADS ONLY UNDER ITS TYPE'S NAME: `{ ..a, x: 3 }` is a MAP
-    literal — `type.spread_map` "`..` in a map spreads a map, found `P`";
-    the record is `P { ..a, x: 3 }`.
-  - `P { x, ..rest }` (binding the remainder) is F0100 "expected `}` to
-    close the `match`" at `..rest`: a record pattern's `..` discards, and
-    `P { x, .. }` is the spelling.
-  - A LIST SPREADS ONLY INTO ITS OWN ELEMENT TYPE: `let c: List<int?> = [null,
-    ..xs]` is `type.list_element` "the first is `List<int?>`, this is
-    `List<int>`" — lists do not widen element-wise.
-  - `f(..xs)` INTO FIXED SEATS is `type.spread_seat` "`..` spreads into a
-    seat that takes the rest of the arguments, and `g` declares none" — a
-    list's length is a run-time fact, a seat a compile-time one; declare
-    `..rest: List<T>`. A RECORD spread fills named seats by field name
-    (`f(..opts)`), plain seats only: a `mut`, `state`, `const` or `isolated`
-    seat is `type.spread_seat` too.
-  - `is` OVER A LIST OR RECORD PATTERN BINDS ONLY UNDER `if`
-    (`type.is_bind`), and a refutable destructuring `let` needs its `else`
-    (`type.let_pattern`): `let [first, ..] = xs else { return … }`.
-- `List` HAS `all`, NOT `every`: `.every(it > 0)` is F2030, `.all(it
-  > 0)` compiles — which retires the double negative `![…].any(!it)`.
-- A MATCH ARM SHARING THE OPENING BRACE'S LINE NEEDS A TRAILING COMMA
-  when another arm follows (found by the HTTP lane, probed here).
-  `match v { .R(o) -> o` with `.S -> "s"` on the next line is
-  "expected `}` to close the `match`", reported at the SECOND arm —
-  so the message points past the arm that needs the comma. Two forms
-  work: the comma (`.R(o) -> o,`), and the whole match on ONE line
-  (`match v { .R(o) -> o }`), which has no following arm to separate.
-  Each arm on its own line is the ordinary spelling and parses.
-- A PRESENT-BIND arm after a COMMA-ended arm (`null -> a,` then `v?
-  -> b`): "expected `}` to close the `match`" — the comma continues
-  the line and `v?` is read into it. AND A PRESENT-BIND ARM ENDING IN
-  A COMMA (`v? -> v,` then `null -> 0`) refuses the same way, at the
-  first arm. Separate such arms by line, as the program tests do;
-  variant and literal arms take the comma.
-- A match arm whose body is an EMPTY BLOCK (`1 -> {}` in statement
-  position): `{}` is an empty map — F2013 "a `match`'s arms
-  disagree: `{}` vs the first arm's `void`" (the order reads
-  backwards from the arms; re-probed at 70e317d6).
-- STRING ESCAPES: `"\uFFFD"` and `"\u0041"` ARE escapes (four hex
-  digits; `.length` 3 and 1), re-probed at 70e317d6 — the old entry
-  that said the lexer keeps `\u` as two characters is deleted. The
-  two that are NOT: `\0` (`"ab\0cd".length` is 6) and `\u{…}`
-  (`"\u{1F600}".length` is 9). Spell a NUL with `@std/text`'s
-  `from_codepoint(0)` (sugar backlog: `\u{…}` escapes).
-- A BARE NAME IN A PATTERN IS A CONST'S OR A BINDER'S, BY ITS
-  BINDING — never by its spelling. `match c { escape -> …, _ -> … }`
-  COMPARES where a `const escape` is in scope (declared, imported
-  through `use`, a body's own) and no parameter or local of that name
-  hides it; any other name BINDS what arrives. The const's type is
-  the subject's own ("a `int` never matches `int?`" — unwrap first),
-  it must compare by value ("`==` compares by value — …"), and a
-  comparison covers nothing: the catch-all is still owed. THE HAZARD
-  IS THAT ONE SPELLING MEANS TWO THINGS, and adding or deleting a
-  const flips an arm with no edit at the arm. Two warnings stand
-  where the flip would be silent: type.const_pattern on a match that
-  ENDS on a const's name ("`escape` is a const here, so this arm
-  compares" — add `_ -> …` or rename the binder), and
-  type.unreachable_arm on any arm after one that takes every value
-  ("this arm is never reached — `gone` above binds, and takes every
-  value" — what a deleted const leaves behind). A name-turned-binder
-  that is the LAST arm says nothing: it is a catch-all, as written.
-  An arms block cannot START on a bare name (`xs.map() { tab -> … }`
-  is a lambda's head) — write the `match` out. An `is` payload under
-  `if` (`if k is .C(tab) { … }`) is a pattern seat like any other. A
-  TEMPLATE'S bare name is judged in the file that WROTE the template:
-  its const compares there, and a const of the same name in the file
-  the code lands in never turns the template's binder into a
-  comparison (features/enums/tests/const_pat_template).
-- A match arm whose body is a bare STATEMENT (`.Unknown(t) -> fail
-  E.Bad(t),`): F0100 "expected `}` to close the `match`" at the
-  `fail`'s payload, then "expected EOF while parsing `program`" — and
-  the whole file goes UNTYPED, earlier declarations included. An arm's
-  body is an expression — brace it: `.Unknown(t) -> { fail E.Bad(t) },`
-  (a block that leaves joins the other arms).
-- `?` then a field on a Result (`get(i)?.name`): lexes as `?.` —
-  F2023 "`?.` reaches into a nullable, this is `Result<P, E>`".
-  `(get(i)?).name` says it, in a comprehension element too.
-- `export let`: F3014 "`export` marks a fn, type, enum or trait — not
-  this statement", help "drop the `export`, or declare the value as a
-  fn". `export const` LANDED — a constant crosses as a const, and the
-  help's "as a fn" reaches a `let` alone.
-- `Result<void, E>` as a fn's answer: F2019 "a `Result` side cannot
-  hold `void` yet" (help: "a verb that answers nothing but may fail
-  is recorded — answer what it wrote"). A writing verb answers what
-  it wrote instead —
-  `@std/io`'s `write_text`/`make_dirs`/`remove` answer the path.
-- A `mut` SEAT CANNOT BE ASSIGNED WHOLE, BY DESIGN, NOT PENDING
-  MACHINERY: `a = a + 1` on a `mut a: int` parameter is F3005 "`a`
-  is a `mut` seat — a seat is written along a path, never replaced
-  whole", help "wrap the value in a `Cell<T>` and `.set(…)` it,
-  write a path under it (`a.field = …`), or answer the new value".
-  `Cell<T>` is the door for whole reassignment from inside a callee
-  (docs/2026_09_22_S2C_CELL_SEAT_DESIGN.md).
-- A TOP-LEVEL `const` IS A DECLARATION, like a fn: module-wide,
-  order-free, exported only when it says `export`. Two in one module
-  clash (F3003 in one file, F3017 across files); a `let` of the same
-  name shadows it from that line on, in the sequence alone — a fn
-  body reads the const. A const whose value asks for its own type is
-  F2078; an annotated one settles and traps (F2062). The old entry
-  here — "`const` in a MODULE file is F0902" — was stale twice over.
-- A METHOD after `?` on a Result (`shell(line)?.run()`): F2023
-  "`?.` reaches into a nullable, this is `Result<R, string>`". The
-  chain DOES call methods now (`a?.m(args)` on a nullable), which is
-  why a Result there reads as one `?.` and is refused for its type,
-  not its shape. Parenthesise the propagation — `(shell(line)?).run()`
-  — or bind it first. The field twin (`x()?.out`) is the same
-  refusal; its help says "write `.out`", wrong for propagate-then-read.
-- `fail` inside a `catch` ARM's block (`x catch e -> { … fail e }`,
-  the block's statements on their own lines — a `;` is F0001): F2029
-  "a `catch` arm answers the ok side: `T`, this is `Result<…>`" — the
-  arm's block is not read as diverging. Write the statement `match`
-  (`.Err(e) -> { … fail e }, .Ok(v) -> …`), as @std/process's three
-  drivers do.
-- A LITERAL OF `null` ALONE names no type WHERE NO SEAT NAMES ONE:
-  `let xs = [null, null]` is F2006 "a list element takes its type
-  from its value, and `null` has none of its own" — `{"a": null}` and
-  `Cell.new(null)` alike. Any sibling with a type names it (`[null,
-  7]` is a `List<int?>`), and so does the seat it lands in: a
-  declared want (`let c: Cell<int?> = Cell.new(null)`), an argument
-  (`count([null, null])` at a `List<string?>` seat), a field, a fn's
-  answer. A generic seat nothing else pins (`g([null])` at `List<T?>`)
-  is the same refusal, spoken once, at the literal.
-- A KEYED LIST (`list xs by it.id { x -> … }`): "`list` takes no head
-  value — name it at a statement (`list name { … }`), or write `list
-  { … }`". Write `list { for x in xs { item { key: "${x.id}" … } }
-  }` — the key rides the tree, but `SiteLowering` has no `Keyed` arm,
-  so reconciliation is positional (avra-xubk.3).
-- `derived x = …` and `query x = …`: "expected BREAK while parsing
-  `stmt`" at the name — recompute in a `fn`, or hold a `state`
-  (avra-8sb5.59.27).
-- `@model type`: "`model` is not defined" — a plain `type` until the
-  derive exists (docs/2026_09_24_DOCUMENTATION.md §4.0).
-- A BUILT-IN TYPE NAME IS NOT A DOMAIN TYPE: `type Task = { … }` is
-  "`Task` is a built-in type", help "choose another name — `int`,
-  `string` and `bool` are the language's" — though `Task` is not
-  among the three it names.
+- An import is spelled with DOTS: `use @std.io.{read_text}`; `use @std/io.{…}` is "expected `.`" at the slash (prose says `@std/io`, the `use` line never does).
+- Or-patterns spell `or`, in patterns only; `|` is "expected `}` to close the `match`", and `or`/`and` as booleans are "expected BREAK" — the operators are `&&`, `||`, `!`.
+- `[i for (i, m) in xs.enumerate()]` — "`enumerate` pairs only under a paired `for` head"; write `[f(i, x) for i, x in xs]`.
+- `int??` has no spelling ("expected `)`"/"expected `=`" at the first `?`) though a generic reaches `string??`.
+- A bare `table { … }` reads as a struct literal ("no `type table` is declared"); write `table<Row> { id | name … }` with a pipe header.
+- A record literal as a component instance's head stands in parentheses (`tally (Span { n: 2 }) { extra: 3 }`); bare, the brace opens the block — pinned by features/components/tests/components_head_test.av, not by this section.
+- A semicolon between statements is "unexpected character `;`"; a one-line body is `{ a }`.
+- A range takes methods (`any`, `find`, `map`, `all`) but has no `.length`.
+- A `once fn` takes no type parameters ("expected `(`"), no arguments, and answers a managed value ("`once fn seed` answers `int`, which the runtime cannot keep").
+- A trailing block in a head (`if f(a) { x -> x } { … }`) is "expected BREAK"; parenthesise the call. `a?.m { … }` and `(f(a)) { … }` take no trailing block either — not pinned.
+- A seat default lands on `fn`, `mut fn` and `static fn` only: `extern fn`, a trait's `fn`, and a lambda refuse it ("expected `)`", "expected `}`", "expected `)` to close the group"); a named argument skips a defaulted seat; a default reads no sibling param; a fn value of a defaulted fn wears every seat.
+- A generic fn as a value: pinned `ident<int>` is "expected BREAK"; bare is "a generic fn is not a value — no single signature to wear".
+- Instantiation is a statement: as a fn's tail it answers `void` — bind, then return the name; a component block is `key: value` ("declares no `List` field, so its block holds settings only") — not pinned.
+- A shell `${VAR}` in a string is Avra's interpolation ("`HOME` is not defined", or silently the binding's value); write `$VAR`.
+- `_` is a parameter name nowhere ("`_` is a keyword"); an unread seat is `_q`, and `let _ = f()` is the binding spelling.
+- A map's keys are strings only ("a map's keys are strings, not `int`").
+- `xs ++ ys` is "expected BREAK"; `xs.concat(ys)` or `[..xs, ..ys]`.
+- `List` has `all`, not `every`.
+- A spread's refusals are laws, not pending sugar (`..` is one spelling in a record literal, list, map, variadic seat, call's named seats and pattern): a record spreads only under its type's name (`{ ..a, x: 3 }` is a map: "`..` in a map spreads a map, found `P`"); a record pattern's `..` discards, so `P { x, ..rest }` is "expected `}` to close the `match`"; a list spreads only into its own element type; `f(..xs)` into fixed seats is "`..` spreads into a seat that takes the rest of the arguments"; `is` over a list or record pattern binds only under `if` (`type.is_bind`) and a refutable destructuring `let` needs its `else` (`type.let_pattern`).
+- A match arm on the brace's line needs a trailing comma before the next arm ("expected `}` to close the `match`", reported at the second arm); each arm on its own line parses.
+- A present-bind arm (`v? -> …`) after a comma-ended arm, or itself ending in a comma, is "expected `}` to close the `match`"; separate such arms by line.
+- An empty block as a match arm is an empty map: "a `match`'s arms disagree: `{}` vs the first arm's `void`".
+- A `\u` escape is not one: `"\u0041"` keeps its six characters, as do `\0` and `\u{…}` (see Runtime facts); spell a code point with `@std/text`'s `from_codepoint(65533)` and a NUL with `from_codepoint(0)` (sugar backlog: `\u{…}` escapes).
+- A bare name in a pattern is a const's or a binder's by its binding, never its spelling: `type.const_pattern` warns when a match ENDS on a const's name and `type.unreachable_arm` when a binder precedes a literal arm (the const-comparison law itself is not pinned here; features/enums/tests/const_pat_template is).
+- A match arm whose body is a bare statement (`.Bad(t) -> fail E.Bad(t),`) fails the whole file ("expected `}` to close the `match`"); brace it.
+- `get(i)?.name` and `shell(line)?.run()` lex as `?.` ("`?.` reaches into a nullable, this is `Result<…>`"); write `(get(i)?).name`.
+- `export let` is "`export` marks a fn, type, enum or trait — not this statement"; `export const` lands.
+- `Result<void, E>` is "a `Result` side cannot hold `void` yet"; a writing verb answers what it wrote.
+- A `mut` seat cannot be assigned whole, by design: "a seat is written along a path, never replaced whole" — use a `Cell<T>`, a path write, or answer the new value.
+- Two top-level consts of one name are "defined more than once"; a `let` of that name shadows from its line on, and a fn body reads the const.
+- `fail` inside a `catch` arm's block is "a `catch` arm answers the ok side"; write the statement `match`.
+- `[null, null]` names no type where no seat names one ("a list element takes its type from its value"); any typed sibling or seat names it.
+- A keyed list (`list xs by it.id { x -> … }`) is "`list` takes no head value"; reconciliation is positional — not pinned (needs `@std/ui`).
+- `derived x = …` and `query x = …` are "expected BREAK"; recompute in a `fn` or hold a `state`.
+- `@model type` is "`model` is not defined"; a plain `type` until the derive exists.
+- A built-in type name is no domain type: `type Task = { … }` is "`Task` is a built-in type".
 
 Wants the typer does not carry yet:
-- A DECLARES ANNOTATION'S ARGUMENT IS A LITERAL. `@traced([1, 2])`
-  is F2067 "`traced` generates declarations, so its arguments come
-  from the source alone" — a generated name must exist while the
-  file's names are still being resolved, so the crossing reaches
-  only what the parse tree holds. A computed argument is the ask
-  that arrives with quotes (S4); `Records`/`Validates` annotations
-  take aggregates today, because they run after resolve.
-- A GENERIC struct literal's field seat UNIFIES instead of planting a
-  want, so a no-argument generic call written there still needs its
-  pin (`MatchContext { absent: captured_absent<N>(), … }` inside a
-  generic fn): F2000 "`N` is not pinned by the arguments". Every
-  other seat pins it.
-- A LAMBDA in a FIELD or ARGUMENT seat does not read the seat's
-  answer: `Cx { get: (n: int) -> .Ok(n) }` under `fn(int) ->
-  Result<int, E>` is F2043 "`.Ok` needs a known enum — nothing here
-  says which". Under a TYPED LET the body hears the answer (bare
-  variants, a free Var, a `dyn` box all read it); a NAMED fn in the
-  seat works everywhere, `?` on the field's call included.
-- A `dyn` want reaches into `match` ARMS now, not yet into `if`
-  BRANCHES — RETRACTED for match, re-probed 2026-09-24 (twice,
-  independently, both engines): `match k { 0 -> P { … }, _ -> Q { …
-  } }` under `-> dyn Show`, and a concrete arm beside a `null` arm
-  under `-> dyn Show?`, both compile and run, eval == native. The
-  `if` twin still refuses exactly as before: F2000 "an `if`'s
-  branches disagree: `P` vs `Q`" — box it under `let x: dyn Show =
-  …` and select among the lets. A CALL's seat DOES reach now too —
-  `refused(p)` with `fn refused(e: dyn Error)` and a `ProcessError`
-  in hand checks and dispatches (probed at `8519ae9`, answering
-  `proc 2`); that clause is retired. Found live (not by re-probing
-  this entry on a hunch) while writing `std-errors`' `Traced<E>`:
-  `cause() -> dyn Error? { match self { .A(x) -> x, .B(y) -> y } }`
-  over two different concrete Error types compiled clean.
-- `@std/errors`' `Traced<E>` (the `? context` propagation carrier)
-  keeps `cause`/`context`/`trace` as its own inherent methods,
-  permanently, not as a workaround: its `cause()` answers the
-  concrete `E` it holds, and a trait member's answer is fixed by
-  its signature (`Error.cause() -> dyn Error?`), so no `impl Error`
-  could return the narrower type. (A trait impl over a generic type,
-  `impl Show for Box<T>`, LANDED — checks and runs, re-probed at
-  70e317d6; the entry that called it F2031 is deleted. The real
-  want `Traced` surfaced is a bound on the type's OWN parameter,
-  `type Traced<E: Error>` — ROADMAP's sugar backlog.)
-- A BOUND LANDS ON A FREE FN'S PARAMETERS AND NOWHERE ELSE, so a
-  GENERIC TYPE CANNOT READ ITS KEY. `type T<K: Tr, V> = { … }` and
-  `impl T<K: Tr, V> {` are both F0100 AT the `<` ("expected `=`" /
-  "expected `{`"), a generic METHOD is F2031 "generic methods are
-  recorded, not landed" with or without a bound, and the body then
-  refuses with F2030 "`K` has no known methods". `fn f<T: Tr>(v: T)`
-  is the one form that works. So a generic CONTAINER keyed by a
-  typed id has no spelling: key by the slot and keep the typed door
-  on the owner (core's `SideTable`, and its accessors). Worth
-  stating because F2030's help named the type/impl form until phase
-  H — A REMEDY THAT NAMES AN UNPARSEABLE FORM sends the reader at
-  the grammar, and the reader tries it, twice.
-- Variant arms on a NULLABLE enum (`match k { .A -> …, null -> …
-  }` over `K?`): F2013 "`match` chooses over an enum, found `K?`"
-  — unwrap first (a `k?` arm), then match variants.
-- `is` over a NULLABLE enum, the `match` entry's twin: `c is
-  .Timeout` where `c` is `Cause?` is F2013 "`is` asks an enum for its
-  variant, found `Cause?`" — unwrap first, then ask.
-- A generic impl's body naming its own `T` in a local annotation
-  (`let held: T? = self.rows[i]`): F2001 "`T` names no type".
-  Leave that local un-annotated; a field read or `with` on a
-  generic method's answer needs no bind at all.
-- A BOUND METHOD AS A VALUE (`xs.any(self.rides)`): F2003 "no field
-  `rides` on `S`" — a method name without parentheses is a PROPERTY
-  read. A free fn is a value (`xs.any(big)` answers); the method is
-  not. Write the wrapper `(k) -> self.rides(k)` (sugar backlog: a
-  bound method as a value).
-- `it` through a self-method wrapper (`xs.any(self.rides(it))`):
-  F2033 "`it` has no element here — this seat takes `int`, not a
-  fn" — `it` binds to the NEAREST call; write `(k) ->
-  self.rides(k)`. `it is .A` binds fine. A PIPE STAGE IS SUCH A CALL:
-  `users |> keep(it.age >= 18) |> names(it.name)` binds each `it` at
-  its stage, where the same free call with no pipe feeding it
-  (`keep(users, it.age >= 18)`) is "`it` rides a METHOD call's
-  arguments — nothing binds it here".
-- `join` over a list that is not text: `[1, 2].join(",")` is F2005
-  "`join` reads a list of text, this one holds `int`" — map to text
-  first.
-- `==`/`!=`, `contains`/`index_of` and a literal pattern share ONE
-  equality: a scalar, text, a tagged enum, or a record of ONE such
-  field, compared by that field (a one-field record inside one
-  compares through), so `Id { n: 1 } == Id { n: 1 }` answers true
-  and `[a, c].contains(b)` finds it. Everything else refuses:
-  a record of two fields is F2000 "`==` compares by value — a
-  scalar, text, a tagged enum, or a record of one such field" with
-  help "compare a field instead"; two different one-field types, or
-  one against its own field's scalar, is "`==` compares matching
-  types, found `Id` and `Other`"; the list scan is F2005 "`contains`
-  scans by value — … — and this list holds `Pair`" (a nullable of
-  a comparable type scans through presence) — spell the scan
-  (`xs.any(same(it))`). Probed at d11ea0f. ENUMS SPLIT ON THE PAYLOAD, which
-  nobody had written down: a payload-FREE enum compares fine
-  (`.Timeout == .Refused` answers false), and one CARRYING a payload
-  is F2000 with the help "match on it instead — only an enum carrying
-  nothing compares, by variant".
+- A declaring annotation's argument is a literal or a const naming one: `@traced("a" + "b")` is "`traced` generates declarations, so its arguments come from the source alone" — not pinned (needs a package with `@std/meta`).
+- A generic struct literal's field seat unifies instead of planting a want: an unpinned `mk()` there is "`N` is not pinned by the arguments".
+- A lambda in a field or argument seat does not read the seat's answer ("`.Ok` needs a known enum"); a typed `let` does, and a named fn works everywhere.
+- A `dyn` want reaches `match` arms, not `if` branches ("an `if`'s branches disagree: `P` vs `Q`"); select among typed lets.
+- `Traced<E>`'s `cause`/`context`/`trace` stay inherent methods permanently (a trait member's answer is fixed by its signature); the real want is a bound on a type's own parameter.
+- A bound lands on a free fn's parameters only: `type T<K: Tr, V>` and `impl T<K: Tr, V>` are "expected `=`"/"expected `{`", a generic method is "generic methods are recorded, not landed"; a generic container keyed by a typed id keys by the slot (core's `SideTable`).
+- Variant arms or `is` over a nullable enum are "`match` chooses over an enum, found `K?`" / "`is` asks an enum for its variant, found `K?`"; unwrap first.
+- A generic impl's local annotation naming `T` is "`T` names no type"; leave it un-annotated.
+- A bound method as a value (`xs.any(self.rides)`) is read as a property ("no field `rides` on `S`"); write `(k) -> self.rides(k)`.
+- `it` through a self-method wrapper (`xs.any(self.rides(it))`) is "`it` has no element here"; `it` binds to the nearest call, and a pipe stage is such a call.
+- `[1, 2].join(",")` is "`join` reads a list of text, this one holds `int`"; map to text first.
+- `==`, `contains`/`index_of` and a literal pattern compare a scalar, text, a tagged enum, or a one-field record; two fields is "`==` compares by value — …", and an enum carrying a payload is refused too (help: match on it).
+- A named type is opaque at a seat and transparent at a read: a `Rows` seat refuses a computed `List<int>` ("wants `Rows`, found `List<int>`") and takes a literal.
 
-Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
-`List<int>` has none" — the others read alike — or the map's F2000):
-- `List.reverse()` / `sort()` — core's `reversed` is the helper
-  (and a copy: nothing here mutates in place).
-- `m["k"]` on a map: F2000 "`[...]` indexes a `List`, found
-  `Map<string, int>`" — `.get(k)`, which answers `T?`.
+Methods the runtime lacks:
+- `List.reverse()` / `sort()` are "calls a method, and `List<int>` has none"; core's `reversed` is the helper.
+- `m["k"]` on a map is "`[...]` indexes a `List`, found `Map<string, int>`"; `.get(k)` answers `T?`.
+- `b[0]` on `Bytes` is "`[...]` indexes a `List`, found `Bytes`"; `b.at(i)` reads an octet and traps past the end. `[104, 105].bytes()` answers `Bytes?` ("declares `Bytes`, this is `Bytes?`"), and `.at` on it is refused.
 
 Runtime facts, ours to ratify:
-- `Bytes` IS NOT A LIST AND `bytes()` HAS TWO ANSWERS. `b[0]` is
-  F2000 "`[...]` indexes a `List`, found `Bytes`" — the octet read is
-  `b.at(i)`, answering `int`, and it TRAPS past the end ("index 99 is
-  out of bounds (length 3)"), so absence is not how a range error
-  arrives. `.length` reads. AND THE ANSWER FOLLOWS THE RECEIVER: a
-  string's `.bytes()` is `Bytes` (every text is octets), a
-  `List<int>`'s is `Bytes?` — an element outside 0..255 makes the
-  whole answer null, so `let b: Bytes = [104, 105].bytes()` is F2024
-  "`b` declares `Bytes`, this is `Bytes?`" and `.at` on the unwrapped
-  value is F2030 "`.at(…)` calls a method, and `Bytes?` has none" —
-  while a `List<Bytes>`'s GATHERS the parts and answers a plain
-  `Bytes`. One name, three receivers, and only the octet reading is
-  nullable. AND TEXT OUT OF OCTETS HAS THREE READERS, by what a bad
-  octet should do: `b.text()` answers `string?` (null when any octet
-  is not UTF-8), `b.text_prefix()` the longest whole-UTF-8 prefix
-  (never null; the rest is `b.slice(prefix.length, b.length)`, and a
-  stream holds at most one unfinished character there), and
-  `b.text_lossy()` every octet, each ill-formed subpart one U+FFFD.
-- A STRING's `.length` is a LOAD — the header carries the length
-  (lane A), as a list's does; `while i < s.length` costs a load per
-  turn, and style.restrlen_loop retired with the strlen it ratcheted. WITH ONE
-  CAVEAT, NOW PAID: `str_len` read `(h && h->len) ? h->len :
-  strlen(s)`, so an EMPTY box failed the truthiness test, discarded
-  its own header and answered from a terminator instead. That was
-  safe only because every text box is minted at n+1 with the NUL
-  written (lane B probed all eight ways to make an empty string,
-  both engines) — a CONVENTION OF THE CALLERS, not a property of the
-  function, and a live bug the day a box is allocated at exactly n.
-  It reads `h ? h->len : strlen(s)` now (44c36f1): a box that says
-  its length is zero is telling the truth, and the fallback is for a
-  pointer that is not ours.
-- `split` DROPS a trailing empty segment and keeps a leading one:
-  `"a.".split(".")` is one element, `".a".split(".")` two,
-  `"".split(".")` is `[]`.
-- A STRING HOLDS A NUL, ALL THE WAY. A NUL cannot be written as a
-  LITERAL (`\0` is not an escape — `"ab\0cd"` is six characters),
-  but a program MINTS one with no foreign input at all:
-  `@std/text`'s `from_codepoint(0)` answers a one-byte NUL,
-  `from_codepoints` weaves it, and `+` and interpolation both carry
-  it. It also arrives from outside — a file, an env var, a process's
-  output, a database blob. EVERY text verb reads the header, so a
-  NUL is an ordinary character: `ab\0cd` has `.length` 5, is UNEQUAL
-  to `ab`, and `contains("cd")` answers true at index 3. A NUL is
-  itself a findable needle.
-  "EVERY" WAS A CLAIM ABOUT FIVE VERBS AND THERE WERE SEVEN.
-  `starts_with` was not on f57372a's list and still walked with
-  `strncmp`, so at EQUAL LENGTH it disagreed with `==` about the same
-  pair — `"ab" + from_codepoint(0) + "cd"` was NOT equal to the same
-  text ending `ce` and DID start with it — and a prefix longer than
-  the text read as a prefix. `ends_with` was on neither list and was
-  already right, which is what let the gap read as closed. Fixed here
-  (`memcmp` over the header), pinned in std-text's NUL block. A
-  UNIVERSAL written from an ENUMERATION is only as wide as the list
-  that produced it, and the list came from the fix rather than from
-  the vocabulary.
-  THIS ENTRY SAID THE OPPOSITE UNTIL 927ed49, and half this file's
-  NUL doctrine was written from it. Five primitives — `==`,
-  `contains`, `index_of`, `split`, `replace` — WERE C string calls
-  that stopped at the first NUL; f57372a made them walk the header
-  under `memcmp`/`memmem`. The retraction is worth more than the
-  fact: I wrote three guards and a law against this paragraph on the
-  day it stopped being true, and no test disagreed because I had
-  asserted rather than run. The scope a `Bytes` value would have
-  carved out is gone with it — f57372a's own message says so, and
-  the HTTP lane confirmed `Bytes` never rested on this premise.
-  Probed both engines, minted and foreign alike, before and after.
-- `avra run` INTERPRETS ON ITS OWN STACK: a call saves the caller's
-  place on the machine's stack and never recurses on the host's, so a
-  50000-deep recursion runs (it trapped at 400 while the evaluator
-  recursed natively). A runaway traps at 100000 ("recursion too deep —
-  100000 nested calls"); a const settlement meets its memory budget
-  first (F2061). Measure, never guess, when either moves. AND IT ENDS
-  AS A NATIVE PROGRAM ENDS: lines stream as printed (`run_live`), a
-  trap says `avra: <words>` after them and exits 2.
-- `parse_int` TAKES EXACTLY `-`? DIGITS, NEVER MORE — no leading
-  `+`, no surrounding space, no digit separator, no fraction or
-  exponent, so `"+42"`, `" 42"` and `"4_2"` are all absent; the
-  caller trims and strips a sign prefix first, on the two-hats law
-  (a parser accepting two spellings of one number is the hazard).
-  Past the ceiling on EITHER side answers absent rather than
-  wrapping — except the smallest int itself, `-9223372036854775808`,
-  which `parse_int` answers WHOLE though the LANGUAGE'S OWN INT
-  LITERAL cannot spell it: the lexer's token grammar has no leading
-  sign, so the unsigned digit run overflows one short of where a
-  trailing `-` would land. The row is two calls over one guarded
-  walk (`avra_str_parses_int`/`avra_str_parsed_int`,
-  `avra_int_parse_walk` in avra_runtime.c) — `RtKind`'s one-scalar
-  answer has no shape for a nullable int yet, so a presence question
-  and a value question is the crossing, the way `avra_map_has`/
-  `avra_map_get` already do it.
+- `split` drops a trailing empty segment and keeps a leading one (`".a"` two, `"a."` one, `""` none).
+- `"\u0041".length` is 6, `"ab\0cd".length` is 6 and `"\u{1F600}".length` is 9 — no `\u` or `\0` is an escape.
+- A 50000-deep recursion runs in `avra run`; a runaway traps at 100000 nested calls — the trap is not pinned.
+- Not gate-pinned: a string's `.length` is a header load; a NUL is an ordinary character in every text verb (`from_codepoint(0)` mints one; `==`, `contains`, `starts_with` walk the header); `parse_int` takes exactly `-`? digits and answers the smallest int whole; `Bytes` text readers (`text()`, `text_prefix()`, `text_lossy()`). Each wants a case.
 
 ## How work lands
 

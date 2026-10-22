@@ -32,6 +32,16 @@ unioned() { tr ' ' '\n' | awk 'NF && !seen[$0]++' | tr '\n' ' '; }
 health_packages_list() { { main_packages .github/ci/packages.txt; main_packages .github/ci/packages-dev.txt; } | packages_of | unioned; }
 sprite_packages_list() { { health_packages_list; local_list .github/ci/packages.txt | packages_of; local_list .github/ci/packages-dev.txt | packages_of; } | unioned; }
 
+# WHAT A SPRITE IS PROVISIONED FROM, as one hash: the provisioning script, the package lists and the
+# pinned installers it runs. A Sprite records the hash it was provisioned from, and a run whose tree
+# hashes differently provisions again before anything starts.
+provision_hash() {
+    root=$(cd "$here/.." && pwd)
+    ( cd "$root" && for f in tools/sprite-provision.sh .github/ci/packages*.txt .github/ci/install_*.sh; do
+        [ ! -f "$f" ] || printf '%s\n' "$f"
+    done | LC_ALL=C sort | xargs shasum -a 256 ) | shasum -a 256 | cut -d' ' -f1
+}
+
 # sx <sprite> <seconds> <command...>
 sx() {
     sx_s=$1 sx_b=$2

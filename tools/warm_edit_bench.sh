@@ -98,12 +98,12 @@ now() {
     n=$(date +%s%N 2>/dev/null)
     case "$n" in ''|*[!0-9]*) python3 -c 'import time; print(time.time_ns())' ;; *) printf '%s' "$n" ;; esac
 }
-wall() { # -> "<ms> <status>"
+wall() { # -> "<ms> <status>"; an answer that never came reads as 0 ms and a failed check
     s=$(now)
     "$avra" check "$target" >/dev/null 2>&1
     st=$?
     e=$(now)
-    printf '%s %s' "$(((e - s) / 1000000))" "$st"
+    printf '%s %s\n' "$(((e - s) / 1000000))" "$st"
 }
 
 orig=$(mktemp)
@@ -135,7 +135,7 @@ i=0
 while [ "$i" -lt "$rounds" ]; do
     i=$((i + 1))
     set -- $(wall)
-    ms=$1; st=$2
+    ms=${1:-0}; st=${2:-1}
     [ "$st" = 0 ] || { echo "warm_edit_bench: an unchanged check exited $st — not measured" >&2; cat "$raw"; rm -f "$raw"; exit 1; }
     if [ "$least" -eq 0 ] || [ "$ms" -lt "$least" ]; then least=$ms; fi
 done
@@ -154,7 +154,7 @@ while [ "$i" -lt "$rounds" ]; do
     i=$((i + 1))
     edit "warm$i"
     set -- $(wall)
-    ms=$1; st=$2
+    ms=${1:-0}; st=${2:-1}
     [ "$st" = 0 ] || { echo "warm_edit_bench: an edited check exited $st — not measured" >&2; cat "$raw"; rm -f "$raw"; exit 1; }
     if [ "$least" -eq 0 ] || [ "$ms" -lt "$least" ]; then least=$ms; fi
 done

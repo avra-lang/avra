@@ -10,7 +10,7 @@
 # `<pkg> Ns` (the suites step), or `speed <name> <seconds>` written around a step.
 set -u
 FAIL=0
-ACCEPT=$(printf '%s\n' "${PR_BODY:-}" | sed -n 's/^SPEED_ACCEPT: *//p' | head -n 1)
+ACCEPT=$(sh "$(dirname "$0")/pr_body.sh" | sed -n 's/^SPEED_ACCEPT: *//p' | head -n 1)
 METRICS="speed.static speed.compiler speed.cache-attacks speed.keepers-a speed.keepers-b keeper.attack suite.cli suite.std-avrac"
 
 collect() {
@@ -103,6 +103,8 @@ case "${1:-}" in
     collect) shift; collect "$@" ;;
     compare) shift; compare "${1:-}" "${2:-}"; exit $? ;;
     --self-test)
+        # hermetic: the fixtures name their own PR_BODY, never the run's PR
+        PR_NUMBER=; export PR_NUMBER
         d=$(mktemp -d)
         printf 'speed.cpu-cli 100\nspeed.compiler 50\n' > "$d/cur"
         printf 'speed.cpu-cli 40\nspeed.compiler 49\n' > "$d/base"

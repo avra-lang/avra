@@ -10,7 +10,11 @@
 # Linux-only; on macOS the Homebrew toolchain already satisfies the
 # tree, so this is a no-op.
 #
-#   sh tools/sprite-provision.sh
+#   sh tools/sprite-provision.sh [--toolchain]
+#
+# `--toolchain` stops once the machine can build (no compiler is made):
+# it is what a run re-provisions with when the files it provisions from
+# changed.
 set -eu
 
 [ "$(uname -s)" = Linux ] || exit 0
@@ -55,6 +59,7 @@ test -f "$prefix/include/llvm-c/Core.h" \
 test -e "$prefix/lib/libLLVM.so" \
     || { echo "sprite-provision: no libLLVM.so under $prefix" >&2; exit 1; }
 echo "sprite-provision: LLVM $major ready at $prefix"
+[ "${1:-}" != --toolchain ] || exit 0
 
 # A compiler on disk is what makes an agent's first turn useful. The
 # seed links into one in seconds, and it IS this tree's compiler exactly

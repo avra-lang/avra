@@ -526,6 +526,42 @@ is read and written by name from the handler — probed: a module-scope
 that request's (a copy, discarded at the frame's end); a `state` in
 scope is the server's; a `once fn` is the process's.
 
+**Per-request CONTEXT is a seat, never a place.** Who is asking — the
+principal, the session, the tenant, the trace, the transaction — belongs
+to one request, and `state` is ONE cell for the whole process (and, with
+`run()`, one per core). A context written there is read by the NEXT
+request, and two requests in flight overwrite each other's. So it arrives
+as an `ambient` seat, supplied by a guard:
+
+```avra
+// a guard reads the request and the value is in scope for the handler
+layer auth { req, next ->
+    let caller? = signed_in(req) else { return refused(req) }
+    next(req)               // the handler's `ambient caller` is supplied here
+}
+
+fn cards(ambient caller: Caller, mut db: Db) -> List<Card> {
+    Card.readable(caller).all(db)
+}
+```
+
+A guard that refuses answers the refusal and never reaches the handler.
+The seat is in the signature, so what a handler depends on is visible and
+its absence is a compile refusal naming the seat rather than a null at
+run time — and the same handler is testable with a literal `Caller` and no
+request at all.
+
+`state` stays what it is: the server's own place (a counter, a cache
+handle). The line is the question each answers — whose is this?
+per-request, per-process, per-core — and only the first rides a seat.
+Administrative context is the same shape: a policy is a query over the
+`ambient` caller, never a place a request writes so the next one inherits
+it (`2026_09_24_ORM.md` §4a).
+
+The mark itself, and the supply reaching a handler across a layer's `next`,
+is `avra-xubk.6.2`; until it lands a handler takes the context as a plain
+parameter, which is the same law with the supply written at each call.
+
 **The honest concurrency story.** The runtime is M:1 cooperative fibers
 (`docs/2026_09_22_FIBERS_DESIGN.md` §12): a fiber switches only at a
 yield point (`.await`, a parking I/O row, `sleep`), never at an
@@ -794,12 +830,17 @@ Per-item `on click { }`, typed message payloads, `field.on_input`,
 and filed under `avra-xubk.2`/`.3` and `avra-8sb5.59.27`. Nothing here
 duplicates them.
 
+The board's Sync POSTs `/tasks` and nothing answers it; the route it needs
+is the data design's (`avra-8sb5.59.27.7`).
+
 ## 8. Decided vs open
 
 **DECIDED.** `let` value; `mut` value; `state` place (`Cell<T>`);
 `once` lifetime; `provide`/`env` deleted; ambience is an `ambient`
 SEAT filled by NAME with a default; supply is a binding (`const`/`state`);
-value-vs-trait-vs-capability selection; extensibility by adding a seat.
+value-vs-trait-vs-capability selection; extensibility by adding a seat;
+per-request context (caller, session, tenant, trace) is a guard-supplied
+`ambient` seat, never a `state` (§4.1).
 
 **OPEN.** (a) process-wide MUTABLE state across cores; (b) whether
 `Remote`/`Relation` reads carry a failure channel and how it meets
