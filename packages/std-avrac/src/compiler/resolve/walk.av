@@ -470,7 +470,9 @@ impl ResolveCx {
     /// Whether a bare name in a pattern is a CONST'S here, by the
     /// binding law: a parameter or a local of that name hides the
     /// const, and the name then binds. Asked without reading the name,
-    /// so a name that binds captures nothing.
+    /// so a name that binds captures nothing. A sibling file's PRIVATE
+    /// const never turns a binder: the file's own names, its imports
+    /// and the module's exports are what a pattern compares to.
     fn names_const(name: string, origin: FileId?) -> bool {
         let key = keyed(name, origin)
         if frame_param_hit(self.lframes, key) != null || found_at(self.scope, key) != null { return false }
@@ -478,8 +480,13 @@ impl ResolveCx {
         if ohit != null { return self.const_def(overlay_at(self.overlays, ohit!, key)) }
         let outer: Binding? = self.outer_binding(key)
         if outer != null { return self.const_def(outer) }
-        let d? = self.names_in(origin).fn_decl(name) else { return false }
-        self.view.decls.is_const(d)
+        let names = self.names_in(origin)
+        let d? = names.fn_decl(name) else { return false }
+        let decls = self.view.decls
+        decls.is_const(d) &&
+            (names.fns.has(name) ||
+                decls.decl(d).exported ||
+                decls.declared_in(d, origin ?? self.view.file))
     }
 
     /// Whether a local binding is a body's own `const`.

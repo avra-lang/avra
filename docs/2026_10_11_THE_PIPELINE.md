@@ -160,7 +160,7 @@ so no PR run publishes a binary.
 | `gate` | any non-push run with a changed `.av` or an affected package; `fmt` + idioms |
 | `cache-attacks` | whenever `cache=1` (a push to `main`, a hand-run gate, or a PR that reaches the store or the attacks); two shards: `cache-attacks-a` (`tools/cache_attacks.sh`) and `cache-attacks-b` (the other attacks, plus `code-hash-attacks`) |
 | `flow-gate` | whenever `runtime/` moved |
-| `runtime-keep` | the C runtime's own tests and mutation breaks: on a PR only when `runtime/`, the Makefile or `tools/memcap.sh` changed (`tools/ci_path_gate.py`); always on main's push and a hand-run |
+| `runtime-keep` | the C runtime's own tests and mutation breaks: on a PR only when `runtime/`, the Makefile or `tools/memcap.sh` changed (`sh tools/avra_tools.sh ci_path_gate`); always on main's push and a hand-run |
 | `suites` | any non-push run with a non-empty affected closure; sharded (4 shards) |
 | `codecs` | a PR whose diff reaches the compiler source or the reader |
 | `test` | the aggregate required check, every run |

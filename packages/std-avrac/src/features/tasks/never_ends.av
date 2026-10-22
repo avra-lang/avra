@@ -14,8 +14,7 @@ use @std.errors.{Loc}
 impl TypeCx {
     mut fn never_ends_law(x: Decl) {
         if self.decl_closes(x) { return }
-        for i in x.lo..x.hi {
-            let e = ExprId { index: i }
+        for e in x.body_exprs() {
             let sp = match self.view.store.expr(e) {
                 .Spawn(_) -> self.view.store.expr_span(e),
                 rest -> null,
@@ -31,8 +30,7 @@ impl TypeCx {
     /// search, so a `.source` read beside it in the same block is not
     /// the task's.
     fn spawned_reader(x: Decl, sp: Span) -> string? {
-        for i in x.lo..x.hi {
-            let e = ExprId { index: i }
+        for e in x.body_exprs() {
             let at? = self.view.store.expr_span(e) else { continue }
             if at.lo >= sp.lo && at.hi <= sp.hi && self.source_read(e) { return self.reader_name(e) }
         }
@@ -41,8 +39,7 @@ impl TypeCx {
 
     /// Whether this block closes a channel's sink anywhere in it.
     fn decl_closes(x: Decl) -> bool {
-        for i in x.lo..x.hi {
-            let e = ExprId { index: i }
+        for e in x.body_exprs() {
             if self.close_call(e) { return true }
         }
         false

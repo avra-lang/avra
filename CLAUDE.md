@@ -1640,7 +1640,10 @@ Syntax the grammar lacks:
 - A present-bind arm (`v? -> …`) after a comma-ended arm, or itself ending in a comma, is "expected `}` to close the `match`"; separate such arms by line.
 - An empty block as a match arm is an empty map: "a `match`'s arms disagree: `{}` vs the first arm's `void`".
 - A `\u` escape is not one: `"\u0041"` keeps its six characters, as do `\0` and `\u{…}` (see Runtime facts); spell a code point with `@std/text`'s `from_codepoint(65533)` and a NUL with `from_codepoint(0)` (sugar backlog: `\u{…}` escapes).
-- A bare name in a pattern is a const's or a binder's by its binding, never its spelling: `type.const_pattern` warns when a match ENDS on a const's name and `type.unreachable_arm` when a binder precedes a literal arm (the const-comparison law itself is not pinned here; features/enums/tests/const_pat_template is).
+- A bare name in a pattern is a const's or a binder's by its binding, never its spelling: `type.const_pattern` warns when a match ENDS on a const's name and `type.unreachable_arm` when a binder precedes a literal arm A SIBLING FILE'S PRIVATE const is no exception — the file's expressions see it, its patterns
+never compare to it, so `escape ->` binds where a sibling keeps it private
+(features/enums/tests/const_pat_sibling; the const-comparison law itself is not pinned here;
+features/enums/tests/const_pat_template is).
 - A match arm whose body is a bare statement (`.Bad(t) -> fail E.Bad(t),`) fails the whole file ("expected `}` to close the `match`"); brace it.
 - `get(i)?.name` and `shell(line)?.run()` lex as `?.` ("`?.` reaches into a nullable, this is `Result<…>`"); write `(get(i)?).name`.
 - `export let` is "`export` marks a fn, type, enum or trait — not this statement"; `export const` lands.

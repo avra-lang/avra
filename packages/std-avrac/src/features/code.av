@@ -577,7 +577,7 @@ impl Code {
     fn local_range() -> List<ExprId> {
         let d? = enclosing_decl(self.of.view, self.at) else { return [] }
         let x = self.of.view.decls.decl(d)
-        [ExprId { index: i } for i in x.lo..x.hi]
+        x.body_exprs()
     }
 
     /// Every place a WRITE lands on, WITHIN `range` (`local_range()`'s
@@ -751,7 +751,8 @@ impl Code {
     /// (`DeclFacts.instance`: a component instance is used by being
     /// imported, so it is exempt), and for EVERY name while a HELD
     /// file leaves the relation unable to say "no use anywhere" —
-    /// unsure is never unused.
+    /// unsure is never unused. A public re-export is used by being
+    /// part of the module's surface, even without a local caller.
     fn unused_imports() -> List<string> {
         [self.of.view.decls.decl(d).name for d in self.unused_import_decls()]
     }
@@ -762,8 +763,11 @@ impl Code {
     fn unused_import_decls() -> List<DeclId> {
         if self.of.view.decls.refs_are_incomplete() { return [] }
         match self.at {
-            .Stmt(id) -> [r.decl for r in self.import_rows_at(id) if !(self.of.view.decls.facts_of(r.decl)?.instance ?? false) &&
-                self.of.view.decls.used(r.decl).is_empty()],
+            .Stmt(id) -> {
+                if self.of.view.store.is_exported(id) { return [] }
+                [r.decl for r in self.import_rows_at(id) if !(self.of.view.decls.facts_of(r.decl)?.instance ?? false) &&
+                    self.of.view.decls.used(r.decl).is_empty()]
+            },
             .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
         }
     }

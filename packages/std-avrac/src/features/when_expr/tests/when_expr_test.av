@@ -3,7 +3,9 @@
 // and nothing after it runs, and the IR is nothing but the regions
 // `if` already built.
 use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{shown, ir_of}
+use @std.avrac.testing.{shown, ir_of, refused_with, refusals}
+use compiler.{avra}
+use @std.avrac.diagnostics.{new_source_file}
 use compiler.backend.{render_ir}
 
 spec "features/when_expr" {
@@ -17,6 +19,53 @@ spec "features/when_expr" {
             shown(
                 "fn floor(n: int) -> int { when { n < 0 -> 0, _ -> n } }\nfloor(0 - 5) + floor(7)",
             ) == "7"
+        }
+    }
+    given "the `_` arm's laws" {
+        then "a `when` with no `_` arm is refused where it starts" {
+            refused_with("when { 1 < 2 -> 1 }", "a `when` needs its `_` arm")
+        }
+        then "a second `_` arm is refused, and the first one runs" {
+            refused_with("when { 1 < 2 -> 1, _ -> 2, _ -> 3 }", "a `when` has ONE `_` arm")
+        }
+        then "an arm below the `_` arm is refused" {
+            refused_with(
+                "when {\n    _ -> 9\n    2 < 3 -> 1\n}",
+                "the `_` arm ends a `when` — move it last",
+            )
+        }
+        then "one arm set breaking one law is one refusal" {
+            refusals("when { 1 < 2 -> 1, _ -> 2, _ -> 3 }") == 1 &&
+                refusals("when {\n    _ -> 9\n    2 < 3 -> 1\n}") == 1
+        }
+        then "a `when` with one `_` arm and no other law stands" {
+            refusals("when { 1 < 2 -> 1, _ -> 2 }") == 0
+        }
+        then "an arm below `_` renders at that arm, with the remedy" {
+            let expected = """error[type.when_arms]: the `_` arm ends a `when` — move it last
+  ╭─[when_arms.av:4:5]
+4 │     2 < 3 -> 1
+  ·     ┬
+  ·     ╰── an arm waits after it
+──╯
+help: move `_` below every arm that waits"""
+            avra()
+                .check(
+                    new_source_file(
+                        "when_arms.av",
+                        "let n = 1\nwhen {\n    _ -> 9\n    2 < 3 -> 1\n}",
+                    ),
+                ) == expected
+        }
+        then "a second `_` arm renders at that arm, with the remedy" {
+            let expected = """error[type.when_arms]: a `when` has ONE `_` arm
+  ╭─[when_arms.av:1:33]
+1 │ when { 1 < 2 -> 1, _ -> 2, _ -> 3 }
+  ·                                 ┬
+  ·                                 ╰── a second `_` arm
+──╯
+help: drop it — the arms are tried top to bottom, so the second never runs"""
+            avra().check(new_source_file("when_arms.av", "when { 1 < 2 -> 1, _ -> 2, _ -> 3 }")) == expected
         }
     }
     given "wrong shapes" {

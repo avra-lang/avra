@@ -27,7 +27,7 @@
 //!   host/      the filesystem seam and the manifest
 //!   format/    the AST's source projection (`avra fmt`)
 //!   dev/       the compiler's own proofs: attacks, diagnostic witnesses
-use core.{flatten, PayloadRow, node_payload_rows}
+use core.{flatten, PayloadRow, node_payload_rows, has_anchor}
 use @std.meta.{Field}
 use @std.grammar.{Diagnostic, Ready, ready, node_builder_name}
 use grammar.{avra_known_terminals}
@@ -148,21 +148,23 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     }
 }
 
-/// The feature builders, plus one per node variant a rule may name.
-/// A node builder's name is the variant's own, which no feature can
-/// spell — the DSL reads a builder name as one word.
+/// The payloads and the ANCHOR the model declares for every node
+/// builder a rule may name — a node builder's name is the variant's
+/// own, which no feature can spell, and a hand builder for the same
+/// variant wears them too, so the mark holds wherever a node is made.
 fn with_nodes(index: Map<string, BuilderRow>, rows: List<PayloadRow>) -> Map<string, BuilderRow> {
     mut out = index
-    for row in node_builders() { out.set(row.name, row with { payloads: payloads_for(rows, row.name) }) }
+    for row in node_builders() { out.set(row.name, row) }
+    for row in rows {
+        let name = node_builder_name(row.owner, row.variant)
+        let held? = out.get(name) else { continue }
+        out.set(name, held with { payloads: row.payloads, anchor: anchorage(row.payloads) })
+    }
     out
 }
 
-/// The payloads the model declares for the variant a builder names —
-/// what lets its body ask by NAME instead of by index.
-fn payloads_for(rows: List<PayloadRow>, name: string) -> List<Field> {
-    let hit: PayloadRow? = rows.find(node_builder_name(it.owner, it.variant) == name)
-    hit?.payloads ?? []
-}
+/// The payload a node is anchored at, absent when none is marked.
+fn anchorage(payloads: List<Field>) -> string? { payloads.find(has_anchor(it))?.name }
 
 /// The language's registries, gathered once from its features.
 fn rows_of(features: List<LanguageFeature>, codes: List<DiagCode>) -> LanguageRows {

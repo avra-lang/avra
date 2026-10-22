@@ -273,9 +273,16 @@ fn attach_docs(store: SyntaxArena, docs: List<DocComment>) {
 /// so it claims a statement only when the parse recorded an
 /// ANNOTATION starting at that exact offset; a MARK never does.
 fn doc_target(store: SyntaxArena, starts: List<StmtStart>, doc: DocComment) -> StmtId? {
-    let target? = statement_after(starts, doc.before) else { return null }
-    if !doc.pkg { return target }
-    if store.annotations_of(target).any(it.span != null && it.span!.lo == doc.before) { target } else { null }
+    if !doc.pkg { return statement_after(starts, doc.before) }
+    // A quote argument can hold statements before the declaration's own
+    // span. The annotation's exact owner, not the nearest such statement,
+    // claims its doc. A member mark has no annotation owner here.
+    starts
+        .find(
+            (s: StmtStart) -> store
+                .annotations_of(s.stmt)
+                .any(it.span != null && it.span!.lo == doc.before),
+        )?.stmt
 }
 
 /// The program's statements in order. A recovery hole becomes an

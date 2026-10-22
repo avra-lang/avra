@@ -62,10 +62,14 @@ concurrency:
 permissions:
   contents: read
   packages: read
+  pull-requests: read
 
-# The PR body, for the speed gates' one waiver line (`SPEED_ACCEPT: <reason>`).
+# The PR body, for the speed gates' one waiver line (`SPEED_ACCEPT: <reason>`): the payload's, frozen
+# at the run's start, is the fallback; tools/pr_body.sh asks the API for the body as it is now.
 env:
   PR_BODY: ${{ github.event.pull_request.body }}
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   prepare:
@@ -140,12 +144,12 @@ jobs:
           if git diff --name-only "$runtime_base" HEAD -- 'runtime/' | grep -q .; then runtime=1; fi
           # THE C RUNTIME'S OWN TESTS owe a PR only a change they read (runtime/,
           # the Makefile rules and the memcap wrapper they run under). Main's push
-          # and a hand-run always carry them (tools/ci_path_gate.py).
-          runtime_keep=$(git diff --name-only "$runtime_base" HEAD | python3 tools/ci_path_gate.py runtime-keep --event "$event")
+          # and a hand-run always carry them (tools/src/commands/ci_path_gate.av).
+          runtime_keep=$(git diff --name-only "$runtime_base" HEAD | sh tools/avra_tools.sh ci_path_gate runtime-keep --event "$event")
           # THE LAYOUT SOLVER'S BROWSER ORACLE owes a PR only a change to what it
           # reads: std-ui, std-text and its own tools. Main's push and a hand-run
           # always carry it; the wide sweep is the nightly orders run's.
-          layout_oracle=$(git diff --name-only "$runtime_base" HEAD | python3 tools/ci_path_gate.py layout-oracle --event "$event")
+          layout_oracle=$(git diff --name-only "$runtime_base" HEAD | sh tools/avra_tools.sh ci_path_gate layout-oracle --event "$event")
           # A PR AND A TRAIN OWE THE SAME CHECK SET: the affected closure. The
           # train adds the suites over it, never a package the PR skipped.
           if [ "$event" = merge_group ] || [ "$event" = pull_request ]; then
@@ -212,7 +216,7 @@ jobs:
             pr_json=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}") || pr_json=""
             [ -n "$pr_json" ] || echo "::warning::the PR's state could not be read; the full gate runs"
-            [ "$(printf '%s' "$pr_json" | python3 tools/pr_mode.py)" = light ] && full=0
+            [ "$(printf '%s' "$pr_json" | sh tools/avra_tools.sh pr_mode)" = light ] && full=0
           fi
           # A LABELED RUN NEVER DOUBLES A GATE: when another run on this head is or was the
           # full one, this run waits for it and mirrors its verdict (tools/ci_dup_run.py).
@@ -440,6 +444,22 @@ jobs:
           mkdir -p .avra-cache/proofs
           [ ! -d proofs-kept ] || cp -R proofs-kept/. .avra-cache/proofs/
           echo "proofs: $(ls .avra-cache/proofs | wc -l) kept row(s) handed down"
+      # THE SHARDS' STORE ROWS RIDE UP AND DOWN TOO. A store segment is one writer's frames and a reader
+      # merges every segment at open, so each main shard hands up the rows it added (`avra cache export`,
+      # one segment), `suite-timing` keeps the newest prints, and every run restores them here: a run whose compiler is main's (the same
+      # print) reads the rows each shard made, and any other print never reads them.
+      - if: steps.plan.outputs.build == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: store-segs-kept
+          key: store-segs-restore-only-${{ github.run_id }}
+          restore-keys: store-segs-
+      - if: steps.plan.outputs.build == '1'
+        name: place store segments
+        run: |
+          mkdir -p .avra-cache/store
+          [ ! -d store-segs-kept ] || cp -p store-segs-kept/seg-*.log .avra-cache/store/ 2>/dev/null || :
+          echo "store segments: $(ls .avra-cache/store | grep -c '^seg-') handed down"
       # THE CACHE'S MACHINE CODE IS BOUNDED BY SIZE. `.avra-cache/obj` and `bin` are
       # restored by prefix from the run before and saved again, and an entry keyed to
       # a compiler that no longer exists is never read, so they only grow (1.1 GB, 621 MB
@@ -607,8 +627,13 @@ jobs:
     needs: [prepare, test]
     if: always() && needs.prepare.outputs.main == '1' && needs.prepare.outputs.build == '1' && needs.test.result == 'success'
     runs-on: ubuntu-latest
+    # the tools build links the runtime library and package objects, made here
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
     permissions:
       contents: write
+      packages: read
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -620,6 +645,15 @@ jobs:
         run: |
           chmod +x build/avra
           python3 tools/compiler_release.py publish "${{ needs.prepare.outputs.key }}" build/avra
+      # THE TOOLS ARE PUBLISHED BESIDE THE COMPILER, built by it from main's
+      # own tools/ and keyed by that source (tools/tools_key.sh): a PR that does
+      # not touch tools/ fetches this binary, never builds one.
+      - name: publish avra-tools
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          built=$(AVRA_TOOLS_COMPILER=build/avra sh tools/avra_tools.sh --path)
+          python3 tools/compiler_release.py --asset avra-tools publish "tools-$(sh tools/tools_key.sh)" "$built"
 
   keepers-a:
     needs: [prepare]
@@ -683,7 +717,7 @@ jobs:
         run: |
           a=0
           # THE ONE WAY TO LET A PR COST MORE: `SPEED_ACCEPT: <reason>` in its body (the squash keeps it).
-          SPEED_ACCEPT=$(printf '%s\n' "$PR_BODY" | sed -n 's/^SPEED_ACCEPT: *//p' | head -n 1)
+          SPEED_ACCEPT=$(sh tools/pr_body.sh | sed -n 's/^SPEED_ACCEPT: *//p' | head -n 1)
           export SPEED_ACCEPT
           # A CONTAINER STEP'S SHELL IS `sh`, WHICH HAS NO time BUILTIN and no
           # TIMEFORMAT — a first cut wrote `time ... %M` and every make was
@@ -749,6 +783,12 @@ jobs:
         with: { name: avra-build }
       - name: built
         run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
+      # THE DEFECTS KEEPER'S SECONDS AGAINST THE LAST GREEN RUN: a timeout names what the program took there.
+      - name: earlier defect timings
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 tools/defects_previous.py --repo "${{ github.repository }}" --out build/defects-timings.prev.tsv
       - name: keepers
         timeout-minutes: 30
         env:
@@ -764,6 +804,13 @@ jobs:
             python3 tools/step_cpu.py "$peak_label" -- "$@"
           }
           peak keepers-b make -s -o avra keepers-b || exit 1
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: defects-timings
+          path: build/defects-timings.tsv
+          retention-days: 14
+          if-no-files-found: ignore
   # THE COMMITTED SEED STILL BUILDS THIS TREE — a compiler build, the
   # heaviest single keeper. It stands ALONE: run beside the two halves it was
   # the third compiler process on one runner, and the OOM killed the whole
@@ -970,6 +1017,9 @@ jobs:
             mv .avra-cache "${RUNNER_TEMP:-/tmp}/aside/" 2>/dev/null || :
             echo "cold pass: the hand-down store is set aside; every suite runs from nothing"
           fi
+          # The store as the hand-down left it is the BASE a main shard's export is measured against.
+          mkdir -p store-base
+          [ ! -d .avra-cache/store ] || cp -R .avra-cache/store store-base/store
           for p in ${{ join(matrix.shard, ' ') }}; do
             [ -d "packages/${p%%/*}/src" ] || continue
             echo "::group::$p"
@@ -1000,6 +1050,22 @@ jobs:
           name: proofs-${{ strategy.job-index }}
           path: .avra-cache/proofs
           include-hidden-files: true
+          retention-days: 1
+
+      # THE ROWS THIS SHARD ADDED over the store it started from, as one segment: sealing stays on, and
+      # a segment is a copy-merge that can never collide with a body.
+      - if: always() && needs.prepare.outputs.main == '1' && inputs.cold != '1'
+        name: export the store rows this shard added
+        run: |
+          [ -d .avra-cache/store ] || exit 0
+          chmod +x build/avra
+          build/avra cache export store-base store-out || echo "::warning::avra cache export failed"
+          echo "export: $(ls store-out/store 2>/dev/null | grep -c '^seg-') segment(s), $(du -sk store-out 2>/dev/null | cut -f1) KB"
+      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('store-out/store/seg-*.log') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: store-segs-${{ strategy.job-index }}
+          path: store-out/store/seg-*.log
           retention-days: 1
 
       - name: speed baseline
@@ -1073,6 +1139,22 @@ jobs:
         with:
           path: proofs-kept
           key: proofs-${{ github.run_id }}
+      # THE STORE SEGMENTS every shard of a main run wrote, merged over the set kept before: the
+      # newest two prints and at most 150 MB (tools/store_segments.py), for every run's `prepare`.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { pattern: store-segs-*, path: store-segs-in, merge-multiple: true }
+      - uses: actions/cache/restore@v4
+        with:
+          path: store-segs-kept
+          key: store-segs-${{ github.run_id }}
+          restore-keys: store-segs-
+      - name: merge store segments
+        run: python3 tools/store_segments.py --merge store-segs-kept store-segs-in
+      - uses: actions/cache/save@v4
+        with:
+          path: store-segs-kept
+          key: store-segs-${{ github.run_id }}
   # THE COMPILER-FREE FLOOR ON A PULL REQUEST. The gate runs these too, but a
   # PR runs them FIRST and for nothing, so a keeper that reads only the tree
   # refuses on the PR instead of after the objects build. The set is
@@ -1159,7 +1241,7 @@ jobs:
   # THE LAYOUT SOLVER AGAINST THE WEB TARGET, in Firefox: std-ui's `place` and
   # the page the real html realizer writes, one fixed seed of 300 random trees,
   # every box in agreement (tools/layout-oracle). Owed only to a change it reads
-  # (tools/ci_path_gate.py); the nine-seed sweep is the nightly orders run's.
+  # (tools/src/commands/ci_path_gate.av); the nine-seed sweep is the nightly orders run's.
   layout-oracle:
     needs: [prepare]
     if: needs.prepare.outputs.layout_oracle == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
@@ -1236,7 +1318,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if python3 tools/ci_wall.py collect > wall.metrics 2>/dev/null; then
+          if sh tools/ci_wall.sh collect > wall.metrics 2>/dev/null; then
             python3 tools/speed_ratchet.py --wall --raw wall.metrics
           else
             echo "::notice title=wall budget::the run's wall time could not be read from the jobs API — not gated"

@@ -1,0 +1,48 @@
+use @std.meta.{derive}
+use @std.validate.{Decode, length, items}
+
+@derive(Decode)
+type BoundedItem = { label: string }
+
+@derive(Decode)
+type Form = {
+    @items(min: 1, max: 2) names: List<string>,
+    @items(max: 1) entries: List<BoundedItem> = [],
+}
+
+fn issues(text: string) -> string {
+    match Form.from_json(text) {
+        .Ok(_) -> "accepted",
+        .Err(all) -> [i.path.text() + ":" + i.rule for i in all.all].join(","),
+    }
+}
+
+spec "standard list cardinality validation" {
+    given "items bounds every list element type" {
+        then "a list in bounds passes" { issues("{\"names\":[\"A\"]}") == "accepted" }
+        then "a list below its minimum is refused" { issues("{\"names\":[]}") == "names:items" }
+        then "a list above its maximum is refused" { issues("{\"names\":[\"A\",\"B\",\"C\"]}") == "names:items" }
+        then "record lists use the same standard rule" {
+            issues("{\"names\":[\"A\"],\"entries\":[{\"label\":\"x\"},{\"label\":\"y\"}]}") == "entries:items"
+        }
+        then "element validation keeps its index path" {
+            issues("{\"names\":[false]}") == "names[0]:type"
+        }
+        then "string cardinality still counts code points" {
+            match length("é🙂", min: 2, max: 2) { .Ok(_) -> true, .Err(_) -> false }
+        }
+        then "a list counts elements rather than their contents" {
+            match items(["long", "words"], min: 2, max: 2) { .Ok(_) -> true, .Err(_) -> false }
+        }
+        then "the error names items rather than characters" {
+            match items([1, 2], max: 1) { .Ok(_) -> false, .Err(e) -> e.contains("items") }
+        }
+        then "invalid bounds are refused" { items([1], min: 2, max: 1) is .Err }
+        then "a custom failure message is retained" {
+            match items([1, 2], max: 1, message: "too many") {
+                .Ok(_) -> false,
+                .Err(e) -> e == "too many",
+            }
+        }
+    }
+}

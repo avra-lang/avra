@@ -23,7 +23,7 @@ lists and refuses by name:
                    run unconditionally; every other leg the `test` aggregate
                    owes names `needs.prepare.outputs.full` in its `if:`, and
                    the aggregate refuses a light run by name.
-  run-mode         a PR's run mode is read from the API at run time (tools/pr_mode.py),
+  run-mode         a PR's run mode is read from the API at run time (tools/avra_tools.sh pr_mode),
                    never from the event payload; a light run whose compiler is not
                    the published one skips the gate and says so.
   compiler-route   a Sprite run's prep installs a published compiler (or the merge-base's)
@@ -31,7 +31,7 @@ lists and refuses by name:
                    comes last, and a merge-base compiler too old to read the tree
                    falls back to the seed (`make bootstrap`).
   path-gate        `runtime-keep` and `layout-oracle` run on a PR only when prepare's path gate
-                   (tools/ci_path_gate.py) says a path it reads changed; main's
+                   (tools/src/commands/ci_path_gate.av) says a path it reads changed; main's
                    push and a hand-run owe it always.
   race-split       a `labeled` run never shares its concurrency group with the other
                    pull_request runs, so the label and the open of one PR cannot
@@ -226,8 +226,8 @@ def check_path_gate(workflow_text):
         cond = re.search(r"^    if:\s*(.+)$", jobs.get(job, ""), re.M)
         if not cond or "needs.prepare.outputs.%s == '1'" % output not in cond.group(1):
             refusals.append("`%s` is not gated on `needs.prepare.outputs.%s`" % (job, output))
-        if "tools/ci_path_gate.py %s" % job not in jobs.get("prepare", ""):
-            refusals.append("`prepare` does not ask tools/ci_path_gate.py whether %s is owed" % job)
+        if "tools/avra_tools.sh ci_path_gate %s" % job not in jobs.get("prepare", ""):
+            refusals.append("`prepare` does not ask `avra_tools.sh ci_path_gate` whether %s is owed" % job)
     if refusals:
         return refusals, []
     return [], ["path-gate: %s run on the path gate's decision" % ", ".join(job for job, _ in GATED)]
@@ -242,7 +242,7 @@ def check_race_split(workflow_text):
         refusals.append("the workflow names no concurrency group")
     elif "github.event.action == 'labeled'" not in m.group(1):
         refusals.append("the concurrency group does not split `labeled` runs: a label and an open cancel each other")
-    if "tools/pr_mode.py" not in workflow_text:
+    if "tools/avra_tools.sh pr_mode" not in workflow_text:
         refusals.append("the run mode is not read at run time")
     if refusals:
         return refusals, []
@@ -282,14 +282,14 @@ def check_ready_race(pr_mode_mod):
 
 
 def check_run_mode(workflow_text):
-    """The run mode is decided by tools/pr_mode.py on the PR's API answer, not by
+    """The run mode is decided by `avra-tools pr_mode` on the PR's API answer, not by
     the event payload, and a light gate on an unpublished compiler is skipped.
     Answers (refusals, words)."""
     jobs = parse_jobs(workflow_text)
     refusals = []
     plan = jobs.get("prepare", "")
-    if "tools/pr_mode.py" not in plan:
-        refusals.append("`prepare` does not read the PR's mode through tools/pr_mode.py")
+    if "tools/avra_tools.sh pr_mode" not in plan:
+        refusals.append("`prepare` does not read the PR's mode through tools/avra_tools.sh pr_mode")
     if "github.event.pull_request.draft" in plan:
         refusals.append("`prepare` decides the run mode from the event payload's draft flag")
     if "compiler_source: ${{ steps.release.outputs.source }}" not in plan:
@@ -355,6 +355,23 @@ def check_ladder(workflow_text):
     if "rungs:" not in re.search(r"^    outputs:\n(.*?)^    steps:", jobs.get("prepare", ""), re.S | re.M).group(1):
         bad.append("`prepare` does not expose `rungs` as an output")
     return bad, ([] if bad else ["ladder: rungs are read, built through tools/ladder.sh before HEAD, and the seed check says it skipped"])
+
+
+def check_store_handup(workflow_text):
+    """The shards' store rows travel: main's shards export the rows they added as one segment and upload it, the
+    suite-timing job merges them, prepare restores them. Answers (refusals, words)."""
+    bad = []
+    if "build/avra cache export store-base store-out" not in workflow_text:
+        bad.append("a main shard never exports the rows it added over its base store")
+    if "AVRA_STORE_SEAL_FRAMES" in workflow_text:
+        bad.append("a shard stops the seal: sealing stays on, and the export carries the rows")
+    if "name: store-segs-${{ strategy.job-index }}" not in workflow_text:
+        bad.append("no shard uploads its store segments")
+    if "tools/store_segments.py --merge" not in workflow_text:
+        bad.append("`suite-timing` never merges the shards' store segments")
+    if "name: place store segments" not in workflow_text:
+        bad.append("`prepare` never places the kept store segments")
+    return bad, ([] if bad else ["store-handup: shards export their added rows, suite-timing merges the segments, prepare places them"])
 
 
 def check_light_draft(workflow_text):
@@ -506,6 +523,7 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_keeper_coverage(make_text, workflow_text),
                   lambda: check_watcher_wired(make_text),
                   lambda: check_light_draft(workflow_text),
+                  lambda: check_store_handup(workflow_text),
                   lambda: check_hold_label(open(os.path.join(ROOT, ".github", "workflows", "auto-merge.yml"), encoding="utf-8").read()),
                   lambda: check_ladder(workflow_text),
                   lambda: check_run_mode(workflow_text),
@@ -689,6 +707,10 @@ rt-header:
     # light run is refused ──
     real = open(CHECKS, encoding="utf-8").read()
     assert check_light_draft(real)[0] == [], check_light_draft(real)
+    assert check_store_handup(real)[0] == [], check_store_handup(real)
+    assert any("never exports" in x for x in check_store_handup(real.replace("cache export store-base", "cache x"))[0])
+    assert any("never merges" in x for x in check_store_handup(real.replace("tools/store_segments.py --merge", ""))[0])
+    assert any("never places" in x for x in check_store_handup(real.replace("name: place store segments", ""))[0])
     am = open(os.path.join(ROOT, ".github", "workflows", "auto-merge.yml"), encoding="utf-8").read()
     assert check_hold_label(am)[0] == [], check_hold_label(am)
     assert any("`labeled`" in x for x in check_hold_label(am.replace(", labeled]", "]"))[0])
@@ -712,9 +734,10 @@ rt-header:
 
     real_wf = open(CHECKS, encoding="utf-8").read()
     assert check_run_mode(real_wf)[0] == [], check_run_mode(real_wf)
-    payload = real_wf.replace("tools/pr_mode.py", "tools/mode_by_hand.py")
+    payload = real_wf.replace("sh tools/avra_tools.sh pr_mode)\" = light ] && full=0",
+                              "true)\" = true ] && full=0")
     assert payload != real_wf
-    assert any("tools/pr_mode.py" in x for x in check_run_mode(payload)[0]), check_run_mode(payload)
+    assert any("avra_tools.sh pr_mode" in x for x in check_run_mode(payload)[0]), check_run_mode(payload)
     ungated_gate = real_wf.replace(" && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')", "")
     assert ungated_gate != real_wf
     assert any("`gate`" in x for x in check_run_mode(ungated_gate)[0]), check_run_mode(ungated_gate)

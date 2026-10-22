@@ -16,6 +16,7 @@
 //!   call         id, verb
 //!   set_var      id, property (`--w`), value
 //!   drop_var     id, property
+//!   adopt        words, kinds (how many, then each)
 //!
 //! A `define` tells a host once what a seat's event is called, what it reads
 //! and whether the page's own answer is stopped; every `listen` of that seat
@@ -45,7 +46,7 @@ use realize.dom.patch.{Patch, Listening, Says, Held, held_says}
 use realize.html.tags.{HtmlTag}
 
 /// The wire's version: a host built for another REFUSES, never misapplies.
-export const wire_version = 13
+export const wire_version = 14
 
 /// A `place`'s `after`: the first place, the end of the parent's run, or — from
 /// here up — a sibling's id plus this much.
@@ -75,6 +76,7 @@ export enum Op {
     @code(13) Define
     @code(14) SetVar
     @code(15) DropVar
+    @code(16) Adopt
 }
 
 /// The op a patch is written under. Every patch spelled.
@@ -94,6 +96,7 @@ fn op_of(p: Patch) -> Op {
         .Call(_, _) -> .Call,
         .SetVar(_, _, _) -> .SetVar,
         .DropVar(_, _) -> .DropVar,
+        .Adopt(_, _) -> .Adopt,
     }
 }
 
@@ -228,6 +231,11 @@ impl Buf {
                 self.push_id(id)
                 self.push_str(verb)
             },
+            .Adopt(kinds, words) -> {
+                self.push_int(words)
+                self.push_int(kinds.length)
+                for k in kinds { self.push_str(k) }
+            },
         }
     }
 }
@@ -310,6 +318,7 @@ const answers = [
     Answers { word: "fired", name: "avra_ui_fired" },
     Answers { word: "answered", name: "avra_ui_answered" },
     Answers { word: "painted", name: "avra_ui_painted" },
+    Answers { word: "repaired", name: "avra_ui_repaired" },
     Answers { word: "walks", name: "avra_ui_walks" },
     Answers { word: "scrolled", name: "avra_ui_scrolled" },
 ]
@@ -321,6 +330,7 @@ const rows = [
     Answers { word: "frame", name: "avra_dom_frame" },
     Answers { word: "arm", name: "avra_ui_arm" },
     Answers { word: "disarm", name: "avra_ui_disarm" },
+    Answers { word: "stood", name: "avra_ui_stood" },
     Answers { word: "get", name: "avra_ui_get" },
     Answers { word: "abort", name: "avra_ui_abort" },
     Answers { word: "next_paint", name: "avra_ui_next_paint" },
