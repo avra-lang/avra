@@ -59,22 +59,13 @@ fn doors(t: Type) -> Decls {
                         soft: ${soft(t)},
                         list: () -> listed(${name(t.name)}.all(held.get()), (r: ${t}) -> r.crud_json()),
                         find: (id: int) -> found(${name(t.name)}.find(held.get(), id), (r: ${t}) -> r.crud_json()),
-                        create: (body: string) -> made(${name(t.name)}.from_json(body), (r: ${t}) -> {
-                                mut d = held.get()
-                                r.insert(d)
-                            }, (r: ${t}) -> r.crud_json()),
+                        create: (body: string) -> made(${name(t.name)}.from_json(body), (r: ${t}) -> r.insert(held.get()), (r: ${t}) -> r.crud_json()),
                         update: (id: int, body: string) -> changed(
                             ${name(t.name)}.from_json(body),
-                            (r: ${t}) -> {
-                                mut d = held.get()
-                                (r with { id: id }).update(d)
-                            },
+                            (r: ${t}) -> (r with { id: id }).update(held.get()),
                             (r: ${t}) -> (r with { id: id }).crud_json(),
                         ),
-                        remove: (id: int) -> dropped(${name(t.name)}.find(held.get(), id), (r: ${t}) -> {
-                                mut d = held.get()
-                                r.remove(d)
-                            }),
+                        remove: (id: int) -> dropped(${name(t.name)}.find(held.get(), id), (r: ${t}) -> r.remove(held.get())),
                         trash: ${trash_code(t)},
                         restore: ${restore_code(t)},
                     },
@@ -103,10 +94,7 @@ fn restore_code(t: Type) -> Code {
             ${name(t.name)}.trash(held.get()),
             id,
             (r: ${t}) -> r.id,
-            (r: ${t}) -> {
-                mut d = held.get()
-                r.restore(d)
-            },
+            (r: ${t}) -> r.restore(held.get()),
             (r: ${t}) -> r.crud_json(),
         )
     }
