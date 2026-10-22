@@ -2030,23 +2030,28 @@ impl Decls {
     }
 
     /// A REGISTRY match over `CollectScope`: `self` is the owner's own
-    /// file, `package` the owner's own package, `closure` everything
-    /// admitted — ACROSS PACKAGES, EXPORTED DECLARATIONS ONLY
-    /// (docs/2026_09_22_COLLECTIONS.md §4.4): a declaration in the
-    /// owner's OWN package is seen either way, private ones included,
-    /// the same as `self`/`package` already see; one a DIFFERENT
-    /// package holds must have said `export`, or a dependency could
-    /// silently hand a program its own unexported internals. An
-    /// unknown scope was already refused at `check_collect` — it
-    /// gathers nothing, honestly.
+    /// file, `package` the owner's own package, `closure` the closure of
+    /// the ROOT being built, wherever the collect is declared
+    /// (docs/2026_09_22_COLLECTIONS.md §4.4). Across packages it sees
+    /// EXPORTED declarations, plus every declaration of the owner's own
+    /// package and of the ROOT's: the closure is the root's, so a
+    /// library's collect gathers the program's private members, while a
+    /// DEPENDENCY's privates stay its own. A library checked alone is its
+    /// own root, so it gathers its own closure. An unknown scope was
+    /// already refused at `check_collect` — it gathers nothing, honestly.
     fn in_scope(d: Decl, scope: CollectScope, owner: FileId) -> bool {
         match scope {
             .Self -> same_file(d.file, owner),
             .Package -> self.package_of_file(d.file) == self.package_of_file(owner),
-            .Closure -> d.exported || self.package_of_file(d.file) == self.package_of_file(owner),
+            .Closure -> d.exported ||
+                self.of_root(d.file) ||
+                self.package_of_file(d.file) == self.package_of_file(owner),
             .UnknownScope(_) -> false,
         }
     }
+
+    /// Whether `f` is the root package's own: its module carries no package prefix.
+    fn of_root(f: FileId) -> bool { package_of_module(self.module_name(self.file(f).module_id)).is_empty() }
 
     fn package_of_file(f: FileId) -> string {
         self.package_named(self.module_name(self.file(f).module_id))
