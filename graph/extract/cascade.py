@@ -1450,7 +1450,7 @@ def remote(body):
 
 def streamed(reqs, args):
     """One stdout line per request as it finishes: {"index", "result"}."""
-    if "--local" in args:
+    if "--local" in args or os.environ.get("CASCADE_LOCAL"):
         lines = ({"index": i, "result": r, "log": l} for i, (r, l) in enumerate(extracted(reqs)))
     else:
         lines = remote_lines({"identity": LOADED, "requests": reqs, "stream": True, "prefix": "--no-prefix" not in args, "trace": "--trace" in args})
@@ -1502,7 +1502,7 @@ def main():
     reqs = [requested(s, catalog) for s in (stdin if batch else [stdin])]
     if "--stream" in args:
         return streamed(reqs, args)
-    if "--local" in args:
+    if "--local" in args or os.environ.get("CASCADE_LOCAL"):
         answers = extract_batch(reqs)
     else:
         units = args[args.index("--units") + 1] if "--units" in args else None
