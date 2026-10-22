@@ -98,11 +98,11 @@ impl TypeCx {
 
     /// An ALIAS's table: the type its name stands for, read under
     /// its own type parameters so an application lands them.
-    fn declare_alias(s: StmtId) {
+    mut fn declare_alias(s: StmtId) {
         let parts? = self.view.store.alias_parts(s) else { return }
         self.refuse_taken_tparams(s, parts.name)
         self.enter_tscope(s)
-        let of = self.full_type(self.stmt_loc(s), parts.of)
+        let of = self.written_type_of(s, parts.of)
         self.leave_tscope()
         self.declare(s, DeclSig.Alias(of))
     }
@@ -184,17 +184,17 @@ impl TypeCx {
 
     /// What a variant carries, in order — each payload judged by the
     /// slot law; a payload the law refuses lands as the Error type.
-    fn payload_types(s: StmtId, v: Variant) -> List<TypeId> {
+    mut fn payload_types(s: StmtId, v: Variant) -> List<TypeId> {
         [self.carried_type(s, v.name.of, p) ?? self.error_type for p in v.payloads]
     }
 
     /// One payload's type under the slot law — absent when it was
     /// written without one. An unnamed payload is named by its variant.
-    fn carried_type(s: StmtId, variant: string, p: Param) -> TypeId? {
+    mut fn carried_type(s: StmtId, variant: string, p: Param) -> TypeId? {
         if p.ty == null { return null }
         let who = if p.name.is_empty() { "`.${variant}`" } else { "`${p.name}`" }
         let at = self.stmt_loc(s)
-        self.payload_verdict(at, who, p.ty!, self.full_type(at, p.ty!))
+        self.payload_verdict(at, who, p.ty!, self.written_type_of(s, p.ty!))
     }
 
     /// The slot law's verdict on a payload `who` carries, written `ty`
@@ -273,8 +273,8 @@ impl TypeCx {
     }
 
     /// The fields one `..R` places; none when it is refused.
-    fn spread_table(s: StmtId, owner: string, x: Spread) -> StructSig {
-        let ty = self.full_type(self.stmt_loc(s), x.of)
+    mut fn spread_table(s: StmtId, owner: string, x: Spread) -> StructSig {
+        let ty = self.written_type_of(s, x.of)
         if self.view.types.shape_of(ty) is .Error { return no_fields() }
         if self.names_record(ty, self.decl_of(s)) {
             self.spread_own(s, owner)
@@ -483,9 +483,8 @@ impl TypeCx {
     /// one law. An UNKNOWN name is not this law's business:
     /// the NAME law speaks first, and a second refusal for one
     /// mistake is a cascade.
-    fn slot_law(s: StmtId, kind: string, message: string, label: string, ty: TypeRef) -> TypeId {
-        self
-            .slot_verdict(self.stmt_loc(s), kind, message, label, self.full_type(self.stmt_loc(s), ty))
+    mut fn slot_law(s: StmtId, kind: string, message: string, label: string, ty: TypeRef) -> TypeId {
+        self.slot_verdict(self.stmt_loc(s), kind, message, label, self.written_type_of(s, ty))
     }
 
     /// The slot law's verdict on a type already read.
@@ -921,6 +920,12 @@ impl TypeCx {
         let ty = self.full_type(at, t)
         self.writer = was
         ty
+    }
+
+    /// The type a statement wrote, read where its text was written: a declaration's
+    /// field, payload, alias or spread type, as an annotation's is.
+    mut fn written_type_of(s: StmtId, t: TypeRef) -> TypeId {
+        self.written_by(self.view.spanned_of_stmt(s), self.stmt_loc(s), t)
     }
 
     /// A type pattern's written type, read as `written_by` reads one —
