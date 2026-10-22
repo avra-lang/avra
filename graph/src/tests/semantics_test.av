@@ -182,6 +182,14 @@ fn time_exported() -> Result<bool, string> {
         plain.get("time") == null
 }
 
+fn labelled(path: List<string>) -> Result<Catalog, string> { changed(Semantics { label: path }) }
+
+fn label_exported() -> Result<bool, string> {
+    let c = labelled(["kind"])?
+    c.document.contains("\"label\":[\"kind\"]") &&
+        (changed(Semantics {})?).document.contains("\"label\":null")
+}
+
 fn passed(answer: Result<bool, string>) -> bool {
     answer catch e -> {
         println(e)
@@ -279,6 +287,11 @@ spec "typed model-declared graph semantics" {
         }
         then "constant units need no specially named property" { passed(constant_quantity()) }
         then "paths cannot cross entity/list boundaries or exceed their budget" { passed(invalid_paths()) }
+        then "a model's label names a text property and is exported" {
+            passed(label_exported()) &&
+                passed(Result.Ok(labelled(["amount"]) is .Err)) &&
+                passed(Result.Ok(labelled(["missing"]) is .Err))
+        }
         then "a declared time encoding is exported beside the property" { passed(time_exported()) }
         then "a time binding fits its property's representation, once" {
             passed(invalid_times([timed(["amount"], .IsoDate)])) &&

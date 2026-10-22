@@ -63,6 +63,8 @@ export type QuantityBinding = { amount: List<string>, unit: UnitBinding, decimal
 /// answer about an absent property carries it. The path must be optional.
 export type AbsenceBinding = { path: List<string>, code: string }
 
+/// `label` names the text property by which an entity of the model is
+/// mentioned and told apart from its peers.
 /// Optional arguments to @model. All paths are property tokens, never SQL
 /// or source code. Paths may cross embedded records, not entity references
 /// or lists. A missing optional value is not an unbounded or zero value.
@@ -73,6 +75,7 @@ export type Semantics = {
     quantities: List<QuantityBinding> = [],
     absences: List<AbsenceBinding> = [],
     times: List<TimeBinding> = [],
+    label: List<string>? = null,
 }
 
 impl Semantics {
@@ -109,6 +112,7 @@ impl Semantics {
                 },
             }
         }
+        if self.label != null && !(path_shape(models, owner, self.label!)? is .Text) { fail "a model's label binds a text property" }
         for i, time in self.times {
             if time.path.length != 1 { fail "a time binding names a top-level property" }
             if self.times.slice(0, i).any(same_path(it.path, time.path)) { fail "a property has one time encoding" }
@@ -143,6 +147,10 @@ impl Semantics {
                         if self.validity == null { Json.Null } else { self.validity!.describe() },
                     ),
                     field("quantities", Json.Arr([q.describe() for q in self.quantities])),
+                    field(
+                        "label",
+                        if self.label == null { Json.Null } else { path_document(self.label!) },
+                    ),
                     field(
                         "times",
                         Json
