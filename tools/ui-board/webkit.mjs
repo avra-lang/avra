@@ -14,6 +14,7 @@ export async function webkitLaunch(playwright) {
   try { return { browser: await playwright.webkit.launch() }; } catch (e) { return { said: String(e.message ?? e).split("\n")[0] }; }
 }
 
+// The browser is the caller's: closing a page closes its context only.
 // `device` names one of Playwright's device descriptors ("iPhone 15"): a touch screen, a phone's
 // viewport and user agent, and a press that is a tap.
 export async function openPage(browser, url, { width = 900, height = 700, device = null, playwright = null } = {}) {
@@ -55,6 +56,6 @@ export async function openPage(browser, url, { width = 900, height = 700, device
       await framed();
     },
     async screenshot(file) { await page.screenshot({ path: file }); },
-    async close() { await context.close(); await browser.close(); },
+    async close() { await context.close(); },
   };
 }

@@ -270,4 +270,5 @@ if (tampered) {
   await torn.close();
 }
 console.log(failed === 0 ? `ui-browser: every claim holds in ${engine}` : `ui-browser: ${failed} claim(s) FAILED in ${engine}`);
+await launched?.browser.close();
 process.exit(failed === 0 ? 0 : 1);
