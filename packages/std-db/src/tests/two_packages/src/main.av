@@ -1,0 +1,15 @@
+// proves: two packages whose modules share a bare name (`shared`) and declare a model of one bare name and one shape are two owners — the second create_table on one database is refused, naming the first owner's module, and the first owner's table is untouched
+use @one.shared.{Shared as First}
+use @two.shared.{Shared as Second}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+
+fn story() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    First.create_table(db)?
+    let again = match First.create_table(db) { .Ok(_) -> "ok", .Err(e) -> e.message }
+    let refused = match Second.create_table(db) { .Ok(_) -> "no refusal", .Err(e) -> e.message }
+    "again ${again} | names the first owner ${refused.contains("@one")} | not the second ${!refused.contains("@two")} | claimed ${refused.contains("is already claimed")}"
+}
+
+match story() { .Ok(s) -> s, .Err(e) -> "FAILED ${e.message}" }
