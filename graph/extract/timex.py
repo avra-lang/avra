@@ -92,3 +92,18 @@ def candidates(anchor_ms, timezone=None, window_days=None):
 def chosen(options, index):
     """The normalization a choice picked, or None for a non-time."""
     return options[index]["normalization"]
+
+
+CLOCK = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b")
+
+
+def with_clock(norm, text, timezone=None):
+    """The TIME a chosen DATE becomes when the expression names a clock time
+    ("16 October at 11:00"), in the source's zone (UTC when it names none);
+    the normalization unchanged when it names none."""
+    clock = CLOCK.search(text)
+    if not clock or not norm or norm["timex_type"] != "DATE":
+        return norm
+    zone = zone_of(timezone) or datetime.timezone.utc
+    at = datetime.datetime.combine(datetime.date.fromisoformat(norm["value"]), datetime.time(int(clock.group(1)), int(clock.group(2))), tzinfo=zone)
+    return {**norm, "timex_type": "TIME", "value": at.isoformat(timespec="seconds")}

@@ -86,5 +86,24 @@ class Zones(unittest.TestCase):
             timex.candidates(self.LATE, "Not/AZone", window_days=0)
 
 
+class Clock(unittest.TestCase):
+    DATE = {"kind": "TIMEX3", "timex_type": "DATE", "value": "2026-10-16", "reference": "2026-10-15T08:00:00Z"}
+
+    def test_a_date_with_a_clock_time_becomes_that_instant(self):
+        got = timex.with_clock(self.DATE, "16 October 2026 at 11:00 UTC")
+        self.assertEqual((got["timex_type"], got["value"]), ("TIME", "2026-10-16T11:00:00+00:00"))
+        self.assertEqual(got["reference"], self.DATE["reference"])
+
+    def test_the_clock_is_read_in_the_sources_zone(self):
+        got = timex.with_clock(self.DATE, "16 October at 11:00", "+02:00")
+        self.assertEqual(got["value"], "2026-10-16T11:00:00+02:00")
+
+    def test_a_date_with_no_clock_is_unchanged(self):
+        self.assertEqual(timex.with_clock(self.DATE, "16 October 2026"), self.DATE)
+
+    def test_a_non_date_is_unchanged(self):
+        self.assertIsNone(timex.with_clock(None, "at 11:00"))
+
+
 if __name__ == "__main__":
     unittest.main()

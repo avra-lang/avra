@@ -38,11 +38,18 @@ def fitted(name):
     return json.load(open(PARAMS_FILE))["params"][name]["value"]
 
 
+def fitted_per_kind():
+    """The record-kind thresholds that differ from the pooled one, by model name."""
+    return json.load(open(PARAMS_FILE))["params"]["accept_record"].get("per_kind", {})
+
+
 LOADED = identity()
 SPAN_THRESHOLD = fitted("span_threshold")
 ACCEPT = fitted("accept")
 ACCEPT_SPEAKER = fitted("accept_speaker")
 ACCEPT_RECORD = fitted("accept_record")
+ACCEPT_KIND = fitted_per_kind()
+ACCEPT_FIELD = fitted("accept_field")
 RECORD_FRAMING = fitted("record_framing")
 MARGIN = fitted("margin")
 NEW_CEILING = fitted("new_ceiling")
@@ -83,6 +90,7 @@ def taken(stage, what, p, options, threshold):
     """The index of the best of `options` when it clears `threshold`, else
     None. A refusal is logged with its stage, subject, scores and threshold."""
     k = max(range(len(p)), key=lambda i: p[i])
+    threshold = threshold(k) if callable(threshold) else threshold
     if k < len(options) and p[k] >= threshold:
         return k
     best = max(range(len(options)), key=lambda i: p[i]) if options else None
@@ -766,7 +774,7 @@ class Cascade:
                 if y <= x:
                     continue
                 p = self.llm.pick(f'Sentence: "{self.t.s[x:y]}"', "Which kind of record does this sentence itself state, if any?", opts, ["none of these"])
-                best = taken("record", f"kind of {self.t.s[x:y][:50]!r}", p, opts, ACCEPT_RECORD)
+                best = taken("record", f"kind of {self.t.s[x:y][:50]!r}", p, opts, lambda i: ACCEPT_KIND.get(kinds[i], ACCEPT_RECORD) if i < len(kinds) else ACCEPT_RECORD)
                 if best is not None:
                     self.fill(kinds[best], x, y, p[best])
 
@@ -843,7 +851,7 @@ class Cascade:
                 log(f"gate field {model}.{name}: no encoder span in the sentence")
                 return None
             pr = self.llm.pick(ctx, f"In a {model}, which part of the sentence is the {name}?", [self.t.s[x:y] for x, y in cands], ["not stated"])
-            k = taken("field", f"{model}.{name}", pr, [self.t.s[x:y] for x, y in cands], ACCEPT_RECORD)
+            k = taken("field", f"{model}.{name}", pr, [self.t.s[x:y] for x, y in cands], ACCEPT_FIELD)
             if k is None:
                 return None
             x, y = cands[k]
@@ -854,18 +862,18 @@ class Cascade:
                 log(f"gate field {model}.{name}: no {target(p['shape'])} mentioned or referred to")
                 return None
             pr = self.llm.pick(ctx, f"In this {model}, who or what is the {name}?", [self.name(i) for i in ids], optional)
-            k = taken("field", f"{model}.{name}", pr, [self.name(i) for i in ids], ACCEPT_RECORD)
+            k = taken("field", f"{model}.{name}", pr, [self.name(i) for i in ids], ACCEPT_FIELD)
             if k is None:
                 return None
             return self.field(name, ids[k], [where[ids[k]]], score=pr[k])
         if kind == "enum":
             vals = p["enum"]
             pr = self.llm.pick(ctx, f"For this {model}, which {name} does the sentence state?", vals, optional)
-            k = taken("field", f"{model}.{name}", pr, vals, ACCEPT_RECORD)
+            k = taken("field", f"{model}.{name}", pr, vals, ACCEPT_FIELD)
             return None if k is None else self.field(name, vals[k], [(a, b)], score=pr[k])
         if kind == "bool":
             pr = self.llm.choose(ctx, f"For this {model}, is {name} true or false according to the sentence?", ["true", "false"] + optional)
-            k = taken("field", f"{model}.{name}", pr, ["true", "false"], ACCEPT_RECORD)
+            k = taken("field", f"{model}.{name}", pr, ["true", "false"], ACCEPT_FIELD)
             return None if k is None else self.field(name, k == 0, [(a, b)], score=pr[k])
         if kind == "time":
             return self.time_field(model, p, ctx, a, b)
@@ -876,7 +884,7 @@ class Cascade:
                 log(f"gate field {model}.{name}: no number in the sentence")
                 return None
             pr = self.llm.pick(ctx, f"In this {model}, which number is the {name}?", [self.t.s[x:y] for x, y in nums], ["not stated"])
-            k = taken("field", f"{model}.{name}", pr, [self.t.s[x:y] for x, y in nums], ACCEPT_RECORD)
+            k = taken("field", f"{model}.{name}", pr, [self.t.s[x:y] for x, y in nums], ACCEPT_FIELD)
             if k is None:
                 return None
             x, y = nums[k]
@@ -893,7 +901,7 @@ class Cascade:
             log(f"gate field {model}.{p['name']}: no {unit} span with a number beside it in the sentence")
             return None
         pr = self.llm.pick(ctx, f"In this {model}, which amount is the {p['name']}?", [self.t.s[x:y] for x, y, _, _ in pairs], ["not stated"])
-        k = taken("field", f"{model}.{p['name']}", pr, [self.t.s[x:y] for x, y, _, _ in pairs], ACCEPT_RECORD)
+        k = taken("field", f"{model}.{p['name']}", pr, [self.t.s[x:y] for x, y, _, _ in pairs], ACCEPT_FIELD)
         if k is None:
             return None
         x, y, number, word = pairs[k]
@@ -926,11 +934,11 @@ class Cascade:
             log(f"gate time {model}.{name}: no time expression in the sentence")
             return None
         pr = self.llm.pick(ctx, f"In this {model}, which words give the {name}?", [self.t.s[x:y] for x, y in found], ["not stated"])
-        k = taken("time", f"{model}.{name} words", pr, [self.t.s[x:y] for x, y in found], ACCEPT_RECORD)
+        k = taken("time", f"{model}.{name} words", pr, [self.t.s[x:y] for x, y in found], ACCEPT_FIELD)
         if k is None:
             return None
         x, y = found[k]
-        norm, meant = self.meaning(ctx, f"{model}.{name}", x, y)
+        norm, meant = self.meaning(ctx, f"{model}.{name}", x, y, p["time"]["encoding"] != "iso_date")
         value = self.encoded_time(p["time"]["encoding"], norm) if norm else None
         if value is None:
             if norm:
@@ -940,7 +948,7 @@ class Cascade:
         f["normalization"] = norm
         return f
 
-    def meaning(self, ctx, what, x, y):
+    def meaning(self, ctx, what, x, y, instant=False):
         """(TIMEX3 normalization, score) of the time expression at [x, y): the
         scorer picks among calendar candidates around the source's anchor, or
         (None, 0) when it picks a non-time."""
@@ -952,8 +960,11 @@ class Cascade:
         written = next(o["label"] for o in options if o["normalization"] and o["normalization"]["timex_type"] == "TIME")
         labels = [o["label"] for o in options]
         pt = self.llm.pick(ctx + f"\nThe text was written {written}.", f'Which date or time does "{self.t.s[x:y]}" mean?', labels[:-2], labels[-2:])
-        j = taken("time", f"{what} meaning of {self.t.s[x:y]!r}", pt, labels[:-2], ACCEPT_RECORD)
-        return (None, 0.0) if j is None else (timex.chosen(options, j), pt[j])
+        j = taken("time", f"{what} meaning of {self.t.s[x:y]!r}", pt, labels[:-2], ACCEPT_FIELD)
+        if j is None:
+            return None, 0.0
+        norm = timex.chosen(options, j)
+        return (timex.with_clock(norm, self.t.s[x:y], timex.zone_for(self.request)) if instant else norm), pt[j]
 
     def valued(self, model, p, claim, a, b, cue):
         """A required embedded value of a relation: the valid-time bounds its
@@ -970,11 +981,11 @@ class Cascade:
                 log(f"gate time {model}.{p['name']}.{name}: no time expression in the sentence")
                 continue
             pr = self.llm.pick(ctx, f"Consider this claim: {claim}. Which words give the time it {words}?", [self.t.s[x:y] for x, y in found], ["not stated"])
-            k = taken("time", f"{model}.{p['name']}.{name} words", pr, [self.t.s[x:y] for x, y in found], ACCEPT_RECORD)
+            k = taken("time", f"{model}.{p['name']}.{name} words", pr, [self.t.s[x:y] for x, y in found], ACCEPT_FIELD)
             if k is None:
                 continue
             x, y = found[k]
-            norm, _ = self.meaning(ctx, f"{model}.{p['name']}.{name}", x, y)
+            norm, _ = self.meaning(ctx, f"{model}.{p['name']}.{name}", x, y, spec["encoding"] != "iso_date")
             ms = None if norm is None else self.bound_ms(side, spec, norm, ctx, x, y)
             if ms is not None:
                 value[name] = self.encoded_instant(spec["encoding"], ms)
