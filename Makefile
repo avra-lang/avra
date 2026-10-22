@@ -1129,7 +1129,7 @@ KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness f
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
 KEEPERS_B = tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board ui-browser ui-browser-skip wasm-host-check tool-witnesses footprint tick-object no-threads \
-            ci-invariants ci-verdict pr-watcher pipeline-doc
+            ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
 	@sh tools/keepers_loop.sh "$(MAKE) -s -o avra" $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a1,$@),$(KEEPERS_A1),$(if $(filter keepers-a2,$@),$(KEEPERS_A2),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS))))))
@@ -1215,7 +1215,7 @@ pipeline-status:
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc
+KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml
 .PHONY: keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
@@ -1321,6 +1321,12 @@ voices-accept:
 # that wrong answer, so a program test cannot catch it.
 externs:
 	@python3 tools/externs.py
+
+# THE WORKFLOW PARSE KEEPER: every workflow file reads as YAML. A file that does not parse
+# runs with no jobs, so the check it was meant to run examines nothing (tools/workflows_yaml.py).
+workflows-yaml:
+	@python3 tools/workflows_yaml.py --self-test >/dev/null
+	@python3 tools/workflows_yaml.py
 
 # THE TRAPS COLUMN'S KEEPER: a row marked `traps: false` reaches no trap the
 # language raises (tools/traps.py).
