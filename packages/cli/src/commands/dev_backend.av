@@ -1,6 +1,6 @@
 //! `avra dev`'s server: the package a page names to answer beside it
 //! (`[dev] server = "<path>"`, rooted at the page's package). It is built for
-//! this machine, run on a loopback port of its own, told that port as `PORT`,
+//! this machine, run in its own root on a loopback port of its own, told that port as `PORT`,
 //! and run again whenever a file its build reads moves. Every request the
 //! page does not own is sent on to it, so the page and what it asks for stand
 //! on one origin.
@@ -107,7 +107,7 @@ impl Backend {
     /// waited on, so the first request after a build finds it listening.
     fn restarted(binary: string) {
         self.stopped()
-        let run = cmd(tool_at("server", binary), []) with { env: Env.Inherit([EnvPair { name: "PORT", value: "${self.port}" }]), streams: .Inherited }
+        let run = cmd(tool_at("server", binary), []) with { cwd: self.root, env: Env.Inherit([EnvPair { name: "PORT", value: "${self.port}" }]), streams: .Inherited }
         match run.start(Ready.Started, secs(5)) {
             .Ok(c) -> {
                 self.child.set(c)

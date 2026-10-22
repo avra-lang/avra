@@ -1,0 +1,84 @@
+//! The board's server: its tasks, kept in a database on disk under `.avra/`,
+//! answered over HTTP on every core. Each core is a process with its own
+//! handle on the one file.
+use @std.io.{make_dirs}
+use @std.json.{Json, field, to_text}
+use @std.process.{exit}
+use @std.http.http.{Response, text}
+use @std.http.route.{get, post}
+use @std.http.server.{server}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+
+/// The database, opened at a core's first request, so no handle crosses
+/// into another core's process. Absent when it would not open.
+state db: Db? = opened()
+
+server tasks {
+    get "/tasks" { _req -> listed() }
+    post "/tasks" { req -> match req.json() { .Ok(j) -> added(to_text(j)), .Err(refused) -> refused } }
+}
+
+let ran = tasks.run()
+if ran is .Err(e) {
+    eprintln("ui-board-server: ${e.describe().message}")
+    exit(.Code(1))
+}
+
+/// `.avra/board.db`, its table made, written ahead so the cores' processes
+/// read while one writes and wait their turn to write.
+fn opened() -> Db? {
+    match ready() {
+        .Ok(d) -> d,
+        .Err(why) -> {
+            eprintln("ui-board-server: the database did not open: ${why}")
+            null
+        },
+    }
+}
+
+fn ready() -> Result<Db, string> {
+    if make_dirs(".avra") is .Err(e) { return .Err(e.describe().message) }
+    match prepared_db() { .Ok(d) -> d, .Err(e) -> .Err(e.describe().message) }
+}
+
+fn prepared_db() -> Result<Db, SqlError> {
+    mut d = Db.open(".avra/board.db")?
+    let _ = d.scalar(sql("PRAGMA journal_mode = WAL"))?
+    let _ = d.scalar(sql("PRAGMA busy_timeout = 5000"))?
+    let _ = Todo.create_table(d)?
+    d
+}
+
+/// Every task, as JSON.
+fn listed() -> Response {
+    let d? = db else { return unopened() }
+    match Todo.all(d) {
+        .Ok(ts) -> Response.json(.Arr([wire(t) for t in ts])),
+        .Err(e) -> text(500, e.describe().message),
+    }
+}
+
+/// The task a body names, kept under an id of the database's, and answered
+/// as kept.
+fn added(body: string) -> Response {
+    let d? = db else { return unopened() }
+    let t = match Todo.from_json(body) {
+        .Ok(t) -> t,
+        .Err(e) -> { return text(400, "not a task: ${e.describe().message}") },
+    }
+    // `insert` takes a `mut` seat, which neither a `state` nor a binding
+    // read out of one can fill; the copy writes the same handle, its cells.
+    mut into = d
+    match (t with { id: 0 }).insert(into) {
+        .Ok(kept) -> Response.json(wire(kept)) with { status: 201 },
+        .Err(e) -> text(500, e.describe().message),
+    }
+}
+
+/// A task as JSON, spelled by hand until `@model` derives its writer.
+fn wire(t: Todo) -> Json {
+    Json.Obj([field("id", .Int(t.id)), field("title", .Str(t.title)), field("done", .Bool(t.done))])
+}
+
+fn unopened() -> Response { text(503, "the board's database did not open") }
