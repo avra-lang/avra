@@ -388,7 +388,10 @@ jobs:
               cp .rung-product/avra build/avra
             else
               [ -x build/avra ] || { echo "::error::the ladder has no starting compiler (the release fetch found none)"; exit 1; }
-              product=$(AVRA_LADDER_S=900 sh tools/ladder.sh build/avra $rungs) || { echo "::error::the ladder failed: a rung did not build with the compiler of the rung before it"; exit 1; }
+              # each rung is replayed on the base this tree is judged against, never on its own stale tree
+              lbase=origin/main
+              [ "${{ github.event_name }}" != push ] || lbase=HEAD~1
+              product=$(AVRA_LADDER_BASE=$(git rev-parse "$lbase") AVRA_LADDER_S=900 sh tools/ladder.sh build/avra $rungs) || { echo "::error::the ladder failed: a rung did not build with the compiler of the rung before it"; exit 1; }
               mkdir -p .rung-product && cp "$product" .rung-product/avra
               cp "$product" build/avra
               echo "built=1" >> "$GITHUB_OUTPUT"
