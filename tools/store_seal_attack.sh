@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 export AVRA_WATCH_HELD=1
 export AVRA_MAX_COMPILES=0
 
-R=build/store-seal; fails=0
+R=build/store-seal
 rm -rf "$R" .avra-cache && mkdir -p $R/small/src $R/big/src
 printf '[package]\nname = "ss-small"\nversion = "0.1.0"\n' > $R/small/avra.toml
 printf 'fn main() -> int { 1 + 2 }\n' > $R/small/src/main.av
@@ -29,7 +29,8 @@ done
 echo "println(\"\${$sum}\")" >> $R/big/src/main.av
 WANT=1770
 
-fail() { fails=$((fails + 1)); echo "store-seal: FAILED — $1"; }
+who=store-seal
+. tools/lib/steps.sh
 bodies() { ls .avra-cache/store/body-*.pack 2>/dev/null | wc -l | tr -d ' '; }
 flip() { python3 -I - "$1" "$2" <<'PY'
 import sys
@@ -103,4 +104,4 @@ flip "$val" all
 AVRA_QTRACE=1 ./avra check $R/big > $R/torn_check.out 2> $R/torn_check.err
 [ "$(grep -c '^Q	attempt' $R/torn_check.err)" -ge 1 ] || fail "a check over a damaged value answered a hit: nothing ran again"
 
-[ "$fails" = 0 ] && echo "store-seal: seal threshold, newest body, slot values and warm reads all held" || exit 1
+verdict "seal threshold, newest body, slot values and warm reads"
