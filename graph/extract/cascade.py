@@ -403,7 +403,7 @@ class Cascade:
     def entity_pass(self):
         labels = self.plan.entity_labels()
         found = self.spans["entities"]
-        log("spans " + " ".join(f"{l}:{[x['text'] for x in xs]}" for l, xs in found.items() if xs))
+        log("spans " + " ".join(f"{l}:{[self.t.s[x['start']:x['end']] for x in xs]}" for l, xs in found.items() if xs))
         by_label = {m.lower(): m for m in self.plan.entities}
         typed = {}
         for l, xs in found.items():
