@@ -126,6 +126,17 @@ export fn vendored_meta_as(files: Map<string, string>, meta: string) -> Map<stri
         .set("/w/vendor/errors/avra.toml", "[package]\nname = \"@std/errors\"\nversion = \"0.1.0\"\n")
     out.set("/w/vendor/errors/src/errors.av", errors_real)
     out
+        .set("/std/std-prelude/avra.toml", "[package]\nname = \"@std/prelude\"\nversion = \"0.0.1\"\n")
+    out.set("/std/std-prelude/src/prelude.av", prelude_real)
+    out
+}
+
+/// A memory host for a program that vendors `@std/meta`: its toolchain is
+/// the std root `/std`, which carries the vendored prelude, so the vendored
+/// packages reach it as the real package does.
+export fn vendored_host(files: Map<string, string>, names: List<string>) -> Host {
+    let host = memory_host(files, names)
+    if files.keys().any(it.starts_with("/std/")) { host with { std_root: "/std" } } else { host }
 }
 
 /// The `@std/meta` a fixture starts from.
@@ -140,6 +151,8 @@ export fn vendored_meta_paths() -> List<string> {
         "/w/vendor/meta/src/meta.av",
         "/w/vendor/errors/avra.toml",
         "/w/vendor/errors/src/errors.av",
+        "/std/std-prelude/avra.toml",
+        "/std/std-prelude/src/prelude.av",
     ]
 }
 
@@ -164,7 +177,7 @@ export fn provided_workspace(main: string, provider: string, modules: List<Modul
     for m in modules { files.set(m.path(), m.text) }
     let paths = ["/w/avra.toml", "/w/src/main.av", "/w/vendor/c/avra.toml", "/w/vendor/c/src/c.av"]
         .concat([m.path() for m in modules])
-    test_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w")
+    test_workspace(vendored_host(files, paths.concat(vendored_meta_paths())), "/w")
 }
 
 /// A workspace a test makes — ONE ONE-SHOT WORKSPACE IS ALIVE AT A TIME,
