@@ -5,6 +5,8 @@
 //! is the page's to answer, so only a program built for a page imports it.
 use app.{Act, Door, Msg, Want, plain, remounted, stood}
 use app.{Wants, replies_to, wants}
+use realize.dom.snapshot.{Page, taken}
+use shipped.{carried, carry, close}
 use realize.dom.wire.{request_frame}
 use @std.http_message.message.{Reply}
 use realize.dom.live.{live}
@@ -29,6 +31,11 @@ once fn mounted() -> Cell<Paged?> { Cell.new(null) }
 /// A seat and the octets it has room for.
 type Seat = { box: Bytes, room: int }
 
+/// The page a module that stood down said, until the first paint takes it over.
+once fn handed() -> Cell<Page?> { Cell.new(null) }
+
+once fn handed_state() -> Cell<string> { Cell.new("") }
+
 once fn seated() -> Cell<Seat?> { Cell.new(null) }
 
 /// The sources the page's host was asked to keep.
@@ -44,8 +51,11 @@ export fn mount<V: View>(view: fn() -> V, theme: fn() -> Theme = plain) {
         stood(made.app)
         made.app.stands.geometric()
         made.app.stands.first_rows(first_window)
+        carry(handed_state().get())
+        close()
         made.app.door.set(opened())
         made.page.stood.set(avra_ui_stood())
+        made.page.handed.set(handed().get())
         made.app.paint()
         made.app.framer.set(asks_frame)
         made.app.holding.set(true)
@@ -225,3 +235,23 @@ extern fn avra_ui_repaired() {
     held.app.paint()
     held.app.warn()
 }
+
+/// The page this module holds, said for the module that takes over: empty
+/// when nothing is mounted.
+extern fn avra_ui_said() -> Bytes {
+    let held? = mounted().get() else { return "".bytes() }
+    held.page.said()
+}
+
+/// The page a module that stood down said, in the first `len` octets of the
+/// seat, kept for this module's first paint to diff against. Bytes that are
+/// no page leave the first paint a full one.
+extern fn avra_ui_took(len: int) { handed().set(taken(seated_octets(len))) }
+
+/// The state this module ships, as the document the module that takes over
+/// writes into its own states.
+extern fn avra_ui_state_said() -> Bytes { carried().bytes() }
+
+/// The shipped state a page carried, in the first `len` octets of the seat,
+/// kept for `mount` to write into the states the program named.
+extern fn avra_ui_stated(len: int) { handed_state().set(seated_text(len) ?? "") }

@@ -84,7 +84,7 @@ url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/dev.out" | head -1)
 mkdir -p "$work/server/tools" "$work/served/tools"
 cp -R "$tree/tools/ui-board" "$work/server/tools/ui-board"
 cp "$tree/tools/ui-board/hydrate/main.av" "$work/server/tools/ui-board/src/main.av"
-"$avra" run "$work/server/tools/ui-board" 2>"$work/hydrate.err" | sed -n '3,$p' > "$work/document.html"
+"$avra" run "$work/server/tools/ui-board" 2>"$work/hydrate.err" | sed -n '4,$p' > "$work/document.html"
 grep -q "^<!doctype html>" "$work/document.html" || { cat "$work/hydrate.err"; echo "ui-browser: the server's page did not draw"; exit 1; }
 cp -R "$tree/tools/ui-board" "$work/served/tools/ui-board"
 "$avra" build --target "$target" --wasm_reactor "$work/served/tools/ui-board" >"$work/served.out" 2>"$work/served.err" || { cat "$work/served.err"; echo "ui-browser: the board did not build for the served page"; exit 1; }
