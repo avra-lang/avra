@@ -43,6 +43,7 @@ use @std.sqlite.{Db, SqlValue, sql, prepared}
 use @std.sqlite.error.{SqlError}
 use @std.validate.{Checked, Issues, checker, decoder, stripped}
 use @std.time.{now_ms}
+use apply.{MigrateError, grown, lifted}
 use shape.{ColumnFacts, create_sql, quoted, shape_text}
 use error.{ModelError, UniqueField, or_attributed, or_invalid, modeled, parent_of, removed}
 
@@ -176,6 +177,14 @@ fn generated(t: Type) -> Decls {
                     }
                 }
                 db.run(sql(${literal(create_table_sql_of(t))}))
+            }
+
+            /// The table made if it is not there, and grown to this model's
+            /// shape if it is; a change that moves is refused with its words.
+            /// Answers how many steps it took.
+            static fn migrate(mut db: Db) -> Result<int, MigrateError> {
+                let _ = lifted(${name(t.name)}.create_table(db))?
+                grown(db, ${name(t.name)}.shape())
             }
 
             fn insert(mut db: Db) -> Result<${t}, ModelError> {
