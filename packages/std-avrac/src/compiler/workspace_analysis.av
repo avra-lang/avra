@@ -355,11 +355,14 @@ impl Workspace {
         let p = self.parsed(f)
         let names = self.resolved(f)
         let facts = self.folded(f)
+        let path = self.decls.file(f).path
         Analysis {
             view: file_view(self.lang, p, self.decls, f),
             names: names,
             facts: facts,
-            ws: self,
+            decl_reads: (d: DeclId) -> self.decl_reads_state(d),
+            decl_places: (d: DeclId) -> self.decl_places(d),
+            decl_structural: (d: DeclId) -> self.decl_structural(d),
             lang: self.lang,
             diagnostics: flatten(
                 [
@@ -370,6 +373,7 @@ impl Workspace {
                     facts.voices.list,
                 ],
             ),
+            program: () -> self.program(path),
         }
     }
 
@@ -387,13 +391,17 @@ impl Workspace {
         mut out = new_type_facts(0, p.store.exprs.count(), 0 - 1, 0, p.store.stmts.count(), hole)
         out.absorb(own)
         let facts = out with { voices: own.voices }
+        let path = self.decls.file(f).path
         Analysis {
             view: file_view(self.lang, p, self.decls, f),
             names: names,
             facts: facts,
-            ws: self,
+            decl_reads: (x: DeclId) -> self.decl_reads_state(x),
+            decl_places: (x: DeclId) -> self.decl_places(x),
+            decl_structural: (x: DeclId) -> self.decl_structural(x),
             lang: self.lang,
             diagnostics: flatten([p.voices.list, names.voices.list, facts.voices.list]),
+            program: () -> self.program(path),
         }
     }
 
@@ -621,21 +629,12 @@ impl Workspace {
         // runtime carries no fiber and no thread, so the tick has no body
         // there — a program that really parks fails on the row it parks at.
         let checks = !self.comptime_active() && !self.wasm_target() && self.scheduler_linked()
-        let analysis = if w.decl != null &&
-            (self.comptime_active() || self.lowers_from_own_range(w.decl!)) {
+        let analysis = if w.decl != null && self.comptime_active() {
             self.analyzed_decl(w.file, w.decl!)
         } else {
             self.analysis(w.file)
         }
         lower_unit(analysis, self.extern_symbols(), w, settle, cross, checks)
-    }
-
-    /// Whether a declaration lowers from the expressions its own range holds: a fn or a
-    /// method, whose body is all it reads. Every other kind reads expressions written
-    /// outside its statement — an annotation's arguments, a const's initializer.
-    fn lowers_from_own_range(d: DeclId) -> bool {
-        let x = self.decls.decl(d)
-        (x.kind is .Fn || x.kind is .Method) && self.decls.owns_a_range(d)
     }
 
     /// An isolated compile-time run needs the body of every function it
