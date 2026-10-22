@@ -165,6 +165,25 @@ spec "features/impls" {
             )
             a.diagnostics.length == 1 && a.report().contains("`fill` writes through it")
         }
+        then "a receiver handed to a method that reads its seat draws no warning" {
+            let a = analyze_source(
+                "type D = { n: int }\ntype S = { k: int }\nfn mk() -> Result<S, string> { .Ok(S { k: 1 }) }\nimpl S {\n    fn drained(d: D) -> int { d.n }\n}\nimpl D {\n    fn run() -> Result<int, string> {\n        let s = mk()?\n        .Ok(s.drained(self))\n    }\n}\nlet d = D { n: 1 }\nd.run()\n0",
+            )
+            a.diagnostics.is_empty()
+        }
+        then "a real write through a non-`mut` receiver still warns" {
+            let a = analyze_source(
+                "type D = { n: int }\nimpl D {\n    fn bump() { self.n = self.n + 1 }\n}\nlet d = D { n: 1 }\nd.bump()\n0",
+            )
+            a.diagnostics.length == 1 &&
+                a.report().contains("`d` is not `mut` — `bump` writes through it")
+        }
+        then "a receiver handed to a method that writes its seat writes" {
+            let a = analyze_source(
+                "type D = { n: int }\ntype S = { k: int }\nfn mk() -> Result<S, string> { .Ok(S { k: 1 }) }\nimpl S {\n    fn grow(mut d: D) -> int {\n        d.n = 2\n        0\n    }\n}\nimpl D {\n    fn run() -> Result<int, string> {\n        let s = mk()?\n        .Ok(s.grow(self))\n    }\n}\nlet d = D { n: 1 }\nd.run()\n0",
+            )
+            a.report().contains("`d` is not `mut` — `run` writes through it")
+        }
         then "a field handed to a type's static fn draws no warning" {
             let a = analyze_source(minted("R.take(self.d, v)"))
             a.diagnostics.is_empty() && a.ran() == "6"
