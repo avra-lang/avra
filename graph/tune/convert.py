@@ -1,14 +1,15 @@
-"""Gold decisions -> mlx-lm completions data, rendered by the real scorer.
+"""Gold decisions -> mlx-lm completions data, in the scorer's own bytes.
 
-Each decision becomes the prompt the shared service's `choose` op would build
-for it (graph/extract/cascade.py's Scorer.choose, run with a stand-in model
-that only records what it is asked) and the gold letter as the completion.
+Each decision becomes the user message the shared service's `choose` op
+sends (graph/extract/cascade.py's `choice_prompt`, the one definition the
+scorer renders) and the gold letter as the completion; mlx-lm applies the
+model's chat template to both, as the scorer does.
 Every decision is written in two option orders: as asked, and with its
 listed options reversed (fixed trailing alternatives such as "none of these"
 stay last, as the cascade lists them). Whole domains are held out for
 validation, so early stopping measures transfer to unseen schemas.
 
-usage: python convert.py extract.jsonl plan.jsonl … --out data/   (venv python)
+usage: python convert.py extract.jsonl plan.jsonl … --out data/
 """
 import argparse
 import collections
@@ -21,31 +22,8 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "extract"))
 import cascade  # noqa: E402
-from pins import SCORER  # noqa: E402
 
 PARAMS = {k: v["value"] for k, v in json.loads((HERE / "params.json").read_text()).items()}
-
-
-class Renderer(cascade.Scorer):
-    """The real choose(), with a model that answers nothing and a render that keeps its prompt."""
-
-    def __init__(self):
-        import mlx.core as mx
-        from mlx_lm.utils import load_tokenizer, hf_repo_to_path
-
-        self.tok = load_tokenizer(hf_repo_to_path(SCORER.split("@")[0]))
-        vocab = len(self.tok.get_vocab())
-        self.model = lambda ids, cache=None: mx.zeros((1, 1, vocab))
-        self.calls, self.source, self.cache, self.prefix, self.body = 0, "", None, False, None
-
-    def render(self, body):
-        self.body = body
-        return super().render(body)
-
-    def prompt(self, source, context, question, options):
-        self.source = source
-        self.choose(context, question, options)
-        return self.body
 
 
 def orders(d):
@@ -84,15 +62,15 @@ def main():
     rows = [json.loads(l) for f in args.decisions for l in open(f) if l.strip()]
     rng = random.Random(PARAMS["seed"])
     rows = balanced(rows, rng)
-    r = Renderer()
     split = {"train": [], "valid": []}
     counts = collections.Counter()
     for d in rows:
         part = "valid" if held_out(d["domain"]) else "train"
         for options, gold in orders(d):
-            body = r.prompt(d.get("source", ""), d["context"], d["question"], options)
+            body = cascade.choice_prompt(d["context"], d["question"], options, d.get("source", ""))
             split[part].append({"prompt": body, "completion": cascade.string.ascii_uppercase[gold],
-                                "kind": d["kind"], "domain": d["domain"]})
+                                "kind": d["kind"], "domain": d["domain"], "source": d.get("source", ""),
+                                "context": d["context"], "question": d["question"], "options": options, "gold": gold})
             counts[(part, d["kind"])] += 1
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
