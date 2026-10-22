@@ -109,11 +109,9 @@ fn plain_int(k: Kind) -> bool {
     match k { .Int -> true, rest -> false }
 }
 
-/// The widest row this derive can build a constructor for — `row_ctor`
-/// hand-spells one arm per count, the same shape `core/rebuild_derive.av`
-/// already carries for the identical reason (no seat splices a struct
-/// literal's field list); the flagged fifth argument, "the compiler
-/// wants a construct the language lacks," names this site too.
+/// The widest row this derive can build a `where` for — its filters are one
+/// defaulted parameter per field, hand-spelled per count, since a parameter
+/// list has no run to splice (avra-8sb5.10 sugar ask).
 const MAX_FIELDS: int = 6
 
 /// The same question `shape_problems` answers as diagnostics, asked
@@ -554,7 +552,7 @@ fn too_many_fields(t: Type) -> Diagnostic {
     refuse_as_at(
         "too_many_fields",
         t.at,
-        "`@model` constructs a row from at most ${MAX_FIELDS} fields, and `${t.name}` has ${t.fields.length}",
+        "`@model` filters by each field and builds that filter for at most ${MAX_FIELDS} fields, and `${t.name}` has ${t.fields.length}",
         "split `${t.name}` into a model and a related type, or narrow it to ${MAX_FIELDS} fields",
     )
 }
@@ -658,21 +656,10 @@ fn is_unique(f: Field) -> bool { f.marks.any(it.name == "unique") }
 /// into `insert`/`update`'s generated body so a constraint violation
 /// resolves back through the schema the moment it happens — never a
 /// second lookup against `t` at run time, which the derive has no
-/// reason to keep around. Hand-spelled per count, the same law and
-/// remedy as `row_ctor`: a list literal has no expression position for
-/// a variable-width splice, and `non_id_fields(t)` is already capped
-/// at `MAX_FIELDS - 1`.
+/// reason to keep around.
 fn unique_fields_code(t: Type) -> Code {
-    let fs = [f for f in non_id_fields(t) if is_unique(f)]
-    match fs.length {
-        0 -> quote { [] },
-        1 -> quote { [${unique_field_code(fs[0])}] },
-        2 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}] },
-        3 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}] },
-        4 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}, ${unique_field_code(fs[3])}] },
-        5 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}, ${unique_field_code(fs[3])}, ${unique_field_code(fs[4])}] },
-        rest -> quote { a_model_with_more_than_five_unique_fields_needs_a_wider_list_literal() },
-    }
+    let found = [unique_field_code(f) for f in non_id_fields(t) if is_unique(f)]
+    quote { [..${found}] }
 }
 
 fn unique_field_code(f: Field) -> Code {
@@ -851,19 +838,13 @@ fn read_kind(k: Kind, i: int) -> Code {
     }
 }
 
-/// The one place a struct literal's field list needs its whole arity
-/// known at the file's OWN parse time — hand-spelled per count, same
-/// law and same remedy as `core/rebuild_derive.av`'s constructor arms.
-/// Wired into `find`, above.
+/// The row built from the columns read: one initialiser per field, spliced
+/// flat as a run, so no width of row has a constructor spelled for it.
 fn row_ctor(t: Type) -> Code {
-    let fs = t.fields
-    match fs.length {
-        1 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)} } },
-        2 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)}, ${fs[1].name}: ${field_value(t, 1)} } },
-        3 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)}, ${fs[1].name}: ${field_value(t, 1)}, ${fs[2].name}: ${field_value(t, 2)} } },
-        4 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)}, ${fs[1].name}: ${field_value(t, 1)}, ${fs[2].name}: ${field_value(t, 2)}, ${fs[3].name}: ${field_value(t, 3)} } },
-        5 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)}, ${fs[1].name}: ${field_value(t, 1)}, ${fs[2].name}: ${field_value(t, 2)}, ${fs[3].name}: ${field_value(t, 3)}, ${fs[4].name}: ${field_value(t, 4)} } },
-        6 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)}, ${fs[1].name}: ${field_value(t, 1)}, ${fs[2].name}: ${field_value(t, 2)}, ${fs[3].name}: ${field_value(t, 3)}, ${fs[4].name}: ${field_value(t, 4)}, ${fs[5].name}: ${field_value(t, 5)} } },
-        rest -> quote { a_model_with_more_than_six_fields_needs_a_wider_row_constructor() },
-    }
+    let inits = [field_init(t, j) for j in 0..t.fields.length]
+    quote { ${t} { ..${inits} } }
 }
+
+/// One field initialiser, as a record literal the run splices flat —
+/// `${f.name}: ${…}` has no expression position of its own.
+fn field_init(t: Type, j: int) -> Code { quote { Init { ${t.fields[j].name}: ${field_value(t, j)} } } }
