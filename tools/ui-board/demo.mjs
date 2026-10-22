@@ -249,12 +249,33 @@ spent();
 
 // ── a server's page, adopted ──
 const serverPrint = process.argv[3];
+// What a request decided, shipped beside the server's page: the module starts
+// from it, so the page it draws is the one the server drew.
+const shipped = new TextEncoder().encode(process.argv[6] ?? "");
+const withState = async () => {
+  const doc = stubDocument();
+  const at = stubElement("root");
+  await run(new Uint8Array(fs.readFileSync(process.argv[2])), {
+    document: doc,
+    mount: at,
+    style: { textContent: "" },
+    wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(`the program exited ${code}`); }),
+    clock,
+    fetch: fetchFn,
+    raf: (cb) => rafs.push(cb),
+    state: shipped,
+  });
+  await settle();
+  return at.childNodes.map((n) => copied(n, stubDocument()));
+};
+const servedPaint = await withState();
+claim("a module started from the shipped state draws another page than its own default", servedPaint.map(shape).join() !== firstPaint.map(shape).join());
 const serverBytes = Number(process.argv[4]);
 const adopting = async (print, early = null) => {
   const doc = stubDocument();
   const at = stubElement("root");
   at.setAttribute("data-avra-print", print);
-  const placed = firstPaint.map((n) => copied(n, doc));
+  const placed = servedPaint.map((n) => copied(n, doc));
   for (const n of placed) at.insertBefore(n, null);
   if (early !== null) every(at, (n) => n.attrs["aria-label"] === "New task")[0].value = early;
   const sentFrames = [];
@@ -270,6 +291,7 @@ const adopting = async (print, early = null) => {
     clock,
     fetch: fetchFn,
     raf: (cb) => rafs.push(cb),
+    state: shipped,
   });
   await settle();
   console.warn = quiet;
@@ -282,7 +304,7 @@ claim("the server's print is the number the module folds from the same view", fi
 claim("an adopted page builds nothing", all.filter((p) => p.op === OP.create || p.op === OP.create_text).length === 0, `${all.length} patch(es)`);
 claim("the first paint over an adopted page is the adoption, then define and listen only", first.length > 1 && first.slice(1).every((p) => p.op === OP.listen || p.op === OP.define), first.map((p) => p.op).join(","));
 claim("the server's nodes are the page the module stands on", kept.at.childNodes.length === kept.placed.length && kept.placed.every((n, j) => kept.at.childNodes[j] === n));
-claim("the adopted page is the page the module drew itself", kept.at.childNodes.map(shape).join() === firstPaint.map(shape).join());
+claim("the adopted page is the page the module drew itself", kept.at.childNodes.map(shape).join() === servedPaint.map(shape).join());
 claim("the first frame over an adopted page is under 1500 bytes (9326 without a server page)", kept.sizes[0] < 1500, `${kept.sizes[0]}`);
 claim(`the server's page is ${serverBytes} bytes of HTML`, serverBytes > 0);
 const early = await adopting(serverPrint, "typed early");
@@ -292,11 +314,16 @@ const early = await adopting(serverPrint, "typed early");
   dispatch(early.at, add, ear.event, { bubbles: false });
   frame();
   await settle();
+  const all = every(early.at, (n) => n.attrs["aria-label"] === "All" && early.heard(n.__avra_id).length > 0)[0];
+  const [, all_ear] = early.heard(all.__avra_id)[0];
+  dispatch(early.at, all, all_ear.event, { bubbles: false });
+  frame();
+  await settle();
   claim("text typed before the program stood is the program's when it adds the task", textOf(early.at).includes("typed early"), textOf(early.at).slice(0, 60));
 }
 const torn = await adopting(String(Number(serverPrint) + 1));
 const tornCreates = torn.sentFrames.flat().filter((p) => p.op === OP.create).length;
-claim("a print that is not the module's empties the page and draws it again", torn.sentFrames[0][0].kinds.length === 0 && tornCreates > 0 && torn.at.childNodes.map(shape).join() === firstPaint.map(shape).join());
+claim("a print that is not the module's empties the page and draws it again", torn.sentFrames[0][0].kinds.length === 0 && tornCreates > 0 && torn.at.childNodes.map(shape).join() === servedPaint.map(shape).join());
 
 // ── a module swapped under the page ──
 const editedWasm = process.argv[5];
