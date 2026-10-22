@@ -3,6 +3,7 @@
 //! DOOR, `turn`: whatever may change the state — a control speaking, a
 //! timer, an answer arriving — runs through it, and a paint follows only
 //! when it ran.
+use @std.meta.{contained}
 use tree.bindings.{dead_keys}
 use tree.identity.{Owner}
 use tree.node.{Node, Prim, Attribute, Urgency}
@@ -100,8 +101,9 @@ fn unmoved() -> bool { false }
 /// A target with nowhere to show a notice beside the view.
 fn unnoticed(_words: string?) {}
 
-/// A turn that nothing contains: the action runs and its answer stands.
-fn uncontained(act: fn() -> bool) -> Result<bool, string> { .Ok(act()) }
+/// A turn the runtime contains: a trap in the action ends the turn and its
+/// words are the failure.
+fn contained_turn(act: fn() -> bool) -> Result<bool, string> { contained(act) }
 
 /// The notice a target that draws one shows beside the view while the
 /// last turn failed: an assertive alert naming the failure, under a key
@@ -150,7 +152,7 @@ export fn owned_app<V: View>(
         jobs: Cell.new(0),
         failed: Cell.new(nothing),
         unsaid: Cell.new(nothing),
-        guard: Cell.new(uncontained),
+        guard: Cell.new(contained_turn),
         noticed: Cell.new(unnoticed),
         asking: Cell.new(nobody),
         standing: on_screen,
