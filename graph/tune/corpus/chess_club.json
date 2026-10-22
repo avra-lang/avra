@@ -1,0 +1,137 @@
+{
+ "domain": "chess_club",
+ "models": {
+  "Member": {"description": "A club player, arbiter or coach. A first name alone is not an identity.",
+   "properties": {"name": "string", "phone": "string?", "fide_id": "string?"}, "identities": ["fide_id"]},
+  "Team": {"description": "A club team entered in the league, whoever plays for it.",
+   "properties": {"team_name": "string", "venue": "string?"}},
+  "Roster": {"description": "Who holds which place on a team: its captain, a reserve board, or its coach.\nCoaching a team is not playing for it.",
+   "properties": {"team": "Team", "member": "Member", "place": ["captain", "reserve", "coach"]},
+   "relation": {"from": "team", "to": "member", "label": "place", "phrasing": "{to} plays as {label} for {from}",
+    "labels": {"captain": {"forward": ["captain", "captains", "skipper"], "reverse": ["skippered"]},
+               "reserve": {"forward": ["reserve", "substitute"], "reverse": ["back"]},
+               "coach": {"forward": ["coach", "coaches"], "reverse": ["coached"]}}}},
+  "Tutelage": {"description": "Who helps whom prepare: a tutor gives lessons, a second helps analyse before events.",
+   "properties": {"student": "Member", "helper": "Member", "kind": ["tutor", "second"]},
+   "relation": {"from": "student", "to": "helper", "label": "kind", "phrasing": "{from} takes {to} as {label}",
+    "labels": {"tutor": {"forward": ["tutor", "teaches", "lessons from"], "reverse": ["pupil"]},
+               "second": {"forward": ["second", "analysis partner"], "reverse": ["principal"]}}}},
+  "Game": {"description": "One game between two members. white and black are the players; arbiter rules on disputes and is not a player.",
+   "properties": {"white": "Member", "black": "Member", "arbiter": "Member?", "result": ["white_win", "black_win", "draw", "adjourned"],
+    "rated": "boolean?", "move_count": "integer?", "opening": "string?"},
+   "absences": {"rated": "no_rating_record"}}
+ },
+ "entities": {
+  "jiho_b": {"model": "Member", "name": "Ji-ho Baek"},
+  "jiho_l": {"model": "Member", "name": "Ji-ho Lim"},
+  "femi": {"model": "Member", "name": "Femi Adeyemi"},
+  "saoirse": {"model": "Member", "name": "Saoirse Dunleavy"},
+  "matteo": {"model": "Member", "name": "Matteo Gallizia"},
+  "nilufar": {"model": "Member", "name": "Nilufar Rashidova"},
+  "tomasz": {"model": "Member", "name": "Tomasz Wierzbicki", "fields": {"fide_id": "1120458"}},
+  "bilal": {"model": "Member", "name": "Bilal Qureshi"},
+  "owls": {"model": "Team", "name": "Knight Owls"},
+  "raiders": {"model": "Team", "name": "Rook Raiders"},
+  "endgame": {"model": "Team", "name": "Endgame Collective"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Saoirse Dunleavy: I captain the Knight Owls this season, and Matteo Gallizia is their reserve. He plays only on home nights.",
+   "mentions": [["Saoirse Dunleavy", "saoirse"], ["I", "saoirse", "ref"], ["Knight Owls", "owls"], ["Matteo Gallizia", "matteo"], ["their", "owls", "ref"], ["He", "matteo", "ref"]],
+   "facts": [
+    {"model": "Roster", "in": "I captain the Knight Owls this season", "from": "owls", "to": "saoirse", "label": "captain", "act": "assert"},
+    {"model": "Roster", "in": "Matteo Gallizia is their reserve", "from": "owls", "to": "matteo", "label": "reserve", "act": "assert"}]},
+  {"id": "m02", "text": "Ji-ho Baek beat Femi Adeyemi with the black pieces in 41 moves in a rated Dragon line game. Ji-ho said it was her best result.",
+   "mentions": [["Ji-ho Baek", "jiho_b"], ["Femi Adeyemi", "femi"], ["Ji-ho", "jiho_b"], ["her", "jiho_b", "ref"]],
+   "facts": [
+    {"model": "Game", "in": "Ji-ho Baek beat Femi Adeyemi with the black pieces in 41 moves in a rated Dragon line game.", "fields": {"white": "femi", "black": "jiho_b", "result": "black_win", "move_count": 41, "rated": true, "opening": "Dragon line"}, "act": "assert"}]},
+  {"id": "m03", "text": "Hi Nilufar,\nCould you arbitrate the adjourned game between Bilal Qureshi as white and Tomasz Wierzbicki as black?\nThanks,\nSaoirse Dunleavy",
+   "mentions": [["Nilufar", "nilufar"], ["you", "nilufar", "ref"], ["Bilal Qureshi", "bilal"], ["Tomasz Wierzbicki", "tomasz"], ["Saoirse Dunleavy", "saoirse"]],
+   "facts": [
+    {"model": "Game", "in": "Could you arbitrate the adjourned game between Bilal Qureshi as white and Tomasz Wierzbicki as black?", "fields": {"white": "bilal", "black": "tomasz", "arbiter": "nilufar", "result": "adjourned"}, "act": "request"}]},
+  {"id": "m04", "text": "Tomasz Wierzbicki takes lessons from Nilufar Rashidova. Tomasz is also the second of Bilal Qureshi before every tournament.",
+   "mentions": [["Tomasz Wierzbicki", "tomasz"], ["Nilufar Rashidova", "nilufar"], ["Tomasz", "tomasz"], ["Bilal Qureshi", "bilal"]],
+   "facts": [
+    {"model": "Tutelage", "in": "Tomasz Wierzbicki takes lessons from Nilufar Rashidova.", "from": "tomasz", "to": "nilufar", "label": "tutor", "act": "assert"},
+    {"model": "Tutelage", "in": "Tomasz is also the second of Bilal Qureshi before every tournament.", "from": "bilal", "to": "tomasz", "label": "second", "act": "assert"}]},
+  {"id": "m05", "text": "Club night notes: Ji-ho Lim drew with Matteo Gallizia in 60 moves, with Ji-ho Lim as white and Ji-ho Baek as arbiter. Ji-ho wants a rematch.",
+   "mentions": [["Ji-ho Lim", "jiho_l"], ["Matteo Gallizia", "matteo"], ["Ji-ho Lim", "jiho_l"], ["Ji-ho Baek", "jiho_b"], ["Ji-ho", "jiho_l", "?"]],
+   "facts": [
+    {"model": "Game", "in": "Ji-ho Lim drew with Matteo Gallizia in 60 moves, with Ji-ho Lim as white and Ji-ho Baek as arbiter.", "fields": {"white": "jiho_l", "black": "matteo", "arbiter": "jiho_b", "result": "draw", "move_count": 60}, "act": "assert"}]},
+  {"id": "m06", "text": "Femi Adeyemi told the arbiter: \"I never captained the Rook Raiders, ask Saoirse.\"",
+   "mentions": [["Femi Adeyemi", "femi"], ["I", "femi", "ref"], ["Rook Raiders", "raiders"], ["Saoirse", "saoirse"]],
+   "quotes": [["I never captained the Rook Raiders, ask Saoirse.", "femi"]],
+   "facts": [
+    {"model": "Roster", "in": "I never captained the Rook Raiders", "from": "raiders", "to": "femi", "label": "captain", "act": "assert", "deny": true}]},
+  {"id": "m07", "text": "Rated game: Matteo Gallizia as white beat Bilal Qureshi in 33 moves, arbiter Nilufar Rashidova, opening the Catalan.",
+   "mentions": [["Matteo Gallizia", "matteo"], ["Bilal Qureshi", "bilal"], ["Nilufar Rashidova", "nilufar"]],
+   "facts": [
+    {"model": "Game", "in": "Rated game: Matteo Gallizia as white beat Bilal Qureshi in 33 moves", "fields": {"white": "matteo", "black": "bilal", "arbiter": "nilufar", "result": "white_win", "move_count": 33, "rated": true, "opening": "Catalan"}, "act": "assert"}]},
+  {"id": "m08", "text": "Bilal Qureshi: The game where I had white against Femi Adeyemi was a draw, unrated. He offered the draw and I accepted.",
+   "mentions": [["Bilal Qureshi", "bilal"], ["I", "bilal", "ref"], ["Femi Adeyemi", "femi"], ["He", "femi", "ref"], ["I", "bilal", "ref"]],
+   "facts": [
+    {"model": "Game", "in": "The game where I had white against Femi Adeyemi was a draw, unrated.", "fields": {"white": "bilal", "black": "femi", "result": "draw", "rated": false}, "act": "assert"}]},
+  {"id": "m09", "text": "Nilufar Rashidova: I teach Femi Adeyemi, not Ji-ho Lim. I will coach the Endgame Collective from March.",
+   "mentions": [["Nilufar Rashidova", "nilufar"], ["I", "nilufar", "ref"], ["Femi Adeyemi", "femi"], ["Ji-ho Lim", "jiho_l"], ["I", "nilufar", "ref"], ["Endgame Collective", "endgame"]],
+   "facts": [
+    {"model": "Tutelage", "in": "I teach Femi Adeyemi", "from": "femi", "to": "nilufar", "label": "tutor", "act": "assert"},
+    {"model": "Tutelage", "in": "not Ji-ho Lim", "from": "jiho_l", "to": "nilufar", "label": "tutor", "act": "assert", "deny": true},
+    {"model": "Roster", "in": "I will coach the Endgame Collective from March.", "from": "endgame", "to": "nilufar", "label": "coach", "act": "plan"}]},
+  {"id": "m10", "text": "If the committee agrees, Ji-ho Baek will join the Rook Raiders as reserve. Saoirse Dunleavy would then tutor her.",
+   "mentions": [["Ji-ho Baek", "jiho_b"], ["Rook Raiders", "raiders"], ["Saoirse Dunleavy", "saoirse"], ["her", "jiho_b", "ref"]],
+   "facts": [
+    {"model": "Roster", "in": "If the committee agrees, Ji-ho Baek will join the Rook Raiders as reserve.", "from": "raiders", "to": "jiho_b", "label": "reserve", "act": "condition"},
+    {"model": "Tutelage", "in": "Saoirse Dunleavy would then tutor her.", "from": "jiho_b", "to": "saoirse", "label": "tutor", "act": "condition"}]},
+  {"id": "m11", "text": "Matteo Gallizia: Bilal, could you play black against Saoirse Dunleavy in the adjourned rated game? She is the captain of the Knight Owls, so she sets the clock.",
+   "mentions": [["Matteo Gallizia", "matteo"], ["Bilal", "bilal"], ["you", "bilal", "ref"], ["Saoirse Dunleavy", "saoirse"], ["She", "saoirse", "ref"], ["Knight Owls", "owls"], ["she", "saoirse", "ref"]],
+   "facts": [
+    {"model": "Game", "in": "could you play black against Saoirse Dunleavy in the adjourned rated game?", "fields": {"white": "saoirse", "black": "bilal", "result": "adjourned", "rated": true}, "act": "request"},
+    {"model": "Roster", "in": "She is the captain of the Knight Owls", "from": "owls", "to": "saoirse", "label": "captain", "act": "assert"}]},
+  {"id": "m12", "text": "Tomasz Wierzbicki here, FIDE ID 1120458. Please put my ID on the rated games.",
+   "mentions": [["Tomasz Wierzbicki", "tomasz"], ["my", "tomasz", "ref"]],
+   "facts": []},
+  {"id": "m13", "text": "Femi Adeyemi: I think the Rook Raiders are coached by Matteo Gallizia, but maybe that changed. Matteo will know.",
+   "mentions": [["Femi Adeyemi", "femi"], ["I", "femi", "ref"], ["Rook Raiders", "raiders"], ["Matteo Gallizia", "matteo"], ["Matteo", "matteo"]],
+   "facts": [
+    {"model": "Roster", "in": "I think the Rook Raiders are coached by Matteo Gallizia", "from": "raiders", "to": "matteo", "label": "coach", "act": "draft"}]},
+  {"id": "m14", "text": "Bilal Qureshi said that Tomasz Wierzbicki is now the second of Saoirse Dunleavy.",
+   "mentions": [["Bilal Qureshi", "bilal"], ["Tomasz Wierzbicki", "tomasz"], ["Saoirse Dunleavy", "saoirse"]],
+   "facts": [
+    {"model": "Tutelage", "in": "Bilal Qureshi said that Tomasz Wierzbicki is now the second of Saoirse Dunleavy.", "from": "saoirse", "to": "tomasz", "label": "second", "act": "report"}]},
+  {"id": "m15", "text": "I warned the juniors: \"Board one stays empty until Femi arrives.\"",
+   "mentions": [["I", "none", "ref"], ["Femi", "femi"]],
+   "quotes": [["Board one stays empty until Femi arrives.", "author"]],
+   "facts": []},
+  {"id": "m16", "text": "Minutes: Nilufar Rashidova confirmed that Ji-ho Lim beat Tomasz Wierzbicki with white in 52 moves, rated. Nilufar also said Ji-ho Lim captains the Endgame Collective.",
+   "mentions": [["Nilufar Rashidova", "nilufar"], ["Ji-ho Lim", "jiho_l"], ["Tomasz Wierzbicki", "tomasz"], ["Nilufar", "nilufar"], ["Ji-ho Lim", "jiho_l"], ["Endgame Collective", "endgame"]],
+   "facts": [
+    {"model": "Game", "in": "Nilufar Rashidova confirmed that Ji-ho Lim beat Tomasz Wierzbicki with white in 52 moves, rated.", "fields": {"white": "jiho_l", "black": "tomasz", "result": "white_win", "move_count": 52, "rated": true}, "act": "assert"},
+    {"model": "Roster", "in": "Nilufar also said Ji-ho Lim captains the Endgame Collective.", "from": "endgame", "to": "jiho_l", "label": "captain", "act": "report"}]},
+  {"id": "m17", "text": "Ji-ho Baek: My tutor is Saoirse Dunleavy, not Nilufar Rashidova.",
+   "mentions": [["Ji-ho Baek", "jiho_b"], ["My", "jiho_b", "ref"], ["Saoirse Dunleavy", "saoirse"], ["Nilufar Rashidova", "nilufar"]],
+   "facts": [
+    {"model": "Tutelage", "in": "My tutor is Saoirse Dunleavy", "from": "jiho_b", "to": "saoirse", "label": "tutor", "act": "assert"},
+    {"model": "Tutelage", "in": "not Nilufar Rashidova", "from": "jiho_b", "to": "nilufar", "label": "tutor", "act": "assert", "deny": true}]},
+  {"id": "m18", "text": "Saoirse Dunleavy lost to Ji-ho Baek in a rated game, Saoirse with black, after 27 moves of the Caro-Kann.",
+   "mentions": [["Saoirse Dunleavy", "saoirse"], ["Ji-ho Baek", "jiho_b"], ["Saoirse", "saoirse"]],
+   "facts": [
+    {"model": "Game", "in": "Saoirse Dunleavy lost to Ji-ho Baek in a rated game", "fields": {"white": "jiho_b", "black": "saoirse", "result": "white_win", "rated": true, "move_count": 27, "opening": "Caro-Kann"}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who is the captain of the Knight Owls?", "speaker": null, "cypher": "MATCH (n0:Team)-[:captain]->(n1:Member) WHERE n0.team_name = 'Knight Owls' RETURN n1.name AS name"},
+  {"q": "Who coaches the Rook Raiders?", "speaker": null, "cypher": "MATCH (n0:Team)-[:coach]->(n1:Member) WHERE n0.team_name = 'Rook Raiders' RETURN n1.name AS name"},
+  {"q": "Which teams have I coached?", "speaker": "nilufar", "cypher": "MATCH (n0:Member)-[:coached]->(n1:Team) WHERE id(n0) = $speaker RETURN n1.team_name AS team_name"},
+  {"q": "Which team does Matteo Gallizia back?", "speaker": null, "cypher": "MATCH (n0:Member)-[:back]->(n1:Team) WHERE n0.name = 'Matteo Gallizia' RETURN n1.team_name AS team_name"},
+  {"q": "Who is my tutor?", "speaker": "jiho_b", "cypher": "MATCH (n0:Member)-[:tutor]->(n1:Member) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is the second of Bilal Qureshi?", "speaker": null, "cypher": "MATCH (n0:Member)-[:second]->(n1:Member) WHERE n0.name = 'Bilal Qureshi' RETURN n1.name AS name"},
+  {"q": "Who is the pupil of Nilufar Rashidova?", "speaker": null, "cypher": "MATCH (n0:Member)-[:pupil]->(n1:Member) WHERE n0.name = 'Nilufar Rashidova' RETURN n1.name AS name"},
+  {"q": "How many games were played?", "speaker": null, "cypher": "MATCH (n0:Game) RETURN count(n0) AS count"},
+  {"q": "Is there a record of the Catalan game being rated?", "speaker": null, "cypher": "MATCH (n0:Game) WHERE n0.opening = 'Catalan' RETURN coalesce(n0.rated, false) AS rated"},
+  {"q": "Was the Caro-Kann game rated?", "speaker": null, "cypher": "MATCH (n0:Game) WHERE n0.opening = 'Caro-Kann' RETURN n0.rated AS rated"},
+  {"q": "How many moves did the games where Ji-ho Lim had white last?", "speaker": null, "cypher": "MATCH (n0:Member)<-[:white]-(n1:Game) WHERE n0.name = 'Ji-ho Lim' RETURN n1.move_count AS move_count"},
+  {"q": "Who played black in my games as white?", "speaker": "matteo", "cypher": "MATCH (n0:Member)<-[:white]-(n1:Game)-[:black]->(n2:Member) WHERE id(n0) = $speaker RETURN n2.name AS name"},
+  {"q": "Who was arbiter in the games I played as black?", "speaker": "bilal", "cypher": "MATCH (n0:Member)<-[:black]-(n1:Game)-[:arbiter]->(n2:Member) WHERE id(n0) = $speaker RETURN n2.name AS name"},
+  {"q": "Which openings were played, and with what result?", "speaker": null, "cypher": "MATCH (n0:Game) RETURN n0.opening AS opening, n0.result AS result"},
+  {"q": "What was the result of the game in the Dragon?", "speaker": null, "cypher": "MATCH (n0:Game) WHERE n0.opening CONTAINS 'dragon' RETURN n0.result AS result"},
+  {"q": "What is the FIDE ID of Tomasz Wierzbicki?", "speaker": null, "cypher": "MATCH (n0:Member) WHERE n0.name = 'Tomasz Wierzbicki' RETURN n0.fide_id AS fide_id"}
+ ]
+}

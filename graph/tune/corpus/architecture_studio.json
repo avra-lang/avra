@@ -1,0 +1,150 @@
+{
+ "domain": "architecture_studio",
+ "models": {
+  "Architect": {"description": "Someone on the studio's staff. A first name alone is not an identity.",
+   "properties": {"staff_name": "string", "studio_email": "string?"}, "identities": ["studio_email"]},
+  "Project": {"description": "A building project the studio works on, named by its project title.",
+   "properties": {"project_code": "string", "site_address": "string?"}},
+  "Commission": {"description": "Who holds which post on a project: lead designer, project architect (job runner) or checker.\nChecking a project's drawings is not designing it.",
+   "properties": {"project": "Project", "architect": "Architect", "capacity": ["lead_designer", "project_architect", "checker"]},
+   "relation": {"from": "project", "to": "architect", "label": "capacity", "phrasing": "{from} has {to} as its {label}",
+    "labels": {"lead_designer": {"forward": ["lead designer", "design lead"], "reverse": ["designed"]},
+               "project_architect": {"forward": ["project architect", "job runner"], "reverse": ["runs"]},
+               "checker": {"forward": ["checker", "checks drawings"], "reverse": ["reviews"]}}}},
+  "Studio": {"description": "A line between two staff members: one is the other's line manager, or deputises for them.",
+   "properties": {"architect": "Architect", "colleague": "Architect", "link": ["line_manager", "deputy"]},
+   "relation": {"from": "architect", "to": "colleague", "label": "link", "phrasing": "{to} acts as {label} to {from}",
+    "labels": {"line_manager": {"forward": ["line manager", "manages"], "reverse": ["reports"]},
+               "deputy": {"forward": ["deputy", "deputises"], "reverse": ["principal"]}}}},
+  "Submission": {"description": "A planning application or amendment sent to the council. drawn_by drew it, checked_by checked it, signed_by signed it off.",
+   "properties": {"scheme": "string", "project": "Project?", "drawn_by": "Architect?", "checked_by": "Architect?", "signed_by": "Architect?",
+    "outcome": ["pending", "approved", "refused"], "listed_building": "boolean?", "sheet_count": "integer?", "conditions": "string?"},
+   "absences": {"listed_building": "listing_unknown"}},
+  "Hours": {"description": "Time booked against a project. logged_by did the work, approved_by approved the timesheet.",
+   "properties": {"task": "string", "project": "Project?", "logged_by": "Architect?", "approved_by": "Architect?",
+    "stage": ["concept", "technical", "construction"], "billable": "boolean?", "hours": "integer?"},
+   "absences": {"billable": "billing_unset"}}
+ },
+ "entities": {
+  "tamar": {"model": "Architect", "name": "Tamar Kapanadze"},
+  "owain": {"model": "Architect", "name": "Owain Llewelyn"},
+  "owain_p": {"model": "Architect", "name": "Owain Prys"},
+  "sigrun": {"model": "Architect", "name": "Sigrun Halldorsdottir"},
+  "kanya": {"model": "Architect", "name": "Kanya Srisai"},
+  "inti": {"model": "Architect", "name": "Inti Mamani"},
+  "hery": {"model": "Architect", "name": "Hery Andriana"},
+  "rojin": {"model": "Architect", "name": "Rojin Aydin"},
+  "adaeze": {"model": "Architect", "name": "Adaeze Nnadi"},
+  "quayside": {"model": "Project", "name": "Quayside Library"},
+  "mill": {"model": "Project", "name": "Mill Lane Housing"},
+  "kiln": {"model": "Project", "name": "Kiln Yard Studios"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Tamar Kapanadze: Quayside Library has me as its lead designer, and Owain Llewelyn is the project architect.",
+   "mentions": [["Tamar Kapanadze", "tamar"], ["Quayside Library", "quayside"], ["me", "tamar", "ref"], ["its", "quayside", "ref"], ["Owain Llewelyn", "owain"]],
+   "facts": [
+    {"model": "Commission", "in": "Quayside Library has me as its lead designer", "from": "quayside", "to": "tamar", "label": "lead_designer", "act": "assert"},
+    {"model": "Commission", "in": "Owain Llewelyn is the project architect", "from": "quayside", "to": "owain", "label": "project_architect", "act": "assert"}]},
+  {"id": "m02", "text": "Owain Llewelyn reports to Sigrun Halldorsdottir, while Owain Prys deputises for her on Fridays.",
+   "mentions": [["Owain Llewelyn", "owain"], ["Sigrun Halldorsdottir", "sigrun"], ["Owain Prys", "owain_p"], ["her", "sigrun", "ref"]],
+   "facts": [
+    {"model": "Studio", "in": "Owain Llewelyn reports to Sigrun Halldorsdottir", "from": "owain", "to": "sigrun", "label": "line_manager", "act": "assert"},
+    {"model": "Studio", "in": "Owain Prys deputises for her on Fridays", "from": "sigrun", "to": "owain_p", "label": "deputy", "act": "assert"}]},
+  {"id": "m03", "text": "Kanya Srisai: I'm not the checker on Mill Lane Housing. Inti Mamani checks those drawings.",
+   "mentions": [["Kanya Srisai", "kanya"], ["I", "kanya", "ref"], ["Mill Lane Housing", "mill"], ["Inti Mamani", "inti"]],
+   "facts": [
+    {"model": "Commission", "in": "I'm not the checker on Mill Lane Housing.", "from": "mill", "to": "kanya", "label": "checker", "act": "assert", "deny": true}]},
+  {"id": "m04", "text": "The Kiln Yard Studios planning application went in with 14 sheets, drawn by Hery Andriana and checked by Inti Mamani; it is still pending.",
+   "mentions": [["Kiln Yard Studios", "kiln"], ["Hery Andriana", "hery"], ["Inti Mamani", "inti"]],
+   "facts": [
+    {"model": "Submission", "in": "The Kiln Yard Studios planning application went in with 14 sheets", "fields": {"scheme": "planning application", "project": "kiln", "drawn_by": "hery", "checked_by": "inti", "sheet_count": 14, "outcome": "pending"}, "act": "assert"}]},
+  {"id": "m05", "text": "Rojin Aydin wrote on the drawing: \"I will check the Quayside Library sections myself.\"",
+   "mentions": [["Rojin Aydin", "rojin"], ["I", "rojin", "ref"], ["Quayside Library", "quayside"]],
+   "quotes": [["I will check the Quayside Library sections myself.", "rojin"]],
+   "facts": [
+    {"model": "Commission", "in": "I will check the Quayside Library sections myself.", "from": "quayside", "to": "rojin", "label": "checker", "act": "plan"}]},
+  {"id": "m06", "text": "Dear Adaeze,\nThe Mill Lane Housing estate scheme was approved with conditions on brick colour, across 22 sheets; Tamar signed it off. Mill Lane is not a listed building.\nRegards,\nKanya Srisai",
+   "mentions": [["Adaeze", "adaeze"], ["Mill Lane Housing", "mill"], ["Tamar", "tamar"], ["Mill Lane", "mill"], ["Kanya Srisai", "kanya"]],
+   "facts": [
+    {"model": "Submission", "in": "The Mill Lane Housing estate scheme was approved", "fields": {"scheme": "estate scheme", "project": "mill", "outcome": "approved", "conditions": "brick colour", "sheet_count": 22, "signed_by": "tamar"}, "act": "assert"},
+    {"model": "Submission", "in": "Mill Lane is not a listed building.", "fields": {"project": "mill", "listed_building": false}, "act": "assert"}]},
+  {"id": "m07", "text": "Hery Andriana logged 6 hours of concept sketching on Kiln Yard Studios, billable, and Tamar Kapanadze approved them.",
+   "mentions": [["Hery Andriana", "hery"], ["Kiln Yard Studios", "kiln"], ["Tamar Kapanadze", "tamar"]],
+   "facts": [
+    {"model": "Hours", "in": "Hery Andriana logged 6 hours of concept sketching", "fields": {"task": "concept sketching", "project": "kiln", "logged_by": "hery", "approved_by": "tamar", "stage": "concept", "billable": true, "hours": 6}, "act": "assert"}]},
+  {"id": "m08", "text": "Studio minutes: Owain Llewelyn and Owain Prys will both visit the Quayside Library site. Owain is bringing the survey kit.",
+   "mentions": [["Owain Llewelyn", "owain"], ["Owain Prys", "owain_p"], ["Quayside Library", "quayside"], ["Owain", "owain", "?"]],
+   "facts": []},
+  {"id": "m09", "text": "Sigrun Halldorsdottir: Adaeze, can you be Kiln Yard Studios' project architect from March? Hery will stay its lead designer.",
+   "mentions": [["Sigrun Halldorsdottir", "sigrun"], ["Adaeze", "adaeze"], ["Kiln Yard Studios", "kiln"], ["Hery", "hery"], ["its", "kiln", "ref"]],
+   "facts": [
+    {"model": "Commission", "in": "Adaeze, can you be Kiln Yard Studios' project architect from March?", "from": "kiln", "to": "adaeze", "label": "project_architect", "act": "request"},
+    {"model": "Commission", "in": "Hery will stay its lead designer.", "from": "kiln", "to": "hery", "label": "lead_designer", "act": "assert"}]},
+  {"id": "m10", "text": "If Owain Prys passes his exams, he will be the job runner on Mill Lane Housing.",
+   "mentions": [["Owain Prys", "owain_p"], ["his", "owain_p", "ref"], ["he", "owain_p", "ref"], ["Mill Lane Housing", "mill"]],
+   "facts": [
+    {"model": "Commission", "in": "he will be the job runner on Mill Lane Housing", "from": "mill", "to": "owain_p", "label": "project_architect", "act": "condition"}]},
+  {"id": "m11", "text": "Inti Mamani: I think Tamar manages Rojin now, though maybe it's still Sigrun.",
+   "mentions": [["Inti Mamani", "inti"], ["I", "inti", "ref"], ["Tamar", "tamar"], ["Rojin", "rojin"], ["Sigrun", "sigrun"]],
+   "facts": [
+    {"model": "Studio", "in": "I think Tamar manages Rojin now", "from": "rojin", "to": "tamar", "label": "line_manager", "act": "draft"}]},
+  {"id": "m12", "text": "Kanya Srisai said that Adaeze Nnadi deputises for Tamar Kapanadze during site season.",
+   "mentions": [["Kanya Srisai", "kanya"], ["Adaeze Nnadi", "adaeze"], ["Tamar Kapanadze", "tamar"]],
+   "facts": [
+    {"model": "Studio", "in": "Adaeze Nnadi deputises for Tamar Kapanadze", "from": "tamar", "to": "adaeze", "label": "deputy", "act": "report"}]},
+  {"id": "m13", "text": "Owain Llewelyn: I spent 9 hours on technical detailing for Quayside Library, not billable, and nobody has approved it yet.",
+   "mentions": [["Owain Llewelyn", "owain"], ["I", "owain", "ref"], ["Quayside Library", "quayside"]],
+   "facts": [
+    {"model": "Hours", "in": "I spent 9 hours on technical detailing", "fields": {"task": "technical detailing", "project": "quayside", "logged_by": "owain", "stage": "technical", "billable": false, "hours": 9}, "act": "assert"}]},
+  {"id": "m14", "text": "Someone scrawled on the whiteboard: \"Kiln Yard Studios is overdue again.\" Hery Andriana rubbed it out.",
+   "mentions": [["Kiln Yard Studios", "kiln"], ["Hery Andriana", "hery"]],
+   "quotes": [["Kiln Yard Studios is overdue again.", "?"]],
+   "facts": []},
+  {"id": "m15", "text": "Adaeze Nnadi forwarded this: \"I signed the Quayside Library reading room application, all 30 sheets, and it was refused.\" That was Sigrun Halldorsdottir writing.",
+   "mentions": [["Adaeze Nnadi", "adaeze"], ["I", "sigrun", "ref"], ["Quayside Library", "quayside"], ["Sigrun Halldorsdottir", "sigrun"]],
+   "quotes": [["I signed the Quayside Library reading room application, all 30 sheets, and it was refused.", "sigrun"]],
+   "facts": [
+    {"model": "Submission", "in": "I signed the Quayside Library reading room application", "fields": {"scheme": "reading room application", "project": "quayside", "signed_by": "sigrun", "sheet_count": 30, "outcome": "refused"}, "act": "assert"}]},
+  {"id": "m16", "text": "Rojin Aydin will be the checker on Kiln Yard Studios next month; Rojin already checks Mill Lane Housing.",
+   "mentions": [["Rojin Aydin", "rojin"], ["Kiln Yard Studios", "kiln"], ["Rojin", "rojin"], ["Mill Lane Housing", "mill"]],
+   "facts": [
+    {"model": "Commission", "in": "Rojin Aydin will be the checker on Kiln Yard Studios next month", "from": "kiln", "to": "rojin", "label": "checker", "act": "plan"},
+    {"model": "Commission", "in": "Rojin already checks Mill Lane Housing", "from": "mill", "to": "rojin", "label": "checker", "act": "assert"}]},
+  {"id": "m17", "text": "Sigrun Halldorsdottir approved 12 hours of site visits that Owain Prys logged for Mill Lane Housing during construction, billable.",
+   "mentions": [["Sigrun Halldorsdottir", "sigrun"], ["Owain Prys", "owain_p"], ["Mill Lane Housing", "mill"]],
+   "facts": [
+    {"model": "Hours", "in": "Sigrun Halldorsdottir approved 12 hours of site visits", "fields": {"task": "site visits", "project": "mill", "logged_by": "owain_p", "approved_by": "sigrun", "stage": "construction", "billable": true, "hours": 12}, "act": "assert"}]},
+  {"id": "m18", "text": "Tamar Kapanadze: We're pencilling in a listed building consent for Mill Lane Housing, maybe 8 sheets.",
+   "mentions": [["Tamar Kapanadze", "tamar"], ["We", "tamar", "ref"], ["Mill Lane Housing", "mill"]],
+   "facts": [
+    {"model": "Submission", "in": "We're pencilling in a listed building consent", "fields": {"scheme": "listed building consent", "project": "mill", "sheet_count": 8}, "act": "draft"}]},
+  {"id": "m19", "text": "Hery Andriana drew the Kiln Yard Studios loading bay amendment, Inti Mamani checked it and Tamar Kapanadze signed it, so it was approved.",
+   "mentions": [["Hery Andriana", "hery"], ["Kiln Yard Studios", "kiln"], ["Inti Mamani", "inti"], ["Tamar Kapanadze", "tamar"]],
+   "facts": [
+    {"model": "Submission", "in": "Hery Andriana drew the Kiln Yard Studios loading bay amendment", "fields": {"scheme": "loading bay amendment", "project": "kiln", "drawn_by": "hery", "checked_by": "inti", "signed_by": "tamar", "outcome": "approved"}, "act": "assert"}]},
+  {"id": "m20", "text": "Adaeze Nnadi: Owain Llewelyn is not my line manager; Sigrun is.",
+   "mentions": [["Adaeze Nnadi", "adaeze"], ["Owain Llewelyn", "owain"], ["my", "adaeze", "ref"], ["Sigrun", "sigrun"]],
+   "facts": [
+    {"model": "Studio", "in": "Owain Llewelyn is not my line manager", "from": "adaeze", "to": "owain", "label": "line_manager", "act": "assert", "deny": true},
+    {"model": "Studio", "in": "Sigrun is.", "from": "adaeze", "to": "sigrun", "label": "line_manager", "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who is the lead designer of Quayside Library?", "speaker": null, "cypher": "MATCH (n0:Project)-[:lead_designer]->(n1:Architect) WHERE n0.project_code = 'Quayside Library' RETURN n1.staff_name AS staff_name"},
+  {"q": "Which projects are designed by me?", "speaker": "tamar", "cypher": "MATCH (n0:Architect)-[:designed]->(n1:Project) WHERE id(n0) = $speaker RETURN n1.project_code AS project_code"},
+  {"q": "Who is my line manager?", "speaker": "owain", "cypher": "MATCH (n0:Architect)-[:line_manager]->(n1:Architect) WHERE id(n0) = $speaker RETURN n1.staff_name AS staff_name"},
+  {"q": "Who reports to Sigrun Halldorsdottir?", "speaker": null, "cypher": "MATCH (n0:Architect)-[:reports]->(n1:Architect) WHERE n0.staff_name = 'Sigrun Halldorsdottir' RETURN n1.staff_name AS staff_name"},
+  {"q": "How many submissions are there?", "speaker": null, "cypher": "MATCH (n0:Submission) RETURN count(n0) AS count"},
+  {"q": "Was the estate scheme for a listed building?", "speaker": null, "cypher": "MATCH (n0:Submission) WHERE n0.scheme = 'estate scheme' RETURN n0.listed_building AS listed_building"},
+  {"q": "Is there a record that the concept sketching was billable?", "speaker": null, "cypher": "MATCH (n0:Hours) WHERE n0.task = 'concept sketching' RETURN coalesce(n0.billable, false) AS billable"},
+  {"q": "Which submissions did Hery Andriana draw?", "speaker": null, "cypher": "MATCH (n0:Architect)<-[:drawn_by]-(n1:Submission) WHERE n0.staff_name = 'Hery Andriana' RETURN n1.scheme AS scheme"},
+  {"q": "Who checked the loading bay amendment?", "speaker": null, "cypher": "MATCH (n0:Submission)-[:checked_by]->(n1:Architect) WHERE n0.scheme = 'loading bay amendment' RETURN n1.staff_name AS staff_name"},
+  {"q": "How long did the technical detailing take?", "speaker": null, "cypher": "MATCH (n0:Hours) WHERE n0.task = 'technical detailing' RETURN n0.hours AS hours"},
+  {"q": "Which submissions concern Mill Lane Housing?", "speaker": null, "cypher": "MATCH (n0:Project)<-[:project]-(n1:Submission) WHERE n0.project_code = 'Mill Lane Housing' RETURN n1.scheme AS scheme"},
+  {"q": "Who deputises for Tamar Kapanadze?", "speaker": null, "cypher": "MATCH (n0:Architect)-[:deputy]->(n1:Architect) WHERE n0.staff_name = 'Tamar Kapanadze' RETURN n1.staff_name AS staff_name"},
+  {"q": "What tasks and hours have I logged?", "speaker": "hery", "cypher": "MATCH (n0:Architect)<-[:logged_by]-(n1:Hours) WHERE id(n0) = $speaker RETURN n1.task AS task, n1.hours AS hours"},
+  {"q": "Which submissions mention application?", "speaker": null, "cypher": "MATCH (n0:Submission) WHERE n0.scheme CONTAINS 'application' RETURN n0.scheme AS scheme"},
+  {"q": "What outcome did the reading room application get?", "speaker": null, "cypher": "MATCH (n0:Submission) WHERE n0.scheme = 'reading room application' RETURN n0.outcome AS outcome"},
+  {"q": "Who is the checker on Mill Lane Housing?", "speaker": null, "cypher": "MATCH (n0:Project)-[:checker]->(n1:Architect) WHERE n0.project_code = 'Mill Lane Housing' RETURN n1.staff_name AS staff_name"},
+  {"q": "Who is the project architect of Kiln Yard Studios?", "speaker": null, "cypher": "MATCH (n0:Project)-[:project_architect]->(n1:Architect) WHERE n0.project_code = 'Kiln Yard Studios' RETURN n1.staff_name AS staff_name"}
+ ]
+}

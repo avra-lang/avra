@@ -1,0 +1,156 @@
+{
+ "domain": "software_oncall",
+ "models": {
+  "Engineer": {"description": "An engineer on the rota. A first name alone is not an identity.",
+   "properties": {"display_name": "string", "email": "string?", "pager": "string?"}, "identities": ["email"]},
+  "Service": {"description": "A running service, named by its slug, independent of who looks after it.",
+   "properties": {"slug": "string", "team_channel": "string?"}},
+  "Stewardship": {"description": "Who answers for a service: its owner, its escalation contact or someone shadowing it.\nShadowing a service is not owning it.",
+   "properties": {"service": "Service", "engineer": "Engineer", "duty": ["owner", "escalation", "shadow"]},
+   "relation": {"from": "service", "to": "engineer", "label": "duty", "phrasing": "{to} serves as {label} for {from}",
+    "labels": {"owner": {"forward": ["owner", "owns"], "reverse": ["owned"]},
+               "escalation": {"forward": ["escalation contact", "escalation point"], "reverse": ["escalations"]},
+               "shadow": {"forward": ["shadow", "shadowing"], "reverse": ["shadowed"]}}}},
+  "Pairing": {"description": "A standing arrangement between two engineers: one mentors the other, or backs the other up on call.",
+   "properties": {"engineer": "Engineer", "partner": "Engineer", "bond": ["mentor", "backup"]},
+   "relation": {"from": "engineer", "to": "partner", "label": "bond", "phrasing": "{to} is {from}'s {label}",
+    "labels": {"mentor": {"forward": ["mentor", "learns from"], "reverse": ["mentee"]},
+               "backup": {"forward": ["backup", "backs up"], "reverse": ["backstop"]}}}},
+  "Incident": {"description": "An outage or degradation. reported_by raised it, responder fixed it, reviewer checks the postmortem.",
+   "properties": {"summary": "string", "service": "Service?", "reported_by": "Engineer?", "responder": "Engineer?", "reviewer": "Engineer?",
+    "status": ["open", "mitigated", "resolved"], "customer_facing": "boolean?", "minutes_down": "integer?", "root_cause": "string?"},
+   "absences": {"customer_facing": "impact_unknown"}},
+  "Deploy": {"description": "A change shipped to a service. author wrote it, approver signed it off; a planned deploy has not shipped.",
+   "properties": {"change": "string", "service": "Service?", "author": "Engineer?", "approver": "Engineer?",
+    "state": ["planned", "shipped", "rolled_back"], "behind_flag": "boolean?", "canary_percent": "integer?"},
+   "absences": {"behind_flag": "flag_unrecorded"}}
+ },
+ "entities": {
+  "amara": {"model": "Engineer", "name": "Amara Nwosu"},
+  "bilal": {"model": "Engineer", "name": "Bilal Haddad"},
+  "ishaan_v": {"model": "Engineer", "name": "Ishaan Varma"},
+  "ishaan_r": {"model": "Engineer", "name": "Ishaan Rao"},
+  "kalani": {"model": "Engineer", "name": "Kalani Akana"},
+  "kalani_m": {"model": "Engineer", "name": "Kalani Mahoe"},
+  "mirela": {"model": "Engineer", "name": "Mirela Dobre"},
+  "joonho": {"model": "Engineer", "name": "Joon-ho Baek"},
+  "checkout": {"model": "Service", "name": "checkout"},
+  "ledger": {"model": "Service", "name": "ledger-api"},
+  "indexer": {"model": "Service", "name": "search-indexer"},
+  "notify": {"model": "Service", "name": "notify"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Amara Nwosu: checkout went down at 02:10 because of an expired certificate, and I resolved it after 47 minutes with Bilal Haddad reviewing.",
+   "mentions": [["Amara Nwosu", "amara"], ["checkout", "checkout"], ["I", "amara", "ref"], ["Bilal Haddad", "bilal"]],
+   "facts": [
+    {"model": "Incident", "in": "checkout went down at 02:10", "fields": {"summary": "checkout went down", "service": "checkout", "responder": "amara", "reviewer": "bilal", "status": "resolved", "minutes_down": 47, "root_cause": "an expired certificate"}, "act": "assert"}]},
+  {"id": "m02", "text": "Bilal Haddad is the owner of ledger-api, and Kalani Akana is its escalation contact.",
+   "mentions": [["Bilal Haddad", "bilal"], ["ledger-api", "ledger"], ["Kalani Akana", "kalani"], ["its", "ledger", "ref"]],
+   "facts": [
+    {"model": "Stewardship", "in": "Bilal Haddad is the owner of ledger-api", "from": "ledger", "to": "bilal", "label": "owner", "act": "assert"},
+    {"model": "Stewardship", "in": "Kalani Akana is its escalation contact", "from": "ledger", "to": "kalani", "label": "escalation", "act": "assert"}]},
+  {"id": "m03", "text": "Kalani: I'm not the escalation contact for checkout any more. Joon-ho Baek took it over on Monday.",
+   "mentions": [["Kalani", "kalani"], ["I", "kalani", "ref"], ["checkout", "checkout"], ["Joon-ho Baek", "joonho"]],
+   "facts": [
+    {"model": "Stewardship", "in": "I'm not the escalation contact for checkout any more.", "from": "checkout", "to": "kalani", "label": "escalation", "act": "assert", "deny": true}]},
+  {"id": "m04", "text": "Ishaan Varma is mentored by Ishaan Rao, though Varma says he mostly learns from Amara Nwosu now.",
+   "mentions": [["Ishaan Varma", "ishaan_v"], ["Ishaan Rao", "ishaan_r"], ["Varma", "ishaan_v"], ["he", "ishaan_v", "ref"], ["Amara Nwosu", "amara"]],
+   "facts": [
+    {"model": "Pairing", "in": "Ishaan Varma is mentored by Ishaan Rao", "from": "ishaan_v", "to": "ishaan_r", "label": "mentor", "act": "assert"},
+    {"model": "Pairing", "in": "Varma says he mostly learns from Amara Nwosu now", "from": "ishaan_v", "to": "amara", "label": "mentor", "act": "report"}]},
+  {"id": "m05", "text": "Mirela Dobre wrote in the channel: \"I can shadow Bilal on ledger-api next week.\"",
+   "mentions": [["Mirela Dobre", "mirela"], ["I", "mirela", "ref"], ["Bilal", "bilal"], ["ledger-api", "ledger"]],
+   "quotes": [["I can shadow Bilal on ledger-api next week.", "mirela"]],
+   "facts": [
+    {"model": "Stewardship", "in": "I can shadow Bilal on ledger-api next week.", "from": "ledger", "to": "mirela", "label": "shadow", "act": "plan"}]},
+  {"id": "m06", "text": "Hi all,\nThe reindex batching change to search-indexer, written by Joon-ho Baek, is planned for Thursday at a 10 percent canary. Mirela approved it this morning.\nThanks,\nIshaan Rao",
+   "mentions": [["search-indexer", "indexer"], ["Joon-ho Baek", "joonho"], ["Mirela", "mirela"], ["Ishaan Rao", "ishaan_r"]],
+   "facts": [
+    {"model": "Deploy", "in": "The reindex batching change to search-indexer", "fields": {"change": "reindex batching", "service": "indexer", "author": "joonho", "state": "planned", "canary_percent": 10}, "act": "plan"},
+    {"model": "Deploy", "in": "Mirela approved it this morning.", "fields": {"approver": "mirela"}, "act": "assert"}]},
+  {"id": "m07", "text": "Postmortem notes: the notify blip lasted 12 minutes, was not customer facing and is resolved, per Kalani Akana.",
+   "mentions": [["notify", "notify"], ["Kalani Akana", "kalani"]],
+   "facts": [
+    {"model": "Incident", "in": "Postmortem notes: the notify blip lasted 12 minutes", "fields": {"summary": "notify blip", "service": "notify", "minutes_down": 12, "customer_facing": false, "status": "resolved"}, "act": "report"}]},
+  {"id": "m08", "text": "Bilal Haddad: Amara, could you be my backup on Saturday? Ishaan Rao already backs me up on weekdays.",
+   "mentions": [["Bilal Haddad", "bilal"], ["Amara", "amara"], ["my", "bilal", "ref"], ["Ishaan Rao", "ishaan_r"], ["me", "bilal", "ref"]],
+   "facts": [
+    {"model": "Pairing", "in": "Amara, could you be my backup on Saturday?", "from": "bilal", "to": "amara", "label": "backup", "act": "request"},
+    {"model": "Pairing", "in": "Ishaan Rao already backs me up on weekdays.", "from": "bilal", "to": "ishaan_r", "label": "backup", "act": "assert"}]},
+  {"id": "m09", "text": "Standup minutes: Ishaan Varma and Ishaan Rao both looked at the checkout alert. Ishaan will write the fix; Amara Nwosu reviews it.",
+   "mentions": [["Ishaan Varma", "ishaan_v"], ["Ishaan Rao", "ishaan_r"], ["checkout", "checkout"], ["Ishaan", "ishaan_v", "?"], ["Amara Nwosu", "amara"]],
+   "facts": []},
+  {"id": "m10", "text": "Joon-ho Baek: I don't own notify; Mirela Dobre owns it, and Amara is her backup.",
+   "mentions": [["Joon-ho Baek", "joonho"], ["I", "joonho", "ref"], ["notify", "notify"], ["Mirela Dobre", "mirela"], ["it", "notify", "ref"], ["Amara", "amara"], ["her", "mirela", "ref"]],
+   "facts": [
+    {"model": "Stewardship", "in": "I don't own notify", "from": "notify", "to": "joonho", "label": "owner", "act": "assert", "deny": true},
+    {"model": "Stewardship", "in": "Mirela Dobre owns it", "from": "notify", "to": "mirela", "label": "owner", "act": "assert"},
+    {"model": "Pairing", "in": "Amara is her backup", "from": "mirela", "to": "amara", "label": "backup", "act": "assert"}]},
+  {"id": "m11", "text": "If Bilal Haddad signs off, the ledger-api schema change goes out tomorrow behind a feature flag.",
+   "mentions": [["Bilal Haddad", "bilal"], ["ledger-api", "ledger"]],
+   "facts": [
+    {"model": "Deploy", "in": "If Bilal Haddad signs off", "fields": {"change": "schema change", "service": "ledger", "approver": "bilal", "state": "planned", "behind_flag": true}, "act": "condition"}]},
+  {"id": "m12", "text": "Mirela Dobre: I think Kalani is the owner of search-indexer, but I'd double-check with Joon-ho.",
+   "mentions": [["Mirela Dobre", "mirela"], ["I", "mirela", "ref"], ["Kalani", "kalani"], ["search-indexer", "indexer"], ["I", "mirela", "ref"], ["Joon-ho", "joonho"]],
+   "facts": [
+    {"model": "Stewardship", "in": "I think Kalani is the owner of search-indexer", "from": "indexer", "to": "kalani", "label": "owner", "act": "draft"}]},
+  {"id": "m13", "text": "Overheard in the war room: \"checkout is flapping again and nobody has paged anyone.\" Amara Nwosu opened an incident called checkout flapping at 3am.",
+   "mentions": [["checkout", "checkout"], ["Amara Nwosu", "amara"], ["checkout", "checkout"]],
+   "quotes": [["checkout is flapping again and nobody has paged anyone.", "?"]],
+   "facts": [
+    {"model": "Incident", "in": "Amara Nwosu opened an incident called checkout flapping at 3am.", "fields": {"summary": "checkout flapping", "service": "checkout", "reported_by": "amara", "status": "open"}, "act": "assert"}]},
+  {"id": "m14", "text": "Kalani Akana, forwarding: Ishaan Rao told the team \"the notify rollback is done, canary was 25 percent.\" I have nothing to add.",
+   "mentions": [["Kalani Akana", "kalani"], ["Ishaan Rao", "ishaan_r"], ["notify", "notify"], ["I", "kalani", "ref"]],
+   "quotes": [["the notify rollback is done, canary was 25 percent.", "ishaan_r"]],
+   "facts": [
+    {"model": "Deploy", "in": "the notify rollback is done", "fields": {"change": "rollback", "service": "notify", "state": "rolled_back", "canary_percent": 25}, "act": "assert"}]},
+  {"id": "m15", "text": "Ishaan Varma reported the search-indexer lag, Joon-ho Baek handled it and Bilal Haddad will review; it is mitigated, not resolved.",
+   "mentions": [["Ishaan Varma", "ishaan_v"], ["search-indexer", "indexer"], ["Joon-ho Baek", "joonho"], ["Bilal Haddad", "bilal"]],
+   "facts": [
+    {"model": "Incident", "in": "Ishaan Varma reported the search-indexer lag", "fields": {"summary": "search-indexer lag", "service": "indexer", "reported_by": "ishaan_v", "responder": "joonho", "reviewer": "bilal", "status": "mitigated"}, "act": "assert"}]},
+  {"id": "m16", "text": "Amara Nwosu shipped the checkout retry tweak without a feature flag at 30 percent canary; Kalani Akana approved.",
+   "mentions": [["Amara Nwosu", "amara"], ["checkout", "checkout"], ["Kalani Akana", "kalani"]],
+   "facts": [
+    {"model": "Deploy", "in": "Amara Nwosu shipped the checkout retry tweak", "fields": {"change": "retry tweak", "service": "checkout", "author": "amara", "approver": "kalani", "state": "shipped", "behind_flag": false, "canary_percent": 30}, "act": "assert"}]},
+  {"id": "m17", "text": "Ishaan Rao: We rolled back the ledger-api index change last night. Bilal wrote it and I approved it, my mistake.",
+   "mentions": [["Ishaan Rao", "ishaan_r"], ["We", "ishaan_r", "ref"], ["ledger-api", "ledger"], ["Bilal", "bilal"], ["I", "ishaan_r", "ref"], ["my", "ishaan_r", "ref"]],
+   "facts": [
+    {"model": "Deploy", "in": "We rolled back the ledger-api index change last night.", "fields": {"change": "index change", "service": "ledger", "state": "rolled_back"}, "act": "assert"},
+    {"model": "Deploy", "in": "Bilal wrote it and I approved it", "fields": {"author": "bilal", "approver": "ishaan_r"}, "act": "assert"}]},
+  {"id": "m18", "text": "Amara Nwosu will mentor Kalani Akana from next sprint. Amara also asked Kalani Mahoe, a new hire, to shadow checkout.",
+   "mentions": [["Amara Nwosu", "amara"], ["Kalani Akana", "kalani"], ["Amara", "amara"], ["Kalani Mahoe", "kalani_m"], ["checkout", "checkout"]],
+   "facts": [
+    {"model": "Pairing", "in": "Amara Nwosu will mentor Kalani Akana from next sprint.", "from": "kalani", "to": "amara", "label": "mentor", "act": "plan"},
+    {"model": "Stewardship", "in": "Amara also asked Kalani Mahoe, a new hire, to shadow checkout.", "from": "checkout", "to": "kalani_m", "label": "shadow", "act": "request"}]},
+  {"id": "m19", "text": "Subject: notify pager rota\n\nJoon-ho, from Monday I am the escalation contact for notify and Mirela Dobre stays its owner.\n\nBest,\nKalani Akana",
+   "mentions": [["notify", "notify"], ["Joon-ho", "joonho"], ["I", "kalani", "ref"], ["notify", "notify"], ["Mirela Dobre", "mirela"], ["its", "notify", "ref"], ["Kalani Akana", "kalani"]],
+   "facts": [
+    {"model": "Stewardship", "in": "from Monday I am the escalation contact for notify", "from": "notify", "to": "kalani", "label": "escalation", "act": "plan"},
+    {"model": "Stewardship", "in": "Mirela Dobre stays its owner", "from": "notify", "to": "mirela", "label": "owner", "act": "assert"}]},
+  {"id": "m20", "text": "Bilal Haddad: Maybe the checkout 500s count as an open incident; Amara Nwosu could review it.",
+   "mentions": [["Bilal Haddad", "bilal"], ["checkout", "checkout"], ["Amara Nwosu", "amara"]],
+   "facts": [
+    {"model": "Incident", "in": "Maybe the checkout 500s count as an open incident", "fields": {"summary": "checkout 500s", "service": "checkout", "reviewer": "amara", "status": "open"}, "act": "draft"}]}
+ ],
+ "questions": [
+  {"q": "Who owns ledger-api?", "speaker": null, "cypher": "MATCH (n0:Service)-[:owner]->(n1:Engineer) WHERE n0.slug = 'ledger-api' RETURN n1.display_name AS display_name"},
+  {"q": "Which services are owned by me?", "speaker": "bilal", "cypher": "MATCH (n0:Engineer)-[:owned]->(n1:Service) WHERE id(n0) = $speaker RETURN n1.slug AS slug"},
+  {"q": "Who is my mentor?", "speaker": "ishaan_v", "cypher": "MATCH (n0:Engineer)-[:mentor]->(n1:Engineer) WHERE id(n0) = $speaker RETURN n1.display_name AS display_name"},
+  {"q": "Who is Amara Nwosu's mentee?", "speaker": null, "cypher": "MATCH (n0:Engineer)-[:mentee]->(n1:Engineer) WHERE n0.display_name = 'Amara Nwosu' RETURN n1.display_name AS display_name"},
+  {"q": "How many incidents are there?", "speaker": null, "cypher": "MATCH (n0:Incident) RETURN count(n0) AS count"},
+  {"q": "Was the notify blip customer facing?", "speaker": null, "cypher": "MATCH (n0:Incident) WHERE n0.summary = 'notify blip' RETURN n0.customer_facing AS customer_facing"},
+  {"q": "Is there a record that the retry tweak was behind a flag?", "speaker": null, "cypher": "MATCH (n0:Deploy) WHERE n0.change = 'retry tweak' RETURN coalesce(n0.behind_flag, false) AS behind_flag"},
+  {"q": "What incidents did Ishaan Varma report?", "speaker": null, "cypher": "MATCH (n0:Engineer)<-[:reported_by]-(n1:Incident) WHERE n0.display_name = 'Ishaan Varma' RETURN n1.summary AS summary"},
+  {"q": "Who reviewed the search-indexer lag?", "speaker": null, "cypher": "MATCH (n0:Incident)-[:reviewer]->(n1:Engineer) WHERE n0.summary = 'search-indexer lag' RETURN n1.display_name AS display_name"},
+  {"q": "Which deploys did Joon-ho Baek write?", "speaker": null, "cypher": "MATCH (n0:Engineer)<-[:author]-(n1:Deploy) WHERE n0.display_name = 'Joon-ho Baek' RETURN n1.change AS change"},
+  {"q": "How long was checkout down?", "speaker": null, "cypher": "MATCH (n0:Service)<-[:service]-(n1:Incident) WHERE n0.slug = 'checkout' AND n1.summary CONTAINS 'down' RETURN n1.minutes_down AS minutes_down"},
+  {"q": "What canary did the reindex batching change get?", "speaker": null, "cypher": "MATCH (n0:Deploy) WHERE n0.change = 'reindex batching' RETURN n0.canary_percent AS canary_percent"},
+  {"q": "Who is the escalation contact for notify?", "speaker": null, "cypher": "MATCH (n0:Service)-[:escalation]->(n1:Engineer) WHERE n0.slug = 'notify' RETURN n1.display_name AS display_name"},
+  {"q": "What were the incidents I responded to?", "speaker": "amara", "cypher": "MATCH (n0:Engineer)<-[:responder]-(n1:Incident) WHERE id(n0) = $speaker RETURN n1.summary AS summary"},
+  {"q": "Which incidents mention checkout?", "speaker": null, "cypher": "MATCH (n0:Incident) WHERE n0.summary CONTAINS 'checkout' RETURN n0.summary AS summary"},
+  {"q": "Which services are shadowed by me?", "speaker": "mirela", "cypher": "MATCH (n0:Engineer)-[:shadowed]->(n1:Service) WHERE id(n0) = $speaker RETURN n1.slug AS slug"},
+  {"q": "What changes did I approve?", "speaker": "kalani", "cypher": "MATCH (n0:Engineer)<-[:approver]-(n1:Deploy) WHERE id(n0) = $speaker RETURN n1.change AS change"},
+  {"q": "Who backs up Bilal Haddad?", "speaker": null, "cypher": "MATCH (n0:Engineer)-[:backup]->(n1:Engineer) WHERE n0.display_name = 'Bilal Haddad' RETURN n1.display_name AS display_name"},
+  {"q": "What is the change and state of every deploy?", "speaker": null, "cypher": "MATCH (n0:Deploy) RETURN n0.change AS change, n0.state AS state"}
+ ]
+}

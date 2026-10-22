@@ -1,0 +1,138 @@
+{
+ "domain": "climbing_gym",
+ "models": {
+  "Climber": {"description": "A gym member or staff climber. A first name alone is not an identity.",
+   "properties": {"member_name": "string", "membership_no": "string?"}, "identities": ["membership_no"]},
+  "Route": {"description": "A set route or boulder problem on the walls, whoever set or climbed it.",
+   "properties": {"label": "string", "wall_section": "string?"}},
+  "Setting": {"description": "Who did what for a route: the setter who built it, the tester who foreruns it before opening.\nTesting a route is not setting it.",
+   "properties": {"route": "Route", "climber": "Climber", "job": ["setter", "tester"]},
+   "relation": {"from": "route", "to": "climber", "label": "job", "phrasing": "{to} was the {label} of {from}",
+    "labels": {"setter": {"forward": ["setter", "set by", "routesetter"], "reverse": ["set"]},
+               "tester": {"forward": ["tester", "forerunner", "tested by"], "reverse": ["tested"]}}}},
+  "Partnership": {"description": "Who a climber depends on: a belayer who holds their rope, or an instructor who teaches them.",
+   "properties": {"learner": "Climber", "partner": "Climber", "bond": ["belayer", "instructor"]},
+   "relation": {"from": "learner", "to": "partner", "label": "bond", "phrasing": "{from} relies on {to} as {label}",
+    "labels": {"belayer": {"forward": ["belayer", "belays", "belay partner"], "reverse": ["belayed"]},
+               "instructor": {"forward": ["instructor", "instructs"], "reverse": ["student"]}}}},
+  "Incident": {"description": "An accident or near miss on the walls. faller is who fell, reported_by logged it, first_aider treated the faller.",
+   "properties": {"faller": "Climber?", "reported_by": "Climber?", "first_aider": "Climber?", "route": "Route?",
+    "severity": ["minor", "serious", "near_miss"], "ambulance_called": "boolean?", "fall_metres": "integer?", "details": "string?"},
+   "absences": {"ambulance_called": "no_ambulance_record"}}
+ },
+ "entities": {
+  "kalani_a": {"model": "Climber", "name": "Kalani Akana"},
+  "kalani_w": {"model": "Climber", "name": "Kalani Whitfield"},
+  "zainab": {"model": "Climber", "name": "Zainab Oyelowo"},
+  "dmitri": {"model": "Climber", "name": "Dmitri Volkonsky"},
+  "ngaio": {"model": "Climber", "name": "Ngaio Harker"},
+  "esperanza": {"model": "Climber", "name": "Esperanza Quispe"},
+  "arjun": {"model": "Climber", "name": "Arjun Mehrotra", "fields": {"membership_no": "88213"}},
+  "liesel": {"model": "Climber", "name": "Liesel Brandauer"},
+  "slab": {"model": "Route", "name": "Slab of Doubt"},
+  "cave": {"model": "Route", "name": "Cave Roof Traverse"},
+  "blue": {"model": "Route", "name": "Blue Dyno Arete"},
+  "orange": {"model": "Route", "name": "Orange Crimp Line"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Zainab Oyelowo: I set Slab of Doubt last week, and Arjun Mehrotra was its forerunner. He fell twice on the crux.",
+   "mentions": [["Zainab Oyelowo", "zainab"], ["I", "zainab", "ref"], ["Slab of Doubt", "slab"], ["Arjun Mehrotra", "arjun"], ["its", "slab", "ref"], ["He", "arjun", "ref"]],
+   "facts": [
+    {"model": "Setting", "in": "I set Slab of Doubt last week", "from": "slab", "to": "zainab", "label": "setter", "act": "assert"},
+    {"model": "Setting", "in": "Arjun Mehrotra was its forerunner", "from": "slab", "to": "arjun", "label": "tester", "act": "assert"}]},
+  {"id": "m02", "text": "Note from the front desk: Kalani Akana belays Esperanza Quispe on Tuesdays. Kalani does not belay Dmitri Volkonsky any more.",
+   "mentions": [["Kalani Akana", "kalani_a"], ["Esperanza Quispe", "esperanza"], ["Kalani", "kalani_a"], ["Dmitri Volkonsky", "dmitri"]],
+   "facts": [
+    {"model": "Partnership", "in": "Kalani Akana belays Esperanza Quispe on Tuesdays.", "from": "esperanza", "to": "kalani_a", "label": "belayer", "act": "assert"},
+    {"model": "Partnership", "in": "Kalani does not belay Dmitri Volkonsky any more.", "from": "dmitri", "to": "kalani_a", "label": "belayer", "act": "assert", "deny": true}]},
+  {"id": "m03", "text": "Hi Liesel,\nCould you file a minor incident report for Cave Roof Traverse, with Dmitri Volkonsky as first aider and Ngaio Harker as the climber who fell?\nThanks,\nArjun Mehrotra",
+   "mentions": [["Liesel", "liesel"], ["you", "liesel", "ref"], ["Cave Roof Traverse", "cave"], ["Dmitri Volkonsky", "dmitri"], ["Ngaio Harker", "ngaio"], ["Arjun Mehrotra", "arjun"]],
+   "facts": [
+    {"model": "Incident", "in": "Could you file a minor incident report for Cave Roof Traverse, with Dmitri Volkonsky as first aider and Ngaio Harker as the climber who fell?", "fields": {"route": "cave", "first_aider": "dmitri", "faller": "ngaio", "severity": "minor"}, "act": "request"}]},
+  {"id": "m04", "text": "Ngaio Harker relies on Arjun Mehrotra as her instructor. Arjun also belays Liesel Brandauer at weekends.",
+   "mentions": [["Ngaio Harker", "ngaio"], ["Arjun Mehrotra", "arjun"], ["her", "ngaio", "ref"], ["Arjun", "arjun"], ["Liesel Brandauer", "liesel"]],
+   "facts": [
+    {"model": "Partnership", "in": "Ngaio Harker relies on Arjun Mehrotra as her instructor.", "from": "ngaio", "to": "arjun", "label": "instructor", "act": "assert"},
+    {"model": "Partnership", "in": "Arjun also belays Liesel Brandauer at weekends.", "from": "liesel", "to": "arjun", "label": "belayer", "act": "assert"}]},
+  {"id": "m05", "text": "Incident log, Friday: Kalani Whitfield reported a near miss on Blue Dyno Arete after a 3 metre fall by Kalani Akana, no ambulance called. Kalani says the hold spun.",
+   "mentions": [["Kalani Whitfield", "kalani_w"], ["Blue Dyno Arete", "blue"], ["Kalani Akana", "kalani_a"], ["Kalani", "kalani_w", "?"]],
+   "facts": [
+    {"model": "Incident", "in": "Kalani Whitfield reported a near miss on Blue Dyno Arete after a 3 metre fall by Kalani Akana, no ambulance called.", "fields": {"reported_by": "kalani_w", "route": "blue", "fall_metres": 3, "faller": "kalani_a", "ambulance_called": false, "severity": "near_miss"}, "act": "report"}]},
+  {"id": "m06", "text": "Dmitri Volkonsky told the setters: \"I never tested Blue Dyno Arete, ask Zainab.\"",
+   "mentions": [["Dmitri Volkonsky", "dmitri"], ["I", "dmitri", "ref"], ["Blue Dyno Arete", "blue"], ["Zainab", "zainab"]],
+   "quotes": [["I never tested Blue Dyno Arete, ask Zainab.", "dmitri"]],
+   "facts": [
+    {"model": "Setting", "in": "I never tested Blue Dyno Arete", "from": "blue", "to": "dmitri", "label": "tester", "act": "assert", "deny": true}]},
+  {"id": "m07", "text": "Serious incident on Slab of Doubt reported by Liesel Brandauer: Esperanza Quispe fell 4 metres and Arjun Mehrotra gave first aid, ambulance called.",
+   "mentions": [["Slab of Doubt", "slab"], ["Liesel Brandauer", "liesel"], ["Esperanza Quispe", "esperanza"], ["Arjun Mehrotra", "arjun"]],
+   "facts": [
+    {"model": "Incident", "in": "Serious incident on Slab of Doubt reported by Liesel Brandauer", "fields": {"route": "slab", "reported_by": "liesel", "faller": "esperanza", "fall_metres": 4, "first_aider": "arjun", "ambulance_called": true, "severity": "serious"}, "act": "assert"}]},
+  {"id": "m08", "text": "Esperanza Quispe: The incident on Cave Roof Traverse was only minor. The setter checked it the same day, so I climbed it again.",
+   "mentions": [["Esperanza Quispe", "esperanza"], ["Cave Roof Traverse", "cave"], ["it", "cave", "ref"], ["I", "esperanza", "ref"], ["it", "cave", "ref"]],
+   "facts": [
+    {"model": "Incident", "in": "The incident on Cave Roof Traverse was only minor.", "fields": {"route": "cave", "severity": "minor"}, "act": "assert"}]},
+  {"id": "m09", "text": "Ngaio Harker: Near miss on Orange Crimp Line: a 2 metre fall, the top bolt hanger was loose, no ambulance. I will be its tester after the reset, not Zainab.",
+   "mentions": [["Ngaio Harker", "ngaio"], ["Orange Crimp Line", "orange"], ["I", "ngaio", "ref"], ["its", "orange", "ref"], ["Zainab", "zainab"]],
+   "facts": [
+    {"model": "Incident", "in": "Near miss on Orange Crimp Line: a 2 metre fall, the top bolt hanger was loose, no ambulance.", "fields": {"route": "orange", "severity": "near_miss", "fall_metres": 2, "details": "the top bolt hanger was loose", "ambulance_called": false}, "act": "assert"},
+    {"model": "Setting", "in": "I will be its tester after the reset", "from": "orange", "to": "ngaio", "label": "tester", "act": "plan"},
+    {"model": "Setting", "in": "not Zainab", "from": "orange", "to": "zainab", "label": "tester", "act": "plan", "deny": true}]},
+  {"id": "m10", "text": "If the head setter agrees, Kalani Whitfield will set Cave Roof Traverse next month. Zainab Oyelowo would then instruct her.",
+   "mentions": [["Kalani Whitfield", "kalani_w"], ["Cave Roof Traverse", "cave"], ["Zainab Oyelowo", "zainab"], ["her", "kalani_w", "ref"]],
+   "facts": [
+    {"model": "Setting", "in": "If the head setter agrees, Kalani Whitfield will set Cave Roof Traverse next month.", "from": "cave", "to": "kalani_w", "label": "setter", "act": "condition"},
+    {"model": "Partnership", "in": "Zainab Oyelowo would then instruct her.", "from": "kalani_w", "to": "zainab", "label": "instructor", "act": "condition"}]},
+  {"id": "m11", "text": "Liesel Brandauer: Dmitri, could you be first aider for the serious incident on Blue Dyno Arete? Zainab Oyelowo is its setter, so she can strip the holds.",
+   "mentions": [["Liesel Brandauer", "liesel"], ["Dmitri", "dmitri"], ["you", "dmitri", "ref"], ["Blue Dyno Arete", "blue"], ["Zainab Oyelowo", "zainab"], ["its", "blue", "ref"], ["she", "zainab", "ref"]],
+   "facts": [
+    {"model": "Incident", "in": "could you be first aider for the serious incident on Blue Dyno Arete?", "fields": {"first_aider": "dmitri", "route": "blue", "severity": "serious"}, "act": "request"},
+    {"model": "Setting", "in": "Zainab Oyelowo is its setter", "from": "blue", "to": "zainab", "label": "setter", "act": "assert"}]},
+  {"id": "m12", "text": "Arjun Mehrotra here, membership 88213. Please send my renewal to the front desk.",
+   "mentions": [["Arjun Mehrotra", "arjun"], ["my", "arjun", "ref"]],
+   "facts": []},
+  {"id": "m13", "text": "Dmitri Volkonsky: I think Orange Crimp Line was set by Esperanza Quispe, but maybe the old team did that one. Esperanza will know.",
+   "mentions": [["Dmitri Volkonsky", "dmitri"], ["I", "dmitri", "ref"], ["Orange Crimp Line", "orange"], ["Esperanza Quispe", "esperanza"], ["Esperanza", "esperanza"]],
+   "facts": [
+    {"model": "Setting", "in": "I think Orange Crimp Line was set by Esperanza Quispe", "from": "orange", "to": "esperanza", "label": "setter", "act": "draft"}]},
+  {"id": "m14", "text": "Zainab Oyelowo said that Kalani Akana instructs Dmitri Volkonsky now.",
+   "mentions": [["Zainab Oyelowo", "zainab"], ["Kalani Akana", "kalani_a"], ["Dmitri Volkonsky", "dmitri"]],
+   "facts": [
+    {"model": "Partnership", "in": "Zainab Oyelowo said that Kalani Akana instructs Dmitri Volkonsky now.", "from": "dmitri", "to": "kalani_a", "label": "instructor", "act": "report"}]},
+  {"id": "m15", "text": "I told the kids club: \"Cave Roof Traverse stays taped off until Liesel says otherwise.\"",
+   "mentions": [["I", "none", "ref"], ["Cave Roof Traverse", "cave"], ["Liesel", "liesel"]],
+   "quotes": [["Cave Roof Traverse stays taped off until Liesel says otherwise.", "author"]],
+   "facts": []},
+  {"id": "m16", "text": "Minutes: Esperanza Quispe confirmed the Orange Crimp Line incident was serious, with a 5 metre fall and an ambulance called. Esperanza also said Kalani Akana tested it before opening.",
+   "mentions": [["Esperanza Quispe", "esperanza"], ["Orange Crimp Line", "orange"], ["Esperanza", "esperanza"], ["Kalani Akana", "kalani_a"], ["it", "orange", "ref"]],
+   "facts": [
+    {"model": "Incident", "in": "Esperanza Quispe confirmed the Orange Crimp Line incident was serious, with a 5 metre fall and an ambulance called.", "fields": {"route": "orange", "severity": "serious", "fall_metres": 5, "ambulance_called": true}, "act": "assert"},
+    {"model": "Setting", "in": "Esperanza also said Kalani Akana tested it before opening.", "from": "orange", "to": "kalani_a", "label": "tester", "act": "report"}]},
+  {"id": "m17", "text": "Kalani Whitfield: My instructor is Zainab Oyelowo, not Arjun Mehrotra.",
+   "mentions": [["Kalani Whitfield", "kalani_w"], ["My", "kalani_w", "ref"], ["Zainab Oyelowo", "zainab"], ["Arjun Mehrotra", "arjun"]],
+   "facts": [
+    {"model": "Partnership", "in": "My instructor is Zainab Oyelowo", "from": "kalani_w", "to": "zainab", "label": "instructor", "act": "assert"},
+    {"model": "Partnership", "in": "not Arjun Mehrotra", "from": "kalani_w", "to": "arjun", "label": "instructor", "act": "assert", "deny": true}]},
+  {"id": "m18", "text": "Liesel Brandauer fell 6 metres on Cave Roof Traverse with Arjun Mehrotra giving first aid, a minor incident, and Liesel logged it.",
+   "mentions": [["Liesel Brandauer", "liesel"], ["Cave Roof Traverse", "cave"], ["Arjun Mehrotra", "arjun"], ["Liesel", "liesel"]],
+   "facts": [
+    {"model": "Incident", "in": "Liesel Brandauer fell 6 metres on Cave Roof Traverse", "fields": {"faller": "liesel", "fall_metres": 6, "route": "cave", "first_aider": "arjun", "severity": "minor", "reported_by": "liesel"}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who is the setter of Slab of Doubt?", "speaker": null, "cypher": "MATCH (n0:Route)-[:setter]->(n1:Climber) WHERE n0.label = 'Slab of Doubt' RETURN n1.member_name AS member_name"},
+  {"q": "Who was the tester for Orange Crimp Line?", "speaker": null, "cypher": "MATCH (n0:Route)-[:tester]->(n1:Climber) WHERE n0.label = 'Orange Crimp Line' RETURN n1.member_name AS member_name"},
+  {"q": "Which routes have I set?", "speaker": "zainab", "cypher": "MATCH (n0:Climber)-[:set]->(n1:Route) WHERE id(n0) = $speaker RETURN n1.label AS label"},
+  {"q": "Which routes has Kalani Akana tested?", "speaker": null, "cypher": "MATCH (n0:Climber)-[:tested]->(n1:Route) WHERE n0.member_name = 'Kalani Akana' RETURN n1.label AS label"},
+  {"q": "Who is my belayer?", "speaker": "esperanza", "cypher": "MATCH (n0:Climber)-[:belayer]->(n1:Climber) WHERE id(n0) = $speaker RETURN n1.member_name AS member_name"},
+  {"q": "Who is Ngaio Harker's instructor?", "speaker": null, "cypher": "MATCH (n0:Climber)-[:instructor]->(n1:Climber) WHERE n0.member_name = 'Ngaio Harker' RETURN n1.member_name AS member_name"},
+  {"q": "Who is Arjun Mehrotra's student?", "speaker": null, "cypher": "MATCH (n0:Climber)-[:student]->(n1:Climber) WHERE n0.member_name = 'Arjun Mehrotra' RETURN n1.member_name AS member_name"},
+  {"q": "How many incidents were logged?", "speaker": null, "cypher": "MATCH (n0:Incident) RETURN count(n0) AS count"},
+  {"q": "Is there a record of an ambulance for the Slab of Doubt incident?", "speaker": null, "cypher": "MATCH (n0:Route)<-[:route]-(n1:Incident) WHERE n0.label = 'Slab of Doubt' RETURN coalesce(n1.ambulance_called, false) AS ambulance_called"},
+  {"q": "Was an ambulance called for the Blue Dyno Arete incident?", "speaker": null, "cypher": "MATCH (n0:Route)<-[:route]-(n1:Incident) WHERE n0.label = 'Blue Dyno Arete' RETURN n1.ambulance_called AS ambulance_called"},
+  {"q": "How many metres were the falls in incidents reported by Liesel Brandauer?", "speaker": null, "cypher": "MATCH (n0:Climber)<-[:reported_by]-(n1:Incident) WHERE n0.member_name = 'Liesel Brandauer' RETURN n1.fall_metres AS fall_metres"},
+  {"q": "Who gave first aid when I fell?", "speaker": "esperanza", "cypher": "MATCH (n0:Climber)<-[:faller]-(n1:Incident)-[:first_aider]->(n2:Climber) WHERE id(n0) = $speaker RETURN n2.member_name AS member_name"},
+  {"q": "Which route was the incident with the loose hanger on?", "speaker": null, "cypher": "MATCH (n0:Incident)-[:route]->(n1:Route) WHERE n0.details CONTAINS 'hanger' RETURN n1.label AS label"},
+  {"q": "List every incident with its severity and fall height.", "speaker": null, "cypher": "MATCH (n0:Incident) RETURN n0.severity AS severity, n0.fall_metres AS fall_metres"},
+  {"q": "What is Arjun Mehrotra's membership number?", "speaker": null, "cypher": "MATCH (n0:Climber) WHERE n0.member_name = 'Arjun Mehrotra' RETURN n0.membership_no AS membership_no"},
+  {"q": "Who fell on Cave Roof Traverse?", "speaker": null, "cypher": "MATCH (n0:Route)<-[:route]-(n1:Incident)-[:faller]->(n2:Climber) WHERE n0.label = 'Cave Roof Traverse' RETURN n2.member_name AS member_name"}
+ ]
+}

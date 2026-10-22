@@ -1,0 +1,139 @@
+{
+ "domain": "airline_crew_scheduling",
+ "models": {
+  "CrewMember": {"description": "A pilot or cabin crew member on the airline's roster. A first name alone is not an identity.",
+   "properties": {"crew_name": "string", "staff_no": "string?"}, "identities": ["staff_no"]},
+  "Flight": {"description": "A scheduled flight, known by its flight code.",
+   "properties": {"flight_code": "string", "route": "string?"}},
+  "Chain": {"description": "Who a crew member answers to: their line manager, or the examiner who checks them.",
+   "properties": {"junior": "CrewMember", "senior": "CrewMember", "line": ["supervisor", "examiner"]},
+   "relation": {"from": "junior", "to": "senior", "label": "line", "phrasing": "{to} acts as {label} to {from}",
+    "labels": {"supervisor": {"forward": ["supervisor", "line manager"], "reverse": ["reports"]},
+               "examiner": {"forward": ["examiner", "check captain"], "reverse": ["candidates"]}}}},
+  "Assignment": {"description": "A crew member's place on a flight: operating it, or standing by as reserve.",
+   "properties": {"crew": "CrewMember", "flight": "Flight", "slot": ["operating", "standby"]},
+   "relation": {"from": "crew", "to": "flight", "label": "slot", "phrasing": "{from} is {label} on {to}",
+    "labels": {"operating": {"forward": ["operating", "rostered on"], "reverse": ["roster"]},
+               "standby": {"forward": ["standby", "reserve for"], "reverse": ["reserves"]}}}},
+  "SwapRequest": {"description": "A request to give away a duty. requested_by asks, covering takes the duty over, decided_by approves or refuses it.",
+   "properties": {"reason": "string", "requested_by": "CrewMember", "covering": "CrewMember?", "decided_by": "CrewMember?", "flight": "Flight?",
+    "status": ["pending", "approved", "refused"], "fatigue_flag": "boolean?", "duty_hours": "integer?", "remark": "string?"},
+   "absences": {"fatigue_flag": "no_fatigue_record"}},
+  "Delay": {"description": "A hold on one flight and its cause. crew_notified stays empty until a notice is recorded.",
+   "properties": {"cause": "string", "flight": "Flight", "minutes": "integer?", "crew_notified": "boolean?"},
+   "absences": {"crew_notified": "no_notice_record"}}
+ },
+ "entities": {
+  "ines": {"model": "CrewMember", "name": "Ines Barros"},
+  "ines_m": {"model": "CrewMember", "name": "Ines Mukherjee"},
+  "tariq": {"model": "CrewMember", "name": "Tariq Haddad", "fields": {"staff_no": "QX-5521"}},
+  "solveig": {"model": "CrewMember", "name": "Solveig Arnadottir"},
+  "obinna": {"model": "CrewMember", "name": "Obinna Eze"},
+  "paulo": {"model": "CrewMember", "name": "Paulo Tavita"},
+  "qx414": {"model": "Flight", "name": "QX414"},
+  "qx922": {"model": "Flight", "name": "QX922", "fields": {"route": "Bergen to Lagos"}},
+  "qx107": {"model": "Flight", "name": "QX107"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Solveig Arnadottir: I'm the line manager for Obinna Eze from this roster. He reports to me on all long-haul days.",
+   "mentions": [["Solveig Arnadottir", "solveig"], ["I", "solveig", "ref"], ["Obinna Eze", "obinna"], ["He", "obinna", "ref"], ["me", "solveig", "ref"]],
+   "facts": [
+    {"model": "Chain", "in": "I'm the line manager for Obinna Eze from this roster.", "from": "obinna", "to": "solveig", "label": "supervisor", "act": "assert"},
+    {"model": "Chain", "in": "He reports to me on all long-haul days.", "from": "obinna", "to": "solveig", "label": "supervisor", "act": "assert"}]},
+  {"id": "m02", "text": "Crew control: Ines Barros is operating on QX414 tomorrow. Tariq Haddad is standby on QX414.",
+   "mentions": [["Ines Barros", "ines"], ["QX414", "qx414"], ["Tariq Haddad", "tariq"], ["QX414", "qx414"]],
+   "facts": [
+    {"model": "Assignment", "in": "Ines Barros is operating on QX414 tomorrow.", "from": "ines", "to": "qx414", "label": "operating", "act": "assert"},
+    {"model": "Assignment", "in": "Tariq Haddad is standby on QX414.", "from": "tariq", "to": "qx414", "label": "standby", "act": "assert"}]},
+  {"id": "m03", "text": "Ines Mukherjee: Could Paulo Tavita cover my QX922 duty on Friday because of a court summons?",
+   "mentions": [["Ines Mukherjee", "ines_m"], ["Paulo Tavita", "paulo"], ["my", "ines_m", "ref"], ["QX922", "qx922"]],
+   "facts": [
+    {"model": "SwapRequest", "in": "Could Paulo Tavita cover my QX922 duty on Friday because of a court summons?", "fields": {"reason": "court summons", "requested_by": "ines_m", "covering": "paulo", "flight": "qx922", "status": "pending"}, "act": "request"}]},
+  {"id": "m04", "text": "Tariq Haddad: Ines Barros and Ines Mukherjee are both on the Friday sheet. Ines told me she wants the window seat in the crew rest.",
+   "mentions": [["Tariq Haddad", "tariq"], ["Ines Barros", "ines"], ["Ines Mukherjee", "ines_m"], ["Ines", "ines", "?"], ["me", "tariq", "ref"], ["she", "?", "ref"]],
+   "facts": []},
+  {"id": "m05", "text": "Solveig Arnadottir approved Ines Mukherjee's swap for the court summons, with Paulo Tavita covering.",
+   "mentions": [["Solveig Arnadottir", "solveig"], ["Ines Mukherjee", "ines_m"], ["Paulo Tavita", "paulo"]],
+   "facts": [
+    {"model": "SwapRequest", "in": "Solveig Arnadottir approved Ines Mukherjee's swap for the court summons", "fields": {"reason": "court summons", "requested_by": "ines_m", "decided_by": "solveig", "covering": "paulo", "status": "approved"}, "act": "assert"}]},
+  {"id": "m06", "text": "QX107 was held 45 minutes for a de-icing queue, and the crew were notified at the gate.",
+   "mentions": [["QX107", "qx107"]],
+   "facts": [
+    {"model": "Delay", "in": "QX107 was held 45 minutes for a de-icing queue", "fields": {"cause": "de-icing queue", "flight": "qx107", "minutes": 45, "crew_notified": true}, "act": "assert"}]},
+  {"id": "m07", "text": "Ops log: QX414 sat 30 minutes waiting for catering; nobody told the crew.",
+   "mentions": [["QX414", "qx414"]],
+   "facts": [
+    {"model": "Delay", "in": "QX414 sat 30 minutes waiting for catering", "fields": {"cause": "catering", "flight": "qx414", "minutes": 30, "crew_notified": false}, "act": "assert"}]},
+  {"id": "m08", "text": "Obinna Eze said: \"Tariq Haddad is my examiner for the line check next week.\" Obinna sounded nervous about it.",
+   "mentions": [["Obinna Eze", "obinna"], ["Tariq Haddad", "tariq"], ["my", "obinna", "ref"], ["Obinna", "obinna"]],
+   "quotes": [["Tariq Haddad is my examiner for the line check next week.", "obinna"]],
+   "facts": [
+    {"model": "Chain", "in": "Tariq Haddad is my examiner for the line check next week.", "from": "obinna", "to": "tariq", "label": "examiner", "act": "assert"}]},
+  {"id": "m09", "text": "I pinned \"no swaps inside 48 hours of report time\" on the crew room board, and Paulo Tavita read it.",
+   "mentions": [["I", "none", "ref"], ["Paulo Tavita", "paulo"]],
+   "quotes": [["no swaps inside 48 hours of report time", "author"]],
+   "facts": []},
+  {"id": "m10", "text": "Paulo Tavita: Solveig isn't my line manager, Obinna Eze is.",
+   "mentions": [["Paulo Tavita", "paulo"], ["Solveig", "solveig"], ["my", "paulo", "ref"], ["Obinna Eze", "obinna"]],
+   "facts": [
+    {"model": "Chain", "in": "Solveig isn't my line manager", "from": "paulo", "to": "solveig", "label": "supervisor", "act": "assert", "deny": true},
+    {"model": "Chain", "in": "Obinna Eze is.", "from": "paulo", "to": "obinna", "label": "supervisor", "act": "assert"}]},
+  {"id": "m11", "text": "If the simulator slot holds, Tariq Haddad will be the check captain for Ines Barros in March.",
+   "mentions": [["Tariq Haddad", "tariq"], ["Ines Barros", "ines"]],
+   "facts": [
+    {"model": "Chain", "in": "Tariq Haddad will be the check captain for Ines Barros", "from": "ines", "to": "tariq", "label": "examiner", "act": "condition"}]},
+  {"id": "m12", "text": "Tariq Haddad's request to give away QX107 for extra rest was refused by Solveig Arnadottir: he is at 11 duty hours this week.",
+   "mentions": [["Tariq Haddad", "tariq"], ["QX107", "qx107"], ["Solveig Arnadottir", "solveig"], ["he", "tariq", "ref"]],
+   "facts": [
+    {"model": "SwapRequest", "in": "Tariq Haddad's request to give away QX107 for extra rest was refused by Solveig Arnadottir", "fields": {"reason": "extra rest", "requested_by": "tariq", "flight": "qx107", "decided_by": "solveig", "status": "refused", "duty_hours": 11}, "act": "assert"}]},
+  {"id": "m13", "text": "Hello crew control, I am asking for a swap off QX922 on Sunday: fatigue after three night sectors, 13 duty hours this week, please pair me with a senior purser. Regards, Ines Barros",
+   "mentions": [["I", "ines", "ref"], ["QX922", "qx922"], ["me", "ines", "ref"], ["Ines Barros", "ines"]],
+   "facts": [
+    {"model": "SwapRequest", "in": "I am asking for a swap off QX922 on Sunday", "fields": {"reason": "fatigue after three night sectors", "requested_by": "ines", "flight": "qx922", "status": "pending", "fatigue_flag": true, "duty_hours": 13, "remark": "please pair me with a senior purser"}, "act": "request"}]},
+  {"id": "m14", "text": "Obinna Eze mentioned that Paulo Tavita is rostered on QX107 this weekend.",
+   "mentions": [["Obinna Eze", "obinna"], ["Paulo Tavita", "paulo"], ["QX107", "qx107"]],
+   "facts": [
+    {"model": "Assignment", "in": "Paulo Tavita is rostered on QX107 this weekend.", "from": "paulo", "to": "qx107", "label": "operating", "act": "report"}]},
+  {"id": "m15", "text": "Ines Mukherjee: I'm off sick, so please ask the other Ines to take my standby on QX414.",
+   "mentions": [["Ines Mukherjee", "ines_m"], ["I", "ines_m", "ref"], ["Ines", "ines"], ["my", "ines_m", "ref"], ["QX414", "qx414"]],
+   "facts": [
+    {"model": "Assignment", "in": "please ask the other Ines to take my standby on QX414", "from": "ines", "to": "qx414", "label": "standby", "act": "request"},
+    {"model": "Assignment", "in": "my standby on QX414", "from": "ines_m", "to": "qx414", "label": "standby", "act": "assert"}]},
+  {"id": "m16", "text": "Minutes of the base meeting: Solveig Arnadottir will examine Paulo Tavita on the 21st. Obinna Eze is not standby on QX922 any more.",
+   "mentions": [["Solveig Arnadottir", "solveig"], ["Paulo Tavita", "paulo"], ["Obinna Eze", "obinna"], ["QX922", "qx922"]],
+   "facts": [
+    {"model": "Chain", "in": "Solveig Arnadottir will examine Paulo Tavita on the 21st.", "from": "paulo", "to": "solveig", "label": "examiner", "act": "plan"},
+    {"model": "Assignment", "in": "Obinna Eze is not standby on QX922 any more.", "from": "obinna", "to": "qx922", "label": "standby", "act": "assert", "deny": true}]},
+  {"id": "m17", "text": "Paulo Tavita asked to swap his QX414 duty for a dental appointment; Paulo has no cover yet.",
+   "mentions": [["Paulo Tavita", "paulo"], ["his", "paulo", "ref"], ["QX414", "qx414"], ["Paulo", "paulo"]],
+   "facts": [
+    {"model": "SwapRequest", "in": "Paulo Tavita asked to swap his QX414 duty for a dental appointment", "fields": {"reason": "dental appointment", "requested_by": "paulo", "flight": "qx414", "status": "pending"}, "act": "request"}]},
+  {"id": "m18", "text": "Tariq Haddad: I think QX922 will be about 20 minutes late because of a crosswind limit.",
+   "mentions": [["Tariq Haddad", "tariq"], ["I", "tariq", "ref"], ["QX922", "qx922"]],
+   "facts": [
+    {"model": "Delay", "in": "I think QX922 will be about 20 minutes late because of a crosswind limit.", "fields": {"cause": "crosswind limit", "flight": "qx922", "minutes": 20}, "act": "draft"}]},
+  {"id": "m19", "text": "Ines Barros: Tariq is my examiner, not Solveig Arnadottir.",
+   "mentions": [["Ines Barros", "ines"], ["Tariq", "tariq"], ["my", "ines", "ref"], ["Solveig Arnadottir", "solveig"]],
+   "facts": [
+    {"model": "Chain", "in": "Tariq is my examiner", "from": "ines", "to": "tariq", "label": "examiner", "act": "assert"},
+    {"model": "Chain", "in": "not Solveig Arnadottir", "from": "ines", "to": "solveig", "label": "examiner", "act": "assert", "deny": true}]}
+ ],
+ "questions": [
+  {"q": "Who is Obinna Eze's line manager?", "speaker": null, "cypher": "MATCH (n0:CrewMember)-[:supervisor]->(n1:CrewMember) WHERE n0.crew_name = 'Obinna Eze' RETURN n1.crew_name AS crew_name"},
+  {"q": "Who are my reports?", "speaker": "solveig", "cypher": "MATCH (n0:CrewMember)-[:reports]->(n1:CrewMember) WHERE id(n0) = $speaker RETURN n1.crew_name AS crew_name"},
+  {"q": "Who is my examiner?", "speaker": "ines", "cypher": "MATCH (n0:CrewMember)-[:examiner]->(n1:CrewMember) WHERE id(n0) = $speaker RETURN n1.crew_name AS crew_name"},
+  {"q": "Which candidates do I have?", "speaker": "tariq", "cypher": "MATCH (n0:CrewMember)-[:candidates]->(n1:CrewMember) WHERE id(n0) = $speaker RETURN n1.crew_name AS crew_name"},
+  {"q": "Who are the reserves on QX414?", "speaker": null, "cypher": "MATCH (n0:Flight)-[:reserves]->(n1:CrewMember) WHERE n0.flight_code = 'QX414' RETURN n1.crew_name AS crew_name"},
+  {"q": "Who is on the roster for QX107?", "speaker": null, "cypher": "MATCH (n0:Flight)-[:roster]->(n1:CrewMember) WHERE n0.flight_code = 'QX107' RETURN n1.crew_name AS crew_name"},
+  {"q": "How many swap requests are there?", "speaker": null, "cypher": "MATCH (n0:SwapRequest) RETURN count(n0) AS count"},
+  {"q": "Which swaps did Solveig Arnadottir decide?", "speaker": null, "cypher": "MATCH (n0:CrewMember)<-[:decided_by]-(n1:SwapRequest) WHERE n0.crew_name = 'Solveig Arnadottir' RETURN n1.reason AS reason"},
+  {"q": "Which swaps am I covering?", "speaker": "paulo", "cypher": "MATCH (n0:CrewMember)<-[:covering]-(n1:SwapRequest) WHERE id(n0) = $speaker RETURN n1.reason AS reason"},
+  {"q": "Which swaps did Ines Mukherjee ask for?", "speaker": null, "cypher": "MATCH (n0:CrewMember)<-[:requested_by]-(n1:SwapRequest) WHERE n0.crew_name = 'Ines Mukherjee' RETURN n1.reason AS reason"},
+  {"q": "How many minutes was the catering delay?", "speaker": null, "cypher": "MATCH (n0:Delay) WHERE n0.cause = 'catering' RETURN n0.minutes AS minutes"},
+  {"q": "Is there a record that the crew heard about the crosswind hold?", "speaker": null, "cypher": "MATCH (n0:Delay) WHERE n0.cause CONTAINS 'crosswind' RETURN coalesce(n0.crew_notified, false) AS crew_notified"},
+  {"q": "Were the crew notified about the delay on QX414?", "speaker": null, "cypher": "MATCH (n0:Flight)<-[:flight]-(n1:Delay) WHERE n0.flight_code = 'QX414' RETURN n1.crew_notified AS crew_notified"},
+  {"q": "What reason and duty hours does each swap request give?", "speaker": null, "cypher": "MATCH (n0:SwapRequest) RETURN n0.reason AS reason, n0.duty_hours AS duty_hours"},
+  {"q": "What is Tariq Haddad's staff number?", "speaker": null, "cypher": "MATCH (n0:CrewMember) WHERE n0.crew_name = 'Tariq Haddad' RETURN n0.staff_no AS staff_no"},
+  {"q": "What route does QX922 fly?", "speaker": null, "cypher": "MATCH (n0:Flight) WHERE n0.flight_code = 'QX922' RETURN n0.route AS route"}
+ ]
+}

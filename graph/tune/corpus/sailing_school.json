@@ -1,0 +1,141 @@
+{
+ "domain": "sailing_school",
+ "models": {
+  "Sailor": {"description": "A student, instructor or member of the sailing school. A first name alone is not an identity.",
+   "properties": {"known_as": "string", "licence_code": "string?", "radio_channel": "string?"}, "identities": ["licence_code"]},
+  "Boat": {"description": "A dinghy or keelboat used by the school, whoever owns or sails it.",
+   "properties": {"hull_name": "string", "sail_number": "string?"}},
+  "Crewing": {"description": "Who stands in which post toward a boat: the skipper at the helm, crew aboard, or the owner.\nSkippering a boat is not owning it.",
+   "properties": {"boat": "Boat", "sailor": "Sailor", "post": ["skipper", "crew", "owner"]},
+   "relation": {"from": "boat", "to": "sailor", "label": "post", "phrasing": "{from} has {to} as {label}",
+    "labels": {"skipper": {"forward": ["skipper", "helm", "helming"], "reverse": ["command"]},
+               "crew": {"forward": ["crew", "crewing", "deckhand"], "reverse": ["berth"]},
+               "owner": {"forward": ["owner", "owned by", "belongs to"], "reverse": ["fleet"]}}}},
+  "Instruction": {"description": "A teaching tie between two sailors: one teaches the other, or examines them for a ticket.",
+   "properties": {"learner": "Sailor", "teacher": "Sailor", "bond": ["instructor", "examiner"]},
+   "relation": {"from": "learner", "to": "teacher", "label": "bond", "phrasing": "{to} serves as {label} for {from}",
+    "labels": {"instructor": {"forward": ["instructor", "teaches", "coach"], "reverse": ["pupil"]},
+               "examiner": {"forward": ["examiner", "assessed by"], "reverse": ["candidate"]}}}},
+  "Lesson": {"description": "One time on the water for a student. student is learning, taught_by teaches aboard, safety_cover drives the rescue boat.",
+   "properties": {"student": "Sailor", "boat": "Boat?", "taught_by": "Sailor?", "safety_cover": "Sailor?",
+    "state": ["scheduled", "sailed", "scrubbed"], "lifejacket_checked": "boolean?", "wind_knots": "integer?", "debrief": "string?"},
+   "absences": {"lifejacket_checked": "no_kit_check"}},
+  "DamageReport": {"description": "Damage found on a boat: what it is, how serious, and how long the repair takes.",
+   "properties": {"hull": "Boat", "reported_by": "Sailor?", "severity": ["cosmetic", "structural"], "repair_hours": "integer?", "defect": "string?"}}
+ },
+ "entities": {
+  "mateus_f": {"model": "Sailor", "name": "Mateus Ferraz"},
+  "mateus_o": {"model": "Sailor", "name": "Mateus Oyelaran"},
+  "saoirse": {"model": "Sailor", "name": "Saoirse Kavanagh"},
+  "nikolai": {"model": "Sailor", "name": "Nikolai Petrenko"},
+  "hana": {"model": "Sailor", "name": "Hana Kobayashi", "fields": {"licence_code": "RYA-4417", "radio_channel": "72"}},
+  "dagny": {"model": "Sailor", "name": "Dagny Strand"},
+  "leilani": {"model": "Sailor", "name": "Leilani Kahale"},
+  "bongani": {"model": "Sailor", "name": "Bongani Zulu"},
+  "gannet": {"model": "Boat", "name": "Gannet"},
+  "saltwhistle": {"model": "Boat", "name": "Saltwhistle"},
+  "brisk": {"model": "Boat", "name": "Brisk Heron"},
+  "kelpie": {"model": "Boat", "name": "Kelpie"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Saoirse Kavanagh: I will helm Gannet in the Saturday race, with Bongani Zulu crewing for me.",
+   "mentions": [["Saoirse Kavanagh", "saoirse"], ["I", "saoirse", "ref"], ["Gannet", "gannet"], ["Bongani Zulu", "bongani"], ["me", "saoirse", "ref"]],
+   "facts": [
+    {"model": "Crewing", "in": "I will helm Gannet in the Saturday race", "from": "gannet", "to": "saoirse", "label": "skipper", "act": "plan"},
+    {"model": "Crewing", "in": "with Bongani Zulu crewing for me", "from": "gannet", "to": "bongani", "label": "crew", "act": "plan"}]},
+  {"id": "m02", "text": "Note from the boat shed: Saltwhistle belongs to Nikolai Petrenko, not to the club. He keeps it on the north mooring.",
+   "mentions": [["Saltwhistle", "saltwhistle"], ["Nikolai Petrenko", "nikolai"], ["He", "nikolai", "ref"], ["it", "saltwhistle", "ref"]],
+   "facts": [
+    {"model": "Crewing", "in": "Saltwhistle belongs to Nikolai Petrenko", "from": "saltwhistle", "to": "nikolai", "label": "owner", "act": "assert"}]},
+  {"id": "m03", "text": "Mateus Ferraz teaches Hana Kobayashi on Tuesdays. Mateus Oyelaran is her examiner for the dinghy ticket. Mateus also runs the junior squad.",
+   "mentions": [["Mateus Ferraz", "mateus_f"], ["Hana Kobayashi", "hana"], ["Mateus Oyelaran", "mateus_o"], ["her", "hana", "ref"], ["Mateus", "mateus_f", "?"]],
+   "facts": [
+    {"model": "Instruction", "in": "Mateus Ferraz teaches Hana Kobayashi on Tuesdays.", "from": "hana", "to": "mateus_f", "label": "instructor", "act": "assert"},
+    {"model": "Instruction", "in": "Mateus Oyelaran is her examiner for the dinghy ticket.", "from": "hana", "to": "mateus_o", "label": "examiner", "act": "assert"}]},
+  {"id": "m04", "text": "Lesson on Kelpie: Leilani Kahale sailed with Mateus Ferraz teaching and Bongani Zulu driving the safety boat, wind 14 knots, lifejackets checked.",
+   "mentions": [["Kelpie", "kelpie"], ["Leilani Kahale", "leilani"], ["Mateus Ferraz", "mateus_f"], ["Bongani Zulu", "bongani"]],
+   "facts": [
+    {"model": "Lesson", "in": "Lesson on Kelpie: Leilani Kahale sailed", "fields": {"boat": "kelpie", "student": "leilani", "taught_by": "mateus_f", "safety_cover": "bongani", "state": "sailed", "wind_knots": 14, "lifejacket_checked": true}, "act": "assert"},
+    {"model": "Instruction", "in": "Leilani Kahale sailed with Mateus Ferraz teaching", "from": "leilani", "to": "mateus_f", "label": "instructor", "act": "assert"}]},
+  {"id": "m05", "text": "Nikolai Petrenko shouted from the slipway: \"I never owned Brisk Heron, she belongs to Dagny.\"",
+   "mentions": [["Nikolai Petrenko", "nikolai"], ["I", "nikolai", "ref"], ["Brisk Heron", "brisk"], ["she", "brisk", "ref"], ["Dagny", "dagny"]],
+   "quotes": [["I never owned Brisk Heron, she belongs to Dagny.", "nikolai"]],
+   "facts": [
+    {"model": "Crewing", "in": "I never owned Brisk Heron", "from": "brisk", "to": "nikolai", "label": "owner", "act": "assert", "deny": true},
+    {"model": "Crewing", "in": "she belongs to Dagny", "from": "brisk", "to": "dagny", "label": "owner", "act": "assert"}]},
+  {"id": "m06", "text": "Hana Kobayashi: My lesson on Gannet was scrubbed at 28 knots, so the debrief was practise reefing ashore.",
+   "mentions": [["Hana Kobayashi", "hana"], ["My", "hana", "ref"], ["Gannet", "gannet"]],
+   "facts": [
+    {"model": "Lesson", "in": "My lesson on Gannet was scrubbed at 28 knots", "fields": {"student": "hana", "boat": "gannet", "state": "scrubbed", "wind_knots": 28, "debrief": "practise reefing ashore"}, "act": "assert"}]},
+  {"id": "m07", "text": "Dagny Strand said that Saoirse Kavanagh is the examiner for Bongani now.",
+   "mentions": [["Dagny Strand", "dagny"], ["Saoirse Kavanagh", "saoirse"], ["Bongani", "bongani"]],
+   "facts": [
+    {"model": "Instruction", "in": "Dagny Strand said that Saoirse Kavanagh is the examiner for Bongani now.", "from": "bongani", "to": "saoirse", "label": "examiner", "act": "report"}]},
+  {"id": "m08", "text": "Leilani Kahale: I think Kelpie is owned by Mateus Oyelaran, but I might be mixing him up with someone.",
+   "mentions": [["Leilani Kahale", "leilani"], ["I", "leilani", "ref"], ["Kelpie", "kelpie"], ["Mateus Oyelaran", "mateus_o"], ["I", "leilani", "ref"], ["him", "mateus_o", "ref"]],
+   "facts": [
+    {"model": "Crewing", "in": "I think Kelpie is owned by Mateus Oyelaran", "from": "kelpie", "to": "mateus_o", "label": "owner", "act": "draft"}]},
+  {"id": "m09", "text": "If the forecast holds, Nikolai Petrenko will skipper Saltwhistle and Hana Kobayashi will crew.",
+   "mentions": [["Nikolai Petrenko", "nikolai"], ["Saltwhistle", "saltwhistle"], ["Hana Kobayashi", "hana"]],
+   "facts": [
+    {"model": "Crewing", "in": "If the forecast holds, Nikolai Petrenko will skipper Saltwhistle", "from": "saltwhistle", "to": "nikolai", "label": "skipper", "act": "condition"},
+    {"model": "Crewing", "in": "Hana Kobayashi will crew", "from": "saltwhistle", "to": "hana", "label": "crew", "act": "condition"}]},
+  {"id": "m10", "text": "Bongani Zulu: Could you book a lesson on Brisk Heron for Leilani on Sunday, with me as safety cover?",
+   "mentions": [["Bongani Zulu", "bongani"], ["you", "none", "ref"], ["Brisk Heron", "brisk"], ["Leilani", "leilani"], ["me", "bongani", "ref"]],
+   "facts": [
+    {"model": "Lesson", "in": "Could you book a lesson on Brisk Heron for Leilani on Sunday, with me as safety cover?", "fields": {"boat": "brisk", "student": "leilani", "safety_cover": "bongani", "state": "scheduled"}, "act": "request"}]},
+  {"id": "m11", "text": "Damage report for Gannet from Saoirse Kavanagh: cracked rudder stock, structural, about 6 hours to repair.",
+   "mentions": [["Gannet", "gannet"], ["Saoirse Kavanagh", "saoirse"]],
+   "facts": [
+    {"model": "DamageReport", "in": "Damage report for Gannet from Saoirse Kavanagh", "fields": {"hull": "gannet", "reported_by": "saoirse", "defect": "cracked rudder stock", "severity": "structural", "repair_hours": 6}, "act": "assert"}]},
+  {"id": "m12", "text": "I warned the juniors: \"Mateus Oyelaran checks every lifejacket, so do not argue with him.\"",
+   "mentions": [["I", "none", "ref"], ["Mateus Oyelaran", "mateus_o"], ["him", "mateus_o", "ref"]],
+   "quotes": [["Mateus Oyelaran checks every lifejacket, so do not argue with him.", "author"]],
+   "facts": []},
+  {"id": "m13", "text": "From: Hana Kobayashi\nMy licence code is RYA-4417 and my radio channel is 72. Mateus Ferraz is no longer my instructor.",
+   "mentions": [["Hana Kobayashi", "hana"], ["My", "hana", "ref"], ["my", "hana", "ref"], ["Mateus Ferraz", "mateus_f"], ["my", "hana", "ref"]],
+   "facts": [
+    {"model": "Instruction", "in": "Mateus Ferraz is no longer my instructor.", "from": "hana", "to": "mateus_f", "label": "instructor", "act": "assert", "deny": true}]},
+  {"id": "m14", "text": "Bongani Zulu: I am not crewing on Kelpie this season; Leilani Kahale is its crew instead.",
+   "mentions": [["Bongani Zulu", "bongani"], ["I", "bongani", "ref"], ["Kelpie", "kelpie"], ["Leilani Kahale", "leilani"], ["its", "kelpie", "ref"]],
+   "facts": [
+    {"model": "Crewing", "in": "I am not crewing on Kelpie this season", "from": "kelpie", "to": "bongani", "label": "crew", "act": "assert", "deny": true},
+    {"model": "Crewing", "in": "Leilani Kahale is its crew instead", "from": "kelpie", "to": "leilani", "label": "crew", "act": "assert"}]},
+  {"id": "m15", "text": "Nikolai Petrenko reported a scratched gelcoat on Saltwhistle, cosmetic only, 2 hours of work.",
+   "mentions": [["Nikolai Petrenko", "nikolai"], ["Saltwhistle", "saltwhistle"]],
+   "facts": [
+    {"model": "DamageReport", "in": "Nikolai Petrenko reported a scratched gelcoat on Saltwhistle, cosmetic only, 2 hours of work.", "fields": {"hull": "saltwhistle", "reported_by": "nikolai", "defect": "scratched gelcoat", "severity": "cosmetic", "repair_hours": 2}, "act": "assert"}]},
+  {"id": "m16", "text": "Dagny Strand sailed Brisk Heron with Hana Kobayashi as her pupil, wind 9 knots, no lifejacket check logged. Dagny was pleased.",
+   "mentions": [["Dagny Strand", "dagny"], ["Brisk Heron", "brisk"], ["Hana Kobayashi", "hana"], ["her", "dagny", "ref"], ["Dagny", "dagny"]],
+   "facts": [
+    {"model": "Lesson", "in": "Dagny Strand sailed Brisk Heron with Hana Kobayashi as her pupil, wind 9 knots, no lifejacket check logged.", "fields": {"boat": "brisk", "student": "hana", "taught_by": "dagny", "wind_knots": 9, "state": "sailed"}, "act": "assert"},
+    {"model": "Instruction", "in": "with Hana Kobayashi as her pupil", "from": "hana", "to": "dagny", "label": "instructor", "act": "assert"}]},
+  {"id": "m17", "text": "Mateus Ferraz: Saoirse is my pupil now. I will be her examiner in May too.",
+   "mentions": [["Mateus Ferraz", "mateus_f"], ["Saoirse", "saoirse"], ["my", "mateus_f", "ref"], ["I", "mateus_f", "ref"], ["her", "saoirse", "ref"]],
+   "facts": [
+    {"model": "Instruction", "in": "Saoirse is my pupil now.", "from": "saoirse", "to": "mateus_f", "label": "instructor", "act": "assert"},
+    {"model": "Instruction", "in": "I will be her examiner in May too.", "from": "saoirse", "to": "mateus_f", "label": "examiner", "act": "plan"}]},
+  {"id": "m18", "text": "Hana Kobayashi has command of Kelpie for the regatta, according to Nikolai.",
+   "mentions": [["Hana Kobayashi", "hana"], ["Kelpie", "kelpie"], ["Nikolai", "nikolai"]],
+   "facts": [
+    {"model": "Crewing", "in": "Hana Kobayashi has command of Kelpie for the regatta, according to Nikolai.", "from": "kelpie", "to": "hana", "label": "skipper", "act": "report"}]}
+ ],
+ "questions": [
+  {"q": "Who is the owner of Saltwhistle?", "speaker": null, "cypher": "MATCH (n0:Boat)-[:owner]->(n1:Sailor) WHERE n0.hull_name = 'Saltwhistle' RETURN n1.known_as AS known_as"},
+  {"q": "Who is the skipper of Gannet?", "speaker": null, "cypher": "MATCH (n0:Boat)-[:skipper]->(n1:Sailor) WHERE n0.hull_name = 'Gannet' RETURN n1.known_as AS known_as"},
+  {"q": "Which boats are in my fleet?", "speaker": "nikolai", "cypher": "MATCH (n0:Sailor)-[:fleet]->(n1:Boat) WHERE id(n0) = $speaker RETURN n1.hull_name AS hull_name"},
+  {"q": "Who is my instructor?", "speaker": "hana", "cypher": "MATCH (n0:Sailor)-[:instructor]->(n1:Sailor) WHERE id(n0) = $speaker RETURN n1.known_as AS known_as"},
+  {"q": "Who is the pupil of Mateus Ferraz?", "speaker": null, "cypher": "MATCH (n0:Sailor)-[:pupil]->(n1:Sailor) WHERE n0.known_as = 'Mateus Ferraz' RETURN n1.known_as AS known_as"},
+  {"q": "Who is the examiner of Bongani Zulu?", "speaker": null, "cypher": "MATCH (n0:Sailor)-[:examiner]->(n1:Sailor) WHERE n0.known_as = 'Bongani Zulu' RETURN n1.known_as AS known_as"},
+  {"q": "How many lessons are there?", "speaker": null, "cypher": "MATCH (n0:Lesson) RETURN count(n0) AS count"},
+  {"q": "Is there a record of a lifejacket check for the lessons of Leilani Kahale?", "speaker": null, "cypher": "MATCH (n0:Sailor)<-[:student]-(n1:Lesson) WHERE n0.known_as = 'Leilani Kahale' RETURN coalesce(n1.lifejacket_checked, false) AS lifejacket_checked"},
+  {"q": "Were lifejackets checked on the lessons of Hana Kobayashi?", "speaker": null, "cypher": "MATCH (n0:Sailor)<-[:student]-(n1:Lesson) WHERE n0.known_as = 'Hana Kobayashi' RETURN n1.lifejacket_checked AS lifejacket_checked"},
+  {"q": "What wind did my lessons have?", "speaker": "hana", "cypher": "MATCH (n0:Sailor)<-[:student]-(n1:Lesson) WHERE id(n0) = $speaker RETURN n1.wind_knots AS wind_knots"},
+  {"q": "Who drove the safety boat on lessons taught by Mateus Ferraz?", "speaker": null, "cypher": "MATCH (n0:Sailor)<-[:taught_by]-(n1:Lesson)-[:safety_cover]->(n2:Sailor) WHERE n0.known_as = 'Mateus Ferraz' RETURN n2.known_as AS known_as"},
+  {"q": "How many repair hours does the damage on Gannet need?", "speaker": null, "cypher": "MATCH (n0:Boat)<-[:hull]-(n1:DamageReport) WHERE n0.hull_name = 'Gannet' RETURN n1.repair_hours AS repair_hours"},
+  {"q": "How severe is the damage to the rudder?", "speaker": null, "cypher": "MATCH (n0:DamageReport) WHERE n0.defect CONTAINS 'rudder' RETURN n0.severity AS severity"},
+  {"q": "Who reported the scratched gelcoat?", "speaker": null, "cypher": "MATCH (n0:DamageReport)-[:reported_by]->(n1:Sailor) WHERE n0.defect = 'scratched gelcoat' RETURN n1.known_as AS known_as"},
+  {"q": "What is Hana Kobayashi's licence code?", "speaker": null, "cypher": "MATCH (n0:Sailor) WHERE n0.known_as = 'Hana Kobayashi' RETURN n0.licence_code AS licence_code"},
+  {"q": "What state was the lesson with the reefing debrief in?", "speaker": null, "cypher": "MATCH (n0:Lesson) WHERE n0.debrief CONTAINS 'reefing' RETURN n0.state AS state"}
+ ]
+}

@@ -1,0 +1,140 @@
+{
+ "domain": "conference_organizing",
+ "models": {
+  "Delegate": {"description": "A person at or behind the conference: organiser, volunteer, speaker or attendee. A first name alone is not an identity.",
+   "properties": {"full_name": "string", "org": "string?", "phone": "string?"}, "identities": ["phone"]},
+  "Session": {"description": "One slot on the programme: a talk, panel or workshop, whoever runs it.",
+   "properties": {"session_title": "string", "track": "string?"}},
+  "SessionRole": {"description": "Who does what in a session: presents it, chairs it, or sits on its panel.\nChairing a session is not presenting it.",
+   "properties": {"session": "Session", "person": "Delegate", "role": ["presenter", "chair", "panelist"]},
+   "relation": {"from": "session", "to": "person", "label": "role", "phrasing": "{to} is the {label} of {from}",
+    "labels": {"presenter": {"forward": ["presenter", "presenting", "keynote"], "reverse": ["talk"]},
+               "chair": {"forward": ["chair", "moderator", "moderated"], "reverse": ["chaired"]},
+               "panelist": {"forward": ["panelist", "panel member"], "reverse": ["panel"]}}}},
+  "Pairing": {"description": "Two delegates paired for the event: a host looks after a newcomer as buddy, or they share a hotel room.",
+   "properties": {"newcomer": "Delegate", "host": "Delegate", "kind": ["buddy", "roommate"]},
+   "relation": {"from": "newcomer", "to": "host", "label": "kind", "phrasing": "{to} serves as {label} for {from}",
+    "labels": {"buddy": {"forward": ["buddy", "conference buddy"], "reverse": ["buddied"]},
+               "roommate": {"forward": ["roommate", "sharing a room with", "rooming with"], "reverse": ["roomie"]}}}},
+  "TravelClaim": {"description": "A request to be paid back for travel. claimant spent the money, booker made the booking, approver signs the claim off.",
+   "properties": {"claimant": "Delegate", "booker": "Delegate?", "approver": "Delegate?", "status": ["submitted", "reimbursed", "rejected"],
+    "receipts_attached": "boolean?", "amount_euros": "integer?", "purpose": "string?"},
+   "absences": {"receipts_attached": "no_receipt_record"}},
+  "RoomBooking": {"description": "A venue room held for the event: how many seats, and whether it is held, confirmed or released.",
+   "properties": {"venue_room": "string", "booked_by": "Delegate?", "seats": "integer?", "status": ["held", "confirmed", "released"]}}
+ },
+ "entities": {
+  "amara_n": {"model": "Delegate", "name": "Amara Nwosu"},
+  "amara_l": {"model": "Delegate", "name": "Amara Lindqvist"},
+  "yusuf": {"model": "Delegate", "name": "Yusuf Demir"},
+  "keiko": {"model": "Delegate", "name": "Keiko Watanabe"},
+  "rafael": {"model": "Delegate", "name": "Rafael Quispe", "fields": {"phone": "0161 555 0193"}},
+  "siobhan": {"model": "Delegate", "name": "Siobhan Doherty"},
+  "thandiwe": {"model": "Delegate", "name": "Thandiwe Mokoena"},
+  "arjun": {"model": "Delegate", "name": "Arjun Pillai"},
+  "cold": {"model": "Session", "name": "Cold Storage at Scale"},
+  "tidal": {"model": "Session", "name": "Tidal Energy Futures"},
+  "ledger": {"model": "Session", "name": "Open Ledger Roundtable"},
+  "quiet": {"model": "Session", "name": "Quiet Networks"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Yusuf Demir: I am presenting Tidal Energy Futures on Thursday, and Siobhan Doherty will chair it.",
+   "mentions": [["Yusuf Demir", "yusuf"], ["I", "yusuf", "ref"], ["Tidal Energy Futures", "tidal"], ["Siobhan Doherty", "siobhan"], ["it", "tidal", "ref"]],
+   "facts": [
+    {"model": "SessionRole", "in": "I am presenting Tidal Energy Futures on Thursday", "from": "tidal", "to": "yusuf", "label": "presenter", "act": "plan"},
+    {"model": "SessionRole", "in": "Siobhan Doherty will chair it", "from": "tidal", "to": "siobhan", "label": "chair", "act": "plan"}]},
+  {"id": "m02", "text": "Note from the programme desk: Arjun Pillai is no longer a panelist on Open Ledger Roundtable. Thandiwe Mokoena is its new panelist instead.",
+   "mentions": [["Arjun Pillai", "arjun"], ["Open Ledger Roundtable", "ledger"], ["Thandiwe Mokoena", "thandiwe"], ["its", "ledger", "ref"]],
+   "facts": [
+    {"model": "SessionRole", "in": "Arjun Pillai is no longer a panelist on Open Ledger Roundtable.", "from": "ledger", "to": "arjun", "label": "panelist", "act": "assert", "deny": true},
+    {"model": "SessionRole", "in": "Thandiwe Mokoena is its new panelist instead.", "from": "ledger", "to": "thandiwe", "label": "panelist", "act": "assert"}]},
+  {"id": "m03", "text": "Dear Rafael,\nCould you file a travel claim for my train fare of 240 euros, with Amara Lindqvist approving it?\nBest,\nKeiko Watanabe",
+   "mentions": [["Rafael", "rafael"], ["you", "rafael", "ref"], ["my", "keiko", "ref"], ["Amara Lindqvist", "amara_l"], ["Keiko Watanabe", "keiko"]],
+   "facts": [
+    {"model": "TravelClaim", "in": "Could you file a travel claim for my train fare of 240 euros, with Amara Lindqvist approving it?", "fields": {"claimant": "keiko", "approver": "amara_l", "amount_euros": 240, "purpose": "train fare", "status": "submitted"}, "act": "request"}]},
+  {"id": "m04", "text": "Minutes: Amara Nwosu moderated Quiet Networks. Amara Lindqvist booked the Harbour Room for 60 seats, and it is confirmed. Amara will release the overflow room tomorrow.",
+   "mentions": [["Amara Nwosu", "amara_n"], ["Quiet Networks", "quiet"], ["Amara Lindqvist", "amara_l"], ["Amara", "amara_l", "?"]],
+   "facts": [
+    {"model": "SessionRole", "in": "Amara Nwosu moderated Quiet Networks.", "from": "quiet", "to": "amara_n", "label": "chair", "act": "assert"},
+    {"model": "RoomBooking", "in": "Amara Lindqvist booked the Harbour Room for 60 seats, and it is confirmed.", "fields": {"venue_room": "Harbour Room", "booked_by": "amara_l", "seats": 60, "status": "confirmed"}, "act": "assert"},
+    {"model": "RoomBooking", "in": "Amara will release the overflow room tomorrow.", "fields": {"venue_room": "overflow room", "status": "released"}, "act": "plan"}]},
+  {"id": "m05", "text": "Siobhan Doherty told the volunteers: \"I am not chairing Cold Storage at Scale, Rafael is.\"",
+   "mentions": [["Siobhan Doherty", "siobhan"], ["I", "siobhan", "ref"], ["Cold Storage at Scale", "cold"], ["Rafael", "rafael"]],
+   "quotes": [["I am not chairing Cold Storage at Scale, Rafael is.", "siobhan"]],
+   "facts": [
+    {"model": "SessionRole", "in": "I am not chairing Cold Storage at Scale", "from": "cold", "to": "siobhan", "label": "chair", "act": "assert", "deny": true},
+    {"model": "SessionRole", "in": "Rafael is.", "from": "cold", "to": "rafael", "label": "chair", "act": "assert"}]},
+  {"id": "m06", "text": "Thandiwe Mokoena is the conference buddy of Yusuf Demir this year. Yusuf is also sharing a room with Arjun Pillai.",
+   "mentions": [["Thandiwe Mokoena", "thandiwe"], ["Yusuf Demir", "yusuf"], ["Yusuf", "yusuf"], ["Arjun Pillai", "arjun"]],
+   "facts": [
+    {"model": "Pairing", "in": "Thandiwe Mokoena is the conference buddy of Yusuf Demir this year.", "from": "yusuf", "to": "thandiwe", "label": "buddy", "act": "assert"},
+    {"model": "Pairing", "in": "Yusuf is also sharing a room with Arjun Pillai.", "from": "yusuf", "to": "arjun", "label": "roommate", "act": "assert"}]},
+  {"id": "m07", "text": "Rafael Quispe said that the hotel claim from Keiko for 410 euros was rejected because no receipts were attached.",
+   "mentions": [["Rafael Quispe", "rafael"], ["Keiko", "keiko"]],
+   "facts": [
+    {"model": "TravelClaim", "in": "Rafael Quispe said that the hotel claim from Keiko for 410 euros was rejected because no receipts were attached.", "fields": {"claimant": "keiko", "amount_euros": 410, "status": "rejected", "receipts_attached": false}, "act": "report"}]},
+  {"id": "m08", "text": "Arjun Pillai: Maybe Tidal Energy Futures should have Amara Nwosu as a panelist, but I am not sure she is free.",
+   "mentions": [["Arjun Pillai", "arjun"], ["Tidal Energy Futures", "tidal"], ["Amara Nwosu", "amara_n"], ["I", "arjun", "ref"], ["she", "amara_n", "ref"]],
+   "facts": [
+    {"model": "SessionRole", "in": "Maybe Tidal Energy Futures should have Amara Nwosu as a panelist", "from": "tidal", "to": "amara_n", "label": "panelist", "act": "draft"}]},
+  {"id": "m09", "text": "If the budget allows, Keiko Watanabe will give the keynote for Cold Storage at Scale.",
+   "mentions": [["Keiko Watanabe", "keiko"], ["Cold Storage at Scale", "cold"]],
+   "facts": [
+    {"model": "SessionRole", "in": "If the budget allows, Keiko Watanabe will give the keynote for Cold Storage at Scale.", "from": "cold", "to": "keiko", "label": "presenter", "act": "condition"}]},
+  {"id": "m10", "text": "Thandiwe Mokoena: Please hold the Lantern Room for 25 seats for my workshop. Yusuf, can you sort out the projector?",
+   "mentions": [["Thandiwe Mokoena", "thandiwe"], ["my", "thandiwe", "ref"], ["Yusuf", "yusuf"], ["you", "yusuf", "ref"]],
+   "facts": [
+    {"model": "RoomBooking", "in": "Please hold the Lantern Room for 25 seats for my workshop.", "fields": {"venue_room": "Lantern Room", "seats": 25, "status": "held"}, "act": "request"}]},
+  {"id": "m11", "text": "Travel claim from Siobhan Doherty for 95 euros, booked by Rafael Quispe and approved by Amara Nwosu: reimbursed, receipts attached, for the airport taxi.",
+   "mentions": [["Siobhan Doherty", "siobhan"], ["Rafael Quispe", "rafael"], ["Amara Nwosu", "amara_n"]],
+   "facts": [
+    {"model": "TravelClaim", "in": "Travel claim from Siobhan Doherty for 95 euros", "fields": {"claimant": "siobhan", "booker": "rafael", "approver": "amara_n", "amount_euros": 95, "status": "reimbursed", "receipts_attached": true, "purpose": "airport taxi"}, "act": "assert"}]},
+  {"id": "m12", "text": "I said to the caterers: \"Amara Lindqvist has the final headcount, ask her.\"",
+   "mentions": [["I", "none", "ref"], ["Amara Lindqvist", "amara_l"], ["her", "amara_l", "ref"]],
+   "quotes": [["Amara Lindqvist has the final headcount, ask her.", "author"]],
+   "facts": []},
+  {"id": "m13", "text": "From: Rafael Quispe\nMy phone for the venue team is 0161 555 0193. I can chair Quiet Networks if Amara Nwosu drops out.",
+   "mentions": [["Rafael Quispe", "rafael"], ["My", "rafael", "ref"], ["I", "rafael", "ref"], ["Quiet Networks", "quiet"], ["Amara Nwosu", "amara_n"]],
+   "facts": [
+    {"model": "SessionRole", "in": "I can chair Quiet Networks if Amara Nwosu drops out.", "from": "quiet", "to": "rafael", "label": "chair", "act": "condition"}]},
+  {"id": "m14", "text": "Amara Lindqvist: I am not rooming with Siobhan Doherty after all; my roommate is Keiko Watanabe.",
+   "mentions": [["Amara Lindqvist", "amara_l"], ["I", "amara_l", "ref"], ["Siobhan Doherty", "siobhan"], ["my", "amara_l", "ref"], ["Keiko Watanabe", "keiko"]],
+   "facts": [
+    {"model": "Pairing", "in": "I am not rooming with Siobhan Doherty after all", "from": "amara_l", "to": "siobhan", "label": "roommate", "act": "assert", "deny": true},
+    {"model": "Pairing", "in": "my roommate is Keiko Watanabe", "from": "amara_l", "to": "keiko", "label": "roommate", "act": "assert"}]},
+  {"id": "m15", "text": "Keiko Watanabe wrote that Arjun Pillai presented Quiet Networks last spring.",
+   "mentions": [["Keiko Watanabe", "keiko"], ["Arjun Pillai", "arjun"], ["Quiet Networks", "quiet"]],
+   "facts": [
+    {"model": "SessionRole", "in": "Keiko Watanabe wrote that Arjun Pillai presented Quiet Networks last spring.", "from": "quiet", "to": "arjun", "label": "presenter", "act": "report"}]},
+  {"id": "m16", "text": "The Harbour Room booking for 60 seats was released by Amara Lindqvist this morning.",
+   "mentions": [["Amara Lindqvist", "amara_l"]],
+   "facts": [
+    {"model": "RoomBooking", "in": "The Harbour Room booking for 60 seats was released by Amara Lindqvist this morning.", "fields": {"venue_room": "Harbour Room", "seats": 60, "status": "released"}, "act": "assert"}]},
+  {"id": "m17", "text": "Siobhan Doherty approved the claim from Arjun Pillai for 180 euros for conference fees, still submitted and awaiting payment. Siobhan wants the receipts by Monday.",
+   "mentions": [["Siobhan Doherty", "siobhan"], ["Arjun Pillai", "arjun"], ["Siobhan", "siobhan"]],
+   "facts": [
+    {"model": "TravelClaim", "in": "Siobhan Doherty approved the claim from Arjun Pillai for 180 euros for conference fees, still submitted and awaiting payment.", "fields": {"claimant": "arjun", "approver": "siobhan", "amount_euros": 180, "purpose": "conference fees", "status": "submitted"}, "act": "assert"}]},
+  {"id": "m18", "text": "Rafael Quispe: Amara Nwosu asked me to be her buddy, and I will.",
+   "mentions": [["Rafael Quispe", "rafael"], ["Amara Nwosu", "amara_n"], ["me", "rafael", "ref"], ["her", "amara_n", "ref"], ["I", "rafael", "ref"]],
+   "facts": [
+    {"model": "Pairing", "in": "Amara Nwosu asked me to be her buddy", "from": "amara_n", "to": "rafael", "label": "buddy", "act": "plan"}]}
+ ],
+ "questions": [
+  {"q": "Who is the chair of Quiet Networks?", "speaker": null, "cypher": "MATCH (n0:Session)-[:chair]->(n1:Delegate) WHERE n0.session_title = 'Quiet Networks' RETURN n1.full_name AS full_name"},
+  {"q": "Which sessions have I chaired?", "speaker": "amara_n", "cypher": "MATCH (n0:Delegate)-[:chaired]->(n1:Session) WHERE id(n0) = $speaker RETURN n1.session_title AS session_title"},
+  {"q": "Who is my roommate?", "speaker": "amara_l", "cypher": "MATCH (n0:Delegate)-[:roommate]->(n1:Delegate) WHERE id(n0) = $speaker RETURN n1.full_name AS full_name"},
+  {"q": "Who has Thandiwe Mokoena buddied?", "speaker": null, "cypher": "MATCH (n0:Delegate)-[:buddied]->(n1:Delegate) WHERE n0.full_name = 'Thandiwe Mokoena' RETURN n1.full_name AS full_name"},
+  {"q": "How many travel claims are there?", "speaker": null, "cypher": "MATCH (n0:TravelClaim) RETURN count(n0) AS count"},
+  {"q": "Is there a record of receipts for the claims of Siobhan Doherty?", "speaker": null, "cypher": "MATCH (n0:Delegate)<-[:claimant]-(n1:TravelClaim) WHERE n0.full_name = 'Siobhan Doherty' RETURN coalesce(n1.receipts_attached, false) AS receipts_attached"},
+  {"q": "Were receipts attached to the claims of Keiko Watanabe?", "speaker": null, "cypher": "MATCH (n0:Delegate)<-[:claimant]-(n1:TravelClaim) WHERE n0.full_name = 'Keiko Watanabe' RETURN n1.receipts_attached AS receipts_attached"},
+  {"q": "How much were the claims Amara Nwosu approved?", "speaker": null, "cypher": "MATCH (n0:Delegate)<-[:approver]-(n1:TravelClaim) WHERE n0.full_name = 'Amara Nwosu' RETURN n1.amount_euros AS amount_euros"},
+  {"q": "Who booked the travel on my claims?", "speaker": "siobhan", "cypher": "MATCH (n0:Delegate)<-[:claimant]-(n1:TravelClaim)-[:booker]->(n2:Delegate) WHERE id(n0) = $speaker RETURN n2.full_name AS full_name"},
+  {"q": "How many seats does the Lantern Room booking have?", "speaker": null, "cypher": "MATCH (n0:RoomBooking) WHERE n0.venue_room = 'Lantern Room' RETURN n0.seats AS seats"},
+  {"q": "Which rooms are booked, and what is their status?", "speaker": null, "cypher": "MATCH (n0:RoomBooking) RETURN n0.venue_room AS venue_room, n0.status AS status"},
+  {"q": "What is the status of the taxi claim?", "speaker": null, "cypher": "MATCH (n0:TravelClaim) WHERE n0.purpose CONTAINS 'taxi' RETURN n0.status AS status"},
+  {"q": "Who is the presenter of Tidal Energy Futures?", "speaker": null, "cypher": "MATCH (n0:Session)-[:presenter]->(n1:Delegate) WHERE n0.session_title = 'Tidal Energy Futures' RETURN n1.full_name AS full_name"},
+  {"q": "What is Rafael Quispe's phone?", "speaker": null, "cypher": "MATCH (n0:Delegate) WHERE n0.full_name = 'Rafael Quispe' RETURN n0.phone AS phone"},
+  {"q": "Who is a panelist on Open Ledger Roundtable?", "speaker": null, "cypher": "MATCH (n0:Session)-[:panelist]->(n1:Delegate) WHERE n0.session_title = 'Open Ledger Roundtable' RETURN n1.full_name AS full_name"},
+  {"q": "Which panel am I on?", "speaker": "thandiwe", "cypher": "MATCH (n0:Delegate)-[:panel]->(n1:Session) WHERE id(n0) = $speaker RETURN n1.session_title AS session_title"}
+ ]
+}

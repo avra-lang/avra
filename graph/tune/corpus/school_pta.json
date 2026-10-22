@@ -1,0 +1,155 @@
+{
+ "domain": "school_pta",
+ "models": {
+  "Parent": {"description": "A parent or carer on the PTA. A first name alone is not an identity.",
+   "properties": {"name": "string", "phone": "string?", "child_class": "string?"}, "identities": ["phone"]},
+  "Fundraiser": {"description": "A PTA fundraising event, known by its name.",
+   "properties": {"name": "string", "venue": "string?"}},
+  "Link": {"description": "A standing arrangement between two parents: one stands in as the other's deputy, or one gives the other lifts.",
+   "properties": {"principal": "Parent", "helper": "Parent", "kind": ["deputy", "carpool"]},
+   "relation": {"from": "principal", "to": "helper", "label": "kind", "phrasing": "{from} relies on {to} as {label}",
+    "labels": {"deputy": {"forward": ["deputy", "stands in for", "second"], "reverse": ["deputies"]},
+               "carpool": {"forward": ["carpool", "lift", "drives"], "reverse": ["passenger"]}}}},
+  "Role": {"description": "The role a parent signs up for on a fundraiser: organiser, treasurer or volunteer.\nAttending an event is not a role.",
+   "properties": {"fundraiser": "Fundraiser", "parent": "Parent", "role": ["organiser", "treasurer", "volunteer"]},
+   "relation": {"from": "fundraiser", "to": "parent", "label": "role", "phrasing": "{to} signed up as {label} for {from}",
+    "labels": {"organiser": {"forward": ["organiser", "organises", "runs"], "reverse": ["organising"]},
+               "treasurer": {"forward": ["treasurer", "keeps the books", "holds the money"], "reverse": ["treasury"]},
+               "volunteer": {"forward": ["volunteer", "volunteers", "helps at"], "reverse": ["helping"]}}}},
+  "Donation": {"description": "A gift offered to the PTA. pledged_by offered it, collected_by picks it up, approved_by accepts it for the committee. A hope of a gift is not a pledge.",
+   "properties": {"item": "string", "fundraiser": "Fundraiser?", "pledged_by": "Parent?", "collected_by": "Parent?", "approved_by": "Parent?",
+    "state": ["pledged", "received", "declined"], "gift_aided": "boolean?", "value_pounds": "integer?", "note": "string?"},
+   "absences": {"gift_aided": "no_gift_aid_record"}},
+  "RotaSlot": {"description": "A duty on a fundraiser's rota. assigned does the duty, cover takes over if needed. confirmed stays empty until someone confirms it.",
+   "properties": {"duty": "string", "fundraiser": "Fundraiser?", "assigned": "Parent?", "cover": "Parent?", "confirmed": "boolean?", "minutes": "integer?"},
+   "absences": {"confirmed": "no_confirmation"}}
+ },
+ "entities": {
+  "margarethe": {"model": "Parent", "name": "Margarethe Lindahl"},
+  "imogen_f": {"model": "Parent", "name": "Imogen Fairweather"},
+  "imogen_a": {"model": "Parent", "name": "Imogen Achebe"},
+  "rashid": {"model": "Parent", "name": "Rashid Al-Amin"},
+  "bettina": {"model": "Parent", "name": "Bettina Kowalczyk"},
+  "bettina_r": {"model": "Parent", "name": "Bettina Rourke"},
+  "desmond": {"model": "Parent", "name": "Desmond Okwuosa", "fields": {"phone": "07700 900318"}},
+  "fatou": {"model": "Parent", "name": "Fatou Sow"},
+  "lachlan": {"model": "Parent", "name": "Lachlan Petrie"},
+  "hoa": {"model": "Parent", "name": "Hoa Tran"},
+  "spring": {"model": "Fundraiser", "name": "Spring Fair"},
+  "quiz": {"model": "Fundraiser", "name": "Quiz Night"},
+  "bookswap": {"model": "Fundraiser", "name": "Book Swap"},
+  "funrun": {"model": "Fundraiser", "name": "Fun Run"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Margarethe Lindahl: I'll run the cake stall at the Spring Fair, and Rashid Al-Amin will cover it after lunch.",
+   "mentions": [["Margarethe Lindahl", "margarethe"], ["I", "margarethe", "ref"], ["Spring Fair", "spring"], ["Rashid Al-Amin", "rashid"]],
+   "facts": [
+    {"model": "RotaSlot", "in": "I'll run the cake stall at the Spring Fair", "fields": {"duty": "cake stall", "fundraiser": "spring", "assigned": "margarethe", "cover": "rashid"}, "act": "plan"},
+    {"model": "Role", "in": "I'll run the cake stall at the Spring Fair", "from": "spring", "to": "margarethe", "label": "volunteer", "act": "plan"},
+    {"model": "Role", "in": "Rashid Al-Amin will cover it after lunch.", "from": "spring", "to": "rashid", "label": "volunteer", "act": "plan"}]},
+  {"id": "m02", "text": "Imogen Fairweather wrote: \"I am not the treasurer for Quiz Night any more. Desmond Okwuosa keeps the Quiz Night books now.\"",
+   "mentions": [["Imogen Fairweather", "imogen_f"], ["I", "imogen_f", "ref"], ["Quiz Night", "quiz"], ["Desmond Okwuosa", "desmond"], ["Quiz Night", "quiz"]],
+   "quotes": [["I am not the treasurer for Quiz Night any more. Desmond Okwuosa keeps the Quiz Night books now.", "imogen_f"]],
+   "facts": [
+    {"model": "Role", "in": "I am not the treasurer for Quiz Night any more.", "from": "quiz", "to": "imogen_f", "label": "treasurer", "act": "assert", "deny": true},
+    {"model": "Role", "in": "Desmond Okwuosa keeps the Quiz Night books now.", "from": "quiz", "to": "desmond", "label": "treasurer", "act": "assert"}]},
+  {"id": "m03", "text": "Hi all,\nAn anonymous cash gift of 60 pounds arrived for the raffle this morning, and it is gift aided.\nThanks, Fatou",
+   "mentions": [["Fatou", "fatou"]],
+   "facts": [
+    {"model": "Donation", "in": "An anonymous cash gift of 60 pounds arrived for the raffle this morning", "fields": {"item": "cash gift", "value_pounds": 60, "state": "received", "gift_aided": true}, "act": "assert"}]},
+  {"id": "m04", "text": "Bettina Kowalczyk: Could someone collect the 4 donated bikes for the Fun Run raffle on Friday? Lachlan Petrie said he might be my deputy next term.",
+   "mentions": [["Bettina Kowalczyk", "bettina"], ["Fun Run", "funrun"], ["Lachlan Petrie", "lachlan"], ["he", "lachlan", "ref"], ["my", "bettina", "ref"]],
+   "facts": [
+    {"model": "Donation", "in": "Could someone collect the 4 donated bikes for the Fun Run raffle on Friday?", "fields": {"item": "donated bikes", "fundraiser": "funrun", "state": "pledged"}, "act": "request"},
+    {"model": "Link", "in": "Lachlan Petrie said he might be my deputy next term.", "from": "bettina", "to": "lachlan", "label": "deputy", "act": "report"}]},
+  {"id": "m05", "text": "PTA minutes, 2 May: Rashid Al-Amin reported that the Book Swap has nobody on the door rota. Hoa Tran said she would take the door rota on Saturday.",
+   "mentions": [["Rashid Al-Amin", "rashid"], ["Book Swap", "bookswap"], ["Hoa Tran", "hoa"], ["she", "hoa", "ref"]],
+   "facts": [
+    {"model": "RotaSlot", "in": "Rashid Al-Amin reported that the Book Swap has nobody on the door rota.", "fields": {"duty": "door rota", "fundraiser": "bookswap"}, "act": "report"},
+    {"model": "RotaSlot", "in": "Hoa Tran said she would take the door rota on Saturday.", "fields": {"duty": "door rota", "assigned": "hoa"}, "act": "report"}]},
+  {"id": "m06", "text": "Imogen Fairweather and Imogen Achebe both asked about the Fun Run. Fairweather will organise it, so Achebe is a volunteer for it instead.",
+   "mentions": [["Imogen Fairweather", "imogen_f"], ["Imogen Achebe", "imogen_a"], ["Fun Run", "funrun"], ["Fairweather", "imogen_f"], ["it", "funrun", "ref"], ["Achebe", "imogen_a"], ["it", "funrun", "ref"]],
+   "facts": [
+    {"model": "Role", "in": "Fairweather will organise it", "from": "funrun", "to": "imogen_f", "label": "organiser", "act": "plan"},
+    {"model": "Role", "in": "so Achebe is a volunteer for it instead", "from": "funrun", "to": "imogen_a", "label": "volunteer", "act": "assert"}]},
+  {"id": "m07", "text": "Margarethe Lindahl: Imogen Fairweather emailed about the posters, and Imogen Achebe phoned too. Imogen says the printer is closed until Monday.",
+   "mentions": [["Margarethe Lindahl", "margarethe"], ["Imogen Fairweather", "imogen_f"], ["Imogen Achebe", "imogen_a"], ["Imogen", "imogen_f", "?"]],
+   "facts": []},
+  {"id": "m08", "text": "Bettina Kowalczyk: A new parent, Bettina Rourke, joins the committee on Monday. I will be her deputy until she settles in.",
+   "mentions": [["Bettina Kowalczyk", "bettina"], ["Bettina Rourke", "bettina_r"], ["I", "bettina", "ref"], ["her", "bettina_r", "ref"], ["she", "bettina_r", "ref"]],
+   "facts": [
+    {"model": "Link", "in": "I will be her deputy until she settles in.", "from": "bettina_r", "to": "bettina", "label": "deputy", "act": "plan"}]},
+  {"id": "m09", "text": "Desmond Okwuosa: I give Fatou and Hoa a lift to every Quiz Night. Lachlan Petrie is Fatou's deputy this year.",
+   "mentions": [["Desmond Okwuosa", "desmond"], ["I", "desmond", "ref"], ["Fatou", "fatou"], ["Hoa", "hoa"], ["Quiz Night", "quiz"], ["Lachlan Petrie", "lachlan"], ["Fatou", "fatou"]],
+   "facts": [
+    {"model": "Link", "in": "I give Fatou and Hoa a lift to every Quiz Night.", "from": "fatou", "to": "desmond", "label": "carpool", "act": "assert"},
+    {"model": "Link", "in": "I give Fatou and Hoa a lift to every Quiz Night.", "from": "hoa", "to": "desmond", "label": "carpool", "act": "assert"},
+    {"model": "Link", "in": "Lachlan Petrie is Fatou's deputy this year.", "from": "fatou", "to": "lachlan", "label": "deputy", "act": "assert"}]},
+  {"id": "m10", "text": "Note on the noticeboard: the Spring Fair tombola has no prizes yet, flagged by Hoa Tran. Nobody has confirmed it yet.",
+   "mentions": [["Spring Fair", "spring"], ["Hoa Tran", "hoa"]],
+   "facts": [
+    {"model": "RotaSlot", "in": "the Spring Fair tombola has no prizes yet, flagged by Hoa Tran.", "fields": {"duty": "tombola", "fundraiser": "spring"}, "act": "assert"}]},
+  {"id": "m11", "text": "As I told Rashid Al-Amin at the gate, \"The Quiz Night bar slot is confirmed and runs until ten.\"\nThe head teacher",
+   "mentions": [["I", "none", "ref"], ["Rashid Al-Amin", "rashid"], ["Quiz Night", "quiz"]],
+   "quotes": [["The Quiz Night bar slot is confirmed and runs until ten.", "author"]],
+   "facts": [
+    {"model": "RotaSlot", "in": "The Quiz Night bar slot is confirmed and runs until ten.", "fields": {"duty": "bar slot", "fundraiser": "quiz", "confirmed": true}, "act": "assert"}]},
+  {"id": "m12", "text": "Fatou Sow: I'm not volunteering at the Book Swap this year; Margarethe Lindahl is.",
+   "mentions": [["Fatou Sow", "fatou"], ["I", "fatou", "ref"], ["Book Swap", "bookswap"], ["Margarethe Lindahl", "margarethe"]],
+   "facts": [
+    {"model": "Role", "in": "I'm not volunteering at the Book Swap this year", "from": "bookswap", "to": "fatou", "label": "volunteer", "act": "assert", "deny": true},
+    {"model": "Role", "in": "Margarethe Lindahl is.", "from": "bookswap", "to": "margarethe", "label": "volunteer", "act": "assert"}]},
+  {"id": "m13", "text": "If the weather holds, Lachlan Petrie will collect the 150 pound bouncy castle from Desmond Okwuosa for the Spring Fair, and Rashid Al-Amin will approve it.",
+   "mentions": [["Lachlan Petrie", "lachlan"], ["Desmond Okwuosa", "desmond"], ["Spring Fair", "spring"], ["Rashid Al-Amin", "rashid"]],
+   "facts": [
+    {"model": "Donation", "in": "If the weather holds, Lachlan Petrie will collect", "fields": {"item": "bouncy castle", "fundraiser": "spring", "collected_by": "lachlan", "pledged_by": "desmond", "approved_by": "rashid", "state": "pledged", "value_pounds": 150, "note": "the weather holds"}, "act": "condition"}]},
+  {"id": "m14", "text": "Hoa Tran: Pencilled in, maybe: Imogen Achebe takes the face painting slot at the Fun Run for 90 minutes, covered by me.",
+   "mentions": [["Hoa Tran", "hoa"], ["Imogen Achebe", "imogen_a"], ["Fun Run", "funrun"], ["me", "hoa", "ref"]],
+   "facts": [
+    {"model": "RotaSlot", "in": "Pencilled in, maybe: Imogen Achebe takes the face painting slot", "fields": {"duty": "face painting slot", "fundraiser": "funrun", "assigned": "imogen_a", "cover": "hoa", "minutes": 90}, "act": "draft"}]},
+  {"id": "m15", "text": "The toy shop's offer of 200 pounds of board games was declined because the Book Swap has no space, Margarethe Lindahl confirmed.",
+   "mentions": [["Book Swap", "bookswap"], ["Margarethe Lindahl", "margarethe"]],
+   "facts": [
+    {"model": "Donation", "in": "The toy shop's offer of 200 pounds of board games was declined", "fields": {"item": "board games", "fundraiser": "bookswap", "value_pounds": 200, "state": "declined", "note": "no space"}, "act": "report"}]},
+  {"id": "m16", "text": "Dear Rashid,\nCould you approve the 75 pound voucher that Fatou Sow pledged for the Quiz Night?\nBest,\nBettina Kowalczyk",
+   "mentions": [["Rashid", "rashid"], ["you", "rashid", "ref"], ["Fatou Sow", "fatou"], ["Quiz Night", "quiz"], ["Bettina Kowalczyk", "bettina"]],
+   "facts": [
+    {"model": "Donation", "in": "Could you approve the 75 pound voucher", "fields": {"item": "voucher", "fundraiser": "quiz", "approved_by": "rashid", "pledged_by": "fatou", "value_pounds": 75, "state": "pledged"}, "act": "request"}]},
+  {"id": "m17", "text": "Hoa Tran: The anonymous cash gift was collected by Desmond Okwuosa yesterday, and it isn't gift aided after all.",
+   "mentions": [["Hoa Tran", "hoa"], ["Desmond Okwuosa", "desmond"]],
+   "facts": [
+    {"model": "Donation", "in": "The anonymous cash gift was collected by Desmond Okwuosa yesterday", "fields": {"item": "cash gift", "collected_by": "desmond", "state": "received", "gift_aided": false}, "act": "assert"}]},
+  {"id": "m18", "text": "Fwd from Lachlan Petrie: \"Bettina Rourke is my new passenger, and I drive her to every committee meeting.\"",
+   "mentions": [["Lachlan Petrie", "lachlan"], ["Bettina Rourke", "bettina_r"], ["my", "lachlan", "ref"], ["I", "lachlan", "ref"], ["her", "bettina_r", "ref"]],
+   "quotes": [["Bettina Rourke is my new passenger, and I drive her to every committee meeting.", "lachlan"]],
+   "facts": [
+    {"model": "Link", "in": "Bettina Rourke is my new passenger", "from": "bettina_r", "to": "lachlan", "label": "carpool", "act": "assert"}]},
+  {"id": "m19", "text": "I'm Desmond Okwuosa and I won't be treasurer for the Fun Run next year after all.",
+   "mentions": [["I", "desmond", "ref"], ["Desmond Okwuosa", "desmond"], ["I", "desmond", "ref"], ["Fun Run", "funrun"]],
+   "facts": [
+    {"model": "Role", "in": "I won't be treasurer for the Fun Run", "from": "funrun", "to": "desmond", "label": "treasurer", "act": "plan", "deny": true}]},
+  {"id": "m20", "text": "Rota sheet: Fatou Sow has the 45 minute raffle slot at the Spring Fair; Hoa will cover it at noon.",
+   "mentions": [["Fatou Sow", "fatou"], ["Spring Fair", "spring"], ["Hoa", "hoa"]],
+   "facts": [
+    {"model": "RotaSlot", "in": "Rota sheet: Fatou Sow has the 45 minute raffle slot", "fields": {"duty": "raffle slot", "fundraiser": "spring", "assigned": "fatou", "cover": "hoa", "minutes": 45}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who is the treasurer for Quiz Night?", "speaker": null, "cypher": "MATCH (n0:Fundraiser)-[:treasurer]->(n1:Parent) WHERE n0.name = 'Quiz Night' RETURN n1.name AS name"},
+  {"q": "Who organises the Fun Run?", "speaker": null, "cypher": "MATCH (n0:Fundraiser)-[:organiser]->(n1:Parent) WHERE n0.name = 'Fun Run' RETURN n1.name AS name"},
+  {"q": "Who is my deputy?", "speaker": "fatou", "cypher": "MATCH (n0:Parent)-[:deputy]->(n1:Parent) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Name every passenger of mine.", "speaker": "desmond", "cypher": "MATCH (n0:Parent)-[:passenger]->(n1:Parent) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Which fundraisers am I helping?", "speaker": "margarethe", "cypher": "MATCH (n0:Parent)-[:helping]->(n1:Fundraiser) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who volunteers at the Book Swap?", "speaker": null, "cypher": "MATCH (n0:Fundraiser)-[:volunteer]->(n1:Parent) WHERE n0.name = 'Book Swap' RETURN n1.name AS name"},
+  {"q": "How many donations are there?", "speaker": null, "cypher": "MATCH (n0:Donation) RETURN count(n0) AS count"},
+  {"q": "Is the cash gift gift aided?", "speaker": null, "cypher": "MATCH (n0:Donation) WHERE n0.item = 'cash gift' RETURN n0.gift_aided AS gift_aided"},
+  {"q": "Is there a record that the voucher is gift aided?", "speaker": null, "cypher": "MATCH (n0:Donation) WHERE n0.item = 'voucher' RETURN coalesce(n0.gift_aided, false) AS gift_aided"},
+  {"q": "Who approved the voucher?", "speaker": null, "cypher": "MATCH (n0:Donation)-[:approved_by]->(n1:Parent) WHERE n0.item = 'voucher' RETURN n1.name AS name"},
+  {"q": "Which donations did Fatou Sow pledge?", "speaker": null, "cypher": "MATCH (n0:Parent)<-[:pledged_by]-(n1:Donation) WHERE n0.name = 'Fatou Sow' RETURN n1.item AS item"},
+  {"q": "How much were the board games worth?", "speaker": null, "cypher": "MATCH (n0:Donation) WHERE n0.item = 'board games' RETURN n0.value_pounds AS value_pounds"},
+  {"q": "What duties and minutes are on the Spring Fair rota?", "speaker": null, "cypher": "MATCH (n0:Fundraiser)<-[:fundraiser]-(n1:RotaSlot) WHERE n0.name = 'Spring Fair' RETURN n1.duty AS duty, n1.minutes AS minutes"},
+  {"q": "How long are the slot duties?", "speaker": null, "cypher": "MATCH (n0:RotaSlot) WHERE n0.duty CONTAINS 'slot' RETURN n0.minutes AS minutes"},
+  {"q": "Is the bar slot confirmed?", "speaker": null, "cypher": "MATCH (n0:RotaSlot) WHERE n0.duty = 'bar slot' RETURN n0.confirmed AS confirmed"},
+  {"q": "Is there a record that the tombola is confirmed?", "speaker": null, "cypher": "MATCH (n0:RotaSlot) WHERE n0.duty = 'tombola' RETURN coalesce(n0.confirmed, false) AS confirmed"},
+  {"q": "Who covers the raffle slot?", "speaker": null, "cypher": "MATCH (n0:RotaSlot)-[:cover]->(n1:Parent) WHERE n0.duty = 'raffle slot' RETURN n1.name AS name"}
+ ]
+}

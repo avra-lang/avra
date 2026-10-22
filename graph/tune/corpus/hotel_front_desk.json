@@ -1,0 +1,142 @@
+{
+ "domain": "hotel_front_desk",
+ "models": {
+  "Clerk": {"description": "A member of the front desk team: receptionist, concierge, night porter or manager. A first name alone is not an identity.",
+   "properties": {"badge": "string", "shift": "string?"}},
+  "Guest": {"description": "A person staying at, booking or paying for a room at the hotel.",
+   "properties": {"guest_name": "string", "loyalty_no": "string?"}, "identities": ["loyalty_no"]},
+  "DeskCover": {"description": "How two clerks stand on the rota: one relieves the other at handover, or is the other's duty manager.",
+   "properties": {"clerk": "Clerk", "partner": "Clerk", "pairing": ["relief", "duty_manager"]},
+   "relation": {"from": "clerk", "to": "partner", "label": "pairing", "phrasing": "{to} covers {from} as {label}",
+    "labels": {"relief": {"forward": ["relief", "handover"], "reverse": ["relieved"]},
+               "duty_manager": {"forward": ["duty manager", "shift manager"], "reverse": ["team"]}}}},
+  "GuestCare": {"description": "Which clerk personally looks after a guest during a stay: the concierge, or a dedicated butler.",
+   "properties": {"guest": "Guest", "clerk": "Clerk", "care": ["concierge", "butler"]},
+   "relation": {"from": "guest", "to": "clerk", "label": "care", "phrasing": "{from} is looked after by {to} as {label}",
+    "labels": {"concierge": {"forward": ["concierge"], "reverse": ["guests"]},
+               "butler": {"forward": ["butler", "personal butler"], "reverse": ["charges"]}}}},
+  "Stay": {"description": "A guest's stay in one room. checked_in_by handled arrival, upgraded_by gave an upgrade, billed_to pays; status is reserved, checked_in, checked_out or no_show.",
+   "properties": {"room": "string", "guest": "Guest", "checked_in_by": "Clerk?", "upgraded_by": "Clerk?", "billed_to": "Guest?",
+    "status": ["reserved", "checked_in", "checked_out", "no_show"], "breakfast": "boolean?", "nights": "integer?", "request": "string?"},
+   "absences": {"breakfast": "no_breakfast_record"}},
+  "Complaint": {"description": "A guest's complaint about one issue. resolved stays empty until a resolution is recorded.",
+   "properties": {"issue": "string", "guest": "Guest", "handled_by": "Clerk?", "refund_pounds": "integer?", "resolved": "boolean?"},
+   "absences": {"resolved": "no_resolution_record"}}
+ },
+ "entities": {
+  "nnamdi": {"model": "Clerk", "name": "Nnamdi Eze"},
+  "saoirse": {"model": "Clerk", "name": "Saoirse Quinlan"},
+  "saoirse_m": {"model": "Clerk", "name": "Saoirse Mbatha"},
+  "tomasz": {"model": "Clerk", "name": "Tomasz Wierzbicki"},
+  "paulo": {"model": "Clerk", "name": "Paulo Fonoti"},
+  "ingrid": {"model": "Guest", "name": "Ingrid Halvorsen", "fields": {"loyalty_no": "HX-55120"}},
+  "ingrid_f": {"model": "Guest", "name": "Ingrid Faulkner"},
+  "rafael": {"model": "Guest", "name": "Rafael Ibarguen"},
+  "meilin": {"model": "Guest", "name": "Mei-Lin Tsao"},
+  "seun": {"model": "Guest", "name": "Oluwaseun Adebayo"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Saoirse Quinlan: I'm on nights this week, so Nnamdi Eze is my relief at seven.",
+   "mentions": [["Saoirse Quinlan", "saoirse"], ["I", "saoirse", "ref"], ["Nnamdi Eze", "nnamdi"], ["my", "saoirse", "ref"]],
+   "facts": [
+    {"model": "DeskCover", "in": "so Nnamdi Eze is my relief at seven", "from": "saoirse", "to": "nnamdi", "label": "relief", "act": "assert"}]},
+  {"id": "m02", "text": "Ingrid Halvorsen checked in to room 412 for 3 nights with breakfast, checked in by Tomasz Wierzbicki.",
+   "mentions": [["Ingrid Halvorsen", "ingrid"], ["Tomasz Wierzbicki", "tomasz"]],
+   "facts": [
+    {"model": "Stay", "in": "Ingrid Halvorsen checked in to room 412", "fields": {"room": "room 412", "guest": "ingrid", "checked_in_by": "tomasz", "status": "checked_in", "nights": 3, "breakfast": true}, "act": "assert"}]},
+  {"id": "m03", "text": "Paulo Fonoti: Saoirse Quinlan and Saoirse Mbatha both asked for Friday off. Saoirse said she could swap with me.",
+   "mentions": [["Paulo Fonoti", "paulo"], ["Saoirse Quinlan", "saoirse"], ["Saoirse Mbatha", "saoirse_m"], ["Saoirse", "saoirse", "?"], ["she", "?", "ref"], ["me", "paulo", "ref"]],
+   "facts": []},
+  {"id": "m04", "text": "Rafael Ibarguen told the desk that Paulo Fonoti has been his concierge all week. He wants Paulo as his butler next time.",
+   "mentions": [["Rafael Ibarguen", "rafael"], ["Paulo Fonoti", "paulo"], ["his", "rafael", "ref"], ["He", "rafael", "ref"], ["Paulo", "paulo"], ["his", "rafael", "ref"]],
+   "facts": [
+    {"model": "GuestCare", "in": "Rafael Ibarguen told the desk that Paulo Fonoti has been his concierge all week.", "from": "rafael", "to": "paulo", "label": "concierge", "act": "report"},
+    {"model": "GuestCare", "in": "He wants Paulo as his butler next time.", "from": "rafael", "to": "paulo", "label": "butler", "act": "request"}]},
+  {"id": "m05", "text": "Mei-Lin Tsao: The air conditioning in my room failed overnight, and Nnamdi Eze promised me 40 pounds off.",
+   "mentions": [["Mei-Lin Tsao", "meilin"], ["my", "meilin", "ref"], ["Nnamdi Eze", "nnamdi"], ["me", "meilin", "ref"]],
+   "facts": [
+    {"model": "Complaint", "in": "The air conditioning in my room failed overnight", "fields": {"issue": "air conditioning", "guest": "meilin", "handled_by": "nnamdi", "refund_pounds": 40}, "act": "assert"}]},
+  {"id": "m06", "text": "Duty log: the air conditioning complaint from Mei-Lin Tsao is still not resolved.",
+   "mentions": [["Mei-Lin Tsao", "meilin"]],
+   "facts": [
+    {"model": "Complaint", "in": "the air conditioning complaint from Mei-Lin Tsao is still not resolved", "fields": {"issue": "air conditioning", "guest": "meilin", "resolved": false}, "act": "assert"}]},
+  {"id": "m07", "text": "Tomasz Wierzbicki: I am not Paulo's duty manager. Saoirse Quinlan is his shift manager.",
+   "mentions": [["Tomasz Wierzbicki", "tomasz"], ["I", "tomasz", "ref"], ["Paulo", "paulo"], ["Saoirse Quinlan", "saoirse"], ["his", "paulo", "ref"]],
+   "facts": [
+    {"model": "DeskCover", "in": "I am not Paulo's duty manager.", "from": "paulo", "to": "tomasz", "label": "duty_manager", "act": "assert", "deny": true},
+    {"model": "DeskCover", "in": "Saoirse Quinlan is his shift manager.", "from": "paulo", "to": "saoirse", "label": "duty_manager", "act": "assert"}]},
+  {"id": "m08", "text": "Nnamdi Eze: Maybe I will upgrade Oluwaseun Adebayo to the Harbour Suite for his 2 reserved nights.",
+   "mentions": [["Nnamdi Eze", "nnamdi"], ["I", "nnamdi", "ref"], ["Oluwaseun Adebayo", "seun"], ["his", "seun", "ref"]],
+   "facts": [
+    {"model": "Stay", "in": "Maybe I will upgrade Oluwaseun Adebayo to the Harbour Suite", "fields": {"room": "the Harbour Suite", "guest": "seun", "upgraded_by": "nnamdi", "status": "reserved", "nights": 2}, "act": "draft"}]},
+  {"id": "m09", "text": "Ingrid Halvorsen wrote in the guest book: \"Tomasz made me feel at home, he is a credit to you.\" Her stay ends on Sunday.",
+   "mentions": [["Ingrid Halvorsen", "ingrid"], ["Tomasz", "tomasz"], ["me", "ingrid", "ref"], ["he", "tomasz", "ref"], ["Her", "ingrid", "ref"]],
+   "quotes": [["Tomasz made me feel at home, he is a credit to you.", "ingrid"]],
+   "facts": []},
+  {"id": "m10", "text": "I pinned a note saying \"late checkout costs 30 pounds\" behind the desk, and Paulo Fonoti read it.",
+   "mentions": [["I", "none", "ref"], ["Paulo Fonoti", "paulo"]],
+   "quotes": [["late checkout costs 30 pounds", "author"]],
+   "facts": []},
+  {"id": "m11", "text": "Oluwaseun Adebayo: If the suite is ready, Saoirse Mbatha will be my butler for the weekend.",
+   "mentions": [["Oluwaseun Adebayo", "seun"], ["Saoirse Mbatha", "saoirse_m"], ["my", "seun", "ref"]],
+   "facts": [
+    {"model": "GuestCare", "in": "Saoirse Mbatha will be my butler for the weekend", "from": "seun", "to": "saoirse_m", "label": "butler", "act": "condition"}]},
+  {"id": "m12", "text": "Rafael Ibarguen checked out of room 208 after 4 nights, billed to Ingrid Halvorsen, without breakfast.",
+   "mentions": [["Rafael Ibarguen", "rafael"], ["Ingrid Halvorsen", "ingrid"]],
+   "facts": [
+    {"model": "Stay", "in": "Rafael Ibarguen checked out of room 208", "fields": {"room": "room 208", "guest": "rafael", "billed_to": "ingrid", "status": "checked_out", "nights": 4, "breakfast": false}, "act": "assert"}]},
+  {"id": "m13", "text": "Mei-Lin Tsao: Paulo, could you reserve room 115 for Ingrid Faulkner for 5 nights, billed to me, with a cot in the room?",
+   "mentions": [["Mei-Lin Tsao", "meilin"], ["Paulo", "paulo"], ["Ingrid Faulkner", "ingrid_f"], ["me", "meilin", "ref"]],
+   "facts": [
+    {"model": "Stay", "in": "Paulo, could you reserve room 115 for Ingrid Faulkner", "fields": {"room": "room 115", "guest": "ingrid_f", "billed_to": "meilin", "status": "reserved", "nights": 5, "request": "a cot in the room"}, "act": "request"}]},
+  {"id": "m14", "text": "Ingrid Faulkner: The front desk keeps confusing me with the other Ingrid. Ingrid Halvorsen is one of Tomasz's guests, not me.",
+   "mentions": [["Ingrid Faulkner", "ingrid_f"], ["me", "ingrid_f", "ref"], ["Ingrid", "ingrid"], ["Ingrid Halvorsen", "ingrid"], ["Tomasz", "tomasz"], ["me", "ingrid_f", "ref"]],
+   "facts": [
+    {"model": "GuestCare", "in": "Ingrid Halvorsen is one of Tomasz's guests", "from": "ingrid", "to": "tomasz", "label": "concierge", "act": "assert"},
+    {"model": "GuestCare", "in": "not me", "from": "ingrid_f", "to": "tomasz", "label": "concierge", "act": "assert", "deny": true}]},
+  {"id": "m15", "text": "Hello all, Oluwaseun Adebayo's stay in the Harbour Suite is now checked in: 2 nights, breakfast included, extra pillows on the bed. I have briefed the night team. Regards, Saoirse Mbatha",
+   "mentions": [["Oluwaseun Adebayo", "seun"], ["I", "saoirse_m", "ref"], ["Saoirse Mbatha", "saoirse_m"]],
+   "facts": [
+    {"model": "Stay", "in": "Oluwaseun Adebayo's stay in the Harbour Suite is now checked in", "fields": {"room": "the Harbour Suite", "guest": "seun", "status": "checked_in", "nights": 2, "breakfast": true, "request": "extra pillows on the bed"}, "act": "assert"}]},
+  {"id": "m16", "text": "Paulo Fonoti said that Mei-Lin Tsao's concierge is Nnamdi Eze, not him.",
+   "mentions": [["Paulo Fonoti", "paulo"], ["Mei-Lin Tsao", "meilin"], ["Nnamdi Eze", "nnamdi"], ["him", "paulo", "ref"]],
+   "facts": [
+    {"model": "GuestCare", "in": "Mei-Lin Tsao's concierge is Nnamdi Eze", "from": "meilin", "to": "nnamdi", "label": "concierge", "act": "report"},
+    {"model": "GuestCare", "in": "not him", "from": "meilin", "to": "paulo", "label": "concierge", "act": "report", "deny": true}]},
+  {"id": "m17", "text": "Rafael Ibarguen's complaint about a noisy minibar was resolved with a 25 pound refund. Rafael thanked Saoirse Quinlan for handling it.",
+   "mentions": [["Rafael Ibarguen", "rafael"], ["Rafael", "rafael"], ["Saoirse Quinlan", "saoirse"]],
+   "facts": [
+    {"model": "Complaint", "in": "Rafael Ibarguen's complaint about a noisy minibar was resolved", "fields": {"issue": "noisy minibar", "guest": "rafael", "refund_pounds": 25, "resolved": true}, "act": "assert"}]},
+  {"id": "m18", "text": "Front desk minutes: Tomasz Wierzbicki will be Nnamdi Eze's shift manager from Monday. Paulo Fonoti will take over as Saoirse Mbatha's relief.",
+   "mentions": [["Tomasz Wierzbicki", "tomasz"], ["Nnamdi Eze", "nnamdi"], ["Paulo Fonoti", "paulo"], ["Saoirse Mbatha", "saoirse_m"]],
+   "facts": [
+    {"model": "DeskCover", "in": "Tomasz Wierzbicki will be Nnamdi Eze's shift manager from Monday.", "from": "nnamdi", "to": "tomasz", "label": "duty_manager", "act": "plan"},
+    {"model": "DeskCover", "in": "Paulo Fonoti will take over as Saoirse Mbatha's relief.", "from": "saoirse_m", "to": "paulo", "label": "relief", "act": "plan"}]},
+  {"id": "m19", "text": "Saoirse Quinlan: Ingrid Faulkner was a no-show for room 115; Ingrid rang later to apologise.",
+   "mentions": [["Saoirse Quinlan", "saoirse"], ["Ingrid Faulkner", "ingrid_f"], ["Ingrid", "ingrid_f"]],
+   "facts": [
+    {"model": "Stay", "in": "Ingrid Faulkner was a no-show for room 115", "fields": {"room": "room 115", "guest": "ingrid_f", "status": "no_show"}, "act": "assert"}]},
+  {"id": "m20", "text": "Nnamdi Eze: Ingrid Halvorsen complained of a cold shower, and I handled it myself.",
+   "mentions": [["Nnamdi Eze", "nnamdi"], ["Ingrid Halvorsen", "ingrid"], ["I", "nnamdi", "ref"], ["myself", "nnamdi", "ref"]],
+   "facts": [
+    {"model": "Complaint", "in": "Ingrid Halvorsen complained of a cold shower", "fields": {"issue": "cold shower", "guest": "ingrid", "handled_by": "nnamdi"}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who is Saoirse Quinlan's relief?", "speaker": null, "cypher": "MATCH (n0:Clerk)-[:relief]->(n1:Clerk) WHERE n0.badge = 'Saoirse Quinlan' RETURN n1.badge AS badge"},
+  {"q": "Who is my shift manager?", "speaker": "paulo", "cypher": "MATCH (n0:Clerk)-[:duty_manager]->(n1:Clerk) WHERE id(n0) = $speaker RETURN n1.badge AS badge"},
+  {"q": "Who is on my team?", "speaker": "saoirse", "cypher": "MATCH (n0:Clerk)-[:team]->(n1:Clerk) WHERE id(n0) = $speaker RETURN n1.badge AS badge"},
+  {"q": "Who are my guests?", "speaker": "nnamdi", "cypher": "MATCH (n0:Clerk)-[:guests]->(n1:Guest) WHERE id(n0) = $speaker RETURN n1.guest_name AS guest_name"},
+  {"q": "Who is Rafael Ibarguen's concierge?", "speaker": null, "cypher": "MATCH (n0:Guest)-[:concierge]->(n1:Clerk) WHERE n0.guest_name = 'Rafael Ibarguen' RETURN n1.badge AS badge"},
+  {"q": "Who will be Oluwaseun Adebayo's butler?", "speaker": null, "cypher": "MATCH (n0:Guest)-[:butler]->(n1:Clerk) WHERE n0.guest_name = 'Oluwaseun Adebayo' RETURN n1.badge AS badge"},
+  {"q": "How many stays are there?", "speaker": null, "cypher": "MATCH (n0:Stay) RETURN count(n0) AS count"},
+  {"q": "How many nights is the Harbour Suite booked for?", "speaker": null, "cypher": "MATCH (n0:Stay) WHERE n0.room = 'the Harbour Suite' RETURN n0.nights AS nights"},
+  {"q": "Which rooms did Tomasz Wierzbicki check in?", "speaker": null, "cypher": "MATCH (n0:Clerk)<-[:checked_in_by]-(n1:Stay) WHERE n0.badge = 'Tomasz Wierzbicki' RETURN n1.room AS room"},
+  {"q": "Which rooms are billed to me?", "speaker": "ingrid", "cypher": "MATCH (n0:Guest)<-[:billed_to]-(n1:Stay) WHERE id(n0) = $speaker RETURN n1.room AS room"},
+  {"q": "Is there a record of breakfast for room 208?", "speaker": null, "cypher": "MATCH (n0:Stay) WHERE n0.room = 'room 208' RETURN coalesce(n0.breakfast, false) AS breakfast"},
+  {"q": "Did Rafael Ibarguen's stay include breakfast?", "speaker": null, "cypher": "MATCH (n0:Guest)<-[:guest]-(n1:Stay) WHERE n0.guest_name = 'Rafael Ibarguen' RETURN n1.breakfast AS breakfast"},
+  {"q": "Has Mei-Lin Tsao's complaint been resolved?", "speaker": null, "cypher": "MATCH (n0:Guest)<-[:guest]-(n1:Complaint) WHERE n0.guest_name = 'Mei-Lin Tsao' RETURN n1.resolved AS resolved"},
+  {"q": "What issue and refund does each complaint record?", "speaker": null, "cypher": "MATCH (n0:Complaint) RETURN n0.issue AS issue, n0.refund_pounds AS refund_pounds"},
+  {"q": "What is Ingrid Halvorsen's loyalty number?", "speaker": null, "cypher": "MATCH (n0:Guest) WHERE n0.guest_name = 'Ingrid Halvorsen' RETURN n0.loyalty_no AS loyalty_no"},
+  {"q": "Who handled the complaint about the shower?", "speaker": null, "cypher": "MATCH (n0:Complaint)-[:handled_by]->(n1:Clerk) WHERE n0.issue CONTAINS 'shower' RETURN n1.badge AS badge"}
+ ]
+}

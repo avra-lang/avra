@@ -1,0 +1,141 @@
+{
+ "domain": "moving_company",
+ "models": {
+  "Mover": {"description": "Someone on the moving firm's staff: crew, driver, packer or office. A first name alone is not an identity.",
+   "properties": {"called": "string", "phone": "string?"}, "identities": ["phone"]},
+  "Client": {"description": "A household or business whose belongings the firm moves.",
+   "properties": {"name": "string", "email": "string?"}},
+  "CrewTie": {"description": "How two movers stand on the crew: one is the other's foreman, or mentors the other.",
+   "properties": {"member": "Mover", "senior": "Mover", "tie": ["foreman", "mentor"]},
+   "relation": {"from": "member", "to": "senior", "label": "tie", "phrasing": "{to} is {from}'s {label}",
+    "labels": {"foreman": {"forward": ["foreman", "crew lead"], "reverse": ["crew"]},
+               "mentor": {"forward": ["mentor", "trainer"], "reverse": ["trainee"]}}}},
+  "Handling": {"description": "Which mover looks after a client: the estimator surveys the home, the coordinator runs the move.",
+   "properties": {"client": "Client", "staff": "Mover", "duty": ["estimator", "coordinator"]},
+   "relation": {"from": "client", "to": "staff", "label": "duty", "phrasing": "{to} serves as {label} for {from}",
+    "labels": {"estimator": {"forward": ["estimator", "surveyor"], "reverse": ["surveys"]},
+               "coordinator": {"forward": ["coordinator", "move manager"], "reverse": ["accounts"]}}}},
+  "Move": {"description": "One removal job for a client. booked_by took the booking, driver drives the van, packer packs; stage is quoted, scheduled, completed or cancelled.",
+   "properties": {"job": "string", "client": "Client", "booked_by": "Mover?", "driver": "Mover?", "packer": "Mover?",
+    "stage": ["quoted", "scheduled", "completed", "cancelled"], "insured": "boolean?", "boxes": "integer?", "access": "string?"},
+   "absences": {"insured": "no_insurance_record"}},
+  "Claim": {"description": "A client's damage claim for one item. settled stays empty until a settlement is recorded.",
+   "properties": {"item": "string", "client": "Client", "amount_euros": "integer?", "settled": "boolean?"},
+   "absences": {"settled": "no_settlement_record"}}
+ },
+ "entities": {
+  "kofi": {"model": "Mover", "name": "Kofi Asamoah", "fields": {"phone": "0131 496 0712"}},
+  "kofi_d": {"model": "Mover", "name": "Kofi Darkwa"},
+  "ilse": {"model": "Mover", "name": "Ilse Vandermeer"},
+  "bogdan": {"model": "Mover", "name": "Bogdan Petrescu"},
+  "marisol": {"model": "Mover", "name": "Marisol Quintero"},
+  "harriet": {"model": "Client", "name": "Harriet Lindqvist"},
+  "harriet_o": {"model": "Client", "name": "Harriet Olabode"},
+  "dev": {"model": "Client", "name": "Dev Raghunathan"},
+  "noor": {"model": "Client", "name": "Noor Al-Saadi"},
+  "yusuf": {"model": "Client", "name": "Yusuf Demirci"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Kofi Asamoah: Bogdan Petrescu joins my crew on Thursday, so I'm his crew lead for the week.",
+   "mentions": [["Kofi Asamoah", "kofi"], ["Bogdan Petrescu", "bogdan"], ["my", "kofi", "ref"], ["I", "kofi", "ref"], ["his", "bogdan", "ref"]],
+   "facts": [
+    {"model": "CrewTie", "in": "so I'm his crew lead for the week", "from": "bogdan", "to": "kofi", "label": "foreman", "act": "assert"}]},
+  {"id": "m02", "text": "Booking note: Harriet Lindqvist's flat move to Leith is scheduled for Saturday, booked by Marisol Quintero, with Kofi Darkwa driving and 40 boxes.",
+   "mentions": [["Harriet Lindqvist", "harriet"], ["Marisol Quintero", "marisol"], ["Kofi Darkwa", "kofi_d"]],
+   "facts": [
+    {"model": "Move", "in": "Harriet Lindqvist's flat move to Leith is scheduled for Saturday", "fields": {"job": "flat move to Leith", "client": "harriet", "booked_by": "marisol", "driver": "kofi_d", "stage": "scheduled", "boxes": 40}, "act": "assert"}]},
+  {"id": "m03", "text": "Marisol Quintero: Kofi Asamoah and Kofi Darkwa are both free on Monday. Kofi said he would bring the spare dolly.",
+   "mentions": [["Marisol Quintero", "marisol"], ["Kofi Asamoah", "kofi"], ["Kofi Darkwa", "kofi_d"], ["Kofi", "kofi", "?"], ["he", "?", "ref"]],
+   "facts": []},
+  {"id": "m04", "text": "Dev Raghunathan wrote that Ilse Vandermeer surveyed his house last week. She will be his move manager from May.",
+   "mentions": [["Dev Raghunathan", "dev"], ["Ilse Vandermeer", "ilse"], ["his", "dev", "ref"], ["She", "ilse", "ref"], ["his", "dev", "ref"]],
+   "facts": [
+    {"model": "Handling", "in": "Dev Raghunathan wrote that Ilse Vandermeer surveyed his house last week.", "from": "dev", "to": "ilse", "label": "estimator", "act": "report"},
+    {"model": "Handling", "in": "She will be his move manager from May.", "from": "dev", "to": "ilse", "label": "coordinator", "act": "plan"}]},
+  {"id": "m05", "text": "Noor Al-Saadi: The mirror Bogdan Petrescu carried arrived cracked, and I am claiming 120 euros for it.",
+   "mentions": [["Noor Al-Saadi", "noor"], ["Bogdan Petrescu", "bogdan"], ["I", "noor", "ref"]],
+   "facts": [
+    {"model": "Claim", "in": "The mirror Bogdan Petrescu carried arrived cracked", "fields": {"item": "mirror", "client": "noor", "amount_euros": 120}, "act": "assert"}]},
+  {"id": "m06", "text": "From accounts: Noor Al-Saadi's claim for the mirror has not been settled yet.",
+   "mentions": [["Noor Al-Saadi", "noor"]],
+   "facts": [
+    {"model": "Claim", "in": "Noor Al-Saadi's claim for the mirror has not been settled yet.", "fields": {"item": "mirror", "client": "noor", "settled": false}, "act": "assert"}]},
+  {"id": "m07", "text": "Ilse Vandermeer: I'm not Marisol's trainer any more. Bogdan Petrescu mentors her now.",
+   "mentions": [["Ilse Vandermeer", "ilse"], ["I", "ilse", "ref"], ["Marisol", "marisol"], ["Bogdan Petrescu", "bogdan"], ["her", "marisol", "ref"]],
+   "facts": [
+    {"model": "CrewTie", "in": "I'm not Marisol's trainer any more.", "from": "marisol", "to": "ilse", "label": "mentor", "act": "assert", "deny": true},
+    {"model": "CrewTie", "in": "Bogdan Petrescu mentors her now.", "from": "marisol", "to": "bogdan", "label": "mentor", "act": "assert"}]},
+  {"id": "m08", "text": "Marisol Quintero: I think Yusuf Demirci's office clear-out could be quoted at 85 boxes, with Ilse packing.",
+   "mentions": [["Marisol Quintero", "marisol"], ["I", "marisol", "ref"], ["Yusuf Demirci", "yusuf"], ["Ilse", "ilse"]],
+   "facts": [
+    {"model": "Move", "in": "I think Yusuf Demirci's office clear-out could be quoted at 85 boxes", "fields": {"job": "office clear-out", "client": "yusuf", "packer": "ilse", "stage": "quoted", "boxes": 85}, "act": "draft"}]},
+  {"id": "m09", "text": "Forwarded from Harriet Lindqvist: \"Kofi Darkwa was a brilliant driver, I would book him again.\" She also asked about insurance.",
+   "mentions": [["Harriet Lindqvist", "harriet"], ["Kofi Darkwa", "kofi_d"], ["I", "harriet", "ref"], ["him", "kofi_d", "ref"], ["She", "harriet", "ref"]],
+   "quotes": [["Kofi Darkwa was a brilliant driver, I would book him again.", "harriet"]],
+   "facts": []},
+  {"id": "m10", "text": "I wrote on the van board \"no more than 60 boxes per van\" and Bogdan Petrescu agreed.",
+   "mentions": [["I", "none", "ref"], ["Bogdan Petrescu", "bogdan"]],
+   "quotes": [["no more than 60 boxes per van", "author"]],
+   "facts": []},
+  {"id": "m11", "text": "Harriet Lindqvist: If the Leith flat goes well, Marisol Quintero will be my move coordinator for the office too.",
+   "mentions": [["Harriet Lindqvist", "harriet"], ["Marisol Quintero", "marisol"], ["my", "harriet", "ref"]],
+   "facts": [
+    {"model": "Handling", "in": "Marisol Quintero will be my move coordinator", "from": "harriet", "to": "marisol", "label": "coordinator", "act": "condition"}]},
+  {"id": "m12", "text": "Noor Al-Saadi's studio move was completed on Friday with 22 boxes, fully insured, driven by Kofi Asamoah and packed by Bogdan Petrescu.",
+   "mentions": [["Noor Al-Saadi", "noor"], ["Kofi Asamoah", "kofi"], ["Bogdan Petrescu", "bogdan"]],
+   "facts": [
+    {"model": "Move", "in": "Noor Al-Saadi's studio move was completed on Friday", "fields": {"job": "studio move", "client": "noor", "driver": "kofi", "packer": "bogdan", "stage": "completed", "insured": true, "boxes": 22}, "act": "assert"}]},
+  {"id": "m13", "text": "Bogdan Petrescu: Marisol, could you book Dev Raghunathan's house move for the 9th with me as driver?",
+   "mentions": [["Bogdan Petrescu", "bogdan"], ["Marisol", "marisol"], ["Dev Raghunathan", "dev"], ["me", "bogdan", "ref"]],
+   "facts": [
+    {"model": "Move", "in": "Marisol, could you book Dev Raghunathan's house move", "fields": {"job": "house move", "client": "dev", "booked_by": "marisol", "driver": "bogdan", "stage": "scheduled"}, "act": "request"}]},
+  {"id": "m14", "text": "Kofi Darkwa: Dispatch keeps mixing me up with the other Kofi. Kofi Asamoah is Ilse's foreman, not mine.",
+   "mentions": [["Kofi Darkwa", "kofi_d"], ["me", "kofi_d", "ref"], ["Kofi", "kofi"], ["Kofi Asamoah", "kofi"], ["Ilse", "ilse"], ["mine", "kofi_d", "ref"]],
+   "facts": [
+    {"model": "CrewTie", "in": "Kofi Asamoah is Ilse's foreman", "from": "ilse", "to": "kofi", "label": "foreman", "act": "assert"},
+    {"model": "CrewTie", "in": "not mine", "from": "kofi_d", "to": "kofi", "label": "foreman", "act": "assert", "deny": true}]},
+  {"id": "m15", "text": "Hi team, Yusuf Demirci's office clear-out is now scheduled for the 3rd: 60 boxes, no insurance, access through the rear loading bay. I have told the crew. Thanks, Marisol",
+   "mentions": [["Yusuf Demirci", "yusuf"], ["I", "marisol", "ref"], ["Marisol", "marisol"]],
+   "facts": [
+    {"model": "Move", "in": "Yusuf Demirci's office clear-out is now scheduled for the 3rd", "fields": {"job": "office clear-out", "client": "yusuf", "stage": "scheduled", "boxes": 60, "insured": false, "access": "the rear loading bay"}, "act": "assert"}]},
+  {"id": "m16", "text": "Ilse Vandermeer said that Dev Raghunathan's coordinator is Marisol Quintero, not her.",
+   "mentions": [["Ilse Vandermeer", "ilse"], ["Dev Raghunathan", "dev"], ["Marisol Quintero", "marisol"], ["her", "ilse", "ref"]],
+   "facts": [
+    {"model": "Handling", "in": "Dev Raghunathan's coordinator is Marisol Quintero", "from": "dev", "to": "marisol", "label": "coordinator", "act": "report"},
+    {"model": "Handling", "in": "not her", "from": "dev", "to": "ilse", "label": "coordinator", "act": "report", "deny": true}]},
+  {"id": "m17", "text": "Yusuf Demirci's claim for a scratched desk was settled at 75 euros. Yusuf thanked Bogdan for sorting it.",
+   "mentions": [["Yusuf Demirci", "yusuf"], ["Yusuf", "yusuf"], ["Bogdan", "bogdan"]],
+   "facts": [
+    {"model": "Claim", "in": "Yusuf Demirci's claim for a scratched desk was settled at 75 euros.", "fields": {"item": "scratched desk", "client": "yusuf", "amount_euros": 75, "settled": true}, "act": "assert"}]},
+  {"id": "m18", "text": "Harriet Lindqvist rang about her boxes. A different Harriet, from the bakery downstairs, wants a quote too.",
+   "mentions": [["Harriet Lindqvist", "harriet"], ["her", "harriet", "ref"], ["Harriet", "harriet_o"]],
+   "facts": []},
+  {"id": "m19", "text": "Minutes, Monday stand-up: Bogdan Petrescu will train Kofi Darkwa on the tail lift. Marisol Quintero is Ilse Vandermeer's crew lead from next week.",
+   "mentions": [["Bogdan Petrescu", "bogdan"], ["Kofi Darkwa", "kofi_d"], ["Marisol Quintero", "marisol"], ["Ilse Vandermeer", "ilse"]],
+   "facts": [
+    {"model": "CrewTie", "in": "Bogdan Petrescu will train Kofi Darkwa on the tail lift.", "from": "kofi_d", "to": "bogdan", "label": "mentor", "act": "plan"},
+    {"model": "CrewTie", "in": "Marisol Quintero is Ilse Vandermeer's crew lead from next week.", "from": "ilse", "to": "marisol", "label": "foreman", "act": "plan"}]},
+  {"id": "m20", "text": "Marisol Quintero: Noor Al-Saadi has cancelled the piano move; Noor says she found a cheaper firm.",
+   "mentions": [["Marisol Quintero", "marisol"], ["Noor Al-Saadi", "noor"], ["Noor", "noor"], ["she", "noor", "ref"]],
+   "facts": [
+    {"model": "Move", "in": "Noor Al-Saadi has cancelled the piano move", "fields": {"job": "piano move", "client": "noor", "stage": "cancelled"}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who is Bogdan Petrescu's crew lead?", "speaker": null, "cypher": "MATCH (n0:Mover)-[:foreman]->(n1:Mover) WHERE n0.called = 'Bogdan Petrescu' RETURN n1.called AS called"},
+  {"q": "Who is my mentor?", "speaker": "marisol", "cypher": "MATCH (n0:Mover)-[:mentor]->(n1:Mover) WHERE id(n0) = $speaker RETURN n1.called AS called"},
+  {"q": "Who is on my crew?", "speaker": "kofi", "cypher": "MATCH (n0:Mover)-[:crew]->(n1:Mover) WHERE id(n0) = $speaker RETURN n1.called AS called"},
+  {"q": "Which clients are my accounts?", "speaker": "marisol", "cypher": "MATCH (n0:Mover)-[:accounts]->(n1:Client) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is Dev Raghunathan's coordinator?", "speaker": null, "cypher": "MATCH (n0:Client)-[:coordinator]->(n1:Mover) WHERE n0.name = 'Dev Raghunathan' RETURN n1.called AS called"},
+  {"q": "Who was the surveyor for Dev Raghunathan?", "speaker": null, "cypher": "MATCH (n0:Client)-[:estimator]->(n1:Mover) WHERE n0.name = 'Dev Raghunathan' RETURN n1.called AS called"},
+  {"q": "How many moves are there?", "speaker": null, "cypher": "MATCH (n0:Move) RETURN count(n0) AS count"},
+  {"q": "How many boxes does the piano job need?", "speaker": null, "cypher": "MATCH (n0:Move) WHERE n0.job CONTAINS 'piano' RETURN n0.boxes AS boxes"},
+  {"q": "Which jobs did Marisol Quintero book?", "speaker": null, "cypher": "MATCH (n0:Mover)<-[:booked_by]-(n1:Move) WHERE n0.called = 'Marisol Quintero' RETURN n1.job AS job"},
+  {"q": "Which jobs am I packing?", "speaker": "ilse", "cypher": "MATCH (n0:Mover)<-[:packer]-(n1:Move) WHERE id(n0) = $speaker RETURN n1.job AS job"},
+  {"q": "Is there a record of insurance for the office clear-out?", "speaker": null, "cypher": "MATCH (n0:Move) WHERE n0.job = 'office clear-out' RETURN coalesce(n0.insured, false) AS insured"},
+  {"q": "Was Noor Al-Saadi's studio move insured?", "speaker": null, "cypher": "MATCH (n0:Client)<-[:client]-(n1:Move) WHERE n0.name = 'Noor Al-Saadi' AND n1.job CONTAINS 'studio' RETURN n1.insured AS insured"},
+  {"q": "Has Yusuf Demirci's claim been settled?", "speaker": null, "cypher": "MATCH (n0:Client)<-[:client]-(n1:Claim) WHERE n0.name = 'Yusuf Demirci' RETURN n1.settled AS settled"},
+  {"q": "What item and amount does each claim name?", "speaker": null, "cypher": "MATCH (n0:Claim) RETURN n0.item AS item, n0.amount_euros AS amount_euros"},
+  {"q": "What is Kofi Asamoah's phone number?", "speaker": null, "cypher": "MATCH (n0:Mover) WHERE n0.called = 'Kofi Asamoah' RETURN n0.phone AS phone"},
+  {"q": "Who drives the jobs for Harriet Lindqvist?", "speaker": null, "cypher": "MATCH (n0:Client)<-[:client]-(n1:Move)-[:driver]->(n2:Mover) WHERE n0.name = 'Harriet Lindqvist' RETURN n2.called AS called"}
+ ]
+}

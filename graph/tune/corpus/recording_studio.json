@@ -1,0 +1,135 @@
+{
+ "domain": "recording_studio",
+ "models": {
+  "Artist": {"description": "A performer who records at the studio, known by the name they release under.",
+   "properties": {"moniker": "string", "website": "string?"}},
+  "Engineer": {"description": "A studio staff member: producer, engineer or assistant. A first name alone is not an identity.",
+   "properties": {"name": "string", "studio_room": "string?"}},
+  "Collab": {"description": "One artist's credit on another's work: a guest feature, or a remix.",
+   "properties": {"host": "Artist", "guest": "Artist", "credit": ["featuring", "remixed_by"]},
+   "relation": {"from": "host", "to": "guest", "label": "credit", "phrasing": "{from} {label} {to}",
+    "labels": {"featuring": {"forward": ["featuring", "with guest"], "reverse": ["hosts"]},
+               "remixed_by": {"forward": ["remixed by", "remix by"], "reverse": ["remixes"]}}}},
+  "Engagement": {"description": "What a staff member does for an artist: produce their record, or mix it.",
+   "properties": {"staff": "Engineer", "artist": "Artist", "job": ["producer", "mix_engineer"]},
+   "relation": {"from": "staff", "to": "artist", "label": "job", "phrasing": "{from} works as {label} for {to}",
+    "labels": {"producer": {"forward": ["producer"], "reverse": ["producers"]},
+               "mix_engineer": {"forward": ["mix engineer", "mixer"], "reverse": ["mixers"]}}}},
+  "Session": {"description": "A block of studio time for an artist. booked_by made the booking, engineer runs the desk, assistant helps; status is on_hold, booked, finished or scrapped.",
+   "properties": {"title": "string", "artist": "Artist", "booked_by": "Engineer?", "engineer": "Engineer?", "assistant": "Engineer?",
+    "status": ["on_hold", "booked", "finished", "scrapped"], "hours": "integer?", "tape_used": "boolean?", "room": "string?"},
+   "absences": {"tape_used": "tape_unrecorded"}},
+  "Clearance": {"description": "Permission to use a sample in an artist's track. cleared stays empty until clearance is recorded.",
+   "properties": {"sample": "string", "artist": "Artist", "fee": "integer?", "cleared": "boolean?"},
+   "absences": {"cleared": "no_clearance_record"}}
+ },
+ "entities": {
+  "kito": {"model": "Artist", "name": "Kito Banda", "fields": {"website": "kitobanda.example"}},
+  "mirela": {"model": "Artist", "name": "Mirela Dragan"},
+  "mirela_c": {"model": "Artist", "name": "Mirela Costa"},
+  "ayo": {"model": "Artist", "name": "Ayodele Martins"},
+  "hamza": {"model": "Engineer", "name": "Hamza Qureshi"},
+  "lotte": {"model": "Engineer", "name": "Lotte Brink", "fields": {"studio_room": "the attic suite"}},
+  "ezequiel": {"model": "Engineer", "name": "Ezequiel Funes"},
+  "annika": {"model": "Engineer", "name": "Annika Rautio"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Hamza Qureshi: I'm producing Kito Banda's second record, so I'm his producer through the summer.",
+   "mentions": [["Hamza Qureshi", "hamza"], ["I", "hamza", "ref"], ["Kito Banda", "kito"], ["I", "hamza", "ref"], ["his", "kito", "ref"]],
+   "facts": [
+    {"model": "Engagement", "in": "I'm producing Kito Banda's second record", "from": "hamza", "to": "kito", "label": "producer", "act": "assert"}]},
+  {"id": "m02", "text": "Room B log: Mirela Dragan's Lowtide vocals were finished in 6 hours, with Lotte Brink engineering and Ezequiel Funes assisting.",
+   "mentions": [["Mirela Dragan", "mirela"], ["Lotte Brink", "lotte"], ["Ezequiel Funes", "ezequiel"]],
+   "facts": [
+    {"model": "Session", "in": "Room B log: Mirela Dragan's Lowtide vocals were finished in 6 hours", "fields": {"title": "Lowtide vocals", "artist": "mirela", "engineer": "lotte", "assistant": "ezequiel", "status": "finished", "hours": 6, "room": "Room B"}, "act": "assert"}]},
+  {"id": "m03", "text": "Annika Rautio: Mirela Dragan and Mirela Costa both want Saturday in the live room. Mirela said she can only come after six.",
+   "mentions": [["Annika Rautio", "annika"], ["Mirela Dragan", "mirela"], ["Mirela Costa", "mirela_c"], ["Mirela", "mirela", "?"], ["she", "?", "ref"]],
+   "facts": []},
+  {"id": "m04", "text": "Kito Banda's single Paper Moon is featuring Ayodele Martins on the bridge.",
+   "mentions": [["Kito Banda", "kito"], ["Ayodele Martins", "ayo"]],
+   "facts": [
+    {"model": "Collab", "in": "Kito Banda's single Paper Moon is featuring Ayodele Martins on the bridge.", "from": "kito", "to": "ayo", "label": "featuring", "act": "assert"}]},
+  {"id": "m05", "text": "Kito Banda: Hamza, could you book me a tracking session called Paper Moon drums for Tuesday with Ezequiel as assistant?",
+   "mentions": [["Kito Banda", "kito"], ["Hamza", "hamza"], ["me", "kito", "ref"], ["Ezequiel", "ezequiel"]],
+   "facts": [
+    {"model": "Session", "in": "Hamza, could you book me a tracking session called Paper Moon drums", "fields": {"title": "Paper Moon drums", "artist": "kito", "booked_by": "hamza", "assistant": "ezequiel", "status": "booked"}, "act": "request"}]},
+  {"id": "m06", "text": "Lotte Brink: I'm not Ayodele's mix engineer, Hamza Qureshi is.",
+   "mentions": [["Lotte Brink", "lotte"], ["I", "lotte", "ref"], ["Ayodele", "ayo"], ["Hamza Qureshi", "hamza"]],
+   "facts": [
+    {"model": "Engagement", "in": "I'm not Ayodele's mix engineer", "from": "lotte", "to": "ayo", "label": "mix_engineer", "act": "assert", "deny": true},
+    {"model": "Engagement", "in": "Hamza Qureshi is.", "from": "hamza", "to": "ayo", "label": "mix_engineer", "act": "assert"}]},
+  {"id": "m07", "text": "Ayodele Martins posted: \"Mirela Costa remixed my track and it slaps.\" He tagged her twice.",
+   "mentions": [["Ayodele Martins", "ayo"], ["Mirela Costa", "mirela_c"], ["my", "ayo", "ref"], ["He", "ayo", "ref"], ["her", "mirela_c", "ref"]],
+   "quotes": [["Mirela Costa remixed my track and it slaps.", "ayo"]],
+   "facts": [
+    {"model": "Collab", "in": "Mirela Costa remixed my track and it slaps.", "from": "ayo", "to": "mirela_c", "label": "remixed_by", "act": "assert"}]},
+  {"id": "m08", "text": "I taped \"no food near the desk\" above the console and Ezequiel Funes laughed.",
+   "mentions": [["I", "none", "ref"], ["Ezequiel Funes", "ezequiel"]],
+   "quotes": [["no food near the desk", "author"]],
+   "facts": []},
+  {"id": "m09", "text": "Annika Rautio: I think Mirela Costa's string overdubs could go on hold for 4 hours next week, with me engineering.",
+   "mentions": [["Annika Rautio", "annika"], ["I", "annika", "ref"], ["Mirela Costa", "mirela_c"], ["me", "annika", "ref"]],
+   "facts": [
+    {"model": "Session", "in": "I think Mirela Costa's string overdubs could go on hold for 4 hours next week", "fields": {"title": "string overdubs", "artist": "mirela_c", "engineer": "annika", "status": "on_hold", "hours": 4}, "act": "draft"}]},
+  {"id": "m10", "text": "If the label pays up, Lotte Brink will be the producer for Mirela Dragan's next album.",
+   "mentions": [["Lotte Brink", "lotte"], ["Mirela Dragan", "mirela"]],
+   "facts": [
+    {"model": "Engagement", "in": "Lotte Brink will be the producer for Mirela Dragan's next album.", "from": "lotte", "to": "mirela", "label": "producer", "act": "condition"}]},
+  {"id": "m11", "text": "Kito Banda said that the vinyl crackle sample on Paper Moon cost 300 dollars to clear.",
+   "mentions": [["Kito Banda", "kito"]],
+   "facts": [
+    {"model": "Clearance", "in": "Kito Banda said that the vinyl crackle sample on Paper Moon cost 300 dollars to clear.", "fields": {"sample": "vinyl crackle", "artist": "kito", "fee": 300, "cleared": true}, "act": "report"}]},
+  {"id": "m12", "text": "From accounts: Ayodele Martins's choir sample has not been cleared yet.",
+   "mentions": [["Ayodele Martins", "ayo"]],
+   "facts": [
+    {"model": "Clearance", "in": "Ayodele Martins's choir sample has not been cleared yet.", "fields": {"sample": "choir", "artist": "ayo", "cleared": false}, "act": "assert"}]},
+  {"id": "m13", "text": "Hi Lotte, the Lowtide mix session is scrapped, Mirela Dragan cancelled it this morning and we used no tape. I will rebook her later. Cheers, Annika",
+   "mentions": [["Lotte", "lotte"], ["Mirela Dragan", "mirela"], ["I", "annika", "ref"], ["her", "mirela", "ref"], ["Annika", "annika"]],
+   "facts": [
+    {"model": "Session", "in": "the Lowtide mix session is scrapped", "fields": {"title": "Lowtide mix", "artist": "mirela", "status": "scrapped", "tape_used": false}, "act": "assert"}]},
+  {"id": "m14", "text": "Mirela Costa: The engineers keep confusing me with the other Mirela. Kito Banda is featuring Mirela Dragan, not me.",
+   "mentions": [["Mirela Costa", "mirela_c"], ["me", "mirela_c", "ref"], ["Mirela", "mirela"], ["Kito Banda", "kito"], ["Mirela Dragan", "mirela"], ["me", "mirela_c", "ref"]],
+   "facts": [
+    {"model": "Collab", "in": "Kito Banda is featuring Mirela Dragan", "from": "kito", "to": "mirela", "label": "featuring", "act": "assert"},
+    {"model": "Collab", "in": "not me", "from": "kito", "to": "mirela_c", "label": "featuring", "act": "assert", "deny": true}]},
+  {"id": "m15", "text": "Ezequiel Funes booked the Gravel Hymn tracking for Ayodele Martins, and it was finished on two-inch tape with Hamza Qureshi engineering and Annika Rautio assisting.",
+   "mentions": [["Ezequiel Funes", "ezequiel"], ["Ayodele Martins", "ayo"], ["Hamza Qureshi", "hamza"], ["Annika Rautio", "annika"]],
+   "facts": [
+    {"model": "Session", "in": "Ezequiel Funes booked the Gravel Hymn tracking for Ayodele Martins", "fields": {"title": "Gravel Hymn tracking", "artist": "ayo", "booked_by": "ezequiel", "engineer": "hamza", "assistant": "annika", "status": "finished", "tape_used": true}, "act": "assert"}]},
+  {"id": "m16", "text": "Minutes: Annika Rautio will be Kito Banda's mix engineer from August. Mirela Dragan is featuring Kito Banda on the encore.",
+   "mentions": [["Annika Rautio", "annika"], ["Kito Banda", "kito"], ["Mirela Dragan", "mirela"], ["Kito Banda", "kito"]],
+   "facts": [
+    {"model": "Engagement", "in": "Annika Rautio will be Kito Banda's mix engineer from August.", "from": "annika", "to": "kito", "label": "mix_engineer", "act": "plan"},
+    {"model": "Collab", "in": "Mirela Dragan is featuring Kito Banda on the encore.", "from": "mirela", "to": "kito", "label": "featuring", "act": "assert"}]},
+  {"id": "m17", "text": "Ayodele Martins's choir sample fee was 150 dollars; Ayodele wants it cleared before mastering.",
+   "mentions": [["Ayodele Martins", "ayo"], ["Ayodele", "ayo"]],
+   "facts": [
+    {"model": "Clearance", "in": "Ayodele Martins's choir sample fee was 150 dollars", "fields": {"sample": "choir", "artist": "ayo", "fee": 150}, "act": "assert"}]},
+  {"id": "m18", "text": "Ezequiel Funes mentioned that Hamza Qureshi works as producer for Mirela Costa now.",
+   "mentions": [["Ezequiel Funes", "ezequiel"], ["Hamza Qureshi", "hamza"], ["Mirela Costa", "mirela_c"]],
+   "facts": [
+    {"model": "Engagement", "in": "Hamza Qureshi works as producer for Mirela Costa now.", "from": "hamza", "to": "mirela_c", "label": "producer", "act": "report"}]},
+  {"id": "m19", "text": "Lotte Brink put Kito Banda's Paper Moon drums session on hold; he is ill.",
+   "mentions": [["Lotte Brink", "lotte"], ["Kito Banda", "kito"], ["he", "kito", "ref"]],
+   "facts": [
+    {"model": "Session", "in": "Lotte Brink put Kito Banda's Paper Moon drums session on hold", "fields": {"title": "Paper Moon drums", "artist": "kito", "status": "on_hold"}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who are Kito Banda's producers?", "speaker": null, "cypher": "MATCH (n0:Artist)-[:producers]->(n1:Engineer) WHERE n0.moniker = 'Kito Banda' RETURN n1.name AS name"},
+  {"q": "Which artists am I producer for?", "speaker": "hamza", "cypher": "MATCH (n0:Engineer)-[:producer]->(n1:Artist) WHERE id(n0) = $speaker RETURN n1.moniker AS moniker"},
+  {"q": "Who are my mixers?", "speaker": "ayo", "cypher": "MATCH (n0:Artist)-[:mixers]->(n1:Engineer) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is Kito Banda featuring?", "speaker": null, "cypher": "MATCH (n0:Artist)-[:featuring]->(n1:Artist) WHERE n0.moniker = 'Kito Banda' RETURN n1.moniker AS moniker"},
+  {"q": "Who are my hosts?", "speaker": "ayo", "cypher": "MATCH (n0:Artist)-[:hosts]->(n1:Artist) WHERE id(n0) = $speaker RETURN n1.moniker AS moniker"},
+  {"q": "Which artists are among my remixes?", "speaker": "mirela_c", "cypher": "MATCH (n0:Artist)-[:remixes]->(n1:Artist) WHERE id(n0) = $speaker RETURN n1.moniker AS moniker"},
+  {"q": "How many sessions are there?", "speaker": null, "cypher": "MATCH (n0:Session) RETURN count(n0) AS count"},
+  {"q": "Which sessions did Ezequiel Funes book?", "speaker": null, "cypher": "MATCH (n0:Engineer)<-[:booked_by]-(n1:Session) WHERE n0.name = 'Ezequiel Funes' RETURN n1.title AS title"},
+  {"q": "Which sessions am I assisting on?", "speaker": "annika", "cypher": "MATCH (n0:Engineer)<-[:assistant]-(n1:Session) WHERE id(n0) = $speaker RETURN n1.title AS title"},
+  {"q": "How many hours did the Lowtide vocals take?", "speaker": null, "cypher": "MATCH (n0:Session) WHERE n0.title = 'Lowtide vocals' RETURN n0.hours AS hours"},
+  {"q": "Is there a record of tape being used for the Gravel Hymn tracking?", "speaker": null, "cypher": "MATCH (n0:Session) WHERE n0.title = 'Gravel Hymn tracking' RETURN coalesce(n0.tape_used, false) AS tape_used"},
+  {"q": "Has Ayodele Martins's choir sample been cleared?", "speaker": null, "cypher": "MATCH (n0:Artist)<-[:artist]-(n1:Clearance) WHERE n0.moniker = 'Ayodele Martins' AND n1.sample CONTAINS 'choir' RETURN n1.cleared AS cleared"},
+  {"q": "What sample and fee does each clearance list?", "speaker": null, "cypher": "MATCH (n0:Clearance) RETURN n0.sample AS sample, n0.fee AS fee"},
+  {"q": "What is Lotte Brink's studio room?", "speaker": null, "cypher": "MATCH (n0:Engineer) WHERE n0.name = 'Lotte Brink' RETURN n0.studio_room AS studio_room"},
+  {"q": "Which room were the Lowtide vocals recorded in?", "speaker": null, "cypher": "MATCH (n0:Session) WHERE n0.title = 'Lowtide vocals' RETURN n0.room AS room"},
+  {"q": "Who engineered the sessions for Mirela Dragan?", "speaker": null, "cypher": "MATCH (n0:Artist)<-[:artist]-(n1:Session)-[:engineer]->(n2:Engineer) WHERE n0.moniker = 'Mirela Dragan' RETURN n2.name AS name"}
+ ]
+}

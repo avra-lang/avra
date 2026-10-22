@@ -1,0 +1,150 @@
+{
+ "domain": "youth_football_league",
+ "models": {
+  "Member": {"description": "A player, parent, volunteer or official registered with the league. A first name alone is not an identity.",
+   "properties": {"name": "string", "email": "string?", "phone": "string?"}, "identities": ["email"]},
+  "Team": {"description": "A squad entered in the league under its club name.",
+   "properties": {"name": "string", "age_group": "string?"}},
+  "Guardianship": {"description": "Which adult a young player relies on: a parent, a carer with legal responsibility, or a regular driver to games.\nDriving a child does not make someone their carer.",
+   "properties": {"child": "Member", "adult": "Member", "kind": ["parent", "carer", "driver"]},
+   "relation": {"from": "child", "to": "adult", "label": "kind", "phrasing": "{from} relies on {to} as {label}",
+    "labels": {"parent": {"forward": ["parent", "mum", "dad"], "reverse": ["child"]},
+               "carer": {"forward": ["carer", "guardian"], "reverse": ["ward"]},
+               "driver": {"forward": ["driver", "lift", "drives"], "reverse": ["passenger"]}}}},
+  "TeamRole": {"description": "A standing role someone holds in a team: its manager, its captain or its goalkeeper.",
+   "properties": {"team": "Team", "holder": "Member", "role": ["manager", "captain", "keeper"]},
+   "relation": {"from": "team", "to": "holder", "label": "role", "phrasing": "{to} is {from}'s {label}",
+    "labels": {"manager": {"forward": ["manager", "manages", "gaffer"], "reverse": ["managed"]},
+               "captain": {"forward": ["captain", "captains", "skipper"], "reverse": ["captained"]},
+               "keeper": {"forward": ["keeper", "goalkeeper", "in goal"], "reverse": []}}}},
+  "Fixture": {"description": "A match between a home team and an opponent. arranged_by organised it, referee officiates, player_of_match is the standout player. A hoped-for match is not a fixture.",
+   "properties": {"opponent": "string", "home_team": "Team?", "arranged_by": "Member?", "referee": "Member?", "player_of_match": "Member?",
+    "status": ["scheduled", "played", "postponed"], "pitch_booked": "boolean?", "goals_scored": "integer?", "note": "string?"},
+   "absences": {"pitch_booked": "no_pitch_record"}},
+  "Injury": {"description": "An injury a player picked up. treated_by gave first aid. cleared stays empty until a return to play is recorded.",
+   "properties": {"injury": "string", "player": "Member?", "treated_by": "Member?", "cleared": "boolean?", "weeks_out": "integer?"},
+   "absences": {"cleared": "no_clearance_record"}}
+ },
+ "entities": {
+  "kofi": {"model": "Member", "name": "Kofi Mensah"},
+  "ama": {"model": "Member", "name": "Ama Mensah"},
+  "dario": {"model": "Member", "name": "Dario Pellegrini"},
+  "dario_e": {"model": "Member", "name": "Dario Esposito"},
+  "liesl": {"model": "Member", "name": "Liesl Brandauer"},
+  "hamza": {"model": "Member", "name": "Hamza Qureshi"},
+  "hamza_b": {"model": "Member", "name": "Hamza Bakri"},
+  "samira": {"model": "Member", "name": "Samira Al-Rashid"},
+  "siosaia": {"model": "Member", "name": "Siosaia Fifita"},
+  "bryony": {"model": "Member", "name": "Bryony Ashcombe", "fields": {"email": "bryony@ashcombe.example"}},
+  "riverside": {"model": "Team", "name": "Riverside Colts"},
+  "millbrook": {"model": "Team", "name": "Millbrook Lions"},
+  "eastfield": {"model": "Team", "name": "Eastfield Rovers"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Dario Pellegrini: Riverside Colts play Hollins Park at home on Saturday. I manage the Colts, and Kofi Mensah is our captain.",
+   "mentions": [["Dario Pellegrini", "dario"], ["Riverside Colts", "riverside"], ["I", "dario", "ref"], ["Colts", "riverside"], ["Kofi Mensah", "kofi"]],
+   "facts": [
+    {"model": "Fixture", "in": "Riverside Colts play Hollins Park at home on Saturday.", "fields": {"opponent": "Hollins Park", "home_team": "riverside", "status": "scheduled"}, "act": "assert"},
+    {"model": "TeamRole", "in": "I manage the Colts", "from": "riverside", "to": "dario", "label": "manager", "act": "assert"},
+    {"model": "TeamRole", "in": "Kofi Mensah is our captain", "from": "riverside", "to": "kofi", "label": "captain", "act": "assert"}]},
+  {"id": "m02", "text": "Ama Mensah: Kofi is my son, and Samira Al-Rashid drives him to away games.",
+   "mentions": [["Ama Mensah", "ama"], ["Kofi", "kofi"], ["my", "ama", "ref"], ["Samira Al-Rashid", "samira"], ["him", "kofi", "ref"]],
+   "facts": [
+    {"model": "Guardianship", "in": "Kofi is my son", "from": "kofi", "to": "ama", "label": "parent", "act": "assert"},
+    {"model": "Guardianship", "in": "Samira Al-Rashid drives him to away games.", "from": "kofi", "to": "samira", "label": "driver", "act": "assert"}]},
+  {"id": "m03", "text": "Liesl Brandauer told the league, \"I refereed Millbrook Lions against Brackley Town and they won 3 to 1.\"",
+   "mentions": [["Liesl Brandauer", "liesl"], ["I", "liesl", "ref"], ["Millbrook Lions", "millbrook"], ["they", "millbrook", "ref"]],
+   "quotes": [["I refereed Millbrook Lions against Brackley Town and they won 3 to 1.", "liesl"]],
+   "facts": [
+    {"model": "Fixture", "in": "I refereed Millbrook Lions against Brackley Town and they won 3 to 1.", "fields": {"opponent": "Brackley Town", "home_team": "millbrook", "referee": "liesl", "status": "played", "goals_scored": 3}, "act": "assert"}]},
+  {"id": "m04", "text": "Siosaia Fifita: Hamza Qureshi and Hamza Bakri both want to play in goal for Eastfield Rovers. Qureshi will be Eastfield Rovers' keeper on Sunday, and Bakri sits on the bench.",
+   "mentions": [["Siosaia Fifita", "siosaia"], ["Hamza Qureshi", "hamza"], ["Hamza Bakri", "hamza_b"], ["Eastfield Rovers", "eastfield"], ["Qureshi", "hamza"], ["Eastfield Rovers", "eastfield"], ["Bakri", "hamza_b"]],
+   "facts": [
+    {"model": "TeamRole", "in": "Qureshi will be Eastfield Rovers' keeper on Sunday", "from": "eastfield", "to": "hamza", "label": "keeper", "act": "plan"}]},
+  {"id": "m05", "text": "Bryony Ashcombe: Hamza Qureshi missed training and Hamza Bakri was late. Hamza says the bus broke down.",
+   "mentions": [["Bryony Ashcombe", "bryony"], ["Hamza Qureshi", "hamza"], ["Hamza Bakri", "hamza_b"], ["Hamza", "hamza", "?"]],
+   "facts": []},
+  {"id": "m06", "text": "Dario Pellegrini: A new parent, Dario Esposito, has offered to drive Hamza Bakri on Saturdays. He passed his checks last week.",
+   "mentions": [["Dario Pellegrini", "dario"], ["Dario Esposito", "dario_e"], ["Hamza Bakri", "hamza_b"], ["He", "dario_e", "ref"], ["his", "dario_e", "ref"]],
+   "facts": [
+    {"model": "Guardianship", "in": "A new parent, Dario Esposito, has offered to drive Hamza Bakri on Saturdays.", "from": "hamza_b", "to": "dario_e", "label": "driver", "act": "plan"}]},
+  {"id": "m07", "text": "Training note: Kofi Mensah twisted his ankle and will be out for 3 weeks, so Siosaia Fifita strapped it up pitch-side.",
+   "mentions": [["Kofi Mensah", "kofi"], ["his", "kofi", "ref"], ["Siosaia Fifita", "siosaia"]],
+   "facts": [
+    {"model": "Injury", "in": "Training note: Kofi Mensah twisted his ankle", "fields": {"injury": "twisted his ankle", "player": "kofi", "treated_by": "siosaia", "weeks_out": 3}, "act": "assert"}]},
+  {"id": "m08", "text": "Ama Mensah: Kofi has not been cleared to play after the ankle injury, whatever the coach says.",
+   "mentions": [["Ama Mensah", "ama"], ["Kofi", "kofi"]],
+   "facts": [
+    {"model": "Injury", "in": "Kofi has not been cleared to play after the ankle injury", "fields": {"injury": "ankle injury", "player": "kofi", "cleared": false}, "act": "assert"}]},
+  {"id": "m09", "text": "Saturday's game against Ashmead Wanderers was postponed because the pitch is waterlogged, Bryony Ashcombe confirmed.",
+   "mentions": [["Bryony Ashcombe", "bryony"]],
+   "facts": [
+    {"model": "Fixture", "in": "Saturday's game against Ashmead Wanderers was postponed", "fields": {"opponent": "Ashmead Wanderers", "status": "postponed", "note": "the pitch is waterlogged"}, "act": "report"}]},
+  {"id": "m10", "text": "Dear Bryony,\nCould you book a pitch for Eastfield Rovers against Hollins Park on the 14th, with Liesl Brandauer as referee?\nThanks,\nSiosaia",
+   "mentions": [["Bryony", "bryony"], ["you", "bryony", "ref"], ["Eastfield Rovers", "eastfield"], ["Liesl Brandauer", "liesl"], ["Siosaia", "siosaia"]],
+   "facts": [
+    {"model": "Fixture", "in": "Could you book a pitch for Eastfield Rovers against Hollins Park", "fields": {"opponent": "Hollins Park", "home_team": "eastfield", "arranged_by": "bryony", "referee": "liesl", "status": "scheduled"}, "act": "request"}]},
+  {"id": "m11", "text": "As I said to Dario Pellegrini after the match, \"Millbrook Lions beat Hollins Park 2 to 0 and the pitch was booked properly.\"\nThe groundsman",
+   "mentions": [["I", "none", "ref"], ["Dario Pellegrini", "dario"], ["Millbrook Lions", "millbrook"]],
+   "quotes": [["Millbrook Lions beat Hollins Park 2 to 0 and the pitch was booked properly.", "author"]],
+   "facts": [
+    {"model": "Fixture", "in": "Millbrook Lions beat Hollins Park 2 to 0 and the pitch was booked properly.", "fields": {"opponent": "Hollins Park", "home_team": "millbrook", "status": "played", "goals_scored": 2, "pitch_booked": true}, "act": "assert"}]},
+  {"id": "m12", "text": "Samira Al-Rashid: Maybe Riverside Colts host Brackley Town on the 21st, arranged by me, but nothing is confirmed.",
+   "mentions": [["Samira Al-Rashid", "samira"], ["Riverside Colts", "riverside"], ["me", "samira", "ref"]],
+   "facts": [
+    {"model": "Fixture", "in": "Maybe Riverside Colts host Brackley Town on the 21st", "fields": {"opponent": "Brackley Town", "home_team": "riverside", "arranged_by": "samira", "status": "scheduled"}, "act": "draft"}]},
+  {"id": "m13", "text": "If the rain holds off, Liesl Brandauer will referee Eastfield Rovers against Ashmead Wanderers on a pitch Bryony Ashcombe booked.",
+   "mentions": [["Liesl Brandauer", "liesl"], ["Eastfield Rovers", "eastfield"], ["Bryony Ashcombe", "bryony"]],
+   "facts": [
+    {"model": "Fixture", "in": "If the rain holds off, Liesl Brandauer will referee", "fields": {"opponent": "Ashmead Wanderers", "home_team": "eastfield", "referee": "liesl", "arranged_by": "bryony", "status": "scheduled", "pitch_booked": true, "note": "the rain holds off"}, "act": "condition"}]},
+  {"id": "m14", "text": "Samira Al-Rashid: I am not Hamza Qureshi's carer; his aunt is.",
+   "mentions": [["Samira Al-Rashid", "samira"], ["I", "samira", "ref"], ["Hamza Qureshi", "hamza"], ["his", "hamza", "ref"]],
+   "facts": [
+    {"model": "Guardianship", "in": "I am not Hamza Qureshi's carer", "from": "hamza", "to": "samira", "label": "carer", "act": "assert", "deny": true}]},
+  {"id": "m15", "text": "Bryony Ashcombe said that Siosaia Fifita is the new manager of Millbrook Lions.",
+   "mentions": [["Bryony Ashcombe", "bryony"], ["Siosaia Fifita", "siosaia"], ["Millbrook Lions", "millbrook"]],
+   "facts": [
+    {"model": "TeamRole", "in": "Bryony Ashcombe said that Siosaia Fifita is the new manager of Millbrook Lions.", "from": "millbrook", "to": "siosaia", "label": "manager", "act": "report"}]},
+  {"id": "m16", "text": "Fwd from Hamza Bakri: \"Dario Esposito is my lift on Saturdays and I owe him the petrol money.\"",
+   "mentions": [["Hamza Bakri", "hamza_b"], ["Dario Esposito", "dario_e"], ["my", "hamza_b", "ref"], ["I", "hamza_b", "ref"], ["him", "dario_e", "ref"]],
+   "quotes": [["Dario Esposito is my lift on Saturdays and I owe him the petrol money.", "hamza_b"]],
+   "facts": [
+    {"model": "Guardianship", "in": "Dario Esposito is my lift on Saturdays", "from": "hamza_b", "to": "dario_e", "label": "driver", "act": "assert"}]},
+  {"id": "m17", "text": "Siosaia Fifita: Hamza Bakri's sprained wrist has healed and the physio cleared him on Monday.",
+   "mentions": [["Siosaia Fifita", "siosaia"], ["Hamza Bakri", "hamza_b"], ["him", "hamza_b", "ref"]],
+   "facts": [
+    {"model": "Injury", "in": "Hamza Bakri's sprained wrist has healed and the physio cleared him on Monday.", "fields": {"injury": "sprained wrist", "player": "hamza_b", "cleared": true}, "act": "assert"}]},
+  {"id": "m18", "text": "Final score: Riverside Colts beat Ashmead Wanderers 4 to 2; Kofi Mensah was player of the match and Dario Pellegrini refereed.",
+   "mentions": [["Riverside Colts", "riverside"], ["Kofi Mensah", "kofi"], ["Dario Pellegrini", "dario"]],
+   "facts": [
+    {"model": "Fixture", "in": "Final score: Riverside Colts beat Ashmead Wanderers 4 to 2", "fields": {"opponent": "Ashmead Wanderers", "home_team": "riverside", "player_of_match": "kofi", "referee": "dario", "status": "played", "goals_scored": 4}, "act": "assert"}]},
+  {"id": "m19", "text": "From next term Ama Mensah will be Hamza Qureshi's guardian while his aunt is away.",
+   "mentions": [["Ama Mensah", "ama"], ["Hamza Qureshi", "hamza"], ["his", "hamza", "ref"]],
+   "facts": [
+    {"model": "Guardianship", "in": "From next term Ama Mensah will be Hamza Qureshi's guardian", "from": "hamza", "to": "ama", "label": "carer", "act": "plan"}]},
+  {"id": "m20", "text": "Committee minutes: Hamza Bakri captains Millbrook Lions this season, and Samira Al-Rashid is their keeper.",
+   "mentions": [["Hamza Bakri", "hamza_b"], ["Millbrook Lions", "millbrook"], ["Samira Al-Rashid", "samira"], ["their", "millbrook", "ref"]],
+   "facts": [
+    {"model": "TeamRole", "in": "Hamza Bakri captains Millbrook Lions this season", "from": "millbrook", "to": "hamza_b", "label": "captain", "act": "assert"},
+    {"model": "TeamRole", "in": "Samira Al-Rashid is their keeper.", "from": "millbrook", "to": "samira", "label": "keeper", "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who is the captain of Riverside Colts?", "speaker": null, "cypher": "MATCH (n0:Team)-[:captain]->(n1:Member) WHERE n0.name = 'Riverside Colts' RETURN n1.name AS name"},
+  {"q": "Who manages Millbrook Lions?", "speaker": null, "cypher": "MATCH (n0:Team)-[:manager]->(n1:Member) WHERE n0.name = 'Millbrook Lions' RETURN n1.name AS name"},
+  {"q": "Who is in goal for Eastfield Rovers?", "speaker": null, "cypher": "MATCH (n0:Team)-[:keeper]->(n1:Member) WHERE n0.name = 'Eastfield Rovers' RETURN n1.name AS name"},
+  {"q": "Which team is managed by me?", "speaker": "dario", "cypher": "MATCH (n0:Member)-[:managed]->(n1:Team) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who drives me to games?", "speaker": "kofi", "cypher": "MATCH (n0:Member)-[:driver]->(n1:Member) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is my passenger?", "speaker": "dario_e", "cypher": "MATCH (n0:Member)-[:passenger]->(n1:Member) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is Kofi Mensah's parent?", "speaker": null, "cypher": "MATCH (n0:Member)-[:parent]->(n1:Member) WHERE n0.name = 'Kofi Mensah' RETURN n1.name AS name"},
+  {"q": "How many fixtures are there?", "speaker": null, "cypher": "MATCH (n0:Fixture) RETURN count(n0) AS count"},
+  {"q": "Has the sprained wrist been cleared?", "speaker": null, "cypher": "MATCH (n0:Injury) WHERE n0.injury = 'sprained wrist' RETURN n0.cleared AS cleared"},
+  {"q": "Is there a record of the ankle injury being cleared?", "speaker": null, "cypher": "MATCH (n0:Injury) WHERE n0.injury = 'ankle injury' RETURN coalesce(n0.cleared, false) AS cleared"},
+  {"q": "How many weeks is Kofi Mensah out with injuries?", "speaker": null, "cypher": "MATCH (n0:Member)<-[:player]-(n1:Injury) WHERE n0.name = 'Kofi Mensah' RETURN n1.weeks_out AS weeks_out"},
+  {"q": "Who refereed the games of Eastfield Rovers?", "speaker": null, "cypher": "MATCH (n0:Team)<-[:home_team]-(n1:Fixture)-[:referee]->(n2:Member) WHERE n0.name = 'Eastfield Rovers' RETURN n2.name AS name"},
+  {"q": "Which opponents did Bryony Ashcombe arrange?", "speaker": null, "cypher": "MATCH (n0:Member)<-[:arranged_by]-(n1:Fixture) WHERE n0.name = 'Bryony Ashcombe' RETURN n1.opponent AS opponent"},
+  {"q": "What goals did Riverside Colts score and against which opponent?", "speaker": null, "cypher": "MATCH (n0:Team)<-[:home_team]-(n1:Fixture) WHERE n0.name = 'Riverside Colts' RETURN n1.goals_scored AS goals_scored, n1.opponent AS opponent"},
+  {"q": "Was the pitch booked for the Brackley Town game?", "speaker": null, "cypher": "MATCH (n0:Fixture) WHERE n0.opponent = 'Brackley Town' RETURN n0.pitch_booked AS pitch_booked"},
+  {"q": "Is there a record of a pitch being booked against Ashmead Wanderers?", "speaker": null, "cypher": "MATCH (n0:Fixture) WHERE n0.opponent = 'Ashmead Wanderers' RETURN coalesce(n0.pitch_booked, false) AS pitch_booked"},
+  {"q": "Which fixtures depend on the rain, and against whom?", "speaker": null, "cypher": "MATCH (n0:Fixture) WHERE n0.note CONTAINS 'rain' RETURN n0.opponent AS opponent"}
+ ]
+}

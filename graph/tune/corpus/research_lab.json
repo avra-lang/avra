@@ -1,0 +1,150 @@
+{
+ "domain": "research_lab",
+ "models": {
+  "Scientist": {"description": "A researcher, student or technician in the lab. A first name alone is not an identity.",
+   "properties": {"name": "string", "orcid": "string?", "office": "string?"}, "identities": ["orcid"]},
+  "Instrument": {"description": "A shared instrument in the core facility, known by its name.",
+   "properties": {"name": "string", "room": "string?"}},
+  "Advising": {"description": "Who supervises or examines a researcher's degree work.\nRunning someone's samples does not make you their supervisor.",
+   "properties": {"researcher": "Scientist", "advisor": "Scientist", "capacity": ["supervisor", "examiner"]},
+   "relation": {"from": "researcher", "to": "advisor", "label": "capacity", "phrasing": "{to} is the {label} of {from}",
+    "labels": {"supervisor": {"forward": ["supervisor", "supervises", "advisor"], "reverse": ["student"]},
+               "examiner": {"forward": ["examiner", "examines", "examined"], "reverse": ["candidate"]}}}},
+  "InstrumentRole": {"description": "A standing role a scientist holds on an instrument: its custodian, or a user signed off to run it alone.",
+   "properties": {"instrument": "Instrument", "holder": "Scientist", "role": ["custodian", "trained_user"]},
+   "relation": {"from": "instrument", "to": "holder", "label": "role", "phrasing": "{to} holds the {label} role on {from}",
+    "labels": {"custodian": {"forward": ["custodian", "looks after", "in charge of"], "reverse": ["custody"]},
+               "trained_user": {"forward": ["trained user", "signed off on", "certified on"], "reverse": ["certified"]}}}},
+  "Run": {"description": "A booked run of samples on an instrument. requested_by wants the data, operator runs the instrument, analyst works up the results. A wish to run is not a booking.",
+   "properties": {"sample": "string", "instrument": "Instrument?", "requested_by": "Scientist?", "operator": "Scientist?", "analyst": "Scientist?",
+    "state": ["queued", "finished", "aborted"], "contaminated": "boolean?", "hours": "integer?", "remark": "string?"},
+   "absences": {"contaminated": "no_contamination_check"}},
+  "SafetyIncident": {"description": "A safety problem in the lab. reported_by raised it, responder deals with it. resolved stays empty until a fix is recorded.",
+   "properties": {"incident": "string", "location": "string?", "reported_by": "Scientist?", "responder": "Scientist?", "resolved": "boolean?"},
+   "absences": {"resolved": "no_resolution_record"}}
+ },
+ "entities": {
+  "leilani": {"model": "Scientist", "name": "Leilani Kahale"},
+  "bart": {"model": "Scientist", "name": "Bartholomew Oyelaran"},
+  "siddharth_i": {"model": "Scientist", "name": "Siddharth Iyer"},
+  "siddharth_m": {"model": "Scientist", "name": "Siddharth Menon"},
+  "agnieszka": {"model": "Scientist", "name": "Agnieszka Wróbel"},
+  "rafaela": {"model": "Scientist", "name": "Rafaela Duarte"},
+  "rafaela_m": {"model": "Scientist", "name": "Rafaela Moniz"},
+  "thandiwe": {"model": "Scientist", "name": "Thandiwe Mokoena", "fields": {"orcid": "0000-0002-1825-0097"}},
+  "gunnar": {"model": "Scientist", "name": "Gunnar Eriksen"},
+  "haewon": {"model": "Scientist", "name": "Hae-won Park"},
+  "krios": {"model": "Instrument", "name": "Krios"},
+  "orbitrap": {"model": "Instrument", "name": "Orbitrap"},
+  "bruker": {"model": "Instrument", "name": "Bruker 600"},
+  "seahorse": {"model": "Instrument", "name": "Seahorse"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Leilani Kahale: I'll operate the Orbitrap run on the liver lysates on Monday, and Siddharth Iyer will analyse the spectra.",
+   "mentions": [["Leilani Kahale", "leilani"], ["I", "leilani", "ref"], ["Orbitrap", "orbitrap"], ["Siddharth Iyer", "siddharth_i"]],
+   "facts": [
+    {"model": "Run", "in": "I'll operate the Orbitrap run on the liver lysates on Monday", "fields": {"sample": "liver lysates", "instrument": "orbitrap", "operator": "leilani", "analyst": "siddharth_i", "state": "queued"}, "act": "plan"}]},
+  {"id": "m02", "text": "Bartholomew Oyelaran said, \"I never examined Hae-won Park, Gunnar Eriksen did.\"",
+   "mentions": [["Bartholomew Oyelaran", "bart"], ["I", "bart", "ref"], ["Hae-won Park", "haewon"], ["Gunnar Eriksen", "gunnar"]],
+   "quotes": [["I never examined Hae-won Park, Gunnar Eriksen did.", "bart"]],
+   "facts": [
+    {"model": "Advising", "in": "I never examined Hae-won Park", "from": "haewon", "to": "bart", "label": "examiner", "act": "assert", "deny": true},
+    {"model": "Advising", "in": "Gunnar Eriksen did.", "from": "haewon", "to": "gunnar", "label": "examiner", "act": "assert"}]},
+  {"id": "m03", "text": "Hi all,\nThe Krios session on the spike protein grids finished overnight after 18 hours, and the grids were not contaminated.\nThanks, Agnieszka",
+   "mentions": [["Krios", "krios"], ["Agnieszka", "agnieszka"]],
+   "facts": [
+    {"model": "Run", "in": "The Krios session on the spike protein grids finished overnight", "fields": {"sample": "spike protein grids", "instrument": "krios", "state": "finished", "hours": 18, "contaminated": false}, "act": "assert"}]},
+  {"id": "m04", "text": "Rafaela Duarte: Could someone book the Seahorse for my 6 hour mitochondria assay on Friday? Gunnar Eriksen said he might supervise me next year.",
+   "mentions": [["Rafaela Duarte", "rafaela"], ["Seahorse", "seahorse"], ["my", "rafaela", "ref"], ["Gunnar Eriksen", "gunnar"], ["he", "gunnar", "ref"], ["me", "rafaela", "ref"]],
+   "facts": [
+    {"model": "Run", "in": "Could someone book the Seahorse for my 6 hour mitochondria assay on Friday?", "fields": {"sample": "mitochondria assay", "instrument": "seahorse", "requested_by": "rafaela", "hours": 6, "state": "queued"}, "act": "request"},
+    {"model": "Advising", "in": "Gunnar Eriksen said he might supervise me next year.", "from": "rafaela", "to": "gunnar", "label": "supervisor", "act": "report"}]},
+  {"id": "m05", "text": "Lab meeting, 9 April: Thandiwe Mokoena reported a solvent spill in the cold room. Siddharth Menon said he would clean up the solvent spill before lunch.",
+   "mentions": [["Thandiwe Mokoena", "thandiwe"], ["Siddharth Menon", "siddharth_m"], ["he", "siddharth_m", "ref"]],
+   "facts": [
+    {"model": "SafetyIncident", "in": "Thandiwe Mokoena reported a solvent spill in the cold room.", "fields": {"incident": "solvent spill", "location": "cold room", "reported_by": "thandiwe"}, "act": "report"},
+    {"model": "SafetyIncident", "in": "Siddharth Menon said he would clean up the solvent spill before lunch.", "fields": {"incident": "solvent spill", "responder": "siddharth_m"}, "act": "report"}]},
+  {"id": "m06", "text": "Siddharth Iyer and Siddharth Menon both want the Krios on Sunday. Iyer booked it first for the ribosome grids, so Menon will use the Bruker 600 instead.",
+   "mentions": [["Siddharth Iyer", "siddharth_i"], ["Siddharth Menon", "siddharth_m"], ["Krios", "krios"], ["Iyer", "siddharth_i"], ["it", "krios", "ref"], ["Menon", "siddharth_m"], ["Bruker 600", "bruker"]],
+   "facts": [
+    {"model": "Run", "in": "Iyer booked it first for the ribosome grids", "fields": {"sample": "ribosome grids", "instrument": "krios", "requested_by": "siddharth_i", "state": "queued"}, "act": "assert"}]},
+  {"id": "m07", "text": "Leilani Kahale: Siddharth Iyer emailed about the safety course, and Siddharth Menon called too. Siddharth says the course moved to Thursday.",
+   "mentions": [["Leilani Kahale", "leilani"], ["Siddharth Iyer", "siddharth_i"], ["Siddharth Menon", "siddharth_m"], ["Siddharth", "siddharth_i", "?"]],
+   "facts": []},
+  {"id": "m08", "text": "Rafaela Duarte: Our new rotation student, Rafaela Moniz, starts on Monday. I will be her supervisor for the rotation.",
+   "mentions": [["Rafaela Duarte", "rafaela"], ["Rafaela Moniz", "rafaela_m"], ["I", "rafaela", "ref"], ["her", "rafaela_m", "ref"]],
+   "facts": [
+    {"model": "Advising", "in": "I will be her supervisor for the rotation.", "from": "rafaela_m", "to": "rafaela", "label": "supervisor", "act": "plan"}]},
+  {"id": "m09", "text": "Gunnar Eriksen: I look after the Bruker 600 for Leilani and Agnieszka. Hae-won Park is a trained user of the Krios this term.",
+   "mentions": [["Gunnar Eriksen", "gunnar"], ["I", "gunnar", "ref"], ["Bruker 600", "bruker"], ["Leilani", "leilani"], ["Agnieszka", "agnieszka"], ["Hae-won Park", "haewon"], ["Krios", "krios"]],
+   "facts": [
+    {"model": "InstrumentRole", "in": "I look after the Bruker 600 for Leilani and Agnieszka.", "from": "bruker", "to": "gunnar", "label": "custodian", "act": "assert"},
+    {"model": "InstrumentRole", "in": "Hae-won Park is a trained user of the Krios this term.", "from": "krios", "to": "haewon", "label": "trained_user", "act": "assert"}]},
+  {"id": "m10", "text": "Note on the door: there is a broken fume hood sash in room 4, reported by Agnieszka Wróbel. Nobody has resolved it yet.",
+   "mentions": [["Agnieszka Wróbel", "agnieszka"]],
+   "facts": [
+    {"model": "SafetyIncident", "in": "there is a broken fume hood sash in room 4, reported by Agnieszka Wróbel.", "fields": {"incident": "broken fume hood sash", "location": "room 4", "reported_by": "agnieszka"}, "act": "assert"}]},
+  {"id": "m11", "text": "As I told Thandiwe Mokoena yesterday, \"The Seahorse has a leaking cartridge port and stays offline until Tuesday.\"\nThe facility manager",
+   "mentions": [["I", "none", "ref"], ["Thandiwe Mokoena", "thandiwe"], ["Seahorse", "seahorse"]],
+   "quotes": [["The Seahorse has a leaking cartridge port and stays offline until Tuesday.", "author"]],
+   "facts": [
+    {"model": "SafetyIncident", "in": "The Seahorse has a leaking cartridge port and stays offline until Tuesday.", "fields": {"incident": "leaking cartridge port"}, "act": "assert"}]},
+  {"id": "m12", "text": "Agnieszka Wróbel: I'm not the custodian of the Orbitrap any more; Bartholomew Oyelaran is.",
+   "mentions": [["Agnieszka Wróbel", "agnieszka"], ["I", "agnieszka", "ref"], ["Orbitrap", "orbitrap"], ["Bartholomew Oyelaran", "bart"]],
+   "facts": [
+    {"model": "InstrumentRole", "in": "I'm not the custodian of the Orbitrap any more", "from": "orbitrap", "to": "agnieszka", "label": "custodian", "act": "assert", "deny": true},
+    {"model": "InstrumentRole", "in": "Bartholomew Oyelaran is.", "from": "orbitrap", "to": "bart", "label": "custodian", "act": "assert"}]},
+  {"id": "m13", "text": "If the helium delivery arrives, Hae-won Park will run Rafaela Duarte's cryo grids on the Krios for 24 hours.",
+   "mentions": [["Hae-won Park", "haewon"], ["Rafaela Duarte", "rafaela"], ["Krios", "krios"]],
+   "facts": [
+    {"model": "Run", "in": "If the helium delivery arrives, Hae-won Park will run", "fields": {"sample": "cryo grids", "instrument": "krios", "operator": "haewon", "requested_by": "rafaela", "hours": 24, "state": "queued", "remark": "the helium delivery arrives"}, "act": "condition"}]},
+  {"id": "m14", "text": "Thandiwe Mokoena: Pencilled in, maybe: Siddharth Menon analyses the 12 hour soil extracts run on the Orbitrap, requested by me.",
+   "mentions": [["Thandiwe Mokoena", "thandiwe"], ["Siddharth Menon", "siddharth_m"], ["Orbitrap", "orbitrap"], ["me", "thandiwe", "ref"]],
+   "facts": [
+    {"model": "Run", "in": "Pencilled in, maybe: Siddharth Menon analyses", "fields": {"sample": "soil extracts", "instrument": "orbitrap", "analyst": "siddharth_m", "requested_by": "thandiwe", "hours": 12, "state": "queued"}, "act": "draft"}]},
+  {"id": "m15", "text": "Tuesday's 8 hour yeast lysates run on the Bruker 600 was aborted because of a probe fault, Leilani Kahale confirmed.",
+   "mentions": [["Bruker 600", "bruker"], ["Leilani Kahale", "leilani"]],
+   "facts": [
+    {"model": "Run", "in": "Tuesday's 8 hour yeast lysates run on the Bruker 600 was aborted", "fields": {"sample": "yeast lysates", "instrument": "bruker", "hours": 8, "state": "aborted", "remark": "a probe fault"}, "act": "report"}]},
+  {"id": "m16", "text": "Dear Gunnar,\nCould you operate the Seahorse on the islet samples next Wednesday?\nBest,\nRafaela Duarte",
+   "mentions": [["Gunnar", "gunnar"], ["you", "gunnar", "ref"], ["Seahorse", "seahorse"], ["Rafaela Duarte", "rafaela"]],
+   "facts": [
+    {"model": "Run", "in": "Could you operate the Seahorse on the islet samples next Wednesday?", "fields": {"sample": "islet samples", "instrument": "seahorse", "operator": "gunnar", "state": "queued"}, "act": "request"}]},
+  {"id": "m17", "text": "Agnieszka Wróbel: The broken fume hood sash in room 4 was fixed by Gunnar Eriksen yesterday.",
+   "mentions": [["Agnieszka Wróbel", "agnieszka"], ["Gunnar Eriksen", "gunnar"]],
+   "facts": [
+    {"model": "SafetyIncident", "in": "The broken fume hood sash in room 4 was fixed by Gunnar Eriksen yesterday.", "fields": {"incident": "broken fume hood sash", "location": "room 4", "responder": "gunnar", "resolved": true}, "act": "assert"}]},
+  {"id": "m18", "text": "Fwd from Thandiwe Mokoena: \"Rafaela Moniz is my new student, and I am her supervisor until the autumn.\"",
+   "mentions": [["Thandiwe Mokoena", "thandiwe"], ["Rafaela Moniz", "rafaela_m"], ["my", "thandiwe", "ref"], ["I", "thandiwe", "ref"], ["her", "rafaela_m", "ref"]],
+   "quotes": [["Rafaela Moniz is my new student, and I am her supervisor until the autumn.", "thandiwe"]],
+   "facts": [
+    {"model": "Advising", "in": "Rafaela Moniz is my new student", "from": "rafaela_m", "to": "thandiwe", "label": "supervisor", "act": "assert"}]},
+  {"id": "m19", "text": "I'm Siddharth Menon and I won't be a trained user of the Krios this term after all.",
+   "mentions": [["I", "siddharth_m", "ref"], ["Siddharth Menon", "siddharth_m"], ["I", "siddharth_m", "ref"], ["Krios", "krios"]],
+   "facts": [
+    {"model": "InstrumentRole", "in": "I won't be a trained user of the Krios", "from": "krios", "to": "siddharth_m", "label": "trained_user", "act": "plan", "deny": true}]},
+  {"id": "m20", "text": "Run sheet: Bartholomew Oyelaran ran the cardiac tissue on the Orbitrap for 5 hours; Hae-won will analyse it tomorrow.",
+   "mentions": [["Bartholomew Oyelaran", "bart"], ["Orbitrap", "orbitrap"], ["Hae-won", "haewon"]],
+   "facts": [
+    {"model": "Run", "in": "Run sheet: Bartholomew Oyelaran ran the cardiac tissue", "fields": {"sample": "cardiac tissue", "instrument": "orbitrap", "operator": "bart", "analyst": "haewon", "hours": 5, "state": "finished"}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who is the custodian of the Orbitrap?", "speaker": null, "cypher": "MATCH (n0:Instrument)-[:custodian]->(n1:Scientist) WHERE n0.name = 'Orbitrap' RETURN n1.name AS name"},
+  {"q": "Who examined Hae-won Park?", "speaker": null, "cypher": "MATCH (n0:Scientist)-[:examiner]->(n1:Scientist) WHERE n0.name = 'Hae-won Park' RETURN n1.name AS name"},
+  {"q": "Who is my supervisor?", "speaker": "rafaela_m", "cypher": "MATCH (n0:Scientist)-[:supervisor]->(n1:Scientist) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Name every student of mine.", "speaker": "thandiwe", "cypher": "MATCH (n0:Scientist)-[:student]->(n1:Scientist) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Which instruments are in my custody?", "speaker": "gunnar", "cypher": "MATCH (n0:Scientist)-[:custody]->(n1:Instrument) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is a trained user of the Krios?", "speaker": null, "cypher": "MATCH (n0:Instrument)-[:trained_user]->(n1:Scientist) WHERE n0.name = 'Krios' RETURN n1.name AS name"},
+  {"q": "How many runs are there?", "speaker": null, "cypher": "MATCH (n0:Run) RETURN count(n0) AS count"},
+  {"q": "Has the broken fume hood sash been resolved?", "speaker": null, "cypher": "MATCH (n0:SafetyIncident) WHERE n0.incident = 'broken fume hood sash' RETURN n0.resolved AS resolved"},
+  {"q": "Is there a record of the leaking cartridge port being resolved?", "speaker": null, "cypher": "MATCH (n0:SafetyIncident) WHERE n0.incident = 'leaking cartridge port' RETURN coalesce(n0.resolved, false) AS resolved"},
+  {"q": "Who reported the incident in the cold room?", "speaker": null, "cypher": "MATCH (n0:SafetyIncident)-[:reported_by]->(n1:Scientist) WHERE n0.location = 'cold room' RETURN n1.name AS name"},
+  {"q": "Which runs did Rafaela Duarte request?", "speaker": null, "cypher": "MATCH (n0:Scientist)<-[:requested_by]-(n1:Run) WHERE n0.name = 'Rafaela Duarte' RETURN n1.sample AS sample"},
+  {"q": "How many hours did the yeast lysates take?", "speaker": null, "cypher": "MATCH (n0:Run) WHERE n0.sample = 'yeast lysates' RETURN n0.hours AS hours"},
+  {"q": "What samples and hours were run on the Krios?", "speaker": null, "cypher": "MATCH (n0:Instrument)<-[:instrument]-(n1:Run) WHERE n0.name = 'Krios' RETURN n1.sample AS sample, n1.hours AS hours"},
+  {"q": "What state are the grids runs in?", "speaker": null, "cypher": "MATCH (n0:Run) WHERE n0.sample CONTAINS 'grids' RETURN n0.state AS state"},
+  {"q": "Were the spike protein grids contaminated?", "speaker": null, "cypher": "MATCH (n0:Run) WHERE n0.sample = 'spike protein grids' RETURN n0.contaminated AS contaminated"},
+  {"q": "Is there a record that the cardiac tissue was contaminated?", "speaker": null, "cypher": "MATCH (n0:Run) WHERE n0.sample = 'cardiac tissue' RETURN coalesce(n0.contaminated, false) AS contaminated"},
+  {"q": "Which incidents did Thandiwe Mokoena report?", "speaker": null, "cypher": "MATCH (n0:Scientist)<-[:reported_by]-(n1:SafetyIncident) WHERE n0.name = 'Thandiwe Mokoena' RETURN n1.incident AS incident"}
+ ]
+}

@@ -1,0 +1,140 @@
+{
+ "domain": "orchestra",
+ "models": {
+  "Musician": {"description": "A player, conductor or librarian of the orchestra. A first name alone is not an identity.",
+   "properties": {"artist": "string", "email": "string?", "instrument": "string?"}, "identities": ["email"]},
+  "Piece": {"description": "A work in the repertoire, independent of who plays it.",
+   "properties": {"opus_title": "string", "tempo_marking": "string?"}},
+  "Assignment": {"description": "Which part a player holds in a piece: soloist, section principal or understudy covering another player.\nCovering a part is not holding it.",
+   "properties": {"piece": "Piece", "player": "Musician", "part": ["soloist", "principal", "understudy"]},
+   "relation": {"from": "piece", "to": "player", "label": "part", "phrasing": "{from} features {to} as {label}",
+    "labels": {"soloist": {"forward": ["soloist", "solo"], "reverse": ["solos"]},
+               "principal": {"forward": ["principal", "leads"], "reverse": ["led"]},
+               "understudy": {"forward": ["understudy", "cover"], "reverse": ["covered"]}}}},
+  "Tutelage": {"description": "A bond between two players: one teaches the other, or the two share a music stand.",
+   "properties": {"student": "Musician", "partner": "Musician", "bond": ["teacher", "stand_partner"]},
+   "relation": {"from": "student", "to": "partner", "label": "bond", "phrasing": "{to} serves as {label} for {from}",
+    "labels": {"teacher": {"forward": ["teacher", "coach", "teaches"], "reverse": ["pupil"]},
+               "stand_partner": {"forward": ["stand partner", "shares a stand with"], "reverse": ["deskmate"]}}}},
+  "Rehearsal": {"description": "One rehearsal call for a piece. booked_by set it up, conductor leads it, absentee missed it.",
+   "properties": {"piece": "Piece", "booked_by": "Musician?", "conductor": "Musician?", "absentee": "Musician?",
+    "status": ["scheduled", "held", "cancelled"], "recorded": "boolean?", "minutes_long": "integer?", "venue_note": "string?"},
+   "absences": {"recorded": "no_recording_record"}},
+  "Fee": {"description": "Money the orchestra owes a player for a concert; paid_state says whether it has gone out.",
+   "properties": {"payee": "Musician", "amount_euros": "integer", "paid_state": ["owed", "paid"]}}
+ },
+ "entities": {
+  "mateus_c": {"model": "Musician", "name": "Mateus Carvalho"},
+  "mateus_l": {"model": "Musician", "name": "Mateus Lindqvist"},
+  "yetunde": {"model": "Musician", "name": "Yetunde Bakare"},
+  "dagny": {"model": "Musician", "name": "Dagny Hovland"},
+  "ravi": {"model": "Musician", "name": "Ravi Subramaniam"},
+  "ilse": {"model": "Musician", "name": "Ilse Vermeulen", "fields": {"email": "ilse.vermeulen@stringhall.example"}},
+  "benedikt": {"model": "Musician", "name": "Benedikt Krauss"},
+  "lantern": {"model": "Piece", "name": "Lantern Suite"},
+  "harrow": {"model": "Piece", "name": "Harrow Variations"},
+  "tidewater": {"model": "Piece", "name": "Tidewater Concerto"},
+  "seven": {"model": "Piece", "name": "Seven Bells Overture"},
+  "kestrel": {"model": "Piece", "name": "Kestrel Rondo"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Yetunde Bakare: I will conduct the Lantern Suite rehearsal on Tuesday, 90 minutes in the hall annex. Mateus Carvalho is its soloist.",
+   "mentions": [["Yetunde Bakare", "yetunde"], ["I", "yetunde", "ref"], ["Lantern Suite", "lantern"], ["Mateus Carvalho", "mateus_c"], ["its", "lantern", "ref"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "I will conduct the Lantern Suite rehearsal on Tuesday, 90 minutes in the hall annex.", "fields": {"piece": "lantern", "conductor": "yetunde", "status": "scheduled", "minutes_long": 90, "venue_note": "hall annex"}, "act": "plan"},
+    {"model": "Assignment", "in": "Mateus Carvalho is its soloist.", "from": "lantern", "to": "mateus_c", "label": "soloist", "act": "assert"}]},
+  {"id": "m02", "text": "Mateus Lindqvist: I am not the soloist for Lantern Suite, that is the other Mateus. I only play second clarinet.",
+   "mentions": [["Mateus Lindqvist", "mateus_l"], ["I", "mateus_l", "ref"], ["Lantern Suite", "lantern"], ["Mateus", "mateus_c"], ["I", "mateus_l", "ref"]],
+   "facts": [
+    {"model": "Assignment", "in": "I am not the soloist for Lantern Suite", "from": "lantern", "to": "mateus_l", "label": "soloist", "act": "assert", "deny": true}]},
+  {"id": "m03", "text": "Dagny Hovland teaches Ravi Subramaniam on Thursdays, and Ravi shares a stand with Ilse Vermeulen.",
+   "mentions": [["Dagny Hovland", "dagny"], ["Ravi Subramaniam", "ravi"], ["Ravi", "ravi"], ["Ilse Vermeulen", "ilse"]],
+   "facts": [
+    {"model": "Tutelage", "in": "Dagny Hovland teaches Ravi Subramaniam on Thursdays", "from": "ravi", "to": "dagny", "label": "teacher", "act": "assert"},
+    {"model": "Tutelage", "in": "Ravi shares a stand with Ilse Vermeulen", "from": "ravi", "to": "ilse", "label": "stand_partner", "act": "assert"}]},
+  {"id": "m04", "text": "Ilse Vermeulen told the librarian: \"I am only the understudy for Harrow Variations, ask Benedikt.\"",
+   "mentions": [["Ilse Vermeulen", "ilse"], ["I", "ilse", "ref"], ["Harrow Variations", "harrow"], ["Benedikt", "benedikt"]],
+   "quotes": [["I am only the understudy for Harrow Variations, ask Benedikt.", "ilse"]],
+   "facts": [
+    {"model": "Assignment", "in": "I am only the understudy for Harrow Variations", "from": "harrow", "to": "ilse", "label": "understudy", "act": "assert"}]},
+  {"id": "m05", "text": "Hi Benedikt,\nCould you book the Kestrel Rondo rehearsal for Friday, with Yetunde Bakare conducting?\nThanks,\nDagny Hovland",
+   "mentions": [["Benedikt", "benedikt"], ["you", "benedikt", "ref"], ["Kestrel Rondo", "kestrel"], ["Yetunde Bakare", "yetunde"], ["Dagny Hovland", "dagny"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "Could you book the Kestrel Rondo rehearsal for Friday, with Yetunde Bakare conducting?", "fields": {"piece": "kestrel", "conductor": "yetunde", "status": "scheduled"}, "act": "request"}]},
+  {"id": "m06", "text": "Minutes, Monday: the Tidewater Concerto rehearsal booked by Mateus Lindqvist was held and recorded, with Ravi absent. Mateus Carvalho kept the minutes. Mateus will send the file.",
+   "mentions": [["Tidewater Concerto", "tidewater"], ["Mateus Lindqvist", "mateus_l"], ["Ravi", "ravi"], ["Mateus Carvalho", "mateus_c"], ["Mateus", "mateus_c", "?"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "the Tidewater Concerto rehearsal booked by Mateus Lindqvist was held and recorded, with Ravi absent.", "fields": {"piece": "tidewater", "booked_by": "mateus_l", "absentee": "ravi", "status": "held", "recorded": true}, "act": "assert"}]},
+  {"id": "m07", "text": "I said to the stage crew: \"Seven Bells Overture needs the risers moved before Benedikt arrives.\"",
+   "mentions": [["I", "none", "ref"], ["Seven Bells Overture", "seven"], ["Benedikt", "benedikt"]],
+   "quotes": [["Seven Bells Overture needs the risers moved before Benedikt arrives.", "author"]],
+   "facts": []},
+  {"id": "m08", "text": "Fee for Ilse Vermeulen: 420 euros, still owed.",
+   "mentions": [["Ilse Vermeulen", "ilse"]],
+   "facts": [
+    {"model": "Fee", "in": "Fee for Ilse Vermeulen: 420 euros, still owed.", "fields": {"payee": "ilse", "amount_euros": 420, "paid_state": "owed"}, "act": "assert"}]},
+  {"id": "m09", "text": "Benedikt Krauss: The 300 euro fee for Ravi Subramaniam is paid. He asked me to confirm by email.",
+   "mentions": [["Benedikt Krauss", "benedikt"], ["Ravi Subramaniam", "ravi"], ["He", "ravi", "ref"], ["me", "benedikt", "ref"]],
+   "facts": [
+    {"model": "Fee", "in": "The 300 euro fee for Ravi Subramaniam is paid.", "fields": {"payee": "ravi", "amount_euros": 300, "paid_state": "paid"}, "act": "assert"}]},
+  {"id": "m10", "text": "Dagny Hovland: I think Ilse is principal on Seven Bells Overture, but maybe Benedikt Krauss leads it this season.",
+   "mentions": [["Dagny Hovland", "dagny"], ["I", "dagny", "ref"], ["Ilse", "ilse"], ["Seven Bells Overture", "seven"], ["Benedikt Krauss", "benedikt"], ["it", "seven", "ref"]],
+   "facts": [
+    {"model": "Assignment", "in": "I think Ilse is principal on Seven Bells Overture", "from": "seven", "to": "ilse", "label": "principal", "act": "draft"},
+    {"model": "Assignment", "in": "maybe Benedikt Krauss leads it this season", "from": "seven", "to": "benedikt", "label": "principal", "act": "draft"}]},
+  {"id": "m11", "text": "Ravi Subramaniam said that Yetunde Bakare coaches Mateus Lindqvist now.",
+   "mentions": [["Ravi Subramaniam", "ravi"], ["Yetunde Bakare", "yetunde"], ["Mateus Lindqvist", "mateus_l"]],
+   "facts": [
+    {"model": "Tutelage", "in": "Ravi Subramaniam said that Yetunde Bakare coaches Mateus Lindqvist now.", "from": "mateus_l", "to": "yetunde", "label": "teacher", "act": "report"}]},
+  {"id": "m12", "text": "If the cellist recovers, Mateus Lindqvist will cover Tidewater Concerto on Saturday. Ilse Vermeulen would then become his stand partner.",
+   "mentions": [["Mateus Lindqvist", "mateus_l"], ["Tidewater Concerto", "tidewater"], ["Ilse Vermeulen", "ilse"], ["his", "mateus_l", "ref"]],
+   "facts": [
+    {"model": "Assignment", "in": "If the cellist recovers, Mateus Lindqvist will cover Tidewater Concerto on Saturday.", "from": "tidewater", "to": "mateus_l", "label": "understudy", "act": "condition"},
+    {"model": "Tutelage", "in": "Ilse Vermeulen would then become his stand partner.", "from": "mateus_l", "to": "ilse", "label": "stand_partner", "act": "condition"}]},
+  {"id": "m13", "text": "The Harrow Variations rehearsal is cancelled; Benedikt will ring round to rebook.",
+   "mentions": [["Harrow Variations", "harrow"], ["Benedikt", "benedikt"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "The Harrow Variations rehearsal is cancelled", "fields": {"piece": "harrow", "status": "cancelled"}, "act": "assert"}]},
+  {"id": "m14", "text": "From: Ilse Vermeulen <ilse.vermeulen@stringhall.example>\nPlease send my part for Kestrel Rondo to this address.",
+   "mentions": [["Ilse Vermeulen", "ilse"], ["my", "ilse", "ref"], ["Kestrel Rondo", "kestrel"]],
+   "facts": []},
+  {"id": "m15", "text": "Yetunde Bakare: Ravi, could you lead Kestrel Rondo as principal? Dagny Hovland is your teacher, so she can help you prepare.",
+   "mentions": [["Yetunde Bakare", "yetunde"], ["Ravi", "ravi"], ["you", "ravi", "ref"], ["Kestrel Rondo", "kestrel"], ["Dagny Hovland", "dagny"], ["your", "ravi", "ref"], ["she", "dagny", "ref"], ["you", "ravi", "ref"]],
+   "facts": [
+    {"model": "Assignment", "in": "could you lead Kestrel Rondo as principal?", "from": "kestrel", "to": "ravi", "label": "principal", "act": "request"},
+    {"model": "Tutelage", "in": "Dagny Hovland is your teacher", "from": "ravi", "to": "dagny", "label": "teacher", "act": "assert"}]},
+  {"id": "m16", "text": "The Seven Bells Overture rehearsal on Sunday was held in the old chapel but not recorded, 45 minutes, conducted by Benedikt Krauss with Ilse absent.",
+   "mentions": [["Seven Bells Overture", "seven"], ["Benedikt Krauss", "benedikt"], ["Ilse", "ilse"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "The Seven Bells Overture rehearsal on Sunday was held in the old chapel but not recorded", "fields": {"piece": "seven", "status": "held", "venue_note": "old chapel", "recorded": false, "minutes_long": 45, "conductor": "benedikt", "absentee": "ilse"}, "act": "assert"}]},
+  {"id": "m17", "text": "Mateus Carvalho: My teacher was Dagny Hovland, never Yetunde Bakare.",
+   "mentions": [["Mateus Carvalho", "mateus_c"], ["My", "mateus_c", "ref"], ["Dagny Hovland", "dagny"], ["Yetunde Bakare", "yetunde"]],
+   "facts": [
+    {"model": "Tutelage", "in": "My teacher was Dagny Hovland", "from": "mateus_c", "to": "dagny", "label": "teacher", "act": "assert"},
+    {"model": "Tutelage", "in": "never Yetunde Bakare", "from": "mateus_c", "to": "yetunde", "label": "teacher", "act": "assert", "deny": true}]},
+  {"id": "m18", "text": "Minutes: Yetunde Bakare confirmed the 250 euro fee for Benedikt Krauss is paid. Yetunde also said Benedikt is principal for Harrow Variations.",
+   "mentions": [["Yetunde Bakare", "yetunde"], ["Benedikt Krauss", "benedikt"], ["Yetunde", "yetunde"], ["Benedikt", "benedikt"], ["Harrow Variations", "harrow"]],
+   "facts": [
+    {"model": "Fee", "in": "Yetunde Bakare confirmed the 250 euro fee for Benedikt Krauss is paid.", "fields": {"payee": "benedikt", "amount_euros": 250, "paid_state": "paid"}, "act": "assert"},
+    {"model": "Assignment", "in": "Yetunde also said Benedikt is principal for Harrow Variations.", "from": "harrow", "to": "benedikt", "label": "principal", "act": "report"}]}
+ ],
+ "questions": [
+  {"q": "Who is the soloist for Lantern Suite?", "speaker": null, "cypher": "MATCH (n0:Piece)-[:soloist]->(n1:Musician) WHERE n0.opus_title = 'Lantern Suite' RETURN n1.artist AS artist"},
+  {"q": "Which pieces have I covered?", "speaker": "mateus_l", "cypher": "MATCH (n0:Musician)-[:covered]->(n1:Piece) WHERE id(n0) = $speaker RETURN n1.opus_title AS opus_title"},
+  {"q": "Who is my teacher?", "speaker": "ravi", "cypher": "MATCH (n0:Musician)-[:teacher]->(n1:Musician) WHERE id(n0) = $speaker RETURN n1.artist AS artist"},
+  {"q": "Who is the pupil of Dagny Hovland?", "speaker": null, "cypher": "MATCH (n0:Musician)-[:pupil]->(n1:Musician) WHERE n0.artist = 'Dagny Hovland' RETURN n1.artist AS artist"},
+  {"q": "Who is the deskmate of Ravi Subramaniam?", "speaker": null, "cypher": "MATCH (n0:Musician)-[:deskmate]->(n1:Musician) WHERE n0.artist = 'Ravi Subramaniam' RETURN n1.artist AS artist"},
+  {"q": "How many rehearsals are there?", "speaker": null, "cypher": "MATCH (n0:Rehearsal) RETURN count(n0) AS count"},
+  {"q": "Is there a record that the Seven Bells Overture rehearsal was recorded?", "speaker": null, "cypher": "MATCH (n0:Piece)<-[:piece]-(n1:Rehearsal) WHERE n0.opus_title = 'Seven Bells Overture' RETURN coalesce(n1.recorded, false) AS recorded"},
+  {"q": "Was the Tidewater Concerto rehearsal recorded?", "speaker": null, "cypher": "MATCH (n0:Piece)<-[:piece]-(n1:Rehearsal) WHERE n0.opus_title = 'Tidewater Concerto' RETURN n1.recorded AS recorded"},
+  {"q": "How many minutes did the rehearsals I conducted last?", "speaker": "benedikt", "cypher": "MATCH (n0:Musician)<-[:conductor]-(n1:Rehearsal) WHERE id(n0) = $speaker RETURN n1.minutes_long AS minutes_long"},
+  {"q": "Who was absent from the rehearsals booked by Mateus Lindqvist?", "speaker": null, "cypher": "MATCH (n0:Musician)<-[:booked_by]-(n1:Rehearsal)-[:absentee]->(n2:Musician) WHERE n0.artist = 'Mateus Lindqvist' RETURN n2.artist AS artist"},
+  {"q": "How much is the fee for Ilse Vermeulen?", "speaker": null, "cypher": "MATCH (n0:Musician)<-[:payee]-(n1:Fee) WHERE n0.artist = 'Ilse Vermeulen' RETURN n1.amount_euros AS amount_euros"},
+  {"q": "What amount is each fee and is it owed or paid?", "speaker": null, "cypher": "MATCH (n0:Fee) RETURN n0.amount_euros AS amount_euros, n0.paid_state AS paid_state"},
+  {"q": "Who conducted the rehearsal in the hall annex?", "speaker": null, "cypher": "MATCH (n0:Rehearsal)-[:conductor]->(n1:Musician) WHERE n0.venue_note = 'hall annex' RETURN n1.artist AS artist"},
+  {"q": "What status does the rehearsal at the chapel have?", "speaker": null, "cypher": "MATCH (n0:Rehearsal) WHERE n0.venue_note CONTAINS 'chapel' RETURN n0.status AS status"},
+  {"q": "What is the email of Ilse Vermeulen?", "speaker": null, "cypher": "MATCH (n0:Musician) WHERE n0.artist = 'Ilse Vermeulen' RETURN n0.email AS email"},
+  {"q": "Who is principal for Harrow Variations?", "speaker": null, "cypher": "MATCH (n0:Piece)-[:principal]->(n1:Musician) WHERE n0.opus_title = 'Harrow Variations' RETURN n1.artist AS artist"},
+  {"q": "Which pieces has Benedikt Krauss led?", "speaker": null, "cypher": "MATCH (n0:Musician)-[:led]->(n1:Piece) WHERE n0.artist = 'Benedikt Krauss' RETURN n1.opus_title AS opus_title"}
+ ]
+}

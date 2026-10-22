@@ -1,0 +1,139 @@
+{
+ "domain": "nonprofit_grants",
+ "models": {
+  "Individual": {"description": "A person in grant work: charity staff, a funder's officer or a trustee. A first name alone is not an identity.",
+   "properties": {"person": "string", "role_title": "string?"}},
+  "Funder": {"description": "A trust, fund or foundation that gives grants.",
+   "properties": {"foundation": "string", "portal": "string?"}, "identities": ["portal"]},
+  "Stewardship": {"description": "Who acts for a funder: its program officer handles applicants, its trustees sit on its board.",
+   "properties": {"funder": "Funder", "agent": "Individual", "seat": ["program_officer", "trustee"]},
+   "relation": {"from": "funder", "to": "agent", "label": "seat", "phrasing": "{from} names {to} as its {label}",
+    "labels": {"program_officer": {"forward": ["program officer", "grants officer"], "reverse": ["portfolio"]},
+               "trustee": {"forward": ["trustee", "board member"], "reverse": ["boards"]}}}},
+  "Signoff": {"description": "Who checks a colleague's bids before they go out: the budget reviewer checks the figures, the proofreader the words.",
+   "properties": {"drafter": "Individual", "checker": "Individual", "check": ["budget_reviewer", "proofreader"]},
+   "relation": {"from": "drafter", "to": "checker", "label": "check", "phrasing": "{to} checks {from}'s bids as {label}",
+    "labels": {"budget_reviewer": {"forward": ["budget reviewer", "finance check"], "reverse": ["drafters"]},
+               "proofreader": {"forward": ["proofreader", "copy editor"], "reverse": ["writers"]}}}},
+  "Application": {"description": "A bid to a funder for one programme. lead_writer writes it, signatory signs it, budget_holder will manage the money; decision is drafting, submitted, awarded or declined.",
+   "properties": {"programme": "string", "funder": "Funder", "lead_writer": "Individual?", "signatory": "Individual?", "budget_holder": "Individual?",
+    "decision": ["drafting", "submitted", "awarded", "declined"], "match_funded": "boolean?", "amount_pounds": "integer?", "feedback": "string?"},
+   "absences": {"match_funded": "no_match_record"}},
+  "Report": {"description": "A progress report owed to a funder for one period. accepted stays empty until the funder's acceptance is recorded.",
+   "properties": {"period": "string", "funder": "Funder", "filed_by": "Individual?", "beneficiaries": "integer?", "accepted": "boolean?"},
+   "absences": {"accepted": "no_acceptance_record"}}
+ },
+ "entities": {
+  "fola": {"model": "Individual", "name": "Folasade Adeyemi"},
+  "matteo": {"model": "Individual", "name": "Matteo Grifoni"},
+  "anjali": {"model": "Individual", "name": "Anjali Venkataraman"},
+  "anjali_m": {"model": "Individual", "name": "Anjali Mehra"},
+  "sio": {"model": "Individual", "name": "Siosaia Taufa"},
+  "bettina": {"model": "Individual", "name": "Bettina Kowalczyk"},
+  "rasmus": {"model": "Individual", "name": "Rasmus Eklund"},
+  "wairimu": {"model": "Individual", "name": "Wairimu Njoroge"},
+  "halvorsen": {"model": "Funder", "name": "Halvorsen Trust"},
+  "brightwater": {"model": "Funder", "name": "Brightwater Foundation"},
+  "tidewell": {"model": "Funder", "name": "Tidewell Fund", "fields": {"portal": "apply-tidewell-org"}}
+ },
+ "messages": [
+  {"id": "m01", "text": "Folasade Adeyemi: I'm drafting the literacy programme bid to the Halvorsen Trust, asking for 40,000 pounds, and Matteo Grifoni will sign it.",
+   "mentions": [["Folasade Adeyemi", "fola"], ["I", "fola", "ref"], ["Halvorsen Trust", "halvorsen"], ["Matteo Grifoni", "matteo"]],
+   "facts": [
+    {"model": "Application", "in": "I'm drafting the literacy programme bid to the Halvorsen Trust", "fields": {"programme": "literacy programme", "funder": "halvorsen", "lead_writer": "fola", "signatory": "matteo", "decision": "drafting", "amount_pounds": 40000}, "act": "assert"}]},
+  {"id": "m02", "text": "Anjali Venkataraman is the Halvorsen Trust's program officer for our region, and she replied within a day.",
+   "mentions": [["Anjali Venkataraman", "anjali"], ["Halvorsen Trust", "halvorsen"], ["she", "anjali", "ref"]],
+   "facts": [
+    {"model": "Stewardship", "in": "Anjali Venkataraman is the Halvorsen Trust's program officer", "from": "halvorsen", "to": "anjali", "label": "program_officer", "act": "assert"}]},
+  {"id": "m03", "text": "Matteo Grifoni: I won't be the budget reviewer on Folasade's bid this time. Bettina Kowalczyk checks her budgets now.",
+   "mentions": [["Matteo Grifoni", "matteo"], ["I", "matteo", "ref"], ["Folasade", "fola"], ["Bettina Kowalczyk", "bettina"], ["her", "fola", "ref"]],
+   "facts": [
+    {"model": "Signoff", "in": "I won't be the budget reviewer on Folasade's bid this time.", "from": "fola", "to": "matteo", "label": "budget_reviewer", "act": "assert", "deny": true},
+    {"model": "Signoff", "in": "Bettina Kowalczyk checks her budgets now.", "from": "fola", "to": "bettina", "label": "budget_reviewer", "act": "assert"}]},
+  {"id": "m04", "text": "Board notes: Anjali Venkataraman and Anjali Mehra both joined the call. Anjali asked whether the youth sport bid could go in again.",
+   "mentions": [["Anjali Venkataraman", "anjali"], ["Anjali Mehra", "anjali_m"], ["Anjali", "anjali", "?"]],
+   "facts": []},
+  {"id": "m05", "text": "Rasmus Eklund filed the spring report to the Tidewell Fund, covering 312 beneficiaries.",
+   "mentions": [["Rasmus Eklund", "rasmus"], ["Tidewell Fund", "tidewell"]],
+   "facts": [
+    {"model": "Report", "in": "Rasmus Eklund filed the spring report to the Tidewell Fund", "fields": {"period": "spring", "funder": "tidewell", "filed_by": "rasmus", "beneficiaries": 312}, "act": "assert"}]},
+  {"id": "m06", "text": "The Tidewell Fund wrote back on Monday. Tidewell says the spring report was accepted without changes.",
+   "mentions": [["Tidewell Fund", "tidewell"], ["Tidewell", "tidewell"]],
+   "facts": [
+    {"model": "Report", "in": "Tidewell says the spring report was accepted without changes.", "fields": {"period": "spring", "funder": "tidewell", "accepted": true}, "act": "report"}]},
+  {"id": "m07", "text": "Wairimu Njoroge forwarded a line from Siosaia Taufa: \"I am happy to act as proofreader for Wairimu again.\" She thanked him warmly.",
+   "mentions": [["Wairimu Njoroge", "wairimu"], ["Siosaia Taufa", "sio"], ["I", "sio", "ref"], ["Wairimu", "wairimu"], ["She", "wairimu", "ref"], ["him", "sio", "ref"]],
+   "quotes": [["I am happy to act as proofreader for Wairimu again.", "sio"]],
+   "facts": [
+    {"model": "Signoff", "in": "I am happy to act as proofreader for Wairimu again.", "from": "wairimu", "to": "sio", "label": "proofreader", "act": "plan"}]},
+  {"id": "m08", "text": "I pinned \"no bid leaves without a second reader\" above the printer, and Bettina Kowalczyk laughed.",
+   "mentions": [["I", "none", "ref"], ["Bettina Kowalczyk", "bettina"]],
+   "quotes": [["no bid leaves without a second reader", "author"]],
+   "facts": []},
+  {"id": "m09", "text": "Great news: the Brightwater Foundation awarded our food growing project 18,500 pounds, match funded by the council, with Wairimu Njoroge as budget holder.",
+   "mentions": [["Brightwater Foundation", "brightwater"], ["Wairimu Njoroge", "wairimu"]],
+   "facts": [
+    {"model": "Application", "in": "the Brightwater Foundation awarded our food growing project 18,500 pounds", "fields": {"programme": "food growing project", "funder": "brightwater", "budget_holder": "wairimu", "decision": "awarded", "match_funded": true, "amount_pounds": 18500}, "act": "assert"}]},
+  {"id": "m10", "text": "Halvorsen Trust declined the arts outreach application, with the feedback that outcomes were too vague.",
+   "mentions": [["Halvorsen Trust", "halvorsen"]],
+   "facts": [
+    {"model": "Application", "in": "Halvorsen Trust declined the arts outreach application", "fields": {"programme": "arts outreach", "funder": "halvorsen", "decision": "declined", "feedback": "outcomes were too vague"}, "act": "assert"}]},
+  {"id": "m11", "text": "Bettina Kowalczyk: Rasmus, could you submit the arts outreach bid to the Tidewell Fund before Friday with yourself as lead writer?",
+   "mentions": [["Bettina Kowalczyk", "bettina"], ["Rasmus", "rasmus"], ["Tidewell Fund", "tidewell"], ["yourself", "rasmus", "ref"]],
+   "facts": [
+    {"model": "Application", "in": "Rasmus, could you submit the arts outreach bid to the Tidewell Fund", "fields": {"programme": "arts outreach", "funder": "tidewell", "lead_writer": "rasmus", "decision": "submitted"}, "act": "request"}]},
+  {"id": "m12", "text": "Siosaia Taufa said that Matteo Grifoni sits on the Brightwater Foundation board as a trustee.",
+   "mentions": [["Siosaia Taufa", "sio"], ["Matteo Grifoni", "matteo"], ["Brightwater Foundation", "brightwater"]],
+   "facts": [
+    {"model": "Stewardship", "in": "Siosaia Taufa said that Matteo Grifoni sits on the Brightwater Foundation board as a trustee.", "from": "brightwater", "to": "matteo", "label": "trustee", "act": "report"}]},
+  {"id": "m13", "text": "Anjali Mehra: If the board agrees, I will become Tidewell's grants officer in the autumn.",
+   "mentions": [["Anjali Mehra", "anjali_m"], ["I", "anjali_m", "ref"], ["Tidewell", "tidewell"]],
+   "facts": [
+    {"model": "Stewardship", "in": "I will become Tidewell's grants officer in the autumn", "from": "tidewell", "to": "anjali_m", "label": "program_officer", "act": "condition"}]},
+  {"id": "m14", "text": "Anjali Mehra rang about the call notes. The other Anjali, the one at Halvorsen, still owes us feedback.",
+   "mentions": [["Anjali Mehra", "anjali_m"], ["Anjali", "anjali"], ["Halvorsen", "halvorsen"]],
+   "facts": []},
+  {"id": "m15", "text": "Rasmus Eklund: I think we could ask Brightwater for maybe 9000 pounds for the repair café, with Wairimu signing.",
+   "mentions": [["Rasmus Eklund", "rasmus"], ["I", "rasmus", "ref"], ["Brightwater", "brightwater"], ["Wairimu", "wairimu"]],
+   "facts": [
+    {"model": "Application", "in": "I think we could ask Brightwater for maybe 9000 pounds for the repair café", "fields": {"programme": "repair café", "funder": "brightwater", "signatory": "wairimu", "decision": "drafting", "amount_pounds": 9000}, "act": "draft"}]},
+  {"id": "m16", "text": "Dear Folasade, Bettina Kowalczyk has agreed to be the proofreader on every bid you send, starting with the literacy programme. I will copy her on the drafts. Best wishes, Siosaia",
+   "mentions": [["Folasade", "fola"], ["Bettina Kowalczyk", "bettina"], ["you", "fola", "ref"], ["I", "sio", "ref"], ["her", "bettina", "ref"], ["Siosaia", "sio"]],
+   "facts": [
+    {"model": "Signoff", "in": "Bettina Kowalczyk has agreed to be the proofreader on every bid you send", "from": "fola", "to": "bettina", "label": "proofreader", "act": "assert"}]},
+  {"id": "m17", "text": "Minutes: the autumn report for Brightwater Foundation, filed by Folasade Adeyemi, counted 145 beneficiaries but has not been accepted.",
+   "mentions": [["Brightwater Foundation", "brightwater"], ["Folasade Adeyemi", "fola"]],
+   "facts": [
+    {"model": "Report", "in": "the autumn report for Brightwater Foundation", "fields": {"period": "autumn", "funder": "brightwater", "filed_by": "fola", "beneficiaries": 145, "accepted": false}, "act": "assert"}]},
+  {"id": "m18", "text": "Matteo Grifoni chaired the board call, and Grifoni confirmed that the Halvorsen Trust lists him as a trustee.",
+   "mentions": [["Matteo Grifoni", "matteo"], ["Grifoni", "matteo"], ["Halvorsen Trust", "halvorsen"], ["him", "matteo", "ref"]],
+   "facts": [
+    {"model": "Stewardship", "in": "the Halvorsen Trust lists him as a trustee", "from": "halvorsen", "to": "matteo", "label": "trustee", "act": "assert"}]},
+  {"id": "m19", "text": "Wairimu Njoroge: Siosaia is not Brightwater's program officer, whatever the website says.",
+   "mentions": [["Wairimu Njoroge", "wairimu"], ["Siosaia", "sio"], ["Brightwater", "brightwater"]],
+   "facts": [
+    {"model": "Stewardship", "in": "Siosaia is not Brightwater's program officer", "from": "brightwater", "to": "sio", "label": "program_officer", "act": "assert", "deny": true}]},
+  {"id": "m20", "text": "The literacy programme bid went to the Halvorsen Trust on Tuesday, written by Folasade Adeyemi, signed by Matteo Grifoni, with Bettina Kowalczyk holding the budget.",
+   "mentions": [["Halvorsen Trust", "halvorsen"], ["Folasade Adeyemi", "fola"], ["Matteo Grifoni", "matteo"], ["Bettina Kowalczyk", "bettina"]],
+   "facts": [
+    {"model": "Application", "in": "The literacy programme bid went to the Halvorsen Trust on Tuesday", "fields": {"programme": "literacy programme", "funder": "halvorsen", "lead_writer": "fola", "signatory": "matteo", "budget_holder": "bettina", "decision": "submitted"}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who is the Halvorsen Trust's program officer?", "speaker": null, "cypher": "MATCH (n0:Funder)-[:program_officer]->(n1:Individual) WHERE n0.foundation = 'Halvorsen Trust' RETURN n1.person AS person"},
+  {"q": "Which boards am I on?", "speaker": "matteo", "cypher": "MATCH (n0:Individual)-[:boards]->(n1:Funder) WHERE id(n0) = $speaker RETURN n1.foundation AS foundation"},
+  {"q": "Which funders are in my portfolio?", "speaker": "anjali", "cypher": "MATCH (n0:Individual)-[:portfolio]->(n1:Funder) WHERE id(n0) = $speaker RETURN n1.foundation AS foundation"},
+  {"q": "Who is my proofreader?", "speaker": "fola", "cypher": "MATCH (n0:Individual)-[:proofreader]->(n1:Individual) WHERE id(n0) = $speaker RETURN n1.person AS person"},
+  {"q": "Who are my drafters?", "speaker": "bettina", "cypher": "MATCH (n0:Individual)-[:drafters]->(n1:Individual) WHERE id(n0) = $speaker RETURN n1.person AS person"},
+  {"q": "How many applications are there?", "speaker": null, "cypher": "MATCH (n0:Application) RETURN count(n0) AS count"},
+  {"q": "How much did the food growing project get?", "speaker": null, "cypher": "MATCH (n0:Application) WHERE n0.programme = 'food growing project' RETURN n0.amount_pounds AS amount_pounds"},
+  {"q": "What feedback came on the arts outreach application?", "speaker": null, "cypher": "MATCH (n0:Application) WHERE n0.programme = 'arts outreach' RETURN n0.feedback AS feedback"},
+  {"q": "Which applications did Folasade Adeyemi write?", "speaker": null, "cypher": "MATCH (n0:Individual)<-[:lead_writer]-(n1:Application) WHERE n0.person = 'Folasade Adeyemi' RETURN n1.programme AS programme"},
+  {"q": "Which applications am I signing?", "speaker": "matteo", "cypher": "MATCH (n0:Individual)<-[:signatory]-(n1:Application) WHERE id(n0) = $speaker RETURN n1.programme AS programme"},
+  {"q": "Is there a record of match funding for the repair café?", "speaker": null, "cypher": "MATCH (n0:Application) WHERE n0.programme = 'repair café' RETURN coalesce(n0.match_funded, false) AS match_funded"},
+  {"q": "Was the spring report accepted?", "speaker": null, "cypher": "MATCH (n0:Report) WHERE n0.period = 'spring' RETURN n0.accepted AS accepted"},
+  {"q": "How many beneficiaries did each report count?", "speaker": null, "cypher": "MATCH (n0:Report) RETURN n0.beneficiaries AS beneficiaries"},
+  {"q": "What is the Tidewell Fund's portal?", "speaker": null, "cypher": "MATCH (n0:Funder) WHERE n0.foundation = 'Tidewell Fund' RETURN n0.portal AS portal"},
+  {"q": "Which reports did Rasmus Eklund file?", "speaker": null, "cypher": "MATCH (n0:Individual)<-[:filed_by]-(n1:Report) WHERE n0.person = 'Rasmus Eklund' RETURN n1.period AS period"},
+  {"q": "What was the decision and amount for each Brightwater Foundation application?", "speaker": null, "cypher": "MATCH (n0:Funder)<-[:funder]-(n1:Application) WHERE n0.foundation = 'Brightwater Foundation' RETURN n1.decision AS decision, n1.amount_pounds AS amount_pounds"}
+ ]
+}

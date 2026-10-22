@@ -1,0 +1,152 @@
+{
+ "domain": "film_crew",
+ "models": {
+  "CrewMember": {"description": "A person on the production crew. A first name alone is not an identity.",
+   "properties": {"name": "string", "email": "string?", "department": "string?"}, "identities": ["email"]},
+  "Scene": {"description": "A scene in the script, known by its working title.",
+   "properties": {"name": "string", "location": "string?"}},
+  "Reporting": {"description": "Who a crew member answers to: their department head, or the person they assist.",
+   "properties": {"member": "CrewMember", "superior": "CrewMember", "kind": ["head", "assistant"]},
+   "relation": {"from": "member", "to": "superior", "label": "kind", "phrasing": "{to} serves {from} as {label}",
+    "labels": {"head": {"forward": ["head", "boss", "reports to"], "reverse": ["team"]},
+               "assistant": {"forward": ["assistant", "second", "deputy"], "reverse": ["principal"]}}}},
+  "SceneRole": {"description": "Who holds a creative role on a scene: its director, its camera operator or its gaffer.",
+   "properties": {"scene": "Scene", "crew": "CrewMember", "role": ["director", "operator", "gaffer"]},
+   "relation": {"from": "scene", "to": "crew", "label": "role", "phrasing": "{to} handles {label} on {from}",
+    "labels": {"director": {"forward": ["director", "directs", "directing"], "reverse": ["directed"]},
+               "operator": {"forward": ["camera operator", "operator", "shoots"], "reverse": ["shot"]},
+               "gaffer": {"forward": ["gaffer", "lights", "lighting"], "reverse": ["lit"]}}}},
+  "Setup": {"description": "One camera setup on the schedule. called_by asked for it, rigged_by builds the rig, approved_by signs it off. A wish for a shot is not a scheduled setup.",
+   "properties": {"setup": "string", "scene": "Scene?", "called_by": "CrewMember?", "rigged_by": "CrewMember?", "approved_by": "CrewMember?",
+    "status": ["scheduled", "in_the_can", "dropped"], "needs_crane": "boolean?", "takes": "integer?", "note": "string?"},
+   "absences": {"needs_crane": "no_crane_record"}},
+  "Expense": {"description": "Money a crew member spent for the production. reimbursed stays empty until a repayment is recorded.",
+   "properties": {"item": "string", "scene": "Scene?", "spender": "CrewMember?", "amount_euros": "integer?", "reimbursed": "boolean?"},
+   "absences": {"reimbursed": "no_reimbursement_record"}}
+ },
+ "entities": {
+  "olu": {"model": "CrewMember", "name": "Oluwaseun Adewale"},
+  "henrik_d": {"model": "CrewMember", "name": "Henrik Dahl"},
+  "henrik_m": {"model": "CrewMember", "name": "Henrik Mazur"},
+  "itzel": {"model": "CrewMember", "name": "Itzel Ruiz-Ortega"},
+  "ravi": {"model": "CrewMember", "name": "Ravi Subramaniam"},
+  "ayumi": {"model": "CrewMember", "name": "Ayumi Kurosawa"},
+  "ayumi_t": {"model": "CrewMember", "name": "Ayumi Tanaka"},
+  "bogdan": {"model": "CrewMember", "name": "Bogdan Petrescu"},
+  "malia": {"model": "CrewMember", "name": "Malia Keawe"},
+  "rooftop": {"model": "Scene", "name": "Rooftop Chase"},
+  "diner": {"model": "Scene", "name": "Diner Confession"},
+  "harbour": {"model": "Scene", "name": "Harbour Fog"},
+  "night": {"model": "Scene", "name": "Night Market"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Itzel Ruiz-Ortega: I'm directing Rooftop Chase next week, and Henrik Dahl will shoot it.",
+   "mentions": [["Itzel Ruiz-Ortega", "itzel"], ["I", "itzel", "ref"], ["Rooftop Chase", "rooftop"], ["Henrik Dahl", "henrik_d"], ["it", "rooftop", "ref"]],
+   "facts": [
+    {"model": "SceneRole", "in": "I'm directing Rooftop Chase next week", "from": "rooftop", "to": "itzel", "label": "director", "act": "plan"},
+    {"model": "SceneRole", "in": "Henrik Dahl will shoot it", "from": "rooftop", "to": "henrik_d", "label": "operator", "act": "plan"}]},
+  {"id": "m02", "text": "Henrik Mazur wrote: \"I am not Henrik Dahl's assistant any more. I report to Ayumi Kurosawa now.\"",
+   "mentions": [["Henrik Mazur", "henrik_m"], ["I", "henrik_m", "ref"], ["Henrik Dahl", "henrik_d"], ["I", "henrik_m", "ref"], ["Ayumi Kurosawa", "ayumi"]],
+   "quotes": [["I am not Henrik Dahl's assistant any more. I report to Ayumi Kurosawa now.", "henrik_m"]],
+   "facts": [
+    {"model": "Reporting", "in": "I am not Henrik Dahl's assistant any more.", "from": "henrik_d", "to": "henrik_m", "label": "assistant", "act": "assert", "deny": true},
+    {"model": "Reporting", "in": "I report to Ayumi Kurosawa now.", "from": "henrik_m", "to": "ayumi", "label": "head", "act": "assert"}]},
+  {"id": "m03", "text": "Hi Bogdan,\nThe Harbour Fog jetty wide went into the can after 14 takes, and no crane was needed.\nCheers, Malia",
+   "mentions": [["Bogdan", "bogdan"], ["Harbour Fog", "harbour"], ["Malia", "malia"]],
+   "facts": [
+    {"model": "Setup", "in": "The Harbour Fog jetty wide went into the can after 14 takes", "fields": {"setup": "jetty wide", "scene": "harbour", "status": "in_the_can", "takes": 14, "needs_crane": false}, "act": "assert"}]},
+  {"id": "m04", "text": "Ravi Subramaniam: Can someone schedule a dolly push-in on Diner Confession for me tomorrow? Ayumi Kurosawa said she is his head now.",
+   "mentions": [["Ravi Subramaniam", "ravi"], ["Diner Confession", "diner"], ["me", "ravi", "ref"], ["Ayumi Kurosawa", "ayumi"], ["she", "ayumi", "ref"], ["his", "ravi", "ref"]],
+   "facts": [
+    {"model": "Setup", "in": "Can someone schedule a dolly push-in on Diner Confession for me tomorrow?", "fields": {"setup": "dolly push-in", "scene": "diner", "called_by": "ravi", "status": "scheduled"}, "act": "request"},
+    {"model": "Reporting", "in": "Ayumi Kurosawa said she is his head now.", "from": "ravi", "to": "ayumi", "label": "head", "act": "report"}]},
+  {"id": "m05", "text": "Production meeting, 4 May: Oluwaseun Adewale reported that the crane rental for Night Market cost 900 euros. Bogdan Petrescu said he paid for the crane rental from the float.",
+   "mentions": [["Oluwaseun Adewale", "olu"], ["Night Market", "night"], ["Bogdan Petrescu", "bogdan"], ["he", "bogdan", "ref"]],
+   "facts": [
+    {"model": "Expense", "in": "Oluwaseun Adewale reported that the crane rental for Night Market cost 900 euros.", "fields": {"item": "crane rental", "scene": "night", "amount_euros": 900}, "act": "report"},
+    {"model": "Expense", "in": "Bogdan Petrescu said he paid for the crane rental from the float.", "fields": {"item": "crane rental", "spender": "bogdan"}, "act": "report"}]},
+  {"id": "m06", "text": "Henrik Dahl and Henrik Mazur both wanted the Steadicam on Friday. Dahl called the alley walk-and-talk first, so Mazur will rig the slider instead.",
+   "mentions": [["Henrik Dahl", "henrik_d"], ["Henrik Mazur", "henrik_m"], ["Dahl", "henrik_d"], ["Mazur", "henrik_m"]],
+   "facts": [
+    {"model": "Setup", "in": "Dahl called the alley walk-and-talk first", "fields": {"setup": "alley walk-and-talk", "called_by": "henrik_d", "status": "scheduled"}, "act": "assert"}]},
+  {"id": "m07", "text": "Malia Keawe: Henrik Dahl phoned about the lens order, and Henrik Mazur emailed too. Henrik says the lenses arrive Thursday.",
+   "mentions": [["Malia Keawe", "malia"], ["Henrik Dahl", "henrik_d"], ["Henrik Mazur", "henrik_m"], ["Henrik", "henrik_d", "?"]],
+   "facts": []},
+  {"id": "m08", "text": "Ayumi Kurosawa: Our new trainee, Ayumi Tanaka, starts on Monday. She will be the gaffer on Harbour Fog.",
+   "mentions": [["Ayumi Kurosawa", "ayumi"], ["Ayumi Tanaka", "ayumi_t"], ["She", "ayumi_t", "ref"], ["Harbour Fog", "harbour"]],
+   "facts": [
+    {"model": "SceneRole", "in": "She will be the gaffer on Harbour Fog.", "from": "harbour", "to": "ayumi_t", "label": "gaffer", "act": "plan"}]},
+  {"id": "m09", "text": "Oluwaseun Adewale: I light Night Market and Diner Confession. Ravi Subramaniam is the camera operator on Diner Confession.",
+   "mentions": [["Oluwaseun Adewale", "olu"], ["I", "olu", "ref"], ["Night Market", "night"], ["Diner Confession", "diner"], ["Ravi Subramaniam", "ravi"], ["Diner Confession", "diner"]],
+   "facts": [
+    {"model": "SceneRole", "in": "I light Night Market and Diner Confession.", "from": "night", "to": "olu", "label": "gaffer", "act": "assert"},
+    {"model": "SceneRole", "in": "I light Night Market and Diner Confession.", "from": "diner", "to": "olu", "label": "gaffer", "act": "assert"},
+    {"model": "SceneRole", "in": "Ravi Subramaniam is the camera operator on Diner Confession.", "from": "diner", "to": "ravi", "label": "operator", "act": "assert"}]},
+  {"id": "m10", "text": "Note from the grip truck: the 40 foot crane shot for Rooftop Chase was approved by Ayumi Kurosawa. Nobody has rigged it yet.",
+   "mentions": [["Rooftop Chase", "rooftop"], ["Ayumi Kurosawa", "ayumi"]],
+   "facts": [
+    {"model": "Setup", "in": "Note from the grip truck: the 40 foot crane shot for Rooftop Chase was approved by Ayumi Kurosawa.", "fields": {"setup": "crane shot", "scene": "rooftop", "approved_by": "ayumi", "status": "scheduled", "needs_crane": true}, "act": "assert"}]},
+  {"id": "m11", "text": "As I told Bogdan Petrescu on set, \"Night Market loses the rain tower, we cannot afford it.\"\nThe line producer",
+   "mentions": [["I", "none", "ref"], ["Bogdan Petrescu", "bogdan"], ["Night Market", "night"]],
+   "quotes": [["Night Market loses the rain tower, we cannot afford it.", "author"]],
+   "facts": [
+    {"model": "Setup", "in": "Night Market loses the rain tower", "fields": {"setup": "rain tower", "scene": "night", "status": "dropped"}, "act": "assert"}]},
+  {"id": "m12", "text": "Henrik Dahl: I don't shoot Night Market any more; Malia Keawe does.",
+   "mentions": [["Henrik Dahl", "henrik_d"], ["I", "henrik_d", "ref"], ["Night Market", "night"], ["Malia Keawe", "malia"]],
+   "facts": [
+    {"model": "SceneRole", "in": "I don't shoot Night Market any more", "from": "night", "to": "henrik_d", "label": "operator", "act": "assert", "deny": true},
+    {"model": "SceneRole", "in": "Malia Keawe does.", "from": "night", "to": "malia", "label": "operator", "act": "assert"}]},
+  {"id": "m13", "text": "If the wind drops, Bogdan Petrescu will rig a drone pass over Harbour Fog for Ravi Subramaniam on Thursday, with no crane.",
+   "mentions": [["Bogdan Petrescu", "bogdan"], ["Harbour Fog", "harbour"], ["Ravi Subramaniam", "ravi"]],
+   "facts": [
+    {"model": "Setup", "in": "If the wind drops, Bogdan Petrescu will rig", "fields": {"setup": "drone pass", "scene": "harbour", "rigged_by": "bogdan", "called_by": "ravi", "status": "scheduled", "needs_crane": false, "note": "the wind drops"}, "act": "condition"}]},
+  {"id": "m14", "text": "Itzel Ruiz-Ortega: Pencilled in, maybe: an 8 take mirror shot on Diner Confession, rigged by Oluwaseun and called by me.",
+   "mentions": [["Itzel Ruiz-Ortega", "itzel"], ["Diner Confession", "diner"], ["Oluwaseun", "olu"], ["me", "itzel", "ref"]],
+   "facts": [
+    {"model": "Setup", "in": "Pencilled in, maybe: an 8 take mirror shot", "fields": {"setup": "mirror shot", "scene": "diner", "rigged_by": "olu", "called_by": "itzel", "status": "scheduled", "takes": 8}, "act": "draft"}]},
+  {"id": "m15", "text": "Monday's slow-motion insert for Rooftop Chase was dropped because of the light, Ayumi Kurosawa confirmed.",
+   "mentions": [["Rooftop Chase", "rooftop"], ["Ayumi Kurosawa", "ayumi"]],
+   "facts": [
+    {"model": "Setup", "in": "Monday's slow-motion insert for Rooftop Chase was dropped", "fields": {"setup": "slow-motion insert", "scene": "rooftop", "status": "dropped", "note": "the light"}, "act": "report"}]},
+  {"id": "m16", "text": "Dear Malia,\nCould you rig Night Market's market wide next Tuesday, with the crane?\nBest,\nItzel Ruiz-Ortega",
+   "mentions": [["Malia", "malia"], ["you", "malia", "ref"], ["Night Market", "night"], ["Itzel Ruiz-Ortega", "itzel"]],
+   "facts": [
+    {"model": "Setup", "in": "Could you rig Night Market's market wide next Tuesday, with the crane?", "fields": {"setup": "market wide", "scene": "night", "rigged_by": "malia", "status": "scheduled", "needs_crane": true}, "act": "request"}]},
+  {"id": "m17", "text": "Bogdan Petrescu: The crane rental for Night Market was reimbursed to me yesterday, all 900 euros.",
+   "mentions": [["Bogdan Petrescu", "bogdan"], ["Night Market", "night"], ["me", "bogdan", "ref"]],
+   "facts": [
+    {"model": "Expense", "in": "The crane rental for Night Market was reimbursed to me yesterday, all 900 euros.", "fields": {"item": "crane rental", "scene": "night", "spender": "bogdan", "amount_euros": 900, "reimbursed": true}, "act": "assert"}]},
+  {"id": "m18", "text": "Fwd from Ayumi Kurosawa: \"Ayumi Tanaka is on my team, and I am her head until the wrap.\"",
+   "mentions": [["Ayumi Kurosawa", "ayumi"], ["Ayumi Tanaka", "ayumi_t"], ["my", "ayumi", "ref"], ["I", "ayumi", "ref"], ["her", "ayumi_t", "ref"]],
+   "quotes": [["Ayumi Tanaka is on my team, and I am her head until the wrap.", "ayumi"]],
+   "facts": [
+    {"model": "Reporting", "in": "Ayumi Tanaka is on my team", "from": "ayumi_t", "to": "ayumi", "label": "head", "act": "assert"}]},
+  {"id": "m19", "text": "I'm Malia Keawe and I won't be the gaffer on Rooftop Chase after all.",
+   "mentions": [["I", "malia", "ref"], ["Malia Keawe", "malia"], ["I", "malia", "ref"], ["Rooftop Chase", "rooftop"]],
+   "facts": [
+    {"model": "SceneRole", "in": "I won't be the gaffer on Rooftop Chase", "from": "rooftop", "to": "malia", "label": "gaffer", "act": "plan", "deny": true}]},
+  {"id": "m20", "text": "Wrap note: Ravi Subramaniam spent 120 euros on gaffer tape for Harbour Fog; Bogdan will reimburse him on Friday.",
+   "mentions": [["Ravi Subramaniam", "ravi"], ["Harbour Fog", "harbour"], ["Bogdan", "bogdan"], ["him", "ravi", "ref"]],
+   "facts": [
+    {"model": "Expense", "in": "Wrap note: Ravi Subramaniam spent 120 euros on gaffer tape", "fields": {"item": "gaffer tape", "scene": "harbour", "spender": "ravi", "amount_euros": 120}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who directs Rooftop Chase?", "speaker": null, "cypher": "MATCH (n0:Scene)-[:director]->(n1:CrewMember) WHERE n0.name = 'Rooftop Chase' RETURN n1.name AS name"},
+  {"q": "Who is the gaffer on Diner Confession?", "speaker": null, "cypher": "MATCH (n0:Scene)-[:gaffer]->(n1:CrewMember) WHERE n0.name = 'Diner Confession' RETURN n1.name AS name"},
+  {"q": "Who shoots Night Market?", "speaker": null, "cypher": "MATCH (n0:Scene)-[:operator]->(n1:CrewMember) WHERE n0.name = 'Night Market' RETURN n1.name AS name"},
+  {"q": "Which scenes have I directed?", "speaker": "itzel", "cypher": "MATCH (n0:CrewMember)-[:directed]->(n1:Scene) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is on my team?", "speaker": "ayumi", "cypher": "MATCH (n0:CrewMember)-[:team]->(n1:CrewMember) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is my head?", "speaker": "henrik_m", "cypher": "MATCH (n0:CrewMember)-[:head]->(n1:CrewMember) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "How many setups are there?", "speaker": null, "cypher": "MATCH (n0:Setup) RETURN count(n0) AS count"},
+  {"q": "Has the crane rental been reimbursed?", "speaker": null, "cypher": "MATCH (n0:Expense) WHERE n0.item = 'crane rental' RETURN n0.reimbursed AS reimbursed"},
+  {"q": "Is there a record of the gaffer tape being reimbursed?", "speaker": null, "cypher": "MATCH (n0:Expense) WHERE n0.item = 'gaffer tape' RETURN coalesce(n0.reimbursed, false) AS reimbursed"},
+  {"q": "Who called setups on Diner Confession?", "speaker": null, "cypher": "MATCH (n0:Scene)<-[:scene]-(n1:Setup)-[:called_by]->(n2:CrewMember) WHERE n0.name = 'Diner Confession' RETURN n2.name AS name"},
+  {"q": "Which setups did Henrik Dahl call?", "speaker": null, "cypher": "MATCH (n0:CrewMember)<-[:called_by]-(n1:Setup) WHERE n0.name = 'Henrik Dahl' RETURN n1.setup AS setup"},
+  {"q": "How many takes did the jetty wide need?", "speaker": null, "cypher": "MATCH (n0:Setup) WHERE n0.setup = 'jetty wide' RETURN n0.takes AS takes"},
+  {"q": "What setups and statuses are there for Rooftop Chase?", "speaker": null, "cypher": "MATCH (n0:Scene)<-[:scene]-(n1:Setup) WHERE n0.name = 'Rooftop Chase' RETURN n1.setup AS setup, n1.status AS status"},
+  {"q": "What takes did the shot setups need?", "speaker": null, "cypher": "MATCH (n0:Setup) WHERE n0.setup CONTAINS 'shot' RETURN n0.takes AS takes"},
+  {"q": "Did the drone pass need a crane?", "speaker": null, "cypher": "MATCH (n0:Setup) WHERE n0.setup = 'drone pass' RETURN n0.needs_crane AS needs_crane"},
+  {"q": "Is there a record that the market wide needs a crane?", "speaker": null, "cypher": "MATCH (n0:Setup) WHERE n0.setup = 'market wide' RETURN coalesce(n0.needs_crane, false) AS needs_crane"},
+  {"q": "How much did Ravi Subramaniam spend?", "speaker": null, "cypher": "MATCH (n0:CrewMember)<-[:spender]-(n1:Expense) WHERE n0.name = 'Ravi Subramaniam' RETURN n1.amount_euros AS amount_euros"}
+ ]
+}

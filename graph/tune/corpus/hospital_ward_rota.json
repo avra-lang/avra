@@ -1,0 +1,151 @@
+{
+ "domain": "hospital_ward_rota",
+ "models": {
+  "Clinician": {"description": "A nurse, doctor, assistant or student on the hospital's staff list. A first name alone is not an identity.",
+   "properties": {"name": "string", "email": "string?", "grade": "string?"}, "identities": ["email"]},
+  "Ward": {"description": "A hospital ward, known by its ward name.",
+   "properties": {"name": "string", "specialty": "string?"}},
+  "Supervision": {"description": "A standing professional link between two clinicians: who supervises, preceptors or provides cover for whom.\nSwapping one shift on the rota is not cover.",
+   "properties": {"junior": "Clinician", "senior": "Clinician", "link": ["supervisor", "preceptor", "cover"]},
+   "relation": {"from": "junior", "to": "senior", "label": "link", "phrasing": "{to} acts as {label} to {from}",
+    "labels": {"supervisor": {"forward": ["supervisor", "supervises", "signs off"], "reverse": ["supervisee"]},
+               "preceptor": {"forward": ["preceptor", "preceptors"], "reverse": ["preceptee"]},
+               "cover": {"forward": ["cover", "covers", "covering for"], "reverse": ["covered"]}}}},
+  "WardPost": {"description": "A clinician's standing post on a ward: its matron, its nurse in charge or its lead consultant.",
+   "properties": {"ward": "Ward", "clinician": "Clinician", "post": ["matron", "charge", "consultant"]},
+   "relation": {"from": "ward", "to": "clinician", "label": "post", "phrasing": "{from} lists {to} as {label}",
+    "labels": {"matron": {"forward": ["matron"], "reverse": ["overseen"]},
+               "charge": {"forward": ["nurse in charge", "in charge", "charge nurse"], "reverse": []},
+               "consultant": {"forward": ["consultant", "lead consultant"], "reverse": []}}}},
+  "Shift": {"description": "One shift on the rota. rostered works it, swapped_with took it over or traded it, approved_by signed it off. A hoped-for shift is not rostered.",
+   "properties": {"slot": "string", "ward": "Ward?", "rostered": "Clinician?", "swapped_with": "Clinician?", "approved_by": "Clinician?",
+    "state": ["rostered", "worked", "swapped", "dropped"], "on_call": "boolean?", "hours": "integer?", "remark": "string?"},
+   "absences": {"on_call": "no_on_call_record"}},
+  "Incident": {"description": "A safety incident on a ward. reported_by logged it. escalated stays empty until an escalation is recorded.",
+   "properties": {"incident": "string", "ward": "Ward?", "reported_by": "Clinician?", "escalated": "boolean?", "patients_affected": "integer?"},
+   "absences": {"escalated": "no_escalation_record"}}
+ },
+ "entities": {
+  "adaeze": {"model": "Clinician", "name": "Adaeze Nwosu"},
+  "adaeze_o": {"model": "Clinician", "name": "Adaeze Okonkwo"},
+  "marguerite": {"model": "Clinician", "name": "Marguerite Duval", "fields": {"email": "m.duval@hospital.example"}},
+  "ravindra": {"model": "Clinician", "name": "Ravindra Varghese"},
+  "ravindra_s": {"model": "Clinician", "name": "Ravindra Seth"},
+  "astrid": {"model": "Clinician", "name": "Astrid Lunde"},
+  "tamar": {"model": "Clinician", "name": "Tamar Ben-David"},
+  "jakub": {"model": "Clinician", "name": "Jakub Nowicki"},
+  "lerato": {"model": "Clinician", "name": "Lerato Dlamini"},
+  "paulo": {"model": "Clinician", "name": "Paulo Tuilagi"},
+  "larch": {"model": "Ward", "name": "Larch Ward"},
+  "kingfisher": {"model": "Ward", "name": "Kingfisher Ward"},
+  "ashby": {"model": "Ward", "name": "Ashby Ward"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Adaeze Nwosu: I'm matron on Larch Ward, and Lerato Dlamini is nurse in charge there.",
+   "mentions": [["Adaeze Nwosu", "adaeze"], ["I", "adaeze", "ref"], ["Larch Ward", "larch"], ["Lerato Dlamini", "lerato"]],
+   "facts": [
+    {"model": "WardPost", "in": "I'm matron on Larch Ward", "from": "larch", "to": "adaeze", "label": "matron", "act": "assert"},
+    {"model": "WardPost", "in": "Lerato Dlamini is nurse in charge there.", "from": "larch", "to": "lerato", "label": "charge", "act": "assert"}]},
+  {"id": "m02", "text": "Rota update: Astrid Lunde is rostered on Kingfisher Ward for the night shift on Friday, 12 hours, approved by Lerato Dlamini.",
+   "mentions": [["Astrid Lunde", "astrid"], ["Kingfisher Ward", "kingfisher"], ["Lerato Dlamini", "lerato"]],
+   "facts": [
+    {"model": "Shift", "in": "Rota update: Astrid Lunde is rostered", "fields": {"slot": "night shift", "ward": "kingfisher", "rostered": "astrid", "approved_by": "lerato", "state": "rostered", "hours": 12}, "act": "assert"}]},
+  {"id": "m03", "text": "Ravindra Varghese told the handover, \"I am not covering for Paulo Tuilagi this weekend; Ravindra Seth is.\"",
+   "mentions": [["Ravindra Varghese", "ravindra"], ["I", "ravindra", "ref"], ["Paulo Tuilagi", "paulo"], ["Ravindra Seth", "ravindra_s"]],
+   "quotes": [["I am not covering for Paulo Tuilagi this weekend; Ravindra Seth is.", "ravindra"]],
+   "facts": [
+    {"model": "Supervision", "in": "I am not covering for Paulo Tuilagi this weekend", "from": "paulo", "to": "ravindra", "label": "cover", "act": "assert", "deny": true},
+    {"model": "Supervision", "in": "Ravindra Seth is.", "from": "paulo", "to": "ravindra_s", "label": "cover", "act": "assert"}]},
+  {"id": "m04", "text": "Lerato Dlamini: Ravindra Varghese and Ravindra Seth both rang the ward. Ravindra wants the consultant to call back.",
+   "mentions": [["Lerato Dlamini", "lerato"], ["Ravindra Varghese", "ravindra"], ["Ravindra Seth", "ravindra_s"], ["Ravindra", "ravindra", "?"]],
+   "facts": []},
+  {"id": "m05", "text": "Incident log: a fall in bay 3 of Ashby Ward this morning, reported by Jakub Nowicki and escalated to the consultant.",
+   "mentions": [["Ashby Ward", "ashby"], ["Jakub Nowicki", "jakub"]],
+   "facts": [
+    {"model": "Incident", "in": "Incident log: a fall in bay 3 of Ashby Ward", "fields": {"incident": "fall in bay 3", "ward": "ashby", "reported_by": "jakub", "escalated": true}, "act": "assert"}]},
+  {"id": "m06", "text": "Tamar Ben-David: Astrid Lunde is my preceptor this placement, and she signs off my competencies.",
+   "mentions": [["Tamar Ben-David", "tamar"], ["Astrid Lunde", "astrid"], ["my", "tamar", "ref"], ["she", "astrid", "ref"], ["my", "tamar", "ref"]],
+   "facts": [
+    {"model": "Supervision", "in": "Astrid Lunde is my preceptor this placement", "from": "tamar", "to": "astrid", "label": "preceptor", "act": "assert"}]},
+  {"id": "m07", "text": "Paulo Tuilagi: I've swapped my Saturday late shift on Larch Ward with Tamar Ben-David, and Tamar has agreed.",
+   "mentions": [["Paulo Tuilagi", "paulo"], ["I", "paulo", "ref"], ["my", "paulo", "ref"], ["Larch Ward", "larch"], ["Tamar Ben-David", "tamar"], ["Tamar", "tamar"]],
+   "facts": [
+    {"model": "Shift", "in": "I've swapped my Saturday late shift", "fields": {"slot": "late shift", "ward": "larch", "rostered": "paulo", "swapped_with": "tamar", "state": "swapped"}, "act": "assert"}]},
+  {"id": "m08", "text": "Adaeze Nwosu: A new healthcare assistant, Adaeze Okonkwo, starts on Ashby Ward on Monday. She will have Jakub Nowicki as her supervisor.",
+   "mentions": [["Adaeze Nwosu", "adaeze"], ["Adaeze Okonkwo", "adaeze_o"], ["Ashby Ward", "ashby"], ["She", "adaeze_o", "ref"], ["Jakub Nowicki", "jakub"], ["her", "adaeze_o", "ref"]],
+   "facts": [
+    {"model": "Supervision", "in": "She will have Jakub Nowicki as her supervisor.", "from": "adaeze_o", "to": "jakub", "label": "supervisor", "act": "plan"}]},
+  {"id": "m09", "text": "Lerato Dlamini: The medication error on Kingfisher Ward affected 2 patients and was not escalated, which I regret.",
+   "mentions": [["Lerato Dlamini", "lerato"], ["Kingfisher Ward", "kingfisher"], ["I", "lerato", "ref"]],
+   "facts": [
+    {"model": "Incident", "in": "The medication error on Kingfisher Ward affected 2 patients", "fields": {"incident": "medication error", "ward": "kingfisher", "patients_affected": 2, "escalated": false}, "act": "assert"}]},
+  {"id": "m10", "text": "Marguerite Duval said that Ravindra Seth is the consultant for Ashby Ward from next month.",
+   "mentions": [["Marguerite Duval", "marguerite"], ["Ravindra Seth", "ravindra_s"], ["Ashby Ward", "ashby"]],
+   "facts": [
+    {"model": "WardPost", "in": "Marguerite Duval said that Ravindra Seth is the consultant for Ashby Ward", "from": "ashby", "to": "ravindra_s", "label": "consultant", "act": "report"}]},
+  {"id": "m11", "text": "As I wrote to Adaeze Nwosu, \"The night shift on Ashby Ward was worked short-staffed, 10 hours with no break.\"\nA bank nurse",
+   "mentions": [["I", "none", "ref"], ["Adaeze Nwosu", "adaeze"], ["Ashby Ward", "ashby"]],
+   "quotes": [["The night shift on Ashby Ward was worked short-staffed, 10 hours with no break.", "author"]],
+   "facts": [
+    {"model": "Shift", "in": "The night shift on Ashby Ward was worked short-staffed", "fields": {"slot": "night shift", "ward": "ashby", "state": "worked", "hours": 10, "remark": "short-staffed"}, "act": "assert"}]},
+  {"id": "m12", "text": "Astrid Lunde: Tentatively, Paulo Tuilagi takes the early shift on Kingfisher Ward next Tuesday, on call as well.",
+   "mentions": [["Astrid Lunde", "astrid"], ["Paulo Tuilagi", "paulo"], ["Kingfisher Ward", "kingfisher"]],
+   "facts": [
+    {"model": "Shift", "in": "Tentatively, Paulo Tuilagi takes the early shift", "fields": {"slot": "early shift", "ward": "kingfisher", "rostered": "paulo", "state": "rostered", "on_call": true}, "act": "draft"}]},
+  {"id": "m13", "text": "If the bank nurse cancels, Tamar Ben-David will work the long day on Larch Ward and Lerato Dlamini will approve it.",
+   "mentions": [["Tamar Ben-David", "tamar"], ["Larch Ward", "larch"], ["Lerato Dlamini", "lerato"]],
+   "facts": [
+    {"model": "Shift", "in": "If the bank nurse cancels, Tamar Ben-David will work the long day", "fields": {"slot": "long day", "ward": "larch", "rostered": "tamar", "approved_by": "lerato", "state": "rostered", "remark": "the bank nurse cancels"}, "act": "condition"}]},
+  {"id": "m14", "text": "Dear Lerato,\nCould you put Jakub Nowicki on the night shift on Ashby Ward this Sunday, 8 hours, with him on call?\nMany thanks,\nMarguerite Duval",
+   "mentions": [["Lerato", "lerato"], ["you", "lerato", "ref"], ["Jakub Nowicki", "jakub"], ["Ashby Ward", "ashby"], ["him", "jakub", "ref"], ["Marguerite Duval", "marguerite"]],
+   "facts": [
+    {"model": "Shift", "in": "Could you put Jakub Nowicki on the night shift", "fields": {"slot": "night shift", "ward": "ashby", "rostered": "jakub", "state": "rostered", "hours": 8, "on_call": true}, "act": "request"}]},
+  {"id": "m15", "text": "Marguerite Duval: Ravindra Varghese covers for me on Thursdays, and he supervises Paulo Tuilagi.",
+   "mentions": [["Marguerite Duval", "marguerite"], ["Ravindra Varghese", "ravindra"], ["me", "marguerite", "ref"], ["he", "ravindra", "ref"], ["Paulo Tuilagi", "paulo"]],
+   "facts": [
+    {"model": "Supervision", "in": "Ravindra Varghese covers for me on Thursdays", "from": "marguerite", "to": "ravindra", "label": "cover", "act": "assert"},
+    {"model": "Supervision", "in": "he supervises Paulo Tuilagi", "from": "paulo", "to": "ravindra", "label": "supervisor", "act": "assert"}]},
+  {"id": "m16", "text": "Fwd from Jakub Nowicki: \"Adaeze Nwosu is matron of Ashby Ward too, and she is my supervisor.\"",
+   "mentions": [["Jakub Nowicki", "jakub"], ["Adaeze Nwosu", "adaeze"], ["Ashby Ward", "ashby"], ["she", "adaeze", "ref"], ["my", "jakub", "ref"]],
+   "quotes": [["Adaeze Nwosu is matron of Ashby Ward too, and she is my supervisor.", "jakub"]],
+   "facts": [
+    {"model": "WardPost", "in": "Adaeze Nwosu is matron of Ashby Ward too", "from": "ashby", "to": "adaeze", "label": "matron", "act": "assert"},
+    {"model": "Supervision", "in": "she is my supervisor", "from": "jakub", "to": "adaeze", "label": "supervisor", "act": "assert"}]},
+  {"id": "m17", "text": "Tamar Ben-David worked the late shift on Kingfisher Ward yesterday, 7 hours, and was not on call.",
+   "mentions": [["Tamar Ben-David", "tamar"], ["Kingfisher Ward", "kingfisher"]],
+   "facts": [
+    {"model": "Shift", "in": "Tamar Ben-David worked the late shift on Kingfisher Ward yesterday, 7 hours, and was not on call.", "fields": {"slot": "late shift", "ward": "kingfisher", "rostered": "tamar", "state": "worked", "hours": 7, "on_call": false}, "act": "assert"}]},
+  {"id": "m18", "text": "Lerato Dlamini: I'm not in charge of Kingfisher Ward any more; Astrid Lunde is.",
+   "mentions": [["Lerato Dlamini", "lerato"], ["I", "lerato", "ref"], ["Kingfisher Ward", "kingfisher"], ["Astrid Lunde", "astrid"]],
+   "facts": [
+    {"model": "WardPost", "in": "I'm not in charge of Kingfisher Ward any more", "from": "kingfisher", "to": "lerato", "label": "charge", "act": "assert", "deny": true},
+    {"model": "WardPost", "in": "Astrid Lunde is.", "from": "kingfisher", "to": "astrid", "label": "charge", "act": "assert"}]},
+  {"id": "m19", "text": "Ravindra Seth reported a pressure sore on Larch Ward and asked Astrid Lunde to escalate it.",
+   "mentions": [["Ravindra Seth", "ravindra_s"], ["Larch Ward", "larch"], ["Astrid Lunde", "astrid"]],
+   "facts": [
+    {"model": "Incident", "in": "Ravindra Seth reported a pressure sore on Larch Ward", "fields": {"incident": "pressure sore", "ward": "larch", "reported_by": "ravindra_s"}, "act": "report"}]},
+  {"id": "m20", "text": "The twilight shift on Larch Ward was dropped because of the strike, Adaeze Nwosu confirmed.",
+   "mentions": [["Larch Ward", "larch"], ["Adaeze Nwosu", "adaeze"]],
+   "facts": [
+    {"model": "Shift", "in": "The twilight shift on Larch Ward was dropped", "fields": {"slot": "twilight shift", "ward": "larch", "state": "dropped", "remark": "the strike"}, "act": "report"}]}
+ ],
+ "questions": [
+  {"q": "Who is the matron of Larch Ward?", "speaker": null, "cypher": "MATCH (n0:Ward)-[:matron]->(n1:Clinician) WHERE n0.name = 'Larch Ward' RETURN n1.name AS name"},
+  {"q": "Who is in charge of Kingfisher Ward?", "speaker": null, "cypher": "MATCH (n0:Ward)-[:charge]->(n1:Clinician) WHERE n0.name = 'Kingfisher Ward' RETURN n1.name AS name"},
+  {"q": "Who is the consultant for Ashby Ward?", "speaker": null, "cypher": "MATCH (n0:Ward)-[:consultant]->(n1:Clinician) WHERE n0.name = 'Ashby Ward' RETURN n1.name AS name"},
+  {"q": "Which ward is overseen by me?", "speaker": "adaeze", "cypher": "MATCH (n0:Clinician)-[:overseen]->(n1:Ward) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is my preceptor?", "speaker": "tamar", "cypher": "MATCH (n0:Clinician)-[:preceptor]->(n1:Clinician) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is a supervisee of mine?", "speaker": "ravindra", "cypher": "MATCH (n0:Clinician)-[:supervisee]->(n1:Clinician) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who covers for Marguerite Duval?", "speaker": null, "cypher": "MATCH (n0:Clinician)-[:cover]->(n1:Clinician) WHERE n0.name = 'Marguerite Duval' RETURN n1.name AS name"},
+  {"q": "How many incidents are there?", "speaker": null, "cypher": "MATCH (n0:Incident) RETURN count(n0) AS count"},
+  {"q": "Was the medication error escalated?", "speaker": null, "cypher": "MATCH (n0:Incident) WHERE n0.incident = 'medication error' RETURN n0.escalated AS escalated"},
+  {"q": "Is there a record of the pressure sore being escalated?", "speaker": null, "cypher": "MATCH (n0:Incident) WHERE n0.incident = 'pressure sore' RETURN coalesce(n0.escalated, false) AS escalated"},
+  {"q": "How many hours is the long day?", "speaker": null, "cypher": "MATCH (n0:Shift) WHERE n0.slot = 'long day' RETURN n0.hours AS hours"},
+  {"q": "Which shifts did Lerato Dlamini approve?", "speaker": null, "cypher": "MATCH (n0:Clinician)<-[:approved_by]-(n1:Shift) WHERE n0.name = 'Lerato Dlamini' RETURN n1.slot AS slot"},
+  {"q": "Who reported incidents on Ashby Ward?", "speaker": null, "cypher": "MATCH (n0:Ward)<-[:ward]-(n1:Incident)-[:reported_by]->(n2:Clinician) WHERE n0.name = 'Ashby Ward' RETURN n2.name AS name"},
+  {"q": "Which slots and hours were worked on Ashby Ward?", "speaker": null, "cypher": "MATCH (n0:Ward)<-[:ward]-(n1:Shift) WHERE n0.name = 'Ashby Ward' RETURN n1.slot AS slot, n1.hours AS hours"},
+  {"q": "Which shifts mention a strike?", "speaker": null, "cypher": "MATCH (n0:Shift) WHERE n0.remark CONTAINS 'strike' RETURN n0.slot AS slot"},
+  {"q": "Is Tamar Ben-David on call for her shifts?", "speaker": null, "cypher": "MATCH (n0:Clinician)<-[:rostered]-(n1:Shift) WHERE n0.name = 'Tamar Ben-David' RETURN n1.on_call AS on_call"},
+  {"q": "Is there a record of Paulo Tuilagi being on call?", "speaker": null, "cypher": "MATCH (n0:Clinician)<-[:rostered]-(n1:Shift) WHERE n0.name = 'Paulo Tuilagi' RETURN coalesce(n1.on_call, false) AS on_call"}
+ ]
+}

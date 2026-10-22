@@ -1,0 +1,140 @@
+{
+ "domain": "pharmacy",
+ "models": {
+  "Party": {"description": "A person the pharmacy deals with: a patient, a doctor, a carer or a pharmacist. A first name alone is not an identity.",
+   "properties": {"name": "string", "pager": "string?", "registration_number": "string?"}, "identities": ["registration_number"]},
+  "Medicine": {"description": "A medicine the pharmacy stocks or dispenses, by brand.",
+   "properties": {"brand": "string", "strength": "string?"}},
+  "CareLink": {"description": "Who acts for a patient in which way: the doctor who prescribes, the carer who looks after them, or the pharmacist who dispenses.\nCaring for someone is not prescribing for them.",
+   "properties": {"patient": "Party", "helper": "Party", "link": ["prescriber", "carer", "pharmacist"]},
+   "relation": {"from": "patient", "to": "helper", "label": "link", "phrasing": "{to} acts for {from} as {label}",
+    "labels": {"prescriber": {"forward": ["prescriber", "GP", "prescribing doctor"], "reverse": ["prescribee"]},
+               "carer": {"forward": ["carer", "caregiver", "looks after"], "reverse": ["charge"]},
+               "pharmacist": {"forward": ["pharmacist", "dispenser"], "reverse": ["customer"]}}}},
+  "Interaction": {"description": "How one medicine affects another taken alongside it: it clashes with it, or boosts its effect.",
+   "properties": {"drug": "Medicine", "other": "Medicine", "effect": ["clashes", "boosts"]},
+   "relation": {"from": "drug", "to": "other", "label": "effect", "phrasing": "{from} {label} {to}",
+    "labels": {"clashes": {"forward": ["clashes with", "interacts with"], "reverse": ["clashing"]},
+               "boosts": {"forward": ["boosts", "strengthens"], "reverse": ["booster"]}}}},
+  "Prescription": {"description": "A medicine dispensed for a patient. patient takes it, prescriber wrote it, collected_by picked it up from the counter.",
+   "properties": {"patient": "Party", "medicine": "Medicine", "prescriber": "Party?", "collected_by": "Party?",
+    "status": ["pending", "ready", "collected"], "repeat": "boolean?", "quantity": "integer?", "directions": "string?"},
+   "absences": {"repeat": "no_repeat_record"}},
+  "Shortage": {"description": "A medicine running short in stock: how many packs are left and whether it is low or out.",
+   "properties": {"medicine": "Medicine", "reported_by": "Party?", "packs_left": "integer?", "severity": ["low", "out"]}}
+ },
+ "entities": {
+  "olu_a": {"model": "Party", "name": "Oluwaseun Adebayo"},
+  "olu_f": {"model": "Party", "name": "Oluwaseun Fashola"},
+  "mireille": {"model": "Party", "name": "Mireille Dubois"},
+  "kenji": {"model": "Party", "name": "Kenji Arakawa", "fields": {"registration_number": "GMC 7731042"}},
+  "farida": {"model": "Party", "name": "Farida Haddad"},
+  "tomasz": {"model": "Party", "name": "Tomasz Wierzbicki"},
+  "ngaio": {"model": "Party", "name": "Ngaio Parata"},
+  "esperanza": {"model": "Party", "name": "Esperanza Villalobos"},
+  "halvenor": {"model": "Medicine", "name": "Halvenor"},
+  "tessaline": {"model": "Medicine", "name": "Tessaline"},
+  "ostrafen": {"model": "Medicine", "name": "Ostrafen"},
+  "ciruvel": {"model": "Medicine", "name": "Ciruvel"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Farida Haddad: Kenji Arakawa is my GP. He prescribed me Halvenor last week, and it is ready to collect.",
+   "mentions": [["Farida Haddad", "farida"], ["Kenji Arakawa", "kenji"], ["my", "farida", "ref"], ["He", "kenji", "ref"], ["me", "farida", "ref"], ["Halvenor", "halvenor"]],
+   "facts": [
+    {"model": "CareLink", "in": "Kenji Arakawa is my GP.", "from": "farida", "to": "kenji", "label": "prescriber", "act": "assert"},
+    {"model": "CareLink", "in": "He prescribed me Halvenor last week", "from": "farida", "to": "kenji", "label": "prescriber", "act": "assert"},
+    {"model": "Prescription", "in": "He prescribed me Halvenor last week, and it is ready to collect.", "fields": {"patient": "farida", "prescriber": "kenji", "medicine": "halvenor", "status": "ready"}, "act": "assert"}]},
+  {"id": "m02", "text": "Pharmacy note: Ostrafen clashes with Halvenor, so never dispense the two together. It does not interact with Tessaline.",
+   "mentions": [["Ostrafen", "ostrafen"], ["Halvenor", "halvenor"], ["It", "ostrafen", "ref"], ["Tessaline", "tessaline"]],
+   "facts": [
+    {"model": "Interaction", "in": "Ostrafen clashes with Halvenor", "from": "ostrafen", "to": "halvenor", "label": "clashes", "act": "assert"},
+    {"model": "Interaction", "in": "It does not interact with Tessaline.", "from": "ostrafen", "to": "tessaline", "label": "clashes", "act": "assert", "deny": true}]},
+  {"id": "m03", "text": "Oluwaseun Adebayo collected 28 tablets of Tessaline for Oluwaseun Fashola today. Oluwaseun said the bag was sealed.",
+   "mentions": [["Oluwaseun Adebayo", "olu_a"], ["Tessaline", "tessaline"], ["Oluwaseun Fashola", "olu_f"], ["Oluwaseun", "olu_a", "?"]],
+   "facts": [
+    {"model": "Prescription", "in": "Oluwaseun Adebayo collected 28 tablets of Tessaline for Oluwaseun Fashola today.", "fields": {"patient": "olu_f", "collected_by": "olu_a", "medicine": "tessaline", "quantity": 28, "status": "collected"}, "act": "assert"}]},
+  {"id": "m04", "text": "Ngaio Parata looks after Esperanza Villalobos at home. Esperanza also uses Tomasz Wierzbicki as her pharmacist.",
+   "mentions": [["Ngaio Parata", "ngaio"], ["Esperanza Villalobos", "esperanza"], ["Esperanza", "esperanza"], ["Tomasz Wierzbicki", "tomasz"], ["her", "esperanza", "ref"]],
+   "facts": [
+    {"model": "CareLink", "in": "Ngaio Parata looks after Esperanza Villalobos at home.", "from": "esperanza", "to": "ngaio", "label": "carer", "act": "assert"},
+    {"model": "CareLink", "in": "Esperanza also uses Tomasz Wierzbicki as her pharmacist.", "from": "esperanza", "to": "tomasz", "label": "pharmacist", "act": "assert"}]},
+  {"id": "m05", "text": "Kenji Arakawa told the counter staff: \"I am not the prescriber for Mireille Dubois, ask her GP.\"",
+   "mentions": [["Kenji Arakawa", "kenji"], ["I", "kenji", "ref"], ["Mireille Dubois", "mireille"], ["her", "mireille", "ref"]],
+   "quotes": [["I am not the prescriber for Mireille Dubois, ask her GP.", "kenji"]],
+   "facts": [
+    {"model": "CareLink", "in": "I am not the prescriber for Mireille Dubois", "from": "mireille", "to": "kenji", "label": "prescriber", "act": "assert", "deny": true}]},
+  {"id": "m06", "text": "Stock check: Ciruvel is out, with 0 packs left, reported by Tomasz Wierzbicki.",
+   "mentions": [["Ciruvel", "ciruvel"], ["Tomasz Wierzbicki", "tomasz"]],
+   "facts": [
+    {"model": "Shortage", "in": "Stock check: Ciruvel is out, with 0 packs left, reported by Tomasz Wierzbicki.", "fields": {"medicine": "ciruvel", "severity": "out", "packs_left": 0, "reported_by": "tomasz"}, "act": "assert"}]},
+  {"id": "m07", "text": "Hello Tomasz,\nCould you set up a repeat prescription of Ostrafen for my mother, Mireille Dubois, 56 capsules, take one at night?\nMany thanks,\nFarida Haddad",
+   "mentions": [["Tomasz", "tomasz"], ["you", "tomasz", "ref"], ["Ostrafen", "ostrafen"], ["my", "farida", "ref"], ["Mireille Dubois", "mireille"], ["Farida Haddad", "farida"]],
+   "facts": [
+    {"model": "Prescription", "in": "Could you set up a repeat prescription of Ostrafen for my mother, Mireille Dubois, 56 capsules, take one at night?", "fields": {"patient": "mireille", "medicine": "ostrafen", "repeat": true, "quantity": 56, "directions": "take one at night", "status": "pending"}, "act": "request"}]},
+  {"id": "m08", "text": "Esperanza Villalobos: I think Tessaline boosts Ciruvel, but maybe I have it backwards.",
+   "mentions": [["Esperanza Villalobos", "esperanza"], ["I", "esperanza", "ref"], ["Tessaline", "tessaline"], ["Ciruvel", "ciruvel"], ["I", "esperanza", "ref"]],
+   "facts": [
+    {"model": "Interaction", "in": "I think Tessaline boosts Ciruvel", "from": "tessaline", "to": "ciruvel", "label": "boosts", "act": "draft"}]},
+  {"id": "m09", "text": "If the clinic agrees, Ngaio Parata will become the carer of Farida Haddad.",
+   "mentions": [["Ngaio Parata", "ngaio"], ["Farida Haddad", "farida"]],
+   "facts": [
+    {"model": "CareLink", "in": "If the clinic agrees, Ngaio Parata will become the carer of Farida Haddad.", "from": "farida", "to": "ngaio", "label": "carer", "act": "condition"}]},
+  {"id": "m10", "text": "Mireille Dubois said that Kenji Arakawa is the prescribing doctor for Tomasz Wierzbicki.",
+   "mentions": [["Mireille Dubois", "mireille"], ["Kenji Arakawa", "kenji"], ["Tomasz Wierzbicki", "tomasz"]],
+   "facts": [
+    {"model": "CareLink", "in": "Mireille Dubois said that Kenji Arakawa is the prescribing doctor for Tomasz Wierzbicki.", "from": "tomasz", "to": "kenji", "label": "prescriber", "act": "report"}]},
+  {"id": "m11", "text": "Prescription for Farida Haddad from Kenji Arakawa, collected by Ngaio Parata: 30 tablets of Halvenor, no repeat, take with food.",
+   "mentions": [["Farida Haddad", "farida"], ["Kenji Arakawa", "kenji"], ["Ngaio Parata", "ngaio"], ["Halvenor", "halvenor"]],
+   "facts": [
+    {"model": "Prescription", "in": "Prescription for Farida Haddad from Kenji Arakawa", "fields": {"patient": "farida", "prescriber": "kenji", "collected_by": "ngaio", "quantity": 30, "medicine": "halvenor", "repeat": false, "directions": "take with food", "status": "collected"}, "act": "assert"},
+    {"model": "CareLink", "in": "Prescription for Farida Haddad from Kenji Arakawa", "from": "farida", "to": "kenji", "label": "prescriber", "act": "assert"}]},
+  {"id": "m12", "text": "I reminded the new locum: \"Ostrafen clashes with Halvenor, check every bag.\"",
+   "mentions": [["I", "none", "ref"], ["Ostrafen", "ostrafen"], ["Halvenor", "halvenor"]],
+   "quotes": [["Ostrafen clashes with Halvenor, check every bag.", "author"]],
+   "facts": [
+    {"model": "Interaction", "in": "Ostrafen clashes with Halvenor", "from": "ostrafen", "to": "halvenor", "label": "clashes", "act": "assert"}]},
+  {"id": "m13", "text": "Tomasz Wierzbicki: Halvenor is running low, 4 packs left. I will reorder it tomorrow.",
+   "mentions": [["Tomasz Wierzbicki", "tomasz"], ["Halvenor", "halvenor"], ["I", "tomasz", "ref"], ["it", "halvenor", "ref"]],
+   "facts": [
+    {"model": "Shortage", "in": "Halvenor is running low, 4 packs left.", "fields": {"medicine": "halvenor", "severity": "low", "packs_left": 4}, "act": "assert"}]},
+  {"id": "m14", "text": "From: Kenji Arakawa\nMy registration number is GMC 7731042. I am the prescriber for Oluwaseun Fashola as well.",
+   "mentions": [["Kenji Arakawa", "kenji"], ["My", "kenji", "ref"], ["I", "kenji", "ref"], ["Oluwaseun Fashola", "olu_f"]],
+   "facts": [
+    {"model": "CareLink", "in": "I am the prescriber for Oluwaseun Fashola as well.", "from": "olu_f", "to": "kenji", "label": "prescriber", "act": "assert"}]},
+  {"id": "m15", "text": "Oluwaseun Adebayo: Tomasz Wierzbicki is not my pharmacist any more; Ngaio Parata is.",
+   "mentions": [["Oluwaseun Adebayo", "olu_a"], ["Tomasz Wierzbicki", "tomasz"], ["my", "olu_a", "ref"], ["Ngaio Parata", "ngaio"]],
+   "facts": [
+    {"model": "CareLink", "in": "Tomasz Wierzbicki is not my pharmacist any more", "from": "olu_a", "to": "tomasz", "label": "pharmacist", "act": "assert", "deny": true},
+    {"model": "CareLink", "in": "Ngaio Parata is.", "from": "olu_a", "to": "ngaio", "label": "pharmacist", "act": "assert"}]},
+  {"id": "m16", "text": "The Ciruvel prescription for Esperanza Villalobos is still pending because of the shortage; Esperanza will call back.",
+   "mentions": [["Ciruvel", "ciruvel"], ["Esperanza Villalobos", "esperanza"], ["Esperanza", "esperanza"]],
+   "facts": [
+    {"model": "Prescription", "in": "The Ciruvel prescription for Esperanza Villalobos is still pending", "fields": {"patient": "esperanza", "medicine": "ciruvel", "status": "pending"}, "act": "assert"}]},
+  {"id": "m17", "text": "Tomasz Wierzbicki says Halvenor strengthens Tessaline when the two are taken together.",
+   "mentions": [["Tomasz Wierzbicki", "tomasz"], ["Halvenor", "halvenor"], ["Tessaline", "tessaline"]],
+   "facts": [
+    {"model": "Interaction", "in": "Tomasz Wierzbicki says Halvenor strengthens Tessaline", "from": "halvenor", "to": "tessaline", "label": "boosts", "act": "report"}]},
+  {"id": "m18", "text": "Ngaio Parata: Kenji, could you be the prescriber for Esperanza while her own doctor is away?",
+   "mentions": [["Ngaio Parata", "ngaio"], ["Kenji", "kenji"], ["you", "kenji", "ref"], ["Esperanza", "esperanza"], ["her", "esperanza", "ref"]],
+   "facts": [
+    {"model": "CareLink", "in": "could you be the prescriber for Esperanza", "from": "esperanza", "to": "kenji", "label": "prescriber", "act": "request"}]}
+ ],
+ "questions": [
+  {"q": "Who is the prescriber of Farida Haddad?", "speaker": null, "cypher": "MATCH (n0:Party)-[:prescriber]->(n1:Party) WHERE n0.name = 'Farida Haddad' RETURN n1.name AS name"},
+  {"q": "Who is my carer?", "speaker": "esperanza", "cypher": "MATCH (n0:Party)-[:carer]->(n1:Party) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is my customer?", "speaker": "tomasz", "cypher": "MATCH (n0:Party)-[:customer]->(n1:Party) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Ostrafen clashes with which medicine?", "speaker": null, "cypher": "MATCH (n0:Medicine)-[:clashes]->(n1:Medicine) WHERE n0.brand = 'Ostrafen' RETURN n1.brand AS brand"},
+  {"q": "What is the booster of Tessaline?", "speaker": null, "cypher": "MATCH (n0:Medicine)-[:booster]->(n1:Medicine) WHERE n0.brand = 'Tessaline' RETURN n1.brand AS brand"},
+  {"q": "How many prescriptions are there?", "speaker": null, "cypher": "MATCH (n0:Prescription) RETURN count(n0) AS count"},
+  {"q": "Is there a record of a repeat on the prescriptions of Mireille Dubois?", "speaker": null, "cypher": "MATCH (n0:Party)<-[:patient]-(n1:Prescription) WHERE n0.name = 'Mireille Dubois' RETURN coalesce(n1.repeat, false) AS repeat"},
+  {"q": "Is the Halvenor prescription a repeat?", "speaker": null, "cypher": "MATCH (n0:Medicine)<-[:medicine]-(n1:Prescription) WHERE n0.brand = 'Halvenor' RETURN n1.repeat AS repeat"},
+  {"q": "What quantity was on the prescriptions I collected?", "speaker": "olu_a", "cypher": "MATCH (n0:Party)<-[:collected_by]-(n1:Prescription) WHERE id(n0) = $speaker RETURN n1.quantity AS quantity"},
+  {"q": "Who prescribed the prescriptions that Ngaio Parata collected?", "speaker": null, "cypher": "MATCH (n0:Party)<-[:collected_by]-(n1:Prescription)-[:prescriber]->(n2:Party) WHERE n0.name = 'Ngaio Parata' RETURN n2.name AS name"},
+  {"q": "How many packs of Ciruvel are left in the shortage?", "speaker": null, "cypher": "MATCH (n0:Medicine)<-[:medicine]-(n1:Shortage) WHERE n0.brand = 'Ciruvel' RETURN n1.packs_left AS packs_left"},
+  {"q": "What is the status of the prescription taken with food?", "speaker": null, "cypher": "MATCH (n0:Prescription) WHERE n0.directions CONTAINS 'food' RETURN n0.status AS status"},
+  {"q": "What is the registration number of Kenji Arakawa?", "speaker": null, "cypher": "MATCH (n0:Party) WHERE n0.name = 'Kenji Arakawa' RETURN n0.registration_number AS registration_number"},
+  {"q": "For each shortage, how many packs are left and how severe is it?", "speaker": null, "cypher": "MATCH (n0:Shortage) RETURN n0.packs_left AS packs_left, n0.severity AS severity"},
+  {"q": "Who is the pharmacist for Esperanza Villalobos?", "speaker": null, "cypher": "MATCH (n0:Party)-[:pharmacist]->(n1:Party) WHERE n0.name = 'Esperanza Villalobos' RETURN n1.name AS name"},
+  {"q": "Who looks after Farida Haddad?", "speaker": null, "cypher": "MATCH (n0:Party)-[:carer]->(n1:Party) WHERE n0.name = 'Farida Haddad' RETURN n1.name AS name"}
+ ]
+}

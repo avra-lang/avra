@@ -1,0 +1,151 @@
+{
+ "domain": "brewery",
+ "models": {
+  "Brewer": {"description": "Someone who works the brewhouse, cellar or taproom. A first name alone is not an identity.",
+   "properties": {"known_as": "string", "phone": "string?"}, "identities": ["phone"]},
+  "Beer": {"description": "A beer the brewery makes, named by its recipe, whoever brews it.",
+   "properties": {"recipe": "string", "style": "string?"}},
+  "Craft": {"description": "Who works on a beer: its head brewer, the cellar hand who conditions it, or its taster.\nTasting a beer is not brewing it.",
+   "properties": {"beer": "Beer", "brewer": "Brewer", "role": ["head_brewer", "cellar", "taster"]},
+   "relation": {"from": "beer", "to": "brewer", "label": "role", "phrasing": "{to} handles {from} as {label}",
+    "labels": {"head_brewer": {"forward": ["head brewer", "brews"], "reverse": ["brewed"]},
+               "cellar": {"forward": ["cellar hand", "cellars"], "reverse": ["cellared"]},
+               "taster": {"forward": ["taster", "tastes"], "reverse": ["tasted"]}}}},
+  "Crew": {"description": "How two brewers stand on the rota: one is trained by a mentor, or covered by a relief.",
+   "properties": {"brewer": "Brewer", "other": "Brewer", "link": ["mentor", "relief"]},
+   "relation": {"from": "brewer", "to": "other", "label": "link", "phrasing": "{from} has {to} as {label}",
+    "labels": {"mentor": {"forward": ["mentor", "trains under"], "reverse": ["trainee"]},
+               "relief": {"forward": ["relief", "relieves"], "reverse": ["relieved"]}}}},
+  "Batch": {"description": "One brew of a beer. brewed_by mashed it, checked_by took the gravity readings, signed_off_by released it.",
+   "properties": {"batch_code": "string", "beer": "Beer?", "brewed_by": "Brewer?", "checked_by": "Brewer?", "signed_off_by": "Brewer?",
+    "status": ["fermenting", "conditioning", "packaged", "dumped"], "dry_hopped": "boolean?", "litres": "integer?", "off_note": "string?"},
+   "absences": {"dry_hopped": "hop_log_missing"}},
+  "Order": {"description": "Kegs a customer ordered. taken_by took the order; delivered stays empty until delivery is recorded.",
+   "properties": {"customer": "string", "beer": "Beer?", "taken_by": "Brewer?", "kegs": "integer", "delivered": "boolean?"},
+   "absences": {"delivered": "no_delivery_record"}}
+ },
+ "entities": {
+  "ayse": {"model": "Brewer", "name": "Ayşe Yıldız"},
+  "lungile": {"model": "Brewer", "name": "Lungile Dube"},
+  "jaan": {"model": "Brewer", "name": "Jaan Kask"},
+  "jaan_r": {"model": "Brewer", "name": "Jaan Rebane"},
+  "mai": {"model": "Brewer", "name": "Mai Lor Xiong"},
+  "mai_v": {"model": "Brewer", "name": "Mai Vue"},
+  "karim": {"model": "Brewer", "name": "Karim Nassar"},
+  "sefa": {"model": "Brewer", "name": "Sefa Tuilagi"},
+  "rupa": {"model": "Brewer", "name": "Rupa Sen"},
+  "saint": {"model": "Beer", "name": "Copper Saint"},
+  "gose": {"model": "Beer", "name": "Low Tide Gose"},
+  "stout": {"model": "Beer", "name": "Night Ferry Stout"},
+  "bitter": {"model": "Beer", "name": "Orchard Bitter"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Ayşe Yıldız: I brew Night Ferry Stout, and Lungile Dube cellars it.",
+   "mentions": [["Ayşe Yıldız", "ayse"], ["I", "ayse", "ref"], ["Night Ferry Stout", "stout"], ["Lungile Dube", "lungile"], ["it", "stout", "ref"]],
+   "facts": [
+    {"model": "Craft", "in": "I brew Night Ferry Stout", "from": "stout", "to": "ayse", "label": "head_brewer", "act": "assert"},
+    {"model": "Craft", "in": "Lungile Dube cellars it", "from": "stout", "to": "lungile", "label": "cellar", "act": "assert"}]},
+  {"id": "m02", "text": "Batch NF-12 of Night Ferry Stout was brewed by Karim Nassar, checked by Rupa Sen and signed off by Jaan Kask; it is conditioning now at 800 litres.",
+   "mentions": [["Night Ferry Stout", "stout"], ["Karim Nassar", "karim"], ["Rupa Sen", "rupa"], ["Jaan Kask", "jaan"]],
+   "facts": [
+    {"model": "Batch", "in": "Batch NF-12 of Night Ferry Stout", "fields": {"batch_code": "NF-12", "beer": "stout", "brewed_by": "karim", "checked_by": "rupa", "signed_off_by": "jaan", "status": "conditioning", "litres": 800}, "act": "assert"}]},
+  {"id": "m03", "text": "Jaan Rebane: I am not the taster for Copper Saint. Sefa Tuilagi tastes it now.",
+   "mentions": [["Jaan Rebane", "jaan_r"], ["I", "jaan_r", "ref"], ["Copper Saint", "saint"], ["Sefa Tuilagi", "sefa"], ["it", "saint", "ref"]],
+   "facts": [
+    {"model": "Craft", "in": "I am not the taster for Copper Saint.", "from": "saint", "to": "jaan_r", "label": "taster", "act": "assert", "deny": true},
+    {"model": "Craft", "in": "Sefa Tuilagi tastes it now.", "from": "saint", "to": "sefa", "label": "taster", "act": "assert"}]},
+  {"id": "m04", "text": "Jaan Kask trains under Jaan Rebane. Jaan wants to keep it that way.",
+   "mentions": [["Jaan Kask", "jaan"], ["Jaan Rebane", "jaan_r"], ["Jaan", "jaan", "?"]],
+   "facts": [
+    {"model": "Crew", "in": "Jaan Kask trains under Jaan Rebane.", "from": "jaan", "to": "jaan_r", "label": "mentor", "act": "assert"}]},
+  {"id": "m05", "text": "Mai Lor Xiong told the taproom: \"I relieve Karim on Sundays and I taste every batch of Low Tide Gose.\"",
+   "mentions": [["Mai Lor Xiong", "mai"], ["I", "mai", "ref"], ["Karim", "karim"], ["I", "mai", "ref"], ["Low Tide Gose", "gose"]],
+   "quotes": [["I relieve Karim on Sundays and I taste every batch of Low Tide Gose.", "mai"]],
+   "facts": [
+    {"model": "Crew", "in": "I relieve Karim on Sundays", "from": "karim", "to": "mai", "label": "relief", "act": "assert"},
+    {"model": "Craft", "in": "I taste every batch of Low Tide Gose.", "from": "gose", "to": "mai", "label": "taster", "act": "assert"}]},
+  {"id": "m06", "text": "Hello Rupa,\nThe Anchor Arms ordered 6 kegs of Orchard Bitter; Sefa took the order and they were delivered Tuesday.\nRegards,\nKarim Nassar",
+   "mentions": [["Rupa", "rupa"], ["Orchard Bitter", "bitter"], ["Sefa", "sefa"], ["Karim Nassar", "karim"]],
+   "facts": [
+    {"model": "Order", "in": "The Anchor Arms ordered 6 kegs of Orchard Bitter", "fields": {"customer": "The Anchor Arms", "beer": "bitter", "taken_by": "sefa", "kegs": 6, "delivered": true}, "act": "assert"}]},
+  {"id": "m07", "text": "Lungile Dube: From next month I will be head brewer on Orchard Bitter.",
+   "mentions": [["Lungile Dube", "lungile"], ["I", "lungile", "ref"], ["Orchard Bitter", "bitter"]],
+   "facts": [
+    {"model": "Craft", "in": "From next month I will be head brewer on Orchard Bitter.", "from": "bitter", "to": "lungile", "label": "head_brewer", "act": "plan"}]},
+  {"id": "m08", "text": "Ayşe Yıldız: Rupa, could you cellar Copper Saint while Lungile is away?",
+   "mentions": [["Ayşe Yıldız", "ayse"], ["Rupa", "rupa"], ["Copper Saint", "saint"], ["Lungile", "lungile"]],
+   "facts": [
+    {"model": "Craft", "in": "Rupa, could you cellar Copper Saint", "from": "saint", "to": "rupa", "label": "cellar", "act": "request"}]},
+  {"id": "m09", "text": "If the gravity holds, the still fermenting batch CS-7 of Copper Saint gets dry hopped tomorrow.",
+   "mentions": [["Copper Saint", "saint"]],
+   "facts": [
+    {"model": "Batch", "in": "If the gravity holds", "fields": {"batch_code": "CS-7", "beer": "saint", "status": "fermenting", "dry_hopped": true}, "act": "condition"}]},
+  {"id": "m10", "text": "Karim Nassar: I think Ayşe is the taster for Night Ferry Stout, but ask Sefa.",
+   "mentions": [["Karim Nassar", "karim"], ["I", "karim", "ref"], ["Ayşe", "ayse"], ["Night Ferry Stout", "stout"], ["Sefa", "sefa"]],
+   "facts": [
+    {"model": "Craft", "in": "I think Ayşe is the taster for Night Ferry Stout", "from": "stout", "to": "ayse", "label": "taster", "act": "draft"}]},
+  {"id": "m11", "text": "Rupa Sen said that Sefa Tuilagi trains under her.",
+   "mentions": [["Rupa Sen", "rupa"], ["Sefa Tuilagi", "sefa"], ["her", "rupa", "ref"]],
+   "facts": [
+    {"model": "Crew", "in": "Rupa Sen said that Sefa Tuilagi trains under her.", "from": "sefa", "to": "rupa", "label": "mentor", "act": "report"}]},
+  {"id": "m12", "text": "Tasting notes, Lungile Dube present. My verdict on Low Tide Gose: \"too much salt, not enough lime.\"",
+   "mentions": [["Lungile Dube", "lungile"], ["My", "none", "ref"], ["Low Tide Gose", "gose"]],
+   "quotes": [["too much salt, not enough lime.", "author"]],
+   "facts": []},
+  {"id": "m13", "text": "A regular scrawled \"Orchard Bitter tastes of wet cardboard\" on the board, and Mai Lor Xiong photographed it.",
+   "mentions": [["Orchard Bitter", "bitter"], ["Mai Lor Xiong", "mai"]],
+   "quotes": [["Orchard Bitter tastes of wet cardboard", "?"]],
+   "facts": []},
+  {"id": "m14", "text": "Jaan Kask dumped batch LT-3 of Low Tide Gose because of a sour off note; Jaan had brewed it himself.",
+   "mentions": [["Jaan Kask", "jaan"], ["Low Tide Gose", "gose"], ["Jaan", "jaan"], ["himself", "jaan", "ref"]],
+   "facts": [
+    {"model": "Batch", "in": "Jaan Kask dumped batch LT-3", "fields": {"batch_code": "LT-3", "beer": "gose", "brewed_by": "jaan", "status": "dumped", "off_note": "a sour off note"}, "act": "assert"}]},
+  {"id": "m15", "text": "Night Ferry Stout order for Cafe Lumo: 4 kegs, taken by Ayşe Yıldız, not delivered yet.",
+   "mentions": [["Night Ferry Stout", "stout"], ["Ayşe Yıldız", "ayse"]],
+   "facts": [
+    {"model": "Order", "in": "Night Ferry Stout order for Cafe Lumo", "fields": {"customer": "Cafe Lumo", "beer": "stout", "kegs": 4, "taken_by": "ayse", "delivered": false}, "act": "assert"}]},
+  {"id": "m16", "text": "Sefa Tuilagi: We packaged batch OB-21 of Orchard Bitter today, 1,200 litres, not dry hopped.",
+   "mentions": [["Sefa Tuilagi", "sefa"], ["We", "sefa", "ref"], ["Orchard Bitter", "bitter"]],
+   "facts": [
+    {"model": "Batch", "in": "We packaged batch OB-21", "fields": {"batch_code": "OB-21", "beer": "bitter", "status": "packaged", "litres": 1200, "dry_hopped": false}, "act": "assert"}]},
+  {"id": "m17", "text": "Karim Nassar: Lungile is not my relief this week. Next week Jaan Rebane relieves me.",
+   "mentions": [["Karim Nassar", "karim"], ["Lungile", "lungile"], ["my", "karim", "ref"], ["Jaan Rebane", "jaan_r"], ["me", "karim", "ref"]],
+   "facts": [
+    {"model": "Crew", "in": "Lungile is not my relief this week.", "from": "karim", "to": "lungile", "label": "relief", "act": "assert", "deny": true},
+    {"model": "Crew", "in": "Next week Jaan Rebane relieves me.", "from": "karim", "to": "jaan_r", "label": "relief", "act": "plan"}]},
+  {"id": "m18", "text": "Mai Lor Xiong will train under Ayşe Yıldız. Ayşe also asked Mai Vue, a new starter, to taste Copper Saint.",
+   "mentions": [["Mai Lor Xiong", "mai"], ["Ayşe Yıldız", "ayse"], ["Ayşe", "ayse"], ["Mai Vue", "mai_v"], ["Copper Saint", "saint"]],
+   "facts": [
+    {"model": "Crew", "in": "Mai Lor Xiong will train under Ayşe Yıldız.", "from": "mai", "to": "ayse", "label": "mentor", "act": "plan"},
+    {"model": "Craft", "in": "Ayşe also asked Mai Vue, a new starter, to taste Copper Saint.", "from": "saint", "to": "mai_v", "label": "taster", "act": "request"}]},
+  {"id": "m19", "text": "Rupa Sen: Can someone take an order from Harbour Kitchen for 3 kegs of Copper Saint?",
+   "mentions": [["Rupa Sen", "rupa"], ["Copper Saint", "saint"]],
+   "facts": [
+    {"model": "Order", "in": "Can someone take an order from Harbour Kitchen", "fields": {"customer": "Harbour Kitchen", "beer": "saint", "kegs": 3}, "act": "request"}]},
+  {"id": "m20", "text": "Subject: cellar rota\n\nSefa, from Monday I cellar Low Tide Gose and Rupa Sen cellars Copper Saint.\n\nBest,\nLungile Dube",
+   "mentions": [["Sefa", "sefa"], ["I", "lungile", "ref"], ["Low Tide Gose", "gose"], ["Rupa Sen", "rupa"], ["Copper Saint", "saint"], ["Lungile Dube", "lungile"]],
+   "facts": [
+    {"model": "Craft", "in": "from Monday I cellar Low Tide Gose", "from": "gose", "to": "lungile", "label": "cellar", "act": "plan"},
+    {"model": "Craft", "in": "Rupa Sen cellars Copper Saint", "from": "saint", "to": "rupa", "label": "cellar", "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who brews Night Ferry Stout?", "speaker": null, "cypher": "MATCH (n0:Beer)-[:head_brewer]->(n1:Brewer) WHERE n0.recipe = 'Night Ferry Stout' RETURN n1.known_as AS known_as"},
+  {"q": "Which beers have I brewed?", "speaker": "lungile", "cypher": "MATCH (n0:Brewer)-[:brewed]->(n1:Beer) WHERE id(n0) = $speaker RETURN n1.recipe AS recipe"},
+  {"q": "Who is my mentor?", "speaker": "jaan", "cypher": "MATCH (n0:Brewer)-[:mentor]->(n1:Brewer) WHERE id(n0) = $speaker RETURN n1.known_as AS known_as"},
+  {"q": "Who is Ayşe Yıldız's trainee?", "speaker": null, "cypher": "MATCH (n0:Brewer)-[:trainee]->(n1:Brewer) WHERE n0.known_as = 'Ayşe Yıldız' RETURN n1.known_as AS known_as"},
+  {"q": "How many batches are there?", "speaker": null, "cypher": "MATCH (n0:Batch) RETURN count(n0) AS count"},
+  {"q": "Was batch OB-21 dry hopped?", "speaker": null, "cypher": "MATCH (n0:Batch) WHERE n0.batch_code = 'OB-21' RETURN n0.dry_hopped AS dry_hopped"},
+  {"q": "Is there a record that CS-7 was dry hopped?", "speaker": null, "cypher": "MATCH (n0:Batch) WHERE n0.batch_code = 'CS-7' RETURN coalesce(n0.dry_hopped, false) AS dry_hopped"},
+  {"q": "What batches did Karim Nassar brew?", "speaker": null, "cypher": "MATCH (n0:Brewer)<-[:brewed_by]-(n1:Batch) WHERE n0.known_as = 'Karim Nassar' RETURN n1.batch_code AS batch_code"},
+  {"q": "Who signed off batch NF-12?", "speaker": null, "cypher": "MATCH (n0:Batch)-[:signed_off_by]->(n1:Brewer) WHERE n0.batch_code = 'NF-12' RETURN n1.known_as AS known_as"},
+  {"q": "What volume is batch OB-21?", "speaker": null, "cypher": "MATCH (n0:Batch) WHERE n0.batch_code = 'OB-21' RETURN n0.litres AS litres"},
+  {"q": "How many kegs did The Anchor Arms order?", "speaker": null, "cypher": "MATCH (n0:Order) WHERE n0.customer = 'The Anchor Arms' RETURN n0.kegs AS kegs"},
+  {"q": "Was the Cafe Lumo order delivered?", "speaker": null, "cypher": "MATCH (n0:Order) WHERE n0.customer = 'Cafe Lumo' RETURN n0.delivered AS delivered"},
+  {"q": "Which orders did I take?", "speaker": "ayse", "cypher": "MATCH (n0:Brewer)<-[:taken_by]-(n1:Order) WHERE id(n0) = $speaker RETURN n1.customer AS customer"},
+  {"q": "Who cellars Copper Saint?", "speaker": null, "cypher": "MATCH (n0:Beer)-[:cellar]->(n1:Brewer) WHERE n0.recipe = 'Copper Saint' RETURN n1.known_as AS known_as"},
+  {"q": "What batches of Low Tide Gose are there?", "speaker": null, "cypher": "MATCH (n0:Beer)<-[:beer]-(n1:Batch) WHERE n0.recipe = 'Low Tide Gose' RETURN n1.batch_code AS batch_code"},
+  {"q": "What are the customer and kegs of every order?", "speaker": null, "cypher": "MATCH (n0:Order) RETURN n0.customer AS customer, n0.kegs AS kegs"},
+  {"q": "Which batches had a sour note?", "speaker": null, "cypher": "MATCH (n0:Batch) WHERE n0.off_note CONTAINS 'sour' RETURN n0.batch_code AS batch_code"},
+  {"q": "Who relieves Karim Nassar?", "speaker": null, "cypher": "MATCH (n0:Brewer)-[:relief]->(n1:Brewer) WHERE n0.known_as = 'Karim Nassar' RETURN n1.known_as AS known_as"}
+ ]
+}

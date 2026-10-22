@@ -1,0 +1,151 @@
+{
+ "domain": "museum_exhibitions",
+ "models": {
+  "Staffer": {"description": "A museum employee or an outside contact such as a private lender. A first name alone is not an identity.",
+   "properties": {"display_name": "string", "email": "string?", "extension": "string?"}, "identities": ["email"]},
+  "Artwork": {"description": "A single object in or coming to the collection, whoever owns or treats it.",
+   "properties": {"catalogue_title": "string", "medium": "string?"}},
+  "Custody": {"description": "Who stands in which capacity toward a work: the lender who owns it, the conservator treating it, or the registrar tracking its movement.\nTreating a work is not owning it.",
+   "properties": {"work": "Artwork", "keeper": "Staffer", "capacity": ["lender", "conservator", "registrar"]},
+   "relation": {"from": "work", "to": "keeper", "label": "capacity", "phrasing": "{to} acts as {label} for {from}",
+    "labels": {"lender": {"forward": ["lender", "on loan from", "lent by"], "reverse": ["lent"]},
+               "conservator": {"forward": ["conservator", "restorer", "restoring"], "reverse": ["treated"]},
+               "registrar": {"forward": ["registrar", "tracking"], "reverse": ["tracked"]}}}},
+  "Reporting": {"description": "A line between two staff: the senior one manages or mentors the junior one.",
+   "properties": {"junior": "Staffer", "senior": "Staffer", "tie": ["manager", "mentor"]},
+   "relation": {"from": "junior", "to": "senior", "label": "tie", "phrasing": "{to} is the {label} of {from}",
+    "labels": {"manager": {"forward": ["manager", "line manager", "manages"], "reverse": ["supervisee"]},
+               "mentor": {"forward": ["mentor", "mentors"], "reverse": ["mentee"]}}}},
+  "LoanRequest": {"description": "A request to borrow a work for an exhibition. requested_by asked for it, approved_by signs it off, courier travels with the work.",
+   "properties": {"work": "Artwork", "requested_by": "Staffer?", "approved_by": "Staffer?", "courier": "Staffer?",
+    "state": ["draft", "approved", "declined"], "insured": "boolean?", "crate_count": "integer?", "condition_note": "string?"},
+   "absences": {"insured": "no_insurance_record"}},
+  "GalleryCheck": {"description": "A humidity inspection of one room: who inspected it, the reading and whether it passed.",
+   "properties": {"room": "string", "inspector": "Staffer?", "reading_percent": "integer?", "outcome": ["passed", "failed", "pending"]}}
+ },
+ "entities": {
+  "ingrid_s": {"model": "Staffer", "name": "Ingrid Solvang"},
+  "ingrid_m": {"model": "Staffer", "name": "Ingrid Matsuda"},
+  "kwabena": {"model": "Staffer", "name": "Kwabena Asante", "fields": {"email": "kwabena@asante-collection.example"}},
+  "henrik": {"model": "Staffer", "name": "Henrik Aalto"},
+  "paloma": {"model": "Staffer", "name": "Paloma Iturbe"},
+  "tavita": {"model": "Staffer", "name": "Tavita Fonoti"},
+  "lior": {"model": "Staffer", "name": "Lior Ben-David"},
+  "ochre": {"model": "Artwork", "name": "Ochre Procession"},
+  "saltmarsh": {"model": "Artwork", "name": "Saltmarsh at Dawn"},
+  "copper": {"model": "Artwork", "name": "Copper Lantern"},
+  "ninefold": {"model": "Artwork", "name": "Ninefold Screen"},
+  "kettle": {"model": "Artwork", "name": "Kettle Hole Drawing"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Ingrid Solvang: Ochre Procession arrives Monday on loan from Kwabena Asante. I will be its registrar until it goes back.",
+   "mentions": [["Ingrid Solvang", "ingrid_s"], ["Ochre Procession", "ochre"], ["Kwabena Asante", "kwabena"], ["I", "ingrid_s", "ref"], ["its", "ochre", "ref"], ["it", "ochre", "ref"]],
+   "facts": [
+    {"model": "Custody", "in": "Ochre Procession arrives Monday on loan from Kwabena Asante.", "from": "ochre", "to": "kwabena", "label": "lender", "act": "assert"},
+    {"model": "Custody", "in": "I will be its registrar", "from": "ochre", "to": "ingrid_s", "label": "registrar", "act": "plan"}]},
+  {"id": "m02", "text": "Note from the conservation studio: Henrik Aalto is restoring Saltmarsh at Dawn this month. He is not treating Copper Lantern, whatever the schedule says.",
+   "mentions": [["Henrik Aalto", "henrik"], ["Saltmarsh at Dawn", "saltmarsh"], ["He", "henrik", "ref"], ["Copper Lantern", "copper"]],
+   "facts": [
+    {"model": "Custody", "in": "Henrik Aalto is restoring Saltmarsh at Dawn this month.", "from": "saltmarsh", "to": "henrik", "label": "conservator", "act": "assert"},
+    {"model": "Custody", "in": "He is not treating Copper Lantern", "from": "copper", "to": "henrik", "label": "conservator", "act": "assert", "deny": true}]},
+  {"id": "m03", "text": "Hi Paloma,\nCould you draft a loan request for Copper Lantern, with Tavita Fonoti approving and Lior Ben-David as courier?\nThanks,\nIngrid Matsuda",
+   "mentions": [["Paloma", "paloma"], ["you", "paloma", "ref"], ["Copper Lantern", "copper"], ["Tavita Fonoti", "tavita"], ["Lior Ben-David", "lior"], ["Ingrid Matsuda", "ingrid_m"]],
+   "facts": [
+    {"model": "LoanRequest", "in": "Could you draft a loan request for Copper Lantern, with Tavita Fonoti approving and Lior Ben-David as courier?", "fields": {"work": "copper", "approved_by": "tavita", "courier": "lior", "state": "draft"}, "act": "request"}]},
+  {"id": "m04", "text": "Kwabena Asante: Ochre Procession is mine, but Saltmarsh at Dawn was never my loan. The museum owns that one outright.",
+   "mentions": [["Kwabena Asante", "kwabena"], ["Ochre Procession", "ochre"], ["mine", "kwabena", "ref"], ["Saltmarsh at Dawn", "saltmarsh"], ["my", "kwabena", "ref"]],
+   "facts": [
+    {"model": "Custody", "in": "Ochre Procession is mine", "from": "ochre", "to": "kwabena", "label": "lender", "act": "assert"},
+    {"model": "Custody", "in": "Saltmarsh at Dawn was never my loan", "from": "saltmarsh", "to": "kwabena", "label": "lender", "act": "assert", "deny": true}]},
+  {"id": "m05", "text": "Tavita Fonoti is the line manager of Lior Ben-David. Lior also has Ingrid Solvang as a mentor.",
+   "mentions": [["Tavita Fonoti", "tavita"], ["Lior Ben-David", "lior"], ["Lior", "lior"], ["Ingrid Solvang", "ingrid_s"]],
+   "facts": [
+    {"model": "Reporting", "in": "Tavita Fonoti is the line manager of Lior Ben-David.", "from": "lior", "to": "tavita", "label": "manager", "act": "assert"},
+    {"model": "Reporting", "in": "Lior also has Ingrid Solvang as a mentor.", "from": "lior", "to": "ingrid_s", "label": "mentor", "act": "assert"}]},
+  {"id": "m06", "text": "Minutes, Tuesday: Ingrid Matsuda chaired. Ingrid Solvang reported that the east gallery humidity was 58 percent, which failed the check. Ingrid will look again on Friday.",
+   "mentions": [["Ingrid Matsuda", "ingrid_m"], ["Ingrid Solvang", "ingrid_s"], ["Ingrid", "ingrid_s", "?"]],
+   "facts": [
+    {"model": "GalleryCheck", "in": "Ingrid Solvang reported that the east gallery humidity was 58 percent, which failed the check.", "fields": {"room": "east gallery", "inspector": "ingrid_s", "reading_percent": 58, "outcome": "failed"}, "act": "report"}]},
+  {"id": "m07", "text": "Lior Ben-David wrote to the front desk: \"I was never the registrar for Copper Lantern, ask Henrik.\"",
+   "mentions": [["Lior Ben-David", "lior"], ["I", "lior", "ref"], ["Copper Lantern", "copper"], ["Henrik", "henrik"]],
+   "quotes": [["I was never the registrar for Copper Lantern, ask Henrik.", "lior"]],
+   "facts": [
+    {"model": "Custody", "in": "I was never the registrar for Copper Lantern", "from": "copper", "to": "lior", "label": "registrar", "act": "assert", "deny": true}]},
+  {"id": "m08", "text": "Loan request for Ochre Procession approved by Tavita Fonoti: insured, packed in 3 crates, requested by Ingrid Solvang.",
+   "mentions": [["Ochre Procession", "ochre"], ["Tavita Fonoti", "tavita"], ["Ingrid Solvang", "ingrid_s"]],
+   "facts": [
+    {"model": "LoanRequest", "in": "Loan request for Ochre Procession approved by Tavita Fonoti", "fields": {"work": "ochre", "approved_by": "tavita", "requested_by": "ingrid_s", "insured": true, "crate_count": 3, "state": "approved"}, "act": "assert"}]},
+  {"id": "m09", "text": "Paloma Iturbe: The loan for Saltmarsh at Dawn was declined. The lender wanted it back by spring, so I said no.",
+   "mentions": [["Paloma Iturbe", "paloma"], ["Saltmarsh at Dawn", "saltmarsh"], ["it", "saltmarsh", "ref"], ["I", "paloma", "ref"]],
+   "facts": [
+    {"model": "LoanRequest", "in": "The loan for Saltmarsh at Dawn was declined.", "fields": {"work": "saltmarsh", "state": "declined"}, "act": "assert"}]},
+  {"id": "m10", "text": "Henrik Aalto: Draft loan request for Copper Lantern: 2 crates, hairline crack in the varnish, not insured. I will be its restorer, not Lior.",
+   "mentions": [["Henrik Aalto", "henrik"], ["Copper Lantern", "copper"], ["I", "henrik", "ref"], ["its", "copper", "ref"], ["Lior", "lior"]],
+   "facts": [
+    {"model": "LoanRequest", "in": "Draft loan request for Copper Lantern: 2 crates, hairline crack in the varnish, not insured.", "fields": {"work": "copper", "state": "draft", "crate_count": 2, "condition_note": "hairline crack in the varnish", "insured": false}, "act": "assert"},
+    {"model": "Custody", "in": "I will be its restorer", "from": "copper", "to": "henrik", "label": "conservator", "act": "plan"},
+    {"model": "Custody", "in": "not Lior", "from": "copper", "to": "lior", "label": "conservator", "act": "plan", "deny": true}]},
+  {"id": "m11", "text": "Tavita Fonoti will inspect the north vault on Wednesday. The last north vault reading was 44 percent and it passed.",
+   "mentions": [["Tavita Fonoti", "tavita"]],
+   "facts": [
+    {"model": "GalleryCheck", "in": "Tavita Fonoti will inspect the north vault on Wednesday.", "fields": {"room": "north vault", "inspector": "tavita", "outcome": "pending"}, "act": "plan"},
+    {"model": "GalleryCheck", "in": "The last north vault reading was 44 percent and it passed.", "fields": {"room": "north vault", "reading_percent": 44, "outcome": "passed"}, "act": "assert"}]},
+  {"id": "m12", "text": "If the board agrees, Ingrid Matsuda will take over as registrar for Ochre Procession. Ingrid Solvang would then mentor her.",
+   "mentions": [["Ingrid Matsuda", "ingrid_m"], ["Ochre Procession", "ochre"], ["Ingrid Solvang", "ingrid_s"], ["her", "ingrid_m", "ref"]],
+   "facts": [
+    {"model": "Custody", "in": "If the board agrees, Ingrid Matsuda will take over as registrar for Ochre Procession.", "from": "ochre", "to": "ingrid_m", "label": "registrar", "act": "condition"},
+    {"model": "Reporting", "in": "Ingrid Solvang would then mentor her.", "from": "ingrid_m", "to": "ingrid_s", "label": "mentor", "act": "condition"}]},
+  {"id": "m13", "text": "Tavita Fonoti: Lior, could you be the courier for the approved loan of Ninefold Screen? Henrik Aalto is its conservator, so he can sign the condition report.",
+   "mentions": [["Tavita Fonoti", "tavita"], ["Lior", "lior"], ["you", "lior", "ref"], ["Ninefold Screen", "ninefold"], ["Henrik Aalto", "henrik"], ["its", "ninefold", "ref"], ["he", "henrik", "ref"]],
+   "facts": [
+    {"model": "LoanRequest", "in": "could you be the courier for the approved loan of Ninefold Screen?", "fields": {"work": "ninefold", "courier": "lior", "state": "approved"}, "act": "request"},
+    {"model": "Custody", "in": "Henrik Aalto is its conservator", "from": "ninefold", "to": "henrik", "label": "conservator", "act": "assert"}]},
+  {"id": "m14", "text": "From: Kwabena Asante <kwabena@asante-collection.example>\nPlease use this address for all loan paperwork. My extension at the gallery is 4471.",
+   "mentions": [["Kwabena Asante", "kwabena"], ["My", "kwabena", "ref"]],
+   "facts": []},
+  {"id": "m15", "text": "Ingrid Matsuda: I think Ninefold Screen is on loan from Paloma Iturbe, but maybe the trust owns it. Paloma will know.",
+   "mentions": [["Ingrid Matsuda", "ingrid_m"], ["I", "ingrid_m", "ref"], ["Ninefold Screen", "ninefold"], ["Paloma Iturbe", "paloma"], ["it", "ninefold", "ref"], ["Paloma", "paloma"]],
+   "facts": [
+    {"model": "Custody", "in": "I think Ninefold Screen is on loan from Paloma Iturbe", "from": "ninefold", "to": "paloma", "label": "lender", "act": "draft"}]},
+  {"id": "m16", "text": "Lior Ben-David said that Tavita Fonoti manages Henrik Aalto now.",
+   "mentions": [["Lior Ben-David", "lior"], ["Tavita Fonoti", "tavita"], ["Henrik Aalto", "henrik"]],
+   "facts": [
+    {"model": "Reporting", "in": "Lior Ben-David said that Tavita Fonoti manages Henrik Aalto now.", "from": "henrik", "to": "tavita", "label": "manager", "act": "report"}]},
+  {"id": "m17", "text": "I told the night guard: \"Copper Lantern stays in the studio until Henrik signs off.\"",
+   "mentions": [["I", "none", "ref"], ["Copper Lantern", "copper"], ["Henrik", "henrik"]],
+   "quotes": [["Copper Lantern stays in the studio until Henrik signs off.", "author"]],
+   "facts": []},
+  {"id": "m18", "text": "Minutes: Paloma Iturbe confirmed the Ninefold Screen loan is approved, with 4 crates and insurance in place. Paloma also said Henrik Aalto restored it last winter.",
+   "mentions": [["Paloma Iturbe", "paloma"], ["Ninefold Screen", "ninefold"], ["Paloma", "paloma"], ["Henrik Aalto", "henrik"], ["it", "ninefold", "ref"]],
+   "facts": [
+    {"model": "LoanRequest", "in": "Paloma Iturbe confirmed the Ninefold Screen loan is approved, with 4 crates and insurance in place.", "fields": {"work": "ninefold", "state": "approved", "crate_count": 4, "insured": true}, "act": "assert"},
+    {"model": "Custody", "in": "Paloma also said Henrik Aalto restored it last winter.", "from": "ninefold", "to": "henrik", "label": "conservator", "act": "report"}]},
+  {"id": "m19", "text": "Henrik Aalto: My mentor is Tavita Fonoti, not Ingrid Solvang.",
+   "mentions": [["Henrik Aalto", "henrik"], ["My", "henrik", "ref"], ["Tavita Fonoti", "tavita"], ["Ingrid Solvang", "ingrid_s"]],
+   "facts": [
+    {"model": "Reporting", "in": "My mentor is Tavita Fonoti", "from": "henrik", "to": "tavita", "label": "mentor", "act": "assert"},
+    {"model": "Reporting", "in": "not Ingrid Solvang", "from": "henrik", "to": "ingrid_s", "label": "mentor", "act": "assert", "deny": true}]},
+  {"id": "m20", "text": "Ingrid Solvang requested the loan of Kettle Hole Drawing with Lior Ben-David as courier; the request is approved, 1 crate, uninsured.",
+   "mentions": [["Ingrid Solvang", "ingrid_s"], ["Kettle Hole Drawing", "kettle"], ["Lior Ben-David", "lior"]],
+   "facts": [
+    {"model": "LoanRequest", "in": "Ingrid Solvang requested the loan of Kettle Hole Drawing", "fields": {"work": "kettle", "requested_by": "ingrid_s", "courier": "lior", "state": "approved", "crate_count": 1, "insured": false}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who is the lender for Ochre Procession?", "speaker": null, "cypher": "MATCH (n0:Artwork)-[:lender]->(n1:Staffer) WHERE n0.catalogue_title = 'Ochre Procession' RETURN n1.display_name AS display_name"},
+  {"q": "Who is the registrar for Ochre Procession?", "speaker": null, "cypher": "MATCH (n0:Artwork)-[:registrar]->(n1:Staffer) WHERE n0.catalogue_title = 'Ochre Procession' RETURN n1.display_name AS display_name"},
+  {"q": "Which works have I treated?", "speaker": "henrik", "cypher": "MATCH (n0:Staffer)-[:treated]->(n1:Artwork) WHERE id(n0) = $speaker RETURN n1.catalogue_title AS catalogue_title"},
+  {"q": "Who is my line manager?", "speaker": "lior", "cypher": "MATCH (n0:Staffer)-[:manager]->(n1:Staffer) WHERE id(n0) = $speaker RETURN n1.display_name AS display_name"},
+  {"q": "Who is the mentee of Ingrid Solvang?", "speaker": null, "cypher": "MATCH (n0:Staffer)-[:mentee]->(n1:Staffer) WHERE n0.display_name = 'Ingrid Solvang' RETURN n1.display_name AS display_name"},
+  {"q": "How many loan requests are there?", "speaker": null, "cypher": "MATCH (n0:LoanRequest) RETURN count(n0) AS count"},
+  {"q": "Is there a record of insurance for the Kettle Hole Drawing loan?", "speaker": null, "cypher": "MATCH (n0:Artwork)<-[:work]-(n1:LoanRequest) WHERE n0.catalogue_title = 'Kettle Hole Drawing' RETURN coalesce(n1.insured, false) AS insured"},
+  {"q": "Was the Copper Lantern loan insured?", "speaker": null, "cypher": "MATCH (n0:Artwork)<-[:work]-(n1:LoanRequest) WHERE n0.catalogue_title = 'Copper Lantern' RETURN n1.insured AS insured"},
+  {"q": "How many crates do the loans requested by Ingrid Solvang need?", "speaker": null, "cypher": "MATCH (n0:Staffer)<-[:requested_by]-(n1:LoanRequest) WHERE n0.display_name = 'Ingrid Solvang' RETURN n1.crate_count AS crate_count"},
+  {"q": "Who is the courier on the loans I requested?", "speaker": "ingrid_s", "cypher": "MATCH (n0:Staffer)<-[:requested_by]-(n1:LoanRequest)-[:courier]->(n2:Staffer) WHERE id(n0) = $speaker RETURN n2.display_name AS display_name"},
+  {"q": "What was the humidity reading in the north vault?", "speaker": null, "cypher": "MATCH (n0:GalleryCheck) WHERE n0.room = 'north vault' RETURN n0.reading_percent AS reading_percent"},
+  {"q": "Which rooms were checked, and with what outcome?", "speaker": null, "cypher": "MATCH (n0:GalleryCheck) RETURN n0.room AS room, n0.outcome AS outcome"},
+  {"q": "What state is the loan with the hairline crack in?", "speaker": null, "cypher": "MATCH (n0:LoanRequest) WHERE n0.condition_note CONTAINS 'crack' RETURN n0.state AS state"},
+  {"q": "Who inspected the east gallery?", "speaker": null, "cypher": "MATCH (n0:GalleryCheck)-[:inspector]->(n1:Staffer) WHERE n0.room = 'east gallery' RETURN n1.display_name AS display_name"},
+  {"q": "What is Kwabena Asante's email?", "speaker": null, "cypher": "MATCH (n0:Staffer) WHERE n0.display_name = 'Kwabena Asante' RETURN n0.email AS email"},
+  {"q": "Which works has Kwabena Asante lent?", "speaker": null, "cypher": "MATCH (n0:Staffer)-[:lent]->(n1:Artwork) WHERE n0.display_name = 'Kwabena Asante' RETURN n1.catalogue_title AS catalogue_title"}
+ ]
+}

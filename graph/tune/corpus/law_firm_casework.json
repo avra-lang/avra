@@ -1,0 +1,149 @@
+{
+ "domain": "law_firm_casework",
+ "models": {
+  "Contact": {"description": "A person the firm deals with: fee earner, staff, client, opponent or witness. A first name alone is not an identity.",
+   "properties": {"name": "string", "email": "string?", "job_title": "string?"}, "identities": ["email"]},
+  "Matter": {"description": "A legal matter the firm has open, known by its matter name.",
+   "properties": {"name": "string", "practice_area": "string?"}},
+  "Party": {"description": "Who appears in a matter and on which side: the firm's client, the opposing party, or a witness.\nA fee earner working on a matter is not a party to it.",
+   "properties": {"matter": "Matter", "person": "Contact", "side": ["client", "opponent", "witness"]},
+   "relation": {"from": "matter", "to": "person", "label": "side", "phrasing": "{to} appears in {from} as the {label}",
+    "labels": {"client": {"forward": ["client", "instructs"], "reverse": ["case"]},
+               "opponent": {"forward": ["opponent", "opposing party", "other side"], "reverse": ["dispute"]},
+               "witness": {"forward": ["witness", "witnesses"], "reverse": ["testimony"]}}}},
+  "Reporting": {"description": "A standing line in the firm: whose supervising partner or whose secretary someone is.",
+   "properties": {"staff": "Contact", "other": "Contact", "line": ["partner", "secretary"]},
+   "relation": {"from": "staff", "to": "other", "label": "line", "phrasing": "{from} has {to} as {label}",
+    "labels": {"partner": {"forward": ["supervising partner", "partner", "reports to"], "reverse": ["associate"]},
+               "secretary": {"forward": ["secretary", "assistant"], "reverse": ["boss"]}}}},
+  "CaseTask": {"description": "A piece of work on a matter. requested_by asked for it, assigned_to does it, reviewed_by checks it. A suggestion is not a task.",
+   "properties": {"action": "string", "matter": "Matter?", "requested_by": "Contact?", "assigned_to": "Contact?", "reviewed_by": "Contact?",
+    "status": ["open", "done", "overdue"], "urgent": "boolean?", "hours": "integer?", "note": "string?"},
+   "absences": {"urgent": "no_urgency_record"}},
+  "Disbursement": {"description": "A cost paid out on a matter. approved stays empty until a sign-off is recorded.",
+   "properties": {"item": "string", "matter": "Matter?", "paid_by": "Contact?", "amount_pounds": "integer", "approved": "boolean?"},
+   "absences": {"approved": "no_approval_record"}}
+ },
+ "entities": {
+  "clemency": {"model": "Contact", "name": "Clemency Ashcombe"},
+  "yaw": {"model": "Contact", "name": "Yaw Mensah", "fields": {"email": "k.mensah@firm.example"}},
+  "kwame_o": {"model": "Contact", "name": "Yaw Danquah"},
+  "kwame_b": {"model": "Contact", "name": "Yaw Appiah"},
+  "sunniva": {"model": "Contact", "name": "Sunniva Ekdahl"},
+  "benedikt": {"model": "Contact", "name": "Benedikt Raab"},
+  "farida": {"model": "Contact", "name": "Farida Saliba"},
+  "tomasz": {"model": "Contact", "name": "Tomasz Zielinski"},
+  "lucinda": {"model": "Contact", "name": "Lucinda Marchetti"},
+  "hiroshi": {"model": "Contact", "name": "Hiroshi Tanabe"},
+  "arden": {"model": "Matter", "name": "Arden Mill lease"},
+  "ferncliff": {"model": "Matter", "name": "Ferncliff probate"},
+  "ostrava": {"model": "Matter", "name": "Ostrava shipping claim"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Yaw Mensah: Clemency Ashcombe is our client on the Arden Mill lease, and Benedikt Raab is the other side.",
+   "mentions": [["Yaw Mensah", "yaw"], ["Clemency Ashcombe", "clemency"], ["Arden Mill lease", "arden"], ["Benedikt Raab", "benedikt"]],
+   "facts": [
+    {"model": "Party", "in": "Clemency Ashcombe is our client on the Arden Mill lease", "from": "arden", "to": "clemency", "label": "client", "act": "assert"},
+    {"model": "Party", "in": "Benedikt Raab is the other side.", "from": "arden", "to": "benedikt", "label": "opponent", "act": "assert"}]},
+  {"id": "m02", "text": "Sunniva Ekdahl: I report to Yaw Mensah, and Tomasz Zielinski is my secretary.",
+   "mentions": [["Sunniva Ekdahl", "sunniva"], ["I", "sunniva", "ref"], ["Yaw Mensah", "yaw"], ["Tomasz Zielinski", "tomasz"], ["my", "sunniva", "ref"]],
+   "facts": [
+    {"model": "Reporting", "in": "I report to Yaw Mensah", "from": "sunniva", "to": "yaw", "label": "partner", "act": "assert"},
+    {"model": "Reporting", "in": "Tomasz Zielinski is my secretary.", "from": "sunniva", "to": "tomasz", "label": "secretary", "act": "assert"}]},
+  {"id": "m03", "text": "File note: Farida Saliba must file the defence on the Ostrava shipping claim by Friday, reviewed by Yaw Danquah; it is urgent.",
+   "mentions": [["Farida Saliba", "farida"], ["Ostrava shipping claim", "ostrava"], ["Yaw Danquah", "kwame_o"]],
+   "facts": [
+    {"model": "CaseTask", "in": "File note: Farida Saliba must file the defence", "fields": {"action": "file the defence", "matter": "ostrava", "assigned_to": "farida", "reviewed_by": "kwame_o", "status": "open", "urgent": true}, "act": "assert"}]},
+  {"id": "m04", "text": "Tomasz Zielinski: Yaw Mensah and Yaw Danquah are both out today. Danquah will sign the Ferncliff letters tomorrow, and Mensah is in court.",
+   "mentions": [["Tomasz Zielinski", "tomasz"], ["Yaw Mensah", "yaw"], ["Yaw Danquah", "kwame_o"], ["Danquah", "kwame_o"], ["Ferncliff", "ferncliff"], ["Mensah", "yaw"]],
+   "facts": [
+    {"model": "CaseTask", "in": "Danquah will sign the Ferncliff letters tomorrow", "fields": {"action": "sign the Ferncliff letters", "matter": "ferncliff", "assigned_to": "kwame_o", "status": "open"}, "act": "plan"}]},
+  {"id": "m05", "text": "Farida Saliba: Yaw Mensah phoned and Yaw Danquah emailed. Yaw wants the bundle by noon.",
+   "mentions": [["Farida Saliba", "farida"], ["Yaw Mensah", "yaw"], ["Yaw Danquah", "kwame_o"], ["Yaw", "yaw", "?"]],
+   "facts": []},
+  {"id": "m06", "text": "Yaw Mensah: Our new trainee, Yaw Appiah, joins on Monday. He will report to Sunniva Ekdahl.",
+   "mentions": [["Yaw Mensah", "yaw"], ["Yaw Appiah", "kwame_b"], ["He", "kwame_b", "ref"], ["Sunniva Ekdahl", "sunniva"]],
+   "facts": [
+    {"model": "Reporting", "in": "He will report to Sunniva Ekdahl.", "from": "kwame_b", "to": "sunniva", "label": "partner", "act": "plan"}]},
+  {"id": "m07", "text": "Lucinda Marchetti told us, \"I saw the crane fail and I will be a witness for Hiroshi Tanabe in the Ostrava shipping claim.\"",
+   "mentions": [["Lucinda Marchetti", "lucinda"], ["I", "lucinda", "ref"], ["I", "lucinda", "ref"], ["Hiroshi Tanabe", "hiroshi"], ["Ostrava shipping claim", "ostrava"]],
+   "quotes": [["I saw the crane fail and I will be a witness for Hiroshi Tanabe in the Ostrava shipping claim.", "lucinda"]],
+   "facts": [
+    {"model": "Party", "in": "I will be a witness for Hiroshi Tanabe in the Ostrava shipping claim.", "from": "ostrava", "to": "lucinda", "label": "witness", "act": "plan"}]},
+  {"id": "m08", "text": "Accounts: the counsel fee of 1,200 pounds on the Arden Mill lease was paid by Yaw Mensah and approved.",
+   "mentions": [["Arden Mill lease", "arden"], ["Yaw Mensah", "yaw"]],
+   "facts": [
+    {"model": "Disbursement", "in": "Accounts: the counsel fee of 1,200 pounds", "fields": {"item": "counsel fee", "matter": "arden", "paid_by": "yaw", "amount_pounds": 1200, "approved": true}, "act": "assert"}]},
+  {"id": "m09", "text": "Hiroshi Tanabe: The 85 pounds court fee for the Ostrava shipping claim has not been approved, and I will not pay it.",
+   "mentions": [["Hiroshi Tanabe", "hiroshi"], ["Ostrava shipping claim", "ostrava"], ["I", "hiroshi", "ref"]],
+   "facts": [
+    {"model": "Disbursement", "in": "The 85 pounds court fee for the Ostrava shipping claim has not been approved", "fields": {"item": "court fee", "matter": "ostrava", "amount_pounds": 85, "approved": false}, "act": "assert"}]},
+  {"id": "m10", "text": "Sunniva Ekdahl said that Hiroshi Tanabe is the client on the Ostrava shipping claim.",
+   "mentions": [["Sunniva Ekdahl", "sunniva"], ["Hiroshi Tanabe", "hiroshi"], ["Ostrava shipping claim", "ostrava"]],
+   "facts": [
+    {"model": "Party", "in": "Sunniva Ekdahl said that Hiroshi Tanabe is the client", "from": "ostrava", "to": "hiroshi", "label": "client", "act": "report"}]},
+  {"id": "m11", "text": "As I warned Clemency Ashcombe, \"The lease review on the Arden Mill lease is overdue and has taken 6 hours so far.\"\nThe paralegal",
+   "mentions": [["I", "none", "ref"], ["Clemency Ashcombe", "clemency"], ["Arden Mill lease", "arden"]],
+   "quotes": [["The lease review on the Arden Mill lease is overdue and has taken 6 hours so far.", "author"]],
+   "facts": [
+    {"model": "CaseTask", "in": "The lease review on the Arden Mill lease is overdue", "fields": {"action": "lease review", "matter": "arden", "status": "overdue", "hours": 6}, "act": "assert"}]},
+  {"id": "m12", "text": "Yaw Danquah: Maybe Farida Saliba drafts the witness statement for the Ferncliff probate next week, with me reviewing.",
+   "mentions": [["Yaw Danquah", "kwame_o"], ["Farida Saliba", "farida"], ["Ferncliff probate", "ferncliff"], ["me", "kwame_o", "ref"]],
+   "facts": [
+    {"model": "CaseTask", "in": "Maybe Farida Saliba drafts the witness statement", "fields": {"action": "witness statement", "matter": "ferncliff", "assigned_to": "farida", "reviewed_by": "kwame_o", "status": "open"}, "act": "draft"}]},
+  {"id": "m13", "text": "If the client agrees, Sunniva Ekdahl will chase the title deeds on the Arden Mill lease, as requested by Yaw Mensah.",
+   "mentions": [["Sunniva Ekdahl", "sunniva"], ["Arden Mill lease", "arden"], ["Yaw Mensah", "yaw"]],
+   "facts": [
+    {"model": "CaseTask", "in": "If the client agrees, Sunniva Ekdahl will chase the title deeds", "fields": {"action": "chase the title deeds", "matter": "arden", "assigned_to": "sunniva", "requested_by": "yaw", "status": "open", "note": "the client agrees"}, "act": "condition"}]},
+  {"id": "m14", "text": "Dear Tomasz,\nCould you book 3 hours with Yaw Mensah to review the Ferncliff probate accounts, nothing urgent?\nRegards,\nSunniva",
+   "mentions": [["Tomasz", "tomasz"], ["you", "tomasz", "ref"], ["Yaw Mensah", "yaw"], ["Ferncliff probate", "ferncliff"], ["Sunniva", "sunniva"]],
+   "facts": [
+    {"model": "CaseTask", "in": "Could you book 3 hours with Yaw Mensah", "fields": {"action": "review the Ferncliff probate accounts", "matter": "ferncliff", "assigned_to": "yaw", "requested_by": "sunniva", "status": "open", "hours": 3, "urgent": false}, "act": "request"}]},
+  {"id": "m15", "text": "Benedikt Raab: I am not the opposing party on the Ferncliff probate; Lucinda Marchetti is.",
+   "mentions": [["Benedikt Raab", "benedikt"], ["I", "benedikt", "ref"], ["Ferncliff probate", "ferncliff"], ["Lucinda Marchetti", "lucinda"]],
+   "facts": [
+    {"model": "Party", "in": "I am not the opposing party on the Ferncliff probate", "from": "ferncliff", "to": "benedikt", "label": "opponent", "act": "assert", "deny": true},
+    {"model": "Party", "in": "Lucinda Marchetti is.", "from": "ferncliff", "to": "lucinda", "label": "opponent", "act": "assert"}]},
+  {"id": "m16", "text": "Fwd from Farida Saliba: \"Yaw Danquah is my supervising partner, and he wants Tomasz Zielinski as his secretary.\"",
+   "mentions": [["Farida Saliba", "farida"], ["Yaw Danquah", "kwame_o"], ["my", "farida", "ref"], ["he", "kwame_o", "ref"], ["Tomasz Zielinski", "tomasz"], ["his", "kwame_o", "ref"]],
+   "quotes": [["Yaw Danquah is my supervising partner, and he wants Tomasz Zielinski as his secretary.", "farida"]],
+   "facts": [
+    {"model": "Reporting", "in": "Yaw Danquah is my supervising partner", "from": "farida", "to": "kwame_o", "label": "partner", "act": "assert"}]},
+  {"id": "m17", "text": "Tomasz Zielinski filed the defence on the Ostrava shipping claim this morning in 2 hours, checked by Yaw Danquah.",
+   "mentions": [["Tomasz Zielinski", "tomasz"], ["Ostrava shipping claim", "ostrava"], ["Yaw Danquah", "kwame_o"]],
+   "facts": [
+    {"model": "CaseTask", "in": "Tomasz Zielinski filed the defence", "fields": {"action": "filed the defence", "matter": "ostrava", "assigned_to": "tomasz", "reviewed_by": "kwame_o", "status": "done", "hours": 2}, "act": "assert"}]},
+  {"id": "m18", "text": "The disclosure list for the Ferncliff probate is overdue because the papers arrived late, Farida Saliba confirmed.",
+   "mentions": [["Ferncliff probate", "ferncliff"], ["Farida Saliba", "farida"]],
+   "facts": [
+    {"model": "CaseTask", "in": "The disclosure list for the Ferncliff probate is overdue", "fields": {"action": "disclosure list", "matter": "ferncliff", "status": "overdue", "note": "the papers arrived late"}, "act": "report"}]},
+  {"id": "m19", "text": "Clemency Ashcombe: I will pay the 340 pounds survey fee on the Arden Mill lease next week.",
+   "mentions": [["Clemency Ashcombe", "clemency"], ["I", "clemency", "ref"], ["Arden Mill lease", "arden"]],
+   "facts": [
+    {"model": "Disbursement", "in": "I will pay the 340 pounds survey fee", "fields": {"item": "survey fee", "matter": "arden", "paid_by": "clemency", "amount_pounds": 340}, "act": "plan"}]},
+  {"id": "m20", "text": "Partners' meeting: Yaw Mensah is Yaw Danquah's supervising partner, and Farida Saliba works as Yaw Mensah's secretary.",
+   "mentions": [["Yaw Mensah", "yaw"], ["Yaw Danquah", "kwame_o"], ["Farida Saliba", "farida"], ["Yaw Mensah", "yaw"]],
+   "facts": [
+    {"model": "Reporting", "in": "Yaw Mensah is Yaw Danquah's supervising partner", "from": "kwame_o", "to": "yaw", "label": "partner", "act": "assert"},
+    {"model": "Reporting", "in": "Farida Saliba works as Yaw Mensah's secretary.", "from": "yaw", "to": "farida", "label": "secretary", "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who is the client on the Arden Mill lease?", "speaker": null, "cypher": "MATCH (n0:Matter)-[:client]->(n1:Contact) WHERE n0.name = 'Arden Mill lease' RETURN n1.name AS name"},
+  {"q": "Who is the opposing party on the Ferncliff probate?", "speaker": null, "cypher": "MATCH (n0:Matter)-[:opponent]->(n1:Contact) WHERE n0.name = 'Ferncliff probate' RETURN n1.name AS name"},
+  {"q": "Who is a witness in the Ostrava shipping claim?", "speaker": null, "cypher": "MATCH (n0:Matter)-[:witness]->(n1:Contact) WHERE n0.name = 'Ostrava shipping claim' RETURN n1.name AS name"},
+  {"q": "What is my case?", "speaker": "clemency", "cypher": "MATCH (n0:Contact)-[:case]->(n1:Matter) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is my secretary?", "speaker": "sunniva", "cypher": "MATCH (n0:Contact)-[:secretary]->(n1:Contact) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is my boss?", "speaker": "tomasz", "cypher": "MATCH (n0:Contact)-[:boss]->(n1:Contact) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is Farida Saliba's supervising partner?", "speaker": null, "cypher": "MATCH (n0:Contact)-[:partner]->(n1:Contact) WHERE n0.name = 'Farida Saliba' RETURN n1.name AS name"},
+  {"q": "How many tasks are recorded?", "speaker": null, "cypher": "MATCH (n0:CaseTask) RETURN count(n0) AS count"},
+  {"q": "Has the counsel fee been approved?", "speaker": null, "cypher": "MATCH (n0:Disbursement) WHERE n0.item = 'counsel fee' RETURN n0.approved AS approved"},
+  {"q": "Is there a record of the survey fee being approved?", "speaker": null, "cypher": "MATCH (n0:Disbursement) WHERE n0.item = 'survey fee' RETURN coalesce(n0.approved, false) AS approved"},
+  {"q": "How much was the court fee?", "speaker": null, "cypher": "MATCH (n0:Disbursement) WHERE n0.item = 'court fee' RETURN n0.amount_pounds AS amount_pounds"},
+  {"q": "Which tasks did Yaw Danquah review?", "speaker": null, "cypher": "MATCH (n0:Contact)<-[:reviewed_by]-(n1:CaseTask) WHERE n0.name = 'Yaw Danquah' RETURN n1.action AS action"},
+  {"q": "What actions and hours are logged on the Ostrava shipping claim?", "speaker": null, "cypher": "MATCH (n0:Matter)<-[:matter]-(n1:CaseTask) WHERE n0.name = 'Ostrava shipping claim' RETURN n1.action AS action, n1.hours AS hours"},
+  {"q": "Who paid costs on the Arden Mill lease?", "speaker": null, "cypher": "MATCH (n0:Matter)<-[:matter]-(n1:Disbursement)-[:paid_by]->(n2:Contact) WHERE n0.name = 'Arden Mill lease' RETURN n2.name AS name"},
+  {"q": "Is the lease review urgent?", "speaker": null, "cypher": "MATCH (n0:CaseTask) WHERE n0.action = 'lease review' RETURN n0.urgent AS urgent"},
+  {"q": "Is there a record of the witness statement being urgent?", "speaker": null, "cypher": "MATCH (n0:CaseTask) WHERE n0.action = 'witness statement' RETURN coalesce(n0.urgent, false) AS urgent"},
+  {"q": "Which tasks concern the defence, and what is their status?", "speaker": null, "cypher": "MATCH (n0:CaseTask) WHERE n0.action CONTAINS 'defence' RETURN n0.action AS action, n0.status AS status"}
+ ]
+}

@@ -1,0 +1,151 @@
+{
+ "domain": "food_bank",
+ "models": {
+  "Volunteer": {"description": "A volunteer at the food bank, known by the name they go by. A first name alone is not an identity.",
+   "properties": {"known_as": "string", "phone": "string?"}, "identities": ["phone"]},
+  "Partner": {"description": "An organisation that donates food or refers households.",
+   "properties": {"org": "string", "postcode": "string?"}},
+  "Liaison": {"description": "Which volunteer handles a partner: its point of contact, the driver who collects from it, or the signatory for its deliveries.\nDriving for a partner is not being its contact.",
+   "properties": {"partner": "Partner", "volunteer": "Volunteer", "link": ["contact", "driver", "signatory"]},
+   "relation": {"from": "partner", "to": "volunteer", "label": "link", "phrasing": "for {from}, {to} is the {label}",
+    "labels": {"contact": {"forward": ["contact", "point of contact"], "reverse": ["contacts"]},
+               "driver": {"forward": ["driver", "collects from"], "reverse": ["pickups"]},
+               "signatory": {"forward": ["signatory", "signs for"], "reverse": ["signed"]}}}},
+  "Buddy": {"description": "A link between two volunteers on shift: one is trained by the other, or is relieved by the other at handover.",
+   "properties": {"volunteer": "Volunteer", "buddy": "Volunteer", "tie": ["trainer", "relief"]},
+   "relation": {"from": "volunteer", "to": "buddy", "label": "tie", "phrasing": "{from} {label} {to}",
+    "labels": {"trainer": {"forward": ["is trained by", "trainer"], "reverse": ["trainee"]},
+               "relief": {"forward": ["is relieved by", "hands over to"], "reverse": ["relieves"]}}}},
+  "Delivery": {"description": "Donated goods arriving from a partner. driven_by brought them, received_by signed them in, checked_by inspected them. An expected delivery has not arrived.",
+   "properties": {"goods": "string", "donor": "Partner?", "driven_by": "Volunteer?", "received_by": "Volunteer?", "checked_by": "Volunteer?",
+    "condition": ["expected", "received", "rejected"], "chilled": "boolean?", "crates": "integer?", "note": "string?"},
+   "absences": {"chilled": "cold_chain_unknown"}},
+  "Parcel": {"description": "A food parcel for a referred household; collected means the household picked it up.",
+   "properties": {"household": "string", "referred_by": "Partner?", "packed_by": "Volunteer?", "status": ["referred", "packed", "collected"],
+    "people": "integer?", "halal": "boolean?", "dietary_note": "string?"},
+   "absences": {"halal": "diet_unasked"}}
+ },
+ "entities": {
+  "efua": {"model": "Volunteer", "name": "Efua Mensah"},
+  "efua_b": {"model": "Volunteer", "name": "Efua Boateng"},
+  "rogelio": {"model": "Volunteer", "name": "Rogelio Bautista"},
+  "bence": {"model": "Volunteer", "name": "Bence Szabó"},
+  "hodan": {"model": "Volunteer", "name": "Hodan Farah"},
+  "duc": {"model": "Volunteer", "name": "Duc Hoang"},
+  "iker": {"model": "Volunteer", "name": "Iker Zubiri"},
+  "taras": {"model": "Volunteer", "name": "Taras Melnyk"},
+  "brightwell": {"model": "Partner", "name": "Brightwell Bakery"},
+  "stagnes": {"model": "Partner", "name": "St Agnes Pantry"},
+  "harbour": {"model": "Partner", "name": "Harbourside Market"},
+  "northgate": {"model": "Partner", "name": "Northgate Mosque"}
+ },
+ "messages": [
+  {"id": "f01", "text": "Hodan Farah: Brightwell Bakery delivered 14 crates of bread this morning, and I checked them while Bence Szabó signed the receipt.",
+   "mentions": [["Hodan Farah", "hodan"], ["Brightwell Bakery", "brightwell"], ["I", "hodan", "ref"], ["Bence Szabó", "bence"]],
+   "facts": [
+    {"model": "Delivery", "in": "Brightwell Bakery delivered 14 crates of bread", "fields": {"goods": "bread", "donor": "brightwell", "checked_by": "hodan", "received_by": "bence", "condition": "received", "crates": 14}, "act": "assert"}]},
+  {"id": "f02", "text": "Rogelio Bautista is the driver for Harbourside Market, and Efua Mensah is its point of contact.",
+   "mentions": [["Rogelio Bautista", "rogelio"], ["Harbourside Market", "harbour"], ["Efua Mensah", "efua"], ["its", "harbour", "ref"]],
+   "facts": [
+    {"model": "Liaison", "in": "Rogelio Bautista is the driver for Harbourside Market", "from": "harbour", "to": "rogelio", "label": "driver", "act": "assert"},
+    {"model": "Liaison", "in": "Efua Mensah is its point of contact", "from": "harbour", "to": "efua", "label": "contact", "act": "assert"}]},
+  {"id": "f03", "text": "Taras Melnyk: I don't collect from St Agnes Pantry any more; Duc Hoang does.",
+   "mentions": [["Taras Melnyk", "taras"], ["I", "taras", "ref"], ["St Agnes Pantry", "stagnes"], ["Duc Hoang", "duc"]],
+   "facts": [
+    {"model": "Liaison", "in": "I don't collect from St Agnes Pantry any more", "from": "stagnes", "to": "taras", "label": "driver", "act": "assert", "deny": true},
+    {"model": "Liaison", "in": "Duc Hoang does.", "from": "stagnes", "to": "duc", "label": "driver", "act": "assert"}]},
+  {"id": "f04", "text": "Efua Mensah and Efua Boateng both packed parcels on Tuesday. Efua Boateng is trained by Iker Zubiri, and Efua says he is patient.",
+   "mentions": [["Efua Mensah", "efua"], ["Efua Boateng", "efua_b"], ["Efua Boateng", "efua_b"], ["Iker Zubiri", "iker"], ["Efua", "efua_b", "?"], ["he", "iker", "ref"]],
+   "facts": [
+    {"model": "Buddy", "in": "Efua Boateng is trained by Iker Zubiri", "from": "efua_b", "to": "iker", "label": "trainer", "act": "assert"}]},
+  {"id": "f05", "text": "Iker Zubiri said at the briefing: \"I will sign for Northgate Mosque deliveries from next week.\"",
+   "mentions": [["Iker Zubiri", "iker"], ["I", "iker", "ref"], ["Northgate Mosque", "northgate"]],
+   "quotes": [["I will sign for Northgate Mosque deliveries from next week.", "iker"]],
+   "facts": [
+    {"model": "Liaison", "in": "I will sign for Northgate Mosque deliveries from next week.", "from": "northgate", "to": "iker", "label": "signatory", "act": "plan"}]},
+  {"id": "f06", "text": "St Agnes Pantry referred the Kovac household, 5 people, needing halal food; Hodan Farah packed it today.",
+   "mentions": [["St Agnes Pantry", "stagnes"], ["Hodan Farah", "hodan"]],
+   "facts": [
+    {"model": "Parcel", "in": "St Agnes Pantry referred the Kovac household", "fields": {"household": "Kovac household", "referred_by": "stagnes", "packed_by": "hodan", "status": "packed", "people": 5, "halal": true}, "act": "assert"}]},
+  {"id": "f07", "text": "Hi Bence,\nCould you drive the Harbourside Market fruit run on Friday? It should be 6 crates, all chilled.\nCheers,\nRogelio Bautista",
+   "mentions": [["Bence", "bence"], ["Harbourside Market", "harbour"], ["Rogelio Bautista", "rogelio"]],
+   "facts": [
+    {"model": "Delivery", "in": "Could you drive the Harbourside Market fruit run on Friday?", "fields": {"goods": "fruit", "donor": "harbour", "driven_by": "bence", "condition": "expected"}, "act": "request"},
+    {"model": "Delivery", "in": "It should be 6 crates, all chilled.", "fields": {"crates": 6, "chilled": true}, "act": "plan"}]},
+  {"id": "f08", "text": "Duc Hoang: I think Taras relieves me on Saturdays, but the rota might have changed.",
+   "mentions": [["Duc Hoang", "duc"], ["I", "duc", "ref"], ["Taras", "taras"], ["me", "duc", "ref"]],
+   "facts": [
+    {"model": "Buddy", "in": "I think Taras relieves me on Saturdays", "from": "duc", "to": "taras", "label": "relief", "act": "draft"}]},
+  {"id": "f09", "text": "Efua Boateng said that the Northgate Mosque rice delivery was rejected because 3 sacks were torn.",
+   "mentions": [["Efua Boateng", "efua_b"], ["Northgate Mosque", "northgate"]],
+   "facts": [
+    {"model": "Delivery", "in": "Efua Boateng said that the Northgate Mosque rice delivery was rejected", "fields": {"goods": "rice", "donor": "northgate", "condition": "rejected", "note": "3 sacks were torn"}, "act": "report"}]},
+  {"id": "f10", "text": "If the van is free, Taras Melnyk will collect the Brightwell Bakery pastries on Sunday and Iker Zubiri will check them.",
+   "mentions": [["Taras Melnyk", "taras"], ["Brightwell Bakery", "brightwell"], ["Iker Zubiri", "iker"]],
+   "facts": [
+    {"model": "Delivery", "in": "If the van is free", "fields": {"goods": "pastries", "donor": "brightwell", "driven_by": "taras", "checked_by": "iker", "condition": "expected"}, "act": "condition"}]},
+  {"id": "f11", "text": "In my notes I wrote \"Harbourside Market closes early on Fridays\" after the last collection.",
+   "mentions": [["my", "none", "ref"], ["I", "none", "ref"], ["Harbourside Market", "harbour"]],
+   "quotes": [["Harbourside Market closes early on Fridays", "author"]],
+   "facts": []},
+  {"id": "f12", "text": "The Okonkwo family parcel was collected at 4pm; Bence Szabó packed it and noted no pork, 3 people.",
+   "mentions": [["Bence Szabó", "bence"]],
+   "facts": [
+    {"model": "Parcel", "in": "The Okonkwo family parcel was collected at 4pm", "fields": {"household": "Okonkwo family", "packed_by": "bence", "status": "collected", "people": 3, "dietary_note": "no pork"}, "act": "assert"}]},
+  {"id": "f13", "text": "Hodan Farah: Bence hands over to me at noon, and I'm trained by Rogelio Bautista.",
+   "mentions": [["Hodan Farah", "hodan"], ["Bence", "bence"], ["me", "hodan", "ref"], ["I", "hodan", "ref"], ["Rogelio Bautista", "rogelio"]],
+   "facts": [
+    {"model": "Buddy", "in": "Bence hands over to me at noon", "from": "bence", "to": "hodan", "label": "relief", "act": "assert"},
+    {"model": "Buddy", "in": "I'm trained by Rogelio Bautista", "from": "hodan", "to": "rogelio", "label": "trainer", "act": "assert"}]},
+  {"id": "f14", "text": "Duc Hoang: We received 20 crates of tinned beans from Northgate Mosque; Efua Mensah drove and nobody checked them.",
+   "mentions": [["Duc Hoang", "duc"], ["We", "duc", "ref"], ["Northgate Mosque", "northgate"], ["Efua Mensah", "efua"]],
+   "facts": [
+    {"model": "Delivery", "in": "We received 20 crates of tinned beans", "fields": {"goods": "tinned beans", "donor": "northgate", "driven_by": "efua", "received_by": "duc", "condition": "received", "crates": 20}, "act": "assert"}]},
+  {"id": "f15", "text": "St Agnes Pantry's contact is not Hodan Farah; it is Efua Boateng.",
+   "mentions": [["St Agnes Pantry", "stagnes"], ["Hodan Farah", "hodan"], ["Efua Boateng", "efua_b"]],
+   "facts": [
+    {"model": "Liaison", "in": "St Agnes Pantry's contact is not Hodan Farah", "from": "stagnes", "to": "hodan", "label": "contact", "act": "assert", "deny": true},
+    {"model": "Liaison", "in": "it is Efua Boateng", "from": "stagnes", "to": "efua_b", "label": "contact", "act": "assert"}]},
+  {"id": "f16", "text": "Iker Zubiri trains Taras Melnyk and Duc Hoang on the forklift; Iker also trains Bence.",
+   "mentions": [["Iker Zubiri", "iker"], ["Taras Melnyk", "taras"], ["Duc Hoang", "duc"], ["Iker", "iker"], ["Bence", "bence"]],
+   "facts": [
+    {"model": "Buddy", "in": "Iker Zubiri trains Taras Melnyk", "from": "taras", "to": "iker", "label": "trainer", "act": "assert"},
+    {"model": "Buddy", "in": "and Duc Hoang on the forklift", "from": "duc", "to": "iker", "label": "trainer", "act": "assert"},
+    {"model": "Buddy", "in": "Iker also trains Bence", "from": "bence", "to": "iker", "label": "trainer", "act": "assert"}]},
+  {"id": "f17", "text": "Northgate Mosque has referred the Abdi household for 7 people; they asked for no nuts.",
+   "mentions": [["Northgate Mosque", "northgate"]],
+   "facts": [
+    {"model": "Parcel", "in": "Northgate Mosque has referred the Abdi household", "fields": {"household": "Abdi household", "referred_by": "northgate", "status": "referred", "people": 7, "dietary_note": "no nuts"}, "act": "assert"}]},
+  {"id": "f18", "text": "Taras Melnyk's phone is 07700 900318 if Brightwell Bakery needs a driver.",
+   "mentions": [["Taras Melnyk", "taras"], ["Brightwell Bakery", "brightwell"]],
+   "facts": []},
+  {"id": "f19", "text": "Hello all,\nFrom next month I will be the point of contact for Brightwell Bakery.\nWarmly,\nEfua Mensah",
+   "mentions": [["I", "efua", "ref"], ["Brightwell Bakery", "brightwell"], ["Efua Mensah", "efua"]],
+   "facts": [
+    {"model": "Liaison", "in": "From next month I will be the point of contact for Brightwell Bakery.", "from": "brightwell", "to": "efua", "label": "contact", "act": "plan"}]},
+  {"id": "f20", "text": "Bence Szabó received the St Agnes Pantry yoghurt unchilled, 2 crates, and Hodan checked it before it went out.",
+   "mentions": [["Bence Szabó", "bence"], ["St Agnes Pantry", "stagnes"], ["Hodan", "hodan"]],
+   "facts": [
+    {"model": "Delivery", "in": "Bence Szabó received the St Agnes Pantry yoghurt unchilled", "fields": {"goods": "yoghurt", "donor": "stagnes", "received_by": "bence", "checked_by": "hodan", "condition": "received", "chilled": false, "crates": 2}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who is the driver for Harbourside Market?", "speaker": null, "cypher": "MATCH (n0:Partner)-[:driver]->(n1:Volunteer) WHERE n0.org = 'Harbourside Market' RETURN n1.known_as AS known_as"},
+  {"q": "Which partners are my pickups?", "speaker": "duc", "cypher": "MATCH (n0:Volunteer)-[:pickups]->(n1:Partner) WHERE id(n0) = $speaker RETURN n1.org AS org"},
+  {"q": "Who is my trainer?", "speaker": "hodan", "cypher": "MATCH (n0:Volunteer)-[:trainer]->(n1:Volunteer) WHERE id(n0) = $speaker RETURN n1.known_as AS known_as"},
+  {"q": "Who is a trainee of Iker Zubiri?", "speaker": null, "cypher": "MATCH (n0:Volunteer)-[:trainee]->(n1:Volunteer) WHERE n0.known_as = 'Iker Zubiri' RETURN n1.known_as AS known_as"},
+  {"q": "How many deliveries are there?", "speaker": null, "cypher": "MATCH (n0:Delivery) RETURN count(n0) AS count"},
+  {"q": "Was the yoghurt chilled?", "speaker": null, "cypher": "MATCH (n0:Delivery) WHERE n0.goods = 'yoghurt' RETURN n0.chilled AS chilled"},
+  {"q": "Is there a record that the rice was chilled?", "speaker": null, "cypher": "MATCH (n0:Delivery) WHERE n0.goods = 'rice' RETURN coalesce(n0.chilled, false) AS chilled"},
+  {"q": "Which deliveries did Efua Mensah drive?", "speaker": null, "cypher": "MATCH (n0:Volunteer)<-[:driven_by]-(n1:Delivery) WHERE n0.known_as = 'Efua Mensah' RETURN n1.goods AS goods"},
+  {"q": "Who checked the yoghurt?", "speaker": null, "cypher": "MATCH (n0:Delivery)-[:checked_by]->(n1:Volunteer) WHERE n0.goods = 'yoghurt' RETURN n1.known_as AS known_as"},
+  {"q": "How many crates came from Northgate Mosque?", "speaker": null, "cypher": "MATCH (n0:Partner)<-[:donor]-(n1:Delivery) WHERE n0.org = 'Northgate Mosque' RETURN n1.crates AS crates"},
+  {"q": "Which households did I pack for?", "speaker": "hodan", "cypher": "MATCH (n0:Volunteer)<-[:packed_by]-(n1:Parcel) WHERE id(n0) = $speaker RETURN n1.household AS household"},
+  {"q": "How many people are in the Abdi household?", "speaker": null, "cypher": "MATCH (n0:Parcel) WHERE n0.household = 'Abdi household' RETURN n0.people AS people"},
+  {"q": "Does the Kovac household need halal food?", "speaker": null, "cypher": "MATCH (n0:Parcel) WHERE n0.household = 'Kovac household' RETURN n0.halal AS halal"},
+  {"q": "Which parcels did St Agnes Pantry refer?", "speaker": null, "cypher": "MATCH (n0:Partner)<-[:referred_by]-(n1:Parcel) WHERE n0.org = 'St Agnes Pantry' RETURN n1.household AS household"},
+  {"q": "Who signs for Northgate Mosque?", "speaker": null, "cypher": "MATCH (n0:Partner)-[:signatory]->(n1:Volunteer) WHERE n0.org = 'Northgate Mosque' RETURN n1.known_as AS known_as"},
+  {"q": "What are the goods and condition of every delivery?", "speaker": null, "cypher": "MATCH (n0:Delivery) RETURN n0.goods AS goods, n0.condition AS condition"},
+  {"q": "Which partners are my contacts?", "speaker": "efua", "cypher": "MATCH (n0:Volunteer)-[:contacts]->(n1:Partner) WHERE id(n0) = $speaker RETURN n1.org AS org"},
+  {"q": "Which parcels mention nuts?", "speaker": null, "cypher": "MATCH (n0:Parcel) WHERE n0.dietary_note CONTAINS 'nuts' RETURN n0.household AS household"}
+ ]
+}

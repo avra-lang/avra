@@ -1,0 +1,145 @@
+{
+ "domain": "ferry_service",
+ "models": {
+  "Mariner": {"description": "A crew member or shore staff of the ferry company. A first name alone is not an identity.",
+   "properties": {"crew_name": "string", "email": "string?", "licence": "string?"}, "identities": ["email"]},
+  "Vessel": {"description": "One ferry in the fleet, whoever crews it.",
+   "properties": {"hull_name": "string", "registry_port": "string?"}},
+  "Terminal": {"description": "A pier, slip or quay a ferry sails from or to.",
+   "properties": {"name": "string", "town": "string?"}},
+  "Crewing": {"description": "Which post a mariner holds aboard a vessel: master in command, mate on deck, or engineer below.\nSailing aboard is not holding a post.",
+   "properties": {"mariner": "Mariner", "ship": "Vessel", "post": ["master", "mate", "engineer"]},
+   "relation": {"from": "mariner", "to": "ship", "label": "post", "phrasing": "{from} serves on {to} as {label}",
+    "labels": {"master": {"forward": ["master", "captain", "skippers"], "reverse": ["skipper"]},
+               "mate": {"forward": ["mate", "first officer"], "reverse": ["mates"]},
+               "engineer": {"forward": ["engineer", "chief engineer"], "reverse": ["engineers"]}}}},
+  "Route": {"description": "How a vessel uses a terminal: the port it is based at, or a terminal it calls at on its run.",
+   "properties": {"vessel": "Vessel", "terminal": "Terminal", "use": ["home_port", "calls_at"]},
+   "relation": {"from": "vessel", "to": "terminal", "label": "use", "phrasing": "{from} {label} {to}",
+    "labels": {"home_port": {"forward": ["home port", "based at"], "reverse": ["homed"]},
+               "calls_at": {"forward": ["calls at", "call at", "stops at"], "reverse": ["calling"]}}}},
+  "Sailing": {"description": "One scheduled crossing. origin is where it departs, destination where it lands.",
+   "properties": {"vessel": "Vessel", "origin": "Terminal", "destination": "Terminal?", "state": ["on_time", "delayed", "cancelled"], "vehicles": "integer?"}},
+  "Incident": {"description": "A safety event aboard a vessel. reported_by filed it, injured was hurt, witness saw it.",
+   "properties": {"vessel": "Vessel", "reported_by": "Mariner?", "injured": "Mariner?", "witness": "Mariner?",
+    "severity": ["minor", "serious", "near_miss"], "logged_to_coastguard": "boolean?", "passengers_aboard": "integer?", "detail": "string?"},
+   "absences": {"logged_to_coastguard": "no_coastguard_record"}}
+ },
+ "entities": {
+  "aroha_n": {"model": "Mariner", "name": "Aroha Ngata"},
+  "aroha_p": {"model": "Mariner", "name": "Aroha Penrose"},
+  "bjarni": {"model": "Mariner", "name": "Bjarni Eiriksson"},
+  "femi": {"model": "Mariner", "name": "Femi Adeleke"},
+  "siobhan": {"model": "Mariner", "name": "Siobhan Kearney", "fields": {"email": "s.kearney@cuanferries.example"}},
+  "tomasz": {"model": "Mariner", "name": "Tomasz Wierzbicki"},
+  "esperanza": {"model": "Mariner", "name": "Esperanza Quispe"},
+  "hamish": {"model": "Mariner", "name": "Hamish Lennox"},
+  "morven": {"model": "Vessel", "name": "Morven Star"},
+  "gannet": {"model": "Vessel", "name": "Gannet Belle"},
+  "saltire": {"model": "Vessel", "name": "Saltire Rose"},
+  "kittiwake": {"model": "Vessel", "name": "Kittiwake"},
+  "ardcairn": {"model": "Terminal", "name": "Ardcairn Pier"},
+  "skelda": {"model": "Terminal", "name": "Skelda Terminal"},
+  "inchmurrin": {"model": "Terminal", "name": "Inchmurrin Slip"},
+  "calloway": {"model": "Terminal", "name": "Calloway Quay"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Aroha Ngata: I am the master of Morven Star this season, and Bjarni Eiriksson is her chief engineer.",
+   "mentions": [["Aroha Ngata", "aroha_n"], ["I", "aroha_n", "ref"], ["Morven Star", "morven"], ["Bjarni Eiriksson", "bjarni"], ["her", "morven", "ref"]],
+   "facts": [
+    {"model": "Crewing", "in": "I am the master of Morven Star this season", "from": "aroha_n", "to": "morven", "label": "master", "act": "assert"},
+    {"model": "Crewing", "in": "Bjarni Eiriksson is her chief engineer", "from": "bjarni", "to": "morven", "label": "engineer", "act": "assert"}]},
+  {"id": "m02", "text": "Morven Star is based at Ardcairn Pier and calls at Skelda Terminal twice a day.",
+   "mentions": [["Morven Star", "morven"], ["Ardcairn Pier", "ardcairn"], ["Skelda Terminal", "skelda"]],
+   "facts": [
+    {"model": "Route", "in": "Morven Star is based at Ardcairn Pier", "from": "morven", "to": "ardcairn", "label": "home_port", "act": "assert"},
+    {"model": "Route", "in": "calls at Skelda Terminal twice a day", "from": "morven", "to": "skelda", "label": "calls_at", "act": "assert"}]},
+  {"id": "m03", "text": "The early sailing of Gannet Belle from Inchmurrin Slip to Calloway Quay is delayed, with 34 vehicles booked.",
+   "mentions": [["Gannet Belle", "gannet"], ["Inchmurrin Slip", "inchmurrin"], ["Calloway Quay", "calloway"]],
+   "facts": [
+    {"model": "Sailing", "in": "The early sailing of Gannet Belle from Inchmurrin Slip to Calloway Quay is delayed, with 34 vehicles booked.", "fields": {"vessel": "gannet", "origin": "inchmurrin", "destination": "calloway", "state": "delayed", "vehicles": 34}, "act": "assert"}]},
+  {"id": "m04", "text": "Siobhan Kearney reported a minor injury: Tomasz Wierzbicki slipped on the car deck of Saltire Rose, and Hamish Lennox saw it happen.",
+   "mentions": [["Siobhan Kearney", "siobhan"], ["Tomasz Wierzbicki", "tomasz"], ["Saltire Rose", "saltire"], ["Hamish Lennox", "hamish"]],
+   "facts": [
+    {"model": "Incident", "in": "Siobhan Kearney reported a minor injury", "fields": {"vessel": "saltire", "reported_by": "siobhan", "injured": "tomasz", "witness": "hamish", "severity": "minor", "detail": "slipped on the car deck"}, "act": "report"}]},
+  {"id": "m05", "text": "Rota note: Aroha Penrose takes Kittiwake as mate from Monday. Aroha Ngata stays where she is. Aroha will brief the new deckhands.",
+   "mentions": [["Aroha Penrose", "aroha_p"], ["Kittiwake", "kittiwake"], ["Aroha Ngata", "aroha_n"], ["she", "aroha_n", "ref"], ["Aroha", "aroha_p", "?"]],
+   "facts": [
+    {"model": "Crewing", "in": "Aroha Penrose takes Kittiwake as mate from Monday.", "from": "aroha_p", "to": "kittiwake", "label": "mate", "act": "plan"}]},
+  {"id": "m06", "text": "Bjarni Eiriksson radioed the bridge: \"I never served as engineer on Gannet Belle, check with Femi.\"",
+   "mentions": [["Bjarni Eiriksson", "bjarni"], ["I", "bjarni", "ref"], ["Gannet Belle", "gannet"], ["Femi", "femi"]],
+   "quotes": [["I never served as engineer on Gannet Belle, check with Femi.", "bjarni"]],
+   "facts": [
+    {"model": "Crewing", "in": "I never served as engineer on Gannet Belle", "from": "bjarni", "to": "gannet", "label": "engineer", "act": "assert", "deny": true}]},
+  {"id": "m07", "text": "Hi Esperanza,\nCould you log the Kittiwake crossing from Calloway Quay to Ardcairn Pier as cancelled for Thursday?\nThanks,\nHamish Lennox",
+   "mentions": [["Esperanza", "esperanza"], ["you", "esperanza", "ref"], ["Kittiwake", "kittiwake"], ["Calloway Quay", "calloway"], ["Ardcairn Pier", "ardcairn"], ["Hamish Lennox", "hamish"]],
+   "facts": [
+    {"model": "Sailing", "in": "Could you log the Kittiwake crossing from Calloway Quay to Ardcairn Pier as cancelled for Thursday?", "fields": {"vessel": "kittiwake", "origin": "calloway", "destination": "ardcairn", "state": "cancelled"}, "act": "request"}]},
+  {"id": "m08", "text": "I warned the purser: \"Saltire Rose will not call at Skelda Terminal until the ramp is fixed.\"",
+   "mentions": [["I", "none", "ref"], ["Saltire Rose", "saltire"], ["Skelda Terminal", "skelda"]],
+   "quotes": [["Saltire Rose will not call at Skelda Terminal until the ramp is fixed.", "author"]],
+   "facts": [
+    {"model": "Route", "in": "Saltire Rose will not call at Skelda Terminal", "from": "saltire", "to": "skelda", "label": "calls_at", "act": "plan", "deny": true}]},
+  {"id": "m09", "text": "Incident on Gannet Belle: a near miss in fog with 112 passengers aboard, logged to the coastguard by Femi Adeleke.",
+   "mentions": [["Gannet Belle", "gannet"], ["Femi Adeleke", "femi"]],
+   "facts": [
+    {"model": "Incident", "in": "Incident on Gannet Belle: a near miss in fog", "fields": {"vessel": "gannet", "severity": "near_miss", "passengers_aboard": 112, "logged_to_coastguard": true, "reported_by": "femi", "detail": "near miss in fog"}, "act": "assert"}]},
+  {"id": "m10", "text": "Esperanza Quispe: I think Tomasz is mate on Saltire Rose, but maybe he only covers weekends. Tomasz Wierzbicki would know.",
+   "mentions": [["Esperanza Quispe", "esperanza"], ["I", "esperanza", "ref"], ["Tomasz", "tomasz"], ["Saltire Rose", "saltire"], ["he", "tomasz", "ref"], ["Tomasz Wierzbicki", "tomasz"]],
+   "facts": [
+    {"model": "Crewing", "in": "I think Tomasz is mate on Saltire Rose", "from": "tomasz", "to": "saltire", "label": "mate", "act": "draft"}]},
+  {"id": "m11", "text": "Hamish Lennox said that Siobhan Kearney skippers Gannet Belle now.",
+   "mentions": [["Hamish Lennox", "hamish"], ["Siobhan Kearney", "siobhan"], ["Gannet Belle", "gannet"]],
+   "facts": [
+    {"model": "Crewing", "in": "Hamish Lennox said that Siobhan Kearney skippers Gannet Belle now.", "from": "siobhan", "to": "gannet", "label": "master", "act": "report"}]},
+  {"id": "m12", "text": "If the refit finishes, Kittiwake will be based at Inchmurrin Slip. Bjarni Eiriksson would then become her engineer.",
+   "mentions": [["Kittiwake", "kittiwake"], ["Inchmurrin Slip", "inchmurrin"], ["Bjarni Eiriksson", "bjarni"], ["her", "kittiwake", "ref"]],
+   "facts": [
+    {"model": "Route", "in": "If the refit finishes, Kittiwake will be based at Inchmurrin Slip.", "from": "kittiwake", "to": "inchmurrin", "label": "home_port", "act": "condition"},
+    {"model": "Crewing", "in": "Bjarni Eiriksson would then become her engineer.", "from": "bjarni", "to": "kittiwake", "label": "engineer", "act": "condition"}]},
+  {"id": "m13", "text": "Morven Star left Ardcairn Pier on time for Skelda Terminal with 58 vehicles.",
+   "mentions": [["Morven Star", "morven"], ["Ardcairn Pier", "ardcairn"], ["Skelda Terminal", "skelda"]],
+   "facts": [
+    {"model": "Sailing", "in": "Morven Star left Ardcairn Pier on time for Skelda Terminal with 58 vehicles.", "fields": {"vessel": "morven", "origin": "ardcairn", "destination": "skelda", "state": "on_time", "vehicles": 58}, "act": "assert"}]},
+  {"id": "m14", "text": "From: Siobhan Kearney <s.kearney@cuanferries.example>\nMy licence renewal is attached; please file it with the office.",
+   "mentions": [["Siobhan Kearney", "siobhan"], ["My", "siobhan", "ref"]],
+   "facts": []},
+  {"id": "m15", "text": "Femi Adeleke: Hamish, could you serve as mate on Morven Star this weekend? Aroha Ngata is her master, so she will sign you on.",
+   "mentions": [["Femi Adeleke", "femi"], ["Hamish", "hamish"], ["you", "hamish", "ref"], ["Morven Star", "morven"], ["Aroha Ngata", "aroha_n"], ["her", "morven", "ref"], ["she", "aroha_n", "ref"], ["you", "hamish", "ref"]],
+   "facts": [
+    {"model": "Crewing", "in": "could you serve as mate on Morven Star this weekend?", "from": "hamish", "to": "morven", "label": "mate", "act": "request"},
+    {"model": "Crewing", "in": "Aroha Ngata is her master", "from": "aroha_n", "to": "morven", "label": "master", "act": "assert"}]},
+  {"id": "m16", "text": "Serious incident aboard Kittiwake: Esperanza Quispe was hurt on the stairs, reported by Aroha Penrose, not yet logged to the coastguard.",
+   "mentions": [["Kittiwake", "kittiwake"], ["Esperanza Quispe", "esperanza"], ["Aroha Penrose", "aroha_p"]],
+   "facts": [
+    {"model": "Incident", "in": "Serious incident aboard Kittiwake", "fields": {"vessel": "kittiwake", "severity": "serious", "injured": "esperanza", "reported_by": "aroha_p", "logged_to_coastguard": false, "detail": "hurt on the stairs"}, "act": "assert"}]},
+  {"id": "m17", "text": "Hamish Lennox: My ship is Saltire Rose, where I am mate, not Gannet Belle.",
+   "mentions": [["Hamish Lennox", "hamish"], ["My", "hamish", "ref"], ["Saltire Rose", "saltire"], ["I", "hamish", "ref"], ["Gannet Belle", "gannet"]],
+   "facts": [
+    {"model": "Crewing", "in": "My ship is Saltire Rose, where I am mate", "from": "hamish", "to": "saltire", "label": "mate", "act": "assert"},
+    {"model": "Crewing", "in": "not Gannet Belle", "from": "hamish", "to": "gannet", "label": "mate", "act": "assert", "deny": true}]},
+  {"id": "m18", "text": "Minutes: Tomasz Wierzbicki confirmed Gannet Belle calls at Calloway Quay on Sundays. Tomasz also said Femi Adeleke is her captain.",
+   "mentions": [["Tomasz Wierzbicki", "tomasz"], ["Gannet Belle", "gannet"], ["Calloway Quay", "calloway"], ["Tomasz", "tomasz"], ["Femi Adeleke", "femi"], ["her", "gannet", "ref"]],
+   "facts": [
+    {"model": "Route", "in": "Tomasz Wierzbicki confirmed Gannet Belle calls at Calloway Quay on Sundays.", "from": "gannet", "to": "calloway", "label": "calls_at", "act": "assert"},
+    {"model": "Crewing", "in": "Tomasz also said Femi Adeleke is her captain.", "from": "femi", "to": "gannet", "label": "master", "act": "report"}]}
+ ],
+ "questions": [
+  {"q": "Who is the skipper of Morven Star?", "speaker": null, "cypher": "MATCH (n0:Vessel)-[:skipper]->(n1:Mariner) WHERE n0.hull_name = 'Morven Star' RETURN n1.crew_name AS crew_name"},
+  {"q": "Which vessel am I the master of?", "speaker": "aroha_n", "cypher": "MATCH (n0:Mariner)-[:master]->(n1:Vessel) WHERE id(n0) = $speaker RETURN n1.hull_name AS hull_name"},
+  {"q": "Who are the engineers of Morven Star?", "speaker": null, "cypher": "MATCH (n0:Vessel)-[:engineers]->(n1:Mariner) WHERE n0.hull_name = 'Morven Star' RETURN n1.crew_name AS crew_name"},
+  {"q": "What is the home port of Morven Star?", "speaker": null, "cypher": "MATCH (n0:Vessel)-[:home_port]->(n1:Terminal) WHERE n0.hull_name = 'Morven Star' RETURN n1.name AS name"},
+  {"q": "Which vessels are calling at Skelda Terminal?", "speaker": null, "cypher": "MATCH (n0:Terminal)-[:calling]->(n1:Vessel) WHERE n0.name = 'Skelda Terminal' RETURN n1.hull_name AS hull_name"},
+  {"q": "How many sailings are there?", "speaker": null, "cypher": "MATCH (n0:Sailing) RETURN count(n0) AS count"},
+  {"q": "Is there a record that the Gannet Belle incident was logged to the coastguard?", "speaker": null, "cypher": "MATCH (n0:Vessel)<-[:vessel]-(n1:Incident) WHERE n0.hull_name = 'Gannet Belle' RETURN coalesce(n1.logged_to_coastguard, false) AS logged_to_coastguard"},
+  {"q": "Was the Kittiwake incident logged to the coastguard?", "speaker": null, "cypher": "MATCH (n0:Vessel)<-[:vessel]-(n1:Incident) WHERE n0.hull_name = 'Kittiwake' RETURN n1.logged_to_coastguard AS logged_to_coastguard"},
+  {"q": "How many passengers were aboard during the incidents I reported?", "speaker": "femi", "cypher": "MATCH (n0:Mariner)<-[:reported_by]-(n1:Incident) WHERE id(n0) = $speaker RETURN n1.passengers_aboard AS passengers_aboard"},
+  {"q": "Who witnessed the incident reported by Siobhan Kearney?", "speaker": null, "cypher": "MATCH (n0:Mariner)<-[:reported_by]-(n1:Incident)-[:witness]->(n2:Mariner) WHERE n0.crew_name = 'Siobhan Kearney' RETURN n2.crew_name AS crew_name"},
+  {"q": "How many vehicles were booked on sailings leaving Inchmurrin Slip?", "speaker": null, "cypher": "MATCH (n0:Terminal)<-[:origin]-(n1:Sailing) WHERE n0.name = 'Inchmurrin Slip' RETURN n1.vehicles AS vehicles"},
+  {"q": "How severe was the incident on the stairs?", "speaker": null, "cypher": "MATCH (n0:Incident) WHERE n0.detail CONTAINS 'stairs' RETURN n0.severity AS severity"},
+  {"q": "What state is each sailing in, and how many vehicles does it carry?", "speaker": null, "cypher": "MATCH (n0:Sailing) RETURN n0.state AS state, n0.vehicles AS vehicles"},
+  {"q": "What is the email of Siobhan Kearney?", "speaker": null, "cypher": "MATCH (n0:Mariner) WHERE n0.crew_name = 'Siobhan Kearney' RETURN n0.email AS email"},
+  {"q": "Who was injured aboard Saltire Rose?", "speaker": null, "cypher": "MATCH (n0:Vessel)<-[:vessel]-(n1:Incident)-[:injured]->(n2:Mariner) WHERE n0.hull_name = 'Saltire Rose' RETURN n2.crew_name AS crew_name"},
+  {"q": "Which vessel is Siobhan Kearney master of?", "speaker": null, "cypher": "MATCH (n0:Mariner)-[:master]->(n1:Vessel) WHERE n0.crew_name = 'Siobhan Kearney' RETURN n1.hull_name AS hull_name"}
+ ]
+}

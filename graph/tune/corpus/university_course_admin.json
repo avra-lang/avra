@@ -1,0 +1,151 @@
+{
+ "domain": "university_course_admin",
+ "models": {
+  "Member": {"description": "A student or member of staff. A first name alone is not an identity.",
+   "properties": {"full_name": "string", "office": "string?", "uni_email": "string?"}, "identities": ["uni_email"]},
+  "Module": {"description": "A taught module, named by its code.",
+   "properties": {"code": "string", "title": "string?"}},
+  "Teaching": {"description": "Who teaches on a module: its convenor runs it, a tutor takes seminars, an examiner marks externally.\nTutoring a module is not convening it.",
+   "properties": {"module": "Module", "member": "Member", "role": ["convenor", "tutor", "examiner"]},
+   "relation": {"from": "module", "to": "member", "label": "role", "phrasing": "{from} has {to} as its {label}",
+    "labels": {"convenor": {"forward": ["convenor", "convenes", "module lead"], "reverse": ["convened"]},
+               "tutor": {"forward": ["tutor", "tutors", "seminar tutor"], "reverse": ["tutored"]},
+               "examiner": {"forward": ["external examiner", "examiner"], "reverse": ["examined"]}}}},
+  "Advising": {"description": "A pastoral or research link between two members: one is the other's personal tutor or supervisor.",
+   "properties": {"member": "Member", "advisor": "Member", "kind": ["personal_tutor", "supervisor"]},
+   "relation": {"from": "member", "to": "advisor", "label": "kind", "phrasing": "{to} acts as {label} to {from}",
+    "labels": {"personal_tutor": {"forward": ["personal tutor", "pastoral tutor"], "reverse": ["tutee"]},
+               "supervisor": {"forward": ["supervisor", "supervises"], "reverse": ["supervisee"]}}}},
+  "Extension": {"description": "A coursework extension. student is who gets the time, filed_by submitted the request, approved_by decides it.",
+   "properties": {"assignment": "string", "module": "Module?", "student": "Member?", "filed_by": "Member?", "approved_by": "Member?",
+    "decision": ["pending", "granted", "refused"], "medical_evidence": "boolean?", "extra_days": "integer?", "reason": "string?"},
+   "absences": {"medical_evidence": "evidence_not_seen"}},
+  "Exam": {"description": "A sitting of an examination paper; a postponed sitting has not been sat.",
+   "properties": {"paper": "string", "module": "Module?", "invigilator": "Member?", "sitting": ["scheduled", "sat", "postponed"],
+    "candidates": "integer?", "venue": "string?", "open_book": "boolean?"},
+   "absences": {"open_book": "format_unconfirmed"}}
+ },
+ "entities": {
+  "linh_t": {"model": "Member", "name": "Linh Tran"},
+  "linh_p": {"model": "Member", "name": "Linh Pham"},
+  "kwabena": {"model": "Member", "name": "Kwabena Asante"},
+  "ainhoa": {"model": "Member", "name": "Ainhoa Etxeberria"},
+  "oksana": {"model": "Member", "name": "Oksana Hrytsenko"},
+  "marisol": {"model": "Member", "name": "Marisol Dizon"},
+  "zsofia": {"model": "Member", "name": "Zsófia Kertész"},
+  "abdi": {"model": "Member", "name": "Abdirahman Warsame"},
+  "chem": {"model": "Module", "name": "CHEM204"},
+  "ling": {"model": "Module", "name": "LING110"},
+  "math": {"model": "Module", "name": "MATH301"},
+  "hist": {"model": "Module", "name": "HIST215"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Kwabena Asante: LING110 has me as convenor this year, and Oksana Hrytsenko is its seminar tutor.",
+   "mentions": [["Kwabena Asante", "kwabena"], ["LING110", "ling"], ["me", "kwabena", "ref"], ["Oksana Hrytsenko", "oksana"], ["its", "ling", "ref"]],
+   "facts": [
+    {"model": "Teaching", "in": "LING110 has me as convenor this year", "from": "ling", "to": "kwabena", "label": "convenor", "act": "assert"},
+    {"model": "Teaching", "in": "Oksana Hrytsenko is its seminar tutor.", "from": "ling", "to": "oksana", "label": "tutor", "act": "assert"}]},
+  {"id": "m02", "text": "Marisol Dizon filed a request for Linh Tran to get 5 extra days on the CHEM204 lab report, and Ainhoa Etxeberria granted it.",
+   "mentions": [["Marisol Dizon", "marisol"], ["Linh Tran", "linh_t"], ["CHEM204", "chem"], ["Ainhoa Etxeberria", "ainhoa"]],
+   "facts": [
+    {"model": "Extension", "in": "Marisol Dizon filed a request for Linh Tran", "fields": {"assignment": "lab report", "module": "chem", "student": "linh_t", "filed_by": "marisol", "approved_by": "ainhoa", "decision": "granted", "extra_days": 5}, "act": "assert"}]},
+  {"id": "m03", "text": "Oksana Hrytsenko: I'm not the external examiner for MATH301; Zsófia Kertész is.",
+   "mentions": [["Oksana Hrytsenko", "oksana"], ["I", "oksana", "ref"], ["MATH301", "math"], ["Zsófia Kertész", "zsofia"]],
+   "facts": [
+    {"model": "Teaching", "in": "I'm not the external examiner for MATH301", "from": "math", "to": "oksana", "label": "examiner", "act": "assert", "deny": true},
+    {"model": "Teaching", "in": "Zsófia Kertész is.", "from": "math", "to": "zsofia", "label": "examiner", "act": "assert"}]},
+  {"id": "m04", "text": "Linh Tran and Linh Pham both asked about the HIST215 essay. Linh Pham's personal tutor is Abdirahman Warsame. Abdirahman says he has already replied to Linh.",
+   "mentions": [["Linh Tran", "linh_t"], ["Linh Pham", "linh_p"], ["HIST215", "hist"], ["Linh Pham", "linh_p"], ["Abdirahman Warsame", "abdi"], ["Abdirahman", "abdi"], ["he", "abdi", "ref"], ["Linh", "linh_p", "?"]],
+   "facts": [
+    {"model": "Advising", "in": "Linh Pham's personal tutor is Abdirahman Warsame.", "from": "linh_p", "to": "abdi", "label": "personal_tutor", "act": "assert"}]},
+  {"id": "m05", "text": "Ainhoa Etxeberria told the board: \"I will convene CHEM204 from January.\"",
+   "mentions": [["Ainhoa Etxeberria", "ainhoa"], ["I", "ainhoa", "ref"], ["CHEM204", "chem"]],
+   "quotes": [["I will convene CHEM204 from January.", "ainhoa"]],
+   "facts": [
+    {"model": "Teaching", "in": "I will convene CHEM204 from January.", "from": "chem", "to": "ainhoa", "label": "convenor", "act": "plan"}]},
+  {"id": "m06", "text": "The MATH301 paper is scheduled in the Great Hall for 140 candidates, with Kwabena Asante invigilating; it is open book.",
+   "mentions": [["MATH301", "math"], ["Kwabena Asante", "kwabena"]],
+   "facts": [
+    {"model": "Exam", "in": "The MATH301 paper is scheduled", "fields": {"paper": "MATH301 paper", "module": "math", "invigilator": "kwabena", "sitting": "scheduled", "candidates": 140, "venue": "the Great Hall", "open_book": true}, "act": "assert"}]},
+  {"id": "m07", "text": "Dear Marisol,\nCould you approve a 7 day extension on the LING110 portfolio for me? I was in hospital last week and can send a doctor's note.\nThanks,\nLinh Pham",
+   "mentions": [["Marisol", "marisol"], ["LING110", "ling"], ["me", "linh_p", "ref"], ["I", "linh_p", "ref"], ["Linh Pham", "linh_p"]],
+   "facts": [
+    {"model": "Extension", "in": "Could you approve a 7 day extension", "fields": {"assignment": "portfolio", "module": "ling", "student": "linh_p", "approved_by": "marisol", "decision": "pending", "extra_days": 7}, "act": "request"}]},
+  {"id": "m08", "text": "Zsófia Kertész: I think I'm Oksana's PhD supervisor on paper, but Kwabena does most of the supervising.",
+   "mentions": [["Zsófia Kertész", "zsofia"], ["I", "zsofia", "ref"], ["I", "zsofia", "ref"], ["Oksana", "oksana"], ["Kwabena", "kwabena"]],
+   "facts": [
+    {"model": "Advising", "in": "I think I'm Oksana's PhD supervisor on paper", "from": "oksana", "to": "zsofia", "label": "supervisor", "act": "draft"},
+    {"model": "Advising", "in": "Kwabena does most of the supervising", "from": "oksana", "to": "kwabena", "label": "supervisor", "act": "assert"}]},
+  {"id": "m09", "text": "If the medical note arrives, Ainhoa Etxeberria will grant Linh Tran 10 more days on the HIST215 dissertation.",
+   "mentions": [["Ainhoa Etxeberria", "ainhoa"], ["Linh Tran", "linh_t"], ["HIST215", "hist"]],
+   "facts": [
+    {"model": "Extension", "in": "If the medical note arrives", "fields": {"assignment": "dissertation", "module": "hist", "student": "linh_t", "approved_by": "ainhoa", "decision": "granted", "extra_days": 10}, "act": "condition"}]},
+  {"id": "m10", "text": "Marisol Dizon said that the CHEM204 practical exam was postponed and that only 38 candidates had registered.",
+   "mentions": [["Marisol Dizon", "marisol"], ["CHEM204", "chem"]],
+   "facts": [
+    {"model": "Exam", "in": "Marisol Dizon said that the CHEM204 practical exam was postponed", "fields": {"paper": "practical exam", "module": "chem", "sitting": "postponed", "candidates": 38}, "act": "report"}]},
+  {"id": "m11", "text": "Note from the office: \"Abdirahman Warsame's extension on the MATH301 problem set was refused; no medical evidence was provided.\"",
+   "mentions": [["Abdirahman Warsame", "abdi"], ["MATH301", "math"]],
+   "quotes": [["Abdirahman Warsame's extension on the MATH301 problem set was refused; no medical evidence was provided.", "?"]],
+   "facts": [
+    {"model": "Extension", "in": "Abdirahman Warsame's extension on the MATH301 problem set was refused", "fields": {"assignment": "problem set", "module": "math", "student": "abdi", "decision": "refused", "medical_evidence": false}, "act": "assert"}]},
+  {"id": "m12", "text": "Handbook draft, in my own words: \"Oksana Hrytsenko tutors MATH301 seminars this term.\" Kwabena Asante has not checked it yet.",
+   "mentions": [["my", "none", "ref"], ["Oksana Hrytsenko", "oksana"], ["MATH301", "math"], ["Kwabena Asante", "kwabena"]],
+   "quotes": [["Oksana Hrytsenko tutors MATH301 seminars this term.", "author"]],
+   "facts": [
+    {"model": "Teaching", "in": "Oksana Hrytsenko tutors MATH301 seminars this term.", "from": "math", "to": "oksana", "label": "tutor", "act": "assert"}]},
+  {"id": "m13", "text": "Abdirahman Warsame: We agreed that I'll be personal tutor to Marisol Dizon and to Linh Tran next year.",
+   "mentions": [["Abdirahman Warsame", "abdi"], ["We", "abdi", "ref"], ["I", "abdi", "ref"], ["Marisol Dizon", "marisol"], ["Linh Tran", "linh_t"]],
+   "facts": [
+    {"model": "Advising", "in": "I'll be personal tutor to Marisol Dizon", "from": "marisol", "to": "abdi", "label": "personal_tutor", "act": "plan"},
+    {"model": "Advising", "in": "and to Linh Tran next year", "from": "linh_t", "to": "abdi", "label": "personal_tutor", "act": "plan"}]},
+  {"id": "m14", "text": "Zsófia invigilated the LING110 oral exam yesterday: 12 candidates sat it, closed book, in Room 4B.",
+   "mentions": [["Zsófia", "zsofia"], ["LING110", "ling"]],
+   "facts": [
+    {"model": "Exam", "in": "Zsófia invigilated the LING110 oral exam", "fields": {"paper": "oral exam", "module": "ling", "invigilator": "zsofia", "sitting": "sat", "candidates": 12, "open_book": false, "venue": "Room 4B"}, "act": "assert"}]},
+  {"id": "m15", "text": "Linh Pham: Oksana doesn't tutor me on HIST215 any more, she moved to CHEM204.",
+   "mentions": [["Linh Pham", "linh_p"], ["Oksana", "oksana"], ["me", "linh_p", "ref"], ["HIST215", "hist"], ["she", "oksana", "ref"], ["CHEM204", "chem"]],
+   "facts": [
+    {"model": "Teaching", "in": "Oksana doesn't tutor me on HIST215 any more", "from": "hist", "to": "oksana", "label": "tutor", "act": "assert", "deny": true}]},
+  {"id": "m16", "text": "Kwabena Asante has asked Ainhoa Etxeberria to decide on his request for Linh Tran to get 3 days on the CHEM204 lab report; it is still pending.",
+   "mentions": [["Kwabena Asante", "kwabena"], ["Ainhoa Etxeberria", "ainhoa"], ["his", "kwabena", "ref"], ["Linh Tran", "linh_t"], ["CHEM204", "chem"]],
+   "facts": [
+    {"model": "Extension", "in": "Kwabena Asante has asked Ainhoa Etxeberria", "fields": {"assignment": "lab report", "module": "chem", "student": "linh_t", "filed_by": "kwabena", "decision": "pending", "extra_days": 3}, "act": "assert"}]},
+  {"id": "m17", "text": "Hi Oksana,\nMarisol Dizon will be the module lead for HIST215 from March, so please send timetabling questions to Marisol.\nBest wishes,\nZsófia Kertész",
+   "mentions": [["Oksana", "oksana"], ["Marisol Dizon", "marisol"], ["HIST215", "hist"], ["Marisol", "marisol"], ["Zsófia Kertész", "zsofia"]],
+   "facts": [
+    {"model": "Teaching", "in": "Marisol Dizon will be the module lead for HIST215 from March", "from": "hist", "to": "marisol", "label": "convenor", "act": "plan"}]},
+  {"id": "m18", "text": "Kwabena Asante supervises Linh Pham; Ainhoa Etxeberria is her personal tutor.",
+   "mentions": [["Kwabena Asante", "kwabena"], ["Linh Pham", "linh_p"], ["Ainhoa Etxeberria", "ainhoa"], ["her", "linh_p", "ref"]],
+   "facts": [
+    {"model": "Advising", "in": "Kwabena Asante supervises Linh Pham", "from": "linh_p", "to": "kwabena", "label": "supervisor", "act": "assert"},
+    {"model": "Advising", "in": "Ainhoa Etxeberria is her personal tutor.", "from": "linh_p", "to": "ainhoa", "label": "personal_tutor", "act": "assert"}]},
+  {"id": "m19", "text": "Abdirahman Warsame: I could be the examiner for LING110 next term, if Kwabena agrees.",
+   "mentions": [["Abdirahman Warsame", "abdi"], ["I", "abdi", "ref"], ["LING110", "ling"], ["Kwabena", "kwabena"]],
+   "facts": [
+    {"model": "Teaching", "in": "I could be the examiner for LING110 next term", "from": "ling", "to": "abdi", "label": "examiner", "act": "condition"}]},
+  {"id": "m20", "text": "Marisol Dizon: We have 95 candidates for the HIST215 final paper, scheduled for May; I still need an invigilator.",
+   "mentions": [["Marisol Dizon", "marisol"], ["We", "marisol", "ref"], ["HIST215", "hist"], ["I", "marisol", "ref"]],
+   "facts": [
+    {"model": "Exam", "in": "We have 95 candidates for the HIST215 final paper", "fields": {"paper": "final paper", "module": "hist", "candidates": 95, "sitting": "scheduled"}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who convenes LING110?", "speaker": null, "cypher": "MATCH (n0:Module)-[:convenor]->(n1:Member) WHERE n0.code = 'LING110' RETURN n1.full_name AS full_name"},
+  {"q": "Which modules are tutored by me?", "speaker": "oksana", "cypher": "MATCH (n0:Member)-[:tutored]->(n1:Module) WHERE id(n0) = $speaker RETURN n1.code AS code"},
+  {"q": "Who is my personal tutor?", "speaker": "linh_p", "cypher": "MATCH (n0:Member)-[:personal_tutor]->(n1:Member) WHERE id(n0) = $speaker RETURN n1.full_name AS full_name"},
+  {"q": "Who is Kwabena Asante's supervisee?", "speaker": null, "cypher": "MATCH (n0:Member)-[:supervisee]->(n1:Member) WHERE n0.full_name = 'Kwabena Asante' RETURN n1.full_name AS full_name"},
+  {"q": "How many exams are there?", "speaker": null, "cypher": "MATCH (n0:Exam) RETURN count(n0) AS count"},
+  {"q": "How many extra days were given on the problem set?", "speaker": null, "cypher": "MATCH (n0:Extension) WHERE n0.assignment = 'problem set' RETURN n0.extra_days AS extra_days"},
+  {"q": "Is there a record of medical evidence for the problem set?", "speaker": null, "cypher": "MATCH (n0:Extension) WHERE n0.assignment = 'problem set' RETURN coalesce(n0.medical_evidence, false) AS medical_evidence"},
+  {"q": "Was the MATH301 paper open book?", "speaker": null, "cypher": "MATCH (n0:Exam) WHERE n0.paper = 'MATH301 paper' RETURN n0.open_book AS open_book"},
+  {"q": "Who invigilated the oral exam?", "speaker": null, "cypher": "MATCH (n0:Exam)-[:invigilator]->(n1:Member) WHERE n0.paper = 'oral exam' RETURN n1.full_name AS full_name"},
+  {"q": "Which extensions did Marisol Dizon file?", "speaker": null, "cypher": "MATCH (n0:Member)<-[:filed_by]-(n1:Extension) WHERE n0.full_name = 'Marisol Dizon' RETURN n1.assignment AS assignment"},
+  {"q": "What extensions did I approve?", "speaker": "ainhoa", "cypher": "MATCH (n0:Member)<-[:approved_by]-(n1:Extension) WHERE id(n0) = $speaker RETURN n1.assignment AS assignment"},
+  {"q": "Who is the external examiner for MATH301?", "speaker": null, "cypher": "MATCH (n0:Module)-[:examiner]->(n1:Member) WHERE n0.code = 'MATH301' RETURN n1.full_name AS full_name"},
+  {"q": "How many candidates registered for CHEM204 exams?", "speaker": null, "cypher": "MATCH (n0:Module)<-[:module]-(n1:Exam) WHERE n0.code = 'CHEM204' RETURN n1.candidates AS candidates"},
+  {"q": "Which exams were in a great hall?", "speaker": null, "cypher": "MATCH (n0:Exam) WHERE n0.venue CONTAINS 'hall' RETURN n0.paper AS paper"},
+  {"q": "What are the paper and sitting of every exam?", "speaker": null, "cypher": "MATCH (n0:Exam) RETURN n0.paper AS paper, n0.sitting AS sitting"},
+  {"q": "Who tutors MATH301?", "speaker": null, "cypher": "MATCH (n0:Module)-[:tutor]->(n1:Member) WHERE n0.code = 'MATH301' RETURN n1.full_name AS full_name"},
+  {"q": "Which modules are convened by me?", "speaker": "kwabena", "cypher": "MATCH (n0:Member)-[:convened]->(n1:Module) WHERE id(n0) = $speaker RETURN n1.code AS code"}
+ ]
+}

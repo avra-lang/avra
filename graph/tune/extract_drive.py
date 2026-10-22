@@ -161,6 +161,8 @@ class Oracle(cascade.Scorer):
         if who in (None, "?"):
             return (len(ids) + 1 if who == "?" else None), None
         k = self.index(ids, who) if who != "none" else None
+        if k is None and who != "none" and who in {item[1] for item in self.g.names.values()}:
+            return None, None
         return (k if k is not None else len(ids)), None
 
     def on_relate(self, local, options):

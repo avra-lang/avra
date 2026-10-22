@@ -1,0 +1,141 @@
+{
+ "domain": "esports_team",
+ "models": {
+  "Gamer": {"description": "A player or staff member on the esports roster, known by their handle. A first name alone is not an identity.",
+   "properties": {"handle": "string", "timezone": "string?"}},
+  "Sponsor": {"description": "A company that backs the team or its players.",
+   "properties": {"brand": "string", "website": "string?"}, "identities": ["website"]},
+  "Roster": {"description": "Who leads or reviews whom inside the team: a shotcaller makes the in-game calls for a player, an analyst reviews their play.",
+   "properties": {"player": "Gamer", "lead": "Gamer", "link": ["shotcaller", "analyst"]},
+   "relation": {"from": "player", "to": "lead", "label": "link", "phrasing": "{to} acts as {label} for {from}",
+    "labels": {"shotcaller": {"forward": ["shotcaller", "captain", "in-game leader"], "reverse": ["squad"]},
+               "analyst": {"forward": ["analyst", "vod reviewer"], "reverse": ["reviewees"]}}}},
+  "Deal": {"description": "A gamer's tie to a sponsor: endorsing the brand as an ambassador, or streaming on its behalf.",
+   "properties": {"gamer": "Gamer", "sponsor": "Sponsor", "kind": ["endorses", "streams_for"]},
+   "relation": {"from": "gamer", "to": "sponsor", "label": "kind", "phrasing": "{from} {label} {to}",
+    "labels": {"endorses": {"forward": ["endorses", "ambassador for"], "reverse": ["ambassadors"]},
+               "streams_for": {"forward": ["streams for", "streams with"], "reverse": ["streamers"]}}}},
+  "Match": {"description": "One scrim or official match against another team. arranged_by set it up, mvp was the best player, benched sat it out; result is upcoming, won, lost or forfeited.",
+   "properties": {"opponent": "string", "arranged_by": "Gamer?", "mvp": "Gamer?", "benched": "Gamer?",
+    "result": ["upcoming", "won", "lost", "forfeited"], "streamed": "boolean?", "maps_played": "integer?", "venue": "string?"},
+   "absences": {"streamed": "no_stream_record"}},
+  "Payout": {"description": "A gamer's share of a tournament prize. paid_out stays empty until a payment is recorded.",
+   "properties": {"tournament": "string", "payee": "Gamer", "amount_dollars": "integer?", "paid_out": "boolean?"},
+   "absences": {"paid_out": "no_payout_record"}}
+ },
+ "entities": {
+  "takumi": {"model": "Gamer", "name": "Takumi Hasegawa", "fields": {"timezone": "JST"}},
+  "luana": {"model": "Gamer", "name": "Luana Kealoha"},
+  "luana_m": {"model": "Gamer", "name": "Luana Mahoe"},
+  "oskar": {"model": "Gamer", "name": "Oskar Brandvold"},
+  "amaru": {"model": "Gamer", "name": "Amaru Quispe"},
+  "amaru_c": {"model": "Gamer", "name": "Amaru Condori"},
+  "zainab": {"model": "Gamer", "name": "Zainab Oyelaran"},
+  "mateus": {"model": "Gamer", "name": "Mateus Barbosa"},
+  "kestrel": {"model": "Sponsor", "name": "Kestrel Energy"},
+  "northwind": {"model": "Sponsor", "name": "Northwind Peripherals"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Takumi Hasegawa: Luana Kealoha is my shotcaller now, so I follow her calls every round.",
+   "mentions": [["Takumi Hasegawa", "takumi"], ["Luana Kealoha", "luana"], ["my", "takumi", "ref"], ["I", "takumi", "ref"], ["her", "luana", "ref"]],
+   "facts": [
+    {"model": "Roster", "in": "Luana Kealoha is my shotcaller now", "from": "takumi", "to": "luana", "label": "shotcaller", "act": "assert"}]},
+  {"id": "m02", "text": "Scrim log: our scrim against Ironclad Seven was won over 3 maps, arranged by Zainab Oyelaran, with Oskar Brandvold as MVP.",
+   "mentions": [["Zainab Oyelaran", "zainab"], ["Oskar Brandvold", "oskar"]],
+   "facts": [
+    {"model": "Match", "in": "our scrim against Ironclad Seven was won over 3 maps", "fields": {"opponent": "Ironclad Seven", "arranged_by": "zainab", "mvp": "oskar", "result": "won", "maps_played": 3}, "act": "assert"}]},
+  {"id": "m03", "text": "Zainab Oyelaran: Amaru Quispe and Amaru Condori both asked for the Sunday slot. Amaru said he wants a new headset too.",
+   "mentions": [["Zainab Oyelaran", "zainab"], ["Amaru Quispe", "amaru"], ["Amaru Condori", "amaru_c"], ["Amaru", "amaru", "?"], ["he", "?", "ref"]],
+   "facts": []},
+  {"id": "m04", "text": "Mateus Barbosa says Kestrel Energy signed him as an ambassador last month. He will also stream for Northwind Peripherals from April.",
+   "mentions": [["Mateus Barbosa", "mateus"], ["Kestrel Energy", "kestrel"], ["him", "mateus", "ref"], ["He", "mateus", "ref"], ["Northwind Peripherals", "northwind"]],
+   "facts": [
+    {"model": "Deal", "in": "Mateus Barbosa says Kestrel Energy signed him as an ambassador last month.", "from": "mateus", "to": "kestrel", "label": "endorses", "act": "report"},
+    {"model": "Deal", "in": "He will also stream for Northwind Peripherals from April.", "from": "mateus", "to": "northwind", "label": "streams_for", "act": "plan"}]},
+  {"id": "m05", "text": "Oskar Brandvold: My share of the Frostline Open prize is 900 dollars, and I still have not been paid.",
+   "mentions": [["Oskar Brandvold", "oskar"], ["My", "oskar", "ref"], ["I", "oskar", "ref"]],
+   "facts": [
+    {"model": "Payout", "in": "My share of the Frostline Open prize is 900 dollars", "fields": {"tournament": "Frostline Open", "payee": "oskar", "amount_dollars": 900, "paid_out": false}, "act": "assert"}]},
+  {"id": "m06", "text": "Finance: the 450 dollars owed to Luana Kealoha from the Frostline Open was paid out on Monday.",
+   "mentions": [["Luana Kealoha", "luana"]],
+   "facts": [
+    {"model": "Payout", "in": "the 450 dollars owed to Luana Kealoha from the Frostline Open was paid out on Monday.", "fields": {"tournament": "Frostline Open", "payee": "luana", "amount_dollars": 450, "paid_out": true}, "act": "assert"}]},
+  {"id": "m07", "text": "Luana Kealoha: I'm not Amaru Quispe's analyst any more. Zainab reviews his matches now.",
+   "mentions": [["Luana Kealoha", "luana"], ["I", "luana", "ref"], ["Amaru Quispe", "amaru"], ["Zainab", "zainab"], ["his", "amaru", "ref"]],
+   "facts": [
+    {"model": "Roster", "in": "I'm not Amaru Quispe's analyst any more.", "from": "amaru", "to": "luana", "label": "analyst", "act": "assert", "deny": true},
+    {"model": "Roster", "in": "Zainab reviews his matches now.", "from": "amaru", "to": "zainab", "label": "analyst", "act": "assert"}]},
+  {"id": "m08", "text": "Zainab Oyelaran: I think the qualifier against Redline Academy is upcoming on Saturday, maybe with Mateus benched.",
+   "mentions": [["Zainab Oyelaran", "zainab"], ["I", "zainab", "ref"], ["Mateus", "mateus"]],
+   "facts": [
+    {"model": "Match", "in": "I think the qualifier against Redline Academy is upcoming on Saturday", "fields": {"opponent": "Redline Academy", "benched": "mateus", "result": "upcoming"}, "act": "draft"}]},
+  {"id": "m09", "text": "Clip caption from Takumi Hasegawa: \"Oskar Brandvold carried that final map, I owe him one.\" He posted it after the scrim.",
+   "mentions": [["Takumi Hasegawa", "takumi"], ["Oskar Brandvold", "oskar"], ["I", "takumi", "ref"], ["him", "oskar", "ref"], ["He", "takumi", "ref"]],
+   "quotes": [["Oskar Brandvold carried that final map, I owe him one.", "takumi"]],
+   "facts": []},
+  {"id": "m10", "text": "I pinned \"warm-up starts at seven sharp\" in the team channel, and Luana Kealoha reacted with a thumbs up.",
+   "mentions": [["I", "none", "ref"], ["Luana Kealoha", "luana"]],
+   "quotes": [["warm-up starts at seven sharp", "author"]],
+   "facts": []},
+  {"id": "m11", "text": "Amaru Condori: If we qualify, Takumi Hasegawa will be my shotcaller for the main event.",
+   "mentions": [["Amaru Condori", "amaru_c"], ["Takumi Hasegawa", "takumi"], ["my", "amaru_c", "ref"]],
+   "facts": [
+    {"model": "Roster", "in": "Takumi Hasegawa will be my shotcaller", "from": "amaru_c", "to": "takumi", "label": "shotcaller", "act": "condition"}]},
+  {"id": "m12", "text": "The grand final against Polar Tide was won over 5 maps at the Kessel Arena, streamed live, with Luana Kealoha as MVP and Amaru Condori benched.",
+   "mentions": [["Luana Kealoha", "luana"], ["Amaru Condori", "amaru_c"]],
+   "facts": [
+    {"model": "Match", "in": "The grand final against Polar Tide was won over 5 maps", "fields": {"opponent": "Polar Tide", "mvp": "luana", "benched": "amaru_c", "result": "won", "streamed": true, "maps_played": 5, "venue": "the Kessel Arena"}, "act": "assert"}]},
+  {"id": "m13", "text": "Mateus Barbosa: Zainab, could you arrange a scrim against Lantern Ghosts for Thursday and bench me for it?",
+   "mentions": [["Mateus Barbosa", "mateus"], ["Zainab", "zainab"], ["me", "mateus", "ref"]],
+   "facts": [
+    {"model": "Match", "in": "Zainab, could you arrange a scrim against Lantern Ghosts", "fields": {"opponent": "Lantern Ghosts", "arranged_by": "zainab", "benched": "mateus", "result": "upcoming"}, "act": "request"}]},
+  {"id": "m14", "text": "Amaru Condori: People keep confusing me with the other Amaru. Oskar is Amaru Quispe's captain, not mine.",
+   "mentions": [["Amaru Condori", "amaru_c"], ["me", "amaru_c", "ref"], ["Amaru", "amaru"], ["Oskar", "oskar"], ["Amaru Quispe", "amaru"], ["mine", "amaru_c", "ref"]],
+   "facts": [
+    {"model": "Roster", "in": "Oskar is Amaru Quispe's captain", "from": "amaru", "to": "oskar", "label": "shotcaller", "act": "assert"},
+    {"model": "Roster", "in": "not mine", "from": "amaru_c", "to": "oskar", "label": "shotcaller", "act": "assert", "deny": true}]},
+  {"id": "m15", "text": "Hi all, the match against Polar Tide on the 14th is upcoming: not streamed, venue the Kessel Arena basement. I booked the room myself. Cheers, Zainab",
+   "mentions": [["I", "zainab", "ref"], ["Zainab", "zainab"]],
+   "facts": [
+    {"model": "Match", "in": "the match against Polar Tide on the 14th is upcoming", "fields": {"opponent": "Polar Tide", "result": "upcoming", "streamed": false, "venue": "the Kessel Arena basement"}, "act": "assert"}]},
+  {"id": "m16", "text": "Takumi Hasegawa said that Luana Kealoha streams for Northwind Peripherals, not for Kestrel Energy.",
+   "mentions": [["Takumi Hasegawa", "takumi"], ["Luana Kealoha", "luana"], ["Northwind Peripherals", "northwind"], ["Kestrel Energy", "kestrel"]],
+   "facts": [
+    {"model": "Deal", "in": "Luana Kealoha streams for Northwind Peripherals", "from": "luana", "to": "northwind", "label": "streams_for", "act": "report"},
+    {"model": "Deal", "in": "not for Kestrel Energy", "from": "luana", "to": "kestrel", "label": "streams_for", "act": "report", "deny": true}]},
+  {"id": "m17", "text": "Amaru Quispe's payout from the Ember Cup came to 300 dollars and has been paid. Amaru thanked Zainab for chasing it.",
+   "mentions": [["Amaru Quispe", "amaru"], ["Amaru", "amaru"], ["Zainab", "zainab"]],
+   "facts": [
+    {"model": "Payout", "in": "Amaru Quispe's payout from the Ember Cup came to 300 dollars and has been paid.", "fields": {"tournament": "Ember Cup", "payee": "amaru", "amount_dollars": 300, "paid_out": true}, "act": "assert"}]},
+  {"id": "m18", "text": "Luana Kealoha streamed until midnight. A different Luana, a trialist from the academy, messaged her afterwards.",
+   "mentions": [["Luana Kealoha", "luana"], ["Luana", "luana_m"], ["her", "luana", "ref"]],
+   "facts": []},
+  {"id": "m19", "text": "Minutes, Tuesday review: Zainab Oyelaran will be the analyst for Takumi Hasegawa next split. Mateus Barbosa becomes Oskar Brandvold's shotcaller from Friday.",
+   "mentions": [["Zainab Oyelaran", "zainab"], ["Takumi Hasegawa", "takumi"], ["Mateus Barbosa", "mateus"], ["Oskar Brandvold", "oskar"]],
+   "facts": [
+    {"model": "Roster", "in": "Zainab Oyelaran will be the analyst for Takumi Hasegawa next split.", "from": "takumi", "to": "zainab", "label": "analyst", "act": "plan"},
+    {"model": "Roster", "in": "Mateus Barbosa becomes Oskar Brandvold's shotcaller from Friday.", "from": "oskar", "to": "mateus", "label": "shotcaller", "act": "plan"}]},
+  {"id": "m20", "text": "Luana Kealoha: Mateus Barbosa was ill, so the match against Redline Academy was forfeited; Mateus says he is sorry.",
+   "mentions": [["Luana Kealoha", "luana"], ["Mateus Barbosa", "mateus"], ["Mateus", "mateus"], ["he", "mateus", "ref"]],
+   "facts": [
+    {"model": "Match", "in": "so the match against Redline Academy was forfeited", "fields": {"opponent": "Redline Academy", "result": "forfeited"}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who is Takumi Hasegawa's shotcaller?", "speaker": null, "cypher": "MATCH (n0:Gamer)-[:shotcaller]->(n1:Gamer) WHERE n0.handle = 'Takumi Hasegawa' RETURN n1.handle AS handle"},
+  {"q": "Who is my analyst?", "speaker": "amaru", "cypher": "MATCH (n0:Gamer)-[:analyst]->(n1:Gamer) WHERE id(n0) = $speaker RETURN n1.handle AS handle"},
+  {"q": "Who is in my squad?", "speaker": "luana", "cypher": "MATCH (n0:Gamer)-[:squad]->(n1:Gamer) WHERE id(n0) = $speaker RETURN n1.handle AS handle"},
+  {"q": "Which sponsors am I an ambassador for?", "speaker": "mateus", "cypher": "MATCH (n0:Gamer)-[:endorses]->(n1:Sponsor) WHERE id(n0) = $speaker RETURN n1.brand AS brand"},
+  {"q": "Who are the streamers of Northwind Peripherals?", "speaker": null, "cypher": "MATCH (n0:Sponsor)-[:streamers]->(n1:Gamer) WHERE n0.brand = 'Northwind Peripherals' RETURN n1.handle AS handle"},
+  {"q": "How many matches are there?", "speaker": null, "cypher": "MATCH (n0:Match) RETURN count(n0) AS count"},
+  {"q": "How many maps were played against Polar Tide?", "speaker": null, "cypher": "MATCH (n0:Match) WHERE n0.opponent = 'Polar Tide' RETURN n0.maps_played AS maps_played"},
+  {"q": "Which matches did Zainab Oyelaran arrange?", "speaker": null, "cypher": "MATCH (n0:Gamer)<-[:arranged_by]-(n1:Match) WHERE n0.handle = 'Zainab Oyelaran' RETURN n1.opponent AS opponent"},
+  {"q": "Which matches am I benched for?", "speaker": "mateus", "cypher": "MATCH (n0:Gamer)<-[:benched]-(n1:Match) WHERE id(n0) = $speaker RETURN n1.opponent AS opponent"},
+  {"q": "Is there a record of the Polar Tide match being streamed?", "speaker": null, "cypher": "MATCH (n0:Match) WHERE n0.opponent = 'Polar Tide' RETURN coalesce(n0.streamed, false) AS streamed"},
+  {"q": "Was the match against Ironclad Seven streamed?", "speaker": null, "cypher": "MATCH (n0:Match) WHERE n0.opponent = 'Ironclad Seven' RETURN n0.streamed AS streamed"},
+  {"q": "Has Oskar Brandvold's prize been paid out?", "speaker": null, "cypher": "MATCH (n0:Gamer)<-[:payee]-(n1:Payout) WHERE n0.handle = 'Oskar Brandvold' RETURN n1.paid_out AS paid_out"},
+  {"q": "What tournament and amount is each payout for?", "speaker": null, "cypher": "MATCH (n0:Payout) RETURN n0.tournament AS tournament, n0.amount_dollars AS amount_dollars"},
+  {"q": "What timezone is Takumi Hasegawa in?", "speaker": null, "cypher": "MATCH (n0:Gamer) WHERE n0.handle = 'Takumi Hasegawa' RETURN n0.timezone AS timezone"},
+  {"q": "Who was MVP of the match against Ironclad Seven?", "speaker": null, "cypher": "MATCH (n0:Match)-[:mvp]->(n1:Gamer) WHERE n0.opponent = 'Ironclad Seven' RETURN n1.handle AS handle"},
+  {"q": "How much did Luana Kealoha get from the Frostline Open?", "speaker": null, "cypher": "MATCH (n0:Gamer)<-[:payee]-(n1:Payout) WHERE n0.handle = 'Luana Kealoha' AND n1.tournament CONTAINS 'frostline' RETURN n1.amount_dollars AS amount_dollars"}
+ ]
+}

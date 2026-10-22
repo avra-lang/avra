@@ -1,0 +1,138 @@
+{
+ "domain": "scout_troop",
+ "models": {
+  "Scout": {"description": "A young member of the troop. A first name alone is not an identity.",
+   "properties": {"handle": "string", "patrol": "string?"}},
+  "Adult": {"description": "A grown-up volunteer, leader or parent connected to the troop.",
+   "properties": {"fullname": "string", "phone": "string?"}, "identities": ["phone"]},
+  "Sponsorship": {"description": "An adult's standing toward a scout: their guardian, or the counselor who teaches them a badge.",
+   "properties": {"adult": "Adult", "scout": "Scout", "kind": ["guardian", "counselor"]},
+   "relation": {"from": "adult", "to": "scout", "label": "kind", "phrasing": "{from} is the {label} of {to}",
+    "labels": {"guardian": {"forward": ["guardian", "parent"], "reverse": ["family"]},
+               "counselor": {"forward": ["counselor", "badge counselor"], "reverse": ["counselors"]}}}},
+  "Pairing": {"description": "How two scouts are paired in the patrol: one leads the other, or they are buddies on the water.",
+   "properties": {"scout": "Scout", "partner": "Scout", "bond": ["leader", "buddy"]},
+   "relation": {"from": "scout", "to": "partner", "label": "bond", "phrasing": "{from} has {to} as {label}",
+    "labels": {"leader": {"forward": ["leader", "patrol leader"], "reverse": ["juniors"]},
+               "buddy": {"forward": ["buddy", "swim buddy"]}}}},
+  "Trip": {"description": "A troop outing. organizer runs it, driver takes scouts there, first_aider covers first aid; phase is proposed, confirmed, done or called_off.",
+   "properties": {"destination": "string", "organizer": "Adult", "driver": "Adult?", "first_aider": "Adult?",
+    "phase": ["proposed", "confirmed", "done", "called_off"], "permission_slips": "integer?", "overnight": "boolean?", "gear_note": "string?"},
+   "absences": {"overnight": "overnight_unrecorded"}},
+  "Advancement": {"description": "A scout's progress on one badge. complete stays empty until completion is recorded.",
+   "properties": {"badge": "string", "scout": "Scout", "signed_off_by": "Adult?", "requirements_left": "integer?", "complete": "boolean?"},
+   "absences": {"complete": "no_completion_record"}}
+ },
+ "entities": {
+  "amaru": {"model": "Scout", "name": "Amaru Quispe"},
+  "amaru_c": {"model": "Scout", "name": "Amaru Condori"},
+  "lior": {"model": "Scout", "name": "Lior Ben-Ami"},
+  "thandi": {"model": "Scout", "name": "Thandiwe Nkosi"},
+  "kenji": {"model": "Scout", "name": "Kenji Watanabe"},
+  "greta": {"model": "Adult", "name": "Greta Holmqvist"},
+  "rahim": {"model": "Adult", "name": "Rahim Chowdhury", "fields": {"phone": "07911 302 448"}},
+  "mele": {"model": "Adult", "name": "Mele Fifita"},
+  "desmond": {"model": "Adult", "name": "Desmond Achterberg"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Greta Holmqvist: I'm organising the Kinder Ridge campout as a confirmed trip, with Rahim Chowdhury driving and 12 permission slips in.",
+   "mentions": [["Greta Holmqvist", "greta"], ["I", "greta", "ref"], ["Rahim Chowdhury", "rahim"]],
+   "facts": [
+    {"model": "Trip", "in": "I'm organising the Kinder Ridge campout as a confirmed trip", "fields": {"destination": "Kinder Ridge", "organizer": "greta", "driver": "rahim", "phase": "confirmed", "permission_slips": 12}, "act": "assert"}]},
+  {"id": "m02", "text": "Kenji Watanabe is Lior's patrol leader, and Lior is Thandiwe Nkosi's swim buddy.",
+   "mentions": [["Kenji Watanabe", "kenji"], ["Lior", "lior"], ["Lior", "lior"], ["Thandiwe Nkosi", "thandi"]],
+   "facts": [
+    {"model": "Pairing", "in": "Kenji Watanabe is Lior's patrol leader", "from": "lior", "to": "kenji", "label": "leader", "act": "assert"},
+    {"model": "Pairing", "in": "Lior is Thandiwe Nkosi's swim buddy", "from": "thandi", "to": "lior", "label": "buddy", "act": "assert"}]},
+  {"id": "m03", "text": "Rahim Chowdhury: Thandiwe is my daughter, so I'm her guardian on the form.",
+   "mentions": [["Rahim Chowdhury", "rahim"], ["Thandiwe", "thandi"], ["my", "rahim", "ref"], ["I", "rahim", "ref"], ["her", "thandi", "ref"]],
+   "facts": [
+    {"model": "Sponsorship", "in": "so I'm her guardian on the form", "from": "rahim", "to": "thandi", "label": "guardian", "act": "assert"}]},
+  {"id": "m04", "text": "Mele Fifita: Amaru Quispe and Amaru Condori both turned up without tents. Amaru said he would share with Kenji.",
+   "mentions": [["Mele Fifita", "mele"], ["Amaru Quispe", "amaru"], ["Amaru Condori", "amaru_c"], ["Amaru", "amaru", "?"], ["he", "?", "ref"], ["Kenji", "kenji"]],
+   "facts": []},
+  {"id": "m05", "text": "Desmond Achterberg signed off Kenji Watanabe's first aid badge last night, so it is complete.",
+   "mentions": [["Desmond Achterberg", "desmond"], ["Kenji Watanabe", "kenji"]],
+   "facts": [
+    {"model": "Advancement", "in": "Desmond Achterberg signed off Kenji Watanabe's first aid badge last night", "fields": {"badge": "first aid", "scout": "kenji", "signed_off_by": "desmond", "complete": true}, "act": "assert"}]},
+  {"id": "m06", "text": "Mele Fifita: I'm not Lior's badge counselor for cooking, Desmond is.",
+   "mentions": [["Mele Fifita", "mele"], ["I", "mele", "ref"], ["Lior", "lior"], ["Desmond", "desmond"]],
+   "facts": [
+    {"model": "Sponsorship", "in": "I'm not Lior's badge counselor for cooking", "from": "mele", "to": "lior", "label": "counselor", "act": "assert", "deny": true},
+    {"model": "Sponsorship", "in": "Desmond is.", "from": "desmond", "to": "lior", "label": "counselor", "act": "assert"}]},
+  {"id": "m07", "text": "Thandiwe Nkosi told the patrol: \"Greta Holmqvist is my counselor for orienteering.\" She looked proud.",
+   "mentions": [["Thandiwe Nkosi", "thandi"], ["Greta Holmqvist", "greta"], ["my", "thandi", "ref"], ["She", "thandi", "ref"]],
+   "quotes": [["Greta Holmqvist is my counselor for orienteering.", "thandi"]],
+   "facts": [
+    {"model": "Sponsorship", "in": "Greta Holmqvist is my counselor for orienteering.", "from": "greta", "to": "thandi", "label": "counselor", "act": "assert"}]},
+  {"id": "m08", "text": "I wrote \"two scouts per canoe, no exceptions\" in the trip notes and Desmond Achterberg agreed.",
+   "mentions": [["I", "none", "ref"], ["Desmond Achterberg", "desmond"]],
+   "quotes": [["two scouts per canoe, no exceptions", "author"]],
+   "facts": []},
+  {"id": "m09", "text": "Desmond Achterberg: I'd maybe organise a Harwick Lakes trip in spring, with Mele as first aider.",
+   "mentions": [["Desmond Achterberg", "desmond"], ["I", "desmond", "ref"], ["Mele", "mele"]],
+   "facts": [
+    {"model": "Trip", "in": "I'd maybe organise a Harwick Lakes trip in spring", "fields": {"destination": "Harwick Lakes", "organizer": "desmond", "first_aider": "mele", "phase": "proposed"}, "act": "draft"}]},
+  {"id": "m10", "text": "If Kenji passes his swim test, Amaru Quispe will be his swim buddy.",
+   "mentions": [["Kenji", "kenji"], ["his", "kenji", "ref"], ["Amaru Quispe", "amaru"], ["his", "kenji", "ref"]],
+   "facts": [
+    {"model": "Pairing", "in": "Amaru Quispe will be his swim buddy", "from": "kenji", "to": "amaru", "label": "buddy", "act": "condition"}]},
+  {"id": "m11", "text": "Lior Ben-Ami said that his camping badge still has 3 requirements left.",
+   "mentions": [["Lior Ben-Ami", "lior"], ["his", "lior", "ref"]],
+   "facts": [
+    {"model": "Advancement", "in": "Lior Ben-Ami said that his camping badge still has 3 requirements left.", "fields": {"badge": "camping", "scout": "lior", "requirements_left": 3}, "act": "report"}]},
+  {"id": "m12", "text": "The Brackenfold camp was done last weekend as an overnight: organised by Mele Fifita, driven by Desmond Achterberg, with Rahim Chowdhury as first aider and 18 slips, and the gear list said bring spare tent pegs.",
+   "mentions": [["Mele Fifita", "mele"], ["Desmond Achterberg", "desmond"], ["Rahim Chowdhury", "rahim"]],
+   "facts": [
+    {"model": "Trip", "in": "The Brackenfold camp was done last weekend as an overnight", "fields": {"destination": "Brackenfold", "organizer": "mele", "driver": "desmond", "first_aider": "rahim", "phase": "done", "permission_slips": 18, "overnight": true, "gear_note": "bring spare tent pegs"}, "act": "assert"}]},
+  {"id": "m13", "text": "Hi Greta, please note I am not Kenji Watanabe's guardian, his aunt Mele Fifita is. Thanks, Rahim",
+   "mentions": [["Greta", "greta"], ["I", "rahim", "ref"], ["Kenji Watanabe", "kenji"], ["his", "kenji", "ref"], ["Mele Fifita", "mele"], ["Rahim", "rahim"]],
+   "facts": [
+    {"model": "Sponsorship", "in": "I am not Kenji Watanabe's guardian", "from": "rahim", "to": "kenji", "label": "guardian", "act": "assert", "deny": true},
+    {"model": "Sponsorship", "in": "his aunt Mele Fifita is", "from": "mele", "to": "kenji", "label": "guardian", "act": "assert"}]},
+  {"id": "m14", "text": "Kenji Watanabe: Desmond, can you sign off my knots badge on Thursday?",
+   "mentions": [["Kenji Watanabe", "kenji"], ["Desmond", "desmond"], ["my", "kenji", "ref"]],
+   "facts": [
+    {"model": "Advancement", "in": "Desmond, can you sign off my knots badge on Thursday?", "fields": {"badge": "knots", "scout": "kenji", "signed_off_by": "desmond"}, "act": "request"}]},
+  {"id": "m15", "text": "Amaru Condori: People keep handing me the other Amaru's kit. Amaru Quispe has Kenji as patrol leader, not me.",
+   "mentions": [["Amaru Condori", "amaru_c"], ["me", "amaru_c", "ref"], ["Amaru", "amaru"], ["Amaru Quispe", "amaru"], ["Kenji", "kenji"], ["me", "amaru_c", "ref"]],
+   "facts": [
+    {"model": "Pairing", "in": "Amaru Quispe has Kenji as patrol leader", "from": "amaru", "to": "kenji", "label": "leader", "act": "assert"},
+    {"model": "Pairing", "in": "not me", "from": "amaru_c", "to": "kenji", "label": "leader", "act": "assert", "deny": true}]},
+  {"id": "m16", "text": "Mele Fifita has called off the Okehollow canoe trip she organised; only 4 slips came back.",
+   "mentions": [["Mele Fifita", "mele"], ["she", "mele", "ref"]],
+   "facts": [
+    {"model": "Trip", "in": "Mele Fifita has called off the Okehollow canoe trip she organised", "fields": {"destination": "Okehollow", "organizer": "mele", "phase": "called_off", "permission_slips": 4}, "act": "assert"}]},
+  {"id": "m17", "text": "Minutes: Desmond Achterberg will be Amaru Condori's counselor for pioneering. Thandiwe Nkosi becomes Kenji's patrol leader in the autumn.",
+   "mentions": [["Desmond Achterberg", "desmond"], ["Amaru Condori", "amaru_c"], ["Thandiwe Nkosi", "thandi"], ["Kenji", "kenji"]],
+   "facts": [
+    {"model": "Sponsorship", "in": "Desmond Achterberg will be Amaru Condori's counselor for pioneering.", "from": "desmond", "to": "amaru_c", "label": "counselor", "act": "plan"},
+    {"model": "Pairing", "in": "Thandiwe Nkosi becomes Kenji's patrol leader in the autumn.", "from": "kenji", "to": "thandi", "label": "leader", "act": "plan"}]},
+  {"id": "m18", "text": "Thandiwe Nkosi's orienteering badge is not complete yet; Thandiwe has 2 requirements left.",
+   "mentions": [["Thandiwe Nkosi", "thandi"], ["Thandiwe", "thandi"]],
+   "facts": [
+    {"model": "Advancement", "in": "Thandiwe Nkosi's orienteering badge is not complete yet", "fields": {"badge": "orienteering", "scout": "thandi", "complete": false, "requirements_left": 2}, "act": "assert"}]},
+  {"id": "m19", "text": "Lior Ben-Ami mentioned that Rahim Chowdhury is his badge counselor for climbing.",
+   "mentions": [["Lior Ben-Ami", "lior"], ["Rahim Chowdhury", "rahim"], ["his", "lior", "ref"]],
+   "facts": [
+    {"model": "Sponsorship", "in": "Rahim Chowdhury is his badge counselor for climbing.", "from": "rahim", "to": "lior", "label": "counselor", "act": "report"}]}
+ ],
+ "questions": [
+  {"q": "Who is Lior Ben-Ami's patrol leader?", "speaker": null, "cypher": "MATCH (n0:Scout)-[:leader]->(n1:Scout) WHERE n0.handle = 'Lior Ben-Ami' RETURN n1.handle AS handle"},
+  {"q": "Who are my juniors in the patrol?", "speaker": "kenji", "cypher": "MATCH (n0:Scout)-[:juniors]->(n1:Scout) WHERE id(n0) = $speaker RETURN n1.handle AS handle"},
+  {"q": "Who is my swim buddy?", "speaker": "thandi", "cypher": "MATCH (n0:Scout)-[:buddy]->(n1:Scout) WHERE id(n0) = $speaker RETURN n1.handle AS handle"},
+  {"q": "Whose guardian am I?", "speaker": "rahim", "cypher": "MATCH (n0:Adult)-[:guardian]->(n1:Scout) WHERE id(n0) = $speaker RETURN n1.handle AS handle"},
+  {"q": "Who are my counselors?", "speaker": "lior", "cypher": "MATCH (n0:Scout)-[:counselors]->(n1:Adult) WHERE id(n0) = $speaker RETURN n1.fullname AS fullname"},
+  {"q": "Who is in Kenji Watanabe's family?", "speaker": null, "cypher": "MATCH (n0:Scout)-[:family]->(n1:Adult) WHERE n0.handle = 'Kenji Watanabe' RETURN n1.fullname AS fullname"},
+  {"q": "How many trips are there?", "speaker": null, "cypher": "MATCH (n0:Trip) RETURN count(n0) AS count"},
+  {"q": "Which trips did Mele Fifita organise?", "speaker": null, "cypher": "MATCH (n0:Adult)<-[:organizer]-(n1:Trip) WHERE n0.fullname = 'Mele Fifita' RETURN n1.destination AS destination"},
+  {"q": "Which trips am I driving?", "speaker": "desmond", "cypher": "MATCH (n0:Adult)<-[:driver]-(n1:Trip) WHERE id(n0) = $speaker RETURN n1.destination AS destination"},
+  {"q": "How many slips came back for Brackenfold?", "speaker": null, "cypher": "MATCH (n0:Trip) WHERE n0.destination = 'Brackenfold' RETURN n0.permission_slips AS permission_slips"},
+  {"q": "Is there a record that Harwick Lakes is an overnight trip?", "speaker": null, "cypher": "MATCH (n0:Trip) WHERE n0.destination = 'Harwick Lakes' RETURN coalesce(n0.overnight, false) AS overnight"},
+  {"q": "Is Thandiwe Nkosi's badge complete?", "speaker": null, "cypher": "MATCH (n0:Scout)<-[:scout]-(n1:Advancement) WHERE n0.handle = 'Thandiwe Nkosi' RETURN n1.complete AS complete"},
+  {"q": "Which badges did Desmond Achterberg sign off?", "speaker": null, "cypher": "MATCH (n0:Adult)<-[:signed_off_by]-(n1:Advancement) WHERE n0.fullname = 'Desmond Achterberg' RETURN n1.badge AS badge"},
+  {"q": "What badge and requirements left does each advancement show?", "speaker": null, "cypher": "MATCH (n0:Advancement) RETURN n0.badge AS badge, n0.requirements_left AS requirements_left"},
+  {"q": "What is Rahim Chowdhury's phone number?", "speaker": null, "cypher": "MATCH (n0:Adult) WHERE n0.fullname = 'Rahim Chowdhury' RETURN n0.phone AS phone"},
+  {"q": "What was the gear note for Brackenfold?", "speaker": null, "cypher": "MATCH (n0:Trip) WHERE n0.destination = 'Brackenfold' RETURN n0.gear_note AS gear_note"}
+ ]
+}

@@ -1,0 +1,151 @@
+{
+ "domain": "dental_practice",
+ "models": {
+  "Patient": {"description": "A person registered with the practice for care. A first name alone is not an identity.",
+   "properties": {"name": "string", "phone": "string?", "date_of_birth": "string?"}},
+  "Clinician": {"description": "A dentist, hygienist or dental nurse working at the practice.",
+   "properties": {"name": "string", "email": "string?", "registration": "string?"}, "identities": ["email"]},
+  "CareTeam": {"description": "Which clinician looks after a patient as their dentist or their hygienist.\nTreating a patient once does not make a clinician their dentist.",
+   "properties": {"patient": "Patient", "clinician": "Clinician", "role": ["dentist", "hygienist"]},
+   "relation": {"from": "patient", "to": "clinician", "label": "role", "phrasing": "{to} looks after {from} as {label}",
+    "labels": {"dentist": {"forward": ["dentist", "sees", "treating dentist"], "reverse": ["patient"]},
+               "hygienist": {"forward": ["hygienist", "cleans", "cleaning"], "reverse": []}}}},
+  "Cover": {"description": "A working arrangement between clinicians: one supervises another, or stands in as their locum.",
+   "properties": {"covered": "Clinician", "other": "Clinician", "arrangement": ["supervisor", "locum"]},
+   "relation": {"from": "covered", "to": "other", "label": "arrangement", "phrasing": "{to} stands in as {label} for {from}",
+    "labels": {"supervisor": {"forward": ["supervisor", "supervises", "oversees"], "reverse": ["supervisee"]},
+               "locum": {"forward": ["locum", "covering for", "cover"], "reverse": ["covered"]}}}},
+  "Treatment": {"description": "A procedure for a patient. prescribed_by decided on it, performed_by carries it out, assisted_by is the nurse at the chair. A wish for treatment is not a booking.",
+   "properties": {"procedure": "string", "patient": "Patient?", "prescribed_by": "Clinician?", "performed_by": "Clinician?", "assisted_by": "Clinician?",
+    "state": ["scheduled", "done", "postponed"], "anaesthetic": "boolean?", "teeth": "integer?", "notes": "string?"},
+   "absences": {"anaesthetic": "no_anaesthetic_record"}},
+  "LabOrder": {"description": "An appliance ordered from the dental lab. ordered_by placed the order, fitted_by fits it. fitted stays empty until a fitting is recorded.",
+   "properties": {"item": "string", "patient": "Patient?", "ordered_by": "Clinician?", "fitted_by": "Clinician?", "cost_pounds": "integer?", "fitted": "boolean?"},
+   "absences": {"fitted": "no_fitting_record"}}
+ },
+ "entities": {
+  "siobhan": {"model": "Clinician", "name": "Siobhan Mulcahy"},
+  "arjun_m": {"model": "Clinician", "name": "Arjun Mehta-Rao"},
+  "arjun_p": {"model": "Clinician", "name": "Arjun Raghavan"},
+  "folake": {"model": "Clinician", "name": "Folake Adebayo"},
+  "mateus": {"model": "Clinician", "name": "Mateus Carvalho", "fields": {"email": "mateus@carvalho.example"}},
+  "hana": {"model": "Clinician", "name": "Hana Novakova"},
+  "bertrand": {"model": "Patient", "name": "Bertrand Leclair"},
+  "zainab_h": {"model": "Patient", "name": "Zainab Karam"},
+  "zainab_o": {"model": "Patient", "name": "Zainab Amankwah"},
+  "nomvula": {"model": "Patient", "name": "Nomvula Dlamini"},
+  "ilse": {"model": "Patient", "name": "Ilse Brandt"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Siobhan Mulcahy: Zainab Karam is booked for a scale and polish on Tuesday. I'll be her hygienist, and Arjun Raghavan is her dentist.",
+   "mentions": [["Siobhan Mulcahy", "siobhan"], ["Zainab Karam", "zainab_h"], ["I", "siobhan", "ref"], ["her", "zainab_h", "ref"], ["Arjun Raghavan", "arjun_p"], ["her", "zainab_h", "ref"]],
+   "facts": [
+    {"model": "Treatment", "in": "Zainab Karam is booked for a scale and polish on Tuesday.", "fields": {"procedure": "scale and polish", "patient": "zainab_h", "state": "scheduled"}, "act": "assert"},
+    {"model": "CareTeam", "in": "I'll be her hygienist", "from": "zainab_h", "to": "siobhan", "label": "hygienist", "act": "plan"},
+    {"model": "CareTeam", "in": "Arjun Raghavan is her dentist", "from": "zainab_h", "to": "arjun_p", "label": "dentist", "act": "assert"}]},
+  {"id": "m02", "text": "Folake Adebayo wrote: \"I am no longer Ilse's dentist. Mateus Carvalho sees her now.\"",
+   "mentions": [["Folake Adebayo", "folake"], ["I", "folake", "ref"], ["Ilse", "ilse"], ["Mateus Carvalho", "mateus"], ["her", "ilse", "ref"]],
+   "quotes": [["I am no longer Ilse's dentist. Mateus Carvalho sees her now.", "folake"]],
+   "facts": [
+    {"model": "CareTeam", "in": "I am no longer Ilse's dentist.", "from": "ilse", "to": "folake", "label": "dentist", "act": "assert", "deny": true},
+    {"model": "CareTeam", "in": "Mateus Carvalho sees her now.", "from": "ilse", "to": "mateus", "label": "dentist", "act": "assert"}]},
+  {"id": "m03", "text": "Hi Hana,\nBertrand Leclair had 2 fillings done today under local anaesthetic, with Arjun Mehta-Rao doing the work.\nThanks, Folake",
+   "mentions": [["Hana", "hana"], ["Bertrand Leclair", "bertrand"], ["Arjun Mehta-Rao", "arjun_m"], ["Folake", "folake"]],
+   "facts": [
+    {"model": "Treatment", "in": "Bertrand Leclair had 2 fillings done today", "fields": {"procedure": "fillings", "patient": "bertrand", "performed_by": "arjun_m", "state": "done", "anaesthetic": true, "teeth": 2}, "act": "assert"}]},
+  {"id": "m04", "text": "Nomvula Dlamini: Can someone book me in for a crown fitting next week? Arjun Raghavan said he will be my dentist from now on.",
+   "mentions": [["Nomvula Dlamini", "nomvula"], ["me", "nomvula", "ref"], ["Arjun Raghavan", "arjun_p"], ["he", "arjun_p", "ref"], ["my", "nomvula", "ref"]],
+   "facts": [
+    {"model": "Treatment", "in": "Can someone book me in for a crown fitting next week?", "fields": {"procedure": "crown fitting", "patient": "nomvula", "state": "scheduled"}, "act": "request"},
+    {"model": "CareTeam", "in": "Arjun Raghavan said he will be my dentist from now on.", "from": "nomvula", "to": "arjun_p", "label": "dentist", "act": "report"}]},
+  {"id": "m05", "text": "Practice meeting, 2 April: Hana Novakova reported that Ilse Brandt's bridge was ordered from the lab by Mateus Carvalho. Folake Adebayo said she would fit the bridge next month.",
+   "mentions": [["Hana Novakova", "hana"], ["Ilse Brandt", "ilse"], ["Mateus Carvalho", "mateus"], ["Folake Adebayo", "folake"], ["she", "folake", "ref"]],
+   "facts": [
+    {"model": "LabOrder", "in": "Hana Novakova reported that Ilse Brandt's bridge was ordered from the lab by Mateus Carvalho.", "fields": {"item": "bridge", "patient": "ilse", "ordered_by": "mateus"}, "act": "report"},
+    {"model": "LabOrder", "in": "Folake Adebayo said she would fit the bridge next month.", "fields": {"item": "bridge", "fitted_by": "folake"}, "act": "report"}]},
+  {"id": "m06", "text": "Arjun Mehta-Rao and Arjun Raghavan both asked for surgery two on Friday. Raghavan prescribed the root canal for Zainab Karam first, so Mehta-Rao will take surgery three instead.",
+   "mentions": [["Arjun Mehta-Rao", "arjun_m"], ["Arjun Raghavan", "arjun_p"], ["Raghavan", "arjun_p"], ["Zainab Karam", "zainab_h"], ["Mehta-Rao", "arjun_m"]],
+   "facts": [
+    {"model": "Treatment", "in": "Raghavan prescribed the root canal for Zainab Karam first", "fields": {"procedure": "root canal", "patient": "zainab_h", "prescribed_by": "arjun_p", "state": "scheduled"}, "act": "assert"}]},
+  {"id": "m07", "text": "Hana Novakova: Arjun Raghavan rang about the X-ray sensor, and Arjun Mehta-Rao emailed too. Arjun says the engineer comes Thursday.",
+   "mentions": [["Hana Novakova", "hana"], ["Arjun Raghavan", "arjun_p"], ["Arjun Mehta-Rao", "arjun_m"], ["Arjun", "arjun_p", "?"]],
+   "facts": []},
+  {"id": "m08", "text": "Zainab Karam: My sister, Zainab Amankwah, registers on Monday. She will see Siobhan Mulcahy as her hygienist.",
+   "mentions": [["Zainab Karam", "zainab_h"], ["My", "zainab_h", "ref"], ["Zainab Amankwah", "zainab_o"], ["She", "zainab_o", "ref"], ["Siobhan Mulcahy", "siobhan"], ["her", "zainab_o", "ref"]],
+   "facts": [
+    {"model": "CareTeam", "in": "She will see Siobhan Mulcahy as her hygienist.", "from": "zainab_o", "to": "siobhan", "label": "hygienist", "act": "plan"}]},
+  {"id": "m09", "text": "Mateus Carvalho: I see Bertrand and Nomvula on Wednesdays. Hana Novakova is Bertrand's hygienist.",
+   "mentions": [["Mateus Carvalho", "mateus"], ["I", "mateus", "ref"], ["Bertrand", "bertrand"], ["Nomvula", "nomvula"], ["Hana Novakova", "hana"], ["Bertrand", "bertrand"]],
+   "facts": [
+    {"model": "CareTeam", "in": "I see Bertrand and Nomvula on Wednesdays.", "from": "bertrand", "to": "mateus", "label": "dentist", "act": "assert"},
+    {"model": "CareTeam", "in": "I see Bertrand and Nomvula on Wednesdays.", "from": "nomvula", "to": "mateus", "label": "dentist", "act": "assert"},
+    {"model": "CareTeam", "in": "Hana Novakova is Bertrand's hygienist.", "from": "bertrand", "to": "hana", "label": "hygienist", "act": "assert"}]},
+  {"id": "m10", "text": "Rota note: Folake Adebayo is covering for Siobhan Mulcahy next week, and Arjun Mehta-Rao supervises Folake Adebayo and Siobhan Mulcahy alike.",
+   "mentions": [["Folake Adebayo", "folake"], ["Siobhan Mulcahy", "siobhan"], ["Arjun Mehta-Rao", "arjun_m"], ["Folake Adebayo", "folake"], ["Siobhan Mulcahy", "siobhan"]],
+   "facts": [
+    {"model": "Cover", "in": "Rota note: Folake Adebayo is covering for Siobhan Mulcahy next week", "from": "siobhan", "to": "folake", "label": "locum", "act": "plan"},
+    {"model": "Cover", "in": "Arjun Mehta-Rao supervises Folake Adebayo and Siobhan Mulcahy alike", "from": "folake", "to": "arjun_m", "label": "supervisor", "act": "assert"},
+    {"model": "Cover", "in": "Arjun Mehta-Rao supervises Folake Adebayo and Siobhan Mulcahy alike", "from": "siobhan", "to": "arjun_m", "label": "supervisor", "act": "assert"}]},
+  {"id": "m11", "text": "As I told Hana Novakova this morning, \"Ilse Brandt's porcelain crown cost 450 pounds and the lab sent it back twice.\"\nPractice manager",
+   "mentions": [["I", "none", "ref"], ["Hana Novakova", "hana"], ["Ilse Brandt", "ilse"]],
+   "quotes": [["Ilse Brandt's porcelain crown cost 450 pounds and the lab sent it back twice.", "author"]],
+   "facts": [
+    {"model": "LabOrder", "in": "Ilse Brandt's porcelain crown cost 450 pounds", "fields": {"item": "porcelain crown", "patient": "ilse", "cost_pounds": 450}, "act": "assert"}]},
+  {"id": "m12", "text": "Siobhan Mulcahy: I don't clean Bertrand Leclair's teeth any more; Hana Novakova does.",
+   "mentions": [["Siobhan Mulcahy", "siobhan"], ["I", "siobhan", "ref"], ["Bertrand Leclair", "bertrand"], ["Hana Novakova", "hana"]],
+   "facts": [
+    {"model": "CareTeam", "in": "I don't clean Bertrand Leclair's teeth any more", "from": "bertrand", "to": "siobhan", "label": "hygienist", "act": "assert", "deny": true},
+    {"model": "CareTeam", "in": "Hana Novakova does.", "from": "bertrand", "to": "hana", "label": "hygienist", "act": "assert"}]},
+  {"id": "m13", "text": "If the swelling settles, Arjun Mehta-Rao will do an extraction of 1 tooth for Bertrand Leclair on Thursday under local anaesthetic, as Mateus Carvalho prescribed.",
+   "mentions": [["Arjun Mehta-Rao", "arjun_m"], ["Bertrand Leclair", "bertrand"], ["Mateus Carvalho", "mateus"]],
+   "facts": [
+    {"model": "Treatment", "in": "If the swelling settles, Arjun Mehta-Rao will do an extraction", "fields": {"procedure": "extraction", "patient": "bertrand", "performed_by": "arjun_m", "prescribed_by": "mateus", "state": "scheduled", "anaesthetic": true, "teeth": 1, "notes": "the swelling settles"}, "act": "condition"}]},
+  {"id": "m14", "text": "Folake Adebayo: Pencilled in, maybe: a whitening session for Nomvula on Friday, assisted by Hana and prescribed by me.",
+   "mentions": [["Folake Adebayo", "folake"], ["Nomvula", "nomvula"], ["Hana", "hana"], ["me", "folake", "ref"]],
+   "facts": [
+    {"model": "Treatment", "in": "Pencilled in, maybe: a whitening session for Nomvula", "fields": {"procedure": "whitening session", "patient": "nomvula", "assisted_by": "hana", "prescribed_by": "folake", "state": "scheduled"}, "act": "draft"}]},
+  {"id": "m15", "text": "Monday's 3 tooth crown prep for Zainab Karam was postponed because of a cold, Arjun Raghavan confirmed.",
+   "mentions": [["Zainab Karam", "zainab_h"], ["Arjun Raghavan", "arjun_p"]],
+   "facts": [
+    {"model": "Treatment", "in": "Monday's 3 tooth crown prep for Zainab Karam was postponed", "fields": {"procedure": "crown prep", "patient": "zainab_h", "state": "postponed", "teeth": 3, "notes": "a cold"}, "act": "report"}]},
+  {"id": "m16", "text": "Dear Mateus,\nCould you take Ilse Brandt's check-up next Tuesday, without anaesthetic?\nBest,\nSiobhan Mulcahy",
+   "mentions": [["Mateus", "mateus"], ["you", "mateus", "ref"], ["Ilse Brandt", "ilse"], ["Siobhan Mulcahy", "siobhan"]],
+   "facts": [
+    {"model": "Treatment", "in": "Could you take Ilse Brandt's check-up next Tuesday, without anaesthetic?", "fields": {"procedure": "check-up", "patient": "ilse", "performed_by": "mateus", "state": "scheduled", "anaesthetic": false}, "act": "request"}]},
+  {"id": "m17", "text": "Hana Novakova: Ilse Brandt's bridge was fitted by Folake Adebayo yesterday.",
+   "mentions": [["Hana Novakova", "hana"], ["Ilse Brandt", "ilse"], ["Folake Adebayo", "folake"]],
+   "facts": [
+    {"model": "LabOrder", "in": "Ilse Brandt's bridge was fitted by Folake Adebayo yesterday.", "fields": {"item": "bridge", "patient": "ilse", "fitted_by": "folake", "fitted": true}, "act": "assert"}]},
+  {"id": "m18", "text": "Fwd from Arjun Raghavan: \"Zainab Amankwah is my patient now, and I am her dentist until she moves away.\"",
+   "mentions": [["Arjun Raghavan", "arjun_p"], ["Zainab Amankwah", "zainab_o"], ["my", "arjun_p", "ref"], ["I", "arjun_p", "ref"], ["her", "zainab_o", "ref"], ["she", "zainab_o", "ref"]],
+   "quotes": [["Zainab Amankwah is my patient now, and I am her dentist until she moves away.", "arjun_p"]],
+   "facts": [
+    {"model": "CareTeam", "in": "Zainab Amankwah is my patient now", "from": "zainab_o", "to": "arjun_p", "label": "dentist", "act": "assert"}]},
+  {"id": "m19", "text": "I'm Nomvula Dlamini and I won't be seeing Hana Novakova as my hygienist after all.",
+   "mentions": [["I", "nomvula", "ref"], ["Nomvula Dlamini", "nomvula"], ["I", "nomvula", "ref"], ["Hana Novakova", "hana"], ["my", "nomvula", "ref"]],
+   "facts": [
+    {"model": "CareTeam", "in": "I won't be seeing Hana Novakova as my hygienist", "from": "nomvula", "to": "hana", "label": "hygienist", "act": "plan", "deny": true}]},
+  {"id": "m20", "text": "Lab note: Mateus Carvalho ordered a night guard for Zainab Amankwah at 95 pounds; Folake will fit it on Friday.",
+   "mentions": [["Mateus Carvalho", "mateus"], ["Zainab Amankwah", "zainab_o"], ["Folake", "folake"]],
+   "facts": [
+    {"model": "LabOrder", "in": "Lab note: Mateus Carvalho ordered a night guard", "fields": {"item": "night guard", "patient": "zainab_o", "ordered_by": "mateus", "fitted_by": "folake", "cost_pounds": 95}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who is Zainab Karam's dentist?", "speaker": null, "cypher": "MATCH (n0:Patient)-[:dentist]->(n1:Clinician) WHERE n0.name = 'Zainab Karam' RETURN n1.name AS name"},
+  {"q": "Who is Bertrand Leclair's hygienist?", "speaker": null, "cypher": "MATCH (n0:Patient)-[:hygienist]->(n1:Clinician) WHERE n0.name = 'Bertrand Leclair' RETURN n1.name AS name"},
+  {"q": "Who is a patient of mine?", "speaker": "mateus", "cypher": "MATCH (n0:Clinician)-[:patient]->(n1:Patient) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who supervises me?", "speaker": "folake", "cypher": "MATCH (n0:Clinician)-[:supervisor]->(n1:Clinician) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is my locum?", "speaker": "siobhan", "cypher": "MATCH (n0:Clinician)-[:locum]->(n1:Clinician) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "How many treatments are there?", "speaker": null, "cypher": "MATCH (n0:Treatment) RETURN count(n0) AS count"},
+  {"q": "Has the bridge been fitted?", "speaker": null, "cypher": "MATCH (n0:LabOrder) WHERE n0.item = 'bridge' RETURN n0.fitted AS fitted"},
+  {"q": "Is there a record of the night guard being fitted?", "speaker": null, "cypher": "MATCH (n0:LabOrder) WHERE n0.item = 'night guard' RETURN coalesce(n0.fitted, false) AS fitted"},
+  {"q": "Who prescribed treatments for Bertrand Leclair?", "speaker": null, "cypher": "MATCH (n0:Patient)<-[:patient]-(n1:Treatment)-[:prescribed_by]->(n2:Clinician) WHERE n0.name = 'Bertrand Leclair' RETURN n2.name AS name"},
+  {"q": "Which treatments did Arjun Mehta-Rao perform?", "speaker": null, "cypher": "MATCH (n0:Clinician)<-[:performed_by]-(n1:Treatment) WHERE n0.name = 'Arjun Mehta-Rao' RETURN n1.procedure AS procedure"},
+  {"q": "How many teeth did the crown prep involve?", "speaker": null, "cypher": "MATCH (n0:Treatment) WHERE n0.procedure = 'crown prep' RETURN n0.teeth AS teeth"},
+  {"q": "What procedures and states does Zainab Karam have?", "speaker": null, "cypher": "MATCH (n0:Patient)<-[:patient]-(n1:Treatment) WHERE n0.name = 'Zainab Karam' RETURN n1.procedure AS procedure, n1.state AS state"},
+  {"q": "What states are the crown treatments in?", "speaker": null, "cypher": "MATCH (n0:Treatment) WHERE n0.procedure CONTAINS 'crown' RETURN n0.state AS state"},
+  {"q": "Was anaesthetic used for the extraction?", "speaker": null, "cypher": "MATCH (n0:Treatment) WHERE n0.procedure = 'extraction' RETURN n0.anaesthetic AS anaesthetic"},
+  {"q": "Is there a record of anaesthetic for the whitening session?", "speaker": null, "cypher": "MATCH (n0:Treatment) WHERE n0.procedure = 'whitening session' RETURN coalesce(n0.anaesthetic, false) AS anaesthetic"},
+  {"q": "Which items has Mateus Carvalho ordered?", "speaker": null, "cypher": "MATCH (n0:Clinician)<-[:ordered_by]-(n1:LabOrder) WHERE n0.name = 'Mateus Carvalho' RETURN n1.item AS item"}
+ ]
+}

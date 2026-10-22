@@ -1,0 +1,149 @@
+{
+ "domain": "bakery",
+ "models": {
+  "Baker": {"description": "Someone who works in the bakery: baker, apprentice or driver. A first name alone is not an identity.",
+   "properties": {"name": "string", "email": "string?", "shift": "string?"}, "identities": ["email"]},
+  "Recipe": {"description": "A house recipe, known by the name on its card.",
+   "properties": {"name": "string", "origin": "string?"}},
+  "Teamwork": {"description": "A standing tie between two bakers: one trains the other, or one is the other's relief on a shift.",
+   "properties": {"baker": "Baker", "partner": "Baker", "tie": ["trainer", "relief"]},
+   "relation": {"from": "baker", "to": "partner", "label": "tie", "phrasing": "{to} acts as {label} to {from}",
+    "labels": {"trainer": {"forward": ["trainer", "trained", "taught"], "reverse": ["trainee"]},
+               "relief": {"forward": ["relief", "covers for", "fills in for"], "reverse": []}}}},
+  "RecipeCredit": {"description": "Who wrote a recipe and who tested it. Baking from a recipe gives no credit for it.",
+   "properties": {"recipe": "Recipe", "baker": "Baker", "duty": ["author", "tester"]},
+   "relation": {"from": "recipe", "to": "baker", "label": "duty", "phrasing": "{from} credits {to} as {label}",
+    "labels": {"author": {"forward": ["author", "wrote", "created"], "reverse": ["authored"]},
+               "tester": {"forward": ["tester", "tested", "trialled"], "reverse": ["tested"]}}}},
+  "Order": {"description": "An order of baked goods. taken_by wrote it down, baked_by bakes it, delivered_by drives it out. A wish to order is not an order.",
+   "properties": {"item": "string", "recipe": "Recipe?", "taken_by": "Baker?", "baked_by": "Baker?", "delivered_by": "Baker?",
+    "state": ["pending", "baked", "collected", "cancelled"], "gluten_free": "boolean?", "quantity": "integer?", "note": "string?"},
+   "absences": {"gluten_free": "no_allergen_record"}},
+  "OvenFault": {"description": "A fault found on a piece of equipment. reported_by noticed it, fixer repairs it. fixed stays empty until a repair is recorded.",
+   "properties": {"fault": "string", "oven": "string?", "reported_by": "Baker?", "fixer": "Baker?", "fixed": "boolean?"},
+   "absences": {"fixed": "no_repair_record"}}
+ },
+ "entities": {
+  "henrike": {"model": "Baker", "name": "Henrike Vos"},
+  "olusegun_b": {"model": "Baker", "name": "Olusegun Bakare"},
+  "olusegun_a": {"model": "Baker", "name": "Olusegun Ajayi"},
+  "paloma": {"model": "Baker", "name": "Paloma Iturbe"},
+  "paloma_r": {"model": "Baker", "name": "Paloma Reyes"},
+  "tamsin": {"model": "Baker", "name": "Tamsin Rhydderch"},
+  "kwame": {"model": "Baker", "name": "Kwame Asante", "fields": {"email": "kwame@asante.example"}},
+  "noor": {"model": "Baker", "name": "Noor Haddad"},
+  "jiri": {"model": "Baker", "name": "Jiří Novák"},
+  "rye": {"model": "Recipe", "name": "Rye Sourdough"},
+  "cardamom": {"model": "Recipe", "name": "Cardamom Bun"},
+  "seeded": {"model": "Recipe", "name": "Seeded Batch"},
+  "tart": {"model": "Recipe", "name": "Treacle Tart"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Henrike Vos: I took an order for 40 cardamom buns from the café, and Olusegun Bakare will bake them tonight.",
+   "mentions": [["Henrike Vos", "henrike"], ["I", "henrike", "ref"], ["Olusegun Bakare", "olusegun_b"]],
+   "facts": [
+    {"model": "Order", "in": "I took an order for 40 cardamom buns", "fields": {"item": "cardamom buns", "quantity": 40, "taken_by": "henrike", "baked_by": "olusegun_b", "state": "pending"}, "act": "assert"}]},
+  {"id": "m02", "text": "Paloma Iturbe wrote: \"I did not create the Rye Sourdough recipe. Tamsin Rhydderch wrote it last winter.\"",
+   "mentions": [["Paloma Iturbe", "paloma"], ["I", "paloma", "ref"], ["Rye Sourdough", "rye"], ["Tamsin Rhydderch", "tamsin"], ["it", "rye", "ref"]],
+   "quotes": [["I did not create the Rye Sourdough recipe. Tamsin Rhydderch wrote it last winter.", "paloma"]],
+   "facts": [
+    {"model": "RecipeCredit", "in": "I did not create the Rye Sourdough recipe.", "from": "rye", "to": "paloma", "label": "author", "act": "assert", "deny": true},
+    {"model": "RecipeCredit", "in": "Tamsin Rhydderch wrote it last winter.", "from": "rye", "to": "tamsin", "label": "author", "act": "assert"}]},
+  {"id": "m03", "text": "Hi team,\nThe café collected 12 seeded loaves this morning, all gluten free as asked.\nCheers, Noor",
+   "mentions": [["Noor", "noor"]],
+   "facts": [
+    {"model": "Order", "in": "The café collected 12 seeded loaves this morning", "fields": {"item": "seeded loaves", "quantity": 12, "state": "collected", "gluten_free": true}, "act": "assert"}]},
+  {"id": "m04", "text": "Kwame Asante: Could someone bake 3 treacle tarts for Saturday? Noor Haddad said she has trained me on the lattice top.",
+   "mentions": [["Kwame Asante", "kwame"], ["Noor Haddad", "noor"], ["she", "noor", "ref"], ["me", "kwame", "ref"]],
+   "facts": [
+    {"model": "Order", "in": "Could someone bake 3 treacle tarts for Saturday?", "fields": {"item": "treacle tarts", "quantity": 3, "state": "pending"}, "act": "request"},
+    {"model": "Teamwork", "in": "Noor Haddad said she has trained me", "from": "kwame", "to": "noor", "label": "trainer", "act": "report"}]},
+  {"id": "m05", "text": "Shift log, 5 May: Tamsin Rhydderch reported that the deck oven has a cracked door seal. Jiří Novák said he would replace the cracked door seal on Monday.",
+   "mentions": [["Tamsin Rhydderch", "tamsin"], ["Jiří Novák", "jiri"], ["he", "jiri", "ref"]],
+   "facts": [
+    {"model": "OvenFault", "in": "Tamsin Rhydderch reported that the deck oven has a cracked door seal.", "fields": {"fault": "cracked door seal", "oven": "deck oven", "reported_by": "tamsin"}, "act": "report"},
+    {"model": "OvenFault", "in": "Jiří Novák said he would replace the cracked door seal on Monday.", "fields": {"fault": "cracked door seal", "fixer": "jiri"}, "act": "report"}]},
+  {"id": "m06", "text": "Olusegun Bakare and Olusegun Ajayi both asked to bake the Cardamom Bun batch. Bakare took the order for 60 buns first, so Ajayi will work the morning shift instead.",
+   "mentions": [["Olusegun Bakare", "olusegun_b"], ["Olusegun Ajayi", "olusegun_a"], ["Cardamom Bun", "cardamom"], ["Bakare", "olusegun_b"], ["Ajayi", "olusegun_a"]],
+   "facts": [
+    {"model": "Order", "in": "Bakare took the order for 60 buns first", "fields": {"item": "buns", "quantity": 60, "taken_by": "olusegun_b", "state": "pending"}, "act": "assert"}]},
+  {"id": "m07", "text": "Henrike Vos: Olusegun Bakare phoned about the flour, and Olusegun Ajayi texted too. Olusegun says the mill is late again.",
+   "mentions": [["Henrike Vos", "henrike"], ["Olusegun Bakare", "olusegun_b"], ["Olusegun Ajayi", "olusegun_a"], ["Olusegun", "olusegun_b", "?"]],
+   "facts": []},
+  {"id": "m08", "text": "Paloma Iturbe: Our new apprentice, Paloma Reyes, starts on Monday. I will be her trainer for the first month.",
+   "mentions": [["Paloma Iturbe", "paloma"], ["Paloma Reyes", "paloma_r"], ["I", "paloma", "ref"], ["her", "paloma_r", "ref"]],
+   "facts": [
+    {"model": "Teamwork", "in": "I will be her trainer for the first month.", "from": "paloma_r", "to": "paloma", "label": "trainer", "act": "plan"}]},
+  {"id": "m09", "text": "Kwame Asante: I tested the Treacle Tart recipe for Noor and Tamsin. Noor Haddad is Tamsin's relief on Sundays.",
+   "mentions": [["Kwame Asante", "kwame"], ["I", "kwame", "ref"], ["Treacle Tart", "tart"], ["Noor", "noor"], ["Tamsin", "tamsin"], ["Noor Haddad", "noor"], ["Tamsin", "tamsin"]],
+   "facts": [
+    {"model": "RecipeCredit", "in": "I tested the Treacle Tart recipe for Noor and Tamsin.", "from": "tart", "to": "kwame", "label": "tester", "act": "assert"},
+    {"model": "Teamwork", "in": "Noor Haddad is Tamsin's relief on Sundays.", "from": "tamsin", "to": "noor", "label": "relief", "act": "assert"}]},
+  {"id": "m10", "text": "Note on the board: the proving cabinet has a broken thermostat, reported by Henrike Vos. Nobody has fixed it yet.",
+   "mentions": [["Henrike Vos", "henrike"]],
+   "facts": [
+    {"model": "OvenFault", "in": "the proving cabinet has a broken thermostat, reported by Henrike Vos.", "fields": {"fault": "broken thermostat", "oven": "proving cabinet", "reported_by": "henrike"}, "act": "assert"}]},
+  {"id": "m11", "text": "As I told Kwame Asante this morning, \"The rack oven has a faulty fan and stays off until Thursday.\"\nThe night baker",
+   "mentions": [["I", "none", "ref"], ["Kwame Asante", "kwame"]],
+   "quotes": [["The rack oven has a faulty fan and stays off until Thursday.", "author"]],
+   "facts": [
+    {"model": "OvenFault", "in": "The rack oven has a faulty fan and stays off until Thursday.", "fields": {"fault": "faulty fan", "oven": "rack oven"}, "act": "assert"}]},
+  {"id": "m12", "text": "Noor Haddad: I don't test the Seeded Batch recipe any more; Jiří Novák does.",
+   "mentions": [["Noor Haddad", "noor"], ["I", "noor", "ref"], ["Seeded Batch", "seeded"], ["Jiří Novák", "jiri"]],
+   "facts": [
+    {"model": "RecipeCredit", "in": "I don't test the Seeded Batch recipe any more", "from": "seeded", "to": "noor", "label": "tester", "act": "assert", "deny": true},
+    {"model": "RecipeCredit", "in": "Jiří Novák does.", "from": "seeded", "to": "jiri", "label": "tester", "act": "assert"}]},
+  {"id": "m13", "text": "If the flour arrives in time, Tamsin Rhydderch will bake 24 rye loaves and Kwame Asante will deliver them to the market.",
+   "mentions": [["Tamsin Rhydderch", "tamsin"], ["Kwame Asante", "kwame"]],
+   "facts": [
+    {"model": "Order", "in": "If the flour arrives in time, Tamsin Rhydderch will bake 24 rye loaves", "fields": {"item": "rye loaves", "quantity": 24, "baked_by": "tamsin", "delivered_by": "kwame", "state": "pending", "note": "the flour arrives in time"}, "act": "condition"}]},
+  {"id": "m14", "text": "Jiří Novák: Pencilled in, maybe: Henrike bakes 8 trays of Cardamom Bun for the school fair, taken by me.",
+   "mentions": [["Jiří Novák", "jiri"], ["Henrike", "henrike"], ["Cardamom Bun", "cardamom"], ["me", "jiri", "ref"]],
+   "facts": [
+    {"model": "Order", "in": "Pencilled in, maybe: Henrike bakes 8 trays", "fields": {"item": "trays", "recipe": "cardamom", "quantity": 8, "baked_by": "henrike", "taken_by": "jiri", "state": "pending"}, "act": "draft"}]},
+  {"id": "m15", "text": "Saturday's order of 30 sourdough rolls was cancelled because the café closed, Olusegun Ajayi confirmed.",
+   "mentions": [["Olusegun Ajayi", "olusegun_a"]],
+   "facts": [
+    {"model": "Order", "in": "Saturday's order of 30 sourdough rolls was cancelled", "fields": {"item": "sourdough rolls", "quantity": 30, "state": "cancelled", "note": "the café closed"}, "act": "report"}]},
+  {"id": "m16", "text": "Dear Noor,\nCould you deliver the 2 wholemeal loaves that Paloma Iturbe baked to the library on Friday?\nBest,\nKwame Asante",
+   "mentions": [["Noor", "noor"], ["you", "noor", "ref"], ["Paloma Iturbe", "paloma"], ["Kwame Asante", "kwame"]],
+   "facts": [
+    {"model": "Order", "in": "Could you deliver the 2 wholemeal loaves", "fields": {"item": "wholemeal loaves", "quantity": 2, "delivered_by": "noor", "baked_by": "paloma", "state": "baked"}, "act": "request"}]},
+  {"id": "m17", "text": "Henrike Vos: The proving cabinet's broken thermostat was fixed by Jiří Novák yesterday.",
+   "mentions": [["Henrike Vos", "henrike"], ["Jiří Novák", "jiri"]],
+   "facts": [
+    {"model": "OvenFault", "in": "The proving cabinet's broken thermostat was fixed by Jiří Novák yesterday.", "fields": {"fault": "broken thermostat", "oven": "proving cabinet", "fixer": "jiri", "fixed": true}, "act": "assert"}]},
+  {"id": "m18", "text": "Fwd from Tamsin Rhydderch: \"Paloma Reyes is my new trainee, and I am her trainer until the autumn.\"",
+   "mentions": [["Tamsin Rhydderch", "tamsin"], ["Paloma Reyes", "paloma_r"], ["my", "tamsin", "ref"], ["I", "tamsin", "ref"], ["her", "paloma_r", "ref"]],
+   "quotes": [["Paloma Reyes is my new trainee, and I am her trainer until the autumn.", "tamsin"]],
+   "facts": [
+    {"model": "Teamwork", "in": "Paloma Reyes is my new trainee", "from": "paloma_r", "to": "tamsin", "label": "trainer", "act": "assert"}]},
+  {"id": "m19", "text": "I'm Jiří Novák and I won't be Noor's relief this weekend after all.",
+   "mentions": [["I", "jiri", "ref"], ["Jiří Novák", "jiri"], ["I", "jiri", "ref"], ["Noor", "noor"]],
+   "facts": [
+    {"model": "Teamwork", "in": "I won't be Noor's relief this weekend", "from": "noor", "to": "jiri", "label": "relief", "act": "plan", "deny": true}]},
+  {"id": "m20", "text": "Bake sheet: Olusegun Ajayi baked 50 cardamom buns from the Cardamom Bun recipe for the hotel; Kwame will deliver them at noon.",
+   "mentions": [["Olusegun Ajayi", "olusegun_a"], ["Cardamom Bun", "cardamom"], ["Kwame", "kwame"]],
+   "facts": [
+    {"model": "Order", "in": "Bake sheet: Olusegun Ajayi baked 50 cardamom buns", "fields": {"item": "cardamom buns", "recipe": "cardamom", "quantity": 50, "baked_by": "olusegun_a", "delivered_by": "kwame", "state": "baked"}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who wrote the Rye Sourdough recipe?", "speaker": null, "cypher": "MATCH (n0:Recipe)-[:author]->(n1:Baker) WHERE n0.name = 'Rye Sourdough' RETURN n1.name AS name"},
+  {"q": "Who tested the Seeded Batch?", "speaker": null, "cypher": "MATCH (n0:Recipe)-[:tester]->(n1:Baker) WHERE n0.name = 'Seeded Batch' RETURN n1.name AS name"},
+  {"q": "Which recipes have I tested?", "speaker": "kwame", "cypher": "MATCH (n0:Baker)-[:tested]->(n1:Recipe) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is my trainer?", "speaker": "paloma_r", "cypher": "MATCH (n0:Baker)-[:trainer]->(n1:Baker) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Name every trainee of mine.", "speaker": "tamsin", "cypher": "MATCH (n0:Baker)-[:trainee]->(n1:Baker) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is Tamsin Rhydderch's relief?", "speaker": null, "cypher": "MATCH (n0:Baker)-[:relief]->(n1:Baker) WHERE n0.name = 'Tamsin Rhydderch' RETURN n1.name AS name"},
+  {"q": "How many orders are there?", "speaker": null, "cypher": "MATCH (n0:Order) RETURN count(n0) AS count"},
+  {"q": "Has the broken thermostat been fixed?", "speaker": null, "cypher": "MATCH (n0:OvenFault) WHERE n0.fault = 'broken thermostat' RETURN n0.fixed AS fixed"},
+  {"q": "Is there a record of the faulty fan being fixed?", "speaker": null, "cypher": "MATCH (n0:OvenFault) WHERE n0.fault = 'faulty fan' RETURN coalesce(n0.fixed, false) AS fixed"},
+  {"q": "Who reported the fault on the deck oven?", "speaker": null, "cypher": "MATCH (n0:OvenFault)-[:reported_by]->(n1:Baker) WHERE n0.oven = 'deck oven' RETURN n1.name AS name"},
+  {"q": "Which orders did Henrike Vos take?", "speaker": null, "cypher": "MATCH (n0:Baker)<-[:taken_by]-(n1:Order) WHERE n0.name = 'Henrike Vos' RETURN n1.item AS item"},
+  {"q": "How many rye loaves were ordered?", "speaker": null, "cypher": "MATCH (n0:Order) WHERE n0.item = 'rye loaves' RETURN n0.quantity AS quantity"},
+  {"q": "What item and quantity were baked from the Cardamom Bun recipe?", "speaker": null, "cypher": "MATCH (n0:Recipe)<-[:recipe]-(n1:Order) WHERE n0.name = 'Cardamom Bun' RETURN n1.item AS item, n1.quantity AS quantity"},
+  {"q": "What quantities were ordered for the loaves?", "speaker": null, "cypher": "MATCH (n0:Order) WHERE n0.item CONTAINS 'loaves' RETURN n0.quantity AS quantity"},
+  {"q": "Were the seeded loaves gluten free?", "speaker": null, "cypher": "MATCH (n0:Order) WHERE n0.item = 'seeded loaves' RETURN n0.gluten_free AS gluten_free"},
+  {"q": "Is there a record that the treacle tarts are gluten free?", "speaker": null, "cypher": "MATCH (n0:Order) WHERE n0.item = 'treacle tarts' RETURN coalesce(n0.gluten_free, false) AS gluten_free"},
+  {"q": "What fault did Tamsin Rhydderch report?", "speaker": null, "cypher": "MATCH (n0:Baker)<-[:reported_by]-(n1:OvenFault) WHERE n0.name = 'Tamsin Rhydderch' RETURN n1.fault AS fault"}
+ ]
+}

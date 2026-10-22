@@ -1,0 +1,148 @@
+{
+ "domain": "theatre_production",
+ "models": {
+  "Member": {"description": "A company member: actor, crew or creative. A first name alone is not an identity.",
+   "properties": {"stage_name": "string", "union_no": "string?"}, "identities": ["union_no"]},
+  "Show": {"description": "A production in the season, named by its title, independent of its cast.",
+   "properties": {"show_title": "string", "venue": "string?"}},
+  "Casting": {"description": "Who holds which part on a show: its lead, the lead's understudy, or its director.\nAn understudy does not play the lead unless called on.",
+   "properties": {"show": "Show", "member": "Member", "part": ["lead", "understudy", "director"]},
+   "relation": {"from": "show", "to": "member", "label": "part", "phrasing": "{to} works on {from} as {label}",
+    "labels": {"lead": {"forward": ["lead", "leading role"], "reverse": ["starring"]},
+               "understudy": {"forward": ["understudy", "covers the lead"], "reverse": ["understudied"]},
+               "director": {"forward": ["director", "directs"], "reverse": ["directed"]}}}},
+  "Coaching": {"description": "A standing service one member gives another: voice coaching, or dressing them backstage.",
+   "properties": {"member": "Member", "helper": "Member", "service": ["voice_coach", "dresser"]},
+   "relation": {"from": "member", "to": "helper", "label": "service", "phrasing": "{from} works with {to}, their {label}",
+    "labels": {"voice_coach": {"forward": ["voice coach", "coached by"], "reverse": ["pupil"]},
+               "dresser": {"forward": ["dresser", "dressed by"], "reverse": ["dressee"]}}}},
+  "Rehearsal": {"description": "A rehearsal session for a scene. called_by scheduled it, led_by ran the room, noted_by took the notes.",
+   "properties": {"scene": "string", "show": "Show?", "called_by": "Member?", "led_by": "Member?", "noted_by": "Member?",
+    "status": ["scheduled", "held", "cancelled"], "off_book": "boolean?", "hours": "integer?", "room": "string?"},
+   "absences": {"off_book": "lines_unchecked"}},
+  "Costume": {"description": "A garment for a show. fitting says pending, fitted or altered; rented stays empty until its source is known.",
+   "properties": {"garment": "string", "show": "Show?", "fitting": ["pending", "fitted", "altered"], "rented": "boolean?", "cost_euros": "integer?"},
+   "absences": {"rented": "source_unknown"}}
+ },
+ "entities": {
+  "ingrid": {"model": "Member", "name": "Ingrid Solberg"},
+  "tavita": {"model": "Member", "name": "Tavita Leota"},
+  "rafael": {"model": "Member", "name": "Rafael Antunes"},
+  "parisa": {"model": "Member", "name": "Parisa Moradi"},
+  "folake": {"model": "Member", "name": "Folake Adeyemi"},
+  "folake_b": {"model": "Member", "name": "Folake Bankole"},
+  "kamala": {"model": "Member", "name": "Kamala Iyer"},
+  "tadeusz": {"model": "Member", "name": "Tadeusz Wrona"},
+  "quilla": {"model": "Member", "name": "Quilla Mamani"},
+  "ferry": {"model": "Show", "name": "Night Ferry"},
+  "harbour": {"model": "Show", "name": "Salt Harbour"},
+  "lantern": {"model": "Show", "name": "Glass Lantern"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Ingrid Solberg: I'm directing Night Ferry this season, and Tavita Leota plays the lead.",
+   "mentions": [["Ingrid Solberg", "ingrid"], ["I", "ingrid", "ref"], ["Night Ferry", "ferry"], ["Tavita Leota", "tavita"]],
+   "facts": [
+    {"model": "Casting", "in": "I'm directing Night Ferry this season", "from": "ferry", "to": "ingrid", "label": "director", "act": "assert"},
+    {"model": "Casting", "in": "Tavita Leota plays the lead", "from": "ferry", "to": "tavita", "label": "lead", "act": "assert"}]},
+  {"id": "m02", "text": "Hi cast,\nAct two blocking for Salt Harbour was held in Studio B for 3 hours; Rafael Antunes called it, Parisa Moradi ran it and Kamala Iyer took notes.\nThanks,\nTadeusz Wrona",
+   "mentions": [["Salt Harbour", "harbour"], ["Rafael Antunes", "rafael"], ["Parisa Moradi", "parisa"], ["Kamala Iyer", "kamala"], ["Tadeusz Wrona", "tadeusz"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "Act two blocking for Salt Harbour", "fields": {"scene": "Act two blocking", "show": "harbour", "called_by": "rafael", "led_by": "parisa", "noted_by": "kamala", "status": "held", "hours": 3, "room": "Studio B"}, "act": "assert"}]},
+  {"id": "m03", "text": "Parisa Moradi: I am not the understudy for Glass Lantern; Quilla Mamani is, and she has Tadeusz Wrona as her voice coach.",
+   "mentions": [["Parisa Moradi", "parisa"], ["I", "parisa", "ref"], ["Glass Lantern", "lantern"], ["Quilla Mamani", "quilla"], ["she", "quilla", "ref"], ["Tadeusz Wrona", "tadeusz"], ["her", "quilla", "ref"]],
+   "facts": [
+    {"model": "Casting", "in": "I am not the understudy for Glass Lantern", "from": "lantern", "to": "parisa", "label": "understudy", "act": "assert", "deny": true},
+    {"model": "Casting", "in": "Quilla Mamani is,", "from": "lantern", "to": "quilla", "label": "understudy", "act": "assert"},
+    {"model": "Coaching", "in": "she has Tadeusz Wrona as her voice coach", "from": "quilla", "to": "tadeusz", "label": "voice_coach", "act": "assert"}]},
+  {"id": "m04", "text": "Production meeting: Folake Adeyemi and Folake Bankole both read for Night Ferry. Folake gets a callback on Friday.",
+   "mentions": [["Folake Adeyemi", "folake"], ["Folake Bankole", "folake_b"], ["Night Ferry", "ferry"], ["Folake", "folake", "?"]],
+   "facts": []},
+  {"id": "m05", "text": "Kamala Iyer told the green room: \"Tavita Leota is my pupil now, I coach her twice a week.\"",
+   "mentions": [["Kamala Iyer", "kamala"], ["Tavita Leota", "tavita"], ["my", "kamala", "ref"], ["I", "kamala", "ref"], ["her", "tavita", "ref"]],
+   "quotes": [["Tavita Leota is my pupil now, I coach her twice a week.", "kamala"]],
+   "facts": [
+    {"model": "Coaching", "in": "Tavita Leota is my pupil now", "from": "tavita", "to": "kamala", "label": "voice_coach", "act": "assert"}]},
+  {"id": "m06", "text": "The velvet cloak for Glass Lantern was rented for 240 euros and is fitted, says Folake Bankole.",
+   "mentions": [["Glass Lantern", "lantern"], ["Folake Bankole", "folake_b"]],
+   "facts": [
+    {"model": "Costume", "in": "The velvet cloak for Glass Lantern was rented", "fields": {"garment": "velvet cloak", "show": "lantern", "rented": true, "cost_euros": 240, "fitting": "fitted"}, "act": "report"}]},
+  {"id": "m07", "text": "Rafael Antunes: Quilla, could you be my dresser for the matinee? Ingrid usually dresses me but she is away.",
+   "mentions": [["Rafael Antunes", "rafael"], ["Quilla", "quilla"], ["my", "rafael", "ref"], ["Ingrid", "ingrid"], ["me", "rafael", "ref"], ["she", "ingrid", "ref"]],
+   "facts": [
+    {"model": "Coaching", "in": "Quilla, could you be my dresser for the matinee?", "from": "rafael", "to": "quilla", "label": "dresser", "act": "request"},
+    {"model": "Coaching", "in": "Ingrid usually dresses me but she is away.", "from": "rafael", "to": "ingrid", "label": "dresser", "act": "assert"}]},
+  {"id": "m08", "text": "If the budget allows, Tadeusz Wrona will direct Salt Harbour next spring.",
+   "mentions": [["Tadeusz Wrona", "tadeusz"], ["Salt Harbour", "harbour"]],
+   "facts": [
+    {"model": "Casting", "in": "If the budget allows, Tadeusz Wrona will direct Salt Harbour", "from": "harbour", "to": "tadeusz", "label": "director", "act": "condition"}]},
+  {"id": "m09", "text": "Ingrid Solberg: Maybe the fight scene rehearsal for Night Ferry is scheduled for Tuesday, with Rafael leading it.",
+   "mentions": [["Ingrid Solberg", "ingrid"], ["Night Ferry", "ferry"], ["Rafael", "rafael"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "Maybe the fight scene rehearsal for Night Ferry is scheduled for Tuesday", "fields": {"scene": "fight scene", "show": "ferry", "led_by": "rafael", "status": "scheduled"}, "act": "draft"}]},
+  {"id": "m10", "text": "Parisa Moradi will coach Folake Adeyemi on the songs from next month. Parisa also wants Folake to understudy Glass Lantern.",
+   "mentions": [["Parisa Moradi", "parisa"], ["Folake Adeyemi", "folake"], ["Parisa", "parisa"], ["Folake", "folake"], ["Glass Lantern", "lantern"]],
+   "facts": [
+    {"model": "Coaching", "in": "Parisa Moradi will coach Folake Adeyemi", "from": "folake", "to": "parisa", "label": "voice_coach", "act": "plan"},
+    {"model": "Casting", "in": "Parisa also wants Folake to understudy Glass Lantern.", "from": "lantern", "to": "folake", "label": "understudy", "act": "plan"}]},
+  {"id": "m11", "text": "Tavita said the curtain call run was cancelled because the hall flooded.",
+   "mentions": [["Tavita", "tavita"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "Tavita said the curtain call run was cancelled", "fields": {"scene": "curtain call run", "status": "cancelled"}, "act": "report"}]},
+  {"id": "m12", "text": "Kamala Iyer: We held the act one run of Salt Harbour for 4 hours and everyone was off book.",
+   "mentions": [["Kamala Iyer", "kamala"], ["We", "kamala", "ref"], ["Salt Harbour", "harbour"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "We held the act one run of Salt Harbour", "fields": {"scene": "act one run", "show": "harbour", "status": "held", "hours": 4, "off_book": true}, "act": "assert"}]},
+  {"id": "m13", "text": "Posted on the callboard by the stage manager: \"Phones off in the wings, always.\" Ingrid Solberg and Rafael Antunes have signed it.",
+   "mentions": [["Ingrid Solberg", "ingrid"], ["Rafael Antunes", "rafael"]],
+   "quotes": [["Phones off in the wings, always.", "author"]],
+   "facts": []},
+  {"id": "m14", "text": "Quilla Mamani: The silk gown for Night Ferry has not been altered yet.",
+   "mentions": [["Quilla Mamani", "quilla"], ["Night Ferry", "ferry"]],
+   "facts": [
+    {"model": "Costume", "in": "The silk gown for Night Ferry has not been altered yet.", "fields": {"garment": "silk gown", "show": "ferry", "fitting": "altered"}, "act": "assert", "deny": true}]},
+  {"id": "m15", "text": "Tadeusz Wrona: Folake Bankole plays the lead in Salt Harbour now, not Quilla.",
+   "mentions": [["Tadeusz Wrona", "tadeusz"], ["Folake Bankole", "folake_b"], ["Salt Harbour", "harbour"], ["Quilla", "quilla"]],
+   "facts": [
+    {"model": "Casting", "in": "Folake Bankole plays the lead in Salt Harbour now", "from": "harbour", "to": "folake_b", "label": "lead", "act": "assert"},
+    {"model": "Casting", "in": "not Quilla", "from": "harbour", "to": "quilla", "label": "lead", "act": "assert", "deny": true}]},
+  {"id": "m16", "text": "Rafael Antunes dresses Kamala Iyer on opening nights, and she coaches his voice in return.",
+   "mentions": [["Rafael Antunes", "rafael"], ["Kamala Iyer", "kamala"], ["she", "kamala", "ref"], ["his", "rafael", "ref"]],
+   "facts": [
+    {"model": "Coaching", "in": "Rafael Antunes dresses Kamala Iyer on opening nights", "from": "kamala", "to": "rafael", "label": "dresser", "act": "assert"},
+    {"model": "Coaching", "in": "she coaches his voice in return", "from": "rafael", "to": "kamala", "label": "voice_coach", "act": "assert"}]},
+  {"id": "m17", "text": "Folake Adeyemi wrote: \"The sailor coats for Night Ferry cost 90 euros, were not rented and still need a fitting.\"",
+   "mentions": [["Folake Adeyemi", "folake"], ["Night Ferry", "ferry"]],
+   "quotes": [["The sailor coats for Night Ferry cost 90 euros, were not rented and still need a fitting.", "folake"]],
+   "facts": [
+    {"model": "Costume", "in": "The sailor coats for Night Ferry cost 90 euros", "fields": {"garment": "sailor coats", "show": "ferry", "cost_euros": 90, "rented": false, "fitting": "pending"}, "act": "assert"}]},
+  {"id": "m18", "text": "Next Monday Quilla Mamani will call a tech rehearsal of Glass Lantern, led by Ingrid Solberg, with Tavita Leota on notes.",
+   "mentions": [["Quilla Mamani", "quilla"], ["Glass Lantern", "lantern"], ["Ingrid Solberg", "ingrid"], ["Tavita Leota", "tavita"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "Next Monday Quilla Mamani will call a tech rehearsal", "fields": {"scene": "tech rehearsal", "show": "lantern", "called_by": "quilla", "led_by": "ingrid", "noted_by": "tavita", "status": "scheduled"}, "act": "plan"}]},
+  {"id": "m19", "text": "Kamala Iyer directs Glass Lantern, and Rafael Antunes is its understudy for the lead.",
+   "mentions": [["Kamala Iyer", "kamala"], ["Glass Lantern", "lantern"], ["Rafael Antunes", "rafael"], ["its", "lantern", "ref"]],
+   "facts": [
+    {"model": "Casting", "in": "Kamala Iyer directs Glass Lantern", "from": "lantern", "to": "kamala", "label": "director", "act": "assert"},
+    {"model": "Casting", "in": "Rafael Antunes is its understudy for the lead", "from": "lantern", "to": "rafael", "label": "understudy", "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who directs Night Ferry?", "speaker": null, "cypher": "MATCH (n0:Show)-[:director]->(n1:Member) WHERE n0.show_title = 'Night Ferry' RETURN n1.stage_name AS stage_name"},
+  {"q": "Which shows are directed by me?", "speaker": "ingrid", "cypher": "MATCH (n0:Member)-[:directed]->(n1:Show) WHERE id(n0) = $speaker RETURN n1.show_title AS show_title"},
+  {"q": "Who is my voice coach?", "speaker": "quilla", "cypher": "MATCH (n0:Member)-[:voice_coach]->(n1:Member) WHERE id(n0) = $speaker RETURN n1.stage_name AS stage_name"},
+  {"q": "Who is Kamala Iyer's pupil?", "speaker": null, "cypher": "MATCH (n0:Member)-[:pupil]->(n1:Member) WHERE n0.stage_name = 'Kamala Iyer' RETURN n1.stage_name AS stage_name"},
+  {"q": "How many rehearsals are there?", "speaker": null, "cypher": "MATCH (n0:Rehearsal) RETURN count(n0) AS count"},
+  {"q": "Was everyone off book for the act one run?", "speaker": null, "cypher": "MATCH (n0:Rehearsal) WHERE n0.scene = 'act one run' RETURN n0.off_book AS off_book"},
+  {"q": "Is there a record that the velvet cloak was rented?", "speaker": null, "cypher": "MATCH (n0:Costume) WHERE n0.garment = 'velvet cloak' RETURN coalesce(n0.rented, false) AS rented"},
+  {"q": "Which rehearsals did Parisa Moradi lead?", "speaker": null, "cypher": "MATCH (n0:Member)<-[:led_by]-(n1:Rehearsal) WHERE n0.stage_name = 'Parisa Moradi' RETURN n1.scene AS scene"},
+  {"q": "Who took notes at the tech rehearsal?", "speaker": null, "cypher": "MATCH (n0:Rehearsal)-[:noted_by]->(n1:Member) WHERE n0.scene = 'tech rehearsal' RETURN n1.stage_name AS stage_name"},
+  {"q": "How many hours did act two blocking take?", "speaker": null, "cypher": "MATCH (n0:Rehearsal) WHERE n0.scene = 'Act two blocking' RETURN n0.hours AS hours"},
+  {"q": "Who is Rafael Antunes's dresser?", "speaker": null, "cypher": "MATCH (n0:Member)-[:dresser]->(n1:Member) WHERE n0.stage_name = 'Rafael Antunes' RETURN n1.stage_name AS stage_name"},
+  {"q": "What did the velvet cloak cost?", "speaker": null, "cypher": "MATCH (n0:Costume) WHERE n0.garment = 'velvet cloak' RETURN n0.cost_euros AS cost_euros"},
+  {"q": "Which garments are for Night Ferry?", "speaker": null, "cypher": "MATCH (n0:Show)<-[:show]-(n1:Costume) WHERE n0.show_title = 'Night Ferry' RETURN n1.garment AS garment"},
+  {"q": "What rehearsals did I call?", "speaker": "rafael", "cypher": "MATCH (n0:Member)<-[:called_by]-(n1:Rehearsal) WHERE id(n0) = $speaker RETURN n1.scene AS scene"},
+  {"q": "Which rehearsals were a run?", "speaker": null, "cypher": "MATCH (n0:Rehearsal) WHERE n0.scene CONTAINS 'run' RETURN n0.scene AS scene"},
+  {"q": "What is the garment and fitting of every costume?", "speaker": null, "cypher": "MATCH (n0:Costume) RETURN n0.garment AS garment, n0.fitting AS fitting"},
+  {"q": "Who plays the lead in Salt Harbour?", "speaker": null, "cypher": "MATCH (n0:Show)-[:lead]->(n1:Member) WHERE n0.show_title = 'Salt Harbour' RETURN n1.stage_name AS stage_name"},
+  {"q": "Where was the act two blocking held?", "speaker": null, "cypher": "MATCH (n0:Rehearsal) WHERE n0.scene = 'Act two blocking' RETURN n0.room AS room"}
+ ]
+}

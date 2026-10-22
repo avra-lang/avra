@@ -1,0 +1,152 @@
+{
+ "domain": "community_choir",
+ "models": {
+  "Singer": {"description": "A choir member, or a musician who plays for the choir. A first name alone is not an identity.",
+   "properties": {"name": "string", "email": "string?", "voice_part": "string?"}, "identities": ["email"]},
+  "Piece": {"description": "A work in the choir's repertoire, known by its title.",
+   "properties": {"name": "string", "composer": "string?"}},
+  "Support": {"description": "Who a singer relies on: their section leader, or the driver who gives them a lift to rehearsals.",
+   "properties": {"singer": "Singer", "helper": "Singer", "kind": ["leader", "driver"]},
+   "relation": {"from": "singer", "to": "helper", "label": "kind", "phrasing": "{from} relies on {to} as {label}",
+    "labels": {"leader": {"forward": ["section leader", "leads", "leader"], "reverse": ["charge"]},
+               "driver": {"forward": ["driver", "lift", "drives"], "reverse": ["passenger"]}}}},
+  "Feature": {"description": "Who a piece features in performance: its soloist or its accompanist.",
+   "properties": {"piece": "Piece", "performer": "Singer", "part": ["soloist", "accompanist"]},
+   "relation": {"from": "piece", "to": "performer", "label": "part", "phrasing": "{from} features {to} as {label}",
+    "labels": {"soloist": {"forward": ["soloist", "solo", "sings the solo"], "reverse": ["solos"]},
+               "accompanist": {"forward": ["accompanist", "accompanies", "plays for"], "reverse": ["accompanied"]}}}},
+  "Rehearsal": {"description": "A rehearsal on the calendar. called_by arranged it, led_by runs it, pianist plays for it. A hope to rehearse is not an arranged rehearsal.",
+   "properties": {"focus": "string", "piece": "Piece?", "called_by": "Singer?", "led_by": "Singer?", "pianist": "Singer?",
+    "status": ["arranged", "held", "cancelled"], "venue_booked": "boolean?", "attendees": "integer?", "remark": "string?"},
+   "absences": {"venue_booked": "no_venue_record"}},
+  "ScoreLoan": {"description": "Choir copies of a score lent out. lent_by handed them over, borrower has them. returned stays empty until a return is recorded.",
+   "properties": {"edition": "string", "piece": "Piece?", "lent_by": "Singer?", "borrower": "Singer?", "copies": "integer?", "returned": "boolean?"},
+   "absences": {"returned": "no_return_record"}}
+ },
+ "entities": {
+  "grainne": {"model": "Singer", "name": "Grainne Moloney"},
+  "kwame_a": {"model": "Singer", "name": "Kofi Darko"},
+  "kwame_b": {"model": "Singer", "name": "Kofi Agyeman"},
+  "esperanza": {"model": "Singer", "name": "Esperanza Villalobos"},
+  "takeshi_m": {"model": "Singer", "name": "Takeshi Morimoto"},
+  "takeshi_o": {"model": "Singer", "name": "Takeshi Ono"},
+  "solveig": {"model": "Singer", "name": "Solveig Brekke"},
+  "nnamdi": {"model": "Singer", "name": "Nnamdi Eze", "fields": {"email": "nnamdi@eze.example"}},
+  "margit": {"model": "Singer", "name": "Margit Szabo"},
+  "ave": {"model": "Piece", "name": "Ave Verum"},
+  "seal": {"model": "Piece", "name": "The Seal Lullaby"},
+  "shenandoah": {"model": "Piece", "name": "Shenandoah"},
+  "locus": {"model": "Piece", "name": "Locus Iste"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Esperanza Villalobos: Shenandoah is called for Thursday's sectional. I'll accompany it, and Solveig Brekke sings the solo.",
+   "mentions": [["Esperanza Villalobos", "esperanza"], ["Shenandoah", "shenandoah"], ["I", "esperanza", "ref"], ["it", "shenandoah", "ref"], ["Solveig Brekke", "solveig"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "Shenandoah is called for Thursday's sectional.", "fields": {"focus": "sectional", "piece": "shenandoah", "status": "arranged"}, "act": "assert"},
+    {"model": "Feature", "in": "I'll accompany it", "from": "shenandoah", "to": "esperanza", "label": "accompanist", "act": "plan"},
+    {"model": "Feature", "in": "Solveig Brekke sings the solo", "from": "shenandoah", "to": "solveig", "label": "soloist", "act": "assert"}]},
+  {"id": "m02", "text": "Takeshi Morimoto wrote: \"I am not Nnamdi's section leader any more. Margit Szabo leads him now.\"",
+   "mentions": [["Takeshi Morimoto", "takeshi_m"], ["I", "takeshi_m", "ref"], ["Nnamdi", "nnamdi"], ["Margit Szabo", "margit"], ["him", "nnamdi", "ref"]],
+   "quotes": [["I am not Nnamdi's section leader any more. Margit Szabo leads him now.", "takeshi_m"]],
+   "facts": [
+    {"model": "Support", "in": "I am not Nnamdi's section leader any more.", "from": "nnamdi", "to": "takeshi_m", "label": "leader", "act": "assert", "deny": true},
+    {"model": "Support", "in": "Margit Szabo leads him now.", "from": "nnamdi", "to": "margit", "label": "leader", "act": "assert"}]},
+  {"id": "m03", "text": "Hi Nnamdi,\nThe Locus Iste run-through went ahead with 23 singers, and the church hall was not booked in the end.\nThanks, Grainne",
+   "mentions": [["Nnamdi", "nnamdi"], ["Locus Iste", "locus"], ["Grainne", "grainne"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "The Locus Iste run-through went ahead with 23 singers", "fields": {"focus": "run-through", "piece": "locus", "status": "held", "attendees": 23, "venue_booked": false}, "act": "assert"}]},
+  {"id": "m04", "text": "Solveig Brekke: Can someone call a breathing workshop on The Seal Lullaby for me to lead next week? Kofi Darko said he might drive me if the weather is bad.",
+   "mentions": [["Solveig Brekke", "solveig"], ["The Seal Lullaby", "seal"], ["me", "solveig", "ref"], ["Kofi Darko", "kwame_a"], ["he", "kwame_a", "ref"], ["me", "solveig", "ref"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "Can someone call a breathing workshop on The Seal Lullaby for me to lead next week?", "fields": {"focus": "breathing workshop", "piece": "seal", "led_by": "solveig", "status": "arranged"}, "act": "request"},
+    {"model": "Support", "in": "Kofi Darko said he might drive me", "from": "solveig", "to": "kwame_a", "label": "driver", "act": "report"}]},
+  {"id": "m05", "text": "Committee minutes, 9 May: Margit Szabo reported that 12 Novello copies of Ave Verum were lent to Takeshi Morimoto. Nnamdi Eze said he drives her to every concert.",
+   "mentions": [["Margit Szabo", "margit"], ["Ave Verum", "ave"], ["Takeshi Morimoto", "takeshi_m"], ["Nnamdi Eze", "nnamdi"], ["he", "nnamdi", "ref"], ["her", "margit", "ref"]],
+   "facts": [
+    {"model": "ScoreLoan", "in": "Margit Szabo reported that 12 Novello copies of Ave Verum were lent to Takeshi Morimoto.", "fields": {"edition": "Novello", "piece": "ave", "borrower": "takeshi_m", "copies": 12}, "act": "report"},
+    {"model": "Support", "in": "Nnamdi Eze said he drives her to every concert.", "from": "margit", "to": "nnamdi", "label": "driver", "act": "report"}]},
+  {"id": "m06", "text": "Kofi Darko and Kofi Agyeman both offered to play for the Shenandoah sectional. Darko called the sectional first, so Agyeman will turn pages instead.",
+   "mentions": [["Kofi Darko", "kwame_a"], ["Kofi Agyeman", "kwame_b"], ["Shenandoah", "shenandoah"], ["Darko", "kwame_a"], ["Agyeman", "kwame_b"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "Darko called the sectional first", "fields": {"focus": "sectional", "called_by": "kwame_a", "status": "arranged"}, "act": "assert"}]},
+  {"id": "m07", "text": "Grainne Moloney: Kofi Darko rang about the robes, and Kofi Agyeman emailed too. Kofi says the robes are ready Saturday.",
+   "mentions": [["Grainne Moloney", "grainne"], ["Kofi Darko", "kwame_a"], ["Kofi Agyeman", "kwame_b"], ["Kofi", "kwame_a", "?"]],
+   "facts": []},
+  {"id": "m08", "text": "Takeshi Morimoto: Our new tenor, Takeshi Ono, joins on Monday. He will sing the solo in Ave Verum.",
+   "mentions": [["Takeshi Morimoto", "takeshi_m"], ["Takeshi Ono", "takeshi_o"], ["He", "takeshi_o", "ref"], ["Ave Verum", "ave"]],
+   "facts": [
+    {"model": "Feature", "in": "He will sing the solo in Ave Verum.", "from": "ave", "to": "takeshi_o", "label": "soloist", "act": "plan"}]},
+  {"id": "m09", "text": "Margit Szabo: I lead Nnamdi and Grainne in the section. Kofi Agyeman is Grainne's lift to rehearsals.",
+   "mentions": [["Margit Szabo", "margit"], ["I", "margit", "ref"], ["Nnamdi", "nnamdi"], ["Grainne", "grainne"], ["Kofi Agyeman", "kwame_b"], ["Grainne", "grainne"]],
+   "facts": [
+    {"model": "Support", "in": "I lead Nnamdi and Grainne in the section.", "from": "nnamdi", "to": "margit", "label": "leader", "act": "assert"},
+    {"model": "Support", "in": "I lead Nnamdi and Grainne in the section.", "from": "grainne", "to": "margit", "label": "leader", "act": "assert"},
+    {"model": "Support", "in": "Kofi Agyeman is Grainne's lift to rehearsals.", "from": "grainne", "to": "kwame_b", "label": "driver", "act": "assert"}]},
+  {"id": "m10", "text": "Note from the librarian: 30 Carus copies of Locus Iste were lent to Esperanza Villalobos by Grainne Moloney. Nobody has returned them yet.",
+   "mentions": [["Locus Iste", "locus"], ["Esperanza Villalobos", "esperanza"], ["Grainne Moloney", "grainne"]],
+   "facts": [
+    {"model": "ScoreLoan", "in": "Note from the librarian: 30 Carus copies of Locus Iste were lent to Esperanza Villalobos by Grainne Moloney.", "fields": {"edition": "Carus", "piece": "locus", "borrower": "esperanza", "lent_by": "grainne", "copies": 30}, "act": "assert"}]},
+  {"id": "m11", "text": "As I told Solveig Brekke after mass, \"The Seal Lullaby full rehearsal on Friday is cancelled, the hall flooded.\"\nThe choir secretary",
+   "mentions": [["I", "none", "ref"], ["Solveig Brekke", "solveig"], ["The Seal Lullaby", "seal"]],
+   "quotes": [["The Seal Lullaby full rehearsal on Friday is cancelled, the hall flooded.", "author"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "The Seal Lullaby full rehearsal on Friday is cancelled", "fields": {"focus": "full rehearsal", "piece": "seal", "status": "cancelled", "remark": "the hall flooded"}, "act": "assert"}]},
+  {"id": "m12", "text": "Solveig Brekke: I don't sing the solo in Shenandoah any more; Esperanza Villalobos does.",
+   "mentions": [["Solveig Brekke", "solveig"], ["I", "solveig", "ref"], ["Shenandoah", "shenandoah"], ["Esperanza Villalobos", "esperanza"]],
+   "facts": [
+    {"model": "Feature", "in": "I don't sing the solo in Shenandoah any more", "from": "shenandoah", "to": "solveig", "label": "soloist", "act": "assert", "deny": true},
+    {"model": "Feature", "in": "Esperanza Villalobos does.", "from": "shenandoah", "to": "esperanza", "label": "soloist", "act": "assert"}]},
+  {"id": "m13", "text": "If the organ is tuned, Nnamdi Eze will lead a 40 singer massed run of Locus Iste on Thursday, booked by Esperanza Villalobos.",
+   "mentions": [["Nnamdi Eze", "nnamdi"], ["Locus Iste", "locus"], ["Esperanza Villalobos", "esperanza"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "If the organ is tuned, Nnamdi Eze will lead", "fields": {"focus": "massed run", "piece": "locus", "led_by": "nnamdi", "called_by": "esperanza", "status": "arranged", "attendees": 40, "remark": "the organ is tuned"}, "act": "condition"}]},
+  {"id": "m14", "text": "Grainne Moloney: Pencilled in, maybe: a diction sectional on Ave Verum next Friday, led by Takeshi and called by me.",
+   "mentions": [["Grainne Moloney", "grainne"], ["Ave Verum", "ave"], ["Takeshi", "takeshi_m"], ["me", "grainne", "ref"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "Pencilled in, maybe: a diction sectional on Ave Verum", "fields": {"focus": "diction sectional", "piece": "ave", "led_by": "takeshi_m", "called_by": "grainne", "status": "arranged"}, "act": "draft"}]},
+  {"id": "m15", "text": "Sunday's 15 singer sight-reading class on The Seal Lullaby was cancelled because of the marathon, Margit Szabo confirmed.",
+   "mentions": [["The Seal Lullaby", "seal"], ["Margit Szabo", "margit"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "Sunday's 15 singer sight-reading class on The Seal Lullaby was cancelled", "fields": {"focus": "sight-reading class", "piece": "seal", "status": "cancelled", "attendees": 15, "remark": "the marathon"}, "act": "report"}]},
+  {"id": "m16", "text": "Dear Nnamdi,\nCould you play piano for Solveig Brekke's warm-up session next Tuesday, in the booked hall?\nBest,\nTakeshi Morimoto",
+   "mentions": [["Nnamdi", "nnamdi"], ["you", "nnamdi", "ref"], ["Solveig Brekke", "solveig"], ["Takeshi Morimoto", "takeshi_m"]],
+   "facts": [
+    {"model": "Rehearsal", "in": "Could you play piano for Solveig Brekke's warm-up session next Tuesday, in the booked hall?", "fields": {"focus": "warm-up session", "pianist": "nnamdi", "led_by": "solveig", "status": "arranged", "venue_booked": true}, "act": "request"}]},
+  {"id": "m17", "text": "Grainne Moloney: The 30 Carus copies of Locus Iste were returned by Esperanza Villalobos yesterday.",
+   "mentions": [["Grainne Moloney", "grainne"], ["Locus Iste", "locus"], ["Esperanza Villalobos", "esperanza"]],
+   "facts": [
+    {"model": "ScoreLoan", "in": "The 30 Carus copies of Locus Iste were returned by Esperanza Villalobos yesterday.", "fields": {"edition": "Carus", "piece": "locus", "borrower": "esperanza", "copies": 30, "returned": true}, "act": "assert"}]},
+  {"id": "m18", "text": "Fwd from Margit Szabo: \"Takeshi Ono is my charge now, and I am his section leader until Easter.\"",
+   "mentions": [["Margit Szabo", "margit"], ["Takeshi Ono", "takeshi_o"], ["my", "margit", "ref"], ["I", "margit", "ref"], ["his", "takeshi_o", "ref"]],
+   "quotes": [["Takeshi Ono is my charge now, and I am his section leader until Easter.", "margit"]],
+   "facts": [
+    {"model": "Support", "in": "Takeshi Ono is my charge now", "from": "takeshi_o", "to": "margit", "label": "leader", "act": "assert"}]},
+  {"id": "m19", "text": "I'm Kofi Agyeman and I won't be accompanying The Seal Lullaby after all.",
+   "mentions": [["I", "kwame_b", "ref"], ["Kofi Agyeman", "kwame_b"], ["I", "kwame_b", "ref"], ["The Seal Lullaby", "seal"]],
+   "facts": [
+    {"model": "Feature", "in": "I won't be accompanying The Seal Lullaby", "from": "seal", "to": "kwame_b", "label": "accompanist", "act": "plan", "deny": true}]},
+  {"id": "m20", "text": "Choir note: Nnamdi Eze lent 8 Oxford copies of Shenandoah to Solveig Brekke; she will give them back after the tour.",
+   "mentions": [["Nnamdi Eze", "nnamdi"], ["Shenandoah", "shenandoah"], ["Solveig Brekke", "solveig"], ["she", "solveig", "ref"]],
+   "facts": [
+    {"model": "ScoreLoan", "in": "Choir note: Nnamdi Eze lent 8 Oxford copies", "fields": {"edition": "Oxford", "piece": "shenandoah", "lent_by": "nnamdi", "borrower": "solveig", "copies": 8}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who sings the solo in Shenandoah?", "speaker": null, "cypher": "MATCH (n0:Piece)-[:soloist]->(n1:Singer) WHERE n0.name = 'Shenandoah' RETURN n1.name AS name"},
+  {"q": "Who accompanies The Seal Lullaby?", "speaker": null, "cypher": "MATCH (n0:Piece)-[:accompanist]->(n1:Singer) WHERE n0.name = 'The Seal Lullaby' RETURN n1.name AS name"},
+  {"q": "Who is my section leader?", "speaker": "nnamdi", "cypher": "MATCH (n0:Singer)-[:leader]->(n1:Singer) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who is in my charge?", "speaker": "margit", "cypher": "MATCH (n0:Singer)-[:charge]->(n1:Singer) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who drives me?", "speaker": "grainne", "cypher": "MATCH (n0:Singer)-[:driver]->(n1:Singer) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Which pieces have I accompanied?", "speaker": "esperanza", "cypher": "MATCH (n0:Singer)-[:accompanied]->(n1:Piece) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "How many rehearsals are there?", "speaker": null, "cypher": "MATCH (n0:Rehearsal) RETURN count(n0) AS count"},
+  {"q": "Have the Carus copies been returned?", "speaker": null, "cypher": "MATCH (n0:ScoreLoan) WHERE n0.edition = 'Carus' RETURN n0.returned AS returned"},
+  {"q": "Is there a record of the Oxford copies being returned?", "speaker": null, "cypher": "MATCH (n0:ScoreLoan) WHERE n0.edition = 'Oxford' RETURN coalesce(n0.returned, false) AS returned"},
+  {"q": "Who borrowed copies of Ave Verum?", "speaker": null, "cypher": "MATCH (n0:Piece)<-[:piece]-(n1:ScoreLoan)-[:borrower]->(n2:Singer) WHERE n0.name = 'Ave Verum' RETURN n2.name AS name"},
+  {"q": "Which rehearsals did Grainne Moloney call?", "speaker": null, "cypher": "MATCH (n0:Singer)<-[:called_by]-(n1:Rehearsal) WHERE n0.name = 'Grainne Moloney' RETURN n1.focus AS focus"},
+  {"q": "How many singers came to the run-through?", "speaker": null, "cypher": "MATCH (n0:Rehearsal) WHERE n0.focus = 'run-through' RETURN n0.attendees AS attendees"},
+  {"q": "What focus and status do the Locus Iste rehearsals have?", "speaker": null, "cypher": "MATCH (n0:Piece)<-[:piece]-(n1:Rehearsal) WHERE n0.name = 'Locus Iste' RETURN n1.focus AS focus, n1.status AS status"},
+  {"q": "What attendance did the class sessions have?", "speaker": null, "cypher": "MATCH (n0:Rehearsal) WHERE n0.focus CONTAINS 'class' RETURN n0.attendees AS attendees"},
+  {"q": "Was the hall booked for the warm-up session?", "speaker": null, "cypher": "MATCH (n0:Rehearsal) WHERE n0.focus = 'warm-up session' RETURN n0.venue_booked AS venue_booked"},
+  {"q": "Is there a record of a venue booking for the massed run?", "speaker": null, "cypher": "MATCH (n0:Rehearsal) WHERE n0.focus = 'massed run' RETURN coalesce(n0.venue_booked, false) AS venue_booked"},
+  {"q": "How many copies did Nnamdi Eze lend?", "speaker": null, "cypher": "MATCH (n0:Singer)<-[:lent_by]-(n1:ScoreLoan) WHERE n0.name = 'Nnamdi Eze' RETURN n1.copies AS copies"}
+ ]
+}

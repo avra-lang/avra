@@ -35,7 +35,7 @@ class Renderer(cascade.Scorer):
 
         self.tok = load_tokenizer(hf_repo_to_path(SCORER.split("@")[0]))
         vocab = len(self.tok.get_vocab())
-        self.model = lambda ids, cache=None: mx.zeros((1, ids.shape[1], vocab))
+        self.model = lambda ids, cache=None: mx.zeros((1, 1, vocab))
         self.calls, self.source, self.cache, self.prefix, self.body = 0, "", None, False, None
 
     def render(self, body):

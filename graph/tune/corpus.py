@@ -168,6 +168,11 @@ def check(domain):
                     problems.append(f"{where}: {f['model']}.{k}={v!r} not one of {props[k]['enum']}")
             if f.get("act", "assert") not in ("assert", "report", "plan", "request", "condition", "draft"):
                 problems.append(f"{where}: act {f.get('act')!r}")
+    for m in desc.values():
+        for l in (m["semantics"]["relation"] or {}).get("labels", []):
+            for w in [l["value"], *l["reverse"]]:
+                if not re.fullmatch(r"\w+", w):
+                    problems.append(f"{m['name']}: relationship type {w!r} must be one word")
     for i, q in enumerate(domain.get("questions", [])):
         if q.get("speaker") and q["speaker"] not in ents:
             problems.append(f"question {i}: speaker {q['speaker']} unknown")

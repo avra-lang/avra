@@ -1,0 +1,153 @@
+{
+ "domain": "rowing_club",
+ "models": {
+  "Rower": {"description": "A club member who rows, coxes or coaches. A first name alone is not an identity.",
+   "properties": {"name": "string", "email": "string?", "squad": "string?"}, "identities": ["email"]},
+  "Boat": {"description": "A hull in the club's fleet, known by the name painted on it.",
+   "properties": {"name": "string", "hull_class": "string?"}},
+  "Coaching": {"description": "A standing link between an athlete and the person who coaches or mentors them.\nCoaching one outing does not make someone an athlete's coach.",
+   "properties": {"athlete": "Rower", "guide": "Rower", "role": ["coach", "mentor"]},
+   "relation": {"from": "athlete", "to": "guide", "label": "role", "phrasing": "{to} serves as {label} for {from}",
+    "labels": {"coach": {"forward": ["coach", "coaches", "trains"], "reverse": ["athlete", "trainee"]},
+               "mentor": {"forward": ["mentor", "mentors", "buddy"], "reverse": ["mentee"]}}}},
+  "CrewSeat": {"description": "Which seat a rower takes in a boat's regular crew: stroke, bow or cox.",
+   "properties": {"boat": "Boat", "rower": "Rower", "seat": ["stroke", "bow", "cox"]},
+   "relation": {"from": "boat", "to": "rower", "label": "seat", "phrasing": "{from} has {to} at {label}",
+    "labels": {"stroke": {"forward": ["stroke", "stroke seat"], "reverse": []},
+               "bow": {"forward": ["bow", "bow seat"], "reverse": []},
+               "cox": {"forward": ["cox", "coxes", "steers"], "reverse": ["coxing"]}}}},
+  "Outing": {"description": "A session on the water. booked_by reserved the boat, coach runs the session from the bank or launch, sculler is the athlete rowing it. A wish to go out is not a booking.",
+   "properties": {"piece": "string", "boat": "Boat?", "booked_by": "Rower?", "coach": "Rower?", "sculler": "Rower?",
+    "state": ["planned", "rowed", "scrubbed"], "launch_needed": "boolean?", "distance_km": "integer?", "conditions": "string?"},
+   "absences": {"launch_needed": "no_launch_record"}},
+  "DamageReport": {"description": "Damage found on a boat. reported_by noticed it, fixer repairs it. repaired stays empty until a repair is recorded.",
+   "properties": {"damage": "string", "boat": "Boat?", "reported_by": "Rower?", "fixer": "Rower?", "repaired": "boolean?"},
+   "absences": {"repaired": "no_repair_record"}}
+ },
+ "entities": {
+  "ifeoma": {"model": "Rower", "name": "Ifeoma Adeyemi"},
+  "tobias_l": {"model": "Rower", "name": "Tobias Lindqvist"},
+  "tobias_a": {"model": "Rower", "name": "Tobias Achterberg"},
+  "dagny": {"model": "Rower", "name": "Dagny Solberg"},
+  "kalani": {"model": "Rower", "name": "Kalani Akana"},
+  "kalani_m": {"model": "Rower", "name": "Kalani Mahoe"},
+  "yusuf": {"model": "Rower", "name": "Yusuf Demirci", "fields": {"email": "yusuf@demirci.example"}},
+  "meilin": {"model": "Rower", "name": "Mei-Lin Harcourt"},
+  "anouk": {"model": "Rower", "name": "Anouk Verbeek"},
+  "kestrel": {"model": "Boat", "name": "Kestrel"},
+  "saltmarsh": {"model": "Boat", "name": "Saltmarsh"},
+  "maud": {"model": "Boat", "name": "Old Maud"},
+  "heron": {"model": "Boat", "name": "Grey Heron"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Ifeoma Adeyemi: Kestrel is booked for steady state on Saturday. I'll cox it, and Tobias Lindqvist rows stroke.",
+   "mentions": [["Ifeoma Adeyemi", "ifeoma"], ["Kestrel", "kestrel"], ["I", "ifeoma", "ref"], ["it", "kestrel", "ref"], ["Tobias Lindqvist", "tobias_l"]],
+   "facts": [
+    {"model": "Outing", "in": "Kestrel is booked for steady state on Saturday.", "fields": {"piece": "steady state", "boat": "kestrel", "state": "planned"}, "act": "assert"},
+    {"model": "CrewSeat", "in": "I'll cox it", "from": "kestrel", "to": "ifeoma", "label": "cox", "act": "plan"},
+    {"model": "CrewSeat", "in": "Tobias Lindqvist rows stroke", "from": "kestrel", "to": "tobias_l", "label": "stroke", "act": "assert"}]},
+  {"id": "m02", "text": "Tobias Achterberg wrote: \"I am not Dagny's coach any more. Kalani Akana took her on in March.\"",
+   "mentions": [["Tobias Achterberg", "tobias_a"], ["I", "tobias_a", "ref"], ["Dagny", "dagny"], ["Kalani Akana", "kalani"], ["her", "dagny", "ref"]],
+   "quotes": [["I am not Dagny's coach any more. Kalani Akana took her on in March.", "tobias_a"]],
+   "facts": [
+    {"model": "Coaching", "in": "I am not Dagny's coach any more.", "from": "dagny", "to": "tobias_a", "label": "coach", "act": "assert", "deny": true},
+    {"model": "Coaching", "in": "Kalani Akana took her on in March.", "from": "dagny", "to": "kalani", "label": "coach", "act": "assert"}]},
+  {"id": "m03", "text": "Hi all,\nSaltmarsh went out for 14 km of steady state this morning with Yusuf Demirci coaching, and no launch was needed.\nThanks, Mei-Lin",
+   "mentions": [["Saltmarsh", "saltmarsh"], ["Yusuf Demirci", "yusuf"], ["Mei-Lin", "meilin"]],
+   "facts": [
+    {"model": "Outing", "in": "Saltmarsh went out for 14 km of steady state this morning", "fields": {"piece": "steady state", "boat": "saltmarsh", "coach": "yusuf", "state": "rowed", "launch_needed": false, "distance_km": 14}, "act": "assert"}]},
+  {"id": "m04", "text": "Dagny Solberg: Can someone book Old Maud for my 8 km technical paddle tomorrow? Anouk Verbeek said she might coach me if the river is calm.",
+   "mentions": [["Dagny Solberg", "dagny"], ["Old Maud", "maud"], ["my", "dagny", "ref"], ["Anouk Verbeek", "anouk"], ["she", "anouk", "ref"], ["me", "dagny", "ref"]],
+   "facts": [
+    {"model": "Outing", "in": "Can someone book Old Maud for my 8 km technical paddle tomorrow?", "fields": {"piece": "technical paddle", "boat": "maud", "sculler": "dagny", "state": "planned", "distance_km": 8}, "act": "request"},
+    {"model": "Coaching", "in": "Anouk Verbeek said she might coach me", "from": "dagny", "to": "anouk", "label": "coach", "act": "report"}]},
+  {"id": "m05", "text": "Committee minutes, 3 March: Kalani Akana reported that Grey Heron has a cracked rigger. Tobias Lindqvist said he would fix the cracked rigger before the regatta.",
+   "mentions": [["Kalani Akana", "kalani"], ["Grey Heron", "heron"], ["Tobias Lindqvist", "tobias_l"], ["he", "tobias_l", "ref"]],
+   "facts": [
+    {"model": "DamageReport", "in": "Kalani Akana reported that Grey Heron has a cracked rigger.", "fields": {"damage": "cracked rigger", "boat": "heron", "reported_by": "kalani"}, "act": "report"},
+    {"model": "DamageReport", "in": "Tobias Lindqvist said he would fix the cracked rigger before the regatta.", "fields": {"damage": "cracked rigger", "fixer": "tobias_l"}, "act": "report"}]},
+  {"id": "m06", "text": "Tobias Lindqvist and Tobias Achterberg both asked for Kestrel on Sunday. Lindqvist booked it first for a racing start drill, so Achterberg will scull Saltmarsh instead.",
+   "mentions": [["Tobias Lindqvist", "tobias_l"], ["Tobias Achterberg", "tobias_a"], ["Kestrel", "kestrel"], ["Lindqvist", "tobias_l"], ["it", "kestrel", "ref"], ["Achterberg", "tobias_a"], ["Saltmarsh", "saltmarsh"]],
+   "facts": [
+    {"model": "Outing", "in": "Lindqvist booked it first for a racing start drill", "fields": {"piece": "racing start drill", "boat": "kestrel", "booked_by": "tobias_l", "state": "planned"}, "act": "assert"}]},
+  {"id": "m07", "text": "Ifeoma Adeyemi: Tobias Lindqvist rang about the erg test, and Tobias Achterberg emailed too. Tobias says the test has moved to Friday.",
+   "mentions": [["Ifeoma Adeyemi", "ifeoma"], ["Tobias Lindqvist", "tobias_l"], ["Tobias Achterberg", "tobias_a"], ["Tobias", "tobias_l", "?"]],
+   "facts": []},
+  {"id": "m08", "text": "Kalani Akana: Our new junior, Kalani Mahoe, starts on Monday. She will row bow in Grey Heron.",
+   "mentions": [["Kalani Akana", "kalani"], ["Kalani Mahoe", "kalani_m"], ["She", "kalani_m", "ref"], ["Grey Heron", "heron"]],
+   "facts": [
+    {"model": "CrewSeat", "in": "She will row bow in Grey Heron.", "from": "heron", "to": "kalani_m", "label": "bow", "act": "plan"}]},
+  {"id": "m09", "text": "Yusuf Demirci: I coach Ifeoma and Anouk on Tuesdays. Mei-Lin Harcourt is Anouk's mentor this season.",
+   "mentions": [["Yusuf Demirci", "yusuf"], ["I", "yusuf", "ref"], ["Ifeoma", "ifeoma"], ["Anouk", "anouk"], ["Mei-Lin Harcourt", "meilin"], ["Anouk", "anouk"]],
+   "facts": [
+    {"model": "Coaching", "in": "I coach Ifeoma and Anouk on Tuesdays.", "from": "ifeoma", "to": "yusuf", "label": "coach", "act": "assert"},
+    {"model": "Coaching", "in": "I coach Ifeoma and Anouk on Tuesdays.", "from": "anouk", "to": "yusuf", "label": "coach", "act": "assert"},
+    {"model": "Coaching", "in": "Mei-Lin Harcourt is Anouk's mentor this season.", "from": "anouk", "to": "meilin", "label": "mentor", "act": "assert"}]},
+  {"id": "m10", "text": "Note from the boathouse: Old Maud has a jammed seat track, reported by Dagny Solberg. Nobody has repaired it yet.",
+   "mentions": [["Old Maud", "maud"], ["Dagny Solberg", "dagny"]],
+   "facts": [
+    {"model": "DamageReport", "in": "Old Maud has a jammed seat track, reported by Dagny Solberg.", "fields": {"damage": "jammed seat track", "boat": "maud", "reported_by": "dagny"}, "act": "assert"}]},
+  {"id": "m11", "text": "As I told Kalani Akana at the regatta, \"Saltmarsh has a snapped fin and stays on the rack.\"\nThe boatman",
+   "mentions": [["I", "none", "ref"], ["Kalani Akana", "kalani"], ["Saltmarsh", "saltmarsh"]],
+   "quotes": [["Saltmarsh has a snapped fin and stays on the rack.", "author"]],
+   "facts": [
+    {"model": "DamageReport", "in": "Saltmarsh has a snapped fin and stays on the rack.", "fields": {"damage": "snapped fin", "boat": "saltmarsh"}, "act": "assert"}]},
+  {"id": "m12", "text": "Anouk Verbeek: I don't row stroke in Kestrel any more; Ifeoma Adeyemi does.",
+   "mentions": [["Anouk Verbeek", "anouk"], ["I", "anouk", "ref"], ["Kestrel", "kestrel"], ["Ifeoma Adeyemi", "ifeoma"]],
+   "facts": [
+    {"model": "CrewSeat", "in": "I don't row stroke in Kestrel any more", "from": "kestrel", "to": "anouk", "label": "stroke", "act": "assert", "deny": true},
+    {"model": "CrewSeat", "in": "Ifeoma Adeyemi does.", "from": "kestrel", "to": "ifeoma", "label": "stroke", "act": "assert"}]},
+  {"id": "m13", "text": "If the water stays flat, Kalani Akana will run Tobias Achterberg's 10 km steady state in Grey Heron from the launch on Thursday.",
+   "mentions": [["Kalani Akana", "kalani"], ["Tobias Achterberg", "tobias_a"], ["Grey Heron", "heron"]],
+   "facts": [
+    {"model": "Outing", "in": "If the water stays flat, Kalani Akana will run", "fields": {"piece": "steady state", "boat": "heron", "coach": "kalani", "sculler": "tobias_a", "state": "planned", "launch_needed": true, "distance_km": 10, "conditions": "the water stays flat"}, "act": "condition"}]},
+  {"id": "m14", "text": "Mei-Lin Harcourt: Pencilled in, maybe: Dagny sculls a 6 km light paddle in Old Maud on Friday, booked by me.",
+   "mentions": [["Mei-Lin Harcourt", "meilin"], ["Dagny", "dagny"], ["Old Maud", "maud"], ["me", "meilin", "ref"]],
+   "facts": [
+    {"model": "Outing", "in": "Pencilled in, maybe: Dagny sculls a 6 km light paddle", "fields": {"piece": "light paddle", "boat": "maud", "sculler": "dagny", "booked_by": "meilin", "state": "planned", "distance_km": 6}, "act": "draft"}]},
+  {"id": "m15", "text": "Saturday's 2000m race pace session in Kestrel was scrubbed because of the wind, Tobias Lindqvist confirmed.",
+   "mentions": [["Kestrel", "kestrel"], ["Tobias Lindqvist", "tobias_l"]],
+   "facts": [
+    {"model": "Outing", "in": "Saturday's 2000m race pace session in Kestrel was scrubbed", "fields": {"piece": "race pace session", "boat": "kestrel", "state": "scrubbed", "conditions": "the wind"}, "act": "report"}]},
+  {"id": "m16", "text": "Dear Yusuf,\nCould you book Grey Heron for Anouk Verbeek's seat racing next Wednesday, with the launch?\nBest,\nIfeoma Adeyemi",
+   "mentions": [["Yusuf", "yusuf"], ["you", "yusuf", "ref"], ["Grey Heron", "heron"], ["Anouk Verbeek", "anouk"], ["Ifeoma Adeyemi", "ifeoma"]],
+   "facts": [
+    {"model": "Outing", "in": "Could you book Grey Heron for Anouk Verbeek's seat racing next Wednesday, with the launch?", "fields": {"piece": "seat racing", "boat": "heron", "booked_by": "yusuf", "sculler": "anouk", "state": "planned", "launch_needed": true}, "act": "request"}]},
+  {"id": "m17", "text": "Dagny Solberg: Old Maud's jammed seat track was repaired by Tobias Achterberg yesterday.",
+   "mentions": [["Dagny Solberg", "dagny"], ["Old Maud", "maud"], ["Tobias Achterberg", "tobias_a"]],
+   "facts": [
+    {"model": "DamageReport", "in": "Old Maud's jammed seat track was repaired by Tobias Achterberg yesterday.", "fields": {"damage": "jammed seat track", "boat": "maud", "fixer": "tobias_a", "repaired": true}, "act": "assert"}]},
+  {"id": "m18", "text": "Fwd from Yusuf Demirci: \"Kalani Mahoe is my new squad member, and I am her coach until the summer.\"",
+   "mentions": [["Yusuf Demirci", "yusuf"], ["Kalani Mahoe", "kalani_m"], ["my", "yusuf", "ref"], ["I", "yusuf", "ref"], ["her", "kalani_m", "ref"]],
+   "quotes": [["Kalani Mahoe is my new squad member, and I am her coach until the summer.", "yusuf"]],
+   "facts": [
+    {"model": "Coaching", "in": "Kalani Mahoe is my new squad member", "from": "kalani_m", "to": "yusuf", "label": "coach", "act": "assert"}]},
+  {"id": "m19", "text": "I'm Anouk Verbeek and I won't be rowing bow in Saltmarsh this weekend after all.",
+   "mentions": [["I", "anouk", "ref"], ["Anouk Verbeek", "anouk"], ["I", "anouk", "ref"], ["Saltmarsh", "saltmarsh"]],
+   "facts": [
+    {"model": "CrewSeat", "in": "I won't be rowing bow in Saltmarsh", "from": "saltmarsh", "to": "anouk", "label": "bow", "act": "plan", "deny": true}]},
+  {"id": "m20", "text": "Squad note: Ifeoma Adeyemi booked Saltmarsh for a 12 km long paddle on Sunday; Yusuf will coach it from the launch.",
+   "mentions": [["Ifeoma Adeyemi", "ifeoma"], ["Saltmarsh", "saltmarsh"], ["Yusuf", "yusuf"]],
+   "facts": [
+    {"model": "Outing", "in": "Squad note: Ifeoma Adeyemi booked Saltmarsh", "fields": {"piece": "long paddle", "boat": "saltmarsh", "booked_by": "ifeoma", "coach": "yusuf", "state": "planned", "launch_needed": true, "distance_km": 12}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who rows stroke in Kestrel?", "speaker": null, "cypher": "MATCH (n0:Boat)-[:stroke]->(n1:Rower) WHERE n0.name = 'Kestrel' RETURN n1.name AS name"},
+  {"q": "Who coxes Kestrel?", "speaker": null, "cypher": "MATCH (n0:Boat)-[:cox]->(n1:Rower) WHERE n0.name = 'Kestrel' RETURN n1.name AS name"},
+  {"q": "Who is my coach?", "speaker": "dagny", "cypher": "MATCH (n0:Rower)-[:coach]->(n1:Rower) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Name every athlete of mine.", "speaker": "yusuf", "cypher": "MATCH (n0:Rower)-[:athlete]->(n1:Rower) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Which boat am I coxing?", "speaker": "ifeoma", "cypher": "MATCH (n0:Rower)-[:coxing]->(n1:Boat) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who mentors Anouk Verbeek?", "speaker": null, "cypher": "MATCH (n0:Rower)-[:mentor]->(n1:Rower) WHERE n0.name = 'Anouk Verbeek' RETURN n1.name AS name"},
+  {"q": "How many outings are there?", "speaker": null, "cypher": "MATCH (n0:Outing) RETURN count(n0) AS count"},
+  {"q": "Has the jammed seat track been repaired?", "speaker": null, "cypher": "MATCH (n0:DamageReport) WHERE n0.damage = 'jammed seat track' RETURN n0.repaired AS repaired"},
+  {"q": "Is there a record of the snapped fin being repaired?", "speaker": null, "cypher": "MATCH (n0:DamageReport) WHERE n0.damage = 'snapped fin' RETURN coalesce(n0.repaired, false) AS repaired"},
+  {"q": "Who reported damage to Grey Heron?", "speaker": null, "cypher": "MATCH (n0:Boat)<-[:boat]-(n1:DamageReport)-[:reported_by]->(n2:Rower) WHERE n0.name = 'Grey Heron' RETURN n2.name AS name"},
+  {"q": "Which outings did Ifeoma Adeyemi book?", "speaker": null, "cypher": "MATCH (n0:Rower)<-[:booked_by]-(n1:Outing) WHERE n0.name = 'Ifeoma Adeyemi' RETURN n1.piece AS piece"},
+  {"q": "How far is the long paddle?", "speaker": null, "cypher": "MATCH (n0:Outing) WHERE n0.piece = 'long paddle' RETURN n0.distance_km AS distance_km"},
+  {"q": "What piece and distance were rowed in Saltmarsh?", "speaker": null, "cypher": "MATCH (n0:Boat)<-[:boat]-(n1:Outing) WHERE n0.name = 'Saltmarsh' RETURN n1.piece AS piece, n1.distance_km AS distance_km"},
+  {"q": "What distances are the paddle outings?", "speaker": null, "cypher": "MATCH (n0:Outing) WHERE n0.piece CONTAINS 'paddle' RETURN n0.distance_km AS distance_km"},
+  {"q": "Did the race pace session need the launch?", "speaker": null, "cypher": "MATCH (n0:Outing) WHERE n0.piece = 'race pace session' RETURN n0.launch_needed AS launch_needed"},
+  {"q": "Is there a record that a launch was needed for the light paddle?", "speaker": null, "cypher": "MATCH (n0:Outing) WHERE n0.piece = 'light paddle' RETURN coalesce(n0.launch_needed, false) AS launch_needed"},
+  {"q": "What damage did Kalani Akana report?", "speaker": null, "cypher": "MATCH (n0:Rower)<-[:reported_by]-(n1:DamageReport) WHERE n0.name = 'Kalani Akana' RETURN n1.damage AS damage"}
+ ]
+}

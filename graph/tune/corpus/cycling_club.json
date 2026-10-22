@@ -1,0 +1,155 @@
+{
+ "domain": "cycling_club",
+ "models": {
+  "Rider": {"description": "A club member who rides. A first name alone is not an identity.",
+   "properties": {"full_name": "string", "licence_no": "string?", "phone": "string?"}, "identities": ["licence_no"]},
+  "Route": {"description": "A named club route, independent of who rides it.",
+   "properties": {"route_title": "string", "terrain": "string?"}},
+  "Squad": {"description": "How one rider stands toward another: captained by, coached by or paced by them.\nPacing a rider is not coaching them.",
+   "properties": {"rider": "Rider", "teammate": "Rider", "tie": ["captain", "coach", "pacer"]},
+   "relation": {"from": "rider", "to": "teammate", "label": "tie", "phrasing": "{from} is {label} {to}",
+    "labels": {"captain": {"forward": ["captained by", "led by"], "reverse": ["captains"]},
+               "coach": {"forward": ["coached by", "trained by"], "reverse": ["pupils"]},
+               "pacer": {"forward": ["paced by"], "reverse": ["pacing"]}}}},
+  "Waymarking": {"description": "Who marshals a route: the ride leader at the front or the sweeper at the back.",
+   "properties": {"route": "Route", "marshal": "Rider", "post": ["leader", "sweeper"]},
+   "relation": {"from": "route", "to": "marshal", "label": "post", "phrasing": "On {from}, {to} is the {label}",
+    "labels": {"leader": {"forward": ["ride leader", "leads"], "reverse": ["led"]},
+               "sweeper": {"forward": ["sweeper", "back marker"], "reverse": ["swept"]}}}},
+  "Outing": {"description": "A club ride on a date. organiser arranged it, ride_leader rode at the front, first_aider carried the kit.",
+   "properties": {"headline": "string", "route": "Route?", "organiser": "Rider?", "ride_leader": "Rider?", "first_aider": "Rider?",
+    "status": ["scheduled", "ridden", "called_off"], "lights_required": "boolean?", "distance_km": "integer?", "meeting_point": "string?"},
+   "absences": {"lights_required": "lights_unrecorded"}},
+  "Repair": {"description": "A fault on a rider's bike. owner rides the bike, mechanic works on it.",
+   "properties": {"fault": "string", "owner": "Rider?", "mechanic": "Rider?", "state": ["waiting", "fixed", "written_off"],
+    "cost_euros": "integer?", "warranty": "boolean?"},
+   "absences": {"warranty": "warranty_unknown"}}
+ },
+ "entities": {
+  "nino": {"model": "Rider", "name": "Nino Beridze"},
+  "rhys": {"model": "Rider", "name": "Rhys Pritchard"},
+  "rhys_b": {"model": "Rider", "name": "Rhys Bevan"},
+  "haukur": {"model": "Rider", "name": "Haukur Magnusson"},
+  "haukur_j": {"model": "Rider", "name": "Haukur Jonsson"},
+  "lalao": {"model": "Rider", "name": "Lalao Rakoto"},
+  "somchai": {"model": "Rider", "name": "Somchai Wongsa"},
+  "zana": {"model": "Rider", "name": "Zana Baran"},
+  "chidi": {"model": "Rider", "name": "Chidi Eze"},
+  "ridgeway": {"model": "Route", "name": "Ridgeway Climb"},
+  "coal": {"model": "Route", "name": "Coal Valley Loop"},
+  "harbour": {"model": "Route", "name": "Harbour Flats"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Nino Beridze: Saturday's club run on the Ridgeway Climb is scheduled at 64 km, meeting at the old mill. I lead the Ridgeway Climb every month and Haukur Magnusson is its sweeper.",
+   "mentions": [["Nino Beridze", "nino"], ["Ridgeway Climb", "ridgeway"], ["I", "nino", "ref"], ["Ridgeway Climb", "ridgeway"], ["Haukur Magnusson", "haukur"], ["its", "ridgeway", "ref"]],
+   "facts": [
+    {"model": "Outing", "in": "Saturday's club run on the Ridgeway Climb is scheduled at 64 km", "fields": {"headline": "club run", "route": "ridgeway", "status": "scheduled", "distance_km": 64, "meeting_point": "the old mill"}, "act": "assert"},
+    {"model": "Waymarking", "in": "I lead the Ridgeway Climb every month", "from": "ridgeway", "to": "nino", "label": "leader", "act": "assert"},
+    {"model": "Waymarking", "in": "Haukur Magnusson is its sweeper", "from": "ridgeway", "to": "haukur", "label": "sweeper", "act": "assert"}]},
+  {"id": "m02", "text": "Rhys Pritchard is coached by Lalao Rakoto, and Rhys Bevan is captained by her too.",
+   "mentions": [["Rhys Pritchard", "rhys"], ["Lalao Rakoto", "lalao"], ["Rhys Bevan", "rhys_b"], ["her", "lalao", "ref"]],
+   "facts": [
+    {"model": "Squad", "in": "Rhys Pritchard is coached by Lalao Rakoto", "from": "rhys", "to": "lalao", "label": "coach", "act": "assert"},
+    {"model": "Squad", "in": "Rhys Bevan is captained by her too", "from": "rhys_b", "to": "lalao", "label": "captain", "act": "assert"}]},
+  {"id": "m03", "text": "Somchai Wongsa: I'm not Zana's coach. I only pace her on the long rides.",
+   "mentions": [["Somchai Wongsa", "somchai"], ["I", "somchai", "ref"], ["Zana", "zana"], ["I", "somchai", "ref"], ["her", "zana", "ref"]],
+   "facts": [
+    {"model": "Squad", "in": "I'm not Zana's coach.", "from": "zana", "to": "somchai", "label": "coach", "act": "assert", "deny": true},
+    {"model": "Squad", "in": "I only pace her on the long rides.", "from": "zana", "to": "somchai", "label": "pacer", "act": "assert"}]},
+  {"id": "m04", "text": "Chidi Eze told the group: \"My rear wheel is buckled and is waiting for parts, about 40 euros.\"",
+   "mentions": [["Chidi Eze", "chidi"], ["My", "chidi", "ref"]],
+   "quotes": [["My rear wheel is buckled and is waiting for parts, about 40 euros.", "chidi"]],
+   "facts": [
+    {"model": "Repair", "in": "My rear wheel is buckled", "fields": {"fault": "rear wheel is buckled", "owner": "chidi", "state": "waiting", "cost_euros": 40}, "act": "assert"}]},
+  {"id": "m05", "text": "Hi all,\nLalao, could you be the first aider on the Harbour Flats social ride next Sunday? Somchai Wongsa organised it and Zana Baran is leading.\nCheers,\nRhys Bevan",
+   "mentions": [["Lalao", "lalao"], ["Harbour Flats", "harbour"], ["Somchai Wongsa", "somchai"], ["Zana Baran", "zana"], ["Rhys Bevan", "rhys_b"]],
+   "facts": [
+    {"model": "Outing", "in": "Lalao, could you be the first aider", "fields": {"headline": "social ride", "route": "harbour", "first_aider": "lalao", "status": "scheduled"}, "act": "request"},
+    {"model": "Outing", "in": "Somchai Wongsa organised it", "fields": {"organiser": "somchai", "ride_leader": "zana"}, "act": "assert"}]},
+  {"id": "m06", "text": "Ride notes: Rhys Pritchard and Rhys Bevan both punctured on Coal Valley Loop. Rhys says the tyres are worn out.",
+   "mentions": [["Rhys Pritchard", "rhys"], ["Rhys Bevan", "rhys_b"], ["Coal Valley Loop", "coal"], ["Rhys", "rhys", "?"]],
+   "facts": []},
+  {"id": "m07", "text": "If the rain holds off, Haukur Magnusson will lead the Coal Valley Loop on Wednesday and Chidi Eze can sweep it.",
+   "mentions": [["Haukur Magnusson", "haukur"], ["Coal Valley Loop", "coal"], ["Chidi Eze", "chidi"], ["it", "coal", "ref"]],
+   "facts": [
+    {"model": "Waymarking", "in": "Haukur Magnusson will lead the Coal Valley Loop", "from": "coal", "to": "haukur", "label": "leader", "act": "condition"},
+    {"model": "Waymarking", "in": "Chidi Eze can sweep it", "from": "coal", "to": "chidi", "label": "sweeper", "act": "condition"}]},
+  {"id": "m08", "text": "Zana Baran: I think Nino is captained by Rhys Pritchard this season, but don't quote me.",
+   "mentions": [["Zana Baran", "zana"], ["I", "zana", "ref"], ["Nino", "nino"], ["Rhys Pritchard", "rhys"], ["me", "zana", "ref"]],
+   "facts": [
+    {"model": "Squad", "in": "I think Nino is captained by Rhys Pritchard", "from": "nino", "to": "rhys", "label": "captain", "act": "draft"}]},
+  {"id": "m09", "text": "Haukur Magnusson fixed Lalao Rakoto's snapped gear cable under warranty, so she paid 0 euros.",
+   "mentions": [["Haukur Magnusson", "haukur"], ["Lalao Rakoto", "lalao"], ["she", "lalao", "ref"]],
+   "facts": [
+    {"model": "Repair", "in": "Haukur Magnusson fixed Lalao Rakoto's snapped gear cable", "fields": {"fault": "snapped gear cable", "owner": "lalao", "mechanic": "haukur", "state": "fixed", "warranty": true, "cost_euros": 0}, "act": "assert"}]},
+  {"id": "m10", "text": "The Ridgeway Climb hill reps were called off, nobody needed lights, and only 12 km had been ridden.",
+   "mentions": [["Ridgeway Climb", "ridgeway"]],
+   "facts": [
+    {"model": "Outing", "in": "The Ridgeway Climb hill reps were called off", "fields": {"headline": "hill reps", "route": "ridgeway", "status": "called_off", "lights_required": false, "distance_km": 12}, "act": "assert"}]},
+  {"id": "m11", "text": "Lalao Rakoto said that Somchai Wongsa coaches Chidi Eze on Tuesdays.",
+   "mentions": [["Lalao Rakoto", "lalao"], ["Somchai Wongsa", "somchai"], ["Chidi Eze", "chidi"]],
+   "facts": [
+    {"model": "Squad", "in": "Somchai Wongsa coaches Chidi Eze", "from": "chidi", "to": "somchai", "label": "coach", "act": "report"}]},
+  {"id": "m12", "text": "Haukur Magnusson rode the Harbour Flats sweep last week. Haukur Jonsson, his cousin, wants to try leading it.",
+   "mentions": [["Haukur Magnusson", "haukur"], ["Harbour Flats", "harbour"], ["Haukur Jonsson", "haukur_j"], ["his", "haukur", "ref"], ["it", "harbour", "ref"]],
+   "facts": [
+    {"model": "Waymarking", "in": "Haukur Magnusson rode the Harbour Flats sweep last week.", "from": "harbour", "to": "haukur", "label": "sweeper", "act": "assert"},
+    {"model": "Waymarking", "in": "Haukur Jonsson, his cousin, wants to try leading it.", "from": "harbour", "to": "haukur_j", "label": "leader", "act": "plan"}]},
+  {"id": "m13", "text": "Nino Beridze: Chidi, would you sweep the Harbour Flats ride for me? Nino will owe you a coffee.",
+   "mentions": [["Nino Beridze", "nino"], ["Chidi", "chidi"], ["Harbour Flats", "harbour"], ["me", "nino", "ref"], ["Nino", "nino"]],
+   "facts": [
+    {"model": "Waymarking", "in": "Chidi, would you sweep the Harbour Flats ride for me?", "from": "harbour", "to": "chidi", "label": "sweeper", "act": "request"}]},
+  {"id": "m14", "text": "Rhys Bevan: my frame crack was written off by Somchai, who says it would cost 300 euros to fix.",
+   "mentions": [["Rhys Bevan", "rhys_b"], ["my", "rhys_b", "ref"], ["Somchai", "somchai"]],
+   "facts": [
+    {"model": "Repair", "in": "my frame crack was written off by Somchai", "fields": {"fault": "frame crack", "owner": "rhys_b", "mechanic": "somchai", "state": "written_off", "cost_euros": 300}, "act": "assert"}]},
+  {"id": "m15", "text": "Zana Baran organised the Coal Valley Loop night ride, Nino Beridze led it and Rhys Pritchard was first aider; lights were required and we did 48 km.",
+   "mentions": [["Zana Baran", "zana"], ["Coal Valley Loop", "coal"], ["Nino Beridze", "nino"], ["Rhys Pritchard", "rhys"]],
+   "facts": [
+    {"model": "Outing", "in": "Zana Baran organised the Coal Valley Loop night ride", "fields": {"headline": "night ride", "route": "coal", "organiser": "zana", "ride_leader": "nino", "first_aider": "rhys", "status": "ridden", "lights_required": true, "distance_km": 48}, "act": "assert"}]},
+  {"id": "m16", "text": "Note from the captain's log: \"I swept the Ridgeway Climb myself because Haukur was ill.\" Signed, Nino Beridze.",
+   "mentions": [["I", "nino", "ref"], ["Ridgeway Climb", "ridgeway"], ["Haukur", "haukur"], ["Nino Beridze", "nino"]],
+   "quotes": [["I swept the Ridgeway Climb myself because Haukur was ill.", "nino"]],
+   "facts": [
+    {"model": "Waymarking", "in": "I swept the Ridgeway Climb myself", "from": "ridgeway", "to": "nino", "label": "sweeper", "act": "assert"}]},
+  {"id": "m17", "text": "Overheard at the cafe stop: \"Rhys Bevan is the worst sweeper the Coal Valley Loop has had.\" I would not repeat that to him.",
+   "mentions": [["Rhys Bevan", "rhys_b"], ["Coal Valley Loop", "coal"], ["I", "none", "ref"], ["him", "rhys_b", "ref"]],
+   "quotes": [["Rhys Bevan is the worst sweeper the Coal Valley Loop has had.", "?"]],
+   "facts": [
+    {"model": "Waymarking", "in": "Rhys Bevan is the worst sweeper the Coal Valley Loop has had.", "from": "coal", "to": "rhys_b", "label": "sweeper", "act": "assert"}]},
+  {"id": "m18", "text": "Lalao: we've pencilled in the Harbour Flats recovery spin, 30 km, maybe Thursday.",
+   "mentions": [["Lalao", "lalao"], ["we", "lalao", "ref"], ["Harbour Flats", "harbour"]],
+   "facts": [
+    {"model": "Outing", "in": "we've pencilled in the Harbour Flats recovery spin", "fields": {"headline": "recovery spin", "route": "harbour", "distance_km": 30, "status": "scheduled"}, "act": "draft"}]},
+  {"id": "m19", "text": "Somchai Wongsa mended Zana Baran's chain on Monday. Somchai charged her 15 euros, and Zana was happy.",
+   "mentions": [["Somchai Wongsa", "somchai"], ["Zana Baran", "zana"], ["Somchai", "somchai"], ["her", "zana", "ref"], ["Zana", "zana"]],
+   "facts": [
+    {"model": "Repair", "in": "Somchai Wongsa mended Zana Baran's chain on Monday.", "fields": {"fault": "chain", "owner": "zana", "mechanic": "somchai", "state": "fixed"}, "act": "assert"},
+    {"model": "Repair", "in": "Somchai charged her 15 euros", "fields": {"owner": "zana", "mechanic": "somchai", "cost_euros": 15}, "act": "assert"}]},
+  {"id": "m20", "text": "Chidi Eze: Rhys Bevan is my captain now, not Nino Beridze.",
+   "mentions": [["Chidi Eze", "chidi"], ["Rhys Bevan", "rhys_b"], ["my", "chidi", "ref"], ["Nino Beridze", "nino"]],
+   "facts": [
+    {"model": "Squad", "in": "Rhys Bevan is my captain now", "from": "chidi", "to": "rhys_b", "label": "captain", "act": "assert"},
+    {"model": "Squad", "in": "not Nino Beridze", "from": "chidi", "to": "nino", "label": "captain", "act": "assert", "deny": true}]}
+ ],
+ "questions": [
+  {"q": "Who leads the Ridgeway Climb?", "speaker": null, "cypher": "MATCH (n0:Route)-[:leader]->(n1:Rider) WHERE n0.route_title = 'Ridgeway Climb' RETURN n1.full_name AS full_name"},
+  {"q": "Who is my coach?", "speaker": "rhys", "cypher": "MATCH (n0:Rider)-[:coach]->(n1:Rider) WHERE id(n0) = $speaker RETURN n1.full_name AS full_name"},
+  {"q": "Who are my pupils?", "speaker": "lalao", "cypher": "MATCH (n0:Rider)-[:pupils]->(n1:Rider) WHERE id(n0) = $speaker RETURN n1.full_name AS full_name"},
+  {"q": "Which routes have I swept?", "speaker": "haukur", "cypher": "MATCH (n0:Rider)-[:swept]->(n1:Route) WHERE id(n0) = $speaker RETURN n1.route_title AS route_title"},
+  {"q": "How many outings are there?", "speaker": null, "cypher": "MATCH (n0:Outing) RETURN count(n0) AS count"},
+  {"q": "Did the hill reps need lights?", "speaker": null, "cypher": "MATCH (n0:Outing) WHERE n0.headline = 'hill reps' RETURN n0.lights_required AS lights_required"},
+  {"q": "Is there a record of lights being required for the night ride?", "speaker": null, "cypher": "MATCH (n0:Outing) WHERE n0.headline = 'night ride' RETURN coalesce(n0.lights_required, false) AS lights_required"},
+  {"q": "Which repairs has Haukur Magnusson worked on?", "speaker": null, "cypher": "MATCH (n0:Rider)<-[:mechanic]-(n1:Repair) WHERE n0.full_name = 'Haukur Magnusson' RETURN n1.fault AS fault"},
+  {"q": "Who organised the night ride?", "speaker": null, "cypher": "MATCH (n0:Outing)-[:organiser]->(n1:Rider) WHERE n0.headline = 'night ride' RETURN n1.full_name AS full_name"},
+  {"q": "How much did the frame crack cost?", "speaker": null, "cypher": "MATCH (n0:Repair) WHERE n0.fault = 'frame crack' RETURN n0.cost_euros AS cost_euros"},
+  {"q": "What outings use Harbour Flats?", "speaker": null, "cypher": "MATCH (n0:Route)<-[:route]-(n1:Outing) WHERE n0.route_title = 'Harbour Flats' RETURN n1.headline AS headline"},
+  {"q": "Who is Nino Beridze's captain?", "speaker": null, "cypher": "MATCH (n0:Rider)-[:captain]->(n1:Rider) WHERE n0.full_name = 'Nino Beridze' RETURN n1.full_name AS full_name"},
+  {"q": "What faults are recorded on my bikes?", "speaker": "chidi", "cypher": "MATCH (n0:Rider)<-[:owner]-(n1:Repair) WHERE id(n0) = $speaker RETURN n1.fault AS fault"},
+  {"q": "What ride outings are there?", "speaker": null, "cypher": "MATCH (n0:Outing) WHERE n0.headline CONTAINS 'ride' RETURN n0.headline AS headline"},
+  {"q": "What are the fault and state of every repair?", "speaker": null, "cypher": "MATCH (n0:Repair) RETURN n0.fault AS fault, n0.state AS state"},
+  {"q": "Who is the sweeper on the Coal Valley Loop?", "speaker": null, "cypher": "MATCH (n0:Route)-[:sweeper]->(n1:Rider) WHERE n0.route_title = 'Coal Valley Loop' RETURN n1.full_name AS full_name"},
+  {"q": "Was the snapped gear cable fixed under warranty?", "speaker": null, "cypher": "MATCH (n0:Repair) WHERE n0.fault = 'snapped gear cable' RETURN n0.warranty AS warranty"},
+  {"q": "How far was the club run?", "speaker": null, "cypher": "MATCH (n0:Outing) WHERE n0.headline = 'club run' RETURN n0.distance_km AS distance_km"}
+ ]
+}

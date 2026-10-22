@@ -179,7 +179,8 @@ class Search:
                  for m in desc}
         facts = set()
         for e in domain["entities"].values():
-            facts.add((e["model"], "name" if "name" in texts[e["model"]] else sorted(texts[e["model"]])[0], e["name"]))
+            first = next(p for p in desc if p["name"] == e["model"])["properties"][0]["name"]
+            facts.add((e["model"], first, e["name"]))
             for k, v in e.get("fields", {}).items():
                 facts.add((e["model"], k, v))
         for m in domain["messages"]:

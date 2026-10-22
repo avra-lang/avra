@@ -1,0 +1,139 @@
+{
+ "domain": "newsroom",
+ "models": {
+  "Journalist": {"description": "A reporter, editor or photographer at the paper, staff or freelance. A first name alone is not an identity.",
+   "properties": {"byline": "string", "email": "string?", "phone": "string?"}, "identities": ["email"]},
+  "Story": {"description": "One piece in the news list, known by its slug, whoever works on it.",
+   "properties": {"slug": "string", "topic": "string?"}},
+  "StoryRole": {"description": "Who does what on a story: the writer who files it, the editor who checks it, or the photographer who takes its pictures.\nEditing a story is not writing it.",
+   "properties": {"story": "Story", "journalist": "Journalist", "role": ["writer", "editor", "photographer"]},
+   "relation": {"from": "story", "to": "journalist", "label": "role", "phrasing": "{to} is {label} on {from}",
+    "labels": {"writer": {"forward": ["writer", "reporter", "wrote"], "reverse": ["authored"]},
+               "editor": {"forward": ["editor", "edits"], "reverse": ["edited"]},
+               "photographer": {"forward": ["photographer", "pictures by", "photographs"], "reverse": ["photographed"]}}}},
+  "Pairing": {"description": "A working tie between two journalists: one is the deputy of the other, or trains the other.",
+   "properties": {"colleague": "Journalist", "partner": "Journalist", "tie": ["deputy", "trainer"]},
+   "relation": {"from": "colleague", "to": "partner", "label": "tie", "phrasing": "{to} serves as {label} for {from}",
+    "labels": {"deputy": {"forward": ["deputy", "second in command"], "reverse": ["chief"]},
+               "trainer": {"forward": ["trainer", "trains", "coach"], "reverse": ["trainee"]}}}},
+  "Correction": {"description": "A fix to a published story. flagged_by spotted the error, fixed_by wrote the fix, signed_off_by approved it.",
+   "properties": {"story": "Story", "flagged_by": "Journalist?", "fixed_by": "Journalist?", "signed_off_by": "Journalist?",
+    "status": ["flagged", "fixed", "rejected"], "legal_review": "boolean?", "word_count": "integer?", "wording": "string?"},
+   "absences": {"legal_review": "no_legal_review_record"}}
+ },
+ "entities": {
+  "amara_n": {"model": "Journalist", "name": "Amara Nwosu"},
+  "amara_l": {"model": "Journalist", "name": "Amara Lindqvist"},
+  "bashir": {"model": "Journalist", "name": "Bashir Haddad"},
+  "siosaia": {"model": "Journalist", "name": "Siosaia Tupou"},
+  "mirela": {"model": "Journalist", "name": "Mirela Popescu", "fields": {"email": "mirela@harbourgazette.example"}},
+  "rangi": {"model": "Journalist", "name": "Rangi Parata"},
+  "daniela": {"model": "Journalist", "name": "Daniela Kowalczyk"},
+  "harbour": {"model": "Story", "name": "Harbour Strike"},
+  "night": {"model": "Story", "name": "Night Market Fire"},
+  "flood": {"model": "Story", "name": "Flood Barrier"},
+  "rail": {"model": "Story", "name": "Rail Fare Probe"},
+  "mayor": {"model": "Story", "name": "Mayor Expenses"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Amara Nwosu: I wrote Harbour Strike, and Bashir Haddad is its editor. He wants it filed by six.",
+   "mentions": [["Amara Nwosu", "amara_n"], ["I", "amara_n", "ref"], ["Harbour Strike", "harbour"], ["Bashir Haddad", "bashir"], ["its", "harbour", "ref"], ["He", "bashir", "ref"], ["it", "harbour", "ref"]],
+   "facts": [
+    {"model": "StoryRole", "in": "I wrote Harbour Strike", "from": "harbour", "to": "amara_n", "label": "writer", "act": "assert"},
+    {"model": "StoryRole", "in": "Bashir Haddad is its editor", "from": "harbour", "to": "bashir", "label": "editor", "act": "assert"}]},
+  {"id": "m02", "text": "Note from the picture desk: Rangi Parata took the photographs for Night Market Fire. Rangi was not the photographer on Flood Barrier; that was a freelancer.",
+   "mentions": [["Rangi Parata", "rangi"], ["Night Market Fire", "night"], ["Rangi", "rangi"], ["Flood Barrier", "flood"]],
+   "facts": [
+    {"model": "StoryRole", "in": "Rangi Parata took the photographs for Night Market Fire.", "from": "night", "to": "rangi", "label": "photographer", "act": "assert"},
+    {"model": "StoryRole", "in": "Rangi was not the photographer on Flood Barrier", "from": "flood", "to": "rangi", "label": "photographer", "act": "assert", "deny": true}]},
+  {"id": "m03", "text": "Hi Siosaia,\nCould you fix the flagged correction on Rail Fare Probe, with Mirela Popescu signing it off?\nCheers,\nDaniela Kowalczyk",
+   "mentions": [["Siosaia", "siosaia"], ["you", "siosaia", "ref"], ["Rail Fare Probe", "rail"], ["Mirela Popescu", "mirela"], ["Daniela Kowalczyk", "daniela"]],
+   "facts": [
+    {"model": "Correction", "in": "Could you fix the flagged correction on Rail Fare Probe, with Mirela Popescu signing it off?", "fields": {"story": "rail", "fixed_by": "siosaia", "signed_off_by": "mirela", "status": "flagged"}, "act": "request"}]},
+  {"id": "m04", "text": "Mirela Popescu is deputy to Bashir Haddad on the news desk. Bashir also trains Amara Lindqvist.",
+   "mentions": [["Mirela Popescu", "mirela"], ["Bashir Haddad", "bashir"], ["Bashir", "bashir"], ["Amara Lindqvist", "amara_l"]],
+   "facts": [
+    {"model": "Pairing", "in": "Mirela Popescu is deputy to Bashir Haddad on the news desk.", "from": "bashir", "to": "mirela", "label": "deputy", "act": "assert"},
+    {"model": "Pairing", "in": "Bashir also trains Amara Lindqvist.", "from": "amara_l", "to": "bashir", "label": "trainer", "act": "assert"}]},
+  {"id": "m05", "text": "Minutes, Monday: Amara Nwosu flagged a correction to Mayor Expenses, 40 words on the wrong council date. Amara Lindqvist will check the wording. Amara said legal had not seen it.",
+   "mentions": [["Amara Nwosu", "amara_n"], ["Mayor Expenses", "mayor"], ["Amara Lindqvist", "amara_l"], ["Amara", "amara_n", "?"]],
+   "facts": [
+    {"model": "Correction", "in": "Amara Nwosu flagged a correction to Mayor Expenses, 40 words on the wrong council date.", "fields": {"story": "mayor", "flagged_by": "amara_n", "word_count": 40, "wording": "wrong council date", "status": "flagged"}, "act": "assert"}]},
+  {"id": "m06", "text": "Bashir Haddad told the night desk: \"I never edited Flood Barrier, ask Mirela.\"",
+   "mentions": [["Bashir Haddad", "bashir"], ["I", "bashir", "ref"], ["Flood Barrier", "flood"], ["Mirela", "mirela"]],
+   "quotes": [["I never edited Flood Barrier, ask Mirela.", "bashir"]],
+   "facts": [
+    {"model": "StoryRole", "in": "I never edited Flood Barrier", "from": "flood", "to": "bashir", "label": "editor", "act": "assert", "deny": true}]},
+  {"id": "m07", "text": "Correction to Night Market Fire fixed by Siosaia Tupou: 25 words, cleared by legal, flagged by Rangi Parata.",
+   "mentions": [["Night Market Fire", "night"], ["Siosaia Tupou", "siosaia"], ["Rangi Parata", "rangi"]],
+   "facts": [
+    {"model": "Correction", "in": "Correction to Night Market Fire fixed by Siosaia Tupou", "fields": {"story": "night", "fixed_by": "siosaia", "flagged_by": "rangi", "word_count": 25, "legal_review": true, "status": "fixed"}, "act": "assert"}]},
+  {"id": "m08", "text": "Daniela Kowalczyk: The correction on Harbour Strike was rejected. The reader wanted it pulled, so I refused.",
+   "mentions": [["Daniela Kowalczyk", "daniela"], ["Harbour Strike", "harbour"], ["it", "harbour", "ref"], ["I", "daniela", "ref"]],
+   "facts": [
+    {"model": "Correction", "in": "The correction on Harbour Strike was rejected.", "fields": {"story": "harbour", "status": "rejected"}, "act": "assert"}]},
+  {"id": "m09", "text": "Siosaia Tupou: Flagged correction on Flood Barrier: 12 words, the barrier height was wrong, no legal review. I will be its editor from tonight, not Rangi.",
+   "mentions": [["Siosaia Tupou", "siosaia"], ["Flood Barrier", "flood"], ["I", "siosaia", "ref"], ["its", "flood", "ref"], ["Rangi", "rangi"]],
+   "facts": [
+    {"model": "Correction", "in": "Flagged correction on Flood Barrier: 12 words, the barrier height was wrong, no legal review.", "fields": {"story": "flood", "status": "flagged", "word_count": 12, "wording": "the barrier height was wrong", "legal_review": false}, "act": "assert"},
+    {"model": "StoryRole", "in": "I will be its editor from tonight", "from": "flood", "to": "siosaia", "label": "editor", "act": "plan"},
+    {"model": "StoryRole", "in": "not Rangi", "from": "flood", "to": "rangi", "label": "editor", "act": "plan", "deny": true}]},
+  {"id": "m10", "text": "If the editor agrees, Amara Lindqvist will take over as writer on Mayor Expenses. Mirela Popescu would then train her.",
+   "mentions": [["Amara Lindqvist", "amara_l"], ["Mayor Expenses", "mayor"], ["Mirela Popescu", "mirela"], ["her", "amara_l", "ref"]],
+   "facts": [
+    {"model": "StoryRole", "in": "If the editor agrees, Amara Lindqvist will take over as writer on Mayor Expenses.", "from": "mayor", "to": "amara_l", "label": "writer", "act": "condition"},
+    {"model": "Pairing", "in": "Mirela Popescu would then train her.", "from": "amara_l", "to": "mirela", "label": "trainer", "act": "condition"}]},
+  {"id": "m11", "text": "Bashir Haddad: Mirela, could you sign off the fixed correction on Rail Fare Probe? Daniela Kowalczyk is its writer, so she can answer the reader.",
+   "mentions": [["Bashir Haddad", "bashir"], ["Mirela", "mirela"], ["you", "mirela", "ref"], ["Rail Fare Probe", "rail"], ["Daniela Kowalczyk", "daniela"], ["its", "rail", "ref"], ["she", "daniela", "ref"]],
+   "facts": [
+    {"model": "Correction", "in": "could you sign off the fixed correction on Rail Fare Probe?", "fields": {"story": "rail", "signed_off_by": "mirela", "status": "fixed"}, "act": "request"},
+    {"model": "StoryRole", "in": "Daniela Kowalczyk is its writer", "from": "rail", "to": "daniela", "label": "writer", "act": "assert"}]},
+  {"id": "m12", "text": "From: Mirela Popescu <mirela@harbourgazette.example>\nUse this address for correction sign-offs. My desk line is 5531.",
+   "mentions": [["Mirela Popescu", "mirela"], ["My", "mirela", "ref"]],
+   "facts": []},
+  {"id": "m13", "text": "Rangi Parata: I think Harbour Strike has pictures by Siosaia Tupou, but maybe the agency sent it. Siosaia will know.",
+   "mentions": [["Rangi Parata", "rangi"], ["I", "rangi", "ref"], ["Harbour Strike", "harbour"], ["Siosaia Tupou", "siosaia"], ["it", "harbour", "ref"], ["Siosaia", "siosaia"]],
+   "facts": [
+    {"model": "StoryRole", "in": "I think Harbour Strike has pictures by Siosaia Tupou", "from": "harbour", "to": "siosaia", "label": "photographer", "act": "draft"}]},
+  {"id": "m14", "text": "Amara Nwosu said that Mirela Popescu trains Rangi Parata now.",
+   "mentions": [["Amara Nwosu", "amara_n"], ["Mirela Popescu", "mirela"], ["Rangi Parata", "rangi"]],
+   "facts": [
+    {"model": "Pairing", "in": "Amara Nwosu said that Mirela Popescu trains Rangi Parata now.", "from": "rangi", "to": "mirela", "label": "trainer", "act": "report"}]},
+  {"id": "m15", "text": "I told the subeditors: \"Night Market Fire stays off the front until Bashir approves the headline.\"",
+   "mentions": [["I", "none", "ref"], ["Night Market Fire", "night"], ["Bashir", "bashir"]],
+   "quotes": [["Night Market Fire stays off the front until Bashir approves the headline.", "author"]],
+   "facts": []},
+  {"id": "m16", "text": "Minutes: Daniela Kowalczyk confirmed the Mayor Expenses correction is fixed, 18 words, after legal review. Daniela also said Rangi Parata took the photographs for it.",
+   "mentions": [["Daniela Kowalczyk", "daniela"], ["Mayor Expenses", "mayor"], ["Daniela", "daniela"], ["Rangi Parata", "rangi"], ["it", "mayor", "ref"]],
+   "facts": [
+    {"model": "Correction", "in": "Daniela Kowalczyk confirmed the Mayor Expenses correction is fixed, 18 words, after legal review.", "fields": {"story": "mayor", "status": "fixed", "word_count": 18, "legal_review": true}, "act": "assert"},
+    {"model": "StoryRole", "in": "Daniela also said Rangi Parata took the photographs for it.", "from": "mayor", "to": "rangi", "label": "photographer", "act": "report"}]},
+  {"id": "m17", "text": "Amara Lindqvist: My trainer is Mirela Popescu, not Siosaia Tupou.",
+   "mentions": [["Amara Lindqvist", "amara_l"], ["My", "amara_l", "ref"], ["Mirela Popescu", "mirela"], ["Siosaia Tupou", "siosaia"]],
+   "facts": [
+    {"model": "Pairing", "in": "My trainer is Mirela Popescu", "from": "amara_l", "to": "mirela", "label": "trainer", "act": "assert"},
+    {"model": "Pairing", "in": "not Siosaia Tupou", "from": "amara_l", "to": "siosaia", "label": "trainer", "act": "assert", "deny": true}]},
+  {"id": "m18", "text": "Rangi Parata flagged the Rail Fare Probe correction and Amara Nwosu fixed it; legal reviewed the fix, and it is 9 words long.",
+   "mentions": [["Rangi Parata", "rangi"], ["Rail Fare Probe", "rail"], ["Amara Nwosu", "amara_n"]],
+   "facts": [
+    {"model": "Correction", "in": "Rangi Parata flagged the Rail Fare Probe correction", "fields": {"story": "rail", "flagged_by": "rangi", "fixed_by": "amara_n", "legal_review": true, "word_count": 9, "status": "fixed"}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who is the editor of Harbour Strike?", "speaker": null, "cypher": "MATCH (n0:Story)-[:editor]->(n1:Journalist) WHERE n0.slug = 'Harbour Strike' RETURN n1.byline AS byline"},
+  {"q": "Who is the photographer for Night Market Fire?", "speaker": null, "cypher": "MATCH (n0:Story)-[:photographer]->(n1:Journalist) WHERE n0.slug = 'Night Market Fire' RETURN n1.byline AS byline"},
+  {"q": "Who is the writer on Rail Fare Probe?", "speaker": null, "cypher": "MATCH (n0:Story)-[:writer]->(n1:Journalist) WHERE n0.slug = 'Rail Fare Probe' RETURN n1.byline AS byline"},
+  {"q": "Which stories have I edited?", "speaker": "bashir", "cypher": "MATCH (n0:Journalist)-[:edited]->(n1:Story) WHERE id(n0) = $speaker RETURN n1.slug AS slug"},
+  {"q": "Which stories has Amara Nwosu authored?", "speaker": null, "cypher": "MATCH (n0:Journalist)-[:authored]->(n1:Story) WHERE n0.byline = 'Amara Nwosu' RETURN n1.slug AS slug"},
+  {"q": "Who is my trainer?", "speaker": "amara_l", "cypher": "MATCH (n0:Journalist)-[:trainer]->(n1:Journalist) WHERE id(n0) = $speaker RETURN n1.byline AS byline"},
+  {"q": "Who is the deputy for Bashir Haddad?", "speaker": null, "cypher": "MATCH (n0:Journalist)-[:deputy]->(n1:Journalist) WHERE n0.byline = 'Bashir Haddad' RETURN n1.byline AS byline"},
+  {"q": "Who is the trainee of Mirela Popescu?", "speaker": null, "cypher": "MATCH (n0:Journalist)-[:trainee]->(n1:Journalist) WHERE n0.byline = 'Mirela Popescu' RETURN n1.byline AS byline"},
+  {"q": "How many corrections are there?", "speaker": null, "cypher": "MATCH (n0:Correction) RETURN count(n0) AS count"},
+  {"q": "Is there a record of legal review for the Night Market Fire correction?", "speaker": null, "cypher": "MATCH (n0:Story)<-[:story]-(n1:Correction) WHERE n0.slug = 'Night Market Fire' RETURN coalesce(n1.legal_review, false) AS legal_review"},
+  {"q": "Did the Flood Barrier correction get a legal review?", "speaker": null, "cypher": "MATCH (n0:Story)<-[:story]-(n1:Correction) WHERE n0.slug = 'Flood Barrier' RETURN n1.legal_review AS legal_review"},
+  {"q": "How many words long are the corrections flagged by Rangi Parata?", "speaker": null, "cypher": "MATCH (n0:Journalist)<-[:flagged_by]-(n1:Correction) WHERE n0.byline = 'Rangi Parata' RETURN n1.word_count AS word_count"},
+  {"q": "Who fixed the corrections I flagged?", "speaker": "rangi", "cypher": "MATCH (n0:Journalist)<-[:flagged_by]-(n1:Correction)-[:fixed_by]->(n2:Journalist) WHERE id(n0) = $speaker RETURN n2.byline AS byline"},
+  {"q": "What is the status of the correction about the height?", "speaker": null, "cypher": "MATCH (n0:Correction) WHERE n0.wording CONTAINS 'height' RETURN n0.status AS status"},
+  {"q": "List each correction with its word count and status.", "speaker": null, "cypher": "MATCH (n0:Correction) RETURN n0.word_count AS word_count, n0.status AS status"},
+  {"q": "What is Mirela Popescu's email?", "speaker": null, "cypher": "MATCH (n0:Journalist) WHERE n0.byline = 'Mirela Popescu' RETURN n0.email AS email"}
+ ]
+}
