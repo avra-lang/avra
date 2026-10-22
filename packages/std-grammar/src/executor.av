@@ -47,7 +47,7 @@ use ast.{
     node_builder_name,
 }
 use first.{with_branch_starts}
-use diagnostics.{Cause, Diagnostic, defect, Want, want_merged, wanted_words, expected_message}
+use diagnostics.{Cause, Diagnostic, Failure, Voice, defect, told, spoken, Want, want_merged}
 use lexeme.{Lexeme}
 use @std.errors.{Loc}
 
@@ -89,7 +89,7 @@ type MatchResult<T, N> = {
     cursor: int,
     bindings: List<Binding<T, N>>,
     value: Captured<T, N>,
-    diagnostics: List<Diagnostic>,
+    diagnostics: List<Failure>,
     farthest: FarthestFailure?,
 }
 
@@ -118,7 +118,7 @@ type MatchContext<T, N> = {
     // commonest outcome, and a value it shares costs nothing to hand
     // out (a consumer that changed one would copy it)
     absent: Captured<T, N>,
-    silence: List<Diagnostic>,
+    silence: List<Failure>,
     build: fn(string, List<Captured<T, N>>, Loc?) -> Result<Captured<T, N>, string>,
     memo: Memo<T, N>,
     // whether misses tell their story — a parse that ends clean never reads one
@@ -156,7 +156,7 @@ fn matched<T, N>(
     cursor: int,
     bindings: List<Binding<T, N>>,
     v: Captured<T, N>,
-    diagnostics: List<Diagnostic>,
+    diagnostics: List<Failure>,
     farthest: FarthestFailure?,
 ) -> MatchResult<T, N> {
     MatchResult {
@@ -178,7 +178,7 @@ fn ended<T, N>(
     status: MatchStatus,
     cursor: int,
     bindings: List<Binding<T, N>>,
-    diagnostics: List<Diagnostic>,
+    diagnostics: List<Failure>,
     farthest: FarthestFailure?,
 ) -> MatchResult<T, N> {
     // no reader asks a plain miss where it was or what was bound: it missed
@@ -197,7 +197,7 @@ fn missed<T, N>(
     cx: MatchContext<T, N>,
     cursor: int,
     bindings: List<Binding<T, N>>,
-    diagnostics: List<Diagnostic>,
+    diagnostics: List<Failure>,
     farthest: FarthestFailure?,
 ) -> MatchResult<T, N> {
     ended<T, N>(cx, MatchStatus.Miss, cursor, bindings, diagnostics, farthest)
@@ -210,7 +210,7 @@ fn broke<T, N>(
     cx: MatchContext<T, N>,
     cursor: int,
     bindings: List<Binding<T, N>>,
-    diagnostics: List<Diagnostic>,
+    diagnostics: List<Failure>,
     farthest: FarthestFailure?,
 ) -> MatchResult<T, N> {
     ended<T, N>(cx, MatchStatus.Broke, cursor, bindings, diagnostics, farthest)
@@ -220,7 +220,7 @@ fn fatal_defect<T, N>(
     cx: MatchContext<T, N>,
     cursor: int,
     bindings: List<Binding<T, N>>,
-    diagnostics: List<Diagnostic>,
+    diagnostics: List<Failure>,
     farthest: FarthestFailure?,
 ) -> MatchResult<T, N> {
     ended<T, N>(cx, MatchStatus.Fatal, cursor, bindings, diagnostics, farthest)
@@ -406,7 +406,7 @@ fn match_rule<T, N>(mut cx: MatchContext<T, N>, name: string, cursor: int, cappe
 
 /// A reference to no rule — a grammar-authoring defect, final.
 fn undefined_rule<T, N>(cx: MatchContext<T, N>, name: string, cursor: int) -> MatchResult<T, N> {
-    broke<T, N>(cx, cursor, [], [defect(name, "undefined rule `${name}`")], null)
+    broke<T, N>(cx, cursor, [], [told(defect(name, "undefined rule `${name}`"))], null)
 }
 
 /// Whether one closed terminal accepts `t`, exactly as `match_prim`
@@ -495,7 +495,7 @@ fn match_alt<T, N>(
     origin: int,
 ) -> MatchResult<T, N> {
     mut farthest: FarthestFailure? = null
-    mut fb_diags: List<Diagnostic>? = null
+    mut fb_diags: List<Failure>? = null
     let tok = cx.tokens[cursor]
     for br in a.branches {
         if cannot_take(cx.lex, cx.kinds, cx.masks, cursor, br.start, tok) {
@@ -514,17 +514,16 @@ fn match_alt<T, N>(
 }
 
 /// "expected A, B or C while parsing `rule`" from a farthest point.
-fn farthest_diagnostic<T, N>(cx: MatchContext<T, N>, f: FarthestFailure) -> Diagnostic {
-    Diagnostic {
+fn farthest_failure<T, N>(cx: MatchContext<T, N>, f: FarthestFailure) -> Failure {
+    Failure {
         cause: Cause.Expected,
-        message: expected_message(f.expected, f.in_rule),
+        voice: Voice.Sentence(f.expected),
         loc: cx.lex.loc(cx.tokens[f.cursor]),
-        expected: wanted_words(f.expected),
         in_rule: f.in_rule,
     }
 }
 
-/// The diagnostic for a failure inside a committed branch, preferring
+/// The failure inside a committed branch, preferring
 /// the failed sub-match's own farthest point.
 fn committed_failure<T, N>(
     cx: MatchContext<T, N>,
@@ -532,13 +531,13 @@ fn committed_failure<T, N>(
     member: Item,
     r: MatchResult<T, N>,
     cursor: int,
-) -> Diagnostic {
+) -> Failure {
     let f = r.farthest ?? FarthestFailure {
         cursor: cursor,
         expected: [member.prim],
         in_rule: rule_name,
     }
-    farthest_diagnostic<T, N>(cx, f)
+    farthest_failure<T, N>(cx, f)
 }
 
 fn match_seq<T, N>(
@@ -554,7 +553,7 @@ fn match_seq<T, N>(
     mut cursor = entry
     mut bindings = entry_bindings
     mut vals: List<Captured<T, N>> = []
-    mut diagnostics: List<Diagnostic> = []
+    mut diagnostics: List<Failure> = []
     mut farthest: FarthestFailure? = null
     mut anchored = false
     // THE HEAD LAW: a trailer never matches under a cap, and a
@@ -602,11 +601,10 @@ fn match_seq<T, N>(
             // Committed territory: this failure is real — a hole.
             diagnostics
                 .push(
-                    Diagnostic {
+                    Failure {
                         cause: Cause.Expected,
-                        message: member.expect!.message,
+                        voice: Voice.Held(member.expect!.message, [member.prim]),
                         loc: cx.lex.loc(cx.tokens[cursor]),
-                        expected: wanted_words([member.prim]),
                         in_rule: rule_name,
                     },
                 )
@@ -652,13 +650,15 @@ fn match_seq<T, N>(
         .Err(m) -> {
             diagnostics
                 .push(
-                    Diagnostic {
-                        cause: Cause.Builder,
-                        message: m,
-                        loc: branch ?? cx.lex.loc(cx.tokens[cursor]),
-                        expected: [],
-                        in_rule: rule_name,
-                    },
+                    told(
+                        Diagnostic {
+                            cause: Cause.Builder,
+                            message: m,
+                            loc: branch ?? cx.lex.loc(cx.tokens[cursor]),
+                            expected: [],
+                            in_rule: rule_name,
+                        },
+                    ),
                 )
             fatal_defect<T, N>(cx, cursor, bindings, diagnostics, farthest)
         },
@@ -804,7 +804,7 @@ fn match_repetition<T, N>(
     mut cursor = entry
     mut bindings = entry_bindings
     mut collected: List<Captured<T, N>> = []
-    mut diagnostics: List<Diagnostic> = []
+    mut diagnostics: List<Failure> = []
     mut farthest: FarthestFailure? = null
     mut count = 0
     while true {
@@ -825,7 +825,7 @@ fn match_repetition<T, N>(
         if r.status != MatchStatus.Hit { break }
         if r.cursor == cursor {
             diagnostics
-                .push(defect(rule_name, "repetition matched without consuming input; stopped"))
+                .push(told(defect(rule_name, "repetition matched without consuming input; stopped")))
             break
         }
         diagnostics = diagnostics.concat(r.diagnostics)
@@ -871,7 +871,7 @@ fn match_fold<T, N>(
     let turns = member.prim.group_alt() ?? Alt { branches: [] }
     mut cursor = entry
     mut acc: Captured<T, N> = binding_for<T, N>(bindings, field) ?? cx.absent
-    mut diagnostics: List<Diagnostic> = []
+    mut diagnostics: List<Failure> = []
     mut farthest: FarthestFailure? = null
     while true {
         let r = match_alt<T, N>(
@@ -898,7 +898,11 @@ fn match_fold<T, N>(
         if r.status != MatchStatus.Hit { break }
         if r.cursor == cursor {
             diagnostics
-                .push(defect(rule_name, "a fold's turn matched without consuming input; stopped"))
+                .push(
+                    told(
+                        defect(rule_name, "a fold's turn matched without consuming input; stopped"),
+                    ),
+                )
             break
         }
         diagnostics = diagnostics.concat(r.diagnostics)
@@ -991,9 +995,11 @@ fn match_prim<T, N>(
             cursor,
             bindings,
             [
-                defect(
-                    rule_name,
-                    "a character primitive reached the token engine — this atom belongs to a lexicon, not a parsing grammar",
+                told(
+                    defect(
+                        rule_name,
+                        "a character primitive reached the token engine — this atom belongs to a lexicon, not a parsing grammar",
+                    ),
                 ),
             ],
             null,
@@ -1005,15 +1011,17 @@ fn match_prim<T, N>(
 
 /// The final diagnostic when the whole parse failed silently — the
 /// farthest point speculation reached, or a generic failure.
-fn overall_failure<T, N>(cx: MatchContext<T, N>, r: MatchResult<T, N>) -> Diagnostic {
-    if r.farthest != null { return farthest_diagnostic<T, N>(cx, r.farthest!) }
-    Diagnostic {
-        cause: Cause.Expected,
-        message: "cannot parse `${cx.g.start}`",
-        loc: cx.lex.loc(cx.tokens[0]),
-        expected: [],
-        in_rule: cx.g.start,
-    }
+fn overall_failure<T, N>(cx: MatchContext<T, N>, r: MatchResult<T, N>) -> Failure {
+    if r.farthest != null { return farthest_failure<T, N>(cx, r.farthest!) }
+    told(
+        Diagnostic {
+            cause: Cause.Expected,
+            message: "cannot parse `${cx.g.start}`",
+            loc: cx.lex.loc(cx.tokens[0]),
+            expected: [],
+            in_rule: cx.g.start,
+        },
+    )
 }
 
 /// A grammar READY TO RUN: its defects found once and its rules
@@ -1131,7 +1139,7 @@ fn run_as<T, N>(
     let g = rd.g
     let kinds: List<int> = [lex.kind_of(term) for term in rd.terms]
     let stride = tokens.length + 1
-    let silence: List<Diagnostic> = []
+    let silence: List<Failure> = []
     let miss = MatchResult<T, N> {
         status: MatchStatus.Miss,
         cursor: 0,
@@ -1161,9 +1169,9 @@ fn run_as<T, N>(
         miss: miss,
     }
     let r = match_rule<T, N>(cx, start, 0, false)
-    mut diagnostics = [d for d in r.diagnostics]
+    mut diagnostics = [spoken(f) for f in r.diagnostics]
     if r.status != MatchStatus.Hit {
-        if diagnostics.is_empty() { diagnostics.push(overall_failure<T, N>(cx, r)) }
+        if diagnostics.is_empty() { diagnostics.push(spoken(overall_failure<T, N>(cx, r))) }
         return RunOutcome { result: null, diagnostics: diagnostics }
     }
     if !cx.lex.is_eof(cx.tokens[r.cursor]) {
@@ -1202,7 +1210,7 @@ type Taken<T, N> = {
     op_words: int,
     rhs: Captured<T, N>,
     cursor: int,
-    diagnostics: List<Diagnostic>,
+    diagnostics: List<Failure>,
     farthest: FarthestFailure?,
 }
 
@@ -1238,7 +1246,7 @@ fn climb<T, N>(
     start: int,
     from: int,
     min: int,
-    diagnostics0: List<Diagnostic>,
+    diagnostics0: List<Failure>,
     farthest0: FarthestFailure?,
 ) -> MatchResult<T, N> {
     mut left = left0
@@ -1464,7 +1472,7 @@ fn refused_run<T, N>(
     message: string,
     start: int,
     until: int,
-    diagnostics: List<Diagnostic>,
+    diagnostics: List<Failure>,
     farthest: FarthestFailure?,
 ) -> MatchResult<T, N> {
     if !diagnostics.is_empty() { return matched<T, N>(until, [], cx.absent, diagnostics, farthest) }
@@ -1474,13 +1482,15 @@ fn refused_run<T, N>(
         until,
         [],
         [
-            Diagnostic {
-                cause: Cause.Builder,
-                message: message,
-                loc: branch ?? cx.lex.loc(cx.tokens[until]),
-                expected: [],
-                in_rule: k.rule_name,
-            },
+            told(
+                Diagnostic {
+                    cause: Cause.Builder,
+                    message: message,
+                    loc: branch ?? cx.lex.loc(cx.tokens[until]),
+                    expected: [],
+                    in_rule: k.rule_name,
+                },
+            ),
         ],
         farthest,
     )
