@@ -1,0 +1,165 @@
+use derive.model.{model}
+use schema.{Registration}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use query.passages.{selectors, code_points}
+use @std.json.{Json, field}
+
+@model
+type Note = { subject: string, body: string }
+
+fn registrations() -> List<Registration> { [Registration { make: Note_graph_model }] }
+
+fn note(id: string, subject: string, body: string) -> Result<Record, string> {
+    Record {
+        id: id,
+        model: "Note",
+        value: stored_value("{\"subject\":\"${subject}\",\"body\":\"${body}\"}")?,
+    }
+}
+
+fn filed(mut g: Graph, id: string, records: List<Record>) -> Result<int, string> {
+    g
+        .publish(
+            Publication {
+                id: id,
+                producer: "agent",
+                scope: "in:1",
+                input: "in:1",
+                input_revision: 1,
+                schema: g.catalog.fingerprint,
+                expected_revision: g.revision()?,
+                records: records,
+            },
+        )
+}
+
+fn notebook() -> Result<Graph, string> {
+    mut g = Graph.memory(registrations())?
+    g.observe("in:1", "Alex asked me to reserve a table for the Friday dinner.")?
+    g.observe("in:2", "The delivery of paint is due on Monday.")?
+    filed(g, "one", [note("n1", "dinner", "table for four")?])?
+    g
+}
+
+fn finds_source_text() -> Result<bool, string> {
+    mut g = notebook()?
+    defer { let _ = g.close() }
+    let hits = g.search("who reserved the dinner table?")?
+    hits[0].kind == "source" &&
+        hits[0].observation == "in:1" &&
+        hits[0].text.contains("Friday dinner") &&
+        hits[0].revision == 1
+}
+
+fn stems_words() -> Result<bool, string> {
+    mut g = notebook()?
+    defer { let _ = g.close() }
+    let hits = g.search("reserving tables")?
+    hits.any(it.observation == "in:1")
+}
+
+fn indexes_facts_under_their_source() -> Result<bool, string> {
+    mut g = notebook()?
+    defer { let _ = g.close() }
+    let facts = (g.search("Note subject dinner")?).filter(it.kind == "fact")
+    !facts.is_empty() &&
+        facts.all(it.observation == "in:1") &&
+        facts.any(it.text.contains("Note subject: dinner"))
+}
+
+fn hostile_queries_are_words() -> Result<bool, string> {
+    mut g = notebook()?
+    defer { let _ = g.close() }
+    let injected = g.search("\"; xyzzy' OR 1=1 --")?
+    let operators = g.search("dinner AND OR NOT * ( ) NEAR")?
+    let blank = g.search("  ?!  ")?
+    injected.is_empty() &&
+        blank.is_empty() &&
+        operators.any(it.observation == "in:1") &&
+        !(g.search("paint")?).is_empty()
+}
+
+fn follows_revisions() -> Result<bool, string> {
+    mut g = notebook()?
+    defer { let _ = g.close() }
+    let before = g.search("paint")?
+    g.observe("in:2", "The delivery of lumber is due on Monday.")?
+    let after = g.search("paint")?
+    let moved = g.search("lumber")?
+    !before.is_empty() &&
+        after.is_empty() &&
+        moved[0].observation == "in:2" &&
+        moved[0].revision == 2
+}
+
+fn limits_are_bounded() -> Result<bool, string> {
+    mut g = notebook()?
+    defer { let _ = g.close() }
+    let one = g.search("the", limit: 1)?
+    let refused = match g.search("dinner", limit: 0) { .Ok(_) -> false, .Err(_) -> true }
+    one.length == 1 && refused
+}
+
+fn op(mut g: Graph, query: string) -> Result<Json, string> {
+    g.dispatch(Json.Obj([field("op", Json.Str("search")), field("query", Json.Str(query))]))
+}
+
+fn cites_with_selectors() -> Result<bool, string> {
+    mut g = notebook()?
+    defer { let _ = g.close() }
+    let found = op(g, "Friday dinner")?
+    let top = found.member("passages").item(0)
+    let citation = top.member("citation")
+    let position = citation.member("selectors").item(0)
+    let quoted = citation.member("selectors").item(1)
+    let fact = found.member("passages").items().find(it.member("kind").text() == "fact")
+    found.member("contract").int() == 1 &&
+        top.member("kind").text() == "source" &&
+        citation.member("source").member("observation").text() == "in:1" &&
+        position.member("kind").text() == "TextPositionSelector" &&
+        position.member("start").int() == 0 &&
+        quoted.member("exact").text() == top.member("text").text() &&
+        fact != null &&
+        fact!.member("citation").member("claim").text() != null
+}
+
+fn selectors_count_code_points() -> bool {
+    let content = "Café opens at nine. Dinner is on Friday at the Café."
+    let at = content.index_of("Dinner")
+    let pair = selectors(content, at, at + 6)
+    pair[0].member("start").int() == 20 &&
+        pair[0].member("end").int() == 26 &&
+        pair[1].member("exact").text() == "Dinner" &&
+        pair[1].member("prefix").text() == "Café opens at nine. " &&
+        code_points("Café") == 4 &&
+        selectors(content, 5, 5).is_empty()
+}
+
+fn selectors_do_not_split_characters() -> bool {
+    let content = "aéb"
+    let inside = selectors(content, 2, 4)
+    inside.length == 2 && inside[1].member("exact").text() == "b"
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "keyword search" {
+    given "a graph with two sources and one admitted fact" {
+        then "source text is found by its words, best first" { passed(finds_source_text()) }
+        then "words match across stems" { passed(stems_words()) }
+        then "admitted facts are indexed under the source that supports them" { passed(indexes_facts_under_their_source()) }
+        then "a query is only words, whatever it contains" { passed(hostile_queries_are_words()) }
+        then "the index follows a source's new revision" { passed(follows_revisions()) }
+        then "the search op cites each passage with its source revision and selectors" { passed(cites_with_selectors()) }
+        then "selector positions are code points, not bytes" { selectors_count_code_points() }
+        then "a selector never starts or ends inside a character" { selectors_do_not_split_characters() }
+        then "the result count is bounded" { passed(limits_are_bounded()) }
+    }
+}

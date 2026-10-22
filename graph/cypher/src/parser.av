@@ -40,7 +40,10 @@ export enum Expr {
     Star
 }
 
-export type NodePat = { name: string?, label: string? }
+/// One `key: value` of a node's property map; the value is a literal or a parameter.
+export type PropEntry = { key: string, value: Expr }
+
+export type NodePat = { name: string?, label: string?, props: List<PropEntry> }
 
 /// `forward` is the arrow's direction as written; `var_length` is a `*` in the brackets.
 export type RelPat = { label: string, forward: bool, name: string?, var_length: bool }
@@ -64,6 +67,7 @@ enum CNode {
     Nd(n: NodePat)
     Rl(r: RelPat)
     Pat(p: Pattern)
+    Pm(entries: List<PropEntry>)
     Mc(m: MatchClause)
     Ml(items: List<MatchClause>)
     Ri(r: ReturnItem)
@@ -97,6 +101,7 @@ impl CNode {
     fn as_exs() -> List<Expr>? { match self { .Exs(items) -> items, rest -> null } }
     fn as_node() -> NodePat? { match self { .Nd(n) -> n, rest -> null } }
     fn as_rel() -> RelPat? { match self { .Rl(r) -> r, rest -> null } }
+    fn as_entries() -> List<PropEntry>? { match self { .Pm(entries) -> entries, rest -> null } }
     fn as_pattern() -> Pattern? { match self { .Pat(p) -> p, rest -> null } }
     fn as_match() -> MatchClause? { match self { .Mc(m) -> m, rest -> null } }
     fn as_item() -> ReturnItem? { match self { .Ri(r) -> r, rest -> null } }
@@ -148,9 +153,20 @@ fn items_of(c: Cap) -> Result<List<ReturnItem>, string> {
     }
 }
 
-@grammar_rule("\"(\" (v:IDENT)? (\":\" l:IDENT)? \")\"")
+@grammar_rule("\"{\" k:IDENT \":\" v:atom (\",\" k:IDENT \":\" v:atom)* \",\"? \"}\"")
+fn prop_map(caps: List<Cap>) -> Result<Cap, string> {
+    let keys = match caps[0] {
+        .Many(items) -> [text_of(i) for i in items],
+        rest -> [text_of(caps[0])],
+    }
+    let values = exprs_of(caps[1])?
+    .Ok(node(CNode.Pm([PropEntry { key: k, value: values[i] } for i, k in keys])))
+}
+
+@grammar_rule("\"(\" (v:IDENT)? (\":\" l:IDENT)? (m:prop_map)? \")\"")
 fn node_pat(caps: List<Cap>) -> Result<Cap, string> {
-    .Ok(node(CNode.Nd(NodePat { name: named(caps[0]), label: named(caps[1]) })))
+    let entries = node_of(caps[2])?.as_entries() ?? []
+    .Ok(node(CNode.Nd(NodePat { name: named(caps[0]), label: named(caps[1]), props: entries })))
 }
 
 @grammar_rule("\"-\" \"[\" (rv:IDENT)? \":\" t:IDENT (vl:\"*\" (NUMBER)? (\"..\" (NUMBER)?)?)? \"]\" \"->\"")

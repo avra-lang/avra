@@ -1,0 +1,147 @@
+use @avra.cypher.parser.{RelPat, NodePat, CypherError}
+use @std.text.{ascii_lower}
+use catalog.{Catalog}
+use schema.{Model, Property}
+use semantics.{RelationBinding, RelationLabel}
+use query.plan.{target}
+
+/// How one hop of a pattern is walked: along a reference property, or through
+/// the reified record of a relation binding (declared relation words are types).
+export enum Link {
+    Reference(property: string, outgoing: bool, owner: string?, reaches: string)
+    Relation(
+        record: string,
+        near: string,
+        far: string,
+        label: string,
+        value: string,
+        reaches: string,
+    )
+}
+
+fn refuse(code: string, message: string) -> CypherError { CypherError { code: code, message: message } }
+
+fn same_word(a: string, b: string) -> bool { ascii_lower(a) == ascii_lower(b) }
+
+export fn model_named(catalog: Catalog, name: string) -> Model? { catalog.models.find(it.name == name) }
+
+/// The edge one pattern hop names, from a node of model `from`.
+export fn resolve_hop(catalog: Catalog, from: string?, rel: RelPat, next: NodePat) -> Result<
+    Link,
+    CypherError,
+> {
+    let real = reference_links(catalog, from, rel, next)
+    if real.length > 1 {
+        return .Err(
+            refuse(
+                "ambiguous_owner",
+                "${rel.label} is declared by several models (${owners(real)}); label the node",
+            ),
+        )
+    }
+    if real.length == 1 { return .Ok(real[0]) }
+    let virtual = relation_links(catalog, from, rel, next)
+    if virtual.length > 1 {
+        return .Err(
+            refuse(
+                "ambiguous_relationship",
+                "${rel.label} names relations of several models (${records(virtual)}); label the far node",
+            ),
+        )
+    }
+    if virtual.length == 1 { return .Ok(virtual[0]) }
+    .Err(
+        refuse(
+            "unknown_relationship",
+            "no relationship type ${rel.label} from ${from ?? "this node"}; ${walks(catalog, from)}",
+        ),
+    )
+}
+
+fn reference_links(catalog: Catalog, from: string?, rel: RelPat, next: NodePat) -> List<Link> {
+    if rel.forward {
+        let home? = from else { return [] }
+        let model? = model_named(catalog, home) else { return [] }
+        return [Link.Reference(p.name, true, null, target(p.shape)!) for p in model.properties if same_word(p.name, rel.label) && target(p.shape) != null]
+    }
+    [Link.Reference(p.name, false, m.name, m.name) for m in catalog.models for p in m.properties if same_word(p.name, rel.label) &&
+        target(p.shape) != null &&
+        (from == null || target(p.shape) == from) &&
+        (next.label == null || next.label == m.name)]
+}
+
+/// A relation word as the pattern's `x -[:word]-> y`: y is x's `word`.
+fn relation_links(catalog: Catalog, from: string?, rel: RelPat, next: NodePat) -> List<Link> {
+    [link for record in catalog.models for binding in [record.semantics.relation] if binding != null for link in binding_links(record, binding!, from, rel, next)]
+}
+
+fn binding_links(record: Model, b: RelationBinding, from: string?, rel: RelPat, next: NodePat) -> List<
+    Link,
+> {
+    if b.from.length != 1 || b.to.length != 1 || b.label.length != 1 { return [] }
+    let subject? = record.properties.find(it.name == b.from[0]) else { return [] }
+    let object? = record.properties.find(it.name == b.to[0]) else { return [] }
+    let subject_model? = target(subject.shape) else { return [] }
+    let object_model? = target(object.shape) else { return [] }
+    [Link.Relation(record.name, near, far, b.label[0], l.value, reached) for l in b.labels for forward_word in [same_word(l.value, rel.label) || l.forward.any(same_word(it, rel.label))] for reverse_word in [l.reverse.any(same_word(it, rel.label))] for from_side in sides(forward_word, reverse_word, rel.forward) for near in [if from_side { subject.name } else { object.name }] for far in [if from_side { object.name } else { subject.name }] for near_model in [if from_side { subject_model } else { object_model }] for reached in [if from_side { object_model } else { subject_model }] if (from == null || near_model == from) && (next.label == null || next.label == reached)]
+}
+
+/// Which endpoint the left node is, for each reading of the word: true is the subject (`from`) side.
+fn sides(forward_word: bool, reverse_word: bool, arrow_forward: bool) -> List<bool> {
+    let forward_read = if forward_word { [arrow_forward] } else { [] }
+    let reverse_read = if reverse_word { [!arrow_forward] } else { [] }
+    forward_read.concat(reverse_read)
+}
+
+fn owners(links: List<Link>) -> string {
+    [owner_of(l) for l in links].join(", ")
+}
+
+fn owner_of(l: Link) -> string {
+    match l {
+        .Reference(_, _, owner, reaches) -> owner ?? reaches,
+        .Relation(record, _, _, _, _, _) -> record,
+    }
+}
+
+fn records(links: List<Link>) -> string { [owner_of(l) for l in links].join(", ") }
+
+/// What a node of this model can walk, spelled the way a query writes it.
+export fn walks(catalog: Catalog, from: string?) -> string {
+    let home? = from else { return "label the node to see the relationship types it has" }
+    let model? = model_named(catalog, home) else { return "models are: ${catalog.models.map(it.name).join(", ")}" }
+    let outgoing = [p.name for p in model.properties if target(p.shape) != null]
+    let incoming = ["${p.name} (from ${m.name})" for m in catalog.models for p in m.properties if target(p.shape) == home]
+    let words = [w for record in catalog.models for binding in [record.semantics.relation] if binding != null for w in relation_words(record, binding!, home)]
+    "from ${home} you can walk -[:${if outgoing.is_empty() { "-" } else { outgoing.join("|") }}]->, <-[:${if incoming.is_empty() { "-" } else { incoming.join("|") }}]-, and the relation words ${if words.is_empty() { "-" } else { words.join(", ") }}"
+}
+
+fn relation_words(record: Model, b: RelationBinding, home: string) -> List<string> {
+    if b.from.length != 1 || b.to.length != 1 { return [] }
+    let ends = [target(p.shape) for p in record.properties if p.name == b.from[0] || p.name == b.to[0]]
+    if !ends.contains(home) { return [] }
+    [w for l in b.labels for w in [l.value].concat(l.forward).concat(l.reverse)]
+}
+
+export fn unknown_label(catalog: Catalog, label: string) -> CypherError {
+    refuse(
+        "unknown_label",
+        "no model ${label}; models are: ${catalog.models.map(it.name).join(", ")}",
+    )
+}
+
+/// A property of a known model, or the properties it has.
+export fn check_property(catalog: Catalog, model: string?, property: string) -> Result<
+    string,
+    CypherError,
+> {
+    let home? = model else { return .Ok(property) }
+    let found? = model_named(catalog, home) else { return .Err(unknown_label(catalog, home)) }
+    if found.properties.any(it.name == property) { return .Ok(property) }
+    .Err(
+        refuse(
+            "unknown_property",
+            "${home} has no property ${property}; it has: ${found.properties.map(it.name).join(", ")}",
+        ),
+    )
+}

@@ -1,0 +1,135 @@
+use @avra.graph_contracts.{SourceEnvelope}
+use @std.json.{Json, Field, field}
+use store.open.{Graph}
+use store.search.{Passage}
+
+/// Context kept on each side of a quoted passage.
+const context_bytes = 120
+
+/// Longest quoted passage a selector carries.
+const quote_bytes = 4096
+
+impl Graph {
+    /// Ranked passages with their citations: `{"contract", "query", "read_revision", "passages"}`.
+    fn passages(query: string, limit: int = 10) -> Result<Json, string> {
+        let found = self.search(query, limit)?
+        let cited = [self.passage_json(i, p)? for i, p in found]
+        Json
+            .Obj(
+                [
+                    field("contract", Json.Int(1)),
+                    field("query", Json.Str(query)),
+                    field("read_revision", Json.Int(self.revision()?)),
+                    field("passages", Json.Arr(cited)),
+                ],
+            )
+    }
+
+    fn passage_json(i: int, p: Passage) -> Result<Json, string> {
+        Json
+            .Obj(
+                [
+                    field("id", Json.Str("p${i}")),
+                    field("kind", Json.Str(p.kind)),
+                    field("text", Json.Str(p.text)),
+                    field("rank", Json.Float(p.rank)),
+                    field("citation", self.citation_of("p${i}", p)?),
+                ],
+            )
+    }
+
+    /// A passage's PROV-O citation; source text also carries Web Annotation selectors.
+    fn citation_of(id: string, p: Passage) -> Result<Json, string> {
+        let base = [
+            field("id", Json.Str(id)),
+            field(
+                "source",
+                Json
+                    .Obj(
+                        [
+                            field("observation", Json.Str(p.observation)),
+                            field("revision", Json.Int(p.revision)),
+                        ],
+                    ),
+            ),
+        ]
+        if p.kind == "fact" {
+            return Json.Obj(base.concat(fact_trail(p)))
+        }
+        let content = self.content_at(p.observation, p.revision)?
+        Json.Obj(base.concat([field("selectors", Json.Arr(selectors(content, p.start, p.stop)))]))
+    }
+
+    /// The text a source revision's byte offsets index into.
+    fn content_at(observation: string, revision: int) -> Result<string, string> {
+        let raw = self.observation(observation, revision)?
+        let payload? = raw.member("payload").text() else { fail "an observation must contain a payload" }
+        match SourceEnvelope.from_json(payload) {
+            .Ok(envelope) -> envelope.content,
+            .Err(_) -> payload,
+        }
+    }
+}
+
+fn fact_trail(p: Passage) -> List<Field> {
+    [field("claim", Json.Str("${p.claim}"))]
+        .concat(if p.run.is_empty() { [] } else { [field("run", Json.Str(p.run))] })
+}
+
+/// A position selector (code points) and a quote selector for bytes `start..stop` of `content`.
+export fn selectors(content: string, start: int, stop: int) -> List<Json> {
+    let lo = clean_from(content, start)
+    let hi = clean_to(content, if stop - lo > quote_bytes { lo + quote_bytes } else { stop })
+    if hi <= lo { return [] }
+    let before = content.substring(0, lo)
+    let first = code_points(before)
+    let exact = content.substring(lo, hi)
+    let prefix_at = clean_from(content, if lo > context_bytes { lo - context_bytes } else { 0 })
+    let suffix_to = clean_to(
+        content,
+        if hi + context_bytes < content.length { hi + context_bytes } else { content.length },
+    )
+    [
+        Json
+            .Obj(
+                [
+                    field("kind", Json.Str("TextPositionSelector")),
+                    field("start", Json.Int(first)),
+                    field("end", Json.Int(first + code_points(exact))),
+                ],
+            ),
+        Json
+            .Obj(
+                [
+                    field("kind", Json.Str("TextQuoteSelector")),
+                    field("exact", Json.Str(exact)),
+                    field("prefix", Json.Str(content.substring(prefix_at, lo))),
+                    field("suffix", Json.Str(content.substring(hi, suffix_to))),
+                ],
+            ),
+    ]
+}
+
+/// Unicode code points in `text`: every byte that does not continue one.
+export fn code_points(text: string) -> int {
+    let b = text.bytes()
+    [i for i in 0..b.length if b.at(i) < 128 || b.at(i) >= 192].length
+}
+
+fn continues(content: string, at: int) -> bool {
+    at < content.length && content.bytes().at(at) >= 128 && content.bytes().at(at) < 192
+}
+
+/// The first character boundary at or after `at`.
+fn clean_from(content: string, at: int) -> int {
+    mut i = at
+    while continues(content, i) { i = i + 1 }
+    i
+}
+
+/// The last character boundary at or before `at`.
+fn clean_to(content: string, at: int) -> int {
+    mut i = if at > content.length { content.length } else { at }
+    while i > 0 && continues(content, i) { i = i - 1 }
+    i
+}

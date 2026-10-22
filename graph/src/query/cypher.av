@@ -4,6 +4,8 @@ use @std.text.{parse_int, parse_float}
 use store.open.{Graph}
 use query.plan.{prepare_read, ReadNode, ReadOnlyPlan}
 use query.respond.{responded, refused}
+use query.relations.{Link, resolve_hop, unknown_label, check_property, model_named}
+use catalog.{Catalog}
 
 /// A node's declared label, checked against the model its step reaches.
 type Label = { step: string, label: string }
@@ -24,10 +26,17 @@ enum Cond {
 
 type Placed = { name: string, cond: Cond }
 
-type Slot = { name: string?, step: string }
+type Slot = { name: string?, step: string, model: string? }
 
 /// One MATCH clause as steps; `last` is the step holding its rows.
-type Chain = { steps: List<Json>, last: string, slots: List<Slot>, labels: List<Label>, optional: bool }
+type Chain = {
+    steps: List<Json>,
+    last: string,
+    slots: List<Slot>,
+    relations: List<Slot>,
+    labels: List<Label>,
+    optional: bool,
+}
 
 enum Aggregate { Count(star: bool), Sum(prop: string), Holds(prop: string) }
 
@@ -72,7 +81,7 @@ impl Graph {
 
     /// The one door from Cypher text to a plan the executor accepts.
     fn admission(text: string, params: Json) -> Admission {
-        match compiled(text, params, self.catalog.fingerprint) {
+        match compiled(text, params, self.catalog) {
             .Err(e) -> Admission.Rejected(e.code, e.message),
             .Ok(c) -> self.labelled(c, prepare_read(self.catalog, to_text(c.plan))),
         }
@@ -91,19 +100,19 @@ impl Graph {
     }
 }
 
-fn compiled(text: string, params: Json, fingerprint: string) -> Result<Compiled, CypherError> {
+fn compiled(text: string, params: Json, catalog: Catalog) -> Result<Compiled, CypherError> {
     let q = parse_cypher(text)?
     let args = Args { params: params }
     mut chains: List<Chain> = []
     for i, m in q.matches {
         let anchors = [c.slots[c.slots.length - 1] for c in chains]
-        chains.push(chain_of(i, m, args, anchors)?)
+        chains.push(chain_of(i, m, args, anchors, catalog)?)
     }
     let wanted = [wanted_of(r)? for r in q.returns]
-    let finished = finish(chains, wanted)?
+    let finished = finish(chains, wanted, catalog)?
     .Ok(
         Compiled {
-            plan: plan_json(text, fingerprint, context_of(params)?, finished, q.limit),
+            plan: plan_json(text, catalog.fingerprint, context_of(params)?, finished, q.limit),
             labels: [l for c in chains for l in c.labels],
         },
     )
@@ -138,14 +147,15 @@ fn context_of(params: Json) -> Result<Json, CypherError> {
 /// ---- MATCH ----
 
 /// A clause may start from the last node of an earlier one (a shared variable).
-fn chain_of(i: int, clause: MatchClause, args: Args, anchors: List<Slot>) -> Result<
+fn chain_of(i: int, clause: MatchClause, args: Args, anchors: List<Slot>, catalog: Catalog) -> Result<
     Chain,
     CypherError,
 > {
     let nodes = [clause.pattern.first].concat([h.node for h in clause.pattern.hops])
+    let rels = [h.rel.name! for h in clause.pattern.hops if h.rel.name != null]
     let names = [n.name! for n in nodes if n.name != null]
-    for j, name in names {
-        if names.slice(0, j).contains(name) { return .Err(refuse("duplicate_variable", "a variable names one node: ${name}")) }
+    for j, name in names.concat(rels) {
+        if names.concat(rels).slice(0, j).contains(name) { return .Err(refuse("duplicate_variable", "a variable names one node: ${name}")) }
     }
     for h in clause.pattern.hops {
         if h.rel.var_length {
@@ -156,15 +166,10 @@ fn chain_of(i: int, clause: MatchClause, args: Args, anchors: List<Slot>) -> Res
                 ),
             )
         }
-        if h.rel.name != null {
-            return .Err(
-                refuse("relationship_variable", "a relationship carries no properties to bind"),
-            )
-        }
     }
     let rebound = [a for a in anchors if nodes[0].name != null && a.name == nodes[0].name]
     for a in anchors {
-        if a.name != null && names.slice(1, names.length).contains(a.name!) {
+        if a.name != null && names.slice(1, names.length).concat(rels).contains(a.name!) {
             return .Err(refuse("duplicate_variable", "a variable names one node: ${a.name!}"))
         }
     }
@@ -174,8 +179,11 @@ fn chain_of(i: int, clause: MatchClause, args: Args, anchors: List<Slot>) -> Res
     if rebound.is_empty() && nodes[0].label == null {
         return .Err(refuse("unlabelled_node", "the first node of a path names its label"))
     }
+    for n in nodes {
+        if n.label != null && model_named(catalog, n.label!) == null { return .Err(unknown_label(catalog, n.label!)) }
+    }
     let placed = match clause.where {
-        w? -> placements(w, nodes, args)?
+        w? -> placements(w, names.concat(rels), args)?
         null -> []
     }
     if !rebound.is_empty() && placed.any(it.name == nodes[0].name!) {
@@ -188,11 +196,13 @@ fn chain_of(i: int, clause: MatchClause, args: Args, anchors: List<Slot>) -> Res
     }
     mut steps: List<Json> = []
     mut slots: List<Slot> = []
+    mut relations: List<Slot> = []
     mut labels: List<Label> = []
     mut last = if rebound.is_empty() { "" } else { rebound[0].step }
+    mut model: string? = if rebound.is_empty() { nodes[0].label } else { rebound[0].model }
     for j, n in nodes {
         let id = "m${i}n${j}"
-        let mine = [p for p in placed if n.name != null && p.name == n.name!]
+        let mine = placed_for(placed, n.name).concat(map_conditions(n, args)?)
         if j == 0 {
             if rebound.is_empty() {
                 steps.push(arrival(id, nodes[0].label!, mine)?)
@@ -200,8 +210,48 @@ fn chain_of(i: int, clause: MatchClause, args: Args, anchors: List<Slot>) -> Res
             }
         } else {
             let hop = clause.pattern.hops[j - 1]
-            steps.push(follow_json(id, last, hop.rel.label, hop.rel.forward, n.label))
+            let link = resolve_hop(catalog, model, hop.rel, n)?
+            match link {
+                .Reference(property, outgoing, owner, reaches) -> {
+                    steps.push(follow_json(id, last, property, outgoing, owner))
+                    model = reaches
+                },
+                .Relation(record, near, far, label, value, reaches) -> {
+                    let record_conditions = placed_for(placed, hop.rel.name)
+                    let crossed = relation_steps(
+                        id,
+                        last,
+                        record,
+                        near,
+                        far,
+                        label,
+                        value,
+                        record_conditions,
+                        catalog,
+                    )?
+                    steps = steps.concat(crossed.steps)
+                    if hop.rel.name != null {
+                        relations
+                            .push(
+                                Slot {
+                                    name: hop.rel.name,
+                                    step: crossed.record_step,
+                                    model: record,
+                                },
+                            )
+                    }
+                    model = reaches
+                },
+            }
             last = id
+            if n.label != null && n.label! != model! {
+                return .Err(
+                    refuse(
+                        "label_mismatch",
+                        "${n.name ?? "this node"} is labelled ${n.label!}, but ${hop.rel.label} reaches ${model!}",
+                    ),
+                )
+            }
         }
         if n.label != null && (j > 0 || rebound.is_empty()) { labels.push(Label { step: id, label: n.label! }) }
         if j > 0 && mine.any(it.cond is .Seat) { return .Err(refuse("unsupported_id_filter", "id() seeds the first node of a path only")) }
@@ -209,13 +259,83 @@ fn chain_of(i: int, clause: MatchClause, args: Args, anchors: List<Slot>) -> Res
             let step_id = "${id}f${steps.length}"
             let narrowed = narrowing(p.cond, step_id, last)
             if narrowed != null {
+                let _ = check_cond(catalog, model, p.cond)?
                 steps.push(narrowed!)
                 last = step_id
             }
         }
-        slots.push(Slot { name: n.name, step: last })
+        slots.push(Slot { name: n.name, step: last, model: model })
     }
-    .Ok(Chain { steps: steps, last: last, slots: slots, labels: labels, optional: clause.optional })
+    .Ok(
+        Chain {
+            steps: steps,
+            last: last,
+            slots: slots,
+            relations: relations,
+            labels: labels,
+            optional: clause.optional,
+        },
+    )
+}
+
+type Crossed = { steps: List<Json>, record_step: string }
+
+/// A relation walked through its reified record: into the record, narrowed
+/// to the relation's value, then out to the far endpoint.
+fn relation_steps(
+    id: string,
+    input: string,
+    record: string,
+    near: string,
+    far: string,
+    label: string,
+    value: string,
+    conditions: List<Placed>,
+    catalog: Catalog,
+) -> Result<Crossed, CypherError> {
+    let into = "${id}a"
+    let valued = "${id}b"
+    mut steps = [
+        follow_json(into, input, near, false, record),
+        step_json(
+            valued,
+            "filter",
+            into,
+            [
+                field("property", Json.Str(label)),
+                field("comparison", Json.Str("eq")),
+                field("arguments", Json.Arr([Json.Str(value)])),
+            ],
+        ),
+    ]
+    mut last = valued
+    for k, c in conditions {
+        let step_id = "${id}c${k}"
+        let narrowed = narrowing(c.cond, step_id, last)
+        if narrowed != null {
+            let _ = check_cond(catalog, record, c.cond)?
+            steps.push(narrowed!)
+            last = step_id
+        }
+    }
+    steps.push(follow_json(id, last, far, true, null))
+    .Ok(Crossed { steps: steps, record_step: last })
+}
+
+fn placed_for(placed: List<Placed>, name: string?) -> List<Placed> {
+    if name == null { [] } else { [p for p in placed if p.name == name!] }
+}
+
+/// A node's `{key: value}` map is sugar for equality conditions on it.
+fn map_conditions(n: NodePat, args: Args) -> Result<List<Placed>, CypherError> {
+    [Placed { name: n.name ?? "", cond: Cond.Filter(e.key, "eq", literal(e.value, args)?) } for e in n.props]
+}
+
+fn check_cond(catalog: Catalog, model: string?, c: Cond) -> Result<string, CypherError> {
+    match c {
+        .Filter(prop, _, _) or .Search(prop, _) or .Nullness(prop, _) -> check_property(catalog, model, prop),
+        .Seat(_) -> .Ok(""),
+    }
 }
 
 /// The first node: seeded from the context when a conjunct says so, else scanned.
@@ -299,10 +419,10 @@ fn follow_json(id: string, input: string, property: string, forward: bool, owner
 
 /// ---- WHERE ----
 
-fn placements(w: Expr, nodes: List<NodePat>, args: Args) -> Result<List<Placed>, CypherError> {
+fn placements(w: Expr, vars: List<string>, args: Args) -> Result<List<Placed>, CypherError> {
     let placed = [placement(c, args)? for c in conjuncts(w)]
     for p in placed {
-        if !nodes.any(it.name == p.name) { return .Err(refuse("unknown_variable", "${p.name} is not a variable of this MATCH")) }
+        if !vars.contains(p.name) { return .Err(refuse("unknown_variable", "${p.name} is not a variable of this MATCH")) }
     }
     placed
 }
@@ -510,7 +630,13 @@ fn unsupported_return() -> CypherError {
 /// The plan's tail: what to return, from which chains.
 type Finished = { steps: List<Json>, output: string, joined: List<string> }
 
-fn finish(chains: List<Chain>, wanted: List<Wanted>) -> Result<Finished, CypherError> {
+/// Where a returned variable's rows are: a path's last node or a bound relation record.
+type Anchor = { chain: int, step: string, model: string? }
+
+fn finish(chains: List<Chain>, wanted: List<Wanted>, catalog: Catalog) -> Result<
+    Finished,
+    CypherError,
+> {
     let totals = [t for w in wanted for t in total_want(w)]
     let props = [p for w in wanted for p in prop_want(w)]
     let sole = [t for t in totals if !is_holds(t)]
@@ -527,28 +653,28 @@ fn finish(chains: List<Chain>, wanted: List<Wanted>) -> Result<Finished, CypherE
         if chains.length != 1 { return .Err(refuse("unused_match", "an aggregate reads the one MATCH it follows")) }
         return aggregated(chains[0], sole[0])
     }
-    for p in props {
-        let _ = owner_chain_of(chains, p.who)?
+    let anchors = [anchor_of(chains, p.who)? for p in props]
+        .concat([anchor_of(chains, t.who ?? "")? for t in statuses])
+    for k, p in props {
+        let _ = check_property(catalog, anchors[k].model, p.prop)?
     }
-    for t in statuses {
-        let _ = owner_chain_of(chains, t.who ?? "")?
+    let places = [a for k, a in anchors if !anchors.slice(0, k).any(it.step == a.step)]
+    for i, c in chains {
+        if !places.any(it.chain == i) { return .Err(refuse("unused_match", "every MATCH contributes to the RETURN")) }
     }
     mut steps = [s for c in chains for s in c.steps]
     mut tails: List<string> = []
-    for i, c in chains {
-        let mine = [p for p in props if owner_chain(chains, p.who) == i]
-        let held = [t for t in statuses if owner_chain(chains, t.who ?? "") == i]
-        if mine.is_empty() && held.is_empty() {
-            return .Err(refuse("unused_match", "every MATCH contributes to the RETURN"))
-        }
+    for g, place in places {
+        let mine = [p for k, p in props if anchors[k].step == place.step]
         if !mine.is_empty() {
-            let tail = returned(i, c, mine)
+            let tail = returned("a${g}", place.step, chains[place.chain].optional, mine)
             steps = steps.concat(tail.steps)
             tails.push(tail.output)
         }
+        let held = [t for k, t in statuses if anchors[props.length + k].step == place.step]
         for k, t in held {
-            let id = "r${i}h${k}"
-            steps.push(status_step(id, c.last, t))
+            let id = "a${g}h${k}"
+            steps.push(status_step(id, place.step, t))
             tails.push(id)
         }
     }
@@ -576,34 +702,29 @@ fn prop_want(w: Wanted) -> List<PropWant> { match w { .Prop(p) -> [p], .Total(_)
 
 fn tail_name(c: Chain) -> string? { c.slots[c.slots.length - 1].name }
 
-fn owner_chain(chains: List<Chain>, who: string) -> int? {
-    [i for i, c in chains if tail_name(c) == who].first()
-}
-
-/// The chain a returned variable ends, or the reason it ends none.
-fn owner_chain_of(chains: List<Chain>, who: string) -> Result<int, CypherError> {
-    let found = owner_chain(chains, who)
-    match found {
-        i? -> .Ok(i)
-        null -> if chains.any(it.slots.any((s) -> s.name == who)) {
-            .Err(
-                refuse(
-                    "return_not_last",
-                    "${who} is not the last node of its path; return properties of the last node",
-                ),
-            )
-        } else {
-            .Err(refuse("unknown_variable", "${who} is not a variable of any MATCH"))
-        }
+/// The rows a returned variable names: a path's last node, or a bound relation record.
+fn anchor_of(chains: List<Chain>, who: string) -> Result<Anchor, CypherError> {
+    let tails = [Anchor { chain: i, step: c.last, model: c.slots[c.slots.length - 1].model } for i, c in chains if tail_name(c) == who]
+    let records = [Anchor { chain: i, step: r.step, model: r.model } for i, c in chains for r in c.relations if r.name == who]
+    let found = tails.concat(records).first()
+    if found != null { return .Ok(found!) }
+    if chains.any(it.slots.any((s) -> s.name == who)) {
+        return .Err(
+            refuse(
+                "return_not_last",
+                "${who} is not the last node of its path; return properties of the last node",
+            ),
+        )
     }
+    .Err(refuse("unknown_variable", "${who} is not a variable of any MATCH"))
 }
 
-fn returned(i: int, c: Chain, props: List<PropWant>) -> Finished {
+fn returned(group: string, input: string, optional: bool, props: List<PropWant>) -> Finished {
     mut steps: List<Json> = []
-    mut last = c.last
-    if !c.optional {
+    mut last = input
+    if !optional {
         for k, p in props {
-            let id = "r${i}e${k}"
+            let id = "${group}e${k}"
             steps
                 .push(
                     step_json(
@@ -619,7 +740,7 @@ fn returned(i: int, c: Chain, props: List<PropWant>) -> Finished {
             last = id
         }
     }
-    let id = "r${i}p"
+    let id = "${group}p"
     steps
         .push(
             step_json(
