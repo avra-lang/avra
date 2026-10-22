@@ -17,6 +17,7 @@ ExtractionResult (contract 2: selectors, FactBank factuality, speech act,
 resolution). Timings, peak RSS and skipped models go to stderr.
 The ontology comes only from the catalog descriptor.
 """
+import decimal
 import json
 import os
 import re
@@ -154,7 +155,7 @@ class Plan:
     def gaps(self, m, handled):
         return [
             p["name"] for p in m["properties"]
-            if required(p) and p["name"] not in handled and route(p) is None and not self.embeddable(p["shape"])
+            if required(p) and p["name"] not in handled and route(p) is None and not self.embeddable(m, p)
         ]
 
     def relation_gap(self, m, rel):
@@ -166,11 +167,31 @@ class Plan:
         gaps = self.gaps(m, (rel["from"][0], rel["to"][0], rel["label"][0]))
         return f"required fields without an evidence route: {gaps}" if gaps else None
 
-    def embeddable(self, shape):
-        """An embedded value whose every field may be absent."""
-        if not (isinstance(shape, dict) and "embedded" in shape):
-            return False
-        return not any(required(p) for p in self.models[shape["embedded"]]["properties"])
+    def embedded(self, p):
+        """The value type an embedded property holds, through optional."""
+        shape = p["shape"]
+        shape = shape.get("optional", shape) if isinstance(shape, dict) else shape
+        return shape["embedded"] if isinstance(shape, dict) and "embedded" in shape else None
+
+    def embeddable(self, m, p):
+        """An embedded value the cascade can state whole: every field may be
+        absent, or the model declares it a quantity its required fields fill."""
+        value = self.embedded(p)
+        return value is not None and (not any(required(x) for x in self.models[value]["properties"]) or self.quantity(m, p) is not None)
+
+    def quantity(self, m, p):
+        """(amount field, unit field, decimal places) when the model's declared
+        quantities read an embedded property as a number beside its unit and
+        those two fields are all the value type requires."""
+        value = self.embedded(p)
+        for q in m["semantics"].get("quantities", []):
+            amount, unit = q["amount"], q["unit"].get("path") or []
+            if value is None or len(amount) != 2 or len(unit) != 2 or amount[0] != p["name"] or unit[0] != p["name"]:
+                continue
+            fields = {x["name"]: x for x in self.models[value]["properties"]}
+            if {n for n, x in fields.items() if required(x)} <= {amount[1], unit[1]} and route(fields[amount[1]]) == "number" and route(fields[unit[1]]) == "text":
+                return amount[1], unit[1], q["decimal_places"]
+        return None
 
     def anchor(self, model):
         """The text field an entity record is named by."""
@@ -207,8 +228,11 @@ class Plan:
             if texts:
                 q[f"record:{model}"] = ("records", text, model, texts[0], texts)
             for p in self.models[model]["properties"]:
+                quantity = self.quantity(self.models[model], p)
                 if route(p) == "text" and required(p):
                     fields[f"{model}.{p['name']}"] = f"the {p['name']} of a {model}: {gloss(self.models[model])}"
+                elif quantity:
+                    fields[f"{model}.{p['name']}.{quantity[1]}"] = f"the {quantity[1]} of the {p['name']} of a {model}: {gloss(self.models[self.embedded(p)])}"
         if fields:
             q["fields"] = ("mentions", text, fields)
         if any(route(p) == "time" for m in self.records for p in self.models[m]["properties"]):
@@ -725,7 +749,7 @@ class Cascade:
         for p in m["properties"]:
             value = self.value_of(model, p, found, ctx, a, b)
             if value is None:
-                if required(p) and not self.plan.embeddable(p["shape"]):
+                if required(p) and not self.plan.embeddable(m, p):
                     missing.append(p["name"])
                 continue
             fields.append(value)
@@ -756,7 +780,10 @@ class Cascade:
     def value_of(self, model, p, found, ctx, a, b):
         """One field proposal, or None when the sentence does not state it."""
         kind, name = route(p), p["name"]
-        if self.plan.embeddable(p["shape"]):
+        if self.plan.embeddable(self.plan.models[model], p):
+            quantity = self.plan.quantity(self.plan.models[model], p)
+            if quantity:
+                return self.quantity_field(model, p, quantity, ctx, a, b)
             return self.field(name, {}, [(a, b)]) if required(p) else None
         optional = ["not stated"]
         if kind == "text":
@@ -809,6 +836,36 @@ class Cascade:
                 return None
             x, y = nums[k]
             return self.field(name, int(self.t.s[x:y].replace(",", "")), [(x, y)], score=pr[k])
+        return None
+
+    def quantity_field(self, model, p, quantity, ctx, a, b):
+        """A declared quantity: the scorer picks the unit span with the number
+        beside it, scaled by the declared decimal places."""
+        amount, unit, places = quantity
+        found = self.spans.get("fields", {}).get(f"{model}.{p['name']}.{unit}", [])
+        pairs = [x for x in (self.beside_number(s["start"], s["end"]) for s in found if a <= s["start"] and s["end"] <= b) if x]
+        if not pairs:
+            return None
+        pr = self.llm.pick(ctx, f"In this {model}, which amount is the {p['name']}?", [self.t.s[x:y] for x, y, _, _ in pairs], ["not stated"])
+        k = max(range(len(pr)), key=lambda i: pr[i])
+        if k == len(pairs) or pr[k] < ACCEPT_RECORD:
+            return None
+        x, y, number, word = pairs[k]
+        scaled = decimal.Decimal(number.replace(",", "")).scaleb(places)
+        if scaled != scaled.to_integral_value():
+            return None
+        return self.field(p["name"], {amount: int(scaled), unit: word}, [(x, y)], score=pr[k])
+
+    def beside_number(self, x, y):
+        """(start, end, number text, unit text) for a unit span with a number
+        directly after or before it, else None."""
+        number = r"\d[\d,]*(?:\.\d+)?"
+        after = re.match(rf"\s*({number})", self.t.s[y:])
+        before = re.search(rf"({number})\s*$", self.t.s[:x])
+        if after:
+            return x, y + after.end(), after.group(1), self.t.s[x:y]
+        if before:
+            return before.start(1), y, before.group(1), self.t.s[x:y]
         return None
 
     def time_field(self, model, p, ctx, a, b):
