@@ -44,6 +44,8 @@ MAX_OPTIONS = len(string.ascii_uppercase)
 GENERATE_BUDGET = parameter("generate_budget")
 ABSTAIN = object()
 SOCKET = os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
+QUOTATION = "quotation"
+QUOTATION_GLOSS = "words quoted from someone, inside quotation marks, without the marks"
 STATEMENT = "statement"
 STATEMENT_GLOSS = "one complete statement, request or question, as a whole sentence"
 SPEECH_ACTS = {
@@ -182,7 +184,11 @@ class Plan:
     def encoder_queries(self, text):
         """Every encoder pass an extraction of this text can use. None depends
         on a choice, so all of them run before any choice is made."""
-        q = {"entities": ("mentions", text, self.entity_labels()), "statements": ("mentions", text, {STATEMENT: STATEMENT_GLOSS})}
+        q = {
+            "entities": ("mentions", text, self.entity_labels()),
+            "statements": ("mentions", text, {STATEMENT: STATEMENT_GLOSS}),
+            "quotations": ("mentions", text, {QUOTATION: QUOTATION_GLOSS}),
+        }
         for model, texts in self.entities.items():
             extra = [p["name"] for p in texts if p["name"] != self.anchor(model)]
             if extra:
@@ -218,22 +224,6 @@ class Text:
 
     def span(self, start, end):
         return {"start": self.byte[start], "end": self.byte[end], "text": self.s[start:end]}
-
-    def units(self):
-        """Sentence/line units; a quotation is its own nested unit."""
-        out = []
-        for m in re.finditer(r"[^\n.!?]+(?:[.!?]+|$)", self.s):
-            a, b = m.start(), m.end()
-            while a < b and self.s[a] in " \t'\"":
-                a += 1
-            while b > a and self.s[b - 1] in " \t":
-                b -= 1
-            if b > a:
-                out.append((a, b))
-        return out
-
-    def quotes(self):
-        return [(m.start(1), m.end(1)) for m in re.finditer(r"(?<=[\s,:])['\"“‘](.+?)['\"”’](?=[\s.,;]|$)", self.s)]
 
 
 # ---------------------------------------------------------------- models
@@ -447,14 +437,11 @@ class Cascade:
     def units(self):
         """The spans choices are asked about, by CASCADE_UNITS:
         statements — the encoder's statement spans (gaps between them kept);
-        windows — each frame, and the text outside frames, whole;
-        sentences — punctuation splitting, kept only as a measured baseline."""
+        windows — each frame, and the text outside frames, whole."""
         if self._units is not None:
             return self._units
         mode = os.environ.get("CASCADE_UNITS", "statements")
-        if mode == "sentences":
-            self._units = self.t.units()
-        elif mode == "windows":
+        if mode == "windows":
             self._units = self.covering([f["_range"] for f in self.frames])
         else:
             found = self.spans["statements"].get(STATEMENT, [])
@@ -538,26 +525,18 @@ class Cascade:
     # Frames: chat turns and quotations; the LLM picks a quote's speaker.
 
     def frame_pass(self, source):
-        """Chat turns and quotations not already framed by the source."""
-        people = [m for m in self.mentions if m["record"]]
-        turns = []
-        for m in people:
-            line_start = self.t.s.rfind("\n", 0, m["start"]) + 1
-            before = self.t.s[line_start : m["start"]].strip()
-            if self.t.s[m["end"] : m["end"] + 1] == ":" and (not before or before[-1] in ".!?"):
-                turns.append(m)
-        turns.sort(key=lambda m: m["start"])
-        for i, m in enumerate(turns):
-            end = turns[i + 1]["start"] if i + 1 < len(turns) else len(self.t.s)
-            while end > m["start"] and self.t.s[end - 1] in " \n":
-                end -= 1
-            self.add_frame(m["start"], end, None, m["record"])
-        for a, b in self.t.quotes():
-            parent = self.innermost(a, b)
+        """Quotations the encoder proposed and the source did not frame; the
+        scorer names each one's speaker. A chat turn needs no frame: every
+        passage's speaker is asked of the passage itself."""
+        quoted = sorted((x["start"], x["end"]) for x in self.spans.get("quotations", {}).get(QUOTATION, []))
+        for a, b in quoted:
             if any(f["_range"] == (a, b) for f in self.frames):
                 continue
-            speaker = self.choose_speaker(a, b, quoted=True)
-            self.add_frame(a, b, parent["id"] if parent else None, speaker)
+            parent = self.innermost(a, b)
+            crossing = [f for f in self.frames if f["_range"][0] < a < f["_range"][1] < b or a < f["_range"][0] < b < f["_range"][1]]
+            if crossing or any(f["parent"] == (parent["id"] if parent else None) and not (b <= f["_range"][0] or a >= f["_range"][1]) for f in self.frames):
+                continue
+            self.add_frame(a, b, parent["id"] if parent else None, self.choose_speaker(a, b, quoted=True))
 
     def add_frame(self, a, b, parent, speaker):
         taken = {f["id"] for f in self.frames}
@@ -569,10 +548,10 @@ class Cascade:
         return min(inside, key=lambda f: f["_range"][1] - f["_range"][0]) if inside else None
 
     def choose_speaker(self, a, b, quoted=False):
-        """The person record that 'I'/'my' in this range refers to, or None."""
+        """The entity record speaking in this range, or None."""
         people = {}
         for m in self.mentions:
-            if m["record"] and m["kind"] in self.person_models():
+            if m["record"] and m["kind"] in self.plan.entities:
                 people.setdefault(m["record"], self.name(m["record"]))
         if not people:
             return None
@@ -598,22 +577,20 @@ class Cascade:
         if before:
             x, y = before[-1]
             for m in self.mentions:
-                if m["record"] and m["kind"] in self.person_models() and x <= m["start"] and m["end"] <= y:
+                if m["record"] and m["kind"] in self.plan.entities and x <= m["start"] and m["end"] <= y:
                     if all(rid != m["record"] for rid, _ in out):
                         out.append((m["record"], (m["start"], m["end"])))
         return out
 
     def speaker(self, a, b):
-        """Who speaks a passage: its frame's speaker, else the text's own."""
+        """Who speaks a passage: its frame's speaker, else the scorer's choice
+        for the passage itself."""
         frame = self.innermost(a, b)
         if frame is not None and frame["speaker"]:
             return frame["speaker"]
-        if "text" not in self.resolved:
-            self.resolved["text"] = self.choose_speaker(0, len(self.t.s))
-        return self.resolved["text"]
-
-    def person_models(self):
-        return {self.plan.relations[n]["from"] and target(self.prop(n, self.plan.relations[n]["from"][0])["shape"]) for n in self.plan.relations}
+        if (a, b) not in self.resolved:
+            self.resolved[(a, b)] = self.choose_speaker(a, b)
+        return self.resolved[(a, b)]
 
     def prop(self, model, name):
         return next(p for p in self.plan.models[model]["properties"] if p["name"] == name)
