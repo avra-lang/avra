@@ -156,6 +156,10 @@ fn generated(t: Type) -> Decls {
             /// name order — what the registry records when it is created.
             static fn shape() -> string { ${literal(shape_text_of(t))} }
 
+            /// Who claims the table: the declaring module and file, never
+            /// where the checkout happens to stand.
+            static fn claimant() -> string { ${literal(claimant_of(t))} }
+
             static fn create_table(mut db: Db) -> Result<int, SqlError> {
                 db.run(sql("PRAGMA foreign_keys = ON"))?
                 db.run(sql(${literal(claim_registry_sql())}))?
@@ -165,12 +169,15 @@ fn generated(t: Type) -> Decls {
                 let claim = db.first(sql(${literal(claim_select_sql())}, [.Text(${literal(table_name_of(t))})]))?
                 match claim {
                     null -> {
-                        let _ = db.run(sql(${literal(claim_insert_sql())}, [.Text(${literal(table_name_of(t))}), .Text(${literal(declared_at_of(t))}), .Text(${literal(shape_text_of(t))})]))?
+                        let _ = db.run(sql(${literal(claim_insert_sql())}, [.Text(${literal(table_name_of(t))}), .Text(${literal(claimant_of(t))}), .Text(${literal(shape_text_of(t))})]))?
                     }
                     row? -> {
                         let claimed_by = row.text(0)?
-                        if claimed_by != ${literal(declared_at_of(t))} {
-                            fail SqlError.defect(${literal(collision_message(t))} + claimed_by)
+                        if claimed_by != ${literal(claimant_of(t))} {
+                            if !moved_claim(claimed_by, ${literal(relative_file_of(t))}) {
+                                fail SqlError.defect(${literal(collision_message(t))} + claimed_by)
+                            }
+                            let _ = db.run(sql(${literal(claim_rekey_sql())}, [.Text(${literal(claimant_of(t))}), .Text(${literal(table_name_of(t))})]))?
                         }
                     }
                 }
@@ -850,11 +857,31 @@ fn claim_insert_sql() -> string {
     "INSERT INTO \"__avra_models__\" (\"table_name\", \"declared_at\", \"shape\") VALUES (?, ?, ?)"
 }
 
-/// The declaring type's own file, its one honest fully-qualified name
-/// — `@std/meta` hands a `Type` no module or package field, but every
-/// declaration's `Loc` names the file it stands in, and two DIFFERENT
-/// files are the only thing a bare type name can never make equal.
-fn declared_at_of(t: Type) -> string { t.at?.file ?? "?" }
+fn claim_rekey_sql() -> string {
+    "UPDATE \"__avra_models__\" SET \"declared_at\" = ? WHERE \"table_name\" = ?"
+}
+
+/// The declaring module, fully qualified with its package, and the file's
+/// own name: the same in every checkout of the package, and different for
+/// two types of one bare name in two modules or two files of one module.
+fn claimant_of(t: Type) -> string { "${t.module}:${file_name(t)}" }
+
+fn file_name(t: Type) -> string { (t.at?.file ?? "?").split("/").last() ?? "?" }
+
+/// The file's path inside its package's source root: the module's own
+/// segments after the package's, then the file's name.
+fn relative_file_of(t: Type) -> string {
+    let segments = t.module.split(".")
+    let package = if t.module.starts_with("@") { 2 } else { 1 }
+    segments.slice(package, segments.length).concat([file_name(t)]).join("/")
+}
+
+/// A claim recorded as an absolute path before claimants were named by
+/// module: the same declaration when that path ends in this file's
+/// package-relative path, so only the checkout's location differs.
+fn moved_claim(recorded: string, relative: string) -> bool {
+    recorded.starts_with("/") && recorded.ends_with("/${relative}")
+}
 
 fn collision_message(t: Type) -> string {
     "table \"${table_name_of(t)}\" is already claimed by a @model declared at "
