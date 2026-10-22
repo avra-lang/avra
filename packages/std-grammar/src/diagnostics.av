@@ -15,6 +15,56 @@ export enum Cause { Expected, Trailing, Builder, Defect, Lex, Block }
 /// have been accepted, and inside which rule.
 export type Diagnostic = { cause: Cause, message: string, loc: Loc?, expected: List<string>, in_rule: string }
 
+/// How a failure will speak. `Told` already has its words; `Sentence` is the standard
+/// "expected …" sentence over a want; `Held` is an authored message beside the words of a want.
+/// The wants are prims until `spoken`, so a failure a parse discards never costs a word.
+export enum Voice {
+    Told(message: string, expected: List<string>)
+    Sentence(want: Want)
+    Held(message: string, want: Want)
+}
+
+/// A failure inside the engine, before it speaks. A `Diagnostic` is what it becomes at `spoken`,
+/// and nothing leaves the engine as a failure.
+export type Failure = { cause: Cause, voice: Voice, loc: Loc?, in_rule: string }
+
+/// A diagnostic that already speaks, as an engine failure.
+export fn told(d: Diagnostic) -> Failure {
+    Failure {
+        cause: d.cause,
+        voice: Voice.Told(d.message, d.expected),
+        loc: d.loc,
+        in_rule: d.in_rule,
+    }
+}
+
+/// The failure with its words made, once, by the one renderer.
+export fn spoken(f: Failure) -> Diagnostic {
+    match f.voice {
+        .Told(message, expected) -> Diagnostic {
+            cause: f.cause,
+            message: message,
+            loc: f.loc,
+            expected: expected,
+            in_rule: f.in_rule,
+        },
+        .Sentence(want) -> Diagnostic {
+            cause: f.cause,
+            message: expected_message(want, f.in_rule),
+            loc: f.loc,
+            expected: wanted_words(want),
+            in_rule: f.in_rule,
+        },
+        .Held(message, want) -> Diagnostic {
+            cause: f.cause,
+            message: message,
+            loc: f.loc,
+            expected: wanted_words(want),
+            in_rule: f.in_rule,
+        },
+    }
+}
+
 /// A source-anchorless coherence diagnostic, attributed by name.
 export fn defect(in_rule: string, message: string) -> Diagnostic {
     Diagnostic { cause: Cause.Defect, message: message, loc: null, expected: [], in_rule: in_rule }
