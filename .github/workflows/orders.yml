@@ -56,11 +56,17 @@ jobs:
       - name: objects and libs
         run: |
           make -s -j"$(nproc)" -o avra objects libs || make -s -o avra objects libs
-          tar -cf avra-build.tar build
+          sh tools/hand_down.sh pack
       - uses: actions/upload-artifact@v4
         with:
-          name: orders-build
-          path: avra-build.tar
+          name: avra-compiler
+          path: build/avra
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: avra-build
+          path: avra-build.tar.gz
+          compression-level: 0
           retention-days: 1
 
   suites:
@@ -76,10 +82,7 @@ jobs:
         shard: ${{ fromJSON(needs.prepare.outputs.shards) }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: orders-build }
-      - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+      - uses: ./.github/actions/handed-down
       - name: eight orders
         env:
           AVRA_SCHED_RUNS: "8"
@@ -120,10 +123,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: orders-build }
-      - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+      - uses: ./.github/actions/handed-down
       - name: nine seeds
         env:
           LAYOUT_ORACLE_SEEDS: "1 2 3 4 5 6 7 8 9"
