@@ -45,7 +45,9 @@ const ENGINE = args.browser ?? "firefox";
 // 1/60 px. A whole-pixel tolerance would hide the very defect this oracle exists to find: a fraction
 // lost before a box is made. A text's LINE COUNT is a count, exact.
 const UNIT = 1; // one solver unit, in sixtieths of a pixel
-const SLACK = 1e-6; // float noise in the page's numbers, never a tolerance on the layout
+// The page's numbers are 32-bit floats: past a few hundred pixels one step is 0.002 sixtieths of a
+// pixel. This is that resolution, rounded up, and never a tolerance on the layout.
+const SLACK = 0.01;
 
 // THE BOUNDARY RULE. A box is also handed back snapped to whole pixels, each EDGE rounded halves up,
 // and two numbers within a unit can round apart when a rounding boundary (k + 1/2 px) lies between
@@ -347,7 +349,11 @@ function solved(cases, work) {
   fs.writeFileSync(path.join(work, "avra.toml"), `[package]\nname = "layout-oracle"\nversion = "0.0.1"\n`);
   fs.writeFileSync(path.join(work, "src/main.av"), program(cases));
   const avra = process.env.AVRA ?? path.join(tree, "build/avra");
-  const ran = spawnSync(avra, ["run", work], { encoding: "utf8", maxBuffer: 1 << 28 });
+  // BUILT, then run natively: the evaluator walks 300 trees in two minutes where the program,
+  // compiled, answers them in seconds (the two engines agree on every program the tree tests).
+  const built = spawnSync(avra, ["build", work], { encoding: "utf8", maxBuffer: 1 << 28 });
+  if (built.status !== 0) { console.error(built.stdout.slice(-2000), built.stderr.slice(-4000)); process.exit(2); }
+  const ran = spawnSync(path.join(work, "src/main"), { encoding: "utf8", maxBuffer: 1 << 28 });
   if (ran.status !== 0) { console.error(ran.stdout.slice(-2000), ran.stderr.slice(-4000)); process.exit(2); }
   const out = [], pages = [], counts = [], fines = [];
   let reading = null;
@@ -423,8 +429,10 @@ async function compare(cases, browser, work, note = false) {
   SPENT.calls += 1;
   SPENT.trees += cases.length;
   const results = [];
+  // ONE round trip for every tree of this call: the page lays each out in turn and answers them all.
+  const read = await timed("page", () => browser.read(`((pages, w) => pages.map((html) => (${BROWSER})(html, w)))(${JSON.stringify(pages)}, ${WIDTH})`));
   for (let i = 0; i < cases.length; i++) {
-    const got = await timed("page", () => browser.read(`(${BROWSER})(${JSON.stringify(pages[i])}, ${WIDTH})`));
+    const got = read[i];
     const verdict = judge(got, out[i]);
     if (note) {
       SEEN.gap = Math.max(SEEN.gap, verdict.gap);
@@ -510,7 +518,9 @@ async function main() {
   licensed_law();
   const rand = prng(SEED);
   const cases = args.tree ? [JSON.parse(args.tree)] : (PROP ? PROP_CASES : FIXED_CASES).concat(Array.from({ length: CASES }, () => rooted(generate(rand, 3))));
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "avra-layout-oracle-"));
+  // The solver's program lives in one directory per face, so the compiler's store (the std-ui it
+  // analyses) is warm from the second run on instead of cold in a fresh temp directory every time.
+  const work = path.join(tree, "build", "layout-oracle", FACE_NAME);
   const page = fs.mkdtempSync(path.join(os.tmpdir(), "avra-layout-page-"));
   fs.writeFileSync(path.join(page, "index.html"), PAGE);
   const browser = await opened("file://" + path.join(page, "index.html"));
