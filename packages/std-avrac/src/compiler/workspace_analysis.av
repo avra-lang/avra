@@ -49,6 +49,7 @@ use features.{
     quote_meta,
     SettleRoot,
     new_type_facts,
+    TypeFacts,
 }
 use core.{StmtId}
 use diagnostics.{Diag, no_voices, has_errors}
@@ -357,14 +358,11 @@ impl Workspace {
         let p = self.parsed(f)
         let names = self.resolved(f)
         let facts = self.folded(f)
-        let path = self.decls.file(f).path
         Analysis {
             view: file_view(self.lang, p, self.decls, f),
             names: names,
             facts: facts,
-            decl_reads: (d: DeclId) -> self.decl_reads_state(d),
-            decl_places: (d: DeclId) -> self.decl_places(d),
-            decl_structural: (d: DeclId) -> self.decl_structural(d),
+            ws: self,
             lang: self.lang,
             diagnostics: flatten(
                 [
@@ -375,7 +373,6 @@ impl Workspace {
                     facts.voices.list,
                 ],
             ),
-            program: () -> self.program(path),
         }
     }
 
@@ -386,24 +383,29 @@ impl Workspace {
     /// range of its own is typed with its whole file.
     fn analyzed_decl(f: FileId, d: DeclId) -> Analysis {
         if !self.decls.owns_a_range(d) { return self.analysis(f) }
-        let p = self.parsed(f)
-        let names = self.resolved(f)
         let own = self.typed(d)
         let hole = self.decls.types.intern(Type.Error)
-        mut out = new_type_facts(0, p.store.exprs.count(), 0 - 1, 0, p.store.stmts.count(), hole)
+        let store = self.parsed(f).store
+        mut out = new_type_facts(0, store.exprs.count(), 0 - 1, 0, store.stmts.count(), hole)
         out.absorb(own)
-        let facts = out with { voices: own.voices }
-        let path = self.decls.file(f).path
+        self.analysis_over(f, out with { voices: own.voices })
+    }
+
+    /// One declaration's analysis over its own range's facts, windowed as typed: a fn or
+    /// a method reads nothing outside it, so no file-wide table is laid per body.
+    fn ranged_analysis(f: FileId, d: DeclId) -> Analysis { self.analysis_over(f, self.typed(d)) }
+
+    /// An analysis of `f` whose body facts are `facts`.
+    fn analysis_over(f: FileId, facts: TypeFacts) -> Analysis {
+        let p = self.parsed(f)
+        let names = self.resolved(f)
         Analysis {
             view: file_view(self.lang, p, self.decls, f),
             names: names,
             facts: facts,
-            decl_reads: (x: DeclId) -> self.decl_reads_state(x),
-            decl_places: (x: DeclId) -> self.decl_places(x),
-            decl_structural: (x: DeclId) -> self.decl_structural(x),
+            ws: self,
             lang: self.lang,
             diagnostics: flatten([p.voices.list, names.voices.list, facts.voices.list]),
-            program: () -> self.program(path),
         }
     }
 
@@ -668,12 +670,24 @@ impl Workspace {
         // runtime carries no fiber and no thread, so the tick has no body
         // there — a program that really parks fails on the row it parks at.
         let checks = !self.comptime_active() && !self.wasm_target() && self.scheduler_linked()
-        let analysis = if w.decl != null && self.comptime_active() {
-            self.analyzed_decl(w.file, w.decl!)
-        } else {
-            self.analysis(w.file)
+        let analysis = when {
+            w.decl == null -> self.analysis(w.file)
+            self.lowers_from_own_range(w.decl!) -> self.ranged_analysis(w.file, w.decl!)
+            self.comptime_active() -> self.analyzed_decl(w.file, w.decl!)
+            _ -> self.analysis(w.file)
         }
         lower_unit(analysis, self.extern_symbols(), w, settle, cross, checks)
+    }
+
+    /// Whether a declaration lowers from the expressions its own range holds: a fn or a
+    /// method, whose body is all it reads. Every other kind reads expressions written
+    /// outside its statement — an annotation's arguments, a const's initializer.
+    fn lowers_from_own_range(d: DeclId) -> bool {
+        let own_body = match self.decls.decl(d).kind {
+            .Fn or .Method -> true,
+            .Builtin or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum or .State -> false,
+        }
+        own_body && self.decls.owns_a_range(d)
     }
 
     /// An isolated compile-time run needs the body of every function it
