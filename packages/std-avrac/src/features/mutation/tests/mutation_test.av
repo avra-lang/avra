@@ -4,6 +4,24 @@ use @std.avrac.compiler.{analyze_source}
 use @std.avrac.testing.{shown, refused_with, halver}
 
 spec "features/mutation" {
+    given "a `state` is a place, asked of its binding" {
+        then "a module `state` fills a `mut` seat in a fn body" {
+            shown(
+                "type T = { n: int }\nstate t: T = T { n: 0 }\nfn bump(mut x: T) { x.n = x.n + 1 }\nfn twice() {\n    bump(t)\n    bump(t)\n}\ntwice()\nt.n",
+            ) == "2"
+        }
+        then "a lambda's capture of a `state` fills a `mut` seat" {
+            shown(
+                "type T = { n: int }\nstate t: T = T { n: 0 }\nfn bump(mut x: T) { x.n = x.n + 1 }\nlet again = () -> bump(t)\nagain()\nt.n",
+            ) == "1"
+        }
+        then "a plain `let` still does not fill a `mut` seat" {
+            refused_with(
+                "type T = { n: int }\nfn bump(mut x: T) { x.n = x.n + 1 }\nlet t = T { n: 0 }\nbump(t)",
+                "`t` is not `mut` — seat 1 of `bump` writes through it",
+            )
+        }
+    }
     given "the borrow — a copy is a copy, whatever the place" {
         then "a mut bound to an IMMUTABLE parameter's field is a copy" {
             shown(
