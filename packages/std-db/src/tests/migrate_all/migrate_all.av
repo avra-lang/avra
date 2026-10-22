@@ -1,0 +1,68 @@
+// proves: one `migrate_all(db, models)` brings a database to every model the program
+// declares — a table that is missing is made, a model that gained a field is
+// grown with its rows kept, and a program restarted on the result changes nothing
+use @std.db.{model}
+use @std.db.models.{Found, migrate_all}
+use @std.db.apply.{MigrateError}
+use @std.errors.{Error}
+use @std.io.{make_dirs}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+use @std.time.{stamp}
+
+@model
+type Board = {
+    id: int = 0,
+    title: string,
+}
+
+@model
+type Card = {
+    id: int = 0,
+    text: string,
+    note: string?,
+}
+
+collect models: List<Found> = @model in closure as Found { model: it, name: it.name } by it.name
+
+fn columns(db: Db, name: string) -> Result<int, SqlError> {
+    (db.scalar(sql("SELECT count(*) FROM pragma_table_info(?)", [.Text(name)]))?).int()
+}
+
+fn told(r: Result<int, MigrateError>) -> string {
+    match r { .Ok(n) -> "${n}", .Err(e) -> e.describe().message }
+}
+
+/// The database as an earlier release left it: Card without its `note`.
+fn earlier(dir: string) -> Result<Db, SqlError> {
+    mut db = Db.open("${dir}/app.db")?
+    let first = told(migrate_all(db, models))
+    let _ = db.run(sql("ALTER TABLE \"Card\" DROP COLUMN \"note\""))?
+    let shape = (db.scalar(sql("SELECT shape FROM \"__avra_models__\" WHERE table_name = 'Card'"))?)
+        .text()?
+    let _ = db
+        .run(
+            sql(
+                "UPDATE \"__avra_models__\" SET shape = ? WHERE table_name = 'Card'",
+                [.Text(shape.replace("\nnote|TEXT|null|-|-|-|-|-", ""))],
+            ),
+        )?
+    let _ = db.run(sql("INSERT INTO \"Card\" (text) VALUES ('kept')"))?
+    let _ = db.close()
+    Db.open("${dir}/app.db")
+}
+
+fn story() -> Result<string, SqlError> {
+    let dir = "/tmp/avra-db-migrate-all/${stamp()}"
+    let _ = make_dirs(dir)
+    mut db = earlier(dir)?
+    let before = columns(db, "Card")?
+    let grown = told(migrate_all(db, models))
+    let after = columns(db, "Card")?
+    let text = (db.scalar(sql("SELECT text FROM \"Card\""))?).text()?
+    let empty = (db.scalar(sql("SELECT note IS NULL FROM \"Card\""))?).int()?
+    let restart = told(migrate_all(db, models))
+    "columns ${before} -> ${after}\nsteps ${grown}\nrow ${text} note empty ${empty}\nrestart ${restart}"
+}
+
+match story() { .Ok(s) -> s, .Err(e) -> "FAILED ${e.describe().message}" }

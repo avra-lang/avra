@@ -5,7 +5,7 @@
 //! checked before it commits, so a plan that breaks the database is never
 //! kept. Forward only: to go back, restore the copy.
 use @std.errors.{Error, ErrorInfo, info}
-use @std.sqlite.{Db, SqlValue, sql}
+use @std.sqlite.{Db, Row, SqlValue, sql}
 use @std.sqlite.error.{SqlError}
 use @std.time.{now_ms}
 use migrate.{Plan, Renamed, diff, refusals, statements}
@@ -34,6 +34,68 @@ impl Error for MigrateError {
             .Broken(name, why) -> info("db.migrate.broken", broken_voice(name, why)),
         }
     }
+}
+
+/// What the whole program's migration needs of one model.
+export type Entry = {
+    name: string,
+    owner: string,
+    declared_at: string,
+    shape: string,
+    renamed_to: List<string>,
+    renamed_from: List<string>,
+}
+
+/// Every model's table made and grown, in the order given; answers how many
+/// steps it took in all. The first refusal stops the rest.
+export fn migrated_all(mut db: Db, entries: List<Entry>) -> Result<int, MigrateError> {
+    mut steps = 0
+    // LICENSED loops.push_loop: tables go one after another, and the first refusal stops the rest
+    for e in entries {
+        let _ = lifted(claim_table(db, e.name, e.owner, e.declared_at, e.shape))?
+        steps = steps + grown(db, e.shape, e.renamed_to, e.renamed_from)?
+    }
+    .Ok(steps)
+}
+
+/// The registry's claim on a table name, and the table made if it is not
+/// there. A second model of the same name declared elsewhere is refused,
+/// naming the file that claimed it first.
+export fn claim_table(mut db: Db, name: string, owner: string, declared_at: string, shape: string) -> Result<
+    int,
+    SqlError,
+> {
+    let read? = shape_read(shape) else { return .Err(SqlError.defect("a model's shape text did not read back")) }
+    let _ = db.run(sql("PRAGMA foreign_keys = ON"))?
+    let _ = db.run(sql(registry_sql()))?
+    if (db.scalar(sql(shape_column_probe_sql()))?).int()? == 0 {
+        let _ = db.run(sql(shape_column_add_sql()))?
+    }
+    if (db.scalar(sql(owner_column_probe_sql()))?).int()? == 0 {
+        let _ = db.run(sql(owner_column_add_sql()))?
+    }
+    let claim = db.first(sql(claim_select_sql(), [.Text(name)]))?
+    match claim {
+        row? -> {
+            let held = text_or_null(row, 0)
+            let recorded = text_or_null(row, 1)
+            if held == null && (recorded == null || recorded == shape) {
+                let _ = db.run(sql(claim_adopt_sql(), [.Text(owner), .Text(name)]))?
+            } else if held != owner {
+                fail SqlError.defect(collision_voice(name) + (held ?? shape_conflict_word()))
+            }
+        }
+        null -> {
+            let _ = db
+                .run(
+                    sql(
+                        claim_insert_sql(),
+                        [.Text(name), .Text(declared_at), .Text(shape), .Text(owner)],
+                    ),
+                )?
+        }
+    }
+    db.run(sql(create_sql(read.name, read.columns)))
 }
 
 /// A table brought to the shape a model's text declares, answering how many
@@ -128,7 +190,7 @@ fn applied(mut db: Db, plan: Plan, declared: Shape) -> Result<int, MigrateError>
     }
 }
 
-fn kept(mut db: Db) -> Result<int, MigrateError> {
+fn kept(db: Db) -> Result<int, MigrateError> {
     match lifted(db.commit()) {
         .Ok(n) -> .Ok(n),
         .Err(e) -> {
@@ -166,6 +228,39 @@ fn checked(db: Db, name: string) -> Result<int, MigrateError> {
 
 // ── SQL ─────────────────────────────────────────────────────────
 
+fn registry_sql() -> string {
+    "CREATE TABLE IF NOT EXISTS \"__avra_models__\" (\"table_name\" TEXT PRIMARY KEY, \"declared_at\" TEXT, \"shape\" TEXT, \"owner\" TEXT)"
+}
+
+/// A registry made before shapes were recorded lacks the column: it is
+/// added, and an older claim's shape stays NULL — unknown, never guessed.
+fn shape_column_probe_sql() -> string {
+    "SELECT count(*) FROM pragma_table_info('__avra_models__') WHERE name = 'shape'"
+}
+
+fn shape_column_add_sql() -> string { "ALTER TABLE \"__avra_models__\" ADD COLUMN \"shape\" TEXT" }
+
+/// A registry made before owners were recorded lacks the column: it is
+/// added, and an older claim's owner stays NULL until a model whose shape
+/// agrees adopts it.
+fn owner_column_probe_sql() -> string {
+    "SELECT count(*) FROM pragma_table_info('__avra_models__') WHERE name = 'owner'"
+}
+
+fn owner_column_add_sql() -> string { "ALTER TABLE \"__avra_models__\" ADD COLUMN \"owner\" TEXT" }
+
+fn claim_select_sql() -> string {
+    "SELECT \"owner\", \"shape\" FROM \"__avra_models__\" WHERE \"table_name\" = ?"
+}
+
+fn claim_insert_sql() -> string {
+    "INSERT INTO \"__avra_models__\" (\"table_name\", \"declared_at\", \"shape\", \"owner\") VALUES (?, ?, ?, ?)"
+}
+
+fn claim_adopt_sql() -> string {
+    "UPDATE \"__avra_models__\" SET \"owner\" = ? WHERE \"table_name\" = ?"
+}
+
 fn recorded_sql() -> string { "SELECT \"shape\" FROM \"__avra_models__\" WHERE \"table_name\" = ?" }
 
 fn restamp_sql() -> string { "UPDATE \"__avra_models__\" SET \"shape\" = ? WHERE \"table_name\" = ?" }
@@ -179,6 +274,17 @@ fn integrity_sql() -> string { "PRAGMA integrity_check" }
 fn links_sql() -> string { "PRAGMA foreign_key_check" }
 
 // ── Voices ──────────────────────────────────────────────────────
+
+fn collision_voice(name: string) -> string {
+    "table \"${name}\" is already claimed by a @model of module "
+}
+
+fn shape_conflict_word() -> string { "an earlier version with another shape" }
+
+/// A column's text, or null where it holds NULL.
+fn text_or_null(r: Row, i: int) -> string? {
+    match r.values[i] { .Text(v) -> v, rest -> null }
+}
 
 fn moving_voice(plan: Plan) -> string {
     "`${plan.name}` cannot be migrated by itself: ${refusals(plan).join("; ")}"
