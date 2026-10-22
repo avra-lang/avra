@@ -1,4 +1,4 @@
-use @std.cli.{cli, command, option, arg, Runnable, CliResult, argv}
+use @std.cli.{cli, command, option, arg, Runnable, CliResult}
 use @std.io.{read_text}
 use @std.json.{parse, to_text}
 use @std.text.{parse_int}
@@ -10,6 +10,9 @@ use transport.dispatch.{failure}
 use transport.server.{serve}
 use mcp.tools.{Door, tools}
 use @std.mcp.{serve_stdio}
+
+/// The program's own invocation path: the planner reaches this graph through it.
+extern fn avra_selfhost_get_arg_cstr(i: int) -> string
 
 type Command = { models: List<Registration>, derived: List<DerivationRegistration>, policy: EnginePolicy }
 
@@ -34,7 +37,7 @@ impl Command {
                 policy: self.policy,
                 planner: words(args.option("planner")),
                 extractor: words(args.option("extractor")),
-                graph: [argv()[0], "request", "--db", args.option("db")],
+                graph: [avra_selfhost_get_arg_cstr(0), "request", "--db", args.option("db")],
             }
             serve_stdio(tools(door)?)
             return 0
