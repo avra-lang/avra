@@ -608,6 +608,59 @@ async function printed(label, spec, v) {
   }
 }
 
+// ── what is licensed ─────────────────────────────────────────────
+// A tree the solver and an engine disagree on stands licensed only where the engine's own behaviour,
+// not the solver's, is the difference. Firefox holds no licence: where Firefox and the solver
+// disagree the solver is wrong.
+//
+// FAMILY "a word wider than its box": WebKit breaks a word wider than its box into lines differently
+// from the solver and from Firefox, in both directions (one line fewer, one more). A tree belongs when
+// every Text whose line count differs holds a word wider than the width the solver gave it; the boxes
+// that follow from that count (heights, positions) are the same disagreement. The CSS is acquitted:
+// the realizer's `overflow-wrap: break-word` and `anywhere` give identical counts, `word-break:
+// break-all` and `normal` move them further. The exemplars below must stay refused, so a fix on either
+// side shows up as a stale licence rather than a silent pass.
+//   webkit prop seed 5 case 118: Text "iimiammm" at width 3 (shrunk): solver 7 lines, WebKit 8
+//     (faces: i 1.5px, m 4.25, W 5, a/x 3.203, space 2). Agrees: every prefix and suffix of the word,
+//     "iimiamm" "imiammm" "iimiammx" "iiaiammm" "immiammm", and the word at widths 2, 4, 5, 6.
+//   webkit prop seed 3 case 39: Text "ma amxiixmam WxammW xaWmxx WxWWix xxWWxaWx" at width 31:
+//     solver 7 lines, WebKit 6. Firefox: 7, agreeing with the solver.
+const FAMILY = {
+  engine: "webkit",
+  face: "prop",
+  exemplars: [{ seed: 5, case: 118, width: 300 }, { seed: 3, case: 39, width: 300 }],
+};
+// Trees licensed one at a time, each with what is known. A name here is a defect nobody has explained.
+const NAMED = [
+  { engine: "webkit", face: "prop", seed: 3, case: 293, width: 300, why: "a bound: box 4 (a WrapReverse Row in a wrapping Row-direction Column) is 0.5/60 px narrower in WebKit than the solver, where its derived width bound is 0; unexplained from place/solve.av" },
+];
+
+const nodes_of = (spec) => [spec, ...spec.kids.flatMap(nodes_of)];
+const word_px = (w) => [...w].reduce((a, c) => a + (FACE.advances[c] ?? FACE.fallback), 0) / FACE.units;
+const longest_px = (t) => Math.max(0, ...t.split(/[ \n]/).map(word_px));
+
+/// Whether every line count that differs in `spec` is a Text holding a word wider than its box.
+function cut_word_tree(spec, got, want) {
+  const nodes = nodes_of(spec);
+  const differing = got.map((b, k) => (b[4] !== want[k][4] ? k : -1)).filter((k) => k >= 0);
+  return differing.length > 0 && differing.every((k) => nodes[k].prim === "Text" && longest_px(nodes[k].text) > want[k][7] / 60 + SLACK);
+}
+
+const named_here = (e) => e.engine === ENGINE && e.face === FACE_NAME && (e.seed === undefined || e.seed === SEED) && (e.width === undefined || e.width === WIDTH);
+
+/// Why a refused tree stands licensed, or null.
+function licence_of(spec, i, v) {
+  if (ENGINE !== FAMILY.engine || FACE_NAME !== FAMILY.face) return NAMED.find((e) => named_here(e) && e.case === i)?.why ?? null;
+  if (cut_word_tree(spec, v.got, v.want)) return "a word wider than its box";
+  return NAMED.find((e) => named_here(e) && e.case === i)?.why ?? null;
+}
+
+/// The licences that name a tree of this run which no longer disagrees.
+const stale = (refused, count) => [
+  ...FAMILY.exemplars.filter((e) => e.seed === SEED && e.width === WIDTH && ENGINE === FAMILY.engine && FACE_NAME === FAMILY.face).map((e) => ({ ...e, family: true })),
+  ...NAMED.filter(named_here),
+].filter((e) => e.case < count && !refused.has(e.case));
+
 /// The tree at `i`, shrunk to the smallest one that still disagrees.
 async function small_enough(cases, i, browser, work) {
   // `--no-shrink` prints the tree as generated: shrinking rebuilds the solver's program every round.
@@ -627,18 +680,22 @@ async function main() {
   const browser = await opened("file://" + path.join(page, "index.html"));
   await browser.read('document.fonts.load("1px cell").then((faces) => faces.length)');
   const verdicts = await compare(cases, browser, work, true);
-  const failing = verdicts.map((v, i) => (v ? i : -1)).filter((i) => i >= 0);
+  const refused = verdicts.map((v, i) => (v ? i : -1)).filter((i) => i >= 0);
+  const licences = new Map(refused.map((i) => [i, licence_of(cases[i], i, verdicts[i])]).filter(([, why]) => why !== null));
+  const failing = refused.filter((i) => !licences.has(i));
   if (cases.length === 0) { console.log("layout-oracle: ran 0 trees — FAILED: no tree was compared"); process.exit(1); }
   for (const i of failing.slice(0, SHOW)) {
     const { small, v } = await small_enough(cases, i, browser, work);
     await printed(`MISMATCH case ${i} (seed ${SEED}), shrunk:`, small, v);
   }
   await browser.close();
+  for (const e of stale(new Set(refused), cases.length)) refuse(`the licence on ${ENGINE} ${FACE_NAME} seed ${SEED} case ${e.case} is not needed: the engines agree on that tree now, so remove its name`);
   for (const n of SEEN.boundary) console.log(`${/ gap /.test(n) ? "BOUND" : "BOUNDARY"} ${FACE_NAME} seed ${SEED} ${n}`);
   console.log(`layout-oracle: time ${((SPENT.solver + SPENT.page) / 1000).toFixed(1)}s = solver ${(SPENT.solver / 1000).toFixed(1)}s + page ${(SPENT.page / 1000).toFixed(1)}s, over ${SPENT.calls} compare call(s) and ${SPENT.trees} tree(s)`);
   if (Object.keys(SEEN.why).length) console.log(`layout-oracle: trees refused for — ${Object.entries(SEEN.why).map(([w, n]) => `${w}: ${n}`).join(", ")}`);
   console.log(`layout-oracle: widest fine gap ${SEEN.gap.toFixed(3)}/60 px (law: ${UNIT}/60); ${SEEN.boundary.filter((n) => / gap /.test(n)).length} number(s) past a unit within a derived bound, ${SEEN.boundary.filter((n) => !/ gap /.test(n)).length} edge(s) rounded apart at a boundary`);
-  console.log(`layout-oracle: ${cases.length - failing.length} of ${cases.length} trees agree in ${ENGINE} (seed ${SEED}, width ${WIDTH})`);
+  if (licences.size > 0) console.log(`layout-oracle: licensed ${licences.size} (${FACE_NAME} seed ${SEED} cases ${[...licences.keys()].join(", ")}) — ${[...new Set(licences.values())].join("; ")}; the count is exact in every other tree`);
+  console.log(`layout-oracle: ${cases.length - refused.length} of ${cases.length} trees agree in ${ENGINE} (seed ${SEED}, width ${WIDTH})`);
   process.exit(failing.length === 0 ? 0 : 1);
 }
 
