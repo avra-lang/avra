@@ -383,14 +383,14 @@ wasm-archive:
 	sh tools/wasm-archive.sh
 
 # Every package that carries tests, in dependency order — DERIVED from
-# the manifests (tools/suites.py), never listed: a hand-kept list is a
+# the manifests (tools/src/commands/suites.av), never listed: a hand-kept list is a
 # registry that forgets its next member, and the gate would report
 # green over a suite it never ran. `suites` is the keeper that speaks.
 # DEFERRED, so only a recipe that reads it pays for the walk — an immediate
 # `$(shell)` runs on every make, `try` included.
-SUITES = $(shell python3 tools/suites.py 2>/dev/null)
+SUITES = $(shell sh tools/avra_tools.sh suites 2>/dev/null)
 
-.PHONY: census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
+.PHONY: tools-suite census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -814,8 +814,8 @@ libs: avra $(PACKAGE_OBJS)
 suites:
 	@python3 tools/shards.py --self-test
 	@python3 tools/shards.py --check-splits
-	@python3 tools/suites.py --self-test
-	@python3 tools/suites.py --report
+	@sh tools/suites_links.sh
+	@sh tools/avra_tools.sh suites --report
 
 # The idiom bar is NATIVE now: every idiom the language can state is
 # a `rule` (packages/std-avrac's compiler/idioms.av and each
@@ -855,7 +855,7 @@ rule-examples:
 # tools/families.ceiling is lowered as one converts. A family is keyed
 # by its NAME, so declaration order is free and no ordinal is durable.
 families-left:
-	@python3 tools/families.py
+	@sh tools/avra_tools.sh families
 
 # NO ANSWER STANDS ON A LONG READ LIST: a cold derivation of the cli, each family's longest
 # read list held under 3,000, and the families still over it only shorten (tools/read_lists.py).
@@ -888,12 +888,16 @@ libs-self-test:
 	@python3 tools/llvm_link.py --twin
 
 hooks-released:
-	@python3 tools/hooks_released.py
+	@sh tools/avra_tools.sh hooks_released
 	@sh tools/hooks_pre_commit_check.sh
 
 # EVERY READ OF THE WORLD IS AN INPUT THROUGH ONE DOOR: the world reads
 # outside the door, counted by subsystem; a site the baseline does
 # not list is refused, and the baseline only falls.
+# THE TOOLS PACKAGE'S OWN SUITE: the Avra ports of tools/*.py, proved on their spec tests.
+tools-suite:
+	@./avra test tools
+
 inputs:
 	@python3 tools/inputs.py
 
@@ -1050,10 +1054,10 @@ ui-host:
 	@sh tools/ui_host.sh
 
 # THE WEB'S EVENT ENUM IS GENERATED from the pinned webref file: DomEvent is
-# what tools/host_events.py writes, and a variant kept by hand would be an
+# what tools/src/commands/host_events.av writes, and a variant kept by hand would be an
 # event the platform never fires.
 host-events:
-	@python3 tools/host_events.py
+	@sh tools/avra_tools.sh host_events
 
 # THE JS HOST IS TESTED BY THE GATE, not by whoever remembers to: a host
 # nothing runs is a second implementation nothing checks.
@@ -1154,7 +1158,7 @@ KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A1 = speed-ratchet census-gate fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns witnesses dogfooding-rules rule-examples attack voices defects \
+KEEPERS_B = tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board ui-browser ui-browser-skip wasm-host-check tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
@@ -1188,7 +1192,6 @@ ci-invariants:
 	@sh tools/batch_test.sh
 	@python3 tools/pr_mode.py --self-test
 	@sh tools/fetch_compiler.sh --self-test
-	@python3 tools/ci_path_gate.py --self-test
 
 # THE AGGREGATE VERDICT'S FIXTURES: the `test` job's arithmetic is a script
 # (tools/ci_verdict.sh), and these prove it counts what it claims — a skipped

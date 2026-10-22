@@ -147,12 +147,12 @@ jobs:
           if git diff --name-only "$runtime_base" HEAD -- 'runtime/' | grep -q .; then runtime=1; fi
           # THE C RUNTIME'S OWN TESTS owe a PR only a change they read (runtime/,
           # the Makefile rules and the memcap wrapper they run under). Main's push
-          # and a hand-run always carry them (tools/ci_path_gate.py).
-          runtime_keep=$(git diff --name-only "$runtime_base" HEAD | python3 tools/ci_path_gate.py runtime-keep --event "$event")
+          # and a hand-run always carry them (tools/src/commands/ci_path_gate.av).
+          runtime_keep=$(git diff --name-only "$runtime_base" HEAD | sh tools/avra_tools.sh ci_path_gate runtime-keep --event "$event")
           # THE LAYOUT SOLVER'S BROWSER ORACLE owes a PR only a change to what it
           # reads: std-ui, std-text and its own tools. Main's push and a hand-run
           # always carry it; the wide sweep is the nightly orders run's.
-          layout_oracle=$(git diff --name-only "$runtime_base" HEAD | python3 tools/ci_path_gate.py layout-oracle --event "$event")
+          layout_oracle=$(git diff --name-only "$runtime_base" HEAD | sh tools/avra_tools.sh ci_path_gate layout-oracle --event "$event")
           # A PR AND A TRAIN OWE THE SAME CHECK SET: the affected closure. The
           # train adds the suites over it, never a package the PR skipped.
           if [ "$event" = merge_group ] || [ "$event" = pull_request ]; then
@@ -216,7 +216,7 @@ jobs:
             pr_json=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}") || pr_json=""
             [ -n "$pr_json" ] || echo "::warning::the PR's state could not be read; the full gate runs"
-            [ "$(printf '%s' "$pr_json" | python3 tools/pr_mode.py)" = light ] && full=0
+            [ "$(printf '%s' "$pr_json" | sh tools/avra_tools.sh pr_mode)" = light ] && full=0
           fi
           # A LABELED RUN NEVER DOUBLES A GATE: when another run on this head is or was the
           # full one, this run waits for it and mirrors its verdict (tools/ci_dup_run.py).
@@ -256,6 +256,15 @@ jobs:
             echo "shards=${shards}"
           } >> "$GITHUB_OUTPUT"
           echo "plan: $event — full=$full build=$build compiler-changed=$compiler runtime=$runtime cache=$cache codecs=$codecs packages: $(echo $pkgs)"
+      # THE TOOLS THE PLAN BUILT OR FETCHED, HANDED DOWN: keepers-static runs them and builds none.
+      - name: avra-tools for keepers-static
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: avra-tools
+          path: build/avra-tools/*/avra-tools
+          if-no-files-found: error
+          retention-days: 1
       # THE RUNGS OF THIS RUN: commits carrying a `Rung: <why>` trailer (tools/rungs.sh). A PR reads
       # them off its own commits; main's own run, whose squash dropped them, reads the landed PR's
       # head ref (`(#N)` in the title, refs/pull/N/head stays fetchable) so it replays the same
@@ -571,8 +580,11 @@ jobs:
     needs: [prepare, test]
     if: always() && needs.prepare.outputs.main == '1' && needs.prepare.outputs.build == '1' && needs.test.result == 'success'
     runs-on: ubuntu-latest
+    # the tools build links the runtime library and package objects, made here
+    container: *ci-image
     permissions:
       contents: write
+      packages: read
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -584,6 +596,15 @@ jobs:
         run: |
           chmod +x build/avra
           python3 tools/compiler_release.py publish "${{ needs.prepare.outputs.key }}" build/avra
+      # THE TOOLS ARE PUBLISHED BESIDE THE COMPILER, built by it from main's
+      # own tools/ and keyed by that source (tools/tools_key.sh): a PR that does
+      # not touch tools/ fetches this binary, never builds one.
+      - name: publish avra-tools
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          built=$(AVRA_TOOLS_COMPILER=build/avra sh tools/avra_tools.sh --path)
+          python3 tools/compiler_release.py --asset avra-tools publish "tools-$(sh tools/tools_key.sh)" "$built"
 
   keepers-a:
     needs: [prepare]
@@ -951,8 +972,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-tools, path: build/avra-tools }
       - name: keepers-static
-        run: make -s keepers-static
+        run: |
+          chmod +x build/avra-tools/*/avra-tools
+          make -s keepers-static
   # THE RUNTIME KEEPERS HELD TO A CLOCK, ALONE ON THEIR OWN RUNNER. The
   # scheduler's own C tests, then the mutation run that breaks one line of
   # the scheduler at a time and demands a test fail for each — the longest
@@ -1006,7 +1031,7 @@ jobs:
   # THE LAYOUT SOLVER AGAINST THE WEB TARGET, in Firefox: std-ui's `place` and
   # the page the real html realizer writes, one fixed seed of 300 random trees,
   # every box in agreement (tools/layout-oracle). Owed only to a change it reads
-  # (tools/ci_path_gate.py); the nine-seed sweep is the nightly orders run's.
+  # (tools/src/commands/ci_path_gate.av); the nine-seed sweep is the nightly orders run's.
   layout-oracle:
     needs: [prepare]
     if: needs.prepare.outputs.layout_oracle == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
