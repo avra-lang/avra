@@ -313,7 +313,7 @@ const swapping = async () => {
   };
   const frames2 = [];
   let swap = null;
-  await run(new Uint8Array(fs.readFileSync(process.argv[2])), {
+  const { ears: heard } = await run(new Uint8Array(fs.readFileSync(process.argv[2])), {
     document: doc,
     mount: at,
     style: { textContent: "" },
@@ -325,7 +325,7 @@ const swapping = async () => {
     hot: (s) => { swap = s; },
   });
   await settle();
-  return { at, sentFrames, swap: (path) => swap(new Uint8Array(fs.readFileSync(path))), timers, frames2 };
+  return { at, heard, sentFrames, swap: (path) => swap(new Uint8Array(fs.readFileSync(path))), timers, frames2 };
 };
 const nodesOf = (n) => [n, ...n.childNodes.flatMap(nodesOf)];
 {
@@ -343,10 +343,9 @@ const nodesOf = (n) => [n, ...n.childNodes.flatMap(nodesOf)];
 }
 {
   const s = await swapping();
-  const remind = named("Remind me", s.at)[0];
-  const sync = named("Sync", s.at)[0];
-  const [, press] = [...remind.listeners][0];
-  press();
+  const remind = every(s.at, (n) => n.attrs["aria-label"] === "Remind me" && s.heard(n.__avra_id).length > 0)[0];
+  const [, ear] = s.heard(remind.__avra_id)[0];
+  dispatch(s.at, remind, ear.event, { bubbles: false });
   for (const cb of s.frames2.splice(0)) cb();
   await settle();
   const armedBefore = s.timers.size;
