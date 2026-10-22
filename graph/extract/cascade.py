@@ -839,16 +839,17 @@ class Cascade:
         return f
 
     def encoded_time(self, encoding, norm):
-        """A TIMEX3 value in a field's declared encoding, or None when the
-        normalization does not say enough (a day is no instant)."""
+        """A TIMEX3 value in a field's declared encoding, or None when the two
+        differ in kind: a date field takes a DATE, an instant field a TIME."""
         import datetime
 
         if encoding == "iso_date":
-            return norm["value"][:10]
+            return norm["value"] if norm["timex_type"] == "DATE" else None
         if norm["timex_type"] != "TIME":
             return None
         at = datetime.datetime.fromisoformat(norm["value"].replace("Z", "+00:00"))
-        return int(at.timestamp() * 1000) if encoding == "unix_millis" else norm["value"]
+        whole = int((at - datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)).total_seconds() // 1)
+        return whole * 1000 + at.microsecond // 1000 if encoding == "unix_millis" else norm["value"]
 
     def within(self, record, a, b):
         """Whether every span a structure record found lies in [a, b)."""
