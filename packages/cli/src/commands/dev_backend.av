@@ -164,20 +164,35 @@ impl Backend {
         }
     }
 
-    /// The routes that send on what the page does not own, every method, the
-    /// GET and HEAD of a file the glue holds left to the glue.
-    fn routes(glue: List<string>) -> List<Route> {
+    /// The routes the page's address space is shared by with its server. Where
+    /// the glue holds a file the glue answers it, and anything else goes on to
+    /// the server: one route per reading method, so the two never overlap. A
+    /// method the glue never answers is the server's alone.
+    fn routes(glue: List<string>, files: List<Route>) -> List<Route> {
         [Route {
-            method: m,
-            pattern: "/{rest...}",
-            reach: Reach.Rest,
-            serve: (q: Request<Unrouted>, t: Bytes) -> if glued(m, t, glue) { null } else { self.forward(q) },
-        } for m in methods()]
+            method: f.method,
+            pattern: f.pattern,
+            reach: f.reach,
+            serve: self.glued_or_sent(f, glue),
+        } for f in files]
+            .concat(
+                [Route {
+                    method: m,
+                    pattern: "/{rest...}",
+                    reach: Reach.Rest,
+                    serve: (q: Request<Unrouted>, _t: Bytes) -> self.forward(q),
+                } for m in methods()],
+            )
+    }
+
+    /// The glue's own answer to a file it holds, else the server's.
+    fn glued_or_sent(file: Route, glue: List<string>) -> fn(Request<Unrouted>, Bytes) -> Response? {
+        (q: Request<Unrouted>, t: Bytes) -> if glued(file.method, t, glue) { file.serve(q, t) } else { self.forward(q) }
     }
 }
 
-/// Every method a request may arrive with.
-fn methods() -> List<Method> { [.Get, .Head, .Post, .Put, .Delete, .Patch, .Options] }
+/// Every method the glue never answers: the server's alone.
+fn methods() -> List<Method> { [.Post, .Put, .Delete, .Patch, .Options] }
 
 /// Whether the glue answers this request: a GET or a HEAD of a file it holds.
 fn glued(m: Method, t: Bytes, glue: List<string>) -> bool {
