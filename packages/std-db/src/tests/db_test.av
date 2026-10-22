@@ -11,12 +11,12 @@ type User = {
 }
 
 fn seeded() -> Result<Db, SqlError> {
-    mut db = Db.memory()?
+    let db = Db.memory()?
     User.create_table(db)?
     db
 }
 
-fn inserted(mut db: Db, email: string, name: string) -> Result<User, ModelError> {
+fn inserted(db: Db, email: string, name: string) -> Result<User, ModelError> {
     User { id: 0, email: email, name: name }.insert(db)
 }
 
@@ -33,13 +33,13 @@ fn name_of(db: Db, id: int) -> Result<string, SqlError> {
 }
 
 fn round_trip() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let u = inserted(db, "ada@example.com", "Ada")?
     "${u.id}|${modeled(email_of(db, u.id))?}|${modeled(name_of(db, u.id))?}"
 }
 
 fn updates() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let u = inserted(db, "a@x.com", "A")?
     let changed = u with { name: "B" }
     changed.update(db)?
@@ -47,7 +47,7 @@ fn updates() -> Result<string, ModelError> {
 }
 
 fn deletes() -> Result<int, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let u = inserted(db, "a@x.com", "A")?
     u.remove(db)?
     modeled(row_count(db))
@@ -58,7 +58,7 @@ fn version_of(db: Db, id: int) -> Result<int, SqlError> {
 }
 
 fn version_bumps_on_update() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let u = inserted(db, "v@x.com", "V")?
     let before = modeled(version_of(db, u.id))?
     let changed = u with { name: "V2" }
@@ -68,7 +68,7 @@ fn version_bumps_on_update() -> Result<string, ModelError> {
 }
 
 fn dup_insert() -> Result<int, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let _ = inserted(db, "a@x.com", "A")?
     let _ = inserted(db, "a@x.com", "B")?
     0
@@ -93,7 +93,7 @@ fn unique_violation_cause_kind() -> string {
 }
 
 fn found() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let u = inserted(db, "ada@example.com", "Ada")?
     let f = modeled(User.find(db, u.id))?
     match f {
