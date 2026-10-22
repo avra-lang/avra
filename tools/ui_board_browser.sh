@@ -61,6 +61,8 @@ fi
 # A COPY is served, so the run edits no file of the tree's.
 mkdir -p "$work/tools"
 cp -R "$tree/tools/ui-board" "$work/tools/ui-board"
+# The board's server keeps its tasks in a file, so a run names its own.
+export BOARD_DB="$work/board.db"
 "$avra" dev --target "$target" --port 0 "$work/tools/ui-board" >"$work/dev.out" 2>"$work/dev.err" &
 dev=$!
 trap 'kill "$dev" 2>/dev/null || true' EXIT

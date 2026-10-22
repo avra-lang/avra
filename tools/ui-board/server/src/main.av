@@ -29,12 +29,18 @@ fn opened() -> Result<Db, string> {
     }
 }
 
+/// Serves on ONE core: the database handle is this process's, and a process
+/// per core would share it across forks.
 fn serving() -> Result<int, string> {
     let db = opened()?
     server board {
         group "/tasks" { Todo.routes(db) }
     }
-    match board.run() { .Ok(n) -> .Ok(n), .Err(e) -> .Err(e.describe().message) }
+    let up = match board.listening() {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(e.describe().message) },
+    }
+    match up.run(1) { .Ok(n) -> .Ok(n), .Err(e) -> .Err(e.describe().message) }
 }
 
 match serving() { .Ok(n) -> "served ${n} connections", .Err(why) -> "ui-board-server: ${why}" }

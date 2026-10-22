@@ -232,7 +232,7 @@ fn todo_of(j: Json) -> Todo? {
 
 /// The reply's body as JSON, or why it is not.
 fn document(r: Reply) -> Result<Json, string> {
-    if r.status != 200 { return .Err("status ${r.status}") }
+    if r.status < 200 || r.status > 299 { return .Err("status ${r.status}") }
     let words? = r.body.text() else { return .Err("not text") }
     match parse(words) { .Ok(j) -> .Ok(j), .Err(e) -> .Err(e.describe().message) }
 }
@@ -258,20 +258,20 @@ fn kept(r: Reply) -> Result<int, string> {
 /// The tasks are asked for at start: one request, whatever target sends it,
 /// its progress kept apart from the footer's Sync words.
 fn load() {
-    let _ = fetched(started, Request.get("/tasks"), loaded)
+    let _ = fetched(started, Request.get("/tasks/"), loaded)
 }
 
 /// Sync sends the first task the server does not hold; with none to send it
 /// asks for the server's again.
 fn sync() {
     let unsent? = tasks.find(!it.held) else {
-        let _ = fetched(synced, Request.get("/tasks"), loaded)
+        let _ = fetched(synced, Request.get("/tasks/"), loaded)
         return
     }
     pending = unsent.id
     let body = Json
         .Obj([member("title", Json.Str(unsent.title)), member("done", Json.Bool(unsent.done))])
-    let _ = fetched(synced, Request.post("/tasks", Body.Json(to_text(body))), kept)
+    let _ = fetched(synced, Request.post("/tasks/", Body.Json(to_text(body))), kept)
 }
 
 /// How the last sync stands, in words.
