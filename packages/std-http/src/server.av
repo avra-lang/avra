@@ -302,7 +302,7 @@ impl Server {
     /// on under what the drain has left, so a body mid-flight is served
     /// through the drain and cut at its end.
     fn stop() {
-        if !self.drain.asked.get() { self.drain.ends.set(now_ms() + self.timing.drain.ms) }
+        if !self.drain.asked.get() { self.drain.ends.set(now_ms() + self.timing.drain.ms()) }
         self.drain.asked.set(true)
         let _ = self.listener.close()
         for fd, parked in self.drain.reading.get() { if parked { Conn { fd: fd }.interrupt() } }
@@ -408,7 +408,7 @@ impl Server {
         }
         self.shaking.set(self.shaking.get() + 1)
         defer self.shaking.set(self.shaking.get() - 1)
-        opener.open(c, ms(self.drain.clipped(self.timing.handshake.ms)))
+        opener.open(c, ms(self.drain.clipped(self.timing.handshake.ms())))
     }
 
     /// This process's open connections moved by `by`, and published to
@@ -617,7 +617,7 @@ impl Serving {
                     total = total + b.length
                     if !within_length(delim, total) || !self.sent(c, piece_on_wire(b, delim)) { return false }
                     if !b.is_empty() { heard = now_ms() }
-                    if now_ms() - heard > self.timing.idle.ms { return false }
+                    if now_ms() - heard > self.timing.idle.ms() { return false }
                     sleep(ms(0))
                 },
                 .Ok(.End) -> { return completes(delim, total) && self.sent(c, body_end(delim)) },
@@ -631,7 +631,7 @@ impl Serving {
     /// written at once.
     fn sent(c: dyn Transport, b: Bytes) -> bool {
         if b.is_empty() { return true }
-        match wire_timely(within ms(self.drain.clipped(self.timing.idle.ms)) { c.wire_write(b) }) {
+        match wire_timely(within ms(self.drain.clipped(self.timing.idle.ms())) { c.wire_write(b) }) {
             .Ok(_) -> true,
             .Err(_) -> false,
         }
@@ -657,7 +657,9 @@ impl Serving {
     /// is owed the head deadline, an idle keep-alive connection the idle
     /// one. A body is read under its own deadline, by whoever reads it.
     fn deadline(l: Link) -> int {
-        self.drain.clipped(if l.buf.length > 0 { self.timing.head.ms } else { self.timing.idle.ms })
+        self
+            .drain
+            .clipped(if l.buf.length > 0 { self.timing.head.ms() } else { self.timing.idle.ms() })
     }
 }
 
@@ -677,7 +679,7 @@ impl Drain {
     /// stop was asked.
     fn bounding(wait: Duration?) -> Duration? {
         if !self.asked.get() { return wait }
-        ms(self.clipped(wait?.ms ?? self.ends.get() - now_ms()))
+        ms(self.clipped(wait?.ms() ?? self.ends.get() - now_ms()))
     }
 
     /// Whether a stop's drain still has time: a read it cut short is
@@ -873,7 +875,7 @@ impl Serving {
         let waiting = t.h.owing() > 0 || !t.pours.is_empty()
         if !waiting || t.h.delivered != t.delivered { t.moved = now_ms() }
         t.delivered = t.h.delivered
-        if waiting && now_ms() - t.moved > self.timing.idle.ms && !t.h.closing { t.h.ended() }
+        if waiting && now_ms() - t.moved > self.timing.idle.ms() && !t.h.closing { t.h.ended() }
     }
 
     /// This task parked on the connection's bell until something moves.
@@ -902,9 +904,9 @@ impl Serving {
             return true
         }
         let deadline = if t.h.streams.is_empty() { self.timing.idle } else { self.timing.body }
-        let silence = deadline.ms - (now_ms() - t.heard)
+        let silence = deadline.ms() - (now_ms() - t.heard)
         if silence <= 0 { return false }
-        let _ = b.waited_since(seen, ms(self.drain.clipped(least(stall?.ms ?? silence, silence))))
+        let _ = b.waited_since(seen, ms(self.drain.clipped(least(stall?.ms() ?? silence, silence))))
         true
     }
 
@@ -913,7 +915,7 @@ impl Serving {
     /// and the connection's end is already owed.
     fn stall_left(t: Talk) -> Duration? {
         if t.h.owing() <= 0 && t.pours.is_empty() { return null }
-        let left = self.timing.idle.ms - (now_ms() - t.moved)
+        let left = self.timing.idle.ms() - (now_ms() - t.moved)
         if left < 0 { return null }
         ms(left)
     }
@@ -981,7 +983,7 @@ impl Serving {
                     sent = sent + b.length
                     if !within_length(p.delim, sent) { return ended_pour(h, p, false) }
                     if !b.is_empty() { heard = now_ms() }
-                    if now_ms() - heard > self.timing.idle.ms { return ended_pour(h, p, false) }
+                    if now_ms() - heard > self.timing.idle.ms() { return ended_pour(h, p, false) }
                     h.piece(p.id, b, false)
                     sleep(ms(0))
                 },

@@ -130,7 +130,7 @@ export fn encoded(e: Event) -> Bytes? {
     if !one_line(e.event ?? "") ||
         !one_line(e.id ?? "") ||
         has_nul(e.id ?? "") ||
-        e.retry?.ms ?? 0 < 0 {
+        e.retry?.ms() ?? 0 < 0 {
         return null
     }
     mut w = named("event", e.event)
@@ -149,7 +149,7 @@ fn named(name: string, value: string?) -> Bytes {
 
 fn retried(d: Duration?) -> Bytes {
     let r? = d else { return "".bytes() }
-    "retry: ${r.ms}\n".bytes()
+    "retry: ${r.ms()}\n".bytes()
 }
 
 /// Every line of `s`, split at CRLF, CR and LF alike, an empty last
@@ -247,7 +247,7 @@ impl Feed {
     /// An observer overtaken by retention while it waited has lost
     /// events it was promised, and its stream fails rather than skip.
     fn waited(at: Cell<int>, wait: Duration) -> Next {
-        let until = now_ms() + wait.ms
+        let until = now_ms() + wait.ms()
         while at.get() >= self.next.get() {
             let left = until - now_ms()
             if left <= 0 || self.published.waited(ms(left)) is .Err { return .Quiet }

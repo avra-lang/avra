@@ -23,6 +23,7 @@ fn within_reg(mut cx: LowerCx, e: ExprId, limit: ExprId, body: ExprId) -> Reg {
     let sides? = cx.view.types.res_parts(cx.type_at(e)) else { return cx.lower_defect(e, "a `within` without its Result survived typing") }
     let body_ty = cx.type_at(body)
     let limit_reg = cx.reg_of(limit)
+    let millis = span_millis(cx, e, limit_reg)
     // The body's answer and the scope end's landing, each written on
     // its own path and read after the loop, in the epilogue.
     let answer = cx.seeded_cell(body_ty, cx.hollow_of(body_ty))
@@ -31,7 +32,7 @@ fn within_reg(mut cx: LowerCx, e: ExprId, limit: ExprId, body: ExprId) -> Reg {
     let at = cx.loops.length - 1
     cx.loop_cond(cx.const_bool(true))
     cx.scope_enter()
-    let scope = cx.fiber_within(Type.Int, limit_reg)
+    let scope = cx.fiber_within(Type.Int, millis)
     cx.open_landing(scope, landing)
     cx.stored(answer, cx.reg_of(body))
     cx.scope_exit(null)
@@ -60,8 +61,17 @@ fn passed_or_answered(mut cx: LowerCx, whole: TypeId, body_ty: TypeId, answer: R
         }
 }
 
+/// The milliseconds the runtime arms a scope with, read through
+/// `@std/time`'s own `ms()`, so the conversion is the library's and
+/// never a second copy.
+fn span_millis(mut cx: LowerCx, e: ExprId, span: Reg) -> Reg {
+    let decl? = cx.view.decls.package_decl("@std.time", "Duration") else { return cx.lower_defect(e, "`@std/time.Duration` vanished") }
+    let m? = cx.view.decls.method(decl, "ms") else { return cx.lower_defect(e, "`Duration.ms` vanished") }
+    cx.call_decl(cx.type(int), cx.symbol_at(m, e), [span])
+}
+
 /// The `TimedOut` the scope that asked answers: the span it was given
-/// — a `Duration` is its `ms` — and the frames its unwind left.
+/// and the frames its unwind left.
 fn timed_out(mut cx: LowerCx, e: ExprId, sides: ResSides, limit: Reg) -> Reg {
     let fields? = cx.view.decls.fields_of_type(sides.err) else { return cx.lower_defect(e, "a `TimedOut` that is no record survived typing") }
     let frames? = fields.types.last() else { return cx.lower_defect(e, "a `TimedOut` without its frames survived typing") }

@@ -10,9 +10,8 @@ fn task_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 }
 
 /// `within limit { body }` answers `Result<T, TimedOut>`: what the body
-/// answers, or the deadline it ran past. The limit is a field read
-/// (`Duration.ms`), typed with the body so a limit that is no span
-/// refuses in the member law's own words.
+/// answers, or the deadline it ran past. The limit is the span AS
+/// WRITTEN, so a limit that is no span refuses at its own seat.
 fn within_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     match cx.view.store.expr(e) {
         .Within(limit, body) -> {
@@ -21,7 +20,9 @@ fn within_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
             let answer = cx.walk_type(body)
             if cx.errored_ty(answer) { return cx.error_type }
             if cx.view.types.shape_of(answer) is .Void { return answers_nothing(cx, body) }
-            let late? = timed_out_type(cx) else { return no_timed_out(cx, e) }
+            let late? = time_type(cx, "TimedOut") else { return no_time(cx, e) }
+            let span? = time_type(cx, "Duration") else { return no_time(cx, e) }
+            if !cx.accepts(limit, span) { return limit_unfit(cx, limit, span) }
             // LICENSED compiler.interned_res: `answer` and `late` are interned ids — a computed pair has no literal spelling
             cx.view.types.intern(Type.Res(answer, late))
         },
@@ -29,13 +30,13 @@ fn within_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     }
 }
 
-/// The `TimedOut` record `@std/time` declares — the span a block was
-/// given and the frames its unwind left. Absent when the program loads
-/// no `@std/time`.
-fn timed_out_type(cx: TypeCx) -> TypeId? {
-    let decl? = cx.view.decls.package_decl("@std.time", "TimedOut") else { return null }
+/// The record `@std/time` declares under `name` — `TimedOut`, and the
+/// `Duration` a limit's seat takes. Absent when the program loads no
+/// `@std/time`.
+fn time_type(cx: TypeCx, name: string) -> TypeId? {
+    let decl? = cx.view.decls.package_decl("@std.time", name) else { return null }
     let _ = cx.view.decls.sig(decl)
-    cx.view.types.intern(Type.Struct(decl, "TimedOut"))
+    cx.view.types.intern(Type.Struct(decl, name))
 }
 
 /// The body is hidden from the walk — its lambda lowers only as the
@@ -219,7 +220,24 @@ fn answers_nothing(mut cx: TypeCx, body: ExprId) -> TypeId {
         )
 }
 
-fn no_timed_out(mut cx: TypeCx, e: ExprId) -> TypeId {
+/// The limit is no span: `within` arms through `@std/time`'s own
+/// `Duration`, so that is what its seat takes.
+fn limit_unfit(mut cx: TypeCx, limit: ExprId, span: TypeId) -> TypeId {
+    let shown = cx.view.types.name_of(span)
+    cx
+        .spoken(
+            cx
+                .seat_mismatch(
+                    "type.mismatch",
+                    cx.loc_of(limit),
+                    limit,
+                    "a `within`'s limit is a span of time — `${shown}`",
+                    span,
+                ),
+        )
+}
+
+fn no_time(mut cx: TypeCx, e: ExprId) -> TypeId {
     cx
         .spoken(
             refusal(
