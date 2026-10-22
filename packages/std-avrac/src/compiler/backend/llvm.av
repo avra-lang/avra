@@ -33,8 +33,7 @@ use core.{
 }
 use features.{nothing}
 use @std.relation.engine.{map_cell}
-use compiler.lower.{Body, Lowered}
-use compiler.lower.{Body, Lowered}
+use compiler.lower.{Body, LinkedPackage, Lowered}
 
 // The runtime's wreck. The backend has no diagnostic channel — by the
 // time IR is emitted the program has been judged — so an IR shape the
@@ -480,17 +479,29 @@ fn slot_value(lc: ptr, m: ptr, st: Static, c: Slot) -> ptr {
 }
 
 /// WHAT A NON-HOST TARGET HAS NO BODY FOR, by NAME: a runtime row that
-/// declares no wasm body (a fiber, a core), and a closure package that owns C
-/// and names no wasm object. It reads the program LOWERED FROM ITS ENTRY
-/// (`Program.reached`), so a body nothing reaches names nothing. The build
-/// speaks which one — never a linker's "undefined symbol", which accuses the
-/// innocent.
+/// declares no wasm body (a fiber, a core), and a closure package that owns C,
+/// names no wasm object, and defines a symbol a body calls. It reads the program
+/// LOWERED FROM ITS ENTRY (`Program.reached`), so a body nothing reaches names
+/// nothing. The build speaks which one — never a linker's "undefined symbol",
+/// which accuses the innocent.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a program in, the names it cannot carry out.
 export fn unsupported_on_wasm(l: Lowered) -> List<string> {
     let absent = [s.name for s in rt_sigs() if !s.wasm]
-    let called = [n for bd in l.fns.concat([l.entry]) for i in bd.ins for n in [hosted_symbol(i)] if n != null]
-    distinct([n! for n in called if absent.contains(n!)])
-        .concat(distinct([p.name for p in l.libraries if p.library != "" && !p.wasm]))
+    let called = distinct(
+        [n! for bd in l.fns.concat([l.entry]) for i in bd.ins for n in [hosted_symbol(i)] if n != null],
+    )
+    [n for n in called if absent.contains(n)]
+        .concat(
+            distinct(
+                [p.name for p in l.libraries if p.library != "" && !p.wasm && calls_its_c(p, called)],
+            ),
+        )
+}
+
+/// Whether `called` names a symbol the package's own C defines: an extern it
+/// declares over a runtime row is the runtime's.
+fn calls_its_c(p: LinkedPackage, called: List<string>) -> bool {
+    p.externs.any((x) -> called.contains(x) && !rt_index().has(x))
 }
 
 /// Whether a program calls a runtime row that may switch a task out: it runs
