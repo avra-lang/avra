@@ -162,6 +162,12 @@ impl Writer {
         self.byte(rest)
     }
 
+    /// A word as exactly eight octets, low first: a hash is uniform, so a varint would cost
+    /// nine or ten of them.
+    fn fixed(v: int) {
+        for k in 0..8 { self.byte(v >> 8 * k) }
+    }
+
     /// Zigzag, so a small negative is a short varint.
     fn int(v: int) { self.varint((v << 1) ^ (v >> 63)) }
 
@@ -213,6 +219,15 @@ export fn written_all<T>(w: Writer, v: T, columns: List<fn(Writer, T) -> void>) 
     for each in columns { each(w, v) }
 }
 
+/// A map written: its count, then every entry's key and value in insertion order.
+export fn written_map<V>(w: Writer, m: Map<string, V>, each: fn(Writer, V) -> void) {
+    w.count(m.length)
+    for e in m.entries() {
+        w.text(e.key)
+        each(w, e.value)
+    }
+}
+
 export fn written_list<T>(w: Writer, xs: List<T>, each: fn(Writer, T) -> void) {
     w.count(xs.length)
     for x in xs { each(w, x) }
@@ -221,6 +236,12 @@ export fn written_list<T>(w: Writer, xs: List<T>, each: fn(Writer, T) -> void) {
 /// A tagged value: its variant's name, then its payload's writers in order.
 export fn written_tagged(w: Writer, tag: string, parts: List<fn(Writer) -> void>) {
     w.text(tag)
+    for part in parts { part(w) }
+}
+
+/// A variant of a fingerprinted codec: its place in the declaration, then its payload's writers.
+export fn written_ordinal(w: Writer, at: int, parts: List<fn(Writer) -> void>) {
+    w.count(at)
     for part in parts { part(w) }
 }
 
@@ -313,6 +334,13 @@ impl Reader {
         fail CodecFault.Overlong
     }
 
+    /// Eight octets, low first: `fixed`'s reader.
+    fn fixed() -> Result<int, CodecFault> {
+        mut v = 0
+        for k in 0..8 { v = v | (self.byte()? << 8 * k) }
+        v
+    }
+
     fn int() -> Result<int, CodecFault> {
         let z = self.varint()?
         shifted(z, 1) ^ 0 - (z & 1)
@@ -348,6 +376,13 @@ impl Reader {
         let spelling = self.text()?
         let index? = self.scope.unspelled(kind, spelling) else { fail CodecFault.Unresolved }
         index
+    }
+
+    /// A variant's place among `n` declared, refused past the last.
+    fn ordinal(n: int) -> Result<int, CodecFault> {
+        let at = self.varint()?
+        if at < 0 || at >= n { fail CodecFault.NotVariant }
+        at
     }
 
     /// A variant read back by its NAME: its place among `names`, the
@@ -388,4 +423,18 @@ export fn read_list<T>(r: Reader, each: fn(Reader) -> Result<T, CodecFault>) -> 
 > {
     let n = r.count()?
     .Ok([each(r)? for i in 0..n])
+}
+
+/// A map read back: its count, then every entry in order.
+export fn read_map<V>(r: Reader, each: fn(Reader) -> Result<V, CodecFault>) -> Result<
+    Map<string, V>,
+    CodecFault,
+> {
+    let n = r.count()?
+    mut m: Map<string, V> = {}
+    for i in 0..n {
+        let k = r.text()?
+        m.set(k, each(r)?)
+    }
+    m
 }
