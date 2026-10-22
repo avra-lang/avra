@@ -1,6 +1,4 @@
 use schema.{Model, Shape}
-use parameters.{function_words}
-use @std.text.{ascii_lower}
 use @std.json.{Json, field}
 
 /// Identity normalization is explicit and domain-independent. It does not
@@ -26,14 +24,12 @@ export type RelationLabel = {
 }
 /// `phrasing` reads one record of the relation as a sentence with the
 /// slots `{from}` and `{to}` (each exactly once) and optionally `{label}`.
-/// `language` names the function-word table that checks the trigger phrases.
 export type RelationBinding = {
     from: List<string>,
     to: List<string>,
     label: List<string>,
     labels: List<RelationLabel> = [],
     phrasing: string = "",
-    language: string = "en",
 }
 
 /// These declare representation, not a date parser or temporal inference.
@@ -169,7 +165,6 @@ impl RelationBinding {
         }
         if !(path_shape(models, owner, self.label)? is .Text) { fail "a relation label must bind a text property" }
         if self.labels.length > 128 { fail "relation labels exceed their budget" }
-        let closed = function_words(self.language)?
         for i, label in self.labels {
             if label.value.is_empty() || label.forward.is_empty() { fail "a relation label needs a value and forward phrases" }
             if self.labels.slice(0, i).any(it.value == label.value) { fail "relation label values must be unique" }
@@ -179,11 +174,6 @@ impl RelationBinding {
             }
             let phrases = label.forward.concat(label.reverse)
             if phrases.length > 128 || phrases.any(it.is_empty()) { fail "relation phrases must be nonempty and bounded" }
-            for phrase in phrases {
-                if closed.contains(ascii_lower(phrase)) {
-                    fail "a bare function word cannot trigger a relation: declare a multi-word phrase instead of `${phrase}`"
-                }
-            }
             for j, phrase in phrases {
                 if phrases.slice(0, j).contains(phrase) { fail "a relation phrase has one direction per label" }
                 if self
@@ -205,7 +195,6 @@ impl RelationBinding {
                     field("to", path_document(self.to)),
                     field("label", path_document(self.label)),
                     field("phrasing", Json.Str(self.phrasing)),
-                    field("language", Json.Str(self.language)),
                     field(
                         "labels",
                         Json

@@ -1,0 +1,70 @@
+use derive.model.{model}
+use schema.{Ref, Registration}
+use semantics.{Semantics, RelationBinding, RelationLabel}
+use store.open.{Graph}
+use @std.json.{to_text}
+
+@model
+type Soul = { name: string }
+
+@model(quote { Semantics { relation: RelationBinding {
+    from: ["subject"],
+    to: ["relative"],
+    label: ["relation"],
+    phrasing: "{to} is {from}'s {label}",
+    labels: [RelationLabel { value: "kin", forward: ["lineage", "the", "kinsman"] }],
+} } })
+type Descent = { subject: Ref<Soul>, relative: Ref<Soul>, relation: string }
+
+fn registrations() -> List<Registration> {
+    [Registration { make: Soul_graph_model }, Registration { make: Descent_graph_model }]
+}
+
+fn reported() -> Result<List<string>, string> {
+    mut g = Graph.memory(registrations())?
+    g.observe("in:1", "The lineage of the house is old and the oak is tall.")?
+    g.observe("in:2", "The garden of the north gate is quiet.")?
+    g.observe("in:3", "The market opens at the harbour.")?
+    g.observe("in:4", "A kinsman of the miller came by.")?
+    let flagged = g.triggers()?
+    [t.phrase for t in flagged if !t.informative()]
+}
+
+fn counted() -> Result<string, string> {
+    mut g = Graph.memory(registrations())?
+    g.observe("in:1", "The lineage of the house is old.")?
+    g.observe("in:2", "The market opens early.")?
+    g.observe("in:3", "A kinsman of the miller came by.")?
+    let all = g.triggers()?
+    all.map("${it.phrase}=${it.documents}/${it.total}").join(" ")
+}
+
+fn only_the() -> Result<bool, string> { (reported()?).join(",") == "the" }
+
+fn counts_read() -> Result<bool, string> { counted()? == "lineage=1/3 the=3/3 kinsman=1/3" }
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "declared trigger phrases against the graph's own text" {
+    given "a relation whose phrases are used unevenly in the indexed text" {
+        then "a phrase found in over half the documents is flagged and a rarer one is not" {
+            passed(only_the())
+        }
+        then "each phrase reports how many documents hold it" {
+            passed(counts_read())
+        }
+        then "an empty graph flags nothing" {
+            passed(empty_graph())
+        }
+    }
+}
+
+fn empty_graph() -> Result<bool, string> {
+    mut g = Graph.memory(registrations())?
+    to_text(g.warnings()?) == "[]"
+}

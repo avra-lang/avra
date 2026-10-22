@@ -67,6 +67,27 @@ impl Graph {
         [passage_of(r, 0.0)? for r in rows]
     }
 
+    /// Indexed documents containing the phrase, or all of them for none.
+    fn index_documents(phrase: string?) -> Result<int, string> {
+        self.indexed()?
+        let match_text = if phrase == null { "" } else { fts_phrase(phrase!) }
+        let rows = stored(
+            if match_text.is_empty() {
+                self.db.all(sql("SELECT count(*) FROM ${index_table}", []))
+            } else {
+                self
+                    .db
+                    .all(
+                        sql(
+                            "SELECT count(*) FROM ${index_table} WHERE ${index_table} MATCH ?",
+                            [.Text(match_text)],
+                        ),
+                    )
+            },
+        )?
+        stored(rows[0].int(0))?
+    }
+
     /// Brings the index up to the graph's revision; a no-op when it is current.
     fn indexed() -> Result<int, string> {
         let revision = self.revision()?
@@ -180,6 +201,12 @@ fn spelled(v: Value) -> string {
 }
 
 /// A question as an FTS5 query: its words, quoted, any of which may match.
+/// The phrase as one FTS5 phrase, quotes doubled.
+fn fts_phrase(text: string) -> string {
+    if text.trim().is_empty() { return "" }
+    "\"${text.replace("\"", "\"\"")}\""
+}
+
 fn fts_query(text: string) -> string {
     let spaced = from_codepoints(
         [if word_char(text.char_code(i)) { text.char_code(i) } else { 32 } for i in 0..text.length],

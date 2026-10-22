@@ -1,0 +1,43 @@
+use @std.json.{Json, field}
+use @std.sqlite.{sql, SqlValue}
+use store.open.{Graph, stored}
+
+/// A declared relation trigger phrase and how widely the graph's own text
+/// uses it. A phrase found in more than half the documents carries under
+/// one bit and cannot tell which relation a sentence means.
+export type Trigger = { model: string, phrase: string, documents: int, total: int }
+
+impl Trigger {
+    fn informative() -> bool { self.documents * 2 <= self.total }
+
+    fn json() -> Json {
+        Json
+            .Obj(
+                [
+                    field("code", Json.Str("uninformative_trigger")),
+                    field("model", Json.Str(self.model)),
+                    field("phrase", Json.Str(self.phrase)),
+                    field("documents", Json.Int(self.documents)),
+                    field("total", Json.Int(self.total)),
+                ],
+            )
+    }
+}
+
+impl Graph {
+    /// Every declared trigger phrase against the indexed text.
+    fn triggers() -> Result<List<Trigger>, string> {
+        let total = self.index_documents(null)?
+        [Trigger {
+            model: m.name,
+            phrase: phrase,
+            documents: self.index_documents(phrase)?,
+            total: total,
+        } for m in self.catalog.models for label in m.semantics.relation?.labels ?? [] for phrase in label.forward.concat(label.reverse)]
+    }
+
+    /// Warnings about the declarations, read against the graph's own text.
+    fn warnings() -> Result<Json, string> {
+        Json.Arr([t.json() for t in self.triggers()? if t.total > 0 && !t.informative()])
+    }
+}
