@@ -501,6 +501,36 @@ export fn type_named(name: string) -> Type? {
     avra_type_named(name)
 }
 
+/// The one scalar a named record stores as, or null for any other kind. A record of
+/// exactly one scalar field and no `@model` is flat at runtime, so its field travels
+/// alone; the structure decides it, not the name.
+/// Whether a kind is one scalar a flat record can store as.
+export fn scalar_kind(k: Kind) -> bool {
+    match k {
+        .Int or .Float or .Bool or .Str -> true,
+        .Opt(inner) -> scalar_kind(inner),
+        rest -> false,
+    }
+}
+
+/// Whether a named record stores as one scalar: its kind is a scalar, so the
+/// consumers ask one question instead of matching the nullable themselves.
+export fn flat(name: string) -> bool {
+    let k? = stored_scalar(name) else { return false }
+    scalar_kind(k)
+}
+
+export fn flat_field(name: string) -> string {
+    let t? = type_named(name) else { return "" }
+    t.fields[0].name
+}
+
+export fn stored_scalar(name: string) -> Kind? {
+    let t? = type_named(name) else { return null }
+    if t.annotations.any(it.name == "model") || t.fields.length != 1 { return null }
+    t.fields[0].kind
+}
+
 /// The `Type` a MODULE exports under `name`, wherever the caller stands
 /// — `type_exported("@std.ui.realize", "Attribute")`, the module as
 /// `Type.module` spells it. A derive reads its own library's
