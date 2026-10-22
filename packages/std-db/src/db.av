@@ -68,8 +68,9 @@ export trait Model {
     /// The marks this derive reads: `@unique` makes a column unique,
     /// `@soft_delete` makes `remove` keep the row, `@auto` makes a column
     /// the database's to set, `@cascade` and `@set_null` say what removing a
-    /// parent does to a child, `@via(field)` names a `Many`'s link.
-    static fn marks(t: Type) -> List<string> { ["unique", "soft_delete", "auto", "cascade", "set_null", "via"] }
+    /// parent does to a child, `@via(field)` names a `Many`'s link, and
+    /// `@renamed_from("old")` says a field continues a column of that name.
+    static fn marks(t: Type) -> List<string> { ["unique", "soft_delete", "auto", "cascade", "set_null", "via", "renamed_from"] }
 }
 
 /// `@model` — the library's own name for `@derive(Model)`, so the
@@ -177,7 +178,7 @@ fn generated(t: Type) -> Decls {
             /// Answers how many steps it took.
             static fn migrate(mut db: Db) -> Result<int, MigrateError> {
                 let _ = lifted(${name(t.name)}.create_table(db))?
-                grown(db, ${name(t.name)}.shape())
+                grown(db, ${name(t.name)}.shape(), [..${renamed_to(t)}], [..${renamed_from(t)}])
             }
 
             fn insert(mut db: Db) -> Result<${t}, ModelError> {
@@ -403,6 +404,19 @@ fn many_child(f: Field) -> string? {
         .Named(n, args) -> if n == "Many" && args.length == 1 { args[0].spelled() } else { null },
         rest -> null,
     }
+}
+
+/// The columns a `@renamed_from("old")` field continues, and the names they had:
+/// two lists of one length, a column and its old name at each index.
+fn renamed_to(t: Type) -> List<Code> { [literal(column_of(f)) for f in stored(t) if old_name(f) != null] }
+
+fn renamed_from(t: Type) -> List<Code> { [literal(old_name(f)!) for f in stored(t) if old_name(f) != null] }
+
+/// The name a field's column had before, as `@renamed_from("name")` says it.
+fn old_name(f: Field) -> string? {
+    let mark? = f.marks.find(it.name == "renamed_from") else { return null }
+    let word? = mark.args.first() else { return null }
+    if word.starts_with("\"") && word.ends_with("\"") && word.length >= 2 { word.substring(1, word.length - 1) } else { word }
 }
 
 /// The child's field that links back: `@via(field)` when written, else the
