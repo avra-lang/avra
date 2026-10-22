@@ -77,7 +77,7 @@ Probabilities are logged raw for later calibration.
 The cascade resolves a mention only inside its own source (the antecedent
 step). Linking across sources is a separate stage run after each admission,
 outside the extraction cache's code closure, so it re-runs without
-re-extracting: `resolve.py` (hook `--resolver`, default on for `--slice`).
+re-extracting: `resolve.py`. The product runs it from the MCP door (`mcp --resolver CMD`: `ingest` runs it after `admit` and returns what it linked); `score.py --resolver` (default on for `--slice`) runs the same command.
 
 For each admitted entity of a model that declares a `label`, the engine's
 `referents` op (declared label, FTS, each merge group once, never the

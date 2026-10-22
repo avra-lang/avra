@@ -15,8 +15,8 @@ use store.policy.{EnginePolicy}
 use catalog.{Catalog}
 
 /// What a host lends the door: its graph, and the commands it trusts to
-/// plan a question (`planner`) and to read a source (`extractor`), each
-/// an argv. `graph` is the argv prefix that reaches this graph with one
+/// plan a question (`planner`), to read a source (`extractor`) and to link
+/// what it admitted to what the graph already holds (`resolver`), each an argv. `graph` is the argv prefix that reaches this graph with one
 /// request file, handed to the planner so it can read the same graph.
 export type Door = {
     db: string,
@@ -25,6 +25,7 @@ export type Door = {
     policy: EnginePolicy = EnginePolicy {},
     planner: List<string> = [],
     extractor: List<string> = [],
+    resolver: List<string> = [],
     graph: List<string> = [],
     scratch: string = "/tmp",
 }
@@ -230,7 +231,25 @@ impl Door {
                         ],
                     ),
             )?
-        Json.Obj([field("ingested", receipt), field("admitted", admitted)])
+        let linked = if self.resolver.is_empty() {
+            Json.Null
+        } else {
+            ran(
+                self.resolver,
+                to_text(
+                    Json
+                        .Obj(
+                            [
+                                field("graph", Json.Arr([Json.Str(w) for w in self.graph])),
+                                field("source", envelope),
+                                field("receipt", admitted),
+                            ],
+                        ),
+                ),
+            )?
+        }
+        Json
+            .Obj([field("ingested", receipt), field("admitted", admitted), field("resolved", linked)])
     }
 }
 

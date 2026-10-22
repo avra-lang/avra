@@ -151,3 +151,10 @@ Stage attribution for cause 1 is by elimination (plan allows the models; admissi
 the exact gate (kind pick, a required field, or the 0.95 threshold) is unobservable from the cache. Keeping `LOG` in the
 cached result, or one logged re-run of s20/s21/s30, would settle it. The schema was read from the fixture app
 (`app/src/main request` `{"op":"schema"}`, fingerprint `e0ec5c08`, equal to the cached results').
+
+## Open: records without a label (q48)
+
+Cross-source resolution (extract/resolve.py) links entities of models that declare a `label`. Relation-like
+records (`OrganizationRole`: person + organization + title) have none, so two roles stating the same thing remain two
+entities, and q48 returns the one merged person twice. A declared identity over a model's reference fields would let
+the engine treat them as one. Not built.

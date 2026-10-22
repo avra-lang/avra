@@ -49,6 +49,7 @@ Claude Code:
 claude mcp add graph -- "$PWD/graph/examples/quickstart/src/main" mcp --db "$HOME/graph.db" \
   --planner "python3 graph/planner/plan.py" \
   --extractor "python3 graph/extract/cascade.py --catalog {schema}" \
+  --resolver "python3 graph/extract/resolve.py" \
   --grantor owner --agent claude --grant ingest,correct
 ```
 
@@ -64,7 +65,9 @@ Any MCP client (stdio), same command:
 
 The agent gets `schema`, `search`, `explain`, `correct`, `uncorrect`, `mandates`, plus `ask` and `ingest` when
 their commands are named. Each write records the grant it ran under (`mandates` lists them,
-`uncorrect` withdraws one). Without a planner or extractor the door still serves (**ran**).
+`uncorrect` withdraws one). With `--resolver`, `ingest` also links what it admitted to entities the graph already holds
+(a model choice over label candidates; reversible `merge`s, see graph/extract/README.md). The scoring harness runs the same command.
+Without a planner or extractor the door still serves (**ran**).
 
 ## 5. Feed it a message and ask  (**ran**, with the facts written by hand)
 
