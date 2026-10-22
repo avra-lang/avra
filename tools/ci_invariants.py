@@ -195,7 +195,7 @@ def check_release_order(jobs):
     prepare = jobs.get("prepare", "")
     steps = parse_steps(prepare)
     fetch = next((i for i, s in enumerate(steps) if "compiler_release.py fetch" in s), None)
-    build = next((i for i, s in enumerate(steps) if "make -s avra" in s or "make -s bootstrap" in s), None)
+    build = next((i for i, s in enumerate(steps) if any(m in s for m in ("make -s avra", "make -s bootstrap", "make -s compiler"))), None)
     if fetch is None:
         return ["no `prepare` step fetches the compiler from the release asset"], []
     if build is None:
