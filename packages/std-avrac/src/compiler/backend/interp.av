@@ -12,6 +12,7 @@
 //! live in machine tables addressed by handle, and calls run on the
 //! machine's own stack, never the host's.
 use core.{
+    op_symbol,
     EmbedKind,
     digest_of_octets,
     Ins,
@@ -980,6 +981,7 @@ impl Machine {
             .FlagRead(d, flag) -> self.put_at(d, Val.B(self.flag_now(flag)), pc),
             .ConstStr(d, s) -> self.put_at(d, Val.S(s), pc),
             .Bin(d, op, a, x) -> self.put_at(d, self.bin_val(op, a, x), pc),
+            .Checked(d, op, a, x) -> self.put_at(d, self.checked_val(op, self.int_val(a), self.int_val(x)), pc),
             .Un(d, op, src) -> self.put_at(d, self.un_val(op, src), pc),
             .CallRt(d, callee, args) -> self.put_at(d, self.rt_val(b, d, callee, args), pc),
             .Pack(d, elems) -> self.put_at(d, self.pack_val(b, d, elems), pc),
@@ -1310,6 +1312,20 @@ impl Machine {
         }
     }
 
+    /// The language's arithmetic: the exact answer, or the trap the native
+    /// code speaks — division by zero, a shift count past 63, or no int.
+    fn checked_val(op: BinOp, l: int, r: int) -> Val {
+        if op == BinOp.Div && r == 0 { return self.trapped_int("division by zero") }
+        if op == BinOp.Shl && (r < 0 || r >= 64) { return self.trapped_int("a shift count must be between 0 and 63") }
+        let exact? = exact_int(op, l, r) else { return self.trapped_int(overflow_voice(op, l, r)) }
+        Val.I(exact)
+    }
+
+    fn trapped_int(msg: string) -> Val {
+        self.trapped(msg)
+        Val.I(0)
+    }
+
     fn bin_val(op: BinOp, a: Reg, x: Reg) -> Val {
         let nulls: bool = self.value(a) is .N || self.value(x) is .N
         if nulls { return self.null_eq_val(op, a, x) }
@@ -1324,10 +1340,10 @@ impl Machine {
             return Val.I(0)
         }
         match op {
-            .Add -> Val.I(l + r),
-            .Sub -> Val.I(l - r),
-            .Mul -> Val.I(l * r),
-            .Div -> Val.I(l / r),
+            .Add -> Val.I(l.wrapping_add(r)),
+            .Sub -> Val.I(l.wrapping_sub(r)),
+            .Mul -> Val.I(l.wrapping_mul(r)),
+            .Div -> Val.I(if r == 0 - 1 { 0.wrapping_sub(l) } else { l / r }),
             .Mod -> Val.I(l % r),
             .Lt -> Val.B(l < r),
             .Le -> Val.B(l <= r),
@@ -2756,3 +2772,19 @@ fn unbuilt_library(package: string) -> string {
 fn library_without(package: string) -> string {
     ", and ${package} declares it but its library does not carry it — rebuild it with `make libs`"
 }
+
+/// `l op r` when it has an int: the exact answer the language promises.
+fn exact_int(op: BinOp, l: int, r: int) -> int? {
+    match op {
+        .Add -> l.checked_add(r),
+        .Sub -> l.checked_sub(r),
+        .Mul -> l.checked_mul(r),
+        .Div -> if r == 0 - 1 && l == smallest_int { null } else { l / r },
+        .Shl -> l.checked_shl(r),
+        .Mod or .Eq or .Ne or .Lt or .Le or .Gt or .Ge or .And or .Or or .BitAnd or .BitOr or .BitXor or .Shr -> null,
+    }
+}
+
+const smallest_int = 0 - 9223372036854775807 - 1
+
+fn overflow_voice(op: BinOp, l: int, r: int) -> string { "integer overflow: ${l} ${op_symbol(op)} ${r} has no 64-bit int" }

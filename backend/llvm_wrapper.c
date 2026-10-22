@@ -512,6 +512,47 @@ int64_t avra_float_to_int_raw(int64_t bits, int64_t mode) {
     }
 }
 
+/// `l op r` with the overflow flag (`op`: 0 add, 1 sub, 2 mul): the answer, or
+/// a branch — expected never taken — to `trap(op, l, r)`, which does not return.
+LLVMValueRef avra_llvm_build_checked_arith(LLVMBuilderRef b, int64_t op, LLVMValueRef l, LLVMValueRef r, LLVMValueRef trap, const char* name) {
+    static const char* const intrinsics[] = {
+        "llvm.sadd.with.overflow.i64", "llvm.ssub.with.overflow.i64", "llvm.smul.with.overflow.i64",
+    };
+    LLVMContextRef ctx = LLVMGetTypeContext(LLVMTypeOf(l));
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef i1 = LLVMInt1TypeInContext(ctx);
+    LLVMTypeRef pair_members[2] = { i64, i1 };
+    LLVMTypeRef pair = LLVMStructTypeInContext(ctx, pair_members, 2, 0);
+    LLVMTypeRef params[2] = { i64, i64 };
+    LLVMTypeRef fty = LLVMFunctionType(pair, params, 2, 0);
+    LLVMBasicBlockRef here = LLVMGetInsertBlock(b);
+    LLVMValueRef fn_val = LLVMGetBasicBlockParent(here);
+    LLVMModuleRef m = LLVMGetGlobalParent(fn_val);
+    LLVMValueRef intrinsic = LLVMGetNamedFunction(m, intrinsics[op]);
+    if (!intrinsic) intrinsic = LLVMAddFunction(m, intrinsics[op], fty);
+    LLVMValueRef args[2] = { l, r };
+    LLVMValueRef both = LLVMBuildCall2(b, fty, intrinsic, args, 2, "");
+    LLVMValueRef value = LLVMBuildExtractValue(b, both, 0, name);
+    LLVMValueRef over = LLVMBuildExtractValue(b, both, 1, "overflow");
+    LLVMTypeRef expect_params[2] = { i1, i1 };
+    LLVMTypeRef expect_ty = LLVMFunctionType(i1, expect_params, 2, 0);
+    LLVMValueRef expect = LLVMGetNamedFunction(m, "llvm.expect.i1");
+    if (!expect) expect = LLVMAddFunction(m, "llvm.expect.i1", expect_ty);
+    LLVMValueRef expect_args[2] = { over, LLVMConstInt(i1, 0, 0) };
+    LLVMValueRef rare = LLVMBuildCall2(b, expect_ty, expect, expect_args, 2, "");
+    LLVMBasicBlockRef trapped = LLVMAppendBasicBlockInContext(ctx, fn_val, "overflowed");
+    LLVMBasicBlockRef fits = LLVMAppendBasicBlockInContext(ctx, fn_val, "fits");
+    LLVMBuildCondBr(b, rare, trapped, fits);
+    LLVMPositionBuilderAtEnd(b, trapped);
+    LLVMTypeRef trap_params[3] = { i64, i64, i64 };
+    LLVMTypeRef trap_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), trap_params, 3, 0);
+    LLVMValueRef trap_args[3] = { LLVMConstInt(i64, (unsigned long long)op, 0), l, r };
+    LLVMBuildCall2(b, trap_ty, trap, trap_args, 3, "");
+    LLVMBuildUnreachable(b);
+    LLVMPositionBuilderAtEnd(b, fits);
+    return value;
+}
+
 /// A float rounded by `mode` (the code `rounding_code` gives) and converted
 /// to an i64: the LLVM rounding intrinsic, then the convert. Both inline.
 LLVMValueRef avra_llvm_build_to_int(LLVMBuilderRef b, LLVMValueRef val, int64_t mode, const char* name) {

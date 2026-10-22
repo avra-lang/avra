@@ -108,6 +108,10 @@ export enum Ins {
     /// The eager binary operations — operands same-typed. The lazy
     /// ops (And/Or) never reach here: they lower as regions.
     Bin(@dst dst: Reg, op: BinOp, a: Reg, b: Reg)
+    /// The language's own int arithmetic — `+ - * / <<` as a program wrote
+    /// them: the exact answer, or a trap when it has no int. `Bin` is the
+    /// machine's op, wrapping, and every arithmetic the compiler mints itself.
+    Checked(@dst dst: Reg, op: BinOp, a: Reg, b: Reg)
     /// The unary operations.
     Un(@dst dst: Reg, op: UnOp, src: Reg)
     /// An effect-only call into the runtime's C surface — no value
@@ -253,6 +257,16 @@ impl Ins {
                     b.fingerprint(),
                 ],
             ),
+            .Checked(dst, op, a, b) -> derived(
+                [
+                    fp_str("Ins"),
+                    35,
+                    dst.fingerprint(),
+                    op.fingerprint(),
+                    a.fingerprint(),
+                    b.fingerprint(),
+                ],
+            ),
             .Un(dst, op, src) -> derived([fp_str("Ins"), 5, dst.fingerprint(), op.fingerprint(), src.fingerprint()]),
             .CallRtVoid(callee, args) -> derived([fp_str("Ins"), 6, fp_str(callee), fp_list([x.fingerprint() for x in args])]),
             .CallRt(dst, callee, args) -> derived(
@@ -342,6 +356,7 @@ fn ins_words(i: Ins) -> InsWords {
         .ConstStr(dst, s) -> InsWords { tag: 2, ints: [dst.index], texts: [s] },
         .ConstBool(dst, v) -> InsWords { tag: 3, ints: [dst.index, if v { 1 } else { 0 }], texts: [] },
         .Bin(dst, op, a, b) -> InsWords { tag: 4, ints: [dst.index, op.fingerprint(), a.index, b.index], texts: [] },
+        .Checked(dst, op, a, b) -> InsWords { tag: 35, ints: [dst.index, op.fingerprint(), a.index, b.index], texts: [] },
         .Un(dst, op, src) -> InsWords { tag: 5, ints: [dst.index, op.fingerprint(), src.index], texts: [] },
         .CallRtVoid(callee, args) -> InsWords { tag: 6, ints: indices(args), texts: [callee] },
         .CallRt(dst, callee, args) -> InsWords { tag: 7, ints: [dst.index].concat(indices(args)), texts: [callee] },
@@ -393,6 +408,7 @@ export fn remapped(i: Ins, m: fn(Reg) -> Reg) -> Ins {
         .ConstStr(dst, s) -> Ins.ConstStr(m(dst), s),
         .ConstBool(dst, v) -> Ins.ConstBool(m(dst), v),
         .Bin(dst, op, a, b) -> Ins.Bin(m(dst), op, m(a), m(b)),
+        .Checked(dst, op, a, b) -> Ins.Checked(m(dst), op, m(a), m(b)),
         .Un(dst, op, src) -> Ins.Un(m(dst), op, m(src)),
         .CallRtVoid(callee, args) -> Ins.CallRtVoid(callee, [m(x) for x in args]),
         .CallRt(dst, callee, args) -> Ins.CallRt(m(dst), callee, [m(x) for x in args]),
@@ -437,7 +453,7 @@ export fn resymbolled(i: Ins, s: fn(string) -> string) -> Ins {
         .OnceRead(dst, sym) -> Ins.OnceRead(dst, s(sym)),
         .OnceCommit(sym, value) -> Ins.OnceCommit(s(sym), value),
         .Call(dst, callee, args) -> Ins.Call(dst, s(callee), args),
-        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> i,
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Checked(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> i,
     }
 }
 
@@ -445,7 +461,7 @@ export fn resymbolled(i: Ins, s: fn(string) -> string) -> Ins {
 export fn symbols_of(i: Ins) -> List<string> {
     match i {
         .FnAddr(_, sym) or .StaticAddr(_, sym) or .OnceRead(_, sym) or .OnceCommit(sym, _) or .Call(_, sym, _) -> [sym],
-        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> [],
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Checked(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> [],
     }
 }
 
@@ -764,6 +780,10 @@ export fn same_ins(a: Ins, b: Ins) -> bool {
         .ConstBool(d1, v1) -> match b { .ConstBool(d2, v2) -> same_reg(d1, d2) && v1 == v2, rest -> false },
         .Bin(d1, op1, l1, r1) -> match b {
             .Bin(d2, op2, l2, r2) -> same_reg(d1, d2) && op1 == op2 && same_reg(l1, l2) && same_reg(r1, r2),
+            rest -> false,
+        },
+        .Checked(d1, op1, l1, r1) -> match b {
+            .Checked(d2, op2, l2, r2) -> same_reg(d1, d2) && op1 == op2 && same_reg(l1, l2) && same_reg(r1, r2),
             rest -> false,
         },
         .Un(d1, op1, s1) -> match b {

@@ -9,7 +9,7 @@ use @std.relation.db.{Db, Durable, durable_db}
 const C1: int = -4658895280553007687
 const C2: int = -7723592293110705685
 
-fn shifted(z: int, k: int) -> int { (z >> k) & (1 << 64 - k) - 1 }
+fn shifted(z: int, k: int) -> int { (z >> k) & 1.wrapping_shl(64 - k).wrapping_sub(1) }
 
 fn unshift(y: int, k: int) -> int {
     mut x = y
@@ -23,15 +23,15 @@ fn unshift(y: int, k: int) -> int {
 
 fn inverse_odd(c: int) -> int {
     mut x = c
-    for i in 0..5 { x = x * (2 - c * x) }
+    for i in 0..5 { x = x.wrapping_mul(2.wrapping_sub(c.wrapping_mul(x))) }
     x
 }
 
 /// The state before a stable hash's finish, from the finished hash.
 fn unmix(y: int) -> int {
     let b = unshift(y, 31)
-    let a = unshift(b * inverse_odd(C2), 27)
-    unshift(a * inverse_odd(C1), 30)
+    let a = unshift(b.wrapping_mul(inverse_odd(C2)), 27)
+    unshift(a.wrapping_mul(inverse_odd(C1)), 30)
 }
 
 /// The owner's disk: each record under the key it was kept at.

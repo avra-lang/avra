@@ -89,6 +89,7 @@ impl Emit {
             .ConstBool(_, v) -> self.define(avra_llvm_const_int(avra_llvm_int1_type(self.lc), if v { 1 } else { 0 }, 0)),
             .ConstStr(_, s) -> self.define(avra_llvm_build_interned_text(self.b, s.bytes(), s.length)),
             .Bin(_, op, a, x) -> self.define(self.binary_value(op, a, x)),
+            .Checked(_, op, a, x) -> self.define(self.checked_value(op, self.vals[a.index], self.vals[x.index])),
             .Un(_, op, src) -> self.define(self.un_value(op, self.vals[src.index])),
             .CallRtVoid(callee, args) -> self.void_rt_call(callee, args),
             .CallRt(dst, callee, args) -> self.define(self.call_rt_value(dst, callee, args)),
@@ -262,6 +263,30 @@ impl Emit {
             .Shl -> self.call("avra_int_shl", [a, b]),
             .Shr -> self.call("avra_int_shr", [a, b]),
         }
+    }
+
+    /// The language's arithmetic: the overflow flag for `+ - *`, one guarded
+    /// C body each for `/` and `<<`, as the evaluator's.
+    fn checked_value(op: BinOp, a: ptr, b: ptr) -> ptr {
+        match op {
+            .Add -> self.flagged(0, a, b),
+            .Sub -> self.flagged(1, a, b),
+            .Mul -> self.flagged(2, a, b),
+            .Div -> if plain_divisor(b) { avra_llvm_build_sdiv(self.b, a, b, "sdiv") } else { self.call("avra_int_quot", [a, b]) },
+            .Shl -> self.call("avra_int_shl_exact", [a, b]),
+            .Mod or .Eq or .Ne or .Lt or .Le or .Gt or .Ge or .And or .Or or .BitAnd or .BitOr or .BitXor or .Shr -> self.wrecked(unchecked_op, a),
+        }
+    }
+
+    fn flagged(op: int, a: ptr, b: ptr) -> ptr {
+        avra_llvm_build_checked_arith(
+            self.b,
+            op,
+            a,
+            b,
+            avra_llvm_get_named_function(self.m, "avra_int_overflow"),
+            "checked",
+        )
     }
 
     fn un_value(op: UnOp, v: ptr) -> ptr {
@@ -773,6 +798,8 @@ impl Emit {
 
 /// A divisor no division traps or overflows on: a constant other than
 /// zero, which traps, and -1, which overflows the smallest int.
+const unchecked_op = "a `Checked` instruction carries an op with no overflow"
+
 fn plain_divisor(v: ptr) -> bool {
     if avra_llvm_is_const_int(v) == 0 { return false }
     let d = avra_llvm_const_int_sext(v)

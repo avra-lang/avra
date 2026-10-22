@@ -114,8 +114,12 @@ fn binary_reg(mut cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Re
         if op == BinOp.Eq { return same }
         return cx.un_at(e, same)
     }
+    if sh is .Int && checks_overflow(op) { return cx.checked_at(e, op, a, b) }
     cx.bin_at(e, op, a, b)
 }
+
+/// The operators whose exact answer can leave the int range.
+fn checks_overflow(op: BinOp) -> bool { op == BinOp.Add || op == BinOp.Sub || op == BinOp.Mul || op == BinOp.Div || op == BinOp.Shl }
 
 /// `a == b` with a nullable side: the NULLABLE side leads the test,
 /// whichever side wrote it; both lower in source order. A BARE

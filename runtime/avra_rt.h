@@ -153,6 +153,9 @@ extern const char avra_rt_held_avra_int_add_overflows __asm__(AVRA_RT_LABEL(avra
 extern const char avra_rt_held_avra_int_sub_overflows __asm__(AVRA_RT_LABEL(avra_int_sub_overflows));
 extern const char avra_rt_held_avra_int_mul_overflows __asm__(AVRA_RT_LABEL(avra_int_mul_overflows));
 extern const char avra_rt_held_avra_int_shl_overflows __asm__(AVRA_RT_LABEL(avra_int_shl_overflows));
+extern const char avra_rt_held_avra_int_overflow __asm__(AVRA_RT_LABEL(avra_int_overflow));
+extern const char avra_rt_held_avra_int_quot __asm__(AVRA_RT_LABEL(avra_int_quot));
+extern const char avra_rt_held_avra_int_shl_exact __asm__(AVRA_RT_LABEL(avra_int_shl_exact));
 extern const char avra_rt_held_avra_int_text __asm__(AVRA_RT_LABEL(avra_int_text));
 extern const char avra_rt_held_avra_bool_text __asm__(AVRA_RT_LABEL(avra_bool_text));
 extern const char avra_rt_held_avra_ints_text __asm__(AVRA_RT_LABEL(avra_ints_text));
@@ -391,6 +394,9 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_int_sub_overflows,
     &avra_rt_held_avra_int_mul_overflows,
     &avra_rt_held_avra_int_shl_overflows,
+    &avra_rt_held_avra_int_overflow,
+    &avra_rt_held_avra_int_quot,
+    &avra_rt_held_avra_int_shl_exact,
     &avra_rt_held_avra_int_text,
     &avra_rt_held_avra_bool_text,
     &avra_rt_held_avra_ints_text,
@@ -721,6 +727,12 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_int_mul_overflows(AV
     "avra_int_mul_overflows: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_int_shl_overflows(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
     "avra_int_shl_overflows: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_int_overflow(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_int_overflow: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_int_quot(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_int_quot: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_int_shl_exact(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_int_shl_exact: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_classify_type(avra_int_text(AVRA_RT_I64)) == AVRA_RT_POINTER,
     "avra_int_text: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_bool_text(AVRA_RT_I64)) == AVRA_RT_POINTER,

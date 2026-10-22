@@ -1242,6 +1242,34 @@ int64_t avra_int_shl_overflows(int64_t a, int64_t b) {
     return (r >> b) != a;
 }
 
+/* THE LANGUAGE'S ARITHMETIC TRAPS where the exact answer has no int.
+   `op` is the operator's code (0 +, 1 -, 2 *, 3 /, 4 <<); the words name
+   the law and the operands, the same words the evaluator speaks. */
+__attribute__((noinline, cold, noreturn))
+void avra_int_overflow(int64_t op, int64_t a, int64_t b) {
+    static const char* const symbols[] = { "+", "-", "*", "/", "<<" };
+    char msg[128];
+    avra_fmt(msg, sizeof msg, "integer overflow: %lld %s %lld has no 64-bit int",
+           (long long)a, symbols[op >= 0 && op < 5 ? op : 0], (long long)b);
+    avra_trap(msg);
+    abort();
+}
+
+/* `/` as a program wrote it: by zero refused, and the one quotient past
+   the range — the smallest int over -1 — refused as an overflow. */
+int64_t avra_int_quot(int64_t a, int64_t b) {
+    if (b == 0) { avra_trap("division by zero"); }
+    if (b == -1 && a == INT64_MIN) { avra_int_overflow(3, a, b); }
+    return a / b;
+}
+
+/* `<<` as a program wrote it: the count law, then every bit kept. */
+int64_t avra_int_shl_exact(int64_t a, int64_t b) {
+    int64_t r = avra_int_shl(a, b);
+    if ((r >> b) != a) { avra_int_overflow(4, a, b); }
+    return r;
+}
+
 int64_t avra_int_mod(int64_t a, int64_t b) {
     if (b == 0) { avra_trap("division by zero"); }
     if (b == -1) { return 0; }

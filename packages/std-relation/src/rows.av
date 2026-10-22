@@ -56,7 +56,7 @@ export fn bool_part(v: bool) -> string { if v { "t" } else { "f" } }
 
 /// One member folded into an ordered bucket's hash — nonlinear, so two
 /// members swapped never fold alike.
-fn ordered_step(h: int, x: int) -> int { mix(h + x) }
+fn ordered_step(h: int, x: int) -> int { mix(h.wrapping_add(x)) }
 
 /// Whether two rows file under the same keys in every index.
 fn same_keys(a: List<List<IndexKey>>, b: List<List<IndexKey>>) -> bool {
@@ -739,7 +739,7 @@ impl Rows<R> {
             self.stamps.push(stamp)
         }
         self.live.set(self.live.get() + 1)
-        self.set.set(self.set.get() + hash)
+        self.set.set(self.set.get().wrapping_add(hash))
         for i, ks in keys {
             for k in ks { self.file(i, k, id, hash) }
         }
@@ -762,7 +762,7 @@ impl Rows<R> {
         self.rows.set_at(id, row)
         self.hashes.set_at(id, hash)
         self.filed.set_at(id, keys)
-        self.set.set(self.set.get() - old + hash)
+        self.set.set(self.set.get().wrapping_sub(old).wrapping_add(hash))
         for i, ks in keys {
             for k in ks {
                 if holds_key(was[i], k) { self.rehashed(i, k, old, hash) } else { self.file(i, k, id, hash) }
@@ -778,7 +778,7 @@ impl Rows<R> {
         bucket
             .hash
             .set(
-                if self.indexes[index].ordered { self.ordered_fold(bucket.members.get()) } else { bucket.hash.get() - old + hash },
+                if self.indexes[index].ordered { self.ordered_fold(bucket.members.get()) } else { bucket.hash.get().wrapping_sub(old).wrapping_add(hash) },
             )
     }
 
@@ -818,7 +818,7 @@ impl Rows<R> {
             if dead.get()[id] {
                 dead.set_at(id, false)
                 self.live.set(self.live.get() - 1)
-                self.set.set(self.set.get() - self.hashes.get()[id])
+                self.set.set(self.set.get().wrapping_sub(self.hashes.get()[id]))
                 self.rows.set_at(id, null)
                 self.filed.set_at(id, self.unfiled)
                 self.stamps.set_at(id, self.vacant)
@@ -836,12 +836,12 @@ impl Rows<R> {
         let hs = self.hashes.get()
         mut lost = 0
         for m in held {
-            if dead[m] { lost = lost + hs[m] }
+            if dead[m] { lost = lost.wrapping_add(hs[m]) }
         }
         bucket
             .hash
             .set(
-                if self.indexes[index].ordered { self.ordered_fold(kept) } else { bucket.hash.get() - lost },
+                if self.indexes[index].ordered { self.ordered_fold(kept) } else { bucket.hash.get().wrapping_sub(lost) },
             )
         bucket.members.set(kept)
     }
@@ -860,7 +860,7 @@ impl Rows<R> {
             for k in ks { self.unfile_from(i, k, id, hash) }
         }
         self.live.set(self.live.get() - 1)
-        self.set.set(self.set.get() - hash)
+        self.set.set(self.set.get().wrapping_sub(hash))
     }
 
     /// The row at `id` taken out of its bucket under one key.
@@ -870,7 +870,7 @@ impl Rows<R> {
         bucket
             .hash
             .set(
-                if self.indexes[index].ordered { self.ordered_fold(bucket.members.get()) } else { bucket.hash.get() - hash },
+                if self.indexes[index].ordered { self.ordered_fold(bucket.members.get()) } else { bucket.hash.get().wrapping_sub(hash) },
             )
     }
 
@@ -890,7 +890,7 @@ impl Rows<R> {
             .hash
             .set(
                 when {
-                    !self.indexes[index].ordered -> bucket.hash.get() + hash
+                    !self.indexes[index].ordered -> bucket.hash.get().wrapping_add(hash)
                     appended -> ordered_step(bucket.hash.get(), hash)
                     _ -> self.ordered_fold(bucket.members.get())
                 },
