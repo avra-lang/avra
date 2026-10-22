@@ -122,5 +122,45 @@ class Sentence(unittest.TestCase):
         self.assertEqual((c.filled, len(asked)), ([], 1))
 
 
+class Partial(unittest.TestCase):
+    def cascade_over(self, fields):
+        c = cascade.Cascade.__new__(cascade.Cascade)
+        c.plan = cascade.Plan(descriptor())
+        c.t = cascade.Text("a sentence")
+        c.frames = []
+        c.records = []
+        c.minted = 0
+        c.value_of = lambda model, p, found, ctx, a, b: fields.get(p["name"])
+        c.spans = {}
+        c.qualifiers = lambda a, b, claim: {}
+        c.llm = type("L", (), {"pick": staticmethod(lambda ctx, q, options, tail=(): [1.0, 0.0])})()
+        return c
+
+    def field(self, name, value):
+        return {"property": name, "value": value, "evidence": []}
+
+    def test_a_record_with_one_grounded_field_is_kept_though_a_required_one_is_missing(self):
+        cascade.LOG.clear()
+        c = self.cascade_over({"label": self.field("label", "x")})
+        c.fill("Sale", 0, 10, 1.0)
+        self.assertEqual([r["model"] for r in c.records], ["Sale"])
+        self.assertTrue(any(line.startswith("partial Sale") for line in cascade.LOG))
+
+    def test_a_record_nothing_grounds_is_dropped_and_says_so(self):
+        cascade.LOG.clear()
+        c = self.cascade_over({})
+        c.fill("Sale", 0, 10, 1.0)
+        self.assertEqual(c.records, [])
+        self.assertTrue(any(line.startswith("drop Sale") for line in cascade.LOG))
+
+
+class ValueTypes(unittest.TestCase):
+    def test_a_value_type_held_in_a_list_is_never_a_record_of_its_own(self):
+        d = descriptor() + [model("Part", [prop("label", "string")]), model("Whole", [prop("name", "string"), prop("parts", {"optional": {"list": {"embedded": "Part"}}})])]
+        plan = cascade.Plan(d)
+        self.assertNotIn("Part", plan.records)
+        self.assertIn("Whole", plan.records)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -105,5 +105,36 @@ class Clock(unittest.TestCase):
         self.assertIsNone(timex.with_clock(None, "at 11:00"))
 
 
+class Narrowing(unittest.TestCase):
+    def values(self, options):
+        return [o["normalization"]["value"] for o in options if o["normalization"] and o["normalization"]["timex_type"] == "DATE"]
+
+    def test_an_explicit_date_leaves_the_one_day_it_names(self):
+        options = timex.narrowed(timex.candidates(TUESDAY, "+00:00", window_days=21), "through 20 October 2026", 24)
+        self.assertEqual(self.values(options), ["2026-10-20"])
+        self.assertEqual(options[-2:][0]["label"], timex.NOT_SPECIFIC)
+
+    def test_a_weekday_and_a_month_day_must_agree(self):
+        options = timex.narrowed(timex.candidates(TUESDAY, "+00:00", window_days=21), "Friday, 23 October", 24)
+        self.assertEqual(self.values(options), ["2026-10-23"])
+        self.assertEqual(self.values(timex.narrowed(timex.candidates(TUESDAY, "+00:00", window_days=21), "Monday 23 October", 24)), [])
+
+    def test_a_weekday_alone_leaves_every_such_day_in_the_window(self):
+        options = timex.narrowed(timex.candidates(TUESDAY, "+00:00", window_days=10), "Friday", 24)
+        self.assertEqual(self.values(options), ["2026-10-16", "2026-10-23", "2026-10-30"])
+
+    def test_a_relative_expression_keeps_the_dates_nearest_the_anchor_up_to_the_room(self):
+        options = timex.narrowed(timex.candidates(TUESDAY, "+00:00", window_days=21), "tomorrow", 7)
+        self.assertEqual(self.values(options), ["2026-10-17", "2026-10-18", "2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23"])
+
+    def test_the_anchor_instant_and_the_non_times_always_remain(self):
+        options = timex.narrowed(timex.candidates(TUESDAY, "+00:00", window_days=3), "15 October 2026", 7)
+        self.assertEqual(self.values(options), [])
+        self.assertEqual([o["normalization"] and o["normalization"]["timex_type"] for o in options], ["TIME", None, None])
+
+    def test_a_clock_time_is_not_a_day_number(self):
+        self.assertIsNone(timex.components("at 18:30")["day"])
+
+
 if __name__ == "__main__":
     unittest.main()

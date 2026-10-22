@@ -18,14 +18,15 @@ class Scripted:
     """A scorer that answers by question: which words, which meaning, whole day."""
 
     def __init__(self, words, day, whole):
-        self.words, self.day, self.whole = words, day, whole
+        self.words, self.whole = words, whole
 
     def pick(self, ctx, question, options, tail=()):
         tail = list(tail)
         if question.startswith("Consider this claim"):
             hit = next((i for i, o in enumerate(options) if o == self.words[question.split("Which words give the time it ")[1].split(" ")[0]]), None)
         elif question.startswith("Which date or time"):
-            hit = next((i for i, o in enumerate(options) if f"{self.day} October 2026" in o), None)
+            said = question.split('"')[1]
+            hit = next((i for i, o in enumerate(options) if said in o), None)
         else:
             hit = 0 if self.whole else 1
         out = [0.0] * (len(options) + len(tail))

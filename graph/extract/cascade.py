@@ -174,7 +174,7 @@ class Plan:
         self.models = {m["name"]: m for m in descriptor}
         self.derived = {d["output"] for d in derivations}
         refs = {target(p["shape"]) for m in descriptor for p in m["properties"]} - {None}
-        embedded = {p["shape"]["embedded"] for m in descriptor for p in m["properties"] if isinstance(p["shape"], dict) and "embedded" in p["shape"]}
+        embedded = {self.value_type(p) for m in descriptor for p in m["properties"]} - {None}
         self.entities, self.relations, self.records, self.blocked = {}, {}, {}, {}
         for m in descriptor:
             if m["name"] in self.derived:
@@ -212,6 +212,15 @@ class Plan:
             return "label one_of values are not in the descriptor"
         gaps = self.gaps(m, (rel["from"][0], rel["to"][0], rel["label"][0]))
         return f"required fields without an evidence route: {gaps}" if gaps else None
+
+    @staticmethod
+    def value_type(p):
+        """The value type a property holds, through optional and list: a model
+        that exists only inside its owner and is never stated on its own."""
+        shape = p["shape"]
+        while isinstance(shape, dict) and ("optional" in shape or "list" in shape):
+            shape = shape.get("optional", shape.get("list"))
+        return shape["embedded"] if isinstance(shape, dict) and "embedded" in shape else None
 
     def embedded(self, p):
         """The value type an embedded property holds, through optional."""
@@ -812,9 +821,11 @@ class Cascade:
                     missing.append(p["name"])
                 continue
             fields.append(value)
-        if missing:
-            log(f"drop {model} at {a}: no evidence for {missing}")
+        if not any(self.grounds(model, f) for f in fields):
+            log(f"drop {model} at {a}: nothing in the sentence grounds a field; missing {missing}")
             return
+        if missing:
+            log(f"partial {model} at {a}: no evidence for {missing}")
         kept = []
         for f in fields:
             if f["value"] == {}:
@@ -825,15 +836,22 @@ class Cascade:
                 kept.append(f)
             else:
                 log(f"gate field {model}.{f['property']}: stated-check margin {said[0] - said[1]:.3f} below {MARGIN}")
-            if said[0] - said[1] < MARGIN and required(self.prop(model, f["property"])):
-                log(f"reject {model} at {a}: {f['property']}={self.shown(f['value'])} is not stated")
-                return
+        if not any(self.grounds(model, f) for f in kept):
+            log(f"drop {model} at {a}: no field is stated by the sentence itself")
+            return
         fields = kept
         claim = f"{model} with " + ", ".join(f"{f['property']}={self.shown(f['value'])}" for f in fields)
         q = self.qualifiers(a, b, claim)
         for f in fields:
             f.update(q)
         self.records.append({"local_id": self.mint(), "model": model, "fields": fields, "identities": [], "resolution": {"kind": "new"}, "_score": chosen})
+
+    def grounds(self, model, field):
+        """Whether a field carries content from the sentence: a text, a
+        reference, a number, a time or a quantity, not a bare choice among
+        declared values or an empty value."""
+        p = self.prop(model, field["property"])
+        return field["value"] != {} and (route(p) in ("text", "ref", "number", "time") or self.plan.quantity(self.plan.models[model], p) is not None)
 
     def shown(self, v):
         return self.name(v) if isinstance(v, str) and any(r["local_id"] == v for r in self.records) else v
@@ -967,7 +985,7 @@ class Cascade:
 
         source = self.request["input"]
         anchor = source.get("authored_at_ms") or source["received_at_ms"]
-        options = timex.candidates(anchor, timex.zone_for(self.request))
+        options = timex.narrowed(timex.candidates(anchor, timex.zone_for(self.request)), self.t.s[x:y], MAX_OPTIONS - 2)
         written = next(o["label"] for o in options if o["normalization"] and o["normalization"]["timex_type"] == "TIME")
         labels = [o["label"] for o in options]
         pt = self.llm.pick(ctx + f"\nThe text was written {written}.", f'Which date or time does "{self.t.s[x:y]}" mean?', labels[:-2], labels[-2:])

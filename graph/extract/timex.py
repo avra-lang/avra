@@ -13,6 +13,7 @@ envelope's own, else the host's declared default. With neither, the dates are
 UTC days and every option says so, since the day a message was written can
 differ by zone.
 """
+import calendar
 import datetime
 import re
 import zoneinfo
@@ -107,3 +108,42 @@ def with_clock(norm, text, timezone=None):
     zone = zone_of(timezone) or datetime.timezone.utc
     at = datetime.datetime.combine(datetime.date.fromisoformat(norm["value"]), datetime.time(int(clock.group(1)), int(clock.group(2))), tzinfo=zone)
     return {**norm, "timex_type": "TIME", "value": at.isoformat(timespec="seconds")}
+
+
+def components(text):
+    """What a time expression names outright: weekday, month, day number and
+    year, by the calendar's own names (full or abbreviated)."""
+    words = re.findall(r"[a-z]+", text.lower())
+    days = {n.lower(): i for i, n in enumerate(calendar.day_name)} | {n.lower(): i for i, n in enumerate(calendar.day_abbr)}
+    months = {n.lower(): i for i, n in enumerate(calendar.month_name) if n} | {n.lower(): i for i, n in enumerate(calendar.month_abbr) if n}
+    plain = CLOCK.sub(" ", text)
+    return {
+        "weekday": next((days[w] for w in words if w in days), None),
+        "month": next((months[w] for w in words if w in months), None),
+        "day": next((int(n) for n in re.findall(r"\b(\d{1,2})(?:st|nd|rd|th)?\b", plain) if 1 <= int(n) <= 31), None),
+        "year": next((int(n) for n in re.findall(r"\b(\d{4})\b", plain)), None),
+    }
+
+
+def narrowed(options, text, room):
+    """The options a closed choice about `text` should offer: the dates that
+    carry every component the text names outright (all of them when it names
+    none, as for "tomorrow"), the nearest to the anchor day when more than
+    `room`, then the instant and the non-times. A scorer picks reliably from a
+    short list and not from three weeks of dates."""
+    is_date = lambda o: bool(o["normalization"]) and o["normalization"]["timex_type"] == "DATE"
+    dates, rest = [o for o in options if is_date(o)], [o for o in options if not is_date(o)]
+    named = {k: v for k, v in components(text).items() if v is not None}
+    day = lambda o: datetime.date.fromisoformat(o["normalization"]["value"])
+    fits = {
+        "weekday": lambda d, v: d.weekday() == v,
+        "month": lambda d, v: d.month == v,
+        "day": lambda d, v: d.day == v,
+        "year": lambda d, v: d.year == v,
+    }
+    dates = [o for o in dates if all(fits[k](day(o), v) for k, v in named.items())]
+    written = next((o for o in rest if o["normalization"]), None)
+    if len(dates) > room and written:
+        centre = datetime.date.fromisoformat(written["normalization"]["value"][:10])
+        dates = sorted(sorted(dates, key=lambda o: abs((day(o) - centre).days))[:room], key=day)
+    return dates + rest
