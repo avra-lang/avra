@@ -316,7 +316,8 @@ def returns(chooser, trail, model, var, record=None, evidence=None, select="comp
     """The RETURN items: a count, one recorded status, or chosen values. The
     final node's properties are candidates; a relation record passed on the
     way is a path, so its own fields are candidates only where unexplained
-    informative words of the question point at them."""
+    informative words of the question point at them, except its yes/no status
+    fields, which answer a question that asks for a status."""
     props = [(var, model["name"], p) for p in model["properties"]]
     if record:
         props += [(record[0], record[1]["name"], p) for p in record[1]["properties"]
@@ -325,6 +326,9 @@ def returns(chooser, trail, model, var, record=None, evidence=None, select="comp
             ["the value of one or more of their properties", "how many there are"]) == 1:
         return f"count({var}) AS count"
     flags = [(v, p["name"]) for v, _, p in props if base_shape(p["shape"]) == "boolean"]
+    if record:
+        flags += [(record[0], p["name"]) for p in record[1]["properties"]
+                  if base_shape(p["shape"]) == "boolean" and (record[0], p["name"]) not in flags]
     if flags and best(chooser, trail, "What does the question want to know?", RECORDED) == 1:
         v, name = flags[best(chooser, trail, "Which recorded status?", [n for _, n in flags])]
         return f"coalesce({v}.{name}, false) AS {name}"
