@@ -61,7 +61,7 @@ observe() {
     tag=$2
     for f in tasks cancel stack_overflow; do
         cp -R "$here/wasm-fixtures/$f" "$work/$tag-$f"
-        out=$("$avra" build --target wasm32 "$work/$tag-$f" 2>/dev/null | tail -1)
+        out=$(sh "$here/capped.sh" --last "$avra" build --target wasm32 "$work/$tag-$f" 2>/dev/null) || out=""
         if [ -f "$out" ]; then
             res=$(timeout 30 "$node" --no-warnings $jspi "$host/tools/wasm-node.mjs" "$out" 2>&1) || true
         else

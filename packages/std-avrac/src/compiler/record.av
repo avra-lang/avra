@@ -44,6 +44,7 @@ use features.{
     DeclFacts,
     AnnotationFact,
     LitArg,
+    NamedLit,
     LitKind,
     CancelReach,
 }
@@ -530,18 +531,19 @@ fn doc_of_wire(wire: string) -> List<string>? {
     [text_of_field(x) for x in parts.slice(1, parts.length)]
 }
 
-/// One `AnnotationFact` as a 4-item `packed` record: its escaped name, its arguments
+/// One `AnnotationFact` as a 5-item `packed` record: its escaped name, its arguments
 /// (each its escaped text and its kind, packed again — an argument's text is exactly as
-/// free), and its span's two wires.
+/// free), its span's two wires, and its named arguments (each its label beside its argument).
 fn annotation_wire(a: AnnotationFact) -> string {
     let slo = a.span?.lo ?? 0 - 1
     let shi = a.span?.hi ?? 0 - 1
     packed(
         [
             field_text(a.name),
-            packed([packed([field_text(x.text), lit_kind_word(x.kind)]) for x in a.args]),
+            packed([lit_arg_wire(x) for x in a.args]),
             "${slo}",
             "${shi}",
+            packed([packed([field_text(n.label), lit_arg_wire(n.arg)]) for n in a.named]),
         ],
     )
 }
@@ -552,7 +554,18 @@ fn annotation_of_wire(wire: string) -> AnnotationFact {
     let args = if p.length > 1 { [lit_arg_of_wire(x) for x in unpacked(p[1])] } else { [] }
     let slo = if p.length > 2 { wire_number(p[2]) ?? 0 - 1 } else { 0 - 1 }
     let shi = if p.length > 3 { wire_number(p[3]) ?? 0 - 1 } else { 0 - 1 }
-    AnnotationFact { name: name, args: args, span: span_of(slo, shi) }
+    let named = if p.length > 4 { [named_lit_of_wire(x) for x in unpacked(p[4])] } else { [] }
+    AnnotationFact { name: name, args: args, span: span_of(slo, shi), named: named }
+}
+
+fn lit_arg_wire(x: LitArg) -> string { packed([field_text(x.text), lit_kind_word(x.kind)]) }
+
+/// One named argument on the wire: its label, then its argument's wire.
+fn named_lit_of_wire(item: string) -> NamedLit {
+    let q = unpacked(item)
+    let label = if q.length > 0 { text_of_field(q[0]) } else { "" }
+    let arg = if q.length > 1 { lit_arg_of_wire(q[1]) } else { LitArg.codec_zero() }
+    NamedLit { label: label, arg: arg }
 }
 
 /// One literal argument on the wire: its text, then its kind's word.
@@ -813,8 +826,9 @@ fn load_gathered(
         for m in [module_path(name.split(".")) for name in distinct([ws.module_of(path) for path in files])] { load_named(ws, store, m, ws.module_files(m), entry, want, meet) }
     }
     let held? = line else {
-        ws.hold.read_with.push(parts[2])
-        ws.hold.read_seeds.push(ReadFile { path: parts[2], why: Reads.GathersUnread })
+        // NO LINE STANDS FOR THE COLLECT, so its collector is read: nothing recorded what
+        // it gathers, and a held file has no body to gather with.
+        ws.force_read(parts[2], Reads.GathersUnread)
         return
     }
     if !ws.hold.gathered.get().any(it.collector == held.collector && it.digest == held.digest) { ws.hold.gathered.push(held) }
@@ -936,9 +950,8 @@ fn kept_gathers(ws: Workspace, line: string) -> bool {
 }
 
 /// ONE FILE OF A RECORDED MODULE, MET: registered, held or not — a file the workspace
-/// never met is neither parsed nor linked — and its hold ASKED, settled once every
-/// module is met: a file that will be read runs bodies at compile time, and those
-/// files are read with it.
+/// never met is neither parsed nor linked — and read where the record's rows no longer
+/// stand in for it. A file it holds is marked by the hold once the whole read set stands.
 // LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a file in.
 fn meet_file(
     ws: Workspace,
@@ -951,27 +964,8 @@ fn meet_file(
 ) {
     let _ = ws.file_id(f)
     let is_entry = entry != null && f == entry!
-    let why: Reads? = read_why(ws, store, m, f, at, is_entry, want)
-    if why == null {
-        ws.hold.hold_asked.push(f)
-        for p in ws.hold.pending_reads.get() {
-            if p.reader == f { ws.hold.read_with.set(ws.hold.read_with.get().concat([p.read.path])) }
-        }
-        return
-    }
-    ws.hold.read_files.push(ReadFile { path: f, why: why! })
-    let runs = ws.forced_runs(store, f)
-    ws.hold.read_with.set(ws.hold.read_with.get().concat(runs))
-    // WHY a run's own reads are excluded rides with them from birth,
-    // beside `read_with` rather than inside it: a candidate seeded
-    // straight into `reads` this way never passes through
-    // `settle_holds`'s own worklist, so a reason recorded only there
-    // would never reach it.
-    let carries = Reads.RunBy(relative_path(ws.root, f))
-    ws
-        .hold
-        .read_seeds
-        .set(ws.hold.read_seeds.get().concat([ReadFile { path: p, why: carries } for p in runs]))
+    let read? = read_why(ws, store, m, f, at, is_entry, want) else { return }
+    ws.force_read(f, read)
 }
 
 /// WHY A FILE IS READ and not held — a thin hold says so itself under `--time`.
@@ -1723,10 +1717,12 @@ impl Reach {
     fn files_of(d: string) -> List<string> { [f for i, f in self.files if self.owners[i] == d] }
 }
 
-/// A module name and every module enclosing it, outermost first.
+/// A module name and every module enclosing it, outermost first — the root package's
+/// own root `""` among them, since its record places the files beside `src/`.
 fn enclosings(name: string) -> List<string> {
     let segments = name.split(".")
-    [joined(segments.slice(0, k), ".") for k in 1..segments.length + 1]
+    let from = if module_path(segments).packaged() { 1 } else { 0 }
+    [joined(segments.slice(0, k), ".") for k in from..segments.length + 1]
 }
 
 /// The key a file's parts digest to — BLAKE3 over an arity-folded encoding of every

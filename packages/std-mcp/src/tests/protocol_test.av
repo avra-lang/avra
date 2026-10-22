@@ -1,5 +1,5 @@
 use @std.json.{to_text}
-use @std.mcp.{schema, faults, handle_text}
+use @std.mcp.{schema, faults, handle_text, listing, server}
 use @std.action.{routine, destructive}
 use @std.text.{repeat}
 
@@ -51,7 +51,10 @@ spec "@std.mcp — the methods" {
     }
     given "tools/list" {
         then "it lists every descriptor in order" {
-            ask("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}") == ok_result("2", "{\"tools\":[${[to_text(schema(t)) for t in tools()].join(",")}]}")
+            ask("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}") == ok_result(
+                "2",
+                "{\"tools\":[${[to_text(listing(server(tools()), t)) for t in tools()].join(",")}]}",
+            )
         }
         then "no tools is an empty list" {
             handle_text([], "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}") == ok_result("2", "{\"tools\":[]}")
@@ -93,25 +96,37 @@ spec "@std.mcp — tools/call" {
         then "a pending presentation is refused uncalled" {
             ask(calling("1", "wipe", "{}")) == ok_result(
                 "1",
-                text_result("`wipe` requires a mandate, and this door holds none", "true"),
+                text_result(
+                    "`wipe` requires a mandate, and this door holds none that covers it now",
+                    "true",
+                ),
             )
         }
         then "a sending presentation is refused uncalled" {
             ask(calling("1", "send", "{}")) == ok_result(
                 "1",
-                text_result("`send` requires a mandate, and this door holds none", "true"),
+                text_result(
+                    "`send` requires a mandate, and this door holds none that covers it now",
+                    "true",
+                ),
             )
         }
         then "a routine impact that asks a safeguard is refused uncalled" {
             ask(calling("1", "archive", "{}")) == ok_result(
                 "1",
-                text_result("`archive` requires a mandate, and this door holds none", "true"),
+                text_result(
+                    "`archive` requires a mandate, and this door holds none that covers it now",
+                    "true",
+                ),
             )
         }
         then "the refusal precedes validation of the arguments" {
             ask(calling("1", "wipe", "{\"x\":1}")) == ok_result(
                 "1",
-                text_result("`wipe` requires a mandate, and this door holds none", "true"),
+                text_result(
+                    "`wipe` requires a mandate, and this door holds none that covers it now",
+                    "true",
+                ),
             )
         }
     }

@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: --self-test
 # THE COMPILER'S LLVM LINK WORDS, in plain POSIX shell: `packages/std-avrac/avra.toml`'s `[link]`
 # `search` and `libs` rows as `-L`/`-l` words, the environment's holes filled. The Makefile reads
 # them while it parses itself, before any compiler or interpreter beyond the platform's exists, so

@@ -3237,33 +3237,23 @@ held inside the rows there are), both through its one `clamped(x, lo, hi)`; the 
 written in `compiler/backend/interp_host.av` and `@std/compress`. The want: the method on `int`,
 and the three copies die.
 
-### Interim record — a quote wants a PARAMETER LIST and a record literal over a field list
+### Interim record — an `Int` stands in for a `Time` instant
 
-Two holes, one cause: a `quote` splices a statement run, a name, a type or
-an expression, never a fn's parameter list or a record literal's entries.
-`@std/db` is the wanting site, and its 6-field cap is exactly this and
-nothing else (SQLite binds any count): `where_decl` hand-spells one
-`static fn where(db, <field>: <T>? = null, …)` per count so that
-`Job.where(db, done: true)` names the model's own fields, and `row_ctor`
-hand-spells the row literal per count. With the two holes the derive emits
-ONE `where` and ONE row constructor and the cap goes. Also wanted beside
-them: `@std/time` has no `Time` instant, so `@soft_delete`'s `removed_at`
-and `@auto`'s `created` are `int` milliseconds (`now_ms()`); the eventual
-spelling is `removed_at: Time? = null`.
+`@std/time` has no `Time` instant, so `@soft_delete`'s `removed_at` and
+`@auto`'s `created` are `int` milliseconds (`now_ms()`); the eventual
+spelling is `removed_at: Time? = null`. (The record this replaced — a quote
+wanting a parameter list and a record literal's entries — is PAID:
+`where_decl` and `row_ctor` are one template each, and `@std/db` has no
+field-count ceiling.)
 
-### Interim record — a quote wants a record literal over a computed field list
+### Interim record — a declared `bool` label cannot say whether it captured
 
-`quote` builds a record only by a fixed field name (`seed with { ${fname}:
-${val} }`), so a derive over a plain record cannot spell "this record from
-one value per field". Two sites want it: `makers_derive.construction`, which
-builds an enum variant positionally (`.Ok(.${v}(${..args}))`) and so cannot
-make a record such as `TypeRef` from its labels, and `exemplar_derive`'s
-`field_sample`, which works around the same hole with a hand-written
-`codec_zero()` seed per type and one `with` per field — a second spelling of
-the type's fields. The want: `${t} { ${..entries} }`, each entry a `name:
-value` pair. It lets `@derive(Makes)` read a plain record's `t.fields`, which
-is what lets the six `type_expr` builders (and any later record target) die;
-`@local span` needs a `Slots.span_of()` beside it.
+The record maker LANDED — `${t} { ..${entries} }` splices entries, and
+`makers_derive.construction` is one call for every arity — so
+`exemplar_derive`'s `field_sample` may now build its sample from one value
+per field instead of a `codec_zero()` seed and one `with` each: a second
+spelling of a type's fields, waiting on its own conversion. `@local span`
+still needs a `Slots.span_of()`.
 
 Its other half is the presence read, designed and small: `Slot` (std-grammar
 `ast.av`) gains `Present(label)`, which the engine fills with a stated
@@ -3271,8 +3261,8 @@ Its other half is the presence read, designed and small: `Slot` (std-grammar
 `slot_value`), and node_grammar's `filling` emits it when the payload is
 `Bool` and its labelled item is a literal (`optional:"?"`, `dynamic:"dyn"`,
 `mutable:"mut"`). The rule decides it — no attribute, no sniffing the type
-— and `flag_of` already reads the stated word. Waits on the record maker,
-since no enum variant has a literal-bound bool without a hand builder.
+— and `flag_of` already reads the stated word. The record maker that stood
+in its way has landed.
 
 ### Interim record — an arm that answers nothing has no spelling
 
@@ -3333,6 +3323,18 @@ one fn: `timely` (`packages/std-net/src/net.av`), `wire_timely`
 The mint differs per error type, and a bound lands only on a free fn's
 parameter, so no trait can carry "make me a timed-out one". The want: one
 generic fold over an error that says how it times out.
+
+### Interim record — an instant less an instant wants an operator
+
+The tasks server was unreachable at landing, so this stands in until the
+ticket can be filed as `avra-8sb5.10.182`. An operator over a declared
+pair: `end - start` for two `@std/time` instants answering the span
+between them, and `d1 + d2` for two spans. `Example:`
+`let took = end.minus(start)` — wanted as `end - start`. `Callsite:`
+`packages/std-time/src/time.av`'s `Time.minus`, exact to the nanosecond
+since a `Duration` became nanoseconds, and its twins `Time.plus` and
+`Duration.plus`, whose callers across std-http, std-net, std-process and
+std-ui spell `.plus(ms(5))` where `+` reads.
 
 ### Interim record — a package cannot pin "this does not build"
 

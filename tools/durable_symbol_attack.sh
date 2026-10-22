@@ -11,14 +11,15 @@ set -u
 cd "$(dirname "$0")/.."
 A=${AVRA_BIN:-build/avra}
 export AVRA_MAX_COMPILES=0
-R=build/durable-symbol-attack; fails=0
+R=build/durable-symbol-attack
 T=build/aside/ds.$$; mkdir -p $T
 [ -e "$R" ] && mv "$R" $T/ds
 P=$R/ds; mkdir -p $P/src/lib
 printf '[package]\nname = "ds"\nversion = "0.1.0"\n' > $P/avra.toml
 printf 'export fn decl_unnamed(word: string) -> string { word }\nexport fn holds_a_lambda(n: int) -> int {\n    let f = (x: int) -> x + n\n    f(1)\n}\nexport fn holds_a_literal() -> List<int> { [1, 2] }\n' > $P/src/lib/m.av
 printf 'use lib.{holds_a_lambda, holds_a_literal}\nprintln("${holds_a_lambda(2)} ${holds_a_literal().length}")\n' > $P/src/main.av
-fail() { fails=$((fails + 1)); echo "FAIL  $1"; }
+who=durable-symbol-attack
+. tools/lib/steps.sh
 judged() { AVRA_DB_VERIFY=lowered $A check $P 2>&1; }
 syms() { $A emit $P > /dev/null 2>&1; grep -hoE '@"[^"]*"' $P/build/*.ll 2>/dev/null | sort -u | tr '\n' ' '; }
 judged > $R/cold.log; cold=$?
@@ -34,5 +35,4 @@ printf '%s' "$sigout" | grep -q 'mismatched 0' || fail "the sig edit moved a kep
 printf '%s' "$sigout" | grep -q 'Q loweredsaid mismatch' && fail "a unit mismatched after the sig edit: $(printf '%s' "$sigout" | grep -a 'Q loweredsaid mismatch' | head -1)"
 [ "$colds" = "$sigs" ] || fail "a lifted/static symbol moved with the sig edit: cold [$colds] sig [$sigs]"
 [ "$sig" -eq 0 ] || fail "the sig verify check exited $sig: $(printf '%s' "$sigout" | grep -avE '^watch:' | head -2 | tr '\n' ' ')"
-echo "durable-symbol-attack: a same-file signature edit left every lifted/static symbol standing, $fails failed"
-[ "$fails" = 0 ]
+verdict "a same-file signature edit left every lifted/static symbol standing"

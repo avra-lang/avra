@@ -10,7 +10,7 @@ cp -R "$here/wasm-min" "$work/min"
 for mode in command reactor; do
     flag=""
     [ "$mode" = reactor ] && flag=--wasm_reactor
-    w=$("$avra" build --target wasm $flag "$work/min" | tail -1)
+    w=$(sh "$here/capped.sh" --last "$avra" build --target wasm $flag "$work/min")
     echo "$mode: $(stat -c%s "$w") bytes  ($w)"
     wasm-objdump -h "$w" | awk '$2 ~ /^[0-9]+$/ || $1 ~ /^[A-Za-z]/ {print "  " $0}' | head -20
     echo "  printf-family funcs: $(wasm-objdump -x "$w" | grep -cE 'vfprintf|printf_core|__intscan|strtoull|__stdio')"

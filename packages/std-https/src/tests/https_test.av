@@ -12,7 +12,8 @@ use @std.http.frame.{limits}
 use @std.http.http.{Request, Unrouted, Response, text, stream_of}
 use @std.http.ws.{Socket, Message, ws_limits, accepted}
 use @std.http.route.{get}
-use @std.http.server.{Server, server, served, timing}
+use @std.http.server.{Server, served, server, timing}
+use @std.http.tests.support.{up}
 use @std.http.client.{Client, ClientError, request, netted, in_stage}
 use @std.https.{over_tls, secured, tls_carried, tls_opened, wss}
 use @std.tls.{Config, TlsConn, TlsError, client_config, dial, handshake, wired}
@@ -228,7 +229,7 @@ export server secure_app {
 }
 
 fn declared_secure() -> Result<bool, ClientError> {
-    let s = netted(secure_app.listening())?
+    let s = netted(up(secure_app))?
     spawn s.run(1)
     defer s.stop()
     .Ok(fetched_secure(s.listener.port, "/health") == "200 ok")
@@ -370,3 +371,4 @@ spec "std.http over TLS" {
         then "it fails promptly, never waits out a reply" { held(https_at_a_plain_port()) }
     }
 }
+

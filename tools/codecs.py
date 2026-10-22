@@ -144,6 +144,7 @@ ACKNOWLEDGED_GAPS = {
     # `_wire` suffix rule pairs it with `read_of_wire` by name alone. The real
     # pair is `read_wire`/`read_of_wire`, which IS registered.
     ("of_wire", "read_of_wire"): "record.av: `Row.of_wire` reads one field of a wire row; `read_wire` is `read_of_wire`'s encoder",
+    ("lit_arg_wire", "lit_arg_of_wire"): "record.av: one literal argument inside `annotation_wire`'s row; the registered `annotation_wire`/`annotation_of_wire` pair round-trips it",
 }
 
 
