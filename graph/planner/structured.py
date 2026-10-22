@@ -158,30 +158,32 @@ def debiased(chooser, context, question, options):
 
 def hops(models, label):
     """Each relationship a node of `label` really has, as (cypher, target, words,
-    phrases, record): declared relation phrases first, whose record model is
-    named, then reference properties both ways."""
+    phrases, record, meaning): declared relation phrases first, whose record
+    model is named and whose meaning is every phrase of the label, both ways;
+    then reference properties both ways."""
     out = []
     for name, m in models.items():
         ends = relation_ends(m)
         relation = ((m.get("semantics") or {}).get("relation")) or {}
         for l in (relation.get("labels", []) if ends else []):
+            meaning = [l["value"], *l.get("forward", []), *l.get("reverse", [])]
             if ends[0] == label:
                 also = [w for w in l.get("forward", []) if w != l["value"]]
                 said = f" ({', '.join(also)})" if also else ""
                 out.append((f"-[:{l['value']}]->", ends[1], f"their {l['value']}{said}: a {ends[1]}",
-                            [l["value"], *also], name))
+                            [l["value"], *also], name, meaning))
             if ends[1] == label:
                 for w in l.get("reverse", []):
-                    out.append((f"-[:{w}]->", ends[0], f"their {w}: a {ends[0]}", [w], name))
+                    out.append((f"-[:{w}]->", ends[0], f"their {w}: a {ends[0]}", [w], name, meaning))
     for p in models[label]["properties"]:
         target = reference_target(p["shape"])
         if target:
-            out.append((f"-[:{p['name']}]->", target, f"follow its {p['name']} to a {target}", [], None))
+            out.append((f"-[:{p['name']}]->", target, f"follow its {p['name']} to a {target}", [], None, []))
     for owner, m in models.items():
         for p in m["properties"]:
             if reference_target(p["shape"]) == label:
                 about = line(m.get("description", ""))
-                out.append((f"<-[:{p['name']}]-", owner, f"{owner} records whose {p['name']} is this {label}: {about}", [], None))
+                out.append((f"<-[:{p['name']}]-", owner, f"{owner} records whose {p['name']} is this {label}: {about}", [], None, []))
     return out
 
 
@@ -206,14 +208,14 @@ def plan(chooser, question, schema, context, search=None, depth=None, model_of=N
         if said:
             pick = said[0] if len(said) == 1 else said[best(chooser, trail, "Which relation does the question mean?",
                                                               [options[i][2] for i in said])]
-            phrasing = unsaid(options[pick][3], phrasing)
             evidence.explain(" ".join(options[pick][3]))
         else:
             if not onward and best(chooser, trail, f"Is the answer about this {label}?", ARRIVED) == 0:
                 break
             ranked = onward or list(range(len(options)))
             pick = ranked[best(chooser, trail, "Where next?", [evidence.shown(options[i]) for i in ranked])]
-        arrow, target, _, _, record = options[pick]
+        arrow, target, _, _, record, meaning = options[pick]
+        phrasing = unsaid(meaning, phrasing)
         back = ("<-" + arrow[1:-2] + "-" if arrow.endswith("->") else arrow[1:-1] + "->")
         var = out.node(target)
         held = (f"r{len(out.vars) - 1}", record, len(out.parts)) if record else None

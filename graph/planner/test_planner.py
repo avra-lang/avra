@@ -305,6 +305,21 @@ class Structured(unittest.TestCase):
         self.assertEqual(cypher, "MATCH (n0:Person)-[r1:member]->(n1:Group) WHERE n0.name = 'Dana Holm' "
                                  "RETURN coalesce(r1.is_member, false) AS is_member")
 
+    def test_a_relation_taken_one_way_spends_its_words_both_ways(self):
+        import structured
+
+        schema = {"models": [
+            {"name": "Member", "description": "", "properties": [prop("name", "string")], "semantics": {}},
+            {"name": "Apiary", "description": "", "properties": [prop("name", "string")], "semantics": {}},
+            {"name": "Keeping", "description": "", "properties": [
+                prop("member", ref("Member")), prop("apiary", ref("Apiary")), prop("relation", "string", enum=["keeps"])],
+             "semantics": {"relation": {"from": ["member"], "to": ["apiary"], "label": ["relation"], "labels": [
+                 {"value": "keeps", "forward": ["keeps"], "reverse": ["keeper"]}]}}},
+        ]}
+        chooser = Scripted(["Hilltop", "no:", "their keeper", "yes", "value"], {"name"})
+        cypher = structured.plan(chooser, "Who keeps Hilltop?", schema, NOBODY, facts("Apiary name: Hilltop"))
+        self.assertEqual(cypher, "MATCH (n0:Apiary)-[:keeper]->(n1:Member) WHERE n0.name = 'Hilltop' RETURN n1.name AS name")
+
     def test_hops_are_only_the_nodes_own(self):
         import structured
 
