@@ -10,6 +10,8 @@
 use core.{TypeRef, flatten}
 use features.{AnnotationFact, ArmBind, ArmInfo, Code, Fix, Scan, Ty, enclosing_decl, rule, said}
 use @std.meta.{name}
+use @std.text.{codepoints}
+use diagnostics.{registered}
 
 /// A refusal assembled from `pointed`/`error_at` by hand — the one
 /// shape is `refusal(kind, at, message, label, help)`.
@@ -33,6 +35,67 @@ export rule refusal_assembled {
 export rule helpless_refusal {
     // LICENSED compiler.helpless_refusal: the pattern's own text names the shape it detects
     quote { refusal(${kind}, ${at}, ${msg}, ${label}, null) } -> helpless(kind, "refusal"),
+}
+
+/// A voice's literal KIND is a REGISTERED kind: `refusal`, `warning` and `error_at` take it as the
+/// first argument, and a literal the registry (`avra diagnostics`, docs/DIAGNOSTICS.md) has no row
+/// for is a voice that speaks a kind nothing registered — no summary, no witness, no help for
+/// `avra docs` to find. A kind of the program `avra` itself (`build.command_failed`, the CLI's
+/// failure wrapper) is no kind of the language the registry describes.
+///
+/// NO REWRITE: the registry row is a new declaration — its summary and remedy are the voice
+/// author's to say.
+@keeps("refusal(\"lex.error\", at, \"m\", \"l\", \"what to do\")")
+@says("the registry row is a new declaration whose summary and remedy the voice's author writes")
+export rule unregistered_refusal {
+    // LICENSED compiler.unregistered_refusal: the pattern's own text names the shape it detects
+    quote { refusal(${kind}, ${at}, ${msg}, ${label}, ${help}) } if unregistered_kind(kind) -> unregistered_found(kind),
+}
+
+/// `unregistered_refusal`'s twin for a warning.
+@keeps("warning(\"lex.error\", at, \"m\", \"l\", \"what to do\")")
+@says("the registry row is a new declaration whose summary and remedy the voice's author writes")
+export rule unregistered_warning {
+    // LICENSED compiler.unregistered_refusal: the pattern's own text names the shape it detects
+    quote { warning(${kind}, ${at}, ${msg}, ${label}, ${help}) } if unregistered_kind(kind) -> unregistered_found(kind),
+}
+
+/// `unregistered_refusal`'s twin for the bare diagnostic.
+@keeps("error_at(\"lex.error\", at, \"m\")")
+@says("the registry row is a new declaration whose summary and remedy the voice's author writes")
+export rule unregistered_error_at {
+    // LICENSED compiler.unregistered_refusal: the pattern's own text names the shape it detects
+    quote { error_at(${kind}, ${at}, ${msg}) } if unregistered_kind(kind) -> unregistered_found(kind),
+}
+
+fn unregistered_kind(kind: Code) -> bool {
+    let v? = kind.str_lit_value() else { return false }
+    !in_a_test(kind) &&
+        kind_shaped(v) &&
+        v != "build.command_failed" &&
+        !registered(avra().rows.codes, v)
+}
+
+/// `<module>.<name>`, both lowercase words with underscores.
+fn kind_shaped(v: string) -> bool {
+    let parts = v.split(".")
+    parts.length == 2 && parts.all(word(it))
+}
+
+fn word(part: string) -> bool {
+    !part.is_empty() && codepoints(part).all(it == 95 || it >= 97 && it <= 122)
+}
+
+fn unregistered_found(kind: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                kind.loc(),
+                "${kind.text()} is spoken here and no registry row names it — a voice speaks a registered kind, or `avra docs` finds no summary, witness or help for it",
+                "this kind",
+                "add the kind's row to its feature's codes (the registry `avra diagnostics` lists), then regenerate docs/DIAGNOSTICS.md",
+            ),
+        )
 }
 
 /// `helpless_refusal`'s twin for a warning: it blocks nothing, and states

@@ -1337,7 +1337,6 @@ witnesses:
 # is the generated inventory, never edited.
 voices:
 	@./avra voices --baseline tools/voices.baseline
-	@python3 tools/voices_spoken.py
 	@./avra voices --report > build/VOICES.md.gen
 	@cmp -s build/VOICES.md.gen docs/VOICES.md || { \
 	  echo "voices: docs/VOICES.md is not what the compiler says — it is generated, never edited:"; \
