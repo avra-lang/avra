@@ -65,7 +65,7 @@ export fn claim_table(mut db: Db, name: string, owner: string, declared_at: stri
     int,
     SqlError,
 > {
-    let read? = shape_read(shape) else { return .Err(SqlError.defect("a model's shape text did not read back")) }
+    let read? = shape_read(shape) else { return .Err(unread_voice()) }
     let _ = db.run(sql("PRAGMA foreign_keys = ON"))?
     let _ = db.run(sql(registry_sql()))?
     if (db.scalar(sql(shape_column_probe_sql()))?).int()? == 0 {
@@ -105,7 +105,7 @@ export fn grown(mut db: Db, declared: string, renamed_to: List<string>, renamed_
     int,
     MigrateError,
 > {
-    let shape? = shape_read(declared) else { return .Err(.Sql(SqlError.defect("a model's shape text did not read back"))) }
+    let shape? = shape_read(declared) else { return .Err(.Sql(unread_voice())) }
     let plan = migrated(
         db,
         shape,
@@ -274,6 +274,8 @@ fn integrity_sql() -> string { "PRAGMA integrity_check" }
 fn links_sql() -> string { "PRAGMA foreign_key_check" }
 
 // ── Voices ──────────────────────────────────────────────────────
+
+fn unread_voice() -> SqlError { SqlError.defect("a model's shape text did not read back") }
 
 fn collision_voice(name: string) -> string {
     "table \"${name}\" is already claimed by a @model of module "
