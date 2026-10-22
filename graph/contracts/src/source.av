@@ -71,8 +71,24 @@ fn framed(content: string, points: List<int>, f: Frame) -> Result<Span, string> 
     span
 }
 
+/// An IANA zone name or a `±HH:MM` offset, by its characters alone; the
+/// zone database itself is the reader's.
+export fn zone_shaped(zone: string) -> bool {
+    let first = zone.char_code(0)
+    let letter = (c: int) -> c >= 65 && c <= 90 || c >= 97 && c <= 122
+    let allowed = (c: int) -> letter(c) ||
+        c >= 48 && c <= 58 ||
+        c == 47 ||
+        c == 95 ||
+        c == 45 ||
+        c == 43
+    (letter(first) || first == 43 || first == 45) &&
+        (0..zone.length).all((i: int) -> allowed(zone.char_code(i)))
+}
+
 fn source_coherent(s: SourceEnvelope) -> Result<SourceEnvelope, string> {
     if s.content.bytes().length > 1048576 { fail "source content exceeds its byte budget" }
+    if s.timezone != null && !zone_shaped(s.timezone!) { fail "a timezone is an IANA zone name or a ±HH:MM offset" }
     let spans = frame_spans(s)?
     for i, frame in s.frames {
         let span = spans[i]
@@ -99,6 +115,9 @@ export type SourceEnvelope = {
     author: string?,
     @items(max: 256) participants: List<string> = [],
     @items(max: 256) audience: List<string>? = null,
+    /// Where the source was written: an IANA zone name ("Europe/Paris")
+    /// or a fixed ISO 8601 offset ("+02:00"). Absent is unknown.
+    @length(min: 1, max: 64) timezone: string? = null,
     conversation: string? = null,
     @length(min: 1, max: 128) media_type: string,
     @length(min: 1) content: string,

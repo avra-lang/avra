@@ -82,4 +82,7 @@ and "this is not a specific time" / "cannot tell from the text". A closed
 choice picks one, and `timex.chosen` gives the TIMEX3 normalization
 (`timex_type`, ISO 8601 `value`, `reference` = the anchor) to put beside the
 field's anchor passage. The model never writes a date. Durations and sets
-come later. `python3 -m unittest test_timex` in this directory.
+come later. The dates are the anchor's days in the source's timezone
+(`timex.zone_for(request)`: the envelope's `timezone`, else the request's
+`default_timezone`); with neither, they are UTC days and every dated label
+says the timezone is unknown. `python3 -m unittest test_timex` in this directory.

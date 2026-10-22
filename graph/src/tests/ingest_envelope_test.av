@@ -107,7 +107,7 @@ fn legacy_payload() -> Result<bool, string> {
 }
 
 fn stored_version_one() -> Result<bool, string> {
-    mut g = Graph.memory(models)?
+    let g = Graph.memory(models)?
     defer { let _ = g.close() }
     g.observe("note:1", source_text_v1)?
     let source = g.source("note:1")?
@@ -118,6 +118,28 @@ fn stored_version_one() -> Result<bool, string> {
         frame_spans(source)?[0].text == "é🙂" &&
         !replay.changed &&
         (g.observation("note:1")?).member("payload").text() == source_text_v1
+}
+
+fn zoned_source() -> Result<bool, string> {
+    let g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    let zoned = source_text
+        .replace("\"conversation\"", "\"timezone\":\"Europe/Paris\",\"conversation\"")
+    g.ingest(zoned)?
+    let read = g.source("note:1")?
+    let offset = g
+        .ingest(
+            source_text
+                .replace("\"conversation\"", "\"timezone\":\"+02:00\",\"conversation\"")
+                .replace("note:1", "note:2"),
+        ) is .Ok
+    let bad = g
+        .ingest(
+            source_text
+                .replace("\"conversation\"", "\"timezone\":\"Europe/Pa ris\",\"conversation\"")
+                .replace("note:1", "note:3"),
+        ) is .Err
+    read.timezone == "Europe/Paris" && offset && bad
 }
 
 fn mismatched_payload() -> Result<bool, string> {
@@ -208,6 +230,7 @@ spec "structured source admission" {
         }
         then "raw observations are not silently adopted as structured envelopes" { passed(legacy_payload()) }
         then "a source cannot lie about the identity of its stored observation" { passed(mismatched_payload()) }
+        then "a source may name its timezone, shaped as an IANA name or an offset" { passed(zoned_source()) }
         then "the shared CLI and HTTP dispatch exposes ingestion and source reads" { passed(transported()) }
     }
 }

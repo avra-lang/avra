@@ -2,6 +2,7 @@ use derive.model.{model}
 use semantics.{Semantics, IdentityBinding}
 use schema.{Registration, Ref}
 use store.open.{Graph}
+use store.policy.{EnginePolicy}
 use store.publish.{Record, Publication}
 use store.identity.{Identity}
 use store.query.{stored_value}
@@ -335,6 +336,19 @@ fn timed_field() -> Result<bool, string> {
         normalization.member("reference").text() == "2026-10-20T09:30:00Z"
 }
 
+fn declared_timezone() -> Result<bool, string> {
+    let refused = Graph.memory(clerk_models(), policy: EnginePolicy { timezone: "nowhere at all" }) is .Err
+    mut g = Graph.memory(clerk_models(), policy: EnginePolicy { timezone: "Europe/Paris" })?
+    defer { let _ = g.close() }
+    g.ingest(to_text(source_document(memo())))?
+    let admitted = g.admit(admission(extraction(g, [ana()]))?) is .Ok
+    let schema = match parse("{\"op\":\"schema\"}") {
+        .Ok(j) -> g.dispatch(j)?,
+        .Err(_) -> { fail "bad JSON" },
+    }
+    refused && admitted && schema.member("timezone").text() == "Europe/Paris"
+}
+
 fn resolution_recorded() -> Result<bool, string> {
     mut g = desk()?
     defer { let _ = g.close() }
@@ -394,6 +408,7 @@ spec "admit" {
         then "an extraction of a superseded source revision is refused" { passed(stale_source()) }
         then "dangling references, unknown qualifiers and invented quotes refuse the whole admission" { passed(refuses_atomically()) }
         then "a TIMEX3 normalization and the reference instant it was resolved against are kept beside the anchor" { passed(timed_field()) }
+        then "a host-declared timezone is checked, rides the extraction request and is shown by schema" { passed(declared_timezone()) }
         then "an extractor's candidate choice is recorded, never applied, and must have been offered" { passed(resolution_recorded()) }
         then "admit runs through the shared op dispatch, closed to unknown fields" { passed(dispatched()) }
     }

@@ -1,4 +1,4 @@
-use source.{SourceEnvelope, Context}
+use source.{SourceEnvelope, Context, zone_shaped}
 use common.{SourceRef}
 
 const source_text = "{\"contract\":2,\"source\":{\"observation\":\"note:1\",\"revision\":1},\"authored_at_ms\":0,\"received_at_ms\":5,\"author\":\"entity:a\",\"media_type\":\"text/plain\",\"content\":\"Aé🙂Z\",\"frames\":[{\"id\":\"quote\",\"passage\":{\"selector\":[{\"kind\":\"TextPositionSelector\",\"start\":1,\"end\":3},{\"kind\":\"TextQuoteSelector\",\"exact\":\"é🙂\"}]},\"speaker\":\"entity:b\"}]}"
@@ -77,6 +77,24 @@ spec "v2 source and context contracts" {
         then "duplicate source keys are refused" {
             SourceEnvelope
                 .from_json(source_text.replace("\"contract\":2", "\"contract\":2,\"contract\":2")) is .Err
+        }
+        then "a timezone is shaped as an IANA name or an offset" {
+            zone_shaped("Europe/Paris") &&
+                zone_shaped("America/Argentina/Buenos_Aires") &&
+                zone_shaped("+02:00") &&
+                zone_shaped("UTC") &&
+                !zone_shaped("Europe/Pa ris") &&
+                !zone_shaped("/Paris") &&
+                SourceEnvelope
+                    .from_json(
+                        source_text
+                            .replace("\"media_type\"", "\"timezone\":\"-05:00\",\"media_type\""),
+                    ) is .Ok &&
+                SourceEnvelope
+                    .from_json(
+                        source_text
+                            .replace("\"media_type\"", "\"timezone\":\"tomorrow?\",\"media_type\""),
+                    ) is .Err
         }
         then "a source revision is not a zero-based graph revision" {
             SourceRef.from_json("{\"observation\":\"note:1\",\"revision\":0}") is .Err

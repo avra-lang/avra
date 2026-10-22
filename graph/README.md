@@ -440,6 +440,7 @@ default reproduces the behaviour described above.
 | `default_rank` | `0` | Rank of an undeclared producer |
 | `denial` | `.Outranks` | A denial removes a claim only when ranked strictly above its best support (`.Matches`: at or above); otherwise it is a flagged contradiction |
 | `supersession` | `.LaterStart` | A strictly later declared start closes an earlier open rival (`.Never`: rivals stay a contradiction) |
+| `timezone` | `null` | The timezone of a source that names none (IANA name or `±HH:MM`); rides each extraction request as `default_timezone` and `schema` shows it |
 | `proposals` | `ProposalPolicy {}` | `similarity` 0.5 (label-word Jaccard) and `min_examples` 2 for clustering unplaced statements |
 | `migrations` | `[]` | Declared answers to incompatible catalog changes (see Model evolution) |
 | `admission` | `AdmissionBudget {}` | Per-admission bounds: `envelope_bytes` 4 MiB, `records` 256, `fields` 4096, `passages` 16384, `frames` 256, `value_depth` 64 |

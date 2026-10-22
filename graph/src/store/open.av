@@ -41,6 +41,7 @@ use data.{digest}
 use store.policy.{EnginePolicy}
 use store.evidence.{Instant}
 use parameters.{storage_formats}
+use @avra.graph_contracts.{zone_shaped}
 
 /// One connection, the immutable model catalog this process was built with,
 /// the policy its host declares, and the view reads take: current unless
@@ -98,7 +99,7 @@ impl Graph {
         string,
     > {
         let graph = Graph { db: db, catalog: catalog, policy: policy }
-        let outcome = graph.prepared(mode)
+        let outcome = graph.zoned(mode)
         match outcome {
             .Ok(_) -> graph,
             .Err(e) -> {
@@ -106,6 +107,15 @@ impl Graph {
                 fail e
             },
         }
+    }
+
+    /// Prepared, once the declared timezone is shaped like one.
+    fn zoned(mode: CatalogUse) -> Result<int, string> {
+        let zone = self.policy.timezone ?? ""
+        if self.policy.timezone != null && !zone_shaped(zone) {
+            fail "a declared timezone is an IANA zone name or a ±HH:MM offset: ${zone}"
+        }
+        self.prepared(mode)
     }
 
     fn close() -> int { self.db.close() }
