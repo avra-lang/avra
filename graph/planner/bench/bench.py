@@ -14,6 +14,7 @@ import argparse
 import collections
 import datetime
 import json
+import math
 import pathlib
 import subprocess
 import sys
@@ -23,7 +24,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent.parent.parent
 sys.path.insert(0, str(HERE.parent))
 from plan import SOCKET, Shared, shared_socket  # noqa: E402
-from structured import debiased  # noqa: E402
+from structured import best, odds  # noqa: E402
+from catalog import PARAMETERS  # noqa: E402
 
 
 def kind(question):
@@ -47,13 +49,25 @@ def kind(question):
     return "other"
 
 
+class Lettered:
+    """The model with only its lettered choice, so a decision is scored the old way."""
+
+    def __init__(self, model):
+        self.choose = model.choose
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resume", help="a partial results file to continue")
+    parser.add_argument("--mode", choices=("letters", "rank"), default="rank",
+                        help="rank: a decision recorded with keys is scored by whole-answer likelihood; else lettered")
+    parser.add_argument("--rule", choices=("sum", "mean"), help="override the declared rank_rule for this run")
     parser.add_argument("--decisions", default=str(HERE / "decisions.jsonl"), help="recorded decisions to score")
     args = parser.parse_args()
     if not shared_socket():
         raise SystemExit(f"bench: no shared model answers on {SOCKET}")
+    if args.rule:
+        PARAMETERS["rank_rule"] = args.rule
     model = Shared(SOCKET)
     rows = [json.loads(l) for l in pathlib.Path(args.decisions).read_text().splitlines() if l.strip()]
     header, decisions = rows[0], rows[1:]
@@ -65,8 +79,12 @@ def main():
                             capture_output=True).stdout.strip()
     for d in decisions[len(done):]:
         started = time.time()
-        p = debiased(model, d["context"], d["question"], d["options"])
-        pick = max(range(len(p)), key=p.__getitem__)
+        if args.mode == "rank" and d.get("keys"):
+            p = [math.exp(x) for x in odds(model, d["context"], d["question"], d["options"], d["keys"])]
+            pick = max(range(len(p)), key=p.__getitem__)
+        else:
+            pick = best(Lettered(model), d["context"], d["question"], d["options"])
+            p = [1.0 if i == pick else 0.0 for i in range(len(d["options"]))]
         done.append({"question_id": d["question_id"], "kind": kind(d["question"]), "gold": d["gold"],
                      "pick": pick, "p_gold": p[d["gold"]], "p": p, "ms": int((time.time() - started) * 1000)})
         out.write_text(json.dumps({"decisions": header, "commit": commit,

@@ -41,6 +41,11 @@ def params_of(context):
     return out
 
 
+def scored(answer):
+    """One ranked answer's score: its summed log-probability, or that per token, as the rank_rule parameter declares."""
+    return answer["logp"] / answer["tokens"] if PARAMETERS["rank_rule"] == "mean" else answer["logp"]
+
+
 class Shared:
     """The model the extraction service already holds, over its socket."""
 
@@ -49,6 +54,15 @@ class Shared:
 
     def choose(self, context, question, options):
         return self.asked({"op": "choose", "context": context, "question": question, "options": options})["p"]
+
+    def rank(self, context, question, shown, keys):
+        """Each option's score as the service's rank op reports it, under the declared rule."""
+        answer = self.asked({"op": "rank", "context": context, "question": question, "options": shown, "keys": keys})["scores"]
+        return [scored(a) for a in answer]
+
+    def embed(self, texts, query=False):
+        """Unit vectors of the texts in the embedding model's space; `query` marks the asking side."""
+        return self.asked({"op": "embed", "texts": texts, "query": query})["vectors"]
 
     def asked(self, body):
         started = time.time()
@@ -169,17 +183,34 @@ def viewed(chooser, question, context):
     return {"valid_at": instant(span["start_ms"] if span else context["question_at_ms"])}
 
 
+def remembered(call):
+    """A read-only call answered once per argument within one question."""
+    seen = {}
+    return lambda arg: seen[arg] if arg in seen else seen.setdefault(arg, call(arg))
+
+
 def composed(chooser, question, schema, context, graph=None, depth=None):
-    """The closed choices composed into one query, gated, with the time it is read at."""
+    """The closed choices composed into one query, the search's candidates
+    admitted by the graph's check op in score order, with the time it is read at."""
+    import search
     import structured
 
     started = time.time()
     params = params_of(context)
-    cypher = structured.plan(chooser, question, schema, context, graph.search if graph else None, depth,
-                             graph.read if graph else None)
-    gated(cypher, schema, params, graph)
-    log(f"composed in {time.time() - started:.1f}s: {cypher}")
-    return {"cypher": cypher, "params": params, "as_of": viewed(chooser, question, context)}
+    seek = remembered(graph.search) if graph else None
+    read = remembered(graph.read) if graph else None
+    found = search.candidates(chooser, lambda walker: structured.plan(walker, question, schema, context, seek, depth, read))
+    refusal = None
+    for path in found:
+        try:
+            gated(path.cypher, schema, params, graph)
+        except Refusal as refused:
+            refusal = refused
+            log(f"refused ({refused}): {path.cypher}")
+            continue
+        log(f"composed in {time.time() - started:.1f}s from {len(found)} candidate(s), score {path.score():.2f}: {path.cypher}")
+        return {"cypher": path.cypher, "params": params, "as_of": viewed(chooser, question, context)}
+    raise refusal
 
 
 def main():

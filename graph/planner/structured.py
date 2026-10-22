@@ -8,6 +8,7 @@ phrases, enum values), the graph's own search over admitted facts, and the
 model's closed choices. A choice the evidence settles alone (one declared
 phrase spoken, one record the question names) is taken without the model.
 """
+import math
 import re
 
 from catalog import PARAMETERS, derivations_of, embedded_in, models_of, base_shape, reference_target, relation_ends, seat_of
@@ -132,8 +133,12 @@ def unsaid(phrases, text):
     return text
 
 
-def best(chooser, context, question, options):
-    """The likeliest option; one option is no choice."""
+def best(chooser, context, question, options, keys=None):
+    """The likeliest option; one option is no choice. A chooser that can rank
+    answers is asked to, when the call names each option's short key: every
+    option then competes in one distribution, whatever their number. A chooser
+    that searches (`decide`) is handed each decision's log-probabilities and
+    names the option taken."""
     budget = getattr(chooser, "budget", None)
     if budget:
         budget.holds(context, question, *options)
@@ -141,11 +146,28 @@ def best(chooser, context, question, options):
         raise ValueError(f"no options for: {question}")
     if len(options) == 1:
         return 0
-    if len(options) > LETTERS:
+    if keys and hasattr(chooser, "rank"):
+        logp = odds(chooser, context, question, options, keys)
+    elif len(options) > LETTERS:
         heats = [options[i:i + LETTERS - 1] for i in range(0, len(options), LETTERS - 1)]
         winners = [heat[best(chooser, context, question, heat)] for heat in heats]
         return options.index(winners[best(chooser, context, question, winners)])
-    return max(range(len(options)), key=debiased(chooser, context, question, options).__getitem__)
+    else:
+        logp = [math.log(max(x, 1e-9)) for x in debiased(chooser, context, question, options)]
+    pick = chooser.decide(logp) if hasattr(chooser, "decide") else max(range(len(logp)), key=logp.__getitem__)
+    chooser.tally = getattr(chooser, "tally", 0.0) + logp[pick]
+    return pick
+
+
+def odds(chooser, context, question, options, keys):
+    """Each option's log-probability among the options: its answer's score
+    averaged over the listed order and its reverse, normalised over the set."""
+    forward = chooser.rank(context, question, options, keys)
+    backward = chooser.rank(context, question, options[::-1], keys[::-1])[::-1]
+    raw = [(a + b) / 2 for a, b in zip(forward, backward)]
+    top = max(raw)
+    total = top + math.log(sum(math.exp(r - top) for r in raw))
+    return [r - total for r in raw]
 
 
 def debiased(chooser, context, question, options):
@@ -154,6 +176,18 @@ def debiased(chooser, context, question, options):
     forward = chooser.choose(context, question, options)
     backward = chooser.choose(context, question, options[::-1])[::-1]
     return [(a + b) / 2 for a, b in zip(forward, backward)]
+
+
+def unique(keys):
+    """Keys that tell their options apart: a repeat takes its position."""
+    return [k if keys.count(k) == 1 else f"{k} ({i + 1})" for i, k in enumerate(keys)]
+
+
+def hop_key(hop):
+    """A hop's short name: its declared word, else the reference followed and the record reached."""
+    arrow, target, _, phrases, _, _ = hop
+    name = arrow.strip("<>-[]:")
+    return phrases[0] if phrases else f"{target} by {name}" if arrow.startswith("<-") else f"{name} to {target}"
 
 
 def hops(models, label):
@@ -219,13 +253,15 @@ def plan(chooser, question, schema, context, search=None, depth=None, read=None)
         onward = [i for i, h in enumerate(options) if h[1] in evidence.models()]
         if said:
             pick = said[0] if len(said) == 1 else said[best(chooser, trail, "Which relation does the question mean?",
-                                                              [options[i][2] for i in said])]
+                                                              [options[i][2] for i in said],
+                                                              unique([options[i][3][0] for i in said]))]
             evidence.explain(" ".join(options[pick][3]))
         else:
             if not onward and best(chooser, trail, f"Is the answer about this {label}?", arrival(models, label, options)) == 0:
                 break
             ranked = onward or list(range(len(options)))
-            pick = ranked[best(chooser, trail, "Where next?", [evidence.shown(options[i]) for i in ranked])]
+            pick = ranked[best(chooser, trail, "Where next?", [evidence.shown(options[i]) for i in ranked],
+                               unique([hop_key(options[i]) for i in ranked]))]
         arrow, target, _, _, record, meaning = options[pick]
         phrasing = unsaid(meaning, phrasing)
         back = ("<-" + arrow[1:-2] + "-" if arrow.endswith("->") else arrow[1:-1] + "->")
@@ -244,6 +280,19 @@ def plan(chooser, question, schema, context, search=None, depth=None, read=None)
     return out.cypher(items)
 
 
+def nearest(chooser, question, models, k):
+    """The k declared models whose text lies nearest the question in the
+    embedding model's space, in declared order; all of them when the chooser
+    cannot embed or no k is declared."""
+    if not k or k >= len(models) or not hasattr(chooser, "embed"):
+        return list(models)
+    docs = [f"{name}: {line(m.get('description', ''))} Fields: {', '.join(p['name'] for p in m['properties'])}"
+            for name, m in models.items()]
+    asked, vectors = chooser.embed([question], True)[0], chooser.embed(docs)
+    near = sorted(range(len(docs)), key=lambda i: -sum(a * b for a, b in zip(asked, vectors[i])))[:k]
+    return [name for i, name in enumerate(models) if i in near]
+
+
 def speaking(chooser, head, models, context, read):
     """Whether the question is about the speaker or what is theirs: a closed
     yes/no, framed with the speaker's own declared label when the graph holds one."""
@@ -253,8 +302,7 @@ def speaking(chooser, head, models, context, read):
     who = next((v["value"] for v in sorted(values, key=lambda v: not v.get("chosen"))), None)
     ask = f"Is the question about {who}, the one asking, or about what belongs to {who}?" if who \
         else "Is the question about the one asking, or about what belongs to them?"
-    p = debiased(chooser, f"{head}\nAsked by {who}." if who else head, ask, ["yes", "no"])
-    return p[0] > p[1]
+    return best(chooser, f"{head}\nAsked by {who}." if who else head, ask, ["no", "yes"]) == 1
 
 
 def anchored(chooser, head, question, models, context, evidence, out, read=None):
@@ -271,7 +319,8 @@ def anchored(chooser, head, question, models, context, evidence, out, read=None)
         out.where.append(f"id({var}) = $speaker")
         return var, label
     starts = [f"the {m} whose {p} is {v!r}, named in the question" for m, p, v in named] + ["every record of one kind"]
-    pick = best(chooser, head, "Who or what is the question about first?", starts)
+    pick = best(chooser, head, "Who or what is the question about first?", starts,
+                unique([f"{m} {v}" for m, _, v in named] + ["any record"]))
     if pick < len(named):
         label, prop, value = named[pick]
         evidence.used.add((label, prop, value))
@@ -281,9 +330,9 @@ def anchored(chooser, head, question, models, context, evidence, out, read=None)
         out.where.append(f"{var}.{prop} = {quoted(value)}")
         evidence.spent.add(label)
     else:
-        kinds = list(models)
+        kinds = nearest(chooser, question, models, PARAMETERS["kind_shortlist"])
         label = kinds[best(chooser, head, "Which kind of record holds the answer?",
-                           [k + ": " + line(models[k].get("description", "")) for k in kinds])]
+                           [k + ": " + line(models[k].get("description", "")) for k in kinds], kinds)]
         var = out.node(label)
         out.parts.append(f"({var}:{label})")
         narrowed(chooser, head, models[label], var, out, question, evidence)
@@ -315,7 +364,8 @@ def narrowed(chooser, trail, model, var, out, question, evidence):
     if not shared:
         return
     options = [f"its {prop} contains {w!r}" for prop, w in shared] + ["no narrowing"]
-    pick = best(chooser, trail, f"Which of these narrows the {model['name']} records to the ones the question means?", options)
+    pick = best(chooser, trail, f"Which of these narrows the {model['name']} records to the ones the question means?",
+                options, unique(options))
     if pick < len(shared):
         prop, w = shared[pick]
         out.where.append(f"{var}.{prop} CONTAINS {quoted(w)}")
@@ -390,21 +440,21 @@ def returns(chooser, trail, model, var, record=None, evidence=None, offers=(), c
         return f"coalesce({v}.{name}, false) AS {name}"
     shown = [f"the {owner}'s {p['name']}" + (f" ({line(p['description'])})" if p.get("description") else "")
              for _, owner, p in props]
-    picked = compared(chooser, trail, shown)
+    picked = compared(chooser, trail, shown, unique([f"{owner}.{p['name']}" for _, owner, p in props]))
     names = [props[i][2]["name"] for i in picked]
     return ", ".join(f"{props[i][0]}.{props[i][2]['name']} AS {props[i][2]['name']}"
                      + ("" if names.count(props[i][2]["name"]) == 1 else f"_{props[i][0]}")
                      for i in picked)
 
 
-def compared(chooser, trail, shown):
+def compared(chooser, trail, shown, keys):
     """One property chosen against the others, then more while the answer needs them."""
-    picked = [best(chooser, trail, "Which property does the question ask for?", shown)]
+    picked = [best(chooser, trail, "Which property does the question ask for?", shown, keys)]
     while len(picked) < len(shown):
         rest = [i for i in range(len(shown)) if i not in picked]
         asked = trail + "\nAlready answering with: " + "; ".join(shown[i] for i in picked)
         at = best(chooser, asked, "Which other property does the answer also need?",
-                  [shown[i] for i in rest] + [ENOUGH])
+                  [shown[i] for i in rest] + [ENOUGH], [keys[i] for i in rest] + ["nothing else"])
         if at == len(rest):
             break
         picked.append(rest[at])

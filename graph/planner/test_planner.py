@@ -139,6 +139,35 @@ class Derived(unittest.TestCase):
         self.assertNotIn("PaymentStatus", [o for q, os in chooser.asked for o in os if q.startswith("Which kind")])
 
 
+class Searching(unittest.TestCase):
+    class Model:
+        calls = 0
+
+        def choose(self, context, question, options):
+            Searching.Model.calls += 1
+            return [0.55, 0.45] if question == "q1" else [0.9, 0.1]
+
+    @staticmethod
+    def make(walker):
+        import structured
+
+        return "xy"[structured.best(walker, "c", "q1", ["x", "y"])] + "uv"[structured.best(walker, "c", "q2", ["u", "v"])]
+
+    def test_candidates_flip_the_least_sure_decisions_and_rank_by_joint_score(self):
+        import search
+
+        self.assertEqual([p.cypher for p in search.candidates(self.Model(), self.make, width=2, flips=2, rounds=1)],
+                         ["xu", "yu", "xv"])
+        self.assertEqual([p.cypher for p in search.candidates(self.Model(), self.make, width=1, flips=0, rounds=1)], ["xu"])
+
+    def test_a_remembered_prompt_is_asked_once(self):
+        import search
+
+        Searching.Model.calls = 0
+        search.candidates(self.Model(), self.make, width=2, flips=2, rounds=1)
+        self.assertEqual(Searching.Model.calls, 4)
+
+
 class Speaker(unittest.TestCase):
     def test_the_gate_is_framed_with_the_speakers_declared_label(self):
         import structured
@@ -335,7 +364,7 @@ class Structured(unittest.TestCase):
 
         chooser = Scripted(["yes", "Person", "yes", "value"], {"name"})
         cypher = structured.plan(chooser, "Who is my wife?", SCHEMA, SPEAKER, search)
-        self.assertEqual(chooser.asked[0][1], ["yes", "no"])
+        self.assertEqual(chooser.asked[0][1], ["no", "yes"])
         self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE id(n0) = $speaker RETURN n1.name AS name")
 
     def test_a_hop_shows_the_facts_that_point_to_it(self):
@@ -432,8 +461,8 @@ class Choices(unittest.TestCase):
         cypher, decisions = choices.walk("Who is my wife?", SCHEMA, SPEAKER, label)
         self.assertEqual(cypher, "MATCH (n0:Person)-[:wife]->(n1:Person) WHERE id(n0) = $speaker RETURN n1.name AS name")
         first = choices.prompts(decisions[0])
-        self.assertEqual([gold for _, gold in first], ["A", "B"])
-        self.assertTrue(first[0][0].startswith("Question: Who is my wife?\n\nIs the question about the one asking, or about what belongs to them?\nA) yes"))
+        self.assertEqual([gold for _, gold in first], ["B", "A"])
+        self.assertTrue(first[0][0].startswith("Question: Who is my wife?\n\nIs the question about the one asking, or about what belongs to them?\nA) no"))
         self.assertTrue(first[0][0].endswith("Answer with the letter only."))
 
 
