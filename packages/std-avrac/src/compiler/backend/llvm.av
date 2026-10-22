@@ -462,21 +462,26 @@ fn slot_value(lc: ptr, m: ptr, st: Static, c: Slot) -> ptr {
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a program in, the names it cannot carry out.
 export fn unsupported_on_wasm(l: Lowered) -> List<string> {
     let absent = [s.name for s in rt_sigs() if !s.wasm]
-    let called = distinct(
-        [n! for bd in l.fns.concat([l.entry]) for i in bd.ins for n in [hosted_symbol(i)] if n != null],
-    )
-    [n for n in called if absent.contains(n)]
+    let calls = [WasmCall { caller: bd.name, symbol: n! } for bd in l.fns.concat([l.entry]) for i in bd.ins for n in [hosted_symbol(i)] if n != null]
+    distinct([c.symbol for c in calls if absent.contains(c.symbol)])
         .concat(
-            distinct(
-                [p.name for p in l.libraries if p.library != "" && !p.wasm && calls_its_c(p, called)],
-            ),
+            [refused_package(p, calls) for p in l.libraries if p.library != "" && !p.wasm && calls.any((c) -> calls_its_c(p, c))],
         )
 }
 
-/// Whether `called` names a symbol the package's own C defines: an extern it
+/// A reached fn calling a symbol, as the link's own reach saw it.
+type WasmCall = { caller: string, symbol: string }
+
+/// Whether the call is to a symbol the package's own C defines: an extern it
 /// declares over a runtime row is the runtime's.
-fn calls_its_c(p: LinkedPackage, called: List<string>) -> bool {
-    p.externs.any((x) -> called.contains(x) && !rt_index().has(x))
+fn calls_its_c(p: LinkedPackage, c: WasmCall) -> bool {
+    p.externs.contains(c.symbol) && !rt_index().has(c.symbol)
+}
+
+/// A package's C refused by the call that reaches it: the package, the reached fn and the extern it calls.
+fn refused_package(p: LinkedPackage, calls: List<WasmCall>) -> string {
+    let first = calls.find((c) -> calls_its_c(p, c))!
+    "${p.name} (`${first.caller}` calls `${first.symbol}`)"
 }
 
 /// Whether a program calls a runtime row that may switch a task out: it runs

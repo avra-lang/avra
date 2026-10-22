@@ -57,5 +57,6 @@ builds io || fail=1
 builds unreached || fail=1
 builds untouched || fail=1
 builds time || fail=1
+check sqlite_call '@std/sqlite (`@std.sqlite.opened` calls `avra_sqlite_sleeps_held`)' || fail=1
 [ "$fail" -eq 0 ] || exit 1
 say "refusals speak, and a wasm-named package links"
