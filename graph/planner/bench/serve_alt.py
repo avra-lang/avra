@@ -15,7 +15,6 @@ import cascade  # noqa: E402
 
 SCORER = os.environ["ALT_SCORER"]
 cascade.SOCKET = os.environ["ALT_SOCKET"]
-load_original = None
 
 
 class Scorer(cascade.Scorer):
