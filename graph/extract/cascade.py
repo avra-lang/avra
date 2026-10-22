@@ -831,7 +831,7 @@ class Cascade:
             if f["value"] == {}:
                 kept.append(f)
                 continue
-            said = self.llm.pick(ctx, f"In a {model}, does the sentence itself state that {f['property']} is {self.shown(f['value'])}?", ["yes", "no"])
+            said = self.llm.pick(ctx, f"In a {model}, does the sentence itself state that {f['property']} is {self.stated(f)}?", ["yes", "no"])
             if said[0] - said[1] >= MARGIN:
                 kept.append(f)
             else:
@@ -850,6 +850,14 @@ class Cascade:
         """Whether a field states something the sentence says: any value but a
         bare reference to another record, which only links."""
         return field["value"] != {} and route(self.prop(model, field["property"])) != "ref"
+
+    def stated(self, f):
+        """A field's value as the sentence words it: a time or a quantity by the
+        passage that gave it, any other value as it is."""
+        if "normalization" in f or isinstance(f["value"], dict):
+            x, y = position(f["evidence"][0])
+            return repr(self.t.s[x:y])
+        return self.shown(f["value"])
 
     def shown(self, v):
         return self.name(v) if isinstance(v, str) and any(r["local_id"] == v for r in self.records) else v
@@ -984,6 +992,10 @@ class Cascade:
         source = self.request["input"]
         anchor = source.get("authored_at_ms") or source["received_at_ms"]
         options = timex.narrowed(timex.candidates(anchor, timex.zone_for(self.request)), self.t.s[x:y], MAX_OPTIONS - 2)
+        outright = timex.explicit(options, self.t.s[x:y])
+        if outright:
+            norm = timex.with_clock(outright, self.t.s[x:y], timex.zone_for(self.request)) if instant else outright
+            return norm, 1.0
         written = next(o["label"] for o in options if o["normalization"] and o["normalization"]["timex_type"] == "TIME")
         labels = [o["label"] for o in options]
         pt = self.llm.pick(ctx + f"\nThe text was written {written}.", f'Which date or time does "{self.t.s[x:y]}" mean?', labels[:-2], labels[-2:])

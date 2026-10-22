@@ -136,5 +136,19 @@ class Narrowing(unittest.TestCase):
         self.assertIsNone(timex.components("at 18:30")["day"])
 
 
+class Outright(unittest.TestCase):
+    def test_a_day_and_month_with_one_matching_date_is_decided_without_a_choice(self):
+        options = timex.narrowed(timex.candidates(TUESDAY, "+00:00", window_days=21), "through 20 October 2026", 24)
+        self.assertEqual(timex.explicit(options, "through 20 October 2026")["value"], "2026-10-20")
+
+    def test_a_weekday_alone_is_left_to_the_choice(self):
+        options = timex.narrowed(timex.candidates(TUESDAY, "+00:00", window_days=21), "Friday", 24)
+        self.assertIsNone(timex.explicit(options, "Friday"))
+
+    def test_a_named_date_outside_the_window_is_left_to_the_choice(self):
+        options = timex.narrowed(timex.candidates(TUESDAY, "+00:00", window_days=3), "1 January", 24)
+        self.assertIsNone(timex.explicit(options, "1 January"))
+
+
 if __name__ == "__main__":
     unittest.main()

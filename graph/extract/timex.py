@@ -147,3 +147,14 @@ def narrowed(options, text, room):
         centre = datetime.date.fromisoformat(written["normalization"]["value"][:10])
         dates = sorted(sorted(dates, key=lambda o: abs((day(o) - centre).days))[:room], key=day)
     return dates + rest
+
+
+def explicit(options, text):
+    """The normalization of a text that names a day and a month outright when
+    exactly one candidate date carries all it names, else None: that is
+    calendar arithmetic, not a judgement for the scorer."""
+    named = components(text)
+    if named["day"] is None or named["month"] is None:
+        return None
+    dates = [o for o in options if o["normalization"] and o["normalization"]["timex_type"] == "DATE"]
+    return dates[0]["normalization"] if len(dates) == 1 else None
