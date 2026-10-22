@@ -413,11 +413,18 @@ const BROWSER = `(html, widthPx) => {
 /// What a run saw beyond agree/disagree: every boundary edge, and the widest fine gap.
 const SEEN = { boundary: [], gap: 0 };
 
+/// Where a run's time goes, in milliseconds: the solver's program (compile and run), the page, and
+/// the work shrinking a failure took. Printed at the end of every run.
+const SPENT = { solver: 0, page: 0, calls: 0, trees: 0 };
+const timed = async (key, f) => { const t = Date.now(); try { return await f(); } finally { SPENT[key] += Date.now() - t; } };
+
 async function compare(cases, browser, work, note = false) {
-  const { out, pages } = solved(cases, work);
+  const { out, pages } = await timed("solver", async () => solved(cases, work));
+  SPENT.calls += 1;
+  SPENT.trees += cases.length;
   const results = [];
   for (let i = 0; i < cases.length; i++) {
-    const got = await browser.read(`(${BROWSER})(${JSON.stringify(pages[i])}, ${WIDTH})`);
+    const got = await timed("page", () => browser.read(`(${BROWSER})(${JSON.stringify(pages[i])}, ${WIDTH})`));
     const verdict = judge(got, out[i]);
     if (note) {
       SEEN.gap = Math.max(SEEN.gap, verdict.gap);
@@ -528,6 +535,7 @@ async function main() {
   }
   await browser.close();
   for (const n of SEEN.boundary) console.log(`BOUNDARY ${FACE_NAME} seed ${SEED} ${n}`);
+  console.log(`layout-oracle: time ${((SPENT.solver + SPENT.page) / 1000).toFixed(1)}s = solver ${(SPENT.solver / 1000).toFixed(1)}s + page ${(SPENT.page / 1000).toFixed(1)}s, over ${SPENT.calls} compare call(s) and ${SPENT.trees} tree(s)`);
   console.log(`layout-oracle: widest fine gap ${SEEN.gap.toFixed(3)}/60 px (law: ${UNIT}/60); ${SEEN.boundary.length} edge(s) rounded apart at a boundary`);
   console.log(`layout-oracle: ${cases.length - failing.length} of ${cases.length} trees agree in ${ENGINE} (seed ${SEED}, width ${WIDTH})`);
   if (kept.length) console.log(`layout-oracle: licensed ${kept.length} (${FACE_NAME} seed ${SEED} cases ${kept.join(", ")}) — the count is exact in every other tree`);
