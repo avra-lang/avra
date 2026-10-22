@@ -183,7 +183,27 @@ fn exported() -> Result<bool, string> {
         all.item(0).member("request").member("value").text() == "1" &&
         all.item(0).member("effects").member("run").text() == "correct:c1" &&
         all.item(1).member("until_revision").int() == 0 &&
-        all.item(1).member("decider").text() == "user"
+        all.item(1).member("decider").text() == "user" &&
+        all
+            .item(0)
+            .member("before")
+            .member("entity")
+            .member("entity")
+            .member("fields")
+            .member("phone")
+            .item(0)
+            .member("value")
+            .text() == "1" &&
+        all
+            .item(0)
+            .member("after")
+            .member("entity")
+            .member("entity")
+            .member("fields")
+            .member("phone") is .Null &&
+        all.item(0).member("before").member("evidence").items().length == 1 &&
+        all.item(0).member("after").member("evidence").items().length == 2 &&
+        all.item(0).member("prior_revision").int() ?? 0 < all.item(0).member("revision").int() ?? 0
 }
 
 fn corrections_dispatched() -> Result<bool, string> {
@@ -226,7 +246,7 @@ spec "corrections" {
         then "different ends the merges joining two entities, refuses rejoining them, and undo restores the merges" { passed(different_and_undo()) }
         then "a correction replays by id, refuses changed content, undo is idempotent and an undone id cannot be reused" { passed(correction_replays()) }
         then "invalid values, unknown entities, self-difference and anonymous deciders refuse atomically" { passed(refusals_are_atomic()) }
-        then "every correction exports with its request, effects and undo revision" { passed(exported()) }
+        then "every correction exports self-contained: request, effects, belief before and after, and undo revision" { passed(exported()) }
         then "correct, uncorrect and corrections run through the shared op dispatch" { passed(corrections_dispatched()) }
     }
 }

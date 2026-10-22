@@ -7,7 +7,7 @@ use store.merge.{Merge}
 use store.tombstone.{Tombstone}
 use store.choice.{Choice}
 use ingest.admit.{Admission}
-use store.correct.{Correction, Amendment}
+use store.correct.{Correction, Amendment, correction_kind}
 use @avra.graph_contracts.{SourceRef}
 
 export enum Operation {
@@ -276,13 +276,11 @@ export fn operation(j: Json) -> Result<Operation, string> {
 
 /// Entity pairs take `left` and `right`; values take `entity`, `property` and `value`.
 fn amendment(j: Json) -> Result<Amendment, string> {
-    let kind = text(j, "kind")?
-    match kind {
-        "same" -> Amendment.Same(text(j, "left")?, text(j, "right")?),
-        "different" -> Amendment.Different(text(j, "left")?, text(j, "right")?),
-        "wrong" -> Amendment.Wrong(text(j, "entity")?, text(j, "property")?, corrected_value(j)?),
-        "true" -> Amendment.Right(text(j, "entity")?, text(j, "property")?, corrected_value(j)?),
-        rest -> { fail "a correction kind is same, different, wrong or true: ${kind}" },
+    match correction_kind(text(j, "kind")?)? {
+        .Same -> Amendment.Same(text(j, "left")?, text(j, "right")?),
+        .Different -> Amendment.Different(text(j, "left")?, text(j, "right")?),
+        .Wrong -> Amendment.Wrong(text(j, "entity")?, text(j, "property")?, corrected_value(j)?),
+        .Right -> Amendment.Right(text(j, "entity")?, text(j, "property")?, corrected_value(j)?),
     }
 }
 

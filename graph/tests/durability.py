@@ -156,6 +156,8 @@ def corrections(graph):
     [logged] = graph.call({"op": "corrections"})
     assert logged["kind"] == "wrong" and logged["until_revision"] > 0
     assert logged["request"]["value"] == "Ada" and logged["effects"]["run"] == "correct:c1"
+    assert logged["before"]["entity"]["entity"]["fields"]["name"][0]["denied"] is False
+    assert logged["after"]["entity"]["entity"]["fields"]["name"][0]["denied"] is True
     assert "undone" in graph.call(wrong, success=False)["error"]
     with sqlite3.connect(graph.database) as raw:
         assert raw.execute("SELECT count(*) FROM CorrectionRow").fetchone() == (1,)

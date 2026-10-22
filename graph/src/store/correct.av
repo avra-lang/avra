@@ -3,7 +3,7 @@ use @std.validate.{Value, Entry}
 use @std.sqlite.{Db}
 use data.{as_json, as_value}
 use store.open.{Graph, stored, modeled}
-use store.engine.{CorrectionRow, CorrectionEndRow, MergeRow, MergeEndRow}
+use store.engine.{CorrectionRow, CorrectionEndRow, MergeRow, MergeEndRow, EntityRow}
 use store.merge.{Merge}
 use store.publish.{Publication, Record, RecordMode}
 use store.evidence.{FieldEvidence, Voice, Factuality}
@@ -24,13 +24,37 @@ export type Correction = { id: string, decider: string, amendment: Amendment }
 /// A separated pair: the merges a `Different` ended, rejoined on undo.
 type Bridge = { decision: string, left: string, right: string, decider: string }
 
-impl Amendment {
-    fn kind() -> string {
+/// The kind of a correction, as its log stores it.
+export enum CorrectionKind { Same, Different, Wrong, Right }
+
+impl CorrectionKind {
+    fn word() -> string {
         match self {
-            .Same(_, _) -> "same",
-            .Different(_, _) -> "different",
-            .Wrong(_, _, _) -> "wrong",
-            .Right(_, _, _) -> "true",
+            .Same -> "same",
+            .Different -> "different",
+            .Wrong -> "wrong",
+            .Right -> "true",
+        }
+    }
+}
+
+export fn correction_kind(word: string) -> Result<CorrectionKind, string> {
+    match word {
+        "same" -> CorrectionKind.Same,
+        "different" -> CorrectionKind.Different,
+        "wrong" -> CorrectionKind.Wrong,
+        "true" -> CorrectionKind.Right,
+        rest -> { fail "a correction kind is same, different, wrong or true: ${word}" },
+    }
+}
+
+impl Amendment {
+    fn kind() -> CorrectionKind {
+        match self {
+            .Same(_, _) -> CorrectionKind.Same,
+            .Different(_, _) -> CorrectionKind.Different,
+            .Wrong(_, _, _) -> CorrectionKind.Wrong,
+            .Right(_, _, _) -> CorrectionKind.Right,
         }
     }
 }
@@ -51,7 +75,7 @@ impl Correction {
                 [
                     field("id", Json.Str(self.id)),
                     field("decider", Json.Str(self.decider)),
-                    field("kind", Json.Str(self.amendment.kind())),
+                    field("kind", Json.Str(self.amendment.kind().word())),
                 ]
                     .concat(subject),
             )
@@ -78,15 +102,26 @@ impl Graph {
             [] -> {},
             rest -> { fail "correction id is not unique: ${c.id}" },
         }
+        let before = self.belief(c.amendment)?
         let effects = self.amended(db, c, request, revision)?
         if self.revision()? == revision { self.advanced()? }
+        let document = Json
+            .Obj(
+                [
+                    field("request", request),
+                    field("effects", effects),
+                    field("before", before),
+                    field("after", self.belief(c.amendment)?),
+                    field("prior_revision", Json.Int(revision)),
+                ],
+            )
         let _ = modeled(
             CorrectionRow {
                 decision: c.id,
-                kind: c.amendment.kind(),
+                kind: c.amendment.kind().word(),
                 decider: c.decider,
                 revision: self.revision()?,
-                document: to_text(Json.Obj([field("request", request), field("effects", effects)])),
+                document: to_text(document),
             }
                 .insert(db),
         )?
@@ -192,8 +227,8 @@ impl Graph {
         if !(stored(CorrectionEndRow.where(db, correction: row))?).is_empty() { return revision }
         let document = document_of(row)?
         let _ = modeled(CorrectionEndRow { correction: row, until: revision + 1 }.insert(db))?
-        match row.kind {
-            "same" -> {
+        match correction_kind(row.kind)? {
+            .Same -> {
                 let merge = match stored(MergeRow.where(db, decision: id))? {
                     [only] -> only,
                     rest -> { fail "a same correction has no merge: ${id}" },
@@ -202,7 +237,7 @@ impl Graph {
                     let _ = modeled(MergeEndRow { merge: merge, until: revision + 1 }.insert(db))?
                 }
             },
-            "different" -> {
+            .Different -> {
                 for b in document.member("effects").member("ended").items() {
                     let left = b.member("left").text() ?? ""
                     let right = b.member("right").text() ?? ""
@@ -221,7 +256,7 @@ impl Graph {
                     }
                 }
             },
-            "wrong" or "true" -> {
+            .Wrong or .Right -> {
                 let input = correction_input(id)
                 let p = Publication {
                     id: "undo:${id}",
@@ -235,7 +270,6 @@ impl Graph {
                 }
                 let _ = self.published(p, p.fingerprint())?
             },
-            rest -> { fail "unknown correction kind: ${row.kind}" },
         }
         if self.revision()? == revision { self.advanced()? }
         stored(db.commit())?
@@ -264,15 +298,55 @@ impl Graph {
                             ),
                             field("request", (document_of(r)?).member("request")),
                             field("effects", (document_of(r)?).member("effects")),
+                            field("before", (document_of(r)?).member("before")),
+                            field("after", (document_of(r)?).member("after")),
+                            field("prior_revision", (document_of(r)?).member("prior_revision")),
                         ],
                     ) for r in stored(CorrectionRow.all(self.db))?],
             )
     }
 
+    /// What the graph believes about what a correction touches: each entity
+    /// read as current, and for a value its property's whole evidence. A
+    /// hidden or unknown entity reads as null.
+    fn belief(amendment: Amendment) -> Result<Json, string> {
+        match amendment {
+            .Same(left, right) or .Different(left, right) -> Json.Obj([field("left", self.believed(left)?), field("right", self.believed(right)?)]),
+            .Wrong(entity, property, _) or .Right(entity, property, _) -> Json
+                .Obj(
+                    [
+                        field("entity", self.believed(entity)?),
+                        field(
+                            "evidence",
+                            if self.known(entity)? { self.explain(entity, property)? } else { Json.Null },
+                        ),
+                    ],
+                ),
+        }
+    }
+
+    fn believed(id: string) -> Result<Json, string> {
+        if !self.known(id)? { return Json.Null }
+        let entity = self.entity(id)?
+        Json
+            .Obj(
+                [
+                    field("entity", entity.json()),
+                    field("group", Json.Arr([Json.Str(m) for m in self.group(id)?])),
+                ],
+            )
+    }
+
+    /// An entity that exists and is not tombstoned.
+    fn known(id: string) -> Result<bool, string> {
+        if (stored(EntityRow.where(self.db, name: id))?).is_empty() { return false }
+        !self.hidden(id)?
+    }
+
     /// Whether an active `different` correction keeps two groups apart.
     fn kept_apart(left: List<string>, right: List<string>) -> Result<bool, string> {
         let ended = stored(CorrectionEndRow.all(self.db))?
-        let live = [r for r in stored(CorrectionRow.where(self.db, kind: "different"))? if !ended.any(it.correction.id == r.id)]
+        let live = [r for r in stored(CorrectionRow.where(self.db, kind: CorrectionKind.Different.word()))? if !ended.any(it.correction.id == r.id)]
         let pairs = [(document_of(r)?).member("request") for r in live]
         pairs.any(apart(it, left, right))
     }
