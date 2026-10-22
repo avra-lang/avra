@@ -1,0 +1,95 @@
+use @std.json.{Json, to_text}
+use @std.action.{Mandate, covers, mandate_faults, reversible}
+use @std.mcp.{Invocation, Server, Tool, handle_text_on, server, server_faults}
+
+fn grant(id: string, actions: List<string>) -> Mandate {
+    Mandate { id: id, issuer: "host", subject: "agent", actions: actions, granted_ms: 0 }
+}
+
+/// Answers the id of the mandate it ran under, so the write can name it.
+fn noting_call(i: Invocation) -> Result<Json, string> { .Ok(Json.Str(i.mandate?.id ?? "(none)")) }
+
+fn noting_tool() -> Tool { Tool { name: "note", description: "Notes", params: [], impact: reversible, call: noting_call } }
+
+fn on(s: Server, request: string) -> string { handle_text_on(s, request) ?? "(none)" }
+
+fn note_call(id: string) -> string {
+    "{\"jsonrpc\":\"2.0\",\"id\":${id},\"method\":\"tools/call\",\"params\":{\"name\":\"note\"}}"
+}
+
+fn answered(id: string, text: string, is_error: string) -> string {
+    "{\"jsonrpc\":\"2.0\",\"id\":${id},\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"${text}\"}],\"isError\":${is_error}}}"
+}
+
+const refused = "`note` requires a mandate, and this door holds none that covers it now"
+
+spec "@std.mcp — mandates" {
+    given "a reversible tool" {
+        then "it is refused with no mandate" {
+            on(server([noting_tool()]), note_call("1")) == answered("1", refused, "true")
+        }
+        then "it runs under a covering mandate and receives it" {
+            on(server([noting_tool()], [grant("m1", ["note"])]), note_call("1")) == answered("1", "\\\"m1\\\"", "false")
+        }
+        then "a mandate for another tool does not cover it" {
+            on(server([noting_tool()], [grant("m1", ["other"])]), note_call("1")) == answered("1", refused, "true")
+        }
+        then "an expired mandate does not cover it" {
+            on(
+                server([noting_tool()], [grant("m1", ["note"]) with { expires_ms: 1 }]),
+                note_call("1"),
+            ) == answered("1", refused, "true")
+        }
+        then "a budget is spent one call at a time" {
+            let s = server([noting_tool()], [grant("m1", ["note"]) with { budget: 1 }])
+            on(s, note_call("1")) == answered("1", "\\\"m1\\\"", "false") &&
+                on(s, note_call("2")) == answered("2", refused, "true")
+        }
+        then "a spent mandate gives way to the next that covers" {
+            let s = server(
+                [noting_tool()],
+                [grant("m1", ["note"]) with { budget: 1 }, grant("m2", ["note"])],
+            )
+            on(s, note_call("1")) == answered("1", "\\\"m1\\\"", "false") &&
+                on(s, note_call("2")) == answered("2", "\\\"m2\\\"", "false")
+        }
+    }
+    given "tools/list" {
+        then "a tool shows the mandate that covers it" {
+            on(
+                server([noting_tool()], [grant("m1", ["note"])]),
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}",
+            )
+                .contains(
+                    "\"_meta\":{\"avra/needs_mandate\":true,\"avra/mandates\":[{\"id\":\"m1\",\"issuer\":\"host\"",
+                )
+        }
+        then "a tool with no grant shows none" {
+            on(server([noting_tool()]), "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}")
+                .contains("\"avra/needs_mandate\":true,\"avra/mandates\":[]")
+        }
+    }
+    given "a mandate's own soundness" {
+        then "a sound mandate has no faults" { mandate_faults(grant("m1", ["note"])).is_empty() }
+        then "an unnamed mandate is a fault" {
+            mandate_faults(grant("", ["note"])).join("|") == "a mandate names its id, its issuer and its subject"
+        }
+        then "a mandate covering nothing is a fault" { mandate_faults(grant("m1", [])).join("|") == "mandate `m1` covers no action" }
+        then "a window that closes before it opens is a fault" {
+            mandate_faults(grant("m1", ["note"]) with { granted_ms: 5, expires_ms: 5 }).join("|") == "mandate `m1` expires before it is granted"
+        }
+        then "a zero budget is a fault" {
+            mandate_faults(grant("m1", ["note"]) with { budget: 0 }).join("|") == "mandate `m1` has no budget to spend"
+        }
+        then "covers reads the window's start" { !covers(grant("m1", ["note"]) with { granted_ms: 10 }, "note", 5, 0) }
+    }
+    given "a door's soundness" {
+        then "a grant for no tool is a fault" {
+            server_faults(server([noting_tool()], [grant("m1", ["gone"])])).join("|") == "mandate `m1` grants `gone`, which is no tool here"
+        }
+        then "one id granted twice is a fault, once per grant" {
+            server_faults(server([noting_tool()], [grant("m1", ["note"]), grant("m1", ["note"])]))
+                .join("|") == "mandate `m1` is granted more than once|mandate `m1` is granted more than once"
+        }
+    }
+}
