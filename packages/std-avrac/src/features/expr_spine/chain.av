@@ -16,7 +16,7 @@ use core.{
     NodeFacts,
 }
 use core.marks.{sequence}
-use features.{Meaning, ResolveCx, TypeCx, LowerCx, nothing, chained_binder}
+use features.{Meaning, ResolveCx, TypeCx, LowerCx, nothing}
 
 /// `subject?.name(args)`.
 @expr_node
@@ -33,7 +33,12 @@ export type ChainApply = { subject: ExprId, args: List<ExprId> }
 @sequence
 export type ChainType = { subject: ExprId, ty: TypeRef }
 
+/// The binder a chain's meaning reads its subject through — a name no
+/// program can spell, so nothing a program writes can capture it.
+const chained_binder: string = "chained value"
+
 impl NodeFacts for ChainCall {
+    fn chains() -> bool { true }
     fn minted(store: SyntaxArena, span: Span?) -> Result<List<ExprId>, string> {
         let before = store.exprs.count()
         let args = [store.pronouned(a) for a in self.args]
@@ -47,6 +52,7 @@ impl NodeFacts for ChainCall {
 }
 
 impl NodeFacts for ChainApply {
+    fn chains() -> bool { true }
     fn minted(store: SyntaxArena, span: Span?) -> Result<List<ExprId>, string> {
         let before = store.exprs.count()
         let call = store.alloc_expr(Expr.CallValue(store.held_value(span), self.args), span)
@@ -59,6 +65,7 @@ impl NodeFacts for ChainApply {
 }
 
 impl NodeFacts for ChainType {
+    fn chains() -> bool { true }
     fn minted(store: SyntaxArena, span: Span?) -> Result<List<ExprId>, string> {
         let before = store.exprs.count()
         let lit = store.spelling(self.ty)?
