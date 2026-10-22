@@ -209,6 +209,10 @@ def run(avra, verb, package):
 STALL = int(os.environ.get("AVRA_DEFECT_STALL", "10"))
 
 
+# The last look taken at each program that stalled, by name: the notes quote it.
+DUMPS = {}
+
+
 def sh_out(argv, limit=40):
     """The first `limit` lines a diagnostic tool answers, or why it could not run."""
     try:
@@ -254,9 +258,13 @@ def timed(avra, verb, package, name=""):
         except subprocess.TimeoutExpired:
             if STALL >= TIMEOUT:
                 raise
-            print("defects: STALLED %s (%s) past %ds:\n    %s" % (name, verb, STALL, "\n    ".join(stalled(p.pid))), flush=True)
+            dump = stalled(p.pid)
+            DUMPS[name] = dump
+            print("defects: STALLED %s (%s) past %ds:\n    %s" % (name, verb, STALL, "\n    ".join(dump)), flush=True)
             out, _ = p.communicate(timeout=TIMEOUT - STALL)
     except subprocess.TimeoutExpired:
+        # the stack at the kill names the frame it was blocked in
+        DUMPS[name] = stalled(p.pid)
         os.killpg(p.pid, signal.SIGKILL)
         p.communicate()
         return 124, "timed out after %ds" % TIMEOUT, time.time() - began
@@ -297,7 +305,7 @@ def self_test():
     count = os.path.join(d, "count")
     once = fake("once", 'n=$(cat "%s" 2>/dev/null || echo 0); echo $((n+1)) > "%s"; [ "$n" = 0 ] && sleep 4; exit 0' % (count, count))
     bad, notes = survey(once, work, 1)
-    assert not bad and len(notes) == 1 and "finished alone — not a hang" in notes[0], (bad, notes)
+    assert not bad and len(notes) == 1 and "POOL STALL probe (check)" in notes[0] and "finished in" in notes[0] and "alone" in notes[0] and "load:" in notes[0], (bad, notes)
     hangs = fake("hangs", "sleep 4")
     bad, notes = survey(hangs, work, 1)
     assert [b[0] for b in bad] == ["probe"] and "timed out twice" in bad[0][1] and not notes, (bad, notes)
@@ -382,6 +390,7 @@ def main():
     bad, notes = survey(a.avra, work, jobs, a.progress, a.show, previous, taken)
     for line in notes:
         print(line, flush=True)
+    print("defects: %d pool stall(s)" % len(notes), flush=True)
     if taken:
         print("\n".join(slowest(taken)))
     if a.timings:
@@ -418,6 +427,16 @@ def examine(avra, d, k, case, alone, say, count=None):
         if why:
             refused.append((verb, why, out))
     return refused, None
+
+
+def stall_words(name, verb, first, jobs, alone):
+    """The loud note for a program that timed out in the pool and finished alone: both seconds and
+    the last look taken at it while it stalled. It passes the job (the alone run proved the program
+    right) and is counted, never silent."""
+    lines = ["defects: POOL STALL %s (%s): timed out after %.0fs beside %d workers, finished in %.1fs alone — the program is correct; the compile stalled in the pool"
+             % (name, verb, first, jobs, alone)]
+    lines += ["    " + l for l in DUMPS.get(name, ["(no dump was taken)"])]
+    return "\n".join(lines)
 
 
 def survey(avra, work, jobs, progress=0, show=False, previous=None, taken=None):
@@ -470,14 +489,16 @@ def survey(avra, work, jobs, progress=0, show=False, previous=None, taken=None):
         for t in threads:
             t.join()
         for k, case, (verb, first) in sorted(retry, key=lambda r: r[0]):
+            before = taken.get(case[0], 0.0)
             refused, hung = examine(avra, os.path.join(root, "alone"), k, case, True, say, count)
+            alone = taken.get(case[0], 0.0) - before
             for v, why, out in refused:
                 refuse(case[0], v, why, out)
             if hung:
                 refuse(case[0], hung[0], "%s — timed out twice: %.0fs beside %d workers, %.0fs alone"
                        % (timeout_words(case[0], previous), first, jobs, hung[1]), "")
             else:
-                notes.append("defects: %s (%s) timed out after %.0fs beside %d workers and finished alone — not a hang" % (case[0], verb, first, jobs))
+                notes.append(stall_words(case[0], verb, first, jobs, alone))
     return bad, notes
 
 
