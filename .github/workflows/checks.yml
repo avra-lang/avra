@@ -275,8 +275,10 @@ jobs:
         if: steps.plan.outputs.build == '1'
         run: |
           list=""
-          if [ "${{ github.event_name }}" = pull_request ]; then
-            head="${{ github.event.pull_request.head.sha }}"
+          # A branch's rungs are its own commits past main: a PR's head, or the
+          # branch a hand-run checks out.
+          if [ "${{ github.event_name }}" = pull_request ] || { [ "${{ github.event_name }}" = workflow_dispatch ] && [ "${{ steps.plan.outputs.main }}" != 1 ]; }; then
+            head="${{ github.event.pull_request.head.sha || github.sha }}"
             git fetch -q --depth=200 origin main "$head" 2>/dev/null || :
             base=$(git merge-base origin/main "$head" 2>/dev/null || :)
             [ -z "$base" ] || list=$(sh tools/rungs.sh "$base" "$head" | tr '\n' ' ')
@@ -329,13 +331,15 @@ jobs:
       # so the miss is a `::warning::` carrying the fetch's own reason (an
       # unpublished key, an unreachable API) or that the smoke run failed.
       #
-      # A MISS FALLS BACK TO MAIN'S NEWEST COMPILER, never straight to the
-      # seed. Only a push to main publishes, so a train's or a PR's own key can
-      # never have a release; main's binary beside main's `.avra-cache` is where
-      # the incremental build starts, and the committed seed is a full cold
-      # bootstrap. A hit on the tree's OWN key needs no build at all. Both
-      # paths are smoke-run before they are trusted, so a binary built for
-      # another image falls through.
+      # A MISS FALLS BACK TO MAIN'S OWN COMPILER, OR TO THE SEED, AND TO
+      # NOTHING ELSE. A tree must build from main's compiler, from the committed
+      # seed, or through its declared `Rung:` steps: a compiler from any other
+      # tree may already know the tree's own features (a batch landed then
+      # reverted publishes one), and a build it starts proves nothing. So the
+      # start is main's tip (the base a PR is judged against; for main's own
+      # push, the commit before it), installed by tools/fetch_compiler.sh, and a
+      # miss there is the seed. A prefix-restored binary is no compiler of
+      # record and is discarded. Every start is smoke-run before it is trusted.
       - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true'
         id: release
         name: compiler from release
@@ -345,7 +349,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p build
+          find build/avra -delete 2>/dev/null || :
           tree="${{ steps.plan.outputs.key }}"
+          base=origin/main
+          [ "${{ github.event_name }}" != push ] || base=HEAD~1
           reason=$(python3 tools/compiler_release.py fetch "$tree" build/avra 2>&1) && rc=0 || rc=$?
           printf '%s\n' "$reason"
           if [ "$rc" = 0 ] && build/avra --version >/dev/null 2>&1; then
@@ -353,15 +360,15 @@ jobs:
             echo "source=exact" >> "$GITHUB_OUTPUT"
             echo "speed compiler 0" >> speed.log
             echo "compiler-release: HIT — the tree's own key ${tree}; no build owed"
-          elif python3 tools/compiler_release.py latest build/avra && build/avra --version >/dev/null 2>&1; then
+          elif FETCH_BUILD=build sh tools/fetch_compiler.sh "$base" && build/avra --version >/dev/null 2>&1; then
             echo "hit=false" >> "$GITHUB_OUTPUT"
-            echo "source=latest" >> "$GITHUB_OUTPUT"
-            echo "::warning::compiler release for ${tree} missed (${reason}); starting the build from the newest published compiler"
+            echo "source=main" >> "$GITHUB_OUTPUT"
+            echo "::warning::compiler release for ${tree} missed (${reason}); starting the build from main's compiler ($base)"
           else
             echo "hit=false" >> "$GITHUB_OUTPUT"
             echo "source=none" >> "$GITHUB_OUTPUT"
-            build/avra --version >/dev/null 2>&1 || rm -f build/avra
-            echo "::warning::compiler release for ${tree} missed (${reason}) and no published compiler ran; building from the committed seed"
+            find build/avra -delete 2>/dev/null || :
+            echo "::warning::compiler release for ${tree} missed (${reason}) and main's compiler ($base) is not published or did not run; building from the committed seed"
           fi
       # Two source generations: a cold `make avra` measured ~517 s each, so a
       # bootstrap fits with margin; each generation and the bootstrap are
@@ -396,7 +403,8 @@ jobs:
               echo "ladder: the rung product is cached for these rungs"
               cp .rung-product/avra build/avra
             else
-              [ -x build/avra ] || { echo "::error::the ladder has no starting compiler (the release fetch found none)"; exit 1; }
+              # with main's compiler unpublished the ladder starts from the committed seed, linked as is
+              [ -x build/avra ] || timeout -k 10 900 make -s recover || { echo "::error::the ladder has no starting compiler: main's is unpublished and the seed did not link"; exit 1; }
               product=$(AVRA_LADDER_S=900 sh tools/ladder.sh build/avra $rungs) || { echo "::error::the ladder failed: a rung did not build with the compiler of the rung before it"; exit 1; }
               mkdir -p .rung-product && cp "$product" .rung-product/avra
               cp "$product" build/avra
@@ -612,8 +620,8 @@ jobs:
           key: speed-main-prepare-${{ github.sha }}
   # THE COMPILER MAIN BUILT AND PROVED, PUBLISHED WHERE A PR CAN READ IT. Only a
   # run on `main` reaches this job, and only once that run's `test` verdict is
-  # green: every PR falls back to the newest published compiler, so a compiler
-  # main has not proved is never served. The key is the compiler's own source
+  # green: a PR starts from main's own compiler, so a compiler main has not
+  # proved is never served. The key is the compiler's own source
   # digest, so the artifact is immutable: one key, one binary, and `publish`
   # never overwrites one.
   publish-compiler:
@@ -908,7 +916,7 @@ jobs:
     needs: [prepare]
     # A LIGHT RUN WHOSE TREE'S COMPILER IS NOT PUBLISHED OWES NO GATE: the gate's fmt and
     # idioms would run an older compiler over this tree's source. Skipped, not passed.
-    if: (needs.prepare.outputs.changed != '' || needs.prepare.outputs.packages != '') && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')
+    if: (needs.prepare.outputs.changed != '' || needs.prepare.outputs.packages != '') && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'main')
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -1233,7 +1241,7 @@ jobs:
       # A DRAFT'S RUN IS NOT THE GATE: its heavy legs were never owed, so a
       # verdict over them would pass on skips. It says so and refuses, as the
       # `only` run does; readying the PR (or the `full-ci` label) runs the gate.
-      - if: needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest'
+      - if: needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'main'
         name: light gate compiler
         run: |
           echo "light gate: compiler steps skipped — the tree's compiler is not the published one; ready or label full-ci for a verdict"

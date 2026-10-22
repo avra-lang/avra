@@ -11,7 +11,7 @@
 # Resolved in order:
 #   1. build/avra-tools/<key>/avra-tools, already here;
 #   2. the published asset for the key, fetched;
-#   3. built here by $AVRA_TOOLS_COMPILER, else by main's published compiler
+#   3. built here by $AVRA_TOOLS_COMPILER, else by main's own published compiler
 #      (tools/fetch_compiler.sh, into $dir/compiler), for a tree whose tools/
 #      differs from anything published — run from build/, where a compiler stands;
 #   4. the Python tool of the same name (tools/<command with _>.py), while no
@@ -59,15 +59,19 @@ build_tools() {
     fi
 }
 
-# Main's compiler, installed beside (never over) the standing build/avra: main's own
-# key, else the newest published (main's key is unpublished until its run proves it).
-# A checkout of the PR's ref alone holds no origin/main, so it is fetched first.
+# Main's compiler, installed beside (never over) the standing build/avra: the newest
+# published along main's own first-parent line (main's key is unpublished until its run
+# proves it), never "the newest release", which may be another tree's. The tools build
+# certifies no tree, so an older main compiler serves. A checkout of the PR's ref alone
+# holds no origin/main, so it is fetched first.
 main_compiler() {
     git rev-parse -q --verify origin/main >/dev/null 2>&1 ||
-        git fetch -q --depth 1 origin main:refs/remotes/origin/main >&2 || true
-    FETCH_BUILD="$dir/compiler" sh tools/fetch_compiler.sh >&2 && return 0
-    mkdir -p "$dir/compiler"
-    python3 tools/compiler_release.py latest "$dir/compiler/avra" >&2 && chmod +x "$dir/compiler/avra"
+        git fetch -q --depth 20 origin main:refs/remotes/origin/main >&2 || true
+    for rev in $(git rev-list --first-parent -n 20 origin/main 2>/dev/null); do
+        FETCH_BUILD="$dir/compiler" sh tools/fetch_compiler.sh "$rev" >&2 2>/dev/null && return 0
+    done
+    echo "avra_tools: no compiler is published along main's last 20 commits" >&2
+    return 1
 }
 
 key=$(sh tools/tools_key.sh)
