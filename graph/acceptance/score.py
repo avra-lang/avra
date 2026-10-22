@@ -370,17 +370,30 @@ def id_map(app, entities, sources, by_ref):
                 return hit
         return None
 
+    def spans_of(run):
+        """Byte spans a claim run is anchored at: the published locator, or each
+        anchor's position selector (code points of the source text) as bytes."""
+        locator = run.get("locator") or {}
+        if isinstance(locator, dict) and locator.get("span"):
+            return [(by_ref.get((run.get("input"), run.get("input_revision"))), locator["span"])]
+        out = []
+        for a in run.get("anchors") or []:
+            origin = by_ref.get((a["source"]["observation"], a["source"]["revision"]))
+            text = by_source[origin]["content"] if origin in by_source else None
+            for sel in a.get("selectors", []):
+                if sel.get("kind") == "TextPositionSelector" and text is not None:
+                    out.append((origin, [len(text[:sel["start"]].encode()), len(text[:sel["end"]].encode())]))
+        return out
+
     def by_anchor(value):
         fields = app.call({"op": "get", "id": value}).get("fields", {})
         for prop in fields:
             runs = app.call({"op": "explain", "id": value, "property": prop})
             for run in runs if isinstance(runs, list) else []:
-                locator = run.get("locator") or {}
-                source = by_ref.get((run.get("input"), run.get("input_revision")))
-                span = locator.get("span") if isinstance(locator, dict) else None
-                for name, where, wanted in anchors:
-                    if span and source == where and span_overlap(span, wanted):
-                        return name
+                for source, span in spans_of(run):
+                    for name, where, wanted in anchors:
+                        if source == where and span_overlap(span, wanted):
+                            return name
         return None
 
     def lookup(value):
