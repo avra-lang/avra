@@ -428,14 +428,28 @@ impl LowerCx {
         held!.regs[i]
     }
 
+    /// The register an INLINED lambda's capture `j` was read into at its
+    /// site — a `state` source's cell, any other source's value.
+    fn inline_capture(lam: ExprId, j: int) -> Reg? {
+        let held = self.inline_seats.find((s: InlineSeat) -> same_expr(s.lam, lam))
+        if held == null || j >= held!.caps.length { return null }
+        held!.caps[j]
+    }
+
+    /// Capture `j` of `lam` as THIS body holds it: the site's register when
+    /// the lambda is inlined here, else its lane of the env box.
+    fn lane_read(lam: ExprId, j: int, ty: TypeId) -> Reg? {
+        self.inline_capture(lam, j) ?? self.env_read(j, ty)
+    }
+
     /// Whether `f` is a lambda literal meant to be lowered IN PLACE:
-    /// no captures (its reads are its own params and program-wide
-    /// names), exactly `seats` positional seats, and a body with no
-    /// frame of its own — a `?`, a `catch` or a block of statements
-    /// acts on the CALLER's frame once the body is inlined.
+    /// exactly `seats` positional seats, and a body with no frame of its
+    /// own — a `?`, a `catch` or a block of statements acts on the
+    /// CALLER's frame once the body is inlined. Its captures are read
+    /// where its box would be packed (`capture_regs`), and its body reads
+    /// those registers (`inline_capture`).
     fn can_inline(f: ExprId, seats: int = 1) -> bool {
         let parts? = self.view.store.lambda_parts(f) else { return false }
-        if !(self.names.capture(f)?.names ?? []).is_empty() { return false }
         if self.facts.takes_by_name(f) || parts.params.length != seats { return false }
         let body? = self.inline_body(f) else { return false }
         self.inline_safe(body)
@@ -470,9 +484,9 @@ impl LowerCx {
     /// The lambda `lam` lowered where its seat stands: its params bound
     /// to `regs`, its body lowered in THIS context, so no box is minted
     /// and no code pointer is called per element.
-    mut fn inlined(lam: ExprId, regs: List<Reg>) -> Reg {
+    mut fn inlined(lam: ExprId, regs: List<Reg>, caps: List<Reg>) -> Reg {
         let body? = self.inline_body(lam) else { return self.lower_defect(lam, "an inline seat without an inlinable lambda") }
-        self.inline_enter(InlineSeat { lam: lam, regs: regs })
+        self.inline_enter(InlineSeat { lam: lam, regs: regs, caps: caps })
         let r = self.reg_of(body)
         self.inline_exit()
         r
@@ -504,14 +518,14 @@ impl LowerCx {
     /// The cell a `state` capture's env slot holds.
     fn state_capture_cell(l: ExprId, j: int) -> Reg? {
         let s? = self.state_capture(l, j) else { return null }
-        self.env_read(j, self.def_ty(s))
+        self.lane_read(l, j, self.def_ty(s))
     }
 
     /// A `state` capture's read: the env holds the CELL, so the name
     /// reads the value it holds — the capture SHARES the place.
     mut fn capture_read(l: ExprId, j: int, ty: TypeId) -> Reg? {
-        let s? = self.state_capture(l, j) else { return self.env_read(j, ty) }
-        let cell? = self.env_read(j, self.def_ty(s)) else { return null }
+        let s? = self.state_capture(l, j) else { return self.lane_read(l, j, ty) }
+        let cell? = self.lane_read(l, j, self.def_ty(s)) else { return null }
         self.proven_read(cell, 0, ty)
     }
     /// Whether seat `i` of the body is a `state` seat — a place the
@@ -954,7 +968,7 @@ impl LowerCx {
     /// the answer's type read the box as a number.
     fn callee_binding(e: ExprId, b: Binding) -> Reg? {
         match b {
-            .Capture(lam, j) -> self.env_read(j, self.capture_ty(lam, j)),
+            .Capture(lam, j) -> self.lane_read(lam, j, self.capture_ty(lam, j)),
             .Def(s) -> self.read_wearing(e, b, self.concrete(self.def_ty(s))),
             // the rest mint nothing — the register is the value
             .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Index(_) or .Decl(_) -> self.read_binding(e, b),
