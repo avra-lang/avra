@@ -1,0 +1,239 @@
+//! `avra dev`'s server: the package a page names to answer beside it
+//! (`[dev] server = "<path>"`, rooted at the page's package). It is built for
+//! this machine, run on a loopback port of its own, told that port as `PORT`,
+//! and run again whenever a file its build reads moves. Every request the
+//! page does not own is sent on to it, so the page and what it asks for stand
+//! on one origin.
+use @std.http_message.message.{Header, Method}
+use @std.avrac.compiler.{Workspace, inputs_this_turn}
+use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.route.{Route, Reach}
+use @std.http.fetch.{Payload, fetch, options, Redirects}
+use @std.net.{listen, connect}
+use @std.io.{list_dir}
+use @std.path.{joined_path, normalized}
+use @std.process.{Tool, Child, Env, EnvPair, Ready, cmd, tool_at, inherited}
+use @std.text.{ascii_lower}
+use @std.time.{ms, secs, sleep, now_ms}
+
+/// The server child of one page: its package, the build it runs, the port it
+/// is told, the child running now, and what its build read when it last ran.
+export type Backend = {
+    root: string,
+    compiler: Tool,
+    lister: Cell<Workspace>,
+    port: int,
+    child: Cell<Child?>,
+    watched: Cell<List<Watched>>,
+}
+
+/// The server the page at `page_root` names, nothing built yet — absent when
+/// its manifest names none, and the refusal's words when the one it names
+/// cannot be served.
+export fn backend_of(page_root: string, compiler: Tool) -> Result<Backend?, string> {
+    let named? = root_workspace(page_root).manifest(0).dev_server else { return .Ok(null) }
+    let root = normalized(joined_path(page_root, named))
+    if !is_a_dir(root) { return .Err(no_server_package(named, root)) }
+    let door = match listen("127.0.0.1", 0) {
+        .Ok(l) -> l,
+        .Err(e) -> { return .Err(no_server_port(e.describe().message)) },
+    }
+    let port = door.port
+    let _ = door.close()
+    let none: List<Watched> = []
+    let idle: Child? = null
+    .Ok(
+        Backend {
+            root: root,
+            compiler: compiler,
+            lister: Cell.new(root_workspace(root)),
+            port: port,
+            child: Cell.new(idle),
+            watched: Cell.new(none),
+        },
+    )
+}
+
+impl Backend {
+    /// Every file the server's build reads, each as it stands now.
+    fn looked() -> List<Watched> {
+        match inputs_this_turn(self.lister) {
+            .Ok(read) -> [Watched { path: p, mark: mark_of(p) } for p in read],
+            .Err(why) -> {
+                eprintln("avra: ${why}")
+                []
+            },
+        }
+    }
+
+    /// The paths a watch aims at for the server.
+    fn paths() -> List<string> { [w.path for w in self.watched.get()] }
+
+    /// ONE TURN: the server built and run again when a file its build reads
+    /// moved; answers whether it built. What is remembered is what the build
+    /// started from, as the page's turn does.
+    fn turn() -> bool {
+        let now = self.looked()
+        let was = self.watched.get()
+        let still = !was.is_empty() &&
+            was.length == now.length &&
+            [j for j, w in now if was[j].path != w.path || !unmoved(w.path, was[j].mark, w.mark)]
+                .is_empty()
+        if still { return false }
+        match self.built() {
+            .Ok(binary) -> self.restarted(binary),
+            .Err(report) -> eprintln(server_failed(self.root, report)),
+        }
+        mut at: Map<string, Mark> = {}
+        for w in now { at.set(w.path, w.mark) }
+        self.watched.set([w with { mark: at.get(w.path) ?? w.mark } for w in self.looked()])
+        true
+    }
+
+    /// `avra build` of the server's package for this machine, as a child:
+    /// the program it wrote, or everything the build said.
+    fn built() -> Result<string, string> {
+        let asked = cmd(self.compiler, ["build", self.root]) with { env: inherited() }
+        // LICENSED input.live_process: dev builds the server it runs, and no compile answer reads it
+        let o = match asked.outcome() {
+            .Ok(o) -> o,
+            .Err(e) -> { return .Err(e.describe().message) },
+        }
+        if status_of_exit(o.exit) != 0 { return .Err([o.out.stdout.trim(), o.out.stderr.trim()].filter(it != "").join("\n")) }
+        .Ok(o.out.stdout.trim().split("\n").last() ?? "")
+    }
+
+    /// The child that ran stopped, and `binary` run in its place on the
+    /// server's port, its own words reaching the terminal. The port is
+    /// waited on, so the first request after a build finds it listening.
+    fn restarted(binary: string) {
+        self.stopped()
+        let run = cmd(tool_at("server", binary), []) with { env: Env.Inherit([EnvPair { name: "PORT", value: "${self.port}" }]), streams: .Inherited }
+        // LICENSED input.live_process: the server dev runs is a child, and no compile answer reads it
+        match run.start(Ready.Started, secs(5)) {
+            .Ok(c) -> {
+                self.child.set(c)
+                println(server_line(self.root, self.port, self.listening()))
+            },
+            .Err(e) -> eprintln(server_failed(self.root, e.describe().message)),
+        }
+    }
+
+    /// Whether the server's port takes a connection within five seconds.
+    fn listening() -> bool {
+        // LICENSED input.clock: how long dev waits for its server is timing, never an input of what is built
+        let deadline = now_ms() + 5000
+        // LICENSED input.clock: how long dev waits for its server is timing, never an input of what is built
+        while now_ms() < deadline {
+            // LICENSED input.live_process: whether dev's server listens yet, which no compile answer reads
+            match connect("127.0.0.1", self.port, ms(200)) {
+                .Ok(c) -> {
+                    let _ = c.close()
+                    return true
+                },
+                .Err(_) -> sleep(ms(50)),
+            }
+        }
+        false
+    }
+
+    /// The child stopped, when one runs.
+    fn stopped() {
+        let c? = self.child.get() else { return }
+        mut running = Child { stage: c.stage, command: c.command }
+        let _ = running.stop()
+        let idle: Child? = null
+        self.child.set(idle)
+    }
+
+    /// `q` sent on to the server as it came, and its answer sent back as it
+    /// came. A server that does not answer is a 502 saying so.
+    fn forward(q: Request<Unrouted>) -> Response {
+        let target = q.target() ?? "/"
+        let body = q.body.octets() ?? "".bytes()
+        let payload = if body.length == 0 { Payload.Empty } else { Payload.Octets(body, q.header("content-type") ?? "application/octet-stream") }
+        let sent = options() with { headers: [h for h in fields_of(q) if passes(h.name)], redirects: Redirects.Stop }
+        // LICENSED input.live_process: a request dev forwards to its server, which no compile answer reads
+        match fetch(q.method(), "http://127.0.0.1:${self.port}${target}", payload, sent) {
+            .Ok(a) -> Response {
+                status: a.status,
+                headers: [h for h in a.headers if passes(h.name)],
+                body: a.body,
+            },
+            .Err(e) -> text(502, not_answered(self.root, e.describe().message)),
+        }
+    }
+
+    /// The routes that send on what the page does not own, every method, the
+    /// GET and HEAD of a file the glue holds left to the glue.
+    fn routes(glue: List<string>) -> List<Route> {
+        [Route {
+            method: m,
+            pattern: "/{rest...}",
+            reach: Reach.Rest,
+            serve: (q: Request<Unrouted>, t: Bytes) -> if glued(m, t, glue) { null } else { self.forward(q) },
+        } for m in methods()]
+    }
+}
+
+/// Every method a request may arrive with.
+fn methods() -> List<Method> { [.Get, .Head, .Post, .Put, .Delete, .Patch, .Options] }
+
+/// Whether the glue answers this request: a GET or a HEAD of a file it holds.
+fn glued(m: Method, t: Bytes, glue: List<string>) -> bool {
+    let read = match m {
+        .Get or .Head -> true,
+        .Post or .Put or .Delete or .Patch or .Options or .Connect or .Trace or .Other -> false,
+    }
+    read && glue.contains((t.text() ?? "").split("?")[0])
+}
+
+/// The paths of the files a glue directory holds, as a page asks for them.
+export fn glue_files(dir: string) -> List<string> {
+    // LICENSED input.live_process: the glue files dev serves, never an input of what is built
+    ["/${f}" for f in list_dir(dir) catch []]
+}
+
+/// Every field `q` carries, in the order sent.
+fn fields_of(q: Request<Unrouted>) -> List<Header> {
+    let fs = q.head.fields
+    [Header {
+        name: q.raw.slice(fs.name_at(i).lo, fs.name_at(i).hi).text() ?? "",
+        value: q.raw.slice(fs.value_at(i).lo, fs.value_at(i).hi).text() ?? "",
+    } for i in 0..fs.count()]
+}
+
+/// Whether a field passes through the forwarder: one that speaks of a single
+/// hop, or that the forwarder's own server writes again (the framing, the
+/// date), does not.
+fn passes(name: string) -> bool {
+    ![
+        "host",
+        "connection",
+        "keep-alive",
+        "transfer-encoding",
+        "content-length",
+        "date",
+        "upgrade",
+        "te",
+        "trailer",
+        "proxy-connection",
+    ]
+        .contains(ascii_lower(name))
+}
+
+// ── voices ──
+
+fn no_server_package(named: string, root: string) -> string {
+    "`[dev] server = \"${named}\"` names ${root}, which is no package — a server is a package beside the page whose program serves (`server api { … }`)"
+}
+
+fn no_server_port(why: string) -> string { "dev: no loopback port could be taken for the server (${why})" }
+
+fn server_failed(root: string, why: string) -> string { "dev: the server ${root} did not start — ${why}" }
+
+fn server_line(root: string, port: int, up: bool) -> string {
+    if up { "dev: server ${root} runs on 127.0.0.1:${port}" } else { "dev: server ${root} started, and nothing listens on 127.0.0.1:${port} — its program serves on the `PORT` it is told" }
+}
+
+fn not_answered(root: string, why: string) -> string { "the dev server ${root} did not answer: ${why}" }
