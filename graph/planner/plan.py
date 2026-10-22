@@ -158,12 +158,19 @@ def gated(cypher, schema, params, graph=None):
     raise Refusal(answer["code"], answer.get("message", ""))
 
 
+class ChooseOnly:
+    """The shared model with its lettered choice alone, when ranked answers are not declared in use."""
+
+    def __init__(self, shared):
+        self.choose, self.asked, self.budget = shared.choose, shared.asked, None
+
+
 def chosen():
     """The extraction service's resident model."""
     path = shared_socket()
     if not path:
         raise SystemExit(f"planner: no shared model answers on {SOCKET}; start the extraction service")
-    return Shared(path)
+    return Shared(path) if PARAMETERS["rank_use"] else ChooseOnly(Shared(path))
 
 
 def instant(ms):
@@ -213,7 +220,17 @@ def composed(chooser, question, schema, context, graph=None, depth=None):
     raise refusal
 
 
+def fitted_from_argv():
+    """`--set name=value` overrides a declared parameter for one run, so a fit never edits the declarations."""
+    args = sys.argv[1:]
+    for i, a in enumerate(args):
+        if a == "--set":
+            name, _, value = args[i + 1].partition("=")
+            PARAMETERS[name] = json.loads(value)
+
+
 def main():
+    fitted_from_argv()
     llm = chosen()
     llm.budget = Budget(declared_context(MODEL, HUB), PARAMETERS["answer_tokens"])
     payload = json.load(sys.stdin)
