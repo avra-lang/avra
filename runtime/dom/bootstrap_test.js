@@ -519,6 +519,19 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   check("a page that is not the program's is emptied, the rest of the frame skipped, and the program asked to draw again", [t.mount.childNodes.length, repairs], [0, 1]);
 
   {
+    // The frame a host drops takes its definitions with it: what answers the
+    // repair must define what it listens to, or the host refuses the listen.
+    const lost = served(doc);
+    const apply7 = createApplier(doc, lost.mount, () => {}, null, () => {});
+    const seat = (id) => [OP.listen, ...idBytes(id), ...i32(2), ...i32(SAYS.text)];
+    const repair = (...recs) => { try { apply7(frame(create(1, "input"), ...recs)); return "applied"; } catch (e) { return e.message; } };
+    apply7(frame(adopt(wordsOf(standingOf(lost.mount)), "div"), listen(1, 2, "input", SAYS.text, "value", false)));
+    const forgotten = repair(seat(1));
+    const defined = repair(define(2, "input", SAYS.text, "value", false), seat(1));
+    check("a repair after a dropped frame that listens without defining is refused, and one that defines is applied", [/no definition told/.test(forgotten), defined], [true, "applied"]);
+  }
+
+  {
     const typed = stubElement("root");
     const form = doc.createElement("div");
     const typedIn = doc.createElement("input");
