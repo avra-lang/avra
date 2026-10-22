@@ -62,3 +62,19 @@ AND from: `id(n0) = $speaker`; `n0.name = 'Whole Value'` (only when the question
 whole stored value); `nK.label = 'v'` (relation records' label only); `nK.prop CONTAINS 'word'`
 (a lowercase word shared by the question and a stored text value). RETURN from the last
 node: `nK.prop AS prop, …` | `count(nK) AS count` | `coalesce(nK.flag, false) AS flag`.
+
+## Results
+
+### r3, best step 2250 (full held-out loss 0.3523 vs base 2.3460)
+
+`evaluate.py --adapter adapters/r3/best`, base then adapter, untouched benches
+(full output: `results/eval-r3-20261022T012702.json`).
+
+| bench | base | adapter | gold probability |
+|---|---|---|---|
+| planner (96) | 74 | 73 (+4 -5) | 0.719 -> 0.677 |
+| extract (52) | 47 | 40 (+0 -7) | 0.892 -> 0.652 |
+| er (13) | 12 | 10 (+0 -2) | 0.906 -> 0.716 |
+
+Losses concentrate in extract/relation (19 -> 13), planner/property (9 -> 7) and
+er/antecedent (12 -> 10). Verdict: not promoted; the base stays the service default.
