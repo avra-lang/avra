@@ -1,5 +1,15 @@
 use models.people.{models}
-use models.business.{Money, Invoice, Payment, PurchaseOrder, SalesOrder, StockMovement, Product}
+use models.business.{
+    Money,
+    Invoice,
+    Payment,
+    PurchaseOrder,
+    SalesOrder,
+    StockMovement,
+    Product,
+    Fibre,
+    MarketingClaim,
+}
 use models.personal.{Event}
 use models.derived.{
     derivations,
@@ -8,6 +18,7 @@ use models.derived.{
     payment_status,
     arrival_before,
     available_stock,
+    vegan_status,
     return_status,
 }
 use @avra.graph.{Catalog, Ref, Unknown}
@@ -114,6 +125,42 @@ fn returned() -> Result<bool, string> {
         r.units_remaining_with_customer == 1
 }
 
+fn jacket(composition: string) -> Result<Product, string> {
+    let text = "{\"code\":\"NJ-01\",\"name\":\"Nocturne Jacket\",\"planned_retail_price\":null,\"shell_composition\":${composition},\"vegan\":null}"
+    match Product.from_json(text) { .Ok(p) -> p, .Err(e) -> { fail e.report() } }
+}
+
+fn vegan_claim() -> Result<MarketingClaim, string> {
+    match MarketingClaim
+        .from_json("{\"product\":\"nj01\",\"wording\":\"entirely vegan\",\"status\":\"rejected\"}") {
+        .Ok(c) -> c,
+        .Err(e) -> { fail e.report() },
+    }
+}
+
+fn fibre(name: string, animal: bool) -> Result<Fibre, string> {
+    match Fibre.from_json("{\"name\":\"${name}\",\"animal_origin\":${animal}}") {
+        .Ok(f) -> f,
+        .Err(e) -> { fail e.report() },
+    }
+}
+
+fn vegan_read() -> Result<bool, string> {
+    let mixed = jacket(
+        "[{\"fibre\":\"viscose\",\"percent\":82},{\"fibre\":\"silk\",\"percent\":18}]",
+    )?
+    let declared = [fibre("viscose", false)?, fibre("silk", true)?]
+    let no = known(vegan_status(vegan_claim()?, mixed, declared))?
+    let plain = jacket("[{\"fibre\":\"viscose\",\"percent\":100}]")?
+    let yes = known(vegan_status(vegan_claim()?, plain, [fibre("viscose", false)?]))?
+    no.vegan == false &&
+        no.reason == "contains_silk" &&
+        yes.vegan &&
+        yes.reason == null &&
+        unknown_code(vegan_status(vegan_claim()?, mixed, [fibre("viscose", false)?])) == "unclassified_fibre" &&
+        unknown_code(vegan_status(vegan_claim()?, jacket("[]")?, declared)) == "no_composition"
+}
+
 fn passed(answer: Result<bool, string>) -> bool {
     answer catch e -> {
         println(e)
@@ -125,7 +172,9 @@ spec "fixture derivations" {
     given "the commercial models and their declared derivations" {
         then "every derivation collects into the catalog" {
             match Catalog.collected(models, derivations) {
-                .Ok(c) -> c.derivations.length == 6 && c.derivation("deposit_top_up") is .Ok,
+                .Ok(c) -> c.derivations.length == 7 &&
+                    c.derivation("deposit_top_up") is .Ok &&
+                    c.derivation("vegan_status") is .Ok,
                 .Err(_) -> false,
             }
         }
@@ -135,6 +184,7 @@ spec "fixture derivations" {
         then "a payment in another currency is not added" { passed(mixed_payment()) }
         then "an estimated dispatch is not a confirmed arrival" { passed(arrival()) }
         then "quarantined returns and dispatches are not available stock" { passed(available()) }
+        then "a claim is vegan only when every fibre is declared and none is of animal origin" { passed(vegan_read()) }
         then "a quarantined return is neither restocked nor still with the customer" { passed(returned()) }
     }
 }

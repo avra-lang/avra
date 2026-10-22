@@ -9,7 +9,17 @@ use @avra.graph.{
     total,
     same_unit,
 }
-use models.business.{Money, Invoice, Payment, PurchaseOrder, SalesOrder, StockMovement, Product}
+use models.business.{
+    Money,
+    Invoice,
+    Payment,
+    PurchaseOrder,
+    SalesOrder,
+    StockMovement,
+    Product,
+    Fibre,
+    MarketingClaim,
+}
 use models.people.{Person}
 use models.personal.{Event}
 
@@ -28,6 +38,10 @@ export type PaymentStatus = { full_payment_confirmed: bool, recorded_payment: Mo
 /// The dates an arrival question turns on when arrival is not confirmed.
 @model
 export type ArrivalGap = { estimated_dispatch: string?, launch_date: string? }
+
+/// Whether a claimed product is vegan, and why not.
+@model
+export type VeganStatus = { product: Ref<Product>, vegan: bool, reason: string? }
 
 /// Available units of one colour.
 @model
@@ -142,6 +156,32 @@ export fn return_status(order: SalesOrder, movements: List<StockMovement>) -> Re
         quarantined_units: quarantined,
         returned_available_units: restocked,
         units_remaining_with_customer: difference(units_of(movements, "dispatch")?, returned)?,
+    }
+}
+
+/// A product is vegan only when every fibre of its composition is declared and
+/// none is of animal origin. An undeclared fibre leaves the answer unknown.
+@derived
+export fn vegan_status(claim: MarketingClaim, product: Product, fibres: List<Fibre>) -> Result<
+    VeganStatus,
+    Unknown,
+> {
+    let names = [f.fibre for f in product.shell_composition ?? []]
+    if names.is_empty() {
+        fail Unknown { code: "no_composition", why: "the product records no composition" }
+    }
+    let animal = [n for n in names if fibres.any(it.name == n && it.animal_origin)]
+    let unclassified = [n for n in names if !fibres.any(it.name == n)]
+    if animal.is_empty() && !unclassified.is_empty() {
+        fail Unknown {
+            code: "unclassified_fibre",
+            why: "no declaration says whether ${unclassified[0]} is of animal origin",
+        }
+    }
+    VeganStatus {
+        product: claim.product,
+        vegan: animal.is_empty(),
+        reason: if animal.is_empty() { null } else { "contains_${animal[0]}" },
     }
 }
 
