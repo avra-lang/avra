@@ -1,18 +1,6 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{
-    void_ref,
-    Expr,
-    ExprId,
-    binop_of,
-    Pat,
-    want,
-    TypeRef,
-    pronoun_param,
-    Plain,
-    Scoped,
-    some_list,
-}
-use features.{LangNode, Builder, expr_id_at, zip_defect, aligned_binds, chained_binder, params_at}
+use core.{void_ref, Expr, binop_of, Pat, want, pronoun_param, Plain, Scoped, some_list}
+use features.{LangNode, Builder, expr_id_at, zip_defect, aligned_binds, params_at}
 use grammar.{Token}
 
 fn build_int_lit(b: Builder) -> Result<LangNode, string> {
@@ -83,15 +71,6 @@ fn build_method_link(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.MethodCall(b.expr(0)?, Plain((b.token(1)?).text), args))
 }
 
-fn build_chained_call_link(b: Builder) -> Result<LangNode, string> {
-    let args = [b.store.pronouned(a) for a in b.exprs(2)?]
-    b.wrap_expr(chained_call(b, b.expr(0)?, (b.token(1)?).text, args))
-}
-
-fn build_chained_apply_link(b: Builder) -> Result<LangNode, string> {
-    b.wrap_expr(chained_apply(b, b.expr(0)?, b.exprs(1)?))
-}
-
 /// `subject { … }` and `subject { … } else { … }` — the call so far
 /// takes the blocks as its last arguments. Only a call takes one, and
 /// never after a type literal or another block.
@@ -100,26 +79,6 @@ fn build_trailed_link(b: Builder) -> Result<LangNode, string> {
     if b.store.spells_a_type(subject) { return .Err(block_after_literal()) }
     if b.store.ends_in_block(subject) { return .Err(second_block()) }
     b.wrap_expr(b.trailed(subject, [b.expr(1)?].concat(some_list(expr_id_at(b.args, 2))))?)
-}
-
-/// `a?.m(args)` IS `match a { null -> null, v? -> v.m(args) }`: the
-/// present arm calls the method on what the nullable carries, the
-/// absent arm answers absence, and the match's own typing joins them.
-fn chained_call(b: Builder, subject: ExprId, name: string, args: List<ExprId>) -> ExprId {
-    let carried = b.store.alloc_expr(Expr.Ident(Scoped(chained_binder)), b.span)
-    let call = b.store.alloc_expr(Expr.MethodCall(carried, Plain(name), args), b.span)
-    let absent = b.store.alloc_expr(Expr.NullLit, b.span)
-    b.store.alloc_expr(Expr.MatchOpt(subject, Scoped(chained_binder), call, absent), b.span)
-}
-
-/// `f?.(args)` IS `match f { null -> null, v? -> v(args) }`: the fn
-/// that may be absent is called when it is held, and absence answers
-/// absence — the chain's law, over an application.
-fn chained_apply(b: Builder, subject: ExprId, args: List<ExprId>) -> ExprId {
-    let carried = b.store.alloc_expr(Expr.Ident(Scoped(chained_binder)), b.span)
-    let call = b.store.alloc_expr(Expr.CallValue(carried, args), b.span)
-    let absent = b.store.alloc_expr(Expr.NullLit, b.span)
-    b.store.alloc_expr(Expr.MatchOpt(subject, Scoped(chained_binder), call, absent), b.span)
 }
 
 /// `{ ( mut? x, … -> )? statements }` — a lambda whose body is a
