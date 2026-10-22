@@ -1,3 +1,4 @@
+#include <execinfo.h>
 // The Avra runtime — the native half of the language's semantics.
 //
 // Every function here is a CONTRACT the compiler lowers against:
@@ -863,6 +864,7 @@ void avra_trap(const char* msg) {
     fputs("avra: ", stderr);
     fputs(msg, stderr);
     fputc('\n', stderr);
+    if (getenv("AVRA_TRAP_BT")) { void* bt[96]; int n = backtrace(bt, 96); backtrace_symbols_fd(bt, n, 2); }
     exit(2);
 }
 
