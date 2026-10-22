@@ -403,7 +403,7 @@ def main():
         return 1
     started = time.time()
     jobs = max(1, min(WORKERS, len(work)))
-    bad, notes = survey(a.avra, work, jobs, a.progress, a.show, previous, taken, None if os.environ.get("AVRA_DEFECT_WARM") == "0" else warm_programs())
+    bad, notes = survey(a.avra, work, jobs, a.progress, a.show, previous, taken, warm_programs() if os.environ.get("AVRA_DEFECT_WARM") == "1" else None)
     for line in notes:
         print(line, flush=True)
     print("defects: %d pool stall(s)" % len(notes), flush=True)
@@ -586,7 +586,7 @@ def timings_self_test():
         got = subprocess.run(
             [sys.executable, os.path.abspath(__file__), "--avra", fake, "--corpus", corpus,
              "--timings", out_file, "--previous", prev],
-            env=dict(os.environ, AVRA_DEFECT_TIMEOUT="2", AVRA_DEFECT_WARM="0"), capture_output=True, text=True)
+            env=dict(os.environ, AVRA_DEFECT_TIMEOUT="2"), capture_output=True, text=True)
         text = got.stdout + got.stderr
         rows = read_timings(out_file)
         fails = []
@@ -602,7 +602,7 @@ def timings_self_test():
         # a program with no earlier green timing says so
         none = subprocess.run(
             [sys.executable, os.path.abspath(__file__), "--avra", fake, "--corpus", corpus, "--only", "hang"],
-            env=dict(os.environ, AVRA_DEFECT_TIMEOUT="2", AVRA_DEFECT_WARM="0"), capture_output=True, text=True)
+            env=dict(os.environ, AVRA_DEFECT_TIMEOUT="2"), capture_output=True, text=True)
         if "last green run: not known" not in none.stdout + none.stderr:
             fails.append("a timeout with no earlier timing does not say so")
         for m in fails:
