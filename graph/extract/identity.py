@@ -10,6 +10,9 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENTRY = "cascade.py"
 LOGGING_ONLY = {"CASCADE_TRACE", "CASCADE_DECISIONS"}
+# Programs the service imports to answer planner ops. An extraction never calls
+# them, so their code decides no extraction's bytes and stays out of the identity.
+SERVES_PLANNER_ONLY = {"planning_ops"}
 
 
 def digest(data):
@@ -37,7 +40,7 @@ def closure(entry=ENTRY):
         name = todo.pop()
         if name not in seen:
             seen.add(name)
-            todo.extend(named_modules(os.path.join(HERE, name + ".py")))
+            todo.extend(named_modules(os.path.join(HERE, name + ".py")) - SERVES_PLANNER_ONLY)
     return sorted(seen)
 
 

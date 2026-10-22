@@ -1329,6 +1329,8 @@ def answered(body, models):
     if body.get("op") == "choose":
         models.llm.source, models.llm.cache = "", None
         return {"p": models.llm.choose(body["context"], body["question"], body["options"])}
+    if body.get("op") in ("rank", "embed"):
+        return planned(body, models)
     models.llm.prefix = body.get("prefix", True)
     os.environ["CASCADE_UNITS"] = body.get("units") or "statements"
     os.environ["CASCADE_TRACE"] = "1" if body.get("trace") else ""
@@ -1338,6 +1340,17 @@ def answered(body, models):
         return {"results": [{"result": r, "log": l} for r, l in extract_batch(body["requests"], models)]}
     result, logs = extract_batch([body["request"]], models)[0]
     return {"result": result, "log": logs}
+
+
+def planned(body, models):
+    """A planner op: ranked answers from the scorer, or embeddings."""
+    import planning_ops
+
+    if body["op"] == "embed":
+        models.embedder = getattr(models, "embedder", None) or planning_ops.Embedder()
+        return {"vectors": models.embedder.vectors([str(t) for t in body["texts"]], bool(body.get("query")))}
+    models.llm.source, models.llm.cache = "", None
+    return {"scores": planning_ops.rank(models.llm, body["context"], body["question"], body["options"], body["keys"])}
 
 
 def settled():
