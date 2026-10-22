@@ -1,0 +1,134 @@
+{
+ "domain": "vet_clinic",
+ "models": {
+  "Person": {"description": "A person: staff, client or contact. A first name alone is not an identity.",
+   "properties": {"name": "string", "email": "string?", "phone": "string?"}, "identities": ["email"]},
+  "Animal": {"description": "A patient animal, independent of who owns or treats it.",
+   "properties": {"name": "string", "species": "string?"}},
+  "CareRole": {"description": "Who stands in which role toward an animal: its owner, its treating vet or its nurse.\nA vet treating an animal does not own it.",
+   "properties": {"person": "Person", "animal": "Animal", "role": ["owner", "vet", "nurse"]},
+   "relation": {"from": "animal", "to": "person", "label": "role", "phrasing": "{to} is {from}'s {label}",
+    "labels": {"owner": {"forward": ["owner", "belongs to"], "reverse": ["pet"]},
+               "vet": {"forward": ["vet", "treating vet", "attending vet"], "reverse": ["patient"]},
+               "nurse": {"forward": ["nurse", "veterinary nurse"], "reverse": ["nursed animal"]}}}},
+  "Colleague": {"description": "A working relationship between two staff members: one supervises or covers for the other.",
+   "properties": {"staff": "Person", "other": "Person", "relation": ["supervisor", "cover"]},
+   "relation": {"from": "staff", "to": "other", "label": "relation", "phrasing": "{to} is {from}'s {label}",
+    "labels": {"supervisor": {"forward": ["supervisor", "boss", "reports to"]},
+               "cover": {"forward": ["cover", "covering for", "stand-in"]}}}},
+  "Appointment": {"description": "A visit booked for an animal. state says booked, done or cancelled; a wish to book is not a booking.",
+   "properties": {"animal": "Animal", "reason": "string", "vet": "Person?", "state": ["booked", "done", "cancelled"],
+    "fasted": "boolean?", "duration_minutes": "integer?"},
+   "absences": {"fasted": "no_fasting_record"}},
+  "Task": {"description": "A job someone asked for or took on. requested_by asked for it, assignee does it, recipient receives the result.",
+   "properties": {"summary": "string", "requested_by": "Person?", "assignee": "Person?", "recipient": "Person?",
+    "status": ["open", "promised", "done"], "confirmed": "boolean?"},
+   "absences": {"confirmed": "no_confirmation"}},
+  "Invoice": {"description": "A bill for a visit. paid stays empty until a payment is recorded.",
+   "properties": {"animal": "Animal", "payer": "Person?", "amount_pounds": "integer", "paid": "boolean?"},
+   "absences": {"paid": "no_payment_record"}}
+ },
+ "entities": {
+  "ada": {"model": "Person", "name": "Ada Okoye"},
+  "tom_b": {"model": "Person", "name": "Tom Brierley"},
+  "tom_h": {"model": "Person", "name": "Tom Hale"},
+  "priya": {"model": "Person", "name": "Priya Nandakumar"},
+  "jo": {"model": "Person", "name": "Jo Merritt"},
+  "ken": {"model": "Person", "name": "Ken Ashdown"},
+  "lucia": {"model": "Person", "name": "Lucia Ferreira"},
+  "bramble": {"model": "Animal", "name": "Bramble"},
+  "pickle": {"model": "Animal", "name": "Pickle"},
+  "moss": {"model": "Animal", "name": "Moss"},
+  "biscuit": {"model": "Animal", "name": "Biscuit"}
+ },
+ "messages": [
+  {"id": "m01", "text": "Ada Okoye: Bramble is booked in for a dental scale on Thursday. I'll be her vet, and Priya Nandakumar is nursing.",
+   "mentions": [["Ada Okoye", "ada"], ["Bramble", "bramble"], ["I", "ada", "ref"], ["her", "bramble", "ref"], ["Priya Nandakumar", "priya"]],
+   "facts": [
+    {"model": "Appointment", "in": "Bramble is booked in for a dental scale on Thursday.", "fields": {"animal": "bramble", "reason": "dental scale", "state": "booked"}, "act": "assert"},
+    {"model": "CareRole", "in": "I'll be her vet", "from": "bramble", "to": "ada", "label": "vet", "act": "plan"}]},
+  {"id": "m02", "text": "Tom Brierley: Pickle belongs to Ken Ashdown, not to me. I only fostered him last spring.",
+   "mentions": [["Tom Brierley", "tom_b"], ["Pickle", "pickle"], ["Ken Ashdown", "ken"], ["me", "tom_b", "ref"], ["I", "tom_b", "ref"], ["him", "pickle", "ref"]],
+   "facts": [
+    {"model": "CareRole", "in": "Pickle belongs to Ken Ashdown", "from": "pickle", "to": "ken", "label": "owner", "act": "assert"},
+    {"model": "CareRole", "in": "not to me", "from": "pickle", "to": "tom_b", "label": "owner", "act": "assert", "deny": true}]},
+  {"id": "m03", "text": "Jo Merritt asked if someone could ring Lucia Ferreira about Moss's blood results. Tom said he would do it after lunch.",
+   "mentions": [["Jo Merritt", "jo"], ["Lucia Ferreira", "lucia"], ["Moss", "moss"], ["Tom", "tom_b", "?"], ["he", "tom_b", "ref"]],
+   "facts": [
+    {"model": "Task", "in": "Jo Merritt asked if someone could ring Lucia Ferreira about Moss's blood results.", "fields": {"summary": "ring Lucia Ferreira about Moss's blood results", "requested_by": "jo", "recipient": "lucia", "status": "open"}, "act": "request"}]},
+  {"id": "m04", "text": "Note from reception: Lucia Ferreira says \"Moss is mine, I adopted him in March.\" Her phone is 07700 900412.",
+   "mentions": [["Lucia Ferreira", "lucia"], ["Moss", "moss"], ["I", "lucia", "ref"], ["him", "moss", "ref"], ["Her", "lucia", "ref"]],
+   "quotes": [["Moss is mine, I adopted him in March.", "lucia"]],
+   "facts": [
+    {"model": "CareRole", "in": "Moss is mine", "from": "moss", "to": "lucia", "label": "owner", "act": "assert"}]},
+  {"id": "m05", "text": "Priya Nandakumar: I'm not covering for Ada on Saturday after all. Tom Hale is her cover instead.",
+   "mentions": [["Priya Nandakumar", "priya"], ["I", "priya", "ref"], ["Ada", "ada"], ["Tom Hale", "tom_h"], ["her", "ada", "ref"]],
+   "facts": [
+    {"model": "Colleague", "in": "I'm not covering for Ada on Saturday after all.", "from": "ada", "to": "priya", "label": "cover", "act": "assert", "deny": true},
+    {"model": "Colleague", "in": "Tom Hale is her cover instead.", "from": "ada", "to": "tom_h", "label": "cover", "act": "assert"}]},
+  {"id": "m06", "text": "Biscuit's appointment for the limp has been cancelled; Ken will call back to rebook.",
+   "mentions": [["Biscuit", "biscuit"], ["Ken", "ken"]],
+   "facts": [
+    {"model": "Appointment", "in": "Biscuit's appointment for the limp has been cancelled", "fields": {"animal": "biscuit", "reason": "limp", "state": "cancelled"}, "act": "assert"}]},
+  {"id": "m07", "text": "Ada Okoye reports to Jo Merritt, who runs the practice. Jo is also Tom Hale's supervisor.",
+   "mentions": [["Ada Okoye", "ada"], ["Jo Merritt", "jo"], ["Jo", "jo"], ["Tom Hale", "tom_h"]],
+   "facts": [
+    {"model": "Colleague", "in": "Ada Okoye reports to Jo Merritt", "from": "ada", "to": "jo", "label": "supervisor", "act": "assert"},
+    {"model": "Colleague", "in": "Jo is also Tom Hale's supervisor.", "from": "tom_h", "to": "jo", "label": "supervisor", "act": "assert"}]},
+  {"id": "m08", "text": "Invoice for Bramble's dental: 185 pounds, payable by Priya Nandakumar. Nothing has been paid yet.",
+   "mentions": [["Bramble", "bramble"], ["Priya Nandakumar", "priya"]],
+   "facts": [
+    {"model": "Invoice", "in": "Invoice for Bramble's dental: 185 pounds, payable by Priya Nandakumar.", "fields": {"animal": "bramble", "payer": "priya", "amount_pounds": 185}, "act": "assert"}]},
+  {"id": "m09", "text": "Ken Ashdown: Could you send me Pickle's vaccination card before Friday? Tom Hale promised it last week.",
+   "mentions": [["Ken Ashdown", "ken"], ["me", "ken", "ref"], ["Pickle", "pickle"], ["Tom Hale", "tom_h"]],
+   "facts": [
+    {"model": "Task", "in": "Could you send me Pickle's vaccination card before Friday?", "fields": {"summary": "send Pickle's vaccination card", "requested_by": "ken", "recipient": "ken", "status": "open"}, "act": "request"}]},
+  {"id": "m10", "text": "Moss came in fasted this morning and the scan took 40 minutes. Ada Okoye was the vet on it.",
+   "mentions": [["Moss", "moss"], ["Ada Okoye", "ada"]],
+   "facts": [
+    {"model": "Appointment", "in": "Moss came in fasted this morning and the scan took 40 minutes.", "fields": {"animal": "moss", "reason": "scan", "state": "done", "fasted": true, "duration_minutes": 40}, "act": "assert"},
+    {"model": "CareRole", "in": "Ada Okoye was the vet on it.", "from": "moss", "to": "ada", "label": "vet", "act": "assert"}]},
+  {"id": "m11", "text": "Jo Merritt: If Lucia agrees, we might move Moss to Tom Brierley's list next month.",
+   "mentions": [["Jo Merritt", "jo"], ["Lucia", "lucia"], ["Moss", "moss"], ["Tom Brierley", "tom_b"]],
+   "facts": [
+    {"model": "CareRole", "in": "we might move Moss to Tom Brierley's list next month", "from": "moss", "to": "tom_b", "label": "vet", "act": "condition"}]},
+  {"id": "m12", "text": "Priya Nandakumar paid the 185 pounds for Bramble today by card.",
+   "mentions": [["Priya Nandakumar", "priya"], ["Bramble", "bramble"]],
+   "facts": [
+    {"model": "Invoice", "in": "Priya Nandakumar paid the 185 pounds for Bramble today by card.", "fields": {"animal": "bramble", "payer": "priya", "amount_pounds": 185, "paid": true}, "act": "assert"}]},
+  {"id": "m13", "text": "Tom Hale: Biscuit isn't my patient. I think Tom Brierley sees him, but check with Jo.",
+   "mentions": [["Tom Hale", "tom_h"], ["Biscuit", "biscuit"], ["my", "tom_h", "ref"], ["I", "tom_h", "ref"], ["Tom Brierley", "tom_b"], ["him", "biscuit", "ref"], ["Jo", "jo"]],
+   "facts": [
+    {"model": "CareRole", "in": "Biscuit isn't my patient.", "from": "biscuit", "to": "tom_h", "label": "vet", "act": "assert", "deny": true},
+    {"model": "CareRole", "in": "I think Tom Brierley sees him", "from": "biscuit", "to": "tom_b", "label": "vet", "act": "draft"}]},
+  {"id": "m14", "text": "Lucia Ferreira emailed from lucia@ferreira.example to say Moss's fasting went fine.",
+   "mentions": [["Lucia Ferreira", "lucia"], ["Moss", "moss"]],
+   "facts": []},
+  {"id": "m15", "text": "Ada: Tom, can you take the 20 minute check on Pickle tomorrow? He's Ken's dog, the anxious one.",
+   "mentions": [["Ada", "ada"], ["Tom", "tom_b", "?"], ["Pickle", "pickle"], ["He", "pickle", "ref"], ["Ken", "ken"]],
+   "facts": [
+    {"model": "Appointment", "in": "can you take the 20 minute check on Pickle tomorrow?", "fields": {"animal": "pickle", "reason": "check", "duration_minutes": 20, "state": "booked"}, "act": "request"},
+    {"model": "CareRole", "in": "He's Ken's dog, the anxious one.", "from": "pickle", "to": "ken", "label": "owner", "act": "assert"}]},
+  {"id": "m16", "text": "Ken Ashdown has confirmed that the vaccination card arrived. Thanks, Tom Hale.",
+   "mentions": [["Ken Ashdown", "ken"], ["Tom Hale", "tom_h"]],
+   "facts": [
+    {"model": "Task", "in": "Ken Ashdown has confirmed that the vaccination card arrived.", "fields": {"summary": "vaccination card", "recipient": "ken", "status": "done", "confirmed": true}, "act": "assert"}]}
+ ],
+ "questions": [
+  {"q": "Who is Bramble's vet?", "speaker": null, "cypher": "MATCH (n0:Animal)-[:vet]->(n1:Person) WHERE n0.name = 'Bramble' RETURN n1.name AS name"},
+  {"q": "Which animals do I own?", "speaker": "ken", "cypher": "MATCH (n0:Person)-[:pet]->(n1:Animal) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "Who supervises me?", "speaker": "ada", "cypher": "MATCH (n0:Person)-[:supervisor]->(n1:Person) WHERE id(n0) = $speaker RETURN n1.name AS name"},
+  {"q": "How many appointments are there?", "speaker": null, "cypher": "MATCH (n0:Appointment) RETURN count(n0) AS count"},
+  {"q": "Has Bramble's invoice been paid?", "speaker": null, "cypher": "MATCH (n0:Animal)<-[:animal]-(n1:Invoice) WHERE n0.name = 'Bramble' RETURN n1.paid AS paid"},
+  {"q": "Is there a recorded payment for Bramble's invoice?", "speaker": null, "cypher": "MATCH (n0:Animal)<-[:animal]-(n1:Invoice) WHERE n0.name = 'Bramble' RETURN coalesce(n1.paid, false) AS paid"},
+  {"q": "What tasks did Jo Merritt ask for?", "speaker": null, "cypher": "MATCH (n0:Person)<-[:requested_by]-(n1:Task) WHERE n0.name = 'Jo Merritt' RETURN n1.summary AS summary"},
+  {"q": "Who is Ada Okoye's cover?", "speaker": null, "cypher": "MATCH (n0:Person)-[:cover]->(n1:Person) WHERE n0.name = 'Ada Okoye' RETURN n1.name AS name"},
+  {"q": "How long did Moss's scan take?", "speaker": null, "cypher": "MATCH (n0:Animal)<-[:animal]-(n1:Appointment) WHERE n0.name = 'Moss' AND n1.reason CONTAINS 'scan' RETURN n1.duration_minutes AS duration_minutes"},
+  {"q": "Who is the nurse for Bramble?", "speaker": null, "cypher": "MATCH (n0:Animal)-[:nurse]->(n1:Person) WHERE n0.name = 'Bramble' RETURN n1.name AS name"},
+  {"q": "What are the appointments of my patients for?", "speaker": "ada", "cypher": "MATCH (n0:Person)-[:patient]->(n1:Animal)<-[:animal]-(n2:Appointment) WHERE id(n0) = $speaker RETURN n2.reason AS reason"},
+  {"q": "What is Lucia Ferreira's phone number?", "speaker": null, "cypher": "MATCH (n0:Person) WHERE n0.name = 'Lucia Ferreira' RETURN n0.phone AS phone"},
+  {"q": "Who was assigned to send the vaccination card?", "speaker": null, "cypher": "MATCH (n0:Task) WHERE n0.summary = 'vaccination card' RETURN n0.assignee AS assignee"},
+  {"q": "Was Moss fasted for his appointment?", "speaker": null, "cypher": "MATCH (n0:Animal)<-[:animal]-(n1:Appointment) WHERE n0.name = 'Moss' RETURN n1.fasted AS fasted"},
+  {"q": "How much is owed for each invoice?", "speaker": null, "cypher": "MATCH (n0:Invoice) RETURN n0.amount_pounds AS amount_pounds"}
+ ]
+}
