@@ -221,6 +221,15 @@ class Encoder:
         return r.get(model) or []
 
 
+def choice_prompt(context, question, options, source=""):
+    """The user message of one closed choice, exactly as the scorer sends it:
+    the source text (when given), the context, the question and the lettered
+    options. Importable without mlx, so tuning data matches runtime bytes."""
+    letters = string.ascii_uppercase[: len(options)]
+    text = f'Text: "{source}"\n\n' if source else ""
+    return text + f"{context}\n\n{question}\n" + "\n".join(f"{l}) {o}" for l, o in zip(letters, options)) + "\nAnswer with the letter only."
+
+
 class Scorer:
     """Closed-choice scorer: next-token probabilities over option letters."""
 
@@ -292,9 +301,8 @@ class Scorer:
         if not 2 <= len(options) <= MAX_OPTIONS:
             raise ValueError(f"a choice takes 2 to {MAX_OPTIONS} options, got {len(options)}; split it into heats")
         letters = list(string.ascii_uppercase[: len(options)])
-        body = f"{context}\n\n{question}\n" + "\n".join(f"{l}) {o}" for l, o in zip(letters, options)) + "\nAnswer with the letter only."
         text = f'Text: "{self.source}"\n\n' if self.source else ""
-        prompt = self.render(text + body)
+        prompt = self.render(choice_prompt(context, question, options, self.source))
         ids = mx.array([self.tok.encode(l, add_special_tokens=False)[0] for l in letters])
         if self.cache is None:
             logits = self.model(mx.array(self.tok.encode(prompt))[None])[0, -1]
