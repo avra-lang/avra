@@ -36,7 +36,7 @@ export type ToolRow = { name: string, from: Provenance, var: string?, default: s
 /// `budgets` is what a settlement may spend — `[lifted]`'s `steps` in
 /// instructions and `memory` in MiB of the compiler's heap, resolved
 /// to the measured defaults where the manifest writes none.
-export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, wasm_objects: List<string>, search: List<string>, libs: List<string>, dynamic_symbols: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, voices: List<Diag> }
+export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, wasm_objects: List<string>, search: List<string>, libs: List<string>, dynamic_symbols: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, voices: List<Diag>, dev_server: string? = null }
 
 /// A reader over one document: the source for positions, the
 /// document, and what it has said so far.
@@ -99,6 +99,7 @@ export fn read_manifest(src: SourceFile) -> Manifest {
         version: version,
         bin: r.target("bin", "src/main.av"),
         lib: r.target("lib", "src/lib.av"),
+        dev_server: r.dev_server(),
         excludes: r.excludes(),
         objects: r.linked("objects"),
         wasm_objects: r.linked("wasm_objects"),
@@ -156,6 +157,7 @@ fn known_section(name: string) -> bool {
         name == "link" ||
         name == "link.raw" ||
         name == "lifted" ||
+        name == "dev" ||
         name.starts_with("profile.") ||
         is_process_section(name)
 }
@@ -188,6 +190,7 @@ fn known_key(section: string, key: string) -> bool {
     if section == "link" { return ["objects", "wasm_objects", "search", "libs", "dynamic_symbols"].contains(key) }
     if section == "link.raw" { return key == "flags" }
     if section == "lifted" { return key == "steps" || key == "memory" }
+    if section == "dev" { return key == "server" }
     if section.starts_with("profile.") { return ["opt_level", "debug", "overflow_checks", "incremental", "coverage"].contains(key) }
     if section == "process" { return key == "max_capture" || key == "enforce" }
     if section == "process.env" { return key == "base" || key == "pass" || key == "set" }
@@ -448,6 +451,13 @@ impl Reader {
     /// A target's entry path: the written one, the section's
     /// default when the section is declared bare, absence when it
     /// is not declared.
+    /// `[dev] server`: the package, beside this one, whose program `avra dev`
+    /// runs to answer what the page does not.
+    fn dev_server() -> string? {
+        let v? = self.doc.get("dev", "server") else { return null }
+        toml_text(v)
+    }
+
     fn target(section: string, default_path: string) -> string? {
         if !self.doc.has_section(section) { return null }
         let v? = self.doc.get(section, "path") else { return default_path }
