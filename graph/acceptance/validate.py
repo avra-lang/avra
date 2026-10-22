@@ -247,25 +247,44 @@ HARDCODE_BASELINE = ROOT / "hardcoding.baseline"
 HARDCODE_ROOTS = ("extract", "planner", "src")
 _STR = r"(?:\"[^\"\n]+\"|'[^'\n]+')"
 WORD_LIST = re.compile(r"[\[{(]\s*" + _STR + r"(?:\s*,\s*" + _STR + r"){3,}")
+WORD_LIST_BROKEN = re.compile(r"[\[{(]\s*" + _STR + r"(?:\s*,\s*" + _STR + r"){3,}", re.S)
 THRESHOLD = re.compile(
     r"(?:<=|>=|<|>|==)\s*-?\d+\.\d+|(?:<=|>=|<|>)\s*\d{2,}\b|^\s*[A-Z][A-Z_0-9]*\s*=\s*-?\d+(?:\.\d+)?\s*$"
 )
+
+
+def protocol_field_list(text, start):
+    """A request parser's `closed(j, [...])` names the protocol's own fields."""
+    at = text.rfind("closed(", 0, start)
+    return at >= 0 and re.fullmatch(r"\s*\w+\s*,\s*", text[at + len("closed("):start]) is not None
 
 
 def hardcoded_sites(root):
     """Word lists and numeric thresholds in engine, extractor and planner code.
 
     A calibrated-parameters file (its name says `parameters`) is the one place
-    such values may live; tests, benches and recordings are not code."""
+    such values may live; tests, benches and recordings are not code. Lists
+    are found across line breaks, so layout cannot hide one; a request
+    parser's `closed(j, [...])` field list is protocol, not data."""
     found = []
     for rel in HARDCODE_ROOTS:
         for path in sorted((root / rel).rglob("*")):
             parts = set(path.parts)
             if (path.is_file() and path.suffix in (".py", ".av") and not {"bench", "recorded", "__pycache__", "tests"} & parts
                     and not path.name.startswith("test_") and "parameters" not in path.name):
-                for line in path.read_text(errors="ignore").splitlines():
-                    if WORD_LIST.search(line) or THRESHOLD.search(line):
-                        found.append(f"{path.relative_to(root)} :: {line.strip()}")
+                text = path.read_text(errors="ignore")
+                name = path.relative_to(root)
+                for line in text.splitlines():
+                    if THRESHOLD.search(line):
+                        found.append(f"{name} :: {line.strip()}")
+                for m in WORD_LIST_BROKEN.finditer(text):
+                    if protocol_field_list(text, m.start()):
+                        continue
+                    if "\n" in m.group(0):
+                        found.append(f"{name} :: {' '.join(m.group(0).split())}")
+                    else:
+                        start = text.rfind("\n", 0, m.start()) + 1
+                        found.append(f"{name} :: {text[start:text.find(chr(10), m.end())].strip()}")
     return sorted(set(found))
 
 
@@ -353,10 +372,15 @@ def self_test(data):
         require(both.search(text), f"second-fixture leak witness missed: {text}")
     for text in ("a founder's spouse", "Dana Ferris", "mail dana@example.test"):
         require(not pattern.search(text), f"leak witness refused innocent text: {text}")
+    for text in ('closed(j, ["op", "id", "x", "y"])?', 'closed(\n j,\n ["op",\n "id", "x", "y"],\n )?'):
+        require(all(protocol_field_list(text, m.start()) for m in WORD_LIST_BROKEN.finditer(text)) and WORD_LIST_BROKEN.search(text),
+                f"protocol field list witness missed: {text!r}")
+    split = 'names = [\n "a",\n "b",\n "c",\n "d",\n ]'
+    require(WORD_LIST_BROKEN.search(split) and not protocol_field_list(split, 8), "layout must not hide a word list")
     for text in ('words = ["a", "b", "c", "d"]', "if score >= 0.65:", "LIMIT = 40", "if n > 30 {"):
-        require(WORD_LIST.search(text) or THRESHOLD.search(text), f"hardcoding witness missed: {text}")
+        require(WORD_LIST_BROKEN.search(text) or THRESHOLD.search(text), f"hardcoding witness missed: {text}")
     for text in ('names = ["a", "b"]', "if n > 3:", "x = items[0]"):
-        require(not (WORD_LIST.search(text) or THRESHOLD.search(text)), f"hardcoding refused innocent text: {text}")
+        require(not (WORD_LIST_BROKEN.search(text) or THRESHOLD.search(text)), f"hardcoding refused innocent text: {text}")
     print(f"integrity self-test: {len(mutations)} invalid fixtures refused, leak pattern witnessed")
 
 
