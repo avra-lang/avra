@@ -109,32 +109,32 @@ TREE_STEM_LAW = $(if $(TREE_CLASH),$(error A STEM NAMES ITS OBJECT, \
 # never built — twice, the trampoline and then @std/io's own C.
 #
 # COMPILER_OBJS is what `build/avra` itself links: the runtime every
-# program carries, plus the compiler's own foreign machinery, plus
-# every package in the cli's dependency closure whose manifest names
-# an object. The bootstrap's clang line takes this same variable, so
-# the two can never be a list and its copy. @std/io's object is here
-# because the SEED-BUILT compiler links it — a compiler that cannot
-# open a file cannot compile the tree it was built for — so a package
-# object in the compiler's own closure is BOTH a package object and a
-# compiler one, and belongs here the day its package lands.
+# program carries, plus every object a manifest names in the cli's
+# closure — the cli and each @std package its sources `use`, asked of
+# tools/manifest_objects.sh, the one reader of a `[link]` row. The
+# bootstrap's clang line takes this same variable, so the two can never
+# be a list and its copy. A package object in the compiler's own closure
+# (@std/io's: a compiler that cannot open a file cannot compile the tree)
+# is BOTH a package object and a compiler one, and joins here the day its
+# package's `use` lands. An archive brings its members (MEMBERS_<name>),
+# which a seed links in its place.
 # The runtime's objects are GLOBBED, one per runtime/*.c, so a new
 # runtime file joins the library without a line here.
 RUNTIME_OBJS = $(patsubst runtime/%.c,build/%.o,$(wildcard runtime/*.c)) build/avra_tick.o
 RUNTIME_LIB = build/libavra_runtime.a
 
-COMPILER_OBJS = $(TREE_STEM_LAW)$(RUNTIME_OBJS) $(RUNTIME_LIB) build/llvm_wrapper.o \
-                build/ffi.o build/std_io.o build/std_io_watch.o build/std_process.o build/std_time.o build/std_net.o \
-                build/std_hash.a $(HASH_OBJS)
+COMPILER_PACKAGE_OBJS := $(shell sh tools/manifest_objects.sh --closure cli)
+COMPILER_ARCHIVES = $(filter %.a,$(COMPILER_PACKAGE_OBJS))
+COMPILER_OBJS = $(TREE_STEM_LAW)$(RUNTIME_OBJS) $(RUNTIME_LIB) $(COMPILER_PACKAGE_OBJS) \
+                $(foreach a,$(COMPILER_ARCHIVES),$(MEMBERS_$(notdir $(a))))
 
-# A seed names the hash rows itself, so its link takes them once: the objects, not also their archive.
-SEED_LINK_OBJS = $(filter-out build/std_hash.a,$(COMPILER_OBJS))
+# A seed names an archive's rows itself, so its link takes them once: the members, not also their archive.
+SEED_LINK_OBJS = $(filter-out $(COMPILER_ARCHIVES),$(COMPILER_OBJS))
 
 # PACKAGE_OBJS is every object a package's `[link]` row names — what a
 # target that RUNS programs may need, since any package's suite or
 # program tests can link its own C.
-PACKAGE_OBJS = $(TREE_STEM_LAW)$(sort $(foreach o,$(shell sed -n \
-  's/.*objects *= *\[\(.*\)\].*/\1/p' packages/*/avra.toml | tr ',' '\n' \
-  | tr -d ' "'),build/$(notdir $(o))))
+PACKAGE_OBJS = $(TREE_STEM_LAW)$(shell sh tools/manifest_objects.sh)
 
 # PER-OBJECT FLAGS, by stem. The LLVM binding needs its headers; the
 # vendored amalgamation takes its author's whole flag set, which its
@@ -169,7 +169,8 @@ MBEDTLS_FLAGS := -I$(MBEDTLS_DIR)/include -I$(MBEDTLS_DIR)/tf-psa-crypto/include
 TLS_OBJS := $(patsubst packages/std-tls/src/c/%.c,build/%.o,$(wildcard packages/std-tls/src/c/*.c)) $(MBEDTLS_OBJS)
 $(foreach o,$(TLS_OBJS),$(eval CFLAGS_$(basename $(notdir $(o))) := $(MBEDTLS_FLAGS)))
 
-build/std_tls.a: $(TLS_OBJS)
+MEMBERS_std_tls.a = $(TLS_OBJS)
+build/std_tls.a: $(MEMBERS_std_tls.a)
 	@rm -f $@
 	ar rcs $@ $^
 
@@ -184,7 +185,8 @@ COMPRESS_OBJS := build/std_compress.o $(patsubst packages/std-compress/vendor/%.
 $(foreach o,$(filter build/brotli_%,$(COMPRESS_OBJS)),$(eval CFLAGS_$(basename $(notdir $(o))) := $(BROTLI_INCLUDE)))
 CFLAGS_std_compress := -Ipackages/std-compress/vendor $(BROTLI_INCLUDE)
 
-build/std_compress.a: $(COMPRESS_OBJS)
+MEMBERS_std_compress.a = $(COMPRESS_OBJS)
+build/std_compress.a: $(MEMBERS_std_compress.a)
 	@rm -f $@
 	ar rcs $@ $^
 
@@ -203,7 +205,8 @@ CFLAGS_b3_blake3_sse41 += -msse4.1
 CFLAGS_b3_blake3_avx2 += -mavx2
 CFLAGS_b3_blake3_avx512 += -mavx512f -mavx512vl
 
-build/std_hash.a: $(HASH_OBJS)
+MEMBERS_std_hash.a = $(HASH_OBJS)
+build/std_hash.a: $(MEMBERS_std_hash.a)
 	@rm -f $@
 	ar rcs $@ $^
 
@@ -308,7 +311,7 @@ build/wasm32/%.o: runtime/%.c build/%.sha
 # A PACKAGE'S C FOR WASM, from the paths its manifest's `wasm_objects` names.
 # A package opts in by naming its wasm objects; one that names none is refused
 # by the build, never compiled here.
-WASM_PACKAGE_OBJS := $(sort $(foreach o,$(shell sed -n 's/.*wasm_objects *= *\[\(.*\)\].*/\1/p' packages/*/avra.toml 2>/dev/null | tr ',' '\n' | tr -d ' "'),build/wasm32/$(notdir $(o))))
+WASM_PACKAGE_OBJS := $(shell sh tools/manifest_objects.sh --wasm)
 
 build/wasm32/%.o: %.c build/%.sha
 	@mkdir -p build/wasm32
@@ -480,6 +483,13 @@ avra: $(COMPILER_OBJS)
 	@sh tools/work built-from . > build/.avra-built-from 2>/dev/null || rm -f build/.avra-built-from
 	@sh tools/work deposit . || true
 	@echo "avra: build/avra"
+
+# WHAT A COMPILER BUILD LEAVES, one path a line: the binary, its hot leaves
+# and every object it links with each object's stamp and dependency list.
+# A cache of built compilers (tools/sprite-remote.sh) keeps exactly these.
+compiler-files:
+	@printf '%s\n' build/avra build/avra_hot.bc build/avra_hot.inc $(sort $(COMPILER_OBJS) \
+	  $(patsubst %.o,%.sha,$(filter %.o,$(COMPILER_OBJS))) $(patsubst %.o,%.d,$(filter %.o,$(COMPILER_OBJS))))
 
 # THE EDIT LOOP: the source built by the STANDING compiler into
 # build/avra-try, never over it — so the builder's print, and every row its
@@ -1201,7 +1211,7 @@ pipeline-status:
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
 KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc
-.PHONY: store-witnesses keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc pipeline-status ci-invariants ci-verdict pr-watcher
+.PHONY: compiler-files store-witnesses keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@sh tools/keepers_loop.sh "$(MAKE) -s" $(KEEPERS_STATIC)

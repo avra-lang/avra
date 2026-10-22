@@ -284,25 +284,8 @@ keeper() {
     hold off "$r"
 }
 
-# The compiler's own objects, as the Makefile's COMPILER_OBJS names them.
-compiler_objs() {
-    echo build/avra build/libavra_runtime.a build/avra_hot.bc build/avra_hot.inc
-    for f in runtime/*.c; do
-        [ -f "$f" ] || continue
-        s=$(basename "$f" .c)
-        echo "build/$s.o build/$s.sha build/$s.d"
-    done
-    echo build/avra_tick.o build/avra_tick.sha build/avra_tick.d
-    for s in llvm_wrapper ffi std_io std_io_watch std_process std_time std_net std_hash; do
-        echo "build/$s.o build/$s.sha build/$s.d"
-    done
-    echo build/std_hash.a
-    for f in packages/std-hash/vendor/b3_*.c; do
-        [ -f "$f" ] || continue
-        s=$(basename "$f" .c)
-        echo "build/$s.o build/$s.sha build/$s.d"
-    done
-}
+# What a compiler build leaves, as the Makefile's COMPILER_OBJS names it.
+compiler_objs() { make -s compiler-files; }
 
 # ONLY A FIXED POINT IS CACHED: two `make avra` from a standing compiler
 # (or `make bootstrap` from none) reach the generation `make bootstrap`
