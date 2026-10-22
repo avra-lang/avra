@@ -206,8 +206,13 @@ if (source) {
 
   await read(`(window.witness = "kept", 1)`);
   const ticked = (await rows())[1].done;
+  const standing_module = () => read(`document.documentElement.getAttribute("data-avra-module")`);
+  const before = await standing_module();
   fs.writeFileSync(source, written.replace(`fn title() -> string { "Tasks" }`, `fn title() -> string { "Chores" }`));
-  claim("a view edited where it stands reaches the running page", await until(says("Chores")) && !(await read(says("Tasks"))));
+  // The page names its module again when the swap lands: wait on that, for as long as a build may take, and say so if it never comes.
+  const swapped = await until(`document.documentElement.getAttribute("data-avra-module") !== ${JSON.stringify(before)}`);
+  if (!swapped) console.log(`  no swap landed within the build bound: the page still runs module ${before}`);
+  claim("a view edited where it stands reaches the running page", swapped && await read(says("Chores")) && !(await read(says("Tasks"))), await standing_module());
   claim("and the page was not reloaded to show it", await read(`window.witness`) === "kept");
   claim("and the state the page had comes through the edit: a ticked box stays ticked", ticked === true && (await rows())[1].done === true, await rows());
   await shot("edited");
@@ -225,6 +230,39 @@ if (source) {
 
 claim("nothing reached the console while the board was used", page.complaints().length === 0, page.complaints());
 await page.close();
+
+// ── the server keeps what Sync sends ────────────────────────────
+// `avra dev` runs the board's server beside the page, and the server holds a
+// file database. A task added and synced is still there when the page is
+// loaded again, in a browser that has never seen it.
+{
+  const board = await openPage(firefoxBinary(), url);
+  const waits = async (holds) => { for (let i = 0; i < 100; i++) { if (await board.read(holds).catch(() => false)) return true; await new Promise((go) => setTimeout(go, 100)); } return false; };
+  const drawn = () => board.read(`[...document.querySelectorAll("li")].map((li) => ({ key: li.dataset.key, words: li.textContent }))`);
+  const says = (words) => `document.body.textContent.includes(${JSON.stringify(words)})`;
+  await waits(`document.querySelector("li") !== null`);
+  claim("a server holding no tasks leaves the board its own four", (await drawn()).map((r) => r.key).join() === "t1,t2,t3,t4", await drawn());
+  await board.press(named("New task"));
+  await board.type(..."Buy milk");
+  await board.press(named("Add"));
+  claim("the new task is a row of the board, not yet the server's", (await drawn()).at(-1).words.includes("Buy milk"), await drawn());
+  for (let n = 1; n <= 5; n++) {
+    await board.press(named("Sync"));
+    claim(`Sync number ${n} is answered by the server: it holds ${n}`, await waits(says(`synced ${n}`)), await board.read(`document.body.textContent`));
+  }
+  const kept = await drawn();
+  claim("every task stands under the server's own key", kept.length === 5 && kept.every((r) => /^[0-9]+$/.test(r.key)), kept);
+  claim("and the new task is among them", kept.some((r) => r.words.includes("Buy milk")), kept);
+  const again = await openPage(firefoxBinary(), url);
+  await again.read(`new Promise((ready) => { const look = setInterval(() => { if (document.querySelector("li")) { clearInterval(look); ready(1); } }, 20); })`);
+  const back = async () => again.read(`[...document.querySelectorAll("li")].map((li) => ({ key: li.dataset.key, words: li.textContent }))`);
+  let seen = [];
+  for (let i = 0; i < 100; i++) { seen = await back(); if (seen.every((r) => /^[0-9]+$/.test(r.key))) break; await new Promise((go) => setTimeout(go, 100)); }
+  claim("a page loaded again asks the server and shows the task that was synced", seen.length === 5 && seen.some((r) => r.words.includes("Buy milk")), seen);
+  claim("nothing reached either console", board.complaints().length === 0 && again.complaints().length === 0, [...board.complaints(), ...again.complaints()]);
+  await again.close();
+  await board.close();
+}
 
 // ── an engine that does not send a dialog away on its own ───────
 // The same board where the browser knows no `closedby`: the page sends the
