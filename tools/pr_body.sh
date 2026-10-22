@@ -27,7 +27,7 @@ if [ "${1:-}" = --self-test ]; then
     printf '%s\n' "$got" | grep -qx 'SPEED_ACCEPT: now' || { echo "pr_body: the fresh body was not read: $got"; exit 1; }
     got=$(PR_NUMBER=7 GH_TOKEN=t PR_BODY_API="file://$d/missing.json" PR_BODY='SPEED_ACCEPT: payload' body)
     printf '%s\n' "$got" | grep -qx 'SPEED_ACCEPT: payload' || { echo "pr_body: an unanswered API did not fall back to the payload: $got"; exit 1; }
-    got=$(PR_BODY='SPEED_ACCEPT: payload' body)
+    got=$(PR_NUMBER= GH_TOKEN= PR_BODY='SPEED_ACCEPT: payload' body)
     printf '%s\n' "$got" | grep -qx 'SPEED_ACCEPT: payload' || { echo "pr_body: no PR number did not fall back to the payload: $got"; exit 1; }
     echo "pr_body: self-test passed — the API's body wins, the payload answers when it cannot"
     exit 0
