@@ -1,0 +1,229 @@
+//! The agent door: the graph's operations as MCP tools. Every tool is one
+//! call into an existing operation or hook — the graph's own request ops,
+//! the host's planner and extractor commands — and adds no logic of its
+//! own. Descriptions name the host's declared models, never a domain.
+use @std.mcp.{Tool, ToolParam, ParamKind}
+use @std.action.{routine, reversible}
+use @std.json.{Json, Field, field, parse, to_text}
+use @std.io.{write_text}
+use @std.process.{cmd, tool, Stdin, inherited}
+use @std.time.{wall_secs}
+use policy.{DerivationRegistration}
+use schema.{Registration}
+use store.open.{Graph}
+use store.policy.{EnginePolicy}
+use catalog.{Catalog}
+
+/// What a host lends the door: its graph, and the commands it trusts to
+/// plan a question (`planner`) and to read a source (`extractor`), each
+/// an argv. `graph` is the argv prefix that reaches this graph with one
+/// request file, handed to the planner so it can read the same graph.
+export type Door = {
+    db: string,
+    models: List<Registration>,
+    derived: List<DerivationRegistration> = [],
+    policy: EnginePolicy = EnginePolicy {},
+    planner: List<string> = [],
+    extractor: List<string> = [],
+    graph: List<string> = [],
+    scratch: string = "/tmp",
+}
+
+/// The tools a door offers: the planner's and extractor's only when the host names them.
+export fn tools(door: Door) -> Result<List<Tool>, string> {
+    let models = (Catalog.collected(door.models, door.derived)?).models.map(it.name).join(", ")
+    let reads = [
+        Tool {
+            name: "schema",
+            description: "The declared models of this graph (${models}): their properties, references and relation words.",
+            params: [],
+            impact: routine,
+            call: (args: Json) -> door.requested(Json.Obj([field("op", Json.Str("schema"))])),
+        },
+        Tool {
+            name: "search",
+            description: "Ranked passages of source text and admitted facts that match words, each with its citation.",
+            params: [
+                text("query", "words to look for"),
+                ToolParam { name: "limit", kind: .Integer, required: false },
+            ],
+            impact: routine,
+            call: (args: Json) -> door
+                .requested(Json.Obj([field("op", Json.Str("search"))].concat(fields_of(args)))),
+        },
+        Tool {
+            name: "explain",
+            description: "Every piece of evidence behind one property of one entity: which source said it, and when.",
+            params: [text("id", "an entity id from an answer"), text("property", "one of its properties")],
+            impact: routine,
+            call: (args: Json) -> door
+                .requested(Json.Obj([field("op", Json.Str("explain"))].concat(fields_of(args)))),
+        },
+    ]
+    let asking = if door.planner.is_empty() {
+        []
+    } else {
+        [
+            Tool {
+                name: "ask",
+                description: "Answer an English question from this graph (${models}) with cited facts. An answer may be unknown or ambiguous, and says so.",
+                params: [
+                    text("question", "the question, in the asker's words"),
+                    text("principal", "the id of the person the answer is for"),
+                    ToolParam {
+                        name: "speaker",
+                        kind: .Text,
+                        required: false,
+                        description: "the id of the person whose words these are, when not the principal",
+                    },
+                ],
+                impact: routine,
+                call: (args: Json) -> door.asked(args),
+            },
+        ]
+    }
+    let writing = [
+        Tool {
+            name: "correct",
+            description: "Record a person's correction of the graph, as the graph's correct operation takes it (JSON).",
+            params: [text("correction", "the correct operation's fields as a JSON object")],
+            impact: reversible,
+            call: (args: Json) -> door.requested_with("correct", args.member("correction").text()),
+        },
+        Tool {
+            name: "uncorrect",
+            description: "Withdraw a recorded correction by its id.",
+            params: [text("id", "the correction's id")],
+            impact: reversible,
+            call: (args: Json) -> door
+                .requested(Json.Obj([field("op", Json.Str("uncorrect"))].concat(fields_of(args)))),
+        },
+    ]
+    let ingesting = if door.extractor.is_empty() {
+        []
+    } else {
+        [
+            Tool {
+                name: "ingest",
+                description: "Take a source (a message, note or document, as a source envelope in JSON), extract what it says about ${models}, and admit what its text supports.",
+                params: [text("source", "the source envelope as a JSON object")],
+                impact: reversible,
+                call: (args: Json) -> door.ingested(args.member("source").text()),
+            },
+        ]
+    }
+    reads.concat(asking).concat(writing).concat(ingesting)
+}
+
+fn text(name: string, description: string) -> ToolParam {
+    ToolParam { name: name, kind: .Text, required: true, description: description }
+}
+
+fn fields_of(args: Json) -> List<Field> { [field(k, args.member(k)) for k in args.keys()] }
+
+impl Door {
+    /// One request to the graph, opened for this call alone.
+    fn requested(request: Json) -> Result<Json, string> {
+        mut graph = Graph.open(self.db, self.models, self.derived)? with { policy: self.policy }
+        defer { let _ = graph.close() }
+        graph.dispatch(request)
+    }
+
+    fn requested_with(op: string, body: string?) -> Result<Json, string> {
+        let fields = match parse(body ?? "") {
+            .Ok(.Obj(fs)) -> fs,
+            rest -> { fail "`${op}` takes its fields as one JSON object" },
+        }
+        self.requested(Json.Obj([field("op", Json.Str(op))].concat(fields)))
+    }
+
+    /// The planner drafts a query for the question over this graph; the graph answers it.
+    fn asked(args: Json) -> Result<Json, string> {
+        let schema = self.requested(Json.Obj([field("op", Json.Str("schema"))]))?
+        let context = Json
+            .Obj(
+                [
+                    field("principal", args.member("principal")),
+                    field("speaker", args.get("speaker") ?? args.member("principal")),
+                    field("conversation", Json.Null),
+                    field("question_at_ms", Json.Int(wall_secs() * 1000)),
+                    field("valid_at_ms", Json.Null),
+                    field("known_revision", schema.member("revision")),
+                    field("previous_answer", Json.Null),
+                ],
+            )
+        let payload = Json
+            .Obj(
+                [
+                    field("contract", Json.Int(1)),
+                    field("request", Json.Str("mcp-ask")),
+                    field("question", args.member("question")),
+                    field("context", context),
+                    field("source_view", Json.Str("current")),
+                    field("schema", schema),
+                    field("graph", Json.Arr([Json.Str(w) for w in self.graph])),
+                ],
+            )
+        let planned = ran(self.planner, to_text(payload))?
+        let answer = self
+            .requested(
+                Json
+                    .Obj(
+                        [
+                            field("op", Json.Str("query")),
+                            field("cypher", planned.member("cypher")),
+                            field("params", planned.member("params")),
+                        ],
+                    ),
+            )?
+        Json.Obj([field("answer", answer), field("cypher", planned.member("cypher"))])
+    }
+
+    /// The source is recorded, the extractor reads it against this catalog, and the graph admits what it may.
+    fn ingested(body: string?) -> Result<Json, string> {
+        let envelope = match parse(body ?? "") {
+            .Ok(j) -> j,
+            .Err(_) -> { fail "`ingest` takes its source envelope as JSON" },
+        }
+        let receipt = self
+            .requested(Json.Obj([field("op", Json.Str("ingest")), field("source", envelope)]))?
+        let schema = self.requested(Json.Obj([field("op", Json.Str("schema"))]))?
+        let catalog = "${self.scratch}/graph-mcp-schema.json"
+        if write_text(catalog, to_text(schema)) is .Err { fail "the catalog could not be written for the extractor" }
+        let argv = [w.replace("{schema}", catalog) for w in self.extractor]
+        let result = ran(argv, to_text(envelope))?
+        let admitted = self
+            .requested(
+                Json
+                    .Obj(
+                        [
+                            field("op", Json.Str("admit")),
+                            field("source", envelope.member("source")),
+                            field("result", result),
+                        ],
+                    ),
+            )?
+        Json.Obj([field("ingested", receipt), field("admitted", admitted)])
+    }
+}
+
+/// A host command run with `input` on its stdin, answering one JSON value.
+fn ran(argv: List<string>, input: string) -> Result<Json, string> {
+    if argv.is_empty() { fail "no command is configured for this tool" }
+    let program = match tool(argv[0]) {
+        .Ok(t) -> t,
+        .Err(e) -> { fail "`${argv[0]}`: ${e.describe().message}" },
+    }
+    let done = match (cmd(program, argv.slice(1, argv.length)) with { stdin: Stdin.Text(input), env: inherited() })
+        .outcome() {
+        .Ok(o) -> o,
+        .Err(e) -> { fail "`${argv.join(" ")}`: ${e.describe().message}" },
+    }
+    match parse(done.out.stdout) {
+        .Ok(j) -> j,
+        .Err(_) -> { fail "`${argv.join(" ")}` answered no JSON: ${last_line(done.out.stderr)}" },
+    }
+}
+
+/// The last nonempty line of a command's stderr: where it says why it stopped.
+fn last_line(text: string) -> string { text.split("\n").filter(!it.trim().is_empty()).last() ?? "" }

@@ -1,0 +1,70 @@
+use derive.model.{model}
+use schema.{Registration}
+use mcp.tools.{Door, tools}
+use @std.mcp.{handle}
+use @std.json.{Json, parse}
+
+/// A lamp on a shelf.
+@model
+type Lamp = { label: string, shelf: string? }
+
+fn door(planner: List<string> = []) -> Door {
+    Door {
+        db: "/tmp/graph-mcp-tools-test.db",
+        models: [Registration { make: Lamp_graph_model }],
+        planner: planner,
+    }
+}
+
+fn named(d: Door) -> Result<List<string>, string> { (tools(d)?).map(it.name) }
+
+fn called(name: string, arguments: string) -> Result<Json, string> {
+    let request = match parse(
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"${name}\",\"arguments\":${arguments}}}",
+    ) { .Ok(j) -> j, .Err(_) -> { fail "test request is not JSON" } }
+    let reply? = handle(tools(door())?, request) else { fail "no reply" }
+    reply.member("result")
+}
+
+fn reads_offered() -> Result<bool, string> {
+    let plain = named(door())?
+    let planned = named(door(["planner"]))?
+    plain.contains("schema") &&
+        plain.contains("search") &&
+        plain.contains("explain") &&
+        !plain.contains("ask") &&
+        !plain.contains("ingest") &&
+        planned.contains("ask")
+}
+
+fn described_from_the_catalog() -> Result<bool, string> {
+    (tools(door())?).find(it.name == "schema")!.description.contains("Lamp")
+}
+
+fn schema_answers() -> Result<bool, string> {
+    let result = called("schema", "{}")?
+    result.member("isError").truth() == false &&
+        (result.member("content").item(0).member("text").text() ?? "").contains("\"Lamp\"")
+}
+
+fn writes_need_a_mandate() -> Result<bool, string> {
+    let result = called("uncorrect", "{\"id\":\"c1\"}")?
+    result.member("isError").truth() == true &&
+        (result.member("content").item(0).member("text").text() ?? "").contains("mandate")
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "the graph's agent door" {
+    given "a host with one declared model" {
+        then "reads are offered; ask and ingest only when their commands are named" { passed(reads_offered()) }
+        then "descriptions name the declared models" { passed(described_from_the_catalog()) }
+        then "the schema tool answers the graph's own schema op" { passed(schema_answers()) }
+        then "a write waits for a mandate" { passed(writes_need_a_mandate()) }
+    }
+}
