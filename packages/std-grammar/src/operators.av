@@ -1,8 +1,8 @@
 //! The climb's tables, read off a branch's tiers once.
 
 use util.{flatten, distinct}
-use ast.{Tier, Suffix, OpEntry, Operators}
-use executor.{lit_expected}
+use ast.{Tier, Suffix, OpEntry, Operators, Prim}
+use diagnostics.{Want}
 
 /// The operators a list of tiers (loosest first) declares: entries
 /// tightest first, so an operator spelled with more tokens than another
@@ -15,7 +15,7 @@ export fn operators_of(tiers: List<Tier>) -> Operators {
         entries: entries,
         by_first: keyed_by_first(entries),
         expects: [tier_expects(l) for l in tiers],
-        reach: [distinct(flatten([tier_expects(tiers[i]) for i in tightest_first(tiers) if i >= m])) for m in 0..tiers.length + 1],
+        reach: [flatten([tier_expects(tiers[i]) for i in tightest_first(tiers) if i >= m]) for m in 0..tiers.length + 1],
         lits: distinct(flatten([tier_lits(l) for l in tiers])),
     }
 }
@@ -38,9 +38,8 @@ fn keyed_by_first(entries: List<OpEntry>) -> Map<string, List<OpEntry>> {
 }
 
 /// What a miss at this tier's operators expects: each one's first token.
-fn tier_expects(l: Tier) -> List<string> {
-    flatten([lit_expected(w[0]) for w in l.words])
-        .concat(flatten([lit_expected(x.word) for x in l.suffixes]))
+fn tier_expects(l: Tier) -> Want {
+    [Prim.Lit(w[0]) for w in l.words].concat([Prim.Lit(x.word) for x in l.suffixes])
 }
 
 fn tier_lits(l: Tier) -> List<string> {
