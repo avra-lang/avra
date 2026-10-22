@@ -46,8 +46,6 @@ ABSTAIN = object()
 SOCKET = os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
 STATEMENT = "statement"
 STATEMENT_GLOSS = "one complete statement, request or question, as a whole sentence"
-REFERENCE = "reference"
-REFERENCE_GLOSS = "a pronoun or possessive word that stands for a person, without the noun it modifies"
 SPEECH_ACTS = {
     "assert": "stated as a current fact by the speaker",
     "report": "reported as what someone else said",
@@ -172,7 +170,6 @@ class Plan:
     def entity_labels(self):
         """Encoder labels for entity mentions, references and free relation labels."""
         labels = {m.lower(): gloss(self.models[m]) for m in self.entities}
-        labels[REFERENCE] = REFERENCE_GLOSS
         for name in self.relations:
             label = self.free_labels(name)
             if label:
@@ -406,6 +403,7 @@ class Cascade:
     def entity_pass(self):
         labels = self.plan.entity_labels()
         found = self.spans["entities"]
+        log("spans " + " ".join(f"{l}:{[x['text'] for x in xs]}" for l, xs in found.items() if xs))
         by_label = {m.lower(): m for m in self.plan.entities}
         typed = {}
         for l, xs in found.items():
@@ -589,29 +587,30 @@ class Cascade:
         return next(r["model"] for r in self.records if r["local_id"] == rid)
 
     def referents(self, a, b):
-        """Each reference word in the range, resolved 1-of-N to a person the
-        text names, or left out (abstain): (record id, span) pairs."""
+        """People a passage may speak of without naming them here: its
+        speaker, anchored on the passage, and the people the passage before
+        it names. They are candidates only; the choices decide."""
         out = []
-        for r in self.mentions:
-            if r["kind"] != REFERENCE or not (a <= r["start"] and r["end"] <= b):
-                continue
-            key = (r["start"], r["end"])
-            if key not in self.resolved:
-                self.resolved[key] = self.resolve(*key)
-            if self.resolved[key]:
-                out.append((self.resolved[key], key))
+        speaker = self.speaker(a, b)
+        if speaker:
+            out.append((speaker, (a, b)))
+        before = [u for u in self.units() if u[1] <= a]
+        if before:
+            x, y = before[-1]
+            for m in self.mentions:
+                if m["record"] and m["kind"] in self.person_models() and x <= m["start"] and m["end"] <= y:
+                    if all(rid != m["record"] for rid, _ in out):
+                        out.append((m["record"], (m["start"], m["end"])))
         return out
 
-    def resolve(self, x, y):
-        ids = list(dict.fromkeys(m["record"] for m in self.mentions if m["record"] and m["kind"] in self.person_models()))
-        if not ids:
-            return None
-        frame = self.innermost(x, y)
-        spoken = f"\nThis passage is spoken by {self.name(frame['speaker'])}." if frame and frame["speaker"] else ""
-        unit = next(((u, v) for u, v in self.units() if u <= x and y <= v), (x, y))
-        p = self.llm.pick(f'Passage: "{self.t.s[unit[0]:unit[1]]}"{spoken}', f'Who does "{self.t.s[x:y]}" at character {x} refer to?', [self.name(i) for i in ids], ["someone the text does not name", "cannot tell"])
-        ranked = sorted(range(len(p)), key=lambda i: -p[i])
-        return ids[ranked[0]] if ranked[0] < len(ids) and p[ranked[0]] - p[ranked[1]] >= MARGIN else None
+    def speaker(self, a, b):
+        """Who speaks a passage: its frame's speaker, else the text's own."""
+        frame = self.innermost(a, b)
+        if frame is not None and frame["speaker"]:
+            return frame["speaker"]
+        if "text" not in self.resolved:
+            self.resolved["text"] = self.choose_speaker(0, len(self.t.s))
+        return self.resolved["text"]
 
     def person_models(self):
         return {self.plan.relations[n]["from"] and target(self.prop(n, self.plan.relations[n]["from"][0])["shape"]) for n in self.plan.relations}
@@ -654,7 +653,8 @@ class Cascade:
             return ids
 
         froms, tos = holders(ft, False), holders(tt, False) or (holders(tt, True) if free else {})
-        ctx = f'Sentence: "{self.t.s[a:b]}"' + "".join(f'\n"{self.t.s[x:y]}" here refers to {self.name(rid)}.' for rid, (x, y) in referred)
+        speaker = self.speaker(a, b)
+        ctx = f'Sentence: "{self.t.s[a:b]}"' + (f"\nThis sentence is spoken by {self.name(speaker)}." if speaker else "")
         question = f"{self.plan.models[name]['description']}\n\nWhich of these does the sentence itself explicitly state? Do not infer from other sentences or world knowledge."
         rel = self.plan.relations[name]
         if free:
@@ -1066,6 +1066,7 @@ def answered(body, models):
         return {"p": models.llm.choose(body["context"], body["question"], body["options"])}
     models.llm.prefix = body.get("prefix", True)
     os.environ["CASCADE_UNITS"] = body.get("units") or "statements"
+    os.environ["CASCADE_TRACE"] = "1" if body.get("trace") else ""
     if "requests" in body:
         return {"results": [{"result": r, "log": l} for r, l in extract_batch(body["requests"], models)]}
     result, logs = extract_batch([body["request"]], models)[0]
@@ -1153,7 +1154,7 @@ def main():
         answers = extract_batch(reqs)
     else:
         units = args[args.index("--units") + 1] if "--units" in args else None
-        answer = remote({"requests": reqs, "prefix": "--no-prefix" not in args, "units": units})
+        answer = remote({"requests": reqs, "prefix": "--no-prefix" not in args, "units": units, "trace": "--trace" in args})
         if answer is None:
             print(f"service unavailable: nothing answers on {SOCKET}; start `cascade.py --serve`, or pass --local to load the models here", file=sys.stderr)
             return 1
