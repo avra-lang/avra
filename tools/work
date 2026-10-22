@@ -593,10 +593,15 @@ carry() {
 
 run() {
     minutes=15
+    browser=""
     if [ "${1:-}" = --for ]; then
         case ${2:-} in '' | *[!0-9]*) usage run >&2; exit 64 ;; esac
         minutes=$2
         shift 2
+    fi
+    if [ "${1:-}" = --browser ]; then
+        browser=$(browser_packages_list)
+        shift
     fi
     case ${1:-} in '' | -*) [ -z "${1:-}" ] || echo "work: \`run\` has no flag \`$1\`" >&2; usage run >&2; exit 64 ;; esac
     inside
@@ -621,7 +626,7 @@ run() {
     remote_tree=${AVRA_SPRITE_HOME:-/home/sprite}/avra-build/$slug/tree
     wake_s=${AVRA_WAKE_S:-150}
     echo "work: $sprite — waking" >&2
-    info=$(woken "$sprite" "$wake_s" ready "$hash" $(sprite_packages_list)) || {
+    info=$(woken "$sprite" "$wake_s" ready "$hash" $(sprite_packages_list) $browser) || {
         blame
         echo "work: $who — $sprite did not answer within ${wake_s}s: $why. Nothing was started" >&2
         exit "$code"
@@ -1025,7 +1030,7 @@ wait_landed() {
 usage() {
     case ${1:-} in
         new) echo "usage: sh tools/work new <name>   — a worktree ../avra-<name> off main, and its Sprite" ;;
-        run) echo "usage: sh tools/work run [--for <minutes>] <cmd…>   — run it on this lane's Sprite, followed to its exit status through any dropped connection (bound: 15 minutes); Ctrl-C or \`work stop\` ends it, this client ending does not" ;;
+        run) echo "usage: sh tools/work run [--for <minutes>] [--browser] <cmd…>   — run it on this lane's Sprite (--browser first provisions the browser leg's libraries, .github/ci/packages-browser.txt), followed to its exit status through any dropped connection (bound: 15 minutes); Ctrl-C or \`work stop\` ends it, this client ending does not" ;;
         test) echo "usage: sh tools/work test   — what this branch touches, on this lane's Sprite" ;;
         land) echo "usage: sh tools/work land [--batch]  — push, PR, ready, strip a DO NOT MERGE title, arm auto-merge; refuses while another PR is mid-CI unless --batch; no Sprite involved" ;;
         status) echo "usage: sh tools/work status   — PRs and their merge state; each lane and its Sprite" ;;
