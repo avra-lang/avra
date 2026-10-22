@@ -847,11 +847,9 @@ class Cascade:
         self.records.append({"local_id": self.mint(), "model": model, "fields": fields, "identities": [], "resolution": {"kind": "new"}, "_score": chosen})
 
     def grounds(self, model, field):
-        """Whether a field carries content from the sentence: a text, a
-        reference, a number, a time or a quantity, not a bare choice among
-        declared values or an empty value."""
-        p = self.prop(model, field["property"])
-        return field["value"] != {} and (route(p) in ("text", "ref", "number", "time") or self.plan.quantity(self.plan.models[model], p) is not None)
+        """Whether a field states something the sentence says: any value but a
+        bare reference to another record, which only links."""
+        return field["value"] != {} and route(self.prop(model, field["property"])) != "ref"
 
     def shown(self, v):
         return self.name(v) if isinstance(v, str) and any(r["local_id"] == v for r in self.records) else v
