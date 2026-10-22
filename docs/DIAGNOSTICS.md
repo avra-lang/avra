@@ -4216,10 +4216,10 @@ let a = [..5]
 
 ```
 error[type.spread_list]: `..` in a list spreads a list, found `int`
-  ╭─[witness.av:1:12]
+  ╭─[witness.av:1:10]
 1 │ let a = [..5]
-  ·            ┬
-  ·            ╰── spread here
+  ·          ┬
+  ·          ╰── spread here
 ──╯
 help: a list literal spreads lists — `[..xs, y]`; write any other value as an element
 ```

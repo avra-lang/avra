@@ -5,7 +5,6 @@ use core.{
     ExprId,
     binop_of,
     Pat,
-    PatId,
     want,
     TypeRef,
     pronoun_param,
@@ -45,29 +44,10 @@ fn build_unmixed_bitwise(b: Builder) -> Result<LangNode, string> {
     b.make_type(void_ref)
 }
 
-/// `left op right` for the operator whose source symbol is `symbol`.
-fn binary_of(b: Builder, symbol: string, what: string) -> Result<LangNode, string> {
-    let op = want(binop_of(symbol), what)?
-    let l = b.expr(0)?
-    let r = b.expr(2)?
-    b.wrap_expr(b.store.alloc_expr(Expr.Binary(op, l, r), b.cover(l, r)))
-}
-
 /// The words that law refuses in — one place, so the two operators
 /// it names are always the two the reader wrote.
 fn mixed_bitwise(first: string, second: string) -> string {
     "`${first}` and `${second}` in one expression have no agreed order — write parentheses to say which binds first"
-}
-
-/// `l op r` or `l is …` — at most one, never a chain. The right side
-/// says which: a value is a comparison's, and the PATTERN the `is`
-/// rule built is a tag test (`.V`, `.V(x)`) or a type test (`c: T`).
-fn build_compare(b: Builder) -> Result<LangNode, string> {
-    match b.args[2] {
-        .Node(.NExpr(_)) -> binary_of(b, (b.token(1)?).text, "a comparison operator"),
-        .Node(.NPat(p)) -> asked_expr(b, b.expr(0)?, p),
-        rest -> .Err(compare_without_right_side()),
-    }
 }
 
 /// One seat of a payload `is` — a bare name or `_`, spelled here so a
@@ -80,16 +60,6 @@ fn build_asked_bind(b: Builder) -> Result<LangNode, string> {
     if n.text == "null" { return b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.NullLit, b.span))) }
     b.make_pat(Pat.Bind(Scoped(n.text)))
 }
-/// `l is …`, the tag or type test the pattern names. The node keeps
-/// the pattern: the `if` that means to bind desugars it to a match,
-/// and a payload `is` anywhere else has enums name it and refuse.
-fn asked_expr(b: Builder, l: ExprId, asked: PatId) -> Result<LangNode, string> {
-    match b.store.pat(asked) {
-        .Variant(_, _) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> b.wrap_expr(b.expr_node(Expr.Is(l, asked))),
-        rest -> .Err(compare_without_right_side()),
-    }
-}
-
 /// `-v` is `0 - v`: the parse desugars, so no pass learns a node.
 /// A LITERAL FOLDS INSTEAD — `-1` and `-1.5` ARE literals, so a const
 /// takes them and every reader that asks the value protocol gets
@@ -150,10 +120,6 @@ fn chained_apply(b: Builder, subject: ExprId, args: List<ExprId>) -> ExprId {
     let call = b.store.alloc_expr(Expr.CallValue(carried, args), b.span)
     let absent = b.store.alloc_expr(Expr.NullLit, b.span)
     b.store.alloc_expr(Expr.MatchOpt(subject, Scoped(chained_binder), call, absent), b.span)
-}
-
-fn compare_without_right_side() -> string {
-    "a comparison's right side is a value, or the pattern an `is` names"
 }
 
 /// `{ ( mut? x, … -> )? statements }` — a lambda whose body is a

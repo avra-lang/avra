@@ -23,11 +23,10 @@ use diagnostics.{DiagCode}
 
 export fn enums() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name        | build
-        "match_arm" | build_arm
-        "hole_arm"  | build_hole_arm
-        "bind_pat"  | build_bind_pat
-        "num_pat"   | build_num_pat
+        name       | build
+        "hole_arm" | build_hole_arm
+        "bind_pat" | build_bind_pat
+        "num_pat"  | build_num_pat
     }
     let codes = table<DiagCode> {
         kind                   | summary
@@ -62,7 +61,7 @@ export fn enums() -> LanguageFeature {
             variant = ( marks:mark )* name:NAME ( "(" payloads:payload ( "," payloads:payload )* ","? ")" )? -> Record.VariantSyntax
             primary = "." name:NAME ( "(" ( args:element ( "," args:element )* ","? )? ")" )? -> Expr.VariantLit
             primary = "match" subject:expression "{" ( BREAK | "," | arms:arm | arms:hole_arm )* "}" @expect("}", "expected `}` to close the `match`") -> Expr.Match @head(subject)
-            arm = p:pattern ( "or" p:pattern )* ( "if" g:expression )? "->" v:expression -> match_arm(p, g, v)
+            arm = pats:pattern ( "or" pats:pattern )* ( "if" guard:expression )? "->" value:expression -> Record.Arm
             hole_arm = h:HOLE -> hole_arm(h)
             pattern = "." name:NAME "as" bind:NAME -> Pat.Member | "." name:NAME ( "(" args:pattern ( "," args:pattern )* ","? ")" )? -> Pat.Variant | "_" -> Pat.Wild | "true" -> Pat.Lit(value = Expr.BoolLit(value = true)) | "false" -> Pat.Lit(value = Expr.BoolLit(value = false)) | v:NUMBER -> num_pat(v) | n:NAME -> bind_pat(n)
         }

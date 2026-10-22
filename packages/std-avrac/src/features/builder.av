@@ -156,6 +156,11 @@ impl Slots for Builder {
         .Ok(arms_at(self.args, self.slot_of(label)?))
     }
 
+    /// The comprehension clauses the payload `label` carries.
+    fn comp_clauses_of(label: string) -> Result<List<CompClause>, string> {
+        .Ok(comp_clauses_at(self.args, self.slot_of(label)?))
+    }
+
     /// The spec cases the payload `label` carries.
     fn cases_of(label: string) -> Result<List<Case>, string> {
         .Ok(cases_at(self.args, self.slot_of(label)?))
@@ -169,6 +174,13 @@ impl Slots for Builder {
     /// The patterns the payload `label` carries.
     fn pats_of(label: string) -> Result<List<PatId>, string> {
         .Ok(pat_ids_at(self.args, self.slot_of(label)?))
+    }
+
+    /// The pattern the payload `label` carries.
+    fn pat_of(label: string) -> Result<PatId, string> {
+        let at = self.slot_of(label)?
+        let p? = pat_id_at(self.args, at) else { return .Err(no_pattern(label)) }
+        .Ok(p)
     }
 
     /// The written type the payload `label` carries.
@@ -339,6 +351,29 @@ impl Builder {
     /// One match arm, as data — `guard` null for an unguarded one.
     fn make_arm(pats: List<PatId>, value: ExprId, guard: ExprId?) -> Result<LangNode, string> {
         .Ok(LangNode.NArm(Arm { pats: pats, guard: guard, value: value }))
+    }
+
+    /// One match arm read off its rule's labels.
+    fn arm() -> Result<LangNode, string> {
+        self.make_arm(self.pats_of("pats")?, self.expr_of("value")?, self.expr_opt_of("guard")?)
+    }
+
+    /// One spec case read off its rule's labels, in the group its
+    /// `given` names later.
+    fn case() -> Result<LangNode, string> {
+        .Ok(
+            LangNode
+                .NCases(
+                    [
+                        Case {
+                            group: self.text_of("group")?,
+                            name: self.text_of("name")?,
+                            body: self.expr_of("body")?,
+                            span: self.span,
+                        },
+                    ],
+                ),
+        )
     }
 
     /// One comprehension clause, as data.
@@ -765,3 +800,6 @@ fn unknown_payload(ps: List<Field>, n: string) -> string {
     "no payload `${n}` — this build carries `${[p.name for p in ps].join("`, `")}`"
 }
 
+fn no_pattern(label: string) -> string {
+    "defect: the payload `${label}` holds no pattern — the arena and the grammar disagree"
+}
