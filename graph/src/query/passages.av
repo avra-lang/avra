@@ -2,16 +2,21 @@ use @avra.graph_contracts.{SourceEnvelope}
 use @std.json.{Json, Field, field}
 use store.open.{Graph}
 use store.search.{Passage}
+use parameters.{
+    utf8_continuation_low,
+    utf8_lead_low,
+    quote_context_bytes,
+    plan_text_bytes,
+    search_limit_default,
+}
 
 /// Context kept on each side of a quoted passage.
-const context_bytes = 120
 
 /// Longest quoted passage a selector carries.
-const quote_bytes = 4096
 
 impl Graph {
-    /// Ranked passages with their citations: `{"contract", "query", "read_revision", "passages"}`.
-    fn passages(query: string, limit: int = 10) -> Result<Json, string> {
+    /// Ranked passages with their citations, and the revision they were read at.
+    fn passages(query: string, limit: int = search_limit_default) -> Result<Json, string> {
         let found = self.search(query, limit)?
         let cited = [self.passage_json(i, p)? for i, p in found]
         Json
@@ -79,15 +84,21 @@ fn fact_trail(p: Passage) -> List<Field> {
 /// A position selector (code points) and a quote selector for bytes `start..stop` of `content`.
 export fn selectors(content: string, start: int, stop: int) -> List<Json> {
     let lo = clean_from(content, start)
-    let hi = clean_to(content, if stop - lo > quote_bytes { lo + quote_bytes } else { stop })
+    let hi = clean_to(
+        content,
+        if stop - lo > plan_text_bytes { lo + plan_text_bytes } else { stop },
+    )
     if hi <= lo { return [] }
     let before = content.substring(0, lo)
     let first = code_points(before)
     let exact = content.substring(lo, hi)
-    let prefix_at = clean_from(content, if lo > context_bytes { lo - context_bytes } else { 0 })
+    let prefix_at = clean_from(
+        content,
+        if lo > quote_context_bytes { lo - quote_context_bytes } else { 0 },
+    )
     let suffix_to = clean_to(
         content,
-        if hi + context_bytes < content.length { hi + context_bytes } else { content.length },
+        if hi + quote_context_bytes < content.length { hi + quote_context_bytes } else { content.length },
     )
     [
         Json
@@ -113,11 +124,13 @@ export fn selectors(content: string, start: int, stop: int) -> List<Json> {
 /// Unicode code points in `text`: every byte that does not continue one.
 export fn code_points(text: string) -> int {
     let b = text.bytes()
-    [i for i in 0..b.length if b.at(i) < 128 || b.at(i) >= 192].length
+    [i for i in 0..b.length if b.at(i) < utf8_continuation_low || b.at(i) >= utf8_lead_low].length
 }
 
 fn continues(content: string, at: int) -> bool {
-    at < content.length && content.bytes().at(at) >= 128 && content.bytes().at(at) < 192
+    at < content.length &&
+        content.bytes().at(at) >= utf8_continuation_low &&
+        content.bytes().at(at) < utf8_lead_low
 }
 
 /// The first character boundary at or after `at`.

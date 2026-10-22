@@ -3,6 +3,7 @@ use @std.validate.{Value}
 use catalog.{Catalog}
 use schema.{Shape, Property, Model}
 use semantics.{QuantityBinding}
+use parameters.{plan_document_bytes, plan_text_bytes, float_zero}
 
 export enum Comparison { Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual }
 export enum Direction { Outgoing, Incoming }
@@ -45,7 +46,7 @@ export type ReadOnlyPlan = {
 /// Pure admission, not execution or authorization. The trusted caller supplies
 /// the catalog; untrusted planners supply only the bounded wire document.
 export fn prepare_read(catalog: Catalog, payload: string) -> Result<ReadOnlyPlan, string> {
-    if payload.bytes().length > 262144 { fail "read plan exceeds its byte budget" }
+    if payload.bytes().length > plan_document_bytes { fail "read plan exceeds its byte budget" }
     let wire = match ReadPlan.from_json(payload) {
         .Ok(p) -> p,
         .Err(issues) -> { fail "read plan: ${issues.report()}" },
@@ -145,8 +146,8 @@ fn checked_literal(property: Property, literal: Value, compare: Comparison) -> R
 
 fn bounded(literal: Value) -> bool {
     match literal {
-        .Text(s) -> s.bytes().length <= 4096,
-        .Float(n) -> n - n == 0.0,
+        .Text(s) -> s.bytes().length <= plan_text_bytes,
+        .Float(n) -> n - n == float_zero,
         .Null or .Bool(_) or .Int(_) or .List(_) or .Map(_) -> true,
     }
 }
@@ -213,7 +214,7 @@ fn prepared_node(catalog: Catalog, nodes: List<ReadNode>, step: ReadStep) -> Res
                 .Text(s) -> s,
                 rest -> { fail "search requires a text literal" },
             }
-            if needle.is_empty() || needle.bytes().length > 4096 { fail "search text must be nonempty and bounded" }
+            if needle.is_empty() || needle.bytes().length > plan_text_bytes { fail "search text must be nonempty and bounded" }
             ReadNode {
                 id: step.id,
                 operation: .Search(input, property, needle),

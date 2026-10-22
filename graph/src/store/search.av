@@ -9,6 +9,20 @@ use store.evidence.{Interval, interval}
 use store.engine.{ObservationRow}
 use store.open.{Graph, stored, put_meta}
 use data.{encoded}
+use parameters.{
+    search_limit_max,
+    search_limit_default,
+    page_limit,
+    ascii_space,
+    search_terms_max,
+    ascii_zero,
+    ascii_nine,
+    ascii_upper_a,
+    ascii_upper_z,
+    ascii_a,
+    ascii_z,
+    ascii_limit,
+}
 
 /// One indexed passage: source text, or a fact admitted from a source.
 export type Passage = {
@@ -39,8 +53,8 @@ const columns = "rowid, kind, observation, revision, start, stop, text, claim, r
 impl Graph {
     /// Passages ranked by BM25 over source text and admitted facts, best first.
     /// The index is rebuilt when the graph has moved since it was built.
-    fn search(query: string, limit: int = 10) -> Result<List<Passage>, string> {
-        if limit < 1 || limit > 100 { fail "search limit must be 1..100" }
+    fn search(query: string, limit: int = search_limit_default) -> Result<List<Passage>, string> {
+        if limit < 1 || limit > search_limit_max { fail "search limit must be 1..${search_limit_max}" }
         self.indexed()?
         let match_text = fts_query(query)
         if match_text.is_empty() { return [] }
@@ -191,7 +205,7 @@ impl Graph {
 
     /// Every standing value, spelled `Model property: value`, filed under each source that supports it.
     fn fact_passages(sources: List<Passage>) -> Result<List<Passage>, string> {
-        let nested = [self.facts_of(m.name, id, sources)? for m in self.catalog.models for id in self.find(m.name, limit: 1000)?]
+        let nested = [self.facts_of(m.name, id, sources)? for m in self.catalog.models for id in self.find(m.name, limit: page_limit)?]
         [p for run in nested for p in run]
     }
 
@@ -234,14 +248,20 @@ fn fts_phrase(text: string) -> string {
 
 fn fts_query(text: string) -> string {
     let spaced = from_codepoints(
-        [if word_char(text.char_code(i)) { text.char_code(i) } else { 32 } for i in 0..text.length],
+        [if word_char(text.char_code(i)) { text.char_code(i) } else { ascii_space } for i in 0..text.length],
     )
     let words = [w for w in spaced.split(" ") if !w.is_empty()]
-    words.slice(0, if words.length > 32 { 32 } else { words.length }).map("\"${it}\"").join(" OR ")
+    words
+        .slice(0, if words.length > search_terms_max { search_terms_max } else { words.length })
+        .map("\"${it}\"")
+        .join(" OR ")
 }
 
 fn word_char(c: int) -> bool {
-    c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122 || c >= 128
+    c >= ascii_zero && c <= ascii_nine ||
+        c >= ascii_upper_a && c <= ascii_upper_z ||
+        c >= ascii_a && c <= ascii_z ||
+        c >= ascii_limit
 }
 
 fn passage_of(r: Row, rank: float) -> Result<Passage, string> {

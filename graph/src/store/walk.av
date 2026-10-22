@@ -3,10 +3,25 @@ use store.engine.{EntityRow}
 use store.open.{Graph, stored}
 use store.rank.{Tie, Scored, personalized}
 use store.search.{Passage}
+use parameters.{
+    walk_hops_default,
+    walk_nodes_default,
+    walk_calls_default,
+    walk_iterations_default,
+    walk_hops_max,
+    walk_iterations_max,
+    ppr_damping,
+    float_zero,
+}
 
 /// What a walk may spend: hops from the seeds, entities it may touch, edge
 /// reads, and rounds of the rank iteration.
-export type WalkBudget = { hops: int = 2, nodes: int = 200, calls: int = 400, iterations: int = 20 }
+export type WalkBudget = {
+    hops: int = walk_hops_default,
+    nodes: int = walk_nodes_default,
+    calls: int = walk_calls_default,
+    iterations: int = walk_iterations_default,
+}
 
 /// One retrieval channel's answer: passages best first, whether its budget cut it short,
 /// and the seeds it could not use.
@@ -14,19 +29,17 @@ export type Channel = { name: string, passages: List<Passage>, truncated: bool, 
 
 type Reach = { links: List<Tie>, truncated: bool }
 
-const damping = 0.85
-
 impl Graph {
     /// Passages scored through the facts that cite them: personalized PageRank
     /// from the seed entities over the claim graph, spread to each fact's
     /// entity and from there to the sources the facts were admitted from.
     fn walked(seeds: List<string>, budget: WalkBudget = WalkBudget {}) -> Result<Channel, string> {
         if budget.hops < 0 ||
-            budget.hops > 6 ||
+            budget.hops > walk_hops_max ||
             budget.nodes < 1 ||
             budget.calls < 0 ||
             budget.iterations < 0 ||
-            budget.iterations > 100 {
+            budget.iterations > walk_iterations_max {
             fail "walk budget is out of range"
         }
         let usable = [self.resolved(s)? for s in seeds]
@@ -34,7 +47,7 @@ impl Graph {
         let ignored = [s for i, s in seeds if usable[i] == ""]
         if roots.is_empty() { return Channel { name: "ppr", passages: [], truncated: false, ignored: ignored } }
         let reach = self.neighborhood(roots, budget)?
-        let scored = personalized(roots, reach.links, budget.iterations, damping)
+        let scored = personalized(roots, reach.links, budget.iterations, ppr_damping)
         Channel {
             name: "ppr",
             passages: self.spread(scored)?,
@@ -89,7 +102,7 @@ impl Graph {
     /// Entity scores to passages: each entity's facts take its score, each source
     /// the sum of the scores of the facts it supplied.
     fn spread(scored: List<Scored>) -> Result<List<Passage>, string> {
-        let names = [s.name for s in scored if s.score > 0.0]
+        let names = [s.name for s in scored if s.score > float_zero]
         if names.is_empty() { return [] }
         let holes = names.map((n) -> "?").join(", ")
         let facts = self

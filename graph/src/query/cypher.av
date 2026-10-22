@@ -21,6 +21,12 @@ use parameters.{
     ascii_case_gap,
     ascii_underscore,
     unspecified_absence,
+    request_bytes,
+    cypher_steps,
+    cypher_rows,
+    cypher_work,
+    cypher_depth,
+    cypher_timeout_ms,
 }
 use query.relations.{Link, resolve_hop, unknown_label, check_property, model_named}
 use catalog.{Catalog}
@@ -79,7 +85,7 @@ export enum Admission {
 impl Graph {
     /// A Cypher query and its parameters answer a contract `Answer`.
     fn cypher(text: string, params: Json) -> Result<Json, string> {
-        let request = if text.length > 512 { text.substring(0, 512) } else { text }
+        let request = quoted_request(text)
         let revision = self.read_revision()?
         match self.admission(text, params) {
             .Rejected(code, message, kind) -> refused(request, revision, policy_of(kind), code, message),
@@ -995,7 +1001,7 @@ fn aggregated(c: Chain, t: TotalWant) -> Result<Finished, CypherError> {
 fn plan_json(text: string, fingerprint: string, context: Json, f: Finished, limit: int?) -> Json {
     let base = [
         field("contract", Json.Int(1)),
-        field("request", Json.Str(if text.length > 512 { text.substring(0, 512) } else { text })),
+        field("request", Json.Str(quoted_request(text))),
         field("schema", Json.Str(fingerprint)),
         field("context", context),
         field("source_view", Json.Str("current")),
@@ -1011,11 +1017,11 @@ fn budget() -> Json {
     Json
         .Obj(
             [
-                field("steps", Json.Int(32)),
-                field("rows", Json.Int(1000)),
-                field("work", Json.Int(100000)),
-                field("depth", Json.Int(8)),
-                field("timeout_ms", Json.Int(10000)),
+                field("steps", Json.Int(cypher_steps)),
+                field("rows", Json.Int(cypher_rows)),
+                field("work", Json.Int(cypher_work)),
+                field("depth", Json.Int(cypher_depth)),
+                field("timeout_ms", Json.Int(cypher_timeout_ms)),
             ],
         )
 }
@@ -1028,4 +1034,9 @@ fn mislabelled(labels: List<Label>, nodes: List<ReadNode>) -> string? {
 
 fn model_of(n: ReadNode) -> string {
     match n.shape { .Rows(rows) -> rows.model, .Status or .Count or .Quantity(_) or .Derived -> "" }
+}
+
+/// The request as a plan quotes it: the query text, cut to its byte bound.
+fn quoted_request(text: string) -> string {
+    if text.length > request_bytes { text.substring(0, request_bytes) } else { text }
 }
