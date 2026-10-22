@@ -39,7 +39,7 @@ error[parse.expected]: this cannot start or continue a `stmt`
 1 │ }
   · ┬
 ──╯
-help: it could begin with `yield`, PKG, `component`, COMPONENT, `use`, `export`, `spec`, `collect` — and 53 more
+help: it could begin with `yield`, `@fair`, PKG, `component`, COMPONENT, `use`, `export`, `spec` — and 54 more
 ```
 
 ## build.failed
@@ -684,6 +684,31 @@ error[parse.select_catchall]: a `select` has no catch-all
   ·     ┬
 ──╯
 help: write `else -> …` — it runs when nothing is ready
+```
+
+## parse.select_mark
+
+a `select` reads one mark, `@fair`
+
+```avra
+fn one() -> int {
+    1
+}
+let job = spawn one()
+let v = @slow select {
+    r in job -> r
+    else -> 0
+}
+v
+```
+
+```
+error[parse.select_mark]: a `select` reads one mark, `@fair`
+  ╭─[witness.av:5:9]
+5 │ let v = @slow select {
+  ·         ┬
+──╯
+help: drop the mark — `@fair` is the one a `select` reads
 ```
 
 ## flow.arm
