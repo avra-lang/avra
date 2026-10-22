@@ -261,7 +261,7 @@ const adopting = async (print, early = null) => {
   const sizes = [];
   const quiet = console.warn;
   console.warn = () => {};
-  await run(new Uint8Array(fs.readFileSync(process.argv[2])), {
+  const { ears: heard } = await run(new Uint8Array(fs.readFileSync(process.argv[2])), {
     document: doc,
     mount: at,
     style: { textContent: "" },
@@ -273,7 +273,7 @@ const adopting = async (print, early = null) => {
   });
   await settle();
   console.warn = quiet;
-  return { at, placed, sentFrames, sizes };
+  return { at, placed, sentFrames, sizes, heard };
 };
 const kept = await adopting(serverPrint);
 const all = kept.sentFrames.flat();
@@ -287,8 +287,9 @@ claim("the first frame over an adopted page is under 1500 bytes (9326 without a 
 claim(`the server's page is ${serverBytes} bytes of HTML`, serverBytes > 0);
 const early = await adopting(serverPrint, "typed early");
 {
-  const [, add] = [...named("Add", early.at)[0].listeners][0];
-  add();
+  const add = every(early.at, (n) => n.attrs["aria-label"] === "Add" && early.heard(n.__avra_id).length > 0)[0];
+  const [, ear] = early.heard(add.__avra_id)[0];
+  dispatch(early.at, add, ear.event, { bubbles: false });
   frame();
   await settle();
   claim("text typed before the program stood is the program's when it adds the task", textOf(early.at).includes("typed early"), textOf(early.at).slice(0, 60));
