@@ -17,6 +17,7 @@ use core.{
     SyntaxArena,
     TypeRegistry,
     Binding,
+    DeclKind,
     Param,
     Reg,
     Ins,
@@ -274,10 +275,11 @@ fn takes_a_seat(keywords: List<string>, pp: Param) -> bool {
 }
 
 /// Whether a name reads a `mut` binding.
-export fn is_mut_at(names: NameFacts, store: SyntaxArena, e: ExprId) -> bool {
+export fn is_mut_at(names: NameFacts, view: FileView, e: ExprId) -> bool {
     let b? = names.binding(e) else { return false }
+    if shares_place(view, names, b) { return true }
     match b {
-        .Def(s) -> store.stmt(s) is .MutLet,
+        .Def(s) -> view.store.stmt(s) is .MutLet,
         // a method's receiver is a place: a write through it is what
         // makes the method a writing one (ROADMAP: the inout receiver)
         .Receiver -> true,
@@ -285,6 +287,32 @@ export fn is_mut_at(names: NameFacts, store: SyntaxArena, e: ExprId) -> bool {
         // lambda's written one as much as a fn's
         .Param(_) or .LambdaParam(_, _) -> names.reads_mut_seat(e),
         .Decl(_) or .Pattern(_, _) or .Capture(_, _) or .Index(_) -> false,
+    }
+}
+
+/// Whether a binding is a `state`, or a lambda's capture of one: a place
+/// whose one cell every reader shares — a module's or a component's own —
+/// so a fn body, a lambda and a `mut` seat all write the one cell.
+export fn shares_place(view: FileView, names: NameFacts, b: Binding) -> bool {
+    match b {
+        .Def(s) -> view.store.is_state_stmt(s),
+        .Decl(d) -> declares_state(view.decls.decl(d).kind),
+        .Capture(l, j) -> captured_place(view, names, l, j),
+        .Param(_) or .LambdaParam(_, _) or .Receiver or .Pattern(_, _) or .Index(_) -> false,
+    }
+}
+
+fn captured_place(view: FileView, names: NameFacts, l: ExprId, j: int) -> bool {
+    let cap? = names.capture(l) else { return false }
+    if j >= cap.sources.length { return false }
+    shares_place(view, names, cap.sources[j])
+}
+
+/// Whether a declaration of this kind is a module `state`.
+export fn declares_state(k: DeclKind) -> bool {
+    match k {
+        .State -> true,
+        .Builtin or .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum -> false,
     }
 }
 
@@ -590,7 +618,7 @@ impl TypeCx {
     /// A `mut` binding: a `mut` local, a receiver, a `mut` seat — or
     /// a lambda's seat that HEARD its mark from the slot, which only
     /// typing knows.
-    fn is_mut(e: ExprId) -> bool { is_mut_at(self.names, self.view.store, e) || self.heard_mut_at(e) }
+    fn is_mut(e: ExprId) -> bool { is_mut_at(self.names, self.view, e) || self.heard_mut_at(e) }
     fn heard_mut_at(e: ExprId) -> bool {
         let b? = self.names.binding(e) else { return false }
         match b { .LambdaParam(l, i) -> self.heard_mut(l, i), _ -> false }
