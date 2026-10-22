@@ -16,7 +16,7 @@ use core.{
     NodeFacts,
 }
 use core.marks.{sequence}
-use features.{Meaning, ResolveCx, TypeCx, LowerCx, nothing}
+use features.{Meaning, MeanCx, ResolveCx, TypeCx, LowerCx, nothing}
 
 /// `subject?.name(args)`.
 @expr_node
@@ -39,13 +39,6 @@ const chained_binder: string = "chained value"
 
 impl NodeFacts for ChainCall {
     fn chains() -> bool { true }
-    fn minted(store: SyntaxArena, span: Span?) -> Result<List<ExprId>, string> {
-        let before = store.exprs.count()
-        let args = [store.pronouned(a) for a in self.args]
-        let call = store.alloc_expr(Expr.MethodCall(store.held_value(span), self.name, args), span)
-        let root = store.chain_of(self.subject, call, span)
-        .Ok(store.allocated_since(before, root))
-    }
     fn says(written: string) -> string? {
         "`${written}` calls the method on what the nullable holds, and answers null when it holds nothing"
     }
@@ -53,12 +46,6 @@ impl NodeFacts for ChainCall {
 
 impl NodeFacts for ChainApply {
     fn chains() -> bool { true }
-    fn minted(store: SyntaxArena, span: Span?) -> Result<List<ExprId>, string> {
-        let before = store.exprs.count()
-        let call = store.alloc_expr(Expr.CallValue(store.held_value(span), self.args), span)
-        let root = store.chain_of(self.subject, call, span)
-        .Ok(store.allocated_since(before, root))
-    }
     fn says(written: string) -> string? {
         "`${written}` calls the fn when it is held, and answers null when it is not"
     }
@@ -66,13 +53,6 @@ impl NodeFacts for ChainApply {
 
 impl NodeFacts for ChainType {
     fn chains() -> bool { true }
-    fn minted(store: SyntaxArena, span: Span?) -> Result<List<ExprId>, string> {
-        let before = store.exprs.count()
-        let lit = store.spelling(self.ty)?
-        let root = store
-            .chain_of(self.subject, store.type_literal(store.held_value(span), lit, span), span)
-        .Ok(store.allocated_since(before, root))
-    }
     fn says(written: string) -> string? {
         "`${written}` folds the type literal on what the nullable holds, and answers null when it holds nothing"
     }
@@ -99,6 +79,15 @@ impl SyntaxArena {
 }
 
 impl Meaning for ChainCall {
+    fn minted(cx: MeanCx) -> Result<List<ExprId>, string> {
+        let before = cx.store.exprs.count()
+        let args = [cx.store.pronouned(a) for a in self.args]
+        let call = cx
+            .store
+            .alloc_expr(Expr.MethodCall(cx.store.held_value(cx.span), self.name, args), cx.span)
+        let root = cx.store.chain_of(self.subject, call, cx.span)
+        .Ok(cx.store.allocated_since(before, root))
+    }
     fn resolve(mut cx: ResolveCx, e: ExprId) {
         nothing()
     }
@@ -107,6 +96,14 @@ impl Meaning for ChainCall {
 }
 
 impl Meaning for ChainApply {
+    fn minted(cx: MeanCx) -> Result<List<ExprId>, string> {
+        let before = cx.store.exprs.count()
+        let call = cx
+            .store
+            .alloc_expr(Expr.CallValue(cx.store.held_value(cx.span), self.args), cx.span)
+        let root = cx.store.chain_of(self.subject, call, cx.span)
+        .Ok(cx.store.allocated_since(before, root))
+    }
     fn resolve(mut cx: ResolveCx, e: ExprId) {
         nothing()
     }
@@ -115,6 +112,18 @@ impl Meaning for ChainApply {
 }
 
 impl Meaning for ChainType {
+    fn minted(cx: MeanCx) -> Result<List<ExprId>, string> {
+        let before = cx.store.exprs.count()
+        let lit = cx.store.spelling(self.ty)?
+        let root = cx
+            .store
+            .chain_of(
+                self.subject,
+                cx.store.type_literal(cx.store.held_value(cx.span), lit, cx.span),
+                cx.span,
+            )
+        .Ok(cx.store.allocated_since(before, root))
+    }
     fn resolve(mut cx: ResolveCx, e: ExprId) {
         nothing()
     }
