@@ -1,10 +1,15 @@
-// proves: a `router` is a named group of routes with no prefix, declared once and embedded by name — in a server, in a `group` (once or under two prefixes), and in another router
+// proves: a group's `/` door answers the group's prefix exactly (`/api/tasks`, never `/api/tasks/`); a `router` is a named group of routes with no prefix, declared once and embedded by name — in a server, in a `group` (once or under two prefixes), and in another router
 use @std.net.{Conn, NetError, connect, timely}
 use @std.time.{ms, secs}
 use @std.http.http.{text}
 use @std.http.route.{get, post, group, router, faults, gathered}
 use @std.http.server.{server}
 use tests.support.{up}
+
+/// A group whose only door is its root: the prefix answers, the prefix and a slash do not.
+export router lone {
+    get "/" { _req -> "lone" }
+}
 
 export router tasks {
     get "/" { _req -> "list" }
@@ -35,6 +40,7 @@ export server app {
     group "/api/tasks" { tasks }
     group "/v2/tasks" { tasks }
     group "/svc" { everything }
+    group "/lone" { lone }
 }
 
 /// `sent` written, then read until the server closes or goes quiet.
@@ -70,14 +76,16 @@ fn shown() -> Result<string, NetError> {
         asked(port, "GET / HTTP/1.1")?,
         asked(port, "POST / HTTP/1.1")?,
         asked(port, "GET /7 HTTP/1.1")?,
-        asked(port, "GET /api/tasks/ HTTP/1.1")?,
+        asked(port, "GET /api/tasks HTTP/1.1")?,
         asked(port, "GET /api/tasks/9 HTTP/1.1")?,
-        asked(port, "GET /v2/tasks/ HTTP/1.1")?,
+        asked(port, "GET /v2/tasks HTTP/1.1")?,
         asked(port, "GET /v2/tasks/4 HTTP/1.1")?,
-        asked(port, "GET /svc/ HTTP/1.1")?,
+        asked(port, "GET /svc HTTP/1.1")?,
         asked(port, "GET /svc/users HTTP/1.1")?,
         asked(port, "GET /svc/5 HTTP/1.1")?,
         asked(port, "GET /nope/1 HTTP/1.1")?,
+        asked(port, "GET /lone HTTP/1.1")?,
+        asked(port, "GET /lone/ HTTP/1.1")?,
     ]
     .Ok(lines.join("\n"))
 }

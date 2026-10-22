@@ -267,8 +267,20 @@ export component delete(path: Format) {
 
 /// Routes under a prefix: each pattern begins with it, and each route
 /// reads what follows it in the target.
-export fn prefixed(prefix: string, routes: List<Route>) -> List<Route> {
-    [r with { pattern: prefix + r.pattern, serve: beneath(prefix.bytes(), r.serve) } for r in routes]
+export fn prefixed(prefix: string, routes: List<Route>) -> List<Route> { [placed(prefix, r) for r in routes] }
+
+/// A route under a prefix. A route's own `/` is the prefix itself — a
+/// collection lives at `/tasks`, and `/tasks/` is another target nothing answers.
+fn placed(prefix: string, r: Route) -> Route {
+    if r.pattern == "/" && !prefix.is_empty() {
+        return r with { pattern: prefix, serve: exactly(prefix.bytes(), r.serve) }
+    }
+    r with { pattern: prefix + r.pattern, serve: beneath(prefix.bytes(), r.serve) }
+}
+
+/// `serve`, asked about the prefix alone as the root door it is.
+fn exactly(prefix: Bytes, serve: fn(Request<Unrouted>, Bytes) -> Response?) -> fn(Request<Unrouted>, Bytes) -> Response? {
+    (q: Request<Unrouted>, t: Bytes) -> if t == prefix { serve(q, "/".bytes()) } else { null }
 }
 
 /// A route's reader past a prefix — absent for a target that is not
