@@ -21,10 +21,10 @@
 //! read the tree's way — shown as a `Value` and handed to the tree
 //! reader — so a refusal says what the tree path says.
 use @std.json.{plain_end, int_end, int_of, value_at, MAX_DEPTH}
-use @std.json.typed.{reader_of}
+use @std.json.typed.{Path, Step, reader_of}
 use decode.{Decoding, Decoder, Slot, Coercion, Limits, decode, answered}
 use formats.{from_json, json_value}
-use issue.{Issue, Issues, Path, Step, root}
+use issue.{Issue, Issues, root}
 use value.{Value}
 use validate.{Refusal}
 
@@ -188,34 +188,14 @@ impl Decoding {
 
     /// Every issue from `mark` on one step further from the root, at
     /// place `k` in its container's order.
-    mut fn stepped(mark: int, k: int, s: Step) {
-        for i in mark..self.count() {
-            if self.issues[i].path.up.is_empty() {
-                self.issues[i].path = Path { up: [s] }
-            } else {
-                self.issues[i].path.up.push(s)
-            }
-            self.order.set(i, k)
-        }
-    }
+    mut fn stepped(mark: int, k: int, s: Step) { self.json.stepped(mark, k, s) }
 
-    /// The issues from `from` on, stably in their record's order — an
-    /// insertion in place, since only a field read out of turn moves.
+    /// The issues from `from` on, stably in their record's order.
     mut fn sorted(from: int) {
-        for i in from + 1..self.count() {
-            let key = self.order[i]
-            let issue = self.issues[i]
-            mut j = i
-            while j > from && self.order[j - 1] > key {
-                self.issues.set(j, self.issues[j - 1])
-                self.order.set(j, self.order[j - 1])
-                j = j - 1
-            }
-            if j < i {
-                self.issues.set(j, issue)
-                self.order.set(j, key)
-            }
-        }
+        let perm = self.json.sorted(from)
+        if perm.is_empty() { return }
+        let old = self.issues
+        for k in 0..perm.length { self.issues.set(from + k, old[perm[k]]) }
     }
 }
 
@@ -286,12 +266,17 @@ export fn ruled_json<T, E: Refusal>(
     match verdict {
         .Ok(v) -> v,
         .Err(e) -> {
-            let v = if secret { null } else { d.value_from(at) }
             let words? = e.said() else {
+                let v = if secret { null } else { d.value_from(at) }
                 for i in e.issues() { d.refusal(root(), v, secret, rule, i) }
                 return null
             }
-            d.say(Issue { path: root(), rule: rule, message: words, received: v })
+            d
+                .noted_at(
+                    Issue { path: root(), rule: rule, message: words },
+                    0,
+                    if secret { -1 } else { at },
+                )
             null
         },
     }

@@ -4,66 +4,13 @@
 //! one can be named.
 use @std.text.{pad_right, cells}
 use @std.errors.{Error, ErrorInfo, info}
-use value.{Value, quoted}
-
-/// One step into a value.
-export enum Step {
-    Field(name: string)
-    Index(at: int)
-    Key(key: string)
-    Variant(name: string)
-}
-
-/// A place inside a value, from its root: `items[3].qty`,
-/// `payment.Card.exp`, `meta["x-y"]`. Held nearest-first — `up` walks
-/// from the place back to the root — so a container filing what its
-/// readers found under its own step puts that step on the end, in
-/// place.
-export type Path = { up: List<Step> }
+use value.{Value}
+use @std.json.typed.{Path}
 
 /// The value itself — the path with no steps.
 export fn root() -> Path { the_root }
 
 const the_root: Path = Path { up: [] }
-
-impl Path {
-    fn field(name: string) -> Path { self.then(Step.Field(name)) }
-    fn index(at: int) -> Path { self.then(Step.Index(at)) }
-    fn key(key: string) -> Path { self.then(Step.Key(key)) }
-    fn variant(name: string) -> Path { self.then(Step.Variant(name)) }
-
-    /// This path, read from `prefix` rather than the root.
-    fn under(prefix: Path) -> Path {
-        if prefix.up.is_empty() { return self }
-        Path { up: self.up.concat(prefix.up) }
-    }
-
-    /// One step further from the root.
-    fn then(s: Step) -> Path {
-        // pinned: `concat` may take its argument's box, and a field of `self` is a place
-        let up = self.up
-        Path { up: [s].concat(up) }
-    }
-
-    /// The steps from the root down.
-    fn steps() -> List<Step> { [self.up[self.up.length - 1 - j] for j in 0..self.up.length] }
-
-    /// How many steps down from the root.
-    fn depth() -> int { self.up.length }
-
-    /// The path as code spells it; the root is empty.
-    fn text() -> string {
-        [spelled(j, s) for j, s in self.steps()].join("")
-    }
-}
-
-fn spelled(j: int, s: Step) -> string {
-    match s {
-        .Field(name) or .Variant(name) -> if j == 0 { name } else { ".${name}" },
-        .Index(at) -> "[${at}]",
-        .Key(key) -> "[${quoted(key)}]",
-    }
-}
 
 /// One problem: where, which rule, what it says, what was received
 /// (absent when the input held nothing there, or it is secret), and
