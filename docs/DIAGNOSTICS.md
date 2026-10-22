@@ -662,6 +662,30 @@ error[flow.select]: `select` type-checks but lowers to nothing
 help: wait on one task with `t.await`
 ```
 
+## parse.select_catchall
+
+a `select` has no catch-all
+
+```avra
+fn one() -> int {
+    1
+}
+let job = spawn one()
+select {
+    _ -> 1
+}
+1
+```
+
+```
+error[parse.select_catchall]: a `select` has no catch-all
+  ╭─[witness.av:6:5]
+6 │     _ -> 1
+  ·     ┬
+──╯
+help: write `else -> …` — it runs when nothing is ready
+```
+
 ## flow.arm
 
 an arm waits on a task, a list of tasks, a source or a timer
@@ -4224,6 +4248,24 @@ error[type.spread_list]: `..` in a list spreads a list, found `int`
 help: a list literal spreads lists — `[..xs, y]`; write any other value as an element
 ```
 
+## parse.blockless_collect
+
+`collect` gathers what a block's statements leave
+
+```avra
+let a = collect 1
+1
+```
+
+```
+error[parse.blockless_collect]: `collect` gathers the values its block's statements leave
+  ╭─[witness.av:1:9]
+1 │ let a = collect 1
+  ·         ┬
+──╯
+help: give it its block — `collect { … }`
+```
+
 ## type.list_pattern
 
 a list pattern matches a list
@@ -6069,6 +6111,25 @@ error[type.shift_count]: a shift count must be between 0 and 63, this is 99
   ·      ╰── shifted by this
 ──╯
 help: an `int` is 64 bits, so a wider shift has no answer to give
+```
+
+## parse.leading_pipe
+
+a continuing operator ends the line it continues
+
+```avra
+let a = 1
+|> f
+1
+```
+
+```
+error[parse.leading_pipe]: a line never begins with `|>`
+  ╭─[witness.av:2:1]
+2 │ |> f
+  · ┬
+──╯
+help: a continuing operator ends the line it continues — end the previous line with `|>`
 ```
 
 ## type.map_key

@@ -25,6 +25,7 @@ use core.{
     Mark,
     Variant,
     CompClause,
+    Refused,
     flatten,
     some_list,
     SeatMark,
@@ -358,6 +359,15 @@ impl Builder {
     /// One match arm, as data — `guard` null for an unguarded one.
     fn make_arm(pats: List<PatId>, value: ExprId, guard: ExprId?) -> Result<LangNode, string> {
         .Ok(LangNode.NArm(Arm { pats: pats, guard: guard, value: value }))
+    }
+
+    /// The grammar's own refusal spoken where this branch matched, and an
+    /// error node standing in its place so the parse goes on.
+    fn refused(kind: string, words: RefusalWords) -> Result<LangNode, string> {
+        self
+            .store
+            .refuse(Refused { kind: kind, message: words.message, help: words.help, span: self.span })
+        .Ok(LangNode.NExpr(self.store.alloc_expr(Expr.Error, self.span)))
     }
 
     /// One match arm read off its rule's labels.

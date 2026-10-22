@@ -17,7 +17,7 @@
 //! too: `v.type(List<string?>)` is `v.interned(.List(.Opt(.Str)))`
 //! — the type in its own spelling, folded once by the receiver; a
 //! name that spells no shape is a hole, the id it names.
-use features.{LanguageFeature, BuilderRow}
+use features.{LanguageFeature, BuilderRow, RefusalRow}
 // LICENSED modules.unused_import: `Operators`' tables and `Fixed` are named by GENERATED
 // code, not by this file — the `grammar { }` expansion writes `Tier`,
 // `Assoc`, `Suffix` and the `operators_of` call here for the table, and a
@@ -53,16 +53,16 @@ export fn expr_spine() -> LanguageFeature {
         "chained_call_link"  | build_chained_call_link
         "chained_apply_link" | build_chained_apply_link
         "trailed_link"       | build_trailed_link
-        "leading_pipe"       | build_leading_pipe
         "catch_any"          | build_catch
         "trailing"           | build_trailing
         "asked_bind"         | build_asked_bind
     }
     let codes = table<DiagCode> {
-        kind                | summary                              | remedy
-        "type.mismatch"     | "an operand has the wrong type"      | Remedy.Fix
-        "type.unknown_prop" | "a property name nothing answers to" | Remedy.Fix
-        "type.shift_count"  | "a shift count is between 0 and 63"  | Remedy.Help
+        kind                 | summary                                            | remedy
+        "type.mismatch"      | "an operand has the wrong type"                    | Remedy.Fix
+        "type.unknown_prop"  | "a property name nothing answers to"               | Remedy.Fix
+        "type.shift_count"   | "a shift count is between 0 and 63"                | Remedy.Help
+        "parse.leading_pipe" | "a continuing operator ends the line it continues" | Remedy.Help
     }
     LanguageFeature expr_spine {
         gram: grammar {
@@ -71,7 +71,7 @@ export fn expr_spine() -> LanguageFeature {
             element = ".." value:postfix -> Expr.Named(name = "..", value = value) | expression
             trailing = "{" ( ps:trailing_seat ( "," ps:trailing_seat )* ","? "->" )? ( ts:stmt | BREAK )* "}" @expect("}", "expected `}` to close the trailing block") -> trailing(ps, ts)
             trailing_seat = ( constant:"const" )? ( mutable:"mut" )? name:NAME -> Record.ParamSyntax
-            stmt = lp:"|>" -> leading_pipe(lp)
+            stmt = "|>" expression END -> Refusal.leading_pipe
             asked = "." name:NAME ( "(" ( args:asked_payload ( "," args:asked_payload )* ","? )? ")" )? -> Pat.Variant | name:NAME ":" ty:type_atom -> Pat.Typed
             asked_payload = "_" -> Pat.Wild | n:NAME -> asked_bind(n)
             climbed = left:additive @operators {
@@ -93,6 +93,9 @@ export fn expr_spine() -> LanguageFeature {
         }
         builders: rows
         diags: codes
+        refusals: [
+            RefusalRow { name: "leading_pipe", kind: "parse.leading_pipe", voice: leading_pipe },
+        ]
     }
     expr_spine
 }

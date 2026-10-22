@@ -1,18 +1,7 @@
 //! Parse-time lowering: the list pattern's `..` and the blockless
 //! `collect` refusal.
 use core.{Pat, Scoped}
-use features.{pat_ids_at, LangNode, Builder}
-
-/// `collect` with no block: the gathering needs statements to run.
-fn build_collect_blockless(_b: Builder) -> Result<LangNode, string> {
-    .Err(blockless_collect())
-}
-
-// ── voices ──
-
-fn blockless_collect() -> string {
-    "`collect` gathers the values its block's statements leave — write `collect { … }`"
-}
+use features.{pat_ids_at, LangNode, Builder, RefusalWords}
 
 /// `[a, ..rest, z]` — the element patterns on either side of the `..`,
 /// which binds the middle (or discards it, bare). Without a `..` every
@@ -29,4 +18,14 @@ fn build_list_pat(b: Builder) -> Result<LangNode, string> {
         .store
         .alloc_pat(if binds.is_empty() { Pat.Wild } else { Pat.Bind(Scoped(binds[0].text)) }, d.span)
     b.make_pat(Pat.Seq(before, [rest], after))
+}
+
+// ── voices ──
+
+/// `collect` with no block: the gathering needs statements to run.
+fn blockless_collect() -> RefusalWords {
+    RefusalWords {
+        message: "`collect` gathers the values its block's statements leave",
+        help: "give it its block — `collect { … }`",
+    }
 }
