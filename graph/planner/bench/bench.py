@@ -49,7 +49,7 @@ def kind(question):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resume", help="a partial results file to continue")
-    parser.add_argument("--decisions", default=str(HERE / "decisions.compare.jsonl"), help="recorded decisions to score")
+    parser.add_argument("--decisions", default=str(HERE / "decisions.jsonl"), help="recorded decisions to score")
     args = parser.parse_args()
     if not shared_socket():
         raise SystemExit(f"bench: no shared model answers on {SOCKET}")

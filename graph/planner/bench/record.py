@@ -79,8 +79,6 @@ def graph_at(checkpoint, scratch, fixture):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--only", help="comma-separated question ids")
-    parser.add_argument("--select", choices=("compare", "each"), default="compare",
-                        help="how the planner chooses returned properties")
     args = parser.parse_args()
     fixture = score.load_fixture()
     questions = {q["id"]: q for q in fixture[3]}
@@ -103,19 +101,18 @@ def main():
             context = {**context, **{k: locate(context[k]) for k in ("principal", "speaker") if context[k]}}
             chooser = Gold(row["id"], row["choices"], row.get("needed", []))
             graph = Graph([str(app.binary), "request", "--db", str(app.db)])
-            cypher = structured.plan(chooser, q["question"], schema, context, graph.search, None, graph.model_of,
-                                     args.select)
+            cypher = structured.plan(chooser, q["question"], schema, context, graph.search, None, graph.model_of)
             if chooser.labels:
                 raise SystemExit(f"{row['id']}: labels left unused: {chooser.labels}\n  composed: {cypher}")
-            if row.get("cypher", {}).get(args.select) and row["cypher"][args.select] != cypher:
+            if row.get("cypher") and row["cypher"] != cypher:
                 raise SystemExit(f"{row['id']}: gold walk composed\n  {cypher}\n  not\n  {row['cypher']}")
             print(f"{row['id']}: {len(chooser.decisions)} decisions: {cypher}")
             decisions += chooser.decisions
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, text=True, capture_output=True).stdout.strip()
     header = {"recorded": datetime.datetime.now().isoformat(timespec="seconds"), "commit": commit,
-              "binary": str(score.BINARY), "select": args.select,
+              "binary": str(score.BINARY),
               "questions": sorted({d["question_id"] for d in decisions})}
-    out = HERE / f"decisions.{args.select}.jsonl"
+    out = HERE / "decisions.jsonl"
     out.write_text("\n".join(json.dumps(r) for r in [header, *decisions]) + "\n")
     print(f"{len(decisions)} decisions -> {out.relative_to(ROOT)}")
 

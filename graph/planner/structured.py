@@ -8,20 +8,15 @@ phrases, enum values), the graph's own search over admitted facts, and the
 model's closed choices. A choice the evidence settles alone (one declared
 phrase spoken, one record the question names) is taken without the model.
 """
-import json
-import pathlib
 import re
 
 from subset import models_of, base_shape, reference_target, relation_ends
 from prompt import line
 
-PARAMS = json.loads((pathlib.Path(__file__).with_name("params.json")).read_text()) \
-    if pathlib.Path(__file__).with_name("params.json").exists() else {}
 
 # The choose op letters its options A-Z; longer lists run as heats.
 LETTERS = 26
 ARRIVED = ["yes: the question asks about this record", "no: the answer lies further along"]
-NEEDED = ["yes", "no"]
 ENOUGH = "nothing else: the answer is complete"
 RECORDED = ["the content of the records: values, words, dates, people (missing means unknown)",
             "only whether a yes/no status has been recorded (no record counts as no)"]
@@ -191,7 +186,7 @@ def hops(models, label):
     return out
 
 
-def plan(chooser, question, schema, context, search=None, depth=None, model_of=None, select="compare"):
+def plan(chooser, question, schema, context, search=None, depth=None, model_of=None):
     """One query composed from closed choices; `depth` caps the hops (the
     request's budget), else the catalog's size bounds the walk."""
     models = models_of(schema)
@@ -228,7 +223,7 @@ def plan(chooser, question, schema, context, search=None, depth=None, model_of=N
         narrowed(chooser, trail, models[target], var, out, question, evidence)
         evidence.spent.add(target)
     trail = f"{head}\nSo far: {' '.join(out.parts)} — the answer is about these {label} records."
-    items = returns(chooser, trail, models[label], var, held and (held[0], models[held[1]]), evidence, select)
+    items = returns(chooser, trail, models[label], var, held and (held[0], models[held[1]]), evidence)
     if held and f"{held[0]}." in items:
         out.parts[held[2]] = out.parts[held[2]].replace("-[:", f"-[{held[0]}:", 1)
     return out.cypher(items)
@@ -300,19 +295,7 @@ def narrowed(chooser, trail, model, var, out, question, evidence):
         evidence.explain(w)
 
 
-def needed(chooser, trail, question):
-    """Yes when the debiased probability of yes reaches the fitted cut
-    (params.json, written by bench/calibrate.py); without one, the likelier answer."""
-    cut = PARAMS.get("property_yes")
-    if cut is None:
-        return best(chooser, trail, question, NEEDED) == 0
-    budget = getattr(chooser, "budget", None)
-    if budget:
-        budget.holds(trail, question, *NEEDED)
-    return debiased(chooser, trail, question, NEEDED)[0] >= cut
-
-
-def returns(chooser, trail, model, var, record=None, evidence=None, select="compare"):
+def returns(chooser, trail, model, var, record=None, evidence=None):
     """The RETURN items: a count, one recorded status, or chosen values. The
     final node's properties are candidates; a relation record passed on the
     way is a path, so its own fields are candidates only where unexplained
@@ -334,7 +317,7 @@ def returns(chooser, trail, model, var, record=None, evidence=None, select="comp
         return f"coalesce({v}.{name}, false) AS {name}"
     shown = [f"the {owner}'s {p['name']}" + (f" ({line(p['description'])})" if p.get("description") else "")
              for _, owner, p in props]
-    picked = compared(chooser, trail, shown) if select == "compare" else each(chooser, trail, shown)
+    picked = compared(chooser, trail, shown)
     names = [props[i][2]["name"] for i in picked]
     return ", ".join(f"{props[i][0]}.{props[i][2]['name']} AS {props[i][2]['name']}"
                      + ("" if names.count(props[i][2]["name"]) == 1 else f"_{props[i][0]}")
@@ -353,9 +336,3 @@ def compared(chooser, trail, shown):
             break
         picked.append(rest[at])
     return picked
-
-
-def each(chooser, trail, shown):
-    """Every property asked on its own, yes or no."""
-    picked = [i for i, s in enumerate(shown) if needed(chooser, trail, f"Does the answer need {s}?")]
-    return picked or [0]
