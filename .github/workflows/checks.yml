@@ -379,15 +379,6 @@ jobs:
         timeout-minutes: 50
         run: |
           s=$(date +%s)
-          # The status names the cause: 124 is the bound, 137 a kill (the memory cap or the bound's -k), anything else a failure.
-          said() { case $1 in 124) echo "::error::$2 ran past its 1500 s bound" ;; 137) echo "::error::$2 was killed (exit 137: the memory cap or a kill; see the watch: peak line)" ;; *) echo "::error::$2 failed (exit $1)" ;; esac; }
-          # A RELEASED COMPILER OLDER THAN THIS TREE CANNOT READ IT: `gen` prints
-          # the branch's new syntax as parse errors and `said` names a failed
-          # generation. That is the expected shape here, not a broken tree — the
-          # seed recovery is the answer, and it is a FULL build (gen-1 by the seed,
-          # gen-2 by gen-1), so a source broken for real still dies there. The
-          # fallback forgives a compiler too old, never a source wrong.
-          gen() { timeout -k 10 1500 make -s avra; rc=$?; [ "$rc" = 0 ] || { said "$rc" "a compiler generation"; return 1; }; }
           # THE LADDER, when the run carries rungs: the starting compiler builds rung 1, its product
           # rung 2, and so on; the last product then builds HEAD twice below, as for any tree. A
           # failing rung is a hard stop that names itself — the seed cannot read a rung either.
@@ -405,11 +396,12 @@ jobs:
             fi
             echo "speed ladder $(( $(date +%s) - s ))" >> speed.log
           fi
-          if [ -x build/avra ] && gen && gen; then :; else
-            # a store is one compiler's: the recovery starts without the one the older compiler left
-            [ -d .avra-cache ] && mv .avra-cache "${RUNNER_TEMP:-/tmp}/avra-cache-of-an-older-compiler"
-            timeout -k 10 1500 make -s bootstrap; rc=$?; [ "$rc" = 0 ] || { said "$rc" "the bootstrap"; exit 1; }
-          fi
+          # A RELEASED COMPILER OLDER THAN THIS TREE CANNOT READ IT, and its
+          # failed generation is the expected shape here: `make compiler` falls
+          # back to the seed, a full build that forgives a compiler too old,
+          # never a source wrong.
+          make -s compiler GEN_BOUND=1500 STORE_ASIDE="${RUNNER_TEMP:-/tmp}/avra-cache-of-an-older-compiler" \
+            || { echo "::error::the compiler did not build, from the standing compiler nor from the seed"; exit 1; }
           echo "speed compiler $(( $(date +%s) - s ))" >> speed.log
           echo "compiler: built from source in $(( $(date +%s) - s ))s (starting compiler: ${{ steps.release.outputs.source || 'cache' }})"
       - if: steps.compiler.outputs.built == '1' && github.event_name == 'pull_request'
@@ -557,9 +549,8 @@ jobs:
             # them, so the build below is from source and what SAVES is sound.
             rm -f build/*.o build/*.a
           fi
-          timeout -k 10 900 make -s -j"$(nproc)" -o avra objects libs \
-            || timeout -k 10 900 make -s -o avra objects libs \
-            || { echo "::error::objects and libs exceeded their 900 s bound or failed"; exit 1; }
+          sh tools/bounded.sh 900 make -s -j"$(nproc)" -o avra objects libs \
+            || sh tools/bounded.sh 900 make -s -o avra objects libs || exit 1
           # The store rides the same hand-down the objects do, so a keeper or
           # suite reads what prepare's self-compile already analysed.
           sh tools/hand_down.sh pack
@@ -828,11 +819,7 @@ jobs:
         run: |
           args="--files ${{ needs.prepare.outputs.changed }} --packages ${{ needs.prepare.outputs.packages }} --no-keepers"
           [ "${{ github.event_name }}" != pull_request ] || args="$args --pr-minimum"
-          timeout -k 10 900 sh tools/gate_changed.sh $args || {
-            rc=$?
-            if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then echo "::error::the gate exceeded its 900 s bound"; else echo "::error::the gate refused (exit $rc)"; fi
-            exit 1
-          }
+          sh tools/bounded.sh 900 sh tools/gate_changed.sh $args || exit 1
 
   # THE LATENCY GATE A RUNTIME CHANGE OWES: the scheduler's transition
   # rows against the recorded baseline, on the runner the checks' image

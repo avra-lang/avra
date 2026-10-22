@@ -305,9 +305,7 @@ advance_and_cache() {
         return "$s1"
     }
     : > "$log"
-    if [ -x build/avra ] && step make -s avra && step make -s avra; then
-        ok=1
-    elif step make bootstrap; then
+    if step make -s compiler; then
         ok=1
     fi
     if [ "$ok" = 1 ] && [ -x build/avra ]; then

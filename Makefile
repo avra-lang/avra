@@ -491,6 +491,23 @@ compiler-files:
 	@printf '%s\n' build/avra build/avra_hot.bc build/avra_hot.inc $(sort $(COMPILER_OBJS) \
 	  $(patsubst %.o,%.sha,$(filter %.o,$(COMPILER_OBJS))) $(patsubst %.o,%.d,$(filter %.o,$(COMPILER_OBJS))))
 
+# THE COMPILER FROM WHATEVER STANDS: the standing binary builds this tree
+# twice (one `make avra` advances one generation), and where none stands or
+# it cannot read the tree — new syntax, a refusal about its own source — the
+# seed bootstraps it, a FULL build, so a source wrong for real still dies.
+# GEN_BOUND bounds each build in seconds (tools/bounded.sh names the cause);
+# STORE_ASIDE is where an older compiler's store goes before the bootstrap,
+# since a store is one compiler's.
+GEN_BOUND ?=
+STORE_ASIDE ?=
+BOUNDED = $(if $(GEN_BOUND),sh tools/bounded.sh $(GEN_BOUND) )
+compiler:
+	@if [ -x build/avra ] && $(BOUNDED)$(MAKE) -s avra && $(BOUNDED)$(MAKE) -s avra; then :; else \
+	  if [ -n "$(STORE_ASIDE)" ] && [ -d .avra-cache ]; then mv .avra-cache "$(STORE_ASIDE)"; fi; \
+	  echo "compiler: the standing compiler did not build this tree — bootstrapping from the seed"; \
+	  $(BOUNDED)$(MAKE) -s bootstrap; \
+	fi
+
 # THE EDIT LOOP: the source built by the STANDING compiler into
 # build/avra-try, never over it — so the builder's print, and every row its
 # store holds, stands from one edit to the next. `./avra-try` runs it. A
@@ -1211,7 +1228,7 @@ pipeline-status:
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
 KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc
-.PHONY: compiler-files store-witnesses keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc pipeline-status ci-invariants ci-verdict pr-watcher
+.PHONY: compiler compiler-files store-witnesses keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@sh tools/keepers_loop.sh "$(MAKE) -s" $(KEEPERS_STATIC)
