@@ -1,0 +1,32 @@
+// THE PACK'S CONTRACT: one writer's segment, each frame ended by a commit
+// marker; a later open reads what committed; a segment whose plain header
+// names another compiler's print is foreign and read not at all.
+use @std.time.{now_ns}
+use compiler.store.{pack_at, pack_put, pack_has, pack_get}
+
+/// One store directory per case, so no case reads another's segments.
+fn pack_root(name: string) -> string { "/tmp/avra-pack-test/${name}-${now_ns()}" }
+
+spec "store/pack — segments, commit markers, the two tiers" {
+    given "a row written to one writer's segment" {
+        then "a later open reads it back through the content tier" {
+            let root = pack_root("reopen")
+            let _ = pack_put(pack_at(root, "print-one"), "unit", "k", "v", [])
+            pack_has(pack_at(root, "print-one"), "unit", "k") &&
+                pack_get(pack_at(root, "print-one"), "unit", "k") == "v"
+        }
+        then "another key in the same family is absent" {
+            let root = pack_root("absent")
+            let _ = pack_put(pack_at(root, "print-one"), "unit", "k", "v", [])
+            !pack_has(pack_at(root, "print-one"), "unit", "other")
+        }
+    }
+    given "a segment whose plain header names another compiler's print" {
+        then "no row is read, and the pack says foreign" {
+            let root = pack_root("foreign")
+            let _ = pack_put(pack_at(root, "print-one"), "unit", "k", "v", [])
+            let other = pack_at(root, "print-two")
+            !pack_has(other, "unit", "k") && other.foreign.get()
+        }
+    }
+}
