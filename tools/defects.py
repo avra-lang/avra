@@ -332,7 +332,7 @@ def self_test():
     assert {b[0] for b in bad} == {"probe"} and all("voice" in b[1] for b in bad) and not notes, (bad, notes)
     assert timings_self_test() == 0, "the timings report failed"
     dump = stalled(os.getpid())
-    assert dump[0].startswith("load: ") and any("python" in l.lower() or str(os.getpid()) in l for l in dump), dump
+    assert dump[0].startswith("load: ") and len(dump) > 2 and any(l.startswith(("fd: ", "wchan: ")) for l in dump), dump
     print("defects: self-test passed — a timeout finishing alone stands down, one that hangs twice fails with both durations, a voice still fails, and the slowest, the timings file and the last green seconds hold")
     return 0
 
