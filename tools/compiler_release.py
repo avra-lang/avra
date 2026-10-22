@@ -340,6 +340,7 @@ def _self_test_body(base, state, tempfile):
 
 
 def main(argv):
+    global ASSET
     if "--self-test" in argv:
         return _self_test()
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -352,9 +353,11 @@ def main(argv):
     u = sub.add_parser("publish")
     u.add_argument("key")
     u.add_argument("path")
+    p.add_argument("--asset", default=ASSET, help="the release asset's name")
     p.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "avra-lang/avra"))
     p.add_argument("--api", default=os.environ.get("AVRA_RELEASE_API", ""))
     args = p.parse_args(argv)
+    ASSET = args.asset
     base = _api_for(args.repo, args.api)
     if args.cmd == "fetch":
         return fetch(base, args.key, args.dest)

@@ -1,0 +1,44 @@
+//! `avra-tools ci_path_gate <job> --event <event>` — which jobs a change owes, decided from the
+//! changed paths on stdin (one per line). Prints 1 when the job owes the run, 0 when it does not.
+//! A push, a hand-run and any other non-PR event owe every job, so main's own run always carries
+//! them; a PR owes a job only when a path it reads is changed.
+use @std.cli.{CliResult, Runnable, arg, command, option}
+use @std.io.{read_text}
+
+type PathGateCmd = {}
+
+impl Runnable for PathGateCmd {
+    fn run(args: CliResult) -> int {
+        let changed = [l.trim() for l in (read_text("/dev/stdin") catch "").split("\n") if l.trim() != ""]
+        println(if owes(args.arg("job"), args.option("event"), changed) { "1" } else { "0" })
+        0
+    }
+}
+
+export command ci_path_gate {
+    description: "Whether a job owes the run: 1 when a PR changed a path the job reads, or on any other event, else 0"
+    arg job {
+        description: "the gated job: `runtime-keep` or `layout-oracle`"
+        required: true
+    }
+    option event { description: "the workflow event (`pull_request` is judged by paths, every other owes the job)" }
+    run: PathGateCmd {}
+}
+
+/// What each gated job reads. A trailing slash is a directory; any other entry is one file.
+fn reads_of(job: string) -> List<string> {
+    match job {
+        "runtime-keep" -> ["runtime/", "Makefile", "tools/memcap.sh"],
+        "layout-oracle" -> ["packages/std-ui/", "packages/std-text/", "tools/layout-oracle/", "tools/layout_oracle.sh"],
+        rest -> [],
+    }
+}
+
+fn reads(path: string, entry: string) -> bool {
+    path == entry || entry.ends_with("/") && path.starts_with(entry)
+}
+
+export fn owes(job: string, event: string, changed: List<string>) -> bool {
+    event != "pull_request" ||
+        changed.any((path) -> reads_of(job).any((entry) -> reads(path, entry)))
+}
