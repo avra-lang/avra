@@ -43,6 +43,8 @@ lists and refuses by name:
                    composite action (.github/actions/handed-down), and the
                    tar is packed and unpacked only by tools/hand_down.sh —
                    never a second spelling in a workflow.
+  ci-image         every job container is the image ci-image.yml pushes, named
+                   ONCE per workflow (a YAML anchor) and aliased everywhere else.
   warm-edit        WHERE the DB 07 warm-edit gate exists (Makefile target
                    `warm-edit`), it is one of `KEEPERS` and its measurement
                    skips with a word on a cold store — a claim with no gate
@@ -524,6 +526,25 @@ def check_hand_down(workflows):
     return [], ["hand-down: %d job(s) take what prepare built through %s" % (takers, HAND_DOWN_ACTION)]
 
 
+def check_ci_image(workflows):
+    """{file: text} -> (refusals, words). The image ci-image.yml pushes is the
+    one every workflow runs in, and a workflow spells it once."""
+    pushed = re.findall(r"^\s*tags:\s*(\S+)\s*$", workflows.get("ci-image.yml", ""), re.M)
+    if len(pushed) != 1:
+        return ["ci-image.yml pushes %d tag(s), not one" % len(pushed)], []
+    refusals, aliases = [], 0
+    for name, text in sorted(workflows.items()):
+        images = re.findall(r"^\s*image:\s*(\S+)\s*$", text, re.M)
+        refusals += ["%s runs `%s`, not the pushed `%s`" % (name, i, pushed[0]) for i in images if i != pushed[0]]
+        if len(images) > 1:
+            refusals.append("%s spells its image %d times — name it once and alias it (`container: *ci-image`)"
+                            % (name, len(images)))
+        aliases += len(re.findall(r"^\s*container:\s*\*", text, re.M))
+    if refusals:
+        return refusals, []
+    return [], ["ci-image: one image (%s), spelled once per workflow, %d alias(es)" % (pushed[0], aliases)]
+
+
 def workflow_texts():
     d = os.path.join(ROOT, ".github", "workflows")
     return {f: open(os.path.join(d, f), encoding="utf-8").read()
@@ -552,7 +573,8 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_dup_run(workflow_text),
                   lambda: check_ready_race(__import__("pr_mode")),
                   lambda: check_warm_edit(make_text),
-                  lambda: check_hand_down(workflow_texts())):
+                  lambda: check_hand_down(workflow_texts()),
+                  lambda: check_ci_image(workflow_texts())):
         r, w = check()
         refusals += r
         words += w
@@ -802,8 +824,17 @@ rt-header:
     pack = "          tar -cf - build | gzip -1 > avra-build.tar.gz\n"
     assert check_hand_down({"a.yml": pack})[0], "a by-hand pack must be refused"
 
+    # ── ci-image: one pushed tag, spelled once per workflow ──
+    push = {"ci-image.yml": "          tags: ghcr.io/x/ci:1\n"}
+    once = "    container: &ci-image\n      image: ghcr.io/x/ci:1\n  b:\n    container: *ci-image\n"
+    assert check_ci_image(dict(push, **{"a.yml": once}))[0] == [], check_ci_image(dict(push, **{"a.yml": once}))
+    twice = once.replace("container: *ci-image", "container:\n      image: ghcr.io/x/ci:1")
+    assert check_ci_image(dict(push, **{"a.yml": twice}))[0], "a second spelling must be refused"
+    other = once.replace("ci:1", "ci:0")
+    assert check_ci_image(dict(push, **{"a.yml": other}))[0], "an image the recipe does not push must be refused"
+
     print("ci_invariants self-test: release-order, keeper-coverage, watcher-fixtures, "
-          "light-draft, run-mode, race-split, compiler-route, path-gate, dup-run, ready-race, warm-edit, hand-down held on fixtures")
+          "light-draft, run-mode, race-split, compiler-route, path-gate, dup-run, ready-race, warm-edit, hand-down, ci-image held on fixtures")
     return 0
 
 

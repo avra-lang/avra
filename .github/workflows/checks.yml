@@ -74,7 +74,8 @@ env:
 jobs:
   prepare:
     runs-on: ubuntu-latest
-    container:
+    # THE CHECKS' MACHINE, named once: every other job's `container` is this alias.
+    container: &ci-image
       image: ghcr.io/avra-lang/avra-ci:llvm22
       credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
     # Backstop above the compiler (50) and objects (15) step bounds; a hang in
@@ -611,9 +612,7 @@ jobs:
     if: always() && needs.prepare.outputs.main == '1' && needs.prepare.outputs.build == '1' && needs.test.result == 'success'
     runs-on: ubuntu-latest
     # the tools build links the runtime library and package objects, made here
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     permissions:
       contents: write
       packages: read
@@ -642,9 +641,7 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -740,9 +737,7 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -773,9 +768,7 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -800,9 +793,7 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.cache == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -852,9 +843,7 @@ jobs:
     needs: [prepare]
     if: github.event_name == 'pull_request' && needs.prepare.outputs.codecs == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -867,9 +856,7 @@ jobs:
     # idioms would run an older compiler over this tree's source. Skipped, not passed.
     if: (needs.prepare.outputs.changed != '' || needs.prepare.outputs.packages != '') && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -908,9 +895,7 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.runtime == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -924,9 +909,7 @@ jobs:
     # the combination, which no single PR's tree can. A PR pays fmt + idioms.
     if: needs.prepare.outputs.packages != '' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -1011,9 +994,7 @@ jobs:
     runs-on: ubuntu-latest
     # Prepare's own image: a cache's version includes how it was compressed, so the job that
     # saves the weights and the one that restores them must share a toolchain.
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -1059,9 +1040,7 @@ jobs:
     needs: [prepare]
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -1086,9 +1065,7 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.runtime_keep == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 60
     # THE BREAKS RUN IN TWO PARTS (runtime/tests/mutations.py, MUTATION_SHARD): the scheduler's
     # mutations were 10 of this job's 11 minutes, so each runner owns every other one.
@@ -1131,9 +1108,7 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.layout_oracle == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    container: *ci-image
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
