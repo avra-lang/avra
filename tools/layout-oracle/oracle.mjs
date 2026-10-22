@@ -58,6 +58,11 @@ const SHARE = 60 / Q; // one engine quantum, in sixtieths of a pixel
 // stands past a plain unit, and anything beyond it fails: no flat number. A text's LINE COUNT is a
 // count, exact. A whole-pixel tolerance would hide the very defect this oracle exists to find.
 const UNIT = 1; // one solver unit, in sixtieths of a pixel
+// A box's own numbers are quantised twice: the solver snaps a length to a unit (`fine` in place/measure.av,
+// carried as `unit` in place/solve.av), the engine lays it out in its quantum (ENGINE_QUANTUM). Each rounds
+// to nearest, so they stand apart by half a unit plus half a quantum even for a box that shares nothing.
+// Two lattices of one size disagree on nothing. `--without-own-term` drops the term, to witness it needed.
+const OWN = args["without-own-term"] !== undefined || SHARE === UNIT ? 0 : (UNIT + SHARE) / 2;
 // The page's numbers are 32-bit floats: past a few hundred pixels one step is 0.002 sixtieths of a
 // pixel. This is that resolution, rounded up, and never a tolerance on the layout.
 const SLACK = 0.01;
@@ -162,7 +167,7 @@ function bounds_of(spec) {
       const wraps = (parent.layout.wrap ?? "NoWrap") !== "NoWrap";
       pos[cross] = parentPos[cross] + (align === "Center" ? parentSize[cross] + size[cross] + SHARE : align === "End" ? parentSize[cross] + size[cross] : 0) + (wraps ? sum(before.map((k) => sizeBound(k, cross, parent, parentSize[cross], parentRoom, shrinks))) + (before.length + 1) * SHARE : 0);
     }
-    out.push({ left: pos.width, top: pos.height, width: size.width, height: size.height });
+    out.push({ left: pos.width + OWN, top: pos.height + OWN, width: size.width + OWN, height: size.height + OWN });
     const order = visual(n);
     for (const k of n.kids) walk(k, n, pos, size, room, definite, order.slice(0, order.indexOf(k)));
   };
@@ -632,7 +637,6 @@ const FAMILY = {
 };
 // Trees licensed one at a time, each with what is known. A name here is a defect nobody has explained.
 const NAMED = [
-  { engine: "webkit", face: "prop", seed: 3, case: 293, width: 300, why: "a bound: box 4 (a WrapReverse Row in a wrapping Row-direction Column) is 0.5/60 px narrower in WebKit than the solver, where its derived width bound is 0; unexplained from place/solve.av" },
 ];
 
 const nodes_of = (spec) => [spec, ...spec.kids.flatMap(nodes_of)];
