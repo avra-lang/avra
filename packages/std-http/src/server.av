@@ -59,6 +59,7 @@
 //! `drain` from the stop, and so does every write begun after it. A
 //! handler's own work is not a wait the drain can end.
 use @std.http_message.message.{Method}
+use @std.errors.{Error, ErrorInfo, info}
 use @std.net.{Listener, Conn, NetError, Bell, bell, listen}
 use @std.time.{Duration, ms, secs, sleep, now_ms}
 use frame.{Head, Limits, ReplyBody, RequestBody, framed, status_of, limits, no_bytes}
@@ -85,7 +86,7 @@ use http.{
     completes,
 }
 use wire.{Transport, WireError, Secure, plainly, wire_timely}
-use route.{Route, Routes, compiled, dispatch, gathered}
+use route.{Route, RouteFault, Routes, compiled, dispatch, gathered, route_faults, told}
 use h2.{H2Conn, H2Error, Exchange, Arrived, h2_server, preface}
 use h2_serve.{Pour, request_of, answered_on, refused_on, scheme_of, stream_body, handed_on}
 
@@ -224,15 +225,38 @@ fn through(layers: List<layer>, inner: Handler) -> Handler {
     (q: Request<Unrouted>) -> outer.wraps(q, next)
 }
 
+/// Why a server did not start: the network refused it, or its own route
+/// table is wrong.
+export enum ServeError {
+    Net(e: NetError)
+    Routes(found: List<RouteFault>)
+}
+
+impl Error for ServeError {
+    fn describe() -> ErrorInfo {
+        match self {
+            .Net(e) -> e.describe(),
+            .Routes(found) -> info("http.routes", "the routes cannot start: ${[told(f) for f in found].join("; ")}"),
+        }
+    }
+}
+
 /// What a server of routes keeps between requests: nothing.
 export type Stateless = {}
 
 impl server {
     /// This server bound and ready: its routes compiled once into the
-    /// table every connection dispatches through.
-    fn listening() -> Result<Server<Stateless>, NetError> {
-        let l = listen(self.host, self.port)?
-        let routed = compiled(gathered(self.routes))
+    /// table every connection dispatches through. A table with a fault
+    /// never binds.
+    fn listening() -> Result<Server<Stateless>, ServeError> {
+        let all = gathered(self.routes)
+        let found = route_faults(all)
+        if !found.is_empty() { return .Err(.Routes(found)) }
+        let l = match listen(self.host, self.port) {
+            .Ok(l) -> l,
+            .Err(e) -> { return .Err(.Net(e)) },
+        }
+        let routed = compiled(all)
         let handled = through(self.layers, (q: Request<Unrouted>) -> dispatch(routed, q))
         let plain = served(l, () -> Stateless {}, limits(), timing()) { _none, q -> handled(q) }
         let opener? = self.tls else { return .Ok(plain) }
@@ -241,8 +265,8 @@ impl server {
 
     /// Listens and serves on every core until stopped; answers how many
     /// connections it took.
-    fn run() -> Result<int, NetError> {
-        (self.listening()?).run()
+    fn run() -> Result<int, ServeError> {
+        match (self.listening()?).run() { .Ok(n) -> .Ok(n), .Err(e) -> .Err(.Net(e)) }
     }
 }
 
