@@ -509,14 +509,25 @@ def extraction_key(source, schema, hooks):
                      Cache.identity(hooks["extractor"]))
 
 
-def legacy_key(source, schema, hooks):
+def legacy_code(command, rev):
+    """`Cache.code` of the extractor's programs as `rev` committed them."""
+    files = [w for w in shlex.split(command) if w.endswith(".py")]
+    names = sorted(subprocess.run(["git", "ls-tree", "--name-only", rev, f"{(ROOT / f).parent.relative_to(ROOT)}/"],
+                                  capture_output=True, text=True, cwd=ROOT, check=True).stdout.split()
+                   for f in files[:1])[0]
+    texts = [subprocess.run(["git", "show", f"{rev}:{n}"], capture_output=True, cwd=ROOT, check=True).stdout
+             for n in names if n.endswith(".py")]
+    return hashlib.sha256(b"".join(texts)).hexdigest()
+
+
+def legacy_key(source, schema, hooks, code=None):
     """The key extractions were kept under before `extraction_key`: it did not
     see the source text, the fitted parameters or the models."""
     return Cache.key(source["id"], source["observation"], source["revision"], schema["fingerprint"],
-                     hooks["extractor"], Cache.code(hooks["extractor"]))
+                     hooks["extractor"], code or Cache.code(hooks["extractor"]))
 
 
-def adopt_legacy(fixture, hooks, binary, scratch):
+def adopt_legacy(fixture, hooks, binary, scratch, rev=None, was=None):
     """Copies the extractions kept under the legacy key to the current key,
     leaving the originals, and logs each in adopted.jsonl. The legacy key did
     not see the fitted parameters, so an adoption is the caller's word that
@@ -524,8 +535,9 @@ def adopt_legacy(fixture, hooks, binary, scratch):
     app = App(binary, scratch / "adopt.db", scratch)
     schema = app.call({"op": "schema"})
     adopted = []
+    code = legacy_code(was or hooks["extractor"], rev) if rev else None
     for s in fixture[1]:
-        old, new = legacy_key(s, schema, hooks), extraction_key(s, schema, hooks)
+        old, new = legacy_key(s, schema, {**hooks, "extractor": was or hooks["extractor"]}, code), extraction_key(s, schema, hooks)
         kept = CACHE.get("extractions", old)
         if kept is not None and CACHE.get("extractions", new) is None:
             CACHE.put("extractions", new, kept)
@@ -947,8 +959,10 @@ def main():
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--fit-timeout", nargs="+", metavar="RESULTS",
                         help="fit the extraction timeout from e2e results files, then exit")
-    parser.add_argument("--adopt-legacy", action="store_true",
-                        help="copy extractions kept under the legacy key to the current key (originals stay), then exit")
+    parser.add_argument("--adopt-legacy", nargs="?", const="", metavar="REV",
+                        help="copy extractions kept under the legacy key to the current key (originals stay), then exit; "
+                             "REV is the commit whose extractor code made them")
+    parser.add_argument("--legacy-extractor", help="with --adopt-legacy: the extractor command the entries were made under")
     parser.add_argument("--resume", action="store_true",
                         help="reuse extractions and graded questions a cut run already paid for (never held-out)")
     args = parser.parse_args()
@@ -965,11 +979,12 @@ def main():
         if built.returncode != 0:
             sys.exit("fixture app build failed")
     fixture = load_fixture()
-    if args.adopt_legacy:
+    if args.adopt_legacy is not None:
         if not CACHE:
             sys.exit("--adopt-legacy needs --resume")
         with tempfile.TemporaryDirectory(prefix="graph-score-") as directory:
-            return adopt_legacy(fixture, slice_hooks(args), pathlib.Path(args.binary), pathlib.Path(directory))
+            return adopt_legacy(fixture, slice_hooks(args), pathlib.Path(args.binary), pathlib.Path(directory),
+                                 args.adopt_legacy or None, args.legacy_extractor)
     split = load_split(fixture[3])
     held = set(split["heldout"])
     named = set((slice_ids(args.slice) if args.slice else args.only or "").split(",")) - {""}
