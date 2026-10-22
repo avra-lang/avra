@@ -1,5 +1,5 @@
 #!/bin/sh
-# tool-witness: run by make store-witnesses
+# tool-witness: owed by store-probe — claim 1 is killed at its 4000 MB cap: the std-avrac suite from a cold cache peaks past it
 # `MEMCAP=<memcap.sh> sh tools/witness_parallel_build.sh [<package> <package>]`
 #
 # THREE claims about concurrent runs over ONE tree, each a run of its own:
