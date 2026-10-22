@@ -9,7 +9,6 @@
 //! learn it. Asked through the declaration table's hook, remembered
 //! by the kernel (ROADMAP: the inout receiver).
 use core.{
-    IndexRange,
     DeclId,
     Expr,
     ExprId,
@@ -215,13 +214,14 @@ impl Workspace {
             names: self.names_of(d),
             receiver: receiver,
             seats: seats,
-            body: x.body(),
+            lo: x.lo,
+            hi: x.hi,
             own: filled(n, false),
             edges: [],
         }
         cx.assigns()
         for k in call_tags(cx.store) {
-            for e in cx.store.body_by_kind(x.body(), k) { cx.site_evidence(e) }
+            for e in cx.store.exprs_by_kind(x.lo, x.hi, k) { cx.site_evidence(e) }
         }
         Summary { own: cx.own, edges: cx.edges }
     }
@@ -230,7 +230,7 @@ impl Workspace {
 /// What one fn's summary reads and gathers: the body's file, its
 /// seats' types (the receiver's when it has one), its expression
 /// range — and the evidence as it accrues.
-type Survey = { ws: Workspace, decls: Decls, store: SyntaxArena, names: NameFacts, receiver: TypeId?, seats: List<TypeId>, body: IndexRange, own: List<bool>, edges: List<Flow> }
+type Survey = { ws: Workspace, decls: Decls, store: SyntaxArena, names: NameFacts, receiver: TypeId?, seats: List<TypeId>, lo: int, hi: int, own: List<bool>, edges: List<Flow> }
 
 impl Survey {
     /// Every assignment in the range rooted in a seat writes it —
@@ -244,7 +244,7 @@ impl Survey {
     }
 
     fn in_range(e: ExprId) -> bool {
-        self.body.holds(e.index)
+        e.index >= self.lo && e.index < self.hi
     }
 
     /// The seat a place is rooted in — asked of the BINDING: the

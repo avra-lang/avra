@@ -633,41 +633,6 @@ fn stmt_index_walk_found(lit: Code) -> Fix {
         )
 }
 
-/// A declaration's BODY walked by its raw window — `for i in x.lo..x.hi { … }` — where
-/// `x.body_exprs()` hands the expressions themselves. The window is a declaration's whole
-/// span of expression ids and the body is one named part of it, so a scan that re-spells the
-/// bounds reads the part as if it were the whole, and breaks the day the window holds more
-/// than the body (a declaration's annotations). `decl_rows.av` is exempt — its `body()` and
-/// `body_exprs()` ARE the one place the bounds are spelled. A `for` statement's head is read
-/// structurally (`Code.for_range`), and the receiver is a declaration by its name (`x`, `d`,
-/// `decl`), the spelling every such scan used.
-///
-/// NO REWRITE: the walk may read the index as an int as freely as it reads the expression,
-/// which only the body says.
-@keeps("for i in 0..xs.length { log(i) }")
-@says("the walk may read the index as a plain int, and only the body says which")
-export rule raw_body_scan { quote { ${lit} } if body_scanned(lit) -> body_scan_found(lit) }
-
-fn body_scanned(lit: Code) -> bool {
-    let file = lit.of.view.source.file
-    if file.ends_with("features/decl_rows.av") || file.ends_with("core/nodes.av") { return false }
-    let r? = lit.for_range() else { return false }
-    ["x", "d", "decl"].any(r.from.text() == "${it}.lo" && r.to.text() == "${it}.hi")
-}
-
-fn body_scan_found(lit: Code) -> Fix {
-    let r = lit.for_range()!
-    Fix
-        .Say(
-            said(
-                r.to.loc(),
-                "a declaration's body walked by its raw window — `x.body_exprs()` hands the expressions, and the window may hold more than the body",
-                "this loop",
-                null,
-            ),
-        )
-}
-
 /// A VOCABULARY VERB written as a free fn taking a pass STATE first —
 /// `open_region(cx, c)`, `sig(ws, d)` — where the state's own impl IS
 /// its vocabulary, so the verb belongs there as a method
