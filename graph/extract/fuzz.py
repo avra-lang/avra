@@ -25,7 +25,7 @@ class Sc:
     def pick(self, ctx, q, opts, tail=()):
         return self.choose(ctx, q, list(opts) + list(tail))
     def choose(self, ctx, q, opts):
-        if not 2 <= len(opts) <= 26: raise ValueError(f"{len(opts)} options for {q[:60]}")
+        if not 2 <= len(opts) <= c.MAX_OPTIONS: raise ValueError(f"{len(opts)} options for {q[:60]}")
         self.calls += 1
         k = random.randrange(len(opts))
         return [1.0 if i == k else 0.0 for i in range(len(opts))]

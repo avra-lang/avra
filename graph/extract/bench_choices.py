@@ -14,6 +14,9 @@ import tempfile
 import time
 from collections import defaultdict
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pins import parameter  # noqa: E402
+
 OLLAYA = "/usr/local/bin/ollaya"
 
 
@@ -37,7 +40,7 @@ def service():
         s.connect(SOCKET)
         with s:
             s.sendall(json.dumps({"op": "choose", "context": d["context"], "question": d["question"], "options": d["options"]}).encode() + b"\n")
-            out = b"".join(iter(lambda: s.recv(1 << 16), b""))
+            out = b"".join(iter(lambda: s.recv(parameter("socket_read_bytes")), b""))
         return json.loads(out)["p"]
 
     return choose
@@ -71,7 +74,7 @@ def split(d):
 
 def decided(choose, d):
     """Answer a decision; a labelled-pair one is asked as two."""
-    if d["kind"] != "relation" or len(d["options"]) <= 16 or os.environ.get("BENCH_NATIVE"):
+    if d["kind"] != "relation" or len(d["options"]) <= parameter("jevk5_option_budget") or os.environ.get("BENCH_NATIVE"):
         p = choose(d)
         return max(range(len(p)), key=lambda i: p[i]), p
     label, words, x, y = split(d)

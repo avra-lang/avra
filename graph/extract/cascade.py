@@ -20,7 +20,9 @@ import resource
 import sys
 import time
 
-from pins import ENCODER, MODEL_ID, SCORER
+import string
+
+from pins import ENCODER, MODEL_ID, SCORER, parameter
 
 PARAMS_FILE = os.environ.get("CASCADE_PARAMS", os.path.join(os.path.dirname(os.path.abspath(__file__)), "params.json"))
 
@@ -34,8 +36,8 @@ SPAN_THRESHOLD = fitted("span_threshold")
 ACCEPT = fitted("accept")
 MARGIN = fitted("margin")
 NEW_CEILING = fitted("new_ceiling")
-MAX_OPTIONS = 26
-GENERATE_BUDGET = 4096
+MAX_OPTIONS = len(string.ascii_uppercase)
+GENERATE_BUDGET = parameter("generate_budget")
 ABSTAIN = object()
 SOCKET = os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
 STATEMENT = "statement"
@@ -52,7 +54,7 @@ SPEECH_ACTS = {
 }
 # FactBank value of an affirmed claim by speech act; a denied one is CT-.
 FACTUALITY = {"assert": "CT+", "report": "CT+", "plan": "Uu", "request": "Uu", "condition": "PS+", "draft": "PS+"}
-QUOTE_CONTEXT = 32
+QUOTE_CONTEXT = parameter("quote_context")
 
 os.environ.setdefault("HF_HOME", os.path.expanduser("~/.cache/avra-graph-ml/hf"))
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -289,7 +291,7 @@ class Scorer:
 
         if not 2 <= len(options) <= MAX_OPTIONS:
             raise ValueError(f"a choice takes 2 to {MAX_OPTIONS} options, got {len(options)}; split it into heats")
-        letters = [chr(65 + i) for i in range(len(options))]
+        letters = list(string.ascii_uppercase[: len(options)])
         body = f"{context}\n\n{question}\n" + "\n".join(f"{l}) {o}" for l, o in zip(letters, options)) + "\nAnswer with the letter only."
         text = f'Text: "{self.source}"\n\n' if self.source else ""
         prompt = self.render(text + body)
@@ -943,7 +945,7 @@ def received(conn):
     """One request: bytes up to the first newline, or to end of stream."""
     data = b""
     while b"\n" not in data:
-        chunk = conn.recv(1 << 16)
+        chunk = conn.recv(parameter("socket_read_bytes"))
         if not chunk:
             break
         data += chunk
@@ -1032,7 +1034,7 @@ def remote(req, prefix=True, units=None):
     with s:
         s.sendall(json.dumps({"request": req, "prefix": prefix, "units": units}, ensure_ascii=False).encode() + b"\n")
         s.shutdown(socket.SHUT_WR)
-        return json.loads(b"".join(iter(lambda: s.recv(1 << 16), b"")))
+        return json.loads(b"".join(iter(lambda: s.recv(parameter("socket_read_bytes")), b"")))
 
 
 def main():
