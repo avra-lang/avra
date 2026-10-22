@@ -532,15 +532,14 @@ impl Page {
             fixed(Method.Get, "/app.wasm", (_q: Request<Unrouted>) -> self.module()),
             fixed(Method.Get, "/@dev/events", (_q: Request<Unrouted>) -> self.events()),
         ]
-            .concat(forwarded(self.backend, self.glue_files))
-            .concat(directory("/", fresh_files(self.glue)))
+            .concat(shared(self.backend, self.glue_files, directory("/", fresh_files(self.glue))))
     }
 }
 
-/// What the page's server answers, when the page has one.
-fn forwarded(backend: Backend?, glue: List<string>) -> List<Route> {
-    let b? = backend else { return [] }
-    b.routes(glue)
+/// The glue's files, and what the page's server answers when the page has one.
+fn shared(backend: Backend?, glue: List<string>, files: List<Route>) -> List<Route> {
+    let b? = backend else { return files }
+    b.routes(glue, files)
 }
 
 /// An answer no cache keeps: the next ask reads what stands then.
