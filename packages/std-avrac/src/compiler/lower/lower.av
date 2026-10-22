@@ -310,7 +310,7 @@ export fn lower(a: Analysis) -> Lowered {
             false,
             false,
             true,
-            [],
+            no_held_wants(),
             [],
             (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross),
             (_f: FileId) -> false,
@@ -455,7 +455,7 @@ impl Decls {
         every: bool,
         programs: bool,
         hashed: bool,
-        held_asks: List<Wanted>,
+        held_asks: HeldWants,
         held_codes: List<CodeFacts>,
         unit_of: fn(Wanted) -> Unit,
         is_held: fn(FileId) -> bool,
@@ -500,7 +500,8 @@ impl Decls {
             hashes = [HashAsk { by: files[at].view.file, target: h } for h in mu.hashes]
         }
         let d = drained(
-            wants.concat(held_asks),
+            wants.concat(held_asks.read),
+            held_asks,
             unit_of,
             is_held,
             (w: Wanted) -> self.instantiated(w),
@@ -678,6 +679,7 @@ impl Decls {
         let ru = unit_of(root)
         let d = drained(
             ru.wants,
+            no_held_wants(),
             unit_of,
             (_f: FileId) -> false,
             (_w: Wanted) -> false,
@@ -770,10 +772,19 @@ fn instance_of(decls: Decls, w: Wanted) -> Instance {
     }
 }
 
+/// WHAT HELD BODIES ASK, as the lowering takes it: the asks homed in read files, resolved —
+/// they lower here — and of the rest their names, the homes of those that roam, and, when a
+/// link owes code hashes, the roaming ones resolved.
+export type HeldWants = { read: List<Wanted>, names: List<string>, homes: List<FileId>, roaming: List<Wanted> }
+
+/// No held body asks anything.
+export fn no_held_wants() -> HeldWants { HeldWants { read: [], names: [], homes: [], roaming: [] } }
+
 type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static>, asks: List<Ask>, homes: List<FileId>, hashes: List<HashAsk>, held: List<string>, instances: List<InstanceCode>, kept: List<CodeFacts> }
 
 fn drained(
     pending: List<Wanted>,
+    asked: HeldWants,
     unit_of: fn(Wanted) -> Unit,
     is_held: fn(FileId) -> bool,
     instantiated: fn(Wanted) -> bool,
@@ -792,6 +803,15 @@ fn drained(
     mut asks: List<Ask> = []
     mut homes: List<FileId> = []
     mut seen: Map<string, bool> = {}
+    // a held body's ask is the store's: its name is seen, and its code kept only where it roams
+    for name in asked.names { seen.set(name, true) }
+    for w in asked.roaming {
+        let k = kept_instance(instance_key(w))
+        kept = kept.concat(k.facts)
+        held = held.concat(k.held)
+    }
+    // a stub is a fresh caller's, whoever first asked the name
+    mut stubbed: Map<string, bool> = {}
     mut minted = 0
     while !wants.is_empty() && minted < unit_ceiling {
         let w = wants.pop()
@@ -802,7 +822,7 @@ fn drained(
         let roams = instantiated(w)
         if roams { homes.push(w.file) }
         let fresh = claim_seen(seen, w.name)
-        if fresh && is_held(w.file) {
+        if is_held(w.file) && claim_seen(stubbed, w.name) {
             // THE BODY IS THE STORE'S, BUT THE CONTRACT MUST STILL BE HERE: a
             // fresh caller's memory pass reads a called-by-name callee's seat
             // marks from `l.fns` alone (`marks_by_name`), and a held callee is
@@ -814,6 +834,8 @@ fn drained(
             // LICENSED input.debug_flag: a debug flag is the process's own, not an input
             if env("AVRA_STUB_DEBUG") ?? "" != "" && w.name.contains("rules") { eprintln("drained: name=${w.name} stub_null=${stub == null}") }
             if stub != null { fns.push(stub!) }
+        }
+        if fresh && is_held(w.file) {
             held.push(w.name)
             if roams {
                 let k = kept_instance(instance_key(w))
@@ -865,9 +887,9 @@ fn drained(
         spoken: spoken,
         statics: statics,
         asks: asks,
-        homes: homes,
+        homes: asked.homes.concat(homes),
         hashes: hashes,
-        held: held,
+        held: asked.names.concat(held),
         instances: instances,
         kept: kept,
     }

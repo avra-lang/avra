@@ -200,7 +200,7 @@ fn new_keys() -> Keys {
 
 /// WHAT IS HELD THIS BUILD: the files a build must parse, each with why
 /// (`forced` — a home an instantiation lowers from, a file a run reaches,
-/// one whose stored asks or rule findings could not be read); the instantiations held files' bodies demand (`held_wants`); the
+/// one whose stored asks or rule findings could not be read); what held files' bodies ask, by name (`held_asks`), and the held files whose asks name a declaration that no longer resolves (`asks_lost`); the
 /// held files whose bodies this build asked for — a compile-time run reads
 /// a body, and a held file has none (`body_asks`, a Cell: the ask comes
 /// from inside a query); what each file's compile-time runs read
@@ -249,7 +249,8 @@ type ViewStand = { files: int, asks: int, stands: bool }
 @identity
 type Hold = {
     forced: Cell<Map<string, Reads>>,
-    held_wants: Cell<List<Wanted>>,
+    held_asks: Cell<List<HeldAsk>>,
+    asks_lost: Cell<List<string>>,
     held_codes: Cell<List<CodeFacts>>,
     body_asks: Cell<List<string>>,
     runs: Cell<Map<string, List<RunRead>>>,
@@ -328,6 +329,11 @@ type PendingRead = { reader: string, read: RunRead }
 
 /// A held file's `collect` that gathers across files: the file, the package's source,
 /// what it gathers, and the set it gathered when it was last read.
+/// WHAT A HELD BODY ASKS, AS A NAME: the held file that asks, the want's symbol and home, whether
+/// it roams (an instantiation, lowered wherever it is wanted), and its own wire — resolved into a
+/// want only when a reader needs its declaration.
+type HeldAsk = { by: string, name: string, home: string, roams: bool, wire: string }
+
 type HeldGather = { collector: string, package: string, gathering: Gathering, digest: string }
 
 /// What a `collect` gathers by, from where, the order it gathers in, and what it reads of each
@@ -342,7 +348,7 @@ type KeptLine = { line: string, unit: bool, path: string, bodies: List<string>, 
 
 fn new_hold() -> Hold {
     let no_forced: Map<string, Reads> = {}
-    let no_wants: List<Wanted> = []
+    let no_asks: List<HeldAsk> = []
     let no_runs: Map<string, List<RunRead>> = {}
     let no_reads: List<string> = []
     let no_seeds: List<ReadFile> = []
@@ -354,7 +360,8 @@ fn new_hold() -> Hold {
     let no_reexports: Map<string, List<Reexport>> = {}
     Hold {
         forced: Cell.new(no_forced),
-        held_wants: Cell.new(no_wants),
+        held_asks: Cell.new(no_asks),
+        asks_lost: list_cell(),
         held_codes: Cell.new(no_codes()),
         body_asks: Cell.new(no_paths()),
         runs: Cell.new(no_runs),
