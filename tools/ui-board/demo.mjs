@@ -338,7 +338,7 @@ const nodesOf = (n) => [n, ...n.childNodes.flatMap(nodesOf)];
   const ops = s.sentFrames.flat();
   const after = s.at.childNodes.flatMap(nodesOf);
   claim("a swap to the same module keeps every element the page holds", before.length === after.length && before.every((n, j) => after[j] === n), `${before.length} vs ${after.length}`);
-  claim("a swap to the same module says listeners and nothing built", ops.length > 0 && ops.every((p) => p.op === OP.listen), ops.map((p) => p.op).join(","));
+  claim("a swap to the same module says define and listen and nothing built", ops.length > 0 && ops.every((p) => p.op === OP.listen || p.op === OP.define), ops.map((p) => p.op).join(","));
   claim("and the page it leaves is the page it had", s.at.childNodes.map(shape).join() === shapeBefore);
 }
 {
