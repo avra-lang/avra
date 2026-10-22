@@ -21,12 +21,12 @@ which only shrinks.
 | flow | 16 | 12 | 12 | 0 |
 | annotation | 17 | 12 | 12 | 0 |
 | manifest | 30 | 28 | 28 | 0 |
-| collect | 14 | 14 | 14 | 0 |
+| collect | 13 | 13 | 13 | 0 |
 | collect_enum | 7 | 7 | 7 | 0 |
 | const | 6 | 6 | 6 | 0 |
 | shape | 1 | 0 | 0 | 0 |
 | loop | 2 | 2 | 2 | 0 |
-| **all** | 274 | 248 | 247 | 8 |
+| **all** | 273 | 247 | 246 | 8 |
 
 ## Rules
 

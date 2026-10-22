@@ -27,6 +27,7 @@ use core.{
     is_kind_word,
     key_spelled,
 }
+use compiler.store.{Reading}
 use @std.path.{under_dir, joined_path, normalized, dir_of}
 use features.{
     Decls,
@@ -225,11 +226,12 @@ impl Workspace {
         if !gathers_across_files(scope) { return null }
         let parts? = store.collect_parts(s) else {
             let e? = store.collect_enum_parts(s) else { return null }
-            return Gathering { kind: e.kind, scope: scope, order: e.order, plans: [] }
+            return Gathering { name: e.name, kind: e.kind, scope: scope, order: e.order, plans: [] }
         }
         let rt = collect_answer_type(self.decls, f, s)
         let entry = self.decls.types.element(rt) ?? rt
         Gathering {
+            name: parts.name,
             kind: parts.kind,
             scope: scope,
             order: parts.order,
@@ -243,6 +245,45 @@ impl Workspace {
     fn gathered_set(g: Gathering, owner: FileId) -> string {
         let members = ordered_collect_members(self.decls, g.kind, g.scope, g.order, owner)
         digest_of(fields_wire([self.member_print(g, m) for m in members]))
+    }
+
+    /// A CROSS-FILE COLLECT AS A NAMED READ — `collect:<module>.<name>`, digested by
+    /// the set it gathers: a value that folds a collect is a function of its members,
+    /// which no file's text shows. Absent for a declaration that is no such collect.
+    fn collect_read(d: DeclId) -> Reading? {
+        let x = self.decls.decl(d)
+        if !self.gathers_across(d) { return null }
+        let name = "collect:${self.decls.module_of(d)}.${x.name}"
+        let digest? = self.collect_digest(self.decls.file(x.file).path, x.name) else { return null }
+        Reading { name: name, digest: digest }
+    }
+
+    /// Whether `d` is a collect gathering across files — for a held file, whether its
+    /// record holds one.
+    fn gathers_across(d: DeclId) -> bool {
+        let x = self.decls.decl(d)
+        let path = self.decls.file(x.file).path
+        if self.is_held(x.file) { return self.hold.gathered.get().any(it.collector == path) }
+        let scope? = self.parsed(x.file).store.collect_scope(x.stmt) else { return false }
+        gathers_across_files(scope)
+    }
+
+    /// A `collect:` read's digest now; absent for a name that names no cross-file collect.
+    fn collect_read_now(name: string) -> string? {
+        let parts = name.substring(8, name.length).split(".")
+        let gathers = parts.last() ?? ""
+        let files = self.module_files(module_path(parts.slice(0, parts.length - 1)))
+        let path? = files.find((p) -> self.collect_digest(p, gathers) != null) else { return null }
+        self.collect_digest(path, gathers)
+    }
+
+    /// The set the collect `name` in `path` gathers now — a held file's from its record,
+    /// since a held collector is one whose sets did not move.
+    fn collect_digest(path: string, name: string) -> string? {
+        let f = self.file_id(path)
+        if self.is_held(f) { return self.hold.gathered.get().find(it.collector == path && it.gathering.name == name)?.digest }
+        let g? = self.gatherings(path).find(it.name == name) else { return null }
+        self.gathered_set(g, f)
     }
 
     /// One member as its collect sees it: where it is declared, its name, the mark

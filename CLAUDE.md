@@ -1161,6 +1161,9 @@ registry is the idiom engine's spec, written by dogfooding.
   arguments, a list's elements and a variant's payload take `..${xs}`
   (or `${..xs}`) with a `List<Code>`; a record literal takes its fields
   as `${t} { ..${inits} }` at any width, so no derive folds a list per
+  arity; a fn's parameters take `..${seats}`, each seat a `quote { fn
+  _(x: T = d) {} }`, and a type's fields `{ ..${fields} }`, each a
+  `quote { type _ = { x: T } }`, so no derive spells a signature per
   arity; and a block's LAST hole (`fn f() { ${steps} }`) takes a
   `List<Stmts>` — statements joining the block, an expression its
   value. Not listed under "the subset today" because each SPEAKS.
