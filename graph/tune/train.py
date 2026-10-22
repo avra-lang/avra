@@ -50,6 +50,21 @@ class Letters:
         return prompt + [self.tok.encode(d["completion"], add_special_tokens=False)[0]], len(prompt)
 
 
+def letter_loss(model, batch, lengths):
+    """Cross-entropy on the tokens from each example's offset to its last token
+    only. mlx-lm's default mask also counts the position after the last token, a
+    padding target, which here would be half of every example's loss."""
+    import mlx.core as mx
+    import mlx.nn as nn
+
+    logits = model(batch[:, :-1])
+    steps = mx.arange(1, batch.shape[1])
+    mask = mx.logical_and(steps >= lengths[:, 0:1], steps < lengths[:, 1:])
+    ce = nn.losses.cross_entropy(logits, batch[:, 1:]) * mask
+    ntoks = mask.sum()
+    return ce.astype(mx.float32).sum() / ntoks, ntoks
+
+
 class Footprint:
     """The process's physical footprint as macOS accounts it (unified memory included)."""
 
@@ -69,12 +84,17 @@ class MemoryCap(Exception):
     pass
 
 
+class Stop(Exception):
+    """A planned end: held-out loss stopped improving, or the time cap passed."""
+
+
 class Metrics:
     """One JSON line per step and per evaluation, for the live dashboard; the run's
     own log keeps the same lines. Aborts the run past the footprint cap."""
 
     def __init__(self, paths, total, out):
         self.paths, self.total, self.val, self.fp, self.out = paths, total, [], Footprint(), out
+        self.tokens, self.since, self.started = 0, time.time(), time.time()
         for p in paths:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("")
@@ -103,8 +123,21 @@ class Metrics:
                 f.write(line)
 
     def on_train_loss_report(self, info):
-        self.write("train", int(info["iteration"]), float(info["train_loss"]), lr=float(info["learning_rate"]),
-                   tps=round(float(info["tokens_per_second"]), 1))
+        now = time.time()
+        tps = round(self.tokens / max(now - self.since, 1e-6), 1)
+        self.tokens, self.since = 0, now
+        self.write("train", int(info["iteration"]), float(info["train_loss"]), lr=float(info["learning_rate"]), tps=tps)
+        if now - self.started > PARAMS["max_hours"] * 3600:
+            raise Stop(f"time cap of {PARAMS['max_hours']} h")
+
+    def counted(self, iterate):
+        """mlx-lm's batch iterator, counting every token a training step reads."""
+        def batches(*args, **kw):
+            for batch, lengths in iterate(*args, **kw):
+                if kw.get("loop"):
+                    self.tokens += int(lengths[:, 1].sum().item())
+                yield batch, lengths
+        return batches
 
     def on_val_loss_report(self, info):
         # mlx-lm reports the evaluation before step k as k-1; the adapter saved at step k is the one evaluated.
@@ -116,6 +149,9 @@ class Metrics:
             if k != best and older.exists():
                 older.unlink()  # only the best evaluated adapter is kept, so disk use stays two adapters
         self.write("eval", step, val_loss=float(info["val_loss"]), note=f"val_time_s={info['val_time']:.0f}")
+        self.since = time.time()
+        if len(self.val) - 1 - [k for k, _ in self.val].index(best) >= PARAMS["patience_evals"]:
+            raise Stop(f"held-out loss has not improved for {PARAMS['patience_evals']} evaluations")
 
 
 def main():
@@ -143,7 +179,13 @@ def main():
 
     mx.set_memory_limit(int(PARAMS["mlx_memory_limit_gb"] * 2**30))
     mx.set_cache_limit(int(PARAMS["mlx_cache_limit_gb"] * 2**30))
+    import functools
+    import mlx_lm.lora as lora
+
     trainer.maybe_set_recommended_wired_limit = lambda: None  # wiring memory would take it from the other work
+    evaluate = trainer.evaluate
+    trainer.evaluate = lambda **kw: evaluate(**{**kw, "batch_size": PARAMS["val_batch"], "num_batches": -1})
+    lora.train = functools.partial(trainer.train, loss=letter_loss, iterate_batches=metrics.counted(trainer.iterate_batches))
     every = PARAMS["steps_per_eval"]
     try:
         model, tok = load(SCORER.split("@")[0])
@@ -151,7 +193,7 @@ def main():
         longest = max(len(d.process(d[i])[0]) for d in (train, valid) for i in range(len(d)))
         args = types.SimpleNamespace(**{**CONFIG_DEFAULTS, "model": SCORER, "train": True, "seed": PARAMS["seed"],
                                         "num_layers": a.layers, "batch_size": 1, "grad_accumulation_steps": a.accumulate,
-                                        "iters": a.iters, "val_batches": PARAMS["val_examples"], "learning_rate": a.lr,
+                                        "iters": a.iters, "val_batches": -1, "learning_rate": a.lr,
                                         "steps_per_report": 1, "steps_per_eval": every, "save_every": every,
                                         "adapter_path": str(out), "max_seq_length": longest, "grad_checkpoint": True,
                                         "clear_cache_threshold": 0,
@@ -160,6 +202,8 @@ def main():
                                                    "rank": a.rank, "layers": a.layers, "accumulate": a.accumulate, "lr": a.lr,
                                                    "free_disk_gb": round(free, 1)}))
         train_model(args, model, train, valid, metrics)
+    except Stop as e:
+        metrics.write("eval", None, note=f"stopped: {e}")
     except Exception as e:
         metrics.failed(f"{type(e).__name__}: {e}"[:500])
         raise SystemExit(f"train: {type(e).__name__}: {e}")
