@@ -11,6 +11,7 @@ use @avra.graph_contracts.{
     Span,
     Passage,
     UnplacedStatement,
+    Normalization,
     code_points,
     passage_span,
     quote_holds,
@@ -23,6 +24,8 @@ use schema.{Shape}
 use data.{as_value, encoded, json_safe}
 use ingest.envelope.{source_document}
 use store.policy.{AdmissionBudget}
+use store.evidence.{instant_named}
+use parameters.{iso_date_length}
 
 /// Admission is not entity linking or publication. Failure has no records
 /// to accidentally treat as a successful empty replacement.
@@ -142,6 +145,25 @@ fn crosses(f: Span, span: Span) -> bool {
     f.start > span.start && f.start < span.end || f.end > span.start && f.end < span.end
 }
 
+/// A TIMEX3 value is a well-formed ISO 8601 date (DATE) or instant (TIME),
+/// and its reference, when given, an instant. Durations and sets are not
+/// admitted yet.
+fn timex_ok(n: Normalization) -> Result<bool, string> {
+    if n.kind != "TIMEX3" { return true }
+    let value = n.value ?? ""
+    match n.timex_type ?? "" {
+        "DATE" -> { if value.length != iso_date_length || instant_named(value) is .Err { fail "a TIMEX3 DATE value is an ISO 8601 calendar date: ${value}" } },
+        "TIME" -> { if value.length <= iso_date_length || instant_named(value) is .Err { fail "a TIMEX3 TIME value is an ISO 8601 instant with its offset: ${value}" } },
+        unadmitted -> { fail "TIMEX3 ${unadmitted} values are not admitted yet" },
+    }
+    let reference = n.reference ?? ""
+    if n.reference != null &&
+        (reference.length <= iso_date_length || instant_named(reference) is .Err) {
+        fail "a TIMEX3 reference is an ISO 8601 instant with its offset: ${reference}"
+    }
+    true
+}
+
 /// An unplaced statement is anchored like a field and names only what exists.
 fn checked_unplaced(
     catalog: Catalog,
@@ -179,6 +201,7 @@ fn checked_record(
         if !model.properties.any(it.name == field.property) { fail "unknown extraction property: ${r.model}.${field.property}" }
         if !json_safe(field.value.value) { fail not_finite() }
         for p in field.evidence { located(q, p, field.frame)? }
+        if field.normalization != null { timex_ok(field.normalization!)? }
     }
     let value = Value.Map([Entry { key: f.property, value: f.value.value } for f in r.fields])
     let normalized = match (model.check_fields)(value) {

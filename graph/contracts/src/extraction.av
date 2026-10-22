@@ -36,7 +36,7 @@ fn normalization_coherent(n: Normalization) -> Result<Normalization, string> {
             n.currency != null ||
             n.minor_units != null ||
             n.exponent != null {
-            fail "a TIMEX3 normalization carries timex_type and an ISO 8601 value only"
+            fail "a TIMEX3 normalization carries timex_type, an ISO 8601 value and its reference instant only"
         }
         if !["DATE", "TIME", "DURATION", "SET"].contains(n.timex_type!) { fail "a TIMEX3 type is DATE, TIME, DURATION or SET" }
     } else {
@@ -44,7 +44,8 @@ fn normalization_coherent(n: Normalization) -> Result<Normalization, string> {
             n.minor_units == null ||
             n.exponent == null ||
             n.timex_type != null ||
-            n.value != null {
+            n.value != null ||
+            n.reference != null {
             fail "an ISO 4217 normalization carries currency, minor_units and exponent only"
         }
         let code = n.currency!
@@ -57,8 +58,9 @@ fn normalization_coherent(n: Normalization) -> Result<Normalization, string> {
     n
 }
 
-/// How a value was normalized from its text: TIMEX3 (type plus ISO 8601
-/// value) or ISO 4217 money in integer minor units.
+/// How a value was normalized from its text: TIMEX3 (type, ISO 8601 value
+/// and the reference instant it was resolved against) or ISO 4217 money in
+/// integer minor units.
 @derive(Decode)
 @normalization_coherent
 export type Normalization = {
@@ -68,6 +70,9 @@ export type Normalization = {
     currency: string? = null,
     minor_units: int? = null,
     exponent: int? = null,
+    /// The ISO 8601 instant a relative expression was resolved against
+    /// (the source's anchor time), kept as provenance.
+    @length(min: 1, max: 64) reference: string? = null,
 }
 
 /// `value` is the normalized, model-shaped value; `evidence` locates the

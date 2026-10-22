@@ -3,6 +3,7 @@ use @std.json.{Json, Field, field}
 use @avra.graph_contracts.{Passage as Quoted, Selector, Normalization}
 use semantics.{ValidityBinding, TimeEncoding}
 use parameters.{
+    iso_date_length,
     iso_instant_shortest,
     last_hour,
     last_minute,
@@ -207,6 +208,7 @@ export fn normalization_json(n: Normalization?) -> Json {
         field("currency", optional_text(found.currency)),
         field("minor_units", optional_int(found.minor_units)),
         field("exponent", optional_int(found.exponent)),
+        field("reference", optional_text(found.reference)),
     ]
     Json.Obj([field("kind", Json.Str(found.kind))].concat(present.filter(!(it.value is .Null))))
 }
@@ -296,7 +298,7 @@ fn at_path(value: Value, path: List<string>) -> Value? {
 
 /// An ISO 8601 date (its UTC start) or instant.
 export fn instant_named(t: string) -> Result<Instant, string> {
-    if t.length == 10 { iso_date(t) } else { iso_instant(t) }
+    if t.length == iso_date_length { iso_date(t) } else { iso_instant(t) }
 }
 
 fn from_millis(ms: int) -> Instant {
@@ -306,7 +308,7 @@ fn from_millis(ms: int) -> Instant {
 
 /// `YYYY-MM-DD`, as the start of that UTC day.
 fn iso_date(t: string) -> Result<Instant, string> {
-    if t.length != 10 { fail not_iso(t) }
+    if t.length != iso_date_length { fail not_iso(t) }
     Instant { seconds: day_seconds(t)? }
 }
 

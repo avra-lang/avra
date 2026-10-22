@@ -252,6 +252,27 @@ fn identity_anchor(invented: bool = false) -> Result<bool, string> {
     }
 }
 
+fn timex(timex_type: string, value: string, reference: string = "2026-10-20T09:00:00Z") -> string {
+    record(
+        field(
+            extra: ",\"normalization\":{\"kind\":\"TIMEX3\",\"timex_type\":\"${timex_type}\",\"value\":\"${value}\",\"reference\":\"${reference}\"}",
+        ),
+    )
+}
+
+fn timex_admission() -> Result<bool, string> {
+    let c = catalog()?
+    let admits = (r: string) -> admit_extraction(c, request(c), response(c, r)) is .Ok
+    admits(timex("DATE", "2026-10-23")) &&
+        admits(timex("TIME", "2026-10-23T17:00:00+02:00")) &&
+        !admits(timex("DATE", "2026-13-01")) &&
+        !admits(timex("DATE", "next friday")) &&
+        !admits(timex("DATE", "2026-10-23T17:00:00Z")) &&
+        !admits(timex("TIME", "2026-10-23T17:00:00")) &&
+        !admits(timex("DURATION", "P3D")) &&
+        !admits(timex("DATE", "2026-10-23", "2026-10-20"))
+}
+
 fn declared_budget() -> Result<bool, string> {
     let c = catalog()?
     let tight = AdmissionBudget { records: 1 }
@@ -343,6 +364,7 @@ spec "provider-neutral extraction admission" {
         then "identity-only proposals stay unverified but require exact anchors" { passed(identity_anchor()) && passed(identity_anchor(true)) }
         then "record budget exhaustion refuses the entire result" { passed(bounded_records()) }
         then "admission bounds are a declared budget" { passed(declared_budget()) }
+        then "a TIMEX3 normalization is a valid ISO 8601 date or instant with an instant reference" { passed(timex_admission()) }
         then "unknown field frames and dangling proposed parents are refused" { passed(missing_frame()) }
     }
 }

@@ -71,3 +71,15 @@ cross-source names). `python bench_choices.py qwen|jevk5` scores one backend;
 keep only one model resident. jevk5 (ollaya) takes at most 16 options, so a
 labelled-pair choice is asked as label-or-none and then direction.
 Probabilities are logged raw for later calibration.
+
+## Time candidates
+
+`timex.candidates(anchor_ms)` enumerates what a time expression in a source
+written at `anchor_ms` could mean, by calendar arithmetic only: every date
+`time_window_days` (service_parameters.json) either side of the anchor's UTC
+day, labelled with weekday, day, month and year; the anchor instant itself;
+and "this is not a specific time" / "cannot tell from the text". A closed
+choice picks one, and `timex.chosen` gives the TIMEX3 normalization
+(`timex_type`, ISO 8601 `value`, `reference` = the anchor) to put beside the
+field's anchor passage. The model never writes a date. Durations and sets
+come later. `python3 -m unittest test_timex` in this directory.

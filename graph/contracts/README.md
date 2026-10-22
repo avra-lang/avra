@@ -103,7 +103,11 @@ optional `prefix`/`suffix`, checked against the source); FactBank
 `speech_act` (`assert`, `report`, `plan`, `request`, `condition`, `draft`);
 and an optional `normalization`: `{"kind":"TIMEX3","timex_type":"DATE|TIME|DURATION|SET","value":<ISO 8601>}`
 or `{"kind":"ISO4217","currency":"EUR","minor_units":1250,"exponent":2}`.
-A passage need not contain the value ("next Friday" normalized to a date).
+A TIMEX3 normalization may carry `reference`, the ISO 8601 instant a
+relative expression was resolved against (the source's anchor time).
+Admission accepts a DATE value that is an ISO 8601 calendar date and a TIME
+value that is an instant with its offset; DURATION and SET are not admitted
+yet. A passage need not contain the value ("next Friday" normalized to a date).
 A result may also carry `unplaced` statements: anchored passages stating
 what no declared model or property holds, with the extractor's best guess
 (`kind` `property` with its `model`, or `model`; a `label`; an optional
