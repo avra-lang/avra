@@ -3214,6 +3214,16 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### A compile-time directory embed
+
+`embed(path)` reads one file at a literal path, so the std-avrac witness fixtures
+(`packages/std-avrac/src/testing/mod.av`, `vendored_beside`) name every source a vendored
+std package needs, one `embed` per file. `tools/vendored_fixture.py` keeps that list equal
+to the manifest closure on disk, but the list itself is still hand-written. The want: an
+`embed_dir("@std/json/src")` that answers every `.av` under a directory as a list of
+`(path, text)`, so a fixture follows the tree by construction. Wanting site: the
+`vendored_beside` packages in `testing/mod.av`.
+
 ### A declaring annotation takes a fn name as an argument
 
 `@json_text("iso", "parse_iso")` on `Time` (`packages/std-time/src/time.av`) spells the
