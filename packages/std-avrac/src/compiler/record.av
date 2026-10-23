@@ -72,7 +72,18 @@ impl Workspace {
     /// WHO MAY READ A MODULE'S RECORD: the code that produces it, the C that code runs,
     /// the code that writes the record and the code that reads it back, each by its hash,
     /// under the store's toolchain. A part the compiler cannot hash makes the rows its own.
-    fn sig_producer() -> Producer {
+    /// Settled once a workspace, as its compiler's print is.
+    fn sig_producer() -> Producer { self.keys.sig_producer.get() ?? self.settled_sig_producer() }
+
+    /// The producer, made and kept for this workspace.
+    fn settled_sig_producer() -> Producer {
+        let made = self.made_sig_producer()
+        self.keys.sig_producer.set(made)
+        made
+    }
+
+    /// The producer from its parts' hashes.
+    fn made_sig_producer() -> Producer {
         producer_of(
             [
                 code_hash(held_sig_verified),
