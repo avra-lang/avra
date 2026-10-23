@@ -48,4 +48,32 @@ spec "compiler/const_json — what the compiler settled, as JSON" {
             json_of("const xs: List<int> = [1]\n", "ys") == "refused: no const `ys` is declared here"
         }
     }
+    given "floats, bytes, results and value enums" {
+        then "a float is its shortest round-trip text" {
+            json_of("const x: float = 0.1\n", "x") == "0.1" &&
+                json_of("const y: float = 100.0\n", "y") == "100.0"
+        }
+        then "a float inside a record" {
+            json_of("type P = { r: float }\nconst p: P = P { r: 2.5 }\n", "p") == "{\"r\":2.5}"
+        }
+        then "bytes are base64, named" {
+            json_of("const b: Bytes = [104, 105].bytes()!\n", "b") == "{\"base64\":\"aGk=\"}"
+        }
+        then "a result is its one side under ok or err" {
+            json_of("const r: Result<int, string> = Result.Ok(3)\n", "r") == "{\"ok\":3}" &&
+                json_of("const e: Result<int, string> = Result.Err(\"no\")\n", "e") == "{\"err\":\"no\"}"
+        }
+        then "a value enum in a record is its variant, with its word" {
+            json_of(
+                "enum V { A(n: int), B }\ntype H = { x: V, y: V }\nconst h: H = H { x: V.A(5), y: V.B }\n",
+                "h",
+            ) == "{\"x\":{\"variant\":\"A\",\"payload\":[5]},\"y\":\"B\"}"
+        }
+        then "a nullable value enum is null when absent" {
+            json_of(
+                "enum V { A(n: int), B }\ntype H = { x: V?, y: V? }\nconst h: H = H { x: V.A(1), y: null }\n",
+                "h",
+            ) == "{\"x\":{\"variant\":\"A\",\"payload\":[1]},\"y\":null}"
+        }
+    }
 }

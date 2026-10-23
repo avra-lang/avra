@@ -3,10 +3,15 @@
 //! slots, a list's elements — so the const's TYPE names the fields and the
 //! variants: a record is an object by field name, a list an array, a
 //! nullable its value or null, a map an object, an enum its variant's name
-//! (`{"variant": …, "payload": […]}` when it carries something). A shape the
-//! projection does not read is refused by name, never guessed.
+//! (`{"variant": …, "payload": […]}` when it carries something), a result
+//! `{"ok": …}` or `{"err": …}`, bytes `{"base64": …}`, a float its shortest
+//! round-trip text (`null` for infinity and NaN, which JSON has no word for).
 use core.{FileId, TypeId, TypeRegistry, joined}
-use features.{SettleRoot, MetaVal, MetaHeap, Unsettled, unsettled_label}
+use features.{SettleRoot, MetaVal, MetaHeap, Unsettled, unsettled_label, absent_tag}
+use @std.text.{base64}
+
+/// A float's bit pattern as the shortest text that reads back as the same number.
+extern fn avra_float_text_bits(bits: int) -> string
 
 impl Workspace {
     /// The JSON text of the const `name` that the file `f` declares.
@@ -38,8 +43,51 @@ impl Workspace {
             .Struct(_, _) -> self.record_json(v, heap, ty),
             .App(_, _, _) -> if self.decls.fields_of_type(ty) != null { self.record_json(v, heap, ty) } else { self.variant_json(v, heap, ty) },
             .Enum(_, _) -> self.variant_json(v, heap, ty),
-            .Float or .Bytes or .Ptr or .Cell(_) or .Task(_) or .Tasks or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Union(_) or .Range or .Res(_, _) -> .Err(unread(types.name_of(ty))),
+            .Float -> match v {
+                .Float(bits) -> .Ok(float_json(bits)),
+                rest -> .Err(misfit(types.name_of(ty))),
+            },
+            .Bytes -> self.bytes_json(v),
+            .Res(_, _) -> self.result_json(v, heap, ty),
+            .Ptr or .Cell(_) or .Task(_) or .Tasks or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Union(_) or .Range -> .Err(unread(types.name_of(ty))),
         }
+    }
+
+    /// Bytes: their base64, under the name that says so.
+    fn bytes_json(v: MetaVal) -> Result<string, string> {
+        let xs? = match v { .Octets(o) -> o, rest -> null } else { return .Err(misfit("Bytes")) }
+        let b? = xs.bytes() else { return .Err(misfit("Bytes")) }
+        .Ok("{\"base64\":" + json_text(base64(b)) + "}")
+    }
+
+    /// A result: its one side, under `ok` or `err`.
+    fn result_json(v: MetaVal, heap: MetaHeap, ty: TypeId) -> Result<string, string> {
+        let sig? = self.decls.variants_of_type(ty) else { return .Err(unread(self.decls.types.name_of(ty))) }
+        let slots = heap.slots(v)
+        let tag = match slots[0] { .Int(n) -> n, rest -> -1 }
+        if tag < 0 || tag >= sig.payloads.length || sig.payloads[tag].length != 1 {
+            return .Err(misfit(self.decls.types.name_of(ty)))
+        }
+        let side = self.field_json(slots.slice(1, 2), heap, sig.payloads[tag][0])?
+        .Ok("{" + json_text(if tag == 0 { "ok" } else { "err" }) + ":" + side + "}")
+    }
+
+    /// A value enum laid in a field: its tag and the one word its variant
+    /// carries; the spare tag is a nullable's absence.
+    fn valued_json(piece: List<MetaVal>, heap: MetaHeap, ty: TypeId) -> Result<string, string> {
+        let types = self.decls.types
+        let tag = match piece[0] { .Int(n) -> n, rest -> absent_tag }
+        if tag == absent_tag { return .Ok("null") }
+        let machine = types.machine_type(ty)
+        let sig? = self
+            .decls
+            .variants_of_type(types.machine_type(types.carried(machine) ?? machine)) else {
+            return .Err(unread(types.name_of(ty)))
+        }
+        if tag < 0 || tag >= sig.names.length { return .Err(misfit(types.name_of(ty))) }
+        if sig.payloads[tag].is_empty() { return .Ok(json_text(sig.names[tag])) }
+        let word = self.projected(piece[1], heap, sig.payloads[tag][0])?
+        .Ok("{\"variant\":" + json_text(sig.names[tag]) + ",\"payload\":[" + word + "]}")
     }
 
     fn array_of(xs: List<MetaVal>, heap: MetaHeap, inner: TypeId) -> Result<string, string> {
@@ -94,7 +142,7 @@ impl Workspace {
     /// One field from the slots it spans: a value type laid inline spans several.
     fn field_json(piece: List<MetaVal>, heap: MetaHeap, ty: TypeId) -> Result<string, string> {
         let types = self.decls.types
-        if types.valued_carrier(ty) { return .Err(unread(types.name_of(ty))) }
+        if types.valued_carrier(ty) { return self.valued_json(piece, heap, ty) }
         if types.lays_inline(ty) {
             let sig? = self.decls.fields_of_type(ty) else { return .Err(unread(types.name_of(ty))) }
             return self.fields_json(sig.names, sig.types, piece, heap)
@@ -131,7 +179,13 @@ fn unboxed(v: MetaVal, heap: MetaHeap, inner: TypeId, types: TypeRegistry) -> Me
 
 fn misfit(want: string) -> string { "the const's value does not fit its type `${want}`" }
 
-fn unread(ty: string) -> string { "a const of type `${ty}` is not projected to JSON: floats, bytes, results and value enums are not read yet" }
+fn unread(ty: string) -> string { "a const of type `${ty}` is not projected to JSON" }
+
+/// A float's text; infinity and NaN, which JSON has no word for, are null.
+fn float_json(bits: int) -> string {
+    let text = avra_float_text_bits(bits)
+    if text.contains("n") { "null" } else { text }
+}
 
 fn unsettled_words(name: string, why: Unsettled) -> string {
     let words = unsettled_label(name, why)
