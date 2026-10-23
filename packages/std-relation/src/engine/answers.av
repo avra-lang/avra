@@ -30,24 +30,22 @@ export type Relation<T> = {
     /// Reads a verified key's value back from where it was saved, when this process holds none.
     revive: Cell<fn(int) -> Revival<T>>,
     /// Told each answer this process settles, to keep it past the process.
-    keeper: Cell<fn(int, T) -> void>,
+    keeper: Cell<fn(int, T) -> bool>,
 }
-
-fn never_revived<T>(_arg: int) -> Revival<T> { Revival.Gone }
-
-fn nothing_kept<T>(_arg: int, _value: T) {}
 
 /// `Memo<T>`'s old name, kept as the same type: nothing that already
 /// spells `Memo<T>` moves.
 export alias Memo<T> = Relation<T>
 
 export fn new_memo<T>(db: Kernel, family: int) -> Relation<T> {
+    let gone: fn(int) -> Revival<T> = (_arg: int) -> Revival.Gone
+    let unkept: fn(int, T) -> bool = (_arg: int, _value: T) -> true
     Relation {
         kernel: db,
         family: family,
         values: new_table<T>(),
-        revive: Cell.new(never_revived),
-        keeper: Cell.new(nothing_kept),
+        revive: Cell.new(gone),
+        keeper: Cell.new(unkept),
     }
 }
 
@@ -144,7 +142,7 @@ impl Relation {
         self.kernel.settle(self.query_key(arg), fingerprint)
         self.values.keep(arg, value)
         let keep = self.keeper.get()
-        keep(arg, value)
+        let _ = keep(arg, value)
         if self.kernel.tracing.get() {
             avra_qtrace(
                 "Q\tsettle\t${self.kernel.family_name(self.family)}\t${arg}\t${fingerprint}\n",
@@ -162,7 +160,7 @@ impl Relation {
         self.kernel.settle_lazy(key, () -> fingerprint(value))
         self.values.keep(arg, value)
         let keep = self.keeper.get()
-        keep(arg, value)
+        let _ = keep(arg, value)
         if self.kernel.tracing.get() {
             avra_qtrace(
                 "Q\tsettle\t${self.kernel.family_name(self.family)}\t${arg}\t${self.kernel.value_hash_of(key) ?? -1}\n",
