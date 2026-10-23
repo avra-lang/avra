@@ -1,0 +1,54 @@
+// A component lookup reads each file at most once per build: a lookup of any word,
+// found or absent, costs no further reads once the first has run.
+use @std.avrac.testing.{test_workspace}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+
+fn component_file(name: string) -> string { "export component ${name} {\n}\n" }
+
+/// An app reaching a vendored package of twelve modules, each exporting one component.
+fn provider() -> Workspace {
+    let components = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    let files = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/kit\" = { path = \"vendor/kit\" }\n",
+        "/w/src/main.av": "1\n",
+        "/w/vendor/kit/avra.toml": "[package]\nname = \"@acme/kit\"\nversion = \"0.1.0\"\n",
+        "/w/vendor/kit/src/c0.av": component_file("c0"),
+        "/w/vendor/kit/src/c1.av": component_file("c1"),
+        "/w/vendor/kit/src/c2.av": component_file("c2"),
+        "/w/vendor/kit/src/c3.av": component_file("c3"),
+        "/w/vendor/kit/src/c4.av": component_file("c4"),
+        "/w/vendor/kit/src/c5.av": component_file("c5"),
+        "/w/vendor/kit/src/c6.av": component_file("c6"),
+        "/w/vendor/kit/src/c7.av": component_file("c7"),
+        "/w/vendor/kit/src/c8.av": component_file("c8"),
+        "/w/vendor/kit/src/c9.av": component_file("c9"),
+        "/w/vendor/kit/src/c10.av": component_file("c10"),
+        "/w/vendor/kit/src/c11.av": component_file("c11"),
+    }
+    test_workspace(memory_host(files, files.keys()), "/w")
+}
+
+fn lexes(ws: Workspace) -> int { ws.records.component_lexes.get() }
+
+spec "component_home — one lookup's reads do not grow with the lookups" {
+    given "twelve modules each exporting a component" {
+        then "the first lookup names the module that exports the word" {
+            let ws = provider()
+            (ws.component_home("c3", "app") ?? "").ends_with("c3.{c3}")
+        }
+        then "eight more lookups, found or absent, read no further file" {
+            let ws = provider()
+            let _ = ws.component_home("c3", "app")
+            let first = lexes(ws)
+            for w in ["c0", "c7", "c11", "c5", "nope", "let", "c9", "c1"] { let _ = ws.component_home(w, "app") }
+            first > 0 && lexes(ws) == first
+        }
+        then "a word no module exports reads each candidate file once" {
+            let ws = provider()
+            let _ = ws.component_home("nope", "app")
+            let _ = ws.component_home("nope", "app")
+            lexes(ws) <= 12
+        }
+    }
+}

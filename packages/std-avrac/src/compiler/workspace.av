@@ -465,6 +465,8 @@ type Records = {
     /// block word, decoded once per build — the names, and the instances whose
     /// word alone answers (no form to parse).
     block_rows: Cell<Map<string, List<Row>>>,
+    /// Files whose text a component lookup lexed, this build: what the witness counts.
+    component_lexes: Cell<int>,
 }
 
 fn new_records() -> Records {
@@ -490,6 +492,7 @@ fn new_records() -> Records {
         met_files: Cell.new(no_met),
         block_named: Cell.new(no_block_named),
         block_rows: Cell.new(no_block_rows),
+        component_lexes: Cell.new(0),
     }
 }
 
@@ -1726,8 +1729,7 @@ impl Workspace {
     /// says, or — with no record — the file's own tokens do.
     fn exports_component(path: string, word: string) -> bool {
         let rows? = module_block_rows(self, self.module_path_of(path)) else {
-            return file_declares_component(self, path) &&
-                exports_component_named(self.listed_text(path), word)
+            return file_declares_component(self, path) && self.lexed_for_component(path, word)
         }
         rows
             .any(
@@ -1735,6 +1737,12 @@ impl Workspace {
                     r.name == word &&
                     facts_unblocked(r.facts)?.is_component ?? false,
             )
+    }
+
+    /// Whether the file's own tokens export a component by this name.
+    fn lexed_for_component(path: string, word: string) -> bool {
+        self.records.component_lexes.set(self.records.component_lexes.get() + 1)
+        exports_component_named(self.listed_text(path), word)
     }
 
     /// A provider read as it parses — under its OWN block words, since a
