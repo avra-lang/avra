@@ -15,6 +15,9 @@ use @std.io.{
     remove,
     open_beneath,
     exists,
+    append_bytes,
+    opened_for_append,
+    truncate_to,
 }
 use @std.path.{joined_path, dir_of}
 use @std.text.{from_codepoint, parse_int}
@@ -68,8 +71,41 @@ export fn cas_blob(value: string) -> bool {
     if exists(at) { return true }
     match make_dirs(dir_of(at)) { .Ok(_) -> {}, .Err(_) -> { return false } }
     match write_bytes(at, value.bytes()) { .Ok(_) -> {}, .Err(_) -> { return false } }
+    let _ = append_bytes(grown_at(dir), "${value.bytes().length}\n".bytes())
     if traced() { qtrace("Q\tcas\tput\t${digest}\t${value.length}\n") }
     true
+}
+
+/// The octets put since the shared store was last swept, a line a blob: what calls the next sweep.
+fn grown_at(dir: string) -> string { joined_path(dir, "grown") }
+
+/// Whether the shared store grew by a quarter of its ceiling since it was last swept, so a
+/// sweep is owed without a human asking.
+export fn cas_due() -> bool {
+    let dir? = cas_dir() else { return false }
+    // LICENSED input.store_io: the shared store's own growth ledger, read to call its sweep
+    let grown = match read_text(grown_at(dir)) { .Ok(t) -> t, .Err(_) -> { return false } }
+    grown.split("\n").fold(0, (sum, l) -> sum + (parse_int(l) ?? 0)) * 4 >= cas_limit()
+}
+
+/// THE SWEEP NOBODY ASKS FOR: under the shared store's own lock, the collection runs over
+/// what the live stores name and the ledger starts again. Absent when another process holds
+/// the lock — it sweeps instead.
+export fn cas_swept(live: fn() -> List<string>) -> CasReport? {
+    let dir? = cas_dir() else { return null }
+    // LICENSED input.store_io: the shared store's own directory, asked whether it stands
+    if !exists(dir) { return nothing_swept() }
+    let lock? = match opened_for_append(joined_path(dir, "lock")) { .Ok(f) -> f, .Err(_) -> null } else { return null }
+    let won = match lock.locked() { .Ok(b) -> b, .Err(_) -> false }
+    if !won {
+        let _ = lock.closed()
+        return null
+    }
+    let report = cas_collect(live())
+    let _ = truncate_to(grown_at(dir), 0)
+    let _ = lock.closed()
+    if traced() { qtrace("Q\tcas\tswept\t${report.freed}\t${report.freed_bytes}\n") }
+    report
 }
 
 /// The reference a value is stored as when it belongs in the shared store: the blob put
@@ -150,14 +186,17 @@ export fn cas_readers() -> List<string> {
 /// What a collection did.
 export type CasReport = { kept: int, freed: int, kept_bytes: int, freed_bytes: int }
 
+/// A collection that found nothing to collect.
+fn nothing_swept() -> CasReport { CasReport { kept: 0, freed: 0, kept_bytes: 0, freed_bytes: 0 } }
+
 /// One blob: where it stands, its digest, its size and its time.
 type Blob = { path: string, digest: string, bytes: int, at: int }
 
 /// The shared store collected. A blob no live store names goes; of those that remain,
 /// the limits drop the oldest past the age (`AVRA_CAS_MAX_AGE_DAYS`, none by default) and
 /// then to fit the byte ceiling. A blob dropped for a limit is a MISS its readers recompute.
-export fn cas_collect(live: List<string>) -> CasReport {
-    let dir? = cas_dir() else { return CasReport { kept: 0, freed: 0, kept_bytes: 0, freed_bytes: 0 } }
+fn cas_collect(live: List<string>) -> CasReport {
+    let dir? = cas_dir() else { return nothing_swept() }
     mut named: Map<string, bool> = {}
     for d in live { named.set(d, true) }
     // RECENCY IS THE WRITE TIME: nothing here sets a file's time. A touch on use is `avra_file_touch`'s (the ladder's proof row, #1052).
