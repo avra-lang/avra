@@ -448,6 +448,8 @@ type Records = {
     block_rows: Cell<Map<string, List<Row>>>,
     /// Files whose text a component lookup lexed, this build: what the witness counts.
     component_lexes: Cell<int>,
+    /// The modules that export a component, by its name; null until first asked.
+    component_index: Cell<Map<string, List<string>>?>,
 }
 
 fn new_records() -> Records {
@@ -461,6 +463,7 @@ fn new_records() -> Records {
     let no_met: Map<string, bool> = {}
     let no_block_named: Map<string, List<string>> = {}
     let no_block_rows: Map<string, List<Row>> = {}
+    let no_index: Map<string, List<string>>? = null
     Records {
         loaded_records: Cell.new(no_loaded),
         record_texts: Cell.new(no_texts),
@@ -474,6 +477,7 @@ fn new_records() -> Records {
         block_named: Cell.new(no_block_named),
         block_rows: Cell.new(no_block_rows),
         component_lexes: Cell.new(0),
+        component_index: Cell.new(no_index),
     }
 }
 
@@ -1698,32 +1702,30 @@ impl Workspace {
     /// TOKENS ALONE: a remedy never admits a file into the program, so a
     /// refusal types exactly what the program it refuses would.
     fn component_home(word: string, own: string) -> string? {
-        let paths = flatten([self.all_files_no_tests(pkg.src) for pkg in self.packages()])
-        let path? = paths
-            .find((path: string) -> self.module_of(path) != own && self.exports_component(path, word)) else {
+        let home? = (self.component_index().get(word) ?? []).find((m: string) -> m != own) else {
             return null
         }
-        "${self.module_of(path)}.{${word}}"
+        "${home}.{${word}}"
     }
 
-    /// Whether a file's module exports a component by this name: its record
-    /// says, or — with no record — the file's own tokens do.
-    fn exports_component(path: string, word: string) -> bool {
-        let rows? = module_block_rows(self, self.module_path_of(path)) else {
-            return file_declares_component(self, path) && self.lexed_for_component(path, word)
-        }
-        rows
-            .any(
-                (r: Row) -> r.exported &&
-                    r.name == word &&
-                    facts_unblocked(r.facts)?.is_component ?? false,
-            )
+    /// The modules in reach that export a component, by its name, in the order
+    /// the packages list their files. BUILT ONCE PER BUILD: a lookup is a map
+    /// read however many words are asked, and each file is read at most once.
+    fn component_index() -> Map<string, List<string>> {
+        let known = self.records.component_index.get()
+        if known != null { return known! }
+        let built = component_index_of(
+            self,
+            flatten([self.all_files_no_tests(pkg.src) for pkg in self.packages()]),
+        )
+        self.records.component_index.set(built)
+        built
     }
 
-    /// Whether the file's own tokens export a component by this name.
-    fn lexed_for_component(path: string, word: string) -> bool {
+    /// The components a file's own tokens export, counted as a read.
+    fn lexed_components(path: string) -> List<string> {
         self.records.component_lexes.set(self.records.component_lexes.get() + 1)
-        exports_component_named(self.listed_text(path), word)
+        exported_components_in(self.listed_text(path))
     }
 
     /// A provider read as it parses — under its OWN block words, since a

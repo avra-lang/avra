@@ -870,18 +870,39 @@ fn declares_component(tokens: List<Token>) -> bool {
         )
 }
 
-/// Whether a text exports a component by this name: `export component
-/// NAME`, then its block or its head.
-fn exports_component_named(text: string, word: string) -> bool {
-    if !text.contains(word) { return false }
+/// The names a text exports as components: `export component NAME`, then
+/// its block or its head.
+fn exported_components_in(text: string) -> List<string> {
+    if !text.contains("component") { return [] }
     let tokens = lex_source(text).tokens
-    (1..tokens.length - 2)
-        .any(
-            tokens[it - 1].lit_matches("export") &&
-                tokens[it].lit_matches("component") &&
-                tokens[it + 1].text == word &&
-                (tokens[it + 2].lit_matches("{") || tokens[it + 2].lit_matches("(")),
-        )
+    [tokens[i + 1].text for i in 1..tokens.length - 2 if tokens[i - 1].lit_matches("export") &&
+        tokens[i].lit_matches("component") &&
+        (tokens[i + 2].lit_matches("{") || tokens[i + 2].lit_matches("("))]
+}
+
+/// What a file's module exports as components: its record says, or — with no
+/// record — the file's own tokens do.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn exported_components(ws: Workspace, path: string) -> List<string> {
+    let rows? = module_block_rows(ws, ws.module_path_of(path)) else {
+        return if file_declares_component(ws, path) { ws.lexed_components(path) } else { [] }
+    }
+    [r.name for r in rows if r.exported && facts_unblocked(r.facts)?.is_component ?? false]
+}
+
+/// Every component the given files' modules export, by name: the modules that
+/// export it, each once, in file order.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn component_index_of(ws: Workspace, paths: List<string>) -> Map<string, List<string>> {
+    mut index: Map<string, List<string>> = {}
+    for path in paths {
+        let m = ws.module_of(path)
+        for name in exported_components(ws, path) {
+            let homes = index.get(name) ?? []
+            if !homes.contains(m) { index.set(name, homes.concat([m])) }
+        }
+    }
+    index
 }
 
 /// Whether a file's text may declare a block word. THE CHEAPEST GATE
