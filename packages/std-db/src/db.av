@@ -45,6 +45,7 @@ use @std.validate.{Checked, Issues, checker, decoder, stripped}
 use @std.time.{now_ms}
 use apply.{Entry, MigrateError, claim_table, grown, lifted}
 use shape.{ColumnFacts, create_sql, quoted, shape_text}
+use scope.{Where, scope_clause, scope_text, scope_args}
 use error.{ModelError, UniqueField, or_attributed, or_invalid, modeled, parent_of, removed}
 
 /// The phantom a one-to-many relation is held as. `cards: Many<Card>`
@@ -118,7 +119,7 @@ fn shape_ok(t: Type) -> bool { t.variants.is_empty() && has_id_field(t) && shape
 
 /// The annotations a model owns — its marks and its own — which are no
 /// rule of the validation it brings.
-fn claimed(t: Type) -> List<string> { Model.marks(t).concat(["model"]) }
+fn claimed(t: Type) -> List<string> { Model.marks(t).concat(["model", "crud"]) }
 
 /// The rules the type declares, run over a row before any SQL.
 fn checks(t: Type) -> Decls {
@@ -146,19 +147,19 @@ fn generated(t: Type) -> Decls {
             /// name order — what the registry records when it is created.
             static fn shape() -> string { ${literal(shape_text_of(t))} }
 
-            static fn create_table(mut db: Db) -> Result<int, SqlError> {
+            static fn create_table(db: Db) -> Result<int, SqlError> {
                 claim_table(db, ${literal(table_name_of(t))}, ${literal(owner_of(t))}, ${literal(declared_at_of(t))}, ${literal(shape_text_of(t))})
             }
 
             /// The table made if it is not there, and grown to this model's
             /// shape if it is; a change that moves is refused with its words.
             /// Answers how many steps it took.
-            static fn migrate(mut db: Db) -> Result<int, MigrateError> {
+            static fn migrate(db: Db) -> Result<int, MigrateError> {
                 let _ = lifted(${name(t.name)}.create_table(db))?
                 grown(db, ${name(t.name)}.shape(), [..${renamed_to(t)}], [..${renamed_from(t)}])
             }
 
-            fn insert(mut db: Db) -> Result<${t}, ModelError> {
+            fn insert(db: Db) -> Result<${t}, ModelError> {
                 let _ = or_invalid(self.check())?
                 mut args: List<SqlValue> = []
                 ${[push_bound(f) for f in written_fields(t)]}
@@ -173,12 +174,23 @@ fn generated(t: Type) -> Decls {
                 if s.step()? { ${row_ctor(t)} } else { null }
             }
 
-            fn update(mut db: Db) -> Result<int, ModelError> {
+            fn update(db: Db) -> Result<int, ModelError> {
                 let _ = or_invalid(self.check())?
                 mut args: List<SqlValue> = []
                 ${[push_bound(f) for f in written_fields(t)]}
                 args.push(.Int(self.id))
                 or_attributed(db.run(sql(${literal(update_sql_of(t))}, args)), ${literal(table_name_of(t))}, ${unique_fields_code(t)})
+            }
+
+            /// `update`, as ONE statement whose own WHERE carries the scope, so the
+            /// row it changes is a row within it at the moment of the write; a row
+            /// outside the scope changes nothing (answers 0).
+            fn update_within(db: Db, scope: Where?) -> Result<int, ModelError> {
+                let _ = or_invalid(self.check())?
+                mut args: List<SqlValue> = []
+                ${[push_bound(f) for f in written_fields(t)]}
+                args.push(.Int(self.id))
+                or_attributed(db.run(sql(${literal(update_sql_of(t))} + scope_text(scope), scope_args(args, scope))), ${literal(table_name_of(t))}, ${unique_fields_code(t)})
             }
 
             /// The rows, in the order they were inserted.
@@ -188,8 +200,36 @@ fn generated(t: Type) -> Decls {
 
             ${where_decl(t)}
 
-            fn remove(mut db: Db) -> Result<int, ModelError> {
+            /// The row by key, held within `scope` (none: unheld).
+            static fn find_within(db: Db, id: int, scope: Where?) -> Result<${t}?, SqlError> {
+                ${[cache_stmt(f) for f in links(t)]}
+                let s = prepared(db, sql(${literal(select_by_id_sql_of(t))} + scope_text(scope), scope_args([.Int(id)], scope)))?
+                defer s.reset()
+                if s.step()? { ${row_ctor(t)} } else { null }
+            }
+
+            /// The rows held within `scope`, in the order they were inserted.
+            static fn all_within(db: Db, scope: Where?) -> Result<List<${t}>, SqlError> {
+                ${within_body(t)}
+            }
+
+            /// This row with the scope's column set to the scope's value, so a
+            /// row written through a scope stays inside it.
+            fn in_scope(scope: Where?) -> ${t} {
+                let w? = scope else { return self }
+                mut held = self
+                ${[scope_set(f) for f in scoped_fields(t)]}
+                held
+            }
+
+            fn remove(db: Db) -> Result<int, ModelError> {
                 ${removal(t)}
+            }
+
+            /// `remove`, as one scoped statement: a row outside the scope is
+            /// untouched, and nothing it owns is cascaded (answers 0).
+            fn remove_within(db: Db, scope: Where?) -> Result<int, ModelError> {
+                ${removal_within(t)}
             }
 
             ${soft_decls(t)}
@@ -328,6 +368,46 @@ fn where_body(t: Type) -> Stmts {
     }
 }
 
+/// `where_body`'s twin with no filter seats: the live rows within the scope.
+fn within_body(t: Type) -> Stmts {
+    quote {
+        mut clauses: List<string> = ${clauses_code(live_clause(t))}
+        let args = scope_args([], scope)
+        ${[cache_stmt(f) for f in links(t)]}
+        if scope_clause(scope) != "" { clauses.push(scope_clause(scope)) }
+        let where_text = if clauses.is_empty() { "" } else { " WHERE " + clauses.join(" AND ") }
+        let s = prepared(db, sql(${literal(select_prefix_sql_of(t))} + where_text + ${literal(order_suffix_sql())}, args))?
+        defer s.reset()
+        mut rows: List<${t}> = []
+        while s.step()? { rows.push(${row_ctor(t)}) }
+        rows
+    }
+}
+
+/// The fields a scope can set: those whose column holds an int, text or flag.
+fn scoped_fields(t: Type) -> List<Field> {
+    [f for f in stored(t) if link_target(f) == null && scope_value(f) != null]
+}
+
+/// One field set from the scope's value when the scope names its column.
+fn scope_set(f: Field) -> Stmts {
+    quote {
+        if w.column == ${literal(column_of(f))} {
+            held = held with { ${f.name}: ${scope_value(f)!} }
+        }
+    }
+}
+
+/// The scope's value read as the field's kind; the field's own when it is another.
+fn scope_value(f: Field) -> Code? {
+    match f.kind {
+        .Int -> quote { match w.value { .Int(n) -> n, rest -> self.${f.name} } },
+        .Str -> quote { match w.value { .Text(x) -> x, rest -> self.${f.name} } },
+        .Bool -> quote { match w.value { .Int(n) -> n != 0, rest -> self.${f.name} } },
+        rest -> null,
+    }
+}
+
 fn clauses_code(live: string) -> Code {
     if live.is_empty() { quote { [] } } else { quote { [${literal(live)}] } }
 }
@@ -409,6 +489,24 @@ fn inverse_link(t: Type, f: Field) -> string? {
 
 /// The `Many` fields whose children go when this row does: the child's
 /// link says `@cascade`.
+/// `removal` held within a scope: the row's own statement carries it, and
+/// only a row it changed has its children cascaded.
+fn removal_within(t: Type) -> Code {
+    if soft_field(t) == null {
+        return quote { removed(db.run(sql(${literal(delete_sql_of(t))} + scope_text(scope), scope_args([.Int(self.id)], scope))), ${literal(table_name_of(t))}) }
+    }
+    quote {
+        let opened = modeled(db.begin_unless_open())?
+        defer db.finish_if_opened(opened)
+        let changed = modeled(db.run(sql(${literal(soft_remove_sql_of(t))} + scope_text(scope), scope_args([.Int(now_ms()), .Int(self.id)], scope))))?
+        if changed != 0 {
+            ${[cascade_stmt(f) for f in cascading(t)]}
+        }
+        if opened { let _ = modeled(db.commit())? }
+        changed
+    }
+}
+
 fn cascading(t: Type) -> List<Field> { [f for f in t.fields if is_many(f) && child_cascades(t, f)] }
 
 fn child_cascades(t: Type, f: Field) -> bool {
@@ -491,8 +589,23 @@ fn soft_decls(t: Type) -> List<Decls> {
                 rows
             }
 
+            /// The removed rows held within `scope`.
+            static fn trash_within(db: Db, scope: Where?) -> Result<List<${t}>, SqlError> {
+                ${[cache_stmt(f) for f in links(t)]}
+                let s = prepared(db, sql(${literal(trash_prefix_sql_of(t))} + scope_text(scope) + ${literal(order_suffix_sql())}, scope_args([], scope)))?
+                defer s.reset()
+                mut rows: List<${t}> = []
+                while s.step()? { rows.push(${row_ctor(t)}) }
+                rows
+            }
+
+            /// `restore`, as one scoped statement (answers 0 outside the scope).
+            fn restore_within(db: Db, scope: Where?) -> Result<int, SqlError> {
+                db.run(sql(${literal(restore_sql_of(t))} + scope_text(scope), scope_args([.Int(self.id)], scope)))
+            }
+
             /// A removed row, back among the living.
-            fn restore(mut db: Db) -> Result<int, SqlError> {
+            fn restore(db: Db) -> Result<int, SqlError> {
                 db.run(sql(${literal(restore_sql_of(t))}, [.Int(self.id)]))
             }
         },
@@ -695,8 +808,13 @@ fn select_by_id_sql_of(t: Type) -> string {
 }
 
 fn trash_sql_of(t: Type) -> string {
+    if soft_field(t) == null { return "" }
+    "${trash_prefix_sql_of(t)}${order_suffix_sql()}"
+}
+
+fn trash_prefix_sql_of(t: Type) -> string {
     let f? = soft_field(t) else { return "" }
-    "${select_prefix_sql_of(t)} WHERE ${quoted(f.name)} IS NOT NULL${order_suffix_sql()}"
+    "${select_prefix_sql_of(t)} WHERE ${quoted(f.name)} IS NOT NULL"
 }
 
 fn soft_remove_sql_of(t: Type) -> string {
