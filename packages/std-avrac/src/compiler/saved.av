@@ -1,0 +1,160 @@
+//! Saved answers by durable name. A key this process never settled stands on a row the store
+//! holds under a name — its family and what its argument names, never a dense id — so a row
+//! is read only when the kernel asks for that key. The kernel resolves nothing; this file
+//! maps keys to names on the way out and names to keys on the way in.
+use @std.relation.engine.{Key, Saved, SavedRead}
+use @std.text.{parse_int}
+use core.{FileId, DeclId, ModuleId, joined}
+use features.{kind_word, decl_key_text}
+use compiler.families.{Family}
+use compiler.store.{Store, Stored, StoredName, Reading, node_key, read_spelled}
+
+/// What a family's key argument names. A `Local` argument is an id of this process alone,
+/// so no answer under it is saved.
+enum ArgName {
+    File
+    Decl
+    Module
+    Unit
+    Local
+}
+
+/// The row a read of the family's own hash stands on: the value hash a row was saved at.
+const HASH_READ: string = "="
+
+fn arg_name(f: Family) -> ArgName {
+    match f {
+        .Source or .Parsed or .Items or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .FileRefs or .MethodDiags or .Admitted -> ArgName.File,
+        .Sig or .Methods or .Typed or .WriteSummary or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .CancelSummary or .Writes or .CancelBits or .ReadFound or .Consumed -> ArgName.Decl,
+        .Namespace or .HeldSig -> ArgName.Module,
+        .References or .Failures or .ReadReach -> ArgName.Unit,
+        .ConstTyped or .Settled or .Lowered or .Lifted or .LiftLowered or .Manifest or .Named or .Input or .BlockScan or .ComponentScan or .ComponentNames -> ArgName.Local,
+    }
+}
+
+/// The families whose answers are saved by name: those with a value codec behind them.
+fn saved_family(f: Family) -> bool {
+    match f {
+        .Sig -> true,
+        .Source or .Parsed or .Items or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .FileRefs or .MethodDiags or .Admitted or .Methods or .Typed or .WriteSummary or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .CancelSummary or .Writes or .CancelBits or .ReadFound or .Consumed or .Namespace or .HeldSig or .References or .Failures or .ReadReach or .ConstTyped or .Settled or .Lowered or .Lifted or .LiftLowered or .Manifest or .Named or .Input or .BlockScan or .ComponentScan or .ComponentNames -> false,
+    }
+}
+
+impl Workspace {
+    /// A key's durable name — the family, then what the argument names — or null for a key
+    /// no process but this one can read.
+    fn saved_name(key: Key) -> string? {
+        let f = Family.all()[key.family]
+        let spelled? = self.arg_spelled(arg_name(f), key.arg) else { return null }
+        "${f.name}\t${spelled}"
+    }
+
+    /// What an argument names, spelled so another process reads the same thing: a file by its
+    /// name, a declaration by the key it is filed under.
+    fn arg_spelled(kind: ArgName, arg: int) -> string? {
+        match kind {
+            .File -> self.decls.file(FileId { index: arg }).name,
+            .Decl -> self.decl_spelled(DeclId { index: arg }),
+            .Module -> self.decls.module_name(ModuleId { index: arg }),
+            .Unit -> "",
+            .Local -> null,
+        }
+    }
+
+    /// A declaration's key as text, unrecorded: its file's name, then kind, owner, maker,
+    /// encloser, name and place among the siblings that share them.
+    fn decl_spelled(d: DeclId) -> string? {
+        let x = self.decls.raw_decl(d)
+        if x.name.contains("\t") ||
+            x.owner.contains("\t") ||
+            x.maker.contains("\t") ||
+            x.enclosing.contains("\t") { return null }
+        joined(
+            [x.path, kind_word(x.kind), x.owner, x.maker, x.enclosing, x.name, "${x.sibling}"],
+            "\t",
+        )
+    }
+
+    /// `saved_name`'s inverse: the key a name stands for here. Null where the name's file or
+    /// declaration does not stand in this program.
+    fn saved_key(name: string) -> Key? {
+        let at = name.index_of("\t")
+        if at < 0 { return null }
+        let word = name.substring(0, at)
+        let f? = Family.all().find(it.name == word) else { return null }
+        let arg? = self.arg_named(arg_name(f), name.substring(at + 1, name.length)) else { return null }
+        Key { family: f.ordinal, arg: arg }
+    }
+
+    fn arg_named(kind: ArgName, spelled: string) -> int? {
+        match kind {
+            .File -> self.decls.known_file_id(self.path_named(StoredName(spelled)))?.index,
+            .Decl -> self.decl_named(spelled)?.index,
+            .Module -> self.decls.known_module_id(spelled)?.index,
+            .Unit -> 0,
+            .Local -> null,
+        }
+    }
+
+    /// The declaration a spelling names, found in the key index without minting anything.
+    fn decl_named(spelled: string) -> DeclId? {
+        let parts = spelled.split("\t")
+        if parts.length != 7 { return null }
+        let kind? = kind_of_word(parts[1]) else { return null }
+        let sibling? = parse_int(parts[6]) else { return null }
+        self
+            .decls
+            .known_id(decl_key_text(parts[0], parts[5], kind, parts[2], parts[3], parts[4], sibling))
+    }
+
+    /// Where the row for a name is filed: the name, in the view the file is read in.
+    fn saved_row_key(name: string) -> string {
+        node_key(Stored.Unit, ["saved", name, self.root_view()])
+    }
+
+    /// A saved answer for a key never settled here: what it read, each as a key of this process,
+    /// and the hash it answered. Null when nothing is saved, or a read names no key here.
+    fn saved_found(key: Key) -> Saved? {
+        if !saved_family(Family.all()[key.family]) { return null }
+        let store? = self.store.get() else { return null }
+        let name? = self.saved_name(key) else { return null }
+        let row = self.saved_row_key(name)
+        let lines? = store.reads_of(Stored.Unit, row) else { return null }
+        mut reads: List<SavedRead> = []
+        mut hash: int? = null
+        for line in lines {
+            let r? = read_spelled(line) else { return null }
+            let digest? = parse_int(r.digest) else { return null }
+            if r.name == HASH_READ {
+                hash = digest
+                continue
+            }
+            let k? = self.saved_key(r.name) else { return null }
+            reads.push(SavedRead { key: k, digest: digest })
+        }
+        let value_hash? = hash else { return null }
+        Saved { reads: reads, value_hash: value_hash }
+    }
+
+    /// An answer this process computed, saved under its name with what it read: refused (false)
+    /// when a read has no name, since an answer on a read nothing can resolve would never stand.
+    fn saved_kept(key: Key, value: string) -> bool {
+        let store? = self.store.get() else { return false }
+        let name? = self.saved_name(key) else { return false }
+        let hash? = self.db.kernel.hash_forced(key) else { return false }
+        let reads? = self.db.kernel.saved_reads(key) else { return false }
+        mut readings: List<Reading> = [Reading { name: HASH_READ, digest: "${hash}" }]
+        for r in reads {
+            let named? = self.saved_name(r.key) else { return false }
+            readings.push(Reading { name: named, digest: "${r.digest}" })
+        }
+        store.keep_reading(Stored.Unit, self.saved_row_key(name), value, readings)
+    }
+
+    /// The value a saved answer was kept with.
+    fn saved_value(key: Key) -> string? {
+        let store? = self.store.get() else { return null }
+        let name? = self.saved_name(key) else { return null }
+        store.get(Stored.Unit, self.saved_row_key(name))
+    }
+}
