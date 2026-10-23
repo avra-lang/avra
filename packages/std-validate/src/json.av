@@ -20,20 +20,8 @@
 //! when no issue may show what it received. A value it refuses is
 //! read the tree's way — shown as a `Value` and handed to the tree
 //! reader — so a refusal says what the tree path says.
-use @std.json.{
-    space,
-    plain_end,
-    string_end,
-    text_of,
-    number_end,
-    int_end,
-    int_of,
-    skip,
-    skip_judged,
-    value_at,
-    MAX_DEPTH,
-}
-use @std.text.{parse_float}
+use @std.json.{plain_end, int_end, int_of, value_at, MAX_DEPTH}
+use @std.json.typed.{reader_of}
 use decode.{Decoding, Decoder, Slot, Coercion, Limits, decode, answered}
 use formats.{from_json, json_value}
 use issue.{Issue, Issues, Path, Step, root}
@@ -54,26 +42,20 @@ export fn decode_json<T>(
     limits: Limits = Limits {},
 ) -> Result<T, Issues> {
     if coercion is .Strict {
-        let b = text.bytes()
         // LICENSED let_stmt.unmutated_mut: `direct`'s `mut` seat writes through it
-        mut d = Decoding { limits: limits, text: text, bytes: b, pos: space(b, 0) }
+        mut d = Decoding { limits: limits, json: reader_of(text) }
         let got = direct(d, 0, true, false)
-        if d.pos >= 0 && space(b, d.pos) == b.length { return answered(d, got) }
+        if d.json.finished() { return answered(d, got) }
     }
     decode(from_json(text)?, tree, coercion, limits)
 }
 
 impl Decoding {
     /// The direct reader stops here; the tree path answers.
-    mut fn aside() { self.pos = -1 }
-
-    /// The byte at the cursor, or -1 past the text or aside.
-    fn here() -> int {
-        if self.pos >= 0 && self.pos < self.bytes.length { self.bytes.at(self.pos) } else { -1 }
-    }
+    mut fn aside() { self.json.aside() }
 
     /// Whether the byte at the cursor is `c`.
-    fn at_byte(c: int) -> bool { self.here() == c }
+    fn at_byte(c: int) -> bool { self.json.at_byte(c) }
 
     /// Whether a container at `depth` is past a bound — the decoder's,
     /// which the tree path names as an issue, or the parser's, which it
@@ -82,16 +64,12 @@ impl Decoding {
 
     /// Past the value at the cursor, nested no deeper than the bound
     /// allows below `depth`; false where the text is not JSON.
-    mut fn skipped(depth: int) -> bool {
-        if self.pos < 0 { return false }
-        self.pos = skip_judged(self.bytes, self.pos, MAX_DEPTH - depth)
-        self.pos >= 0
-    }
+    mut fn skipped(depth: int) -> bool { self.json.skipped(MAX_DEPTH - depth) }
 
     /// The value at the cursor as the tree reads it, the cursor past
     /// it: shown as a `Value` in a slot of its own.
     mut fn tree_slot(depth: int, required: bool, secret: bool) -> Slot? {
-        let at = self.pos
+        let at = self.json.pos
         if !self.skipped(depth) { return null }
         Slot { value: self.value_from(at), at: root(), required: required, hidden: secret }
     }
@@ -99,80 +77,49 @@ impl Decoding {
     /// The value whose text starts at `at`, which the reader passed —
     /// what an issue shows it received.
     fn value_from(at: int) -> Value {
-        let b = self.bytes
+        let text = self.json.text
+        let b = self.json.bytes
         let c = b.at(at)
         let plain = if c == 34 { plain_end(b, at) } else { -1 }
-        if plain >= 0 { return Value.Text(self.text.substring(at + 1, plain - 1)) }
+        if plain >= 0 { return Value.Text(text.substring(at + 1, plain - 1)) }
         let digits = if c == 45 || is_digit(c) { int_end(b, at) } else { -1 }
-        if digits >= 0 { return Value.Int(int_of(self.text, b, at, digits)) }
-        json_value(value_at(self.text, at))
+        if digits >= 0 { return Value.Int(int_of(text, b, at, digits)) }
+        json_value(value_at(text, at))
     }
 
     mut fn json_text(depth: int, required: bool, secret: bool) -> string? {
-        let at = self.pos
-        if self.at_byte(34) {
-            let b = self.bytes
-            let plain = plain_end(b, at)
-            if plain >= 0 {
-                self.pos = plain
-                return self.text.substring(at + 1, plain - 1)
-            }
-            let end = string_end(b, at)
-            if end >= 0 {
-                self.pos = end
-                return text_of(self.text, b, at, end)
-            }
+        let read? = self.json.string_here() else {
+            let s? = self.tree_slot(depth, required, secret) else { return null }
+            return self.text(s)
         }
-        let s? = self.tree_slot(depth, required, secret) else { return null }
-        self.text(s)
+        read
     }
 
     mut fn json_int(depth: int, required: bool, secret: bool) -> int? {
-        let at = self.pos
-        let c = self.here()
-        if c == 45 || is_digit(c) {
-            let end = int_end(self.bytes, at)
-            if end >= 0 {
-                self.pos = end
-                return int_of(self.text, self.bytes, at, end)
-            }
+        let read? = self.json.int_here() else {
+            let s? = self.tree_slot(depth, required, secret) else { return null }
+            return self.int(s)
         }
-        let s? = self.tree_slot(depth, required, secret) else { return null }
-        self.int(s)
+        read
     }
 
     mut fn json_bool(depth: int, required: bool, secret: bool) -> bool? {
-        let at = self.pos
-        let c = self.here()
-        if c == 116 || c == 102 {
-            let end = skip(self.bytes, at, 0)
-            if end == at + 4 && c == 116 || end == at + 5 {
-                self.pos = end
-                return end == at + 4
-            }
+        let read? = self.json.bool_here() else {
+            let s? = self.tree_slot(depth, required, secret) else { return null }
+            return self.bool(s)
         }
-        let s? = self.tree_slot(depth, required, secret) else { return null }
-        self.bool(s)
+        read
     }
 
     /// A number with a fraction or an exponent; an integer is the
     /// tree's to refuse, since a float seat takes only a float.
     mut fn json_float(depth: int, required: bool, secret: bool) -> float? {
-        let at = self.pos
-        let c = self.here()
-        if c == 45 || is_digit(c) {
-            let end = number_end(self.bytes, at)
-            if end >= 0 && int_end(self.bytes, at) < 0 {
-                self.pos = end
-                let x? = parse_float(self.text.substring(at, end)) else {
-                    self.aside()
-                    return null
-                }
-                return x
-            }
+        let read? = self.json.float_here() else {
+            if self.json.pos < 0 { return null }
+            let s? = self.tree_slot(depth, required, secret) else { return null }
+            return self.float(s)
         }
-        let s? = self.tree_slot(depth, required, secret) else { return null }
-        self.float(s)
+        read
     }
 
     /// A shape no reader takes yet: its value skipped, one issue
@@ -190,8 +137,7 @@ impl Decoding {
                 self.aside()
                 return false
             }
-            self.pos = self.pos + 1
-            return true
+            return self.json.opened(123)
         }
         let s? = self.tree_slot(depth, required, secret) else { return false }
         let _ = self.object(s)
@@ -199,78 +145,33 @@ impl Decoding {
     }
 
     /// Just past an opener: whether an item follows, the cursor at it.
-    /// At `close` the cursor passes it.
-    mut fn json_first(close: int) -> bool {
-        if self.pos < 0 { return false }
-        let j = space(self.bytes, self.pos)
-        if j < self.bytes.length && self.bytes.at(j) == close {
-            self.pos = j + 1
-            return false
-        }
-        self.pos = j
-        true
-    }
+    mut fn json_first(close: int) -> bool { self.json.first(close) }
 
     /// Just past an item: whether another follows, the cursor at it.
-    /// At `close` the cursor passes it.
-    mut fn json_next(close: int) -> bool {
-        if self.pos < 0 { return false }
-        let b = self.bytes
-        let j = space(b, self.pos)
-        let c = if j < b.length { b.at(j) } else { -1 }
-        if c == 44 {
-            self.pos = space(b, j + 1)
-            return true
-        }
-        if c == close { self.pos = j + 1 } else { self.aside() }
-        false
-    }
+    mut fn json_next(close: int) -> bool { self.json.next(close) }
 
     /// The key at the cursor read and the cursor left at its value:
     /// past the key's closing quote, or -1 where the text holds no key.
-    mut fn json_key() -> int {
-        if !self.at_byte(34) {
-            self.aside()
-            return -1
-        }
-        let b = self.bytes
-        let plain = plain_end(b, self.pos)
-        let end = if plain >= 0 { plain } else { string_end(b, self.pos) }
-        let colon = if end < 0 { end } else { space(b, end) }
-        if colon < 0 || colon >= b.length || b.at(colon) != 58 {
-            self.aside()
-            return -1
-        }
-        self.pos = space(b, colon + 1)
-        end
-    }
+    mut fn json_key() -> int { self.json.key() }
 
-    /// Whether the key whose quote is at `at` spells `name` exactly —
-    /// asked once its length is known to be `name`'s.
-    fn key_is(at: int, name: string) -> bool {
-        self.bytes.eq_at(at + 1, at + 1 + name.length, name.bytes())
-    }
+    /// Whether the key whose quote is at `at` spells `name` exactly.
+    fn key_is(at: int, name: string) -> bool { self.json.key_is(at, name) }
 
-    /// The field an ESCAPED key names among `names` — a key with no
-    /// escape was matched by its bytes already, so it names none.
-    fn key_index(at: int, end: int, names: List<string>) -> int {
-        if end < 0 { return -1 }
-        let key = text_of(self.text, self.bytes, at, end)
-        if key.length == end - at - 2 { -1 } else { names.index_of(key) }
-    }
+    /// The field an ESCAPED key names among `names`.
+    fn key_index(at: int, end: int, names: List<string>) -> int { self.json.key_index(at, end, names) }
 
     /// A key the record does not name: its value skipped, and an issue
     /// under `Strict` naming the field it may have meant.
     mut fn json_stray(at: int, end: int, order: int, depth: int, names: List<string>) {
         if !self.skipped(depth) { return }
-        let key = text_of(self.text, self.bytes, at, end)
+        let key = self.json.key_text(at, end)
         self.strayed(root().field(key), key, names, order)
     }
 
     /// A key written a second time: its value skipped, and an issue.
     mut fn json_repeated(at: int, end: int, order: int, depth: int) {
         if !self.skipped(depth) { return }
-        self.repeated(root().field(text_of(self.text, self.bytes, at, end)), order)
+        self.repeated(root().field(self.json.key_text(at, end)), order)
     }
 
     /// Every issue from `mark` on, spoken from where a field's value
@@ -339,7 +240,7 @@ export fn json_list<T>(
         d.aside()
         return null
     }
-    d.pos = d.pos + 1
+    let _ = d.json.opened(91)
     let before = d.count()
     mut out: List<T> = []
     mut i = 0
@@ -356,7 +257,7 @@ export fn json_list<T>(
         i = i + 1
         more = d.json_next(93)
     }
-    if d.pos < 0 || d.count() > before { null } else { out }
+    if d.json.pos < 0 || d.count() > before { null } else { out }
 }
 
 /// A shape with no direct reader, read the tree's way: shown as a
