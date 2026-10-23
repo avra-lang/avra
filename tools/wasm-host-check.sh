@@ -10,16 +10,14 @@ here=$(cd "$(dirname "$0")" && pwd)
 tree=$(cd "$here/.." && pwd)
 avra=${AVRA:-$tree/build/avra}
 work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-whost.XXXXXX")}
-say() { echo "wasm-host-check: $*" >&2; }
-skip() { say "$* — skipped"; exit 0; }
+wasm_who=wasm-host-check; . "$here/lib/wasm.sh"
 . "$here/jspi_node.sh"
 
-[ -x "$avra" ] || skip "no compiler at $avra"
-command -v "$node" >/dev/null 2>&1 || skip "node not on PATH"
-command -v clang >/dev/null 2>&1 || skip "clang not on PATH"
-clang --print-targets 2>/dev/null | grep -q wasm32 || skip "clang has no wasm32 target"
-command -v wasm-opt >/dev/null 2>&1 || skip "wasm-opt (binaryen) not on PATH"
-[ -f "$tree/build/wasm32/libavra_runtime.a" ] || ( cd "$tree" && make -s wasm-runtime ) >/dev/null 2>&1 || skip "the wasm runtime archive did not build"
+needs_compiler
+needs "$node"
+needs_wasm_clang
+needs wasm-opt
+wasm_ready || skip "the wasm runtime archive did not build"
 
 "$node" --no-warnings --experimental-wasm-jspi "$tree/runtime/dom/tasks_unit_test.js"
 # both hosts against one freestanding module: JSPI against the plain build, asyncify against the asyncified one

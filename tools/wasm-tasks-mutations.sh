@@ -38,19 +38,17 @@ tree=$(cd "$here/.." && pwd)
 avra=${AVRA:-$tree/build/avra}
 work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-wmut.XXXXXX")}
 lib=$tree/build/wasm32/libavra_runtime.a
-say() { echo "wasm-tasks-mutations: $*" >&2; }
-skip() { say "$* — skipped"; exit 0; }
+wasm_who=wasm-tasks-mutations; . "$here/lib/wasm.sh"
 . "$here/jspi_node.sh"
 
-[ -x "$avra" ] || skip "no compiler at $avra"
-command -v "$node" >/dev/null 2>&1 || skip "node not on PATH"
-command -v clang >/dev/null 2>&1 || skip "clang not on PATH"
-clang --print-targets 2>/dev/null | grep -q wasm32 || skip "clang has no wasm32 target"
-( cd "$tree" && make -s wasm-runtime ) >/dev/null 2>&1 || skip "the wasm runtime archive did not build"
+needs_compiler
+needs "$node"
+needs_wasm_clang
+wasm_ready || skip "the wasm runtime archive did not build"
 if "$node" --experimental-wasm-jspi -e 0 >/dev/null 2>&1; then jspi="--experimental-wasm-jspi"; else skip "this Node has no JSPI"; fi
 
 cp "$lib" "$work/clean.a"
-restore() { cp "$work/clean.a" "$lib"; ( cd "$tree" && make -s wasm-runtime ) >/dev/null 2>&1 || true; }
+restore() { cp "$work/clean.a" "$lib"; wasm_ready || true; }
 trap restore EXIT
 
 # Build and run every fixture with the archive as it stands, under the host

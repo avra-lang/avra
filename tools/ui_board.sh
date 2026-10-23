@@ -22,9 +22,8 @@ skip() { echo "ui-board: SKIPPED — $* ; the board did not run on a page"; exit
 
 [ -x "$avra" ] || skip "no compiler at $avra"
 command -v node >/dev/null 2>&1 || skip "no \`node\` on this machine"
-if [ ! -f "$tree/build/wasm32/libavra_runtime.a" ]; then
-    ( cd "$tree" && make -s wasm-runtime wasm-packages ) >/dev/null 2>&1 || skip "the wasm runtime archive did not build"
-fi
+. "$here/lib/wasm_ready.sh"
+wasm_ready || skip "the wasm runtime archive did not build"
 
 # A COPY is built, so the tree's own object cache never holds a wasm object.
 mkdir -p "$work/tools"
