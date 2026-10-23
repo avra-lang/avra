@@ -1,0 +1,49 @@
+// proves: a scoped write is ONE statement whose own WHERE carries the scope — a row re-owned after it was found is untouched by update, remove and restore (each answers 0), so check and act cannot be separated
+use @std.db.{model}
+use @std.db.error.{ModelError}
+use @std.db.scope.{Where}
+use @std.sqlite.{Db, SqlValue, sql}
+use @std.sqlite.error.{SqlError}
+
+@model
+type Memo = {
+    id: int = 0,
+    owner: int,
+    text: string,
+    @soft_delete removed_at: int? = null,
+}
+
+fn mine(who: int) -> Where? { Where { column: "owner", op: .Eq, value: SqlValue.Int(who) } }
+
+/// What a model verb answered, as a word: the rows it changed, or the failure.
+fn told(r: Result<int, ModelError>) -> string {
+    match r { .Ok(n) -> "${n}", .Err(e) -> e.describe().message }
+}
+
+fn told_sql(r: Result<int, SqlError>) -> string {
+    match r { .Ok(n) -> "${n}", .Err(e) -> e.message }
+}
+
+fn seeded(db: Db) -> bool {
+    match Memo { owner: 1, text: "mine" }.insert(db) { .Ok(_) -> true, .Err(_) -> false }
+}
+
+fn shown() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    let _ = Memo.create_table(db)?
+    if !seeded(db) { return "no row" }
+    // found as owner 1 — and only then handed to owner 2
+    let found = Memo.find_within(db, 1, mine(1))?!
+    let _ = db.run(sql("UPDATE \"Memo\" SET \"owner\" = 2 WHERE \"id\" = 1"))?
+    let updated = told((found with { text: "late" }).update_within(db, mine(1)))
+    let removed = told(found.remove_within(db, mine(1)))
+    let restored = told_sql(found.restore_within(db, mine(1)))
+    let theirs = Memo.find_within(db, 1, mine(2))?!
+    let untouched = "${theirs.text} ${theirs.removed_at == null}"
+    // the same verbs as the owner it now has
+    let now_updated = told((found with { owner: 2, text: "now" }).update_within(db, mine(2)))
+    let now_removed = told(found.remove_within(db, mine(2)))
+    [updated, removed, restored, untouched, now_updated, now_removed].join(" ")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.message}" }

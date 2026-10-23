@@ -182,6 +182,17 @@ fn generated(t: Type) -> Decls {
                 or_attributed(db.run(sql(${literal(update_sql_of(t))}, args)), ${literal(table_name_of(t))}, ${unique_fields_code(t)})
             }
 
+            /// `update`, as ONE statement whose own WHERE carries the scope, so the
+            /// row it changes is a row within it at the moment of the write; a row
+            /// outside the scope changes nothing (answers 0).
+            fn update_within(db: Db, scope: Where?) -> Result<int, ModelError> {
+                let _ = or_invalid(self.check())?
+                mut args: List<SqlValue> = []
+                ${[push_bound(f) for f in written_fields(t)]}
+                args.push(.Int(self.id))
+                or_attributed(db.run(sql(${literal(update_sql_of(t))} + scope_text(scope), scope_args(args, scope))), ${literal(table_name_of(t))}, ${unique_fields_code(t)})
+            }
+
             /// The rows, in the order they were inserted.
             static fn all(db: Db) -> Result<List<${t}>, SqlError> {
                 ${name(t.name)}.where(db)
@@ -213,6 +224,12 @@ fn generated(t: Type) -> Decls {
 
             fn remove(db: Db) -> Result<int, ModelError> {
                 ${removal(t)}
+            }
+
+            /// `remove`, as one scoped statement: a row outside the scope is
+            /// untouched, and nothing it owns is cascaded (answers 0).
+            fn remove_within(db: Db, scope: Where?) -> Result<int, ModelError> {
+                ${removal_within(t)}
             }
 
             ${soft_decls(t)}
@@ -472,6 +489,24 @@ fn inverse_link(t: Type, f: Field) -> string? {
 
 /// The `Many` fields whose children go when this row does: the child's
 /// link says `@cascade`.
+/// `removal` held within a scope: the row's own statement carries it, and
+/// only a row it changed has its children cascaded.
+fn removal_within(t: Type) -> Code {
+    if soft_field(t) == null {
+        return quote { removed(db.run(sql(${literal(delete_sql_of(t))} + scope_text(scope), scope_args([.Int(self.id)], scope))), ${literal(table_name_of(t))}) }
+    }
+    quote {
+        let opened = modeled(db.begin_unless_open())?
+        defer db.finish_if_opened(opened)
+        let changed = modeled(db.run(sql(${literal(soft_remove_sql_of(t))} + scope_text(scope), scope_args([.Int(now_ms()), .Int(self.id)], scope))))?
+        if changed != 0 {
+            ${[cascade_stmt(f) for f in cascading(t)]}
+        }
+        if opened { let _ = modeled(db.commit())? }
+        changed
+    }
+}
+
 fn cascading(t: Type) -> List<Field> { [f for f in t.fields if is_many(f) && child_cascades(t, f)] }
 
 fn child_cascades(t: Type, f: Field) -> bool {
@@ -562,6 +597,11 @@ fn soft_decls(t: Type) -> List<Decls> {
                 mut rows: List<${t}> = []
                 while s.step()? { rows.push(${row_ctor(t)}) }
                 rows
+            }
+
+            /// `restore`, as one scoped statement (answers 0 outside the scope).
+            fn restore_within(db: Db, scope: Where?) -> Result<int, SqlError> {
+                db.run(sql(${literal(restore_sql_of(t))} + scope_text(scope), scope_args([.Int(self.id)], scope)))
             }
 
             /// A removed row, back among the living.
