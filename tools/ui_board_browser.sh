@@ -142,32 +142,11 @@ torn=$(sed -n 's/^serving \(http[^ ]*\).*$/\1/p' "$work/serve--tampered.out" | h
 # use; one that cannot launch is a missing browser like any other: it fails unless stood down by
 # name (`skip`), and says where its libraries come from.
 engines=${UI_BROWSER_ENGINES:-firefox}
-playwright_version=1.64.1
 case " $engines " in
     *" webkit "* | *" webkit-iphone "*)
-        playwright=${PLAYWRIGHT_DIR:-$tree/build/playwright}
-        # THE BROWSER STANDS WHERE THIS GUARD LOOKS. `playwright install`
-        # honours PLAYWRIGHT_BROWSERS_PATH, so the directory the checks cache
-        # holds the browser too, and a restored cache is VALIDATED rather than
-        # assumed: one that carries the node module and no browser installs it
-        # instead of failing at launch.
-        browsers=$playwright/browsers
-        export PLAYWRIGHT_BROWSERS_PATH="$browsers"
-        if [ ! -d "$playwright/node_modules/playwright" ]; then
-            mkdir -p "$playwright"
-            # a machine with no npm (the checks' image) takes the one in the pinned Node (.github/ci/install_node.sh)
-            command -v npm >/dev/null 2>&1 || PATH=/opt/node-jspi/bin:$PATH
-            npm install --prefix "$playwright" --no-audit --no-fund "playwright@$playwright_version" >"$work/npm.out" 2>&1 ||
-                skip "Playwright did not install: $(tail -1 "$work/npm.out")"
-        fi
-        exe=$(webkit_exe "$playwright") || skip "Playwright's module named no WebKit executable"
-        if ! webkit_stands "$exe"; then
-            "$playwright/node_modules/.bin/playwright" install webkit >>"$work/npm.out" 2>&1 ||
-                skip "Playwright's WebKit did not install: $(tail -1 "$work/npm.out")"
-            exe=$(webkit_exe "$playwright") || skip "Playwright's module named no WebKit executable after install"
-            webkit_stands "$exe" || skip "Playwright's WebKit is not at $exe after install"
-        fi
-        export PLAYWRIGHT_DIR="$playwright"
+        # the pinned Playwright and its WebKit, one setup shared with the layout oracle
+        . "$here/ui-board/playwright.sh"
+        playwright_ready "$tree" "$work/npm.out" || skip "Playwright's WebKit did not install: $(tail -1 "$work/npm.out")"
         ;;
 esac
 
