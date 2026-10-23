@@ -22,6 +22,7 @@ use core.{
     PatId,
     Arm,
     Case,
+    UseItem,
     Mark,
     Variant,
     CompClause,
@@ -145,6 +146,11 @@ impl Slots for Builder {
     /// The enum variants the payload `label` carries.
     fn variants_of(label: string) -> Result<List<Variant>, string> {
         .Ok(variants_at(self.args, self.slot_of(label)?))
+    }
+
+    /// The imported items the payload `label` carries.
+    fn use_items_of(label: string) -> Result<List<UseItem>, string> {
+        .Ok(use_items_at(self.args, self.slot_of(label)?))
     }
 
     /// The marks the payload `label` carries.
@@ -389,6 +395,19 @@ impl Builder {
                             span: self.span,
                         },
                     ],
+                ),
+        )
+    }
+
+    /// One imported item read off its rule's labels.
+    fn use_item() -> Result<LangNode, string> {
+        .Ok(
+            LangNode
+                .NUseItem(
+                    UseItem {
+                        name: self.text_of("name")?,
+                        rename: (self.tokens(self.slot_of("rename")?)?).first()?.text,
+                    },
                 ),
         )
     }
@@ -641,6 +660,16 @@ export fn variants_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Var
 
 fn variant_of(args: List<Captured<Token, LangNode>>, i: int) -> Variant? {
     match args[i] { .Node(.NVariant(v)) -> v, _ -> null }
+}
+
+/// The repeated imported-item capture at `args[i]`, as items.
+export fn use_items_at(args: List<Captured<Token, LangNode>>, i: int) -> List<UseItem> {
+    let items = list_at(args, i)
+    flatten([some_list(use_item_of(items, j)) for j in 0..items.length])
+}
+
+fn use_item_of(args: List<Captured<Token, LangNode>>, i: int) -> UseItem? {
+    match args[i] { .Node(.NUseItem(u)) -> u, _ -> null }
 }
 
 /// The repeated arm capture at `args[i]`, as arms.
