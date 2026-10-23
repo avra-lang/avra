@@ -56,6 +56,13 @@ case "$page" in *app.wasm*|*bootstrap.js*) say "the page is still the page's" ;;
 glue=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "${url}bootstrap.js")
 [ "$glue" = "200" ] && say "the page's glue is still the page's" || fail "GET /bootstrap.js answered $glue"
 
+# What the page's walk says (order-only instances) reaches dev's own output, once a module.
+warning='ui: `counter` keeps state, and here its instances are told apart by their order alone — give each its own `key`'
+for _ in 1 2; do curl -s --max-time 10 -o /dev/null -X POST --data "$warning" "${url}@dev/said"; done
+sleep 0.5
+told=$(grep -c "^dev: the page said: ui: .counter. keeps state" "$work/dev.out" || true)
+[ "$told" = 1 ] && say "a warning the page's walk made is in dev's output, once: dev: the page said: …" || fail "the page's warning was told $told times in dev's output, wanted 1"
+
 runs=$(grep -c '^dev: server .* runs on' "$work/dev.out")
 served "two"
 waits 120 "built the save to the server's source" rebuilt
