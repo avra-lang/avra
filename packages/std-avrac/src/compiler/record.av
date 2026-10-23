@@ -28,6 +28,7 @@ use core.{
     flatten,
     same_decl,
     module_path,
+    package_of_module,
     ModulePath,
     TypeRegistry,
     TypeId,
@@ -47,6 +48,7 @@ use features.{
     NamedLit,
     LitKind,
     CancelReach,
+    Decls,
 }
 use compiler.lower.{Body, program_symbol, FieldPlan}
 use compiler.store.{Store, Stored, Producer, node_key, producer_of}
@@ -63,11 +65,26 @@ impl Workspace {
     /// wrote and reads it, and the store files a record under that code's hash
     /// (`sig_producer`), so a compiler whose producer or codec differs never reads it.
     fn record_key(m: ModulePath) -> string {
-        node_key(Stored.Sig, [self.root, m.text()])
+        node_key(
+            Stored.Sig,
+            [self.decls.qualified_module_named(m.text()), self.module_view(m.text())],
+        )
+    }
+
+    /// Where a file's key parts are kept: under its stored name, so the parts a key was made
+    /// of the last time the file was kept can be read when its key no longer is.
+    fn parts_key(path: string) -> string { self.file_key(Stored.Unit, "parts", path) }
+
+    /// Where a module's seen interfaces are kept: one row a module's files share.
+    fn seen_key(module: string) -> string {
+        node_key(
+            Stored.Unit,
+            ["seen", self.decls.qualified_module_named(module), self.module_view(module)],
+        )
     }
 
     /// Where this compiler keeps record bodies, by module and interface.
-    fn record_bodies() -> RecordBodies { RecordBodies { root: self.root, db: self.db } }
+    fn record_bodies() -> RecordBodies { RecordBodies { decls: self.decls, db: self.db } }
 
     /// WHO MAY READ A MODULE'S RECORD: the code that produces it, the C that code runs,
     /// the code that writes the record and the code that reads it back, each by its hash,
@@ -103,10 +120,21 @@ export fn runtime_bodies(host: Host) -> string? {
 /// the interface digest, and the body stands under (module, digest). A body
 /// edit rewrites the body its interface already names; an interface that moves
 /// leaves the old body standing, so what it declared can still be read.
-export type RecordBodies = { root: string, db: Db }
+export type RecordBodies = { decls: Decls, db: Db }
+
+/// Which side a module's record body is filed on: the root's own modules, or a dependency's —
+/// the body is named by its interface's digest, so this side is all a body's key needs.
+fn module_side(module: string) -> string { if package_of_module(module).is_empty() { "root" } else { "dep" } }
 
 impl RecordBodies {
-    fn key(module: string, iface: string) -> string { node_key(Stored.Sig, [self.root, module, iface]) }
+    /// A module's row under one interface, of one kind ("" for its record body): the module fully
+    /// qualified, so a dependency's rows are one in every program.
+    fn key(module: string, iface: string, kind: string = "") -> string {
+        node_key(
+            Stored.Sig,
+            [kind, self.decls.qualified_module_named(module), module_side(module), iface],
+        )
+    }
 
     /// The body kept for a module under one interface, when one was.
     fn body(store: Store, module: string, iface: string) -> string? { self.db.sig(store, self.key(module, iface)) }
@@ -1292,7 +1320,9 @@ export fn obj_key_of(ws: Workspace, store: Store, m: ModulePath, path: string) -
 /// THE OBJECT KEY OF A FILE'S PARTS under this workspace's compiler and build mode — the
 /// one fold, so a key computed on any route is the key the file was kept under.
 // LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace and parts in, the key out.
-export fn object_key_of_parts(ws: Workspace, k: KeyParts) -> string { node_key(Stored.Obj, [ws.compiler_id(), key_of_parts(k)]) }
+export fn object_key_of_parts(ws: Workspace, k: KeyParts) -> string {
+    node_key(Stored.Obj, [ws.compiler_id(), key_of_parts(ws.stored_parts(k))])
+}
 
 /// WHAT ONE FILE'S KEY IS MADE OF: its module and path, its text's digest, the
 /// digest of each text its compile-time runs read ("" for one that is gone), the
@@ -1742,10 +1772,6 @@ fn key_of_parts(k: KeyParts) -> string {
     )
 }
 
-/// Where a file's key parts are kept: under its PATH, so the parts a key was made
-/// of the last time the file was kept can be read when its key no longer is.
-export fn parts_key(path: string) -> string { node_key(Stored.Unit, ["parts", path]) }
-
 /// A file's key parts as a row: a line per part, its fields apart by tabs.
 export fn parts_wire(k: KeyParts) -> string {
     joined(
@@ -1756,9 +1782,6 @@ export fn parts_wire(k: KeyParts) -> string {
         "\n",
     )
 }
-
-/// Where a module's seen interfaces are kept: one row a module's files share.
-export fn seen_key(module: string) -> string { node_key(Stored.Unit, ["seen", module]) }
 
 /// The modules a module's files see, as a row: a line each.
 export fn seen_wire(seen: List<SeenPart>) -> string { joined(seen_lines(seen), "\n") }

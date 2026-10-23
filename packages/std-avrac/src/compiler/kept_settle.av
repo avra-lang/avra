@@ -105,7 +105,10 @@ impl Workspace {
     }
 
     /// Where `d`'s kept verdict lives: its file's path and its name.
-    fn kept_settle_key(f: FileId, d: DeclId) -> string { kept_key_for(self.decls.file(f).path, self.decls.decl(d).name) }
+    fn kept_settle_key(f: FileId, d: DeclId) -> string { self.kept_key_for(self.decls.file(f).path, self.decls.decl(d).name) }
+
+    /// Where a const's kept verdict lives: its file's stored name and its name.
+    fn kept_key_for(path: string, name: string) -> string { self.file_key(Stored.Unit, "kept-settle", path, [name]) }
 
     /// The files a read file's runs force read: none when its kept const
     /// verdicts will answer without running AND account for every run its
@@ -114,7 +117,7 @@ impl Workspace {
         let m = self.module_path_of(path)
         let runs = kept_runs(record_places(self, store, m).get(path))
         let consts = [parts[5] for parts in record_fields(self, store, m) if parts.length > 5 && parts[0] == "const" && parts[1] == path]
-        let kept = [kept_reads(store, kept_key_for(path, n)) for n in consts]
+        let kept = [kept_reads(store, self.kept_key_for(path, n)) for n in consts]
         if consts.is_empty() || kept.any(it == null) { return [r.path for r in runs] }
         let read = flatten([r ?? [] for r in kept])
         // A run's membership is a question about PATHS: the union is deduped as
@@ -846,9 +849,6 @@ fn kept_reads(store: Store, key: string) -> List<RunRead>? {
     if xs.any(it == null) { return null }
     [x! for x in xs]
 }
-
-/// Where a const's kept verdict lives: its file's path and its name.
-fn kept_key_for(path: string, name: string) -> string { node_key(Stored.Unit, ["kept-settle", path, name]) }
 
 /// A frame's line as kept: a unit line marks whether the run entered it, and
 /// carries its wanted last, since a wire may hold a tab.
