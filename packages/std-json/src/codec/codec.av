@@ -53,9 +53,10 @@ use @std.json.typed.{
     elements,
     float_text,
     int_text,
-    member,
+    member_once,
     member_text,
     members,
+    fields,
     needed,
     object_of,
     present_raw,
@@ -80,15 +81,7 @@ fn codec(t: Type) -> Decls {
     )
     let rec_parts = [quote { ${literal(f.name + ":")} + ${shape_code(f.kind)} } for f in t.fields]
     let text_parts = [quote { member_text(${literal(f.name)}, ${text_write(f.kind, quote { self.${f} }, 0)}) } for f in t.fields]
-    let text_body = record_of(
-        t,
-        [text_read(
-            f.kind,
-            quote { member(ms, ${literal(f.name)}) },
-            quote { path_field(at, ${literal(f.name)}) },
-            0,
-        ) for f in t.fields],
-    )
+    let text_body = record_of(t, [member_read(f) for f in t.fields])
     quote {
         impl ${t} {
 
@@ -125,7 +118,7 @@ fn codec(t: Type) -> Decls {
             /// This record read from the value whose text is `raw` at the path
             /// `at`, absent when the member was missing.
             static fn decode_text(raw: string?, at: string) -> Result<${t}, DecodeError> {
-                let ms = members(needed(raw, at, "an object")?, at)?
+                let ms = fields(needed(raw, at, "an object")?, at)?
                 ${text_body}
             }
 
@@ -160,19 +153,7 @@ fn enum_json(t: Type) -> Declared {
 
 fn enum_codec(t: Type) -> Decls {
     let text_chosen = chosen_by_tag(
-        [Named {
-            name: v.name,
-            value: built(
-                t,
-                v,
-                [text_read(
-                    f.kind,
-                    quote { member(ms, ${literal(f.name)}) },
-                    quote { path_field(at, ${literal(f.name)}) },
-                    0,
-                ) for f in v.fields],
-            ),
-        } for v in t.variants],
+        [Named { name: v.name, value: built(t, v, [member_read(f) for f in v.fields]) } for v in t.variants],
         quote { { fail unknown_tag(tag_at, tag) } },
     )
     let text_writes = [text_write_arm(v) for v in t.variants]
@@ -217,9 +198,9 @@ fn enum_codec(t: Type) -> Decls {
 
             /// This enum read from the value whose text is `raw` at the path `at`.
             static fn decode_text(raw: string?, at: string) -> Result<${t}, DecodeError> {
-                let ms = members(needed(raw, at, "an object")?, at)?
+                let ms = fields(needed(raw, at, "an object")?, at)?
                 let tag_at = path_field(at, "tag")
-                let tag = as_text(needed(member(ms, "tag"), tag_at, "text")?, tag_at)?
+                let tag = as_text(needed(member_once(ms, "tag", tag_at)?, tag_at, "text")?, tag_at)?
                 ${text_chosen}
             }
 
@@ -376,6 +357,13 @@ fn text_read(kind: Kind, raw: Code, at: Code, depth: int) -> Code {
         },
         rest -> quote { unreadable() },
     }
+}
+
+/// A field's reading: its member taken once from `ms`, then read by the
+/// field's kind at its own path.
+fn member_read(f: Field) -> Code {
+    let p = quote { path_field(at, ${literal(f.name)}) }
+    text_read(f.kind, quote { member_once(ms, ${literal(f.name)}, ${p})? }, p, 0)
 }
 
 /// A list's reading: each element read at its own index path.

@@ -44,14 +44,21 @@ fn misfit(at: string, wanted: string, raw: string?) -> DecodeError {
     DecodeError { at: at, wanted: wanted, found: said(raw) }
 }
 
-/// The members of the object `raw` is, each value kept as written.
-export fn members(raw: string, at: string) -> Result<List<Piece>, DecodeError> {
+/// The members of the object `raw` is, each value kept as written and no
+/// name written twice: a document that says two things of one name means neither.
+export fn members(raw: string, at: string) -> Result<List<Piece>, DecodeError> { scanned(raw, at, true) }
+
+/// The members of the object `raw` is, as `members` reads them but for names
+/// written twice, which `member_once` refuses where a field reads one.
+export fn fields(raw: string, at: string) -> Result<List<Piece>, DecodeError> { scanned(raw, at, false) }
+
+fn scanned(raw: string, at: string, once: bool) -> Result<List<Piece>, DecodeError> {
     let b = raw.bytes()
     mut i = space(b, 0)
     if i >= b.length || b.at(i) != 123 { fail misfit(at, "an object", raw) }
     i = space(b, i + 1)
     let found: Cell<List<Piece>> = Cell.new([])
-    if i < b.length && b.at(i) == 125 { return after(b, i + 1, found.get(), at) }
+    if i < b.length && b.at(i) == 125 { return after(b, i + 1, found.get(), at, once) }
     // LICENSED loops.push_loop: members are read in the order they stand, each from where the last ended
     while true {
         if i >= b.length || b.at(i) != 34 { fail misfit(at, "a member name", null) }
@@ -69,16 +76,20 @@ export fn members(raw: string, at: string) -> Result<List<Piece>, DecodeError> {
             i = space(b, i + 1)
             continue
         }
-        if i < b.length && b.at(i) == 125 { return after(b, i + 1, found.get(), at) }
+        if i < b.length && b.at(i) == 125 { return after(b, i + 1, found.get(), at, once) }
         fail misfit(at, "`,` or `}`", null)
     }
     found.get()
 }
 
-/// The members, when nothing but blanks follows the object and no name is
-/// written twice: a document that says two things of one name means neither.
-fn after(b: Bytes, i: int, found: List<Piece>, at: string) -> Result<List<Piece>, DecodeError> {
+/// The members, when nothing but blanks follows the object and, under `once`,
+/// no name is written twice.
+fn after(b: Bytes, i: int, found: List<Piece>, at: string, once: bool) -> Result<
+    List<Piece>,
+    DecodeError,
+> {
     if space(b, i) != b.length { fail misfit(at, "nothing after the object", null) }
+    if !once { return found }
     let keys = [p.key for p in found]
     for j, k in keys {
         if keys.slice(0, j).contains(k) { fail DecodeError { at: path_field(at, k), wanted: "one member", found: "more" } }
@@ -117,6 +128,14 @@ fn done(b: Bytes, i: int, found: List<string>, at: string) -> Result<List<string
 
 /// The value of the member named `key`, when there is one.
 export fn member(ms: List<Piece>, key: string) -> string? { ms.find(it.key == key)?.raw }
+
+/// The value of the member named `key`, once: absent when missing, refused
+/// when written twice — a document that says two things of one name means neither.
+export fn member_once(ms: List<Piece>, key: string, at: string) -> Result<string?, DecodeError> {
+    let named = [p.raw for p in ms if p.key == key]
+    if named.length > 1 { fail DecodeError { at: at, wanted: "one member", found: "${named.length}" } }
+    named.first()
+}
 
 /// The integer `raw` is.
 export fn as_int(raw: string, at: string) -> Result<int, DecodeError> {
