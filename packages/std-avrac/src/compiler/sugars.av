@@ -36,12 +36,13 @@ export fn sugar_door(lang: Language) -> Means {
 /// What the sugar means, copied beside it: the nodes the copy minted, the
 /// last the root; none when the node is no sugar or its template cannot be
 /// read here.
-fn minted_means(lang: Language, store: SyntaxArena, sugar: ExprId) -> List<ExprId> {
-    let rewrite: Rewrite? = store.expr(sugar).means()
-    let template? = rewrite else { return store.expr(sugar).minted(store, store.expr_span(sugar)) }
+fn minted_means(lang: Language, store: SyntaxArena, sugar: ExprId) -> Result<List<ExprId>, string> {
+    let rewrite: Result<Rewrite, string>? = store.expr(sugar).means()
+    let held? = rewrite else { return store.expr(sugar).minted(store, store.expr_span(sugar)) }
+    let template = held?
     match template.node {
-        .Template(_, _, parts, fills) -> spliced(lang, store, sugar, parts, [hole_id(f) for f in fills]),
-        rest -> [],
+        .Template(_, _, parts, fills) -> .Ok(spliced(lang, store, sugar, parts, [hole_id(f) for f in fills])),
+        rest -> .Ok([]),
     }
 }
 

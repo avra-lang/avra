@@ -164,6 +164,20 @@ fn framed(f: Frame, pick: fn(Loc) -> SourceFile?) -> List<string> {
     [window(at, f.label, src)]
 }
 
+/// A secondary frame: windowed at its own place, or — standing where the
+/// primary already points — its words alone, never a second caret.
+fn beside(f: Frame, primary: Loc?, pick: fn(Loc) -> SourceFile?) -> List<string> {
+    if same_place(f.loc, primary) { return unplaced(f.label) }
+    framed(f, pick)
+}
+
+/// Whether two places are one: the same file, the same span.
+fn same_place(a: Loc?, b: Loc?) -> bool {
+    let x? = a else { return false }
+    let y? = b else { return false }
+    x.file == y.file && x.lo == y.lo && x.hi == y.hi
+}
+
 /// Every frame windowed from the source its Loc picks.
 ///
 /// THE RENDERER NEVER DROPS A LABEL. A label is what the diagnostic
@@ -178,7 +192,8 @@ fn framed(f: Frame, pick: fn(Loc) -> SourceFile?) -> List<string> {
 fn render_with(d: DiagFacts, pick: fn(Loc) -> SourceFile?) -> string {
     mut parts = ["${severity_word(d.severity)}[${d.kind}]: ${d.message}"]
     parts = parts.concat(framed(d.primary, pick))
-    parts = parts.concat(flatten([framed(f, pick) for f in d.secondary if f.loc != null]))
+    parts = parts
+        .concat(flatten([beside(f, d.primary.loc, pick) for f in d.secondary if f.loc != null]))
     parts = parts.concat(d.cause_lines)
     if d.help != null { parts.push("help: ${d.help!}") }
     parts = parts.concat(flatten([suggestion_lines(sg) for sg in d.suggestions]))

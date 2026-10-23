@@ -13,7 +13,6 @@ export fn specs() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name          | build
         "given_group" | build_given
-        "then_case"   | build_then
     }
     let codes = table<DiagCode> {
         kind                     | summary
@@ -25,7 +24,7 @@ export fn specs() -> LanguageFeature {
         gram: grammar {
             stmt = "spec" name:STRING "{" ( BREAK | cases:given_group | cases:then_case )* "}" END @recover(sync_to: "END") -> Stmt.Spec
             given_group = "given" n:STRING "{" ( BREAK | t:then_case )* "}" @expect("}", "expected `}` to close the `given` — it holds `then` cases") @recover(sync_to: "END") -> given_group(n, t)
-            then_case = "then" n:STRING b:block @recover(sync_to: "END") -> then_case(n, b)
+            then_case = "then" name:STRING body:block @recover(sync_to: "END") -> Record.Case(group = "")
         }
         builders: rows
         diags: codes

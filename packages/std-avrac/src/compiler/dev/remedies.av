@@ -49,6 +49,33 @@ export fn rows() -> List<RemedyRow> {
             becomes: Then.Clean,
         },
         RemedyRow {
+            kind: "parse.blockless_collect",
+            says: "`collect` gathers the values its block's statements leave",
+            refused: Witness.Source("let a = collect 1\na"),
+            applied: Witness.Source("let a = collect {\n    1\n}\na"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "parse.select_mark",
+            says: "a `select` reads one mark, `@fair`",
+            refused: Witness
+                .Source(
+                    "fn one() -> int {\n    1\n}\nlet job = spawn one()\nlet v = @slow select {\n    r in job -> r\n    else -> 0\n}\nv",
+                ),
+            applied: Witness.Source(select_clean),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "parse.select_catchall",
+            says: "a `select` has no catch-all",
+            refused: Witness
+                .Source(
+                    "fn one() -> int {\n    1\n}\nlet job = spawn one()\nlet v = select {\n    r in job -> r\n    _ -> 0\n}\nv",
+                ),
+            applied: Witness.Source(select_clean),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
             kind: "type.mut_fn",
             says: "`mut fn` marks a method that writes its receiver",
             refused: Witness.Source("mut fn f() -> int { 1 }\nf()"),
@@ -727,6 +754,8 @@ const x_package: string = "[package]\nname = \"@x/y\"\nversion = \"1.0.0\"\n"
 
 /// The module the dependency fixtures export `z` from.
 const z_module: string = "export fn z() -> int { 1 }\n"
+
+const select_clean: string = "fn one() -> int {\n    1\n}\nlet job = spawn one()\nlet v = select {\n    r in job -> r\n    else -> 0\n}\nv"
 
 const plain_f: string = "fn f() -> int { 1 }\nf()"
 

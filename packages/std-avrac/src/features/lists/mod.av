@@ -13,6 +13,7 @@
 use features.{
     LanguageFeature,
     BuilderRow,
+    RefusalRow,
     MethodRow,
     ReceiverEffect,
     TypeRow,
@@ -34,25 +35,21 @@ use diagnostics.{DiagCode}
 
 export fn lists() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name                | build
-        "list_lit"          | build_list_lit
-        "list_pat"          | build_list_pat
-        "comp"              | build_comp
-        "comp_head"         | build_comp_head
-        "comp_filter"       | build_comp_filter
-        "collect_blockless" | build_collect_blockless
+        name       | build
+        "list_pat" | build_list_pat
     }
     let codes = table<DiagCode> {
-        kind                  | summary
-        "type.spread_list"    | "a list literal spreads lists"
-        "type.list_pattern"   | "a list pattern matches a list"
-        "type.list_element"   | "a list's elements share one type"
-        "type.list_scalar"    | "a list holds scalars for now"
-        "type.place"          | "a mutation needs a mut place"
-        "type.list"           | "a comprehension walks a list"
-        "type.plan_residual"  | "a filter over a whole relation hands its rows to a call with no index narrowing it"
-        "type.plans_mismatch" | "a planned lookup files by its field's own type"
-        "type.plan_scan"      | "a relation a census counts past the floor is scanned whole for a compare no index answers"
+        kind                      | summary
+        "type.spread_list"        | "a list literal spreads lists"
+        "parse.blockless_collect" | "`collect` gathers what a block's statements leave"
+        "type.list_pattern"       | "a list pattern matches a list"
+        "type.list_element"       | "a list's elements share one type"
+        "type.list_scalar"        | "a list holds scalars for now"
+        "type.place"              | "a mutation needs a mut place"
+        "type.list"               | "a comprehension walks a list"
+        "type.plan_residual"      | "a filter over a whole relation hands its rows to a call with no index narrowing it"
+        "type.plans_mismatch"     | "a planned lookup files by its field's own type"
+        "type.plan_scan"          | "a relation a census counts past the floor is scanned whole for a compare no index answers"
     }
     let methods = table<MethodRow> {
         name         | takes   | check            | lower            | effect               | answers
@@ -105,14 +102,21 @@ export fn lists() -> LanguageFeature {
     }
     LanguageFeature lists {
         gram: grammar {
-            primary = "[" v:expression h:comp_head ( c:comp_head | c:comp_filter )* "]" @expect("]", "expected `]` to close the comprehension") -> comp(v, h, c) | "[" BREAK? ( ( elems:expression | ".." se:postfix ) ( "," BREAK? ( elems:expression | ".." se:postfix ) )* ","? BREAK? )? "]" @expect("]", "expected `]` to close the list") -> list_lit(elems, se) | "collect" "{" ( stmts:stmt | BREAK )* "}" @expect("}", "expected `}` to close the `collect`") -> Expr.Collect | "collect" v:expression -> collect_blockless(v)
+            primary = "[" elem:expression clauses:comp_head ( clauses:comp_head | clauses:comp_filter )* "]" @expect("]", "expected `]` to close the comprehension") -> Expr.Comp | "[" BREAK? ( elems:element ( "," BREAK? elems:element )* ","? BREAK? )? "]" @expect("]", "expected `]` to close the list") -> Expr.ListLit | "collect" "{" ( stmts:stmt | BREAK )* "}" @expect("}", "expected `}` to close the `collect`") -> Expr.Collect | "collect" expression -> Refusal.blockless_collect
             pattern = "[" BREAK? ( ( pats:pattern | dots:".." ( bind:NAME )? ) ( "," BREAK? ( pats:pattern | dots:".." ( bind:NAME )? ) )* ","? BREAK? )? "]" -> list_pat(pats, dots, bind)
             asked = "[" BREAK? ( ( pats:pattern | dots:".." ( bind:NAME )? ) ( "," BREAK? ( pats:pattern | dots:".." ( bind:NAME )? ) )* ","? BREAK? )? "]" -> list_pat(pats, dots, bind)
             destructure = "[" BREAK? ( ( pats:pattern | dots:".." ( bind:NAME )? ) ( "," BREAK? ( pats:pattern | dots:".." ( bind:NAME )? ) )* ","? BREAK? )? "]" -> list_pat(pats, dots, bind)
-            comp_head = "for" ( "(" ix:NAME "," en:NAME ")" | ix:NAME "," en:NAME | en:NAME ) "in" src:expression ( ".." hi:expression )? -> comp_head(ix, en, src, hi)
-            comp_filter = "if" c:expression -> comp_filter(c)
+            comp_head = "for" ( "(" index:NAME "," name:NAME ")" | index:NAME "," name:NAME | name:NAME ) "in" source:expression ( ".." hi:expression )? -> CompClause.Head
+            comp_filter = "if" cond:expression -> CompClause.Filter
         }
         builders: rows
+        refusals: [
+            RefusalRow {
+                name: "blockless_collect",
+                kind: "parse.blockless_collect",
+                voice: blockless_collect,
+            },
+        ]
         diags: codes
         methods: methods
         types: types

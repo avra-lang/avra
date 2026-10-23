@@ -39,7 +39,7 @@ error[parse.expected]: this cannot start or continue a `stmt`
 1 │ }
   · ┬
 ──╯
-help: it could begin with `yield`, PKG, `component`, COMPONENT, `use`, `export`, `spec`, `collect` — and 53 more
+help: it could begin with `yield`, `@fair`, PKG, `component`, COMPONENT, `use`, `export`, `spec` — and 54 more
 ```
 
 ## build.failed
@@ -660,6 +660,55 @@ error[flow.select]: `select` type-checks but lowers to nothing
   · ╰── `@fair` stands here
 ──╯
 help: wait on one task with `t.await`
+```
+
+## parse.select_catchall
+
+a `select` has no catch-all
+
+```avra
+fn one() -> int {
+    1
+}
+let job = spawn one()
+select {
+    _ -> 1
+}
+1
+```
+
+```
+error[parse.select_catchall]: a `select` has no catch-all
+  ╭─[witness.av:6:5]
+6 │     _ -> 1
+  ·     ┬
+──╯
+help: write `else -> …` — it runs when nothing is ready
+```
+
+## parse.select_mark
+
+a `select` reads one mark, `@fair`
+
+```avra
+fn one() -> int {
+    1
+}
+let job = spawn one()
+let v = @slow select {
+    r in job -> r
+    else -> 0
+}
+v
+```
+
+```
+error[parse.select_mark]: a `select` reads one mark, `@fair`
+  ╭─[witness.av:5:9]
+5 │ let v = @slow select {
+  ·         ┬
+──╯
+help: drop the mark — `@fair` is the one a `select` reads
 ```
 
 ## flow.arm
@@ -4187,12 +4236,30 @@ let a = [..5]
 
 ```
 error[type.spread_list]: `..` in a list spreads a list, found `int`
-  ╭─[witness.av:1:12]
+  ╭─[witness.av:1:10]
 1 │ let a = [..5]
-  ·            ┬
-  ·            ╰── spread here
+  ·          ┬
+  ·          ╰── spread here
 ──╯
 help: a list literal spreads lists — `[..xs, y]`; write any other value as an element
+```
+
+## parse.blockless_collect
+
+`collect` gathers what a block's statements leave
+
+```avra
+let a = collect 1
+1
+```
+
+```
+error[parse.blockless_collect]: `collect` gathers the values its block's statements leave
+  ╭─[witness.av:1:9]
+1 │ let a = collect 1
+  ·         ┬
+──╯
+help: give it its block — `collect { … }`
 ```
 
 ## type.list_pattern
@@ -6040,6 +6107,25 @@ error[type.shift_count]: a shift count must be between 0 and 63, this is 99
   ·      ╰── shifted by this
 ──╯
 help: an `int` is 64 bits, so a wider shift has no answer to give
+```
+
+## parse.leading_pipe
+
+a continuing operator ends the line it continues
+
+```avra
+let a = 1
+|> f
+1
+```
+
+```
+error[parse.leading_pipe]: a line never begins with `|>`
+  ╭─[witness.av:2:1]
+2 │ |> f
+  · ┬
+──╯
+help: a continuing operator ends the line it continues — end the previous line with `|>`
 ```
 
 ## type.map_key

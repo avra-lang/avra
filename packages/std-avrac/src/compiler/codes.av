@@ -3,7 +3,7 @@
 //! kind-free — and every projected kind is checked against the
 //! assembled registry. Passes never pass through this table: they
 //! emit Diag directly with their own registered kinds.
-use core.{flatten, Span}
+use core.{flatten, Span, Refused}
 use @std.errors.{Loc}
 use @std.grammar.{Diagnostic, Cause}
 use diagnostics.{Diag, DiagCode, Remedy, error_at, registered, loc_at, defect_at, defect_kind}
@@ -176,6 +176,14 @@ fn in_rule(d: Diagnostic) -> string {
 /// registry does not know becomes a loud defect of its own.
 export fn project_all(ds: List<Diagnostic>, file: string?, codes: List<DiagCode>) -> List<Diag> {
     flatten([netted(project(d, file), codes) for d in ds])
+}
+
+/// What the grammar's own refusals said, each in its registered kind,
+/// through the same net.
+export fn refusals_spoken(rs: List<Refused>, file: string?, codes: List<DiagCode>) -> List<Diag> {
+    flatten(
+        [netted(error_at(r.kind, loc_at(file, r.span), r.message) with { help: r.help }, codes) for r in rs],
+    )
 }
 
 /// The projected diagnostic — plus the net's defect when its kind
