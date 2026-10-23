@@ -889,7 +889,7 @@ read-lists:
 # THE SAVED-ANSWER METER MAY ONLY IMPROVE. A settled answer can be saved only if every
 # read it made has a name that outlives the process; tools/leaves.sh counts, per blocking
 # family, the answers a read of which cannot be named, and the baseline only falls.
-# keeper owed by dry-sweep — timing under investigation
+# keeper: nightly (orders) — two cold whole-compiler checks, over 220 s warm for the cli alone, too long for every pull request
 leaves:
 	@sh tools/leaves.sh --check
 
