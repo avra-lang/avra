@@ -7,6 +7,23 @@
 //! and the scalar readers) and what each field does with its value (a
 //! `FieldPlan`): the skeleton names no rule.
 use @std.meta.{Type, Field, Kind, Decls, Stmts, Code, name, literal}
+use @std.json.typed.{not_yet}
+
+/// The names a generated reader binds and its hooks read, spelled once: a
+/// template reads a binder another template wrote only through a hole.
+export type Binders = { d: Code, depth: Code, required: Code, at: Code, got: Code, end: Code }
+
+/// The binders.
+export fn bind() -> Binders {
+    Binders {
+        d: name("d"),
+        depth: name("depth"),
+        required: name("required"),
+        at: name("at"),
+        got: name("got"),
+        end: name("end"),
+    }
+}
 
 /// What the caller decides of one field: the code reading its value at the
 /// cursor, the code settling its absence, whether it is secret, and the
@@ -28,30 +45,43 @@ export fn inner(k: Kind) -> Kind {
     match k { .Opt(k2) -> k2, rest -> k }
 }
 
+/// The reader of a type: `read_json` over the judge `d` of type `judge`,
+/// running `lines` and answering `answer` — the value, or null with its
+/// problems filed.
+export fn reader_decl(t: Type, judge: string, lines: Stmts, answer: Code) -> Decls {
+    quote {
+        static fn read_json(mut ${bind().d}: ${judge}, ${bind().depth}: int, ${bind().required}: bool, secret: bool) -> ${t}? {
+            let ${hidden} = secret
+            ${lines}
+            ${answer}
+        }
+    }
+}
+
 /// The statements reading the record at the cursor: each key the text
 /// writes matched to its field and the value read where it stands; then every
 /// field settled in declaration order and the problems filed in that order.
 export fn object_lines(t: Type, plans: List<FieldPlan>) -> Stmts {
     quote {
-        let ${own("start")} = d.json.pos
-        if !d.json_object(depth, required, ${name(hidden)}) { return null }
-        let ${own("before")} = d.count()
+        let ${own("start")} = ${bind().d}.json.pos
+        if !${bind().d}.json_object(${bind().depth}, ${bind().required}, ${name(hidden)}) { return null }
+        let ${own("before")} = ${bind().d}.count()
         ${[unread_yet(f) for f in t.fields]}
         mut ${own("entry")} = 0
-        mut ${own("more")} = d.json_first(125)
+        mut ${own("more")} = ${bind().d}.json_first(125)
         while ${mine("more")} {
-            let ${own("key")} = d.json.pos
-            let ${own("key_end")} = d.json_key()
-            let ${own("mark")} = d.count()
-            let ${own("field")} = ${name(t.name)}.field_at(d, ${mine("key")}, ${mine("key_end")})
+            let ${own("key")} = ${bind().d}.json.pos
+            let ${own("key_end")} = ${bind().d}.json_key()
+            let ${own("mark")} = ${bind().d}.count()
+            let ${own("field")} = ${name(t.name)}.field_at(${bind().d}, ${mine("key")}, ${mine("key_end")})
             ${taken(t, plans)}
             ${mine("entry")} = ${mine("entry")} + 1
-            ${mine("more")} = d.json_next(125)
+            ${mine("more")} = ${bind().d}.json_next(125)
         }
-        if d.json.pos < 0 { return null }
+        if ${bind().d}.json.pos < 0 { return null }
         ${[settled(t, f, i, plans[i]) for i, f in t.fields]}
-        d.sorted(${mine("before")})
-        if d.count() > ${mine("before")} { return null }
+        ${bind().d}.sorted(${mine("before")})
+        if ${bind().d}.count() > ${mine("before")} { return null }
     }
 }
 
@@ -70,7 +100,7 @@ fn unread_yet(f: Field) -> Stmts {
 /// turn, a key the record does not name last.
 fn taken(t: Type, plans: List<FieldPlan>) -> Code {
     let entry = quote { ${t.fields.length} + ${mine("entry")} }
-    mut chain = quote { d.json_stray(${mine("key")}, ${mine("key_end")}, ${entry}, depth + 1, ${name(t.name)}.field_names()) }
+    mut chain = quote { ${bind().d}.json_stray(${mine("key")}, ${mine("key_end")}, ${entry}, ${bind().depth} + 1, ${name(t.name)}.field_names()) }
     for i in reversed([i for i in 0..t.fields.length]) {
         chain = quote { if ${mine("field")} == ${i} { ${take(t.fields[i], i, entry, plans[i])} } else { ${chain} } }
     }
@@ -84,15 +114,15 @@ fn take(f: Field, i: int, entry: Code, plan: FieldPlan) -> Code {
     let at = own("${f.name}_at")
     quote {
         if ${name(at)} >= 0 {
-            d.json_repeated(${mine("key")}, ${mine("key_end")}, ${entry}, depth + 1)
+            ${bind().d}.json_repeated(${mine("key")}, ${mine("key_end")}, ${entry}, ${bind().depth} + 1)
         } else {
-            let at = d.json.pos
-            ${name(at)} = at
+            let ${bind().at} = ${bind().d}.json.pos
+            ${name(at)} = ${bind().at}
             let ${hidden} = ${plan.secret}
-            let got: ${inner(f.kind).spelled()}? = ${plan.read}
+            let ${bind().got}: ${inner(f.kind).spelled()}? = ${plan.read}
             ${plan.early}
-            ${mine("${f.name}_read")} = got
-            d.filed(${mine("mark")}, ${i}, ${literal(f.name)})
+            ${mine("${f.name}_read")} = ${bind().got}
+            ${bind().d}.filed(${mine("mark")}, ${i}, ${literal(f.name)})
         }
     }
 }
@@ -106,11 +136,11 @@ fn settled(t: Type, f: Field, i: int, plan: FieldPlan) -> Stmts {
     if plan.late.is_empty() {
         return quote {
             let ${f.name}: ${inner(f.kind).spelled()}? = if ${at} < 0 {
-                let ${own("mark")} = d.count()
+                let ${own("mark")} = ${bind().d}.count()
                 let ${hidden} = ${plan.secret}
-                let got: ${inner(f.kind).spelled()}? = ${plan.absent}
-                d.filed(${mine("mark")}, ${i}, ${literal(f.name)})
-                got
+                let ${bind().got}: ${inner(f.kind).spelled()}? = ${plan.absent}
+                ${bind().d}.filed(${mine("mark")}, ${i}, ${literal(f.name)})
+                ${bind().got}
             } else {
                 ${mine("${f.name}_read")}
             }
@@ -118,13 +148,13 @@ fn settled(t: Type, f: Field, i: int, plan: FieldPlan) -> Stmts {
     }
     quote {
         let ${f.name} = {
-            let ${own("mark")} = d.count()
-            let at = ${at}
+            let ${own("mark")} = ${bind().d}.count()
+            let ${bind().at} = ${at}
             let ${hidden} = ${plan.secret}
-            let got: ${inner(f.kind).spelled()}? = if at < 0 { ${plan.absent} } else { ${mine("${f.name}_read")} }
+            let ${bind().got}: ${inner(f.kind).spelled()}? = if ${bind().at} < 0 { ${plan.absent} } else { ${mine("${f.name}_read")} }
             ${plan.late}
-            d.filed(${mine("mark")}, ${i}, ${literal(f.name)})
-            got
+            ${bind().d}.filed(${mine("mark")}, ${i}, ${literal(f.name)})
+            ${bind().got}
         }
     }
 }
@@ -135,12 +165,12 @@ export fn keys(t: Type, judge: string) -> List<Decls> {
     let names = literal_list([literal(f.name) for f in t.fields])
     mut chain = escaped_key(t)
     for len in lengths(t) {
-        chain = quote { if end - at - 2 == ${len} { ${keyed(t, len)} } else { ${chain} } }
+        chain = quote { if ${bind().end} - ${bind().at} - 2 == ${len} { ${keyed(t, len)} } else { ${chain} } }
     }
     [
         quote {
             /// The field the key from `at` to `end` names, or -1.
-            static fn field_at(d: ${judge}, at: int, end: int) -> int { ${chain} }
+            static fn field_at(${bind().d}: ${judge}, ${bind().at}: int, ${bind().end}: int) -> int { ${chain} }
         },
         quote { static fn field_names() -> List<string> { ${names} } },
     ]
@@ -157,14 +187,14 @@ fn lengths(t: Type) -> List<int> {
 fn keyed(t: Type, len: int) -> Code {
     mut chain = escaped_key(t)
     for i in reversed([i for i, f in t.fields if f.name.length == len]) {
-        chain = quote { if d.key_is(at, ${literal(t.fields[i].name)}) { ${i} } else { ${chain} } }
+        chain = quote { if ${bind().d}.key_is(${bind().at}, ${literal(t.fields[i].name)}) { ${i} } else { ${chain} } }
     }
     chain
 }
 
 /// A key its bytes matched to no field: read as text, since an escape
 /// may spell a field's name.
-fn escaped_key(t: Type) -> Code { quote { d.key_index(at, end, ${name(t.name)}.field_names()) } }
+fn escaped_key(t: Type) -> Code { quote { ${bind().d}.key_index(${bind().at}, ${bind().end}, ${name(t.name)}.field_names()) } }
 
 fn reversed(xs: List<int>) -> List<int> { [xs[xs.length - 1 - i] for i in 0..xs.length] }
 
