@@ -1,0 +1,90 @@
+// proves: a database file opened before the cores fork is each core's own connection afterwards — concurrent writes from three cores all land, the file stays whole, and every row is there
+use @std.http.http.{text}
+use @std.http.route.{get, post}
+use @std.http.server.{server}
+use @std.io.{make_dirs}
+use @std.net.{Conn, NetError, connect, timely}
+use @std.sqlite.{Db, sql}
+use @std.time.{ms, secs, stamp}
+
+/// One request on its own connection, answered with its body.
+fn asked(port: int, method: string) -> Result<string, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    c
+        .write(
+            "${method} / HTTP/1.1\r\nHost: a\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+                .bytes(),
+        )?
+    mut got = "".bytes()
+    while true {
+        match timely(within secs(2) { c.read(65536) }) {
+            .Ok(b) -> {
+                let more? = b else { break }
+                got = got.concat(more)
+            },
+            .Err(_) -> { break },
+        }
+    }
+    let parts = (got.text() ?? "?").split("\r\n\r\n")
+    .Ok(if parts.length > 1 { parts[1] } else { "?" })
+}
+
+/// A setup failure, in the one error this program speaks.
+fn refused(why: string) -> NetError { NetError { verb: "setup", subject: why, errno: 1 } }
+
+/// The file under a directory of this run's own, with its table made.
+fn prepared() -> Result<Db, NetError> {
+    let dir = "/tmp/avra-http-cores-sqlite/${stamp()}"
+    let _ = make_dirs(dir)
+    let db = match Db.open("${dir}/rows.db") {
+        .Ok(d) -> d,
+        .Err(e) -> { return .Err(refused(e.message)) },
+    }
+    match db.run(sql("CREATE TABLE rows (n INTEGER PRIMARY KEY, who INTEGER)")) {
+        .Ok(_) -> .Ok(db),
+        .Err(e) -> .Err(refused(e.message)),
+    }
+}
+
+fn added(db: Db) -> string {
+    match db.run(sql("INSERT INTO rows (who) VALUES (0)")) {
+        .Ok(_) -> "added",
+        .Err(e) -> e.message,
+    }
+}
+
+fn audit(db: Db) -> string {
+    let whole = match db.scalar(sql("PRAGMA integrity_check")) {
+        .Ok(v) -> v.text() catch "?",
+        .Err(e) -> e.message,
+    }
+    let count = match db.scalar(sql("SELECT count(*) FROM rows")) {
+        .Ok(v) -> v.int() catch -1,
+        .Err(_) -> -2,
+    }
+    "${whole} ${count}"
+}
+
+fn shown() -> Result<string, NetError> {
+    let db = prepared()?
+    server app {
+        port: 0
+        post "/" { _req -> text(200, added(db)) }
+        get "/" { _req -> text(200, audit(db)) }
+    }
+    let up = match app.listening() {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    let ran = spawn up.run(3)
+    let port = up.listener.port
+    let sent = [spawn asked(port, "POST") for i in 0..30]
+    let answers = [t.await? for t in sent]
+    let verdict = asked(port, "GET")?
+    up.stop()
+    let _ = ran.await
+    .Ok("${answers.all(it == "added")} ${verdict}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
