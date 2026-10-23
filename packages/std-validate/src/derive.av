@@ -28,9 +28,9 @@ use @std.text.{admits}
 use @std.json.reading.{
     bind,
     FieldPlan,
-    reader_decl,
     object_lines,
-    keys,
+    field_chain,
+    field_names_decl,
     own,
     mine,
     inner,
@@ -232,7 +232,11 @@ export fn decoder(t: Type) -> Decls {
                 ${b.answer}
             }
 
-            ${reader_decl(t, judge_type(), j.lines, j.answer)}
+            static fn read_json(mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool) -> ${t}? {
+                let ${hidden} = secret
+                ${j.lines}
+                ${j.answer}
+            }
 
             ${keys_of(t)}
         }
@@ -496,15 +500,16 @@ fn direct(t: Type) -> Body {
     record_direct(t)
 }
 
-/// The judge a direct reader asks: the decoding in flight.
-fn judge_type() -> Type {
-    type_named("Decoding")!
-}
-
 /// A record's key matcher and its field names, when it has a record's shape.
 fn keys_of(t: Type) -> List<Decls> {
     if names_a_shape(t) || !t.variants.is_empty() { return [] }
-    keys(t, judge_type())
+    [
+        quote {
+            /// The field the key from `at` to `end` names, or -1.
+            static fn field_at(${bind().d}: Decoding, ${bind().at}: int, ${bind().end}: int) -> int { ${field_chain(t)} }
+        },
+        field_names_decl(t),
+    ]
 }
 
 /// A named type: its shape read where it stands, then wrapped.

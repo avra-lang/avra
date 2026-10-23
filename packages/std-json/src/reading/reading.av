@@ -45,19 +45,6 @@ export fn inner(k: Kind) -> Kind {
     match k { .Opt(k2) -> k2, rest -> k }
 }
 
-/// The reader of a type: `read_json` over the judge `d` of type `judge`,
-/// running `lines` and answering `answer` — the value, or null with its
-/// problems filed.
-export fn reader_decl(t: Type, judge: Type, lines: Stmts, answer: Code) -> Decls {
-    quote {
-        static fn read_json(mut ${bind().d}: ${judge}, ${bind().depth}: int, ${bind().required}: bool, secret: bool) -> ${t}? {
-            let ${hidden} = secret
-            ${lines}
-            ${answer}
-        }
-    }
-}
-
 /// The statements reading the record at the cursor: each key the text
 /// writes matched to its field and the value read where it stands; then every
 /// field settled in declaration order and the problems filed in that order.
@@ -159,21 +146,21 @@ fn settled(t: Type, f: Field, i: int, plan: FieldPlan) -> Stmts {
     }
 }
 
-/// A record's key matcher and its field names: a key is matched by its length,
-/// then by its bytes; an escaped key by its text. `judge` names the type of `d`.
-export fn keys(t: Type, judge: Type) -> List<Decls> {
-    let names = literal_list([literal(f.name) for f in t.fields])
+/// The code answering which field the key from `at` to `end` names, or -1: a key
+/// is matched by its length, then by its bytes; an escaped key by its text. It
+/// reads the binders `d`, `at` and `end` of the matcher fn the package writes.
+export fn field_chain(t: Type) -> Code {
     mut chain = escaped_key(t)
     for len in lengths(t) {
         chain = quote { if ${name(bind().end)} - ${name(bind().at)} - 2 == ${len} { ${keyed(t, len)} } else { ${chain} } }
     }
-    [
-        quote {
-            /// The field the key from `at` to `end` names, or -1.
-            static fn field_at(${bind().d}: ${judge}, ${bind().at}: int, ${bind().end}: int) -> int { ${chain} }
-        },
-        quote { static fn field_names() -> List<string> { ${names} } },
-    ]
+    chain
+}
+
+/// A record's field names, as its matcher answers their indexes.
+export fn field_names_decl(t: Type) -> Decls {
+    let names = literal_list([literal(f.name) for f in t.fields])
+    quote { static fn field_names() -> List<string> { ${names} } }
 }
 
 /// The distinct lengths of the record's field names.
