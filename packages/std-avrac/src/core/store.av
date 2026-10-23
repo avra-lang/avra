@@ -6,10 +6,10 @@ use @std.relation.engine.{list_cell, map_cell}
 /// How a sugar's meaning is minted beside it: the language's own door,
 /// since only the language reads a template. It answers the nodes it
 /// minted, the last the root, or none when it cannot.
-export alias Means = fn(SyntaxArena, ExprId) -> List<ExprId>
+export alias Means = fn(SyntaxArena, ExprId) -> Result<List<ExprId>, string>
 
 /// The door of a store whose language is not at hand: it mints nothing.
-export fn no_door(_store: SyntaxArena, _sugar: ExprId) -> List<ExprId> { [] }
+export fn no_door(_store: SyntaxArena, _sugar: ExprId) -> Result<List<ExprId>, string> { .Ok([]) }
 
 /// The forms an expression was written in: a lambda as a trailing block,
 /// a string as `"""raw"""`, a name inside a type literal (a hole), and a
@@ -181,6 +181,7 @@ export type SyntaxArena = {
     @copied_by_hand("minted_expr: a block is named by its new offset") sublangs: Cell<List<ExprId>>,
     @copied_by_hand("minted_expr: a block is named by its new offset") body_starts: Cell<Map<string, int>>,
     @not_copied("the file's own parse refusals") block_voices: Cell<List<BlockVoice>>,
+    @not_copied("the file's own parse refusals") refused: Cell<List<Refused>>,
     @not_copied("the file's own sublanguage ranges") foreign: Cell<List<ForeignRange>>,
     // an `on <kind> { … }` handler's KIND, by the nullary lambda the
     // instance-body sugar built — the word the handler was written
@@ -233,6 +234,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         sublangs: list_cell(),
         body_starts: map_cell(),
         block_voices: list_cell(),
+        refused: list_cell(),
         foreign: list_cell(),
         on_handlers: list_cell(),
     }
@@ -523,11 +525,17 @@ impl SyntaxArena {
     /// sentence that says what the sugar means. The one door a builder and
     /// a template copy both use, so a copy re-mints and never copies.
     fn mean(sugar: ExprId, note: string, door: Means) -> List<ExprId> {
-        let minted = door(self, sugar)
-        let root? = minted.last() else { return [] }
+        let minted = match door(self, sugar) { .Ok(ids) -> ids, .Err(_) -> [] }
+        self.means_as(sugar, minted, note)
+        minted
+    }
+
+    /// `minted` recorded as what `sugar` means, the last its root; nothing
+    /// when it minted nothing.
+    fn means_as(sugar: ExprId, minted: List<ExprId>, note: string) {
+        let root? = minted.last() else { return }
         self.meaning.set_at(sugar.index, root)
         self.mint_for(sugar, minted, note)
-        minted
     }
 
     /// Mints nodes `sugar` is EXTENDED by: `roots` are what a walk reaches
@@ -569,6 +577,12 @@ impl SyntaxArena {
     /// The sugar a minted node stands in for; null for any other.
     fn minted_for(e: ExprId) -> ExprId? {
         self.minted_by.get()[e.index]
+    }
+
+    /// Whether `e` is part of what a `?.` link means.
+    fn chained_by(e: ExprId) -> bool {
+        let sugar? = self.minted_for(e) else { return false }
+        self.expr(sugar).chains()
     }
 
     fn mark_statement_if(e: ExprId) {
@@ -820,6 +834,7 @@ impl SyntaxArena {
     fn body_start(e: ExprId) -> int { self.body_starts.get().get("${e.index}") ?? 0 }
 
     fn speak_block(v: BlockVoice) { self.block_voices.push(v) }
+    fn refuse(r: Refused) { self.refused.push(r) }
 
     /// The arenas' counts now.
     fn marks() -> ArenaMarks { ArenaMarks { exprs: self.exprs.count(), stmts: self.stmts.count(), pats: self.pat_count() } }

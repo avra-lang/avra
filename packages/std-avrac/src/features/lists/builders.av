@@ -1,74 +1,7 @@
-//! Parse-time lowering: captures -> the comprehension and collect nodes.
-use core.{Expr, ExprId, Pat, Plain, Scoped, CompClause, sorted_by, spread_entry}
-use features.{
-    pat_ids_at,
-    token_at,
-    expr_id_at,
-    scoped_at,
-    comp_clause_at,
-    comp_clauses_at,
-    LangNode,
-    Builder,
-}
-use grammar.{Token}
-
-/// `[v for ix, en in src for … if c …]` — one or more `for` heads
-/// (left outermost) and any number of `if` filters, in written order;
-/// the grammar requires the first clause to be a head.
-fn build_comp(b: Builder) -> Result<LangNode, string> {
-    let v = b.expr(0)?
-    let h? = comp_clause_at(b.args, 1) else {
-        return .Err(
-            "defect: a comprehension's own head is absent — the arena and the grammar disagree",
-        )
-    }
-    b.make_expr(Expr.Comp(v, [h].concat(comp_clauses_at(b.args, 2))))
-}
-
-/// `for ix, en in src..hi` — the index name is absent when the binder
-/// is a bare name, `hi` is present when the source is a range `lo..hi`.
-fn build_comp_head(b: Builder) -> Result<LangNode, string> {
-    let ix: Token? = token_at(b.args, 0)
-    let en = b.token(1)?
-    let src = b.expr(2)?
-    b.make_comp_clause(CompClause.Head(scoped_at(ix), Scoped(en.text), src, expr_id_at(b.args, 3)))
-}
-
-/// `if c` — a filter clause.
-fn build_comp_filter(b: Builder) -> Result<LangNode, string> {
-    b.make_comp_clause(CompClause.Filter(b.expr(0)?))
-}
-
-/// `collect` with no block: the gathering needs statements to run.
-fn build_collect_blockless(_b: Builder) -> Result<LangNode, string> {
-    .Err(blockless_collect())
-}
-
-// ── voices ──
-
-fn blockless_collect() -> string {
-    "`collect` gathers the values its block's statements leave — write `collect { … }`"
-}
-
-/// One list entry in written order: its start, and the node it is.
-type Entry = { at: int, node: ExprId }
-
-/// `[a, ..xs, b]` — elements and spreads in written order. A spread is
-/// the `Named` node `..` wearing its operand.
-fn build_list_lit(b: Builder) -> Result<LangNode, string> {
-    let elems = [Entry { at: b.store.expr_span(x)?.lo ?? 0, node: x } for x in b.exprs(0)?]
-    let spreads = [spread_entry_at(b, x) for x in b.exprs(1)?]
-    b
-        .make_expr(Expr.ListLit([x.node for x in sorted_by(elems.concat(spreads), (x, y) -> x.at < y.at)]))
-}
-
-/// A spread's operand wrapped as the entry it is.
-fn spread_entry_at(b: Builder, operand: ExprId) -> Entry {
-    Entry {
-        at: b.store.expr_span(operand)?.lo ?? 0,
-        node: b.store.alloc_expr(Expr.Named(Plain(spread_entry), operand), b.store.expr_span(operand)),
-    }
-}
+//! Parse-time lowering: the list pattern's `..` and the blockless
+//! `collect` refusal.
+use core.{Pat, Scoped}
+use features.{pat_ids_at, LangNode, Builder, RefusalWords}
 
 /// `[a, ..rest, z]` — the element patterns on either side of the `..`,
 /// which binds the middle (or discards it, bare). Without a `..` every
@@ -85,4 +18,14 @@ fn build_list_pat(b: Builder) -> Result<LangNode, string> {
         .store
         .alloc_pat(if binds.is_empty() { Pat.Wild } else { Pat.Bind(Scoped(binds[0].text)) }, d.span)
     b.make_pat(Pat.Seq(before, [rest], after))
+}
+
+// ── voices ──
+
+/// `collect` with no block: the gathering needs statements to run.
+fn blockless_collect() -> RefusalWords {
+    RefusalWords {
+        message: "`collect` gathers the values its block's statements leave",
+        help: "give it its block — `collect { … }`",
+    }
 }

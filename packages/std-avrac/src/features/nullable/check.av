@@ -3,7 +3,7 @@
 //! must be nullable, and the right must be what that nullable
 //! carries; the answer is the carried type, never nullable again.
 use core.{ExprId, StmtId, Type, TypeId, ResSides}
-use features.{TypeCx, this_is, chained_binder}
+use features.{TypeCx, this_is}
 use diagnostics.{refusal, warning, Diag}
 use @std.errors.{Confidence, Edit, Loc, Suggestion}
 
@@ -61,11 +61,18 @@ fn never_absent(mut cx: TypeCx, v: ExprId, r: ExprId) -> TypeId {
 /// nullable, the bind carries what it holds, and the two arms JOIN
 /// like any other pair of branches. Refusals name the BIND, so
 /// both surfaces read their own words.
-fn match_opt_type(mut cx: TypeCx, subject: ExprId, bind: string, present: ExprId, absent: ExprId) -> TypeId {
+fn match_opt_type(
+    mut cx: TypeCx,
+    e: ExprId,
+    subject: ExprId,
+    bind: string,
+    present: ExprId,
+    absent: ExprId,
+) -> TypeId {
     if cx.errored(subject) { return cx.error_type }
     let held: TypeId? = cx.view.types.carried(cx.type_at(subject))
     if held == null {
-        if bind == chained_binder {
+        if cx.view.store.chained_by(e) {
             return not_absent_able(
                 cx,
                 subject,
@@ -91,7 +98,7 @@ fn match_opt_type(mut cx: TypeCx, subject: ExprId, bind: string, present: ExprId
     let at = cx.walk_type(absent)
     // a chain into a call that answers nothing answers nothing: there
     // is no `void?` — the call runs when its subject is held
-    if bind == chained_binder && cx.view.types.shape_of(pt) is .Void { return pt }
+    if cx.view.store.chained_by(e) && cx.view.types.shape_of(pt) is .Void { return pt }
     let answer? = cx.join_of(pt, at) else { return arms_disagree(cx, present, absent) }
     let _ = cx.accepts(present, answer)
     let _ = cx.accepts(absent, answer)
