@@ -1,0 +1,64 @@
+//! `avra db diff <file> --database <path>` — the program's whole schema, as
+//! the compiler settled it (`const shapes`), against the shapes a database
+//! has recorded. Prints the migration plan; exits 1 when it is not empty, so
+//! a pipeline can gate on it.
+use @std.cli.{CliResult, Runnable, command, arg, option}
+use @std.avrac.compiler.{Program}
+use @std.db.apply.{recorded_shapes}
+use @std.db.migrate.{plan_all, report}
+use @std.db.shape.{Shape}
+use @std.json.typed.{elements}
+use @std.sqlite.{Db}
+
+type DbCmd = {}
+
+impl Runnable for DbCmd {
+    fn run(args: CliResult) -> int {
+        if args.arg("action") != "diff" {
+            eprintln("`avra db` knows one verb: `diff`")
+            return 2
+        }
+        let file_at = args.option("database")
+        if file_at == "" {
+            eprintln("`avra db diff` names the database it compares with: --database <path>")
+            return 2
+        }
+        phased(args, "db diff", (p) -> compared(p, file_at))
+    }
+}
+
+/// The program's declared shapes against the database's; the plan's lines
+/// print, and a plan with anything in it answers 1.
+fn compared(p: Program, file_at: string) -> Result<int, string> {
+    let declared = [Shape.from_json_text(e)? for e in elements(p.const_json("shapes")?)?]
+    let live = match recorded_shapes(opened(file_at)?) {
+        .Ok(shapes) -> shapes,
+        .Err(e) -> { return .Err("cannot read ${file_at}'s registry: ${e.message}") },
+    }
+    let lines = report(plan_all(declared, live, []))
+    for line in lines { println(line) }
+    if lines.is_empty() { 0 } else { 1 }
+}
+
+fn opened(file_at: string) -> Result<Db, string> {
+    match Db.open_read(file_at) {
+        .Ok(handle) -> .Ok(handle),
+        .Err(e) -> .Err("cannot open ${file_at}: ${e.message}"),
+    }
+}
+
+export command db {
+    description: "The program's schema against a database: `diff` prints the migration plan and exits 1 when it is not empty"
+    arg action {
+        description: "`diff`"
+        required: true
+    }
+    arg file {
+        description: "the program's file; it declares `const shapes: List<Shape>`"
+        required: true
+    }
+    option database {
+        description: "the database file to compare with"
+    }
+    run: DbCmd {}
+}
