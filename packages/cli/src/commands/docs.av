@@ -3,7 +3,7 @@
 //! thing's own doc — a diagnostic's meaning, or a declared symbol's
 //! `///` doc and its `@name(args)` annotations.
 use @std.cli.{CliResult, Runnable, command, arg, flag}
-use @std.avrac.compiler.{avra, DocRow, current_read_digest, package_root_of}
+use @std.avrac.compiler.{avra, DocRow, Workspace, package_root_of}
 use @std.avrac.core.{distinct}
 use @std.avrac.compiler.store.{Reading, Store, Stored, node_key}
 use @std.avrac.diagnostics.{DiagCode}
@@ -63,13 +63,13 @@ fn explained_decl(name: string, json: bool) -> int {
     let root = here()
     let ws = root_workspace(root)
     let store = ws.opened_store()
-    let key = node_key(Stored.Rows, ["docs", root, ws.compiler_id(), name])
-    let cached? = store.get_valid(Stored.Rows, key, current_read_digest) else { return derived_decl(store, root, key, name, json) }
+    let key = ws.root_key(Stored.Rows, "docs", [ws.compiler_id(), name])
+    let cached? = store.get_valid(Stored.Rows, key, (n) -> ws.read_now(n)) else { return derived_decl(ws, store, root, key, name, json) }
     print_decl(name, cached, json)
     0
 }
 
-fn derived_decl(store: Store, root: string, key: string, name: string, json: bool) -> int {
+fn derived_decl(ws: Workspace, store: Store, root: string, key: string, name: string, json: bool) -> int {
     let p? = clean_program() else { return 1 }
     let found? = p.explain_doc(name) else {
         eprintln(
@@ -78,7 +78,7 @@ fn derived_decl(store: Store, root: string, key: string, name: string, json: boo
         return 1
     }
     let packages = distinct([root].concat([package_root_of(f) ?? root for f in found.files]))
-    let reads = [Reading { name: r, digest: current_read_digest(r) ?? "-" } for r in packages.concat(found.files)]
+    let reads = [ws.read_at(r) for r in packages.concat(found.files)]
     let _ = store.keep_reading(Stored.Rows, key, found.text, reads)
     print_decl(name, found.text, json)
     0

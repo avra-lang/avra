@@ -1,98 +1,213 @@
-//! THE KERNEL FAMILIES THAT STAND ON A SAVED ANSWER. A family named here has its answers kept
-//! as rows of `Stored.Answer` — value, hash, and the reads it stood on as (name, digest) — by
-//! its relation's `keeper`, and a key this process never settled is looked up by `saved_find`,
-//! which hands the kernel the answer's reads as keys. The kernel demands each one and compares
-//! its hash; the value is read back by `revive` only when something reads it.
-//!
-//! A read is named by its input: `text <path>`. An answer standing on any other read is not kept.
+//! Saved answers by durable name. A key this process never settled stands on a row the store
+//! holds under a name — its family and what its argument names, never a dense id — so a row
+//! is read only when the kernel asks for that key. The kernel resolves nothing; this file
+//! maps keys to names on the way out and names to keys on the way in.
+use @std.relation.engine.{Key, Saved, SavedRead}
 use @std.text.{parse_int}
-use core.{joined}
-use compiler.families.{Family}
+use core.{FileId, DeclId, ModuleId, joined}
 use compiler.host.{InputName}
-use compiler.store.{Stored, Reading, node_key, read_spelled}
-use @std.relation.engine.{Key, Saved, SavedRead, Revival}
+use @std.relation.engine.{Revival}
+use features.{kind_word, decl_key_text}
+use compiler.families.{Family}
+use compiler.store.{Store, Stored, StoredName, Reading, node_key, read_spelled}
 
-/// The families kept as saved answers.
-const KEPT: List<Family> = [Family.ComponentNames]
+/// What a family's key argument names. A `Local` argument is an id of this process alone,
+/// so no answer under it is saved.
+enum ArgName {
+    File
+    Decl
+    Module
+    Unit
+    /// A file's text input: the key is the input's own, and the name is `text <path>`.
+    Text
+    Local
+}
+
+/// The row a read of the family's own hash stands on: the value hash a row was saved at.
+const HASH_READ: string = "="
+
+fn arg_name(f: Family) -> ArgName {
+    match f {
+        .Source or .Parsed or .Items or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .FileRefs or .MethodDiags or .Admitted -> ArgName.File,
+        .Sig or .Methods or .Typed or .WriteSummary or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .CancelSummary or .Writes or .CancelBits or .ReadFound or .Consumed -> ArgName.Decl,
+        .Namespace or .HeldSig -> ArgName.Module,
+        .References or .Failures or .ReadReach -> ArgName.Unit,
+        .BlockScan or .ComponentScan or .ComponentNames or .Input -> ArgName.Text,
+        .ConstTyped or .Settled or .Lowered or .Lifted or .LiftLowered or .Manifest or .Named -> ArgName.Local,
+    }
+}
+
+/// The families whose answers are saved by name: those with a value codec behind them.
+fn saved_family(f: Family) -> bool {
+    match f {
+        .Sig or .ComponentNames -> true,
+        .Source or .Parsed or .Items or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .FileRefs or .MethodDiags or .Admitted or .Methods or .Typed or .WriteSummary or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .CancelSummary or .Writes or .CancelBits or .ReadFound or .Consumed or .Namespace or .HeldSig or .References or .Failures or .ReadReach or .ConstTyped or .Settled or .Lowered or .Lifted or .LiftLowered or .Manifest or .Named or .Input or .BlockScan or .ComponentScan -> false,
+    }
+}
 
 impl Workspace {
-    /// The kernel's saved lookup and each kept family's hooks, set once at the workspace's making.
-    fn arm_saved() {
-        self.db.kernel.set_saved((key: Key) -> self.saved_find(key))
-        for f in KEPT {
-            let rel = self.relation(f)
-            rel.revive.set((arg: int) -> self.saved_revived(f, arg))
-            rel.keeper.set((arg: int, value: DbRow) -> self.saved_kept(f, arg, value))
+    /// A key's durable name — the family, then what the argument names — or null for a key
+    /// no process but this one can read.
+    fn saved_name(key: Key) -> string? {
+        let f = Family.all()[key.family]
+        let spelled? = self.arg_spelled(arg_name(f), key.arg) else { return null }
+        "${f.name}\t${spelled}"
+    }
+
+    /// What an argument names, spelled so another process reads the same thing: a file by its
+    /// name, a declaration by the key it is filed under.
+    fn arg_spelled(kind: ArgName, arg: int) -> string? {
+        match kind {
+            .File -> self.decls.file(FileId { index: arg }).name,
+            .Decl -> self.decl_spelled(DeclId { index: arg }),
+            .Module -> self.decls.module_name(ModuleId { index: arg }),
+            .Unit -> "",
+            .Text -> self.text_spelled(arg),
+            .Local -> null,
         }
     }
 
-    /// The row a kept family's answer at `arg` is filed under: its family and its input's key.
-    fn saved_row(f: Family, arg: int) -> string? {
+    /// An input's name when it is a file's text: `text <path>`.
+    fn text_spelled(arg: int) -> string? {
         let at = self.input_names.get()
         if arg < 0 || arg >= at.length { return null }
-        node_key(Stored.Answer, [f.name, at[arg].key])
+        match at[arg].kind {
+            .Text -> "text ${at[arg].key}",
+            .Octets or .Range or .Listing or .Exists or .Env or .Tool or .Compiler or .Embedded or .EmbeddedOctets -> null,
+        }
     }
 
-    /// The saved answer at `key`, its reads as keys — each input read named is staged through
-    /// the door first, so its cell stands and carries the hash it has now.
-    fn saved_find(key: Key) -> Saved? {
-        let f? = KEPT.find(it.ordinal == key.family) else { return null }
-        let store? = self.store.get() else { return null }
-        let row? = self.saved_row(f, key.arg) else { return null }
-        let bytes? = store.get(Stored.Answer, row) else { return null }
-        let lines = store.reads_of(Stored.Answer, row) ?? []
-        let reads = [r for l in lines for r in [self.saved_read(l)]]
-        if reads.any(it == null) { return null }
-        let hash? = parse_int(bytes.split("\n")[0]) else { return null }
-        Saved { reads: [r! for r in reads], value_hash: hash }
+    /// A declaration's key as text, unrecorded: its file's name, then kind, owner, maker,
+    /// encloser, name and place among the siblings that share them.
+    fn decl_spelled(d: DeclId) -> string? {
+        let x = self.decls.raw_decl(d)
+        if x.name.contains("\t") ||
+            x.owner.contains("\t") ||
+            x.maker.contains("\t") ||
+            x.enclosing.contains("\t") {
+            return null
+        }
+        joined(
+            [x.path, kind_word(x.kind), x.owner, x.maker, x.enclosing, x.name, "${x.sibling}"],
+            "\t",
+        )
     }
 
-    /// One read a row names, as a key and the digest it stood at: absent for a name this
-    /// process cannot stage.
-    fn saved_read(line: string) -> SavedRead? {
-        let r? = read_spelled(line) else { return null }
-        let digest? = parse_int(r.digest) else { return null }
-        if !r.name.starts_with("text ") { return null }
-        let name = InputName { kind: .Text, key: r.name.substring(5, r.name.length) }
+    /// `saved_name`'s inverse: the key a name stands for here. Null where the name's file or
+    /// declaration does not stand in this program.
+    fn saved_key(name: string) -> Key? {
+        let at = name.index_of("\t")
+        if at < 0 { return null }
+        let word = name.substring(0, at)
+        let f? = Family.all().find(it.name == word) else { return null }
+        let arg? = self.arg_named(arg_name(f), name.substring(at + 1, name.length)) else { return null }
+        Key { family: f.ordinal, arg: arg }
+    }
+
+    fn arg_named(kind: ArgName, spelled: string) -> int? {
+        match kind {
+            .File -> self.decls.known_file_id(self.path_named(StoredName(spelled)))?.index,
+            .Decl -> self.saved_decl(spelled)?.index,
+            .Module -> self.decls.known_module_id(spelled)?.index,
+            .Unit -> 0,
+            .Text -> self.text_named_arg(spelled),
+            .Local -> null,
+        }
+    }
+
+    /// The input a `text <path>` spelling names, staged through the door so its cell stands
+    /// with the digest the file has now.
+    fn text_named_arg(spelled: string) -> int? {
+        if !spelled.starts_with("text ") { return null }
+        let name = InputName { kind: .Text, key: spelled.substring(5, spelled.length) }
         let _ = self.input(name)
-        SavedRead {
-            key: Key { family: Family.Input.ordinal, arg: self.world_key(name) },
-            digest: digest,
+        self.world_key(name)
+    }
+
+    /// The declaration a spelling names, found in the key index without minting anything.
+    fn saved_decl(spelled: string) -> DeclId? {
+        let parts = spelled.split("\t")
+        if parts.length != 7 { return null }
+        let kind? = kind_of_word(parts[1]) else { return null }
+        let sibling? = parse_int(parts[6]) else { return null }
+        self
+            .decls
+            .known_id(decl_key_text(parts[0], parts[5], kind, parts[2], parts[3], parts[4], sibling))
+    }
+
+    /// Where the row for a name is filed: the name, in the view the file is read in.
+    fn saved_row_key(name: string) -> string {
+        node_key(Stored.Unit, ["saved", name, self.root_view()])
+    }
+
+    /// A saved answer for a key never settled here: what it read, each as a key of this process,
+    /// and the hash it answered. Null when nothing is saved, or a read names no key here.
+    fn saved_found(key: Key) -> Saved? {
+        if !saved_family(Family.all()[key.family]) { return null }
+        let store? = self.store.get() else { return null }
+        let name? = self.saved_name(key) else { return null }
+        let row = self.saved_row_key(name)
+        let lines? = store.reads_of(Stored.Unit, row) else { return null }
+        mut reads: List<SavedRead> = []
+        mut hash: int? = null
+        for line in lines {
+            let r? = read_spelled(line) else { return null }
+            let digest? = parse_int(r.digest) else { return null }
+            if r.name == HASH_READ {
+                hash = digest
+                continue
+            }
+            let k? = self.saved_key(r.name) else { return null }
+            reads.push(SavedRead { key: k, digest: digest })
         }
+        let value_hash? = hash else { return null }
+        Saved { reads: reads, value_hash: value_hash }
     }
 
-    /// The value of a kept family's saved answer.
-    fn saved_revived(f: Family, arg: int) -> Revival<DbRow> {
-        let store? = self.store.get() else { return Revival.Gone }
-        let row? = self.saved_row(f, arg) else { return Revival.Gone }
-        let bytes? = store.get(Stored.Answer, row) else { return Revival.Gone }
-        let lines = bytes.split("\n")
-        Revival.Revived(DbRow.Words(lines.drop(1)))
-    }
-
-    /// A kept family's answer settled this run, filed with the reads it stood on.
-    fn saved_kept(f: Family, arg: int, value: DbRow) -> bool {
+    /// An answer this process computed, saved under its name with what it read: refused (false)
+    /// when a read has no name, since an answer on a read nothing can resolve would never stand.
+    fn saved_kept(key: Key, value: string) -> bool {
         let store? = self.store.get() else { return false }
-        let row? = self.saved_row(f, arg) else { return false }
-        let k = Key { family: f.ordinal, arg: arg }
-        let reads? = self.db.kernel.saved_reads(k) else { return false }
-        let hash? = self.db.kernel.hash_forced(k) else { return false }
-        let named = [self.saved_reading(r) for r in reads]
-        if named.any(it == null) { return false }
-        let words = scan_words(value)
-        store
-            .keep_reading(Stored.Answer, row, joined(["${hash}"].concat(words), "\n"), [n! for n in named])
+        let name? = self.saved_name(key) else { return false }
+        let hash? = self.db.kernel.hash_forced(key) else { return false }
+        let reads? = self.db.kernel.saved_reads(key) else { return false }
+        mut readings: List<Reading> = [Reading { name: HASH_READ, digest: "${hash}" }]
+        for r in reads {
+            let named? = self.saved_name(r.key) else { return false }
+            readings.push(Reading { name: named, digest: "${r.digest}" })
+        }
+        store.keep_reading(Stored.Unit, self.saved_row_key(name), value, readings)
     }
 
-    /// A read as a row spells it: an input by its name and the digest its cell holds.
-    fn saved_reading(r: SavedRead) -> Reading? {
-        if r.key.family != Family.Input.ordinal { return null }
-        let at = self.input_names.get()
-        if r.key.arg < 0 || r.key.arg >= at.length { return null }
-        let name = at[r.key.arg]
-        match name.kind {
-            .Text -> Reading { name: "text ${name.key}", digest: "${r.digest}" },
-            rest -> null,
-        }
+    /// The value a saved answer was kept with.
+    fn saved_value(key: Key) -> string? {
+        let store? = self.store.get() else { return null }
+        let name? = self.saved_name(key) else { return null }
+        store.get(Stored.Unit, self.saved_row_key(name))
+    }
+}
+
+impl Workspace {
+    /// The kernel's saved lookup, and the hooks of the one family kept with a codec so far:
+    /// `ComponentNames`, whose answer is its names, one to a line.
+    fn arm_saved() {
+        self.db.kernel.set_saved((key: Key) -> self.saved_found(key))
+        let rel = self.relation(Family.ComponentNames)
+        rel.revive.set((arg: int) -> self.saved_words(arg))
+        rel
+            .keeper
+            .set(
+                (arg: int, value: DbRow) -> self
+                    .saved_kept(
+                        Key { family: Family.ComponentNames.ordinal, arg: arg },
+                        joined(scan_words(value), "\n"),
+                    ),
+            )
+    }
+
+    /// A `ComponentNames` answer read back.
+    fn saved_words(arg: int) -> Revival<DbRow> {
+        let text? = self.saved_value(Key { family: Family.ComponentNames.ordinal, arg: arg }) else { return Revival.Gone }
+        Revival.Revived(DbRow.Words(text.split("\n")))
     }
 }

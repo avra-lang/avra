@@ -77,16 +77,14 @@ impl Runnable for FmtCmd {
 /// (`Store.get_valid`), and nothing else judges it: a later compiler asks another row,
 /// and a file that moved reads a different digest.
 fn canonical_row(ws: Workspace, path: string) -> string {
-    node_key(Stored.Rows, ["fmt.canonical", ws.compiler_id(), path])
+    ws.file_key(Stored.Rows, "fmt.canonical", path, [ws.compiler_id()])
 }
 
 /// The files a canonical verdict stood on, each at its digest: the file as it stands (or
 /// as `own` says it will, for a file about to be written), then every provider file.
 fn canonical_reads(ws: Workspace, f: FileId, path: string, own: string) -> List<Reading> {
-    [Reading { name: path, digest: digest_of(own) }]
-        .concat(
-            [Reading { name: p, digest: current_read_digest(p) ?? "-" } for p in provider_origins(ws.block_words(f, ws.parsed(f)))],
-        )
+    [ws.read_at(path, digest_of(own))]
+        .concat([ws.read_at(p) for p in provider_origins(ws.block_words(f, ws.parsed(f)))])
 }
 
 /// The files a file's block words come from, each once.
@@ -96,7 +94,7 @@ fn provider_origins(bw: BlockWords) -> List<string> {
 
 /// Whether the saved verdict still holds: no parse, no print.
 fn canonical_kept(store: Store, ws: Workspace, path: string) -> bool {
-    store.get_valid(Stored.Rows, canonical_row(ws, path), current_read_digest) != null
+    store.get_valid(Stored.Rows, canonical_row(ws, path), (n) -> ws.read_now(n)) != null
 }
 
 /// Remember `path` as canonical with the bytes `own` it stands on.

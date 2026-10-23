@@ -17,7 +17,7 @@ use @std.avrac.compiler.store.{
     all_body_names,
     body_rev_of,
     cas_live,
-    cas_collect,
+    cas_swept,
     cas_readers,
 }
 use @std.avrac.core.{sorted_by}
@@ -72,7 +72,12 @@ fn cache_clean(store: Store) -> int {
         "avra cache clean: sealed ${yesno(rep.sealed)} · revisions ${rep.bodies_before} → ${rep.bodies_after} · evicted ${evicted}",
     )
     println("avra cache clean: bytes ${rep.bytes_before} → ${rep.bytes_after}")
-    let shared = cas_collect(cas_live())
+    let shared? = cas_swept(cas_live) else {
+        println(
+            "avra cache clean: another process is sweeping the shared store — nothing freed there",
+        )
+        return 0
+    }
     println(
         "avra cache clean: shared store kept ${shared.kept} blob(s) (${shared.kept_bytes} bytes) · freed ${shared.freed} blob(s) (${shared.freed_bytes} bytes) · ${cas_readers().length} live store(s)",
     )
