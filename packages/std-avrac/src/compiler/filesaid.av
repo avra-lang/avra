@@ -145,6 +145,15 @@ impl Workspace {
         made
     }
 
+    /// Whether the words an edited file's module parses under differ from those its kept answer
+    /// stood on. A file with no kept words read is judged moved.
+    fn words_moved(store: Store, path: string) -> bool {
+        let name = FileRead.Words(self.module_of(path)).name(path)
+        let lines = store.reads_of(Stored.Warn, self.said_row(path)) ?? []
+        let kept = [r! for l in lines for r in [read_spelled(l)] if r != null && r!.name == name]
+        kept.is_empty() || kept[0].digest != self.words_at(path)
+    }
+
     /// What each module a file reads stood as when its answer was kept — its frame and its plain
     /// free fns' forms: the names the judge asks first, so a module whose stamps stand, or whose
     /// moved fns the file never spells, never has its views rebuilt.
@@ -371,7 +380,9 @@ impl Workspace {
         let edited = [p for p in paths if self.text_moved(store, p)]
         mut moved = [FileRead.Text.name(p) for p in edited]
             .concat([self.seen_name(p) for p in edited])
-            .concat([FileRead.Words(self.module_of(p)).name(p) for p in edited])
+            .concat(
+                [FileRead.Words(self.module_of(p)).name(p) for p in edited if self.words_moved(store, p)],
+            )
         mut rows: Map<string, bool> = {}
         mut grown = true
         while grown {
