@@ -18,7 +18,7 @@ use core.{
 }
 use core.debug.{db_verified_files}
 use compiler.{Want}
-use compiler.store.{Store, Stored, Reading, node_key, read_name, read_spelled}
+use compiler.store.{Store, Stored, StoredName, Reading, read_name, read_spelled}
 use compiler.record.{KeyParts}
 use compiler.findings.{findings_read}
 
@@ -35,8 +35,9 @@ enum FileRead {
 }
 
 impl FileRead {
-    /// The read as its row names it: an input by the path it belongs to, an interface by its module.
-    fn name(path: string) -> string {
+    /// The read as its row names it: an input by the stored name of the file it belongs to, an
+    /// interface by its module.
+    fn name(path: StoredName) -> string {
         match self {
             .Text -> "text ${path}",
             .Run(j) -> "run ${path} ${j}",
@@ -51,7 +52,7 @@ impl FileRead {
 }
 
 /// A read of `path`'s row read back from its name; null for one this compiler never wrote.
-fn file_read_of(name: string, path: string) -> FileRead? {
+fn file_read_of(name: string, path: StoredName) -> FileRead? {
     let run = "run ${path} "
     when {
         name == FileRead.Text.name(path) -> FileRead.Text
@@ -88,31 +89,36 @@ fn seen_answer(k: KeyParts, m: string) -> string? {
     digest_of(s.bytes_key)
 }
 
-/// Every answer these parts stand on, named.
-fn reads_of_parts(k: KeyParts) -> List<Reading> {
+/// Every answer these parts stand on, named under `at`, the file's stored name.
+fn reads_of_parts(k: KeyParts, at: StoredName) -> List<Reading> {
     let reads = [FileRead.Text, FileRead.Runs, FileRead.Gathered, FileRead.SeenSet]
         .concat([FileRead.Run(j) for j in 0..k.runs.length])
         .concat([FileRead.Seen(s.module) for s in k.seen])
-    [Reading { name: r.name(k.path), digest: answer_in(k, r) ?? "" } for r in reads]
+    [Reading { name: r.name(at), digest: answer_in(k, r) ?? "" } for r in reads]
 }
 
 impl Workspace {
     /// FILE-SAID: what a file said, with the answers it stood on. Rows are the program's own — a
     /// file's answers are spelled in the view of the program that kept them.
-    fn said_row(path: string) -> string { node_key(Stored.Warn, ["said-row", self.root, path]) }
+    fn said_row(path: string) -> string { self.file_key(Stored.Warn, "said-row", path) }
 
     /// FILE-SAID: a file's rule findings, rendered.
-    fn rules_row(path: string) -> string { node_key(Stored.Warn, ["rules-row", self.root, path]) }
+    fn rules_row(path: string) -> string { self.file_key(Stored.Warn, "rules-row", path) }
 
     /// FILE-SAID: a file's findings rows.
-    fn findings_row(path: string) -> string { node_key(Stored.Warn, ["findings-row", self.root, path]) }
+    fn findings_row(path: string) -> string { self.file_key(Stored.Warn, "findings-row", path) }
 
     /// A file's kept answer filed under its path with what it stood on.
     fn keep_file_row(store: Store, path: string, family: Stored, key: string, bytes: string) {
         if store.get(family, key) == bytes && self.file_kept(store, path, family, key) { return }
         let k = self.key_parts_cached(store, self.module_path_of(path), path)
         let _ = store
-            .keep_reading(family, key, bytes, reads_of_parts(k).concat(self.seen_stamps(store, k)))
+            .keep_reading(
+                family,
+                key,
+                bytes,
+                reads_of_parts(k, self.stored_name(path)).concat(self.seen_stamps(store, k)),
+            )
     }
 
     /// What each module a file reads stood as when its answer was kept — its frame and its plain
@@ -122,11 +128,11 @@ impl Workspace {
         flatten(
             [[
                 Reading {
-                    name: FileRead.SeenPart(m).name(k.path),
+                    name: FileRead.SeenPart(m).name(self.stored_name(k.path)),
                     digest: self.seen_stamp(store, module_path(m.split("."))),
                 },
                 Reading {
-                    name: FileRead.SeenForms(m).name(k.path),
+                    name: FileRead.SeenForms(m).name(self.stored_name(k.path)),
                     digest: self.forms_stamp(store, module_path(m.split("."))),
                 },
             ] for m in distinct([k.module].concat([s.module for s in k.seen]))],
@@ -199,7 +205,7 @@ impl Workspace {
     /// Whether a module's plain free fns stand as a row read them: their forms are the ones it
     /// read, or the fns that moved are none the file spells.
     fn forms_stand(store: Store, path: string, r: Reading) -> bool {
-        let read? = file_read_of(r.name, "") else { return false }
+        let read? = file_read_of(r.name, StoredName("")) else { return false }
         match read {
             .SeenForms(m) -> {
                 let at = module_path(m.split("."))
@@ -222,7 +228,7 @@ impl Workspace {
 
     /// Whether a module's stamp still has the digest a row read it at.
     fn stamp_stands(store: Store, r: Reading) -> bool {
-        let read? = file_read_of(r.name, "") else { return false }
+        let read? = file_read_of(r.name, StoredName("")) else { return false }
         match read {
             .SeenPart(m) -> self.seen_stamp(store, module_path(m.split("."))) == r.digest,
             rest -> false,
@@ -232,7 +238,7 @@ impl Workspace {
     /// Whether one read a row stood on still has its digest. A module's whole stamp stands for every
     /// narrowed view of it, so the views are rebuilt only for a row whose stamps moved or were never kept.
     fn read_stands(store: Store, m: ModulePath, path: string, r: Reading, cheap: bool) -> bool {
-        let read? = file_read_of(r.name, path) else { return false }
+        let read? = file_read_of(r.name, self.stored_name(path)) else { return false }
         match read {
             .Text -> digest_of(self.text_digest(path)) == r.digest,
             .SeenPart(_) or .SeenForms(_) -> true,
@@ -243,7 +249,10 @@ impl Workspace {
 
     /// The digest a compile-time-run or collect read has now, off the module's row when it has one.
     fn lite_answer(store: Store, m: ModulePath, path: string, read: FileRead) -> string? {
-        let pr? = self.producers_for(store, m) else { return self.stood_on(self.key_parts_cached(store, m, path), read.name(path)) }
+        let pr? = self.producers_for(store, m) else {
+            return self
+                .stood_on(self.key_parts_cached(store, m, path), read.name(self.stored_name(path)))
+        }
         match read {
             .Run(j) -> {
                 let runs = self.lite_runs(pr, path)
@@ -257,7 +266,7 @@ impl Workspace {
 
     /// The digest a named answer has in these parts now.
     fn stood_on(k: KeyParts, name: string) -> string? {
-        let r? = file_read_of(name, k.path) else { return null }
+        let r? = file_read_of(name, self.stored_name(k.path)) else { return null }
         answer_in(k, r)
     }
 
@@ -314,7 +323,7 @@ impl Workspace {
         mut row_of: Map<string, string> = {}
         for p in paths { row_of.set(store.suspect_key(Stored.Warn, self.said_row(p)), p) }
         let edited = [p for p in paths if self.text_moved(store, p)]
-        mut moved = [FileRead.Text.name(p) for p in edited]
+        mut moved = [FileRead.Text.name(self.stored_name(p)) for p in edited]
             .concat([self.seen_name(p) for p in edited])
         mut rows: Map<string, bool> = {}
         mut grown = true
@@ -350,7 +359,7 @@ impl Workspace {
     /// under this name and want — one line a file, so it is bounded by the program's own
     /// files and rewritten only when the set moves.
     fn held_set_key(entry: string?, want: Want) -> string {
-        node_key(Stored.Fp, ["held-set", self.root, entry ?? "", want_word(want)])
+        self.file_key(Stored.Fp, "held-set", entry ?? self.root, [want_word(want)])
     }
 
     /// The files the last derivation confirmed standing; null for one never confirmed, which
@@ -358,14 +367,14 @@ impl Workspace {
     fn held_set(store: Store, entry: string?, want: Want) -> Map<string, bool>? {
         let row? = store.get(Stored.Fp, self.held_set_key(entry, want)) else { return null }
         mut set: Map<string, bool> = {}
-        for line in row.split("\n") { if line != "" { set.set(line, true) } }
+        for line in row.split("\n") { if line != "" { set.set(self.path_named(StoredName(line)), true) } }
         set
     }
 
     /// REMEMBER THE HELD SET. A row that stands on nothing is never suspect, so it is
     /// rewritten only when the set itself moves — never an action frame per derivation.
     fn keep_held_set(store: Store, entry: string?, want: Want, paths: List<string>) {
-        let text = joined(sorted_texts(distinct(paths)), "\n")
+        let text = joined(sorted_texts(distinct(["${self.stored_name(p)}" for p in paths])), "\n")
         let key = self.held_set_key(entry, want)
         if store.get(Stored.Fp, key) == text { return }
         let _ = store.keep(Stored.Fp, key, text, [])
@@ -403,12 +412,12 @@ impl Workspace {
     }
 
     /// The read a file's module is seen through.
-    fn seen_name(path: string) -> string { FileRead.Seen(self.module_of(path)).name(path) }
+    fn seen_name(path: string) -> string { FileRead.Seen(self.module_of(path)).name(self.stored_name(path)) }
 
     /// Whether a file's text differs from what its kept row stood on; a file never kept has moved.
     fn text_moved(store: Store, path: string) -> bool {
         let lines? = store.reads_of(Stored.Warn, self.said_row(path)) else { return true }
-        let read = FileRead.Text.name(path)
+        let read = FileRead.Text.name(self.stored_name(path))
         let line? = lines.find(read_name(it) == read) else { return true }
         line.substring(0, line.index_of(" ")) != digest_of(self.text_digest(path))
     }

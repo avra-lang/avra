@@ -1,10 +1,13 @@
 //! The manifest closure: the root package, its path dependencies, and
 //! the module path each names. Moved out of the workspace god-object.
-use core.{ModulePath, key_spelled, flatten}
+use core.{ModulePath, key_spelled, flatten, sorted_by, package_of_module}
 use @std.path.{under_dir, joined_path, normalized, relative_path}
 use features.{nothing, Budgets, budgets_of}
 use diagnostics.{SourceFile, new_source_file, Diag, refusal}
 use compiler.families.{Family}
+use compiler.store.{StoredName, Stored, Reading, node_key}
+use compiler.record.{KeyParts}
+use compiler.db.{current_read_digest}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
 use @std.relation.engine.{Loaded}
 use compiler.host.{
@@ -192,6 +195,116 @@ impl Workspace {
     /// The admitted packages, root first.
     fn packages() -> List<Package> { self.package_rows.get() }
 
+    /// THE NAME THE STORE FILES A PATH UNDER — `package:relative/path`, the package that holds it
+    /// named by its manifest, the root's included — so a moved or recloned checkout reads its own
+    /// rows and a dependency's file is one name in every program. A path no package holds keeps
+    /// its own spelling.
+    fn stored_name(path: string) -> StoredName {
+        let known = self.keys.stored_names.get().get(path)
+        if known != null { return StoredName(known!) }
+        let held? = self.package_holding(path) else { return StoredName(path) }
+        let named = "${held.key}:${if path == held.root { "" } else { path.substring(held.root.length + 1, path.length) }}"
+        self.keys.stored_names.put(path, named)
+        StoredName(named)
+    }
+
+    /// THE KEY OF A ROW ABOUT ONE FILE: its kind, the file's stored name and the view it is read
+    /// in, then the parts — the one derivation every per-file row shares, so no row folds where
+    /// the checkout stands, and a dependency's file is one row in every program that reaches it.
+    fn file_key(family: Stored, kind: string, path: string, parts: List<string> = []) -> string {
+        node_key(family, [kind, "${self.stored_name(path)}", self.file_view(path)].concat(parts))
+    }
+
+    /// The view a file is read in: its package built as the root, or reached as a dependency —
+    /// the two answer differently (a root reads its tests, a lone file is its own module).
+    fn file_view(path: string) -> string {
+        let known = self.keys.file_views.get().get(path)
+        if known != null { return known! }
+        let root? = self.packages().first()?.root else { return "dep" }
+        let view = if self.package_holding(path)?.root == root { self.root_view() } else { "dep" }
+        self.keys.file_views.put(path, view)
+        view
+    }
+
+    /// The view a module is read in: the root's own (spelled with no package) or a dependency's.
+    fn module_view(module: string) -> string { if package_of_module(module).is_empty() { self.root_view() } else { "dep" } }
+
+    /// THE ROOT AS A KEY READS IT: its manifest name and where it stands in the tree, so two
+    /// packages of one name in one tree are two roots and a moved or recloned tree is the same.
+    fn root_view() -> string {
+        if self.keys.root_view.get().is_empty() {
+            self
+                .keys
+                .root_view
+                .set(
+                    "root ${self.packages().first()?.key ?? ""} ${relative_path(tree_root(self), self.root)}",
+                )
+        }
+        self.keys.root_view.get()
+    }
+
+    /// THE KEY OF A ROW ABOUT THE PROGRAM: its kind, the root's view, then the parts.
+    fn root_key(family: Stored, kind: string, parts: List<string>) -> string {
+        node_key(family, [kind, self.root_view()].concat(parts))
+    }
+
+    /// Key parts as the store files them: the file under its stored name.
+    fn stored_parts(k: KeyParts) -> KeyParts { k with { path: "${self.stored_name(k.path)}" } }
+
+    /// A saved answer's read of `path` as it stands now: its stored name and its digest.
+    fn read_at(path: string, digest: string? = null) -> Reading {
+        Reading {
+            name: "${self.stored_name(path)}",
+            digest: digest ?? current_read_digest(path) ?? "-",
+        }
+    }
+
+    /// What a read's name stands at now, by the path the name resolves to here.
+    fn read_now(name: string) -> string? { current_read_digest(self.path_named(StoredName(name))) }
+
+    /// The path a stored name stands for here: its package's root joined with the rest.
+    fn path_named(name: StoredName) -> string {
+        let text = "${name}"
+        let at = text.index_of(":")
+        if at <= 0 { return text }
+        let root? = self.root_of_package(text.substring(0, at)) else { return text }
+        let rest = text.substring(at + 1, text.length)
+        if rest.is_empty() { root } else { joined_path(root, rest) }
+    }
+
+    /// The package holding `path`: the innermost admitted one, else the toolchain's std package
+    /// it stands in, which a check names before any `use` admits it.
+    fn package_holding(path: string) -> Holding? {
+        let admitted = sorted_by(
+            [p for p in self.packages() if path == p.root || under_dir(path, p.root)],
+            deeper_root,
+        )
+            .first()
+        if admitted != null { return Holding { key: admitted!.key, root: admitted!.root } }
+        let std? = self.host.std_root else { return null }
+        if !under_dir(path, std) { return null }
+        let root = joined_path(
+            std,
+            path.substring(std.length + 1, path.length).split("/").first() ?? "",
+        )
+        let key? = self.std_named(root) else { return null }
+        Holding { key: key, root: root }
+    }
+
+    /// A toolchain package's manifest name, read once a workspace — none where no manifest stands.
+    fn std_named(root: string) -> string? {
+        let known = self.keys.std_names.get().get(root)
+        if known != null { return known }
+        let manifest = joined_path(root, "avra.toml")
+        if !self.there(manifest) { return null }
+        let named = read_manifest(new_source_file(manifest, self.listed_text(manifest))).name
+        self.keys.std_names.put(root, named)
+        named
+    }
+
+    /// Where a package of this key stands: an admitted one's root, else the toolchain's copy.
+    fn root_of_package(key: string) -> string? { self.packages().find(it.key == key)?.root ?? self.host.std_dir(key) }
+
     /// Everything the packages said: each manifest's own voices, then
     /// the graph's.
     fn packages_voiced() -> List<Diag> {
@@ -333,3 +446,9 @@ fn qualified(m: ModulePath, from: Package) -> ModulePath {
     if m.packaged() || from.ordinal == 0 { return m }
     ModulePath { segments: key_spelled(from.key).split(".").concat(m.segments) }
 }
+
+/// A package as a stored name spells it: its manifest key and the root its paths stand under.
+type Holding = { key: string, root: string }
+
+/// Whether `a`'s root is deeper than `b`'s: the innermost package holds a path first.
+fn deeper_root(a: Package, b: Package) -> bool { a.root.length > b.root.length }

@@ -97,7 +97,7 @@ impl Workspace {
             let _ = s
                 .keep(
                     Stored.Unit,
-                    rows_key(path, surface),
+                    self.file_key(Stored.Unit, "unit-rows", path, [surface]),
                     "R2" + fields_wire(flatten([[r.key, r.wants, r.facts, r.consts] for r in live])),
                     [],
                 )
@@ -128,7 +128,9 @@ impl Workspace {
     fn row_file(s: Store, path: string, surface: string) -> Map<string, UnitRow> {
         let known = self.hold.rows.get().get(path)
         if known != null { return known! }
-        let made = rows_of(s.get(Stored.Unit, rows_key(path, surface)) ?? "")
+        let made = rows_of(
+            s.get(Stored.Unit, self.file_key(Stored.Unit, "unit-rows", path, [surface])) ?? "",
+        )
         self.hold.rows.put(path, made)
         made
     }
@@ -180,7 +182,6 @@ type RowKey = { path: string, key: string }
 type RowPlace = { path: string, surface: string, key: string }
 
 /// Where a file's rows live, under what its file shows.
-fn rows_key(path: string, surface: string) -> string { node_key(Stored.Unit, ["unit-rows", path, surface]) }
 
 /// A file's rows as the store keeps them; none for text no `keep_unit_rows` wrote.
 fn rows_of(raw: string) -> Map<string, UnitRow> {
