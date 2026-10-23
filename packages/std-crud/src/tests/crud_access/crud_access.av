@@ -1,0 +1,101 @@
+// proves: `routes(db, access: belongs_to("owner", "x-user", …))` holds every door within the caller's own rows, pushed into the SQL — a second caller lists none of the first's rows, finds, changes, removes and restores none of them (404), a request that names no caller is refused (401), and what a caller creates is its own
+use @std.crud.{crud}
+use @std.crud.routes.{Door, Access, belongs_to}
+use @std.db.scope.{Where}
+use @std.http.route.{group, Mounted}
+use @std.http.server.{server}
+use @std.json.{Json}
+use @std.net.{Conn, NetError, connect, timely}
+use @std.sqlite.{Db, SqlValue}
+use @std.text.{parse_int}
+use @std.time.{ms, secs}
+
+@crud
+type Memo = {
+    id: int = 0,
+    owner: int,
+    text: string,
+    @soft_delete removed_at: int? = null,
+}
+
+/// `sent` written, then read until the server closes or goes quiet.
+fn exchanged(c: Conn, sent: string) -> Result<string, NetError> {
+    c.write(sent.bytes())?
+    mut got = "".bytes()
+    while true {
+        match timely(within ms(300) { c.read(65536) }) {
+            .Ok(b) -> {
+                let more? = b else { break }
+                got = got.concat(more)
+            },
+            .Err(_) -> { break },
+        }
+    }
+    let parts = (got.text() ?? "?").split("\r\n\r\n")
+    let body = if parts.length > 1 { parts[1] } else { "" }
+    .Ok("${parts[0].split("\r\n").first() ?? "?"} ${body}")
+}
+
+/// One request as caller `who` (none: no caller named).
+fn asked(port: int, who: int?, method: string, path: string, body: string) -> Result<
+    string,
+    NetError,
+> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    let caller = match who {
+        n? -> "x-user: ${n}\r\n"
+        null -> ""
+    }
+    exchanged(
+        c,
+        "${method} ${path} HTTP/1.1\r\nHost: a\r\nConnection: close\r\n${caller}Content-Type: application/json\r\nContent-Length: ${body.length}\r\n\r\n${body}",
+    )
+}
+
+/// An answer's status line alone, for a row holding a clock reading.
+fn gist(answer: string) -> string { answer.split(" ").slice(0, 3).join(" ") }
+
+fn user_of(text: string) -> SqlValue? {
+    let n? = parse_int(text) else { return null }
+    SqlValue.Int(n)
+}
+
+fn refused(why: string) -> NetError { NetError { verb: "setup", subject: why, errno: 1 } }
+
+fn shown() -> Result<string, NetError> {
+    let db = match Db.memory() {
+        .Ok(opened) -> opened,
+        .Err(e) -> { return .Err(refused(e.message)) },
+    }
+    let _ = Memo.create_table(db)
+    server app {
+        port: 0
+        group "/memos" { Memo.routes(db, access: belongs_to("owner", "x-user", user_of)) }
+    }
+    let s = match app.listening() {
+        .Ok(up) -> up,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    spawn s.run(1)
+    defer s.stop()
+    let p = s.listener.port
+    let lines = [
+        asked(p, 1, "POST", "/memos", "{\"owner\":2,\"text\":\"mine\"}")?,
+        asked(p, 2, "GET", "/memos", "")?,
+        asked(p, 1, "GET", "/memos/1", "")?,
+        asked(p, 2, "GET", "/memos/1", "")?,
+        asked(p, 2, "PATCH", "/memos/1", "{\"owner\":2,\"text\":\"taken\"}")?,
+        asked(p, 2, "DELETE", "/memos/1", "")?,
+        asked(p, 1, "GET", "/memos", "")?,
+        asked(p, 1, "PATCH", "/memos/1", "{\"owner\":1,\"text\":\"edited\"}")?,
+        asked(p, 1, "DELETE", "/memos/1", "")?,
+        asked(p, 2, "GET", "/memos/trash", "")?,
+        asked(p, 2, "POST", "/memos/1/restore", "")?,
+        gist(asked(p, 1, "POST", "/memos/1/restore", "")?),
+        asked(p, null, "GET", "/memos", "")?,
+    ]
+    .Ok(lines.join("\n"))
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
