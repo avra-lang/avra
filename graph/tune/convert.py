@@ -15,12 +15,14 @@ import argparse
 import collections
 import hashlib
 import json
+import os
 import pathlib
 import random
 import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "extract"))
+SRC = pathlib.Path(os.environ.get("GRAPH_SRC", HERE.parent))
+sys.path.insert(0, str(SRC / "extract"))
 import cascade  # noqa: E402
 
 PARAMS = {k: v["value"] for k, v in json.loads((HERE / "params.json").read_text()).items()}
@@ -54,6 +56,17 @@ def balanced(rows, rng):
     return out
 
 
+def gated(rows, rng):
+    """The speaker gate's decline ("no") is capped at `gate_ratio` times its
+    positives: every question not about the asker is a decline, so left whole
+    the gate would learn to say no."""
+    gate = [d for d in rows if d["kind"] == "speaker gate"]
+    yes = [d for d in gate if d["options"][d["gold"]] == "yes"]
+    no = [d for d in gate if d["options"][d["gold"]] != "yes"]
+    rng.shuffle(no)
+    return [d for d in rows if d["kind"] != "speaker gate"] + yes + no[: int(len(yes) * PARAMS["gate_ratio"])]
+
+
 def stratified(rows, n, rng):
     """A fixed sample balanced over (decision kind, domain): rounds take one
     example from each group in turn until n are taken."""
@@ -77,7 +90,7 @@ def main():
     args = parser.parse_args()
     rows = [json.loads(l) for f in args.decisions for l in open(f) if l.strip()]
     rng = random.Random(PARAMS["seed"])
-    rows = balanced(rows, rng)
+    rows = gated(balanced(rows, rng), rng)
     split = {"train": [], "valid": []}
     counts = collections.Counter()
     for d in rows:
