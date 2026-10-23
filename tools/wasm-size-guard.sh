@@ -16,15 +16,13 @@ avra=${AVRA:-$tree/build/avra}
 work=$(mktemp -d "${TMPDIR:-/tmp}/avra-sz.XXXXXX")
 # WASM_TARGET names another wasm triple, for a machine whose sysroot is not the default's.
 target=${WASM_TARGET:-wasm}
-say() { echo "wasm-size-guard: $*"; }
-skip() { say "$* — skipped"; exit 0; }
+wasm_who=wasm-size-guard; . "$here/lib/wasm.sh"
 
-command -v clang >/dev/null 2>&1 || skip "no clang"
-clang --print-targets 2>/dev/null | grep -q wasm32 || skip "clang has no wasm32 target"
-command -v wasm-opt >/dev/null 2>&1 || skip "no wasm-opt (binaryen) on PATH"
-command -v wasm-objdump >/dev/null 2>&1 || skip "no wasm-objdump (wabt) on PATH"
-[ -x "$avra" ] || skip "no compiler at $avra"
-( cd "$tree" && make -s wasm-runtime wasm-packages ) >/dev/null 2>&1 || skip "the wasm runtime did not build"
+needs_wasm_clang
+needs wasm-opt
+needs wasm-objdump
+needs_compiler
+wasm_ready || skip "the wasm runtime archive did not build"
 
 base=$(cd "$tree" && (git rev-parse --short HEAD 2>/dev/null || echo no-git))
 hex() { printf '%d' "$(( 0x${1:-0} ))"; }

@@ -85,9 +85,8 @@ skip() {
 command -v node >/dev/null 2>&1 || skip "no \`node\` on this machine"
 node -e 'process.exit(typeof WebSocket === "function" ? 0 : 1)' || skip "this \`node\` has no WebSocket of its own (22 or later has)"
 node --input-type=module -e "import { firefoxBinary } from '$here/ui-board/firefox.mjs'; process.exit(firefoxBinary() ? 0 : 1)" || skip "no Firefox on this machine (FIREFOX names one)"
-if [ ! -f "$tree/build/wasm32/libavra_runtime.a" ]; then
-    ( cd "$tree" && make -s wasm-runtime wasm-packages ) >/dev/null 2>&1 || skip "the wasm runtime archive did not build"
-fi
+. "$here/lib/wasm_ready.sh"
+wasm_ready || skip "the wasm runtime archive did not build"
 
 # A COPY is served, so the run edits no file of the tree's.
 mkdir -p "$work/tools"
