@@ -1,0 +1,36 @@
+//! A component a derive emits and `View` refuses is refused where the derive's
+//! template wrote it. The member's place crosses to the second derive with the
+//! file its offset indexes, so the refusal speaks at the template and the
+//! compiler is never wrecked by reading it against the file the code landed in.
+//! `avra_ran` and `scratch_dir` are the neighbouring tests' own.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+
+/// A derive that emits a composition marking its member `@attr`.
+const template: string = "use @std.meta.{Type, Declared, Directive}\nuse @std.ui.components.{text}\n\nexport fn formed(t: Type) -> Declared {\n    Declared {\n        made: [\n            Directive {\n                twin: \"\",\n                name: form_name(t),\n                at: t.at,\n                source: quote {\n                    component \${form_name(t)}(@attr(.Label) title: string) {\n                        text \"hello\"\n                    }\n                },\n            },\n        ],\n        problems: [],\n    }\n}\n\nfn form_name(t: Type) -> string { \"\${t.name}_form\" }\n"
+
+const landing: string = "use formed.{formed}\n\n@formed\ntype Note = { id: int, title: string }\n\n1\n"
+
+/// What `avra check` says about the package.
+once fn refused() -> string {
+    let root = "${scratch_dir()}/generated_view_${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"generated_view\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text("${root}/src/formed.av", template)
+    let _ = write_text("${root}/src/main.av", landing)
+    match avra_ran(["check", root]) { .Ok(o) -> o.out.stdout, .Err(_) -> "the check did not run" }
+}
+
+spec "a generated component is refused at its template" {
+    given "a derive emitting a composition with an @attr member" {
+        then "the refusal speaks, naming the member" {
+            refused()
+                .contains("a composition projects nothing of its own, and `title` is marked `@attr`")
+        }
+        then "and stands in the derive's file" { refused().contains("formed.av:") }
+        then "and nothing wrecks the compiler" { !refused().contains("reaches outside its own text") }
+    }
+}
