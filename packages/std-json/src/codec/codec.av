@@ -33,6 +33,7 @@ use @std.meta.{
     Declared,
     Code,
     Decls,
+    Stmts,
     literal,
     name,
     refuse_as_at,
@@ -272,7 +273,7 @@ fn chosen_by_tag(by_name: List<Named>, refusal: Code) -> Code {
 }
 
 /// A variant's name and the code that builds it.
-type Named = { name: string, value: Code }
+type Named = { name: string, value: Stmts }
 
 /// A variant's shape: its name and the kinds of its payload fields.
 fn variant_shape(v: Variant) -> Code {
@@ -472,11 +473,11 @@ fn field_value(i: int, f: Field) -> Code {
 /// and then answering `finish`: each member matched to its field by name and
 /// read where it stands, a name written twice refused, a name no field has
 /// skipped (a variant's `tag` among them).
-fn object_read(fields: List<Field>, finish: Code) -> Code {
+fn object_read(fields: List<Field>, finish: Code) -> Stmts {
     let locals = [declared(i, f) for i, f in fields]
     let key = name(own("key"))
     let more = name(own("more"))
-    mut chain = quote { let _ = skip_value(r, at)? }
+    mut chain = quote { { let _ = skip_value(r, at)? } }
     for j in 0..fields.length {
         let i = fields.length - 1 - j
         let rest = chain
@@ -506,7 +507,7 @@ fn declared(i: int, f: Field) -> Stmts {
 }
 
 /// Field `i` met by name: counted once, then read.
-fn taken(i: int, f: Field) -> Code {
+fn taken(i: int, f: Field) -> Stmts {
     let here = quote { path_field(at, ${literal(f.name)}) }
     quote {
         ${name(own("c${i}"))} = seen_once(${name(own("c${i}"))}, ${here})?
