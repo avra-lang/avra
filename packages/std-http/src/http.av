@@ -222,12 +222,19 @@ impl Request {
     /// media type is what a browser will not forge — 400 when the body
     /// is not UTF-8 or not JSON, naming where.
     fn json() -> Result<Json, Response> {
-        if !json_typed(self.header("content-type")) { fail text(415, "the body must be `application/json`") }
-        let body? = (self.gathered()?).text() else { fail text(400, "the body is not UTF-8") }
+        let body = self.json_text()?
         match parse(body) {
             .Ok(j) -> j,
             .Err(e) -> { fail text(400, "the body is not JSON: ${e.describe().message}") },
         }
+    }
+
+    /// THE BODY AS JSON TEXT, or the response that refuses it: `json`'s 415 and
+    /// 400 for a body that is not UTF-8, the text itself unparsed.
+    fn json_text() -> Result<string, Response> {
+        if !json_typed(self.header("content-type")) { fail text(415, "the body must be `application/json`") }
+        let body? = (self.gathered()?).text() else { fail text(400, "the body is not UTF-8") }
+        body
     }
 
     /// The body, whole, or the response refusing it: `Body.gathered`'s
@@ -261,11 +268,11 @@ fn body_refused(e: BodyError) -> Response {
     }
 }
 
-/// The request's JSON body read by `decode` — a record's `from_json`
-/// under `@json` — or the response refusing it: `json`'s, or a 400
+/// The request's JSON body read by `decode` — a record's `from_json_text`
+/// under `@json` — or the response refusing it: `json_text`'s, or a 400
 /// naming the member that misfit.
 export fn json_body<P, T>(q: Request<P>, decode: Decoder<T>) -> Result<T, Response> {
-    let doc = q.json()?
+    let doc = q.json_text()?
     match decode(doc) { .Ok(v) -> v, .Err(e) -> { fail text(400, e.describe().message) } }
 }
 

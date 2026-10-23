@@ -33,7 +33,7 @@ type Reading = {
 }
 
 fn seeded() -> Result<Db, SqlError> {
-    mut db = Db.memory()?
+    let db = Db.memory()?
     Job.create_table(db)?
     Note.create_table(db)?
     Reading.create_table(db)?
@@ -48,7 +48,7 @@ fn titles(rows: List<Job>) -> string { [t.title for t in rows].join(",") }
 
 fn texts(rows: List<Note>) -> string { [n.text for n in rows].join(",") }
 
-fn add(mut db: Db, title: string, done: bool) -> Result<Job, ModelError> {
+fn add(db: Db, title: string, done: bool) -> Result<Job, ModelError> {
     Job { title: title, done: done }.insert(db)
 }
 
@@ -58,7 +58,7 @@ fn empty_table() -> Result<string, SqlError> {
 }
 
 fn all_in_order() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let _ = add(db, "a", false)?
     let _ = add(db, "b", true)?
     let _ = add(db, "c", true)?
@@ -66,7 +66,7 @@ fn all_in_order() -> Result<string, ModelError> {
 }
 
 fn filtered() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let _ = add(db, "a", false)?
     let _ = add(db, "b", true)?
     let _ = add(db, "c", true)?
@@ -78,7 +78,7 @@ fn filtered() -> Result<string, ModelError> {
 }
 
 fn removed() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let a = add(db, "a", false)?
     let _ = add(db, "b", false)?
     let gone = a.remove(db)?
@@ -87,7 +87,7 @@ fn removed() -> Result<string, ModelError> {
 }
 
 fn kept() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let a = Note { text: "a", created: 0 }.insert(db)?
     let _ = Note { text: "b", created: 0 }.insert(db)?
     let _ = a.remove(db)?
@@ -99,7 +99,7 @@ fn kept() -> Result<string, ModelError> {
 }
 
 fn restored() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let a = Note { text: "a", created: 0 }.insert(db)?
     let _ = a.remove(db)?
     let _ = modeled(a.restore(db))?
@@ -107,7 +107,7 @@ fn restored() -> Result<string, ModelError> {
 }
 
 fn stamped() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let n = Note { text: "a", created: 7 }.insert(db)?
     let before = n.created
     let _ = (n with { text: "b", created: 99 }).update(db)?
@@ -116,7 +116,7 @@ fn stamped() -> Result<string, ModelError> {
 }
 
 fn null_column() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let n = Note { text: "a", created: 0 }.insert(db)?
     let live = modeled(Note.find(db, n.id))?!
     "${live.removed_at == null}"
@@ -128,27 +128,27 @@ fn held(r: Reading) -> string {
 }
 
 fn absent_row() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let r = Reading { label: null, count: null, ratio: null, flag: null }.insert(db)?
     let back = modeled(Reading.find(db, r.id))?!
     "${back.label == null} ${back.count == null} ${back.ratio == null} ${back.flag == null}"
 }
 
 fn spare_row() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let r = Reading { label: "", count: 0, ratio: 0.0, flag: false }.insert(db)?
     let back = modeled(Reading.find(db, r.id))?!
     "${back.label != null} ${back.count != null} ${back.ratio != null} ${back.flag != null} ${held(back)}"
 }
 
-fn labelled(mut db: Db, label: string?, count: int?) -> Result<Reading, ModelError> {
+fn labelled(db: Db, label: string?, count: int?) -> Result<Reading, ModelError> {
     Reading { label: label, count: count, ratio: null, flag: null }.insert(db)
 }
 
 fn labels(rows: List<Reading>) -> string { [r.label ?? "~" for r in rows].join(",") }
 
 fn null_filter() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let _ = labelled(db, null, null)?
     let _ = labelled(db, "", 0)?
     let _ = labelled(db, "x", 5)?
