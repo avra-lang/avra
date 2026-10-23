@@ -3,7 +3,7 @@
 //! decoder written once reads them all. A map keeps its entries in
 //! written order — a list of `Entry`, never a `Map` — so an issue list
 //! reads in the order the input was written.
-use issue.{Path, Step}
+use @std.json.typed.{Path, Step, has_quote, shown_text}
 
 export type Entry = { key: string, value: Value }
 
@@ -26,7 +26,7 @@ impl Value {
             .Bool(b) -> "${b}",
             .Int(n) -> "${n}",
             .Float(x) -> "${x}",
-            .Text(s) -> quoted(s),
+            .Text(s) -> shown_text(s),
             .List(items) -> "[${[i.shown() for i in items].join(", ")}]",
             .Map(entries) -> "{${[shown_entry(e) for e in entries].join(", ")}}",
         }
@@ -74,19 +74,12 @@ impl Value {
 }
 
 fn shown_entry(e: Entry) -> string {
-    "${quoted(e.key)}: ${e.value.shown()}"
-}
-
-/// Text in double quotes, the quote and the backslash escaped.
-export fn quoted(s: string) -> string {
-    "\"${if escapes(s) { s.replace("\\", "\\\\").replace("\"", "\\\"") } else { s }}\""
+    "${shown_text(e.key)}: ${e.value.shown()}"
 }
 
 /// Each text quoted, joined by a comma — one join when none needs an
 /// escape.
 export fn quoted_each(xs: List<string>) -> string {
-    if escapes(xs.join("")) { return [quoted(x) for x in xs].join(", ") }
+    if has_quote(xs.join("")) { return [shown_text(x) for x in xs].join(", ") }
     "\"${xs.join("\", \"")}\""
 }
-
-fn escapes(s: string) -> bool { s.contains("\\") || s.contains("\"") }

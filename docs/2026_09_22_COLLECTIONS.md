@@ -111,9 +111,10 @@ pages, benchmarks, fuzz targets, scheduled jobs.
 
 ## 4. The laws — every edge case is a refusal
 
-1. **Open world closes at link.** A library may READ a collection at run time;
-   only a program may fold one at compile time.
-   `error: \`rules\` is closed only when a program links — read it at run time`
+1. **A fold settles per root.** A const that folds a `closure` collection
+   settles once for each root that builds it, held to the set it gathered:
+   a program's members in a program, a library's own closure when the library
+   is checked alone.
 2. **A member never reads its own collection at compile time** (a cycle).
    `error: \`meta\` is collected into \`rules\`, so it cannot read \`rules\` while compiling`
 3. **Order is declared.** `error: a collection declares its order — \`by …\``

@@ -702,6 +702,7 @@ cache-attacks-b1: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/turn_memory_attack.sh
 	@sh tools/gathered_cache_attack.sh
 	@sh tools/closure_gather_attack.sh
+	@sh tools/closure_fold_attack.sh
 	@sh tools/impl_held_attack.sh
 	@sh tools/store_reads_attack.sh
 	@sh tools/cas_attack.sh

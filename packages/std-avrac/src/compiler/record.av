@@ -845,7 +845,13 @@ fn held_gather(parts: List<string>, package: string) -> HeldGather? {
     HeldGather {
         collector: parts[2],
         package: package,
-        gathering: Gathering { kind: kind, scope: scope, order: [Plain(o) for o in order], plans: plans },
+        gathering: Gathering {
+            name: if parts.length > 9 { parts[9] } else { "" },
+            kind: kind,
+            scope: scope,
+            order: [Plain(o) for o in order],
+            plans: plans,
+        },
         digest: parts[7],
     }
 }
@@ -855,7 +861,7 @@ fn held_gather(parts: List<string>, package: string) -> HeldGather? {
 fn gathered_files(ws: Workspace, src: string) -> List<string> { [path for path in ws.all_files(src) if !ws.is_test_path(path)] }
 
 /// A `gathers` line: the package, the collecting file, what it gathers by, in what
-/// order, what it reads of each member, and the set.
+/// order, what it reads of each member, the set, its scope and the collect's name.
 fn gathers_line(key: string, path: string, g: Gathering, set: string) -> string {
     joined(
         ["gathers", key, path]
@@ -866,6 +872,7 @@ fn gathers_line(key: string, path: string, g: Gathering, set: string) -> string 
                     hex_fields([hex_fields(plan_words(p)) for p in g.plans]),
                     set,
                     scope_word(g.scope),
+                    g.name,
                 ],
             ),
         "\t",
