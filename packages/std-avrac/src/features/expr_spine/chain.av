@@ -3,6 +3,8 @@
 //! `match a { null -> null, v? -> v.m(args) }` — minted beside it, so
 //! the match's own typing joins the arms.
 use core.{
+    Minting,
+    minting,
     expr_node,
     Expr,
     ExprId,
@@ -79,14 +81,14 @@ impl SyntaxArena {
 }
 
 impl Meaning for ChainCall {
-    fn minted(cx: MeanCx) -> Result<List<ExprId>, string> {
+    fn minted(cx: MeanCx) -> Result<Minting, string> {
         let before = cx.store.exprs.count()
         let args = [cx.store.pronouned(a) for a in self.args]
         let call = cx
             .store
             .alloc_expr(Expr.MethodCall(cx.store.held_value(cx.span), self.name, args), cx.span)
         let root = cx.store.chain_of(self.subject, call, cx.span)
-        .Ok(cx.store.allocated_since(before, root))
+        .Ok(minting(cx.store.allocated_since(before, root)))
     }
     fn resolve(mut cx: ResolveCx, e: ExprId) {
         nothing()
@@ -96,13 +98,13 @@ impl Meaning for ChainCall {
 }
 
 impl Meaning for ChainApply {
-    fn minted(cx: MeanCx) -> Result<List<ExprId>, string> {
+    fn minted(cx: MeanCx) -> Result<Minting, string> {
         let before = cx.store.exprs.count()
         let call = cx
             .store
             .alloc_expr(Expr.CallValue(cx.store.held_value(cx.span), self.args), cx.span)
         let root = cx.store.chain_of(self.subject, call, cx.span)
-        .Ok(cx.store.allocated_since(before, root))
+        .Ok(minting(cx.store.allocated_since(before, root)))
     }
     fn resolve(mut cx: ResolveCx, e: ExprId) {
         nothing()
@@ -112,7 +114,7 @@ impl Meaning for ChainApply {
 }
 
 impl Meaning for ChainType {
-    fn minted(cx: MeanCx) -> Result<List<ExprId>, string> {
+    fn minted(cx: MeanCx) -> Result<Minting, string> {
         let before = cx.store.exprs.count()
         let lit = cx.store.spelling(self.ty)?
         let root = cx
@@ -122,7 +124,7 @@ impl Meaning for ChainType {
                 cx.store.type_literal(cx.store.held_value(cx.span), lit, cx.span),
                 cx.span,
             )
-        .Ok(cx.store.allocated_since(before, root))
+        .Ok(minting(cx.store.allocated_since(before, root)))
     }
     fn resolve(mut cx: ResolveCx, e: ExprId) {
         nothing()

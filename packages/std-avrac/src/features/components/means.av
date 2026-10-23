@@ -5,6 +5,7 @@
 //! component is a literal of its record, the body's settings by name and its
 //! other statements `collect`ed into its one `List` field.
 use core.{
+    Minting,
     ComponentWord,
     Template,
     Record,
@@ -73,8 +74,12 @@ fn keyed_child(store: SyntaxArena, value: ExprId, key: ExprId) -> ExprId {
                     store.expr_span(lit),
                 )
             let check = store.checked_by(value)
-            store.expanded_as(value, grown, check)
-            store.means_as(value, [check ?? grown], store.means_note(value) ?? "")
+            store
+                .means_as(
+                    value,
+                    Minting { nodes: [check ?? grown], literal: grown, check: check },
+                    store.means_note(value) ?? "",
+                )
             value
         },
         rest -> value,
@@ -499,12 +504,11 @@ fn field_fill(
 /// An instance's meaning, minted beside it: the literal or template copy that
 /// stands in place — the root a walk descends into — and the `check` call over
 /// it when its component judges instances.
-fn minted_instance(cx: MeanCx, c: Component) -> Result<List<ExprId>, string> {
+fn minted_instance(cx: MeanCx, c: Component) -> Result<Minting, string> {
     let provided? = cx.provided else { return .Err(unimported(c.word)) }
     let m = Mint { store: cx.store, span: cx.span, provided: provided, door: cx.door }
     let made = m.made(c)?
-    cx.store.expanded_as(cx.at, made.literal, made.check)
-    .Ok([made.check ?? made.literal])
+    .Ok(Minting { nodes: [made.check ?? made.literal], literal: made.literal, check: made.check })
 }
 
 impl Mint {
