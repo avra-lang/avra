@@ -183,21 +183,131 @@ export fn float_text(x: float) -> string { if x - x == 0.0 { "${x}" } else { "nu
 
 // ── the cursor ──────────────────────────────────────────────────
 
+/// One step into a value.
+export enum Step {
+    Field(name: string)
+    Index(at: int)
+    Key(key: string)
+    Variant(name: string)
+}
+
+/// A place inside a value, from its root: `items[3].qty`,
+/// `payment.Card.exp`, `meta["x-y"]`. Held nearest-first — `up` walks
+/// from the place back to the root — so a container filing what its
+/// readers found under its own step puts that step on the end, in
+/// place.
+export type Path = { up: List<Step> }
+
+impl Path {
+    fn field(name: string) -> Path { self.then(Step.Field(name)) }
+    fn index(at: int) -> Path { self.then(Step.Index(at)) }
+    fn key(key: string) -> Path { self.then(Step.Key(key)) }
+    fn variant(name: string) -> Path { self.then(Step.Variant(name)) }
+
+    /// This path, read from `prefix` rather than the root.
+    fn under(prefix: Path) -> Path {
+        if prefix.up.is_empty() { return self }
+        Path { up: self.up.concat(prefix.up) }
+    }
+
+    /// One step further from the root.
+    fn then(s: Step) -> Path {
+        // pinned: `concat` may take its argument's box, and a field of `self` is a place
+        let up = self.up
+        Path { up: [s].concat(up) }
+    }
+
+    /// The steps from the root down.
+    fn steps() -> List<Step> { [self.up[self.up.length - 1 - j] for j in 0..self.up.length] }
+
+    /// How many steps down from the root.
+    fn depth() -> int { self.up.length }
+
+    /// The path as code spells it; the root is empty.
+    fn text() -> string {
+        [spelled(j, s) for j, s in self.steps()].join("")
+    }
+}
+
+fn spelled(j: int, s: Step) -> string {
+    match s {
+        .Field(name) or .Variant(name) -> if j == 0 { name } else { ".${name}" },
+        .Index(at) -> "[${at}]",
+        .Key(key) -> "[${shown_text(key)}]",
+    }
+}
+
+/// Text in double quotes, only the quote and the backslash escaped: a value
+/// as a report shows it. `quoted` is the JSON literal, every control escaped.
+export fn shown_text(s: string) -> string {
+    "\"${if has_quote(s) { s.replace("\\", "\\\\").replace("\"", "\\\"") } else { s }}\""
+}
+
+/// Whether `shown_text` would change the text.
+export fn has_quote(s: string) -> bool { s.contains("\\") || s.contains("\"") }
+
+/// Where a problem read from this text stands among the others: the
+/// steps filed under its containers (nearest the root last), its place
+/// in the container's order, and the offset its received value starts
+/// at (-1 when none is shown).
+export type Place = { up: List<Step>, order: int, received_at: int }
+
 /// A cursor over JSON text that reads each value where it stands: the
 /// text, its octets, and where it is — -1 once it stepped aside, so a
-/// reader that cannot go on hands the text to one that can.
-export type Reader = { text: string, bytes: Bytes, pos: int }
+/// reader that cannot go on hands the text to one that can. `places`
+/// files each problem found while reading, in the order it was found.
+export type Reader = { text: string, bytes: Bytes, pos: int, places: List<Place> = [] }
 
 /// A reader at the first value `text` holds.
 export fn reader_of(text: string) -> Reader {
     let b = text.bytes()
-    Reader { text: text, bytes: b, pos: space(b, 0) }
+    Reader { text: text, bytes: b, pos: space(b, 0), places: [] }
 }
 
 /// A reader of nothing, already aside.
-export fn no_reader() -> Reader { Reader { text: "", bytes: "".bytes(), pos: -1 } }
+export fn no_reader() -> Reader { Reader { text: "", bytes: "".bytes(), pos: -1, places: [] } }
 
 impl Reader {
+    /// A problem found, filed at `order` in its container; its received
+    /// value starts at `received_at`, or nowhere at -1.
+    mut fn placed(order: int, received_at: int) {
+        self.places.push(Place { up: [], order: order, received_at: received_at })
+    }
+
+    /// Every problem from `mark` on filed one step further from the
+    /// root, at `order` in its container.
+    mut fn stepped(mark: int, order: int, s: Step) {
+        for i in mark..self.places.length {
+            self.places[i].up.push(s)
+            self.places[i].order = order
+        }
+    }
+
+    /// The problems from `from` on put stably in their container's
+    /// order: the indexes to read the old ones in, or null when they
+    /// already stand so. Only a member read out of turn moves.
+    mut fn sorted(from: int) -> List<int>? {
+        let n = self.places.length
+        mut perm = [i for i in from..n]
+        mut moved = false
+        for i in from + 1..n {
+            let key = perm[i - from]
+            mut j = i
+            while j > from && self.places[perm[j - 1 - from]].order > self.places[key].order {
+                perm.set(j - from, perm[j - 1 - from])
+                j = j - 1
+            }
+            if j < i {
+                perm.set(j - from, key)
+                moved = true
+            }
+        }
+        if !moved { return null }
+        let old = self.places
+        for k, p in perm { self.places.set(from + k, old[p]) }
+        perm
+    }
+
     /// The reader stops here.
     mut fn aside() { self.pos = -1 }
 
