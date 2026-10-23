@@ -14,17 +14,15 @@ avra=${AVRA:-$tree/build/avra}
 work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-wasm.XXXXXX")}
 fixtures=$here/wasm-fixtures
 
-say() { echo "wasm-check: $*" >&2; }
-skip() { say "$* — skipped"; exit 0; }
+wasm_who=wasm-check; . "$here/lib/wasm.sh"
 . "$here/jspi_node.sh"
 
-[ -x "$avra" ] || skip "no compiler at $avra"
-command -v "$node" >/dev/null 2>&1 || skip "node not on PATH"
-command -v clang >/dev/null 2>&1 || skip "clang not on PATH"
-clang --print-targets 2>/dev/null | grep -q wasm32 || skip "clang has no wasm32 target"
-command -v wasm-opt >/dev/null 2>&1 || skip "wasm-opt (binaryen) not on PATH"
+needs_compiler
+needs "$node"
+needs_wasm_clang
+needs wasm-opt
 
-( cd "$tree" && make -s wasm-runtime wasm-packages ) || skip "the wasm runtime archive did not build"
+wasm_ready || skip "the wasm runtime archive did not build"
 # each fixture is built for the host too, and a gate job may hold only the compiler: the host
 # runtime AND the package C objects and archives a fixture's `[link]` rows name (std_time.o)
 sh "$here/wasm-host-objects.sh" "$tree"
