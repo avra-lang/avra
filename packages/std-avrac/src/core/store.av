@@ -6,10 +6,18 @@ use @std.relation.engine.{list_cell, map_cell}
 /// How a sugar's meaning is minted beside it: the language's own door,
 /// since only the language reads a template. It answers the nodes it
 /// minted, the last the root, or none when it cannot.
-export alias Means = fn(SyntaxArena, ExprId) -> Result<List<ExprId>, string>
+export alias Means = fn(SyntaxArena, ExprId) -> Result<Minting, string>
+
+/// What a sugar's meaning minted: its nodes in allocation order, the last the
+/// root; and, for an instance, the literal that stands in place and the `check`
+/// call over it. The door files these; a meaning never writes the store.
+export type Minting = { nodes: List<ExprId>, literal: ExprId? = null, check: ExprId? = null }
+
+/// A meaning that minted only nodes.
+export fn minting(nodes: List<ExprId>) -> Minting { Minting { nodes: nodes } }
 
 /// The door of a store whose language is not at hand: it mints nothing.
-export fn no_door(_store: SyntaxArena, _sugar: ExprId) -> Result<List<ExprId>, string> { .Ok([]) }
+export fn no_door(_store: SyntaxArena, _sugar: ExprId) -> Result<Minting, string> { .Ok(minting([])) }
 
 /// The forms an expression was written in: a lambda as a trailing block,
 /// a string as `"""raw"""`, a name inside a type literal (a hole), and a
@@ -544,17 +552,19 @@ impl SyntaxArena {
     /// sentence that says what the sugar means. The one door a builder and
     /// a template copy both use, so a copy re-mints and never copies.
     fn mean(sugar: ExprId, note: string, door: Means) -> List<ExprId> {
-        let minted = match door(self, sugar) { .Ok(ids) -> ids, .Err(_) -> [] }
+        let minted = match door(self, sugar) { .Ok(m) -> m, .Err(_) -> minting([]) }
         self.means_as(sugar, minted, note)
-        minted
+        minted.nodes
     }
 
     /// `minted` recorded as what `sugar` means, the last its root; nothing
     /// when it minted nothing.
-    fn means_as(sugar: ExprId, minted: List<ExprId>, note: string) {
-        let root? = minted.last() else { return }
+    fn means_as(sugar: ExprId, minted: Minting, note: string) {
+        let root? = minted.nodes.last() else { return }
         self.meaning.set_at(sugar.index, root)
-        self.mint_for(sugar, minted, note)
+        self.mint_for(sugar, minted.nodes, note)
+        let literal? = minted.literal else { return }
+        self.expanded_as(sugar, literal, minted.check)
     }
 
     /// Mints nodes `sugar` is EXTENDED by: `roots` are what a walk reaches
@@ -1179,7 +1189,7 @@ impl SyntaxArena {
 
     /// A bare name in a pattern, as a READ of that name: the node
     /// resolve walks when the name is a const's, so the pattern
-    /// compares to it. Minted with every binding pattern, whoever
+    /// compares to it. Minting with every binding pattern, whoever
     /// allocates it; a name that binds leaves it unread. A type test's
     /// read is never walked: typing records the narrowed type on it.
     fn read_of(p: Pat, span: Span?) -> ExprId? {

@@ -5,6 +5,8 @@
 //! template is never run on the program's values: its holes are read, and
 //! the scratch parse is kept for the process, keyed by the template's text.
 use core.{
+    Minting,
+    minting,
     SyntaxArena,
     ExprId,
     PatId,
@@ -36,7 +38,7 @@ export fn sugar_door(lang: Language) -> Means {
 /// What the sugar means, copied beside it: the nodes the copy minted, the
 /// last the root; none when the node is no sugar or its template cannot be
 /// read here.
-fn minted_means(lang: Language, store: SyntaxArena, sugar: ExprId) -> Result<List<ExprId>, string> {
+fn minted_means(lang: Language, store: SyntaxArena, sugar: ExprId) -> Result<Minting, string> {
     let node = store.expr(sugar)
     let cx = MeanCx {
         store: store,
@@ -47,8 +49,8 @@ fn minted_means(lang: Language, store: SyntaxArena, sugar: ExprId) -> Result<Lis
     }
     let said? = node.means(cx) else { return node.minted(cx) }
     match (said?).node {
-        .Template(_, _, parts, fills) -> .Ok(spliced(lang, store, sugar, parts, [hole_id(f) for f in fills])),
-        rest -> .Ok([]),
+        .Template(_, _, parts, fills) -> .Ok(minting(spliced(lang, store, sugar, parts, [hole_id(f) for f in fills]))),
+        rest -> .Ok(minting([])),
     }
 }
 
