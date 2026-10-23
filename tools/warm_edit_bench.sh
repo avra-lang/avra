@@ -19,7 +19,8 @@
 #
 # stdout is the raw measurement the judge reads (`host <key>`,
 # `warm unchanged <ms>`, `warm edit <ms>`); every word of its own goes to
-# stderr. A WARM STORE IS REQUIRED and a run that cannot judge is a
+# stderr. THE STORE MEASURED IS THE COMPILER'S OWN (the tree's is set aside and
+# put back) and a run that cannot judge is a
 # FAILURE, never a silent pass: a named reason and status 1, with the
 # `skip warm-edit` marker on stdout. The ONLY skip is a hand-set
 # `WARM_EDIT_SKIP` (the workflow's `warm_skip` input), and even then it says
@@ -61,16 +62,7 @@ if [ "$(uname -s)" = "Darwin" ] && [ "${SPEED_LOCAL:-0}" != "1" ]; then
     exec sh tools/work run "sh tools/warm_edit_bench.sh"
 fi
 
-# A CEILING IS READ FROM A WARM STORE. A cold run at a human's request
-# (`SPEED_ALLOW_COLD=1`) is measured, but said out loud: the first unchanged
-# round is the cold price and the least-of-rounds picks a later warm one.
-if [ ! -d .avra-cache ] && [ "${SPEED_ALLOW_COLD:-0}" != "1" ]; then
-    refuse "no warm store at .avra-cache"
-fi
-if [ ! -d .avra-cache ]; then
-    echo "warm_edit_bench: no warm store — measuring COLD at SPEED_ALLOW_COLD's request; the first unchanged round warms it" >&2
-fi
-[ -x "$avra" ] || { echo "warm_edit_bench: no compiler at $avra — build it first" >&2; exit 1; }
+[ -x "$avra" ] || refuse "no compiler at $avra — build it first"
 [ -f "$file" ] || { echo "warm_edit_bench: no edit target at $file" >&2; exit 1; }
 grep -qF "$lit" "$file" || { echo "warm_edit_bench: \`$lit\` is gone from $file — the edit target moved" >&2; exit 1; }
 # The program links the tree's own runtime library; a fresh Sprite may not
@@ -106,10 +98,24 @@ wall() { # -> "<ms> <status>"; an answer that never came reads as 0 ms and a fai
     printf '%s %s\n' "$(((e - s) / 1000000))" "$st"
 }
 
+# A CEILING IS READ FROM A STORE THE COMPILER UNDER TEST WROTE. A store restored from elsewhere
+# (CI's cache, another compiler's run) holds answers this compiler did not make, and an edit over
+# it prices their holds, not this compiler's edit path. The tree's own store is set aside, warmed
+# here by one unchanged check, and put back when the run ends, so what follows still has it.
+held=$(mktemp -d)
 orig=$(mktemp)
 cp "$file" "$orig"
-restore() { cp "$orig" "$file"; rm -f "$orig"; }
+restore() {
+    cp "$orig" "$file"
+    rm -f "$orig"
+    [ ! -d .avra-cache ] || mv .avra-cache "$held/measured"
+    [ ! -d "$held/kept" ] || mv "$held/kept" .avra-cache
+    find "$held" -delete
+}
 trap restore EXIT INT TERM
+[ ! -d .avra-cache ] || mv .avra-cache "$held/kept"
+set -- $(wall)
+[ "${2:-1}" = 0 ] || { echo "warm_edit_bench: the warming check exited ${2:-1} — not measured" >&2; exit 1; }
 
 # A FRESH EDIT per round, of the same WIDTH every run (a count of bytes written is exact only
 # if the edit's text is): the appended word carries a run nonce and the

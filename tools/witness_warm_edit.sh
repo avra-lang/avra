@@ -9,19 +9,39 @@ set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-unset SPEED_ALLOW_COLD WARM_EDIT_SKIP
+unset WARM_EDIT_SKIP
 mkdir -p "$tmp/tools"
 cp "$root/tools/warm_edit_bench.sh" "$tmp/tools/warm_edit_bench.sh"
 
-# 1. no warm store, no opt-out: FAIL, with the reason named.
+# 1. no compiler, no opt-out: FAIL, with the reason named.
 if SPEED_LOCAL=1 sh "$tmp/tools/warm_edit_bench.sh" >"$tmp/fail.stdout" 2>"$tmp/fail.err"; then
-    echo "witness_warm_edit: the bench PASSED with no warm store — a skip is not a pass" >&2
+    echo "witness_warm_edit: the bench PASSED with no compiler — a skip is not a pass" >&2
     exit 1
 fi
-grep -q "no warm store" "$tmp/fail.err" \
-    || { echo "witness_warm_edit: the refusal does not name the warm store" >&2; cat "$tmp/fail.err" >&2; exit 1; }
+grep -q "no compiler" "$tmp/fail.err" \
+    || { echo "witness_warm_edit: the refusal does not name the compiler" >&2; cat "$tmp/fail.err" >&2; exit 1; }
 grep -q "FAILURE" "$tmp/fail.err" \
     || { echo "witness_warm_edit: the refusal does not say FAILURE" >&2; cat "$tmp/fail.err" >&2; exit 1; }
+
+# 1a. a store the tree holds is set aside, never read by the measurement, and put back as it stood;
+# the store the measurement ran over is the compiler's own.
+mkdir -p "$tmp/s/tools" "$tmp/s/build" "$tmp/s/packages/cli/src/commands" "$tmp/s/.avra-cache"
+cp "$root/tools/warm_edit_bench.sh" "$tmp/s/tools/warm_edit_bench.sh"
+printf 'x · memo y\n' > "$tmp/s/packages/cli/src/commands/shared.av"
+: > "$tmp/s/build/libavra_runtime.a"
+echo theirs > "$tmp/s/.avra-cache/sentinel"
+cat > "$tmp/s/build/avra" <<'RECORDS'
+#!/bin/sh
+[ ! -e .avra-cache/sentinel ] || echo SAW >> "$AVRA_WITNESS_LOG"
+mkdir -p .avra-cache
+echo own > .avra-cache/own
+RECORDS
+chmod +x "$tmp/s/build/avra"
+AVRA_WITNESS_LOG="$tmp/saw" SPEED_LOCAL=1 SPEED_ROUNDS=1 AVRA_SPEED_BIN="$tmp/s/build/avra" sh "$tmp/s/tools/warm_edit_bench.sh" >/dev/null 2>"$tmp/s.err" || :
+[ ! -e "$tmp/saw" ] \
+    || { echo "witness_warm_edit: the measurement ran over a store it did not write" >&2; cat "$tmp/s.err" >&2; exit 1; }
+{ [ -e "$tmp/s/.avra-cache/sentinel" ] && [ ! -e "$tmp/s/.avra-cache/own" ]; } \
+    || { echo "witness_warm_edit: the tree's own store was not put back as it stood" >&2; cat "$tmp/s.err" >&2; exit 1; }
 
 # 1b. a measurement whose subshell dies is a NAMED refusal, never an unbound `$1`.
 mkdir -p "$tmp/m/tools" "$tmp/m/build" "$tmp/m/packages/cli/src/commands" "$tmp/m/.avra-cache"
