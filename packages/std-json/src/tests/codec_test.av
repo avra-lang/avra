@@ -20,14 +20,22 @@ type Idea = {
 }
 
 @json
+type Item = { email: string }
+
+@json
+type Order = { items: List<Item> }
+
+@json
 type Tree = { v: int, kids: List<Tree> }
 
 const full: string = "{\"title\":\"t\",\"votes\":3,\"open\":true,\"tags\":[\"a\",\"b\"],\"note\":\"n\",\"scores\":[1,null,3],\"main\":{\"label\":\"m\",\"weight\":0.5},\"extra\":[{\"label\":\"x\",\"weight\":2}],\"maybe\":null}"
 
 /// The document read as an `Idea` and written back, or the refusal.
 fn idea_round(text: string) -> string {
-    let doc = parse(text) catch Json.Null
-    match Idea.from_json(doc) { .Ok(i) -> to_text(i.to_json()), .Err(e) -> e.describe().message }
+    match Idea.from_json_text(text) {
+        .Ok(i) -> to_text(i.to_json()),
+        .Err(e) -> e.describe().message,
+    }
 }
 
 /// `full` with one member's value replaced.
@@ -94,22 +102,31 @@ spec "std/json — @json codec" {
     given "a record that holds itself" {
         then "it reads and writes back" {
             let text = "{\"v\":1,\"kids\":[{\"v\":2,\"kids\":[]},{\"v\":3,\"kids\":[{\"v\":4,\"kids\":[]}]}]}"
-            match Tree.from_json(parse(text) catch Json.Null) {
+            match Tree.from_json_text(text) {
                 .Ok(t) -> to_text(t.to_json()) == text,
                 .Err(_) -> false,
             }
         }
         then "a misfit deep inside names the whole path" {
             match Tree
-                .from_json(
-                    parse("{\"v\":1,\"kids\":[{\"v\":2,\"kids\":[{\"v\":\"x\",\"kids\":[]}]}]}") catch Json
-                        .Null,
-                ) { .Ok(_) -> false, .Err(e) -> e.at == "kids[0].kids[0].v" }
+                .from_json_text("{\"v\":1,\"kids\":[{\"v\":2,\"kids\":[{\"v\":\"x\",\"kids\":[]}]}]}") {
+                .Ok(_) -> false,
+                .Err(e) -> e.at == "kids[0].kids[0].v",
+            }
+        }
+    }
+    given "a list of records" {
+        then "a misfit in the third item names its path" {
+            match Order
+                .from_json_text("{\"items\":[{\"email\":\"a\"},{\"email\":\"b\"},{\"email\":3}]}") {
+                .Ok(_) -> "read",
+                .Err(e) -> e.describe().message,
+            } == "`items[2].email` wants text, found the number 3"
         }
     }
     given "the refusal is a value" {
         then "its path and words are fields" {
-            match Idea.from_json(Json.Obj([])) {
+            match Idea.from_json_text("{}") {
                 .Ok(_) -> false,
                 .Err(e) -> e.at == "title" && e.wanted == "text" && e.found == "nothing",
             }

@@ -399,6 +399,12 @@ const judged: string = "judged\$"
 /// Whether no issue may show what the value being read received.
 const hidden: string = "hidden\$"
 
+/// Whether a named type answers std-json's protocol: it carries `@json`.
+fn json_typed(n: string) -> bool {
+    let t? = type_named(n) else { return false }
+    t.annotations.any(it.name == "json")
+}
+
 /// The reader for a shape at `at`.
 fn reader(k: Kind) -> Code {
     match k {
@@ -410,7 +416,13 @@ fn reader(k: Kind) -> Code {
             let each? = element(elem) else { return unread(k) }
             quote { list(d, at, ${each}) }
         },
-        .Named(n, _) -> if texted(n) { form_read(n, quote { at }) } else { quote { ${name(n)}.decoded(d, at) } },
+        .Named(n, _) -> if texted(n) {
+            form_read(n, quote { at })
+        } else if json_typed(n) {
+            quote { ruled(d, at, "json", ${name(n)}.decode_text(at.value?.shown(), at.at.text())) }
+        } else {
+            quote { ${name(n)}.decoded(d, at) }
+        },
         .Opt(k2) -> reader(k2),
         .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> unread(k),
     }
@@ -691,6 +703,8 @@ fn reading(k: Kind, depth: Code, required: Code, secret: Code) -> Code {
         },
         .Named(n, _) -> if texted(n) {
             form_read_json(n, depth, required, secret)
+        } else if json_typed(n) {
+            quote { json_read_protocol(d, ${depth}, ${required}, ${secret}, (raw: string?, at: string) -> ${name(n)}.decode_text(raw, at)) }
         } else {
             quote { ${name(n)}.read_json(d, ${depth}, ${required}, ${secret}) }
         },

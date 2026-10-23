@@ -31,20 +31,24 @@ enum Choice {
 }
 
 fn bag_round(text: string) -> string {
-    let doc = parse(text) catch Json.Null
-    match Bag.from_json(doc) { .Ok(b) -> to_text(b.to_json()), .Err(e) -> e.describe().message }
+    match Bag.from_json_text(text) {
+        .Ok(b) -> to_text(b.to_json()),
+        .Err(e) -> e.describe().message,
+    }
 }
 
 fn round(text: string) -> string {
-    let doc = parse(text) catch Json.Null
-    match Choice.from_json(doc) { .Ok(c) -> to_text(c.to_json()), .Err(e) -> e.describe().message }
+    match Choice.from_json_text(text) {
+        .Ok(c) -> to_text(c.to_json()),
+        .Err(e) -> e.describe().message,
+    }
 }
 
 spec "std/json — an enum's codec" {
     given "a variant with no payload" {
         then "is its tag alone" { to_text(Show.Active.to_json()) == "{\"tag\":\"Active\"}" }
         then "reads back from it" {
-            match Show.from_json(parse("{\"tag\":\"Done\"}") catch Json.Null) {
+            match Show.from_json_text("{\"tag\":\"Done\"}") {
                 .Ok(s) -> s == Show.Done,
                 .Err(_) -> false,
             }
@@ -158,11 +162,14 @@ spec "std/json — an enum's codec" {
         then "refuses a document that misfits, in its own words" {
             match Choice.from_json_text("{\"tag\":\"One\",\"row\":\"x\"}") {
                 .Ok(_) -> "read",
-                .Err(e) -> e,
-            } == "wants an integer"
+                .Err(e) -> e.wanted,
+            } == "an integer"
         }
         then "refuses a tag that names no variant" {
-            match Choice.from_json_text("{\"tag\":\"Nope\"}") { .Ok(_) -> "read", .Err(e) -> e } == "names no variant"
+            match Choice.from_json_text("{\"tag\":\"Nope\"}") {
+                .Ok(_) -> "read",
+                .Err(e) -> e.wanted,
+            } == "a variant's name"
         }
     }
 }
