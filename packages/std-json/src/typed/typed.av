@@ -36,7 +36,7 @@ fn said(raw: string?) -> string {
         t == "null" -> "null"
         t == "true" || t == "false" -> "`${t}`"
         parse_float(t) != null -> "the number ${t}"
-        _ -> "text that is not JSON"
+        _ -> not_json
     }
 }
 
@@ -503,6 +503,9 @@ fn is_digit(c: int) -> bool { c >= 48 && c <= 57 }
 export alias ReadFn<T> = fn(mut Reader, string) -> Result<T, DecodeError>
 
 /// What stands at the cursor, in the words a refusal says it with.
+/// What a refusal says of text that is no JSON.
+const not_json: string = "text that is not JSON"
+
 fn said_here(r: Reader) -> string {
     let c = r.here()
     when {
@@ -513,7 +516,7 @@ fn said_here(r: Reader) -> string {
         c == 116 || c == 102 -> "`${r.text.substring(r.pos, skip(r.bytes, r.pos, 0))}`"
         c == 45 || is_digit(c) -> "the number ${r.text.substring(r.pos, number_end(r.bytes, r.pos))}"
         c < 0 -> "nothing"
-        _ -> "text that is not JSON"
+        _ -> not_json
     }
 }
 
@@ -591,11 +594,13 @@ export fn opened_in(mut r: Reader, at: string, open: int, close: int, wanted: st
 > {
     if !r.opened(open) { fail refused_here(r, at, wanted) }
     r.depth = r.depth + 1
-    if r.depth > MAX_DEPTH { fail DecodeError {
+    if r.depth > MAX_DEPTH {
+        fail DecodeError {
             at: at,
             wanted: "a document nested at most ${MAX_DEPTH} deep",
             found: "deeper",
-        } }
+        }
+    }
     let more = r.first(close)
     if !more { r.depth = r.depth - 1 }
     more
@@ -607,7 +612,7 @@ export fn next_in(mut r: Reader, at: string, close: int, wanted: string) -> Resu
     DecodeError,
 > {
     let more = r.next(close)
-    if r.pos < 0 { fail DecodeError { at: at, wanted: wanted, found: "text that is not JSON" } }
+    if r.pos < 0 { fail DecodeError { at: at, wanted: wanted, found: not_json } }
     if !more { r.depth = r.depth - 1 }
     more
 }
@@ -616,13 +621,13 @@ export fn next_in(mut r: Reader, at: string, close: int, wanted: string) -> Resu
 export fn key_here(mut r: Reader, at: string) -> Result<string, DecodeError> {
     let start = r.pos
     let end = r.key()
-    if end < 0 { fail DecodeError { at: at, wanted: "a member name", found: "text that is not JSON" } }
+    if end < 0 { fail DecodeError { at: at, wanted: "a member name", found: not_json } }
     r.key_text(start, end)
 }
 
 /// Past the value at the cursor.
 export fn skip_value(mut r: Reader, at: string) -> Result<bool, DecodeError> {
-    if !r.skipped(MAX_DEPTH - r.depth) { fail DecodeError { at: at, wanted: "a value", found: "text that is not JSON" } }
+    if !r.skipped(MAX_DEPTH - r.depth) { fail DecodeError { at: at, wanted: "a value", found: not_json } }
     true
 }
 
@@ -655,16 +660,18 @@ export fn read_whole<T>(raw: string?, at: string, wanted: string, each: ReadFn<T
 export fn tag_here(mut r: Reader, at: string) -> Result<string, DecodeError> {
     let tag_at = path_field(at, "tag")
     mut more = opened_in(r, at, 123, 125, "an object")?
-    mut tag: string? = null
+    mut tag = ""
+    mut seen = 0
     while more {
         let key = key_here(r, at)?
         if key == "tag" {
-            let _ = seen_once(if tag == null { 0 } else { 1 }, tag_at)?
+            seen = seen_once(seen, tag_at)?
             tag = read_text(r, tag_at)?
         } else {
             let _ = skip_value(r, at)?
         }
         more = next_in(r, at, 125, "`,` or `}`")?
     }
-    required(tag, tag_at, "text")?
+    if seen == 0 { fail DecodeError { at: tag_at, wanted: "text", found: "nothing" } }
+    tag
 }
