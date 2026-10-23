@@ -146,6 +146,20 @@ fn recorded(db: Db, name: string) -> Result<Shape?, SqlError> {
     .Ok(shape_read(texted(row.values[0])))
 }
 
+/// Every shape the registry holds, in table order; none for a database no
+/// model has claimed a table in.
+export fn recorded_shapes(db: Db) -> Result<List<Shape>, SqlError> {
+    if (db.scalar(sql(registry_probe_sql()))?).int()? == 0 { return .Ok([]) }
+    let held: List<Shape?> = [shape_read(texted(r.values[0])) for r in db.all(sql(all_recorded_sql()))?]
+    .Ok([s! for s in held if s != null])
+}
+
+fn registry_probe_sql() -> string { "SELECT count(*) FROM sqlite_master WHERE name = '__avra_models__'" }
+
+fn all_recorded_sql() -> string {
+    "SELECT \"shape\" FROM \"__avra_models__\" WHERE \"shape\" IS NOT NULL ORDER BY \"table_name\""
+}
+
 // ── The copy ────────────────────────────────────────────────────
 
 /// A verified copy of a file database; nothing for one that lives in memory.

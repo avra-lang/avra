@@ -1,0 +1,215 @@
+//! A SETTLED CONST AS JSON TEXT (P10, P11): what the compiler holds of a
+//! const's value, read by any tool. The value crosses untyped — a record's
+//! slots, a list's elements — so the const's TYPE names the fields and the
+//! variants: a record is an object by field name, a list an array, a
+//! nullable its value or null, a map an object, an enum its variant's name
+//! (`{"variant": …, "payload": […]}` when it carries something), a result
+//! `{"ok": …}` or `{"err": …}`, bytes `{"base64": …}`, a float its shortest
+//! round-trip text (`null` for infinity and NaN, which JSON has no word for).
+use core.{FileId, TypeId, TypeRegistry, joined}
+use features.{SettleRoot, MetaVal, MetaHeap, Unsettled, unsettled_label, absent_tag}
+use @std.text.{base64}
+
+/// A float's bit pattern as the shortest text that reads back as the same number.
+extern fn avra_float_text_bits(bits: int) -> string
+
+impl Workspace {
+    /// The JSON text of the const `name` that the file `f` declares.
+    fn const_json(f: FileId, name: string) -> Result<string, string> {
+        let d? = self
+            .decls
+            .decls_of_file(f)
+            .map((id) -> self.decl_at(id))
+            .find(it.kind is .Const && it.name == name) else {
+            return .Err("no const `${name}` is declared here")
+        }
+        let ty? = self.decls.type_of_const(f, d.stmt) else { return .Err("`${name}` has no type") }
+        match self.settled(f, SettleRoot.Const(d.stmt), []) {
+            .Ok(held) -> self.projected(held.answer, held.heap, ty),
+            .Err(why) -> .Err(unsettled_words(name, why)),
+        }
+    }
+
+    /// One value under its type, as JSON text.
+    fn projected(v: MetaVal, heap: MetaHeap, ty: TypeId) -> Result<string, string> {
+        let types = self.decls.types
+        match types.shape_of(ty) {
+            .Int -> match v { .Int(n) -> .Ok("${n}"), rest -> .Err(misfit(types.name_of(ty))) },
+            .Bool -> match v { .Bool(b) -> .Ok("${b}"), rest -> .Err(misfit(types.name_of(ty))) },
+            .Str -> match v { .Text(s) -> .Ok(json_text(s)), rest -> .Err(misfit(types.name_of(ty))) },
+            .Opt(inner) -> if v is .Absent || v is .Gone { .Ok("null") } else { self.projected(unboxed(v, heap, inner, types), heap, inner) },
+            .List(inner) -> self.array_of(heap.slots(v), heap, inner),
+            .Map(_, value) -> self.object_of_map(v, heap, value),
+            .Struct(_, _) -> self.record_json(v, heap, ty),
+            .App(_, _, _) -> if self.decls.fields_of_type(ty) != null { self.record_json(v, heap, ty) } else { self.variant_json(v, heap, ty) },
+            .Enum(_, _) -> self.variant_json(v, heap, ty),
+            .Float -> match v {
+                .Float(bits) -> .Ok(float_json(bits)),
+                rest -> .Err(misfit(types.name_of(ty))),
+            },
+            .Bytes -> self.bytes_json(v),
+            .Res(_, _) -> self.result_json(v, heap, ty),
+            .Ptr or .Cell(_) or .Task(_) or .Tasks or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Union(_) or .Range -> .Err(unread(types.name_of(ty))),
+        }
+    }
+
+    /// Bytes: their base64, under the name that says so.
+    fn bytes_json(v: MetaVal) -> Result<string, string> {
+        let xs? = match v { .Octets(o) -> o, rest -> null } else { return .Err(misfit("Bytes")) }
+        let b? = xs.bytes() else { return .Err(misfit("Bytes")) }
+        .Ok("{\"base64\":" + json_text(base64(b)) + "}")
+    }
+
+    /// A result: its one side, under `ok` or `err`.
+    fn result_json(v: MetaVal, heap: MetaHeap, ty: TypeId) -> Result<string, string> {
+        let sig? = self.decls.variants_of_type(ty) else { return .Err(unread(self.decls.types.name_of(ty))) }
+        let slots = heap.slots(v)
+        let tag = match slots[0] { .Int(n) -> n, rest -> -1 }
+        if tag < 0 || tag >= sig.payloads.length || sig.payloads[tag].length != 1 {
+            return .Err(misfit(self.decls.types.name_of(ty)))
+        }
+        let side = self.field_json(slots.slice(1, 2), heap, sig.payloads[tag][0])?
+        .Ok("{" + json_text(if tag == 0 { "ok" } else { "err" }) + ":" + side + "}")
+    }
+
+    /// A value enum laid in a field: its tag and the one word its variant
+    /// carries; the spare tag is a nullable's absence.
+    fn valued_json(piece: List<MetaVal>, heap: MetaHeap, ty: TypeId) -> Result<string, string> {
+        let types = self.decls.types
+        let tag = match piece[0] { .Int(n) -> n, rest -> absent_tag }
+        if tag == absent_tag { return .Ok("null") }
+        let machine = types.machine_type(ty)
+        let sig? = self
+            .decls
+            .variants_of_type(types.machine_type(types.carried(machine) ?? machine)) else {
+            return .Err(unread(types.name_of(ty)))
+        }
+        if tag < 0 || tag >= sig.names.length { return .Err(misfit(types.name_of(ty))) }
+        if sig.payloads[tag].is_empty() { return .Ok(json_text(sig.names[tag])) }
+        let word = self.projected(piece[1], heap, sig.payloads[tag][0])?
+        .Ok("{\"variant\":" + json_text(sig.names[tag]) + ",\"payload\":[" + word + "]}")
+    }
+
+    fn array_of(xs: List<MetaVal>, heap: MetaHeap, inner: TypeId) -> Result<string, string> {
+        let parts = [self.projected(x, heap, inner) for x in xs]
+        let bad = parts.find(it is .Err)
+        if bad != null { return bad! }
+        .Ok("[" + joined([p catch "" for p in parts], ",") + "]")
+    }
+
+    fn object_of_map(v: MetaVal, heap: MetaHeap, value: TypeId) -> Result<string, string> {
+        let id? = match v { .Map(i) -> i, rest -> null } else { return .Err(misfit("a map")) }
+        let row = heap.maps[id]
+        let parts = [self.projected(x, heap, value) for x in row.values]
+        let bad = parts.find(it is .Err)
+        if bad != null { return bad! }
+        .Ok(
+            "{" + joined([json_text(k) + ":" + (parts[j] catch "") for j, k in row.keys], ",") + "}",
+        )
+    }
+
+    /// A record: an object by field name. A flat record IS its one field.
+    fn record_json(v: MetaVal, heap: MetaHeap, ty: TypeId) -> Result<string, string> {
+        let types = self.decls.types
+        let sig? = self.decls.fields_of_type(ty) else { return .Err(unread(types.name_of(ty))) }
+        if types.is_flat(ty) && !types.is_wide(ty) {
+            let one = self.projected(v, heap, sig.types[0])?
+            return .Ok("{" + json_text(sig.names[0]) + ":" + one + "}")
+        }
+        self.fields_json(sig.names, sig.types, heap.slots(v), heap)
+    }
+
+    /// Fields read off consecutive slots, each as wide as its type is.
+    fn fields_json(names: List<string>, types: List<TypeId>, slots: List<MetaVal>, heap: MetaHeap) -> Result<
+        string,
+        string,
+    > {
+        let widths = [self.decls.types.slot_width(t) for t in types]
+        let starts = [widths.slice(0, j).fold(0, (a, w) -> a + w) for j in 0..widths.length]
+        let parts = [self.field_json(slots.slice(starts[j], starts[j] + widths[j]), heap, types[j]) for j in 0..types.length]
+        let bad = parts.find(it is .Err)
+        if bad != null { return bad! }
+        .Ok(
+            "{" +
+                joined(
+                    [json_text(names[j]) + ":" + (parts[j] catch "") for j in 0..names.length],
+                    ",",
+                ) +
+                "}",
+        )
+    }
+
+    /// One field from the slots it spans: a value type laid inline spans several.
+    fn field_json(piece: List<MetaVal>, heap: MetaHeap, ty: TypeId) -> Result<string, string> {
+        let types = self.decls.types
+        if types.valued_carrier(ty) { return self.valued_json(piece, heap, ty) }
+        if types.lays_inline(ty) {
+            let sig? = self.decls.fields_of_type(ty) else { return .Err(unread(types.name_of(ty))) }
+            return self.fields_json(sig.names, sig.types, piece, heap)
+        }
+        self.projected(piece[0], heap, ty)
+    }
+
+    /// An enum: a payload-free variant is its name; any other carries its payload.
+    fn variant_json(v: MetaVal, heap: MetaHeap, ty: TypeId) -> Result<string, string> {
+        let types = self.decls.types
+        let sig? = self.decls.variants_of_type(ty) else { return .Err(unread(types.name_of(ty))) }
+        let slots = heap.slots(v)
+        let tag = match v { .Int(n) -> n, rest -> match slots[0] { .Int(n) -> n, rest -> -1 } }
+        if tag < 0 || tag >= sig.names.length { return .Err(misfit(types.name_of(ty))) }
+        if types.is_flat(ty) || sig.payloads[tag].is_empty() { return .Ok(json_text(sig.names[tag])) }
+        let held = [self.field_json(slots.slice(1 + j, 2 + j), heap, t) for j, t in sig.payloads[tag]]
+        let bad = held.find(it is .Err)
+        if bad != null { return bad! }
+        .Ok(
+            "{\"variant\":" +
+                json_text(sig.names[tag]) +
+                ",\"payload\":[" +
+                joined([h catch "" for h in held], ",") +
+                "]}",
+        )
+    }
+}
+
+/// A nullable's present value: a flat record behind a one-slot box is its slot.
+fn unboxed(v: MetaVal, heap: MetaHeap, inner: TypeId, types: TypeRegistry) -> MetaVal {
+    if types.is_flat(inner) && !types.is_wide(inner) && v is .Node { return heap.slots(v)[0] }
+    v
+}
+
+fn misfit(want: string) -> string { "the const's value does not fit its type `${want}`" }
+
+fn unread(ty: string) -> string { "a const of type `${ty}` is not projected to JSON" }
+
+/// A float's text; infinity and NaN, which JSON has no word for, are null.
+fn float_json(bits: int) -> string {
+    let text = avra_float_text_bits(bits)
+    if text.contains("n") { "null" } else { text }
+}
+
+fn unsettled_words(name: string, why: Unsettled) -> string {
+    let words = unsettled_label(name, why)
+    if words == "" { "`${name}` did not settle" } else { words }
+}
+
+/// A string as a JSON string literal.
+fn json_text(s: string) -> string {
+    "\"" + [escaped(s.char_code(i), s.substring(i, i + 1)) for i in 0..s.length].join("") + "\""
+}
+
+fn escaped(code: int, raw: string) -> string {
+    when {
+        raw == "\"" -> "\\\""
+        raw == "\\" -> "\\\\"
+        code == 10 -> "\\n"
+        code == 13 -> "\\r"
+        code == 9 -> "\\t"
+        code < 32 -> "\\u00${hex2(code)}"
+        _ -> raw
+    }
+}
+
+fn hex2(n: int) -> string {
+    let digits = "0123456789abcdef"
+    digits.substring(n / 16, n / 16 + 1) + digits.substring(n % 16, n % 16 + 1)
+}
