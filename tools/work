@@ -9,7 +9,8 @@
 #   sh tools/work sprites      every Sprite at a glance; `--fix [name]` repairs
 #   sh tools/work done         remove this lane, end its run, free its Sprite
 #
-# Also: `attach` follows this lane's run again and `stop` ends it; `bind
+# Also: `main-compiler` builds main's compiler once per source into the shared depot (every lane's
+# pre-commit hook wants one at the merge-base); `attach` follows this lane's run again and `stop` ends it; `bind
 # [sprite]` gives a worktree a Sprite, or moves it to the one named; `wait
 # <branch>` waits for a PR to merge; `run --for <minutes>` raises the
 # command's bound.
@@ -135,6 +136,55 @@ seed_local() {
     else
         echo "work: compiler from $best, built $made — $best_n compiler commit(s) behind origin/main; \`make avra\` twice brings it level"
     fi
+}
+
+# main-compiler: main's compiler, built ONCE per compiler source into the depot, for every lane's
+# pre-commit hook. A tree of its own (detached at origin/main, beside the depot) builds it with
+# `make avra` twice, each under the watchdog; the build lock is machine-wide, a lane that waits
+# finds the depot already holding the compiler and skips. AVRA_MAINC_BUILD replaces the build
+# (a witness's stub), AVRA_MAINC_WAIT_S (300) bounds the wait for another lane's build.
+main_compiler() {
+    dep=$(depot)
+    mt=${AVRA_MAIN_TREE:-$(dirname "$dep")/main-tree}
+    lock=$(dirname "$dep")/main-compiler.lock
+    mkdir -p "$(dirname "$dep")"
+    git -C "$repo" fetch -q origin main || die "main-compiler: could not fetch origin/main"
+    sha=$(git -C "$repo" rev-parse origin/main)
+    waited=0
+    until mkdir "$lock" 2>/dev/null; do
+        holder=$(cat "$lock/pid" 2>/dev/null || :)
+        [ -n "$holder" ] || { sleep 1; holder=$(cat "$lock/pid" 2>/dev/null || :); }
+        if [ -z "$holder" ] || ! kill -0 "$holder" 2>/dev/null; then
+            find "$lock" -delete 2>/dev/null
+            continue
+        fi
+        [ "$waited" -lt "${AVRA_MAINC_WAIT_S:-300}" ] || { echo "work: main-compiler: pid $holder is still building — run it again" >&2; return 75; }
+        [ $((waited % 30)) -ne 0 ] || echo "work: main-compiler: waiting on pid $holder's build" >&2
+        sleep 5
+        waited=$((waited + 5))
+    done
+    echo $$ > "$lock/pid"
+    trap 'find "$lock" -delete 2>/dev/null' EXIT INT TERM
+    [ -e "$mt/.git" ] || git -C "$repo" worktree add -q --detach "$mt" "$sha" || die "main-compiler: no tree at $mt"
+    git -C "$mt" checkout -q --detach "$sha" || die "main-compiler: $mt cannot stand at $sha"
+    h=$(compiler_hash "$mt")
+    if [ -x "$dep/$h/avra" ]; then
+        echo "work: main-compiler: the depot holds $dep/$h — main at $(printf '%.8s' "$sha"), nothing to build"
+        return 0
+    fi
+    if [ -n "${AVRA_MAINC_BUILD:-}" ]; then
+        (cd "$mt" && sh -c "$AVRA_MAINC_BUILD") || die "main-compiler: the build failed"
+    else
+        [ -x "$mt/build/avra" ] || seed_local "$mt"
+        if [ -x "$mt/build/avra" ]; then
+            (cd "$mt" && sh tools/watch.sh 6000 make avra && sh tools/watch.sh 6000 make avra) || die "main-compiler: \`make avra\` failed in $mt"
+        else
+            (cd "$mt" && sh tools/watch.sh 6000 make bootstrap && sh tools/watch.sh 6000 make avra) || die "main-compiler: \`make bootstrap\` failed in $mt"
+        fi
+    fi
+    deposit "$mt"
+    [ -x "$dep/$h/avra" ] || die "main-compiler: built, but the depot holds nothing for $h (the tree's compiler says what it was built from?)"
+    echo "work: main-compiler: $dep/$h — main at $(printf '%.8s' "$sha"); \`sh tools/work compiler\` copies it into a lane"
 }
 
 new() {
@@ -1037,6 +1087,7 @@ usage() {
         sprites) echo "usage: sh tools/work sprites [--fix [<sprite>…]]   — every Sprite at a glance; --fix repairs" ;;
         done) echo "usage: sh tools/work done   — remove this lane, end its run, free its Sprite" ;;
         bind) echo "usage: sh tools/work bind [<sprite>]   — give this worktree a Sprite, or move it to the one named" ;;
+        main-compiler) echo "usage: sh tools/work main-compiler   — build main's compiler once per compiler source into the shared depot (idempotent, one build at a time, under the watchdog); \`work compiler\` then copies it into a lane" ;;
         wait) echo "usage: sh tools/work wait <branch>   — wait until the branch's PR merges" ;;
         attach) echo "usage: sh tools/work attach   — follow this lane's run again, from its first line, and answer its status" ;;
         stop) echo "usage: sh tools/work stop   — end this lane's run on its Sprite" ;;
@@ -1063,6 +1114,7 @@ case "${1:-}" in
     built-from) built_from "${2:-$PWD}" ;;
     deposit) deposit "${2:-$PWD}" ;;
     compiler) seed_local "$PWD" ;;
+    main-compiler) main_compiler ;;
     seed-local) seed_local "$2" ;;
     libs-step) printf '%s\n' "$libs_step" ;;
     land) shift; land "$@" ;;
