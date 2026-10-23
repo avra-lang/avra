@@ -358,6 +358,8 @@ export type Nominal = string
 /// Several heads nest (the left outermost); a filter may sit between
 /// them or after the last.
 @derive(Identity)
+@derive(Grammar)
+@derive(Makes)
 export enum CompClause {
     Head(index: Scoped?, name: Scoped, source: ExprId, hi: ExprId?)
     Filter(cond: ExprId)
@@ -380,6 +382,10 @@ export fn node_payload_rows() -> List<PayloadRow> {
         .concat(grammar_payloads_ParamSyntax())
         .concat(grammar_payloads_VariantSyntax())
         .concat(grammar_payloads_TypeRef())
+        .concat(grammar_payloads_CompClause())
+        .concat(grammar_payloads_Arm())
+        .concat(grammar_payloads_Case())
+        .concat(grammar_payloads_UseItem())
 }
 
 /// Every flat expression variant's maker, read off `Expr` by
@@ -391,6 +397,11 @@ export fn expr_makers() -> List<Maker<Expr>> {
 /// Every flat pattern variant's maker, read off `Pat` by `@derive(Makes)`.
 export fn pat_makers() -> List<Maker<Pat>> {
     makers_Pat()
+}
+
+/// Every comprehension clause's maker, read off `CompClause` by `@derive(Makes)`.
+export fn comp_clause_makers() -> List<Maker<CompClause>> {
+    makers_CompClause()
 }
 
 /// Every flat statement variant's maker, read off `Stmt` by `@derive(Makes)`.
@@ -505,6 +516,9 @@ impl BodyView {
 /// What a block's grammar refused, in the file's offsets — spoken
 /// with the parse's own words.
 export type BlockVoice = { message: string, lo: int, hi: int, expected: List<string>, in_rule: string }
+/// What a grammar's own refusal said where a branch matched: its
+/// registered kind, its words and its help, at the branch's span.
+export type Refused = { kind: string, message: string, help: string, span: Span? }
 /// A half-open run of arena indexes.
 export type IndexRange = { lo: int, hi: int }
 
@@ -784,6 +798,7 @@ export fn bound_names(parts: List<FormatPart>) -> List<string> {
 /// its value. A false guard tries the next arm; a guarded arm covers
 /// nothing, so coverage and repeats never count it.
 @derive(Identity)
+@derive(Grammar)
 export type Arm = { pats: List<PatId>, guard: ExprId? = null, value: ExprId }
 
 /// One declared variant: its name, what it carries in order — a
@@ -792,9 +807,16 @@ export type Arm = { pats: List<PatId>, guard: ExprId? = null, value: ExprId }
 @derive(Identity)
 export type Variant = { name: Plain, payloads: List<Param>, @local span: Span? = null, marks: List<Mark> = [] }
 
+/// One imported item: its name, and the name it binds under when it
+/// writes one.
+@derive(Identity)
+@derive(Grammar)
+export type UseItem = { name: string, rename: string? = null }
+
 /// One test case: its `given` group's name, its own name (the
 /// `then`'s), and its body — a block answering a bool.
 @derive(Identity)
+@derive(Grammar)
 export type Case = { group: string, name: string, body: ExprId, @local span: Span? = null }
 
 /// One step of a PLACE — where a mutation lands.

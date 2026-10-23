@@ -729,6 +729,8 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/cancel_cache_attack.sh
 	@sh tools/writes_attack.sh
 	@sh tools/file_module_attack.sh
+	@sh tools/dep_edit_kept_attack.sh
+	@sh tools/cross_compiler_warm_attack.sh
 	@sh tools/cancel_bits_attack.sh
 	@sh tools/readfound_attack.sh
 	@sh tools/durable_symbol_attack.sh
@@ -890,7 +892,7 @@ read-lists:
 # THE SAVED-ANSWER METER MAY ONLY IMPROVE. A settled answer can be saved only if every
 # read it made has a name that outlives the process; tools/leaves.sh counts, per blocking
 # family, the answers a read of which cannot be named, and the baseline only falls.
-# keeper owed by dry-sweep — timing under investigation
+# keeper: nightly (orders) — two cold whole-compiler checks, over 220 s warm for the cli alone, too long for every pull request
 leaves:
 	@sh tools/leaves.sh --check
 
