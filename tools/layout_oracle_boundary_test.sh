@@ -15,6 +15,15 @@ playwright_ready "$tree" "$log" || {
     exit 0
 }
 run() { AVRA="${AVRA:-$tree/build/avra}" node "$here/layout-oracle/oracle.mjs" --browser webkit --face prop --seed 2 --cases 70 --show 0 "$@" 2>&1; }
-run | grep -q "76 of 76 trees agree" || bad "the boundary term did not make case 64 agree: $(run | grep 'trees agree')"
-run --without-boundary-term 1 | grep -q "trees refused for" || bad "without the term no tree was refused"
+# what an assertion compared: the engine, the tree count and the oracle's own words, never a bare line
+saw() {
+    echo "layout-oracle boundary self-test: $1" >&2
+    echo "  engine: $(node -e 'import("'"$PLAYWRIGHT_DIR"'/node_modules/playwright/index.mjs").then((m) => console.log(m.webkit.executablePath()))' 2>&1 | tail -1)" >&2
+    printf '%s\n' "$2" | tail -25 | cut -c1-300 | sed 's/^/  | /' >&2
+    exit 1
+}
+with=$(run)
+printf '%s\n' "$with" | grep -q "76 of 76 trees agree" || saw "the term did not make the tree agree (wanted: 76 of 76 trees agree)" "$with"
+without=$(run --without-boundary-term 1)
+printf '%s\n' "$without" | grep -q "75 of 76 trees agree" || saw "without the term the tree was not refused (wanted: 75 of 76 trees agree)" "$without"
 echo "layout-oracle boundary self-test: case 64 agrees with the boundary term and is refused without it"
