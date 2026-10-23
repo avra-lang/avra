@@ -32,20 +32,7 @@ use @std.meta.{
 }
 use @std.db.{model}
 use @std.db.scope.{Where}
-use routes.{
-    Door,
-    Access,
-    Wire,
-    empty,
-    when_held,
-    crud_routes,
-    listed,
-    found,
-    made,
-    changed,
-    dropped,
-    revived,
-}
+use routes.{Door, Access, Wire, empty, crud_routes, listed, found, made, changed, dropped, revived}
 
 /// `@crud` — the library's own name for the derive, so the annotation reads
 /// `@crud` with nothing imported but this.
@@ -76,10 +63,10 @@ fn doors(t: Type) -> Decls {
                         create: (scope: Where?, body: string) -> made(${name(t.name)}.from_json(body), (r: ${t}) -> r.in_scope(scope).insert(held.get()), (r: ${t}) -> r.crud_json()),
                         update: (scope: Where?, id: int, body: string) -> changed(
                             ${name(t.name)}.from_json(body),
-                            (r: ${t}) -> when_held(${name(t.name)}.find_within(held.get(), id, scope), () -> (r with { id: id }).in_scope(scope).update(held.get())),
+                            (r: ${t}) -> (r with { id: id }).in_scope(scope).update_within(held.get(), scope),
                             (r: ${t}) -> (r with { id: id }).crud_json(),
                         ),
-                        remove: (scope: Where?, id: int) -> dropped(${name(t.name)}.find_within(held.get(), id, scope), (r: ${t}) -> r.remove(held.get())),
+                        remove: (scope: Where?, id: int) -> dropped(${name(t.name)}.find_within(held.get(), id, scope), (r: ${t}) -> r.remove_within(held.get(), scope)),
                         trash: ${trash_code(t)},
                         restore: ${restore_code(t)},
                     },
@@ -109,7 +96,7 @@ fn restore_code(t: Type) -> Code {
             ${name(t.name)}.trash_within(held.get(), scope),
             id,
             (r: ${t}) -> r.id,
-            (r: ${t}) -> r.restore(held.get()),
+            (r: ${t}) -> r.restore_within(held.get(), scope),
             (r: ${t}) -> r.crud_json(),
         )
     }
