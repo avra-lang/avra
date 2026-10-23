@@ -754,7 +754,7 @@ fn load_named(
         ws.met_all(named)
         return
     }
-    if first { load_imports(ws, store, pr, entry, want, meet) }
+    if first { load_imports(ws, store, pr, entry, want, meet, !ws.moved_in(store, m).is_empty()) }
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
     // this same module finds it.
     // A FILE THE RECORD PLACES IS MET WITH THE FILES NAMED: registering one file of a
@@ -780,12 +780,25 @@ fn load_named(
 
 /// WHAT A MODULE'S RECORD SEES, loaded before its own files are met: the prelude, every
 /// import under the record that keeps it, and where its impls and traits are named.
+///
+/// A MODULE WHOSE TEXT MOVED SINCE ITS RECORD WAS WRITTEN has no imports the record can vouch
+/// for: its parse admits the ones it names now, so an old import is never carried into a
+/// program that no longer reaches it.
 // LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
-fn load_imports(ws: Workspace, store: Store, pr: Producers, entry: string?, want: Want, meet: bool) {
+fn load_imports(
+    ws: Workspace,
+    store: Store,
+    pr: Producers,
+    entry: string?,
+    want: Want,
+    meet: bool,
+    moved: bool,
+) {
     // every module sees the prelude and none imports it
     ws.ensure_package(prelude_key)
     load_named(ws, store, prelude_module(), ws.module_files(prelude_module()), entry, want, meet)
-    for parts in pr.walk {
+    let walk = if moved { [] } else { pr.walk }
+    for parts in walk {
         if parts[0] == "import" {
             // the ROOT module's name is empty, and `split` drops a trailing empty field
             let imp = module_path(if parts.length > 1 { parts[1] } else { "" }.split("."))
