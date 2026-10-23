@@ -171,6 +171,26 @@ case " $engines " in
         ;;
 esac
 
+# WHAT THE PAGE SAYS REACHES THE DEVELOPER: a second, tiny page whose walk warns (two unkeyed
+# instances of a stateful component) is served by `avra dev` and opened in Firefox; dev's own
+# output must carry the page's words, once.
+cp -R "$tree/tools/ui-warns" "$work/ui-warns"
+"$avra" dev --target "$target" --port 0 "$work/ui-warns" >"$work/warns.out" 2>"$work/warns.err" &
+warns=$!
+trap 'kill "$dev" "$warns" $servers 2>/dev/null || true' EXIT
+tries=0
+until grep -q '^dev: .* at http' "$work/warns.out" 2>/dev/null; do
+    kill -0 "$warns" 2>/dev/null || { cat "$work/warns.err" "$work/warns.out"; echo "ui-browser: \`avra dev\` ended before it served the warning page"; exit 1; }
+    tries=$((tries + 1))
+    [ "$tries" -lt 600 ] || { cat "$work/warns.err"; echo "ui-browser: \`avra dev\` never served the warning page"; exit 1; }
+    sleep 0.1
+done
+warns_url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/warns.out" | head -1)
+node "$here/ui-board/warned.mjs" "$warns_url" >"$work/warned.out" 2>&1 || { cat "$work/warned.out" "$work/warns.out"; echo "ui-browser: the warning page did not draw in Firefox"; exit 1; }
+said=$(grep -c '^dev: the page said: ui: .*keeps state' "$work/warns.out" || :)
+[ "$said" = 1 ] || { cat "$work/warns.out"; echo "ui-browser: dev's output carried the page's warning $said times, wanted once"; exit 1; }
+echo "ui-browser: a page whose walk warns is told in \`avra dev\`'s output, once"
+
 shots=${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"}
 for engine in $engines; do
     status=0
