@@ -119,7 +119,7 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     // model into the call the engine runs, its arguments in payload
     // order. The AUTHORED grammar is what the feature registry is
     // judged against — a node build names no feature's builder.
-    let rows = node_payload_rows()
+    let rows = node_payload_rows().concat(refusal_rows(features))
     let bound = bind_nodes(g, rows)
     let wordings = node_wordings(g, rows, rule_scale)
     // PREPARED ONCE: validated and indexed here, so a parse pays for
@@ -131,6 +131,7 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
         [
             rd.defects,
             bound.defects,
+            template_defects(bound.g, rows),
             builder_defects(features, g),
             code_defects(codes),
             wording_defects(wordings, worded_nodes),
@@ -139,7 +140,7 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     if !defects.is_empty() { return unassembled(features, defects) }
     Language {
         features: features,
-        builders: with_nodes(builder_index(features), rows),
+        builders: with_nodes(builder_index(features), rows, refusal_builders(features)),
         syntax: rd,
         wordings: wordings.found,
         keywords: g.keywords(),
@@ -153,15 +154,32 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
 /// builder a rule may name — a node builder's name is the variant's
 /// own, which no feature can spell, and a hand builder for the same
 /// variant wears them too, so the mark holds wherever a node is made.
-fn with_nodes(index: Map<string, BuilderRow>, rows: List<PayloadRow>) -> Map<string, BuilderRow> {
+fn with_nodes(index: Map<string, BuilderRow>, rows: List<PayloadRow>, refusals: List<BuilderRow>) -> Map<
+    string,
+    BuilderRow,
+> {
     mut out = index
-    for row in node_builders() { out.set(row.name, row) }
+    for row in node_builders().concat(refusals) { out.set(row.name, row) }
     for row in rows {
         let name = node_builder_name(row.owner, row.variant)
         let held? = out.get(name) else { continue }
         out.set(name, held with { payloads: row.payloads, anchor: anchorage(row.payloads) })
     }
     out
+}
+
+/// Each grammar refusal as the payload row its `Refusal.<name>` binds: it
+/// carries nothing.
+fn refusal_rows(features: List<LanguageFeature>) -> List<PayloadRow> {
+    [PayloadRow { owner: "Refusal", variant: r.name, payloads: [] } for f in features for r in f.refusals]
+}
+
+/// Each grammar refusal's builder, under the name its rule's build names.
+fn refusal_builders(features: List<LanguageFeature>) -> List<BuilderRow> {
+    [BuilderRow {
+        name: node_builder_name("Refusal", r.name),
+        build: (b) -> b.refused(r.kind, (r.voice)()),
+    } for f in features for r in f.refusals]
 }
 
 /// The payload a node is anchored at, absent when none is marked.

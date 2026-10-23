@@ -1,18 +1,14 @@
 //! Tables — `table<Row> { header | names \n cell | cell … }`: the
 //! manifest shape. PURE SUGAR: the header names the row type's
-//! fields and every row becomes a `Row { … }` literal, so the struct
-//! literal's own laws judge each cell and the list's law the rows.
-//! No node, no rule of its own — a builder.
-use features.{LanguageFeature, BuilderRow}
+//! fields and every row means a `Row { … }` literal (the node's
+//! `minted`), so the struct literal's own laws judge each cell and
+//! the list's law the rows.
+use features.{LanguageFeature}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 export fn tables() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name        | build
-        "table_lit" | build_table
-    }
     LanguageFeature tables {
         gram: grammar {
-            primary = "table" "<" t:NAME ">" "{" BREAK h:NAME ( "|" h:NAME )* BREAK ( r:table_row BREAK )* "}" @expect("}", "expected `}` to close the table, or a cell that stopped early — a cell is a value up to `+`, so `==`, `??`, `|>` and the bitwise operators need parentheses") -> table_lit(t, h, r)
+            primary = "table" "<" row:NAME ">" "{" BREAK header:NAME ( "|" header:NAME )* BREAK ( rows:table_row BREAK )* "}" @expect("}", "expected `}` to close the table, or a cell that stopped early — a cell is a value up to `+`, so `==`, `??`, `|>` and the bitwise operators need parentheses") -> Expr.Table
             // A CELL PARSES BELOW THE BITWISE BAND. `|` is this
             // literal's column separator, so a cell that could
             // contain a bare `|` would eat its own row: `"x" | f`
@@ -22,7 +18,6 @@ export fn tables() -> LanguageFeature {
             // grammar parenthesises — `primary` takes `( … )`.
             table_row = elems:additive ( "|" elems:additive )* -> Expr.ListLit
         }
-        builders: rows
     }
     tables
 }

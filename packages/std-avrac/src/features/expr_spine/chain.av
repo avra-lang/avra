@@ -1,0 +1,123 @@
+//! The `?.` links that call: variants of `Expr` declared where their
+//! meaning is. Each keeps what was written and MEANS the chain's law —
+//! `match a { null -> null, v? -> v.m(args) }` — minted beside it, so
+//! the match's own typing joins the arms.
+use core.{
+    expr_node,
+    Expr,
+    ExprId,
+    TypeId,
+    Reg,
+    Plain,
+    Scoped,
+    Span,
+    TypeRef,
+    SyntaxArena,
+    NodeFacts,
+}
+use core.marks.{sequence}
+use features.{Meaning, ResolveCx, TypeCx, LowerCx, nothing}
+
+/// `subject?.name(args)`.
+@expr_node
+@sequence
+export type ChainCall = { subject: ExprId, name: Plain, args: List<ExprId> }
+
+/// `subject?.(args)`.
+@expr_node
+@sequence
+export type ChainApply = { subject: ExprId, args: List<ExprId> }
+
+/// `subject?.type(T)`.
+@expr_node
+@sequence
+export type ChainType = { subject: ExprId, ty: TypeRef }
+
+/// The binder a chain's meaning reads its subject through — a name no
+/// program can spell, so nothing a program writes can capture it.
+const chained_binder: string = "chained value"
+
+impl NodeFacts for ChainCall {
+    fn chains() -> bool { true }
+    fn minted(store: SyntaxArena, span: Span?) -> Result<List<ExprId>, string> {
+        let before = store.exprs.count()
+        let args = [store.pronouned(a) for a in self.args]
+        let call = store.alloc_expr(Expr.MethodCall(store.held_value(span), self.name, args), span)
+        let root = store.chain_of(self.subject, call, span)
+        .Ok(store.allocated_since(before, root))
+    }
+    fn says(written: string) -> string? {
+        "`${written}` calls the method on what the nullable holds, and answers null when it holds nothing"
+    }
+}
+
+impl NodeFacts for ChainApply {
+    fn chains() -> bool { true }
+    fn minted(store: SyntaxArena, span: Span?) -> Result<List<ExprId>, string> {
+        let before = store.exprs.count()
+        let call = store.alloc_expr(Expr.CallValue(store.held_value(span), self.args), span)
+        let root = store.chain_of(self.subject, call, span)
+        .Ok(store.allocated_since(before, root))
+    }
+    fn says(written: string) -> string? {
+        "`${written}` calls the fn when it is held, and answers null when it is not"
+    }
+}
+
+impl NodeFacts for ChainType {
+    fn chains() -> bool { true }
+    fn minted(store: SyntaxArena, span: Span?) -> Result<List<ExprId>, string> {
+        let before = store.exprs.count()
+        let lit = store.spelling(self.ty)?
+        let root = store
+            .chain_of(self.subject, store.type_literal(store.held_value(span), lit, span), span)
+        .Ok(store.allocated_since(before, root))
+    }
+    fn says(written: string) -> string? {
+        "`${written}` folds the type literal on what the nullable holds, and answers null when it holds nothing"
+    }
+}
+
+impl SyntaxArena {
+    /// The value a chain holds, as its present arm reads it.
+    fn held_value(span: Span?) -> ExprId { self.alloc_expr(Expr.Ident(Scoped(chained_binder)), span) }
+
+    /// The chain's law over `subject`: `call` on the value it holds, or null.
+    fn chain_of(subject: ExprId, call: ExprId, span: Span?) -> ExprId {
+        self
+            .alloc_expr(
+                Expr
+                    .MatchOpt(subject, Scoped(chained_binder), call, self.alloc_expr(Expr.NullLit, span)),
+                span,
+            )
+    }
+
+    /// Every node allocated since `before`, the root last.
+    fn allocated_since(before: int, root: ExprId) -> List<ExprId> {
+        [ExprId { index: i } for i in before..self.exprs.count() if i != root.index].concat([root])
+    }
+}
+
+impl Meaning for ChainCall {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { cx.meant_type(e) }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { cx.meant_reg(e) }
+}
+
+impl Meaning for ChainApply {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { cx.meant_type(e) }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { cx.meant_reg(e) }
+}
+
+impl Meaning for ChainType {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { cx.meant_type(e) }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { cx.meant_reg(e) }
+}

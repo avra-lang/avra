@@ -273,6 +273,16 @@ holds "hashC $old_at"
 AVRA_DEPOT_KEEP=1 AVRA_COMPILER_DEPOT="$dp2" sh "$slw" deposit "$sl/held"
 check "$(ls "$dp2" | tr '\n' ' ')" "hashC " "work deposit: only the newest AVRA_DEPOT_KEEP entries stay" "$scratch/out"
 
+# MAIN'S COMPILER, ONCE PER SOURCE: the first run builds and deposits, the second finds the depot holding it.
+mcd=$scratch/mc/depot
+mcb='mkdir -p build && echo bin > build/avra && chmod +x build/avra && sh '"$slw"' built-from . > build/.avra-built-from && echo built >> '"$scratch"'/mc-builds'
+mc() { (cd "$sl/main" && AVRA_COMPILER_DEPOT="$mcd" AVRA_MAIN_TREE="$scratch/mc/tree" AVRA_MAINC_BUILD="$mcb" sh "$slw" main-compiler) > "$scratch/out" 2>&1; }
+mc; mc
+check "$(ls "$mcd" | wc -l | tr -d ' ') $(grep -c built "$scratch/mc-builds" 2>/dev/null || echo 0) $(grep -c 'nothing to build' "$scratch/out")" "1 1 1" "work main-compiler: built and deposited once, the second run finds the depot holding it" "$scratch/out"
+mkdir -p "$scratch/mc"; mkdir "$scratch/mc/main-compiler.lock"; echo 99999999 > "$scratch/mc/main-compiler.lock/pid"
+mc
+check "$(grep -c 'nothing to build' "$scratch/out")" "1" "work main-compiler: a lock whose pid is dead is taken over" "$scratch/out"
+
 # ══ HELP: asked after any verb it prints that verb's line, and touches nothing
 export SPRITE_LOG="$scratch/sprite.log"
 : > "$SPRITE_LOG"; : > "$GH_LOG"

@@ -5,38 +5,43 @@
 //! `else ->`, which runs when nothing is ready. `@fair select` takes
 //! the arm ready longest instead. The front end stands here: a `select`
 //! parses, prints and types, and is refused by name where it is lowered.
-use features.{LanguageFeature, BuilderRow}
+use features.{LanguageFeature, RefusalRow}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn select_expr() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name          | build
-        "select_expr" | build_select
-        "select_stmt" | build_select_stmt
-        "wait_arm"    | build_wait_arm
-        "any_arm"     | build_any_arm
-    }
     let codes = table<DiagCode> {
-        kind                  | summary
-        "flow.select"         | "a `select` waits on its arms, top to bottom"
-        "flow.arm"            | "an arm waits on a task, a list of tasks, a source or a timer"
-        "flow.arm_binder"     | "an arm binds what its head hands over"
-        "flow.spent_arm"      | "a list arm is taken once, so no loop holds it"
-        "flow.guard_binder"   | "a guard is read before its arm's head"
-        "flow.quiet_never"    | "a `Quiet` beside `else` is never taken"
-        "flow.fresh_deadline" | "a timer made inside a loop starts over each turn"
-        "flow.end_arm"        | "a source that can end says what happens when it does"
+        kind                    | summary
+        "flow.select"           | "a `select` waits on its arms, top to bottom"
+        "parse.select_catchall" | "a `select` has no catch-all"
+        "parse.select_mark"     | "a `select` reads one mark, `@fair`"
+        "flow.arm"              | "an arm waits on a task, a list of tasks, a source or a timer"
+        "flow.arm_binder"       | "an arm binds what its head hands over"
+        "flow.spent_arm"        | "a list arm is taken once, so no loop holds it"
+        "flow.guard_binder"     | "a guard is read before its arm's head"
+        "flow.quiet_never"      | "a `Quiet` beside `else` is never taken"
+        "flow.fresh_deadline"   | "a timer made inside a loop starts over each turn"
+        "flow.end_arm"          | "a source that can end says what happens when it does"
     }
     LanguageFeature select_expr {
         gram: grammar {
-            primary = ( f:PKG )? "select" "{" ( BREAK | "," | a:sel_arm )* "}" @expect("}", "expected `}` to close the `select`") -> select_expr(f, a)
-            stmt = f:PKG "select" "{" ( BREAK | "," | a:sel_arm )* "}" END -> select_stmt(f, a)
+            primary = ( fair:"@fair" )? "select" "{" ( BREAK | "," | arms:sel_arm )* "}" @expect("}", "expected `}` to close the `select`") -> Expr.Select
+            primary = PKG "select" "{" ( BREAK | "," | sel_arm )* "}" -> Refusal.select_mark
+            stmt = value:fair_select END -> Stmt.ExprStmt
+            fair_select = fair:"@fair" "select" "{" ( BREAK | "," | arms:sel_arm )* "}" -> Expr.Select
+            stmt = PKG "select" "{" ( BREAK | "," | sel_arm )* "}" END -> Refusal.select_mark
             sel_arm = "else" "->" value:expression -> Expr.ElseArm
-            sel_arm = "_" "->" v:expression -> any_arm(v)
-            sel_arm = ( ( ix:NAME "," )? ( w:"_" | b:NAME ) "in" )? h:expression ( "if" g:expression )? "->" v:expression -> wait_arm(ix, w, b, h, g, v)
+            sel_arm = "_" "->" expression -> Refusal.select_catchall
+            sel_arm = ( ( index:NAME "," )? ( bind:"_" | bind:NAME ) "in" )? head:expression ( "if" guard:expression )? "->" value:expression -> Expr.WaitArm
         }
-        builders: rows
+        refusals: [
+            RefusalRow {
+                name: "select_catchall",
+                kind: "parse.select_catchall",
+                voice: select_catchall,
+            },
+            RefusalRow { name: "select_mark", kind: "parse.select_mark", voice: select_mark },
+        ]
         diags: codes
     }
     select_expr

@@ -1,0 +1,173 @@
+//! A SUGAR'S TEMPLATE IS A CHECKED DECLARATION. At assembly every rule
+//! that builds an expression node is made once over a probe — each
+//! payload an id ranked by where the rule captures it — and the node's
+//! `means()` template is read: a hole read twice evaluates its node
+//! twice, and holes read out of the rule's order evaluate the author's
+//! code out of the order it was written. Both refuse the assembly.
+use core.{
+    flatten,
+    some_list,
+    PayloadRow,
+    row_for,
+    expr_makers,
+    Maker,
+    Expr,
+    ExprId,
+    StmtId,
+    PatId,
+    BinOp,
+    Scoped,
+    Param,
+    Variant,
+    Mark,
+    Arm,
+    Case,
+    CompClause,
+    TypeRef,
+    Span,
+    Slots,
+    named_ref,
+}
+use @std.meta.{Node}
+use @std.grammar.{Grammar, Seq, Build, Slot, Tier, Diagnostic, defect}
+
+/// Every template a rule's node build reaches, judged against the order
+/// the rule captures its holes in.
+fn template_defects(g: Grammar, rows: List<PayloadRow>) -> List<Diagnostic> {
+    let makers = expr_makers()
+    flatten(
+        [branch_template_defects(r.name, b, rows, makers) for r in g.rules for b in r.body.branches],
+    )
+}
+
+/// One branch's builds — its own, its groups', its tiers' — each read
+/// under the branch's labels.
+fn branch_template_defects(rname: string, b: Seq, rows: List<PayloadRow>, makers: List<Maker<Expr>>) -> List<
+    Diagnostic,
+> {
+    let labels = b.labels()
+    let builds = flatten([seq_builds(s) for s in b.seqs()])
+    flatten([build_template_defects(rname, x, labels, rows, makers) for x in builds])
+}
+
+/// A branch's own build and every build its operator tiers name.
+fn seq_builds(s: Seq) -> List<Build> {
+    let tiers: List<Tier> = s.operators?.tiers ?? []
+    flatten([some_list(x) for x in [s.build].concat(flatten([tier_builds(t) for t in tiers]))])
+}
+
+fn tier_builds(t: Tier) -> List<Build?> {
+    [t.build].concat([x.build for x in t.suffixes])
+}
+
+/// One expression build made over the probe, its template judged.
+fn build_template_defects(
+    rname: string,
+    b: Build,
+    labels: List<string>,
+    rows: List<PayloadRow>,
+    makers: List<Maker<Expr>>,
+) -> List<Diagnostic> {
+    let node? = node_of(b) else { return [] }
+    if node.owner != "Expr" { return [] }
+    let row? = row_for(rows, node.owner, node.variant) else { return [] }
+    let maker? = makers.find(it.name == node.variant) else { return [] }
+    let ranks = [rank_of(s, labels, j) for j, s in node.slots]
+    let probe = Probe { names: [p.name for p in row.payloads], ranks: ranks }
+    let made? = match (maker.make)(probe) { .Ok(e) -> e, .Err(_) -> null } else { return [] }
+    let held? = made.means() else { return [] }
+    let template? = match held { .Ok(t) -> t, .Err(_) -> null } else { return [] }
+    let read = [r for r in template_ranks(template.node) if r >= 0]
+    let refused? = misread(node.variant, read, labels) else { return [] }
+    [defect(rname, refused)]
+}
+
+/// Why a template reading the ranks `read`, in that order, is refused —
+/// a hole read twice, or one read before a hole the rule captures
+/// earlier; null for a template that reads each once, in order.
+fn misread(variant: string, read: List<int>, labels: List<string>) -> string? {
+    let twice = read.find((r) -> read.filter(it == r).length > 1)
+    if twice != null { return hole_twice(variant, label_at(labels, twice!)) }
+    let early? = [j for j in 1..read.length if read[j] < read[j - 1]].first() else { return null }
+    out_of_order(variant, label_at(labels, read[early - 1]), label_at(labels, read[early]))
+}
+
+/// A node build's parts.
+type NodeBuild = { owner: string, variant: string, slots: List<Slot> }
+
+fn node_of(b: Build) -> NodeBuild? {
+    match b {
+        .Node(owner, variant, _, slots) -> NodeBuild { owner: owner, variant: variant, slots: slots ?? [] },
+        .Var(_) or .Call(_, _) -> null,
+    }
+}
+
+/// Where a payload's capture stands in the rule: its label's place, or
+/// past every label for a payload the rule states or leaves out.
+fn rank_of(s: Slot, labels: List<string>, j: int) -> int {
+    match s {
+        .Label(name) -> if labels.contains(name) { labels.index_of(name) } else { labels.length + j },
+        .Fixed(_) or .Nested(_) or .Items(_) or .Empty -> labels.length + j,
+    }
+}
+
+/// The ranks a template's holes read, in the order it reads them.
+fn template_ranks(n: Node) -> List<int> {
+    match n {
+        .Template(_, _, _, fills) -> flatten([template_ranks(f) for f in fills]),
+        .Int(index) -> [index],
+        .Many(items) -> flatten([template_ranks(i) for i in items]),
+        .Name(_) or .Text(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> [],
+    }
+}
+
+fn label_at(labels: List<string>, r: int) -> string {
+    if r < labels.length { labels[r] } else { "a stated payload" }
+}
+
+/// A maker's view of a rule made over nothing: each payload answers the
+/// id of its rank, every other read the empty value of its kind.
+type Probe = { names: List<string>, ranks: List<int> }
+
+impl Probe {
+    fn rank(label: string) -> int {
+        if !self.names.contains(label) { return 0 - 1 }
+        self.ranks[self.names.index_of(label)]
+    }
+}
+
+impl Slots for Probe {
+    fn expr_of(label: string) -> Result<ExprId, string> { .Ok(ExprId { index: self.rank(label) }) }
+    fn text_of(label: string) -> Result<string, string> { .Ok(label) }
+    fn int_of(_label: string) -> Result<int, string> { .Ok(0) }
+    fn flag_of(_label: string) -> Result<bool, string> { .Ok(false) }
+    fn op_of(_label: string) -> Result<BinOp, string> { .Ok(BinOp.Add) }
+    fn exprs_of(label: string) -> Result<List<ExprId>, string> { .Ok([ExprId { index: self.rank(label) }]) }
+    fn expr_opt_of(label: string) -> Result<ExprId?, string> { .Ok(ExprId { index: self.rank(label) }) }
+    fn texts_of(label: string) -> Result<List<string>, string> { .Ok([label]) }
+    fn scoped_opt_of(label: string) -> Result<Scoped?, string> { .Ok(Scoped(label)) }
+    fn present_of(_label: string) -> Result<bool, string> { .Ok(true) }
+    fn params_of(_label: string) -> Result<List<Param>, string> { .Ok([]) }
+    fn variants_of(_label: string) -> Result<List<Variant>, string> { .Ok([]) }
+    fn marks_of(_label: string) -> Result<List<Mark>, string> { .Ok([]) }
+    fn arms_of(_label: string) -> Result<List<Arm>, string> { .Ok([]) }
+    fn cases_of(_label: string) -> Result<List<Case>, string> { .Ok([]) }
+    fn comp_clauses_of(_label: string) -> Result<List<CompClause>, string> { .Ok([]) }
+    fn stmts_of(_label: string) -> Result<List<StmtId>, string> { .Ok([]) }
+    fn pats_of(label: string) -> Result<List<PatId>, string> { .Ok([PatId { index: self.rank(label) }]) }
+    fn pat_of(label: string) -> Result<PatId, string> { .Ok(PatId { index: self.rank(label) }) }
+    fn type_of(label: string) -> Result<TypeRef, string> { .Ok(named_ref(label)) }
+    fn types_of(label: string) -> Result<List<TypeRef>, string> { .Ok([named_ref(label)]) }
+    fn type_opt_of(label: string) -> Result<TypeRef?, string> { .Ok(named_ref(label)) }
+    fn at_of(_label: string) -> Result<Span?, string> { .Ok(null) }
+}
+
+// ── voices ──
+
+fn hole_twice(variant: string, label: string) -> string {
+    "the template of `${variant}` reads `${label}` twice — a hole evaluates its node each time, so bind it once with a `let`"
+}
+
+fn out_of_order(variant: string, first: string, second: string) -> string {
+    "the template of `${variant}` reads `${first}` before `${second}`, against the order the rule captures them — bind them in source order with a `let`"
+}
