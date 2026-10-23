@@ -14,7 +14,6 @@ use diagnostics.{DiagCode}
 export fn modules() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name          | build
-        "use_stmt"    | build_use
         "export_stmt" | build_export
     }
     let codes = table<DiagCode> {
@@ -67,7 +66,8 @@ export fn modules() -> LanguageFeature {
     }
     LanguageFeature modules {
         gram: grammar {
-            stmt = "use" ( h:PKG | h:NAME ) ( "." p:NAME )* "." "{" BREAK? i:NAME ( "as" q:NAME )? ( ( "," | BREAK ) BREAK? i:NAME ( "as" q:NAME )? )* ","? BREAK? "}" END @recover(sync_to: "END") -> use_stmt(h, p, i, q) | "export" d:stmt -> export_stmt(d)
+            stmt = "use" ( path:PKG | path:NAME ) ( "." path:NAME )* "." "{" BREAK? items:use_item ( ( "," | BREAK ) BREAK? items:use_item )* ","? BREAK? "}" END @recover(sync_to: "END") -> Stmt.Use | "export" d:stmt -> export_stmt(d)
+            use_item = name:NAME ( "as" rename:NAME )? -> Record.UseItem
         }
         builders: rows
         diags: codes
