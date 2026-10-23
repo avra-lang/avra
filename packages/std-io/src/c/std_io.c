@@ -332,8 +332,9 @@ int64_t avra_io_seek(int64_t fd, int64_t at) {
 }
 /* ── The compile slot ─────────────────────────────────────────────
    One of AVRA_MAX_COMPILES machine-wide slots (default 3; 0 = off),
-   counted by one System V semaphore keyed on <AVRA_SLOT_DIR, default
-   /tmp/avra-slots>/gate and the cap (1..255). A take is SEM_UNDO, so the
+   counted by one System V semaphore keyed on the slot directory's NAME
+   and the cap — never its inode, so a directory made again finds its set
+   (a set outlives its processes, and the kernel's table is bounded). A take is SEM_UNDO, so the
    kernel returns the slot when the process ends by any means. Nothing
    polls: a waiter sleeps in the kernel until what it waits on is released.
    ARRIVAL ORDER IS BY CONSTRUCTION, never a kernel's wake order: each
@@ -358,10 +359,17 @@ static void slot_path(char* out, size_t size, const char* dir, const char* name,
     else snprintf(out, size, "%s/%s", dir, name);
 }
 
+/* The key of the semaphore for `dir` and cap `n`: FNV-1a over the name, never zero. */
+static key_t slot_key(const char* dir, long n) {
+    uint32_t h = 2166136261u;
+    for (const char* c = dir; *c; c++) h = (h ^ (uint8_t)*c) * 16777619u;
+    h = (h ^ (uint32_t)n) * 16777619u;
+    return (key_t)((h & 0x7fffffffu) | 1u);
+}
+
 /* The semaphore counting the slots of cap `n` under `dir`, made at `n` when absent; -1 when the host will not give one. Called under the gate. */
-static int slot_counter(const char* dir, const char* gate_path, long n) {
-    key_t key = ftok(gate_path, (int)(n > 255 ? 255 : n));
-    if (key == (key_t)-1) return -1;
+static int slot_counter(const char* dir, long n) {
+    key_t key = slot_key(dir, n);
     int id = semget(key, 1, IPC_CREAT | IPC_EXCL | 0666);
     if (id >= 0) {
         union avra_semun start;
@@ -372,7 +380,6 @@ static int slot_counter(const char* dir, const char* gate_path, long n) {
         }
         return id;
     }
-    (void)dir;
     return errno == EEXIST ? semget(key, 1, 0666) : -1;
 }
 
@@ -383,8 +390,9 @@ static int slot_join(const char* dir, long n, int* mine, char* mine_path, char* 
     slot_path(count_path, sizeof count_path, dir, "counter", 0, 0);
     int gate = open(gate_path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
     if (gate < 0) return -1;
+    // the clock: held for a few file operations only, by the compiler's own startup, before any program runs
     flock(gate, LOCK_EX);
-    int counter = slot_counter(dir, gate_path, n);
+    int counter = slot_counter(dir, n);
     int book = open(count_path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
     unsigned long ticket = 0;
     if (counter >= 0 && book >= 0) {
@@ -402,9 +410,11 @@ static int slot_join(const char* dir, long n, int* mine, char* mine_path, char* 
     if (counter >= 0) {
         slot_path(mine_path, size, dir, "q", ticket, 1);
         *mine = open(mine_path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+        // the clock: a lock named for this ticket, taken by no one else, answers at once
         if (*mine < 0 || flock(*mine, LOCK_EX) != 0) counter = -1;
         else if (ticket > 0) slot_path(behind, size, dir, "q", ticket - 1, 1);
     }
+    // the clock: LOCK_UN answers at once, never waits
     flock(gate, LOCK_UN);
     close(gate);
     if (counter < 0 && *mine >= 0) { close(*mine); *mine = -1; }
@@ -434,9 +444,11 @@ int64_t avra_io_compile_slot(void) {
     if (behind[0]) {
         int ahead = open(behind, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
         if (ahead >= 0) {
+            // the clock: LOCK_NB answers at once, never waits
             if (flock(ahead, LOCK_EX | LOCK_NB) != 0) {
                 fprintf(stderr, "avra: waiting for a compile slot (AVRA_MAX_COMPILES=%ld)\n", n);
                 said = 1;
+                // the clock: the compiler's own wait for a slot, before any program runs
                 flock(ahead, LOCK_EX);
             }
             unlink(behind);

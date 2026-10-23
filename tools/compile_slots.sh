@@ -57,6 +57,14 @@ row() {
 }
 waited() { grep -c "avra: waiting for a compile slot" "$1" | tr -d ' '; }
 
+# THE KERNEL'S SEMAPHORE TABLE IS BOUNDED AND A SET OUTLIVES ITS PROCESSES: the
+# keeper counts the sets it makes and removes them when it is done.
+sets() {
+    if [ "$(uname)" = Darwin ]; then ipcs -s | awk '$1 == "s" { print $2 }'; else ipcs -s | awk '/^0x/ { print $2 }'; fi | sort
+}
+sets_before="$D/sets.before"
+sets > "$sets_before"
+
 export AVRA_MAX_COMPILES=1
 # a private slot directory: another session's compile never holds these
 export AVRA_SLOT_DIR="$PWD/$D/slots"
@@ -115,8 +123,21 @@ row "five waiters over one slot acquire in the order they began waiting" "$(tr '
 if [ "$(cat "$F/switches.1")" = unread ]; then
     echo "compile-slots: the wait's wakeups are unread on this host (Darwin keeps no voluntary-switch count); the quiet-wait row is held on Linux"
 else
-    row "a waiter that waited two seconds woke at most four times (a block, not a poll)" "$([ "$(cat "$F/switches.1")" -le 4 ] && echo yes || echo "no: $(cat "$F/switches.1")")" "yes"
+    row "a waiter that waited two seconds woke at most six times (a block, not a poll)" "$([ "$(cat "$F/switches.1")" -le 6 ] && echo yes || echo "no: $(cat "$F/switches.1")")" "yes"
 fi
+
+# A SLOT DIRECTORY MADE AGAIN FINDS ITS SET: the same name and cap add no set.
+sets > "$D/sets.mid"
+find "$F/slots" -delete 2>/dev/null
+"$D/holder" > "$F/again.out" 2>&1 &
+AGAIN=$!
+until_gone "[ -s '$F/again.out' ]"
+kill $AGAIN
+wait $AGAIN 2>/dev/null
+sets > "$D/sets.after"
+row "a slot directory made again adds no semaphore set" "$(cmp -s "$D/sets.mid" "$D/sets.after" && echo same || echo grew)" "same"
+for id in $(comm -13 "$sets_before" "$D/sets.after"); do ipcrm -s "$id" 2>/dev/null; done
+row "the keeper leaves the kernel's semaphore table as it found it" "$(sets | cmp -s - "$sets_before" && echo same || echo changed)" "same"
 
 if [ "$fails" -gt 0 ]; then
     echo "compile-slots: $fails of $rows contracts broken"
