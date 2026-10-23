@@ -1130,6 +1130,7 @@ layout-oracle:
 	@sh tools/layout_oracle.sh
 	@sh tools/layout_oracle_absent_test.sh
 	@sh tools/layout_oracle_own_term_test.sh
+	@sh tools/layout_oracle_boundary_test.sh
 
 # A fingerprint tag NAMES a node kind: inside one fold space no two
 # kinds may wear one number, or they fingerprint alike by construction.
