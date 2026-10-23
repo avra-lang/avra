@@ -66,7 +66,7 @@ kill "$dev" 2>/dev/null || true
 
 # The same program outside dev: no PORT is 8080, a PORT that is no port is
 # refused, and a written port wins over PORT.
-answered() { tries=0; until got=$(curl -s --max-time 2 "http://127.0.0.1:$1/hello") && [ -n "$got" ]; do tries=$((tries + 1)); [ "$tries" -lt 100 ] || return 1; sleep 0.1; done; echo "$got"; }
+answered() { tries=0; until got=$(curl -s --max-time 2 "http://127.0.0.1:$1/hello") && [ -n "$got" ]; do tries=$((tries + 1)); [ "$tries" -lt 100 ] || return 1; [ -z "${2:-}" ] || kill -0 "$2" 2>/dev/null || return 1; sleep 0.1; done; echo "$got"; }
 bin=$(sh "$here/capped.sh" --last "$avra" build "$work/page/server" 2>"$work/build.err") || fail "the page server did not build: $(tail -3 "$work/build.err")"
 if curl -s --max-time 10 -o /dev/null "http://127.0.0.1:8080/" 2>/dev/null; then
     fail "something already answers on 8080, so the default cannot be witnessed"
@@ -85,13 +85,22 @@ elif grep -q "PORT=abc" "$work/bad.err"; then say "a PORT that is no port is ref
 else fail "a bad PORT ended the server without saying so: $(cat "$work/bad.err")"; fi
 mkdir -p "$work/written/src"
 printf '[package]\nname = "written"\nversion = "0.1.0"\n' > "$work/written/avra.toml"
-written=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
-served "written" "port: $written" "$work/written"
-wbin=$(sh "$here/capped.sh" --last "$avra" build "$work/written" 2>"$work/build.err") || fail "the written-port server did not build: $(tail -3 "$work/build.err")"
-PORT=1 "$wbin" > /dev/null 2>&1 &
-w=$!
-got=$(answered "$written" || echo "nothing")
-kill "$w" 2>/dev/null || true
+# A port the OS handed out and released can be taken before the server binds it, so a server that
+# ends on "Address already in use" is built again on a fresh port, never counted.
+free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
+got=nothing
+for attempt in 1 2 3 4 5; do
+    written=${DEV_SERVER_PORT:-$(free_port)}
+    served "written" "port: $written" "$work/written"
+    wbin=$(sh "$here/capped.sh" --last "$avra" build "$work/written" 2>"$work/build.err") || fail "the written-port server did not build: $(tail -3 "$work/build.err")"
+    PORT=1 "$wbin" > /dev/null 2> "$work/written.err" &
+    w=$!
+    got=$(answered "$written" "$w" || echo "nothing")
+    kill "$w" 2>/dev/null || true
+    grep -q "Address already in use" "$work/written.err" || break
+    say "port $written was taken before the server bound it; again on a fresh one"
+    unset DEV_SERVER_PORT
+done
 [ "$got" = "written" ] && say "a written port wins over PORT: :$written answered, PORT=1 ignored" || fail "a server writing port $written answered '$got'"
 
 verdict "every claim holds"
