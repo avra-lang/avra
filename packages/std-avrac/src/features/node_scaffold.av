@@ -1,10 +1,11 @@
 //! THE NODE BUILDERS THE MODEL ANSWERS: one per flat variant of `Expr`,
 //! `Pat` and `Stmt`, each maker read off its enum by `@derive(Makes)`
-//! (core/makers_derive.av). A variant with a payload no `Slots`
-//! accessor reads has no maker, and keeps its own builder. A record
-//! that is no node (`Record.ParamSyntax`, `Record.VariantSyntax`,
-//! `Record.TypeRef`) names its builder directly.
-use core.{expr_makers, pat_makers, stmt_makers}
+//! (core/makers_derive.av), and each comprehension clause's the same
+//! way. A variant with a payload no `Slots` accessor reads has no maker,
+//! and keeps its own builder. A record that is no node
+//! (`Record.ParamSyntax`, `Record.VariantSyntax`, `Record.TypeRef`,
+//! `Record.Arm`, `Record.Case`) names its builder directly.
+use core.{expr_makers, pat_makers, stmt_makers, comp_clause_makers}
 use features.{BuilderRow}
 use features.type_expr.{build_type_ref}
 
@@ -26,7 +27,15 @@ export fn node_builders() -> List<BuilderRow> {
                 build: (b) -> match (m.make)(b) { .Ok(s) -> b.make_stmt(s), .Err(msg) -> .Err(msg) },
             } for m in stmt_makers()],
         )
+        .concat(
+            [BuilderRow {
+                name: "CompClause.${m.name}",
+                build: (b) -> match (m.make)(b) { .Ok(c) -> b.make_comp_clause(c), .Err(msg) -> .Err(msg) },
+            } for m in comp_clause_makers()],
+        )
         .concat([BuilderRow { name: "Record.ParamSyntax", build: (b) -> b.seat() }])
         .concat([BuilderRow { name: "Record.VariantSyntax", build: (b) -> b.variant() }])
         .concat([BuilderRow { name: "Record.TypeRef", build: build_type_ref }])
+        .concat([BuilderRow { name: "Record.Arm", build: (b) -> b.arm() }])
+        .concat([BuilderRow { name: "Record.Case", build: (b) -> b.case() }])
 }

@@ -1,15 +1,7 @@
-//! Parse-time lowering: captures -> the Match node with its arms and
-//! the pattern nodes. Arms and values ZIP (both are written every
-//! time); a declaration's variants arrive already built — each rule
-//! writes its own `NVariant`, its payloads their own `NParam` — so no
-//! span window restores what the grammar nests.
+//! Parse-time lowering: a template hole standing as a whole arm, and the
+//! bare-name and number patterns. An arm is its rule's `Record.Arm`.
 use core.{Expr, Pat, Scoped}
-use features.{LangNode, Builder, pat_ids_at, expr_id_at}
-
-fn build_arm(b: Builder) -> Result<LangNode, string> {
-    let value = b.expr(2)?
-    b.make_arm(pat_ids_at(b.args, 0), value, expr_id_at(b.args, 1))
-}
+use features.{LangNode, Builder}
 
 /// A template's hole standing as a whole arm: the one hole as the
 /// arm's pattern and its value, so the walk that classifies holes
@@ -28,10 +20,5 @@ fn build_bind_pat(b: Builder) -> Result<LangNode, string> {
     if n.text == "rest" { return b.make_pat(Pat.Rest) }
     if n.text == "null" { return b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.NullLit, b.span))) }
     b.make_pat(Pat.Bind(Scoped(n.text)))
-}
-
-fn build_num_pat(b: Builder) -> Result<LangNode, string> {
-    let t = b.token(0)?
-    b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.IntLit(t.int_value() ?? 0), b.span)))
 }
 

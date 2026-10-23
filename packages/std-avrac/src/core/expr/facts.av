@@ -15,6 +15,8 @@ use core.{
     Leftmost,
     PlaceStep,
     SyntaxArena,
+    BinOp,
+    op_symbol,
     WaitProbe,
     UseShape,
     form_value,
@@ -163,9 +165,22 @@ impl NodeFacts for Not {
     fn form() -> Form { form_operator }
 }
 impl NodeFacts for Table {
-    fn minted(store: SyntaxArena, span: Span?) -> List<ExprId> {
+    fn minted(store: SyntaxArena, span: Span?) -> Result<List<ExprId>, string> {
+        let short: int? = self.rows.find_index(cells_of(store, it).length != self.header.length)
+        if short != null {
+            return .Err(
+                short_row_words(
+                    short! + 1,
+                    cells_of(store, self.rows[short!]).length,
+                    self.header.length,
+                ),
+            )
+        }
         let lits = [row_literal(store, self.row, self.header, r) for r in self.rows]
-        lits.concat([store.alloc_expr(Expr.ListLit(lits), span)])
+        .Ok(lits.concat([store.alloc_expr(Expr.ListLit(lits), span)]))
+    }
+    fn says(_written: string) -> string? {
+        "`table<${self.row}>` means a list of `${self.row} { … }` literals, one per row"
     }
 }
 
@@ -181,8 +196,8 @@ fn cells_of(store: SyntaxArena, row: ExprId) -> List<ExprId> {
 }
 impl NodeFacts for Bitnot {
     fn form() -> Form { form_operator }
-    fn means() -> Rewrite? {
-        quote { ${self.value} ^ -1 }
+    fn means() -> Result<Rewrite, string>? {
+        .Ok(quote { ${self.value} ^ -1 })
     }
 }
 impl NodeFacts for Named {
@@ -199,14 +214,44 @@ impl NodeFacts for Is {
 }
 impl NodeFacts for Pipe {
     fn leftmost() -> Leftmost { Leftmost.Operand(self.value) }
-    fn minted(store: SyntaxArena, span: Span?) -> List<ExprId> { store.piped_nodes(self.stage, self.value) }
+    fn minted(store: SyntaxArena, span: Span?) -> Result<List<ExprId>, string> {
+        let piped = store.piped_nodes(self.stage, self.value)
+        if !piped.is_empty() { return .Ok(piped) }
+        let op? = stage_operator(store.expr(self.stage)) else { return .Err(stage_is_a_call()) }
+        .Err(operator_after_stage(op_symbol(op)))
+    }
+    fn says(written: string) -> string? {
+        "`${written}` calls the stage with the piped value as its first argument"
+    }
+}
+
+/// The operator a stage is, when the climb grouped one under the pipe.
+fn stage_operator(stage: Expr) -> BinOp? {
+    match stage { .Binary(op, _, _) -> op, _ -> null }
 }
 impl NodeFacts for LetPattern {
     fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
-    fn minted(store: SyntaxArena, span: Span?) -> List<ExprId> {
-        store.let_matched(self.pat, self.subject, self.otherwise, self.rest, span)
+    fn minted(store: SyntaxArena, span: Span?) -> Result<List<ExprId>, string> {
+        .Ok(store.let_matched(self.pat, self.subject, self.otherwise, self.rest, span))
+    }
+    fn says(written: string) -> string? {
+        "`${written}` takes the value apart by its pattern, and the rest of the block is the arm the pattern's names scope over"
     }
 }
 impl NodeFacts for Propagate {
     fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+}
+
+// ── voices ──
+
+fn short_row_words(row: int, cells: int, columns: int) -> string {
+    "row ${row} has ${cells} cells, and the header names ${columns} columns"
+}
+
+fn stage_is_a_call() -> string {
+    "a pipe's right side is a call, and the piped value becomes its first argument — `x |> f`, `x |> f(a)`, `x |> a.m(b)`, `x |> ((v) -> …)`; a method on the value itself is `x.m()`"
+}
+
+fn operator_after_stage(op: string) -> string {
+    "a pipe's right side is a call, and `|>` binds looser than `${op}` — write `(x |> f) ${op} …` to pipe first"
 }

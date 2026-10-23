@@ -1,51 +1,23 @@
-//! Parse-time lowering: each arm is its own node, and the `select`
-//! holds them in written order. The mark and the catch-all are the
-//! builder's to refuse — the arm set's laws are typing's, where the
-//! arms carry a span.
-use core.{Expr, Stmt, Scoped}
-use grammar.{Token}
-use features.{LangNode, Builder}
+//! The select's refusals: a catch-all it has none of, and a mark it
+//! does not read. Each arm is its own node, and the `select` holds them
+//! in written order; the arm set's laws are typing's, where the arms
+//! carry a span.
+use features.{RefusalWords}
 
-fn build_select(b: Builder) -> Result<LangNode, string> {
-    b.make_expr(selected(b)?)
-}
-
-/// A marked `select` standing as a statement.
-fn build_select_stmt(b: Builder) -> Result<LangNode, string> {
-    b.make_stmt(Stmt.ExprStmt(b.expr_node(selected(b)?)))
-}
-
-/// The `Select` node of a mark and its arms.
-fn selected(b: Builder) -> Result<Expr, string> {
-    .Ok(Expr.Select(fair_marked(b.tokens(0)?)?, b.exprs(1)?))
-}
-
-/// Whether the mark written is `@fair` — the one a `select` reads.
-fn fair_marked(marks: List<Token>) -> Result<bool, string> {
-    let m? = marks.first() else { return .Ok(false) }
-    if m.text == "@fair" { return .Ok(true) }
-    .Err("a `select` reads one mark, `@fair` — `${m.text}` is not it")
-}
-
-fn build_wait_arm(b: Builder) -> Result<LangNode, string> {
-    let index = b.tokens(0)?
-    let blank = b.tokens(1)?
-    let bind = b.tokens(2)?
-    let guard = b.exprs(4)?
-    b
-        .make_expr(
-            Expr
-                .WaitArm(written(index), written(blank.concat(bind)), b.expr(3)?, guard.first(), b.expr(5)?),
-        )
-}
-
-/// The name a token run wrote, empty when it wrote none.
-fn written(names: List<Token>) -> Scoped {
-    Scoped(names.first()?.text ?? "")
-}
+// ── voices ──
 
 /// `_ -> …` is `match`'s catch-all, and a `select` has none.
-// LICENSED fns.dead_parameter: a builder wears the row's signature
-fn build_any_arm(_b: Builder) -> Result<LangNode, string> {
-    .Err("a `select` has no catch-all — `else ->` runs when nothing is ready")
+fn select_catchall() -> RefusalWords {
+    RefusalWords {
+        message: "a `select` has no catch-all",
+        help: "write `else -> …` — it runs when nothing is ready",
+    }
+}
+
+/// A mark before `select` other than the one it reads.
+fn select_mark() -> RefusalWords {
+    RefusalWords {
+        message: "a `select` reads one mark, `@fair`",
+        help: "drop the mark — `@fair` is the one a `select` reads",
+    }
 }

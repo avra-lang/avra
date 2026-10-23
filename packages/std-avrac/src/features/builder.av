@@ -25,6 +25,7 @@ use core.{
     Mark,
     Variant,
     CompClause,
+    Refused,
     flatten,
     some_list,
     SeatMark,
@@ -35,7 +36,7 @@ use core.{
     binop_of,
 }
 use core.{Slots}
-use @std.meta.{Field}
+use @std.meta.{Field, Node as MetaNode}
 use @std.grammar.{Captured, Ready}
 use grammar.{Token}
 /// One build call's world: the store, the captured arguments in
@@ -156,6 +157,11 @@ impl Slots for Builder {
         .Ok(arms_at(self.args, self.slot_of(label)?))
     }
 
+    /// The comprehension clauses the payload `label` carries.
+    fn comp_clauses_of(label: string) -> Result<List<CompClause>, string> {
+        .Ok(comp_clauses_at(self.args, self.slot_of(label)?))
+    }
+
     /// The spec cases the payload `label` carries.
     fn cases_of(label: string) -> Result<List<Case>, string> {
         .Ok(cases_at(self.args, self.slot_of(label)?))
@@ -169,6 +175,13 @@ impl Slots for Builder {
     /// The patterns the payload `label` carries.
     fn pats_of(label: string) -> Result<List<PatId>, string> {
         .Ok(pat_ids_at(self.args, self.slot_of(label)?))
+    }
+
+    /// The pattern the payload `label` carries.
+    fn pat_of(label: string) -> Result<PatId, string> {
+        let at = self.slot_of(label)?
+        let p? = pat_id_at(self.args, at) else { return .Err(no_pattern(label)) }
+        .Ok(p)
     }
 
     /// The written type the payload `label` carries.
@@ -201,6 +214,13 @@ impl Slots for Builder {
     /// it fills, never by how it was spelled.
     fn text_of(label: string) -> Result<string, string> {
         .Ok((self.token(self.slot_of(label)?)?).text)
+    }
+
+    /// The integer the number the payload `label` carries spells.
+    fn int_of(label: string) -> Result<int, string> {
+        let t = self.token(self.slot_of(label)?)?
+        let n? = t.int_value() else { return .Err(no_integer(t.text)) }
+        .Ok(n)
     }
 
     /// The operator the word the payload `label` carries spells.
@@ -324,7 +344,7 @@ impl Builder {
                     ),
                 span,
             )
-        let _ = self.store.mean(node, let_means(self.source_of(node)), self.words.door)
+        let _ = self.meant(node)
         items.slice(0, at).concat([self.store.alloc_stmt(Stmt.ExprStmt(node), span)])
     }
 
@@ -339,6 +359,38 @@ impl Builder {
     /// One match arm, as data — `guard` null for an unguarded one.
     fn make_arm(pats: List<PatId>, value: ExprId, guard: ExprId?) -> Result<LangNode, string> {
         .Ok(LangNode.NArm(Arm { pats: pats, guard: guard, value: value }))
+    }
+
+    /// The grammar's own refusal spoken where this branch matched, and an
+    /// error node standing in its place so the parse goes on.
+    fn refused(kind: string, words: RefusalWords) -> Result<LangNode, string> {
+        self
+            .store
+            .refuse(Refused { kind: kind, message: words.message, help: words.help, span: self.span })
+        .Ok(LangNode.NExpr(self.store.alloc_expr(Expr.Error, self.span)))
+    }
+
+    /// One match arm read off its rule's labels.
+    fn arm() -> Result<LangNode, string> {
+        self.make_arm(self.pats_of("pats")?, self.expr_of("value")?, self.expr_opt_of("guard")?)
+    }
+
+    /// One spec case read off its rule's labels, in the group its
+    /// `given` names later.
+    fn case() -> Result<LangNode, string> {
+        .Ok(
+            LangNode
+                .NCases(
+                    [
+                        Case {
+                            group: self.text_of("group")?,
+                            name: self.text_of("name")?,
+                            body: self.expr_of("body")?,
+                            span: self.span,
+                        },
+                    ],
+                ),
+        )
     }
 
     /// One comprehension clause, as data.
@@ -378,7 +430,43 @@ impl Builder {
             let row? = expr_facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
             (row.mark)(self.store, id)
         }
+        self.meant(id)
+    }
+
+    /// `id` as this build's node, with what it means minted beside it when
+    /// it is a sugar. A sugar whose shape means nothing refuses in its own
+    /// words.
+    fn meant(id: ExprId) -> Result<LangNode, string> {
+        let minted = (self.words.door)(self.store, id)?
+        if !minted.is_empty() { self.store.means_as(id, minted, self.said(id, self.store.expr(id))) }
         .Ok(LangNode.NExpr(id))
+    }
+
+    /// The sentence a sugar says its meaning in: its own, or its template
+    /// with each hole spelled as it was written.
+    fn said(id: ExprId, node: Expr) -> string {
+        let written = self.source_of(id)
+        node.says(written) ?? "`${written}` means `${self.rewritten(node)}`"
+    }
+
+    /// A sugar's template, each hole the source its node was written as.
+    fn rewritten(node: Expr) -> string {
+        let held? = node.means() else { return "" }
+        let template? = match held { .Ok(t) -> t, .Err(_) -> null } else { return "" }
+        match template.node {
+            .Template(_, _, parts, fills) -> self.woven(parts, fills).trim(),
+            _ -> "",
+        }
+    }
+
+    /// A template's runs with each hole's written source between them.
+    fn woven(parts: List<string>, fills: List<MetaNode>) -> string {
+        [parts[j] + self.hole_written(f) for j, f in fills].join("") + parts[fills.length]
+    }
+
+    /// The source a rewrite's hole names: an id fills as its index.
+    fn hole_written(fill: MetaNode) -> string {
+        match fill { .Int(index) -> self.source_of(ExprId { index: index }), _ -> "" }
     }
 
     /// A new expression node at its anchor's span or the matched
@@ -729,7 +817,10 @@ fn unknown_payload(ps: List<Field>, n: string) -> string {
     "no payload `${n}` — this build carries `${[p.name for p in ps].join("`, `")}`"
 }
 
-/// What a destructuring `let` means, in words.
-fn let_means(written: string) -> string {
-    "`${written}` takes the value apart by its pattern, and the rest of the block is the arm the pattern's names scope over"
+fn no_integer(written: string) -> string {
+    "`${written}` is no integer — a number pattern matches an `int`"
+}
+
+fn no_pattern(label: string) -> string {
+    "defect: the payload `${label}` holds no pattern — the arena and the grammar disagree"
 }
