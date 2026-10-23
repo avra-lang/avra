@@ -269,18 +269,6 @@ fn written<T>(r: Result<T, ModelError>, show: fn(T) -> Json) -> Result<Json, Fai
     match r { .Ok(row) -> .Ok(show(row)), .Err(e) -> .Err(model_failure(e)) }
 }
 
-/// An act on a row, done only when the row is there within the scope: a row
-/// outside it changes nothing, which the door answers as missing.
-export fn when_held<T>(present: Result<T?, SqlError>, act: fn() -> Result<int, ModelError>) -> Result<
-    int,
-    ModelError,
-> {
-    match present {
-        .Ok(row) -> if row == null { .Ok(0) } else { act() },
-        .Err(e) -> .Err(.Other(e)),
-    }
-}
-
 /// A body read and written over an existing row: no row changed is missing.
 export fn changed<T>(
     read: Result<T, Issues>,
@@ -308,11 +296,7 @@ export fn dropped<T>(r: Result<T?, SqlError>, drop: fn(T) -> Result<int, ModelEr
 
 fn dropped_row<T>(row: T?, drop: fn(T) -> Result<int, ModelError>) -> Result<int, Failure> {
     let r? = row else { return .Err(.Missing) }
-    counted(drop(r))
-}
-
-fn counted(r: Result<int, ModelError>) -> Result<int, Failure> {
-    match r { .Ok(n) -> .Ok(n), .Err(e) -> .Err(model_failure(e)) }
+    match drop(r) { .Ok(0) -> .Err(.Missing), .Ok(n) -> .Ok(n), .Err(e) -> .Err(model_failure(e)) }
 }
 
 /// A removed row brought back; missing when the trash holds none by this key.
@@ -334,7 +318,11 @@ fn restored<T>(row: T?, back: fn(T) -> Result<int, SqlError>, show: fn(T) -> Jso
     Failure,
 > {
     let r? = row else { return .Err(.Missing) }
-    match back(r) { .Ok(_) -> .Ok(show(r)), .Err(e) -> .Err(sql_failure(e)) }
+    match back(r) {
+        .Ok(0) -> .Err(.Missing),
+        .Ok(_) -> .Ok(show(r)),
+        .Err(e) -> .Err(sql_failure(e)),
+    }
 }
 
 fn sql_failure(e: SqlError) -> Failure { .Broken(e.describe().message) }
