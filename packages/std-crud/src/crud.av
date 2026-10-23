@@ -31,7 +31,21 @@ use @std.meta.{
     refuse_as_at,
 }
 use @std.db.{model}
-use routes.{Door, Wire, empty, crud_routes, listed, found, made, changed, dropped, revived}
+use @std.db.scope.{Where}
+use routes.{
+    Door,
+    Access,
+    Wire,
+    empty,
+    when_held,
+    crud_routes,
+    listed,
+    found,
+    made,
+    changed,
+    dropped,
+    revived,
+}
 
 /// `@crud` — the library's own name for the derive, so the annotation reads
 /// `@crud` with nothing imported but this.
@@ -52,24 +66,25 @@ fn doors(t: Type) -> Decls {
             fn crud_json() -> Json { json_obj([..${entries}]) }
 
             /// The model's doors as routes, over this database.
-            static fn routes(db: Db, without: List<Door> = []) -> Mounted {
+            static fn routes(db: Db, without: List<Door> = [], access: Access? = null) -> Mounted {
                 let held = Cell.new(db)
                 crud_routes(
                     Wire {
                         soft: ${soft(t)},
-                        list: () -> listed(${name(t.name)}.all(held.get()), (r: ${t}) -> r.crud_json()),
-                        find: (id: int) -> found(${name(t.name)}.find(held.get(), id), (r: ${t}) -> r.crud_json()),
-                        create: (body: string) -> made(${name(t.name)}.from_json(body), (r: ${t}) -> r.insert(held.get()), (r: ${t}) -> r.crud_json()),
-                        update: (id: int, body: string) -> changed(
+                        list: (scope: Where?) -> listed(${name(t.name)}.all_within(held.get(), scope), (r: ${t}) -> r.crud_json()),
+                        find: (scope: Where?, id: int) -> found(${name(t.name)}.find_within(held.get(), id, scope), (r: ${t}) -> r.crud_json()),
+                        create: (scope: Where?, body: string) -> made(${name(t.name)}.from_json(body), (r: ${t}) -> r.in_scope(scope).insert(held.get()), (r: ${t}) -> r.crud_json()),
+                        update: (scope: Where?, id: int, body: string) -> changed(
                             ${name(t.name)}.from_json(body),
-                            (r: ${t}) -> (r with { id: id }).update(held.get()),
+                            (r: ${t}) -> when_held(${name(t.name)}.find_within(held.get(), id, scope), () -> (r with { id: id }).in_scope(scope).update(held.get())),
                             (r: ${t}) -> (r with { id: id }).crud_json(),
                         ),
-                        remove: (id: int) -> dropped(${name(t.name)}.find(held.get(), id), (r: ${t}) -> r.remove(held.get())),
+                        remove: (scope: Where?, id: int) -> dropped(${name(t.name)}.find_within(held.get(), id, scope), (r: ${t}) -> r.remove(held.get())),
                         trash: ${trash_code(t)},
                         restore: ${restore_code(t)},
                     },
                     without,
+                    access,
                 )
             }
         }
@@ -83,15 +98,15 @@ fn is_soft(f: Field) -> bool { f.marks.any(it.name == "soft_delete") }
 /// The trash door's reader: the removed rows, for a soft-delete model; nothing
 /// for any other, whose door is never opened.
 fn trash_code(t: Type) -> Code {
-    if !soft(t) { return quote { () -> empty() } }
-    quote { () -> listed(${name(t.name)}.trash(held.get()), (r: ${t}) -> r.crud_json()) }
+    if !soft(t) { return quote { (scope: Where?) -> empty() } }
+    quote { (scope: Where?) -> listed(${name(t.name)}.trash_within(held.get(), scope), (r: ${t}) -> r.crud_json()) }
 }
 
 fn restore_code(t: Type) -> Code {
-    if !soft(t) { return quote { (id: int) -> empty() } }
+    if !soft(t) { return quote { (scope: Where?, id: int) -> empty() } }
     quote {
-        (id: int) -> revived(
-            ${name(t.name)}.trash(held.get()),
+        (scope: Where?, id: int) -> revived(
+            ${name(t.name)}.trash_within(held.get(), scope),
             id,
             (r: ${t}) -> r.id,
             (r: ${t}) -> r.restore(held.get()),
