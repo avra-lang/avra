@@ -1,0 +1,51 @@
+// A settled const read as JSON text: records by field name, lists, nullables,
+// maps and enums, each from the program's own source.
+use @std.avrac.compiler.{analyze_source}
+
+fn json_of(source: string, name: string) -> string {
+    match analyze_source(source).program().const_json(name) {
+        .Ok(text) -> text,
+        .Err(why) -> "refused: ${why}",
+    }
+}
+
+spec "compiler/const_json — what the compiler settled, as JSON" {
+    given "scalars and lists" {
+        then "a list of ints is an array" { json_of("const xs: List<int> = [1, 2, 3]\n", "xs") == "[1,2,3]" }
+        then "text is quoted and escaped" { json_of("const s: string = \"a\\\"b\"\n", "s") == "\"a\\\"b\"" }
+        then "a bool is a word" { json_of("const b: bool = true\n", "b") == "true" }
+    }
+    given "records" {
+        then "a record is an object by field name" {
+            json_of(
+                "type P = { x: int, name: string, on: bool }\nconst p: P = P { x: 3, name: \"n\", on: false }\n",
+                "p",
+            ) == "{\"x\":3,\"name\":\"n\",\"on\":false}"
+        }
+        then "a nullable field is its value or null" {
+            json_of(
+                "type P = { a: string?, b: string? }\nconst p: P = P { a: \"x\", b: null }\n",
+                "p",
+            ) == "{\"a\":\"x\",\"b\":null}"
+        }
+        then "a list of records nests" {
+            json_of(
+                "type P = { x: int, tags: List<string> }\nconst ps: List<P> = [P { x: 1, tags: [\"a\"] }, P { x: 2, tags: [] }]\n",
+                "ps",
+            ) == "[{\"x\":1,\"tags\":[\"a\"]},{\"x\":2,\"tags\":[]}]"
+        }
+    }
+    given "enums and maps" {
+        then "a payload-free variant is its name" {
+            json_of("enum K { A, B }\nconst k: K = K.B\n", "k") == "\"B\""
+        }
+        then "a map is an object in insertion order" {
+            json_of("const m: Map<string, int> = { \"a\": 1, \"b\": 2 }\n", "m") == "{\"a\":1,\"b\":2}"
+        }
+    }
+    given "what is not a const" {
+        then "an undeclared name is refused by name" {
+            json_of("const xs: List<int> = [1]\n", "ys") == "refused: no const `ys` is declared here"
+        }
+    }
+}
