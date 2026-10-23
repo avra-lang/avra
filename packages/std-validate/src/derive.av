@@ -475,7 +475,7 @@ fn direct(t: Type) -> Body {
 fn named_direct(t: Type) -> Body {
     wrapping(
         t,
-        quote { d.pos },
+        quote { d.json.pos },
         reading(t.over, quote { depth }, quote { required }, name(hidden)),
         json_ruling,
     )
@@ -496,14 +496,14 @@ fn union_direct(t: Type) -> Body {
 /// record's own rules over the whole value.
 fn record_direct(t: Type) -> Body {
     let lines = quote {
-        let ${own("start")} = d.pos
+        let ${own("start")} = d.json.pos
         if !d.json_object(depth, required, ${name(hidden)}) { return null }
         let ${own("before")} = d.count()
         ${[unread_yet(f) for f in t.fields]}
         mut ${own("entry")} = 0
         mut ${own("more")} = d.json_first(125)
         while ${mine("more")} {
-            let ${own("key")} = d.pos
+            let ${own("key")} = d.json.pos
             let ${own("key_end")} = d.json_key()
             let ${own("mark")} = d.count()
             let ${own("field")} = ${name(t.name)}.field_at(d, ${mine("key")}, ${mine("key_end")})
@@ -511,7 +511,7 @@ fn record_direct(t: Type) -> Body {
             ${mine("entry")} = ${mine("entry")} + 1
             ${mine("more")} = d.json_next(125)
         }
-        if d.pos < 0 { return null }
+        if d.json.pos < 0 { return null }
         ${[settled(t, f, i) for i, f in t.fields]}
         d.sorted(${mine("before")})
         if d.count() > ${mine("before")} { return null }
@@ -556,7 +556,7 @@ fn take(t: Type, f: Field, i: int, entry: Code) -> Code {
         if ${name(at)} >= 0 {
             d.json_repeated(${mine("key")}, ${mine("key_end")}, ${entry}, depth + 1)
         } else {
-            let at = d.pos
+            let at = d.json.pos
             ${name(at)} = at
             let ${hidden} = ${secret_code(f)}
             let got: ${inner(f.kind).spelled()}? = ${reading(inner(f.kind), quote { depth + 1 }, required_code(f), name(hidden))}

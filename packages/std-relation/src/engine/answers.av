@@ -11,20 +11,44 @@ export enum MemoAsk<T> {
 
 export enum MemoStart<T> { Reuse(T), Compute }
 
+/// A saved answer's value read back, or that the owner cannot give it.
+export enum Revival<T> {
+    Revived(T)
+    Gone
+}
+
 /// One input read with the fingerprint of the bytes that produced it.
 export type Loaded<T> = { value: T, fingerprint: int }
 
 /// A family's dense value table over the Kernel: the shape a compile's
 /// 22 in-process query families and, later, a `Db`'s durable relations
 /// both are — ONE DEFINITION (COMPILER DB townhall §6.2).
-export type Relation<T> = { kernel: Kernel, family: int, values: Table<T> }
+export type Relation<T> = {
+    kernel: Kernel,
+    family: int,
+    values: Table<T>,
+    /// Reads a verified key's value back from where it was saved, when this process holds none.
+    revive: Cell<fn(int) -> Revival<T>>,
+    /// Told each answer this process settles, to keep it past the process.
+    keeper: Cell<fn(int, T) -> void>,
+}
+
+fn never_revived<T>(_arg: int) -> Revival<T> { Revival.Gone }
+
+fn nothing_kept<T>(_arg: int, _value: T) {}
 
 /// `Memo<T>`'s old name, kept as the same type: nothing that already
 /// spells `Memo<T>` moves.
 export alias Memo<T> = Relation<T>
 
 export fn new_memo<T>(db: Kernel, family: int) -> Relation<T> {
-    Relation { kernel: db, family: family, values: new_table<T>() }
+    Relation {
+        kernel: db,
+        family: family,
+        values: new_table<T>(),
+        revive: Cell.new(never_revived),
+        keeper: Cell.new(nothing_kept),
+    }
 }
 
 impl Relation {
@@ -34,13 +58,29 @@ impl Relation {
         let a = match self.kernel.ask(self.query_key(arg)) {
             .Reuse -> match self.values.entry(arg) {
                 .Present(value) -> MemoAsk.Reuse(value),
-                .Missing -> missing_value(self.family, arg),
+                .Missing -> self.revived(arg),
             },
             .Compute -> MemoAsk.Compute,
             .Cycle -> MemoAsk.Cycle,
         }
         if self.kernel.tracing.get() { avra_qtrace("Q\task\t${self.kernel.family_name(self.family)}\t${arg}\t${ask_tag(a)}\n") }
         a
+    }
+
+    /// A verified cell this process holds no value for: read back from where it was saved, or
+    /// forgotten so it computes.
+    fn revived(arg: int) -> MemoAsk<T> {
+        let read = self.revive.get()
+        match read(arg) {
+            .Revived(value) -> {
+                self.values.keep(arg, value)
+                MemoAsk.Reuse(value)
+            },
+            .Gone -> {
+                self.kernel.forget(self.query_key(arg))
+                MemoAsk.Compute
+            },
+        }
     }
 
     /// Open an acyclic query unless its typed value is reusable. The
@@ -103,6 +143,8 @@ impl Relation {
     fn settle(arg: int, value: T, fingerprint: int) -> T {
         self.kernel.settle(self.query_key(arg), fingerprint)
         self.values.keep(arg, value)
+        let keep = self.keeper.get()
+        keep(arg, value)
         if self.kernel.tracing.get() {
             avra_qtrace(
                 "Q\tsettle\t${self.kernel.family_name(self.family)}\t${arg}\t${fingerprint}\n",
@@ -119,6 +161,8 @@ impl Relation {
         let key = self.query_key(arg)
         self.kernel.settle_lazy(key, () -> fingerprint(value))
         self.values.keep(arg, value)
+        let keep = self.keeper.get()
+        keep(arg, value)
         if self.kernel.tracing.get() {
             avra_qtrace(
                 "Q\tsettle\t${self.kernel.family_name(self.family)}\t${arg}\t${self.kernel.value_hash_of(key) ?? -1}\n",

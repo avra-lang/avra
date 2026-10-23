@@ -1,7 +1,7 @@
 //! The grammar engine's one diagnostic currency, and the vocabulary
 //! that renders expectations into prose. Structured first (P11):
 //! `loc` is null for defects with no source anchor.
-use util.{distinct}
+use util.{distinct, is_end}
 use ast.{Prim}
 use @std.errors.{Loc}
 
@@ -15,41 +15,100 @@ export enum Cause { Expected, Trailing, Builder, Defect, Lex, Block }
 /// have been accepted, and inside which rule.
 export type Diagnostic = { cause: Cause, message: string, loc: Loc?, expected: List<string>, in_rule: string }
 
+/// How a failure will speak. `Told` already has its words; `Sentence` is the standard
+/// "expected …" sentence over a want; `Held` is an authored message beside the words of a want.
+/// The wants are prims until `spoken`, so a failure a parse discards never costs a word.
+export enum Voice {
+    Told(message: string, expected: List<string>)
+    Sentence(want: Want)
+    Held(message: string, want: Want)
+}
+
+/// A failure inside the engine, before it speaks. A `Diagnostic` is what it becomes at `spoken`,
+/// and nothing leaves the engine as a failure.
+export type Failure = { cause: Cause, voice: Voice, loc: Loc?, in_rule: string }
+
+/// A diagnostic that already speaks, as an engine failure.
+export fn told(d: Diagnostic) -> Failure {
+    Failure {
+        cause: d.cause,
+        voice: Voice.Told(d.message, d.expected),
+        loc: d.loc,
+        in_rule: d.in_rule,
+    }
+}
+
+/// The failure with its words made, once, by the one renderer.
+export fn spoken(f: Failure) -> Diagnostic {
+    match f.voice {
+        .Told(message, expected) -> Diagnostic {
+            cause: f.cause,
+            message: message,
+            loc: f.loc,
+            expected: expected,
+            in_rule: f.in_rule,
+        },
+        .Sentence(want) -> Diagnostic {
+            cause: f.cause,
+            message: expected_message(want, f.in_rule),
+            loc: f.loc,
+            expected: wanted_words(want),
+            in_rule: f.in_rule,
+        },
+        .Held(message, want) -> Diagnostic {
+            cause: f.cause,
+            message: message,
+            loc: f.loc,
+            expected: wanted_words(want),
+            in_rule: f.in_rule,
+        },
+    }
+}
+
 /// A source-anchorless coherence diagnostic, attributed by name.
 export fn defect(in_rule: string, message: string) -> Diagnostic {
     Diagnostic { cause: Cause.Defect, message: message, loc: null, expected: [], in_rule: in_rule }
 }
 
-/// Two expected sets APPENDED — no dedup, and the name says so. A
-/// merge runs at every tie of every branch attempt, and a parse that
-/// SUCCEEDS never shows the set at all; deduplicating here puts the
-/// error machinery on the hot path. Duplicates die at
-/// `shown_expected`, the one place a reader ever sees them.
-export fn appended_expected(a: List<string>, b: List<string>) -> List<string> {
+/// What a failure expected: the terminals that would have matched, as the grammar
+/// writes them. It rides up a parse as these, merged by `want_merged`, and is
+/// spoken once, by `wanted_words`, where a diagnostic is made.
+export alias Want = List<Prim>
+
+/// Two wants APPENDED — no dedup, and the name says so. A merge runs at every
+/// tie of every branch attempt, and a parse that SUCCEEDS never shows the want at
+/// all; deduplicating here puts the error machinery on the hot path. Duplicates
+/// die in `wanted_words`, the one place a reader ever sees them.
+export fn want_merged(a: Want, b: Want) -> Want {
     if a.is_empty() { return b }
     if b.is_empty() { return a }
     a.concat(b)
 }
 
-/// The expected set as a READER sees it: each word once, in the
-/// order the parser first wanted it.
-export fn shown_expected(xs: List<string>) -> List<string> {
-    distinct(xs)
+/// The words a want reads as: each once, in the order the parser first wanted it.
+export fn wanted_words(w: Want) -> List<string> {
+    distinct([prim_word(p) for p in w])
 }
 
-/// How a prim reads in an "expected ..." message.
-export fn describe_prim(p: Prim) -> string {
+/// How one prim reads in an "expected ..." message: a literal in quotes, a
+/// terminal class by its name (`END` asks for the line's end).
+fn prim_word(p: Prim) -> string {
     match p {
         .Lit(text) -> "`${text}`",
-        .Named(term) -> term,
+        .Named(term) -> if is_end(term) { "BREAK" } else { term },
         .Ref(target) -> "a ${target}",
         .Group(_) -> "one of the group",
-        .NotChar(inner) -> "a character other than ${describe_prim(inner)}",
+        .NotChar(inner) -> "a character other than ${prim_word(inner)}",
     }
 }
 
+/// "expected A, B or C while parsing `rule`" — the one sentence a want is spoken in.
+export fn expected_message(w: Want, in_rule: string) -> string {
+    "expected ${joined_words(wanted_words(w))} while parsing `${in_rule}`"
+}
+
 /// "A", "A or B", "A, B or C".
-export fn join_expected(xs: List<string>) -> string {
+fn joined_words(xs: List<string>) -> string {
     if xs.is_empty() { return "input" }
     if xs.length == 1 { return xs[0] }
     "${xs.slice(0, xs.length - 1).join(", ")} or ${xs.last()!}"

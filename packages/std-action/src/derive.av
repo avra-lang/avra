@@ -39,10 +39,6 @@ use @std.meta.{
 use action.{Impact, faults}
 use wire.{ActionInfo, ActionParam, ActionRefusal, text_field, int_field, bool_field, unread_field}
 
-/// The widest fn `_from_text` can call: a call's argument list is
-/// spelled per count, as a run has no expression position.
-const MAX_PARAMS: int = 8
-
 /// `@impact(profile)` — the impact record an action declares.
 export fn impact(f: Fn, i: Impact) -> List<Diagnostic> {
     [impact_fault(f, why) for why in faults(i)]
@@ -64,7 +60,6 @@ fn shape_problems(f: Fn) -> List<Diagnostic> {
     let seats = [seat_problem(f, p) for p in f.params if reserved(p) || marked(p)]
     seats
         .concat(if f.answers is .Void { [no_answer(f)] } else { [] })
-        .concat(if f.params.length > MAX_PARAMS { [too_many_params(f)] } else { [] })
         .concat(if unreadable_failure(f) { [failure_kind(f)] } else { [] })
         .concat(if generic(f) { [generic_action(f)] } else { [] })
         .concat(impact_problems(f))
@@ -224,22 +219,8 @@ fn argument(p: Param, i: int) -> Code {
     if optional(p.kind) { name(slot(i)) } else { quote { ${name(slot(i))}! } }
 }
 
-/// The call, its argument list spelled for the fn's own count.
-fn called(f: Fn) -> Code {
-    let a = [argument(p, i) for i, p in f.params]
-    match f.params.length {
-        0 -> quote { ${f.name}() },
-        1 -> quote { ${f.name}(${a[0]}) },
-        2 -> quote { ${f.name}(${a[0]}, ${a[1]}) },
-        3 -> quote { ${f.name}(${a[0]}, ${a[1]}, ${a[2]}) },
-        4 -> quote { ${f.name}(${a[0]}, ${a[1]}, ${a[2]}, ${a[3]}) },
-        5 -> quote { ${f.name}(${a[0]}, ${a[1]}, ${a[2]}, ${a[3]}, ${a[4]}) },
-        6 -> quote { ${f.name}(${a[0]}, ${a[1]}, ${a[2]}, ${a[3]}, ${a[4]}, ${a[5]}) },
-        7 -> quote { ${f.name}(${a[0]}, ${a[1]}, ${a[2]}, ${a[3]}, ${a[4]}, ${a[5]}, ${a[6]}) },
-        8 -> quote { ${f.name}(${a[0]}, ${a[1]}, ${a[2]}, ${a[3]}, ${a[4]}, ${a[5]}, ${a[6]}, ${a[7]}) },
-        _ -> quote { an_action_with_more_than_eight_seats_needs_a_wider_call() },
-    }
-}
+/// The call, one argument per seat.
+fn called(f: Fn) -> Code { quote { ${f.name}(..${[argument(p, i) for i, p in f.params]}) } }
 
 // ── The refusals — each a `Diagnostic` at the declaration, stating
 // the law broken. The package prefixes the kind. ──
@@ -290,15 +271,6 @@ fn no_answer(f: Fn) -> Diagnostic {
         f.at,
         "an action answers what it did, and `${f.name}` answers nothing",
         "give `${f.name}` an answer type",
-    )
-}
-
-fn too_many_params(f: Fn) -> Diagnostic {
-    refuse_as_at(
-        "too_many_params",
-        f.at,
-        "`${f.name}` takes ${f.params.length} seats, and an action takes at most ${MAX_PARAMS}",
-        "group the seats into a record",
     )
 }
 
