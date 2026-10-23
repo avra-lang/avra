@@ -10,15 +10,15 @@
 
 /// splitmix64's finalizer: a nonlinear 64-bit mix.
 export fn mix(x: int) -> int {
-    let a = (x ^ shifted(x, 30)) * -4658895280553007687
-    let b = (a ^ shifted(a, 27)) * -7723592293110705685
+    let a = (x ^ shifted(x, 30)).wrapping_mul(-4658895280553007687)
+    let b = (a ^ shifted(a, 27)).wrapping_mul(-7723592293110705685)
     b ^ shifted(b, 31)
 }
 
 /// `z` shifted right by `k` with zeros in from the top — `>>` carries
 /// the sign bit.
 fn shifted(z: int, k: int) -> int {
-    (z >> k) & (1 << 64 - k) - 1
+    (z >> k) & 1.wrapping_shl(64 - k).wrapping_sub(1)
 }
 
 /// A hash under construction — one word, so it rides a register and a
@@ -39,7 +39,7 @@ export fn text_hash(s: string) -> int {
 /// order-free, and a duplicate counts twice. The empty set is zero.
 export fn set_hash(hashes: List<int>) -> int {
     mut sum = 0
-    for h in hashes { sum = sum + h }
+    for h in hashes { sum = sum.wrapping_add(h) }
     sum
 }
 
@@ -79,7 +79,7 @@ impl StableHasher {
 fn word_at(b: Bytes, at: int) -> int {
     mut w = 0
     for k in 0..8 {
-        if at + k < b.length { w = w | (b.at(at + k) << 8 * k) }
+        if at + k < b.length { w = w | b.at(at + k).wrapping_shl(8 * k) }
     }
     w
 }
@@ -172,7 +172,7 @@ impl Writer {
     }
 
     /// Zigzag, so a small negative is a short varint.
-    fn int(v: int) { self.varint((v << 1) ^ (v >> 63)) }
+    fn int(v: int) { self.varint(v.wrapping_shl(1) ^ (v >> 63)) }
 
     fn bool(v: bool) { self.byte(flag(v)) }
 
@@ -321,7 +321,7 @@ impl Reader {
         for k in 0..10 {
             let o = self.byte()?
             if k == 9 && o > 1 { fail CodecFault.Overlong }
-            v = v | ((o & 127) << 7 * k)
+            v = v | (o & 127).wrapping_shl(7 * k)
             if o < 128 {
                 if k > 0 && o == 0 { fail CodecFault.Overlong }
                 return v
@@ -333,7 +333,7 @@ impl Reader {
     /// Eight octets, low first: `fixed`'s reader.
     fn fixed() -> Result<int, CodecFault> {
         mut v = 0
-        for k in 0..8 { v = v | (self.byte()? << 8 * k) }
+        for k in 0..8 { v = v | (self.byte()?).wrapping_shl(8 * k) }
         v
     }
 
