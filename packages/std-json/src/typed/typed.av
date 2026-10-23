@@ -52,13 +52,13 @@ export fn members(raw: string, at: string) -> Result<List<Piece>, DecodeError> {
 /// written twice, which `member_once` refuses where a field reads one.
 export fn fields(raw: string, at: string) -> Result<List<Piece>, DecodeError> { scanned(raw, at, false) }
 
-fn scanned(raw: string, at: string, once: bool) -> Result<List<Piece>, DecodeError> {
+fn scanned(raw: string, at: string, distinct: bool) -> Result<List<Piece>, DecodeError> {
     let b = raw.bytes()
     mut i = space(b, 0)
     if i >= b.length || b.at(i) != 123 { fail misfit(at, "an object", raw) }
     i = space(b, i + 1)
     let found: Cell<List<Piece>> = Cell.new([])
-    if i < b.length && b.at(i) == 125 { return after(b, i + 1, found.get(), at, once) }
+    if i < b.length && b.at(i) == 125 { return after(b, i + 1, found.get(), at, distinct) }
     // LICENSED loops.push_loop: members are read in the order they stand, each from where the last ended
     while true {
         if i >= b.length || b.at(i) != 34 { fail misfit(at, "a member name", null) }
@@ -76,20 +76,20 @@ fn scanned(raw: string, at: string, once: bool) -> Result<List<Piece>, DecodeErr
             i = space(b, i + 1)
             continue
         }
-        if i < b.length && b.at(i) == 125 { return after(b, i + 1, found.get(), at, once) }
+        if i < b.length && b.at(i) == 125 { return after(b, i + 1, found.get(), at, distinct) }
         fail misfit(at, "`,` or `}`", null)
     }
     found.get()
 }
 
-/// The members, when nothing but blanks follows the object and, under `once`,
+/// The members, when nothing but blanks follows the object and, under `distinct`,
 /// no name is written twice.
-fn after(b: Bytes, i: int, found: List<Piece>, at: string, once: bool) -> Result<
+fn after(b: Bytes, i: int, found: List<Piece>, at: string, distinct: bool) -> Result<
     List<Piece>,
     DecodeError,
 > {
     if space(b, i) != b.length { fail misfit(at, "nothing after the object", null) }
-    if !once { return found }
+    if !distinct { return found }
     let keys = [p.key for p in found]
     for j, k in keys {
         if keys.slice(0, j).contains(k) { fail DecodeError { at: path_field(at, k), wanted: "one member", found: "more" } }
