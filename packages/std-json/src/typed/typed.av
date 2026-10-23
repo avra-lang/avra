@@ -6,7 +6,9 @@
 //! program that decodes a few types therefore links these scans and its own
 //! decoders, never the general value, its parser or its writer.
 use @std.json.{
+    DecodeError,
     MAX_DEPTH,
+    path_field,
     int_end,
     int_of,
     number_end,
@@ -22,74 +24,94 @@ use @std.text.{parse_float}
 /// One member of an object read: its decoded key, and its value as written.
 export type Piece = { key: string, raw: string }
 
+/// What the text `raw` is, in the words a refusal says it with.
+fn said(raw: string?) -> string {
+    let r? = raw else { return "nothing" }
+    let t = r.trim()
+    when {
+        t.starts_with("\"") -> "text"
+        t.starts_with("[") -> "an array"
+        t.starts_with("{") -> "an object"
+        t == "null" -> "null"
+        t == "true" || t == "false" -> "`${t}`"
+        parse_float(t) != null -> "the number ${t}"
+        _ -> "text that is not JSON"
+    }
+}
+
+/// `raw` is not what `at` wants.
+fn misfit(at: string, wanted: string, raw: string?) -> DecodeError {
+    DecodeError { at: at, wanted: wanted, found: said(raw) }
+}
+
 /// The members of the object `raw` is, each value kept as written.
-export fn members(raw: string) -> Result<List<Piece>, string> {
+export fn members(raw: string, at: string) -> Result<List<Piece>, DecodeError> {
     let b = raw.bytes()
     mut i = space(b, 0)
-    if i >= b.length || b.at(i) != 123 { fail "wants an object" }
+    if i >= b.length || b.at(i) != 123 { fail misfit(at, "an object", raw) }
     i = space(b, i + 1)
     let found: Cell<List<Piece>> = Cell.new([])
-    if i < b.length && b.at(i) == 125 { return after(b, i + 1, found.get()) }
+    if i < b.length && b.at(i) == 125 { return after(b, i + 1, found.get(), at) }
     // LICENSED loops.push_loop: members are read in the order they stand, each from where the last ended
     while true {
-        if i >= b.length || b.at(i) != 34 { fail "wants a member name" }
+        if i >= b.length || b.at(i) != 34 { fail misfit(at, "a member name", null) }
         let key_end = string_end(b, i)
-        if key_end < 0 { fail "wants a member name" }
+        if key_end < 0 { fail misfit(at, "a member name", null) }
         let key = text_of(raw, b, i, key_end)
         i = space(b, key_end)
-        if i >= b.length || b.at(i) != 58 { fail "wants `:` after a name" }
+        if i >= b.length || b.at(i) != 58 { fail misfit(at, "`:` after a name", null) }
         i = space(b, i + 1)
         let end = skip(b, i, MAX_DEPTH)
-        if end < 0 { fail "wants a value" }
+        if end < 0 { fail misfit(at, "a value", null) }
         found.push(Piece { key: key, raw: raw.substring(i, end) })
         i = space(b, end)
         if i < b.length && b.at(i) == 44 {
             i = space(b, i + 1)
             continue
         }
-        if i < b.length && b.at(i) == 125 { return after(b, i + 1, found.get()) }
-        fail "wants `,` or `}`"
+        if i < b.length && b.at(i) == 125 { return after(b, i + 1, found.get(), at) }
+        fail misfit(at, "`,` or `}`", null)
     }
     found.get()
 }
 
 /// The members, when nothing but blanks follows the object and no name is
 /// written twice: a document that says two things of one name means neither.
-fn after(b: Bytes, i: int, found: List<Piece>) -> Result<List<Piece>, string> {
-    if space(b, i) != b.length { fail "has more after the object" }
+fn after(b: Bytes, i: int, found: List<Piece>, at: string) -> Result<List<Piece>, DecodeError> {
+    if space(b, i) != b.length { fail misfit(at, "nothing after the object", null) }
     let keys = [p.key for p in found]
     for j, k in keys {
-        if keys.slice(0, j).contains(k) { fail "names a member twice" }
+        if keys.slice(0, j).contains(k) { fail DecodeError { at: path_field(at, k), wanted: "one member", found: "more" } }
     }
     found
 }
 
 /// The elements of the array `raw` is, each kept as written.
-export fn elements(raw: string) -> Result<List<string>, string> {
+export fn elements(raw: string, at: string) -> Result<List<string>, DecodeError> {
     let b = raw.bytes()
     mut i = space(b, 0)
-    if i >= b.length || b.at(i) != 91 { fail "wants an array" }
+    if i >= b.length || b.at(i) != 91 { fail misfit(at, "an array", raw) }
     i = space(b, i + 1)
     let found: Cell<List<string>> = Cell.new([])
-    if i < b.length && b.at(i) == 93 { return done(b, i + 1, found.get()) }
+    if i < b.length && b.at(i) == 93 { return done(b, i + 1, found.get(), at) }
     // LICENSED loops.push_loop: elements are read in the order they stand, each from where the last ended
     while true {
         let end = skip(b, i, MAX_DEPTH)
-        if end < 0 { fail "wants a value" }
+        if end < 0 { fail misfit(at, "a value", null) }
         found.push(raw.substring(i, end))
         i = space(b, end)
         if i < b.length && b.at(i) == 44 {
             i = space(b, i + 1)
             continue
         }
-        if i < b.length && b.at(i) == 93 { return done(b, i + 1, found.get()) }
-        fail "wants `,` or `]`"
+        if i < b.length && b.at(i) == 93 { return done(b, i + 1, found.get(), at) }
+        fail misfit(at, "`,` or `]`", null)
     }
     found.get()
 }
 
-fn done(b: Bytes, i: int, found: List<string>) -> Result<List<string>, string> {
-    if space(b, i) != b.length { fail "has more after the array" }
+fn done(b: Bytes, i: int, found: List<string>, at: string) -> Result<List<string>, DecodeError> {
+    if space(b, i) != b.length { fail misfit(at, "nothing after the array", null) }
     found
 }
 
@@ -97,30 +119,30 @@ fn done(b: Bytes, i: int, found: List<string>) -> Result<List<string>, string> {
 export fn member(ms: List<Piece>, key: string) -> string? { ms.find(it.key == key)?.raw }
 
 /// The integer `raw` is.
-export fn as_int(raw: string) -> Result<int, string> {
+export fn as_int(raw: string, at: string) -> Result<int, DecodeError> {
     let b = raw.bytes()
     let from = space(b, 0)
     let end = int_end(b, from)
-    if end < 0 || space(b, end) != b.length { fail "wants an integer" }
+    if end < 0 || space(b, end) != b.length { fail misfit(at, "an integer", raw) }
     int_of(raw, b, from, end)
 }
 
 /// The text `raw` is, its escapes decoded.
-export fn as_text(raw: string) -> Result<string, string> {
+export fn as_text(raw: string, at: string) -> Result<string, DecodeError> {
     let b = raw.bytes()
     let from = space(b, 0)
-    if from >= b.length || b.at(from) != 34 { fail "wants text" }
+    if from >= b.length || b.at(from) != 34 { fail misfit(at, "text", raw) }
     let end = string_end(b, from)
-    if end < 0 || space(b, end) != b.length { fail "wants text" }
+    if end < 0 || space(b, end) != b.length { fail misfit(at, "text", raw) }
     text_of(raw, b, from, end)
 }
 
 /// The truth `raw` is.
-export fn as_bool(raw: string) -> Result<bool, string> {
+export fn as_bool(raw: string, at: string) -> Result<bool, DecodeError> {
     let t = raw.trim()
     if t == "true" { return true }
     if t == "false" { return false }
-    fail "wants `true` or `false`"
+    fail misfit(at, "`true` or `false`", raw)
 }
 
 /// Whether `raw` is `null`.
@@ -157,8 +179,8 @@ export fn map_of_entries<T>(entries: List<Entry<T>>) -> Map<string, T> {
 }
 
 /// The value of a member a field cannot do without.
-export fn needed(raw: string?) -> Result<string, string> {
-    let r? = raw else { fail "is missing" }
+export fn needed(raw: string?, at: string, wanted: string) -> Result<string, DecodeError> {
+    let r? = raw else { fail misfit(at, wanted, null) }
     r
 }
 
@@ -169,8 +191,8 @@ export fn present_raw(raw: string?) -> string? {
 }
 
 /// The float `raw` is.
-export fn as_float(raw: string) -> Result<float, string> {
-    let n? = parse_float(raw.trim()) else { fail "wants a number" }
+export fn as_float(raw: string, at: string) -> Result<float, DecodeError> {
+    let n? = parse_float(raw.trim()) else { fail misfit(at, "a number", raw) }
     n
 }
 

@@ -46,7 +46,6 @@ use decode.{
     Limits,
     decode,
     ruled,
-    json_of,
     list,
     read_text,
     read_int,
@@ -65,7 +64,6 @@ use json.{
     json_read_float,
     json_read_bool,
 }
-use @std.json.{Json}
 use value.{Value, Entry}
 use issue.{Issues, root}
 use check.{Checking, filed}
@@ -418,7 +416,7 @@ fn reader(k: Kind) -> Code {
             quote { list(d, at, ${each}) }
         },
         .Named(n, _) -> if json_typed(n) {
-            quote { ruled(d, at, "json", ${name(n)}.decode_json(json_of(at.value), at.at.text())) }
+            quote { ruled(d, at, "json", ${name(n)}.decode_text(at.value?.shown(), at.at.text())) }
         } else {
             quote { ${name(n)}.decoded(d, at) }
         },
@@ -697,7 +695,7 @@ fn reading(k: Kind, depth: Code, required: Code, secret: Code) -> Code {
             quote { json_list(d, ${depth}, ${required}, ${secret}, ${each}) }
         },
         .Named(n, _) -> if json_typed(n) {
-            quote { json_read_protocol(d, ${depth}, ${required}, ${secret}, (v: Json?, at: string) -> ${name(n)}.decode_json(v, at)) }
+            quote { json_read_protocol(d, ${depth}, ${required}, ${secret}, (raw: string?, at: string) -> ${name(n)}.decode_text(raw, at)) }
         } else {
             quote { ${name(n)}.read_json(d, ${depth}, ${required}, ${secret}) }
         },

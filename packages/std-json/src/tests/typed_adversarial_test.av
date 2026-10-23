@@ -15,33 +15,33 @@ fn reads(text: string) -> bool {
 }
 
 fn refusal(text: string) -> string {
-    match Cell2.from_json_text(text) { .Ok(_) -> "read", .Err(e) -> e }
+    match Cell2.from_json_text(text) { .Ok(_) -> "read", .Err(e) -> e.describe().message }
 }
 
 fn cut_reads(n: int) -> bool { reads(whole.substring(0, n)) }
 
 fn int_refused(text: string) -> bool {
-    match as_int(text) { .Ok(_) -> false, .Err(_) -> true }
+    match as_int(text, "") { .Ok(_) -> false, .Err(_) -> true }
 }
 
 fn int_read(text: string) -> int {
-    match as_int(text) { .Ok(n) -> n, .Err(_) -> -999 }
+    match as_int(text, "") { .Ok(n) -> n, .Err(_) -> -999 }
 }
 
 fn text_refused(text: string) -> bool {
-    match as_text(text) { .Ok(_) -> false, .Err(_) -> true }
+    match as_text(text, "") { .Ok(_) -> false, .Err(_) -> true }
 }
 
 fn text_read(text: string) -> string {
-    match as_text(text) { .Ok(t) -> t, .Err(_) -> "refused" }
+    match as_text(text, "") { .Ok(t) -> t, .Err(_) -> "refused" }
 }
 
 fn elements_of(text: string) -> List<string> {
-    match elements(text) { .Ok(xs) -> xs, .Err(_) -> ["refused"] }
+    match elements(text, "") { .Ok(xs) -> xs, .Err(_) -> ["refused"] }
 }
 
 fn members_count(text: string) -> int {
-    match members(text) { .Ok(ms) -> ms.length, .Err(_) -> -1 }
+    match members(text, "") { .Ok(ms) -> ms.length, .Err(_) -> -1 }
 }
 
 spec "std/json typed — hostile text" {
@@ -60,7 +60,7 @@ spec "std/json typed — hostile text" {
     }
     given "a name written twice" {
         then "is refused, as the tree refuses it" {
-            refusal("{\"n\":1,\"n\":2,\"s\":\"\",\"flag\":true,\"tags\":[]}") == "names a member twice"
+            refusal("{\"n\":1,\"n\":2,\"s\":\"\",\"flag\":true,\"tags\":[]}") == "`n` wants one member, found more"
         }
     }
     given "a trailing comma" {
@@ -93,12 +93,12 @@ spec "std/json typed — hostile text" {
     }
     given "a value of the wrong kind" {
         then "is refused in its own words" {
-            refusal("{\"n\":\"3\",\"s\":\"\",\"flag\":true,\"tags\":[]}") == "wants an integer" &&
-                refusal("{\"n\":3,\"s\":4,\"flag\":true,\"tags\":[]}") == "wants text" &&
-                refusal("{\"n\":3,\"s\":\"\",\"flag\":\"yes\",\"tags\":[]}") == "wants `true` or `false`" &&
-                refusal("{\"n\":3,\"s\":\"\",\"flag\":true,\"tags\":{}}") == "wants an array"
+            refusal("{\"n\":\"3\",\"s\":\"\",\"flag\":true,\"tags\":[]}") == "`n` wants an integer, found text" &&
+                refusal("{\"n\":3,\"s\":4,\"flag\":true,\"tags\":[]}") == "`s` wants text, found the number 4" &&
+                refusal("{\"n\":3,\"s\":\"\",\"flag\":\"yes\",\"tags\":[]}") == "`flag` wants `true` or `false`, found text" &&
+                refusal("{\"n\":3,\"s\":\"\",\"flag\":true,\"tags\":{}}") == "`tags` wants an array, found an object"
         }
-        then "is refused for a missing member" { refusal("{\"s\":\"\",\"flag\":true,\"tags\":[]}") == "is missing" }
+        then "is refused for a missing member" { refusal("{\"s\":\"\",\"flag\":true,\"tags\":[]}") == "`n` wants an integer, found nothing" }
         then "null reads an optional as absent, and a required one is refused" {
             reads("{\"n\":3,\"s\":\"\",\"flag\":true,\"maybe\":null,\"tags\":[]}") &&
                 !reads("{\"n\":null,\"s\":\"\",\"flag\":true,\"tags\":[]}")

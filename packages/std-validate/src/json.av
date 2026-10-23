@@ -20,9 +20,9 @@
 //! when no issue may show what it received. A value it refuses is
 //! read the tree's way — shown as a `Value` and handed to the tree
 //! reader — so a refusal says what the tree path says.
-use @std.json.{Json, DecodeError, plain_end, int_end, int_of, value_at, MAX_DEPTH}
+use @std.json.{DecodeError, plain_end, int_end, int_of, value_at, MAX_DEPTH}
 use @std.json.typed.{Path, Step, reader_of}
-use decode.{Decoding, Decoder, Slot, Coercion, Limits, decode, answered, ruled, json_of}
+use decode.{Decoding, Decoder, Slot, Coercion, Limits, decode, answered, ruled}
 use formats.{from_json, json_value}
 use issue.{Issue, Issues, root}
 use value.{Value}
@@ -284,20 +284,21 @@ export fn ruled_json<T, E: Refusal>(
 /// A field's value before its key is met.
 export fn not_yet<T>() -> T? { null }
 
-/// Each scalar reader as a direct reader, for a list of them.
-/// A field whose type answers std-json's protocol, read from JSON text: its value is
-/// read at the cursor as one tree, then decoded by the type's own `decode_json`.
+/// A field whose type answers std-json's protocol, read from JSON text: the text of
+/// its value at the cursor, decoded by the type's own `decode_text`.
 export fn json_read_protocol<T>(
     mut d: Decoding,
     depth: int,
     required: bool,
     secret: bool,
-    read: fn(Json?, string) -> Result<T, DecodeError>,
+    read: fn(string?, string) -> Result<T, DecodeError>,
 ) -> T? {
+    let from = d.json.pos
     let s? = d.tree_slot(depth, required, secret) else { return null }
-    ruled(d, s, "json", read(json_of(s.value), s.at.text()))
+    ruled(d, s, "json", read(d.json.text.substring(from, d.json.pos), s.at.text()))
 }
 
+/// Each scalar reader as a direct reader, for a list of them.
 export fn json_read_text(mut d: Decoding, depth: int, required: bool, secret: bool) -> string? {
     d.json_text(depth, required, secret)
 }
