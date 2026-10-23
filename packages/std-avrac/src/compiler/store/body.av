@@ -183,7 +183,7 @@ fn any_withdrawn(pack: Pack) -> bool { pack.withdrawn.get().values().any(it) }
 export fn sealed_whole(pack: Pack) -> bool {
     if newest_rev(pack.dir) > pack.seen_rev.get() { return false }
     materialized(pack)
-    let keys = sorted_by([k for k in pack.records.get().keys() if !withdrawn(pack, k)], text_before)
+    let keys = [k for k in pack.records.get().keys() if !withdrawn(pack, k)]
     if keys.is_empty() { return false }
     let rev = newest_rev(pack.dir) + 1
     let digests = referenced_digests(pack, keys)
@@ -214,10 +214,7 @@ export fn sealed_whole(pack: Pack) -> bool {
 /// are appended to the chain's one value file.
 fn sealed_run(pack: Pack, fresh: List<string>, k: int) -> bool {
     let runs = pack.sealed.get()
-    let keys = sorted_by(
-        distinct(fresh.concat(flatten([run_keys(pack, r) for r in runs.slice(0, k)]))),
-        text_before,
-    )
+    let keys = distinct(fresh.concat(flatten([run_keys(pack, r) for r in runs.slice(0, k)])))
     if keys.is_empty() { return false }
     let rev = newest_rev(pack.dir) + 1
     let val_rev = pack.val_rev.get()
@@ -238,9 +235,16 @@ fn sealed_run(pack: Pack, fresh: List<string>, k: int) -> bool {
     true
 }
 
-/// Every record key one run holds.
+/// Every record key one run holds, each row decoded once and carried: a newer row already
+/// resident stands over the run's, and the seal reads the carried rows, never the run again.
 fn run_keys(pack: Pack, s: Sealed) -> List<string> {
-    [record_key(h!.family, h!.key) for k in 0..s.count for h in [sealed_held_at(pack, s, k)] if h != null]
+    [carried(pack, h!) for k in 0..s.count for h in [sealed_held_at(pack, s, k)] if h != null]
+}
+
+fn carried(pack: Pack, h: Held) -> string {
+    let at = record_key(h.family, h.key)
+    if pack.records.get().get(at) == null { pack.records.put(at, h) }
+    at
 }
 
 /// Where the open value file holds a digest already, if it does.
@@ -362,14 +366,15 @@ fn body_bytes(
     base: int,
     placed: List<Placed>,
 ) -> Bytes {
-    let held = indexed(pack, keys)
+    let lined = indexed(pack, keys)
+    let held = [l.held for l in lined]
     let reads = [reads_of(pack, h) for h in held]
     let n = names()
     n.filled(flatten(reads))
     let s = sets()
     let set_ids = [s.intern(named_ids(n, r)) for r in reads]
     let rows = [row_bytes(held[i], set_ids[i]) for i in 0..held.length]
-    let index = index_bytes(held, rows)
+    let index = index_bytes(lined, rows)
     let sections = [
         index,
         slot_bytes(placed),
@@ -396,9 +401,13 @@ fn body_bytes(
     [framed(head.bytes())].concat(sections).bytes()
 }
 
-/// The live rows in index order: by the leading hex of their action key, the order a lookup bisects.
-fn indexed(pack: Pack, keys: List<string>) -> List<Held> {
-    [record_of(pack, t.substring(KEY_HEX, t.length))! for t in sorted_by(["${index_hex(k)}${k}" for k in keys], text_before)]
+/// A row and the leading hex of its action key, as its index line spells it.
+type Lined = { hex: string, held: Held }
+
+/// The live rows in index order: by the leading hex of their action key, the order a lookup
+/// bisects. The hex is made once a row and rides with it.
+fn indexed(pack: Pack, keys: List<string>) -> List<Lined> {
+    [Lined { hex: t.substring(0, KEY_HEX), held: record_of(pack, t.substring(KEY_HEX, t.length))! } for t in sorted_by(["${index_hex(k)}${k}" for k in keys], text_before)]
 }
 
 /// The leading hex of the action key a record key's index line holds.
@@ -422,14 +431,11 @@ fn slot_bytes(placed: List<Placed>) -> Bytes {
 }
 
 /// The index: one line a row, sorted by key — the line's position is the row's ordinal.
-fn index_bytes(held: List<Held>, rows: List<Bytes>) -> Bytes {
+fn index_bytes(lined: List<Lined>, rows: List<Bytes>) -> Bytes {
     mut at = 0
     mut lines: List<string> = []
-    for i, h in held {
-        lines
-            .push(
-                "\n${action_key(h.family, h.key).substring(0, KEY_HEX)}${padded(at, OFFSET_WIDTH)}${padded(rows[i].length, LENGTH_WIDTH)}",
-            )
+    for i, l in lined {
+        lines.push("\n${l.hex}${padded(at, OFFSET_WIDTH)}${padded(rows[i].length, LENGTH_WIDTH)}")
         at = at + rows[i].length
     }
     lines.join("").bytes()
