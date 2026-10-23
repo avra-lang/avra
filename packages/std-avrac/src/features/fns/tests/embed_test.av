@@ -34,6 +34,28 @@ fn embedding(main: string, files: Map<string, string>) -> Program {
     test_workspace(memory_host(held, paths), "/w").program("/w/src/main.av")
 }
 
+/// `main` in a package that depends on nothing but `@std/meta`, over a toolchain
+/// directory that carries `@std/sqlite` — a package with C objects — and a file of it.
+fn embedding_toolchain(main: string) -> Program {
+    let held = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            "/w/src/main.av": "use @std.meta.{embed}\n${main}",
+            "/std/std-sqlite/avra.toml": "[package]\nname = \"@std/sqlite\"\nversion = \"0.1.0\"\n\n[link]\nobjects = [\"../../build/sqlite3.o\"]\n",
+            "/std/std-sqlite/src/probe.txt": "sqlite's text",
+        },
+    )
+    let paths = [
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/std/std-sqlite/avra.toml",
+        "/std/std-sqlite/src/probe.txt",
+    ]
+        .concat(vendored_meta_paths())
+    test_workspace(memory_host(held, paths) with { std_root: "/std" }, "/w")
+        .program("/w/src/main.av")
+}
+
 /// Every path a case here may place a file at, under the package root.
 fn embed_fixture_paths() -> List<string> {
     ["src/hello.txt", "src/sub/deep.txt", "data/side.txt", "src/banner.txt", "src/@x/f.txt"]
@@ -74,6 +96,23 @@ spec "features/fns — embed reads a file inside its own package" {
     given "a file of a package this one depends on, named by the package" {
         then "the const holds its text, read from that package's root" {
             answered("const A: string = embed(\"@x/lib/src/banner.txt\")\nA") == "the library's"
+        }
+    }
+    given "a file of a toolchain package this one does not depend on" {
+        then "the const holds its text" {
+            (embedding_toolchain("const A: string = embed(\"@std/sqlite/src/probe.txt\")\nA").run() catch e -> e) == "sqlite's text"
+        }
+        then "the package joins no build: it is no package row and links no object" {
+            let p = embedding_toolchain("const A: string = embed(\"@std/sqlite/src/probe.txt\")\nA")
+            let _ = p.run() catch e -> e
+            !p.ws.packages().any(it.key == "@std/sqlite") &&
+                !p.ws.link_words("").any(it.contains("sqlite3.o"))
+        }
+        then "a toolchain package that does not exist refuses, naming the package" {
+            refused_in(
+                embedding_toolchain("const A: string = embed(\"@std/nope/src/x.txt\")\nA"),
+                "`embed` reads `@std/nope` as a package, and this package does not depend on it",
+            )
         }
     }
     given "a directory of the package literally named `@x`" {
