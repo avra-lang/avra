@@ -14,7 +14,7 @@
 use @std.io.{exists, read_text, write_text, read_bytes, write_bytes, make_dirs, remove}
 use @std.path.{joined_path}
 use @std.relation.engine.{map_cell}
-use core.{digest_of, joined, flatten}
+use core.{digest_of, joined, flatten, sorted_by}
 use core.debug.{qtrace, traced}
 use core.runtime_header.{runtime_header}
 
@@ -80,8 +80,20 @@ export enum Keeping {
     Aside(Cell<Map<string, string>>)
 }
 
-/// THE STORE — one root, the packed index, and where its writes land.
-export type Store = { root: string, print: string, keeping: Keeping, pack: Pack, producers: Producers }
+/// THE STORE — one root, the packed index, where its writes land, and the directories its
+/// values name by a word.
+export type Store = { root: string, print: string, keeping: Keeping, pack: Pack, producers: Producers, anchors: List<Anchor> = [], spelled: List<Spelled> = [] }
+
+/// A DIRECTORY A VALUE NAMES BY A WORD — the tree, the toolchain's std — so a row's text holds
+/// no absolute path and a moved or recloned checkout reads it as its own.
+export type Anchor = { at: string, word: string }
+
+/// An anchor as a value spells it: the directory's prefix, and what stands for it there.
+type Spelled = { prefix: string, word: string }
+
+/// What opens an anchored path in a kept value: a byte no text the compiler writes holds, and
+/// doubled where a value holds it, so every value reads back whole.
+const MARK: string = "\\u0001"
 
 /// WHAT STAMPS A FAMILY'S ROWS so a compiler that did not write them may read them: the
 /// producing code, its codec and the toolchain, folded to one digest — or the reason there
@@ -170,13 +182,21 @@ export fn store_with(root: string, print: string, keeping: Keeping) -> Store { s
 /// `store_with`, the families it shares named: a row of one is filed under its producer's
 /// stamp and read by any compiler of the same stamp; every other row under this compiler's.
 // LICENSED compiler.free_state_verb: a CONSTRUCTOR — a root, a print, the producers and a mode in.
-export fn store_stamped(root: string, print: string, producers: Producers, keeping: Keeping) -> Store {
+export fn store_stamped(
+    root: string,
+    print: string,
+    producers: Producers,
+    keeping: Keeping,
+    anchors: List<Anchor> = [],
+) -> Store {
     let made = Store {
         root: root,
         print: print,
         keeping: keeping,
         pack: pack_for(root, print),
         producers: producers,
+        anchors: anchors,
+        spelled: [Spelled { prefix: "${a.at}/", word: "${MARK}${a.word}:" } for a in sorted_by(anchors, (a: Anchor, b: Anchor) -> a.at.length > b.at.length)],
     }
     if traced() { qtrace("Q\tstore\tstamp\tsig\t${stamp_word(producers.sig)}\n") }
     made
@@ -184,6 +204,10 @@ export fn store_stamped(root: string, print: string, producers: Producers, keepi
 
 /// How a producer reads in the trace.
 fn stamp_word(p: Producer) -> string { match p { .Hashed(_) -> "shared", .Absent -> "absent" } }
+
+/// A NAME AS THE STORE FILES IT — `package:relative/path` (`Workspace.stored_name`), never an
+/// absolute path, which would bind every row to where the checkout stands.
+export type StoredName = string
 
 /// ONE READ OF A SAVED ANSWER: what was read, named by its stable name, and the digest
 /// of exactly what came back. A name holds no newline; a digest holds no space and is
@@ -302,6 +326,42 @@ impl Store {
         }
     }
 
+    /// A value as the store keeps it: each anchored directory spelled by its word.
+    fn filed(text: string) -> string {
+        if !text.contains(MARK) && !self.names_place(text) { return text }
+        self.spelled.fold(text.replace(MARK, MARK + MARK), (t, s) -> t.replace(s.prefix, s.word))
+    }
+
+    /// Whether a value names an anchored directory — asked of every value kept, so it holds no closure.
+    fn names_place(text: string) -> bool {
+        for s in self.spelled {
+            if text.contains(s.prefix) { return true }
+        }
+        false
+    }
+
+    /// A kept value read back: each word spelled as its directory here.
+    fn found(text: string) -> string {
+        if !text.contains(MARK) { return text }
+        let parts = text.split(MARK)
+        mut out = parts[0]
+        mut i = 1
+        while i < parts.length {
+            let part = parts[i]
+            if part.is_empty() {
+                out = out + MARK + if i + 1 < parts.length { parts[i + 1] } else { "" }
+                i = i + 2
+                continue
+            }
+            let at = part.index_of(":")
+            let anchor = if at < 0 { null } else { self.anchors.find(it.word == part.substring(0, at)) }
+            out = out +
+                if anchor == null { MARK + part } else { "${anchor!.at}/${part.substring(at + 1, part.length)}" }
+            i = i + 1
+        }
+        out
+    }
+
     /// The bytes a key names, or nothing when the row is not committed.
     fn get(family: Stored, key: string) -> string? {
         let found = self.read_row(family, key)
@@ -311,12 +371,13 @@ impl Store {
 
     fn read_row(family: Stored, key: string) -> string? {
         let aside = self.aside_row(family, key)
-        if aside != null { return aside }
-        if family.file_family() {
+        if aside != null { return self.found(aside!) }
+        let kept = if family.file_family() {
             self.read_disk(family, key)
         } else {
             pack_get(self.pack, self.packed(family), key, inspects(self.keeping))
         }
+        if kept == null { null } else { self.found(kept!) }
     }
 
     fn read_disk(family: Stored, key: string) -> string? {
@@ -327,11 +388,12 @@ impl Store {
 
     /// REMEMBER A ROW — on disk, or set aside where the store keeps none.
     fn keep(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
+        let filed = [self.filed(r) for r in read]
         match self.keeping {
-            .Disk -> self.disk_kept(family, key, bytes, read),
+            .Disk -> self.disk_kept(family, key, self.filed(bytes), filed),
             .Aside(rows) -> {
-                rows.put(self.aside_key(family, key), bytes)
-                rows.put(self.reads_key(family, key), joined(read, "\n"))
+                rows.put(self.aside_key(family, key), self.filed(bytes))
+                rows.put(self.reads_key(family, key), joined(filed, "\n"))
                 true
             },
         }
@@ -405,8 +467,13 @@ impl Store {
             suspect.get(self.suspect_key(family, key)) == null
     }
 
-    /// The lines a row was kept with.
+    /// The lines a row was kept with, each read back as a name here.
     fn reads_of(family: Stored, key: string) -> List<string>? {
+        let lines? = self.kept_reads(family, key) else { return null }
+        [self.found(l) for l in lines]
+    }
+
+    fn kept_reads(family: Stored, key: string) -> List<string>? {
         if self.aside_row(family, key) != null {
             return lines_of(self.aside_reads(family, key))
         }

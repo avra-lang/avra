@@ -54,13 +54,13 @@ build() { # build <label>
 
 build cold
 # one fn's body moves; no signature does
-moved_fn='fn module_shown(name: string) -> string { if name == "" { "the root module" } else { name } }'
+moved_fn='fn module_shown(name: string) -> string { if name == "" { ROOT_MODULE } else { name } }'
 python3 - "$moved" "$moved_fn" <<'PY' || { echo "witness_held_instance: the fn to move is gone from $moved" >&2; exit 2; }
 import sys
 path, old = sys.argv[1], sys.argv[2]
 text = open(path).read()
 assert old in text
-open(path, "w").write(text.replace(old, old.replace('"the root module"', '"the root module, moved"'), 1))
+open(path, "w").write(text.replace(old, old.replace('{ ROOT_MODULE }', '{ "${ROOT_MODULE}" }'), 1))
 PY
 build warm
 
