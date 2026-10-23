@@ -294,17 +294,17 @@ fn kind_at(kinds: List<Kind>, j: int) -> Kind {
 /// a payload's name, its spelling and its shape cannot come from two
 /// places and disagree, which is the property the crossing suite
 /// asserts positionally.
-fn crossed_field(v: FileView, p: Param, kind: Kind, spelled: MetaSpelled?) -> MetaField {
+fn crossed_field(v: FileView, origin: FileId?, p: Param, kind: Kind, spelled: MetaSpelled?) -> MetaField {
     MetaField {
         name: p.name.of,
         ty: written_spelling(p.ty),
-        at: placed(v, v.store.param_id_span(p.id)),
+        at: placed(v, origin, v.store.param_id_span(p.id)),
         kind: kind,
-        marks: crossed_marks(v, p.marks),
+        marks: crossed_marks(v, origin, p.marks),
         doc: null,
-        annotations: crossed_annotations(v, p.marks),
+        annotations: crossed_annotations(v, origin, p.marks),
         defaulted: p.default != null,
-        says: crossed_says(v, p, kind),
+        says: crossed_says(v, origin, p, kind),
         state: p.state,
         default: crossed_default(v, p),
         spelled: spelled,
@@ -328,23 +328,23 @@ fn crossed_default(v: FileView, p: Param) -> MetaCode? {
 
 /// A declared seat as a `Param`: its name, its type's spelling AND ITS
 /// SHAPE, its `mut` and `const` marks.
-fn crossed_param(v: FileView, p: Param, k: Kind) -> MetaParam {
+fn crossed_param(v: FileView, origin: FileId?, p: Param, k: Kind) -> MetaParam {
     MetaParam {
         name: p.name.of,
         ty: written_spelling(p.ty),
         mutable: p.promises.mutable,
         settled: p.promises.settled,
-        at: placed(v, v.store.param_id_span(p.id)),
+        at: placed(v, origin, v.store.param_id_span(p.id)),
         kind: k,
     }
 }
 
 /// What an event says: the seats its handler is told, each shaped by
 /// the handler's own type. Absent for a member that is no event.
-fn crossed_says(v: FileView, p: Param, kind: Kind) -> List<MetaParam>? {
+fn crossed_says(v: FileView, origin: FileId?, p: Param, kind: Kind) -> List<MetaParam>? {
     let says? = p.says else { return null }
     let kinds = told_kinds(kind)
-    [crossed_param(v, s, kind_at(kinds, j)) for j, s in says]
+    [crossed_param(v, origin, s, kind_at(kinds, j)) for j, s in says]
 }
 
 /// The seats a handler's type takes — an event's member holds a
@@ -360,8 +360,8 @@ fn crossed_named(m: Mark) -> List<MetaMarkArg> {
 
 /// A member's marks as the derive reads them — the word, its words,
 /// and where it stands.
-fn crossed_marks(v: FileView, ms: List<Mark>) -> List<MetaMark> {
-    [MetaMark { name: m.name, args: m.args, at: placed(v, m.span), named: crossed_named(m) } for m in ms]
+fn crossed_marks(v: FileView, origin: FileId?, ms: List<Mark>) -> List<MetaMark> {
+    [MetaMark { name: m.name, args: m.args, at: placed(v, origin, m.span), named: crossed_named(m) } for m in ms]
 }
 
 /// A member's marks again, as its OWN `annotations` — `crossed_marks`'s
@@ -369,11 +369,11 @@ fn crossed_marks(v: FileView, ms: List<Mark>) -> List<MetaMark> {
 /// member shares with a declaration rather than the claimed-by-a-derive
 /// one. A field or a variant has no `///` of its own yet — no grammar
 /// attaches one — so its `doc` reads null until one does.
-fn crossed_annotations(v: FileView, ms: List<Mark>) -> List<MetaAnnotation> {
+fn crossed_annotations(v: FileView, origin: FileId?, ms: List<Mark>) -> List<MetaAnnotation> {
     [MetaAnnotation {
         name: m.name,
         args: m.args,
-        at: placed(v, m.span),
+        at: placed(v, origin, m.span),
         call: call_at(v, m.name, m.span),
         named: crossed_named(m),
     } for m in ms]
@@ -386,10 +386,12 @@ export fn call_at(v: FileView, name: string, sp: Span?) -> MetaCode? {
     MetaCode { node: Node.Template(v.source.file, sp!.lo, ["${name}(", ")"], []) }
 }
 
-/// A source span as the place a meta value names.
-fn placed(v: FileView, sp: Span?) -> Loc? {
+/// A source span as the place a meta value names: in the file whose text the
+/// span indexes — a template's origin for generated code, this file otherwise.
+fn placed(v: FileView, origin: FileId?, sp: Span?) -> Loc? {
     if sp == null { return null }
-    Loc { file: v.source.file, lo: sp!.lo, hi: sp!.hi }
+    let file = if origin == null { v.source.file } else { v.decls.file(origin!).path }
+    Loc { file: file, lo: sp!.lo, hi: sp!.hi }
 }
 
 /// A type reference as the program WROTE it, "" for a written absence.
