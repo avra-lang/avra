@@ -124,7 +124,8 @@ if [ "$(cat "$F/switches.1")" = unread ]; then
     echo "compile-slots: the wait's wakeups are unread on this host (Darwin keeps no voluntary-switch count); the quiet-wait row is held on Linux"
 else
     echo "compile-slots: the waiter's wakeups over a two-second wait: $(cat "$F/switches.1")"
-    row "a waiter that waited two seconds woke at most six times (a block, not a poll)" "$([ "$(cat "$F/switches.1")" -le 6 ] && echo yes || echo "no: $(cat "$F/switches.1")")" "yes"
+    # measured on Linux: a blocked waiter wakes about twice, a 200 ms poll about ten times
+    row "a waiter that waited two seconds woke at most four times (a block, not a poll)" "$([ "$(cat "$F/switches.1")" -le 4 ] && echo yes || echo "no: $(cat "$F/switches.1")")" "yes"
 fi
 
 # A SLOT DIRECTORY MADE AGAIN FINDS ITS SET: the same name and cap add no set.
