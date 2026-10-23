@@ -544,7 +544,7 @@ impl SyntaxArena {
 
     /// Every sugar node, in allocation order.
     fn sugars() -> List<ExprId> {
-        [ExprId { index: i } for i, n in self.means_notes.get() if n != null]
+        [ExprId { index: i } for i, n in self.means_notes.get() if n != null && !n!.is_empty()]
     }
 
     /// What `sugar` means, minted beside it: its nodes answer for it, the
@@ -1830,7 +1830,7 @@ impl SyntaxArena {
             .MethodCall(subject, _, _) -> self.pronoun_rides(subject),
             .Call(callee, _, args) -> callee == "it" || self.any_rides(args),
             .Body(_, _, holes, _) -> self.any_rides(holes),
-            rest -> self.any_rides(self.expr_children(id)),
+            rest -> self.any_rides(self.reached(id)),
         }
     }
 
@@ -1860,10 +1860,18 @@ impl SyntaxArena {
     // only where it DIFFERS and delegates the rest here, so no two
     // registries can disagree about which payloads are children.
 
+    /// What a complete walk reaches under `e`: its payloads' nodes — or, for an
+    /// instance, which stands for what its component makes of it, that meaning
+    /// alone, so each node is reached once.
+    fn reached(e: ExprId) -> List<ExprId> {
+        let root = if self.instance_word(e) == null { null } else { self.meant(e) }
+        if root == null { self.expr_children(e) } else { [root!] }
+    }
+
     /// Every expression at and under `root`, children before owners,
     /// hidden branches and statement bodies included.
     fn every_expr(root: ExprId) -> List<ExprId> {
-        flatten([self.every_expr(k) for k in self.expr_children(root)]).concat([root])
+        flatten([self.every_expr(k) for k in self.reached(root)]).concat([root])
     }
 
     fn stmts_exprs(ids: List<StmtId>) -> List<ExprId> {
