@@ -123,6 +123,7 @@ row "five waiters over one slot acquire in the order they began waiting" "$(tr '
 if [ "$(cat "$F/switches.1")" = unread ]; then
     echo "compile-slots: the wait's wakeups are unread on this host (Darwin keeps no voluntary-switch count); the quiet-wait row is held on Linux"
 else
+    echo "compile-slots: the waiter's wakeups over a two-second wait: $(cat "$F/switches.1")"
     row "a waiter that waited two seconds woke at most six times (a block, not a poll)" "$([ "$(cat "$F/switches.1")" -le 6 ] && echo yes || echo "no: $(cat "$F/switches.1")")" "yes"
 fi
 
