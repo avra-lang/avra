@@ -11,7 +11,7 @@ const NAMED = new Map([[KEY.enter, "Enter"], [KEY.tab, "Tab"], [KEY.escape, "Esc
 
 // Whether Playwright's WebKit can launch here, and what it says when it cannot.
 export async function webkitLaunch(playwright) {
-  try { return { browser: await playwright.webkit.launch() }; } catch (e) { return { said: String(e.message ?? e).split("\n")[0] }; }
+  try { return { browser: await playwright.webkit.launch() }; } catch (e) { return { said: String(e.message ?? e).split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 6).join(" | ") }; }
 }
 
 // The browser is the caller's: closing a page closes its context only.
