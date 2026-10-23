@@ -114,6 +114,8 @@ type MatchContext<T, N> = {
     // per token, the classes it wears by slot as bits (bit 62: it closes a body) — the
     // branch check reads one int where it would ask the lexeme class by class
     masks: List<int>,
+    // per token, the slot of the grammar literal it spells, or -1
+    lit_at: List<int>,
     // one absence and one silence per run: a miss is the engine's
     // commonest outcome, and a value it shares costs nothing to hand
     // out (a consumer that changed one would copy it)
@@ -430,18 +432,17 @@ fn skip_point(st: BranchStart, cursor: int) -> FarthestFailure {
     }
 }
 
-/// Whether a branch cannot consume `tok`: it is not nullable and none of
-/// its first terminals accepts.
-fn cannot_take<T>(
-    lex: Lexeme<T>,
-    kinds: List<int>,
-    masks: List<int>,
-    cursor: int,
-    st: BranchStart?,
-    tok: T,
-) -> bool {
+/// Whether a branch cannot consume the token at `cursor`: it is not nullable and none
+/// of its first terminals accepts — read off the token's bits, the rest asked.
+fn cannot_take<T, N>(cx: MatchContext<T, N>, cursor: int, st: BranchStart?) -> bool {
     let s? = st else { return false }
-    !s.nullable && !starts_at_masked(lex, kinds, masks[cursor], s.terminals, tok)
+    if s.nullable || cx.masks[cursor] & s.kinds != 0 || has_bit(s.lits, cx.lit_at[cursor]) { return false }
+    s.asked.is_empty() || !s.asked.any(takes_term(cx.lex, cx.kinds, it, cx.tokens[cursor]))
+}
+
+/// Whether bit `b` of a run of 62-bit words is set; a negative `b` is no bit.
+fn has_bit(words: List<int>, b: int) -> bool {
+    b >= 0 && b / 62 < words.length && (words[b / 62] >> b % 62) & 1 == 1
 }
 
 /// A token's bits for the branch check: bit `s` when it wears the class of slot `s`, bit 62
@@ -451,20 +452,10 @@ fn token_mask<T>(lex: Lexeme<T>, kinds: List<int>, t: T) -> int {
     bits.fold(if closes_body(lex, t) { 1 << 62 } else { 0 }, (acc, b) -> acc | b)
 }
 
-/// `starts_at`, read off the token's bits where a class has a slot in range.
-fn starts_at_masked<T>(lex: Lexeme<T>, kinds: List<int>, mask: int, terms: List<StartTerm>, t: T) -> bool {
-    for st in terms {
-        if takes_masked(lex, kinds, mask, st, t) { return true }
-    }
-    false
-}
-
-/// `takes_term`, the same answer, read from the bits when the class has a slot in range.
-fn takes_masked<T>(lex: Lexeme<T>, kinds: List<int>, mask: int, st: StartTerm, t: T) -> bool {
-    match st.prim {
-        .Named(term) if st.slot >= 0 && st.slot < kinds.length && st.slot < 62 -> { (mask >> st.slot) & 1 == 1 || is_end(term) && (mask >> 62) & 1 == 1 },
-        .Named(_) or .Lit(_) or .Ref(_) or .Group(_) or .NotChar(_) -> takes_term(lex, kinds, st, t),
-    }
+/// The slot of the grammar literal a token spells, or -1 — a literal matches by text alone.
+fn token_lit<T>(lex: Lexeme<T>, lit_slots: Map<string, int>, t: T) -> int {
+    let at? = lit_slots.get(lex.text(t)) else { return 0 - 1 }
+    if lex.lit_matches(t, lex.text(t)) { at } else { 0 - 1 }
 }
 
 /// The kind id a terminal wears in this parse: its slot's, resolved
@@ -496,9 +487,8 @@ fn match_alt<T, N>(
 ) -> MatchResult<T, N> {
     mut farthest: FarthestFailure? = null
     mut broken: List<List<Failure>> = []
-    let tok = cx.tokens[cursor]
     for br in a.branches {
-        if cannot_take(cx.lex, cx.kinds, cx.masks, cursor, br.start, tok) {
+        if cannot_take<T, N>(cx, cursor, br.start) {
             if cx.tracking { farthest = far_merge(farthest, skip_point(br.start!, cursor)) }
         } else {
             let r = match_seq<T, N>(cx, rule_name, br, cursor, bindings, acc, capped, origin)
@@ -940,7 +930,7 @@ fn match_prim<T, N>(
     match member.prim {
         .Lit(text) -> {
             let t = cx.tokens[cursor]
-            if cx.lex.lit_matches(t, text) {
+            if takes_lit<T, N>(cx, member.slot, text, cursor) {
                 matched<T, N>(cursor + 1, bindings, captured_terminal<T, N>(t), cx.silence, null)
             } else {
                 missed<T, N>(
@@ -1009,6 +999,11 @@ fn match_prim<T, N>(
     }
 }
 
+/// Whether the token at `cursor` is literal `text`, slot `slot` — by slot when it has one.
+fn takes_lit<T, N>(cx: MatchContext<T, N>, slot: int, text: string, cursor: int) -> bool {
+    if slot >= 0 { cx.lit_at[cursor] == slot } else { cx.lex.lit_matches(cx.tokens[cursor], text) }
+}
+
 /// The final diagnostic when the whole parse failed silently — the
 /// farthest point speculation reached, or a generic failure.
 fn overall_failure<T, N>(cx: MatchContext<T, N>, r: MatchResult<T, N>) -> Failure {
@@ -1036,6 +1031,8 @@ export type Ready = {
     // every terminal class the grammar names, a `.Named` atom's slot
     // its place here
     terms: List<string>,
+    // every literal the grammar spells, by its text: a `.Lit` atom's slot
+    lit_slots: Map<string, int>,
     defects: List<Diagnostic>,
 }
 
@@ -1044,14 +1041,16 @@ export type Ready = {
 export fn ready(g: Grammar, known_terminals: List<string>) -> Ready {
     mut ordinals: Map<string, int> = {}
     for j, r in g.rules { ordinals.set(r.name, j) }
-    let terms = distinct(
-        [term for p in flatten([terminals_of(r.body) for r in g.rules]) for term in named_term(p)],
-    )
+    let prims = flatten([terminals_of(r.body) for r in g.rules])
+    let terms = distinct([term for p in prims for term in named_term(p)])
+    mut lit_slots: Map<string, int> = {}
+    for j, text in distinct([text for p in prims for text in lit_term(p)]) { lit_slots.set(text, j) }
     Ready {
-        g: listed_grammar(with_branch_starts(slotted(g, terms))),
+        g: listed_grammar(with_start_bits(with_branch_starts(slotted(g, terms, lit_slots)))),
         ordinals: ordinals,
         known_terminals: known_terminals,
         terms: terms,
+        lit_slots: lit_slots,
         defects: g.defects(known_terminals),
     }
 }
@@ -1061,23 +1060,67 @@ fn named_term(p: Prim) -> List<string> {
     match p { .Named(term) -> [term], .Lit(_) or .Ref(_) or .Group(_) or .NotChar(_) -> [] }
 }
 
-/// Every item naming a terminal class slotted by the class's place in
-/// `terms`, groups opened.
-fn slotted(g: Grammar, terms: List<string>) -> Grammar {
-    g with { rules: [r with { body: slotted_alt(r.body, terms) } for r in g.rules] }
+/// A terminal's text, when it is a literal.
+fn lit_term(p: Prim) -> List<string> {
+    match p { .Lit(text) -> [text], .Named(_) or .Ref(_) or .Group(_) or .NotChar(_) -> [] }
 }
 
-fn slotted_alt(a: Alt, terms: List<string>) -> Alt {
-    a with { branches: [s with { items: [slotted_item(m, terms) for m in s.items] } for s in a.branches] }
+/// Every terminal item slotted — a class by its place in `terms`, a literal by its
+/// place in `lit_slots` — groups opened.
+fn slotted(g: Grammar, terms: List<string>, lit_slots: Map<string, int>) -> Grammar {
+    g with { rules: [r with { body: slotted_alt(r.body, terms, lit_slots) } for r in g.rules] }
 }
 
-fn slotted_item(m: Item, terms: List<string>) -> Item {
+fn slotted_alt(a: Alt, terms: List<string>, lit_slots: Map<string, int>) -> Alt {
+    a with { branches: [s with { items: [slotted_item(m, terms, lit_slots) for m in s.items] } for s in a.branches] }
+}
+
+fn slotted_item(m: Item, terms: List<string>, lit_slots: Map<string, int>) -> Item {
     match m.prim {
         .Named(term) -> m with { slot: terms.index_of(term) },
-        .Group(inner) -> m with { prim: Prim.Group(slotted_alt(inner, terms)) },
-        .Ref(_) or .Lit(_) or .NotChar(_) -> m,
+        .Lit(text) -> m with { slot: lit_slots.get(text) ?? 0 - 1 },
+        .Group(inner) -> m with { prim: Prim.Group(slotted_alt(inner, terms, lit_slots)) },
+        .Ref(_) or .NotChar(_) -> m,
     }
 }
+
+/// Every branch's start terminals as bits, groups opened.
+fn with_start_bits(g: Grammar) -> Grammar {
+    g with { rules: [r with { body: bits_alt(r.body) } for r in g.rules] }
+}
+
+fn bits_alt(a: Alt) -> Alt {
+    a with { branches: [bits_seq(s) for s in a.branches] }
+}
+
+fn bits_seq(s: Seq) -> Seq {
+    let items = [m with { prim: bits_prim(m.prim) } for m in s.items]
+    let st? = s.start else { return s with { items: items } }
+    let kinds = flatten([kind_bits(t) for t in st.terminals]).fold(0, (acc, b) -> acc | b)
+    let lits = [t.slot for t in st.terminals if lit_slotted(t)]
+    s with { items: items, start: st with { kinds: kinds, lits: [lits.filter(it / 62 == w).fold(0, (acc, b) -> acc | (1 << b % 62)) for w in 0..word_count(lits)], asked: [t for t in st.terminals if !lit_slotted(t) && kind_bits(t).is_empty()] } }
+}
+
+fn bits_prim(p: Prim) -> Prim {
+    match p {
+        .Group(inner) -> Prim.Group(bits_alt(inner)),
+        .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> p,
+    }
+}
+
+/// A class terminal's bits: its slot's, and bit 62 for an `END` a closing `}` answers —
+/// none for a slot past 61, which is asked.
+fn kind_bits(t: StartTerm) -> List<int> {
+    match t.prim {
+        .Named(term) if t.slot >= 0 && t.slot < 62 -> [1 << t.slot].concat(if is_end(term) { [1 << 62] } else { [] }),
+        .Named(_) or .Lit(_) or .Ref(_) or .Group(_) or .NotChar(_) -> [],
+    }
+}
+
+fn lit_slotted(t: StartTerm) -> bool { t.prim is .Lit && t.slot >= 0 }
+
+/// How many 62-bit words hold slots up to the highest of `slots`.
+fn word_count(slots: List<int>) -> int { slots.fold(0, (acc, b) -> if b / 62 + 1 > acc { b / 62 + 1 } else { acc }) }
 
 /// Every terminal under an alternation, groups opened.
 fn terminals_of(a: Alt) -> List<Prim> {
@@ -1161,6 +1204,7 @@ fn run_as<T, N>(
         known_terminals: rd.known_terminals,
         kinds: kinds,
         masks: [token_mask(lex, kinds, t) for t in tokens],
+        lit_at: [token_lit(lex, rd.lit_slots, t) for t in tokens],
         absent: captured_absent<T, N>(),
         silence: silence,
         build: build,
