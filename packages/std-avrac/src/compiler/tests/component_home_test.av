@@ -35,20 +35,20 @@ spec "component_home — one lookup's reads do not grow with the lookups" {
     given "twelve modules each exporting a component" {
         then "the first lookup names the module that exports the word" {
             let ws = provider()
-            (ws.component_home("c3", "app") ?? "").ends_with("c3.{c3}")
+            ws.component_home("c3", "app") ?? "none" == "@acme.kit.{c3}"
         }
         then "eight more lookups, found or absent, read no further file" {
             let ws = provider()
             let _ = ws.component_home("c3", "app")
             let first = lexes(ws)
             for w in ["c0", "c7", "c11", "c5", "nope", "let", "c9", "c1"] { let _ = ws.component_home(w, "app") }
-            first > 0 && lexes(ws) == first
+            "${first} ${lexes(ws)}" == "12 12"
         }
         then "a word no module exports reads each candidate file once" {
             let ws = provider()
             let _ = ws.component_home("nope", "app")
             let _ = ws.component_home("nope", "app")
-            lexes(ws) <= 12
+            "${lexes(ws)}" == "12"
         }
     }
 }
