@@ -25,6 +25,7 @@
 //! fields in declaration order — absence, then each rule — so a rule
 //! naming a sibling reads it as the tree path does.
 use @std.text.{admits}
+use @std.json.reading.{FieldPlan, object_lines, keys, own, mine, inner, hidden, literal_list}
 use @std.meta.{
     Type,
     Field,
@@ -226,7 +227,7 @@ export fn decoder(t: Type) -> Decls {
                 ${j.answer}
             }
 
-            ${keys(t)}
+            ${keys_of(t)}
         }
     }
 }
@@ -395,9 +396,6 @@ fn json_ruling(rule: Code, call: Code) -> Code { quote { ruled_json(d, at, ${nam
 /// The value a rule judges, as its call reads it.
 const judged: string = "judged\$"
 
-/// Whether no issue may show what the value being read received.
-const hidden: string = "hidden\$"
-
 /// The reader for a shape at `at`.
 /// Whether a named type answers std-json's protocol: it carries `@json` or `@json_text`.
 fn json_typed(n: string) -> bool {
@@ -483,16 +481,18 @@ fn defaulted(f: Field) -> Code {
 /// Absent is no issue: the field is nullable or declares a default.
 fn optional(f: Field) -> bool { f.defaulted || f.kind is .Opt }
 
-fn inner(k: Kind) -> Kind {
-    match k { .Opt(k2) -> k2, rest -> k }
-}
-
 // ── the direct reader ───────────────────────────────────────────
 
 fn direct(t: Type) -> Body {
     if names_a_shape(t) { return named_direct(t) }
     if !t.variants.is_empty() { return union_direct(t) }
     record_direct(t)
+}
+
+/// A record's key matcher and its field names, when it has a record's shape.
+fn keys_of(t: Type) -> List<Decls> {
+    if names_a_shape(t) || !t.variants.is_empty() { return [] }
+    keys(t, "Decoding")
 }
 
 /// A named type: its shape read where it stands, then wrapped.
@@ -519,108 +519,18 @@ fn union_direct(t: Type) -> Body {
 /// declaration order, the issues filed in that order, and the
 /// record's own rules over the whole value.
 fn record_direct(t: Type) -> Body {
-    let lines = quote {
-        let ${own("start")} = d.json.pos
-        if !d.json_object(depth, required, ${name(hidden)}) { return null }
-        let ${own("before")} = d.count()
-        ${[unread_yet(f) for f in t.fields]}
-        mut ${own("entry")} = 0
-        mut ${own("more")} = d.json_first(125)
-        while ${mine("more")} {
-            let ${own("key")} = d.json.pos
-            let ${own("key_end")} = d.json_key()
-            let ${own("mark")} = d.count()
-            let ${own("field")} = ${name(t.name)}.field_at(d, ${mine("key")}, ${mine("key_end")})
-            ${taken(t)}
-            ${mine("entry")} = ${mine("entry")} + 1
-            ${mine("more")} = d.json_next(125)
-        }
-        if d.json.pos < 0 { return null }
-        ${[settled(t, f, i) for i, f in t.fields]}
-        d.sorted(${mine("before")})
-        if d.count() > ${mine("before")} { return null }
-    }
-    whole(t, lines, mine("start"), json_ruling)
+    whole(t, object_lines(t, [plan(t, f) for f in t.fields]), mine("start"), json_ruling)
 }
 
-/// A generated local's name, which no program can spell.
-fn own(word: string) -> string { "${word}\$" }
-
-/// A generated local, read.
-fn mine(word: string) -> Code { name(own(word)) }
-
-/// Where a field's value was read, and what was read: -1 and null
-/// until its key is met.
-fn unread_yet(f: Field) -> Stmts {
-    quote {
-        // LICENSED let_stmt.unmutated_mut: `take`'s template writes it, beyond this one's sight
-        mut ${own("${f.name}_at")} = -1
-        // LICENSED let_stmt.unmutated_mut: `take`'s template writes it, beyond this one's sight
-        mut ${own("${f.name}_read")}: ${inner(f.kind).spelled()}? = not_yet()
-    }
-}
-
-/// The key just read dispatched to its field — each field tried in
-/// turn, a key the record does not name last.
-fn taken(t: Type) -> Code {
-    let entry = quote { ${t.fields.length} + ${mine("entry")} }
-    mut chain = quote { d.json_stray(${mine("key")}, ${mine("key_end")}, ${entry}, depth + 1, ${name(t.name)}.field_names()) }
-    for i in reversed([i for i in 0..t.fields.length]) {
-        chain = quote { if ${mine("field")} == ${i} { ${take(t, t.fields[i], i, entry)} } else { ${chain} } }
-    }
-    chain
-}
-
-/// Field `i` read where its key stands and its rules run over it at
-/// once, up to the first that reads a sibling — or a second copy of
-/// it refused.
-fn take(t: Type, f: Field, i: int, entry: Code) -> Code {
-    let at = own("${f.name}_at")
-    quote {
-        if ${name(at)} >= 0 {
-            d.json_repeated(${mine("key")}, ${mine("key_end")}, ${entry}, depth + 1)
-        } else {
-            let at = d.json.pos
-            ${name(at)} = at
-            let ${hidden} = ${secret_code(f)}
-            let got: ${inner(f.kind).spelled()}? = ${reading(inner(f.kind), quote { depth + 1 }, required_code(f), name(hidden))}
-            ${[judging(a, json_ruling) for a in early(t, f)]}
-            ${mine("${f.name}_read")} = got
-            d.filed(${mine("mark")}, ${i}, ${literal(f.name)})
-        }
-    }
-}
-
-/// `let email = …` — the field as the tree path would have it: absent
-/// read the tree's way, present taken as read, then each rule that
-/// reads a sibling, all of them settled — every issue filed at the
-/// field's place.
-fn settled(t: Type, f: Field, i: int) -> Stmts {
-    let at = mine("${f.name}_at")
-    let rest = late(t, f)
-    if rest.is_empty() {
-        return quote {
-            let ${f.name}: ${inner(f.kind).spelled()}? = if ${at} < 0 {
-                let ${own("mark")} = d.count()
-                let ${hidden} = ${secret_code(f)}
-                let got: ${inner(f.kind).spelled()}? = ${absent(f)}
-                d.filed(${mine("mark")}, ${i}, ${literal(f.name)})
-                got
-            } else {
-                ${mine("${f.name}_read")}
-            }
-        }
-    }
-    quote {
-        let ${f.name} = {
-            let ${own("mark")} = d.count()
-            let at = ${at}
-            let ${hidden} = ${secret_code(f)}
-            let got: ${inner(f.kind).spelled()}? = if at < 0 { ${absent(f)} } else { ${mine("${f.name}_read")} }
-            ${[judging(a, json_ruling) for a in rest]}
-            d.filed(${mine("mark")}, ${i}, ${literal(f.name)})
-            got
-        }
+/// What the skeleton asks of one field: how its value is read, how its
+/// absence is settled, whether it is secret, and the rules judging it.
+fn plan(t: Type, f: Field) -> FieldPlan {
+    FieldPlan {
+        read: reading(inner(f.kind), quote { depth + 1 }, required_code(f), name(hidden)),
+        absent: absent(f),
+        secret: secret_code(f),
+        early: [judging(a, json_ruling) for a in early(t, f)],
+        late: [judging(a, json_ruling) for a in late(t, f)],
     }
 }
 
@@ -735,50 +645,6 @@ fn json_element(k: Kind) -> Code? {
         },
         .Ptr or .Void or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
     }
-}
-
-/// A record's key matcher and its field names: a key is matched by
-/// its length, then by its bytes; an escaped key by its text.
-fn keys(t: Type) -> List<Decls> {
-    if names_a_shape(t) || !t.variants.is_empty() { return [] }
-    let names = literal_list([literal(f.name) for f in t.fields])
-    mut chain = escaped_key(t)
-    for len in lengths(t) {
-        chain = quote { if end - at - 2 == ${len} { ${keyed(t, len)} } else { ${chain} } }
-    }
-    [
-        quote {
-            /// The field the key from `at` to `end` names, or -1.
-            static fn field_at(d: Decoding, at: int, end: int) -> int { ${chain} }
-        },
-        quote { static fn field_names() -> List<string> { ${names} } },
-    ]
-}
-
-/// The distinct lengths of the record's field names.
-fn lengths(t: Type) -> List<int> {
-    let all = [f.name.length for f in t.fields]
-    [len for i, len in all if all.index_of(len) == i]
-}
-
-/// The fields of one name length, tried in turn; an escaped key of
-/// that length falls to its text.
-fn keyed(t: Type, len: int) -> Code {
-    mut chain = escaped_key(t)
-    for i in reversed([i for i, f in t.fields if f.name.length == len]) {
-        chain = quote { if d.key_is(at, ${literal(t.fields[i].name)}) { ${i} } else { ${chain} } }
-    }
-    chain
-}
-
-/// A key its bytes matched to no field: read as text, since an escape
-/// may spell a field's name.
-fn escaped_key(t: Type) -> Code { quote { d.key_index(at, end, ${name(t.name)}.field_names()) } }
-
-fn reversed(xs: List<int>) -> List<int> { [xs[xs.length - 1 - i] for i in 0..xs.length] }
-
-fn literal_list(items: List<Code>) -> Code {
-    quote { [${..items}] }
 }
 
 fn flatten<T>(xss: List<List<T>>) -> List<T> {
