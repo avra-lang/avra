@@ -22,6 +22,8 @@ type World = {
     nv: Cell<int>,
     runs: Cell<int>,
     rows: Cell<Map<string, Rec>>,
+    /// Whether `tens` is left unsaved, so what reads it stands on what it read.
+    flat: Cell<bool>,
 }
 
 fn world(rows: Cell<Map<string, Rec>>, n: int) -> World {
@@ -37,6 +39,7 @@ fn world(rows: Cell<Map<string, Rec>>, n: int) -> World {
         nv: Cell.new(n),
         runs: Cell.new(0),
         rows: rows,
+        flat: Cell.new(false),
     }
     k.set_verify(tens_family, (arg: int) -> verified(w, w.tens, arg))
     k.set_verify(next_family, (arg: int) -> verified(w, w.next, arg))
@@ -62,7 +65,9 @@ fn revived(w: World, m: Relation<int>, arg: int) -> Revival<int> {
 }
 
 fn kept(w: World, m: Relation<int>, arg: int, v: int) -> bool {
-    let reads = w.k.saved_reads(Key { family: m.family, arg: arg }) ?? []
+    let reads = w
+        .k
+        .saved_reads(Key { family: m.family, arg: arg }, (k: Key) -> !w.flat.get() || k.family != w.tens.family) ?? []
     w.rows.put(row_name(m.family, arg), Rec { reads: reads, hash: v, value: v })
     true
 }
@@ -123,6 +128,26 @@ spec "relation/engine — saved answers stand on their reads" {
             let _ = next_of(world(rows, 15))
             let w = world(rows, 17)
             next_of(w) == 2 && w.runs.get() == 1
+        }
+    }
+    given "an answer whose read has no row of its own" {
+        then "stands on what that read read, and restores while it holds" {
+            let rows: Cell<Map<string, Rec>> = Cell.new({})
+            let first = world(rows, 15)
+            first.flat.set(true)
+            let _ = next_of(first)
+            let w = world(rows, 15)
+            w.flat.set(true)
+            next_of(w) == 2 && w.runs.get() == 0
+        }
+        then "recomputes whole when the input it flattened to moved" {
+            let rows: Cell<Map<string, Rec>> = Cell.new({})
+            let first = world(rows, 15)
+            first.flat.set(true)
+            let _ = next_of(first)
+            let w = world(rows, 25)
+            w.flat.set(true)
+            next_of(w) == 3 && w.runs.get() == 2
         }
     }
 }

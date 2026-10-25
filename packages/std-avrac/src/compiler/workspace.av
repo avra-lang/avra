@@ -105,7 +105,7 @@ use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, InputName, memory_host}
 use compiler.store.{Reading}
-use compiler.store.{Store, Keeping, pack_released}
+use compiler.store.{Store, Keeping, Producer, pack_released}
 use compiler.lower.{Unit, FieldPlan, CodeFacts}
 use compiler.families.{Family}
 use compiler.typing.{new_type_cx}
@@ -147,14 +147,14 @@ type ExternNames = { decls: int, names: List<string> }
 /// PER-BUILD KEY MEMOIZATION: a module's interface digest and what it sees, a
 /// file's object key, the parts it digests, and its text digest (record.av's key derivations), where
 /// this compiler's store stands and where its writes land, and this compiler's
-/// own print (build.av — `compiler_id` is never cleared: the running binary
-/// cannot move mid-process). Cleared piecemeal by `keep_interfaces`: `object_keys` and
+/// own print and the producer its records are stamped under (build.av — `compiler_id`
+/// and `sig_producer` are never cleared: the running binary cannot move mid-process). Cleared piecemeal by `keep_interfaces`: `object_keys` and
 /// `object_parts` every record write, the rest only when a record's SEEN part (its
 /// interface or imports) moved.
 type Suspects = { files: int, rows: Map<string, bool>, paths: Map<string, bool> }
 
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, text_stamps: Cell<Map<string, int>>, std_names: Cell<Map<string, string>>, stored_names: Cell<Map<string, string>>, root_view: Cell<string>, file_views: Cell<Map<string, string>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string>, one_shot: Cell<bool> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, text_stamps: Cell<Map<string, int>>, text_scans: Cell<Map<string, TextScan>>, std_names: Cell<Map<string, string>>, stored_names: Cell<Map<string, string>>, root_view: Cell<string>, file_views: Cell<Map<string, string>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, sig_producer: Cell<Producer?>, build_mode: Cell<string>, one_shot: Cell<bool> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -167,12 +167,14 @@ fn new_keys() -> Keys {
     let no_parts: Map<string, KeyParts> = {}
     let no_digests: Map<string, string> = {}
     let no_stamps: Map<string, int> = {}
+    let no_scans: Map<string, TextScan> = {}
     let no_tokens: Map<string, Spelling> = {}
     let no_views: Map<string, SeenView> = {}
     let no_named: Map<string, int> = {}
     let no_seen: Map<string, int> = {}
     let no_viewed: Map<string, List<ModulePath>> = {}
     let no_marks: Map<string, bool> = {}
+    let no_producer: Producer? = null
     Keys {
         bytes_keys: Cell.new(no_bytes),
         view_parts: Cell.new(no_view),
@@ -189,6 +191,7 @@ fn new_keys() -> Keys {
         stored_names: Cell.new(no_digests),
         root_view: Cell.new(""),
         file_views: Cell.new(no_digests),
+        text_scans: Cell.new(no_scans),
         file_tokens: Cell.new(no_tokens),
         seen_views: Cell.new(no_views),
         suspects: Cell.new(Suspects { files: -1, rows: {}, paths: {} }),
@@ -201,6 +204,7 @@ fn new_keys() -> Keys {
         one_shot: Cell.new(false),
         keeping: Cell.new(Keeping.Disk),
         compiler_id: Cell.new(""),
+        sig_producer: Cell.new(no_producer),
         build_mode: Cell.new(""),
     }
 }

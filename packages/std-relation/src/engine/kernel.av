@@ -602,16 +602,37 @@ impl Kernel {
     }
 
     /// What a settled key stands on, as a saved answer keeps it: each read with its value
-    /// hash, asking the fold a lazy settle left unasked. Absent when a read has no hash.
-    fn saved_reads(key: Key) -> List<SavedRead>? {
-        let deps = self.edges_of(key) ?? []
-        mut out: List<SavedRead> = []
-        for e in deps {
+    /// hash, asking the fold a lazy settle left unasked. A read that `stands` for an answer
+    /// of its own is kept as it is; one that does not has no row to be demanded by, so it
+    /// stands for what IT read — down to reads that do. Absent when a read has no hash, or
+    /// an unsaved one has no cell to descend into.
+    fn saved_reads(key: Key, stands: fn(Key) -> bool) -> List<SavedRead>? {
+        let out: Cell<List<SavedRead>> = list_cell()
+        let seen: Cell<List<int>> = list_cell()
+        if !self.gathered(self.edges_of(key) ?? [], stands, out, seen) { return null }
+        out.get()
+    }
+
+    /// `saved_reads`' walk: the edges kept or descended into, each key once.
+    fn gathered(
+        edges: List<int>,
+        stands: fn(Key) -> bool,
+        out: Cell<List<SavedRead>>,
+        seen: Cell<List<int>>,
+    ) -> bool {
+        for e in edges {
+            if seen.get().contains(e) { continue }
+            seen.push(e)
             let k = key_of(e)
-            let h? = self.hash_forced(k) else { return null }
-            out.push(SavedRead { key: k, digest: h })
+            if stands(k) {
+                let h? = self.hash_forced(k) else { return false }
+                out.push(SavedRead { key: k, digest: h })
+                continue
+            }
+            let below? = self.edges_of(k) else { return false }
+            if !self.gathered(below, stands, out, seen) { return false }
         }
-        out
+        true
     }
 
     /// The first of `cell`'s dependencies that moved since it was verified, as an edge; -1 for none.

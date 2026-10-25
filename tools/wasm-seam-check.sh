@@ -24,15 +24,11 @@ work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-seam.XXXXXX")}
 # WASM_TARGET names one wasm triple (default `wasm`: the one this machine's toolchain links).
 target=${WASM_TARGET:-wasm}
 
-say() { echo "wasm-seam: $*" >&2; }
-skip() { say "$* — skipped"; exit 0; }
+wasm_who=wasm-seam; . "$here/lib/wasm.sh"
 
-[ -x "$avra" ] || skip "no compiler at $avra"
-command -v wasm-objdump >/dev/null 2>&1 || skip "wasm-objdump (wabt) not on PATH"
-command -v wasm-validate >/dev/null 2>&1 || skip "wasm-validate (wabt) not on PATH"
-if [ ! -f "$tree/build/wasm32/libavra_runtime.a" ]; then
-    ( cd "$tree" && make -s wasm-runtime wasm-packages ) >/dev/null 2>&1 || skip "the wasm runtime archive did not build"
-fi
+needs_compiler
+needs wasm-objdump wasm-validate
+wasm_ready || skip "the wasm runtime archive did not build"
 
 cp -R "$here/wasm-seam" "$work/seam"
 "$avra" build --target "$target" "$work/seam" >"$work/build.out" 2>"$work/build.err" || built=$?
