@@ -9,6 +9,7 @@ use compiler.host.{InputName}
 use @std.relation.engine.{Revival}
 use features.{kind_word, decl_key_text}
 use compiler.families.{Family}
+use compiler.record.{read_fields}
 use compiler.store.{Store, Stored, StoredName, Reading, node_key, read_spelled}
 
 /// What a family's key argument names. A `Local` argument is an id of this process alone,
@@ -40,8 +41,8 @@ fn arg_name(f: Family) -> ArgName {
 /// The families whose answers are saved by name: those with a value codec behind them.
 fn saved_family(f: Family) -> bool {
     match f {
-        .Sig or .ComponentNames -> true,
-        .Source or .Parsed or .Items or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .FileRefs or .MethodDiags or .Admitted or .Methods or .Typed or .WriteSummary or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .CancelSummary or .Writes or .CancelBits or .ReadFound or .Consumed or .Namespace or .HeldSig or .References or .Failures or .ReadReach or .ConstTyped or .Settled or .Lowered or .Lifted or .LiftLowered or .Manifest or .Named or .Input or .BlockScan or .ComponentScan -> false,
+        .Sig or .ComponentNames or .Items -> true,
+        .Source or .Parsed or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .FileRefs or .MethodDiags or .Admitted or .Methods or .Typed or .WriteSummary or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .CancelSummary or .Writes or .CancelBits or .ReadFound or .Consumed or .Namespace or .HeldSig or .References or .Failures or .ReadReach or .ConstTyped or .Settled or .Lowered or .Lifted or .LiftLowered or .Manifest or .Named or .Input or .BlockScan or .ComponentScan -> false,
     }
 }
 
@@ -195,10 +196,11 @@ impl Workspace {
 }
 
 impl Workspace {
-    /// The kernel's saved lookup, and the hooks of the one family kept with a codec so far:
+    /// The kernel's saved lookup, and the hooks of the families kept with a codec so far:
     /// `ComponentNames`, whose answer is its names, one to a line.
     fn arm_saved() {
         self.db.kernel.set_saved((key: Key) -> self.saved_found(key))
+        self.arm_items()
         let rel = self.relation(Family.ComponentNames)
         rel.revive.set((arg: int) -> self.saved_words(arg))
         rel
@@ -210,6 +212,43 @@ impl Workspace {
                         joined(scan_words(value), "\n"),
                     ),
             )
+    }
+
+    /// `Items`: the file is noted when it is admitted, and its identity rows are written once
+    /// the run is over — the shapes they leave out are other answers'.
+    fn arm_items() {
+        let rel = self.relation(Family.Items)
+        rel.keeper.set((arg: int, _value: DbRow) -> self.items_noted(arg))
+        rel.revive.set((arg: int) -> self.items_revived(arg))
+    }
+
+    fn items_noted(arg: int) -> bool {
+        self.fresh_items.push(arg)
+        true
+    }
+
+    /// Every `Items` row this run owes, written: O(files admitted).
+    fn keep_items() {
+        for arg in self.fresh_items.get() {
+            let path = self.decls.file(FileId { index: arg }).path
+            let _ = self
+                .saved_kept(
+                    Key { family: Family.Items.ordinal, arg: arg },
+                    joined(self.identity_lines(path), "\n"),
+                )
+        }
+        self.fresh_items.set([])
+    }
+
+    /// A file's declarations minted from its saved identity rows, never parsed.
+    fn items_revived(arg: int) -> Revival<DbRow> {
+        let text? = self.saved_value(Key { family: Family.Items.ordinal, arg: arg }) else { return Revival.Gone }
+        let f = FileId { index: arg }
+        let path = self.decls.file(f).path
+        let rows = [read_fields(l) for l in text.split("\n") if !l.is_empty()]
+        self.mint_file(path, rows, {})
+        self.link_file(path, rows)
+        Revival.Revived(DbRow.Items(self.decls.held_items.get().get(path) ?? []))
     }
 
     /// A `ComponentNames` answer read back.

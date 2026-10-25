@@ -392,14 +392,13 @@ impl Workspace {
             )
         self.decls.held_joins(f, id, kind! is .Main, row.item)
         // the cancel bit is read before any signature is asked, so it lands with the row
-        self.decls.record_cancel(id, row.reach())
+        if !row.payload.is_empty() { self.decls.record_cancel(id, row.reach()) }
         id
     }
 
     fn record_line(d: Decl, ordinal: int, item: bool) -> string {
         let shape = self.record_shape(d)
         let at = shape.index_of("\t")
-        let visibility = bit_word(d.exported)
         // AN `extern fn` WEARS ITS OWN SHAPE WORD. The fact is a STORE read (`extern_parts`),
         // and a held file has no store, so the record must carry it: the word is the one
         // column every kind already has, and the payload's layout is unchanged.
@@ -415,13 +414,57 @@ impl Workspace {
                 if same_decl(id, d.parent!) { parent_at = j }
             }
         }
-        let root = d.root?.index ?? 0 - 1
         let facts = self.decls.facts_or(d.id)
         let block = facts_block(facts)
         // THE CODEC IS HELD TO ITSELF WHERE IT WRITES: a fact the decoder does not give
         // back is a defect said now, never a check every reader pays
         if facts_unblocked(block)?.fingerprint() != facts.fingerprint() { self.defect("`${d.name}`'s facts do not survive their record") }
-        "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${field_text(d.enclosing)}\t${root}\t${bit_word(item)}\t${block}\t${payload}"
+        "${self.identity_columns(d, ordinal, item, first, parent_at, block)}\t${payload}"
+    }
+
+    /// A declaration line's identity columns, shape word to facts block: what a reader needs to
+    /// mint the declaration and nothing about its shape.
+    fn identity_columns(
+        d: Decl,
+        ordinal: int,
+        item: bool,
+        first: string,
+        parent_at: int,
+        block: string,
+    ) -> string {
+        let root = d.root?.index ?? 0 - 1
+        "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${bit_word(d.exported)}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${field_text(d.enclosing)}\t${root}\t${bit_word(item)}\t${block}"
+    }
+
+    /// A file's admitted declarations as identity rows — the answer `Items` is saved as. Only the
+    /// declarations the file itself declares: what a run generates is another answer's.
+    fn identity_lines(path: string) -> List<string> {
+        let f = self.file_id(path)
+        let top = self.items(f)
+        let ids = [id for id in self.decls.decls_of_file(f) if self.decl_at(id).maker == ""]
+        [self.identity_line(self.decl_at(id), ordinal, on_top(top, id), ids) for ordinal, id in ids]
+    }
+
+    fn identity_line(d: Decl, ordinal: int, item: bool, ids: List<DeclId>) -> string {
+        let parent_at = [j for j, x in ids if d.parent != null && same_decl(x, d.parent!)].first() ?? 0 - 1
+        let block = facts_block(self.decls.facts_or(d.id))
+        self.identity_columns(d, ordinal, item, self.identity_word(d), parent_at, block)
+    }
+
+    /// The shape word an identity row wears: what the kind alone says, a record's layout left to its sig.
+    fn identity_word(d: Decl) -> string {
+        match d.kind {
+            .Record -> "struct",
+            .Named -> "named",
+            .Alias -> "alias",
+            .Enum or .CollectEnum -> "enum",
+            .Const -> "const",
+            .Collect -> "collect",
+            .State -> "state",
+            .Impl -> "aims",
+            .Fn or .Method or .Default or .Case -> if self.decls.is_extern(d.id) { "extern" } else { "fn" },
+            .Builtin or .Trait or .Syntax or .Main -> "opaque",
+        }
     }
 
     /// The shape word and payload a declaration's record line carries.
