@@ -52,22 +52,10 @@ expanded() {
     printf '%s' "$out"
 }
 
-# row <key> <letter>: the manifest's `[link]` array under the key, one `<letter>word` per entry.
+# row <key> <letter>: the manifest's `[link]` array under the key, one `<letter>word` per entry
+# (the one `[link]` reader is tools/manifest_objects.sh).
 row() {
-    awk -v key="$1" '
-        /^\[/ { inlink = ($0 == "[link]"); next }
-        !inlink { next }
-        reading == 0 && $0 ~ "^" key "[ \t]*=" { reading = 1 }
-        reading == 1 {
-            line = $0
-            sub(/^[ \t]*#.*/, "", line)
-            while (match(line, /"[^"]*"/)) {
-                print substr(line, RSTART + 1, RLENGTH - 2)
-                line = substr(line, RSTART + RLENGTH)
-            }
-            if ($0 ~ /\]/) reading = 2
-        }
-    ' packages/std-avrac/avra.toml | while IFS= read -r entry; do
+    sh "$(dirname "$0")/manifest_objects.sh" --rows "$1" packages/std-avrac/avra.toml | while IFS= read -r entry; do
         word=$(expanded "$entry")
         [ -z "$word" ] || printf '%s%s\n' "$2" "$word"
     done
