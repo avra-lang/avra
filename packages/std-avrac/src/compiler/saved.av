@@ -170,13 +170,20 @@ impl Workspace {
         let store? = self.store.get() else { return false }
         let name? = self.saved_name(key) else { return false }
         let hash? = self.db.kernel.hash_forced(key) else { return false }
-        let reads? = self.db.kernel.saved_reads(key) else { return false }
+        let reads? = self.db.kernel.saved_reads(key, (k: Key) -> self.stands_alone(k)) else { return false }
         mut readings: List<Reading> = [Reading { name: HASH_READ, digest: "${hash}" }]
         for r in reads {
             let named? = self.saved_name(r.key) else { return false }
             readings.push(Reading { name: named, digest: "${r.digest}" })
         }
         store.keep_reading(Stored.Unit, self.saved_row_key(name), value, readings)
+    }
+
+    /// Whether a read is a row of its own: a saved family's answer, or a file's text. Any other
+    /// read stands for what it read.
+    fn stands_alone(k: Key) -> bool {
+        let f = Family.all()[k.family]
+        saved_family(f) || f is .Input
     }
 
     /// The value a saved answer was kept with.
