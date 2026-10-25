@@ -1,13 +1,15 @@
 //! A map lowers as the runtime aggregate: one `avra_map_new`, then
 //! a set per pair — the memory pass marks managed values owned; the
 //! runtime keeps its own reference to every key.
-use core.{ExprId, Reg}
+use core.{ExprId, Reg, MapEntry, map_keys, map_values, map_spreads}
 use features.{LowerCx, Pipeline, Clause, Source, Sink}
 
-fn map_reg(mut cx: LowerCx, e: ExprId, keys: List<ExprId>, values: List<ExprId>) -> Reg {
-    if keys.any((k) -> spreads(cx, k)) { return spread_reg(cx, e, keys, values) }
-    let ks = [cx.reg_of(k) for k in keys]
-    let vs = [cx.reg_of(v) for v in values]
+/// A literal of pairs alone evaluates every key, then every value,
+/// then writes them.
+fn map_reg(mut cx: LowerCx, e: ExprId, entries: List<MapEntry>) -> Reg {
+    if !map_spreads(entries).is_empty() { return spread_reg(cx, e, entries) }
+    let ks = [cx.reg_of(k) for k in map_keys(entries)]
+    let vs = [cx.reg_of(v) for v in map_values(entries)]
     let dst = cx.map_new(cx.shape_at(e))
     for j, k in ks {
         cx.map_write(dst, k, vs[j])
@@ -15,27 +17,28 @@ fn map_reg(mut cx: LowerCx, e: ExprId, keys: List<ExprId>, values: List<ExprId>)
     dst
 }
 
-/// A literal with `..` entries, in written order: a pair is written,
-/// a spread writes each of its map's entries in the map's order — a
-/// key already there keeps its place and takes the new value.
-fn spread_reg(mut cx: LowerCx, e: ExprId, keys: List<ExprId>, values: List<ExprId>) -> Reg {
+/// A literal with `..` entries, in written order: a pair is written, a
+/// spread writes each of its map's entries in the map's order — a key
+/// already there keeps its place and takes the new value.
+fn spread_reg(mut cx: LowerCx, e: ExprId, entries: List<MapEntry>) -> Reg {
     let dst = cx.map_new(cx.shape_at(e))
-    for j, k in keys {
-        let m: ExprId? = cx.view.store.spread_operand(k)
-        if m == null {
-            cx.map_write(dst, cx.reg_of(k), cx.reg_of(values[j]))
-        } else if cx.view.types.map_value(cx.type_at(m!)) != null {
-            let _ = cx
-                .piped(
-                    Pipeline {
-                        clauses: [.Head(Source { source: m!, hi: null, index: false, lookup: null })],
-                        sink: .Put(dst),
-                    },
-                )
+    for entry in entries {
+        match entry {
+            .Pair(key, value) -> cx.map_write(dst, cx.reg_of(key), cx.reg_of(value)),
+            .Spread(from) -> spread_into(cx, dst, from),
         }
     }
     dst
 }
 
-/// Whether a map entry is a `..` spread.
-fn spreads(cx: LowerCx, k: ExprId) -> bool { cx.view.store.spread_operand(k) != null }
+/// One spread's entries, put into the literal being built.
+fn spread_into(mut cx: LowerCx, dst: Reg, from: ExprId) {
+    if cx.view.types.map_value(cx.type_at(from)) == null { return }
+    let _ = cx
+        .piped(
+            Pipeline {
+                clauses: [.Head(Source { source: from, hi: null, index: false, lookup: null })],
+                sink: .Put(dst),
+            },
+        )
+}

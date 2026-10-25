@@ -18,6 +18,8 @@ use core.{
     Arm,
     PayloadIs,
     CompClause,
+    MapEntry,
+    map_entry_head,
     BinOp,
     Param,
     member_of,
@@ -1335,7 +1337,7 @@ impl SourceText {
             .ListLit(elems) -> grouped(self.list_lit_text(id, elems, depth, c), atom_tier, parent),
             .Table(row, header, rows) -> grouped(self.table_text(row, header, rows, depth), atom_tier, parent),
             .Comp(elem, clauses) -> self.comprehension(elem, clauses, parent, depth),
-            .MapLit(keys, values) -> grouped(self.map_lit_text(id, keys, values, depth, c), atom_tier, parent),
+            .MapLit(entries) -> grouped(self.map_lit_text(id, entries, depth, c), atom_tier, parent),
             .Prop(_, _) -> self.chain_rendered(id, parent, depth, c),
             .Body(word, parts, holes, _) -> {
                 let text = self.body_text(word, parts, holes, depth)
@@ -1622,41 +1624,29 @@ impl SourceText {
 
     /// A map's text, one line or many as it was written — an entry
     /// drains the trivia before its KEY's span, the entry's own start.
-    mut fn map_lit_text(
-        id: ExprId,
-        keys: List<ExprId>,
-        values: List<ExprId>,
-        depth: int,
-        col: int = -1,
-    ) -> string {
-        if keys.is_empty() { return "{}" }
+    mut fn map_lit_text(id: ExprId, entries: List<MapEntry>, depth: int, col: int = -1) -> string {
+        if entries.is_empty() { return "{}" }
         let span = self.store.expr_span(id)
         if self.width_decides(span) {
             return self
-                .wrapped_list(
-                    "{",
-                    [self.map_entry_text(k, values[j], depth + 1) for j, k in keys],
-                    "}",
-                    false,
-                    depth,
-                    col,
-                )
+                .wrapped_list("{", [self.map_entry_text(m, depth + 1) for m in entries], "}", false, depth, col)
         }
-        if self.span_flat(span) { return "{${joined([self.map_entry_text(k, values[j], depth) for j, k in keys], ", ")}}" }
+        if self.span_flat(span) { return "{${joined([self.map_entry_text(m, depth) for m in entries], ", ")}}" }
         let body = flatten(
             [self
-                .trivia_before(start_of(self.store.expr_span(k)), depth + 1)
-                .concat([source_line(depth + 1, "${self.map_entry_text(k, values[j], depth + 1)},")]) for j, k in keys],
+                .trivia_before(start_of(self.store.expr_span(map_entry_head(m))), depth + 1)
+                .concat([source_line(depth + 1, "${self.map_entry_text(m, depth + 1)},")]) for m in entries],
         )
             .concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
         "{\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
-    /// One map entry: `key: value`, or a spread's `..map` — its key is
-    /// the spread and its value a placeholder that prints nothing.
-    mut fn map_entry_text(k: ExprId, v: ExprId, depth: int) -> string {
-        if self.store.spread_operand(k) != null { return self.expression(k, loosest_tier, depth) }
-        "${self.expression(k, loosest_tier, depth)}: ${self.expression(v, loosest_tier, depth)}"
+    /// One map entry: `key: value`, or a spread's `..map`.
+    mut fn map_entry_text(m: MapEntry, depth: int) -> string {
+        match m {
+            .Pair(key, value) -> "${self.expression(key, loosest_tier, depth)}: ${self.expression(value, loosest_tier, depth)}",
+            .Spread(from) -> "..${self.expression(from, postfix_tier, depth)}",
+        }
     }
 
     /// The table's lines, each column padded to its own widest cell

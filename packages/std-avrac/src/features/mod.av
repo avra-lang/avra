@@ -23,6 +23,8 @@ use core.{
     Arm,
     Mark,
     CompClause,
+    MapEntry,
+    map_entry_reach,
     Param,
     Variant,
     UseItem,
@@ -45,6 +47,8 @@ export enum LangNode {
     /// One comprehension clause — a `for` head or an `if` filter, as
     /// data.
     NCompClause(clause: CompClause)
+    /// One map-literal entry, as data.
+    NMapEntry(entry: MapEntry)
     /// Test cases — a `then`, or a `given` group's, as data.
     NCases(cases: List<Case>)
     /// A `@word` before a declared member, as data — no pass walks a
@@ -83,6 +87,9 @@ impl LangNode {
             .NMark(mark) -> mark.span,
             .NArm(arm) -> arm_extent(store, arm),
             .NCompClause(clause) -> clause_extent(store, clause),
+            .NMapEntry(entry) -> cover_of(
+                [store.expr_span(x)! for x in map_entry_reach(entry) if store.expr_span(x) != null],
+            ),
             .NCases(cases) -> cover_of([c.span! for c in cases if c.span != null]),
         }
     }
