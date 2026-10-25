@@ -140,7 +140,7 @@ seed_local() {
 
 # main-compiler: main's compiler, built ONCE per compiler source into the depot, for every lane's
 # pre-commit hook. A tree of its own (detached at origin/main, beside the depot) builds it with
-# `make avra` twice, each under the watchdog; the build lock is machine-wide, a lane that waits
+# `make compiler` (the one build verb: the standing compiler twice, else the seed) under the watchdog; the build lock is machine-wide, a lane that waits
 # finds the depot already holding the compiler and skips. AVRA_MAINC_BUILD replaces the build
 # (a witness's stub), AVRA_MAINC_WAIT_S (300) bounds the wait for another lane's build.
 main_compiler() {
@@ -176,11 +176,7 @@ main_compiler() {
         (cd "$mt" && sh -c "$AVRA_MAINC_BUILD") || die "main-compiler: the build failed"
     else
         [ -x "$mt/build/avra" ] || seed_local "$mt"
-        if [ -x "$mt/build/avra" ]; then
-            (cd "$mt" && sh tools/watch.sh 6000 make avra && sh tools/watch.sh 6000 make avra) || die "main-compiler: \`make avra\` failed in $mt"
-        else
-            (cd "$mt" && sh tools/watch.sh 6000 make bootstrap && sh tools/watch.sh 6000 make avra) || die "main-compiler: \`make bootstrap\` failed in $mt"
-        fi
+        (cd "$mt" && sh tools/watch.sh 6000 make -s compiler) || die "main-compiler: \`make compiler\` failed in $mt"
     fi
     deposit "$mt"
     [ -x "$dep/$h/avra" ] || die "main-compiler: built, but the depot holds nothing for $h (the tree's compiler says what it was built from?)"
