@@ -20,7 +20,21 @@ root="${MANIFEST_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 rows() {
     key=$1; shift
     [ $# -gt 0 ] || return 0
-    sed -n "s/^ *$key *= *\[\(.*\)\].*/\1/p" "$@" | tr ',' '\n' | tr -d ' "' | sed '/^$/d'
+    awk -v key="$key" '
+        FNR == 1 { inlink = 0; reading = 0 }
+        /^\[/ { inlink = ($0 ~ /^\[link\][ \t]*$/); next }
+        !inlink { next }
+        reading == 0 && $0 ~ "^[ \t]*" key "[ \t]*=" { reading = 1 }
+        reading == 1 {
+            line = $0
+            sub(/^[ \t]*#.*/, "", line)
+            while (match(line, /"[^"]*"/)) {
+                print substr(line, RSTART + 1, RLENGTH - 2)
+                line = substr(line, RSTART + RLENGTH)
+            }
+            if ($0 ~ /\]/) reading = 2
+        }
+    ' "$@"
 }
 
 # objects <key> <prefix> <manifest>...: the build/ path each entry names
