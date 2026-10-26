@@ -264,7 +264,7 @@ compiler_paths() {
 # (`published:<key>`), the merge-base's published compiler built once here
 # (`mergebase:<key>`), or a build (`build`). A tree with no fetch tool builds.
 compiler_route() {
-    [ -f "$1/tools/fetch_compiler.sh" ] || { echo build; return; }
+    [ -f "$1/tools/compiler_release.py" ] || { echo build; return; }
     (
         cd "$1"
         dirty=0
@@ -272,8 +272,8 @@ compiler_route() {
         hk=$(sh tools/compiler_paths.sh --key 2>/dev/null) || hk=
         mb=$(git merge-base HEAD origin/main 2>/dev/null) || mb=
         mk=
-        [ -z "$mb" ] || mk=$(sh tools/fetch_compiler.sh --key-of "$mb" 2>/dev/null) || mk=
-        sh tools/fetch_compiler.sh --route "$dirty" "$hk" "$mk" 2>/dev/null || echo build
+        [ -z "$mb" ] || mk=$(python3 tools/compiler_release.py key-of "$mb" 2>/dev/null) || mk=
+        python3 tools/compiler_release.py route "$dirty" "$hk" "$mk" 2>/dev/null || echo build
     )
 }
 # The compiler to stand as a lane's builder, matched by COMPILER KEY, never by commit: `<key> exact` when
@@ -288,12 +288,12 @@ builder_key() {
         seen=
         first=1
         for c in $(git rev-list --first-parent -n "${AVRA_BUILDER_BACK:-40}" "$mb"); do
-            k=$(sh tools/fetch_compiler.sh --key-of "$c" 2>/dev/null) || k=
+            k=$(python3 tools/compiler_release.py key-of "$c" 2>/dev/null) || k=
             case " $seen " in
                 *" $k "*) ;;
                 *)
                     seen="$seen $k"
-                    if [ -n "$k" ] && sh tools/fetch_compiler.sh --probe "$k" 2>/dev/null; then
+                    if [ -n "$k" ] && python3 tools/compiler_release.py probe "$k" 2>/dev/null; then
                         if [ -n "$first" ]; then echo "$k exact"; else echo "$k ancestor $n"; fi
                         exit 0
                     fi
@@ -749,7 +749,7 @@ run() {
             *" exact") route="builder:${bk%% *}"; echo "work: builder: the compiler published for the merge-base's key" >&2 ;;
             *)
                 mb=$(git -C "$tree" merge-base HEAD origin/main)
-                mbk=$(cd "$tree" && sh tools/fetch_compiler.sh --key-of "$mb")
+                mbk=$(cd "$tree" && python3 tools/compiler_release.py key-of "$mb")
                 route="builderold:${bk%% *}:$mbk"
                 echo "work: builder: the merge-base's key is unpublished; the nearest published one is ${bk##* } commit(s) back — the Sprite builds the MERGE-BASE's source once from it, shared by every lane on that base" >&2
                 mbroot=${AVRA_SPRITE_HOME:-/home/sprite}/avra-mb
