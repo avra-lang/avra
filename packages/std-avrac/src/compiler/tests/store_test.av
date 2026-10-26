@@ -212,6 +212,60 @@ spec "store" {
             s.get_valid(Stored.Unit, k, (n: string) -> "d1") == "answer" &&
                 s.get_valid(Stored.Unit, k, (n: string) -> "d2") == null
         }
+        then "an older version answers once its reads hold again" {
+            let s = at("undone")
+            let k = node_key(Stored.Unit, ["undone"])
+            let _ = s.keep_version(Stored.Unit, k, "A", [Reading { name: "a.av", digest: "d1" }])
+            let _ = s.keep_version(Stored.Unit, k, "B", [Reading { name: "a.av", digest: "d2" }])
+            s.get_valid(Stored.Unit, k, (n: string) -> "d1") == "A" &&
+                s.get_valid(Stored.Unit, k, (n: string) -> "d2") == "B"
+        }
+        then "the same answer kept twice is one version" {
+            let s = at("twice")
+            let k = node_key(Stored.Unit, ["twice"])
+            let _ = s.keep_version(Stored.Unit, k, "A", [Reading { name: "a.av", digest: "d1" }])
+            let _ = s.keep_version(Stored.Unit, k, "A", [Reading { name: "a.av", digest: "d1" }])
+            let _ = s.keep_version(Stored.Unit, k, "B", [Reading { name: "a.av", digest: "d2" }])
+            s.versions(Stored.Unit, k).length == 2
+        }
+        then "past the bound the least recently valid version is let go" {
+            let s = at("bounded")
+            let k = node_key(Stored.Unit, ["bounded"])
+            for i in 0..5 {
+                let _ = s
+                    .keep_version(Stored.Unit, k, "v${i}", [Reading { name: "a.av", digest: "d${i}" }])
+            }
+            s.versions(Stored.Unit, k).length == 4 &&
+                s.get_valid(Stored.Unit, k, (n: string) -> "d0") == null &&
+                s.get_valid(Stored.Unit, k, (n: string) -> "d1") == "v1"
+        }
+        then "a lookup judges no more versions than the bound" {
+            let s = at("judged")
+            let k = node_key(Stored.Unit, ["judged"])
+            for i in 0..9 {
+                let _ = s
+                    .keep_version(Stored.Unit, k, "v${i}", [Reading { name: "a.av", digest: "d${i}" }])
+            }
+            let asked: Cell<int> = Cell.new(0)
+            let _ = s
+                .get_valid(
+                    Stored.Unit,
+                    k,
+                    (n: string) -> {
+                        asked.set(asked.get() + 1)
+                        "none"
+                    },
+                )
+            asked.get() == 4
+        }
+        then "an answer kept without versions has one" {
+            let s = at("single")
+            let k = node_key(Stored.Unit, ["single"])
+            let _ = s.keep_reading(Stored.Unit, k, "A", [Reading { name: "a.av", digest: "d1" }])
+            let _ = s.keep_reading(Stored.Unit, k, "B", [Reading { name: "a.av", digest: "d2" }])
+            s.versions(Stored.Unit, k).length == 1 &&
+                s.get_valid(Stored.Unit, k, (n: string) -> "d1") == null
+        }
         then "a file family's edges are judged too" {
             let s = at("files")
             let k = node_key(Stored.Obj, ["files"])

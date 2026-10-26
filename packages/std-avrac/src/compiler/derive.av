@@ -539,8 +539,8 @@ impl Workspace {
     /// The program derived with nothing held — the hold's oracle.
     fn from_sources(entry: string?, want: Want) -> Result<Derived, string> { self.again(Attempt { entry: entry, want: want, hold: false }) }
 
-    /// WHETHER THE STORE STANDS IN FOR A FILE under this want.
-    fn stands_in(s: Store, okey: string, want: Want) -> bool {
+    /// Whether the rows a file's object key names are kept under this want.
+    fn kept_under(s: Store, okey: string, want: Want) -> bool {
         if !s.has(Stored.Warn, said_key(okey)) ||
             !s.has(Stored.Unit, self.asks_key(okey)) ||
             !s.has(Stored.Unit, self.codes_key(okey)) {
@@ -889,7 +889,7 @@ impl Workspace {
         let _ = self.keep_const_units(store, moved)
         let defects = self.defects.get()
         if defects.length > p.defects.length { fail Turn.Refused(p.rendered(defects.drop(p.defects.length))) }
-        let adrift = [path for path in held_paths(self) if !self.stands_in(store, self.held_okey(store, path), at.want)]
+        let adrift = [path for path in held_paths(self) if !self.kept_under(store, self.held_okey(store, path), at.want)]
         if !adrift.is_empty() { fail at.adrift(adrift) }
         let bodies = filed(lo.unmanaged, (b) -> b.file)
         let statics = filed(lo.statics, (s) -> s.file)
@@ -1191,7 +1191,7 @@ impl Workspace {
     fn read_unkept(store: Store, readers: List<string>, want: Want) {
         for reader in readers {
             if self.hold.forced.get().get(reader) == null &&
-                !self.stands_in(store, self.held_okey(store, reader), want) {
+                !self.file_rows_stand(store, reader, want) {
                 self.force_read(reader, Reads.Unkept)
             }
         }
@@ -1367,7 +1367,7 @@ fn boxed_name(parts: List<string>, path: string) -> string? {
 }
 
 /// A held file's `Said` under `want`: a diagnostics want reads its rule
-/// findings beside it, and `stands_in` held it only where they were kept.
+/// findings beside it, and a file is held only where its rows stand.
 fn held_said(store: Store, okey: string, said: Said, want: Want) -> Said? {
     match want {
         .Diagnostics -> {

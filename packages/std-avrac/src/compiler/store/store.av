@@ -11,6 +11,7 @@
 //! A FILE ROW IS PRESENT ONLY WHEN ITS EDGES ARE, so a write that never finished reads
 //! as ABSENT rather than as half a value. A packed row is present once its commit
 //! marker lands, which is the same law one mechanism over.
+use @std.text.{parse_int}
 use @std.io.{exists, read_text, write_text, read_bytes, write_bytes, make_dirs, remove}
 use @std.path.{joined_path}
 use @std.relation.engine.{map_cell}
@@ -185,6 +186,19 @@ export fn store_stamped(root: string, print: string, producers: Producers, keepi
 
 /// How a producer reads in the trace.
 fn stamp_word(p: Producer) -> string { match p { .Hashed(_) -> "shared", .Absent -> "absent" } }
+
+/// HOW MANY VERSIONS OF ONE SAVED ANSWER A NAME KEEPS. An edit and its undo each leave an
+/// answer that will be asked again; four holds that and one round more before the least
+/// recently valid is let go, and bounds what one lookup judges. A name a file's edits wrote
+/// grows to this many rows; seals fold them like any row, and the store's collection lets an
+/// unreachable one go.
+const VERSIONS_KEPT: int = 4
+
+/// Where an older version of a name's answer is kept: the one spelling of a slot.
+fn slot_key(key: string, slot: int) -> string { "${key}\tv${slot}" }
+
+/// Where a name's older versions are listed, most recently valid first.
+fn order_key(key: string) -> string { "${key}\torder" }
 
 /// ONE READ OF A SAVED ANSWER: what was read, named by its stable name, and the digest
 /// of exactly what came back. A name holds no newline; a digest holds no space and is
@@ -367,13 +381,60 @@ impl Store {
         self.keep(family, key, bytes, [r.spelled() for r in reads])
     }
 
-    /// THE SAVED-ANSWER RULE, PULLED: the row's bytes only if every read it was kept with
-    /// still has the digest it was read at. `now` answers a name's digest at this moment,
-    /// absent for a name that cannot be read. A row kept with no pairs, or whose reads
-    /// cannot be read back, is a miss — no other check stands in.
+    /// REMEMBER ONE MORE VERSION OF AN ANSWER: `keep_reading`, with the answer it replaces kept
+    /// as an older version. For an answer that is whole in its row — never one that names an
+    /// artifact kept elsewhere, which has one version only.
+    fn keep_version(family: Stored, key: string, bytes: string, reads: List<Reading>) -> bool {
+        if reads.any(!it.writable()) { return false }
+        let read = [r.spelled() for r in reads]
+        self.shelve_latest(family, key, bytes, read)
+        self.keep(family, key, bytes, read)
+    }
+
+    /// THE SAVED-ANSWER RULE, PULLED: the bytes of the version whose every read still has the
+    /// digest it was read at. `now` answers a name's digest at this moment, absent for a name
+    /// that cannot be read. A row kept with no pairs, or whose reads cannot be read back, is a
+    /// miss — no other check stands in.
     fn get_valid(family: Stored, key: string, now: fn(string) -> string?) -> string? {
-        if !self.holds(family, key, now) { return null }
-        self.get(family, key)
+        let at? = self.valid_version(family, key, (k) -> self.holds(family, k, now)) else { return null }
+        self.get(family, at)
+    }
+
+    /// WHICH VERSION OF A NAME STANDS — the one place a version is chosen. Judged newest first,
+    /// then most recently valid; an older one that stands becomes the most recently valid.
+    fn valid_version(family: Stored, key: string, stands: fn(string) -> bool) -> string? {
+        if stands(key) { return key }
+        let slots = self.older_slots(family, key)
+        let slot? = slots.find((n: int) -> stands(slot_key(key, n))) else { return null }
+        self.ordered(family, key, [slot].concat(slots.filter(it != slot)))
+        slot_key(key, slot)
+    }
+
+    /// Every version of a name: its newest, then the older ones, most recently valid first.
+    fn versions(family: Stored, key: string) -> List<string> {
+        [key].concat([slot_key(key, n) for n in self.older_slots(family, key)])
+    }
+
+    /// The older versions' slots, most recently valid first.
+    fn older_slots(family: Stored, key: string) -> List<int> {
+        let text = self.get(family, order_key(key)) ?? ""
+        [n! for w in text.split(" ") for n in [parse_int(w)] if n != null]
+    }
+
+    /// The name's newest answer, moved to an older slot before `bytes` replaces it — the
+    /// least recently valid version let go when every slot is taken.
+    fn shelve_latest(family: Stored, key: string, bytes: string, read: List<string>) {
+        let had? = self.get(family, key) else { return }
+        let had_read = self.reads_of(family, key) ?? []
+        if had == bytes && joined(had_read, "\n") == joined(read, "\n") { return }
+        let slots = self.older_slots(family, key)
+        let slot = (0..VERSIONS_KEPT - 1).find((n: int) -> !slots.contains(n)) ?? slots.last()!
+        let _ = self.keep(family, slot_key(key, slot), had, had_read)
+        self.ordered(family, key, [slot].concat(slots.filter(it != slot)))
+    }
+
+    fn ordered(family: Stored, key: string, slots: List<int>) {
+        let _ = self.keep(family, order_key(key), joined(["${n}" for n in slots], " "), [])
     }
 
     /// Whether a row's reads all still have their digests — the rule alone, with no value
