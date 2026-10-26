@@ -1,6 +1,6 @@
 // A field whose type implements `TextForm` crosses JSON as its text: written through
 // `text_form`, read through `from_text_form`, a refused text filed at its path.
-use @std.json.{Json, parse, to_text}
+use @std.json.{to_text}
 use @std.json.codec.{json}
 use @std.time.{Time}
 
@@ -9,49 +9,35 @@ type Event = { at: Time, label: string, seen: List<Time> }
 
 const stamp: string = "1970-01-01T00:00:01.000000000Z"
 
+fn doc(at: string, seen: string) -> string { "{\"at\":\"${at}\",\"label\":\"x\",\"seen\":[${seen}]}" }
+
 spec "std/json — a text-form field is a JSON string" {
     given "an event with a Time" {
         then "it writes the time's text" {
-            Event { at: Time { ns: 1000000000 }, label: "x", seen: [] }.json_text() == "{\"at\":\"${stamp}\",\"label\":\"x\",\"seen\":[]}"
+            Event { at: Time { ns: 1000000000 }, label: "x", seen: [] }.json_text() == doc(stamp, "")
         }
         then "its tree form carries the same string" {
-            to_text(Event { at: Time { ns: 1000000000 }, label: "x", seen: [] }.to_json()) == "{\"at\":\"${stamp}\",\"label\":\"x\",\"seen\":[]}"
+            to_text(Event { at: Time { ns: 1000000000 }, label: "x", seen: [] }.to_json()) == doc(stamp, "")
         }
         then "the text reads back to the instant, as list elements too" {
-            match Event
-                .from_json_text("{\"at\":\"${stamp}\",\"label\":\"x\",\"seen\":[\"${stamp}\"]}") {
+            match Event.from_json_text(doc(stamp, "\"${stamp}\"")) {
                 .Ok(e) -> e.at.ns == 1000000000 && e.seen[0].ns == 1000000000,
-                .Err(_) -> false,
-            }
-        }
-        then "the tree reads it back too" {
-            match Event
-                .from_json(parse("{\"at\":\"${stamp}\",\"label\":\"x\",\"seen\":[]}") catch Json.Null) {
-                .Ok(e) -> e.at.ns == 1000000000,
                 .Err(_) -> false,
             }
         }
     }
     given "a malformed time" {
-        then "the tree refuses it at its path" {
-            match Event
-                .from_json(parse("{\"at\":\"nope\",\"label\":\"x\",\"seen\":[]}") catch Json.Null) {
+        then "it is refused at its path" {
+            match Event.from_json_text(doc("nope", "")) {
                 .Ok(_) -> false,
                 .Err(e) -> e.at == "at" && e.found == "nope",
             }
         }
-        then "the text refuses it" {
-            match Event.from_json_text("{\"at\":\"nope\",\"label\":\"x\",\"seen\":[]}") {
+        then "a list element is refused at its index" {
+            match Event.from_json_text(doc(stamp, "\"${stamp}\",\"nope\"")) {
                 .Ok(_) -> false,
-                .Err(_) -> true,
+                .Err(e) -> e.at == "seen[1]",
             }
-        }
-        then "a list element refuses at its index" {
-            match Event
-                .from_json(
-                    parse("{\"at\":\"${stamp}\",\"label\":\"x\",\"seen\":[\"${stamp}\",\"nope\"]}") catch Json
-                        .Null,
-                ) { .Ok(_) -> false, .Err(e) -> e.at == "seen[1]" }
         }
     }
 }

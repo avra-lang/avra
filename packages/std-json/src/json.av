@@ -9,7 +9,7 @@
 //! infinity. Strings decode every escape, `\uXXXX` and surrogate
 //! pairs included. Every refusal is a `JsonError` that says where.
 //! A document nests at most `MAX_DEPTH` deep. `@json`, in the `codec`
-//! module, reads a record from a value and writes it back; a misfit is
+//! module, reads a record from text and writes it back; a misfit is
 //! a `DecodeError` naming the path to it.
 //!
 //! THERE IS ONE SCANNER. `skip` and the scans under it (`string_end`,
@@ -233,8 +233,8 @@ impl Error for JsonError {
 /// root itself.
 export type DecodeError = { at: string, wanted: string, found: string }
 
-/// What reads a value as a `T` — a record's `from_json` under `@json`.
-export alias Decoder<T> = fn(Json) -> Result<T, DecodeError>
+/// What reads JSON text as a `T` — a record's `from_json_text` under `@json`.
+export alias Decoder<T> = fn(string) -> Result<T, DecodeError>
 
 impl Error for DecodeError {
     fn describe() -> ErrorInfo {
@@ -254,114 +254,9 @@ export fn path_field(at: string, key: string) -> string {
 /// The path to an item under `at`.
 export fn path_item(at: string, i: int) -> string { "${at}[${i}]" }
 
-/// What a value is, in the words a refusal says it with. A REGISTRY:
-/// every variant answers.
-fn kind_said(v: Json?) -> string {
-    let j? = v else { return "nothing" }
-    match j {
-        .Null -> "null",
-        .Bool(b) -> "`${b}`",
-        .Int(n) -> "the number ${n}",
-        .Float(x) -> "the number ${float_text(x)}",
-        .Str(_) -> "text",
-        .Arr(_) -> "an array",
-        .Obj(_) -> "an object",
-    }
-}
-
-fn misfit(at: string, wanted: string, v: Json?) -> DecodeError {
-    DecodeError { at: at, wanted: wanted, found: kind_said(v) }
-}
-
-/// The value unless it is absent or `null` — what an optional seat
-/// reads.
-export fn present(v: Json?) -> Json? {
-    let j? = v else { return null }
-    if j.is_null() { null } else { j }
-}
-
-export fn want_int(v: Json?, at: string) -> Result<int, DecodeError> {
-    let n? = v?.int() else { fail misfit(at, "an integer", v) }
-    n
-}
-
-/// A float, or an integer read as the float nearest it.
-export fn want_float(v: Json?, at: string) -> Result<float, DecodeError> {
-    let j? = v else { fail misfit(at, "a number", v) }
-    match j {
-        .Float(x) -> x,
-        .Int(n) -> parse_float("${n}")!,
-        rest -> { fail misfit(at, "a number", j) },
-    }
-}
-
-export fn want_text(v: Json?, at: string) -> Result<string, DecodeError> {
-    let s? = v?.text() else { fail misfit(at, "text", v) }
-    s
-}
-
-/// A text read through `read`: the value it names, or a `DecodeError`
-/// at `at` when the text names none.
-export fn text_formed<T>(v: Json?, at: string, wanted: string, read: fn(string) -> T?) -> Result<
-    T,
-    DecodeError,
-> {
-    let text = want_text(v, at)?
-    let value? = read(text) else { fail DecodeError { at: at, wanted: wanted, found: text } }
-    value
-}
-
-export fn want_bool(v: Json?, at: string) -> Result<bool, DecodeError> {
-    let b? = v?.truth() else { fail misfit(at, "`true` or `false`", v) }
-    b
-}
-
-/// An array's items.
-export fn want_items(v: Json?, at: string) -> Result<List<Json>, DecodeError> {
-    let j? = v else { fail misfit(at, "an array", v) }
-    match j { .Arr(items) -> items, rest -> { fail misfit(at, "an array", j) } }
-}
-
-/// THE MEMBER `key` OF AN OBJECT, ONCE: absent when missing, refused
-/// when named twice. RFC 8259 leaves a duplicate's meaning to the
-/// reader, and readers disagree — JavaScript takes the last, `get` the
-/// first — so a record read from a document another reader also
-/// judges would mean two things. A decoder takes neither.
-export fn member_once(o: Json, key: string, at: string) -> Result<Json?, DecodeError> {
-    let named = [f.value for f in o.fields() if f.key == key]
-    if named.length > 1 { fail DecodeError { at: at, wanted: "one member", found: "${named.length}" } }
-    named.first()
-}
-
-/// One member of an object read as a map: its name and what its value read as.
-export type Member<T> = { key: string, value: T }
-
-/// An object's members, each named once.
-export fn want_members(v: Json?, at: string) -> Result<List<Field>, DecodeError> {
-    let o = want_object(v, at)?
-    let keys = [f.key for f in o.fields()]
-    for j, k in keys {
-        if keys.slice(0, j).contains(k) { fail DecodeError { at: path_field(at, k), wanted: "one member", found: "more" } }
-    }
-    o.fields()
-}
-
-/// Members, as the map from their names.
-export fn map_from<T>(members: List<Member<T>>) -> Map<string, T> {
-    mut out: Map<string, T> = {}
-    for m in members { out.set(m.key, m.value) }
-    out
-}
-
 /// The refusal for a `tag` that names no variant.
 export fn unknown_tag(at: string, tag: string) -> DecodeError {
     DecodeError { at: at, wanted: "a variant's name", found: "`${tag}`" }
-}
-
-/// An object, as itself.
-export fn want_object(v: Json?, at: string) -> Result<Json, DecodeError> {
-    let j? = v else { fail misfit(at, "an object", v) }
-    match j { .Obj(_) -> j, rest -> { fail misfit(at, "an object", j) } }
 }
 
 // ── Reading ─────────────────────────────────────────────────────
