@@ -193,8 +193,8 @@ impl TypeCx {
         self.starving = was
     }
 
-    /// A fn BODY's walk: the declared answer, the type parameters
-    /// and the SEATS are in scope for exactly the walk — `return`
+    /// A fn BODY's walk: the declared answer, the type parameters —
+    /// its own and its owner's — and the SEATS are in scope for exactly the walk — `return`
     /// judges where it stands, a body-level `let x: T` resolves the
     /// fn's own Vars, and a param's read answers its seat.
     mut fn walk_under(s: StmtId, body: ExprId) {
@@ -206,6 +206,9 @@ impl TypeCx {
         self.scope = sig?.params ?? []
         self.scope_marks = self.view.decls.marks_of(self.decl_of(s), self.scope.length)
         self.enter_tscope(s)
+        let owner: DeclId? = self.view.decls.decl(self.decl_of(s)).parent
+        let vars: DeclId? = if owner == null { null } else { self.vars_owner(owner!) }
+        if vars != null { self.enter_target_scope(vars!) }
         let ret: TypeId? = sig?.ret
         if ret != null { self.plant_want(body, ret!) }
         self.walk(body)
@@ -432,7 +435,7 @@ impl TypeCx {
             .Def(s) -> self.narrowed_def_walk(s, branch),
             .Param(i) -> self.framed(Narrowing.Params, i, self.seat_type(i), branch),
             // lambda params, captures and the receiver never narrow — walk wide
-            .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> self.walk_type(branch),
+            .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .TypeParam(_) or .Decl(_) -> self.walk_type(branch),
         }
     }
 
@@ -512,6 +515,7 @@ impl TypeCx {
             .Capture(l, j) -> self.capture_ty(l, j),
             .Index(s) -> self.index_binding_ty(s),
             .Decl(d) -> self.decl_type_read(e, d),
+            .TypeParam(n) -> self.tparam_type(n),
         }
     }
 
@@ -661,7 +665,24 @@ impl TypeCx {
             .Capture(l, j) -> self.capture_ty(l, j),
             .Index(s) -> self.index_binding_ty(s),
             .Decl(d) -> self.decl_type(d),
+            .TypeParam(n) -> self.tparam_type(n),
         }
+    }
+
+    /// The declaration whose type parameters a method's body reads, as
+    /// its signature did: an impl's target, a component's own record.
+    fn vars_owner(parent: DeclId) -> DeclId? {
+        match self.view.decls.decl(parent).kind {
+            .Impl -> self.view.decls.target_of(parent),
+            .Record -> parent,
+            .Trait or .Fn or .Named or .Alias or .Enum or .Syntax or .Method or .Default or .Main or .Case or .Builtin or .Const or .Collect or .CollectEnum or .State -> null,
+        }
+    }
+
+    /// The Var a type parameter in scope stands for — Error when none
+    /// of that name is, which resolve refused already.
+    fn tparam_type(name: string) -> TypeId {
+        self.tscope.find(var_named(self.view.types, it, name)) ?? self.error_type
     }
 
     /// A paired head's INDEX binder: the loop counter's `int`, or the

@@ -11,10 +11,10 @@ fn receiver_reg(mut cx: LowerCx, e: ExprId) -> Reg {
 }
 
 fn method_call_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> Reg {
-    match callee_of(cx.view, cx.type_at(subject), name) {
+    match subject_callee(cx.view, cx.names, subject, cx.type_at(subject), name) {
         .Variant(_, _) -> built_variant(cx, e, name, args),
         .Static(m, _) -> static_dispatch(cx, e, m, args),
-        .Bounded(_, _, _) -> cx.lower_defect(e, "a bounded receiver survived mono"),
+        .Bounded(_, _, _) or .BoundStatic(_, _, _) -> cx.lower_defect(e, "a bounded receiver survived mono"),
         .Contract(tdecl, _) -> dyn_dispatch(cx, e, subject, tdecl, name, args),
         .FnField(slot, fty) -> fielded_dispatch(cx, e, subject, slot, fty, args),
         .Row(r) -> r.lower(cx, MethodCall { e: e, subject: subject, args: args }),
