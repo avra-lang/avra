@@ -461,6 +461,7 @@ fn removal(t: Type) -> Code {
     quote {
         let opened = modeled(db.begin_unless_open())?
         defer db.finish_if_opened(opened)
+        ${[cascade_held(f) for f in cascading(t)]}
         let changed = modeled(db.run(sql(${literal(soft_remove_sql_of(t))} + scope_text(scope), scope_args([.Int(now_ms()), .Int(self.id)], scope))))?
         if changed != 0 {
             ${[cascade_stmt(f) for f in cascading(t)]}
@@ -479,9 +480,16 @@ fn child_cascades(t: Type, f: Field) -> bool {
     declared.fields.any(it.name == link && is_mark(it, "cascade"))
 }
 
+/// A cascading child list, read while the parent is still live: a soft
+/// parent's children are read through it, so they are held before it goes.
+fn cascade_held(f: Field) -> Stmts {
+    quote { let ${"held_" + f.name} = modeled(self.${f.name}(db))? }
+}
+
+/// The held children removed, after the parent's own statement changed a row.
 fn cascade_stmt(f: Field) -> Stmts {
     quote {
-        for kid in modeled(self.${f.name}(db))? { let _ = kid.remove(db)? }
+        for kid in ${name("held_" + f.name)} { let _ = kid.remove(db)? }
     }
 }
 
