@@ -34,7 +34,8 @@ fn inserted(pairs: List<string>, word: string) -> List<string> {
 }
 
 /// A view that reads an entry: told each time the entry's state moves.
-export type Watcher = { id: int, apply: fn(Async<Reply>) -> void }
+/// `seen` is the paint that last showed what the view reads (none yet: zero).
+export type Watcher = { id: int, apply: fn(Async<Reply>) -> void, seen: Cell<int> }
 
 /// One observation: the answer to a key's request as the reply it came in, the
 /// version that answer carries, the tables the server said it read (none: it did not
@@ -152,6 +153,11 @@ impl Entry {
         if self.unread() { self.read.set(now_ms()) }
     }
 
+    /// Every reader a paint showed once and `walk` did not has been removed from the screen: it reads no more.
+    fn unseen(walk: int) {
+        for w in self.watchers.get() { if w.seen.get() > 0 && w.seen.get() < walk { self.left(w.id) } }
+    }
+
     /// Its state moved: every reader is told.
     fn told() {
         for w in self.watchers.get() { (w.apply)(self.now.get()) }
@@ -255,6 +261,11 @@ impl Cache {
     /// The observations a write that touched `written` leaves stale: those a view reads that the
     /// write reaches. (An entry no view reads keeps its version; its next ask sends it and the
     /// server answers by what it read.)
+    /// Every view the paint `walk` did not show, having shown before, lets go of what it read.
+    fn released(walk: int) {
+        for e in self.entries.get() { e.unseen(walk) }
+    }
+
     fn stale_by(written: List<string>) -> List<Entry> {
         [e for e in self.entries.get() if !e.unread() && self.reached(e, written)]
     }

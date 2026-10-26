@@ -1,6 +1,6 @@
 //! `app/async.av` — what a view shows of work that has not finished: the
 //! four states it can be in, as a library type a state holds.
-use app.{Entry}
+use app.{Entry, running}
 
 /// Work asked for and not yet answered: nothing asked, under way, refused
 /// with its words, or answered.
@@ -32,7 +32,7 @@ impl Async<T> {
 /// last asked: the entry is the loop's, shared by every view asking the same
 /// key, so `at` is which one this view reads, and `id` is how the entry tells
 /// this view from another.
-export type Fetch<T> = { now: Cell<Async<T>>, id: int, at: Cell<Entry?>, last: Cell<T?> }
+export type Fetch<T> = { now: Cell<Async<T>>, id: int, at: Cell<Entry?>, last: Cell<T?>, seen: Cell<int> }
 
 /// The numbers views are told apart by.
 once fn views() -> Cell<int> { Cell.new(0) }
@@ -43,18 +43,22 @@ export fn fetch<T>() -> Fetch<T> {
     let nothing: Entry? = null
     let unread: T? = null
     views().set(views().get() + 1)
-    Fetch { now: Cell.new(idle), id: views().get(), at: Cell.new(nothing), last: Cell.new(unread) }
+    Fetch { now: Cell.new(idle), id: views().get(), at: Cell.new(nothing), last: Cell.new(unread), seen: Cell.new(0) }
 }
 impl Fetch<T> {
     /// The state now, to `match` on.
-    fn state() -> Async<T> { self.now.get() }
+    fn state() -> Async<T> {
+        let on? = running() else { return self.now.get() }
+        if on.painting.get() { self.seen.set(on.walks.get()) }
+        self.now.get()
+    }
 
     /// Whether an answer is awaited.
-    fn is_loading() -> bool { self.now.get().is_loading() || self.at.get()?.loading() ?? false }
+    fn is_loading() -> bool { self.state().is_loading() || self.at.get()?.loading() ?? false }
 
     /// The answer, once there is one.
-    fn value() -> T? { self.now.get().value() ?? self.last.get() }
+    fn value() -> T? { self.state().value() ?? self.last.get() }
 
     /// The refusal's words, when the work failed.
-    fn failure() -> string? { self.now.get().failure() }
+    fn failure() -> string? { self.state().failure() }
 }

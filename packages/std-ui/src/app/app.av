@@ -106,6 +106,7 @@ export type App = {
     asked: Cell<bool>,
     framer: Cell<fn() -> void>,
     walks: Cell<int>,
+    painting: Cell<bool>,
     frames: Cell<int>,
     observed: Cache,
 }
@@ -180,6 +181,7 @@ export fn owned_app<V: View>(
         asked: Cell.new(false),
         framer: Cell.new(nobody_asks),
         walks: Cell.new(0),
+        painting: Cell.new(false),
         frames: Cell.new(0),
         observed: cache(),
     }
@@ -205,7 +207,11 @@ impl App {
         let theme = self.theme.get()
         self.stands.begun()
         let before = self.standers()
+        self.painting.set(true)
         let root = view(self.stands)
+        self.painting.set(false)
+        self.observed.released(self.walks.get())
+        hung_up(self)
         for w in dead_keys(root) { self.stands.says(w) }
         self.show(root, theme())
         if self.standers() != before { self.woken() }
