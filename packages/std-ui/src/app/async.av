@@ -1,6 +1,6 @@
 //! `app/async.av` — what a view shows of work that has not finished: the
 //! four states it can be in, as a library type a state holds.
-use app.{Entry, running}
+use app.{Entry, running, watching}
 
 /// Work asked for and not yet answered: nothing asked, under way, refused
 /// with its words, or answered.
@@ -49,8 +49,16 @@ impl Fetch<T> {
     /// The state now, to `match` on.
     fn state() -> Async<T> {
         let on? = running() else { return self.now.get() }
-        if on.painting.get() { self.seen.set(on.walks.get()) }
+        if on.painting.get() { self.shown(on) }
         self.now.get()
+    }
+
+    /// A paint shows what this view reads: if an earlier paint left it out (a windowed list's unbuilt
+    /// rows) and it was let go, it reads its entry again.
+    fn shown(on: App) {
+        self.seen.set(on.walks.get())
+        let e? = self.at.get() else { return }
+        if e.rejoined(self.id) { watching(on, e) }
     }
 
     /// Whether an answer is awaited.

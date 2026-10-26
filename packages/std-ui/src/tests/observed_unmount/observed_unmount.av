@@ -7,6 +7,7 @@ use @std.http_message.message.{Header, Reply, Request}
 use @std.time.{ms}
 
 state shown: bool = true
+state other: int = 0
 
 fn words(a: Async<int>) -> string {
     match a {
@@ -25,6 +26,7 @@ fn view_of(rows: Fetch<int>) -> column {
     if !shown { return column {} }
     column {
         text "${words(rows.state())}"
+        text "other ${other}"
         button "Load" {
             on press {
                 let _ = fetched(rows, Request.get("/rows"), parsed)
@@ -58,13 +60,19 @@ screen
             println(
                 "the view shows ${words(rows.state())} and listens: ${screen.listened("/feed") != null}",
             )
+            other = 1
+            screen.turn(() -> true)
+            println(
+                "only the other view changed, the first still listens: ${screen.listened("/feed") != null}",
+            )
             shown = false
             screen.turn(() -> true)
             println("the view removed, listening: ${screen.listened("/feed") != null}")
             shown = true
             screen.turn(() -> true)
-            let _ = screen.press("Load")
-            screen.advance(ms(10))
-            println("shown and loaded again, listening: ${screen.listened("/feed") != null}")
+            println(
+                "shown again, reading what it read before, listening: ${screen.listened("/feed") != null}",
+            )
+            println("and it still shows ${words(rows.state())}")
         },
     )
