@@ -40,7 +40,7 @@ use @std.meta.{
     type_named,
     implements,
 }
-use @std.derive.{record_of, RECORD_WIDTH}
+use @std.derive.{record_of}
 use @std.json.{Json, DecodeError, field, path_field, path_item, unknown_tag, to_text}
 use @std.json.typed.{
     Reader,
@@ -598,7 +598,6 @@ fn read_closure(t: Type) -> List<string> {
 // ── The shape a codec reads ──────────────────────────────────────
 
 fn shape_problems(t: Type) -> List<Diagnostic> {
-    if t.fields.length > RECORD_WIDTH { return [too_wide(t)] }
     [unreadable_field(t, f) for f in t.fields if !readable(f.kind)]
         .concat([unannotated(t, f, n) for f in t.fields for n in records_read(f.kind) if !coded(n)])
 }
@@ -647,9 +646,6 @@ fn readable(k: Kind) -> bool {
 
 // ── Voices ───────────────────────────────────────────────────────
 
-/// What a declaration too wide to read is told to do.
-const group_help: string = "group fields into a nested `@json` record"
-
 fn unreadable_payload(t: Type, v: Variant, f: Field) -> Diagnostic {
     refuse_as_at(
         "unreadable_field",
@@ -665,15 +661,6 @@ fn unannotated_payload(t: Type, v: Variant, f: Field, n: string) -> Diagnostic {
         f.at,
         "`${t.name}.${v.name}`'s `${f.name}` reads `${n}`, which does not wear `@json`",
         "write `@json` on `${n}` too",
-    )
-}
-
-fn too_wide(t: Type) -> Diagnostic {
-    refuse_as_at(
-        "too_wide",
-        t.at,
-        "`@json` reads a record of at most ${RECORD_WIDTH} fields, and `${t.name}` has ${t.fields.length}",
-        group_help,
     )
 }
 
