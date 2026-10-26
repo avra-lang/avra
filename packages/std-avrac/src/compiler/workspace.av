@@ -2212,9 +2212,15 @@ impl Workspace {
         t.declare_one(x)
         self.sig_voices.keep(d.index, t.facts.voices)
         let out: DeclSig? = self.decls.sigs.get()[d.index]
-        self.db.settle(k, sig_hash(out))
+        self.db.kernel.settle_lazy(k, () -> self.sig_stable(x, out))
         if t.facts.voices.list.is_empty() { let _ = self.noted_key(Key { family: Family.Sig.ordinal, arg: d.index }) }
         out
+    }
+
+    /// A signature's hash as any process spells it: its record shape's text, never the
+    /// interned type ids `DeclSig.fingerprint` folds. A signature a body has none of hashes 0.
+    fn sig_stable(x: Decl, out: DeclSig?) -> int {
+        if out == null { 0 } else { fp_str(self.record_shape(x)) }
     }
 
     /// A held declaration's sig came from its module's stored record —

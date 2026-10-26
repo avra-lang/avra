@@ -5,7 +5,6 @@
 use @std.relation.engine.{Key, Saved, SavedRead}
 use @std.text.{parse_int}
 use core.{FileId, DeclId, ModuleId, DeclKind, joined}
-use compiler.host.{InputName}
 use @std.relation.engine.{Revival}
 use features.{kind_word, decl_key_text}
 use compiler.families.{Family, keyed_by}
@@ -19,8 +18,12 @@ enum ArgName {
     Decl
     Module
     Unit
-    /// A file's text input: the key is the input's own, and the name is `text <path>`.
-    Text
+    /// A read of the world: the key is the input's own, spelled `kind key`.
+    World
+    /// A package's manifest, by the package's key.
+    Package
+    /// A name's bucket of declarations, by the name.
+    Bucket
     Local
 }
 
@@ -33,8 +36,10 @@ fn arg_name(f: Family) -> ArgName {
         .Decl -> ArgName.Decl,
         .Module -> ArgName.Module,
         .Program -> ArgName.Unit,
-        .Input -> ArgName.Text,
-        .Package or .Unit or .Name or .Row -> ArgName.Local,
+        .Input -> ArgName.World,
+        .Package -> ArgName.Package,
+        .Name -> ArgName.Bucket,
+        .Unit or .Row -> ArgName.Local,
     }
 }
 
@@ -55,19 +60,24 @@ impl Workspace {
             .Decl -> self.decl_spelled(DeclId { index: arg }),
             .Module -> self.decls.module_name(ModuleId { index: arg }),
             .Unit -> "",
-            .Text -> self.text_spelled(arg),
+            .World -> self.world_spelled(arg),
+            .Package -> self.package_spelled(arg),
+            .Bucket -> self.decls.bucket_label(arg),
             .Local -> null,
         }
     }
 
-    /// An input's name when it is a file's text: `text <path>`.
-    fn text_spelled(arg: int) -> string? {
+    /// A read of the world as its name spells it: its kind's word, then its key.
+    fn world_spelled(arg: int) -> string? {
         let at = self.input_names.get()
         if arg < 0 || arg >= at.length { return null }
-        match at[arg].kind {
-            .Text -> "text ${at[arg].key}",
-            .Octets or .Range or .Listing or .Exists or .Env or .Tool or .Compiler or .Embedded or .EmbeddedOctets -> null,
-        }
+        input_spelled(at[arg])
+    }
+
+    fn package_spelled(arg: int) -> string? {
+        let at = self.packages()
+        if arg < 0 || arg >= at.length { return null }
+        at[arg].key
     }
 
     /// A declaration's key as text, unrecorded: its file's name, then kind, owner, maker,
@@ -103,18 +113,34 @@ impl Workspace {
             .Decl -> self.saved_decl(spelled)?.index,
             .Module -> self.decls.known_module_id(spelled)?.index,
             .Unit -> 0,
-            .Text -> self.text_named_arg(spelled),
+            .World -> self.world_named_arg(spelled),
+            .Package -> self.package_named_arg(spelled),
+            .Bucket -> self.bucket_named_arg(spelled),
             .Local -> null,
         }
     }
 
-    /// The input a `text <path>` spelling names, staged through the door so its cell stands
-    /// with the digest the file has now.
-    fn text_named_arg(spelled: string) -> int? {
-        if !spelled.starts_with("text ") { return null }
-        let name = InputName { kind: .Text, key: spelled.substring(5, spelled.length) }
+    /// The input a spelling names, staged through the door so its cell stands with the digest
+    /// the world has now.
+    fn world_named_arg(spelled: string) -> int? {
+        let name? = input_named(spelled) else { return null }
         let _ = self.input(name)
         self.world_key(name)
+    }
+
+    /// The name's bucket, its cell set against the bucket as it stands so it carries the hash
+    /// the bucket has now.
+    fn bucket_named_arg(name: string) -> int? {
+        let b? = self.decls.bucket_standing(name) else { return null }
+        self.decls.named_now(b)
+        b
+    }
+
+    /// The package a key names, its manifest read so its cell stands.
+    fn package_named_arg(key: string) -> int? {
+        let at? = [j for j, p in self.packages() if p.key == key].first() else { return null }
+        let _ = self.manifest(at)
+        at
     }
 
     /// The declaration a spelling names, found in the key index. A declaration of a file not yet
@@ -194,7 +220,7 @@ impl Workspace {
     /// read stands for what it read.
     fn stands_alone(k: Key) -> bool {
         let f? = Family.all().get(k.family) else { return false }
-        self.saved_family(f) || f is .Input
+        self.saved_family(f) || f is .Input || f is .Manifest || f is .Named
     }
 
     /// The value a saved answer was kept with.
