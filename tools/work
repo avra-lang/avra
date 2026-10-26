@@ -311,7 +311,7 @@ ladder_ship() {
     ls_sprite=$1 ls_tree=$2 ls_plan=$3
     ls_key=$(printf '%s' "$ls_plan" | git hash-object --stdin)
     ls_dest=${AVRA_SPRITE_HOME:-/home/sprite}/avra-ladder/$ls_key
-    if ! sx "$ls_sprite" 20 test -d "$ls_dest/repo/.git" 2>/dev/null; then
+    if ! sx "$ls_sprite" 20 git -C "$ls_dest/repo" rev-parse -q --verify "${ls_plan%%:*}^{commit}" >/dev/null 2>&1; then
         ls_mb=${ls_plan%%:*}
         ls_tmp=$(mktemp -d "${TMPDIR:-/tmp}/avra-ladder.XXXXXX")
         git init -q "$ls_tmp/repo"
@@ -322,8 +322,8 @@ ladder_ship() {
             ls_depth=$((ls_depth * 2))
             [ "$ls_depth" -lt 5000 ] || die "could not cut the history for the rungs at $ls_mb"
         done
-        tar -C "$ls_tmp/repo" -cf - .git | gzip -1 |
-            timeout -k 2 300 "$sprite_cli" -s "$ls_sprite" exec --no-port-forward -- sh -c "mkdir -p '$ls_dest/repo' && tar xzf - -C '$ls_dest/repo'" ||
+        COPYFILE_DISABLE=1 tar --no-xattrs --no-acls -C "$ls_tmp/repo" -cf - .git | gzip -1 |
+            timeout -k 2 300 "$sprite_cli" -s "$ls_sprite" exec --no-port-forward -- sh -c "find '$ls_dest' -mindepth 1 -delete 2>/dev/null; mkdir -p '$ls_dest/repo' && tar xzf - -C '$ls_dest/repo'" ||
             die "could not hand the rungs to $ls_sprite"
         find "$ls_tmp" -delete
     fi
