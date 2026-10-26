@@ -112,7 +112,7 @@ class Sentence(unittest.TestCase):
         asked = []
         script = list(script)
 
-        def pick(ctx, question, options, tail=()):
+        def pick(ctx, question, options, tail=(), **_):
             asked.append(list(options))
             want = script.pop(0)
             out = [0.0] * (len(options) + len(tail))
@@ -125,14 +125,12 @@ class Sentence(unittest.TestCase):
     def test_every_kind_a_sentence_states_is_taken_in_turn_and_not_asked_again(self):
         c, asked = self.cascade_over("A and B.", ["Cash: x", "Sale: y", None])
         opts = {"Cash": "Cash: x", "Sale": "Sale: y", "Pair": "Pair: z"}
-        c.sentence_records(["Cash", "Sale", "Pair"], opts, 0, 8)
-        self.assertEqual(c.filled, ["Cash", "Sale"])
+        self.assertEqual([k for k, _ in c.sentence_records(["Cash", "Sale", "Pair"], opts, 0, 8)], ["Cash", "Sale"])
         self.assertEqual([len(a) for a in asked], [3, 2, 1])
 
     def test_a_sentence_that_states_nothing_is_asked_once(self):
         c, asked = self.cascade_over("Nothing.", [None])
-        c.sentence_records(["Cash"], {"Cash": "Cash: x"}, 0, 8)
-        self.assertEqual((c.filled, len(asked)), ([], 1))
+        self.assertEqual((c.sentence_records(["Cash"], {"Cash": "Cash: x"}, 0, 8), len(asked)), ([], 1))
 
 
 class Partial(unittest.TestCase):

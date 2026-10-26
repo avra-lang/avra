@@ -37,17 +37,29 @@ def main():
         q = json.loads(line)
         if q["op"] == "footprint":
             out = {"footprint": footprint()}
-        elif q["op"] == "mentions":
-            r = m.extract(q["text"], m.create_schema().entities(q["labels"]), threshold=q["threshold"], include_confidence=True, include_spans=True)
-            out = {"value": r["entities"]}
         else:
-            s = m.create_schema()
-            b = s.structure(q["model"], mode="natural", anchor=q["anchor"])
-            for f in q["fields"]:
-                b = b.field(f, dtype="str")
-            r = m.extract(q["text"], s, threshold=q["threshold"], include_confidence=True, include_spans=True)
-            out = {"value": r.get(q["model"]) or []}
+            out = {"value": answered(m, q["text"], [q], q["threshold"])[0]}
         print(json.dumps(out), flush=True)
+
+
+def schema_of(m, q):
+    """The extraction schema one query asks."""
+    s = m.create_schema()
+    if q["op"] == "mentions":
+        return s.entities(q["labels"])
+    b = s.structure(q["model"], mode="natural", anchor=q["anchor"])
+    for f in q["fields"]:
+        b = b.field(f, dtype="str")
+    return s
+
+
+def answered(m, text, queries, threshold):
+    """One value per query: an entity dict for a mentions query, a record list for a records query."""
+    out = []
+    for q in queries:
+        r = m.extract(text, schema_of(m, q), threshold=threshold, include_confidence=True, include_spans=True)
+        out.append(r["entities"] if q["op"] == "mentions" else r.get(q["model"]) or [])
+    return out
 
 
 if __name__ == "__main__":

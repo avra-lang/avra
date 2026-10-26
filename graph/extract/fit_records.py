@@ -88,14 +88,14 @@ def rows(corpus):
         encoder.close()
 
 
-def pooled_kinds(corpus):
+def pooled_kinds(corpus, framing=None):
     """Every (domain, kind, option text) the invented domains declare, as the cascade words an option."""
     import cascade
 
     out = []
     for name, d in corpus.domains().items():
         plan = cascade.Plan(corpus.descriptor(d))
-        out += [(name, k, cascade.FRAMINGS[cascade.RECORD_FRAMING](plan.models[k])) for k in plan.records]
+        out += [(name, k, cascade.FRAMINGS[framing or cascade.RECORD_FRAMING](plan.models[k])) for k in plan.records]
     return out
 
 
@@ -141,7 +141,7 @@ def scored(asked, socket_path, out, mode):
             key = hashlib.sha256(json.dumps([r["text"], r["context"], r["question"]] + (r["options"] if mode == "choice" else [])).encode()).hexdigest()
             if key not in kept:
                 p = choose(socket_path, f'Text: "{r["text"]}"\n\n{r["context"]}', r["question"], r["options"])
-                kept[key] = {"key": key, "domain": r["domain"], "kind": r.get("kind"), "gold": r["gold"], "p": p if mode == "choice" else p[0]}
+                kept[key] = {"key": key, "sid": ranked(r["domain"], r["message"], r["sentence"]), "domain": r["domain"], "kind": r.get("kind"), "gold": r["gold"], "p": p if mode == "choice" else p[0]}
                 f.write(json.dumps(kept[key]) + "\n")
                 f.flush()
             yield kept[key]
@@ -189,12 +189,16 @@ def main():
     flag = lambda name, default=None: args[args.index(name) + 1] if name in args else default
     mode = flag("--mode", "choice")
     width = int(flag("--kinds", "17"))
-    out = flag("--scores", os.path.join(HERE, "bench", f"records.invented.choice.scores.jsonl" if mode == "choice" else "records.invented.scores.jsonl"))
+    import cascade
+
+    framing = flag("--framing", cascade.RECORD_FRAMING)
+    named = f".{framing}"
+    out = flag("--scores", os.path.join(HERE, "bench", f"records.invented.choice{named}.scores.jsonl" if mode == "choice" else "records.invented.scores.jsonl"))
     sock = os.environ.get("AVRA_GRAPH_SOCKET") or os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
     corpus = tune_module("corpus")
     started = time.time()
     base = list(rows(corpus))
-    asked = base if mode == "yesno" else choice_rows(sentence_rows(base), pooled_kinds(corpus), width)
+    asked = base if mode == "yesno" else choice_rows(sentence_rows(base), pooled_kinds(corpus, framing), width)
     every = int(flag("--every", "1"))
     asked = [r for r in asked if int(ranked(r["sentence"])[:8], 16) % every == 0]
     rs = list(scored(asked, sock, out, mode))
@@ -212,7 +216,7 @@ def main():
             entry["sentence_sample"] = f"one in {every}, by hash of the sentence"
             entry["dev_accuracy"] = entry["held_out_accuracy"]
         params["params"][PARAM[mode]] = entry
-        params["params"]["fitted_at_records"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        params["fitted_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         json.dump(params, open(path, "w"), indent=2)
 
 

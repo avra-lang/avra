@@ -11,7 +11,7 @@ class Scripted:
     def __init__(self, yes):
         self.yes, self.asked = yes, []
 
-    def pick(self, context, question, options, tail=()):
+    def pick(self, context, question, options, tail=(), **_):
         self.asked.append((context, question, options))
         name = question.split("Kind: ")[-1].split(":")[0] if "Kind: " in question else next(k for k in self.yes if f"{k}: " in question)
         p = self.yes[name]
@@ -44,14 +44,12 @@ class Gate(unittest.TestCase):
     def test_a_kind_is_taken_at_or_above_the_threshold_and_a_sentence_may_state_several(self):
         t = cascade.ACCEPT_KIND_YES
         c = cascade_over({"Booking": t, "Payment": t})
-        c.sentence_kinds(list(c.plan.records), 0, 10)
-        self.assertEqual([k for k, *_ in c.filled], ["Booking", "Payment"])
+        self.assertEqual([k for k, _ in c.sentence_kinds(list(c.plan.records), 0, 10)], ["Booking", "Payment"])
 
     def test_a_kind_below_the_threshold_is_left_and_the_drop_is_logged(self):
         c = cascade_over({"Booking": 0.0, "Payment": 1.0})
         cascade.LOG.clear()
-        c.sentence_kinds(list(c.plan.records), 0, 10)
-        self.assertEqual([k for k, *_ in c.filled], ["Payment"])
+        self.assertEqual([k for k, _ in c.sentence_kinds(list(c.plan.records), 0, 10)], ["Payment"])
         self.assertTrue(any("gate record Booking" in line for line in cascade.LOG))
 
     def test_every_kind_is_asked_once_per_sentence(self):

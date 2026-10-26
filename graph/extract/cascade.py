@@ -51,12 +51,14 @@ ACCEPT_RECORD = fitted("accept_record")
 ACCEPT_KIND = fitted_per_kind()
 ACCEPT_FIELD = fitted("accept_field")
 RECORD_MODE = fitted("record_mode")
+PROMPT_LAYOUT = fitted("prompt_layout")
 ACCEPT_KIND_YES = fitted("accept_kind_yes")
 RECORD_FRAMING = fitted("record_framing")
 MARGIN = fitted("margin")
 NEW_CEILING = fitted("new_ceiling")
 MAX_OPTIONS = len(string.ascii_uppercase)
 GENERATE_BUDGET = parameter("generate_budget")
+CLEAR_CACHE_EVERY = parameter("clear_cache_every")
 ABSTAIN = object()
 SOCKET = os.environ.get("AVRA_GRAPH_SOCKET") or os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
 TIME_EXPRESSION = "time expression"
@@ -374,30 +376,48 @@ class Encoder:
         self.p.wait()
 
 
-def choice_prompt(context, question, options, source=""):
+def choice_prompt(context, question, options, source="", options_first=False):
     """The user message of one closed choice, exactly as the scorer sends it:
     the source text (when given), the context, the question and the lettered
-    options. Importable without mlx, so tuning data matches runtime bytes."""
+    options; with options_first the options lead, so a prefix cache keeps them
+    across sources. Importable without mlx, so tuning data matches runtime bytes."""
     letters = string.ascii_uppercase[: len(options)]
     text = f'Text: "{source}"\n\n' if source else ""
-    return text + f"{context}\n\n{question}\n" + "\n".join(f"{l}) {o}" for l, o in zip(letters, options)) + "\nAnswer with the letter only."
+    block = "\n".join(f"{l}) {o}" for l, o in zip(letters, options))
+    if options_first:
+        return f"Options:\n{block}\n\n{text}{context}\n\n{question}\nAnswer with the letter only."
+    return text + f"{context}\n\n{question}\n" + block + "\nAnswer with the letter only."
+
+
+def common_prefix(a, b):
+    """How many leading items two sequences share."""
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
 
 
 class Scorer:
     """Closed-choice scorer: next-token probabilities over option letters."""
+
+    held = ()
+    spent = None
 
     def __init__(self):
         from mlx_lm import load
 
         self.model, self.tok = load(SCORER.split("@")[0])
         self.calls, self.source, self.cache, self.prefix = 0, "", None, True
-        self.spent = {}
+        self.spent, self.held = {}, []
 
     def spend(self, started, tokens):
         """Account a forward pass to the cascade method that asked for it: calls, seconds, prompt tokens."""
         frame = sys._getframe(2)
         while frame.f_locals.get("self") is self:
             frame = frame.f_back
+        self.spent = {} if self.spent is None else self.spent
         row = self.spent.setdefault(frame.f_code.co_name, [0, 0.0, 0])
         row[0] += 1
         row[1] += time.time() - started
@@ -416,22 +436,32 @@ class Scorer:
         self.cache = make_prompt_cache(self.model)
         started, ids = time.time(), self.tok.encode(head)
         mx.eval(self.forward(ids))
+        self.held = ids
         self.spend(started, len(ids))
 
-    def pick(self, context, question, options, tail=()):
+    def reuse(self, ids):
+        """Trim the cache to the longest prefix it shares with `ids` (always short of all of them) and answer its length."""
+        from mlx_lm.models.cache import trim_prompt_cache
+
+        keep = min(common_prefix(self.held, ids), len(ids) - 1)
+        trim_prompt_cache(self.cache, len(self.held) - keep)
+        self.held = self.held[:keep]
+        return keep
+
+    def pick(self, context, question, options, tail=(), options_first=False):
         """Probabilities over options + tail. Past MAX_OPTIONS the options run
         in heats, each with the tail, and the heat winners meet in a final;
         an option that lost its heat scores 0."""
         options, tail = list(options), list(tail)
         room = MAX_OPTIONS - len(tail)
         if len(options) <= room:
-            return self.choose(context, question, options + tail)
+            return self.choose(context, question, options + tail, options_first)
         winners = []
         for i in range(0, len(options), room):
             heat = options[i : i + room]
-            p = self.choose(context, question, heat + tail) if len(heat) + len(tail) >= 2 else [1.0]
+            p = self.choose(context, question, heat + tail, options_first) if len(heat) + len(tail) >= 2 else [1.0]
             winners.append(i + max(range(len(heat)), key=lambda k: p[k]))
-        final = self.pick(context, question, [options[w] for w in winners], tail)
+        final = self.pick(context, question, [options[w] for w in winners], tail, options_first)
         out = [0.0] * (len(options) + len(tail))
         for j, w in enumerate(winners):
             out[w] = final[j]
@@ -465,15 +495,12 @@ class Scorer:
 
         return self.model(mx.array(ids)[None], cache=self.cache)[0, -1]
 
-    def choose(self, context, question, options):
+    def choose(self, context, question, options, options_first=False):
         import mlx.core as mx
-        from mlx_lm.models.cache import trim_prompt_cache
-
         if not 2 <= len(options) <= MAX_OPTIONS:
             raise ValueError(f"a choice takes 2 to {MAX_OPTIONS} options, got {len(options)}; split it into heats")
         started, letters = time.time(), list(string.ascii_uppercase[: len(options)])
-        text = f'Text: "{self.source}"\n\n' if self.source else ""
-        prompt = self.render(choice_prompt(context, question, options, self.source))
+        prompt = self.render(choice_prompt(context, question, options, self.source, options_first))
         ids = mx.array([self.tok.encode(l, add_special_tokens=False)[0] for l in letters])
         if self.cache is None:
             whole = self.tok.encode(prompt)
@@ -481,14 +508,15 @@ class Scorer:
             p = mx.softmax(logits[ids].astype(mx.float32)).tolist()
             sent = len(whole)
         else:
-            head = self.render(text + "\x00").split("\x00")[0]
-            tail = self.tok.encode(prompt[len(head) :], add_special_tokens=False)
-            p = mx.softmax(self.forward(tail)[ids].astype(mx.float32)).tolist()
-            trim_prompt_cache(self.cache, len(tail))
-            sent = len(tail)
+            whole = self.tok.encode(prompt)
+            keep = self.reuse(whole)
+            p = mx.softmax(self.forward(whole[keep:])[ids].astype(mx.float32)).tolist()
+            self.held = whole
+            sent = len(whole) - keep
         self.calls += 1
         self.spend(started, sent)
-        mx.clear_cache()
+        if self.calls % CLEAR_CACHE_EVERY == 0:
+            mx.clear_cache()
         if os.environ.get("CASCADE_DECISIONS"):
             with open(os.environ["CASCADE_DECISIONS"], "a") as out:
                 out.write(json.dumps({"context": context, "question": question, "options": options, "p": p}) + "\n")
@@ -814,37 +842,44 @@ class Cascade:
     # fills each field from spans, offered entities or declared values.
 
     def record_pass(self):
+        """Every sentence's kinds are chosen first, then each stated kind is filled, so the kind choices run back to back over one cached prefix."""
         kinds = list(self.plan.records)
         if not kinds:
             return
         opts = {m: FRAMINGS[RECORD_FRAMING](self.plan.models[m]) for m in kinds}
+        stated = []
         for a, b in self.units():
             for x, y in self.sub_units(a, b):
                 x, y = self.trimmed(x, y)
                 if y > x:
-                    self.sentence_records(kinds, opts, x, y)
+                    stated += [(kind, x, y, p) for kind, p in self.sentence_records(kinds, opts, x, y)]
+        for kind, x, y, p in stated:
+            self.fill(kind, x, y, p)
 
     def sentence_records(self, kinds, opts, x, y):
-        """Every kind of record a sentence states."""
+        """(kind, score) of every kind of record a sentence states."""
         if RECORD_MODE == "yesno":
             return self.sentence_kinds(kinds, x, y)
-        left = list(kinds)
+        left, found = list(kinds), []
         while left:
-            p = self.llm.pick(*kind_choice_ask(self.t.s[x:y], [opts[m] for m in left], len(left) == len(kinds)))
+            p = self.llm.pick(*kind_choice_ask(self.t.s[x:y], [opts[m] for m in left], len(left) == len(kinds)), options_first=PROMPT_LAYOUT == "schema_first")
             best = taken("record", f"kind of {self.t.s[x:y][:50]!r}", p, [opts[m] for m in left], lambda i: ACCEPT_KIND.get(left[i], ACCEPT_RECORD) if i < len(left) else ACCEPT_RECORD)
             if best is None:
-                return
-            kind = left.pop(best)
-            self.fill(kind, x, y, p[best])
+                break
+            found.append((left[best], p[best]))
+            left.pop(best)
+        return found
 
     def sentence_kinds(self, kinds, x, y):
         """Each kind is its own yes/no; a sentence may state several."""
+        found = []
         for kind in kinds:
             p = self.llm.pick(*record_ask(self.plan.models[kind], self.t.s[x:y]))
             if p[0] >= ACCEPT_KIND_YES:
-                self.fill(kind, x, y, p[0])
+                found.append((kind, p[0]))
             else:
                 log(f"gate record {kind} in {self.t.s[x:y][:50]!r}: no (p yes={p[0]:.3f}, threshold={ACCEPT_KIND_YES})")
+        return found
 
     def trimmed(self, a, b):
         """A sentence without its chat-turn speaker prefix."""
@@ -1410,7 +1445,7 @@ def answered(body, models):
         return {"text": models.llm.generate(body["messages"], int(body.get("max_tokens", GENERATE_BUDGET)), [str(s) for s in body.get("stop", [])])}
     if body.get("op") == "choose":
         models.llm.source, models.llm.cache = "", None
-        return {"p": models.llm.choose(body["context"], body["question"], body["options"])}
+        return {"p": models.llm.choose(body["context"], body["question"], body["options"], bool(body.get("options_first")))}
     if body.get("op") in ("rank", "embed"):
         return planned(body, models)
     if body.get("op") in ("link", "retrieve", "block"):

@@ -82,7 +82,7 @@ def main():
     per_source, loads, dumped = [], [], []
     for line in head:
         parts = line.split()
-        if parts[:1] == ["encoder"]:
+        if parts[:1] == ["encoder"] and len(parts) == 3:
             q = by_query[parts[1].split(":")[0]]
             q[0] += 1
             q[1] += float(parts[2].split("=")[1])
