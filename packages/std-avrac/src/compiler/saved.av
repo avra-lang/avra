@@ -274,10 +274,11 @@ impl Workspace {
         self.relation(Family.ComponentNames).revive.set((arg: int) -> self.saved_words(arg))
     }
 
-    /// A declaration's signature as its row's text: its record line; none for one a run generated.
+    /// A declaration's signature as its row's text: its record line; none for one a run generated
+    /// or whose signing registers more than its signature.
     fn sig_text(arg: int) -> string? {
         let d = self.decl_at(DeclId { index: arg })
-        if d.maker != "" { return null }
+        if d.maker != "" || !standing_sig(d.kind) { return null }
         self.sig_line(d)
     }
 
@@ -315,5 +316,15 @@ fn kinds_of_word(word: string) -> List<DeclKind> {
         "builtin" -> [DeclKind.Builtin],
         "state" -> [DeclKind.State],
         _ -> [],
+    }
+}
+
+/// The declarations whose signing leaves nothing but the signature: a free fn. Every other kind
+/// also registers what it declares (an impl its methods, a record its type), so its answer is
+/// computed.
+fn standing_sig(k: DeclKind) -> bool {
+    match k {
+        .Fn -> true,
+        .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum or .State or .Builtin -> false,
     }
 }
