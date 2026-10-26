@@ -3,7 +3,7 @@
 //! scope per turn. A step runs as the turn BEGINS, never after the
 //! body, so a turn ends at its back edge — which is all `continue`
 //! is. A `break` or `continue` ends a turn early (`Ins.LoopJump`).
-use core.{StmtId, ExprId, Ins, Type, TypeId}
+use core.{StmtId, ExprId, Ins, Type, TypeId, BinOp}
 use features.{LowerCx, LoopMark}
 
 export fn lower_while(mut cx: LowerCx, s: StmtId, cond: ExprId, stmts: List<StmtId>) {
@@ -21,23 +21,17 @@ export fn lower_while(mut cx: LowerCx, s: StmtId, cond: ExprId, stmts: List<Stmt
 /// Two cells: the COUNT, stepped as each turn begins, and the NAME,
 /// which holds the turn's own value for every read in the body —
 /// bound BEFORE the condition lowers, which reads it.
-export fn lower_for(
-    mut cx: LowerCx,
-    s: StmtId,
-    from: ExprId,
-    cond: ExprId,
-    step: ExprId,
-    stmts: List<StmtId>,
-) {
+export fn lower_for(mut cx: LowerCx, s: StmtId, from: ExprId, to: ExprId, stmts: List<StmtId>) {
     let ty = cx.type_at(from)
     let lo = cx.reg_of(from)
+    let hi = cx.reg_of(to)
     let count = cx.seeded_cell(ty, lo)
     let slot = cx.seeded_cell(ty, lo)
     cx.bind_slot(s, slot)
     cx.loop_start()
     cx.stored(slot, cx.loaded_as(ty, count))
-    cx.loop_cond(cx.reg_of(cond), s)
-    cx.stored(count, cx.reg_of(step))
+    cx.loop_cond(cx.bin(Type.Bool, BinOp.Lt, cx.loaded_as(ty, slot), hi), s)
+    cx.stored(count, cx.bin(Type.Int, BinOp.Add, cx.loaded_as(ty, slot), cx.const_int(1)))
     cx.lower_stmts(stmts)
     cx.loop_end()
 }
