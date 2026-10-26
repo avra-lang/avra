@@ -1,0 +1,33 @@
+// A `List` slot over a component another file of the module declares is
+// that component's slot — never a plain gatherer.
+use @std.avrac.testing.{answered, vendored_prelude, test_workspace}
+use @std.avrac.compiler.host.{memory_host}
+use @std.avrac.compiler.{Program}
+
+fn module_of(main: string, beside: Map<string, string>) -> Program {
+    mut files = vendored_prelude(
+        {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": main},
+    )
+    for name, text in beside { files.set("/w/src/${name}.av", text) }
+    test_workspace(memory_host(files, files.keys()), "/w").program("/w/src/main.av")
+}
+
+fn sibling_router() -> Map<string, string> {
+    {
+        "router": "component router {\n    prefix: string = \"\"\n}\n",
+        "server": "component layer(name: string) {}\ntype Route = { path: string }\ncomponent server {\n    layers: List<layer> = []\n    routes: List<Route> = []\n    routers: List<router> = []\n}\n",
+    }
+}
+
+spec "features/components — slots over a sibling file's component" {
+    given "a slot whose element component is declared in another file" {
+        then "a record child lands in the one slot that takes any element" {
+            answered(
+                module_of(
+                    "server web {\n    layer \"auth\"\n    router api { prefix: \"/api\" }\n    Route { path: \"/a\" }\n}\n\"\${web.layers.length} \${web.routes.length} \${web.routers.length}\"",
+                    sibling_router(),
+                ),
+            ) == "1 1 1"
+        }
+    }
+}

@@ -45,7 +45,7 @@ use core.{
     Exemplar,
 }
 use @std.path.{dir_of, joined_path, relative_path}
-use features.components.{word_of, instanced, named_instances}
+use features.components.{word_of, instanced, named_instances, beside}
 use features.{
     ExternNote,
     Ref,
@@ -1793,12 +1793,13 @@ impl Workspace {
     /// block word, and a full parse of a sibling would re-enter this one.
     fn module_components(f: FileId, p: Parsed) -> List<ComponentWord> {
         let siblings = [self.file_id(s) for s in self.declaring_siblings(p.source.file)]
-        declared_components(p)
+        let words = declared_components(p)
             .concat(
                 flatten(
                     [declared_components(self.plain_parsed(s)) for s in siblings if !same_file(s, f)],
                 ),
             )
+        [beside(w, [x.declared for x in words]) for w in words]
     }
 
     /// The source files beside `path` in its module that declare a
@@ -1872,9 +1873,17 @@ impl Workspace {
         let exported = [s for s in p.stmts if p.store.is_exported(s)]
         BlockWords {
             grammars: flatten([some_list(readied_grammar(p, s, path)) for s in exported]),
-            components: flatten([some_list(word_of(p.store, s, path)) for s in exported]),
+            components: [beside(w, self.declared_beside(path)) for w in flatten([some_list(word_of(p.store, s, path)) for s in exported])],
             instances: flatten([some_list(instanced(p.store, s)) for s in exported]),
         }
+    }
+
+    /// The names of the components `path`'s module declares in its files
+    /// that declare one, read off their plain parses.
+    fn declared_beside(path: string) -> List<string> {
+        flatten(
+            [[w.declared for w in declared_components(self.plain_parsed(self.file_id(s)))] for s in self.declaring_siblings(path)],
+        )
     }
 
     /// THE TRAITS THAT MAY COMPOSE A COMPONENT OF FILE `f` — found from
