@@ -730,6 +730,8 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/cancel_cache_attack.sh
 	@sh tools/writes_attack.sh
 	@sh tools/file_module_attack.sh
+	@sh tools/dep_edit_kept_attack.sh
+	@sh tools/cross_compiler_warm_attack.sh
 	@sh tools/cancel_bits_attack.sh
 	@sh tools/readfound_attack.sh
 	@sh tools/durable_symbol_attack.sh
