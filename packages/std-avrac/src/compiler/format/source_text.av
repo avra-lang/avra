@@ -1323,8 +1323,13 @@ impl SourceText {
             .FloatLit(bits) -> numeric(avra_float_text_bits(bits), parent),
             .StrLit(value) -> grouped(self.str_lit_text(id, value), atom_tier, parent),
             .BytesLit(spelled) -> grouped("b\"${spelled}\"", atom_tier, parent),
-            .Range(_, _) or .Not(_) or .NullLit or .Receiver or .Channel(_, _) or .Ident(_) or .Index(_, _) or .Force(_) -> self.worded(id, parent, depth, c),
+            .Not(_) or .NullLit or .Receiver or .Channel(_, _) or .Ident(_) or .Index(_, _) or .Force(_) -> self.worded(id, parent, depth, c),
             .BoolLit(value) -> grouped(if value { "true" } else { "false" }, atom_tier, parent),
+            .Range(lo, hi) -> grouped(
+                "(${self.expression(lo, loosest_tier, depth, resolved_col(c, depth) + 1)}..${self.expression(hi, loosest_tier, depth)})",
+                atom_tier,
+                parent,
+            ),
             .Binary(op, left, right) -> self.binary(op, left, right, parent, depth, c),
             .LetPattern(pat, subject, otherwise, held) -> grouped(
                 self.let_pattern_text(pat, subject, otherwise, held, depth),
@@ -2712,7 +2717,6 @@ export const rule_scale: List<RuleTier> = [
 /// as a template.
 export const worded_nodes: List<string> = [
     "Expr.Not",
-    "Expr.Range",
     "Expr.NullLit",
     "Expr.Receiver",
     "Expr.Channel",
