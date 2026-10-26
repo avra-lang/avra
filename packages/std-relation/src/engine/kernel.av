@@ -601,8 +601,18 @@ impl Kernel {
     fn reads_stand(reads: List<SavedRead>) -> bool {
         for r in reads {
             self.verified(r.key.family, r.key.arg)
-            let now? = self.hash_forced(r.key) else { return false }
-            if now != r.digest { return false }
+            let now? = self.hash_forced(r.key) else {
+                if self.tracing.get() { avra_qtrace("Q\trestore\tunhashed\t${self.edge_text(edge_of(r.key))}\n") }
+                return false
+            }
+            if now != r.digest {
+                if self.tracing.get() {
+                    avra_qtrace(
+                        "Q\trestore\tmoved\t${self.edge_text(edge_of(r.key))}\t${now}\t${r.digest}\n",
+                    )
+                }
+                return false
+            }
         }
         true
     }

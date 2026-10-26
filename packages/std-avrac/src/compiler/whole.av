@@ -1,6 +1,7 @@
 //! The whole program: every file analyzed, the entries, the cases, the
 //! hold, and the link words. Moved out of the workspace god-object.
 use core.{
+    traced,
     EmbedKind,
     EmbedBase,
     digest_of,
@@ -68,10 +69,14 @@ impl Workspace {
         // a held file is not parsed — and asking its items would mint its module for nothing
         for path in self.entry_files(built) { let _ = self.file_id(path) }
         self.admit_all()
+        // the prelude is admitted by the first name any file looks up; asked here, every file's
+        // answers are verified against the same program a cold run probed
+        if self.std_admitted(prelude_key) { let _ = self.exported_decls(prelude_module()) }
         // A FILE MINTED FROM ITS SAVED ROWS HAS NO BODY YET: its parse is attached before anything
         // types, so no declaration row is read at ranges the attach is about to give it
         let _ = self.each_open_file((f: FileId) -> self.attach_parse(f))
         self.timed("parse", t0)
+        if traced() { let _ = self.each_open_file((f: FileId) -> self.said_standing(f)) }
         // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its declarations are
         // MINTED from its record, so every consumer sees the interface it had — and its
         // BODY is not wanted, because its object comes from the store. THIS IS WHERE THE

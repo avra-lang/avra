@@ -532,7 +532,9 @@ export type Workspace = {
     /// An environment's digest at one size and revision, so a run reads each once.
     env_digests: Cell<Map<string, int>>,
     /// The files whose probe set grew this run: the `NameEnv` rows the flush owes.
-    env_owed: Cell<List<int>>,
+    env_owed: Cell<List<Key>>,
+    /// Each analysed file's said rows this run, by file index: what the flush owes `FileSaid`.
+    said_rows: Cell<Map<string, string>>,
     /// The files whose declarations were minted from saved rows, each with the modules its `use` lines name.
     revived: Cell<Map<string, List<string>>>,
     /// The revived files whose parse has been attached to their minted declarations.
@@ -900,9 +902,17 @@ fn admitted_verified(ws: Workspace, arg: int) -> int {
     ws.admission(file_at(arg))
     ws.db.changed_at(key(Family.Admitted, arg))
 }
+fn file_said_verified(ws: Workspace, arg: int) -> int {
+    ws.said_standing(file_at(arg))
+    ws.db.changed_at(key(Family.FileSaid, arg))
+}
+fn sibling_env_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.env_of(file_at(arg), Family.SiblingEnv))
+    ws.db.changed_at(key(Family.SiblingEnv, arg))
+}
 // LICENSED compiler.free_state_verb: a code-hash TARGET, as `placed_verified` is.
 fn name_env_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.name_env_of(file_at(arg)))
+    touch(ws.env_of(file_at(arg), Family.NameEnv))
     ws.db.changed_at(key(Family.NameEnv, arg))
 }
 fn named_verified(ws: Workspace, arg: int) -> int {
@@ -983,6 +993,8 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Admitted -> admitted_verified(ws, arg),
         .Named -> named_verified(ws, arg),
         .NameEnv -> name_env_verified(ws, arg),
+        .SiblingEnv -> sibling_env_verified(ws, arg),
+        .FileSaid -> file_said_verified(ws, arg),
         .ReadReach -> read_reach_verified(ws, arg),
         .DeclReads -> decl_reads_verified(ws, arg),
         .Input -> input_verified(ws, arg),
@@ -1140,6 +1152,7 @@ fn built(
         env_seen: map_cell(),
         env_digests: map_cell(),
         env_owed: list_cell(),
+        said_rows: map_cell(),
         revived: map_cell(),
         attached: map_cell(),
     }
@@ -2373,6 +2386,7 @@ impl Workspace {
         let _ = self.parsed(x.file)
         let h = syntax_hash(self.decls.store(d), x)
         self.db.settle(k, h)
+        let _ = self.noted_key(k)
         h
     }
 
@@ -2749,6 +2763,8 @@ export fn family_code_hash(f: Family) -> string {
         .Admitted -> code_hash(admitted_verified) ?? "",
         .Named -> code_hash(named_verified) ?? "",
         .NameEnv -> code_hash(name_env_verified) ?? "",
+        .SiblingEnv -> code_hash(sibling_env_verified) ?? "",
+        .FileSaid -> code_hash(file_said_verified) ?? "",
         .ReadReach -> code_hash(read_reach_verified) ?? "",
         .DeclReads -> code_hash(decl_reads_verified) ?? "",
         .Input -> code_hash(input_verified) ?? "",
