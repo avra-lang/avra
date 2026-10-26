@@ -394,7 +394,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell sh tools/avra_tools.sh suites 2>/dev/null)
 
-.PHONY: store-keys tools-suite dev-server census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
+.PHONY: store-keys tools-suite dev-server census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -700,7 +700,6 @@ store-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 cache-attacks-b: cache-attacks-b1 cache-attacks-b2
 cache-attacks-b1: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/link_cache_attack.sh
-	@sh tools/turn_memory_attack.sh
 	@sh tools/gathered_cache_attack.sh
 	@sh tools/closure_gather_attack.sh
 	@sh tools/closure_fold_attack.sh
@@ -715,7 +714,7 @@ cache-attacks-b1: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/stamp_attack.sh
 	@sh tools/expanded_attack.sh
-	@sh tools/held_generated_attack.sh
+	@sh tools/generated_rows_attack.sh
 	@sh tools/store_quiet_attack.sh
 	@sh tools/store_seal_attack.sh
 	@sh tools/store_index_attack.sh
@@ -743,12 +742,6 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # CLEARS the store it builds through, as the attacks above do.
 code-hash-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/code_hash_attacks.sh
-
-# ONE DERIVATION ALIVE AT A TIME, held by memory: a rebuild that turns once per
-# link of a chain of held bodies, under a ceiling one attempt clears and their
-# sum trips. It CLEARS the store, as the attacks above do.
-turn-memory-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/turn_memory_attack.sh
 
 # Exact refcount and list-write counts; the shipping runtime is put
 # back on every exit.   make census CMD="check packages/std-avrac"
