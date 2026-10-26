@@ -1,7 +1,7 @@
 //! `app/asks.av` — the sources a handler asks for by name. Each is a
 //! `Want`, data, handed to the app's loop: no task, no host row is named
 //! here, so the same call runs on every target.
-use app.{Act, Async, Cache, Entry, Fetch, Want, Watcher, running}
+use app.{Act, Async, Cache, Entry, Fetch, Want, Watcher, running, watching}
 use @std.http_message.message.{Reply, Request}
 use @std.time.{Duration}
 
@@ -27,7 +27,9 @@ export fn repeating(period: Duration, act: Act) -> bool {
 /// fetch untouched, when no loop runs. The request is data, so the page's host
 /// and a native client send the same value. `parse` must be PURE: it answers the value the view shows
 /// and assigns no state, because it runs again for every answer the observation gets, a refresh after
-/// a write included.
+/// a write included. An observation whose server announces its changes on a stream (`avra-feed`) is
+/// FRESH while that stream is up and nothing has been announced about what it read: asking it again
+/// sends nothing then, and the moment the stream drops, is refused or says otherwise, the next ask sends.
 export fn fetched<T>(held: Fetch<T>, request: Request, parse: fn(Reply) -> Result<T, string>) -> bool {
     let on? = running() else { return false }
     let entry = on.observed.entry_of(request)
@@ -47,7 +49,7 @@ export fn fetched<T>(held: Fetch<T>, request: Request, parse: fn(Reply) -> Resul
             },
         )
     on.observed.swept()
-    if entry.loading() { return true }
+    if entry.loading() || entry.fresh.get() { return true }
     asking(on, entry, request)
 }
 
@@ -55,6 +57,7 @@ export fn fetched<T>(held: Fetch<T>, request: Request, parse: fn(Reply) -> Resul
 /// so a write that makes it stale can ask it again.
 fn asking(on: App, entry: Entry, request: Request) -> bool {
     entry.request.set(request)
+    entry.floor.set(on.observed.known.get())
     let sent = entry.conditional(request)
     entry.asked()
     let into: Cell<Result<Reply, string>?> = Cell.new(null)
@@ -68,8 +71,12 @@ fn asking(on: App, entry: Entry, request: Request) -> bool {
 fn landed(on: App, entry: Entry, into: Cell<Result<Reply, string>?>) -> bool {
     let answer? = into.get() else { return false }
     let changed = entry.offered(answer)
+    let stood = match answer { .Ok(r) -> r.stand(), .Err(_) -> null }
+    on.observed.learned(stood)
+    entry.floor.set(max_of(entry.floor.get(), stood ?? 0))
     on.observed.swept()
     refreshed(on, entry, answer)
+    watching(on, entry)
     changed && !entry.unread()
 }
 
@@ -81,14 +88,24 @@ fn refreshed(on: App, entry: Entry, answer: Result<Reply, string>) {
         entry.again.set(false)
         asked_again(on, entry)
     }
-    let written? = match answer { .Ok(reply) -> reply.wrote(), .Err(_) -> null } else { return }
+    let reply? = match answer { .Ok(r) -> r, .Err(_) -> null } else { return }
+    let written? = reply.wrote() else { return }
+    let after = reply.stand()
     for e in on.observed.stale_by(written) {
-        if e.id == entry.id { continue }
+        if e.id == entry.id || reflects(e, after) { continue }
+        e.fresh.set(false)
         if e.loading() { e.again.set(true) } else { asked_again(on, e) }
     }
 }
 
-fn asked_again(on: App, entry: Entry) {
+/// Whether the request an entry has out was asked after the database stood at `after` — the count a
+/// write left it at — so it reflects that write already.
+fn reflects(e: Entry, after: int?) -> bool {
+    let at? = after else { return false }
+    e.loading() && e.floor.get() >= at
+}
+
+export fn asked_again(on: App, entry: Entry) {
     let request? = entry.request.get() else { return }
     let _ = asking(on, entry, request)
 }
@@ -102,3 +119,5 @@ fn settled<T>(a: Async<Reply>, parse: fn(Reply) -> Result<T, string>) -> Async<T
         .Ready(reply) -> match parse(reply) { .Ok(v) -> Async.Ready(v), .Err(m) -> Async.Failed(m) },
     }
 }
+
+fn max_of(a: int, b: int) -> int { if a > b { a } else { b } }

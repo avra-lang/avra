@@ -35,6 +35,7 @@ use @std.db.scope.{Where}
 use @std.http.route.{Mounted}
 use @std.json.{Json}
 use @std.sqlite.{Db}
+use @std.time.{Duration, ms}
 use routes.{
     Door,
     Access,
@@ -69,7 +70,7 @@ fn doors(t: Type) -> Decls {
             fn crud_json() -> Json { json_obj([..${entries}]) }
 
             /// The model's doors as routes, over this database.
-            static fn routes(db: Db, without: List<Door> = [], access: Access? = null) -> Mounted {
+            static fn routes(db: Db, without: List<Door> = [], access: Access? = null, every: Duration = ms(100)) -> Mounted {
                 let held = Cell.new(db)
                 crud_routes(
                     Wire {
@@ -86,9 +87,11 @@ fn doors(t: Type) -> Decls {
                         trash: ${trash_code(t)},
                         restore: ${restore_code(t)},
                         ledger: ledger(held.get()),
+                        tables: [${literal(t.name)}],
                     },
                     without,
                     access,
+                    every,
                 )
             }
         }
