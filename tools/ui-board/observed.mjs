@@ -1,12 +1,11 @@
 // Opens a served page whose two views ask the same GET and prints what the browser sent:
-// the page must have made ONE request for /tasks, and both views must have settled on its
-// answer (the page's server holds no /tasks, so the answer is a refusal both views show).
+// the page must have made ONE request for /tasks, and both views must show its answer.
 //   node observed.mjs <page url>
 import { openPage, firefoxBinary } from "./firefox.mjs";
 
 const [url] = process.argv.slice(2);
 const page = await openPage(firefoxBinary(), url);
-const settled = `document.body.textContent.includes("left failed") && document.body.textContent.includes("right failed")`;
+const settled = `/left ready \\d+/.test(document.body.textContent) && /right ready \\d+/.test(document.body.textContent)`;
 let both = false;
 for (let tries = 0; tries < 100 && !both; tries++) {
   both = await page.read(settled).catch(() => false);
