@@ -155,7 +155,7 @@ check "$? $(holder "$scratch/avra-loose")" "1 " "work bind: with none free it re
 # ══ MOVE: a named bind on a bound lane moves it, cleanly or not at all
 (cd "$scratch/avra-one" && sh "$work" bind B) > "$scratch/out" 2>&1
 check "$? $(holder "$scratch/avra-one")" "1 A" "work bind <sprite>: a Sprite another lane holds is refused, and the lane keeps its own" "$scratch/out"
-(cd "$scratch/avra-two" && sh "$work" done) > /dev/null 2>&1
+(cd "$scratch/avra-two" && sh "$work" done --remove-worktree) > /dev/null 2>&1
 git -C "$main" worktree add -q -b two-again "$scratch/avra-two" main
 gd=$(git -C "$scratch/avra-one" rev-parse --absolute-git-dir)
 echo "$$ $(LC_ALL=C ps -o lstart= -p $$ | tr -s ' ' '_')" > "$gd/avra-run"
@@ -172,8 +172,20 @@ check "$(holder "$scratch/avra-one") $(holder "$scratch/avra-two") $(grep -c 'ho
 check "$(holder "$scratch/avra-one") $(holder "$scratch/avra-two")" "B A" "work bind <sprite>: two lanes cannot swap through each other — each keeps what it holds" "$scratch/out"
 (cd "$scratch/avra-two" && rm -f "$(git rev-parse --absolute-git-dir)/avra-sprite"; cd "$scratch/avra-one" && sh "$work" bind A; cd "$scratch/avra-two" && sh "$work" bind) > /dev/null 2>&1
 
-# ══ DONE: the lane goes, its Sprite is free ═══════════════════════════
+# ══ DONE REFUSES WITHOUT --remove-worktree, and UNBIND frees the Sprite and keeps the worktree
+before=$(holder "$scratch/avra-two")
 (cd "$scratch/avra-two" && sh "$work" done) > "$scratch/out" 2>&1
+st=$?
+[ -e "$scratch/avra-two" ] && stands=stands || stands=absent
+check "$st $stands $(holder "$scratch/avra-two") $(grep -c 'REMOVES this worktree' "$scratch/out")" "1 stands $before 1" "work done: without --remove-worktree it refuses, says the worktree goes, and removes nothing" "$scratch/out"
+(cd "$scratch/avra-two" && sh "$work" unbind) > "$scratch/out" 2>&1
+st=$?
+[ -e "$scratch/avra-two" ] && stands=stands || stands=absent
+check "$st $stands $(holder "$scratch/avra-two" | tr -d ' ')" "0 stands " "work unbind: the Sprite is freed and the worktree stays" "$scratch/out"
+(cd "$scratch/avra-two" && sh "$work" bind "$before") > /dev/null 2>&1
+
+# ══ DONE: the lane goes, its Sprite is free ═══════════════════════════
+(cd "$scratch/avra-two" && sh "$work" done --remove-worktree) > "$scratch/out" 2>&1
 st=$?
 [ -e "$scratch/avra-two" ] && stands=stands || stands=absent
 (cd "$scratch/avra-loose" && sh "$work" bind) >> "$scratch/out" 2>&1
@@ -272,6 +284,30 @@ sleep 1
 holds "hashC $old_at"
 AVRA_DEPOT_KEEP=1 AVRA_COMPILER_DEPOT="$dp2" sh "$slw" deposit "$sl/held"
 check "$(ls "$dp2" | tr '\n' ' ')" "hashC " "work deposit: only the newest AVRA_DEPOT_KEEP entries stay" "$scratch/out"
+
+# THE BUILDER IS MATCHED BY COMPILER KEY: the merge-base's own key when published, else the nearest published
+# ancestor key and how far back it is, else nothing. The fetch tool is a stub keyed by a file in each commit.
+bk=$scratch/bk
+git init -q -b main "$bk"
+mkdir -p "$bk/tools"
+cat > "$bk/tools/fetch_compiler.sh" <<'STUB'
+#!/bin/sh
+case "$1" in
+    --key-of) echo "k-$(git show "$2:keyfile")" ;;
+    --probe) grep -qx "$2" "$PUBLISHED" ;;
+esac
+STUB
+bkg() { git -C "$bk" -c user.name=t -c user.email=t@t "$@"; }
+echo old > "$bk/keyfile"; bkg add -A; bkg commit -q -m a
+echo new > "$bk/keyfile"; bkg commit -q -am b
+echo new > "$bk/keyfile2"; bkg add -A; bkg commit -q -m c
+bkg update-ref refs/remotes/origin/main HEAD
+echo k-old > "$scratch/published"
+check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bk")" "k-old ancestor 2" "work builder-key: an unpublished key takes the nearest published ancestor, and says how far back" "$scratch/out"
+printf 'k-old\nk-new\n' > "$scratch/published"
+check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bk")" "k-new exact" "work builder-key: the merge-base's own key, published, is exact (a commit with no compiler change shares it)" "$scratch/out"
+: > "$scratch/published"
+check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bk")" "" "work builder-key: nothing published answers nothing" "$scratch/out"
 
 # MAIN'S COMPILER, ONCE PER SOURCE: the first run builds and deposits, the second finds the depot holding it.
 mcd=$scratch/mc/depot
@@ -393,7 +429,7 @@ check "$(grep -c 'Mine-1 stopped' "$scratch/out") $(grep -c '^stop Mine-1' "$scr
 
 # ══ NOTHING RUNS FOR NOBODY: a lane that moves or ends takes its run with it
 scene 0; echo Mine-2 > "$scratch/fake/live"
-(cd "$scratch/avra-loose" && sh "$work" done) > /dev/null 2>&1
+(cd "$scratch/avra-loose" && sh "$work" done --remove-worktree) > /dev/null 2>&1
 PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" bind B > "$scratch/out" 2>&1
 check "$? $(holder .) $(grep -c 'A still runs something for this lane' "$scratch/out")" "1 A 1" "work bind <sprite>: a lane whose Sprite still runs its run does not move away from it" "$scratch/out"
 echo "quiet=12 frozen=357" > "$scratch/fake/idle"
@@ -407,7 +443,7 @@ check "$(grep -c 'A is running Mine-2 for lane avra-after — left alone' "$scra
 (cd "$main" && FAKE="$scratch/fake" sh "$work" sprites --fix B) > "$scratch/out" 2>&1
 check "$(grep -c 'B: stopped Mine-2, which no lane owns' "$scratch/out") $(grep -c '^stop Mine-2' "$scratch/fake/calls")" "1 1" "work sprites --fix: a live run on a Sprite no lane holds is nobody's, and is stopped" "$scratch/out"
 : > "$scratch/fake/calls"
-FAKE="$scratch/fake" sh "$work" done > "$scratch/out" 2>&1
+FAKE="$scratch/fake" sh "$work" done --remove-worktree > "$scratch/out" 2>&1
 st=$?
 cd "$main" || exit 1
 [ -e "$scratch/avra-after" ] && stands=stands || stands=absent

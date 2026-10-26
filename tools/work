@@ -7,9 +7,9 @@
 #   sh tools/work land         push, PR, arm auto-merge — no Sprite involved
 #   sh tools/work status       PRs and their merge state; each lane and its Sprite
 #   sh tools/work sprites      every Sprite at a glance; `--fix [name]` repairs
-#   sh tools/work done         remove this lane, end its run, free its Sprite
+#   sh tools/work done --remove-worktree   REMOVE this lane (owner-approved only): end its run, free its Sprite
 #
-# Also: `main-compiler` builds main's compiler once per source into the shared depot (every lane's
+# Also: `unbind` ends this lane's run and frees its Sprite and keeps the worktree; `main-compiler` builds main's compiler once per source into the shared depot (every lane's
 # pre-commit hook wants one at the merge-base); `attach` follows this lane's run again and `stop` ends it; `bind
 # [sprite]` gives a worktree a Sprite, or moves it to the one named; `wait
 # <branch>` waits for a PR to merge; `run --for <minutes>` raises the
@@ -195,7 +195,7 @@ new() {
     git -C "$main" fetch -q origin main
     git -C "$main" worktree add -q -b "$name" "$wt" origin/main
     seed_local "$wt" >&2
-    (cd "$wt" && bind) >&2 || die "$wt stands, with no Sprite — free one with \`work done\`, then \`work bind\` there"
+    (cd "$wt" && bind) >&2 || die "$wt stands, with no Sprite — free one with \`work unbind\`, then \`work bind\` there"
     echo "$wt"
 }
 
@@ -276,12 +276,32 @@ compiler_route() {
         sh tools/fetch_compiler.sh --route "$dirty" "$hk" "$mk" 2>/dev/null || echo build
     )
 }
-# The key of the compiler published for the tree's merge-base with origin/main, or nothing.
-merge_base_key() {
+# The compiler to stand as a lane's builder, matched by COMPILER KEY, never by commit: `<key> exact` when
+# a compiler is published for the key of the tree's merge-base with origin/main (a commit that moved no
+# compiler source shares its parent's key), else `<key> ancestor <n>` for the nearest published key
+# among its first-parent ancestors (n commits back, at most AVRA_BUILDER_BACK, 40), else nothing.
+builder_key() {
     (
         cd "$1"
         mb=$(git merge-base HEAD origin/main 2>/dev/null) || exit 0
-        sh tools/fetch_compiler.sh --key-of "$mb" 2>/dev/null || :
+        n=0
+        seen=
+        first=1
+        for c in $(git rev-list --first-parent -n "${AVRA_BUILDER_BACK:-40}" "$mb"); do
+            k=$(sh tools/fetch_compiler.sh --key-of "$c" 2>/dev/null) || k=
+            case " $seen " in
+                *" $k "*) ;;
+                *)
+                    seen="$seen $k"
+                    if [ -n "$k" ] && sh tools/fetch_compiler.sh --probe "$k" 2>/dev/null; then
+                        if [ -n "$first" ]; then echo "$k exact"; else echo "$k ancestor $n"; fi
+                        exit 0
+                    fi
+                    first=
+                    ;;
+            esac
+            n=$((n + 1))
+        done
     )
 }
 compiler_hash() {
@@ -723,8 +743,23 @@ run() {
     [ "${AVRA_PROBE_BUILD:-}" != one ] || wire="one:$hash"
     route=$(compiler_route "$tree")
     if [ -n "$builder" ]; then
-        bk=$(merge_base_key "$tree")
-        [ -n "$bk" ] && route="builder:$bk" || echo "work: no merge-base compiler key here — the run takes the tree's own route" >&2
+        bk=$(builder_key "$tree")
+        case $bk in
+            "") echo "work: no compiler is published for the merge-base or its recent ancestors — the run takes the tree's own route" >&2 ;;
+            *" exact") route="builder:${bk%% *}"; echo "work: builder: the compiler published for the merge-base's key" >&2 ;;
+            *)
+                mb=$(git -C "$tree" merge-base HEAD origin/main)
+                mbk=$(cd "$tree" && sh tools/fetch_compiler.sh --key-of "$mb")
+                route="builderold:${bk%% *}:$mbk"
+                echo "work: builder: the merge-base's key is unpublished; the nearest published one is ${bk##* } commit(s) back — the Sprite builds the MERGE-BASE's source once from it, shared by every lane on that base" >&2
+                mbroot=${AVRA_SPRITE_HOME:-/home/sprite}/avra-mb
+                if ! sx "$sprite" 20 test -x "$mbroot/$mbk/build/avra" 2>/dev/null; then
+                    git -C "$tree" archive --format=tar "$mb" | gzip -1 |
+                        timeout -k 2 300 "$sprite_cli" -s "$sprite" exec --no-port-forward -- sh -c "mkdir -p '$mbroot' && cat > '$mbroot/$mbk.tgz'" ||
+                        die "could not hand the merge-base's source to $sprite"
+                fi
+                ;;
+        esac
     fi
     wire="$wire@$route"
     echo "work: $sprite — compiler route: $route" >&2
@@ -939,11 +974,10 @@ sprites() {
     return "$unwell"
 }
 
-done_() {
+unbind() {
     inside
     wt=$(git rev-parse --show-toplevel)
-    main=$(main_tree)
-    [ "$wt" != "$main" ] || die "this is the main checkout"
+    [ "$wt" != "$(main_tree)" ] || die "this is the main checkout"
     s=$(bound)
     # The lane's run ends with the lane: nothing is left running for nobody.
     if [ -n "$s" ]; then
@@ -955,6 +989,16 @@ done_() {
     fi
     rm -f "$(binding)"
     [ -z "$s" ] || echo "work: $s is free"
+}
+
+# done: unbind, then the worktree goes. A worktree is removed only on the owner's say-so, so removal
+# is never the default: it takes `--remove-worktree`.
+done_() {
+    [ "${1:-}" = --remove-worktree ] || die "\`done\` REMOVES this worktree, which only the owner may approve — \`sh tools/work done --remove-worktree\` once they have; \`sh tools/work unbind\` frees the Sprite and keeps the worktree"
+    inside
+    wt=$(git rev-parse --show-toplevel)
+    main=$(main_tree)
+    unbind
     cd "$main"
     git worktree remove "$wt" || die "$wt stays — commit or drop its changes, then \`git worktree remove\`"
     echo "work: $wt removed"
@@ -1101,7 +1145,8 @@ usage() {
         land) echo "usage: sh tools/work land [--batch]  — push, PR, ready, strip a DO NOT MERGE title, arm auto-merge; refuses while another PR is mid-CI unless --batch; no Sprite involved" ;;
         status) echo "usage: sh tools/work status   — PRs and their merge state; each lane and its Sprite" ;;
         sprites) echo "usage: sh tools/work sprites [--fix [<sprite>…]]   — every Sprite at a glance; --fix repairs" ;;
-        done) echo "usage: sh tools/work done   — remove this lane, end its run, free its Sprite" ;;
+        done) echo "usage: sh tools/work done --remove-worktree   — REMOVE this lane's worktree (the owner must have approved), end its run, free its Sprite; without the flag it refuses" ;;
+        unbind) echo "usage: sh tools/work unbind   — end this lane's run and free its Sprite; the worktree stays" ;;
         bind) echo "usage: sh tools/work bind [<sprite>]   — give this worktree a Sprite, or move it to the one named" ;;
         main-compiler) echo "usage: sh tools/work main-compiler   — build main's compiler once per compiler source into the shared depot (idempotent, one build at a time, under the watchdog); \`work compiler\` then copies it into a lane" ;;
         wait) echo "usage: sh tools/work wait <branch>   — wait until the branch's PR merges" ;;
@@ -1123,9 +1168,11 @@ case "${1:-}" in
     bind) shift; bind "$@" ;;
     bind-locked) shift; bind_locked "$@" ;;
     sprites) shift; sprites "$@" ;;
-    done) done_ ;;
+    done) shift; done_ "$@" ;;
+    unbind) unbind ;;
     command) shift; assemble "$@"; echo ;;
     seed) shift; seed "$@" ;;
+    builder-key) builder_key "${2:-$PWD}" ;;
     compiler-hash) compiler_hash "${2:-$PWD}" ;;
     built-from) built_from "${2:-$PWD}" ;;
     deposit) deposit "${2:-$PWD}" ;;
