@@ -1,7 +1,7 @@
 // The dev client, by its own verb over a stub document and a stream it is
 // handed: when it reloads, and that a failed build is shown and a mended
 // one clears it.
-import { hudPosting, relayed, watch } from "./dev.js";
+import { hudPosting, panel, relayed, watch } from "./dev.js";
 import { stubDocument, stubElement } from "./stub_dom.js";
 
 let passed = 0;
@@ -110,6 +110,33 @@ test("a mended build of another module reloads", broke.reloads === 1);
   take('{"v":1,"rows":[{"age_ms":51,"key":"/b"}]}');
   drain();
   test("a frame that says something new is posted", frames.length === 2 && frames[1].includes("/b"));
+}
+
+// The panel: a module of its own in a shadow root, told what the server says — including what came while it loaded.
+{
+  const doc = page();
+  const made = [];
+  doc.createElement = (tag) => { const el = stubElement(tag); made.push(el); return el; };
+  const hosted = { shadow: null, appended: [] };
+  const created = doc.createElement;
+  doc.createElement = (tag) => {
+    const el = created(tag);
+    if (tag === "div" && hosted.shadow === null) el.attachShadow = () => { hosted.shadow = { children: [], append(...kids) { this.children.push(...kids); } }; return hosted.shadow; };
+    return el;
+  };
+  const told = [];
+  const events = stream();
+  let release;
+  const loading = new Promise((go) => { release = go; });
+  const starting = panel({ doc, events, source: "/@dev/panel.wasm", start: async (source, options) => { await loading; return { tell: (text) => told.push(text), source, options }; } });
+  events.say("cache", '{"tab":"aa","frame":{"v":1}}');
+  test("what is told while the panel loads waits", told.length === 0);
+  release();
+  const running = await starting;
+  events.say("cache", '{"tab":"bb","frame":{"v":1}}');
+  test("and is told once it runs, then each after", told.length === 2 && told[0].includes('"tab":"aa"') && told[1].includes('"tab":"bb"'));
+  test("the panel is a host element holding a shadow root with the module's mount and style, beside the app", doc.body.childNodes.some((el) => el.id === "avra-dev-panel") && hosted.shadow.children.length === 2);
+  test("it starts its module from the dev server, with no shipped state", running.source === "/@dev/panel.wasm" && running.options.state.length === 0 && running.options.mount === hosted.shadow.children[1]);
 }
 
 console.log(`dev: ${passed}/${passed + failed}`);

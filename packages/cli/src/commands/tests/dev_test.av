@@ -234,7 +234,7 @@ fn serving(source: string) -> Page? {
         .Err(_) -> { return null },
     }
     match tool("${tree_root()}/build/avra") {
-        .Ok(compiler) -> page_of(lister, tools, compiler, "${tree_root()}/runtime/dom"),
+        .Ok(compiler) -> page_of(lister, tools, compiler, "${tree_root()}/runtime/dom") with { panel_root: "${tree_root()}/tools/dev-hud/page" },
         .Err(_) -> null,
     }
 }
@@ -568,6 +568,29 @@ spec "avra dev — the cache's snapshots" {
         then "a snapshot over a megabyte is refused" {
             match unbuilt() {
                 d? -> snapshot_posted(d, "ab12", repeat("x", 1048577)) == 413
+                null -> true
+            }
+        }
+    }
+}
+
+spec "avra dev — the panel's module" {
+    given "a server that has built nothing" {
+        then "a request never builds the panel: before the page's first turn it is not there yet" {
+            match unbuilt() {
+                d? -> got(d, "/@dev/panel.wasm").status == 503
+                null -> true
+            }
+        }
+        then "built from the toolchain's own package with the page, the panel's module is wasm" {
+            match unbuilt() {
+                d? -> {
+                    d.warmed_panel()
+                    let r = got(d, "/@dev/panel.wasm")
+                    r.status == 200 &&
+                        r.header("content-type") == "application/wasm" &&
+                        r.body.slice(0, 4) == [0, 97, 115, 109].bytes()!
+                }
                 null -> true
             }
         }

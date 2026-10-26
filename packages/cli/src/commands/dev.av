@@ -299,6 +299,8 @@ export type Page = {
     moved: Bell,
     frames: Cell<List<TabFrame>>,
     framed: Cell<int>,
+    panel: Cell<Bytes?>,
+    panel_root: string? = null,
     backend: Backend? = null,
     glue_files: List<string> = [],
 }
@@ -320,7 +322,7 @@ fn page_at(root: string, target: string) -> Result<Page, int> {
         .Err(why) -> { return .Err(unequipped(why)) },
     }
     .Ok(
-        page_of(lister, tools, compiler, glue) with { backend: backend, glue_files: glue_files(glue) },
+        page_of(lister, tools, compiler, glue) with { backend: backend, glue_files: glue_files(glue), panel_root: panel_root() },
     )
 }
 
@@ -331,6 +333,7 @@ export fn page_of(lister: Workspace, tools: Toolchain, compiler: Tool, glue: str
     let none: List<Watched> = []
     let none_said: List<string> = []
     let no_frames: List<TabFrame> = []
+    let no_panel_yet: Bytes? = null
     Page {
         root: lister.root,
         tools: tools,
@@ -343,6 +346,7 @@ export fn page_of(lister: Workspace, tools: Toolchain, compiler: Tool, glue: str
         moved: Bell {},
         frames: Cell.new(no_frames),
         framed: Cell.new(0),
+        panel: Cell.new(no_panel_yet),
     }
 }
 
@@ -380,6 +384,7 @@ impl Page {
         let now = self.looked()
         if self.still(now) { return served }
         self.build()
+        if self.panel.get() == null { self.warmed_panel() }
         mut at: Map<string, Mark> = {}
         for w in now { at.set(w.path, w.mark) }
         self.watched.set([w with { mark: at.get(w.path) ?? w.mark } for w in self.looked()])
@@ -454,10 +459,13 @@ impl Page {
 
     /// `avra build` of the package, as a child: the module it wrote, or
     /// everything the build said.
-    fn built() -> Result<Bytes, string> {
+    fn built() -> Result<Bytes, string> { self.built_at(self.root) }
+
+    /// `avra build` of the package at `root`, as a child: the module it wrote, or everything the build said.
+    fn built_at(root: string) -> Result<Bytes, string> {
         let asked = cmd(
             self.compiler,
-            ["build", "--target", self.tools.target, "--wasm_reactor", self.root],
+            ["build", "--target", self.tools.target, "--wasm_reactor", root],
         ) with { env: inherited() }
         let o = match asked.outcome() {
             .Ok(o) -> o,
@@ -623,6 +631,29 @@ impl Page {
         unkept("application/wasm", now.module)
     }
 
+    /// The panel's module as a page asks for it: built already, or not yet (503) — a request never builds it, since a
+    /// build holds the server's one task and every other request would wait behind it.
+    fn panel_module() -> Response {
+        let held? = self.panel.get() else { return text(503, no_panel_yet()) }
+        unkept("application/wasm", held)
+    }
+
+    /// The panel's module built from the toolchain's own panel package and kept for the life of the server; the
+    /// compiler's build cache keeps the build across servers, keyed by the compiler itself. Said once built.
+    export fn warmed_panel() {
+        let root? = self.panel_root else { return }
+        // LICENSED input.clock: this build's duration is timing, never an input of what is built
+        let began = now_ms()
+        match self.built_at(root) {
+            .Ok(module) -> {
+                self.panel.set(module)
+                // LICENSED input.clock: this build's duration is timing, never an input of what is built
+                println("dev: built the panel — ${module.length} bytes in ${now_ms() - began} ms")
+            },
+            .Err(report) -> eprintln("dev: the panel did not build — ${report}"),
+        }
+    }
+
     /// The page, the module and the channel, then the glue's own files.
     export fn routes() -> List<Route> {
         // LICENSED input.served_file: the glue's files are read as a browser asks for them, never an input of what is built
@@ -633,10 +664,14 @@ impl Page {
             fixed(Method.Get, "/@dev/events", (_q: Request<Unrouted>) -> self.events()),
             fixed(Method.Post, "/@dev/said", (q: Request<Unrouted>) -> self.heard(q)),
             fixed(Method.Post, "/@dev/cache", (q: Request<Unrouted>) -> self.cached(q)),
+            fixed(Method.Get, "/@dev/panel.wasm", (_q: Request<Unrouted>) -> self.panel_module()),
         ]
             .concat(shared(self.backend, self.glue_files, glue))
     }
 }
+
+/// The panel's package beside the compiler, where a page is asked for it: `tools/dev-hud/page` in a checkout, `lib/avra/dev-hud` in an install.
+fn panel_root() -> string? { toolchain_files(["../tools/dev-hud/page", "../lib/avra/dev-hud"]).find(is_a_dir(it)) }
 
 /// The glue's files, and what the page's server answers when the page has one.
 fn shared(backend: Backend?, glue: List<string>, files: List<Route>) -> List<Route> {
@@ -669,6 +704,8 @@ fn is_tab(word: string) -> bool {
 }
 
 // ── The voices ──
+
+fn no_panel_yet() -> string { "dev: the panel is not built — it is built with the page, and is missing when the toolchain carries none" }
 
 fn tab_refused() -> string { "dev: a tab is one to sixteen lowercase letters and digits, in the `x-avra-tab` field" }
 

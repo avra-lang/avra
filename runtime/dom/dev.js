@@ -65,6 +65,28 @@ export function relayed({ console, post }) {
   };
 }
 
+// THE PANEL, a module of its own: the cache of this page, drawn by a program (`tools/dev-hud`) that `run` starts into
+// a mount in a shadow root beside the app — never the app's tree, never its loop. It is told what the server says
+// (`cache` events), not what the app does, so an app that traps leaves the last snapshot standing. `start` is
+// `run` with the page's own rows (wasi) filled in, `source` the panel's module.
+export async function panel({ doc, events, start, source }) {
+  const host = doc.createElement("div");
+  host.id = "avra-dev-panel";
+  host.setAttribute("style", "position:fixed;inset:auto 0 0 0;z-index:2147483646;max-height:45vh;overflow:auto;margin:0;background:#fff;color:#111;border-top:1px solid #bbb;font:13px/1.4 ui-monospace,monospace");
+  const shadow = host.attachShadow({ mode: "open" });
+  const style = doc.createElement("style");
+  const mount = doc.createElement("div");
+  shadow.append(style, mount);
+  doc.body.appendChild(host);
+  // What the server tells while the module is still loading is kept and told once it runs.
+  const early = [];
+  let running = null;
+  events.addEventListener("cache", (said) => { if (running) running.tell(said.data); else early.push(said.data); });
+  running = await start(source, { document: doc, mount, style, state: new Uint8Array(0) });
+  for (const said of early.splice(0)) running.tell(said);
+  return running;
+}
+
 // THE CACHE'S SNAPSHOTS, posted: `api` is what the page offers (`on(take)` turns them on, `off()` stops them),
 // each snapshot is a JSON frame, and `post(frame)` sends one to the server under this page's own `tab`. A
 // frame that says what the last said is not sent again, and a burst is coalesced to the newest at the next
@@ -91,6 +113,7 @@ export function hudPosting({ api, post, raf }) {
 if (typeof document !== "undefined") {
   relayed({ console, post: (text) => fetch("/@dev/said", { method: "POST", body: text, keepalive: true }).catch(() => {}) });
   // The cache's snapshots go to the server, one set of frames per tab: a page offers the verb once its module runs.
+  const events = new EventSource("/@dev/events");
   const tab = Math.random().toString(36).slice(2, 10);
   const posting = () => hudPosting({
     api: globalThis.avraHud,
@@ -98,10 +121,21 @@ if (typeof document !== "undefined") {
     post: (frame) => fetch("/@dev/cache", { method: "POST", headers: { "content-type": "application/json", "x-avra-tab": tab }, body: frame, keepalive: true }).catch(() => {}),
   });
   if (globalThis.avraHud) posting(); else addEventListener("avra-hud", posting, { once: true });
+  // The panel starts beside the app; a page that cannot start it is no worse for it.
+  panel({
+    doc: document,
+    events,
+    source: "/@dev/panel.wasm",
+    start: async (source, options) => {
+      const { run } = await import("./bootstrap.js");
+      const { wasiPreview1 } = await import("./wasi.js");
+      return run(source, { ...options, wasi: (memory) => wasiPreview1(memory, () => {}), failed: (e) => console.warn(`avra: the dev panel failed (${e && e.message ? e.message : e})`) });
+    },
+  }).catch((e) => console.warn(`avra: the dev panel did not start (${e && e.message ? e.message : e})`));
   watch({
     doc: document,
     mine: document.querySelector('meta[name="avra-module"]').content,
-    events: new EventSource("/@dev/events"),
+    events,
     reload: () => location.reload(),
     // Asked when a build lands, not when this script loads: the page's own
     // script offers the verb once its module runs.

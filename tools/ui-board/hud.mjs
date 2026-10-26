@@ -60,6 +60,23 @@ await new Promise((done) => setTimeout(done, 1500));
 const before = first ? first.frame.counts : { asks: 0, skipped: 0 };
 await page.press(`[...document.querySelectorAll('[aria-label="Again"]')][0]`);
 const again = await snapshot((f) => f.counts.asks > before.asks || f.counts.skipped > before.skipped);
+
+// THE PANEL: a module of its own, in a shadow root beside the app. It is told what the server says; opened, it draws
+// the entry the views read, and the app's own tree is untouched by it.
+const panelText = () => page.read(`(() => { const h = document.getElementById("avra-dev-panel"); return h && h.shadowRoot ? h.shadowRoot.textContent : null; })()`);
+let panelAt = null;
+for (let tries = 0; tries < 100 && !(panelAt || "").includes("1 tab"); tries++) {
+  panelAt = await panelText();
+  if (!(panelAt || "").includes("1 tab")) await new Promise((done) => setTimeout(done, 100));
+}
+const appBefore = await page.read(`document.getElementById("app").innerHTML`);
+await page.press(`document.getElementById("avra-dev-panel").shadowRoot.querySelector('[aria-label="cache ▸"]')`);
+let opened = "";
+for (let tries = 0; tries < 50 && !opened.includes("/tasks"); tries++) {
+  opened = (await panelText()) || "";
+  if (!opened.includes("/tasks")) await new Promise((done) => setTimeout(done, 100));
+}
+const appAfter = await page.read(`document.getElementById("app").innerHTML`);
 await page.close();
 
 const claims = {
@@ -67,6 +84,9 @@ const claims = {
   "a snapshot names the entry the views read, ready": told !== null && told.readers === 2,
   "the terminal reader says it": /── tab [0-9a-z]+ ──/.test(said) && said.includes("/tasks") && /asks \d+/.test(said),
   "asking again moves the counts in a later snapshot (sent, or skipped as fresh)": again !== null,
+  "the panel stands in a shadow root and knows the page's one tab": (panelAt || "").includes("1 tab"),
+  "opened, the panel draws the entry the views read": opened.includes("/tasks") && opened.includes("tab "),
+  "and the app's own tree is the same with the panel open": appBefore === appAfter,
 };
 for (const [claim, held] of Object.entries(claims)) console.log(`${held ? "ok  " : "FAIL"} ${claim}`);
 process.exit(Object.values(claims).every(Boolean) ? 0 : 1);
