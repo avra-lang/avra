@@ -1,0 +1,52 @@
+// A connection waits out a lock another holds, unless it asked not to.
+use @std.io.{make_dirs}
+use @std.sqlite.open.{Db, OpenConfig}
+use @std.sqlite.sql.{sql}
+use @std.time.{now_ns}
+
+once fn busy_default_base() -> string {
+    let d = "/tmp/avra-sqlite-busy-default-test/${now_ns()}"
+    let _ = make_dirs(d)
+    d
+}
+
+/// The wait in milliseconds `db` was given.
+fn wait_of(db: Db) -> string {
+    match db.scalar(sql("PRAGMA busy_timeout")) {
+        .Ok(v) -> match v.int() { .Ok(n) -> "${n}", .Err(e) -> e.message },
+        .Err(e) -> e.message,
+    }
+}
+
+/// The wait, in milliseconds, a connection opened by `open` is given.
+fn waited_by_default() -> string {
+    match Db.open("${busy_default_base()}/default.db") {
+        .Ok(db) -> wait_of(db),
+        .Err(e) -> e.message,
+    }
+}
+
+/// The wait of a connection opened with `busy` set.
+fn waited_when_set() -> string {
+    let c = OpenConfig.config_at("${busy_default_base()}/set.db") with { busy: 0 }
+    match Db.open_with(c) { .Ok(db) -> wait_of(db), .Err(e) -> e.message }
+}
+
+/// The kind a connection refused with when opened with a wait of `ms`.
+fn refused_wait(ms: int) -> string {
+    let c = OpenConfig.config_at("${busy_default_base()}/negative.db") with { busy: ms }
+    match Db.open_with(c) { .Ok(_) -> "opened", .Err(e) -> e.cause.kind() }
+}
+
+spec "std/sqlite busy default" {
+    given "a connection opened with `open`" {
+        then "it waits five seconds for a held lock" { waited_by_default() == "5000" }
+    }
+    given "a connection opened with `busy: 0`" {
+        then "it is refused at once" { waited_when_set() == "0" }
+    }
+    given "a connection opened with a negative wait" {
+        then "it is refused, naming the law" { refused_wait(-5) == "sqlite.negative_wait" }
+        then "and a wait of zero is allowed" { refused_wait(0) == "opened" }
+    }
+}
