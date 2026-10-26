@@ -747,7 +747,18 @@ run() {
         case $bk in
             "") echo "work: no compiler is published for the merge-base or its recent ancestors — the run takes the tree's own route" >&2 ;;
             *" exact") route="builder:${bk%% *}"; echo "work: builder: the compiler published for the merge-base's key" >&2 ;;
-            *) route="builderold:${bk%% *}"; echo "work: builder: the merge-base's key is unpublished; the nearest published one is ${bk##* } commit(s) back — one generation is built from it on the Sprite" >&2 ;;
+            *)
+                mb=$(git -C "$tree" merge-base HEAD origin/main)
+                mbk=$(cd "$tree" && sh tools/fetch_compiler.sh --key-of "$mb")
+                route="builderold:${bk%% *}:$mbk"
+                echo "work: builder: the merge-base's key is unpublished; the nearest published one is ${bk##* } commit(s) back — the Sprite builds the MERGE-BASE's source once from it, shared by every lane on that base" >&2
+                mbroot=${AVRA_SPRITE_HOME:-/home/sprite}/avra-mb
+                if ! sx "$sprite" 20 test -x "$mbroot/$mbk/build/avra" 2>/dev/null; then
+                    git -C "$tree" archive --format=tar "$mb" | gzip -1 |
+                        timeout -k 2 300 "$sprite_cli" -s "$sprite" exec --no-port-forward -- sh -c "mkdir -p '$mbroot' && cat > '$mbroot/$mbk.tgz'" ||
+                        die "could not hand the merge-base's source to $sprite"
+                fi
+                ;;
         esac
     fi
     wire="$wire@$route"
