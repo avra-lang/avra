@@ -152,7 +152,7 @@ impl Backend {
     /// `q` sent on to the server as it came, and its answer sent back as it
     /// came. A server that does not answer is a 502 saying so.
     fn forward(q: Request<Unrouted>) -> Response {
-        if wants_events(q) { return self.relayed(q) }
+        if wants_events(q) { return relayed(self.port, self.root, q) }
         let target = q.target() ?? "/"
         let body = q.body.octets() ?? "".bytes()
         let payload = if body.length == 0 { Payload.Empty } else { Payload.Octets(body, q.header("content-type") ?? "application/octet-stream") }
@@ -165,36 +165,6 @@ impl Backend {
                 body: a.body,
             },
             .Err(e) -> text(502, not_answered(self.root, e.describe().message)),
-        }
-    }
-
-    /// A request for an event stream sent on to the server and its answer relayed AS IT COMES: the
-    /// head, then each piece the server writes, so a page's stream reaches the browser the moment the
-    /// server says something. A server that does not answer is a 502 saying so.
-    fn relayed(q: Request<Unrouted>) -> Response {
-        let target = q.target() ?? "/"
-        let c = match connect("127.0.0.1", self.port, secs(2)) {
-            .Ok(up) -> up,
-            .Err(e) -> { return text(502, not_answered(self.root, e.describe().message)) },
-        }
-        let fields = [h for h in fields_of(q) if passes(h.name)]
-        let asked = "GET ${target} HTTP/1.1\r\nHost: 127.0.0.1:${self.port}\r\nConnection: close\r\n${[f.name + ": " + f.value + "\r\n" for f in fields].join("")}\r\n"
-        match c.write(asked.bytes()) {
-            .Ok(_) -> {},
-            .Err(e) -> { return text(502, not_answered(self.root, e.describe().message)) },
-        }
-        let head = heard_head(c)
-        let answered? = head else { return text(502, not_answered(self.root, "the server sent no head for an event stream")) }
-        let flow = Flow {
-            conn: c,
-            pending: Cell.new(answered.rest),
-            decoder: Cell.new(chunker(0)),
-            chunked: answered.chunked,
-        }
-        Response {
-            status: answered.status,
-            headers: [h for h in answered.fields if passes(h.name)],
-            stream: Stream { pull: () -> flow.pulled(), ended: () -> { let _ = c.close() } },
         }
     }
 
@@ -217,6 +187,36 @@ impl Backend {
     /// The glue's own answer to a file it holds, else the server's.
     fn glued_or_sent(file: Route, glue: List<string>) -> fn(Request<Unrouted>, Bytes) -> Response? {
         (q: Request<Unrouted>, t: Bytes) -> if glued(file.method, t, glue) { file.serve(q, t) } else { self.forward(q) }
+    }
+}
+
+/// A request for an event stream sent on to the server and its answer relayed AS IT COMES: the
+/// head, then each piece the server writes, so a page's stream reaches the browser the moment the
+/// server says something. A server that does not answer is a 502 saying so.
+export fn relayed(port: int, root: string, q: Request<Unrouted>) -> Response {
+    let target = q.target() ?? "/"
+    let c = match connect("127.0.0.1", port, secs(2)) {
+        .Ok(up) -> up,
+        .Err(e) -> { return text(502, not_answered(root, e.describe().message)) },
+    }
+    let fields = [h for h in fields_of(q) if passes(h.name)]
+    let asked = "GET ${target} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\n${[f.name + ": " + f.value + "\r\n" for f in fields].join("")}\r\n"
+    match c.write(asked.bytes()) {
+        .Ok(_) -> {},
+        .Err(e) -> { return text(502, not_answered(root, e.describe().message)) },
+    }
+    let head = heard_head(c)
+    let answered? = head else { return text(502, not_answered(root, "the server sent no head for an event stream")) }
+    let flow = Flow {
+        conn: c,
+        pending: Cell.new(answered.rest),
+        decoder: Cell.new(chunker(0)),
+        chunked: answered.chunked,
+    }
+    Response {
+        status: answered.status,
+        headers: [h for h in answered.fields if passes(h.name)],
+        stream: Stream { pull: () -> flow.pulled(), ended: () -> { let _ = c.close() } },
     }
 }
 
