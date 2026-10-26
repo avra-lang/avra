@@ -6,9 +6,7 @@
 # type and a private name two files keep apart each move exactly the files that mention them —
 # and every answer is held to what the program says, never to the hold's own report.
 set -u
-cd "$(dirname "$0")/.."
-export AVRA_WATCH_HELD=1
-export AVRA_MAX_COMPILES=0
+. "$(dirname "$0")/lib/attack.sh"
 
 R=build/fn-add
 T=build/aside/fa.$$; mkdir -p $T
