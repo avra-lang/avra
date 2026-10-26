@@ -116,6 +116,11 @@ impl ResolveCx {
             self.note_settled_seat(e, b)
             return
         }
+        if self.tnames.contains(name) {
+            self.bind_use(e, Binding.TypeParam(name))
+            self.unseated.push(e)
+            return
+        }
         let at = self.loc_of(e)
         if name == "it" { return self.unbound_pronoun(at) }
         if self.hidden_def(keyed(name, origin)) { return self.runtime_binding(name, at) }
@@ -225,7 +230,7 @@ impl ResolveCx {
         match b {
             .Param(i) -> self.seat_is_mut(i),
             .LambdaParam(l, i) -> self.lambda_seat_mut(l, i),
-            .Receiver or .Def(_) or .Pattern(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> false,
+            .Receiver or .Def(_) or .Pattern(_, _) or .Capture(_, _) or .Index(_) or .TypeParam(_) or .Decl(_) -> false,
         }
     }
 
@@ -753,6 +758,17 @@ impl ResolveCx {
         if l.lo + name.length > text.length || text.substring(l.lo, l.lo + name.length) != name { return null }
         l with { hi: l.lo + name.length }
     }
+}
+
+/// A type parameter read anywhere but as a static call's subject.
+fn type_param_value(at: Loc?, name: string) -> Diag {
+    refusal(
+        "type.type_value",
+        at,
+        "`${name}` is a type parameter, which names no value",
+        "used as a value here",
+        "a type parameter is read only as the subject of a static its bound declares — `${name}.member()`",
+    )
 }
 
 fn read_past_hole(at: Loc?, name: string) -> Diag {

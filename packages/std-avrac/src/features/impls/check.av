@@ -25,12 +25,13 @@ fn methoded(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List
 /// and every kind judges the call in its own law.
 fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId {
     if cx.errored(subject) { return cx.error_type }
-    let callee = callee_of(cx.view, cx.type_at(subject), name)
+    let callee = subject_callee(cx.view, cx.names, subject, cx.type_at(subject), name)
     if !seats_named(callee) && !cx.nameless(name, args) { return cx.error_type }
     match callee {
         .Variant(decl, tname) -> if cx.view.store.is_type_lit(e) { no_interned(cx, e, tname) } else { cx.construct_variant(e, decl, tname, name, args) },
         .Static(m, tname) -> static_call(cx, e, m, tname, name, args),
         .Bounded(decl, j, tname) -> bounded_call(cx, e, subject, decl, j, tname, name, args),
+        .BoundStatic(decl, j, tname) -> bound_static_call(cx, e, subject, decl, j, tname, name, args),
         .Contract(tdecl, tname) -> dyn_call(cx, e, subject, tdecl, tname, name, args),
         .FnField(_, fty) -> fielded_call(cx, e, name, fty, args),
         .Row(r) -> r.check(cx, MethodCall { e: e, subject: subject, args: args }),
@@ -45,7 +46,7 @@ fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args:
 fn seats_named(c: Callee) -> bool {
     match c {
         .Static(_, _) or .Declared(_, _) -> true,
-        .Variant(_, _) or .Bounded(_, _, _) or .Contract(_, _) or .FnField(_, _) or .Row(_) or .Nameless -> false,
+        .Variant(_, _) or .Bounded(_, _, _) or .BoundStatic(_, _, _) or .Contract(_, _) or .FnField(_, _) or .Row(_) or .Nameless -> false,
     }
 }
 
@@ -569,6 +570,32 @@ fn wrong_method_arity(
         )
 }
 
+fn unbounded_call(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.method",
+                cx.loc_of(e),
+                "`${tname}` has no known methods",
+                "called here",
+                bound_remedy(cx, decl, tname),
+            ),
+        )
+}
+
+fn receiver_through_type(mut cx: TypeCx, e: ExprId, trait_name: string, name: string, tname: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.method",
+                cx.loc_of(e),
+                "`${trait_name}.${name}` takes a receiver, and `${tname}` names a type — call it on a value of `${tname}`",
+                "called here",
+                "a type parameter calls its bound's `static fn`s alone",
+            ),
+        )
+}
+
 fn no_trait_method(mut cx: TypeCx, e: ExprId, trait_name: string, name: string, tname: string) -> TypeId {
     cx
         .spoken(
@@ -664,24 +691,44 @@ fn bounded_call(
     args: List<ExprId>,
 ) -> TypeId {
     let trait_name = cx.bound_name(decl, j)
-    if trait_name == "" {
-        return cx
-            .spoken(
-                refusal(
-                    "type.method",
-                    cx.loc_of(e),
-                    "`${tname}` has no known methods",
-                    "called here",
-                    bound_remedy(cx, decl, tname),
-                ),
-            )
-    }
+    if trait_name == "" { return unbounded_call(cx, e, decl, tname) }
     trait_judged(cx, e, subject, trait_name, name, args, cx.view.decls.bound_args(decl, j)) ?? no_trait_method(
         cx,
         e,
         trait_name,
         name,
         tname,
+    )
+}
+
+/// A STATIC through a bounded type parameter: the bound's trait
+/// supplies the member, which must be static — a member with a
+/// receiver reads a value, and a type parameter names none. Mono
+/// resolves the concrete static per specialization.
+fn bound_static_call(
+    mut cx: TypeCx,
+    e: ExprId,
+    subject: ExprId,
+    decl: DeclId,
+    j: int,
+    tname: string,
+    name: string,
+    args: List<ExprId>,
+) -> TypeId {
+    let trait_name = cx.bound_name(decl, j)
+    if trait_name == "" { return unbounded_call(cx, e, decl, tname) }
+    let tdecl? = cx.bound_trait(decl, trait_name) else { return cx.error_type }
+    let member? = cx.view.decls.trait_member(tdecl, name) else { return no_trait_method(cx, e, trait_name, name, tname) }
+    if !cx.view.decls.is_static_of(member) { return receiver_through_type(cx, e, trait_name, name, tname) }
+    let found? = cx.view.decls.sig(member)?.fn_sig() else { return cx.error_type }
+    if !cx.seat_contracts(e, "${trait_name}.${name}", member, 0, args, null) { return cx.error_type }
+    sig_judged(
+        cx,
+        e,
+        trait_name,
+        name,
+        args,
+        selfed_sig(cx, subject, member, found, cx.view.decls.bound_args(decl, j)),
     )
 }
 

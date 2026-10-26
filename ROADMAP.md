@@ -3233,6 +3233,15 @@ misspelled name is not caught at the annotation: the derive cannot ask whether `
 is a method, so the error appears in generated code. The want: a declaring annotation
 takes a fn name, checked where it is written.
 
+### Interim record — a generic fn's type argument cannot be written at a call
+
+A static through a bound (`T.zero()`) is the only use some fns make of
+`T`, so the parameter exists to pin it: `fn zero_of<T: Zeroed<int>>(_x: T)`
+takes a value it never reads (features/impls/tests/bound_statics). The
+want: `zero_of<P>()`, the type argument written at the call as a component
+instance already writes it (`box<int> { }`); today `ident<int>(…)` is
+"expected BREAK".
+
 ### Interim record — `Cell<T>` has no spelled form in a pass
 
 A type in a pass is spelled (`cx.type(List<string?>)`), but `types.type(Cell<ty>)` is

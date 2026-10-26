@@ -1665,7 +1665,6 @@ Wants the typer does not carry yet:
 - `Traced<E>`'s `cause`/`context`/`trace` stay inherent methods permanently (a trait member's answer is fixed by its signature); the real want is a bound on a type's own parameter.
 - A bound lands on a free fn's and a component's parameters only: `type T<K: Tr, V>` and `impl T<K: Tr, V>` are "expected `=`"/"expected `{`", a generic method is "generic methods are recorded, not landed"; a generic container keyed by a typed id keys by the slot (core's `SideTable`).
 - Variant arms or `is` over a nullable enum are "`match` chooses over an enum, found `K?`" / "`is` asks an enum for its variant, found `K?`"; unwrap first.
-- A generic impl's local annotation naming `T` is "`T` names no type"; leave it un-annotated.
 - A bound method as a value (`xs.any(self.rides)`) is read as a property ("no field `rides` on `S`"); write `(k) -> self.rides(k)`.
 - `it` through a self-method wrapper (`xs.any(self.rides(it))`) is "`it` has no element here"; `it` binds to the nearest call, and a pipe stage is such a call.
 - `[1, 2].join(",")` is "`join` reads a list of text, this one holds `int`"; map to text first.
