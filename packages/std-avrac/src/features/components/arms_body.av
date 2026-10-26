@@ -1,0 +1,42 @@
+//! An instance's body written as ARMS: `Name inst { pattern if guard ->
+//! value, … }` is `Name inst { it -> match it { … } }` — the pronoun's one
+//! seat, its body the match, exactly as a trailing block's arms read. The
+//! node keeps the arms as written and MEANS that closure.
+use core.{
+    expr_node,
+    Expr,
+    ExprId,
+    TypeId,
+    Reg,
+    Arm,
+    Scoped,
+    Minting,
+    minting,
+    pronoun_param,
+    NodeFacts,
+}
+use core.marks.{branches}
+use features.{Meaning, MeanCx, ResolveCx, TypeCx, LowerCx, nothing}
+
+@expr_node
+@branches
+export type ArmsBody = { arms: List<Arm> }
+
+impl NodeFacts for ArmsBody {
+    fn says(written: string) -> string? { "" }
+}
+
+impl Meaning for ArmsBody {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { cx.meant_type(e) }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { cx.meant_reg(e) }
+    fn minted(cx: MeanCx) -> Result<Minting, string> {
+        let subject = cx.store.alloc_expr(Expr.Ident(Scoped("it")), cx.span)
+        let matched = cx.store.alloc_expr(Expr.Match(subject, self.arms), cx.span)
+        cx.store.mark_sugar_match(matched)
+        let closure = cx.store.alloc_expr(Expr.Lambda([pronoun_param], matched), cx.span)
+        .Ok(minting([subject, matched, closure]))
+    }
+}
