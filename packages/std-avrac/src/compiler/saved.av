@@ -4,7 +4,7 @@
 //! maps keys to names on the way out and names to keys on the way in.
 use @std.relation.engine.{Key, Saved, SavedRead}
 use @std.text.{parse_int}
-use core.{StmtId, FileId, DeclId, ModuleId, DeclKind, joined, traced, qtrace}
+use core.{fp_str, sorted_texts, StmtId, FileId, DeclId, ModuleId, DeclKind, joined, traced, qtrace}
 use @std.relation.engine.{Revival}
 use features.{kind_word, decl_key_text, TypeFacts}
 use compiler.families.{Family, keyed_by}
@@ -210,7 +210,8 @@ impl Workspace {
         let store? = self.store.get() else { return false }
         let name? = self.saved_name(key) else { return false }
         let hash? = self.db.kernel.hash_forced(key) else { return false }
-        let reads? = self.db.kernel.saved_reads(key, (k: Key) -> self.stands_alone(k)) else { return false }
+        let walked? = self.db.kernel.saved_reads(key, (k: Key) -> self.stands_alone(k)) else { return false }
+        let reads = self.grouped(key, walked)
         if traced() { qtrace("Q\treads\t${Family.all()[key.family].name}\t${reads.length}\n") }
         mut readings: List<Reading> = [Reading { name: HASH_READ, digest: "${hash}" }]
         for r in reads {
@@ -228,6 +229,101 @@ impl Workspace {
     fn stands_alone(k: Key) -> bool {
         let f? = Family.all().get(k.family) else { return false }
         self.saved_family(f) || f is .Input || f is .Manifest || f is .Named
+    }
+
+    /// THE NAME PROBES GROUPED: an answer under a file reads that file's `NameEnv` once where it
+    /// probed many buckets. The environment is the union of every probe the file's answers made,
+    /// so it moves when any of them would; an answer's other reads stand as they are.
+    fn grouped(key: Key, reads: List<SavedRead>) -> List<SavedRead> {
+        let named = Family.Named.ordinal
+        let buckets = [r for r in reads if r.key.family == named]
+        let file? = self.answer_file(key) else { return reads }
+        if buckets.is_empty() || Family.all()[key.family] is .NameEnv { return reads }
+        let env = self.env_noted(file, [r.key for r in buckets])
+        [r for r in reads if r.key.family != named]
+            .concat(
+                [
+                    SavedRead {
+                        key: Key { family: Family.NameEnv.ordinal, arg: file.index },
+                        digest: env,
+                    },
+                ],
+            )
+    }
+
+    /// The file an answer's key belongs to, when its argument names a file or a declaration.
+    fn answer_file(key: Key) -> FileId? {
+        let f? = Family.all().get(key.family) else { return null }
+        match arg_name(f) {
+            .File -> FileId { index: key.arg },
+            .Decl -> self.decls.decl(DeclId { index: key.arg }).file,
+            .Module or .Unit or .Symbol or .World or .Package or .Bucket or .Local -> null,
+        }
+    }
+
+    /// A file's probe set grown by `more`, and the digest of what it stands on now.
+    fn env_noted(file: FileId, more: List<Key>) -> int {
+        let at = "${file.index}"
+        let known = self.env_probes.get().get(at) ?? self.env_loaded(file)
+        let fresh = [k for k in more if !known.any((j: Key) -> j.arg == k.arg)]
+        if !fresh.is_empty() || self.env_probes.get().get(at) == null {
+            self.env_probes.put(at, known.concat(fresh))
+            if !self.env_owed.get().contains(file.index) { self.env_owed.push(file.index) }
+        }
+        self.env_digest(file)
+    }
+
+    /// The probes a file's saved environment names, staged so their buckets stand here.
+    fn env_loaded(file: FileId) -> List<Key> {
+        let text? = self.saved_value(Key { family: Family.NameEnv.ordinal, arg: file.index }) else { return [] }
+        [k! for l in text.split("\n") if !l.is_empty() for k in [self.saved_key(l)] if k != null]
+    }
+
+    /// One digest over a file's probed buckets as they stand: each by name, in name order.
+    fn env_digest(file: FileId) -> int {
+        let probes = self.env_probes.get().get("${file.index}") ?? []
+        fp_str(
+            joined(
+                sorted_texts(
+                    ["${self.saved_name(k) ?? ""}\t${self.db.kernel.hash_forced(k) ?? 0}" for k in probes],
+                ),
+                "\n",
+            ),
+        )
+    }
+
+    /// A file's environment as a derived answer: every probed bucket read, hashed together.
+    fn name_env_of(file: FileId) -> DbRow {
+        let probes = self.env_probes.get().get("${file.index}") ?? self.env_loaded(file)
+        self.env_probes.put("${file.index}", probes)
+        let rel = self.relation(Family.NameEnv)
+        rel
+            .demand(
+                file.index,
+                () -> {
+                    for k in self.env_probes.get().get("${file.index}") ?? [] { self.db.kernel.record_dep(k) }
+                    DbRow
+                        .Words(
+                            [self.saved_name(k) ?? "" for k in self.env_probes.get().get("${file.index}") ?? []],
+                        )
+                },
+                (_v: DbRow) -> self.env_digest(file),
+            )
+    }
+
+    /// The environments this run grew, kept: each as the buckets it probes, with those reads.
+    fn env_flushed() {
+        for at in self.env_owed.get() {
+            let file = FileId { index: at }
+            let key = Key { family: Family.NameEnv.ordinal, arg: at }
+            let probes = self.env_probes.get().get("${at}") ?? []
+            self.db.kernel.begin(key)
+            for k in probes { self.db.kernel.record_dep(k) }
+            self.db.kernel.settle(key, self.env_digest(file))
+            let _ = self
+                .saved_kept(key, joined(sorted_texts([self.saved_name(k) ?? "" for k in probes]), "\n"))
+        }
+        self.env_owed.set([])
     }
 
     /// The value a saved answer was kept with.
@@ -271,6 +367,7 @@ impl Workspace {
             let text? = (saver.text)(key.arg) else { continue }
             let _ = self.saved_kept(key, text)
         }
+        self.env_flushed()
         self.db.kernel.forget_standing()
     }
 
@@ -279,6 +376,8 @@ impl Workspace {
         self.db.kernel.set_saved((key: Key) -> self.saved_found(key))
         self.saves(Family.Items, (arg: int) -> self.items_text(arg))
         self.relation(Family.Items).revive.set((arg: int) -> self.items_revived(arg))
+        self.saves(Family.NameEnv, (arg: int) -> null)
+        self.relation(Family.NameEnv).revive.set((arg: int) -> self.env_revived(arg))
         self.saves(Family.Sig, (arg: int) -> self.sig_text(arg))
         self.saves(Family.Typed, (arg: int) -> self.typed_text(arg))
         self.relation(Family.Typed).revive.set((arg: int) -> self.typed_revived(arg))
@@ -320,6 +419,13 @@ impl Workspace {
         let d = self.decl_at(DeclId { index: arg })
         if d.maker != "" || !standing_sig(d.kind) { return null }
         self.sig_line(d)
+    }
+
+    /// A file's environment read back: its probes loaded so the answers that read it can be verified.
+    fn env_revived(arg: int) -> Revival<DbRow> {
+        let probes = self.env_loaded(FileId { index: arg })
+        self.env_probes.put("${arg}", probes)
+        Revival.Revived(DbRow.Words([self.saved_name(k) ?? "" for k in probes]))
     }
 
     /// A `ComponentNames` answer as its row's text: its names, one to a line.

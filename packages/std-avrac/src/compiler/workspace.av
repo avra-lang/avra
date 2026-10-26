@@ -525,6 +525,10 @@ export type Workspace = {
     savers: Cell<List<Saver>>,
     /// The declarations whose saved signature was asked for, found or not.
     sig_tried: Table<bool>,
+    /// Each file's probed name buckets, by file index: what its `NameEnv` is the digest of.
+    env_probes: Cell<Map<string, List<Key>>>,
+    /// The files whose probe set grew this run: the `NameEnv` rows the flush owes.
+    env_owed: Cell<List<int>>,
     /// The files whose declarations were minted from saved rows, each with the modules its `use` lines name.
     revived: Cell<Map<string, List<string>>>,
     /// The revived files whose parse has been attached to their minted declarations.
@@ -892,6 +896,10 @@ fn admitted_verified(ws: Workspace, arg: int) -> int {
     ws.admission(file_at(arg))
     ws.db.changed_at(key(Family.Admitted, arg))
 }
+fn name_env_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.name_env_of(file_at(arg)))
+    ws.db.changed_at(key(Family.NameEnv, arg))
+}
 fn named_verified(ws: Workspace, arg: int) -> int {
     ws.decls.named_now(arg)
     ws.db.changed_at(key(Family.Named, arg))
@@ -969,6 +977,7 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Consumed -> consumed_verified(ws, arg),
         .Admitted -> admitted_verified(ws, arg),
         .Named -> named_verified(ws, arg),
+        .NameEnv -> name_env_verified(ws, arg),
         .ReadReach -> read_reach_verified(ws, arg),
         .DeclReads -> decl_reads_verified(ws, arg),
         .Input -> input_verified(ws, arg),
@@ -1122,6 +1131,8 @@ fn built(
         noted: list_cell(),
         savers: list_cell(),
         sig_tried: new_table<bool>(),
+        env_probes: map_cell(),
+        env_owed: list_cell(),
         revived: map_cell(),
         attached: map_cell(),
     }
@@ -2730,6 +2741,7 @@ export fn family_code_hash(f: Family) -> string {
         .Consumed -> code_hash(consumed_verified) ?? "",
         .Admitted -> code_hash(admitted_verified) ?? "",
         .Named -> code_hash(named_verified) ?? "",
+        .NameEnv -> code_hash(name_env_verified) ?? "",
         .ReadReach -> code_hash(read_reach_verified) ?? "",
         .DeclReads -> code_hash(decl_reads_verified) ?? "",
         .Input -> code_hash(input_verified) ?? "",
