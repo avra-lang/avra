@@ -61,10 +61,15 @@ use compiler.lower.{ordered_collect_members}
 use @std.errors.{Loc}
 
 impl TypeCx {
-    /// A record's table, from its declaration alone.
+    /// A record's table, from its declaration alone — and a component's
+    /// bounds, typed as a fn's are.
     fn declare_record(s: StmtId) {
         self.refuse_taken_tparams(s, self.view.store.type_decl_name(s) ?? "this type")
         self.enter_tscope(s)
+        self
+            .view
+            .decls
+            .record_bound_args(self.decl_of(s), [self.bound_typed(s, p.ty) for p in self.view.store.decl_tbounds(s)])
         let sp: StructParts? = self.view.store.struct_parts(s)
         if sp != null { self.declare_struct_sig(s, sp!.fields, sp!.spreads) }
         self.leave_tscope()

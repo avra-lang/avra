@@ -2,7 +2,7 @@
 //! its name keys the impl table — and the found sig judges the
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
-use core.{ExprId, StmtId, TypeId, DeclId, DeclKind, same_type, counted}
+use core.{ExprId, StmtId, TypeId, DeclId, same_type, counted}
 use features.{
     TypeCx,
     FnSig,
@@ -672,7 +672,7 @@ fn bounded_call(
                     cx.loc_of(e),
                     "`${tname}` has no known methods",
                     "called here",
-                    bound_remedy(cx.view.decls.decl(decl).kind, tname),
+                    bound_remedy(cx, decl, tname),
                 ),
             )
     }
@@ -686,15 +686,19 @@ fn bounded_call(
 }
 
 /// A REMEDY NAMES A FORM THAT PARSES. A bound is written on a fn's
-/// type parameters and nowhere else — a type's and an impl's refuse
-/// it at the `<` — so telling every unbounded parameter to add one
-/// sends half of them at a form the grammar has no rule for.
-fn bound_remedy(kind: DeclKind, tname: string) -> string {
-    match kind {
+/// and a component's type parameters and nowhere else — a type's and
+/// an impl's refuse it at the `<` — so telling every unbounded
+/// parameter to add one sends half of them at a form the grammar has
+/// no rule for.
+fn bound_remedy(cx: TypeCx, decl: DeclId, tname: string) -> string {
+    if cx.view.decls.component_parts_of(decl) != null { return bound_written(tname) }
+    match cx.view.decls.decl(decl).kind {
         .Record or .Named or .Alias or .Enum or .Impl or .CollectEnum or .State -> "a type's and an impl's parameters take no bound yet — a bounded generic is a free `fn<${tname}: SomeTrait>` for now",
-        .Fn or .Method or .Trait or .Default or .Case or .Main or .Const or .Syntax or .Builtin or .Collect -> "add a bound — `<${tname}: SomeTrait>`",
+        .Fn or .Method or .Trait or .Default or .Case or .Main or .Const or .Syntax or .Builtin or .Collect -> bound_written(tname),
     }
 }
+
+fn bound_written(tname: string) -> string { "add a bound — `<${tname}: SomeTrait>`" }
 
 /// A method on a CONTRACT value: the trait's sig judges (self
 /// omitted — the boxed value fills that seat at dispatch); the
