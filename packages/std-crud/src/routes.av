@@ -84,11 +84,11 @@ export type Wire = {
 
 /// What a database says of itself, as closures over one connection: where it stands now, the
 /// version of an answer that read a set of tables (never newer than `now`), and which tables
-/// were written since it stood at a count.
+/// were written since it stood at a count, or none when the database could not be read.
 export type Ledger = {
     stand: fn() -> int?,
     version: fn(List<string>, int) -> Version?,
-    touched: fn(int) -> List<string>,
+    touched: fn(int) -> List<string>?,
 }
 
 /// `db`'s ledger. A counter that cannot be read answers no stand, so no answer under it is tagged.
@@ -99,7 +99,7 @@ export fn ledger(db: Db) -> Ledger {
             .Ok(n) -> Version { sequence: if n < now { n } else { now } },
             .Err(_) -> null,
         },
-        touched: (since: int) -> match touched(db, since) { .Ok(names) -> names, .Err(_) -> [] },
+        touched: (since: int) -> match touched(db, since) { .Ok(names) -> names, .Err(_) -> null },
     }
 }
 
@@ -116,6 +116,7 @@ export type Hub = {
     seen: Cell<int>,
     checked: Cell<int>,
     memo: Cell<Map<string, List<string>>>,
+    blind: Cell<bool>,
     bell: Bell,
 }
 
@@ -136,6 +137,7 @@ export fn hub(l: Ledger, tables: List<string>, every: Duration) -> Hub {
         seen: Cell.new(0),
         checked: Cell.new(0),
         memo: Cell.new(none),
+        blind: Cell.new(false),
         bell: Bell {},
     }
 }
@@ -144,7 +146,11 @@ impl Hub {
     /// The database's count now; when it moved, every stream is woken.
     fn sync() {
         self.checked.set(now_ms())
-        let now? = self.ledger.stand() else { return }
+        let now? = self.ledger.stand() else {
+            self.blind.set(true)
+            return
+        }
+        self.blind.set(false)
         if now == self.seen.get() { return }
         self.seen.set(now)
         let none: Map<string, List<string>> = {}
@@ -158,10 +164,11 @@ impl Hub {
     }
 
     /// The tables this router serves that were written since the database stood at `cursor`.
-    fn since(cursor: int) -> List<string> {
+    fn since(cursor: int) -> List<string>? {
         let held = self.memo.get().get("${cursor}")
         if held != null { return held! }
-        let names = [t for t in self.ledger.touched(cursor) if self.tables.contains(t)]
+        let written? = self.ledger.touched(cursor) else { return null }
+        let names = [t for t in written if self.tables.contains(t)]
         self.memo.put("${cursor}", names)
         names
     }
@@ -195,17 +202,19 @@ impl Hub {
         while true {
             self.refresh()
             let now = self.seen.get()
-            if !told.get() || now > at.get() {
-                let names = self.since(at.get())
+            let names = self.since(at.get())
+            if names != null && (!told.get() || now > at.get()) {
                 let first = !told.get()
                 told.set(true)
                 at.set(now)
-                if first || !names.is_empty() {
-                    return .Event(Event { data: named_field(names), event: "notice", id: "${now}" })
+                if first || !names!.is_empty() {
+                    return .Event(
+                        Event { data: named_field(names!), event: "notice", id: "${now}" },
+                    )
                 }
             }
             let left = until - now_ms()
-            if left <= 0 { return .Quiet }
+            if left <= 0 { return if names == null || self.blind.get() { .Failed } else { .Quiet } }
             let _ = self
                 .bell
                 .waited(ms(if left < self.every.ms() { left } else { self.every.ms() }))
@@ -484,9 +493,9 @@ export fn committed(l: Ledger, act: fn() -> Response) -> Response {
     let b? = before else { return r }
     if r.status < 200 || r.status > 299 { return r }
     let after = l.stand() ?? b
-    r with { headers: r
-        .headers
-        .concat([header_pair(WROTE, named_field(l.touched(b))), header_pair(STAND, "${after}")]) }
+    let written = l.touched(b)
+    let named = if written == null { [] } else { [header_pair(WROTE, named_field(written!))] }
+    r with { headers: r.headers.concat(named).concat([header_pair(STAND, "${after}")]) }
 }
 
 fn removed_answer(r: Result<int, Failure>) -> Response {
