@@ -1441,6 +1441,7 @@ impl SourceText {
                 parent,
             ),
             .ArmsBody(arms) -> self.arms_braced(arms, id, depth),
+            .InstanceFn(_, _) -> self.instance_body(id, depth),
             .ChainCall(subject, name, args) -> grouped(
                 "${self.chain_subject(subject, depth, c)}?.${source_name(name.of)}${self.args_wrapped(args, depth)}",
                 postfix_tier,
@@ -1964,7 +1965,7 @@ impl SourceText {
     /// An instance's body: its block, or a fn's braces with its `req ->`
     /// head inside them.
     mut fn instance_body(b: ExprId, depth: int) -> string {
-        match self.store.expr(b) {
+        match self.store.expr(self.store.body_fn(b) ?? b) {
             .Lambda(params, body) -> self.trailing_lambda(params, body, b, depth),
             rest -> self.expression(b, loosest_tier, depth),
         }
