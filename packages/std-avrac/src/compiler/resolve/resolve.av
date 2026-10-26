@@ -185,7 +185,7 @@ impl ResolveCx {
 
     mut fn arm_body(binds: List<Bound>, value: ExprId, guard: ExprId?) {
         for j, b in binds {
-            if !self.refused_binder(b.name, self.loc_of(value)) { self.bind(keyed(b.name, b.origin), Binding.Pattern(value, j)) }
+            if !self.refused_binder(b.name, self.loc_of(value), b.origin) { self.bind(keyed(b.name, b.origin), Binding.Pattern(value, j)) }
         }
         if guard != null { self.walk(guard!) }
         self.walk(value)
@@ -204,14 +204,16 @@ impl ResolveCx {
     }
 
     /// A lambda's body under its own frame: params bind, outer names
-    /// capture, and the frame dies with the walk.
+    /// capture, and the frame dies with the walk. A plain param keys by
+    /// the lambda's origin, or the body's when a sibling param named through
+    /// a hole made the lambda itself holed: the plain ones stay the template's.
     mut fn lambda_scope(lam: ExprId, params: List<Param>, body: ExprId) {
         // a refused param name still BINDS (declare the wreckage) — the
         // body resolves quietly and the one refusal stands alone
         for pp in params {
-            let _ = self.refused_binder(pp.name.of, self.loc_of(lam))
+            let _ = self.refused_binder(pp.name.of, self.loc_of(lam), self.view.origin_of(lam))
         }
-        let origin: FileId? = self.view.origin_of(lam)
+        let origin: FileId? = self.view.origin_of(lam) ?? self.view.origin_of(body)
         // LICENSED compiler.bracket_ritual: this IS the bracket
         self
             .lframes

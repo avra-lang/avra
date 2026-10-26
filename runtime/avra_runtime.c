@@ -3544,23 +3544,30 @@ int64_t avra_pid_alive(int64_t pid) {
 }
 #endif
 
+#include "avra_random.h"
+
+#if defined(__wasm32__)
+// No entropy source stands here: the draw answers absent.
+static ssize_t os_random(void* out, size_t n) {
+    (void)out; (void)n;
+    return -1;
+}
+
+const char* avra_random_bytes(int64_t n) { return random_from(n, os_random); }
+#else
 static ssize_t os_random(void* out, size_t n) {
 #ifdef __APPLE__
     arc4random_buf(out, n);
     return (ssize_t)n;
-#elif defined(__wasm32__)
-    (void)out; (void)n;
-    return -1;
 #else
     return getrandom(out, n, 0);
 #endif
 }
 
-#include "avra_random.h"
-
 // The OS's entropy as `n` bytes. No weaker source stands behind it: a nonce
 // or a token must never be drawn from a clock.
 const char* avra_random_bytes(int64_t n) { return random_from(n, os_random); }
+#endif
 
 // This process's own id, OS-assigned at birth.
 int64_t avra_own_pid(void) {

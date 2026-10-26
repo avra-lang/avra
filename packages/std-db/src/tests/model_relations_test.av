@@ -53,7 +53,7 @@ type Item = {
 }
 
 fn seeded() -> Result<Db, SqlError> {
-    mut db = Db.memory()?
+    let db = Db.memory()?
     Board.create_table(db)?
     Card.create_table(db)?
     Pin.create_table(db)?
@@ -67,7 +67,7 @@ fn count(db: Db, name: string) -> Result<int, SqlError> {
     (db.scalar(sql("select count(*) from \"${name}\""))?).int()
 }
 
-fn board(mut db: Db, name: string) -> Result<Board, ModelError> {
+fn board(db: Db, name: string) -> Result<Board, ModelError> {
     Board { name: name }.insert(db)
 }
 
@@ -85,13 +85,13 @@ fn held(e: ModelError) -> bool {
 fn titles(rows: List<Card>) -> string { [c.title for c in rows].join(",") }
 
 fn no_children() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let b = board(db, "empty")?
     "${titles(modeled(b.cards(db))?)}|${(modeled(Card.where(db, board: b))?).length}"
 }
 
 fn hydrated() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let b = board(db, "work")?
     let c = Card { title: "a", board: b }.insert(db)?
     let back = modeled(Card.find(db, c.id))?!
@@ -99,7 +99,7 @@ fn hydrated() -> Result<string, ModelError> {
 }
 
 fn by_parent() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let one = board(db, "one")?
     let two = board(db, "two")?
     let _ = Card { title: "a", board: one }.insert(db)?
@@ -109,7 +109,7 @@ fn by_parent() -> Result<string, ModelError> {
 }
 
 fn batched() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let one = board(db, "one")?
     let two = board(db, "two")?
     let three = board(db, "three")?
@@ -121,7 +121,7 @@ fn batched() -> Result<string, ModelError> {
 }
 
 fn refused() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let b = board(db, "held")?
     let _ = Card { title: "a", board: b }.insert(db)?
     match b.remove(db) {
@@ -131,13 +131,13 @@ fn refused() -> Result<string, ModelError> {
 }
 
 fn removable() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let b = board(db, "bare")?
     "${b.remove(db)?} ${modeled(count(db, "Board"))?}"
 }
 
 fn cascaded() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let b = board(db, "gone")?
     let _ = Pin { label: "p", board: b }.insert(db)?
     let _ = b.remove(db)?
@@ -145,7 +145,7 @@ fn cascaded() -> Result<string, ModelError> {
 }
 
 fn nulled() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let b = board(db, "gone")?
     let m = Memo { text: "m", board: b }.insert(db)?
     let _ = b.remove(db)?
@@ -154,7 +154,7 @@ fn nulled() -> Result<string, ModelError> {
 }
 
 fn soft_cascade() -> Result<string, ModelError> {
-    mut db = modeled(seeded())?
+    let db = modeled(seeded())?
     let c = Crate { label: "c" }.insert(db)?
     let _ = Item { name: "i", crate: c }.insert(db)?
     let _ = c.remove(db)?

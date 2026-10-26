@@ -6,10 +6,22 @@ use @std.relation.engine.{list_cell, map_cell}
 /// How a sugar's meaning is minted beside it: the language's own door,
 /// since only the language reads a template. It answers the nodes it
 /// minted, the last the root, or none when it cannot.
-export alias Means = fn(SyntaxArena, ExprId) -> Result<List<ExprId>, string>
+export alias Means = fn(SyntaxArena, ExprId) -> Result<Minting, string>
+
+/// What a sugar's meaning minted: its nodes in allocation order, the last the
+/// root; and, for an instance, the literal that stands in place and the `check`
+/// call over it. The door files these; a meaning never writes the store.
+export type Minting = { nodes: List<ExprId>, expansion: Expansion? = null }
+
+/// What stands in an instance's place: the literal, and the `check` call over
+/// it when its component judges instances.
+export type Expansion = { literal: ExprId, check: ExprId? = null }
+
+/// A meaning that minted only nodes.
+export fn minting(nodes: List<ExprId>) -> Minting { Minting { nodes: nodes } }
 
 /// The door of a store whose language is not at hand: it mints nothing.
-export fn no_door(_store: SyntaxArena, _sugar: ExprId) -> Result<List<ExprId>, string> { .Ok([]) }
+export fn no_door(_store: SyntaxArena, _sugar: ExprId) -> Result<Minting, string> { .Ok(minting([])) }
 
 /// The forms an expression was written in: a lambda as a trailing block,
 /// a string as `"""raw"""`, a name inside a type literal (a hole), and a
@@ -19,6 +31,12 @@ export type ExprMarks = { is_trailing: bool, is_raw: bool, is_hole: bool, is_run
 fn no_expr_marks() -> ExprMarks {
     ExprMarks { is_trailing: false, is_raw: false, is_hole: false, is_run_hole: false }
 }
+
+/// What an instance stands on: the component its word names, as its
+/// file read it, and what its meaning minted — the literal or template copy
+/// that stands in place, and the `check` call over it when the component
+/// judges its instances.
+export type InstanceFacts = { provided: Provided, expansion: Expansion? = null }
 
 /// A STATEMENT'S MARKS: `export`, `mut fn`, `once fn`, `static fn` — the
 /// fn-shaped keywords a declaration wears, one bitset instead of four
@@ -162,6 +180,9 @@ export type SyntaxArena = {
     // read, by the `Grammar` struct literal it fully expanded into —
     // the raw block's own words, never rebuilt from the expansion
     @copied(expr, wear_grammar_lit) grammar_lits: Cell<List<string?>>,
+    // what an instance stands on, by the instance: its component as the
+    // file read it, then the literal its meaning minted
+    @copied(expr, wear_instance) instances: Cell<List<InstanceFacts?>>,
     // the type arguments a literal or instance writes after its name
     // (`Box<float> { … }`, `queue<Charge> charges { … }`), by the
     // struct literal they pin — the record's parameters, seated from
@@ -228,6 +249,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         is_payloads: list_cell(),
         instance_owners: list_cell(),
         grammar_lits: list_cell(),
+        instances: list_cell(),
         struct_targs: list_cell(),
         written_close: list_cell(),
         quotes_at: map_cell(),
@@ -300,6 +322,7 @@ impl SyntaxArena {
         self.is_payloads.push(null)
         self.instance_owners.push(null)
         self.grammar_lits.push(null)
+        self.instances.push(null)
         self.struct_targs.push([])
         self.written_close.push(null)
         self.on_handlers.push(null)
@@ -515,9 +538,17 @@ impl SyntaxArena {
         self.means_notes.get()[sugar.index]
     }
 
+    /// `stmts` as a scope answering with its tail: the block a statement list is.
+    fn block_over(stmts: List<StmtId>, span: Span?) -> ExprId {
+        if stmts.is_empty() { return self.alloc_expr(Expr.Block(stmts, null), span) }
+        let tail = stmts.last()!
+        let value? = self.answer_of(tail) else { return self.alloc_expr(Expr.Block(stmts, null), span) }
+        self.tail_scoped(stmts, tail, value, span)
+    }
+
     /// Every sugar node, in allocation order.
     fn sugars() -> List<ExprId> {
-        [ExprId { index: i } for i, n in self.means_notes.get() if n != null]
+        [ExprId { index: i } for i, n in self.means_notes.get() if n != null && !n!.is_empty()]
     }
 
     /// What `sugar` means, minted beside it: its nodes answer for it, the
@@ -525,17 +556,19 @@ impl SyntaxArena {
     /// sentence that says what the sugar means. The one door a builder and
     /// a template copy both use, so a copy re-mints and never copies.
     fn mean(sugar: ExprId, note: string, door: Means) -> List<ExprId> {
-        let minted = match door(self, sugar) { .Ok(ids) -> ids, .Err(_) -> [] }
+        let minted = match door(self, sugar) { .Ok(m) -> m, .Err(_) -> minting([]) }
         self.means_as(sugar, minted, note)
-        minted
+        minted.nodes
     }
 
     /// `minted` recorded as what `sugar` means, the last its root; nothing
     /// when it minted nothing.
-    fn means_as(sugar: ExprId, minted: List<ExprId>, note: string) {
-        let root? = minted.last() else { return }
+    fn means_as(sugar: ExprId, minted: Minting, note: string) {
+        let root? = minted.nodes.last() else { return }
         self.meaning.set_at(sugar.index, root)
-        self.mint_for(sugar, minted, note)
+        self.mint_for(sugar, minted.nodes, note)
+        let expansion? = minted.expansion else { return }
+        self.expanded_as(sugar, expansion)
     }
 
     /// Mints nodes `sugar` is EXTENDED by: `roots` are what a walk reaches
@@ -710,11 +743,14 @@ impl SyntaxArena {
     /// The written type arguments a literal carries, in written order.
     fn struct_targs_of(e: ExprId) -> List<TypeRef> { self.struct_targs.get()[e.index] }
 
-    /// The type arguments a literal OR instance writes: an instance's
-    /// live on its expansion's literal.
+    /// The type arguments a literal OR instance writes. An instance's are its
+    /// payload's alone: its expansion's literal is marked from them when it is
+    /// minted (`recorded`), so the two never disagree.
     fn targs_of_lit(e: ExprId) -> List<TypeRef> {
-        let x? = self.expansion_of(e) else { return self.struct_targs_of(e) }
-        self.struct_targs_of(x)
+        match self.expr(e) {
+            .Component(_, targs, _, _, _, _) -> targs,
+            rest -> self.struct_targs_of(e),
+        }
     }
 
     /// A keyed list's reconciliation key — the element accessor its
@@ -888,9 +924,44 @@ impl SyntaxArena {
 
     fn expansion_of(e: ExprId) -> ExprId? {
         match self.expr(e) {
-            .Body(_, _, _, view) or .Component(_, _, _, view, _, _) -> view.expansion(),
+            .Body(_, _, _, view) -> view.expansion(),
+            .Component(_, _, _, _, _, _) -> self.instances.get()[e.index]?.expansion?.literal,
             _ -> null,
         }
+    }
+
+    /// The component an instance's word names, as its file read it.
+    fn provided_of(e: ExprId) -> Provided? {
+        self.instances.get()[e.index]?.provided
+    }
+
+    /// `provided` as what the instance `e` stands on; its minted nodes are
+    /// kept when it is minted again.
+    fn provide(e: ExprId, provided: Provided) {
+        let held = self.instances.get()[e.index]
+        self
+            .instances
+            .set_at(e.index, InstanceFacts { provided: provided, expansion: held?.expansion })
+    }
+
+    /// The literal an instance's meaning minted, and the `check` call over
+    /// it when the component judges its instances.
+    fn expanded_as(e: ExprId, expansion: Expansion) {
+        let held? = self.instances.get()[e.index] else { return }
+        self.instances.set_at(e.index, held with { expansion: expansion })
+    }
+
+    /// The `check` call an instance's component judges it by; null for a
+    /// component that declares none.
+    fn checked_by(e: ExprId) -> ExprId? {
+        self.instances.get()[e.index]?.expansion?.check
+    }
+
+    /// Gives `e` the component `worn` names — the door a copy uses, so an
+    /// instance's meaning is minted again from what it stood on.
+    fn wear_instance(e: ExprId, worn: InstanceFacts?) {
+        let facts? = worn else { return }
+        self.provide(e, facts.provided)
     }
 
     /// The expressions a body's view holds, for the complete walk: a
@@ -1120,7 +1191,7 @@ impl SyntaxArena {
 
     /// A bare name in a pattern, as a READ of that name: the node
     /// resolve walks when the name is a const's, so the pattern
-    /// compares to it. Minted with every binding pattern, whoever
+    /// compares to it. Minting with every binding pattern, whoever
     /// allocates it; a name that binds leaves it unread. A type test's
     /// read is never walked: typing records the narrowed type on it.
     fn read_of(p: Pat, span: Span?) -> ExprId? {
@@ -1761,7 +1832,7 @@ impl SyntaxArena {
             .MethodCall(subject, _, _) -> self.pronoun_rides(subject),
             .Call(callee, _, args) -> callee == "it" || self.any_rides(args),
             .Body(_, _, holes, _) -> self.any_rides(holes),
-            rest -> self.any_rides(self.expr_children(id)),
+            rest -> self.any_rides(self.reached(id)),
         }
     }
 
@@ -1791,10 +1862,20 @@ impl SyntaxArena {
     // only where it DIFFERS and delegates the rest here, so no two
     // registries can disagree about which payloads are children.
 
+    /// What a complete walk reaches under `e`: its payloads' nodes — or, for an
+    /// instance, which stands for what its component makes of it, that meaning
+    /// alone, so each node is reached once. Unlike `walked`, a sugar that is no
+    /// instance keeps its written payloads here: the printer and the walks that
+    /// list what was written read them.
+    fn reached(e: ExprId) -> List<ExprId> {
+        let root = if self.instance_word(e) == null { null } else { self.meant(e) }
+        if root == null { self.expr_children(e) } else { [root!] }
+    }
+
     /// Every expression at and under `root`, children before owners,
     /// hidden branches and statement bodies included.
     fn every_expr(root: ExprId) -> List<ExprId> {
-        flatten([self.every_expr(k) for k in self.expr_children(root)]).concat([root])
+        flatten([self.every_expr(k) for k in self.reached(root)]).concat([root])
     }
 
     fn stmts_exprs(ids: List<StmtId>) -> List<ExprId> {

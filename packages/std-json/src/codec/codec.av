@@ -39,7 +39,7 @@ use @std.meta.{
     refuse_as_at,
     type_named,
 }
-use @std.derive.{record_of, RECORD_WIDTH}
+use @std.derive.{record_of}
 use @std.json.{
     Json,
     DecodeError,
@@ -568,7 +568,6 @@ fn read_closure(t: Type) -> List<string> {
 // ── The shape a codec reads ──────────────────────────────────────
 
 fn shape_problems(t: Type) -> List<Diagnostic> {
-    if t.fields.length > RECORD_WIDTH { return [too_wide(t)] }
     [unreadable_field(t, f) for f in t.fields if !readable(f.kind)]
         .concat([unannotated(t, f, n) for f in t.fields for n in records_read(f.kind) if !coded(n)])
 }
@@ -629,15 +628,6 @@ fn unannotated_payload(t: Type, v: Variant, f: Field, n: string) -> Diagnostic {
         f.at,
         "`${t.name}.${v.name}`'s `${f.name}` reads `${n}`, which does not wear `@json`",
         "write `@json` on `${n}` too",
-    )
-}
-
-fn too_wide(t: Type) -> Diagnostic {
-    refuse_as_at(
-        "too_wide",
-        t.at,
-        "`@json` reads a record of at most ${RECORD_WIDTH} fields, and `${t.name}` has ${t.fields.length}",
-        group_help,
     )
 }
 

@@ -1,0 +1,36 @@
+//! An ACCESS SCOPE: the one predicate a model's reads and writes can be held
+//! within, pushed into the SQL — a column, an operator and a value. `Eq` is
+//! the first operator; the predicate grows by adding to `Op` and nothing is
+//! ever filtered in memory.
+use @std.sqlite.{SqlValue}
+use shape.{quoted}
+
+/// How a column is compared with the value.
+export enum Op {
+    Eq
+}
+
+/// A column held to a value: `Where { column: "owner", op: .Eq, value: .Int(7) }`.
+export type Where = { column: string, op: Op, value: SqlValue }
+
+/// A scope's SQL condition; nothing for no scope.
+export fn scope_clause(scope: Where?) -> string {
+    let w? = scope else { return "" }
+    "${quoted(w.column)} ${op_text(w.op)} ?"
+}
+
+/// The condition ready to follow `AND`; nothing for no scope.
+export fn scope_text(scope: Where?) -> string {
+    let held = scope_clause(scope)
+    if held == "" { "" } else { " AND " + held }
+}
+
+/// The arguments with the scope's value after them; unchanged for no scope.
+export fn scope_args(args: List<SqlValue>, scope: Where?) -> List<SqlValue> {
+    let w? = scope else { return args }
+    args.concat([w.value])
+}
+
+fn op_text(o: Op) -> string {
+    match o { .Eq -> "=" }
+}
