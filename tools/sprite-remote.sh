@@ -472,12 +472,9 @@ supervise() {
             # the seed is the floor — `make bootstrap` builds from the committed
             # seed, whatever the standing compiler knows.
             s0=$(date +%s)
-            if make -s avra >> "$rd/probe.log" 2>&1; then
+            if make -s compiler GENS=1 >> "$rd/probe.log" 2>&1; then
                 : > build/.avra-compiler-hash
-                compiler="merge-base published, one generation ($(($(date +%s) - s0))s)"
-            elif make -s bootstrap >> "$rd/probe.log" 2>&1; then
-                : > build/.avra-compiler-hash
-                compiler="merge-base compiler cannot read the tree; bootstrapped from the seed ($(($(date +%s) - s0))s)"
+                compiler="merge-base published, built once ($(($(date +%s) - s0))s)"
             else
                 echo "sprite-run: the merge-base generation and the seed both FAILED — see $rd/probe.log" >&2; exit 70
             fi
