@@ -1,7 +1,21 @@
 //! The if-expression's NodeSemantics: dispatch only. The typing rule
 //! lives in check.av; lowering — the MEANING — in lower.av.
-use core.{ExprId, TypeId, Reg, Kids, Heirs, some_list}
-use features.{ResolveCx, TypeCx, LowerCx, Meaning}
+use core.{
+    ExprId,
+    TypeId,
+    Reg,
+    Kids,
+    Heirs,
+    some_list,
+    Minting,
+    minting,
+    SyntaxArena,
+    Span,
+    Expr,
+    Arm,
+    Pat,
+}
+use features.{ResolveCx, TypeCx, LowerCx, MeanCx, Meaning, nothing}
 
 use core.expr.{If}
 
@@ -16,13 +30,59 @@ impl Heirs for If {
 
 impl Meaning for If {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
+        if cx.view.store.meant(e) != null { return nothing() }
         cx.arm_scope([], self.on_true)
         if self.on_false != null { cx.arm_scope([], self.on_false!) }
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        if cx.view.store.meant(e) != null { return cx.meant_type(e) }
         if_type(cx, e)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        if cx.view.store.meant(e) != null { return cx.meant_reg(e) }
         if_lower(cx, e)
     }
+    fn minted(cx: MeanCx) -> Result<Minting, string> {
+        .Ok(
+            minting(payload_match(cx.store, cx.at, self.cond, self.on_true, self.on_false, cx.span)),
+        )
+    }
+}
+
+/// `if x is .V(p) { A } else { B }` is `match x { .V(p) -> A, _ -> B }` — the
+/// binding law's one meaning, spelled by the machinery that already carries
+/// it (spec 10.4: bind-fresh, scoped to the arm). A statement form's branches
+/// answer as a block's statements do, and an elseless one answers nothing.
+/// Empty for an `if` whose condition binds nothing.
+fn payload_match(
+    store: SyntaxArena,
+    at: ExprId,
+    cond: ExprId,
+    taken: ExprId,
+    other: ExprId?,
+    span: Span?,
+) -> List<ExprId> {
+    let payload? = store.is_payload(cond) else { return [] }
+    let statement = store.statement_if(at)
+    let yes = if statement { rewrapped(store, taken, span) } else { taken }
+    let no = other_branch(store, other, statement, span)
+    let rest = store.alloc_pat(Pat.Wild, span)
+    let arms = [
+        Arm { pats: [payload.pat], guard: null, value: yes },
+        Arm { pats: [rest], guard: null, value: no },
+    ]
+    [store.alloc_expr(Expr.Match(store.is_subject(cond) ?? cond, arms), span)]
+}
+
+/// The else side: absent, an empty block; a statement form's, re-wrapped.
+fn other_branch(store: SyntaxArena, other: ExprId?, statement: bool, span: Span?) -> ExprId {
+    let held? = other else { return store.block_over([], span) }
+    if statement { rewrapped(store, held, span) } else { held }
+}
+
+/// A written block answers as its statements do; an `else if` link is its own
+/// expression and stands.
+fn rewrapped(store: SyntaxArena, branch: ExprId, span: Span?) -> ExprId {
+    let stmts? = store.block_stmts(branch) else { return branch }
+    store.block_over(stmts, span)
 }

@@ -902,19 +902,24 @@ fn scan_text(text: string, keywords: List<string>) -> TextScan {
         }
     }
     let tokens = lex_source(text).tokens
-    let named = [tokens[j + 1].text for j in 0..tokens.length - 2 if tokens[j].lit_matches("component") &&
-        tokens[j + 1].kind == TokenKind.Name &&
-        (tokens[j + 2].lit_matches("{") || tokens[j + 2].lit_matches("("))]
+    let named = [tokens[j + 1].text for j in 0..tokens.length - 2 if declares_component_at(tokens, j)]
     TextScan {
         text: text,
         opens_block: opens_block(tokens, keywords),
         declares: !named.is_empty(),
         components: named,
-        exported: [tokens[j + 1].text for j in 1..tokens.length - 2 if tokens[j - 1].lit_matches("export") &&
-            tokens[j].lit_matches("component") &&
-            tokens[j + 1].kind == TokenKind.Name &&
-            (tokens[j + 2].lit_matches("{") || tokens[j + 2].lit_matches("("))],
+        exported: [tokens[j + 1].text for j in 1..tokens.length - 2 if tokens[j - 1].lit_matches("export") && declares_component_at(tokens, j)],
     }
+}
+
+/// Whether `component NAME` at `j` declares one — its block, its head,
+/// or its type parameters after the name.
+fn declares_component_at(tokens: List<Token>, j: int) -> bool {
+    tokens[j].lit_matches("component") &&
+        tokens[j + 1].kind == TokenKind.Name &&
+        (tokens[j + 2].lit_matches("{") ||
+            tokens[j + 2].lit_matches("(") ||
+            tokens[j + 2].lit_matches("<"))
 }
 
 /// Whether the stream may declare a block word: a `grammar` token
