@@ -2,6 +2,7 @@
 //! ones: a database the program migrated prints nothing and exits 0, one a
 //! model behind prints the plan and exits 1, and a missing one exits 2.
 use @std.io.{env, make_dirs, write_text}
+use @std.path.{dir_of}
 use @std.process.{Outcome, ProcessError}
 use @std.time.{now_ms}
 
@@ -104,6 +105,16 @@ spec "avra db diff" {
                 diff_args(diff_served("while true { }\nprintln(\"SERVED\")\n"), database),
             )
             code_of(r) == 0 && !stdout_of(r).contains("SERVED")
+        }
+    }
+    given "a package whose program does not check, diffed between two checks" {
+        then "the diff silences the program and both checks still refuse it" {
+            let database = migrated_database()
+            let schema = diff_served("nothing_defined()\n")
+            let package = dir_of(dir_of(schema))
+            let before = code_of(avra_ran(["check", package]))
+            let diff = code_of(avra_ran(diff_args(schema, database)))
+            before == 1 && diff == 0 && code_of(avra_ran(["check", package])) == 1
         }
     }
     given "a program that declares its shapes in its own serving entry" {
