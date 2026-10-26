@@ -299,9 +299,10 @@ fn tables_sql() -> string {
 }
 
 /// The trigger that counts one kind of write to the table `on`, and stamps the table with the
-/// count it reached: the table's own version.
+/// count it reached: the table's own version. An upsert, never `OR REPLACE`: a write made
+/// by a foreign-key action runs under its own conflict policy, which overrides a trigger's.
 fn bump_sql(on: string, kind: string) -> string {
-    "CREATE TRIGGER IF NOT EXISTS ${quoted("avra_commit_${on}_${kind}")} AFTER ${kind} ON ${quoted(on)} BEGIN UPDATE \"avra_commits\" SET \"seq\" = \"seq\" + 1 WHERE \"id\" = 1; INSERT OR REPLACE INTO \"avra_tables\" (\"name\", \"last\") VALUES (${literal_text(on)}, (SELECT \"seq\" FROM \"avra_commits\" WHERE \"id\" = 1)); END"
+    "CREATE TRIGGER IF NOT EXISTS ${quoted("avra_commit_${on}_${kind}")} AFTER ${kind} ON ${quoted(on)} BEGIN UPDATE \"avra_commits\" SET \"seq\" = \"seq\" + 1 WHERE \"id\" = 1; INSERT INTO \"avra_tables\" (\"name\", \"last\") VALUES (${literal_text(on)}, (SELECT \"seq\" FROM \"avra_commits\" WHERE \"id\" = 1)) ON CONFLICT (\"name\") DO UPDATE SET \"last\" = excluded.\"last\"; END"
 }
 
 /// `name` as an SQL text literal.
