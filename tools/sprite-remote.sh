@@ -460,6 +460,18 @@ supervise() {
             else
                 echo "sprite-run: no published compiler for the merge-base (key ${route#builder:}) — run without --builder" >&2; exit 70
             fi
+        elif [ "${route%%:*}" = builderold ]; then
+            # An older published compiler builds this tree once; that product stands as the builder
+            # for as long as the tree's compiler source (chash) does.
+            if [ -x build/avra ] && [ "$(cat build/.avra-builder-key 2>/dev/null)" = "old:${route#builderold:}:$chash" ]; then
+                compiler="builder, warm (built once from key ${route#builderold:})"
+            elif install_published "${route#builderold:}" && s0=$(date +%s) && make -s compiler GENS=1 >> "$rd/probe.log" 2>&1; then
+                printf '%s' "old:${route#builderold:}:$chash" > build/.avra-builder-key
+                : > build/.avra-compiler-hash
+                compiler="builder, one generation from the published ancestor key ${route#builderold:} ($(($(date +%s) - s0))s)"
+            else
+                echo "sprite-run: the published ancestor compiler (key ${route#builderold:}) could not be installed or build this tree — see $rd/probe.log" >&2; exit 70
+            fi
         elif [ -x build/avra ] && [ "$(cat build/.avra-compiler-hash 2>/dev/null)" = "$chash" ]; then
             compiler=warm
         elif [ "${route%%:*}" = published ] && install_published "${route#published:}"; then
