@@ -448,6 +448,18 @@ supervise() {
             else
                 echo "sprite-run: the probe generation FAILED — see $rd/probe.log" >&2; exit 70
             fi
+        elif [ "${route%%:*}" = builder ]; then
+            # The merge-base's published compiler stands as the builder, byte for byte across runs, so
+            # the store it filled is still its own; this tree's compiler is never built for the run.
+            if [ -x build/avra ] && [ "$(cat build/.avra-builder-key 2>/dev/null)" = "${route#builder:}" ]; then
+                compiler="builder, warm (merge-base key ${route#builder:})"
+            elif install_published "${route#builder:}"; then
+                printf '%s' "${route#builder:}" > build/.avra-builder-key
+                : > build/.avra-compiler-hash
+                compiler="builder, installed (merge-base key ${route#builder:})"
+            else
+                echo "sprite-run: no published compiler for the merge-base (key ${route#builder:}) — run without --builder" >&2; exit 70
+            fi
         elif [ -x build/avra ] && [ "$(cat build/.avra-compiler-hash 2>/dev/null)" = "$chash" ]; then
             compiler=warm
         elif [ "${route%%:*}" = published ] && install_published "${route#published:}"; then
