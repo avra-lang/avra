@@ -1011,6 +1011,7 @@ census-accept:
 	@python3 tools/census_ratchet.py --accept --raw build/census-gate.out
 
 warm-edit:
+	@python3 tools/ratchet_rows.py --self-test >/dev/null
 	@python3 tools/speed_ratchet.py --self-test >/dev/null
 	@python3 tools/work_ratchet.py --self-test >/dev/null
 	@sh tools/warm_edit_bench.sh
