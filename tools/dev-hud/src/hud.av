@@ -8,6 +8,10 @@ use @std.ui.components.{button, column, item, text}
 /// A tab and the lines of the snapshot it last told.
 type Told = { tab: string, lines: List<string> }
 
+/// How many tabs the panel keeps: a reload is a new tab and a closed one never speaks again, so the oldest
+/// block goes first.
+const tabs_kept: int = 8
+
 state tabs: List<Told> = []
 state open: bool = false
 
@@ -20,7 +24,8 @@ export fn hear(said: string) -> bool {
         .Obj(_) or .Arr(_) or .Null or .Bool(_) or .Int(_) or .Float(_) -> { return false },
     }
     let snap? = snapshot_of(to_text(member(doc, "frame"))) else { return false }
-    tabs = [t for t in tabs if t.tab != tab].concat([Told { tab: tab, lines: snap.lines() }])
+    let told = [t for t in tabs if t.tab != tab].concat([Told { tab: tab, lines: snap.lines() }])
+    tabs = told.drop(told.length - tabs_kept)
     true
 }
 
