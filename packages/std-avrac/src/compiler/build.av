@@ -56,6 +56,7 @@ use compiler.store.{
     pack_holding,
 }
 use compiler.host.{no_target, read_manifest, Stamp, Read}
+use compiler.hosts.{BuildHost, hosts_of, host_word}
 use @std.errors.{Error, ErrorInfo, info}
 use diagnostics.{new_source_file}
 use @std.relation.engine.{map_cell}
@@ -887,7 +888,7 @@ impl Workspace {
         let held = self.held_objects(d.store)?
         clock.mark("place")
         let staged = staged_beside(binary)
-        let hosted = [self.decls.decl(h).name for h in self.program_host_fns([a.view.file for a in d.program.files])]
+        let hosted = [self.decls.decl(h).name for h in self.exported_host_fns([a.view.file for a in d.program.files], hosts_of(tools.target))]
         let code = avra_spawn_status(
             tools.linker,
             link_objects(
@@ -914,7 +915,8 @@ impl Workspace {
         let fallback = self.fallback_made(d, full, ready, key, binary, tools)
         let warnings = spoken([d.warnings, shrunk.said, fallback.said])
         let _ = d.store.keep(Stored.Warn, key, warnings, [key])
-        let host_fns = self.host_fn_lines([a.view.file for a in d.program.files])
+        let host_fns = self
+            .host_fn_lines([a.view.file for a in d.program.files], hosts_of(tools.target))
         let reads = linked_reads(self.linked_files(tools.runtime, tools.target), tools.tools)
         if reads != null {
             let _ = d
@@ -967,13 +969,16 @@ impl Workspace {
     }
 
     /// The program's host fns, each as `package name`, in name order.
-    fn host_fn_lines(files: List<FileId>) -> List<string> {
-        sorted_texts([self.host_fn_line(d) for d in self.program_host_fns(files)])
+    fn host_fn_lines(files: List<FileId>, hosts: List<BuildHost>) -> List<string> {
+        sorted_texts([self.host_fn_line(d) for d in self.exported_host_fns(files, hosts)])
     }
 
+    /// `package name`, and `(Host)` after it when the fn names its host.
     fn host_fn_line(d: DeclId) -> string {
         let x = self.decls.decl(d)
-        "${self.packages()[self.holder_of_path(self.decls.file(x.file).path)].key} ${x.name}"
+        let at = "${self.packages()[self.holder_of_path(self.decls.file(x.file).path)].key} ${x.name}"
+        let host? = self.named_host(d) else { return at }
+        "${at} (${host_word(host)})"
     }
 
     /// A read file's object: kept under the file's key, standing beside the store's
