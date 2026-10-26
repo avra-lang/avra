@@ -113,7 +113,7 @@ const drain = async () => { await settle(); await answered(); frame(); };
 const footerWords = () => every(mount, (n) => n.tagName === "#text" && n.textContent.includes("open ·")).map((n) => n.textContent)[0] || "";
 
 claim("the first paint is the board with no tasks: the server holds them", keyed("1") === null && textOf(mount).includes("Nothing here yet."), shape(mount).slice(0, 80));
-claim("the page asks the server for its tasks at start, with a GET for /tasks", asked.length === 1 && asked[0].url.startsWith("/tasks") && asked[0].init.method === "GET", `${asked.length}`);
+claim("the page asks the server for its tasks at start, with a GET for /tasks", asked.length === 1 && asked[0].url === "/tasks" && asked[0].init.method === "GET", `${asked.length}`);
 for (const title of ["Draft the spec", "Wire the event channel", "Land the wasm board", "Write the tour"]) seeded(title, title.startsWith("Draft") || title.startsWith("Write"));
 await drain();
 claim("the server's tasks are the board's: four rows, under the server's keys", ["1", "2", "3", "4"].every((k) => keyed(k) !== null), shape(mount).slice(0, 80));

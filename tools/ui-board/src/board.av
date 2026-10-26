@@ -64,8 +64,7 @@ state dark: bool = false
 state newest_first: bool = false
 state dialog_open: bool = false
 state reminded: bool = false
-state asked: List<Fetch<List<Todo>>> = []
-state loads: int = 0
+state tasks_ask: Fetch<List<Todo>> = fetch()
 state refused: string = ""
 state sending: List<string> = []
 state waiting: Map<string, Request> = {}
@@ -126,17 +125,15 @@ fn seq_written(j: string) -> bool {
 export fn tasks_written(j: string) -> bool {
     match todos_of(j) {
         .Ok(read) -> {
-            let answered: Fetch<List<Todo>> = fetch()
-            answered.now.set(Async.Ready(read))
-            asked = [answered]
+            tasks_ask.now.set(Async.Ready(read))
             true
         },
         .Err(_) -> false,
     }
 }
 
-/// The tasks the server last answered with, newest answer first; none until one has come.
-fn tasks() -> List<Todo> { [v! for v in [f.value() for f in asked] if v != null].first() ?? [] }
+/// The tasks the server last answered with; none until one has come.
+fn tasks() -> List<Todo> { tasks_ask.value() ?? [] }
 
 fn todos_of(j: string) -> Result<List<Todo>, DecodeError> {
     [Todo.from_json_text(entry)? for entry in elements(j, "")?]
@@ -328,14 +325,9 @@ fn loaded(r: Reply) -> Result<List<Todo>, string> {
     .Ok([t! for t in [todo_of(j) for j in doc.items()] if t != null])
 }
 
-/// The server's tasks are asked for: at start, and after every change. Each ask
-/// names its own observation, so the answer already drawn stands until the new one
-/// lands and the list is never drawn empty between.
+/// The server's tasks are asked for: at start, and after every change.
 fn load() {
-    let next: Fetch<List<Todo>> = fetch()
-    asked = [next].concat([f for f in asked if f.value() != null].take(1))
-    loads = loads + 1
-    let _ = fetched(next, Request.get("/tasks?ask=${loads}"), loaded)
+    let _ = fetched(tasks_ask, Request.get("/tasks"), loaded)
 }
 
 /// A change was answered. Whatever it answered, the board shows the
@@ -382,7 +374,7 @@ fn answered(id: string, r: Reply) -> Result<int, string> {
 /// How the last change stands, in words.
 fn saved_words() -> string {
     if refused != "" { return " · save failed: ${refused}" }
-    let why? = asked.first()?.failure() else { return "" }
+    let why? = tasks_ask.failure() else { return "" }
     " · load failed: ${why}"
 }
 
