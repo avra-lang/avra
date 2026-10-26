@@ -7,10 +7,11 @@
 //! own.
 use @std.io.{make_dirs, write_text}
 use @std.process.{tool, cmd, inherited, exit_text, Ready, Exit, ProcessError}
+use @std.text.{repeat}
 use @std.time.{ms, stamp}
 use @std.http.frame.{framed, limits}
 use @std.http.http.{Request, Unrouted, Response, Pulled}
-use @std.http.body.{Body}
+use @std.http.body.{Body, whole}
 use @std.http.route.{compiled, dispatch}
 use @std.http.fetch.{get}
 use commands.{Page, page_of, toolchain, root_workspace}
@@ -491,3 +492,84 @@ spec "avra dev — what a page is answered before any build" {
     }
 }
 
+/// A request framed from its line and one more field, carrying `body`.
+fn requested_with(line: string, field: string, body: string) -> Request<Unrouted>? {
+    let raw = (line +
+        "\r\nHost: h\r\n" +
+        field +
+        "\r\nContent-Length: ${body.bytes().length}\r\n\r\n")
+        .bytes()
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: whole(body.bytes()), peer: "t", params: Unrouted {} },
+        .Partial or .Refused(_) -> null,
+    }
+}
+
+/// The status the server answers a snapshot posted by `tab`.
+fn snapshot_posted(d: Page, tab: string, body: string) -> int {
+    let q? = requested_with("POST /@dev/cache HTTP/1.1", "x-avra-tab: ${tab}", body) else { return 0 }
+    dispatch(compiled(d.routes()), q).status
+}
+
+/// The events a page joining now hears, `n` of them, each as its lines.
+fn events_heard(d: Page, n: int) -> List<List<string>> {
+    let stream? = got(d, "/@dev/events").stream else { return [] }
+    [heard_lines(stream.pull()) for _i in 0..n]
+}
+
+fn heard_lines(p: Pulled) -> List<string> {
+    match p { .Data(piece) -> (piece.text() ?? "").trim().split("\n"), .End or .Failed -> [] }
+}
+
+spec "avra dev — the cache's snapshots" {
+    given "a tab that posts its snapshot" {
+        then "it is accepted, and a page joining hears the build, then the snapshot with its tab" {
+            match unbuilt() {
+                d? -> {
+                    let said = snapshot_posted(d, "ab12", "{\"v\":1}")
+                    let heard = events_heard(d, 2)
+                    said == 204 &&
+                        field_of(heard[1], "event") == "cache" &&
+                        field_of(heard[1], "data") == "{\"tab\":\"ab12\",\"frame\":{\"v\":1}}"
+                }
+                null -> true
+            }
+        }
+        then "a later snapshot of the same tab replaces it: a page joining hears only the newest" {
+            match unbuilt() {
+                d? -> {
+                    let _ = snapshot_posted(d, "ab12", "{\"v\":1}")
+                    let _ = snapshot_posted(d, "ab12", "{\"v\":2}")
+                    field_of(events_heard(d, 2)[1], "data").contains("\"frame\":{\"v\":2}")
+                }
+                null -> true
+            }
+        }
+        then "two tabs are two snapshots, each told with its own tab" {
+            match unbuilt() {
+                d? -> {
+                    let _ = snapshot_posted(d, "aaa", "{\"v\":1}")
+                    let _ = snapshot_posted(d, "bbb", "{\"v\":1}")
+                    let heard = events_heard(d, 3)
+                    field_of(heard[1], "data").contains("\"tab\":\"aaa\"") &&
+                        field_of(heard[2], "data").contains("\"tab\":\"bbb\"")
+                }
+                null -> true
+            }
+        }
+    }
+    given "a snapshot the server will not keep" {
+        then "a tab that is no lowercase letters and digits is refused, so it can sit in a JSON text" {
+            match unbuilt() {
+                d? -> snapshot_posted(d, "A\"b", "{}") == 400 && snapshot_posted(d, "", "{}") == 400
+                null -> true
+            }
+        }
+        then "a snapshot over a megabyte is refused" {
+            match unbuilt() {
+                d? -> snapshot_posted(d, "ab12", repeat("x", 1048577)) == 413
+                null -> true
+            }
+        }
+    }
+}
