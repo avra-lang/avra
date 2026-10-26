@@ -12,9 +12,7 @@
 # one this machine's toolchain links).
 set -eu
 
-here=$(cd "$(dirname "$0")" && pwd)
-tree=$(cd "$here/.." && pwd)
-avra=${AVRA:-$tree/build/avra}
+. "$(dirname "$0")/lib/tree.sh"
 target=${UI_BOARD_TARGET:-wasm}
 work=$(mktemp -d "${TMPDIR:-/tmp}/avra-ui-board.XXXXXX")
 

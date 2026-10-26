@@ -18,9 +18,7 @@
 # name off the checks' machine (CI=true), where a missing browser is a broken machine.
 set -eu
 
-here=$(cd "$(dirname "$0")" && pwd)
-tree=$(cd "$here/.." && pwd)
-avra=${AVRA:-$tree/build/avra}
+. "$(dirname "$0")/lib/tree.sh"
 seeds=${LAYOUT_ORACLE_SEEDS:-1}
 cases=${LAYOUT_ORACLE_CASES:-300}
 show=${LAYOUT_ORACLE_SHOW:-2}

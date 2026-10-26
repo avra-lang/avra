@@ -5,9 +5,7 @@
 # innocent. A package that DOES name a wasm object links instead.
 set -eu
 
-here=$(cd "$(dirname "$0")" && pwd)
-tree=$(cd "$here/.." && pwd)
-avra=${AVRA:-$tree/build/avra}
+. "$(dirname "$0")/lib/tree.sh"
 work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-refuses.XXXXXX")}
 
 wasm_who=wasm-refuses; . "$here/lib/wasm.sh"

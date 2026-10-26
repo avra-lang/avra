@@ -7,9 +7,7 @@
 # `server` with none listens on `PORT` (how dev hands it one), else 8080, and a
 # written `port` wins over `PORT`.
 set -eu
-here=$(cd "$(dirname "$0")" && pwd)
-tree=$(cd "$here/.." && pwd)
-avra=${AVRA:-$tree/build/avra}
+. "$(dirname "$0")/lib/tree.sh"
 work=$(mktemp -d "${TMPDIR:-/tmp}/avra-dev-server.XXXXXX")
 who=dev-server
 . "$tree/tools/lib/steps.sh"
