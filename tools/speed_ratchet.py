@@ -110,39 +110,10 @@ DEFAULT_RATIO = 1.25
 DEFAULT_SLACK_MS = 250
 
 
-def cpu_token():
-    """The measuring machine's CPU as a short key token, matching
-    `speed_measure.sh`'s own — two x86_64 Linux machines are not one
-    machine."""
-    model = ""
-    try:
-        if os.path.exists("/proc/cpuinfo"):
-            for line in open("/proc/cpuinfo"):
-                if line.startswith("model name"):
-                    model = line.split(":", 1)[1].strip()
-                    break
-        else:
-            model = subprocess.run(
-                ["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True
-            ).stdout.strip()
-    except Exception:
-        model = ""
-    return re.sub(r"[^a-z0-9]+", "-", model.lower()).strip("-")
-
-
 def host_key():
-    """`<platform>-<machine>-<cpu>`, lowercased and tokenized — the same
-    spelling `speed_measure.sh` states, so a Mac and a Sprite (and two
-    Linux machines) are never compared."""
-    if os.environ.get("SPEED_HOST"):
-        return os.environ["SPEED_HOST"]
-
-    def token(text):
-        return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-
-    key = "%s-%s" % (token(platform.system()), token(platform.machine()))
-    cpu = cpu_token()
-    return "%s-%s" % (key, cpu) if cpu else key
+    """The measuring machine's key, from the one definition both languages ask (tools/host_key.sh)."""
+    got = subprocess.run(["sh", os.path.join(os.path.dirname(os.path.abspath(__file__)), "host_key.sh")], capture_output=True, text=True)
+    return got.stdout.strip()
 
 
 def least_rows(text):

@@ -1235,7 +1235,6 @@ ci-invariants:
 	@python3 tools/ci_dup_run.py --self-test
 	@sh tools/batch_test.sh
 	@python3 tools/pr_mode.py --self-test
-	@sh tools/fetch_compiler.sh --self-test
 
 # THE AGGREGATE VERDICT'S FIXTURES: the `test` job's arithmetic is a script
 # (tools/ci_verdict.sh), and these prove it counts what it claims — a skipped

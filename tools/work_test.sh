@@ -290,12 +290,12 @@ check "$(ls "$dp2" | tr '\n' ' ')" "hashC " "work deposit: only the newest AVRA_
 bk=$scratch/bk
 git init -q -b main "$bk"
 mkdir -p "$bk/tools"
-cat > "$bk/tools/fetch_compiler.sh" <<'STUB'
-#!/bin/sh
-case "$1" in
-    --key-of) echo "k-$(git show "$2:keyfile")" ;;
-    --probe) grep -qx "$2" "$PUBLISHED" ;;
-esac
+cat > "$bk/tools/compiler_release.py" <<'STUB'
+import os, subprocess, sys
+if sys.argv[1] == "key-of":
+    print("k-" + subprocess.check_output(["git", "show", sys.argv[2] + ":keyfile"], text=True).strip())
+elif sys.argv[1] == "probe":
+    sys.exit(0 if sys.argv[2] in open(os.environ["PUBLISHED"]).read().split() else 1)
 STUB
 bkg() { git -C "$bk" -c user.name=t -c user.email=t@t "$@"; }
 echo old > "$bk/keyfile"; bkg add -A; bkg commit -q -m a
