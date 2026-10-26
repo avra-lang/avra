@@ -3,7 +3,8 @@
 //! tree, for a test and for `explain`.
 use tree.controls.{shows_content}
 use tree.identity.{readable}
-use tree.node.{Node, Attribute}
+use tree.node.{Node, Attribute, masked_among}
+use @std.text.{codepoint_count, repeat}
 use @std.assets.{Picture}
 
 /// A text between quotes, on one line: a quote, a backslash and a line
@@ -22,13 +23,14 @@ fn picture_notes(p: Picture) -> List<string> {
     }
 }
 
-/// What one attribute tells a reader beyond the node's own words. ONE
-/// exhaustive match, so a new attribute is a decision here.
-fn noted(a: Attribute) -> List<string> {
+/// What one attribute tells a reader beyond the node's own words — a
+/// masked control's value as one mark per character, never the text.
+/// ONE exhaustive match, so a new attribute is a decision here.
+fn noted(a: Attribute, masked: bool) -> List<string> {
     match a {
         .Text(_) or .Label(_) -> [],
         .Level(rank) -> ["level=${rank}"],
-        .Value(t) -> ["value=${quoted(t)}"],
+        .Value(t) -> ["value=${quoted(if masked { repeat("•", codepoint_count(t)) } else { t })}"],
         .Amount(n) -> ["amount=${n}"],
         .Placeholder(t) -> ["placeholder=${quoted(t)}"],
         .Source(p) -> picture_notes(p),
@@ -47,9 +49,16 @@ fn noted(a: Attribute) -> List<string> {
         .Title(t) -> ["title=${quoted(t)}"],
         .Name(t) -> ["name=${quoted(t)}"],
         .Submits(on) -> state("submits", on),
+        .Masked(on) -> state("masked", on),
         .Skipped(_, rows, extent) -> ["skipped=${rows}x${extent}"],
         .Placed(at, of, reveal) -> ["row=${at}/${of}"].concat(if reveal { ["reveal"] } else { [] }),
     }
+}
+
+/// What a node's attributes tell a reader, masked as the node is.
+fn notes(attrs: List<Attribute>) -> List<string> {
+    let masked = masked_among(attrs)
+    [w for a in attrs for w in noted(a, masked)]
 }
 
 /// A node's own line: what it is, its words, its key, what it says.
@@ -60,11 +69,7 @@ fn line(n: Node) -> string {
         key? -> ["key=${quoted(key)}"]
         null -> []
     }
-    [n.prim.word()]
-        .concat(named)
-        .concat(keyed)
-        .concat([w for a in n.attrs for w in noted(a)])
-        .join(" ")
+    [n.prim.word()].concat(named).concat(keyed).concat(notes(n.attrs)).join(" ")
 }
 
 fn lines(n: Node, indent: string) -> List<string> {

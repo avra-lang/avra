@@ -1,0 +1,56 @@
+//! `model_form<T>` by its law: one input per field `T` declares — a
+//! checkbox for a bool, a field for the rest, each labelled by its name —
+//! and a submit that decodes what was typed through `T`'s own rules,
+//! handing the handler a `T` or showing each field's issue beside it.
+use @std.meta.{derive}
+use @std.validate.{Decode, range, length}
+use @std.ui.forms.{model_form}
+use @std.ui.headless.{Screen, headless}
+
+@derive(Decode)
+type Signup = {
+    @length(min: 1) name: string,
+    @range(13, 130) age: int,
+    agree: bool = false,
+}
+
+fn signup(got: Cell<string>) -> Screen {
+    headless(
+        () -> model_form<Signup> { on submit { s -> got.set("${s.name} ${s.age} ${s.agree}") } },
+    )
+}
+
+spec "std/ui model_form" {
+    given "a decoded record" {
+        then "draws a field per text or number, a checkbox per bool, and a submit" {
+            let page = signup(Cell.new(""))
+            page.text() == "form\n  list\n    column key=\"name\"\n      field \"name\" placeholder=\"\"\n    column key=\"age\"\n      field \"age\" placeholder=\"\"\n    column key=\"agree\"\n      checkbox \"agree\"\n  button \"Save\" submits"
+        }
+        then "a submit hands the handler the value the type decoded" {
+            let got = Cell.new("")
+            let page = signup(got)
+            page.fill("name", "Ada") &&
+                page.fill("age", "36") &&
+                page.check("agree", true) &&
+                page.submit("name") &&
+                got.get() == "Ada 36 true"
+        }
+        then "a refused field is marked invalid, its rule's words beside it, and nothing is handed" {
+            let got = Cell.new("")
+            let page = signup(got)
+            page.fill("name", "Ada") &&
+                page.fill("age", "9") &&
+                page.submit("name") &&
+                got.get() == "" &&
+                page.text() == "form\n  list\n    column key=\"name\"\n      field \"name\" value=\"Ada\" placeholder=\"\"\n    column key=\"age\"\n      field \"age\" value=\"9\" placeholder=\"\" invalid\n      text \"must be between 13 and 130\"\n    column key=\"agree\"\n      checkbox \"agree\"\n  button \"Save\" submits"
+        }
+        then "an owed field left empty is refused by the decode, in its words" {
+            let got = Cell.new("")
+            let page = signup(got)
+            page.fill("age", "40") &&
+                page.submit("age") &&
+                got.get() == "" &&
+                page.text() == "form\n  list\n    column key=\"name\"\n      field \"name\" placeholder=\"\" invalid\n      text \"is required\"\n    column key=\"age\"\n      field \"age\" value=\"40\" placeholder=\"\"\n    column key=\"agree\"\n      checkbox \"agree\"\n  button \"Save\" submits"
+        }
+    }
+}

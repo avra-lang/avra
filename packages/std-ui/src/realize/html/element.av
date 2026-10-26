@@ -12,7 +12,7 @@
 //! value, and every other value is escaped by whoever writes it.
 use tree.identity.{NodeId, Step, root as root_step, steps, unplaced, under}
 use tree.controls.{by_order}
-use tree.node.{Node, Attribute, Prim, Action, submits_among}
+use tree.node.{Node, Attribute, Prim, Action, submits_among, masked_among}
 use tree.seats.{always_seat_of}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, carries, control_attrs, tag_of}
 use realize.html.css.{class_names, box_vars, drawn_box, CssVar}
@@ -139,7 +139,7 @@ fn wrote(a: Attribute) -> List<Wrote> {
             Wrote { name: .AriaSetsize, value: "${of}" },
             Wrote { name: .DataReveal, on: reveal },
         ],
-        .Text(_) or .Level(_) or .Submits(_) -> [],
+        .Text(_) or .Level(_) or .Submits(_) or .Masked(_) -> [],
     }
 }
 
@@ -163,9 +163,12 @@ fn rests_of(attrs: List<Attribute>) -> List<HtmlAttrName> {
 }
 
 /// An element's attributes from the neutral node: what kind of control it
-/// is, then its properties.
+/// is, then its properties — a masked control's value never written, so
+/// a page's text never holds the secret.
 fn element_attrs(n: Node) -> List<HtmlAttr> {
-    control_attrs(n.prim, submits_among(n.attrs), n.words()).concat(attrs_of(n.attrs))
+    let masked = masked_among(n.attrs)
+    control_attrs(n.prim, submits_among(n.attrs), masked, n.words())
+        .concat(attrs_of([a for a in n.attrs if !masked || !(a is .Value)]))
 }
 
 // ── the class attribute ─────────────────────────────────────────

@@ -1,0 +1,144 @@
+//! `model_form<T>` at its edges — the red team's cases, each kept: a
+//! record with no fields, one of secrets alone, an option, a nested
+//! record, a list, every field refused at once, and submits in a row.
+use @std.meta.{derive}
+use @std.validate.{Decode, range, length}
+use @std.ui.forms.{model_form}
+use @std.ui.headless.{Screen, headless}
+
+@derive(Decode)
+type Blank = {}
+
+@derive(Decode)
+type Vault = { @secret pin: string }
+
+@derive(Decode)
+type Inner = { n: int }
+
+@derive(Decode)
+type Mixed = {
+    nick: string? = null,
+    inner: Inner,
+    tags: List<string> = [],
+}
+
+@derive(Decode)
+type Tagged = {
+    nick: string? = null,
+    tags: List<string> = [],
+}
+
+@derive(Decode)
+type Strict = {
+    @length(min: 2) name: string,
+    @range(1, 9) count: int,
+}
+
+fn counted(got: Cell<int>) -> Screen { headless(() -> model_form<Blank> { on submit { _b -> got.set(got.get() + 1) } }) }
+
+fn vault(got: Cell<string>) -> Screen { headless(() -> model_form<Vault> { on submit { v -> got.set(v.pin) } }) }
+
+fn mixed(got: Cell<string>) -> Screen {
+    headless(
+        () -> model_form<Mixed> { on submit { m -> got.set("${m.nick ?? "none"} ${m.tags.length}") } },
+    )
+}
+
+fn tagged(got: Cell<string>) -> Screen {
+    headless(
+        () -> model_form<Tagged> { on submit { m -> got.set("${m.nick ?? "none"} ${m.tags.length}") } },
+    )
+}
+
+fn strict(got: Cell<int>) -> Screen { headless(() -> model_form<Strict> { on submit { _s -> got.set(got.get() + 1) } }) }
+
+spec "std/ui model_form — the edges" {
+    given "a record with no fields" {
+        then "draws its submit alone, and a submit hands the value" {
+            let got = Cell.new(0)
+            let page = counted(got)
+            page.text() == "form\n  list\n  button \"Save\" submits" &&
+                page.press("Save") &&
+                got.get() == 1
+        }
+    }
+    given "a record of secrets alone" {
+        then "draws each as a masked input, never echoing what was typed" {
+            let got = Cell.new("")
+            let page = vault(got)
+            page.fill("pin", "4321") &&
+                page.text() == "form\n  list\n    column key=\"pin\"\n      field \"pin\" value=\"••••\" placeholder=\"\" masked\n  button \"Save\" submits"
+        }
+        then "hands the secret to the handler" {
+            let got = Cell.new("")
+            let page = vault(got)
+            page.fill("pin", "4321") && page.submit("pin") && got.get() == "4321"
+        }
+    }
+    given "an option, a nested record and a list" {
+        then "an untyped option and list take their defaults" {
+            let got = Cell.new("")
+            let page = tagged(got)
+            page.submit("nick") && got.get() == "none 0"
+        }
+        then "a nested record is refused in its decode's words" {
+            let got = Cell.new("")
+            let page = mixed(got)
+            page.fill("inner", "x") &&
+                page.submit("inner") &&
+                page.text() == "form\n  list\n    column key=\"nick\"\n      field \"nick\" placeholder=\"\"\n    column key=\"inner\"\n      field \"inner\" value=\"x\" placeholder=\"\" invalid\n      text \"must be an object, not text\"\n    column key=\"tags\"\n      field \"tags\" placeholder=\"\"\n  button \"Save\" submits"
+        }
+        then "one typed list value reads as a list of one" {
+            let got = Cell.new("")
+            let page = tagged(got)
+            page.fill("tags", "a") &&
+                page.fill("nick", "z") &&
+                page.submit("tags") &&
+                got.get() == "z 1"
+        }
+    }
+    given "every field refused at once" {
+        then "each field shows its own issue, and nothing is handed" {
+            let got = Cell.new(0)
+            let page = strict(got)
+            page.fill("name", "a") &&
+                page.fill("count", "0") &&
+                page.submit("name") &&
+                got.get() == 0 &&
+                page.text() == "form\n  list\n    column key=\"name\"\n      field \"name\" value=\"a\" placeholder=\"\" invalid\n      text \"must be at least 2 characters\"\n    column key=\"count\"\n      field \"count\" value=\"0\" placeholder=\"\" invalid\n      text \"must be between 1 and 9\"\n  button \"Save\" submits"
+        }
+    }
+    given "submits in a row" {
+        then "each decodes anew: two good submits hand two values" {
+            let got = Cell.new(0)
+            let page = strict(got)
+            page.fill("name", "ab") &&
+                page.fill("count", "3") &&
+                page.submit("name") &&
+                page.submit("name") &&
+                got.get() == 2
+        }
+        then "a refused submit after a good one clears nothing it handed, and shows its issue" {
+            let got = Cell.new(0)
+            let page = strict(got)
+            page.fill("name", "ab") &&
+                page.fill("count", "3") &&
+                page.submit("name") &&
+                page.fill("count", "99") &&
+                page.submit("name") &&
+                got.get() == 1 &&
+                page.text() == "form\n  list\n    column key=\"name\"\n      field \"name\" value=\"ab\" placeholder=\"\"\n    column key=\"count\"\n      field \"count\" value=\"99\" placeholder=\"\" invalid\n      text \"must be between 1 and 9\"\n  button \"Save\" submits"
+        }
+        then "a good submit after a refused one clears the issues" {
+            let got = Cell.new(0)
+            let page = strict(got)
+            page.fill("name", "ab") &&
+                page.fill("count", "99") &&
+                page.submit("name") &&
+                page.fill("count", "4") &&
+                page.submit("name") &&
+                got.get() == 1 &&
+                page.text() == "form\n  list\n    column key=\"name\"\n      field \"name\" value=\"ab\" placeholder=\"\"\n    column key=\"count\"\n      field \"count\" value=\"4\" placeholder=\"\"\n  button \"Save\" submits"
+        }
+    }
+}
