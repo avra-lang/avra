@@ -283,6 +283,24 @@ extern fn avra_ui_walks() -> int {
     held.app.walks.get()
 }
 
+/// What the program does with a text its host tells it, none until `hears` says.
+once fn hearing() -> Cell<fn(string) -> bool> { Cell.new(unheard_text) }
+
+fn unheard_text(_said: string) -> bool { false }
+
+/// From now on `act` is what the program does with each text its host tells it (`avra_ui_told`): it runs as a turn and
+/// answers whether state moved, so the screen follows. How a page's host speaks to the app it runs — a dev panel
+/// handed what a server said, an island handed its props.
+export fn hears(act: fn(string) -> bool) { hearing().set(act) }
+
+/// The host tells the program a text, `len` octets of the seat: it is heard as a turn.
+extern fn avra_ui_told(len: int) {
+    let held? = mounted().get() else { return }
+    let said = seated_text(len) ?? ""
+    let _ = held.app.turn(() -> (hearing().get())(said))
+    held.app.warn()
+}
+
 /// The host turns the cache's snapshots on (1) or off (0): while on, every move of the app's cache hands the
 /// host its snapshot as a JSON frame (`avra_ui_snap`), the standing one at once. Only a dev host asks.
 extern fn avra_ui_hud(on: int) {

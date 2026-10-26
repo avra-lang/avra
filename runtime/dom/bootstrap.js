@@ -800,7 +800,14 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
       return start(next, said, shipped);
     });
   }
-  return { mod: first, ears: apply.ears };
+  // Tell the running module a text: written into its seat, then heard as a turn (`avra_ui_told`).
+  const tell = (text) => {
+    const octets = new TextEncoder().encode(text);
+    const at = Number(mod[HOST.seat](BigInt(octets.length)));
+    new Uint8Array(mod.memory.buffer, at, octets.length).set(octets);
+    mod[HOST.told](BigInt(octets.length));
+  };
+  return { mod: first, ears: apply.ears, tell };
 }
 
 // EVERY WAY THE PAGE ENTERS THE MODULE — an event, a timer, a frame, an
