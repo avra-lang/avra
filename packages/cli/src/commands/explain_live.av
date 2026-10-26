@@ -1,0 +1,88 @@
+//! `avra explain --cache --live` — the running page's cache, read from a dev server. The dev server tells each
+//! snapshot a page's tab sent as a `cache` event on its channel (`/@dev/events`); this reads that stream and
+//! says each as lines, or as the frame itself with `--json`. A thin reader: the page's own `Snapshot` says what a
+//! frame holds, so a terminal and the page's panel never disagree.
+use @std.ui.app.{snapshot_of}
+use @std.json.{Json, parse, to_text}
+use @std.net.{connect}
+use @std.time.{secs}
+
+/// The stream the dev server tells a page by.
+const events_path: string = "/@dev/events"
+
+/// What the channel said, read for `frames` snapshots (a negative number: until it ends), each handed to `say` as
+/// lines. Answers the exit code: 0 once it has read what it was asked, 1 where the server cannot be reached or
+/// its stream ends with no snapshot told.
+fn followed(host: string, port: int, json: bool, frames: int, say: fn(string) -> void) -> int {
+    let c = match connect(host, port, secs(2)) {
+        .Ok(up) -> up,
+        .Err(e) -> {
+            eprintln(unreachable(host, port, e.describe().message))
+            return 1
+        },
+    }
+    defer { let _ = c.close() }
+    let asked = "GET ${events_path} HTTP/1.1\r\nHost: ${host}:${port}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"
+    match c.write(asked.bytes()) {
+        .Ok(_) -> {},
+        .Err(e) -> {
+            eprintln(unreachable(host, port, e.describe().message))
+            return 1
+        },
+    }
+    let head? = heard_head(c) else {
+        eprintln(no_channel(host, port))
+        return 1
+    }
+    if head.status != 200 {
+        eprintln(no_channel(host, port))
+        return 1
+    }
+    let flow = flowing(c, head)
+    mut buffer = head.rest.text() ?? ""
+    mut told = 0
+    while frames < 0 || told < frames {
+        let heard = events_in(buffer)
+        buffer = heard.rest
+        for s in heard.events {
+            if told >= frames && frames >= 0 { break }
+            if s.event == "cache" {
+                told = told + 1
+                for line in tab_lines(s.data, json) { say(line) }
+            }
+        }
+        if frames >= 0 && told >= frames { return 0 }
+        match flow.pulled() {
+            .Data(b) -> { buffer = buffer + (b.text() ?? "") },
+            .End or .Failed -> { return if told > 0 { 0 } else { 1 } },
+        }
+    }
+    0
+}
+
+/// One `cache` event as lines: with `--json` the event's data as it came, else the tab and its snapshot's lines.
+fn tab_lines(data: string, json: bool) -> List<string> {
+    if json { return [data] }
+    let doc = match parse(data) { .Ok(j) -> j, .Err(_) -> { return [unreadable_event()] } }
+    let tab = match member(doc, "tab") {
+        .Str(t) -> t,
+        .Obj(_) or .Arr(_) or .Null or .Bool(_) or .Int(_) or .Float(_) -> "?",
+    }
+    let snap? = snapshot_of(to_text(member(doc, "frame"))) else { return [unreadable_event()] }
+    ["── tab ${tab} ──"].concat(snap.lines())
+}
+
+fn member(j: Json, key: string) -> Json {
+    match j {
+        .Obj(fields) -> fields.find(it.key == key)?.value ?? Json.Null,
+        .Arr(_) or .Null or .Bool(_) or .Int(_) or .Float(_) or .Str(_) -> Json.Null,
+    }
+}
+
+// ── voices ──
+
+fn unreachable(host: string, port: int, why: string) -> string { "avra: `explain --live` could not reach a dev server at ${host}:${port} (${why}) — run `avra dev` and pass `--port`" }
+
+fn no_channel(host: string, port: int) -> string { "avra: ${host}:${port} is no dev server — it did not answer the event stream ${events_path}" }
+
+fn unreadable_event() -> string { "(a snapshot this reader cannot read — the page and the tool are different versions)" }

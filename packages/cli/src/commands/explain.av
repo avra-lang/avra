@@ -6,7 +6,7 @@
 //! with nothing held; only `--why` asks the hold, first. Every form keeps
 //! NOTHING, so a second asking answers what the first did. This file is
 //! wiring and text alone.
-use @std.cli.{CliResult, Runnable, command, arg, flag}
+use @std.cli.{CliResult, Runnable, command, arg, flag, option}
 use @std.avrac.compiler.{
     Workspace,
     CacheWalk,
@@ -30,7 +30,7 @@ use @std.relation.engine.{count_reads, read_calls, abandoned_frames, time_frames
 use @std.json.{Json, Field, field, to_text}
 use @std.path.{relative_path}
 use @std.relation.engine.{Key}
-use @std.text.{pad_left, pad_right}
+use @std.text.{pad_left, pad_right, parse_int}
 use @std.time.{now_ns}
 
 type ExplainCmd = {}
@@ -44,6 +44,9 @@ export type Asked = {
     why: bool = false,
     sites: bool = false,
     cache: bool = false,
+    live: bool = false,
+    host: string = "127.0.0.1",
+    port: int = 8787,
     json: bool = false,
     time: bool = false,
 }
@@ -53,6 +56,7 @@ alias Lines = Result<List<string>, List<string>>
 
 impl Runnable for ExplainCmd {
     fn run(args: CliResult) -> int {
+        if args.has_flag("live") { return watched(args) }
         printed(
             explain_answer(
                 Asked {
@@ -68,6 +72,29 @@ impl Runnable for ExplainCmd {
             ),
         )
     }
+}
+
+/// `--cache --live`: the running page's cache as a dev server tells it, line by line as it comes.
+fn watched(args: CliResult) -> int {
+    if !args.has_flag("cache") { return refused_live(live_wants_cache()) }
+    if args.has_flag("stats") ||
+        args.has_flag("why") ||
+        args.has_flag("sites") ||
+        args.has_flag("time") {
+        return refused_live(cache_alone())
+    }
+    followed(
+        args.option("host"),
+        parse_int(args.option("port")) ?? 8787,
+        args.has_flag("json"),
+        parse_int(args.option("frames")) ?? -1,
+        (line: string) -> println(line),
+    )
+}
+
+fn refused_live(why: string) -> int {
+    eprintln(why)
+    1
 }
 
 /// An answer's lines to stdout and 0, a refusal's to stderr and 1.
@@ -616,11 +643,18 @@ export command explain {
     }
     flag stats { description: "count the package's answers: cells, reads and how long one answer's reads run, per family" }
     flag why { description: "what moved since the kept state: whether a check holds each file and why not, the way down from an answer to each moved input, and the answers each moved input reaches" }
+    flag live { description: "with `--cache`: follow the running page instead — each snapshot of its cache as a dev server tells it, until the server ends (with `--json`, the frames as they come)" }
+    options: [host, port, frames]
     flag cache { description: "the observations a package's views ask, the writes they make and the routers that answer them, as the source states them" }
     flag sites { description: "for a declaration, the mechanism the compiler chose for each site of its body (hoist, direct, tree, keyed) and the places it depends on" }
     flag json { description: "JSON instead of text, every list in the text's order" }
     flag time { description: "with `--stats`, the time each phase of the derivation took and what it asked of the store — the rows that differ run to run" }
     run: ExplainCmd {}
+}
+
+/// How many snapshots `--live` reads before it stops.
+export option frames {
+    description: "with `--live`: stop after this many snapshots (default: follow until the server ends)"
 }
 
 // ── voices ──
@@ -634,6 +668,8 @@ fn sites_alone() -> string { "avra: `explain --sites` is a form of its own — i
 fn sites_wants_decl(target: string) -> string { "avra: `explain --sites` reads one declaration's body — `${target}` is not a `@name`" }
 
 fn no_sites(name: string) -> string { "avra: `explain --sites`: `${name}` has no body with sites in what this package's check reads" }
+
+fn live_wants_cache() -> string { "avra: `explain --live` follows a page's cache — it goes with `--cache`" }
 
 fn cache_alone() -> string { "avra: `explain --cache` is a form of its own — it goes with none of `--stats`, `--why`, `--sites` and `--time`" }
 

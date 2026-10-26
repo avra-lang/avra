@@ -188,6 +188,11 @@ observed_url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/observed.out"
 node "$here/ui-board/observed.mjs" "$observed_url" >"$work/observed.node" 2>&1 || { cat "$work/observed.node" "$work/observed.out"; echo "ui-browser: the observation page's claims did not hold"; exit 1; }
 sed 's/^/ui-browser: observation page: /' "$work/observed.node"
 
+# THE PAGE'S CACHE, READ FROM THE DEV SERVER: the same page tells `avra dev` a snapshot of its cache; the
+# channel carries it, and `avra explain --cache --live` reads it back.
+node "$here/ui-board/hud.mjs" "$observed_url" "$avra" >"$work/hud.node" 2>&1 || { cat "$work/hud.node" "$work/observed.out"; echo "ui-browser: the page's cache was not read back from the dev server"; exit 1; }
+sed 's/^/ui-browser: the page cache: /' "$work/hud.node"
+
 shots=${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"}
 for engine in $engines; do
     status=0

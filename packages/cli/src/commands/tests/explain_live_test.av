@@ -1,0 +1,117 @@
+//! `avra explain --cache --live` reads a dev server's channel: each snapshot a tab told becomes lines, or the
+//! frame with `--json`; a server that is not there, or is no dev server, is refused. And the shared reader under
+//! it, `events_in`: complete events only, comments and silent blocks skipped.
+use @std.net.{listen}
+use @std.http.frame.{limits}
+use @std.http.server.{served, timing}
+use @std.http.sse.{Event, Feed, feed, events}
+use @std.http.http.{Response, text}
+use @std.ui.app.{Row, Snapshot, Tally}
+use @std.time.{secs}
+use commands.{events_in, followed}
+
+type Devish = {}
+
+/// A reader that keeps nothing.
+fn unsaid(_line: string) {}
+
+fn row(key: string, fresh: bool, stale_by: string) -> Row {
+    Row {
+        key: key,
+        state: "ready",
+        fresh: fresh,
+        stale_by: stale_by,
+        age_ms: 0,
+        bytes: 3,
+        readers: 2,
+        parked: 0,
+        layers: [],
+        feed: "/feed",
+    }
+}
+
+fn snapshot(rows: List<Row>) -> Snapshot {
+    Snapshot {
+        rows: rows,
+        streams: ["stream /feed  synced"],
+        writes: [],
+        counts: Tally { asks: 2, skipped: 1, joined: 0, not_modified: 0, laid: 0, dropped: 0 },
+    }
+}
+
+/// What a tab's event says: its name and the frame, as the dev server writes it.
+fn told_by(tab: string, s: Snapshot) -> string { "{\"tab\":\"${tab}\",\"frame\":${s.frame()}}" }
+
+/// A dev server's channel: the build standing, then one snapshot each from two tabs.
+fn channel_feed() -> Feed {
+    let f = feed(16)
+    let _ = f.publish(Event { event: "built", data: "1" })
+    let _ = f
+        .publish(Event { event: "cache", data: told_by("aa", snapshot([row("/tasks", true, "")])) })
+    let _ = f
+        .publish(
+            Event {
+                event: "cache",
+                data: told_by("bb", snapshot([row("/tasks", false, "notice 2 [Task]")])),
+            },
+        )
+    f
+}
+
+/// What `followed` said of a channel carrying `f`, and the code it left with.
+fn followed_from(f: Feed, json: bool, frames: int) -> string {
+    let l = match listen("127.0.0.1", 0) { .Ok(x) -> x, .Err(_) -> { return "no port" } }
+    let s = served(l, () -> Devish {}, limits(), timing()) { _app, q -> events(q, secs(5), (c: string?) -> f.resumed("0")) }
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let none: List<string> = []
+    let said = Cell.new(none)
+    let code = followed("127.0.0.1", l.port, json, frames, (line: string) -> said.push(line))
+    "${code}\n${said.get().join("\n")}"
+}
+
+spec "commands/explain — live" {
+    given "a dev server whose channel carries two tabs' snapshots" {
+        then "each is said as its tab and its lines" {
+            followed_from(channel_feed(), false, 2) == "0\n── tab aa ──\n/tasks  ready · fresh · 3 B · readers 2 (+0 parked) · feed /feed\nstream /feed  synced\nasks 2 · skipped fresh 1 · joined 0 · not modified 0 · layers 0 laid, 0 dropped\n── tab bb ──\n/tasks  ready · stale: notice 2 [Task] · 3 B · readers 2 (+0 parked) · feed /feed\nstream /feed  synced\nasks 2 · skipped fresh 1 · joined 0 · not modified 0 · layers 0 laid, 0 dropped"
+        }
+        then "with `--json` each is the event's data as it came" {
+            let said = followed_from(channel_feed(), true, 1).split("\n")
+            said[0] == "0" && said[1].starts_with("{\"tab\":\"aa\",\"frame\":{\"v\":1,")
+        }
+    }
+    given "no server, or one that is no dev server" {
+        then "a port nothing listens on is refused" {
+            followed("127.0.0.1", 1, false, 1, unsaid) == 1
+        }
+        then "a server that answers the channel with a refusal is refused" {
+            let l = match listen("127.0.0.1", 0) { .Ok(x) -> x, .Err(_) -> { return false } }
+            let s = served(l, () -> Devish {}, limits(), timing()) { _app, _q -> text(404, "no") }
+            spawn s.run(cores: 1)
+            defer s.stop()
+            followed("127.0.0.1", l.port, false, 1, unsaid) == 1
+        }
+    }
+}
+
+spec "commands/flow — events" {
+    given "a stream read in pieces" {
+        then "only the complete events are told, and the tail waits for the rest" {
+            let told = events_in("event: built\ndata: 1\n\nevent: cache\ndata: {\"a\":")
+            told.events.length == 1 &&
+                told.events[0].event == "built" &&
+                told.events[0].data == "1" &&
+                told.rest == "event: cache\ndata: {\"a\":"
+        }
+        then "the rest completes into its event" {
+            let told = events_in("event: cache\ndata: {\"a\":" + "1}\n\n")
+            told.events.length == 1 && told.events[0].data == "{\"a\":1}" && told.rest == ""
+        }
+        then "a comment and a block that says nothing are no events" {
+            events_in(": keep-alive\n\n\n\nevent: built\ndata: 2\n\n").events.length == 1
+        }
+        then "data over several lines is joined" {
+            events_in("data: a\ndata: b\n\n").events[0].data == "a\nb"
+        }
+    }
+}

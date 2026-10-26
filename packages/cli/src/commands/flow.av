@@ -1,0 +1,122 @@
+//! `commands/flow.av` — AN HTTP REPLY READ AS IT COMES, and the events a stream of them says. One definition for
+//! both readers of a live reply: `avra dev`'s relay, which hands each piece the server writes to the browser, and
+//! `avra explain --cache --live`, which reads the dev server's event stream. The head is read until its blank
+//! line; the body is then pulled piece by piece, decoded when it is chunked.
+use @std.http_message.message.{Header}
+use @std.http.http.{Pulled}
+use @std.http.frame.{Chunker, chunker, limits, unchunked}
+use @std.net.{Conn}
+use @std.text.{ascii_lower, parse_int}
+
+/// A reply's head as read off the wire: its status, its fields, whether its body is chunked, and
+/// the octets that came after the head in the same reads.
+export type Head = { status: int, fields: List<Header>, chunked: bool, rest: Bytes }
+
+/// The head of the reply on `c`, read until its blank line; absent when the connection ends or
+/// answers nonsense before one.
+export fn heard_head(c: Conn) -> Head? {
+    mut buf = "".bytes()
+    let blank = "\r\n\r\n".bytes()
+    while buf.index_of(blank, 0) < 0 {
+        if buf.length > 65536 { return null }
+        let more = match c.read(65536) { .Ok(b) -> b, .Err(_) -> { return null } }
+        let b? = more else { return null }
+        buf = buf.concat(b)
+    }
+    let end = buf.index_of(blank, 0)
+    let lines = (buf.slice(0, end).text() ?? "").split("\r\n")
+    let status = parse_int((lines.first() ?? "").split(" ")[1]) ?? 0
+    let fields = [Header { name: l.substring(0, at), value: l.substring(at + 2, l.length) } for l in lines.drop(1) for at in [l.index_of(": ") ?? -1] if at > 0]
+    let chunked = fields
+        .any(ascii_lower(it.name) == "transfer-encoding" && it.value.contains("chunked"))
+    Head { status: status, fields: fields, chunked: chunked, rest: buf.slice(end + 4, buf.length) }
+}
+
+/// The body of a relayed reply: the connection it is read from, the octets read and not yet decoded,
+/// and the chunk decoder over them.
+export type Flow = { conn: Conn, pending: Cell<Bytes>, decoder: Cell<Chunker>, chunked: bool }
+
+impl Flow {
+    /// The next piece of the body, as the server wrote it, or its end.
+    fn pulled() -> Pulled {
+        if !self.chunked {
+            if !self.pending.get().is_empty() {
+                let held = self.pending.get()
+                self.pending.set("".bytes())
+                return .Data(held)
+            }
+            return self.more(true)
+        }
+        while true {
+            match unchunked(self.decoder.get(), self.pending.get(), 16777216, limits()) {
+                .Piece(b, next) -> {
+                    self.decoder.set(next)
+                    return .Data(b)
+                },
+                .More(next) -> {
+                    let whole = next.at >= self.pending.get().length
+                    self.decoder.set(if whole { next with { at: 0 } } else { next })
+                    if whole { self.pending.set("".bytes()) }
+                    match self.more(false) {
+                        .Data(_) -> {},
+                        .End -> { return .End },
+                        .Failed -> { return .Failed },
+                    }
+                },
+                .Done(_) -> { return .End },
+                .Refused(_) -> { return .Failed },
+            }
+        }
+        .End
+    }
+
+    /// What the connection says next: handed on as a piece when `raw`, else kept for the decoder
+    /// (answering an empty piece, which a stream skips).
+    fn more(raw: bool) -> Pulled {
+        match self.conn.read(65536) {
+            .Ok(b) -> {
+                let said? = b else { return .End }
+                if raw { return .Data(said) }
+                self.pending.set(self.pending.get().concat(said))
+                .Data("".bytes())
+            },
+            .Err(_) -> .Failed,
+        }
+    }
+}
+
+/// The body of the reply `head` began on `c`: what came after the head in its reads, and the chunk decoder when
+/// the body is chunked.
+export fn flowing(c: Conn, head: Head) -> Flow {
+    Flow {
+        conn: c,
+        pending: Cell.new(head.rest),
+        decoder: Cell.new(chunker(0)),
+        chunked: head.chunked,
+    }
+}
+
+/// One event of a stream: its name and its data, its lines joined.
+export type Said = { event: string, data: string }
+
+/// A mark placed after the text so that splitting on blank lines never drops the empty piece the text may end on.
+const edge: string = "⁂"
+
+/// The events `text` completes — each ends at a blank line — and what follows the last, which is the start of
+/// one not yet complete. A line that starts with `:` is a comment, and a block with no data line says nothing.
+export fn events_in(text: string) -> Told {
+    let blocks = (text + edge).split("\n\n")
+    let said = [said_by(b) for b in blocks.take(blocks.length - 1) if b.split("\n").any(it.starts_with("data: "))]
+    Told { events: said, rest: (blocks.last() ?? "").replace(edge, "") }
+}
+
+/// What `events_in` was told: the complete events, and the unfinished tail.
+export type Told = { events: List<Said>, rest: string }
+
+fn said_by(block: string) -> Said {
+    let lines = [l for l in block.split("\n") if !l.starts_with(":")]
+    Said {
+        event: [l.substring(7, l.length) for l in lines if l.starts_with("event: ")].first() ?? "message",
+        data: [l.substring(6, l.length) for l in lines if l.starts_with("data: ")].join("\n"),
+    }
+}
