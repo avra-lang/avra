@@ -336,6 +336,18 @@ registry is the idiom engine's spec, written by dogfooding.
   revision one, every sig it will ask for is held, and an Analysis
   asked after is remade over the memoized parts, never kept. The
   language's answer is in the sugar backlog: weak captures.
+- A LOOP THAT WAITS FOR THE SERVER TO CATCH UP IS BOUNDED BY WHAT IT
+  ASKED, NEVER BY THE SERVER'S COOPERATION. The cache re-asked a view
+  behind a layer on every landing until the reading's stand passed the
+  write's; a server whose stand lagged (a replica, a stale proxy) made
+  that unbounded — a hang at zero latency, a poll forever otherwise.
+  Ask once per layer and let the layer stand over a reading that is
+  still behind. AND A LOOP OVER CALLBACKS CONTAINS EACH ONE: a caller's
+  parse that trapped inside the watcher loop left its view loading and
+  every later view of the entry untold, with the answer's bookkeeping
+  skipped. A callback the loop does not own runs under `contained`, and
+  its trap is that view's own failure. Witnesses:
+  std-ui/src/tests/observed_layer_attacks, observed_trapped_parse.
 - ONE DERIVATION IS ALIVE AT A TIME. A derivation that turns, owes
   its instantiations, or quarrels under a hold is asked AGAIN in a
   fresh workspace, and the one before must be LET GO first or the
