@@ -525,6 +525,10 @@ export type Workspace = {
     savers: Cell<List<Saver>>,
     /// The declarations whose saved signature was asked for, found or not.
     sig_tried: Table<bool>,
+    /// The files whose declarations were minted from saved rows, each with the modules its `use` lines name.
+    revived: Cell<Map<string, List<string>>>,
+    /// The revived files whose parse has been attached to their minted declarations.
+    attached: Cell<Map<string, bool>>,
     // plain for its identity: the host capability table, set once at
     // construction and never reassigned
     host: Host,
@@ -1118,6 +1122,8 @@ fn built(
         noted: list_cell(),
         savers: list_cell(),
         sig_tried: new_table<bool>(),
+        revived: map_cell(),
+        attached: map_cell(),
     }
     // The registration IS `Family`'s declaration order: `Family.all()`
     // answers the variants in ordinal order, so `db.family`'s minted index
@@ -1309,7 +1315,19 @@ impl Workspace {
     /// its signature. Parse that file on first such read; the declaration
     /// identities and object reuse still come from the stored interface.
     fn store_ensured(f: FileId) {
-        self.decls.remember_store(f, self.parsed(f).store)
+        let p = self.parsed(f)
+        self.attach_parse(f, p)
+        self.decls.remember_store(f, p.store)
+    }
+
+    /// THE ONE DOOR A MINTED FILE'S BODIES COME THROUGH: its parse admitted over the declarations
+    /// its saved rows already minted. An identical key names the identical declaration, so the
+    /// parse registers each body's ranges and its store against the ids that stand.
+    fn attach_parse(f: FileId, p: Parsed) {
+        let at = "${f.index}"
+        if self.revived.get().get(at) == null || self.attached.get().get(at) != null { return }
+        self.attached.put(at, true)
+        let _ = self.decls.admit(f, p.store, p.stmts)
     }
 
     fn methods_ensured(d: DeclId) {
