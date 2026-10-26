@@ -39,7 +39,7 @@ value() {
 # the rows the median below is made of. A step whose baseline is the other cache state is absent by name.
 cpu_ratios() {
     [ -f "$1" ] && [ -f "$2" ] || return 0
-    for m in $(awk '$1 ~ /^speed\.cpu-/ { print $1 }' "$1" | sort -u); do
+    for m in $(awk '$1 ~ /^speed\.(cpu|phases)-/ { print $1 }' "$1" | sort -u); do
         c=$(value "$1" "$m")
         b=$(value "$2" "$m")
         [ -n "$b" ] && awk -v c="$c" -v b="$b" 'BEGIN { if (b + 0 > 0) print c / b }'
@@ -71,6 +71,17 @@ state_other() {
         [ -z "$v" ] || { echo "$other $v"; return 0; }
     done
     return 1
+}
+
+# gates <metric>: whether a row may fail the run. A suite's compile phases do; its whole-step CPU (a state in
+# the name) only warns, since the step also waits on whatever the suite's tests do; a keeper's CPU row gates.
+gates() {
+    case "$1" in
+        speed.phases-*) true ;;
+        speed.cpu-*-cold | speed.cpu-*-warm | speed.cpu-*-part) false ;;
+        speed.cpu-*) true ;;
+        *) false ;;
+    esac
 }
 
 compare() {
@@ -111,7 +122,7 @@ compare() {
         fi
     fi
     runner=0
-    cpus=$(awk '$1 ~ /^speed\.cpu-/ { print $1 }' "$cur" 2>/dev/null)
+    cpus=$(awk '$1 ~ /^speed\.(cpu|phases)-/ { print $1 }' "$cur" 2>/dev/null)
     for m in $METRICS $cpus; do
         c=$(value "$cur" "$m")
         b=$(value "$base" "$m")
@@ -144,7 +155,7 @@ compare() {
             # not worth a gate — and the counters are the ratchet for the rest. It is no longer the judge:
             # whether the growth belongs to the row or to the runner is the median's question.
             grew=$(awk -v c="$c" -v b="$b" 'BEGIN { print (c - b >= 30) ? 1 : 0 }')
-            if [ "$pct" -gt 100 ] 2>/dev/null && [ "$grew" = 1 ] && case "$m" in speed.cpu-*) true ;; *) false ;; esac; then
+            if [ "$pct" -gt 100 ] 2>/dev/null && [ "$grew" = 1 ] && gates "$m"; then
                 # BEYOND TWICE THE RUN: a row earns a gate only by growing twice as much as the run's
                 # middle row did. A uniform +120% run has median 2.2, and its rows sit at 2.2, not 4.4.
                 if [ "$n" -lt 3 ] || [ -z "$med" ] || awk -v c="$c" -v b="$b" -v m="$med" 'BEGIN { exit !(c / b >= 2 * m) }'; then
@@ -203,13 +214,13 @@ case "${1:-}" in
         printf 'suite.cli 40\n' > "$d/basew"
         [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curw" "$d/basew" >/dev/null 2>&1; echo $?)" = 0 ] || { echo "speed_note: a wall-clock swing failed (only CPU gates)"; exit 1; }
         # LIKE WITH LIKE: a cold PR against a warm main is NOT compared (and says so); matched states are judged
-        printf 'speed.cpu-std-action-cold 14\n' > "$d/curc"
-        printf 'speed.cpu-std-action-warm 0\n' > "$d/basew2"
+        printf 'speed.phases-std-action-cold 14\n' > "$d/curc"
+        printf 'speed.phases-std-action-warm 0\n' > "$d/basew2"
         out=$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/stdout sh "$0" compare "$d/curc" "$d/basew2" 2>&1); st=$?
         [ "$st" = 0 ] && printf '%s\n' "$out" | grep -q "not compared" || { echo "speed_note: a cold run against a warm baseline failed or was passed silently ($st): $out"; exit 1; }
-        printf 'speed.cpu-std-action-cold 33\n' > "$d/basec"
+        printf 'speed.phases-std-action-cold 33\n' > "$d/basec"
         [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curc" "$d/basec" >/dev/null 2>&1; echo $?)" = 0 ] || { echo "speed_note: matched cold states within 2x failed"; exit 1; }
-        printf 'speed.cpu-std-action-cold 100\n' > "$d/curc2"
+        printf 'speed.phases-std-action-cold 100\n' > "$d/curc2"
         [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curc2" "$d/basec" >/dev/null 2>&1; echo $?)" = 1 ] || { echo "speed_note: a real 3x on matched cold states did not fail"; exit 1; }
         printf 'speed.cpu-small 13\n' > "$d/curs"
         printf 'speed.cpu-small 6\n' > "$d/bases"
@@ -250,25 +261,33 @@ case "${1:-}" in
         printf '%s\n' "$outb" | grep -q "median CPU step grew 37%" || { echo "speed_note: the features-b-cold replay did not report the run's median: $outb"; exit 1; }
         printf '%s\n' "$outb" | grep -q "::error::speed" && { echo "speed_note: the features-b-cold replay gated a row: $outb"; exit 1; }
         # PART-WARM: never compared with a warm row (said); against main's cold row when that is all main has
-        printf 'speed.cpu-std-db-part 64\n' > "$d/curp"
-        printf 'speed.cpu-std-db-warm 32\n' > "$d/basepw"
+        printf 'speed.phases-std-db-part 64\n' > "$d/curp"
+        printf 'speed.phases-std-db-warm 32\n' > "$d/basepw"
         outp=$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/stdout sh "$0" compare "$d/curp" "$d/basepw" 2>&1); stp=$?
         { [ "$stp" = 0 ] && printf '%s\n' "$outp" | grep -q "not compared: another cache state"; } || { echo "speed_note: a part-warm row against a warm baseline was compared or failed ($stp): $outp"; exit 1; }
-        printf 'speed.cpu-std-db-cold 60\nspeed.cpu-std-db-warm 32\n' > "$d/basepc"
+        printf 'speed.phases-std-db-cold 60\nspeed.phases-std-db-warm 32\n' > "$d/basepc"
         outpc=$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/stdout sh "$0" compare "$d/curp" "$d/basepc" 2>&1); stpc=$?
         { [ "$stpc" = 0 ] && printf '%s\n' "$outpc" | grep -q "main's cold row, an upper bound"; } || { echo "speed_note: a part-warm row was not held against main's cold row ($stpc): $outpc"; exit 1; }
-        printf 'speed.cpu-std-db-part 190\n' > "$d/curp2"
-        printf 'speed.cpu-std-db-cold 60\n' > "$d/basepc2"
+        printf 'speed.phases-std-db-part 190\n' > "$d/curp2"
+        printf 'speed.phases-std-db-cold 60\n' > "$d/basepc2"
         [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curp2" "$d/basepc2" >/dev/null 2>&1; echo $?)" = 1 ] || { echo "speed_note: a part-warm row 3x past main's cold row did not fail"; exit 1; }
         # THE RUNNER'S CALIBRATION: two CPU rows (too few for a median), one 3.8x over main's — a runner that ran its fixed
         # workload 4x slower explains it; one whose workload matched main's does not.
-        printf 'speed.cpu-site-cold 46\nspeed.cpu-small-cold 10\nspeed.calib-ms-x 4000\n' > "$d/curk"
-        printf 'speed.cpu-site-cold 12\nspeed.cpu-small-cold 10\nspeed.calib-ms-x 1000\n' > "$d/basek"
+        printf 'speed.phases-site-cold 46\nspeed.phases-small-cold 10\nspeed.calib-ms-x 4000\n' > "$d/curk"
+        printf 'speed.phases-site-cold 12\nspeed.phases-small-cold 10\nspeed.calib-ms-x 1000\n' > "$d/basek"
         outk=$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/stdout sh "$0" compare "$d/curk" "$d/basek" 2>&1); stk=$?
         { [ "$stk" = 0 ] && printf '%s\n' "$outk" | grep -q "fixed workload ran 300%"; } || { echo "speed_note: a 4x slower runner did not excuse a 3.8x row ($stk): $outk"; exit 1; }
-        printf 'speed.cpu-site-cold 46\nspeed.cpu-small-cold 10\nspeed.calib-ms-x 1020\n' > "$d/curk2"
+        printf 'speed.phases-site-cold 46\nspeed.phases-small-cold 10\nspeed.calib-ms-x 1020\n' > "$d/curk2"
         [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curk2" "$d/basek" >/dev/null 2>&1; echo $?)" = 1 ] || { echo "speed_note: a row 3.8x over main's with a runner as fast as main's did not fail"; exit 1; }
-        echo "speed_note: self-test passed — 26 fixtures"
+        # A SOCKET SUITE: its whole-step CPU swung 20 -> 58 s with the same compile phases, so it warns; its phases gate.
+        printf 'speed.cpu-x-std-ui-http-cold 58\nspeed.phases-x-std-ui-http-cold 8\n' > "$d/curs1"
+        printf 'speed.cpu-x-std-ui-http-cold 20\nspeed.phases-x-std-ui-http-cold 7\n' > "$d/bases1"
+        outs=$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/stdout sh "$0" compare "$d/curs1" "$d/bases1" 2>&1); sts=$?
+        { [ "$sts" = 0 ] && printf '%s\n' "$outs" | grep -q "::warning::speed: speed.cpu-x-std-ui-http-cold is 190% slower"; } || { echo "speed_note: a suite's whole-step CPU swing gated, or did not warn ($sts): $outs"; exit 1; }
+        printf 'speed.cpu-x-std-ui-http-cold 60\nspeed.phases-x-std-ui-http-cold 45\n' > "$d/curs2"
+        printf 'speed.cpu-x-std-ui-http-cold 20\nspeed.phases-x-std-ui-http-cold 12\n' > "$d/bases2"
+        [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curs2" "$d/bases2" >/dev/null 2>&1; echo $?)" = 1 ] || { echo "speed_note: compile phases 3.7x over main's, +33 s, did not fail"; exit 1; }
+        echo "speed_note: self-test passed — 28 fixtures"
         exit 0 ;;
     *) echo "usage: speed_note.sh collect <log>... | compare <current> <main>" ;;
 esac
