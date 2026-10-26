@@ -7,7 +7,7 @@
 //! the pack itself runs. Reads are the spine's property ladder (a
 //! slot read at the field's compile-time index) — zero new
 //! instructions anywhere.
-use core.{ExprId, StmtId, Reg, TypeId, Binding, filled, flatten, spread_entry}
+use core.{ExprId, StmtId, Reg, TypeId, DeclId, Binding, filled, flatten, spread_entry, same_decl}
 use features.{
     LowerCx,
     StructSig,
@@ -407,5 +407,14 @@ fn default_reg(mut cx: LowerCx, e: ExprId, sig: StructSig, slot: int) -> Reg {
             )
     }
     let d? = sig.defaults[slot] else { return cx.lower_defect(e, "a literal missing a field without a default survived typing") }
-    cx.call_decl(cx.viewed(slot_want(cx.view.types, sig, slot)), cx.symbol_at(d, e), [])
+    cx.call_decl(cx.viewed(slot_want(cx.view.types, sig, slot)), default_symbol(cx, d, e), [])
+}
+
+/// A default instantiated at the literal's arguments when it is the
+/// generic record's own — a spread's default is its own record's, and
+/// that record takes no arguments from this literal.
+fn default_symbol(mut cx: LowerCx, d: DeclId, e: ExprId) -> string {
+    let sub? = cx.facts.subst_at(e) else { return cx.wanted(d) }
+    let owner? = cx.view.decls.decl(d).parent else { return cx.wanted(d) }
+    if same_decl(owner, sub.target) { cx.symbol_at(d, e) } else { cx.wanted(d) }
 }
