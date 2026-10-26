@@ -907,6 +907,7 @@ layers:
 # state; a baseline keeps both states.
 speed-note:
 	@sh tools/speed_note.sh --self-test
+	@python3 tools/calib.py --self-test
 	@python3 tools/step_cpu.py --self-test
 
 libs-self-test:
