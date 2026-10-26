@@ -26,6 +26,7 @@ use core.{
     dst_of,
     lent_args,
     reads_of,
+    reads_any,
     reads_reg,
     reads_some,
     same_reg,
@@ -481,7 +482,7 @@ fn borrow_outlives(
     mut j = at + 1
     while j < ins.length {
         let i = ins[j]
-        if views.any(reads_reg(i, it)) {
+        if reads_any(i, views) {
             if gives_upward(i) { return true }
             last = j
             let d: Reg? = view_of(i)
@@ -847,7 +848,7 @@ fn lending_source(i: Ins) -> Reg? {
 /// handed.
 fn root_handed(life: Lives, i: Ins, ar: Reg) -> bool {
     let root? = life.root_of(ar) else { return true }
-    lent_args(i).any(same_reg(it, root))
+    lent_args(i).contains(root)
 }
 
 /// What each open scope from `floor` in owes at an early exit: its
@@ -894,8 +895,7 @@ fn moved_out(types: TypeRegistry, reg_types: List<TypeId>, scope: Scope, gives: 
     if gives == null { return [] }
     let r = gives!
     if !is_managed(types, reg_types[r.index]) { return [] }
-    // LICENSED structs.index_compared: register identity, not type agreement
-    if scope.managed.any(same_reg(it, r)) { return [] }
+    if scope.managed.contains(r) { return [] }
     [Ins.Retain(r)]
 }
 
@@ -1240,7 +1240,7 @@ impl Lives {
             let i = self.ins[j]
             let d: Reg? = view_of(i)
             if d != null &&
-                family.any(reads_reg(i, it)) &&
+                reads_any(i, family) &&
                 is_managed(self.types, self.reg_types[d!.index]) &&
                 !self.twins[j] {
                 family.push(d!)
@@ -1454,13 +1454,12 @@ fn def_sites(count: int, ins: List<Ins>) -> List<int> {
 /// Whether the innermost open scope owns `r`.
 fn owned_top(open_scopes: Stack<Scope>, r: Reg) -> bool {
     let top? = open_scopes.top() else { return false }
-    top.managed.any(same_reg(it, r))
+    top.managed.contains(r)
 }
 
 /// Whether the open scopes hold exactly one reference to `r`.
 fn owned_once(open_scopes: Stack<Scope>, r: Reg) -> bool {
-    flatten([open_scopes.at(j).managed for j in 0..open_scopes.depth()])
-        .filter(same_reg(it, r))
+    [x for x in flatten([open_scopes.at(j).managed for j in 0..open_scopes.depth()]) if x == r]
         .length == 1
 }
 
