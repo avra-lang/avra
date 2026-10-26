@@ -204,6 +204,7 @@ def composed(chooser, question, schema, context, graph=None, depth=None):
     """The closed choices composed into one query, the search's candidates
     admitted by the graph's check op in score order, with the time it is read at."""
     import beam
+    import contrast
     import structured
 
     started = time.time()
@@ -214,6 +215,11 @@ def composed(chooser, question, schema, context, graph=None, depth=None):
     found = beam.candidates(chooser, lambda walker: structured.plan(walker, question, schema, context, seek, depth, read, probe), probe)
     if not found:
         raise Abstain("every walk the beam tried binds nothing in the graph")
+    if PARAMETERS["contrast"] and probe:
+        verdict = contrast.settle(chooser, f"Question: {question}", found, probe, PARAMETERS["preview_rows"])
+        if verdict.plan is None:
+            raise Abstain("no reading of the question is supported by its answer")
+        found = [verdict.plan]
     refusal = None
     for path in found:
         try:
@@ -247,7 +253,7 @@ def main():
     except Refusal as refusal:
         raise SystemExit(f"planner: the graph refuses the composed query ({refusal})")
     except Abstain as why:
-        raise SystemExit(f"planner: abstains: {why}")
+        out = {"abstain": str(why)}
     print(json.dumps(out))
 
 

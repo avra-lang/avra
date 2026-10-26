@@ -173,6 +173,8 @@ def best(chooser, context, question, options, keys=None):
         logp = [math.log(max(x, 1e-9)) for x in debiased(chooser, context, question, options)]
     pick = chooser.decide(logp) if hasattr(chooser, "decide") else max(range(len(logp)), key=logp.__getitem__)
     chooser.tally = getattr(chooser, "tally", 0.0) + logp[pick]
+    if hasattr(chooser, "took"):
+        chooser.took(options[pick])
     return pick
 
 
@@ -200,11 +202,11 @@ def unique(keys):
     return [k if keys.count(k) == 1 else f"{k} ({i + 1})" for i, k in enumerate(keys)]
 
 
-def fitted(look, chooser, trail, question, build):
+def fitted(most, chooser, trail, question, build):
     """The options built with as many sample rows as the model's prompt budget
-    holds, up to the declared preview rows."""
+    holds, up to `most`."""
     tokens = getattr(getattr(chooser, "budget", None), "tokens", None)
-    for rows in range(look.rows if look else 0, -1, -1):
+    for rows in range(most, -1, -1):
         options = build(rows)
         if tokens is None or len(trail) + len(question) + sum(map(len, options)) <= tokens:
             return options
@@ -288,7 +290,7 @@ def plan(chooser, question, schema, context, search=None, depth=None, read=None,
             ask = "Which relation does the question mean?"
             pick = said[0] if len(said) == 1 else said[best(
                 chooser, trail, ask,
-                fitted(look, chooser, trail, ask, lambda n: [options[i][2] + (look.reach(out, options[i], n) if look else "") for i in said]),
+                fitted(look.rows if look else 0, chooser, trail, ask, lambda n: [options[i][2] + (look.reach(out, options[i], n) if look else "") for i in said]),
                 unique([options[i][3][0] for i in said]))]
             evidence.explain(" ".join(options[pick][3]))
         else:
@@ -298,7 +300,7 @@ def plan(chooser, question, schema, context, search=None, depth=None, read=None,
             ask = "Where next?"
             pick = ranked[best(
                 chooser, trail, ask,
-                fitted(look, chooser, trail, ask, lambda n: [evidence.shown(options[i]) + (look.reach(out, options[i], n) if look else "") for i in ranked]),
+                fitted(look.rows if look else 0, chooser, trail, ask, lambda n: [evidence.shown(options[i]) + (look.reach(out, options[i], n) if look else "") for i in ranked]),
                 unique([hop_key(options[i]) for i in ranked]))]
         arrow, target, _, _, record, meaning = options[pick]
         phrasing = unsaid(meaning, phrasing)
@@ -494,7 +496,7 @@ def returns(chooser, trail, model, var, record=None, evidence=None, offers=(), c
         return [f"the {owner}'s {p['name']}" + (f" ({line(p['description'])})" if p.get("description") else "")
                 + (seen(v, p["name"], rows) if seen else "") for v, owner, p in props]
     ask = "Which property does the question ask for?"
-    picked = compared(chooser, trail, fitted(look, chooser, trail, ask, shown), unique([f"{owner}.{p['name']}" for _, owner, p in props]))
+    picked = compared(chooser, trail, fitted(look.rows if look else 0, chooser, trail, ask, shown), unique([f"{owner}.{p['name']}" for _, owner, p in props]))
     names = [props[i][2]["name"] for i in picked]
     return ", ".join(f"{props[i][0]}.{props[i][2]['name']} AS {props[i][2]['name']}"
                      + ("" if names.count(props[i][2]["name"]) == 1 else f"_{props[i][0]}")

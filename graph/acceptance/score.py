@@ -712,6 +712,12 @@ def query_request(planned):
     return {"op": "query", "plan": planned, **seen}
 
 
+def abstained_answer(plan):
+    """A planner that declines to plan answers `unknown`: the status an empty plan reads as, typed and carrying its reason."""
+    return {"status": "unknown", "fields": [], "candidates": [], "conflicts": [], "citations": [], "policies": [],
+            "absent": [], "abstained": plan["abstain"]}
+
+
 def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, superseded, locate):
     previous = answers.get(q.get("context", {}).get("previous_question"))
     context = question_context(q, manifest, revision, previous)
@@ -736,7 +742,7 @@ def ask(app, q, manifest, hooks, plans, schema, revision, answers, ids, by_ref, 
                 timeout=fitted("plan_timeout_s"), log=log,
                 env={"PLANNER_CALL_TIMEOUT_S": str(fitted("plan_call_timeout_s"))} if fitted("plan_call_timeout_s") else None)
         record["planned"] = plan
-        answer = app.call(query_request(plan))
+        answer = abstained_answer(plan) if "abstain" in plan else app.call(query_request(plan))
         record["response"] = answer
     except Exception as error:
         return {"status": "error", "reason": f"{type(error).__name__}: {error}", **record}
@@ -930,6 +936,10 @@ def self_test():
                 pathlib.Path(str(fake) + ".answer").write_text(json.dumps(answer_for(person)))
                 got = score(fake, fixture, "oracle-facts", {"planner": planner}, scratch, only={"q01"})
                 assert got["q01"]["status"] == status, got
+            declining = f"{sys.executable} -c \"import json; print(json.dumps({{'abstain': 'no supported reading'}}))\""
+            pathlib.Path(str(fake) + ".answer").write_text(json.dumps(answer_for("person:elena")))
+            got = score(fake, fixture, "oracle-facts", {"planner": declining}, scratch, only={"q01"})
+            assert got["q01"]["status"] == "fail" and got["q01"]["got"] == "unknown", got
         finally:
             ORACLE = saved
     held = json.loads(SPLIT.read_text())["heldout"][0]

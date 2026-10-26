@@ -26,6 +26,7 @@ sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(ROOT / "graph/acceptance"))
 import score  # noqa: E402
 import beam  # noqa: E402
+import contrast  # noqa: E402
 import structured  # noqa: E402
 import record  # noqa: E402
 from catalog import PARAMETERS  # noqa: E402
@@ -33,13 +34,15 @@ from plan import ChooseOnly, MODEL, HUB, SOCKET, Graph, Shared, params_of, remem
 from prompt import Budget, declared_context  # noqa: E402
 
 CONFIGS = {
-    "baseline": {"preview": False, "beam_k": 1, "beam_prune": False},
-    "previews": {"preview": True, "beam_k": 1, "beam_prune": False},
-    "beam3": {"preview": False, "beam_k": 3, "beam_prune": True},
-    "both": {"preview": True, "beam_k": 3, "beam_prune": True},
-    "beam1": {"preview": False, "beam_k": 1, "beam_prune": True},
-    "both1": {"preview": True, "beam_k": 1, "beam_prune": True},
+    "baseline": {"preview": False, "beam_k": 1, "beam_prune": False, "contrast": False},
+    "previews": {"preview": True, "beam_k": 1, "beam_prune": False, "contrast": False},
+    "beam3": {"preview": False, "beam_k": 3, "beam_prune": True, "contrast": False},
+    "both": {"preview": True, "beam_k": 3, "beam_prune": True, "contrast": False},
+    "beam1": {"preview": False, "beam_k": 1, "beam_prune": True, "contrast": False},
+    "both1": {"preview": True, "beam_k": 1, "beam_prune": True, "contrast": False},
+    "contrast": {"preview": True, "beam_k": 3, "beam_prune": True, "contrast": True},
 }
+SHARES = {"contrast": "both"}
 
 
 def values(answer):
@@ -98,22 +101,38 @@ def main():
             params = params_of(context)
             ask = lambda cypher: app.call({"op": "query", "cypher": cypher, "params": params})  # noqa: E731
             goal = values(ask(row["cypher"]))
+            beams = {}
             for name in names:
                 if any(r["config"] == name and r["question_id"] == row["id"] for r in rows):
                     continue
                 PARAMETERS.update(CONFIGS[name])
                 seek, read, probe = remembered(graph.search), remembered(graph.read), graph.prober(params)
                 started = time.time()
-                found = beam.candidates(model, lambda w: structured.plan(w, q["question"], schema, context, seek, None, read, probe), probe)
-                ms = int((time.time() - started) * 1000)
+                shared = SHARES.get(name)
+                if shared in beams:
+                    found, spent = beams[shared]
+                else:
+                    PARAMETERS.update(CONFIGS[shared or name])
+                    found = beam.candidates(model, lambda w: structured.plan(w, q["question"], schema, context, seek, None, read, probe), probe)
+                    spent = int((time.time() - started) * 1000)
+                    beams[name] = found, spent
+                    PARAMETERS.update(CONFIGS[name])
+                oracle = any(p.cypher == row["cypher"] for p in found)
+                groups = picked = None
+                judged = time.time()
+                if CONFIGS[name]["contrast"] and found:
+                    verdict = contrast.settle(model, f"Question: {q['question']}", found, probe, PARAMETERS["preview_rows"])
+                    groups, picked = verdict.groups, verdict.picked
+                    found = [verdict.plan] if verdict.plan else []
+                ms = spent + int((time.time() - judged) * 1000)
                 cypher = found[0].cypher if found else None
                 got = values(ask(cypher)) if cypher else None
                 walk = {"config": name, "question_id": row["id"], "cypher": cypher, "gold": row["cypher"],
-                       "right": cypher == row["cypher"], "answer_right": got == goal, "abstained": not found,
-                       "finished": len(found), "ms": ms}
+                        "right": cypher == row["cypher"], "answer_right": got == goal, "abstained": not found,
+                        "finished": len(found), "oracle_in_beam": oracle, "groups": groups, "picked": picked, "ms": ms}
                 rows.append(walk)
                 save()
-                print(f"{name:<9} {row['id']} {'+' if walk['right'] else '-'}{'a' if walk['answer_right'] else ' '} {ms:>6} ms  {cypher}", flush=True)
+                print(f"{name:<9} {row['id']} {'+' if walk['right'] else '-'}{'a' if walk['answer_right'] else ' '}{'o' if oracle else ' '} g={groups} {ms:>6} ms  {cypher}", flush=True)
     for name, line in save().items():
         print(name, line)
     print("results:", out.relative_to(ROOT))

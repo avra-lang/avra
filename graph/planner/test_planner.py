@@ -239,6 +239,45 @@ class Beaming(unittest.TestCase):
         self.assertEqual(len(asked), len(set(asked)))
 
 
+class Contrasting(unittest.TestCase):
+    @staticmethod
+    def probe(rows):
+        def ask(cypher):
+            return {"status": "answered", "fields": [{"path": [e, col], "value": v} for e, col, v in rows[cypher]]}
+        return ask
+
+    @staticmethod
+    def plan(cypher, steps, tally=0.0):
+        import beam
+
+        return beam.Plan(cypher, tally, len(steps), tuple(steps))
+
+    def test_plans_with_the_same_answer_are_one_group_and_need_no_model(self):
+        import contrast
+
+        rows = {"a": [("e1", "title", "x")], "b": [("e1", "name", "x")]}
+        verdict = contrast.settle(None, "Q", [self.plan("a", ["s"]), self.plan("b", ["t"])], self.probe(rows), 3)
+        self.assertEqual((verdict.plan.cypher, verdict.groups), ("a", 1))
+
+    def test_groups_are_described_by_their_rows_and_steps_and_the_model_may_decline(self):
+        import contrast
+
+        rows = {"a": [("e1", "title", "x"), ("e2", "title", "y")], "b": [("e1", "title", "x")]}
+        seen = []
+
+        class Model:
+            def choose(self, context, question, options):
+                seen.append(options)
+                return [1.0 if o.startswith("none") else 0.0 for o in options]
+
+        verdict = contrast.settle(Model(), "Q", [self.plan("a", ["follow actor"]), self.plan("b", ["follow recipient"])],
+                                  self.probe(rows), 3)
+        self.assertIsNone(verdict.plan)
+        first = sorted(seen[0])
+        self.assertTrue(any("chooses: follow actor" in o and "only this returns 1: title='y'" in o for o in first))
+        self.assertTrue(any("chooses: follow recipient" in o and "leaves out 1: title='y'" in o for o in first))
+
+
 class Speaker(unittest.TestCase):
     def test_the_gate_is_framed_with_the_speakers_declared_label(self):
         import structured

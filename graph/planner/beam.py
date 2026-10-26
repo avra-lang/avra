@@ -31,6 +31,7 @@ class Plan:
     cypher: str
     tally: float
     length: int
+    steps: tuple = ()
 
     def score(self):
         """Joint log-probability of the picks, or that per decision, as beam_score declares."""
@@ -42,7 +43,7 @@ class Walker(Branching):
 
     def __init__(self, base, probe):
         super().__init__(base)
-        self.probe, self.picks, self.plan = probe, (), None
+        self.probe, self.picks, self.plan, self.steps = probe, (), None, []
 
     def watch(self, plan):
         self.plan = plan
@@ -65,6 +66,9 @@ class Walker(Branching):
         self.vet()
         return super().ranked(context, question, shown, keys)
 
+    def took(self, option):
+        self.steps.append(option)
+
     def decide(self, logp):
         at = len(self.trace)
         self.trace.append(logp)
@@ -74,7 +78,7 @@ class Walker(Branching):
 
     def run(self, make, picks):
         """('open', logp) at the next undecided choice, ('done', plan) when the walk ends, or None when it is dropped."""
-        self.picks, self.trace, self.tally, self.plan = tuple(picks), [], 0.0, None
+        self.picks, self.trace, self.tally, self.plan, self.steps = tuple(picks), [], 0.0, None, []
         try:
             cypher = make(self)
         except Frontier as stop:
@@ -85,7 +89,7 @@ class Walker(Branching):
             return None
         if self.probe and PARAMETERS["beam_prune"] and self.empty(cypher):
             return None
-        return "done", Plan(cypher, self.tally, len(self.trace))
+        return "done", Plan(cypher, self.tally, len(self.trace), tuple(self.steps))
 
 
 def candidates(base, make, probe=None, k=None):
