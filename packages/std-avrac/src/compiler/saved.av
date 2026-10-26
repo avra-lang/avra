@@ -30,6 +30,9 @@ enum ArgName {
     Local
 }
 
+/// A key no process can name again, as `Workspace.named` keeps it.
+const NO_NAME: string = "-"
+
 /// The row a read of the family's own hash stands on: the value hash a row was saved at.
 const HASH_READ: string = "="
 
@@ -51,9 +54,35 @@ impl Workspace {
     /// A key's durable name — the family, then what the argument names — or null for a key
     /// no process but this one can read.
     fn saved_name(key: Key) -> string? {
+        let known = self.named_at(key)
+        if !known.is_empty() { return if known == NO_NAME { null } else { known } }
+        let made = self.spelled_name(key)
+        self.named_put(key, made ?? NO_NAME)
+        made
+    }
+
+    /// `saved_name`, spelled afresh: the answer a workspace keeps once per key.
+    fn spelled_name(key: Key) -> string? {
         let f? = Family.all().get(key.family) else { return null }
         let spelled? = self.arg_spelled(arg_name(f), key.arg) else { return null }
         "${f.name}\t${spelled}"
+    }
+
+    /// The name kept for a key; empty for one not yet spelled.
+    fn named_at(key: Key) -> string {
+        if key.family >= self.named.get().length { return "" }
+        let row = self.named.get()[key.family]
+        if key.arg < row.get().length { row.get()[key.arg] } else { "" }
+    }
+
+    fn named_put(key: Key, name: string) {
+        while self.named.get().length <= key.family {
+            let fresh: Cell<List<string>> = list_cell()
+            self.named.push(fresh)
+        }
+        let row = self.named.get()[key.family]
+        while row.get().length <= key.arg { row.push("") }
+        row.set_at(key.arg, name)
     }
 
     /// What an argument names, spelled so another process reads the same thing: a file by its

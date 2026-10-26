@@ -523,6 +523,8 @@ export type Workspace = {
     noted: Cell<List<Key>>,
     /// How each saved family writes its answer: registered once, by the family's own `saves`.
     savers: Cell<List<Saver>>,
+    /// Each key's durable name, spelled once: family, then argument.
+    named: Cell<List<Cell<List<string>>>>,
     /// The declarations whose saved signature was asked for, found or not.
     sig_tried: Table<bool>,
     /// Each file's probed name buckets, by file index: what its `NameEnv` is the digest of.
@@ -1147,6 +1149,7 @@ fn built(
         stand: Cell.new(Stand.Open),
         noted: list_cell(),
         savers: list_cell(),
+        named: list_cell(),
         sig_tried: new_table<bool>(),
         env_probes: map_cell(),
         env_seen: map_cell(),
@@ -1261,6 +1264,7 @@ impl Workspace {
         self.db.disarm()
         self.decls.disarm()
         self.savers.set([])
+        self.named.set([])
         self.closed.set(true)
     }
 
@@ -1278,6 +1282,7 @@ impl Workspace {
         for f in Family.all() { self.relation(f).evict() }
         self.db.disarm()
         self.savers.set([])
+        self.named.set([])
         self.db.kernel.folds_forgotten()
         self.decls.let_go(stand_voice(why))
         self.stand.set(why)
