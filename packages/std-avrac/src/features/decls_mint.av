@@ -148,12 +148,15 @@ impl Decls {
     /// trait's and impl's methods under their owner. The file's rows
     /// are then exactly the ones minted here: what it held before and
     /// did not mint again is removed in one step. Answers the top-level
-    /// ids, in order.
-    fn admit(f: FileId, store: SyntaxArena, stmts: List<StmtId>) -> List<DeclId> {
+    /// ids, in order. `keep_made` also keeps the rows a maker generated: a file
+    /// minted from saved rows holds them, and no expansion runs to mint them again.
+    fn admit(f: FileId, store: SyntaxArena, stmts: List<StmtId>, keep_made: bool = false) -> List<
+        DeclId,
+    > {
         let before = self.decls_so_far(f)
         self.stores.set_at(f.index, store)
         let _ = self.counted.get().opened(f, "")
-        mut minted: List<int> = []
+        mut minted: List<int> = if keep_made { [d.index for d in before if self.raw_decl(d).maker != ""] } else { [] }
         mut by_stmt = side_table("decl_ids", 0, store.stmts.count(), DeclAt { decl: null })
         mut out: List<DeclId> = []
         // A `state` at the top level is a DECLARATION: the mark lands
