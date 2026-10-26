@@ -94,6 +94,22 @@ compare() {
         med=$(printf '%s\n' "$ratios" | median)
         medpct=$(awk -v m="$med" 'BEGIN { printf "%.0f", (m - 1) * 100 }')
     fi
+    # THE RUNNER'S OWN MEASURE: tools/calib.py ran a fixed workload in this job, and its growth over main's is how
+    # much slower the machine itself was. It stands in for the median in a job with too few CPU rows, and
+    # lifts it when it is the larger: a row gates only beyond twice what the runner explains.
+    cal=$(awk '$1 ~ /^speed\.calib-ms/ { print $1; exit }' "$cur" 2>/dev/null)
+    if [ -n "$cal" ]; then
+        c1=$(value "$cur" "$cal")
+        b1=$(value "$base" "$cal")
+        cr=
+        [ -z "$c1" ] || [ -z "$b1" ] || cr=$(awk -v c="$c1" -v b="$b1" 'BEGIN { if (b + 0 > 0) printf "%.6f", c / b }')
+        if [ -n "$cr" ] && { [ -z "$med" ] || awk -v a="$cr" -v m="$med" 'BEGIN { exit !(a > m) }'; }; then
+            med=$cr
+            medpct=$(awk -v m="$med" 'BEGIN { printf "%.0f", (m - 1) * 100 }')
+            n=3
+            echo "::notice::speed: the runner's fixed workload ran ${medpct}% against main's (${c1} ms against ${b1} ms), so a row gates only beyond twice that"
+        fi
+    fi
     runner=0
     cpus=$(awk '$1 ~ /^speed\.cpu-/ { print $1 }' "$cur" 2>/dev/null)
     for m in $METRICS $cpus; do
@@ -244,7 +260,15 @@ case "${1:-}" in
         printf 'speed.cpu-std-db-part 190\n' > "$d/curp2"
         printf 'speed.cpu-std-db-cold 60\n' > "$d/basepc2"
         [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curp2" "$d/basepc2" >/dev/null 2>&1; echo $?)" = 1 ] || { echo "speed_note: a part-warm row 3x past main's cold row did not fail"; exit 1; }
-        echo "speed_note: self-test passed — 24 fixtures"
+        # THE RUNNER'S CALIBRATION: two CPU rows (too few for a median), one 3.8x over main's — a runner that ran its fixed
+        # workload 4x slower explains it; one whose workload matched main's does not.
+        printf 'speed.cpu-site-cold 46\nspeed.cpu-small-cold 10\nspeed.calib-ms-x 4000\n' > "$d/curk"
+        printf 'speed.cpu-site-cold 12\nspeed.cpu-small-cold 10\nspeed.calib-ms-x 1000\n' > "$d/basek"
+        outk=$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/stdout sh "$0" compare "$d/curk" "$d/basek" 2>&1); stk=$?
+        { [ "$stk" = 0 ] && printf '%s\n' "$outk" | grep -q "fixed workload ran 300%"; } || { echo "speed_note: a 4x slower runner did not excuse a 3.8x row ($stk): $outk"; exit 1; }
+        printf 'speed.cpu-site-cold 46\nspeed.cpu-small-cold 10\nspeed.calib-ms-x 1020\n' > "$d/curk2"
+        [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curk2" "$d/basek" >/dev/null 2>&1; echo $?)" = 1 ] || { echo "speed_note: a row 3.8x over main's with a runner as fast as main's did not fail"; exit 1; }
+        echo "speed_note: self-test passed — 26 fixtures"
         exit 0 ;;
     *) echo "usage: speed_note.sh collect <log>... | compare <current> <main>" ;;
 esac
