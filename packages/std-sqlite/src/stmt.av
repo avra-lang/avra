@@ -467,9 +467,16 @@ impl Stmt {
     /// question — `closed_fault`'s twin one level down, and every verb
     /// that can refuse asks it before reading a count.
     fn finalized_fault() -> SqlError? {
-        if !self.dead() { return null }
+        if !self.dead() { return self.foreign_fault() }
         if self.parked() && self.raw.get() != null { return statement_parked }
         statement_finalized
+    }
+
+    /// The refusal for a statement of a private in-memory connection used by a process that did not open it.
+    fn foreign_fault() -> SqlError? {
+        let conn? = self.conn.get() else { return null }
+        if self.epoch < 0 && avra_sqlite_foreign(conn) != 0 { return memory_foreign }
+        null
     }
 
     /// Whether the statement has been finalized. THE COUNTING VERBS ASK IT
@@ -548,6 +555,7 @@ extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
 /// own C, for the one wall answer with no paired length function.
 extern fn avra_sqlite_cstr_len(p: ptr) -> int
 extern fn avra_sqlite_epoch() -> int
+extern fn avra_sqlite_foreign(db: ptr) -> int
 
 /// A cell's octets, copied. The CLASS has already said a value is
 /// there; what remains is a pointer that may be absent because the

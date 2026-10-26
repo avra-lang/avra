@@ -305,6 +305,7 @@ type Home = { epoch: int, path: string, flags: int, busy: int }
 extern fn avra_sqlite_opened(db: ptr)
 extern fn avra_sqlite_closed(db: ptr)
 extern fn avra_sqlite_epoch() -> int
+extern fn avra_sqlite_foreign(db: ptr) -> int
 
 impl Db {
     /// A database at a path, opened for reading and writing and created
@@ -392,7 +393,8 @@ impl Db {
     /// otherwise report the caller's own sequence as SQLite's opinion asks
     /// here first.
     fn closed_fault() -> SqlError? {
-        if self.live() == null { return connection_closed }
+        let handle? = self.live() else { return connection_closed }
+        if self.home.get().path == ":memory:" && avra_sqlite_foreign(handle) != 0 { return memory_foreign }
         null
     }
 
@@ -439,7 +441,7 @@ impl Db {
     /// hottest call on the cached path — every `run`/`one`/`first`/
     /// `all`/`scalar` reaches it once.
     fn cached(text: string) -> Stmt? {
-        let _ = self.live()
+        if self.closed_fault() != null { return null }
         for c in self.cache.get() {
             if c.text == text { return c.stmt }
         }
@@ -541,6 +543,12 @@ fn closing(handle: ptr?, rc: int) -> SqlError {
         sql: null,
     }
 }
+
+const memory_foreign: SqlError = SqlError
+    .refused(
+        Cause.Foreign,
+        "a memory database lives in the process that opened it: a core would hold a private copy — open it inside the core, or use a file",
+    )
 
 const connection_closed: SqlError = SqlError
     .refused(Cause.Closed, "this connection was closed — open it again")

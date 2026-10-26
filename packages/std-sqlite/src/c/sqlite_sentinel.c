@@ -19,7 +19,9 @@
  */
 #include "sqlite3.h"
 #include <stdint.h>
+#include <pthread.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -89,32 +91,39 @@ void avra_sqlite_sleeps_held(void) {
 extern void avra_fork_hook(int (*prepare)(const char** why));
 extern void avra_run_hook(void (*begins)(void), void (*ends)(void));
 
-/* Each connection carries the serial it was opened under, so a run's own are told from the host's. */
-static sqlite3** g_open = NULL;
-static int64_t* g_serial = NULL;
+/* Each connection carries the serial it was opened under, so a run's own are told from the host's,
+ * and the process that opened it, so a copy inherited across a fork is told from the original. */
+typedef struct { sqlite3* db; int64_t serial; pid_t owner; } Entry;
+static Entry* g_open = NULL;
 static int g_open_count = 0, g_open_cap = 0;
 static int64_t g_epoch = 0, g_minted = 0;
+static pid_t g_pid = 0;
+
+static void forked_child(void) { g_pid = getpid(); }
 
 void avra_sqlite_opened(void* db) {
     if (g_open_count == g_open_cap) {
         int cap = g_open_cap ? g_open_cap * 2 : 8;
-        sqlite3** grown = (sqlite3**)realloc(g_open, (size_t)cap * sizeof(sqlite3*));
-        int64_t* serials = (int64_t*)realloc(g_serial, (size_t)cap * sizeof(int64_t));
-        if (grown) g_open = grown;
-        if (serials) g_serial = serials;
-        if (!grown || !serials) return;
+        Entry* grown = (Entry*)realloc(g_open, (size_t)cap * sizeof(Entry));
+        if (!grown) return;
+        g_open = grown;
         g_open_cap = cap;
     }
-    g_serial[g_open_count] = ++g_minted;
-    g_open[g_open_count++] = (sqlite3*)db;
+    g_open[g_open_count++] = (Entry){ (sqlite3*)db, ++g_minted, g_pid };
+}
+
+/* Whether this connection was opened by another process: a private database copied across a fork. */
+int64_t avra_sqlite_foreign(void* db) {
+    for (int i = 0; i < g_open_count; i++) {
+        if (g_open[i].db == (sqlite3*)db) return g_open[i].owner != g_pid;
+    }
+    return 0;
 }
 
 void avra_sqlite_closed(void* db) {
     for (int i = 0; i < g_open_count; i++) {
-        if (g_open[i] == (sqlite3*)db) {
-            g_open_count--;
-            g_open[i] = g_open[g_open_count];
-            g_serial[i] = g_serial[g_open_count];
+        if (g_open[i].db == (sqlite3*)db) {
+            g_open[i] = g_open[--g_open_count];
             return;
         }
     }
@@ -147,18 +156,17 @@ static int private_to_process(sqlite3* db) {
 
 static int parked(const char** why) {
     for (int i = 0; i < g_open_count; i++) {
-        const char* held = holds_work(g_open[i]);
+        const char* held = holds_work(g_open[i].db);
         if (held) { *why = held; return 1; }
     }
     int kept = 0;
     for (int i = 0; i < g_open_count; i++) {
-        if (private_to_process(g_open[i])) {
-            g_open[kept] = g_open[i];
-            g_serial[kept++] = g_serial[i];
+        if (private_to_process(g_open[i].db)) {
+            g_open[kept++] = g_open[i];
             continue;
         }
-        for (sqlite3_stmt* s; (s = sqlite3_next_stmt(g_open[i], NULL));) sqlite3_finalize(s);
-        sqlite3_close_v2(g_open[i]);
+        for (sqlite3_stmt* s; (s = sqlite3_next_stmt(g_open[i].db, NULL));) sqlite3_finalize(s);
+        sqlite3_close_v2(g_open[i].db);
     }
     g_open_count = kept;
     g_epoch++;
@@ -186,16 +194,16 @@ static void run_ends(void) {
         mark = g_run_marks[g_run_depth];
     }
     for (int i = g_open_count - 1; i >= 0; i--) {
-        if (g_serial[i] <= mark) continue;
-        for (sqlite3_stmt* s; (s = sqlite3_next_stmt(g_open[i], NULL));) sqlite3_finalize(s);
-        sqlite3_close_v2(g_open[i]);
-        g_open_count--;
-        g_open[i] = g_open[g_open_count];
-        g_serial[i] = g_serial[g_open_count];
+        if (g_open[i].serial <= mark) continue;
+        for (sqlite3_stmt* s; (s = sqlite3_next_stmt(g_open[i].db, NULL));) sqlite3_finalize(s);
+        sqlite3_close_v2(g_open[i].db);
+        g_open[i] = g_open[--g_open_count];
     }
 }
 
 __attribute__((constructor)) static void registered(void) {
+    g_pid = getpid();
+    pthread_atfork(NULL, NULL, forked_child);
     avra_fork_hook(parked);
     avra_run_hook(run_begins, run_ends);
 }
