@@ -90,6 +90,8 @@ export enum BuildError {
     Diagnosed(report: string)
     /// The finished binary could not be renamed onto its path.
     Unpublished(path: string)
+    /// A reached package's C object is not where its manifest names it.
+    ObjectsMissing(paths: List<string>)
 }
 
 impl Error for BuildError {
@@ -104,6 +106,7 @@ impl Error for BuildError {
             .UnsupportedOnWasm(names) -> info("build.wasm_unsupported", wasm_unsupported(names)),
             .Diagnosed(report) -> info("build.diagnosed", report),
             .Unpublished(p) -> info("build.unpublished", unpublished(p)),
+            .ObjectsMissing(paths) -> info("build.objects_missing", objects_missing(paths)),
         }
     }
 }
@@ -886,6 +889,8 @@ impl Workspace {
         clock.mark("emit")
         let held = self.held_objects(d.store)?
         clock.mark("place")
+        let absent = self.absent_objects(tools.target)
+        if !absent.is_empty() { fail BuildError.ObjectsMissing(absent) }
         let staged = staged_beside(binary)
         let hosted = [self.decls.decl(h).name for h in self.program_host_fns([a.view.file for a in d.program.files])]
         let code = avra_spawn_status(
@@ -1226,6 +1231,10 @@ fn handed(full: Lowered, owed: List<Made>, opt: int, target: string) -> string? 
 
 fn object_gone(path: string) -> string {
     "avra: a held object disappeared: ${path}"
+}
+
+fn objects_missing(paths: List<string>) -> string {
+    "avra: a package's C is not built: ${paths.join(", ")} — `make libs` builds the package objects of a checkout (`make wasm-packages` for a wasm target)"
 }
 
 fn unpublished(path: string) -> string {
