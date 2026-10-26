@@ -20,6 +20,8 @@ enum ArgName {
     Decl
     Module
     Unit
+    /// A lowered unit: its symbol, which no other process spells differently.
+    Symbol
     /// A file's text input: the key is the input's own, and the name is `text <path>`.
     Text
     Local
@@ -35,15 +37,16 @@ fn arg_name(f: Family) -> ArgName {
         .Namespace or .HeldSig -> ArgName.Module,
         .References or .Failures or .ReadReach -> ArgName.Unit,
         .BlockScan or .ComponentScan or .ComponentNames or .Input -> ArgName.Text,
-        .ConstTyped or .Settled or .Lowered or .Lifted or .LiftLowered or .Manifest or .Named -> ArgName.Local,
+        .Lowered -> ArgName.Symbol,
+        .ConstTyped or .Settled or .Lifted or .LiftLowered or .Manifest or .Named -> ArgName.Local,
     }
 }
 
 /// The families whose answers are saved by name: those with a value codec behind them.
 fn saved_family(f: Family) -> bool {
     match f {
-        .Sig or .ComponentNames or .Items or .Typed -> true,
-        .Source or .Parsed or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .FileRefs or .MethodDiags or .Admitted or .Methods or .WriteSummary or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .CancelSummary or .Writes or .CancelBits or .ReadFound or .Consumed or .Namespace or .HeldSig or .References or .Failures or .ReadReach or .ConstTyped or .Settled or .Lowered or .Lifted or .LiftLowered or .Manifest or .Named or .Input or .BlockScan or .ComponentScan -> false,
+        .Sig or .ComponentNames or .Items or .Typed or .Lowered -> true,
+        .Source or .Parsed or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .FileRefs or .MethodDiags or .Admitted or .Methods or .WriteSummary or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .CancelSummary or .Writes or .CancelBits or .ReadFound or .Consumed or .Namespace or .HeldSig or .References or .Failures or .ReadReach or .ConstTyped or .Settled or .Lifted or .LiftLowered or .Manifest or .Named or .Input or .BlockScan or .ComponentScan -> false,
     }
 }
 
@@ -64,6 +67,7 @@ impl Workspace {
             .Decl -> self.decl_spelled(DeclId { index: arg }),
             .Module -> self.decls.module_name(ModuleId { index: arg }),
             .Unit -> "",
+            .Symbol -> self.symbol_spelled(arg),
             .Text -> self.text_spelled(arg),
             .Local -> null,
         }
@@ -112,6 +116,7 @@ impl Workspace {
             .Decl -> self.saved_decl(spelled)?.index,
             .Module -> self.decls.known_module_id(spelled)?.index,
             .Unit -> 0,
+            .Symbol -> null,
             .Text -> self.text_named_arg(spelled),
             .Local -> null,
         }
@@ -249,6 +254,8 @@ impl Workspace {
         self.relation(Family.Items).revive.set((arg: int) -> self.items_revived(arg))
         self.saves(Family.Typed, (arg: int) -> self.typed_text(arg))
         self.relation(Family.Typed).revive.set((arg: int) -> self.typed_revived(arg))
+        self.saves(Family.Lowered, (arg: int) -> self.lowered_text(arg))
+        self.relation(Family.Lowered).revive.set((arg: int) -> self.lowered_revived(arg))
         self.saves(Family.ComponentNames, (arg: int) -> self.words_of(arg))
         self.relation(Family.ComponentNames).revive.set((arg: int) -> self.saved_words(arg))
     }
@@ -303,5 +310,29 @@ impl Workspace {
             .Ok(facts) -> Revival.Revived(DbRow.Typed(facts)),
             .Err(_) -> Revival.Gone,
         }
+    }
+
+    /// A unit's symbol, by its place in the unit table.
+    fn symbol_spelled(arg: int) -> string? {
+        let at = self.asks.get()
+        if arg < 0 || arg >= at.length { return null }
+        at[arg].name
+    }
+
+    /// A lowered unit as its row's text, from the value this run settled.
+    fn lowered_text(arg: int) -> string? {
+        match self.relation(Family.Lowered).values.entry(arg) {
+            .Present(row) -> self.unit_text(self.asks.get()[arg], lowered_of(row)),
+            .Missing -> null,
+        }
+    }
+
+    /// A unit read back as its stub, the code its row stood for noted for the file's code row —
+    /// only where no code is emitted from it: a build emits the body.
+    fn lowered_revived(arg: int) -> Revival<DbRow> {
+        if !self.hold.serving.get() { return Revival.Gone }
+        let text? = self.saved_value(Key { family: Family.Lowered.ordinal, arg: arg }) else { return Revival.Gone }
+        let unit? = self.unit_from_text(self.asks.get()[arg], text) else { return Revival.Gone }
+        Revival.Revived(DbRow.Lowered(unit))
     }
 }
