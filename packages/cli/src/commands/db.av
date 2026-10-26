@@ -1,8 +1,10 @@
 //! `avra db diff <file> --database <path>` — the program's whole schema, as
 //! its own `const shapes: List<Shape>`, against the shapes a database has
-//! recorded. The program is run with a generated entry appended that prints
-//! the migration plan and exits 1 when it is not empty, so a pipeline can
-//! gate on it. The compiler itself carries no database library.
+//! recorded. The program's declarations are built with a generated entry as
+//! its only one: every file's own top-level statements are silenced, so
+//! nothing the program does runs. The entry prints the migration plan and
+//! exits 1 when it is not empty, so a pipeline can gate on it. The compiler
+//! itself carries no database library.
 use @std.cli.{CliResult, Runnable, command, arg, option}
 use @std.avrac.compiler.{Program}
 
@@ -28,17 +30,14 @@ impl Runnable for DbCmd {
     }
 }
 
-/// The program, its source carrying the diff entry, run live; the entry's
-/// own exit answers.
+/// The program run live with the diff as its only entry: its own top-level
+/// statements are silenced, and the entry's, appended to the file, run in their
+/// place.
 fn diffed(p: Program, file: string, database: string) -> Result<int, string> {
-    let entered = p.after_program(file, entry_text(read_or_die(file), database), file)
+    let source = read_or_die(file)
+    let entered = p
+        .entered_over(file, [source, DIFF_USES, diff_entry(database)].join("\n"), source.length)
     ended_as(entered.run_live()?)
-}
-
-/// The imports the entry reads, the entry, and `source` after it: the entry
-/// exits, so no statement of `source` runs.
-fn entry_text(source: string, database: string) -> string {
-    [DIFF_USES, diff_entry(database), source].join("\n")
 }
 
 const DIFF_USES: string = "use @std.db.apply.{recorded_shapes as diff_recorded}\nuse @std.db.migrate.{plan_all as diff_plan, report as diff_report}\nuse @std.process.{exit as diff_exit, Exit as DiffExit}\nuse @std.sqlite.{Db as DiffDb}"

@@ -19,12 +19,15 @@ const DIFF_SHAPES: string = "collect models: List<Found> = @model in closure as 
 const DIFF_MIGRATES: string = "\nexport fn migrated(path: string) -> string {\n    match Db.open(path) {\n        .Ok(db) -> {\n            let _ = migrate_all(db, models) catch 0\n            \"migrated\"\n        },\n        .Err(e) -> e.message,\n    }\n}\n"
 
 /// A package of its own under scratch, its lib the file named.
-fn diff_package(name: string, lib: string) -> string {
+fn diff_package(name: string, lib: string) -> string { diff_package_of(name, lib, "lib") }
+
+/// A package whose `section` (`lib` or `bin`) names the file `lib`.
+fn diff_package_of(name: string, lib: string, section: string) -> string {
     let dir = "${diff_root()}/${name}"
     let _ = make_dirs("${dir}/src")
     let _ = write_text(
         "${dir}/avra.toml",
-        "[package]\nname        = \"${name}\"\nversion     = \"0.1.0\"\ndescription = \"x\"\n\n[lib]\nname = \"${name}\"\npath = \"src/${lib}.av\"\n",
+        "[package]\nname        = \"${name}\"\nversion     = \"0.1.0\"\ndescription = \"x\"\n\n[${section}]\nname = \"${name}\"\npath = \"src/${lib}.av\"\n",
     )
     "${dir}/src"
 }
@@ -34,6 +37,15 @@ fn diff_schema(name: string, models: string, tail: string = "") -> string {
     let src = diff_package(name, name)
     let _ = write_text("${src}/${name}.av", DIFF_USES + models + DIFF_SHAPES + tail)
     "${src}/${name}.av"
+}
+
+/// A package whose program is `main` — statements and all — beside a `schema`
+/// module; the module's path.
+fn diff_served(main: string) -> string {
+    let src = diff_package_of("served", "main", "bin")
+    let _ = write_text("${src}/main.av", main)
+    let _ = write_text("${src}/schema.av", DIFF_USES + DIFF_BOARD + DIFF_SHAPES)
+    "${src}/schema.av"
 }
 
 /// A database brought to the schema's one model by a program of its own.
@@ -83,6 +95,27 @@ spec "avra db diff" {
                 diff_args(diff_schema("loud", DIFF_BOARD, "\nprintln(\"SERVED\")\n"), database),
             )
             code_of(r) == 0 && !stdout_of(r).contains("SERVED")
+        }
+    }
+    given "a package whose program serves forever beside a schema module" {
+        then "the diff builds without that program's statements and prints nothing from it" {
+            let database = migrated_database()
+            let r = avra_ran(
+                diff_args(diff_served("while true { }\nprintln(\"SERVED\")\n"), database),
+            )
+            code_of(r) == 0 && !stdout_of(r).contains("SERVED")
+        }
+    }
+    given "a program that declares its shapes in its own serving entry" {
+        then "the entry's statements are silenced and its shapes still diff" {
+            let database = migrated_database()
+            let src = diff_package_of("entry", "main", "bin")
+            let _ = write_text(
+                "${src}/main.av",
+                DIFF_USES + DIFF_BOARD + DIFF_SHAPES + "\nwhile true { }\n",
+            )
+            let r = avra_ran(diff_args("${src}/main.av", database))
+            code_of(r) == 0 && stdout_of(r) == ""
         }
     }
     given "a database that does not exist" {
