@@ -40,5 +40,18 @@ class Reuse(unittest.TestCase):
         self.assertEqual(s.cache, [])
 
 
+class Sound(unittest.TestCase):
+    def test_a_span_past_the_end_of_the_text_is_dropped(self):
+        got = cascade.sound("abc.", {"quotation": [{"text": ".", "start": 4, "end": 5}, {"text": "bc", "start": 1, "end": 3}]})
+        self.assertEqual([x["text"] for x in got["quotation"]], ["bc"])
+
+    def test_an_empty_span_is_dropped(self):
+        self.assertEqual(cascade.sound("abc", {"x": [{"start": 2, "end": 2}]}), {"x": []})
+
+    def test_a_record_field_outside_the_text_is_dropped_and_the_rest_kept(self):
+        got = cascade.sound("abc", [{"name": {"start": 0, "end": 3}, "code": {"start": 3, "end": 4}}])
+        self.assertEqual(got, [{"name": {"start": 0, "end": 3}}])
+
+
 if __name__ == "__main__":
     unittest.main()

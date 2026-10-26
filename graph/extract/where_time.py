@@ -32,9 +32,9 @@ class RemoteScorer(cascade.Scorer):
     def begin(self, source):
         self.source, self.spent = source, {}
 
-    def choose(self, context, question, options):
+    def choose(self, context, question, options, options_first=False):
         started = time.time()
-        body = {"op": "choose", "context": (f'Text: "{self.source}"\n\n' if self.source else "") + context, "question": question, "options": options}
+        body = {"op": "choose", "context": (f'Text: "{self.source}"\n\n' if self.source else "") + context, "question": question, "options": options, "options_first": options_first}
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.connect(self.path)
             s.sendall((json.dumps(body) + "\n").encode())

@@ -45,6 +45,7 @@ def fitted_per_kind():
 
 LOADED = identity()
 SPAN_THRESHOLD = fitted("span_threshold")
+SPAN_THRESHOLD_OTHER = fitted("span_threshold_other")
 ACCEPT = fitted("accept")
 ACCEPT_SPEAKER = fitted("accept_speaker")
 ACCEPT_RECORD = fitted("accept_record")
@@ -52,6 +53,7 @@ ACCEPT_KIND = fitted_per_kind()
 ACCEPT_FIELD = fitted("accept_field")
 RECORD_MODE = fitted("record_mode")
 PROMPT_LAYOUT = fitted("prompt_layout")
+SHORTLIST_K = fitted("record_shortlist_k")
 ACCEPT_KIND_YES = fitted("accept_kind_yes")
 RECORD_FRAMING = fitted("record_framing")
 MARGIN = fitted("margin")
@@ -148,11 +150,14 @@ FRAMINGS = {
 }
 
 
-def record_ask(model, sentence):
+def yesno_ask(wording, sentence):
     """One kind's closed question about one sentence: (context, question, options).
     Its answer does not depend on how many other kinds the schema declares."""
-    kind = FRAMINGS["sentence+fields"](model)
-    return f'Sentence: "{sentence}"', f"Does this sentence itself state a record of this kind? {kind}", ["yes", "no"]
+    return f'Sentence: "{sentence}"', f"Does this sentence itself state a record of this kind? {wording}", ["yes", "no"]
+
+
+def record_ask(model, sentence):
+    return yesno_ask(FRAMINGS[RECORD_FRAMING](model), sentence)
 
 
 NO_KIND = "none of these"
@@ -344,6 +349,19 @@ class Text:
 # ---------------------------------------------------------------- models
 
 
+def holds(text, span):
+    return 0 <= span["start"] < span["end"] <= len(text)
+
+
+def sound(text, found):
+    """The encoder's answer without the spans the text does not hold (it may answer one past its end)."""
+    if isinstance(found, list):
+        return [sound(text, x) for x in found if not (isinstance(x, dict) and "start" in x and not holds(text, x))]
+    if isinstance(found, dict) and "start" not in found:
+        return {k: sound(text, v) for k, v in found.items() if not (isinstance(v, dict) and "start" in v and not holds(text, v))}
+    return found
+
+
 class Encoder:
     """The span encoder, run in a child process that ends with close()."""
 
@@ -364,11 +382,11 @@ class Encoder:
         self.p.stdin.flush()
         return json.loads(self.p.stdout.readline())
 
-    def mentions(self, text, labels):
-        return self.ask(op="mentions", text=text, labels=labels, threshold=SPAN_THRESHOLD)["value"] if labels else {}
+    def mentions(self, text, labels, threshold=SPAN_THRESHOLD_OTHER):
+        return sound(text, self.ask(op="mentions", text=text, labels=labels, threshold=threshold)["value"]) if labels else {}
 
     def records(self, text, model, anchor, fields):
-        return self.ask(op="records", text=text, model=model, anchor=anchor, fields=fields, threshold=SPAN_THRESHOLD)["value"]
+        return sound(text, self.ask(op="records", text=text, model=model, anchor=anchor, fields=fields, threshold=SPAN_THRESHOLD_OTHER)["value"])
 
     def close(self):
         print(f"encoder_footprint_end={self.ask(op='footprint')['footprint']}", file=sys.stderr, flush=True)
@@ -665,7 +683,7 @@ class Cascade:
                     continue
                 for f in extra:
                     v = g.get(f)
-                    if v and v["confidence"] >= SPAN_THRESHOLD and not any(x["property"] == f for x in rec["fields"]):
+                    if v and v["confidence"] >= SPAN_THRESHOLD_OTHER and not any(x["property"] == f for x in rec["fields"]):
                         rec["fields"].append(self.field(f, v["text"], [(v["start"], v["end"])], score=v["confidence"]))
             for rec in recs:
                 missing = [p["name"] for p in texts if required(p) and not any(f["property"] == p["name"] for f in rec["fields"])]
@@ -856,8 +874,18 @@ class Cascade:
         for kind, x, y, p in stated:
             self.fill(kind, x, y, p)
 
+    def shortlisted(self, kinds, opts, x, y):
+        """The kinds worth asking about a sentence: all of them, or the k its wording ranks nearest, in declared order."""
+        if not SHORTLIST_K or len(kinds) <= SHORTLIST_K:
+            return kinds
+        sentence = self.t.s[x:y]
+        schema = [{"name": f"k{i}", "description": opts[m]} for i, m in enumerate(kinds)]
+        links = retrieval_op({"op": "link", "schema": schema, "phrases": [sentence], "n": SHORTLIST_K})["links"][sentence]
+        return [m for i, m in enumerate(kinds) if f"k{i}" in {name for name, _ in links}]
+
     def sentence_records(self, kinds, opts, x, y):
         """(kind, score) of every kind of record a sentence states."""
+        kinds = self.shortlisted(kinds, opts, x, y)
         if RECORD_MODE == "yesno":
             return self.sentence_kinds(kinds, x, y)
         left, found = list(kinds), []
@@ -961,7 +989,7 @@ class Cascade:
             if v and self.named(v["start"], v["end"]):
                 log(f"skip {model}.{name}: {v['text']!r} names an entity, not text")
                 v = None
-            if v and v.get("confidence", 0) >= SPAN_THRESHOLD:
+            if v and v.get("confidence", 0) >= SPAN_THRESHOLD_OTHER:
                 return self.field(name, v["text"], [(v["start"], v["end"])], score=v["confidence"])
             if not required(p):
                 return None
@@ -1339,7 +1367,7 @@ def encoded(reqs, models):
                 spans = {}
                 for key, (op, *args) in plan.encoder_queries(req["input"]["content"]).items():
                     asked = time.time()
-                    spans[key] = enc.mentions(*args) if op == "mentions" else enc.records(*args)
+                    spans[key] = (enc.mentions(*args, SPAN_THRESHOLD) if key == "entities" else enc.mentions(*args)) if op == "mentions" else enc.records(*args)
                     log(f"encoder {key} s={time.time() - asked:.2f}")
                 out.append(spans)
             except Exception as e:
