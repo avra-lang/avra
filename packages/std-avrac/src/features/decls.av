@@ -3366,19 +3366,25 @@ impl Decls {
         self.trait_fns(g).all((r) -> self.has_body(r) || self.answered_at(d, r, g, at))
     }
 
-    /// Whether `d` has a method answering trait member `r` at `at`.
+    /// Whether `d` has a method answering trait member `r` at `at` — its
+    /// seats AND its answer, since an argument may ride either.
     fn answered_at(d: DeclId, r: DeclId, g: DeclId, at: List<TypeId>) -> bool {
         let want? = self.sig(r)?.fn_sig() else { return false }
-        let seats = [self.types.substituted(p, g, at) for p in want.params]
-        self.methods_named(d, self.decl(r).name).any((m) -> self.same_seats(m, seats))
+        let wanted = FnSig {
+            params: [self.types.substituted(p, g, at) for p in want.params],
+            ret: self.types.substituted(want.ret, g, at),
+        }
+        self.methods_named(d, self.decl(r).name).any((m) -> self.same_sig(m, wanted))
     }
 
-    /// Whether a method's seats past its receiver are exactly these.
-    fn same_seats(m: DeclId, seats: List<TypeId>) -> bool {
+    /// Whether a method's seats past its receiver, and its answer, are exactly these.
+    fn same_sig(m: DeclId, wanted: FnSig) -> bool {
         let sig? = self.sig(m)?.fn_sig() else { return false }
         let from = if self.is_static_of(m) { 0 } else { 1 }
-        sig.params.length == seats.length &&
-            same_types(sig.params.slice(from, seats.length), seats.slice(from, seats.length))
+        let n = wanted.params.length
+        sig.params.length == n &&
+            same_types(sig.params.slice(from, n), wanted.params.slice(from, n)) &&
+            same_type(sig.ret, wanted.ret)
     }
 
     /// A type's runtime tag in a `dyn` box: its symbol's fingerprint —

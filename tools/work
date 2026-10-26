@@ -110,6 +110,7 @@ seed_local() {
     best_n=
     holders=$( { git -C "$1" worktree list --porcelain | sed -n 's/^worktree //p' | sed 's|$|/build|'; ls -d "$(depot)"/*/ 2>/dev/null | sed 's|/$||'; } )
     for tree in $holders; do
+        [ "$tree" != "$1/build" ] || continue
         [ -x "$tree/avra" ] && [ -s "$tree/.avra-built-from" ] || continue
         read -r hash at < "$tree/.avra-built-from" || continue
         if [ "$hash" = "$want" ]; then best=$tree; best_n=0; break; fi
@@ -181,6 +182,24 @@ main_compiler() {
     deposit "$mt"
     [ -x "$dep/$h/avra" ] || die "main-compiler: built, but the depot holds nothing for $h (the tree's compiler says what it was built from?)"
     echo "work: main-compiler: $dep/$h — main at $(printf '%.8s' "$sha"); \`sh tools/work compiler\` copies it into a lane"
+}
+
+# get_compiler: this tree's compiler by the cheapest door — one the depot or a worktree holds for its
+# source, else the one published for its key (a Linux machine), else `make compiler`. AVRA_GET_BUILD
+# replaces the last (a witness's stub).
+get_compiler() {
+    held() { [ -x build/avra ] && [ "$(cut -d' ' -f1 build/.avra-built-from 2>/dev/null)" = "$(compiler_hash "$PWD")" ]; }
+    held || seed_local "$PWD" >&2
+    if held; then
+        echo "work: compiler: this tree's, from the depot or a worktree"
+        return 0
+    fi
+    if [ -f tools/compiler_release.py ] && python3 tools/compiler_release.py install >&2; then
+        echo "work: compiler: the published one for this tree's source"
+        return 0
+    fi
+    echo "work: compiler: none held or published for this source — \`make compiler\`" >&2
+    sh -c "${AVRA_GET_BUILD:-make -s compiler}"
 }
 
 new() {
@@ -1149,6 +1168,7 @@ usage() {
         unbind) echo "usage: sh tools/work unbind   — end this lane's run and free its Sprite; the worktree stays" ;;
         bind) echo "usage: sh tools/work bind [<sprite>]   — give this worktree a Sprite, or move it to the one named" ;;
         main-compiler) echo "usage: sh tools/work main-compiler   — build main's compiler once per compiler source into the shared depot (idempotent, one build at a time, under the watchdog); \`work compiler\` then copies it into a lane" ;;
+        compiler) echo "usage: sh tools/work compiler [--get]   — copy the nearest stamped compiler into this worktree; --get goes on to the published one for this source, then \`make compiler\`" ;;
         wait) echo "usage: sh tools/work wait <branch>   — wait until the branch's PR merges" ;;
         attach) echo "usage: sh tools/work attach   — follow this lane's run again, from its first line, and answer its status" ;;
         stop) echo "usage: sh tools/work stop   — end this lane's run on its Sprite" ;;
@@ -1176,7 +1196,7 @@ case "${1:-}" in
     compiler-hash) compiler_hash "${2:-$PWD}" ;;
     built-from) built_from "${2:-$PWD}" ;;
     deposit) deposit "${2:-$PWD}" ;;
-    compiler) seed_local "$PWD" ;;
+    compiler) if [ "${2:-}" = --get ]; then get_compiler; else seed_local "$PWD"; fi ;;
     main-compiler) main_compiler ;;
     seed-local) seed_local "$2" ;;
     libs-step) printf '%s\n' "$libs_step" ;;

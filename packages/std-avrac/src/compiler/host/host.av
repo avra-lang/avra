@@ -4,7 +4,8 @@ use core.{sorted_texts, EmbedKind}
 use @std.path.{under_dir, joined_path, normalized, head_segment, dir_of}
 use @std.io.{env}
 
-/// The filesystem, as its questions. `stamp` says a file's bytes have not moved
+/// The filesystem, as its questions. `quiet` names, per file, the byte offset below which
+/// its top-level statements do not run (null: all run). `stamp` says a file's bytes have not moved
 /// without reading them — null when the host cannot tell.
 /// What stands at a path BENEATH a root, reached through no link: its
 /// text, nothing, a link on the way, octets that are not UTF-8 (at that
@@ -16,7 +17,7 @@ export enum Beneath { Text(text: string), Octets(octets: Bytes), Missing, Linked
 /// cause, since every file is octets.
 export enum Octet { Bytes(octets: Bytes), Missing, Refused(why: string) }
 
-export type Host = { exists: fn(string) -> bool, peek: fn(string) -> Beneath, refused: fn(string) -> void, beneath: fn(string, string, EmbedKind) -> Beneath, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, stamp: fn(string) -> int?, reads_ahead: fn(int) -> void, env: fn(string) -> string?, print: fn() -> string?, tool: fn(string) -> Stamp?, octets: fn(string) -> Octet = no_octets, std_root: string? = null, cwd: string = "", compiler: string? = null }
+export type Host = { exists: fn(string) -> bool, peek: fn(string) -> Beneath, refused: fn(string) -> void, beneath: fn(string, string, EmbedKind) -> Beneath, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, stamp: fn(string) -> int?, reads_ahead: fn(int) -> void, env: fn(string) -> string?, print: fn() -> string?, tool: fn(string) -> Stamp?, octets: fn(string) -> Octet = no_octets, quiet: fn(string) -> int? = never_quiet, std_root: string? = null, cwd: string = "", compiler: string? = null }
 
 impl Host {
     /// One spelling for one directory: a relative path rooted at the
@@ -189,6 +190,9 @@ export fn no_tool(_word: string) -> Stamp? { null }
 
 /// A host that gives no octets: every read is absent.
 fn no_octets(_path: string) -> Octet { Octet.Missing }
+
+/// No file is quiet: every top-level statement runs.
+fn never_quiet(_path: string) -> int? { null }
 
 /// A host whose environment holds no variable.
 export fn unset(_name: string) -> string? { null }

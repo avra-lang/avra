@@ -17,3 +17,11 @@ int64_t avra_time_wall_s(void) {
 #endif
     return (int64_t)ts.tv_sec;
 }
+
+/* Nanoseconds since 1970-01-01 UTC by the host's wall clock. The same clock as
+   avra_time_wall_s, at the grain an instant carries. */
+int64_t avra_time_wall_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (int64_t)ts.tv_sec * 1000000000 + (int64_t)ts.tv_nsec;
+}
