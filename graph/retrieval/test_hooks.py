@@ -39,5 +39,20 @@ class Hooks(unittest.TestCase):
         self.assertEqual(got["agree"], 0.5)
 
 
+class Support(unittest.TestCase):
+    rows = {1: "Elena signed the contract on 3 May.", 2: "The order shipped to Paris on 9 June."}
+
+    def search(self, word):
+        return [{"row": r, "text": t, "observation": f"s{r}", "claim": r} for r, t in self.rows.items() if word.lower() in t.lower()]
+
+    def test_a_held_answer_agrees(self):
+        got = hooks.answer_support(Holder(), "When did Elena sign the contract?", {"fields": [{"value": "3 May"}]}, self.search)
+        self.assertEqual(got, 1.0)
+
+    def test_a_scalar_nowhere_in_the_passages_gives_no_opinion(self):
+        self.assertIsNone(hooks.answer_support(Holder(), "When did Elena sign?", {"fields": [{"value": "17 July"}]}, self.search))
+        self.assertIsNone(hooks.answer_support(Holder(), "How many?", {"fields": [{"value": True}]}, self.search))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -23,6 +23,8 @@ def asked(chooser, body):
     service the chooser holds (a service that predates the op refuses it: no answer); None when neither answers."""
     import socket
 
+    if os.environ.get("AVRA_NO_RETRIEVAL"):
+        return None
     if os.path.exists(SOCKET):
         with socket.socket(socket.AF_UNIX) as s:
             try:
@@ -79,3 +81,23 @@ def agreement(chooser, question, support, passages, entities=(), mentions=()):
     seen = {h["passage"] for h in hits} | {f for h in hits for f in h["facts"]} | {h["source"] for h in hits if h["source"]}
     held = [s for s in support if s in seen]
     return {"agree": len(held) / len(support), "held": held, "hits": hits}
+
+
+def answer_support(chooser, question, answer, search):
+    """The share of a plan's supporting passages that independent retrieval holds, or
+    None when it has no opinion: no service, no scalar answer, or no searched passage
+    carries an answered value. The passages are what the graph's search finds for each
+    word of the question; a passage supports the plan when its text holds an answered value."""
+    import re
+
+    values = [str(f["value"]) for f in answer.get("fields", []) if isinstance(f.get("value"), (str, int, float)) and not isinstance(f.get("value"), bool)]
+    if not values:
+        return None
+    found = {}
+    for word in dict.fromkeys(re.findall(r"\w+", question)):
+        for p in search(word):
+            found.setdefault(p["row"], p)
+    passages = [{"id": str(r), "text": p["text"], "source": p.get("observation"), "facts": [str(p.get("claim"))]} for r, p in found.items()]
+    support = [p["id"] for p in passages if any(v in p["text"] for v in values)]
+    verdict = agreement(chooser, question, support, passages) if support else None
+    return None if verdict is None else verdict["agree"]

@@ -228,6 +228,10 @@ def composed(chooser, question, schema, context, graph=None, depth=None):
             refusal = refused
             log(f"refused ({refused}): {path.cypher}")
             continue
+        if PARAMETERS["agreement"] and probe:
+            held = structured.retrieval_hooks.answer_support(chooser, question, probe(path.cypher), seek)
+            if held is not None and held < structured.retrieval_hooks.PARAMS["agreement_threshold"]:
+                raise Abstain("independent retrieval does not hold the plan's answer")
         log(f"composed in {time.time() - started:.1f}s from {len(found)} finished plan(s), score {path.score():.2f}: {path.cypher}")
         return {"cypher": path.cypher, "params": params, "as_of": viewed(chooser, question, context)}
     raise refusal
