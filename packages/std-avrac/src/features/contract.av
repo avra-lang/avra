@@ -19,7 +19,7 @@
 //! values.av the runtime VALUE representation, builder.av the
 //! parse-time authoring surface. A feature-named fn has no place
 //! in any of them.
-use @std.meta.{derive, delegates}
+use @std.meta.{derive, delegates, Rewrite}
 use core.{
     Expr,
     Stmt,
@@ -37,6 +37,13 @@ use core.{
     DeclId,
     found_at,
     Binding,
+    SyntaxArena,
+    Span,
+    Provided,
+    Means,
+    no_door,
+    Minting,
+    minting,
 }
 use core.{SeatMark, SideTable, Fingerprint, StaticBox, nothing_bound}
 use core.{fp, fp_list, fp_str}
@@ -500,7 +507,25 @@ export trait Meaning {
     fn resolve(mut cx: ResolveCx, e: ExprId)
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg
+
+    /// What the node means, written once as the template it expands to —
+    /// read where it is written and never run on a program's values; null
+    /// for a node that is no sugar, and an Err its own refusal, spoken where
+    /// it stands.
+    fn means(cx: MeanCx) -> Result<Rewrite, string>? { null }
+
+    /// What the node means where its meaning is computed from what stands
+    /// around it, minted into `cx.store` at `cx.span`: its nodes in
+    /// allocation order, the last the root. Empty for a node that is no
+    /// computed sugar, and for one whose shape has no meaning (a pipe into a
+    /// non-call); an Err its own refusal.
+    fn minted(cx: MeanCx) -> Result<Minting, string> { .Ok(minting([])) }
 }
+
+/// What a sugar's meaning is read with: the store it stands in, the sugar
+/// itself and its span, the component its word names when the file's
+/// imports provide one, and the door a template it copies is minted by.
+export type MeanCx = { store: SyntaxArena, at: ExprId, span: Span?, provided: Provided? = null, door: Means = no_door }
 
 /// The per-pass behavior of one feature's STATEMENT kinds — the
 /// stmt-spine's twin of NodeSemantics. A driver calls the method on

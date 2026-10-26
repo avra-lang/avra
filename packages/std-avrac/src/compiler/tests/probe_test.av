@@ -1,0 +1,44 @@
+// probe
+use @std.relation.engine.{Key, key_of}
+use core.{DeclId, flatten}
+use compiler.host.{memory_host}
+use compiler.{Workspace}
+use compiler.families.{Family}
+use @std.avrac.testing.{test_workspace}
+use compiler.store.{store_at}
+
+fn world(text: string) -> Workspace {
+    test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": text,
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+    )
+}
+
+fn walk(ws: Workspace, k: Key, depth: int) -> List<string> {
+    let f? = Family.all().get(k.family) else { return ["relation:${k.family}"] }
+    let here = "${f.name}:${k.arg} stands=${ws.stands_alone(k)} name=${ws.saved_name(k) ?? "-"} hash=${ws.db.kernel.value_hash_of(k) != null}"
+    let below = ws.db.kernel.edges_of(k) ?? []
+    if depth > 0 && ws.stands_alone(k) || depth > 4 { return [here] }
+    [here].concat(flatten([walk(ws, key_of(e), depth + 1) for e in below]))
+}
+
+spec "probe" {
+    given "a sig" {
+        then "shows its read tree" {
+            let ws = world(
+                "export fn one() -> int { 1 }\nexport fn two() -> int { one() + 1 }\ntwo()\n",
+            )
+            let f = ws.file_id("/w/src/main.av")
+            let d = ws.items(f).find((d: DeclId) -> ws.decls.decl(d).name == "two")!
+            let _ = ws.sig(d)
+            let tree = walk(ws, Key { family: Family.Sig.ordinal, arg: d.index }, 0).join(" | ")
+            tree == "x"
+        }
+    }
+}

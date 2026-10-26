@@ -1128,7 +1128,7 @@ impl Workspace {
         let x = self.decls.decl(d)
         if !self.decls.seat_takes(want, x.kind) { return MetaVal.Absent }
         let v = file_view(self.lang, self.parsed(x.file), self.decls, x.file)
-        let at = placed(v, v.store.stmt_span(x.stmt))
+        let at = placed(v, v.spanned_of_stmt(x.stmt), v.store.stmt_span(x.stmt))
         match self.decls.meta_seat(want) {
             .Fn -> meta_of_fn(self.crossed_fn(v, d), self.decls.loaded_slots("Fn"), heap),
             .Type -> meta_of_type(
@@ -1167,7 +1167,7 @@ impl Workspace {
             name: x.name,
             params: self.crossed_params(v, x.stmt, d),
             answer: self.crossed_answer(v, x.stmt),
-            at: placed(v, v.store.stmt_span(x.stmt)),
+            at: placed(v, v.spanned_of_stmt(x.stmt), v.store.stmt_span(x.stmt)),
             answers: self.answer_kind(d),
             doc: self.decl_doc_text(d),
             annotations: self.decl_annotations(v, d),
@@ -1237,7 +1237,7 @@ impl Workspace {
         [MetaAnnotation {
             name: a.name,
             args: [x.text for x in a.args],
-            at: placed(v, a.span),
+            at: placed(v, v.spanned_of_stmt(self.decls.decl(d).stmt), a.span),
             call: if self.rule_named(v.file, a.name) { call_at(v, a.name, a.span) } else { null },
             named: [MetaMarkArg { label: n.label, value: n.arg.text } for n in a.named],
         } for a in self.decls.annotations_of(d)]
@@ -1262,7 +1262,7 @@ impl Workspace {
         let written = v.store.declared_params(s)
         let kinds = self.seat_kinds(d)
         let receiver = if kinds.length > written.length { kinds.length - written.length } else { 0 }
-        [crossed_param(v, p, kind_at(kinds, receiver + j)) for j, p in written]
+        [crossed_param(v, v.spanned_of_stmt(s), p, kind_at(kinds, receiver + j)) for j, p in written]
     }
 
     /// The type or trait a member belongs to, as its block spells it —
@@ -1285,15 +1285,22 @@ impl Workspace {
     /// fields a `..Record` spread placed, which the declaration never
     /// wrote, so the two runs do not share positions.
     fn crossed_fields(v: FileView, s: StmtId, d: DeclId) -> List<MetaField> {
-        [self.crossed(v, p, self.field_kind(d, p.name.of), self.field_state(d, p.name.of)) for p in v.store.declared_fields(s)]
+        [self
+            .crossed(
+                v,
+                v.spanned_of_stmt(s),
+                p,
+                self.field_kind(d, p.name.of),
+                self.field_state(d, p.name.of),
+            ) for p in v.store.declared_fields(s)]
     }
 
     /// One field as a `Field` value: the one door every crossed field takes.
     /// `cell` is the signature's word that the field is a cell: a head prop of a
     /// stateful composition whose type compares by value is one, though it was
     /// not written `state`.
-    fn crossed(v: FileView, p: Param, kind: Kind, cell: bool) -> MetaField {
-        crossed_field(v, p, kind, self.spelled_field(v.file, p.ty)) with { state: p.state || cell, prop: p.prop }
+    fn crossed(v: FileView, origin: FileId?, p: Param, kind: Kind, cell: bool) -> MetaField {
+        crossed_field(v, origin, p, kind, self.spelled_field(v.file, p.ty)) with { state: p.state || cell, prop: p.prop }
     }
 
     fn spelled_field(f: FileId, written: TypeRef?) -> MetaSpelled? {
@@ -1328,7 +1335,7 @@ impl Workspace {
     fn crossed_variants(v: FileView, s: StmtId, d: DeclId) -> List<MetaVariant> {
         let gathers? = v.store.collect_enum_parts(s) else {
             let rows = self.payload_kinds(d)
-            return [self.crossed_variant(v, va, kinds_at(rows, j)) for j, va in v.store.declared_variants(s)]
+            return [self.crossed_variant(v, v.spanned_of_stmt(s), va, kinds_at(rows, j)) for j, va in v.store.declared_variants(s)]
         }
         let members = ordered_collect_members(
             self.decls,
@@ -1360,9 +1367,9 @@ impl Workspace {
         MetaVariant {
             name: m.name,
             payload: [written_spelling(p.ty) for p in fields if !faceted(p.marks)],
-            at: placed(v, v.store.stmt_span(m.stmt)),
-            fields: [self.crossed(v, p, kind_at(kinds, j), false) for j, p in fields],
-            marks: crossed_marks(v, self.decls.member_marks(m.id, gathering)),
+            at: placed(v, v.spanned_of_stmt(m.stmt), v.store.stmt_span(m.stmt)),
+            fields: [self.crossed(v, v.spanned_of_stmt(m.stmt), p, kind_at(kinds, j), false) for j, p in fields],
+            marks: crossed_marks(v, v.spanned_of_stmt(m.stmt), self.decls.member_marks(m.id, gathering)),
             doc: self.decl_doc_text(m.id),
             annotations: self.decl_annotations(v, m.id),
             impls: self.implemented_by(m),
@@ -1376,15 +1383,15 @@ impl Workspace {
         [tr for b in self.decls.impls_named(m.name) if self.aims_at(b, m.id) for tr in some_list(self.decls.facts_of(b)?.of) if !tr.is_empty()]
     }
 
-    fn crossed_variant(v: FileView, va: Variant, kinds: List<Kind>) -> MetaVariant {
+    fn crossed_variant(v: FileView, origin: FileId?, va: Variant, kinds: List<Kind>) -> MetaVariant {
         MetaVariant {
             name: va.name.of,
             payload: [written_spelling(p.ty) for p in va.payloads if !faceted(p.marks)],
-            at: placed(v, va.span),
-            fields: [self.crossed(v, p, kind_at(kinds, j), false) for j, p in va.payloads],
-            marks: crossed_marks(v, va.marks),
+            at: placed(v, origin, va.span),
+            fields: [self.crossed(v, origin, p, kind_at(kinds, j), false) for j, p in va.payloads],
+            marks: crossed_marks(v, origin, va.marks),
             doc: null,
-            annotations: crossed_annotations(v, va.marks),
+            annotations: crossed_annotations(v, origin, va.marks),
         }
     }
 

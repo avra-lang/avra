@@ -448,6 +448,18 @@ supervise() {
             else
                 echo "sprite-run: the probe generation FAILED — see $rd/probe.log" >&2; exit 70
             fi
+        elif [ "${route%%:*}" = builder ]; then
+            # The merge-base's published compiler stands as the builder, byte for byte across runs, so
+            # the store it filled is still its own; this tree's compiler is never built for the run.
+            if [ -x build/avra ] && [ "$(cat build/.avra-builder-key 2>/dev/null)" = "${route#builder:}" ]; then
+                compiler="builder, warm (merge-base key ${route#builder:})"
+            elif install_published "${route#builder:}"; then
+                printf '%s' "${route#builder:}" > build/.avra-builder-key
+                : > build/.avra-compiler-hash
+                compiler="builder, installed (merge-base key ${route#builder:})"
+            else
+                echo "sprite-run: no published compiler for the merge-base (key ${route#builder:}) — run without --builder" >&2; exit 70
+            fi
         elif [ -x build/avra ] && [ "$(cat build/.avra-compiler-hash 2>/dev/null)" = "$chash" ]; then
             compiler=warm
         elif [ "${route%%:*}" = published ] && install_published "${route#published:}"; then
@@ -460,12 +472,9 @@ supervise() {
             # the seed is the floor — `make bootstrap` builds from the committed
             # seed, whatever the standing compiler knows.
             s0=$(date +%s)
-            if make -s avra >> "$rd/probe.log" 2>&1; then
+            if make -s compiler GENS=1 >> "$rd/probe.log" 2>&1; then
                 : > build/.avra-compiler-hash
-                compiler="merge-base published, one generation ($(($(date +%s) - s0))s)"
-            elif make -s bootstrap >> "$rd/probe.log" 2>&1; then
-                : > build/.avra-compiler-hash
-                compiler="merge-base compiler cannot read the tree; bootstrapped from the seed ($(($(date +%s) - s0))s)"
+                compiler="merge-base published, built once ($(($(date +%s) - s0))s)"
             else
                 echo "sprite-run: the merge-base generation and the seed both FAILED — see $rd/probe.log" >&2; exit 70
             fi

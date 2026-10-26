@@ -52,9 +52,9 @@ use features.{
     PipeStage,
     Wanted,
     SeatValue,
-    Instanced,
 }
-use features.{no_kind, ComponentWord, Instancing, default_mark}
+use core.{Instanced, ComponentWord, Instancing}
+use features.{no_kind, default_mark}
 use @std.meta.{
     Node,
     Field as MetaField,
@@ -294,17 +294,17 @@ fn kind_at(kinds: List<Kind>, j: int) -> Kind {
 /// a payload's name, its spelling and its shape cannot come from two
 /// places and disagree, which is the property the crossing suite
 /// asserts positionally.
-fn crossed_field(v: FileView, p: Param, kind: Kind, spelled: MetaSpelled?) -> MetaField {
+fn crossed_field(v: FileView, origin: FileId?, p: Param, kind: Kind, spelled: MetaSpelled?) -> MetaField {
     MetaField {
         name: p.name.of,
         ty: written_spelling(p.ty),
-        at: placed(v, v.store.param_id_span(p.id)),
+        at: placed(v, origin, v.store.param_id_span(p.id)),
         kind: kind,
-        marks: crossed_marks(v, p.marks),
+        marks: crossed_marks(v, origin, p.marks),
         doc: null,
-        annotations: crossed_annotations(v, p.marks),
+        annotations: crossed_annotations(v, origin, p.marks),
         defaulted: p.default != null,
-        says: crossed_says(v, p, kind),
+        says: crossed_says(v, origin, p, kind),
         state: p.state,
         default: crossed_default(v, p),
         spelled: spelled,
@@ -328,23 +328,23 @@ fn crossed_default(v: FileView, p: Param) -> MetaCode? {
 
 /// A declared seat as a `Param`: its name, its type's spelling AND ITS
 /// SHAPE, its `mut` and `const` marks.
-fn crossed_param(v: FileView, p: Param, k: Kind) -> MetaParam {
+fn crossed_param(v: FileView, origin: FileId?, p: Param, k: Kind) -> MetaParam {
     MetaParam {
         name: p.name.of,
         ty: written_spelling(p.ty),
         mutable: p.promises.mutable,
         settled: p.promises.settled,
-        at: placed(v, v.store.param_id_span(p.id)),
+        at: placed(v, origin, v.store.param_id_span(p.id)),
         kind: k,
     }
 }
 
 /// What an event says: the seats its handler is told, each shaped by
 /// the handler's own type. Absent for a member that is no event.
-fn crossed_says(v: FileView, p: Param, kind: Kind) -> List<MetaParam>? {
+fn crossed_says(v: FileView, origin: FileId?, p: Param, kind: Kind) -> List<MetaParam>? {
     let says? = p.says else { return null }
     let kinds = told_kinds(kind)
-    [crossed_param(v, s, kind_at(kinds, j)) for j, s in says]
+    [crossed_param(v, origin, s, kind_at(kinds, j)) for j, s in says]
 }
 
 /// The seats a handler's type takes — an event's member holds a
@@ -360,8 +360,8 @@ fn crossed_named(m: Mark) -> List<MetaMarkArg> {
 
 /// A member's marks as the derive reads them — the word, its words,
 /// and where it stands.
-fn crossed_marks(v: FileView, ms: List<Mark>) -> List<MetaMark> {
-    [MetaMark { name: m.name, args: m.args, at: placed(v, m.span), named: crossed_named(m) } for m in ms]
+fn crossed_marks(v: FileView, origin: FileId?, ms: List<Mark>) -> List<MetaMark> {
+    [MetaMark { name: m.name, args: m.args, at: placed(v, origin, m.span), named: crossed_named(m) } for m in ms]
 }
 
 /// A member's marks again, as its OWN `annotations` — `crossed_marks`'s
@@ -369,11 +369,11 @@ fn crossed_marks(v: FileView, ms: List<Mark>) -> List<MetaMark> {
 /// member shares with a declaration rather than the claimed-by-a-derive
 /// one. A field or a variant has no `///` of its own yet — no grammar
 /// attaches one — so its `doc` reads null until one does.
-fn crossed_annotations(v: FileView, ms: List<Mark>) -> List<MetaAnnotation> {
+fn crossed_annotations(v: FileView, origin: FileId?, ms: List<Mark>) -> List<MetaAnnotation> {
     [MetaAnnotation {
         name: m.name,
         args: m.args,
-        at: placed(v, m.span),
+        at: placed(v, origin, m.span),
         call: call_at(v, m.name, m.span),
         named: crossed_named(m),
     } for m in ms]
@@ -386,10 +386,12 @@ export fn call_at(v: FileView, name: string, sp: Span?) -> MetaCode? {
     MetaCode { node: Node.Template(v.source.file, sp!.lo, ["${name}(", ")"], []) }
 }
 
-/// A source span as the place a meta value names.
-fn placed(v: FileView, sp: Span?) -> Loc? {
+/// A source span as the place a meta value names: in the file whose text the
+/// span indexes — a template's origin for generated code, this file otherwise.
+fn placed(v: FileView, origin: FileId?, sp: Span?) -> Loc? {
     if sp == null { return null }
-    Loc { file: v.source.file, lo: sp!.lo, hi: sp!.hi }
+    let file = if origin == null { v.source.file } else { v.decls.file(origin!).path }
+    Loc { file: file, lo: sp!.lo, hi: sp!.hi }
 }
 
 /// A type reference as the program WROTE it, "" for a written absence.
@@ -851,29 +853,53 @@ fn unread_word(name: string, origin: string) -> ComponentWord {
     }
 }
 
-/// Whether a text exports a component by this name: `export component
-/// NAME`, then its block or its head.
-fn exports_component_named(text: string, word: string) -> bool {
-    if !text.contains(word) { return false }
-    let tokens = lex_source(text).tokens
-    (1..tokens.length - 2)
-        .any(
-            tokens[it - 1].lit_matches("export") &&
-                tokens[it].lit_matches("component") &&
-                tokens[it + 1].text == word &&
-                (tokens[it + 2].lit_matches("{") || tokens[it + 2].lit_matches("(")),
-        )
+/// What a file's module exports as components: its record says, or — with no
+/// record — the file's own tokens do.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn exported_components(ws: Workspace, path: string) -> List<string> {
+    let rows? = module_block_rows(ws, ws.module_path_of(path)) else {
+        return if file_declares_component(ws, path) { ws.lexed_components(path) } else { [] }
+    }
+    [r.name for r in rows if r.exported && facts_unblocked(r.facts)?.is_component ?? false]
+}
+
+/// Every component the given files' modules export, by name: the modules that
+/// export it, each once, in file order.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn component_index_of(ws: Workspace, paths: List<string>) -> Map<string, List<string>> {
+    mut index: Map<string, List<string>> = {}
+    for path in paths {
+        let m = ws.module_of(path)
+        for name in exported_components(ws, path) {
+            let homes = index.get(name) ?? []
+            if !homes.contains(m) { index.set(name, homes.concat([m])) }
+        }
+    }
+    index
 }
 
 /// What one lex of a text answers: whether it may declare a block word, and the
-/// components it declares — `component NAME` before its block or its head.
-type TextScan = { text: string, opens_block: bool, declares: bool, components: List<string> }
+/// components it declares and the ones it exports — `component NAME` before its
+/// block or its head.
+type TextScan = {
+    text: string,
+    opens_block: bool,
+    declares: bool,
+    components: List<string>,
+    exported: List<string>,
+}
 
 /// THE CHEAPEST GATE FIRST: no `grammar`/`component`/`export` substring anywhere, no
 /// token stream worth building.
 fn scan_text(text: string, keywords: List<string>) -> TextScan {
     if !(text.contains("grammar") || text.contains("component") || text.contains("export")) {
-        return TextScan { text: text, opens_block: false, declares: false, components: [] }
+        return TextScan {
+            text: text,
+            opens_block: false,
+            declares: false,
+            components: [],
+            exported: [],
+        }
     }
     let tokens = lex_source(text).tokens
     let named = [tokens[j + 1].text for j in 0..tokens.length - 2 if tokens[j].lit_matches("component") &&
@@ -884,6 +910,10 @@ fn scan_text(text: string, keywords: List<string>) -> TextScan {
         opens_block: opens_block(tokens, keywords),
         declares: !named.is_empty(),
         components: named,
+        exported: [tokens[j + 1].text for j in 1..tokens.length - 2 if tokens[j - 1].lit_matches("export") &&
+            tokens[j].lit_matches("component") &&
+            tokens[j + 1].kind == TokenKind.Name &&
+            (tokens[j + 2].lit_matches("{") || tokens[j + 2].lit_matches("("))],
     }
 }
 

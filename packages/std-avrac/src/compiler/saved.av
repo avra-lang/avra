@@ -4,12 +4,11 @@
 //! maps keys to names on the way out and names to keys on the way in.
 use @std.relation.engine.{Key, Saved, SavedRead}
 use @std.text.{parse_int}
-use core.{FileId, DeclId, ModuleId, joined}
-use compiler.host.{InputName}
+use core.{FileId, DeclId, ModuleId, DeclKind, joined}
 use @std.relation.engine.{Revival}
-use core.digest.{hex, unhex}
 use features.{kind_word, decl_key_text, TypeFacts}
-use compiler.families.{Family}
+use compiler.families.{Family, keyed_by}
+use core.digest.{hex, unhex}
 use compiler.record.{read_fields}
 use compiler.store.{Store, Stored, StoredName, Reading, node_key, read_spelled}
 
@@ -20,10 +19,14 @@ enum ArgName {
     Decl
     Module
     Unit
-    /// A lowered unit: its symbol, which no other process spells differently.
+    /// A read of the world: the key is the input's own, spelled `kind key`.
+    World
+    /// A package's manifest, by the package's key.
+    Package
+    /// A name's bucket of declarations, by the name.
+    Bucket
+    /// A lowered or lifted unit: its symbol, which no other process spells differently.
     Symbol
-    /// A file's text input: the key is the input's own, and the name is `text <path>`.
-    Text
     Local
 }
 
@@ -31,22 +34,16 @@ enum ArgName {
 const HASH_READ: string = "="
 
 fn arg_name(f: Family) -> ArgName {
-    match f {
-        .Source or .Parsed or .Items or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .FileRefs or .MethodDiags or .Admitted -> ArgName.File,
-        .Sig or .Methods or .Typed or .WriteSummary or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .CancelSummary or .Writes or .CancelBits or .ReadFound or .Consumed -> ArgName.Decl,
-        .Namespace or .HeldSig -> ArgName.Module,
-        .References or .Failures or .ReadReach -> ArgName.Unit,
-        .BlockScan or .ComponentScan or .ComponentNames or .Input -> ArgName.Text,
-        .Lowered -> ArgName.Symbol,
-        .ConstTyped or .Settled or .Lifted or .LiftLowered or .Manifest or .Named -> ArgName.Local,
-    }
-}
-
-/// The families whose answers are saved by name: those with a value codec behind them.
-fn saved_family(f: Family) -> bool {
-    match f {
-        .Sig or .ComponentNames or .Items or .Typed or .Lowered -> true,
-        .Source or .Parsed or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .FileRefs or .MethodDiags or .Admitted or .Methods or .WriteSummary or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .CancelSummary or .Writes or .CancelBits or .ReadFound or .Consumed or .Namespace or .HeldSig or .References or .Failures or .ReadReach or .ConstTyped or .Settled or .Lifted or .LiftLowered or .Manifest or .Named or .Input or .BlockScan or .ComponentScan -> false,
+    match keyed_by(f) {
+        .File -> ArgName.File,
+        .Decl -> ArgName.Decl,
+        .Module -> ArgName.Module,
+        .Program -> ArgName.Unit,
+        .Input -> ArgName.World,
+        .Package -> ArgName.Package,
+        .Name -> ArgName.Bucket,
+        .Unit -> ArgName.Symbol,
+        .Row -> ArgName.Local,
     }
 }
 
@@ -54,7 +51,7 @@ impl Workspace {
     /// A key's durable name — the family, then what the argument names — or null for a key
     /// no process but this one can read.
     fn saved_name(key: Key) -> string? {
-        let f = Family.all()[key.family]
+        let f? = Family.all().get(key.family) else { return null }
         let spelled? = self.arg_spelled(arg_name(f), key.arg) else { return null }
         "${f.name}\t${spelled}"
     }
@@ -67,20 +64,25 @@ impl Workspace {
             .Decl -> self.decl_spelled(DeclId { index: arg }),
             .Module -> self.decls.module_name(ModuleId { index: arg }),
             .Unit -> "",
+            .World -> self.world_spelled(arg),
+            .Package -> self.package_spelled(arg),
+            .Bucket -> self.decls.bucket_label(arg),
             .Symbol -> self.symbol_spelled(arg),
-            .Text -> self.text_spelled(arg),
             .Local -> null,
         }
     }
 
-    /// An input's name when it is a file's text: `text <path>`.
-    fn text_spelled(arg: int) -> string? {
+    /// A read of the world as its name spells it: its kind's word, then its key.
+    fn world_spelled(arg: int) -> string? {
         let at = self.input_names.get()
         if arg < 0 || arg >= at.length { return null }
-        match at[arg].kind {
-            .Text -> "text ${at[arg].key}",
-            .Octets or .Range or .Listing or .Exists or .Env or .Tool or .Compiler or .Embedded or .EmbeddedOctets -> null,
-        }
+        input_spelled(at[arg])
+    }
+
+    fn package_spelled(arg: int) -> string? {
+        let at = self.packages()
+        if arg < 0 || arg >= at.length { return null }
+        at[arg].key
     }
 
     /// A declaration's key as text, unrecorded: its file's name, then kind, owner, maker,
@@ -116,30 +118,60 @@ impl Workspace {
             .Decl -> self.saved_decl(spelled)?.index,
             .Module -> self.decls.known_module_id(spelled)?.index,
             .Unit -> 0,
+            .World -> self.world_named_arg(spelled),
+            .Package -> self.package_named_arg(spelled),
+            .Bucket -> self.bucket_named_arg(spelled),
             .Symbol -> null,
-            .Text -> self.text_named_arg(spelled),
             .Local -> null,
         }
     }
 
-    /// The input a `text <path>` spelling names, staged through the door so its cell stands
-    /// with the digest the file has now.
-    fn text_named_arg(spelled: string) -> int? {
-        if !spelled.starts_with("text ") { return null }
-        let name = InputName { kind: .Text, key: spelled.substring(5, spelled.length) }
+    /// The input a spelling names, staged through the door so its cell stands with the digest
+    /// the world has now.
+    fn world_named_arg(spelled: string) -> int? {
+        let name? = input_named(spelled) else { return null }
         let _ = self.input(name)
         self.world_key(name)
     }
 
-    /// The declaration a spelling names, found in the key index without minting anything.
+    /// The name's bucket, its cell set against the bucket as it stands so it carries the hash
+    /// the bucket has now.
+    fn bucket_named_arg(name: string) -> int? {
+        let b? = self.decls.bucket_standing(name) else { return null }
+        self.decls.named_now(b)
+        b
+    }
+
+    /// The package a key names, its manifest read so its cell stands.
+    fn package_named_arg(key: string) -> int? {
+        let at? = [j for j, p in self.packages() if p.key == key].first() else { return null }
+        let _ = self.manifest(at)
+        at
+    }
+
+    /// The declaration a spelling names, found in the key index. A declaration of a file not yet
+    /// admitted is asked of its file's `Items`, which restores or admits it — the only way a name
+    /// reaches a declaration nothing has minted.
     fn saved_decl(spelled: string) -> DeclId? {
         let parts = spelled.split("\t")
         if parts.length != 7 { return null }
-        let kind? = kind_of_word(parts[1]) else { return null }
         let sibling? = parse_int(parts[6]) else { return null }
-        self
-            .decls
-            .known_id(decl_key_text(parts[0], parts[5], kind, parts[2], parts[3], parts[4], sibling))
+        let kinds = kinds_of_word(parts[1])
+        let held = self.known_decl(parts, kinds, sibling)
+        if held != null { return held }
+        let f? = self.decls.known_file_id(self.path_named(StoredName(parts[0]))) else { return null }
+        let _ = self.items(f)
+        self.known_decl(parts, kinds, sibling)
+    }
+
+    fn known_decl(parts: List<string>, kinds: List<DeclKind>, sibling: int) -> DeclId? {
+        for kind in kinds {
+            let id = self
+                .decls
+                .known_id(decl_key_text(parts[0], parts[5], kind, parts[2], parts[3], parts[4], sibling))
+            if id != null { return id }
+        }
+        null
     }
 
     /// Where the row for a name is filed: the name, in the view the file is read in.
@@ -150,7 +182,8 @@ impl Workspace {
     /// A saved answer for a key never settled here: what it read, each as a key of this process,
     /// and the hash it answered. Null when nothing is saved, or a read names no key here.
     fn saved_found(key: Key) -> Saved? {
-        if !saved_family(Family.all()[key.family]) { return null }
+        let kind? = Family.all().get(key.family) else { return null }
+        if !self.saved_family(kind) { return null }
         let store? = self.store.get() else { return null }
         let name? = self.saved_name(key) else { return null }
         let row = self.saved_row_key(name)
@@ -178,6 +211,7 @@ impl Workspace {
         let name? = self.saved_name(key) else { return false }
         let hash? = self.db.kernel.hash_forced(key) else { return false }
         let reads? = self.db.kernel.saved_reads(key, (k: Key) -> self.stands_alone(k)) else { return false }
+        if traced() { qtrace("Q\treads\t${Family.all()[key.family].name}\t${reads.length}\n") }
         mut readings: List<Reading> = [Reading { name: HASH_READ, digest: "${hash}" }]
         for r in reads {
             let named? = self.saved_name(r.key) else { return false }
@@ -186,11 +220,14 @@ impl Workspace {
         store.keep_reading(Stored.Unit, self.saved_row_key(name), value, readings)
     }
 
+    /// Whether a family is kept by name: it registered a saver.
+    fn saved_family(f: Family) -> bool { self.savers.get().any(it.family == f.ordinal) }
+
     /// Whether a read is a row of its own: a saved family's answer, or a file's text. Any other
     /// read stands for what it read.
     fn stands_alone(k: Key) -> bool {
-        let f = Family.all()[k.family]
-        saved_family(f) || f is .Input
+        let f? = Family.all().get(k.family) else { return false }
+        self.saved_family(f) || f is .Input || f is .Manifest || f is .Named
     }
 
     /// The value a saved answer was kept with.
@@ -229,15 +266,12 @@ impl Workspace {
     fn flush_saved() {
         let owed = self.noted.get()
         self.noted.set([])
-        mut done: Map<string, bool> = {}
         for key in owed {
-            let at = "${key.family}.${key.arg}"
-            if done.get(at) != null { continue }
-            done.set(at, true)
             let saver? = self.savers.get().find(it.family == key.family) else { continue }
             let text? = (saver.text)(key.arg) else { continue }
             let _ = self.saved_kept(key, text)
         }
+        self.db.kernel.forget_standing()
     }
 
     /// The kernel's saved lookup and the saved families' hooks.
@@ -252,12 +286,20 @@ impl Workspace {
                 ),
             )
         self.relation(Family.Items).revive.set((arg: int) -> self.items_revived(arg))
+        self.saves(Family.Sig, (arg: int) -> self.sig_text(arg))
         self.saves(Family.Typed, (arg: int) -> self.typed_text(arg))
         self.relation(Family.Typed).revive.set((arg: int) -> self.typed_revived(arg))
         self.saves(Family.Lowered, (arg: int) -> self.lowered_text(arg))
         self.relation(Family.Lowered).revive.set((arg: int) -> self.lowered_revived(arg))
         self.saves(Family.ComponentNames, (arg: int) -> self.words_of(arg))
         self.relation(Family.ComponentNames).revive.set((arg: int) -> self.saved_words(arg))
+    }
+
+    /// A declaration's signature as its row's text: its record line; none for one a run generated.
+    fn sig_text(arg: int) -> string? {
+        let d = self.decl_at(DeclId { index: arg })
+        if d.maker != "" { return null }
+        self.sig_line(d)
     }
 
     /// A `ComponentNames` answer as its row's text: its names, one to a line.
@@ -274,9 +316,9 @@ impl Workspace {
         let f = FileId { index: arg }
         let path = self.decls.file(f).path
         let rows = [read_fields(l) for l in text.split("\n") if !l.is_empty()]
-        self.mint_file(path, rows, {})
+        let top = self.mint_file(path, rows, {})
         self.link_file(path, rows)
-        Revival.Revived(DbRow.Items(self.decls.held_items.get().get(path) ?? []))
+        Revival.Revived(DbRow.Items(top))
     }
 
     /// A `ComponentNames` answer read back.
@@ -334,5 +376,27 @@ impl Workspace {
         let text? = self.saved_value(Key { family: Family.Lowered.ordinal, arg: arg }) else { return Revival.Gone }
         let unit? = self.unit_from_text(self.asks.get()[arg], text) else { return Revival.Gone }
         Revival.Revived(DbRow.Lowered(unit))
+    }
+}
+
+/// The kinds a spelled kind word (`kind_word`'s) may mean: `type` is a record, a named type or an alias.
+fn kinds_of_word(word: string) -> List<DeclKind> {
+    match word {
+        "type" -> [DeclKind.Record, DeclKind.Named, DeclKind.Alias],
+        "fn" -> [DeclKind.Fn],
+        "enum" -> [DeclKind.Enum],
+        "trait" -> [DeclKind.Trait],
+        "syntax" -> [DeclKind.Syntax],
+        "method" -> [DeclKind.Method],
+        "default" -> [DeclKind.Default],
+        "impl" -> [DeclKind.Impl],
+        "main" -> [DeclKind.Main],
+        "case" -> [DeclKind.Case],
+        "const" -> [DeclKind.Const],
+        "collect" -> [DeclKind.Collect],
+        "collect_enum" -> [DeclKind.CollectEnum],
+        "builtin" -> [DeclKind.Builtin],
+        "state" -> [DeclKind.State],
+        _ -> [],
     }
 }

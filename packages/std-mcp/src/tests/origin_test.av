@@ -24,7 +24,19 @@ fn status_when(origin: string?, origins: List<string>) -> int {
     dispatch(compiled([route(tools(), origins)]), q).status
 }
 
+/// The status of a POST to a route declared with no `origins` at all.
+fn status_default(origin: string) -> int {
+    let q? = post_from(origin, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}".bytes()) else { return -1 }
+    dispatch(compiled([route(tools())]), q).status
+}
+
 spec "@std.mcp — the Origin of a POST" {
+    given "a route declared with no origins" {
+        then "it answers loopback and refuses any other page" {
+            status_default("http://localhost:3000") == 200 &&
+                status_default("https://evil.example") == 403
+        }
+    }
     given "a page on another host" {
         then "an https origin is refused with a 403" {
             status_from("https://evil.example") == 403

@@ -140,7 +140,7 @@ seed_local() {
 
 # main-compiler: main's compiler, built ONCE per compiler source into the depot, for every lane's
 # pre-commit hook. A tree of its own (detached at origin/main, beside the depot) builds it with
-# `make avra` twice, each under the watchdog; the build lock is machine-wide, a lane that waits
+# `make compiler` (the one build verb: the standing compiler twice, else the seed) under the watchdog; the build lock is machine-wide, a lane that waits
 # finds the depot already holding the compiler and skips. AVRA_MAINC_BUILD replaces the build
 # (a witness's stub), AVRA_MAINC_WAIT_S (300) bounds the wait for another lane's build.
 main_compiler() {
@@ -176,11 +176,7 @@ main_compiler() {
         (cd "$mt" && sh -c "$AVRA_MAINC_BUILD") || die "main-compiler: the build failed"
     else
         [ -x "$mt/build/avra" ] || seed_local "$mt"
-        if [ -x "$mt/build/avra" ]; then
-            (cd "$mt" && sh tools/watch.sh 6000 make avra && sh tools/watch.sh 6000 make avra) || die "main-compiler: \`make avra\` failed in $mt"
-        else
-            (cd "$mt" && sh tools/watch.sh 6000 make bootstrap && sh tools/watch.sh 6000 make avra) || die "main-compiler: \`make bootstrap\` failed in $mt"
-        fi
+        (cd "$mt" && sh tools/watch.sh 6000 make -s compiler) || die "main-compiler: \`make compiler\` failed in $mt"
     fi
     deposit "$mt"
     [ -x "$dep/$h/avra" ] || die "main-compiler: built, but the depot holds nothing for $h (the tree's compiler says what it was built from?)"
@@ -278,6 +274,14 @@ compiler_route() {
         mk=
         [ -z "$mb" ] || mk=$(sh tools/fetch_compiler.sh --key-of "$mb" 2>/dev/null) || mk=
         sh tools/fetch_compiler.sh --route "$dirty" "$hk" "$mk" 2>/dev/null || echo build
+    )
+}
+# The key of the compiler published for the tree's merge-base with origin/main, or nothing.
+merge_base_key() {
+    (
+        cd "$1"
+        mb=$(git merge-base HEAD origin/main 2>/dev/null) || exit 0
+        sh tools/fetch_compiler.sh --key-of "$mb" 2>/dev/null || :
     )
 }
 compiler_hash() {
@@ -644,6 +648,11 @@ carry() {
 run() {
     minutes=15
     browser=""
+    builder=""
+    if [ "${1:-}" = --builder ]; then
+        builder=1
+        shift
+    fi
     if [ "${1:-}" = --for ]; then
         case ${2:-} in '' | *[!0-9]*) usage run >&2; exit 64 ;; esac
         minutes=$2
@@ -653,6 +662,9 @@ run() {
         browser=$(browser_packages_list)
         shift
     fi
+    # THE EDIT LOOP'S COMMAND NEEDS THE MERGE-BASE'S COMPILER, never this tree's: `make try` builds the
+    # edited source with the standing one, so it asks for the builder whatever the flag said.
+    case "$*" in "make try"* | "make -s try"*) builder=1 ;; esac
     case ${1:-} in '' | -*) [ -z "${1:-}" ] || echo "work: \`run\` has no flag \`$1\`" >&2; usage run >&2; exit 64 ;; esac
     inside
     cmd=$(assemble "$@")
@@ -710,6 +722,10 @@ run() {
     wire=$hash
     [ "${AVRA_PROBE_BUILD:-}" != one ] || wire="one:$hash"
     route=$(compiler_route "$tree")
+    if [ -n "$builder" ]; then
+        bk=$(merge_base_key "$tree")
+        [ -n "$bk" ] && route="builder:$bk" || echo "work: no merge-base compiler key here — the run takes the tree's own route" >&2
+    fi
     wire="$wire@$route"
     echo "work: $sprite — compiler route: $route" >&2
     build_s=${AVRA_BUILD_S:-1200}
@@ -1080,7 +1096,7 @@ wait_landed() {
 usage() {
     case ${1:-} in
         new) echo "usage: sh tools/work new <name>   — a worktree ../avra-<name> off main, and its Sprite" ;;
-        run) echo "usage: sh tools/work run [--for <minutes>] [--browser] <cmd…>   — run it on this lane's Sprite (--browser first provisions the browser leg's libraries, .github/ci/packages-browser.txt), followed to its exit status through any dropped connection (bound: 15 minutes); Ctrl-C or \`work stop\` ends it, this client ending does not" ;;
+        run) echo "usage: sh tools/work run [--builder] [--for <minutes>] [--browser] <cmd…>   — run it on this lane's Sprite (--builder keeps the merge-base's published compiler as the standing one, never building this tree's, so an edit loop's store stays warm — \`make try\` asks for it itself; --browser first provisions the browser leg's libraries, .github/ci/packages-browser.txt), followed to its exit status through any dropped connection (bound: 15 minutes); Ctrl-C or \`work stop\` ends it, this client ending does not" ;;
         test) echo "usage: sh tools/work test   — what this branch touches, on this lane's Sprite" ;;
         land) echo "usage: sh tools/work land [--batch]  — push, PR, ready, strip a DO NOT MERGE title, arm auto-merge; refuses while another PR is mid-CI unless --batch; no Sprite involved" ;;
         status) echo "usage: sh tools/work status   — PRs and their merge state; each lane and its Sprite" ;;

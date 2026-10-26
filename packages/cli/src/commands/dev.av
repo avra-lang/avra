@@ -280,6 +280,7 @@ export type Page = {
     glue: string,
     lister: Cell<Workspace>,
     standing: Cell<Standing>,
+    said: Cell<List<string>>,
     watched: Cell<List<Watched>>,
     moved: Bell,
     backend: Backend? = null,
@@ -312,6 +313,7 @@ fn page_at(root: string, target: string) -> Result<Page, int> {
 export fn page_of(lister: Workspace, tools: Toolchain, compiler: Tool, glue: string) -> Page {
     lister.built_for(tools)
     let none: List<Watched> = []
+    let none_said: List<string> = []
     Page {
         root: lister.root,
         tools: tools,
@@ -319,6 +321,7 @@ export fn page_of(lister: Workspace, tools: Toolchain, compiler: Tool, glue: str
         glue: glue,
         lister: Cell.new(lister),
         standing: Cell.new(Standing { module: "".bytes(), number: 0, failure: "" }),
+        said: Cell.new(none_said),
         watched: Cell.new(none),
         moved: Bell {},
     }
@@ -517,6 +520,18 @@ impl Page {
         }
     }
 
+    /// What the page's walk said, shown beside dev's own words: each warning once a module, since
+    /// a reload makes the page say it afresh.
+    fn heard(q: Request<Unrouted>) -> Response {
+        let words = q.body.text() ?? ""
+        let key = "${self.standing.get().number} ${words}"
+        if words != "" && !self.said.get().contains(key) {
+            self.said.set(self.said.get().concat([key]))
+            println(page_said(words))
+        }
+        text(204, "")
+    }
+
     /// The module as last built — or, before any build succeeded, what
     /// the build said.
     fn module() -> Response {
@@ -533,6 +548,7 @@ impl Page {
             fixed(Method.Get, "/", (_q: Request<Unrouted>) -> self.page()),
             fixed(Method.Get, "/app.wasm", (_q: Request<Unrouted>) -> self.module()),
             fixed(Method.Get, "/@dev/events", (_q: Request<Unrouted>) -> self.events()),
+            fixed(Method.Post, "/@dev/said", (q: Request<Unrouted>) -> self.heard(q)),
         ]
             .concat(shared(self.backend, self.glue_files, glue))
     }
@@ -565,6 +581,8 @@ fn dev_tags(module: int) -> string {
 fn not_watched(why: string) -> string {
     "dev: this host will not watch the page's sources (${why}) — pass `--interval <ms>` to look on a clock"
 }
+
+fn page_said(words: string) -> string { "dev: the page said: ${words}" }
 
 fn build_line(now: Standing, took_ms: int) -> string {
     if now.failure == "" { return "dev: built module ${now.number} — ${now.module.length} bytes in ${took_ms} ms" }

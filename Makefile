@@ -496,7 +496,7 @@ compiler-files:
 	  $(patsubst %.o,%.sha,$(filter %.o,$(COMPILER_OBJS))) $(patsubst %.o,%.d,$(filter %.o,$(COMPILER_OBJS))))
 
 # THE COMPILER FROM WHATEVER STANDS: the standing binary builds this tree
-# twice (one `make avra` advances one generation), and where none stands or
+# GENS times (one `make avra` advances one generation; two reach a fixed point), and where none stands or
 # it cannot read the tree — new syntax, a refusal about its own source — the
 # seed bootstraps it, a FULL build, so a source wrong for real still dies.
 # RUNGS are the tree's `Rung:` commits, oldest first (tools/rungs.sh): each is
@@ -513,16 +513,17 @@ LADDER_BASE ?=
 GEN_BOUND ?=
 LADDER_BOUND ?= 900
 STORE_ASIDE ?=
+GENS ?= 2
 BOUNDED = $(if $(GEN_BOUND),sh tools/bounded.sh $(GEN_BOUND) )
 compiler:
-	@if [ -n "$(strip $(RUNGS))" ]; then \
+	@gens() { n=$(GENS); while [ "$$n" -gt 0 ]; do $(BOUNDED)$(MAKE) -s avra || return 1; n=$$((n - 1)); done; }; \
+	if [ -n "$(strip $(RUNGS))" ]; then \
 	  [ -x build/avra ] || $(MAKE) -s recover || { echo "compiler: the ladder has no start — none stands and the seed did not link"; exit 1; }; \
 	  product=$$(AVRA_LADDER_BASE=$(LADDER_BASE) AVRA_LADDER_S=$(LADDER_BOUND) sh tools/ladder.sh build/avra $(RUNGS)) \
 	    || { echo "compiler: the ladder failed — a rung did not build with the compiler of the rung before it"; exit 1; }; \
 	  cp "$$product" build/avra-ladder && cp "$$product" build/avra; \
-	  $(BOUNDED)$(MAKE) -s avra && $(BOUNDED)$(MAKE) -s avra \
-	    || { echo "compiler: the ladder's product did not build this tree — no seed can read a rung"; exit 1; }; \
-	elif [ -x build/avra ] && $(BOUNDED)$(MAKE) -s avra && $(BOUNDED)$(MAKE) -s avra; then :; else \
+	  gens || { echo "compiler: the ladder's product did not build this tree — no seed can read a rung"; exit 1; }; \
+	elif [ -x build/avra ] && gens; then :; else \
 	  if [ -n "$(STORE_ASIDE)" ] && [ -d .avra-cache ]; then mv .avra-cache "$(STORE_ASIDE)"; fi; \
 	  echo "compiler: the standing compiler did not build this tree — bootstrapping from the seed"; \
 	  $(BOUNDED)$(MAKE) -s bootstrap; \
@@ -718,6 +719,7 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/store_quiet_attack.sh
 	@sh tools/store_seal_attack.sh
 	@sh tools/store_index_attack.sh
+	@sh tools/stale_imports_attack.sh
 	@sh tools/fn_add_attack.sh
 	@sh tools/host_fn_edit_attack.sh
 	@sh tools/suspect_narrow_attack.sh
@@ -1125,8 +1127,8 @@ ui-browser-skip:
 
 # THE LAYOUT SOLVER AGAINST THE WEB TARGET: std-ui's `place` and Firefox running
 # the page the real html realizer writes, on the same random trees (fixed seeds),
-# every box in agreement (tools/layout-oracle). Skips, spoken, where Firefox or
-# node is absent.
+# every box in agreement (tools/layout-oracle). Fails where Firefox or node is
+# absent, unless LAYOUT_ORACLE_SKIP=<reason> stands it down.
 layout-oracle:
 	@sh tools/layout_oracle.sh
 

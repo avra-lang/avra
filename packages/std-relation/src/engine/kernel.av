@@ -230,6 +230,10 @@ export type Kernel = {
     saved: Cell<fn(Key) -> Saved?>,
     /// The saved answers being stood on now, as edges: a read that returns to one is a miss.
     restoring: Cell<List<int>>,
+    /// What each unsaved key stands for, by edge: its leaves, kept while a flush gathers every
+    /// noted answer's reads, so a key many answers read is walked once. `None` is a refusal.
+    standing_on: Cell<Map<string, List<SavedRead>>>,
+    refused: Cell<Map<string, bool>>,
     /// The LAST-READER STAMP of every key, laid out as `cells` is: the
     /// reader id that last recorded it, 0 for none. A row only grows
     /// (`read_any`).
@@ -296,6 +300,8 @@ export fn new_kernel() -> Kernel {
         by_dispatch: Cell.new(no_dispatch),
         saved: Cell.new(unsaved),
         restoring: list_cell(),
+        standing_on: map_cell(),
+        refused: map_cell(),
         stamps: list_cell(),
         minted: Cell.new(0),
         asker: new_asker(),
@@ -607,32 +613,60 @@ impl Kernel {
     /// stands for what IT read — down to reads that do. Absent when a read has no hash, or
     /// an unsaved one has no cell to descend into.
     fn saved_reads(key: Key, stands: fn(Key) -> bool) -> List<SavedRead>? {
+        self.leaves_of_edges(self.edges_of(key) ?? [], stands, edge_of(key))
+    }
+
+    /// Every distinct leaf under `edges`, each unsaved key's walk done once and remembered
+    /// (`forget_standing` ends the memory); `from` is the key being walked, so a read that
+    /// returns to it adds nothing.
+    fn leaves_of_edges(edges: List<int>, stands: fn(Key) -> bool, from: int) -> List<SavedRead>? {
+        let met: Cell<Map<string, bool>> = map_cell()
+        met.put("${from}", true)
         let out: Cell<List<SavedRead>> = list_cell()
-        let seen: Cell<List<int>> = list_cell()
-        if !self.gathered(self.edges_of(key) ?? [], stands, out, seen) { return null }
+        for e in edges {
+            let below? = self.leaves_below(e, stands) else { return null }
+            for r in below {
+                let id = "${edge_of(r.key)}"
+                if met.get().get(id) == null {
+                    met.put(id, true)
+                    out.push(r)
+                }
+            }
+        }
         out.get()
     }
 
-    /// `saved_reads`' walk: the edges kept or descended into, each key once.
-    fn gathered(
-        edges: List<int>,
-        stands: fn(Key) -> bool,
-        out: Cell<List<SavedRead>>,
-        seen: Cell<List<int>>,
-    ) -> bool {
-        for e in edges {
-            if seen.get().contains(e) { continue }
-            seen.push(e)
-            let k = key_of(e)
-            if stands(k) {
-                let h? = self.hash_forced(k) else { return false }
-                out.push(SavedRead { key: k, digest: h })
-                continue
-            }
-            let below? = self.edges_of(k) else { return false }
-            if !self.gathered(below, stands, out, seen) { return false }
+    /// One edge's leaves: itself when it stands for an answer of its own, else what it read.
+    fn leaves_below(e: int, stands: fn(Key) -> bool) -> List<SavedRead>? {
+        let at = "${e}"
+        if self.refused.get().get(at) != null { return null }
+        let known = self.standing_on.get().get(at)
+        if known != null { return known }
+        let k = key_of(e)
+        let made: List<SavedRead>? = if stands(k) {
+            let h? = self.hash_forced(k) else { return self.refusing(at) }
+            [SavedRead { key: k, digest: h }]
+        } else {
+            // a read with no row of its own and nothing it read is an input nothing names: refused
+            let below? = self.edges_of(k) else { return self.refusing(at) }
+            if below.is_empty() { return self.refusing(at) }
+            self.standing_on.put(at, [])
+            self.leaves_of_edges(below, stands, e)
         }
-        true
+        let leaves? = made else { return self.refusing(at) }
+        self.standing_on.put(at, leaves)
+        leaves
+    }
+
+    fn refusing(at: string) -> List<SavedRead>? {
+        self.refused.put(at, true)
+        null
+    }
+
+    /// The memory of `saved_reads`' walks ends: the next flush gathers afresh.
+    fn forget_standing() {
+        self.standing_on.set({})
+        self.refused.set({})
     }
 
     /// The first of `cell`'s dependencies that moved since it was verified, as an edge; -1 for none.
