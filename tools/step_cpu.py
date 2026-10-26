@@ -22,6 +22,7 @@ HELD = re.compile(r"\bheld (\d+)/(\d+)\b")
 
 
 HIT = re.compile(r"\bcache hit\b")
+PHASE = re.compile(r"\b(?:analyze|lower|keep|emit|link) (\d+)ms\b")
 
 
 def state_of(text):
@@ -56,9 +57,15 @@ def cpu_tag(cpuinfo=None):
     return "-".join(words[:3]) or platform.machine().lower() or "unknown"
 
 
-def metric(label, state, tag=""):
+def phases_of(text):
+    """The compile's own seconds: analyze, lower, keep, emit and link, summed over every `time:` line. A suite
+    that runs sockets spends the rest of its step waiting on them, which varies without the compiler moving."""
+    return sum(int(m.group(1)) for l in text.splitlines() if l.startswith("time:") for m in PHASE.finditer(l)) // 1000
+
+
+def metric(label, state, tag="", kind="cpu"):
     stem = re.sub("[^a-z0-9-]+", "-", label.lower()).strip("-")
-    return "cpu-%s%s%s" % (tag + "-" if tag else "", stem, "-" + state if state else "")
+    return "%s-%s%s%s" % (kind, tag + "-" if tag else "", stem, "-" + state if state else "")
 
 
 def self_test():
@@ -78,6 +85,9 @@ def self_test():
     assert cpu_tag("processor : 0\nmodel name\t: AMD EPYC 7763 64-Core Processor\n") == "epyc-7763"
     assert cpu_tag("model name : Intel(R) Xeon(R) Platinum 8272CL CPU @ 2.60GHz") == "xeon-platinum-8272cl"
     assert cpu_tag("nothing here") == platform.machine().lower()
+    assert phases_of("time: ast 5ms, analyze 4022ms, lower 1490ms, keep 3976ms, emit 5364ms, link 66ms\nnoise\ntime: analyze 900ms") == 15
+    assert phases_of("no time lines") == 0
+    assert metric("std-ui_http", "cold", "epyc-7763", "phases") == "phases-epyc-7763-std-ui-http-cold"
     print("step_cpu: self-test passed — warm/cold/none read from the held lines, the state and the CPU model ride the name")
     return 0
 
@@ -101,8 +111,12 @@ def main(argv):
     rc = proc.wait()
     u = resource.getrusage(resource.RUSAGE_CHILDREN)
     print("%s: peak %d KB max RSS" % (label, u.ru_maxrss))
+    text = "".join(seen)
+    state = state_of(text) if stated else ""
     with open("speed.log", "a") as f:
-        f.write("speed %s %d\n" % (metric(label, state_of("".join(seen)) if stated else "", cpu_tag()), u.ru_utime + u.ru_stime))
+        f.write("speed %s %d\n" % (metric(label, state, cpu_tag()), u.ru_utime + u.ru_stime))
+        if stated:
+            f.write("speed %s %d\n" % (metric(label, state, cpu_tag(), "phases"), phases_of(text)))
     return rc
 
 
