@@ -1,0 +1,41 @@
+// A notice is never lost to a read that failed: when the database cannot say which tables were written, the stream
+// waits and asks again, and says nothing false meanwhile; one that stays unreadable ends the stream.
+use @std.crud.routes.{Ledger, hub}
+use @std.http_message.message.{Version}
+use @std.http.sse.{Next, Resume}
+use @std.time.{ms}
+
+/// A database standing at 1, whose first `failures` reads of what was written fail.
+fn unreliable(failures: int) -> Ledger {
+    let asked = Cell.new(0)
+    Ledger {
+        stand: () -> 1,
+        version: (_read: List<string>, _now: int) -> null,
+        touched: (_since: int) -> {
+            asked.set(asked.get() + 1)
+            if asked.get() <= failures { null } else { ["Job"] }
+        },
+    }
+}
+
+/// What the stream says first, which says where the database stands and the tables written since the cursor.
+fn first(failures: int) -> string {
+    let h = hub(unreliable(failures), ["Job"], ms(5))
+    match h.resume("0") {
+        .From(s) or .Expired(_, s) -> { match s.next(ms(200)) {
+                .Event(e) -> e.data,
+                .Quiet -> "quiet",
+                .End -> "end",
+                .Failed -> "failed",
+            } },
+    }
+}
+
+spec "crud hub" {
+    given "a read of what was written that fails once" {
+        then "the notice still names the table" { first(1) == "Job" }
+    }
+    given "a read that keeps failing" {
+        then "the stream fails rather than say nothing" { first(1000) == "failed" }
+    }
+}
