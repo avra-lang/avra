@@ -319,6 +319,7 @@ name = "app"
 version = "0.1.0"
 
 [dependencies]
+"@std/meta" = { path = "vendor/meta" }
 "@x/near" = { path = "vendor/near" }
 "@x/far" = { path = "vendor/far" }
 
@@ -330,8 +331,8 @@ use @x.far.{helper}
 
 ```
 error[lower.host_fn_answers]: `page_row` is `@x/near`'s to name, and `@x/far` answers it — only the package that names an extern, or the program's own, answers it
-  ╭─[/w/vendor/far/src/far.av:4:1]
-4 │ extern fn page_row(n: int) -> int {
+  ╭─[/w/vendor/far/src/far.av:6:1]
+6 │ extern fn page_row(n: int) -> int {
   · ┬
   · ╰── answered here
 ──╯
@@ -349,6 +350,7 @@ name = "app"
 version = "0.1.0"
 
 [dependencies]
+"@std/meta" = { path = "vendor/meta" }
 "@x/near" = { path = "vendor/near" }
 "@x/far" = { path = "vendor/far" }
 
@@ -362,12 +364,46 @@ extern fn page_row(n: int) -> int {
 
 ```
 error[lower.host_fn_unasked]: the host fn `far_event` of `@x/far` would be this program's export, and the program's own sources never import `@x/far`
+  ╭─[/w/vendor/far/src/far.av:6:1]
+6 │ extern fn far_event(n: int) -> int {
+  · ┬
+  · ╰── declared here
+──╯
+help: import from `@x/far` in the program's own package — that says its host fns speak for this program — or drop the dependency that brings it
+```
+
+## lower.host_fn_unhosted
+
+a dependency's host fn names the host that calls it, so a build exports it only beside that host
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+"@x/near" = { path = "vendor/near" }
+"@x/far" = { path = "vendor/far" }
+
+// /w/src/main.av
+use @x.near.{used}
+use @x.far.{helper}
+extern fn page_row(n: int) -> int {
+    n
+}
+"${used(helper(1))}"
+```
+
+```
+error[lower.host_fn_unhosted]: the host fn `far_event` of `@x/far` names no host, so no build can say whose it is
   ╭─[/w/vendor/far/src/far.av:4:1]
 4 │ extern fn far_event(n: int) -> int {
   · ┬
   · ╰── declared here
 ──╯
-help: import from `@x/far` in the program's own package — that says its host fns speak for this program — or drop the dependency that brings it
+help: mark it with `@host(Host.Page)` (`@std/meta`) — the host that calls it by name
 ```
 
 ## type.type_value
