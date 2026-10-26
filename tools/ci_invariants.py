@@ -326,7 +326,7 @@ def check_compiler_route(work_text, remote_text):
     published = remote_text.find('"${route%%:*}" = published')
     merged = remote_text.find('"${route%%:*}" = mergebase')
     build = remote_text.find("building this tree's compiler")
-    seed = remote_text.find("make -s compiler GENS=1")
+    seed = remote_text.find("make -s compiler GENS=1", max(merged, 0))
     if min(published, merged) < 0:
         refusals.append("the Sprite's prep does not install a published compiler for a route")
     elif build < 0 or build < max(published, merged):
@@ -938,7 +938,8 @@ rt-header:
     published_gone = real_remote.replace('"${route%%:*}" = published', '"${route%%:*}" = never', 1)
     assert published_gone != real_remote
     assert any("published" in x for x in check_compiler_route(real_work, published_gone)[0]), check_compiler_route(real_work, published_gone)
-    no_seed = real_remote.replace("make -s compiler GENS=1", "make -s avra", 1)
+    head, _, tail = real_remote.rpartition("make -s compiler GENS=1")
+    no_seed = head + "make -s avra" + tail
     assert no_seed != real_remote
     assert any("seed" in x for x in check_compiler_route(real_work, no_seed)[0]), check_compiler_route(real_work, no_seed)
 

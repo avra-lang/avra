@@ -460,6 +460,26 @@ supervise() {
             else
                 echo "sprite-run: no published compiler for the merge-base (key ${route#builder:}) — run without --builder" >&2; exit 70
             fi
+        elif [ "${route%%:*}" = builderold ]; then
+            # The MERGE-BASE's own source, built once from an older published compiler and kept by the
+            # merge-base's key, is the builder: stable for the lane's whole life, shared by every lane on
+            # that base. The lane's tree is never built for the run.
+            anc=${route#builderold:}; mbk=${anc#*:}; anc=${anc%%:*}
+            mbt=$home/avra-mb/$mbk
+            if [ ! -x "$mbt/build/avra" ]; then
+                s0=$(date +%s)
+                mkdir -p "$mbt" && tar -xzf "$home/avra-mb/$mbk.tgz" -C "$mbt" \
+                    && (FETCH_BUILD="$mbt/build" sh "$remote/tools/fetch_compiler.sh" --key "$anc" >&2 && cd "$mbt" && make -s compiler GENS=1) >> "$rd/probe.log" 2>&1 \
+                    || { echo "sprite-run: the merge-base's source (key $mbk) did not build from the published ancestor $anc — see $rd/probe.log" >&2; exit 70; }
+                echo "sprite-run: merge-base builder $mbk built once from $anc ($(($(date +%s) - s0))s)" >&2
+            fi
+            if [ -x build/avra ] && cmp -s "$mbt/build/avra" build/avra; then
+                compiler="builder, warm (merge-base $mbk, built once from $anc)"
+            else
+                cp -p "$mbt/build/avra" build/avra
+                : > build/.avra-compiler-hash
+                compiler="builder, merge-base $mbk (built once from $anc, shared)"
+            fi
         elif [ -x build/avra ] && [ "$(cat build/.avra-compiler-hash 2>/dev/null)" = "$chash" ]; then
             compiler=warm
         elif [ "${route%%:*}" = published ] && install_published "${route#published:}"; then

@@ -285,6 +285,30 @@ holds "hashC $old_at"
 AVRA_DEPOT_KEEP=1 AVRA_COMPILER_DEPOT="$dp2" sh "$slw" deposit "$sl/held"
 check "$(ls "$dp2" | tr '\n' ' ')" "hashC " "work deposit: only the newest AVRA_DEPOT_KEEP entries stay" "$scratch/out"
 
+# THE BUILDER IS MATCHED BY COMPILER KEY: the merge-base's own key when published, else the nearest published
+# ancestor key and how far back it is, else nothing. The fetch tool is a stub keyed by a file in each commit.
+bk=$scratch/bk
+git init -q -b main "$bk"
+mkdir -p "$bk/tools"
+cat > "$bk/tools/fetch_compiler.sh" <<'STUB'
+#!/bin/sh
+case "$1" in
+    --key-of) echo "k-$(git show "$2:keyfile")" ;;
+    --probe) grep -qx "$2" "$PUBLISHED" ;;
+esac
+STUB
+bkg() { git -C "$bk" -c user.name=t -c user.email=t@t "$@"; }
+echo old > "$bk/keyfile"; bkg add -A; bkg commit -q -m a
+echo new > "$bk/keyfile"; bkg commit -q -am b
+echo new > "$bk/keyfile2"; bkg add -A; bkg commit -q -m c
+bkg update-ref refs/remotes/origin/main HEAD
+echo k-old > "$scratch/published"
+check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bk")" "k-old ancestor 2" "work builder-key: an unpublished key takes the nearest published ancestor, and says how far back" "$scratch/out"
+printf 'k-old\nk-new\n' > "$scratch/published"
+check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bk")" "k-new exact" "work builder-key: the merge-base's own key, published, is exact (a commit with no compiler change shares it)" "$scratch/out"
+: > "$scratch/published"
+check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bk")" "" "work builder-key: nothing published answers nothing" "$scratch/out"
+
 # MAIN'S COMPILER, ONCE PER SOURCE: the first run builds and deposits, the second finds the depot holding it.
 mcd=$scratch/mc/depot
 mcb='mkdir -p build && echo bin > build/avra && chmod +x build/avra && sh '"$slw"' built-from . > build/.avra-built-from && echo built >> '"$scratch"'/mc-builds'
