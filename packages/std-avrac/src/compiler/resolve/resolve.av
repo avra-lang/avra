@@ -150,8 +150,19 @@ impl ResolveCx {
     mut fn open_tparams(s: StmtId) -> int {
         let at = self.tnames.length
         // LICENSED loops.push_loop: pushing through the field alias — concat would rebind the local
-        for n in self.view.store.tparams_in_scope(s) { self.tnames.push(n) }
+        for n in self.tparams_in_scope(s) { self.tnames.push(n) }
         at
+    }
+
+    /// The type parameters `s` brings into scope: those it writes, and an
+    /// impl that writes none on a generic target serves the whole generic,
+    /// so its bodies see the target's own.
+    fn tparams_in_scope(s: StmtId) -> List<string> {
+        let written = self.view.store.tparams_in_scope(s)
+        if !written.is_empty() { return written }
+        let target? = self.view.store.impl_parts(s)?.target else { return [] }
+        let d? = self.facts.names.type_decl(target) else { return [] }
+        self.view.decls.tparams(d)
     }
 
     /// The scope back where it stood; a read of a type parameter that
