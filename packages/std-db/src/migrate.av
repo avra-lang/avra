@@ -55,6 +55,27 @@ export fn diff(stored: Shape?, declared: Shape, renames: List<Renamed>) -> Plan 
     }
 }
 
+/// Every declared table's plan against the shapes a database holds, in
+/// declared order. A live table nothing declares is not this diff's business.
+export fn plan_all(declared: List<Shape>, live: List<Shape>, renames: List<Renamed>) -> List<Plan> {
+    [diff(live.find(it.name == d.name), d, renames) for d in declared]
+}
+
+/// Whether a plan has nothing to say: no step to apply and nothing that moves.
+export fn is_current(p: Plan) -> bool { p.steps.is_empty() && p.moving.is_empty() }
+
+/// What a diff says, line by line: each table that is not current, the
+/// statements that would bring it there, and what needs an author.
+export fn report(plans: List<Plan>) -> List<string> {
+    [l for p in plans if !is_current(p) for l in lines_of(p)]
+}
+
+fn lines_of(p: Plan) -> List<string> {
+    ["${p.name}:"]
+        .concat(["  ${s};" for s in statements(p)])
+        .concat(["  ! ${w}" for w in refusals(p)])
+}
+
 /// A declared column and the recorded one it continues, if any.
 type Pair = { now: ColumnFacts, was: ColumnFacts?, renamed: bool }
 

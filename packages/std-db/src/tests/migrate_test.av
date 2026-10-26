@@ -3,7 +3,17 @@
 // statement and word is written by hand from the law.
 use @std.db.{model}
 use @std.db.shape.{Shape, shape_read, shape_text}
-use @std.db.migrate.{Plan, Renamed, Moving, diff, grows_alone, statements, refusals}
+use @std.db.migrate.{
+    Plan,
+    Renamed,
+    Moving,
+    diff,
+    grows_alone,
+    is_current,
+    plan_all,
+    statements,
+    refusals,
+}
 
 @model
 type Note = {
@@ -192,6 +202,51 @@ spec "std/db migrate" {
         then "and renders to the very text it was read from" {
             let s = shape_read(Note.shape())!
             shape_text(s.name, s.columns) == Note.shape()
+        }
+    }
+    given "the whole program against a database" {
+        then "a table the database lacks is created" {
+            let plans = plan_all([shape(base())], [], [])
+            plans.length == 1 && !is_current(plans[0]) && statements(plans[0]).length == 1
+        }
+        then "a database that already has every declared table is current" {
+            plan_all([shape(base())], [shape(base())], []).all(is_current(it))
+        }
+        then "an added column is a step and nothing moves" {
+            let p = plan_all(
+                [shape(base().concat(["n|INTEGER|null|-|-|-|-|-"]))],
+                [shape(base())],
+                [],
+            )[0]
+            statements(p).length == 1 && moves(p) == "" && !is_current(p)
+        }
+        then "a dropped column moves" {
+            moves(plan_all([shape(without_title())], [shape(base())], [])[0]) == "dropped:title"
+        }
+        then "a renamed column without its hint is refused as a drop" {
+            let renamed = [KEY, VERSION, "name|TEXT|notnull|-|-|-|-|-"]
+            moves(plan_all([shape(renamed)], [shape(base())], [])[0]) == "required:name,dropped:title"
+        }
+        then "under its hint it is renamed in place" {
+            let renamed = [KEY, VERSION, "name|TEXT|notnull|-|-|-|-|-"]
+            let p = plan_all(
+                [shape(renamed)],
+                [shape(base())],
+                [Renamed { from: "title", to: "name" }],
+            )[0]
+            moves(p) == "" && statements(p).length == 1
+        }
+        then "a type change moves" {
+            moves(
+                plan_all(
+                    [shape([KEY, VERSION, "title|INTEGER|notnull|-|-|-|-|-"])],
+                    [shape(base())],
+                    [],
+                )[0],
+            ) == "retyped:title"
+        }
+        then "a live table nothing declares is left alone" {
+            plan_all([shape(base())], [shape(base()), shape_read("other\n${KEY}")!], []).length == 1
         }
     }
 }
