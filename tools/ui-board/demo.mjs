@@ -113,7 +113,7 @@ const drain = async () => { await settle(); await answered(); frame(); };
 const footerWords = () => every(mount, (n) => n.tagName === "#text" && n.textContent.includes("open ·")).map((n) => n.textContent)[0] || "";
 
 claim("the first paint is the board with no tasks: the server holds them", keyed("1") === null && textOf(mount).includes("Nothing here yet."), shape(mount).slice(0, 80));
-claim("the page asks the server for its tasks at start, with a GET for /tasks", asked.length === 1 && asked[0].url === "/tasks" && asked[0].init.method === "GET", `${asked.length}`);
+claim("the page asks the server for its tasks at start, with a GET for /tasks", asked.length === 1 && asked[0].url.startsWith("/tasks") && asked[0].init.method === "GET", `${asked.length}`);
 for (const title of ["Draft the spec", "Wire the event channel", "Land the wasm board", "Write the tour"]) seeded(title, title.startsWith("Draft") || title.startsWith("Write"));
 await drain();
 claim("the server's tasks are the board's: four rows, under the server's keys", ["1", "2", "3", "4"].every((k) => keyed(k) !== null), shape(mount).slice(0, 80));
@@ -173,6 +173,21 @@ fire(field);
 fire(add);
 await drain();
 claim("a 12000-octet title is kept whole by the server and shown whole", keyed("6") !== null && textOf(keyed("6")).includes(long) && table.rows.at(-1).title === long);
+spent();
+
+// A BURST OF TICKS goes out in click order, one at a time: the task's first change, and only the last
+// of the rest, each sent when the one before it has been answered, so the server ends as the last click left it.
+const burst = named("Wire the event channel")[0];
+for (const on of [false, true, false, true]) { burst.checked = on; fire(burst); }
+await settle();
+const wording_of = (ask) => wording(ask.init);
+claim("four quick ticks send one PATCH and the rest wait", asked.length === 1 && asked[0].init.method === "PATCH" && wording_of(asked[0]).done === false, `${asked.map((a) => a.init.method + " " + a.url)}`);
+const sentFirst = asked.shift();
+sentFirst.resolve(answer(sentFirst));
+await settle();
+claim("its answer sends the last tick alone, and asks for no list yet", asked.length === 1 && asked[0].init.method === "PATCH" && wording_of(asked[0]).done === true && table.rows.find((r) => r.id === 2).done === false, `${asked.map((a) => a.init.method + " " + a.url)}`);
+await drain();
+claim("the server holds the last click's state, and the list was asked for once the run was over", table.rows.find((r) => r.id === 2).done === true && asked.length === 0);
 spent();
 
 // A MODE IS A WHOLE SHEET: the theme's variables move and no element does.

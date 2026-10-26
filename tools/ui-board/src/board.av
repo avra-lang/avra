@@ -65,7 +65,10 @@ state newest_first: bool = false
 state dialog_open: bool = false
 state reminded: bool = false
 state asked: List<Fetch<List<Todo>>> = []
+state loads: int = 0
 state refused: string = ""
+state sending: List<string> = []
+state waiting: Map<string, Request> = {}
 
 // ── the state a page carries ────────────────────────────────────
 
@@ -163,9 +166,9 @@ fn add(title: string) {
 }
 
 /// The task is sent with the state the box now shows.
-fn mark(t: Todo, done: bool) { save(Request.patch("/tasks/${t.id}", row_of(t.title, done))) }
+fn mark(t: Todo, done: bool) { change(t.id, Request.patch("/tasks/${t.id}", row_of(t.title, done))) }
 
-fn remove(t: Todo) { save(Request.delete("/tasks/${t.id}")) }
+fn remove(t: Todo) { change(t.id, Request.delete("/tasks/${t.id}")) }
 
 // ── view: state in, tree out ────────────────────────────────────
 
@@ -325,12 +328,14 @@ fn loaded(r: Reply) -> Result<List<Todo>, string> {
     .Ok([t! for t in [todo_of(j) for j in doc.items()] if t != null])
 }
 
-/// The server's tasks are asked for: at start, and after every change. The
-/// last answer stands until the new one comes, so the list is never drawn empty between.
+/// The server's tasks are asked for: at start, and after every change. Each ask
+/// names its own observation, so the answer already drawn stands until the new one
+/// lands and the list is never drawn empty between.
 fn load() {
     let next: Fetch<List<Todo>> = fetch()
     asked = [next].concat([f for f in asked if f.value() != null].take(1))
-    let _ = fetched(next, Request.get("/tasks"), loaded)
+    loads = loads + 1
+    let _ = fetched(next, Request.get("/tasks?ask=${loads}"), loaded)
 }
 
 /// A change was answered. Whatever it answered, the board shows the
@@ -342,10 +347,36 @@ fn saved(r: Reply) -> Result<int, string> {
     if held == "" { .Ok(r.status) } else { .Err(held) }
 }
 
-/// A change is sent through the server's doors. Each is its own ask, so
-/// none's answer is dropped for a later one's.
+/// A change with no task yet is sent through the server's doors at once.
 fn save(request: Request) {
     let _ = fetched(fetch<int>(), request, saved)
+}
+
+/// A change to a task goes out when the task's last one has been answered, so the
+/// server meets them in click order; one still waiting is replaced by a later click,
+/// so a burst sends its first change and its last.
+fn change(id: string, request: Request) {
+    if sending.contains(id) {
+        waiting.set(id, request)
+        return
+    }
+    sending = sending.concat([id])
+    let _ = fetched(fetch<int>(), request, (r: Reply) -> answered(id, r))
+}
+
+/// A change to a task was answered: the next one waiting goes out, and only the last of a run refreshes the list.
+fn answered(id: string, r: Reply) -> Result<int, string> {
+    let held = if r.status < 200 || r.status > 299 { "status ${r.status}" } else { "" }
+    refused = held
+    sending = [s for s in sending if s != id]
+    let verdict: Result<int, string> = if held == "" { .Ok(r.status) } else { .Err(held) }
+    let next? = waiting.get(id) else {
+        load()
+        return verdict
+    }
+    waiting.remove(id)
+    change(id, next)
+    verdict
 }
 
 /// How the last change stands, in words.

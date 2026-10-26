@@ -138,7 +138,7 @@ claim("a closed dialog is not drawn, whatever its classes say", await styled(`do
 await read(`document.querySelectorAll("li").forEach((li) => { li.witness = li.dataset.key; }), 1`);
 await press(`${row(k3)}.querySelector("button")`);
 claim("pressing a row's Remove takes that row alone, once the server has answered", await keys_become([k1, k2, k4].join()) === [k1, k2, k4].join(), await keys());
-claim("the row below is the same element: nothing rebuilt it", await read(`${row(k4)}.witness`) === k4);
+claim("the row below is the same element: nothing rebuilt it", await read(`${row(k4)}.witness`) === k4, await read(`[...document.querySelectorAll("li")].map((li) => li.dataset.key + ":" + li.witness)`));
 claim("and the server no longer holds the task", !(await (await fetch(url + "tasks")).json()).some((t) => String(t.id) === k3));
 
 await press(named("Wire the event channel"));
@@ -293,6 +293,7 @@ await page.close();
     return { seen, complaints };
   };
   await waits(`document.body.textContent.includes("Nothing here yet.")`);
+  await watch(board);
   claim("a server holding no tasks leaves the board with none", (await drawn(board)).length === 0, await drawn(board));
   await board.press(named("New task"));
   await board.type(..."Buy milk");
@@ -302,6 +303,15 @@ await page.close();
   claim("and a page loaded again shows it", again.seen.length === 1 && again.seen[0].words.includes("Buy milk") && !again.seen[0].done, again.seen);
   await board.press(named("Buy milk"));
   claim("a task ticked is ticked on the server: a page loaded again shows it done", await (async () => { const r = await reloaded((rows) => rows.length === 1 && rows[0].done); return r.seen.length === 1 && r.seen[0].done; })());
+  // Writes to one task go out in click order, each after the last was answered: a burst sends its first
+  // change and its last, and the server ends as the last click left it.
+  const logged = await board.read(`window.__log.length`);
+  await board.read(`(() => { const box = document.querySelector('[aria-label="Buy milk"]'); box.click(); box.click(); box.click(); return 1; })()`);
+  await agreed(board);
+  const patches = (await board.read(`window.__log.slice(${logged})`)).filter((entry) => entry.startsWith("> PATCH")).length;
+  claim("three quick ticks send two writes at most", patches >= 1 && patches <= 2, patches);
+  again = await reloaded((rows) => rows.length === 1 && !rows[0].done);
+  claim("and a page loaded again shows the state the last click left: three ticks undo one", again.seen.length === 1 && !again.seen[0].done, again.seen);
   await board.press(`document.querySelector("li button")`);
   claim("a task removed is gone from the board once the server has answered", await waits(`document.querySelectorAll("li").length === 0`), await drawn(board));
   again = await reloaded((rows) => rows.length === 0);
