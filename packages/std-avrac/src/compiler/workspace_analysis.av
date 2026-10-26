@@ -455,7 +455,11 @@ impl Workspace {
     /// the ask and settle it.
     fn lowered_in(fam: Family, id: int) -> Unit {
         match self.relation(fam).start_recursive(id) {
-            .Reuse(value) -> { return lowered_of(value) },
+            .Reuse(value) -> {
+                let unit = lowered_of(value)
+                if !(self.comptime_active() && unit.is_stub()) { return unit }
+                return self.lowered_unit(self.asks.get()[id])
+            },
             .Compute -> nothing(),
         }
         self.hold.lowering.push(id)
