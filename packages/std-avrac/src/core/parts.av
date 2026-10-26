@@ -175,17 +175,20 @@ impl SyntaxArena {
     /// empty when plain. The ordinal IS the Var identity.
     fn decl_tparams(s: StmtId) -> List<string> {
         match self.stmt(s) {
-            .FnDecl(_, tparams, _, _, _) -> [t.name.of for t in tparams],
-            .StructDecl(_, tparams, _) or .NamedType(_, tparams, _) or .Alias(_, tparams, _) or .EnumDecl(_, tparams, _) or .ComponentDecl(_, tparams, _, _, _) -> [t.of for t in tparams],
+            .FnDecl(_, tparams, _, _, _) or .ComponentDecl(_, tparams, _, _, _) -> [t.name.of for t in tparams],
+            .StructDecl(_, tparams, _) or .NamedType(_, tparams, _) or .Alias(_, tparams, _) or .EnumDecl(_, tparams, _) -> [t.of for t in tparams],
             .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .ExternFn(_, _, _) or .ImplDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> [],
             .TraitDecl(_, tparams, _) -> [t.of for t in tparams],
         }
     }
 
-    /// A fn's type parameters WITH their bounds — the constrained
-    /// twin of decl_tparams; empty for every other declaring kind.
+    /// A fn's or a component's type parameters WITH their bounds — the
+    /// constrained twin of decl_tparams; empty for every other kind.
     fn decl_tbounds(s: StmtId) -> List<Param> {
-        match self.stmt(s) { .FnDecl(_, tparams, _, _, _) -> tparams, _ -> [] }
+        match self.stmt(s) {
+            .FnDecl(_, tparams, _, _, _) or .ComponentDecl(_, tparams, _, _, _) -> tparams,
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .ExternFn(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> [],
+        }
     }
 
     /// A block that LEAVES: no value, and a last statement that
@@ -314,7 +317,7 @@ impl SyntaxArena {
         match self.stmt(s) {
             .ComponentDecl(name, tparams, head, members, fns) -> ComponentParts {
                 name: name.of,
-                tparams: [t.of for t in tparams],
+                tparams: [t.name.of for t in tparams],
                 head: head,
                 members: [member_of(p) for p in members],
                 holders: members,
@@ -426,7 +429,7 @@ impl SyntaxArena {
             },
             .ComponentDecl(name, tparams, head, fields, _) -> StructParts {
                 name: name.of,
-                tparams: [t.of for t in tparams],
+                tparams: [t.name.of for t in tparams],
                 fields: head.concat(fields),
                 spreads: [x with { at: x.at + head.length } for x in self.spreads_of(s)],
             },
