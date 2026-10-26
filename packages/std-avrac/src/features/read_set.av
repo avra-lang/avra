@@ -133,7 +133,7 @@ fn here(view: FileView, names: NameFacts, e: ExprId) -> List<StatePlace> {
 fn reads_of(view: FileView, names: NameFacts, root: ExprId) -> List<StatePlace> {
     let own = here(view, names, root)
     if view.store.expr_is_closure(root) { return own }
-    flatten([reads_of(view, names, k) for k in view.store.expr_children(root)]).concat(own)
+    flatten([reads_of(view, names, k) for k in view.store.reached(root)]).concat(own)
 }
 
 /// The places the calls in the subtree reach: a callee this compile can
@@ -153,11 +153,7 @@ export fn call_places_of(
     let method = if applies_method(view.store, root) { [StatePlace.Unknown] } else { [] }
     called
         .concat(method)
-        .concat(
-            flatten(
-                [call_places_of(view, names, k, callee) for k in view.store.expr_children(root)],
-            ),
-        )
+        .concat(flatten([call_places_of(view, names, k, callee) for k in view.store.reached(root)]))
 }
 
 /// What one call reaches: its callee's places, or `Unknown` for a callee no
@@ -200,7 +196,10 @@ fn covered(view: FileView, e: ExprId) -> bool {
 /// of the instance takes.
 fn sited_heads(view: FileView, e: ExprId, answered: fn(ExprId) -> List<ExprId>) -> List<ExprId> {
     match view.store.expr(e) {
-        .Component(_, heads, _, .Expanded(lit), _, _) -> if says_again(view, lit) { heads.take(1) } else { [] }.concat(answered(e)),
+        .Component(_, _, heads, _, _, _) -> {
+            let lit? = view.store.expansion_of(e) else { return [] }
+            if says_again(view, lit) { heads.take(1) } else { [] }.concat(answered(e))
+        },
         rest -> [],
     }
 }
@@ -246,9 +245,7 @@ fn structural_reads(
     let own = here(view, names, root).concat(receiver_reads(names, root))
     if view.store.expr_is_closure(root) { return own }
     let inner = skip.concat(sited_heads(view, root, answered))
-    flatten(
-        [structural_reads(view, names, k, inner, answered) for k in view.store.expr_children(root)],
-    )
+    flatten([structural_reads(view, names, k, inner, answered) for k in view.store.reached(root)])
         .concat(own)
 }
 
@@ -271,7 +268,7 @@ fn structural_calls(
         .concat(method)
         .concat(
             flatten(
-                [structural_calls(view, names, k, inner, callee, answered) for k in view.store.expr_children(root)],
+                [structural_calls(view, names, k, inner, callee, answered) for k in view.store.reached(root)],
             ),
         )
 }
@@ -385,7 +382,7 @@ fn closure_closed(view: FileView, names: NameFacts, lam: ExprId, at: Span) -> bo
 /// Whether every binding the subtree reads is closed, given its span.
 fn closed_in(view: FileView, names: NameFacts, root: ExprId, at: Span) -> bool {
     if view.store.expr_is_closure(root) { return closure_closed(view, names, root, at) }
-    let kids = view.store.expr_children(root)
+    let kids = view.store.reached(root)
     let b? = names.binding(root) else { return kids.all((k) -> closed_in(view, names, k, at)) }
     binding_closed(view, names, b, at) && kids.all((k) -> closed_in(view, names, k, at))
 }
@@ -509,7 +506,7 @@ export fn lowering_plan_of(
         .Tree or .Keyed(_) -> [here]
             .concat(
                 flatten(
-                    [lowering_plan_of(view, names, k, callee) for k in view.store.expr_children(root)],
+                    [lowering_plan_of(view, names, k, callee) for k in view.store.reached(root)],
                 ),
             ),
     }
