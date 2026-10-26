@@ -67,6 +67,10 @@ export type OpenConfig = {
     threading: Threading = .Serialized,
     /// Refuse a path whose final component is a symbolic link.
     no_follow: bool = false,
+    /// How long, in milliseconds, a statement waits for a lock another connection holds before it
+    /// is refused as busy; zero refuses at once. Connections to one file contend as a matter of
+    /// course — the cores of a server, a tool beside it — so a lock held is waited out by default.
+    busy: int = 5000,
 }
 
 impl OpenConfig {
@@ -130,9 +134,17 @@ impl OpenConfig {
         if self.path == ":memory:" { return spent_empty }
         if !self.uri && self.path.starts_with("file:") { return reads_as_uri(self.path) }
         if self.uri && empty_uri_path(self.path) { return spent_empty }
+        if self.busy < 0 { return negative_wait }
         null
     }
 }
+
+/// A busy wait is zero or more milliseconds; none below it is a wait.
+const negative_wait: SqlError = SqlError
+    .refused(
+        Cause.NegativeWait,
+        "a busy wait is zero or more milliseconds — `busy: 0` refuses a held lock at once, and a negative wait names no wait at all",
+    )
 
 const open_readonly: int = 1
 const open_readwrite: int = 2
@@ -275,7 +287,7 @@ export type Db = {
 }
 
 /// The process, file and flags a connection was opened with.
-type Home = { pid: int, path: string, flags: int }
+type Home = { pid: int, path: string, flags: int, busy: int }
 
 /// This process's id.
 extern fn avra_own_pid() -> int
@@ -295,12 +307,12 @@ impl Db {
     /// dies with the connection, which is why it is a VERB and never a
     /// path — a config whose `path =` key went missing must not become
     /// one.
-    static fn memory() -> Result<Db, SqlError> { opened(":memory:", OpenConfig.config_at(":memory:").flags_of()) }
+    static fn memory() -> Result<Db, SqlError> { opened(OpenConfig.config_at(":memory:")) }
 
     /// Every knob, spelled. `open(p)` is `open_with(config_at(p))`.
     static fn open_with(c: OpenConfig) -> Result<Db, SqlError> {
         let _ = barred(c.path_fault())?
-        opened(c.path, c.flags_of())
+        opened(c)
     }
 
     /// The connection closed, and the handle NULLED so it cannot be
@@ -383,7 +395,7 @@ impl Db {
         self.cache.set([])
         self.raw.set(handle)
         self.home.set(home with { pid: now })
-        let _ = patient(self)
+        let _ = patient(self, home.busy)
         handle
     }
 
@@ -416,7 +428,9 @@ extern fn avra_sqlite_sleeps_held()
 /// object even for a FAILED open — its header says so — so a driver
 /// that closes only on success leaks one per failure, and the leak is
 /// invisible because the caller has an error in hand.
-fn opened(path: string, flags: int) -> Result<Db, SqlError> {
+fn opened(c: OpenConfig) -> Result<Db, SqlError> {
+    let flags = c.flags_of()
+    let path = c.path
     avra_sqlite_sleeps_held()
     mut handle: ptr? = null
     let rc = sqlite3_open_v2(path, handle, flags, null)
@@ -424,9 +438,9 @@ fn opened(path: string, flags: int) -> Result<Db, SqlError> {
     if handle == null { fail SqlError.refused(Cause.CantOpen, "SQLite answered success and no handle") }
     let db = Db {
         raw: Cell.new(handle),
-        home: Cell.new(Home { pid: avra_own_pid(), path: path, flags: flags }),
+        home: Cell.new(Home { pid: avra_own_pid(), path: path, flags: flags, busy: c.busy }),
     }
-    let fault: SqlError? = unreadable(db)
+    let fault: SqlError? = patient(db, c.busy) ?? unreadable(db)
     if fault != null {
         let _ = db.close()
         fail fault!
@@ -437,8 +451,8 @@ fn opened(path: string, flags: int) -> Result<Db, SqlError> {
 /// How long a core's connection waits on a lock another core holds: the
 /// cores of one server write one file, so a held lock is contention, not
 /// an error.
-fn patient(db: Db) -> SqlError? {
-    match db.prepare("PRAGMA busy_timeout = 5000") { .Ok(s) -> ran(s), .Err(e) -> e }
+fn patient(db: Db, wait: int) -> SqlError? {
+    match db.prepare("PRAGMA busy_timeout = ${wait}") { .Ok(s) -> ran(s), .Err(e) -> e }
 }
 
 /// T127 CLOSED: the one trivial statement that tells a database from a

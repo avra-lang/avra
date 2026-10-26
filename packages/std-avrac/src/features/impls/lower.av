@@ -11,10 +11,10 @@ fn receiver_reg(mut cx: LowerCx, e: ExprId) -> Reg {
 }
 
 fn method_call_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> Reg {
-    match callee_of(cx.view, cx.type_at(subject), name) {
+    match subject_callee(cx.view, cx.names, subject, cx.type_at(subject), name) {
         .Variant(_, _) -> built_variant(cx, e, name, args),
         .Static(m, _) -> static_dispatch(cx, e, m, args),
-        .Bounded(_, _, _) -> cx.lower_defect(e, "a bounded receiver survived mono"),
+        .Bounded(_, _, _) or .BoundStatic(_, _, _) -> cx.lower_defect(e, "a bounded receiver survived mono"),
         .Contract(tdecl, _) -> dyn_dispatch(cx, e, subject, tdecl, name, args),
         .FnField(slot, fty) -> fielded_dispatch(cx, e, subject, slot, fty, args),
         .Row(r) -> r.lower(cx, MethodCall { e: e, subject: subject, args: args }),
@@ -35,11 +35,12 @@ fn dyn_dispatch(
     args: List<ExprId>,
 ) -> Reg {
     let ordinal = cx.view.decls.trait_method_names(tdecl).index_of(name)
-    if ordinal < 0 { return cx.lower_defect(e, "a dyn method outside its trait survived typing") }
+    let member: DeclId? = cx.view.decls.trait_member(tdecl, name)
+    if ordinal < 0 || member == null { return cx.lower_defect(e, "a dyn method outside its trait survived typing") }
     let s = seated(cx, subject, args)
     let data = boxed_value(cx, subject, s.recv, dyn_writes(cx, tdecl, name))
     let fp = cx.slot_read(s.recv, 1 + ordinal, null)
-    cx.call_ptr_at(e, fp, [data].concat(s.args))
+    cx.call_ptr_at(e, fp, [data].concat(cx.seated_regs(e, member!, args, s.args)))
 }
 
 /// Whether the trait member named writes its receiver — a contract's

@@ -201,6 +201,23 @@ settled route 20
 check "$(res route)|$(grep -c '^route-ran$' "$AVRA_SPRITE_HOME/avra-runs/route/out")|$(grep -c 'built once' "$AVRA_SPRITE_HOME/avra-runs/route/out")|$(cat "$route_tree/compiled" 2>/dev/null)|$(left route)" \
       "status 0|1|1|gens=1|0" "a merge-base compiler builds the tree once, through make compiler" "$AVRA_SPRITE_HOME/avra-runs/route/out"
 
+# ══ A BRANCH WITH RUNGS IS BUILT BY THE LADDER, as CI builds it: make compiler gets RUNGS and
+# LADDER_BASE, and tools/ladder.sh is pointed at the repository shipped beside the tree.
+ladder_tree="$scratch/ladder-tree"
+mkdir -p "$ladder_tree"
+cat > "$ladder_tree/Makefile" <<'MK'
+compiler:
+	@mkdir -p build
+	@printf 'fixture compiler\n' > build/avra && chmod +x build/avra
+	@echo "rungs=$(RUNGS)|base=$(LADDER_BASE)|repo=$$AVRA_LADDER_REPO|dir=$$AVRA_LADDER_DIR" > compiled
+compiler-files:
+	@echo build/avra
+MK
+remote start ladder "fixture 0 0" 60 ladder "$ladder_tree" 'ladderhash@build%k1:basec:r1,r2' echo ladder-ran > "$scratch/start"
+settled ladder 20
+check "$(res ladder)|$(cat "$ladder_tree/compiled" 2>/dev/null)" \
+      "status 0|rungs=r1 r2|base=basec|repo=$AVRA_SPRITE_HOME/avra-ladder/k1/repo|dir=$AVRA_SPRITE_HOME/avra-ladder/k1/work" "a branch with rungs builds through make compiler with RUNGS and LADDER_BASE" "$AVRA_SPRITE_HOME/avra-runs/ladder/out"
+
 # ══ A NEW RUN CLEARS THE OLD RECORDS, and a record that never was is `gone`
 begin fresh 60 true > /dev/null
 settled fresh 20

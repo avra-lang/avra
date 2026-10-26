@@ -1,0 +1,43 @@
+// proves: a static member through a bound — `T.kind()` and a `Self`
+// answering static, each answered by the type the parameter stands for,
+// inside a lambda, through a forwarding caller, and at a trait's argument
+
+trait Named {
+    static fn kind() -> string
+    static fn made(n: int) -> Self
+    fn n() -> int
+}
+
+type P = { v: int }
+
+impl Named for P {
+    static fn kind() -> string { "p" }
+    static fn made(n: int) -> P { P { v: n } }
+    fn n() -> int { self.v }
+}
+
+impl Named for int {
+    static fn kind() -> string { "int" }
+    static fn made(n: int) -> int { n + 100 }
+    fn n() -> int { self }
+}
+
+fn shown<T: Named>(x: T) -> string { "${T.kind()}:${T.made(x.n()).n()}" }
+
+// through a lambda, and through a generic caller's own parameter
+fn kinds<T: Named>(xs: List<T>) -> string { xs.map((x) -> T.kind()).join(",") }
+
+fn forwarded<U: Named>(u: U) -> string { shown(u) }
+
+// a generic trait's argument rides the static's answer
+trait Zeroed<X> {
+    static fn zero() -> X
+}
+
+impl Zeroed<int> for P {
+    static fn zero() -> int { 7 }
+}
+
+fn zero_of<T: Zeroed<int>>(_x: T) -> int { T.zero() + 1 }
+
+"${shown(P { v: 3 })} ${shown(4)} ${kinds([P { v: 1 }, P { v: 2 }])} ${forwarded(5)} ${zero_of(P { v: 0 })}"

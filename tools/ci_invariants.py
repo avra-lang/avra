@@ -321,7 +321,7 @@ def check_compiler_route(work_text, remote_text):
     published compiler before it builds one, and a merge-base compiler too old
     to read the tree falls back to the seed. Answers (refusals, words)."""
     refusals = []
-    if 'wire="$wire@$route"' not in work_text or "compiler_route" not in work_text:
+    if 'wire="$wire@$route' not in work_text or "compiler_route" not in work_text:
         refusals.append("`tools/work run` does not put the compiler route on the wire")
     published = remote_text.find('"${route%%:*}" = published')
     merged = remote_text.find('"${route%%:*}" = mergebase')
@@ -932,7 +932,7 @@ rt-header:
     real_work = open(os.path.join(ROOT, "tools", "work"), encoding="utf-8").read()
     real_remote = open(os.path.join(ROOT, "tools", "sprite-remote.sh"), encoding="utf-8").read()
     assert check_compiler_route(real_work, real_remote)[0] == [], check_compiler_route(real_work, real_remote)
-    no_wire = real_work.replace('wire="$wire@$route"', 'wire="$wire"', 1)
+    no_wire = real_work.replace('wire="$wire@$route', 'wire="$wire', 1)
     assert no_wire != real_work
     assert any("wire" in x for x in check_compiler_route(no_wire, real_remote)[0]), check_compiler_route(no_wire, real_remote)
     published_gone = real_remote.replace('"${route%%:*}" = published', '"${route%%:*}" = never', 1)

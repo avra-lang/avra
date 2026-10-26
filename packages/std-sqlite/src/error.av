@@ -183,6 +183,9 @@ export enum Cause {
     /// A `begin` on a connection that already has a transaction open.
     /// Nesting wants a savepoint, which is a later slice.
     TransactionOpen
+    /// A busy wait below zero. A wait is a number of milliseconds, zero meaning none; a negative one names no
+    /// wait at all, and passing it to SQLite would read as the default of a library that was never asked.
+    NegativeWait
 }
 
 /// Why SQLite refused, materialised at the failure site and owning
@@ -310,7 +313,7 @@ impl Cause {
     fn retryable() -> bool {
         match self {
             .Busy(b) -> waiting_clears(b),
-            .Constraint(_) or .Denied(_) or .Mismatch(_, _, _) or .NoColumn(_) or .OutOfRow(_, _) or .OutOfSlots(_, _) or .Unfilled(_, _) or .NotUtf8(_, _) or .NoRow or .ManyRows or .Syntax or .Corrupt or .Full or .TooBig or .Interrupted or .Io(_) or .NoMemory or .CantOpen or .NotADatabase or .Expired or .Defect(_) or .Other(_) or .EmptyPath or .UriPath or .HoldsNul or .ManyStatements or .NoStatement or .RowsDiscarded or .Finalized or .Done or .Closed or .NoTransaction or .TransactionOpen -> false,
+            .Constraint(_) or .Denied(_) or .Mismatch(_, _, _) or .NoColumn(_) or .OutOfRow(_, _) or .OutOfSlots(_, _) or .Unfilled(_, _) or .NotUtf8(_, _) or .NoRow or .ManyRows or .Syntax or .Corrupt or .Full or .TooBig or .Interrupted or .Io(_) or .NoMemory or .CantOpen or .NotADatabase or .Expired or .Defect(_) or .Other(_) or .EmptyPath or .UriPath or .HoldsNul or .ManyStatements or .NoStatement or .RowsDiscarded or .Finalized or .Done or .Closed or .NoTransaction or .TransactionOpen or .NegativeWait -> false,
         }
     }
 
@@ -351,6 +354,7 @@ impl Cause {
             .Closed -> "sqlite.closed",
             .NoTransaction -> "sqlite.no_transaction",
             .TransactionOpen -> "sqlite.transaction_open",
+            .NegativeWait -> "sqlite.negative_wait",
         }
     }
 }

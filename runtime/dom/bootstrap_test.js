@@ -419,10 +419,10 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
     calls.push(call);
     init.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
   });
-  const reply = (status, text) => ({ status, arrayBuffer: async () => new TextEncoder().encode(text).buffer });
+  const reply = (status, text, fields = {}) => ({ status, headers: new Map(Object.entries(fields)), arrayBuffer: async () => new TextEncoder().encode(text).buffer });
   const heard = [];
   const clock = clockAt();
-  const fetches = createFetches(fetchFn, (t, status, octets) => heard.push([t, status, new TextDecoder().decode(octets)]), clock);
+  const fetches = createFetches(fetchFn, (t, status, octets, fields) => heard.push([t, status, new TextDecoder().decode(octets), fields]), clock);
   const settle = async () => { for (let k = 0; k < 6; k++) await Promise.resolve(); };
 
   fetches.get(1n, requestFrame({ method: "POST", url: "/p", headers: [["x-id", "7"]], kind: "text/plain; charset=utf-8", body: utf8("hi") }));
@@ -430,26 +430,26 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   check("a request is sent with its method, fields, content type and body", [calls[0].url, calls[0].init.method, calls[0].init.headers, new TextDecoder().decode(calls[0].init.body)], ["/p", "POST", { "x-id": "7", "content-type": "text/plain; charset=utf-8" }, "hi"]);
   calls[0].resolve(reply(200, "ok"));
   await settle();
-  check("an answer crosses with its status and octets, and the request is forgotten", [heard, fetches.count()], [[[1, 200, "ok"]], 0]);
+  check("an answer crosses with its status and octets, and the request is forgotten", [heard, fetches.count()], [[[1, 200, "ok", ""]], 0]);
 
   fetches.get(2n, requestFrame({ url: "/g" }));
   await settle();
   check("a get carries no body", calls[1].init.body === undefined, true);
   calls[1].resolve(reply(200, "g"));
   await settle();
-  check("a get answers once it is resolved, and is forgotten", [heard[1], fetches.count()], [[2, 200, "g"], 0]);
+  check("a get answers once it is resolved, and is forgotten", [heard[1], fetches.count()], [[2, 200, "g", ""], 0]);
 
   fetches.get(3n, requestFrame({ url: "/n" }));
   await settle();
   calls[2].reject(new Error("offline"));
   await settle();
-  check("a failure crosses as status -1 and its words", heard[2], [3, -1, "offline"]);
+  check("a failure crosses as status -1 and its words", heard[2], [3, -1, "offline", ""]);
 
   fetches.get(4n, requestFrame({ url: "/t", timeoutMs: 20 }));
   await settle();
   clock.advance(25);
   await settle();
-  check("a request past its wait answers -1 and is aborted", [heard[3], calls[3].init.signal.aborted], [[4, -1, "the request timed out"], true]);
+  check("a request past its wait answers -1 and is aborted", [heard[3], calls[3].init.signal.aborted], [[4, -1, "the request timed out", ""], true]);
 
   fetches.get(5n, requestFrame({ url: "/two" }));
   await settle();
@@ -459,11 +459,17 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   check("a request answers once", heard.filter((h) => h[0] === 5).length, 1);
   check("nothing is left held", fetches.count(), 0);
 
+  fetches.get(6n, requestFrame({ url: "/h" }));
+  await settle();
+  calls[5].resolve(reply(200, "b", { etag: '"v1.2"', "x-n": "1" }));
+  await settle();
+  check("a reply's fields cross as name: value lines", heard[heard.length - 1], [6, 200, "b", 'etag: "v1.2"\nx-n: 1']);
+
   // the answer crosses into the program through the seat
   const seen = [];
-  const mod = { memory: { buffer: new ArrayBuffer(64) }, [HOST.seat]: (room) => { seen.push(["seat", Number(room)]); return 16n; }, [HOST.answered]: (t, st, len) => seen.push([Number(t), Number(st), Number(len)]) };
-  sendAnswer(mod, 9, 201, new TextEncoder().encode("abc"));
-  check("an answer writes its octets into the seat, then names the token, status and length", [seen, new TextDecoder().decode(new Uint8Array(mod.memory.buffer, 16, 3))], [[["seat", 3], [9, 201, 3]], "abc"]);
+  const mod = { memory: { buffer: new ArrayBuffer(64) }, [HOST.seat]: (room) => { seen.push(["seat", Number(room)]); return 16n; }, [HOST.answered]: (t, st, len, fields) => seen.push([Number(t), Number(st), Number(len), Number(fields)]) };
+  sendAnswer(mod, 9, 201, new TextEncoder().encode("abc"), "etag: x");
+  check("an answer writes its fields then its octets into the seat, then names the token, status, length and fields", [seen, new TextDecoder().decode(new Uint8Array(mod.memory.buffer, 16, 10))], [[["seat", 10], [9, 201, 10, 7]], "etag: xabc"]);
   check("the rows a page answers include the request rows", ["get"].every((k) => typeof ROWS[k] === "string"), true);
 }
 

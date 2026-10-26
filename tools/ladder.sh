@@ -75,6 +75,8 @@ Rung: stale"
 fi
 cur=$(cd "$(dirname "${1:?usage: ladder.sh <compiler> <rung>...}")" && pwd)/$(basename "$1")
 shift
+# AVRA_LADDER_REPO: the repository that holds the rungs and the base, where the tree under build has no .git (a Sprite's).
+[ -z "${AVRA_LADDER_REPO:-}" ] || cd "$AVRA_LADDER_REPO"
 dir=${AVRA_LADDER_DIR:-${RUNNER_TEMP:-/tmp}/ladder}
 mkdir -p "$dir"
 cap=${AVRA_LADDER_S:-900}

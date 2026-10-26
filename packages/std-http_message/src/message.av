@@ -8,6 +8,7 @@
 //! NOTHING HERE OPENS A SOCKET, PARKS A TASK OR READS A CLOCK, so a page's
 //! program may depend on it. A wait is a `Duration`. A body is data too: a
 //! stream (a closure) is `@std/http`'s own extra, never part of the value.
+use @std.text.{parse_int}
 use @std.time.{Duration}
 
 use @std.url.{encoded as percent_encoded}
@@ -97,9 +98,45 @@ fn form_pair(f: Header) -> string {
     "${name}=${value}"
 }
 
+/// The fields a host hands over as `name: value` lines, in the order they stand;
+/// a line with no `: ` names no field.
+export fn headers_of(lines: string) -> List<Header> {
+    [Header { name: l.substring(0, at), value: l.substring(at + 2, l.length) } for l in lines.split("\n") for at in [l.index_of(": ") ?? -1] if at > 0]
+}
+
 /// What a request is answered with: the status, the fields the answer
 /// carries and its body, whole.
 export type Reply = { status: int, headers: List<Header> = [], body: Bytes }
+
+/// WHERE A SERVER'S DATA STANDS: the database's commit counter, the one number its
+/// answers are ordered by. It is a reply's `ETag` — `tag` writes it, `parsed` reads
+/// it back — so the validator a client sends and the order it keeps answers in are
+/// one value, the same for every process that serves the database.
+export type Version = { sequence: int }
+
+impl Version {
+    /// The version as an entity tag.
+    fn tag() -> string { "\"v${self.sequence}\"" }
+
+    /// The version an entity tag names, or none when it names no version.
+    static fn parsed(tag: string) -> Version? {
+        let quoted = if tag.starts_with("W/") { tag.substring(2, tag.length) } else { tag }
+        if quoted.length < 4 || !quoted.starts_with("\"v") || !quoted.ends_with("\"") { return null }
+        let sequence? = parse_int(quoted.substring(2, quoted.length - 1)) else { return null }
+        Version { sequence: sequence }
+    }
+
+    /// Whether this version is later than `held`. An equal version is no later.
+    fn after(held: Version) -> bool { self.sequence > held.sequence }
+}
+
+impl Reply {
+    /// The version its `ETag` names, when it carries one.
+    fn version() -> Version? {
+        let tag? = self.headers.find(it.named("etag")) else { return null }
+        Version.parsed(tag.value)
+    }
+}
 
 impl Request {
     /// A request for `url`.
