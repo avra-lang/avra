@@ -23,6 +23,10 @@ fn printed(main: string) -> string {
 /// A component declared in the file that instances it.
 const nest = "component nest(depth: int) {\n    extra: int = 0\n    fn total() -> int { self.depth + self.extra }\n}\n"
 
+/// A generic component declared in the file that instances it, firing
+/// its event when it is heard.
+const cue = "component cue<T> {\n    on heard(value: T)\n    fn fire(v: T) -> int {\n        let f? = self.heard else { return 0 }\n        f(v)\n        1\n    }\n}\n"
+
 spec "features/components — an instance's head" {
     given "a record literal as the head" {
         then "stands in parentheses before the block" {
@@ -54,6 +58,46 @@ spec "features/components — an instance's head" {
         then "takes a bare head" { answered(provided(nest + "let n = nest 2\nn.total()", "")) == "2" }
         then "takes a name and a block" {
             answered(provided(nest + "let d = 2\nlet n = nest d {\n    extra: 5\n}\nn.total()", "")) == "7"
+        }
+        then "opens its block with type arguments and an `on` handler, as an imported word does" {
+            answered(
+                provided(
+                    cue +
+                        "let got = Cell.new(0)\nlet c = cue<int> { on heard { x -> got.set(x) } }\n\"\${c.fire(4)} \${got.get()}\"",
+                    "",
+                ),
+            ) == "1 4"
+        }
+        then "opens its block as a lambda's answer" {
+            answered(
+                provided(
+                    cue +
+                        "let made = () -> cue<int> { on heard { x -> let _ = x } }\nmade().fire(1)",
+                    "",
+                ),
+            ) == "1"
+        }
+        then "stays a record pattern where a match arm reads it" {
+            answered(
+                provided(
+                    nest +
+                        "let n = nest 3\nmatch n {\n    nest { depth, extra } -> depth + extra,\n}",
+                    "",
+                ),
+            ) == "3"
+        }
+        then "stays a record pattern under an `is`" {
+            answered(
+                provided(
+                    nest + "let n = nest 4\nif n is nest { depth, extra } { depth } else { 0 }",
+                    "",
+                ),
+            ) == "4"
+        }
+        then "stays a type where a fn's signature answers it" {
+            answered(
+                provided(cue + "fn fresh() -> cue<int> {\n    cue<int> { }\n}\nfresh().fire(2)", ""),
+            ) == "0"
         }
         then "followed by a parenthesis is a call — refused in words that write the head" {
             provided(nest + "let d = 2\nlet n = nest (d - 1)\nn.total()", "").report().trim() == "error[type.lambda]: `nest` is a component, and a parenthesis after its word is read as a call\n  ╭─[/w/src/main.av:6:9]\n6 │ let n = nest (d - 1)\n  ·         ┬\n  ·         ╰── called here\n──╯\nhelp: an instance's head value follows its word bare — `nest value` — so bind a longer one first: `let value = …`"
