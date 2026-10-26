@@ -248,12 +248,16 @@ impl Workspace {
     /// Whether a family is kept by name: it registered a saver.
     fn saved_family(f: Family) -> bool { self.savers.get().any(it.family == f.ordinal) }
 
-    /// Whether a read is kept as itself: a saved family's answer or a read of the world. Any
-    /// other read stands for what it read.
+    /// Whether a read is kept as itself: a saved family's answer, a file's environment or a read
+    /// of the world. Any other read stands for what it read.
     fn stands_alone(k: Key) -> bool {
         let f? = Family.all().get(k.family) else { return false }
         if f is .Sig { return self.sig_saved(k.arg) }
-        self.saved_family(f) || f is .Input || f is .Manifest || f is .Named
+        self.saved_family(f) ||
+            self.is_env(k.family) ||
+            f is .Input ||
+            f is .Manifest ||
+            f is .Named
     }
 
     /// Whether a declaration's signature is a row of its own: only a free fn's is (`sig_text`).
@@ -488,8 +492,6 @@ impl Workspace {
         self.saves(Family.FileSaid, (arg: int) -> self.said_rows.get().get("${arg}"))
         self.relation(Family.FileSaid).revive.set((arg: int) -> self.said_revived(arg))
         self.saves(Family.Syntax, (arg: int) -> self.syntax_text(arg))
-        self.saves(Family.NameEnv, (arg: int) -> null)
-        self.saves(Family.SiblingEnv, (arg: int) -> null)
         self.saves(Family.Sig, (arg: int) -> self.sig_text(arg))
         self.saves(Family.Lowered, (arg: int) -> self.lowered_text(arg))
         self.relation(Family.Lowered).revive.set((arg: int) -> self.lowered_revived(arg))
@@ -515,7 +517,7 @@ impl Workspace {
         let path = self.decls.file(FileId { index: arg }).path
         let lines = [l for l in text.split("\n") if !l.is_empty()]
         let rows = [read_fields(l) for l in lines if !l.starts_with("use\t")]
-        let top = self.mint_file(path, rows, {})
+        let top = self.mint_file(path, rows)
         self.link_file(path, rows)
         self
             .revived

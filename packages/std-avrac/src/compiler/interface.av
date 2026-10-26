@@ -347,51 +347,24 @@ impl Workspace {
         if ordinal < rows.length { self.fill_row(store, m, ids, rows[ordinal]) }
     }
 
-    /// HELD FILES OF ONE MODULE, MINTED: each file's declarations from its record
-    /// lines, adopted by their parents — names before shapes, since a shape names a
-    /// type of its own module. A file stands once, and its flag stands before the
-    /// work does, so two files that name each other meet once. SHAPES ARE NOT FILLED
-    /// HERE: `fill_ensured` fills each row lazily, on the ask that names it.
-    fn mint_files(store: Store, m: ModulePath, paths: List<string>) {
-        let held = [p for p in paths if self.decls.held.get().get(p) != null && self.hold.minted.get().get(p) == null]
-        if held.is_empty() { return }
-        for path in held {
-            if traced() { qtrace("Q\tmint\t${m.text()}\t${path}\n") }
-            self.hold.minted.put(path, true)
-        }
-        work_module_minted()
-        let fields = record_fields(self, store, m)
-        let places = record_places(self, store, m)
-        let makers = makers_by_path(fields)
-        for path in held {
-            let _ = self
-                .mint_file(path, file_rows(fields, places.get(path)), makers.get(path) ?? {})
-        }
-        for path in held { self.link_file(path, file_rows(fields, places.get(path))) }
-        let lead? = held.first() else { return }
-        self.decls.note_module_rows(self.decls.file(self.file_id(lead)).module_id, 2)
-    }
-
     /// ONE HELD FILE'S DECLARATIONS, minted from its record lines in record order. The
     /// file's statement table is written ONCE: read out and stored back per line, it
     /// is held twice while it is written, and every line copies it.
     /// Answers the file's top-level declarations, the ones its `Items` is.
-    fn mint_file(path: string, rows: List<List<string>>, makers: Map<string, string>) -> List<
-        DeclId,
-    > {
+    fn mint_file(path: string, rows: List<List<string>>) -> List<DeclId> {
         work_file_minted()
         let f = self.file_id(path)
-        self.decls.held_opened(f, makers.values())
+        self.decls.held_opened(f, [])
         mut by_stmt = self.decls.decl_ids.get()[f.index].get()
         mut top: List<DeclId> = []
         for parts in rows {
-            let id: DeclId? = self.minted(f, path, parts, makers)
+            let id: DeclId? = self.minted(f, path, parts)
             let stmt_index = read_row(parts)?.stmt ?? 0
             by_stmt.grow_to(stmt_index + 1)
             if id != null && by_stmt.get(stmt_index).decl == null { by_stmt.set(stmt_index, DeclAt { decl: id }) }
             if id != null && read_row(parts)?.item ?? false { top.push(id!) }
         }
-        self.decls.held_closed(f, makers.values())
+        self.decls.held_closed(f, [])
         self.decls.keep_stmt_decls(f, by_stmt)
         top
     }
@@ -399,7 +372,7 @@ impl Workspace {
     /// One record line as a declaration — null for a line that names nothing. A line
     /// that does not decode is a DEFECT spoken: the hold's attempt fails, and the
     /// sources answer.
-    fn minted(f: FileId, path: string, parts: List<string>, makers: Map<string, string>) -> DeclId? {
+    fn minted(f: FileId, path: string, parts: List<string>) -> DeclId? {
         let row? = read_row(parts) else { return null }
         let kind = declared_kind(row.shape, row.kind)
         let facts = facts_unblocked(row.facts)
@@ -420,7 +393,7 @@ impl Workspace {
                 null,
                 row.enclosing,
                 root,
-                makers.get("${row.ordinal}") ?? "",
+                "",
                 facts!,
             )
         self.decls.held_joins(f, id, kind! is .Main, row.item)
@@ -1097,23 +1070,6 @@ fn bound_entry(j: int, wires: List<string>) -> string { "${j}=${joined(wires, "|
 fn maker_line(path: string, ordinal: int, maker: string) -> string {
     "maker\t${path}\t${ordinal}\t${field_text(maker)}"
 }
-
-/// Every file's makers as its module's record keeps them, by file path and the declaration's
-/// ordinal — one pass over the record, so a module's files never each scan it whole.
-export fn makers_by_path(fields: List<List<string>>) -> Map<string, Map<string, string>> {
-    mut out: Map<string, Map<string, string>> = {}
-    for p in fields {
-        if p.length == 4 && p[0] == "maker" {
-            mut own = out.get(p[1]) ?? {}
-            own.set(p[2], text_of_field(p[3]))
-            out.set(p[1], own)
-        }
-    }
-    out
-}
-
-/// A file's makers as its record keeps them, by the declaration's ordinal.
-export fn makers_in(fields: List<List<string>>, path: string) -> Map<string, string> { makers_by_path(fields).get(path) ?? {} }
 
 /// A bit as a record field writes it.
 fn bit_word(b: bool) -> string {
