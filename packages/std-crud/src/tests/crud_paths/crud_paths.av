@@ -1,0 +1,42 @@
+// proves: a `@crud` model answers its doors as data — the method and path of each, for a base — with no database,
+// no server and no handler in hand, and a soft-delete model's paths are the same five. A trailing slash names the same
+// doors — eval == native.
+use @std.crud.{crud}
+use @std.http_message.message.{Method}
+use @std.http.route.{Route, prefixed}
+use @std.http_message.route.{Routes}
+use @std.sqlite.{Db}
+
+@crud
+type Job = { id: int = 0, title: string, done: bool = false }
+
+@crud
+type Note = { id: int = 0, text: string, @soft_delete removed_at: int? = null }
+
+fn shown(r: Routes<Job>) -> string {
+    "${r.list.method.word()} ${r.list.path} | ${r.find.method.word()} ${r.find.path} | ${r.create.method.word()} ${r.create.path} | ${r.update.method.word()} ${r.update.path} | ${r.remove.method.word()} ${r.remove.path}"
+}
+
+println(shown(Job.paths("/jobs")))
+println(shown(Job.paths("/jobs/")))
+let notes = Note.paths("/notes")
+println("${notes.list.path} ${notes.find.path} ${notes.remove.method.word()}")
+
+/// Whether the served routes hold a door at `method` and `path`, a typed hole written as the descriptor writes it.
+fn serves(found: List<Route>, method: Method, path: string) -> bool {
+    found.any(it.method == method && it.pattern.replace(": int", "") == path)
+}
+
+/// Every door the descriptor names is a door the served model answers at, and the other way round.
+fn agrees(db: Db) -> string {
+    let found = prefixed("/jobs", Job.routes(db).found)
+    let named = Job.paths("/jobs")
+    let held = serves(found, named.list.method, named.list.path) &&
+        serves(found, named.find.method, named.find.path) &&
+        serves(found, named.create.method, named.create.path) &&
+        serves(found, named.update.method, named.update.path) &&
+        serves(found, named.remove.method, named.remove.path)
+    "descriptor in the server: ${held} | server in the descriptor: ${found.length == 5}"
+}
+
+match Db.memory() { .Ok(db) -> println(agrees(db)), .Err(e) -> println("no db: ${e.message}") }

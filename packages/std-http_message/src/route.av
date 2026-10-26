@@ -1,0 +1,34 @@
+//! A ROUTE AS DATA: the method and path a door answers at, and the types it takes and answers — nothing a
+//! server needs. A page that names a route links no handler, database or closure: the descriptor is a record
+//! of two scalars, and `A` and `T` are phantoms that exist only for the type checker.
+use message.{Method}
+
+/// What a route takes or answers when it carries nothing.
+export type Nothing = {}
+
+/// A door at `path` for `method`, taking an `A` and answering a `T`.
+export type Route<A, T> = { method: Method, path: string }
+
+/// The doors of one served model rooted at a path: `A` is what the caller hands over (a row, a key) and
+/// `T` what comes back.
+export type Routes<T> = {
+    list: Route<Nothing, List<T>>,
+    find: Route<int, T>,
+    create: Route<T, T>,
+    update: Route<T, T>,
+    remove: Route<int, Nothing>,
+}
+
+/// The doors of a model served at `base` (a trailing slash is the same path): the collection at `base` and one row at `base/{id}`, under the methods
+/// `@crud` serves them by. `T` comes from the seat the answer fills.
+export fn routes_at<T>(base: string) -> Routes<T> {
+    let root = if base.ends_with("/") { base.substring(0, base.length - 1) } else { base }
+    let collection = if root.is_empty() { "/" } else { root }
+    let one = "${root}/{id}"
+    let list: Route<Nothing, List<T>> = Route { method: Method.Get, path: collection }
+    let find: Route<int, T> = Route { method: Method.Get, path: one }
+    let create: Route<T, T> = Route { method: Method.Post, path: collection }
+    let update: Route<T, T> = Route { method: Method.Patch, path: one }
+    let remove: Route<int, Nothing> = Route { method: Method.Delete, path: one }
+    Routes { list: list, find: find, create: create, update: update, remove: remove }
+}
