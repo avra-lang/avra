@@ -27,20 +27,17 @@ use diagnostics.{DiagCode}
 
 export fn components() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name                   | build
-        "component_decl"       | build_component_decl
-        "component_event"      | build_component_event
-        "component_value"      | build_component_value
-        "component_keyed"      | build_component_keyed
-        "component_headless"   | build_component_headless
-        "component_name_head"  | build_component_name_head
-        "component_blockless"  | build_component_blockless
-        "component_named"      | build_component_named
-        "component_named_bare" | build_component_named_bare
-        "on_handler"           | build_on_handler
-        "on_value"             | build_on_value
-        "instance_body"        | build_instance_body
-        "instance_arms_body"   | build_instance_arms_body
+        name                    | build
+        "component_decl"        | build_component_decl
+        "component_event"       | build_component_event
+        "component_keyed"       | build_component_keyed
+        "component_braced_head" | build_component_braced_head
+        "component_named"       | build_component_named
+        "component_named_bare"  | build_component_named_bare
+        "on_handler"            | build_on_handler
+        "on_value"              | build_on_value
+        "instance_body"         | build_instance_body
+        "instance_arms_body"    | build_instance_arms_body
     }
     let codes = table<DiagCode> {
         kind                      | summary
@@ -68,7 +65,8 @@ export fn components() -> LanguageFeature {
                 | b:instance_body -> b
             instance_body = "{" BREAK* ( ip:handler_seat ( "," ip:handler_seat )* ","? "->" )? ( s:setting | s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> instance_body(ip, s)
             handler_seat = name:NAME -> Record.ParamSyntax
-            primary = w:COMPONENT ( "<" ta:type ( "," ta:type )* ","? ">" )? hn:NAME b:instance_body ( x:instance_body )? -> component_name_head(w, ta, hn, b, x) @trailer(x) | w:COMPONENT ( "<" ta:type ( "," ta:type )* ","? ">" )? b:instance_body -> component_headless(w, ta, b) | w:COMPONENT ( "<" ta:type ( "," ta:type )* ","? ">" )? h:expression b:instance_body -> component_value(w, ta, h, b) @head(h) | w:COMPONENT h:expression kw:NAME iw:NAME "." fp:NAME b:instance_body -> component_keyed(w, h, kw, iw, fp, b) @head(h) | w:COMPONENT ( "<" ta:type ( "," ta:type )* ","? ">" )? h:expression -> component_blockless(w, ta, h) @head(h)
+            primary = w:COMPONENT ( "<" ta:type ( "," ta:type )* ","? ">" )? hn:NAME b:instance_body x:instance_body -> component_braced_head(w, ta, hn) @trailer(x) | word:COMPONENT ( "<" targs:type ( "," targs:type )* ","? ">" )? heads:head_name body:instance_body -> Expr.Component | word:COMPONENT ( "<" targs:type ( "," targs:type )* ","? ">" )? body:instance_body -> Expr.Component | word:COMPONENT ( "<" targs:type ( "," targs:type )* ","? ">" )? heads:expression body:instance_body -> Expr.Component @head(heads) | w:COMPONENT h:expression kw:NAME iw:NAME "." fp:NAME b:instance_body -> component_keyed(w, h, kw, iw, fp, b) @head(h) | word:COMPONENT ( "<" targs:type ( "," targs:type )* ","? ">" )? heads:expression -> Expr.Component @head(heads)
+            head_name = name:NAME -> Expr.Ident
         }
         builders: rows
         diags: codes

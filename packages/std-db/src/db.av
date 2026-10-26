@@ -118,7 +118,7 @@ fn shape_ok(t: Type) -> bool { t.variants.is_empty() && has_id_field(t) && shape
 
 /// The annotations a model owns — its marks and its own — which are no
 /// rule of the validation it brings.
-fn claimed(t: Type) -> List<string> { Model.marks(t).concat(["model"]) }
+fn claimed(t: Type) -> List<string> { Model.marks(t).concat(["model", "crud"]) }
 
 /// The rules the type declares, run over a row before any SQL.
 fn checks(t: Type) -> Decls {
@@ -146,19 +146,19 @@ fn generated(t: Type) -> Decls {
             /// name order — what the registry records when it is created.
             static fn shape() -> string { ${literal(shape_text_of(t))} }
 
-            static fn create_table(mut db: Db) -> Result<int, SqlError> {
+            static fn create_table(db: Db) -> Result<int, SqlError> {
                 claim_table(db, ${literal(table_name_of(t))}, ${literal(owner_of(t))}, ${literal(declared_at_of(t))}, ${literal(shape_text_of(t))})
             }
 
             /// The table made if it is not there, and grown to this model's
             /// shape if it is; a change that moves is refused with its words.
             /// Answers how many steps it took.
-            static fn migrate(mut db: Db) -> Result<int, MigrateError> {
+            static fn migrate(db: Db) -> Result<int, MigrateError> {
                 let _ = lifted(${name(t.name)}.create_table(db))?
                 grown(db, ${name(t.name)}.shape(), [..${renamed_to(t)}], [..${renamed_from(t)}])
             }
 
-            fn insert(mut db: Db) -> Result<${t}, ModelError> {
+            fn insert(db: Db) -> Result<${t}, ModelError> {
                 let _ = or_invalid(self.check())?
                 mut args: List<SqlValue> = []
                 ${[push_bound(f) for f in written_fields(t)]}
@@ -173,7 +173,7 @@ fn generated(t: Type) -> Decls {
                 if s.step()? { ${row_ctor(t)} } else { null }
             }
 
-            fn update(mut db: Db) -> Result<int, ModelError> {
+            fn update(db: Db) -> Result<int, ModelError> {
                 let _ = or_invalid(self.check())?
                 mut args: List<SqlValue> = []
                 ${[push_bound(f) for f in written_fields(t)]}
@@ -188,7 +188,7 @@ fn generated(t: Type) -> Decls {
 
             ${where_decl(t)}
 
-            fn remove(mut db: Db) -> Result<int, ModelError> {
+            fn remove(db: Db) -> Result<int, ModelError> {
                 ${removal(t)}
             }
 
@@ -492,7 +492,7 @@ fn soft_decls(t: Type) -> List<Decls> {
             }
 
             /// A removed row, back among the living.
-            fn restore(mut db: Db) -> Result<int, SqlError> {
+            fn restore(db: Db) -> Result<int, SqlError> {
                 db.run(sql(${literal(restore_sql_of(t))}, [.Int(self.id)]))
             }
         },

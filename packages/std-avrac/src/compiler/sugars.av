@@ -5,6 +5,8 @@
 //! template is never run on the program's values: its holes are read, and
 //! the scratch parse is kept for the process, keyed by the template's text.
 use core.{
+    Minting,
+    minting,
     SyntaxArena,
     ExprId,
     PatId,
@@ -19,7 +21,7 @@ use core.{
 }
 use @std.meta.{Rewrite, Node}
 use diagnostics.{new_source_file}
-use features.{BlockWords}
+use features.{BlockWords, MeanCx, Meaning}
 use @std.relation.engine.{map_cell}
 
 /// One template's parse: the store that holds it and the quote it was
@@ -36,13 +38,19 @@ export fn sugar_door(lang: Language) -> Means {
 /// What the sugar means, copied beside it: the nodes the copy minted, the
 /// last the root; none when the node is no sugar or its template cannot be
 /// read here.
-fn minted_means(lang: Language, store: SyntaxArena, sugar: ExprId) -> Result<List<ExprId>, string> {
-    let rewrite: Result<Rewrite, string>? = store.expr(sugar).means()
-    let held? = rewrite else { return store.expr(sugar).minted(store, store.expr_span(sugar)) }
-    let template = held?
-    match template.node {
-        .Template(_, _, parts, fills) -> .Ok(spliced(lang, store, sugar, parts, [hole_id(f) for f in fills])),
-        rest -> .Ok([]),
+fn minted_means(lang: Language, store: SyntaxArena, sugar: ExprId) -> Result<Minting, string> {
+    let node = store.expr(sugar)
+    let cx = MeanCx {
+        store: store,
+        at: sugar,
+        span: store.expr_span(sugar),
+        provided: store.provided_of(sugar),
+        door: sugar_door(lang),
+    }
+    let said? = node.means(cx) else { return node.minted(cx) }
+    match (said?).node {
+        .Template(_, _, parts, fills) -> .Ok(minting(spliced(lang, store, sugar, parts, [hole_id(f) for f in fills]))),
+        rest -> .Ok(minting([])),
     }
 }
 

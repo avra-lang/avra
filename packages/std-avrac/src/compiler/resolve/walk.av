@@ -17,7 +17,7 @@ impl ResolveCx {
     fn name_laws() {
         for s in self.view.stmts {
             let fname: string? = self.view.store.fn_parts(s)?.name
-            if fname != null { let _ = self.refused_binder(fname!, self.stmt_loc(s)) }
+            if fname != null { let _ = self.refused_binder(fname!, self.stmt_loc(s), self.view.origin_of_stmt(s)) }
             let tname: string? = self.view.store.type_decl_name(s)
             if tname != null { self.type_name_law(tname!, s) }
         }
@@ -25,7 +25,7 @@ impl ResolveCx {
 
     fn type_name_law(name: string, s: StmtId) {
         let at = self.stmt_loc(s)
-        if self.refused_binder(name, at) { return }
+        if self.refused_binder(name, at, self.view.origin_of_stmt(s)) { return }
         if builtin_type_name(self.view.lang.types, name) {
             self
                 .emit(
@@ -47,20 +47,27 @@ impl ResolveCx {
     /// literal and a name before a block, so no binder or declaration
     /// of the file may wear an imported sublanguage's or component's
     /// word. A READ is not a binder: `sql` alone is the unresolved name
-    /// it always was.
-    fn refused_binder(name: string, at: Loc?) -> bool {
+    /// it always was. A TEMPLATE'S binder is judged in the file that WROTE
+    /// the template (`origin`), never in the one it lands in — the same
+    /// rule a const's name follows.
+    fn refused_binder(name: string, at: Loc?, origin: FileId?) -> bool {
         if self.refused_name(name, at) { return true }
-        if !self.opens_block(name) { return false }
+        if !self.opens_block(name, origin) { return false }
         self.emit(worn_block_word(at, name))
         true
     }
 
-    /// Whether a name is a block word in this file: a named grammar, or
-    /// a component another module declares.
-    fn opens_block(name: string) -> bool {
-        if self.facts.names.syntax_decl(name) != null { return true }
-        let d? = self.facts.names.type_decl(name) else { return false }
-        let own = self.view.decls.module_name(self.view.decls.file(self.view.file).module_id)
+    /// Whether a name is a block word in the file that wrote it (`origin`, or
+    /// this file when it is null): a named grammar, or a component another
+    /// module declares.
+    fn opens_block(name: string, origin: FileId?) -> bool {
+        let names = self.names_in(origin)
+        if names.syntax_decl(name) != null { return true }
+        let d? = names.type_decl(name) else { return false }
+        let own = self
+            .view
+            .decls
+            .module_name(self.view.decls.file(origin ?? self.view.file).module_id)
         self.view.decls.facts_of(d)?.is_component ?? false && self.view.decls.module_of(d) != own
     }
 
@@ -89,7 +96,7 @@ impl ResolveCx {
             if self.keywords.contains(pp.name.of) {
                 self.refuse_keyword(pp.name.of, at, remedy_for(self.view.lang, pp.name.of))
             } else {
-                let _ = self.refused_binder(pp.name.of, at)
+                let _ = self.refused_binder(pp.name.of, at, self.view.origin_of_stmt(s))
             }
         }
     }
@@ -670,7 +677,7 @@ impl ResolveCx {
     /// under the same naming law.
     fn bind_index(s: StmtId) {
         let name? = self.view.store.loop_index(s) else { return }
-        if self.refused_binder(name, self.stmt_loc(s)) { return }
+        if self.refused_binder(name, self.stmt_loc(s), self.view.origin_of_stmt(s)) { return }
         if name == self.view.store.let_name(s) ?? "" { return self.paired_alike(s, name) }
         self.bind(keyed(name, self.view.origin_of_stmt(s)), Binding.Index(s))
     }
@@ -693,7 +700,7 @@ impl ResolveCx {
     fn bind_checked(s: StmtId) {
         let binds: string? = self.view.store.let_name(s)
         if binds == null { return }
-        if self.refused_binder(binds!, self.stmt_loc(s)) { return }
+        if self.refused_binder(binds!, self.stmt_loc(s), self.view.origin_of_stmt(s)) { return }
         // a DECLARED statement (a top-level `const`) is the namespace's:
         // order-free and module-wide, it binds nowhere in the sequence
         if self.view.decls.decl_of(self.view.file, s) != null { return }

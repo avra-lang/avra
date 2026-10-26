@@ -54,14 +54,14 @@ fn recorded(db: Db, tname: string) -> Result<string, SqlError> {
 }
 
 fn made() -> Result<string, SqlError> {
-    mut db = Db.memory()?
+    let db = Db.memory()?
     let first = kind_of(Note.migrate(db))
     let again = kind_of(Note.migrate(db))
     "${first} ${again} ${columns(db, "Note")?}"
 }
 
 fn grown_once() -> Result<string, SqlError> {
-    mut db = Db.memory()?
+    let db = Db.memory()?
     let _ = kind_of(Note.migrate(db))
     let _ = db.run(sql("INSERT INTO \"Note\" (title) VALUES ('kept')"))?
     let steps = kind_of(grown(db, Note.shape() + EXTRA, [], []))
@@ -71,14 +71,14 @@ fn grown_once() -> Result<string, SqlError> {
 }
 
 fn then_nothing_to_do() -> Result<string, SqlError> {
-    mut db = Db.memory()?
+    let db = Db.memory()?
     let _ = kind_of(Note.migrate(db))
     let _ = kind_of(grown(db, Note.shape() + EXTRA, [], []))
     "${kind_of(grown(db, Note.shape() + EXTRA, [], []))} ${kind_of(Note.migrate(db))}"
 }
 
 fn refused_move() -> Result<string, SqlError> {
-    mut db = Db.memory()?
+    let db = Db.memory()?
     let _ = kind_of(Note.migrate(db))
     let before = recorded(db, "Note")?
     let dropped = "Note\nid|INTEGER|null|key|-|-|-|-\n__avra_version__|INTEGER|notnull|-|-|1|-|-"
@@ -88,7 +88,7 @@ fn refused_move() -> Result<string, SqlError> {
 }
 
 fn unrecorded() -> Result<string, SqlError> {
-    mut db = Db.memory()?
+    let db = Db.memory()?
     let _ = kind_of(Note.migrate(db))
     let _ = db.run(sql("UPDATE \"__avra_models__\" SET shape = NULL"))?
     kind_of(grown(db, Note.shape(), [], []))
@@ -97,7 +97,7 @@ fn unrecorded() -> Result<string, SqlError> {
 fn copied_first() -> Result<string, SqlError> {
     let dir = "/tmp/avra-db-apply-test/${stamp()}"
     let _ = make_dirs(dir)
-    mut db = Db.open("${dir}/app.db")?
+    let db = Db.open("${dir}/app.db")?
     let _ = kind_of(Note.migrate(db))
     let _ = db.run(sql("INSERT INTO \"Note\" (title) VALUES ('before')"))?
     let none = (list_dir(dir) catch []).filter(it.ends_with(".bak")).length
@@ -112,14 +112,14 @@ fn copied_first() -> Result<string, SqlError> {
 fn untouched_when_copy_is_not_needed() -> Result<string, SqlError> {
     let dir = "/tmp/avra-db-apply-test/${stamp()}"
     let _ = make_dirs(dir)
-    mut db = Db.open("${dir}/app.db")?
+    let db = Db.open("${dir}/app.db")?
     let _ = kind_of(Note.migrate(db))
     let _ = kind_of(Note.migrate(db))
     "${(list_dir(dir) catch []).filter(it.ends_with(".bak")).length}"
 }
 
 fn rolled_back() -> Result<string, SqlError> {
-    mut db = Db.memory()?
+    let db = Db.memory()?
     let _ = kind_of(Owner.migrate(db))
     let _ = kind_of(Pet.migrate(db))
     let _ = db.run(sql("PRAGMA foreign_keys = OFF"))?
@@ -130,7 +130,7 @@ fn rolled_back() -> Result<string, SqlError> {
 
 /// A Memo table as an earlier declaration left it: the column still called `body`.
 fn memo_as_it_was() -> Result<Db, SqlError> {
-    mut db = Db.memory()?
+    let db = Db.memory()?
     let _ = kind_of(Memo.migrate(db))
     let _ = db.run(sql("INSERT INTO \"Memo\" (text) VALUES ('kept')"))?
     let _ = db.run(sql("ALTER TABLE \"Memo\" RENAME COLUMN \"text\" TO \"body\""))?
@@ -141,7 +141,7 @@ fn memo_as_it_was() -> Result<Db, SqlError> {
 }
 
 fn renamed() -> Result<string, SqlError> {
-    mut db = memo_as_it_was()?
+    let db = memo_as_it_was()?
     let r = kind_of(Memo.migrate(db))
     let held = (db.scalar(sql("SELECT text FROM \"Memo\""))?).text()?
     let old = (db.scalar(sql("SELECT count(*) FROM pragma_table_info('Memo') WHERE name = 'body'"))?)

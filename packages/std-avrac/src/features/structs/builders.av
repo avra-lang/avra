@@ -11,6 +11,10 @@ use features.{
     spread_name,
     record_spreads,
     three_dots,
+    one_dot,
+    valued_spread,
+    typed_spread,
+    bare_spread,
     pat_ids_at,
 }
 use grammar.{Token}
@@ -25,6 +29,10 @@ fn build_type_decl(b: Builder) -> Result<LangNode, string> {
     let shape = b.type_refs(3)?
     if !shape.is_empty() { return b.make_stmt(Stmt.NamedType(Scoped(n.text), tparams, shape[0])) }
     if !(b.tokens(6)?).is_empty() { return .Err(three_dots()) }
+    if !(b.tokens(7)?).is_empty() { return .Err(one_dot()) }
+    if !(b.tokens(8)?).is_empty() { return .Err(valued_spread()) }
+    if !(b.tokens(9)?).is_empty() { return .Err(typed_spread()) }
+    if (b.tokens(4)?).length > (b.type_refs(5)?).length { return .Err(bare_spread()) }
     let fields = params_at(b.args, 2)
     let records = record_spreads([b.written_at(f) for f in fields], b.tokens(4)?, b.type_refs(5)?)?
     let s = b.store.alloc_stmt(Stmt.StructDecl(Scoped(n.text), tparams, fields), b.span)

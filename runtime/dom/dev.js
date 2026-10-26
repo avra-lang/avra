@@ -46,7 +46,19 @@ export function watch({ doc, mine, events, reload, swap = null }) {
   events.addEventListener("failed", (said) => shown(doc, said.data));
 }
 
+// What the app tells the developer ("ui: …", its walk's warnings) reaches the console of a page
+// nobody has open to the server's own output too: each such line is posted to `post`.
+export function relayed({ console, post }) {
+  const error = console.error.bind(console);
+  console.error = (...said) => {
+    error(...said);
+    const text = said.join(" ").replace(/\s+$/, "");
+    if (text.startsWith("ui: ")) post(text);
+  };
+}
+
 if (typeof document !== "undefined") {
+  relayed({ console, post: (text) => fetch("/@dev/said", { method: "POST", body: text, keepalive: true }).catch(() => {}) });
   watch({
     doc: document,
     mine: document.querySelector('meta[name="avra-module"]').content,

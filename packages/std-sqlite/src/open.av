@@ -268,7 +268,17 @@ export type Db = {
     /// repeats; wrong for a connection that never repeats a query.
     /// `close` finalizes every entry.
     cache: Cell<List<Cached>> = Cell.new([]),
+    /// Where the connection was opened and by which process. A forked
+    /// child holds the parent's handle, which is not safe to use there;
+    /// the first use in another process opens the child's own.
+    home: Cell<Home>,
 }
+
+/// The process, file and flags a connection was opened with.
+type Home = { pid: int, path: string, flags: int }
+
+/// This process's id.
+extern fn avra_own_pid() -> int
 
 impl Db {
     /// A database at a path, opened for reading and writing and created
@@ -334,7 +344,7 @@ impl Db {
     /// wanting THEIR statement's rowid reads it immediately after
     /// stepping, before any other statement on the same connection runs.
     fn last_insert_rowid() -> int {
-        sqlite3_last_insert_rowid(self.raw.get())
+        sqlite3_last_insert_rowid(self.live())
     }
 
     /// The refusal for a connection that was closed, or absence when it
@@ -350,8 +360,31 @@ impl Db {
     /// otherwise report the caller's own sequence as SQLite's opinion asks
     /// here first.
     fn closed_fault() -> SqlError? {
-        if self.raw.get() == null { return connection_closed }
+        if self.live() == null { return connection_closed }
         null
+    }
+
+    /// The handle this process may use: the one it opened, or after a
+    /// fork a fresh one on the same file. The inherited handle and the
+    /// statements prepared on it are abandoned unclosed, since closing
+    /// them would release locks the parent holds. A private in-memory
+    /// database has no file to reopen and keeps its inherited copy.
+    fn live() -> ptr? {
+        let now = avra_own_pid()
+        let home = self.home.get()
+        let held: ptr? = self.raw.get()
+        if held == null || home.pid == now || home.path == ":memory:" { return held }
+        avra_sqlite_sleeps_held()
+        mut handle: ptr? = null
+        if sqlite3_open_v2(home.path, handle, home.flags, null) != 0 || handle == null {
+            let _ = sqlite3_close_v2(handle)
+            return held
+        }
+        self.cache.set([])
+        self.raw.set(handle)
+        self.home.set(home with { pid: now })
+        let _ = patient(self)
+        handle
     }
 
     /// The statement already prepared for `text` on this connection,
@@ -359,6 +392,7 @@ impl Db {
     /// hottest call on the cached path — every `run`/`one`/`first`/
     /// `all`/`scalar` reaches it once.
     fn cached(text: string) -> Stmt? {
+        let _ = self.live()
         for c in self.cache.get() {
             if c.text == text { return c.stmt }
         }
@@ -388,13 +422,23 @@ fn opened(path: string, flags: int) -> Result<Db, SqlError> {
     let rc = sqlite3_open_v2(path, handle, flags, null)
     if rc != 0 { fail closing(handle, rc) }
     if handle == null { fail SqlError.refused(Cause.CantOpen, "SQLite answered success and no handle") }
-    let db = Db { raw: Cell.new(handle) }
+    let db = Db {
+        raw: Cell.new(handle),
+        home: Cell.new(Home { pid: avra_own_pid(), path: path, flags: flags }),
+    }
     let fault: SqlError? = unreadable(db)
     if fault != null {
         let _ = db.close()
         fail fault!
     }
     db
+}
+
+/// How long a core's connection waits on a lock another core holds: the
+/// cores of one server write one file, so a held lock is contention, not
+/// an error.
+fn patient(db: Db) -> SqlError? {
+    match db.prepare("PRAGMA busy_timeout = 5000") { .Ok(s) -> ran(s), .Err(e) -> e }
 }
 
 /// T127 CLOSED: the one trivial statement that tells a database from a

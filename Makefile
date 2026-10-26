@@ -719,6 +719,7 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/store_quiet_attack.sh
 	@sh tools/store_seal_attack.sh
 	@sh tools/store_index_attack.sh
+	@sh tools/stale_imports_attack.sh
 	@sh tools/fn_add_attack.sh
 	@sh tools/host_fn_edit_attack.sh
 	@sh tools/suspect_narrow_attack.sh
@@ -1123,8 +1124,8 @@ ui-browser-skip:
 
 # THE LAYOUT SOLVER AGAINST THE WEB TARGET: std-ui's `place` and Firefox running
 # the page the real html realizer writes, on the same random trees (fixed seeds),
-# every box in agreement (tools/layout-oracle). Skips, spoken, where Firefox or
-# node is absent.
+# every box in agreement (tools/layout-oracle). Fails where Firefox or node is
+# absent, unless LAYOUT_ORACLE_SKIP=<reason> stands it down.
 layout-oracle:
 	@sh tools/layout_oracle.sh
 
