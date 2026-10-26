@@ -1,0 +1,127 @@
+// proves: the stream can never leave an entry wrongly fresh, and no notice is asked for twice. A notice repeated, one
+// older than what the entry already reads, one that arrives while the entry is being asked, one naming no table the
+// entry read, one before the stream says it is open, and a stream that closes twice or is refused and then spoken to
+// again each leave exactly the asks the law allows — eval == native.
+use @std.ui.app.{Async, Fetch, Heard, fetch, fetched}
+use @std.ui.components.{button, item}
+use @std.ui.headless.{Screen, headless}
+use @std.http_message.message.{Header, Reply, Request}
+use @std.text.{repeat}
+use @std.time.{ms}
+
+state version: int = 1
+state clock: int = 1
+
+fn parsed(r: Reply) -> Result<int, string> { .Ok(r.body.length) }
+
+fn words(a: Async<int>) -> string {
+    match a {
+        .Idle -> "idle",
+        .Loading -> "loading",
+        .Failed(m) -> "failed ${m}",
+        .Ready(n) -> "ready ${n}",
+    }
+}
+
+/// The server: one table `One`, announced on `/feed`.
+fn serve(r: Request, log: Cell<List<string>>) -> Result<Reply, string> {
+    let held = r.headers.find(it.name == "If-None-Match")
+    log.push("${r.url}${if held == null { "" } else { " held" }}")
+    let tag = "\"v${version}\""
+    let said = [
+        Header { name: "etag", value: tag },
+        Header { name: "avra-reads", value: "One" },
+        Header { name: "avra-stand", value: "${clock}" },
+        Header { name: "avra-feed", value: "/feed" },
+    ]
+    if held != null && held!.value == tag { return .Ok(Reply { status: 304, headers: said, body: "".bytes() }) }
+    .Ok(Reply { status: 200, headers: said, body: repeat("x", version).bytes() })
+}
+
+fn write_one() {
+    clock = clock + 1
+    version = clock
+}
+
+fn said(log: Cell<List<string>>) -> string {
+    let all = log.get()
+    log.set([])
+    if all.is_empty() { "nothing sent" } else { all.join(", ") }
+}
+
+let page: Fetch<int> = fetch()
+let log: Cell<List<string>> = Cell.new([])
+let screen = headless(
+    () -> item {
+        items: [button "Load" { on press { let _ = fetched(page, Request.get("/first"), parsed) } }]
+    },
+)
+screen.wired((r: Request) -> serve(r, log))
+
+/// The stream says `h`, then the screen runs what it left.
+fn tell(screen: Screen, h: Heard) {
+    screen.heard("/feed", h)
+    screen.advance(ms(10))
+}
+
+/// Ask again by pressing, and what was sent.
+fn again(screen: Screen, log: Cell<List<string>>) -> string {
+    let _ = screen.press("Load")
+    screen.advance(ms(10))
+    said(log)
+}
+
+screen
+    .running(
+        () -> {
+            let _ = screen.press("Load")
+            screen.advance(ms(10))
+            println("loaded: ${said(log)}")
+            tell(screen, Heard.Opened)
+            tell(screen, Heard.Notice(1, "notice", ""))
+            println("up and synced, asking again: ${again(screen, log)}")
+            write_one()
+            tell(screen, Heard.Notice(2, "notice", "One"))
+            println("a notice for its table: ${said(log)}")
+            tell(screen, Heard.Notice(2, "notice", "One"))
+            println("the same notice again: ${said(log)}")
+            tell(screen, Heard.Notice(1, "notice", "One"))
+            println("an older notice than the entry reads: ${said(log)}")
+            tell(screen, Heard.Notice(3, "notice", "Other"))
+            println("a notice naming no table it read: ${said(log)}")
+            tell(screen, Heard.Notice(4, "notice", " , ,"))
+            println("a notice naming nothing: ${said(log)}")
+            println("and asking again: ${again(screen, log)}")
+            write_one()
+            let _ = screen.press("Load")
+            tell(screen, Heard.Notice(5, "notice", "One"))
+            tell(screen, Heard.Notice(5, "notice", "One"))
+            screen.advance(ms(10))
+            println("a press the fresh entry skips, then the same notice twice: ${said(log)}")
+            println("shown: ${words(page.state())}")
+            tell(screen, Heard.Closed)
+            tell(screen, Heard.Closed)
+            println("closed twice, asking again: ${again(screen, log)}")
+            tell(screen, Heard.Opened)
+            tell(screen, Heard.Opened)
+            println("opened twice, before it says where it stands: ${again(screen, log)}")
+            tell(screen, Heard.Notice(6, "notice", ""))
+            println("synced, asking again: ${again(screen, log)}")
+            tell(screen, Heard.Notice(7, "cursor-expired", "One"))
+            println("a cursor that expired reaches every entry: ${said(log)}")
+            tell(screen, Heard.Closed)
+            write_one()
+            let _ = screen.press("Load")
+            screen.heard("/feed", Heard.Opened)
+            screen.heard("/feed", Heard.Notice(9, "notice", "One"))
+            screen.heard("/feed", Heard.Notice(9, "notice", "One"))
+            screen.advance(ms(10))
+            println("notices while the entry is out, twice: ${said(log)}")
+            println("shown: ${words(page.state())}")
+            tell(screen, Heard.Refused(401))
+            tell(screen, Heard.Opened)
+            tell(screen, Heard.Notice(8, "notice", ""))
+            println("refused, then spoken to again: ${again(screen, log)}")
+            println("shown: ${words(page.state())}")
+        },
+    )
