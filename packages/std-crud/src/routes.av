@@ -119,6 +119,13 @@ export type Hub = {
     bell: Bell,
 }
 
+/// The event streams open in this process.
+once fn streams() -> Cell<int> { Cell.new(0) }
+
+/// How many event streams this process serves now; each ends when its client goes, which the server
+/// learns when it next writes to it.
+export fn subscribed() -> int { streams().get() }
+
 /// A hub over `l` for the tables a router serves, asking at most once per `every`.
 export fn hub(l: Ledger, tables: List<string>, every: Duration) -> Hub {
     let none: Map<string, List<string>> = {}
@@ -176,7 +183,11 @@ impl Hub {
     fn source(from: int) -> Source {
         let at = Cell.new(from)
         let told = Cell.new(false)
-        Source { next: (wait: Duration) -> self.waited(at, told, wait) }
+        streams().set(streams().get() + 1)
+        Source {
+            next: (wait: Duration) -> self.waited(at, told, wait),
+            ended: () -> streams().set(streams().get() - 1),
+        }
     }
 
     fn waited(at: Cell<int>, told: Cell<bool>, wait: Duration) -> Next {

@@ -32,6 +32,15 @@ fn serve(r: Request, log: Cell<List<string>>) -> Result<Reply, string> {
     let version = if r.url == "/first" { table_one } else { table_two }
     let reads = if r.url == "/first" { "One" } else { "Two" }
     let tag = "\"v${version}\""
+    if r.url == "/plain" {
+        return .Ok(
+            Reply {
+                status: 200,
+                headers: [Header { name: "etag", value: "\"p\"" }],
+                body: "p".bytes(),
+            },
+        )
+    }
     let said = [
         Header { name: "etag", value: tag },
         Header { name: "avra-reads", value: reads },
@@ -54,6 +63,12 @@ fn view_of(first: Fetch<int>, second: Fetch<int>) -> item {
                 on press {
                     let _ = fetched(first, Request.get("/first"), parsed)
                     let _ = fetched(second, Request.get("/second"), parsed)
+                }
+            },
+            button "Away" {
+                on press {
+                    let _ = fetched(first, Request.get("/plain"), parsed)
+                    let _ = fetched(second, Request.get("/plain"), parsed)
                 }
             },
         ]
@@ -144,6 +159,16 @@ screen_a
                         let _ = screen_b.press("Load")
                         screen_b.advance(ms(10))
                         println("the second screen, never told, is still fresh: ${said(log_b)}")
+                        let _ = screen_b.press("Away")
+                        screen_b.advance(ms(10))
+                        println(
+                            "both views move to an answer no stream announces, the last reader leaves the feed: ${said(log_b)}, its stream open: ${screen_b.listened("/feed") != null}",
+                        )
+                        let _ = screen_b.press("Load")
+                        screen_b.advance(ms(10))
+                        println(
+                            "reading it again asks for itself and listens anew, resuming from ${resumed(screen_b.listened("/feed"))}: ${said(log_b)}",
+                        )
                     },
                 )
             tell(screen_a, Heard.Notice(6, "notice", "Two"))

@@ -13,7 +13,7 @@ use app.{App, Entry, Feed, Heard, Want, asked_again}
 /// stands, and no request for it is out or owed. An entry with a feed no one listens to yet opens it.
 export fn watching(on: App, entry: Entry) {
     let path? = entry.feed.get() else { return }
-    if entry.loading() || entry.again.get() || entry.held() == null {
+    if entry.loading() || entry.again.get() || entry.held() == null || entry.unread() {
         entry.fresh.set(false)
         return
     }
@@ -23,6 +23,17 @@ export fn watching(on: App, entry: Entry) {
         return
     }
     entry.fresh.set(feed.synced.get() && !feed.closed.get())
+}
+
+/// Every stream no watched entry reads is ended: its host lets go of it, and the entries that read
+/// it are no longer fresh, since nothing says when they change.
+export fn hung_up(on: App) {
+    let idle = [f for f in on.observed.feeds.get() if on.observed.on_feed(f.path).all(it.unread())]
+    for f in idle {
+        on.hush(f.path)
+        for e in on.observed.on_feed(f.path) { e.fresh.set(false) }
+    }
+    on.observed.feeds.set([f for f in on.observed.feeds.get() if !idle.any(it.path == f.path)])
 }
 
 /// A stream opened for `path`, resuming from the oldest count any entry on it stood at — so what was

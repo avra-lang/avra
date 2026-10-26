@@ -653,6 +653,14 @@ export function createFeeds(fetchFn, noticed, clock = globalThis, silence = 1500
       held.set(t, { controller: null });
       open(t, parseRequest(frame));
     },
+    // A stream let go is closed, unanswered; one that is not held is nothing.
+    unlisten: (token) => {
+      const t = Number(token);
+      const mine = held.get(t);
+      if (!mine) return;
+      held.delete(t);
+      mine.controller?.abort();
+    },
     count: () => held.size,
     // Every stream a module that stood down listened to is closed, unanswered.
     clear: () => {
@@ -735,7 +743,7 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
       rt: {
         [ROWS.frame]: (ptr) => { const bytes = frameOf(own.module.memory, ptr, own.module.avra_bytes_len); sent(bytes); apply(bytes); queueMicrotask(windows.check); },
         [ROWS.arm]: timers.arm,
-        [ROWS.disarm]: timers.disarm,
+        [ROWS.disarm]: (token) => { timers.disarm(token); feeds.unlisten(token); },
         [ROWS.get]: (token, ptr) => fetches.get(token, frameOf(own.module.memory, ptr, own.module.avra_bytes_len).slice()),
         [ROWS.listen]: (token, ptr) => feeds.listen(token, frameOf(own.module.memory, ptr, own.module.avra_bytes_len).slice()),
         [ROWS.next_paint]: frames.next,
