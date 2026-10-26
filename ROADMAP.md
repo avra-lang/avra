@@ -3222,6 +3222,16 @@ the answer lands. The want: a change in flight is a value the view can read besi
 observation (the control shows what was asked until the answer or its refusal), without the
 board keeping a copy of the tasks. Wanting site: `task_row`'s checkbox.
 
+### Interim record — a `once fn` takes no type parameters
+
+std-ui keeps a stateful composition's instances in a derived
+`once fn X$kept() -> Kept<X>` (tree/view.av's `composition`), so a STATEFUL
+generic component has no keeper to derive. `model_form<T>` is therefore a
+stateless generic over a non-generic stateful `form_inputs` that holds what
+was typed as text (std-ui/src/forms). The split is clean in its own right;
+the want is a `once fn` with type parameters — one cache per
+instantiation — so `$kept` can be derived for `X<T>`.
+
 ### A compile-time directory embed
 
 `embed(path)` reads one file at a literal path, so the std-avrac witness fixtures

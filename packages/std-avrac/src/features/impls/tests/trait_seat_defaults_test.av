@@ -1,7 +1,7 @@
 // A TRAIT MEMBER'S SEAT DEFAULT is the contract's: every impl's method
 // takes it for that seat, so a call through the type, a bound or a
 // contract value may leave the seat unwritten. One default, one place.
-use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.testing.{shown, refused_with, provided, answered}
 
 /// A trait whose members default a seat, and one type answering it.
 fn grows() -> string {
@@ -24,6 +24,16 @@ spec "features/impls — a trait member's seat default" {
         }
         then "a named argument skips the defaulted seat" {
             shown(grows() + "P.scaled(n: 4)") == "8"
+        }
+    }
+    given "a contract across a package" {
+        then "a bound's static, called in the dependency, takes the dependency trait's default" {
+            answered(
+                provided(
+                    "use @x.c.{Grows, via}\ntype P = { n: int }\nimpl Grows for P {\n    static fn scaled(n: int, by: int) -> int { n * by }\n}\nvia(P { n: 1 })",
+                    "export trait Grows {\n    static fn scaled(n: int, by: int = 2) -> int\n}\nexport fn via<T: Grows>(_x: T) -> int { T.scaled(3) }\n",
+                ),
+            ) == "6"
         }
     }
     given "an impl's method" {
