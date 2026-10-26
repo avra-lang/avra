@@ -18,9 +18,10 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SOCKET = os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
+SOCKET = os.environ.get("AVRA_GRAPH_SOCKET") or os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
 KEPT = os.path.expanduser("~/.cache/avra-graph-ml/resolve")
 PARAMS = os.environ.get("RESOLVE_PARAMS", os.path.join(HERE, "er_params.json"))
 NEW, UNSURE = "someone new, not listed", "cannot tell"
@@ -39,13 +40,16 @@ class Chooser:
 
     def __init__(self, kept=KEPT):
         self.local, self.kept = None, kept
+        self.calls, self.seconds = 0, 0.0
 
     def choose(self, context, question, options):
         body = json.dumps([self.scorer(), context, question, options], sort_keys=True).encode()
         path = os.path.join(self.kept, hashlib.sha256(body).hexdigest() + ".json") if self.kept else None
         if path and os.path.exists(path):
             return json.load(open(path))
+        started = time.time()
         p = self.asked(context, question, options)
+        self.calls, self.seconds = self.calls + 1, self.seconds + time.time() - started
         if path:
             os.makedirs(self.kept, exist_ok=True)
             json.dump(p, open(path, "w"))
@@ -77,6 +81,8 @@ class Chooser:
                     answer = json.loads(data)
                     if "p" in answer:
                         return answer["p"]
+        if not os.environ.get("RESOLVE_LOCAL"):
+            raise RuntimeError(f"no model service answers on {SOCKET}; start one, or set RESOLVE_LOCAL=1 to load a model here")
         if self.local is None:
             sys.path.insert(0, HERE)
             from cascade import Scorer
@@ -314,7 +320,7 @@ def main():
 
     resolver = Resolver(call({"op": "schema"}), call)
     done = resolver.resolve(call, body["source"], body["receipt"])
-    json.dump({"resolved": done}, sys.stdout)
+    json.dump({"resolved": done, "model_calls": resolver.chooser.calls, "model_s": round(resolver.chooser.seconds, 2)}, sys.stdout)
 
 
 if __name__ == "__main__":

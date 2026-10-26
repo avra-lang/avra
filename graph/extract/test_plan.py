@@ -25,6 +25,19 @@ def descriptor(quantities=(AMOUNT,)):
     ]
 
 
+class Anchor(unittest.TestCase):
+    def entity(self, label):
+        m = model("Item", [prop("code", "string"), prop("name", "string")])
+        m["semantics"]["label"] = label
+        return cascade.Plan([m, model("Use", [prop("item", {"reference": "Item"})])])
+
+    def test_an_entity_is_named_by_its_declared_label_field(self):
+        self.assertEqual(self.entity(["name"]).anchor("Item"), "name")
+
+    def test_without_a_declared_label_the_first_required_text_names_it(self):
+        self.assertEqual(self.entity(None).anchor("Item"), "code")
+
+
 class Embedding(unittest.TestCase):
     def test_a_value_type_the_model_reads_as_a_quantity_embeds_whole(self):
         plan = cascade.Plan(descriptor())

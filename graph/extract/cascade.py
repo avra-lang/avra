@@ -50,13 +50,15 @@ ACCEPT_SPEAKER = fitted("accept_speaker")
 ACCEPT_RECORD = fitted("accept_record")
 ACCEPT_KIND = fitted_per_kind()
 ACCEPT_FIELD = fitted("accept_field")
+RECORD_MODE = fitted("record_mode")
+ACCEPT_KIND_YES = fitted("accept_kind_yes")
 RECORD_FRAMING = fitted("record_framing")
 MARGIN = fitted("margin")
 NEW_CEILING = fitted("new_ceiling")
 MAX_OPTIONS = len(string.ascii_uppercase)
 GENERATE_BUDGET = parameter("generate_budget")
 ABSTAIN = object()
-SOCKET = os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
+SOCKET = os.environ.get("AVRA_GRAPH_SOCKET") or os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
 TIME_EXPRESSION = "time expression"
 TIME_GLOSS = "a date, day or time the text names"
 QUOTATION = "quotation"
@@ -142,6 +144,22 @@ FRAMINGS = {
     "fields": lambda m: f"{m['name']} with {field_names(m)}",
     "sentence+fields": lambda m: f"{m['name']}: {first_sentence(m)} Fields: {field_names(m)}.",
 }
+
+
+def record_ask(model, sentence):
+    """One kind's closed question about one sentence: (context, question, options).
+    Its answer does not depend on how many other kinds the schema declares."""
+    kind = FRAMINGS["sentence+fields"](model)
+    return f'Sentence: "{sentence}"', f"Does this sentence itself state a record of this kind? {kind}", ["yes", "no"]
+
+
+NO_KIND = "none of these"
+
+
+def kind_choice_ask(sentence, options, first=True):
+    """The one closed choice over every offered kind: (context, question, options, tail)."""
+    other = "" if first else "other "
+    return f'Sentence: "{sentence}"', f"Which {other}kind of record does this sentence itself state, if any?", list(options), [NO_KIND]
 
 
 def is_enum(p):
@@ -254,9 +272,10 @@ class Plan:
         return None
 
     def anchor(self, model):
-        """The text field an entity record is named by."""
+        """The text field an entity record is named by: the model's declared label, else its first required text."""
         texts = self.entities[model]
-        return next((p["name"] for p in texts if required(p)), texts[0]["name"])
+        label = (self.models[model]["semantics"].get("label") or [None])[0]
+        return next((p["name"] for p in texts if p["name"] == label), None) or next((p["name"] for p in texts if required(p)), texts[0]["name"])
 
     def entity_labels(self):
         """Encoder labels for entity mentions, references and free relation labels."""
@@ -372,6 +391,17 @@ class Scorer:
 
         self.model, self.tok = load(SCORER.split("@")[0])
         self.calls, self.source, self.cache, self.prefix = 0, "", None, True
+        self.spent = {}
+
+    def spend(self, started, tokens):
+        """Account a forward pass to the cascade method that asked for it: calls, seconds, prompt tokens."""
+        frame = sys._getframe(2)
+        while frame.f_locals.get("self") is self:
+            frame = frame.f_back
+        row = self.spent.setdefault(frame.f_code.co_name, [0, 0.0, 0])
+        row[0] += 1
+        row[1] += time.time() - started
+        row[2] += tokens
 
     def begin(self, source):
         """Every choice about one source shares its text as a cached prefix."""
@@ -379,11 +409,14 @@ class Scorer:
         from mlx_lm.models.cache import make_prompt_cache
 
         self.source, self.cache = source, None
+        self.spent = {}
         if not self.prefix or os.environ.get("CASCADE_PREFIX") == "0":
             return
         head = self.render(f'Text: "{source}"\n\n\x00').split("\x00")[0]
         self.cache = make_prompt_cache(self.model)
-        mx.eval(self.forward(self.tok.encode(head)))
+        started, ids = time.time(), self.tok.encode(head)
+        mx.eval(self.forward(ids))
+        self.spend(started, len(ids))
 
     def pick(self, context, question, options, tail=()):
         """Probabilities over options + tail. Past MAX_OPTIONS the options run
@@ -411,14 +444,18 @@ class Scorer:
         extraction prefix cache is untouched."""
         from mlx_lm import stream_generate
 
+        started = time.time()
         prompt = self.tok.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
         text = ""
         for part in stream_generate(self.model, self.tok, prompt, max_tokens=max(1, min(max_tokens, GENERATE_BUDGET))):
             text += part.text
             cut = min((text.find(s) for s in stop if s and s in text), default=-1)
             if cut >= 0:
-                return text[:cut]
-        return text
+                break
+        else:
+            cut = -1
+        self.spend(started, len(self.tok.encode(prompt)))
+        return text[:cut] if cut >= 0 else text
 
     def render(self, body):
         return self.tok.apply_chat_template([{"role": "user", "content": body}], add_generation_prompt=True, tokenize=False)
@@ -434,19 +471,23 @@ class Scorer:
 
         if not 2 <= len(options) <= MAX_OPTIONS:
             raise ValueError(f"a choice takes 2 to {MAX_OPTIONS} options, got {len(options)}; split it into heats")
-        letters = list(string.ascii_uppercase[: len(options)])
+        started, letters = time.time(), list(string.ascii_uppercase[: len(options)])
         text = f'Text: "{self.source}"\n\n' if self.source else ""
         prompt = self.render(choice_prompt(context, question, options, self.source))
         ids = mx.array([self.tok.encode(l, add_special_tokens=False)[0] for l in letters])
         if self.cache is None:
-            logits = self.model(mx.array(self.tok.encode(prompt))[None])[0, -1]
+            whole = self.tok.encode(prompt)
+            logits = self.model(mx.array(whole)[None])[0, -1]
             p = mx.softmax(logits[ids].astype(mx.float32)).tolist()
+            sent = len(whole)
         else:
             head = self.render(text + "\x00").split("\x00")[0]
             tail = self.tok.encode(prompt[len(head) :], add_special_tokens=False)
             p = mx.softmax(self.forward(tail)[ids].astype(mx.float32)).tolist()
             trim_prompt_cache(self.cache, len(tail))
+            sent = len(tail)
         self.calls += 1
+        self.spend(started, sent)
         mx.clear_cache()
         if os.environ.get("CASCADE_DECISIONS"):
             with open(os.environ["CASCADE_DECISIONS"], "a") as out:
@@ -601,11 +642,8 @@ class Cascade:
             for rec in recs:
                 missing = [p["name"] for p in texts if required(p) and not any(f["property"] == p["name"] for f in rec["fields"])]
                 if missing:
-                    log(f"drop {rec['local_id']} {model}: no evidence for {missing}")
-                    self.records.remove(rec)
-                    self.mentions = [m for m in self.mentions if m["record"] != rec["local_id"]]
-                else:
-                    self.identities(rec)
+                    log(f"partial {rec['local_id']} {model}: no evidence for {missing}")
+                self.identities(rec)
 
     def points_to(self, rec, span):
         return any(m["record"] == rec["local_id"] and m["start"] <= span["start"] < m["end"] for m in self.mentions)
@@ -787,16 +825,26 @@ class Cascade:
                     self.sentence_records(kinds, opts, x, y)
 
     def sentence_records(self, kinds, opts, x, y):
-        """Every kind of record a sentence states: the kinds are asked again
-        without each one taken, until none is left to state."""
+        """Every kind of record a sentence states."""
+        if RECORD_MODE == "yesno":
+            return self.sentence_kinds(kinds, x, y)
         left = list(kinds)
         while left:
-            p = self.llm.pick(f'Sentence: "{self.t.s[x:y]}"', "Which kind of record does this sentence itself state, if any?" if len(left) == len(kinds) else "Which other kind of record does this sentence itself state, if any?", [opts[m] for m in left], ["none of these"])
+            p = self.llm.pick(*kind_choice_ask(self.t.s[x:y], [opts[m] for m in left], len(left) == len(kinds)))
             best = taken("record", f"kind of {self.t.s[x:y][:50]!r}", p, [opts[m] for m in left], lambda i: ACCEPT_KIND.get(left[i], ACCEPT_RECORD) if i < len(left) else ACCEPT_RECORD)
             if best is None:
                 return
             kind = left.pop(best)
             self.fill(kind, x, y, p[best])
+
+    def sentence_kinds(self, kinds, x, y):
+        """Each kind is its own yes/no; a sentence may state several."""
+        for kind in kinds:
+            p = self.llm.pick(*record_ask(self.plan.models[kind], self.t.s[x:y]))
+            if p[0] >= ACCEPT_KIND_YES:
+                self.fill(kind, x, y, p[0])
+            else:
+                log(f"gate record {kind} in {self.t.s[x:y][:50]!r}: no (p yes={p[0]:.3f}, threshold={ACCEPT_KIND_YES})")
 
     def trimmed(self, a, b):
         """A sentence without its chat-turn speaker prefix."""
@@ -1247,6 +1295,7 @@ def encoded(reqs, models):
     models.drop_llm()
     t = time.time()
     enc = models.encoder()
+    log(f"encoder_start_s={time.time() - t:.1f}")
     out = []
     try:
         for req in reqs:
@@ -1254,7 +1303,9 @@ def encoded(reqs, models):
                 plan = Plan(req["catalog"]["descriptor"], req["catalog"].get("derivations", ()))
                 spans = {}
                 for key, (op, *args) in plan.encoder_queries(req["input"]["content"]).items():
+                    asked = time.time()
                     spans[key] = enc.mentions(*args) if op == "mentions" else enc.records(*args)
+                    log(f"encoder {key} s={time.time() - asked:.2f}")
                 out.append(spans)
             except Exception as e:
                 out.append(e)
@@ -1307,6 +1358,8 @@ def extract(req, models, spans):
         reframe(c)
         records, frames = finish(c.records, c.frames)
         result.update(status="complete", records=records, proposed_frames=frames)
+        for who, (n, took, tokens) in sorted(getattr(llm, "spent", {}).items(), key=lambda kv: -kv[1][1]):
+            log(f"profile {who} calls={n} s={took:.2f} tokens={tokens}")
         log(f"scorer_load_s={models.load_s:.1f} phase2_s={time.time() - started:.1f} llm_calls={llm.calls - calls} records={len(records)} frames={len(frames)}")
     except Exception as e:
         result.update(status="failed", records=[], problems=[{"code": stage, "message": f"{type(e).__name__}: {e}"[:4096]}])
@@ -1360,6 +1413,8 @@ def answered(body, models):
         return {"p": models.llm.choose(body["context"], body["question"], body["options"])}
     if body.get("op") in ("rank", "embed"):
         return planned(body, models)
+    if body.get("op") in ("link", "retrieve", "block"):
+        return retrieval_op(body)
     models.llm.prefix = body.get("prefix", True)
     os.environ["CASCADE_UNITS"] = body.get("units") or "statements"
     os.environ["CASCADE_TRACE"] = "1" if body.get("trace") else ""
@@ -1369,6 +1424,16 @@ def answered(body, models):
         return {"results": [{"result": r, "log": l} for r, l in extract_batch(body["requests"], models)]}
     result, logs = extract_batch([body["request"]], models)[0]
     return {"result": result, "log": logs}
+
+
+def retrieval_op(body):
+    """A retrieval op (retrieval/service.py): small non-generative models held beside the scorer."""
+    where = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "retrieval")
+    if where not in sys.path:
+        sys.path.append(where)
+    import service
+
+    return service.answered(body)
 
 
 def planned(body, models):
