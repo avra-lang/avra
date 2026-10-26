@@ -3,7 +3,20 @@
 use @std.http_message.message.{Reply, Request, Version}
 use @std.text.{text_before}
 use @std.time.{now_ms}
-use app.{Async, Heard, Laid, Layer, Overlay, collection_of, laid}
+use app.{
+    Async,
+    Cause,
+    Counts,
+    Heard,
+    Laid,
+    Layer,
+    Overlay,
+    Row,
+    Snapshot,
+    collection_of,
+    counts,
+    laid,
+}
 use @std.json.{Json, parse}
 
 /// How long an entry nobody reads is kept.
@@ -64,6 +77,9 @@ export type Entry = {
     shown_laid: Cell<Laid?>,
     asked_n: Cell<int>,
     aliases: Cell<Map<string, int>>,
+    staled: Cell<Cause?>,
+    answered: Cell<int>,
+    counts: Counts,
 }
 
 impl Entry {
@@ -111,6 +127,9 @@ impl Entry {
             .Err(why) -> self.now.set(Async.Failed(why)),
             .Ok(reply) -> {
                 if kept && reply.status == 304 {
+                    self.counts.bump(self.counts.not_modified)
+                    self.staled.set(null)
+                    self.answered.set(now_ms())
                     self.stand.set(reply.stand() ?? self.stand.get())
                     return false
                 }
@@ -127,6 +146,8 @@ impl Entry {
 
     fn taken(reply: Reply, at: Version?) -> bool {
         self.now.set(Async.Ready(reply))
+        self.staled.set(null)
+        self.answered.set(now_ms())
         self.version.set(at)
         self.reads.set(reply.reads())
         self.feed.set(reply.feed())
@@ -149,6 +170,12 @@ impl Entry {
         self.out.set(false)
         self.now.set(Async.Failed("replaced by a later change to the same row"))
         self.told()
+    }
+
+    /// No longer fresh, and why.
+    fn stale(why: Cause) {
+        self.fresh.set(false)
+        self.staled.set(why)
     }
 
     /// Whether no view reads it.
@@ -254,7 +281,13 @@ export type Cache = {
     lanes: Cell<List<Lane>>,
     laid: Cell<int>,
     asks: Cell<int>,
+    counts: Counts,
+    sink: Cell<fn(Snapshot) -> void>,
+    watched: Cell<bool>,
 }
+
+/// The sink of a cache nobody watches.
+fn unwatched(_s: Snapshot) {}
 
 export fn cache() -> Cache {
     let none: List<Entry> = []
@@ -270,6 +303,9 @@ export fn cache() -> Cache {
         lanes: Cell.new(alone),
         laid: Cell.new(0),
         asks: Cell.new(0),
+        counts: counts(),
+        sink: Cell.new(unwatched),
+        watched: Cell.new(false),
     }
 }
 
@@ -301,6 +337,7 @@ impl Cache {
         let unfed: string? = null
         let unstood: int? = null
         let unlaid: Laid? = null
+        let unsaid_cause: Cause? = null
         let unnamed: Map<string, int> = {}
         Entry {
             id: self.minted.get(),
@@ -322,6 +359,9 @@ impl Cache {
             shown_laid: Cell.new(unlaid),
             asked_n: Cell.new(0),
             aliases: Cell.new(unnamed),
+            staled: Cell.new(unsaid_cause),
+            answered: Cell.new(0),
+            counts: self.counts,
         }
     }
 
@@ -412,6 +452,7 @@ impl Cache {
             after: Cell.new(unstood),
         }
         self.layers.push(made)
+        self.counts.bump(self.counts.laid)
         self.felt(made)
         made
     }
@@ -448,6 +489,7 @@ impl Cache {
         let kept_as = l.named_by()
         if kept_as != null { for e in reached { e.aliases.put(kept_as!, l.id) } }
         self.layers.set([x for x in self.layers.get() if x.id != l.id])
+        self.counts.bump(self.counts.dropped)
         for e in reached { e.told() }
     }
 
@@ -472,4 +514,66 @@ impl Cache {
 
     /// The entries whose answers say they are announced on `path`.
     fn on_feed(path: string) -> List<Entry> { [e for e in self.entries.get() if e.feed.get() == path] }
+}
+
+impl Cache {
+    /// Every entry, stream and write in flight as it stands now. Built on demand.
+    fn snapshot() -> Snapshot {
+        self.counts.bump(self.counts.built)
+        let now = now_ms()
+        Snapshot {
+            rows: [self.row_of(e, now) for e in self.entries.get() if e.key != null],
+            streams: [f.line() for f in self.feeds.get()],
+            writes: [w.line() for w in self.lanes.get() if w.flying.get()],
+            counts: self.counts.line(self.asks.get()),
+        }
+    }
+
+    fn row_of(e: Entry, now: int) -> Row {
+        let key = e.key!
+        Row {
+            key: if key.query.is_empty() { key.path } else { "${key.path}?${key.query}" },
+            state: match e.now.get() {
+                .Idle -> "idle",
+                .Loading -> "loading",
+                .Failed(why) -> "failed: ${why}",
+                .Ready(_) -> "ready",
+            },
+            fresh: e.fresh.get(),
+            stale_by: e.staled.get()?.words() ?? "",
+            age_ms: if e.answered.get() == 0 { 0 } else { now - e.answered.get() },
+            bytes: e.size(),
+            readers: e.watchers.get().length,
+            parked: e.parked.get().length,
+            layers: [l.id for l in self.layers.get() if l.reaches(key)],
+            feed: e.feed.get() ?? "",
+        }
+    }
+
+    /// The sink is told the snapshot from now on; none: nothing is built.
+    fn watching(sink: fn(Snapshot) -> void) {
+        self.sink.set(sink)
+        self.watched.set(true)
+    }
+
+    /// The cache moved: a watcher is told, and a cache nobody watches builds nothing.
+    fn moved() {
+        if !self.watched.get() { return }
+        (self.sink.get())(self.snapshot())
+    }
+}
+
+impl Feed {
+    fn line() -> string {
+        let state = when {
+            self.closed.get() -> "refused"
+            self.synced.get() -> "synced"
+            _ -> "waiting for its first notice"
+        }
+        "stream ${self.path}  ${state}"
+    }
+}
+
+impl Lane {
+    fn line() -> string { "write ${self.url}  in flight${if self.queued.get() == null { "" } else { ", one waiting" }}" }
 }

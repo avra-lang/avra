@@ -37,6 +37,18 @@ export fn fetched<T>(
     foresee: Overlay? = null,
 ) -> bool {
     let on? = running() else { return false }
+    let went = observed(on, held, request, parse, foresee)
+    on.observed.moved()
+    went
+}
+
+fn observed<T>(
+    on: App,
+    held: Fetch<T>,
+    request: Request,
+    parse: fn(Reply) -> Result<T, string>,
+    foresee: Overlay?,
+) -> bool {
     let entry = on.observed.entry_of(request)
     let before = held.at.get()
     before?.left(held.id)
@@ -57,7 +69,14 @@ export fn fetched<T>(
     on.observed.swept()
     hung_up(on)
     if entry.key == null { return written(on, entry, request, foresee) }
-    if entry.loading() || entry.fresh.get() { return true }
+    if entry.loading() {
+        on.observed.counts.bump(on.observed.counts.joined)
+        return true
+    }
+    if entry.fresh.get() {
+        on.observed.counts.bump(on.observed.counts.skipped)
+        return true
+    }
     asking(on, entry, request)
 }
 
@@ -109,6 +128,7 @@ fn landed(on: App, entry: Entry, into: Cell<Result<Reply, string>?>) -> bool {
     watching(on, entry)
     reconciled(on)
     on.observed.settled()
+    on.observed.moved()
     changed && !entry.unread()
 }
 
@@ -148,7 +168,7 @@ fn reconciled(on: App) {
         let after? = l.after.get() else { continue }
         for e in on.observed.reaching(l) {
             if !e.loading() && !e.reflects(l.stand.get(), after) {
-                e.fresh.set(false)
+                e.stale(.Reconciled)
                 asked_again(on, e)
             }
         }
@@ -168,7 +188,7 @@ fn refreshed(on: App, entry: Entry, answer: Result<Reply, string>) {
     let after = reply.stand()
     for e in on.observed.stale_by(written) {
         if e.id == entry.id || reflects(e, after) { continue }
-        e.fresh.set(false)
+        e.stale(.Wrote(written))
         if e.loading() { e.again.set(true) } else { asked_again(on, e) }
     }
 }
