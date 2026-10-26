@@ -296,6 +296,26 @@ spec "grammar/lexer" {
                 own_opened("x = thing self.name") == "thing" &&
                 own_opened("a +\nthing add") == "thing"
         }
+        then "a block holding what only an instance holds opens one, type arguments and all" {
+            own_opened("let c = thing<int> { on heard { x -> x } }") == "thing" &&
+                own_opened("made(() -> thing<int> { on heard { x -> x } })") == "thing" &&
+                own_opened("let c = thing {\n    child\n}") == "thing"
+        }
+        then "a block of fields alone stays the record's literal" {
+            own_opened("let c = thing<int> { w: 1, v: 2 }") == "" &&
+                own_opened("let c = thing { ..base, w: 1 }") == ""
+        }
+        then "where a type stands it stays a name, its block another's" {
+            own_opened("fn f() -> thing<int> {\n    child\n}") == "" &&
+                own_opened("fn f<T>(x: T) -> thing<T> {\n    child\n}") == "" &&
+                own_opened("impl thing {\n    fn f() { }\n}") == "" &&
+                own_opened("component thing<T> {\n    on heard(value: T)\n}") == ""
+        }
+        then "a record pattern stays a name" {
+            own_opened("match t {\n    thing { a, b } -> a\n}") == "" &&
+                own_opened("match t {\n    thing { a } if a > 1 -> a\n}") == "" &&
+                own_opened("if t is thing { a } { a }") == ""
+        }
         then "a keyword that is no value after it leaves it a name" {
             own_opened("for thing in things { }") == "" &&
                 own_opened("[x for thing in things]") == "" &&

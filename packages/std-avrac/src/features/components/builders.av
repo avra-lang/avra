@@ -112,7 +112,8 @@ fn build_component_keyed(b: Builder) -> Result<LangNode, string> {
     let body = b.expr(5)?
     if kw.text != "by" { return .Err(keyed_clause(word.word, kw.text)) }
     if iw.text != "it" { return .Err(keyed_pronoun(word.word, iw.text)) }
-    let parts? = b.store.lambda_parts(body) else { return .Err(keyed_body(word.word)) }
+    let lam? = b.store.body_fn(body) else { return .Err(keyed_body(word.word)) }
+    let parts? = b.store.lambda_parts(lam) else { return .Err(keyed_body(word.word)) }
     let seat? = parts.params.first() else { return .Err(keyed_binder(word.word)) }
     let subject = b.store.alloc_expr(Expr.Ident(Scoped(seat.name.of)), b.span)
     let key = b.store.alloc_expr(Expr.Prop(subject, Plain(field.text)), b.span)
@@ -137,17 +138,6 @@ fn build_component_named(b: Builder) -> Result<LangNode, string> {
 /// `secret stripe_key` — a named instance with no block.
 fn build_component_named_bare(b: Builder) -> Result<LangNode, string> {
     b.named(b.word_at(0)?, b.type_refs(1)?, b.token(2)?, null)
-}
-
-/// An instance's body: its settings and statements as written — the
-/// block the printer spells — or, under a `req ->` head, a fn over
-/// what the component offers.
-fn build_instance_body(b: Builder) -> Result<LangNode, string> {
-    let ps = params_at(b.args, 0)
-    let stmts = b.stmts(1)?
-    if ps.is_empty() { return b.make_expr(Expr.Block(stmts, null)) }
-    if stmts.any((s) -> b.store.setting_parts(s) != null) { return .Err(fn_body_setting()) }
-    b.make_expr(Expr.Lambda(ps, b.block_of(stmts)))
 }
 
 /// `on <event> { … }` — a handler written where the control is: the
@@ -342,10 +332,6 @@ fn unplaceable_field() -> string {
 
 fn pattern_literal(word: string, field: string) -> string {
     "`${word}`'s `${field}` is a pattern — write it as a string literal"
-}
-
-fn fn_body_setting() -> string {
-    "a body with parameters is a fn, and a fn holds no settings — write them in a body without a `name ->` head"
 }
 
 fn unmarked_handler() -> string {
