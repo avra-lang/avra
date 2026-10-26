@@ -4,7 +4,8 @@
 // writes for the same tree. Every box must agree; a mismatch is shrunk to a
 // small tree and printed with both answers.
 //
-//   node tools/layout-oracle/oracle.mjs [--cases N] [--seed S] [--show K] [--width W]
+//   node tools/layout-oracle/oracle.mjs [--cases N] [--seed S] [--show K] [--width W] [--css RULES]
+// `--css` adds rules to the page's style (mark them !important to beat the realizer's), to ask what a property would change.
 //
 // Leaves are empty boxes of a given size (or of none, which stretch or grow),
 // or text of random words. The page is set in a font whose every character is
@@ -16,7 +17,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { pathToFileURL } from "node:url";
 import { firefoxBinary, openPage } from "../ui-board/firefox.mjs";
+import { openPage as openWebkit, webkitLaunch } from "../ui-board/webkit.mjs";
 import { cellFontBase64 } from "./cellfont.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -26,6 +29,202 @@ const CASES = Number(args.cases ?? 200);
 const SEED = Number(args.seed ?? 1);
 const SHOW = Number(args.show ?? 3);
 const WIDTH = Number(args.width ?? 300);
+
+// --face prop: text is laid in a PROPORTIONAL face whose advances are fractional
+// pixels, summed in sixty-fourths by the solver and by the browser alike. The font
+// is built here with 64 units to the em, so at a font size of one pixel a glyph's
+// advance in font units is its advance in sixty-fourths of a pixel.
+const PROP = args.face === "prop";
+
+// The engine the boxes are read from: firefox (default) or webkit (Playwright's, PLAYWRIGHT_DIR).
+const ENGINE = args.browser ?? "firefox";
+
+// Each engine declares its own layout quantum, in parts to the pixel: Gecko lays a length out in
+// 1/60, WebKit in 1/64 (its LayoutUnit). The solver keeps one exact unit, 1/60, and knows no engine
+// (it cannot, short of sniffing which will paint); the QUANTUM is a parameter of this comparison,
+// handed to the face under test (`Text.quantum`) and to the bound below.
+const ENGINE_QUANTUM = { firefox: 60, webkit: 64 };
+const Q = ENGINE_QUANTUM[ENGINE] ?? 60;
+const SHARE = 60 / Q; // one engine quantum, in sixtieths of a pixel
+
+// HOW A BROWSER'S BOX MAY STAND FROM OURS, judged BEFORE rounding, in sixtieths of a pixel. The page
+// is read as it is laid out (fractional `getBoundingClientRect`) and each number of a box — left,
+// top, width, height — may differ from the solver's by at most what its own derivation can add:
+//   * a hugged text's WIDTH is the engine's measure of the run, one solver unit (1/60 px), per text;
+//   * a SHARE of divided room — a grow or fill size, a SpaceBetween/Around/Evenly space, half the free
+//     room under Center — is cut in the engine's quantum, so it costs one quantum (SHARE) each.
+// A position adds the uncertainties of everything laid before it, a size those of what it holds or
+// of the room it takes. The bound is computed PER BOX from the tree, printed beside every edge that
+// stands past a plain unit, and anything beyond it fails: no flat number. A text's LINE COUNT is a
+// count, exact. A whole-pixel tolerance would hide the very defect this oracle exists to find.
+const UNIT = 1; // one solver unit, in sixtieths of a pixel
+// A box's own numbers are quantised twice: the solver snaps a length to a unit (`fine` in place/measure.av,
+// carried as `unit` in place/solve.av), the engine lays it out in its quantum (ENGINE_QUANTUM). Each rounds
+// to nearest, so they stand apart by half a unit plus half a quantum even for a box that shares nothing.
+// Two lattices of one size disagree on nothing. `--without-own-term` drops the term, to witness it needed.
+const OWN = args["without-own-term"] !== undefined || SHARE === UNIT ? 0 : (UNIT + SHARE) / 2;
+// The page's numbers are 32-bit floats: past a few hundred pixels one step is 0.002 sixtieths of a
+// pixel. This is that resolution, rounded up, and never a tolerance on the layout.
+const SLACK = 0.01;
+
+const dirOf = (n) => n.layout.direction ?? (n.prim === "Row" ? "Row" : "Column");
+const mainOf = (n) => (dirOf(n) === "Row" ? "width" : "height");
+const fixedOn = (n, axis) => typeof n.layout[axis] === "object" && n.layout[axis].fixed !== undefined;
+const fillOn = (n, axis) => n.layout[axis] === "Fill";
+const sum = (xs) => xs.reduce((a, b) => a + b, 0);
+/// A node's children in the order they are laid: `order`, then tree order.
+const visual = (n) => n.kids.map((k, i) => [k, i]).sort((a, b) => (a[0].layout.order ?? 0) - (b[0].layout.order ?? 0) || a[1] - b[1]).map((x) => x[0]);
+
+/// What a size can stand off by from its CONTENT alone: a hugged text's width is the engine's
+/// measure (1 unit), a fixed size is exact, a container adds up (main axis) or takes the widest (cross).
+const natural = (n, axis) => {
+  if (fixedOn(n, axis)) return 0;
+  if (n.prim === "Text") return axis === "width" ? UNIT : 0;
+  if (n.kids.length === 0) return 0;
+  const inside = n.kids.map((k) => natural(k, axis));
+  return mainOf(n) === axis ? sum(inside) : Math.max(...inside);
+};
+
+/// Whether a size is cut from room it was GIVEN (a definite size, or a share of its parent's) rather
+/// than from its content: only then can the engine divide that room among its children.
+const roomOn = (n, axis, parent, parentRoom) => {
+  if (fixedOn(n, axis)) return true;
+  if (parent === null) return axis === "width";
+  const main = mainOf(parent) === axis;
+  const shared = fillOn(n, axis) || (main && (n.layout.grow ?? 0) > 0);
+  if (shared) return parentRoom[axis];
+  return !main && (parent.layout.align ?? "Stretch") === "Stretch" && parentRoom[axis];
+};
+
+/// A box's DEFINITE size on an axis in pixels, where its layout fixes it (a fixed size, or the root's
+/// width, which the host decides); null where it is cut from content or room.
+const definiteOn = (n, axis, parent) => (fixedOn(n, axis) ? n.layout[axis].fixed : parent === null && axis === "width" ? WIDTH : null);
+
+const px = (name) => SPACE[name ?? "None"] ?? 0;
+const edgeOf = (e, axis, end) => px(e?.[{ width: ["start", "end"], height: ["top", "bottom"] }[axis][end]]);
+
+/// Whether a container's items can SHRINK along its main axis, read from the tree: false when its
+/// room is not given or when every item is fixed and together they fit; true when they overflow; and
+/// true (it may) where an item is cut from content, so the fit cannot be told from the tree.
+function mayShrink(parent, parentDefinite, parentRoom) {
+  const axis = mainOf(parent);
+  if (!parentRoom[axis]) return false;
+  if ((parent.layout.wrap ?? "NoWrap") !== "NoWrap") return true;
+  const inner = parentDefinite[axis];
+  if (inner === null || !parent.kids.every((k) => fixedOn(k, axis))) return true;
+  const pad = edgeOf(parent.layout.pad, axis, 0) + edgeOf(parent.layout.pad, axis, 1);
+  const gaps = px(parent.layout.gap) * Math.max(0, parent.kids.length - 1);
+  const items = sum(parent.kids.map((k) => k.layout[axis].fixed + edgeOf(k.layout.margin, axis, 0) + edgeOf(k.layout.margin, axis, 1)));
+  return items + gaps > inner - pad;
+}
+
+/// A size's uncertainty given its parent's. Along the main axis an item takes a SHARE of divided
+/// room when it grows or fills, and when its container may shrink it; the engine cuts that share in
+/// its quantum. A share carries the parent's uncertainty, its siblings' contents and one quantum. A
+/// cross size that stretches or fills carries the parent's.
+const sizeBound = (n, axis, parent, parentSize, parentRoom, shrinks) => {
+  if (parent === null) return fixedOn(n, axis) || axis === "width" ? 0 : natural(n, axis);
+  const main = mainOf(parent) === axis;
+  const shares = main && (fillOn(n, axis) || (n.layout.grow ?? 0) > 0 || shrinks);
+  if (shares) return parentSize + sum(parent.kids.filter((k) => k !== n).map((k) => natural(k, axis))) + SHARE;
+  if (fixedOn(n, axis)) return 0;
+  // a wrapped container shares the room its lines leave across them, so a stretched item is a share too
+  const wrapped = (parent.layout.wrap ?? "NoWrap") !== "NoWrap" ? SHARE : 0;
+  if (!main && (fillOn(n, axis) || (parent.layout.align ?? "Stretch") === "Stretch")) return Math.max(natural(n, axis), parentSize) + wrapped;
+  return natural(n, axis);
+};
+
+/// Every box's bounds [left, top, width, height] in the page's pre-order, from the node's own `layout`.
+// The share of a container's free room an item's offset carries, as `spanned` in place/solve.av
+// computes it: the free room (`spare`) times the running sum of the distribution's space weights
+// (`spaces_of`) up to the item, over their total. The room is the container's own size less its
+// items, so the container's size bound enters at this share.
+function spare_share(dist, i, n) {
+  const weights = { Start: [], End: [1], Center: [1], SpaceBetween: n < 2 ? [] : [0, ...Array(n - 1).fill(1)], SpaceAround: [1, ...Array(n - 1).fill(2)], SpaceEvenly: Array(n + 1).fill(1) }[dist] ?? [];
+  const full = { Start: 0, End: 1, Center: 2, SpaceBetween: Math.max(n - 1, 0), SpaceAround: 2 * n, SpaceEvenly: n + 1 }[dist] ?? 0;
+  return full === 0 ? 0 : weights.slice(0, i + 1).reduce((a, b) => a + b, 0) / full;
+}
+
+function bounds_of(spec) {
+  const out = [];
+  const walk = (n, parent, parentPos, parentSize, parentRoom, parentDefinite, before) => {
+    const shrinks = parent !== null && mayShrink(parent, parentDefinite, parentRoom);
+    const size = { width: sizeBound(n, "width", parent, parentSize?.width, parentRoom, shrinks), height: sizeBound(n, "height", parent, parentSize?.height, parentRoom, shrinks) };
+    const room = { width: roomOn(n, "width", parent, parentRoom), height: roomOn(n, "height", parent, parentRoom) };
+    const definite = { width: definiteOn(n, "width", parent), height: definiteOn(n, "height", parent) };
+    const pos = { width: 0, height: 0 };
+    if (parent !== null) {
+      const main = mainOf(parent), cross = main === "width" ? "height" : "width";
+      const index = before.length;
+      const dist = parent.layout.distribute ?? "Start";
+      const spaces = { SpaceBetween: index, SpaceAround: index + 1, SpaceEvenly: index + 1, Center: 1 }[dist] ?? 0;
+      // the free room a distribution cuts is the container's room less EVERY item, so it carries
+      // every item's uncertainty, wherever the item stands
+      const everyone = dist === "Start" ? 0 : sum(parent.kids.map((k) => sizeBound(k, main, parent, parentSize[main], parentRoom, shrinks)));
+      pos[main] = parentPos[main] + sum(before.map((k) => sizeBound(k, main, parent, parentSize[main], parentRoom, shrinks))) + spaces * SHARE + everyone + spare_share(dist, index, parent.kids.length) * parentSize[main];
+      const align = parent.layout.align ?? "Stretch";
+      // a wrapped container shares its spare cross room among its lines, at most one line per item before this one
+      const wraps = (parent.layout.wrap ?? "NoWrap") !== "NoWrap";
+      pos[cross] = parentPos[cross] + (align === "Center" ? parentSize[cross] + size[cross] + SHARE : align === "End" ? parentSize[cross] + size[cross] : 0) + (wraps ? sum(before.map((k) => sizeBound(k, cross, parent, parentSize[cross], parentRoom, shrinks))) + (before.length + 1) * SHARE : 0);
+    }
+    out.push({ left: pos.width + OWN, top: pos.height + OWN, width: size.width + OWN, height: size.height + OWN });
+    const order = visual(n);
+    for (const k of n.kids) walk(k, n, pos, size, room, definite, order.slice(0, order.indexOf(k)));
+  };
+  walk(spec, null, null, null, null, null, []);
+  return out;
+}
+
+// THE BOUNDARY RULE. A box is also handed back snapped to whole pixels, each EDGE rounded halves up,
+// and two numbers within their bound can round apart when a rounding boundary (k + 1/2 px) lies
+// between them. The rounded boxes may differ by one pixel on an edge ONLY when that edge's fine
+// value is within its bound of such a boundary; every such edge is named in the run. Anywhere else a
+// rounded difference is a defect, because the fine numbers it comes from agreed.
+const near_boundary = (sixtieths, bound) => {
+  const r = (((sixtieths - 30) % 60) + 60) % 60;
+  const reach = Math.max(UNIT, bound) + SLACK;
+  return r <= reach || r >= 60 - reach;
+};
+
+/// A box is [left, top, width, height, lines, fx, fy, fw, fh]: the first four whole pixels, the
+/// last four the fractional page numbers (browser) or sixtieths (solver). Returns whether the
+/// browser's boxes stand within each box's bound, the edges worth naming, and the widest fine gap.
+function judge(got, want, bound) {
+  const notes = [];
+  let gap = 0;
+  if (got.length !== want.length) return { ok: false, notes, gap, why: ["a box count"] };
+  let ok = true;
+  const why = new Set();
+  got.forEach((b, i) => {
+    const w = want[i], u = bound[i];
+    if (b[4] !== w[4]) { ok = false; why.add("a line count"); }
+    const limits = [u.left, u.top, u.width, u.height];
+    for (let q = 0; q < 4; q++) {
+      const d = Math.abs(w[5 + q] - b[5 + q] * 60);
+      gap = Math.max(gap, d);
+      if (d > limits[q] + SLACK) { ok = false; why.add("a bound"); }
+      else if (d > UNIT + SLACK) notes.push(`box ${i} ${["left", "top", "width", "height"][q]}: gap ${d.toFixed(3)}/60 px within its derived bound ${limits[q].toFixed(3)}/60 (engine quantum 1/${Q})`);
+    }
+    // each edge, solver sixtieths against the browser's whole pixel: left, right, top, bottom
+    const edges = [[w[0], w[5], b[0], u.left], [w[0] + w[2], w[5] + w[7], b[0] + b[2], u.left + u.width], [w[1], w[6], b[1], u.top], [w[1] + w[3], w[6] + w[8], b[1] + b[3], u.top + u.height]];
+    edges.forEach(([wholeSolver, fine, wholeBrowser, reach], e) => {
+      if (wholeSolver === wholeBrowser) return;
+      if (near_boundary(fine, reach)) notes.push(`box ${i} ${["left", "right", "top", "bottom"][e]}: fine ${fine}/60 px sits within its bound (${Math.max(UNIT, reach).toFixed(3)}/60) of a rounding boundary — solver rounds to ${wholeSolver}, browser to ${wholeBrowser}`);
+      else { ok = false; why.add("a rounding"); }
+    });
+  });
+  return { ok, notes, gap, why: [...why] };
+}
+
+const FACE_NAME = PROP ? "prop" : "cell";
+
+/// The run's verdict, spoken once and exited on.
+function refuse(said) {
+  console.log(`layout-oracle: FAILED — ${said}`);
+  process.exit(1);
+}
+const FACE = { units: 64, advances: { i: 96, m: 272, W: 320, " ": 128 }, fallback: 205 };
+const LINE = 16;
 
 // ── the trees ────────────────────────────────────────────────────
 
@@ -47,6 +246,7 @@ const WRAPS = ["NoWrap", "Wrap", "WrapReverse"];
 
 function words(rand) {
   const n = 1 + Math.floor(rand() * 6);
+  if (PROP) return Array.from({ length: n }, () => Array.from({ length: 1 + Math.floor(rand() * 9) }, () => "imWxa"[Math.floor(rand() * 5)]).join("")).join(" ");
   return Array.from({ length: n }, () => "abcdefghijklmnopqrstuvwxyz".slice(0, 1 + Math.floor(rand() * 9))).join(" ");
 }
 
@@ -106,6 +306,18 @@ const FIXED_CASES = [
   { prim: "Row", layout: { gap: "Xs", pad: { start: "Xs", end: "Xs", top: "None", bottom: "None" }, width: { fixed: 60 } }, kids: [leaf({ width: { fixed: 10 }, height: { fixed: 3 } }), leaf({ width: "Fill", height: { fixed: 3 } })] },
 ];
 
+// A twenty-glyph word of 205/64 pixels each is 64.06 pixels: it wraps in 64, where
+// whole-pixel advances (3 each) would not. Rows of fractional advances that land on
+// the edge pin where the browser breaks.
+const PROP_CASES = [
+  { prim: "Row", layout: { width: { fixed: 64 } }, kids: [text("xxxxxxxxxxxxxxxxxxxx")] },
+  { prim: "Row", layout: { width: { fixed: 64 } }, kids: [text("xxxxxxxxxx xxxxxxxxxx")] },
+  { prim: "Row", layout: { width: { fixed: 8 } }, kids: [text("ii ii")] },
+  { prim: "Row", layout: { width: { fixed: 7 } }, kids: [text("ii ii")] },
+  { prim: "Row", layout: { width: { fixed: 40 } }, kids: [text("mmm WWW iii xxx mmm WWW iii xxx")] },
+  { prim: "Row", layout: { width: { fixed: 61 } }, kids: [text("xxxxxxxxxxxxxxxxxxx")] },
+];
+
 // ── the solver's side and the page ───────────────────────────────
 
 const sizing = (s) => (s === "Fill" ? ".Fill" : `.Fixed(${s.fixed})`);
@@ -133,18 +345,47 @@ function nodeSrc(n) {
   return `boxed(.${prim}, ${layoutSrc(n.layout)}, [${n.kids.map(nodeSrc).join(", ")}])`;
 }
 
-function program(cases) {
+function program(cases, slacks = []) {
   const defs = cases.map((c, i) => `fn case_${i}() -> Node { ${nodeSrc(c)} }`).join("\n");
-  const runs = cases.map((_, i) => `show(${i}, case_${i}())`).join("\n");
+  const slackSrc = (m) => `{ ${Object.entries(m ?? {}).map(([t, v]) => `"${t}": ${v}`).join(", ")} }`;
+  const runs = cases.map((_, i) => `show(${i}, case_${i}(), ${Object.keys(slacks[i] ?? {}).length === 0 ? "{}" : slackSrc(slacks[i])})`).join("\n");
   return `use @std.ui.tree.node.{Node}
 use @std.ui.env.{Env}
 use @std.ui.style.layout.{Layout, Edge}
 use @std.ui.style.tokens.{Size}
 use @std.ui.style.theme.{Theme}
-use @std.ui.place.measure.{Measure, Extent, Cells}
-use @std.ui.place.solve.{place, Placed}
+use @std.ui.place.measure.{Measure, Extent, Cells, fine}
+use @std.ui.place.metrics.{Table, run_width_in}
+use @std.ui.place.lines.{lines_in}
+use @std.ui.place.text.{Text}
+use @std.ui.place.solve.{place_fine, whole, Placed}
+use @std.ui.realize.tui.layout.{own_lines}
 use @std.ui.realize.html.html.{render}
 use @std.ui.realize.tests.support.{boxed, placed, text_node}
+
+/// The target's measure, wrapped to COUNT: the solver's own line structure for a text is what its
+/// own lines_in answers at the width the solver hands it, so the count is read, never inferred
+/// from a height. kept is handed the solver's path for the node whose content is measured next.
+type Counting = { inner: dyn Measure, seen: Cell<Map<string, int>>, at: Cell<string>, slack: Map<string, int> }
+
+impl Measure for Counting {
+    fn own(n: Node, avail: int) -> Extent {
+        let room = when { n.prim is .Text -> avail + (self.slack.get(n.words()) ?? 0), _ -> avail }
+        if n.prim is .Text { self.seen.put(self.at.get(), count_lines(n, room)) }
+        self.inner.own(n, room)
+    }
+    fn kept(n: Node, path: string) -> int {
+        self.at.set(path)
+        self.inner.kept(n, path)
+    }
+    fn hidden(n: Node) -> bool { self.inner.hidden(n) }
+    fn holds(n: Node) -> bool { self.inner.holds(n) }
+    fn min_own(n: Node) -> int { self.inner.min_own(n) }
+    fn gap_x(z: Size) -> int { self.inner.gap_x(z) }
+    fn gap_y(z: Size) -> int { self.inner.gap_y(z) }
+    fn pad_x(z: Size) -> int { self.inner.pad_x(z) }
+    fn pad_y(z: Size) -> int { self.inner.pad_y(z) }
+}
 
 type Pixels = { theme: Theme }
 
@@ -160,48 +401,91 @@ impl Measure for Pixels {
     fn pad_y(z: Size) -> int { self.theme.space_of(z) }
 }
 
+${PROP ? `fn face_metrics() -> Table {
+    Table { advances: { ${Object.entries(FACE.advances).map(([c, u]) => `"${c}": ${u}`).join(", ")} }, fallback: ${FACE.fallback}, up: ${LINE * 48}, down: ${LINE * 16} }
+}
+
+fn typeface() -> Text { Text { metrics: face_metrics(), theme: Env {}.theme, rest: Cells {}, quantum: ${Q} } }
+
+fn count_lines(n: Node, avail: int) -> int {
+    lines_in(n.words(), (avail * ${Q} + fine / 2) / fine, (s: string) -> run_width_in(face_metrics(), s, ${Q})).length
+}
+` : `fn count_lines(n: Node, avail: int) -> int { own_lines(n, avail / fine).length }
+`}
 fn rows_of(p: Placed) -> List<string> {
     ["\${p.rect.x} \${p.rect.y} \${p.rect.w} \${p.rect.h}"].concat([l for k in p.kids for l in rows_of(k)])
 }
 
-fn show(i: int, n: Node) {
+fn count_of(c: Counting, n: Node, path: string) -> int {
+    when { n.prim is .Text -> c.seen.get().get(path) ?? 0, _ -> 0 }
+}
+
+fn counts(c: Counting, n: Node, path: string) -> List<int> {
+    [count_of(c, n, path)].concat([v for i, k in n.children for v in counts(c, k, "\${path}.\${i}")])
+}
+
+fn show(i: int, n: Node, slack: Map<string, int>) {
+    let seen: Cell<Map<string, int>> = Cell.new({})
+    let at: Cell<string> = Cell.new("")
+    let c = Counting { inner: ${PROP ? "typeface()" : "Pixels { theme: Env {}.theme }"}, seen: seen, at: at, slack: slack }
+    let fine_boxes = place_fine(n, c, ${WIDTH})
     println("case \${i}")
-    for l in rows_of(place(n, Pixels { theme: Env {}.theme }, ${WIDTH})) { println(l) }
+    for l in rows_of(whole(fine_boxes)) { println(l) }
+    println("fine \${i}")
+    for l in rows_of(fine_boxes) { println(l) }
+    println("lines \${i}")
+    println(["\${v}" for v in counts(c, n, "0")].join(" "))
     println("html \${i}")
     println(render(n, Env {}).replace("\\n", " "))
     println("end \${i}")
 }
+${["None", "Xs", "S", "M", "L", "Xl"].map((z) => `println("space ${z} \${Env {}.theme.space_of(.${z})}")`).join("\n")}
 ${defs}
 ${runs}
 `;
 }
 
-function solved(cases, work) {
+function solved(cases, work, slacks = []) {
   fs.mkdirSync(path.join(work, "src"), { recursive: true });
   fs.writeFileSync(path.join(work, "avra.toml"), `[package]\nname = "layout-oracle"\nversion = "0.0.1"\n`);
-  fs.writeFileSync(path.join(work, "src/main.av"), program(cases));
+  fs.writeFileSync(path.join(work, "src/main.av"), program(cases, slacks));
   const avra = process.env.AVRA ?? path.join(tree, "build/avra");
-  const ran = spawnSync(avra, ["run", work], { encoding: "utf8", maxBuffer: 1 << 28 });
+  // BUILT, then run natively: the evaluator walks 300 trees in two minutes where the program,
+  // compiled, answers them in seconds (the two engines agree on every program the tree tests).
+  const built = spawnSync(avra, ["build", work], { encoding: "utf8", maxBuffer: 1 << 28 });
+  if (built.status !== 0) { console.error(built.stdout.slice(-2000), built.stderr.slice(-4000)); process.exit(2); }
+  const ran = spawnSync(path.join(work, "src/main"), { encoding: "utf8", maxBuffer: 1 << 28 });
   if (ran.status !== 0) { console.error(ran.stdout.slice(-2000), ran.stderr.slice(-4000)); process.exit(2); }
-  const out = [], pages = [];
+  const out = [], pages = [], counts = [], fines = [];
+  for (const l of ran.stdout.split("\n")) { const m = l.match(/^space (\w+) (-?\d+)$/); if (m) SPACE[m[1]] = Number(m[2]); }
   let reading = null;
   for (const l of ran.stdout.split("\n")) {
     if (l.startsWith("case ")) { out.push([]); reading = "rects"; }
+    else if (l.startsWith("fine ")) { fines.push([]); reading = "fine"; }
+    else if (l.startsWith("lines ")) reading = "lines";
     else if (l.startsWith("html ")) reading = "html";
     else if (l.startsWith("end ")) reading = null;
     else if (reading === "rects" && /^-?\d/.test(l)) out[out.length - 1].push(l.split(" ").map(Number));
+    else if (reading === "fine" && /^-?\d/.test(l)) fines[fines.length - 1].push(l.split(" ").map(Number));
+    else if (reading === "lines" && /^-?\d/.test(l)) counts.push(l.split(" ").map(Number));
     else if (reading === "html") pages.push(l);
   }
+  // The solver's line count joins its box as the fifth number, read beside the browser's own, and its
+  // fine rect (sixtieths, before any snapping) as the last four.
+  out.forEach((boxes, i) => boxes.forEach((b, k) => b.push(counts[i]?.[k] ?? 0, ...(fines[i]?.[k] ?? [0, 0, 0, 0]))));
   return { out, pages };
 }
 
 // ── the browser's side ───────────────────────────────────────────
 
-const PAGE = `<!doctype html><meta charset=utf-8><style>@font-face{font-family:cell;src:url(data:font/ttf;base64,${cellFontBase64()})}body{margin:0;font:1px/1px cell}</style><body></body>`;
+const PAGE = `<!doctype html><meta charset=utf-8><style>@font-face{font-family:cell;src:url(data:font/ttf;base64,${cellFontBase64(PROP ? FACE : {})})}body{margin:0;font:1px/${PROP ? LINE : 1}px cell${PROP ? ";font-kerning:none;font-variant-ligatures:none" : ""}}${args.css ?? ""}</style><body></body>`;
 
 // The page the realizer wrote is laid in a host WIDTH wide. Each box is read
 // as the browser paints it: its edges, from the root's corner, snapped to the
 // nearest whole unit, halves up — the law the solver hands its boxes back by.
+// Each box is [left, top, width, height, lines]: the last is the element's OWN line count, read from
+// its text's line boxes — never its height divided by a line height. An element holding text counts
+// the lines that text is painted on; every other element counts zero.
 const BROWSER = `(html, widthPx) => {
   const host = document.createElement("div");
   host.style.cssText = "position:absolute;left:0;top:0;width:" + widthPx + "px";
@@ -210,10 +494,23 @@ const BROWSER = `(html, widthPx) => {
   const root = host.lastElementChild;
   const origin = root.getBoundingClientRect();
   const out = [];
+  const lineCount = (el) => {
+    const node = el.firstChild;
+    if (!node || node.nodeType !== 3 || el.children.length > 0) return 0;
+    const range = document.createRange();
+    let lines = 0, last = -1e9;
+    for (let i = 0; i < node.textContent.length; i++) {
+      range.setStart(node, i); range.setEnd(node, i + 1);
+      const rect = range.getClientRects()[0];
+      if (!rect) continue;
+      if (rect.top - last > 0.5) { lines++; last = rect.top; }
+    }
+    return lines;
+  };
   const walk = (el) => {
     const r = el.getBoundingClientRect();
     const l = Math.round(r.x - origin.x), t = Math.round(r.y - origin.y);
-    out.push([l, t, Math.round(r.x + r.width - origin.x) - l, Math.round(r.y + r.height - origin.y) - t]);
+    out.push([l, t, Math.round(r.x + r.width - origin.x) - l, Math.round(r.y + r.height - origin.y) - t, lineCount(el), r.x - origin.x, r.y - origin.y, r.width, r.height]);
     for (const k of el.children) walk(k);
   };
   walk(root);
@@ -221,12 +518,61 @@ const BROWSER = `(html, widthPx) => {
   return out;
 }`;
 
-async function compare(cases, browser, work) {
-  const { out, pages } = solved(cases, work);
+/// What a run saw beyond agree/disagree: every boundary edge, and the widest fine gap.
+const SEEN = { boundary: [], gap: 0, why: {} };
+
+/// Where a run's time goes, in milliseconds: the solver's program (compile and run), the page, and
+/// the work shrinking a failure took. Printed at the end of every run.
+/// The theme's spacing steps in pixels, as the solver's program reads them.
+const SPACE = {};
+const SPENT = { solver: 0, page: 0, calls: 0, trees: 0 };
+const timed = async (key, f) => { const t = Date.now(); try { return await f(); } finally { SPENT[key] += Date.now() - t; } };
+
+// A BOUNDARY LINE BREAK. A line whose run stands within OWN of its room is decided by two quanta, so two
+// correct engines may break it either way. Where the browser's line count for a text is not the solver's,
+// the solver is asked again with that text's room nudged one unit toward the browser's choice (more room
+// where the browser fit more, less where it fit fewer), and everything is compared exactly again: the
+// nudge can only move a break that lay within a unit of the edge, so any other difference stays refused.
+const NUDGE = Math.ceil(OWN);
+async function boundary_resolved(cases, out, read, work) {
+  const verdicts = new Map();
+  if (NUDGE === 0 || args["without-boundary-term"] !== undefined) return verdicts;
+  const plans = [];
+  cases.forEach((c, i) => {
+    if (judge(read[i], out[i], bounds_of(c)).ok) return;
+    const slack = {};
+    nodes_of(c).forEach((n, k) => {
+      if (n.prim === "Text" && read[i][k]?.[4] !== out[i][k]?.[4]) slack[n.text] = read[i][k][4] > out[i][k][4] ? -NUDGE : NUDGE;
+    });
+    if (Object.keys(slack).length > 0) plans.push({ i, slack });
+  });
+  if (plans.length === 0) return verdicts;
+  const again = await timed("solver", async () => solved(plans.map((p) => cases[p.i]), work, plans.map((p) => p.slack)));
+  SPENT.calls += 1;
+  plans.forEach((p, j) => {
+    const v = judge(read[p.i], again.out[j], bounds_of(cases[p.i]));
+    if (v.ok) verdicts.set(p.i, { ...v, notes: [`a line broke on the edge of its room (within ${OWN.toFixed(2)}/60): the solver agrees once that line breaks as the engine broke it`, ...v.notes] });
+  });
+  return verdicts;
+}
+
+async function compare(cases, browser, work, note = false) {
+  const { out, pages } = await timed("solver", async () => solved(cases, work));
+  SPENT.calls += 1;
+  SPENT.trees += cases.length;
   const results = [];
+  // ONE round trip for every tree of this call: the page lays each out in turn and answers them all.
+  const read = await timed("page", () => browser.read(`((pages, w) => pages.map((html) => (${BROWSER})(html, w)))(${JSON.stringify(pages)}, ${WIDTH})`));
+  const nudged = await boundary_resolved(cases, out, read, work);
   for (let i = 0; i < cases.length; i++) {
-    const got = await browser.read(`(${BROWSER})(${JSON.stringify(pages[i])}, ${WIDTH})`);
-    results.push(JSON.stringify(got) === JSON.stringify(out[i]) ? null : { got, want: out[i] });
+    const got = read[i];
+    const verdict = nudged.get(i) ?? judge(got, out[i], bounds_of(cases[i]));
+    if (note) {
+      SEEN.gap = Math.max(SEEN.gap, verdict.gap);
+      for (const n of verdict.notes) SEEN.boundary.push(`case ${i}: ${n}`);
+    }
+    if (note && !verdict.ok) for (const w of verdict.why) SEEN.why[w] = (SEEN.why[w] ?? 0) + 1;
+    results.push(verdict.ok ? null : { got, want: out[i] });
   }
   return results;
 }
@@ -261,30 +607,128 @@ async function shrunk(spec, browser, work) {
   return cur;
 }
 
+// The page in the engine asked for. A machine without it FAILS (a run that compared nothing is no pass)
+// unless `--skip-if-absent` stands it down aloud.
+async function opened(url) {
+  const absent = (why) => {
+    const skipped = process.argv.includes("--skip-if-absent");
+    console.log(`layout-oracle: ran 0 trees — ${skipped ? "SKIPPED" : "FAILED"}: ${why}`);
+    process.exit(skipped ? 0 : 1);
+  };
+  if (ENGINE === "firefox") {
+    const binary = firefoxBinary();
+    if (!binary) absent("no Firefox on this machine (FIREFOX names one)");
+    return openPage(binary, url, { width: 1200, height: 900 });
+  }
+  if (ENGINE !== "webkit") absent(`no engine called ${ENGINE} (firefox or webkit)`);
+  const dir = process.env.PLAYWRIGHT_DIR ?? ".";
+  const loaded = await import(pathToFileURL(path.join(dir, "node_modules/playwright/index.mjs")).href).catch((e) => ({ said: String(e.message).split("\n")[0] }));
+  const { browser, said } = loaded.webkit ? await webkitLaunch(loaded) : { said: loaded.said };
+  if (!browser) absent(`WebKit could not launch — ${said}`);
+  return openWebkit(browser, url, { width: 1200, height: 900 });
+}
+
+/// A tree's two answers, box by box: the solver's, the browser's, and a mark on every box that
+/// disagrees under the fine law.
+async function printed(label, spec, v) {
+  console.log(`${label}\n${JSON.stringify(spec)}`);
+  const bounds = bounds_of(spec);
+  for (let k = 0; k < Math.max(v.got.length, v.want.length); k++) {
+    const px = (x) => (x / 60).toFixed(3);
+    const solver = (b) => `[${b.slice(0, 4).join(",")}] lines ${b[4]} fine ${b.slice(5).map(px).join(" ")}`;
+    const browser = (b) => `[${b.slice(0, 4).join(",")}] lines ${b[4]} fine ${b.slice(5).map((x) => x.toFixed(3)).join(" ")}`;
+    const holds = v.want[k] && v.got[k] && judge([v.got[k]], [v.want[k]], [bounds[k]]).ok;
+    const u = bounds[k];
+    const limit = u ? ` bound ${[u.left, u.top, u.width, u.height].map((x) => x.toFixed(2)).join(" ")}` : "";
+    console.log(`  box ${k}: solver ${solver(v.want[k])}  browser ${browser(v.got[k])}${limit}${holds ? "" : "   <--"}`);
+  }
+}
+
+// ── what is licensed ─────────────────────────────────────────────
+// A tree the solver and an engine disagree on stands licensed only where the engine's own behaviour,
+// not the solver's, is the difference. Firefox holds no licence: where Firefox and the solver
+// disagree the solver is wrong.
+//
+// FAMILY "a word wider than its box": WebKit breaks a word wider than its box into lines differently
+// from the solver and from Firefox. A tree belongs when
+// every Text whose line count differs holds a word wider than the width the solver gave it; the boxes
+// that follow from that count (heights, positions) are the same disagreement. The CSS is acquitted:
+// the realizer's `overflow-wrap: break-word` and `anywhere` give identical counts, `word-break:
+// break-all` and `normal` move them further. The exemplars below must stay refused, so a fix on either
+// side shows up as a stale licence rather than a silent pass.
+//   webkit prop seed 5 case 118: Text "iimiammm" at width 3 (shrunk): solver 7 lines, WebKit 8
+//     (faces: i 1.5px, m 4.25, W 5, a/x 3.203, space 2). Agrees: every prefix and suffix of the word,
+//     "iimiamm" "imiammm" "iimiammx" "iiaiammm" "immiammm", and the word at widths 2, 4, 5, 6.
+const FAMILY = {
+  engine: "webkit",
+  face: "prop",
+  exemplars: [{ seed: 5, case: 118, width: 300 }],
+};
+// Trees licensed one at a time, each with what is known. A name here is a defect nobody has explained.
+const NAMED = [
+];
+
+const nodes_of = (spec) => [spec, ...spec.kids.flatMap(nodes_of)];
+const word_px = (w) => [...w].reduce((a, c) => a + (FACE.advances[c] ?? FACE.fallback), 0) / FACE.units;
+const longest_px = (t) => Math.max(0, ...t.split(/[ \n]/).map(word_px));
+
+/// Whether every line count that differs in `spec` is a Text holding a word wider than its box.
+function cut_word_tree(spec, got, want) {
+  const nodes = nodes_of(spec);
+  const differing = got.map((b, k) => (b[4] !== want[k][4] ? k : -1)).filter((k) => k >= 0);
+  return differing.length > 0 && differing.every((k) => nodes[k].prim === "Text" && longest_px(nodes[k].text) > want[k][7] / 60 + SLACK);
+}
+
+const named_here = (e) => e.engine === ENGINE && e.face === FACE_NAME && (e.seed === undefined || e.seed === SEED) && (e.width === undefined || e.width === WIDTH);
+
+/// Why a refused tree stands licensed, or null.
+function licence_of(spec, i, v) {
+  if (ENGINE !== FAMILY.engine || FACE_NAME !== FAMILY.face) return NAMED.find((e) => named_here(e) && e.case === i)?.why ?? null;
+  if (cut_word_tree(spec, v.got, v.want)) return "a word wider than its box";
+  return NAMED.find((e) => named_here(e) && e.case === i)?.why ?? null;
+}
+
+/// The licences that name a tree of this run which no longer disagrees.
+const stale = (refused, count) => [
+  ...FAMILY.exemplars.filter((e) => e.seed === SEED && e.width === WIDTH && ENGINE === FAMILY.engine && FACE_NAME === FAMILY.face).map((e) => ({ ...e, family: true })),
+  ...NAMED.filter(named_here),
+].filter((e) => e.case < count && !refused.has(e.case));
+
+/// The tree at `i`, shrunk to the smallest one that still disagrees.
+async function small_enough(cases, i, browser, work) {
+  // `--no-shrink` prints the tree as generated: shrinking rebuilds the solver's program every round.
+  const small = process.argv.includes("--no-shrink") ? cases[i] : await shrunk(cases[i], browser, work);
+  const [v] = await compare([small], browser, work);
+  return { small, v };
+}
+
 async function main() {
   const rand = prng(SEED);
-  const cases = args.tree ? [JSON.parse(args.tree)] : FIXED_CASES.concat(Array.from({ length: CASES }, () => rooted(generate(rand, 3))));
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "avra-layout-oracle-"));
-  const binary = firefoxBinary();
-  if (!binary) { console.log("layout-oracle: ran 0 trees — FAILED: no Firefox on this machine (FIREFOX names one)"); process.exit(1); }
+  const cases = args.tree ? [JSON.parse(args.tree)] : (PROP ? PROP_CASES : FIXED_CASES).concat(Array.from({ length: CASES }, () => rooted(generate(rand, 3))));
+  // The solver's program lives in one directory per face, so the compiler's store (the std-ui it
+  // analyses) is warm from the second run on instead of cold in a fresh temp directory every time.
+  const work = path.join(tree, "build", "layout-oracle", FACE_NAME);
   const page = fs.mkdtempSync(path.join(os.tmpdir(), "avra-layout-page-"));
   fs.writeFileSync(path.join(page, "index.html"), PAGE);
-  const browser = await openPage(binary, "file://" + path.join(page, "index.html"), { width: 1200, height: 900 });
+  const browser = await opened("file://" + path.join(page, "index.html"));
   await browser.read('document.fonts.load("1px cell").then((faces) => faces.length)');
-  const verdicts = await compare(cases, browser, work);
-  const failing = verdicts.map((v, i) => (v ? i : -1)).filter((i) => i >= 0);
+  const verdicts = await compare(cases, browser, work, true);
+  const refused = verdicts.map((v, i) => (v ? i : -1)).filter((i) => i >= 0);
+  const licences = new Map(refused.map((i) => [i, licence_of(cases[i], i, verdicts[i])]).filter(([, why]) => why !== null));
+  const failing = refused.filter((i) => !licences.has(i));
+  if (cases.length === 0) { console.log("layout-oracle: ran 0 trees — FAILED: no tree was compared"); process.exit(1); }
   for (const i of failing.slice(0, SHOW)) {
-    const small = await shrunk(cases[i], browser, work);
-    const [v] = await compare([small], browser, work);
-    console.log(`MISMATCH case ${i} (seed ${SEED}), shrunk:\n${JSON.stringify(small)}`);
-    const n = Math.max(v.got.length, v.want.length);
-    for (let k = 0; k < n; k++) {
-      const a = JSON.stringify(v.want[k]), b = JSON.stringify(v.got[k]);
-      console.log(`  box ${k}: solver ${a}  browser ${b}${a === b ? "" : "   <--"}`);
-    }
+    const { small, v } = await small_enough(cases, i, browser, work);
+    await printed(`MISMATCH case ${i} (seed ${SEED}), shrunk:`, small, v);
   }
   await browser.close();
-  console.log(`layout-oracle: ${cases.length - failing.length} of ${cases.length} trees agree (seed ${SEED}, width ${WIDTH})`);
+  for (const e of stale(new Set(refused), cases.length)) refuse(`the licence on ${ENGINE} ${FACE_NAME} seed ${SEED} case ${e.case} is not needed: the engines agree on that tree now, so remove its name`);
+  for (const n of SEEN.boundary) console.log(`${/ gap /.test(n) ? "BOUND" : "BOUNDARY"} ${FACE_NAME} seed ${SEED} ${n}`);
+  console.log(`layout-oracle: time ${((SPENT.solver + SPENT.page) / 1000).toFixed(1)}s = solver ${(SPENT.solver / 1000).toFixed(1)}s + page ${(SPENT.page / 1000).toFixed(1)}s, over ${SPENT.calls} compare call(s) and ${SPENT.trees} tree(s)`);
+  if (Object.keys(SEEN.why).length) console.log(`layout-oracle: trees refused for — ${Object.entries(SEEN.why).map(([w, n]) => `${w}: ${n}`).join(", ")}`);
+  console.log(`layout-oracle: widest fine gap ${SEEN.gap.toFixed(3)}/60 px (law: ${UNIT}/60); ${SEEN.boundary.filter((n) => / gap /.test(n)).length} number(s) past a unit within a derived bound, ${SEEN.boundary.filter((n) => !/ gap /.test(n)).length} edge(s) rounded apart at a boundary`);
+  if (licences.size > 0) console.log(`layout-oracle: licensed ${licences.size} (${FACE_NAME} seed ${SEED} cases ${[...licences.keys()].join(", ")}) — ${[...new Set(licences.values())].join("; ")}; the count is exact in every other tree`);
+  console.log(`layout-oracle: ${cases.length - refused.length} of ${cases.length} trees agree in ${ENGINE} (seed ${SEED}, width ${WIDTH})`);
   process.exit(failing.length === 0 ? 0 : 1);
 }
 
