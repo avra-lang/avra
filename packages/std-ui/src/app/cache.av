@@ -57,6 +57,7 @@ export type Entry = {
     out: Cell<bool>,
     again: Cell<bool>,
     watchers: Cell<List<Watcher>>,
+    parked: Cell<List<Watcher>>,
     read: Cell<int>,
 }
 
@@ -143,19 +144,33 @@ impl Entry {
     /// `w` reads it from now, in place of any earlier word of the same view,
     /// and is told what it holds.
     fn joined(w: Watcher) {
+        self.parked.set([x for x in self.parked.get() if x.id != w.id])
         self.watchers.set([x for x in self.watchers.get() if x.id != w.id].concat([w]))
         (w.apply)(self.now.get())
     }
 
     /// The view `id` reads no more.
     fn left(id: int) {
+        self.parked.set([x for x in self.parked.get() if x.id != id])
         self.watchers.set([x for x in self.watchers.get() if x.id != id])
         if self.unread() { self.read.set(now_ms()) }
     }
 
     /// Every reader a paint showed once and `walk` did not has been removed from the screen: it reads no more.
     fn unseen(walk: int) {
-        for w in self.watchers.get() { if w.seen.get() > 0 && w.seen.get() < walk { self.left(w.id) } }
+        for w in self.watchers.get() {
+            if w.seen.get() > 0 && w.seen.get() < walk {
+                self.left(w.id)
+                self.parked.push(w)
+            }
+        }
+    }
+
+    /// A view a paint left out reads the entry again: it is told what the entry holds. Whether it was parked.
+    fn rejoined(id: int) -> bool {
+        let w? = self.parked.get().find(it.id == id) else { return false }
+        self.joined(w)
+        true
     }
 
     /// Its state moved: every reader is told.
@@ -224,6 +239,7 @@ impl Cache {
             out: Cell.new(false),
             again: Cell.new(false),
             watchers: Cell.new(nobody),
+            parked: Cell.new(nobody),
             read: Cell.new(now_ms()),
         }
     }
