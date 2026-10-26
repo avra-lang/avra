@@ -938,7 +938,8 @@ rt-header:
     published_gone = real_remote.replace('"${route%%:*}" = published', '"${route%%:*}" = never', 1)
     assert published_gone != real_remote
     assert any("published" in x for x in check_compiler_route(real_work, published_gone)[0]), check_compiler_route(real_work, published_gone)
-    no_seed = real_remote.replace("make -s compiler GENS=1", "make -s avra", 1)
+    head, _, tail = real_remote.rpartition("make -s compiler GENS=1")
+    no_seed = head + "make -s avra" + tail
     assert no_seed != real_remote
     assert any("seed" in x for x in check_compiler_route(real_work, no_seed)[0]), check_compiler_route(real_work, no_seed)
 
