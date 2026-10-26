@@ -33,9 +33,7 @@
 # (`make runtime-mutations`); what these breaks reach is the port under it.
 set -eu
 
-here=$(cd "$(dirname "$0")" && pwd)
-tree=$(cd "$here/.." && pwd)
-avra=${AVRA:-$tree/build/avra}
+. "$(dirname "$0")/lib/tree.sh"
 work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-wmut.XXXXXX")}
 lib=$tree/build/wasm32/libavra_runtime.a
 wasm_who=wasm-tasks-mutations; . "$here/lib/wasm.sh"

@@ -8,9 +8,7 @@
 # reason — never silently green (CLAUDE.md, a check that examined nothing).
 set -eu
 
-here=$(cd "$(dirname "$0")" && pwd)
-tree=$(cd "$here/.." && pwd)
-avra=${AVRA:-$tree/build/avra}
+. "$(dirname "$0")/lib/tree.sh"
 work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-wasm.XXXXXX")}
 fixtures=$here/wasm-fixtures
 

@@ -6,9 +6,7 @@
 # or a JSPI Node is absent.
 set -eu
 
-here=$(cd "$(dirname "$0")" && pwd)
-tree=$(cd "$here/.." && pwd)
-avra=${AVRA:-$tree/build/avra}
+. "$(dirname "$0")/lib/tree.sh"
 work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-whost.XXXXXX")}
 wasm_who=wasm-host-check; . "$here/lib/wasm.sh"
 . "$here/jspi_node.sh"

@@ -8,9 +8,7 @@
 # shrunk module is told from the link's own answer by one appended byte.
 set -eu
 
-here=$(cd "$(dirname "$0")" && pwd)
-tree=$(cd "$here/.." && pwd)
-avra=${AVRA:-$tree/build/avra}
+. "$(dirname "$0")/lib/tree.sh"
 target=${WASM_TARGET:-wasm32}
 work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-wasm-cache.XXXXXX")}
 pkg=$work/app

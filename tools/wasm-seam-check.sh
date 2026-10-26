@@ -17,9 +17,7 @@
 # wabt is absent.
 set -eu
 
-here=$(cd "$(dirname "$0")" && pwd)
-tree=$(cd "$here/.." && pwd)
-avra=${AVRA:-$tree/build/avra}
+. "$(dirname "$0")/lib/tree.sh"
 work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-seam.XXXXXX")}
 # WASM_TARGET names one wasm triple (default `wasm`: the one this machine's toolchain links).
 target=${WASM_TARGET:-wasm}

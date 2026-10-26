@@ -1,9 +1,7 @@
 #!/bin/sh
 # The wasm floor: build the smallest program and count what the target carries.
 set -eu
-here=$(cd "$(dirname "$0")" && pwd)
-tree=$(cd "$here/.." && pwd)
-avra=${AVRA:-$tree/build/avra}
+. "$(dirname "$0")/lib/tree.sh"
 command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-size: wasm-opt (binaryen) not on PATH — skipped"; exit 0; }
 work=$(mktemp -d "${TMPDIR:-/tmp}/avra-size.XXXXXX")
 cp -R "$here/wasm-min" "$work/min"

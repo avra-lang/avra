@@ -59,9 +59,7 @@ if [ "${1:-}" = --self-test ]; then
     exit 0
 fi
 
-here=$(cd "$(dirname "$0")" && pwd)
-tree=$(cd "$here/.." && pwd)
-avra=${AVRA:-$tree/build/avra}
+. "$(dirname "$0")/lib/tree.sh"
 target=${UI_BOARD_TARGET:-wasm}
 work=$(mktemp -d "${TMPDIR:-/tmp}/avra-ui-browser.XXXXXX")
 
