@@ -284,12 +284,29 @@ if (engine !== "firefox") {
   }
 }
 
+// Every task the board's server holds, removed through its own doors, so a
+// section's claims begin from the board's seeds alone.
+async function emptied() {
+  let listed = null;
+  for (let i = 0; i < 300 && !(listed && listed.ok); i++) {
+    listed = await fetch(url + "tasks").catch(() => null);
+    if (!(listed && listed.ok)) await new Promise((go) => setTimeout(go, 200));
+  }
+  if (!(listed && listed.ok)) { console.log(`ui-browser: the server never answered GET /tasks (${listed ? listed.status : "no answer"})`); process.exit(1); }
+  for (const row of await listed.json()) {
+    const gone = await fetch(url + "tasks/" + row.id, { method: "DELETE" });
+    if (!gone.ok) { console.log(`ui-browser: emptying the server, DELETE /tasks/${row.id} answered ${gone.status}`); process.exit(1); }
+  }
+}
+await emptied();
+
 // The module has run and painted: the page says so itself.
 const standing = async (p) => { for (let i = 0; i < 200; i++) { if (await p.read(`document.documentElement.getAttribute("data-avra") === "ready"`).catch(() => false)) { await p.frame(); return true; } await new Promise((go) => setTimeout(go, 100)); } return false; };
 
 // ── a server's page, adopted by the module ──────────────────────
 // The elements the server drew are marked before the module runs.
 if (hydrated) {
+  await emptied();
   const adopted = await opened(hydrated);
   const asked = adopted.read;
   const ready = `document.querySelector("#app button") !== null && [...document.querySelectorAll("#app *")].length > 0`;
