@@ -326,7 +326,7 @@ def check_compiler_route(work_text, remote_text):
     published = remote_text.find('"${route%%:*}" = published')
     merged = remote_text.find('"${route%%:*}" = mergebase')
     build = remote_text.find("building this tree's compiler")
-    seed = remote_text.find("make -s compiler GENS=1")
+    seed = remote_text.find("make -s compiler GENS=1", max(merged, 0))
     if min(published, merged) < 0:
         refusals.append("the Sprite's prep does not install a published compiler for a route")
     elif build < 0 or build < max(published, merged):
