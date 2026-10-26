@@ -152,7 +152,7 @@ impl Mint {
         name: string?,
     ) -> Result<Expansion, string> {
         if heads.length != r.head.length { return .Err(record_heads(word, r.head.length, heads.length)) }
-        let written_fn: ExprId? = if body != null && self.store.lambda_parts(body!) != null { self.tailed(body!, r.fn_optional) } else { null }
+        let written_fn: ExprId? = if body != null && self.store.body_fn(body!) != null { self.tailed(self.store.body_fn(body!)!, r.fn_optional) } else { null }
         let fn_filled = if written_fn == null { [] } else { [Field { name: r.fn_field ?? "", value: written_fn! }] }
         if written_fn != null && r.fn_field == null { return .Err(record_fn_body(word)) }
         let stmts = if written_fn == null { self.written(body) } else { [] }
@@ -324,7 +324,7 @@ impl Mint {
     /// What a template's body hole takes: a written fn whole, or the
     /// statements scoped to answer their tail.
     fn filled_body(body: ExprId, stmts: List<StmtId>) -> ExprId {
-        if self.store.lambda_parts(body) != null { body } else { self.store.block_over(stmts, self.span) }
+        self.store.body_fn(body) ?? self.store.block_over(stmts, self.span)
     }
 
     /// The statements a written body holds — none when no block was
