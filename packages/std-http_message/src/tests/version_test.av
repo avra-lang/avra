@@ -1,0 +1,53 @@
+// `Version`: the tag a server answers and the order a client keeps answers in are one value — it reads back
+// what it wrote, an equal version is no later, and what is no version parses to none.
+use @std.http_message.message.{Header, Reply, Version, headers_of}
+
+fn at(sequence: int) -> Version { Version { sequence: sequence } }
+
+fn read(tag: string) -> string {
+    let v? = Version.parsed(tag) else { return "none" }
+    "${v.sequence}"
+}
+
+spec "Version" {
+    given "a version and its tag" {
+        then "the tag reads back as the version" {
+            read(at(17).tag()) == "17" && read("W/${at(3).tag()}") == "3"
+        }
+        then "a tag that names no version parses to none" {
+            read("") == "none" &&
+                read("\"abc\"") == "none" &&
+                read("\"v\"") == "none" &&
+                read("\"v1x\"") == "none" &&
+                read("v12") == "none" &&
+                read("\"v1.2\"") == "none"
+        }
+    }
+    given "two versions" {
+        then "a higher sequence is later, an equal one is not" {
+            at(6).after(at(5)) && !at(5).after(at(6)) && !at(5).after(at(5))
+        }
+    }
+    given "a reply" {
+        then "it reads its version from its ETag, or has none" {
+            let tagged = Reply {
+                status: 200,
+                headers: [Header { name: "ETag", value: at(9).tag() }],
+                body: "".bytes(),
+            }
+            let plain = Reply { status: 200, body: "".bytes() }
+            tagged.version()?.sequence ?? -1 == 9 && plain.version() == null
+        }
+    }
+    given "fields a host hands over as lines" {
+        then "each `name: value` line is a field, in order, and a line with no colon is none" {
+            let fields = headers_of(
+                "etag: \"v1.2\"\nx-n: 1: 2\nnonsense\n\ncontent-type: text/plain",
+            )
+            fields.map(it.name).join(",") == "etag,x-n,content-type" &&
+                fields[0].value == "\"v1.2\"" &&
+                fields[1].value == "1: 2"
+        }
+        then "nothing is no field" { headers_of("").is_empty() }
+    }
+}
