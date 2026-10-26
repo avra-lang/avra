@@ -7,7 +7,8 @@ use @std.text.{parse_int}
 use core.{FileId, DeclId, ModuleId, joined}
 use compiler.host.{InputName}
 use @std.relation.engine.{Revival}
-use features.{kind_word, decl_key_text}
+use core.digest.{hex, unhex}
+use features.{kind_word, decl_key_text, TypeFacts}
 use compiler.families.{Family}
 use compiler.record.{read_fields}
 use compiler.store.{Store, Stored, StoredName, Reading, node_key, read_spelled}
@@ -30,7 +31,7 @@ const HASH_READ: string = "="
 fn arg_name(f: Family) -> ArgName {
     match f {
         .Source or .Parsed or .Items or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .FileRefs or .MethodDiags or .Admitted -> ArgName.File,
-        .Sig or .Methods or .Typed or .WriteSummary or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .CancelSummary or .Writes or .CancelBits or .ReadFound or .Consumed -> ArgName.Decl,
+        .Sig or .Methods or .WriteSummary or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .CancelSummary or .Writes or .CancelBits or .ReadFound or .Consumed -> ArgName.Decl,
         .Namespace or .HeldSig -> ArgName.Module,
         .References or .Failures or .ReadReach -> ArgName.Unit,
         .BlockScan or .ComponentScan or .ComponentNames or .Input -> ArgName.Text,
@@ -41,8 +42,8 @@ fn arg_name(f: Family) -> ArgName {
 /// The families whose answers are saved by name: those with a value codec behind them.
 fn saved_family(f: Family) -> bool {
     match f {
-        .Sig or .ComponentNames or .Items -> true,
-        .Source or .Parsed or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .FileRefs or .MethodDiags or .Admitted or .Methods or .Typed or .WriteSummary or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .CancelSummary or .Writes or .CancelBits or .ReadFound or .Consumed or .Namespace or .HeldSig or .References or .Failures or .ReadReach or .ConstTyped or .Settled or .Lowered or .Lifted or .LiftLowered or .Manifest or .Named or .Input or .BlockScan or .ComponentScan -> false,
+        .Sig or .ComponentNames or .Items or .Typed -> true,
+        .Source or .Parsed or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .FileRefs or .MethodDiags or .Admitted or .Methods or .WriteSummary or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .CancelSummary or .Writes or .CancelBits or .ReadFound or .Consumed or .Namespace or .HeldSig or .References or .Failures or .ReadReach or .ConstTyped or .Settled or .Lowered or .Lifted or .LiftLowered or .Manifest or .Named or .Input or .BlockScan or .ComponentScan -> false,
     }
 }
 
@@ -246,6 +247,8 @@ impl Workspace {
                 ),
             )
         self.relation(Family.Items).revive.set((arg: int) -> self.items_revived(arg))
+        self.saves(Family.Typed, (arg: int) -> self.typed_text(arg))
+        self.relation(Family.Typed).revive.set((arg: int) -> self.typed_revived(arg))
         self.saves(Family.ComponentNames, (arg: int) -> self.words_of(arg))
         self.relation(Family.ComponentNames).revive.set((arg: int) -> self.saved_words(arg))
     }
@@ -273,5 +276,32 @@ impl Workspace {
     fn saved_words(arg: int) -> Revival<DbRow> {
         let text? = self.saved_value(Key { family: Family.ComponentNames.ordinal, arg: arg }) else { return Revival.Gone }
         Revival.Revived(DbRow.Words(text.split("\n")))
+    }
+
+    /// A body's typing facts as its row's text: its columns in the scope of its own window.
+    /// A body that spoke is not saved, so a restored one says nothing it did not say when typed.
+    fn typed_text(arg: int) -> string? {
+        match self.relation(Family.Typed).values.entry(arg) {
+            .Present(row) -> {
+                let facts = typed_of(row)
+                if !facts.voices.list.is_empty() { return null }
+                hex(facts.encoded_in(facts_scope(self, facts.of_expr.lo, facts.binding_types.lo)))
+            },
+            .Missing -> null,
+        }
+    }
+
+    /// A body's typing facts read back over its file's parse: gone for a file not parsed here,
+    /// whose arena ids name nothing, and for a declaration still expanding, whose window grows.
+    fn typed_revived(arg: int) -> Revival<DbRow> {
+        let x = self.decls.decl(DeclId { index: arg })
+        if self.db.active(key(Family.Expanded, x.file.index)) { return Revival.Gone }
+        if self.relation(Family.Parsed).values.entry(x.file.index) is .Missing { return Revival.Gone }
+        let text? = self.saved_value(Key { family: Family.Typed.ordinal, arg: arg }) else { return Revival.Gone }
+        let bytes? = unhex(text) else { return Revival.Gone }
+        match TypeFacts.decoded_in(facts_scope(self, x.lo, x.stmt_lo), bytes) {
+            .Ok(facts) -> Revival.Revived(DbRow.Typed(facts)),
+            .Err(_) -> Revival.Gone,
+        }
     }
 }
