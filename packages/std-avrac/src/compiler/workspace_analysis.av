@@ -440,6 +440,15 @@ impl Workspace {
     /// unit; the specializations it wants are other units.
     fn lowered(id: int) -> Unit { self.lowered_in(Family.Lowered, id) }
 
+    /// The unit a program takes for an ask: the link takes a revived stub as it stands, and a
+    /// compile-time run takes only a unit it can execute, lowering afresh where only a stub is held.
+    fn unit_asked_for_program(id: int) -> Unit {
+        let unit = self.lowered(id)
+        if !unit.linked || !self.comptime_active() { return unit }
+        self.relation(Family.Lowered).evict_call(id)
+        self.lowered(id)
+    }
+
     /// A COMPILE-TIME RUN'S OWN unit, remembered in ITS OWN family —
     /// never `Lowered`'s. The two share `id`'s space (interned by
     /// symbol name, `spec_id`), so a symbol a lift also reaches would
