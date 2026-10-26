@@ -16,7 +16,6 @@ use core.{
     Expr,
     Stmt,
     Arm,
-    PayloadIs,
     CompClause,
     MapEntry,
     map_entry_head,
@@ -805,7 +804,7 @@ impl SourceText {
     /// A field or a seat as written: its marks, its word, its name, its
     /// type and its default.
     mut fn field(p: Param, depth: int) -> string {
-        let dots = if p.variadic { ".." } else { "" }
+        let dots = if p.spread != null { ".." } else { "" }
         let name = if p.name.is_empty() { "" } else { "${dots}${source_name(p.name.of)}${if p.ty == null { "" } else { ": " }}" }
         let ty = if p.ty == null { "" } else { spelled(p.ty!) }
         let word = if p.state { "state " } else { "" }
@@ -1395,7 +1394,7 @@ impl SourceText {
                 with_tier,
                 parent,
             ),
-            .Match(subject, arms) -> grouped(self.match_or_payload_if(subject, arms, id, depth, c), atom_tier, parent),
+            .Match(subject, arms) -> grouped(self.match_expr(subject, arms, id, depth, c), atom_tier, parent),
             .Coalesce(left, right) -> {
                 let l = self.expression(left, 5, depth, c)
                 grouped(
@@ -1446,6 +1445,7 @@ impl SourceText {
                 parent,
             ),
             .ArmsBody(arms) -> self.arms_braced(arms, id, depth),
+            .InstanceFn(_, _) -> self.instance_body(id, depth),
             .ChainCall(subject, name, args) -> grouped(
                 "${self.chain_subject(subject, depth, c)}?.${source_name(name.of)}${self.args_wrapped(args, depth)}",
                 postfix_tier,
@@ -1748,37 +1748,6 @@ impl SourceText {
         if self.store.is_raw_string(id) { "\"\"\"${value}\"\"\"" } else { quoted_text(value) }
     }
 
-    /// A Match an `if` desugared, or a plain `match` — the mark is the
-    /// only difference, and the printer never drops it.
-    mut fn match_or_payload_if(
-        subject: ExprId,
-        arms: List<Arm>,
-        id: ExprId,
-        depth: int,
-        col: int = -1,
-    ) -> string {
-        let payload? = self.store.is_payload(id) else { return self.match_expr(subject, arms, id, depth, col) }
-        self.payload_if(subject, arms, payload, id, depth, col)
-    }
-
-    /// The `if x is .V(p) { A } else { B }` the Match desugared from.
-    /// The arm values ARE blocks (the branches as written), so `block`
-    /// renders them whole; an elseless guard omits the `else`.
-    mut fn payload_if(
-        subject: ExprId,
-        arms: List<Arm>,
-        payload: PayloadIs,
-        id: ExprId,
-        depth: int,
-        col: int = -1,
-    ) -> string {
-        let one = self.span_flat(self.store.expr_span(id))
-        let cond = "${self.expression(subject, 5, depth, resolved_col(col, depth) + 3)} is ${self.pattern(payload.pat, depth)}"
-        let yes = self.block(arms[0].value, one, depth)
-        if !payload.has_else { return "if ${cond} ${yes}" }
-        "if ${cond} ${yes} else ${self.if_group_else(arms[1].value, one, depth)}"
-    }
-
     /// The `let pattern = subject [else { … }]` node and the statements it
     /// holds: the head line, then the statements its block holds, level
     /// with it — the first line unpadded, as an expression's text is.
@@ -1810,13 +1779,6 @@ impl SourceText {
             },
             rest -> [source_line(depth, self.expression(block, loosest_tier, depth))],
         }
-    }
-
-    /// The chained form of `payload_if` — a marked Match in an else
-    /// position prints `else if …`, never `else { match … }`.
-    mut fn chained_payload_if(subject: ExprId, arms: List<Arm>, id: ExprId, depth: int) -> string? {
-        let payload? = self.store.is_payload(id) else { return null }
-        self.payload_if(subject, arms, payload, id, depth)
     }
 
     /// An `if`'s branches, one-line when the whole form was; an else-less
@@ -1867,9 +1829,6 @@ impl SourceText {
         if self.pending_before(start_of(self.store.expr_span(no))) { return null }
         match self.store.expr(no) {
             .If(c2, y2, n2) -> self.if_group(c2, y2, n2, no, depth),
-            // a payload `if` desugared into a marked Match chains as the
-            // `if` it was, exactly as a nested `Expr.If` does
-            .Match(subject, arms) -> self.chained_payload_if(subject, arms, no, depth),
             rest -> null,
         }
     }
@@ -1969,7 +1928,7 @@ impl SourceText {
     /// An instance's body: its block, or a fn's braces with its `req ->`
     /// head inside them.
     mut fn instance_body(b: ExprId, depth: int) -> string {
-        match self.store.expr(b) {
+        match self.store.expr(self.store.body_fn(b) ?? b) {
             .Lambda(params, body) -> self.trailing_lambda(params, body, b, depth),
             rest -> self.expression(b, loosest_tier, depth),
         }
