@@ -1,0 +1,64 @@
+// proves: the dev panel shows the newest snapshot each tab told, one block a tab; a second snapshot of a tab replaces
+// its block; a text that is no `cache` event changes nothing; it starts closed, and the heading opens and closes it — eval == native.
+use @dev.hud.{hear, view}
+use @std.ui.app.{Row, Snapshot, Tally}
+use @std.ui.headless.{Screen, headless}
+
+fn row(key: string, fresh: bool, stale_by: string) -> Row {
+    Row {
+        key: key,
+        state: "ready",
+        fresh: fresh,
+        stale_by: stale_by,
+        age_ms: 0,
+        bytes: 3,
+        readers: 2,
+        parked: 0,
+        layers: [],
+        feed: "/feed",
+    }
+}
+
+fn told_by(tab: string, asks: int, rows: List<Row>) -> string {
+    let s = Snapshot {
+        rows: rows,
+        streams: ["stream /feed  synced"],
+        writes: [],
+        counts: Tally { asks: asks, skipped: 0, joined: 0, not_modified: 0, laid: 0, dropped: 0 },
+    }
+    "{\"tab\":\"${tab}\",\"frame\":${s.frame()}}"
+}
+
+fn shown(screen: Screen) -> string {
+    [l.trim() for l in screen.text().split("\n") if l.trim().starts_with("text") || l.trim().starts_with("button")]
+        .join(" | ")
+}
+
+/// What the host tells the panel: heard, then drawn by a turn.
+fn tell(screen: Screen, said: string) -> bool {
+    let moved = hear(said)
+    let _ = screen.turn(() -> true)
+    moved
+}
+
+let screen = headless(view)
+println("start, closed: ${shown(screen)}")
+let _ = screen.press("cache ▸")
+println("opened: ${shown(screen)}")
+let first = tell(screen, told_by("aa", 1, [row("/tasks", true, "")]))
+println("a tab tells: ${first}")
+println(shown(screen))
+let _ = tell(screen, told_by("bb", 1, [row("/tasks", false, "notice 2 [Task]")]))
+println("two tabs: ${shown(screen)}")
+let _ = tell(screen, told_by("aa", 2, [row("/tasks", true, "")]))
+println("aa tells again, replacing its block: ${shown(screen)}")
+let bad = [
+    tell(screen, "not json"),
+    tell(screen, "{\"tab\":\"cc\"}"),
+    tell(screen, "{\"tab\":\"cc\",\"frame\":{\"v\":9}}"),
+]
+println("a text that is no event moves nothing: ${["${b}" for b in bad].join(" ")}")
+let _ = screen.press("cache ▾")
+println("closed again: ${shown(screen)}")
+let _ = screen.press("cache ▸")
+println("open again: ${shown(screen)}")

@@ -1,0 +1,70 @@
+//! The dev panel: the cache of the page under development, one block of lines per tab, drawn from the
+//! `cache` events a dev server tells (`{ "tab", "frame" }`). It knows nothing of the app: it is handed texts
+//! (`hear`) and shows the newest snapshot each tab told, so what it shows survives the app it watches.
+use @std.json.{Json, parse, to_text}
+use @std.ui.app.{snapshot_of}
+use @std.ui.components.{button, column, item, text}
+
+/// A tab and the lines of the snapshot it last told.
+type Told = { tab: string, lines: List<string> }
+
+state tabs: List<Told> = []
+state open: bool = false
+
+/// What one `cache` event says. Answers whether the panel moved: a text that is no event of this version
+/// changes nothing.
+export fn hear(said: string) -> bool {
+    let doc = match parse(said) { .Ok(j) -> j, .Err(_) -> { return false } }
+    let tab = match member(doc, "tab") {
+        .Str(t) -> t,
+        .Obj(_) or .Arr(_) or .Null or .Bool(_) or .Int(_) or .Float(_) -> { return false },
+    }
+    let snap? = snapshot_of(to_text(member(doc, "frame"))) else { return false }
+    tabs = [t for t in tabs if t.tab != tab].concat([Told { tab: tab, lines: snap.lines() }])
+    true
+}
+
+fn member(j: Json, key: string) -> Json {
+    match j {
+        .Obj(fields) -> fields.find(it.key == key)?.value ?? Json.Null,
+        .Arr(_) or .Null or .Bool(_) or .Int(_) or .Float(_) or .Str(_) -> Json.Null,
+    }
+}
+
+fn toggled() { open = !open }
+
+fn heading() -> string { if open { "cache ▾" } else { "cache ▸" } }
+
+/// One tab's block: its name, then its snapshot's lines.
+component tab_block(told: Told) {
+    column {
+        text "tab ${self.told.tab}"
+        for l in self.told.lines { text l }
+    }
+}
+
+/// The tabs, one block each, while the panel is open.
+component tabs_open {
+    if open {
+        column {
+            for t in tabs { tab_block t { key: t.tab } }
+        }
+    } else {
+        text ""
+    }
+}
+
+/// The panel: its heading, which opens and closes it, and a block per tab.
+export fn view() -> column {
+    column {
+        items: [
+            item {
+                items: [
+                    button heading() { on press { toggled() } },
+                    text "${tabs.length} tab${if tabs.length == 1 { "" } else { "s" }}",
+                ]
+            },
+            tabs_open {},
+        ]
+    }
+}
