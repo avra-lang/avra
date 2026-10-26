@@ -86,6 +86,7 @@ jobs:
     outputs:
       full: ${{ steps.plan.outputs.full }}
       mirror: ${{ steps.plan.outputs.mirror }}
+      accept_key: ${{ steps.plan.outputs.accept_key }}
       compiler_source: ${{ steps.release.outputs.source }}
       shards: ${{ steps.plan.outputs.shards }}
       changed: ${{ steps.plan.outputs.changed }}
@@ -125,8 +126,13 @@ jobs:
         name: plan
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           event="${{ github.event_name }}"
+          # THE WAIVER THIS RUN JUDGES BY, as a short key: a verdict another run on the head gave stands for this
+          # run only under the same waiver line, since the speed judge reads the PR's body fresh each run.
+          accept_key=$(sh tools/pr_body.sh | sed -n 's/^SPEED_ACCEPT: *//p' | head -n 1 | git hash-object --stdin | cut -c1-12)
           changed=""
           pkgs=""
           compiler=1
@@ -230,7 +236,7 @@ jobs:
           [ "$lab" = ignore ] && dupflag=--any
           if [ "$lab" != plain ]; then
             dup=$(GH_TOKEN="$GH_TOKEN" python3 tools/ci_dup_run.py --repo "${{ github.repository }}" \
-              --sha "${{ github.event.pull_request.head.sha }}" --run "${{ github.run_id }}" $dupflag) || dup=work
+              --sha "${{ github.event.pull_request.head.sha }}" --run "${{ github.run_id }}" --accept "$accept_key" $dupflag) || dup=work
             case "$dup" in
                 mirror\ *) mirror=${dup#mirror }; full=0; build=0; changed=; pkgs=; codecs=0; cache=0; runtime=0; runtime_keep=0; layout_oracle=0 ;;
             esac
@@ -244,6 +250,7 @@ jobs:
             echo "main=${main}"
             echo "full=${full}"
             echo "mirror=${mirror}"
+            echo "accept_key=${accept_key}"
             echo "changed=${changed}"
             echo "packages=$(echo $pkgs)"
             echo "build=${build}"
@@ -1146,6 +1153,9 @@ jobs:
         name: light gate compiler
         run: |
           echo "light gate: compiler steps skipped — the tree's compiler is not the published one; ready or label full-ci for a verdict"
+      # THE WAIVER KEY RIDES A STEP'S NAME so a later run on this head can read it (tools/ci_dup_run.py).
+      - name: accepts ${{ needs.prepare.outputs.accept_key }}
+        run: echo "test judged under the SPEED_ACCEPT key ${{ needs.prepare.outputs.accept_key }}"
       - if: needs.prepare.outputs.mirror != ''
         name: mirror
         run: |
