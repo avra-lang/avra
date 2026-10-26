@@ -212,7 +212,9 @@ impl Workspace {
         let hash? = self.db.kernel.hash_forced(key) else { return false }
         let walked? = self.db.kernel.saved_reads(key, (k: Key) -> self.stands_alone(k)) else { return false }
         let reads = self.grouped(key, walked)
-        if traced() { qtrace("Q\treads\t${Family.all()[key.family].name}\t${reads.length}\n") }
+        if traced() { qtrace(
+                "Q\treads\t${Family.all()[key.family].name}\t${reads.length}\t${self.reads_by_family(reads)}\n",
+            ) }
         mut readings: List<Reading> = [Reading { name: HASH_READ, digest: "${hash}" }]
         for r in reads {
             let named? = self.saved_name(r.key) else { return false }
@@ -231,16 +233,28 @@ impl Workspace {
         self.saved_family(f) || f is .Input || f is .Manifest || f is .Named
     }
 
-    /// THE NAME PROBES GROUPED: an answer under a file reads that file's `NameEnv` once where it
-    /// probed many buckets. The environment is the union of every probe the file's answers made,
-    /// so it moves when any of them would; an answer's other reads stand as they are.
+    /// What an answer read, counted by the family each read belongs to: `Family:count` words.
+    fn reads_by_family(reads: List<SavedRead>) -> string {
+        mut counts: Map<string, int> = {}
+        for r in reads {
+            let at = Family.all().get(r.key.family)?.name ?? "relation"
+            counts.set(at, (counts.get(at) ?? 0) + 1)
+        }
+        joined(["${k}:${v}" for k, v in counts], " ")
+    }
+
+    /// THE READS OUTSIDE A FILE GROUPED: an answer under a file keeps the reads that are its own
+    /// (its file's text and rows, its declarations) and reads the file's `NameEnv` once for the
+    /// rest — the name buckets it probed and the other files and modules it consulted. The
+    /// environment is the union of every such read the file's answers made, so it moves when
+    /// any of them would and no sooner; an answer's own reads stand as they are.
     fn grouped(key: Key, reads: List<SavedRead>) -> List<SavedRead> {
-        let named = Family.Named.ordinal
-        let buckets = [r for r in reads if r.key.family == named]
         let file? = self.answer_file(key) else { return reads }
-        if buckets.is_empty() || Family.all()[key.family] is .NameEnv { return reads }
-        let env = self.env_noted(file, [r.key for r in buckets])
-        [r for r in reads if r.key.family != named]
+        if Family.all()[key.family] is .NameEnv { return reads }
+        let outside = [r for r in reads if self.read_file(r.key) != file.index]
+        if outside.length < 2 { return reads }
+        let env = self.env_noted(file, [r.key for r in outside])
+        [r for r in reads if self.read_file(r.key) == file.index]
             .concat(
                 [
                     SavedRead {
@@ -249,6 +263,28 @@ impl Workspace {
                     },
                 ],
             )
+    }
+
+    /// The index of the file a read belongs to; -1 for a read no file owns (a name, a manifest,
+    /// a listing).
+    fn read_file(k: Key) -> int {
+        let f? = Family.all().get(k.family) else { return 0 - 1 }
+        match arg_name(f) {
+            .File -> k.arg,
+            .Decl -> self.decls.decl(DeclId { index: k.arg }).file.index,
+            .World -> self.text_file(k.arg),
+            .Module or .Unit or .Package or .Bucket or .Local -> 0 - 1,
+        }
+    }
+
+    /// The file whose text an input cell is, when it is one.
+    fn text_file(arg: int) -> int {
+        let at = self.input_names.get()
+        if arg < 0 || arg >= at.length { return 0 - 1 }
+        match at[arg].kind {
+            .Text -> self.decls.known_file_id(at[arg].key)?.index ?? 0 - 1,
+            .Octets or .Range or .Listing or .Exists or .Env or .Tool or .Compiler or .Embedded or .EmbeddedOctets -> 0 - 1,
+        }
     }
 
     /// The file an answer's key belongs to, when its argument names a file or a declaration.
