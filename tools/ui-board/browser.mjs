@@ -312,6 +312,11 @@ await page.close();
   claim("three quick ticks send two writes at most", patches >= 1 && patches <= 2, patches);
   again = await reloaded((rows) => rows.length === 1 && !rows[0].done);
   claim("and a page loaded again shows the state the last click left: three ticks undo one", again.seen.length === 1 && !again.seen[0].done, again.seen);
+  // A RELOAD DURING A WRITE: the page that comes back shows what the server holds, whichever way the write fell.
+  await board.read(`(() => { document.querySelector('[aria-label="Buy milk"]').click(); setTimeout(() => location.reload(), 0); return 1; })()`);
+  await waits(`document.querySelector("li") !== null && document.documentElement.getAttribute("data-avra") === "ready"`);
+  await watch(board);
+  claim("a page reloaded during a write shows what the server holds", await agreed(board) && (await drawn(board)).length === 1, await drawn(board));
   await board.press(`document.querySelector("li button")`);
   claim("a task removed is gone from the board once the server has answered", await waits(`document.querySelectorAll("li").length === 0`), await drawn(board));
   again = await reloaded((rows) => rows.length === 0);

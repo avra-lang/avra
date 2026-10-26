@@ -66,7 +66,7 @@ state dialog_open: bool = false
 state reminded: bool = false
 state tasks_ask: Fetch<List<Todo>> = fetch()
 state refused: string = ""
-state sending: List<string> = []
+state sending: Map<string, Fetch<int>> = {}
 state waiting: Map<string, Request> = {}
 
 // ── the state a page carries ────────────────────────────────────
@@ -218,7 +218,7 @@ component filters {
         tab "Done" { shows: .Done }
         button "Clear done" {
             on press { for t in tasks() { if t.done { remove(t) } } }
-            disabled: done_count() == 0
+            disabled: done_count() == 0 || writing()
             style: sunk_style()
         }
         button "Newest first" {
@@ -341,6 +341,7 @@ fn saved(r: Reply) -> Result<int, string> {
 
 /// A change with no task yet is sent through the server's doors at once.
 fn save(request: Request) {
+    refused = ""
     let _ = fetched(fetch<int>(), request, saved)
 }
 
@@ -348,19 +349,31 @@ fn save(request: Request) {
 /// server meets them in click order; one still waiting is replaced by a later click,
 /// so a burst sends its first change and its last.
 fn change(id: string, request: Request) {
-    if sending.contains(id) {
+    if in_flight(id) {
         waiting.set(id, request)
         return
     }
-    sending = sending.concat([id])
-    let _ = fetched(fetch<int>(), request, (r: Reply) -> answered(id, r))
+    waiting.remove(id)
+    refused = ""
+    let held: Fetch<int> = fetch()
+    sending.set(id, held)
+    let _ = fetched(held, request, (r: Reply) -> answered(id, r))
+}
+
+/// Whether any change to any task is on its way: what Clear done would judge by is then not yet the server's.
+fn writing() -> bool { sending.values().any(it.is_loading()) }
+
+/// Whether the task's last change has neither been answered nor failed.
+fn in_flight(id: string) -> bool {
+    let held? = sending.get(id) else { return false }
+    held.is_loading()
 }
 
 /// A change to a task was answered: the next one waiting goes out, and only the last of a run refreshes the list.
 fn answered(id: string, r: Reply) -> Result<int, string> {
     let held = if r.status < 200 || r.status > 299 { "status ${r.status}" } else { "" }
     refused = held
-    sending = [s for s in sending if s != id]
+    sending.remove(id)
     let verdict: Result<int, string> = if held == "" { .Ok(r.status) } else { .Err(held) }
     let next? = waiting.get(id) else {
         load()
@@ -374,6 +387,12 @@ fn answered(id: string, r: Reply) -> Result<int, string> {
 /// How the last change stands, in words.
 fn saved_words() -> string {
     if refused != "" { return " · save failed: ${refused}" }
+    let lost? = [w! for w in [f.failure() for f in sending.values()] if w != null].first() else { return loading_words() }
+    " · save failed: ${lost}"
+}
+
+/// How the list's last ask stands, in words.
+fn loading_words() -> string {
     let why? = tasks_ask.failure() else { return "" }
     " · load failed: ${why}"
 }
