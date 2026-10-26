@@ -1,0 +1,67 @@
+// A decoded type's CONTRACT: `@derive(Decode)` implements `Decode`, so a
+// bounded parameter calls `T.decode(v)` and `T.fields()` — the fields a
+// form draws, in order, each with what it holds and whether it is owed.
+use @std.meta.{derive}
+use @std.validate.{Decode, Value, Issues, FieldShape, FieldKind, range, from_json}
+
+@derive(Decode)
+type Chore = {
+    title: string,
+    @range(1, 5) priority: int = 3,
+    done: bool,
+    @secret note: string? = null,
+    weight: float = 1.0,
+    tags: List<string> = [],
+}
+
+@derive(Decode)
+@range(1, 5)
+type Small = int
+
+fn json(text: string) -> Value { from_json(text) catch Value.Null }
+
+/// A field's kind as one word.
+fn kind_word(k: FieldKind) -> string {
+    match k { .Text -> "text", .Int -> "int", .Float -> "float", .Bool -> "bool", .Other(t) -> t }
+}
+
+fn described(s: FieldShape) -> string {
+    "${s.name}:${kind_word(s.kind)}${if s.required { "!" } else { "" }}${if s.secret { "*" } else { "" }}"
+}
+
+/// The shape of whatever `T` stands for, read through its bound.
+fn shape_of<T: Decode>(_x: T) -> string { [described(s) for s in T.fields()].join(" ") }
+
+/// A value read as `T` through its bound, the type's own rules run.
+fn read_as<T: Decode>(_x: T, v: Value) -> Result<T, Issues> { T.decode(v) }
+
+fn sample() -> Chore { Chore { title: "t", done: false } }
+
+spec "std/validate — the Decode contract" {
+    given "a record's shape" {
+        then "lists its fields in order, each kind, owed (!) and secret (*)" {
+            [described(s) for s in Chore.fields()].join(" ") == "title:text! priority:int done:bool! note:text* weight:float tags:List<string>"
+        }
+        then "a named type draws no fields" { Small.fields().is_empty() }
+    }
+    given "a bounded parameter" {
+        then "reads the shape of the type it stands for" {
+            shape_of(sample()) == "title:text! priority:int done:bool! note:text* weight:float tags:List<string>"
+        }
+        then "decodes through it, defaults filled" {
+            match read_as(sample(), json("{\"title\": \"a\", \"done\": true}")) {
+                .Ok(t) -> t.title == "a" && t.priority == 3 && t.done,
+                .Err(_) -> false,
+            }
+        }
+        then "decodes through it, the type's own rules run" {
+            match read_as(sample(), json("{\"title\": \"a\", \"done\": true, \"priority\": 9}")) {
+                .Ok(_) -> false,
+                .Err(e) -> e.all[0].rule == "range" && e.all[0].path.text() == "priority",
+            }
+        }
+    }
+    given "the type itself" {
+        then "still decodes with its defaults" { Chore.decode(json("{\"title\": \"a\", \"done\": false}")) is .Ok }
+    }
+}
