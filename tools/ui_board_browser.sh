@@ -169,6 +169,23 @@ said=$(grep -c '^dev: the page said: ui: .*keeps state' "$work/warns.out" || :)
 [ "$said" = 1 ] || { cat "$work/warns.out"; echo "ui-browser: dev's output carried the page's warning $said times, wanted once"; exit 1; }
 echo "ui-browser: a page whose walk warns is told in \`avra dev\`'s output, once"
 
+# TWO VIEWS OF ONE REQUEST: a page whose two views ask the same GET is served by `avra dev` and
+# opened in Firefox; the browser must have sent the request once.
+cp -R "$tree/tools/ui-observed" "$work/ui-observed"
+"$avra" dev --target "$target" --port 0 "$work/ui-observed" >"$work/observed.out" 2>"$work/observed.err" &
+observed=$!
+trap 'kill "$dev" "$warns" "$observed" $servers 2>/dev/null || true' EXIT
+tries=0
+until grep -q '^dev: .* at http' "$work/observed.out" 2>/dev/null; do
+    kill -0 "$observed" 2>/dev/null || { cat "$work/observed.err" "$work/observed.out"; echo "ui-browser: \`avra dev\` ended before it served the observation page"; exit 1; }
+    tries=$((tries + 1))
+    [ "$tries" -lt 600 ] || { cat "$work/observed.err"; echo "ui-browser: \`avra dev\` never served the observation page"; exit 1; }
+    sleep 0.1
+done
+observed_url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/observed.out" | head -1)
+node "$here/ui-board/observed.mjs" "$observed_url" >"$work/observed.node" 2>&1 || { cat "$work/observed.node" "$work/observed.out"; echo "ui-browser: two views of one request did not make one request"; exit 1; }
+echo "ui-browser: two views asking one GET sent it once ($(cat "$work/observed.node"))"
+
 shots=${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"}
 for engine in $engines; do
     status=0

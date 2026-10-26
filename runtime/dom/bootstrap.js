@@ -516,7 +516,7 @@ export function parseRequest(bytes) {
 }
 
 // The page's requests, for the program's asks. The program names one by a
-// number it counted out (`get(token, frame)`), the host keeps its abort handle,
+// number it counted out (`get(token, frame)`), the host keeps its abort handle (a timeout, or the module standing down),
 // and `answered(token, status, octets)` re-enters the program as a turn: the
 // status and body of the reply, or status -1 and the words of why there is
 // none. An aborted request, or one already answered, never answers — a late
@@ -546,14 +546,6 @@ export function createFetches(fetchFn, answered, clock = globalThis) {
         .then(() => fetchFn(r.url, init))
         .then((res) => res.arrayBuffer().then((buf) => finish(t, res.status, new Uint8Array(buf))))
         .catch((err) => finish(t, -1, new TextEncoder().encode(String(err && err.message ? err.message : err))));
-    },
-    abort: (token) => {
-      const t = Number(token);
-      const mine = held.get(t);
-      if (!mine) return;
-      held.delete(t);
-      if (mine.timer !== null) clock.clearTimeout(mine.timer);
-      mine.controller.abort();
     },
     count: () => held.size,
     // Every request a module that stood down asked is aborted, unanswered.
@@ -641,7 +633,6 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
         [ROWS.arm]: timers.arm,
         [ROWS.disarm]: timers.disarm,
         [ROWS.get]: (token, ptr) => fetches.get(token, frameOf(own.module.memory, ptr, own.module.avra_bytes_len).slice()),
-        [ROWS.abort]: fetches.abort,
         [ROWS.next_paint]: frames.next,
         [ROWS.stood]: () => BigInt(left ? 0 : printOf(mount)),
       },

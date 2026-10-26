@@ -19,7 +19,6 @@ extern fn avra_dom_frame(frame: Bytes)
 extern fn avra_ui_arm(token: int, ms: int, repeat: int)
 extern fn avra_ui_disarm(token: int)
 extern fn avra_ui_get(token: int, request: Bytes)
-extern fn avra_ui_abort(token: int)
 extern fn avra_ui_next_paint()
 extern fn avra_ui_stood() -> int
 extern fn avra_bytes_with_room(n: int) -> Bytes
@@ -152,15 +151,12 @@ fn armed(want: Want, act: Act, owner: string?) -> bool {
     true
 }
 
-/// Every source whose control has left the page is cancelled: a timer is
-/// disarmed, a request aborted.
+/// Every timer whose control has left the page is disarmed. A request is the
+/// loop's own and stays.
 fn swept(held: Paged) {
     for h in wanted().left(held.app) {
         wanted().dropped(h.token)
-        match h.how {
-            .Timer(_) -> avra_ui_disarm(h.token),
-            .Request(_, _) -> avra_ui_abort(h.token),
-        }
+        avra_ui_disarm(h.token)
     }
 }
 

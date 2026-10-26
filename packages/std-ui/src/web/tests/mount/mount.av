@@ -73,10 +73,6 @@ extern fn avra_ui_get(token: int, request: Bytes) {
     println("get ${token} (${request.length} octets)")
 }
 
-extern fn avra_ui_abort(token: int) {
-    println("abort ${token}")
-}
-
 extern fn avra_ui_answered(token: int, status: int, len: int)
 
 fn waits() -> bool {
@@ -162,9 +158,13 @@ println("── ${waited} waited, ${ticks} ticks")
 
 // ── sources: the page's requests ──
 // A press asks for a request; the host's `get` row is told of it as one frame,
-// its answer re-enters as a turn and shows, an older ask answering late is
-// dropped, and a control that leaves has its request aborted.
+// its answer re-enters as a turn and shows, a second ask for what is out joins
+// it, an older ask for another key answering late is dropped, and a request
+// outlives the control that asked: an observation is the loop's, not a control's.
 state profile: Fetch<int> = fetch()
+state target: string = "/profile"
+
+fn aim(at: string) { target = at }
 
 fn words(a: Async<int>) -> string {
     match a {
@@ -178,7 +178,7 @@ fn words(a: Async<int>) -> string {
 fn parsed(r: Reply) -> Result<int, string> { if r.status == 200 { .Ok(r.body.length) } else { .Err("status ${r.status}") } }
 
 fn loads() {
-    let _ = fetched(profile, Request.get("/profile"), parsed)
+    let _ = fetched(profile, Request.get(target), parsed)
 }
 
 fn requesting() -> column {
@@ -206,7 +206,7 @@ println("── a second answer for the same request is ignored")
 avra_ui_answered(7, 500, 0)
 avra_ui_painted()
 println("── ${words(profile.state())}")
-println("── an older ask answering after a newer one is dropped")
+println("── a second ask for what is out joins it: one request")
 for who in 0..160 {
     avra_ui_event(who, press, 0, 0, 0)
     avra_ui_painted()
@@ -217,19 +217,34 @@ for who in 0..160 {
 }
 avra_ui_answered(8, 200, 0)
 avra_ui_painted()
+println("── the one answer shows: ${words(profile.state())}")
+println("── an older ask for another key answering after a newer one is dropped")
+aim("/a")
+for who in 0..160 {
+    avra_ui_event(who, press, 0, 0, 0)
+    avra_ui_painted()
+}
+aim("/b")
+for who in 0..160 {
+    avra_ui_event(who, press, 0, 0, 0)
+    avra_ui_painted()
+}
+avra_ui_answered(9, 200, 0)
+avra_ui_painted()
 println("── older answer: ${words(profile.state())}")
-avra_ui_answered(9, -1, 0)
+avra_ui_answered(10, -1, 0)
 avra_ui_painted()
 println("── newer answer: ${words(profile.state())}")
-println("── a request in flight when its control leaves is aborted")
+println("── a request in flight when its control leaves is kept")
+aim("/c")
 for who in 0..160 {
     avra_ui_event(who, press, 0, 0, 0)
     avra_ui_painted()
 }
 mount(gone)
-avra_ui_answered(10, 200, 0)
+avra_ui_answered(11, 200, 0)
 avra_ui_painted()
-println("── then its late answer is ignored: ${words(profile.state())}")
+println("── then its answer fills the entry the view reads: ${words(profile.state())}")
 
 // ── the frame: turns that land together are one paint ──
 mount(timed)

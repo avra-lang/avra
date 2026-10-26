@@ -114,7 +114,8 @@ INERT = {
     "relation": {"rows": {"avra_trap", "avra_qtrace"}, "world": {}},
     "text": {
         "rows": {"avra_str_from_codepoint", "avra_str_parsed_float", "avra_str_parsed_int",
-                 "avra_str_parses_float", "avra_str_parses_int", "avra_bytes_with_room"},
+                 "avra_str_parses_float", "avra_str_parses_int", "avra_bytes_with_room",
+                 "avra_str_word_at"},
         "world": {},
     },
     "derive": {"rows": set(), "world": {}},
