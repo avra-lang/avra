@@ -298,10 +298,13 @@ export type Db = {
 }
 
 /// The process, file and flags a connection was opened with.
-type Home = { pid: int, path: string, flags: int, busy: int, wal: bool }
+type Home = { epoch: int, path: string, flags: int, busy: int }
 
-/// This process's id.
-extern fn avra_own_pid() -> int
+/// Every file-backed connection is registered when opened and forgotten when closed, and the registry
+/// closes them all before the cores fork, bumping the epoch (`sqlite_sentinel.c`).
+extern fn avra_sqlite_opened(db: ptr)
+extern fn avra_sqlite_closed(db: ptr)
+extern fn avra_sqlite_epoch() -> int
 
 impl Db {
     /// A database at a path, opened for reading and writing and created
@@ -354,11 +357,12 @@ impl Db {
     fn close() -> int {
         let handle: ptr? = self.raw.get()
         if handle == null { return 0 }
-        if self.crossed() {
+        if self.parked() {
             self.cache.set([])
             self.raw.set(null)
             return 0
         }
+        avra_sqlite_closed(handle!)
         for c in self.cache.get() {
             let _ = c.stmt.finalize()
         }
@@ -388,19 +392,16 @@ impl Db {
     /// otherwise report the caller's own sequence as SQLite's opinion asks
     /// here first.
     fn closed_fault() -> SqlError? {
-        if self.crossed() { return connection_forked }
         if self.live() == null { return connection_closed }
         null
     }
 
-    /// Whether this is a write-ahead-log connection inherited by a process forked after it was opened.
-    /// SQLite keeps a WAL's shared-memory state per process, naming descriptors the parent opened; a
-    /// reopen here would hand a child that state, and a close would close descriptors the child has
-    /// since reused. Neither is done: the connection is refused, and the database is opened inside the
-    /// process that uses it.
-    fn crossed() -> bool {
+    /// Whether the cores' fork closed this connection's handle since it was made or last reopened: the
+    /// driver's registry closes every file-backed connection before a fork (`sqlite_sentinel.c`), and a
+    /// connection made under an earlier epoch holds a handle that is gone.
+    fn parked() -> bool {
         let home = self.home.get()
-        home.wal && home.pid != avra_own_pid() && self.raw.get() != null
+        home.path != ":memory:" && home.epoch != avra_sqlite_epoch()
     }
 
     /// The journal mode the file is in right now, by SQLite's own word: `wal`, `delete`, `memory`…
@@ -409,31 +410,26 @@ impl Db {
         v.text()
     }
 
-    /// The handle this process may use: the one it opened, or after a
-    /// fork a fresh one on the same file. The inherited handle and the
-    /// statements prepared on it are abandoned unclosed, since closing
-    /// them would release locks the parent holds. A private in-memory
-    /// database has no file to reopen and keeps its inherited copy.
-    ///
-    /// SQLite's per-file state is per PROCESS and a fork copies it: a connection that holds a
-    /// transaction at the fork, or a sibling closed while it held a lock (its descriptor parked
-    /// for a deferred close), leaves the child's reopened connection joined to state naming
-    /// descriptors the child has closed and reused, and a core ends. Nothing here prevents it.
+    /// The handle this process may use: the one it opened, or one fresh on the same file when the cores'
+    /// fork closed it (each process, parent and core alike, reopens on first use, so no process-wide
+    /// state of SQLite's reaches a child). The statements cached on the closed handle were finalized with
+    /// it. A private in-memory database has no file to reopen and is never parked.
     fn live() -> ptr? {
-        let now = avra_own_pid()
         let home = self.home.get()
         let held: ptr? = self.raw.get()
-        if held == null || home.pid == now || home.path == ":memory:" { return held }
-        if home.wal { return null }
+        if held == null || !self.parked() { return held }
         avra_sqlite_sleeps_held()
         mut handle: ptr? = null
         if sqlite3_open_v2(home.path, handle, home.flags, null) != 0 || handle == null {
             let _ = sqlite3_close_v2(handle)
-            return held
+            self.cache.set([])
+            self.raw.set(null)
+            return null
         }
+        avra_sqlite_opened(handle!)
         self.cache.set([])
         self.raw.set(handle)
-        self.home.set(home with { pid: now })
+        self.home.set(home with { epoch: avra_sqlite_epoch() })
         let _ = patient(self, home.busy)
         handle
     }
@@ -475,9 +471,10 @@ fn opened(c: OpenConfig) -> Result<Db, SqlError> {
     let rc = sqlite3_open_v2(path, handle, flags, null)
     if rc != 0 { fail closing(handle, rc) }
     if handle == null { fail SqlError.refused(Cause.CantOpen, "SQLite answered success and no handle") }
+    if path != ":memory:" { avra_sqlite_opened(handle!) }
     let db = Db {
         raw: Cell.new(handle),
-        home: Cell.new(Home { pid: avra_own_pid(), path: path, flags: flags, busy: c.busy, wal: false }),
+        home: Cell.new(Home { epoch: avra_sqlite_epoch(), path: path, flags: flags, busy: c.busy }),
     }
     let fault: SqlError? = patient(db, c.busy) ?? unreadable(db)
     if fault != null {
@@ -485,7 +482,6 @@ fn opened(c: OpenConfig) -> Result<Db, SqlError> {
         fail fault!
     }
     let _ = journaled(db, c)
-    db.home.set(db.home.get() with { wal: in_wal(db, c) })
     db
 }
 
@@ -503,19 +499,6 @@ fn journaled(db: Db, c: OpenConfig) -> SqlError? {
     if c.path == ":memory:" || c.mode is .ReadOnly { return null }
     let word = match c.journal { .Keep -> { return null }, .Wal -> "wal", .Rollback -> "delete" }
     match db.prepare("PRAGMA journal_mode = ${word}") { .Ok(s) -> ran(s), .Err(e) -> e }
-}
-
-/// Whether the file is in a write-ahead log now, asked on a statement of its own that is finalized: a statement
-/// left on the connection would hold a lock into any fork. A memory database and a read of nothing say no.
-fn in_wal(db: Db, c: OpenConfig) -> bool {
-    if c.path == ":memory:" { return false }
-    match db.prepare("PRAGMA journal_mode") { .Ok(s) -> says_wal(s), .Err(_) -> false }
-}
-
-fn says_wal(s: Stmt) -> bool {
-    let word = match s.step() { .Ok(_) -> s.text_at(0) catch "", .Err(_) -> "" }
-    let _ = s.finalize()
-    word == "wal"
 }
 
 /// T127 CLOSED: the one trivial statement that tells a database from a
@@ -558,12 +541,6 @@ fn closing(handle: ptr?, rc: int) -> SqlError {
         sql: null,
     }
 }
-
-const connection_forked: SqlError = SqlError
-    .refused(
-        Cause.Forked,
-        "a write-ahead-log database cannot be carried across a fork — its state belongs to the process that opened it; open the database inside each core",
-    )
 
 const connection_closed: SqlError = SqlError
     .refused(Cause.Closed, "this connection was closed — open it again")

@@ -13,6 +13,11 @@ int64_t avra_cores_online(void);
 // A group of `n` cores, not yet forked; the handle, or -errno.
 int64_t avra_cores_group(int64_t n);
 
+// A package's PREPARE hook for the cores' fork: asked once, in the parent, before the first
+// fork. It readies the package's process-global state to be rebuilt on either side, or answers
+// nonzero with its words in `*why`, and then no core forks (the fork answers -EBUSY).
+void avra_fork_hook(int (*prepare)(const char** why));
+
 // Forks the group's cores. Answers the core's index (0..n-1) in each
 // core, `n` in the supervisor, or -errno. A core keeps the calling task
 // alone and no descriptor but the standard three and `serving`.

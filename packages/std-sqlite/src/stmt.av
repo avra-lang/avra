@@ -62,6 +62,10 @@ export type Stmt = {
     done: Cell<bool> = Cell.new(false),
     name_cache: Cell<List<string>?> = Cell.new(null),
     conn: Cell<ptr?> = Cell.new(null),
+    /// The registry epoch the statement was prepared under. The cores' fork closes every connection and
+    /// finalizes what it held, so a statement of an earlier epoch is gone: it is read as finalized and
+    /// its handle is never handed to SQLite.
+    epoch: int = 0,
 }
 
 /// The result codes this driver reads by name rather than by number.
@@ -124,7 +128,7 @@ impl Db {
             fail SqlError
                 .refused(Cause.NoStatement, "the text holds no statement — it is a comment, or blank")
         }
-        Stmt { raw: Cell.new(handle), conn: Cell.new(conn) }
+        Stmt { raw: Cell.new(handle), conn: Cell.new(conn), epoch: avra_sqlite_epoch() }
     }
 }
 
@@ -159,13 +163,13 @@ impl Stmt {
                     "this statement already answered DONE — stepping it again RE-RUNS it from the start; `reset` it if that is what you mean",
                 )
         }
-        let rc = sqlite3_step(self.raw.get())
+        let rc = sqlite3_step(self.h())
         if rc == row_code { return true }
         if rc == done_code {
             self.done.set(true)
             return false
         }
-        fail step_failed(self.conn.get(), rc)
+        fail step_failed(if self.parked() { null } else { self.conn.get() }, rc)
     }
 
     /// The statement rewound, its bindings kept — and the DONE mark
@@ -174,7 +178,7 @@ impl Stmt {
     fn reset() -> int {
         if self.dead() { return 0 }
         self.done.set(false)
-        sqlite3_reset(self.raw.get())
+        sqlite3_reset(self.h())
     }
 
     /// The statement destroyed, and the handle NULLED so it cannot be
@@ -184,6 +188,7 @@ impl Stmt {
         let handle: ptr? = self.raw.get()
         if handle == null { return 0 }
         self.raw.set(null)
+        if self.parked() { return 0 }
         sqlite3_finalize(handle)
     }
 
@@ -197,7 +202,7 @@ impl Stmt {
     /// one through a verb that answers a count would throw the rows away
     /// silently — which is the whole reason this verb refuses instead.
     fn drained(db: Db) -> Result<int, SqlError> {
-        if sqlite3_column_count(self.raw.get()) > 0 {
+        if sqlite3_column_count(self.h()) > 0 {
             fail SqlError
                 .refused(
                     Cause.RowsDiscarded,
@@ -238,13 +243,13 @@ impl Stmt {
     /// How many parameter slots the statement has.
     fn slots() -> int {
         if self.dead() { return 0 }
-        sqlite3_bind_parameter_count(self.raw.get())
+        sqlite3_bind_parameter_count(self.h())
     }
 
     /// An integer bound into the Nth hole, counting from 1.
     fn bind_int(index: int, value: int) -> Result<int, SqlError> {
         let i = in_slots(self, index)?
-        judged(sqlite3_bind_int64(self.raw.get(), i, value))
+        judged(sqlite3_bind_int64(self.h(), i, value))
     }
 
     /// A float into the Nth slot. A `double` on both sides of the wall, so
@@ -252,7 +257,7 @@ impl Stmt {
     /// happens crossing, and none is decided here.
     fn bind_real(index: int, value: float) -> Result<int, SqlError> {
         let i = in_slots(self, index)?
-        judged(sqlite3_bind_double(self.raw.get(), i, value))
+        judged(sqlite3_bind_double(self.h(), i, value))
     }
 
     /// SQL NULL bound into the Nth hole. NULL is a VALUE here — it is not
@@ -262,7 +267,7 @@ impl Stmt {
     /// there is, and it takes a non-null `ptr`.
     fn bind_null(index: int) -> Result<int, SqlError> {
         let i = in_slots(self, index)?
-        judged(sqlite3_bind_null(self.raw.get(), i))
+        judged(sqlite3_bind_null(self.h(), i))
     }
 
     /// A string's bytes bound into the Nth hole, COPIED. A zero-length
@@ -274,7 +279,7 @@ impl Stmt {
     /// holds, sparing them a `.bytes()` at every call site.
     fn bind_blob(index: int, value: string) -> Result<int, SqlError> {
         let i = in_slots(self, index)?
-        judged(sqlite3_bind_blob(self.raw.get(), i, value.bytes(), value.length, transient()))
+        judged(sqlite3_bind_blob(self.h(), i, value.bytes(), value.length, transient()))
     }
 
     /// Arbitrary octets bound into the Nth hole, COPIED — `bind_blob`'s
@@ -282,7 +287,7 @@ impl Stmt {
     /// valid UTF-8.
     fn bind_blob_bytes(index: int, value: Bytes) -> Result<int, SqlError> {
         let i = in_slots(self, index)?
-        judged(sqlite3_bind_blob(self.raw.get(), i, value, value.length, transient()))
+        judged(sqlite3_bind_blob(self.h(), i, value, value.length, transient()))
     }
 
     /// Text bound into the Nth hole, COPIED by SQLite.
@@ -293,7 +298,7 @@ impl Stmt {
     /// caller wrote, silently.
     fn bind_text(index: int, value: string) -> Result<int, SqlError> {
         let i = in_slots(self, index)?
-        judged(sqlite3_bind_text(self.raw.get(), i, value.bytes(), value.length, transient()))
+        judged(sqlite3_bind_text(self.h(), i, value.bytes(), value.length, transient()))
     }
 
     /// Text bound WITHOUT a copy — the named hatch (P8).
@@ -314,7 +319,7 @@ impl Stmt {
     /// the promise it is making can actually be kept.
     fn bind_text_unsafely_borrowed(index: int, value: Bytes) -> Result<int, SqlError> {
         let i = in_slots(self, index)?
-        judged(sqlite3_bind_text(self.raw.get(), i, value, value.length, static_bytes()))
+        judged(sqlite3_bind_text(self.h(), i, value, value.length, static_bytes()))
     }
 
     // ── Reading the row that is standing ────────────────────────
@@ -324,7 +329,7 @@ impl Stmt {
     /// one without reading the SQL.
     fn width() -> int {
         if self.dead() { return 0 }
-        sqlite3_column_count(self.raw.get())
+        sqlite3_column_count(self.h())
     }
 
     /// How many columns the CURRENT row has: 0 before the first step, 0
@@ -332,20 +337,20 @@ impl Stmt {
     /// standing", which is why no flag of ours is needed.
     fn standing() -> int {
         if self.dead() { return 0 }
-        sqlite3_data_count(self.raw.get())
+        sqlite3_data_count(self.h())
     }
 
     /// The storage class of a cell. THE FIRST QUESTION ASKED OF ANY CELL.
     fn class_at(col: int) -> Result<Storage, SqlError> {
         let held = in_row(self, col)?
-        storage_of(sqlite3_column_type(self.raw.get(), col))
+        storage_of(sqlite3_column_type(self.h(), col))
     }
 
     /// A cell as an integer, refused when it holds another class.
     fn int_at(col: int) -> Result<int, SqlError> {
         let class = self.class_at(col)?
         if !(class is .Int) { fail SqlError.wrong_class(col, Storage.Int, class) }
-        sqlite3_column_int64(self.raw.get(), col)
+        sqlite3_column_int64(self.h(), col)
     }
 
     /// A cell as a float, refused when it holds another class — the INTEGER
@@ -381,7 +386,7 @@ impl Stmt {
     fn real_at(col: int) -> Result<float, SqlError> {
         let class = self.class_at(col)?
         if !(class is .Real) { fail SqlError.wrong_class(col, Storage.Real, class) }
-        sqlite3_column_double(self.raw.get(), col)
+        sqlite3_column_double(self.h(), col)
     }
 
     // ── Reading text and octets ──────────────────────────────────
@@ -411,8 +416,8 @@ impl Stmt {
     fn text_at(col: int) -> Result<string, SqlError> {
         let class = self.class_at(col)?
         if !(class is .Text) { fail SqlError.wrong_class(col, Storage.Text, class) }
-        let p: ptr? = sqlite3_column_text(self.raw.get(), col)
-        let held = taken(p, sqlite3_column_bytes(self.raw.get(), col), col)?
+        let p: ptr? = sqlite3_column_text(self.h(), col)
+        let held = taken(p, sqlite3_column_bytes(self.h(), col), col)?
         let word? = held.text() else { fail SqlError.defect(not_utf8_words(col)) }
         word
     }
@@ -423,8 +428,8 @@ impl Stmt {
     fn blob_at(col: int) -> Result<Bytes, SqlError> {
         let class = self.class_at(col)?
         if !(class is .Blob) { fail SqlError.wrong_class(col, Storage.Blob, class) }
-        let p: ptr? = sqlite3_column_blob(self.raw.get(), col)
-        taken(p, sqlite3_column_bytes(self.raw.get(), col), col)
+        let p: ptr? = sqlite3_column_blob(self.h(), col)
+        taken(p, sqlite3_column_bytes(self.h(), col), col)
     }
 
     /// The column's name in the result set — the `AS` alias where there is
@@ -435,7 +440,7 @@ impl Stmt {
     /// foreign row could hand back un-measured.
     fn column_name(col: int) -> Result<string, SqlError> {
         let _ = in_row(self, col)?
-        let p: ptr? = sqlite3_column_name(self.raw.get(), col)
+        let p: ptr? = sqlite3_column_name(self.h(), col)
         let held? = p else { fail SqlError.defect(no_name_words(col)) }
         let bytes = avra_bytes_adopted(held, avra_sqlite_cstr_len(held))
         let word? = bytes.text() else { fail SqlError.defect(not_utf8_name_words(col)) }
@@ -471,7 +476,16 @@ impl Stmt {
     /// `sqlite3_column_count` answers zero only under
     /// `SQLITE_ENABLE_API_ARMOR`, so a driver that let the null cross
     /// would rest on a build flag no reader of this package can see.
-    fn dead() -> bool { self.raw.get() == null }
+    fn dead() -> bool { self.h() == null }
+
+    /// Whether the cores' fork finalized this statement along with its connection.
+    fn parked() -> bool { self.epoch != avra_sqlite_epoch() }
+
+    /// The statement handle SQLite may be given: none once the fork finalized it.
+    fn h() -> ptr? {
+        if self.parked() { return null }
+        self.raw.get()
+    }
 
 }
 
@@ -527,6 +541,7 @@ extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
 /// A borrowed, NUL-terminated buffer's length in bytes — this package's
 /// own C, for the one wall answer with no paired length function.
 extern fn avra_sqlite_cstr_len(p: ptr) -> int
+extern fn avra_sqlite_epoch() -> int
 
 /// A cell's octets, copied. The CLASS has already said a value is
 /// there; what remains is a pointer that may be absent because the

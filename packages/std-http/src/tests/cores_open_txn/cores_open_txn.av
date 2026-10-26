@@ -1,0 +1,70 @@
+// proves: a database connection holding a transaction at the cores' fork REFUSES the fork — `run(3)` answers an
+// error naming it, nothing forks and nothing is lost — and the same server serves once the transaction is over.
+use @std.http.http.{text}
+use @std.http.route.{get}
+use @std.http.server.{server}
+use @std.io.{make_dirs}
+use @std.net.{NetError, connect, timely}
+use @std.sqlite.{Db, sql}
+use @std.time.{secs, stamp}
+
+/// One request on its own connection, answered with its body.
+fn asked(port: int, method: string) -> Result<string, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    c
+        .write(
+            "${method} / HTTP/1.1\r\nHost: a\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+                .bytes(),
+        )?
+    mut got = "".bytes()
+    while true {
+        match timely(within secs(2) { c.read(65536) }) {
+            .Ok(b) -> {
+                let more? = b else { break }
+                got = got.concat(more)
+            },
+            .Err(_) -> { break },
+        }
+    }
+    let parts = (got.text() ?? "?").split("\r\n\r\n")
+    .Ok(if parts.length > 1 { parts[1] } else { "?" })
+}
+
+/// A setup failure, in the one error this program speaks.
+fn refused(why: string) -> NetError { NetError { verb: "setup", subject: why, errno: 1 } }
+
+fn shown() -> Result<string, NetError> {
+    let dir = "/tmp/avra-http-cores-open-txn/${stamp()}"
+    let _ = make_dirs(dir)
+    let db = match Db.open("${dir}/rows.db") {
+        .Ok(d) -> d,
+        .Err(e) -> { return .Err(refused(e.message)) },
+    }
+    defer { let _ = db.close() }
+    let _ = db.run(sql("CREATE TABLE rows (n INTEGER PRIMARY KEY, who INTEGER)"))
+    let _ = db.exec("BEGIN")
+    let _ = db.run(sql("INSERT INTO rows (who) VALUES (1)"))
+    server app {
+        port: 0
+        get "/" { _req -> text(200, "up") }
+    }
+    let up = match app.listening() {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    let first = match up.run(3) {
+        .Ok(_) -> "served",
+        .Err(e) -> "refused ${e.errno}: ${e.subject}",
+    }
+    let committed = match db.exec("COMMIT") { .Ok(_) -> "committed", .Err(e) -> e.message }
+    let ran = spawn up.run(3)
+    let port = up.listener.port
+    let sent = [spawn asked(port, "GET") for i in 0..6]
+    let answers = [t.await? for t in sent]
+    up.stop()
+    let second = match ran.await { .Ok(n) -> "ran ${n}", .Err(e) -> "err ${e.errno} ${e.subject}" }
+    .Ok("${first} | ${committed} ${answers.all(it == "up")} ${second}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

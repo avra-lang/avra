@@ -19,6 +19,8 @@
  */
 #include "sqlite3.h"
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 void* avra_sqlite_transient(void) { return (void*)SQLITE_TRANSIENT; }
@@ -69,3 +71,75 @@ void avra_sqlite_sleeps_held(void) {
     g_platform = platform;
     if (sqlite3_vfs_register(&g_held, 1) != SQLITE_OK) avra_trap("SQLite refused the file system that holds its sleeps");
 }
+
+/* THE CONNECTIONS THIS PROCESS HAS OPEN, PARKED BEFORE A FORK.
+ *
+ * SQLite keeps per-file state per PROCESS — a connection's locks, a WAL's shared-memory node
+ * naming the descriptors that were open when it was made — and a fork copies that state while the
+ * cores' fork closes the descriptors it names. A connection carried over would hand its stale state
+ * to the child's own, whose locks then fail or land on whatever file reused the number. So before
+ * the cores fork, every file-backed connection is CLOSED FOR REAL, in the parent, while its
+ * descriptors are valid; each process opens its own again the first time it uses it (`Db.live`
+ * and `Stmt` compare the epoch they were made under with this one).
+ *
+ * A connection that holds a transaction, or a statement mid-run, is not the driver's to roll back:
+ * the fork is refused and nothing is closed. The verdict is made over every connection before any
+ * is touched, so a refusal leaves the process exactly as it was.
+ */
+extern void avra_fork_hook(int (*prepare)(const char** why));
+
+static sqlite3** g_open = NULL;
+static int g_open_count = 0, g_open_cap = 0;
+static int64_t g_epoch = 0;
+
+void avra_sqlite_opened(void* db) {
+    if (g_open_count == g_open_cap) {
+        int cap = g_open_cap ? g_open_cap * 2 : 8;
+        sqlite3** grown = (sqlite3**)realloc(g_open, (size_t)cap * sizeof(sqlite3*));
+        if (!grown) return;
+        g_open = grown;
+        g_open_cap = cap;
+    }
+    g_open[g_open_count++] = (sqlite3*)db;
+}
+
+void avra_sqlite_closed(void* db) {
+    for (int i = 0; i < g_open_count; i++) {
+        if (g_open[i] == (sqlite3*)db) { g_open[i] = g_open[--g_open_count]; return; }
+    }
+}
+
+int64_t avra_sqlite_epoch(void) { return g_epoch; }
+
+/* Why a connection cannot be closed for a fork, in words the fork's refusal carries; null when it can. */
+static char g_why[256];
+static const char* holds_work(sqlite3* db) {
+    if (sqlite3_get_autocommit(db) == 0) {
+        const char* file = sqlite3_db_filename(db, "main");
+        snprintf(g_why, sizeof g_why, "a database connection holds a transaction open (%.100s) — commit or roll it back before serving across cores", file ? file : "?");
+        return g_why;
+    }
+    for (sqlite3_stmt* s = sqlite3_next_stmt(db, NULL); s; s = sqlite3_next_stmt(db, s)) {
+        if (sqlite3_stmt_busy(s)) {
+            snprintf(g_why, sizeof g_why, "a database statement is mid-run (%.120s) — finish or reset it before serving across cores", sqlite3_sql(s));
+            return g_why;
+        }
+    }
+    return NULL;
+}
+
+static int parked(const char** why) {
+    for (int i = 0; i < g_open_count; i++) {
+        const char* held = holds_work(g_open[i]);
+        if (held) { *why = held; return 1; }
+    }
+    for (int i = 0; i < g_open_count; i++) {
+        for (sqlite3_stmt* s; (s = sqlite3_next_stmt(g_open[i], NULL));) sqlite3_finalize(s);
+        sqlite3_close_v2(g_open[i]);
+    }
+    g_open_count = 0;
+    g_epoch++;
+    return 0;
+}
+
+__attribute__((constructor)) static void registered(void) { avra_fork_hook(parked); }

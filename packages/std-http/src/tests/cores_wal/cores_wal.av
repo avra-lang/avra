@@ -1,7 +1,7 @@
-// proves: a write-ahead-log database opened before the cores fork is REFUSED in each core, loudly, by name — never
-// reopened on the parent's per-process state and never closed over descriptors the core has since reused (the core's
-// first act here takes the numbers the parent's connection held). No write is lost: none was made. The parent's own
-// connection reads and writes after the cores exit, and a database opened inside a core is the way through.
+// proves: a write-ahead-log database opened before the cores fork is each core's own connection afterwards, even
+// when the core's first act takes the descriptor numbers the parent held — concurrent writes from three cores all
+// land, the file stays whole, every row is there, and the parent's connection (closed before the fork, reopened on
+// its next use) still reads and writes once the cores have exited.
 use @std.http.http.{text}
 use @std.http.route.{get, post}
 use @std.http.server.{server}
@@ -64,7 +64,7 @@ fn added(db: Db) -> string {
     let _ = reserving()
     match db.run(sql("INSERT INTO rows (who) VALUES (0)")) {
         .Ok(_) -> "added",
-        .Err(e) -> e.cause.kind(),
+        .Err(e) -> e.message,
     }
 }
 
@@ -91,6 +91,7 @@ fn shown() -> Result<string, NetError> {
     server app {
         port: 0
         post "/" { _req -> text(200, added(db)) }
+        get "/" { _req -> text(200, audit(db)) }
     }
     let up = match app.listening() {
         .Ok(s) -> s,
@@ -100,9 +101,10 @@ fn shown() -> Result<string, NetError> {
     let port = up.listener.port
     let sent = [spawn asked(port, "POST") for i in 0..30]
     let answers = [t.await? for t in sent]
+    let verdict = asked(port, "GET")?
     up.stop()
     let _ = ran.await
-    .Ok("${answers.all(it == "sqlite.forked")} ${after_cores(db)}")
+    .Ok("${answers.all(it == "added")} ${verdict} ${after_cores(db)}")
 }
 
 match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
