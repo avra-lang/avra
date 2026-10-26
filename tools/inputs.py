@@ -111,7 +111,9 @@ SPAWNS = re.compile(r"\.(run(?=\(\))|outcome|start)\(")
 # name of it that does read. Held to the package's own source.
 INERT = {
     "meta": {"rows": {"avra_embed", "avra_embed_octets", "avra_type_named"}, "world": {"embed": "read"}},
-    "relation": {"rows": {"avra_trap", "avra_qtrace"}, "world": {}},
+    "relation": {"rows": {"avra_trap", "avra_qtrace", "avra_cores_group", "avra_cores_fork",
+                          "avra_cores_end_fd", "avra_cores_heard", "avra_cores_leave",
+                          "avra_cores_result", "avra_fiber_park_fd"}, "world": {}},
     "text": {
         "rows": {"avra_str_from_codepoint", "avra_str_parsed_float", "avra_str_parsed_int",
                  "avra_str_parses_float", "avra_str_parses_int", "avra_bytes_with_room",
