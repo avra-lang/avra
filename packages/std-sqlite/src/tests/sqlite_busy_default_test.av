@@ -1,6 +1,6 @@
 // A connection waits out a lock another holds, unless it asked not to.
 use @std.io.{make_dirs}
-use @std.sqlite.open.{Db, Journal, OpenConfig}
+use @std.sqlite.open.{Db, OpenConfig}
 use @std.sqlite.sql.{sql}
 use @std.time.{now_ns}
 
@@ -32,16 +32,10 @@ fn waited_when_set() -> string {
     match Db.open_with(c) { .Ok(db) -> wait_of(db), .Err(e) -> e.message }
 }
 
-/// The journal mode of a connection opened with `journal`, by the file's own word.
-fn journal_of(name: string, journal: Journal) -> string {
-    let c = OpenConfig.config_at("${busy_default_base()}/${name}.db") with { journal: journal }
-    match Db.open_with(c) {
-        .Ok(db) -> match db.scalar(sql("PRAGMA journal_mode")) {
-            .Ok(v) -> match v.text() { .Ok(s) -> s, .Err(e) -> e.message },
-            .Err(e) -> e.message,
-        },
-        .Err(e) -> e.message,
-    }
+/// The kind a connection refused with when opened with a wait of `ms`.
+fn refused_wait(ms: int) -> string {
+    let c = OpenConfig.config_at("${busy_default_base()}/negative.db") with { busy: ms }
+    match Db.open_with(c) { .Ok(_) -> "opened", .Err(e) -> e.cause.kind() }
 }
 
 spec "std/sqlite busy default" {
@@ -51,8 +45,8 @@ spec "std/sqlite busy default" {
     given "a connection opened with `busy: 0`" {
         then "it is refused at once" { waited_when_set() == "0" }
     }
-    given "a file opened for writing" {
-        then "it is kept in a write-ahead log by default" { journal_of("wal", .Wal) == "wal" }
-        then "and in a rollback journal when asked" { journal_of("delete", .Rollback) == "delete" }
+    given "a connection opened with a negative wait" {
+        then "it is refused, naming the law" { refused_wait(-5) == "sqlite.negative_wait" }
+        then "and a wait of zero is allowed" { refused_wait(0) == "opened" }
     }
 }

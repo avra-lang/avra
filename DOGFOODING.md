@@ -1180,12 +1180,11 @@ fn call_args(v: Captured<GrammarNode>) -> Result<List<string>, string> {
 `let _ = row.insert(db)` throws away whether the write happened. A refused write (busy, a constraint, a full
 disk) then reads as a missing effect somewhere else — a notice that never came, a row that is not there — and
 the failure is found at the symptom. Read it: `?` in a fn that answers a Result, a `match` that speaks the
-refusal, or `.expect`-style handling in a test that proves the write committed.
+refusal, or a check in a test that proves the write committed.
 
 Smell: `let _ = <call that answers Result<…, SqlError | ModelError>>`. Licensed: a best-effort cleanup that
-says so (`// LICENSED results.discarded_write: <reason>`). Wanted as a rule (`results.discarded_write`): it
-needs the callee's answer type, which a rule over the typed program has. Found in `crud_feed`, where a busy
-insert was discarded and the lost write surfaced as an empty notice.
+says why at the site. A rule would need the callee's answer type, which a rule over the typed program has; none
+flags it today. Found when a test discarded a busy insert and the lost write surfaced as a missing notice.
 
 ## Generics: what infers, what needs pins
 
