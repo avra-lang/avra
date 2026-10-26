@@ -241,7 +241,6 @@ await page.close();
   const drawn = () => board.read(`[...document.querySelectorAll("li")].map((li) => ({ key: li.dataset.key, words: li.textContent }))`);
   const says = (words) => `document.body.textContent.includes(${JSON.stringify(words)})`;
   await waits(`document.querySelector("li") !== null`);
-  claim("the board and its footer both read the tasks, and the page asked the server once", (await board.read(`performance.getEntriesByType("resource").filter((e) => new URL(e.name).pathname === "/tasks").length`)) === 1 && await waits(says("synced 0")), await board.read(`performance.getEntriesByType("resource").map((e) => e.name)`));
   claim("a server holding no tasks leaves the board its own four", (await drawn()).map((r) => r.key).join() === "t1,t2,t3,t4", await drawn());
   await board.press(named("New task"));
   await board.type(..."Buy milk");

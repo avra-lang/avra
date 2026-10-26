@@ -1,6 +1,7 @@
 //! `app/cache.av` — what a loop has observed: one entry per key, shared by
 //! every view that asks it, and kept a while after its last reader leaves.
 use @std.http_message.message.{Reply, Request}
+use @std.text.{text_before}
 use @std.time.{now_ms}
 use app.{Async}
 
@@ -27,22 +28,9 @@ export fn key_of(request: Request) -> Key? {
 /// `pairs` in byte order with `word` placed.
 fn inserted(pairs: List<string>, word: string) -> List<string> {
     if word.is_empty() { return pairs }
-    [p for p in pairs if before(p, word)]
+    [p for p in pairs if text_before(p, word)]
         .concat([word])
-        .concat([p for p in pairs if !before(p, word)])
-}
-
-/// Whether `a` sorts before `b`, by byte.
-fn before(a: string, b: string) -> bool {
-    let n = if a.length < b.length { a.length } else { b.length }
-    mut i = 0
-    while i < n {
-        let ca = a.char_code(i)
-        let cb = b.char_code(i)
-        if ca != cb { return ca < cb }
-        i = i + 1
-    }
-    a.length < b.length
+        .concat([p for p in pairs if !text_before(p, word)])
 }
 
 /// A view that reads an entry: told each time the entry's state moves.

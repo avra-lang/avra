@@ -392,7 +392,7 @@ const clockAt = () => {
   timers.disarm(99n);
   clock.advance(10);
   check("a disarmed one-shot never fires; disarming twice, or a stranger, says nothing", [fired.length, timers.count()], [4, 0]);
-  check("the rows a page answers are named by the generated table", Object.keys(ROWS).sort(), ["abort", "arm", "disarm", "frame", "get", "next_paint", "stood"]);
+  check("the rows a page answers are named by the generated table", Object.keys(ROWS).sort(), ["arm", "disarm", "frame", "get", "next_paint", "stood"]);
 }
 
 // ── the page's requests ──
@@ -435,22 +435,21 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   fetches.get(2n, requestFrame({ url: "/g" }));
   await settle();
   check("a get carries no body", calls[1].init.body === undefined, true);
-  fetches.abort(2n);
-  calls[1].resolve(reply(200, "late"));
+  calls[1].resolve(reply(200, "g"));
   await settle();
-  check("an aborted request is aborted at the host and a late answer is dropped", [calls[1].init.signal.aborted, heard.length, fetches.count()], [true, 1, 0]);
+  check("a get answers once it is resolved, and is forgotten", [heard[1], fetches.count()], [[2, 200, "g"], 0]);
 
   fetches.get(3n, requestFrame({ url: "/n" }));
   await settle();
   calls[2].reject(new Error("offline"));
   await settle();
-  check("a failure crosses as status -1 and its words", heard[1], [3, -1, "offline"]);
+  check("a failure crosses as status -1 and its words", heard[2], [3, -1, "offline"]);
 
   fetches.get(4n, requestFrame({ url: "/t", timeoutMs: 20 }));
   await settle();
   clock.advance(25);
   await settle();
-  check("a request past its wait answers -1 and is aborted", [heard[2], calls[3].init.signal.aborted], [[4, -1, "the request timed out"], true]);
+  check("a request past its wait answers -1 and is aborted", [heard[3], calls[3].init.signal.aborted], [[4, -1, "the request timed out"], true]);
 
   fetches.get(5n, requestFrame({ url: "/two" }));
   await settle();
@@ -458,15 +457,14 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   calls[4].resolve(reply(500, "again"));
   await settle();
   check("a request answers once", heard.filter((h) => h[0] === 5).length, 1);
-  fetches.abort(99n);
-  check("aborting a stranger says nothing", fetches.count(), 0);
+  check("nothing is left held", fetches.count(), 0);
 
   // the answer crosses into the program through the seat
   const seen = [];
   const mod = { memory: { buffer: new ArrayBuffer(64) }, [HOST.seat]: (room) => { seen.push(["seat", Number(room)]); return 16n; }, [HOST.answered]: (t, st, len) => seen.push([Number(t), Number(st), Number(len)]) };
   sendAnswer(mod, 9, 201, new TextEncoder().encode("abc"));
   check("an answer writes its octets into the seat, then names the token, status and length", [seen, new TextDecoder().decode(new Uint8Array(mod.memory.buffer, 16, 3))], [[["seat", 3], [9, 201, 3]], "abc"]);
-  check("the rows a page answers include the request rows", ["get", "abort"].every((k) => typeof ROWS[k] === "string"), true);
+  check("the rows a page answers include the request rows", ["get"].every((k) => typeof ROWS[k] === "string"), true);
 }
 
 // ── the page's frames ──

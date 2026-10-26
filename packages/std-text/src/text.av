@@ -22,6 +22,7 @@ extern fn avra_str_from_codepoint(code: int) -> string
 extern fn avra_str_parses_int(s: string) -> bool
 extern fn avra_str_parsed_int(s: string) -> int
 extern fn avra_str_parses_float(s: string) -> int
+extern fn avra_str_word_at(s: string, at: int) -> int
 extern fn avra_str_parsed_float(s: string) -> float
 extern fn avra_bytes_with_room(n: int) -> Bytes
 
@@ -74,6 +75,23 @@ export fn parse_int(s: string) -> int? {
 export fn parse_float(s: string) -> float? {
     if has_nul(s) || avra_str_parses_float(s) == 0 { return null }
     avra_str_parsed_float(s)
+}
+
+// ── Order ───────────────────────────────────────────────────────
+
+/// Byte order on text: true when `a` sorts before `b`.
+export fn text_before(a: string, b: string) -> bool {
+    let n = if a.length < b.length { a.length } else { b.length }
+    mut i = 0
+    // whole words first: names that are paths share most of their length
+    while i + 8 <= n && avra_str_word_at(a, i) == avra_str_word_at(b, i) { i = i + 8 }
+    while i < n {
+        let ca = a.char_code(i)
+        let cb = b.char_code(i)
+        if ca != cb { return ca < cb }
+        i = i + 1
+    }
+    a.length < b.length
 }
 
 // ── Shaping ─────────────────────────────────────────────────────
