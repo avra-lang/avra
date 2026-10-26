@@ -1,8 +1,10 @@
 //! `forms/form_inputs.av` — a form's inputs drawn from field shapes,
-//! one per field: a checkbox for a bool, a field for the rest, each
-//! labelled by its name, with the issue a submit earned beside it.
-use @std.validate.{Value, Entry, Issue, FieldShape}
-use components.{form, column, list, field, checkbox, button, error_text}
+//! one per field: a checkbox for a bool, a fieldset for a record, a
+//! field for the rest, each labelled by its name, with the issue a
+//! submit earned beside it. A field is keyed by its PATH — `ship.city`
+//! — the spelling a decode's issue names it by.
+use @std.validate.{Value, Entry, Issue, FieldShape, FieldKind}
+use components.{form, column, list, field, checkbox, button, error_text, fieldset}
 
 /// The inputs a form draws for its fields, by their shapes: the text
 /// typed and the boxes ticked are this instance's own, and `judged`
@@ -14,44 +16,149 @@ export component form_inputs(shapes: List<FieldShape>) {
     state ticked: Map<string, bool> = {}
     state issues: List<Issue> = []
     form {
-        on submit { self.issues = self.judged(entered(self.shapes, self.typed, self.ticked)) }
-        list self.shapes by it.name { f ->
-            column {
-                if f.kind is .Bool {
-                    checkbox f.name {
-                        checked: self.ticked.get(f.name)
-                        on change { on -> self.ticked = {..self.ticked, "${f.name}": on} }
-                    }
-                } else {
-                    field f.name {
-                        value: self.typed.get(f.name)
-                        masked: f.secret
-                        invalid: !issued(self.issues, f.name).is_empty()
-                        on input { typed -> self.typed = {..self.typed, "${f.name}": typed} }
-                    }
-                }
-                for i in issued(self.issues, f.name) { error_text { message: i.message } }
-            }
+        on submit { self.issues = self.judged(Value.Map(entered(self.shapes, "", self.typed, self.ticked))) }
+        shape_inputs self.shapes {
+            typed: self.typed
+            ticked: self.ticked
+            issues: self.issues
+            on typing { t -> self.typed = {..self.typed, "${t.at}": t.typed} }
+            on ticking { t -> self.ticked = {..self.ticked, "${t.at}": t.on} }
         }
         button self.submit_label { submits: true }
     }
 }
 
-/// The issues a submit earned at one field.
-fn issued(issues: List<Issue>, name: string) -> List<Issue> { [i for i in issues if i.path.text() == name] }
+/// Text typed into the field at a path.
+export type Typing = { at: string, typed: string }
 
-/// What was entered, as the decode reads it: a field nothing was given
-/// is absent, so its default stands and an owed one is refused.
-fn entered(shapes: List<FieldShape>, typed: Map<string, string>, ticked: Map<string, bool>) -> Value {
-    Value.Map([e for f in shapes for e in entry(f, typed, ticked)])
+/// A box ticked or cleared at a path.
+export type Ticking = { at: string, on: bool }
+
+/// The inputs for `shapes`, each at its path under `prefix`. What is
+/// entered goes up as `typing` and `ticking`; the state is the form's.
+component shape_inputs(shapes: List<FieldShape>) {
+    prefix: string = ""
+    typed: Map<string, string> = {}
+    ticked: Map<string, bool> = {}
+    issues: List<Issue> = []
+    on typing(entry: Typing)
+    on ticking(entry: Ticking)
+    list self.shapes by it.name { f ->
+        column {
+            if drawn(f.kind) == Drawn.Ticked {
+                checkbox f.name {
+                    checked: self.ticked.get(self.at(f))
+                    on change { on -> self.ticked_at(self.at(f), on) }
+                }
+            } else if drawn(f.kind) == Drawn.Grouped {
+                fieldset f.name {
+                    shape_inputs grouped(f.kind) {
+                        prefix: self.at(f)
+                        typed: self.typed
+                        ticked: self.ticked
+                        issues: self.issues
+                        on typing: self.typing
+                        on ticking: self.ticking
+                    }
+                }
+            } else if drawn(f.kind) == Drawn.Unlisted {
+                error_text { message: records_undrawn(f.name) }
+            } else {
+                field f.name {
+                    value: self.typed.get(self.at(f))
+                    masked: f.secret
+                    invalid: !issued(self.issues, self.at(f)).is_empty()
+                    on input { t -> self.typed_at(self.at(f), t) }
+                }
+            }
+            for i in issued(self.issues, self.at(f)) { error_text { message: i.message } }
+        }
+    }
+
+    /// A field's path under this group.
+    fn at(f: FieldShape) -> string { path(self.prefix, f.name) }
+
+    fn typed_at(at: string, typed: string) {
+        let fire? = self.typing else { return }
+        fire(Typing { at: at, typed: typed })
+    }
+
+    fn ticked_at(at: string, on: bool) {
+        let fire? = self.ticking else { return }
+        fire(Ticking { at: at, on: on })
+    }
 }
 
-fn entry(f: FieldShape, typed: Map<string, string>, ticked: Map<string, bool>) -> List<Entry> {
-    if f.kind is .Bool {
-        let on? = ticked.get(f.name) else { return [] }
-        return [Entry { key: f.name, value: Value.Bool(on) }]
+/// How a field is drawn.
+enum Drawn {
+    Ticked
+    Grouped
+    Unlisted
+    Typed
+}
+
+/// How a field of kind `k` is drawn. Every kind spelled.
+fn drawn(k: FieldKind) -> Drawn {
+    match k {
+        .Bool -> .Ticked,
+        .Record(_) -> .Grouped,
+        .Records(_) -> .Unlisted,
+        .Text or .Int or .Float or .Other(_) -> .Typed,
     }
-    let t? = typed.get(f.name) else { return [] }
-    if t.is_empty() { return [] }
-    [Entry { key: f.name, value: Value.Text(t) }]
+}
+
+/// The fields a record's kind carries; none for any other kind.
+fn grouped(k: FieldKind) -> List<FieldShape> {
+    match k { .Record(fs) -> fs, rest -> [] }
+}
+
+/// A field's path: its name, under its group's.
+fn path(prefix: string, name: string) -> string { if prefix.is_empty() { name } else { "${prefix}.${name}" } }
+
+/// The issues a submit earned at one path.
+fn issued(issues: List<Issue>, at: string) -> List<Issue> { [i for i in issues if i.path.text() == at] }
+
+/// What was entered under `prefix`, as the decode reads it: a field
+/// nothing was given is absent, so its default stands and an owed one
+/// is refused.
+fn entered(
+    shapes: List<FieldShape>,
+    prefix: string,
+    typed: Map<string, string>,
+    ticked: Map<string, bool>,
+) -> List<Entry> {
+    [e for f in shapes for e in entry(f, path(prefix, f.name), typed, ticked)]
+}
+
+/// One field's entry, read at its path. Every kind spelled.
+fn entry(f: FieldShape, at: string, typed: Map<string, string>, ticked: Map<string, bool>) -> List<
+    Entry,
+> {
+    match f.kind {
+        .Bool -> {
+            let on? = ticked.get(at) else { return [] }
+            [Entry { key: f.name, value: Value.Bool(on) }]
+        },
+        .Record(fs) -> group_entry(f, entered(fs, at, typed, ticked)),
+        .Records(_) -> [],
+        .Text or .Int or .Float or .Other(_) -> {
+            let t? = typed.get(at) else { return [] }
+            if t.is_empty() { return [] }
+            [Entry { key: f.name, value: Value.Text(t) }]
+        },
+    }
+}
+
+/// A record's entries as one value: absent when nothing was entered and
+/// none is owed, so an option stays null; owed, an empty record, so each
+/// of its owed fields is refused by name.
+fn group_entry(f: FieldShape, inner: List<Entry>) -> List<Entry> {
+    if inner.is_empty() && !f.required { return [] }
+    [Entry { key: f.name, value: Value.Map(inner) }]
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn records_undrawn(name: string) -> string {
+    "`${name}` holds a list of records, which has no fixed fields for a form to draw"
 }
