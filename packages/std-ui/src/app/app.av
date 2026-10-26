@@ -62,6 +62,7 @@ export type Door = {
     send: fn(Msg) -> bool,
     ask: fn(Want, Act, string?) -> bool,
     hush: fn(string) -> void,
+    snap: fn(Bytes) -> void,
     close: fn() -> void,
 }
 
@@ -406,6 +407,22 @@ impl App {
     fn hush(url: string) {
         let door? = self.door.get() else { return }
         door.hush(url)
+    }
+
+    /// The cache's snapshots are handed to the host from now on (`on`), the standing one at once, or no more.
+    fn hud(on: bool) {
+        if !on {
+            self.observed.unwatching()
+            return
+        }
+        self.observed.watching((s) -> self.snapped(s.frame().bytes()))
+        self.observed.moved()
+    }
+
+    /// A snapshot of the cache, as a frame, handed to the target's host. Nothing where no loop runs.
+    fn snapped(frame: Bytes) {
+        let door? = self.door.get() else { return }
+        door.snap(frame)
     }
 
     /// Where messages go now: the running loop's inbox, held — a source

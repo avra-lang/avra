@@ -1,7 +1,7 @@
 // The dev client, by its own verb over a stub document and a stream it is
 // handed: when it reloads, and that a failed build is shown and a mended
 // one clears it.
-import { relayed, watch } from "./dev.js";
+import { hudPosting, relayed, watch } from "./dev.js";
 import { stubDocument, stubElement } from "./stub_dom.js";
 
 let passed = 0;
@@ -91,6 +91,25 @@ test("a mended build of another module reloads", broke.reloads === 1);
   const before = named();
   await swapping.events.say("built", "xyz");
   test("a page names its module at start and again once a swap lands", before === "abc" && named() === "xyz");
+}
+
+// The cache's snapshots: posted once a frame, newest only, never the same twice.
+{
+  let take = null;
+  let off = 0;
+  const frames = [];
+  const queue = [];
+  hudPosting({ api: { on: (fn) => { take = fn; }, off: () => { off++; } }, post: (f) => frames.push(f), raf: (cb) => queue.push(cb) });
+  const drain = () => { while (queue.length) queue.shift()(); };
+  take('{"v":1,"rows":[{"age_ms":5,"key":"/a"}]}');
+  take('{"v":1,"rows":[{"age_ms":9,"key":"/a"}]}');
+  test("a burst is one post, the newest", queue.length === 1 && (drain(), frames.length === 1 && frames[0].includes('"age_ms":9')));
+  take('{"v":1,"rows":[{"age_ms":50,"key":"/a"}]}');
+  drain();
+  test("a frame that differs only in age is not posted again", frames.length === 1);
+  take('{"v":1,"rows":[{"age_ms":51,"key":"/b"}]}');
+  drain();
+  test("a frame that says something new is posted", frames.length === 2 && frames[1].includes("/b"));
 }
 
 console.log(`dev: ${passed}/${passed + failed}`);

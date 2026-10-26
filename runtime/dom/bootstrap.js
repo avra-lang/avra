@@ -719,7 +719,10 @@ export function stateOf(doc) {
 // module under the page: `swap(source)` asks the running module to say its
 // page, lets go of what it armed and asked, and starts the new one over the
 // elements the page holds — so its first paint is a diff against them.
-export async function run(source, { document, mount, style = null, wasi, sent = () => {}, failed = (e) => { throw e; }, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a), raf = (cb) => globalThis.requestAnimationFrame(cb), hot = null, state = null }) {
+export async function run(source, { document, mount, style = null, wasi, sent = () => {}, failed = (e) => { throw e; }, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a), raf = (cb) => globalThis.requestAnimationFrame(cb), hot = null, state = null, hud = null }) {
+  // THE CACHE'S SNAPSHOTS, for a dev page: the program sends them only while the host has turned them on
+  // (`HOST.hud`), and `take` is who hears them. A page with no `hud` option never turns them on.
+  let take = null;
   // The module events, answers and fires reach: the one running now.
   let mod = null;
   const into = guarded(failed);
@@ -747,6 +750,7 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
         [ROWS.get]: (token, ptr) => fetches.get(token, frameOf(own.module.memory, ptr, own.module.avra_bytes_len).slice()),
         [ROWS.listen]: (token, ptr) => feeds.listen(token, frameOf(own.module.memory, ptr, own.module.avra_bytes_len).slice()),
         [ROWS.next_paint]: frames.next,
+        [ROWS.snap]: (ptr) => { if (take) take(new TextDecoder().decode(frameOf(own.module.memory, ptr, own.module.avra_bytes_len))); },
         [ROWS.stood]: () => BigInt(left ? 0 : printOf(mount)),
       },
     });
@@ -771,10 +775,19 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
     mod = exports;
     const code = exports[HOST.entry]();
     if (code !== 0) throw new Error(`the program's statements answered ${code}`);
+    if (take) exports[HOST.hud](1n);
     return exports;
   };
 
   const first = await start(source, null, state ?? stateOf(document));
+  // The page's snapshots on or off: `on(take)` has every snapshot the running module makes handed to `take`
+  // (the standing one at once), `off()` stops them. A module that replaces this one is turned on the same way.
+  if (hud) {
+    hud({
+      on: (fn) => { take = fn; mod[HOST.hud](1n); },
+      off: () => { take = null; mod[HOST.hud](0n); },
+    });
+  }
   // Said last: a reader of the page knows the module stands and has painted.
   if (document.documentElement) document.documentElement.setAttribute("data-avra", "ready");
   if (hot) {

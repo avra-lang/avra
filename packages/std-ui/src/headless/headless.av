@@ -45,6 +45,7 @@ export type Screen = {
     now: Cell<int> = Cell.new(0),
     queue: Cell<List<Msg>> = Cell.new([]),
     driving: Cell<bool> = Cell.new(false),
+    framed: Cell<string> = Cell.new(""),
 }
 
 /// `view` on a screen held in memory, painted once. `rows` is a viewport's
@@ -154,9 +155,19 @@ impl Screen {
             send: (m: Msg) -> self.left_for_loop(ended, m),
             ask: (w: Want, act: Act, owner: string?) -> self.asked_of(ended, w, act, owner),
             hush: (url: string) -> { let _ = self.wants.hushed(url) },
+            snap: (frame: Bytes) -> self.snapped_frame(frame),
             close: () -> ended.set(true),
         }
     }
+
+    /// The last snapshot the app handed its host, as its JSON frame; none until one was.
+    fn frame() -> string { self.framed.get() }
+
+    /// The host turns the cache's snapshots on or off.
+    fn hud(on: bool) { self.shown.app.hud(on) }
+
+    /// A snapshot a loop hands its host: kept as the last, where a test reads it.
+    fn snapped_frame(frame: Bytes) { self.framed.set(frame.text() ?? "") }
 
     /// A message left for the loop: kept, unless the loop has ended.
     fn left_for_loop(ended: Cell<bool>, m: Msg) -> bool {

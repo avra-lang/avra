@@ -1,6 +1,6 @@
 // proves: the cache says what it holds, why an entry stopped being fresh, and how many asks it sent, skipped,
 // joined and answered by a held version; a snapshot is built only where a sink is installed — eval == native.
-use @std.ui.app.{Async, Fetch, Heard, Overlay, fetch, fetched, running}
+use @std.ui.app.{Async, Fetch, Heard, Overlay, fetch, fetched, running, snapshot_of}
 use @std.ui.components.{column}
 use @std.ui.headless.{Screen, headless}
 use @std.http_message.message.{Body, Header, Reply, Request}
@@ -38,6 +38,9 @@ fn lines_of(held: Cell<List<string>>) -> string { held.get().join("\n") }
 
 fn show(label: string, held: Cell<List<string>>) { println("${label}:\n${lines_of(held)}") }
 
+/// The lines of the snapshot a frame says, one text.
+fn rebuilt(frame: string) -> string { (snapshot_of(frame)?.lines() ?? []).join("\n") }
+
 /// The screen's cache, watched: each step prints the snapshot it was handed.
 fn watched(screen: Screen, seen: Cell<List<string>>) {
     let on? = running() else { return }
@@ -73,7 +76,32 @@ fn watched(screen: Screen, seen: Cell<List<string>>) {
     show("a write awaiting its answer", seen)
     screen.advance(ms(10))
     show("answered", seen)
+    let snap = on.observed.snapshot()
+    let frame = snap.frame()
+    println("the frame: ${frame.substring(0, 96)}")
+    println(
+        "read back from the frame, its lines are the snapshot's: ${rebuilt(frame) == snap.lines().join("\n")}",
+    )
+    println(
+        "a text that is no frame reads as none: ${(snapshot_of("{}")?.lines() ?? ["none"]).join("")} ${(snapshot_of("[")?.lines() ?? ["none"]).join("")}",
+    )
     println("snapshots built while watched: ${on.observed.counts.built.get() > 0}")
+}
+
+/// A cache whose host turns snapshots on: the standing one arrives at once and each move after; off, no more.
+fn hosted(screen: Screen) {
+    println("before the host asks: [${screen.frame()}]")
+    screen.hud(true)
+    println("snapshots on, the standing one at once: ${screen.frame().substring(0, 28)}")
+    let v: Fetch<int> = fetch()
+    let _ = fetched(v, Request.get("/first"), parsed)
+    screen.advance(ms(10))
+    println("after an ask: ${screen.frame().contains("\"key\":\"/first\"")}")
+    screen.hud(false)
+    let before = screen.frame()
+    let _ = fetched(fetch<int>(), Request.get("/second"), parsed)
+    screen.advance(ms(10))
+    println("snapshots off, the frame stands: ${screen.frame() == before}")
 }
 
 /// A cache nobody watches: it counts, and builds nothing.
@@ -91,6 +119,9 @@ let seen: Cell<List<string>> = Cell.new([])
 let screen = headless(() -> column {})
 screen.wired(serve)
 screen.running(() -> watched(screen, seen))
+let hosting = headless(() -> column {})
+hosting.wired(serve)
+hosting.running(() -> hosted(hosting))
 let idle = headless(() -> column {})
 idle.wired(serve)
 idle.running(() -> unwatched(idle))

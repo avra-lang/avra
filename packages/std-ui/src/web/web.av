@@ -21,6 +21,7 @@ extern fn avra_ui_disarm(token: int)
 extern fn avra_ui_get(token: int, request: Bytes)
 extern fn avra_ui_listen(token: int, request: Bytes)
 extern fn avra_ui_next_paint()
+extern fn avra_ui_snap(frame: Bytes)
 extern fn avra_ui_stood() -> int
 extern fn avra_bytes_with_room(n: int) -> Bytes
 extern fn avra_bytes_adopted(p: Bytes, n: int) -> Bytes
@@ -124,8 +125,11 @@ extern fn avra_ui_event(who: int, what: int, tag: int, num: int, len: int) {
 /// What a handler's ask is on a page: a timer the host keeps. No task, no
 /// loop — the host's callback is the turn.
 fn opened() -> Door {
-    Door { send: sent, ask: armed, hush: hushed, close: unclosed }
+    Door { send: sent, ask: armed, hush: hushed, snap: snapped, close: unclosed }
 }
+
+/// A snapshot of the cache is handed to the host.
+fn snapped(frame: Bytes) { avra_ui_snap(frame) }
 
 /// The host lets go of every stream listening at `url`.
 fn hushed(url: string) {
@@ -277,6 +281,13 @@ extern fn avra_ui_scrolled(len: int, from: int, to: int, extent: int) {
 extern fn avra_ui_walks() -> int {
     let held? = mounted().get() else { return 0 }
     held.app.walks.get()
+}
+
+/// The host turns the cache's snapshots on (1) or off (0): while on, every move of the app's cache hands the
+/// host its snapshot as a JSON frame (`avra_ui_snap`), the standing one at once. Only a dev host asks.
+extern fn avra_ui_hud(on: int) {
+    let held? = mounted().get() else { return }
+    held.app.hud(on != 0)
 }
 
 /// The host held a server's page the module's first frame could not keep

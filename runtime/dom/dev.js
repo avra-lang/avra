@@ -65,8 +65,39 @@ export function relayed({ console, post }) {
   };
 }
 
+// THE CACHE'S SNAPSHOTS, posted: `api` is what the page offers (`on(take)` turns them on, `off()` stops them),
+// each snapshot is a JSON frame, and `post(frame)` sends one to the server under this page's own `tab`. A
+// frame that says what the last said is not sent again, and a burst is coalesced to the newest at the next
+// animation frame, so the page posts at most once a frame and only what changed.
+export function hudPosting({ api, post, raf }) {
+  let latest = null;
+  let sent = null;
+  let waiting = false;
+  const settled = (frame) => frame.replace(/"age_ms":\d+,/g, "");
+  api.on((frame) => {
+    latest = frame;
+    if (waiting) return;
+    waiting = true;
+    raf(() => {
+      waiting = false;
+      if (latest === null || (sent !== null && settled(latest) === settled(sent))) return;
+      sent = latest;
+      post(latest);
+    });
+  });
+  return () => api.off();
+}
+
 if (typeof document !== "undefined") {
   relayed({ console, post: (text) => fetch("/@dev/said", { method: "POST", body: text, keepalive: true }).catch(() => {}) });
+  // The cache's snapshots go to the server, one set of frames per tab: a page offers the verb once its module runs.
+  const tab = Math.random().toString(36).slice(2, 10);
+  const posting = () => hudPosting({
+    api: globalThis.avraHud,
+    raf: (cb) => requestAnimationFrame(cb),
+    post: (frame) => fetch("/@dev/cache", { method: "POST", headers: { "content-type": "application/json", "x-avra-tab": tab }, body: frame, keepalive: true }).catch(() => {}),
+  });
+  if (globalThis.avraHud) posting(); else addEventListener("avra-hud", posting, { once: true });
   watch({
     doc: document,
     mine: document.querySelector('meta[name="avra-module"]').content,

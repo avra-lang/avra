@@ -392,7 +392,7 @@ const clockAt = () => {
   timers.disarm(99n);
   clock.advance(10);
   check("a disarmed one-shot never fires; disarming twice, or a stranger, says nothing", [fired.length, timers.count()], [4, 0]);
-  check("the rows a page answers are named by the generated table", Object.keys(ROWS).sort(), ["arm", "disarm", "frame", "get", "listen", "next_paint", "stood"]);
+  check("the rows a page answers are named by the generated table", Object.keys(ROWS).sort(), ["arm", "disarm", "frame", "get", "listen", "next_paint", "snap", "stood"]);
 }
 
 // ── the page's requests ──

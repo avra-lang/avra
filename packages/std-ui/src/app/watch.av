@@ -2,6 +2,7 @@
 //! asks were sent, saved and joined, and one snapshot of every entry, stream and write in flight: the
 //! rows a dev HUD draws and `explain` prints are this value, never a second account. A snapshot is built
 //! only where a sink is installed; nothing else pays for it.
+use @std.json.{Json, field, parse, to_text}
 /// Why an entry is no longer fresh.
 export enum Cause {
     Wrote(names: List<string>)
@@ -54,8 +55,39 @@ impl Counts {
     /// A count moved by one.
     fn bump(c: Cell<int>) { c.set(c.get() + 1) }
 
-    fn line(asks: int) -> string {
-        "asks ${asks} · skipped fresh ${self.skipped.get()} · joined ${self.joined.get()} · not modified ${self.not_modified.get()} · layers ${self.laid.get()} laid, ${self.dropped.get()} dropped"
+    /// The counts as they stand, over `asks` asks sent.
+    fn tallied(asks: int) -> Tally {
+        Tally {
+            asks: asks,
+            skipped: self.skipped.get(),
+            joined: self.joined.get(),
+            not_modified: self.not_modified.get(),
+            laid: self.laid.get(),
+            dropped: self.dropped.get(),
+        }
+    }
+}
+
+/// The counts at one moment.
+export type Tally = { asks: int, skipped: int, joined: int, not_modified: int, laid: int, dropped: int }
+
+impl Tally {
+    fn line() -> string {
+        "asks ${self.asks} · skipped fresh ${self.skipped} · joined ${self.joined} · not modified ${self.not_modified} · layers ${self.laid} laid, ${self.dropped} dropped"
+    }
+
+    fn json() -> Json {
+        Json
+            .Obj(
+                [
+                    field("asks", Json.Int(self.asks)),
+                    field("skipped", Json.Int(self.skipped)),
+                    field("joined", Json.Int(self.joined)),
+                    field("not_modified", Json.Int(self.not_modified)),
+                    field("laid", Json.Int(self.laid)),
+                    field("dropped", Json.Int(self.dropped)),
+                ],
+            )
     }
 }
 
@@ -74,9 +106,27 @@ export type Row = {
 }
 
 /// Everything the cache says of itself at one moment: entries, streams, writes, counts.
-export type Snapshot = { rows: List<Row>, streams: List<string>, writes: List<string>, counts: string }
+export type Snapshot = { rows: List<Row>, streams: List<string>, writes: List<string>, counts: Tally }
 
 impl Row {
+    fn json() -> Json {
+        Json
+            .Obj(
+                [
+                    field("key", Json.Str(self.key)),
+                    field("state", Json.Str(self.state)),
+                    field("fresh", Json.Bool(self.fresh)),
+                    field("stale_by", Json.Str(self.stale_by)),
+                    field("age_ms", Json.Int(self.age_ms)),
+                    field("bytes", Json.Int(self.bytes)),
+                    field("readers", Json.Int(self.readers)),
+                    field("parked", Json.Int(self.parked)),
+                    field("layers", Json.Arr([Json.Int(l) for l in self.layers])),
+                    field("feed", Json.Str(self.feed)),
+                ],
+            )
+    }
+
     fn line() -> string {
         let fresh = when {
             self.fresh -> "fresh"
@@ -89,9 +139,98 @@ impl Row {
     }
 }
 
+/// The version of the frame a snapshot is sent as.
+const frame_version: int = 1
+
 impl Snapshot {
+    /// The snapshot as one JSON text a tool reads without the language: `{ v, counts, rows, streams, writes }`.
+    fn frame() -> string {
+        to_text(
+            Json
+                .Obj(
+                    [
+                        field("v", Json.Int(frame_version)),
+                        field("counts", self.counts.json()),
+                        field("rows", Json.Arr([r.json() for r in self.rows])),
+                        field("streams", Json.Arr([Json.Str(s) for s in self.streams])),
+                        field("writes", Json.Arr([Json.Str(s) for s in self.writes])),
+                    ],
+                ),
+        )
+    }
+
     /// The snapshot as lines: one per entry, stream and write, and the counts last.
     fn lines() -> List<string> {
-        [r.line() for r in self.rows].concat(self.streams).concat(self.writes).concat([self.counts])
+        [r.line() for r in self.rows]
+            .concat(self.streams)
+            .concat(self.writes)
+            .concat([self.counts.line()])
+    }
+}
+
+/// A snapshot read back from the JSON frame it was sent as, none for text that is no frame of this version: what a
+/// tool that holds the frames (`avra explain cache --live`) shows them with.
+export fn snapshot_of(text: string) -> Snapshot? {
+    let doc = match parse(text) { .Ok(j) -> j, .Err(_) -> { return null } }
+    if numbered(doc, "v") != frame_version { return null }
+    let counts = member_of(doc, "counts")
+    Snapshot {
+        rows: [row_from(r) for r in items_of(doc, "rows")],
+        streams: [texted(s) for s in items_of(doc, "streams")],
+        writes: [texted(s) for s in items_of(doc, "writes")],
+        counts: Tally {
+            asks: numbered(counts, "asks"),
+            skipped: numbered(counts, "skipped"),
+            joined: numbered(counts, "joined"),
+            not_modified: numbered(counts, "not_modified"),
+            laid: numbered(counts, "laid"),
+            dropped: numbered(counts, "dropped"),
+        },
+    }
+}
+
+fn row_from(j: Json) -> Row {
+    Row {
+        key: texted(member_of(j, "key")),
+        state: texted(member_of(j, "state")),
+        fresh: truthy(member_of(j, "fresh")),
+        stale_by: texted(member_of(j, "stale_by")),
+        age_ms: numbered(j, "age_ms"),
+        bytes: numbered(j, "bytes"),
+        readers: numbered(j, "readers"),
+        parked: numbered(j, "parked"),
+        layers: [numbered_of(l) for l in items_of(j, "layers")],
+        feed: texted(member_of(j, "feed")),
+    }
+}
+
+fn member_of(j: Json, key: string) -> Json {
+    match j {
+        .Obj(fields) -> fields.find(it.key == key)?.value ?? Json.Null,
+        .Arr(_) or .Null or .Bool(_) or .Int(_) or .Float(_) or .Str(_) -> Json.Null,
+    }
+}
+
+fn items_of(j: Json, key: string) -> List<Json> {
+    match member_of(j, key) {
+        .Arr(items) -> items,
+        .Obj(_) or .Null or .Bool(_) or .Int(_) or .Float(_) or .Str(_) -> [],
+    }
+}
+
+fn texted(j: Json) -> string {
+    match j { .Str(s) -> s, .Obj(_) or .Arr(_) or .Null or .Bool(_) or .Int(_) or .Float(_) -> "" }
+}
+
+fn numbered(j: Json, key: string) -> int { numbered_of(member_of(j, key)) }
+
+fn numbered_of(j: Json) -> int {
+    match j { .Int(n) -> n, .Obj(_) or .Arr(_) or .Null or .Bool(_) or .Float(_) or .Str(_) -> 0 }
+}
+
+fn truthy(j: Json) -> bool {
+    match j {
+        .Bool(b) -> b,
+        .Obj(_) or .Arr(_) or .Null or .Int(_) or .Float(_) or .Str(_) -> false,
     }
 }

@@ -13,6 +13,7 @@ use app.{
     Overlay,
     Row,
     Snapshot,
+    Tally,
     collection_of,
     counts,
     laid,
@@ -525,7 +526,7 @@ impl Cache {
             rows: [self.row_of(e, now) for e in self.entries.get() if e.key != null],
             streams: [f.line() for f in self.feeds.get()],
             writes: [w.line() for w in self.lanes.get() if w.flying.get()],
-            counts: self.counts.line(self.asks.get()),
+            counts: self.counts.tallied(self.asks.get()),
         }
     }
 
@@ -554,6 +555,12 @@ impl Cache {
     fn watching(sink: fn(Snapshot) -> void) {
         self.sink.set(sink)
         self.watched.set(true)
+    }
+
+    /// No sink is told from now on.
+    fn unwatching() {
+        self.sink.set(unwatched)
+        self.watched.set(false)
     }
 
     /// The cache moved: a watcher is told, and a cache nobody watches builds nothing.
