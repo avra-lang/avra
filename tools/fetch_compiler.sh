@@ -41,6 +41,8 @@ if [ "${1:-}" = --self-test ]; then
     expect "unknown commit refuses" "no commit named no-such-commit-here" "$out"
     out=$(cd "$here" && FETCH_URL="file://$scratch/absent" FETCH_BUILD="$scratch/none" sh tools/fetch_compiler.sh --key abc123 2>&1) || true
     expect "no published compiler refuses" "no published compiler for a key given on the command line (key abc123)" "$out"
+    out=$(cd "$here" && FETCH_URL="http://127.0.0.1:9/none" FETCH_TRIES=2 FETCH_BUILD="$scratch/retry" sh tools/fetch_compiler.sh --key abc123 2>&1) || true
+    expect "an unreachable asset is asked again and the answer named" "after 2 attempt(s)" "$out"
     mkdir -p "$scratch/ok"
     printf 'standing\n' > "$scratch/ok/avra"
     out=$(cd "$here" && FETCH_URL="file://$scratch/published" FETCH_BUILD="$scratch/ok" sh tools/fetch_compiler.sh HEAD 2>&1) || true
@@ -55,7 +57,7 @@ if [ "${1:-}" = --self-test ]; then
     expect "an unpublished head takes the merge-base path" "mergebase:mk" "$(route_of 0 hkabs mk)"
     expect "nothing published builds" "build" "$(route_of 0 hkabs mkabs)"
     expect "a probe finds a published key" "found" "$(cd "$here" && FETCH_URL="file://$scratch/pub-KEY" sh tools/fetch_compiler.sh --probe hk && echo found)"
-    if [ "$fails" = 0 ]; then echo "fetch_compiler: self-test clean — 12 case(s)"; exit 0; fi
+    if [ "$fails" = 0 ]; then echo "fetch_compiler: self-test clean — 13 case(s)"; exit 0; fi
     echo "fetch_compiler: self-test FAILED — $fails case(s)"
     exit 1
 fi
@@ -68,11 +70,22 @@ url_for() {
 }
 
 # A file:// asset is a local copy (the fixtures); any other URL is downloaded or probed.
+# fetch_asset <url> <dest>: the asset, asked up to FETCH_TRIES (5) times with a doubling pause (2 s first),
+# each answer's HTTP status kept in $fetch_why; a `file://` url is a copy.
 fetch_asset() {
     case "$1" in
-        file://*) cp "${1#file://}" "$2" ;;
-        *) curl -fsSL --retry 2 -o "$2" "$1" 2>/dev/null ;;
+        file://*) cp "${1#file://}" "$2" 2>/dev/null && return 0; fetch_why="$1 is not a file"; return 1 ;;
     esac
+    tries=0
+    pause=2
+    while :; do
+        tries=$((tries + 1))
+        code=$(curl -sSL -o "$2" -w '%{http_code}' --max-time "${FETCH_MAX_S:-600}" "$1" 2>"$build/fetch.err") && [ "$code" = 200 ] && return 0
+        fetch_why="HTTP ${code:-none} after $tries attempt(s): $(head -c 160 "$build/fetch.err" 2>/dev/null | tr '\n' ' ')"
+        [ "$tries" -lt "${FETCH_TRIES:-5}" ] || return 1
+        sleep "$pause"
+        pause=$((pause * 2))
+    done
 }
 asset_there() {
     case "$1" in
@@ -135,8 +148,15 @@ fi
 
 url=$(url_for "$key")
 fetched="$build/avra.fetch"
-fetch_asset "$url" "$fetched" ||
-    refuse "no published compiler for $sha (key $key): $url did not answer"
+mkdir -p "$build"
+fetch_asset "$url" "$fetched" || {
+    # the anonymous door failed: the releases API, with the run's token when it has one, is the second
+    if [ -z "${FETCH_URL:-}" ] && [ -f tools/compiler_release.py ] && python3 tools/compiler_release.py fetch "avrac-$key" "$fetched" >/dev/null 2>&1; then
+        echo "fetch_compiler: the anonymous asset failed ($fetch_why); the releases API answered" >&2
+    else
+        refuse "no published compiler for $sha (key $key): $url did not answer — last answer $fetch_why"
+    fi
+}
 chmod +x "$fetched"
 "$fetched" --version >/dev/null 2>&1 || refuse "the compiler published for $sha does not run here"
 
