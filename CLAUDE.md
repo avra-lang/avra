@@ -705,6 +705,19 @@ registry is the idiom engine's spec, written by dogfooding.
   failing), counts the lists it read, and claims the shared fold's
   tag in every file that CALLS it, since a borrowed tag mixes into
   that file's space.
+- AN IDENTITY ASSIGNED LATE MUST RE-KEY WHAT WAS FILED UNDER ITS ABSENCE. The evaluator files the program's own run as
+  a task the first time a task row asks (`rooted`), and a `contained` guard records the task that opened it — so a
+  guard opened BEFORE any task row ran was filed under "no task" (-1), and the first `spawn`, wait or write inside
+  its closure moved the run to task 0. The closure then returned to a guard that no longer matched, the guarded
+  call's register took the closure's own answer (a `bool`) instead of the status 0, and the next compare read a
+  bool where it wanted an int: "a non-int reached a runtime seat in a clean program", in the EVALUATOR only (native
+  keeps no such table), and only when the closure's first task row was the program's first. It hid for as long as
+  every guard's closure ran after the root was filed, and surfaced the first time a headless `turn` parsed JSON.
+  THE TELL: a defect worded about a type, raised in a body nowhere near the type — the register was written by a
+  path that mismatched silently (`guard_returned` answers null on a mismatch and the caller takes `gave`). THE FIX is
+  in `rooted`, which re-keys the guards it finds; the witness is features/fns/tests/contained_rooted. Instrumenting
+  the defect with the row, the body, the stack depth and the guard table found it in four builds: when a defect names
+  a seat, print what wore it and who last wrote its register.
 - A GUARD IS A PROPERTY OF EVERY CROSSING, NOT OF A PACKAGE. The law
   above says a NUL is spent at the C boundary; this one is where the
   refusal goes. THE CROSSING IS THE EXTERN SEAT, and only that: every
