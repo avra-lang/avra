@@ -396,8 +396,8 @@ start() {
 # would answer about a different program.
 # Installs the compiler published for a key, from the tree's own fetch tool.
 install_published() {
-    [ -f tools/fetch_compiler.sh ] || return 1
-    sh tools/fetch_compiler.sh --key "$1" >&2
+    [ -f tools/compiler_release.py ] || return 1
+    python3 tools/compiler_release.py install --key "$1" >&2
 }
 
 supervise() {
@@ -469,7 +469,7 @@ supervise() {
             if [ ! -x "$mbt/build/avra" ]; then
                 s0=$(date +%s)
                 mkdir -p "$mbt" && tar -xzf "$home/avra-mb/$mbk.tgz" -C "$mbt" \
-                    && (FETCH_BUILD="$mbt/build" sh "$remote/tools/fetch_compiler.sh" --key "$anc" >&2 && cd "$mbt" && make -s compiler GENS=1) >> "$rd/probe.log" 2>&1 \
+                    && (python3 "$remote/tools/compiler_release.py" install --key "$anc" --into "$mbt/build" >&2 && cd "$mbt" && make -s compiler GENS=1) >> "$rd/probe.log" 2>&1 \
                     || { echo "sprite-run: the merge-base's source (key $mbk) did not build from the published ancestor $anc — see $rd/probe.log" >&2; exit 70; }
                 echo "sprite-run: merge-base builder $mbk built once from $anc ($(($(date +%s) - s0))s)" >&2
             fi
