@@ -209,55 +209,75 @@ impl Workspace {
     }
 }
 
+/// How a saved family writes an answer: the row's text for the argument, or null for none.
+type Saver = { family: int, text: fn(int) -> string? }
+
 impl Workspace {
-    /// The kernel's saved lookup, and the hooks of the families kept with a codec so far:
-    /// `ComponentNames`, whose answer is its names, one to a line.
-    fn arm_saved() {
-        self.db.kernel.set_saved((key: Key) -> self.saved_found(key))
-        self.arm_items()
-        let rel = self.relation(Family.ComponentNames)
-        rel.revive.set((arg: int) -> self.saved_words(arg))
-        rel
+    /// A family kept by name: its keeper only NOTES the recomputed argument, and `flush_saved`
+    /// writes the row once the run is over, so `text` runs after typing and lowering.
+    fn saves(family: Family, text: fn(int) -> string?) {
+        self.savers.push(Saver { family: family.ordinal, text: text })
+        self
+            .relation(family)
             .keeper
             .set(
-                (arg: int, value: DbRow) -> self
-                    .saved_kept(
-                        Key { family: Family.ComponentNames.ordinal, arg: arg },
-                        joined(scan_words(value), "\n"),
-                    ),
+                (arg: int, _value: DbRow) -> self
+                    .noted_key(Key { family: family.ordinal, arg: arg }),
             )
     }
 
-    /// `Items`: the file is noted when it is admitted, and its identity rows are written once
-    /// the run is over — the shapes they leave out are other answers'.
-    fn arm_items() {
-        let rel = self.relation(Family.Items)
-        rel.keeper.set((arg: int, _value: DbRow) -> self.items_noted(arg))
-        rel.revive.set((arg: int) -> self.items_revived(arg))
-    }
-
-    fn items_noted(arg: int) -> bool {
-        self.fresh_items.push(arg)
+    /// A recomputed key noted for the flush; answers true, the keeper's word that it holds the row.
+    fn noted_key(key: Key) -> bool {
+        self.noted.push(key)
         true
     }
 
-    /// Every `Items` row this run owes, written: O(files admitted).
-    fn keep_items() {
-        for arg in self.fresh_items.get() {
-            let path = self.decls.file(FileId { index: arg }).path
-            let _ = self
-                .saved_kept(
-                    Key { family: Family.Items.ordinal, arg: arg },
-                    joined(self.identity_lines(path), "\n"),
-                )
+    /// EVERY SAVED ANSWER THIS RUN COMPUTED, written: one row each, O(noted). The run's last
+    /// act, never inside a settle, since a saver may ask the kernel.
+    fn flush_saved() {
+        let owed = self.noted.get()
+        self.noted.set([])
+        mut done: Map<string, bool> = {}
+        for key in owed {
+            let at = "${key.family}.${key.arg}"
+            if done.get(at) != null { continue }
+            done.set(at, true)
+            let saver? = self.savers.get().find(it.family == key.family) else { continue }
+            let text? = (saver.text)(key.arg) else { continue }
+            let _ = self.saved_kept(key, text)
         }
-        self.fresh_items.set([])
-        for arg in self.fresh_sigs.get() {
-            let d = self.decl_at(DeclId { index: arg })
-            if d.maker != "" { continue }
-            let _ = self.saved_kept(Key { family: Family.Sig.ordinal, arg: arg }, self.sig_line(d))
+    }
+
+    /// The kernel's saved lookup and the saved families' hooks.
+    fn arm_saved() {
+        self.db.kernel.set_saved((key: Key) -> self.saved_found(key))
+        self
+            .saves(
+                Family.Items,
+                (arg: int) -> joined(
+                    self.identity_lines(self.decls.file(FileId { index: arg }).path),
+                    "\n",
+                ),
+            )
+        self.relation(Family.Items).revive.set((arg: int) -> self.items_revived(arg))
+        self.saves(Family.Sig, (arg: int) -> self.sig_text(arg))
+        self.saves(Family.ComponentNames, (arg: int) -> self.words_of(arg))
+        self.relation(Family.ComponentNames).revive.set((arg: int) -> self.saved_words(arg))
+    }
+
+    /// A declaration's signature as its row's text: its record line; none for one a run generated.
+    fn sig_text(arg: int) -> string? {
+        let d = self.decl_at(DeclId { index: arg })
+        if d.maker != "" { return null }
+        self.sig_line(d)
+    }
+
+    /// A `ComponentNames` answer as its row's text: its names, one to a line.
+    fn words_of(arg: int) -> string? {
+        match self.relation(Family.ComponentNames).values.entry(arg) {
+            .Present(value) -> joined(scan_words(value), "\n"),
+            .Missing -> null,
         }
-        self.fresh_sigs.set([])
     }
 
     /// A file's declarations minted from its saved identity rows, never parsed.
