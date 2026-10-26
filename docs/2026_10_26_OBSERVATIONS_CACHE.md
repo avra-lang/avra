@@ -9,7 +9,7 @@ Out of scope: the device replica (.59.14) and offline writes.
 No new keywords: every override below is a component SETTING or a
 library verb.
 
-`?` marks an open question for the owner (§4).
+The owner's decisions of 2026-10-26 are §4.
 
 ---
 
@@ -153,6 +153,9 @@ nothing, wasteful when you know everything.
   re-asking) → `items`/`empty`; a first-load failure → `error`.
 - A view that wants to SAY it is re-asking reads `.refreshing` on the
   observation. It never flickers to `loading` by default.
+- A link prefetches its screen's observations on hover (the read set
+  is known from the screen's signature). A link opts out with
+  `prefetch: false`.
 - Revisiting by Back keeps the entries of the last screens in history
   alive (they count as readers), so Back is instant — Turbo's
   restoration visit.
@@ -182,8 +185,8 @@ rendered page, so nothing private survives as pixels.
 - Raw SQL through `@std/db` is covered: the hook sees every write on
   the connection. Only a write OUTSIDE our database escapes, and the
   read that depends on it is already **external** (§3.3).
-- A dev build checks that the runtime sets are within the static ones.
-  A miss is a compiler defect, shown in the dev HUD (P7).
+- Under `avra test` a runtime write outside the static write set FAILS
+  the test, naming the table: it is a compiler defect (P7, P9).
 - Escape hatch (P8): `tasks.list.refresh()` asks again by hand, for a
   change only the program knows about.
 
@@ -210,7 +213,7 @@ Speculation is an OVERLAY, never a mutation of the cache.
   - `update` patches the row by id in every entry holding it;
   - `remove` hides the row by id.
 - A hand-written action has no derived layer: it shows pending, not a
-  guess. `?` whether it may declare one (a `foresee:` setting).
+  guess, unless its route declares one with the `foresee:` setting.
 
 Borrows: Replicache's rebase (layers replayed over the server truth),
 Apollo/Relay's optimistic layer. Rejects: TanStack's snapshot +
@@ -253,7 +256,7 @@ where normalization belongs — a real database, not a merge function.
 - An entry with a reader is never evicted.
 - An unread entry is kept for `kept:` (default 5 minutes), then
   dropped.
-- All unread entries share a byte cap (default 16 MB `?`), least
+- All unread entries share a byte cap (default 16 MB), least
   recently read first. An answer's size is known when it lands.
 - The server keeps NO cross-request cache of observations. A server
   render's entries live for that request and travel in the page for
@@ -284,7 +287,8 @@ SWR's and Apollo's unbounded defaults.
   truth. No separate revocation path.
 - **Notices leak nothing.** A notice carries model names and a
   sequence, never row data, and goes only to sessions whose guard
-  admits that model. `?` ids too.
+  admits that model. No row ids: an id would tell a session that a
+  row it cannot see exists.
 - **Shared caches never hold a guarded answer.** A route under a guard
   answers `Cache-Control: private, no-store`; only a route with no
   guard above it may be `public`. The compiler knows which is which
@@ -325,31 +329,25 @@ actions
 ```
 
 The dev HUD shows the same live: each entry, its state, its age, the
-last notice that staled it, and any runtime/static disagreement.
+last notice that staled it.
 
 ---
 
-## 4. Open questions for the owner
+## 4. Owner decisions, 2026-10-26
 
-1. **Notice granularity.** Model names only (recommended for now:
-   leaks nothing), or model + row ids (fewer re-asks of `find(id)`,
-   but tells a session that a row it cannot see exists)?
-2. **Default bounds.** `kept` 5 minutes and a 16 MB cap of unread
-   entries?
-3. **Hand-written optimism.** May a hand-written action declare a
-   layer (a `foresee:` setting), or does it always show pending?
-4. **Single flight by default.** Answer the affected observations
-   inside the action's response (one round trip, a larger answer), or
-   let the notice trigger ordinary re-asks?
-5. **External reads.** Default `fresh` 0 (TanStack's choice), or a
-   small window such as 30 s?
-6. **Dev check strictness.** Is a runtime write outside the static
-   write set a dev-HUD warning, or a failing test under `avra test`?
-7. **Tabs.** Each tab keeps its own cache and channel (recommended
-   now), or tabs share one through a `BroadcastChannel`?
-8. **Prefetch on intent.** A screen's read set is known from its
-   signature, so a link can prefetch on hover or when it scrolls into
-   view. On by default?
+1. **Notices carry model names only**, never row ids (§3.10).
+2. **Unread entries are kept 5 minutes**, under a 16 MB cap (§3.9).
+3. **A hand-written action may declare an optimistic layer** with
+   `foresee:`; without one it shows pending (§3.6).
+4. **Single flight is on by default** (§3.5).
+5. **External reads default to `fresh: 0`**, overridable per route
+   (§3.3).
+6. **A runtime write outside the static write set is a failing test**
+   (§3.5).
+7. **Each tab keeps its own cache and channel.** Sharing between tabs
+   comes with the replica (.59.14).
+8. **Prefetch is on hover by default**, not on scroll into view, with
+   a per-link opt-out (§3.4).
 
 ---
 
