@@ -187,9 +187,8 @@ fi
 # and no network.
 route_tree="$scratch/route-tree"
 mkdir -p "$route_tree/tools"
-cat > "$route_tree/tools/fetch_compiler.sh" <<'FETCH'
-#!/bin/sh
-echo "fetch_compiler: installed (fixture)"
+cat > "$route_tree/tools/compiler_release.py" <<'FETCH'
+print("compiler_release: installed (fixture)")
 FETCH
 cat > "$route_tree/Makefile" <<'MK'
 compiler:

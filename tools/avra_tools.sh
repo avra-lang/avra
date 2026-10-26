@@ -12,7 +12,7 @@
 #   1. build/avra-tools/<key>/avra-tools, already here;
 #   2. the published asset for the key, fetched;
 #   3. built here by $AVRA_TOOLS_COMPILER, else by main's published compiler
-#      (tools/fetch_compiler.sh, into $dir/compiler), for a tree whose tools/
+#      (tools/compiler_release.py install, into $dir/compiler), for a tree whose tools/
 #      differs from anything published — run from build/, where a compiler stands;
 #   4. the Python tool of the same name (tools/<command with _>.py), while no
 #      binary answers — said on stderr, so a fallback is never silent.
@@ -42,7 +42,7 @@ build_tools() {
 main_compiler() {
     git rev-parse -q --verify origin/main >/dev/null 2>&1 ||
         git fetch -q --depth 1 origin main:refs/remotes/origin/main >&2 || true
-    FETCH_BUILD="$dir/compiler" sh tools/fetch_compiler.sh >&2 && return 0
+    python3 tools/compiler_release.py install --into "$dir/compiler" >&2 && return 0
     mkdir -p "$dir/compiler"
     python3 tools/compiler_release.py latest "$dir/compiler/avra" >&2 && chmod +x "$dir/compiler/avra"
 }
