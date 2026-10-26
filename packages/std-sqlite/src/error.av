@@ -174,10 +174,9 @@ export enum Cause {
     /// transaction — so the misuse path spends the value the real answer
     /// needs, and every guard reading it inverts.
     Closed
-    /// A write-ahead-log connection used in a process forked after it was opened. Its state is per
-    /// process, so the connection is refused rather than reopened or closed; the caller opens the
-    /// database inside the process that uses it.
-    Forked
+    /// A private in-memory database used by a process other than the one that opened it. A fork
+    /// copies it, so each process would hold a database of its own that the others never see.
+    Foreign
     /// A `commit` with no transaction open. The driver cannot tell WHICH
     /// way the caller arrived — none was ever begun, or the database
     /// ended it under them — so the message names both. A statement-level
@@ -317,7 +316,7 @@ impl Cause {
     fn retryable() -> bool {
         match self {
             .Busy(b) -> waiting_clears(b),
-            .Constraint(_) or .Denied(_) or .Mismatch(_, _, _) or .NoColumn(_) or .OutOfRow(_, _) or .OutOfSlots(_, _) or .Unfilled(_, _) or .NotUtf8(_, _) or .NoRow or .ManyRows or .Syntax or .Corrupt or .Full or .TooBig or .Interrupted or .Io(_) or .NoMemory or .CantOpen or .NotADatabase or .Expired or .Defect(_) or .Other(_) or .EmptyPath or .UriPath or .HoldsNul or .ManyStatements or .NoStatement or .RowsDiscarded or .Finalized or .Done or .Closed or .Forked or .NoTransaction or .TransactionOpen or .NegativeWait -> false,
+            .Constraint(_) or .Denied(_) or .Mismatch(_, _, _) or .NoColumn(_) or .OutOfRow(_, _) or .OutOfSlots(_, _) or .Unfilled(_, _) or .NotUtf8(_, _) or .NoRow or .ManyRows or .Syntax or .Corrupt or .Full or .TooBig or .Interrupted or .Io(_) or .NoMemory or .CantOpen or .NotADatabase or .Expired or .Defect(_) or .Other(_) or .EmptyPath or .UriPath or .HoldsNul or .ManyStatements or .NoStatement or .RowsDiscarded or .Finalized or .Done or .Closed or .Foreign or .NoTransaction or .TransactionOpen or .NegativeWait -> false,
         }
     }
 
@@ -356,7 +355,7 @@ impl Cause {
             .Finalized -> "sqlite.finalized",
             .Done -> "sqlite.done",
             .Closed -> "sqlite.closed",
-            .Forked -> "sqlite.forked",
+            .Foreign -> "sqlite.foreign",
             .NoTransaction -> "sqlite.no_transaction",
             .TransactionOpen -> "sqlite.transaction_open",
             .NegativeWait -> "sqlite.negative_wait",

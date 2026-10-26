@@ -1,0 +1,70 @@
+// proves: a connection closed while a sibling held a lock (its descriptor parked for a deferred close) no longer
+// takes a core down: the fork is refused while the lock is held, and once it is released the cores serve with the
+// descriptors they reserved first still theirs.
+use @std.http.http.{text}
+use @std.http.route.{get, post}
+use @std.http.server.{server}
+use @std.io.{make_dirs, opened_for_append, AppendFile, IoError}
+use @std.net.{NetError}
+use @std.sqlite.{Db, sql}
+use @std.time.{stamp}
+use tests.support.{asked, refused}
+
+/// Descriptors held open before the database is touched: the numbers an inherited connection held name these.
+fn reserved() -> List<AppendFile> {
+    let dir = "/tmp/avra-audit-reserved"
+    let _ = make_dirs(dir)
+    let opened = [opened_for_append("${dir}/held${i}") for i in 0..6]
+    [f for r in opened for f in standing(r)]
+}
+
+fn standing(r: Result<AppendFile, IoError>) -> List<AppendFile> {
+    match r { .Ok(f) -> [f], .Err(_) -> [] }
+}
+
+/// A write to a held file that fails: the file's descriptor was closed under it.
+fn lost(f: AppendFile) -> bool { f.write("x".bytes()) is .Err }
+
+/// The write through the inherited database, then a write to every reserved file: how many were closed under us.
+fn added(db: Db) -> string {
+    let held = reserved()
+    let inserted = match db.scalar(sql("SELECT count(*) FROM rows")) {
+        .Ok(_) -> "read",
+        .Err(e) -> e.message,
+    }
+    "${inserted}:${[h for h in held if lost(h)].length}"
+}
+
+fn shown() -> Result<string, NetError> {
+    let dir = "/tmp/avra-audit/${stamp()}"
+    let _ = make_dirs(dir)
+    let path = "${dir}/rows.db"
+    let a = match Db.open(path) { .Ok(d) -> d, .Err(e) -> { return .Err(refused(e.message)) } }
+    let b = match Db.open(path) { .Ok(d) -> d, .Err(e) -> { return .Err(refused(e.message)) } }
+    defer { let _ = a.close() }
+    let _ = a.run(sql("CREATE TABLE rows (n INTEGER PRIMARY KEY, who INTEGER)"))
+    // a holds a shared lock; b closes while a holds it, so b's descriptor is parked in SQLite's deferred-close list
+    let _ = a.exec("BEGIN")
+    let _ = a.scalar(sql("SELECT count(*) FROM rows"))
+    let _ = b.close()
+    server app {
+        port: 0
+        post "/" { _req -> text(200, added(a)) }
+        get "/" { _req -> text(200, "up") }
+    }
+    let up = match app.listening() {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    let first = match up.run(3) { .Ok(_) -> "served", .Err(e) -> "refused ${e.errno}" }
+    let _ = a.exec("COMMIT")
+    let ran = spawn up.run(3)
+    let port = up.listener.port
+    let sent = [spawn asked(port, "POST") for i in 0..30]
+    let answers = [t.await? for t in sent]
+    up.stop()
+    let _ = ran.await
+    .Ok("${first} | ${answers.all(it == "read:0")} | parent ${added(a)}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

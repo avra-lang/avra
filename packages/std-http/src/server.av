@@ -294,6 +294,13 @@ export fn every_core() -> int { avra_cores_online() }
 
 once fn continue_line() -> Bytes { "HTTP/1.1 100 Continue\r\n\r\n".bytes() }
 
+/// What a refused fork says. EBUSY is a package refusing the fork because it holds state that cannot
+/// cross it: the program's own state to settle, named.
+fn forking_subject(cores: int, errno: int) -> string {
+    if errno == 16 { return "on ${cores} cores: a package holds state that cannot cross a fork — settle it first (a database transaction or statement open: commit, roll back or reset)" }
+    "on ${cores} cores"
+}
+
 impl Server {
     /// Accepts until `stop` on `cores` processes that share nothing
     /// but the listener; answers how many connections they accepted.
@@ -309,7 +316,11 @@ impl Server {
         let g = avra_cores_group(cores)
         if g < 0 { return .Err(NetError { verb: "run", subject: "on ${cores} cores", errno: 0 - g }) }
         let core = avra_cores_fork(g, self.listener.live("run")?)
-        if core < 0 { return .Err(NetError { verb: "run", subject: "on ${cores} cores", errno: 0 - core }) }
+        if core < 0 {
+            return .Err(
+                NetError { verb: "run", subject: forking_subject(cores, 0 - core), errno: 0 - core },
+            )
+        }
         if core == cores { return self.supervised(g, cores) }
         self.cored(g, core)
     }
