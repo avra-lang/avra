@@ -87,25 +87,36 @@ void avra_sqlite_sleeps_held(void) {
  * is touched, so a refusal leaves the process exactly as it was.
  */
 extern void avra_fork_hook(int (*prepare)(const char** why));
+extern void avra_run_hook(void (*begins)(void), void (*ends)(void));
 
+/* Each connection carries the serial it was opened under, so a run's own are told from the host's. */
 static sqlite3** g_open = NULL;
+static int64_t* g_serial = NULL;
 static int g_open_count = 0, g_open_cap = 0;
-static int64_t g_epoch = 0;
+static int64_t g_epoch = 0, g_minted = 0;
 
 void avra_sqlite_opened(void* db) {
     if (g_open_count == g_open_cap) {
         int cap = g_open_cap ? g_open_cap * 2 : 8;
         sqlite3** grown = (sqlite3**)realloc(g_open, (size_t)cap * sizeof(sqlite3*));
-        if (!grown) return;
-        g_open = grown;
+        int64_t* serials = (int64_t*)realloc(g_serial, (size_t)cap * sizeof(int64_t));
+        if (grown) g_open = grown;
+        if (serials) g_serial = serials;
+        if (!grown || !serials) return;
         g_open_cap = cap;
     }
+    g_serial[g_open_count] = ++g_minted;
     g_open[g_open_count++] = (sqlite3*)db;
 }
 
 void avra_sqlite_closed(void* db) {
     for (int i = 0; i < g_open_count; i++) {
-        if (g_open[i] == (sqlite3*)db) { g_open[i] = g_open[--g_open_count]; return; }
+        if (g_open[i] == (sqlite3*)db) {
+            g_open_count--;
+            g_open[i] = g_open[g_open_count];
+            g_serial[i] = g_serial[g_open_count];
+            return;
+        }
     }
 }
 
@@ -142,4 +153,37 @@ static int parked(const char** why) {
     return 0;
 }
 
-__attribute__((constructor)) static void registered(void) { avra_fork_hook(parked); }
+/* A run's connections die with it: an evaluated program's handles are closed, uncommitted work
+ * rolled back, when the run ends, so a finished, trapped or abandoned program leaves no
+ * connection for a later run's fork to refuse. The host's own were opened before the run began. */
+#define RUN_DEPTH 64
+static int64_t g_run_marks[RUN_DEPTH];
+static int g_run_depth = 0;
+
+static void run_begins(void) {
+    if (g_run_depth < RUN_DEPTH) g_run_marks[g_run_depth] = g_minted;
+    g_run_depth++;
+}
+
+/* A library loaded inside a run never saw it begin: everything it holds was opened in that run. */
+static void run_ends(void) {
+    int64_t mark = 0;
+    if (g_run_depth > 0) {
+        g_run_depth--;
+        if (g_run_depth >= RUN_DEPTH) return;
+        mark = g_run_marks[g_run_depth];
+    }
+    for (int i = g_open_count - 1; i >= 0; i--) {
+        if (g_serial[i] <= mark) continue;
+        for (sqlite3_stmt* s; (s = sqlite3_next_stmt(g_open[i], NULL));) sqlite3_finalize(s);
+        sqlite3_close_v2(g_open[i]);
+        g_open_count--;
+        g_open[i] = g_open[g_open_count];
+        g_serial[i] = g_serial[g_open_count];
+    }
+}
+
+__attribute__((constructor)) static void registered(void) {
+    avra_fork_hook(parked);
+    avra_run_hook(run_begins, run_ends);
+}
