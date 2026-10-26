@@ -97,6 +97,7 @@ export type CleanReport = {
 
 /// Frames in live segments before a writer seals them into a body.
 const SEAL_FRAMES: int = 32
+const SEAL_SPARE: int = 64
 
 fn hooked_frames() -> int? {
     // LICENSED input.debug_flag: a test hook that sets the seal threshold, never an input of what is built
@@ -104,7 +105,13 @@ fn hooked_frames() -> int? {
     parse_int(raw)
 }
 
-fn seal_frames() -> int { hooked_frames() ?? SEAL_FRAMES }
+/// The frames a derivation's end lets stand unsealed: SEAL_FRAMES, or in a larger store a
+/// sixty-fourth of its sealed records — a one-function edit appends a few dozen frames and
+/// must not rewrite the whole body, while the next open reads at most this many.
+fn seal_frames(pack: Pack) -> int {
+    let spare = sealed_count(pack) / SEAL_SPARE
+    hooked_frames() ?? if spare > SEAL_FRAMES { spare } else { SEAL_FRAMES }
+}
 
 /// ONE ROW: the family and key it answers, the digest of its value and the
 /// keys it read — listed here, or, for a row a sealed body carries, the id of
@@ -515,7 +522,7 @@ fn settled(pack: Pack) {
 /// A derivation's end: what it left in the segments is folded into a body once it
 /// is more than a floor's worth, so the next open reads an index and not a log.
 export fn pack_settle(pack: Pack) {
-    if pack.opened.get() && pack.frames.get() >= seal_frames() { admit(pack) }
+    if pack.opened.get() && pack.frames.get() >= seal_frames(pack) { admit(pack) }
 }
 
 /// A test hook: hold the lock so a second process's admission fails.
