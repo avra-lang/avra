@@ -2,7 +2,7 @@
 //! labels the words and parts a seat writes, and the seat is made here,
 //! its identity minted at its name — or at its type, for a positional
 //! enum payload that writes none.
-use core.{Param, Scoped, SeatMark}
+use core.{Param, Scoped, SeatMark, SeatSpread, hole_name}
 use features.{LangNode, Builder}
 
 impl Builder {
@@ -27,10 +27,18 @@ impl Builder {
                         id: self.store.alloc_param_id(n?.span ?? ty?.span),
                         marks: self.marks_of("marks")?,
                         state: self.present_of("state_field")?,
-                        variadic: self.present_of("variadic")?,
-                        spread: self.present_of("spread")?,
+                        spread: self.spread_of(name)?,
                     },
                 ),
         )
+    }
+
+    /// What the seat spreads: the rest of a call's arguments, a template
+    /// hole, or nothing.
+    fn spread_of(name: string) -> Result<SeatSpread?, string> {
+        if self.present_of("variadic")? { return .Ok(SeatSpread.Rest) }
+        if !self.present_of("spread")? { return .Ok(null) }
+        let holes: List<int> = hole_name(name)?.holes ?? []
+        .Ok(SeatSpread.Hole(holes.first() ?? 0 - 1))
     }
 }

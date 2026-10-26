@@ -730,7 +730,30 @@ export enum Unheard {
 /// string)`): the seats its handler is told, none for an event that
 /// says nothing — and absent on every seat that is not an event.
 @derive(Identity)
-export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, @local id: ParamId, marks: List<Mark> = [], state: bool = false, says: List<Param>? = null, variadic: bool = false, prop: bool = false, spread: bool = false }
+export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, @local id: ParamId, marks: List<Mark> = [], state: bool = false, says: List<Param>? = null, prop: bool = false, spread: SeatSpread? = null }
+
+/// What a seat standing for MANY says it is: the call's remaining arguments
+/// (`..rest: List<T>`), or a template hole that fills with whole entries
+/// (`..${xs}`), the hole's index.
+@derive(Identity)
+export enum SeatSpread {
+    Rest
+    Hole(index: int)
+}
+
+impl Param {
+    /// Whether the seat takes the arguments a call leaves.
+    fn is_rest() -> bool {
+        let held? = self.spread else { return false }
+        held is .Rest
+    }
+
+    /// The template hole the seat stands for, when it is a hole spread.
+    fn spread_hole() -> int? {
+        let held? = self.spread else { return null }
+        match held { .Hole(index) -> index, .Rest -> null }
+    }
+}
 
 /// What a parameter seat WRITES, as a grammar rule labels it: the
 /// marks are words (`mut`, `const`, `state`, and `isolated` as `unshared`)
