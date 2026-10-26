@@ -1,0 +1,160 @@
+// proves: a router announces what changed on a stream — `GET <prefix>/events` — as the tables written (names, and the database's
+// count as the event id, never a row). The first event says where the database stands, a write through the router reaches
+// an open stream at once, a write from outside it within the router's interval, a reconnect with the last id seen is told every
+// table written since, a cursor the database has not reached is told expired, and a caller the router's access refuses gets 401
+use @std.crud.{crud}
+use @std.crud.routes.{belongs_to}
+use @std.http.route.{group}
+use @std.http.server.{server}
+use @std.net.{Conn, NetError, connect, timely}
+use @std.io.{env, make_dirs}
+use @std.sqlite.{Db, SqlValue}
+use @std.text.{parse_int}
+use @std.time.{ms, now_ms, now_ns, secs}
+
+@crud
+type Job = {
+    id: int = 0,
+    owner: int,
+    title: string,
+}
+
+/// One notice as it was heard: its event name, its id and its data.
+type Heard = { event: string, id: int, data: string }
+
+fn refused(why: string) -> NetError { NetError { verb: "setup", subject: why, errno: 1 } }
+
+/// What arrived on `c` within a short wait, if anything.
+fn chunk(c: Conn) -> Bytes {
+    match timely(within ms(60) { c.read(65536) }) {
+        .Ok(b) -> b ?? "".bytes(),
+        .Err(_) -> "".bytes(),
+    }
+}
+
+/// What `c` says within `wait` milliseconds, as the events it completed.
+fn heard(c: Conn, wait: int) -> List<Heard> {
+    let until = now_ms() + wait
+    mut got = "".bytes()
+    while now_ms() < until { got = got.concat(chunk(c)) }
+    let text = got.text() ?? ""
+    [event_of(block) for block in text.split("\n\n") if block.contains("event: ")]
+}
+
+fn field(block: string, name: string) -> string {
+    let held = block.split("\n").find(it.starts_with("${name}: "))
+    if held == null { "" } else { held!.replace("${name}: ", "") }
+}
+
+fn event_of(block: string) -> Heard {
+    Heard {
+        event: field(block, "event"),
+        id: parse_int(field(block, "id")) ?? -1,
+        data: field(block, "data"),
+    }
+}
+
+fn opened(port: int, extra: string) -> Result<Conn, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    c
+        .write(
+            "GET /jobs/events HTTP/1.1\r\nHost: a\r\nAccept: text/event-stream\r\n${extra}\r\n"
+                .bytes(),
+        )?
+    .Ok(c)
+}
+
+fn posted(port: int) -> Result<string, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    let body = "{\"owner\":1,\"title\":\"t\"}"
+    c
+        .write(
+            "POST /jobs HTTP/1.1\r\nHost: a\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\n\r\n${body}"
+                .bytes(),
+        )?
+    let got = timely(within ms(300) { c.read(65536) })
+    .Ok(match got { .Ok(b) -> (b ?? "".bytes()).text() ?? "?", .Err(_) -> "?" })
+}
+
+fn said(events: List<Heard>) -> string {
+    [if e.event == "notice" { "notice ${e.id} [${e.data}]" } else { e.event } for e in events]
+        .join(", ")
+}
+
+fn status_of(port: int) -> Result<string, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    c.write("GET /own/events HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n".bytes())?
+    let got = timely(within ms(300) { c.read(65536) })
+    .Ok(
+        match got {
+            .Ok(b) -> ((b ?? "".bytes()).text() ?? "?").split("\r\n").first() ?? "?",
+            .Err(_) -> "?",
+        },
+    )
+}
+
+/// A database file of its own under the tree's scratch directory.
+fn scratch() -> string {
+    let dir = "${env("PWD") ?? "."}/build/scratch"
+    let _ = make_dirs(dir)
+    "${dir}/crud_feed_${now_ns()}.db"
+}
+
+fn shown() -> Result<string, NetError> {
+    let path = scratch()
+    let db = match Db.open(path) { .Ok(d) -> d, .Err(e) -> { return .Err(refused(e.message)) } }
+    let other = match Db.open(path) { .Ok(d) -> d, .Err(e) -> { return .Err(refused(e.message)) } }
+    let _ = Job.create_table(db)
+    server app {
+        port: 0
+        group "/jobs" { Job.routes(db, every: ms(50)) }
+        group "/own" {
+            Job
+                .routes(
+                    db,
+                    access: belongs_to(
+                        "owner",
+                        "x-user",
+                        (v: string) -> SqlValue.Int(parse_int(v) ?? 0),
+                    ),
+                    every: ms(50),
+                )
+        }
+    }
+    let s = match app.listening() {
+        .Ok(up) -> up,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    spawn s.run(8)
+    defer s.stop()
+    let p = s.listener.port
+    let a = opened(p, "")?
+    let first = heard(a, 400)
+    let _ = posted(p)?
+    let through = heard(a, 400)
+    let _ = Job { owner: 2, title: "outside" }.insert(db)
+    let outside = heard(a, 400)
+    let cursor = first.first()?.id ?? -1
+    let b = opened(p, "Last-Event-ID: ${cursor}\r\n")?
+    let resumed = heard(b, 400)
+    let c = opened(p, "Last-Event-ID: 99999\r\n")?
+    let expired = heard(c, 400)
+    let _ = a.close()
+    let _ = b.close()
+    let _ = c.close()
+    .Ok(
+        [
+            "the first event says where it stands: ${said(first)}",
+            "a write through the router: ${said(through)}",
+            "a write from outside it, within the interval: ${said(outside)}",
+            "a reconnect with the first id: ${said(resumed)}",
+            "a cursor the database has not reached: ${said(expired)}",
+            "a caller the access refuses: ${status_of(p)?}",
+        ]
+            .join("\n"),
+    )
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

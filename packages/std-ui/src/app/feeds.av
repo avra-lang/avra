@@ -1,0 +1,103 @@
+//! `app/feeds.av` — the streams a loop listens to for what its observations read. A server that
+//! announces the changes of an answer's tables names the stream in `avra-feed`; the cache listens
+//! there once, however many entries read it, and what it hears moves the same marks a write's own
+//! answer does (`stale_by`). THE LAW, because a dropped notice must never read as fresh: an entry
+//! is fresh only while its stream has said where the database stands since it was last opened, and
+//! the stream's dropping, its refusal and any notice that reaches the entry end that at once. A
+//! stream that is down is opened again by its host, resuming from the last id it heard, so what
+//! was written meanwhile arrives as one notice naming exactly the tables touched.
+use @std.http_message.message.{Method, Request}
+use app.{App, Entry, Feed, Heard, Want, asked_again}
+
+/// An entry's answer has landed: it is fresh when its feed is up and has said where the database
+/// stands, and no request for it is out or owed. An entry with a feed no one listens to yet opens it.
+export fn watching(on: App, entry: Entry) {
+    let path? = entry.feed.get() else { return }
+    if entry.loading() || entry.again.get() || entry.held() == null {
+        entry.fresh.set(false)
+        return
+    }
+    let feed? = on.observed.feed_named(path) else {
+        entry.fresh.set(false)
+        listen(on, path, entry)
+        return
+    }
+    entry.fresh.set(feed.synced.get() && !feed.closed.get())
+}
+
+/// A stream opened for `path`, resuming from the oldest count any entry on it stood at — so what was
+/// written between those answers and the stream's opening is announced — and carrying the caller's own
+/// fields (an access header) from the request that asked, never its validator.
+fn listen(on: App, path: string, entry: Entry) {
+    let asked? = entry.request.get() else { return }
+    let stands = [at for e in on.observed.on_feed(path) for at in [e.stand.get()] if at != null]
+    let from = stands
+        .fold(entry.stand.get() ?? 0, (low: int, at: int?) -> if at! < low { at! } else { low })
+    let request = Request {
+        method: Method.Get,
+        url: path,
+        headers: [h for h in asked.headers if !h.named("if-none-match")],
+    }
+        .header("Last-Event-ID", "${from}")
+    let silent: List<Heard> = []
+    let feed = Feed {
+        path: path,
+        heard: Cell.new(silent),
+        synced: Cell.new(false),
+        closed: Cell.new(false),
+    }
+    on.observed.feeds.push(feed)
+    let _ = on.ask_observed(Want.Listen(request, feed.heard), () -> felt(on, feed))
+}
+
+/// The stream spoke: each thing it said, in order. Whether the screen follows is the answers' to
+/// say, when the entries it moved are asked again.
+fn felt(on: App, feed: Feed) -> bool {
+    let said = feed.heard.get()
+    feed.heard.set([])
+    for h in said { heard(on, feed, h) }
+    false
+}
+
+fn heard(on: App, feed: Feed, said: Heard) {
+    match said {
+        .Opened -> feed.synced.set(false),
+        .Notice(id, event, data) -> announced(on, feed, id, event, data),
+        .Closed -> lost(on, feed, false),
+        .Refused(_) -> lost(on, feed, true),
+    }
+}
+
+/// An announcement at `id`: the tables written since the stream's cursor. The first after the stream opened
+/// says where the database stands and frees every entry it does not reach; one for an expired cursor
+/// reaches every entry.
+fn announced(on: App, feed: Feed, id: int, event: string, data: string) {
+    let everything = event == "cursor-expired"
+    on.observed.learned(id)
+    let first = !feed.synced.get()
+    let names = [n.trim() for n in data.split(",") if !n.trim().is_empty()]
+    if !everything { feed.synced.set(true) }
+    for e in on.observed.on_feed(feed.path) {
+        let hit = everything || on.observed.reached(e, names) && !read_since(e, id)
+        if hit {
+            e.fresh.set(false)
+            if !e.unread() { if e.loading() { e.again.set(true) } else { asked_again(on, e) } }
+        } else if first && e.held() != null && !e.loading() {
+            e.fresh.set(true)
+        }
+    }
+}
+
+/// Whether what an entry holds, or the request it has out, reflects the database at `id` or later, so an
+/// announcement at `id` is already in it: a write of its own, whose answer asked the entry again, is
+/// announced after that.
+fn read_since(e: Entry, id: int) -> bool {
+    e.floor.get() >= id
+}
+
+/// The stream is gone — dropped, or refused for good: no entry on it is fresh until it speaks again.
+fn lost(on: App, feed: Feed, for_good: bool) {
+    feed.synced.set(false)
+    feed.closed.set(for_good)
+    for e in on.observed.on_feed(feed.path) { e.fresh.set(false) }
+}

@@ -5,7 +5,7 @@
 //! loop does. A TARGET WITHOUT TASKS REALIZES THE SAME SEAM ITS OWN WAY:
 //! a source is anything that posts an `Act`, and the page's host does it
 //! from its own callbacks (docs/2026_10_05_UI_ARCHITECTURE.md, law 7).
-use app.{Act, App, Door, Job, Msg, Want, running}
+use app.{Act, App, Door, Heard, Job, Msg, Want, running}
 use @std.http_message.message.{Reply, Request}
 use @std.time.{Duration, every, ms, now_ms, sleep}
 use @std.task.{Channel, Posted, Sink, Source, unbounded_channel}
@@ -45,6 +45,7 @@ fn asked(
         .After(span) -> () -> waited(send, owner, ms(span), act),
         .Every(period) -> () -> ticked(send, owner, ms(period), act),
         .Get(request, into) -> () -> got(send, owner, net, request, into, act),
+        .Listen(_, heard) -> () -> unheard(send, owner, heard, act),
     }
     send(Msg.Start(job, owner))
 }
@@ -284,6 +285,14 @@ fn got(
     act: Act,
 ) -> bool {
     into.set(net(request))
+    let _ = send(Msg.Turn(act, owner))
+    true
+}
+
+/// This target has no stream to listen to: the source is told the server refused it, so what
+/// waited on it falls back to asking.
+fn unheard(send: fn(Msg) -> bool, owner: string?, heard: Cell<List<Heard>>, act: Act) -> bool {
+    heard.push(Heard.Refused(0))
     let _ = send(Msg.Turn(act, owner))
     true
 }

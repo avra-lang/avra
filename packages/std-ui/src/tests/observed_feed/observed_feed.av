@@ -1,0 +1,161 @@
+// proves: an observation whose server announces its changes on a stream is FRESH while that stream is up and
+// has said where the database stands, and asking it again then sends nothing; and the stream can never leave an
+// entry wrongly fresh. A drop between a write and its notice, a refusal (401), and a notice that reaches it each
+// end freshness at once. After a reconnect the server's one resync notice marks exactly the entries whose tables
+// were written meanwhile. Two screens (two tabs) each hold a stream of their own — eval == native.
+use @std.ui.app.{Async, Fetch, Heard, fetch, fetched}
+use @std.ui.components.{button, item}
+use @std.ui.headless.{Screen, headless}
+use @std.http_message.message.{Header, Reply, Request}
+use @std.text.{repeat}
+use @std.time.{ms}
+
+state table_one: int = 1
+state table_two: int = 1
+state clock: int = 1
+
+fn words(a: Async<int>) -> string {
+    match a {
+        .Idle -> "idle",
+        .Loading -> "loading",
+        .Failed(m) -> "failed ${m}",
+        .Ready(n) -> "ready ${n}",
+    }
+}
+
+fn parsed(r: Reply) -> Result<int, string> { .Ok(r.body.length) }
+
+/// The server: two tables, each read by one route, announced on `/feed`. A write moves the table's version.
+fn serve(r: Request, log: Cell<List<string>>) -> Result<Reply, string> {
+    let held = r.headers.find(it.name == "If-None-Match")
+    log.push("${r.url}${if held == null { "" } else { " held" }}")
+    let version = if r.url == "/first" { table_one } else { table_two }
+    let reads = if r.url == "/first" { "One" } else { "Two" }
+    let tag = "\"v${version}\""
+    let said = [
+        Header { name: "etag", value: tag },
+        Header { name: "avra-reads", value: reads },
+        Header { name: "avra-stand", value: "${clock}" },
+        Header { name: "avra-feed", value: "/feed" },
+    ]
+    if held != null && held!.value == tag { return .Ok(Reply { status: 304, headers: said, body: "".bytes() }) }
+    .Ok(Reply { status: 200, headers: said, body: repeat("x", version).bytes() })
+}
+
+fn write_one() {
+    clock = clock + 1
+    table_one = clock
+}
+
+fn view_of(first: Fetch<int>, second: Fetch<int>) -> item {
+    item {
+        items: [
+            button "Load" {
+                on press {
+                    let _ = fetched(first, Request.get("/first"), parsed)
+                    let _ = fetched(second, Request.get("/second"), parsed)
+                }
+            },
+        ]
+    }
+}
+
+/// The cursor a stream was opened with.
+fn resumed(request: Request?) -> string {
+    let r? = request else { return "-" }
+    r.headers.find(it.name == "Last-Event-ID")?.value ?? "-"
+}
+
+fn said(log: Cell<List<string>>) -> string {
+    let all = log.get()
+    log.set([])
+    if all.is_empty() { "nothing sent" } else { all.join(", ") }
+}
+
+/// The screen's stream says `h`, then the screen runs what it left.
+fn tell(screen: Screen, h: Heard) { screen.heard("/feed", h) }
+
+let first_a: Fetch<int> = fetch()
+let second_a: Fetch<int> = fetch()
+let first_b: Fetch<int> = fetch()
+let second_b: Fetch<int> = fetch()
+let log_a: Cell<List<string>> = Cell.new([])
+let log_b: Cell<List<string>> = Cell.new([])
+let screen_a = headless(() -> view_of(first_a, second_a))
+let screen_b = headless(() -> view_of(first_b, second_b))
+screen_a.wired((r: Request) -> serve(r, log_a))
+screen_b.wired((r: Request) -> serve(r, log_b))
+screen_a
+    .running(
+        () -> {
+            let _ = screen_a.press("Load")
+            screen_a.advance(ms(10))
+            println("loaded: ${said(log_a)}")
+            let stream = screen_a.listened("/feed")
+            println("one stream opened, resuming from ${resumed(stream)}")
+            let _ = screen_a.press("Load")
+            screen_a.advance(ms(10))
+            println(
+                "before the stream has said where it stands, asking again sends: ${said(log_a)}",
+            )
+            tell(screen_a, Heard.Opened)
+            tell(screen_a, Heard.Notice(1, "notice", ""))
+            let _ = screen_a.press("Load")
+            screen_a.advance(ms(10))
+            println("the stream up and synced, asking again: ${said(log_a)}")
+            write_one()
+            tell(screen_a, Heard.Closed)
+            let _ = screen_a.press("Load")
+            screen_a.advance(ms(10))
+            println("the stream drops between a write and its notice, asking again: ${said(log_a)}")
+            println("shown: ${words(first_a.state())} ${words(second_a.state())}")
+            tell(screen_a, Heard.Opened)
+            tell(screen_a, Heard.Notice(2, "notice", ""))
+            let _ = screen_a.press("Load")
+            screen_a.advance(ms(10))
+            println("reopened and synced: ${said(log_a)}")
+            write_one()
+            tell(screen_a, Heard.Closed)
+            write_one()
+            tell(screen_a, Heard.Opened)
+            tell(screen_a, Heard.Notice(4, "notice", "One"))
+            screen_a.advance(ms(10))
+            println("reconnected after two writes to one table, the resync notice: ${said(log_a)}")
+            let _ = screen_a.press("Load")
+            screen_a.advance(ms(10))
+            println("then asking again: ${said(log_a)}")
+            println("shown: ${words(first_a.state())} ${words(second_a.state())}")
+            screen_b
+                .running(
+                    () -> {
+                        let _ = screen_b.press("Load")
+                        screen_b.advance(ms(10))
+                        println(
+                            "a second screen asks for itself: ${said(log_b)}, its own stream: ${screen_b.listened("/feed") != null}",
+                        )
+                        tell(screen_b, Heard.Opened)
+                        tell(screen_b, Heard.Notice(4, "notice", ""))
+                        write_one()
+                        tell(screen_a, Heard.Notice(5, "notice", "One"))
+                        screen_a.advance(ms(10))
+                        println(
+                            "a notice for the first screen: it asks ${said(log_a)}, the second asks ${said(log_b)}",
+                        )
+                        let _ = screen_b.press("Load")
+                        screen_b.advance(ms(10))
+                        println("the second screen, never told, is still fresh: ${said(log_b)}")
+                    },
+                )
+            tell(screen_a, Heard.Notice(6, "notice", "Two"))
+            screen_a.advance(ms(10))
+            println("a notice for a table the second entry read: ${said(log_a)}")
+            tell(screen_a, Heard.Notice(1, "notice", "One, Two"))
+            screen_a.advance(ms(10))
+            println("an announcement of writes the entries already hold: ${said(log_a)}")
+            tell(screen_a, Heard.Refused(401))
+            println("a refused stream is closed: ${screen_a.listened("/feed") == null}")
+            let _ = screen_a.press("Load")
+            screen_a.advance(ms(10))
+            println("and asking again sends: ${said(log_a)}")
+        },
+    )

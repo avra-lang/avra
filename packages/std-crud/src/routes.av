@@ -15,10 +15,14 @@
 //! A body is JSON and is decoded by the model's own rules: a row that breaks
 //! one is refused with all of them (422), never one at a time.
 use @std.errors.{Error}
-use @std.http_message.message.{Header, Method, READS, Version, WROTE, named_field}
+use @std.http_message.message.{FEED, Header, Method, READS, STAND, Version, WROTE, named_field}
 use @std.http_message.route.{Nothing, Route as Described, Routes}
 use @std.http.http.{Request, Unrouted, Response, text, status, header_pair}
+use @std.http.sse.{Event, Next, Resume, Source, events}
 use @std.http.validators.{tag_listed}
+use @std.net.{Bell}
+use @std.text.{parse_int}
+use @std.time.{Duration, ms, now_ms, secs}
 use @std.http.route.{Route, Mounted, fixed, routed, mounted}
 use @std.json.{Json, Field, field, to_text}
 use @std.db.apply.{commits, last_of, touched}
@@ -41,6 +45,7 @@ export enum Door {
     Remove
     Trash
     Restore
+    Events
 }
 
 /// Why a door answered no row.
@@ -74,6 +79,7 @@ export type Wire = {
     trash: fn(Where?) -> Result<Json, Failure>,
     restore: fn(Where?, int) -> Result<Json, Failure>,
     ledger: Ledger,
+    tables: List<string>,
 }
 
 /// What a database says of itself, as closures over one connection: where it stands now, the
@@ -94,6 +100,106 @@ export fn ledger(db: Db) -> Ledger {
             .Err(_) -> null,
         },
         touched: (since: int) -> match touched(db, since) { .Ok(names) -> names, .Err(_) -> [] },
+    }
+}
+
+/// A router's account of the database for the streams that watch it: the count it last saw, when it
+/// last asked, the tables written since each cursor it was asked for (one SELECT however many streams
+/// share it), and a bell every stream parks on. ONE ASK PER INTERVAL PER PROCESS, whoever's wait
+/// runs out first, and none while nobody watches; a write committed through this router asks at once
+/// and rings, so a stream of this process wakes without waiting. A write from another process or
+/// core is seen within the interval.
+export type Hub = {
+    ledger: Ledger,
+    tables: List<string>,
+    every: Duration,
+    seen: Cell<int>,
+    checked: Cell<int>,
+    memo: Cell<Map<string, List<string>>>,
+    bell: Bell,
+}
+
+/// A hub over `l` for the tables a router serves, asking at most once per `every`.
+export fn hub(l: Ledger, tables: List<string>, every: Duration) -> Hub {
+    let none: Map<string, List<string>> = {}
+    Hub {
+        ledger: l,
+        tables: tables,
+        every: every,
+        seen: Cell.new(0),
+        checked: Cell.new(0),
+        memo: Cell.new(none),
+        bell: Bell {},
+    }
+}
+
+impl Hub {
+    /// The database's count now; when it moved, every stream is woken.
+    fn sync() {
+        self.checked.set(now_ms())
+        let now? = self.ledger.stand() else { return }
+        if now == self.seen.get() { return }
+        self.seen.set(now)
+        let none: Map<string, List<string>> = {}
+        self.memo.set(none)
+        self.bell.ring()
+    }
+
+    /// `sync`, unless the interval has not yet passed since the last ask.
+    fn refresh() {
+        if now_ms() - self.checked.get() >= self.every.ms() { self.sync() }
+    }
+
+    /// The tables this router serves that were written since the database stood at `cursor`.
+    fn since(cursor: int) -> List<string> {
+        let held = self.memo.get().get("${cursor}")
+        if held != null { return held! }
+        let names = [t for t in self.ledger.touched(cursor) if self.tables.contains(t)]
+        self.memo.put("${cursor}", names)
+        names
+    }
+
+    /// Where a stream resumes from the cursor its caller sent: after it, or — a cursor the database
+    /// has not reached, one it was replaced under — from now, the caller told so first. No cursor
+    /// reads from now.
+    fn resume(cursor: string?) -> Resume {
+        self.sync()
+        let now = self.seen.get()
+        let c? = cursor else { return .From(self.source(now)) }
+        let at = parse_int(c) ?? -1
+        if at < 0 || at > now { return .Expired(c, self.source(now)) }
+        .From(self.source(at))
+    }
+
+    /// A source of notices from `from` on: the first says where the database stands (the tables written
+    /// since `from`, possibly none), each later one names the tables written since the last.
+    fn source(from: int) -> Source {
+        let at = Cell.new(from)
+        let told = Cell.new(false)
+        Source { next: (wait: Duration) -> self.waited(at, told, wait) }
+    }
+
+    fn waited(at: Cell<int>, told: Cell<bool>, wait: Duration) -> Next {
+        let until = now_ms() + wait.ms()
+        while true {
+            self.refresh()
+            let now = self.seen.get()
+            if !told.get() || now > at.get() {
+                let names = self.since(at.get())
+                let first = !told.get()
+                told.set(true)
+                at.set(now)
+                if first || !names.is_empty() {
+                    return .Event(Event { data: named_field(names), event: "notice", id: "${now}" })
+                }
+            }
+            let left = until - now_ms()
+            if left <= 0 { return .Quiet }
+            let _ = self
+                .bell
+                .waited(ms(if left < self.every.ms() { left } else { self.every.ms() }))
+        }
+        .Quiet
     }
 }
 
@@ -156,8 +262,14 @@ export fn described<T>(soft: bool, without: List<Door>, base: string) -> Routes<
 }
 
 /// The routes of a model's doors, but the ones left out.
-export fn crud_routes(w: Wire, without: List<Door>, access: Access? = null) -> Mounted {
-    mounted([d.route for d in opened(w, access) if standing(d.door, w.soft, without)])
+export fn crud_routes(
+    w: Wire,
+    without: List<Door>,
+    access: Access? = null,
+    every: Duration = ms(100),
+) -> Mounted {
+    let held = hub(w.ledger, w.tables, every)
+    mounted([d.route for d in opened(w, access, held) if standing(d.door, w.soft, without)])
 }
 
 /// The scope a request's caller is held within, or the refusal to answer it.
@@ -170,7 +282,7 @@ fn scoped<P>(access: Access?, q: Request<P>, act: fn(Where?) -> Response) -> Res
 
 fn unknown(a: Access) -> Response { text(401, "this door needs the caller named in the `${a.header}` header") }
 
-fn opened(w: Wire, access: Access?) -> List<Opened> {
+fn opened(w: Wire, access: Access?, held: Hub) -> List<Opened> {
     [
         Opened {
             door: .List,
@@ -180,7 +292,7 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
                 (q: Request<Unrouted>) -> scoped(
                     access,
                     q,
-                    (sc) -> observed(w.ledger, q, () -> answered(w.list(sc))),
+                    (sc) -> observed(w.ledger, q, () -> answered(w.list(sc)), feed_of(q, 0)),
                 ),
             ),
         },
@@ -192,10 +304,7 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
                 (q: Request<Unrouted>) -> scoped(
                     access,
                     q,
-                    (sc) -> committed(
-                        w.ledger,
-                        () -> created(q, (body: string) -> w.create(sc, body)),
-                    ),
+                    (sc) -> nudged(held, () -> created(q, (body: string) -> w.create(sc, body))),
                 ),
             ),
         },
@@ -208,7 +317,12 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
                 (q: Request<Whole>) -> scoped(
                     access,
                     q,
-                    (sc) -> observed(w.ledger, q, () -> answered(w.find(sc, q.params.id))),
+                    (sc) -> observed(
+                        w.ledger,
+                        q,
+                        () -> answered(w.find(sc, q.params.id)),
+                        feed_of(q, 1),
+                    ),
                 ),
             ),
         },
@@ -221,8 +335,8 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
                 (q: Request<Whole>) -> scoped(
                     access,
                     q,
-                    (sc) -> committed(
-                        w.ledger,
+                    (sc) -> nudged(
+                        held,
                         () -> bodied(q, (body: string) -> w.update(sc, q.params.id, body)),
                     ),
                 ),
@@ -237,15 +351,27 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
                 (q: Request<Whole>) -> scoped(
                     access,
                     q,
-                    (sc) -> committed(w.ledger, () -> removed_answer(w.remove(sc, q.params.id))),
+                    (sc) -> nudged(held, () -> removed_answer(w.remove(sc, q.params.id))),
+                ),
+            ),
+        },
+        Opened {
+            door: .Events,
+            route: fixed(
+                Method.Get,
+                "/events",
+                (q: Request<Unrouted>) -> scoped(
+                    access,
+                    q,
+                    (sc) -> events(q, secs(5), (cursor) -> held.resume(cursor)),
                 ),
             ),
         },
     ]
-        .concat(if w.soft { soft_doors(w, access) } else { [] })
+        .concat(if w.soft { soft_doors(w, access, held) } else { [] })
 }
 
-fn soft_doors(w: Wire, access: Access?) -> List<Opened> {
+fn soft_doors(w: Wire, access: Access?, held: Hub) -> List<Opened> {
     [
         Opened {
             door: .Trash,
@@ -255,7 +381,7 @@ fn soft_doors(w: Wire, access: Access?) -> List<Opened> {
                 (q: Request<Unrouted>) -> scoped(
                     access,
                     q,
-                    (sc) -> observed(w.ledger, q, () -> answered(w.trash(sc))),
+                    (sc) -> observed(w.ledger, q, () -> answered(w.trash(sc)), feed_of(q, 1)),
                 ),
             ),
         },
@@ -268,7 +394,7 @@ fn soft_doors(w: Wire, access: Access?) -> List<Opened> {
                 (q: Request<Restored>) -> scoped(
                     access,
                     q,
-                    (sc) -> committed(w.ledger, () -> answered(w.restore(sc, q.params.id))),
+                    (sc) -> nudged(held, () -> answered(w.restore(sc, q.params.id))),
                 ),
             ),
         },
@@ -293,14 +419,14 @@ once fn learned() -> Cell<Map<string, List<string>>> { Cell.new({}) }
 /// between can only make the tag older than the data, never newer. An answer carries
 /// `ETag` and `avra-reads`; a count that cannot be read tags nothing, and the read is
 /// answered plainly. Hand-written routes call this too.
-export fn observed<P>(l: Ledger, q: Request<P>, answer: fn() -> Response) -> Response {
+export fn observed<P>(l: Ledger, q: Request<P>, answer: fn() -> Response, feed: string = "") -> Response {
     let now? = l.stand() else { return answer() }
     let target = q.target() ?? ""
     let known = learned().get().get(target)
     if known != null && q.header("if-none-match") != null {
         let at = l.version(known!, now)
         if at != null && tag_listed(q.header("if-none-match"), at!.tag()) {
-            return Response { status: 304, headers: tagged(at!.tag(), known!) }
+            return Response { status: 304, headers: tagged(at!.tag(), known!, now, feed) }
         }
     }
     let seen = observing(answer)
@@ -308,24 +434,48 @@ export fn observed<P>(l: Ledger, q: Request<P>, answer: fn() -> Response) -> Res
     learned().put(target, seen.reads)
     let at? = l.version(seen.reads, now) else { return seen.value }
     if tag_listed(q.header("if-none-match"), at.tag()) {
-        return Response { status: 304, headers: tagged(at.tag(), seen.reads) }
+        return Response { status: 304, headers: tagged(at.tag(), seen.reads, now, feed) }
     }
-    seen.value with { headers: seen.value.headers.concat(tagged(at.tag(), seen.reads)) }
+    seen.value with { headers: seen.value.headers.concat(tagged(at.tag(), seen.reads, now, feed)) }
 }
 
-fn tagged(tag: string, read: List<string>) -> List<Header> {
-    [header_pair("etag", tag), header_pair(READS, named_field(read))]
+fn tagged(tag: string, read: List<string>, stand: int, feed: string) -> List<Header> {
+    [
+        header_pair("etag", tag),
+        header_pair(READS, named_field(read)),
+        header_pair(STAND, "${stand}"),
+    ]
+        .concat(if feed == "" { [] } else { [header_pair(FEED, feed)] })
+}
+
+/// Where the observations of the router a request reached are announced: the request's path with
+/// its last `up` segments dropped (the door's own), then `/events`.
+fn feed_of<P>(q: Request<P>, up: int) -> string {
+    let path = (q.target() ?? "").split("?").first() ?? ""
+    let parts = [p for p in path.split("/") if !p.is_empty()]
+    "/${parts.slice(0, parts.length - up).join("/")}/events"
+}
+
+/// A write answered with the tables it touched, and the router's streams woken at once.
+fn nudged(h: Hub, act: fn() -> Response) -> Response {
+    let r = committed(h.ledger, act)
+    h.sync()
+    r
 }
 
 /// A write answered with the tables it touched (`avra-wrote`): those the database says were
-/// written between the count before the write and the count after it, none of which names a row.
+/// written between the count before the write and the count after it, none of which names a row,
+/// and the count it left the database at (`avra-stand`).
 /// Hand-written actions call this too.
 export fn committed(l: Ledger, act: fn() -> Response) -> Response {
     let before = l.stand()
     let r = act()
     let b? = before else { return r }
     if r.status < 200 || r.status > 299 { return r }
-    r with { headers: r.headers.concat([header_pair(WROTE, named_field(l.touched(b)))]) }
+    let after = l.stand() ?? b
+    r with { headers: r
+        .headers
+        .concat([header_pair(WROTE, named_field(l.touched(b))), header_pair(STAND, "${after}")]) }
 }
 
 fn removed_answer(r: Result<int, Failure>) -> Response {

@@ -9,11 +9,14 @@ use @std.avrac.compiler.{Workspace, inputs_this_turn}
 use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.route.{Route, Reach}
 use @std.http.fetch.{Payload, fetch, options, Redirects}
+use @std.http.frame.{Chunker, Decoded, chunker, limits, unchunked}
+use @std.http.http.{Pulled, Stream}
+use @std.net.{Conn}
 use @std.net.{listen, connect}
 use @std.io.{list_dir}
 use @std.path.{joined_path, normalized}
 use @std.process.{Tool, Child, Env, EnvPair, Ready, cmd, tool_at, inherited}
-use @std.text.{ascii_lower}
+use @std.text.{ascii_lower, parse_int}
 use @std.time.{ms, secs, sleep, now_ms}
 
 /// The server child of one page: its package, the build it runs, the port it
@@ -149,6 +152,7 @@ impl Backend {
     /// `q` sent on to the server as it came, and its answer sent back as it
     /// came. A server that does not answer is a 502 saying so.
     fn forward(q: Request<Unrouted>) -> Response {
+        if wants_events(q) { return self.relayed(q) }
         let target = q.target() ?? "/"
         let body = q.body.octets() ?? "".bytes()
         let payload = if body.length == 0 { Payload.Empty } else { Payload.Octets(body, q.header("content-type") ?? "application/octet-stream") }
@@ -161,6 +165,36 @@ impl Backend {
                 body: a.body,
             },
             .Err(e) -> text(502, not_answered(self.root, e.describe().message)),
+        }
+    }
+
+    /// A request for an event stream sent on to the server and its answer relayed AS IT COMES: the
+    /// head, then each piece the server writes, so a page's stream reaches the browser the moment the
+    /// server says something. A server that does not answer is a 502 saying so.
+    fn relayed(q: Request<Unrouted>) -> Response {
+        let target = q.target() ?? "/"
+        let c = match connect("127.0.0.1", self.port, secs(2)) {
+            .Ok(up) -> up,
+            .Err(e) -> { return text(502, not_answered(self.root, e.describe().message)) },
+        }
+        let fields = [h for h in fields_of(q) if passes(h.name)]
+        let asked = "GET ${target} HTTP/1.1\r\nHost: 127.0.0.1:${self.port}\r\nConnection: close\r\n${[f.name + ": " + f.value + "\r\n" for f in fields].join("")}\r\n"
+        match c.write(asked.bytes()) {
+            .Ok(_) -> {},
+            .Err(e) -> { return text(502, not_answered(self.root, e.describe().message)) },
+        }
+        let head = heard_head(c)
+        let answered? = head else { return text(502, not_answered(self.root, "the server sent no head for an event stream")) }
+        let flow = Flow {
+            conn: c,
+            pending: Cell.new(answered.rest),
+            decoder: Cell.new(chunker(0)),
+            chunked: answered.chunked,
+        }
+        Response {
+            status: answered.status,
+            headers: [h for h in answered.fields if passes(h.name)],
+            stream: Stream { pull: () -> flow.pulled(), ended: () -> { let _ = c.close() } },
         }
     }
 
@@ -247,3 +281,83 @@ fn server_line(root: string, port: int, up: bool) -> string {
 }
 
 fn not_answered(root: string, why: string) -> string { "the dev server ${root} did not answer: ${why}" }
+
+/// Whether a request asks for an event stream: it names `text/event-stream` among what it accepts.
+fn wants_events(q: Request<Unrouted>) -> bool { q.header("accept")?.contains("text/event-stream") ?? false }
+
+/// A reply's head as read off the wire: its status, its fields, whether its body is chunked, and
+/// the octets that came after the head in the same reads.
+type Head = { status: int, fields: List<Header>, chunked: bool, rest: Bytes }
+
+/// The head of the reply on `c`, read until its blank line; absent when the connection ends or
+/// answers nonsense before one.
+fn heard_head(c: Conn) -> Head? {
+    mut buf = "".bytes()
+    let blank = "\r\n\r\n".bytes()
+    while buf.index_of(blank, 0) < 0 {
+        if buf.length > 65536 { return null }
+        let more = match c.read(65536) { .Ok(b) -> b, .Err(_) -> { return null } }
+        let b? = more else { return null }
+        buf = buf.concat(b)
+    }
+    let end = buf.index_of(blank, 0)
+    let lines = (buf.slice(0, end).text() ?? "").split("\r\n")
+    let status = parse_int((lines.first() ?? "").split(" ")[1]) ?? 0
+    let fields = [Header { name: l.substring(0, at), value: l.substring(at + 2, l.length) } for l in lines.drop(1) for at in [l.index_of(": ") ?? -1] if at > 0]
+    let chunked = fields
+        .any(ascii_lower(it.name) == "transfer-encoding" && it.value.contains("chunked"))
+    Head { status: status, fields: fields, chunked: chunked, rest: buf.slice(end + 4, buf.length) }
+}
+
+/// The body of a relayed reply: the connection it is read from, the octets read and not yet decoded,
+/// and the chunk decoder over them.
+type Flow = { conn: Conn, pending: Cell<Bytes>, decoder: Cell<Chunker>, chunked: bool }
+
+impl Flow {
+    /// The next piece of the body, as the server wrote it, or its end.
+    fn pulled() -> Pulled {
+        if !self.chunked {
+            if !self.pending.get().is_empty() {
+                let held = self.pending.get()
+                self.pending.set("".bytes())
+                return .Data(held)
+            }
+            return self.more(true)
+        }
+        while true {
+            match unchunked(self.decoder.get(), self.pending.get(), 16777216, limits()) {
+                .Piece(b, next) -> {
+                    self.decoder.set(next)
+                    return .Data(b)
+                },
+                .More(next) -> {
+                    let whole = next.at >= self.pending.get().length
+                    self.decoder.set(if whole { next with { at: 0 } } else { next })
+                    if whole { self.pending.set("".bytes()) }
+                    match self.more(false) {
+                        .Data(_) -> {},
+                        .End -> { return .End },
+                        .Failed -> { return .Failed },
+                    }
+                },
+                .Done(_) -> { return .End },
+                .Refused(_) -> { return .Failed },
+            }
+        }
+        .End
+    }
+
+    /// What the connection says next: handed on as a piece when `raw`, else kept for the decoder
+    /// (answering an empty piece, which a stream skips).
+    fn more(raw: bool) -> Pulled {
+        match self.conn.read(65536) {
+            .Ok(b) -> {
+                let said? = b else { return .End }
+                if raw { return .Data(said) }
+                self.pending.set(self.pending.get().concat(said))
+                .Data("".bytes())
+            },
+            .Err(_) -> .Failed,
+        }
+    }
+}
