@@ -56,17 +56,21 @@ median() {
     }'
 }
 
-# state_other <metric> <baseline file>: when the metric names a cache state (-warm or -cold) and the baseline holds
-# the OTHER state of the same stem, `<other metric> <seconds>`; else status 1.
+# state_other <metric> <baseline file>: when the metric names a cache state (-warm, -part or -cold) and the
+# baseline holds ANOTHER state of the same stem, `<other metric> <seconds>`; else status 1.
 state_other() {
     case "$1" in
-        *-cold) other="${1%-cold}-warm" ;;
-        *-warm) other="${1%-warm}-cold" ;;
+        *-cold) stem="${1%-cold}" ;;
+        *-warm) stem="${1%-warm}" ;;
+        *-part) stem="${1%-part}" ;;
         *) return 1 ;;
     esac
-    v=$(value "$2" "$other")
-    [ -n "$v" ] || return 1
-    echo "$other $v"
+    for other in "$stem-warm" "$stem-cold" "$stem-part"; do
+        [ "$other" != "$1" ] || continue
+        v=$(value "$2" "$other")
+        [ -z "$v" ] || { echo "$other $v"; return 0; }
+    done
+    return 1
 }
 
 compare() {
@@ -95,6 +99,15 @@ compare() {
     for m in $METRICS $cpus; do
         c=$(value "$cur" "$m")
         b=$(value "$base" "$m")
+        # A PART-WARM ROW IS HELD AGAINST MAIN'S COLD ONE when main has no part-warm row of its own: the
+        # run held some of what the cold run built, so cold is an upper bound, and growth past it is real.
+        vs=
+        case "$m" in
+            *-part) if [ -z "$b" ]; then
+                b=$(value "$base" "${m%-part}-cold")
+                [ -z "$b" ] || vs=" (main's cold row, an upper bound)"
+            fi ;;
+        esac
         if [ -z "$c" ]; then
             echo "| $m | ${b:-—} | not measured | — |" >> "$out"
         elif [ -z "$b" ] && state_other "$m" "$base" >/dev/null; then
@@ -108,7 +121,8 @@ compare() {
             echo "| $m | no baseline | ${c}s | — |" >> "$out"
         else
             pct=$(awk -v c="$c" -v b="$b" 'BEGIN { if (b == 0) print 0; else printf "%.0f", (c - b) * 100 / b }')
-            echo "| $m | ${b}s | ${c}s | ${pct}% |" >> "$out"
+            echo "| $m | ${b}s$vs | ${c}s | ${pct}% |" >> "$out"
+            [ -z "$vs" ] || echo "::notice::speed: $m is part-warm and main has no part-warm row, so it is compared with main's cold row (${b}s), an upper bound"
             # Runners swing a small step past 2x with nothing changed (std-path 6s -> 13s, sqlite 10s -> 23s),
             # so the 30 s floor stays as MATERIALITY — a step too small for its growth to mean anything is
             # not worth a gate — and the counters are the ratchet for the rest. It is no longer the judge:
@@ -219,7 +233,18 @@ case "${1:-}" in
         [ "$stb" = 0 ] || { echo "speed_note: the features-b-cold replay gated ($stb): $outb"; exit 1; }
         printf '%s\n' "$outb" | grep -q "median CPU step grew 37%" || { echo "speed_note: the features-b-cold replay did not report the run's median: $outb"; exit 1; }
         printf '%s\n' "$outb" | grep -q "::error::speed" && { echo "speed_note: the features-b-cold replay gated a row: $outb"; exit 1; }
-        echo "speed_note: self-test passed — 21 fixtures"
+        # PART-WARM: never compared with a warm row (said); against main's cold row when that is all main has
+        printf 'speed.cpu-std-db-part 64\n' > "$d/curp"
+        printf 'speed.cpu-std-db-warm 32\n' > "$d/basepw"
+        outp=$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/stdout sh "$0" compare "$d/curp" "$d/basepw" 2>&1); stp=$?
+        { [ "$stp" = 0 ] && printf '%s\n' "$outp" | grep -q "not compared: another cache state"; } || { echo "speed_note: a part-warm row against a warm baseline was compared or failed ($stp): $outp"; exit 1; }
+        printf 'speed.cpu-std-db-cold 60\nspeed.cpu-std-db-warm 32\n' > "$d/basepc"
+        outpc=$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/stdout sh "$0" compare "$d/curp" "$d/basepc" 2>&1); stpc=$?
+        { [ "$stpc" = 0 ] && printf '%s\n' "$outpc" | grep -q "main's cold row, an upper bound"; } || { echo "speed_note: a part-warm row was not held against main's cold row ($stpc): $outpc"; exit 1; }
+        printf 'speed.cpu-std-db-part 190\n' > "$d/curp2"
+        printf 'speed.cpu-std-db-cold 60\n' > "$d/basepc2"
+        [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curp2" "$d/basepc2" >/dev/null 2>&1; echo $?)" = 1 ] || { echo "speed_note: a part-warm row 3x past main's cold row did not fail"; exit 1; }
+        echo "speed_note: self-test passed — 24 fixtures"
         exit 0 ;;
     *) echo "usage: speed_note.sh collect <log>... | compare <current> <main>" ;;
 esac

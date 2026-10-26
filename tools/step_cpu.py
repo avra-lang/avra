@@ -4,9 +4,9 @@ user+sys CPU appended to speed.log as `speed cpu-<label>[-warm|-cold] <seconds>`
 
     step_cpu.py [--state] <label> -- <command> [args...]
 
-THE STATE RIDES THE NAME. A suite compiles its package held (a warm store: `held N/M` with N > 0 in
-its `--time` lines) or from nothing (every N is 0), and the two cost 2-100x apart for the same
-tree. A number is only comparable to a baseline taken in the SAME state, so the state is part of the
+THE STATE RIDES THE NAME. A suite compiles its package held (a warm store: nearly all of `held N/M`
+in its `--time` lines), from nothing (every N is 0) or between (`part`: a package the PR changed,
+compiled beside held dependencies), and the three cost 2-100x apart for the same tree. A number is only comparable to a baseline taken in the SAME state, so the state is part of the
 metric's name (tools/speed_note.sh compares like with like and says aloud when it cannot). A step
 that prints no `held` line has no state and keeps the bare name; only a step asked with `--state`
 reads one (a suite does; a keeper's own `held` lines are a different question).
@@ -22,11 +22,16 @@ HELD = re.compile(r"\bheld (\d+)/(\d+)\b")
 
 
 def state_of(text):
-    """'warm' when any derivation held a file, 'cold' when the lines said none did, '' when no line said."""
-    seen = [int(m.group(1)) for m in HELD.finditer(text)]
+    """'warm' when nearly every derivation held (90% or more of them), 'cold' when none did, 'part' between
+    (a package this run changed, compiled beside held dependencies), '' when no line said."""
+    seen = [(int(m.group(1)), int(m.group(2))) for m in HELD.finditer(text)]
     if not seen:
         return ""
-    return "warm" if any(n > 0 for n in seen) else "cold"
+    held = sum(h for h, _ in seen)
+    total = sum(t for _, t in seen)
+    if held == 0:
+        return "cold"
+    return "warm" if held * 10 >= total * 9 else "part"
 
 
 def cpu_tag(cpuinfo=None):
@@ -50,7 +55,10 @@ def metric(label, state, tag=""):
 
 def self_test():
     assert state_of("time: held 0/5, x\ntime: held 0/90, y") == "cold"
-    assert state_of("time: held 0/5\ntime: held 1049/1170") == "warm"
+    assert state_of("time: held 0/5\ntime: held 1049/1170") == "part"
+    assert state_of("time: held 1100/1170") == "warm"
+    assert state_of("time: held 1053/1170") == "warm"
+    assert state_of("time: held 5/5\ntime: held 1/90") == "part"
     assert state_of("no timing lines here") == ""
     assert metric("std-avrac/@features-a", "cold") == "cpu-std-avrac-features-a-cold"
     assert metric("keepers-a1", "") == "cpu-keepers-a1"
