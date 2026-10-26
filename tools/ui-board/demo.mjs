@@ -255,6 +255,7 @@ const offered = () => cleared().attrs["disabled"] === undefined;
   fire(c);
   await drain();
   claim("a refused list ask is said in the footer", footerWords().includes("load failed: status 503"), footerWords());
+  claim("and the board keeps the rows it had drawn, never an empty list", every(mount, (n) => n.attrs["data-key"] !== undefined).length > 0, `${every(mount, (n) => n.attrs["data-key"] !== undefined).length}`);
   table.refuseList = 0;
   typed = "Restore the board";
   fire(field);
