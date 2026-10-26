@@ -32,6 +32,18 @@ export fn word_of(store: SyntaxArena, s: StmtId, origin: string) -> ComponentWor
     }
 }
 
+/// A word whose `List` slots over a component declared beside it, in
+/// another file of its module, are that component's — never plain gatherers.
+export fn beside(w: ComponentWord, names: List<string>) -> ComponentWord {
+    match w.form {
+        .Record(r) -> w with { form: Instancing
+            .Record(
+                r with { slots: [s with { gathers: s.gathers && !names.contains(s.of) } for s in r.slots] },
+            ) },
+        .Template(_) or .Refused(_) or .Unread -> w,
+    }
+}
+
 /// A named instance's statement as a name a body may list.
 export fn instanced(store: SyntaxArena, s: StmtId) -> Instanced? {
     let of? = store.instance_of(s) else { return null }
