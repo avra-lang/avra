@@ -1498,21 +1498,14 @@ static void sized_noted(AvraArray* a, void* ra) {
     acc_site(a->site, array_bytes(a), 1);
 }
 
-// A box asked for a SIZE is one block — its cells and marks laid right
-// after the AvraArray, as static data is — so a record costs one
-// allocation. A builder (no size asked) keeps a buffer of its own,
-// since it grows.
+// A box is one block — its cells and marks laid right after the
+// AvraArray, as static data is — so a record costs one allocation, and
+// so does an EMPTY list: it holds no cells until the first push grows
+// it out of the box.
 static AvraArray* array_made(int64_t cap, void* ra) {
-    AvraArray* a;
-    if (cap > 0) {
-        a = (AvraArray*)box_alloc(sizeof(AvraArray) + buf_bytes(cap), KIND_ARRAY);
-        a->cap = cap;
-        a->data = (int64_t*)(a + 1);
-    } else {
-        a = (AvraArray*)box_alloc(sizeof(AvraArray), KIND_ARRAY);
-        a->cap = ARRAY_FIRST;
-        a->data = buf_alloc(a->cap);
-    }
+    AvraArray* a = (AvraArray*)box_alloc(sizeof(AvraArray) + buf_bytes(cap), KIND_ARRAY);
+    a->cap = cap;
+    a->data = (int64_t*)(a + 1);
     a->len = 0;
     array_marks(a);
     memset(a->marks, 0, (size_t)a->cap);
@@ -1617,7 +1610,7 @@ static void array_grow(AvraArray* a, void* pusher) {
 // TAIL-calls it and keeps no frame of its own.
 __attribute__((noinline))
 static void push_grown(AvraArray* a, int64_t v) {
-    if (a->cap >= CELL_CEILING || a->cap <= 0) avra_trap("a list grew past any possible size — a corrupted box"); // LICENSED traps.defect: a corrupted box
+    if (a->cap >= CELL_CEILING || a->cap < 0) avra_trap("a list grew past any possible size — a corrupted box"); // LICENSED traps.defect: a corrupted box
     array_grow(a, __builtin_return_address(0));
     a->data[a->len] = v;
     a->marks[a->len] = 0;
