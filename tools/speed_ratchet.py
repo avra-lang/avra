@@ -68,6 +68,8 @@ import re
 import subprocess
 import sys
 
+import ratchet_rows as rows_lib
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUDGET = os.path.join(ROOT, "tools", "speed.budget")
 MEASURE = "tools/speed_measure.sh"
@@ -115,19 +117,9 @@ def host_key():
 
 
 def least_rows(text):
-    """`<command> <phase> <ms>` lines -> {(cmd, phase): least ms}. A line
-    that is not a row is read past: the measurement's own words are not
-    rows."""
-    rows = {}
-    for line in text.splitlines():
-        m = ROW.match(line.strip())
-        if not m:
-            continue
-        key = (m.group("cmd"), m.group("phase"))
-        ms = int(m.group("ms"))
-        if key not in rows or ms < rows[key]:
-            rows[key] = ms
-    return rows
+    """`<command> <phase> <ms>` lines -> {(cmd, phase): least ms}. A line that is not a row is read past:
+    the measurement's own words are not rows."""
+    return rows_lib.read(text, ROW, ["cmd", "phase"], "ms", least=True)
 
 
 def measured_host(text):
@@ -154,12 +146,7 @@ def skip_reason(text):
 
 def budget_rows(text):
     """`<host> <command> <phase> <ms>` -> {(host, cmd, phase): ms}."""
-    rows = {}
-    for line in text.splitlines():
-        m = BUDGET_ROW.match(line.strip())
-        if m:
-            rows[(m.group("host"), m.group("cmd"), m.group("phase"))] = int(m.group("ms"))
-    return rows
+    return rows_lib.read(text, BUDGET_ROW, ["host", "cmd", "phase"], "ms")
 
 
 def budget_text(rows):
@@ -206,8 +193,7 @@ def budget_text(rows):
         "# summed job clock. They were first set for the fast floor and refused every",
         "# PR; these are calibrated from the completed runs that measured the gate.",
     ]
-    body = ["%s %s %s %d" % (h, c, p, rows[(h, c, p)]) for (h, c, p) in sorted(rows)]
-    return "\n".join(head + body) + "\n"
+    return "\n".join(head) + "\n" + rows_lib.lines(rows)
 
 
 def check(measured, accepted, host, ratio, slack, require):
