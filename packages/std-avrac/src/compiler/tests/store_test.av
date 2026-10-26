@@ -14,7 +14,9 @@ use compiler.host.{Host, memory_host, memory_host_at}
 use compiler.{Want, Workspace}
 use @std.avrac.testing.{test_workspace}
 use compiler.record.{runtime_bodies}
+use @std.text.{from_codepoint}
 use compiler.store.{
+    Anchor,
     Keeping,
     Producer,
     Producers,
@@ -37,6 +39,27 @@ fn toolchain_host(compiler: string?, at: List<string>, body: string) -> Host {
     mut files: Map<string, string> = {}
     for p in at { files.set(p, body) }
     memory_host_at(files, at, "/") with { compiler: compiler }
+}
+
+/// A store whose values name `/a/tree` as `tree` and `/a/tree/packages` as `std`.
+fn anchored(name: string) -> Store {
+    store_stamped(
+        "${store_base()}/${name}",
+        "",
+        Producers { sig: Producer.Absent },
+        Keeping.Disk,
+        [Anchor { at: "/a/tree", word: "tree" }, Anchor { at: "/a/tree/packages", word: "std" }],
+    )
+}
+
+/// Whether `text` kept under `name` reads back whole, and its kept bytes hold neither directory.
+fn round_trips(name: string, text: string) -> bool {
+    let s = anchored(name)
+    let _ = s.keep(Stored.Unit, "k", text, [text])
+    let filed = s.filed(text)
+    s.get(Stored.Unit, "k") == text &&
+        (s.reads_of(Stored.Unit, "k") ?? []).join("\n") == text &&
+        !filed.contains("/a/tree/")
 }
 
 /// A store of one spec's own, so two specs cannot see each other's rows.
@@ -73,7 +96,7 @@ spec "compiler/hold set — the files a derivation confirmed standing" {
             let ws = held_ws()
             ws
                 .keep_held_set(s, null, Want.Diagnostics, ["/w/src/b.av", "/w/src/a.av", "/w/src/b.av"])
-            s.get(Stored.Fp, ws.held_set_key(null, Want.Diagnostics)) == "/w/src/a.av\n/w/src/b.av"
+            s.get(Stored.Fp, ws.held_set_key(null, Want.Diagnostics)) == "${ws.stored_name("/w/src/a.av")}\n${ws.stored_name("/w/src/b.av")}"
         }
         then "a want's set is its own, so a build never trusts a check's" {
             let s = at("held-set-wants")
@@ -374,3 +397,31 @@ fn producer_stamp(parts: List<string?>, toolchain: string) -> string { stamp_tex
 fn stamp_of_parts(parts: List<string?>) -> string { stamp_text(producer_under(parts, "tc")) }
 
 fn stamp_text(p: Producer) -> string { match p { .Hashed(s) -> s, .Absent -> "absent" } }
+
+spec "store — a kept value names no place" {
+    given "a value naming the tree and the toolchain's std" {
+        then "it reads back whole, and its kept bytes name neither directory" {
+            round_trips(
+                "anchored",
+                "text /a/tree/p/src/main.av\nrun /a/tree/packages/std-json/src/json.av 5",
+            )
+        }
+        then "the deeper directory is named by its own word" {
+            anchored("deeper")
+                .filed("/a/tree/packages/std-text/src/text.av")
+                .contains("std:std-text/")
+        }
+    }
+    given "a value holding the byte that opens a word" {
+        then "it reads back whole, beside a named path or alone" {
+            let mark = from_codepoint(1)
+            round_trips("mark", "a${mark}b /a/tree/x ${mark}${mark}tree:y ${mark}") &&
+                round_trips("mark-alone", "${mark}")
+        }
+    }
+    given "a value naming no anchored directory" {
+        then "it is kept as it is" {
+            anchored("plain").filed("/elsewhere/x tree:y") == "/elsewhere/x tree:y"
+        }
+    }
+}

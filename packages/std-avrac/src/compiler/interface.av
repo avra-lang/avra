@@ -500,7 +500,9 @@ impl Workspace {
         let files = self.module_files(m)
         let kept = lines_by_file(prior_lines)
         let fresh = flatten([self.imported_by(path) for path in files if self.read_here(path)])
-        let gathers = flatten([self.gathers_lines(path) for path in files if self.read_here(path)])
+        let gathers = flatten(
+            [self.gathers_lines(store, path) for path in files if self.read_here(path)],
+        )
         let here = distinct(
             [line for line in prior_lines if line.starts_with("import\t") || kept_gathers(self, line)]
                 .concat(["import\t${d.text()}" for d in fresh])
@@ -644,7 +646,7 @@ impl Workspace {
         if r.ref.is_empty() || words.length < 4 { return self.ran_directly(store, r.path) }
         match words[1] {
             "fn" -> [],
-            "const" -> kept_reads(store, kept_key_for(r.path, text_of_field(words[3]))) ?? self
+            "const" -> kept_reads(store, self.kept_key_for(r.path, text_of_field(words[3]))) ?? self
                 .ran_directly(store, r.path),
             _ -> self.ran_directly(store, r.path),
         }

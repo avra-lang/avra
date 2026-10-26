@@ -27,7 +27,7 @@ use core.{
     is_kind_word,
     key_spelled,
 }
-use compiler.store.{Reading}
+use compiler.store.{Reading, Store, Stored}
 use @std.path.{under_dir, joined_path, normalized, dir_of}
 use features.{
     Decls,
@@ -204,10 +204,41 @@ impl Workspace {
     /// package whole: the package, the file, what it gathers, what it reads of each
     /// member and the set it gathered — the reach a record keeps for its held walk,
     /// and what a held file is held to.
-    fn gathers_lines(path: string) -> List<string> {
+    fn gathers_lines(store: Store, path: string) -> List<string> {
         let f = self.file_id(path)
         let key = self.packages()[self.holder_of_path(path)].key
-        [gathers_line(key, path, g, self.gathered_set(g, f)) for g in self.gatherings(path)]
+        [gathers_line(key, path, g, self.recorded_set(store, path, g, self.gathered_set(g, f))) for g in self.gatherings(path)]
+    }
+
+    /// Whether a collect gathers the program's import closure.
+    fn closing(scope: CollectScope) -> bool {
+        match scope { .Closure -> true, .Self or .Package or .UnknownScope(_) -> false }
+    }
+
+    /// The set a record's `gathers` line carries. An import closure's members are the PROGRAM's,
+    /// and a dependency's record is every program's, so its set rides a row of this program's own
+    /// and the line holds none.
+    fn recorded_set(store: Store, path: string, g: Gathering, set: string) -> string {
+        if !self.closing(g.scope) { return set }
+        let key = self.closure_set_key(path, g.name)
+        if store.get(Stored.Unit, key) != set { let _ = store.keep(Stored.Unit, key, set, []) }
+        ""
+    }
+
+    /// Where this program keeps the set a closure collect of `path` gathered.
+    fn closure_set_key(path: string, name: string) -> string { self.root_key(Stored.Unit, "closure-set", ["${self.stored_name(path)}", name]) }
+
+    /// A `gathers` line's set as this program stands on it: the line's own, or for an import
+    /// closure the row this program kept; empty for one it never kept, which no set equals.
+    fn gathers_set(store: Store, parts: List<string>) -> string {
+        let set = if parts.length > 7 { parts[7] } else { "" }
+        let scope? = scope_of_word(if parts.length > 8 { parts[8] } else { "" }) else { return set }
+        if !self.closing(scope) { return set }
+        store
+            .get(
+                Stored.Unit,
+                self.closure_set_key(parts[2], if parts.length > 9 { parts[9] } else { "" }),
+            ) ?? ""
     }
 
     /// A read file's package-wide collects, each as what it gathers.

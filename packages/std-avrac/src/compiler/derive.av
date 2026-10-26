@@ -29,7 +29,7 @@ use core.{
 use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path, joined_path}
 use diagnostics.{Diag, render_among}
-use compiler.store.{Store, Stored, node_key}
+use compiler.store.{Store, Stored, StoredName, node_key}
 use compiler.lower.{Lowered, Body, HashAsk, code_facts, code_facts_wire}
 use compiler.host.{no_source}
 use compiler.findings.{Finding, findings_read, findings_text, file_findings}
@@ -320,18 +320,6 @@ fn case_of(line: string) -> CaseCall? {
     }
 }
 
-/// Where a program's instantiation homes are remembered, by its entry.
-fn homes_key(entry: string) -> string { node_key(Stored.Unit, ["homes", entry]) }
-
-/// Where the reads the last standing attempt needed are remembered, by its entry and the
-/// files its edit moved: a guess that only pre-admits, each path with the words of the
-/// reason it was read for. The same edit needs the same reads. Under no edit the row is
-/// the last standing attempt's reads whatever it moved, the guess for any other edit.
-fn guess_key(entry: string, edit: string) -> string { node_key(Stored.Unit, ["guess", entry, edit]) }
-
-/// Whether the last standing attempt of an entry read the program's instantiation homes.
-fn homes_read_key(entry: string) -> string { node_key(Stored.Unit, ["homes-read", entry]) }
-
 /// Where "these instantiations lowered clean" is remembered.
 fn clean_key(asked: string) -> string { node_key(Stored.Unit, ["clean", asked]) }
 
@@ -359,6 +347,34 @@ fn remember(store: Store, key: string, paths: List<string>) {
 export type Checked = { warnings: string, reused: bool, timed: string, program: Program? = null, licenses: string = "", findings: List<Finding> = [], held: List<string> = [] }
 
 impl Workspace {
+    /// Where a program's instantiation homes are remembered, by its entry.
+    fn homes_key(entry: string) -> string { self.file_key(Stored.Unit, "homes", entry) }
+
+    /// Where the reads the last standing attempt needed are remembered, by its entry and the
+    /// files its edit moved: a guess that only pre-admits, each file with the words of the
+    /// reason it was read for. The same edit needs the same reads. Under no edit the row is
+    /// the last standing attempt's reads whatever it moved, the guess for any other edit.
+    fn guess_key(entry: string, edit: string) -> string { self.file_key(Stored.Unit, "guess", entry, [edit]) }
+
+    /// Whether the last standing attempt of an entry read the program's instantiation homes.
+    fn homes_read_key(entry: string) -> string { self.file_key(Stored.Unit, "homes-read", entry) }
+
+    /// A read as a row files it: its file under its stored name.
+    fn filed_read(r: ReadFile) -> ReadFile { r with { path: "${self.stored_name(r.path)}" } }
+
+    /// The paths a row remembers, each kept under its stored name and read back as a path here.
+    fn remembered_paths(store: Store, key: string) -> List<string> {
+        [self.path_named(StoredName(n)) for n in remembered(store, key) if !n.is_empty()]
+    }
+
+    /// `paths` joined to the ones a row remembers, each under its stored name.
+    fn remember_paths(store: Store, key: string, paths: List<string>) {
+        remember(store, key, ["${self.stored_name(p)}" for p in paths])
+    }
+
+    /// What names a check among the root's kept programs: its entry by stored name.
+    fn check_named(entry: string?) -> string { "check:${if entry == null { "" } else { "${self.stored_name(entry!)}" }}" }
+
     /// EVERYTHING WRONG WITH THE PROGRAM, as the refusal — or what merely warned,
     /// kept under the program's key, so an unchanged program costs a hash. A
     /// refusal is never kept.
@@ -367,7 +383,7 @@ impl Workspace {
         let opening = self.clock()
         let store = self.opened_store()
         self.timed("open", opening)
-        let under = Keyed { named: "check:${entry ?? ""}", beside: [] }
+        let under = Keyed { named: self.check_named(entry), beside: [] }
         let judging = self.clock()
         let key0 = self.confirmed_key(store, under)
         self.timed("judge", judging)
@@ -578,8 +594,8 @@ impl Workspace {
     /// modules its module sees.
     fn parts_moved_at(path: string) -> List<PartMoved> {
         let moved = self.hold.moved.get()
-        (moved.get(parts_key(path)) ?? [])
-            .concat(moved.get(seen_key(self.module_path_of(path).text())) ?? [])
+        (moved.get(self.parts_key(path)) ?? [])
+            .concat(moved.get(self.seen_key(self.module_path_of(path).text())) ?? [])
     }
 
     /// The rows standing in for a file under `want` that the store lacks, by
@@ -784,15 +800,15 @@ impl Workspace {
     /// starts with them reads what it would have turned to read.
     fn guessed_reads(store: Store, at: Attempt, led: List<string>) -> List<ReadFile> {
         if at.edit.is_empty() { return [] }
-        let own = remembered(store, guess_key(self.known_as(at), at.edit))
-        let lines = if own.length > 1 || own.any(!it.is_empty()) { own } else { remembered(store, guess_key(self.known_as(at), "")) }
-        [ReadFile { path: parts[0], why: Reads.Remembered(parts[1]) } for line in lines for parts in [line.split("\t")] if parts.length == 2 && !led.contains(parts[0]) && self.there(parts[0])]
+        let own = remembered(store, self.guess_key(self.known_as(at), at.edit))
+        let lines = if own.length > 1 || own.any(!it.is_empty()) { own } else { remembered(store, self.guess_key(self.known_as(at), "")) }
+        [ReadFile { path: path, why: Reads.Remembered(parts[1]) } for line in lines for parts in [line.split("\t")] if parts.length == 2 for path in [self.path_named(StoredName(parts[0]))] if !led.contains(path) && self.there(path)]
     }
 
     /// Whether the last standing attempt of `entry` read the instantiation homes: the
     /// attempt that starts with them stands without the one that finds it owes them.
     fn homes_were_read(entry: string) -> bool {
-        self.opened_store().get(Stored.Unit, homes_read_key(entry)) ?? "" == "1"
+        self.opened_store().get(Stored.Unit, self.homes_read_key(entry)) ?? "" == "1"
     }
 
     /// The standing attempt's reads, kept for the next attempt 0.
@@ -800,21 +816,21 @@ impl Workspace {
         if at.edit.is_empty() || !at.hold { return }
         let wire = joined(
             distinct(
-                [line for r in at.parse if guessable(r) for line in [guess_line(r)] if !line.is_empty()],
+                [line for r in at.parse if guessable(r) for line in [guess_line(self.filed_read(r))] if !line.is_empty()],
             ),
             "\n",
         )
-        let key = guess_key(self.known_as(at), at.edit)
+        let key = self.guess_key(self.known_as(at), at.edit)
         if store.get(Stored.Unit, key) ?? "" != wire { let _ = store.keep(Stored.Unit, key, wire, []) }
         let last = joined(
             distinct(
-                [line for r in at.parse if guessable(r) && !(r.why is .Moved) for line in [guess_line(r)] if !line.is_empty()],
+                [line for r in at.parse if guessable(r) && !(r.why is .Moved) for line in [guess_line(self.filed_read(r))] if !line.is_empty()],
             ),
             "\n",
         )
-        let last_key = guess_key(self.known_as(at), "")
+        let last_key = self.guess_key(self.known_as(at), "")
         if store.get(Stored.Unit, last_key) ?? "" != last { let _ = store.keep(Stored.Unit, last_key, last, []) }
-        let homed_key = homes_read_key(self.known_as(at))
+        let homed_key = self.homes_read_key(self.known_as(at))
         let homed = if at.homes { "1" } else { "0" }
         if store.get(Stored.Unit, homed_key) ?? "" != homed { let _ = store.keep(Stored.Unit, homed_key, homed, []) }
     }
@@ -837,7 +853,7 @@ impl Workspace {
     /// The files a const's kept verdict read, when one of its kept rows that needs no
     /// analysis refuses it; none when every such row stands.
     fn cheap_reads(store: Store, path: string, name: string) -> List<string> {
-        let said = store.get(Stored.Unit, "${kept_key_for(path, name)}#lines") ?? ""
+        let said = store.get(Stored.Unit, "${self.kept_key_for(path, name)}#lines") ?? ""
         let rows = [l.split("\t") for l in said.split("\n") if !l.is_empty()]
         if !rows.any((r: List<string>) -> self.row_refuses(store, r)) { return [] }
         let reads = rows.find(it[0] == "r") ?? []
@@ -871,11 +887,12 @@ impl Workspace {
                 [ReadFile { path: path, why: Reads.AsksUnread } for path in distinct(self.hold.asks_lost.get())],
             )?
         let lo = or_refused(lowered)?
-        remember(
-            store,
-            homes_key(self.known_as(at)),
-            distinct([self.decls.file(f).path for f in lo.homes]),
-        )
+        self
+            .remember_paths(
+                store,
+                self.homes_key(self.known_as(at)),
+                distinct([self.decls.file(f).path for f in lo.homes]),
+            )
         self.guess_kept(store, at)
         if at.homes && lo.homes.any((f) -> self.is_held(f)) { fail Turn.Again(at) }
         lo
@@ -1017,7 +1034,7 @@ impl Workspace {
     fn known_as(at: Attempt) -> string { at.entry ?? self.root }
 
     /// The homes this program has lowered from, as the store remembers them.
-    fn known_homes(store: Store, at: Attempt) -> List<string> { remembered(store, homes_key(self.known_as(at))) }
+    fn known_homes(store: Store, at: Attempt) -> List<string> { self.remembered_paths(store, self.homes_key(self.known_as(at))) }
 
     /// How many files this attempt is about to read: the ones it has met and does
     /// not hold — and, for all it can tell, EVERY file when it holds none.
@@ -1246,13 +1263,15 @@ impl Workspace {
     /// it sees. An ask a home's own body makes is that home's content. A home the
     /// tree no longer has is gone from the print, so the print moves with it.
     fn asked_print(store: Store, known_as: string, held: List<HeldAsk>, fresh: List<Wanted>) -> string {
-        let homes = [path for path in sorted_texts(remembered(store, homes_key(known_as))) if !path.is_empty() && self.there(path)]
+        let homes = [path for path in sorted_texts(self.remembered_paths(store, self.homes_key(known_as))) if self.there(path)]
         digest_of(
             joined(
                 sorted_texts(
                     distinct([h.wire for h in held].concat([self.wanted_wire(w) for w in fresh])),
                 )
-                    .concat(["${path}\t${self.held_okey(store, path)}" for path in homes]),
+                    .concat(
+                        ["${self.stored_name(path)}\t${self.held_okey(store, path)}" for path in homes],
+                    ),
                 "\n",
             ),
         )
@@ -1290,24 +1309,25 @@ impl Workspace {
     fn keep_parts(store: Store, path: string) {
         let now = self.key_parts_cached(store, self.module_path_of(path), path)
         let own = now with { seen: [] }
-        let kept = store.get(Stored.Unit, parts_key(path))
+        let kept = store.get(Stored.Unit, self.parts_key(path))
         let was = parts_of(kept ?? "")
+        let filed = self.stored_parts(own)
         self
             .keep_moved(
                 store,
-                parts_key(path),
-                parts_wire(own),
-                if was == null { [] } else { parts_moved(store, self.record_bodies(), was!, own) },
+                self.parts_key(path),
+                parts_wire(filed),
+                if was == null { [] } else { parts_moved(store, self.record_bodies(), was!, filed) },
             )
         // THE MODULE'S SEEN ROW is the module's whole view, one row its files share: the key a
         // file wears narrows it by name, and the move a reader is told of is the module's
         let whole = self.view_parts(store, self.module_path_of(path))
-        let seen = store.get(Stored.Unit, seen_key(now.module))
+        let seen = store.get(Stored.Unit, self.seen_key(now.module))
         let seen_was = seen_of(seen ?? "")
         self
             .keep_moved(
                 store,
-                seen_key(now.module),
+                self.seen_key(now.module),
                 seen_wire(whole),
                 if seen == null || seen_was == null { [] } else { seen_list_moved(store, self.record_bodies(), seen_was!, whole) },
             )

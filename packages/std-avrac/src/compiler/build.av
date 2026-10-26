@@ -48,6 +48,8 @@ use compiler.memory.{sound_checked}
 use compiler.store.{
     Store,
     Stored,
+    StoredName,
+    Anchor,
     Keeping,
     Producers,
     node_key,
@@ -254,7 +256,17 @@ impl Workspace {
             self.compiler_id(),
             Producers { sig: self.sig_producer() },
             self.keys.keeping.get(),
+            self.store_anchors(),
         )
+    }
+
+    /// The directories a kept value names by a word: the tree its cache stands in, and the
+    /// toolchain's std packages.
+    fn store_anchors() -> List<Anchor> {
+        [Anchor { at: tree_root(self), word: "tree" }]
+            .concat(
+                if self.host.std_root == null { [] } else { [Anchor { at: self.host.std_root!, word: "std" }] },
+            )
     }
 
     /// FROM HERE ON, AN INSPECTION: this workspace and every restart of it derive
@@ -554,23 +566,27 @@ impl Workspace {
     fn closure(named: string) -> List<string> {
         let kept = remembered(self.opened_store(), self.closure_key(named))
         sorted_texts(
-            distinct(
-                ["${p.src}\t${p.root}" for p in self.packages()]
-                    .concat([line for line in kept if !line.is_empty()]),
-            ),
+            distinct(self.closure_lines().concat([line for line in kept if !line.is_empty()])),
         )
     }
 
+    /// The admitted packages as closure lines: each one's source and root, by stored name.
+    fn closure_lines() -> List<string> { ["${self.stored_name(p.src)}\t${self.stored_name(p.root)}" for p in self.packages()] }
+
+    /// The directories a program's closure covers, each as a path here: its source and its root.
+    fn covered_dirs(named: string) -> List<CoveredDir> {
+        [CoveredDir {
+            src: self.path_named(StoredName(at[0])),
+            root: self.path_named(StoredName(at[1])),
+        } for at in [line.split("\t") for line in self.closure(named)] if at.length > 1]
+    }
+
     /// Where a program's closure is remembered.
-    fn closure_key(named: string) -> string { node_key(Stored.Unit, ["closure", self.root, named]) }
+    fn closure_key(named: string) -> string { self.root_key(Stored.Unit, "closure", [named]) }
 
     /// The closure as it stands now, remembered for the next key.
     fn keep_closure(named: string) {
-        remember(
-            self.opened_store(),
-            self.closure_key(named),
-            ["${p.src}\t${p.root}" for p in self.packages()],
-        )
+        remember(self.opened_store(), self.closure_key(named), self.closure_lines())
     }
 
     /// EVERY FILE A PROGRAM'S COMPILE-TIME RUNS READ THAT IS NOT ONE OF ITS
@@ -597,7 +613,7 @@ impl Workspace {
     }
 
     /// An embedded file's line of the key.
-    fn embed_line(path: string) -> string { "${relative_path(self.root, path)}\t${self.embed_said(path)}" }
+    fn embed_line(path: string) -> string { "${self.stored_name(path)}\t${self.embed_said(path)}" }
 
     /// THE INPUT MANIFEST: what the last derivation of a program read — its closure, each
     /// covered directory's listing, and every input, embed and object with its line of the
@@ -605,7 +621,7 @@ impl Workspace {
     /// record by recomputing those lines and reads the key off it, instead of rebuilding the
     /// input set (the closure walk, the embeds of every record, the reached objects).
     fn manifest_key(under: Keyed) -> string {
-        node_key(Stored.Fp, ["manifest", self.root, under.named, joined(under.beside, "\t")])
+        self.root_key(Stored.Fp, "manifest", [under.named, joined(under.beside, "\t")])
     }
 
     fn keep_manifest(store: Store, under: Keyed, key: string) {
@@ -613,12 +629,18 @@ impl Workspace {
         let covered = self.closure(under.named)
         let entries = [ManifestEntry.Covered(c) for c in covered]
             .concat(
-                [ManifestEntry.Listing(c.split("\t")[0], self.listing_word(c.split("\t")[0])) for c in covered],
+                [ManifestEntry
+                    .Listing(
+                        c.split("\t")[0],
+                        self.listing_word(self.path_named(StoredName(c.split("\t")[0]))),
+                    ) for c in covered],
             )
             .concat([self.input_entry(f) for f in inputs])
-            .concat([ManifestEntry.Embed(f, self.embed_line(f)) for f in self.embeds(inputs)])
             .concat(
-                [ManifestEntry.Object(o, self.object_line(o)) for o in self.reached_objects(under.named)],
+                [ManifestEntry.Embed("${self.stored_name(f)}", self.embed_line(f)) for f in self.embeds(inputs)],
+            )
+            .concat(
+                [ManifestEntry.Object("${self.stored_name(o)}", self.object_line(o)) for o in self.reached_objects(under.named)],
             )
         let _ = store
             .keep(
@@ -662,10 +684,10 @@ impl Workspace {
     fn entry_stands(e: ManifestEntry) -> bool {
         match e {
             .Covered(_) -> true,
-            .Listing(dir, word) -> self.listing_word(dir) == word,
-            .Input(path, line, stamp) -> self.input_stands(path, line, stamp),
-            .Embed(path, line) -> self.embed_line(path) == line,
-            .Object(path, line) -> self.object_line(path) == line,
+            .Listing(dir, word) -> self.listing_word(self.path_named(StoredName(dir))) == word,
+            .Input(name, line, stamp) -> self.input_stands(self.path_named(StoredName(name)), line, stamp),
+            .Embed(name, line) -> self.embed_line(self.path_named(StoredName(name))) == line,
+            .Object(name, line) -> self.object_line(self.path_named(StoredName(name))) == line,
         }
     }
 
@@ -674,7 +696,7 @@ impl Workspace {
     /// first, because taking the digest is what takes the stamp.
     fn input_entry(path: string) -> ManifestEntry {
         let line = self.input_line(path)
-        ManifestEntry.Input(path, line, self.text_stamp(path))
+        ManifestEntry.Input("${self.stored_name(path)}", line, self.text_stamp(path))
     }
 
     /// Whether an input still stands: the stamp it was recorded with, when the
@@ -735,10 +757,7 @@ impl Workspace {
         digest_key(
             digest_text(
                 digest_text(
-                    digest_text(
-                        digest_text(new_digest(), self.compiler_id()),
-                        relative_path(self.root, named),
-                    ),
+                    digest_text(digest_text(new_digest(), self.compiler_id()), named),
                     inputs,
                 ),
                 objects,
@@ -746,7 +765,7 @@ impl Workspace {
         )
     }
 
-    fn input_line(path: string) -> string { "${relative_path(self.root, path)}\t${self.text_digest(path)}" }
+    fn input_line(path: string) -> string { "${self.stored_name(path)}\t${self.text_digest(path)}" }
 
     /// Every object every reached package's manifest names — a C-only edit
     /// moves this list's digests though it moves no `.av` file's. Read over
@@ -755,8 +774,7 @@ impl Workspace {
     /// what already survives that (its own remembered half), `packages()`
     /// here would answer empty every first ask.
     fn reached_objects(named: string) -> List<string> {
-        let roots = [at[1] for at in [line.split("\t") for line in self.closure(named)] if at.length > 1]
-        distinct(flatten([self.manifest_objects(root) for root in roots]))
+        distinct(flatten([self.manifest_objects(c.root) for c in self.covered_dirs(named)]))
     }
 
     /// A root's own manifest, read fresh and not through `manifest(i)`'s
@@ -771,7 +789,7 @@ impl Workspace {
     /// An object's path paired with its CURRENT bytes' digest, read fresh —
     /// `digest_of_binary`, never `text_digest`: an object is bytes, not text,
     /// and nothing here keeps a memo across the one key this answers.
-    fn object_line(path: string) -> string { "${relative_path(self.root, path)}\t${digest_of_binary(path) ?? "-"}" }
+    fn object_line(path: string) -> string { "${self.stored_name(path)}\t${digest_of_binary(path) ?? "-"}" }
 
     /// A file's text as one digest, through its Text input: kept per read of
     /// that input, so a turn that reads the file again digests the text it read.
@@ -1247,6 +1265,9 @@ fn no_fallback(tool: string) -> string {
 fn wasm_unsupported(names: List<string>) -> string {
     "avra: a wasm module has no body for ${names.join(", ")} — a fiber, a core and a package's C are not available on this target"
 }
+
+/// A directory a program's closure covers: a package's source and its root, as paths here.
+type CoveredDir = { src: string, root: string }
 
 /// One line of an input manifest.
 enum ManifestEntry {
