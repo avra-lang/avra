@@ -1458,36 +1458,39 @@ fn helper_id(spelled: string) -> string {
         .replace(" ", "")
 }
 
+/// The kinds met so far, in reach order, and the spellings among them.
+type Reach = { kinds: List<Kind>, met: Map<string, bool> }
+
 /// Every kind reachable from a set of columns that needs a helper — a record or a payload
 /// enum, each instance of a generic once — in reach order, `seeded` ones counted as met.
 fn helper_types(columns: List<Field>, seeded: List<Kind>) -> List<Kind> {
-    mut all = seeded
-    for f in columns { all = collect_kinds(f.kind, all) }
-    all
+    mut reach = Reach { kinds: seeded, met: {} }
+    for k in seeded { reach.met.set(k.spelled(), true) }
+    for f in columns { reach = collect_kinds(f.kind, reach) }
+    reach.kinds
 }
 
 /// Every kind reachable in a kind's subtree, in reach order, each spelling once.
-fn collect_kinds(k: Kind, acc: List<Kind>) -> List<Kind> {
+fn collect_kinds(k: Kind, acc: Reach) -> Reach {
     match k {
         .Opt(inner) -> collect_kinds(inner, acc),
         .List(elem) -> collect_kinds(elem, acc),
         .Map(_, value) -> collect_kinds(value, acc),
         .Named(n, args) -> {
             let spelled = k.spelled()
-            if acc.any((m: Kind) -> m.spelled() == spelled) { return acc }
-            let next = acc.concat([k])
+            if acc.met.get(spelled) != null { return acc }
+            mut next = Reach { kinds: acc.kinds.concat([k]), met: acc.met }
+            next.met.set(spelled, true)
             match instance_shape(n, args) {
                 .Record(fs) -> {
-                    mut out = next
-                    for f in columns(fs) { out = collect_kinds(f.kind, out) }
-                    out
+                    for f in columns(fs) { next = collect_kinds(f.kind, next) }
+                    next
                 },
                 .Payload(vs) -> {
-                    mut out = next
                     for v in vs {
-                        for f in v.fields { out = collect_kinds(f.kind, out) }
+                        for f in v.fields { next = collect_kinds(f.kind, next) }
                     }
-                    out
+                    next
                 },
                 .Over(shape) -> collect_kinds(shape, next),
                 .Tagged(_) or .Dense(_) or .Plain -> next,
@@ -1549,10 +1552,9 @@ fn stored_type(t: Type, n: string) -> Type? { if n == t.name { t } else { type_n
 
 /// The helpers a stored type writes and reads by: every record and payload enum it reaches,
 /// itself among them when it is an enum.
-fn stored_helpers(t: Type) -> List<Decls> {
+fn stored_helpers(t: Type, owner: Owner) -> List<Decls> {
     let seeded: List<Kind> = if t.variants.is_empty() { [] } else { [Kind.Named(t.name, [])] }
-    let hashing = !stored_scoped(t)
-    [d for k in helper_types(stored_wire(t), seeded) for d in helper_members(t, k, stored_owner(t), hashing)]
+    [d for k in helper_types(stored_wire(t), seeded) for d in helper_members(t, k, owner, !owner.scoped)]
 }
 
 /// Whether a declaration carries its own codec — `@codec` gives a record or an enum the write,
@@ -1617,24 +1619,25 @@ fn described(ty: Type) -> string {
 fn stored_generated(t: Type) -> Decls {
     if !stored_problems(t).is_empty() { return quote { impl ${t} { } } }
     let shape = stored_shape(t)
+    let owner = stored_owner(t)
     let w = "w"
     quote {
         impl ${t} {
-            ${stored_helpers(t)}
+            ${stored_helpers(t, owner)}
 
             static fn codec_shape() -> int { ${shape} }
 
             fn encoded_in(scope: dyn Scope) -> Bytes {
                 let ${w} = writer()
                 ${name(w)}.fixed(${shape})
-                ${stored_write(t)}
+                ${stored_write(t, owner)}
                 ${name(w)}.bytes()
             }
 
             static fn decoded_in(scope: dyn Scope, b: Bytes) -> Result<${t}, CodecFault> {
                 let rd = reader(b)
                 if rd.fixed()? != ${shape} { fail CodecFault.OtherShape }
-                let v = ${stored_read(t)}
+                let v = ${stored_read(t, owner)}
                 if !rd.done() { fail CodecFault.Trailing }
                 v
             }
@@ -1644,19 +1647,19 @@ fn stored_generated(t: Type) -> Decls {
 
 /// The statements that write `self`: a payload enum through its own helper, a payload-free
 /// one as the tag a column of its kind is, a record column by column.
-fn stored_write(t: Type) -> List<Code> {
+fn stored_write(t: Type, owner: Owner) -> List<Code> {
     if carries_payload(t) {
-        return [write_helper(name("w"), t.name, quote { self }, stored_owner(t))]
+        return [write_helper(name("w"), t.name, quote { self }, owner)]
     }
-    if !t.variants.is_empty() { return [written(name("w"), quote { self }, Kind.Named(t.name, []), stored_owner(t))] }
-    [written(name("w"), quote { self.${f.name} }, f.kind, stored_owner(t)) for f in stored_wire(t)]
+    if !t.variants.is_empty() { return [written(name("w"), quote { self }, Kind.Named(t.name, []), owner)] }
+    [written(name("w"), quote { self.${f.name} }, f.kind, owner) for f in stored_wire(t)]
 }
 
 /// The expression that reads one back.
-fn stored_read(t: Type) -> Code {
-    if carries_payload(t) { return quote { ${read_helper(quote { rd }, t.name, stored_owner(t))}? } }
-    if !t.variants.is_empty() { return read_value(Kind.Named(t.name, []), stored_owner(t)) }
-    let inits = [quote { W { ${f.name}: ${field_value(f, stored_owner(t))} } } for f in t.fields]
+fn stored_read(t: Type, owner: Owner) -> Code {
+    if carries_payload(t) { return quote { ${read_helper(quote { rd }, t.name, owner)}? } }
+    if !t.variants.is_empty() { return read_value(Kind.Named(t.name, []), owner) }
+    let inits = [quote { W { ${f.name}: ${field_value(f, owner)} } } for f in t.fields]
     quote { ${t} { ..${inits} } }
 }
 
