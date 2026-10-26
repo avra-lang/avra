@@ -1,0 +1,27 @@
+//! Two views asking the same GET: the page sends one request and both show its answer.
+use @std.http_message.message.{Reply, Request}
+use @std.ui.app.{Async, Fetch, fetch, fetched}
+use @std.ui.components.{column, text}
+use @std.ui.web.{mount}
+
+state left: Fetch<int> = fetch()
+state right: Fetch<int> = fetch()
+
+fn sized(r: Reply) -> Result<int, string> { .Ok(r.body.length) }
+
+fn words(a: Async<int>) -> string {
+    match a {
+        .Idle -> "idle",
+        .Loading -> "loading",
+        .Failed(m) -> "failed ${m}",
+        .Ready(n) -> "ready ${n}",
+    }
+}
+
+fn view() -> column {
+    column { items: [text "left ${words(left.state())}", text "right ${words(right.state())}"] }
+}
+
+mount(view)
+let _ = fetched(left, Request.get("/tasks"), sized)
+let _ = fetched(right, Request.get("/tasks"), sized)
