@@ -193,7 +193,26 @@ said=$(grep -c '^dev: the page said: ui: .*keeps state' "$work/warns.out" || :)
 echo "ui-browser: a page whose walk warns is told in \`avra dev\`'s output, once"
 
 shots=${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"}
+# emptied: every task the server holds removed through its own doors, so each
+# engine's claims begin from the board's seeds alone.
+emptied() {
+    node --input-type=module -e '
+        const at = process.argv[1];
+        let listed = null;
+        for (let i = 0; i < 300 && !(listed && listed.ok); i++) {
+            listed = await fetch(at + "tasks").catch(() => null);
+            if (!(listed && listed.ok)) await new Promise((r) => setTimeout(r, 200));
+        }
+        if (!(listed && listed.ok)) { console.log(`ui-browser: the server never answered GET /tasks (${listed ? listed.status : "no answer"})`); process.exit(1); }
+        const rows = await listed.json();
+        for (const r of rows) {
+            const gone = await fetch(at + "tasks/" + r.id, { method: "DELETE" });
+            if (!gone.ok) { console.log(`ui-browser: emptying the server, DELETE /tasks/${r.id} answered ${gone.status}`); process.exit(1); }
+        }
+    ' "$1"
+}
 for engine in $engines; do
+    emptied "$url" || exit 1
     status=0
     began=$(date +%s)
     # `webkit-iphone` is WebKit under a phone's touch screen and window: the owner's real target
