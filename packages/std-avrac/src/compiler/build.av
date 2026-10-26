@@ -25,7 +25,7 @@ use core.{
 use features.{Wanted}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_bytes, make_dirs, remove}
-use @std.text.{parse_int}
+use @std.text.{parse_int, from_codepoint}
 use @std.time.{now_ns}
 use compiler.backend.{
     in_symbol_order,
@@ -910,7 +910,10 @@ impl Workspace {
         )
         if code != 0 {
             fail BuildError
-                .LinkFailed(code, if tools.target == "" { unanswered_externs(full, hosted) } else { [] })
+                .LinkFailed(
+                    code,
+                    if tools.target == "" { unanswered_externs(full, hosted, archive_text(tools.runtime)) } else { [] },
+                )
         }
         clock.mark("link")
         let shrunk = shipped(staged, tools)
@@ -1151,15 +1154,27 @@ fn program_asked_key(d: Derived, main: ProgramMain, tools: Toolchain) -> string 
 }
 
 /// THE EXTERNS NOTHING HERE ANSWERS: no runtime row, no package's
-/// library, no host fn of the program — what a failed link most likely
-/// lacked. A host's own row is one of these on every target but that
-/// host's.
+/// library, no host fn of the program, and no symbol the runtime archive
+/// names — what a failed link most likely lacked. A host's own row is one
+/// of these on every target but that host's.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a program in, the names nothing in it defines out.
-fn unanswered_externs(l: Lowered, defined: List<string>) -> List<string> {
+fn unanswered_externs(l: Lowered, defined: List<string>, archive: string) -> List<string> {
     let claimed = flatten([p.externs for p in l.libraries if p.library != ""])
     [row.name for row in l.externs if !rt_sigs().any(it.name == row.name) &&
         !claimed.contains(row.name) &&
-        !defined.contains(row.name)]
+        !defined.contains(row.name) &&
+        !named_in(archive, row.name)]
+}
+
+/// Whether an archive's text names `name` as a whole symbol: its index and
+/// string tables end each name with a NUL, and a mach-o name wears a leading `_`.
+fn named_in(archive: string, name: string) -> bool {
+    archive.contains(name + from_codepoint(0))
+}
+
+/// The runtime archive as text, or none when it cannot be read.
+fn archive_text(path: string) -> string {
+    match read_bytes(path) { .Ok(b) -> b.text_lossy(), .Err(_) -> "" }
 }
 
 fn unanswered_note(names: List<string>) -> string {

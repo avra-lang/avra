@@ -2,6 +2,8 @@
 // and the entry's own shape can each refuse, each answering through
 // @std.errors the same way every other compiler error does.
 use @std.avrac.compiler.{BuildError}
+use @std.text.{from_codepoint}
+use compiler.{named_in}
 
 spec "BuildError" {
     given "an empty program" {
@@ -72,6 +74,24 @@ spec "BuildError" {
         then "it passes through verbatim" {
             let d = BuildError.Diagnosed("error[manifest.no_target]: nothing to run").describe()
             d.kind == "build.diagnosed" && d.message == "error[manifest.no_target]: nothing to run"
+        }
+    }
+}
+
+/// What an archive's tables hold: names, each ended by a NUL.
+fn archive_of(names: List<string>) -> string {
+    [n + from_codepoint(0) for n in names].join("")
+}
+
+spec "named_in" {
+    given "an archive whose index names two symbols" {
+        then "each is named, whole" {
+            let a = archive_of(["_avra_str_parses_float", "avra_str_parsed_float"])
+            named_in(a, "avra_str_parses_float") && named_in(a, "avra_str_parsed_float")
+        }
+        then "a symbol it does not name is not, nor is a prefix of one it does" {
+            let a = archive_of(["avra_str_parses_float"])
+            !named_in(a, "avra_dom_frame") && !named_in(a, "avra_str_parses")
         }
     }
 }
