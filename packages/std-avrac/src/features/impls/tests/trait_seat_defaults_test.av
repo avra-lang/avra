@@ -1,0 +1,45 @@
+// A TRAIT MEMBER'S SEAT DEFAULT is the contract's: every impl's method
+// takes it for that seat, so a call through the type, a bound or a
+// contract value may leave the seat unwritten. One default, one place.
+use @std.avrac.testing.{shown, refused_with}
+
+/// A trait whose members default a seat, and one type answering it.
+fn grows() -> string {
+    "trait Grows {\n    fn grown(by: int = 10) -> int\n    static fn scaled(n: int, by: int = 2) -> int\n}\ntype P = { n: int }\nimpl Grows for P {\n    fn grown(by: int) -> int { self.n + by }\n    static fn scaled(n: int, by: int) -> int { n * by }\n}\n"
+}
+
+spec "features/impls — a trait member's seat default" {
+    given "a call that leaves a defaulted seat unwritten" {
+        then "through the type, the impl's method takes the trait's default" {
+            shown(grows() + "P.scaled(3) + P { n: 1 }.grown()") == "17"
+        }
+        then "a written argument fills the seat" {
+            shown(grows() + "P.scaled(3, 3) + P { n: 1 }.grown(1)") == "11"
+        }
+        then "through a bound, the trait's default fills it" {
+            shown(grows() + "fn g<T: Grows>(x: T) -> int { x.grown() }\ng(P { n: 5 })") == "15"
+        }
+        then "through a contract value, the trait's default fills it" {
+            shown(grows() + "let d: dyn Grows = P { n: 2 }\nd.grown()") == "12"
+        }
+        then "a named argument skips the defaulted seat" {
+            shown(grows() + "P.scaled(n: 4)") == "8"
+        }
+    }
+    given "an impl's method" {
+        then "that writes its own default for the trait's defaulted seat is refused" {
+            refused_with(
+                "trait Grows {\n    fn grown(by: int = 10) -> int\n}\ntype P = { n: int }\nimpl Grows for P {\n    fn grown(by: int = 3) -> int { self.n + by }\n}\nP { n: 1 }.grown()",
+                "`by`'s default is `Grows.grown`'s",
+            )
+        }
+    }
+    given "the default" {
+        then "is judged against its seat" {
+            refused_with(
+                "trait Grows {\n    fn grown(by: int = \"x\") -> int\n}\n1",
+                "this is `string`",
+            )
+        }
+    }
+}
