@@ -6,6 +6,7 @@
 //! other statements `collect`ed into its one `List` field.
 use core.{
     Minting,
+    Expansion,
     ComponentWord,
     Template,
     Record,
@@ -77,7 +78,10 @@ fn keyed_child(store: SyntaxArena, value: ExprId, key: ExprId) -> ExprId {
             store
                 .means_as(
                     value,
-                    Minting { nodes: [check ?? grown], literal: grown, check: check },
+                    Minting {
+                        nodes: [check ?? grown],
+                        expansion: Expansion { literal: grown, check: check },
+                    },
                     store.means_note(value) ?? "",
                 )
             value
@@ -90,15 +94,11 @@ fn keyed_child(store: SyntaxArena, value: ExprId, key: ExprId) -> ExprId {
 /// its file, where it stands, and the door a template it copies mints sugars by.
 type Mint = { store: SyntaxArena, span: Span?, provided: Provided, door: Means }
 
-/// What an instance's meaning stands as: the literal or template copy in its
-/// place, and the `check` call over it when its component judges instances.
-type Made = { literal: ExprId, check: ExprId? }
-
 impl Mint {
     /// An instance: its component's template copied in place, or a
     /// literal of its record. `body` is absent when no block was written.
     fn instance(targs: List<TypeRef>, heads: List<ExprId>, body: ExprId?, name: string?) -> Result<
-        Made,
+        Expansion,
         string,
     > {
         let word = self.provided.word
@@ -113,7 +113,7 @@ impl Mint {
     /// An instance of a template its declaration refused, or of a word known by
     /// its name alone: it stands as a hole, still an instance, so typing points it
     /// at the refusal.
-    fn hole() -> Made { Made { literal: self.store.alloc_expr(Expr.Error, self.span), check: null } }
+    fn hole() -> Expansion { Expansion { literal: self.store.alloc_expr(Expr.Error, self.span), check: null } }
 
     fn templated(
         word: ComponentWord,
@@ -121,7 +121,7 @@ impl Mint {
         t: Template,
         heads: List<ExprId>,
         body: ExprId?,
-    ) -> Result<Made, string> {
+    ) -> Result<Expansion, string> {
         if !targs.is_empty() { return .Err(template_targs(word.word)) }
         if heads.is_empty() { return .Err(headless(word.word)) }
         if t.head.length != 1 { return .Err(head_count(word.word, t.head.length)) }
@@ -131,7 +131,7 @@ impl Mint {
         let block = self.filled_body(body!, stmts)
         let minted = [self.minted_format(word, t, h, heads[j])? for j, h in t.head]
         .Ok(
-            Made {
+            Expansion {
                 literal: self.store.instantiated(t, word, heads, block, minted, self.door),
                 check: null,
             },
@@ -150,7 +150,7 @@ impl Mint {
         heads: List<ExprId>,
         body: ExprId?,
         name: string?,
-    ) -> Result<Made, string> {
+    ) -> Result<Expansion, string> {
         if heads.length != r.head.length { return .Err(record_heads(word, r.head.length, heads.length)) }
         let written_fn: ExprId? = if body != null && self.store.lambda_parts(body!) != null { self.tailed(body!, r.fn_optional) } else { null }
         let fn_filled = if written_fn == null { [] } else { [Field { name: r.fn_field ?? "", value: written_fn! }] }
@@ -182,7 +182,7 @@ impl Mint {
         self.store.mark_struct_targs(literal, targs)
         let check: ExprId? = if r.checks { self.store.alloc_expr(Expr.MethodCall(literal, Plain("check"), []), self.span) } else { null }
         if again != null { self.store.extend(literal, said_again_note(word), [again!.root], again!.minted) }
-        .Ok(Made { literal: literal, check: check })
+        .Ok(Expansion { literal: literal, check: check })
     }
 
     /// A SITED component's head text, said again: a closure over a COPY of the
@@ -506,12 +506,12 @@ fn minted_instance(cx: MeanCx, c: Component) -> Result<Minting, string> {
     let provided? = cx.provided else { return .Err(unimported(c.word)) }
     let m = Mint { store: cx.store, span: cx.span, provided: provided, door: cx.door }
     let made = m.made(c)?
-    .Ok(Minting { nodes: [made.check ?? made.literal], literal: made.literal, check: made.check })
+    .Ok(Minting { nodes: [made.check ?? made.literal], expansion: made })
 }
 
 impl Mint {
     /// The meaning of the instance `c`: a keyed list's loop, or the instance as written.
-    fn made(c: Component) -> Result<Made, string> {
+    fn made(c: Component) -> Result<Expansion, string> {
         let key? = c.key else { return self.instance(c.targs, c.heads, c.body, c.name?.of) }
         let word = self.provided.word.word
         let body? = c.body else { return .Err(keyed_body(word)) }

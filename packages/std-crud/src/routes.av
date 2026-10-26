@@ -20,6 +20,8 @@ use @std.http.http.{Request, Unrouted, Response, text, status}
 use @std.http.route.{Route, Mounted, fixed, routed, mounted}
 use @std.json.{Json, Field, field, to_text}
 use @std.db.error.{ModelError}
+use @std.db.scope.{Op, Where}
+use @std.sqlite.{SqlValue}
 use @std.sqlite.error.{SqlError}
 use @std.validate.{Issue, Issues}
 
@@ -45,34 +47,68 @@ export enum Failure {
     Broken(why: string)
 }
 
-/// A model's operations as closures, each already over its database.
+/// Who may see and touch which rows: the model's `column`, compared by `op`
+/// with a value read from the caller's `header`. A request that carries no
+/// value is refused (401); a row outside the scope is a row that is not there
+/// (404). `belongs_to` is the first constructor; the predicate grows in `Op`.
+export type Access = { column: string, op: Op, header: string, value: fn(string) -> SqlValue? }
+
+/// Rows whose `column` equals what `value` reads from the caller's `header`.
+export fn belongs_to(column: string, header: string, value: fn(string) -> SqlValue?) -> Access {
+    Access { column: column, op: .Eq, header: header, value: value }
+}
+
+/// A model's operations as closures, each already over its database and
+/// each held within the scope the caller's access gives (none: every row).
 export type Wire = {
     soft: bool,
-    list: fn() -> Result<Json, Failure>,
-    find: fn(int) -> Result<Json, Failure>,
-    create: fn(string) -> Result<Json, Failure>,
-    update: fn(int, string) -> Result<Json, Failure>,
-    remove: fn(int) -> Result<int, Failure>,
-    trash: fn() -> Result<Json, Failure>,
-    restore: fn(int) -> Result<Json, Failure>,
+    list: fn(Where?) -> Result<Json, Failure>,
+    find: fn(Where?, int) -> Result<Json, Failure>,
+    create: fn(Where?, string) -> Result<Json, Failure>,
+    update: fn(Where?, int, string) -> Result<Json, Failure>,
+    remove: fn(Where?, int) -> Result<int, Failure>,
+    trash: fn(Where?) -> Result<Json, Failure>,
+    restore: fn(Where?, int) -> Result<Json, Failure>,
 }
 
 type Opened = { door: Door, route: Route }
 
 /// The routes of a model's doors, but the ones left out.
-export fn crud_routes(w: Wire, without: List<Door>) -> Mounted {
-    mounted([d.route for d in opened(w) if !without.any(it == d.door)])
+export fn crud_routes(w: Wire, without: List<Door>, access: Access? = null) -> Mounted {
+    mounted([d.route for d in opened(w, access) if !without.any(it == d.door)])
 }
 
-fn opened(w: Wire) -> List<Opened> {
+/// The scope a request's caller is held within, or the refusal to answer it.
+fn scoped<P>(access: Access?, q: Request<P>, act: fn(Where?) -> Response) -> Response {
+    let a? = access else { return act(null) }
+    let named? = q.header(a.header) else { return unknown(a) }
+    let v? = a.value(named) else { return unknown(a) }
+    act(Where { column: a.column, op: a.op, value: v })
+}
+
+fn unknown(a: Access) -> Response { text(401, "this door needs the caller named in the `${a.header}` header") }
+
+fn opened(w: Wire, access: Access?) -> List<Opened> {
     [
         Opened {
             door: .List,
-            route: fixed(Method.Get, "/", (q: Request<Unrouted>) -> answered(w.list())),
+            route: fixed(
+                Method.Get,
+                "/",
+                (q: Request<Unrouted>) -> scoped(access, q, (sc) -> answered(w.list(sc))),
+            ),
         },
         Opened {
             door: .Create,
-            route: fixed(Method.Post, "/", (q: Request<Unrouted>) -> created(q, w.create)),
+            route: fixed(
+                Method.Post,
+                "/",
+                (q: Request<Unrouted>) -> scoped(
+                    access,
+                    q,
+                    (sc) -> created(q, (body: string) -> w.create(sc, body)),
+                ),
+            ),
         },
         Opened {
             door: .Find,
@@ -80,7 +116,7 @@ fn opened(w: Wire) -> List<Opened> {
                 Method.Get,
                 "/{id: int}",
                 (t: Bytes) -> Whole.parse(t),
-                (q: Request<Whole>) -> answered(w.find(q.params.id)),
+                (q: Request<Whole>) -> scoped(access, q, (sc) -> answered(w.find(sc, q.params.id))),
             ),
         },
         Opened {
@@ -89,7 +125,11 @@ fn opened(w: Wire) -> List<Opened> {
                 Method.Patch,
                 "/{id: int}",
                 (t: Bytes) -> Whole.parse(t),
-                (q: Request<Whole>) -> bodied(q, (body: string) -> w.update(q.params.id, body)),
+                (q: Request<Whole>) -> scoped(
+                    access,
+                    q,
+                    (sc) -> bodied(q, (body: string) -> w.update(sc, q.params.id, body)),
+                ),
             ),
         },
         Opened {
@@ -98,18 +138,26 @@ fn opened(w: Wire) -> List<Opened> {
                 Method.Delete,
                 "/{id: int}",
                 (t: Bytes) -> Whole.parse(t),
-                (q: Request<Whole>) -> removed_answer(w.remove(q.params.id)),
+                (q: Request<Whole>) -> scoped(
+                    access,
+                    q,
+                    (sc) -> removed_answer(w.remove(sc, q.params.id)),
+                ),
             ),
         },
     ]
-        .concat(if w.soft { soft_doors(w) } else { [] })
+        .concat(if w.soft { soft_doors(w, access) } else { [] })
 }
 
-fn soft_doors(w: Wire) -> List<Opened> {
+fn soft_doors(w: Wire, access: Access?) -> List<Opened> {
     [
         Opened {
             door: .Trash,
-            route: fixed(Method.Get, "/trash", (q: Request<Unrouted>) -> answered(w.trash())),
+            route: fixed(
+                Method.Get,
+                "/trash",
+                (q: Request<Unrouted>) -> scoped(access, q, (sc) -> answered(w.trash(sc))),
+            ),
         },
         Opened {
             door: .Restore,
@@ -117,7 +165,11 @@ fn soft_doors(w: Wire) -> List<Opened> {
                 Method.Post,
                 "/{id: int}/restore",
                 (t: Bytes) -> Restored.parse(t),
-                (q: Request<Restored>) -> answered(w.restore(q.params.id)),
+                (q: Request<Restored>) -> scoped(
+                    access,
+                    q,
+                    (sc) -> answered(w.restore(sc, q.params.id)),
+                ),
             ),
         },
     ]
@@ -244,11 +296,7 @@ export fn dropped<T>(r: Result<T?, SqlError>, drop: fn(T) -> Result<int, ModelEr
 
 fn dropped_row<T>(row: T?, drop: fn(T) -> Result<int, ModelError>) -> Result<int, Failure> {
     let r? = row else { return .Err(.Missing) }
-    counted(drop(r))
-}
-
-fn counted(r: Result<int, ModelError>) -> Result<int, Failure> {
-    match r { .Ok(n) -> .Ok(n), .Err(e) -> .Err(model_failure(e)) }
+    match drop(r) { .Ok(0) -> .Err(.Missing), .Ok(n) -> .Ok(n), .Err(e) -> .Err(model_failure(e)) }
 }
 
 /// A removed row brought back; missing when the trash holds none by this key.
@@ -270,7 +318,11 @@ fn restored<T>(row: T?, back: fn(T) -> Result<int, SqlError>, show: fn(T) -> Jso
     Failure,
 > {
     let r? = row else { return .Err(.Missing) }
-    match back(r) { .Ok(_) -> .Ok(show(r)), .Err(e) -> .Err(sql_failure(e)) }
+    match back(r) {
+        .Ok(0) -> .Err(.Missing),
+        .Ok(_) -> .Ok(show(r)),
+        .Err(e) -> .Err(sql_failure(e)),
+    }
 }
 
 fn sql_failure(e: SqlError) -> Failure { .Broken(e.describe().message) }

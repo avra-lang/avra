@@ -11,7 +11,11 @@ export alias Means = fn(SyntaxArena, ExprId) -> Result<Minting, string>
 /// What a sugar's meaning minted: its nodes in allocation order, the last the
 /// root; and, for an instance, the literal that stands in place and the `check`
 /// call over it. The door files these; a meaning never writes the store.
-export type Minting = { nodes: List<ExprId>, literal: ExprId? = null, check: ExprId? = null }
+export type Minting = { nodes: List<ExprId>, expansion: Expansion? = null }
+
+/// What stands in an instance's place: the literal, and the `check` call over
+/// it when its component judges instances.
+export type Expansion = { literal: ExprId, check: ExprId? = null }
 
 /// A meaning that minted only nodes.
 export fn minting(nodes: List<ExprId>) -> Minting { Minting { nodes: nodes } }
@@ -32,7 +36,7 @@ fn no_expr_marks() -> ExprMarks {
 /// file read it, and what its meaning minted — the literal or template copy
 /// that stands in place, and the `check` call over it when the component
 /// judges its instances.
-export type InstanceFacts = { provided: Provided, literal: ExprId? = null, check: ExprId? = null }
+export type InstanceFacts = { provided: Provided, expansion: Expansion? = null }
 
 /// A STATEMENT'S MARKS: `export`, `mut fn`, `once fn`, `static fn` — the
 /// fn-shaped keywords a declaration wears, one bitset instead of four
@@ -563,8 +567,8 @@ impl SyntaxArena {
         let root? = minted.nodes.last() else { return }
         self.meaning.set_at(sugar.index, root)
         self.mint_for(sugar, minted.nodes, note)
-        let literal? = minted.literal else { return }
-        self.expanded_as(sugar, literal, minted.check)
+        let expansion? = minted.expansion else { return }
+        self.expanded_as(sugar, expansion)
     }
 
     /// Mints nodes `sugar` is EXTENDED by: `roots` are what a walk reaches
@@ -739,8 +743,9 @@ impl SyntaxArena {
     /// The written type arguments a literal carries, in written order.
     fn struct_targs_of(e: ExprId) -> List<TypeRef> { self.struct_targs.get()[e.index] }
 
-    /// The type arguments a literal OR instance writes: an instance's
-    /// live on its expansion's literal.
+    /// The type arguments a literal OR instance writes. An instance's are its
+    /// payload's alone: its expansion's literal is marked from them when it is
+    /// minted (`recorded`), so the two never disagree.
     fn targs_of_lit(e: ExprId) -> List<TypeRef> {
         match self.expr(e) {
             .Component(_, targs, _, _, _, _) -> targs,
@@ -920,7 +925,7 @@ impl SyntaxArena {
     fn expansion_of(e: ExprId) -> ExprId? {
         match self.expr(e) {
             .Body(_, _, _, view) -> view.expansion(),
-            .Component(_, _, _, _, _, _) -> self.instances.get()[e.index]?.literal,
+            .Component(_, _, _, _, _, _) -> self.instances.get()[e.index]?.expansion?.literal,
             _ -> null,
         }
     }
@@ -936,23 +941,20 @@ impl SyntaxArena {
         let held = self.instances.get()[e.index]
         self
             .instances
-            .set_at(
-                e.index,
-                InstanceFacts { provided: provided, literal: held?.literal, check: held?.check },
-            )
+            .set_at(e.index, InstanceFacts { provided: provided, expansion: held?.expansion })
     }
 
     /// The literal an instance's meaning minted, and the `check` call over
     /// it when the component judges its instances.
-    fn expanded_as(e: ExprId, literal: ExprId, check: ExprId?) {
+    fn expanded_as(e: ExprId, expansion: Expansion) {
         let held? = self.instances.get()[e.index] else { return }
-        self.instances.set_at(e.index, held with { literal: literal, check: check })
+        self.instances.set_at(e.index, held with { expansion: expansion })
     }
 
     /// The `check` call an instance's component judges it by; null for a
     /// component that declares none.
     fn checked_by(e: ExprId) -> ExprId? {
-        self.instances.get()[e.index]?.check
+        self.instances.get()[e.index]?.expansion?.check
     }
 
     /// Gives `e` the component `worn` names — the door a copy uses, so an
@@ -1862,7 +1864,9 @@ impl SyntaxArena {
 
     /// What a complete walk reaches under `e`: its payloads' nodes — or, for an
     /// instance, which stands for what its component makes of it, that meaning
-    /// alone, so each node is reached once.
+    /// alone, so each node is reached once. Unlike `walked`, a sugar that is no
+    /// instance keeps its written payloads here: the printer and the walks that
+    /// list what was written read them.
     fn reached(e: ExprId) -> List<ExprId> {
         let root = if self.instance_word(e) == null { null } else { self.meant(e) }
         if root == null { self.expr_children(e) } else { [root!] }
