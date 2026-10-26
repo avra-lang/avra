@@ -256,8 +256,9 @@ const sentTo = () => asked.map((a) => `${a.init.method} ${a.url}`);
   await drain();
   claim("a refused list ask is said in the footer", footerWords().includes("load failed: status 503"), footerWords());
   table.refuseList = 0;
-  c.checked = !c.checked;
-  fire(c);
+  typed = "Restore the board";
+  fire(field);
+  fire(add);
   await drain();
   claim("the next change's list ask restores the board", keyed("1") !== null && !footerWords().includes("failed"), footerWords());
   spent();
@@ -345,12 +346,12 @@ table.refusing = 503;
 fire(named("Remove", keyed("6"))[0]);
 await drain();
 claim("a refused change shows as the words the answer gave", footerWords().includes("save failed: status 503"), footerWords());
-claim("and the board shows what the server holds: row 6 is still there", keyed("6") !== null && table.rows.length === 4);
+claim("and the board shows what the server holds: row 6 is still there", keyed("6") !== null && table.rows.length === 5);
 table.refusing = 0;
 spent();
 fire(named("Remove", keyed("6"))[0]);
 await drain();
-claim("the next change the server takes clears the words, and the row goes", !footerWords().includes("failed") && keyed("6") === null && table.rows.length === 3, footerWords());
+claim("the next change the server takes clears the words, and the row goes", !footerWords().includes("failed") && keyed("6") === null && table.rows.length === 4, footerWords());
 spent();
 
 // TURNS THAT LAND TOGETHER ARE ONE PAINT: a timer and the answers to a change
