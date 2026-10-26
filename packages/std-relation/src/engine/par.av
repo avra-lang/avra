@@ -3,8 +3,8 @@
 //! (a shard's writes land in its own segment, merged after). Nothing
 //! else forks: no pass starts a process of its own.
 //!
-//! A shard is a contiguous run of ids, cut by cost, so the same costs
-//! always cut the same shards and a shard owns neighbouring files.
+//! Shards are balanced by cost, heaviest unit first, so the same costs
+//! always give the same shards.
 extern fn avra_cores_group(n: int) -> int
 extern fn avra_cores_fork(g: int, serving: int) -> int
 extern fn avra_cores_end_fd(g: int, core: int) -> int
@@ -22,20 +22,52 @@ export fn workers_for(want: int, cores: int, free_mb: int, peak_mb: int) -> int 
     if m < 1 { 1 } else { m }
 }
 
-/// Ids `0..costs.length` cut into `n` contiguous shards of near-equal
-/// total cost: an id goes to the shard its cost-midpoint falls in. A
-/// zero cost counts as one, so every id has weight.
+/// Ids `0..costs.length` split into `n` shards of near-equal total cost: heaviest first, each
+/// to the lightest shard so far (ties to the lower shard and id). A shard lists its ids in
+/// ascending order; the same costs always give the same shards.
 export fn shards_of(costs: List<int>, n: int) -> List<List<int>> {
-    let total = costs.fold(0, (sum, c) -> sum + c + 1)
-    mut run = 0
-    mut owner: List<int> = []
-    for c in costs {
-        let w = c + 1
-        let k = (2 * run + w) * n / (2 * total)
-        owner.push(if k < n { k } else { n - 1 })
-        run = run + w
+    mut load: List<int> = [0 for _k in 0..n]
+    mut owner: List<int> = [0 for _c in costs]
+    for id in by_weight(costs, [i for i, _c in costs]) {
+        let k = lightest(load)
+        owner[id] = k
+        load[k] = load[k] + costs[id] + 1
     }
     [[i for i, o in owner if o == k] for k in 0..n]
+}
+
+/// The lowest-indexed shard with the least load.
+fn lightest(load: List<int>) -> int {
+    mut at = 0
+    for k, l in load { if l < load[at] { at = k } }
+    at
+}
+
+fn heavier(costs: List<int>, a: int, b: int) -> bool {
+    costs[a] > costs[b] || costs[a] == costs[b] && a < b
+}
+
+/// `ids` ordered heaviest first, ties by id.
+fn by_weight(costs: List<int>, ids: List<int>) -> List<int> {
+    if ids.length < 2 { return ids }
+    let mid = ids.length / 2
+    merged(costs, by_weight(costs, ids.slice(0, mid)), by_weight(costs, ids.slice(mid, ids.length)))
+}
+
+fn merged(costs: List<int>, xs: List<int>, ys: List<int>) -> List<int> {
+    mut out: List<int> = []
+    mut i = 0
+    mut j = 0
+    while i < xs.length && j < ys.length {
+        if heavier(costs, xs[i], ys[j]) {
+            out.push(xs[i])
+            i = i + 1
+        } else {
+            out.push(ys[j])
+            j = j + 1
+        }
+    }
+    out.concat(xs.slice(i, xs.length)).concat(ys.slice(j, ys.length))
 }
 
 /// `work(k)` done once for each shard `k` in `0..n`, each in its own
