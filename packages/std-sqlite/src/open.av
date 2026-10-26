@@ -21,9 +21,9 @@ use stmt.{Stmt}
 
 /// How a database file is journaled. `Keep` leaves it as it is: a new file is SQLite's classic rollback
 /// journal, an existing one stays in whatever it was. `Wal` asks for a write-ahead log, which lets readers and
-/// the writer proceed together, at a price: its state belongs to the PROCESS that opened the file, so a
-/// connection carried across a fork (the cores of a server) is refused, and its `-wal` and `-shm` files travel
-/// with the database. `Rollback` asks for the classic journal, which converts a file back. The journal is a
+/// the writer proceed together; its `-wal` and `-shm` files travel with the database, and its shared-memory
+/// state belongs to the PROCESS that opened the file, so the cores' fork closes every connection and each
+/// process reopens its own. `Rollback` asks for the classic journal, which converts a file back. The journal is a
 /// property of the FILE and persists, which is why only an explicit ask changes it, and a switch SQLite refuses
 /// (another connection holds a lock) leaves the file as it was and the open succeeds: ask `journal` which holds.
 export enum Journal { Keep, Wal, Rollback }
@@ -297,7 +297,7 @@ export type Db = {
     home: Cell<Home>,
 }
 
-/// The process, file and flags a connection was opened with.
+/// The registry epoch, file, flags and lock wait a connection was opened with.
 type Home = { epoch: int, path: string, flags: int, busy: int }
 
 /// Every connection is registered when opened and forgotten when closed. Before the cores fork the registry
@@ -394,17 +394,17 @@ impl Db {
     /// here first.
     fn closed_fault() -> SqlError? {
         let handle? = self.live() else { return connection_closed }
-        if self.home.get().path == ":memory:" && avra_sqlite_foreign(handle) != 0 { return memory_foreign }
+        if self.in_memory() && avra_sqlite_foreign(handle) != 0 { return memory_foreign }
         null
     }
 
     /// Whether the cores' fork closed this connection's handle since it was made or last reopened: the
     /// driver's registry closes every file-backed connection before a fork (`sqlite_sentinel.c`), and a
     /// connection made under an earlier epoch holds a handle that is gone.
-    fn parked() -> bool {
-        let home = self.home.get()
-        home.path != ":memory:" && home.epoch != avra_sqlite_epoch()
-    }
+    fn parked() -> bool { !self.in_memory() && self.home.get().epoch != avra_sqlite_epoch() }
+
+    /// Whether this is a private in-memory database: no file to reopen, and a copy in every forked process.
+    fn in_memory() -> bool { self.home.get().path == ":memory:" }
 
     /// The journal mode the file is in right now, by SQLite's own word: `wal`, `delete`, `memory`…
     fn journal() -> Result<string, SqlError> {

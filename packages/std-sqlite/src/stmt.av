@@ -64,9 +64,10 @@ export type Stmt = {
     conn: Cell<ptr?> = Cell.new(null),
     /// The registry epoch the statement was prepared under. The cores' fork closes every file-backed
     /// connection and finalizes what it held, so a statement of an earlier epoch is gone: it is read as
-    /// closed and its handle is never handed to SQLite. -1 marks a private in-memory connection's, which
-    /// the fork never closes.
+    /// closed and its handle is never handed to SQLite.
     epoch: int = 0,
+    /// Whether its connection is a private in-memory database, which the fork never closes.
+    memory: bool = false,
 }
 
 /// The result codes this driver reads by name rather than by number.
@@ -132,7 +133,8 @@ impl Db {
         Stmt {
             raw: Cell.new(handle),
             conn: Cell.new(conn),
-            epoch: if self.home.get().path == ":memory:" { -1 } else { avra_sqlite_epoch() },
+            epoch: avra_sqlite_epoch(),
+            memory: self.in_memory(),
         }
     }
 }
@@ -475,7 +477,7 @@ impl Stmt {
     /// The refusal for a statement of a private in-memory connection used by a process that did not open it.
     fn foreign_fault() -> SqlError? {
         let conn? = self.conn.get() else { return null }
-        if self.epoch < 0 && avra_sqlite_foreign(conn) != 0 { return memory_foreign }
+        if self.memory && avra_sqlite_foreign(conn) != 0 { return memory_foreign }
         null
     }
 
@@ -492,7 +494,7 @@ impl Stmt {
     fn dead() -> bool { self.h() == null }
 
     /// Whether the cores' fork finalized this statement along with its connection.
-    fn parked() -> bool { self.epoch >= 0 && self.epoch != avra_sqlite_epoch() }
+    fn parked() -> bool { !self.memory && self.epoch != avra_sqlite_epoch() }
 
     /// The statement handle SQLite may be given: none once the fork finalized it.
     fn h() -> ptr? {
@@ -554,8 +556,6 @@ extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
 /// A borrowed, NUL-terminated buffer's length in bytes — this package's
 /// own C, for the one wall answer with no paired length function.
 extern fn avra_sqlite_cstr_len(p: ptr) -> int
-extern fn avra_sqlite_epoch() -> int
-extern fn avra_sqlite_foreign(db: ptr) -> int
 
 /// A cell's octets, copied. The CLASS has already said a value is
 /// there; what remains is a pointer that may be absent because the

@@ -4,35 +4,10 @@ use @std.http.http.{text}
 use @std.http.route.{get}
 use @std.http.server.{server}
 use @std.io.{make_dirs}
-use @std.net.{NetError, connect, timely}
+use @std.net.{NetError}
 use @std.sqlite.{Db, sql}
-use @std.time.{secs, stamp}
-
-/// One request on its own connection, answered with its body.
-fn asked(port: int, method: string) -> Result<string, NetError> {
-    let c = connect("127.0.0.1", port, secs(2))?
-    defer { let _ = c.close() }
-    c
-        .write(
-            "${method} / HTTP/1.1\r\nHost: a\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
-                .bytes(),
-        )?
-    mut got = "".bytes()
-    while true {
-        match timely(within secs(2) { c.read(65536) }) {
-            .Ok(b) -> {
-                let more? = b else { break }
-                got = got.concat(more)
-            },
-            .Err(_) -> { break },
-        }
-    }
-    let parts = (got.text() ?? "?").split("\r\n\r\n")
-    .Ok(if parts.length > 1 { parts[1] } else { "?" })
-}
-
-/// A setup failure, in the one error this program speaks.
-fn refused(why: string) -> NetError { NetError { verb: "setup", subject: why, errno: 1 } }
+use @std.time.{stamp}
+use tests.support.{asked, refused}
 
 fn shown() -> Result<string, NetError> {
     let dir = "/tmp/avra-http-cores-open-txn/${stamp()}"

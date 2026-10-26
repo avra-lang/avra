@@ -86,7 +86,10 @@ void avra_sqlite_sleeps_held(void) {
  *
  * A connection that holds a transaction, or a statement mid-run, is not the driver's to roll back:
  * the fork is refused and nothing is closed. The verdict is made over every connection before any
- * is touched, so a refusal leaves the process exactly as it was.
+ * is touched, so a refusal leaves the process exactly as it was. A private in-memory database has
+ * no file to reopen: it is checked like the rest, never closed, and a process other than the one
+ * that opened it is told so (`avra_sqlite_foreign`). An evaluated run's connections die with it
+ * (`run_ends`), so a dead evaluation leaves nothing for a later fork to refuse.
  */
 extern void avra_fork_hook(int (*prepare)(const char** why));
 extern void avra_run_hook(void (*begins)(void), void (*ends)(void));
@@ -110,6 +113,12 @@ void avra_sqlite_opened(void* db) {
         g_open_cap = cap;
     }
     g_open[g_open_count++] = (Entry){ (sqlite3*)db, ++g_minted, g_pid };
+}
+
+/* A connection closed for real: its statements finalized first, any uncommitted work rolled back. */
+static void shut(sqlite3* db) {
+    for (sqlite3_stmt* s; (s = sqlite3_next_stmt(db, NULL));) sqlite3_finalize(s);
+    sqlite3_close_v2(db);
 }
 
 /* Whether this connection was opened by another process: a private database copied across a fork. */
@@ -165,8 +174,7 @@ static int parked(const char** why) {
             g_open[kept++] = g_open[i];
             continue;
         }
-        for (sqlite3_stmt* s; (s = sqlite3_next_stmt(g_open[i].db, NULL));) sqlite3_finalize(s);
-        sqlite3_close_v2(g_open[i].db);
+        shut(g_open[i].db);
     }
     g_open_count = kept;
     g_epoch++;
@@ -195,8 +203,7 @@ static void run_ends(void) {
     }
     for (int i = g_open_count - 1; i >= 0; i--) {
         if (g_open[i].serial <= mark) continue;
-        for (sqlite3_stmt* s; (s = sqlite3_next_stmt(g_open[i].db, NULL));) sqlite3_finalize(s);
-        sqlite3_close_v2(g_open[i].db);
+        shut(g_open[i].db);
         g_open[i] = g_open[--g_open_count];
     }
 }
