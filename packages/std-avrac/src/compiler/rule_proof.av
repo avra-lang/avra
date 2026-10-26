@@ -161,7 +161,21 @@ impl Program {
         let ws2 = timed_workspace(host2, self.ws.root, self.ws.lang, self.ws.clock)
         ws2.program(entry)
     }
+
+    /// A FRESH program whose ONLY ENTRY is `path`, its text overridden to `text`: every
+    /// top-level statement of every file below its own offset is silenced — `path`'s
+    /// below `kept_from`, any other file's all — so what runs is the statements `text`
+    /// carries from `kept_from` on. Declarations stay where they stand and stay in scope.
+    /// Never written to disk.
+    fn entered_over(path: string, text: string, kept_from: int) -> Program {
+        // LICENSED compiler.host_asked_directly: a host built over a host: the overlay asks the one beneath it — a composition, never a query's read
+        let host2 = self.ws.host with { peek: (p: string) -> if normalized(p) == normalized(path) { Beneath.Text(text) } else { (self.ws.host.peek)(p) }, quiet: (p: string) -> if normalized(p) == normalized(path) { kept_from } else { everything } }
+        timed_workspace(host2, self.ws.root, self.ws.lang, self.ws.clock).program(path)
+    }
 }
+
+/// Past any file's length: every statement below it is silenced.
+const everything: int = 1000000000000
 
 /// `enclosing_decl`'s own question (features/code.av), over a byte
 /// range rather than a node id — the only anchor an `Edit` outside

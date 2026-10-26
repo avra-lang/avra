@@ -38,6 +38,7 @@ use @std.meta.{
     name,
     refuse_as_at,
     type_named,
+    implements,
 }
 use @std.derive.{record_of}
 use @std.json.{
@@ -50,6 +51,7 @@ use @std.json.{
     want_float,
     want_text,
     want_bool,
+    text_formed,
     want_items,
     want_object,
     path_field,
@@ -78,6 +80,7 @@ use @std.json.typed.{
     object_of,
     present_raw,
     quoted,
+    text_parsed,
 }
 
 /// `@json` — a record's or an enum's JSON reader and writer, and every
@@ -334,7 +337,11 @@ fn read(kind: Kind, v: Code, p: Code, depth: int) -> Code {
         .Opt(inner) -> read_present(inner, v, p, depth),
         .List(elem) -> read_items(elem, v, p, depth),
         .Map(_, elem) -> read_members(elem, v, p, depth),
-        .Named(n, _) -> quote { ${name(n)}.decode_json(${v}, ${p})? },
+        .Named(n, _) -> if texted(n) {
+            quote { text_formed(${v}, ${p}, ${reads_as(n)}, (s: string) -> ${name(n)}.from_text_form(s))? }
+        } else {
+            quote { ${name(n)}.decode_json(${v}, ${p})? }
+        },
         rest -> quote { unreadable() },
     }
 }
@@ -401,7 +408,7 @@ fn written(kind: Kind, v: Code, depth: int) -> Code {
         .Opt(inner) -> written_present(inner, v, depth),
         .List(elem) -> written_items(elem, v, depth),
         .Map(_, elem) -> written_members(elem, v, depth),
-        .Named(_, _) -> quote { ${v}.to_json() },
+        .Named(n, _) -> if texted(n) { quote { Json.Str(${v}.text_form()) } } else { quote { ${v}.to_json() } },
         rest -> quote { unwritable() },
     }
 }
@@ -452,7 +459,11 @@ fn text_read(kind: Kind, raw: Code, depth: int) -> Code {
         .Map(_, elem) -> quote {
             map_of_entries([Entry { key: ${name(m)}.key, value: ${text_read(elem, quote { ${name(m)}.raw }, depth + 1)} } for ${m} in members(needed(${raw})?)?])
         },
-        .Named(n, _) -> quote { ${name(n)}.from_json_text(needed(${raw})?)? },
+        .Named(n, _) -> if texted(n) {
+            quote { text_parsed(needed(${raw})?, ${reads_as(n)}, (s: string) -> ${name(n)}.from_text_form(s))? }
+        } else {
+            quote { ${name(n)}.from_json_text(needed(${raw})?)? }
+        },
         rest -> quote { unreadable() },
     }
 }
@@ -474,7 +485,7 @@ fn text_write(kind: Kind, v: Code, depth: int) -> Code {
         },
         .List(elem) -> quote { array_of([${text_write(elem, name(x), depth + 1)} for ${x} in ${v}]) },
         .Map(_, elem) -> quote { object_of([member_text(${name(k)}, ${text_write(elem, name(x), depth + 1)}) for ${k}, ${x} in ${v}]) },
-        .Named(_, _) -> quote { ${v}.json_text() },
+        .Named(n, _) -> if texted(n) { quote { quoted(${v}.text_form()) } } else { quote { ${v}.json_text() } },
         rest -> quote { unwritable() },
     }
 }
@@ -502,7 +513,11 @@ fn shape_code(kind: Kind) -> Code {
         .Opt(inner) -> quote { ${shape_code(inner)} + "?" },
         .List(elem) -> quote { "[" + ${shape_code(elem)} + "]" },
         .Map(_, elem) -> quote { "map<" + ${shape_code(elem)} + ">" },
-        .Named(n, _) -> quote { if here.contains(${literal(n)}) { ${literal("~" + n)} } else { ${name(n)}.shape_in(here) } },
+        .Named(n, _) -> if texted(n) {
+            quote { ${literal(n)} }
+        } else {
+            quote { if here.contains(${literal(n)}) { ${literal("~" + n)} } else { ${name(n)}.shape_in(here) } }
+        },
         rest -> quote { unwritable() },
     }
 }
@@ -537,7 +552,7 @@ fn kind_schema(kind: Kind) -> Code {
         .Opt(inner) -> quote { Json.Obj([field("anyOf", Json.Arr([${kind_schema(inner)}, ${typed("null")}]))]) },
         .List(elem) -> quote { Json.Obj([field("type", Json.Str("array")), field("items", ${kind_schema(elem)})]) },
         .Map(_, elem) -> quote { Json.Obj([field("type", Json.Str("object")), field("additionalProperties", ${kind_schema(elem)})]) },
-        .Named(n, _) -> quote { Json.Obj([field("$ref", Json.Str(${literal("#/components/schemas/" + n)}))]) },
+        .Named(n, _) -> if texted(n) { typed("string") } else { quote { Json.Obj([field("$ref", Json.Str(${literal("#/components/schemas/" + n)}))]) } },
         rest -> quote { unwritable() },
     }
 }
@@ -582,11 +597,17 @@ fn fields_of(t: Type?) -> List<Field> {
 /// its own `@json`.
 fn records_read(k: Kind) -> List<string> {
     match k {
-        .Named(n, _) -> [n],
+        .Named(n, _) -> if texted(n) { [] } else { [n] },
         .Opt(held) or .List(held) or .Map(_, held) -> records_read(held),
         rest -> [],
     }
 }
+
+/// What a refused text-form value should have been.
+fn reads_as(n: string) -> Code { literal("a text that reads as " + n) }
+
+/// Whether a named type crosses as one string: it implements `@std/text`'s `TextForm`.
+fn texted(n: string) -> bool { implements(n, "TextForm") }
 
 /// Whether the record named `n` wears `@json` — or is not one this
 /// program can see, which the typer then names.

@@ -309,6 +309,16 @@ check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bk")" "k-new exa
 : > "$scratch/published"
 check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bk")" "" "work builder-key: nothing published answers nothing" "$scratch/out"
 
+# `compiler --get`: a held compiler for this source needs no build; none held and none published builds.
+lane getme
+mkdir -p "$sl/getme/build"; echo bin > "$sl/getme/build/avra"; chmod +x "$sl/getme/build/avra"
+echo "$(sh "$slw" compiler-hash "$sl/getme") $(git -C "$sl/getme" rev-parse HEAD)" > "$sl/getme/build/.avra-built-from"
+(cd "$sl/getme" && AVRA_GET_BUILD="echo BUILT >> $scratch/get-built" sh "$slw" compiler --get) > "$scratch/out" 2>&1
+check "$(grep -c "this tree's, from" "$scratch/out") $(grep -c BUILT "$scratch/get-built" 2>/dev/null || echo 0)" "1 0" "work compiler --get: a compiler held for this source is taken, nothing builds" "$scratch/out"
+find "$sl/getme/build" -type f -delete
+(cd "$sl/getme" && AVRA_COMPILER_DEPOT="$scratch/emptydepot" AVRA_GET_BUILD="echo BUILT >> $scratch/get-built" sh "$slw" compiler --get) > "$scratch/out" 2>&1
+check "$(grep -c BUILT "$scratch/get-built" 2>/dev/null || echo 0)" "1" "work compiler --get: none held and none published builds with make compiler" "$scratch/out"
+
 # MAIN'S COMPILER, ONCE PER SOURCE: the first run builds and deposits, the second finds the depot holding it.
 mcd=$scratch/mc/depot
 mcb='mkdir -p build && echo bin > build/avra && chmod +x build/avra && sh '"$slw"' built-from . > build/.avra-built-from && echo built >> '"$scratch"'/mc-builds'
