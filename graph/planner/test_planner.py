@@ -79,6 +79,9 @@ class FakeGraph:
     def read(self, entity):
         return {}
 
+    def prober(self, params):
+        return lambda cypher: self.call({"op": "query", "cypher": cypher, "params": params})
+
 
 class Gate(unittest.TestCase):
     def test_the_graphs_check_op_is_the_gate(self):
@@ -166,6 +169,74 @@ class Searching(unittest.TestCase):
         Searching.Model.calls = 0
         search.candidates(self.Model(), self.make, width=2, flips=2, rounds=1)
         self.assertEqual(Searching.Model.calls, 4)
+
+
+class Beaming(unittest.TestCase):
+    """A two-step walk: the first step prefers `a`, whose branch binds nothing."""
+
+    class Model:
+        def choose(self, context, question, options):
+            weights = {"a": 0.6, "b": 0.3, "c": 0.1} if question == "first" else \
+                {"x": 0.7, "y": 0.3} if context.endswith("a") else {"x": 0.4, "y": 0.6}
+            return [weights[o] for o in options]
+
+    @staticmethod
+    def make(walker):
+        import structured
+
+        out = structured.Plan()
+        walker.watch(out)
+        first = "abc"[structured.best(walker, "so far:", "first", ["a", "b", "c"])]
+        out.parts.append(f"({first})")
+        out.node(first)
+        second = "xy"[structured.best(walker, f"so far: {first}", "second", ["x", "y"])]
+        out.parts.append(f"-[:{second}]")
+        return "".join(out.parts)
+
+    @staticmethod
+    def probe(empty):
+        def ask(query):
+            hit = any(e in query for e in empty)
+            return {"status": "unknown" if hit else "answered", "fields": [] if hit else [{"value": 1}]}
+        return ask
+
+    def test_k1_is_the_greedy_walk(self):
+        import beam
+
+        found = beam.candidates(self.Model(), self.make, None, 1)
+        self.assertEqual([p.cypher for p in found], ["(a)-[:x]"])
+
+    def test_a_partial_plan_binding_nothing_is_dropped_and_the_beam_moves_on(self):
+        import beam
+
+        found = beam.candidates(self.Model(), self.make, self.probe(["(a)"]), 1)
+        self.assertEqual([p.cypher for p in found], ["(b)-[:y]"])
+
+    def test_a_wider_beam_reaches_a_plan_greedy_scores_below(self):
+        import beam
+
+        found = beam.candidates(self.Model(), self.make, None, 2)
+        self.assertEqual(found[0].cypher, "(a)-[:x]")
+        self.assertGreater(len(found), 1)
+
+    def test_a_finished_plan_with_an_empty_answer_is_never_chosen(self):
+        import beam
+
+        found = beam.candidates(self.Model(), self.make, self.probe(["-[:x]", "-[:y]"]), 3)
+        self.assertEqual(found, [])
+
+    def test_a_remembered_prompt_is_asked_once(self):
+        import beam
+
+        asked = []
+
+        class Counting(self.Model):
+            def choose(self, context, question, options):
+                asked.append((context, question, tuple(options)))
+                return super().choose(context, question, options)
+
+        beam.candidates(Counting(), self.make, None, 2)
+        self.assertEqual(len(asked), len(set(asked)))
 
 
 class Speaker(unittest.TestCase):

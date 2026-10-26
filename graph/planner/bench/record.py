@@ -27,7 +27,8 @@ sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(ROOT / "graph/acceptance"))
 import score  # noqa: E402
 from choices import walk  # noqa: E402
-from plan import Graph  # noqa: E402
+from plan import Graph, params_of  # noqa: E402
+from catalog import PARAMETERS  # noqa: E402
 
 
 def labeller(question_id, labels, needed):
@@ -76,7 +77,14 @@ def graph_at(checkpoint, scratch, fixture):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--only", help="comma-separated question ids")
+    parser.add_argument("--preview", action="store_true", help="options show what the graph holds (sight.py)")
+    parser.add_argument("--rows", type=int, help="override preview_rows")
+    parser.add_argument("--out", help="decisions file to write (default decisions.jsonl)")
     args = parser.parse_args()
+    if args.preview:
+        PARAMETERS["preview"] = True
+    if args.rows is not None:
+        PARAMETERS["preview_rows"] = args.rows
     fixture = score.load_fixture()
     questions = {q["id"]: q for q in fixture[3]}
     heldout = set(json.loads((ROOT / "graph/acceptance/split.json").read_text())["heldout"])
@@ -98,7 +106,7 @@ def main():
             context = {**context, **{k: locate(context[k]) for k in ("principal", "speaker") if context[k]}}
             label = labeller(row["id"], row["choices"], row.get("needed", []))
             graph = Graph([str(app.binary), "request", "--db", str(app.db)])
-            cypher, made = walk(q["question"], schema, context, label, graph.search, None, graph.read)
+            cypher, made = walk(q["question"], schema, context, label, graph.search, None, graph.read, graph.prober(params_of(context)))
             if label.missed():
                 raise SystemExit(f"{row['id']}: labels matching no option: {label.missed()}\n  composed: {cypher}")
             if label.unused:
@@ -111,9 +119,9 @@ def main():
     header = {"recorded": datetime.datetime.now().isoformat(timespec="seconds"), "commit": commit,
               "binary": str(score.BINARY), "binary_sha256": hashlib.sha256(score.BINARY.read_bytes()).hexdigest(),
               "questions": sorted({d["question_id"] for d in decisions})}
-    out = HERE / "decisions.jsonl"
+    out = pathlib.Path(args.out) if args.out else HERE / "decisions.jsonl"
     out.write_text("\n".join(json.dumps(r) for r in [header, *decisions]) + "\n")
-    print(f"{len(decisions)} decisions -> {out.relative_to(ROOT)}")
+    print(f"{len(decisions)} decisions -> {out}")
 
 
 if __name__ == "__main__":

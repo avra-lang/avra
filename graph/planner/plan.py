@@ -24,7 +24,7 @@ HUB = pathlib.Path.home() / ".cache/avra-graph-ml/hf/hub"
 
 sys.path.insert(0, str(HERE))
 from prompt import Budget, declared_context  # noqa: E402
-from catalog import PARAMETERS, Refusal  # noqa: E402
+from catalog import Abstain, PARAMETERS, Refusal  # noqa: E402
 
 
 def log(text):
@@ -129,6 +129,10 @@ class Graph:
         """The entity as the graph holds it: its model and its fields."""
         return self.call({"op": "get", "id": entity})
 
+    def prober(self, params):
+        """Read-only queries under the question's parameters, each asked once."""
+        return remembered(lambda cypher: self.call({"op": "query", "cypher": cypher, "params": params}))
+
     def search(self, query):
         """Every passage the search op will return for the query, up to its declared maximum."""
         return self.call({"op": "search", "query": query, "limit": PARAMETERS["search_limit"]}).get("passages", [])
@@ -199,14 +203,17 @@ def remembered(call):
 def composed(chooser, question, schema, context, graph=None, depth=None):
     """The closed choices composed into one query, the search's candidates
     admitted by the graph's check op in score order, with the time it is read at."""
-    import search
+    import beam
     import structured
 
     started = time.time()
     params = params_of(context)
     seek = remembered(graph.search) if graph else None
     read = remembered(graph.read) if graph else None
-    found = search.candidates(chooser, lambda walker: structured.plan(walker, question, schema, context, seek, depth, read))
+    probe = graph.prober(params) if graph else None
+    found = beam.candidates(chooser, lambda walker: structured.plan(walker, question, schema, context, seek, depth, read, probe), probe)
+    if not found:
+        raise Abstain("every walk the beam tried binds nothing in the graph")
     refusal = None
     for path in found:
         try:
@@ -215,7 +222,7 @@ def composed(chooser, question, schema, context, graph=None, depth=None):
             refusal = refused
             log(f"refused ({refused}): {path.cypher}")
             continue
-        log(f"composed in {time.time() - started:.1f}s from {len(found)} candidate(s), score {path.score():.2f}: {path.cypher}")
+        log(f"composed in {time.time() - started:.1f}s from {len(found)} finished plan(s), score {path.score():.2f}: {path.cypher}")
         return {"cypher": path.cypher, "params": params, "as_of": viewed(chooser, question, context)}
     raise refusal
 
@@ -239,6 +246,8 @@ def main():
                        (payload.get("budget") or {}).get("depth"))
     except Refusal as refusal:
         raise SystemExit(f"planner: the graph refuses the composed query ({refusal})")
+    except Abstain as why:
+        raise SystemExit(f"planner: abstains: {why}")
     print(json.dumps(out))
 
 

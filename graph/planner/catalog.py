@@ -16,6 +16,10 @@ class Refusal(Exception):
         self.code, self.message = code, message
 
 
+class Abstain(Exception):
+    """Every walk the planner tried binds nothing in the graph: no plan answers."""
+
+
 def models_of(schema):
     """The catalog's model descriptors from a `schema` op answer or a bare list."""
     models = schema.get("models", schema) if isinstance(schema, dict) else schema

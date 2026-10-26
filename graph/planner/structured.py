@@ -13,6 +13,7 @@ import re
 
 from catalog import PARAMETERS, derivations_of, embedded_in, models_of, base_shape, reference_target, relation_ends, seat_of
 from prompt import line
+from sight import Sight
 
 
 LETTERS = PARAMETERS["choice_letters"]
@@ -32,6 +33,16 @@ class Plan:
         var = f"n{len(self.vars)}"
         self.vars.append((var, label))
         return var
+
+    def seen(self, returns, tail="", where=(), limit=None, held=None):
+        """A read-only query over the pattern so far, continued by `tail` and
+        narrowed by `where`; `held` names the relation record the pattern passes."""
+        parts = list(self.parts)
+        if held:
+            parts[held[2]] = parts[held[2]].replace("-[:", f"-[{held[0]}:", 1)
+        conds = [*self.where, *where]
+        text = "MATCH " + "".join(parts) + tail + (" WHERE " + " AND ".join(conds) if conds else "")
+        return f"{text} RETURN {returns}" + (f" LIMIT {limit}" if limit else "")
 
     def cypher(self, returns):
         text = "MATCH " + "".join(self.parts)
@@ -183,6 +194,17 @@ def unique(keys):
     return [k if keys.count(k) == 1 else f"{k} ({i + 1})" for i, k in enumerate(keys)]
 
 
+def fitted(look, chooser, trail, question, build):
+    """The options built with as many sample rows as the model's prompt budget
+    holds, up to the declared preview rows."""
+    tokens = getattr(getattr(chooser, "budget", None), "tokens", None)
+    for rows in range(look.rows if look else 0, -1, -1):
+        options = build(rows)
+        if tokens is None or len(trail) + len(question) + sum(map(len, options)) <= tokens:
+            return options
+    return build(0)
+
+
 def hop_key(hop):
     """A hop's short name: its declared word, else the reference followed and the record reached."""
     arrow, target, _, phrases, _, _ = hop
@@ -230,7 +252,7 @@ def arrival(models, label, options):
             f"no: the answer is on related records ({onward})"]
 
 
-def plan(chooser, question, schema, context, search=None, depth=None, read=None):
+def plan(chooser, question, schema, context, search=None, depth=None, read=None, probe=None):
     """One query composed from closed choices; `depth` caps the hops (the
     request's budget), else the catalog's size bounds the walk."""
     derived = derivations_of(schema)
@@ -240,7 +262,10 @@ def plan(chooser, question, schema, context, search=None, depth=None, read=None)
     head = f"Question: {question}"
     evidence = Evidence(search, question, models)
     out = Plan()
-    var, label = anchored(chooser, head, question, models, context, evidence, out, read)
+    if hasattr(chooser, "watch"):
+        chooser.watch(out)
+    look = Sight(probe, models, PARAMETERS["preview_rows"]) if probe and PARAMETERS["preview"] else None
+    var, label = anchored(chooser, head, question, models, context, evidence, out, read, look)
     came, held = None, None
     phrasing = question.lower()
     for hop in range(depth if depth is not None else len(models)):
@@ -252,16 +277,21 @@ def plan(chooser, question, schema, context, search=None, depth=None, read=None)
         said = [i for i, h in enumerate(options) if any(spoken(p, phrasing) for p in h[3])]
         onward = [i for i, h in enumerate(options) if h[1] in evidence.models()]
         if said:
-            pick = said[0] if len(said) == 1 else said[best(chooser, trail, "Which relation does the question mean?",
-                                                              [options[i][2] for i in said],
-                                                              unique([options[i][3][0] for i in said]))]
+            ask = "Which relation does the question mean?"
+            pick = said[0] if len(said) == 1 else said[best(
+                chooser, trail, ask,
+                fitted(look, chooser, trail, ask, lambda n: [options[i][2] + (look.reach(out, options[i], n) if look else "") for i in said]),
+                unique([options[i][3][0] for i in said]))]
             evidence.explain(" ".join(options[pick][3]))
         else:
             if not onward and best(chooser, trail, f"Is the answer about this {label}?", arrival(models, label, options)) == 0:
                 break
             ranked = onward or list(range(len(options)))
-            pick = ranked[best(chooser, trail, "Where next?", [evidence.shown(options[i]) for i in ranked],
-                               unique([hop_key(options[i]) for i in ranked]))]
+            ask = "Where next?"
+            pick = ranked[best(
+                chooser, trail, ask,
+                fitted(look, chooser, trail, ask, lambda n: [evidence.shown(options[i]) + (look.reach(out, options[i], n) if look else "") for i in ranked]),
+                unique([hop_key(options[i]) for i in ranked]))]
         arrow, target, _, _, record, meaning = options[pick]
         phrasing = unsaid(meaning, phrasing)
         back = ("<-" + arrow[1:-2] + "-" if arrow.endswith("->") else arrow[1:-1] + "->")
@@ -269,12 +299,13 @@ def plan(chooser, question, schema, context, search=None, depth=None, read=None)
         held = (f"r{len(out.vars) - 1}", record, len(out.parts)) if record else None
         out.parts.append(f"{arrow}({var}:{target})")
         came, label = (back, label), target
-        narrowed(chooser, trail, models[target], var, out, question, evidence)
+        narrowed(chooser, trail, models[target], var, out, question, evidence, look)
         evidence.spent.add(target)
     trail = f"{head}\nSo far: {' '.join(out.parts)} — the answer is about these {label} records."
     offers = [d for d in derived if offered(d, label)]
     items = returns(chooser, trail, models[label], var, held and (held[0], models[held[1]]), evidence, offers,
-                    lambda d: derivation_call(chooser, trail, d, out, var, label, models, evidence, question))
+                    lambda d: derivation_call(chooser, trail, d, out, var, label, models, evidence, question),
+                    look and PARAMETERS["preview_values"] and (lambda v, name, n: look.value(out, v, name, n, held)), look)
     if held and f"{held[0]}." in items:
         out.parts[held[2]] = out.parts[held[2]].replace("-[:", f"-[{held[0]}:", 1)
     return out.cypher(items)
@@ -305,7 +336,7 @@ def speaking(chooser, head, models, context, read):
     return best(chooser, f"{head}\nAsked by {who}." if who else head, ask, ["no", "yes"]) == 1
 
 
-def anchored(chooser, head, question, models, context, evidence, out, read=None):
+def anchored(chooser, head, question, models, context, evidence, out, read=None, look=None):
     """The first node: the speaker, a record the question names, or every record of a kind."""
     named = evidence.named(question)
     if context.get("speaker") and speaking(chooser, head, models, context, read):
@@ -335,7 +366,7 @@ def anchored(chooser, head, question, models, context, evidence, out, read=None)
                            [k + ": " + line(models[k].get("description", "")) for k in kinds], kinds)]
         var = out.node(label)
         out.parts.append(f"({var}:{label})")
-        narrowed(chooser, head, models[label], var, out, question, evidence)
+        narrowed(chooser, head, models[label], var, out, question, evidence, look)
         evidence.spent.add(label)
     return var, label
 
@@ -346,7 +377,7 @@ def identified(models):
     return keyed or list(models)
 
 
-def narrowed(chooser, trail, model, var, out, question, evidence):
+def narrowed(chooser, trail, model, var, out, question, evidence, look=None):
     """A relationship record's declared label value, then a word its facts share with the question."""
     relation = ((model.get("semantics") or {}).get("relation")) or {}
     label = relation.get("label") or []
@@ -363,9 +394,9 @@ def narrowed(chooser, trail, model, var, out, question, evidence):
     shared = list(dict.fromkeys(shared))
     if not shared:
         return
-    options = [f"its {prop} contains {w!r}" for prop, w in shared] + ["no narrowing"]
-    pick = best(chooser, trail, f"Which of these narrows the {model['name']} records to the ones the question means?",
-                options, unique(options))
+    ask = f"Which of these narrows the {model['name']} records to the ones the question means?"
+    options = [f"its {prop} contains {w!r}" + (look.kept(out, var, prop, w) if look else "") for prop, w in shared] + ["no narrowing"]
+    pick = best(chooser, trail, ask, options, unique([f"its {prop} contains {w!r}" for prop, w in shared] + ["no narrowing"]))
     if pick < len(shared):
         prop, w = shared[pick]
         out.where.append(f"{var}.{prop} CONTAINS {quoted(w)}")
@@ -414,7 +445,7 @@ def derivation_call(chooser, trail, d, out, var, label, models, evidence, questi
     return f"{d['name']}({args}) AS {d['name']}"
 
 
-def returns(chooser, trail, model, var, record=None, evidence=None, offers=(), compose=None):
+def returns(chooser, trail, model, var, record=None, evidence=None, offers=(), compose=None, seen=None, look=None):
     """The RETURN items: a count, one recorded status, or chosen values. The
     final node's properties are candidates; a relation record passed on the
     way is a path, so its own fields are candidates only where unexplained
@@ -438,9 +469,11 @@ def returns(chooser, trail, model, var, record=None, evidence=None, offers=(), c
     if flags and best(chooser, trail, "What does the question want to know?", RECORDED) == 1:
         v, name = flags[best(chooser, trail, "Which recorded status?", [n for _, n in flags])]
         return f"coalesce({v}.{name}, false) AS {name}"
-    shown = [f"the {owner}'s {p['name']}" + (f" ({line(p['description'])})" if p.get("description") else "")
-             for _, owner, p in props]
-    picked = compared(chooser, trail, shown, unique([f"{owner}.{p['name']}" for _, owner, p in props]))
+    def shown(rows):
+        return [f"the {owner}'s {p['name']}" + (f" ({line(p['description'])})" if p.get("description") else "")
+                + (seen(v, p["name"], rows) if seen else "") for v, owner, p in props]
+    ask = "Which property does the question ask for?"
+    picked = compared(chooser, trail, fitted(look, chooser, trail, ask, shown), unique([f"{owner}.{p['name']}" for _, owner, p in props]))
     names = [props[i][2]["name"] for i in picked]
     return ", ".join(f"{props[i][0]}.{props[i][2]['name']} AS {props[i][2]['name']}"
                      + ("" if names.count(props[i][2]["name"]) == 1 else f"_{props[i][0]}")
