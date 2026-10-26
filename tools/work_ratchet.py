@@ -27,6 +27,8 @@ import os
 import re
 import sys
 
+import ratchet_rows as rows_lib
+
 BUDGET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "work.budget")
 ROW = re.compile(r"^counts (?P<scenario>[a-z]+) (?P<counter>[a-z_]+) (?P<n>[0-9]+)$")
 BUDGET_ROW = re.compile(r"^(?P<scenario>[a-z]+) (?P<counter>[a-z_]+) (?P<n>[0-9]+)$")
@@ -58,16 +60,9 @@ HEAD = """\
 
 
 def measured_rows(text):
-    """`counts <scenario> <counter> <n>` -> {(scenario, counter): n}, the
-    least of a repeated row. Any other line is read past."""
-    rows = {}
-    for line in text.splitlines():
-        m = ROW.match(line.strip())
-        if m:
-            key = (m.group("scenario"), m.group("counter"))
-            n = int(m.group("n"))
-            rows[key] = min(n, rows.get(key, n))
-    return rows
+    """`counts <scenario> <counter> <n>` -> {(scenario, counter): n}, the least of a repeated row. Any
+    other line is read past."""
+    return rows_lib.read(text, ROW, ["scenario", "counter"], "n", least=True)
 
 
 def gated(rows):
@@ -75,16 +70,11 @@ def gated(rows):
 
 
 def budget_rows(text):
-    rows = {}
-    for line in text.splitlines():
-        m = BUDGET_ROW.match(line.strip())
-        if m:
-            rows[(m.group("scenario"), m.group("counter"))] = int(m.group("n"))
-    return rows
+    return rows_lib.read(text, BUDGET_ROW, ["scenario", "counter"], "n")
 
 
 def budget_text(rows):
-    return HEAD + "".join("%s %s %d\n" % (s, c, rows[(s, c)]) for (s, c) in sorted(rows))
+    return HEAD + rows_lib.lines(rows)
 
 
 def judge(measured, ceilings):
@@ -112,12 +102,8 @@ def judge(measured, ceilings):
 
 
 def accepted(measured, ceilings):
-    """The ceilings after `--accept`: lowered to what was measured, a new
-    counter seeded, never one raised."""
-    out = dict(ceilings)
-    for key, now in measured.items():
-        out[key] = min(now, ceilings.get(key, now))
-    return out
+    """The ceilings after `--accept`: lowered to what was measured, a new counter seeded, never one raised."""
+    return rows_lib.lowered(measured, ceilings)
 
 
 def main(argv):
