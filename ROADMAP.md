@@ -3214,6 +3214,16 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### Interim record — an event is fired in two statements
+
+A component fires its own declared event by unwrapping the nullable
+handler first: `let fire? = self.submit else { return [] }` then
+`fire(value)` (std-ui/src/forms: `model_form.decoded`,
+`model_table.removed`). `self.submit?(value)` reads the `?` as
+propagation ("`?` makes this fn answer `null`"). The want: a call
+through a nullable fn value that runs when present and answers nothing
+when absent — `self.submit?.(value)` or the like.
+
 ### Interim record — a `once fn` takes no type parameters
 
 std-ui keeps a stateful composition's instances in a derived

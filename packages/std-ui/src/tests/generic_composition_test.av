@@ -1,0 +1,61 @@
+//! A generic composition draws what its body makes for the type its
+//! instance pins: by its head, or by its written type argument alone,
+//! with its own fields' defaults, and with its bound answering inside
+//! the body.
+use @std.ui.components.{text}
+use @std.ui.headless.{headless}
+
+trait Named {
+    static fn kind() -> string
+}
+
+type P = { v: int }
+
+impl Named for P {
+    static fn kind() -> string { "p" }
+}
+
+component plain_box<T>(head: T) {
+    text "boxed"
+}
+
+component labelled<T>(head: T) {
+    label: string = "own"
+    text self.label
+}
+
+component marked<T> {
+    label: string = "own"
+    held: List<T> = []
+    text "${self.label} ${self.held.length}"
+}
+
+component tagged<T: Named>(head: T) {
+    text T.kind()
+}
+
+fn sample() -> P { P { v: 1 } }
+
+spec "std/ui — a generic composition" {
+    given "an instance" {
+        then "pinned by its head draws its body" {
+            let p = sample()
+            headless(() -> plain_box p {}).text() == "text \"boxed\""
+        }
+        then "with its type argument written draws its body" {
+            let p = sample()
+            headless(() -> plain_box<P> p {}).text() == "text \"boxed\""
+        }
+        then "takes its own field's default" {
+            let p = sample()
+            headless(() -> labelled p {}).text() == "text \"own\""
+        }
+        then "pinned by its written type argument alone takes its defaults" {
+            headless(() -> marked<P> {}).text() == "text \"own 0\""
+        }
+        then "reads its bound's static in its body" {
+            let p = sample()
+            headless(() -> tagged p {}).text() == "text \"p\""
+        }
+    }
+}
