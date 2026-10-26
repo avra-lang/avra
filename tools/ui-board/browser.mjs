@@ -269,6 +269,7 @@ await page.close();
 // dialog away itself, by the same rule. The pref is Firefox's, so this page
 // is that engine's alone.
 if (engine === "firefox") {
+  await emptied();
   const unaware = await openPage(firefoxBinary(), url, { prefs: { "dom.dialog.light-dismiss.enabled": false } });
   await unaware.read(`new Promise((ready) => { const look = setInterval(() => { if (document.querySelector("li")) { clearInterval(look); ready(1); } }, 20); })`);
   claim("this engine knows no `closedby`", await unaware.read(`!("closedBy" in HTMLDialogElement.prototype)`));
