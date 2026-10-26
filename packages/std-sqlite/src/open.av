@@ -31,6 +31,12 @@ use stmt.{Stmt}
 /// and dropping it silently is the accepted-and-ignored shape this
 /// driver refuses everywhere else. The state is unrepresentable
 /// instead.
+/// How a database file keeps its changes safe. `Wal` writes them to a log beside the file, so a reader never
+/// blocks the writer and the writer never blocks a reader; the cost is two files beside the database
+/// (`-wal`, `-shm`) that travel with it, and a filesystem that shares memory between processes. `Rollback`
+/// is SQLite's classic journal: one writer, and a reader holds it off.
+export enum Journal { Wal, Rollback }
+
 export enum Mode {
     /// Read, write, and create the file when it is not there.
     ReadWrite
@@ -67,6 +73,13 @@ export type OpenConfig = {
     threading: Threading = .Serialized,
     /// Refuse a path whose final component is a symbolic link.
     no_follow: bool = false,
+    /// How long, in milliseconds, a statement waits for a lock another connection holds before it
+    /// is refused as busy; zero refuses at once. Connections to one file contend as a matter of
+    /// course — the cores of a server, a tool beside it — so a lock held is waited out by default.
+    busy: int = 5000,
+    /// The journal a file is kept in. It is a property of the FILE, set when a writer opens it and kept
+    /// until changed; a read-only connection leaves it alone, and a memory database has none.
+    journal: Journal = .Wal,
 }
 
 impl OpenConfig {
@@ -275,7 +288,7 @@ export type Db = {
 }
 
 /// The process, file and flags a connection was opened with.
-type Home = { pid: int, path: string, flags: int }
+type Home = { pid: int, path: string, flags: int, busy: int }
 
 /// This process's id.
 extern fn avra_own_pid() -> int
@@ -295,12 +308,12 @@ impl Db {
     /// dies with the connection, which is why it is a VERB and never a
     /// path — a config whose `path =` key went missing must not become
     /// one.
-    static fn memory() -> Result<Db, SqlError> { opened(":memory:", OpenConfig.config_at(":memory:").flags_of()) }
+    static fn memory() -> Result<Db, SqlError> { opened(OpenConfig.config_at(":memory:")) }
 
     /// Every knob, spelled. `open(p)` is `open_with(config_at(p))`.
     static fn open_with(c: OpenConfig) -> Result<Db, SqlError> {
         let _ = barred(c.path_fault())?
-        opened(c.path, c.flags_of())
+        opened(c)
     }
 
     /// The connection closed, and the handle NULLED so it cannot be
@@ -383,7 +396,7 @@ impl Db {
         self.cache.set([])
         self.raw.set(handle)
         self.home.set(home with { pid: now })
-        let _ = patient(self)
+        let _ = patient(self, home.busy)
         handle
     }
 
@@ -416,7 +429,9 @@ extern fn avra_sqlite_sleeps_held()
 /// object even for a FAILED open — its header says so — so a driver
 /// that closes only on success leaks one per failure, and the leak is
 /// invisible because the caller has an error in hand.
-fn opened(path: string, flags: int) -> Result<Db, SqlError> {
+fn opened(c: OpenConfig) -> Result<Db, SqlError> {
+    let flags = c.flags_of()
+    let path = c.path
     avra_sqlite_sleeps_held()
     mut handle: ptr? = null
     let rc = sqlite3_open_v2(path, handle, flags, null)
@@ -424,9 +439,9 @@ fn opened(path: string, flags: int) -> Result<Db, SqlError> {
     if handle == null { fail SqlError.refused(Cause.CantOpen, "SQLite answered success and no handle") }
     let db = Db {
         raw: Cell.new(handle),
-        home: Cell.new(Home { pid: avra_own_pid(), path: path, flags: flags }),
+        home: Cell.new(Home { pid: avra_own_pid(), path: path, flags: flags, busy: c.busy }),
     }
-    let fault: SqlError? = unreadable(db)
+    let fault: SqlError? = patient(db, c.busy) ?? journaled(db, c) ?? unreadable(db)
     if fault != null {
         let _ = db.close()
         fail fault!
@@ -437,8 +452,8 @@ fn opened(path: string, flags: int) -> Result<Db, SqlError> {
 /// How long a core's connection waits on a lock another core holds: the
 /// cores of one server write one file, so a held lock is contention, not
 /// an error.
-fn patient(db: Db) -> SqlError? {
-    match db.prepare("PRAGMA busy_timeout = 5000") { .Ok(s) -> ran(s), .Err(e) -> e }
+fn patient(db: Db, wait: int) -> SqlError? {
+    match db.prepare("PRAGMA busy_timeout = ${wait}") { .Ok(s) -> ran(s), .Err(e) -> e }
 }
 
 /// T127 CLOSED: the one trivial statement that tells a database from a
@@ -458,6 +473,13 @@ fn ran(s: Stmt) -> SqlError? {
     let outcome = s.step()
     let _ = s.finalize()
     fault_of(outcome)
+}
+
+/// The journal `c` asks for, set on a file this connection may write.
+fn journaled(db: Db, c: OpenConfig) -> SqlError? {
+    if c.path == ":memory:" || c.mode is .ReadOnly { return null }
+    let word = match c.journal { .Wal -> "wal", .Rollback -> "delete" }
+    match db.prepare("PRAGMA journal_mode = ${word}") { .Ok(s) -> ran(s), .Err(e) -> e }
 }
 
 fn fault_of(r: Result<bool, SqlError>) -> SqlError? {
