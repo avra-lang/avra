@@ -40,7 +40,7 @@ use features.{
     DeclSig,
 }
 use compiler.lower.{Body, collect_answer_type}
-use compiler.store.{Store, Stored, node_key}
+use compiler.store.{Store, Stored, StoredName, node_key}
 use compiler.families.{Family}
 use @std.relation.engine.{Key}
 
@@ -162,7 +162,7 @@ impl Workspace {
         let store? = self.store.get() else { return }
         let path = self.decls.file(self.decl_at(d).file).path
         let read? = read_row(read_fields(text)) else { return }
-        let row = read with { path: path }
+        let row = read with { path: self.path_named(StoredName(read.path)) }
         self.fill_shape(store, self.module_path_of(path), d, row)
     }
 
@@ -362,7 +362,8 @@ impl Workspace {
         work_module_minted()
         let fields = record_fields(self, store, m)
         let places = record_places(self, store, m)
-        for path in held { self.mint_file(path, file_rows(fields, places.get(path)), makers_in(fields, path)) }
+        for path in held { let _ = self
+                .mint_file(path, file_rows(fields, places.get(path)), makers_in(fields, path)) }
         for path in held { self.link_file(path, file_rows(fields, places.get(path))) }
         let lead? = held.first() else { return }
         self.decls.note_module_rows(self.decls.file(self.file_id(lead)).module_id, 2)
@@ -371,19 +372,25 @@ impl Workspace {
     /// ONE HELD FILE'S DECLARATIONS, minted from its record lines in record order. The
     /// file's statement table is written ONCE: read out and stored back per line, it
     /// is held twice while it is written, and every line copies it.
-    fn mint_file(path: string, rows: List<List<string>>, makers: Map<string, string>) {
+    /// Answers the file's top-level declarations, the ones its `Items` is.
+    fn mint_file(path: string, rows: List<List<string>>, makers: Map<string, string>) -> List<
+        DeclId,
+    > {
         work_file_minted()
         let f = self.file_id(path)
         self.decls.held_opened(f, makers.values())
         mut by_stmt = self.decls.decl_ids.get()[f.index].get()
+        mut top: List<DeclId> = []
         for parts in rows {
             let id: DeclId? = self.minted(f, path, parts, makers)
             let stmt_index = read_row(parts)?.stmt ?? 0
             by_stmt.grow_to(stmt_index + 1)
             if id != null && by_stmt.get(stmt_index).decl == null { by_stmt.set(stmt_index, DeclAt { decl: id }) }
+            if id != null && read_row(parts)?.item ?? false { top.push(id!) }
         }
         self.decls.held_closed(f, makers.values())
         self.decls.keep_stmt_decls(f, by_stmt)
+        top
     }
 
     /// One record line as a declaration — null for a line that names nothing. A line
