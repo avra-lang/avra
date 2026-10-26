@@ -1,6 +1,6 @@
 //! `app/cache.av` — what a loop has observed: one entry per key, shared by
 //! every view that asks it, and kept a while after its last reader leaves.
-use @std.http_message.message.{Reply, Request}
+use @std.http_message.message.{Reply, Request, Version}
 use @std.text.{text_before}
 use @std.time.{now_ms}
 use app.{Async}
@@ -36,20 +36,77 @@ fn inserted(pairs: List<string>, word: string) -> List<string> {
 /// A view that reads an entry: told each time the entry's state moves.
 export type Watcher = { id: int, apply: fn(Async<Reply>) -> void }
 
-/// One observation: the answer to a key's request as the reply it came in, its
-/// readers, and when the last of them left.
+/// One observation: the answer to a key's request as the reply it came in, the
+/// version that answer carries, whether a request is out, its readers, and when
+/// the last of them left.
 export type Entry = {
     id: int,
     key: Key?,
     now: Cell<Async<Reply>>,
+    version: Cell<Version?>,
+    out: Cell<bool>,
     watchers: Cell<List<Watcher>>,
     read: Cell<int>,
 }
 
 impl Entry {
     /// Whether the request is out and unanswered.
-    fn loading() -> bool {
-        match self.now.get() { .Loading -> true, .Idle or .Failed(_) or .Ready(_) -> false }
+    fn loading() -> bool { self.out.get() }
+
+    /// The version of the answer the entry holds, when it holds one.
+    fn held() -> Version? {
+        match self.now.get() {
+            .Ready(_) -> self.version.get(),
+            .Idle or .Loading or .Failed(_) -> null,
+        }
+    }
+
+    /// `request`, as it is sent: asking again what a version answered carries
+    /// that version, so the server may say nothing has changed.
+    fn conditional(request: Request) -> Request {
+        let at? = self.held() else { return request }
+        request.header("If-None-Match", at.tag())
+    }
+
+    /// A request goes out. An entry that holds a versioned answer keeps showing
+    /// it while the question is asked again; any other shows loading.
+    fn asked() {
+        self.out.set(true)
+        if self.held() != null { return }
+        self.now.set(Async.Loading)
+        self.told()
+    }
+
+    /// An answer came, and whether the entry changed. A 304 leaves what the
+    /// entry holds. An answer whose version is no later than the one held is
+    /// never taken, so what arrives late cannot replace what arrived first. A
+    /// failed ask leaves a held answer where it stands.
+    fn offered(answer: Result<Reply, string>) -> bool {
+        self.out.set(false)
+        let kept = self.held() != null
+        match answer {
+            .Err(why) -> {
+                if kept { return false }
+                self.now.set(Async.Failed(why))
+            },
+            .Ok(reply) -> {
+                if kept && reply.status == 304 { return false }
+                let at = reply.version()
+                let current? = self.held() else { return self.taken(reply, at) }
+                if at != null && !at!.after(current) { return false }
+                self.taken(reply, at)
+                return true
+            },
+        }
+        self.told()
+        true
+    }
+
+    fn taken(reply: Reply, at: Version?) -> bool {
+        self.now.set(Async.Ready(reply))
+        self.version.set(at)
+        self.told()
+        true
     }
 
     /// Whether no view reads it.
@@ -112,10 +169,13 @@ impl Cache {
         self.minted.set(self.minted.get() + 1)
         let idle: Async<Reply> = .Idle
         let nobody: List<Watcher> = []
+        let unversioned: Version? = null
         Entry {
             id: self.minted.get(),
             key: key,
             now: Cell.new(idle),
+            version: Cell.new(unversioned),
+            out: Cell.new(false),
             watchers: Cell.new(nobody),
             read: Cell.new(now_ms()),
         }
