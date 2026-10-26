@@ -67,6 +67,21 @@ spec "features/components — type parameters" {
                 "`int` does not implement `Named`",
             )
         }
+        then "accepts a type argument implementing a generic bound at its arguments" {
+            answered(
+                over(
+                    "trait Holds<X> {\n    fn held() -> X\n}\ntype P = { n: int }\nimpl Holds<int> for P {\n    fn held() -> int { self.n }\n}\ncomponent tag<T: Holds<int>>(head: T) {\n    fn twice() -> int { self.head.held() * 2 }\n}\nlet p = P { n: 4 }\nlet t = tag p { }\nt.twice()",
+                ),
+            ) == "8"
+        }
+        then "refuses a type argument implementing a generic bound at other arguments in the answer alone" {
+            refused_in(
+                over(
+                    "trait Holds<X> {\n    fn held() -> X\n}\ntype P = { n: int }\nimpl Holds<int> for P {\n    fn held() -> int { self.n }\n}\ncomponent tag<T: Holds<string>>(head: T) {\n    label: string = \"x\"\n}\nlet p = P { n: 1 }\nlet t = tag p { }\nt.label",
+                ),
+                "`P` does not implement `Holds<string>`",
+            )
+        }
         then "refuses a written type argument that does not implement it" {
             refused_in(
                 over(
