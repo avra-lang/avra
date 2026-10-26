@@ -48,8 +48,9 @@ spec "compiler/saved — answers by durable name" {
         }
         then "the same declaration in a second process has the same name" {
             let a = world(source())
+            let named = a.saved_name(sig_key(a, "two"))
             let b = world(source())
-            a.saved_name(sig_key(a, "two")) == b.saved_name(sig_key(b, "two"))
+            named == b.saved_name(sig_key(b, "two"))
         }
         then "a key whose argument is a local id has no name" {
             let ws = world(source())
@@ -69,12 +70,14 @@ spec "compiler/saved — answers by durable name" {
                         .find((d: DeclId) -> first.decls.decl(d).name == "two")!,
                 )
             let kept = first.saved_kept(k, "value")
+            let owed = (first.db.kernel.saved_reads(k, (r: Key) -> first.stands_alone(r)) ?? [])
+                .length
             let second = world(source())
             second.attach_store(store_at(dir))
             let found = second.saved_found(sig_key(second, "two"))
             kept &&
                 found != null &&
-                found!.reads.length == (first.db.kernel.saved_reads(k, (r: Key) -> first.stands_alone(r)) ?? []).length &&
+                found!.reads.length == owed &&
                 second.saved_found(sig_key(second, "one")) == null
         }
         then "an answer never kept is not found" {
