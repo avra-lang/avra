@@ -326,13 +326,13 @@ def check_compiler_route(work_text, remote_text):
     published = remote_text.find('"${route%%:*}" = published')
     merged = remote_text.find('"${route%%:*}" = mergebase')
     build = remote_text.find("building this tree's compiler")
-    seed = remote_text.find("bootstrapped from the seed")
+    seed = remote_text.find("make -s compiler GENS=1")
     if min(published, merged) < 0:
         refusals.append("the Sprite's prep does not install a published compiler for a route")
     elif build < 0 or build < max(published, merged):
         refusals.append("the Sprite's prep builds before it tries the published compiler")
     if merged >= 0 and (seed < merged or (build >= 0 and seed > build)):
-        refusals.append("a merge-base compiler that cannot read the tree does not fall back to the seed")
+        refusals.append("a merge-base compiler is not built through `make compiler`, whose seed fallback is the one that reads a tree it cannot")
     if refusals:
         return refusals, []
     return [], ["compiler-route: a published compiler is installed before a build; a merge-base miss falls back to the seed"]
@@ -938,7 +938,7 @@ rt-header:
     published_gone = real_remote.replace('"${route%%:*}" = published', '"${route%%:*}" = never', 1)
     assert published_gone != real_remote
     assert any("published" in x for x in check_compiler_route(real_work, published_gone)[0]), check_compiler_route(real_work, published_gone)
-    no_seed = real_remote.replace("bootstrapped from the seed", "built anyway", 1)
+    no_seed = real_remote.replace("make -s compiler GENS=1", "make -s avra", 1)
     assert no_seed != real_remote
     assert any("seed" in x for x in check_compiler_route(real_work, no_seed)[0]), check_compiler_route(real_work, no_seed)
 
