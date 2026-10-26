@@ -2683,6 +2683,14 @@ impl Decls {
         self.answers.set_at(method.index, member)
     }
 
+    /// The trait member an impl's method answers, read where the impl
+    /// names its trait.
+    fn contract_member(method: DeclId) -> DeclId? {
+        let block? = self.decl(method).parent else { return null }
+        let tr? = self.impl_trait(block) else { return null }
+        self.trait_member(tr, self.decl(method).name)
+    }
+
     fn record_target(impl_decl: DeclId, target: DeclId) {
         self.targets.set_at(impl_decl.index, target)
     }
@@ -3170,12 +3178,12 @@ impl Decls {
     }
 
     /// The trait member an `impl Trait for` method answers — absent
-    /// for an inherent method and a trait's own member. Its signature
-    /// names it, so the declaration is asked first.
+    /// for an inherent method and a trait's own member. A signed
+    /// declaration holds it; one read from an interface asks its impl.
     fn answered_member(d: DeclId) -> DeclId? {
         let _ = self.sig(d)
         let held: DeclId? = self.answers.get()[d.index]
-        held
+        held ?? self.contract_member(d)
     }
 
     /// Whether a fn's body is lowered once for every caller: no type

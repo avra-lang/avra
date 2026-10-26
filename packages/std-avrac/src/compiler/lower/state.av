@@ -206,8 +206,19 @@ impl LowerCx {
                     seats,
                 )
         }
-        if at == null { return self.wanted(m) }
+        if at == null || self.facts.subst_at(at!) == null { return self.receiver_symbol(m, recv) }
         self.symbol_at(m, at!)
+    }
+
+    /// A method a bound or a `dyn` box reached: typing recorded no
+    /// instantiation at the call, and under mono the receiver is concrete
+    /// — a generic record's method is instantiated at the record's own
+    /// arguments.
+    fn receiver_symbol(m: DeclId, recv: TypeId) -> string {
+        match self.view.types.shape_of(self.concrete(recv)) {
+            .App(d, _, args) -> self.wanted(m, Sub { target: d, args: args }),
+            rest -> self.wanted(m),
+        }
     }
 
     /// A trait member's instantiation at a call: `Self` and, for a
