@@ -338,7 +338,7 @@ fn read(kind: Kind, v: Code, p: Code, depth: int) -> Code {
         .List(elem) -> read_items(elem, v, p, depth),
         .Map(_, elem) -> read_members(elem, v, p, depth),
         .Named(n, _) -> if texted(n) {
-            quote { text_formed(${v}, ${p}, ${literal("a text that reads as " + n)}, (s: string) -> ${name(n)}.from_text_form(s))? }
+            quote { text_formed(${v}, ${p}, ${reads_as(n)}, (s: string) -> ${name(n)}.from_text_form(s))? }
         } else {
             quote { ${name(n)}.decode_json(${v}, ${p})? }
         },
@@ -460,7 +460,7 @@ fn text_read(kind: Kind, raw: Code, depth: int) -> Code {
             map_of_entries([Entry { key: ${name(m)}.key, value: ${text_read(elem, quote { ${name(m)}.raw }, depth + 1)} } for ${m} in members(needed(${raw})?)?])
         },
         .Named(n, _) -> if texted(n) {
-            quote { text_parsed(needed(${raw})?, ${literal("a text that reads as " + n)}, (s: string) -> ${name(n)}.from_text_form(s))? }
+            quote { text_parsed(needed(${raw})?, ${reads_as(n)}, (s: string) -> ${name(n)}.from_text_form(s))? }
         } else {
             quote { ${name(n)}.from_json_text(needed(${raw})?)? }
         },
@@ -602,6 +602,9 @@ fn records_read(k: Kind) -> List<string> {
         rest -> [],
     }
 }
+
+/// What a refused text-form value should have been.
+fn reads_as(n: string) -> Code { literal("a text that reads as " + n) }
 
 /// Whether a named type crosses as one string: it implements `@std/text`'s `TextForm`.
 fn texted(n: string) -> bool { implements(n, "TextForm") }
