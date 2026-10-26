@@ -4,7 +4,7 @@
 //! refused by name, a bound on one holds as a fn's does — the
 //! component's fns call its methods, and an instance's argument must
 //! implement it — and a parameter names no value.
-use @std.avrac.testing.{provided, answered, refused_in}
+use @std.avrac.testing.{provided, answered, refused_in, refused_with}
 use @std.avrac.compiler.{Program}
 
 fn over(main: string) -> Program { provided(main, "") }
@@ -141,6 +141,21 @@ spec "features/components — type parameters" {
                     "component slot<T> {\n    held: T\n}\nlet si = slot<int, int> { held: 1 }\nsi.held",
                 ),
                 "error[type.struct_targs]",
+            )
+        }
+    }
+    given "an event whose seat wears the parameter" {
+        then "hands the handler the pinned type" {
+            answered(
+                over(
+                    "component form<T>(head: T) {\n    on submit(value: T)\n    fn fire() -> int {\n        let h? = self.submit else { return 0 }\n        h(self.head)\n        1\n    }\n}\ntype P = { n: string }\nlet got = Cell.new(\"\")\nlet p = P { n: \"ab\" }\nlet f = form p { on submit { v -> got.set(v.n) } }\n\"\${f.fire()} \${got.get()}\"",
+                ),
+            ) == "1 ab"
+        }
+        then "names the pinned handler type when a handler does not fit" {
+            refused_with(
+                "component form<T>(head: T) {\n    on submit(value: T)\n}\ntype P = { n: string }\nlet p = P { n: \"ab\" }\nlet f = form p { on submit { v -> v.n.length } }\n0",
+                "`submit` is heard by a handler, `fn(P)?`",
             )
         }
     }
