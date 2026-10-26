@@ -17,6 +17,8 @@
 # ONE RULE builds all of them, the two above included: every object in
 # this tree comes from `build/%.o: %.c` and from nowhere else.
 
+# The default is one of two copies: `LLVM_PREFIXES` in packages/cli/src/commands/shared.av
+# holds the compiler's own, since this builds before any compiler exists.
 LLVM_PREFIX ?= /opt/homebrew/opt/llvm
 # a manifest's link flags name it as ${LLVM_PREFIX}
 export LLVM_PREFIX
