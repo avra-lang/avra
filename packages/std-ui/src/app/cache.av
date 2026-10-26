@@ -1,0 +1,164 @@
+//! `app/cache.av` — what a loop has observed: one entry per key, shared by
+//! every view that asks it, and kept a while after its last reader leaves.
+use @std.http_message.message.{Reply, Request}
+use @std.time.{now_ms}
+use app.{Async}
+
+/// How long an entry nobody reads is kept.
+const KEPT_MS: int = 300000
+
+/// The bytes all unread entries together may hold.
+const CAP_BYTES: int = 16777216
+
+/// What an observation is asked by: the path and its arguments, the query
+/// sorted so the order a caller wrote them in is no second observation.
+export type Key = { path: string, query: string }
+
+/// The key a request observes under, or none when it is no observation: only
+/// a GET without a body reads; any other request writes.
+export fn key_of(request: Request) -> Key? {
+    if !(request.method is .Get) || !(request.body is .Empty) { return null }
+    let parts = request.url.split("?")
+    let none: List<string> = []
+    let pairs = parts.drop(1).join("?").split("&").fold(none, inserted)
+    Key { path: parts.first() ?? "", query: pairs.join("&") }
+}
+
+/// `pairs` in byte order with `word` placed.
+fn inserted(pairs: List<string>, word: string) -> List<string> {
+    if word.is_empty() { return pairs }
+    [p for p in pairs if before(p, word)]
+        .concat([word])
+        .concat([p for p in pairs if !before(p, word)])
+}
+
+/// Whether `a` sorts before `b`, by byte.
+fn before(a: string, b: string) -> bool {
+    let n = if a.length < b.length { a.length } else { b.length }
+    mut i = 0
+    while i < n {
+        let ca = a.char_code(i)
+        let cb = b.char_code(i)
+        if ca != cb { return ca < cb }
+        i = i + 1
+    }
+    a.length < b.length
+}
+
+/// A view that reads an entry: told each time the entry's state moves.
+export type Watcher = { id: int, apply: fn(Async<Reply>) -> void }
+
+/// One observation: the answer to a key's request as the reply it came in, its
+/// readers, and when the last of them left.
+export type Entry = {
+    id: int,
+    key: Key?,
+    now: Cell<Async<Reply>>,
+    watchers: Cell<List<Watcher>>,
+    read: Cell<int>,
+}
+
+impl Entry {
+    /// Whether the request is out and unanswered.
+    fn loading() -> bool {
+        match self.now.get() { .Loading -> true, .Idle or .Failed(_) or .Ready(_) -> false }
+    }
+
+    /// Whether no view reads it.
+    fn unread() -> bool { self.watchers.get().is_empty() }
+
+    /// The reply's bytes it holds.
+    fn size() -> int {
+        match self.now.get() {
+            .Ready(reply) -> reply.body.length,
+            .Idle or .Loading or .Failed(_) -> 0,
+        }
+    }
+
+    /// `w` reads it from now, in place of any earlier word of the same view,
+    /// and is told what it holds.
+    fn joined(w: Watcher) {
+        self.watchers.set([x for x in self.watchers.get() if x.id != w.id].concat([w]))
+        (w.apply)(self.now.get())
+    }
+
+    /// The view `id` reads no more.
+    fn left(id: int) {
+        self.watchers.set([x for x in self.watchers.get() if x.id != id])
+        if self.unread() { self.read.set(now_ms()) }
+    }
+
+    /// Its state moved: every reader is told.
+    fn told() {
+        for w in self.watchers.get() { (w.apply)(self.now.get()) }
+    }
+}
+
+/// The entries a loop holds.
+export type Cache = { entries: Cell<List<Entry>>, minted: Cell<int> }
+
+export fn cache() -> Cache {
+    let none: List<Entry> = []
+    Cache { entries: Cell.new(none), minted: Cell.new(0) }
+}
+
+impl Cache {
+    /// The entry `request` is observed under: the one standing for its key,
+    /// shared by every view that asks, or a new one. A request that is no
+    /// observation gets an entry nobody else reads.
+    fn entry_of(request: Request) -> Entry {
+        let key? = key_of(request) else { return self.minted_entry(null) }
+        let held = self.entries.get().find((e) -> self.holds(e, key))
+        if held != null { return held! }
+        let made = self.minted_entry(key)
+        self.entries.push(made)
+        made
+    }
+
+    fn holds(e: Entry, key: Key) -> bool {
+        let at? = e.key else { return false }
+        at.path == key.path && at.query == key.query
+    }
+
+    fn minted_entry(key: Key?) -> Entry {
+        self.minted.set(self.minted.get() + 1)
+        let idle: Async<Reply> = .Idle
+        let nobody: List<Watcher> = []
+        Entry {
+            id: self.minted.get(),
+            key: key,
+            now: Cell.new(idle),
+            watchers: Cell.new(nobody),
+            read: Cell.new(now_ms()),
+        }
+    }
+
+    /// What is not worth keeping goes: an answered entry nobody has read for
+    /// `KEPT_MS`, and then, least recently read first, unread entries past the
+    /// cap.
+    fn swept() {
+        let now = now_ms()
+        let held = [e for e in self.entries.get() if !(e.unread() && !e.loading() && now - e.read.get() >= KEPT_MS)]
+        self.entries.set(self.under_cap(held))
+    }
+
+    fn under_cap(held: List<Entry>) -> List<Entry> {
+        let unread = [e for e in held if e.unread() && !e.loading()]
+        if unread.fold(0, (n: int, e: Entry) -> n + e.size()) <= CAP_BYTES { return held }
+        let nobody: Entry? = null
+        let oldest? = unread
+            .fold(
+                nobody,
+                (best: Entry?, e: Entry) -> if best == null || e.read.get() < best!.read.get() { e } else { best },
+            ) else {
+            return held
+        }
+        self.under_cap([e for e in held if e.id != oldest.id])
+    }
+
+    /// Every entry is let go: a loop that ends takes the requests it kept.
+    fn reset() {
+        let none: List<Entry> = []
+        self.entries.set(none)
+    }
+}

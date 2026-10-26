@@ -319,11 +319,18 @@ fn document(r: Reply) -> Result<Json, string> {
 /// The server's tasks replace the board's when it holds any; answers how
 /// many it holds.
 fn loaded(r: Reply) -> Result<int, string> {
-    let doc = document(r)?
-    let rows = [t! for t in [todo_of(j) for j in doc.items()] if t != null]
+    let rows = rows_of(document(r)?)
     if !rows.is_empty() { tasks = rows }
     .Ok(rows.length)
 }
+
+/// The tasks a reply holds, as the page shows them.
+fn rows_of(doc: Json) -> List<Todo> {
+    [t! for t in [todo_of(j) for j in doc.items()] if t != null]
+}
+
+/// How many tasks the server holds, the board left as it stands.
+fn counted(r: Reply) -> Result<int, string> { .Ok(rows_of(document(r)?).length) }
 
 /// The task the server kept stands where the pending one did; answers how
 /// many tasks the server now holds.
@@ -334,10 +341,12 @@ fn kept(r: Reply) -> Result<int, string> {
     .Ok([t for t in tasks if held(t)].length)
 }
 
-/// The tasks are asked for at start: one request, whatever target sends it,
-/// its progress kept apart from the footer's Sync words.
+/// The tasks are asked for at start: one request, whatever target sends it.
+/// The board takes them (`started`) and the footer counts them (`synced`) — two
+/// views of one observation, so the page asks once.
 fn load() {
     let _ = fetched(started, Request.get("/tasks"), loaded)
+    let _ = fetched(synced, Request.get("/tasks"), counted)
 }
 
 /// Sync sends the first task the server does not hold; with none to send it

@@ -56,7 +56,8 @@ export type Door = { send: fn(Msg) -> bool, ask: fn(Want, Act, string?) -> bool,
 /// starts: every component instance on the app is kept under it, and
 /// nowhere else. `told` is what its walk has said that a target already
 /// passed on. `looping` is whether a loop serves it; `door` is where every source that is not a control —
-/// a timer, an answer, a stream — leaves its message once a loop runs;
+/// a timer, an answer, a stream — leaves its message once a loop runs; `observed`
+/// holds what the loop has asked of the network, one entry per key;
 /// its writers never wait. A target with no loop runs an `Act` as a turn
 /// at once and starts no job. `jobs` is how many tasks the loop holds.
 /// `dirty` is whether state moved since the last paint, `holding` whether a
@@ -90,6 +91,7 @@ export type App = {
     framer: Cell<fn() -> void>,
     walks: Cell<int>,
     frames: Cell<int>,
+    observed: Cache,
 }
 
 /// A target that is asked for no frame.
@@ -163,6 +165,7 @@ export fn owned_app<V: View>(
         framer: Cell.new(nobody_asks),
         walks: Cell.new(0),
         frames: Cell.new(0),
+        observed: cache(),
     }
 }
 
@@ -368,6 +371,13 @@ impl App {
         if self.refuses() { return false }
         let door? = self.door.get() else { return false }
         door.ask(want, act, self.asking.get())
+    }
+
+    /// An observation is asked for: it is the loop's own, so no control's
+    /// leaving takes it back. False when no loop runs.
+    fn ask_observed(want: Want, act: Act) -> bool {
+        let door? = self.door.get() else { return false }
+        door.ask(want, act, null)
     }
 
     /// Where messages go now: the running loop's inbox, held — a source
