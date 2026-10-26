@@ -13,7 +13,8 @@ import sys
 import numpy as np
 
 import channels
-from bench import first_rank, metrics, pooled, trigrams
+from bench import first_rank, metrics, pooled
+from channels import trigrams
 from embedders import Embedder, VectorStore
 
 
@@ -34,17 +35,18 @@ def entity_cases(pool, store, emb, regime):
 
     rng = random.Random(7)
     ents = pool["entities"]
-    forms, owner = [], []
+    forms, plain, owner = [], [], []
     for i, e in enumerate(ents):
         for f in ([e["name"], e["alias"]] if regime else [e["name"]]):
             forms.append(f"{f} ({e['kind']})")
+            plain.append(f)
             owner.append(i)
     fv = store.encode(emb, forms, "document")
     cases = []
     for i, e in enumerate(ents):
         for m in (e["alias"], typo(e["name"], rng), typo(e["alias"], rng)):
             q = store.encode(emb, [m], "query")[0]
-            cases.append((fv @ q, trigram_sim(m, forms), owner, i))
+            cases.append((fv @ q, trigram_sim(m, plain), owner, i))
     return cases
 
 

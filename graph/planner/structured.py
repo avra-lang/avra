@@ -11,6 +11,11 @@ phrase spoken, one record the question names) is taken without the model.
 import math
 import re
 
+import os
+import sys
+
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "retrieval"))
+import hooks as retrieval_hooks  # noqa: E402
 from catalog import PARAMETERS, derivations_of, embedded_in, models_of, base_shape, reference_target, relation_ends, seat_of
 from prompt import line
 from sight import Sight
@@ -65,7 +70,7 @@ class Evidence:
 
     def __init__(self, search, question, models):
         self.facts, self.every, self.words, self.spent = [], [], set(), set()
-        self.used = set()
+        self.used, self.near = set(), []
         if not search:
             return
         found = {w: search(w) for w in dict.fromkeys(tokens(question))}
@@ -100,7 +105,8 @@ class Evidence:
     def named(self, question):
         """Facts whose whole value the question spells: records it names. A name
         is evidence however common its words are, since the whole value matches."""
-        return [f for f in self.every if spoken(f[2], question.lower())]
+        exact = [f for f in self.every if spoken(f[2], question.lower())]
+        return exact + [f for f in self.near if f not in exact]
 
     def models(self):
         """Models whose facts hold a still unexplained informative word."""
@@ -261,6 +267,8 @@ def plan(chooser, question, schema, context, search=None, depth=None, read=None,
     models = {k: m for k, m in declared.items() if k not in held}
     head = f"Question: {question}"
     evidence = Evidence(search, question, models)
+    if probe:
+        evidence.near = retrieval_hooks.near_facts(chooser, question, labels_of(probe, models))
     out = Plan()
     if hasattr(chooser, "watch"):
         chooser.watch(out)
@@ -309,6 +317,19 @@ def plan(chooser, question, schema, context, search=None, depth=None, read=None,
     if held and f"{held[0]}." in items:
         out.parts[held[2]] = out.parts[held[2]].replace("-[:", f"-[{held[0]}:", 1)
     return out.cypher(items)
+
+
+def labels_of(probe, models):
+    """Every record's label as a fact (model, property, value), read from the graph."""
+    sight, facts = Sight(probe, models, 0), []
+    for name in models:
+        prop = sight.label_of(name)
+        if prop:
+            out = Plan()
+            var = out.node(name)
+            out.parts.append(f"({var}:{name})")
+            facts += [(name, prop, v) for v in sight.sample(out.seen(f"{var}.{prop} AS v")) or []]
+    return facts
 
 
 def nearest(chooser, question, models, k):

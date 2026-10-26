@@ -14,6 +14,7 @@ import time
 import numpy as np
 
 import channels
+from channels import trigrams
 from embedders import Embedder, VectorStore
 
 
@@ -31,11 +32,6 @@ def metrics(ranks, ks=(1, 3, 5, 10)):
 
 def first_rank(order, gold):
     return next((i for i, p in enumerate(order, 1) if p in gold), None)
-
-
-def trigrams(s):
-    s = f"  {s.lower()} "
-    return {s[i:i + 3] for i in range(len(s) - 2)}
 
 
 def trigram_rank(mention, names, n):

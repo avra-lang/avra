@@ -5,7 +5,7 @@ import numpy as np
 import json
 import os
 
-from bench import trigrams
+from channels import trigrams
 
 PARAMS = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "params.json")))
 
@@ -22,16 +22,29 @@ class EntityLinker:
     def __init__(self, entities, embedder, store, blend=None):
         self.embedder, self.store = embedder, store
         self.blend = PARAMS["entity_blend_dense"] if blend is None else blend
-        self.forms, self.owner = [], []
+        self.forms, self.plain, self.owner = [], [], []
         for e in entities:
             for f in [e["name"], *e.get("aliases", [])]:
                 self.forms.append(f"{f} ({e['kind']})" if e.get("kind") else f)
+                self.plain.append(f)
                 self.owner.append(e["id"])
         self.vectors = store.encode(embedder, self.forms, "document")
 
+    def best_many(self, mentions):
+        """For each mention the (entity id, score) it ranks first."""
+        if not mentions:
+            return []
+        q = self.store.encode(self.embedder, mentions, "query")
+        out = []
+        for m, v in zip(mentions, q):
+            score = self.blend * (self.vectors @ v) + (1 - self.blend) * trigram_sim(m, self.plain)
+            j = int(np.argmax(score))
+            out.append((self.owner[j], float(score[j])))
+        return out
+
     def link(self, mention, n=3):
         """Up to n (entity id, score) pairs, best first."""
-        score = self.blend * (self.vectors @ self.store.encode(self.embedder, [mention], "query")[0]) + (1 - self.blend) * trigram_sim(mention, self.forms)
+        score = self.blend * (self.vectors @ self.store.encode(self.embedder, [mention], "query")[0]) + (1 - self.blend) * trigram_sim(mention, self.plain)
         out = {}
         for j in np.argsort(-score, kind="stable"):
             out.setdefault(self.owner[j], float(score[j]))

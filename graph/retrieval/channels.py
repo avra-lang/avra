@@ -7,6 +7,11 @@ import sqlite3
 import numpy as np
 
 
+def trigrams(s):
+    s = f"  {s.lower()} "
+    return {s[i:i + 3] for i in range(len(s) - 2)}
+
+
 def rrf(rankings, k, weights=None):
     """Reciprocal Rank Fusion: each ranking contributes 1/(k+rank) per item."""
     score = {}
