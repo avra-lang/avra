@@ -121,8 +121,7 @@ impl Workspace {
             .World -> self.world_named_arg(spelled),
             .Package -> self.package_named_arg(spelled),
             .Bucket -> self.bucket_named_arg(spelled),
-            .Symbol -> null,
-            .Local -> null,
+            .Symbol or .Local -> null,
         }
     }
 
@@ -188,19 +187,10 @@ impl Workspace {
         let name? = self.saved_name(key) else { return null }
         let row = self.saved_row_key(name)
         let lines? = store.reads_of(Stored.Unit, row) else { return null }
-        mut reads: List<SavedRead> = []
-        mut hash: int? = null
-        for line in lines {
-            let r? = read_spelled(line) else { return null }
-            let digest? = parse_int(r.digest) else { return null }
-            if r.name == HASH_READ {
-                hash = digest
-                continue
-            }
-            let k? = self.saved_key(r.name) else { return null }
-            reads.push(SavedRead { key: k, digest: digest })
-        }
-        let value_hash? = hash else { return null }
+        let spelled = [read_spelled(line)? for line in lines]
+        let hashed? = spelled.find(it.name == HASH_READ) else { return null }
+        let value_hash? = parse_int(hashed.digest) else { return null }
+        let reads = [SavedRead { key: self.saved_key(r.name)?, digest: parse_int(r.digest)? } for r in spelled if r.name != HASH_READ]
         Saved { reads: reads, value_hash: value_hash }
     }
 
@@ -257,14 +247,7 @@ impl Workspace {
         if outside.length < 2 { return reads }
         let env = self.env_noted(file, [r.key for r in outside])
         [r for r in reads if self.read_file(r.key) == file.index]
-            .concat(
-                [
-                    SavedRead {
-                        key: Key { family: Family.NameEnv.ordinal, arg: file.index },
-                        digest: env,
-                    },
-                ],
-            )
+            .concat([SavedRead { key: env_key(file), digest: env }])
     }
 
     /// The index of the file a read belongs to; -1 for a read no file owns (a name, a manifest,
@@ -313,7 +296,7 @@ impl Workspace {
 
     /// The probes a file's saved environment names, staged so their buckets stand here.
     fn env_loaded(file: FileId) -> List<Key> {
-        let text? = self.saved_value(Key { family: Family.NameEnv.ordinal, arg: file.index }) else { return [] }
+        let text? = self.saved_value(env_key(file)) else { return [] }
         [k! for l in text.split("\n") if !l.is_empty() for k in [self.saved_key(l)] if k != null]
     }
 
@@ -353,7 +336,7 @@ impl Workspace {
     fn env_flushed() {
         for at in self.env_owed.get() {
             let file = FileId { index: at }
-            let key = Key { family: Family.NameEnv.ordinal, arg: at }
+            let key = env_key(file)
             let probes = self.env_probes.get().get("${at}") ?? []
             self.db.kernel.begin(key)
             for k in probes { self.db.kernel.record_dep(k) }
@@ -534,3 +517,6 @@ fn standing_sig(k: DeclKind) -> bool {
         .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum or .State or .Builtin -> false,
     }
 }
+
+/// The answer a file's saved environment is kept under.
+fn env_key(file: FileId) -> Key { Key { family: Family.NameEnv.ordinal, arg: file.index } }
