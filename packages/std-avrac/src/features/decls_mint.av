@@ -597,9 +597,15 @@ impl Decls {
     }
 
     /// What a declaration nested in `d`'s body names as its encloser: `d`'s key, its path left out.
-    fn within_text(d: DeclId) -> string {
-        let x = self.decl(d)
-        decl_key_text("", x.name, x.kind, x.owner, x.maker, x.enclosing, x.sibling)
+    fn within_text(d: DeclId) -> string { within_key(self.decl(d)) }
+
+    /// `within_text`, unrecorded: the minter's own read of a row it holds.
+    fn within_of(d: DeclId) -> string { within_key(self.raw_decl(d)) }
+
+    /// A declaration's key as its index files it: the text `mint_faced` mints it by and `known_id` finds it by.
+    fn key_of(d: DeclId) -> string {
+        let x = self.raw_decl(d)
+        decl_key_text(x.path, x.name, x.kind, x.owner, x.maker, x.enclosing, x.sibling)
     }
 
     fn spanned_here(f: FileId, d: DeclId) -> bool { self.spanned_stmt_of(f, self.decl(d).stmt) == null }
@@ -1183,4 +1189,9 @@ fn homed(kind: DeclKind, f: FileId) -> FileId? {
         .Builtin -> null,
         .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum or .State -> f,
     }
+}
+
+/// A declaration's key with its file left out.
+fn within_key(x: Decl) -> string {
+    decl_key_text("", x.name, x.kind, x.owner, x.maker, x.enclosing, x.sibling)
 }

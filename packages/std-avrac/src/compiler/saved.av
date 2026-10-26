@@ -6,7 +6,6 @@ use @std.relation.engine.{Key, Saved, SavedRead, key_of, same_key}
 use @std.text.{parse_int}
 use core.{fp_str, sorted_texts, StmtId, FileId, DeclId, ModuleId, DeclKind, joined, traced, qtrace}
 use @std.relation.engine.{Revival}
-use features.{kind_word, decl_key_text}
 use compiler.families.{Family, keyed_by}
 use core.debug.{qtrace, traced}
 use compiler.record.{read_fields}
@@ -85,21 +84,9 @@ impl Workspace {
         at[arg].key
     }
 
-    /// A declaration's key as text, unrecorded: its file's name, then kind, owner, maker,
-    /// encloser, name and place among the siblings that share them.
-    fn decl_spelled(d: DeclId) -> string? {
-        let x = self.decls.raw_decl(d)
-        if x.name.contains("\t") ||
-            x.owner.contains("\t") ||
-            x.maker.contains("\t") ||
-            x.enclosing.contains("\t") {
-            return null
-        }
-        joined(
-            [x.path, kind_word(x.kind), x.owner, x.maker, x.enclosing, x.name, "${x.sibling}"],
-            "\t",
-        )
-    }
+    /// A declaration spelled by the file it stands in and the key it is filed under, which is
+    /// exactly what `mint_faced` mints it by: the file is what restores it, the key what finds it.
+    fn decl_spelled(d: DeclId) -> string? { "${self.decls.raw_decl(d).path}\t${field_text(self.decls.key_of(d))}" }
 
     /// `saved_name`'s inverse: the key a name stands for here. Null where the name's file or
     /// declaration does not stand in this program.
@@ -152,25 +139,14 @@ impl Workspace {
     /// admitted is asked of its file's `Items`, which restores or admits it — the only way a name
     /// reaches a declaration nothing has minted.
     fn saved_decl(spelled: string) -> DeclId? {
-        let parts = spelled.split("\t")
-        if parts.length != 7 { return null }
-        let sibling? = parse_int(parts[6]) else { return null }
-        let kinds = kinds_of_word(parts[1])
-        let held = self.known_decl(parts, kinds, sibling)
+        let at = spelled.index_of("\t")
+        if at < 0 { return null }
+        let key = text_of_field(spelled.substring(at + 1, spelled.length))
+        let held = self.decls.known_id(key)
         if held != null { return held }
-        let f? = self.decls.known_file_id(self.path_named(StoredName(parts[0]))) else { return null }
+        let f? = self.decls.known_file_id(self.path_named(StoredName(spelled.substring(0, at)))) else { return null }
         let _ = self.items(f)
-        self.known_decl(parts, kinds, sibling)
-    }
-
-    fn known_decl(parts: List<string>, kinds: List<DeclKind>, sibling: int) -> DeclId? {
-        for kind in kinds {
-            let id = self
-                .decls
-                .known_id(decl_key_text(parts[0], parts[5], kind, parts[2], parts[3], parts[4], sibling))
-            if id != null { return id }
-        }
-        null
+        self.decls.known_id(key)
     }
 
     /// Where the row for a name is filed: the name, in the view the file is read in.
@@ -517,8 +493,7 @@ impl Workspace {
         let path = self.decls.file(FileId { index: arg }).path
         let lines = [l for l in text.split("\n") if !l.is_empty()]
         let rows = [read_fields(l) for l in lines if !l.starts_with("use\t")]
-        let top = self.mint_file(path, rows, {})
-        self.link_file(path, rows)
+        let top = self.mint_file(path, rows)
         self
             .revived
             .put("${arg}", [l.substring(4, l.length) for l in lines if l.starts_with("use\t")])
@@ -604,28 +579,6 @@ impl Workspace {
         let text? = self.saved_value(Key { family: Family.Lowered.ordinal, arg: arg }) else { return Revival.Gone }
         let unit? = self.unit_from_text(self.asks.get()[arg], text) else { return Revival.Gone }
         Revival.Revived(DbRow.Lowered(unit))
-    }
-}
-
-/// The kinds a spelled kind word (`kind_word`'s) may mean: `type` is a record, a named type or an alias.
-fn kinds_of_word(word: string) -> List<DeclKind> {
-    match word {
-        "type" -> [DeclKind.Record, DeclKind.Named, DeclKind.Alias],
-        "fn" -> [DeclKind.Fn],
-        "enum" -> [DeclKind.Enum],
-        "trait" -> [DeclKind.Trait],
-        "syntax" -> [DeclKind.Syntax],
-        "method" -> [DeclKind.Method],
-        "default" -> [DeclKind.Default],
-        "impl" -> [DeclKind.Impl],
-        "main" -> [DeclKind.Main],
-        "case" -> [DeclKind.Case],
-        "const" -> [DeclKind.Const],
-        "collect" -> [DeclKind.Collect],
-        "collect_enum" -> [DeclKind.CollectEnum],
-        "builtin" -> [DeclKind.Builtin],
-        "state" -> [DeclKind.State],
-        _ -> [],
     }
 }
 
