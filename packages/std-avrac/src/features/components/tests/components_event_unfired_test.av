@@ -25,6 +25,7 @@ fn heard(events: string, body: string, fns: string) -> string {
 const unheard = "event `message` is declared and nothing in `feed` calls it or hands it on"
 const message = "    on message(text: string)\n"
 const reads_pick = "    fn fire() {\n        let f? = self.pick else { return }\n        f()\n    }\n"
+const reads_in_an_arm = "    fn fire(n: int) -> int {\n        match n {\n            0 -> {\n                let f? = self.message else { return 0 }\n                f(\"x\")\n                1\n            },\n            rest -> rest,\n        }\n    }\n"
 const reads_message = "    fn fire() {\n        let f? = self.message else { return }\n        f(\"x\")\n    }\n"
 
 spec "features/components — an event nothing fires" {
@@ -43,6 +44,9 @@ spec "features/components — an event nothing fires" {
     given "a composition that reads its event" {
         then "through a method, is not warned" {
             !heard(message, "    self.name\n", reads_message).contains(unheard)
+        }
+        then "inside a match arm of a method, is not warned" {
+            !heard(message, "    self.name\n", reads_in_an_arm).contains(unheard)
         }
     }
     given "a component with no body" {
