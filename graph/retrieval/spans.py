@@ -11,9 +11,14 @@ def word_runs(text, longest):
     return [(words[i][0], words[j][1]) for i in range(len(words)) for j in range(i, min(i + longest, len(words)))]
 
 
+def longest_form(linker):
+    """Words in the longest name the graph knows: no span need be longer."""
+    return max(len(f.split()) for f in linker.plain)
+
+
 def linked_spans(linker, text, threshold=None, longest=None):
     threshold = PARAMS["span_threshold"] if threshold is None else threshold
-    runs = word_runs(text, longest or PARAMS["span_words"])
+    runs = word_runs(text, longest or longest_form(linker))
     scored = [(a, b, e, s) for (a, b), (e, s) in zip(runs, linker.best_many([text[a:b] for a, b in runs]))]
     return [{"start": a, "stop": b, "text": text[a:b], "entity": e, "score": s} for a, b, e, s in kept_spans(scored, threshold)]
 

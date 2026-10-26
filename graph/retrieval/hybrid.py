@@ -35,7 +35,7 @@ class Index:
         self.links = [(self.eidx[m], E + j) for j, p in enumerate(passages) for m in p.entities if m in self.eidx]
 
     def search(self, question, mentions=(), n=10):
-        pa, depth = self.params, max(n, 50)
+        pa, depth = self.params, len(self.passages)
         qv = self.store.encode(self.embedder, [question], "query")[0]
         seeds = [self.eidx[self.linker.link(m, 1)[0][0]] for m in mentions]
         E = len(self.entities)

@@ -1,6 +1,7 @@
 """Retrieval channels over passages, each answering a best-first list of
 passage indexes, and the fusion that joins them."""
 import math
+import os
 import re
 import sqlite3
 
@@ -50,10 +51,18 @@ class Dense:
         return [int(i) for i in np.argsort(-s, kind="stable")[:n]]
 
 
-def walk(seeds, links, size, iterations=20, damping=0.85):
+def declared(name):
+    """A constant the store declares in src/parameters.av, so the walk here and the walk there agree."""
+    text = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "parameters.av")).read()
+    return float(re.search(rf"const {name} = ([0-9.]+)", text).group(1))
+
+
+def walk(seeds, links, size, iterations=None, damping=None):
     """Personalized PageRank from `seeds` over undirected `links` between
     node indexes 0..size-1; the scores of every node, mass at a dead end
     returning to the seeds."""
+    iterations = int(declared("walk_iterations_default")) if iterations is None else iterations
+    damping = declared("ppr_damping") if damping is None else damping
     if not seeds:
         return np.zeros(size)
     adj = np.zeros((size, size))

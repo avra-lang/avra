@@ -1,6 +1,6 @@
 """Fit the retrieval parameters on invented domains and check them on others.
 
-usage: python fit.py DATA.json EMBEDDER RERANKER OUT.json
+usage: python fit.py DATA.json EMBEDDER RERANKER OUT.json [PARAMS.json to update]
 Domains split by position: the first ceil(2/3) fit (pooled), the rest check
 (pooled). Fitted: RRF k, per-channel weights, the entity-link blend of
 dense and trigram similarity, and the rerank depth. The output records the
@@ -58,8 +58,19 @@ def entity_score(cases, alpha):
     return metrics(ranks, (1, 3))
 
 
-def retrieval_runs(pool, store, emb, reranker, depth=50):
+def elbow(cases, alpha):
+    """The smallest n whose recall equals recall at n + 1: the candidates a blocker must keep."""
+    ranks = [first_rank(list(dict.fromkeys(owner[j] for j in blend_rank(d, t, alpha))), {g}) for d, t, owner, g in cases]
+    recall = lambda n: sum(1 for r in ranks if r is not None and r <= n)
+    n = 1
+    while recall(n) < recall(n + 1):
+        n += 1
+    return n
+
+
+def retrieval_runs(pool, store, emb, reranker):
     texts = [p["text"] for p in pool["passages"]]
+    depth = len(texts)
     pidx = {p["id"]: i for i, p in enumerate(pool["passages"])}
     lex, dense = channels.Lexical(texts), channels.Dense(store.encode(emb, texts, "document"))
     E = len(pool["entities"])
@@ -99,6 +110,7 @@ def main():
     check = {str(r): entity_score(entity_cases(check_pool, store, emb, r), best[r]) for r in (False, True)}
     check_fixed = {str(r): {str(a): entity_score(entity_cases(check_pool, store, emb, r), a)["MRR"] for a in (0, 0.5, 1.0)} for r in (False, True)}
     blend = best[True]
+    candidates = max(elbow(entity_cases(fit_pool, store, emb, r), best[r]) for r in (False, True))
 
     texts, fit_runs = retrieval_runs(fit_pool, store, emb, reranker)
     _, check_runs = retrieval_runs(check_pool, store, emb, reranker)
@@ -110,7 +122,7 @@ def main():
             best_cfg, best_mrr = (k, w), mrr
     k, w = best_cfg
     depths = {}
-    for n in (3, 5, 10, 20):
+    for n in (3, 5, 10, 20):  # candidate depths; the smallest reaching the best MRR is kept
         ranks = []
         for q, g, ch in fit_runs:
             order = fused(ch, k, w)
@@ -119,7 +131,6 @@ def main():
     check_texts = _
     result = {
         "provenance": {"data": data, "seed": seed, "fit_domains": cut, "check_domains": len(domains) - cut, "embedder": emb.identity, "reranker": rr_id, "fit_questions": len(fit_runs)},
-        "rrf_k": k, "weights": w, "entity_blend_dense": blend, "schema_blend_note": "none",
         "rerank_depth_fit": depths,
         "fit": {"fused_MRR": best_mrr},
         "check": {
@@ -130,8 +141,14 @@ def main():
             "equal_weights_k60": metrics([first_rank(fused(ch, 60, {"dense": 1, "bm25": 1, "walk": 1}), g) for _, g, ch in check_runs]),
         },
     }
+    top = max(v["MRR"] for v in depths.values())
+    result["params"] = {"rrf_k": k, "weights": w, "entity_blend_dense": blend, "rerank_depth": min(n for n, v in depths.items() if v["MRR"] == top), "candidates_per_mention": candidates}
     json.dump(result, open(out, "w"), indent=1)
-    print(json.dumps(result, indent=1))
+    print(json.dumps(result["params"]))
+    if len(sys.argv) > 5:
+        params = json.load(open(sys.argv[5]))
+        params.update(result["params"], embedder=emb_id, reranker=rr_id, provenance={**result["provenance"], "fit_file": out, "rule": "grid max fused MRR on fit domains; smallest depth reaching the best rerank MRR; candidates at the recall elbow"})
+        json.dump(params, open(sys.argv[5], "w"), indent=1)
 
 
 if __name__ == "__main__":

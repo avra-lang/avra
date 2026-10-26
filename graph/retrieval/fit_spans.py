@@ -14,15 +14,16 @@ import numpy as np
 from embedders import Embedder, VectorStore
 from invent import typo
 from link import EntityLinker
-from spans import kept_spans, word_runs
+from spans import kept_spans, longest_form, word_runs
 
 
-def cases(domains, linker_for, longest, rng):
+def cases(domains, linker_for, rng):
     """Per question: its scored runs and every known entity form it contains, as extents.
     The primary mention is also tried with a one-character edit."""
     out = []
     for d in domains:
         linker = linker_for(d)
+        longest = longest_form(linker)
         for q in d["questions"]:
             for form in (q["mention"], typo(q["mention"], rng)):
                 text = q["question"].replace(q["mention"], form, 1)
@@ -55,16 +56,15 @@ def main():
     cut = -(-2 * len(domains) // 3)
     params = json.load(open(params_path))
     store, emb = VectorStore("data/vectors.db"), Embedder(params["embedder"])
-    longest = params.get("span_words", 4)
 
     def linker_for(d):
         return EntityLinker([{"id": e["id"], "name": e["name"], "aliases": [e["alias"]], "kind": e["kind"]} for e in d["entities"]], emb, store, params["entity_blend_dense"])
 
     rng = random.Random(11)
-    fit, check = cases(domains[:cut], linker_for, longest, rng), cases(domains[cut:], linker_for, longest, rng)
+    fit, check = cases(domains[:cut], linker_for, rng), cases(domains[cut:], linker_for, rng)
     grid = [round(t, 3) for t in np.linspace(0.3, 1.0, 71)]
     best = max(grid, key=lambda t: (f1_at(fit, t)[0], t))
-    params["span_words"] = longest
+    params.pop("span_words", None)
     params["span_threshold"] = best
     params["span_fit"] = {"data": data, "seed": doc["seed"], "fit_f1": round(f1_at(fit, best)[0], 3), "check_f1_pr": [round(x, 3) for x in f1_at(check, best)], "rule": "max F1 over runs, ties to the higher threshold"}
     json.dump(params, open(params_path, "w"), indent=1)

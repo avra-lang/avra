@@ -1,6 +1,5 @@
 """Local embedders behind one shape: `Embedder.encode(texts, role)` answers
-unit-length float32 rows. A role is `query` or `document`; each model declares
-its own prompt per role. `identity` names the model, revision and prompts, so
+unit-length float32 rows. A role is `query` or `document`; texts are embedded as written. `identity` names the model, revision and prompts, so
 a stored vector is reusable exactly when the identity matches."""
 import hashlib
 import os
@@ -10,23 +9,19 @@ import numpy as np
 
 os.environ.setdefault("HF_HOME", os.path.expanduser("~/.cache/avra-graph-ml/hf"))
 
-BGE_QUERY = "Represent this sentence for searching relevant passages: "
-QWEN_TASK = "Instruct: Given a question, retrieve the passage that answers it\nQuery: "
-
-# model id -> (query prompt, document prompt, backend)
+# model id -> backend. No prompt template is used: the texts are embedded as written.
 MODELS = {
-    "BAAI/bge-small-en-v1.5": (BGE_QUERY, "", "st"),
-    "BAAI/bge-base-en-v1.5": (BGE_QUERY, "", "st"),
-    "google/embeddinggemma-300m": ("task: search result | query: ", "title: none | text: ", "st"),
-    "mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ": (QWEN_TASK, "", "mlx"),
+    "BAAI/bge-small-en-v1.5": "st",
+    "BAAI/bge-base-en-v1.5": "st",
+    "mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ": "mlx",
 }
 
 
 class Embedder:
     def __init__(self, model_id):
         self.model_id = model_id
-        self.query_prompt, self.document_prompt, self.backend = MODELS[model_id]
-        self.identity = f"{model_id}|q={self.query_prompt}|d={self.document_prompt}"
+        self.backend = MODELS[model_id]
+        self.identity = f"{model_id}|plain"
         self._model = None
 
     def _load(self):
@@ -44,8 +39,6 @@ class Embedder:
 
     def encode(self, texts, role="document"):
         self._load()
-        prompt = self.query_prompt if role == "query" else self.document_prompt
-        texts = [prompt + t for t in texts]
         if self.backend == "st":
             return np.asarray(self._model.encode(texts, normalize_embeddings=True, batch_size=16), dtype=np.float32)
         import mlx.core as mx
