@@ -308,24 +308,6 @@ impl Workspace {
         if decoded.next == words.length { decoded.id } else { self.decls.types.intern(Type.Error) }
     }
 
-    /// A held file's declarations adopted by their parents, in one pass over its
-    /// lines: the file and its declarations are found ONCE, never per line.
-    fn link_file(path: string, rows: List<List<string>>) {
-        let ids = self.decls.decls_so_far(self.file_id(path))
-        for parts in rows { self.link_row(ids, parts) }
-    }
-
-    fn link_row(ids: List<DeclId>, parts: List<string>) {
-        let row? = read_row(parts) else { return }
-        if row.ordinal < 0 || row.ordinal >= ids.length { return }
-        if row.parent_at >= 0 && row.parent_at < ids.length { self.decls.adopt(ids[row.ordinal], ids[row.parent_at]) }
-    }
-
-    fn fill_row(store: Store, m: ModulePath, ids: List<DeclId>, parts: List<string>) {
-        let row? = read_row(parts) else { return }
-        if row.ordinal >= 0 && row.ordinal < ids.length { self.fill_shape(store, m, ids[row.ordinal], row) }
-    }
-
     /// A HELD DECLARATION'S OWN ROW, FILLED ON THE ASK THAT NAMES IT,
     /// never eagerly with the rest of its module: a row that fills
     /// EARLIER in record order can itself name a declaration whose row
@@ -341,10 +323,13 @@ impl Workspace {
         let store? = self.store.get() else { return }
         let path = self.decls.file(x.file).path
         let m = self.module_path_of(path)
-        let ids = self.decls.decls_so_far(x.file)
-        let ordinal? = [i for i, id in ids if same_decl(id, d)].first() else { return }
+        let want = self.decls.within_of(d)
         let rows = file_rows(record_fields(self, store, m), record_places(self, store, m).get(path))
-        if ordinal < rows.length { self.fill_row(store, m, ids, rows[ordinal]) }
+        let named = [parts for parts in rows if parts[5] == x.name]
+        let row? = [r! for parts in named for r in [read_row(parts)] if r?.keyed() == want].first() else {
+            return
+        }
+        self.fill_shape(store, m, d, row)
     }
 
     /// HELD FILES OF ONE MODULE, MINTED: each file's declarations from its record
@@ -362,12 +347,7 @@ impl Workspace {
         work_module_minted()
         let fields = record_fields(self, store, m)
         let places = record_places(self, store, m)
-        let makers = makers_by_path(fields)
-        for path in held {
-            let _ = self
-                .mint_file(path, file_rows(fields, places.get(path)), makers.get(path) ?? {})
-        }
-        for path in held { self.link_file(path, file_rows(fields, places.get(path))) }
+        for path in held { let _ = self.mint_file(path, file_rows(fields, places.get(path))) }
         let lead? = held.first() else { return }
         self.decls.note_module_rows(self.decls.file(self.file_id(lead)).module_id, 2)
     }
@@ -376,30 +356,46 @@ impl Workspace {
     /// file's statement table is written ONCE: read out and stored back per line, it
     /// is held twice while it is written, and every line copies it.
     /// Answers the file's top-level declarations, the ones its `Items` is.
-    fn mint_file(path: string, rows: List<List<string>>, makers: Map<string, string>) -> List<
-        DeclId,
-    > {
+    fn mint_file(path: string, rows: List<List<string>>) -> List<DeclId> {
         work_file_minted()
         let f = self.file_id(path)
-        self.decls.held_opened(f, makers.values())
+        let makers = distinct(
+            [r!.maker for parts in rows for r in [read_row(parts)] if r != null && r!.maker != ""],
+        )
+        self.decls.held_opened(f, makers)
         mut by_stmt = self.decls.decl_ids.get()[f.index].get()
         mut top: List<DeclId> = []
+        mut named: Map<string, DeclId> = {}
         for parts in rows {
-            let id: DeclId? = self.minted(f, path, parts, makers)
-            let stmt_index = read_row(parts)?.stmt ?? 0
+            let id: DeclId? = self.minted(f, path, parts)
+            let row = read_row(parts)
+            let stmt_index = row?.stmt ?? 0
             by_stmt.grow_to(stmt_index + 1)
             if id != null && by_stmt.get(stmt_index).decl == null { by_stmt.set(stmt_index, DeclAt { decl: id }) }
-            if id != null && read_row(parts)?.item ?? false { top.push(id!) }
+            if id != null && row?.item ?? false { top.push(id!) }
+            if id != null { named.set(self.decls.within_of(id!), id!) }
         }
-        self.decls.held_closed(f, makers.values())
+        self.decls.held_closed(f, makers)
         self.decls.keep_stmt_decls(f, by_stmt)
+        self.adopted_by_keys(rows, named)
         top
+    }
+
+    /// A file's minted declarations adopted by their parents, each parent named by its key: a
+    /// member can come before its parent in the rows, so the link follows the mint.
+    fn adopted_by_keys(rows: List<List<string>>, named: Map<string, DeclId>) {
+        for parts in rows {
+            let row? = read_row(parts) else { continue }
+            let child? = named.get(row.keyed() ?? "") else { continue }
+            let parent? = named.get(row.parent) else { continue }
+            self.decls.adopt(child, parent)
+        }
     }
 
     /// One record line as a declaration — null for a line that names nothing. A line
     /// that does not decode is a DEFECT spoken: the hold's attempt fails, and the
     /// sources answer.
-    fn minted(f: FileId, path: string, parts: List<string>, makers: Map<string, string>) -> DeclId? {
+    fn minted(f: FileId, path: string, parts: List<string>) -> DeclId? {
         let row? = read_row(parts) else { return null }
         let kind = declared_kind(row.shape, row.kind)
         let facts = facts_unblocked(row.facts)
@@ -420,22 +416,18 @@ impl Workspace {
                 null,
                 row.enclosing,
                 root,
-                makers.get("${row.ordinal}") ?? "",
+                row.maker,
                 facts!,
             )
+        // a row names its declaration by key, so a mint that files it under another is a defect
+        if self.decls.within_of(id) != row.keyed() ?? "" { self.defect("a record line minted under another key — ${path}") }
         self.decls.held_joins(f, id, kind! is .Main, row.item)
         // the cancel bit is read before any signature is asked, so it lands with the row
         if !row.payload.is_empty() { self.decls.record_cancel(id, row.reach()) }
         id
     }
 
-    fn record_line(
-        d: Decl,
-        ordinal: int,
-        item: bool,
-        parent_at: int = 0 - 1,
-        spelled: string? = null,
-    ) -> string {
+    fn record_line(d: Decl, item: bool, spelled: string? = null) -> string {
         let shape = self.record_shape(d)
         let at = shape.index_of("\t")
         // AN `extern fn` WEARS ITS OWN SHAPE WORD. The fact is a STORE read (`extern_parts`),
@@ -452,33 +444,21 @@ impl Workspace {
         // THE CODEC IS HELD TO ITSELF WHERE IT WRITES: a fact the decoder does not give
         // back is a defect said now, never a check every reader pays
         if facts_unblocked(block)?.fingerprint() != facts.fingerprint() { self.defect("`${d.name}`'s facts do not survive their record") }
-        "${self.identity_columns(d, ordinal, item, first, parent_at, block, spelled ?? self.decls.file(d.file).path)}\t${payload}"
+        "${self.identity_columns(d, item, first, block, spelled ?? self.decls.file(d.file).path)}\t${payload}"
     }
 
     /// A declaration line's identity columns, shape word to facts block: what a reader needs to
     /// mint the declaration and nothing about its shape.
-    fn identity_columns(
-        d: Decl,
-        ordinal: int,
-        item: bool,
-        first: string,
-        parent_at: int,
-        block: string,
-        path: string,
-    ) -> string {
+    fn identity_columns(d: Decl, item: bool, first: string, block: string, path: string) -> string {
         let root = d.root?.index ?? 0 - 1
-        "${first}\t${path}\t${ordinal}\t${d.stmt.index}\t${bit_word(d.exported)}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${field_text(d.enclosing)}\t${root}\t${bit_word(item)}\t${block}"
+        let parent = if d.parent == null { "" } else { self.decls.within_of(d.parent!) }
+        "${first}\t${path}\t${d.sibling}\t${d.stmt.index}\t${bit_word(d.exported)}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${field_text(parent)}\t${field_text(d.enclosing)}\t${root}\t${bit_word(item)}\t${block}\t${field_text(d.maker)}"
     }
 
-    /// A declaration's whole record line as the file's admitted declarations number it: identity
-    /// and shape. What `Sig` is saved as.
+    /// A declaration's whole record line, identity and shape, its file under its stored name.
+    /// What `Sig` is saved as.
     fn sig_line(d: Decl) -> string {
-        let f = d.file
-        let top = self.items(f)
-        let ids = self.declared_in(f)
-        let ordinal = [j for j, x in ids if same_decl(x, d.id)].first() ?? 0 - 1
-        self
-            .record_line(d, ordinal, on_top(top, d.id), parent_ordinal(ids, d), self.decls.file(f).name)
+        self.record_line(d, on_top(self.items(d.file), d.id), self.decls.file(d.file).name)
     }
 
     /// A file's admitted declarations as identity rows — the answer `Items` is saved as. Only the
@@ -486,21 +466,16 @@ impl Workspace {
     fn identity_lines(path: string) -> List<string> {
         let f = self.file_id(path)
         let top = self.items(f)
-        let ids = self.declared_in(f)
-        [self.identity_line(self.decl_at(id), ordinal, on_top(top, id), ids) for ordinal, id in ids]
+        [self.identity_line(self.decl_at(id), on_top(top, id)) for id in self.declared_in(f)]
     }
 
-    fn identity_line(d: Decl, ordinal: int, item: bool, ids: List<DeclId>) -> string {
-        let parent_at = parent_ordinal(ids, d)
-        let block = facts_block(self.decls.facts_or(d.id))
+    fn identity_line(d: Decl, item: bool) -> string {
         self
             .identity_columns(
                 d,
-                ordinal,
                 item,
                 self.identity_word(d),
-                parent_at,
-                block,
+                facts_block(self.decls.facts_or(d.id)),
                 self.decls.file(d.file).name,
             )
     }
@@ -682,11 +657,7 @@ impl Workspace {
         let f = self.file_id(path)
         let top = self.items(f)
         let ids = self.decls.decls_of_file(f)
-        [self
-            .record_line(self.decl_at(id), ordinal, on_top(top, id), parent_ordinal(ids, self.decl_at(id))) for ordinal, id in ids]
-            .concat(
-                [maker_line(path, ordinal, self.decl_at(id).maker) for ordinal, id in ids if self.decl_at(id).maker != ""],
-            )
+        [self.record_line(self.decl_at(id), on_top(top, id)) for id in ids]
             .concat([reexport_line(path, r) for r in self.file_reexports(path)])
     }
 
@@ -1093,28 +1064,6 @@ type WireDeclRef = { id: DeclId, next: int }
 /// One bounded seat in the fn row's bounds column.
 fn bound_entry(j: int, wires: List<string>) -> string { "${j}=${joined(wires, "|")}" }
 
-/// What generated the declaration at `ordinal` of `path` — written only for a generated one.
-fn maker_line(path: string, ordinal: int, maker: string) -> string {
-    "maker\t${path}\t${ordinal}\t${field_text(maker)}"
-}
-
-/// Every file's makers as its module's record keeps them, by file path and the declaration's
-/// ordinal — one pass over the record, so a module's files never each scan it whole.
-export fn makers_by_path(fields: List<List<string>>) -> Map<string, Map<string, string>> {
-    mut out: Map<string, Map<string, string>> = {}
-    for p in fields {
-        if p.length == 4 && p[0] == "maker" {
-            mut own = out.get(p[1]) ?? {}
-            own.set(p[2], text_of_field(p[3]))
-            out.set(p[1], own)
-        }
-    }
-    out
-}
-
-/// A file's makers as its record keeps them, by the declaration's ordinal.
-export fn makers_in(fields: List<List<string>>, path: string) -> Map<string, string> { makers_by_path(fields).get(path) ?? {} }
-
 /// A bit as a record field writes it.
 fn bit_word(b: bool) -> string {
     if b { "1" } else { "0" }
@@ -1133,7 +1082,3 @@ fn parks_word(r: CancelReach) -> string {
 /// One read's identity: the file and the declaration read in it.
 fn read_id(r: RunRead) -> string { "${r.path}\t${r.ref}" }
 
-/// Where a declaration's parent stands among `ids`; -1 for none.
-fn parent_ordinal(ids: List<DeclId>, d: Decl) -> int {
-    [j for j, x in ids if d.parent != null && same_decl(x, d.parent!)].first() ?? 0 - 1
-}

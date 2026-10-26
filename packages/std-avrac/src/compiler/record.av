@@ -50,6 +50,7 @@ use features.{
     LitKind,
     CancelReach,
     Decls,
+    decl_key_text,
 }
 use compiler.lower.{Body, program_symbol, FieldPlan}
 use compiler.store.{Store, Stored, Producer, node_key, producer_of}
@@ -291,37 +292,44 @@ fn shape_of(word: string) -> Shape? {
 /// block: one field for most shapes, six for `Fn`/`Extern` (seats, return,
 /// marks, written bits, bounds, whether it may reach a cancel point), read
 /// through `Row`'s own verbs below.
-type Row = { shape: Shape, path: string, ordinal: int, stmt: int, exported: bool, name: string, kind: string, owner: string, parent_at: int, enclosing: string, root: int, item: bool, facts: string, payload: List<string> }
+type Row = { shape: Shape, path: string, sibling: int, stmt: int, exported: bool, name: string, kind: string, owner: string, parent: string, enclosing: string, root: int, item: bool, facts: string, maker: string, payload: List<string> }
 
 /// A declaration row, decoded from its already-split fields — null for a
 /// header line, or one that does not decode: the same checks `decodable`
 /// runs over a whole record, over the one row a caller already has in hand.
 fn read_row(parts: List<string>) -> Row? {
-    if parts.length < 13 || nameless(parts) { return null }
+    if parts.length < 14 || nameless(parts) { return null }
     let shape? = shape_of(parts[0]) else { return null }
-    let ordinal? = wire_number(parts[2]) else { return null }
+    let sibling? = wire_number(parts[2]) else { return null }
     let stmt? = wire_number(parts[3]) else { return null }
-    let parent_at? = wire_number(parts[8]) else { return null }
     let root? = wire_number(parts[10]) else { return null }
     Row {
         shape: shape,
         path: parts[1],
-        ordinal: ordinal,
+        sibling: sibling,
         stmt: stmt,
         exported: parts[4] == "1",
         name: parts[5],
         kind: parts[6],
         owner: parts[7],
-        parent_at: parent_at,
+        parent: text_of_field(parts[8]),
         enclosing: text_of_field(parts[9]),
         root: root,
         item: parts[11] == "1",
         facts: parts[12],
-        payload: parts.slice(13, parts.length),
+        maker: text_of_field(parts[13]),
+        payload: parts.slice(14, parts.length),
     }
 }
 
 impl Row {
+    /// The key the declaration this row names is filed under, its file left out — the one
+    /// `Decls.within_text` answers — or null for a kind that does not decode.
+    fn keyed() -> string? {
+        let kind? = declared_kind(self.shape, self.kind) else { return null }
+        decl_key_text("", self.name, kind, self.owner, self.maker, self.enclosing, self.sibling)
+    }
+
     /// Payload field `j`, or "" past its end — every shape but `Fn`/`Extern`
     /// writes one field, and one with nothing to say writes it empty.
     fn field(j: int) -> string { if self.payload.length > j { self.payload[j] } else { "" } }
@@ -472,15 +480,15 @@ fn interface_form(line: string) -> string {
     let p = line.split("\t")
     // a re-export's contract is the name it exports and what it names — never its path
     if p[0] == "reexport" { return p.slice(2, p.length).join("\t") }
-    if p.length < 13 { return "" }
+    if p.length < 14 { return "" }
     let top = unpacked(p[12])
     let facts = if top.is_empty() { [] } else { top[0].split(";") }
     let seen = if facts.length >= 8 { facts.slice(0, 3).concat(facts.slice(5, 10)) } else { facts }
     // the payload skips its `writes` bits (field 16); past them stand a fn's bounds,
     // then its cancel bits, parks and spins
     [p[0], p[2], p[4], p[5], p[6], p[7], p[8], p[11], seen.join(";")]
-        .concat(p.slice(13, 16))
-        .concat(p.slice(17, 20))
+        .concat(p.slice(14, 17))
+        .concat(p.slice(18, 21))
         .join("\t")
 }
 
@@ -925,7 +933,6 @@ fn declares(parts: List<string>) -> bool {
         parts[0] != "iface" &&
         parts[0] != "file" &&
         parts[0] != "ref" &&
-        parts[0] != "maker" &&
         parts[0] != "reexport"
 }
 
@@ -937,23 +944,25 @@ fn declares(parts: List<string>) -> bool {
 /// refusal this answers for (`load_interface`'s own `Reads.Undecodable`).
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a record's lines in, the first break out.
 fn record_complete(fields: List<List<string>>) -> string? {
-    // THE ORDINALS MUST BE CONTIGUOUS PER FILE, 0..n-1 IN ORDER: the mint appends each
-    // held declaration to its file, so a hole is a record where a declaration would be
-    // silently missing. Checking it HERE refuses the whole module instead of truncating.
-    mut seen: Map<string, int> = {}
+    // A DECLARATION IS NAMED BY ITS KEY, so a key named twice is one declaration written twice,
+    // and a parent no row names is a declaration silently missing: either refuses the whole
+    // module instead of minting a different one.
+    mut keys: Map<string, bool> = {}
     for parts in fields {
         if declares(parts) {
-            if !decodable(parts) {
+            let key? = read_row(parts)?.keyed() else {
                 return "`${parts[5]}`'s kind `${parts[6]}` (shape `${parts[0]}`) in ${parts[1]} does not decode"
             }
-            let ordinal? = wire_number(parts[2]) else {
-                return "`${parts[5]}` in ${parts[1]} names no ordinal"
-            }
-            let want: int = seen.get(parts[1]) ?? 0
-            if ordinal != want {
-                return "`${parts[5]}` in ${parts[1]} wants ordinal ${want}, names ${ordinal}"
-            }
-            seen.set(parts[1], want + 1)
+            let at = "${parts[1].length}:${parts[1]}${key}"
+            if keys.has(at) { return "`${parts[5]}` in ${parts[1]} is named twice" }
+            keys.set(at, true)
+        }
+    }
+    for parts in fields {
+        if !declares(parts) { continue }
+        let row? = read_row(parts) else { continue }
+        if !row.parent.is_empty() && !keys.has("${row.path.length}:${row.path}${row.parent}") {
+            return "`${row.name}` in ${row.path} names a parent no row declares"
         }
     }
     null
@@ -962,13 +971,6 @@ fn record_complete(fields: List<List<string>>) -> string? {
 /// Whether a line names nothing where a name is owed: a CASE's name is any text,
 /// the empty one included.
 fn nameless(parts: List<string>) -> bool { parts[5].is_empty() && parts[6] != "case" }
-
-/// WHETHER ONE RECORD LINE DECODES — the guard half of the decoder, so a line the
-/// mint would silently skip is caught here and the whole record is refused.
-fn decodable(parts: List<string>) -> bool {
-    let row? = read_row(parts) else { return false }
-    declared_kind(row.shape, row.kind) != null
-}
 
 /// WHETHER A FILE MAY BE HELD — a grammar record's spec and an extern fn's raw seat
 /// spellings are their own parse and are not in the interface, so a file that declares
@@ -1187,11 +1189,11 @@ export type NarrowIndex = { whole: bool, globals: List<string>, alone: List<stri
 /// or an instance, a host or external one, a static one.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a record line's fields in, whether a name alone reaches it.
 fn named_alone(p: List<string>) -> bool {
-    if p.length < 13 ||
+    if p.length < 14 ||
         p[0] != "fn" && p[0] != "const" ||
         p[6] != p[0] ||
         !p[7].is_empty() ||
-        p[8] != "-1" ||
+        !p[8].is_empty() ||
         p[11] != "1" {
         return false
     }
@@ -1817,16 +1819,16 @@ fn builtin_word(word: string) -> bool {
 /// The files a declaration line's type wires name: the word after each declared
 /// type's tag (`S~<decl wire>` and its kin) opens that declaration's wire, its file.
 fn wired_files(row: List<string>) -> List<string> {
-    let words = [w for field in row.slice(13, row.length) for a in field.split(";") for b in a.split("|") for c in b.split(":") for w in c.split("~")]
+    let words = [w for field in row.slice(14, row.length) for a in field.split(";") for b in a.split("|") for c in b.split(":") for w in c.split("~")]
     [words[i + 1] for i, w in words if i + 1 < words.length && opens_decl_wire(w)]
 }
 
 /// The file an `impl` line's aimed type sits in — the impl rides wherever that type
 /// goes, a `dyn` box's vtable included. Null for every other line.
 fn aimed_file(row: List<string>) -> string? {
-    if row.length <= 13 { return null }
+    if row.length <= 14 { return null }
     let shape? = shape_of(row[0]) else { return null }
-    match shape { .Aims -> wire_fields(row[13], "~")[0], _ -> null }
+    match shape { .Aims -> wire_fields(row[14], "~")[0], _ -> null }
 }
 
 /// Whether a type wire's word is a tag a declaration's wire follows.
