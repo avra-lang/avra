@@ -1,11 +1,10 @@
-//! Loops — `while c { statements }` and `for name in lo..hi
-//! { statements }`. Statements, no value; each body is a statement
-//! list under its own scope. `for` is mut+while in costume: the
-//! BUILDER synthesizes its condition (`name < hi`) and step
-//! (`name + 1`) as real nodes, so every pass just walks them.
+//! Loops — `while c { statements }` and `for name in subject
+//! { statements }`, the subject a walk source or a counted range
+//! `lo..hi`, read once. Statements, no value; each body is a statement
+//! list under its own scope.
 //! `break` and `continue` end a turn early — the innermost loop's,
 //! or the `for` whose name follows the word (`break row`).
-use features.{LanguageFeature, BuilderRow}
+use features.{LanguageFeature}
 use features.loops.{push_loop, index_walk, branched_push_loop}
 // LICENSED modules.unused_import: `Term` is named by GENERATED code, not by this file — a rule
 // that builds a node in place writes a `Term`. Resolve needs the name the source never spells.
@@ -13,10 +12,6 @@ use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Term, 
 use diagnostics.{DiagCode}
 
 export fn loops() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name       | build
-        "for_stmt" | build_for
-    }
     let codes = table<DiagCode> {
         kind         | summary
         "loop.jump"  | "`break` and `continue` end a loop's turn, so a loop must enclose them"
@@ -24,13 +19,13 @@ export fn loops() -> LanguageFeature {
     }
     LanguageFeature loops {
         gram: grammar {
-            stmt = "while" cond:expression "{" ( stmts:stmt | BREAK )* "}" END @recover(sync_to: "END") -> Stmt.While @head(cond) | "for" ( "(" index:NAME "," name:NAME ")" | index:NAME "," name:NAME | name:NAME ) "in" subject:expression "{" ( stmts:stmt | BREAK )* "}" END -> Stmt.ForEach @head(subject) | "for" n:NAME "in" lo:expression ".." hi:expression "{" ( s:stmt | BREAK )* "}" END @recover(sync_to: "END") -> for_stmt(n, lo, hi, s) @head(lo) @head(hi)
+            stmt = "while" cond:expression "{" ( stmts:stmt | BREAK )* "}" END @recover(sync_to: "END") -> Stmt.While @head(cond) | "for" ( "(" index:NAME "," name:NAME ")" | index:NAME "," name:NAME | name:NAME ) "in" subject:expression "{" ( stmts:stmt | BREAK )* "}" END -> Stmt.ForEach @head(subject) | "for" name:NAME "in" subject:counted "{" ( stmts:stmt | BREAK )* "}" END @recover(sync_to: "END") -> Stmt.ForEach @head(subject)
+            counted = lo:expression ".." hi:expression -> Expr.Range
             stmt = "break" name:NAME END -> Stmt.Jump(label = Expr.Ident(name = name), again = false)
             stmt = "break" END @expect("END", "`break` ends its line, or names its loop — `break row`") @recover(sync_to: "END") -> Stmt.Jump(again = false)
             stmt = "continue" name:NAME END -> Stmt.Jump(label = Expr.Ident(name = name), again = true)
             stmt = "continue" END @expect("END", "`continue` ends its line, or names its loop — `continue row`") @recover(sync_to: "END") -> Stmt.Jump(again = true)
         }
-        builders: rows
         diags: codes
     }
     loops

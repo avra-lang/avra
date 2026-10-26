@@ -529,21 +529,6 @@ impl SourceText {
                         ),
                 ]
             },
-            .For(name, from, to, _, _, stmts) -> {
-                let prefix = "for ${source_name(name.of)} in "
-                let f = self.expression(from, loosest_tier, depth, col_after(prefix, depth * 4))
-                let head = "${prefix}${f}"
-                [
-                    self
-                        .statement_block(
-                            "${head}..${self.expression(to, loosest_tier, depth, col_after(head, depth * 4) + 2)}",
-                            stmts,
-                            self.stmt_end(s),
-                            self.stmt_flat(s),
-                            depth,
-                        ),
-                ]
-            },
             .Use(path, items) -> {
                 let prefix = "${exported}use ${joined(path, ".")}."
                 [
@@ -558,7 +543,7 @@ impl SourceText {
                 [
                     self
                         .statement_block(
-                            "${prefix}${self.expression(subject, loosest_tier, depth, col_after(prefix, depth * 4))}",
+                            "${prefix}${self.loop_subject(subject, prefix, depth)}",
                             stmts,
                             self.stmt_end(s),
                             self.stmt_flat(s),
@@ -1296,6 +1281,19 @@ impl SourceText {
         match self.store.expr(body) {
             .Lambda(params, value) if params.is_empty() -> self.expression(value, loosest_tier, depth),
             rest -> self.expression(body, loosest_tier, depth),
+        }
+    }
+
+    /// What a `for` walks: a range written in the head stays `lo..hi`, bare;
+    /// any other source prints as an expression.
+    mut fn loop_subject(subject: ExprId, prefix: string, depth: int) -> string {
+        let at = col_after(prefix, depth * 4)
+        match self.store.expr(subject) {
+            .Range(lo, hi) -> {
+                let head = "${prefix}${self.expression(lo, loosest_tier, depth, at)}"
+                "${self.expression(lo, loosest_tier, depth, at)}..${self.expression(hi, loosest_tier, depth, col_after(head, depth * 4) + 2)}"
+            },
+            rest -> self.expression(subject, loosest_tier, depth, at),
         }
     }
 
