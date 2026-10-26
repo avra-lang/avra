@@ -34,10 +34,10 @@ export enum Clause {
     Map(s: Step)
     Take(count: Reg, n: Reg)
     Drop(count: Reg, n: Reg)
-    TakeWhile(pred: FnBox)
-    DropWhile(pred: FnBox, started: Reg)
-    FilterMap(f: FnBox, opt: TypeId)
-    FlatMap(f: FnBox, e: ExprId, list: TypeId, elem: TypeId)
+    TakeWhile(pred: Step)
+    DropWhile(pred: Step, started: Reg)
+    FilterMap(f: Step, opt: TypeId)
+    FlatMap(f: Step, e: ExprId, list: TypeId, elem: TypeId)
     Flatten(e: ExprId, list: TypeId, elem: TypeId)
 }
 
@@ -48,19 +48,19 @@ export enum Clause {
 export enum Sink {
     Push(dst: Reg)
     Put(dst: Reg)
-    Any(ret: TypeId, cell: Reg, pred: FnBox)
-    All(ret: TypeId, cell: Reg, pred: FnBox)
-    Find(ret: TypeId, cell: Reg, pred: FnBox)
-    FindMap(ret: TypeId, cell: Reg, pred: FnBox)
-    FindLast(ret: TypeId, cell: Reg, pred: FnBox)
-    FindIndex(ret: TypeId, cell: Reg, seen: Reg, pred: FnBox)
+    Any(ret: TypeId, cell: Reg, pred: Step)
+    All(ret: TypeId, cell: Reg, pred: Step)
+    Find(ret: TypeId, cell: Reg, pred: Step)
+    FindMap(ret: TypeId, cell: Reg, pred: Step)
+    FindLast(ret: TypeId, cell: Reg, pred: Step)
+    FindIndex(ret: TypeId, cell: Reg, seen: Reg, pred: Step)
     Contains(ret: TypeId, cell: Reg, needle: Reg, elem: TypeId)
     IndexOf(ret: TypeId, cell: Reg, seen: Reg, needle: Reg, elem: TypeId)
     Fold(ret: TypeId, cell: Reg, f: Step)
     Count(ret: TypeId, cell: Reg)
     Sum(ret: TypeId, cell: Reg)
     MinMax(ret: TypeId, has: Reg, best: Reg, less: bool)
-    MinBy(ret: TypeId, has: Reg, best: Reg, key: Reg, f: FnBox, key_ty: TypeId, less: bool)
+    MinBy(ret: TypeId, has: Reg, best: Reg, key: Reg, f: Step, key_ty: TypeId, less: bool)
 }
 
 export type Pipeline = { clauses: List<Clause>, sink: Sink }
@@ -107,7 +107,7 @@ impl LowerCx {
                 self.void_region(self.un(ok)) { cx -> cx.walk_done() }
             },
             .FilterMap(f, opt) -> {
-                let v = self.call_ptr(opt, f.code, [f.box, t.value!])
+                let v = self.stepped(f, t)
                 let has = self.presence_of(v, opt)
                 self
                     .void_region(has) { cx ->
@@ -115,7 +115,7 @@ impl LowerCx {
                     }
             },
             .FlatMap(f, e, list, elem) -> {
-                let xs = self.call_ptr(list, f.code, [f.box, t.value!])
+                let xs = self.stepped(f, t)
                 self.inner_walk(p, at, xs, e, list, elem)
             },
             .Flatten(e, list, elem) -> self.inner_walk(p, at, t.value!, e, list, elem),
@@ -232,7 +232,7 @@ impl LowerCx {
                     }
             },
             .FindMap(ret, cell, pred) -> {
-                let ans = self.call_ptr(ret, pred.code, [pred.box, t.value!])
+                let ans = self.stepped(pred, t)
                 self
                     .void_region(self.presence_of(ans, ret)) { cx ->
                         cx.store_hit(cell, ans)
@@ -282,7 +282,7 @@ impl LowerCx {
                     }
             },
             .MinBy(_, has, best, key, f, key_ty, less) -> {
-                let k = self.call_ptr(key_ty, f.code, [f.box, t.value!])
+                let k = self.stepped(f, t)
                 let held = self.loaded_as(key_ty, key)
                 let op: BinOp = if less { BinOp.Lt } else { BinOp.Gt }
                 let beats = self.bin(Type.Bool, op, k, held)
@@ -330,10 +330,8 @@ impl LowerCx {
         self.emit(Ins.Store(cell, next))
     }
 
-    /// The predicate asked about this element — one CallPtr per turn.
-    mut fn pred_call(pred: FnBox, t: Turn) -> Reg {
-        self.call_ptr(self.type(bool), pred.code, [pred.box, t.value!])
-    }
+    /// The predicate asked about this element.
+    mut fn pred_call(pred: Step, t: Turn) -> Reg { self.stepped(pred, t) }
 
     /// The terminal's hit: write its cell and end the walk.
     mut fn store_hit(cell: Reg, v: Reg) {

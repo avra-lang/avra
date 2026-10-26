@@ -21,7 +21,8 @@ export fn found_chain(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let clauses = subject_clauses(cx, mc.subject)
     let opt = cx.type_at(mc.e)
     let cell = absent_cell(cx, opt)
-    cx.piped(Pipeline { clauses: clauses, sink: .Find(opt, cell, box_of(cx, s.arg)) })
+    cx
+        .piped(Pipeline { clauses: clauses, sink: .Find(opt, cell, step_of(cx, s.arg, cx.type(bool))) })
 }
 
 /// `xs.find_map(f)` over a chain — the first turn whose fn answers
@@ -30,7 +31,7 @@ export fn find_map_chain(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let clauses = subject_clauses(cx, mc.subject)
     let opt = cx.type_at(mc.e)
     let cell = absent_cell(cx, opt)
-    cx.piped(Pipeline { clauses: clauses, sink: .FindMap(opt, cell, box_of(cx, s.arg)) })
+    cx.piped(Pipeline { clauses: clauses, sink: .FindMap(opt, cell, step_of(cx, s.arg, opt)) })
 }
 
 /// `xs.find_last(p)` over a chain — the LAST hit's cell: the walk runs
@@ -39,7 +40,13 @@ export fn find_last_chain(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let clauses = subject_clauses(cx, mc.subject)
     let opt = cx.type_at(mc.e)
     let cell = absent_cell(cx, opt)
-    cx.piped(Pipeline { clauses: clauses, sink: .FindLast(opt, cell, box_of(cx, s.arg)) })
+    cx
+        .piped(
+            Pipeline {
+                clauses: clauses,
+                sink: .FindLast(opt, cell, step_of(cx, s.arg, cx.type(bool))),
+            },
+        )
 }
 
 /// `xs.find_index(p)` — the first hit's place, absent until one.
@@ -51,7 +58,7 @@ export fn found_at_chain(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
         .piped(
             Pipeline {
                 clauses: clauses,
-                sink: .FindIndex(opt, cell, int_cell(cx, 0), box_of(cx, s.arg)),
+                sink: .FindIndex(opt, cell, int_cell(cx, 0), step_of(cx, s.arg, cx.type(bool))),
             },
         )
 }
@@ -62,7 +69,7 @@ export fn judged_chain(mut cx: LowerCx, mc: MethodCall, s: Seat, all: bool) -> R
     let clauses = subject_clauses(cx, mc.subject)
     let ret = cx.type(bool)
     let cell = bool_cell(cx, all)
-    let pred = box_of(cx, s.arg)
+    let pred = step_of(cx, s.arg, ret)
     if all { return cx.piped(Pipeline { clauses: clauses, sink: .All(ret, cell, pred) }) }
     cx.piped(Pipeline { clauses: clauses, sink: .Any(ret, cell, pred) })
 }
@@ -140,7 +147,15 @@ export fn keyed_extreme_chain(mut cx: LowerCx, mc: MethodCall, less: bool) -> Re
         .piped(
             Pipeline {
                 clauses: subject_clauses(cx, mc.subject),
-                sink: .MinBy(ret, has, best, key, box_of(cx, mc.args.first()!), cx.type(int), less),
+                sink: .MinBy(
+                    ret,
+                    has,
+                    best,
+                    key,
+                    step_of(cx, mc.args.first()!, cx.type(int)),
+                    cx.type(int),
+                    less,
+                ),
             },
         )
 }
@@ -229,12 +244,15 @@ fn link_clause(mut cx: LowerCx, stage: PipeStage, arg: ExprId?, subject: ExprId,
         .Map -> .Map(step_of(cx, arg!, mapped_to(cx, e))),
         .Take -> .Take(int_cell(cx, 0), cx.reg_of(arg!)),
         .Drop -> .Drop(int_cell(cx, 0), cx.reg_of(arg!)),
-        .TakeWhile -> .TakeWhile(box_of(cx, arg!)),
-        .DropWhile -> .DropWhile(box_of(cx, arg!), cx.seeded_cell(cx.type(bool), cx.const_bool(false))),
-        .FilterMap -> .FilterMap(box_of(cx, arg!), fn_answer(cx, arg!)),
+        .TakeWhile -> .TakeWhile(step_of(cx, arg!, bool_ty(cx))),
+        .DropWhile -> .DropWhile(
+            step_of(cx, arg!, bool_ty(cx)),
+            cx.seeded_cell(cx.type(bool), cx.const_bool(false)),
+        ),
+        .FilterMap -> .FilterMap(step_of(cx, arg!, fn_answer(cx, arg!)), fn_answer(cx, arg!)),
         .FlatMap -> {
             let list = fn_answer(cx, arg!)
-            .FlatMap(box_of(cx, arg!), e, list, mapped_to(cx, e))
+            .FlatMap(step_of(cx, arg!, list), e, list, mapped_to(cx, e))
         },
         // a `.Chars` link is its chain's HEAD, built in `chain_clauses` — it never reaches here
         .Chars -> null,
