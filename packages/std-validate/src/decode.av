@@ -27,7 +27,6 @@ use issue.{Issue, Issues, root}
 use value.{Value, Entry}
 use @std.text.{parse_int}
 use @std.json.typed.{Path, Reader, no_reader}
-use @std.json.{Json, Field}
 
 /// How a value may be read as another kind.
 export enum Coercion {
@@ -340,26 +339,30 @@ export fn ruled<T, E: Refusal>(mut d: Decoding, s: Slot, rule: string, verdict: 
     }
 }
 
+/// A text slot read through `read`: the value its text names, or null with
+/// an issue at the slot saying what the text should have been.
+export fn formed<T>(mut d: Decoding, s: Slot, wanted: string, read: fn(string) -> T?) -> T? {
+    let text? = d.text(s) else { return null }
+    let value? = read(text) else {
+        d
+            .say(
+                Issue {
+                    path: s.at,
+                    rule: "text",
+                    message: "must be ${wanted}",
+                    received: if s.hidden { null } else { Value.Text(text) },
+                },
+            )
+        return null
+    }
+    value
+}
+
 /// Each scalar reader as a decoder, for a list of them.
 export fn read_text(mut d: Decoding, s: Slot) -> string? { d.text(s) }
 export fn read_int(mut d: Decoding, s: Slot) -> int? { d.int(s) }
 export fn read_float(mut d: Decoding, s: Slot) -> float? { d.float(s) }
 export fn read_bool(mut d: Decoding, s: Slot) -> bool? { d.bool(s) }
-
-/// The JSON value a `Value` reads as: what a type with a std-json reader takes.
-/// Absent for an absent value.
-export fn json_of(v: Value?) -> Json? {
-    let w? = v else { return null }
-    match w {
-        .Null -> Json.Null,
-        .Bool(b) -> Json.Bool(b),
-        .Int(n) -> Json.Int(n),
-        .Float(x) -> Json.Float(x),
-        .Text(s) -> Json.Str(s),
-        .List(items) -> Json.Arr([json_of(x) ?? Json.Null for x in items]),
-        .Map(entries) -> Json.Obj([Field { key: e.key, value: json_of(e.value) ?? Json.Null } for e in entries]),
-    }
-}
 
 /// A field the decoder does not name, and the one it may have meant.
 fn stray(at: Path, key: string, names: List<string>) -> Issue {

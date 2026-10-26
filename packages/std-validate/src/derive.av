@@ -37,7 +37,7 @@ use @std.meta.{
     name,
     literal,
     applied,
-    type_named,
+    implements,
 }
 use decode.{
     Decoding,
@@ -46,7 +46,7 @@ use decode.{
     Limits,
     decode,
     ruled,
-    json_of,
+    formed,
     list,
     read_text,
     read_int,
@@ -57,7 +57,7 @@ use json.{
     decode_json,
     not_yet,
     json_list,
-    json_read_protocol,
+    json_formed,
     json_by_tree,
     ruled_json,
     json_read_text,
@@ -65,7 +65,6 @@ use json.{
     json_read_float,
     json_read_bool,
 }
-use @std.json.{Json}
 use value.{Value, Entry}
 use issue.{Issues, root}
 use check.{Checking, filed}
@@ -401,12 +400,6 @@ const judged: string = "judged\$"
 const hidden: string = "hidden\$"
 
 /// The reader for a shape at `at`.
-/// Whether a named type answers std-json's protocol: it carries `@json` or `@json_text`.
-fn json_typed(n: string) -> bool {
-    let t? = type_named(n) else { return false }
-    t.annotations.any(it.name == "json" || it.name == "json_text")
-}
-
 fn reader(k: Kind) -> Code {
     match k {
         .Str -> quote { d.text(at) },
@@ -417,11 +410,7 @@ fn reader(k: Kind) -> Code {
             let each? = element(elem) else { return unread(k) }
             quote { list(d, at, ${each}) }
         },
-        .Named(n, _) -> if json_typed(n) {
-            quote { ruled(d, at, "json", ${name(n)}.decode_json(json_of(at.value), at.at.text())) }
-        } else {
-            quote { ${name(n)}.decoded(d, at) }
-        },
+        .Named(n, _) -> if texted(n) { form_read(n, quote { at }) } else { quote { ${name(n)}.decoded(d, at) } },
         .Opt(k2) -> reader(k2),
         .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> unread(k),
     }
@@ -445,10 +434,14 @@ fn element(k: Kind) -> Code? {
         .Int -> quote { read_int },
         .Float -> quote { read_float },
         .Bool -> quote { read_bool },
-        .Named(n, _) -> quote {
-            (mut d: Decoding, s: Slot) -> {
-                let got: ${k.spelled()}? = ${name(n)}.decoded(d, s)
-                got
+        .Named(n, _) -> if texted(n) {
+            quote { (mut d: Decoding, s: Slot) -> ${form_read(n, quote { s })} }
+        } else {
+            quote {
+                (mut d: Decoding, s: Slot) -> {
+                    let got: ${k.spelled()}? = ${name(n)}.decoded(d, s)
+                    got
+                }
             }
         },
         .List(elem) -> {
@@ -696,8 +689,8 @@ fn reading(k: Kind, depth: Code, required: Code, secret: Code) -> Code {
             let each? = json_element(elem) else { return unread_json(k, depth) }
             quote { json_list(d, ${depth}, ${required}, ${secret}, ${each}) }
         },
-        .Named(n, _) -> if json_typed(n) {
-            quote { json_read_protocol(d, ${depth}, ${required}, ${secret}, (v: Json?, at: string) -> ${name(n)}.decode_json(v, at)) }
+        .Named(n, _) -> if texted(n) {
+            form_read_json(n, depth, required, secret)
         } else {
             quote { ${name(n)}.read_json(d, ${depth}, ${required}, ${secret}) }
         },
@@ -717,6 +710,19 @@ fn unread_json(k: Kind, depth: Code) -> Code {
     }
 }
 
+/// Whether a named type crosses as one string: it implements `@std/text`'s `TextForm`.
+fn texted(n: string) -> bool { implements(n, "TextForm") }
+
+/// A text-form type read from the tree slot `s`.
+fn form_read(n: string, s: Code) -> Code {
+    quote { formed(d, ${s}, ${literal("a text that reads as " + n)}, (t: string) -> ${name(n)}.from_text_form(t)) }
+}
+
+/// A text-form type read from the JSON cursor.
+fn form_read_json(n: string, depth: Code, required: Code, secret: Code) -> Code {
+    quote { json_formed(d, ${depth}, ${required}, ${secret}, ${literal("a text that reads as " + n)}, (t: string) -> ${name(n)}.from_text_form(t)) }
+}
+
 /// A list element's direct reader, as a fn value — absent for an
 /// element with none, whose whole list the tree reads.
 fn json_element(k: Kind) -> Code? {
@@ -725,10 +731,14 @@ fn json_element(k: Kind) -> Code? {
         .Int -> quote { json_read_int },
         .Float -> quote { json_read_float },
         .Bool -> quote { json_read_bool },
-        .Named(n, _) -> quote {
-            (mut d: Decoding, depth: int, required: bool, secret: bool) -> {
-                let got: ${k.spelled()}? = ${name(n)}.read_json(d, depth, required, secret)
-                got
+        .Named(n, _) -> if texted(n) {
+            quote { (mut d: Decoding, depth: int, required: bool, secret: bool) -> ${form_read_json(n, quote { depth }, quote { required }, quote { secret })} }
+        } else {
+            quote {
+                (mut d: Decoding, depth: int, required: bool, secret: bool) -> {
+                    let got: ${k.spelled()}? = ${name(n)}.read_json(d, depth, required, secret)
+                    got
+                }
             }
         },
         .List(elem) -> {
