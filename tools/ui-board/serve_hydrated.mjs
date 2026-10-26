@@ -5,9 +5,9 @@
 // `--backend <url>` every path the page does not own is the app's server's,
 // as it is where the page ships.
 //
-// With `--hold` the page's first GET of `/tasks` waits at the proxy until something asks for
+// With `--hold` each page's first GET of `/tasks` waits at the proxy until something asks for
 // `/__release`: the page stands on the server's own paint, with no list answered, for as
-// long as a claim needs.
+// long as a claim needs. Every load of the document arms a fresh hold, so each engine's run has its own.
 //
 //   node serve_hydrated.mjs <document> <module.wasm> <runtime/dom> [--tampered] [--hold] [--backend <url>]
 //
@@ -20,7 +20,9 @@ const [documentFile, wasmFile, glue, ...flags] = process.argv.slice(2);
 const tampered = flags.includes("--tampered");
 const hold = flags.includes("--hold");
 let release = () => {};
-const released = new Promise((go) => { release = go; });
+let released = Promise.resolve();
+const armed = () => { released = new Promise((go) => { release = go; }); };
+armed();
 const backend = flags.includes("--backend") ? flags[flags.indexOf("--backend") + 1] : null;
 
 // Before the module runs, every element the server drew is marked, so a page
@@ -32,7 +34,7 @@ const types = { ".js": "text/javascript", ".wasm": "application/wasm", ".html": 
 const served = (res, kind, body) => { res.writeHead(200, { "content-type": kind, "cache-control": "no-store" }); res.end(body); };
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://x");
-  if (url.pathname === "/") return served(res, types[".html"], page);
+  if (url.pathname === "/") { armed(); return served(res, types[".html"], page); }
   if (url.pathname === "/app.wasm") return served(res, types[".wasm"], fs.readFileSync(wasmFile));
   if (url.pathname.startsWith("/avra/")) {
     const file = path.join(glue, path.basename(url.pathname));
