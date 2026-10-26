@@ -1,0 +1,108 @@
+// proves: a write-ahead-log database opened before the cores fork is REFUSED in each core, loudly, by name — never
+// reopened on the parent's per-process state and never closed over descriptors the core has since reused (the core's
+// first act here takes the numbers the parent's connection held). No write is lost: none was made. The parent's own
+// connection reads and writes after the cores exit, and a database opened inside a core is the way through.
+use @std.http.http.{text}
+use @std.http.route.{get, post}
+use @std.http.server.{server}
+use @std.io.{make_dirs, opened_for_append}
+use @std.net.{Conn, NetError, connect, timely}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.open.{Journal, OpenConfig}
+use @std.time.{ms, secs, stamp}
+
+/// One request on its own connection, answered with its body.
+fn asked(port: int, method: string) -> Result<string, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    c
+        .write(
+            "${method} / HTTP/1.1\r\nHost: a\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+                .bytes(),
+        )?
+    mut got = "".bytes()
+    while true {
+        match timely(within secs(2) { c.read(65536) }) {
+            .Ok(b) -> {
+                let more? = b else { break }
+                got = got.concat(more)
+            },
+            .Err(_) -> { break },
+        }
+    }
+    let parts = (got.text() ?? "?").split("\r\n\r\n")
+    .Ok(if parts.length > 1 { parts[1] } else { "?" })
+}
+
+/// A setup failure, in the one error this program speaks.
+fn refused(why: string) -> NetError { NetError { verb: "setup", subject: why, errno: 1 } }
+
+/// The file under a directory of this run's own, with its table made.
+fn prepared() -> Result<Db, NetError> {
+    let dir = "/tmp/avra-http-cores-wal/${stamp()}"
+    let _ = make_dirs(dir)
+    let db = match Db
+        .open_with(OpenConfig.config_at("${dir}/rows.db") with { journal: Journal.Wal }) {
+        .Ok(d) -> d,
+        .Err(e) -> { return .Err(refused(e.message)) },
+    }
+    match db.run(sql("CREATE TABLE rows (n INTEGER PRIMARY KEY, who INTEGER)")) {
+        .Ok(_) -> .Ok(db),
+        .Err(e) -> .Err(refused(e.message)),
+    }
+}
+
+/// Descriptors held open before the database is touched, so the numbers a core's inherited connection
+/// held name these files instead. Each is kept open by its descriptor, whose number is the only thing held.
+fn reserving() -> int {
+    let dir = "/tmp/avra-http-cores-wal-reserved"
+    let _ = make_dirs(dir)
+    [opened_for_append("${dir}/held${i}") is .Ok for i in 0..6].length
+}
+
+fn added(db: Db) -> string {
+    let _ = reserving()
+    match db.run(sql("INSERT INTO rows (who) VALUES (0)")) {
+        .Ok(_) -> "added",
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn audit(db: Db) -> string {
+    let whole = match db.scalar(sql("PRAGMA integrity_check")) {
+        .Ok(v) -> v.text() catch "?",
+        .Err(e) -> e.message,
+    }
+    let count = match db.scalar(sql("SELECT count(*) FROM rows")) {
+        .Ok(v) -> v.int() catch -1,
+        .Err(_) -> -2,
+    }
+    "${whole} ${count}"
+}
+
+/// The parent's own connection, after the cores have exited: it writes one more row and reads them all.
+fn after_cores(db: Db) -> string {
+    let wrote = added(db)
+    "${wrote} ${audit(db)}"
+}
+
+fn shown() -> Result<string, NetError> {
+    let db = prepared()?
+    server app {
+        port: 0
+        post "/" { _req -> text(200, added(db)) }
+    }
+    let up = match app.listening() {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    let ran = spawn up.run(3)
+    let port = up.listener.port
+    let sent = [spawn asked(port, "POST") for i in 0..30]
+    let answers = [t.await? for t in sent]
+    up.stop()
+    let _ = ran.await
+    .Ok("${answers.all(it == "sqlite.forked")} ${after_cores(db)}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
