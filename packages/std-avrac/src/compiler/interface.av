@@ -480,6 +480,46 @@ impl Workspace {
             .record_line(d, ordinal, on_top(top, d.id), parent_ordinal(ids, d), self.decls.file(f).name)
     }
 
+    /// A file's admitted declarations as identity rows — the answer `Items` is saved as. Only the
+    /// declarations the file itself declares: what a run generates is another answer's.
+    fn identity_lines(path: string) -> List<string> {
+        let f = self.file_id(path)
+        let top = self.items(f)
+        let ids = self.declared_in(f)
+        [self.identity_line(self.decl_at(id), ordinal, on_top(top, id), ids) for ordinal, id in ids]
+    }
+
+    fn identity_line(d: Decl, ordinal: int, item: bool, ids: List<DeclId>) -> string {
+        let parent_at = parent_ordinal(ids, d)
+        let block = facts_block(self.decls.facts_or(d.id))
+        self
+            .identity_columns(
+                d,
+                ordinal,
+                item,
+                self.identity_word(d),
+                parent_at,
+                block,
+                self.decls.file(d.file).name,
+            )
+    }
+
+    /// The shape word an identity row wears: what the kind alone says, a record's layout left to its sig.
+    fn identity_word(d: Decl) -> string {
+        match d.kind {
+            .Record -> "struct",
+            .Named -> "named",
+            .Alias -> "alias",
+            .Enum or .CollectEnum -> "enum",
+            .Const -> "const",
+            .Collect -> "collect",
+            .State -> "state",
+            .Impl -> "aims",
+            .Fn or .Method or .Default or .Case -> if self.decls.is_extern(d.id) { "extern" } else { "fn" },
+            .Builtin or .Trait or .Syntax or .Main -> "opaque",
+        }
+    }
+
     /// The declarations a file itself declares, in order: what `Items` names.
     fn declared_in(f: FileId) -> List<DeclId> {
         [id for id in self.decls.decls_of_file(f) if self.decl_at(id).maker == ""]

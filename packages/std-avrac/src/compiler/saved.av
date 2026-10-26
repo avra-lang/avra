@@ -4,7 +4,7 @@
 //! maps keys to names on the way out and names to keys on the way in.
 use @std.relation.engine.{Key, Saved, SavedRead}
 use @std.text.{parse_int}
-use core.{FileId, DeclId, ModuleId, DeclKind, joined}
+use core.{StmtId, FileId, DeclId, ModuleId, DeclKind, joined}
 use @std.relation.engine.{Revival}
 use features.{kind_word, decl_key_text}
 use compiler.families.{Family, keyed_by}
@@ -269,9 +269,37 @@ impl Workspace {
     /// The kernel's saved lookup and the saved families' hooks.
     fn arm_saved() {
         self.db.kernel.set_saved((key: Key) -> self.saved_found(key))
+        self.saves(Family.Items, (arg: int) -> self.items_text(arg))
+        self.relation(Family.Items).revive.set((arg: int) -> self.items_revived(arg))
         self.saves(Family.Sig, (arg: int) -> self.sig_text(arg))
         self.saves(Family.ComponentNames, (arg: int) -> self.words_of(arg))
         self.relation(Family.ComponentNames).revive.set((arg: int) -> self.saved_words(arg))
+    }
+
+    /// A file's `Items` as its row's text: its declarations' identity rows, then the modules its
+    /// `use` lines name — what admitting it needs, so a restore reads no parse. A file that
+    /// collects gathers from a package's other files, which the row cannot say: none is saved.
+    fn items_text(arg: int) -> string? {
+        let f = FileId { index: arg }
+        let p = self.parsed(f)
+        if p.stmts.any((s: StmtId) -> p.store.collect_scope(s) != null) { return null }
+        let uses = ["use\t${joined(u!.path, ".")}" for s in p.stmts for u in [p.store.use_parts(s)] if u != null]
+        joined(self.identity_lines(self.decls.file(f).path).concat(uses), "\n")
+    }
+
+    /// A file's declarations minted from its saved rows, never parsed: the parse comes when a
+    /// body is read (`attached`), and the modules its `use` lines name are admitted from the row.
+    fn items_revived(arg: int) -> Revival<DbRow> {
+        let text? = self.saved_value(Key { family: Family.Items.ordinal, arg: arg }) else { return Revival.Gone }
+        let path = self.decls.file(FileId { index: arg }).path
+        let lines = [l for l in text.split("\n") if !l.is_empty()]
+        let rows = [read_fields(l) for l in lines if !l.starts_with("use\t")]
+        let top = self.mint_file(path, rows, {})
+        self.link_file(path, rows)
+        self
+            .revived
+            .put("${arg}", [l.substring(4, l.length) for l in lines if l.starts_with("use\t")])
+        Revival.Revived(DbRow.Items(top))
     }
 
     /// A declaration's signature as its row's text: its record line; none for one a run generated

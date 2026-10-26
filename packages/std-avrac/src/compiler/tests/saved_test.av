@@ -4,7 +4,7 @@ use @std.time.{stamp}
 use @std.relation.engine.{Key, same_key}
 use core.{DeclId}
 use compiler.host.{memory_host}
-use compiler.{Workspace}
+use compiler.{Workspace, Want, Derived}
 use compiler.families.{Family}
 use @std.avrac.testing.{test_workspace}
 use compiler.store.{store_at}
@@ -23,6 +23,9 @@ fn world(text: string) -> Workspace {
         "/w",
     )
 }
+
+/// What a derivation said: its warnings, or its refusal.
+fn said(r: Result<Derived, string>) -> string { match r { .Ok(d) -> d.warnings, .Err(why) -> why } }
 
 fn source() -> string { "export fn one() -> int { 1 }\nexport fn two() -> int { one() + 1 }\ntwo()\n" }
 
@@ -84,6 +87,27 @@ spec "compiler/saved — answers by durable name" {
             let ws = world(source())
             ws.attach_store(store_at("${base()}/empty"))
             ws.saved_found(sig_key(ws, "two")) == null
+        }
+    }
+    given "a derivation over files minted from saved rows" {
+        then "answers what the derivation that saved them did" {
+            let dir = "${base()}/derived"
+            let first = world(source())
+            first.attach_store(store_at(dir))
+            let a = first.derived(null, Want.Diagnostics)
+            let second = world(source())
+            second.attach_store(store_at(dir))
+            let b = second.derived(null, Want.Diagnostics)
+            a is .Ok && said(a) == said(b)
+        }
+        then "stands after the file's text moved" {
+            let dir = "${base()}/derived_moved"
+            let first = world(source())
+            first.attach_store(store_at(dir))
+            let _ = first.derived(null, Want.Diagnostics)
+            let second = world(source() + "export fn three() -> int { 3 }\n")
+            second.attach_store(store_at(dir))
+            second.derived(null, Want.Diagnostics) is .Ok
         }
     }
 }
