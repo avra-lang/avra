@@ -853,29 +853,53 @@ fn unread_word(name: string, origin: string) -> ComponentWord {
     }
 }
 
-/// Whether a text exports a component by this name: `export component
-/// NAME`, then its block or its head.
-fn exports_component_named(text: string, word: string) -> bool {
-    if !text.contains(word) { return false }
-    let tokens = lex_source(text).tokens
-    (1..tokens.length - 2)
-        .any(
-            tokens[it - 1].lit_matches("export") &&
-                tokens[it].lit_matches("component") &&
-                tokens[it + 1].text == word &&
-                (tokens[it + 2].lit_matches("{") || tokens[it + 2].lit_matches("(")),
-        )
+/// What a file's module exports as components: its record says, or — with no
+/// record — the file's own tokens do.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn exported_components(ws: Workspace, path: string) -> List<string> {
+    let rows? = module_block_rows(ws, ws.module_path_of(path)) else {
+        return if file_declares_component(ws, path) { ws.lexed_components(path) } else { [] }
+    }
+    [r.name for r in rows if r.exported && facts_unblocked(r.facts)?.is_component ?? false]
+}
+
+/// Every component the given files' modules export, by name: the modules that
+/// export it, each once, in file order.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn component_index_of(ws: Workspace, paths: List<string>) -> Map<string, List<string>> {
+    mut index: Map<string, List<string>> = {}
+    for path in paths {
+        let m = ws.module_of(path)
+        for name in exported_components(ws, path) {
+            let homes = index.get(name) ?? []
+            if !homes.contains(m) { index.set(name, homes.concat([m])) }
+        }
+    }
+    index
 }
 
 /// What one lex of a text answers: whether it may declare a block word, and the
-/// components it declares — `component NAME` before its block or its head.
-type TextScan = { text: string, opens_block: bool, declares: bool, components: List<string> }
+/// components it declares and the ones it exports — `component NAME` before its
+/// block or its head.
+type TextScan = {
+    text: string,
+    opens_block: bool,
+    declares: bool,
+    components: List<string>,
+    exported: List<string>,
+}
 
 /// THE CHEAPEST GATE FIRST: no `grammar`/`component`/`export` substring anywhere, no
 /// token stream worth building.
 fn scan_text(text: string, keywords: List<string>) -> TextScan {
     if !(text.contains("grammar") || text.contains("component") || text.contains("export")) {
-        return TextScan { text: text, opens_block: false, declares: false, components: [] }
+        return TextScan {
+            text: text,
+            opens_block: false,
+            declares: false,
+            components: [],
+            exported: [],
+        }
     }
     let tokens = lex_source(text).tokens
     let named = [tokens[j + 1].text for j in 0..tokens.length - 2 if tokens[j].lit_matches("component") &&
@@ -886,6 +910,10 @@ fn scan_text(text: string, keywords: List<string>) -> TextScan {
         opens_block: opens_block(tokens, keywords),
         declares: !named.is_empty(),
         components: named,
+        exported: [tokens[j + 1].text for j in 1..tokens.length - 2 if tokens[j - 1].lit_matches("export") &&
+            tokens[j].lit_matches("component") &&
+            tokens[j + 1].kind == TokenKind.Name &&
+            (tokens[j + 2].lit_matches("{") || tokens[j + 2].lit_matches("("))],
     }
 }
 
