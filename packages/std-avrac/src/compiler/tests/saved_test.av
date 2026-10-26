@@ -27,6 +27,8 @@ fn world(text: string) -> Workspace {
 /// What a derivation said: its warnings, or its refusal.
 fn said(r: Result<Derived, string>) -> string { match r { .Ok(d) -> d.warnings, .Err(why) -> why } }
 
+const MAIN: string = "/w/src/main.av"
+
 fn source() -> string { "export fn one() -> int { 1 }\nexport fn two() -> int { one() + 1 }\ntwo()\n" }
 
 /// The key of the signature of the declaration named `name` in the world's one file.
@@ -93,21 +95,26 @@ spec "compiler/saved — answers by durable name" {
         then "answers what the derivation that saved them did" {
             let dir = "${base()}/derived"
             let first = world(source())
+            first.alone()
             first.attach_store(store_at(dir))
-            let a = first.derived(null, Want.Diagnostics)
+            let a = first.derived(MAIN, Want.Diagnostics)
+            let said_first = said(a)
             let second = world(source())
+            second.alone()
             second.attach_store(store_at(dir))
-            let b = second.derived(null, Want.Diagnostics)
-            a is .Ok && said(a) == said(b)
+            let b = second.derived(MAIN, Want.Diagnostics)
+            a is .Ok && b is .Ok && said_first == said(b)
         }
         then "stands after the file's text moved" {
             let dir = "${base()}/derived_moved"
             let first = world(source())
+            first.alone()
             first.attach_store(store_at(dir))
-            let _ = first.derived(null, Want.Diagnostics)
+            let _ = first.derived(MAIN, Want.Diagnostics)
             let second = world(source() + "export fn three() -> int { 3 }\n")
+            second.alone()
             second.attach_store(store_at(dir))
-            second.derived(null, Want.Diagnostics) is .Ok
+            second.derived(MAIN, Want.Diagnostics) is .Ok
         }
     }
 }
