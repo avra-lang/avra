@@ -722,14 +722,9 @@ fn bound_static_call(
     if !cx.view.decls.is_static_of(member) { return receiver_through_type(cx, e, trait_name, name, tname) }
     let found? = cx.view.decls.sig(member)?.fn_sig() else { return cx.error_type }
     if !cx.seat_contracts(e, "${trait_name}.${name}", member, 0, args, null) { return cx.error_type }
-    sig_judged(
-        cx,
-        e,
-        trait_name,
-        name,
-        args,
-        selfed_sig(cx, subject, member, found, cx.view.decls.bound_args(decl, j)),
-    )
+    let sig = selfed_sig(cx, subject, member, found, cx.view.decls.bound_args(decl, j))
+    let placed? = cx.placed(e, "${trait_name}.${name}", member, args, sig.params) else { return cx.error_type }
+    sig_judged(cx, e, trait_name, name, placed.args, FnSig { params: placed.wants, ret: sig.ret })
 }
 
 /// A REMEDY NAMES A FORM THAT PARSES. A bound is written on a fn's
