@@ -8,7 +8,7 @@ graph is dropped before the model is asked anything more of it, and a finished
 plan whose answer is empty is never chosen: when every walk ends empty the
 planner abstains. With k = 1 the walk is the greedy one.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from catalog import PARAMETERS
 from search import Branching
@@ -32,6 +32,7 @@ class Plan:
     tally: float
     length: int
     steps: tuple = ()
+    round: int = 0
 
     def score(self):
         """Joint log-probability of the picks, or that per decision, as beam_score declares."""
@@ -98,11 +99,13 @@ def candidates(base, make, probe=None, k=None):
     walker = Walker(base, probe)
     first = walker.run(make, ())
     kept, finished = [((), 0.0, first)] if first else [], []
+    rounds = 0
     while kept:
+        rounds += 1
         pool = []
         for picks, tally, state in kept:
             if state[0] == "done":
-                finished.append(state[1])
+                finished.append(replace(state[1], round=rounds))
                 continue
             logp = state[1]
             pool += [(picks + (j,), tally + logp[j]) for j in range(len(logp))]
