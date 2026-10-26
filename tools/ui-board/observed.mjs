@@ -22,11 +22,15 @@ good = claim("two views asking one GET sent it once", both && first.length === 1
 
 await page.read(`(() => { window.__moved = 0; new MutationObserver((m) => { window.__moved += m.length; }).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true }); return 1; })()`);
 const before = await words();
+await page.read(`(() => { window.__texts = []; window.__sampler = setInterval(() => window.__texts.push(document.body.textContent), 5); return 1; })()`);
 await press("Again");
 const asked = await waits(`performance.getEntriesByType("resource").filter((e) => new URL(e.name).pathname === "/tasks").length === 2`);
 await new Promise((go) => setTimeout(go, 300));
 const second = await sent();
 good = claim("asking again sent the version it held and the server answered 304", asked && second[1] === 304, second) && good;
+const texts = JSON.parse(await page.read(`(() => { clearInterval(window.__sampler); return JSON.stringify(window.__texts); })()`));
+const lost = texts.filter((s) => !(/left ready \d+/.test(s) && /right ready \d+/.test(s)));
+good = claim("asking again never drew a loading word: every sample held both answers", texts.length >= 20 && lost.length === 0, { samples: texts.length, lost: lost.slice(0, 2) }) && good;
 good = claim("a 304 changed nothing on the page", (await words()) === before && (await page.read(`window.__moved`)) === 0, await page.read(`window.__moved`)) && good;
 
 await press("Add");

@@ -68,11 +68,16 @@ impl Entry {
         request.header("If-None-Match", at.tag())
     }
 
-    /// A request goes out. An entry that holds a versioned answer keeps showing
-    /// it while the question is asked again; any other shows loading.
+    /// Whether the entry holds an answer its views show.
+    fn shows() -> bool {
+        match self.now.get() { .Ready(_) -> true, .Idle or .Loading or .Failed(_) -> false }
+    }
+
+    /// A request goes out. An entry that holds an answer keeps showing it while
+    /// the question is asked again; any other shows loading.
     fn asked() {
         self.out.set(true)
-        if self.held() != null { return }
+        if self.shows() { return }
         self.now.set(Async.Loading)
         self.told()
     }
@@ -80,15 +85,13 @@ impl Entry {
     /// An answer came, and whether the entry changed. A 304 leaves what the
     /// entry holds. An answer whose version is no later than the one held is
     /// never taken, so what arrives late cannot replace what arrived first. A
-    /// failed ask leaves a held answer where it stands.
+    /// failed ask is what its views show — each keeps the last good reading it
+    /// had beside the failure.
     fn offered(answer: Result<Reply, string>) -> bool {
         self.out.set(false)
         let kept = self.held() != null
         match answer {
-            .Err(why) -> {
-                if kept { return false }
-                self.now.set(Async.Failed(why))
-            },
+            .Err(why) -> self.now.set(Async.Failed(why)),
             .Ok(reply) -> {
                 if kept && reply.status == 304 { return false }
                 let at = reply.version()
