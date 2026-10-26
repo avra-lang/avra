@@ -43,6 +43,7 @@ export type Asked = {
     stats: bool = false,
     why: bool = false,
     sites: bool = false,
+    cache: bool = false,
     json: bool = false,
     time: bool = false,
 }
@@ -60,6 +61,7 @@ impl Runnable for ExplainCmd {
                     stats: args.has_flag("stats"),
                     why: args.has_flag("why"),
                     sites: args.has_flag("sites"),
+                    cache: args.has_flag("cache"),
                     json: args.has_flag("json"),
                     time: args.has_flag("time"),
                 },
@@ -91,6 +93,7 @@ export fn explain_answer(a: Asked) -> Lines {
     }
     if a.stats && a.why { return .Err([stats_or_why()]) }
     if a.sites && (a.stats || a.why) { return .Err([sites_alone()]) }
+    if a.cache && (a.stats || a.why || a.sites || a.time) { return .Err([cache_alone()]) }
     if a.time && !a.stats { return .Err([time_wants_stats()]) }
     let ws = root_workspace(aim.root)
     let subject = match placed("explain", a.target, aim.subject, ws) {
@@ -98,6 +101,7 @@ export fn explain_answer(a: Asked) -> Lines {
         .Err(why) -> { return .Err([why]) },
     }
     if a.sites { return sites_answer(a, subject, ws) }
+    if a.cache { return cache_answer(a, subject, ws, aim.root) }
     match subject {
         .Package -> if a.stats || a.why { package_answer(a, ws) } else { .Err([needs_target()]) },
         .File(_) or .Decl(_) or .Query(_) -> if a.stats { .Err([stats_wants_package(a.target)]) } else { subject_answer(a, subject, ws) },
@@ -112,6 +116,18 @@ fn sites_answer(a: Asked, subject: Subject, ws: Workspace) -> Lines {
             if lines.is_empty() { .Err([no_sites(name)]) } else { lines }
         },
         .Package or .File(_) or .Query(_) -> .Err([sites_wants_decl(a.target)]),
+    }
+}
+
+/// The observations, writes and routers a package's source states (`--cache`), or one file's.
+fn cache_answer(a: Asked, subject: Subject, ws: Workspace, root: string) -> Lines {
+    match subject {
+        .Package -> {
+            let g = ws.walk_graph().ws
+            .Ok([line.replace("${root}/", "") for line in g.cache_lines(g.root_files())])
+        },
+        .File(at) -> .Ok([line.replace("${root}/", "") for line in ws.walk_graph().ws.cache_lines([at])]),
+        .Decl(_) or .Query(_) -> .Err([cache_wants_files(a.target)]),
     }
 }
 
@@ -600,6 +616,7 @@ export command explain {
     }
     flag stats { description: "count the package's answers: cells, reads and how long one answer's reads run, per family" }
     flag why { description: "what moved since the kept state: whether a check holds each file and why not, the way down from an answer to each moved input, and the answers each moved input reaches" }
+    flag cache { description: "the observations a package's views ask, the writes they make and the routers that answer them, as the source states them" }
     flag sites { description: "for a declaration, the mechanism the compiler chose for each site of its body (hoist, direct, tree, keyed) and the places it depends on" }
     flag json { description: "JSON instead of text, every list in the text's order" }
     flag time { description: "with `--stats`, the time each phase of the derivation took and what it asked of the store — the rows that differ run to run" }
@@ -617,6 +634,10 @@ fn sites_alone() -> string { "avra: `explain --sites` is a form of its own — i
 fn sites_wants_decl(target: string) -> string { "avra: `explain --sites` reads one declaration's body — `${target}` is not a `@name`" }
 
 fn no_sites(name: string) -> string { "avra: `explain --sites`: `${name}` has no body with sites in what this package's check reads" }
+
+fn cache_alone() -> string { "avra: `explain --cache` is a form of its own — it goes with none of `--stats`, `--why`, `--sites` and `--time`" }
+
+fn cache_wants_files(target: string) -> string { "avra: `explain --cache` reads a package or a file — `${target}` names one declaration or answer" }
 
 fn time_wants_stats() -> string { "avra: `explain --time` times the derivation `--stats` counts — it goes with `--stats`" }
 

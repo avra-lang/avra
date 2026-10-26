@@ -1,0 +1,148 @@
+//! `avra explain --cache` — the observations a package's views ask, the writes they make, and the
+//! models whose doors answer them, as the compiler RESOLVED them (P7, P10). A site is a call bound to
+//! `@std/ui`'s own `fetched` — by declaration, so a renamed import is found and a fn of the same name
+//! is not — and a model is a declaration wearing `@std/crud`'s `@crud`, again by declaration. What a
+//! route reads is learned at run time (`avra-reads`), so this lists what the program states and no more.
+use core.{DeclId, ExprId, Expr, FileId, flatten}
+use features.{AnnotationFact}
+
+/// What a site is.
+enum CacheKind {
+    Observation
+    Write
+    Model
+}
+
+/// One site: where it stands, and what it says.
+type CacheSite = { kind: CacheKind, at: string, what: string }
+
+/// The `Request` constructors a request is spelled with, and the method each sends.
+const request_methods: Map<string, string> = {
+    "get": "GET",
+    "post": "POST",
+    "put": "PUT",
+    "patch": "PATCH",
+    "delete": "DELETE",
+}
+
+/// The doors `@crud` mounts on every model.
+const crud_doors: string = "list, find, create, update, remove"
+
+impl Workspace {
+    /// What `explain --cache` says of `files`: the observations, writes and crud models of the program they state.
+    fn cache_lines(files: List<string>) -> List<string> {
+        let sites = flatten([self.cache_sites_in(f) for f in files])
+        flatten(
+            [
+                section("observations a view asks", [s for s in sites if s.kind is .Observation]),
+                section("writes a view makes", [s for s in sites if s.kind is .Write]),
+                section("models whose doors answer", [s for s in sites if s.kind is .Model]),
+                [
+                    "reads are learned from the server's answers at run time (`avra-reads`); a crud model reads its own table",
+                ],
+            ],
+        )
+    }
+
+    fn cache_sites_in(path: string) -> List<CacheSite> {
+        let f? = self.decls.known_file_id(path) else { return [] }
+        let a = self.analysis(f)
+        let calls = flatten(
+            [self.fetch_site(a, path, ExprId { index: i }) for i in 0..a.view.store.expr_count()],
+        )
+        calls
+            .concat(
+                [self.model_site(path, d) for d in self.decls.decls_of_file(f) if self.wears_crud(d, f)],
+            )
+    }
+
+    /// The site a call is, when it is bound to `@std/ui`'s `fetched`.
+    fn fetch_site(a: Analysis, path: string, e: ExprId) -> List<CacheSite> {
+        let call? = called(a.view.store.expr(e)) else { return [] }
+        let d? = a.names.names.fn_decl(call.callee) else { return [] }
+        let args = call.args
+        if args.length < 2 || !self.is_ui_fetched(d) { return [] }
+        let parse = if args.length > 2 { " · parse ${a.text_of(args[2], 32)}" } else { "" }
+        let foresee = [" · ${a.text_of(x, 40)}" for x in args.drop(3)].join("")
+        let kind = if writes(a, args[1]) { CacheKind.Write } else { CacheKind.Observation }
+        [
+            CacheSite {
+                kind: kind,
+                at: place(a, path, e),
+                what: "${request_words(a, args[1])}${parse}${foresee}",
+            },
+        ]
+    }
+
+    /// Whether a declaration is the one `fetched` that `@std/ui` declares.
+    fn is_ui_fetched(d: DeclId) -> bool { self.decls.decl(d).name == "fetched" && self.decls.package_of(d) == "@std.ui" }
+
+    /// Whether a declaration wears `@std/crud`'s `@crud`: an annotation that resolves, in the declaration's own
+    /// file, to that package's `crud`.
+    fn wears_crud(d: DeclId, file: FileId) -> bool {
+        [a for a in self.decls.annotations_of(d) if self.is_crud(a, file)].length > 0
+    }
+
+    fn is_crud(a: AnnotationFact, file: FileId) -> bool {
+        let c? = self.decls.annotation_callee(a, file) else { return false }
+        self.decls.decl(c).name == "crud" && self.decls.package_of(c) == "@std.crud"
+    }
+
+    fn model_site(path: string, d: DeclId) -> CacheSite {
+        CacheSite {
+            kind: CacheKind.Model,
+            at: path,
+            what: "${self.decls.decl(d).name} · doors ${crud_doors}",
+        }
+    }
+}
+
+/// A section's heading and its sites, none when it holds none.
+fn section(heading: string, sites: List<CacheSite>) -> List<string> {
+    if sites.is_empty() { return [] }
+    ["${heading}:"].concat(["  ${s.at}  ${s.what}" for s in sites])
+}
+
+/// A call by name: the name it was written with, which the file's own names resolve, and its arguments.
+type Called = { callee: string, args: List<ExprId> }
+
+fn called(x: Expr) -> Called? {
+    match x { .Call(callee, _, args) -> Called { callee: callee.of, args: args }, rest -> null }
+}
+
+/// What a request says: its method and the text of its path, or its own text when it is not a `Request` constructor.
+fn request_words(a: Analysis, request: ExprId) -> string {
+    let ctor? = request_ctor(a, request) else { return a.text_of(request, 56) }
+    "${request_methods.get(ctor.name) ?? ctor.name} ${a.text_of(ctor.path, 56)}"
+}
+
+/// Whether the request is a write: a constructor other than `get`.
+fn writes(a: Analysis, request: ExprId) -> bool {
+    let ctor? = request_ctor(a, request) else { return false }
+    ctor.name != "get"
+}
+
+type Ctor = { name: string, path: ExprId }
+
+/// A `Request.<method>(path, …)` call, `Request` being `@std/http_message`'s own type by declaration: the method
+/// it names and its path expression.
+fn request_ctor(a: Analysis, e: ExprId) -> Ctor? {
+    match a.view.store.expr(e) {
+        .MethodCall(subject, name, args) -> if is_request_type(a, subject) && request_methods.has(name.of) && !args.is_empty() { Ctor { name: name.of, path: args[0] } } else { null },
+        rest -> null,
+    }
+}
+
+/// Whether an expression names `@std/http_message`'s `Request` type.
+fn is_request_type(a: Analysis, subject: ExprId) -> bool {
+    let spelled? = a.view.store.ident_name(subject) else { return false }
+    let d? = a.names.names.type_decl(spelled) else { return false }
+    a.view.decls.decl(d).name == "Request" && a.view.decls.package_of(d) == "@std.http_message"
+}
+
+/// `file:line` of an expression.
+fn place(a: Analysis, path: string, e: ExprId) -> string {
+    let at = a.view.store.expr_span(e)?.lo ?? 0
+    let line = a.view.source.line_starts.filter(it <= at).length
+    "${path}:${line}"
+}

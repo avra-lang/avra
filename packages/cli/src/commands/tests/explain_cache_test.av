@@ -1,0 +1,71 @@
+//! `avra explain --cache` — the observations a package's views ask, the writes they make and the
+//! models whose doors answer them, as the compiler resolved them: a renamed import is found, a fn of the
+//! same name is not, and a model is a declaration wearing `@std/crud`'s `@crud`.
+use @std.io.{make_dirs, write_text}
+use @std.process.{Outcome, ProcessError}
+use @std.time.{stamp}
+
+/// A package of one file, its own path each run.
+fn cache_probe(name: string, source: string) -> string {
+    let root = "/tmp/avra-cache-explain-test/${name}-${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
+    let _ = write_text("${root}/src/main.av", source)
+    root
+}
+
+const ui_use: string = "use @std.http_message.message.{Body, Reply, Request}\nuse @std.ui.app.{Fetch, Overlay, fetch, fetched}\n\nfn parsed(r: Reply) -> Result<int, string> { .Ok(r.body.length) }\n"
+
+/// What `avra explain --cache` printed for a package, and what it said of itself on stderr.
+fn explained(root: string, extra: List<string>) -> Result<Outcome, ProcessError> { avra_ran(["explain", "--cache"].concat(extra).concat([root])) }
+
+/// The sites of the program, without the closing note.
+fn sites_of(root: string) -> string {
+    match explained(root, []) {
+        .Ok(o) -> o
+            .out
+            .stdout
+            .split("\n")
+            .filter(!it.is_empty() && !it.starts_with("reads are learned"))
+            .join("\n"),
+        .Err(_) -> "did not run",
+    }
+}
+
+/// The refusal printed when `--cache` is combined with `--stats`.
+fn refused_alone(root: string) -> string {
+    match explained(root, ["--stats"]) { .Ok(o) -> o.out.stderr, .Err(_) -> "did not run" }
+}
+
+spec "commands/explain — cache" {
+    given "views that ask and write through `fetched`" {
+        then "each is a site, its request said as written" {
+            let src = "${ui_use}\nfn load(f: Fetch<int>) { let _ = fetched(f, Request.get(\"/tasks\"), parsed) }\nfn save(f: Fetch<int>) { let _ = fetched(f, Request.post(\"/tasks\", Body.Empty), parsed) }\nfn tick(f: Fetch<int>) { let _ = fetched(f, Request.patch(\"/tasks/1\", Body.Empty), parsed, foresee: Overlay.Patch(\"id\", \"1\")) }\n"
+            sites_of(cache_probe("plain", src)) == "observations a view asks:\n  src/main.av:6  GET \"/tasks\" · parse parsed\nwrites a view makes:\n  src/main.av:7  POST \"/tasks\" · parse parsed\n  src/main.av:8  PATCH \"/tasks/1\" · parse parsed · foresee: Overlay.Patch(\"id\", \"1\")"
+        }
+    }
+    given "a call through a renamed import" {
+        then "it is found, since the call is bound to `@std/ui`'s declaration" {
+            let src = "use @std.http_message.message.{Reply, Request}\nuse @std.ui.app.{Fetch, fetched as ask}\n\nfn parsed(r: Reply) -> Result<int, string> { .Ok(r.body.length) }\nfn load(f: Fetch<int>) { let _ = ask(f, Request.get(\"/tasks\"), parsed) }\n"
+            sites_of(cache_probe("renamed", src)) == "observations a view asks:\n  src/main.av:5  GET \"/tasks\" · parse parsed"
+        }
+    }
+    given "a fn of the same name that is not `@std/ui`'s" {
+        then "it is no site" {
+            let src = "fn fetched(a: int, b: int) -> int { a + b }\nfn use_it() -> int { fetched(1, 2) }\n"
+            sites_of(cache_probe("decoy", src)) == ""
+        }
+    }
+    given "a model wearing `@crud`" {
+        then "it is a model whose doors answer" {
+            let src = "use @std.crud.{crud}\n\n@crud\nexport type Card = { id: int = 0, title: string }\n"
+            sites_of(cache_probe("model", src)) == "models whose doors answer:\n  src/main.av  Card · doors list, find, create, update, remove"
+        }
+    }
+    given "the form combined with another" {
+        then "it is refused by name" {
+            let root = cache_probe("alone", "fn f() -> int { 1 }\n")
+            refused_alone(root).contains("a form of its own")
+        }
+    }
+}
