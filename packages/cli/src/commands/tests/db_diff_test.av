@@ -30,9 +30,9 @@ fn diff_package(name: string, lib: string) -> string {
 }
 
 /// A package whose one program file declares the shapes of `models`.
-fn diff_schema(name: string, models: string) -> string {
+fn diff_schema(name: string, models: string, tail: string = "") -> string {
     let src = diff_package(name, name)
-    let _ = write_text("${src}/${name}.av", DIFF_USES + models + DIFF_SHAPES)
+    let _ = write_text("${src}/${name}.av", DIFF_USES + models + DIFF_SHAPES + tail)
     "${src}/${name}.av"
 }
 
@@ -74,6 +74,15 @@ spec "avra db diff" {
             let database = migrated_database()
             let r = avra_ran(diff_args(diff_schema("ahead", DIFF_BOARD + DIFF_CARD), database))
             code_of(r) == 1 && stdout_of(r).contains("Card")
+        }
+    }
+    given "a program whose own statements would print" {
+        then "none of them runs: the diff is the only entry" {
+            let database = migrated_database()
+            let r = avra_ran(
+                diff_args(diff_schema("loud", DIFF_BOARD, "\nprintln(\"SERVED\")\n"), database),
+            )
+            code_of(r) == 0 && !stdout_of(r).contains("SERVED")
         }
     }
     given "a database that does not exist" {
