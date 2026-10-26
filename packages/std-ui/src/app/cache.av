@@ -3,7 +3,8 @@
 use @std.http_message.message.{Reply, Request, Version}
 use @std.text.{text_before}
 use @std.time.{now_ms}
-use app.{Async, Heard}
+use app.{Async, Heard, Laid, Layer, Overlay, collection_of, laid}
+use @std.json.{Json, parse}
 
 /// How long an entry nobody reads is kept.
 const KEPT_MS: int = 300000
@@ -59,6 +60,10 @@ export type Entry = {
     watchers: Cell<List<Watcher>>,
     parked: Cell<List<Watcher>>,
     read: Cell<int>,
+    layers: Cell<List<Layer>>,
+    shown_laid: Cell<Laid?>,
+    asked_n: Cell<int>,
+    aliases: Cell<Map<string, int>>,
 }
 
 impl Entry {
@@ -130,6 +135,22 @@ impl Entry {
         true
     }
 
+    /// Whether this entry's answer is past a layer: it is not out, and it was asked after the write
+    /// answered, or it stood at or past where the database stood after it.
+    fn reflects(stand: int?, after: int) -> bool {
+        if self.loading() { return false }
+        let at? = self.stand.get() else { return self.asked_n.get() > after }
+        let want? = stand else { return self.asked_n.get() > after }
+        at >= want
+    }
+
+    /// The write was replaced before it went out: it is answered no more.
+    fn superseded() {
+        self.out.set(false)
+        self.now.set(Async.Failed("replaced by a later change to the same row"))
+        self.told()
+    }
+
     /// Whether no view reads it.
     fn unread() -> bool { self.watchers.get().is_empty() }
 
@@ -146,7 +167,7 @@ impl Entry {
     fn joined(w: Watcher) {
         self.parked.set([x for x in self.parked.get() if x.id != w.id])
         self.watchers.set([x for x in self.watchers.get() if x.id != w.id].concat([w]))
-        (w.apply)(self.now.get())
+        (w.apply)(self.shown())
     }
 
     /// The view `id` reads no more.
@@ -175,7 +196,42 @@ impl Entry {
 
     /// Its state moved: every reader is told.
     fn told() {
-        for w in self.watchers.get() { (w.apply)(self.now.get()) }
+        self.shown_laid.set(null)
+        for w in self.watchers.get() { (w.apply)(self.shown()) }
+    }
+
+    /// What a view reads: the answer with the layers of the writes it was not yet answered for over it.
+    fn shown() -> Async<Reply> {
+        let l? = self.laid_over() else { return self.now.get() }
+        Async.Ready(l.reply)
+    }
+
+    /// The answer with the layers laid over it, kept until the entry or a layer moves; none where no
+    /// layer reaches it.
+    fn laid_over() -> Laid? {
+        let held = self.shown_laid.get()
+        if held != null { return held }
+        let key? = self.key else { return null }
+        let reply? = match self.now.get() {
+            .Ready(r) -> r,
+            .Idle or .Loading or .Failed(_) -> null,
+        } else {
+            return null
+        }
+        let made = laid(self.layers.get(), key, reply)
+        self.shown_laid.set(made)
+        made
+    }
+
+    /// The key row `at` of the list a view reads is kept under, when its own key is `id`: a row a write
+    /// appended keeps the key of that write, before and after the server names it, so its node stays
+    /// where it is mounted. The kind is written first, so a key the server chose can never be a layer's.
+    fn key_at(at: int, id: string) -> string {
+        let marks = self.laid_over()?.marks ?? []
+        let mark = if at < marks.length { marks[at] } else { null }
+        let former = self.aliases.get().get(id)
+        let layer? = mark ?? former else { return "s:${id}" }
+        "p:${layer}"
     }
 }
 
@@ -184,17 +240,36 @@ impl Entry {
 /// opened — until it has, no entry on it is fresh — and whether the server refused it for good.
 export type Feed = { path: string, heard: Cell<List<Heard>>, synced: Cell<bool>, closed: Cell<bool> }
 
-/// The entries a loop holds, and the streams it listens to.
-export type Cache = { entries: Cell<List<Entry>>, minted: Cell<int>, feeds: Cell<List<Feed>>, known: Cell<int> }
+/// The writes to one row, one in flight: what waits behind it, newest only.
+export type Lane = { url: string, flying: Cell<bool>, queued: Cell<Entry?> }
+
+/// The entries a loop holds, the streams it listens to, the layers of writes not yet reflected, the
+/// lanes writes to one row go in, and how many asks have been made.
+export type Cache = {
+    entries: Cell<List<Entry>>,
+    minted: Cell<int>,
+    feeds: Cell<List<Feed>>,
+    known: Cell<int>,
+    layers: Cell<List<Layer>>,
+    lanes: Cell<List<Lane>>,
+    laid: Cell<int>,
+    asks: Cell<int>,
+}
 
 export fn cache() -> Cache {
     let none: List<Entry> = []
     let silent: List<Feed> = []
+    let unlaid: List<Layer> = []
+    let alone: List<Lane> = []
     Cache {
         entries: Cell.new(none),
         minted: Cell.new(0),
         feeds: Cell.new(silent),
         known: Cell.new(0),
+        layers: Cell.new(unlaid),
+        lanes: Cell.new(alone),
+        laid: Cell.new(0),
+        asks: Cell.new(0),
     }
 }
 
@@ -225,6 +300,8 @@ impl Cache {
         let unasked: Request? = null
         let unfed: string? = null
         let unstood: int? = null
+        let unlaid: Laid? = null
+        let unnamed: Map<string, int> = {}
         Entry {
             id: self.minted.get(),
             key: key,
@@ -241,6 +318,10 @@ impl Cache {
             watchers: Cell.new(nobody),
             parked: Cell.new(nobody),
             read: Cell.new(now_ms()),
+            layers: self.layers,
+            shown_laid: Cell.new(unlaid),
+            asked_n: Cell.new(0),
+            aliases: Cell.new(unnamed),
         }
     }
 
@@ -291,8 +372,92 @@ impl Cache {
         let none: List<Entry> = []
         let silent: List<Feed> = []
         self.entries.set(none)
+        let unlaid: List<Layer> = []
+        let alone: List<Lane> = []
         self.feeds.set(silent)
         self.known.set(0)
+        self.layers.set(unlaid)
+        self.lanes.set(alone)
+    }
+
+    /// The lane writes to `url`'s row go in, or none for a create, which no write waits behind.
+    fn lane_of(request: Request) -> Lane? {
+        if request.method is .Post { return null }
+        let url = request.url.split("?").first() ?? ""
+        let held = self.lanes.get().find(it.url == url)
+        if held != null { return held }
+        let nobody: Entry? = null
+        let made = Lane { url: url, flying: Cell.new(false), queued: Cell.new(nobody) }
+        self.lanes.push(made)
+        made
+    }
+
+    /// The write `request` makes is laid over every entry it reaches until the server's reading catches up with it.
+    fn lay(request: Request, overlay: Overlay, owner: int) -> Layer {
+        self.laid.set(self.laid.get() + 1)
+        let unstood: int? = null
+        let unanswered: Json? = null
+        let body = match request.body {
+            .Json(text) -> match parse(text) { .Ok(j) -> j, .Err(_) -> null },
+            .Empty or .Text(_) or .Form(_) or .Octets(_, _) -> null,
+        }
+        let made = Layer {
+            id: self.laid.get(),
+            path: collection_of(request.url, overlay),
+            overlay: overlay,
+            body: body,
+            owner: Cell.new(owner),
+            stand: Cell.new(unstood),
+            answered: Cell.new(unanswered),
+            after: Cell.new(unstood),
+        }
+        self.layers.push(made)
+        self.felt(made)
+        made
+    }
+
+    /// The entries a layer reaches that a view reads.
+    fn reaching(l: Layer) -> List<Entry> {
+        [e for e in self.entries.get() if !e.unread() && e.key != null && l.reaches(e.key!)]
+    }
+
+    /// The views of everything `l` reaches are shown it, or shown it gone.
+    fn felt(l: Layer) { for e in self.reaching(l) { e.told() } }
+
+    /// The layers the write of entry `id` stands behind.
+    fn owned(id: int) -> List<Layer> { [l for l in self.layers.get() if l.owner.get() == id] }
+
+    /// A write that waited was replaced by a later one: its layers settle with the later answer.
+    fn handed(from: int, to: int) { for l in self.owned(from) { l.owner.set(to) } }
+
+    /// The write's answer came: where the database stood after it, and the row the server made.
+    fn answered(mine: List<Layer>, reply: Reply) {
+        let row = match parse(reply.body.text() ?? "") { .Ok(j) -> j, .Err(_) -> null }
+        for l in mine {
+            l.stand.set(reply.stand())
+            l.answered.set(if l.overlay is .Append(_) { row } else { null })
+            l.after.set(self.asks.get())
+            self.felt(l)
+        }
+    }
+
+    /// A layer is gone: a row it appended stays under the key it was shown with, however the server
+    /// names it, and every view it reached is shown the server's reading alone.
+    fn dropped(l: Layer) {
+        let reached = self.reaching(l)
+        let kept_as = l.named_by()
+        if kept_as != null { for e in reached { e.aliases.put(kept_as!, l.id) } }
+        self.layers.set([x for x in self.layers.get() if x.id != l.id])
+        for e in reached { e.told() }
+    }
+
+    /// Every layer the server's reading has caught up with is dropped: each view it reaches has been
+    /// answered since, at or past where the database stood after the write.
+    fn settled() {
+        for l in self.layers.get() {
+            let after? = l.after.get() else { continue }
+            if self.reaching(l).all(it.reflects(l.stand.get(), after)) { self.dropped(l) }
+        }
     }
 
     /// The database has been seen at `count`: an answer read at it, a write's answer, an announcement. A
