@@ -362,10 +362,9 @@ impl Workspace {
         work_module_minted()
         let fields = record_fields(self, store, m)
         let places = record_places(self, store, m)
-        for path in held {
-            let _ = self
-                .mint_file(path, file_rows(fields, places.get(path)), makers_in(fields, path))
-        }
+        let makers = makers_by_path(fields)
+        for path in held { let _ = self
+                .mint_file(path, file_rows(fields, places.get(path)), makers.get(path) ?? {}) }
         for path in held { self.link_file(path, file_rows(fields, places.get(path))) }
         let lead? = held.first() else { return }
         self.decls.note_module_rows(self.decls.file(self.file_id(lead)).module_id, 2)
@@ -560,7 +559,9 @@ impl Workspace {
         let files = self.module_files(m)
         let kept = lines_by_file(prior_lines)
         let fresh = flatten([self.imported_by(path) for path in files if self.read_here(path)])
-        let gathers = flatten([self.gathers_lines(path) for path in files if self.read_here(path)])
+        let gathers = flatten(
+            [self.gathers_lines(store, path) for path in files if self.read_here(path)],
+        )
         let here = distinct(
             [line for line in prior_lines if line.starts_with("import\t") || kept_gathers(self, line)]
                 .concat(["import\t${d.text()}" for d in fresh])
@@ -1055,14 +1056,22 @@ fn maker_line(path: string, ordinal: int, maker: string) -> string {
     "maker\t${path}\t${ordinal}\t${field_text(maker)}"
 }
 
-/// A file's makers as its record keeps them, by the declaration's ordinal.
-export fn makers_in(fields: List<List<string>>, path: string) -> Map<string, string> {
-    mut out: Map<string, string> = {}
+/// Every file's makers as its module's record keeps them, by file path and the declaration's
+/// ordinal — one pass over the record, so a module's files never each scan it whole.
+export fn makers_by_path(fields: List<List<string>>) -> Map<string, Map<string, string>> {
+    mut out: Map<string, Map<string, string>> = {}
     for p in fields {
-        if p.length == 4 && p[0] == "maker" && p[1] == path { out.set(p[2], text_of_field(p[3])) }
+        if p.length == 4 && p[0] == "maker" {
+            mut own = out.get(p[1]) ?? {}
+            own.set(p[2], text_of_field(p[3]))
+            out.set(p[1], own)
+        }
     }
     out
 }
+
+/// A file's makers as its record keeps them, by the declaration's ordinal.
+export fn makers_in(fields: List<List<string>>, path: string) -> Map<string, string> { makers_by_path(fields).get(path) ?? {} }
 
 /// A bit as a record field writes it.
 fn bit_word(b: bool) -> string {

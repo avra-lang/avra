@@ -215,19 +215,20 @@ impl Workspace {
         node_key(family, [kind, "${self.stored_name(path)}", self.file_view(path)].concat(parts))
     }
 
-    /// The view a file is read in: its package built as the root, or reached as a dependency —
-    /// the two answer differently (a root reads its tests, a lone file is its own module).
+    /// The view a file is read in: its package built as the root, or reached as a dependency of
+    /// this program — the two answer differently (a root reads its tests, a lone file is its own
+    /// module), and a dependency's answer folds what only this program gathers (an import closure).
     fn file_view(path: string) -> string {
         let known = self.keys.file_views.get().get(path)
         if known != null { return known! }
         let root? = self.packages().first()?.root else { return "dep" }
-        let view = if self.package_holding(path)?.root == root { self.root_view() } else { "dep" }
+        let view = if self.package_holding(path)?.root == root { self.root_view() } else { "dep of ${self.root_view()}" }
         self.keys.file_views.put(path, view)
         view
     }
 
     /// The view a module is read in: the root's own (spelled with no package) or a dependency's.
-    fn module_view(module: string) -> string { if package_of_module(module).is_empty() { self.root_view() } else { "dep" } }
+    fn module_view(module: string) -> string { if package_of_module(module).is_empty() { self.root_view() } else { "dep of ${self.root_view()}" } }
 
     /// THE ROOT AS A KEY READS IT: its manifest name and where it stands in the tree, so two
     /// packages of one name in one tree are two roots and a moved or recloned tree is the same.

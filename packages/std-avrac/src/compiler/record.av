@@ -85,7 +85,7 @@ impl Workspace {
     }
 
     /// Where this compiler keeps record bodies, by module and interface.
-    fn record_bodies() -> RecordBodies { RecordBodies { decls: self.decls, db: self.db } }
+    fn record_bodies() -> RecordBodies { RecordBodies { decls: self.decls, db: self.db, view: self.root_view() } }
 
     /// WHO MAY READ A MODULE'S RECORD: the code that produces it, the C that code runs,
     /// the code that writes the record and the code that reads it back, each by its hash,
@@ -132,11 +132,11 @@ export fn runtime_bodies(host: Host) -> string? {
 /// the interface digest, and the body stands under (module, digest). A body
 /// edit rewrites the body its interface already names; an interface that moves
 /// leaves the old body standing, so what it declared can still be read.
-export type RecordBodies = { decls: Decls, db: Db }
+export type RecordBodies = { decls: Decls, db: Db, view: string }
 
 /// Which side a module's record body is filed on: the root's own modules, or a dependency's —
 /// the body is named by its interface's digest, so this side is all a body's key needs.
-fn module_side(module: string) -> string { if package_of_module(module).is_empty() { "root" } else { "dep" } }
+fn module_side(module: string, dep: string) -> string { if package_of_module(module).is_empty() { "root" } else { dep } }
 
 impl RecordBodies {
     /// A module's row under one interface, of one kind ("" for its record body): the module fully
@@ -144,7 +144,12 @@ impl RecordBodies {
     fn key(module: string, iface: string, kind: string = "") -> string {
         node_key(
             Stored.Sig,
-            [kind, self.decls.qualified_module_named(module), module_side(module), iface],
+            [
+                kind,
+                self.decls.qualified_module_named(module),
+                module_side(module, "dep of ${self.view}"),
+                iface,
+            ],
         )
     }
 
@@ -735,7 +740,7 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
 
 /// A `gathers` line read back as the collect it holds a file to; null for a line
 /// this compiler never wrote.
-fn held_gather(parts: List<string>, package: string) -> HeldGather? {
+fn held_gather(parts: List<string>, package: string, digest: string) -> HeldGather? {
     if parts.length < 8 { return null }
     let kind? = kind_of_words(parts[3], parts[4]) else { return null }
     let order? = hex_fields_of(parts[5]) else { return null }
@@ -751,7 +756,7 @@ fn held_gather(parts: List<string>, package: string) -> HeldGather? {
             order: [Plain(o) for o in order],
             plans: plans,
         },
-        digest: parts[7],
+        digest: digest,
     }
 }
 
@@ -1273,7 +1278,7 @@ impl Workspace {
     /// held file is held to it (`gathered_moved`); a read file's object is keyed by
     /// the set it gathers now (`gathered_now`).
     fn gathered_said(store: Store, m: ModulePath, path: string) -> List<string> {
-        [p[7] for p in record_fields(self, store, m) if p.length > 7 && p[0] == "gathers" && p[2] == path]
+        [self.gathers_set(store, p) for p in record_fields(self, store, m) if p.length > 7 && p[0] == "gathers" && p[2] == path]
     }
 
     /// What a text a compile-time run read says NOW: a source file's digest,

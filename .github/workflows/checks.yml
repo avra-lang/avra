@@ -749,8 +749,8 @@ jobs:
       - name: playwright pin
         id: playwright
         run: |
-          v=$(sed -n 's/^playwright_version=//p' tools/ui_board_browser.sh)
-          [ -n "$v" ] || { echo "::error::tools/ui_board_browser.sh names no playwright_version, so the cache would be keyed by nothing"; exit 1; }
+          v=$(sed -n 's/^playwright_version=//p' tools/ui-board/playwright.sh)
+          [ -n "$v" ] || { echo "::error::tools/ui-board/playwright.sh names no playwright_version, so the cache would be keyed by nothing"; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
@@ -1089,8 +1089,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/handed-down
+      # WebKit's host libraries, the same list the board's browser leg installs; node and the pinned
+      # Playwright as there (the pin is tools/ui-board/playwright.sh's).
+      - name: browser libraries
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends $(grep -v '^#' .github/ci/packages-browser.txt | tr '\n' ' ')
+      - name: node for the browser leg
+        timeout-minutes: 5
+        run: sh .github/ci/install_node.sh
+      - name: playwright pin
+        id: playwright
+        run: |
+          v=$(sed -n 's/^playwright_version=//p' tools/ui-board/playwright.sh)
+          [ -n "$v" ] || { echo "::error::tools/ui-board/playwright.sh names no playwright_version"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: build/playwright
+          key: playwright-${{ steps.playwright.outputs.version }}-webkit-browsers
       - name: layout oracle
         run: sh tools/layout_oracle.sh
+      - name: layout oracle bound terms
+        run: |
+          sh tools/layout_oracle_absent_test.sh
+          sh tools/layout_oracle_own_term_test.sh
+          sh tools/layout_oracle_boundary_test.sh
   # THE ONE REQUIRED CHECK. Every other job is a shard or a step; this passes
   # iff each of them succeeded or was skipped (`always()` so it still reports
   # when a needed job failed, rather than being skipped itself).

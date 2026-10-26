@@ -1,7 +1,8 @@
 //! `realize/tui/wrap.av` — text as lines of a width. A cell is a terminal
 //! column, so a wide glyph takes two and a combining mark none; a cluster
 //! (`@std.text.graphemes`) is never split across lines.
-use @std.text.{cells, graphemes, codepoints, from_codepoints}
+use @std.text.{cells, codepoints, from_codepoints}
+use place.lines.{lines_in, cut_in}
 
 /// The picture a control code point is shown as, so no byte of a tree
 /// can drive the terminal: C0 and DEL as their control pictures, C1 as
@@ -27,53 +28,8 @@ export fn at_least_one(n: int) -> int { if n < 1 { 1 } else { n } }
 /// newline starts a fresh paragraph, a blank one keeping its blank line;
 /// runs of spaces collapse; a word longer than the line is cut at the
 /// width. "" has no lines.
-export fn wrap(text: string, width: int) -> List<string> {
-    let w = at_least_one(width)
-    [l for p in text.split("\n") for l in paragraph(p, w)]
-}
-
-fn paragraph(p: string, w: int) -> List<string> {
-    let words = [piece for word in p.split(" ") if word != "" for piece in cut(word, w)]
-    if words.is_empty() { return [""] }
-    filled(words, w)
-}
-
-/// The words on lines of at most `w` cells, a space between, each line
-/// taking words until the next would pass it.
-fn filled(words: List<string>, w: int) -> List<string> {
-    mut out: List<string> = []
-    mut line = ""
-    for word in words {
-        if line != "" && cells(line) + 1 + cells(word) <= w {
-            line = "${line} ${word}"
-        } else {
-            if line != "" { out.push(line) }
-            line = word
-        }
-    }
-    out.concat([line])
-}
+export fn wrap(text: string, width: int) -> List<string> { lines_in(text, at_least_one(width), cells) }
 
 /// `s` in runs of at most `width` cells, cut between clusters; whole when
 /// it already fits. A cluster wider than the line stands alone.
-export fn cut(s: string, width: int) -> List<string> {
-    let w = at_least_one(width)
-    if cells(s) <= w { [s] } else { packed(graphemes(s), w) }
-}
-
-fn packed(gs: List<string>, w: int) -> List<string> {
-    mut out: List<string> = []
-    mut line = ""
-    mut used = 0
-    for g in gs {
-        let n = cells(g)
-        if used + n > w && line != "" {
-            out.push(line)
-            line = ""
-            used = 0
-        }
-        line = line + g
-        used = used + n
-    }
-    if line == "" { out } else { out.concat([line]) }
-}
+export fn cut(s: string, width: int) -> List<string> { cut_in(s, at_least_one(width), cells) }
