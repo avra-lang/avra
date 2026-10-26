@@ -55,7 +55,6 @@ use core.{
 use features.{Wording, Piece, RuleTier}
 use compiler.{avra}
 use @std.grammar.{node_builder_name}
-use features.expr_spine.{words, applieds}
 use @std.text.{Text, builder}
 extern fn avra_float_text_bits(bits: int) -> string
 
@@ -1340,7 +1339,7 @@ impl SourceText {
             .Table(row, header, rows) -> grouped(self.table_text(row, header, rows, depth), atom_tier, parent),
             .Comp(elem, clauses) -> self.comprehension(elem, clauses, parent, depth),
             .MapLit(entries) -> grouped(self.map_lit_text(id, entries, depth, c), atom_tier, parent),
-            .Prop(_, _) -> self.chain_rendered(id, parent, depth, c),
+            .Prop(_, _) or .TypeLiteral(_, _) -> self.chain_rendered(id, parent, depth, c),
             .Body(word, parts, holes, _) -> {
                 let text = self.body_text(word, parts, holes, depth)
                 self.skip_trivia_within(end_of(self.store.expr_span(id)))
@@ -2404,25 +2403,14 @@ impl SourceText {
         "${self.params(params, depth)} ->"
     }
 
-    /// `.type(T)`'s own tail, `type(T)` with no receiver — absent when
-    /// `id`'s call is not that sugar, or its argument does not reverse
-    /// (`type_lit_spelling`).
-    fn type_lit_tail(id: ExprId, name: Plain, args: List<ExprId>) -> string? {
-        if name.of != "interned" || args.length != 1 || !self.store.is_type_lit(id) { return null }
-        let ty? = self.type_lit_spelling(args[0]) else { return null }
-        "type(${ty})"
-    }
-
-    /// One `.` chain LINK's own text, no receiver: `.type(T)`'s
-    /// read-back, or `.name(args)`. Rendered at the fallback column —
+    /// One `.` chain LINK's own text, no receiver: `.name(args)`. Rendered at the fallback column —
     /// a link, like a comma list's item, is pre-rendered before the
     /// chain it belongs to decides flat or broken.
-    mut fn method_link_text(id: ExprId, name: Plain, args: List<ExprId>, depth: int) -> string {
+    mut fn method_link_text(name: Plain, args: List<ExprId>, depth: int) -> string {
         // A link lands at `depth + 1` once the chain breaks (postfix_chain_doc's
         // own `nest(4, ...)`), so its OWN call — if IT also wraps — must
         // nest from THAT column, never from the chain's.
-        let tail? = self.type_lit_tail(id, name, args) else { return ".${source_name(name.of)}${self.call_tail(args, depth + 1)}" }
-        ".${tail}"
+        ".${source_name(name.of)}${self.call_tail(args, depth + 1)}"
     }
 
     /// A postfix `.` chain's root and its links, walked from the
@@ -2444,7 +2432,14 @@ impl SourceText {
                 let inner = self.chain_walk(subject, depth)
                 ChainWalk {
                     root: inner.root,
-                    links: inner.links.concat([self.method_link_text(e, name, args, depth)]),
+                    links: inner.links.concat([self.method_link_text(name, args, depth)]),
+                }
+            },
+            .TypeLiteral(subject, ty) -> {
+                let inner = self.chain_walk(subject, depth)
+                ChainWalk {
+                    root: inner.root,
+                    links: inner.links.concat([".type(${self.type_ref_wrapped(ty, depth + 1)})"]),
                 }
             },
             rest -> unlinked(e),
@@ -2539,38 +2534,6 @@ impl SourceText {
     /// A `?` a following `.` would meet and lex with as `?.`.
     fn bare_propagate(e: ExprId) -> bool {
         match self.store.expr(e) { .Propagate(_) -> true, rest -> false }
-    }
-
-    /// `v.type(T)`'s argument read back to `T` — the SAME `words`/
-    /// `applieds` tables the sugar spelled it with (features/
-    /// expr_spine/type_lit.av), or `null` when the shape does not
-    /// reverse (a fn type: no site has needed one back yet).
-    fn type_lit_spelling(id: ExprId) -> string? {
-        match self.store.expr(id) {
-            .VariantLit(name, args) -> self.type_variant_spelling(name.of, args),
-            rest -> null,
-        }
-    }
-
-    fn type_variant_spelling(variant: string, args: List<ExprId>) -> string? {
-        if variant == "Opt" {
-            let inner? = self.type_lit_spelling(args[0]) else { return null }
-            return "${inner}?"
-        }
-        if args.length == 1 && self.store.is_hole(args[0]) { return self.type_hole_name(args[0]) }
-        let word? = words.find(it.variant == variant) else { return self.type_applied_spelling(variant, args) }
-        word.name
-    }
-
-    fn type_hole_name(id: ExprId) -> string? {
-        match self.store.expr(id) { .Ident(name) -> source_name(name.of), rest -> null }
-    }
-
-    fn type_applied_spelling(variant: string, args: List<ExprId>) -> string? {
-        let applied? = applieds.find(it.variant == variant) else { return null }
-        let parts = [self.type_lit_spelling(a) for a in args]
-        if parts.any(it == null) { return null }
-        "${applied.name}<${joined([p! for p in parts], ", ")}>"
     }
 }
 

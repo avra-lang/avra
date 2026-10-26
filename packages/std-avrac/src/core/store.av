@@ -135,7 +135,6 @@ export type SyntaxArena = {
     @copied(expr, wear_expr) expr_marks: Cell<List<ExprMarks>>,
     // a call written as a PIPE (`x |> f(a)`), its first argument
     // a call written as a TYPE LITERAL (`v.type(T)`)
-    @copied(expr, wear_type_lit) type_lits: Cell<List<bool>>,
     // a record's `..R` entries, by its statement
     @copied_by_hand("minted_stmt: its TypeRefs are rebuilt through tref") spreads: Cell<List<List<Spread>>>,
     // a collect's `dense` mark, by its statement: its order is data,
@@ -232,7 +231,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         pat_fingerprints: list_cell(),
         param_spans: list_cell(),
         expr_marks: list_cell(),
-        type_lits: list_cell(),
         spreads: list_cell(),
         collect_dense: list_cell(),
         sugar_matches: list_cell(),
@@ -306,7 +304,6 @@ impl SyntaxArena {
     fn alloc_expr(e: Expr, span: Span? = null) -> ExprId {
         self.expr_fingerprints.push(e.identity(self))
         self.expr_marks.push(no_expr_marks())
-        self.type_lits.push(false)
         self.sugar_matches.push(false)
         self.statement_ifs.push(false)
         self.minted_by.push(null)
@@ -389,24 +386,21 @@ impl SyntaxArena {
         [filler(labels, seats[j], j) for j in 0..seats.length]
     }
 
-    /// A call written as a TYPE LITERAL — the mark is part of the
-    /// node: a receiver that cannot answer refuses in the literal's words.
-    fn mark_type_lit(e: ExprId) {
-        self.type_lits.set_at(e.index, true)
-        self.expr_fingerprints.set_at(e.index, fp(112, [self.expr_fingerprints.get()[e.index]]))
-    }
-
+    /// Whether `e` is the call a type literal means — the receiver's
+    /// `interned` — so a receiver that cannot answer refuses in the
+    /// literal's words.
     fn is_type_lit(e: ExprId) -> bool {
-        self.type_lits.get()[e.index]
+        let sugar? = self.minted_for(e) else { return false }
+        match self.expr(sugar) {
+            .TypeLiteral(_, _) or .ChainType(_, _) -> self.expr(e) is .MethodCall,
+            _ -> false,
+        }
     }
 
     /// Whether this value is a type literal, or the chain over one
     /// (`a?.type(T)`) — a literal is no call, so no block follows it.
     fn spells_a_type(e: ExprId) -> bool {
-        match self.expr(e) {
-            .MatchOpt(_, _, call, _) -> self.is_type_lit(call),
-            _ -> self.is_type_lit(e),
-        }
+        match self.expr(e) { .TypeLiteral(_, _) or .ChainType(_, _) -> true, _ -> false }
     }
 
     /// Whether this is a call whose last argument is a trailing block.
@@ -799,7 +793,6 @@ impl SyntaxArena {
 
     /// The writers a template copy reaches, one per `@copied` table: each takes
     /// the table's own element for the node and does nothing for the empty one.
-    fn wear_type_lit(e: ExprId, on: bool) { if on { self.mark_type_lit(e) } }
 
     fn wear_sugar_match(e: ExprId, on: bool) { if on { self.mark_sugar_match(e) } }
 
