@@ -1,14 +1,10 @@
 //! `avra db diff <file> --database <path>` — the program's whole schema, as
-//! the compiler settled it (`const shapes`), against the shapes a database
-//! has recorded. Prints the migration plan; exits 1 when it is not empty, so
-//! a pipeline can gate on it.
+//! its own `const shapes: List<Shape>`, against the shapes a database has
+//! recorded. The program is run with a generated entry appended that prints
+//! the migration plan and exits 1 when it is not empty, so a pipeline can
+//! gate on it. The compiler itself carries no database library.
 use @std.cli.{CliResult, Runnable, command, arg, option}
 use @std.avrac.compiler.{Program}
-use @std.db.apply.{recorded_shapes}
-use @std.db.migrate.{plan_all, report}
-use @std.db.shape.{Shape}
-use @std.json.typed.{elements}
-use @std.sqlite.{Db}
 
 type DbCmd = {}
 
@@ -18,37 +14,61 @@ impl Runnable for DbCmd {
             eprintln("`avra db` knows one verb: `diff`")
             return 2
         }
-        let file_at = args.option("database")
-        if file_at == "" {
+        let database = args.option("database")
+        if database == "" {
             eprintln("`avra db diff` names the database it compares with: --database <path>")
             return 2
         }
-        phased(args, "db diff", (p) -> compared(p, file_at))
+        if database.contains("\"") || database.contains("\\") || database.contains("\$") {
+            eprintln("`avra db diff` reads --database as a plain path: no quote, backslash or `\$`")
+            return 2
+        }
+        let file = path_arg(args)
+        phased(args, "db diff", (p) -> diffed(p, file, database))
     }
 }
 
-/// The program's declared shapes against the database's; the plan's lines
-/// print, and a plan with anything in it answers 1.
-fn compared(p: Program, file_at: string) -> Result<int, string> {
-    let declared = [Shape.from_json_text(e)? for e in elements(p.const_json("shapes")?)?]
-    let live = match recorded_shapes(opened(file_at)?) {
-        .Ok(shapes) -> shapes,
-        .Err(e) -> { return .Err("cannot read ${file_at}'s registry: ${e.message}") },
-    }
-    let lines = report(plan_all(declared, live, []))
-    for line in lines { println(line) }
-    if lines.is_empty() { 0 } else { 1 }
+/// The program, its source carrying the diff entry, run live; the entry's
+/// own exit answers.
+fn diffed(p: Program, file: string, database: string) -> Result<int, string> {
+    let entered = p.after_program(file, entry_text(read_or_die(file), database), file)
+    ended_as(entered.run_live()?)
 }
 
-fn opened(file_at: string) -> Result<Db, string> {
-    match Db.open_read(file_at) {
-        .Ok(handle) -> .Ok(handle),
-        .Err(e) -> .Err("cannot open ${file_at}: ${e.message}"),
-    }
+/// `source` under the imports the entry reads, and the entry after it.
+fn entry_text(source: string, database: string) -> string {
+    [DIFF_USES, source, diff_entry(database)].join("\n")
+}
+
+const DIFF_USES: string = "use @std.db.apply.{recorded_shapes as diff_recorded}\nuse @std.db.migrate.{plan_all as diff_plan, report as diff_report}\nuse @std.process.{exit as diff_exit, Exit as DiffExit}\nuse @std.sqlite.{Db as DiffDb}"
+
+fn diff_entry(database: string) -> string {
+    [
+        "fn diff_main() -> int {",
+        "    let db = match DiffDb.open_read(\"${database}\") {",
+        "        .Ok(d) -> d,",
+        "        .Err(e) -> { return diff_refused(\"cannot open ${database}: \", e.message) },",
+        "    }",
+        "    let live = match diff_recorded(db) {",
+        "        .Ok(s) -> s,",
+        "        .Err(e) -> { return diff_refused(\"cannot read the registry of ${database}: \", e.message) },",
+        "    }",
+        "    let lines = diff_report(diff_plan(shapes, live, []))",
+        "    for line in lines { println(line) }",
+        "    if lines.is_empty() { 0 } else { 1 }",
+        "}",
+        "fn diff_refused(what: string, why: string) -> int {",
+        "    eprintln(what + why)",
+        "    2",
+        "}",
+        "diff_exit(DiffExit.Code(diff_main()))",
+    ]
+        .join("\n")
 }
 
 export command db {
     description: "The program's schema against a database: `diff` prints the migration plan and exits 1 when it is not empty"
+    flags: [time]
     arg action {
         description: "`diff`"
         required: true

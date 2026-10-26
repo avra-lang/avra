@@ -1,0 +1,88 @@
+//! `avra db diff` — a program's `const shapes` against a database's recorded
+//! ones: a database the program migrated prints nothing and exits 0, one a
+//! model behind prints the plan and exits 1, and a missing one exits 2.
+use @std.io.{env, make_dirs, write_text}
+use @std.process.{Outcome, ProcessError}
+use @std.time.{now_ms}
+
+fn diff_root() -> string { "${env("PWD") ?? "."}/build/scratch/db_diff" }
+
+const DIFF_USES: string = "use @std.db.{model, model_shape}\nuse @std.db.models.{Found, migrate_all}\nuse @std.sqlite.{Db}\nuse @std.db.shape.{Shape}\n\n"
+
+const DIFF_BOARD: string = "@model\ntype Board = {\n    id: int = 0,\n    title: string,\n}\n\n"
+
+const DIFF_CARD: string = "@model\ntype Card = {\n    id: int = 0,\n    text: string,\n}\n\n"
+
+const DIFF_SHAPES: string = "collect models: List<Found> = @model in closure as Found { model: it, name: it.name } by it.name\n\nconst shapes: List<Shape> = [model_shape(f.model) for f in models]\n"
+
+/// The schema's own verb for migrating a database to its models.
+const DIFF_MIGRATES: string = "\nexport fn migrated(path: string) -> string {\n    match Db.open(path) {\n        .Ok(db) -> {\n            let _ = migrate_all(db, models) catch 0\n            \"migrated\"\n        },\n        .Err(e) -> e.message,\n    }\n}\n"
+
+/// A package of its own under scratch, its lib the file named.
+fn diff_package(name: string, lib: string) -> string {
+    let dir = "${diff_root()}/${name}"
+    let _ = make_dirs("${dir}/src")
+    let _ = write_text(
+        "${dir}/avra.toml",
+        "[package]\nname        = \"${name}\"\nversion     = \"0.1.0\"\ndescription = \"x\"\n\n[lib]\nname = \"${name}\"\npath = \"src/${lib}.av\"\n",
+    )
+    "${dir}/src"
+}
+
+/// A package whose one program file declares the shapes of `models`.
+fn diff_schema(name: string, models: string) -> string {
+    let src = diff_package(name, name)
+    let _ = write_text("${src}/${name}.av", DIFF_USES + models + DIFF_SHAPES)
+    "${src}/${name}.av"
+}
+
+/// A database brought to the schema's one model by a program of its own.
+fn migrated_database() -> string {
+    let database = "${diff_root()}/${now_ms()}.db"
+    let src = diff_package("seed", "seed")
+    let _ = write_text(
+        "${src}/seed.av",
+        DIFF_USES + DIFF_BOARD + DIFF_SHAPES + DIFF_MIGRATES + "\nmigrated(\"${database}\")\n",
+    )
+    let _ = avra_ran(["run", "${src}/seed.av"])
+    database
+}
+
+fn code_of(r: Result<Outcome, ProcessError>) -> int {
+    match r {
+        .Ok(o) -> match o.exit { .Code(n) -> n, .Clean -> 0, .Signal(_, _) -> -1 },
+        .Err(_) -> -1,
+    }
+}
+
+fn stdout_of(r: Result<Outcome, ProcessError>) -> string {
+    match r { .Ok(o) -> o.out.stdout, .Err(_) -> "" }
+}
+
+fn diff_args(schema: string, database: string) -> List<string> {
+    ["db", "diff", schema, "--database", database]
+}
+
+spec "avra db diff" {
+    given "a database its program migrated" {
+        then "the program's own shapes diff clean and exit 0" {
+            let database = migrated_database()
+            let r = avra_ran(diff_args(diff_schema("schema", DIFF_BOARD), database))
+            code_of(r) == 0 && stdout_of(r) == ""
+        }
+        then "a program one model ahead prints that model's plan and exits 1" {
+            let database = migrated_database()
+            let r = avra_ran(diff_args(diff_schema("ahead", DIFF_BOARD + DIFF_CARD), database))
+            code_of(r) == 1 && stdout_of(r).contains("Card")
+        }
+    }
+    given "a database that does not exist" {
+        then "the exit is 2" {
+            code_of(
+                avra_ran(
+                    diff_args(diff_schema("schema", DIFF_BOARD), "${diff_root()}/missing/none.db"),
+                ),
+            ) == 2
+        }
+    }
+}
