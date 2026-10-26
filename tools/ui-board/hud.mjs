@@ -28,6 +28,7 @@ async function snapshot(wanted, wait = 10000) {
         if (!block.startsWith("event: cache") && !block.includes("\nevent: cache")) continue;
         const data = block.split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(6)).join("\n");
         const said = JSON.parse(data);
+        if (process.env.HUD_DEBUG) console.error(`frame ${said.tab} ${JSON.stringify(said.frame.counts)}`);
         if (wanted(said.frame)) { stop.abort(); return said; }
       }
     }
