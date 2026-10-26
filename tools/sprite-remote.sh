@@ -305,7 +305,14 @@ advance_and_cache() {
         return "$s1"
     }
     : > "$log"
-    if step make -s compiler; then
+    if [ -n "$ladder" ]; then
+        # THE LADDER IS CI's: the same `make compiler RUNGS=… LADDER_BASE=…`, replayed in the repository shipped beside the tree.
+        lk=${ladder%%:*}
+        lrest=${ladder#*:}
+        export AVRA_LADDER_REPO=$home/avra-ladder/$lk/repo AVRA_LADDER_DIR=$home/avra-ladder/$lk/work
+        step make -s compiler RUNGS="$(printf '%s' "${lrest#*:}" | tr , ' ')" LADDER_BASE="${lrest%%:*}" && ok=1
+        grep -a '^ladder:' "$log" >&2 || :
+    elif step make -s compiler; then
         ok=1
     fi
     if [ "$ok" = 1 ] && [ -x build/avra ]; then
@@ -405,6 +412,9 @@ supervise() {
     shift 5
     # The route rides after the hash (`<hash>@<route>`): see compiler_route in tools/work.
     route=build
+    # A branch with rungs adds them after the route (`<hash>@<route>%<key>:<base>:<rung>,…`): see ladder_plan.
+    ladder=
+    case $chash in *%*) ladder=${chash#*%}; chash=${chash%%%*} ;; esac
     case $chash in *@*) route=${chash#*@}; chash=${chash%%@*} ;; esac
     # A probe asks for one generation of the tree, never cached (`one:<hash>`).
     probe=
