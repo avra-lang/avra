@@ -2671,7 +2671,8 @@ void avra_map_set(void* map, const char* key, int64_t v) {
 // cell's mark — the slots' own law, one table over.
 void avra_map_set_maybe(void* map, const char* key, int64_t present, int64_t v) {
     AvraMap* m = (AvraMap*)map;
-    m->vals->marks[map_put(m, key, present ? v : 0)] = present ? 0 : MARK_ABSENT;
+    int64_t s = map_put(m, key, present ? v : 0);
+    m->vals->marks[s] = present ? 0 : MARK_ABSENT;
 }
 
 // Whether the value under a key is there — 0 for a key that is not.
@@ -2702,7 +2703,8 @@ void avra_map_set_at(void* map, const char* key, int64_t token, int64_t v) {
 
 void avra_map_set_at_maybe(void* map, const char* key, int64_t token, int64_t present, int64_t v) {
     AvraMap* m = (AvraMap*)map;
-    m->vals->marks[map_put_at(m, key, token, present ? v : 0)] = present ? 0 : MARK_ABSENT;
+    int64_t s = map_put_at(m, key, token, present ? v : 0);
+    m->vals->marks[s] = present ? 0 : MARK_ABSENT;
 }
 
 void avra_map_set_at_owned(void* map, const char* key, int64_t token, void* v) {
