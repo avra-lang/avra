@@ -7,9 +7,9 @@
 # and printed with both answers.
 #
 # It needs the compiler and Firefox (FIREFOX names one that is not in a usual
-# place). Where one is absent this SKIPS, spoken, naming what is missing. On the
-# checks' machine (CI=true) a missing browser is a broken machine, and a gate
-# that skips there is green for running nothing.
+# place). Where one is absent the run FAILS, naming what is missing: a run that
+# compared nothing has not passed. LAYOUT_ORACLE_SKIP=<reason> stands it down by
+# name off the checks' machine (CI=true), where a missing browser is a broken machine.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -18,13 +18,15 @@ avra=${AVRA:-$tree/build/avra}
 seeds=${LAYOUT_ORACLE_SEEDS:-1}
 cases=${LAYOUT_ORACLE_CASES:-300}
 
+# A run that compared nothing has not passed: it FAILS unless stood down by name,
+# LAYOUT_ORACLE_SKIP=<reason>, which says so aloud.
 skip() {
-    if [ "${CI:-}" = true ]; then
-        echo "layout-oracle: ran 0 trees — $* ; the checks' machine must carry them (.github/ci/install_firefox.sh installs the browser)"
-        exit 1
+    if [ "${CI:-}" != true ] && [ -n "${LAYOUT_ORACLE_SKIP:-}" ]; then
+        echo "layout-oracle: ran 0 trees — STOOD DOWN ($LAYOUT_ORACLE_SKIP): $* ; the solver did not meet a browser"
+        exit 0
     fi
-    echo "layout-oracle: ran 0 trees — SKIPPED: $*"
-    exit 0
+    echo "layout-oracle: ran 0 trees — FAILED: $* ; install the browser (.github/ci/install_firefox.sh) or stand it down here with LAYOUT_ORACLE_SKIP=<reason>"
+    exit 1
 }
 
 [ -x "$avra" ] || skip "no compiler at $avra"
@@ -39,4 +41,5 @@ for seed in $seeds; do
     n=$(echo "$out" | tail -1 | sed -n 's/^layout-oracle: \([0-9]*\) of.*/\1/p')
     total=$((total + ${n:-0}))
 done
+[ "$total" -gt 0 ] || { echo "layout-oracle: ran 0 trees — FAILED: no seed compared a single tree"; exit 1; }
 echo "layout-oracle: $total trees agree between std-ui's solver and Firefox running the real html target"

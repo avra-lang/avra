@@ -1122,8 +1122,8 @@ ui-browser-skip:
 
 # THE LAYOUT SOLVER AGAINST THE WEB TARGET: std-ui's `place` and Firefox running
 # the page the real html realizer writes, on the same random trees (fixed seeds),
-# every box in agreement (tools/layout-oracle). Skips, spoken, where Firefox or
-# node is absent.
+# every box in agreement (tools/layout-oracle). Fails where Firefox or node is
+# absent, unless LAYOUT_ORACLE_SKIP=<reason> stands it down.
 layout-oracle:
 	@sh tools/layout_oracle.sh
 

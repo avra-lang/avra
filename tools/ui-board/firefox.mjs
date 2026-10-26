@@ -17,30 +17,48 @@ export function firefoxBinary() {
 // The keys a page hears by name, as WebDriver spells them.
 export const KEY = { enter: "", tab: "", escape: "", left: "", right: "" };
 
+const launches = 4;
+
+// The BiDi address a launched Firefox names, or why it named none within `wait` ms.
+const listening = (child, wait) => new Promise((yes, no) => {
+  let said = "";
+  const late = setTimeout(() => no(new Error(`Firefox named no BiDi address: ${said.slice(-400)}`)), wait);
+  const read = (chunk) => {
+    said += chunk;
+    const found = said.match(/WebDriver BiDi listening on (ws:\/\/\S+)/);
+    if (found) { clearTimeout(late); yes(found[1]); }
+  };
+  child.stderr.on("data", read);
+  child.stdout.on("data", read);
+  child.on("exit", (code) => { clearTimeout(late); no(new Error(`Firefox exited ${code}: ${said.slice(-400)}`)); });
+});
+
 export async function openPage(binary, url, { width = 900, height = 700, prefs = {} } = {}) {
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), "avra-firefox-"));
   // The engine's own settings this page runs under, as a profile writes them.
-  fs.writeFileSync(path.join(profile, "user.js"), Object.entries(prefs).map(([name, value]) => `user_pref(${JSON.stringify(name)}, ${JSON.stringify(value)});\n`).join(""));
+  const settings = Object.entries(prefs).map(([name, value]) => `user_pref(${JSON.stringify(name)}, ${JSON.stringify(value)});\n`).join("");
+  let profile = null;
+  const fresh = () => {
+    if (profile) fs.rmSync(profile, { recursive: true, force: true });
+    profile = fs.mkdtempSync(path.join(os.tmpdir(), "avra-firefox-"));
+    fs.writeFileSync(path.join(profile, "user.js"), settings);
+    return profile;
+  };
   // Firefox refuses a HOME another user owns, and a container denies the
   // user namespaces its content sandbox needs, so root runs it unsandboxed.
   const root = process.getuid?.() === 0;
-  const env = { ...process.env, HOME: profile, ...(root ? { MOZ_DISABLE_CONTENT_SANDBOX: "1", MOZ_DISABLE_GMP_SANDBOX: "1", MOZ_DISABLE_RDD_SANDBOX: "1", MOZ_DISABLE_SOCKET_PROCESS_SANDBOX: "1" } : {}) };
-  const child = spawn(binary, ["--headless", "--no-remote", "--profile", profile, "--remote-debugging-port=0"], { stdio: ["ignore", "pipe", "pipe"], env });
-  const gone = () => { child.kill(); fs.rmSync(profile, { recursive: true, force: true }); };
+  const envFor = (home) => ({ ...process.env, HOME: home, ...(root ? { MOZ_DISABLE_CONTENT_SANDBOX: "1", MOZ_DISABLE_GMP_SANDBOX: "1", MOZ_DISABLE_RDD_SANDBOX: "1", MOZ_DISABLE_SOCKET_PROCESS_SANDBOX: "1" } : {}) });
+  // A launch that names no BiDi address in a while is a stalled start, which a
+  // loaded machine produces now and then: it is killed and tried again, in a
+  // profile of its own, since a killed one leaves its lock behind.
+  let child;
+  const gone = () => { child?.kill(); if (profile) fs.rmSync(profile, { recursive: true, force: true }); };
   process.on("exit", gone);
-
-  const address = await new Promise((yes, no) => {
-    let said = "";
-    const late = setTimeout(() => no(new Error(`Firefox named no BiDi address: ${said.slice(-400)}`)), 30000);
-    const read = (chunk) => {
-      said += chunk;
-      const found = said.match(/WebDriver BiDi listening on (ws:\/\/\S+)/);
-      if (found) { clearTimeout(late); yes(found[1]); }
-    };
-    child.stderr.on("data", read);
-    child.stdout.on("data", read);
-    child.on("exit", (code) => no(new Error(`Firefox exited ${code}: ${said.slice(-400)}`)));
-  });
+  let address;
+  for (let attempt = 1; !address; attempt++) {
+    const home = fresh();
+    child = spawn(binary, ["--headless", "--no-remote", "--profile", home, "--remote-debugging-port=0"], { stdio: ["ignore", "pipe", "pipe"], env: envFor(home) });
+    try { address = await listening(child, attempt < launches ? 25000 : 120000); } catch (e) { child.kill(); if (attempt >= launches) throw e; }
+  }
 
   const socket = new WebSocket(`${address}/session`);
   await new Promise((yes, no) => { socket.onopen = yes; socket.onerror = () => no(new Error(`no BiDi session at ${address}`)); });
