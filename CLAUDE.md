@@ -1697,7 +1697,8 @@ doctrine it expands.
       sh tools/work land         # push, PR, arm auto-merge — no Sprite involved
       sh tools/work status       # PRs and their merge state; each lane and its Sprite
       sh tools/work sprites      # every Sprite at a glance; `--fix [name]` repairs
-      sh tools/work done         # remove this lane, free its Sprite
+      sh tools/work unbind       # end this lane's run, free its Sprite, keep the worktree
+      sh tools/work done --remove-worktree   # remove this lane too: ONLY with the owner's say-so
 
   Main lives on GitHub (avra-lang/avra): squash merges, linear history,
   no direct pushes. It requires the `test` check AND that a branch be up
@@ -1737,7 +1738,7 @@ doctrine it expands.
   it prints is `build/avra fmt --write <files>`. Never `--no-verify`.
 - HEAVY RUNS GO ON SPRITES, ONE SPRITE A LANE: `sh tools/work run <cmd>`
   from inside the worktree. `work new` binds a free Sprite (`work bind`
-  for a worktree that has none, `work done` frees it), and the lane's
+  for a worktree that has none, `work unbind` frees it), and the lane's
   tree and compiler stay warm there between runs. Bootstraps, whole
   suites and censuses run there; the Mac keeps quick targeted checks and
   anything macOS-only. ONE RUN PER SPRITE, EVERY STEP BOUNDED: `run`
