@@ -1,8 +1,9 @@
 //! A component's type parameters are its record's: each is pinned by
 //! what an instance writes — the head's value or a field's — and one
 //! component at two pins is two records. A parameter no value pins is
-//! refused by name, a bound on one is refused with the form that does
-//! take it, and a parameter names no value.
+//! refused by name, a bound on one holds as a fn's does — the
+//! component's fns call its methods, and an instance's argument must
+//! implement it — and a parameter names no value.
 use @std.avrac.testing.{provided, answered, refused_in}
 use @std.avrac.compiler.{Program}
 
@@ -43,10 +44,56 @@ spec "features/components — type parameters" {
         }
     }
     given "a bound on a parameter" {
-        then "is refused, naming the bound and the form that takes one" {
-            over("component q<T: Show> {\n    held: T\n}\nexport fn main() -> int { 0 }")
-                .report()
-                .trim() == "error[build.failed]: a component's type parameter takes no bound yet — `Show` is written as one\n  ╭─[/w/src/main.av:1:1]\n1 │ component q<T: Show> {\n  · ┬\n──╯"
+        then "lets the component's fns call the bound's methods on the parameter" {
+            answered(
+                over(
+                    "trait Named {\n    fn name() -> string\n}\ntype P = { n: string }\nimpl Named for P {\n    fn name() -> string { self.n }\n}\ncomponent tag<T: Named>(head: T) {\n    fn shown() -> string { self.head.name() }\n}\nlet p = P { n: \"a\" }\nlet t = tag p { }\nt.shown()",
+                ),
+            ) == "a"
+        }
+        then "holds across a package — the dependency declares the component and its trait" {
+            answered(
+                provided(
+                    "use @x.c.{Named, tag}\ntype P = { n: string }\nimpl Named for P {\n    fn name() -> string { self.n }\n}\nlet p = P { n: \"b\" }\nlet t = tag p { }\nt.shown()",
+                    "export trait Named {\n    fn name() -> string\n}\nexport component tag<T: Named>(head: T) {\n    fn shown() -> string { self.head.name() }\n}\n",
+                ),
+            ) == "b"
+        }
+        then "refuses an instance whose type argument does not implement it" {
+            refused_in(
+                over(
+                    "trait Named {\n    fn name() -> string\n}\ncomponent tag<T: Named>(head: T) {\n    fn shown() -> string { self.head.name() }\n}\nlet t = tag 7 { }\nt.shown()",
+                ),
+                "`int` does not implement `Named`",
+            )
+        }
+        then "refuses a written type argument that does not implement it" {
+            refused_in(
+                over(
+                    "trait Named {\n    fn name() -> string\n}\ncomponent tag<T: Named> {\n    held: List<T> = []\n}\nlet t = tag<int> { }\nt.held.length",
+                ),
+                "`int` does not implement `Named`",
+            )
+        }
+    }
+    given "an unbounded parameter's method call" {
+        then "is refused, and the help writes the bound a component takes" {
+            refused_in(
+                over(
+                    "component tag<T>(head: T) {\n    fn shown() -> string { self.head.name() }\n}\nlet t = tag 7 { }\nt.shown()",
+                ),
+                "help: add a bound — `<T: SomeTrait>`",
+            )
+        }
+    }
+    given "a bound naming no trait" {
+        then "is refused where it is written" {
+            refused_in(
+                over(
+                    "component tag<T: Nope>(head: T) {\n    label: string = \"x\"\n}\nlet t = tag 7 { }\nt.label",
+                ),
+                "a bound names a trait, and `Nope` is not one",
+            )
         }
     }
     given "a parameter read where a value goes" {

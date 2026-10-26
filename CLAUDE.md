@@ -1663,7 +1663,7 @@ Wants the typer does not carry yet:
 - A lambda in a field or argument seat does not read the seat's answer ("`.Ok` needs a known enum"); a typed `let` does, and a named fn works everywhere.
 - A `dyn` want reaches `match` arms, not `if` branches ("an `if`'s branches disagree: `P` vs `Q`"); select among typed lets.
 - `Traced<E>`'s `cause`/`context`/`trace` stay inherent methods permanently (a trait member's answer is fixed by its signature); the real want is a bound on a type's own parameter.
-- A bound lands on a free fn's parameters only: `type T<K: Tr, V>` and `impl T<K: Tr, V>` are "expected `=`"/"expected `{`", a generic method is "generic methods are recorded, not landed"; a generic container keyed by a typed id keys by the slot (core's `SideTable`).
+- A bound lands on a free fn's and a component's parameters only: `type T<K: Tr, V>` and `impl T<K: Tr, V>` are "expected `=`"/"expected `{`", a generic method is "generic methods are recorded, not landed"; a generic container keyed by a typed id keys by the slot (core's `SideTable`).
 - Variant arms or `is` over a nullable enum are "`match` chooses over an enum, found `K?`" / "`is` asks an enum for its variant, found `K?`"; unwrap first.
 - A generic impl's local annotation naming `T` is "`T` names no type"; leave it un-annotated.
 - A bound method as a value (`xs.any(self.rides)`) is read as a property ("no field `rides` on `S`"); write `(k) -> self.rides(k)`.

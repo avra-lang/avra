@@ -2354,6 +2354,51 @@ impl TypeCx {
             )
     }
 
+    /// Every bounded type parameter's binding IMPLEMENTS its trait — the
+    /// instantiation law that makes a body's calls on the bound sound.
+    mut fn bounds_hold(e: ExprId, decl: DeclId, concrete: List<TypeId>, site: string) -> bool {
+        for j in 0..self.tbounds(decl).length {
+            let name = self.bound_name(decl, j)
+            let at = [self.view.types.substituted(a, decl, concrete) for a in self.view.decls.bound_args(decl, j)]
+            if name != "" && !self.bound_held(e, decl, name, concrete[j], at, site) { return false }
+        }
+        true
+    }
+
+    /// One bound, one binding: implemented, or refused with the remedy.
+    mut fn bound_held(
+        e: ExprId,
+        decl: DeclId,
+        tname: string,
+        ty: TypeId,
+        at: List<TypeId>,
+        site: string,
+    ) -> bool {
+        // a bound naming no trait was refused where it was written
+        if self.bound_trait(decl, tname) == null || self.meets_bound(decl, tname, ty, at) { return true }
+        self.bound_unheld(e, self.bound_spelled(tname, at), ty, site)
+        false
+    }
+
+    /// A bound as written: the trait, then its arguments here.
+    fn bound_spelled(tname: string, at: List<TypeId>) -> string {
+        if at.is_empty() { tname } else { "${tname}<${[self.view.types.name_of(t) for t in at].join(", ")}>" }
+    }
+
+    mut fn bound_unheld(e: ExprId, tname: string, ty: TypeId, site: string) {
+        let tn = self.view.types.name_of(ty)
+        self
+            .emit(
+                refusal(
+                    "type.mismatch",
+                    self.loc_of(e),
+                    "`${tn}` does not implement `${tname}`",
+                    site,
+                    "write `impl ${tname} for ${tn} { … }`",
+                ),
+            )
+    }
+
     /// A map has no single element — the shared voice for a `for` and
     /// a comprehension whose head names one binder over a map.
     mut fn map_unpaired(subject: ExprId) -> TypeId {
