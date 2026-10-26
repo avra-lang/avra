@@ -4,7 +4,7 @@
 //! maps keys to names on the way out and names to keys on the way in.
 use @std.relation.engine.{Key, Saved, SavedRead}
 use @std.text.{parse_int}
-use core.{FileId, DeclId, ModuleId, joined}
+use core.{FileId, DeclId, ModuleId, DeclKind, joined}
 use compiler.host.{InputName}
 use @std.relation.engine.{Revival}
 use features.{kind_word, decl_key_text}
@@ -125,15 +125,29 @@ impl Workspace {
         self.world_key(name)
     }
 
-    /// The declaration a spelling names, found in the key index without minting anything.
+    /// The declaration a spelling names, found in the key index. A declaration of a file not yet
+    /// admitted is asked of its file's `Items`, which restores or admits it — the only way a name
+    /// reaches a declaration nothing has minted.
     fn saved_decl(spelled: string) -> DeclId? {
         let parts = spelled.split("\t")
         if parts.length != 7 { return null }
-        let kind? = kind_of_word(parts[1]) else { return null }
         let sibling? = parse_int(parts[6]) else { return null }
-        self
-            .decls
-            .known_id(decl_key_text(parts[0], parts[5], kind, parts[2], parts[3], parts[4], sibling))
+        let kinds = kinds_of_word(parts[1])
+        let held = self.known_decl(parts, kinds, sibling)
+        if held != null { return held }
+        let f? = self.decls.known_file_id(self.path_named(StoredName(parts[0]))) else { return null }
+        let _ = self.items(f)
+        self.known_decl(parts, kinds, sibling)
+    }
+
+    fn known_decl(parts: List<string>, kinds: List<DeclKind>, sibling: int) -> DeclId? {
+        for kind in kinds {
+            let id = self
+                .decls
+                .known_id(decl_key_text(parts[0], parts[5], kind, parts[2], parts[3], parts[4], sibling))
+            if id != null { return id }
+        }
+        null
     }
 
     /// Where the row for a name is filed: the name, in the view the file is read in.
@@ -238,6 +252,12 @@ impl Workspace {
                 )
         }
         self.fresh_items.set([])
+        for arg in self.fresh_sigs.get() {
+            let d = self.decl_at(DeclId { index: arg })
+            if d.maker != "" { continue }
+            let _ = self.saved_kept(Key { family: Family.Sig.ordinal, arg: arg }, self.sig_line(d))
+        }
+        self.fresh_sigs.set([])
     }
 
     /// A file's declarations minted from its saved identity rows, never parsed.
@@ -255,5 +275,27 @@ impl Workspace {
     fn saved_words(arg: int) -> Revival<DbRow> {
         let text? = self.saved_value(Key { family: Family.ComponentNames.ordinal, arg: arg }) else { return Revival.Gone }
         Revival.Revived(DbRow.Words(text.split("\n")))
+    }
+}
+
+/// The kinds a spelled kind word (`kind_word`'s) may mean: `type` is a record, a named type or an alias.
+fn kinds_of_word(word: string) -> List<DeclKind> {
+    match word {
+        "type" -> [DeclKind.Record, DeclKind.Named, DeclKind.Alias],
+        "fn" -> [DeclKind.Fn],
+        "enum" -> [DeclKind.Enum],
+        "trait" -> [DeclKind.Trait],
+        "syntax" -> [DeclKind.Syntax],
+        "method" -> [DeclKind.Method],
+        "default" -> [DeclKind.Default],
+        "impl" -> [DeclKind.Impl],
+        "main" -> [DeclKind.Main],
+        "case" -> [DeclKind.Case],
+        "const" -> [DeclKind.Const],
+        "collect" -> [DeclKind.Collect],
+        "collect_enum" -> [DeclKind.CollectEnum],
+        "builtin" -> [DeclKind.Builtin],
+        "state" -> [DeclKind.State],
+        _ -> [],
     }
 }
