@@ -160,8 +160,9 @@ impl Workspace {
     fn sig_revived(d: DeclId) {
         let text? = self.saved_value(Key { family: Family.Sig.ordinal, arg: d.index }) else { return }
         let store? = self.store.get() else { return }
-        let row? = read_row(read_fields(text)) else { return }
         let path = self.decls.file(self.decl_at(d).file).path
+        let read? = read_row(read_fields(text)) else { return }
+        let row = read with { path: path }
         self.fill_shape(store, self.module_path_of(path), d, row)
     }
 
@@ -418,7 +419,13 @@ impl Workspace {
         id
     }
 
-    fn record_line(d: Decl, ordinal: int, item: bool, parent_at: int = 0 - 1) -> string {
+    fn record_line(
+        d: Decl,
+        ordinal: int,
+        item: bool,
+        parent_at: int = 0 - 1,
+        spelled: string? = null,
+    ) -> string {
         let shape = self.record_shape(d)
         let at = shape.index_of("\t")
         // AN `extern fn` WEARS ITS OWN SHAPE WORD. The fact is a STORE read (`extern_parts`),
@@ -435,7 +442,7 @@ impl Workspace {
         // THE CODEC IS HELD TO ITSELF WHERE IT WRITES: a fact the decoder does not give
         // back is a defect said now, never a check every reader pays
         if facts_unblocked(block)?.fingerprint() != facts.fingerprint() { self.defect("`${d.name}`'s facts do not survive their record") }
-        "${self.identity_columns(d, ordinal, item, first, parent_at, block)}\t${payload}"
+        "${self.identity_columns(d, ordinal, item, first, parent_at, block, spelled ?? self.decls.file(d.file).path)}\t${payload}"
     }
 
     /// A declaration line's identity columns, shape word to facts block: what a reader needs to
@@ -447,9 +454,10 @@ impl Workspace {
         first: string,
         parent_at: int,
         block: string,
+        path: string,
     ) -> string {
         let root = d.root?.index ?? 0 - 1
-        "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${bit_word(d.exported)}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${field_text(d.enclosing)}\t${root}\t${bit_word(item)}\t${block}"
+        "${first}\t${path}\t${ordinal}\t${d.stmt.index}\t${bit_word(d.exported)}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${field_text(d.enclosing)}\t${root}\t${bit_word(item)}\t${block}"
     }
 
     /// A file's admitted declarations as identity rows — the answer `Items` is saved as. Only the
@@ -468,7 +476,8 @@ impl Workspace {
         let top = self.items(f)
         let ids = self.declared_in(f)
         let ordinal = [j for j, x in ids if same_decl(x, d.id)].first() ?? 0 - 1
-        self.record_line(d, ordinal, on_top(top, d.id), parent_ordinal(ids, d))
+        self
+            .record_line(d, ordinal, on_top(top, d.id), parent_ordinal(ids, d), self.decls.file(f).name)
     }
 
     /// The declarations a file itself declares, in order: what `Items` names.
@@ -479,7 +488,16 @@ impl Workspace {
     fn identity_line(d: Decl, ordinal: int, item: bool, ids: List<DeclId>) -> string {
         let parent_at = parent_ordinal(ids, d)
         let block = facts_block(self.decls.facts_or(d.id))
-        self.identity_columns(d, ordinal, item, self.identity_word(d), parent_at, block)
+        self
+            .identity_columns(
+                d,
+                ordinal,
+                item,
+                self.identity_word(d),
+                parent_at,
+                block,
+                self.decls.file(d.file).name,
+            )
     }
 
     /// The shape word an identity row wears: what the kind alone says, a record's layout left to its sig.

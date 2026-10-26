@@ -9,6 +9,7 @@ use compiler.host.{InputName}
 use @std.relation.engine.{Revival}
 use features.{kind_word, decl_key_text}
 use compiler.families.{Family}
+use compiler.cache_walk.{keyed_by, KeyedBy}
 use compiler.record.{read_fields}
 use compiler.store.{Store, Stored, StoredName, Reading, node_key, read_spelled}
 
@@ -28,21 +29,13 @@ enum ArgName {
 const HASH_READ: string = "="
 
 fn arg_name(f: Family) -> ArgName {
-    match f {
-        .Source or .Parsed or .Items or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .FileRefs or .MethodDiags or .Admitted -> ArgName.File,
-        .Sig or .Methods or .Typed or .WriteSummary or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .CancelSummary or .Writes or .CancelBits or .ReadFound or .Consumed -> ArgName.Decl,
-        .Namespace or .HeldSig -> ArgName.Module,
-        .References or .Failures or .ReadReach -> ArgName.Unit,
-        .BlockScan or .ComponentScan or .ComponentNames or .Input -> ArgName.Text,
-        .ConstTyped or .Settled or .Lowered or .Lifted or .LiftLowered or .Manifest or .Named -> ArgName.Local,
-    }
-}
-
-/// The families whose answers are saved by name: those with a value codec behind them.
-fn saved_family(f: Family) -> bool {
-    match f {
-        .Sig or .ComponentNames or .Items -> true,
-        .Source or .Parsed or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .FileRefs or .MethodDiags or .Admitted or .Methods or .Typed or .WriteSummary or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .CancelSummary or .Writes or .CancelBits or .ReadFound or .Consumed or .Namespace or .HeldSig or .References or .Failures or .ReadReach or .ConstTyped or .Settled or .Lowered or .Lifted or .LiftLowered or .Manifest or .Named or .Input or .BlockScan or .ComponentScan -> false,
+    match keyed_by(f) {
+        .File -> ArgName.File,
+        .Decl -> ArgName.Decl,
+        .Module -> ArgName.Module,
+        .Program -> ArgName.Unit,
+        .Input -> ArgName.Text,
+        .Package or .Unit or .Name or .Row -> ArgName.Local,
     }
 }
 
@@ -50,7 +43,7 @@ impl Workspace {
     /// A key's durable name — the family, then what the argument names — or null for a key
     /// no process but this one can read.
     fn saved_name(key: Key) -> string? {
-        let f = Family.all()[key.family]
+        let f? = Family.all().get(key.family) else { return null }
         let spelled? = self.arg_spelled(arg_name(f), key.arg) else { return null }
         "${f.name}\t${spelled}"
     }
@@ -158,7 +151,8 @@ impl Workspace {
     /// A saved answer for a key never settled here: what it read, each as a key of this process,
     /// and the hash it answered. Null when nothing is saved, or a read names no key here.
     fn saved_found(key: Key) -> Saved? {
-        if !saved_family(Family.all()[key.family]) { return null }
+        let kind? = Family.all().get(key.family) else { return null }
+        if !self.saved_family(kind) { return null }
         let store? = self.store.get() else { return null }
         let name? = self.saved_name(key) else { return null }
         let row = self.saved_row_key(name)
@@ -194,11 +188,14 @@ impl Workspace {
         store.keep_reading(Stored.Unit, self.saved_row_key(name), value, readings)
     }
 
+    /// Whether a family is kept by name: it registered a saver.
+    fn saved_family(f: Family) -> bool { self.savers.get().any(it.family == f.ordinal) }
+
     /// Whether a read is a row of its own: a saved family's answer, or a file's text. Any other
     /// read stands for what it read.
     fn stands_alone(k: Key) -> bool {
-        let f = Family.all()[k.family]
-        saved_family(f) || f is .Input
+        let f? = Family.all().get(k.family) else { return false }
+        self.saved_family(f) || f is .Input
     }
 
     /// The value a saved answer was kept with.
@@ -237,11 +234,7 @@ impl Workspace {
     fn flush_saved() {
         let owed = self.noted.get()
         self.noted.set([])
-        mut done: Map<string, bool> = {}
         for key in owed {
-            let at = "${key.family}.${key.arg}"
-            if done.get(at) != null { continue }
-            done.set(at, true)
             let saver? = self.savers.get().find(it.family == key.family) else { continue }
             let text? = (saver.text)(key.arg) else { continue }
             let _ = self.saved_kept(key, text)
