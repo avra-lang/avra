@@ -67,13 +67,11 @@ fn no_stmt_marks() -> StmtMarks {
 /// back what was written.
 export type ImplTypeParams = { of: List<Plain>, target: List<Plain> }
 
-/// A payload `is`: the variant pattern it names (`.V(p, q)`), and — on
-/// the Match an `if` desugared it into — whether the source wrote an
-/// `else`, so the printer can spell an elseless guard back.
-export type PayloadIs = { pat: PatId, has_else: bool }
+/// A payload `is`: the variant pattern it names (`.V(p, q)`).
+export type PayloadIs = { pat: PatId }
 
-/// The payload ask of a binding `is` pattern, as the source wrote it: with an `else`.
-fn binding_payload(asked: PatId) -> PayloadIs { PayloadIs { pat: asked, has_else: true } }
+/// The payload ask of a binding `is` pattern.
+fn binding_payload(asked: PatId) -> PayloadIs { PayloadIs { pat: asked } }
 
 /// A seat's source in a call that spreads a record: argument `arg`, whole
 /// (`field` is -1) or its field `field`.
@@ -169,7 +167,6 @@ export type SyntaxArena = {
     // the variant pattern an `if` that binds desugared into a Match
     // (`.V(p, q)`) — the binder list a match arm would take, kept
     // beside the node so the printer can spell the `if` back
-    @copied_by_hand("minted_expr: its pattern is rebuilt through pat") is_payloads: Cell<List<PayloadIs?>>,
     // a component instance's WRAPPING STATEMENT — where its `///`
     // and `@name(args)` annotations live, attached from OUTSIDE once
     // the instance's own expression already stands; absent for an
@@ -244,7 +241,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         meaning: list_cell(),
         means_notes: list_cell(),
         extensions: list_cell(),
-        is_payloads: list_cell(),
         instance_owners: list_cell(),
         grammar_lits: list_cell(),
         instances: list_cell(),
@@ -317,7 +313,6 @@ impl SyntaxArena {
         self.meaning.push(null)
         self.means_notes.push(null)
         self.extensions.push([])
-        self.is_payloads.push(null)
         self.instance_owners.push(null)
         self.grammar_lits.push(null)
         self.instances.push(null)
@@ -549,6 +544,11 @@ impl SyntaxArena {
         [ExprId { index: i } for i, n in self.means_notes.get() if n != null && !n!.is_empty()]
     }
 
+    /// Every node allocated since `before`, the root last.
+    fn allocated_since(before: int, root: ExprId) -> List<ExprId> {
+        [ExprId { index: i } for i in before..self.exprs.count() if i != root.index].concat([root])
+    }
+
     /// What `sugar` means, minted beside it: its nodes answer for it, the
     /// last is the root a walk descends into in its place, and `note` is the
     /// sentence that says what the sugar means. The one door a builder and
@@ -668,22 +668,11 @@ impl SyntaxArena {
         self.sugar_matches.get()[e.index]
     }
 
-    /// The pattern of the Match an `if` desugared a payload `is` into.
-    fn mark_is_payload(e: ExprId, p: PatId, has_else: bool) {
-        self.is_payloads.set_at(e.index, PayloadIs { pat: p, has_else: has_else })
-    }
-
-    fn payload_marked(e: ExprId) -> PayloadIs? {
-        self.is_payloads.get()[e.index]
-    }
-
     /// `x is .V(p, q)` — the pattern that binds, or null for a bare
-    /// `is` and for every other node; a desugared `if`'s Match answers
-    /// its marked one. One question answered here so the `if` that
-    /// BINDS, the enum law that REFUSES and the printer that spells the
-    /// `if` back read the same fact.
+    /// `is` and for every other node. One question answered here so the
+    /// `if` that BINDS and the enum law that REFUSES read the same fact.
     fn is_payload(e: ExprId) -> PayloadIs? {
-        match self.expr(e) { .Is(_, asked) -> self.binding_ask(asked), _ -> self.payload_marked(e) }
+        match self.expr(e) { .Is(_, asked) -> self.binding_ask(asked), _ -> null }
     }
 
     fn binding_ask(asked: PatId) -> PayloadIs? {
@@ -1088,7 +1077,7 @@ impl SyntaxArena {
     /// answers (`chain_value`).
     fn answered_by(s: StmtId, v: ExprId) -> ExprId? {
         match self.expr(v) {
-            .If(c, t, e) -> if self.statement_if(v) { self.chain_value(self.stmt_span(s), c, t, e) } else { v },
+            .If(c, t, e) -> if self.statement_if(v) && self.is_payload(c) == null { self.chain_value(self.stmt_span(s), c, t, e) } else { v },
             _ -> v,
         }
     }
@@ -1160,7 +1149,10 @@ impl SyntaxArena {
 
     /// Whether `v` is a statement `if` with an else.
     fn else_written(v: ExprId) -> bool {
-        match self.expr(v) { .If(_, _, e) -> self.statement_if(v) && e != null, _ -> false }
+        match self.expr(v) {
+            .If(c, _, e) -> self.statement_if(v) && e != null && self.is_payload(c) == null,
+            _ -> false,
+        }
     }
 
     /// The statements with a trailing if-chain that answers turned
