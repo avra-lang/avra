@@ -1155,7 +1155,7 @@ fn program_asked_key(d: Derived, main: ProgramMain, tools: Toolchain) -> string 
 
 /// THE EXTERNS NOTHING HERE ANSWERS: no runtime row, no package's
 /// library, no host fn of the program, and no symbol the runtime archive
-/// names — what a failed link most likely lacked. A host's own row is one
+/// defines — what a failed link most likely lacked. A host's own row is one
 /// of these on every target but that host's.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a program in, the names nothing in it defines out.
 fn unanswered_externs(l: Lowered, defined: List<string>, archive: string) -> List<string> {
@@ -1166,15 +1166,29 @@ fn unanswered_externs(l: Lowered, defined: List<string>, archive: string) -> Lis
         !named_in(archive, row.name)]
 }
 
-/// Whether an archive's text names `name` as a whole symbol: its index and
-/// string tables end each name with a NUL, and a mach-o name wears a leading `_`.
+/// Whether an archive's index text names `name` as a whole symbol: the index ends
+/// each name with a NUL, and a mach-o name wears a leading `_`.
 fn named_in(archive: string, name: string) -> bool {
     archive.contains(name + from_codepoint(0))
 }
 
-/// The runtime archive as text, or none when it cannot be read.
+/// The runtime archive's symbol index as text, or none when it cannot be read or
+/// carries none. The index lists the symbols its members DEFINE and no others.
 fn archive_text(path: string) -> string {
-    match read_bytes(path) { .Ok(b) -> b.text_lossy(), .Err(_) -> "" }
+    match read_bytes(path) { .Ok(b) -> armap_text(b), .Err(_) -> "" }
+}
+
+/// The text of an `ar` archive's first member when it is the symbol index —
+/// GNU's `/` or the BSD `__.SYMDEF` — and none otherwise. A member's header is
+/// 60 bytes after the 8-byte magic, its size the ten digits at offset 48.
+fn armap_text(archive: Bytes) -> string {
+    if archive.length < 68 { return "" }
+    let name = archive.slice(8, 24).text_lossy()
+    let size = parse_int(archive.slice(56, 66).text_lossy().trim()) ?? 0
+    let data = archive
+        .slice(68, if 68 + size > archive.length { archive.length } else { 68 + size })
+        .text_lossy()
+    if name.starts_with("/ ") || name.starts_with("#1/") && data.contains("__.SYMDEF") { data } else { "" }
 }
 
 fn unanswered_note(names: List<string>) -> string {

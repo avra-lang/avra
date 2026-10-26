@@ -3,7 +3,7 @@
 // @std.errors the same way every other compiler error does.
 use @std.avrac.compiler.{BuildError}
 use @std.text.{from_codepoint}
-use compiler.{named_in}
+use compiler.{named_in, armap_text}
 
 spec "BuildError" {
     given "an empty program" {
@@ -92,6 +92,51 @@ spec "named_in" {
         then "a symbol it does not name is not, nor is a prefix of one it does" {
             let a = archive_of(["avra_str_parses_float"])
             !named_in(a, "avra_dom_frame") && !named_in(a, "avra_str_parses")
+        }
+    }
+}
+
+/// A field padded with spaces to `width`.
+fn padded(s: string, width: int) -> string {
+    s + [" " for _i in 0..width - s.length].join("")
+}
+
+/// An `ar` archive whose first member is `index`, named as GNU names it, and
+/// whose second member holds `body`.
+fn archive_over(index: string, body: string) -> Bytes {
+    let header = (name: string, data: string) -> padded(name, 16) +
+        padded("0", 12) +
+        padded("0", 6) +
+        padded("0", 6) +
+        padded("644", 8) +
+        padded("${data.length}", 10) +
+        "`\n"
+    ("!<arch>\n" + header("/", index) + index + header("m.o/", body) + body).bytes()
+}
+
+spec "armap_text" {
+    given "an archive whose index names a symbol and whose second member only mentions another" {
+        then "the index holds the defined one and not the merely referenced one" {
+            let a = archive_over(
+                "avra_defined_here" + from_codepoint(0),
+                "avra_only_referenced" + from_codepoint(0),
+            )
+            let index = armap_text(a)
+            named_in(index, "avra_defined_here") && !named_in(index, "avra_only_referenced")
+        }
+    }
+    given "an archive whose first member is no symbol index" {
+        then "nothing is taken as defined" {
+            let a = ("!<arch>\n" +
+                padded("m.o/", 16) +
+                padded("0", 12) +
+                padded("0", 6) +
+                padded("0", 6) +
+                padded("644", 8) +
+                padded("4", 10) +
+                "`\navra")
+                .bytes()
+            armap_text(a) == ""
         }
     }
 }
