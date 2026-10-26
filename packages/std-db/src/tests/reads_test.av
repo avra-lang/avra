@@ -1,0 +1,107 @@
+// What a body read: the tables its model queries went to, in the order first reached, none twice, a
+// nested recording's reads reaching the outer one too, and nothing recorded while none is open. And what a
+// write touched: each table's own last write, so the tables written since a count are named and no row is.
+use @std.db.{model, Many}
+use @std.db.apply.{commits, last_of, touched}
+use @std.db.reads.{observing}
+use @std.sqlite.{Db, sql}
+
+@model
+type Shelf = {
+    id: int = 0,
+    name: string,
+    books: Many<Book> = Many {},
+}
+
+@model
+type Book = {
+    id: int = 0,
+    title: string,
+    shelf: Shelf,
+}
+
+@model
+type Lamp = {
+    id: int = 0,
+    watts: int,
+}
+
+/// `body` over a fresh in-memory database with the three tables; false when none opens.
+fn made(body: fn(Db) -> bool) -> bool {
+    match Db.memory() {
+        .Ok(db) -> {
+            let _ = Shelf.create_table(db)
+            let _ = Book.create_table(db)
+            let _ = Lamp.create_table(db)
+            body(db)
+        },
+        .Err(_) -> false,
+    }
+}
+
+/// A read of every row of a model, answering how many.
+fn lamps(db: Db) -> int { (Lamp.all(db) catch []).length }
+
+fn books(db: Db) -> int { (Book.all(db) catch []).length }
+
+fn found(db: Db) -> int { (Shelf.find(db, 1) catch null)?.id ?? 0 }
+
+fn shelves(db: Db) -> int { (Shelf.all(db) catch []).length }
+
+fn children(db: Db, shelf: Shelf) -> int { (shelf.books(db) catch []).length }
+
+/// A read that reads a table inside another recording, then another table outside it.
+fn inner(db: Db) -> string {
+    let seen = observing(() -> lamps(db))
+    let _ = shelves(db)
+    seen.reads.join(",")
+}
+
+spec "reads and touches" {
+    given "model reads under a recording" {
+        then "each table reached is named once, in the order reached" {
+            made(
+                (db) -> { observing(() -> lamps(db) + found(db) + lamps(db)).reads.join(",") == "Lamp,Shelf" },
+            )
+        }
+        then "a link's parent and a Many's children are tables read" {
+            made(
+                (db) -> {
+                    let shelf = Shelf { name: "s" }
+                    let kept = shelf.insert(db) catch shelf
+                    let _ = Book { title: "b", shelf: kept }.insert(db)
+                    observing(() -> books(db)).reads.join(",") == "Book,Shelf" &&
+                        observing(() -> children(db, kept)).reads.join(",") == "Book,Shelf"
+                },
+            )
+        }
+        then "a nested recording's reads reach the outer one, and nothing records outside any" {
+            made(
+                (db) -> {
+                    let _ = lamps(db)
+                    let outer = observing(() -> inner(db))
+                    outer.value == "Lamp" && outer.reads.join(",") == "Lamp,Shelf"
+                },
+            )
+        }
+    }
+    given "writes" {
+        then "the tables written since a count are named, and a table's own last write is its version" {
+            made(
+                (db) -> {
+                    let before = commits(db) catch -1
+                    let _ = Lamp { watts: 5 }.insert(db)
+                    let mid = commits(db) catch -1
+                    let _ = Shelf { name: "s" }.insert(db)
+                    let named = touched(db, before) catch []
+                    let later = touched(db, mid) catch []
+                    named.join(",") == "Lamp,Shelf" &&
+                        later.join(",") == "Shelf" &&
+                        (last_of(db, ["Lamp"]) catch -1) == mid &&
+                        (last_of(db, ["Lamp", "Shelf"]) catch -1) > mid &&
+                        (last_of(db, ["Book"]) catch -1) == 0
+                },
+            )
+        }
+    }
+}

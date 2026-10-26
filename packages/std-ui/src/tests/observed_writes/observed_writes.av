@@ -1,0 +1,118 @@
+// proves: a write's answer names the tables it touched (`avra-wrote`), and the observations a view reads
+// that it reaches are asked again at once — with the version they hold — while one that read other tables
+// is left alone, and one whose server never said what it read is reached by any write. A write that lands
+// while an observation's request is out asks for another when that one answers — eval == native.
+use @std.ui.app.{Async, Fetch, fetch, fetched}
+use @std.ui.components.{button, item}
+use @std.ui.headless.{headless}
+use @std.http_message.message.{Header, Method, Reply, Request}
+use @std.text.{repeat}
+use @std.time.{ms}
+
+state first: Fetch<int> = fetch()
+state second: Fetch<int> = fetch()
+state unsaid: Fetch<int> = fetch()
+state posted: Fetch<int> = fetch()
+state sent: List<string> = []
+state table_one: int = 1
+state table_two: int = 1
+state clock: int = 1
+
+fn words(a: Async<int>) -> string {
+    match a {
+        .Idle -> "idle",
+        .Loading -> "loading",
+        .Failed(m) -> "failed ${m}",
+        .Ready(n) -> "ready ${n}",
+    }
+}
+
+fn parsed(r: Reply) -> Result<int, string> { .Ok(r.body.length) }
+
+/// The tag of a version, quoted as the wire carries it.
+fn tag_of(n: int) -> string { "\"v${n}\"" }
+
+/// The network is a database of two tables and a server over it. A read answers the version of the
+/// tables it reads (`/first`: table one, `/second`: table two, `/unsaid`: both, and says nothing of it) and
+/// a 304 to a caller holding it; a write to table one answers what it touched.
+fn network(r: Request) -> Result<Reply, string> {
+    let held = r.headers.find(it.name == "If-None-Match")
+    sent = sent
+        .concat(["${r.method.word()} ${r.url}${if held == null { "" } else { " held " + held!.value }}"])
+    if r.method is .Post {
+        clock = clock + 1
+        table_one = clock
+        return .Ok(
+            Reply {
+                status: 201,
+                headers: [Header { name: "avra-wrote", value: "One" }],
+                body: "ok".bytes(),
+            },
+        )
+    }
+    let version = match r.url {
+        "/first" -> table_one,
+        "/second" -> table_two,
+        rest -> if table_one > table_two { table_one } else { table_two },
+    }
+    let reads = match r.url { "/first" -> "One", "/second" -> "Two", rest -> "" }
+    let said = if reads == "" { [] } else { [Header { name: "avra-reads", value: reads }] }
+    let tag = tag_of(version)
+    if held != null && held!.value == tag {
+        return .Ok(
+            Reply { status: 304, headers: [Header { name: "etag", value: tag }], body: "".bytes() },
+        )
+    }
+    .Ok(
+        Reply {
+            status: 200,
+            headers: [Header { name: "etag", value: tag }].concat(said),
+            body: repeat("x", version).bytes(),
+        },
+    )
+}
+
+fn view() -> item {
+    item {
+        items: [
+            button "Load" {
+                on press {
+                    let _ = fetched(first, Request.get("/first"), parsed)
+                    let _ = fetched(second, Request.get("/second"), parsed)
+                    let _ = fetched(unsaid, Request.get("/unsaid"), parsed)
+                }
+            },
+            button "Write" { on press { let _ = fetched(posted, Request.post("/w", .Empty), parsed) } },
+        ]
+    }
+}
+
+fn log() -> string { sent.join(" | ") }
+
+let screen = headless(view)
+screen.wired(network)
+screen
+    .running(
+        () -> {
+            let _ = screen.press("Load")
+            screen.advance(ms(10))
+            println(
+                "loaded: ${words(first.state())} ${words(second.state())} ${words(unsaid.state())}",
+            )
+            sent = []
+            let _ = screen.press("Write")
+            screen.advance(ms(10))
+            println("after a write to table one: ${log()}")
+            println(
+                "shown: ${words(first.state())} ${words(second.state())} ${words(unsaid.state())}",
+            )
+            sent = []
+            let _ = screen.press("Write")
+            let _ = screen.press("Write")
+            screen.advance(ms(10))
+            println("two writes: ${log()}")
+            println(
+                "shown: ${words(first.state())} ${words(second.state())} ${words(unsaid.state())}",
+            )
+        },
+    )

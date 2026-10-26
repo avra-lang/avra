@@ -2,7 +2,8 @@
 // browser sent and what the page did with it:
 //   - the two views made ONE request for /tasks, and both show its answer;
 //   - asking again sent the version held, the server answered 304, and the page changed not at all;
-//   - after a write the next ask answered new, and the page shows it.
+//   - a write's answer names the table it touched, and the page asks again at once and shows the new answer;
+//   - and asked once more with nothing changed, it is a 304.
 //   node observed.mjs <page url>
 import { openPage, firefoxBinary } from "./firefox.mjs";
 
@@ -34,12 +35,13 @@ good = claim("asking again never drew a loading word: every sample held both ans
 good = claim("a 304 changed nothing on the page", (await words()) === before && (await page.read(`window.__moved`)) === 0, await page.read(`window.__moved`)) && good;
 
 await press("Add");
-await waits(`performance.getEntriesByType("resource").filter((e) => new URL(e.name).pathname === "/tasks").length === 3`);
-await press("Again");
 await waits(`performance.getEntriesByType("resource").filter((e) => new URL(e.name).pathname === "/tasks").length === 4`);
 const grown = await waits(`/left ready \\d+/.test(document.body.textContent) && document.body.textContent !== ${JSON.stringify(before)}`);
 const last = await sent();
-good = claim("after a write the next ask answered 200 and the page shows the new answer", grown && last[3] === 200, last) && good;
+good = claim("a write's answer named what it touched: the observation was asked again with no press, answered 200, and the page shows it", grown && last[2] === 201 && last[3] === 200, last) && good;
+await press("Again");
+await waits(`performance.getEntriesByType("resource").filter((e) => new URL(e.name).pathname === "/tasks").length === 5`);
+good = claim("asked once more, nothing had changed: 304", (await sent())[4] === 304, await sent()) && good;
 
 await page.close();
 console.log(said.join("\n"));
