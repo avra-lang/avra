@@ -86,7 +86,6 @@ Cause	packages/std-avrac/src/compiler/codes.av	help_of	spelled	the advice a pars
 DeclKind	packages/std-avrac/src/core/nodes.av	binds_name	spelled	whether a declaration is found by its name
 DeclKind	packages/std-avrac/src/core/nodes.av	binds_type	spelled	whether a declaration names a type
 DeclKind	packages/std-avrac/src/compiler/interface.av	record_shape	spelled	the shape a held declaration's record line is written as
-DeclKind	packages/std-avrac/src/compiler/verify_held.av	sig_mismatches	spelled	which held facts --verify-held compares
 Shape	packages/std-avrac/src/compiler/interface.av	fill_shape	spelled	how a held declaration's row is filled back
 Shape	packages/std-avrac/src/compiler/record.av	declared_kind	spelled	the declaration kind a record line mints
 Origin	packages/std-avrac/src/features/worklist.av	at	spelled	which file a node's own name resolves in

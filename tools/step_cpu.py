@@ -5,7 +5,7 @@ user+sys CPU appended to speed.log as `speed cpu-<label>[-warm|-cold] <seconds>`
     step_cpu.py [--state] <label> -- <command> [args...]
 
 THE STATE RIDES THE NAME. A suite compiles its package held (a warm store: nearly all of `held N/M`
-in its `--time` lines), from nothing (every N is 0) or between (`part`: a package the PR changed,
+in its `--time` lines, or nearly all of its `time:` lines a `cache hit` where the compiler counts no `held`), from nothing (every N is 0) or between (`part`: a package the PR changed,
 compiled beside held dependencies), and the three cost 2-100x apart for the same tree. A number is only comparable to a baseline taken in the SAME state, so the state is part of the
 metric's name (tools/speed_note.sh compares like with like and says aloud when it cannot). A step
 that prints no `held` line has no state and keeps the bare name; only a step asked with `--state`
@@ -21,10 +21,18 @@ import sys
 HELD = re.compile(r"\bheld (\d+)/(\d+)\b")
 
 
+HIT = re.compile(r"\bcache hit\b")
+
+
 def state_of(text):
     """'warm' when nearly every derivation held (90% or more of them), 'cold' when none did, 'part' between
-    (a package this run changed, compiled beside held dependencies), '' when no line said."""
+    (a package this run changed, compiled beside held dependencies), '' when no line said. A compiler that
+    counts what it held says `held N/M`; one that holds nothing says only which `time:` lines were a
+    `cache hit`, and the same three states are read from their share."""
     seen = [(int(m.group(1)), int(m.group(2))) for m in HELD.finditer(text)]
+    if not seen:
+        lines = [l for l in text.splitlines() if l.startswith("time:")]
+        seen = [(1 if HIT.search(l) else 0, 1) for l in lines]
     if not seen:
         return ""
     held = sum(h for h, _ in seen)
@@ -60,6 +68,10 @@ def self_test():
     assert state_of("time: held 1053/1170") == "warm"
     assert state_of("time: held 5/5\ntime: held 1/90") == "part"
     assert state_of("no timing lines here") == ""
+    assert state_of("time: suite · cache hit\ntime: suite · cache hit") == "warm"
+    assert state_of("time: lower+emit · built\ntime: lower+emit · built") == "cold"
+    assert state_of("time: suite · cache hit\ntime: parse 3ms, lower 5ms") == "part"
+    assert state_of("time: check · cache hit — open 1us\ntime: held 0/5") == "cold"
     assert metric("std-avrac/@features-a", "cold") == "cpu-std-avrac-features-a-cold"
     assert metric("keepers-a1", "") == "cpu-keepers-a1"
     assert metric("std-path", "cold", "epyc-7763") == "cpu-epyc-7763-std-path-cold"
@@ -84,7 +96,7 @@ def main(argv):
     seen = []
     for line in proc.stderr:
         sys.stderr.write(line)
-        if "held " in line:
+        if "held " in line or line.startswith("time:"):
             seen.append(line)
     rc = proc.wait()
     u = resource.getrusage(resource.RUSAGE_CHILDREN)
