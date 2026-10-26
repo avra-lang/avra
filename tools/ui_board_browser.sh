@@ -91,6 +91,8 @@ wasm_ready || skip "the wasm runtime archive did not build"
 # A COPY is served, so the run edits no file of the tree's.
 mkdir -p "$work/tools"
 cp -R "$tree/tools/ui-board" "$work/tools/ui-board"
+# The board's server keeps its tasks in a file, so a run names its own.
+export BOARD_DB="$work/board.db"
 "$avra" dev --target "$target" --port 0 "$work/tools/ui-board" >"$work/dev.out" 2>"$work/dev.err" &
 dev=$!
 servers=""
@@ -120,7 +122,7 @@ cp -R "$tree/tools/ui-board" "$work/served/tools/ui-board"
 "$avra" build --target "$target" --wasm_reactor "$work/served/tools/ui-board" >"$work/served.out" 2>"$work/served.err" || { cat "$work/served.err"; echo "ui-browser: the board did not build for the served page"; exit 1; }
 served=$(tail -1 "$work/served.out")
 for mode in "" "--tampered"; do
-    node "$here/ui-board/serve_hydrated.mjs" "$work/document.html" "$served" "$tree/runtime/dom" $mode >"$work/serve$mode.out" 2>&1 &
+    node "$here/ui-board/serve_hydrated.mjs" "$work/document.html" "$served" "$tree/runtime/dom" $mode --backend "$url" >"$work/serve$mode.out" 2>&1 &
     servers="$servers $!"
 done
 trap 'kill "$dev" $servers 2>/dev/null || true' EXIT
