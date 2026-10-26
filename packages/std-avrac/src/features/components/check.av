@@ -16,7 +16,6 @@ use core.{
     same_file,
     same_decl,
     some_list,
-    flatten,
     user_kind,
 }
 use features.{ResolveCx, TypeCx, default_mark, type_named}
@@ -112,12 +111,10 @@ fn unfired_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
     }
 }
 
-/// Every name `self` is read at under `e`. A block's statements are not
-/// its node's kids, so each block is entered through its statements.
+/// Every name `self` is read at under `e` — every expression it holds,
+/// a match arm's and a hidden branch's included.
 fn self_reads(cx: TypeCx, e: ExprId) -> List<string> {
-    let inner = cx.view.store.stmts_exprs(cx.view.store.block_stmts(e) ?? [])
-    flatten([self_reads(cx, k) for k in cx.view.store.walked(e).concat(inner)])
-        .concat(self_read(cx, e))
+    [n for k in cx.view.store.every_expr(e) for n in self_read(cx, k)]
 }
 
 /// The name `self` is read at in `e` itself, when it is `self.name` — as a
@@ -395,7 +392,7 @@ fn unfired_event(at: Loc?, word: string, event: string) -> Diag {
         at,
         "event `${event}` is declared and nothing in `${word}` calls it or hands it on — a handler an instance writes for it can never run",
         "declared here",
-        "call it in the body (`self.${event}(…)`), pass it to a child's seat (`on ${event}: self.${event}`), or drop the event",
+        "fire it where it is heard (`let fire? = self.${event} else { return }`, then `fire(…)`), pass it to a child's seat (`on ${event}: self.${event}`), or drop the event",
     )
 }
 

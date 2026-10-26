@@ -853,17 +853,28 @@ impl TypeCx {
         let spread: ExprId? = args.find((a) -> self.view.store.spread_operand(a) != null)
         if spread != null { return self.spread_placed(e, callee, declared, args, wants) }
         let seats: List<string> = self.view.decls.facts_of(declared)?.seats ?? []
-        let defaults = self.view.decls.seat_defaults(declared)
-        if args.all((a) -> self.view.store.arg_label(a) == null) { return self.by_position(e, callee, defaults, args, wants) }
+        if args.all((a) -> self.view.store.arg_label(a) == null) {
+            if args.length == wants.length { return as_written(args, wants) }
+            return self.by_position(e, callee, self.view.decls.seat_defaults(declared), args, wants)
+        }
         if seats.length != wants.length { return self.unplaced(callee, args, wants) }
         if !self.labels_lawful(e, callee, args, seats) { return null }
         let plan = self.view.store.seat_plan(args, seats)
-        let unwritten: string? = [seats[j] for j, i in plan if i < 0 && defaults[j] == null].first()
+        let unwritten = self.unwritten_seat(declared, seats, plan)
         if unwritten != null { return self.seat_unwritten(e, callee, unwritten!) }
         Placed {
             args: self.view.store.seated_args(args, seats),
             wants: [wants[j] for j, i in plan if i >= 0],
         }
+    }
+
+    /// The first seat no argument writes and no default fills; the
+    /// defaults are read only when a seat is left open.
+    fn unwritten_seat(d: DeclId, seats: List<string>, plan: List<int>) -> string? {
+        let open = [j for j, i in plan if i < 0]
+        if open.is_empty() { return null }
+        let defaults = self.view.decls.seat_defaults(d)
+        [seats[j] for j in open if defaults[j] == null].first()
     }
 
     /// Positional arguments: every seat, or — when each seat past them
