@@ -20,20 +20,8 @@ target=${SPEED_TARGET:-packages/cli}
 file=${SPEED_EDIT:-packages/cli/src/commands/fmt.av}
 case "$rounds" in ''|*[!0-9]*) rounds=3 ;; esac
 
-# The host the measurement runs on, in the gate's own spelling. A Mac
-# delegates to its Sprite, so the number that comes back is the Sprite's
-# and must be keyed as the Sprite's — the CPU is in the key because two
-# x86_64 Linux machines (a Sprite and a runner) are not the same machine,
-# and a ceiling recorded on one must never judge the other.
-token() { printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//;s/-*$//'; }
-cpu() {
-    if [ -r /proc/cpuinfo ]; then
-        awk -F: '/model name/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }' /proc/cpuinfo
-    else
-        sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -p
-    fi
-}
-printf 'host %s\n' "${SPEED_HOST:-$(token "$(uname -s)")-$(token "$(uname -m)")-$(token "$(cpu)")}"
+# The host the measurement is keyed by (tools/host_key.sh: a Mac delegating to its Sprite keys the Sprite's).
+printf 'host %s\n' "$(sh tools/host_key.sh)"
 
 # A CEILING IS READ FROM A WARM STORE. A cold one makes the first rounds
 # the whole program's price, not the phase's, and measuring it here would
