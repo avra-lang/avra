@@ -3,14 +3,14 @@
 // an open stream at once, a write from outside it within the router's interval, a reconnect with the last id seen is told every
 // table written since, a cursor the database has not reached is told expired, and a caller the router's access refuses gets 401
 use @std.crud.{crud}
-use @std.crud.routes.{belongs_to}
+use @std.crud.routes.{belongs_to, subscribed}
 use @std.http.route.{group}
 use @std.http.server.{server}
 use @std.net.{Conn, NetError, connect, timely}
 use @std.io.{env, make_dirs}
 use @std.sqlite.{Db, SqlValue}
 use @std.text.{parse_int}
-use @std.time.{ms, now_ms, now_ns, secs}
+use @std.time.{ms, now_ms, now_ns, secs, sleep}
 
 @crud
 type Job = {
@@ -102,6 +102,38 @@ fn scratch() -> string {
     "${dir}/crud_feed_${now_ns()}.db"
 }
 
+/// How many streams are still open once their clients are gone: each ends when the server next writes to
+/// it, so writes from outside the router are made until none is left.
+fn released(db: Db) -> int {
+    let until = now_ms() + 3000
+    while subscribed() > 0 && now_ms() < until {
+        let _ = Job { owner: 3, title: "wake" }.insert(db)
+        sleep(ms(60))
+    }
+    subscribed()
+}
+
+/// A server of one process over `db`, three streams opened on it and then closed: the count of streams it
+/// serves with the three open, and once their clients are gone.
+fn counted(db: Db) -> Result<string, NetError> {
+    server solo {
+        port: 0
+        group "/jobs" { Job.routes(db, every: ms(50)) }
+    }
+    let s = match solo.listening() {
+        .Ok(up) -> up,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    spawn s.run(1)
+    defer s.stop()
+    let p = s.listener.port
+    let watchers = [opened(p, "")? for _n in 0..3]
+    let _ = heard(watchers[0], 200)
+    let open_now = subscribed()
+    for w in watchers { let _ = w.close() }
+    .Ok("${open_now} -> ${released(db)}")
+}
+
 fn shown() -> Result<string, NetError> {
     let path = scratch()
     let db = match Db.open(path) { .Ok(d) -> d, .Err(e) -> { return .Err(refused(e.message)) } }
@@ -152,9 +184,11 @@ fn shown() -> Result<string, NetError> {
             "a reconnect with the first id: ${said(resumed)}",
             "a cursor the database has not reached: ${said(expired)}",
             "a caller the access refuses: ${status_of(p)?}",
+            "streams open in a one-process server with three watching, then after every client has gone: ${counted(db)?}",
         ]
             .join("\n"),
     )
 }
 
 match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
+

@@ -13,6 +13,7 @@ use app.{
     Shown,
     Want,
     Wants,
+    listens_at,
     replies_to,
     running,
     shown,
@@ -152,6 +153,7 @@ impl Screen {
         Door {
             send: (m: Msg) -> self.left_for_loop(ended, m),
             ask: (w: Want, act: Act, owner: string?) -> self.asked_of(ended, w, act, owner),
+            hush: (url: string) -> { let _ = self.wants.hushed(url) },
             close: () -> ended.set(true),
         }
     }
@@ -279,7 +281,7 @@ impl Screen {
     /// queued where its listen put it, and the listen's act runs as a turn. A refusal ends the
     /// listen. Nothing is delivered where no stream listens at `url`.
     fn heard(url: string, said: Heard) {
-        let held? = self.wants.held.get().find(is_listening(it, url)) else { return }
+        let held? = self.wants.held.get().find(listens_at(it, url)) else { return }
         let queue? = match held.how { .Listen(_, q) -> q, .Timer(_) or .Request(_, _) -> null } else {
             return
         }
@@ -292,7 +294,7 @@ impl Screen {
 
     /// The request the screen was asked to open a stream with at `url`, while one listens there.
     fn listened(url: string) -> Request? {
-        let held? = self.wants.held.get().find(is_listening(it, url)) else { return null }
+        let held? = self.wants.held.get().find(listens_at(it, url)) else { return null }
         match held.how { .Listen(request, _) -> request, .Timer(_) or .Request(_, _) -> null }
     }
 
@@ -375,7 +377,3 @@ impl Screen {
     }
 }
 
-/// Whether a held source is a stream listening at `url`.
-fn is_listening(h: Held, url: string) -> bool {
-    match h.how { .Listen(request, _) -> request.url == url, .Timer(_) or .Request(_, _) -> false }
-}

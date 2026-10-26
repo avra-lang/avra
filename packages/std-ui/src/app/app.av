@@ -58,7 +58,12 @@ export enum Heard {
 /// The way into a running loop: where a message goes, what a source's ask
 /// is realized as, and how the loop is told to end. A target with no
 /// loop has none.
-export type Door = { send: fn(Msg) -> bool, ask: fn(Want, Act, string?) -> bool, close: fn() -> void }
+export type Door = {
+    send: fn(Msg) -> bool,
+    ask: fn(Want, Act, string?) -> bool,
+    hush: fn(string) -> void,
+    close: fn() -> void,
+}
 
 /// An app on one target. `show` is the target's own paint: the tree as it
 /// stands and the theme it wears, in; whatever the target does with them.
@@ -389,6 +394,12 @@ impl App {
     fn ask_observed(want: Want, act: Act) -> bool {
         let door? = self.door.get() else { return false }
         door.ask(want, act, null)
+    }
+
+    /// Every stream listening at `url` is ended. Nothing when no loop runs.
+    fn hush(url: string) {
+        let door? = self.door.get() else { return }
+        door.hush(url)
     }
 
     /// Where messages go now: the running loop's inbox, held — a source

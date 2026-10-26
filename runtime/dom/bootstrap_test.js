@@ -534,6 +534,18 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   feeds.clear();
   await settle();
   check("clear lets every stream go", feeds.count(), 0);
+  const before = said.length;
+  status = 200;
+  feeds.listen(3n, requestFrame({ url: "/y" }));
+  await settle();
+  const open = streams.length;
+  feeds.unlisten(3n);
+  await settle();
+  clock.advance(10000);
+  await settle();
+  check("a stream let go is closed and not opened again, and says nothing of it", [feeds.count(), streams.length, said.slice(before)], [0, open, [[3, 0, 0, ""]]]);
+  feeds.unlisten(3n);
+  check("letting go of one that is not held is nothing", feeds.count(), 0);
 }
 
 // ── the page's frames ──
