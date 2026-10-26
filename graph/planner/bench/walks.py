@@ -52,6 +52,7 @@ def main():
     parser.add_argument("--config", default="baseline")
     parser.add_argument("--only")
     parser.add_argument("--rows", type=int, help="override preview_rows for this run")
+    parser.add_argument("--resume", help="a results file to continue: its (configuration, question) walks are not run again")
     args = parser.parse_args()
     if not shared_socket():
         raise SystemExit(f"walks: no shared model answers on {SOCKET}")
@@ -65,7 +66,23 @@ def main():
     model = ChooseOnly(Shared(SOCKET))
     model.budget = Budget(declared_context(MODEL, HUB), PARAMETERS["answer_tokens"])
     names = args.config.split(",")
-    rows, graphs = [], {}
+    out = pathlib.Path(args.resume) if args.resume else HERE / "results" / f"walks-{time.strftime('%Y%m%dT%H%M%S')}.json"
+    rows = json.loads(out.read_text())["walks"] if args.resume else []
+    graphs = {}
+    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, text=True, capture_output=True).stdout.strip()
+
+    def save():
+        summary = {}
+        for name in names:
+            mine = [r for r in rows if r["config"] == name]
+            summary[name] = {"walks_right": sum(r["right"] for r in mine), "answers_right": sum(r["answer_right"] for r in mine),
+                             "abstained": sum(r["abstained"] for r in mine), "questions": len(mine),
+                             "mean_ms": round(sum(r["ms"] for r in mine) / max(len(mine), 1))}
+        out.write_text(json.dumps({"commit": commit, "at": datetime.datetime.now().isoformat(timespec="seconds"),
+                                   "model": MODEL, "parameters": {k: PARAMETERS[k] for k in ("preview_rows", "beam_score", "rank_use")},
+                                   "configs": {n: CONFIGS[n] for n in names}, "summary": summary, "walks": rows}, indent=1))
+        return summary
+
     with tempfile.TemporaryDirectory(prefix="planner-walks-") as scratch:
         for row in gold:
             if (only and row["id"] not in only) or row["id"] in heldout:
@@ -82,6 +99,8 @@ def main():
             ask = lambda cypher: app.call({"op": "query", "cypher": cypher, "params": params})  # noqa: E731
             goal = values(ask(row["cypher"]))
             for name in names:
+                if any(r["config"] == name and r["question_id"] == row["id"] for r in rows):
+                    continue
                 PARAMETERS.update(CONFIGS[name])
                 seek, read, probe = remembered(graph.search), remembered(graph.read), graph.prober(params)
                 started = time.time()
@@ -89,23 +108,14 @@ def main():
                 ms = int((time.time() - started) * 1000)
                 cypher = found[0].cypher if found else None
                 got = values(ask(cypher)) if cypher else None
-                out = {"config": name, "question_id": row["id"], "cypher": cypher, "gold": row["cypher"],
+                walk = {"config": name, "question_id": row["id"], "cypher": cypher, "gold": row["cypher"],
                        "right": cypher == row["cypher"], "answer_right": got == goal, "abstained": not found,
                        "finished": len(found), "ms": ms}
-                rows.append(out)
-                print(f"{name:<9} {row['id']} {'+' if out['right'] else '-'}{'a' if out['answer_right'] else ' '} {ms:>6} ms  {cypher}", flush=True)
-    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, text=True, capture_output=True).stdout.strip()
-    summary = {}
-    for name in names:
-        mine = [r for r in rows if r["config"] == name]
-        summary[name] = {"walks_right": sum(r["right"] for r in mine), "answers_right": sum(r["answer_right"] for r in mine),
-                         "abstained": sum(r["abstained"] for r in mine), "questions": len(mine),
-                         "mean_ms": round(sum(r["ms"] for r in mine) / max(len(mine), 1))}
-        print(name, summary[name])
-    out = HERE / "results" / f"walks-{time.strftime('%Y%m%dT%H%M%S')}.json"
-    out.write_text(json.dumps({"commit": commit, "at": datetime.datetime.now().isoformat(timespec="seconds"),
-                               "model": MODEL, "parameters": {k: PARAMETERS[k] for k in ("preview_rows", "beam_score", "rank_use")},
-                               "configs": {n: CONFIGS[n] for n in names}, "summary": summary, "walks": rows}, indent=1))
+                rows.append(walk)
+                save()
+                print(f"{name:<9} {row['id']} {'+' if walk['right'] else '-'}{'a' if walk['answer_right'] else ' '} {ms:>6} ms  {cypher}", flush=True)
+    for name, line in save().items():
+        print(name, line)
     print("results:", out.relative_to(ROOT))
 
 
