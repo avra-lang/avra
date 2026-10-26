@@ -86,32 +86,4 @@ spec "compiler/saved — answers by durable name" {
             ws.saved_found(sig_key(ws, "two")) == null
         }
     }
-    given "a file's declarations" {
-        then "are minted from their saved rows in a second process, the file never parsed" {
-            let dir = "${base()}/items"
-            let first = world(source())
-            first.attach_store(store_at(dir))
-            let f = first.file_id("/w/src/main.av")
-            let names = [first.decls.decl(d).name for d in first.items(f)]
-            first.flush_saved()
-            let second = world(source())
-            second.attach_store(store_at(dir))
-            let g = second.file_id("/w/src/main.av")
-            let revived = [second.decls.decl(d).name for d in second.items(g)]
-            names.join(",") == revived.join(",") &&
-                !revived.is_empty() &&
-                second.db.kernel.edges_of(Key { family: Family.Parsed.ordinal, arg: g.index }) == null
-        }
-        then "are admitted again when the file's text moved" {
-            let dir = "${base()}/items_moved"
-            let first = world(source())
-            first.attach_store(store_at(dir))
-            let _ = first.items(first.file_id("/w/src/main.av"))
-            first.flush_saved()
-            let second = world(source() + "export fn three() -> int { 3 }\n")
-            second.attach_store(store_at(dir))
-            let revived = [second.decls.decl(d).name for d in second.items(second.file_id("/w/src/main.av"))]
-            revived.contains("three")
-        }
-    }
 }

@@ -13,13 +13,11 @@ use @std.avrac.compiler.{
     Trail,
     FileHold,
     PartMoved,
-    HeldMismatch,
     Explained,
     Changed,
     Digested,
     FamilyCount,
     Counted,
-    Compared,
     Subject,
     Graphed,
     Phase,
@@ -347,7 +345,6 @@ fn cancel_lines(g: Workspace, subject: Subject) -> List<string> {
 /// answer with the way down from it to every moved input.
 fn why_subject(a: Asked, subject: Subject, ws: Workspace, walk: CacheWalk) -> Lines {
     let hold = hold_of(walk, subject)
-    let fresh = compared_held(ws, hold)
     let g = ws.walk_graph().ws
     let keys = answers_named(g, subject)?
     let answers = [Shown { said: e, trails: g.trails(keys[i], walk.moved) } for i, e in g.explained_all(keys)]
@@ -355,18 +352,11 @@ fn why_subject(a: Asked, subject: Subject, ws: Workspace, walk: CacheWalk) -> Li
         if a.json { return [to_text(page_json([], answers))] }
         return [line for s in answers for line in answer_lines(s)].concat(cancel_lines(g, subject))
     }
-    if a.json { return [to_text(page_json(held_json(walk, held, fresh), answers))] }
+    if a.json { return [to_text(page_json(held_json(walk, held), answers))] }
     hold_lines(walk, held)
         .concat(part_moved(walk, held))
-        .concat(compared_lines(fresh))
         .concat([line for s in answers for line in answer_lines(s)])
         .concat(cancel_lines(g, subject))
-}
-
-/// A held file against a fresh reading, nothing to compare for a file read or
-/// for no file — made and let go before the graph is derived.
-fn compared_held(ws: Workspace, hold: FileHold?) -> Compared {
-    if hold?.held ?? false { ws.held_compared(hold!.path) } else { Compared { odds: [], unread: null } }
 }
 
 /// The hold of the file a subject names — none for any other subject.
@@ -376,13 +366,6 @@ fn hold_of(walk: CacheWalk, subject: Subject) -> FileHold? {
         .Package or .Decl(_) or .Query(_) -> null,
     }
 }
-
-fn compared_lines(c: Compared) -> List<string> {
-    [disagreement_line(m) for m in c.odds]
-        .concat(if c.unread == null { [] } else { ["  no fresh reading to compare: ${c.unread!}"] })
-}
-
-export fn disagreement_line(m: HeldMismatch) -> string { "  ${m.decl}'s ${m.field}: ${m.held} held, ${m.fresh} fresh" }
 
 fn answer_lines(s: Shown) -> List<string> {
     [cited_line(s.said.answer)]
@@ -485,30 +468,8 @@ fn part_json(m: PartMoved) -> Json {
         )
 }
 
-fn mismatch_json(m: HeldMismatch) -> Json {
-    Json
-        .Obj(
-            [
-                field("declaration", Json.Str(m.decl)),
-                field("field", Json.Str(m.field)),
-                field("held", Json.Str(m.held)),
-                field("fresh", Json.Str(m.fresh)),
-            ],
-        )
-}
-
-/// A file's hold on the page: the hold, where a fresh reading disagrees, and
-/// why none could be made.
-fn held_json(walk: CacheWalk, hold: FileHold, fresh: Compared) -> List<Field> {
-    [
-        field("hold", hold_json(walk, hold)),
-        field("disagreements", Json.Arr([mismatch_json(m) for m in fresh.odds])),
-        field(
-            "no_fresh_reading",
-            if fresh.unread == null { Json.Null } else { Json.Str(fresh.unread!) },
-        ),
-    ]
-}
+/// A file's hold on the page.
+fn held_json(walk: CacheWalk, hold: FileHold) -> List<Field> { [field("hold", hold_json(walk, hold))] }
 
 fn page_json(held: List<Field>, answers: List<Shown>) -> Json {
     Json.Obj(held.concat([field("answers", Json.Arr([shown_json(s) for s in answers]))]))

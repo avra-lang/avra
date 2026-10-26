@@ -269,15 +269,6 @@ impl Workspace {
     /// The kernel's saved lookup and the saved families' hooks.
     fn arm_saved() {
         self.db.kernel.set_saved((key: Key) -> self.saved_found(key))
-        self
-            .saves(
-                Family.Items,
-                (arg: int) -> joined(
-                    self.identity_lines(self.decls.file(FileId { index: arg }).path),
-                    "\n",
-                ),
-            )
-        self.relation(Family.Items).revive.set((arg: int) -> self.items_revived(arg))
         self.saves(Family.Sig, (arg: int) -> self.sig_text(arg))
         self.saves(Family.ComponentNames, (arg: int) -> self.words_of(arg))
         self.relation(Family.ComponentNames).revive.set((arg: int) -> self.saved_words(arg))
@@ -296,17 +287,6 @@ impl Workspace {
             .Present(value) -> joined(scan_words(value), "\n"),
             .Missing -> null,
         }
-    }
-
-    /// A file's declarations minted from its saved identity rows, never parsed.
-    fn items_revived(arg: int) -> Revival<DbRow> {
-        let text? = self.saved_value(Key { family: Family.Items.ordinal, arg: arg }) else { return Revival.Gone }
-        let f = FileId { index: arg }
-        let path = self.decls.file(f).path
-        let rows = [read_fields(l) for l in text.split("\n") if !l.is_empty()]
-        let top = self.mint_file(path, rows, {})
-        self.link_file(path, rows)
-        Revival.Revived(DbRow.Items(top))
     }
 
     /// A `ComponentNames` answer read back.

@@ -45,158 +45,16 @@ impl Want {
     }
 }
 
-/// ONE ATTEMPT AT A PROGRAM: what it derives and for what, the files it reads
-/// whatever the store holds, whether it reads the program's instantiation HOMES,
-/// whether it holds anything, how many times the records moved under it, and
-/// the attempts that gave way to it.
-type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], homes: bool = false, hold: bool = true, moved: int = 0, turned: int = 0, left: List<Left> = [], sealed: List<string> = [], edit: string = "" }
-
-/// The entry a derivation trims its root walk by: a build's, whose program is
-/// what the entry reaches; a check reads every file of the package.
-fn built_entry(at: Attempt) -> string? {
-    match at.want { .Binary -> at.entry, .Diagnostics -> null }
-}
-
-/// AN ATTEMPT THAT DID NOT STAND: what it spent, phase by phase up to where it
-/// left, and what the attempt made instead does that it did not.
-export type Left = { spans: List<Phase>, ns: int, turn: string }
-
 /// The derivation's phases, in the order `tried` ends them.
 const PHASES: List<string> = ["load", "admit", "analyze", "lower", "keep"]
-
-/// WHAT AN ATTEMPT THAT DOES NOT STAND ANSWERS: the attempt to make instead, or
-/// the refusal. It rides the failure channel, so a phase that finds the question
-/// was wrong leaves with `?`, and the derivation reads as its phases alone.
-enum Turn {
-    Again(Attempt)
-    Refused(string)
-}
-
-impl Attempt {
-    /// The same attempt, reading these files too.
-    fn reading(more: List<ReadFile>) -> Attempt { self with { parse: self.parse.concat(more) } }
-
-    /// STANDS when nothing more must be read — else the attempt that reads it.
-    fn having_read(more: List<ReadFile>) -> Result<int, Turn> {
-        if more.is_empty() { .Ok(0) } else { .Err(Turn.Again(self.reading(more))) }
-    }
-
-    /// The attempt with nothing held — the hold's oracle. One that held nothing
-    /// has no hold to blame: asking again would ask forever.
-    fn unheld(why: string) -> Turn {
-        if self.hold { Turn.Again(self with { hold: false }) } else { Turn.Refused(nothing_held(why)) }
-    }
-
-    /// What the attempt asks, for a trace line.
-    fn shown() -> string {
-        "hold ${self.hold} homes ${self.homes} moved ${self.moved} reading ${self.parse.length}"
-    }
-
-    /// Why this attempt gave way to `next`, as what `next` does that this did not.
-    fn gave_way(root: string, next: Attempt) -> string {
-        turn_said(
-            root,
-            next.parse.slice(self.parse.length, next.parse.length),
-            next.homes && !self.homes,
-            self.hold && !next.hold,
-            next.moved > self.moved,
-        )
-    }
-
-    /// The attempt once more, the records having moved under it — twice, no more.
-    fn adrift(paths: List<string>) -> Turn {
-        if self.moved >= 2 {
-            Turn.Refused(records_adrift(paths))
-        } else {
-            Turn
-                .Again(
-                    (self with { moved: self.moved + 1 })
-                        .reading([ReadFile { path: path, why: Reads.Adrift } for path in paths]),
-                )
-        }
-    }
-}
-
-/// What one attempt answered, whether its workspace held any file, and what it
-/// spent: its phases and its whole time.
-type Tried = { answer: Result<Derived, Turn>, held: bool, spans: List<Phase>, ns: int }
-
-/// How many read files a turn names before it counts the rest.
-const TURN_NAMED: int = 3
-
-/// WHAT THE NEXT ATTEMPT DOES THAT THE ONE BEFORE DID NOT: the files it reads
-/// whatever the store holds, each with why; the homes; nothing held; the records
-/// read again.
-export fn turn_said(root: string, more: List<ReadFile>, homes: bool, unheld: bool, adrift: bool) -> string {
-    let reads = if !more.is_empty() { ["reads ${more.length} more (${read_words(root, more)})"] } else { [] }
-    let said = reads
-        .concat(if homes { ["reads the homes its instantiations lower from"] } else { [] })
-        .concat(if unheld { ["holds nothing"] } else { [] })
-        .concat(if adrift { ["reads the records again, moved under it"] } else { [] })
-    if said.is_empty() { "asks the same again" } else { joined(said, "; ") }
-}
-
-/// The first read files by path and why, the rest counted.
-fn read_words(root: string, more: List<ReadFile>) -> string {
-    let named = ["${read_label(root, r.path)} — ${r.why.says()}" for r in more.slice(0, TURN_NAMED)]
-    let rest = if more.length > TURN_NAMED { ["… and ${more.length - TURN_NAMED} more"] } else { [] }
-    joined(named.concat(rest), "; ")
-}
-
-/// A read as a turn names it: a file by its path, a kept verdict's read by its file and the
-/// unit it is a read of.
-fn read_label(root: string, path: string) -> string {
-    let parts = path.split("~")
-    if parts.length < 3 { return relative_path(root, path) }
-    let file? = unhex_text(parts[0]) else { return relative_path(root, path) }
-    let unit? = unhex_text(parts[2]) else { return relative_path(root, path) }
-    if file.is_empty() { return relative_path(root, path) }
-    "${relative_path(root, file)} · ${if unit.starts_with(file) { unit.substring(file.length + 1, unit.length) } else { unit }}"
-}
-
-/// One discarded attempt, as `--time` says it: its whole time, its phases, the turn.
-export fn left_line(l: Left) -> string {
-    "discarded: ${l.ns / 1000000}ms — ${joined([ph.shown() for ph in grouped_phases(l.spans)], ", ")} — next ${l.turn}"
-}
-
-/// The time a list of spans covers.
-fn spent(spans: List<Phase>) -> int {
-    mut total = 0
-    for ph in spans { total = total + ph.ns }
-    total
-}
-
-/// A derivation that stood: kept, or let go for the attempt that lowers what it owes.
-enum Stood {
-    Kept(Derived)
-    Owing(Attempt)
-}
-
-/// A derivation that only SPEAKS owes its instantiations' verdict, unless these
-/// very instantiations lowered clean before; one that links answers at the link.
-fn verdict_owed(d: Derived) -> bool {
-    d.want is .Diagnostics && !d.store.has(Stored.Unit, clean_key(d.asked))
-}
-
-/// A refusal in the derivation's words is the attempt's refusal.
-fn or_refused<T>(r: Result<T, string>) -> Result<T, Turn> {
-    match r { .Ok(v) -> .Ok(v), .Err(why) -> .Err(Turn.Refused(why)) }
-}
 
 /// What a file SAID the last time it parsed: its warnings, rendered, and the
 /// cases it declares — what stands in for it under every want.
 export type Said = { path: string, warnings: string, cases: List<CaseCall>, findings: List<Finding> = [] }
 
-/// A program derived: clean, every parsed body lowered, its records and what
-/// each file said kept. `program.ws` is the workspace the attempt that stood
-/// ran in.
-///
-/// AN INSTANTIATION LOWERS FROM ITS GENERIC'S BODY, and a held home has none. So
-/// `owed` counts the instantiations this derivation asked for and did not lower —
-/// `unlowered` resolves them for a link — and `asked` names what they and every other would lower to: the
-/// program's root asks, and the key of every home it has ever lowered from. The
-/// same `asked` is the same instantiations, whoever lowered them.
-export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, owed: int, asked: string, held: int, files: int, turns: int, turned: int = 0, spans: List<Phase>, read: List<ReadFile>, refused: int = 0, left: List<Left> = [] }
+/// A program derived: clean, every body lowered, its records and what each file said
+/// kept. `program.ws` is the workspace the attempt that stood ran in.
+export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, asked: string, files: int, spans: List<Phase> }
 
 /// One file's hold: held, or read with why (null for a file no record
 /// knows), the stored rows a read-for-want-of-rows file lacks, and what
@@ -222,36 +80,14 @@ impl Derived {
         self.program.ws.linked(self, m, under, binary, tools)
     }
 
-    /// WHAT `--time` SAYS: the phases and what followed them on one line, then
-    /// each attempt that gave way to this one with what it spent, then the files a
-    /// record knows that were read all the same, each with why.
+    /// WHAT `--time` SAYS: the attempt's phases and what followed them on one line.
     fn timed(more: List<Phase>) -> string {
-        let counted = [
-            "held ${self.held}/${self.files}",
-            "attempt ${self.turns}",
-            "discarded ${self.turned}",
-            "refused ${self.refused}",
-        ]
-        let line = joined(
+        joined(
             [ph.shown() for ph in grouped_phases(self.program.phases)]
-                .concat(counted)
+                .concat(["attempt 0"])
                 .concat([ph.shown() for ph in grouped_phases(self.spans.concat(more))]),
             ", ",
         )
-        let said = [line].concat(["  ${left_line(l)}" for l in self.left])
-        if self.read.is_empty() { return joined(said, "\n") }
-        let named = ["  ${relative_path(self.program.ws.root, r.path)} — ${r.why.says()}" for r in self.read.slice(0, READ_NAMED)]
-        let rest = if self.read.length > READ_NAMED { ["  … and ${self.read.length - READ_NAMED} more"] } else { [] }
-        joined(said.concat(["read:"]).concat(named).concat(rest), "\n")
-    }
-
-    /// This derivation as one that stood and was let go for the homes it owes.
-    fn owing() -> Left {
-        Left {
-            spans: self.program.phases.concat(self.spans),
-            ns: spent(self.spans),
-            turn: "reads the homes ${self.owed} instantiations it owes lower from",
-        }
     }
 }
 
@@ -453,107 +289,118 @@ impl Workspace {
         joined([render_among(d, []) for d in ds], "\n\n")
     }
 
-    /// The program at `entry`, derived — under the hold, and from the sources
-    /// alone when the hold's attempt refused.
-    fn derived(entry: string?, want: Want) -> Result<Derived, string> { self.derived_reading(entry, want, []) }
-
-    /// `derived`, with files read whatever the store holds for them.
-    fn derived_reading(entry: string?, want: Want, parse: List<ReadFile>) -> Result<Derived, string> {
-        self.derived_owing(entry, want, parse, verdict_owed)
-    }
-
-    /// THE PROGRAM DERIVED — and derived again WHOLE, every instantiation lowered,
-    /// when `owes` says what the first derivation left unlowered is owed. ONE
-    /// DERIVATION IS ALIVE AT A TIME: the one that owes is let go before the whole
-    /// one begins, so asking again never stands two programs side by side.
-    fn derived_owing(entry: string?, want: Want, parse: List<ReadFile>, owes: fn(Derived) -> bool) -> Result<
-        Derived,
-        string,
-    > {
-        match self
-            .stood_first(
-                Attempt {
-                    entry: entry,
-                    want: want,
-                    parse: parse,
-                    homes: self.homes_were_read(entry ?? self.root),
-                    hold: !db_verified(),
-                    edit: self.edit_print(entry, want),
-                },
-                owes,
-            )? { .Kept(d) -> d, .Owing(at) -> self.again(at) }
-    }
-
-    /// The derivation that stood under the hold: kept, or — owing — let go for
-    /// the attempt that reads the homes. It dies with this fn, its workspace
-    /// having given back what it derived.
-    fn stood_first(at: Attempt, owes: fn(Derived) -> bool) -> Result<Stood, string> {
-        let d = self.under_hold(at)?
-        if d.owed == 0 || !owes(d) { return Stood.Kept(d) }
-        d.program.ws.discarded()
-        Stood
-            .Owing(
-                Attempt {
-                    entry: d.entry,
-                    want: d.want,
-                    parse: at.parse,
-                    homes: true,
-                    left: d.left.concat([d.owing()]),
-                    edit: at.edit,
-                },
-            )
-    }
-
-    /// The attempt under the hold, and from the sources alone when it refused
-    /// and its first workspace held anything — the hold's oracle.
-    fn under_hold(at: Attempt) -> Result<Derived, string> {
-        let began = self.clock()
-        let first = self.tried_anew(at)
-        let held = self.turned(at, first)
-        if held is .Ok || !first.held { return held }
-        let refused = Left {
-            spans: [],
-            ns: self.clock() - began,
-            turn: "holds nothing — the hold was refused",
-        }
-        let plain = self.again(at with { parse: [], hold: false, left: [refused] })
-        match plain {
-            .Ok(d) -> {
-                eprintln(self.refusal_noted(held))
-                .Ok(d with { refused: 1 })
+    /// THE PROGRAM DERIVED: one attempt, in a workspace of its own that gives back what it
+    /// derived unless the attempt stood. Every file is read, and the saved answers stand in
+    /// for what they still answer.
+    fn derived(entry: string?, want: Want) -> Result<Derived, string> {
+        if traced() { qtrace("Q\tattempt\t0\t${want.links()}\n") }
+        // NOT `mut`: `anew`'s own hooks already capture this box
+        // (workspace.av's `anew` doc — an identity, never a value).
+        let fresh = self.anew()
+        mut clock = fresh.marking()
+        match fresh.tried(entry, want, clock) {
+            .Ok(d) -> d,
+            .Err(why) -> {
+                fresh.discarded()
+                fail why
             },
-            .Err(_) -> plain,
         }
     }
 
-    /// A REFUSED HOLD IS A CONDITION THE COMPILER HANDLES, so it says so on one
-    /// line and keeps the held attempt's words in the store, never on stderr,
-    /// where they read as this run's diagnostics. An inspection keeps nothing,
-    /// so it says where the words are kept instead.
-    fn refusal_noted(held: Result<Derived, string>) -> string {
-        let why = match held { .Ok(_) -> "", .Err(w) -> w }
-        match self.keys.keeping.get() {
-            .Disk -> {
-                let at = joined_path(
-                    joined_path(build_cache_root(self), "store"),
-                    "hold-refused.log",
-                )
-                let _ = self.host.write(at, why)
-                hold_refusal(why, at)
-            },
-            .Aside(_) -> hold_refusal_unkept(why),
+    /// THE DERIVATION, straight through: open the store, read the program, lower it, keep
+    /// what was learned.
+    fn tried(entry: string?, want: Want, mut clock: Marks) -> Result<Derived, string> {
+        let store = self.opened(want)
+        clock.next(PHASES)
+        self.admit_all()
+        clock.next(PHASES)
+        let p = self.analysed(entry, want)?
+        clock.next(PHASES)
+        let lo = self.bodies_lowered(want, p)?
+        clock.next(PHASES)
+        let said = self.kept(want, store, p, lo)?
+        clock.next(PHASES)
+        self.stood(entry, want, store, p, lo, said, clock.spans)
+    }
+
+    /// The store this derivation keeps into, attached before anything reads a file.
+    fn opened(want: Want) -> Store {
+        let store = self.opened_store()
+        self.attach_store(store)
+        self.host.reads_ahead(EVERY_FILE)
+        store
+    }
+
+    /// THE PROGRAM, ANALYSED AND CLEAN.
+    fn analysed(entry: string?, want: Want) -> Result<Program, string> {
+        let p = self.program(entry, if want.links() { entry } else { null })
+        if !p.clean() { fail p.report() }
+        p
+    }
+
+    /// EVERY BODY, LOWERED.
+    fn bodies_lowered(want: Want, p: Program) -> Result<Lowered, string> {
+        let lowered = p.files_checked(want.links())
+        self.settle_consts(p)
+        lowered
+    }
+
+    /// WHAT WAS LEARNED, KEPT: the records first — every key folds them — then what stands in
+    /// for each file, whole: what it said, and what its bodies ask.
+    fn kept(want: Want, store: Store, p: Program, lo: Lowered) -> Result<List<Said>, string> {
+        let moved = [module_path(name.split(".")) for name in distinct([self.module_of(a.view.source.file) for a in p.files])]
+        keep_interfaces(self, store, moved)
+        let _ = self.keep_const_units(store, moved)
+        let defects = self.defects.get()
+        if defects.length > p.defects.length { fail p.rendered(defects.drop(p.defects.length)) }
+        let bodies = filed(lo.unmanaged, (b) -> b.file)
+        let statics = filed(lo.statics, (s) -> s.file)
+        let asks = filed(lo.hash_asks, (h) -> h.by)
+        for a in p.files {
+            self.keep_asks(store, lo, a)
+            self.keep_codes(store, a, bodies, statics, asks)
+        }
+        self.keep_unit_rows(store)
+        self.keep_instances(store, lo)
+        self.flush_saved()
+        let said? = self.all_said(store, p, want) else { fail "what a file said could not be read" }
+        said
+    }
+
+    /// THE DERIVATION THAT STOOD, as the program derived.
+    fn stood(
+        entry: string?,
+        want: Want,
+        store: Store,
+        p: Program,
+        lo: Lowered,
+        said: List<Said>,
+        spans: List<Phase>,
+    ) -> Derived {
+        let reach = reached_modules(self, store, p)
+        if db_verified() {
+            self.lowered_said_pass(store)
+            self.typed_said_pass(store)
+        }
+        store.settle()
+        Derived {
+            entry: entry,
+            want: want,
+            program: p,
+            lowered: lo,
+            store: store,
+            said: said,
+            warnings: spoken(
+                [p.warned(p.voices)]
+                    .concat([s.warnings for s in said if reaches_file(self, reach, s.path)]),
+            ),
+            asked: digest_of(
+                joined(sorted_texts(distinct([self.wanted_wire(k.want) for k in lo.asks])), "\n"),
+            ),
+            files: self.decls.file_count(),
+            spans: spans,
         }
     }
-
-    /// The derivation with every instantiation lowered: the homes read, and
-    /// `parse` with them.
-    fn whole(d: Derived, parse: List<ReadFile>) -> Result<Derived, string> {
-        if d.owed == 0 { return d }
-        self.again(Attempt { entry: d.entry, want: d.want, parse: parse, homes: true })
-    }
-
-    /// The program derived with nothing held — the hold's oracle.
-    fn from_sources(entry: string?, want: Want) -> Result<Derived, string> { self.again(Attempt { entry: entry, want: want, hold: false }) }
 
     /// WHETHER THE STORE STANDS IN FOR A FILE under this want.
     fn stands_in(s: Store, okey: string, want: Want) -> bool {
@@ -578,7 +425,7 @@ impl Workspace {
 
     fn file_hold(d: Derived, path: string, f: FileId) -> FileHold {
         if self.is_held(f) { return FileHold { path: path, held: true, why: null, missing: [], moved: [] } }
-        let why: Reads? = d.read.find(it.path == path)?.why
+        let why: Reads? = null
         let unkept = why != null && why! is .Unkept
         let missing = if unkept { self.missing_rows(d.store, self.held_okey(d.store, path), d.want) } else { [] }
         FileHold {
@@ -617,309 +464,6 @@ impl Workspace {
             },
         ]
         [r.says for r in rows if !r.kept]
-    }
-
-    /// The held files a diagnostics want must read after all: the ones whose
-    /// rule findings were never kept, since only a check keeps them.
-    fn unruled(store: Store, want: Want) -> List<ReadFile> {
-        match want {
-            .Diagnostics -> {
-                // A HELD FILE'S OWN KEY MAY OPEN A PENDING READ: one of its runs read
-                // a file whose text moved, and `read_token` holds the key at
-                // `?<print>` until the read file is parsed and the read declaration
-                // judged (`resolve_pending_reads`). The keys asked HERE open their own,
-                // so they are resolved too, or a reader whose reads all stand is forced
-                // read as if they had moved.
-                let held = held_paths(self)
-                for path in held { let _ = self.held_okey(store, path) }
-                let _ = self.resolve_pending_reads(store)
-                [ReadFile { path: path, why: Reads.Unruled } for path in held if !ruled(store, self.held_okey(store, path))]
-            },
-            .Binary -> [],
-        }
-    }
-
-    /// AN ATTEMPT, TURNED UNTIL IT STANDS: one that finds its question was wrong
-    /// names the attempt to make instead, and a fresh workspace makes it — a
-    /// restart never inherits a hold.
-    fn again(at: Attempt) -> Result<Derived, string> { self.turned(at, self.tried_anew(at)) }
-
-    /// ONE ATTEMPT IN A WORKSPACE OF ITS OWN, which gives back what it derived
-    /// unless the attempt stood. The workspace is this fn's alone, so what a
-    /// turned attempt read dies here, before the next attempt reads anything.
-    fn tried_anew(at: Attempt) -> Tried {
-        if traced() { qtrace("Q\tattempt\t${at.turned}\t${at.shown()}\n") }
-        // NOT `mut`: `anew`'s own hooks already capture this box
-        // (workspace.av's `anew` doc — an identity, never a value).
-        let fresh = self.anew()
-        mut clock = fresh.marking()
-        let began = clock.last
-        let lead = [rf for rf in fresh.lead_reads(at) if !at.parse.any(it.path == rf.path)]
-        let answer = fresh.tried(at with { parse: at.parse.concat(lead) }, clock)
-        let held = !held_paths(fresh).is_empty()
-        if answer is .Ok { return Tried { answer: answer, held: held, spans: [], ns: 0 } }
-        // the phase it left in closes under its own name
-        clock.next(PHASES)
-        let spans = fresh.phases.get().concat(clock.spans)
-        fresh.discarded()
-        Tried { answer: answer, held: held, spans: spans, ns: clock.last - began }
-    }
-
-    /// What `at` answered: the derivation that stood, or the attempt it names,
-    /// made — carrying what `at` spent.
-    fn turned(at: Attempt, t: Tried) -> Result<Derived, string> {
-        match t.answer {
-            .Ok(d) -> d,
-            .Err(.Again(next)) -> {
-                let left = Left { spans: t.spans, ns: t.ns, turn: at.gave_way(self.root, next) }
-                self.again(next with { turned: at.turned + 1, left: next.left.concat([left]) })
-            },
-            .Err(.Refused(why)) -> { fail why },
-        }
-    }
-
-    /// THE DERIVATION, straight through: hold what the store stands in for, read
-    /// the rest, lower it, keep what was learned.
-    fn tried(at: Attempt, mut clock: Marks) -> Result<Derived, Turn> {
-        let store = self.holding(at)?
-        at.having_read(self.unruled(store, at.want))?
-        clock.next(PHASES)
-        self.admit_all()
-        self.presealed(at)
-        clock.next(PHASES)
-        let p = self.analysed(at, store)?
-        clock.next(PHASES)
-        let lo = self.bodies_lowered(at, store, p)?
-        clock.next(PHASES)
-        let said = self.kept(at, store, p, lo)?
-        clock.next(PHASES)
-        self.stood(at, store, p, lo, said, clock.spans)
-    }
-
-    /// WHAT THE STORE STANDS IN FOR, settled: every module's record met, every
-    /// hold asked, and the host told how much is about to be read — a host that
-    /// must not do heavy work where it stands leaves there, having done none.
-    /// From here a held file's declarations are minted when something reads them.
-    fn holding(at: Attempt) -> Result<Store, Turn> {
-        let store = self.opened_store()
-        self.attach_store(store)
-        self.hold.serving.set(match at.want { .Diagnostics -> !db_verified(), .Binary -> false })
-        // a home is read only when the instantiations are owed
-        let homes = if at.homes { self.known_homes(store, at) } else { [] }
-        for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
-        if at.hold {
-            let interfaces = self.clock()
-            let roots = held_modules(self, store, built_entry(at))
-            self.timed("roots", interfaces)
-            let naming = self.clock()
-            // ON-DEMAND: the records are read for their NAMES alone — every file is
-            // registered and every module's impl/trait names indexed — and only the
-            // modules a file whose rows no longer stand sits in are loaded for real.
-            for m in roots { bare_interface(self, store, m, at.entry, at.want) }
-            self.timed("names", naming)
-            let standing = self.clock()
-            let must_read = self
-                .hold
-                .forced
-                .get()
-                .keys()
-                .concat(if at.entry != null { [at.entry!] } else { [] })
-            let asked = self.holds_asked(store, at.entry, at.want)
-            let unstood = [fi.path for fi in self.decls.files_standing() if self.hold_asks(store, fi.path, at.want, must_read, asked)]
-            self.timed("rows stand", standing)
-            let reading = self.clock()
-            for path in unstood { self.declarers_registered(path) }
-            let loading = distinct([self.module_path_of(path).text() for path in unstood])
-            for name in loading { load_interface(self, store, module_path(segments_of(name)), at.entry, at.want) }
-            self.timed("loaded", reading)
-            let holding = self.clock()
-            // every file a module did not load stands in the store's own rows
-            for fi in self.decls.files_standing() {
-                if loading.contains(self.module_path_of(fi.path).text()) { continue }
-                if self.hold.read_files.get().any(it.path == fi.path) { continue }
-                if self.hold.forced.get().get(fi.path) != null { continue }
-                self.hold_only(fi.path)
-                self.hold.standing.put(fi.path, true)
-            }
-            self.timed("held only", holding)
-            self.timed("interfaces", interfaces)
-            // a home whose text moved moves what lowers from it: the homes are read from the start
-            if !at.homes && self.known_homes(store, at).any((path) -> self.home_moved(store, path)) { fail Turn.Again(at with { homes: true }) }
-            let settling = self.clock()
-            // A PENDING READ IS JUDGED FIRST: a held file's key may open one, and the
-            // reader it names is read unless its key stands after the judgement.
-            let pending = self.clock()
-            self.read_unkept(store, self.resolve_pending_reads(store), at.want)
-            self.timed("pending", pending)
-            // WHAT THE WALK MET AND DID NOT READ IS HELD, once the read set stands: the
-            // files whose record rows still answer are the ones no read reaches.
-            let settled = self.clock()
-            let candidates = self.met_unread()
-            self.read_runs(store, candidates)
-            for path in candidates {
-                if self.read_counted(path) { continue }
-                self.hold_only(path)
-            }
-            self.timed("runs", settled)
-            self.timed("settle", settling)
-        }
-        self.hold.warm.set(!held_paths(self).is_empty())
-        self.host.reads_ahead(self.reads_ahead())
-        self.hold.holds_settled.set(true)
-        store
-    }
-
-    /// WHICH EDIT THIS IS, as the files whose text moved since their module's record was
-    /// written: the key a remembered guess is filed under. Empty when nothing moved.
-    fn edit_print(entry: string?, want: Want) -> string {
-        let store = self.opened_store()
-        let moved = flatten(
-            [self.moved_in(store, m) for m in held_modules(self, store, built_entry(Attempt { entry: entry, want: want }))],
-        )
-        if moved.is_empty() { "" } else { digest_of(joined(sorted_texts(moved), "\n")) }
-    }
-
-    fn moved_in(store: Store, m: ModulePath) -> List<string> {
-        let places = record_places(self, store, m)
-        [path for path in self.module_files(m) if !written_from(places.get(path), self.text_digest(path))]
-    }
-
-    /// The reads an attempt takes up front: the files a held module's kept verdicts read,
-    /// for those whose file lines already refuse them — read from the store alone, before
-    /// the attempt starts, so the attempt never turns to read them.
-    fn lead_reads(at: Attempt) -> List<ReadFile> {
-        if !at.hold { return [] }
-        let store = self.opened_store()
-        let kept = self.verdict_reads_first(store, held_modules(self, store, built_entry(at)))
-        [ReadFile { path: path, why: Reads.Unkept } for path in kept]
-            .concat(self.guessed_reads(store, at, kept))
-    }
-
-    /// The reads the last standing attempt needed that are still files here and not
-    /// already led: each wears the reason it was read for then, so the attempt that
-    /// starts with them reads what it would have turned to read.
-    fn guessed_reads(store: Store, at: Attempt, led: List<string>) -> List<ReadFile> {
-        if at.edit.is_empty() { return [] }
-        let own = remembered(store, self.guess_key(self.known_as(at), at.edit))
-        let lines = if own.length > 1 || own.any(!it.is_empty()) { own } else { remembered(store, self.guess_key(self.known_as(at), "")) }
-        [ReadFile { path: path, why: Reads.Remembered(parts[1]) } for line in lines for parts in [line.split("\t")] if parts.length == 2 for path in [self.path_named(StoredName(parts[0]))] if !led.contains(path) && self.there(path)]
-    }
-
-    /// Whether the last standing attempt of `entry` read the instantiation homes: the
-    /// attempt that starts with them stands without the one that finds it owes them.
-    fn homes_were_read(entry: string) -> bool {
-        self.opened_store().get(Stored.Unit, self.homes_read_key(entry)) ?? "" == "1"
-    }
-
-    /// The standing attempt's reads, kept for the next attempt 0.
-    fn guess_kept(store: Store, at: Attempt) {
-        if at.edit.is_empty() || !at.hold { return }
-        let wire = joined(
-            distinct(
-                [line for r in at.parse if guessable(r) for line in [guess_line(self.filed_read(r))] if !line.is_empty()],
-            ),
-            "\n",
-        )
-        let key = self.guess_key(self.known_as(at), at.edit)
-        if store.get(Stored.Unit, key) ?? "" != wire { let _ = store.keep(Stored.Unit, key, wire, []) }
-        let last = joined(
-            distinct(
-                [line for r in at.parse if guessable(r) && !(r.why is .Moved) for line in [guess_line(self.filed_read(r))] if !line.is_empty()],
-            ),
-            "\n",
-        )
-        let last_key = self.guess_key(self.known_as(at), "")
-        if store.get(Stored.Unit, last_key) ?? "" != last { let _ = store.keep(Stored.Unit, last_key, last, []) }
-        let homed_key = self.homes_read_key(self.known_as(at))
-        let homed = if at.homes { "1" } else { "0" }
-        if store.get(Stored.Unit, homed_key) ?? "" != homed { let _ = store.keep(Stored.Unit, homed_key, homed, []) }
-    }
-
-    /// The files a held module's kept const verdicts read, for those whose file lines
-    /// already refuse them: a verdict that cannot stand re-runs, and its run's reads come first.
-    fn verdict_reads_first(store: Store, mods: List<ModulePath>) -> List<string> {
-        flatten(
-            [self.const_reads(store, parts) for m in mods for parts in record_fields(self, store, m)],
-        )
-    }
-
-    /// The reads of a record line's const verdict, when the line is a const.
-    fn const_reads(store: Store, parts: List<string>) -> List<string> {
-        let row? = read_row(parts) else { return [] }
-        if row.kind != "const" { return [] }
-        self.cheap_reads(store, row.path, row.name)
-    }
-
-    /// The files a const's kept verdict read, when one of its kept rows that needs no
-    /// analysis refuses it; none when every such row stands.
-    fn cheap_reads(store: Store, path: string, name: string) -> List<string> {
-        let said = store.get(Stored.Unit, "${self.kept_key_for(path, name)}#lines") ?? ""
-        let rows = [l.split("\t") for l in said.split("\n") if !l.is_empty()]
-        if !rows.any((r: List<string>) -> self.row_refuses(store, r)) { return [] }
-        let reads = rows.find(it[0] == "r") ?? []
-        reads.slice(1, reads.length)
-    }
-
-    /// THE PROGRAM, ANALYSED AND CLEAN — with every file its compile-time runs and
-    /// its held asks reach read beside it, or the attempt that reads them.
-    fn analysed(at: Attempt, store: Store) -> Result<Program, Turn> {
-        let p = self.program(at.entry, built_entry(at))
-        at.having_read(self.bodies_asked())?
-        // a held collector judged against what it gathers now, before a stale set is refused
-        at.having_read(self.gathered_moved([a.view.file for a in p.files]))?
-        if !p.clean() { fail Turn.Refused(p.report()) }
-        self.layouts_judged(at, store, p)?
-        at.having_read(self.read_held_asks(store, at.want.links()))?
-        at.having_read(self.read_held_codes(store))?
-        p
-    }
-
-    /// EVERY READ BODY, LOWERED. A parsed const nothing parsed reads is settled
-    /// here, while a held body it runs can still send the attempt back. The homes
-    /// lowered from are remembered; one that is held all the same is new, and the
-    /// next attempt reads it.
-    fn bodies_lowered(at: Attempt, store: Store, p: Program) -> Result<Lowered, Turn> {
-        let lowered = p.files_checked(at.want.links())
-        self.settle_consts(p)
-        at.having_read(self.bodies_asked())?
-        at
-            .having_read(
-                [ReadFile { path: path, why: Reads.AsksUnread } for path in distinct(self.hold.asks_lost.get())],
-            )?
-        let lo = or_refused(lowered)?
-        self
-            .remember_paths(
-                store,
-                self.homes_key(self.known_as(at)),
-                distinct([self.decls.file(f).path for f in lo.homes]),
-            )
-        self.guess_kept(store, at)
-        if at.homes && lo.homes.any((f) -> self.is_held(f)) { fail Turn.Again(at) }
-        lo
-    }
-
-    /// WHAT WAS LEARNED, KEPT: the records first — every key folds them — then what
-    /// stands in for each read file, whole: what it said, and what its bodies ask.
-    fn kept(at: Attempt, store: Store, p: Program, lo: Lowered) -> Result<List<Said>, Turn> {
-        let moved = [module_path(name.split(".")) for name in distinct([self.module_of(a.view.source.file) for a in p.files])]
-        keep_interfaces(self, store, moved)
-        let _ = self.keep_const_units(store, moved)
-        let defects = self.defects.get()
-        if defects.length > p.defects.length { fail Turn.Refused(p.rendered(defects.drop(p.defects.length))) }
-        let adrift = [path for path in held_paths(self) if !self.stands_in(store, self.held_okey(store, path), at.want)]
-        if !adrift.is_empty() { fail at.adrift(adrift) }
-        let bodies = filed(lo.unmanaged, (b) -> b.file)
-        let statics = filed(lo.statics, (s) -> s.file)
-        let asks = filed(lo.hash_asks, (h) -> h.by)
-        for a in p.files {
-            self.keep_asks(store, lo, a)
-            self.keep_codes(store, a, bodies, statics, asks)
-        }
-        self.keep_unit_rows(store)
-        self.keep_instances(store, lo)
-        self.flush_saved()
-        let said? = self.all_said(store, p, at.want) else { fail at.unheld("what a held file said could not be read") }
-        said
     }
 
     /// What one read file's bodies ask, kept under the file's key.
@@ -978,239 +522,12 @@ impl Workspace {
         self.keep_file_row(store, path, Stored.Unit, self.codes_row(path), code_facts_wire(facts))
     }
 
-    /// THE ATTEMPT THAT STOOD, as the program derived. The instantiations a held
-    /// home owes are named, never lowered — and a derivation that owes none is
-    /// marked clean.
-    fn stood(
-        at: Attempt,
-        store: Store,
-        p: Program,
-        lo: Lowered,
-        said: List<Said>,
-        spans: List<Phase>,
-    ) -> Derived {
-        let fresh = [k.want for k in lo.asks]
-        let reach = reached_modules(self, store, p)
-        let held = self.hold.held_asks.get()
-        let asked = self.asked_print(store, self.known_as(at), held, fresh)
-        let owed_fresh = [w for w in fresh if self.is_held(w.file)]
-        let owed_held = [h for h in held if self.home_held(h)]
-        let unlowered = owed_fresh
-            .concat(
-                if at.want.links() { flatten([some_list(self.asked_want(h)) for h in owed_held]) } else { [] },
-            )
-        let owed = owed_fresh.length + owed_held.length
-        if owed == 0 { let _ = store.keep_once(Stored.Unit, clean_key(asked), "") }
-        if db_verified() {
-            self.lowered_said_pass(store)
-            self.typed_said_pass(store)
-        }
-        if at.want is .Diagnostics { self.keep_held_set(store, at.entry, at.want, held_paths(self)) }
-        store.settle()
-        Derived {
-            entry: at.entry,
-            want: at.want,
-            program: p,
-            lowered: lo,
-            store: store,
-            said: said,
-            warnings: spoken(
-                [p.warned(p.voices)]
-                    .concat([s.warnings for s in said if reaches_file(self, reach, s.path)]),
-            ),
-            unlowered: unlowered,
-            owed: owed,
-            asked: asked,
-            held: held_paths(self).length,
-            files: self.decls.file_count(),
-            turns: at.moved,
-            turned: at.turned,
-            left: at.left,
-            spans: spans,
-            read: self.hold.read_files.get(),
-        }
-    }
-
-    /// What names a program in the store: its entry, or the root it stands under.
-    fn known_as(at: Attempt) -> string { at.entry ?? self.root }
-
-    /// The homes this program has lowered from, as the store remembers them.
-    fn known_homes(store: Store, at: Attempt) -> List<string> { self.remembered_paths(store, self.homes_key(self.known_as(at))) }
-
-    /// How many files this attempt is about to read: the ones it has met and does
-    /// not hold — and, for all it can tell, EVERY file when it holds none.
-    fn reads_ahead() -> int {
-        let held = held_paths(self).length
-        if held == 0 { EVERY_FILE } else { self.decls.file_count() - held }
-    }
-
-    /// WHETHER A SEALED LAYOUT MOVED UNDER THE HOLD. A seal boxes a flat record from
-    /// ANY file, and a held file's seal is not re-met. So a record a held line keeps
-    /// flat and this attempt boxed, or one a parsed file's last record kept boxed and
-    /// this attempt did not, is a layout the stored objects and this analysis read
-    /// two ways — and only the sources whole can say which.
-    fn flat_moved() -> bool {
-        // peek, not the tracked read: this compares what typing just
-        // decided against what the store remembered, after the fact —
-        // never the ask a later write must answer to
-        !held_paths(self).is_empty() &&
-            self.hold.held_flat.get().any((t) -> !self.decls.types.peek_flat(t))
-    }
-
-    /// The records a parsed file's last record kept boxed that this attempt left flat.
-    fn unsealed(store: Store, p: Program) -> List<DeclId> {
-        if held_paths(self).is_empty() { return [] }
-        flatten(
-            [[d for d in self.kept_boxed(store, a.view.file) if !self.decls.types.peek_boxed_flat(self.decls.record_type(d))] for a in p.files],
-        )
-    }
-
-    /// THE SEALS A HELD DECLARATION KEEPS STAND. A record kept boxed that a held
-    /// `mut` seat still seals is boxed again before anything reads its layout, in
-    /// the attempt that follows; one nothing held seals has lost its sealer, and
-    /// only the sources whole can say what its layout is.
-    fn layouts_judged(at: Attempt, store: Store, p: Program) -> Result<int, Turn> {
-        if self.flat_moved() { fail at.unheld(sealed_layout_moved()) }
-        let loose = self.unsealed(store, p)
-        if loose.is_empty() { return .Ok(0) }
-        let keys = [self.seal_key(d) for d in loose]
-        if loose.any((d) -> !self.sealed_by_held(store, d)) ||
-            keys.any((k) -> at.sealed.contains(k)) {
-            fail at.unheld(sealed_layout_moved())
-        }
-        fail Turn.Again(at with { sealed: at.sealed.concat(keys) })
-    }
-
-    /// Whether a held fn seats this record under `mut`, or writes it as its receiver.
-    fn sealed_by_held(store: Store, d: DeclId) -> bool {
-        let t = self.decls.record_type(d)
-        held_paths(self).any((path) -> self.seals_in(store, path, t))
-    }
-
-    fn seals_in(store: Store, path: string, t: TypeId) -> bool {
-        let m = self.module_path_of(path)
-        let rows = file_rows(record_fields(self, store, m), record_places(self, store, m).get(path))
-        rows.any((parts) -> self.row_seals(parts, t))
-    }
-
-    fn row_seals(parts: List<string>, t: TypeId) -> bool {
-        let row? = read_row(parts) else { return false }
-        if !fn_shape(row.shape) { return false }
-        let marks = row.marks()
-        let bits = row.writes()
-        [j for j, w in row.items() if self.interface_type(w) == t]
-            .any(
-                (j) -> j < marks.length && marks[j].mutable ||
-                    j < bits.length && bits.char_code(j) == 49,
-            )
-    }
-
-    /// Records a previous attempt found sealed by a held declaration, sealed before typing reads them.
-    fn presealed(at: Attempt) {
-        for key in at.sealed {
-            let found? = self.sealed_record(key) else { continue }
-            self.decls.types.unflatten(self.decls.record_type(found))
-        }
-    }
-
-    /// A record's durable key among the seals: its file, then its name.
-    fn seal_key(d: DeclId) -> string { "${self.decls.file(self.decl_at(d).file).path}\t${self.decl_at(d).name}" }
-
-    fn sealed_record(key: string) -> DeclId? {
-        let at = key.split("\t")
-        self
-            .decls
-            .decls_of_file(self.file_id(at[0]))
-            .find((d) -> self.decl_at(d).name == at[1] && self.decl_at(d).kind is .Record)
-    }
-
-    /// The records of a parsed file its module's last record kept BOXED, as they
-    /// are declared now — by name, since an edit moves ordinals.
-    fn kept_boxed(store: Store, f: FileId) -> List<DeclId> {
-        let path = self.decls.file(f).path
-        let found = [boxed_name(parts, path) for parts in record_fields(self, store, self.module_path_of(path))]
-        let names = [n! for n in found if n != null]
-        [d for d in self.decls.decls_of_file(f) if self.names_record(d, names)]
-    }
-
-    fn names_record(d: DeclId, names: List<string>) -> bool {
-        let x = self.decl_at(d)
-        x.kind is .Record && names.contains(x.name)
-    }
-
     /// Every declared const of every parsed file, settled.
     fn settle_consts(p: Program) {
         for a in p.files {
             for d in self.decls.decls_of_file(a.view.file) {
                 let x = self.decl_at(d)
                 if x.kind is .Const && !x.nested() { let _ = self.settled(x.file, SettleRoot.Const(x.stmt), []) }
-            }
-        }
-    }
-
-    /// THE HELD FILES THIS ATTEMPT ASKED A BODY OF: a compile-time run reached
-    /// them, and the next attempt reads them. The file that ran them keeps the
-    /// list in its record, so a later derivation reads them with it.
-    fn bodies_asked() -> List<ReadFile> { [ReadFile { path: path, why: Reads.BodyAsked } for path in distinct(self.hold.body_asks.get())] }
-
-    /// Whether a remembered home still stands and is no longer the text its
-    /// module's record was written from.
-    fn home_moved(store: Store, path: string) -> bool {
-        if path.is_empty() || !self.there(path) { return false }
-        !written_from(
-            record_places(self, store, self.module_path_of(path)).get(path),
-            self.text_digest(path),
-        )
-    }
-
-    /// A READER'S PENDING READS, RESOLVED: a reader whose kept read names a
-    /// declaration holds when that declaration's syntax still stands — the read
-    /// file is parsed here, after the walk, never inside a key. A reader whose
-    /// read moved, or whose declaration can no longer be named, is read instead.
-    fn resolve_pending_reads(store: Store) -> List<string> {
-        let pending = self.hold.pending_reads.get()
-        if pending.is_empty() { return [] }
-        for p in pending {
-            let key = pending_key(p.reader, p.read)
-            // JUDGING THE READ PARSES ITS FILE, so that file is read: its record's rows
-            // no longer stand in for it, whatever the reader's own hold comes to.
-            self.declared(self.file_id(p.read.path))
-            self.force_read(p.read.path, Reads.RunBy(relative_path(self.root, p.reader)))
-            let d = self.decl_from_ref(p.read.ref)
-            if d == null {
-                self.hold.pending_resolved.put(key, self.run_said(p.read.path))
-                self.force_read(p.reader, Reads.RunBy(relative_path(self.root, p.read.path)))
-            } else {
-                let now = "${self.syntax(d!)}"
-                self.hold.pending_resolved.put(key, now)
-                // THE DECLARATION READ STANDS, BUT ITS FILE'S OUTLINE MAY NOT: a
-                // renamed, added or removed declaration beside it moves the module
-                // interface the reader's key follows, so the reader is read, never
-                // held to discover the move a turn later.
-                if now != p.read.print || self.outline(p.read.path) != p.read.outline {
-                    self.force_read(p.reader, Reads.RunBy(relative_path(self.root, p.read.path)))
-                }
-            }
-        }
-        let readers = distinct([p.reader for p in pending])
-        for reader in readers {
-            let m = self.module_path_of(reader)
-            let fresh = self.key_parts(store, m, reader)
-            self.keys.object_parts.put("${m.text()}\t${reader}", fresh)
-            self.keys.object_keys.put("${m.text()}\t${reader}", object_key_of_parts(self, fresh))
-        }
-        self.hold.pending_reads.set([])
-        readers
-    }
-
-    /// A RESOLVED READER IS HELD ONLY WHERE ITS FINAL KEY STANDS: a pending read keeps the
-    /// hold open until the read file is parsed, and a read of another kind in the same key
-    /// (a whole file's text) may have moved the key past everything kept.
-    fn read_unkept(store: Store, readers: List<string>, want: Want) {
-        for reader in readers {
-            if self.hold.forced.get().get(reader) == null &&
-                !self.stands_in(store, self.held_okey(store, reader), want) {
-                self.force_read(reader, Reads.Unkept)
             }
         }
     }
@@ -1222,42 +539,6 @@ impl Workspace {
     fn declared(f: FileId) {
         if self.has_declares(f) || self.has_marks(f) { let _ = self.resolved(f) } else { touch(self.items(f)) }
     }
-
-    /// A file this attempt now reads, its reason standing with it: the one door a read
-    /// enters by, so the read set names every file the attempt took a text of.
-    fn force_read(path: string, why: Reads) {
-        self.hold.forced.put(path, why)
-        if !self.hold.read_files.get().any(it.path == path) {
-            self.hold.read_files.push(ReadFile { path: path, why: why })
-        }
-    }
-
-    /// THE READ SET, CLOSED OVER THE COMPILE-TIME RUNS IT PERFORMS: a run lowers a body,
-    /// so the file it reads is read, and what THAT file's runs read with it. A held
-    /// candidate the closure reaches is read like any other — its record's rows cannot
-    /// stand in for a body another file is about to run.
-    // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
-    fn read_runs(store: Store, candidates: List<string>) {
-        mut read: List<string> = [rf.path for rf in self.hold.read_files.get()]
-        mut at = 0
-        while at < read.length {
-            let of = read[at]
-            for path in self.forced_runs(store, of) {
-                if read.contains(path) { continue }
-                read.push(path)
-                if candidates.contains(path) { self.force_read(path, Reads.RunBy(relative_path(self.root, of))) }
-            }
-            at = at + 1
-        }
-    }
-
-    /// THE FILES A MODULE MET AND NO READ STANDS FOR: the hold's candidates, each held
-    /// unless the read set reaches it. Derived from the walk that met them, so no list
-    /// is kept beside it.
-    fn met_unread() -> List<string> { [path for path in self.records.met_files.get().keys() if !self.read_counted(path)] }
-
-    /// Whether this attempt counts `path` among the files it reads.
-    fn read_counted(path: string) -> bool { self.hold.read_files.get().any(it.path == path) }
 
     /// WHAT THE PROGRAM'S INSTANTIATIONS ARE A FUNCTION OF: its root asks, and the
     /// key of every home it has lowered from — a home's text, and the interfaces
@@ -1345,14 +626,6 @@ impl Workspace {
     /// when it did not. Its rule findings are kept under every want; only a
     /// diagnostics want speaks them.
     fn file_said(store: Store, path: string, fresh: Spoken?, want: Want) -> Said? {
-        // A READ FILE'S KEY MAY OPEN A PENDING READ: `held_okey` gathers one, and a
-        // key kept while a token is `?<print>` is a DIFFERENT key from the one the
-        // next build judges — `unruled` resolves first. Resolve here too, so what is
-        // kept and what is asked wear one spelling.
-        if fresh != null {
-            let _ = self.held_okey(store, path)
-            let _ = self.resolve_pending_reads(store)
-        }
         let okey = self.held_okey(store, path)
         let told? = fresh else {
             let kept? = store.get(Stored.Warn, said_key(okey)) else { return null }
@@ -1402,30 +675,6 @@ fn held_said(store: Store, okey: string, said: Said, want: Want) -> Said? {
 
 // ── The voices ──
 
-/// The law on one line: the phrase the cache-attack and hold-sweep tools
-/// read, the held attempt's first word of why, and where the rest is kept.
-export fn hold_refusal(why: string, at: string) -> string {
-    "avra: the hold was refused (${refusal_cause(why)}); built from its sources — the held attempt's words are in ${at}"
-}
-
-/// `hold_refusal` for an inspection, which keeps no words: a check keeps them.
-export fn hold_refusal_unkept(why: string) -> string {
-    "avra: the hold was refused (${refusal_cause(why)}); built from its sources — an inspection keeps nothing, and `avra check` keeps the held attempt's words"
-}
-
-/// The held attempt's first line that says anything.
-fn refusal_cause(why: string) -> string {
-    why.split("\n").find(!it.trim().is_empty())?.trim() ?? "it said nothing"
-}
-
-fn nothing_held(why: string) -> string {
-    "internal compiler error: ${why}, and nothing was held"
-}
-
-fn records_adrift(paths: List<string>) -> string {
-    "avra: interface records did not stabilize — still moving under ${joined(paths, ", ")}"
-}
-
 /// Whether a kept row is judged from its file alone, with no analysis run.
 fn judged_by_files(r: List<string>) -> bool {
     match r[0] { "f" or "m" or "b" or "e" -> true, rest -> false }
@@ -1442,20 +691,9 @@ fn filed<T>(xs: List<T>, at: fn(T) -> FileId?) -> Map<string, List<T>> {
     out
 }
 
-fn sealed_layout_moved() -> string { "a sealed layout moved" }
-
 /// Whether a record row declares a fn.
 fn fn_shape(s: Shape) -> bool {
     match s { .Fn or .Extern -> true, rest -> false }
-}
-
-/// WHETHER A READ MAY JOIN A GUESS. A read the attempt took because a key moved
-/// under it may NOT: the key's movement is the edit's uncertain part, and the
-/// edit identity a guess is filed under is coarse enough to name the same files
-/// for an edit that moves the key and one that does not — so this read is left to
-/// the next edit's own hold, which judges the key it actually wears.
-fn guessable(r: ReadFile) -> bool {
-    match r.why { .Adrift -> false, rest -> true }
 }
 
 /// One read as a guess line: its path and its reason's words; none for a path a line cannot carry.
