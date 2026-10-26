@@ -130,7 +130,28 @@ impl Version {
     fn after(held: Version) -> bool { self.sequence > held.sequence }
 }
 
+/// The field that names the tables an answer read, and the one that names the tables a
+/// write touched: table or model names a server read off its database, never a row.
+export const READS: string = "avra-reads"
+
+export const WROTE: string = "avra-wrote"
+
+/// Names as one field value.
+export fn named_field(names: List<string>) -> string { names.join(", ") }
+
 impl Reply {
+    /// The tables its `avra-reads` field names: none when the server said nothing of what
+    /// the answer read, which is not the same as reading nothing.
+    fn reads() -> List<string>? { self.named(READS) }
+
+    /// The tables its `avra-wrote` field names, when the answer is to a write that said.
+    fn wrote() -> List<string>? { self.named(WROTE) }
+
+    fn named(field: string) -> List<string>? {
+        let held? = self.headers.find(it.named(field)) else { return null }
+        [n.trim() for n in held.value.split(",") if !n.trim().is_empty()]
+    }
+
     /// The version its `ETag` names, when it carries one.
     fn version() -> Version? {
         let tag? = self.headers.find(it.named("etag")) else { return null }

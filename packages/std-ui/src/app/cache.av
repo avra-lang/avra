@@ -37,14 +37,18 @@ fn inserted(pairs: List<string>, word: string) -> List<string> {
 export type Watcher = { id: int, apply: fn(Async<Reply>) -> void }
 
 /// One observation: the answer to a key's request as the reply it came in, the
-/// version that answer carries, whether a request is out, its readers, and when
-/// the last of them left.
+/// version that answer carries, the tables the server said it read (none: it did not
+/// say), the request that asks it again, whether a request is out and whether a write
+/// landed meanwhile that asks for another, its readers, and when the last of them left.
 export type Entry = {
     id: int,
     key: Key?,
     now: Cell<Async<Reply>>,
     version: Cell<Version?>,
+    reads: Cell<List<string>?>,
+    request: Cell<Request?>,
     out: Cell<bool>,
+    again: Cell<bool>,
     watchers: Cell<List<Watcher>>,
     read: Cell<int>,
 }
@@ -108,6 +112,7 @@ impl Entry {
     fn taken(reply: Reply, at: Version?) -> bool {
         self.now.set(Async.Ready(reply))
         self.version.set(at)
+        self.reads.set(reply.reads())
         self.told()
         true
     }
@@ -173,12 +178,17 @@ impl Cache {
         let idle: Async<Reply> = .Idle
         let nobody: List<Watcher> = []
         let unversioned: Version? = null
+        let unsaid: List<string>? = null
+        let unasked: Request? = null
         Entry {
             id: self.minted.get(),
             key: key,
             now: Cell.new(idle),
             version: Cell.new(unversioned),
+            reads: Cell.new(unsaid),
+            request: Cell.new(unasked),
             out: Cell.new(false),
+            again: Cell.new(false),
             watchers: Cell.new(nobody),
             read: Cell.new(now_ms()),
         }
@@ -205,6 +215,20 @@ impl Cache {
             return held
         }
         self.under_cap([e for e in held if e.id != oldest.id])
+    }
+
+    /// Whether a write that touched `written` reaches this entry: it read one of them, or the
+    /// server never said what it read.
+    fn reached(e: Entry, written: List<string>) -> bool {
+        let read? = e.reads.get() else { return true }
+        written.any((w: string) -> read.contains(w))
+    }
+
+    /// The observations a write that touched `written` leaves stale: those a view reads that the
+    /// write reaches. (An entry no view reads keeps its version; its next ask sends it and the
+    /// server answers by what it read.)
+    fn stale_by(written: List<string>) -> List<Entry> {
+        [e for e in self.entries.get() if !e.unread() && self.reached(e, written)]
     }
 
     /// Every entry is let go: a loop that ends takes the requests it kept.

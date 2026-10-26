@@ -20,7 +20,7 @@ type Job = {
 }
 
 /// What one request answered: its status line, the entity tag it carried (none: ""), and whether a body followed.
-type Heard = { status: string, tag: string, body: bool }
+type Heard = { status: string, tag: string, body: bool, wrote: string }
 
 fn exchanged(c: Conn, sent: string) -> Result<Heard, NetError> {
     c.write(sent.bytes())?
@@ -37,11 +37,13 @@ fn exchanged(c: Conn, sent: string) -> Result<Heard, NetError> {
     let parts = (got.text() ?? "?").split("\r\n\r\n")
     let lines = parts[0].split("\r\n")
     let tagged = lines.find(it.starts_with("etag: "))
+    let wrote = lines.find(it.starts_with("avra-wrote: "))
     .Ok(
         Heard {
             status: lines.first() ?? "?",
             tag: if tagged == null { "" } else { tagged!.replace("etag: ", "") },
             body: parts.length > 1 && !parts[1].is_empty(),
+            wrote: if wrote == null { "-" } else { wrote!.replace("avra-wrote: ", "") },
         },
     )
 }
@@ -140,7 +142,7 @@ fn shown() -> Result<string, NetError> {
         [
             "a first read: ${one.status}, tag ${read_of(one.tag)}",
             "another router over the same file, the tag held: ${over.status}, body ${over.body}",
-            "a write through the first: ${wrote.status}",
+            "a write through the first: ${wrote.status}, it touched ${wrote.wrote}",
             "the other connection's next answer: ${seen.status}, a new tag ${seen.tag != one.tag}",
             "the new tag held, on each router: ${both.map(it.status).join(" ")}",
             "a raw write through a connection: the other router answers ${raw_seen.status}, a new tag ${raw_seen.tag != seen.tag}",

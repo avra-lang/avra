@@ -15,12 +15,13 @@
 //! A body is JSON and is decoded by the model's own rules: a row that breaks
 //! one is refused with all of them (422), never one at a time.
 use @std.errors.{Error}
-use @std.http_message.message.{Header, Method, Version}
+use @std.http_message.message.{Header, Method, READS, Version, WROTE, named_field}
 use @std.http.http.{Request, Unrouted, Response, text, status, header_pair}
 use @std.http.validators.{tag_listed}
 use @std.http.route.{Route, Mounted, fixed, routed, mounted}
 use @std.json.{Json, Field, field, to_text}
-use @std.db.apply.{commits}
+use @std.db.apply.{commits, last_of, touched}
+use @std.db.reads.{observing}
 use @std.db.error.{ModelError}
 use @std.db.scope.{Op, Where}
 use @std.sqlite.{Db, SqlValue}
@@ -71,12 +72,28 @@ export type Wire = {
     remove: fn(Where?, int) -> Result<int, Failure>,
     trash: fn(Where?) -> Result<Json, Failure>,
     restore: fn(Where?, int) -> Result<Json, Failure>,
-    version: fn() -> Version?,
+    ledger: Ledger,
 }
 
-/// Where `db` stands, or none when its commit counter cannot be read.
-export fn versioned(db: Db) -> Version? {
-    match commits(db) { .Ok(n) -> Version { sequence: n }, .Err(_) -> null }
+/// What a database says of itself, as closures over one connection: where it stands now, the
+/// version of an answer that read a set of tables (never newer than `now`), and which tables
+/// were written since it stood at a count.
+export type Ledger = {
+    stand: fn() -> int?,
+    version: fn(List<string>, int) -> Version?,
+    touched: fn(int) -> List<string>,
+}
+
+/// `db`'s ledger. A counter that cannot be read answers no stand, so no answer under it is tagged.
+export fn ledger(db: Db) -> Ledger {
+    Ledger {
+        stand: () -> match commits(db) { .Ok(n) -> n, .Err(_) -> null },
+        version: (read: List<string>, now: int) -> match last_of(db, read) {
+            .Ok(n) -> Version { sequence: if n < now { n } else { now } },
+            .Err(_) -> null,
+        },
+        touched: (since: int) -> match touched(db, since) { .Ok(names) -> names, .Err(_) -> [] },
+    }
 }
 
 type Opened = { door: Door, route: Route }
@@ -106,7 +123,7 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
                 (q: Request<Unrouted>) -> scoped(
                     access,
                     q,
-                    (sc) -> validated(w, q, () -> answered(w.list(sc))),
+                    (sc) -> observed(w.ledger, q, () -> answered(w.list(sc))),
                 ),
             ),
         },
@@ -118,7 +135,10 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
                 (q: Request<Unrouted>) -> scoped(
                     access,
                     q,
-                    (sc) -> created(q, (body: string) -> w.create(sc, body)),
+                    (sc) -> committed(
+                        w.ledger,
+                        () -> created(q, (body: string) -> w.create(sc, body)),
+                    ),
                 ),
             ),
         },
@@ -131,7 +151,7 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
                 (q: Request<Whole>) -> scoped(
                     access,
                     q,
-                    (sc) -> validated(w, q, () -> answered(w.find(sc, q.params.id))),
+                    (sc) -> observed(w.ledger, q, () -> answered(w.find(sc, q.params.id))),
                 ),
             ),
         },
@@ -144,7 +164,10 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
                 (q: Request<Whole>) -> scoped(
                     access,
                     q,
-                    (sc) -> bodied(q, (body: string) -> w.update(sc, q.params.id, body)),
+                    (sc) -> committed(
+                        w.ledger,
+                        () -> bodied(q, (body: string) -> w.update(sc, q.params.id, body)),
+                    ),
                 ),
             ),
         },
@@ -157,7 +180,7 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
                 (q: Request<Whole>) -> scoped(
                     access,
                     q,
-                    (sc) -> removed_answer(w.remove(sc, q.params.id)),
+                    (sc) -> committed(w.ledger, () -> removed_answer(w.remove(sc, q.params.id))),
                 ),
             ),
         },
@@ -172,7 +195,11 @@ fn soft_doors(w: Wire, access: Access?) -> List<Opened> {
             route: fixed(
                 Method.Get,
                 "/trash",
-                (q: Request<Unrouted>) -> scoped(access, q, (sc) -> answered(w.trash(sc))),
+                (q: Request<Unrouted>) -> scoped(
+                    access,
+                    q,
+                    (sc) -> observed(w.ledger, q, () -> answered(w.trash(sc))),
+                ),
             ),
         },
         Opened {
@@ -184,7 +211,7 @@ fn soft_doors(w: Wire, access: Access?) -> List<Opened> {
                 (q: Request<Restored>) -> scoped(
                     access,
                     q,
-                    (sc) -> answered(w.restore(sc, q.params.id)),
+                    (sc) -> committed(w.ledger, () -> answered(w.restore(sc, q.params.id))),
                 ),
             ),
         },
@@ -197,18 +224,51 @@ fn answered(r: Result<Json, Failure>) -> Response {
     match r { .Ok(j) -> Response.json(j), .Err(f) -> refused(f) }
 }
 
-/// A read answered under the database's version, taken BEFORE the read so a
-/// write in between can only make the tag older than the data, never newer:
-/// a caller that already holds the version is answered 304 and no body, any
-/// other gets the answer tagged with it. A version that cannot be read is no
-/// tag, and the read is answered plainly.
-fn validated<P>(w: Wire, q: Request<P>, answer: fn() -> Response) -> Response {
-    let at? = w.version() else { return answer() }
-    let tag = at.tag()
-    if tag_listed(q.header("if-none-match"), tag) { return Response { status: 304, headers: [header_pair("etag", tag)] } }
-    let r = answer()
-    if r.status != 200 { return r }
-    r with { headers: r.headers.concat([header_pair("etag", tag)]) }
+/// The tables a request's last answer read, by its target, so a caller that holds a version
+/// can be told nothing it read has changed without running the read again. A read set can only
+/// grow when data in a table it already reads changes, and that moves the version first.
+once fn learned() -> Cell<Map<string, List<string>>> { Cell.new({}) }
+
+/// A read answered under what it read: the database's tables the read reached (`@std/db`
+/// notes each model query), and a version that is the latest write to any of them. A caller
+/// that holds that version is answered 304 and no body — without running the read when an
+/// earlier answer told what it reads. The count is taken BEFORE the read, so a write in
+/// between can only make the tag older than the data, never newer. An answer carries
+/// `ETag` and `avra-reads`; a count that cannot be read tags nothing, and the read is
+/// answered plainly. Hand-written routes call this too.
+export fn observed<P>(l: Ledger, q: Request<P>, answer: fn() -> Response) -> Response {
+    let now? = l.stand() else { return answer() }
+    let target = q.target() ?? ""
+    let known = learned().get().get(target)
+    if known != null && q.header("if-none-match") != null {
+        let at = l.version(known!, now)
+        if at != null && tag_listed(q.header("if-none-match"), at!.tag()) {
+            return Response { status: 304, headers: tagged(at!.tag(), known!) }
+        }
+    }
+    let seen = observing(answer)
+    if seen.value.status != 200 { return seen.value }
+    learned().put(target, seen.reads)
+    let at? = l.version(seen.reads, now) else { return seen.value }
+    if tag_listed(q.header("if-none-match"), at.tag()) {
+        return Response { status: 304, headers: tagged(at.tag(), seen.reads) }
+    }
+    seen.value with { headers: seen.value.headers.concat(tagged(at.tag(), seen.reads)) }
+}
+
+fn tagged(tag: string, read: List<string>) -> List<Header> {
+    [header_pair("etag", tag), header_pair(READS, named_field(read))]
+}
+
+/// A write answered with the tables it touched (`avra-wrote`): those the database says were
+/// written between the count before the write and the count after it, none of which names a row.
+/// Hand-written actions call this too.
+export fn committed(l: Ledger, act: fn() -> Response) -> Response {
+    let before = l.stand()
+    let r = act()
+    let b? = before else { return r }
+    if r.status < 200 || r.status > 299 { return r }
+    r with { headers: r.headers.concat([header_pair(WROTE, named_field(l.touched(b)))]) }
 }
 
 fn removed_answer(r: Result<int, Failure>) -> Response {

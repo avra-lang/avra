@@ -62,6 +62,7 @@ state reminded: bool = false
 state synced: Fetch<int> = fetch()
 state started: Fetch<int> = fetch()
 state seq: int = 5
+state served: bool = false
 state pending: string = ""
 state tasks: List<Todo> = [
     Todo { id: "t1", title: "Draft the spec", done: true },
@@ -317,12 +318,14 @@ fn document(r: Reply) -> Result<Json, string> {
     match parse(words) { .Ok(j) -> .Ok(j), .Err(e) -> .Err(e.describe().message) }
 }
 
-/// The server's tasks replace the board's when it holds any; answers how
-/// many it holds.
+/// The server's tasks replace the board's seeded ones when its first answer holds any. The server's
+/// answer is live — it is asked again when a write touched the tasks — so after the first the rows it
+/// holds stand as it says, and the tasks only this page holds stay. Answers how many it holds.
 fn loaded(r: Reply) -> Result<int, string> {
     let doc = document(r)?
     let rows = [t! for t in [todo_of(j) for j in doc.items()] if t != null]
-    if !rows.is_empty() { tasks = rows }
+    if !rows.is_empty() { tasks = if served { rows.concat([t for t in tasks if !held(t)]) } else { rows } }
+    served = true
     .Ok(rows.length)
 }
 
