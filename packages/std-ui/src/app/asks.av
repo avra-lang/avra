@@ -3,6 +3,7 @@
 //! here, so the same call runs on every target.
 use app.{Act, Async, Cache, Entry, Fetch, Overlay, Want, Watcher, hung_up, running, watching}
 use @std.http_message.message.{Reply, Request}
+use @std.meta.{contained}
 use @std.time.{Duration}
 
 /// `act` runs as a turn once `span` has gone by. False when no loop runs.
@@ -162,12 +163,13 @@ fn succeeded(answer: Result<Reply, string>) -> Reply? {
 }
 
 /// A layer whose write was answered stands until the views it reaches have been answered past it, so
-/// each that no ask is out for, and was not asked since, is asked now.
+/// each that no ask is out for, and was not asked since, is asked now. A reading that
+/// comes back behind the write is asked for no more: the layer stands over it until a later reading passes.
 fn reconciled(on: App) {
     for l in on.observed.layers.get() {
         let after? = l.after.get() else { continue }
         for e in on.observed.reaching(l) {
-            if !e.loading() && !e.reflects(l.stand.get(), after) {
+            if !e.loading() && e.asked_n.get() <= after && !e.reflects(l.stand.get(), after) {
                 e.stale(.Reconciled)
                 asked_again(on, e)
             }
@@ -205,13 +207,18 @@ export fn asked_again(on: App, entry: Entry) {
     let _ = asking(on, entry, request)
 }
 
-/// What a view shows of the entry's state: its parser's word on a reply.
+/// What a view shows of the entry's state: its parser's word on a reply. A parse that traps is that view's
+/// failure alone: the entry's other views are still told, and the answer's bookkeeping still runs.
 fn settled<T>(a: Async<Reply>, parse: fn(Reply) -> Result<T, string>) -> Async<T> {
     match a {
         .Idle -> Async.Idle,
         .Loading -> Async.Loading,
         .Failed(why) -> Async.Failed(why),
-        .Ready(reply) -> match parse(reply) { .Ok(v) -> Async.Ready(v), .Err(m) -> Async.Failed(m) },
+        .Ready(reply) -> match contained(() -> parse(reply)) {
+            .Ok(.Ok(v)) -> Async.Ready(v),
+            .Ok(.Err(m)) -> Async.Failed(m),
+            .Err(trap) -> Async.Failed("the parse trapped: ${trap}"),
+        },
     }
 }
 
