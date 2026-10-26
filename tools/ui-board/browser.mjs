@@ -21,6 +21,7 @@ import { openPage, firefoxBinary, KEY } from "./firefox.mjs";
 import { openPage as openWebkit, webkitLaunch } from "./webkit.mjs";
 import { outsidePresses, outsidePressWords } from "./dialog_claims.mjs";
 
+const pause = (ms) => new Promise((go) => setTimeout(go, ms));
 const [url, ...named_words] = process.argv.slice(2);
 const word = (name) => { const at = named_words.indexOf(name); return at < 0 ? null : named_words[at + 1]; };
 const shots = word("--shots");
@@ -73,10 +74,10 @@ const named = (name, nth = 0) => `[...document.querySelectorAll('[aria-label=${J
 const row = (key) => `document.querySelector('li[data-key=${JSON.stringify(key)}]')`;
 const rows = () => read(`[...document.querySelectorAll("li")].map((li) => ({ key: li.dataset.key, done: li.querySelector("input").checked, words: li.querySelector("label").textContent }))`);
 const keys = async () => (await rows()).map((r) => r.key);
-// Until `holds` answers true of the page: a change is the server's to answer before the board shows it.
-const waited = async (holds) => { for (let i = 0; i < 100; i++) { if (await read(holds).catch(() => false)) return true; await new Promise((go) => setTimeout(go, 50)); } return false; };
+// Until `holds` answers true of `on`, asked for as long as a build or a server may take: a change is the server's to answer before the board shows it.
+const until = async (holds, on = page, beats = 200) => { for (let i = 0; i < beats; i++) { if (await on.read(holds).catch(() => false)) return true; await pause(100); } return false; };
 // The page's keys, once they are `want` (or as they stand when they never are).
-const keys_become = async (want) => { for (let i = 0; i < 100; i++) { const now = (await keys()).join(); if (now === want) return now; await new Promise((go) => setTimeout(go, 50)); } return (await keys()).join(); };
+const keys_become = async (want) => (await until(`[...document.querySelectorAll("li")].map((li) => li.dataset.key).join() === ${JSON.stringify(want)}`)) ? want : (await keys()).join();
 const progress = () => read(`document.querySelector("progress").value`);
 // Until the page and the server hold the same tasks, in the same state, twice over a beat: the changes
 // sent so far have all been answered, so a later press cannot meet an older answer.
@@ -89,8 +90,8 @@ const agreed = async (on = page) => {
     return mine === theirs;
   };
   for (let i = 0; i < 100; i++) {
-    if (await same()) { await new Promise((go) => setTimeout(go, 150)); if (await same()) return true; }
-    await new Promise((go) => setTimeout(go, 50));
+    if (await same()) { await pause(150); if (await same()) return true; }
+    await pause(50);
   }
   return false;
 };
@@ -142,7 +143,7 @@ claim("the row below is the same element: nothing rebuilt it", await read(`${row
 claim("and the server no longer holds the task", !(await (await fetch(url + "tasks")).json()).some((t) => String(t.id) === k3));
 
 await press(named("Wire the event channel"));
-claim("ticking a box marks its task done and moves the progress, once the server has answered", await waited(`document.querySelector("progress").value === 3`) && (await rows())[1].done, await progress());
+claim("ticking a box marks its task done and moves the progress, once the server has answered", await until(`document.querySelector("progress").value === 3`) && (await rows())[1].done, await progress());
 claim("and the server holds the task done", (await (await fetch(url + "tasks")).json()).find((t) => String(t.id) === k2).done === true);
 
 // ── typing ──────────────────────────────────────────────────────
@@ -153,7 +154,7 @@ claim("typing mid-text keeps the caret where the user put it", await read(`(() =
 await shot("typing");
 await press(named("Add"));
 claim("the program clears the field", await read(`${named("New task")}.value`) === "");
-claim("Add appends the row the server made of it", await waited(`[...document.querySelectorAll("li")].some((li) => li.textContent.includes("ShipX it"))`) && (await rows()).at(-1).words === "ShipX it", await rows());
+claim("Add appends the row the server made of it", await until(`[...document.querySelectorAll("li")].some((li) => li.textContent.includes("ShipX it"))`) && (await rows()).at(-1).words === "ShipX it", await rows());
 const k5 = (await rows()).at(-1).key;
 
 // ── the filters ─────────────────────────────────────────────────
@@ -238,8 +239,6 @@ await frame();
 claim("the rows turn back, the focus still kept", (await keys()).join() === [k1, k2, k4, k5].join() && await read(`document.activeElement === ${carried}`), await keys());
 
 // ── the dev loop ────────────────────────────────────────────────
-// Until `holds` answers true of the page, asked for as long as a build takes.
-const until = async (holds) => { for (let i = 0; i < 200; i++) { if (await read(holds).catch(() => false)) return true; await new Promise((go) => setTimeout(go, 100)); } return false; };
 if (source) {
   await agreed();
   const written = fs.readFileSync(source, "utf8");
@@ -282,23 +281,22 @@ await page.close();
 {
   await emptied();
   const board = await openPage(firefoxBinary(), url);
-  const waits = async (holds) => { for (let i = 0; i < 100; i++) { if (await board.read(holds).catch(() => false)) return true; await new Promise((go) => setTimeout(go, 100)); } return false; };
   const drawn = (p) => p.read(`[...document.querySelectorAll("li")].map((li) => ({ key: li.dataset.key, done: li.querySelector("input").checked, words: li.textContent }))`);
-  const reloaded = async (until) => {
+  const reloaded = async (wanted) => {
     const again = await openPage(firefoxBinary(), url);
     let seen = [];
-    for (let i = 0; i < 100; i++) { seen = await drawn(again).catch(() => []); if (until(seen)) break; await new Promise((go) => setTimeout(go, 100)); }
+    for (let i = 0; i < 100; i++) { seen = await drawn(again).catch(() => []); if (wanted(seen)) break; await pause(100); }
     const complaints = again.complaints();
     await again.close();
     return { seen, complaints };
   };
-  await waits(`document.body.textContent.includes("Nothing here yet.")`);
+  await until(`document.body.textContent.includes("Nothing here yet.")`, board);
   await watch(board);
   claim("a server holding no tasks leaves the board with none", (await drawn(board)).length === 0, await drawn(board));
   await board.press(named("New task"));
   await board.type(..."Buy milk");
   await board.press(named("Add"));
-  claim("an added task is the board's once the server has made it", await waits(`[...document.querySelectorAll("li")].some((li) => /^[0-9]+$/.test(li.dataset.key) && li.textContent.includes("Buy milk"))`), await drawn(board));
+  claim("an added task is the board's once the server has made it", await until(`[...document.querySelectorAll("li")].some((li) => /^[0-9]+$/.test(li.dataset.key) && li.textContent.includes("Buy milk"))`, board), await drawn(board));
   let again = await reloaded((rows) => rows.some((r) => r.words.includes("Buy milk")));
   claim("and a page loaded again shows it", again.seen.length === 1 && again.seen[0].words.includes("Buy milk") && !again.seen[0].done, again.seen);
   await board.press(named("Buy milk"));
@@ -314,11 +312,11 @@ await page.close();
   claim("and a page loaded again shows the state the last click left: three ticks undo one", again.seen.length === 1 && !again.seen[0].done, again.seen);
   // A RELOAD DURING A WRITE: the page that comes back shows what the server holds, whichever way the write fell.
   await board.read(`(() => { document.querySelector('[aria-label="Buy milk"]').click(); setTimeout(() => location.reload(), 0); return 1; })()`);
-  await waits(`document.querySelector("li") !== null && document.documentElement.getAttribute("data-avra") === "ready"`);
+  await until(`document.querySelector("li") !== null && document.documentElement.getAttribute("data-avra") === "ready"`, board);
   await watch(board);
   claim("a page reloaded during a write shows what the server holds", await agreed(board) && (await drawn(board)).length === 1, await drawn(board));
   await board.press(`document.querySelector("li button")`);
-  claim("a task removed is gone from the board once the server has answered", await waits(`document.querySelectorAll("li").length === 0`), await drawn(board));
+  claim("a task removed is gone from the board once the server has answered", await until(`document.querySelectorAll("li").length === 0`, board), await drawn(board));
   again = await reloaded((rows) => rows.length === 0);
   claim("and a page loaded again shows none", again.seen.length === 0, again.seen);
   claim("the server holds nothing", (await (await fetch(url + "tasks")).json()).length === 0);
@@ -354,7 +352,7 @@ async function emptied() {
   let listed = null;
   for (let i = 0; i < 1500 && !(listed && listed.ok); i++) {
     listed = await fetch(url + "tasks").catch(() => null);
-    if (!(listed && listed.ok)) await new Promise((go) => setTimeout(go, 200));
+    if (!(listed && listed.ok)) await pause(200);
   }
   if (!(listed && listed.ok)) { console.log(`ui-browser: the server never answered GET /tasks (${listed ? listed.status : "no answer"})`); process.exit(1); }
   for (const row of await listed.json()) {
@@ -365,7 +363,7 @@ async function emptied() {
 await emptied();
 
 // The module has run and painted: the page says so itself.
-const standing = async (p) => { for (let i = 0; i < 200; i++) { if (await p.read(`document.documentElement.getAttribute("data-avra") === "ready"`).catch(() => false)) { await p.frame(); return true; } await new Promise((go) => setTimeout(go, 100)); } return false; };
+const standing = async (p) => { for (let i = 0; i < 200; i++) { if (await p.read(`document.documentElement.getAttribute("data-avra") === "ready"`).catch(() => false)) { await p.frame(); return true; } await pause(100); } return false; };
 
 // ── a server's page, adopted by the module ──────────────────────
 // The elements the server drew are marked before the module runs.
@@ -384,7 +382,7 @@ if (hydrated) {
   claim("the module started from the state the server shipped: the done tasks, in the dark", (await asked(`[...document.querySelectorAll("li")].map((li) => li.querySelector("label").textContent)`)).join() === "Draft the spec,Write the tour" && await asked(`getComputedStyle(document.body).backgroundColor`) === "rgb(18, 18, 18)");
   // The server's list is answered only now: the page stood on the server's paint until it came.
   await fetch(hydrated + "__release");
-  const answered = await (async () => { for (let i = 0; i < 100; i++) { const now = await asked(`[...document.querySelectorAll("li")].map((li) => li.dataset.key)`); if (now.join() !== held.join()) return now; await new Promise((go) => setTimeout(go, 50)); } return held; })();
+  const answered = await (async () => { for (let i = 0; i < 100; i++) { const now = await asked(`[...document.querySelectorAll("li")].map((li) => li.dataset.key)`); if (now.join() !== held.join()) return now; await pause(50); } return held; })();
   claim("the server's list then lands as the board's: the done tasks stand under the server's keys", answered.length === 2 && answered.every((key) => /^[0-9]+$/.test(key)), answered);
   await adopted.press(`document.querySelector('[aria-label="Light mode"]')`);
   claim("and the page answers a press through the adopted elements", await asked(`document.querySelector('[aria-label="Dark mode"]') !== null`));

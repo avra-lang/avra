@@ -181,12 +181,11 @@ spent();
 const burst = named("Wire the event channel")[0];
 for (const on of [false, true, false, true]) { burst.checked = on; fire(burst); }
 await settle();
-const wording_of = (ask) => wording(ask.init);
-claim("four quick ticks send one PATCH and the rest wait", asked.length === 1 && asked[0].init.method === "PATCH" && wording_of(asked[0]).done === false, `${asked.map((a) => a.init.method + " " + a.url)}`);
+claim("four quick ticks send one PATCH and the rest wait", asked.length === 1 && asked[0].init.method === "PATCH" && wording(asked[0].init).done === false, `${asked.map((a) => a.init.method + " " + a.url)}`);
 const sentFirst = asked.shift();
 sentFirst.resolve(answer(sentFirst));
 await settle();
-claim("its answer sends the last tick alone, and asks for no list yet", asked.length === 1 && asked[0].init.method === "PATCH" && wording_of(asked[0]).done === true && table.rows.find((r) => r.id === 2).done === false, `${asked.map((a) => a.init.method + " " + a.url)}`);
+claim("its answer sends the last tick alone, and asks for no list yet", asked.length === 1 && asked[0].init.method === "PATCH" && wording(asked[0].init).done === true && table.rows.find((r) => r.id === 2).done === false, `${asked.map((a) => a.init.method + " " + a.url)}`);
 await drain();
 claim("the server holds the last click's state, and the list was asked for once the run was over", table.rows.find((r) => r.id === 2).done === true && asked.length === 0);
 spent();
@@ -194,6 +193,8 @@ spent();
 // ── THE WRITES UNDER ATTACK ──
 const doneOf = (id) => table.rows.find((r) => r.id === id)?.done;
 const sentTo = () => asked.map((a) => `${a.init.method} ${a.url}`);
+const cleared = () => every(mount, (n) => n.attrs["aria-label"] === "Clear done")[0];
+const offered = () => cleared().attrs["disabled"] === undefined;
 // TICKS ON TWO TASKS in one tick are two queues: each goes out at once.
 {
   const a = named("Draft the spec")[0];
@@ -233,7 +234,6 @@ const sentTo = () => asked.map((a) => `${a.init.method} ${a.url}`);
 // CLEAR DONE JUDGES BY THE SERVER'S LIST, so it is not offered while a change is on its way: a tick pressed just before it would be missed.
 {
   const c = named("Write the tour")[0] ?? named("Draft the spec")[0];
-  const cleared = () => every(mount, (n) => n.attrs["aria-label"] === "Clear done")[0];
   const before = cleared().attrs["disabled"];
   c.checked = !c.checked;
   fire(c);
@@ -276,6 +276,7 @@ const sentTo = () => asked.map((a) => `${a.init.method} ${a.url}`);
   for (const on of [was, !was]) { box.checked = on; fire(box); }
   await drain();
   claim("a refused last write is said in the footer", footerWords().includes("save failed: status 503"), footerWords());
+  claim("and it leaves Clear done offered again, not dark for good", offered(), `${cleared().attrs["disabled"]}`);
   claim("and the server still holds what the last accepted write left", doneOf(5) === !was);
   table.refuseNext = 0;
   spent();
@@ -291,6 +292,7 @@ const sentTo = () => asked.map((a) => `${a.init.method} ${a.url}`);
   await settle();
   frame();
   claim("a write that never reached the server is said in the footer", footerWords().includes("save failed: offline"), footerWords());
+  claim("and it leaves Clear done offered again", offered(), `${cleared().attrs["disabled"]}`);
   box.checked = !doneOf(5);
   fire(box);
   await settle();

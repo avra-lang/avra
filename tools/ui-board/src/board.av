@@ -312,10 +312,15 @@ fn todo_of(j: Json) -> Todo? {
     Todo { id: "${key}", title: title, done: j.get("done")?.truth() ?? false }
 }
 
+/// The reply, when the server took the ask; the words of its refusal otherwise.
+fn taken(r: Reply) -> Result<Reply, string> {
+    if r.status >= 200 && r.status <= 299 { .Ok(r) } else { .Err("status ${r.status}") }
+}
+
 /// The reply's body as JSON, or why it is not.
 fn document(r: Reply) -> Result<Json, string> {
-    if r.status < 200 || r.status > 299 { return .Err("status ${r.status}") }
-    let words? = r.body.text() else { return .Err("not text") }
+    let held = taken(r)?
+    let words? = held.body.text() else { return .Err("not text") }
     match parse(words) { .Ok(j) -> .Ok(j), .Err(e) -> .Err(e.describe().message) }
 }
 
@@ -330,13 +335,19 @@ fn load() {
     let _ = fetched(tasks_ask, Request.get("/tasks"), loaded)
 }
 
+/// A change's answer: its status, or why it was refused, which the footer says.
+fn noted(r: Reply) -> Result<int, string> {
+    let said = taken(r)
+    refused = match said { .Ok(_) -> "", .Err(why) -> why }
+    match said { .Ok(_) -> .Ok(r.status), .Err(why) -> .Err(why) }
+}
+
 /// A change was answered. Whatever it answered, the board shows the
-/// server's list next; a refusal also says so in the footer.
+/// server's list next.
 fn saved(r: Reply) -> Result<int, string> {
-    let held = if r.status < 200 || r.status > 299 { "status ${r.status}" } else { "" }
-    refused = held
+    let verdict = noted(r)
     load()
-    if held == "" { .Ok(r.status) } else { .Err(held) }
+    verdict
 }
 
 /// A change with no task yet is sent through the server's doors at once.
@@ -371,10 +382,8 @@ fn in_flight(id: string) -> bool {
 
 /// A change to a task was answered: the next one waiting goes out, and only the last of a run refreshes the list.
 fn answered(id: string, r: Reply) -> Result<int, string> {
-    let held = if r.status < 200 || r.status > 299 { "status ${r.status}" } else { "" }
-    refused = held
+    let verdict = noted(r)
     sending.remove(id)
-    let verdict: Result<int, string> = if held == "" { .Ok(r.status) } else { .Err(held) }
     let next? = waiting.get(id) else {
         load()
         return verdict
