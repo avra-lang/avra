@@ -84,11 +84,13 @@ git -C "$scratch/seed" add . && git -C "$scratch/seed" commit -q -m seed
 git -C "$scratch/seed" remote add origin "$scratch/origin.git"
 git -C "$scratch/seed" push -q origin main
 # Three members: h2 edits a.txt, h3 edits b.txt, h4 edits a.txt too (conflicts with h2).
+# h5 is STACKED on h2: it contains h2's commit and edits a.txt again.
 for b in h2 h3 h4; do git -C "$scratch/seed" checkout -q -b $b main; done
 git -C "$scratch/seed" checkout -q h2 && printf 'a2\n' > "$scratch/seed/a.txt" && git -C "$scratch/seed" commit -q -am h2
 git -C "$scratch/seed" checkout -q h3 && printf 'b3\n' > "$scratch/seed/b.txt" && git -C "$scratch/seed" commit -q -am h3
 git -C "$scratch/seed" checkout -q h4 && printf 'a4\n' > "$scratch/seed/a.txt" && git -C "$scratch/seed" commit -q -am h4
-git -C "$scratch/seed" push -q origin h2 h3 h4
+git -C "$scratch/seed" checkout -q -b h5 h2 && printf 'a5\n' > "$scratch/seed/a.txt" && git -C "$scratch/seed" commit -q -am h5
+git -C "$scratch/seed" push -q origin h2 h3 h4 h5
 git clone -q "$scratch/origin.git" "$scratch/clone"
 mkdir -p "$scratch/clone/tools"
 cp "$here/batch.sh" "$scratch/clone/tools/batch.sh"
@@ -114,6 +116,7 @@ pr_json 5 "h5: test red" h2 OPEN FAILURE SUCCESS - src/a.txt
 pr_json 6 "h6: attacks red" h3 OPEN SUCCESS FAILURE - src/b.txt
 pr_json 7 "h7: attacks skipped" h3 OPEN SUCCESS SKIPPED - src/b.txt
 pr_json 8 "h8: attacks absent" h3 OPEN SUCCESS ABSENT - src/b.txt
+pr_json 9 "h9: a's edit on top of h2" h5 OPEN SUCCESS SUCCESS - src/a.txt
 
 # ── 1. A red test check refuses the member ────────────────────────────────
 reset_clone
@@ -282,6 +285,24 @@ batch --plan --n 9 2 3
 check "$?" "0" "plan: a buildable plan exits 0"
 check "$(grep -c 'plan: buildable — nothing was pushed, opened, merged or retitled' "$scratch/out")" "1" "plan: says it is buildable and that nothing was touched"
 check "$(git -C "$scratch/origin.git" for-each-ref --format='%(refname)' refs/heads/batch-9 | wc -l | tr -d ' ')" "0" "plan: no batch-9 branch is created on origin"
+
+# ── 10b. --plan resolves a stacked member against the batch, not main ────
+# h5 contains h2's commit and edits the same file, so the build merges it
+# clean. A plan whose steps carry one parent has main as the merge base of
+# every member and reads h2's own change as a conflict.
+reset_clone
+batch --plan --n 29 2 9
+check "$?" "0" "plan stacked: a member stacked on an earlier one is buildable"
+check "$(grep -c 'plan: #2 (h2) merges cleanly' "$scratch/out")" "1" "plan stacked: names the member it stands on as clean"
+check "$(grep -c 'plan: #9 (h5) merges cleanly' "$scratch/out")" "1" "plan stacked: names the stacked member as clean"
+check "$(grep -c 'plan: buildable' "$scratch/out")" "1" "plan stacked: says the plan is buildable"
+# The same two members, then one that really does conflict on a.txt.
+reset_clone
+batch --plan --n 30 2 9 4
+check "$?" "1" "plan stacked: a genuine conflict behind a stacked member still exits 1"
+check "$(grep -c 'plan: #9 (h5) merges cleanly' "$scratch/out")" "1" "plan stacked: the stacked member is still clean"
+check "$(grep -c 'plan: #4 (h4) would CONFLICT; conflicting files: a.txt' "$scratch/out")" "1" "plan stacked: the genuine conflict is named with its file"
+check "$(grep -c 'plan: NOT BUILDABLE as given' "$scratch/out")" "1" "plan stacked: the plan that holds a real conflict is not buildable"
 
 # ── 11. --attacks-na: a reason stands in for a skipped cache-attacks ───────
 reset_clone
