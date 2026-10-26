@@ -1,0 +1,92 @@
+//! PAR — the one scheduler: a run's work split into shards, each shard
+//! done by its own process, the answers returned through the store
+//! (a shard's writes land in its own segment, merged after). Nothing
+//! else forks: no pass starts a process of its own.
+//!
+//! Shards are balanced by cost, heaviest unit first, so the same costs
+//! always give the same shards.
+extern fn avra_cores_group(n: int) -> int
+extern fn avra_cores_fork(g: int, serving: int) -> int
+extern fn avra_cores_end_fd(g: int, core: int) -> int
+extern fn avra_cores_heard(g: int, core: int) -> int
+extern fn avra_cores_leave(g: int, core: int, accepted: int, err: int) -> int
+extern fn avra_cores_result(g: int) -> int
+extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
+
+/// The workers a run may start: as many as asked, the cores there are,
+/// and the memory allows at `peak_mb` each — never fewer than one.
+export fn workers_for(want: int, cores: int, free_mb: int, peak_mb: int) -> int {
+    let fits = if peak_mb < 1 { want } else { free_mb / peak_mb }
+    let n = if want < cores { want } else { cores }
+    let m = if n < fits { n } else { fits }
+    if m < 1 { 1 } else { m }
+}
+
+/// Ids `0..costs.length` split into `n` shards of near-equal total cost: heaviest first, each
+/// to the lightest shard so far (ties to the lower shard and id). A shard lists its ids in
+/// ascending order; the same costs always give the same shards.
+export fn shards_of(costs: List<int>, n: int) -> List<List<int>> {
+    mut load: List<int> = [0 for _k in 0..n]
+    mut owner: List<int> = [0 for _c in costs]
+    for id in by_weight(costs, [i for i, _c in costs]) {
+        let k = lightest(load)
+        owner[id] = k
+        load[k] = load[k] + costs[id] + 1
+    }
+    [[i for i, o in owner if o == k] for k in 0..n]
+}
+
+/// The lowest-indexed shard with the least load.
+fn lightest(load: List<int>) -> int {
+    mut at = 0
+    for k, l in load { if l < load[at] { at = k } }
+    at
+}
+
+fn heavier(costs: List<int>, a: int, b: int) -> bool {
+    costs[a] > costs[b] || costs[a] == costs[b] && a < b
+}
+
+/// `ids` ordered heaviest first, ties by id.
+fn by_weight(costs: List<int>, ids: List<int>) -> List<int> {
+    if ids.length < 2 { return ids }
+    let mid = ids.length / 2
+    merged(costs, by_weight(costs, ids.slice(0, mid)), by_weight(costs, ids.slice(mid, ids.length)))
+}
+
+fn merged(costs: List<int>, xs: List<int>, ys: List<int>) -> List<int> {
+    mut out: List<int> = []
+    mut i = 0
+    mut j = 0
+    while i < xs.length && j < ys.length {
+        if heavier(costs, xs[i], ys[j]) {
+            out.push(xs[i])
+            i = i + 1
+        } else {
+            out.push(ys[j])
+            j = j + 1
+        }
+    }
+    out.concat(xs.slice(i, xs.length)).concat(ys.slice(j, ys.length))
+}
+
+/// `work(k)` done once for each shard `k` in `0..n`, each in its own
+/// process, answering when every one has ended. One shard runs where
+/// it stands, so serial is this same path. A worker that traps or is
+/// killed traps the run, naming it.
+export fn par(n: int, work: fn(int) -> void) {
+    if n < 2 {
+        work(0)
+        return
+    }
+    let g = avra_cores_group(n)
+    let k = avra_cores_fork(g, 2)
+    if k < n {
+        work(k)
+        let _ = avra_cores_leave(g, k, 0, 0)
+    }
+    for i in 0..n {
+        while avra_cores_heard(g, i) != 0 { let _ = avra_fiber_park_fd(avra_cores_end_fd(g, i), 0, -1) }
+    }
+    let _ = avra_cores_result(g)
+}

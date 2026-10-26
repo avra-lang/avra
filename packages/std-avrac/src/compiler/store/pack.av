@@ -27,7 +27,7 @@ use @std.io.{
     Opened,
     AppendFile,
 }
-use @std.path.{joined_path, dir_of}
+use @std.path.{joined_path, dir_of, file_name}
 use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, written_list, read_list}
 use @std.relation.engine.{map_cell, list_cell}
 use @std.text.{parse_int}
@@ -461,6 +461,25 @@ export fn held(
     stamp: int,
 ) {
     pack.records.put(record_key(family, key), listed_row(family, key, digest, read, stamp))
+}
+
+/// THE SEGMENTS OTHER WRITERS APPENDED since this pack opened — each worker's, once it
+/// has ended — folded in, so a row they wrote reads as this process's own. Answers how many
+/// segments joined. This writer's own segment and one already folded are never read twice.
+export fn pack_merged(pack: Pack) -> int {
+    opened_at(pack, false)
+    let own = file_name(writer_segment(pack))
+    let claims: Cell<Map<string, Claim>> = map_cell()
+    let fresh = [n for n in segments(pack.dir) if n != own && !pack.folded.get().contains(n)]
+    for name in fresh {
+        let at = joined_path(pack.dir, name)
+        // LICENSED input.store_io: a segment's own bytes, read to merge it
+        let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
+        if scan_segment(pack, at, raw, writer_alive(name), claims, name) {
+            pack.folded.set(pack.folded.get().concat([name]))
+        }
+    }
+    fresh.length
 }
 
 fn is_segment(name: string) -> bool {
@@ -914,6 +933,8 @@ fn segment_file(pack: Pack, path: string) -> AppendFile? {
     let o = match opened_for_append(path) { .Ok(f) -> f, .Err(_) -> { return null } }
     pack.seg_open.set([o])
     pack.seg_path.set(path)
+    // a segment is headed once, and this one is new to the process
+    pack.headed.set(false)
     o
 }
 
