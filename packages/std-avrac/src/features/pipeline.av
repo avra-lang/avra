@@ -25,7 +25,7 @@ export type FnBox = { box: Reg, code: Reg }
 export enum Step {
     Written(e: ExprId)
     Applied(f: FnBox, ret: TypeId)
-    Inline(lam: ExprId, ret: TypeId)
+    Inline(lam: ExprId, ret: TypeId, caps: List<Reg>)
 }
 
 export enum Clause {
@@ -196,7 +196,7 @@ impl LowerCx {
                 self.reg_of(e)
             },
             .Applied(f, ret) -> self.call_ptr(ret, f.code, [f.box, t.value!]),
-            .Inline(lam, _) -> self.inlined(lam, [t.value!]),
+            .Inline(lam, _, caps) -> self.inlined(lam, [t.value!], caps),
         }
     }
 
@@ -205,7 +205,7 @@ impl LowerCx {
         match f {
             .Written(e) -> self.lower_defect(e, "a fold's fn written over the heads"),
             .Applied(box, ret) -> self.call_ptr(ret, box.code, [box.box, acc, v]),
-            .Inline(lam, _) -> self.inlined(lam, [acc, v]),
+            .Inline(lam, _, caps) -> self.inlined(lam, [acc, v], caps),
         }
     }
 
