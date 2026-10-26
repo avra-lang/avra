@@ -1350,6 +1350,13 @@ impl Workspace {
         self.decls.remember_store(f, self.parsed(f).store)
     }
 
+    /// A declaration's row once its file has its body: a file minted from saved rows holds
+    /// no ranges until its parse is attached, so every reader of a body's range comes here.
+    fn decl_with_body(d: DeclId) -> Decl {
+        self.attach_parse(self.decls.raw_decl(d).file)
+        self.decls.decl(d)
+    }
+
     /// THE ONE DOOR A MINTED FILE'S BODIES COME THROUGH: its parse admitted over the declarations
     /// its saved rows already minted. An identical key names the identical declaration, so the
     /// parse registers each body's ranges and its store against the ids that stand.
@@ -2382,7 +2389,7 @@ impl Workspace {
         let k = key(Family.Syntax, d.index)
         if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
         self.db.begin(k)
-        let x = self.decls.decl(d)
+        let x = self.decl_with_body(d)
         let _ = self.parsed(x.file)
         let h = syntax_hash(self.decls.store(d), x)
         self.db.settle(k, h)
@@ -2399,7 +2406,7 @@ impl Workspace {
         let k = key(Family.Placed, d.index)
         if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
         self.db.begin(k)
-        let x = self.decls.decl(d)
+        let x = self.decl_with_body(d)
         let h = fp(122, [x.lo, x.hi, x.stmt_lo, x.stmt_hi])
         self.db.settle(k, h)
         h
@@ -2413,7 +2420,7 @@ impl Workspace {
         let k = key(Family.Names, d.index)
         if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
         self.db.begin(k)
-        let x = self.decls.decl(d)
+        let x = self.decl_with_body(d)
         let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi, self.decls.ids())
         self.db.settle(k, h)
         h
@@ -2538,7 +2545,7 @@ impl Workspace {
             .Reuse(value) -> { return typed_of(value) },
             .Compute -> nothing(),
         }
-        let x = self.decls.decl(d)
+        let x = self.decl_with_body(d)
         mut t = self.type_cx_for(x)
         let out = t.type_decl(x)
         // A DECLARATION STILL EXPANDING HAS A RANGE THAT WILL GROW: a
