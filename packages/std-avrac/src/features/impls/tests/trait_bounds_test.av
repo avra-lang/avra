@@ -6,6 +6,12 @@ fn drawers() -> string {
     "trait Realize<T> {\n    fn draw(t: T) -> string\n}\ntype Text = { content: string }\ntype Button = { label: string }\ntype Plain = { tag: string = \"\" }\nimpl Realize<Text> for Plain {\n    fn draw(t: Text) -> string { t.content }\n}\n"
 }
 
+/// A generic trait whose argument rides only its member's answer, and
+/// one type holding it at `int`.
+fn holders() -> string {
+    "trait Holds<X> {\n    fn held() -> X\n}\ntype Held = { n: int }\nimpl Holds<int> for Held {\n    fn held() -> int { self.n }\n}\n"
+}
+
 spec "features/impls — bounds with trait arguments" {
     given "a call" {
         then "a type implementing the trait at the bound's arguments is accepted" {
@@ -19,6 +25,20 @@ spec "features/impls — bounds with trait arguments" {
                 drawers() + "fn f<R: Realize<Button>>(r: R) -> int { 1 }\nf(Plain {})",
                 "`Plain` does not implement `Realize<Button>`",
             )
+        }
+        then "a type implementing it at other arguments in the answer alone refuses" {
+            refused_with(
+                holders() + "fn f<R: Holds<string>>(r: R) -> int { 1 }\nf(Held { n: 1 })",
+                "`Held` does not implement `Holds<string>`",
+            )
+        }
+        then "a type implementing it at the arguments its answer wears is accepted" {
+            shown(holders() + "fn f<R: Holds<int>>(r: R) -> int { r.held() }\nf(Held { n: 7 })") == "7"
+        }
+        then "an answer of `Self` is the implementing type's own" {
+            shown(
+                "trait Remade<X> {\n    fn remade(x: X) -> Self\n}\ntype Held = { n: int }\nimpl Remade<int> for Held {\n    fn remade(x: int) -> Held { Held { n: x } }\n}\nfn f<R: Remade<int>>(r: R) -> R { r.remade(4) }\nf(Held { n: 1 }).n",
+            ) == "4"
         }
         then "a bound's arguments are instantiated at the call" {
             refused_with(
