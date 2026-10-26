@@ -332,15 +332,99 @@ int64_t avra_io_seek(int64_t fd, int64_t at) {
 }
 /* ── The compile slot ─────────────────────────────────────────────
    One of AVRA_MAX_COMPILES machine-wide slots (default 3; 0 = off),
-   each a flock on <AVRA_SLOT_DIR, default /tmp/avra-slots>/<i>, held
-   until the process ends.
+   counted by one System V semaphore keyed on the slot directory's NAME
+   and the cap — never its inode, so a directory made again finds its set
+   (a set outlives its processes, and the kernel's table is bounded). A take is SEM_UNDO, so the
+   kernel returns the slot when the process ends by any means. Nothing
+   polls: a waiter sleeps in the kernel until what it waits on is released.
+   ARRIVAL ORDER IS BY CONSTRUCTION, never a kernel's wake order: each
+   arrival takes the next ticket under a blocking flock on the gate file and
+   holds a lock named for it (<dir>/q.<ticket>); it waits only for its
+   predecessor's lock, so at most one waiter at a time contends for the
+   semaphore, and a ticket's holder dying passes the line on. The set is
+   made under that same gate, valued at the cap by whoever makes it.
    A process whose parent already holds one (AVRA_COMPILE_SLOT set, and
    inherited) takes none, so a compile's own children never wait on
    the slot their parent holds. Waits when every slot is taken, saying
-   so once. Answers the slot taken, or -1 when none is taken. */
+   so once. Answers how many other slots were taken at that moment, or
+   -1 when none is taken. */
+#if !defined(__wasm32__)
+#include <sys/ipc.h>
+#include <sys/sem.h>
+
+union avra_semun { int val; struct semid_ds* buf; unsigned short* array; };
+
+static void slot_path(char* out, size_t size, const char* dir, const char* name, unsigned long ticket, int numbered) {
+    if (numbered) snprintf(out, size, "%s/%s.%lu", dir, name, ticket);
+    else snprintf(out, size, "%s/%s", dir, name);
+}
+
+/* The key of the semaphore for `dir` and cap `n`: FNV-1a over the name, never zero. */
+static key_t slot_key(const char* dir, long n) {
+    uint32_t h = 2166136261u;
+    for (const char* c = dir; *c; c++) h = (h ^ (uint8_t)*c) * 16777619u;
+    h = (h ^ (uint32_t)n) * 16777619u;
+    return (key_t)((h & 0x7fffffffu) | 1u);
+}
+
+/* The semaphore counting the slots of cap `n` under `dir`, made at `n` when absent; -1 when the host will not give one. Called under the gate. */
+static int slot_counter(const char* dir, long n) {
+    key_t key = slot_key(dir, n);
+    int id = semget(key, 1, IPC_CREAT | IPC_EXCL | 0666);
+    if (id >= 0) {
+        union avra_semun start;
+        start.val = (int)n;
+        if (semctl(id, 0, SETVAL, start) != 0) {
+            semctl(id, 0, IPC_RMID);
+            return -1;
+        }
+        return id;
+    }
+    return errno == EEXIST ? semget(key, 1, 0666) : -1;
+}
+
+/* Joins the line under the gate: the next ticket's lock, held (descriptor in *mine, path in `mine_path`), the predecessor's path in `behind` (empty for the first arrival), and the semaphore. Answers the semaphore, or -1. */
+static int slot_join(const char* dir, long n, int* mine, char* mine_path, char* behind, size_t size) {
+    char gate_path[1024], count_path[1024];
+    slot_path(gate_path, sizeof gate_path, dir, "gate", 0, 0);
+    slot_path(count_path, sizeof count_path, dir, "counter", 0, 0);
+    int gate = open(gate_path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+    if (gate < 0) return -1;
+    // the clock: held for a few file operations only, by the compiler's own startup, before any program runs
+    flock(gate, LOCK_EX);
+    int counter = slot_counter(dir, n);
+    int book = open(count_path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+    unsigned long ticket = 0;
+    if (counter >= 0 && book >= 0) {
+        char text[32];
+        ssize_t got = pread(book, text, sizeof text - 1, 0);
+        if (got > 0) { text[got] = 0; ticket = strtoul(text, NULL, 10); }
+        int len = snprintf(text, sizeof text, "%lu", ticket + 1);
+        if (ftruncate(book, 0) != 0 || pwrite(book, text, (size_t)len, 0) != len) counter = -1;
+    } else {
+        counter = -1;
+    }
+    if (book >= 0) close(book);
+    *mine = -1;
+    behind[0] = 0;
+    if (counter >= 0) {
+        slot_path(mine_path, size, dir, "q", ticket, 1);
+        *mine = open(mine_path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+        // the clock: a lock named for this ticket, taken by no one else, answers at once
+        if (*mine < 0 || flock(*mine, LOCK_EX) != 0) counter = -1;
+        else if (ticket > 0) slot_path(behind, size, dir, "q", ticket - 1, 1);
+    }
+    // the clock: LOCK_UN answers at once, never waits
+    flock(gate, LOCK_UN);
+    close(gate);
+    if (counter < 0 && *mine >= 0) { close(*mine); *mine = -1; }
+    return counter;
+}
+#endif
+
 int64_t avra_io_compile_slot(void) {
 #if defined(__wasm32__)
-    // WASI has no flock and no machine-wide compile slots; only the compiler's
+    // WASI has no semaphores and no machine-wide compile slots; only the compiler's
     // own tools take one, and a wasm program is never one of them.
     return -1;
 #else
@@ -352,29 +436,43 @@ int64_t avra_io_compile_slot(void) {
     const char* dir = getenv("AVRA_SLOT_DIR");
     if (!dir || !*dir) dir = "/tmp/avra-slots";
     mkdir(dir, 0777);
+    int mine;
+    char mine_path[1100], behind[1100];
+    int counter = slot_join(dir, n, &mine, mine_path, behind, sizeof behind);
+    if (counter < 0) return -1;
     int said = 0;
-    for (;;) {
-        for (long i = 0; i < n; i++) {
-            char path[1024];
-            snprintf(path, sizeof path, "%s/%ld", dir, i);
-            int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
-            if (fd < 0) continue;
+    if (behind[0]) {
+        int ahead = open(behind, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+        if (ahead >= 0) {
             // the clock: LOCK_NB answers at once, never waits
-            if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
-                char slot[24];
-                snprintf(slot, sizeof slot, "%ld", i);
-                setenv("AVRA_COMPILE_SLOT", slot, 1);
-                return (int64_t)i;
+            if (flock(ahead, LOCK_EX | LOCK_NB) != 0) {
+                fprintf(stderr, "avra: waiting for a compile slot (AVRA_MAX_COMPILES=%ld)\n", n);
+                said = 1;
+                // the clock: the compiler's own wait for a slot, before any program runs
+                flock(ahead, LOCK_EX);
             }
-            close(fd);
+            unlink(behind);
+            close(ahead);
         }
-        if (!said) {
-            fprintf(stderr, "avra: waiting for a compile slot (AVRA_MAX_COMPILES=%ld)\n", n);
-            said = 1;
-        }
-        // the clock: the compiler's own wait for a slot, before any program runs
-        usleep(200000);
     }
+    struct sembuf take = { 0, -1, SEM_UNDO };
+    struct sembuf try_take = { 0, -1, SEM_UNDO | IPC_NOWAIT };
+    if (semop(counter, &try_take, 1) != 0) {
+        if (errno != EAGAIN) { unlink(mine_path); close(mine); return -1; }
+        if (!said) fprintf(stderr, "avra: waiting for a compile slot (AVRA_MAX_COMPILES=%ld)\n", n);
+        while (semop(counter, &take, 1) != 0) {
+            if (errno != EINTR) { unlink(mine_path); close(mine); return -1; }
+        }
+    }
+    unlink(mine_path);
+    close(mine);
+    int free_now = semctl(counter, 0, GETVAL);
+    long taken = free_now < 0 ? 0 : (n - 1 - free_now);
+    if (taken < 0) taken = 0;
+    char slot[24];
+    snprintf(slot, sizeof slot, "%ld", taken);
+    setenv("AVRA_COMPILE_SLOT", slot, 1);
+    return (int64_t)taken;
 #endif
 }
 
