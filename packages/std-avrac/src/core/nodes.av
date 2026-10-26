@@ -365,6 +365,41 @@ export enum CompClause {
     Filter(cond: ExprId)
 }
 
+/// One entry of a map literal, in written order: a `key: value` pair, or
+/// a `..map` spread.
+@derive(Identity)
+@derive(Grammar)
+@derive(Makes)
+export enum MapEntry {
+    Pair(key: ExprId, value: ExprId)
+    Spread(from: ExprId)
+}
+
+/// The expressions one map entry holds, in written order.
+export fn map_entry_reach(m: MapEntry) -> List<ExprId> {
+    match m { .Pair(key, value) -> [key, value], .Spread(from) -> [from] }
+}
+
+/// The expression an entry begins at.
+export fn map_entry_head(m: MapEntry) -> ExprId {
+    match m { .Pair(key, _) -> key, .Spread(from) -> from }
+}
+
+/// The keys of an entry list's pairs, in order.
+export fn map_keys(entries: List<MapEntry>) -> List<ExprId> {
+    flatten([match m { .Pair(key, _) -> [key], .Spread(_) -> [] } for m in entries])
+}
+
+/// The values of an entry list's pairs, in order.
+export fn map_values(entries: List<MapEntry>) -> List<ExprId> {
+    flatten([match m { .Pair(_, value) -> [value], .Spread(_) -> [] } for m in entries])
+}
+
+/// The maps an entry list spreads, in order.
+export fn map_spreads(entries: List<MapEntry>) -> List<ExprId> {
+    flatten([match m { .Pair(_, _) -> [], .Spread(from) -> [from] } for m in entries])
+}
+
 /// The expressions one clause holds.
 export fn comp_clause_reach(c: CompClause) -> List<ExprId> {
     match c { .Head(_, _, source, hi) -> [source].concat(some_list(hi)), .Filter(cond) -> [cond] }
@@ -383,6 +418,7 @@ export fn node_payload_rows() -> List<PayloadRow> {
         .concat(grammar_payloads_VariantSyntax())
         .concat(grammar_payloads_TypeRef())
         .concat(grammar_payloads_CompClause())
+        .concat(grammar_payloads_MapEntry())
         .concat(grammar_payloads_Arm())
         .concat(grammar_payloads_Case())
         .concat(grammar_payloads_UseItem())
@@ -402,6 +438,11 @@ export fn pat_makers() -> List<Maker<Pat>> {
 /// Every comprehension clause's maker, read off `CompClause` by `@derive(Makes)`.
 export fn comp_clause_makers() -> List<Maker<CompClause>> {
     makers_CompClause()
+}
+
+/// Every map entry's maker, read off `MapEntry` by `@derive(Makes)`.
+export fn map_entry_makers() -> List<Maker<MapEntry>> {
+    makers_MapEntry()
 }
 
 /// Every flat statement variant's maker, read off `Stmt` by `@derive(Makes)`.
@@ -491,8 +532,6 @@ fn hole_free(e: Expr) -> bool {
     }
 }
 
-/// A map literal's keys and values, in written order.
-export type MapPairs = { keys: List<ExprId>, values: List<ExprId> }
 /// A hole-bearing body's word, its runs between holes, the holes, and
 /// its parsed form or expansion.
 export type BodyParts = { word: string, parts: List<string>, holes: List<ExprId>, view: BodyView }

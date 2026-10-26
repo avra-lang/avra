@@ -1,7 +1,7 @@
 // Attacks on the complete child walk, assuming it is broken: the
 // degenerate shapes (none, one, many), the order the declaration
 // wrote its fields, and the hidden branches the SHAPE still holds.
-use @std.avrac.core.{new_node_store, Expr, Arm, BinOp, CompClause, Scoped, ExprId}
+use @std.avrac.core.{new_node_store, Expr, Arm, BinOp, CompClause, MapEntry, Scoped, ExprId}
 
 spec "core/children adversarial" {
     given "degenerate shapes" {
@@ -59,18 +59,18 @@ spec "core/children adversarial" {
             let ks = s.expr_children(bin)
             ks.length == 2 && ks[0].index == l.index && ks[1].index == r.index
         }
-        then "a map's keys are reached before its values" {
+        then "a map's entries are reached in written order, each key before its value" {
             mut s = new_node_store()
             let k1 = s.alloc_expr(Expr.StrLit("a"))
             let k2 = s.alloc_expr(Expr.StrLit("b"))
             let v1 = s.alloc_expr(Expr.IntLit(1))
             let v2 = s.alloc_expr(Expr.IntLit(2))
-            let m = s.alloc_expr(Expr.MapLit([k1, k2], [v1, v2]))
+            let m = s.alloc_expr(Expr.MapLit([MapEntry.Pair(k1, v1), MapEntry.Pair(k2, v2)]))
             let ks = s.expr_children(m)
             ks.length == 4 &&
                 ks[0].index == k1.index &&
-                ks[1].index == k2.index &&
-                ks[2].index == v1.index &&
+                ks[1].index == v1.index &&
+                ks[2].index == k2.index &&
                 ks[3].index == v2.index
         }
     }
