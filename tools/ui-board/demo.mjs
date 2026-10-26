@@ -92,13 +92,13 @@ spent();
 // replaces, DELETE removes). The board keeps no copy of its own: every change
 // is sent, and the page shows the list the server answers with.
 const settle = async () => { for (let k = 0; k < 8; k++) await Promise.resolve(); };
-const table = { rows: [], next: 1, refusing: 0, refuseNext: 0 };
+const table = { rows: [], next: 1, refusing: 0, refuseNext: 0, refuseList: 0 };
 const seeded = (title, done = false) => table.rows.push({ id: table.next++, title, done });
 const wording = (init) => JSON.parse(new TextDecoder().decode(init.body));
 const reply = (status, value) => ({ status, arrayBuffer: async () => (value === undefined ? new ArrayBuffer(0) : new TextEncoder().encode(JSON.stringify(value)).buffer) });
 const answer = ({ url, init }) => {
   const id = Number(url.split("/")[2]);
-  if (init.method === "GET") return reply(200, table.rows);
+  if (init.method === "GET") return table.refuseList ? reply(table.refuseList) : reply(200, table.rows);
   if (table.refusing) return reply(table.refusing);
   if (table.refuseNext > 0 && init.method !== "GET") { table.refuseNext--; return reply(503); }
   if (init.method === "POST") { const row = { id: table.next++, ...wording(init) }; table.rows.push(row); return reply(200, row); }
@@ -245,6 +245,21 @@ const sentTo = () => asked.map((a) => `${a.init.method} ${a.url}`);
   c.checked = !c.checked;
   fire(c);
   await drain();
+  spent();
+}
+// THE LIST'S OWN ASK REFUSED after a change: the footer says so, and the next change's ask restores the board.
+{
+  table.refuseList = 503;
+  const c = named("Draft the spec")[0];
+  c.checked = !c.checked;
+  fire(c);
+  await drain();
+  claim("a refused list ask is said in the footer", footerWords().includes("load failed: status 503"), footerWords());
+  table.refuseList = 0;
+  c.checked = !c.checked;
+  fire(c);
+  await drain();
+  claim("the next change's list ask restores the board", keyed("1") !== null && !footerWords().includes("failed"), footerWords());
   spent();
 }
 // A REFUSED FIRST WRITE does not stop the run: the last click still goes out and the server ends as it left it.
