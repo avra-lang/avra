@@ -4,7 +4,6 @@
 //! as `[]` is by a list.
 use features.{
     LanguageFeature,
-    BuilderRow,
     MethodRow,
     ReceiverEffect,
     TypeRow,
@@ -20,10 +19,6 @@ use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recov
 use diagnostics.{DiagCode}
 
 export fn maps() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name      | build
-        "map_lit" | build_map_lit
-    }
     let codes = table<DiagCode> {
         kind              | summary
         "type.map_key"    | "a map's keys are strings"
@@ -52,9 +47,9 @@ export fn maps() -> LanguageFeature {
     }
     LanguageFeature maps {
         gram: grammar {
-            primary = "{" BREAK? "}" -> Expr.MapLit | "{" BREAK? ( keys:expression ":" values:expression | ".." sm:postfix ) ( "," BREAK? ( keys:expression ":" values:expression | ".." sm:postfix ) )* ","? BREAK? "}" @expect("}", "expected `}` to close the map") -> map_lit(keys, values, sm) | b:block -> b
+            primary = "{" BREAK? "}" -> Expr.MapLit | "{" BREAK? entries:map_entry ( "," BREAK? entries:map_entry )* ","? BREAK? "}" @expect("}", "expected `}` to close the map") -> Expr.MapLit | b:block -> b
+            map_entry = key:expression ":" value:expression -> MapEntry.Pair | ".." from:postfix -> MapEntry.Spread
         }
-        builders: rows
         diags: codes
         methods: methods
         types: types
