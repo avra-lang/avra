@@ -4,7 +4,7 @@ An option's words say what a field or relation is called; a sample of what it
 reaches from the records bound so far says which one the question means. Every
 figure is read by executing a query against the graph (the `query` op), never
 from the catalog's words. A record is shown by its declared label property,
-else by its first declared string property.
+else by its first declared string property (a structural default).
 """
 from catalog import base_shape, reference_target
 
@@ -46,23 +46,23 @@ class Sight:
         if n is None:
             return ""
         if n == 0:
-            return " (reaches nothing)"
+            return " [rows: 0]"
         prop = self.label_of(target)
         values = rows and prop and self.sample(out.seen(f"{var}.{prop} AS v", tail, limit=rows))
-        return f" (reaches {n}" + (f", {prop}: {'; '.join(values)}" if values else "") + ")"
+        return f" [rows: {n}" + (f"; {prop}: {'; '.join(values)}" if values else "") + "]"
 
     def kept(self, out, var, prop, word):
         """How many of the bound records a narrowing keeps."""
         total = self.count(out.seen(f"count({var}) AS c"))
         left = self.count(out.seen(f"count({var}) AS c", where=[f"{var}.{prop} CONTAINS '{word.replace(chr(39), '')}'"]))
-        return "" if total is None or left is None else f" (keeps {left} of {total})"
+        return "" if total is None or left is None else f" [rows: {left}/{total}]"
 
     def value(self, out, var, prop, rows, held=None):
         """Some values of a property on the bound records."""
         values = rows and self.sample(out.seen(f"{var}.{prop} AS v", limit=rows, held=held))
         if values is None:
             return ""
-        return f" (e.g. {'; '.join(values)})" if values else " (no value recorded)"
+        return f" [values: {'; '.join(values)}]" if values else " [values: none]"
 
 
 def render(value):
