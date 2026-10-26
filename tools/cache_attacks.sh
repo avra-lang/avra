@@ -138,13 +138,14 @@ HR() { # HR <label> <build|check> <pkg> <exit> [<path-substr> <held|read>]...
 
 # WHAT A CHECK COST, from the engine's own counters: `check --counts` (files parsed, each
 # family's recomputations as `why:` rows) and the trace's `Q parse` lines. Sets cost_files (the
-# files parsed, one per line, as `dir/file.av`), cost_n (how many) and cost_settled (constants
-# settled anew, by the `Settled new` rows) — what a hold's bookkeeping used to stand in for.
+# files parsed, one per line, as `dir/file.av`), cost_n (how many) cost_settled (constants
+# settled anew, by the `Settled new` rows) and cost_cas (octets of kept blobs read back) — what a hold's bookkeeping used to stand in for.
 cost() { # cost <pkg under $R, or a path>
     case "$1" in /*|build/*) cost_at=$1 ;; *) cost_at=$R/$1 ;; esac
     cost_out=$(AVRA_QTRACE=1 ./avra check --counts $cost_at 2>&1); cost_st=$?
     cost_files=$(printf '%s\n' "$cost_out" | awk -F'\t' '$1 == "Q" && $2 == "parse" { print $3 }' | sed 's|.*/src/||' | sort -u)
     cost_n=$(printf '%s\n' "$cost_out" | grep -a -o 'files_parsed=[0-9]*' | tail -1 | cut -d= -f2)
+    cost_cas=$(printf '%s\n' "$cost_out" | grep -a -o 'cas_bytes_read=[0-9]*' | tail -1 | cut -d= -f2)
     cost_settled=$(printf '%s\n' "$cost_out" | grep -a '^why: Settled new:' | awk '{ s += $NF } END { print s + 0 }')
 }
 
@@ -490,6 +491,7 @@ printf 'use use.{total}\nprintln("${total()}")\n' > $R/sl/src/main.av
 sl_n=0
 sl_touch() { sl_n=$((sl_n+1)); printf '// moved %s\n' "$sl_n" >> $R/sl/src/rec/r.av; }
 S "cold sl" sl
+HR "cold sl check" check sl 0
 sl_touch
 cost_claim "sl: the declaring file of a sealed record read, the sealers unparsed" sl 0 99 rec/r.av main.av
 S "sl: the declaring file read" sl
@@ -639,6 +641,7 @@ printf 'export fn twice(n: int) -> int { n * 2 }\n' > $R/gg/src/y/calc.av
 printf 'use y.{twice}\nexport const K: int = twice(3)\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
 printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/gg/src/main.av
 S "cold gg" gg
+HR "cold gg check" check gg 0
 printf 'use y.{twice}\nexport const K: int = twice(4)\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
 cost_claim "gg: the const needs calc.av's body -> K settles anew" gg 1 1 f/held.av y/calc.av main.av
 S "gg: the const needs calc.av's body" gg
@@ -781,6 +784,7 @@ lv_state() { # lv_state <label>: how many back-edge checks the program's own cod
     objdump -d $lv/src/main 2>/dev/null | grep -c '<_\{0,1\}avra_tick_cold>$' > $R/lv.$1.ticks
 }
 lv_state cold
+HR "cold lv check" check lv 0
 printf '// edited\n' >> $lv/src/main.av
 cost_claim "lv: an edit to main.av alone parses it alone" lv 0 99 main.av
 lv_state warm
@@ -1442,6 +1446,7 @@ printf 'use @rt.mhl.{Say, Pt}\nexport fn said() -> int {\n    let s: dyn Say = P
 printf 'println("mh ${shown()} ${said()} ${told()}")\n' > $R/mh/src/main.av
 S "cold mh: a sibling reaches one file by use, another by no use at all" mh
 S "mh: warm no-op" mh
+HR "mh: the check rows" check mh 0
 ed $R/mhl/src/pad.av "{ 3 }" "{ 30 }"
 MH "mh: pad's body only moves — lib.av stays held" lib.av held
 ed $R/mhl/src/pad.av "{ 30 }" "{ 3 }"
@@ -1570,6 +1575,7 @@ let f = get_helper()
 println("vh2 ${f(Sq { s: 3 })}")
 AV
 S "cold vh2: helper taken as a value from a non-entry module" vh2
+HR "cold vh2 check" check vh2 0
 ed $R/vh2/src/leaf/mod.av 'cx.area() }' 'cx.area() + 0 }'
 cost_claim "vh2: a body-only edit in leaf/mod.av parses it and the entry alone" vh2 0 99 leaf/mod.av main.av
 S "vh2: a body-only edit in leaf/mod.av — no signature, no new declaration" vh2
@@ -2512,7 +2518,7 @@ gw_step() { # gw_step <label> <wanted a=…> <collector read: yes|no>
     [ "$3" = yes ] || [ "$gw_read" = no ] || { fails=$((fails+1)); echo "FAIL  gw: $1: lib.av was parsed though nothing it gathers moved: $(printf '%s' "$cost_files" | tr '\n' ' ')"; }
     holds=$((holds+1))
 }
-gw_step "cold" "a=1" no
+gw_step "cold" "a=1" yes
 printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\nexport fn help() -> int { 2 }\n' > $gw/gk/src/m/m.av
 gw_step "a member's file edited, its marks and shapes unmoved" "a=1" no
 printf 'use k.{kind}\n@kind(1)\nexport type A = {}\n@kind(5)\nexport type B = {}\nexport fn help() -> int { 2 }\n' > $gw/gk/src/m/m.av
@@ -2556,6 +2562,7 @@ steps=$((steps+1)); ./avra build $go/app > /dev/null 2>&1
 mkdir -p $go/gk/src/z; mv $go/gk/src/p/p.av $go/gk/src/z/z.av; rmdir $go/gk/src/p
 steps=$((steps+1)); ./avra build $go/app > /dev/null 2>&1; go_got=$($go/app/src/main 2>&1)
 [ "$go_got" = "x=1" ] || { fails=$((fails+1)); echo "FAIL  go: member files whose order flipped: the collector did not gather the new order: the binary printed '$go_got', wanted 'x=1'"; }
+./avra check $go/app > /dev/null 2>&1
 printf '// again\n' >> $go/app/src/main.av
 cost_claim "go: the check after the flip re-derives nothing the order settled" $go/app 0 0 main.av
 rm -rf $go
