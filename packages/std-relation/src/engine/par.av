@@ -1,0 +1,60 @@
+//! PAR — the one scheduler: a run's work split into shards, each shard
+//! done by its own process, the answers returned through the store
+//! (a shard's writes land in its own segment, merged after). Nothing
+//! else forks: no pass starts a process of its own.
+//!
+//! A shard is a contiguous run of ids, cut by cost, so the same costs
+//! always cut the same shards and a shard owns neighbouring files.
+extern fn avra_cores_group(n: int) -> int
+extern fn avra_cores_fork(g: int, serving: int) -> int
+extern fn avra_cores_end_fd(g: int, core: int) -> int
+extern fn avra_cores_heard(g: int, core: int) -> int
+extern fn avra_cores_leave(g: int, core: int, accepted: int, err: int) -> int
+extern fn avra_cores_result(g: int) -> int
+extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
+
+/// The workers a run may start: as many as asked, the cores there are,
+/// and the memory allows at `peak_mb` each — never fewer than one.
+export fn workers_for(want: int, cores: int, free_mb: int, peak_mb: int) -> int {
+    let fits = if peak_mb < 1 { want } else { free_mb / peak_mb }
+    let n = if want < cores { want } else { cores }
+    let m = if n < fits { n } else { fits }
+    if m < 1 { 1 } else { m }
+}
+
+/// Ids `0..costs.length` cut into `n` contiguous shards of near-equal
+/// total cost: an id goes to the shard its cost-midpoint falls in. A
+/// zero cost counts as one, so every id has weight.
+export fn shards_of(costs: List<int>, n: int) -> List<List<int>> {
+    let total = costs.fold(0, (sum, c) -> sum + c + 1)
+    mut run = 0
+    mut owner: List<int> = []
+    for c in costs {
+        let w = c + 1
+        let k = (2 * run + w) * n / (2 * total)
+        owner.push(if k < n { k } else { n - 1 })
+        run = run + w
+    }
+    [[i for i, o in owner if o == k] for k in 0..n]
+}
+
+/// `work(k)` done once for each shard `k` in `0..n`, each in its own
+/// process, answering when every one has ended. One shard runs where
+/// it stands, so serial is this same path. A worker that traps or is
+/// killed traps the run, naming it.
+export fn par(n: int, work: fn(int) -> void) {
+    if n < 2 {
+        work(0)
+        return
+    }
+    let g = avra_cores_group(n)
+    let k = avra_cores_fork(g, 2)
+    if k < n {
+        work(k)
+        let _ = avra_cores_leave(g, k, 0, 0)
+    }
+    for i in 0..n {
+        while avra_cores_heard(g, i) != 0 { let _ = avra_fiber_park_fd(avra_cores_end_fd(g, i), 0, -1) }
+    }
+    let _ = avra_cores_result(g)
+}
