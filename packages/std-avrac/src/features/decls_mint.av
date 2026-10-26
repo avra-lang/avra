@@ -2,6 +2,7 @@
 //! path that turns a statement into a declared id. The rest of the
 //! impl lives in decls.av.
 use @std.meta.{bracket}
+use core.debug.{qtrace, traced}
 use core.{
     side_table,
     side_put,
@@ -779,23 +780,24 @@ impl Decls {
 
     /// A run of `maker` over `f` closes on what it `made`: a row of that
     /// file and maker the run did not mint is the file's no longer, and
-    /// the run it opened inside counts on. A provisional run re-entered the annotation it
-    /// proves: it answers nothing of its own, so it drops nothing.
+    /// the run it opened inside counts on.
     @bracket("decls")
-    fn generation_kept(
-        f: FileId,
-        maker: string,
-        made: List<DeclId>,
-        prior: RunPrior,
-        provisional: bool = false,
-    ) {
+    fn generation_kept(f: FileId, maker: string, made: List<DeclId>, prior: RunPrior) {
         self.counted.get().resumed(f, maker, prior)
-        if provisional { return }
         let rows = self.decls_so_far(f)
         let stale = [d for d in rows if self.raw_decl(d).maker == maker && !made.any(same_decl(it, d))]
         if stale.is_empty() { return }
         self.file_keeps(f, [d.index for d in rows if !stale.any(same_decl(it, d))])
         self.forget(stale)
+    }
+
+    /// A run of `maker` over `f` closes with no answer — it could not run, `why` — so the
+    /// file keeps what the maker made before, and the run it opened inside counts on.
+    /// Answers those rows: they are still the file's.
+    fn generation_unrun(f: FileId, maker: string, prior: RunPrior, why: string) -> List<DeclId> {
+        if traced() { qtrace("Q\tunrun\t${maker}\t${why}\n") }
+        self.counted.get().resumed(f, maker, prior)
+        [d for d in self.decls_so_far(f) if self.raw_decl(d).maker == maker]
     }
 
     /// A held file's rows are about to be minted from its record: a run of
