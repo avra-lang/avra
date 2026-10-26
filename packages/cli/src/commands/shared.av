@@ -60,14 +60,20 @@ fn triples_of(spelled: string) -> List<string> {
 /// A C compiler and a triple it links a wasm module for.
 type WasmTools = { linker: Stamp, target: string }
 
+/// Where a package manager puts an LLVM that carries a WASI libc, asked when
+/// `LLVM_PREFIX` names none: the system's own clang has none on macOS.
+const LLVM_PREFIXES: List<string> = ["/opt/homebrew/opt/llvm", "/usr/local/opt/llvm"]
+
 /// The C compilers that may link a wasm module, in the order they are
 /// asked: `CC` alone when it is set — the developer chose — else the LLVM
-/// `LLVM_PREFIX` names, then `clang` on the PATH.
+/// `LLVM_PREFIX` names, then the package managers' prefixes, then `clang`
+/// on the PATH.
 fn wasm_linkers(ws: Workspace) -> List<Stamp> {
     let words = if ws.env("CC") ?? "" != "" {
         [chosen(ws, "CC", "clang")]
     } else {
-        [joined_path(p, "bin/clang") for p in some_list(ws.env("LLVM_PREFIX"))].concat(["clang"])
+        [joined_path(p, "bin/clang") for p in some_list(ws.env("LLVM_PREFIX")).concat(LLVM_PREFIXES)]
+            .concat(["clang"])
     }
     [s for w in words for s in some_list(ws.tool(w))]
 }
