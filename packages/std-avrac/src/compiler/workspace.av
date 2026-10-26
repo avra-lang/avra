@@ -522,8 +522,10 @@ export type Workspace = {
     // whether this workspace stands, or was let go and why: it answers
     // nothing after
     stand: Cell<Stand>,
-    /// The files whose declarations this run admitted: the `Items` rows it owes the store.
-    fresh_items: Cell<List<int>>,
+    /// The saved answers this run computed, noted by their keepers: what `flush_saved` owes the store.
+    noted: Cell<List<Key>>,
+    /// How each saved family writes its answer: registered once, by the family's own `saves`.
+    savers: Cell<List<Saver>>,
     // plain for its identity: the host capability table, set once at
     // construction and never reassigned
     host: Host,
@@ -1114,7 +1116,8 @@ fn built(
         input_names: list_cell(),
         manifest_texts: list_cell(),
         stand: Cell.new(Stand.Open),
-        fresh_items: list_cell(),
+        noted: list_cell(),
+        savers: list_cell(),
     }
     // The registration IS `Family`'s declaration order: `Family.all()`
     // answers the variants in ordinal order, so `db.family`'s minted index
@@ -1220,6 +1223,7 @@ impl Workspace {
         self.relation(Family.Analysis).evict()
         self.db.disarm()
         self.decls.disarm()
+        self.savers.set([])
         self.closed.set(true)
     }
 
@@ -1236,6 +1240,7 @@ impl Workspace {
     fn ended(why: Stand) {
         for f in Family.all() { self.relation(f).evict() }
         self.db.disarm()
+        self.savers.set([])
         self.db.kernel.folds_forgotten()
         self.decls.let_go(stand_voice(why))
         self.stand.set(why)
