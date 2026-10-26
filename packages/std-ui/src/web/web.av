@@ -8,7 +8,7 @@ use app.{Wants, replies_to, wants}
 use realize.dom.snapshot.{Page, taken}
 use shipped.{carried, carry, close}
 use realize.dom.wire.{request_frame}
-use @std.http_message.message.{Reply}
+use @std.http_message.message.{Reply, headers_of}
 use realize.dom.live.{live}
 use realize.dom.page.{Paged, paged}
 use tree.standing.{first_window}
@@ -172,15 +172,16 @@ extern fn avra_ui_fired(token: int) {
 }
 
 /// The host's request `token` was answered: with the status and the octets
-/// in the seat (`len` of them), or — status -1 — why there is no answer, as
+/// in the seat (`len` of them: the reply's `fields` as `name: value` lines,
+/// then its body), or — status -1 — why there is no answer, as
 /// text in the seat. The reply is left where its ask put it and its act runs
 /// as a turn. A request already let go answers nothing.
-extern fn avra_ui_answered(token: int, status: int, len: int) {
+extern fn avra_ui_answered(token: int, status: int, len: int, fields: int) {
     let held? = mounted().get() else { return }
     let ask? = wanted().find(token) else { return }
     let into? = replies_to(ask.how) else { return }
     wanted().dropped(token)
-    into.set(replied(status, len))
+    into.set(replied(status, len, fields))
     let _ = held.app.turn_for(ask.owner, ask.act)
     swept(held)
     held.app.warn()
@@ -193,9 +194,17 @@ fn failure_words(words: string?) -> string {
 }
 
 /// What the host's answer was: a reply, or the words it gave for none.
-fn replied(status: int, len: int) -> Result<Reply, string> {
+fn replied(status: int, len: int, fields: int) -> Result<Reply, string> {
     if status < 0 { return .Err(failure_words(seated_text(len))) }
-    .Ok(Reply { status: status, body: seated_octets(len) })
+    let all = seated_octets(len)
+    if fields < 0 || fields > all.length { return .Ok(Reply { status: status, body: all }) }
+    .Ok(
+        Reply {
+            status: status,
+            headers: headers_of(all.slice(0, fields).text_lossy()),
+            body: all.slice(fields, all.length),
+        },
+    )
 }
 
 /// The page is asked for its next frame.

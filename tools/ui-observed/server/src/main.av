@@ -1,0 +1,20 @@
+//! The observation page's server: one model and its doors, over a database that lives as long as the
+//! process. `avra dev` runs it beside the page and forwards `/tasks` to it.
+use @std.crud.{crud}
+use @std.http.route.{group}
+use @std.http.server.{server}
+use @std.sqlite.{Db}
+
+@crud
+type Todo = { id: int = 0, title: string }
+
+fn serving() -> Result<int, string> {
+    let db = match Db.memory() { .Ok(d) -> d, .Err(e) -> { return .Err(e.message) } }
+    match Todo.migrate(db) { .Ok(_) -> {}, .Err(e) -> { return .Err(e.describe().message) } }
+    server tasks {
+        group "/tasks" { Todo.routes(db) }
+    }
+    match tasks.run() { .Ok(n) -> .Ok(n), .Err(e) -> .Err(e.describe().message) }
+}
+
+match serving() { .Ok(n) -> "served ${n} connections", .Err(why) -> "ui-observed-server: ${why}" }

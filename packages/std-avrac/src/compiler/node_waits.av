@@ -7,7 +7,7 @@
 //! types (`node_waits`).
 use core.{DeclId, ExprId, Expr, DeclKind, TypeId, WaitProbe, flatten}
 use features.{NameFacts, TypeFacts, FileView, bound_decl_of, property_row, declaring_decl}
-use features.impls.{callee_of}
+use features.impls.{subject_callee}
 
 /// Whether a node of this kind may wait at all.
 export fn may_wait(p: WaitProbe) -> bool {
@@ -61,11 +61,17 @@ impl WaitReader {
     /// A dot-call, by the callee its receiver's type dispatches to.
     fn method_call(e: ExprId) -> List<NodeWait> {
         let mp? = self.view.store.method_parts(e) else { return [] }
-        match callee_of(self.view, self.facts.type_at(mp.subject), mp.name) {
+        match subject_callee(
+            self.view,
+            self.names,
+            mp.subject,
+            self.facts.type_at(mp.subject),
+            mp.name,
+        ) {
             .Static(m, _) -> [NodeWait.Calls(m, mp.name)].concat(self.left_out(m, mp.args, 0)),
             .Declared(decl, _) -> self.declared(decl, mp.name, mp.args),
             .Row(r) -> if r.waits { [NodeWait.Reads(mp.name)] } else { [] },
-            .Bounded(_, _, _) or .Contract(_, _) or .FnField(_, _) -> [NodeWait.Value],
+            .Bounded(_, _, _) or .BoundStatic(_, _, _) or .Contract(_, _) or .FnField(_, _) -> [NodeWait.Value],
             .Variant(_, _) or .Nameless -> [],
         }
     }

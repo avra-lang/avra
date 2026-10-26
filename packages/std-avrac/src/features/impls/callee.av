@@ -12,17 +12,43 @@
 //! disagree, and with neither the variant law speaks the refusal —
 //! it is the one that can name what the type does have.
 use core.{Type, TypeId, DeclId}
-use features.{FileView, MethodRow, method_row, EnumSig, declared_decl}
+use core.{ExprId}
+use features.{FileView, MethodRow, method_row, EnumSig, declared_decl, NameFacts}
 
 export enum Callee {
     Variant(decl: DeclId, tname: string)
     Static(m: DeclId, tname: string)
     Bounded(decl: DeclId, j: int, tname: string)
+    BoundStatic(decl: DeclId, j: int, tname: string)
     Contract(tdecl: DeclId, tname: string)
     FnField(slot: int, fty: TypeId)
     Row(r: MethodRow)
     Declared(decl: DeclId, tname: string)
     Nameless
+}
+
+/// A dot-call's callee by its SUBJECT: a type parameter's read is a
+/// type, so its call is a static's; every other subject is a value.
+export fn subject_callee(
+    view: FileView,
+    names: NameFacts,
+    subject: ExprId,
+    ty: TypeId,
+    name: string,
+) -> Callee {
+    if names.reads_type_param(subject) { type_callee(view, ty, name) } else { callee_of(view, ty, name) }
+}
+
+/// A call on a TYPE PARAMETER: its bound's static while the parameter
+/// is abstract, the static of the type it stands for once pinned.
+fn type_callee(view: FileView, ty: TypeId, name: string) -> Callee {
+    match view.types.shape_of(ty) {
+        .Var(decl, j, tname) -> Callee.BoundStatic(decl, j, tname),
+        rest -> {
+            let d? = view.decls.implementor(ty) else { return Callee.Nameless }
+            type_receiver(view, d, view.types.name_of(ty), name)
+        },
+    }
 }
 
 export fn callee_of(view: FileView, ty: TypeId, name: string) -> Callee {

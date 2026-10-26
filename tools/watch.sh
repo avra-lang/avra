@@ -79,7 +79,7 @@ holder_gone() {
 tree_kill() {
     ps -eo pid=,pgid= | tree_pids "$1" | xargs kill -9 2>/dev/null
 }
-# THE TRIPWIRE IS RSS, read by ps in milliseconds; the footprint —
+# THE TRIPWIRE IS RSS (PSS where the kernel has it), read in milliseconds; the footprint —
 # `footprint` walks the process's whole map, seconds on a big one —
 # is read every fourth poll for the honest peak. A process once grew
 # from 7 GB to 16 GB between two footprint polls.
@@ -98,8 +98,22 @@ rss_sum() {
             print int(s / 1024)
         }'
 }
+# WHERE THE KERNEL SAYS WHAT A PROCESS REALLY HOLDS, RSS IS THE WRONG SUM: a forked tree (the
+# evaluator's `run(8)`, a test that forks workers) shares its copy-on-write pages, and each
+# process's RSS counts every shared page again — eight workers over a 500 MB parent read as
+# 4 GB and trip a cap nothing came near. PSS gives each shared page to its sharers in
+# proportion, so the tree's sum is the memory it takes, and a real allocation counts in full.
+# Linux only (smaps_rollup); macOS keeps ps's RSS, whose footprint poll is the honest number.
+tree_pss() {
+    pids=$(ps -eo pid=,pgid= | tree_pids "$1")
+    for p in $pids; do echo "/proc/$p/smaps_rollup"; done | xargs cat 2>/dev/null | awk '/^Pss:/ { s += $2 } END { print int(s / 1024) }'
+}
 tree_rss() {
-    ps -eo pid=,pgid=,rss=,ppid= | rss_sum "$1"
+    if [ -r /proc/self/smaps_rollup ]; then
+        tree_pss "$1"
+    else
+        ps -eo pid=,pgid=,rss=,ppid= | rss_sum "$1"
+    fi
 }
 # THE GUARDED COMMAND BECOMES A PROCESS-GROUP LEADER, WITH OR WITHOUT A
 # TTY: its own pgid, equal to its own pid, is what the tree walkers
@@ -279,7 +293,40 @@ self_test() {
     wait "$dead"
     echo "$dead" > "$held_dir/pid"
     holder_gone "$held_dir" || { echo "watch: self-test: fixture 5 — a dead holder's slot was kept"; return 1; }
-    echo "watch: self-test passed — 5 fixtures"
+    # fixture 6 (Linux): the tripwire reads the memory a tree TAKES. Eight forked workers over one
+    # parent share its pages, so their RSS sums past the cap while the tree holds a fraction of it
+    # and is left to finish; one process really holding more than the cap is still killed.
+    if [ -r /proc/self/smaps_rollup ] && command -v python3 >/dev/null 2>&1; then
+        lock6="$tmp/lock6"
+        cat > "$tmp/forked.py" <<'PY'
+import os, time
+block = bytearray(b"x" * (150 * 1024 * 1024))
+for _ in range(8):
+    if os.fork() == 0:
+        time.sleep(4)
+        os._exit(0)
+for _ in range(8):
+    os.wait()
+PY
+        cat > "$tmp/hog.py" <<'PY'
+import time
+block = bytearray(b"x" * (900 * 1024 * 1024))
+time.sleep(10)
+PY
+        AVRA_BUILD_LOCK="$lock6" sh "$watch" 600 python3 "$tmp/forked.py" > "$tmp/forked.out" 2>&1
+        forked=$?
+        if [ "$forked" -ne 0 ]; then
+            echo "watch: self-test: fixture 6 — eight forked workers sharing one 150 MB parent were killed under a 600 MB cap (status $forked): $(cat "$tmp/forked.out")"
+            return 1
+        fi
+        AVRA_BUILD_LOCK="$lock6" sh "$watch" 600 python3 "$tmp/hog.py" > "$tmp/hog.out" 2>&1
+        hog=$?
+        if [ "$hog" -ne 137 ]; then
+            echo "watch: self-test: fixture 6 — a process really holding 900 MB was not killed by a 600 MB cap (status $hog): $(cat "$tmp/hog.out")"
+            return 1
+        fi
+    fi
+    echo "watch: self-test passed — 6 fixtures"
 }
 if [ "$1" = "--self-test" ]; then
     self_test

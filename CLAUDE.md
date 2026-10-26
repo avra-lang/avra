@@ -1630,7 +1630,7 @@ Syntax the grammar lacks:
 - A range takes methods (`any`, `find`, `map`, `all`) but has no `.length`.
 - A `once fn` takes no type parameters ("expected `(`"), no arguments, and answers a managed value ("`once fn seed` answers `int`, which the runtime cannot keep").
 - A trailing block in a head (`if f(a) { x -> x } { … }`) is "expected BREAK"; parenthesise the call. `a?.m { … }` and `(f(a)) { … }` take no trailing block either — not pinned.
-- A seat default lands on `fn`, `mut fn` and `static fn` only: `extern fn`, a trait's `fn`, and a lambda refuse it ("expected `)`", "expected `}`", "expected `)` to close the group"); a named argument skips a defaulted seat; a default reads no sibling param; a fn value of a defaulted fn wears every seat.
+- A seat default lands on `fn`, `mut fn`, `static fn` and a trait's `fn` (whose default every impl takes) only: `extern fn` and a lambda refuse it ("expected `)`", "expected `)` to close the group"); a named argument skips a defaulted seat; a default reads no sibling param; a fn value of a defaulted fn wears every seat.
 - A generic fn as a value: pinned `ident<int>` is "expected BREAK"; bare is "a generic fn is not a value — no single signature to wear".
 - Instantiation is a statement: as a fn's tail it answers `void` — bind, then return the name; a component block is `key: value` ("declares no `List` field, so its block holds settings only") — not pinned.
 - A shell `${VAR}` in a string is Avra's interpolation ("`HOME` is not defined", or silently the binding's value); write `$VAR`.
@@ -1665,7 +1665,6 @@ Wants the typer does not carry yet:
 - `Traced<E>`'s `cause`/`context`/`trace` stay inherent methods permanently (a trait member's answer is fixed by its signature); the real want is a bound on a type's own parameter.
 - A bound lands on a free fn's and a component's parameters only: `type T<K: Tr, V>` and `impl T<K: Tr, V>` are "expected `=`"/"expected `{`", a generic method is "generic methods are recorded, not landed"; a generic container keyed by a typed id keys by the slot (core's `SideTable`).
 - Variant arms or `is` over a nullable enum are "`match` chooses over an enum, found `K?`" / "`is` asks an enum for its variant, found `K?`"; unwrap first.
-- A generic impl's local annotation naming `T` is "`T` names no type"; leave it un-annotated.
 - A bound method as a value (`xs.any(self.rides)`) is read as a property ("no field `rides` on `S`"); write `(k) -> self.rides(k)`.
 - `it` through a self-method wrapper (`xs.any(self.rides(it))`) is "`it` has no element here"; `it` binds to the nearest call, and a pipe stage is such a call.
 - `[1, 2].join(",")` is "`join` reads a list of text, this one holds `int`"; map to text first.

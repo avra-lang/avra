@@ -169,8 +169,10 @@ said=$(grep -c '^dev: the page said: ui: .*keeps state' "$work/warns.out" || :)
 [ "$said" = 1 ] || { cat "$work/warns.out"; echo "ui-browser: dev's output carried the page's warning $said times, wanted once"; exit 1; }
 echo "ui-browser: a page whose walk warns is told in \`avra dev\`'s output, once"
 
-# TWO VIEWS OF ONE REQUEST: a page whose two views ask the same GET is served by `avra dev` and
-# opened in Firefox; the browser must have sent the request once.
+# TWO VIEWS OF ONE REQUEST, AND ITS VERSION: a page whose two views ask the same GET, beside the
+# server that answers it, is served by `avra dev` and opened in Firefox; the browser must have sent
+# the request once, asked again with the version it held and been answered 304 with the page
+# unchanged, and shown the new answer once a write had moved the version.
 cp -R "$tree/tools/ui-observed" "$work/ui-observed"
 "$avra" dev --target "$target" --port 0 "$work/ui-observed" >"$work/observed.out" 2>"$work/observed.err" &
 observed=$!
@@ -183,8 +185,8 @@ until grep -q '^dev: .* at http' "$work/observed.out" 2>/dev/null; do
     sleep 0.1
 done
 observed_url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/observed.out" | head -1)
-node "$here/ui-board/observed.mjs" "$observed_url" >"$work/observed.node" 2>&1 || { cat "$work/observed.node" "$work/observed.out"; echo "ui-browser: two views of one request did not make one request"; exit 1; }
-echo "ui-browser: two views asking one GET sent it once ($(cat "$work/observed.node"))"
+node "$here/ui-board/observed.mjs" "$observed_url" >"$work/observed.node" 2>&1 || { cat "$work/observed.node" "$work/observed.out"; echo "ui-browser: the observation page's claims did not hold"; exit 1; }
+sed 's/^/ui-browser: observation page: /' "$work/observed.node"
 
 shots=${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"}
 for engine in $engines; do
