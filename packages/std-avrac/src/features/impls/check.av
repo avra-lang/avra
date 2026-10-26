@@ -723,8 +723,7 @@ fn bound_static_call(
     let found? = cx.view.decls.sig(member)?.fn_sig() else { return cx.error_type }
     if !cx.seat_contracts(e, "${trait_name}.${name}", member, 0, args, null) { return cx.error_type }
     let sig = selfed_sig(cx, subject, member, found, cx.view.decls.bound_args(decl, j))
-    let placed? = cx.placed(e, "${trait_name}.${name}", member, args, sig.params) else { return cx.error_type }
-    sig_judged(cx, e, trait_name, name, placed.args, FnSig { params: placed.wants, ret: sig.ret })
+    placed_judged(cx, e, trait_name, name, member, args, sig)
 }
 
 /// A REMEDY NAMES A FORM THAT PARSES. A bound is written on a fn's
@@ -778,8 +777,7 @@ fn contract_judged(
         return cx.error_type
     }
     let sig = seats_of(selfed_sig(cx, subject, member, found, trait_args))
-    let placed? = cx.placed(e, "${trait_name}.${name}", member, args, sig.params) else { return cx.error_type }
-    sig_judged(cx, e, trait_name, name, placed.args, FnSig { params: placed.wants, ret: sig.ret })
+    placed_judged(cx, e, trait_name, name, member, args, sig)
 }
 
 /// A method sig past its receiver — what the arguments fill.
@@ -802,6 +800,21 @@ fn trait_judged(
     let tdecl? = cx.view.decls.trait_named(cx.names, trait_name) else { return null }
     let member? = cx.view.decls.trait_member(tdecl, name) else { return null }
     contract_judged(cx, e, subject, trait_name, name, args, member, trait_args)
+}
+
+/// A trait member's judgment: the arguments placed against its seats and
+/// defaults, then judged as the placed sig.
+fn placed_judged(
+    mut cx: TypeCx,
+    e: ExprId,
+    trait_name: string,
+    name: string,
+    member: DeclId,
+    args: List<ExprId>,
+    sig: FnSig,
+) -> TypeId {
+    let placed? = cx.placed(e, "${trait_name}.${name}", member, args, sig.params) else { return cx.error_type }
+    sig_judged(cx, e, trait_name, name, placed.args, FnSig { params: placed.wants, ret: sig.ret })
 }
 
 /// A method sig's judgment — its seats past the receiver — over the
