@@ -139,16 +139,28 @@ static const char* holds_work(sqlite3* db) {
     return NULL;
 }
 
+/* A memory or temporary database has no file: it crosses the fork as a copy, and is never parked. */
+static int private_to_process(sqlite3* db) {
+    const char* file = sqlite3_db_filename(db, "main");
+    return file == NULL || *file == '\0';
+}
+
 static int parked(const char** why) {
     for (int i = 0; i < g_open_count; i++) {
         const char* held = holds_work(g_open[i]);
         if (held) { *why = held; return 1; }
     }
+    int kept = 0;
     for (int i = 0; i < g_open_count; i++) {
+        if (private_to_process(g_open[i])) {
+            g_open[kept] = g_open[i];
+            g_serial[kept++] = g_serial[i];
+            continue;
+        }
         for (sqlite3_stmt* s; (s = sqlite3_next_stmt(g_open[i], NULL));) sqlite3_finalize(s);
         sqlite3_close_v2(g_open[i]);
     }
-    g_open_count = 0;
+    g_open_count = kept;
     g_epoch++;
     return 0;
 }

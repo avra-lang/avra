@@ -300,8 +300,8 @@ export type Db = {
 /// The process, file and flags a connection was opened with.
 type Home = { epoch: int, path: string, flags: int, busy: int }
 
-/// Every file-backed connection is registered when opened and forgotten when closed, and the registry
-/// closes them all before the cores fork, bumping the epoch (`sqlite_sentinel.c`).
+/// Every connection is registered when opened and forgotten when closed. Before the cores fork the registry
+/// refuses a held transaction, closes every file-backed one and bumps the epoch (`sqlite_sentinel.c`).
 extern fn avra_sqlite_opened(db: ptr)
 extern fn avra_sqlite_closed(db: ptr)
 extern fn avra_sqlite_epoch() -> int
@@ -471,7 +471,7 @@ fn opened(c: OpenConfig) -> Result<Db, SqlError> {
     let rc = sqlite3_open_v2(path, handle, flags, null)
     if rc != 0 { fail closing(handle, rc) }
     if handle == null { fail SqlError.refused(Cause.CantOpen, "SQLite answered success and no handle") }
-    if path != ":memory:" { avra_sqlite_opened(handle!) }
+    avra_sqlite_opened(handle!)
     let db = Db {
         raw: Cell.new(handle),
         home: Cell.new(Home { epoch: avra_sqlite_epoch(), path: path, flags: flags, busy: c.busy }),

@@ -1,0 +1,89 @@
+// proves: a private in-memory database with a transaction open refuses the fork like a file one, and its statements survive the cores.
+use @std.http.http.{text}
+use @std.http.route.{get}
+use @std.http.server.{Server, Stateless, server}
+use @std.io.{make_dirs}
+use @std.net.{NetError, connect, timely}
+use @std.sqlite.{Db, sql}
+use @std.time.{ms, secs, sleep, stamp}
+
+fn asked(port: int, method: string) -> Result<string, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    c
+        .write(
+            "${method} / HTTP/1.1\r\nHost: a\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+                .bytes(),
+        )?
+    mut got = "".bytes()
+    while true {
+        match timely(within secs(2) { c.read(65536) }) {
+            .Ok(b) -> {
+                let more? = b else { break }
+                got = got.concat(more)
+            },
+            .Err(_) -> { break },
+        }
+    }
+    let parts = (got.text() ?? "?").split("\r\n\r\n")
+    .Ok(if parts.length > 1 { parts[1] } else { "?" })
+}
+
+fn refused(why: string) -> NetError { NetError { verb: "setup", subject: why, errno: 1 } }
+
+fn count(db: Db) -> string {
+    match db.scalar(sql("SELECT count(*) FROM rows")) {
+        .Ok(v) -> "${v.int() catch -1}",
+        .Err(e) -> e.message,
+    }
+}
+
+fn opened(path: string) -> Result<Db, NetError> {
+    let db = match Db.open(path) { .Ok(d) -> d, .Err(e) -> { return .Err(refused(e.message)) } }
+    let _ = db.run(sql("CREATE TABLE IF NOT EXISTS rows (n INTEGER PRIMARY KEY, who INTEGER)"))
+    .Ok(db)
+}
+
+fn dir() -> string {
+    let d = "/tmp/avra-rt/${stamp()}"
+    let _ = make_dirs(d)
+    d
+}
+
+/// One cycle: the server runs on 3 cores, answers 3 requests, stops.
+fn cycle(up: Server<Stateless>) -> Result<string, NetError> {
+    let ran = spawn up.run(3)
+    let port = up.listener.port
+    let sent = [spawn asked(port, "GET") for i in 0..3]
+    let answers = [t.await? for t in sent]
+    up.stop()
+    let end = match ran.await { .Ok(n) -> "ran ${n}", .Err(e) -> "err ${e.errno} ${e.subject}" }
+    .Ok("${answers.join(",")} ${end}")
+}
+
+fn shown() -> Result<string, NetError> {
+    let db = match Db.memory() { .Ok(d) -> d, .Err(e) -> { return .Err(refused(e.message)) } }
+    let _ = db.run(sql("CREATE TABLE rows (n INTEGER PRIMARY KEY, who INTEGER)"))
+    let _ = db.run(sql("INSERT INTO rows (who) VALUES (1)"))
+    let st = match db.prepare("SELECT count(*) FROM rows") {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(refused(e.message)) },
+    }
+    let _ = db.exec("BEGIN")
+    let _ = db.run(sql("INSERT INTO rows (who) VALUES (2)"))
+    server app {
+        port: 0
+        get "/" { _req -> text(200, count(db)) }
+    }
+    let up = match app.listening() {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    let first = match up.run(3) { .Ok(_) -> "served", .Err(e) -> "refused ${e.errno}" }
+    let _ = db.exec("COMMIT")
+    let one = cycle(up)?
+    let stepped = match st.step() { .Ok(r) -> "row ${r}", .Err(e) -> e.message }
+    .Ok("${first} | ${one} | parent ${count(db)} stmt ${stepped}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

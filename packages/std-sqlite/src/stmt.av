@@ -62,9 +62,10 @@ export type Stmt = {
     done: Cell<bool> = Cell.new(false),
     name_cache: Cell<List<string>?> = Cell.new(null),
     conn: Cell<ptr?> = Cell.new(null),
-    /// The registry epoch the statement was prepared under. The cores' fork closes every connection and
-    /// finalizes what it held, so a statement of an earlier epoch is gone: it is read as finalized and
-    /// its handle is never handed to SQLite.
+    /// The registry epoch the statement was prepared under. The cores' fork closes every file-backed
+    /// connection and finalizes what it held, so a statement of an earlier epoch is gone: it is read as
+    /// closed and its handle is never handed to SQLite. -1 marks a private in-memory connection's, which
+    /// the fork never closes.
     epoch: int = 0,
 }
 
@@ -128,7 +129,11 @@ impl Db {
             fail SqlError
                 .refused(Cause.NoStatement, "the text holds no statement — it is a comment, or blank")
         }
-        Stmt { raw: Cell.new(handle), conn: Cell.new(conn), epoch: avra_sqlite_epoch() }
+        Stmt {
+            raw: Cell.new(handle),
+            conn: Cell.new(conn),
+            epoch: if self.home.get().path == ":memory:" { -1 } else { avra_sqlite_epoch() },
+        }
     }
 }
 
@@ -462,8 +467,9 @@ impl Stmt {
     /// question — `closed_fault`'s twin one level down, and every verb
     /// that can refuse asks it before reading a count.
     fn finalized_fault() -> SqlError? {
-        if self.dead() { return statement_finalized }
-        null
+        if !self.dead() { return null }
+        if self.parked() && self.raw.get() != null { return statement_parked }
+        statement_finalized
     }
 
     /// Whether the statement has been finalized. THE COUNTING VERBS ASK IT
@@ -479,7 +485,7 @@ impl Stmt {
     fn dead() -> bool { self.h() == null }
 
     /// Whether the cores' fork finalized this statement along with its connection.
-    fn parked() -> bool { self.epoch != avra_sqlite_epoch() }
+    fn parked() -> bool { self.epoch >= 0 && self.epoch != avra_sqlite_epoch() }
 
     /// The statement handle SQLite may be given: none once the fork finalized it.
     fn h() -> ptr? {
@@ -588,6 +594,12 @@ fn storage_of(code: int) -> Result<Storage, SqlError> {
 
 const statement_finalized: SqlError = SqlError
     .refused(Cause.Finalized, "this statement was finalized — prepare it again")
+
+const statement_parked: SqlError = SqlError
+    .refused(
+        Cause.Finalized,
+        "the cores' fork closes every statement with its connection — prepare this one again",
+    )
 
 // ── The voices ──────────────────────────────────────────────────
 
