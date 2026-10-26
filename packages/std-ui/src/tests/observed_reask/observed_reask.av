@@ -1,0 +1,103 @@
+// proves: asking an observation again keeps the answer its views show until the next one lands. Two views
+// share one key; each asks it again while the first answer stands, and at no point is either's value
+// absent: its state stays the value and `is_loading` says a request is out. A re-ask the server refuses leaves the
+// last good value standing, with the refusal beside it — eval == native.
+use @std.ui.app.{Async, Fetch, fetch, fetched}
+use @std.ui.components.{button, item}
+use @std.ui.headless.{headless}
+use @std.http_message.message.{Reply, Request}
+use @std.text.{repeat}
+use @std.time.{ms}
+
+state left: Fetch<int> = fetch()
+state right: Fetch<int> = fetch()
+state asks: int = 0
+state offline: bool = false
+state refusing: bool = false
+state parses: int = 0
+
+/// The server: an answer one octet longer each time it is asked.
+fn network(_r: Request) -> Result<Reply, string> {
+    asks = asks + 1
+    if offline { return .Err("offline") }
+    if refusing { return .Ok(Reply { status: 503, body: "busy".bytes() }) }
+    .Ok(Reply { status: 200, body: repeat("x", asks).bytes() })
+}
+
+/// Counts its calls: each answer is parsed once per view.
+fn parsed(r: Reply) -> Result<int, string> {
+    parses = parses + 1
+    if r.status != 200 { return .Err("status ${r.status}") }
+    .Ok(r.body.length)
+}
+
+fn words(a: Async<int>, loading: bool) -> string {
+    let state = match a {
+        .Idle -> "idle",
+        .Loading -> "loading",
+        .Failed(m) -> "failed ${m}",
+        .Ready(v) -> "ready ${v}",
+    }
+    if loading { "${state}, a request is out" } else { state }
+}
+
+fn shown(f: Fetch<int>) -> string { words(f.state(), f.is_loading()) }
+
+/// What a view keeps: its last good value, and the refusal beside it.
+fn kept(f: Fetch<int>) -> string { "value ${f.value() ?? -1}, failure ${f.failure() ?? "none"}" }
+
+fn view() -> item {
+    item {
+        items: [
+            button "Ask" {
+                on press {
+                    let _ = fetched(left, Request.get("/rows"), parsed)
+                    let _ = fetched(right, Request.get("/rows"), parsed)
+                }
+            },
+        ]
+    }
+}
+
+let screen = headless(view)
+screen.wired(network)
+screen
+    .running(
+        () -> {
+            let _ = screen.press("Ask")
+            println("asked: left ${shown(left)} | right ${shown(right)}")
+            screen.advance(ms(10))
+            println("answered: left ${shown(left)} | right ${shown(right)}")
+            let _ = screen.press("Ask")
+            println("asked again: left ${shown(left)} | right ${shown(right)}")
+            screen.advance(ms(10))
+            println("answered again: left ${shown(left)} | right ${shown(right)}")
+            let _ = screen.press("Ask")
+            let _ = screen.press("Ask")
+            println(
+                "asked twice more before the answer: left ${shown(left)} | right ${shown(right)} | sent ${asks}",
+            )
+            screen.advance(ms(10))
+            println("answered: left ${shown(left)} | right ${shown(right)} | sent ${asks}")
+            offline = true
+            let _ = screen.press("Ask")
+            println("asked while the server is out: left ${kept(left)} | right ${kept(right)}")
+            screen.advance(ms(10))
+            println("refused: left ${kept(left)} | right ${kept(right)}")
+            offline = false
+            let _ = screen.press("Ask")
+            screen.advance(ms(10))
+            println("the server back: left ${kept(left)} | right ${kept(right)}")
+            let before = parses
+            let _ = screen.press("Ask")
+            let joined = parses - before
+            screen.advance(ms(10))
+            println(
+                "two views, one apply each: ${joined} parses joining the held answer, ${parses - before - joined} parsing the new one",
+            )
+            refusing = true
+            let _ = screen.press("Ask")
+            screen.advance(ms(10))
+            println("refused with a 503: left ${kept(left)} | right ${kept(right)}")
+        },
+    )

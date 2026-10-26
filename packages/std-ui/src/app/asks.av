@@ -29,10 +29,21 @@ export fn repeating(period: Duration, act: Act) -> bool {
 export fn fetched<T>(held: Fetch<T>, request: Request, parse: fn(Reply) -> Result<T, string>) -> bool {
     let on? = running() else { return false }
     let entry = on.observed.entry_of(request)
-    held.at.get()?.left(held.id)
+    let before = held.at.get()
+    before?.left(held.id)
+    if before == null || before!.id != entry.id { held.last.set(null) }
     held.at.set(entry)
     entry
-        .joined(Watcher { id: held.id, apply: (a: Async<Reply>) -> held.now.set(settled(a, parse)) })
+        .joined(
+            Watcher {
+                id: held.id,
+                apply: (a: Async<Reply>) -> {
+                    let seen = settled(a, parse)
+                    held.now.set(seen)
+                    held.last.set(seen.value() ?? held.last.get())
+                },
+            },
+        )
     on.observed.swept()
     if entry.loading() { return true }
     let sent = entry.conditional(request)
