@@ -912,7 +912,11 @@ impl Workspace {
             fail BuildError
                 .LinkFailed(
                     code,
-                    if tools.target == "" { unanswered_externs(full, hosted, archive_text(tools.runtime)) } else { [] },
+                    if tools.target == "" { unanswered_externs(
+                            full,
+                            hosted,
+                            armap_text(self.listed_octets(tools.runtime)),
+                        ) } else { [] },
                 )
         }
         clock.mark("link")
@@ -1170,12 +1174,6 @@ fn unanswered_externs(l: Lowered, defined: List<string>, archive: string) -> Lis
 /// each name with a NUL, and a mach-o name wears a leading `_`.
 fn named_in(archive: string, name: string) -> bool {
     archive.contains(name + from_codepoint(0))
-}
-
-/// The runtime archive's symbol index as text, or none when it cannot be read or
-/// carries none. The index lists the symbols its members DEFINE and no others.
-fn archive_text(path: string) -> string {
-    match read_bytes(path) { .Ok(b) -> armap_text(b), .Err(_) -> "" }
 }
 
 /// The text of an `ar` archive's first member when it is the symbol index —
