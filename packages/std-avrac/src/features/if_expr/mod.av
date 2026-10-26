@@ -12,7 +12,6 @@ use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recov
 export fn if_expr() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name      | build
-        "if_expr" | build_if
         "if_stmt" | build_if_stmt
     }
     LanguageFeature if_expr {
@@ -21,8 +20,8 @@ export fn if_expr() -> LanguageFeature {
             // every line a statement, the last included: no tail is promoted
             stmt_block = "{" ( stmts:stmt | BREAK )* "}" -> Expr.Block
             if_stmt = "if" c:expression t:stmt_block ( "else" ( e:stmt_block | ei:if_stmt ) )? -> if_stmt(c, t, e, ei) @head(c)
-            primary = "if" c:expression t:block "else" ( e:block | e:if_expr ) @expect("else", "an `if` expression needs its `else` branch") -> if_expr(c, t, e) @head(c)
-            if_expr = "if" c:expression t:block "else" ( e:block | e:if_expr ) -> if_expr(c, t, e) @head(c)
+            primary = "if" cond:expression on_true:block "else" ( on_false:block | on_false:if_expr ) @expect("else", "an `if` expression needs its `else` branch") -> Expr.If @head(cond)
+            if_expr = "if" cond:expression on_true:block "else" ( on_false:block | on_false:if_expr ) -> Expr.If @head(cond)
         }
         builders: rows
     }
