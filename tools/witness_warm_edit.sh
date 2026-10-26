@@ -11,7 +11,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 unset WARM_EDIT_SKIP
 mkdir -p "$tmp/tools"
-cp "$root/tools/warm_edit_bench.sh" "$tmp/tools/warm_edit_bench.sh"
+cp "$root/tools/warm_edit_bench.sh" "$root/tools/host_key.sh" "$tmp/tools/"
 
 # 1. no compiler, no opt-out: FAIL, with the reason named.
 if SPEED_LOCAL=1 sh "$tmp/tools/warm_edit_bench.sh" >"$tmp/fail.stdout" 2>"$tmp/fail.err"; then
@@ -26,7 +26,7 @@ grep -q "FAILURE" "$tmp/fail.err" \
 # 1a. a store the tree holds is set aside, never read by the measurement, and put back as it stood;
 # the store the measurement ran over is the compiler's own.
 mkdir -p "$tmp/s/tools" "$tmp/s/build" "$tmp/s/packages/cli/src/commands" "$tmp/s/.avra-cache"
-cp "$root/tools/warm_edit_bench.sh" "$tmp/s/tools/warm_edit_bench.sh"
+cp "$root/tools/warm_edit_bench.sh" "$root/tools/host_key.sh" "$tmp/s/tools/"
 printf 'x · memo y\n' > "$tmp/s/packages/cli/src/commands/shared.av"
 : > "$tmp/s/build/libavra_runtime.a"
 echo theirs > "$tmp/s/.avra-cache/sentinel"
@@ -45,7 +45,7 @@ AVRA_WITNESS_LOG="$tmp/saw" SPEED_LOCAL=1 SPEED_ROUNDS=1 AVRA_SPEED_BIN="$tmp/s/
 
 # 1b. a measurement whose subshell dies is a NAMED refusal, never an unbound `$1`.
 mkdir -p "$tmp/m/tools" "$tmp/m/build" "$tmp/m/packages/cli/src/commands" "$tmp/m/.avra-cache"
-cp "$root/tools/warm_edit_bench.sh" "$tmp/m/tools/warm_edit_bench.sh"
+cp "$root/tools/warm_edit_bench.sh" "$root/tools/host_key.sh" "$tmp/m/tools/"
 printf 'x · memo y\n' > "$tmp/m/packages/cli/src/commands/shared.av"
 : > "$tmp/m/build/libavra_runtime.a"
 cat > "$tmp/m/build/avra" <<'DIES'
