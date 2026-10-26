@@ -748,6 +748,9 @@ export type Decls = {
     // an impl block's target type, once typing found it — dense by
     // DeclId; a method's instantiation is its target's
     targets: Cell<List<DeclId?>>,
+    // the trait member each `impl Trait for` method answers, once its
+    // signature named it — dense by DeclId
+    answers: Cell<List<DeclId?>>,
     // THE INOUT SEATS, dense by DeclId: each seat's CONTRACT a fn
     // declared (`mut`, `const`), whether a method DECLARED `mut fn`,
     // and whether the receivers pass found it WRITING through `self`
@@ -1023,6 +1026,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         builtins: list_cell(),
         rows: [],
         targets: Cell.new(no_targets),
+        answers: Cell.new(no_targets),
         seat_marks: Cell.new(no_seat_marks),
         declared_writes: Cell.new(no_declared_writes),
         written_seats: Cell.new(no_written_seats),
@@ -2669,6 +2673,10 @@ impl Decls {
         self.ensure_failures.set(ensure)
     }
 
+    fn record_answered(method: DeclId, member: DeclId) {
+        self.answers.set_at(method.index, member)
+    }
+
     fn record_target(impl_decl: DeclId, target: DeclId) {
         self.targets.set_at(impl_decl.index, target)
     }
@@ -3129,8 +3137,27 @@ impl Decls {
     /// declares one — always its last.
     fn variadic_of(d: DeclId) -> int? { self.facts_of(d)?.variadic }
 
+    /// Each seat's default, by position: the fn's own, else the one the
+    /// trait member it answers writes — a contract's default is written once.
     fn seat_defaults(d: DeclId) -> List<DeclId?> {
+        let own = self.own_seat_defaults(d)
+        let m? = self.answered_member(d) else { return own }
+        let theirs = self.own_seat_defaults(m)
+        [x ?? if j < theirs.length { theirs[j] } else { null } for j, x in own]
+    }
+
+    /// The defaults a fn's own seats write, by position.
+    fn own_seat_defaults(d: DeclId) -> List<DeclId?> {
         [self.default_named(d, n) for n in self.facts_of(d)?.seats ?? []]
+    }
+
+    /// The trait member an `impl Trait for` method answers — absent
+    /// for an inherent method and a trait's own member. Its signature
+    /// names it, so the declaration is asked first.
+    fn answered_member(d: DeclId) -> DeclId? {
+        let _ = self.sig(d)
+        let held: DeclId? = self.answers.get()[d.index]
+        held
     }
 
     /// Whether a fn's body is lowered once for every caller: no type

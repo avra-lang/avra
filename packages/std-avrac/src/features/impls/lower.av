@@ -35,11 +35,12 @@ fn dyn_dispatch(
     args: List<ExprId>,
 ) -> Reg {
     let ordinal = cx.view.decls.trait_method_names(tdecl).index_of(name)
-    if ordinal < 0 { return cx.lower_defect(e, "a dyn method outside its trait survived typing") }
+    let member: DeclId? = cx.view.decls.trait_member(tdecl, name)
+    if ordinal < 0 || member == null { return cx.lower_defect(e, "a dyn method outside its trait survived typing") }
     let s = seated(cx, subject, args)
     let data = boxed_value(cx, subject, s.recv, dyn_writes(cx, tdecl, name))
     let fp = cx.slot_read(s.recv, 1 + ordinal, null)
-    cx.call_ptr_at(e, fp, [data].concat(s.args))
+    cx.call_ptr_at(e, fp, [data].concat(cx.seated_regs(e, member!, args, s.args)))
 }
 
 /// Whether the trait member named writes its receiver — a contract's
