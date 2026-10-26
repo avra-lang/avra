@@ -102,7 +102,6 @@ export type SyntaxArena = {
     // a trait impl's trait arguments (`impl Realize<Text> for Html`), by its statement
     @copied_by_hand("minted_stmt: its TypeRefs are rebuilt through tref") impl_trait_args: Cell<List<List<TypeRef>>>,
     // a trait's own type parameters beside `Self`, by its statement
-    @copied(stmt, wear_trait_tparams) trait_tparams: Cell<List<List<string>>>,
     // declarations an instance MINTED while its file parsed — a
     // route's pattern record — joining the file's top level
     @not_copied("the file's own top level, never a node's") hoisted: Cell<List<StmtId>>,
@@ -224,7 +223,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         component_insts: list_cell(),
         impl_tparams: list_cell(),
         impl_trait_args: list_cell(),
-        trait_tparams: list_cell(),
         hoisted: list_cell(),
         annotations: list_cell(),
         docs: list_cell(),
@@ -838,8 +836,6 @@ impl SyntaxArena {
         self.mark_impl_tparams(s, own.of, own.target)
     }
 
-    fn wear_trait_tparams(s: StmtId, names: List<string>) { if !names.is_empty() { self.mark_trait_tparams(s, names) } }
-
     /// Gives `e` the handler `worn` records, if any, each mark through its own
     /// verb so the fingerprint follows — the door a copy uses.
     fn wear_handler(e: ExprId, worn: OnHandler?) {
@@ -1076,7 +1072,7 @@ impl SyntaxArena {
     fn answer_of(s: StmtId) -> ExprId? {
         match self.stmt(s) {
             .ExprStmt(v) -> self.answered_by(s, v),
-            .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+            .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
         }
     }
 
@@ -1314,7 +1310,6 @@ impl SyntaxArena {
         self.component_insts.push(null)
         self.impl_tparams.push(null)
         self.impl_trait_args.push([])
-        self.trait_tparams.push([])
         self.annotations.push([])
         self.docs.push(null)
         self.doc_ats.push(-1)
@@ -1586,14 +1581,6 @@ impl SyntaxArena {
     }
 
     fn trait_args_of(s: StmtId) -> List<TypeRef> { self.impl_trait_args.get()[s.index] }
-
-    /// A trait's own type parameters, beside `Self`.
-    fn mark_trait_tparams(s: StmtId, names: List<string>) {
-        self.trait_tparams.set_at(s.index, names)
-        self.restamp_carrying(s, 154, [fp_str(n) for n in names])
-    }
-
-    fn trait_tparams_of(s: StmtId) -> List<string> { self.trait_tparams.get()[s.index] }
 
     /// A declaration an instance minted, joining its file's top level.
     fn hoist(s: StmtId) {
