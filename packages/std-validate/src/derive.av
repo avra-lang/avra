@@ -267,7 +267,12 @@ fn valued(t: Type) -> Code {
 }
 
 fn field_value(f: Field) -> Code {
-    quote { Entry { key: ${literal(f.name)}, value: ${encoded(f.kind, quote { self.${f.name} }, 0)} } }
+    entry_of(literal(f.name), encoded(f.kind, quote { self.${f.name} }, 0))
+}
+
+/// One key and its encoded value, as a map's entry in the tree.
+fn entry_of(key: Code, value: Code) -> Code {
+    quote { Entry { key: ${key}, value: ${value} } }
 }
 
 /// What a value of kind `k`, read by `v`, is in the tree — the shape each
@@ -284,7 +289,7 @@ fn encoded(k: Kind, v: Code, depth: int) -> Code {
         .Bool -> quote { Value.Bool(${v}) },
         .Opt(inner) -> quote { if ${v} == null { Value.Null } else { ${encoded(inner, quote { ${v}! }, depth)} } },
         .List(inner) -> quote { Value.List([${encoded(inner, each, depth + 1)} for ${each_word} in ${v}]) },
-        .Map(_, inner) -> quote { Value.Map([Entry { key: ${key}, value: ${encoded(inner, each, depth + 1)} } for ${key_word}, ${each_word} in ${v}]) },
+        .Map(_, inner) -> quote { Value.Map([${entry_of(key, encoded(inner, each, depth + 1))} for ${key_word}, ${each_word} in ${v}]) },
         .Named(n, _) -> if texted(n) { quote { Value.Text(${v}.text_form()) } } else { quote { ${v}.value() } },
         .Ptr or .Void or .Cell(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> quote { Value.Null },
     }
