@@ -414,6 +414,11 @@ impl Db {
     /// statements prepared on it are abandoned unclosed, since closing
     /// them would release locks the parent holds. A private in-memory
     /// database has no file to reopen and keeps its inherited copy.
+    ///
+    /// SQLite's per-file state is per PROCESS and a fork copies it: a connection that holds a
+    /// transaction at the fork, or a sibling closed while it held a lock (its descriptor parked
+    /// for a deferred close), leaves the child's reopened connection joined to state naming
+    /// descriptors the child has closed and reused, and a core ends. Nothing here prevents it.
     fn live() -> ptr? {
         let now = avra_own_pid()
         let home = self.home.get()
