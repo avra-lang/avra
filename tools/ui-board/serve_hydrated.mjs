@@ -5,7 +5,11 @@
 // `--backend <url>` every path the page does not own is the app's server's,
 // as it is where the page ships.
 //
-//   node serve_hydrated.mjs <document> <module.wasm> <runtime/dom> [--tampered] [--backend <url>]
+// With `--hold` the page's first GET of `/tasks` waits at the proxy until something asks for
+// `/__release`: the page stands on the server's own paint, with no list answered, for as
+// long as a claim needs.
+//
+//   node serve_hydrated.mjs <document> <module.wasm> <runtime/dom> [--tampered] [--hold] [--backend <url>]
 //
 // Says `serving http://127.0.0.1:<port>/` and stays until killed.
 import fs from "node:fs";
@@ -14,6 +18,9 @@ import path from "node:path";
 
 const [documentFile, wasmFile, glue, ...flags] = process.argv.slice(2);
 const tampered = flags.includes("--tampered");
+const hold = flags.includes("--hold");
+let release = () => {};
+const released = new Promise((go) => { release = go; });
 const backend = flags.includes("--backend") ? flags[flags.indexOf("--backend") + 1] : null;
 
 // Before the module runs, every element the server drew is marked, so a page
@@ -31,12 +38,16 @@ const server = http.createServer((req, res) => {
     const file = path.join(glue, path.basename(url.pathname));
     if (fs.existsSync(file)) return served(res, types[".js"], fs.readFileSync(file));
   }
+  if (url.pathname === "/__release") { release(); return res.writeHead(204).end(); }
   if (!backend) return res.writeHead(404).end();
-  const ahead = http.request(new URL(url.pathname + url.search, backend), { method: req.method, headers: req.headers }, (answer) => {
-    res.writeHead(answer.statusCode, answer.headers);
-    answer.pipe(res);
-  });
-  ahead.on("error", () => res.writeHead(502).end());
-  req.pipe(ahead);
+  const forward = () => {
+    const ahead = http.request(new URL(url.pathname + url.search, backend), { method: req.method, headers: req.headers }, (answer) => {
+      res.writeHead(answer.statusCode, answer.headers);
+      answer.pipe(res);
+    });
+    ahead.on("error", () => res.writeHead(502).end());
+    req.pipe(ahead);
+  };
+  if (hold && req.method === "GET" && url.pathname === "/tasks") released.then(forward); else forward();
 });
 server.listen(0, "127.0.0.1", () => console.log(`serving http://127.0.0.1:${server.address().port}/`));

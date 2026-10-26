@@ -87,28 +87,65 @@ const claim = (words, holds, seen = "") => {
 claim("the first paint sends the theme's variables and the page's base rule", style.textContent.includes(":root{") && style.textContent.includes("body{"), style.textContent.slice(0, 40));
 claim("the first paint is one frame", frames === 1, spent());
 spent();
-claim("the page holds the four seeded rows", ["t1", "t2", "t3", "t4"].every((k) => keyed(k) !== null), shape(mount).slice(0, 80));
+// THE SERVER, BY HAND: the page's fetch is answered from a table of tasks the
+// way the board's server answers its doors (GET lists, POST makes, PATCH
+// replaces, DELETE removes). The board keeps no copy of its own: every change
+// is sent, and the page shows the list the server answers with.
+const settle = async () => { for (let k = 0; k < 8; k++) await Promise.resolve(); };
+const table = { rows: [], next: 1, refusing: 0 };
+const seeded = (title, done = false) => table.rows.push({ id: table.next++, title, done });
+const wording = (init) => JSON.parse(new TextDecoder().decode(init.body));
+const reply = (status, value) => ({ status, arrayBuffer: async () => (value === undefined ? new ArrayBuffer(0) : new TextEncoder().encode(JSON.stringify(value)).buffer) });
+const answer = ({ url, init }) => {
+  const id = Number(url.split("/")[2]);
+  if (init.method === "GET") return reply(200, table.rows);
+  if (table.refusing) return reply(table.refusing);
+  if (init.method === "POST") { const row = { id: table.next++, ...wording(init) }; table.rows.push(row); return reply(200, row); }
+  const row = table.rows.find((r) => r.id === id);
+  if (!row) return reply(404);
+  if (init.method === "PATCH") { Object.assign(row, wording(init)); return reply(200, row); }
+  table.rows.splice(table.rows.indexOf(row), 1);
+  return reply(204);
+};
+// Every ask the page has made is answered, and each answer is a turn: the change's, then the list the board asks for after it.
+const answered = async () => { while (asked.length) { const ask = asked.shift(); ask.resolve(answer(ask)); await settle(); } };
+const drain = async () => { await settle(); await answered(); frame(); };
+const footerWords = () => every(mount, (n) => n.tagName === "#text" && n.textContent.includes("open ·")).map((n) => n.textContent)[0] || "";
 
-// THE PER-ITEM HANDLER: row 3's Remove names row 3's task.
-const row4 = keyed("t4");
-const remove3 = named("Remove", keyed("t3"))[0];
-claim("row t3 holds a Remove that listens", Boolean(remove3));
-fire(remove3);
-claim("pressing it removes t3 and keeps t2", keyed("t3") === null && keyed("t2") !== null);
-claim("the row below is the same element: nothing rebuilt it", keyed("t4") === row4);
-claim("a removal is one frame of under 200 bytes", frames === 1 && writes < 200, spent());
+claim("the first paint is the board with no tasks: the server holds them", keyed("1") === null && textOf(mount).includes("Nothing here yet."), shape(mount).slice(0, 80));
+claim("the page asks the server for its tasks at start, with a GET for /tasks", asked.length === 1 && asked[0].url === "/tasks" && asked[0].init.method === "GET", `${asked.length}`);
+for (const title of ["Draft the spec", "Wire the event channel", "Land the wasm board", "Write the tour"]) seeded(title, title.startsWith("Draft") || title.startsWith("Write"));
+await drain();
+claim("the server's tasks are the board's: four rows, under the server's keys", ["1", "2", "3", "4"].every((k) => keyed(k) !== null), shape(mount).slice(0, 80));
+claim("the footer says nothing of a failed ask", !footerWords().includes("failed"), footerWords());
 spent();
 
-// The user checks the box; the control says its own state.
+// THE PER-ITEM HANDLER: row 3's Remove names row 3's task, and its press is a DELETE.
+const row4 = keyed("4");
+const remove3 = named("Remove", keyed("3"))[0];
+claim("row 3 holds a Remove that listens", Boolean(remove3));
+fire(remove3);
+await settle();
+claim("pressing it sends one DELETE for /tasks/3 and changes nothing on the page", asked.length === 1 && asked[0].url === "/tasks/3" && asked[0].init.method === "DELETE" && keyed("3") !== null && frames === 0, `${asked.map((a) => a.init.method + " " + a.url)}`);
+await drain();
+claim("the server's answer takes the row: 3 is gone and 2 is kept", keyed("3") === null && keyed("2") !== null && table.rows.length === 3);
+claim("the row below is the same element: nothing rebuilt it", keyed("4") === row4);
+claim("the change is one frame of under 200 bytes", frames === 1 && writes < 200, spent());
+spent();
+
+// The user checks the box; the control says its own state, and the change is a PATCH of the whole task.
 const toggle2 = named("Wire the event channel")[0];
-claim("row t2's checkbox listens", Boolean(toggle2));
+claim("row 2's checkbox listens", Boolean(toggle2));
 toggle2.checked = true;
 fire(toggle2);
-claim("checking it is one frame of under 200 bytes", frames === 1 && writes < 200, spent());
+await settle();
+claim("checking it sends one PATCH for /tasks/2 carrying the task as JSON", asked.length === 1 && asked[0].url === "/tasks/2" && asked[0].init.method === "PATCH" && asked[0].init.headers["content-type"] === "application/json" && new TextDecoder().decode(asked[0].init.body) === '{"title":"Wire the event channel","done":true}', `${asked.map((a) => a.init.method + " " + a.url)}`);
+await drain();
+claim("the server holds it done, and the board shows the server's list in small frames", table.rows.find((r) => r.id === 2).done === true && writes < 400, spent());
 spent();
 
 // ADD FROM THE FIELD: the input's own text rides the input event, then the
-// Add button appends the task the draft named. THE CARET WITNESS: while the
+// Add button sends the task the draft named. THE CARET WITNESS: while the
 // user types, the page's own value is never written back to it.
 const field = named("New task")[0];
 const add = named("Add")[0];
@@ -120,16 +157,22 @@ typed = "Ship the rewrite";
 fire(field);
 claim("typing writes no value back and sends no frame", valueWrites === 0 && frames === 0, `${valueWrites} write(s), ${spent()}`);
 fire(add);
-claim("Add appends the row the draft named", keyed("t5") !== null && textOf(keyed("t5")).includes("Ship the rewrite"));
+await settle();
+claim("Add sends one POST for /tasks carrying the draft as a task", asked.length === 1 && asked[0].url === "/tasks" && asked[0].init.method === "POST" && new TextDecoder().decode(asked[0].init.body) === '{"title":"Ship the rewrite","done":false}', `${asked.map((a) => a.init.method + " " + a.url)}`);
 claim("the program clears the field, once", valueWrites === 1 && typed === "", `${valueWrites} write(s), value "${typed}"`);
+claim("the row is not the board's until the server answers", keyed("5") === null);
+await drain();
+claim("the server's task is a row under the server's key", keyed("5") !== null && textOf(keyed("5")).includes("Ship the rewrite"));
 spent();
 
 // A TEXT OF ANY LENGTH: the program hands out a seat for the octets the
 // field holds, so a value far past any fixed room arrives whole.
-typed = "é".repeat(6000);
+const long = "é".repeat(6000);
+typed = long;
 fire(field);
 fire(add);
-claim("a 12000-octet title is kept whole", keyed("t6") !== null && textOf(keyed("t6")).includes(typed));
+await drain();
+claim("a 12000-octet title is kept whole by the server and shown whole", keyed("6") !== null && textOf(keyed("6")).includes(long) && table.rows.at(-1).title === long);
 spent();
 
 // A MODE IS A WHOLE SHEET: the theme's variables move and no element does.
@@ -161,7 +204,6 @@ claim("every ink reads on every fill in the dark mode", faint(style.textContent)
 // A SOURCE IS THE HOST'S TIMER: a press asks, the page arms a timer, its
 // firing is a turn, and the footer says so.
 spent();
-const footerWords = () => every(mount, (n) => n.tagName === "#text" && n.textContent.includes("open ·")).map((n) => n.textContent)[0] || "";
 const remind = named("Remind me")[0];
 claim("the footer holds a Remind me that listens", Boolean(remind));
 claim("before the reminder the footer does not say it", !footerWords().includes("reminder"), footerWords());
@@ -173,86 +215,56 @@ frame();
 claim("the timer firing is a turn: the footer says the reminder", footerWords().includes("reminder"), footerWords());
 spent();
 
-// A SOURCE IS THE HOST'S FETCH TOO: the same Request value, one frame to the
-// host, its answer a turn.
-const settle = async () => { for (let k = 0; k < 8; k++) await Promise.resolve(); };
-const made = (id, title, done = false) => ({ status: 200, arrayBuffer: async () => new TextEncoder().encode(JSON.stringify({ id, title, done })).buffer });
-const listed = (rows) => ({ status: 200, arrayBuffer: async () => new TextEncoder().encode(JSON.stringify(rows)).buffer });
-claim("the page asks the server for its tasks at start, with a GET for /tasks", asked.length === 1 && asked[0].url === "/tasks" && asked[0].init.method === "GET", `${asked.length}`);
-asked[0].resolve(listed([]));
-await settle();
-frame();
-claim("a server with no tasks leaves the board its own: four rows, and the footer says nothing of the ask", keyed("t1") !== null && !footerWords().includes("sync"), footerWords());
-asked.splice(0);
+// A REFUSAL IS SHOWN IN WORDS, and the board still shows the server's list:
+// a change the server refuses is a change the board never made.
+table.refusing = 503;
+fire(named("Remove", keyed("6"))[0]);
+await drain();
+claim("a refused change shows as the words the answer gave", footerWords().includes("save failed: status 503"), footerWords());
+claim("and the board shows what the server holds: row 6 is still there", keyed("6") !== null && table.rows.length === 5);
+table.refusing = 0;
 spent();
-const sync = named("Sync")[0];
-claim("the footer holds a Sync that listens", Boolean(sync));
-spent();
-fire(sync);
-await settle();
-claim("pressing it sends one request for /tasks with the page's fetch", asked.length === 1 && asked[0].url === "/tasks" && asked[0].init.method === "POST", `${asked.length}`);
-claim("the whole request crossed the wasm boundary: content type and the first task the server does not hold, as JSON", asked[0].init.headers["content-type"] === "application/json" && new TextDecoder().decode(asked[0].init.body) === '{"title":"Draft the spec","done":true}', JSON.stringify(asked[0].init.headers));
-claim("the footer says it is syncing; the ask cost one small frame", footerWords().includes("syncing") && frames === 1, `${footerWords()} / ${spent()}`);
-spent();
-asked[0].resolve(made(7, "Draft the spec", true));
-await settle();
-frame();
-claim("the answer is a turn: the footer says how many tasks the server holds", footerWords().includes("synced 1"), footerWords());
-claim("the task the server kept stands where it did, under the server's key", keyed("7") !== null && keyed("t1") === null, `${keyed("7") !== null} ${keyed("t1") === null}`);
-spent();
-fire(sync);
-await settle();
-asked[1].resolve({ status: 503, arrayBuffer: async () => new ArrayBuffer(0) });
-await settle();
-frame();
-claim("a refusal shows as the words the parse gave", footerWords().includes("sync failed: status 503"), footerWords());
+fire(named("Remove", keyed("6"))[0]);
+await drain();
+claim("the next change the server takes clears the words, and the row goes", !footerWords().includes("failed") && keyed("6") === null && table.rows.length === 4, footerWords());
 spent();
 
-// TURNS THAT LAND TOGETHER ARE ONE PAINT: a timer and a fetch answer in one
-// tick wait for the display's frame, which walks the view once and sends one
-// frame; a frame nothing asked for walks nothing; and an EVENT shows what is
-// pending first, because the user acts on the screen they saw.
+// TURNS THAT LAND TOGETHER ARE ONE PAINT: a timer and the answers to a change
+// in one tick wait for the display's frame, which walks the view once and
+// sends one frame; a frame nothing asked for walks nothing; and an EVENT shows
+// what is pending first, because the user acts on the screen they saw.
+fire(named("Remove", keyed("5"))[0]);
 fire(remind);
-fire(sync);
 await settle();
 frame();
 spent();
 const walks = () => Number(mod.avra_ui_walks());
 let walked = walks();
 const reminderTimer = [...armed.values()].slice(-1)[0];
-asked[asked.length - 1].resolve(made(8, "Wire the event channel"));
 await settle();
+await answered();
 reminderTimer.fn();
 claim("nothing is painted until the frame comes: no frame sent, no walk", frames === 0 && walks() === walked, `${frames} frame(s), ${walks() - walked} walk(s)`);
 frame();
 claim("the frame is one frame and one walk for both sources", frames === 1 && walks() - walked === 1, `${spent()}, ${walks() - walked} walk(s)`);
-claim("what each source did shows in it", footerWords().includes("synced 2") && footerWords().includes("reminder"), footerWords());
+claim("what each source did shows in it", keyed("5") === null && footerWords().includes("reminder"), footerWords());
 frame();
 claim("a frame nothing asked for walks nothing", walks() - walked === 1, `${walks() - walked}`);
 spent();
 
-// A source lands, then the user presses before the frame: the press meets the
+// An answer lands, then the user presses before the frame: the press meets the
 // screen the user saw, so the pending paint is shown first.
 walked = walks();
 const mode = named("Light mode")[0] ?? named("Dark mode")[0];
 const [, mode_ear] = ears(mode.__avra_id)[0];
 const dark = () => dispatch(mount, mode, mode_ear.event, { bubbles: false });
-fire(sync);
+fire(named("Remove", keyed("4"))[0]);
 await settle();
-asked[asked.length - 1].resolve(made(9, "Land the wasm board"));
-await settle();
-frame();
+await answered();
 spent();
 walked = walks();
-fire(sync);
-await settle();
-frame();
-walked = walks();
-asked[asked.length - 1].resolve(made(10, "Write the tour", true));
-await settle();
-spent();
 dark();
-claim("a press after a pending answer shows the answer first, then its own change", frames === 1 && walks() - walked === 1, `${frames} frame(s), ${walks() - walked} walk(s)`);
+claim("a press after a pending answer shows the answer first, then its own change", frames === 1 && walks() - walked === 1 && keyed("4") === null, `${frames} frame(s), ${walks() - walked} walk(s)`);
 frame();
 claim("and the press's own frame follows at the display's frame", walks() - walked === 2 && named("Dark mode").length + named("Light mode").length === 1, `${walks() - walked}`);
 spent();
@@ -324,6 +336,7 @@ const early = await adopting(serverPrint, "typed early");
   dispatch(early.at, add, ear.event, { bubbles: false });
   frame();
   await settle();
+  await drain();
   const all = every(early.at, (n) => n.attrs["aria-label"] === "All" && early.heard(n.__avra_id).length > 0)[0];
   const [, all_ear] = early.heard(all.__avra_id)[0];
   dispatch(early.at, all, all_ear.event, { bubbles: false });

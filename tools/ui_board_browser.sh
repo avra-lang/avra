@@ -120,7 +120,7 @@ cp -R "$tree/tools/ui-board" "$work/served/tools/ui-board"
 "$avra" build --target "$target" --wasm_reactor "$work/served/tools/ui-board" >"$work/served.out" 2>"$work/served.err" || { cat "$work/served.err"; echo "ui-browser: the board did not build for the served page"; exit 1; }
 served=$(tail -1 "$work/served.out")
 for mode in "" "--tampered"; do
-    node "$here/ui-board/serve_hydrated.mjs" "$work/document.html" "$served" "$tree/runtime/dom" $mode --backend "$url" >"$work/serve$mode.out" 2>&1 &
+    node "$here/ui-board/serve_hydrated.mjs" "$work/document.html" "$served" "$tree/runtime/dom" $mode --hold --backend "$url" >"$work/serve$mode.out" 2>&1 &
     servers="$servers $!"
 done
 trap 'kill "$dev" $servers 2>/dev/null || true' EXIT

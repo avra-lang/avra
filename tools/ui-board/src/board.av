@@ -10,17 +10,22 @@
 //! it.id`), so the row identity is the task id and an insert or a
 //! removal touches no other row.
 //!
+//! THE BOARD'S TASKS ARE THE SERVER'S. A change is sent through the
+//! server's doors — add is a POST, a tick a PATCH, a removal a DELETE — and
+//! the board draws the list the server last answered, read from the ask
+//! itself: no copy of the tasks is kept beside it, and the parse that reads
+//! an answer assigns nothing.
+//!
 //! The board names no target. A page mounts it (`web/`) and so does a
 //! terminal (`term/`).
 use @std.json.{DecodeError}
 use @std.json.codec.{json}
-use @std.json.typed.{array_of, as_bool, as_int, bool_text, elements, int_text}
+use @std.json.typed.{array_of, as_bool, bool_text, elements}
 use @std.time.{ms}
 use @std.ui.app.{Async, Fetch, fetch, fetched, later}
 use @std.ui.shipped.{ship}
 use @std.http_message.message.{Body, Reply, Request}
 use @std.json.{Json, field as member, parse, to_text}
-use @std.text.{parse_int}
 use @std.ui.components.{
     button,
     card,
@@ -59,16 +64,8 @@ state dark: bool = false
 state newest_first: bool = false
 state dialog_open: bool = false
 state reminded: bool = false
-state synced: Fetch<int> = fetch()
-state started: Fetch<int> = fetch()
-state seq: int = 5
-state pending: string = ""
-state tasks: List<Todo> = [
-    Todo { id: "t1", title: "Draft the spec", done: true },
-    Todo { id: "t2", title: "Wire the event channel", done: false },
-    Todo { id: "t3", title: "Land the wasm board", done: false },
-    Todo { id: "t4", title: "Write the tour", done: true },
-]
+state asked: List<Fetch<List<Todo>>> = []
+state refused: string = ""
 
 // ── the state a page carries ────────────────────────────────────
 
@@ -77,11 +74,10 @@ state tasks: List<Todo> = [
 export fn ship_state() {
     ship("filter", Show.json_shape(), () -> filter.json_text(), (j: string) -> filter_written(j))
     ship("dark", "bool", () -> bool_text(dark), (j: string) -> dark_written(j))
-    ship("seq", "int", () -> int_text(seq), (j: string) -> seq_written(j))
     ship(
         "tasks",
         "[${Todo.json_shape()}]",
-        () -> array_of([t.json_text() for t in tasks]),
+        () -> array_of([t.json_text() for t in tasks()]),
         (j: string) -> tasks_written(j),
     )
 }
@@ -123,24 +119,30 @@ fn seq_written(j: string) -> bool {
     }
 }
 
-fn tasks_written(j: string) -> bool {
+/// The tasks a server's page carries stand as the answer of an ask already made.
+export fn tasks_written(j: string) -> bool {
     match todos_of(j) {
         .Ok(read) -> {
-            tasks = read
+            let answered: Fetch<List<Todo>> = fetch()
+            answered.now.set(Async.Ready(read))
+            asked = [answered]
             true
         },
         .Err(_) -> false,
     }
 }
 
+/// The tasks the server last answered with, newest answer first; none until one has come.
+fn tasks() -> List<Todo> { [v! for v in [f.value() for f in asked] if v != null].first() ?? [] }
+
 fn todos_of(j: string) -> Result<List<Todo>, DecodeError> {
     [Todo.from_json_text(entry)? for entry in elements(j, "")?]
 }
 
 /// The counts are DERIVED from the list, never stored beside it.
-fn done_count() -> int { [t for t in tasks if t.done].length }
+fn done_count() -> int { [t for t in tasks() if t.done].length }
 
-fn open_count() -> int { [t for t in tasks if !t.done].length }
+fn open_count() -> int { [t for t in tasks() if !t.done].length }
 
 fn admits(t: Todo) -> bool {
     match filter { .All -> true, .Active -> !t.done, .Done -> t.done }
@@ -148,18 +150,22 @@ fn admits(t: Todo) -> bool {
 
 export fn theme() -> Theme { if dark { dark_theme } else { default_theme } }
 
-/// `title` becomes the next task — none, when it says nothing.
-fn add(title: string) {
-    if title == "" { return }
-    tasks = tasks.concat([Todo { id: "t${seq}", title: title, done: false }])
-    seq = seq + 1
+/// A task as the server's doors take it.
+fn row_of(title: string, done: bool) -> Body {
+    Body
+        .Json(to_text(Json.Obj([member("title", Json.Str(title)), member("done", Json.Bool(done))])))
 }
 
-/// This task with its state as given when it is the named one, unchanged
-/// otherwise.
-fn marked(t: Todo, id: string, done: bool) -> Todo {
-    if t.id == id { t with { done: done } } else { t }
+/// `title` is sent as the next task — nothing, when it says nothing.
+fn add(title: string) {
+    if title == "" { return }
+    save(Request.post("/tasks", row_of(title, false)))
 }
+
+/// The task is sent with the state the box now shows.
+fn mark(t: Todo, done: bool) { save(Request.patch("/tasks/${t.id}", row_of(t.title, done))) }
+
+fn remove(t: Todo) { save(Request.delete("/tasks/${t.id}")) }
 
 // ── view: state in, tree out ────────────────────────────────────
 
@@ -211,7 +217,7 @@ component filters {
         tab "Active" { shows: .Active }
         tab "Done" { shows: .Done }
         button "Clear done" {
-            on press { tasks = [t for t in tasks if !t.done] }
+            on press { for t in tasks() { if t.done { remove(t) } } }
             disabled: done_count() == 0
             style: sunk_style()
         }
@@ -249,11 +255,11 @@ component task_row(task: Todo) {
     item {
         checkbox self.task.title {
             checked: self.task.done
-            on change { checked -> tasks = [marked(x, self.task.id, checked) for x in tasks] }
+            on change { checked -> mark(self.task, checked) }
             style: title_style(self.task.done)
         }
         button "Remove" {
-            on press { tasks = [x for x in tasks if x.id != self.task.id] }
+            on press { remove(self.task) }
             style: sunk_style()
         }
     }
@@ -274,7 +280,7 @@ component task_rows {
 /// The tasks the filter admits, in the order the board shows them. The
 /// rows are keyed, so turning the order CARRIES each row: none is made.
 fn visible() -> List<Todo> {
-    let admitted = [t for t in tasks if admits(t)]
+    let admitted = [t for t in tasks() if admits(t)]
     if newest_first { [admitted[admitted.length - 1 - j] for j, t in admitted] } else { admitted }
 }
 
@@ -284,7 +290,7 @@ component board {
         layout: Layout { gap: .M, pad: around(.M) }
         progress "Done" {
             amount: done_count()
-            max: tasks.length
+            max: tasks().length
         }
         filters {}
         new_task {}
@@ -298,10 +304,6 @@ fn remind_now() -> bool {
     reminded = true
     true
 }
-
-/// Whether the server keeps the task: its `id` is then the server's own
-/// numeric key, where a task made on this page wears `t<n>`.
-fn held(t: Todo) -> bool { parse_int(t.id) != null }
 
 /// A task as the server writes it: `{"id":1,"title":"…","done":false}`.
 fn todo_of(j: Json) -> Todo? {
@@ -317,51 +319,40 @@ fn document(r: Reply) -> Result<Json, string> {
     match parse(words) { .Ok(j) -> .Ok(j), .Err(e) -> .Err(e.describe().message) }
 }
 
-/// The server's tasks replace the board's when it holds any; answers how
-/// many it holds.
-fn loaded(r: Reply) -> Result<int, string> {
+/// The tasks an answer holds.
+fn loaded(r: Reply) -> Result<List<Todo>, string> {
     let doc = document(r)?
-    let rows = [t! for t in [todo_of(j) for j in doc.items()] if t != null]
-    if !rows.is_empty() { tasks = rows }
-    .Ok(rows.length)
+    .Ok([t! for t in [todo_of(j) for j in doc.items()] if t != null])
 }
 
-/// The task the server kept stands where the pending one did; answers how
-/// many tasks the server now holds.
-fn kept(r: Reply) -> Result<int, string> {
-    let doc = document(r)?
-    let made? = todo_of(doc) else { return .Err("the server's task is unreadable") }
-    tasks = [if t.id == pending { made } else { t } for t in tasks]
-    .Ok([t for t in tasks if held(t)].length)
-}
-
-/// The tasks are asked for at start: one request, whatever target sends it,
-/// its progress kept apart from the footer's Sync words.
+/// The server's tasks are asked for: at start, and after every change. The
+/// last answer stands until the new one comes, so the list is never drawn empty between.
 fn load() {
-    let _ = fetched(started, Request.get("/tasks"), loaded)
+    let next: Fetch<List<Todo>> = fetch()
+    asked = [next].concat([f for f in asked if f.value() != null].take(1))
+    let _ = fetched(next, Request.get("/tasks"), loaded)
 }
 
-/// Sync sends the first task the server does not hold; with none to send it
-/// asks for the server's again.
-fn sync() {
-    let unsent? = tasks.find(!held(it)) else {
-        let _ = fetched(synced, Request.get("/tasks"), loaded)
-        return
-    }
-    pending = unsent.id
-    let body = Json
-        .Obj([member("title", Json.Str(unsent.title)), member("done", Json.Bool(unsent.done))])
-    let _ = fetched(synced, Request.post("/tasks", Body.Json(to_text(body))), kept)
+/// A change was answered. Whatever it answered, the board shows the
+/// server's list next; a refusal also says so in the footer.
+fn saved(r: Reply) -> Result<int, string> {
+    let held = if r.status < 200 || r.status > 299 { "status ${r.status}" } else { "" }
+    refused = held
+    load()
+    if held == "" { .Ok(r.status) } else { .Err(held) }
 }
 
-/// How the last sync stands, in words.
-fn synced_words() -> string {
-    match synced.state() {
-        .Idle -> "",
-        .Loading -> " · syncing",
-        .Failed(why) -> " · sync failed: ${why}",
-        .Ready(n) -> " · synced ${n}",
-    }
+/// A change is sent through the server's doors. Each is its own ask, so
+/// none's answer is dropped for a later one's.
+fn save(request: Request) {
+    let _ = fetched(fetch<int>(), request, saved)
+}
+
+/// How the last change stands, in words.
+fn saved_words() -> string {
+    if refused != "" { return " · save failed: ${refused}" }
+    let why? = asked.first()?.failure() else { return "" }
+    " · load failed: ${why}"
 }
 
 /// A reminder is asked for: a timer, whatever the target keeps it with.
@@ -372,12 +363,8 @@ fn remind() {
 component footer {
     row {
         layout: spread_layout()
-        text "${open_count()} open · ${done_count()} done of ${tasks.length}${if reminded { " · reminder" } else { "" }}${synced_words()}" {
+        text "${open_count()} open · ${done_count()} done of ${tasks().length}${if reminded { " · reminder" } else { "" }}${saved_words()}" {
             style: Style { color: .Muted }
-        }
-        button "Sync" {
-            on press { sync() }
-            style: sunk_style()
         }
         button "Remind me" {
             on press { remind() }
