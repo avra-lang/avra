@@ -7,9 +7,9 @@
 #   sh tools/work land         push, PR, arm auto-merge — no Sprite involved
 #   sh tools/work status       PRs and their merge state; each lane and its Sprite
 #   sh tools/work sprites      every Sprite at a glance; `--fix [name]` repairs
-#   sh tools/work done         remove this lane, end its run, free its Sprite
+#   sh tools/work done --remove-worktree   REMOVE this lane (owner-approved only): end its run, free its Sprite
 #
-# Also: `main-compiler` builds main's compiler once per source into the shared depot (every lane's
+# Also: `unbind` ends this lane's run and frees its Sprite and keeps the worktree; `main-compiler` builds main's compiler once per source into the shared depot (every lane's
 # pre-commit hook wants one at the merge-base); `attach` follows this lane's run again and `stop` ends it; `bind
 # [sprite]` gives a worktree a Sprite, or moves it to the one named; `wait
 # <branch>` waits for a PR to merge; `run --for <minutes>` raises the
@@ -195,7 +195,7 @@ new() {
     git -C "$main" fetch -q origin main
     git -C "$main" worktree add -q -b "$name" "$wt" origin/main
     seed_local "$wt" >&2
-    (cd "$wt" && bind) >&2 || die "$wt stands, with no Sprite — free one with \`work done\`, then \`work bind\` there"
+    (cd "$wt" && bind) >&2 || die "$wt stands, with no Sprite — free one with \`work unbind\`, then \`work bind\` there"
     echo "$wt"
 }
 
@@ -939,11 +939,10 @@ sprites() {
     return "$unwell"
 }
 
-done_() {
+unbind() {
     inside
     wt=$(git rev-parse --show-toplevel)
-    main=$(main_tree)
-    [ "$wt" != "$main" ] || die "this is the main checkout"
+    [ "$wt" != "$(main_tree)" ] || die "this is the main checkout"
     s=$(bound)
     # The lane's run ends with the lane: nothing is left running for nobody.
     if [ -n "$s" ]; then
@@ -955,6 +954,16 @@ done_() {
     fi
     rm -f "$(binding)"
     [ -z "$s" ] || echo "work: $s is free"
+}
+
+# done: unbind, then the worktree goes. A worktree is removed only on the owner's say-so, so removal
+# is never the default: it takes `--remove-worktree`.
+done_() {
+    [ "${1:-}" = --remove-worktree ] || die "\`done\` REMOVES this worktree, which only the owner may approve — \`sh tools/work done --remove-worktree\` once they have; \`sh tools/work unbind\` frees the Sprite and keeps the worktree"
+    inside
+    wt=$(git rev-parse --show-toplevel)
+    main=$(main_tree)
+    unbind
     cd "$main"
     git worktree remove "$wt" || die "$wt stays — commit or drop its changes, then \`git worktree remove\`"
     echo "work: $wt removed"
@@ -1101,7 +1110,8 @@ usage() {
         land) echo "usage: sh tools/work land [--batch]  — push, PR, ready, strip a DO NOT MERGE title, arm auto-merge; refuses while another PR is mid-CI unless --batch; no Sprite involved" ;;
         status) echo "usage: sh tools/work status   — PRs and their merge state; each lane and its Sprite" ;;
         sprites) echo "usage: sh tools/work sprites [--fix [<sprite>…]]   — every Sprite at a glance; --fix repairs" ;;
-        done) echo "usage: sh tools/work done   — remove this lane, end its run, free its Sprite" ;;
+        done) echo "usage: sh tools/work done --remove-worktree   — REMOVE this lane's worktree (the owner must have approved), end its run, free its Sprite; without the flag it refuses" ;;
+        unbind) echo "usage: sh tools/work unbind   — end this lane's run and free its Sprite; the worktree stays" ;;
         bind) echo "usage: sh tools/work bind [<sprite>]   — give this worktree a Sprite, or move it to the one named" ;;
         main-compiler) echo "usage: sh tools/work main-compiler   — build main's compiler once per compiler source into the shared depot (idempotent, one build at a time, under the watchdog); \`work compiler\` then copies it into a lane" ;;
         wait) echo "usage: sh tools/work wait <branch>   — wait until the branch's PR merges" ;;
@@ -1123,7 +1133,8 @@ case "${1:-}" in
     bind) shift; bind "$@" ;;
     bind-locked) shift; bind_locked "$@" ;;
     sprites) shift; sprites "$@" ;;
-    done) done_ ;;
+    done) shift; done_ "$@" ;;
+    unbind) unbind ;;
     command) shift; assemble "$@"; echo ;;
     seed) shift; seed "$@" ;;
     compiler-hash) compiler_hash "${2:-$PWD}" ;;

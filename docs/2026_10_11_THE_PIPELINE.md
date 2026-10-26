@@ -236,13 +236,14 @@ per-landing refresh conflicts every other branch.
 
 `sh tools/work new <name>` claims a free Sprite and binds it to the
 worktree (recorded in the worktree's own git dir, `avra-sprite`). A
-Sprite belongs to one worktree until `sh tools/work done`. The pool is
+Sprite belongs to one worktree until `sh tools/work unbind` (or `done --remove-worktree`). The pool is
 `sprite list` minus `AVRA_SP_EXCLUDE` (default `web-terminal
 avra-bench`), or `AVRA_SPRITES` when set.
 
     sh tools/work bind [<sprite>]   # give this worktree a Sprite, or move it
     sh tools/work sprites [--fix]   # every Sprite at a glance; --fix repairs one
-    sh tools/work done              # remove this lane, end its run, free its Sprite
+    sh tools/work unbind            # end this lane's run, free its Sprite, keep the worktree
+    sh tools/work done --remove-worktree   # remove the worktree too — only with the owner's say-so
 
 `--fix` repairs a Sprite that is silent or unprovisioned (re-provisions
 it and wakes it).
@@ -683,7 +684,8 @@ auto-merge (§0). None of these is a command to run.
 | `sh tools/work wait <branch>` | wait until the branch's PR merges |
 | `sh tools/work attach` | follow this lane's run again, from its first line |
 | `sh tools/work stop` | end this lane's run on its Sprite |
-| `sh tools/work done` | remove this lane, end its run, free its Sprite |
+| `sh tools/work unbind` | end this lane's run, free its Sprite, keep the worktree |
+| `sh tools/work done --remove-worktree` | remove this lane too, only with the owner's say-so |
 | `sh tools/work command <stage> …` | the hand-off's words: stage word then link plans |
 | `sh tools/gate_changed.sh --refs origin/main HEAD --no-keepers` | the changed-file gate |
 | `make keepers-static` | the compiler-free keepers |
