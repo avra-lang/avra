@@ -266,7 +266,7 @@ async function main() {
   const cases = args.tree ? [JSON.parse(args.tree)] : FIXED_CASES.concat(Array.from({ length: CASES }, () => rooted(generate(rand, 3))));
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "avra-layout-oracle-"));
   const binary = firefoxBinary();
-  if (!binary) { console.log("layout-oracle: ran 0 trees — no Firefox on this machine (FIREFOX names one)"); process.exit(process.env.CI === "true" ? 1 : 0); }
+  if (!binary) { console.log("layout-oracle: ran 0 trees — FAILED: no Firefox on this machine (FIREFOX names one)"); process.exit(1); }
   const page = fs.mkdtempSync(path.join(os.tmpdir(), "avra-layout-page-"));
   fs.writeFileSync(path.join(page, "index.html"), PAGE);
   const browser = await openPage(binary, "file://" + path.join(page, "index.html"), { width: 1200, height: 900 });

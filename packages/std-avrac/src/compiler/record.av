@@ -33,6 +33,7 @@ use core.{
     TypeId,
     DeclId,
     DeclKind,
+    FileId,
     SeatMark,
     Span,
 }
@@ -2098,6 +2099,59 @@ fn imports_kept(ws: Workspace, store: Store, name: string) -> List<string> {
     let made = [p[1] for p in ws.producers_in(store, module_path(name.split("."))).walk if p[0] == "import" && p.length > 1]
     ws.import_lists.put(name, made)
     made
+}
+
+/// THE MODULES A PROGRAM REACHES: its own package's, the prelude, and the closure of what they
+/// import — a parsed module by the `use` lines it has now, a held one by its record — with each
+/// package a held `collect` gathers whole, as `pkg:KEY`. What a held file said stands in the store
+/// whatever else ran in the directory; it is printed only when the program reaches it.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — the workspace, a store and the program in, the modules reached out.
+fn reached_modules(ws: Workspace, store: Store, p: Program) -> Map<string, bool> {
+    mut reached: Map<string, bool> = {}
+    mut parsed_in: Map<string, List<Analysis>> = {}
+    for a in p.files {
+        let m = ws.module_of(a.view.source.file)
+        parsed_in.set(m, (parsed_in.get(m) ?? []).concat([a]))
+    }
+    mut held_in: Map<string, bool> = {}
+    for path in ws.decls.held.get().keys() { held_in.set(ws.module_of(path), true) }
+    mut work: List<string> = [prelude_module().text()]
+        .concat(
+            distinct(
+                [ws.module_of(path) for path in ws.decls.held.get().keys().concat([a.view.source.file for a in p.files]) if ws.holder_of_path(path) == 0],
+            ),
+        )
+    mut at = 0
+    while at < work.length {
+        let m = work[at]
+        at = at + 1
+        if reached.get(m) != null { continue }
+        reached.set(m, true)
+        if held_in.get(m) != null {
+            work = work.concat(imports_kept(ws, store, m))
+            for parts in ws.producers_in(store, module_path(m.split("."))).walk {
+                if parts[0] == "gathers" && parts.length > 1 { reached.set("pkg:${parts[1]}", true) }
+            }
+        }
+        for a in parsed_in.get(m) ?? [] {
+            let from = ws.packages()[ws.holder_of_path(a.view.source.file)]
+            for s in a.view.stmts {
+                let u = a.view.store.use_parts(s)
+                if u != null { work.push(qualified(module_path(u!.path), from).text()) }
+            }
+        }
+    }
+    reached
+}
+
+/// Whether a program reaches the file at `path`: its own package's, a reached module's, or a
+/// package some reached `collect` gathers whole.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — the workspace, the reached modules and a path in.
+fn reaches_file(ws: Workspace, reached: Map<string, bool>, path: string) -> bool {
+    let holder = ws.holder_of_path(path)
+    holder == 0 ||
+        reached.get(ws.module_of(path)) != null ||
+        reached.get("pkg:${ws.packages()[holder].key}") != null
 }
 
 /// EVERY MODULE A FILE OF `m` CAN SEE A TYPE OF: its own — a sibling file's names need no

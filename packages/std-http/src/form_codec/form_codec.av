@@ -29,7 +29,7 @@ use @std.meta.{
     name,
     refuse_as_at,
 }
-use @std.derive.{record_of, RECORD_WIDTH}
+use @std.derive.{record_of}
 use @std.http.form.{
     Form,
     FormError,
@@ -109,7 +109,6 @@ fn parsed(kind: Kind, v: Code, n: Code) -> Code {
 
 fn shape_problems(t: Type) -> List<Diagnostic> {
     if !t.variants.is_empty() { return [an_enum(t)] }
-    if t.fields.length > RECORD_WIDTH { return [too_wide(t)] }
     [unreadable_field(t, f) for f in t.fields if !readable(f.kind)]
 }
 
@@ -140,15 +139,6 @@ fn an_enum(t: Type) -> Diagnostic {
         t.at,
         "`@form` reads a record, and `${t.name}` is an enum",
         "give each variant its own record, or write `from_form` by hand",
-    )
-}
-
-fn too_wide(t: Type) -> Diagnostic {
-    refuse_as_at(
-        "too_wide",
-        t.at,
-        "`@form` reads a record of at most ${RECORD_WIDTH} fields, and `${t.name}` has ${t.fields.length}",
-        "read the rest from `Form.value` by hand",
     )
 }
 

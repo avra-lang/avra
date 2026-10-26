@@ -1,7 +1,7 @@
 // The dev client, by its own verb over a stub document and a stream it is
 // handed: when it reloads, and that a failed build is shown and a mended
 // one clears it.
-import { watch } from "./dev.js";
+import { relayed, watch } from "./dev.js";
 import { stubDocument, stubElement } from "./stub_dom.js";
 
 let passed = 0;
@@ -68,6 +68,18 @@ test("a mended build of another module reloads", broke.reloads === 1);
   await failing.events.say("built", "xyz");
   console.warn = warn;
   test("a swap that fails reloads the page", failing.reloads === 1);
+}
+
+// The app's own words reach the server; nothing else does.
+{
+  const heard = [], posted = [];
+  const fake = { error: (...said) => heard.push(said.join(" ")) };
+  relayed({ console: fake, post: (text) => posted.push(text) });
+  fake.error("ui: `counter` keeps state");
+  fake.error("avra: the page held elements this program does not draw");
+  fake.error("  ui: indented is not the app's");
+  test("an app warning is posted to the server", posted.length === 1 && posted[0] === "ui: `counter` keeps state");
+  test("every line still reaches the console", heard.length === 3);
 }
 
 console.log(`dev: ${passed}/${passed + failed}`);
