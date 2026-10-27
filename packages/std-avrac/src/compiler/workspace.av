@@ -2162,16 +2162,23 @@ impl Workspace {
         let home = self.decls.decl(target).file
         let _ = self.resolved(home)
         let blocks = self.method_blocks(target)
+        // A BLOCK THAT STANDS NAMES ITS MEMBERS BEFORE ANY SIG IS ASKED. A derive MINTS ITS
+        // IMPL INTO THE ANNOTATED FILE and runs inside that file's resolve, so a read
+        // arriving there can take no sig of it — and must still find the methods it has
+        // already declared, never hear that the type has none.
+        for b in blocks { self.block_members(target, b) }
         // A table that cannot be COMPLETED is not the table, and must
-        // not be memoized: an impl still registering, or an impl in a
-        // file whose resolve is in flight (a lifted call runs inside
-        // one, and the generated impl it is minting is not signed yet).
-        // Its reads stay the caller's, which answered from what stands.
-        if blocks
-            .any(
-                (b) -> self.registering(b) ||
-                    self.db.active(key(Family.Resolved, self.decls.decl(b).file.index)),
-            ) {
+        // not be memoized: an impl still registering, an expansion still
+        // minting, or an impl in a file whose resolve is in flight (a
+        // lifted call runs inside one, and the generated impl it is
+        // minting is not signed yet). Its reads stay the caller's, which
+        // answered from what stands.
+        if self.db.family_active(Family.Expanded.ordinal) ||
+            blocks
+                .any(
+                    (b) -> self.registering(b) ||
+                        self.db.active(key(Family.Resolved, self.decls.decl(b).file.index)),
+                ) {
             self.db.abandon(k)
             return self.decls.registered_methods(target)
         }
@@ -2264,6 +2271,13 @@ impl Workspace {
             .visible(self.decls.decl(b).file)
             .type_decl(self.decls.decl(target).name)
         seen != null && same_decl(seen!, target)
+    }
+
+    /// A standing block's methods, registered from the declaration itself: a generated
+    /// impl is minted with the members it names, so they are knowable before any sig.
+    fn block_members(target: DeclId, block: DeclId) {
+        if self.decls.decl(block).kind is .Method { return self.decls.declare_method(target, block) }
+        for m in self.decls.children_of(block) { self.decls.declare_method(target, m) }
     }
 
     /// Whether a declaration's signature is being computed right now.
