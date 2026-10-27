@@ -714,7 +714,10 @@ impl Kernel {
     /// The revision a cell last changed at, by its family's verifier.
     fn verified(family: int, arg: int) -> int {
         match self.verifiers.get()[family] {
-            .By -> (self.by_dispatch.get())(family, arg),
+            .By -> {
+                let cell? = self.cell(Key { family: family, arg: arg }) else { return (self.by_dispatch.get())(family, arg) }
+                if cell.verified_at == self.rev.get() { cell.changed_at } else { (self.by_dispatch.get())(family, arg) }
+            },
             .Input -> self.changed_at(Key { family: family, arg: arg }),
             .Hash(live, seen, moved) -> self.moved_at(seen, moved, arg, live(arg)),
         }
