@@ -326,25 +326,13 @@ impl Workspace {
         if row.ordinal >= 0 && row.ordinal < ids.length { self.fill_shape(store, m, ids[row.ordinal], row) }
     }
 
-    /// A HELD DECLARATION'S OWN ROW, FILLED ON THE ASK THAT NAMES IT,
-    /// never eagerly with the rest of its module: a row that fills
-    /// EARLIER in record order can itself name a declaration whose row
-    /// sits LATER, and a settle read through that name must see the
-    /// later row's own fill, not the blank default sitting there until
-    /// the module's sweep reaches it. Guarded per declaration, so a
-    /// name reached while filling ITS OWN row (a cycle) sees "not
-    /// filled yet" rather than recursing.
+    /// A HELD DECLARATION'S OWN ROW, FILLED ON THE ASK THAT NAMES IT from its saved `Sig` row.
+    /// Guarded per declaration, so a name reached while filling ITS OWN row (a cycle) sees
+    /// "not filled yet" rather than recursing.
     fn fill_ensured(d: DeclId) {
         if self.hold.row_filled.at(d.index) != null { return }
         self.hold.row_filled.keep(d.index, true)
-        let x = self.decls.decl(d)
-        let store? = self.store.get() else { return }
-        let path = self.decls.file(x.file).path
-        let m = self.module_path_of(path)
-        let ids = self.decls.decls_so_far(x.file)
-        let ordinal? = [i for i, id in ids if same_decl(id, d)].first() else { return }
-        let rows = file_rows(record_fields(self, store, m), record_places(self, store, m).get(path))
-        if ordinal < rows.length { self.fill_row(store, m, ids, rows[ordinal]) }
+        self.sig_revived(d)
     }
 
     /// ONE HELD FILE'S DECLARATIONS, minted from its record lines in record order. The
