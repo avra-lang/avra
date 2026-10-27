@@ -678,25 +678,30 @@ impl Program {
         // reads it below as an ordinary dependency rather than
         // computing it lazily mid-lower. The test after a call reads
         // its callee's cancel bits, so that fact settles here too.
+        let t0 = ws.clock()
         touch(ws.references())
         ws.cancels_settled()
-        let lo = memory(
-            self
-                .ws
-                .decls
-                .union(
-                    self.files,
-                    entry,
-                    every,
-                    programs,
-                    hashed,
-                    no_held_wants(),
-                    ws.hold.held_codes.get(),
-                    (w: Wanted) -> ws.lowered(ws.spec_id(w)),
-                    (f: FileId) -> ws.is_program_file(f),
-                    (i: Instance) -> ws.kept_instance(i),
-                ),
-        ) with { libraries: ws.linked_packages() }
+        ws.timed("lower-refs", t0)
+        let t1 = ws.clock()
+        let units = self
+            .ws
+            .decls
+            .union(
+                self.files,
+                entry,
+                every,
+                programs,
+                hashed,
+                no_held_wants(),
+                ws.hold.held_codes.get(),
+                (w: Wanted) -> ws.lowered(ws.spec_id(w)),
+                (f: FileId) -> ws.is_program_file(f),
+                (i: Instance) -> ws.kept_instance(i),
+            )
+        ws.timed("lower-union", t1)
+        let t2 = ws.clock()
+        let lo = memory(units) with { libraries: ws.linked_packages() }
+        ws.timed("lower-memory", t2)
         if leaves_traced() { eprintln(ws.leaves_report()) }
         // A `defer` that parks outside its own `within`, refused here:
         // the cancel fact settled above, so the parks are the settled
