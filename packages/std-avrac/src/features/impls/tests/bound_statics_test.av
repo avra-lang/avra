@@ -1,0 +1,74 @@
+// A STATIC MEMBER THROUGH A BOUND — `T.m()` calls the static its
+// bound's trait declares, answered per instantiation by the type the
+// parameter stands for. A type parameter names no value elsewhere.
+use @std.avrac.testing.{shown, refused_with}
+
+/// A trait with a static member, and two types answering it.
+fn named() -> string {
+    "trait Named {\n    static fn kind() -> string\n    static fn made(n: int) -> Self\n    fn n() -> int\n}\ntype P = { v: int }\nimpl Named for P {\n    static fn kind() -> string { \"p\" }\n    static fn made(n: int) -> P { P { v: n } }\n    fn n() -> int { self.v }\n}\ntype Q = { w: int }\nimpl Named for Q {\n    static fn kind() -> string { \"q\" }\n    static fn made(n: int) -> Q { Q { w: n * 2 } }\n    fn n() -> int { self.w }\n}\n"
+}
+
+spec "features/impls — a static member through a bound" {
+    given "a bounded parameter" {
+        then "calls its bound's static member, per instantiation" {
+            shown(
+                named() +
+                    "fn k<T: Named>(x: T) -> string { T.kind() }\n\"\${k(P { v: 1 })}\${k(Q { w: 1 })}\"",
+            ) == "pq"
+        }
+        then "a static answering `Self` answers the parameter's type" {
+            shown(
+                named() + "fn twin<T: Named>(x: T) -> int { T.made(x.n()).n() }\ntwin(Q { w: 1 })",
+            ) == "2"
+        }
+    }
+    given "a component's bounded parameter" {
+        then "calls its bound's static in the component's fns, per instance" {
+            shown(
+                named() +
+                    "component tag<T: Named>(head: T) {\n    fn kind() -> string { T.kind() }\n}\nlet p = P { v: 1 }\nlet q = Q { w: 1 }\nlet a = tag p { }\nlet b = tag q { }\n\"\${a.kind()}\${b.kind()}\"",
+            ) == "pq"
+        }
+    }
+    given "a parameter without the member" {
+        then "an unbounded parameter is refused, and the help writes the bound" {
+            refused_with(
+                "fn k<T>(x: T) -> string { T.kind() }\nk(1)",
+                "add a bound — `<T: SomeTrait>`",
+            )
+        }
+        then "a bound that lacks the member is refused" {
+            refused_with(
+                named() + "fn k<T: Named>(x: T) -> string { T.nope() }\nk(P { v: 1 })",
+                "`Named` has no method `nope`",
+            )
+        }
+        then "a member with a receiver is refused through the type" {
+            refused_with(
+                named() + "fn k<T: Named>(x: T) -> int { T.n() }\nk(P { v: 1 })",
+                "`Named.n` takes a receiver, and `T` names a type — call it on a value of `T`",
+            )
+        }
+    }
+    given "a type parameter read as a value" {
+        then "is refused as an argument" {
+            refused_with(
+                named() +
+                    "fn id<A>(a: A) -> int { 1 }\nfn k<T: Named>(x: T) -> int { id(T) }\nk(P { v: 1 })",
+                "`T` is a type parameter, which names no value",
+            )
+        }
+        then "is refused as a field read's subject" {
+            refused_with(
+                named() + "fn k<T: Named>(x: T) -> int { T.v }\nk(P { v: 1 })",
+                "`T` is a type parameter, which names no value",
+            )
+        }
+        then "names no value" {
+            refused_with(
+                named() + "fn k<T: Named>(x: T) -> int {\n    let y = T\n    1\n}\nk(P { v: 1 })",
+                "`T` is a type parameter, which names no value",
+            )
+        }
+    }
+}

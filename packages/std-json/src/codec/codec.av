@@ -7,7 +7,7 @@
 //!     @json
 //!     type Idea = { title: string, votes: int, tags: List<string>, note: string? }
 //!
-//! gives `Idea.from_json(j)`, answering the record or a `DecodeError`
+//! gives `Idea.from_json_text(raw)`, answering the record or a `DecodeError`
 //! naming the path that misfit (`tags[2]`), and `idea.to_json()`. An
 //! ENUM is an object whose `tag` names the variant and whose other
 //! members are its payload fields (`{"tag":"Both","row":1}`). A field reads an `int`, `float`, `bool`, `string`, a `T?` (absent and
@@ -15,8 +15,7 @@
 //! `@json` record or enum. Anything else is refused at the declaration.
 //! `x.json_text()` and `T.from_json_text(raw)` write and read the same documents as TEXT,
 //! straight from and into the fields with no value tree between (`typed`): a program that
-//! only moves its own types links those and none of the general value. A refusal there is
-//! one string, not a path.
+//! only moves its own types links those and none of the general value.
 //! `T.json_shape()` is the type's STRUCTURE as one string -- fields, variants
 //! and payload kinds, down through the types it reads -- so a state saved
 //! under one shape is told from one read back under another.
@@ -34,50 +33,42 @@ use @std.meta.{
     Declared,
     Code,
     Decls,
+    Stmts,
     literal,
     name,
     refuse_as_at,
     type_named,
+    implements,
 }
 use @std.derive.{record_of}
-use @std.json.{
-    Json,
-    DecodeError,
-    field,
-    present,
-    member_once,
-    want_int,
-    want_float,
-    want_text,
-    want_bool,
-    want_items,
-    want_object,
-    path_field,
-    path_item,
-    unknown_tag,
-    want_members,
-    map_from,
-    Member,
-}
+use @std.json.{Json, DecodeError, field, path_field, path_item, unknown_tag, to_text}
 use @std.json.typed.{
-    Entry,
+    Reader,
     array_of,
-    map_of_entries,
-    as_bool,
-    as_float,
-    as_int,
-    as_text,
     bool_text,
-    elements,
     float_text,
     int_text,
-    member,
+    key_here,
     member_text,
-    members,
     needed,
+    next_in,
+    not_yet,
     object_of,
-    present_raw,
+    opened_in,
     quoted,
+    read_bool,
+    read_float,
+    read_int,
+    read_list,
+    read_map,
+    read_opt,
+    read_parsed,
+    read_text,
+    read_whole,
+    required,
+    seen_once,
+    skip_value,
+    tag_here,
 }
 
 /// `@json` — a record's or an enum's JSON reader and writer, and every
@@ -90,8 +81,6 @@ export fn json(t: Type) -> Declared {
 }
 
 fn codec(t: Type) -> Decls {
-    let reads = [member_read(f) for f in t.fields]
-    let body = record_of(t, reads)
     let members = members_of(t)
     let schema = schema_of(t)
     let schemas = listed(
@@ -99,23 +88,9 @@ fn codec(t: Type) -> Decls {
     )
     let rec_parts = [quote { ${literal(f.name + ":")} + ${shape_code(f.kind)} } for f in t.fields]
     let text_parts = [quote { member_text(${literal(f.name)}, ${text_write(f.kind, quote { self.${f} }, 0)}) } for f in t.fields]
-    let text_body = record_of(
-        t,
-        [text_read(f.kind, quote { member(ms, ${literal(f.name)}) }, 0) for f in t.fields],
-    )
+    let body = object_read(t.fields, record_of(t, object_reads(t.fields)))
     quote {
         impl ${t} {
-            /// This record read from a JSON document.
-            static fn from_json(j: Json) -> Result<${t}, DecodeError> {
-                ${name(t.name)}.decode_json(j, "")
-            }
-
-            /// This record read from the value at `at`, absent when the
-            /// member was missing.
-            static fn decode_json(v: Json?, at: string) -> Result<${t}, DecodeError> {
-                let o = want_object(v, at)?
-                ${body}
-            }
 
             /// This record as a JSON object, its fields in declared order.
             fn to_json() -> Json {
@@ -142,11 +117,12 @@ fn codec(t: Type) -> Decls {
                 object_of(parts)
             }
 
-            /// This record read from JSON text, straight into its fields.
-            static fn from_json_text(raw: string) -> Result<${t}, string> {
-                let ms = members(raw)?
-                ${text_body}
+            /// This record read from the object at the cursor, straight into its fields.
+            static fn read_from(mut r: Reader, at: string) -> Result<${t}, DecodeError> {
+                ${body}
             }
+
+            ${text_entry(t, "an object")}
 
             /// This record's SHAPE: its name, its fields and their kinds,
             /// down through every type it reads. A field added, dropped,
@@ -178,20 +154,9 @@ fn enum_json(t: Type) -> Declared {
 }
 
 fn enum_codec(t: Type) -> Decls {
-    let chosen = chosen_by_tag(
-        [Named { name: v.name, value: built(t, v, [member_read(f) for f in v.fields]) } for v in t.variants],
-        quote { { fail unknown_tag(tag_at, tag) } },
-    )
     let text_chosen = chosen_by_tag(
-        [Named {
-            name: v.name,
-            value: built(
-                t,
-                v,
-                [text_read(f.kind, quote { member(ms, ${literal(f.name)}) }, 0) for f in v.fields],
-            ),
-        } for v in t.variants],
-        quote { { fail "names no variant" } },
+        [Named { name: v.name, value: object_read(v.fields, built(t, v, object_reads(v.fields))) } for v in t.variants],
+        quote { { fail unknown_tag(tag_at, tag) } },
     )
     let text_writes = [text_write_arm(v) for v in t.variants]
     let writes = [write_arm(v) for v in t.variants]
@@ -202,20 +167,6 @@ fn enum_codec(t: Type) -> Decls {
     let variant_parts = [variant_shape(v) for v in t.variants]
     quote {
         impl ${t} {
-            /// This enum read from a JSON document.
-            static fn from_json(j: Json) -> Result<${t}, DecodeError> {
-                ${name(t.name)}.decode_json(j, "")
-            }
-
-            /// This enum read from the value at `at`: its variant under
-            /// `tag`, then the payload fields it names.
-            static fn decode_json(v: Json?, at: string) -> Result<${t}, DecodeError> {
-                let o = want_object(v, at)?
-                let tag_at = path_field(at, "tag")
-                let tag = want_text(member_once(o, "tag", tag_at)?, tag_at)?
-                ${chosen}
-            }
-
             /// This enum as a JSON object: its variant under `tag`.
             fn to_json() -> Json {
                 match self { ${writes} }
@@ -241,13 +192,17 @@ fn enum_codec(t: Type) -> Decls {
                 match self { ${text_writes} }
             }
 
-            /// This enum read from JSON text: its variant under `tag`, then
-            /// the payload fields it names.
-            static fn from_json_text(raw: string) -> Result<${t}, string> {
-                let ms = members(raw)?
-                let tag = as_text(needed(member(ms, "tag"))?)?
+            /// This enum read from the object at the cursor: its variant under
+            /// `tag`, then the payload fields it names.
+            static fn read_from(mut r: Reader, at: string) -> Result<${t}, DecodeError> {
+                let start = r.pos
+                let tag_at = path_field(at, "tag")
+                let tag = tag_here(r, at)?
+                r.pos = start
                 ${text_chosen}
             }
+
+            ${text_entry(t, "an object")}
 
             /// This enum's SHAPE: its name, each variant and the kinds of its
             /// payload, down through every type it reads.
@@ -278,7 +233,7 @@ fn chosen_by_tag(by_name: List<Named>, refusal: Code) -> Code {
 }
 
 /// A variant's name and the code that builds it.
-type Named = { name: string, value: Code }
+type Named = { name: string, value: Stmts }
 
 /// A variant's shape: its name and the kinds of its payload fields.
 fn variant_shape(v: Variant) -> Code {
@@ -314,61 +269,6 @@ fn enum_problems(t: Type) -> List<Diagnostic> {
         )
 }
 
-// ── Reading ──────────────────────────────────────────────────────
-
-/// A field's reading: its member taken once from `o`, then read by
-/// the field's kind, refusing with its path.
-fn member_read(f: Field) -> Code {
-    let p = quote { path_field(at, ${literal(f.name)}) }
-    read(f.kind, quote { member_once(o, ${literal(f.name)}, ${p})? }, p, 0)
-}
-
-/// The code reading a field of `kind` from `v` (a `Json?`), refusing
-/// with the path `p`. `depth` keeps nested binders apart.
-fn read(kind: Kind, v: Code, p: Code, depth: int) -> Code {
-    match kind {
-        .Int -> quote { want_int(${v}, ${p})? },
-        .Float -> quote { want_float(${v}, ${p})? },
-        .Str -> quote { want_text(${v}, ${p})? },
-        .Bool -> quote { want_bool(${v}, ${p})? },
-        .Opt(inner) -> read_present(inner, v, p, depth),
-        .List(elem) -> read_items(elem, v, p, depth),
-        .Map(_, elem) -> read_members(elem, v, p, depth),
-        .Named(n, _) -> quote { ${name(n)}.decode_json(${v}, ${p})? },
-        rest -> quote { unreadable() },
-    }
-}
-
-fn read_present(inner: Kind, v: Code, p: Code, depth: int) -> Code {
-    let x = "x${depth}"
-    let got = read(inner, name(x), p, depth + 1)
-    quote {
-        match present(${v}) {
-            ${x}? -> ${got}
-            null -> null
-        }
-    }
-}
-
-fn read_items(elem: Kind, v: Code, p: Code, depth: int) -> Code {
-    let i = "i${depth}"
-    let e = "e${depth}"
-    let got = read(elem, name(e), quote { path_item(${p}, ${name(i)}) }, depth + 1)
-    quote { [${got} for ${i}, ${e} in want_items(${v}, ${p})?] }
-}
-
-/// A map's reading: each member read by the value kind, at its own path.
-fn read_members(elem: Kind, v: Code, p: Code, depth: int) -> Code {
-    let m = "m${depth}"
-    let got = read(
-        elem,
-        quote { ${name(m)}.value },
-        quote { path_field(${p}, ${name(m)}.key) },
-        depth + 1,
-    )
-    quote { map_from([Member { key: ${name(m)}.key, value: ${got} } for ${m} in want_members(${v}, ${p})?]) }
-}
-
 // ── Writing ──────────────────────────────────────────────────────
 
 /// The object's members as one list, one `field` per record field,
@@ -401,7 +301,7 @@ fn written(kind: Kind, v: Code, depth: int) -> Code {
         .Opt(inner) -> written_present(inner, v, depth),
         .List(elem) -> written_items(elem, v, depth),
         .Map(_, elem) -> written_members(elem, v, depth),
-        .Named(_, _) -> quote { ${v}.to_json() },
+        .Named(n, _) -> if texted(n) { quote { Json.Str(${v}.text_form()) } } else { quote { ${v}.to_json() } },
         rest -> quote { unwritable() },
     }
 }
@@ -432,28 +332,154 @@ fn written_members(elem: Kind, v: Code, depth: int) -> Code {
 
 // ── Text, with no tree ───────────────────────────────────────────
 
-/// The code reading a field of `kind` from `raw` (a `string?`, absent when
-/// the member is) straight out of JSON text, refusing with a string.
-fn text_read(kind: Kind, raw: Code, depth: int) -> Code {
-    let x = "x${depth}"
-    let m = "m${depth}"
+/// A reader of a type's JSON text: `from_json_text` over the whole text, and
+/// `decode_text` over the text of a value that may be absent, at the path `at`.
+fn text_entry(t: Type, wanted: string) -> Decls {
+    quote {
+        /// This value read from JSON text.
+        static fn from_json_text(raw: string) -> Result<${t}, DecodeError> {
+            ${name(t.name)}.decode_text(raw, "")
+        }
+
+        /// This value read from the text `raw` of the value at the path `at`.
+        static fn decode_text(raw: string?, at: string) -> Result<${t}, DecodeError> {
+            read_whole(
+                raw,
+                at,
+                ${literal(wanted)},
+                (mut r: Reader, p: string) -> {
+                    let got: Result<${t}, DecodeError> = ${name(t.name)}.read_from(r, p)
+                    got
+                },
+            )
+        }
+    }
+}
+
+/// The code reading a value of `kind` from the cursor `r` at the path `at`,
+/// refusing with a `DecodeError`.
+fn read_code(kind: Kind, at: Code) -> Code {
     match kind {
-        .Int -> quote { as_int(needed(${raw})?)? },
-        .Float -> quote { as_float(needed(${raw})?)? },
-        .Str -> quote { as_text(needed(${raw})?)? },
-        .Bool -> quote { as_bool(needed(${raw})?)? },
-        .Opt(inner) -> quote {
-            match present_raw(${raw}) {
-                ${x}? -> ${text_read(inner, name(x), depth + 1)}
-                null -> null
+        .Int -> quote { read_int(r, ${at})? },
+        .Float -> quote { read_float(r, ${at})? },
+        .Str -> quote { read_text(r, ${at})? },
+        .Bool -> quote { read_bool(r, ${at})? },
+        .Opt(inner) -> quote { read_opt(r, ${at}, ${reader_fn(inner)})? },
+        .List(elem) -> quote { read_list(r, ${at}, ${reader_fn(elem)})? },
+        .Map(_, elem) -> quote { read_map(r, ${at}, ${reader_fn(elem)})? },
+        .Named(n, _) -> if texted(n) {
+            quote { read_parsed(r, ${at}, ${reads_as(n)}, (s: string) -> ${name(n)}.from_text_form(s))? }
+        } else {
+            quote { ${name(n)}.read_from(r, ${at})? }
+        },
+        rest -> quote { unreadable() },
+    }
+}
+
+/// The reader of a kind as a value, for the helper that reads many.
+fn reader_fn(kind: Kind) -> Code {
+    match kind {
+        .Int -> quote { read_int },
+        .Float -> quote { read_float },
+        .Str -> quote { read_text },
+        .Bool -> quote { read_bool },
+        .Opt(_) or .List(_) or .Map(_, _) or .Named(_, _) -> quote {
+            (mut r: Reader, p: string) -> {
+                let got: Result<${kind.spelled()}, DecodeError> = ${result_code(kind)}
+                got
             }
         },
-        .List(elem) -> quote { [${text_read(elem, name(x), depth + 1)} for ${x} in elements(needed(${raw})?)?] },
-        .Map(_, elem) -> quote {
-            map_of_entries([Entry { key: ${name(m)}.key, value: ${text_read(elem, quote { ${name(m)}.raw }, depth + 1)} } for ${m} in members(needed(${raw})?)?])
-        },
-        .Named(n, _) -> quote { ${name(n)}.from_json_text(needed(${raw})?)? },
         rest -> quote { unreadable() },
+    }
+}
+
+/// `read_code` as the helper's own answer, before its `?`.
+fn result_code(kind: Kind) -> Code {
+    match kind {
+        .Opt(inner) -> quote { read_opt(r, p, ${reader_fn(inner)}) },
+        .List(elem) -> quote { read_list(r, p, ${reader_fn(elem)}) },
+        .Map(_, elem) -> quote { read_map(r, p, ${reader_fn(elem)}) },
+        .Named(n, _) -> if texted(n) {
+            quote { read_parsed(r, p, ${reads_as(n)}, (s: string) -> ${name(n)}.from_text_form(s)) }
+        } else {
+            quote { ${name(n)}.read_from(r, p) }
+        },
+        rest -> quote { unreadable() },
+    }
+}
+
+/// What a missing field wanted, in the words a refusal says it with.
+fn wanted_word(kind: Kind) -> string {
+    match kind {
+        .Int -> "an integer",
+        .Float -> "a number",
+        .Str -> "text",
+        .Bool -> "`true` or `false`",
+        .List(_) -> "an array",
+        .Opt(_) or .Map(_, _) or .Named(_, _) -> "an object",
+        rest -> "a value",
+    }
+}
+
+/// A generated local, named so no program can spell it.
+fn own(word: string) -> string { "${word}\$" }
+
+/// A field's value once the object is read: required unless optional.
+fn object_reads(fields: List<Field>) -> List<Code> {
+    [field_value(i, f) for i, f in fields]
+}
+
+fn field_value(i: int, f: Field) -> Code {
+    let v = name(own("f${i}"))
+    match f.kind {
+        .Opt(_) -> v,
+        rest -> quote { required(${v}, path_field(at, ${literal(f.name)}), ${literal(wanted_word(f.kind))})? },
+    }
+}
+
+/// The statements reading the object at the cursor into one local per field
+/// and then answering `finish`: each member matched to its field by name and
+/// read where it stands, a name written twice refused, a name no field has
+/// skipped (a variant's `tag` among them).
+fn object_read(fields: List<Field>, finish: Code) -> Stmts {
+    let locals = [declared(i, f) for i, f in fields]
+    let key = name(own("key"))
+    let more = name(own("more"))
+    mut chain = quote { { let _ = skip_value(r, at)? } }
+    for j in 0..fields.length {
+        let i = fields.length - 1 - j
+        let rest = chain
+        chain = quote { if ${key} == ${literal(fields[i].name)} { ${taken(i, fields[i])} } else { ${rest} } }
+    }
+    quote {
+        ${locals}
+        mut ${own("more")} = opened_in(r, at, 123, 125, "an object")?
+        while ${more} {
+            let ${own("key")} = key_here(r, at)?
+            ${chain}
+            ${more} = next_in(r, at, 125, "`,` or `}`")?
+        }
+        ${finish}
+    }
+}
+
+/// A field's local and its count of sightings.
+fn declared(i: int, f: Field) -> Stmts {
+    let kind = match f.kind { .Opt(inner) -> inner, rest -> f.kind }
+    quote {
+        // LICENSED let_stmt.unmutated_mut: the member loop writes it, beyond this one's sight
+        mut ${own("f${i}")}: ${kind.spelled()}? = not_yet()
+        // LICENSED let_stmt.unmutated_mut: the member loop writes it, beyond this one's sight
+        mut ${own("c${i}")} = 0
+    }
+}
+
+/// Field `i` met by name: counted once, then read.
+fn taken(i: int, f: Field) -> Stmts {
+    let here = quote { path_field(at, ${literal(f.name)}) }
+    quote {
+        ${name(own("c${i}"))} = seen_once(${name(own("c${i}"))}, ${here})?
+        ${name(own("f${i}"))} = ${read_code(f.kind, here)}
     }
 }
 
@@ -474,7 +500,7 @@ fn text_write(kind: Kind, v: Code, depth: int) -> Code {
         },
         .List(elem) -> quote { array_of([${text_write(elem, name(x), depth + 1)} for ${x} in ${v}]) },
         .Map(_, elem) -> quote { object_of([member_text(${name(k)}, ${text_write(elem, name(x), depth + 1)}) for ${k}, ${x} in ${v}]) },
-        .Named(_, _) -> quote { ${v}.json_text() },
+        .Named(n, _) -> if texted(n) { quote { quoted(${v}.text_form()) } } else { quote { ${v}.json_text() } },
         rest -> quote { unwritable() },
     }
 }
@@ -502,7 +528,11 @@ fn shape_code(kind: Kind) -> Code {
         .Opt(inner) -> quote { ${shape_code(inner)} + "?" },
         .List(elem) -> quote { "[" + ${shape_code(elem)} + "]" },
         .Map(_, elem) -> quote { "map<" + ${shape_code(elem)} + ">" },
-        .Named(n, _) -> quote { if here.contains(${literal(n)}) { ${literal("~" + n)} } else { ${name(n)}.shape_in(here) } },
+        .Named(n, _) -> if texted(n) {
+            quote { ${literal(n)} }
+        } else {
+            quote { if here.contains(${literal(n)}) { ${literal("~" + n)} } else { ${name(n)}.shape_in(here) } }
+        },
         rest -> quote { unwritable() },
     }
 }
@@ -537,7 +567,7 @@ fn kind_schema(kind: Kind) -> Code {
         .Opt(inner) -> quote { Json.Obj([field("anyOf", Json.Arr([${kind_schema(inner)}, ${typed("null")}]))]) },
         .List(elem) -> quote { Json.Obj([field("type", Json.Str("array")), field("items", ${kind_schema(elem)})]) },
         .Map(_, elem) -> quote { Json.Obj([field("type", Json.Str("object")), field("additionalProperties", ${kind_schema(elem)})]) },
-        .Named(n, _) -> quote { Json.Obj([field("$ref", Json.Str(${literal("#/components/schemas/" + n)}))]) },
+        .Named(n, _) -> if texted(n) { typed("string") } else { quote { Json.Obj([field("$ref", Json.Str(${literal("#/components/schemas/" + n)}))]) } },
         rest -> quote { unwritable() },
     }
 }
@@ -582,11 +612,17 @@ fn fields_of(t: Type?) -> List<Field> {
 /// its own `@json`.
 fn records_read(k: Kind) -> List<string> {
     match k {
-        .Named(n, _) -> [n],
+        .Named(n, _) -> if texted(n) { [] } else { [n] },
         .Opt(held) or .List(held) or .Map(_, held) -> records_read(held),
         rest -> [],
     }
 }
+
+/// What a refused text-form value should have been.
+fn reads_as(n: string) -> Code { literal("a text that reads as " + n) }
+
+/// Whether a named type crosses as one string: it implements `@std/text`'s `TextForm`.
+fn texted(n: string) -> bool { implements(n, "TextForm") }
 
 /// Whether the record named `n` wears `@json` — or is not one this
 /// program can see, which the typer then names.
@@ -609,9 +645,6 @@ fn readable(k: Kind) -> bool {
 }
 
 // ── Voices ───────────────────────────────────────────────────────
-
-/// What a declaration too wide to read is told to do.
-const group_help: string = "group fields into a nested `@json` record"
 
 fn unreadable_payload(t: Type, v: Variant, f: Field) -> Diagnostic {
     refuse_as_at(

@@ -1,0 +1,215 @@
+//! `app/cache.av` — what a loop has observed: one entry per key, shared by
+//! every view that asks it, and kept a while after its last reader leaves.
+use @std.http_message.message.{Reply, Request, Version}
+use @std.text.{text_before}
+use @std.time.{now_ms}
+use app.{Async}
+
+/// How long an entry nobody reads is kept.
+const KEPT_MS: int = 300000
+
+/// The bytes all unread entries together may hold.
+const CAP_BYTES: int = 16777216
+
+/// What an observation is asked by: the path and its arguments, the query
+/// sorted so the order a caller wrote them in is no second observation.
+export type Key = { path: string, query: string }
+
+/// The key a request observes under, or none when it is no observation: only
+/// a GET without a body reads; any other request writes.
+export fn key_of(request: Request) -> Key? {
+    if !(request.method is .Get) || !(request.body is .Empty) { return null }
+    let parts = request.url.split("?")
+    let none: List<string> = []
+    let pairs = parts.drop(1).join("?").split("&").fold(none, inserted)
+    Key { path: parts.first() ?? "", query: pairs.join("&") }
+}
+
+/// `pairs` in byte order with `word` placed.
+fn inserted(pairs: List<string>, word: string) -> List<string> {
+    if word.is_empty() { return pairs }
+    [p for p in pairs if text_before(p, word)]
+        .concat([word])
+        .concat([p for p in pairs if !text_before(p, word)])
+}
+
+/// A view that reads an entry: told each time the entry's state moves.
+export type Watcher = { id: int, apply: fn(Async<Reply>) -> void }
+
+/// One observation: the answer to a key's request as the reply it came in, the
+/// version that answer carries, whether a request is out, its readers, and when
+/// the last of them left.
+export type Entry = {
+    id: int,
+    key: Key?,
+    now: Cell<Async<Reply>>,
+    version: Cell<Version?>,
+    out: Cell<bool>,
+    watchers: Cell<List<Watcher>>,
+    read: Cell<int>,
+}
+
+impl Entry {
+    /// Whether the request is out and unanswered.
+    fn loading() -> bool { self.out.get() }
+
+    /// The version of the answer the entry holds, when it holds one.
+    fn held() -> Version? {
+        match self.now.get() {
+            .Ready(_) -> self.version.get(),
+            .Idle or .Loading or .Failed(_) -> null,
+        }
+    }
+
+    /// `request`, as it is sent: asking again what a version answered carries
+    /// that version, so the server may say nothing has changed.
+    fn conditional(request: Request) -> Request {
+        let at? = self.held() else { return request }
+        request.header("If-None-Match", at.tag())
+    }
+
+    /// Whether the entry holds an answer its views show.
+    fn shows() -> bool {
+        match self.now.get() { .Ready(_) -> true, .Idle or .Loading or .Failed(_) -> false }
+    }
+
+    /// A request goes out. An entry that holds an answer keeps showing it while
+    /// the question is asked again; any other shows loading.
+    fn asked() {
+        self.out.set(true)
+        if self.shows() { return }
+        self.now.set(Async.Loading)
+        self.told()
+    }
+
+    /// An answer came, and whether the entry changed. A 304 leaves what the
+    /// entry holds. An answer whose version is no later than the one held is
+    /// never taken, so what arrives late cannot replace what arrived first. A
+    /// failed ask is what its views show — each keeps the last good reading it
+    /// had beside the failure.
+    fn offered(answer: Result<Reply, string>) -> bool {
+        self.out.set(false)
+        let kept = self.held() != null
+        match answer {
+            .Err(why) -> self.now.set(Async.Failed(why)),
+            .Ok(reply) -> {
+                if kept && reply.status == 304 { return false }
+                let at = reply.version()
+                let current? = self.held() else { return self.taken(reply, at) }
+                if at != null && !at!.after(current) { return false }
+                self.taken(reply, at)
+                return true
+            },
+        }
+        self.told()
+        true
+    }
+
+    fn taken(reply: Reply, at: Version?) -> bool {
+        self.now.set(Async.Ready(reply))
+        self.version.set(at)
+        self.told()
+        true
+    }
+
+    /// Whether no view reads it.
+    fn unread() -> bool { self.watchers.get().is_empty() }
+
+    /// The reply's bytes it holds.
+    fn size() -> int {
+        match self.now.get() {
+            .Ready(reply) -> reply.body.length,
+            .Idle or .Loading or .Failed(_) -> 0,
+        }
+    }
+
+    /// `w` reads it from now, in place of any earlier word of the same view,
+    /// and is told what it holds.
+    fn joined(w: Watcher) {
+        self.watchers.set([x for x in self.watchers.get() if x.id != w.id].concat([w]))
+        (w.apply)(self.now.get())
+    }
+
+    /// The view `id` reads no more.
+    fn left(id: int) {
+        self.watchers.set([x for x in self.watchers.get() if x.id != id])
+        if self.unread() { self.read.set(now_ms()) }
+    }
+
+    /// Its state moved: every reader is told.
+    fn told() {
+        for w in self.watchers.get() { (w.apply)(self.now.get()) }
+    }
+}
+
+/// The entries a loop holds.
+export type Cache = { entries: Cell<List<Entry>>, minted: Cell<int> }
+
+export fn cache() -> Cache {
+    let none: List<Entry> = []
+    Cache { entries: Cell.new(none), minted: Cell.new(0) }
+}
+
+impl Cache {
+    /// The entry `request` is observed under: the one standing for its key,
+    /// shared by every view that asks, or a new one. A request that is no
+    /// observation gets an entry nobody else reads.
+    fn entry_of(request: Request) -> Entry {
+        let key? = key_of(request) else { return self.minted_entry(null) }
+        let held = self.entries.get().find((e) -> self.holds(e, key))
+        if held != null { return held! }
+        let made = self.minted_entry(key)
+        self.entries.push(made)
+        made
+    }
+
+    fn holds(e: Entry, key: Key) -> bool {
+        let at? = e.key else { return false }
+        at.path == key.path && at.query == key.query
+    }
+
+    fn minted_entry(key: Key?) -> Entry {
+        self.minted.set(self.minted.get() + 1)
+        let idle: Async<Reply> = .Idle
+        let nobody: List<Watcher> = []
+        let unversioned: Version? = null
+        Entry {
+            id: self.minted.get(),
+            key: key,
+            now: Cell.new(idle),
+            version: Cell.new(unversioned),
+            out: Cell.new(false),
+            watchers: Cell.new(nobody),
+            read: Cell.new(now_ms()),
+        }
+    }
+
+    /// What is not worth keeping goes: an answered entry nobody has read for
+    /// `KEPT_MS`, and then, least recently read first, unread entries past the
+    /// cap.
+    fn swept() {
+        let now = now_ms()
+        let held = [e for e in self.entries.get() if !(e.unread() && !e.loading() && now - e.read.get() >= KEPT_MS)]
+        self.entries.set(self.under_cap(held))
+    }
+
+    fn under_cap(held: List<Entry>) -> List<Entry> {
+        let unread = [e for e in held if e.unread() && !e.loading()]
+        if unread.fold(0, (n: int, e: Entry) -> n + e.size()) <= CAP_BYTES { return held }
+        let nobody: Entry? = null
+        let oldest? = unread
+            .fold(
+                nobody,
+                (best: Entry?, e: Entry) -> if best == null || e.read.get() < best!.read.get() { e } else { best },
+            ) else {
+            return held
+        }
+        self.under_cap([e for e in held if e.id != oldest.id])
+    }
+
+    /// Every entry is let go: a loop that ends takes the requests it kept.
+    fn reset() {
+        let none: List<Entry> = []
+        self.entries.set(none)
+    }
+}

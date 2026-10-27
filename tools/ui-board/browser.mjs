@@ -21,6 +21,7 @@ import { openPage, firefoxBinary, KEY } from "./firefox.mjs";
 import { openPage as openWebkit, webkitLaunch } from "./webkit.mjs";
 import { outsidePresses, outsidePressWords } from "./dialog_claims.mjs";
 
+const pause = (ms) => new Promise((go) => setTimeout(go, ms));
 const [url, ...named_words] = process.argv.slice(2);
 const word = (name) => { const at = named_words.indexOf(name); return at < 0 ? null : named_words[at + 1]; };
 const shots = word("--shots");
@@ -44,6 +45,20 @@ async function opened(at, options = {}) {
   const { browser, loaded } = await engineBrowser();
   return openWebkit(browser, at, { device: process.env.UI_BROWSER_DEVICE ?? null, playwright: loaded });
 }
+// THE BOARD'S TASKS ARE THE SERVER'S: its claims begin from a server holding the four tasks the board
+// is shown with, made through the server's own doors, and each is known by the key the server gave it.
+const first_tasks = [["Draft the spec", true], ["Wire the event channel", false], ["Land the wasm board", false], ["Write the tour", true]];
+async function seeded(tasks = first_tasks) {
+  await emptied();
+  const keys = [];
+  for (const [title, done] of tasks) {
+    const made = await fetch(url + "tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, done }) });
+    if (!made.ok) { console.log(`ui-browser: seeding the server, POST /tasks answered ${made.status}`); process.exit(1); }
+    keys.push(String((await made.json()).id));
+  }
+  return keys;
+}
+const [k1, k2, k3, k4] = await seeded();
 const page = await opened(url);
 const { read, press, type, frame } = page;
 
@@ -59,6 +74,27 @@ const named = (name, nth = 0) => `[...document.querySelectorAll('[aria-label=${J
 const row = (key) => `document.querySelector('li[data-key=${JSON.stringify(key)}]')`;
 const rows = () => read(`[...document.querySelectorAll("li")].map((li) => ({ key: li.dataset.key, done: li.querySelector("input").checked, words: li.querySelector("label").textContent }))`);
 const keys = async () => (await rows()).map((r) => r.key);
+// Until `holds` answers true of `on`, asked for as long as a build or a server may take: a change is the server's to answer before the board shows it.
+const until = async (holds, on = page, beats = 200) => { for (let i = 0; i < beats; i++) { if (await on.read(holds).catch(() => false)) return true; await pause(100); } return false; };
+// The page's keys, once they are `want` (or as they stand when they never are).
+const keys_become = async (want) => (await until(`[...document.querySelectorAll("li")].map((li) => li.dataset.key).join() === ${JSON.stringify(want)}`)) ? want : (await keys()).join();
+const progress = () => read(`document.querySelector("progress").value`);
+// Until the page and the server hold the same tasks, in the same state, twice over a beat: the changes
+// sent so far have all been answered, so a later press cannot meet an older answer.
+const watch = (on) => on.read(`(() => { window.__sent = 0; window.__done = 0; window.__log = []; const asking = globalThis.fetch.bind(globalThis); globalThis.fetch = (...a) => { window.__sent++; const mark = ((a[1] && a[1].method) || "GET") + " " + a[0] + (a[1] && a[1].body ? " " + new TextDecoder().decode(a[1].body) : ""); window.__log.push("> " + mark); return asking(...a).then((r) => { window.__log.push("< " + r.status + " " + mark); return r; }).finally(() => { window.__done++; }); }; document.addEventListener("change", (e) => window.__log.push("change " + e.target.getAttribute("aria-label") + " " + e.target.checked), true); return 1; })()`);
+const agreed = async (on = page) => {
+  const same = async () => {
+    if (await on.read(`window.__sent !== window.__done`)) return false;
+    const mine = (await on.read(`[...document.querySelectorAll("li")].map((li) => li.dataset.key + ":" + li.querySelector("input").checked)`)).sort().join();
+    const theirs = (await (await fetch(url + "tasks")).json()).map((t) => `${t.id}:${t.done}`).sort().join();
+    return mine === theirs;
+  };
+  for (let i = 0; i < 100; i++) {
+    if (await same()) { await pause(150); if (await same()) return true; }
+    await pause(50);
+  }
+  return false;
+};
 const focused = () => read(`document.activeElement.getAttribute("aria-label")`);
 const styled = (selecting, property) => read(`getComputedStyle(${selecting})[${JSON.stringify(property)}]`);
 const sheet = () => read(`document.getElementById("avra-style").textContent`);
@@ -74,12 +110,13 @@ const faint = () => read(`(() => {
 })()`);
 
 await read(`new Promise((ready) => { const look = setInterval(() => { if (document.querySelector("li")) { clearInterval(look); ready(1); } }, 20); })`);
+await watch(page);
 
 // ── the first paint ─────────────────────────────────────────────
 await shot("first");
 claim("the page loads with nothing on its console", page.complaints().length === 0, page.complaints());
 claim("the sheet styles the page: the body wears the theme's surface", await styled("document.body", "backgroundColor") === "rgb(255, 255, 255)" && await styled("document.body", "marginTop") === "0px");
-claim("the four seeded rows are drawn in order", (await keys()).join() === "t1,t2,t3,t4", await keys());
+claim("the server's four tasks are drawn in order, under its keys", (await keys()).join() === [k1, k2, k3, k4].join(), await keys());
 claim("a done task is a real checkbox, checked", await read(`[...document.querySelectorAll("li input")].map((i) => i.type + ":" + i.checked).join()`) === "checkbox:true,checkbox:false,checkbox:false,checkbox:true");
 claim("the progress holds its amount and its end", await read(`(() => { const p = document.querySelector("progress"); return [p.value, p.max]; })()`).then((v) => v.join() === "2,4"));
 claim("every control's words are drawn beside it", await read(`[...document.querySelectorAll("label > span")].every((s) => s.getBoundingClientRect().width > 0)`));
@@ -100,12 +137,14 @@ claim("a closed dialog is not drawn, whatever its classes say", await styled(`do
 
 // ── the pointer ─────────────────────────────────────────────────
 await read(`document.querySelectorAll("li").forEach((li) => { li.witness = li.dataset.key; }), 1`);
-await press(`${row("t3")}.querySelector("button")`);
-claim("pressing a row's Remove takes that row alone", (await keys()).join() === "t1,t2,t4", await keys());
-claim("the row below is the same element: nothing rebuilt it", await read(`${row("t4")}.witness`) === "t4");
+await press(`${row(k3)}.querySelector("button")`);
+claim("pressing a row's Remove takes that row alone, once the server has answered", await keys_become([k1, k2, k4].join()) === [k1, k2, k4].join(), await keys());
+claim("the row below is the same element: nothing rebuilt it", await read(`${row(k4)}.witness`) === k4, await read(`[...document.querySelectorAll("li")].map((li) => li.dataset.key + ":" + li.witness)`));
+claim("and the server no longer holds the task", !(await (await fetch(url + "tasks")).json()).some((t) => String(t.id) === k3));
 
 await press(named("Wire the event channel"));
-claim("ticking a box marks its task done and moves the progress", (await rows())[1].done && await read(`document.querySelector("progress").value`) === 2 + 1);
+claim("ticking a box marks its task done and moves the progress, once the server has answered", await until(`document.querySelector("progress").value === 3`) && (await rows())[1].done, await progress());
+claim("and the server holds the task done", (await (await fetch(url + "tasks")).json()).find((t) => String(t.id) === k2).done === true);
 
 // ── typing ──────────────────────────────────────────────────────
 await press(named("New task"));
@@ -114,16 +153,17 @@ await type(KEY.left, KEY.left, KEY.left, "X");
 claim("typing mid-text keeps the caret where the user put it", await read(`(() => { const f = ${named("New task")}; return [f.value, f.selectionStart]; })()`).then((v) => v.join() === "ShipX it,5"));
 await shot("typing");
 await press(named("Add"));
-claim("Add appends the row the field named", (await rows()).at(-1).words === "ShipX it", await rows());
 claim("the program clears the field", await read(`${named("New task")}.value`) === "");
+claim("Add appends the row the server made of it", await until(`[...document.querySelectorAll("li")].some((li) => li.textContent.includes("ShipX it"))`) && (await rows()).at(-1).words === "ShipX it", await rows());
+const k5 = (await rows()).at(-1).key;
 
 // ── the filters ─────────────────────────────────────────────────
 await press(named("Active"));
-claim("Active shows the open tasks", (await keys()).join() === "t5", await keys());
+claim("Active shows the open tasks", (await keys()).join() === k5, await keys());
 await press(named("Done", 1));
-claim("Done shows the done tasks", (await keys()).join() === "t1,t2,t4", await keys());
+claim("Done shows the done tasks", (await keys()).join() === [k1, k2, k4].join(), await keys());
 await press(named("All"));
-claim("All shows every task", (await keys()).join() === "t1,t2,t4,t5", await keys());
+claim("All shows every task", (await keys()).join() === [k1, k2, k4, k5].join(), await keys());
 
 // ── the theme ───────────────────────────────────────────────────
 const light = await sheet();
@@ -159,7 +199,7 @@ claim("and it opens again after that too", await read(`${dialog}.open`));
 await press(named("Close"));
 await press(named("Light mode"));
 
-await outsidePresses({ ...page, escape: () => type(KEY.escape) }, "", claim, named);
+await outsidePresses({ ...page, escape: () => type(KEY.escape), quiet: () => agreed(page) }, "", claim, named);
 
 // ── the keyboard ────────────────────────────────────────────────
 await read(`${named("Dark mode")}.focus(), 1`);
@@ -181,33 +221,39 @@ await press(field);
 await type(..."Keep me");
 await type(KEY.left, KEY.left);
 await read(`${named("Draft the spec")}.click(), 1`);
-claim("the box ticked from script repainted the page", (await rows())[0].done === false, await rows());
+await agreed();
+claim("the box ticked from script repainted the page: the server's list moved the progress", await progress() === 2 && (await rows())[0].done === false, { rows: await rows(), log: await read(`window.__log.slice(-14)`), footer: await read(`[...document.querySelectorAll("*")].find((e) => e.children.length === 0 && e.textContent.includes("open ·"))?.textContent`), server: await (await fetch(url + "tasks")).json() });
 claim("a repaint elsewhere leaves a field its text, its caret and the focus", await read(`(() => { const f = ${field}; return [f.value, f.selectionStart, document.activeElement === f]; })()`).then((v) => v.join() === "Keep me,5,true"));
 await read(`${named("Draft the spec")}.click(), 1`);
+await agreed();
 
 const carried = named("Wire the event channel");
-await read(`(() => { const b = ${carried}; b.focus(); b.witness = "kept"; ${row("t2")}.witness = "t2"; })(), 1`);
+await read(`(() => { const b = ${carried}; b.focus(); b.witness = "kept"; ${row(k2)}.witness = "t2"; })(), 1`);
 await read(`${named("Newest first")}.click(), 1`);
 await frame();
-claim("Newest first turns the rows end for end", (await keys()).join() === "t5,t4,t2,t1", await keys());
-claim("a keyed row carried to another place is the same element", await read(`${row("t2")}.witness`) === "t2");
+claim("Newest first turns the rows end for end", (await keys()).join() === [k5, k4, k2, k1].join(), await keys());
+claim("a keyed row carried to another place is the same element", await read(`${row(k2)}.witness`) === "t2");
 claim("and the focus is kept on the control inside it", await read(`(() => { const b = ${carried}; return [document.activeElement === b, b.witness]; })()`).then((v) => v.join() === "true,kept"));
 await read(`${named("Newest first")}.click(), 1`);
 await frame();
-claim("the rows turn back, the focus still kept", (await keys()).join() === "t1,t2,t4,t5" && await read(`document.activeElement === ${carried}`), await keys());
+claim("the rows turn back, the focus still kept", (await keys()).join() === [k1, k2, k4, k5].join() && await read(`document.activeElement === ${carried}`), await keys());
 
 // ── the dev loop ────────────────────────────────────────────────
-// Until `holds` answers true of the page, asked for as long as a build takes.
-const until = async (holds) => { for (let i = 0; i < 200; i++) { if (await read(holds).catch(() => false)) return true; await new Promise((go) => setTimeout(go, 100)); } return false; };
 if (source) {
+  await agreed();
   const written = fs.readFileSync(source, "utf8");
   const says = (words) => `document.body.textContent.includes(${JSON.stringify(words)})`;
   claim("the dev page names the module it loaded", (await read(`document.querySelector('meta[name="avra-module"]').content`)).length > 0);
 
   await read(`(window.witness = "kept", 1)`);
   const ticked = (await rows())[1].done;
+  const standing_module = () => read(`document.documentElement.getAttribute("data-avra-module")`);
+  const before = await standing_module();
   fs.writeFileSync(source, written.replace(`fn title() -> string { "Tasks" }`, `fn title() -> string { "Chores" }`));
-  claim("a view edited where it stands reaches the running page", await until(says("Chores")) && !(await read(says("Tasks"))));
+  // The page names its module again when the swap lands: wait on that, for as long as a build may take, and say so if it never comes.
+  const swapped = await until(`document.documentElement.getAttribute("data-avra-module") !== ${JSON.stringify(before)}`);
+  if (!swapped) console.log(`  no swap landed within the build bound: the page still runs module ${before}`);
+  claim("a view edited where it stands reaches the running page", swapped && await read(says("Chores")) && !(await read(says("Tasks"))), await standing_module());
   claim("and the page was not reloaded to show it", await read(`window.witness`) === "kept");
   claim("and the state the page had comes through the edit: a ticked box stays ticked", ticked === true && (await rows())[1].done === true, await rows());
   await shot("edited");
@@ -217,6 +263,7 @@ if (source) {
   claim("a build that fails is shown over the page, naming the file", await until(`${failure} && !${failure}.hidden && ${failure}.textContent.includes(${JSON.stringify(path.basename(source))})`));
   await shot("failed");
   await press(named("Wire the event channel"));
+  await agreed();
   claim("the last good page keeps running under it", await read(says("Chores")) && (await rows())[1].done === false);
 
   fs.writeFileSync(source, written);
@@ -226,15 +273,68 @@ if (source) {
 claim("nothing reached the console while the board was used", page.complaints().length === 0, page.complaints());
 await page.close();
 
+// ── every change is the server's ────────────────────────────────
+// `avra dev` runs the board's server beside the page, and the server holds a
+// file database. Each change the board makes is sent through the server's
+// doors as it is made, and a page loaded again in a browser that has never
+// seen it shows what the server holds: an added task, a ticked one, a removed one.
+{
+  await emptied();
+  const board = await openPage(firefoxBinary(), url);
+  const drawn = (p) => p.read(`[...document.querySelectorAll("li")].map((li) => ({ key: li.dataset.key, done: li.querySelector("input").checked, words: li.textContent }))`);
+  const reloaded = async (wanted) => {
+    const again = await openPage(firefoxBinary(), url);
+    let seen = [];
+    for (let i = 0; i < 100; i++) { seen = await drawn(again).catch(() => []); if (wanted(seen)) break; await pause(100); }
+    const complaints = again.complaints();
+    await again.close();
+    return { seen, complaints };
+  };
+  await until(`document.body.textContent.includes("Nothing here yet.")`, board);
+  await watch(board);
+  claim("a server holding no tasks leaves the board with none", (await drawn(board)).length === 0, await drawn(board));
+  await board.press(named("New task"));
+  await board.type(..."Buy milk");
+  await board.press(named("Add"));
+  claim("an added task is the board's once the server has made it", await until(`[...document.querySelectorAll("li")].some((li) => /^[0-9]+$/.test(li.dataset.key) && li.textContent.includes("Buy milk"))`, board), await drawn(board));
+  let again = await reloaded((rows) => rows.some((r) => r.words.includes("Buy milk")));
+  claim("and a page loaded again shows it", again.seen.length === 1 && again.seen[0].words.includes("Buy milk") && !again.seen[0].done, again.seen);
+  await board.press(named("Buy milk"));
+  claim("a task ticked is ticked on the server: a page loaded again shows it done", await (async () => { const r = await reloaded((rows) => rows.length === 1 && rows[0].done); return r.seen.length === 1 && r.seen[0].done; })());
+  // Writes to one task go out in click order, each after the last was answered: a burst sends its first
+  // change and its last, and the server ends as the last click left it.
+  const logged = await board.read(`window.__log.length`);
+  await board.read(`(() => { const box = document.querySelector('[aria-label="Buy milk"]'); box.click(); box.click(); box.click(); return 1; })()`);
+  await agreed(board);
+  const patches = (await board.read(`window.__log.slice(${logged})`)).filter((entry) => entry.startsWith("> PATCH")).length;
+  claim("three quick ticks send two writes at most", patches >= 1 && patches <= 2, patches);
+  again = await reloaded((rows) => rows.length === 1 && !rows[0].done);
+  claim("and a page loaded again shows the state the last click left: three ticks undo one", again.seen.length === 1 && !again.seen[0].done, again.seen);
+  // A RELOAD DURING A WRITE: the page that comes back shows what the server holds, whichever way the write fell.
+  await board.read(`(() => { document.querySelector('[aria-label="Buy milk"]').click(); setTimeout(() => location.reload(), 0); return 1; })()`);
+  await until(`document.querySelector("li") !== null && document.documentElement.getAttribute("data-avra") === "ready"`, board);
+  await watch(board);
+  claim("a page reloaded during a write shows what the server holds", await agreed(board) && (await drawn(board)).length === 1, await drawn(board));
+  await board.press(`document.querySelector("li button")`);
+  claim("a task removed is gone from the board once the server has answered", await until(`document.querySelectorAll("li").length === 0`, board), await drawn(board));
+  again = await reloaded((rows) => rows.length === 0);
+  claim("and a page loaded again shows none", again.seen.length === 0, again.seen);
+  claim("the server holds nothing", (await (await fetch(url + "tasks")).json()).length === 0);
+  claim("nothing reached either console", board.complaints().length === 0 && again.complaints.length === 0, [...board.complaints(), ...again.complaints]);
+  await board.close();
+}
+
 // ── an engine that does not send a dialog away on its own ───────
 // The same board where the browser knows no `closedby`: the page sends the
 // dialog away itself, by the same rule. The pref is Firefox's, so this page
 // is that engine's alone.
 if (engine === "firefox") {
+  await seeded();
   const unaware = await openPage(firefoxBinary(), url, { prefs: { "dom.dialog.light-dismiss.enabled": false } });
   await unaware.read(`new Promise((ready) => { const look = setInterval(() => { if (document.querySelector("li")) { clearInterval(look); ready(1); } }, 20); })`);
+  await watch(unaware);
   claim("this engine knows no `closedby`", await unaware.read(`!("closedBy" in HTMLDialogElement.prototype)`));
-  await outsidePresses({ ...unaware, escape: () => unaware.type(KEY.escape) }, ", where the engine knows no `closedby`", claim, named);
+  await outsidePresses({ ...unaware, escape: () => unaware.type(KEY.escape), quiet: () => agreed(unaware) }, ", where the engine knows no `closedby`", claim, named);
   claim("nothing reached that page's console", unaware.complaints().length === 0, unaware.complaints());
   await unaware.close();
 }
@@ -246,12 +346,30 @@ if (engine !== "firefox") {
   }
 }
 
+// Every task the board's server holds, removed through its own doors, so a
+// section's claims begin from the board's seeds alone.
+async function emptied() {
+  let listed = null;
+  for (let i = 0; i < 1500 && !(listed && listed.ok); i++) {
+    listed = await fetch(url + "tasks").catch(() => null);
+    if (!(listed && listed.ok)) await pause(200);
+  }
+  if (!(listed && listed.ok)) { console.log(`ui-browser: the server never answered GET /tasks (${listed ? listed.status : "no answer"})`); process.exit(1); }
+  for (const row of await listed.json()) {
+    const gone = await fetch(url + "tasks/" + row.id, { method: "DELETE" });
+    if (!gone.ok) { console.log(`ui-browser: emptying the server, DELETE /tasks/${row.id} answered ${gone.status}`); process.exit(1); }
+  }
+}
+await emptied();
+
 // The module has run and painted: the page says so itself.
-const standing = async (p) => { for (let i = 0; i < 200; i++) { if (await p.read(`document.documentElement.getAttribute("data-avra") === "ready"`).catch(() => false)) { await p.frame(); return true; } await new Promise((go) => setTimeout(go, 100)); } return false; };
+const standing = async (p) => { for (let i = 0; i < 200; i++) { if (await p.read(`document.documentElement.getAttribute("data-avra") === "ready"`).catch(() => false)) { await p.frame(); return true; } await pause(100); } return false; };
 
 // ── a server's page, adopted by the module ──────────────────────
 // The elements the server drew are marked before the module runs.
 if (hydrated) {
+  // The server holds the tasks the page it drew showed, so the list it answers with is the one shipped.
+  await seeded();
   const adopted = await opened(hydrated);
   const asked = adopted.read;
   const ready = `document.querySelector("#app button") !== null && [...document.querySelectorAll("#app *")].length > 0`;
@@ -260,7 +378,12 @@ if (hydrated) {
   const total = await asked(`document.querySelectorAll("#app *").length`);
   const kept = await asked(`[...document.querySelectorAll("#app *")].filter((el) => el.__served === true).length`);
   claim("the module took the server's elements over and built none", kept === total, `${kept} of ${total}`);
-  claim("the module started from the state the server shipped: the done tasks, in the dark", (await asked(`[...document.querySelectorAll("li")].map((li) => li.dataset.key)`)).join() === "t1,t4" && await asked(`getComputedStyle(document.body).backgroundColor`) === "rgb(18, 18, 18)");
+  const held = await asked(`[...document.querySelectorAll("li")].map((li) => li.dataset.key)`);
+  claim("the module started from the state the server shipped: the done tasks, in the dark", (await asked(`[...document.querySelectorAll("li")].map((li) => li.querySelector("label").textContent)`)).join() === "Draft the spec,Write the tour" && await asked(`getComputedStyle(document.body).backgroundColor`) === "rgb(18, 18, 18)");
+  // The server's list is answered only now: the page stood on the server's paint until it came.
+  await fetch(hydrated + "__release");
+  const answered = await (async () => { for (let i = 0; i < 100; i++) { const now = await asked(`[...document.querySelectorAll("li")].map((li) => li.dataset.key)`); if (now.join() !== held.join()) return now; await pause(50); } return held; })();
+  claim("the server's list then lands as the board's: the done tasks stand under the server's keys", answered.length === 2 && answered.every((key) => /^[0-9]+$/.test(key)), answered);
   await adopted.press(`document.querySelector('[aria-label="Light mode"]')`);
   claim("and the page answers a press through the adopted elements", await asked(`document.querySelector('[aria-label="Dark mode"]') !== null`));
   claim("nothing reached the console while the server's page was adopted", adopted.complaints().length === 0, adopted.complaints());

@@ -2,7 +2,7 @@
 //! its name keys the impl table — and the found sig judges the
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
-use core.{ExprId, StmtId, TypeId, DeclId, DeclKind, same_type, counted}
+use core.{ExprId, StmtId, TypeId, DeclId, same_type, counted}
 use features.{
     TypeCx,
     FnSig,
@@ -25,12 +25,13 @@ fn methoded(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List
 /// and every kind judges the call in its own law.
 fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId {
     if cx.errored(subject) { return cx.error_type }
-    let callee = callee_of(cx.view, cx.type_at(subject), name)
+    let callee = subject_callee(cx.view, cx.names, subject, cx.type_at(subject), name)
     if !seats_named(callee) && !cx.nameless(name, args) { return cx.error_type }
     match callee {
         .Variant(decl, tname) -> if cx.view.store.is_type_lit(e) { no_interned(cx, e, tname) } else { cx.construct_variant(e, decl, tname, name, args) },
         .Static(m, tname) -> static_call(cx, e, m, tname, name, args),
         .Bounded(decl, j, tname) -> bounded_call(cx, e, subject, decl, j, tname, name, args),
+        .BoundStatic(decl, j, tname) -> bound_static_call(cx, e, subject, decl, j, tname, name, args),
         .Contract(tdecl, tname) -> dyn_call(cx, e, subject, tdecl, tname, name, args),
         .FnField(_, fty) -> fielded_call(cx, e, name, fty, args),
         .Row(r) -> r.check(cx, MethodCall { e: e, subject: subject, args: args }),
@@ -45,7 +46,7 @@ fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args:
 fn seats_named(c: Callee) -> bool {
     match c {
         .Static(_, _) or .Declared(_, _) -> true,
-        .Variant(_, _) or .Bounded(_, _, _) or .Contract(_, _) or .FnField(_, _) or .Row(_) or .Nameless -> false,
+        .Variant(_, _) or .Bounded(_, _, _) or .BoundStatic(_, _, _) or .Contract(_, _) or .FnField(_, _) or .Row(_) or .Nameless -> false,
     }
 }
 
@@ -569,6 +570,32 @@ fn wrong_method_arity(
         )
 }
 
+fn unbounded_call(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.method",
+                cx.loc_of(e),
+                "`${tname}` has no known methods",
+                "called here",
+                bound_remedy(cx, decl, tname),
+            ),
+        )
+}
+
+fn receiver_through_type(mut cx: TypeCx, e: ExprId, trait_name: string, name: string, tname: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.method",
+                cx.loc_of(e),
+                "`${trait_name}.${name}` takes a receiver, and `${tname}` names a type — call it on a value of `${tname}`",
+                "called here",
+                "a type parameter calls its bound's `static fn`s alone",
+            ),
+        )
+}
+
 fn no_trait_method(mut cx: TypeCx, e: ExprId, trait_name: string, name: string, tname: string) -> TypeId {
     cx
         .spoken(
@@ -664,18 +691,7 @@ fn bounded_call(
     args: List<ExprId>,
 ) -> TypeId {
     let trait_name = cx.bound_name(decl, j)
-    if trait_name == "" {
-        return cx
-            .spoken(
-                refusal(
-                    "type.method",
-                    cx.loc_of(e),
-                    "`${tname}` has no known methods",
-                    "called here",
-                    bound_remedy(cx.view.decls.decl(decl).kind, tname),
-                ),
-            )
-    }
+    if trait_name == "" { return unbounded_call(cx, e, decl, tname) }
     trait_judged(cx, e, subject, trait_name, name, args, cx.view.decls.bound_args(decl, j)) ?? no_trait_method(
         cx,
         e,
@@ -685,16 +701,45 @@ fn bounded_call(
     )
 }
 
+/// A STATIC through a bounded type parameter: the bound's trait
+/// supplies the member, which must be static — a member with a
+/// receiver reads a value, and a type parameter names none. Mono
+/// resolves the concrete static per specialization.
+fn bound_static_call(
+    mut cx: TypeCx,
+    e: ExprId,
+    subject: ExprId,
+    decl: DeclId,
+    j: int,
+    tname: string,
+    name: string,
+    args: List<ExprId>,
+) -> TypeId {
+    let trait_name = cx.bound_name(decl, j)
+    if trait_name == "" { return unbounded_call(cx, e, decl, tname) }
+    let tdecl? = cx.bound_trait(decl, trait_name) else { return cx.error_type }
+    let member? = cx.view.decls.trait_member(tdecl, name) else { return no_trait_method(cx, e, trait_name, name, tname) }
+    if !cx.view.decls.is_static_of(member) { return receiver_through_type(cx, e, trait_name, name, tname) }
+    let found? = cx.view.decls.sig(member)?.fn_sig() else { return cx.error_type }
+    if !cx.seat_contracts(e, "${trait_name}.${name}", member, 0, args, null) { return cx.error_type }
+    let sig = selfed_sig(cx, subject, member, found, cx.view.decls.bound_args(decl, j))
+    placed_judged(cx, e, trait_name, name, member, args, sig)
+}
+
 /// A REMEDY NAMES A FORM THAT PARSES. A bound is written on a fn's
-/// type parameters and nowhere else — a type's and an impl's refuse
-/// it at the `<` — so telling every unbounded parameter to add one
-/// sends half of them at a form the grammar has no rule for.
-fn bound_remedy(kind: DeclKind, tname: string) -> string {
-    match kind {
+/// and a component's type parameters and nowhere else — a type's and
+/// an impl's refuse it at the `<` — so telling every unbounded
+/// parameter to add one sends half of them at a form the grammar has
+/// no rule for.
+fn bound_remedy(cx: TypeCx, decl: DeclId, tname: string) -> string {
+    if cx.view.decls.component_parts_of(decl) != null { return bound_written(tname) }
+    match cx.view.decls.decl(decl).kind {
         .Record or .Named or .Alias or .Enum or .Impl or .CollectEnum or .State -> "a type's and an impl's parameters take no bound yet — a bounded generic is a free `fn<${tname}: SomeTrait>` for now",
-        .Fn or .Method or .Trait or .Default or .Case or .Main or .Const or .Syntax or .Builtin or .Collect -> "add a bound — `<${tname}: SomeTrait>`",
+        .Fn or .Method or .Trait or .Default or .Case or .Main or .Const or .Syntax or .Builtin or .Collect -> bound_written(tname),
     }
 }
+
+fn bound_written(tname: string) -> string { "add a bound — `<${tname}: SomeTrait>`" }
 
 /// A method on a CONTRACT value: the trait's sig judges (self
 /// omitted — the boxed value fills that seat at dispatch); the
@@ -731,14 +776,8 @@ fn contract_judged(
         .seat_contracts(e, "${trait_name}.${name}", member, 1, args, if writes { subject } else { null }) {
         return cx.error_type
     }
-    sig_judged(
-        cx,
-        e,
-        trait_name,
-        name,
-        args,
-        seats_of(selfed_sig(cx, subject, member, found, trait_args)),
-    )
+    let sig = seats_of(selfed_sig(cx, subject, member, found, trait_args))
+    placed_judged(cx, e, trait_name, name, member, args, sig)
 }
 
 /// A method sig past its receiver — what the arguments fill.
@@ -761,6 +800,21 @@ fn trait_judged(
     let tdecl? = cx.view.decls.trait_named(cx.names, trait_name) else { return null }
     let member? = cx.view.decls.trait_member(tdecl, name) else { return null }
     contract_judged(cx, e, subject, trait_name, name, args, member, trait_args)
+}
+
+/// A trait member's judgment: the arguments placed against its seats and
+/// defaults, then judged as the placed sig.
+fn placed_judged(
+    mut cx: TypeCx,
+    e: ExprId,
+    trait_name: string,
+    name: string,
+    member: DeclId,
+    args: List<ExprId>,
+    sig: FnSig,
+) -> TypeId {
+    let placed? = cx.placed(e, "${trait_name}.${name}", member, args, sig.params) else { return cx.error_type }
+    sig_judged(cx, e, trait_name, name, placed.args, FnSig { params: placed.wants, ret: sig.ret })
 }
 
 /// A method sig's judgment — its seats past the receiver — over the

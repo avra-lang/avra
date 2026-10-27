@@ -1,18 +1,22 @@
 //! The map literal's NodeSemantics — dispatch one-liners; the rule
 //! bodies live beside this file, by concern.
-use core.{ExprId, TypeId, Reg}
+use core.{ExprId, TypeId, Reg, Kids, map_entry_reach, flatten}
 use features.{TypeCx, LowerCx, Meaning, ResolveCx, nothing}
 
 use core.expr.{MapLit}
+
+impl Kids for MapLit {
+    fn kids() -> List<ExprId> { flatten([map_entry_reach(m) for m in self.entries]) }
+}
 
 impl Meaning for MapLit {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        map_type(cx, e, self.keys, self.values)
+        map_type(cx, e, self.entries)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        map_reg(cx, e, self.keys, self.values)
+        map_reg(cx, e, self.entries)
     }
 }

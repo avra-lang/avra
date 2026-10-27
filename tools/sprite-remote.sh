@@ -305,7 +305,14 @@ advance_and_cache() {
         return "$s1"
     }
     : > "$log"
-    if step make -s compiler; then
+    if [ -n "$ladder" ]; then
+        # THE LADDER IS CI's: the same `make compiler RUNGS=… LADDER_BASE=…`, replayed in the repository shipped beside the tree.
+        lk=${ladder%%:*}
+        lrest=${ladder#*:}
+        export AVRA_LADDER_REPO=$home/avra-ladder/$lk/repo AVRA_LADDER_DIR=$home/avra-ladder/$lk/work
+        step make -s compiler RUNGS="$(printf '%s' "${lrest#*:}" | tr , ' ')" LADDER_BASE="${lrest%%:*}" && ok=1
+        grep -a '^ladder:' "$log" >&2 || :
+    elif step make -s compiler; then
         ok=1
     fi
     if [ "$ok" = 1 ] && [ -x build/avra ]; then
@@ -396,8 +403,8 @@ start() {
 # would answer about a different program.
 # Installs the compiler published for a key, from the tree's own fetch tool.
 install_published() {
-    [ -f tools/fetch_compiler.sh ] || return 1
-    sh tools/fetch_compiler.sh --key "$1" >&2
+    [ -f tools/compiler_release.py ] || return 1
+    python3 tools/compiler_release.py install --key "$1" >&2
 }
 
 supervise() {
@@ -405,6 +412,9 @@ supervise() {
     shift 5
     # The route rides after the hash (`<hash>@<route>`): see compiler_route in tools/work.
     route=build
+    # A branch with rungs adds them after the route (`<hash>@<route>%<key>:<base>:<rung>,…`): see ladder_plan.
+    ladder=
+    case $chash in *%*) ladder=${chash#*%}; chash=${chash%%%*} ;; esac
     case $chash in *@*) route=${chash#*@}; chash=${chash%%@*} ;; esac
     # A probe asks for one generation of the tree, never cached (`one:<hash>`).
     probe=
@@ -459,6 +469,26 @@ supervise() {
                 compiler="builder, installed (merge-base key ${route#builder:})"
             else
                 echo "sprite-run: no published compiler for the merge-base (key ${route#builder:}) — run without --builder" >&2; exit 70
+            fi
+        elif [ "${route%%:*}" = builderold ]; then
+            # The MERGE-BASE's own source, built once from an older published compiler and kept by the
+            # merge-base's key, is the builder: stable for the lane's whole life, shared by every lane on
+            # that base. The lane's tree is never built for the run.
+            anc=${route#builderold:}; mbk=${anc#*:}; anc=${anc%%:*}
+            mbt=$home/avra-mb/$mbk
+            if [ ! -x "$mbt/build/avra" ]; then
+                s0=$(date +%s)
+                mkdir -p "$mbt" && tar -xzf "$home/avra-mb/$mbk.tgz" -C "$mbt" \
+                    && (python3 "$remote/tools/compiler_release.py" install --key "$anc" --into "$mbt/build" >&2 && cd "$mbt" && make -s compiler GENS=1) >> "$rd/probe.log" 2>&1 \
+                    || { echo "sprite-run: the merge-base's source (key $mbk) did not build from the published ancestor $anc — see $rd/probe.log" >&2; exit 70; }
+                echo "sprite-run: merge-base builder $mbk built once from $anc ($(($(date +%s) - s0))s)" >&2
+            fi
+            if [ -x build/avra ] && cmp -s "$mbt/build/avra" build/avra; then
+                compiler="builder, warm (merge-base $mbk, built once from $anc)"
+            else
+                cp -p "$mbt/build/avra" build/avra
+                : > build/.avra-compiler-hash
+                compiler="builder, merge-base $mbk (built once from $anc, shared)"
             fi
         elif [ -x build/avra ] && [ "$(cat build/.avra-compiler-hash 2>/dev/null)" = "$chash" ]; then
             compiler=warm

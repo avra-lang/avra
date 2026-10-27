@@ -32,6 +32,8 @@ import os
 import re
 import sys
 
+import ratchet_rows as rows_lib
+
 BUDGET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "census.budget")
 SLACK_PPM = 15000
 COUNTERS = ("retains", "releases", "reclaims", "list_reads", "list_writes", "store_bytes")
@@ -84,12 +86,7 @@ def gained(now, main, top=10):
 
 
 def read_budget(text):
-    out = {}
-    for line in text.splitlines():
-        m = re.match(r"^([a-z_]+) (\d+)$", line.strip())
-        if m:
-            out[m[1]] = int(m[2])
-    return out
+    return rows_lib.read(text, re.compile(r"^(?P<k>[a-z_]+) (?P<n>\d+)$"), ["k"], "n", flat=True)
 
 
 def over(n, ceiling):

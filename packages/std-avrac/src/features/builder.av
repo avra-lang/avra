@@ -29,6 +29,7 @@ use core.{
     Mark,
     Variant,
     CompClause,
+    MapEntry,
     Refused,
     flatten,
     some_list,
@@ -114,6 +115,11 @@ impl Slots for Builder {
     /// The comprehension clauses the payload `label` carries.
     fn comp_clauses_of(label: string) -> Result<List<CompClause>, string> {
         .Ok(comp_clauses_at(self.args, self.slot_of(label)?))
+    }
+
+    /// The map entries the payload `label` carries.
+    fn map_entries_of(label: string) -> Result<List<MapEntry>, string> {
+        .Ok(map_entries_at(self.args, self.slot_of(label)?))
     }
 
     /// The spec cases the payload `label` carries.
@@ -358,6 +364,11 @@ impl Builder {
                     },
                 ),
         )
+    }
+
+    /// One map entry, as data.
+    fn make_map_entry(m: MapEntry) -> Result<LangNode, string> {
+        .Ok(LangNode.NMapEntry(m))
     }
 
     /// One comprehension clause, as data.
@@ -626,6 +637,16 @@ fn use_item_of(args: List<Captured<Token, LangNode>>, i: int) -> UseItem? {
     match args[i] { .Node(.NUseItem(u)) -> u, _ -> null }
 }
 
+/// The repeated map-entry capture at `args[i]`, as entries.
+export fn map_entries_at(args: List<Captured<Token, LangNode>>, i: int) -> List<MapEntry> {
+    let items = list_at(args, i)
+    flatten([some_list(map_entry_at(items, j)) for j in 0..items.length])
+}
+
+fn map_entry_at(args: List<Captured<Token, LangNode>>, i: int) -> MapEntry? {
+    match args[i] { .Node(.NMapEntry(m)) -> m, _ -> null }
+}
+
 /// The repeated arm capture at `args[i]`, as arms.
 export fn arms_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Arm> {
     let items = list_at(args, i)
@@ -782,6 +803,7 @@ fn facet_rows() -> List<FacetRow> {
         FacetRow { side: "state", mark: (st, id) -> st.mark_state(id) },
         FacetRow { side: "host", mark: (st, id) -> st.mark_host(id) },
         FacetRow { side: "mutating", mark: (st, id) -> st.mark_mutating(id) },
+        FacetRow { side: "on", mark: (st, id) -> st.mark_setting_handler(id) },
         FacetRow { side: "static", mark: (st, id) -> st.mark_static(id) },
     ]
 }

@@ -432,7 +432,7 @@ fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
         mut_seats: if readable { sealed_names(store, x) } else { [] },
         trait_args: if readable && x.kind is .Impl { [spelled(a) for a in store.trait_args_of(x.stmt)] } else { [] },
         hosted: readable && x.kind is .Fn && store.is_host_fn(x.stmt),
-        variadic: if owns { [j for j, p in store.fn_parts(x.stmt)?.params ?? [] if p.variadic].first() } else { null },
+        variadic: if owns { [j for j, p in store.fn_parts(x.stmt)?.params ?? [] if p.is_rest()].first() } else { null },
     }
 }
 
@@ -740,6 +740,9 @@ export type Decls = {
     // an impl block's target type, once typing found it — dense by
     // DeclId; a method's instantiation is its target's
     targets: Cell<List<DeclId?>>,
+    // the trait member each `impl Trait for` method answers, once its
+    // signature named it — dense by DeclId
+    answers: Cell<List<DeclId?>>,
     // THE INOUT SEATS, dense by DeclId: each seat's CONTRACT a fn
     // declared (`mut`, `const`), whether a method DECLARED `mut fn`,
     // and whether the receivers pass found it WRITING through `self`
@@ -1009,6 +1012,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         builtins: list_cell(),
         rows: [],
         targets: Cell.new(no_targets),
+        answers: Cell.new(no_targets),
         seat_marks: Cell.new(no_seat_marks),
         declared_writes: Cell.new(no_declared_writes),
         written_seats: Cell.new(no_written_seats),
@@ -2648,6 +2652,18 @@ impl Decls {
         self.ensure_failures.set(ensure)
     }
 
+    fn record_answered(method: DeclId, member: DeclId) {
+        self.answers.set_at(method.index, member)
+    }
+
+    /// The trait member an impl's method answers, read where the impl
+    /// names its trait.
+    fn contract_member(method: DeclId) -> DeclId? {
+        let block? = self.decl(method).parent else { return null }
+        let tr? = self.impl_trait(block) else { return null }
+        self.trait_member(tr, self.decl(method).name)
+    }
+
     fn record_target(impl_decl: DeclId, target: DeclId) {
         self.targets.set_at(impl_decl.index, target)
     }
@@ -3105,8 +3121,27 @@ impl Decls {
     /// declares one — always its last.
     fn variadic_of(d: DeclId) -> int? { self.facts_of(d)?.variadic }
 
+    /// Each seat's default, by position: the fn's own, else the one the
+    /// trait member it answers writes — a contract's default is written once.
     fn seat_defaults(d: DeclId) -> List<DeclId?> {
+        let own = self.own_seat_defaults(d)
+        let m? = self.answered_member(d) else { return own }
+        let theirs = self.own_seat_defaults(m)
+        [x ?? if j < theirs.length { theirs[j] } else { null } for j, x in own]
+    }
+
+    /// The defaults a fn's own seats write, by position.
+    fn own_seat_defaults(d: DeclId) -> List<DeclId?> {
         [self.default_named(d, n) for n in self.facts_of(d)?.seats ?? []]
+    }
+
+    /// The trait member an `impl Trait for` method answers — absent
+    /// for an inherent method and a trait's own member. A signed
+    /// declaration holds it; one read from an interface asks its impl.
+    fn answered_member(d: DeclId) -> DeclId? {
+        let _ = self.sig(d)
+        let held: DeclId? = self.answers.get()[d.index]
+        held ?? self.contract_member(d)
     }
 
     /// Whether a fn's body is lowered once for every caller: no type
@@ -3342,19 +3377,25 @@ impl Decls {
         self.trait_fns(g).all((r) -> self.has_body(r) || self.answered_at(d, r, g, at))
     }
 
-    /// Whether `d` has a method answering trait member `r` at `at`.
+    /// Whether `d` has a method answering trait member `r` at `at` — its
+    /// seats AND its answer, since an argument may ride either.
     fn answered_at(d: DeclId, r: DeclId, g: DeclId, at: List<TypeId>) -> bool {
         let want? = self.sig(r)?.fn_sig() else { return false }
-        let seats = [self.types.substituted(p, g, at) for p in want.params]
-        self.methods_named(d, self.decl(r).name).any((m) -> self.same_seats(m, seats))
+        let wanted = FnSig {
+            params: [self.types.substituted(p, g, at) for p in want.params],
+            ret: self.types.substituted(want.ret, g, at),
+        }
+        self.methods_named(d, self.decl(r).name).any((m) -> self.same_sig(m, wanted))
     }
 
-    /// Whether a method's seats past its receiver are exactly these.
-    fn same_seats(m: DeclId, seats: List<TypeId>) -> bool {
+    /// Whether a method's seats past its receiver, and its answer, are exactly these.
+    fn same_sig(m: DeclId, wanted: FnSig) -> bool {
         let sig? = self.sig(m)?.fn_sig() else { return false }
         let from = if self.is_static_of(m) { 0 } else { 1 }
-        sig.params.length == seats.length &&
-            same_types(sig.params.slice(from, seats.length), seats.slice(from, seats.length))
+        let n = wanted.params.length
+        sig.params.length == n &&
+            same_types(sig.params.slice(from, n), wanted.params.slice(from, n)) &&
+            same_type(sig.ret, wanted.ret)
     }
 
     /// A type's runtime tag in a `dyn` box: its symbol's fingerprint —

@@ -206,8 +206,19 @@ impl LowerCx {
                     seats,
                 )
         }
-        if at == null { return self.wanted(m) }
+        if at == null || self.facts.subst_at(at!) == null { return self.receiver_symbol(m, recv) }
         self.symbol_at(m, at!)
+    }
+
+    /// A method a bound or a `dyn` box reached: typing recorded no
+    /// instantiation at the call, and under mono the receiver is concrete
+    /// — a generic record's method is instantiated at the record's own
+    /// arguments.
+    fn receiver_symbol(m: DeclId, recv: TypeId) -> string {
+        match self.view.types.shape_of(self.concrete(recv)) {
+            .App(d, _, args) -> self.wanted(m, Sub { target: d, args: args }),
+            rest -> self.wanted(m),
+        }
     }
 
     /// A trait member's instantiation at a call: `Self` and, for a
@@ -409,6 +420,8 @@ impl LowerCx {
                 self.view.decls.decl(d).kind is .Collect -> self.collect_value_reg(e, d)
                 _ -> null
             },
+            // a type names no register — its one read is a static's subject
+            .TypeParam(_) -> null,
         }
     }
 
@@ -548,7 +561,7 @@ impl LowerCx {
             .Decl(d) -> if declares_state(self.view.decls.decl(d).kind) { self.state_decl_cell(d) } else { null },
             .Param(i) -> if self.state_seat(i) { self.param_reg(i) } else { null },
             .Capture(l, j) -> self.state_capture_cell(l, j),
-            .Receiver or .LambdaParam(_, _) or .Pattern(_, _) or .Index(_) -> null,
+            .Receiver or .LambdaParam(_, _) or .Pattern(_, _) or .Index(_) or .TypeParam(_) -> null,
         }
     }
 
@@ -939,7 +952,7 @@ impl LowerCx {
         let b? = self.names.binding(e) else { return null }
         let direct: bool = match b {
             .Decl(d) -> self.view.decls.fn_name(d) != null,
-            .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
+            .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .TypeParam(_) -> false,
         }
         if direct { return null }
         self.callee_binding(e, b)
@@ -957,7 +970,7 @@ impl LowerCx {
             .Capture(lam, j) -> self.env_read(j, self.capture_ty(lam, j)),
             .Def(s) -> self.read_wearing(e, b, self.concrete(self.def_ty(s))),
             // the rest mint nothing — the register is the value
-            .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Index(_) or .Decl(_) -> self.read_binding(e, b),
+            .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Index(_) or .TypeParam(_) or .Decl(_) -> self.read_binding(e, b),
         }
     }
 

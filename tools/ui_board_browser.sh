@@ -59,9 +59,7 @@ if [ "${1:-}" = --self-test ]; then
     exit 0
 fi
 
-here=$(cd "$(dirname "$0")" && pwd)
-tree=$(cd "$here/.." && pwd)
-avra=${AVRA:-$tree/build/avra}
+. "$(dirname "$0")/lib/tree.sh"
 target=${UI_BOARD_TARGET:-wasm}
 work=$(mktemp -d "${TMPDIR:-/tmp}/avra-ui-browser.XXXXXX")
 
@@ -91,6 +89,8 @@ wasm_ready || skip "the wasm runtime archive did not build"
 # A COPY is served, so the run edits no file of the tree's.
 mkdir -p "$work/tools"
 cp -R "$tree/tools/ui-board" "$work/tools/ui-board"
+# The board's server keeps its tasks in a file, so a run names its own.
+export BOARD_DB="$work/board.db"
 "$avra" dev --target "$target" --port 0 "$work/tools/ui-board" >"$work/dev.out" 2>"$work/dev.err" &
 dev=$!
 servers=""
@@ -120,7 +120,7 @@ cp -R "$tree/tools/ui-board" "$work/served/tools/ui-board"
 "$avra" build --target "$target" --wasm_reactor "$work/served/tools/ui-board" >"$work/served.out" 2>"$work/served.err" || { cat "$work/served.err"; echo "ui-browser: the board did not build for the served page"; exit 1; }
 served=$(tail -1 "$work/served.out")
 for mode in "" "--tampered"; do
-    node "$here/ui-board/serve_hydrated.mjs" "$work/document.html" "$served" "$tree/runtime/dom" $mode >"$work/serve$mode.out" 2>&1 &
+    node "$here/ui-board/serve_hydrated.mjs" "$work/document.html" "$served" "$tree/runtime/dom" $mode --hold --backend "$url" >"$work/serve$mode.out" 2>&1 &
     servers="$servers $!"
 done
 trap 'kill "$dev" $servers 2>/dev/null || true' EXIT
@@ -168,6 +168,25 @@ node "$here/ui-board/warned.mjs" "$warns_url" >"$work/warned.out" 2>&1 || { cat 
 said=$(grep -c '^dev: the page said: ui: .*keeps state' "$work/warns.out" || :)
 [ "$said" = 1 ] || { cat "$work/warns.out"; echo "ui-browser: dev's output carried the page's warning $said times, wanted once"; exit 1; }
 echo "ui-browser: a page whose walk warns is told in \`avra dev\`'s output, once"
+
+# TWO VIEWS OF ONE REQUEST, AND ITS VERSION: a page whose two views ask the same GET, beside the
+# server that answers it, is served by `avra dev` and opened in Firefox; the browser must have sent
+# the request once, asked again with the version it held and been answered 304 with the page
+# unchanged, and shown the new answer once a write had moved the version.
+cp -R "$tree/tools/ui-observed" "$work/ui-observed"
+"$avra" dev --target "$target" --port 0 "$work/ui-observed" >"$work/observed.out" 2>"$work/observed.err" &
+observed=$!
+trap 'kill "$dev" "$warns" "$observed" $servers 2>/dev/null || true' EXIT
+tries=0
+until grep -q '^dev: .* at http' "$work/observed.out" 2>/dev/null; do
+    kill -0 "$observed" 2>/dev/null || { cat "$work/observed.err" "$work/observed.out"; echo "ui-browser: \`avra dev\` ended before it served the observation page"; exit 1; }
+    tries=$((tries + 1))
+    [ "$tries" -lt 600 ] || { cat "$work/observed.err"; echo "ui-browser: \`avra dev\` never served the observation page"; exit 1; }
+    sleep 0.1
+done
+observed_url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/observed.out" | head -1)
+node "$here/ui-board/observed.mjs" "$observed_url" >"$work/observed.node" 2>&1 || { cat "$work/observed.node" "$work/observed.out"; echo "ui-browser: the observation page's claims did not hold"; exit 1; }
+sed 's/^/ui-browser: observation page: /' "$work/observed.node"
 
 shots=${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"}
 for engine in $engines; do

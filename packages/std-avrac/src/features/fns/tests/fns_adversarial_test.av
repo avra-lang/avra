@@ -40,11 +40,21 @@ spec "features/fns (adversarial)" {
         then "an extern's seat" {
             refusals("extern fn g(a: int = 1) -> int\n0") == 1
         }
-        then "a trait's seat" {
-            refusals("trait T { fn m(a: int = 1) -> int }\n0") == 1
-        }
         then "a lambda's seat" {
             refusals("let h = (a: int = 1) -> a\n0") == 1
+        }
+    }
+    given "a seat's default — a trait's seat takes one, for every impl" {
+        then "an impl's method wears it" {
+            shown(
+                "trait T {\n    fn m(a: int = 1) -> int\n}\ntype P = { x: int }\nimpl T for P {\n    fn m(a: int) -> int { self.x + a }\n}\nP { x: 2 }.m()",
+            ) == "3"
+        }
+        then "an impl's method that writes its own is refused" {
+            refused_with(
+                "trait T {\n    fn m(a: int = 1) -> int\n}\ntype P = { x: int }\nimpl T for P {\n    fn m(a: int = 5) -> int { self.x + a }\n}\nP { x: 2 }.m()",
+                "`a`'s default is `T.m`'s — an impl's method takes its trait's",
+            )
         }
     }
     given "a seat's default — names against names" {

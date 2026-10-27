@@ -350,9 +350,9 @@ fn defaults_law(mut cx: TypeCx, s: StmtId, fname: string, params: List<Param>) {
 /// THE VARIADIC LAW at the declaration: a `..rest: List<T>` seat is the
 /// last, the only one, and a list — it takes whatever the call leaves.
 fn variadic_law(mut cx: TypeCx, s: StmtId, fname: string, params: List<Param>) {
-    let at? = params.find_index(it.variadic) else { return }
+    let at? = params.find_index(it.is_rest()) else { return }
     let p = params[at]
-    if at != params.length - 1 || params.filter(it.variadic).length > 1 { return variadic_misplaced(cx, s, p, fname) }
+    if at != params.length - 1 || params.filter(it.is_rest()).length > 1 { return variadic_misplaced(cx, s, p, fname) }
     let listed = (cx.stmt_sig(s)?.params ?? []).last()
     if listed == null || cx.view.types.element(cx.view.types.seen_through(listed!)) == null { variadic_unlisted(cx, s, p, fname) }
 }
@@ -523,7 +523,7 @@ fn generic_call(
     if missing != null && args.any(spoke_already(cx, it)) { return cx.error_type }
     if missing != null { return if cx.starving { unpinned_by_arguments(cx, e, callee, missing!) } else { cx.hungry(e) } }
     let concrete = cx.bound_closed(bound)
-    if !bounds_hold(cx, e, decl, concrete) { return cx.error_type }
+    if !cx.bounds_hold(e, decl, concrete, "in this call") { return cx.error_type }
     if !lawful_instantiation(cx, e, s, decl, concrete) { return cx.error_type }
     let settled: List<string> = cx.subst_at(e)?.consts ?? []
     cx.record_subst(e, decl, concrete, settled)
@@ -631,30 +631,6 @@ export fn check_return(mut cx: TypeCx, s: StmtId) {
     if cx.errored(v) { return }
     if cx.accepts(v, want!) { return }
     wrong_return(cx, s, v, want!)
-}
-
-/// One bound, one binding: implemented, or refused with the remedy.
-fn bound_held(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string, ty: TypeId, at: List<TypeId>) -> bool {
-    // a bound naming no trait was refused where it was written
-    if cx.bound_trait(decl, tname) == null || cx.meets_bound(decl, tname, ty, at) { return true }
-    bound_unheld(cx, e, bound_spelled(cx, tname, at), ty)
-    false
-}
-
-/// A bound as written: the trait, then its arguments at this call.
-fn bound_spelled(cx: TypeCx, tname: string, at: List<TypeId>) -> string {
-    if at.is_empty() { tname } else { "${tname}<${[cx.view.types.name_of(t) for t in at].join(", ")}>" }
-}
-
-/// Every bounded tparam's binding must IMPLEMENT its trait — the
-/// instantiation check that makes abstract method calls sound.
-fn bounds_hold(mut cx: TypeCx, e: ExprId, decl: DeclId, concrete: List<TypeId>) -> bool {
-    for j in 0..cx.tbounds(decl).length {
-        let name = cx.bound_name(decl, j)
-        let at = [cx.view.types.substituted(a, decl, concrete) for a in cx.view.decls.bound_args(decl, j)]
-        if name != "" && !bound_held(cx, e, decl, name, concrete[j], at) { return false }
-    }
-    true
 }
 
 /// THE HOST INOUT LAW at the CALL: only a LOCAL binding owns a cell,
@@ -1057,20 +1033,6 @@ fn wrong_return(mut cx: TypeCx, s: StmtId, v: ExprId, want: TypeId) {
                     "`return` answers `${cx.view.types.name_of(want)}`, this is `${gn}`",
                     want,
                 ),
-        )
-}
-
-fn bound_unheld(mut cx: TypeCx, e: ExprId, tname: string, ty: TypeId) {
-    let tn = cx.view.types.name_of(ty)
-    cx
-        .emit(
-            refusal(
-                "type.mismatch",
-                cx.loc_of(e),
-                "`${tn}` does not implement `${tname}`",
-                "in this call",
-                "write `impl ${tname} for ${tn} { … }`",
-            ),
         )
 }
 

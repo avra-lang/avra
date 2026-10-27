@@ -73,8 +73,9 @@ impl Wants {
     /// ignored.
     fn dropped(token: int) { self.held.set([h for h in self.held.get() if h.token != token]) }
 
-    /// The sources whose control has left the screen.
-    fn left(on: App) -> List<Held> { [h for h in self.held.get() if !on.owns(h.owner)] }
+    /// The timers whose control has left the screen. A request is the loop's
+    /// own, owned by no control.
+    fn left(on: App) -> List<Held> { [h for h in self.held.get() if timed(h) && !on.owns(h.owner)] }
 
     /// The source that falls due first by `end`, the earlier asked first of
     /// two due together; none when nothing is due by then.
@@ -105,6 +106,11 @@ impl Wants {
             .Request(_, _) -> false,
         }
     }
+}
+
+/// Whether a source is a timer, which a control owns, rather than a request.
+fn timed(h: Held) -> bool {
+    match h.how { .Timer(_) -> true, .Request(_, _) -> false }
 }
 
 /// Where a request's reply is left; none for a timer.

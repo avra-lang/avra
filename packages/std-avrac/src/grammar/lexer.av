@@ -1557,8 +1557,9 @@ fn paren_opening(ts: List<Token>, close: int) -> int? {
 /// Whether the token at `i` is a component's word opening an instance.
 /// An imported word always does. A word the file's own MODULE declares
 /// is reserved nowhere, so it opens one only where the line says so: a
-/// head value after it. Its word before a `{` stays the record's
-/// literal.
+/// head value after it, or — past its type arguments — a block, where
+/// an expression stands. Where a type stands (a declaration's name, an
+/// annotation, a fn signature's answer) the word stays the type's.
 fn opens_instance(
     ts: List<Token>,
     i: int,
@@ -1569,7 +1570,108 @@ fn opens_instance(
     let t = ts[i]
     if t.kind != TokenKind.Name { return false }
     if components.contains(t.text) { return true }
-    named.contains(t.text) && heads_instance(ts, after_type_args(ts, i + 1), keywords)
+    if !named.contains(t.text) { return false }
+    let head = after_type_args(ts, i + 1)
+    heads_instance(ts, head, keywords) ||
+        head < ts.length &&
+            ts[head].lit_matches("{") &&
+            !types_here(ts, i) &&
+            !patterns_here(ts, i, head) &&
+            instance_only(ts, head)
+}
+
+/// Whether the word at `i`, its block opening at `open`, is a record
+/// PATTERN: under an `is`, or with what follows the block reading it as
+/// one — an arm's `->`, a guard's `if`, a destructuring's `=`.
+fn patterns_here(ts: List<Token>, i: int, open: int) -> bool {
+    if i > 0 && ts[i - 1].lit_matches("is") { return true }
+    let after? = block_end(ts, open) else { return false }
+    let next = after + 1
+    next < ts.length &&
+        (ts[next].lit_matches("->") || ts[next].lit_matches("if") || ts[next].lit_matches("="))
+}
+
+/// The `}` that closes the block opening at `open`.
+fn block_end(ts: List<Token>, open: int) -> int? {
+    mut depth = 0
+    for j in open..ts.length {
+        if ts[j].lit_matches("{") { depth = depth + 1 }
+        if ts[j].lit_matches("}") {
+            depth = depth - 1
+            if depth == 0 { return j }
+        }
+    }
+    null
+}
+
+/// Whether the block opening at `open` holds what only an instance's
+/// can: a member that is no `name: value` field or spread — an `on`
+/// handler, a child, the body's own seats. A block of fields alone is
+/// the record's literal, and means the same.
+fn instance_only(ts: List<Token>, open: int) -> bool {
+    mut depth = 0
+    mut starts = false
+    for j in open..ts.length {
+        let tok = ts[j]
+        if tok.lit_matches("}") || tok.lit_matches(")") || tok.lit_matches("]") {
+            depth = depth - 1
+            if depth == 0 { return false }
+        }
+        if depth == 1 {
+            if starts && opens_member(ts, j) { return true }
+            starts = tok.kind == TokenKind.Break || tok.lit_matches(",")
+        }
+        if tok.lit_matches("{") || tok.lit_matches("(") || tok.lit_matches("[") {
+            depth = depth + 1
+            starts = depth == 1
+        }
+    }
+    false
+}
+
+/// Whether the token at `j`, where a member of a block starts, begins
+/// one no record literal holds: anything but `name:`, `..` or a break.
+fn opens_member(ts: List<Token>, j: int) -> bool {
+    let tok = ts[j]
+    if tok.kind == TokenKind.Break || tok.lit_matches(",") || tok.lit_matches("..") { return false }
+    !(tok.kind == TokenKind.Name && j + 1 < ts.length && ts[j + 1].lit_matches(":"))
+}
+
+/// The words a type's name follows where it is declared or served.
+const type_words: List<string> = ["impl", "for", "component", "type", "trait", "enum", "alias"]
+
+/// Whether the word at `i` stands where a type does: after a word that
+/// declares or serves one, an annotation's `:`, or a fn signature's `->`.
+fn types_here(ts: List<Token>, i: int) -> bool {
+    if i == 0 { return false }
+    let before = ts[i - 1]
+    type_words.contains(before.text) || before.lit_matches(":") || signature_answer(ts, i - 1)
+}
+
+/// Whether the `->` at `arrow` gives a fn signature its answer —
+/// `fn name(…) ->`, its type parameters between — never a lambda's body.
+fn signature_answer(ts: List<Token>, arrow: int) -> bool {
+    if !ts[arrow].lit_matches("->") || arrow == 0 || !ts[arrow - 1].lit_matches(")") { return false }
+    let opened? = paren_opening(ts, arrow - 1) else { return false }
+    let named = before_type_params(ts, opened - 1)
+    named > 0 && ts[named].kind == TokenKind.Name && ts[named - 1].lit_matches("fn")
+}
+
+/// The token before a `<…>` list that ends at `at`, or `at` itself when
+/// none ends there.
+fn before_type_params(ts: List<Token>, at: int) -> int {
+    if at < 0 || !ts[at].lit_matches(">") { return at }
+    mut depth = 0
+    mut j = at
+    while j >= 0 && ts[j].kind != TokenKind.Break {
+        if ts[j].lit_matches(">") { depth = depth + 1 }
+        if ts[j].lit_matches("<") {
+            depth = depth - 1
+            if depth == 0 { return j - 1 }
+        }
+        j = j - 1
+    }
+    at
 }
 
 /// The token where a word's head begins, past a `<…>` TYPE ARGUMENT

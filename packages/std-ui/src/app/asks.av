@@ -1,7 +1,7 @@
 //! `app/asks.av` — the sources a handler asks for by name. Each is a
 //! `Want`, data, handed to the app's loop: no task, no host row is named
 //! here, so the same call runs on every target.
-use app.{Act, Async, Fetch, Want, running}
+use app.{Act, Async, Cache, Entry, Fetch, Want, Watcher, running}
 use @std.http_message.message.{Reply, Request}
 use @std.time.{Duration}
 
@@ -18,38 +18,56 @@ export fn repeating(period: Duration, act: Act) -> bool {
     on.ask(Want.Every(period.ms()), act)
 }
 
-/// `held` is loading now, and becomes what `parse` makes of `request`'s
-/// reply: `Ready` with its answer, or `Failed` with its refusal — the words
-/// `parse` gives, or why no reply came. THE LATEST ASK WINS: each ask takes
-/// the next number, and an answer lands only if its number is still the
-/// latest, so an older ask answering late never shows. False, and the fetch
-/// untouched, when no loop runs. The request is data, so the page's host
+/// `held` reads the observation `request` makes: loading now, and `Ready`
+/// with what `parse` makes of the reply, or `Failed` with its refusal — the
+/// words `parse` gives, or why no reply came. A GET is observed under its key
+/// and SHARED: a view asking what is already out joins that request, and the
+/// answer reaches every view that reads it. Of two asks by one view the LATEST
+/// is the one it shows, whatever order the answers come in. False, and the
+/// fetch untouched, when no loop runs. The request is data, so the page's host
 /// and a native client send the same value.
 export fn fetched<T>(held: Fetch<T>, request: Request, parse: fn(Reply) -> Result<T, string>) -> bool {
     let on? = running() else { return false }
-    let ask = held.asks.get() + 1
-    held.asks.set(ask)
-    held.now.set(Async.Loading)
+    let entry = on.observed.entry_of(request)
+    let before = held.at.get()
+    before?.left(held.id)
+    if before == null || before!.id != entry.id { held.last.set(null) }
+    held.at.set(entry)
+    entry
+        .joined(
+            Watcher {
+                id: held.id,
+                apply: (a: Async<Reply>) -> {
+                    let seen = settled(a, parse)
+                    held.now.set(seen)
+                    held.last.set(seen.value() ?? held.last.get())
+                },
+            },
+        )
+    on.observed.swept()
+    if entry.loading() { return true }
+    let sent = entry.conditional(request)
+    entry.asked()
     let into: Cell<Result<Reply, string>?> = Cell.new(null)
-    on.ask(Want.Get(request, into), () -> landed(held, ask, into, parse))
+    on.ask_observed(Want.Get(sent, into), () -> landed(on.observed, entry, into))
 }
 
-/// The reply has come: it shows if its ask is still the latest.
-fn landed<T>(
-    held: Fetch<T>,
-    ask: int,
-    into: Cell<Result<Reply, string>?>,
-    parse: fn(Reply) -> Result<T, string>,
-) -> bool {
+/// The reply has come: the entry takes it if it is the latest it has seen, and
+/// every view that reads the entry shows it. Whether the screen follows: the
+/// entry changed and a view reads it.
+fn landed(cache: Cache, entry: Entry, into: Cell<Result<Reply, string>?>) -> bool {
     let answer? = into.get() else { return false }
-    let latest = held.asks.get() == ask
-    if latest { held.now.set(settled(answer, parse)) }
-    latest
+    let changed = entry.offered(answer)
+    cache.swept()
+    changed && !entry.unread()
 }
 
-fn settled<T>(answer: Result<Reply, string>, parse: fn(Reply) -> Result<T, string>) -> Async<T> {
-    match answer {
-        .Ok(reply) -> match parse(reply) { .Ok(v) -> Async.Ready(v), .Err(m) -> Async.Failed(m) },
-        .Err(why) -> Async.Failed(why),
+/// What a view shows of the entry's state: its parser's word on a reply.
+fn settled<T>(a: Async<Reply>, parse: fn(Reply) -> Result<T, string>) -> Async<T> {
+    match a {
+        .Idle -> Async.Idle,
+        .Loading -> Async.Loading,
+        .Failed(why) -> Async.Failed(why),
+        .Ready(reply) -> match parse(reply) { .Ok(v) -> Async.Ready(v), .Err(m) -> Async.Failed(m) },
     }
 }

@@ -269,8 +269,8 @@ export type Variant = { name: string, payload: List<string>, at: Loc?, fields: L
 /// fields it wrote itself, never the ones a spread placed. `body` is
 /// the statements a component is MADE OF, as the template a reader
 /// splices where they mean something — absent for a declaration that
-/// holds none.
-export type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc?, doc: string? = null, annotations: List<Annotation> = [], module: string = "", over: Kind = Kind.Unspelled(""), spreads: List<string> = [], body: Stmts? = null }
+/// holds none. `impls` is the traits an `impl … for` it can see names.
+export type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc?, doc: string? = null, annotations: List<Annotation> = [], module: string = "", over: Kind = Kind.Unspelled(""), spreads: List<string> = [], body: Stmts? = null, impls: List<string> = [] }
 
 /// What an annotation says back about a declaration. A fn answering
 /// `List<Diagnostic>` VALIDATES: an empty list passes, each ERROR is
@@ -390,6 +390,16 @@ export fn unbroken(_f: Fn) {}
 /// (`compiler/typing/declare.av`).
 export fn plain_field(_t: Type, _field: string) {}
 
+/// Where a host fn runs: the host that calls it by its name.
+export enum Host {
+    Page
+}
+
+/// The bodied `extern fn` is called by `host` and by no other: a build
+/// exports it only when its hosts include `host`. A marker the compiler's
+/// whole-program law reads (`compiler/whole.av`).
+export fn host(_f: Fn, _on: Host) {}
+
 /// The type is SEALED: only the module that declares it builds or
 /// rewrites one — no literal fill, `Name(value)`, record literal, `with`,
 /// field write or variant outside it — while every read stays open. A
@@ -501,6 +511,42 @@ export fn contained<T>(body: fn() -> T) -> Result<T, string> {
 export fn type_named(name: string) -> Type? {
     if name.contains(".") { return null }
     avra_type_named(name)
+}
+
+/// The one scalar a named record stores as, or null for any other kind. A record of
+/// exactly one scalar field and no `@model` is flat at runtime, so its field travels
+/// alone; the structure decides it, not the name.
+/// Whether a kind is one scalar a flat record can store as.
+export fn scalar_kind(k: Kind) -> bool {
+    match k {
+        .Int or .Float or .Bool or .Str -> true,
+        .Opt(inner) -> scalar_kind(inner),
+        rest -> false,
+    }
+}
+
+/// Whether a named record stores as one scalar: its kind is a scalar, so the
+/// consumers ask one question instead of matching the nullable themselves.
+export fn flat(name: string) -> bool {
+    let k? = stored_scalar(name) else { return false }
+    scalar_kind(k)
+}
+
+/// Whether the type named `name` implements the trait named `tr`.
+export fn implements(name: string, tr: string) -> bool {
+    let t? = type_named(name) else { return false }
+    t.impls.contains(tr)
+}
+
+export fn flat_field(name: string) -> string {
+    let t? = type_named(name) else { return "" }
+    t.fields[0].name
+}
+
+export fn stored_scalar(name: string) -> Kind? {
+    let t? = type_named(name) else { return null }
+    if t.annotations.any(it.name == "model") || t.fields.length != 1 { return null }
+    t.fields[0].kind
 }
 
 /// The `Type` a MODULE exports under `name`, wherever the caller stands

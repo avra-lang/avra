@@ -12,7 +12,18 @@
 //! the file that wrote its text, so a template's `let tmp` and a
 //! hole's `tmp` never meet, and a template's module names resolve in
 //! the namespace of the file that wrote the quote.
-use core.{StmtId, ExprId, FileId, Param, flatten, Binding, found_at, SyntaxArena, Annotation}
+use core.{
+    StmtId,
+    ExprId,
+    FileId,
+    Param,
+    flatten,
+    Binding,
+    found_at,
+    SyntaxArena,
+    Annotation,
+    same_expr,
+}
 use core.{side_table, Binder}
 use diagnostics.{refusal, Voices}
 use features.modules.{module_laws}
@@ -83,6 +94,8 @@ export fn resolve(
         scoped: side_table("scoped", 0, view.store.stmts.count(), false),
         scope: [],
         in_block: false,
+        tnames: [],
+        unseated: [],
         elsewhere: elsewhere,
     }
     r.name_laws()
@@ -117,7 +130,9 @@ impl ResolveCx {
         let was = self.in_block
         self.in_block = in_block
         for s in stmts {
+            let opened = self.open_tparams(s)
             self.view.store.stmt(s).resolve_stmt(self, s)
+            self.close_tparams(opened)
             // A rule's `@fixes`/`@keeps` NAME no declared fn — the callee
             // is never resolved — but its ARGS are read at lowering as
             // ordinary values (components/lower.av's `augmented`,
@@ -128,6 +143,45 @@ impl ResolveCx {
             }
         }
         self.in_block = was
+    }
+
+    /// The type parameters `s` declares come into scope — answering
+    /// where the scope stood, for `close_tparams`.
+    mut fn open_tparams(s: StmtId) -> int {
+        let at = self.tnames.length
+        // LICENSED loops.push_loop: pushing through the field alias — concat would rebind the local
+        for n in self.tparams_in_scope(s) { self.tnames.push(n) }
+        at
+    }
+
+    /// The type parameters `s` brings into scope: those it writes, and an
+    /// impl that writes none on a generic target serves the whole generic,
+    /// so its bodies see the target's own.
+    fn tparams_in_scope(s: StmtId) -> List<string> {
+        let written = self.view.store.tparams_in_scope(s)
+        if !written.is_empty() { return written }
+        let target? = self.view.store.impl_parts(s)?.target else { return [] }
+        let d? = self.facts.names.type_decl(target) else { return [] }
+        self.view.decls.tparams(d)
+    }
+
+    /// The scope back where it stood; a read of a type parameter that
+    /// no static call seated is refused as it leaves, and binds nothing
+    /// — so no later pass speaks about it again.
+    mut fn close_tparams(at: int) {
+        if self.tnames.length == at { return }
+        self.tnames = self.tnames.slice(0, at)
+        for e in self.unseated {
+            self.emit(type_param_value(self.loc_of(e), self.view.store.ident_name(e) ?? ""))
+            self.facts.bindings.set(e.index, null)
+        }
+        self.unseated = []
+    }
+
+    /// A type parameter read as the subject of a call: seated, so its
+    /// read stands.
+    mut fn seat_type_read(e: ExprId) {
+        self.unseated = [u for u in self.unseated if !same_expr(u, e)]
     }
 
     /// A statement list under its own overlay scope — a loop body.

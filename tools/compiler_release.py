@@ -12,6 +12,21 @@ binary that key names.
     compiler_release.py fetch   <key> <dest>   # 0 and the file, or nonzero
     compiler_release.py latest  <dest>         # the newest published compiler
     compiler_release.py publish <key> <file>   # the release, created once
+    compiler_release.py install [<rev> | --key <key>] [--into <dir>]
+                                               # the compiler published for a commit's source
+                                               # (default origin/main) or a key, installed as
+                                               # <dir>/avra (default build), the standing one
+                                               # kept as avra.pre; Linux only
+    compiler_release.py key-of <rev>           # the key a commit's compiler source has
+    compiler_release.py probe <key>            # 0 when a compiler is published for the key
+    compiler_release.py route <dirty> <head-key> <base-key>
+                                               # how a run's compiler is got: published:<key>,
+                                               # mergebase:<key> (install it, then one
+                                               # generation), or build
+
+`install`, `probe` and `route` read the repository's public release asset
+(`FETCH_URL`, `releases/download/avrac-KEY/avra`), so they need no token; a
+`file://` FETCH_URL points them at a local file for the witness.
 
 `fetch` reads the release named by the key — the tree's OWN compiler, so a
 hit needs no build. A tree that differs from main (a train, or a PR that
@@ -33,7 +48,9 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -202,6 +219,125 @@ def publish(base, key, path):
     return 0
 
 
+# ---- the public asset: no token, the door `install`, `probe` and `route` use ----
+
+def _asset_url(key):
+    template = os.environ.get(
+        "FETCH_URL",
+        "https://github.com/%s/releases/download/avrac-KEY/avra"
+        % os.environ.get("GITHUB_REPOSITORY", "avra-lang/avra"),
+    )
+    return template.replace("KEY", key)
+
+
+def _asset_there(url):
+    if url.startswith("file://"):
+        return os.path.isfile(url[len("file://"):])
+    try:
+        req = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(req, timeout=30):
+            return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def _asset_fetch(url, dest):
+    """The asset, asked up to FETCH_TRIES (5) times with a doubling pause (2 s first). Answers (ok, why):
+    why names the last answer, with its HTTP status when there was one."""
+    if url.startswith("file://"):
+        try:
+            shutil.copyfile(url[len("file://"):], dest)
+            return True, ""
+        except OSError as e:
+            return False, f"{url} is not a file ({e})"
+    tries = int(os.environ.get("FETCH_TRIES", "5"))
+    pause = 2
+    why = ""
+    for attempt in range(1, tries + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=int(os.environ.get("FETCH_MAX_S", "600"))) as r, open(dest, "wb") as f:
+                shutil.copyfileobj(r, f)
+            return True, ""
+        except urllib.error.HTTPError as e:
+            why = f"HTTP {e.code} after {attempt} attempt(s)"
+        except (urllib.error.URLError, OSError) as e:
+            why = f"no HTTP answer after {attempt} attempt(s): {e}"
+        if attempt < tries:
+            time.sleep(pause)
+            pause *= 2
+    return False, why
+
+
+def key_of(rev, scratch="build"):
+    """The compiler-source key of a commit, read from a temporary index of its tree."""
+    os.makedirs(scratch, exist_ok=True)
+    env = dict(os.environ, GIT_INDEX_FILE=os.path.join(scratch, "fetch.index"))
+    if subprocess.run(["git", "read-tree", rev], env=env, capture_output=True).returncode != 0:
+        return None
+    got = subprocess.run(["sh", "tools/compiler_paths.sh", "--key"], env=env, capture_output=True, text=True)
+    return got.stdout.strip() if got.returncode == 0 and got.stdout.strip() else None
+
+
+def _refuse(why):
+    print(f"compiler-release: REFUSED — {why}", file=sys.stderr)
+    return 1
+
+
+def install(rev, key, into):
+    platform = os.environ.get("FETCH_UNAME") or os.uname().sysname
+    if platform != "Linux":
+        return _refuse(f"the published compiler is a linux binary; this machine is {platform} (run it on a Sprite)")
+    if key:
+        names = "a key given on the command line"
+    else:
+        rev = rev or "origin/main"
+        if subprocess.run(["git", "rev-parse", "--git-dir"], capture_output=True).returncode != 0:
+            return _refuse("no git repository here; read the key where git is (sh tools/compiler_paths.sh --key at the commit) and pass it with --key")
+        got = subprocess.run(["git", "rev-parse", "--verify", "--quiet", rev + "^{commit}"], capture_output=True, text=True)
+        if got.returncode != 0:
+            return _refuse(f"no commit named {rev}")
+        names = got.stdout.strip()
+        key = key_of(names, into)
+        if key is None:
+            return _refuse(f"the compiler source of {names} is not listed")
+    url = _asset_url(key)
+    os.makedirs(into, exist_ok=True)
+    fetched = os.path.join(into, "avra.fetch")
+    ok, why = _asset_fetch(url, fetched)
+    if not ok and "FETCH_URL" not in os.environ:
+        # the anonymous door failed: the releases API, with the run's token when it has one, is the second
+        base = _api_for(os.environ.get("GITHUB_REPOSITORY", "avra-lang/avra"), os.environ.get("AVRA_RELEASE_API", ""))
+        if fetch(base, f"avrac-{key}", fetched) == 0:
+            print(f"compiler-release: the anonymous asset failed ({why}); the releases API answered", file=sys.stderr)
+            ok = True
+    if not ok:
+        return _refuse(f"no published compiler for {names} (key {key}): {url} did not answer — last answer {why}")
+    os.chmod(fetched, 0o755)
+    if subprocess.run([fetched, "--version"], capture_output=True).returncode != 0:
+        return _refuse(f"the compiler published for {names} does not run here")
+    standing = os.path.join(into, "avra")
+    if os.path.exists(standing):
+        pre = standing + ".pre"
+        if os.path.exists(pre):
+            os.replace(pre, f"{pre}.{int(time.time())}")
+        os.replace(standing, pre)
+    os.replace(fetched, standing)
+    data = open(standing, "rb").read()
+    import hashlib
+    print(f"compiler-release: installed {standing} — key {key} from {names}, {len(data)} bytes, sha256 {hashlib.sha256(data).hexdigest()}")
+    return 0
+
+
+def route(dirty, head_key, base_key):
+    if dirty == "0" and head_key and _asset_there(_asset_url(head_key)):
+        print(f"published:{head_key}")
+    elif base_key and _asset_there(_asset_url(base_key)):
+        print(f"mergebase:{base_key}")
+    else:
+        print("build")
+    return 0
+
+
 def _api_for(repo, override):
     return override or f"https://api.github.com/repos/{repo}"
 
@@ -333,11 +469,64 @@ def _self_test_body(base, state, tempfile):
         check("latest reads a published compiler", fetch_latest(base, dest))
         check("latest is the newest release", open(dest, "rb").read(), b"compiler-B")
 
+    _self_test_install(check, tempfile)
+
     if failures:
         print(f"compiler_release: SELF-TEST FAILED — {', '.join(failures)}", file=sys.stderr)
         return 1
     print("compiler_release: self-test clean")
     return 0
+
+
+def _self_test_install(check, tempfile):
+    """`install`, `probe` and `route` against local files, with no network and no token."""
+    import io
+    import contextlib
+
+    def said(fn, *a):
+        buf, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            rc = fn(*a)
+        return rc, buf.getvalue() + err.getvalue()
+
+    with tempfile.TemporaryDirectory() as d:
+        pub = os.path.join(d, "published")
+        with open(pub, "w") as f:
+            f.write("#!/bin/sh\necho stub-avra\n")
+        os.chmod(pub, 0o755)
+        for name in ("pub-hk", "pub-mk"):
+            open(os.path.join(d, name), "w").write("x")
+        os.environ["FETCH_UNAME"] = "Darwin"
+        rc, out = said(install, None, "abc123", os.path.join(d, "mac"))
+        check("macOS refuses", rc == 1 and "the published compiler is a linux binary" in out, True)
+        os.environ["FETCH_UNAME"] = "Linux"
+        os.environ["FETCH_URL"] = "file://" + os.path.join(d, "absent")
+        rc, out = said(install, None, "abc123", os.path.join(d, "none"))
+        check("no published compiler refuses", rc == 1 and "no published compiler for a key given on the command line (key abc123)" in out, True)
+        rc, out = said(install, "no-such-commit-here", None, os.path.join(d, "sha"))
+        check("an unknown commit refuses", rc == 1 and "no commit named no-such-commit-here" in out, True)
+        os.environ["FETCH_URL"] = "file://" + pub
+        ok = os.path.join(d, "ok")
+        os.makedirs(ok)
+        open(os.path.join(ok, "avra"), "w").write("standing\n")
+        rc, out = said(install, None, "abc123", ok)
+        check("install names the key and the bytes", rc == 0 and "key abc123" in out, True)
+        check("the standing compiler moves to avra.pre", open(os.path.join(ok, "avra.pre")).read(), "standing\n")
+        check("the fetched compiler is installed as avra", open(os.path.join(ok, "avra")).read(), "#!/bin/sh\necho stub-avra\n")
+        os.environ["FETCH_URL"] = "file://" + os.path.join(d, "pub-KEY")
+        os.environ["FETCH_URL"] = "http://127.0.0.1:9/none"
+        os.environ["FETCH_TRIES"] = "2"
+        rc, out = said(install, None, "abc123", os.path.join(d, "retry"))
+        check("an unreachable asset is asked again and the answer named", rc == 1 and "after 2 attempt(s)" in out, True)
+        os.environ.pop("FETCH_TRIES")
+        os.environ["FETCH_URL"] = "file://" + os.path.join(d, "pub-KEY")
+        check("a probe finds a published key", _asset_there(_asset_url("hk")), True)
+        check("published key takes the published path", said(route, "0", "hk", "mk")[1], "published:hk\n")
+        check("a dirty tree takes the merge-base path", said(route, "1", "hk", "mk")[1], "mergebase:mk\n")
+        check("an unpublished head takes the merge-base path", said(route, "0", "hkabs", "mk")[1], "mergebase:mk\n")
+        check("nothing published builds", said(route, "0", "hkabs", "mkabs")[1], "build\n")
+    for name in ("FETCH_URL", "FETCH_UNAME"):
+        os.environ.pop(name, None)
 
 
 def main(argv):
@@ -351,6 +540,18 @@ def main(argv):
     f.add_argument("dest")
     l = sub.add_parser("latest")
     l.add_argument("dest")
+    i = sub.add_parser("install")
+    i.add_argument("rev", nargs="?")
+    i.add_argument("--key")
+    i.add_argument("--into", default=os.environ.get("FETCH_BUILD", "build"))
+    k = sub.add_parser("key-of")
+    k.add_argument("rev")
+    pr = sub.add_parser("probe")
+    pr.add_argument("key")
+    r = sub.add_parser("route")
+    r.add_argument("dirty")
+    r.add_argument("head_key", nargs="?", default="")
+    r.add_argument("base_key", nargs="?", default="")
     u = sub.add_parser("publish")
     u.add_argument("key")
     u.add_argument("path")
@@ -360,6 +561,19 @@ def main(argv):
     args = p.parse_args(argv)
     ASSET = args.asset
     base = _api_for(args.repo, args.api)
+    if args.cmd == "install":
+        return install(args.rev, args.key, args.into)
+    if args.cmd == "key-of":
+        commit = subprocess.run(["git", "rev-parse", "--verify", "--quiet", args.rev + "^{commit}"], capture_output=True, text=True).stdout.strip()
+        key = key_of(commit) if commit else None
+        if key is None:
+            return 1
+        print(key)
+        return 0
+    if args.cmd == "probe":
+        return 0 if _asset_there(_asset_url(args.key)) else 1
+    if args.cmd == "route":
+        return route(args.dirty, args.head_key, args.base_key)
     if args.cmd == "fetch":
         return fetch(base, args.key, args.dest)
     if args.cmd == "latest":

@@ -1,5 +1,6 @@
 //! `app/async.av` — what a view shows of work that has not finished: the
 //! four states it can be in, as a library type a state holds.
+use app.{Entry}
 
 /// Work asked for and not yet answered: nothing asked, under way, refused
 /// with its words, or answered.
@@ -27,25 +28,32 @@ impl Async<T> {
     }
 }
 
-/// An async state with its asks counted: the answer of the LATEST ask is
-/// the one that stands, whatever order the answers come in.
-export type Fetch<T> = { now: Cell<Async<T>>, asks: Cell<int> }
+/// An async state a view holds, following the entry of the observation it
+/// last asked: the entry is the loop's, shared by every view asking the same
+/// key, so `at` is which one this view reads, and `id` is how the entry tells
+/// this view from another.
+export type Fetch<T> = { now: Cell<Async<T>>, id: int, at: Cell<Entry?>, last: Cell<T?> }
+
+/// The numbers views are told apart by.
+once fn views() -> Cell<int> { Cell.new(0) }
 
 /// A fetch nothing has asked yet.
 export fn fetch<T>() -> Fetch<T> {
     let idle: Async<T> = .Idle
-    Fetch { now: Cell.new(idle), asks: Cell.new(0) }
+    let nothing: Entry? = null
+    let unread: T? = null
+    views().set(views().get() + 1)
+    Fetch { now: Cell.new(idle), id: views().get(), at: Cell.new(nothing), last: Cell.new(unread) }
 }
-
 impl Fetch<T> {
     /// The state now, to `match` on.
     fn state() -> Async<T> { self.now.get() }
 
     /// Whether an answer is awaited.
-    fn is_loading() -> bool { self.now.get().is_loading() }
+    fn is_loading() -> bool { self.now.get().is_loading() || self.at.get()?.loading() ?? false }
 
     /// The answer, once there is one.
-    fn value() -> T? { self.now.get().value() }
+    fn value() -> T? { self.now.get().value() ?? self.last.get() }
 
     /// The refusal's words, when the work failed.
     fn failure() -> string? { self.now.get().failure() }

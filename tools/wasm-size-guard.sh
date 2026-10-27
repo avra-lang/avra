@@ -10,9 +10,7 @@
 #   accepted value, NEVER capped — a cap there would train a re-baseline on
 #   every feature, which is how a guard dies.
 set -eu
-here=$(cd "$(dirname "$0")" && pwd)
-tree=$(cd "$here/.." && pwd)
-avra=${AVRA:-$tree/build/avra}
+. "$(dirname "$0")/lib/tree.sh"
 work=$(mktemp -d "${TMPDIR:-/tmp}/avra-sz.XXXXXX")
 # WASM_TARGET names another wasm triple, for a machine whose sysroot is not the default's.
 target=${WASM_TARGET:-wasm}

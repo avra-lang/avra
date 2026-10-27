@@ -11,6 +11,7 @@
 //! the imports first — a field of another module's type interns only once that
 //! module's types exist.
 use @std.text.{parse_int}
+use @std.relation.engine.{list_cell}
 use core.{
     CollectKind,
     CollectScope,
@@ -197,6 +198,41 @@ fn record_places(ws: Workspace, store: Store, m: ModulePath) -> Map<string, Plac
     let made = places_of(record_fields(ws, store, m))
     ws.records.record_places.put(key, made)
     made
+}
+
+/// A record's fields grouped by the file each line belongs to, in record order — the one
+/// index every per-file read of a record goes through, so no site scans the record whole.
+fn fields_by_file(fields: List<List<string>>) -> Map<string, List<List<string>>> {
+    mut buckets: Map<string, Cell<List<List<string>>>> = {}
+    for p in fields {
+        let path? = line_file(p) else { continue }
+        let own = buckets.get(path) ?? {
+            let fresh: Cell<List<List<string>>> = list_cell()
+            buckets.set(path, fresh)
+            fresh
+        }
+        own.push(p)
+    }
+    mut out: Map<string, List<List<string>>> = {}
+    for path, own in buckets { out.set(path, own.get()) }
+    out
+}
+
+/// The file a record line belongs to: a `gathers` line names it third, every other line second.
+fn line_file(p: List<string>) -> string? {
+    let at = if p[0] == "gathers" { 2 } else { 1 }
+    if p.length > at { p[at] } else { null }
+}
+
+/// A record's lines for one file — built once per record, memoized for the build.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+fn file_lines(ws: Workspace, store: Store, m: ModulePath, path: string) -> List<List<string>> {
+    let key = ws.record_key(m)
+    let known: Map<string, List<List<string>>>? = ws.records.record_files.get().get(key)
+    if known != null { return known!.get(path) ?? [] }
+    let made = fields_by_file(record_fields(ws, store, m))
+    ws.records.record_files.put(key, made)
+    made.get(path) ?? []
 }
 
 fn places_of(fields: List<List<string>>) -> Map<string, Placed> {
@@ -388,6 +424,7 @@ fn record_known(ws: Workspace, m: ModulePath, text: string) {
     let fields = [read_fields(line) for line in lines]
     ws.records.record_fields.put(key, fields)
     ws.records.record_places.put(key, places_of(fields))
+    ws.records.record_files.put(key, fields_by_file(fields))
 }
 
 /// What OTHER modules' keys read of a record: its interface digest, its imports and
@@ -1285,7 +1322,7 @@ impl Workspace {
     /// held file is held to it (`gathered_moved`); a read file's object is keyed by
     /// the set it gathers now (`gathered_now`).
     fn gathered_said(store: Store, m: ModulePath, path: string) -> List<string> {
-        [self.gathers_set(store, p) for p in record_fields(self, store, m) if p.length > 7 && p[0] == "gathers" && p[2] == path]
+        [self.gathers_set(store, p) for p in file_lines(self, store, m, path) if p.length > 7 && p[0] == "gathers"]
     }
 
     /// What a text a compile-time run read says NOW: a source file's digest,

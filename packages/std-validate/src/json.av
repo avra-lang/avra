@@ -20,9 +20,9 @@
 //! when no issue may show what it received. A value it refuses is
 //! read the tree's way — shown as a `Value` and handed to the tree
 //! reader — so a refusal says what the tree path says.
-use @std.json.{plain_end, int_end, int_of, value_at, MAX_DEPTH}
+use @std.json.{DecodeError, plain_end, int_end, int_of, value_at, MAX_DEPTH}
 use @std.json.typed.{Path, Step, reader_of}
-use decode.{Decoding, Decoder, Slot, Coercion, Limits, decode, answered}
+use decode.{Decoding, Decoder, Slot, Coercion, Limits, decode, answered, ruled, formed}
 use formats.{from_json, json_value}
 use issue.{Issue, Issues, root}
 use value.{Value}
@@ -252,6 +252,19 @@ export fn json_by_tree<T>(
     tree(d, s)
 }
 
+/// A text-form value read from the JSON cursor, as `formed` reads a slot.
+export fn json_formed<T>(
+    mut d: Decoding,
+    depth: int,
+    required: bool,
+    secret: bool,
+    wanted: string,
+    read: fn(string) -> T?,
+) -> T? {
+    let s? = d.tree_slot(depth, required, secret) else { return null }
+    formed(d, s, wanted, read)
+}
+
 /// A rule's verdict over the value read from `at` — `ruled`, for a
 /// value read from JSON text: what the rule answered, or null with
 /// its refusal recorded.
@@ -283,6 +296,20 @@ export fn ruled_json<T, E: Refusal>(
 
 /// A field's value before its key is met.
 export fn not_yet<T>() -> T? { null }
+
+/// A field whose type answers std-json's protocol, read from JSON text: the text of
+/// its value at the cursor, decoded by the type's own `decode_text`.
+export fn json_read_protocol<T>(
+    mut d: Decoding,
+    depth: int,
+    required: bool,
+    secret: bool,
+    read: fn(string?, string) -> Result<T, DecodeError>,
+) -> T? {
+    let from = d.json.pos
+    let s? = d.tree_slot(depth, required, secret) else { return null }
+    ruled(d, s, "json", read(d.json.text.substring(from, d.json.pos), s.at.text()))
+}
 
 /// Each scalar reader as a direct reader, for a list of them.
 export fn json_read_text(mut d: Decoding, depth: int, required: bool, secret: bool) -> string? {

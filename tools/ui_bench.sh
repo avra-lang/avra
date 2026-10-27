@@ -10,9 +10,7 @@
 # SKIPS, spoken, without them.
 set -eu
 
-here=$(cd "$(dirname "$0")" && pwd)
-tree=$(cd "$here/.." && pwd)
-avra=${AVRA:-$tree/build/avra}
+. "$(dirname "$0")/lib/tree.sh"
 which=${1:-all}
 sizes=${ROWS:-"1000 10000 100000"}
 work=$(mktemp -d "${TMPDIR:-/tmp}/avra-ui-bench.XXXXXX")

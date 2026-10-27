@@ -3,13 +3,16 @@
 //! want was planted (heterogeneity boxes, lambdas hear seats) — and
 //! a value must be slot-worthy. `{}` wears EmptyMap until a map
 //! adopts it.
-use core.{ExprId, Type, TypeId, flatten, some_list}
+use core.{ExprId, Type, TypeId, MapEntry, map_keys, map_values, map_spreads, flatten, some_list}
 use features.{TypeCx, this_is, slot_worthy}
 use diagnostics.{refusal}
 
-fn map_type(mut cx: TypeCx, e: ExprId, keys: List<ExprId>, values: List<ExprId>) -> TypeId {
-    if keys.is_empty() { return cx.view.types.intern(Type.EmptyMap) }
-    if keys.any((k) -> spreading(cx, k)) { return spread_map_type(cx, e, keys, values) }
+fn map_type(mut cx: TypeCx, e: ExprId, entries: List<MapEntry>) -> TypeId {
+    if entries.is_empty() { return cx.view.types.intern(Type.EmptyMap) }
+    let keys = map_keys(entries)
+    let values = map_values(entries)
+    let maps = map_spreads(entries)
+    if !maps.is_empty() { return spread_map_type(cx, e, keys, values, maps) }
     let str = cx.type(string)
     for k in keys {
         if !cx.accepts(k, str) { return key_not_string(cx, k) }
@@ -28,23 +31,22 @@ fn map_type(mut cx: TypeCx, e: ExprId, keys: List<ExprId>, values: List<ExprId>)
     cx.type(Map<str, v>)
 }
 
-/// Whether a map entry is a `..` spread.
-fn spreading(cx: TypeCx, k: ExprId) -> bool { cx.view.store.spread_operand(k) != null }
-
 /// A literal with `..` entries: each spread is a map, and the pairs'
 /// values and the maps' own values answer to one value type.
-fn spread_map_type(mut cx: TypeCx, e: ExprId, keys: List<ExprId>, values: List<ExprId>) -> TypeId {
+fn spread_map_type(
+    mut cx: TypeCx,
+    e: ExprId,
+    keys: List<ExprId>,
+    singles: List<ExprId>,
+    maps: List<ExprId>,
+) -> TypeId {
     let str = cx.type(string)
-    let maps = [k for k in keys if spreading(cx, k)]
-    for j, k in keys {
-        if spreading(cx, k) {
-            let _ = cx.type_at(values[j])
-        } else if !cx.accepts(k, str) { return key_not_string(cx, k) }
+    for k in keys {
+        if !cx.accepts(k, str) { return key_not_string(cx, k) }
     }
     for m in maps {
         if !spreads_map(cx, m) { return cx.error_type }
     }
-    let singles = [x for j, x in values if !spreading(cx, keys[j])]
     let v? = spread_value(cx, e, singles, maps) else { return cx.view.types.intern(Type.EmptyMap) }
     let held = cx.type(Map<str, v>)
     for m in maps {

@@ -430,6 +430,7 @@ type Records = {
     record_lines: Cell<Map<string, List<string>>>,
     record_fields: Cell<Map<string, List<List<string>>>>,
     record_places: Cell<Map<string, Map<string, Placed>>>,
+    record_files: Cell<Map<string, Map<string, List<List<string>>>>>,
     /// A MODULE'S RE-EXPORTING FILES, keyed by record key: the files its record
     /// marks as re-exporting a name, read once per build however many
     /// modules see it.
@@ -468,6 +469,7 @@ fn new_records() -> Records {
     let no_lines: Map<string, List<string>> = {}
     let no_fields: Map<string, List<List<string>>> = {}
     let no_places: Map<string, Map<string, Placed>> = {}
+    let no_files: Map<string, Map<string, List<List<string>>>> = {}
     let no_producers_of: Map<string, Producers> = {}
     let no_reexports: Map<string, List<string>> = {}
     let no_met: Map<string, bool> = {}
@@ -480,6 +482,7 @@ fn new_records() -> Records {
         record_lines: Cell.new(no_lines),
         record_fields: Cell.new(no_fields),
         record_places: Cell.new(no_places),
+        record_files: Cell.new(no_files),
         record_producers: Cell.new(no_producers_of),
         record_stamps: map_cell(),
         record_reexports: Cell.new(no_reexports),
@@ -1661,7 +1664,16 @@ impl Workspace {
             BlockWords { components: self.unread_words(f) },
         )
         self.timed("ast", t0)
-        p
+        self.quieted(f, p)
+    }
+
+    /// THE PARSE WITHOUT THE STATEMENTS THE HOST SILENCES: a file's top-level
+    /// statements that start below its `quiet` offset are dropped, its
+    /// declarations all stay. A silenced statement never types, lowers or
+    /// runs, and no entry law reads it.
+    fn quieted(f: FileId, p: Parsed) -> Parsed {
+        let below? = (self.host.quiet)(self.decls.file(f).path) else { return p }
+        p with { stmts: [s for s in p.stmts if p.store.is_declaration(s) || p.store.stmt_span(s)?.lo ?? 0 >= below] }
     }
 
     /// A PLAIN PARSE KNOWS ITS MODULE'S COMPONENT WORDS BY NAME. The
@@ -1685,7 +1697,8 @@ impl Workspace {
         self.timed("sublang", t0)
         if words.is_empty() { return self.noted_origins(f, self.with_import_remedies(first, words)) }
         let t1 = self.clock()
-        let p = self.with_import_remedies(parse_program(self.lang, self.source(f), words), words)
+        let p = self
+            .quieted(f, self.with_import_remedies(parse_program(self.lang, self.source(f), words), words))
         self.timed("ast", t1)
         self.noted_origins(f, p)
     }
