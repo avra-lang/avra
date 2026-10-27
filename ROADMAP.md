@@ -3223,6 +3223,15 @@ handler first: `let fire? = self.submit else { return [] }` then
 propagation ("`?` makes this fn answer `null`"). The want: a call
 through a nullable fn value that runs when present and answers nothing
 when absent — `self.submit?.(value)` or the like.
+### Bounded and blanket impls — a typed ask over a list is its own verb
+
+`ask` reads a row (`T: Decode`) and `ask_list` a list of them, because `List<T>` has no `Decode` and neither
+`impl<T: Decode> Args for T` nor `impl Reads for List<T1: Reads>` parses ("expected NAME while parsing `stmt`" at
+the `<`; "expected `{`" at the bound). The want: an impl whose type parameters carry bounds, so a record that
+derives `Decode` is `Args` without its derive saying so and a list of readable rows is readable. Wanting site:
+`std-ui/src/app/typed.av` (`ask`, `ask_list`) and `std-validate`'s `Decode.derive`, which emits `impl Args` per
+record.
+
 ### A control shows its pending change while the server answers
 
 The board (`tools/ui-board/src/board.av`) draws the list the server last answered, so a

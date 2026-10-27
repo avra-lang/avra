@@ -1,0 +1,211 @@
+//! `app/typed.av` — ASKING BY A ROUTE'S DESCRIPTOR. A `Route<A, T>` (`@std/http_message`) names a door and the
+//! types it takes and answers; `ask` builds the request from it and a typed `args`, observes it as any other GET, and
+//! reads the answer with the model's own `Decode` — no request spelled by hand, no parse written. The args are
+//! read as the tree their type's `value()` gives, so the request is a function of that tree alone: the path's `{id}`
+//! holes are filled from its members, a read carries the rest as a query in name order, a write as a JSON body, and a
+//! member that is null is the member absent. Two spellings of one question are one request, and so one observation.
+use @std.http_message.message.{Body, Method, Reply, Request}
+use @std.http_message.route.{Route}
+use @std.json.{Field, Json, to_text}
+use @std.text.{text_before}
+use @std.url.{Part, encoded as percent_encoded}
+use @std.validate.{Args, Decode, Issues, Value}
+use @std.validate.value.{Entry as Member}
+use @std.validate.formats.{from_json}
+
+/// `held` shows the one row a door that reads answers for `args`, observed as any GET is. `args` is what the door takes:
+/// `Nothing`, a row's key, or a record of filters. False, and `held` untouched, when no loop runs; the failure is
+/// `held`'s when the args cannot be carried.
+export fn ask<A: Args, T: Decode>(held: Fetch<T>, route: Route<A, T>, args: A) -> bool {
+    if !reads(route.method) {
+        return unaskable(
+            held,
+            "`ask` reads, and ${route.method.word()} ${route.path} writes: use `send`",
+        )
+    }
+    match requested(route.method, route.path, args.args()) {
+        .Ok(request) -> fetched(held, request, (r: Reply) -> read_one<T>(r)),
+        .Err(why) -> unaskable(held, why),
+    }
+}
+
+/// `ask` for a door that answers a list of rows.
+export fn ask_list<A: Args, T: Decode>(held: Fetch<List<T>>, route: Route<A, List<T>>, args: A) -> bool {
+    if !reads(route.method) {
+        return unaskable(
+            held,
+            "`ask_list` reads, and ${route.method.word()} ${route.path} writes: use `send`",
+        )
+    }
+    match requested(route.method, route.path, args.args()) {
+        .Ok(request) -> fetched(held, request, (r: Reply) -> read_all<T>(r)),
+        .Err(why) -> unaskable(held, why),
+    }
+}
+
+/// `held` shows what a door that writes answers once the server has taken the write: a row created or replaced, or
+/// `Nothing` for a removal. A door that only reads is `ask`'s.
+export fn send<A: Args, T: Decode>(held: Fetch<T>, route: Route<A, T>, args: A) -> bool {
+    if reads(route.method) {
+        return unaskable(
+            held,
+            "`send` writes, and ${route.method.word()} ${route.path} reads: use `ask`",
+        )
+    }
+    match requested(route.method, route.path, args.args()) {
+        .Ok(request) -> fetched(held, request, (r: Reply) -> read_one<T>(r)),
+        .Err(why) -> unaskable(held, why),
+    }
+}
+
+/// Whether a request by `method` only reads.
+fn reads(method: Method) -> bool {
+    match method {
+        .Get or .Head -> true,
+        .Post or .Put or .Patch or .Delete or .Options or .Connect or .Trace or .Other -> false,
+    }
+}
+
+/// The request `method` at `path` makes for the args' tree: its holes filled, the rest a query in name order (a read)
+/// or a body (a write), or why the args cannot be carried.
+export fn requested(method: Method, path: string, args: Value) -> Result<Request, string> {
+    let members = match args {
+        .Map(entries) -> [e for e in entries if !absent(e.value)],
+        .Null -> [],
+        .Bool(_) or .Int(_) or .Float(_) or .Text(_) or .List(_) -> { return .Err("a route takes a record, not a bare value") },
+    }
+    let holes = hole_names(path)
+    let lacking = [h for h in holes if !members.any(it.key == h)]
+    if !lacking.is_empty() { return .Err("the route's `${lacking.join("`, `")}` has no value in its args") }
+    let at = filled(path, [m for m in members if holes.any(it == m.key)])?
+    let rest = [m for m in members if !holes.any(it == m.key)]
+    match method {
+        .Get or .Head or .Delete -> {
+            let query = queried(rest)?
+            .Ok(
+                Request {
+                    method: method,
+                    url: if query.is_empty() { at } else { "${at}?${query}" },
+                },
+            )
+        },
+        .Post or .Put or .Patch -> .Ok(Request { method: method, url: at, body: Body.Json(to_text(object_of(by_name(rest)))) }),
+        .Options or .Connect or .Trace or .Other -> .Err("a route is read or written, never ${method.word()}"),
+    }
+}
+
+/// The answer's body as the one `T` it holds.
+fn read_one<T: Decode>(r: Reply) -> Result<T, string> {
+    let tree = tree_of(r)?
+    match T.decode(tree) { .Ok(t) -> .Ok(t), .Err(issues) -> .Err(told(issues)) }
+}
+
+/// The answer's body as the list of `T` it holds.
+fn read_all<T: Decode>(r: Reply) -> Result<List<T>, string> {
+    let tree = tree_of(r)?
+    let rows = match tree {
+        .List(items) -> items,
+        .Null or .Bool(_) or .Int(_) or .Float(_) or .Text(_) or .Map(_) -> { return .Err("the answer is not a list") },
+    }
+    mut out: List<T> = []
+    for row in rows {
+        match T.decode(row) { .Ok(t) -> out.push(t), .Err(issues) -> { return .Err(told(issues)) } }
+    }
+    .Ok(out)
+}
+
+/// The answer's body as a tree, when the server took the ask.
+fn tree_of(r: Reply) -> Result<Value, string> {
+    if r.status < 200 || r.status > 299 { return .Err("status ${r.status}") }
+    let text? = r.body.text() else { return .Err("the answer is not text") }
+    if text.trim().is_empty() { return .Ok(Value.Map([])) }
+    match from_json(text) { .Ok(v) -> .Ok(v), .Err(issues) -> .Err(told(issues)) }
+}
+
+fn told(issues: Issues) -> string { issues.describe().message }
+
+/// `held` fails with `why`, as a view of an ask that could not be made.
+fn unaskable<T>(held: Fetch<T>, why: string) -> bool {
+    held.now.set(Async.Failed(why))
+    false
+}
+
+fn absent(v: Value) -> bool {
+    match v {
+        .Null -> true,
+        .Bool(_) or .Int(_) or .Float(_) or .Text(_) or .List(_) or .Map(_) -> false,
+    }
+}
+
+/// The `{name}` holes of a path, in order.
+fn hole_names(path: string) -> List<string> {
+    [s.substring(1, s.length - 1) for s in path.split("/") if s.starts_with("{") && s.ends_with("}")]
+}
+
+/// `path` with each hole replaced by its member's text, percent-encoded as one segment.
+fn filled(path: string, supplied: List<Member>) -> Result<string, string> {
+    let segments = [segment(s, supplied)? for s in path.split("/")]
+    .Ok(segments.join("/"))
+}
+
+/// A path segment: itself, or what its hole's member says.
+fn segment(s: string, supplied: List<Member>) -> Result<string, string> {
+    if !(s.starts_with("{") && s.ends_with("}")) { return .Ok(s) }
+    let name = s.substring(1, s.length - 1)
+    let value = supplied.find(it.key == name)?.value ?? Value.Null
+    .Ok(encode(scalar(name, value)?, .Segment))
+}
+
+/// The query the members make, `name=value` pairs joined by `&`, a list member repeating its name.
+fn queried(members: List<Member>) -> Result<string, string> {
+    let pairs = [pair_words(m)? for m in members]
+    .Ok(canonical_query([w for ws in pairs for w in ws]).join("&"))
+}
+
+fn pair_words(m: Member) -> Result<List<string>, string> {
+    let name = encode(m.key, .Param)
+    match m.value {
+        .List(items) -> .Ok([name + "=" + encode(scalar(m.key, x)?, .Param) for x in items]),
+        .Null or .Bool(_) or .Int(_) or .Float(_) or .Text(_) or .Map(_) -> .Ok([name + "=" + encode(scalar(m.key, m.value)?, .Param)]),
+    }
+}
+
+/// A value a path or a query can carry, as its text; why it cannot otherwise.
+fn scalar(name: string, v: Value) -> Result<string, string> {
+    match v {
+        .Text(s) -> .Ok(s),
+        .Int(n) -> .Ok("${n}"),
+        .Bool(b) -> .Ok("${b}"),
+        .Float(x) -> .Ok("${x}"),
+        .Null or .List(_) or .Map(_) -> .Err("`${name}` is nested, and a path or a query carries text, numbers and flags"),
+    }
+}
+
+fn encode(text: string, part: Part) -> string { percent_encoded(text.bytes(), part).text() ?? text }
+
+/// `members` in name order.
+fn by_name(members: List<Member>) -> List<Member> {
+    let none: List<Member> = []
+    members.fold(none, placed)
+}
+
+fn placed(sorted: List<Member>, m: Member) -> List<Member> {
+    [e for e in sorted if text_before(e.key, m.key)]
+        .concat([m])
+        .concat([e for e in sorted if !text_before(e.key, m.key)])
+}
+
+/// The members as a JSON object, a nested value as its tree.
+fn object_of(members: List<Member>) -> Json { Json.Obj([Field { key: m.key, value: json_of(m.value) } for m in members]) }
+
+fn json_of(v: Value) -> Json {
+    match v {
+        .Null -> Json.Null,
+        .Bool(b) -> Json.Bool(b),
+        .Int(n) -> Json.Int(n),
+        .Float(x) -> Json.Float(x),
+        .Text(s) -> Json.Str(s),
+        .List(items) -> Json.Arr([json_of(x) for x in items]),
+        .Map(entries) -> object_of(by_name([e for e in entries if !absent(e.value)])),
+    }
+}

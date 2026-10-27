@@ -12,7 +12,7 @@ const KEPT_MS: int = 300000
 const CAP_BYTES: int = 16777216
 
 /// What an observation is asked by: the path and its arguments, the query
-/// sorted so the order a caller wrote them in is no second observation.
+/// in `canonical_query`'s order so the order a caller wrote them in is no second observation.
 export type Key = { path: string, query: string }
 
 /// The key a request observes under, or none when it is no observation: only
@@ -20,9 +20,17 @@ export type Key = { path: string, query: string }
 export fn key_of(request: Request) -> Key? {
     if !(request.method is .Get) || !(request.body is .Empty) { return null }
     let parts = request.url.split("?")
+    Key {
+        path: parts.first() ?? "",
+        query: canonical_query(parts.drop(1).join("?").split("&")).join("&"),
+    }
+}
+
+/// The query words of one question in the order that names it: byte order, empty words gone. The one place the
+/// order is written — a key reads a request's query through it, and a typed ask writes its query through it.
+export fn canonical_query(words: List<string>) -> List<string> {
     let none: List<string> = []
-    let pairs = parts.drop(1).join("?").split("&").fold(none, inserted)
-    Key { path: parts.first() ?? "", query: pairs.join("&") }
+    words.fold(none, inserted)
 }
 
 /// `pairs` in byte order with `word` placed.
