@@ -2357,6 +2357,11 @@ impl Workspace {
             .Reuse(value) -> { return typed_of(value) },
             .Compute -> nothing(),
         }
+        // A BODY'S FACTS CROSS AS THEIR OWN ROW, keyed by the declaration and the file it was
+        // typed in: an unchanged body reads its table back instead of typing it again. The row
+        // is a plain unit, so no reader's read set grows a row per body it reaches.
+        let restored = self.facts_restored(d)
+        if restored != null { return restored! }
         let x = self.decl_with_body(d)
         mut t = self.type_cx_for(x)
         let out = t.type_decl(x)
@@ -2372,6 +2377,7 @@ impl Workspace {
         // The facts carry ARENA IDS: the settle fingerprint folds WHERE
         // they are placed, so a shift that leaves `syntax(d)` and
         // `names(d)` alike still reads this body's value as moved.
+        self.facts_kept(d, out)
         let spot = self.placed(d)
         typed_of(
             self

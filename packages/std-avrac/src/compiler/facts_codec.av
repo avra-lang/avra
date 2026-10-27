@@ -1,0 +1,472 @@
+//! A TYPING TABLE'S WIRE — a body's `TypeFacts` written as octets another process reads back
+//! over the same body, so a warm run never recomputes an unchanged one. ONE executor per
+//! direction: every column goes through the same walk, so no generated per-type pair exists to
+//! hold a build's memory.
+//!
+//! An id crosses through the `Scope` its owner hands in — a declaration, a type and a file by
+//! their durable names, an expression and a statement by their offset from the window the
+//! facts were typed over — and every column carries its own window start and seed, so a
+//! decoded table sits where the written one did and grows the same way.
+//!
+//! A table that SPOKE has no wire: a `Diag` carries a `dyn Error` chain no process rebuilds, so
+//! `facts_encoded_in` answers null, its saver files no row, and a restored body says nothing it
+//! did not say when it was typed.
+use core.{DeclId, TypeId, FileId, ExprId, StmtId, SideTable, SeatMark, side_table_of}
+use features.{TypeFacts, Asked, Sub, ParamScope, RunChoice, PipeStage, Decl}
+use diagnostics.{no_voices}
+use compiler.{Workspace}
+use compiler.store.{Stored, node_key}
+use compiler.families.{Family}
+use core.digest.{hex, unhex}
+use @std.text.{parse_int}
+use @std.relation.stable.{
+    Scope,
+    CodecFault,
+    Writer,
+    Reader,
+    dense_read,
+    written_dense,
+    written_opt,
+    read_opt,
+    written_list,
+    read_list,
+    encoded_with,
+    decoded_with,
+}
+
+/// The layout a row stands under: a wire that moves under a longer table misses once instead of
+/// being read as this one.
+const facts_wire: int = 1
+
+/// The id types a typing table holds.
+enum IdKind {
+    Decl
+    Type
+    File
+    Expr
+    Stmt
+}
+
+/// The id type a column names by its own declaration's name. A name this table does not hold is
+/// spoken at the site, never guessed.
+fn id_kind(name: string) -> IdKind? {
+    match name {
+        "DeclId" -> .Decl,
+        "TypeId" -> .Type,
+        "FileId" -> .File,
+        "ExprId" -> .Expr,
+        "StmtId" -> .Stmt,
+        _ -> null,
+    }
+}
+
+/// An offset text as the index it stands for under `base`.
+fn counted_from(text: string, base: int) -> int? {
+    let n? = parse_int(text) else { return null }
+    n + base
+}
+
+/// A workspace and the two window starts a body's ids are offset from.
+type FactsScope = { ws: Workspace, expr_base: int, stmt_base: int }
+
+impl Scope for FactsScope {
+    fn spelled(kind: string, index: int) -> string {
+        let k? = id_kind(kind) else {
+            self.ws.defect("a typing table holds an id of `${kind}`, which no scope spells")
+            return ""
+        }
+        match k {
+            .Decl -> self.ws.decl_ref(DeclId { index: index }),
+            .Type -> self.ws.type_ref(TypeId { index: index }),
+            .File -> self.ws.file_ref(FileId { index: index }),
+            .Expr -> "${index - self.expr_base}",
+            .Stmt -> "${index - self.stmt_base}",
+        }
+    }
+
+    fn unspelled(kind: string, text: string) -> int? {
+        let k? = id_kind(kind) else { return null }
+        match k {
+            .Decl -> self.ws.decl_from_ref(text)?.index,
+            .Type -> self.ws.type_from_wire(text)?.index,
+            .File -> self.ws.decls.known_file_id(text)?.index,
+            .Expr -> counted_from(text, self.expr_base),
+            .Stmt -> counted_from(text, self.stmt_base),
+        }
+    }
+}
+
+impl Workspace {
+    /// The scope a body's facts cross under: expressions counted from `lo`, statements from
+    /// `stmt_lo` — the declaration's own window, whose negative statement start reads as the
+    /// whole file's, exactly as `new_type_facts` reads it. One rule, applied on both sides, is
+    /// what makes a written offset and a read one the same offset.
+    fn facts_scope(lo: int, stmt_lo: int) -> dyn Scope {
+        FactsScope { ws: self, expr_base: lo, stmt_base: if stmt_lo < 0 { 0 } else { stmt_lo } }
+    }
+}
+
+fn written_type_id(w: Writer, scope: dyn Scope, t: TypeId) {
+    written_dense(w, scope, "TypeId", t.index)
+}
+
+fn read_type_id(r: Reader, scope: dyn Scope) -> Result<TypeId, CodecFault> {
+    dense_read(r, scope, "TypeId", (i: int) -> TypeId { index: i })
+}
+
+fn written_expr_id(w: Writer, scope: dyn Scope, e: ExprId) {
+    written_dense(w, scope, "ExprId", e.index)
+}
+
+fn read_expr_id(r: Reader, scope: dyn Scope) -> Result<ExprId, CodecFault> {
+    dense_read(r, scope, "ExprId", (i: int) -> ExprId { index: i })
+}
+
+fn written_decl_id(w: Writer, scope: dyn Scope, d: DeclId) {
+    written_dense(w, scope, "DeclId", d.index)
+}
+
+fn read_decl_id(r: Reader, scope: dyn Scope) -> Result<DeclId, CodecFault> {
+    dense_read(r, scope, "DeclId", (i: int) -> DeclId { index: i })
+}
+
+fn written_opt_type(w: Writer, scope: dyn Scope, t: TypeId?) {
+    written_opt(w, t, (ww: Writer, x: TypeId) -> written_type_id(ww, scope, x))
+}
+
+fn read_opt_type(r: Reader, scope: dyn Scope) -> Result<TypeId?, CodecFault> {
+    read_opt(r, (rr: Reader) -> read_type_id(rr, scope))
+}
+
+fn written_type_ids(w: Writer, scope: dyn Scope, xs: List<TypeId>) {
+    written_list(w, xs, (ww: Writer, x: TypeId) -> written_type_id(ww, scope, x))
+}
+
+fn read_type_ids(r: Reader, scope: dyn Scope) -> Result<List<TypeId>, CodecFault> {
+    read_list(r, (rr: Reader) -> read_type_id(rr, scope))
+}
+
+fn written_opt_type_ids(w: Writer, scope: dyn Scope, xs: List<TypeId>?) {
+    written_opt(w, xs, (ww: Writer, x: List<TypeId>) -> written_type_ids(ww, scope, x))
+}
+
+fn read_opt_type_ids(r: Reader, scope: dyn Scope) -> Result<List<TypeId>?, CodecFault> {
+    read_opt(r, (rr: Reader) -> read_type_ids(rr, scope))
+}
+
+fn written_opt_expr_ids(w: Writer, scope: dyn Scope, xs: List<ExprId>?) {
+    written_opt(
+        w,
+        xs,
+        (ww: Writer, x: List<ExprId>) -> written_list(
+            ww,
+            x,
+            (www: Writer, e: ExprId) -> written_expr_id(www, scope, e),
+        ),
+    )
+}
+
+fn read_opt_expr_ids(r: Reader, scope: dyn Scope) -> Result<List<ExprId>?, CodecFault> {
+    read_opt(r, (rr: Reader) -> read_list(rr, (rrr: Reader) -> read_expr_id(rrr, scope)))
+}
+
+fn written_opt_decl(w: Writer, scope: dyn Scope, d: DeclId?) {
+    written_opt(w, d, (ww: Writer, x: DeclId) -> written_decl_id(ww, scope, x))
+}
+
+fn read_opt_decl(r: Reader, scope: dyn Scope) -> Result<DeclId?, CodecFault> {
+    read_opt(r, (rr: Reader) -> read_decl_id(rr, scope))
+}
+
+/// A seat's promises, each spelled by the record's own word — the one spelling a read of it
+/// anywhere shares.
+fn written_opt_marks(w: Writer, ms: List<SeatMark>?) {
+    written_opt(
+        w,
+        ms,
+        (ww: Writer, x: List<SeatMark>) -> written_list(
+            ww,
+            x,
+            (www: Writer, m: SeatMark) -> www.text(mark_word(m)),
+        ),
+    )
+}
+
+/// A seat's promises read back from the record's own word.
+fn read_mark(r: Reader) -> Result<SeatMark, CodecFault> {
+    let word = r.text()?
+    .Ok(mark_of_word(word))
+}
+
+fn read_opt_marks(r: Reader) -> Result<List<SeatMark>?, CodecFault> {
+    read_opt(r, (rr: Reader) -> read_list(rr, (rrr: Reader) -> read_mark(rrr)))
+}
+
+fn written_asked(w: Writer, scope: dyn Scope, a: Asked) {
+    written_expr_id(w, scope, a.subject)
+    w.bool(a.on_present)
+}
+
+fn read_asked(r: Reader, scope: dyn Scope) -> Result<Asked, CodecFault> {
+    let subject = read_expr_id(r, scope)?
+    let on_present = r.bool()?
+    .Ok(Asked { subject: subject, on_present: on_present })
+}
+
+fn written_opt_asked(w: Writer, scope: dyn Scope, a: Asked?) {
+    written_opt(w, a, (ww: Writer, x: Asked) -> written_asked(ww, scope, x))
+}
+
+fn read_opt_asked(r: Reader, scope: dyn Scope) -> Result<Asked?, CodecFault> {
+    read_opt(r, (rr: Reader) -> read_asked(rr, scope))
+}
+
+fn written_sub(w: Writer, scope: dyn Scope, s: Sub) {
+    written_decl_id(w, scope, s.target)
+    written_type_ids(w, scope, s.args)
+    written_list(w, s.consts, (ww: Writer, c: string) -> ww.text(c))
+}
+
+fn read_sub(r: Reader, scope: dyn Scope) -> Result<Sub, CodecFault> {
+    let target = read_decl_id(r, scope)?
+    let args = read_type_ids(r, scope)?
+    let consts = read_list(r, (rr: Reader) -> rr.text())?
+    .Ok(Sub { target: target, args: args, consts: consts })
+}
+
+fn written_opt_sub(w: Writer, scope: dyn Scope, s: Sub?) {
+    written_opt(w, s, (ww: Writer, x: Sub) -> written_sub(ww, scope, x))
+}
+
+fn read_opt_sub(r: Reader, scope: dyn Scope) -> Result<Sub?, CodecFault> {
+    read_opt(r, (rr: Reader) -> read_sub(rr, scope))
+}
+
+fn written_opt_scope(w: Writer, scope: dyn Scope, s: ParamScope?) {
+    written_opt(w, s, (ww: Writer, x: ParamScope) -> written_type_ids(ww, scope, x.params))
+}
+
+fn read_param_scope(r: Reader, scope: dyn Scope) -> Result<ParamScope, CodecFault> {
+    let params = read_type_ids(r, scope)?
+    .Ok(ParamScope { params: params })
+}
+
+fn read_opt_scope(r: Reader, scope: dyn Scope) -> Result<ParamScope?, CodecFault> {
+    read_opt(r, (rr: Reader) -> read_param_scope(rr, scope))
+}
+
+fn written_choice(w: Writer, scope: dyn Scope, c: RunChoice) {
+    w.int(c.seat)
+    written_list(w, c.members, (ww: Writer, d: DeclId) -> written_decl_id(ww, scope, d))
+}
+
+fn read_choice(r: Reader, scope: dyn Scope) -> Result<RunChoice, CodecFault> {
+    let seat = r.int()?
+    let members = read_list(r, (rr: Reader) -> read_decl_id(rr, scope))?
+    .Ok(RunChoice { seat: seat, members: members })
+}
+
+fn written_opt_choice(w: Writer, scope: dyn Scope, c: RunChoice?) {
+    written_opt(w, c, (ww: Writer, x: RunChoice) -> written_choice(ww, scope, x))
+}
+
+fn read_opt_choice(r: Reader, scope: dyn Scope) -> Result<RunChoice?, CodecFault> {
+    read_opt(r, (rr: Reader) -> read_choice(rr, scope))
+}
+
+/// A stage crosses by its place in the declaration, the tag lowering reads.
+fn written_opt_stage(w: Writer, s: PipeStage?) {
+    written_opt(w, s, (ww: Writer, x: PipeStage) -> ww.count(x.ordinal))
+}
+
+fn read_stage(r: Reader) -> Result<PipeStage, CodecFault> {
+    let at = r.ordinal(PipeStage.all().length)?
+    .Ok(PipeStage.all()[at])
+}
+
+fn read_opt_stage(r: Reader) -> Result<PipeStage?, CodecFault> {
+    read_opt(r, (rr: Reader) -> read_stage(rr))
+}
+
+/// A column written: its window's start, its seed, then every cell in window order — so a
+/// decoded table sits where the written one did and grows holding what it grew with.
+fn written_column<V>(w: Writer, t: SideTable<V>, each: fn(Writer, V) -> void) {
+    w.text(t.name)
+    w.int(t.lo)
+    each(w, t.seed)
+    written_list(w, t.cells, each)
+}
+
+fn read_column<V>(r: Reader, each: fn(Reader) -> Result<V, CodecFault>) -> Result<
+    SideTable<V>,
+    CodecFault,
+> {
+    let name = r.text()?
+    let lo = r.int()?
+    let seed = each(r)?
+    let cells = read_list(r, each)?
+    .Ok(side_table_of(name, lo, cells, seed))
+}
+
+/// Every column of a body's typing table, in declaration order, under one walk.
+fn written_columns(w: Writer, scope: dyn Scope, t: TypeFacts) {
+    written_column(w, t.of_expr, (ww: Writer, v: TypeId) -> written_type_id(ww, scope, v))
+    written_column(w, t.widens, (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v))
+    written_column(w, t.narrows, (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v))
+    written_column(w, t.asks, (ww: Writer, v: Asked?) -> written_opt_asked(ww, scope, v))
+    written_column(w, t.substs, (ww: Writer, v: Sub?) -> written_opt_sub(ww, scope, v))
+    written_column(
+        w,
+        t.lambda_params,
+        (ww: Writer, v: List<TypeId>?) -> written_opt_type_ids(ww, scope, v),
+    )
+    written_column(w, t.lambda_marks, (ww: Writer, v: List<SeatMark>?) -> written_opt_marks(ww, v))
+    written_column(
+        w,
+        t.captures,
+        (ww: Writer, v: List<TypeId>?) -> written_opt_type_ids(ww, scope, v),
+    )
+    written_column(w, t.wants, (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v))
+    written_column(w, t.flags, (ww: Writer, v: int) -> ww.int(v))
+    written_column(w, t.starved, (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v))
+    written_column(w, t.scopes, (ww: Writer, v: ParamScope?) -> written_opt_scope(ww, scope, v))
+    written_column(
+        w,
+        t.pattern_types,
+        (ww: Writer, v: List<TypeId>) -> written_type_ids(ww, scope, v),
+    )
+    written_column(w, t.binding_types, (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v))
+    written_column(w, t.index_types, (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v))
+    written_column(w, t.stmt_flags, (ww: Writer, v: int) -> ww.int(v))
+    written_column(
+        w,
+        t.collections,
+        (ww: Writer, v: List<ExprId>?) -> written_opt_expr_ids(ww, scope, v),
+    )
+    written_column(w, t.chosen, (ww: Writer, v: DeclId?) -> written_opt_decl(ww, scope, v))
+    written_column(w, t.dispatches, (ww: Writer, v: RunChoice?) -> written_opt_choice(ww, scope, v))
+    written_column(w, t.stages, (ww: Writer, v: PipeStage?) -> written_opt_stage(ww, v))
+}
+
+/// A body's typing table as octets, or null for a table that spoke — a voice carries a `dyn
+/// Error` chain no process rebuilds, so a table that said something has no wire to restore it
+/// from and its saver files no row.
+export fn facts_encoded_in(facts: TypeFacts, scope: dyn Scope) -> Bytes? {
+    if facts.voices.heard() { return null }
+    encoded_with(
+        facts,
+        (w: Writer, t: TypeFacts) -> {
+            w.int(facts_wire)
+            written_columns(w, scope, t)
+        },
+    )
+}
+
+/// The table those octets wrote, read back under `scope` — a spelling the scope does not hold,
+/// a wire of another shape and a trailing octet are all a miss. The octets lead, as a reader's
+/// do (`dense_read`), and the scope travels with them.
+export fn facts_decoded_in(b: Bytes, scope: dyn Scope) -> Result<TypeFacts, string> {
+    match decoded_with(b, (r: Reader) -> read_facts(r, scope)) {
+        .Ok(facts) -> .Ok(facts),
+        .Err(fault) -> .Err(fault_word(fault)),
+    }
+}
+
+fn read_facts(r: Reader, scope: dyn Scope) -> Result<TypeFacts, CodecFault> {
+    if r.int()? != facts_wire { fail CodecFault.OtherShape }
+    let of_expr = read_column(r, (rr: Reader) -> read_type_id(rr, scope))?
+    let widens = read_column(r, (rr: Reader) -> read_opt_type(rr, scope))?
+    let narrows = read_column(r, (rr: Reader) -> read_opt_type(rr, scope))?
+    let asks = read_column(r, (rr: Reader) -> read_opt_asked(rr, scope))?
+    let substs = read_column(r, (rr: Reader) -> read_opt_sub(rr, scope))?
+    let lambda_params = read_column(r, (rr: Reader) -> read_opt_type_ids(rr, scope))?
+    let lambda_marks = read_column(r, (rr: Reader) -> read_opt_marks(rr))?
+    let captures = read_column(r, (rr: Reader) -> read_opt_type_ids(rr, scope))?
+    let wants = read_column(r, (rr: Reader) -> read_opt_type(rr, scope))?
+    let flags = read_column(r, (rr: Reader) -> rr.int())?
+    let starved = read_column(r, (rr: Reader) -> read_opt_type(rr, scope))?
+    let scopes = read_column(r, (rr: Reader) -> read_opt_scope(rr, scope))?
+    let pattern_types = read_column(r, (rr: Reader) -> read_type_ids(rr, scope))?
+    let binding_types = read_column(r, (rr: Reader) -> read_opt_type(rr, scope))?
+    let index_types = read_column(r, (rr: Reader) -> read_opt_type(rr, scope))?
+    let stmt_flags = read_column(r, (rr: Reader) -> rr.int())?
+    let collections = read_column(r, (rr: Reader) -> read_opt_expr_ids(rr, scope))?
+    let chosen = read_column(r, (rr: Reader) -> read_opt_decl(rr, scope))?
+    let dispatches = read_column(r, (rr: Reader) -> read_opt_choice(rr, scope))?
+    let stages = read_column(r, (rr: Reader) -> read_opt_stage(rr))?
+    .Ok(
+        TypeFacts {
+            of_expr: of_expr,
+            widens: widens,
+            narrows: narrows,
+            asks: asks,
+            substs: substs,
+            lambda_params: lambda_params,
+            lambda_marks: lambda_marks,
+            captures: captures,
+            wants: wants,
+            flags: flags,
+            starved: starved,
+            scopes: scopes,
+            pattern_types: pattern_types,
+            binding_types: binding_types,
+            index_types: index_types,
+            stmt_flags: stmt_flags,
+            collections: collections,
+            chosen: chosen,
+            dispatches: dispatches,
+            stages: stages,
+            voices: no_voices(),
+        },
+    )
+}
+
+/// Why a table does not read back, in words a refusal can carry.
+fn fault_word(fault: CodecFault) -> string {
+    match fault {
+        .Truncated -> "truncated",
+        .Overlong -> "overlong",
+        .NotFlag -> "not_flag",
+        .NotText -> "not_text",
+        .Trailing -> "trailing",
+        .NotVariant -> "not_variant",
+        .OtherArguments -> "other_arguments",
+        .OtherShape -> "other_shape",
+        .Unresolved -> "unresolved",
+    }
+}
+
+impl Workspace {
+    /// A body's facts as its OWN row: the declaration's durable key, under the digest of the
+    /// file it was typed in, so an edit to any other file leaves the row standing and an edit
+    /// here drops it. The row is a plain unit — never a family answer, which would stand alone
+    /// in every reader's read set and name thousands of rows.
+    fn facts_row_key(d: DeclId) -> string {
+        let x = self.decls.raw_decl(d)
+        node_key(Stored.Unit, ["facts", self.decls.key_of(d), self.text_digest(x.path)])
+    }
+
+    /// The facts a declaration's row holds, read back over its parse. Null when the file is
+    /// not parsed here, when the declaration is still expanding, or when the row names nothing
+    /// this scope can resolve — a stale fact is a miss, never a lie.
+    fn facts_restored(d: DeclId) -> TypeFacts? {
+        let store? = self.store.get() else { return null }
+        let x = self.decls.raw_decl(d)
+        if self.db.active(key(Family.Expanded, x.file.index)) { return null }
+        if self.relation(Family.Parsed).values.entry(x.file.index) is .Missing { return null }
+        let text? = store.get(Stored.Unit, self.facts_row_key(d)) else { return null }
+        let octets? = unhex(text) else { return null }
+        match facts_decoded_in(octets, self.facts_scope(x.lo, x.stmt_lo)) {
+            .Ok(facts) -> facts,
+            .Err(_) -> null,
+        }
+    }
+
+    /// File a body's facts under the row it will be read from; a table that spoke files none.
+    fn facts_kept(d: DeclId, facts: TypeFacts) {
+        let store? = self.store.get() else { return }
+        let x = self.decls.raw_decl(d)
+        let octets? = facts_encoded_in(facts, self.facts_scope(x.lo, x.stmt_lo)) else { return }
+        let _ = store.keep(Stored.Unit, self.facts_row_key(d), hex(octets), [])
+    }
+}

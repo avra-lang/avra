@@ -1,0 +1,218 @@
+//! THE TYPING TABLE'S WIRE, held by machine: every column a body's facts
+//! carry is written under a scope and read back, and the table read is the
+//! table written — field by field, never a second encoding of the first,
+//! which would pass with a column dropped both times.
+use compiler.{facts_encoded_in, facts_decoded_in}
+use core.{DeclId, TypeId, ExprId, SeatMark, SideTable, side_table_of, list_eq, opt_eq}
+use features.{TypeFacts, Asked, Sub, ParamScope, RunChoice, PipeStage}
+use diagnostics.{no_voices, Voices, Diag, error_at}
+use @std.relation.stable.{Scope, indexed_scope}
+
+fn ty(i: int) -> TypeId { TypeId { index: i } }
+
+fn ex(i: int) -> ExprId { ExprId { index: i } }
+
+fn dc(i: int) -> DeclId { DeclId { index: i } }
+
+/// A table with EVERY column holding something: an absent optional, an
+/// empty list and a populated one, so the three shapes a column can wear
+/// are all on the wire at once.
+fn sample() -> TypeFacts {
+    let widens_cells: List<TypeId?> = [null, ty(12), null]
+    let asked = Asked { subject: ex(5), on_present: true }
+    let asks_cells: List<Asked?> = [null, asked]
+    let substitution = Sub { target: dc(7), args: [ty(1), ty(2)], consts: ["c"] }
+    let substs_cells: List<Sub?> = [substitution, null]
+    let params_cells: List<List<TypeId>?> = [[ty(21), ty(22)]]
+    let marks_cells: List<List<SeatMark>?> = [
+        [
+            SeatMark { mutable: true, settled: false },
+            SeatMark { mutable: false, settled: true, state: true, unshared: true, consumed: true },
+        ],
+    ]
+    let captures_cells: List<List<TypeId>?> = [[]]
+    let wants_cells: List<TypeId?> = [ty(31)]
+    let starved_cells: List<TypeId?> = [null, ty(41)]
+    let scope_cells: List<ParamScope?> = [ParamScope { params: [ty(51)] }, null]
+    let no_types: List<TypeId> = []
+    let patterns: List<List<TypeId>> = [[ty(61)], no_types]
+    let bindings_cells: List<TypeId?> = [null, ty(71)]
+    let index_cells: List<TypeId?> = [ty(81), null]
+    let collections_cells: List<List<ExprId>?> = [[ex(63)], []]
+    let chosen_cells: List<DeclId?> = [null, dc(91)]
+    let choice = RunChoice { seat: 1, members: [dc(92), dc(93)] }
+    let dispatches_cells: List<RunChoice?> = [choice]
+    let stages_cells: List<PipeStage?> = [null, PipeStage.FlatMap]
+    TypeFacts {
+        of_expr: side_table_of("of_expr", 4, [ty(11), ty(12), ty(13)], ty(9)),
+        widens: side_table_of("widens", 4, widens_cells, null),
+        narrows: side_table_of("narrows", 4, widens_cells, null),
+        asks: side_table_of("asks", 4, asks_cells, null),
+        substs: side_table_of("substs", 4, substs_cells, null),
+        lambda_params: side_table_of("lambda_params", 4, params_cells, null),
+        lambda_marks: side_table_of("lambda_marks", 4, marks_cells, null),
+        captures: side_table_of("captures", 4, captures_cells, null),
+        wants: side_table_of("wants", 4, wants_cells, null),
+        flags: side_table_of("flags", 4, [0, 257], 0),
+        starved: side_table_of("starved", 4, starved_cells, null),
+        scopes: side_table_of("scopes", 4, scope_cells, null),
+        pattern_types: side_table_of("pattern_types", 4, patterns, no_types),
+        binding_types: side_table_of("binding_types", 4, bindings_cells, null),
+        index_types: side_table_of("index_types", 4, index_cells, null),
+        stmt_flags: side_table_of("stmt_flags", 4, [0, 1], 0),
+        collections: side_table_of("collections", 4, collections_cells, null),
+        chosen: side_table_of("chosen", 4, chosen_cells, null),
+        dispatches: side_table_of("dispatches", 4, dispatches_cells, null),
+        stages: side_table_of("stages", 4, stages_cells, null),
+        voices: no_voices(),
+    }
+}
+
+fn same_id(a: int, b: int) -> bool { a == b }
+
+fn same_type(a: TypeId, b: TypeId) -> bool { same_id(a.index, b.index) }
+
+fn same_opt_type(a: TypeId?, b: TypeId?) -> bool { opt_eq(a, b, same_type) }
+
+fn same_types(a: List<TypeId>, b: List<TypeId>) -> bool { list_eq(a, b, same_type) }
+
+fn same_opt_types(a: List<TypeId>?, b: List<TypeId>?) -> bool { opt_eq(a, b, same_types) }
+
+fn same_expr(a: ExprId, b: ExprId) -> bool { same_id(a.index, b.index) }
+
+fn same_decl(a: DeclId, b: DeclId) -> bool { same_id(a.index, b.index) }
+
+fn same_opt_decl(a: DeclId?, b: DeclId?) -> bool { opt_eq(a, b, same_decl) }
+
+fn same_exprs(a: List<ExprId>, b: List<ExprId>) -> bool { list_eq(a, b, same_expr) }
+
+fn same_opt_exprs(a: List<ExprId>?, b: List<ExprId>?) -> bool { opt_eq(a, b, same_exprs) }
+
+fn same_mark(a: SeatMark, b: SeatMark) -> bool {
+    a.mutable == b.mutable &&
+        a.settled == b.settled &&
+        a.state == b.state &&
+        a.unshared == b.unshared &&
+        a.consumed == b.consumed
+}
+
+fn same_marks(a: List<SeatMark>, b: List<SeatMark>) -> bool { list_eq(a, b, same_mark) }
+
+fn same_opt_marks(a: List<SeatMark>?, b: List<SeatMark>?) -> bool { opt_eq(a, b, same_marks) }
+
+fn same_asked(a: Asked, b: Asked) -> bool {
+    same_expr(a.subject, b.subject) && a.on_present == b.on_present
+}
+
+fn same_opt_asked(a: Asked?, b: Asked?) -> bool { opt_eq(a, b, same_asked) }
+
+fn same_sub(a: Sub, b: Sub) -> bool {
+    same_decl(a.target, b.target) &&
+        same_types(a.args, b.args) &&
+        list_eq(a.consts, b.consts, (x: string, y: string) -> x == y)
+}
+
+fn same_opt_sub(a: Sub?, b: Sub?) -> bool { opt_eq(a, b, same_sub) }
+
+fn same_scope(a: ParamScope, b: ParamScope) -> bool { same_types(a.params, b.params) }
+
+fn same_opt_scope(a: ParamScope?, b: ParamScope?) -> bool { opt_eq(a, b, same_scope) }
+
+fn same_choice(a: RunChoice, b: RunChoice) -> bool {
+    a.seat == b.seat && list_eq(a.members, b.members, same_decl)
+}
+
+fn same_opt_choice(a: RunChoice?, b: RunChoice?) -> bool { opt_eq(a, b, same_choice) }
+
+fn same_stage(a: PipeStage, b: PipeStage) -> bool { a.ordinal == b.ordinal }
+
+fn same_opt_stage(a: PipeStage?, b: PipeStage?) -> bool { opt_eq(a, b, same_stage) }
+
+fn same_int(a: int, b: int) -> bool { a == b }
+
+/// A column compared WHOLE: its name, where its window starts, the value it
+/// grows with, and every cell in order.
+fn same_column<T>(a: SideTable<T>, b: SideTable<T>, eq: fn(T, T) -> bool) -> bool {
+    a.name == b.name && a.lo == b.lo && eq(a.seed, b.seed) && list_eq(a.cells, b.cells, eq)
+}
+
+fn same_facts(a: TypeFacts, b: TypeFacts) -> bool {
+    same_column(a.of_expr, b.of_expr, same_type) &&
+        same_column(a.widens, b.widens, same_opt_type) &&
+        same_column(a.narrows, b.narrows, same_opt_type) &&
+        same_column(a.asks, b.asks, same_opt_asked) &&
+        same_column(a.substs, b.substs, same_opt_sub) &&
+        same_column(a.lambda_params, b.lambda_params, same_opt_types) &&
+        same_column(a.lambda_marks, b.lambda_marks, same_opt_marks) &&
+        same_column(a.captures, b.captures, same_opt_types) &&
+        same_column(a.wants, b.wants, same_opt_type) &&
+        same_column(a.flags, b.flags, same_int) &&
+        same_column(a.starved, b.starved, same_opt_type) &&
+        same_column(a.scopes, b.scopes, same_opt_scope) &&
+        same_column(a.pattern_types, b.pattern_types, same_types) &&
+        same_column(a.binding_types, b.binding_types, same_opt_type) &&
+        same_column(a.index_types, b.index_types, same_opt_type) &&
+        same_column(a.stmt_flags, b.stmt_flags, same_int) &&
+        same_column(a.collections, b.collections, same_opt_exprs) &&
+        same_column(a.chosen, b.chosen, same_opt_decl) &&
+        same_column(a.dispatches, b.dispatches, same_opt_choice) &&
+        same_column(a.stages, b.stages, same_opt_stage) &&
+        a.voices.list.is_empty() &&
+        b.voices.list.is_empty()
+}
+
+fn back(facts: TypeFacts) -> Result<TypeFacts, string> {
+    facts_decoded_in(facts_encoded_in(facts, indexed_scope())!, indexed_scope())
+}
+
+/// A scope whose inverse holds nothing: the wire it wrote names ids it can
+/// no longer resolve.
+type Forgetful = {}
+
+impl Scope for Forgetful {
+    fn spelled(kind: string, index: int) -> string { "${index}" }
+
+    fn unspelled(kind: string, text: string) -> int? { null }
+}
+
+/// A table holding one voice — a `Diag` whose `cause` is a `dyn Error` no
+/// process rebuilds.
+fn spoken() -> TypeFacts {
+    let said: Diag = error_at("facts.spoken", null, "a table that spoke")
+    sample() with { voices: Voices { list: [said] } }
+}
+
+spec "compiler/facts_codec — a typing table crosses as one wire" {
+    given "a table with every column populated" {
+        then "the table read is the table written, field by field" {
+            match back(sample()) { .Ok(t) -> same_facts(sample(), t), .Err(_) -> false }
+        }
+        then "one body's table is a few hundred octets, never a few thousand" {
+            facts_encoded_in(sample(), indexed_scope())!.length <= 400
+        }
+        then "one table writes one text" {
+            facts_encoded_in(sample(), indexed_scope()) == facts_encoded_in(sample(), indexed_scope())
+        }
+        then "an absent optional and an empty list are different wires" {
+            let absent = sample() with { captures: side_table_of("captures", 4, sample_absences(), null) }
+            let empty = sample() with { captures: side_table_of("captures", 4, sample_empties(), null) }
+            facts_encoded_in(absent, indexed_scope()) != facts_encoded_in(empty, indexed_scope())
+        }
+    }
+    given "a table that spoke" {
+        then "it has no wire, so its saver files no row" {
+            facts_encoded_in(spoken(), indexed_scope()) == null
+        }
+    }
+    given "a spelling the reading scope does not hold" {
+        then "the read is refused, never guessed" {
+            let bytes = facts_encoded_in(sample(), indexed_scope())!
+            let deaf: dyn Scope = Forgetful {}
+            match facts_decoded_in(bytes, deaf) { .Ok(_) -> false, .Err(_) -> true }
+        }
+    }
+}
+
+fn sample_absences() -> List<List<TypeId>?> { [null] }
+
+fn sample_empties() -> List<List<TypeId>?> { [[]] }
