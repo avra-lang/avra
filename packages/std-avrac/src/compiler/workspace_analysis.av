@@ -438,7 +438,7 @@ impl Workspace {
 
     /// One unit lowered and remembered: a body edit re-lowers its own
     /// unit; the specializations it wants are other units.
-    fn lowered(id: int) -> Unit { self.lowered_in(Family.Lowered, id, true) }
+    fn lowered(id: int) -> Unit { self.lowered_in(Family.Lowered, id) }
 
     /// A COMPILE-TIME RUN'S OWN unit, remembered in ITS OWN family —
     /// never `Lowered`'s. The two share `id`'s space (interned by
@@ -448,18 +448,22 @@ impl Workspace {
     /// a comptime run's units — every seat borrowed, see
     /// `comptime_active` — from ever standing in for the real
     /// program's.
-    fn lift_lowered(id: int) -> Unit { self.lowered_in(Family.LiftLowered, id, false) }
+    fn lift_lowered(id: int) -> Unit { self.lowered_in(Family.LiftLowered, id) }
 
     /// The shared memo shape `lowered` and `lift_lowered` differ only
     /// by family: start recursive, reuse a settled answer, or lower
     /// the ask and settle it.
-    fn lowered_in(fam: Family, id: int, rows: bool) -> Unit {
+    fn lowered_in(fam: Family, id: int) -> Unit {
         match self.relation(fam).start_recursive(id) {
-            .Reuse(value) -> { return lowered_of(value) },
+            .Reuse(value) -> {
+                let unit = lowered_of(value)
+                if !(self.comptime_active() && unit.is_stub()) { return unit }
+                return self.lowered_unit(self.asks.get()[id])
+            },
             .Compute -> nothing(),
         }
         self.hold.lowering.push(id)
-        let out = self.lowered_unit(self.asks.get()[id], rows)
+        let out = self.lowered_unit(self.asks.get()[id])
         let open = self.hold.lowering.get()
         self.hold.lowering.set(open.slice(0, open.length - 1))
         lowered_of(
@@ -477,9 +481,8 @@ impl Workspace {
         for b in out.bodies { self.hold.owners.put(b.name, d) }
     }
 
-    /// One unit: served from its kept row when `rows` allows, else lowered and,
-    /// when it spoke nothing, kept.
-    fn lowered_unit(w: Wanted, rows: bool) -> Unit {
+    /// One unit lowered.
+    fn lowered_unit(w: Wanted) -> Unit {
         // A unit's OWN body is a read whatever its shape: a declaration's
         // range, or — for a program's entry, a body no declaration owns —
         // the whole file's parse, which is where that body lives. Without
@@ -489,12 +492,9 @@ impl Workspace {
         } else if w.root == null {
             let _ = self.parsed(w.file)
         }
-        let served = if rows { self.unit_served(w) } else { null }
-        if traced() { qtrace("Q\tunit\t${if served == null { "lowered" } else { "served" }}\t${w.name}\n") }
-        if served != null { return served! }
+        if traced() { qtrace("Q\tunit\tlowered\t${w.name}\n") }
         let out = self.lower_requested(w)
         self.owned(w, out)
-        if rows { self.unit_kept(w, out) }
         out
     }
 
@@ -511,8 +511,8 @@ impl Workspace {
     /// Where a file's asks live: beside its object, under the object's key.
     fn asks_key(okey: string) -> string { node_key(Stored.Unit, ["asks", okey]) }
 
-    /// FILE-SAID: a file's asks, keyed by PATH under the program's root — written beside the object-keyed row.
-    fn asks_row(path: string) -> string { node_key(Stored.Unit, ["asks-row", self.root, path]) }
+    /// FILE-SAID: a file's asks, keyed by its stored name — written beside the object-keyed row.
+    fn asks_row(path: string) -> string { self.file_key(Stored.Unit, "asks-row", path) }
 
     /// EVERY ASK THE HELD FILES' BODIES MAKE, read by name where the bodies are not —
     /// kept for the lowering, nothing resolved — and the held files whose row could NOT be read.
@@ -568,8 +568,8 @@ impl Workspace {
     /// Where a file's code lives: beside its object, under the object's key.
     fn codes_key(okey: string) -> string { node_key(Stored.Unit, ["codes", okey]) }
 
-    /// FILE-SAID: a file's code, keyed by PATH under the program's root — written beside the object-keyed row.
-    fn codes_row(path: string) -> string { node_key(Stored.Unit, ["codes-row", self.root, path]) }
+    /// FILE-SAID: a file's code, keyed by its stored name — written beside the object-keyed row.
+    fn codes_row(path: string) -> string { self.file_key(Stored.Unit, "codes-row", path) }
 
     /// Where an instantiation's code is kept: its symbol, its type arguments'
     /// shapes, and the object key of the file its generic lowers from, so an
@@ -637,9 +637,9 @@ impl Workspace {
         found
     }
 
-    /// FILE-SAID: a file's object key, keyed by PATH under the program's root — kept beside its other rows, and read back for a
+    /// FILE-SAID: a file's object key, keyed by its stored name — kept beside its other rows, and read back for a
     /// file whose rows stand, so a held file's key needs none of its parts.
-    fn okey_row(path: string) -> string { node_key(Stored.Unit, ["okey-row", self.compiler_id(), self.root, path]) }
+    fn okey_row(path: string) -> string { self.file_key(Stored.Unit, "okey-row", path, [self.compiler_id()]) }
 
     /// Whether this build is for wasm: no fiber, no thread, so no `while`
     /// check — the row it would call has no body on that target.

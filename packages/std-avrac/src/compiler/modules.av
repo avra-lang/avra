@@ -308,7 +308,7 @@ impl Workspace {
     /// the key, and a code-generator change must invalidate every
     /// module it could have emitted.
     fn source_inputs(named: string) -> List<string> {
-        let covered = [line.split("\t") for line in self.closure(named)]
+        let covered = self.covered_dirs(named)
         let tree = self.toolchain_root()
         let engine: List<string> = if tree == "" {
             []
@@ -317,13 +317,13 @@ impl Workspace {
                 .concat(self.engine_sources(joined_path(tree, "backend")))
                 .concat(self.engine_sources(joined_path(tree, "runtime")))
         }
-        let manifests = [joined_path(at[1], "avra.toml") for at in covered if at.length > 1 && self.there(joined_path(at[1], "avra.toml"))]
+        let manifests = [joined_path(c.root, "avra.toml") for c in covered if self.there(joined_path(c.root, "avra.toml"))]
         // A DEPENDENCY'S TESTS ARE NEVER READ: only the root package's own test
         // files enter the key, because only they are derived. A test file of a
         // package this program merely reaches is no input of it, so covering it
         // would rebuild on an edit nothing read.
         let root_src = self.packages()[0].src
-        let deps = flatten([self.all_files_no_tests(at[0]) for at in covered if at[0] != root_src])
+        let deps = flatten([self.all_files_no_tests(c.src) for c in covered if c.src != root_src])
         sorted_texts(self.all_files(root_src).concat(deps).concat(manifests).concat(engine))
     }
 
@@ -350,8 +350,6 @@ impl Workspace {
     fn written_exports(m: ModulePath, name: string) -> List<DeclId> {
         let files = self.module_file_ids(m)
         for f in files { self.admission(f) }
-        let here = [self.decls.file(f).path for f in files]
-        self.minted_files([p for p in self.hold.named_by.get().get(name) ?? [] if here.contains(p)])
         let named = self.decls.named_filed(name)
         [x.id for f in files for x in named if self.written_export_in(x, f)]
     }

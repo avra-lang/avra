@@ -2762,6 +2762,22 @@ lost message and a duplicated backlog entry.
   stopping it — write `cd X || exit 1` before it. Changing a shared
   layout is an ANNOUNCEMENT, not a cleanup.
 
+## THE HOLD DELETION CHECKLIST (ticket avra-8sb5.57.176.10) — what goes in the commit that deletes the hold
+
+The saved families (`Items`, `Sig`, `ComponentNames`, then `Typed`, `Lowered`) stand on `saved.av`'s one
+name map, the Relation `keeper`/`revive` hooks and `flush_saved`. That commit is the deadline for the old
+paths, each deleted with its last reader:
+
+- the hold: `Hold` and its fields, `hold_only`, `is_held`/`held_paths`/`held_okey`, `Attempt`, `Turn`,
+  `under_hold`, `stood_first`, `again`/`tried_anew`/`turned`, `holding`, `HeldSig`, `Admitted`;
+- the held mint: `mint_files`, `decls.held_items`/`held_values`/`held_reaches`/`held_rows`, `Hold.served`/`serving`;
+- the module record's signature path: `keep_interfaces`' `insert_sig`, `RecordBodies`/`record_bodies().body`,
+  `parts_moved`, `seen_list_moved`, `KeyParts` and formats 1 and 2;
+- the store's relocation rewrite: `Anchor`, `filed`, `found`, `names_place`, `MARK`, `store_anchors` —
+  deletable only when every value kind that carries an absolute path is spelled by `stored_name` at its
+  writer (record lines, import and gathers lines, diagnostic text);
+- `cache_walk.av` and its `keyed_by` registry's second reader, once `keyed_by` is derived from the `@family` args.
+
 ## THE C LEVEL (opened 2026-09-23) — @std/http per request at a hand-written C server's cost
 
 Epic avra-8sb5.34; design and numbers: docs/2026_09_23_REUSE_IN_PLACE.md.

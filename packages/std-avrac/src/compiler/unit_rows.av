@@ -1,207 +1,44 @@
-//! A LOWERED UNIT KEPT BY DECLARATION. A plain fn's or method's lowering is kept as
-//! the instantiations it asks and the code facts it hashes, under its own name, its
-//! own syntax and the surface its file shows it. A kept unit stands in for its
-//! lowering exactly when it spoke nothing, so serving one can never hide a voice.
-use core.{DeclId, DeclKind, FileId, flatten, distinct, fp, fp_str, fp_list, joined}
-use features.{Wanted, SettleRoot}
+//! A LOWERED UNIT SAVED BY DECLARATION: a plain fn's or method's lowering is saved as the
+//! instantiations it asks and the code facts it hashes, under its symbol. A saved unit stands
+//! in for its lowering exactly when it spoke nothing, so serving one can never hide a voice.
+use core.{DeclKind, FileId, flatten, distinct, joined}
+use features.{Wanted}
 use diagnostics.{no_voices}
-use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Unit, CodeFacts, code_facts, code_facts_wire, code_facts_from_wire}
 
-/// A unit served from its kept row: the file it belongs to and the code it stood for.
+/// A unit served from its saved row: the file it belongs to and the code it stood for.
 type Served = { file: FileId, facts: CodeFacts }
 
-/// A kept lowering: the unit's name and syntax, the instantiations it asked for, the code
-/// facts it hashed and the consts it read with the value each had, each as the wire that keeps it.
-type UnitRow = { key: string, wants: string, facts: string, consts: string }
-
 impl Workspace {
-    /// The unit a kept row stands for, when this derivation may be served one: it
-    /// links nothing, it holds files (a cold one has no row to find), no compile-time
-    /// run is lowering, and the row's inputs stand.
-    fn unit_served(w: Wanted) -> Unit? {
-        if !self.hold.serving.get() || !self.hold.warm.get() { return null }
-        let s? = self.store.get() else { return null }
-        let at? = self.row_place(s, w) else { return null }
-        let row? = self.row_file(s, at.path, at.surface).get(at.key) else { return null }
-        let wants? = self.wanted_list_from_wire(row.wants) else { return null }
-        let facts? = code_facts_from_wire(row.facts) else { return null }
-        if !self.consts_stand(row.consts) { return null }
+    /// A unit as its saved row's text: the instantiations it asks, then the code facts it hashes.
+    /// Absent for a unit no row can stand for: one that spoke, or is not a plain declaration's.
+    fn unit_text(w: Wanted, out: Unit) -> string? {
+        if !out.voices.list.is_empty() || !self.unit_saved(w) { return null }
+        let facts = code_facts(self.decls, out.bodies, out.statics, out.hashes)
+        fields_wire([self.wanted_list_wire(out.wants), code_facts_wire(facts)])
+    }
+
+    /// The unit a saved row stands for, its body the declaration's stub: the code is the store's.
+    fn unit_from_text(w: Wanted, text: string) -> Unit? {
+        if !self.unit_saved(w) { return null }
+        mut r = wire_reader(text)
+        let parts? = r.fields() else { return null }
+        if parts.length != 2 { return null }
+        let wants? = self.wanted_list_from_wire(parts[0]) else { return null }
+        let facts? = code_facts_from_wire(parts[1]) else { return null }
         let stub? = self.stub_of(self.decls.decl(w.decl!)) else { return null }
         self.hold.served.push(Served { file: w.file, facts: facts })
-        self.row_lives(at.path, row)
         Unit { bodies: [stub], wants: wants, voices: no_voices(), statics: [], kept: [facts] }
     }
 
-    /// A unit's lowering kept as a row: only one that spoke nothing.
-    fn unit_kept(w: Wanted, out: Unit) {
-        if !out.voices.list.is_empty() { return }
-        let at? = self.row_key(w) else { return }
-        let consts? = self.consts_read(w) else { return }
-        let facts = code_facts(self.decls, out.bodies, out.statics, out.hashes)
-        self
-            .row_lives(
-                at.path,
-                UnitRow {
-                    key: at.key,
-                    wants: self.wanted_list_wire(out.wants),
-                    facts: code_facts_wire(facts),
-                    consts: consts,
-                },
-            )
-        self.hold.rows_fresh.put(at.path, true)
-    }
-
-    /// The consts a unit's lowering read, each with its value's fingerprint, as the wire a
-    /// row keeps. Absent for a unit that read one a row cannot name again: an expression
-    /// root, or a const settled at seats.
-    fn consts_read(w: Wanted) -> string? {
-        mut words: List<string> = []
-        for ask in self.asks_of(self.spec_id(w)) {
-            let s = match ask.root { .Const(s) -> s, .Expr(_) -> { return null } }
-            if !ask.seats.is_empty() { return null }
-            let d? = self.decls.decl_of(ask.file, s) else { return null }
-            let got = match self.settled_replay(ask.file, ask.root, ask.seats) {
-                .Ok(v) -> v,
-                .Err(_) -> { return null },
-            }
-            words = words.concat([self.decl_ref(d), "${got.fingerprint}"])
-        }
-        "C1" + fields_wire(words)
-    }
-
-    /// Whether every const a row read still settles to the value it read.
-    fn consts_stand(wire: string) -> bool {
-        mut r = wire_reader(wire)
-        let words? = r.fields() else { return false }
-        if words.length % 2 != 0 { return false }
-        for i in 0..words.length / 2 {
-            let d? = self.decl_from_ref(words[2 * i]) else { return false }
-            let x = self.decls.decl(d)
-            let got = match self.settled(x.file, SettleRoot.Const(x.stmt), []) {
-                .Ok(v) -> v,
-                .Err(_) -> { return false },
-            }
-            if "${got.fingerprint}" != words[2 * i + 1] { return false }
-        }
-        true
-    }
-
-    /// Every file that lowered a unit afresh keeps its live rows, whole, under the
-    /// surface the NEXT derivation will read — its interface records are kept by now
-    /// — so a row of a declaration that moved or went is dropped.
-    fn keep_unit_rows(s: Store) {
-        for path, _fresh in self.hold.rows_fresh.get() {
-            let surface? = self.surface_of(s, self.file_id(path)) else { continue }
-            let live = self.hold.rows_live.get().get(path) ?? []
-            let _ = s
-                .keep(
-                    Stored.Unit,
-                    rows_key(path, surface),
-                    "R2" + fields_wire(flatten([[r.key, r.wants, r.facts, r.consts] for r in live])),
-                    [],
-                )
-        }
-    }
-
-    /// WHAT A ROW IS A FUNCTION OF: the declaration and its own syntax, under what its
-    /// file shows it — every sibling's surface, the file's runs and gathers, and the
-    /// interface of every module it sees. Absent for a unit no row stands for.
-    fn row_place(s: Store, w: Wanted) -> RowPlace? {
-        let at? = self.row_key(w) else { return null }
-        let surface? = self.unit_surface(s, self.file_id(at.path)) else { return null }
-        RowPlace { path: at.path, surface: surface, key: at.key }
-    }
-
-    /// A UNIT'S ROW KEY, which asks nothing of the store: the file and the declaration with its
-    /// syntax. A row is written under its file's surface when the records are kept, never earlier,
-    /// since a surface read before them is a view of records not yet written.
-    fn row_key(w: Wanted) -> RowKey? {
-        let d? = w.decl else { return null }
-        if w.sub != null || !w.seats.is_empty() || w.root != null || self.comptime_active() { return null }
+    /// Whether a unit is a plain declaration's own lowering: no specialization, no seats, no
+    /// expression root, no compile-time run lowering, a body this program reads.
+    fn unit_saved(w: Wanted) -> bool {
+        let d? = w.decl else { return false }
+        if w.sub != null || !w.seats.is_empty() || w.root != null || self.comptime_active() { return false }
         let x = self.decls.decl(d)
-        if !plain_unit(x.kind) || x.external || self.is_held(x.file) { return null }
-        RowKey { path: self.decls.file(x.file).path, key: "${self.decl_ref(d)}\t${self.syntax(d)}" }
+        plain_unit(x.kind) && !x.external && !self.is_held(x.file)
     }
-
-    /// A file's kept rows by key, read once for the derivation.
-    fn row_file(s: Store, path: string, surface: string) -> Map<string, UnitRow> {
-        let known = self.hold.rows.get().get(path)
-        if known != null { return known! }
-        let made = rows_of(s.get(Stored.Unit, rows_key(path, surface)) ?? "")
-        self.hold.rows.put(path, made)
-        made
-    }
-
-    /// A row of this derivation's file, live.
-    fn row_lives(path: string, row: UnitRow) {
-        self.hold.rows_live.put(path, (self.hold.rows_live.get().get(path) ?? []).concat([row]))
-    }
-
-    /// A file's surface, remembered for the derivation.
-    fn unit_surface(s: Store, f: FileId) -> string? {
-        let path = self.decls.file(f).path
-        let known = self.hold.surfaces.get().get(path)
-        if known != null { return if known! == "" { null } else { known } }
-        let made = self.surface_of(s, f)
-        self.hold.surfaces.put(path, made ?? "")
-        made
-    }
-
-    /// What a body of file `f` can see of it. A key still opening a pending read
-    /// shows nothing.
-    fn surface_of(s: Store, f: FileId) -> string? {
-        let path = self.decls.file(f).path
-        let parts = self.key_parts_cached(s, self.module_path_of(path), path)
-        if parts.runs.any(it.starts_with("?")) { return null }
-        let decls = [self.surface_fp(d) for d in self.decls.decls_of_file(f)]
-        "${fp(314, [fp_list(decls), fp_list(self.use_fps(f)), fp_str(joined(parts.runs, ",")), fp_str(joined(parts.gathered, ",")), fp_str(seen_digest(parts.seen))])}"
-    }
-
-    /// One declaration as its siblings see it: its record shape, and its syntax too
-    /// unless it is a plain body, which a unit answers for.
-    fn surface_fp(d: DeclId) -> int {
-        let x = self.decls.decl(d)
-        fp(
-            315,
-            [
-                fp_str(self.decl_ref(d)),
-                fp_str(self.record_shape(x)),
-                if plain_unit(x.kind) { 0 } else { self.syntax(d) },
-            ],
-        )
-    }
-}
-
-/// A unit's key among its file's rows: the file and the row's key.
-type RowKey = { path: string, key: string }
-
-/// A unit's place among its file's rows: the file, what the file shows, the row's key.
-type RowPlace = { path: string, surface: string, key: string }
-
-/// Where a file's rows live, under what its file shows.
-fn rows_key(path: string, surface: string) -> string { node_key(Stored.Unit, ["unit-rows", path, surface]) }
-
-/// A file's rows as the store keeps them; none for text no `keep_unit_rows` wrote.
-fn rows_of(raw: string) -> Map<string, UnitRow> {
-    mut out: Map<string, UnitRow> = {}
-    if !raw.starts_with("R2") { return out }
-    mut r = wire_reader(raw)
-    let fields? = r.fields() else { return out }
-    if fields.length % 4 != 0 { return out }
-    for i in 0..fields.length / 4 {
-        out
-            .set(
-                fields[4 * i],
-                UnitRow {
-                    key: fields[4 * i],
-                    wants: fields[4 * i + 1],
-                    facts: fields[4 * i + 2],
-                    consts: fields[4 * i + 3],
-                },
-            )
-    }
-    out
 }
 
 /// Whether a declaration kind lowers as one plain unit a row can stand for.

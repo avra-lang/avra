@@ -1,16 +1,14 @@
 #!/bin/sh
-# A HELD FILE'S RECORD CARRIES ROWS ITS EARLIER EXPANSION GENERATED, and their
-# statements live in an arena the new parse does not have. A package gathers its
-# members into a `collect enum` that derives a trait over them, so each member's file
-# holds a generated `impl`; an edit to the enum's file holds the members' file and
-# expands it again, and a row read at a statement the parse never wrote traps
-# ("index N is out of bounds"). The rebuild answers what a cold build answers. It
+# A MEMBER FILE'S GENERATED ROWS FOLLOW THE ENUM'S FILE. A package gathers its members into a
+# `collect enum` that derives a trait over them, so each member's file carries a generated `impl`;
+# an edit to the enum's file expands it again, and a row read at a statement the new parse never
+# wrote traps ("index N is out of bounds"). The rebuild must answer what a cold build answers. It
 # CLEARS the store, as the attacks beside it do.
 set -u
 cd "$(dirname "$0")/.."
 . tools/lib/failed_tail.sh
 AVRA=${AVRA:-./avra}
-R=build/held-generated-attack; fails=0
+R=build/generated-rows-attack; fails=0
 rm -rf "$R" .avra-cache && mkdir -p $R/lib/src/shapes $R/app/src
 cat > $R/lib/avra.toml <<'TOML'
 [package]
@@ -77,12 +75,8 @@ B() { # B <label>: build through the store and run it
     got=$($R/app/src/main 2>&1)
     [ "$got" = "size 2" ] || { fails=$((fails+1)); echo "FAIL  $1: printed '$got', wanted 'size 2'"; }
 }
-B "cold" || { echo "held-generated-attack: the cold build failed"; exit 1; }
+B "cold" || { echo "generated-rows-attack: the cold build failed"; exit 1; }
 echo "// edited" >> $R/lib/src/shapes/shape.av
-held=none
-if B "the enum's file edited, its members' held"; then
-    held=$(grep -oE 'held [0-9]+/[0-9]+' $R/err | tail -1)
-    case "$held" in "held 0/"*|"") fails=$((fails+1)); echo "FAIL  the rebuild held no file (${held:-no held count}), so it never met a record" ;; esac
-fi
-echo "held-generated-attack: a held member file expanded again ($held), $fails failed"
+B "the enum's file edited" || :
+echo "generated-rows-attack: the members' generated rows after an edit to the enum's file, $fails failed"
 [ "$fails" -eq 0 ]

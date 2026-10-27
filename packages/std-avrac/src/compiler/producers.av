@@ -72,7 +72,7 @@ export fn producers_of(m: ModulePath, fields: List<List<string>>) -> Producers {
         refs: distinct_filed(
             [Filed { value: ref_target(p), path: p[1] } for p in fields if is_ref_row(p)],
         ),
-        narrows: [file_names(decoded, made_ordinals(fields), p) for p in distinct([p[1] for p in fields if declares(p)])],
+        narrows: [file_names(decoded, p) for p in distinct([p[1] for p in fields if declares(p)])],
         typed: distinct_filed(flatten([typed_edges(p) for p in fields])),
         reach_refs: distinct([ref_target(p) for p in fields if is_ref_row(p) && !names_builtin(p)]),
         seen: seen_digest_of(fields),
@@ -144,17 +144,11 @@ fn extern_note(m: ModulePath, row: Row, facts: DeclFacts) -> ExternNote {
 /// binds, a plain free fn's marked with `*`, and whether any declaration was written by an annotation.
 type FileNames = { path: string, generated: bool, head: string, bound: List<string> }
 
-/// The `path<TAB>ordinal` of every declaration an annotation wrote.
-fn made_ordinals(fields: List<List<string>>) -> List<string> {
-    [joined([p[1], p[2]], "\t") for p in fields if p.length == 4 && p[0] == "maker" && !text_of_field(p[3]).is_empty()]
-}
-
 /// A file's names from its decoded rows.
-fn file_names(rows: List<FiledRow>, made: List<string>, path: string) -> FileNames {
-    let bound = flatten(
-        [some_name(bound_name(d.row!, made.contains(joined([path, "${d.row!.ordinal}"], "\t")))) for d in rows if d.parts[1] == path],
-    )
-    let generated = made.any(it.starts_with("${path}\t"))
+fn file_names(rows: List<FiledRow>, path: string) -> FileNames {
+    let own = [d for d in rows if d.parts[1] == path]
+    let bound = flatten([some_name(bound_name(d.row!, d.row!.maker != "")) for d in own])
+    let generated = own.any(it.row!.maker != "")
     FileNames { path: path, generated: generated, head: head_of(bound, generated), bound: bound }
 }
 
@@ -200,7 +194,7 @@ fn bound_name(row: Row, made: bool) -> string? {
 fn typed_edges(p: List<string>) -> List<Filed> {
     let named = when {
         is_ref_row(p) && shapes_signature(p[3]) && !names_builtin(p) -> [ref_target(p)]
-        p.length > 13 && declares(p) -> wired_files(p)
+        p.length > 14 && declares(p) -> wired_files(p)
         _ -> []
     }
     let aimed = aimed_file(p)
@@ -405,7 +399,7 @@ fn filings(rows: List<List<string>>, tag: string) -> List<Filed> {
 impl Workspace {
     /// Where a module's producer row stands: beside its record, under the same interface.
     fn producers_key(m: ModulePath, iface: string) -> string {
-        self.record_bodies().key("producers ${m.text()}", iface)
+        self.record_bodies().key(m.text(), iface, "producers")
     }
 
     /// A module's producers as its kept row says — absent when no row stands for the
@@ -467,8 +461,8 @@ impl Workspace {
     }
 
     /// What a file's package-wide collects gathered, off its module's row.
-    fn lite_gathered(pr: Producers, path: string) -> List<string> {
-        [p[7] for p in pr.walk if p.length > 7 && p[0] == "gathers" && p[2] == path]
+    fn lite_gathered(store: Store, pr: Producers, path: string) -> List<string> {
+        [self.gathers_set(store, p) for p in pr.walk if p.length > 7 && p[0] == "gathers" && p[2] == path]
     }
 
     /// The digest of a module's plain free fns' forms, as its row says them.

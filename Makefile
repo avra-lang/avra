@@ -396,7 +396,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell sh tools/avra_tools.sh suites 2>/dev/null)
 
-.PHONY: ready tools-suite dev-server census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
+.PHONY: ready tools-suite dev-server census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -714,7 +714,6 @@ store-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 cache-attacks-b: cache-attacks-b1 cache-attacks-b2
 cache-attacks-b1: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/link_cache_attack.sh
-	@sh tools/turn_memory_attack.sh
 	@sh tools/gathered_cache_attack.sh
 	@sh tools/closure_gather_attack.sh
 	@sh tools/closure_fold_attack.sh
@@ -729,7 +728,7 @@ cache-attacks-b1: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/stamp_attack.sh
 	@sh tools/expanded_attack.sh
-	@sh tools/held_generated_attack.sh
+	@sh tools/generated_rows_attack.sh
 	@sh tools/store_quiet_attack.sh
 	@sh tools/store_seal_attack.sh
 	@sh tools/store_index_attack.sh
@@ -740,10 +739,13 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/store_bound_attack.sh
 	@sh tools/obj_gone_attack.sh
 	@sh tools/names_attack.sh
+	@sh tools/store_names_attack.sh
 	@sh tools/dep_tests_listing_attack.sh
 	@sh tools/cancel_cache_attack.sh
 	@sh tools/writes_attack.sh
 	@sh tools/file_module_attack.sh
+	@sh tools/dep_edit_kept_attack.sh
+	@sh tools/cross_compiler_warm_attack.sh
 	@sh tools/cancel_bits_attack.sh
 	@sh tools/readfound_attack.sh
 	@sh tools/durable_symbol_attack.sh
@@ -754,12 +756,6 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # CLEARS the store it builds through, as the attacks above do.
 code-hash-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/code_hash_attacks.sh
-
-# ONE DERIVATION ALIVE AT A TIME, held by memory: a rebuild that turns once per
-# link of a chain of held bodies, under a ceiling one attempt clears and their
-# sum trips. It CLEARS the store, as the attacks above do.
-turn-memory-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/turn_memory_attack.sh
 
 # Exact refcount and list-write counts; the shipping runtime is put
 # back on every exit.   make census CMD="check packages/std-avrac"
@@ -1153,6 +1149,11 @@ layout-oracle:
 fingerprints:
 	@python3 tools/fingerprints.py
 
+# A STORE KEY NAMES NO PLACE: every key a row about a file or a program is filed under
+# goes through `file_key`/`root_key`, never a hand list naming a path or a root.
+store-keys:
+	@python3 tools/store_keys.py
+
 # THE FOOTPRINT: a program that spawns nothing links no scheduler, and the
 # smallest programs' bytes stay under a relative cap (tools/footprint.py).
 footprint: $(RUNTIME_LIB)
@@ -1210,7 +1211,7 @@ KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A1 = speed-ratchet census-gate fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = libscope h2spec tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns witnesses dogfooding-rules rule-examples attack voices defects \
+KEEPERS_B = libscope h2spec tools-suite fingerprints store-keys vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board dev-server ui-browser ui-browser-skip tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status vendored-fixture
 # KEEPERS_WASM is the wasm target's proof — the fixtures native and wasm32 alike, the seam,
@@ -1302,7 +1303,7 @@ pipeline-status:
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status vendored-fixture
+KEEPERS_STATIC = host-events fingerprints store-keys vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status vendored-fixture
 .PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr pipeline-doc tail-status pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }

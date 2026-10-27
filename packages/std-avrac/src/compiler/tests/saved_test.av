@@ -1,0 +1,120 @@
+// A SAVED ANSWER IS FILED UNDER A NAME, never an id: a key reads back as the same key in
+// another process, and an answer kept in one is found by the next.
+use @std.time.{stamp}
+use @std.relation.engine.{Key, same_key}
+use core.{DeclId}
+use compiler.host.{memory_host}
+use compiler.{Workspace, Want, Derived}
+use compiler.families.{Family}
+use @std.avrac.testing.{test_workspace}
+use compiler.store.{store_at}
+
+once fn base() -> string { "/tmp/avra-saved-test/${stamp()}" }
+
+fn world(text: string) -> Workspace {
+    test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": text,
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+    )
+}
+
+/// What a derivation said: its warnings, or its refusal.
+fn said(r: Result<Derived, string>) -> string { match r { .Ok(d) -> d.warnings, .Err(why) -> why } }
+
+const MAIN: string = "/w/src/main.av"
+
+fn source() -> string { "export fn one() -> int { 1 }\nexport fn two() -> int { one() + 1 }\ntwo()\n" }
+
+/// The key of the signature of the declaration named `name` in the world's one file.
+fn sig_key(ws: Workspace, name: string) -> Key {
+    let f = ws.file_id("/w/src/main.av")
+    let d = ws.items(f).find((d: DeclId) -> ws.decls.decl(d).name == name)!
+    Key { family: Family.Sig.ordinal, arg: d.index }
+}
+
+spec "compiler/saved — answers by durable name" {
+    given "a declaration's signature key" {
+        then "its name reads back as the same key" {
+            let ws = world(source())
+            let k = sig_key(ws, "two")
+            let name = ws.saved_name(k) ?? ""
+            let back = ws.saved_key(name)
+            back != null && same_key(back!, k)
+        }
+        then "a key under another declaration is another name" {
+            let ws = world(source())
+            ws.saved_name(sig_key(ws, "one")) != ws.saved_name(sig_key(ws, "two"))
+        }
+        then "the same declaration in a second process has the same name" {
+            let a = world(source())
+            let named = a.saved_name(sig_key(a, "two"))
+            let b = world(source())
+            named == b.saved_name(sig_key(b, "two"))
+        }
+        then "a key whose argument is a local id has no name" {
+            let ws = world(source())
+            ws.saved_name(Key { family: Family.Lowered.ordinal, arg: 0 }) == null
+        }
+    }
+    given "an answer a first process kept" {
+        then "a second finds it with its reads and its hash, and no other key" {
+            let dir = "${base()}/kept"
+            let first = world(source())
+            first.attach_store(store_at(dir))
+            let k = sig_key(first, "two")
+            let _ = first
+                .sig(
+                    first
+                        .items(first.file_id("/w/src/main.av"))
+                        .find((d: DeclId) -> first.decls.decl(d).name == "two")!,
+                )
+            let kept = first.saved_kept(k, "value")
+            let walked = first.db.kernel.saved_reads(k, (r: Key) -> first.stands_alone(r)) ?? []
+            let owed = first.grouped(k, walked).length
+            let second = world(source())
+            second.attach_store(store_at(dir))
+            let found = second.saved_found(sig_key(second, "two"))
+            kept &&
+                found != null &&
+                found!.reads.length == owed &&
+                second.saved_found(sig_key(second, "one")) == null
+        }
+        then "an answer never kept is not found" {
+            let ws = world(source())
+            ws.attach_store(store_at("${base()}/empty"))
+            ws.saved_found(sig_key(ws, "two")) == null
+        }
+    }
+    given "a derivation over files minted from saved rows" {
+        then "answers what the derivation that saved them did" {
+            let dir = "${base()}/derived"
+            let first = world(source())
+            first.alone()
+            first.attach_store(store_at(dir))
+            let a = first.derived(MAIN, Want.Diagnostics)
+            let said_first = said(a)
+            let second = world(source())
+            second.alone()
+            second.attach_store(store_at(dir))
+            let b = second.derived(MAIN, Want.Diagnostics)
+            a is .Ok && b is .Ok && said_first == said(b)
+        }
+        then "stands after the file's text moved" {
+            let dir = "${base()}/derived_moved"
+            let first = world(source())
+            first.alone()
+            first.attach_store(store_at(dir))
+            let _ = first.derived(MAIN, Want.Diagnostics)
+            let second = world(source() + "export fn three() -> int { 3 }\n")
+            second.alone()
+            second.attach_store(store_at(dir))
+            second.derived(MAIN, Want.Diagnostics) is .Ok
+        }
+    }
+}

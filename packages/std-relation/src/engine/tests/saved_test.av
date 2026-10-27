@@ -1,0 +1,153 @@
+// A saved answer stands on the hashes of its reads, demanded when the key is first asked.
+// Toy: input `n`; `tens` = n / 10 reads it; `next` = tens + 1 reads that. A new world is a
+// fresh process: its kernel holds nothing, the saved rows are all it shares.
+use @std.relation.engine.{
+    Kernel,
+    new_kernel,
+    Key,
+    new_memo,
+    Relation,
+    Revival,
+    Saved,
+    SavedRead,
+    MemoAsk,
+}
+
+type Rec = { reads: List<SavedRead>, hash: int, value: int }
+
+type World = {
+    k: Kernel,
+    tens: Relation<int>,
+    next: Relation<int>,
+    nv: Cell<int>,
+    runs: Cell<int>,
+    rows: Cell<Map<string, Rec>>,
+    /// Whether `tens` is left unsaved, so what reads it stands on what it read.
+    flat: Cell<bool>,
+}
+
+fn world(rows: Cell<Map<string, Rec>>, n: int) -> World {
+    let k = new_kernel()
+    let input = k.family()
+    k.set_verify(input, (arg: int) -> k.changed_at(Key { family: input, arg: arg }))
+    let tens_family = k.family()
+    let next_family = k.family()
+    let w = World {
+        k: k,
+        tens: new_memo(k, tens_family),
+        next: new_memo(k, next_family),
+        nv: Cell.new(n),
+        runs: Cell.new(0),
+        rows: rows,
+        flat: Cell.new(false),
+    }
+    k.set_verify(tens_family, (arg: int) -> verified(w, w.tens, arg))
+    k.set_verify(next_family, (arg: int) -> verified(w, w.next, arg))
+    k.set_saved((key: Key) -> found(w, key))
+    for m in [w.tens, w.next] {
+        m.revive.set((arg: int) -> revived(w, m, arg))
+        m.keeper.set((arg: int, v: int) -> kept(w, m, arg, v))
+    }
+    k.set_input(Key { family: input, arg: 0 }, n)
+    w
+}
+
+fn row_name(f: int, arg: int) -> string { "${f}:${arg}" }
+
+fn found(w: World, key: Key) -> Saved? {
+    let r? = w.rows.get().get(row_name(key.family, key.arg)) else { return null }
+    Saved { reads: r.reads, value_hash: r.hash }
+}
+
+fn revived(w: World, m: Relation<int>, arg: int) -> Revival<int> {
+    let r? = w.rows.get().get(row_name(m.family, arg)) else { return Revival.Gone }
+    Revival.Revived(r.value)
+}
+
+fn kept(w: World, m: Relation<int>, arg: int, v: int) -> bool {
+    let reads = w
+        .k
+        .saved_reads(Key { family: m.family, arg: arg }, (k: Key) -> !w.flat.get() || k.family != w.tens.family) ?? []
+    w.rows.put(row_name(m.family, arg), Rec { reads: reads, hash: v, value: v })
+    true
+}
+
+fn verified(w: World, m: Relation<int>, arg: int) -> int {
+    let _ = if m.family == w.tens.family { tens_of(w) } else { next_of(w) }
+    w.k.changed_at(Key { family: m.family, arg: arg })
+}
+
+fn tens_of(w: World) -> int {
+    match w.tens.ask(0) {
+        .Reuse(v) -> v,
+        .Cycle -> 0 - 1,
+        .Compute -> {
+            w.k.begin(w.tens.query_key(0))
+            w.k.record_at(0, 0)
+            w.runs.set(w.runs.get() + 1)
+            let v = w.nv.get() / 10
+            w.tens.settle(0, v, v)
+        },
+    }
+}
+
+fn next_of(w: World) -> int {
+    match w.next.ask(0) {
+        .Reuse(v) -> v,
+        .Cycle -> 0 - 1,
+        .Compute -> {
+            w.k.begin(w.next.query_key(0))
+            let t = tens_of(w)
+            w.runs.set(w.runs.get() + 1)
+            w.next.settle(0, t + 1, t + 1)
+        },
+    }
+}
+
+spec "relation/engine — saved answers stand on their reads" {
+    given "a second process" {
+        then "the first computes both answers and keeps them" {
+            let rows: Cell<Map<string, Rec>> = Cell.new({})
+            let w = world(rows, 15)
+            next_of(w) == 2 && w.runs.get() == 2 && rows.get().length == 2
+        }
+        then "unmoved reads restore the answer without running" {
+            let rows: Cell<Map<string, Rec>> = Cell.new({})
+            let _ = next_of(world(rows, 15))
+            let w = world(rows, 15)
+            next_of(w) == 2 && w.runs.get() == 0
+        }
+        then "a moved read recomputes what it reaches" {
+            let rows: Cell<Map<string, Rec>> = Cell.new({})
+            let _ = next_of(world(rows, 15))
+            let w = world(rows, 25)
+            next_of(w) == 3 && w.runs.get() == 2
+        }
+        then "a read that moved and answers the same leaves its reader standing" {
+            let rows: Cell<Map<string, Rec>> = Cell.new({})
+            let _ = next_of(world(rows, 15))
+            let w = world(rows, 17)
+            next_of(w) == 2 && w.runs.get() == 1
+        }
+    }
+    given "an answer whose read has no row of its own" {
+        then "stands on what that read read, and restores while it holds" {
+            let rows: Cell<Map<string, Rec>> = Cell.new({})
+            let first = world(rows, 15)
+            first.flat.set(true)
+            let _ = next_of(first)
+            let w = world(rows, 15)
+            w.flat.set(true)
+            next_of(w) == 2 && w.runs.get() == 0
+        }
+        then "recomputes whole when the input it flattened to moved" {
+            let rows: Cell<Map<string, Rec>> = Cell.new({})
+            let first = world(rows, 15)
+            first.flat.set(true)
+            let _ = next_of(first)
+            let w = world(rows, 25)
+            w.flat.set(true)
+            next_of(w) == 3 && w.runs.get() == 2
+        }
+    }
+}

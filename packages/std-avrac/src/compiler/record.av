@@ -29,6 +29,7 @@ use core.{
     flatten,
     same_decl,
     module_path,
+    package_of_module,
     ModulePath,
     TypeRegistry,
     TypeId,
@@ -49,6 +50,8 @@ use features.{
     NamedLit,
     LitKind,
     CancelReach,
+    Decls,
+    decl_key_text,
 }
 use compiler.lower.{Body, program_symbol, FieldPlan}
 use compiler.store.{Store, Stored, Producer, node_key, producer_of}
@@ -65,11 +68,26 @@ impl Workspace {
     /// wrote and reads it, and the store files a record under that code's hash
     /// (`sig_producer`), so a compiler whose producer or codec differs never reads it.
     fn record_key(m: ModulePath) -> string {
-        node_key(Stored.Sig, [self.root, m.text()])
+        node_key(
+            Stored.Sig,
+            [self.decls.qualified_module_named(m.text()), self.module_view(m.text())],
+        )
+    }
+
+    /// Where a file's key parts are kept: under its stored name, so the parts a key was made
+    /// of the last time the file was kept can be read when its key no longer is.
+    fn parts_key(path: string) -> string { self.file_key(Stored.Unit, "parts", path) }
+
+    /// Where a module's seen interfaces are kept: one row a module's files share.
+    fn seen_key(module: string) -> string {
+        node_key(
+            Stored.Unit,
+            ["seen", self.decls.qualified_module_named(module), self.module_view(module)],
+        )
     }
 
     /// Where this compiler keeps record bodies, by module and interface.
-    fn record_bodies() -> RecordBodies { RecordBodies { root: self.root, db: self.db } }
+    fn record_bodies() -> RecordBodies { RecordBodies { decls: self.decls, db: self.db, view: self.root_view() } }
 
     /// WHO MAY READ A MODULE'S RECORD: the code that produces it, the C that code runs,
     /// the code that writes the record and the code that reads it back, each by its hash,
@@ -116,10 +134,26 @@ export fn runtime_bodies(host: Host) -> string? {
 /// the interface digest, and the body stands under (module, digest). A body
 /// edit rewrites the body its interface already names; an interface that moves
 /// leaves the old body standing, so what it declared can still be read.
-export type RecordBodies = { root: string, db: Db }
+export type RecordBodies = { decls: Decls, db: Db, view: string }
+
+/// Which side a module's record body is filed on: the root's own modules, or a dependency's —
+/// the body is named by its interface's digest, so this side is all a body's key needs.
+fn module_side(module: string, dep: string) -> string { if package_of_module(module).is_empty() { "root" } else { dep } }
 
 impl RecordBodies {
-    fn key(module: string, iface: string) -> string { node_key(Stored.Sig, [self.root, module, iface]) }
+    /// A module's row under one interface, of one kind ("" for its record body): the module fully
+    /// qualified, so a dependency's rows are one in every program.
+    fn key(module: string, iface: string, kind: string = "") -> string {
+        node_key(
+            Stored.Sig,
+            [
+                kind,
+                self.decls.qualified_module_named(module),
+                module_side(module, "dep of ${self.view}"),
+                iface,
+            ],
+        )
+    }
 
     /// The body kept for a module under one interface, when one was.
     fn body(store: Store, module: string, iface: string) -> string? { self.db.sig(store, self.key(module, iface)) }
@@ -294,37 +328,49 @@ fn shape_of(word: string) -> Shape? {
 /// block: one field for most shapes, six for `Fn`/`Extern` (seats, return,
 /// marks, written bits, bounds, whether it may reach a cancel point), read
 /// through `Row`'s own verbs below.
-type Row = { shape: Shape, path: string, ordinal: int, stmt: int, exported: bool, name: string, kind: string, owner: string, parent_at: int, enclosing: string, root: int, item: bool, facts: string, payload: List<string> }
+type Row = { shape: Shape, path: string, sibling: int, stmt: int, exported: bool, name: string, kind: string, owner: string, parent: string, enclosing: string, root: int, item: bool, facts: string, maker: string, payload: List<string> }
+
+/// An identity row ends in `maker`, which a split drops when it is empty: thirteen fields are
+/// fourteen with an empty `maker`.
+fn whole_row(parts: List<string>) -> List<string> { if parts.length == 13 { parts.concat([""]) } else { parts } }
 
 /// A declaration row, decoded from its already-split fields — null for a
 /// header line, or one that does not decode: the same checks `decodable`
 /// runs over a whole record, over the one row a caller already has in hand.
-fn read_row(parts: List<string>) -> Row? {
-    if parts.length < 13 || nameless(parts) { return null }
+fn read_row(split: List<string>) -> Row? {
+    let parts = whole_row(split)
+    if parts.length < 14 || nameless(parts) { return null }
     let shape? = shape_of(parts[0]) else { return null }
-    let ordinal? = wire_number(parts[2]) else { return null }
+    let sibling? = wire_number(parts[2]) else { return null }
     let stmt? = wire_number(parts[3]) else { return null }
-    let parent_at? = wire_number(parts[8]) else { return null }
     let root? = wire_number(parts[10]) else { return null }
     Row {
         shape: shape,
         path: parts[1],
-        ordinal: ordinal,
+        sibling: sibling,
         stmt: stmt,
         exported: parts[4] == "1",
         name: parts[5],
         kind: parts[6],
         owner: parts[7],
-        parent_at: parent_at,
+        parent: text_of_field(parts[8]),
         enclosing: text_of_field(parts[9]),
         root: root,
         item: parts[11] == "1",
         facts: parts[12],
-        payload: parts.slice(13, parts.length),
+        maker: text_of_field(parts[13]),
+        payload: parts.slice(14, parts.length),
     }
 }
 
 impl Row {
+    /// The key the declaration this row names is filed under, its file left out — the one
+    /// `Decls.within_text` answers — or null for a kind that does not decode.
+    fn keyed() -> string? {
+        let kind? = declared_kind(self.shape, self.kind) else { return null }
+        decl_key_text("", self.name, kind, self.owner, self.maker, self.enclosing, self.sibling)
+    }
+
     /// Payload field `j`, or "" past its end — every shape but `Fn`/`Extern`
     /// writes one field, and one with nothing to say writes it empty.
     fn field(j: int) -> string { if self.payload.length > j { self.payload[j] } else { "" } }
@@ -476,15 +522,15 @@ fn interface_form(line: string) -> string {
     let p = line.split("\t")
     // a re-export's contract is the name it exports and what it names — never its path
     if p[0] == "reexport" { return p.slice(2, p.length).join("\t") }
-    if p.length < 13 { return "" }
+    if p.length < 14 { return "" }
     let top = unpacked(p[12])
     let facts = if top.is_empty() { [] } else { top[0].split(";") }
     let seen = if facts.length >= 8 { facts.slice(0, 3).concat(facts.slice(5, 10)) } else { facts }
     // the payload skips its `writes` bits (field 16); past them stand a fn's bounds,
     // then its cancel bits, parks and spins
     [p[0], p[2], p[4], p[5], p[6], p[7], p[8], p[11], seen.join(";")]
-        .concat(p.slice(13, 16))
-        .concat(p.slice(17, 20))
+        .concat(p.slice(14, 17))
+        .concat(p.slice(18, 21))
         .join("\t")
 }
 
@@ -742,150 +788,9 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
 
 // ── REBUILDING ──────────────────────────────────────────────────────
 
-/// THE DECLARATIONS A MODULE'S RECORD DESCRIBES, minted into the workspace as if its file
-/// had been parsed. THE IMPORTS COME FIRST: a shape may name another module's type, and
-/// `by_name` can only answer for a type that exists.
-///
-/// A MINTED DECLARATION HAS NO BODY AND NO STORE, which is safe for the same reason a
-/// `.Builtin` is: nothing lowers a module that was not read. The day something does, these
-/// rows are lies.
-export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) {
-    load_named(ws, store, m, ws.module_files(m), entry, want, true)
-}
-
-/// THE SAME WALK, NAMES ONLY: every file registered and every module's impl/trait names indexed,
-/// so a by-name ask can answer — but no interface loaded, no file met, nothing held. What an
-/// on-demand load reads the store for before it decides which modules to load for real.
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
-export fn bare_interface(ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) {
-    load_named(ws, store, m, ws.module_files(m), entry, want, false)
-}
-
-/// THE FILES OF `m` A PATH NAMES, met under `m`'s record: the record is loaded once,
-/// each file met once. A `use` may name ONE FILE of a directory module
-/// (`@std.http.frame`) — its record is the directory's, and every file that record
-/// places is met with it: a module is one namespace, so naming one registers them all.
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
-fn load_named(
-    ws: Workspace,
-    store: Store,
-    m: ModulePath,
-    named: List<string>,
-    entry: string?,
-    want: Want,
-    meet: bool,
-) {
-    let key = ws.record_key(m)
-    let first = ws.records.loaded_records.get().get(key) == null
-    ws.records.loaded_records.put(key, true)
-    // A MODULE HELD NOTHING FOR IS READ, and a read file is one the workspace MET:
-    // a module whose importers are all held is met nowhere else, and a file never
-    // met is neither parsed nor linked.
-    let pr? = ws.producers_for(store, m) else {
-        ws.met_all(named)
-        return
-    }
-    let here = ws.module_files(m)
-    let why = fault_of(pr, here)
-    if why != "" {
-        if first {
-            ws
-                .hold
-                .read_files
-                .set(
-                    ws
-                        .hold
-                        .read_files
-                        .get()
-                        .concat([ReadFile { path: f, why: Reads.Undecodable(why) } for f in here]),
-                )
-        }
-        ws.met_all(named)
-        return
-    }
-    if first { load_imports(ws, store, pr, entry, want, meet) }
-    // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
-    // this same module finds it.
-    // A FILE THE RECORD PLACES IS MET WITH THE FILES NAMED: registering one file of a
-    // directory registers them all, and a registered file never met is asked no hold —
-    // it parses on every run, whatever moved.
-    for f in named.concat([f for f in here if pr.placed.contains(f) && !named.contains(f)]) {
-        if ws.records.met_files.get().get(f) != null { continue }
-        // ON-DEMAND: a names-only walk registers the file so the program is whole,
-        // and leaves its interface to the module a suspect asks for.
-        if !meet {
-            let _ = ws.registered(f)
-            continue
-        }
-        ws.records.met_files.put(f, true)
-        meet_file(ws, store, m, f, record_places(ws, store, m).get(f), entry, want)
-    }
-    // A NAMES-ONLY WALK REGISTERS THE MODULE'S OTHER FILES TOO: one the record never placed
-    // is one the module gained, and it is read.
-    if !meet { for f in here { if !pr.placed.contains(f) && ws.reads_as_source(f) { let _ = ws.registered(f) } } }
-    // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
-    // pass only REMEMBERS the module for the shape pass. One parser, one minter.
-}
-
-/// WHAT A MODULE'S RECORD SEES, loaded before its own files are met: the prelude, every
-/// import under the record that keeps it, and where its impls and traits are named.
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
-fn load_imports(ws: Workspace, store: Store, pr: Producers, entry: string?, want: Want, meet: bool) {
-    // every module sees the prelude and none imports it
-    ws.ensure_package(prelude_key)
-    load_named(ws, store, prelude_module(), ws.module_files(prelude_module()), entry, want, meet)
-    for parts in pr.walk {
-        if parts[0] == "import" {
-            // the ROOT module's name is empty, and `split` drops a trailing empty field
-            let imp = module_path(if parts.length > 1 { parts[1] } else { "" }.split("."))
-            let key = imp.package()
-            if key != null { ws.ensure_package(key!) }
-            for owner in ws.record_modules(imp) { load_named(ws, store, owner, ws.module_files(imp), entry, want, meet) }
-        }
-        if parts[0] == "gathers" { load_gathered(ws, store, parts, entry, want, meet) }
-    }
-    note_producers(ws, pr)
-}
-
-/// A PACKAGE A HELD `collect` GATHERS WHOLE, met module by module under each one's own
-/// record — as a read `collect` admits it — so a file nothing imports stands, held,
-/// beside the ones its imports reach. What the collector gathered is held to the set
-/// its record names, judged once the program is analysed (`gathered_moved`).
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a package in.
-fn load_gathered(
-    ws: Workspace,
-    store: Store,
-    parts: List<string>,
-    entry: string?,
-    want: Want,
-    meet: bool,
-) {
-    if parts.length < 3 {
-        ws.defect(gathers_collectorless())
-        return
-    }
-    let pkg? = ws.packages().find(it.key == parts[1]) else {
-        ws.defect(gathers_unadmitted(parts[1]))
-        return
-    }
-    let line = held_gather(parts, relative_path(ws.root, pkg.src))
-    // an import closure's members are whatever the program's imports reach: no package is loaded for it
-    if line == null || admits_package(line!.gathering.scope) {
-        let files = gathered_files(ws, pkg.src)
-        for m in [module_path(name.split(".")) for name in distinct([ws.module_of(path) for path in files])] { load_named(ws, store, m, ws.module_files(m), entry, want, meet) }
-    }
-    let held? = line else {
-        // NO LINE STANDS FOR THE COLLECT, so its collector is read: nothing recorded what
-        // it gathers, and a held file has no body to gather with.
-        ws.force_read(parts[2], Reads.GathersUnread)
-        return
-    }
-    if !ws.hold.gathered.get().any(it.collector == held.collector && it.digest == held.digest) { ws.hold.gathered.push(held) }
-}
-
 /// A `gathers` line read back as the collect it holds a file to; null for a line
 /// this compiler never wrote.
-fn held_gather(parts: List<string>, package: string) -> HeldGather? {
+fn held_gather(parts: List<string>, package: string, digest: string) -> HeldGather? {
     if parts.length < 8 { return null }
     let kind? = kind_of_words(parts[3], parts[4]) else { return null }
     let order? = hex_fields_of(parts[5]) else { return null }
@@ -901,7 +806,7 @@ fn held_gather(parts: List<string>, package: string) -> HeldGather? {
             order: [Plain(o) for o in order],
             plans: plans,
         },
-        digest: parts[7],
+        digest: digest,
     }
 }
 
@@ -1005,25 +910,6 @@ fn kept_gathers(ws: Workspace, line: string) -> bool {
     parts[0] == "gathers" && parts.length > 3 && !ws.read_here(parts[2])
 }
 
-/// ONE FILE OF A RECORDED MODULE, MET: registered, held or not — a file the workspace
-/// never met is neither parsed nor linked — and read where the record's rows no longer
-/// stand in for it. A file it holds is marked by the hold once the whole read set stands.
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a file in.
-fn meet_file(
-    ws: Workspace,
-    store: Store,
-    m: ModulePath,
-    f: string,
-    at: Placed?,
-    entry: string?,
-    want: Want,
-) {
-    let _ = ws.file_id(f)
-    let is_entry = entry != null && f == entry!
-    let read? = read_why(ws, store, m, f, at, is_entry, want) else { return }
-    ws.force_read(f, read)
-}
-
 /// WHY A FILE IS READ and not held — a thin hold says so itself under `--time`.
 export enum Reads {
     Entry
@@ -1071,30 +957,6 @@ impl Reads {
     }
 }
 
-/// Why a file a record knows is read — null when its hold may be asked. The entry
-/// is read: its law over every other file is spoken from its parse.
-// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
-fn read_why(
-    ws: Workspace,
-    store: Store,
-    m: ModulePath,
-    f: string,
-    at: Placed?,
-    is_entry: bool,
-    want: Want,
-) -> Reads? {
-    if is_entry { return Reads.Entry }
-    let forced: Reads? = ws.hold.forced.get().get(f)
-    if forced != null { return forced! }
-    if !written_from(at, ws.text_digest(f)) { return Reads.Moved }
-    if ws.reads_pending(store, m, f) { return null }
-    if !ws.stands_in(store, obj_key_cached(ws, store, m, f), want) { return Reads.Unkept }
-    let rows = file_rows(record_fields(ws, store, m), at)
-    if !ws.const_rows_ready(store, m, f, rows) { return Reads.Consts }
-    if !holdable(rows) { return Reads.Unholdable }
-    null
-}
-
 /// WHETHER A RECORD'S LINES FOR A FILE WERE WRITTEN FROM THIS TEXT. A record is kept
 /// under its module's NAME and an object under its file's CONTENT, so two programs share
 /// the object and not the record: one that holds a file by an object another stored
@@ -1113,7 +975,6 @@ fn declares(parts: List<string>) -> bool {
         parts[0] != "iface" &&
         parts[0] != "file" &&
         parts[0] != "ref" &&
-        parts[0] != "maker" &&
         parts[0] != "reexport"
 }
 
@@ -1125,23 +986,25 @@ fn declares(parts: List<string>) -> bool {
 /// refusal this answers for (`load_interface`'s own `Reads.Undecodable`).
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a record's lines in, the first break out.
 fn record_complete(fields: List<List<string>>) -> string? {
-    // THE ORDINALS MUST BE CONTIGUOUS PER FILE, 0..n-1 IN ORDER: the mint appends each
-    // held declaration to its file, so a hole is a record where a declaration would be
-    // silently missing. Checking it HERE refuses the whole module instead of truncating.
-    mut seen: Map<string, int> = {}
+    // A DECLARATION IS NAMED BY ITS KEY, so a key named twice is one declaration written twice,
+    // and a parent no row names is a declaration silently missing: either refuses the whole
+    // module instead of minting a different one.
+    mut keys: Map<string, bool> = {}
     for parts in fields {
         if declares(parts) {
-            if !decodable(parts) {
+            let key? = read_row(parts)?.keyed() else {
                 return "`${parts[5]}`'s kind `${parts[6]}` (shape `${parts[0]}`) in ${parts[1]} does not decode"
             }
-            let ordinal? = wire_number(parts[2]) else {
-                return "`${parts[5]}` in ${parts[1]} names no ordinal"
-            }
-            let want: int = seen.get(parts[1]) ?? 0
-            if ordinal != want {
-                return "`${parts[5]}` in ${parts[1]} wants ordinal ${want}, names ${ordinal}"
-            }
-            seen.set(parts[1], want + 1)
+            let at = "${parts[1].length}:${parts[1]}${key}"
+            if keys.has(at) { return "`${parts[5]}` in ${parts[1]} is named twice" }
+            keys.set(at, true)
+        }
+    }
+    for parts in fields {
+        if !declares(parts) { continue }
+        let row? = read_row(parts) else { continue }
+        if !row.parent.is_empty() && !keys.has("${row.path.length}:${row.path}${row.parent}") {
+            return "`${row.name}` in ${row.path} names a parent no row declares"
         }
     }
     null
@@ -1150,13 +1013,6 @@ fn record_complete(fields: List<List<string>>) -> string? {
 /// Whether a line names nothing where a name is owed: a CASE's name is any text,
 /// the empty one included.
 fn nameless(parts: List<string>) -> bool { parts[5].is_empty() && parts[6] != "case" }
-
-/// WHETHER ONE RECORD LINE DECODES — the guard half of the decoder, so a line the
-/// mint would silently skip is caught here and the whole record is refused.
-fn decodable(parts: List<string>) -> bool {
-    let row? = read_row(parts) else { return false }
-    declared_kind(row.shape, row.kind) != null
-}
 
 /// WHETHER A FILE MAY BE HELD — a grammar record's spec and an extern fn's raw seat
 /// spellings are their own parse and are not in the interface, so a file that declares
@@ -1348,7 +1204,9 @@ export fn obj_key_of(ws: Workspace, store: Store, m: ModulePath, path: string) -
 /// THE OBJECT KEY OF A FILE'S PARTS under this workspace's compiler and build mode — the
 /// one fold, so a key computed on any route is the key the file was kept under.
 // LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace and parts in, the key out.
-export fn object_key_of_parts(ws: Workspace, k: KeyParts) -> string { node_key(Stored.Obj, [ws.compiler_id(), key_of_parts(k)]) }
+export fn object_key_of_parts(ws: Workspace, k: KeyParts) -> string {
+    node_key(Stored.Obj, [ws.compiler_id(), key_of_parts(ws.stored_parts(k))])
+}
 
 /// WHAT ONE FILE'S KEY IS MADE OF: its module and path, its text's digest, the
 /// digest of each text its compile-time runs read ("" for one that is gone), the
@@ -1373,11 +1231,11 @@ export type NarrowIndex = { whole: bool, globals: List<string>, alone: List<stri
 /// or an instance, a host or external one, a static one.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a record line's fields in, whether a name alone reaches it.
 fn named_alone(p: List<string>) -> bool {
-    if p.length < 13 ||
+    if p.length < 14 ||
         p[0] != "fn" && p[0] != "const" ||
         p[6] != p[0] ||
         !p[7].is_empty() ||
-        p[8] != "-1" ||
+        !p[8].is_empty() ||
         p[11] != "1" {
         return false
     }
@@ -1464,7 +1322,7 @@ impl Workspace {
     /// held file is held to it (`gathered_moved`); a read file's object is keyed by
     /// the set it gathers now (`gathered_now`).
     fn gathered_said(store: Store, m: ModulePath, path: string) -> List<string> {
-        [p[7] for p in file_lines(self, store, m, path) if p.length > 7 && p[0] == "gathers"]
+        [self.gathers_set(store, p) for p in file_lines(self, store, m, path) if p.length > 7 && p[0] == "gathers"]
     }
 
     /// What a text a compile-time run read says NOW: a source file's digest,
@@ -1798,10 +1656,6 @@ fn key_of_parts(k: KeyParts) -> string {
     )
 }
 
-/// Where a file's key parts are kept: under its PATH, so the parts a key was made
-/// of the last time the file was kept can be read when its key no longer is.
-export fn parts_key(path: string) -> string { node_key(Stored.Unit, ["parts", path]) }
-
 /// A file's key parts as a row: a line per part, its fields apart by tabs.
 export fn parts_wire(k: KeyParts) -> string {
     joined(
@@ -1812,9 +1666,6 @@ export fn parts_wire(k: KeyParts) -> string {
         "\n",
     )
 }
-
-/// Where a module's seen interfaces are kept: one row a module's files share.
-export fn seen_key(module: string) -> string { node_key(Stored.Unit, ["seen", module]) }
 
 /// The modules a module's files see, as a row: a line each.
 export fn seen_wire(seen: List<SeenPart>) -> string { joined(seen_lines(seen), "\n") }
@@ -2010,16 +1861,16 @@ fn builtin_word(word: string) -> bool {
 /// The files a declaration line's type wires name: the word after each declared
 /// type's tag (`S~<decl wire>` and its kin) opens that declaration's wire, its file.
 fn wired_files(row: List<string>) -> List<string> {
-    let words = [w for field in row.slice(13, row.length) for a in field.split(";") for b in a.split("|") for c in b.split(":") for w in c.split("~")]
+    let words = [w for field in row.slice(14, row.length) for a in field.split(";") for b in a.split("|") for c in b.split(":") for w in c.split("~")]
     [words[i + 1] for i, w in words if i + 1 < words.length && opens_decl_wire(w)]
 }
 
 /// The file an `impl` line's aimed type sits in — the impl rides wherever that type
 /// goes, a `dyn` box's vtable included. Null for every other line.
 fn aimed_file(row: List<string>) -> string? {
-    if row.length <= 13 { return null }
+    if row.length <= 14 { return null }
     let shape? = shape_of(row[0]) else { return null }
-    match shape { .Aims -> wire_fields(row[13], "~")[0], _ -> null }
+    match shape { .Aims -> wire_fields(row[14], "~")[0], _ -> null }
 }
 
 /// Whether a type wire's word is a tag a declaration's wire follows.

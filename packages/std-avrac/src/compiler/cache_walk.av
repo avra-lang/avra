@@ -11,7 +11,7 @@ use core.{FileId, ModuleId, DeclId, reversed, sorted_by, sorted_texts, some_list
 use @std.text.{text_before}
 use @std.path.{relative_path, joined_path, normalized}
 use @std.text.{parse_int}
-use compiler.families.{Family}
+use compiler.families.{Family, KeyedBy, keyed_by}
 use compiler.host.{InputName, InputKind}
 use compiler.store.{Traffic}
 use features.{Decl}
@@ -72,24 +72,6 @@ export enum Meant {
 /// Every family holding an answer, counted, and their cells and edges in all.
 export type Counted = { families: List<FamilyCount>, cells: int, edges: int }
 
-/// What an answer's key names — `Row` for a relation's minted family, whose
-/// key is a row's place.
-enum KeyedBy { File, Module, Decl, Package, Program, Unit, Name, Input, Row }
-
-/// What each family keys by.
-fn keyed_by(f: Family) -> KeyedBy {
-    match f {
-        .Source or .Parsed or .Items or .Admitted or .FileRefs or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .MethodDiags -> KeyedBy.File,
-        .Namespace or .HeldSig -> KeyedBy.Module,
-        .Sig or .Methods or .Typed or .ConstTyped or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .Writes or .WriteSummary or .CancelSummary or .CancelBits or .ReadFound or .Consumed -> KeyedBy.Decl,
-        .Manifest -> KeyedBy.Package,
-        .References or .Failures or .ReadReach -> KeyedBy.Program,
-        .Lowered or .LiftLowered or .Lifted or .Settled -> KeyedBy.Unit,
-        .Named -> KeyedBy.Name,
-        .Input or .BlockScan or .ComponentScan or .ComponentNames -> KeyedBy.Input,
-    }
-}
-
 /// What a family's keys name — a row's place for a family no declaration
 /// names, a relation's minted one.
 fn keyed(family: int) -> KeyedBy {
@@ -134,9 +116,9 @@ impl Workspace {
             root: self.root,
             holds: holds,
             moved: [h.path for h in holds if h.moved.any(it.part is .Text)],
-            attempts: d.turned + 1,
-            discarded: d.turned,
-            turns: [left_line(l) for l in d.left],
+            attempts: 1,
+            discarded: 0,
+            turns: [],
             phases: grouped_phases(d.program.phases.concat(d.spans)),
         }
         d.program.ws.discarded()

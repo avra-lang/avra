@@ -3,10 +3,9 @@
 //! prints the same thing, and it leaves the store as it found it.
 use @std.io.{make_dirs, write_text, list_dir}
 use @std.time.{stamp}
-use @std.avrac.compiler.{HeldMismatch}
 use @std.avrac.core.{flatten}
 use @std.text.{parse_int}
-use commands.{explain_answer, Asked, checked_at, disagreement_line, decl_unanswered}
+use commands.{explain_answer, Asked, checked_at, decl_unanswered}
 
 /// A form's printed lines, or none when it refused.
 fn explain_lines(a: Asked) -> List<string> {
@@ -92,6 +91,33 @@ fn bare_dir(name: string) -> string {
 fn store_names(root: string) -> string {
     let top = list_dir("${root}/.avra-cache") catch []
     ["${d}:${(list_dir("${root}/.avra-cache/${d}") catch []).join(",")}" for d in top].join(";")
+}
+
+/// A package root of one file under `src/`, holding `text` — its own path
+/// each run, so nothing an earlier run kept answers for it.
+fn cache_probe(name: string, text: string) -> string {
+    let root = "/tmp/avra-cache-test/${name}-${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
+    let _ = write_text("${root}/src/main.av", text)
+    root
+}
+
+/// A package whose `main` reads one fn from a module `lib` of one file.
+fn lib_probe(name: string) -> string {
+    let root = cache_probe(name, "use lib.{one}\none()\n")
+    let _ = make_dirs("${root}/src/lib")
+    let _ = write_text("${root}/src/lib/a.av", "export fn one() -> int { 1 }\n")
+    root
+}
+
+/// A lib probe checked, then its module's one file given a new signature —
+/// the input every mode must name.
+fn edited_lib(name: string) -> string {
+    let root = lib_probe(name)
+    let _ = checked_at(root)
+    let _ = write_text("${root}/src/lib/a.av", "export fn one(n: int = 0) -> int { 1 }\n")
+    root
 }
 
 spec "commands/explain" {
@@ -421,19 +447,6 @@ spec "commands/explain" {
             let _ = checked_at(root)
             explain_lines(Asked { target: "", from: root, why: true })
                 .any(it == "no input moved since the kept state")
-        }
-    }
-    given "a held file a fresh reading disagrees with" {
-        then "a Reference-row count reads as the rows naming the declaration, held then fresh" {
-            disagreement_line(
-                HeldMismatch {
-                    file: "a.av",
-                    decl: "check_length",
-                    field: "Reference rows",
-                    held: "0",
-                    fresh: "1",
-                },
-            ) == "  check_length's Reference rows: 0 held, 1 fresh"
         }
     }
     given "an inspection" {

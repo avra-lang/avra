@@ -2,6 +2,7 @@
 //! path that turns a statement into a declared id. The rest of the
 //! impl lives in decls.av.
 use @std.meta.{bracket}
+use core.debug.{qtrace, traced}
 use core.{
     side_table,
     side_put,
@@ -148,12 +149,15 @@ impl Decls {
     /// trait's and impl's methods under their owner. The file's rows
     /// are then exactly the ones minted here: what it held before and
     /// did not mint again is removed in one step. Answers the top-level
-    /// ids, in order.
-    fn admit(f: FileId, store: SyntaxArena, stmts: List<StmtId>) -> List<DeclId> {
+    /// ids, in order. `keep_made` also keeps the rows a maker generated: a file
+    /// minted from saved rows holds them, and no expansion runs to mint them again.
+    fn admit(f: FileId, store: SyntaxArena, stmts: List<StmtId>, keep_made: bool = false) -> List<
+        DeclId,
+    > {
         let before = self.decls_so_far(f)
         self.stores.set_at(f.index, store)
         let _ = self.counted.get().opened(f, "")
-        mut minted: List<int> = []
+        mut minted: List<int> = if keep_made { [d.index for d in before if self.raw_decl(d).maker != ""] } else { [] }
         mut by_stmt = side_table("decl_ids", 0, store.stmts.count(), DeclAt { decl: null })
         mut out: List<DeclId> = []
         // A `state` at the top level is a DECLARATION: the mark lands
@@ -399,16 +403,6 @@ impl Decls {
         [FileId { index: i } for i in 0..self.file_count() if !self.file_held(FileId { index: i })]
     }
 
-    /// The four producer doors, read by the bucket readers and answered by the armed
-    /// workspace hook: mint the held modules whose record files a row under this value.
-    fn hold_named(name: string) { (self.ensure_named.get())(name) }
-
-    fn hold_worded(word: string) { (self.ensure_worded.get())(word) }
-
-    fn hold_marked(mark: string) { (self.ensure_marked.get())(mark) }
-
-    fn hold_modules(modules: List<string>) { (self.ensure_modules.get())(modules) }
-
     /// The externs the records of the files held now declare.
     fn held_externs() -> List<ExternNote> { [n for n in (self.externs_index.get())() if self.held.get().get(n.path) != null] }
 
@@ -422,22 +416,9 @@ impl Decls {
 
     fn arm_file(ensure: fn(FileId) -> void) { self.ensure_file.set(ensure) }
 
-    /// THE FOUR PRODUCER DOORS: a bucket reader mints the held modules whose record files
-    /// a row under the value it is about to read, through the workspace armed here.
-    fn arm_named(ensure: fn(string) -> void) { self.ensure_named.set(ensure) }
-
-    fn arm_worded(ensure: fn(string) -> void) { self.ensure_worded.set(ensure) }
-
-    fn arm_marked(ensure: fn(string) -> void) { self.ensure_marked.set(ensure) }
-
-    fn arm_externs(
-        index: fn() -> List<ExternNote>,
-        types: fn() -> List<string>,
-        ensure: fn(List<string>) -> void,
-    ) {
+    fn arm_externs(index: fn() -> List<ExternNote>, types: fn() -> List<string>) {
         self.externs_index.set(index)
         self.types_index.set(types)
-        self.ensure_modules.set(ensure)
     }
 
     fn held_items_of_file(f: FileId) -> List<DeclId> {
@@ -604,9 +585,15 @@ impl Decls {
     }
 
     /// What a declaration nested in `d`'s body names as its encloser: `d`'s key, its path left out.
-    fn within_text(d: DeclId) -> string {
-        let x = self.decl(d)
-        decl_key_text("", x.name, x.kind, x.owner, x.maker, x.enclosing, x.sibling)
+    fn within_text(d: DeclId) -> string { within_key(self.decl(d)) }
+
+    /// `within_text`, unrecorded: the minter's own read of a row it holds.
+    fn within_of(d: DeclId) -> string { within_key(self.raw_decl(d)) }
+
+    /// A declaration's key as its index files it: the text `mint_faced` mints it by and `known_id` finds it by.
+    fn key_of(d: DeclId) -> string {
+        let x = self.raw_decl(d)
+        decl_key_text(x.path, x.name, x.kind, x.owner, x.maker, x.enclosing, x.sibling)
     }
 
     fn spanned_here(f: FileId, d: DeclId) -> bool { self.spanned_stmt_of(f, self.decl(d).stmt) == null }
@@ -802,6 +789,15 @@ impl Decls {
         if stale.is_empty() { return }
         self.file_keeps(f, [d.index for d in rows if !stale.any(same_decl(it, d))])
         self.forget(stale)
+    }
+
+    /// A run of `maker` over `f` closes with no answer — it could not run, `why` — so the
+    /// file keeps what the maker made before, and the run it opened inside counts on.
+    /// Answers those rows: they are still the file's.
+    fn generation_unrun(f: FileId, maker: string, prior: RunPrior, why: string) -> List<DeclId> {
+        if traced() { qtrace("Q\tunrun\t${maker}\t${why}\n") }
+        self.counted.get().resumed(f, maker, prior)
+        [d for d in self.decls_so_far(f) if self.raw_decl(d).maker == maker]
     }
 
     /// A held file's rows are about to be minted from its record: a run of
@@ -1191,4 +1187,9 @@ fn homed(kind: DeclKind, f: FileId) -> FileId? {
         .Builtin -> null,
         .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum or .State -> f,
     }
+}
+
+/// A declaration's key with its file left out.
+fn within_key(x: Decl) -> string {
+    decl_key_text("", x.name, x.kind, x.owner, x.maker, x.enclosing, x.sibling)
 }

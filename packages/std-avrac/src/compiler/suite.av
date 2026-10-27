@@ -43,13 +43,6 @@ fn child_ends() -> List<ChildEnd> { [ChildEnd.Trap, ChildEnd.Verdict] }
 /// `end` how it must end.
 export type RefusesCall = { path: string, voice: string, end: ChildEnd }
 
-/// What the evaluator made of a held derivation: agreed with it, or quarrelled
-/// under a hold — the derivation let go, the sources to be asked.
-enum Hearing {
-    Agreed(Derived)
-    Quarrelled
-}
-
 /// A suite's own module, as one derivation tells it: every case in scope and
 /// the file its body is in, and each program the entry calls.
 fn suite_module(d: Derived, only: List<string>, calls: List<ProgramCall>) -> ProgramModule {
@@ -129,13 +122,7 @@ impl Workspace {
         let owed = [path for path in programs if !self.native_only(path) && !self.proved(store, path)]
         let calls = [self.program_call(path, told_from) for path in programs]
         let began = self.clock()
-        let d = self
-            .evaluated(
-                store,
-                owed,
-                told_from,
-                (met: Derived) -> link_owes(met, suite_module(met, only, calls), tools),
-            )?
+        let d = self.evaluated(store, owed, told_from)?
         eprintln(
             "proofs: ${owed.length} of ${programs.length} programs owed, evaluated in ${(self.clock() - began) / 1000000} ms",
         )
@@ -185,46 +172,13 @@ impl Workspace {
         }
     }
 
-    /// The program derived with every program the evaluator owes a run READ,
-    /// each run and held to its text — and remembered, so an unmoved program is
-    /// not run again. A quarrel under a hold is asked again of the sources: a
-    /// held body the record did not foresee is no verdict on the program.
-    /// `owes` is the link's own whole question, asked here so no derivation is
-    /// made again at the link.
-    fn evaluated(store: Store, owed: List<string>, told_from: string, owes: fn(Derived) -> bool) -> Result<
-        Derived,
-        string,
-    > {
-        match self.heard(store, owed, told_from, owes)? {
-            .Agreed(d) -> .Ok(d),
-            .Quarrelled -> self.heard_whole(store, owed, told_from),
-        }
-    }
-
-    /// THE HELD DERIVATION, HEARD BY THE EVALUATOR: agreed with, or — quarrelling
-    /// under a hold — let go, so the sources' own derivation never stands beside
-    /// it. A quarrel with nothing held is the program's.
-    fn heard(store: Store, owed: List<string>, told_from: string, owes: fn(Derived) -> bool) -> Result<
-        Hearing,
-        string,
-    > {
-        let reach = [ReadFile { path: path, why: Reads.Reached } for path in flatten([self.seen_files(store, path) for path in owed])]
-        // the evaluator runs bodies, an instantiation's among them
-        let d = self
-            .derived_owing(null, Want.Binary, reach, (met: Derived) -> !owed.is_empty() || owes(met))?
-        let first = d.program.ws.quarrels(d, owed, told_from)
-        if first.is_empty() { return Hearing.Agreed(d.program.ws.agreed(store, d, owed)) }
-        if held_paths(d.program.ws).is_empty() { fail joined(first, "\n") }
-        d.program.ws.discarded()
-        Hearing.Quarrelled
-    }
-
-    /// The sources' own derivation, heard: the verdict on the program.
-    fn heard_whole(store: Store, owed: List<string>, told_from: string) -> Result<Derived, string> {
-        let sure = self.from_sources(null, Want.Binary)?
-        let last = sure.program.ws.quarrels(sure, owed, told_from)
-        if !last.is_empty() { fail joined(last, "\n") }
-        sure.program.ws.agreed(store, sure, owed)
+    /// The program derived, the evaluator's verdict heard: each program the evaluator owes a
+    /// run is run, held to its text, and remembered so an unmoved program is not run again.
+    fn evaluated(store: Store, owed: List<string>, told_from: string) -> Result<Derived, string> {
+        let d = self.derived(null, Want.Binary)?
+        let quarrels = d.program.ws.quarrels(d, owed, told_from)
+        if !quarrels.is_empty() { fail joined(quarrels, "\n") }
+        d.program.ws.agreed(store, d, owed)
     }
 
     /// The evaluator agreed with each: remembered under what the program can see.

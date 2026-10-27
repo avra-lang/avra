@@ -2,11 +2,11 @@
 // what generated it, the declaration it is nested in, its own name, and its
 // place among the declarations of that file sharing all six. A declaration written above another moves the
 // other's name only when it shares them.
-use compiler.{Workspace, makers_in}
+use compiler.{Workspace, parse_source}
 use compiler.record.{read_fields}
 use @std.avrac.testing.{provided_workspace, test_workspace, vendored_meta, vendored_meta_paths}
 use compiler.host.{memory_host}
-use core.{DeclId, DeclKind, flatten, no_stmt, named_ref}
+use core.{DeclId, DeclKind, flatten, no_stmt, named_ref, same_decl}
 use features.{Decl, DeclareWork, decl_key_text, new_decls}
 
 /// The key of every declaration of one kind and name, in id order.
@@ -125,12 +125,70 @@ fn restored() -> Restored {
     let fields = [read_fields(line) for line in ws.lines_of(readmit_path()).join("\n").split("\n")]
     let parsed = [Decl.key_text(d.key()) for d in ws.decls.all_decls() if d.maker != ""].join(" | ")
     let held = admitted_nothing()
-    held.mint_file(readmit_path(), fields, makers_in(fields, readmit_path()))
+    held.mint_file(readmit_path(), fields)
     Restored {
         parsed: parsed,
         held: [Decl.key_text(d.key()) for d in held.decls.all_decls() if d.maker != ""].join(" | "),
-        lines: [p for p in fields if p[0] == "maker"].length,
+        lines: [p for p in fields if p.length > 13 && p[13] != ""].length,
     }
+}
+
+/// What a file whose written declarations stand on both sides of a generated one gives back
+/// from its saved identity rows: the written keys and who each member's parent is, as the
+/// parse had them, as the rows revive them, and as a parse admitted over the revived rows has them.
+/// `between` says the generated declaration was minted after a written one and before another.
+type Revived = {
+    parsed: string,
+    revived: string,
+    attached: string,
+    parents_parsed: string,
+    parents_revived: string,
+    ids_kept: bool,
+    between: bool,
+}
+
+fn before_the_impl() -> string { "export type Box = { v: int }\nfn kept() -> int {\n    2\n}\n" }
+
+fn after_generated() -> Revived {
+    // the generated declaration is minted first, the impl and its member written after it
+    let ws = admitted(before_the_impl())
+    let f = ws.file_id(readmit_path())
+    let _ = ws
+        .decls
+        .mint_generated_code(f, ws.decls.store_of(f), ws.parsed(f).stmts.slice(0, 1), 0, awkward_maker(), "made", null)
+    let p = parse_source(one_impl())
+    let _ = ws.decls.admit(f, p.store, p.stmts, true)
+    let ids = [d.id.index for d in ws.decls.all_decls() if d.kind != DeclKind.Builtin]
+    let generated = ws.decls.all_decls().find(it.maker != "")!.id.index
+    let rows = [read_fields(line) for line in ws.identity_lines(readmit_path())]
+    let held = admitted_nothing()
+    let _ = held.mint_file(readmit_path(), rows)
+    let hf = held.file_id(readmit_path())
+    let before = held.decls.decls_so_far(hf)
+    let revived = written_keys(held)
+    let _ = held.decls.admit(hf, p.store, p.stmts, true)
+    Revived {
+        parsed: written_keys(ws),
+        revived: revived,
+        attached: written_keys(held),
+        parents_parsed: parent_names(ws),
+        parents_revived: parent_names(held),
+        ids_kept: before.length > 0 &&
+            before.all((d: DeclId) -> held.decls.decls_so_far(hf).any(same_decl(it, d))),
+        between: ids.any(it < generated) && ids.any(it > generated),
+    }
+}
+
+/// The key of every written declaration, in id order.
+fn written_keys(ws: Workspace) -> string {
+    [Decl.key_text(d.key()) for d in ws.decls.all_decls() if d.maker == "" && d.kind != DeclKind.Builtin]
+        .join(" | ")
+}
+
+/// Each written member beside the declaration that adopted it.
+fn parent_names(ws: Workspace) -> string {
+    ["${d.name}<${ws.decls.decl(d.parent!).name}" for d in ws.decls.all_decls() if d.maker == "" && d.parent != null]
+        .join(",")
 }
 
 /// One record held twice into one table: the keys and the row count after
@@ -145,10 +203,10 @@ fn held_twice() -> HeldTwice {
         .mint_generated_code(f, ws.decls.store_of(f), ws.parsed(f).stmts.slice(0, 1), 0, awkward_maker(), "made", null)
     let fields = [read_fields(line) for line in ws.lines_of(readmit_path())]
     let held = admitted_nothing()
-    held.mint_file(readmit_path(), fields, makers_in(fields, readmit_path()))
+    held.mint_file(readmit_path(), fields)
     let first = all_keys(held)
     let rows_first = held.decls.all_decls().length
-    held.mint_file(readmit_path(), fields, makers_in(fields, readmit_path()))
+    held.mint_file(readmit_path(), fields)
     HeldTwice {
         first: first,
         second: all_keys(held),
@@ -507,11 +565,27 @@ spec "compiler/decl name — a declaration's key is its name" {
         }
     }
     given "a generated declaration read back from its module's record" {
-        then "fixture: the record carries one maker line, on one line" {
+        then "fixture: the record has one row wearing a maker, on one line" {
             restored().lines == 1
         }
         then "its key is the key its parse gave it, tab and line break in the maker included" {
             unmoved(restored().parsed, restored().held) && restored().parsed.contains("\n\t1,")
+        }
+    }
+    given "written declarations on both sides of a generated one, revived from their saved rows and then parsed" {
+        then "fixture: the generated declaration was minted after one written declaration and before another" {
+            after_generated().between && after_generated().revived != ""
+        }
+        then "the revived rows are the declarations the parse gave, keys and all" {
+            unmoved(after_generated().parsed, after_generated().revived)
+        }
+        then "a member is adopted by the parent its row names, not by a position" {
+            unmoved(after_generated().parents_parsed, after_generated().parents_revived) &&
+                after_generated().parents_revived.contains("later<")
+        }
+        then "a parse admitted over them finds the same declarations: no key moved, no id replaced" {
+            unmoved(after_generated().revived, after_generated().attached) &&
+                after_generated().ids_kept
         }
     }
     given "one record held twice into one table" {

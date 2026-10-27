@@ -1,0 +1,627 @@
+//! Saved answers by durable name. A key this process never settled stands on a row the store
+//! holds under a name — its family and what its argument names, never a dense id — so a row
+//! is read only when the kernel asks for that key. The kernel resolves nothing; this file
+//! maps keys to names on the way out and names to keys on the way in.
+use @std.relation.engine.{Key, Saved, SavedRead, key_of, same_key}
+use @std.text.{parse_int}
+use core.{
+    fp_str,
+    sorted_texts,
+    StmtId,
+    FileId,
+    DeclId,
+    ModuleId,
+    DeclKind,
+    joined,
+    flatten,
+    traced,
+    qtrace,
+}
+use @std.relation.engine.{Revival}
+use compiler.families.{Family, keyed_by}
+use core.debug.{qtrace, traced}
+use compiler.record.{read_fields}
+use compiler.store.{Store, Stored, StoredName, Reading, node_key, read_spelled}
+
+/// What a family's key argument names. A `Local` argument is an id of this process alone,
+/// so no answer under it is saved.
+enum ArgName {
+    File
+    Decl
+    Module
+    Unit
+    /// A read of the world: the key is the input's own, spelled `kind key`.
+    World
+    /// A package's manifest, by the package's key.
+    Package
+    /// A name's bucket of declarations, by the name.
+    Bucket
+    /// A lowered or lifted unit: its symbol, which no other process spells differently.
+    Symbol
+    Local
+}
+
+/// The row a read of the family's own hash stands on: the value hash a row was saved at.
+const HASH_READ: string = "="
+
+fn arg_name(f: Family) -> ArgName {
+    match keyed_by(f) {
+        .File -> ArgName.File,
+        .Decl -> ArgName.Decl,
+        .Module -> ArgName.Module,
+        .Program -> ArgName.Unit,
+        .Input -> ArgName.World,
+        .Package -> ArgName.Package,
+        .Name -> ArgName.Bucket,
+        .Unit -> ArgName.Symbol,
+        .Row -> ArgName.Local,
+    }
+}
+
+impl Workspace {
+    /// A key's durable name — the family, then what the argument names — or null for a key
+    /// no process but this one can read.
+    fn saved_name(key: Key) -> string? {
+        let f? = Family.all().get(key.family) else { return null }
+        let spelled? = self.arg_spelled(arg_name(f), key.arg) else { return null }
+        "${f.name}\t${spelled}"
+    }
+
+    /// What an argument names, spelled so another process reads the same thing: a file by its
+    /// name, a declaration by the key it is filed under.
+    fn arg_spelled(kind: ArgName, arg: int) -> string? {
+        match kind {
+            .File -> self.decls.file(FileId { index: arg }).name,
+            .Decl -> self.decl_spelled(DeclId { index: arg }),
+            .Module -> self.decls.module_name(ModuleId { index: arg }),
+            .Unit -> "",
+            .World -> self.world_spelled(arg),
+            .Package -> self.package_spelled(arg),
+            .Bucket -> self.decls.bucket_label(arg),
+            .Symbol -> self.symbol_spelled(arg),
+            .Local -> null,
+        }
+    }
+
+    /// A read of the world as its name spells it: its kind's word, then its key.
+    fn world_spelled(arg: int) -> string? {
+        let at = self.input_names.get()
+        if arg < 0 || arg >= at.length { return null }
+        input_spelled(at[arg])
+    }
+
+    fn package_spelled(arg: int) -> string? {
+        let at = self.packages()
+        if arg < 0 || arg >= at.length { return null }
+        at[arg].key
+    }
+
+    /// A declaration spelled by the file it stands in and the key it is filed under, which is
+    /// exactly what `mint_faced` mints it by: the file is what restores it, the key what finds it.
+    fn decl_spelled(d: DeclId) -> string? { "${self.decls.raw_decl(d).path}\t${field_text(self.decls.key_of(d))}" }
+
+    /// `saved_name`'s inverse: the key a name stands for here. Null where the name's file or
+    /// declaration does not stand in this program.
+    fn saved_key(name: string) -> Key? {
+        let at = name.index_of("\t")
+        if at < 0 { return null }
+        let word = name.substring(0, at)
+        let f? = Family.all().find(it.name == word) else { return null }
+        let arg? = self.arg_named(arg_name(f), name.substring(at + 1, name.length)) else { return null }
+        Key { family: f.ordinal, arg: arg }
+    }
+
+    fn arg_named(kind: ArgName, spelled: string) -> int? {
+        match kind {
+            .File -> self.decls.known_file_id(self.path_named(StoredName(spelled)))?.index,
+            .Decl -> self.saved_decl(spelled)?.index,
+            .Module -> self.decls.known_module_id(spelled)?.index,
+            .Unit -> 0,
+            .World -> self.world_named_arg(spelled),
+            .Package -> self.package_named_arg(spelled),
+            .Bucket -> self.bucket_named_arg(spelled),
+            .Symbol or .Local -> null,
+        }
+    }
+
+    /// The input a spelling names, staged through the door so its cell stands with the digest
+    /// the world has now.
+    fn world_named_arg(spelled: string) -> int? {
+        let name? = input_named(spelled) else { return null }
+        let _ = self.input(name)
+        self.world_key(name)
+    }
+
+    /// The name's bucket, its cell set against the bucket as it stands so it carries the hash
+    /// the bucket has now.
+    fn bucket_named_arg(name: string) -> int? {
+        let b? = self.decls.bucket_standing(name) else { return null }
+        self.decls.named_now(b)
+        b
+    }
+
+    /// The package a key names, its manifest read so its cell stands.
+    fn package_named_arg(key: string) -> int? {
+        let at? = [j for j, p in self.packages() if p.key == key].first() else { return null }
+        let _ = self.manifest(at)
+        at
+    }
+
+    /// The declaration a spelling names, found in the key index. A declaration of a file not yet
+    /// admitted is asked of its file's `Items`, which restores or admits it — the only way a name
+    /// reaches a declaration nothing has minted.
+    fn saved_decl(spelled: string) -> DeclId? {
+        let at = spelled.index_of("\t")
+        if at < 0 { return null }
+        let key = text_of_field(spelled.substring(at + 1, spelled.length))
+        let held = self.decls.known_id(key)
+        if held != null { return held }
+        let f? = self.decls.known_file_id(self.path_named(StoredName(spelled.substring(0, at)))) else { return null }
+        let _ = self.items(f)
+        self.decls.known_id(key)
+    }
+
+    /// Where the row for a name is filed: the name, in the view the file is read in.
+    fn saved_row_key(name: string) -> string {
+        node_key(Stored.Unit, ["saved", name, self.root_view()])
+    }
+
+    /// A saved answer for a key never settled here: what it read, each as a key of this process,
+    /// and the hash it answered. Null when nothing is saved, or a read names no key here.
+    fn saved_found(key: Key) -> Saved? {
+        let kind? = Family.all().get(key.family) else { return null }
+        if !self.saved_family(kind) || self.is_env(key.family) { return null }
+        let store? = self.store.get() else { return null }
+        let name? = self.saved_name(key) else { return null }
+        let row = self.saved_row_key(name)
+        let lines? = store.reads_of(Stored.Unit, row) else {
+            if traced() { qtrace("Q\tsaved\tno row\t${name}\n") }
+            return null
+        }
+        let spelled = [read_spelled(line)? for line in lines]
+        let hashed? = spelled.find(it.name == HASH_READ) else { return null }
+        let value_hash? = parse_int(hashed.digest) else { return null }
+        let reads = [SavedRead { key: self.saved_read_key(name, r.name)?, digest: parse_int(r.digest)? } for r in spelled if r.name != HASH_READ]
+        Saved { reads: reads, value_hash: value_hash }
+    }
+
+    /// The key a saved read's name resolves to here.
+    fn saved_read_key(answer: string, read: string) -> Key? {
+        let k? = self.saved_key(read) else {
+            if traced() { qtrace("Q\tsaved\tunnamed read\t${answer}\t${read}\n") }
+            return null
+        }
+        k
+    }
+
+    /// An answer this process computed, saved under its name with what it read: refused (false)
+    /// when a read has no name, since an answer on a read nothing can resolve would never stand.
+    fn saved_kept(key: Key, value: string) -> bool {
+        let p? = self.prepared(key, value) else { return false }
+        self.written(p)
+    }
+
+    /// An answer ready to file: what it read, grouped, with the digest of its file's environment
+    /// still to be read once every answer of the run has widened it.
+    fn prepared(key: Key, value: string) -> Prepared? {
+        let name? = self.saved_name(key) else { return null }
+        let hash? = self.db.kernel.hash_forced(key) else { return null }
+        let walked? = self.db.kernel.saved_reads(key, (k: Key) -> self.stands_alone(k)) else { return null }
+        let reads = self.grouped(key, walked)
+        if traced() {
+            qtrace(
+                "Q\treads\t${Family.all()[key.family].name}\t${reads.length}\t${self.reads_by_family(reads)}\n",
+            )
+        }
+        if traced() && Family.all()[key.family] is .FileSaid {
+            qtrace(
+                "Q\tdetail\t${name}\t${joined([self.saved_name(r.key) ?? "?" for r in reads], " | ")}\n",
+            )
+        }
+        Prepared { name: name, value: value, hash: hash, reads: reads }
+    }
+
+    /// A prepared answer filed, its environment read at the digest it has now.
+    fn written(p: Prepared) -> bool {
+        let store? = self.store.get() else { return false }
+        mut readings: List<Reading> = [Reading { name: HASH_READ, digest: "${p.hash}" }]
+        for r in p.reads {
+            let named? = self.saved_name(r.key) else { return false }
+            let digest = if self.is_env(r.key.family) { self.env_digest(FileId { index: r.key.arg }, Family.all()[r.key.family]) } else { r.digest }
+            readings.push(Reading { name: named, digest: "${digest}" })
+        }
+        store.keep_reading(Stored.Unit, self.saved_row_key(p.name), p.value, readings)
+    }
+
+    /// Whether a family is kept by name: it registered a saver.
+    fn saved_family(f: Family) -> bool { self.savers.get().any(it.family == f.ordinal) }
+
+    /// Whether a read is kept as itself: a saved family's answer, a file's environment or a read
+    /// of the world. Any other read stands for what it read.
+    fn stands_alone(k: Key) -> bool {
+        let f? = Family.all().get(k.family) else { return false }
+        if f is .Sig { return self.sig_saved(k.arg) }
+        self.saved_family(f) ||
+            self.is_env(k.family) ||
+            f is .Input ||
+            f is .Manifest ||
+            f is .Named
+    }
+
+    /// Whether a declaration's signature is a row of its own: only a free fn's is (`sig_text`).
+    fn sig_saved(arg: int) -> bool {
+        let d = self.decl_at(DeclId { index: arg })
+        d.maker == "" && standing_sig(d.kind)
+    }
+
+    /// What an answer read, counted by the family each read belongs to: `Family:count` words.
+    fn reads_by_family(reads: List<SavedRead>) -> string {
+        mut counts: Map<string, int> = {}
+        for r in reads {
+            let at = Family.all().get(r.key.family)?.name ?? "relation"
+            counts.set(at, (counts.get(at) ?? 0) + 1)
+        }
+        joined(["${k}:${v}" for k, v in counts], " ")
+    }
+
+    /// THE READS OUTSIDE A FILE GROUPED: an answer under a file keeps the reads that are its own
+    /// (its file's text and rows, its declarations) and reads the file's `NameEnv` once for the
+    /// rest — the name buckets it probed and the other files and modules it consulted. The
+    /// environment is the union of every such read the file's answers made, so it moves when
+    /// any of them would and no sooner; an answer's own reads stand as they are.
+    fn grouped(key: Key, reads: List<SavedRead>) -> List<SavedRead> {
+        let file? = self.answer_file(key) else { return reads }
+        let family = Family.all()[key.family]
+        if self.is_env(key.family) { return reads }
+        let gathers = env_family(family)
+        let homes = [self.read_file(r.key) for r in reads]
+        let outside = [r.key for i, r in reads if homes[i] != file.index && self.is_probe(r.key)]
+        if outside.length < 2 { return reads }
+        self.env_noted(file, gathers, outside)
+        [r for i, r in reads if homes[i] == file.index || !self.is_probe(r.key)]
+            .concat([SavedRead { key: Key { family: gathers.ordinal, arg: file.index }, digest: 0 }])
+    }
+
+    /// Whether a read is a probe an environment holds: a name bucket or a read of the world. Another
+    /// file's saved answer stays a read of the answer, so no environment waits on one.
+    fn is_probe(k: Key) -> bool {
+        let f? = Family.all().get(k.family) else { return false }
+        f is .Named || f is .Input || f is .Manifest
+    }
+
+    /// Whether a family is a file's environment.
+    fn is_env(family: int) -> bool {
+        let f? = Family.all().get(family) else { return false }
+        f is .NameEnv || f is .SiblingEnv
+    }
+
+    /// The index of the file a read belongs to; -1 for a read no file owns (a name, a manifest,
+    /// a listing).
+    fn read_file(k: Key) -> int {
+        let f? = Family.all().get(k.family) else { return 0 - 1 }
+        match arg_name(f) {
+            .File -> k.arg,
+            .Decl -> self.decls.decl(DeclId { index: k.arg }).file.index,
+            .World -> self.text_file(k.arg),
+            .Module or .Unit or .Symbol or .Package or .Bucket or .Local -> 0 - 1,
+        }
+    }
+
+    /// The file whose text an input cell is, when it is one.
+    fn text_file(arg: int) -> int {
+        let at = self.input_names.get()
+        if arg < 0 || arg >= at.length { return 0 - 1 }
+        match at[arg].kind {
+            .Text -> self.decls.known_file_id(at[arg].key)?.index ?? 0 - 1,
+            .Octets or .Range or .Listing or .Exists or .Env or .Tool or .Compiler or .Embedded or .EmbeddedOctets -> 0 - 1,
+        }
+    }
+
+    /// The file an answer's key belongs to, when its argument names a file or a declaration.
+    fn answer_file(key: Key) -> FileId? {
+        let f? = Family.all().get(key.family) else { return null }
+        match arg_name(f) {
+            .File -> FileId { index: key.arg },
+            .Decl -> self.decls.decl(DeclId { index: key.arg }).file,
+            .Module or .Unit or .Symbol or .World or .Package or .Bucket or .Local -> null,
+        }
+    }
+
+    /// A file's probe set under `gathers` grown by `more`, each probe once.
+    fn env_noted(file: FileId, gathers: Family, more: List<Key>) {
+        let at = self.env_at(file, gathers)
+        let known = self.env_probes.get().get(at) ?? self.env_staged(file, gathers)
+        let fresh = [k for k in more if self.env_seen_now(at, k)]
+        if !fresh.is_empty() || self.env_probes.get().get(at) == null {
+            self.env_probes.put(at, known.concat(fresh))
+            let owed = Key { family: gathers.ordinal, arg: file.index }
+            if !self.env_owed.get().any((k: Key) -> same_key(k, owed)) { self.env_owed.push(owed) }
+        }
+    }
+
+    /// Whether a probe is new to an environment, marking it seen.
+    fn env_seen_now(at: string, k: Key) -> bool {
+        let seen = "${at} ${k.family} ${k.arg}"
+        if self.env_seen.get().has(seen) { return false }
+        self.env_seen.put(seen, true)
+        true
+    }
+
+    /// An environment's probes read from its saved row, each marked seen.
+    fn env_staged(file: FileId, gathers: Family) -> List<Key> {
+        let at = self.env_at(file, gathers)
+        let probes = [k for k in self.env_loaded(file, gathers) if self.env_seen_now(at, k)]
+        self.env_probes.put(at, probes)
+        probes
+    }
+
+    /// Where a file's probes under one environment family are kept.
+    fn env_at(file: FileId, gathers: Family) -> string { "${gathers.ordinal}.${file.index}" }
+
+    /// The probes a file's saved environment names, staged so what they name stands here.
+    fn env_loaded(file: FileId, gathers: Family) -> List<Key> {
+        let text? = self.saved_value(Key { family: gathers.ordinal, arg: file.index }) else { return [] }
+        [k! for l in text.split("\n") if !l.is_empty() for k in [self.saved_key(l)] if k != null]
+    }
+
+    /// One digest over a file's probes as they stand: each by name, in name order. A name bucket
+    /// counts by the identities it holds, which another process names alike.
+    fn env_digest(file: FileId, gathers: Family) -> int {
+        let probes = self.env_probes.get().get(self.env_at(file, gathers)) ?? []
+        let at = "${self.env_at(file, gathers)} ${probes.length} ${self.db.revision()}"
+        let kept = self.env_digests.get().get(at)
+        if kept != null { return kept! }
+        let digest = fp_str(
+            joined(
+                sorted_texts(
+                    ["${self.saved_name(k) ?? ""}\t${self.probe_digest(k)}" for k in probes],
+                ),
+                "\n",
+            ),
+        )
+        self.env_digests.put(at, digest)
+        digest
+    }
+
+    /// What one probe stands at now: restored from its saved answer, else verified, so the digest never depends on what the run
+    /// happened to ask earlier.
+    fn probe_digest(k: Key) -> int {
+        if k.family == Family.Named.ordinal { return self.bucket_digest(k.arg) ?? 0 }
+        if self.db.kernel.cell(k) != null || !self.db.kernel.restored(k) { self.db.kernel.verified(k.family, k.arg) }
+        self.db.kernel.hash_forced(k) ?? 0
+    }
+
+    /// A file's environment as a derived answer: every probe read, hashed together. It is
+    /// computed, never restored: its probes are what its row names, and the hash is theirs now.
+    fn env_of(file: FileId, gathers: Family) -> DbRow {
+        let at = self.env_at(file, gathers)
+        let probes = self.env_probes.get().get(at) ?? self.env_staged(file, gathers)
+        self
+            .relation(gathers)
+            .demand(
+                file.index,
+                () -> {
+                    for k in self.env_probes.get().get(at) ?? [] { self.db.kernel.record_dep(k) }
+                    DbRow
+                        .Words([self.saved_name(k) ?? "" for k in self.env_probes.get().get(at) ?? []])
+                },
+                (_v: DbRow) -> self.env_digest(file, gathers),
+            )
+    }
+
+    /// The environments this run grew, kept: each as the probes it names.
+    fn env_flushed() {
+        for key in self.env_owed.get() {
+            let file = FileId { index: key.arg }
+            let gathers = Family.all()[key.family]
+            let probes = self.env_probes.get().get(self.env_at(file, gathers)) ?? []
+            if traced() {
+                qtrace(
+                    "Q\tenv\t${gathers.name}\t${self.decls.file(file).name}\t${joined(sorted_texts([self.saved_name(k) ?? "?" for k in probes]), " | ")}\n",
+                )
+            }
+            self.db.kernel.begin(key)
+            for k in probes { self.db.kernel.record_dep(k) }
+            self.db.kernel.settle(key, self.env_digest(file, gathers))
+            let _ = self
+                .saved_kept(key, joined(sorted_texts([self.saved_name(k) ?? "" for k in probes]), "\n"))
+        }
+        self.env_owed.set([])
+    }
+
+    /// The value a saved answer was kept with.
+    fn saved_value(key: Key) -> string? {
+        let store? = self.store.get() else { return null }
+        let name? = self.saved_name(key) else { return null }
+        store.get(Stored.Unit, self.saved_row_key(name))
+    }
+}
+
+/// An answer ready to be filed: its name, value, hash and grouped reads.
+type Prepared = { name: string, value: string, hash: int, reads: List<SavedRead> }
+
+/// How a saved family writes an answer: the row's text for the argument, or null for none.
+type Saver = { family: int, text: fn(int) -> string? }
+
+impl Workspace {
+    /// A family kept by name: its keeper only NOTES the recomputed argument, and `flush_saved`
+    /// writes the row once the run is over, so `text` runs after typing and lowering.
+    fn saves(family: Family, text: fn(int) -> string?) {
+        self.savers.push(Saver { family: family.ordinal, text: text })
+        self
+            .relation(family)
+            .keeper
+            .set(
+                (arg: int, _value: DbRow) -> self
+                    .noted_key(Key { family: family.ordinal, arg: arg }),
+            )
+    }
+
+    /// A recomputed key noted for the flush; answers true, the keeper's word that it holds the row.
+    fn noted_key(key: Key) -> bool {
+        self.noted.push(key)
+        true
+    }
+
+    /// EVERY SAVED ANSWER THIS RUN COMPUTED, written: one row each, O(noted). The run's last
+    /// act, never inside a settle, since a saver may ask the kernel.
+    fn flush_saved() {
+        let owed = self.noted.get()
+        self.noted.set([])
+        mut ready: List<Prepared> = []
+        for key in owed {
+            let saver? = self.savers.get().find(it.family == key.family) else { continue }
+            let text? = (saver.text)(key.arg) else { continue }
+            let p? = self.prepared(key, text) else { continue }
+            ready.push(p)
+        }
+        self.env_flushed()
+        for p in ready { let _ = self.written(p) }
+        self.env_digests.set({})
+        self.db.kernel.forget_standing()
+    }
+
+    /// The kernel's saved lookup and the saved families' hooks.
+    fn arm_saved() {
+        self.db.kernel.set_saved((key: Key) -> self.saved_found(key))
+        self.saves(Family.Items, (arg: int) -> self.items_text(arg))
+        self.relation(Family.Items).revive.set((arg: int) -> self.items_revived(arg))
+        self.saves(Family.FileSaid, (arg: int) -> self.said_rows.get().get("${arg}"))
+        self.relation(Family.FileSaid).revive.set((arg: int) -> self.said_revived(arg))
+        self.saves(Family.Visible, (arg: int) -> "")
+        self.saves(Family.Syntax, (arg: int) -> self.syntax_text(arg))
+        self.saves(Family.Sig, (arg: int) -> self.sig_text(arg))
+        self.saves(Family.Lowered, (arg: int) -> self.lowered_text(arg))
+        self.relation(Family.Lowered).revive.set((arg: int) -> self.lowered_revived(arg))
+        self.saves(Family.ComponentNames, (arg: int) -> self.words_of(arg))
+        self.relation(Family.ComponentNames).revive.set((arg: int) -> self.saved_words(arg))
+    }
+
+    /// A file's `Items` as its row's text: its declarations' identity rows, then the modules its
+    /// `use` lines name — what admitting it needs, so a restore reads no parse. A file that
+    /// collects gathers from a package's other files, which the row cannot say, and one a maker
+    /// generated into holds bodies no row carries: neither is saved.
+    fn items_text(arg: int) -> string? {
+        let f = FileId { index: arg }
+        let p = self.parsed(f)
+        if p.stmts.any((s: StmtId) -> p.store.collect_scope(s) != null) { return null }
+        if self.decls.decls_of_file(f).any((d: DeclId) -> self.decls.decl(d).maker != "") { return null }
+        let uses = ["use\t${joined(u!.path, ".")}" for s in p.stmts for u in [p.store.use_parts(s)] if u != null]
+        joined(self.identity_lines(self.decls.file(f).path).concat(uses), "\n")
+    }
+
+    /// A file's declarations minted from its saved rows, never parsed: the parse comes when a
+    /// body is read (`attached`), and the modules its `use` lines name are admitted from the row.
+    fn items_revived(arg: int) -> Revival<DbRow> {
+        let text? = self.saved_value(Key { family: Family.Items.ordinal, arg: arg }) else { return Revival.Gone }
+        let path = self.decls.file(FileId { index: arg }).path
+        let lines = [l for l in text.split("\n") if !l.is_empty()]
+        let rows = [read_fields(l) for l in lines if !l.starts_with("use\t")]
+        let top = self.mint_file(path, rows)
+        self
+            .revived
+            .put("${arg}", [l.substring(4, l.length) for l in lines if l.starts_with("use\t")])
+        Revival.Revived(DbRow.Items(top))
+    }
+
+    /// A declaration's signature as its row's text: its record line; none for one a run generated
+    /// or whose signing registers more than its signature.
+    fn sig_text(arg: int) -> string? {
+        let d = self.decl_at(DeclId { index: arg })
+        if d.maker != "" || !standing_sig(d.kind) { return null }
+        self.sig_line(d)
+    }
+
+    /// A file's said row, the answer it settles under: its analysis is its one read, which the
+    /// flush walks down to the leaves the answer stands on.
+    fn said_noted(path: string, spoken: Spoken) {
+        let f = self.file_id(path)
+        let text = packed(
+            [said_wire(spoken.said), spoken.rules.rendered, findings_text(spoken.rules.rows)],
+        )
+        self.said_rows.put("${f.index}", text)
+        let at = Key { family: Family.FileSaid.ordinal, arg: f.index }
+        self.db.kernel.begin(at)
+        self.db.kernel.record_dep(Key { family: Family.Analysis.ordinal, arg: f.index })
+        self.db.kernel.settle(at, fp_str(text))
+        let _ = self.noted_key(at)
+    }
+
+    /// Whether a file's said row stands: asked, and answered from what is saved or settled here.
+    fn said_standing(f: FileId) -> bool {
+        let held = match self.relation(Family.FileSaid).ask(f.index) {
+            .Reuse(_) -> true,
+            .Compute or .Cycle -> false,
+        }
+        if traced() { qtrace("Q\tsaid\t${held}\t${self.decls.file(f).path}\n") }
+        held
+    }
+
+    /// A file's said row's text, as it is saved.
+    fn said_row_text(path: string) -> string? {
+        self.saved_value(Key { family: Family.FileSaid.ordinal, arg: self.file_id(path).index })
+    }
+
+    /// A file's said row read back.
+    fn said_revived(arg: int) -> Revival<DbRow> {
+        let text? = self.saved_value(Key { family: Family.FileSaid.ordinal, arg: arg }) else { return Revival.Gone }
+        Revival.Revived(DbRow.Words([text]))
+    }
+
+    /// A declaration's syntax answers by its hash alone, which its row already holds: a read of it
+    /// stands on the hash, so an edit that leaves a declaration's syntax unmoved moves no reader.
+    /// None for one a run generated.
+    fn syntax_text(arg: int) -> string? { if self.decl_at(DeclId { index: arg }).maker == "" { "" } else { null } }
+
+    /// A `ComponentNames` answer as its row's text: its names, one to a line.
+    fn words_of(arg: int) -> string? {
+        match self.relation(Family.ComponentNames).values.entry(arg) {
+            .Present(value) -> joined(scan_words(value), "\n"),
+            .Missing -> null,
+        }
+    }
+
+    /// A `ComponentNames` answer read back.
+    fn saved_words(arg: int) -> Revival<DbRow> {
+        let text? = self.saved_value(Key { family: Family.ComponentNames.ordinal, arg: arg }) else { return Revival.Gone }
+        Revival.Revived(DbRow.Words(text.split("\n")))
+    }
+
+    /// A unit's symbol, by its place in the unit table.
+    fn symbol_spelled(arg: int) -> string? {
+        let at = self.asks.get()
+        if arg < 0 || arg >= at.length { return null }
+        at[arg].name
+    }
+
+    /// A lowered unit as its row's text, from the value this run settled.
+    fn lowered_text(arg: int) -> string? {
+        match self.relation(Family.Lowered).values.entry(arg) {
+            .Present(row) -> self.unit_text(self.asks.get()[arg], lowered_of(row)),
+            .Missing -> null,
+        }
+    }
+
+    /// A unit read back as its stub, the code its row stood for noted for the file's code row —
+    /// only where no code is emitted from it: a build emits the body.
+    fn lowered_revived(arg: int) -> Revival<DbRow> {
+        if !self.hold.serving.get() { return Revival.Gone }
+        let text? = self.saved_value(Key { family: Family.Lowered.ordinal, arg: arg }) else { return Revival.Gone }
+        let unit? = self.unit_from_text(self.asks.get()[arg], text) else { return Revival.Gone }
+        Revival.Revived(DbRow.Lowered(unit))
+    }
+}
+
+/// The declarations whose signing leaves nothing but the signature: a free fn. Every other kind
+/// also registers what it declares (an impl its methods, a record its type), so its answer is
+/// computed.
+fn standing_sig(k: DeclKind) -> bool {
+    match k {
+        .Fn -> true,
+        .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum or .State or .Builtin -> false,
+    }
+}
+
+/// The environment family an answer's outside reads gather under: a file's rows read its siblings and the manifest, which no typing probe ever joins;
+/// everything else reads the names it looked up.
+fn env_family(f: Family) -> Family { if f is .Items { Family.SiblingEnv } else { Family.NameEnv } }

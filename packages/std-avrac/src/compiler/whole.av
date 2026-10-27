@@ -1,6 +1,7 @@
 //! The whole program: every file analyzed, the entries, the cases, the
 //! hold, and the link words. Moved out of the workspace god-object.
 use core.{
+    traced,
     EmbedKind,
     EmbedBase,
     digest_of,
@@ -27,7 +28,7 @@ use core.{
     key_spelled,
 }
 use @std.text.{text_before}
-use compiler.store.{Reading}
+use compiler.store.{Reading, Store, Stored}
 use @std.path.{under_dir, joined_path, normalized, dir_of}
 use features.{
     Decls,
@@ -69,6 +70,13 @@ impl Workspace {
         // a held file is not parsed — and asking its items would mint its module for nothing
         for path in self.entry_files(built) { let _ = self.file_id(path) }
         self.admit_all()
+        // the prelude is admitted by the first name any file looks up; asked here, every file's
+        // answers are verified against the same program a cold run probed
+        if self.std_admitted(prelude_key) { let _ = self.exported_decls(prelude_module()) }
+        self.hold_the_standing()
+        // A FILE MINTED FROM ITS SAVED ROWS HAS NO BODY YET: its parse is attached before anything
+        // types, so no declaration row is read at ranges the attach is about to give it
+        let _ = self.each_open_file((f: FileId) -> self.attach_parse(f))
         self.timed("parse", t0)
         // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its declarations are
         // MINTED from its record, so every consumer sees the interface it had — and its
@@ -86,6 +94,18 @@ impl Workspace {
         let out = [self.analysis(f) for f in ids]
         self.timed("bodies", t3)
         out
+    }
+
+    /// A revived file whose said row stands is held: nothing of it is read, signed or analysed.
+    fn hold_the_standing() {
+        let _ = self.each_open_file((f: FileId) -> self.hold_if_standing(f))
+    }
+
+    fn hold_if_standing(f: FileId) {
+        if self.revived.get().get("${f.index}") == null || !self.said_standing(f) { return }
+        let path = self.decls.file(f).path
+        self.stood.put(path, true)
+        let _ = self.hold_only(path)
     }
 
     /// EVERY OPEN (non-held) FILE, WALKED AS THE TABLE ITSELF GROWS. A
@@ -191,6 +211,12 @@ impl Workspace {
     /// minted inside a query that already read the relation.
     fn admit_used(f: FileId) {
         if self.lone { return }
+        let uses: List<string>? = self.revived.get().get("${f.index}")
+        if uses != null {
+            let from = self.packages()[self.holder_of_path(self.decls.file(f).path)]
+            for u in uses! { self.admit_module(from, qualified(module_path(u.split(".")), from)) }
+            return
+        }
         let p = self.parsed(f)
         let from = self.packages()[self.holder_of_path(p.source.file)]
         for s in p.stmts {
@@ -205,10 +231,41 @@ impl Workspace {
     /// package whole: the package, the file, what it gathers, what it reads of each
     /// member and the set it gathered — the reach a record keeps for its held walk,
     /// and what a held file is held to.
-    fn gathers_lines(path: string) -> List<string> {
+    fn gathers_lines(store: Store, path: string) -> List<string> {
         let f = self.file_id(path)
         let key = self.packages()[self.holder_of_path(path)].key
-        [gathers_line(key, path, g, self.gathered_set(g, f)) for g in self.gatherings(path)]
+        [gathers_line(key, path, g, self.recorded_set(store, path, g, self.gathered_set(g, f))) for g in self.gatherings(path)]
+    }
+
+    /// Whether a collect gathers the program's import closure.
+    fn closing(scope: CollectScope) -> bool {
+        match scope { .Closure -> true, .Self or .Package or .UnknownScope(_) -> false }
+    }
+
+    /// The set a record's `gathers` line carries. An import closure's members are the PROGRAM's,
+    /// and a dependency's record is every program's, so its set rides a row of this program's own
+    /// and the line holds none.
+    fn recorded_set(store: Store, path: string, g: Gathering, set: string) -> string {
+        if !self.closing(g.scope) { return set }
+        let key = self.closure_set_key(path, g.name)
+        if store.get(Stored.Unit, key) != set { let _ = store.keep(Stored.Unit, key, set, []) }
+        ""
+    }
+
+    /// Where this program keeps the set a closure collect of `path` gathered.
+    fn closure_set_key(path: string, name: string) -> string { self.root_key(Stored.Unit, "closure-set", ["${self.stored_name(path)}", name]) }
+
+    /// A `gathers` line's set as this program stands on it: the line's own, or for an import
+    /// closure the row this program kept; empty for one it never kept, which no set equals.
+    fn gathers_set(store: Store, parts: List<string>) -> string {
+        let set = if parts.length > 7 { parts[7] } else { "" }
+        let scope? = scope_of_word(if parts.length > 8 { parts[8] } else { "" }) else { return set }
+        if !self.closing(scope) { return set }
+        store
+            .get(
+                Stored.Unit,
+                self.closure_set_key(parts[2], if parts.length > 9 { parts[9] } else { "" }),
+            ) ?? ""
     }
 
     /// A read file's package-wide collects, each as what it gathers.

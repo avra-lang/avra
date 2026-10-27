@@ -153,7 +153,7 @@ type ExternNames = { decls: int, names: List<string> }
 type Suspects = { files: int, rows: Map<string, bool>, paths: Map<string, bool> }
 
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, text_stamps: Cell<Map<string, int>>, text_scans: Cell<Map<string, TextScan>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, sig_producer: Cell<Producer?>, build_mode: Cell<string>, one_shot: Cell<bool> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, text_stamps: Cell<Map<string, int>>, text_scans: Cell<Map<string, TextScan>>, std_names: Cell<Map<string, string>>, stored_names: Cell<Map<string, string>>, root_view: Cell<string>, file_views: Cell<Map<string, string>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, sig_producer: Cell<Producer?>, build_mode: Cell<string>, one_shot: Cell<bool> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -187,6 +187,10 @@ fn new_keys() -> Keys {
         text_digests: Cell.new(no_digests),
         text_stamps: Cell.new(no_stamps),
         text_scans: Cell.new(no_scans),
+        std_names: Cell.new(no_digests),
+        stored_names: Cell.new(no_digests),
+        root_view: Cell.new(""),
+        file_views: Cell.new(no_digests),
         file_tokens: Cell.new(no_tokens),
         seen_views: Cell.new(no_views),
         suspects: Cell.new(Suspects { files: -1, rows: {}, paths: {} }),
@@ -235,9 +239,8 @@ fn new_keys() -> Keys {
 /// and the reads seen under it (`read_gen`, `read_seen`, `read_gens`), the units being lowered,
 /// innermost last (`lowering`), and the consts each unit's lowering asked
 /// for, by the unit (`unit_asks`), the declaration each lowered body belongs to, by its
-/// name (`owners`), whether kept units may stand in for lowering
-/// (`serving`), the units that did (`served`), each file's surface (`surfaces`), its kept rows (`rows`), the rows of
-/// this derivation (`rows_live`) and the files that made one (`rows_fresh`).
+/// name (`owners`), whether saved units may stand in for lowering
+/// (`serving`) and the units that did (`served`).
 /// A read's expansion, memoized for the attempt: the reads it inherits and the
 /// run generation of the path it walked. A read expands differently as a fn than
 /// as a whole file, so the run generation — not a "seen" mark — invalidates it.
@@ -268,7 +271,6 @@ type Hold = {
     pending_resolved: Cell<Map<string, string>>,
     settling: Cell<List<string>>,
     read_files: Cell<List<ReadFile>>,
-    minted: Cell<Map<string, bool>>,
     file_ready: Table<bool>,
     row_filled: Table<bool>,
     holds_settled: Cell<bool>,
@@ -314,10 +316,6 @@ type Hold = {
     serving: Cell<bool>,
     warm: Cell<bool>,
     served: Cell<List<Served>>,
-    surfaces: Cell<Map<string, string>>,
-    rows: Cell<Map<string, Map<string, UnitRow>>>,
-    rows_live: Cell<Map<string, List<UnitRow>>>,
-    rows_fresh: Cell<Map<string, bool>>,
 }
 
 /// One const a unit's lowering asked the settlement for.
@@ -365,7 +363,6 @@ fn new_hold() -> Hold {
     let no_asks: List<HeldAsk> = []
     let no_runs: Map<string, List<RunRead>> = {}
     let no_read_files: List<ReadFile> = []
-    let no_minted: Map<string, bool> = {}
     let no_producers: Map<string, List<string>> = {}
     let no_flat: List<TypeId> = []
     let no_moved: Map<string, List<PartMoved>> = {}
@@ -388,7 +385,6 @@ fn new_hold() -> Hold {
         pending_resolved: map_cell(),
         settling: Cell.new(no_paths()),
         read_files: Cell.new(no_read_files),
-        minted: Cell.new(no_minted),
         file_ready: new_table<bool>(),
         row_filled: new_table<bool>(),
         holds_settled: Cell.new(false),
@@ -419,10 +415,6 @@ fn new_hold() -> Hold {
         serving: Cell.new(false),
         warm: Cell.new(false),
         served: list_cell(),
-        surfaces: map_cell(),
-        rows: map_cell(),
-        rows_live: map_cell(),
-        rows_fresh: map_cell(),
     }
 }
 
@@ -527,6 +519,28 @@ export type Workspace = {
     // whether this workspace stands, or was let go and why: it answers
     // nothing after
     stand: Cell<Stand>,
+    /// The saved answers this run computed, noted by their keepers: what `flush_saved` owes the store.
+    noted: Cell<List<Key>>,
+    /// How each saved family writes its answer: registered once, by the family's own `saves`.
+    savers: Cell<List<Saver>>,
+    /// The declarations whose saved signature was asked for, found or not.
+    sig_tried: Table<bool>,
+    /// Each file's probed name buckets, by file index: what its `NameEnv` is the digest of.
+    env_probes: Cell<Map<string, List<Key>>>,
+    /// The probes each file's environment already holds, by file, family and argument.
+    env_seen: Cell<Map<string, bool>>,
+    /// An environment's digest at one size and revision, so a run reads each once.
+    env_digests: Cell<Map<string, int>>,
+    /// The files whose probe set grew this run: the `NameEnv` rows the flush owes.
+    env_owed: Cell<List<Key>>,
+    /// Each analysed file's said rows this run, by file index: what the flush owes `FileSaid`.
+    said_rows: Cell<Map<string, string>>,
+    /// The files whose declarations were minted from saved rows, each with the modules its `use` lines name.
+    revived: Cell<Map<string, List<string>>>,
+    /// The revived files whose parse has been attached to their minted declarations.
+    attached: Cell<Map<string, bool>>,
+    /// The revived files held because their said row stands, by path: what they said is that row.
+    stood: Cell<Map<string, bool>>,
     // plain for its identity: the host capability table, set once at
     // construction and never reassigned
     host: Host,
@@ -823,7 +837,7 @@ fn consumed_verified(ws: Workspace, arg: int) -> int {
 }
 // LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
 fn read_found_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.read_found_of(decl_at_arg(arg)))
+    if !ws.typing_open() { touch(ws.read_found_of(decl_at_arg(arg))) }
     ws.db.changed_at(key(Family.ReadFound, arg))
 }
 // LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
@@ -845,7 +859,7 @@ fn plain_verified(ws: Workspace, arg: int) -> int {
     ws.db.changed_at(key(Family.Plain, arg))
 }
 fn references_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.references())
+    if !ws.typing_open() { touch(ws.references()) }
     ws.db.changed_at(key(Family.References, arg))
 }
 // LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
@@ -889,6 +903,19 @@ fn marks_verified(ws: Workspace, arg: int) -> int {
 fn admitted_verified(ws: Workspace, arg: int) -> int {
     ws.admission(file_at(arg))
     ws.db.changed_at(key(Family.Admitted, arg))
+}
+fn file_said_verified(ws: Workspace, arg: int) -> int {
+    ws.said_standing(file_at(arg))
+    ws.db.changed_at(key(Family.FileSaid, arg))
+}
+fn sibling_env_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.env_of(file_at(arg), Family.SiblingEnv))
+    ws.db.changed_at(key(Family.SiblingEnv, arg))
+}
+// LICENSED compiler.free_state_verb: a code-hash TARGET, as `placed_verified` is.
+fn name_env_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.env_of(file_at(arg), Family.NameEnv))
+    ws.db.changed_at(key(Family.NameEnv, arg))
 }
 fn named_verified(ws: Workspace, arg: int) -> int {
     ws.decls.named_now(arg)
@@ -967,6 +994,9 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Consumed -> consumed_verified(ws, arg),
         .Admitted -> admitted_verified(ws, arg),
         .Named -> named_verified(ws, arg),
+        .NameEnv -> name_env_verified(ws, arg),
+        .SiblingEnv -> sibling_env_verified(ws, arg),
+        .FileSaid -> file_said_verified(ws, arg),
         .ReadReach -> read_reach_verified(ws, arg),
         .DeclReads -> decl_reads_verified(ws, arg),
         .Input -> input_verified(ws, arg),
@@ -1117,6 +1147,17 @@ fn built(
         input_names: list_cell(),
         manifest_texts: list_cell(),
         stand: Cell.new(Stand.Open),
+        noted: list_cell(),
+        savers: list_cell(),
+        sig_tried: new_table<bool>(),
+        env_probes: map_cell(),
+        env_seen: map_cell(),
+        env_digests: map_cell(),
+        env_owed: list_cell(),
+        said_rows: map_cell(),
+        revived: map_cell(),
+        attached: map_cell(),
+        stood: map_cell(),
     }
     // The registration IS `Family`'s declaration order: `Family.all()`
     // answers the variants in ordinal order, so `db.family`'s minted index
@@ -1132,22 +1173,14 @@ fn built(
         if ws.db.family() != f.ordinal { ws.defect("defect: the families registered out of ordinal order") }
         ws.db.kernel.named(f.ordinal, f.name)
     }
+    ws.arm_saved()
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
     ws.decls.arm_seats((d: DeclId) -> ws.seats_ensured(d))
     ws.decls.arm_target((d: DeclId) -> ws.target_ensured(d))
     ws.decls.arm_store((f: FileId) -> ws.store_ensured(f))
     ws.decls.arm_file((f: FileId) -> ws.file_ensured(f))
-    ws.decls.arm_named((name: string) -> ws.held_named(name))
-    ws.decls.arm_worded((word: string) -> ws.held_worded(word))
-    ws.decls.arm_marked((mark: string) -> ws.held_marked(mark))
-    ws
-        .decls
-        .arm_externs(
-            () -> ws.hold.externed_by.get(),
-            () -> ws.hold.typed_by.get(),
-            (modules: List<string>) -> ws.minted_modules(modules),
-        )
+    ws.decls.arm_externs(() -> ws.hold.externed_by.get(), () -> ws.hold.typed_by.get())
     ws
         .decls
         .arm_embeds(
@@ -1221,6 +1254,7 @@ impl Workspace {
         self.relation(Family.Analysis).evict()
         self.db.disarm()
         self.decls.disarm()
+        self.savers.set([])
         self.closed.set(true)
     }
 
@@ -1237,6 +1271,7 @@ impl Workspace {
     fn ended(why: Stand) {
         for f in Family.all() { self.relation(f).evict() }
         self.db.disarm()
+        self.savers.set([])
         self.db.kernel.folds_forgotten()
         self.decls.let_go(stand_voice(why))
         self.stand.set(why)
@@ -1261,10 +1296,7 @@ impl Workspace {
     fn file_ensured(f: FileId) {
         if self.hold.file_ready.at(f.index) != null || !self.hold.holds_settled.get() { return }
         self.hold.file_ready.keep(f.index, true)
-        if self.is_held(f) && self.store.get() != null {
-            self.minted_files([self.decls.file(f).path])
-            self.decls.note_module_rows(self.decls.file(f).module_id, 2)
-        }
+        if self.is_held(f) && self.store.get() != null { self.decls.note_module_rows(self.decls.file(f).module_id, 2) }
     }
 
     /// Every read source file of the package `f` stands in admitted, its tests aside. A held
@@ -1277,35 +1309,30 @@ impl Workspace {
         }
     }
 
-    /// THE PRODUCER INDEX'S FOUR DOORS: a bucket reader asks for the value it is about to
-    /// read, and every held module whose record files a row there is minted first — so the
-    /// row exists before the read, and only where it is wanted.
-    fn held_named(name: string) { self.minted_files(self.hold.named_by.get().get(name) ?? []) }
-
-    fn held_worded(word: string) { self.minted_files(self.hold.worded_by.get().get(word) ?? []) }
-
-    fn held_marked(mark: string) { self.minted_files(self.hold.marked_by.get().get(mark) ?? []) }
-
-    /// Every held file of each listed module minted, once.
-    fn minted_modules(modules: List<string>) {
-        let store? = self.store.get() else { return }
-        for m in modules {
-            let at = module_path(segments_of(m))
-            self.mint_files(store, at, self.module_files(at))
-        }
-    }
-
-    /// The held modules of the listed files minted whole, once: a module stands as one
-    /// namespace, so no sibling is left to mint inside a query that already read the rows.
-    fn minted_files(paths: List<string>) {
-        self.minted_modules(distinct([self.module_path_of(p).text() for p in paths]))
-    }
-
     /// A held declaration may need syntax-only facts that were not part of
     /// its signature. Parse that file on first such read; the declaration
     /// identities and object reuse still come from the stored interface.
     fn store_ensured(f: FileId) {
+        self.attach_parse(f)
         self.decls.remember_store(f, self.parsed(f).store)
+    }
+
+    /// A declaration's row once its file has its body: a file minted from saved rows holds
+    /// no ranges until its parse is attached, so every reader of a body's range comes here.
+    fn decl_with_body(d: DeclId) -> Decl {
+        self.attach_parse(self.decls.raw_decl(d).file)
+        self.decls.decl(d)
+    }
+
+    /// THE ONE DOOR A MINTED FILE'S BODIES COME THROUGH: its parse admitted over the declarations
+    /// its saved rows already minted. An identical key names the identical declaration, so the
+    /// parse registers each body's ranges and its store against the ids that stand.
+    fn attach_parse(f: FileId) {
+        let at = "${f.index}"
+        if self.revived.get().get(at) == null || self.attached.get().get(at) != null { return }
+        self.attached.put(at, true)
+        let p = self.parsed(f)
+        let _ = self.decls.admit(f, p.store, p.stmts, true)
     }
 
     fn methods_ensured(d: DeclId) {
@@ -1341,14 +1368,14 @@ impl Workspace {
     /// Runs the references pass and says so, or says it cannot: a whole-program pass
     /// never runs inside a resolve.
     fn refs_ensured() -> bool {
-        if self.db.family_active(Family.Resolved.ordinal) { return false }
+        if self.db.family_active(Family.Resolved.ordinal) || self.typing_open() { return false }
         let _ = self.references()
         true
     }
 
     /// Runs the references pass for one declaration's read bit and says so, or says it cannot.
     fn read_found_ensured(d: DeclId) -> bool {
-        if self.db.family_active(Family.Resolved.ordinal) { return false }
+        if self.db.family_active(Family.Resolved.ordinal) || self.typing_open() { return false }
         let _ = self.read_found_of(d)
         true
     }
@@ -1470,10 +1497,7 @@ impl Workspace {
 
     /// A FILE'S NAME: its package, then its path within it as written — never
     /// where the tree stands, never a number this process gave it.
-    fn file_name(path: string) -> string {
-        let pkg = self.packages()[self.holder_of_path(path)]
-        "${pkg.key}:${relative_path(pkg.root, path)}"
-    }
+    fn file_name(path: string) -> string { "${self.stored_name(path)}" }
 
     /// THE FILE AS WRITTEN, canonically printed — from a PARSE, never
     /// an analysis.
@@ -2204,15 +2228,22 @@ impl Workspace {
         }
         // the language's own declarations were signed at admission
         if !(self.db.ask(k) is .Compute) || x.kind is .Builtin {
-            return self.decls.sigs.get()[d.index]
+            return self.sig_standing(d)
         }
         self.db.begin(k)
         mut t = self.sign_cx_for(x)
         t.declare_one(x)
         self.sig_voices.keep(d.index, t.facts.voices)
         let out: DeclSig? = self.decls.sigs.get()[d.index]
-        self.db.settle(k, sig_hash(out))
+        self.db.kernel.settle_lazy(k, () -> self.sig_stable(x, out))
+        if t.facts.voices.list.is_empty() { let _ = self.noted_key(Key { family: Family.Sig.ordinal, arg: d.index }) }
         out
+    }
+
+    /// A signature's hash as any process spells it: its record shape's text, never the
+    /// interned type ids `DeclSig.fingerprint` folds. A signature a body has none of hashes 0.
+    fn sig_stable(x: Decl, out: DeclSig?) -> int {
+        if out == null { 0 } else { fp_str(self.record_shape(x)) }
     }
 
     /// A held declaration's sig came from its module's stored record —
@@ -2293,7 +2324,6 @@ impl Workspace {
         // its record, so its table is whole without a parse.
         let home = self.decls.decl(target).file
         if !self.is_held(home) { let _ = self.resolved(home) }
-        self.decls.hold_named(self.decls.decl(target).name)
         let blocks = self.method_blocks(target)
         // A table that cannot be COMPLETED is not the table, and must
         // not be memoized: an impl still registering, or an impl in a
@@ -2335,10 +2365,11 @@ impl Workspace {
         let k = key(Family.Syntax, d.index)
         if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
         self.db.begin(k)
-        let x = self.decls.decl(d)
+        let x = self.decl_with_body(d)
         let _ = self.parsed(x.file)
         let h = syntax_hash(self.decls.store(d), x)
         self.db.settle(k, h)
+        let _ = self.noted_key(k)
         h
     }
 
@@ -2351,7 +2382,7 @@ impl Workspace {
         let k = key(Family.Placed, d.index)
         if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
         self.db.begin(k)
-        let x = self.decls.decl(d)
+        let x = self.decl_with_body(d)
         let h = fp(122, [x.lo, x.hi, x.stmt_lo, x.stmt_hi])
         self.db.settle(k, h)
         h
@@ -2365,7 +2396,7 @@ impl Workspace {
         let k = key(Family.Names, d.index)
         if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
         self.db.begin(k)
-        let x = self.decls.decl(d)
+        let x = self.decl_with_body(d)
         let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi, self.decls.ids())
         self.db.settle(k, h)
         h
@@ -2490,7 +2521,7 @@ impl Workspace {
             .Reuse(value) -> { return typed_of(value) },
             .Compute -> nothing(),
         }
-        let x = self.decls.decl(d)
+        let x = self.decl_with_body(d)
         mut t = self.type_cx_for(x)
         let out = t.type_decl(x)
         // A DECLARATION STILL EXPANDING HAS A RANGE THAT WILL GROW: a
@@ -2714,6 +2745,9 @@ export fn family_code_hash(f: Family) -> string {
         .Consumed -> code_hash(consumed_verified) ?? "",
         .Admitted -> code_hash(admitted_verified) ?? "",
         .Named -> code_hash(named_verified) ?? "",
+        .NameEnv -> code_hash(name_env_verified) ?? "",
+        .SiblingEnv -> code_hash(sibling_env_verified) ?? "",
+        .FileSaid -> code_hash(file_said_verified) ?? "",
         .ReadReach -> code_hash(read_reach_verified) ?? "",
         .DeclReads -> code_hash(decl_reads_verified) ?? "",
         .Input -> code_hash(input_verified) ?? "",
