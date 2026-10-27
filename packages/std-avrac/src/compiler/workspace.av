@@ -142,7 +142,7 @@ extern fn avra_host_env(name: string) -> string
 type ExternNames = { decls: int, names: List<string> }
 
 /// PER-BUILD KEY MEMOIZATION: a module's interface digest and what it sees, a
-/// file's object key, the parts it digests, and its text digest (record.av's key derivations), where
+/// file's object key, the parts it digests (record.av's key derivations), where
 /// this compiler's store stands and where its writes land, and this compiler's
 /// own print and the producer its records are stamped under (build.av — `compiler_id`
 /// and `sig_producer` are never cleared: the running binary cannot move mid-process). Cleared piecemeal by `keep_interfaces`: `object_keys` and
@@ -151,7 +151,7 @@ type ExternNames = { decls: int, names: List<string> }
 type Suspects = { files: int, rows: Map<string, bool>, paths: Map<string, bool> }
 
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, text_stamps: Cell<Map<string, int>>, text_scans: Cell<Map<string, TextScan>>, std_names: Cell<Map<string, string>>, stored_names: Cell<Map<string, string>>, root_view: Cell<string>, file_views: Cell<Map<string, string>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, sig_producer: Cell<Producer?>, build_mode: Cell<string>, one_shot: Cell<bool> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_stamps: Cell<Map<string, int>>, text_scans: Cell<Map<string, TextScan>>, std_names: Cell<Map<string, string>>, stored_names: Cell<Map<string, string>>, root_view: Cell<string>, file_views: Cell<Map<string, string>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, sig_producer: Cell<Producer?>, build_mode: Cell<string>, one_shot: Cell<bool> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -182,7 +182,6 @@ fn new_keys() -> Keys {
         placed_from: Cell.new(no_placed),
         object_keys: Cell.new(no_object),
         object_parts: Cell.new(no_parts),
-        text_digests: Cell.new(no_digests),
         text_stamps: Cell.new(no_stamps),
         text_scans: Cell.new(no_scans),
         std_names: Cell.new(no_digests),
@@ -790,6 +789,10 @@ fn plain_verified(ws: Workspace, arg: int) -> int {
     touch(ws.plain_parsed(file_at(arg)))
     ws.db.changed_at(key(Family.Plain, arg))
 }
+fn text_digest_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.text_digest(ws.input_names.get()[arg].key))
+    ws.db.changed_at(key(Family.TextDigest, arg))
+}
 fn references_verified(ws: Workspace, arg: int) -> int {
     if !ws.typing_open() { touch(ws.references()) }
     ws.db.changed_at(key(Family.References, arg))
@@ -906,6 +909,7 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .WriteSummary -> write_summary_verified(ws, arg),
         .Expanded -> expanded_verified(ws, arg),
         .Plain -> plain_verified(ws, arg),
+        .TextDigest -> text_digest_verified(ws, arg),
         .References -> references_verified(ws, arg),
         .FileRefs -> file_refs_verified(ws, arg),
         .Failures -> failures_verified(ws, arg),
@@ -2542,7 +2546,7 @@ fn declared_components(p: Parsed) -> List<ComponentWord> {
 // THE PER-FAMILY IDENTITY (DB 05b, design section 6.4): each family's
 // key is re-asked through its own ENTRY FN, so `code_hash` over that fn
 // is a function of the family's own IR and what it calls — never of a
-// shared dispatcher. `family_code_hash` reads the 37 hashes the
+// shared dispatcher. `family_code_hash` reads one hash per family, the
 // compiler's own build bakes in (the pass after lowering answers every
 // `code_hash`), so nothing is computed at run time; the store folds a
 // family's row into the key a saved answer is filed under.
@@ -2571,6 +2575,7 @@ export fn family_code_hash(f: Family) -> string {
         .WriteSummary -> code_hash(write_summary_verified) ?? "",
         .Expanded -> code_hash(expanded_verified) ?? "",
         .Plain -> code_hash(plain_verified) ?? "",
+        .TextDigest -> code_hash(text_digest_verified) ?? "",
         .References -> code_hash(references_verified) ?? "",
         .FileRefs -> code_hash(file_refs_verified) ?? "",
         .Failures -> code_hash(failures_verified) ?? "",

@@ -485,6 +485,10 @@ impl Workspace {
         mut ready: List<Prepared> = []
         for key in owed {
             let saver? = self.savers.get().find(it.family == key.family) else { continue }
+            // A ROW WHOSE ANSWER HAS NOT MOVED IS ALREADY THE ROW: its hash is the fold of
+            // everything it read, so a hash equal to the one it was written under means every
+            // reading is equal too — no text is serialised and no read graph walked.
+            if row_stands_at(self, key) { continue }
             let text? = (saver.text)(key.arg) else { continue }
             let p? = self.prepared(key, text) else { continue }
             ready.push(p)
@@ -640,3 +644,14 @@ fn standing_sig(k: DeclKind) -> bool {
 /// The environment family an answer's outside reads gather under: a file's rows read its siblings and the manifest, which no typing probe ever joins;
 /// everything else reads the names it looked up.
 fn env_family(f: Family) -> Family { if f is .Items { Family.SiblingEnv } else { Family.NameEnv } }
+
+/// Whether the row a key would be written under still stands at the answer's own hash.
+// LICENSED compiler.free_state_verb: a PROJECTION — a workspace and a key in, a verdict out.
+fn row_stands_at(ws: Workspace, key: Key) -> bool {
+    let store? = ws.store.get() else { return false }
+    let name? = ws.saved_name(key) else { return false }
+    let row = ws.saved_row_key(name)
+    if store.get(Stored.Unit, row) == null { return false }
+    let now? = ws.db.kernel.hash_forced(key) else { return false }
+    ws.row_hash(store, row) == now
+}

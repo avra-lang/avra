@@ -681,7 +681,7 @@ impl Program {
         let t0 = ws.clock()
         touch(ws.references())
         ws.cancels_settled()
-        ws.timed("lower-refs", t0)
+        let d_refs = ws.clock() - t0
         let t1 = ws.clock()
         let units = self
             .ws
@@ -698,10 +698,14 @@ impl Program {
                 (f: FileId) -> ws.is_program_file(f),
                 (i: Instance) -> ws.kept_instance(i),
             )
-        ws.timed("lower-union", t1)
+        let d_union = ws.clock() - t1
         let t2 = ws.clock()
         let lo = memory(units) with { libraries: ws.linked_packages() }
-        ws.timed("lower-memory", t2)
+        let d_memory = ws.clock() - t2
+        // LOWERPROBE: a temporary split of the lower phase, deleted once its number is known.
+        eprintln(
+            "LOWERPROBE refs ${d_refs / 1000000}ms union ${d_union / 1000000}ms memory ${d_memory / 1000000}ms",
+        )
         if leaves_traced() { eprintln(ws.leaves_report()) }
         // A `defer` that parks outside its own `within`, refused here:
         // the cancel fact settled above, so the parks are the settled

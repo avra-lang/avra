@@ -55,6 +55,7 @@ use features.{
 }
 use compiler.lower.{FieldPlan}
 use compiler.store.{Store, Stored, Producer, node_key, producer_of, WIRE_ROW}
+use compiler.derive.{Want}
 use compiler.host.{Host}
 use @std.meta.{code_hash}
 use @std.path.{relative_path}
@@ -742,12 +743,18 @@ export fn facts_unblocked(block: string) -> DeclFacts? {
 }
 
 /// REMEMBER EVERY MODULE'S INTERFACE, once the build has computed it.
+/// Whether every file of a module still stands: every row it stands on has its digest, so
+/// nothing the module says has moved and nothing it owes the store is owed again.
 // LICENSED compiler.free_state_verb: THE RECORD STEP — a workspace, a store and a module list in, the records written.
+export fn module_stands(ws: Workspace, store: Store, m: ModulePath) -> bool {
+    !ws.module_files(m).any((path) -> !ws.file_rows_stand(store, path, Want.Diagnostics))
+}
+
 export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>) {
     mut seen_moved = false
     for m in modules {
-        // a module none of whose files this attempt read has its lines carried forward whole
-        if !ws.module_files(m).any((path) -> ws.read_here(path)) { continue }
+        // A MODULE NONE OF WHOSE FILES MOVED IS THE RECORD THAT ALREADY STANDS.
+        if module_stands(ws, store, m) { continue }
         let prior = record_cached(ws, store, m)
         let made = ws.record_of(store, m)
         // a record is keyed by its module's NAME: a write is owed when its words moved

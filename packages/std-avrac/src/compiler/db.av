@@ -107,6 +107,7 @@ export enum DbKind {
     Input
     Flag
     Words
+    TextDigest
 }
 
 impl DbKind {
@@ -137,6 +138,7 @@ impl DbKind {
             .Input -> "Input",
             .Flag -> "Flag",
             .Words -> "Words",
+            .TextDigest -> "TextDigest",
         }
     }
 }
@@ -247,6 +249,9 @@ export enum DbRow {
     Flag(bool)
     /// A scan's words.
     Words(List<string>)
+    /// One file's bytes as one digest (build.av's `text_digest`), under the octets read
+    /// they were taken of — no store of its own: a digest is a hash of bytes already read.
+    TextDigest(string)
 }
 
 impl DbRow {
@@ -277,6 +282,7 @@ impl DbRow {
             .Input(_) -> DbKind.Input,
             .Flag(_) -> DbKind.Flag,
             .Words(_) -> DbKind.Words,
+            .TextDigest(_) -> DbKind.TextDigest,
         }
     }
 
@@ -316,6 +322,16 @@ fn scan_words(r: DbRow) -> List<string> {
         rest -> {
             avra_trap("defect: DbRow.Words expected")
             scan_words(r)
+        },
+    }
+}
+
+export fn text_digest_of(r: DbRow) -> string {
+    match r {
+        .TextDigest(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.TextDigest expected")
+            text_digest_of(r)
         },
     }
 }

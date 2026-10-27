@@ -486,6 +486,12 @@ impl Workspace {
 
     /// What one read file's bodies ask, kept under the file's key.
     fn keep_asks(store: Store, lo: Lowered, a: Analysis) {
+        // A FILE WHOSE ASKS ROW STANDS ASKED WHAT IT ASKS NOW: every answer it stood on still
+        // has its digest, so the row is only re-serialised when one of them moved.
+        if self
+            .file_judged(store, a.view.source.file, Stored.Unit, self.asks_row(a.view.source.file)) {
+            return
+        }
         let asks = self.held_asks_wire([k.want for k in lo.asks if same_file(k.by, a.view.file)])
         let _ = store
             .keep_once(Stored.Unit, self.asks_key(self.held_okey(store, a.view.source.file)), asks)
@@ -498,6 +504,9 @@ impl Workspace {
     fn keep_instances(store: Store, lo: Lowered) {
         for ic in lo.instances {
             let key = self.inst_key(store, ic.key)
+            // AN INSTANTIATION THAT STANDS OWES NOTHING: its key is what it instantiates, so a
+            // row under it already holds this code and these callees.
+            if store.has(Stored.Unit, key) && store.has(Stored.Unit, self.callees_key(key)) { continue }
             let facts = code_facts(self.decls, ic.bodies, ic.statics, [])
             let _ = store.keep_once(Stored.Unit, key, code_facts_wire(facts))
             let rows = flatten([[c.symbol, self.inst_key(store, c)] for c in ic.callees])

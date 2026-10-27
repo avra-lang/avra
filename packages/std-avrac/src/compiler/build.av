@@ -15,6 +15,7 @@ use core.{
     rt_sigs,
     sorted_texts,
     fp_list,
+    fp_str,
     RtSig,
     TypeRegistry,
     FileId,
@@ -44,6 +45,8 @@ use compiler.backend.{
     runs_tasks,
 }
 use compiler.lower.{Body, Lowered, program_symbol}
+use compiler.families.{Family}
+use compiler.db.{DbRow, text_digest_of}
 use compiler.memory.{sound_checked}
 use compiler.store.{
     Store,
@@ -787,20 +790,23 @@ impl Workspace {
     /// and nothing here keeps a memo across the one key this answers.
     fn object_line(path: string) -> string { "${self.stored_name(path)}\t${digest_of_binary(path) ?? "-"}" }
 
-    /// A file's text as one digest, through its Text input: kept per read of
-    /// that input, so a turn that reads the file again digests the text it read.
-    /// The stamp those bytes wore is kept BESIDE the digest, taken in the same
-    /// breath: a stamp on its own is a claim about bytes nobody hashed, and a
-    /// digest with no stamp cannot be confirmed without reading.
+    /// A file's text as one digest, keyed by the octets input it was read from: the
+    /// answer stands on that read, so a reader of the digest is ordered after the bytes
+    /// and a file whose bytes did not move answers without hashing. The stamp those
+    /// bytes wore is kept BESIDE the digest, taken in the same breath: a stamp on its
+    /// own is a claim about bytes nobody hashed, and a digest with no stamp cannot be
+    /// confirmed without reading.
     fn text_digest(path: string) -> string {
-        let octets = self.listed_octets(path)
-        let at = "${self.octets_word(path)}\t${path}"
-        let known: string? = self.keys.text_digests.get().get(at)
-        if known != null { return known! }
-        let made = "${octets.length}.${digest_of_octets(octets)}"
-        self.keys.text_digests.put(at, made)
-        self.keys.text_stamps.put(at, self.file_stamp(path))
-        made
+        let ws = self
+        text_digest_of(
+            self
+                .relation(Family.TextDigest)
+                .demand(
+                    self.octets_key(path),
+                    () -> DbRow.TextDigest(digested_octets(ws, path)),
+                    text_digest_print,
+                ),
+        )
     }
 
     /// What one lex of a file's text answers about its block words, kept while the
@@ -1338,3 +1344,14 @@ fn wasm_opt_runs(tool: string, words: List<string>) -> bool {
     // LICENSED input.staged_output: post-processes the program just built, never an input of what is built
     avra_spawn_status(tool, words) == 0
 }
+
+/// One file's bytes as one digest, with the stamp they wore as it was taken.
+// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace and a path in, the digest of its bytes out.
+fn digested_octets(ws: Workspace, path: string) -> string {
+    let octets = ws.listed_octets(path)
+    ws.keys.text_stamps.put("${ws.octets_word(path)}\t${path}", ws.file_stamp(path))
+    "${octets.length}.${digest_of_octets(octets)}"
+}
+
+/// A digest row as the hash its readers are cut by.
+fn text_digest_print(r: DbRow) -> int { fp_str(text_digest_of(r)) }

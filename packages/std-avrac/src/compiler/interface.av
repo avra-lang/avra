@@ -43,6 +43,7 @@ use compiler.lower.{Body, collect_answer_type}
 use compiler.store.{Store, Stored, StoredName, node_key}
 use compiler.families.{Family}
 use @std.relation.engine.{Key}
+use compiler.record.{module_stands}
 
 /// One file's lines in its module's record, and the digest of what a caller can see of them.
 type FileLines = { path: string, lines: List<string>, iface: string, idents: string, global: string }
@@ -63,6 +64,9 @@ impl Workspace {
     fn keep_const_units(store: Store, modules: List<ModulePath>) -> int {
         mut count = 0
         for m in modules {
+            // A MODULE NONE OF WHOSE FILES MOVED OWES NO CONST: its units are the ones that
+            // stand, and enumerating its interface again would only re-derive them.
+            if module_stands(self, store, m) { continue }
             for d in self.interface_decls(m) {
                 if d.kind is .Const {
                     let path = self.decls.file(d.file).path
