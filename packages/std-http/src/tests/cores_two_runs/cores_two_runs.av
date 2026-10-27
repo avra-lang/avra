@@ -1,0 +1,34 @@
+// proves: `run` twice in a row on one program, with the parent writing between and a database opened between, serves each the parent's current rows.
+use @std.http.http.{text}
+use @std.http.route.{get}
+use @std.http.server.{ServeError, Server, Stateless, server}
+use @std.net.{NetError}
+use @std.sqlite.{sql}
+use tests.support.{count, cycle, dir, opened, refused}
+
+fn listened(up: Result<Server<Stateless>, ServeError>) -> Result<string, NetError> {
+    match up { .Ok(s) -> cycle(s), .Err(e) -> .Err(refused(e.describe().message)) }
+}
+
+fn shown() -> Result<string, NetError> {
+    let d = dir()
+    let db = opened("${d}/rows.db")?
+    let _ = db.run(sql("INSERT INTO rows (who) VALUES (1)"))
+    server app {
+        port: 0
+        get "/" { _req -> text(200, count(db)) }
+    }
+    let one = listened(app.listening())?
+    let _ = db.run(sql("INSERT INTO rows (who) VALUES (2)"))
+    let two = listened(app.listening())?
+    let other = opened("${d}/other.db")?
+    let _ = other.run(sql("INSERT INTO rows (who) VALUES (9)"))
+    server app2 {
+        port: 0
+        get "/" { _req -> text(200, "${count(db)}/${count(other)}") }
+    }
+    let three = listened(app2.listening())?
+    .Ok("${one} | ${two} | ${three} | parent ${count(db)} other ${count(other)}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

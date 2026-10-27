@@ -1,0 +1,29 @@
+// proves: a memory database opened inside each core — after the fork — is that core's own and works.
+use @std.http.http.{text}
+use @std.http.route.{get}
+use @std.http.server.{server}
+use @std.net.{NetError}
+use @std.sqlite.{Db, sql}
+use tests.support.{count, cycle, refused}
+
+fn private_count() -> string {
+    let db = match Db.memory() { .Ok(d) -> d, .Err(e) -> { return e.message } }
+    let _ = db.run(sql("CREATE TABLE rows (n INTEGER PRIMARY KEY, who INTEGER)"))
+    let _ = db.run(sql("INSERT INTO rows (who) VALUES (1)"))
+    count(db)
+}
+
+fn shown() -> Result<string, NetError> {
+    server app {
+        port: 0
+        get "/" { _req -> text(200, private_count()) }
+    }
+    let up = match app.listening() {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    let one = cycle(up)?
+    .Ok(one)
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
