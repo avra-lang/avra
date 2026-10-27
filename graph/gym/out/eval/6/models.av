@@ -1,0 +1,138 @@
+// domain: Halvard Observatory Telescope Time Allocation
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    TimeBinding,
+    QuantityBinding,
+    AbsenceBinding,
+}
+use @std.validate.{length, email, one_of}
+
+/// Embedded price: a whole-number count of minor currency units (cents) with
+/// its ISO currency code. It is only a value inside other records, never an
+/// entity. A zero amount means the charge was waived, not that it is unknown.
+@model
+export type Charge = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency: string,
+}
+
+/// Embedded span of nights an allocation is usable. `opens_ms` is the first
+/// instant, `closes_ms` the exclusive end, both UTC Unix milliseconds. An
+/// unrecorded close means the span has no announced end yet, not that it is
+/// open forever.
+@model
+export type NightWindow = {
+    opens_ms: int,
+    closes_ms: int?,
+}
+
+/// A researcher who applies for or reviews telescope time. A name is not a
+/// unique key; email is. An unrecorded email means none was supplied. An
+/// unrecorded home institution means the researcher did not state one, for
+/// the reason in its absence code.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "email", path: ["email"], normalization: .AsciiLowerTrim }],
+    label: ["name"],
+    absences: [AbsenceBinding { path: ["institution"], code: "unaffiliated" }],
+} })
+export type Astronomer = {
+    @length(min: 1, max: 200) name: string,
+    @email email: string?,
+    @length(min: 1, max: 200) institution: string?,
+}
+
+/// A telescope or camera rig on the mountain that time can be granted on.
+/// The designation is how staff name it in schedules. Aperture is the
+/// primary mirror diameter. An unrecorded last calibration date means the
+/// instrument has not been calibrated since commissioning, not that the
+/// date was lost.
+@model(quote { Semantics {
+    label: ["designation"],
+    quantities: [QuantityBinding { amount: ["aperture_mm"], unit: .Constant("millimetre") }],
+    times: [TimeBinding { path: ["last_calibrated"], encoding: .IsoDate }],
+    absences: [AbsenceBinding { path: ["last_calibrated"], code: "never_calibrated" }],
+} })
+export type Instrument = {
+    @length(min: 1, max: 80) designation: string,
+    aperture_mm: int,
+    last_calibrated: string?,
+}
+
+/// A request for observing time written by an astronomer. The title is how
+/// committee members mention it. `submitted_at` is UTC Unix milliseconds.
+/// Requested hours are the hours asked for, not granted. An unrecorded
+/// abstract means none was filed with the proposal.
+@model(quote { Semantics {
+    label: ["title"],
+    quantities: [QuantityBinding { amount: ["requested_hours"], unit: .Constant("hour") }],
+    times: [TimeBinding { path: ["submitted_at"], encoding: .UnixMillis }],
+    absences: [AbsenceBinding { path: ["abstract_text"], code: "not_filed" }],
+} })
+export type Proposal = {
+    @length(min: 1, max: 300) title: string,
+    abstract_text: string?,
+    applicant: Ref<Astronomer>,
+    requested_hours: int,
+    submitted_at: int,
+}
+
+/// A committee member's assessment of one proposal. `reviewer` scored it;
+/// `referee` is a second astronomer who arbitrated a split decision. An
+/// unrecorded referee means no arbitration was needed. An unrecorded score
+/// means the review is still in draft.
+@model(quote { Semantics {
+    absences: [
+        AbsenceBinding { path: ["referee"], code: "no_split_decision" },
+        AbsenceBinding { path: ["score"], code: "draft_pending" },
+    ],
+} })
+export type ProposalReview = {
+    proposal: Ref<Proposal>,
+    reviewer: Ref<Astronomer>,
+    referee: Ref<Astronomer>?,
+    @one_of(["accept", "waitlist", "reject"]) verdict: string,
+    score: int?,
+}
+
+/// One grant of time by an astronomer on an instrument, valid during its
+/// night window. The kind says how the time may be used. Granted hours are
+/// the hours awarded; the charge is the fee billed for them. `awarded_at`
+/// is an ISO instant. A zero charge means waived. An unrecorded close of
+/// the window means the grant has no announced end.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["astronomer"], to: ["instrument"], label: ["kind"],
+        phrasing: "{from} holds {label} time on {to}",
+        labels: [
+            RelationLabel { value: "survey", forward: ["survey"], broader: ["scheduled"] },
+            RelationLabel { value: "targeted", forward: ["targeted"], broader: ["scheduled"] },
+            RelationLabel { value: "scheduled", forward: ["scheduled"] },
+            RelationLabel { value: "rapid_response", forward: ["rapid response"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["window", "opens_ms"], until: ["window", "closes_ms"] },
+    quantities: [
+        QuantityBinding { amount: ["granted_hours"], unit: .Constant("hour") },
+        QuantityBinding { amount: ["charge", "minor_units"], unit: .Field(["charge", "currency"]), decimal_places: 2 },
+    ],
+    times: [TimeBinding { path: ["awarded_at"], encoding: .IsoInstant }],
+} })
+export type TimeAllocation = {
+    astronomer: Ref<Astronomer>,
+    instrument: Ref<Instrument>,
+    @one_of(["survey", "targeted", "scheduled", "rapid_response"]) kind: string,
+    granted_hours: int,
+    charge: Charge,
+    window: NightWindow,
+    awarded_at: string,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

@@ -174,12 +174,22 @@ def main():
     p.add_argument("--seeds", required=True, help="comma separated seeds")
     p.add_argument("--out", default=str(OUT))
     p.add_argument("--generator", choices=("hosted", "local"), default="hosted")
+    p.add_argument("--avoid-family", help="family whose built domains this run must differ from")
     p.add_argument("--stop-after", choices=("world", "plans"))
     args = p.parse_args()
     llm = llmmod.Hosted() if args.generator == "hosted" else llmmod.Llm()
     domains = []
+    if args.avoid_family:
+        for f in sorted((pathlib.Path(args.out) / args.avoid_family).glob("*/models.av")):
+            first = f.read_text().splitlines()[0]
+            if first.lower().startswith("// domain:"):
+                domains.append(first.split(":", 1)[1].strip())
     for seed in args.seeds.split(","):
-        d = build(args.family, seed, llm, args.out, domains, args.stop_after)
+        try:
+            d = build(args.family, seed, llm, args.out, domains, args.stop_after)
+        except (SystemExit, Exception) as why:
+            print(f"failed {args.family}-{seed}: {str(why)[:300]}", flush=True)
+            continue
         domains.append(domain_of(d, llm, None))
         print("built", d, "-", domains[-1], flush=True)
 

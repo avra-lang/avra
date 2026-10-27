@@ -1,0 +1,149 @@
+// domain: Ironbridge Community Tool Library
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    TimeBinding,
+    AbsenceBinding,
+    TimeEncoding,
+}
+use @std.validate.{length, one_of}
+
+/// An amount of money in minor units with its currency code, embedded in
+/// the records that charge or hold it. A zero amount is a real zero charge.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["minor_units"], unit: UnitBinding.Field(["currency"]), decimal_places: 2 }],
+} })
+export type Money = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency: string,
+}
+
+/// A half-open span in UTC Unix milliseconds embedded in time-bounded
+/// records. An unrecorded bound is unspecified, not evidence of "forever".
+@model(quote { Semantics { validity: ValidityBinding { from: ["from_ms"], until: ["until_ms"] } } })
+export type Window = {
+    from_ms: int?,
+    until_ms: int?,
+}
+
+/// A physical lending site of the library, such as the Ironbridge depot
+/// or a pop-up shed. Its name is how staff mention it, not a unique key.
+/// An unrecorded street address means the site has no fixed premises.
+@model(quote { Semantics { label: ["name"] } })
+export type Depot = {
+    @length(min: 1, max: 128) name: string,
+    @length(min: 1, max: 256) street_address: string?,
+}
+
+/// A person enrolled to borrow tools. A member is told apart by name in
+/// conversation; a name is not unique. An unrecorded phone means the member
+/// gave none or it was never asked, as coded; an unrecorded home depot
+/// means no depot is preferred.
+@model(quote { Semantics {
+    label: ["name"],
+    times: [TimeBinding { path: ["joined_on"], encoding: TimeEncoding.IsoDate }],
+    absences: [AbsenceBinding { path: ["phone"], code: "declined_to_share" }],
+} })
+export type Member = {
+    @length(min: 1, max: 256) name: string,
+    joined_on: string,
+    @length(min: 1, max: 64) phone: string?,
+    home_depot: Ref<Depot>?,
+}
+
+/// A lendable tool owned by the library. Its name (for example "Orbital
+/// sander, blue case") mentions one tool. An unrecorded serial number means
+/// the maker stamped none or it is worn away, as coded; an unrecorded
+/// retirement time means the tool is still in circulation.
+@model(quote { Semantics {
+    label: ["name"],
+    times: [
+        TimeBinding { path: ["acquired_at"], encoding: TimeEncoding.UnixMillis },
+        TimeBinding { path: ["retired_at"], encoding: TimeEncoding.UnixMillis },
+    ],
+    quantities: [QuantityBinding { amount: ["weight_grams"], unit: UnitBinding.Constant("gram") }],
+    absences: [AbsenceBinding { path: ["serial_number"], code: "no_serial_stamped" }],
+} })
+export type Tool = {
+    @length(min: 1, max: 256) name: string,
+    @length(min: 1, max: 128) serial_number: string?,
+    weight_grams: int,
+    acquired_at: int,
+    retired_at: int?,
+    replacement_value: Money,
+    shelved_at: Ref<Depot>,
+}
+
+/// A member borrowing a tool over a window. `kind` records which wording
+/// the lender used; "borrows" and "checks out" are the same act. The
+/// deposit is what was held against return; an unrecorded deposit means the
+/// loan was deposit-free by policy, as coded, not that the amount was lost.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["member"], to: ["tool"], label: ["kind"],
+        phrasing: "{from} {label} {to}",
+        labels: [
+            RelationLabel { value: "borrows", forward: ["borrows"], reverse: ["is borrowed by"] },
+            RelationLabel { value: "checks_out", forward: ["checks out"], reverse: ["is checked out by"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["window", "from_ms"], until: ["window", "until_ms"] },
+    absences: [AbsenceBinding { path: ["deposit"], code: "deposit_waived" }],
+} })
+export type ToolLoan = {
+    member: Ref<Member>,
+    tool: Ref<Tool>,
+    @one_of(["borrows", "checks_out"]) kind: string,
+    window: Window,
+    deposit: Money?,
+}
+
+/// A member's claim on a tool for a future window. "reserves" and "holds"
+/// are near-synonyms for the same claim and do not mean the tool left the
+/// shelf; a loan is the separate record that it did.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["member"], to: ["tool"], label: ["kind"],
+        phrasing: "{from} {label} {to}",
+        labels: [
+            RelationLabel { value: "reserves", forward: ["reserves"], reverse: ["is reserved by"] },
+            RelationLabel { value: "holds", forward: ["holds aside"], reverse: ["is held aside by"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["window", "from_ms"], until: ["window", "until_ms"] },
+} })
+export type ToolHold = {
+    member: Ref<Member>,
+    tool: Ref<Tool>,
+    @one_of(["reserves", "holds"]) kind: string,
+    window: Window,
+}
+
+/// A fault report on a tool. `reported_by` is who wrote the ticket and
+/// `flagged_by` is who first noticed the fault; both are members and may be
+/// the same person. An unrecorded flagger means the first noticer is
+/// unknown. An unrecorded estimate means no repair cost has been quoted, as
+/// coded; it is not a free repair.
+@model(quote { Semantics {
+    label: ["summary"],
+    times: [TimeBinding { path: ["opened_at"], encoding: TimeEncoding.IsoInstant }],
+    absences: [AbsenceBinding { path: ["estimate"], code: "quote_pending" }],
+} })
+export type RepairTicket = {
+    @length(min: 1, max: 256) summary: string,
+    tool: Ref<Tool>,
+    reported_by: Ref<Member>,
+    flagged_by: Ref<Member>?,
+    opened_at: string,
+    estimate: Money?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

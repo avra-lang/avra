@@ -32,7 +32,7 @@ def q_unit(q):
 
 def valid_item(spec, v):
     if "time_encoding" in spec:
-        return isinstance(v, str) and _iso(v)
+        return (isinstance(v, str) and _iso(v)) or (spec["time_encoding"] == "unix_millis" and isinstance(v, int) and not isinstance(v, bool) and v > 0)
     if spec["type"] != "boolean" and isinstance(v, bool):
         return False
     if not isinstance(v, JSON_KIND[spec["type"]]):
@@ -81,7 +81,7 @@ def pools(llm, cat, domain, done=None, keep=lambda out: None):
                         bad = f"{spec['path']} needs at least {need} valid distinct values"
                         break
                     if "time_encoding" in spec:
-                        items = sorted(times.encode(v, spec["time_encoding"]) for v in items)
+                        items = sorted(v if isinstance(v, int) else times.encode(v, spec["time_encoding"]) for v in items)
                     built[spec["path"]] = items
             if not bad:
                 out[model] = built

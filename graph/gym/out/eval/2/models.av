@@ -1,0 +1,135 @@
+// domain: Glacier Hut Wardens' Association
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+    TimeBinding,
+    TimeEncoding,
+}
+use @std.validate.{length, one_of}
+
+/// Embedded half-open window [opens_ms, closes_ms) in UTC Unix milliseconds.
+/// An unrecorded opening or closing means that edge was never written down,
+/// not that the window is unlimited.
+@model(quote { Semantics { validity: ValidityBinding { from: ["opens_ms"], until: ["closes_ms"] } } })
+export type Window = {
+    opens_ms: int?,
+    closes_ms: int?,
+}
+
+/// Embedded charge: whole minor currency units with an ISO currency code.
+/// It only appears inside other records.
+@model(quote { Semantics { quantities: [
+    QuantityBinding { amount: ["cents"], unit: .Field(["iso_code"]), decimal_places: 2 },
+] } })
+export type Fee = {
+    cents: int,
+    @length(min: 3, max: 3) iso_code: string,
+}
+
+/// A warden certified to keep mountain huts. Names are shared by many
+/// people; the licence code is the key. An unrecorded radio callsign means
+/// none has been issued to this warden.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "licence", path: ["licence_code"], normalization: .AsciiLowerTrim }],
+    label: ["name"],
+    times: [TimeBinding { path: ["certified_on"], encoding: .IsoDate }],
+    absences: [AbsenceBinding { path: ["callsign"], code: "none_issued" }],
+} })
+export type Warden = {
+    @length(min: 1, max: 256) name: string,
+    @length(min: 1, max: 32) licence_code: string,
+    certified_on: string,
+    @length(min: 1, max: 32) callsign: string?,
+}
+
+/// A mountain hut with beds. Its name is how people refer to it but is not
+/// a unique key. An unrecorded altitude means the site was never surveyed.
+@model(quote { Semantics {
+    label: ["name"],
+    quantities: [QuantityBinding { amount: ["altitude_m"], unit: .Constant("metre"), decimal_places: 0 }],
+    absences: [AbsenceBinding { path: ["altitude_m"], code: "unsurveyed" }],
+} })
+export type Hut = {
+    @length(min: 1, max: 256) name: string,
+    altitude_m: int?,
+    bed_count: int,
+}
+
+/// A warden's role at one hut over a window of time. The role is the
+/// relation label; the window says when it held. An open-ended window says
+/// nothing about whether the role continues.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["warden"], to: ["hut"], label: ["role"],
+        phrasing: "{from} is {label} at {to}",
+        labels: [
+            RelationLabel { value: "resident", forward: ["resident warden of"], reverse: ["home of"], broader: ["staff"] },
+            RelationLabel { value: "relief", forward: ["relief warden of"], reverse: ["covered by"], broader: ["staff"] },
+            RelationLabel { value: "staff", forward: ["staff at"] },
+            RelationLabel { value: "auditor", forward: ["auditor of"], reverse: ["audited by"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["tenure", "opens_ms"], until: ["tenure", "closes_ms"] },
+} })
+export type Posting = {
+    warden: Ref<Warden>,
+    hut: Ref<Hut>,
+    @one_of(["resident", "relief", "staff", "auditor"]) role: string,
+    tenure: Window,
+}
+
+/// A safety inspection of one hut. `filed_by` and `recorded_by` may be the
+/// same warden or two different ones. An unrecorded follow-up date means no
+/// revisit is required; an unrecorded countersigner means it awaits
+/// countersignature. An unrecorded repair quote means none was requested.
+@model(quote { Semantics {
+    label: ["headline"],
+    times: [
+        TimeBinding { path: ["inspected_at"], encoding: .UnixMillis },
+        TimeBinding { path: ["follow_up_on"], encoding: .IsoDate },
+    ],
+    absences: [
+        AbsenceBinding { path: ["follow_up_on"], code: "no_revisit_needed" },
+        AbsenceBinding { path: ["countersigned_by"], code: "awaiting_countersign" },
+        AbsenceBinding { path: ["repair_quote"], code: "quote_not_requested" },
+    ],
+} })
+export type Inspection = {
+    @length(min: 1, max: 256) headline: string,
+    hut: Ref<Hut>,
+    filed_by: Ref<Warden>,
+    recorded_by: Ref<Warden>,
+    countersigned_by: Ref<Warden>?,
+    inspected_at: int,
+    follow_up_on: string?,
+    repair_quote: Fee?,
+}
+
+/// A stock of supplies carried up to a hut, counted in the stated unit
+/// (for example litres or kilograms) with the cost paid. An unrecorded
+/// vendor means the goods were gifted or the source went unlogged.
+@model(quote { Semantics {
+    label: ["item"],
+    quantities: [QuantityBinding { amount: ["amount"], unit: .Field(["unit"]), decimal_places: 1 }],
+    absences: [AbsenceBinding { path: ["vendor"], code: "gifted_or_unlogged" }],
+} })
+export type Provision = {
+    @length(min: 1, max: 256) item: string,
+    hut: Ref<Hut>,
+    amount: float,
+    @length(min: 1, max: 32) unit: string,
+    cost: Fee,
+    @length(min: 1, max: 256) vendor: string?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

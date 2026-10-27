@@ -1,0 +1,174 @@
+// domain: Emberwick Pottery Studio
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    TimeBinding,
+    TimeEncoding,
+    AbsenceBinding,
+}
+use @std.validate.{length, one_of}
+
+/// Embedded stretch of time in UTC Unix milliseconds, half-open [begins_ms, ends_ms).
+/// An unrecorded bound means the studio ledger did not say, not that the stretch is endless.
+@model
+export type Window = {
+    begins_ms: int?,
+    ends_ms: int?,
+}
+
+/// Embedded money amount in minor units of a currency, such as cents in USD.
+@model
+export type Charge = {
+    minor_units: int,
+    iso_code: string,
+}
+
+/// Embedded weight with its own measure word, such as 850 g.
+@model
+export type Mass = {
+    amount: int,
+    measure: string,
+}
+
+/// A person who rents bench space and throws, hand-builds or glazes at the studio.
+/// The handle is what others call them at the wheel and is not unique; the
+/// member code is. An unrecorded email address means the potter did not
+/// offer one, not that they have none.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "studio_member", path: ["member_code"], normalization: .AsciiLowerTrim }],
+    label: ["handle"],
+    absences: [AbsenceBinding { path: ["email_address"], code: "not_offered" }],
+    times: [TimeBinding { path: ["joined_on"], encoding: .IsoDate }],
+} })
+export type Potter = {
+    @length(min: 1, max: 128) handle: string,
+    @length(min: 1, max: 32) member_code: string,
+    joined_on: string,
+    @length(min: 1, max: 128) email_address: string?,
+}
+
+/// A kiln in the firing room. Kiln names are shorthand used on the booking
+/// board and may be reused after a replacement. An unrecorded top
+/// temperature means the maker's rating was never found, not that it is cold.
+@model(quote { Semantics {
+    label: ["kiln_name"],
+    quantities: [
+        QuantityBinding { amount: ["chamber_litres"], unit: UnitBinding.Constant("litre") },
+        QuantityBinding { amount: ["rated_peak"], unit: UnitBinding.Constant("celsius") },
+    ],
+    absences: [AbsenceBinding { path: ["rated_peak"], code: "rating_missing" }],
+} })
+export type Kiln = {
+    @length(min: 1, max: 64) kiln_name: string,
+    chamber_litres: int,
+    rated_peak: int?,
+}
+
+/// One firing of one kiln. Two potters may be named: the one who loaded the
+/// shelves and the one who stacked the pieces on them. An unrecorded stacker
+/// means the loader also stacked; an unrecorded peak reading means the
+/// pyrometer was not logged, not zero degrees.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["peak_reading"], unit: UnitBinding.Constant("celsius") }],
+    times: [TimeBinding { path: ["lit_at"], encoding: .UnixMillis }],
+    absences: [
+        AbsenceBinding { path: ["peak_reading"], code: "pyrometer_unlogged" },
+        AbsenceBinding { path: ["stacked_by"], code: "same_as_loader" },
+    ],
+} })
+export type FiringRun = {
+    kiln: Ref<Kiln>,
+    loaded_by: Ref<Potter>,
+    stacked_by: Ref<Potter>?,
+    lit_at: int,
+    peak_reading: int?,
+}
+
+/// A finished or in-progress ceramic piece made by one potter. Titles are
+/// informal and repeat. An unrecorded glaze note means the piece was left
+/// unglazed or the glaze was not written down, not that it is bare by design.
+@model(quote { Semantics {
+    label: ["title"],
+    quantities: [QuantityBinding { amount: ["dry_weight", "amount"], unit: UnitBinding.Field(["dry_weight", "measure"]) }],
+    times: [TimeBinding { path: ["thrown_on"], encoding: .IsoDate }],
+    absences: [AbsenceBinding { path: ["glaze_note"], code: "glaze_unrecorded" }],
+} })
+export type Piece = {
+    @length(min: 1, max: 128) title: string,
+    maker: Ref<Potter>,
+    thrown_on: string,
+    dry_weight: Mass,
+    @length(min: 1, max: 256) glaze_note: string?,
+}
+
+/// A sale of one piece to a buyer at a stated price. An unrecorded buyer
+/// email means the buyer paid at the counter and left none.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["price", "minor_units"], unit: UnitBinding.Field(["price", "iso_code"]), decimal_places: 2 }],
+    times: [TimeBinding { path: ["sold_at"], encoding: .IsoInstant }],
+    absences: [AbsenceBinding { path: ["buyer_email"], code: "paid_at_counter" }],
+} })
+export type PieceSale = {
+    piece: Ref<Piece>,
+    @length(min: 1, max: 128) buyer_alias: string,
+    buyer_email: string?,
+    price: Charge,
+    sold_at: string,
+}
+
+/// A potter's formal permission to fire a kiln, valid over a window.
+/// Permission is not the same as upkeep of the machine. An unrecorded bound
+/// means the ledger gave no date.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["permitted"], to: ["machine"], label: ["clearance"],
+        phrasing: "{from} {label} {to}",
+        labels: [
+            RelationLabel { value: "is certified on", forward: ["is certified on"], reverse: ["certifies"], broader: ["may fire"] },
+            RelationLabel { value: "is licensed on", forward: ["is licensed on"], reverse: ["licenses"], broader: ["may fire"] },
+            RelationLabel { value: "is signed off on", forward: ["is signed off on"], reverse: ["signed off by"], broader: ["may fire"] },
+            RelationLabel { value: "may fire", forward: ["may fire"], reverse: ["fireable by"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["period", "begins_ms"], until: ["period", "ends_ms"] },
+} })
+export type KilnPermit = {
+    permitted: Ref<Potter>,
+    machine: Ref<Kiln>,
+    @one_of(["is certified on", "is licensed on", "is signed off on", "may fire"]) clearance: string,
+    period: Window,
+}
+
+/// A potter's practical duty to keep a kiln in working order, valid over a
+/// window. It says nothing about who is allowed to fire it. An unrecorded
+/// bound means the source gave no date.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["steward"], to: ["furnace"], label: ["chore"],
+        phrasing: "{from} {label} {to}",
+        labels: [
+            RelationLabel { value: "services", forward: ["services"], reverse: ["serviced by"], broader: ["keeps up"] },
+            RelationLabel { value: "repairs", forward: ["repairs"], reverse: ["repaired by"], broader: ["keeps up"] },
+            RelationLabel { value: "maintains", forward: ["maintains"], reverse: ["maintained by"], broader: ["keeps up"] },
+            RelationLabel { value: "keeps up", forward: ["keeps up"], reverse: ["kept up by"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["stretch", "begins_ms"], until: ["stretch", "ends_ms"] },
+} })
+export type KilnUpkeep = {
+    steward: Ref<Potter>,
+    furnace: Ref<Kiln>,
+    @one_of(["services", "repairs", "maintains", "keeps up"]) chore: string,
+    stretch: Window,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

@@ -19,17 +19,23 @@ def freeze(family, seeds, name):
     rows, worlds = [], []
     for seed in seeds:
         d = OUT / family / str(seed)
-        spec = json.loads((d / "spec.json").read_text())
-        items = json.loads((d / "items.json").read_text())
+        domain = (d / "models.av").read_text().splitlines()[0].split(":", 1)[1].strip()
+        model_names = [m["name"] for m in json.loads((d / "catalog.json").read_text())["catalog"]["models"]]
+        strict = d / "items.strict.json"
+        items = json.loads((strict if strict.exists() else d / "items.json").read_text())
         world = f"{family}-{seed}"
-        worlds.append({"world": world, "domain": spec["domain"], "questions": len(items), "models": [m["name"] for m in spec["models"].values()]})
+        worlds.append({"world": world, "domain": domain, "questions": len(items), "models": model_names})
         for n, it in enumerate(items, 1):
-            rows.append({"id": f"{world}:{n:02d}", "world": world, "world_dir": f"{family}/{seed}", "domain": spec["domain"], "kind": it["kind"], "tags": it["tags"],
+            rows.append({"id": f"{world}:{n:02d}", "world": world, "world_dir": f"{family}/{seed}", "domain": domain, "kind": it["kind"], "tags": it["tags"],
                          "intent": it["intent"], "question": it["question"], "cypher": it["cypher"], "params": it["params"], "as_of": it["as_of"],
                          "speaker": it["speaker"], "made": it["made"], "gold": it["gold"], "steps": it["steps"], "hops": it["hops"]})
     SPLITS.mkdir(exist_ok=True)
     (SPLITS / f"{name}.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    selftest = SPLITS / f"judge-selftest-{family}.json"
     meta = {"name": name, "family": family, "questions": len(rows), "worlds": worlds,
+            "judge": {"kept_only_if": "question carries the plan's names and literals; asks for each step; picks the plan over minimal edits in both option orders",
+                      "selftest_reject_rates": json.loads(selftest.read_text()) if selftest.exists() else None,
+                      "generators": sorted({r["made"].get("model", "plain") for r in rows if isinstance(r["made"], dict)})},
             "by_kind": {k: sum(r["kind"] == k for r in rows) for k in sorted({r["kind"] for r in rows})},
             "by_tag": {t: sum(t in r["tags"] for r in rows) for t in sorted({t for r in rows for t in r["tags"]})}}
     (SPLITS / f"{name}.meta.json").write_text(json.dumps(meta, indent=1))

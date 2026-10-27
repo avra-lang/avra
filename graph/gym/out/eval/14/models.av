@@ -1,0 +1,136 @@
+// domain: Seed Library Cooperative
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    TimeBinding,
+    TimeEncoding,
+    AbsenceBinding,
+}
+use @std.validate.{length, one_of}
+
+/// A deposit held against borrowed seed, embedded in records that take a
+/// refundable sum. Minor units are whole units of the stated currency; a
+/// deposit is never stored without its currency code.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["minor_units"], unit: .Field(["currency"]), decimal_places: 2 }],
+} })
+export type Deposit = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency: string,
+}
+
+/// A span of calendar dates within a growing season, embedded in records that
+/// hold only for a while. An unrecorded start or end means the logbook gave
+/// no date for that bound; it does not mean the span is open-ended.
+@model(quote { Semantics { validity: ValidityBinding { from: ["first_day"], until: ["last_day"], encoding: .IsoDate } } })
+export type GrowingSpan = {
+    first_day: string?,
+    last_day: string?,
+}
+
+/// A person enrolled in the seed library who borrows, sows or returns seed.
+/// The nickname is how volunteers call them and is not a unique key; the
+/// library card number is. An unrecorded allotment bed means the gardener
+/// has no bed in the community garden, not that the bed is unnumbered.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "library_card", path: ["card_no"], normalization: .AsciiLowerTrim }],
+    label: ["nickname"],
+    times: [TimeBinding { path: ["enrolled_at"], encoding: .UnixMillis }],
+    absences: [AbsenceBinding { path: ["allotment_bed"], code: "no_bed_allotted" }],
+} })
+export type Gardener = {
+    @length(min: 1, max: 24) card_no: string,
+    @length(min: 1, max: 100) nickname: string,
+    enrolled_at: int,
+    @length(min: 1, max: 12) allotment_bed: string?,
+}
+
+/// A kind of plant whose seed the library keeps, such as a bean landrace.
+/// The variety name is how members mention it and several seed packets may
+/// share it. An unrecorded germination rate means no germination test has
+/// been run, not that nothing sprouted.
+@model(quote { Semantics {
+    label: ["variety_name"],
+    quantities: [
+        QuantityBinding { amount: ["germination_rate"], unit: .Constant("percent") },
+        QuantityBinding { amount: ["days_to_harvest"], unit: .Constant("day") },
+    ],
+    absences: [AbsenceBinding { path: ["germination_rate"], code: "never_tested" }],
+} })
+export type SeedVariety = {
+    @length(min: 1, max: 120) variety_name: string,
+    @one_of(["bean", "tomato", "squash", "herb", "grain", "flower"]) crop_family: string,
+    days_to_harvest: int,
+    germination_rate: int?,
+}
+
+/// One packed lot of seed on the library drawers. A record is a lot that was
+/// packed; the donor gave the seed and the collector gathered and dried it,
+/// possibly the same gardener. An unrecorded storage note means nobody wrote
+/// one at packing, and an unrecorded recall reason means the lot was not
+/// recalled or the reason was never noted.
+@model(quote { Semantics {
+    label: ["lot_code"],
+    quantities: [
+        QuantityBinding { amount: ["net_weight"], unit: .Field(["weight_unit"]) },
+        QuantityBinding { amount: ["seed_count"], unit: .Constant("seed") },
+        QuantityBinding { amount: ["deposit", "minor_units"], unit: .Field(["deposit", "currency"]), decimal_places: 2 },
+    ],
+    times: [
+        TimeBinding { path: ["packed_at"], encoding: .IsoInstant },
+        TimeBinding { path: ["best_before"], encoding: .IsoDate },
+    ],
+    absences: [
+        AbsenceBinding { path: ["storage_note"], code: "none_written" },
+        AbsenceBinding { path: ["recall_reason"], code: "not_recalled" },
+    ],
+} })
+export type SeedLot = {
+    @length(min: 1, max: 40) lot_code: string,
+    variety: Ref<SeedVariety>,
+    donor: Ref<Gardener>,
+    collector: Ref<Gardener>,
+    packed_at: string,
+    best_before: string,
+    net_weight: int,
+    @one_of(["gram", "ounce"]) weight_unit: string,
+    seed_count: int,
+    deposit: Deposit,
+    @length(min: 1, max: 300) storage_note: string?,
+    @length(min: 1, max: 300) recall_reason: string?,
+}
+
+/// A directed stewardship: the gardener takes a role toward a variety during
+/// a growing span. For "Odile is custodian of the Cherokee bean", gardener=
+/// Odile, variety=Cherokee bean, role=custodian. A record asserts no other
+/// variety, and an unrecorded span bound means the pledge form gave no date
+/// there, not that the pledge never ends.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["gardener"], to: ["variety"], label: ["role"],
+        phrasing: "{from} is a {label} of {to}",
+        labels: [
+            RelationLabel { value: "grower", forward: ["grower", "sows each year"] },
+            RelationLabel { value: "saver", forward: ["saver", "keeps seed from"], broader: ["grower"] },
+            RelationLabel { value: "custodian", forward: ["custodian", "guards the line of"], broader: ["saver"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["season", "first_day"], until: ["season", "last_day"], encoding: .IsoDate },
+} })
+export type Stewardship = {
+    gardener: Ref<Gardener>,
+    variety: Ref<SeedVariety>,
+    @one_of(["grower", "saver", "custodian"]) role: string,
+    season: GrowingSpan,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

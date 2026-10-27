@@ -1,0 +1,147 @@
+// domain: Greywater Beekeeping Guild
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+    TimeBinding,
+    TimeEncoding,
+}
+use @std.validate.{length, one_of}
+
+/// A sum of money in minor units with its currency code, embedded in the
+/// record that charges or earns it. An unrecorded Coin is never zero.
+@model
+export type Coin = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency_code: string,
+}
+
+/// A span of Unix-millisecond instants, half-open [opens_ms, closes_ms).
+/// An unrecorded bound is unspecified, not proof of an endless or instant span.
+@model
+export type Stretch = {
+    opens_ms: int?,
+    closes_ms: int?,
+}
+
+/// A member of the guild who keeps bees. The handle is how fellow members
+/// mention them; it is not unique. An unrecorded phone means the member
+/// gave none or it was withheld, and the reason code says which kind of gap.
+@model(quote { Semantics {
+    label: ["handle"],
+    times: [TimeBinding { path: ["enrolled_on"], encoding: .IsoDate }],
+    absences: [AbsenceBinding { path: ["phone"], code: "withheld_by_member" }],
+} })
+export type Beekeeper = {
+    @length(min: 1, max: 80) handle: string,
+    enrolled_on: string,
+    @length(min: 5, max: 32) phone: string?,
+}
+
+/// A place where hives stand, such as a meadow edge or a rooftop. The site
+/// label is told apart by guild members, not guaranteed unique. An
+/// unrecorded altitude means nobody surveyed it, not sea level.
+@model(quote { Semantics {
+    label: ["site_label"],
+    absences: [AbsenceBinding { path: ["altitude_m"], code: "never_surveyed" }],
+} })
+export type Apiary = {
+    @length(min: 1, max: 120) site_label: string,
+    altitude_m: int?,
+}
+
+/// One physical hive box stood at an apiary. Its painted tag is how it is
+/// mentioned. An unrecorded installation time means the box predates the
+/// ledger, not that it was never installed.
+@model(quote { Semantics {
+    label: ["painted_tag"],
+    times: [TimeBinding { path: ["installed_at"], encoding: .UnixMillis }],
+    absences: [AbsenceBinding { path: ["installed_at"], code: "predates_ledger" }],
+} })
+export type Hive = {
+    @length(min: 1, max: 40) painted_tag: string,
+    stands_at: Ref<Apiary>,
+    installed_at: int?,
+}
+
+/// A keeper's standing duty toward one hive over a stretch of time.
+/// The duty text must be one of the closed duties; a keeper holding no
+/// record for a hive makes no claim that nobody tends it.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["keeper"], to: ["hive"], label: ["duty"],
+        phrasing: "{from} acts as {label} for {to}",
+        labels: [
+            RelationLabel { value: "lead_tender", forward: ["lead tender", "head keeper"], broader: ["tender"] },
+            RelationLabel { value: "weekend_tender", forward: ["weekend tender"], broader: ["tender"] },
+            RelationLabel { value: "tender", forward: ["tender"] },
+            RelationLabel { value: "mentor", forward: ["mentor"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["tenure", "opens_ms"], until: ["tenure", "closes_ms"] },
+} })
+export type Stewardship = {
+    keeper: Ref<Beekeeper>,
+    hive: Ref<Hive>,
+    @one_of(["lead_tender", "weekend_tender", "tender", "mentor"]) duty: string,
+    tenure: Stretch,
+}
+
+/// A colony division: bees and brood moved out of one hive to found
+/// another. parent_hive is the box that was divided, donor_hive the box that
+/// lent the extra frames, which may be the same. An unrecorded donor means
+/// the frames came from outside the guild's hives.
+@model(quote { Semantics {
+    times: [TimeBinding { path: ["divided_on"], encoding: .IsoDate }],
+    absences: [AbsenceBinding { path: ["donor_hive"], code: "frames_came_from_outside" }],
+} })
+export type Division = {
+    parent_hive: Ref<Hive>,
+    donor_hive: Ref<Hive>?,
+    daughter_hive: Ref<Hive>,
+    divided_on: string,
+}
+
+/// One honey extraction from a hive. net_grams is the weighed honey only;
+/// the sale value is what the guild shop priced it at. An unrecorded sale
+/// value means the jars were gifted or not yet priced, not free.
+@model(quote { Semantics {
+    quantities: [
+        QuantityBinding { amount: ["net_grams"], unit: UnitBinding.Constant("g") },
+        QuantityBinding { amount: ["sale_value", "minor_units"], unit: UnitBinding.Field(["sale_value", "currency_code"]), decimal_places: 2 },
+    ],
+    times: [TimeBinding { path: ["extracted_at"], encoding: .UnixMillis }],
+    absences: [AbsenceBinding { path: ["sale_value"], code: "gifted_or_unpriced" }],
+} })
+export type Extraction = {
+    hive: Ref<Hive>,
+    extracted_at: int,
+    net_grams: int,
+    sale_value: Coin?,
+}
+
+/// A medicine or feed applied to a hive. dose_amount is measured in
+/// dose_unit as written on the product. An unrecorded lab_finding means no
+/// sample was sent, not a clean result.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["dose_amount"], unit: UnitBinding.Field(["dose_unit"]) }],
+    times: [TimeBinding { path: ["applied_at"], encoding: .IsoInstant }],
+    absences: [AbsenceBinding { path: ["lab_finding"], code: "no_sample_sent" }],
+} })
+export type Dosing = {
+    hive: Ref<Hive>,
+    applied_at: string,
+    dose_amount: int,
+    @length(min: 1, max: 24) dose_unit: string,
+    @length(min: 1, max: 400) lab_finding: string?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

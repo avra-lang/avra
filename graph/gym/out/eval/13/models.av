@@ -1,0 +1,179 @@
+// domain: Mountain Rescue Team
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    TimeBinding,
+    TimeEncoding,
+    AbsenceBinding,
+}
+use @std.validate.{length, one_of}
+
+/// A half-open interval of days in which something held, in UTC Unix
+/// milliseconds. A missing opening bound means the start was not recorded,
+/// and a missing closing bound means no end is known; neither means "always".
+@model(quote { Semantics { validity: ValidityBinding { from: ["opens_ms"], until: ["closes_ms"] } } })
+export type Span = {
+    opens_ms: int?,
+    closes_ms: int?,
+}
+
+/// A measured mass with the unit it was weighed in, such as 12 kg.
+/// The pair is only meaningful together; neither half stands alone.
+@model(quote { Semantics { quantities: [QuantityBinding { amount: ["amount"], unit: .Field(["unit"]), decimal_places: 1 }] } })
+export type Mass = {
+    amount: int,
+    @one_of(["g", "kg", "lb"]) unit: string,
+}
+
+/// A volunteer on the rescue roster. A name is not a unique key; the roster
+/// number is. A missing joined_on means the enrolment date was never written
+/// down, and a missing medical_expiry means no medical certificate is held.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "roster", path: ["roster_no"], normalization: .Trim }],
+    label: ["name"],
+    times: [TimeBinding { path: ["joined_on"], encoding: .IsoDate }],
+    absences: [
+        AbsenceBinding { path: ["joined_on"], code: "enrolment_undocumented" },
+        AbsenceBinding { path: ["medical_expiry"], code: "no_certificate_held" },
+    ],
+} })
+export type Member = {
+    @length(min: 1, max: 128) name: string,
+    @length(min: 1, max: 32) roster_no: string,
+    joined_on: string?,
+    medical_expiry: string?,
+}
+
+/// A hut, depot or lodge from which callouts are run. Names are not keys.
+/// A missing elevation means the site was never surveyed, not sea level.
+@model(quote { Semantics {
+    label: ["name"],
+    quantities: [QuantityBinding { amount: ["elevation_m"], unit: .Constant("metre") }],
+    absences: [AbsenceBinding { path: ["elevation_m"], code: "not_surveyed" }],
+} })
+export type Station = {
+    @length(min: 1, max: 128) name: string,
+    elevation_m: int?,
+}
+
+/// A rescue vehicle, identified in conversation by its radio callsign.
+/// seats counts passenger places; a missing registered_on means the date
+/// is unknown, not that the vehicle is unregistered.
+@model(quote { Semantics {
+    label: ["callsign"],
+    quantities: [QuantityBinding { amount: ["seats"], unit: .Constant("seat") }],
+    times: [TimeBinding { path: ["registered_on"], encoding: .IsoDate }],
+    absences: [AbsenceBinding { path: ["registered_on"], code: "registration_unknown" }],
+} })
+export type Vehicle = {
+    @length(min: 1, max: 32) callsign: string,
+    seats: int,
+    registered_on: string?,
+}
+
+/// A piece of carried gear such as a rope or stretcher. load is its working
+/// limit as weighed. A missing serviced_on means no service has been logged,
+/// which does not say the item is unsafe.
+@model(quote { Semantics {
+    label: ["title"],
+    quantities: [QuantityBinding { amount: ["load", "amount"], unit: .Field(["load", "unit"]), decimal_places: 1 }],
+    times: [TimeBinding { path: ["serviced_on"], encoding: .IsoDate }],
+    absences: [AbsenceBinding { path: ["serviced_on"], code: "never_serviced" }],
+} })
+export type Gear = {
+    @length(min: 1, max: 128) title: string,
+    load: Mass,
+    serviced_on: string?,
+    kept_at: Ref<Station>,
+}
+
+/// One emergency response. leader commands the people on the hill and
+/// coordinator runs the radio desk; they may be the same member.
+/// A missing concluded_on means the callout is still open. A missing
+/// duration_minutes or altitude_m means it was not logged, not that it was
+/// zero, and a missing outcome means no debrief has been held.
+@model(quote { Semantics {
+    label: ["summary"],
+    quantities: [
+        QuantityBinding { amount: ["duration_minutes"], unit: .Constant("minute") },
+        QuantityBinding { amount: ["altitude_m"], unit: .Constant("metre") },
+    ],
+    times: [
+        TimeBinding { path: ["alerted_at"], encoding: .UnixMillis },
+        TimeBinding { path: ["concluded_on"], encoding: .IsoDate },
+    ],
+    absences: [
+        AbsenceBinding { path: ["concluded_on"], code: "still_open" },
+        AbsenceBinding { path: ["duration_minutes"], code: "not_logged" },
+        AbsenceBinding { path: ["altitude_m"], code: "not_logged" },
+        AbsenceBinding { path: ["outcome"], code: "awaiting_debrief" },
+    ],
+} })
+export type Callout = {
+    @length(min: 1, max: 256) summary: string,
+    alerted_at: int,
+    concluded_on: string?,
+    leader: Ref<Member>,
+    coordinator: Ref<Member>,
+    base: Ref<Station>,
+    duration_minutes: int?,
+    altitude_m: int?,
+    outcome: string?,
+}
+
+/// A member's clearance to operate one vehicle during a span.
+/// For "Ines is cleared on Bravo-2", from=Ines, to=Bravo-2, grade=cleared.
+/// cleared and approved are near-synonyms; both mean the member may drive.
+/// This does not say the member holds the vehicle in custody.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["member"], to: ["vehicle"], label: ["grade"],
+        phrasing: "{from} is {label} for {to}",
+        labels: [
+            RelationLabel { value: "cleared", forward: ["cleared on", "cleared for"], broader: ["permitted"] },
+            RelationLabel { value: "approved", forward: ["approved on", "approved for"], broader: ["permitted"] },
+            RelationLabel { value: "permitted", forward: ["permitted on"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["span", "opens_ms"], until: ["span", "closes_ms"] },
+} })
+export type VehicleClearance = {
+    member: Ref<Member>,
+    vehicle: Ref<Vehicle>,
+    @one_of(["cleared", "approved", "permitted"]) grade: string,
+    span: Span,
+}
+
+/// A member's responsibility for the upkeep of one vehicle during a span.
+/// For "Tomas looks after Bravo-2", from=Tomas, to=Bravo-2, duty=custodian.
+/// custodian and keeper are near-synonyms for the same duty. This does not
+/// say the member may drive it; that is a VehicleClearance.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["member"], to: ["vehicle"], label: ["duty"],
+        phrasing: "{from} is {label} of {to}",
+        labels: [
+            RelationLabel { value: "custodian", forward: ["custodian of", "looks after"], broader: ["caretaker"] },
+            RelationLabel { value: "keeper", forward: ["keeper of", "minds"], broader: ["caretaker"] },
+            RelationLabel { value: "caretaker", forward: ["caretaker of"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["span", "opens_ms"], until: ["span", "closes_ms"] },
+} })
+export type VehicleCustody = {
+    member: Ref<Member>,
+    vehicle: Ref<Vehicle>,
+    @one_of(["custodian", "keeper", "caretaker"]) duty: string,
+    span: Span,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

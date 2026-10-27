@@ -1,0 +1,113 @@
+// domain: Brindle Quay Dive School
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+    TimeBinding,
+}
+use @std.validate.{length, one_of}
+
+/// A charge in minor currency units with its ISO currency code. Embedded in
+/// other records; it is never a standalone record.
+@model(quote { Semantics { quantities: [
+    QuantityBinding { amount: ["minor_units"], unit: .Field(["currency_code"]), decimal_places: 2 },
+] } })
+export type Charge = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency_code: string,
+}
+
+/// Embedded valid-time bounds in UTC Unix milliseconds, half-open
+/// [starts_ms, ends_ms). An unrecorded bound means the school never noted it,
+/// not that the period is unbounded.
+@model(quote { Semantics { validity: ValidityBinding { from: ["starts_ms"], until: ["ends_ms"] } } })
+export type Tenure = {
+    starts_ms: int?,
+    ends_ms: int?,
+}
+
+/// A person who dives with the school, as student or as qualified diver. A
+/// record is one person regardless of how many outings they join. Callsigns
+/// are not unique keys. An unrecorded emergency_line means none was ever
+/// collected, not that the diver has no one to call.
+@model(quote { Semantics { label: ["callsign"] } })
+export type Diver = {
+    @length(min: 1, max: 100) callsign: string,
+    @length(min: 3, max: 200) emergency_line: string?,
+}
+
+/// A place in the water where outings descend. A record is one site, not one
+/// descent. An unrecorded hazard_note means no hazard has been reported, not
+/// that the site was judged safe.
+@model(quote { Semantics { label: ["site_name"] } })
+export type DiveSite = {
+    @length(min: 1, max: 200) site_name: string,
+    @length(min: 1, max: 400) hazard_note: string?,
+}
+
+/// A teaching bond between two divers: the tutor trains the learner towards
+/// one certification during a tenure. A record is one bond for one
+/// certification. An unrecorded tenure bound means the date was not stated,
+/// not that the bond is open-ended.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["tutor"], to: ["learner"], label: ["certification"],
+        phrasing: "{from} trains {to} towards {label}",
+        labels: [
+            RelationLabel { value: "open_water", forward: ["open water course"] },
+            RelationLabel { value: "rescue", forward: ["rescue course", "rescue diver"] },
+            RelationLabel { value: "night_dive", forward: ["night diving"] },
+            RelationLabel { value: "wreck", forward: ["wreck penetration"], broader: ["rescue"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["tenure", "starts_ms"], until: ["tenure", "ends_ms"] },
+} })
+export type Tutelage = {
+    tutor: Ref<Diver>,
+    learner: Ref<Diver>,
+    @one_of(["open_water", "rescue", "night_dive", "wreck"]) certification: string,
+    tenure: Tenure,
+}
+
+/// One scheduled group descent at a site. `supervisor` is the diver
+/// answerable for safety underwater; `overseer` is the diver who handled
+/// bookings and the boat manifest. They may be the same record. An
+/// unrecorded settled_on means the fee is not yet settled (code unsettled);
+/// an unrecorded abort_reason means the outing was completed (code
+/// completed_fully).
+@model(quote { Semantics {
+    label: ["outing_code"],
+    quantities: [
+        QuantityBinding { amount: ["fee", "minor_units"], unit: .Field(["fee", "currency_code"]), decimal_places: 2 },
+        QuantityBinding { amount: ["max_depth_m"], unit: .Constant("metre") },
+    ],
+    times: [
+        TimeBinding { path: ["held_on"], encoding: .IsoDate },
+        TimeBinding { path: ["settled_on"], encoding: .IsoDate },
+    ],
+    absences: [
+        AbsenceBinding { path: ["settled_on"], code: "unsettled" },
+        AbsenceBinding { path: ["abort_reason"], code: "completed_fully" },
+    ],
+} })
+export type Outing = {
+    @length(min: 1, max: 60) outing_code: string,
+    site: Ref<DiveSite>,
+    supervisor: Ref<Diver>,
+    overseer: Ref<Diver>,
+    fee: Charge,
+    max_depth_m: int,
+    held_on: string,
+    settled_on: string?,
+    @length(min: 1, max: 500) abort_reason: string?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

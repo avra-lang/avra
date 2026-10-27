@@ -1,0 +1,737 @@
+{
+ "catalog": {
+  "derivations": [],
+  "fingerprint": "4ee02b3628293a5f12a65f06ca7895124a29ab1d5d05b1f49b79f91d05f659b4",
+  "models": [
+   {
+    "description": "A shop, gallery or private customer who buys finished pottery. The\ntrading name is how staff mention them and is not unique. An unrecorded\ndelivery zone means the customer always collects, not that it is blank.",
+    "name": "Customer",
+    "properties": [
+     {
+      "default_source": null,
+      "description": "",
+      "name": "trading_name",
+      "rules": [
+       "length(min: 1, max: 128)"
+      ],
+      "shape": "string"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "delivery_zone",
+      "rules": [],
+      "shape": {
+       "optional": "string"
+      }
+     }
+    ],
+    "rules": [],
+    "semantics": {
+     "absences": [
+      {
+       "code": "pickup_only",
+       "path": [
+        "delivery_zone"
+       ]
+      }
+     ],
+     "identities": [],
+     "label": [
+      "trading_name"
+     ],
+     "quantities": [],
+     "relation": null,
+     "times": [],
+     "validity": null,
+     "version": 1
+    }
+   },
+   {
+    "description": "One loaded firing of a kiln by a potter. The loader put the work in; the\nsupervisor watched the cycle, and is unrecorded when the loader did both.\nThe collect date is an ISO date; unrecorded means nobody has been told a\npick-up day yet, not that the work is abandoned. The fee is the shed\ncharge for the firing, not what a customer paid for pots.",
+    "name": "Firing",
+    "properties": [
+     {
+      "default_source": null,
+      "description": "",
+      "name": "kiln",
+      "rules": [],
+      "shape": {
+       "reference": "Kiln"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "loader",
+      "rules": [],
+      "shape": {
+       "reference": "Potter"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "supervisor",
+      "rules": [],
+      "shape": {
+       "optional": {
+        "reference": "Potter"
+       }
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "shed_fee",
+      "rules": [],
+      "shape": {
+       "embedded": "Sum"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "peak_celsius",
+      "rules": [],
+      "shape": "integer"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "lit_at",
+      "rules": [],
+      "shape": "integer",
+      "time": {
+       "encoding": "unix_millis"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "collect_on",
+      "rules": [],
+      "shape": {
+       "optional": "string"
+      },
+      "time": {
+       "encoding": "iso_date"
+      }
+     }
+    ],
+    "rules": [],
+    "semantics": {
+     "absences": [
+      {
+       "code": "no_pickup_day_told",
+       "path": [
+        "collect_on"
+       ]
+      },
+      {
+       "code": "same_as_loader",
+       "path": [
+        "supervisor"
+       ]
+      }
+     ],
+     "identities": [],
+     "label": null,
+     "quantities": [
+      {
+       "amount": [
+        "peak_celsius"
+       ],
+       "decimal_places": 0,
+       "unit": {
+        "constant": "celsius"
+       }
+      },
+      {
+       "amount": [
+        "shed_fee",
+        "minor_amount"
+       ],
+       "decimal_places": 2,
+       "unit": {
+        "path": [
+         "shed_fee",
+         "currency_code"
+        ]
+       }
+      }
+     ],
+     "relation": null,
+     "times": [
+      {
+       "encoding": "unix_millis",
+       "path": [
+        "lit_at"
+       ]
+      },
+      {
+       "encoding": "iso_date",
+       "path": [
+        "collect_on"
+       ]
+      }
+     ],
+     "validity": null,
+     "version": 1
+    }
+   },
+   {
+    "description": "One kiln in the firing shed. The kiln name is how it is mentioned and is\nnot a unique key. An unrecorded install year means the data plate was\nunreadable, not that the kiln has no age.",
+    "name": "Kiln",
+    "properties": [
+     {
+      "default_source": null,
+      "description": "",
+      "name": "kiln_name",
+      "rules": [
+       "length(min: 1, max: 128)"
+      ],
+      "shape": "string"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "capacity_litres",
+      "rules": [],
+      "shape": "integer"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "install_year",
+      "rules": [],
+      "shape": {
+       "optional": "integer"
+      }
+     }
+    ],
+    "rules": [],
+    "semantics": {
+     "absences": [
+      {
+       "code": "plate_unreadable",
+       "path": [
+        "install_year"
+       ]
+      }
+     ],
+     "identities": [],
+     "label": [
+      "kiln_name"
+     ],
+     "quantities": [
+      {
+       "amount": [
+        "capacity_litres"
+       ],
+       "decimal_places": 0,
+       "unit": {
+        "constant": "litre"
+       }
+      }
+     ],
+     "relation": null,
+     "times": [],
+     "validity": null,
+     "version": 1
+    }
+   },
+   {
+    "description": "A potter's clearance to run a kiln unsupervised during a window of days.\nFor \"Wren cleared on the Big Gas\", member=Wren, kiln=the Big Gas,\nstanding=cleared. Cleared and approved are the same clearance. It asserts\nnothing about renting the kiln, which is recorded as KilnTenancy.",
+    "name": "KilnClearance",
+    "properties": [
+     {
+      "default_source": null,
+      "description": "",
+      "name": "member",
+      "rules": [],
+      "shape": {
+       "reference": "Potter"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "enum": [
+       "cleared",
+       "approved",
+       "clearance"
+      ],
+      "name": "standing",
+      "rules": [
+       "one_of([\"cleared\", \"approved\", \"clearance\"])"
+      ],
+      "shape": "string"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "kiln",
+      "rules": [],
+      "shape": {
+       "reference": "Kiln"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "window",
+      "rules": [],
+      "shape": {
+       "embedded": "Window"
+      }
+     }
+    ],
+    "rules": [],
+    "semantics": {
+     "absences": [],
+     "identities": [],
+     "label": null,
+     "quantities": [],
+     "relation": {
+      "from": [
+       "member"
+      ],
+      "label": [
+       "standing"
+      ],
+      "labels": [
+       {
+        "broader": [
+         "clearance"
+        ],
+        "forward": [
+         "cleared"
+        ],
+        "reverse": [
+         "has cleared"
+        ],
+        "value": "cleared"
+       },
+       {
+        "broader": [
+         "clearance"
+        ],
+        "forward": [
+         "approved"
+        ],
+        "reverse": [
+         "has approved"
+        ],
+        "value": "approved"
+       },
+       {
+        "broader": [],
+        "forward": [
+         "holds clearance for"
+        ],
+        "reverse": [],
+        "value": "clearance"
+       }
+      ],
+      "phrasing": "{from} is {label} on {to}",
+      "to": [
+       "kiln"
+      ]
+     },
+     "times": [],
+     "validity": {
+      "encoding": "iso_date",
+      "from": [
+       "window",
+       "opens"
+      ],
+      "interval": "half_open",
+      "until": [
+       "window",
+       "closes"
+      ]
+     },
+     "version": 1
+    }
+   },
+   {
+    "description": "A potter's paid hold on a kiln during a window of days. For \"Wren rents\nthe Big Gas\", member=Wren, kiln=the Big Gas, hold=rents. Rents and leases\nare the same paid hold. It asserts nothing about clearance to operate,\nwhich is recorded as KilnClearance.",
+    "name": "KilnTenancy",
+    "properties": [
+     {
+      "default_source": null,
+      "description": "",
+      "name": "member",
+      "rules": [],
+      "shape": {
+       "reference": "Potter"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "enum": [
+       "rents",
+       "leases",
+       "tenancy"
+      ],
+      "name": "hold",
+      "rules": [
+       "one_of([\"rents\", \"leases\", \"tenancy\"])"
+      ],
+      "shape": "string"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "kiln",
+      "rules": [],
+      "shape": {
+       "reference": "Kiln"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "window",
+      "rules": [],
+      "shape": {
+       "embedded": "Window"
+      }
+     }
+    ],
+    "rules": [],
+    "semantics": {
+     "absences": [],
+     "identities": [],
+     "label": null,
+     "quantities": [],
+     "relation": {
+      "from": [
+       "member"
+      ],
+      "label": [
+       "hold"
+      ],
+      "labels": [
+       {
+        "broader": [
+         "tenancy"
+        ],
+        "forward": [
+         "rents"
+        ],
+        "reverse": [
+         "is rented by"
+        ],
+        "value": "rents"
+       },
+       {
+        "broader": [
+         "tenancy"
+        ],
+        "forward": [
+         "leases"
+        ],
+        "reverse": [
+         "is leased by"
+        ],
+        "value": "leases"
+       },
+       {
+        "broader": [],
+        "forward": [
+         "has a paid hold on"
+        ],
+        "reverse": [],
+        "value": "tenancy"
+       }
+      ],
+      "phrasing": "{from} {label} {to}",
+      "to": [
+       "kiln"
+      ]
+     },
+     "times": [],
+     "validity": {
+      "encoding": "iso_date",
+      "from": [
+       "window",
+       "opens"
+      ],
+      "interval": "half_open",
+      "until": [
+       "window",
+       "closes"
+      ]
+     },
+     "version": 1
+    }
+   },
+   {
+    "description": "A sale of pots to a customer. The purchaser placed the order; the payer\nsettled the invoice, and is unrecorded when that was the purchaser. The\ndelivered date is an ISO date; unrecorded means not yet delivered, not\nthat the order was lost. The total is the invoiced sum at sale time.",
+    "name": "PotSale",
+    "properties": [
+     {
+      "default_source": null,
+      "description": "",
+      "name": "purchaser",
+      "rules": [],
+      "shape": {
+       "reference": "Customer"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "payer",
+      "rules": [],
+      "shape": {
+       "optional": {
+        "reference": "Customer"
+       }
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "total",
+      "rules": [],
+      "shape": {
+       "embedded": "Sum"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "parcel_grams",
+      "rules": [],
+      "shape": "integer"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "placed_at",
+      "rules": [],
+      "shape": "string",
+      "time": {
+       "encoding": "iso_instant"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "delivered_on",
+      "rules": [],
+      "shape": {
+       "optional": "string"
+      },
+      "time": {
+       "encoding": "iso_date"
+      }
+     }
+    ],
+    "rules": [],
+    "semantics": {
+     "absences": [
+      {
+       "code": "not_yet_delivered",
+       "path": [
+        "delivered_on"
+       ]
+      },
+      {
+       "code": "same_as_purchaser",
+       "path": [
+        "payer"
+       ]
+      }
+     ],
+     "identities": [],
+     "label": null,
+     "quantities": [
+      {
+       "amount": [
+        "parcel_grams"
+       ],
+       "decimal_places": 0,
+       "unit": {
+        "constant": "gram"
+       }
+      },
+      {
+       "amount": [
+        "total",
+        "minor_amount"
+       ],
+       "decimal_places": 2,
+       "unit": {
+        "path": [
+         "total",
+         "currency_code"
+        ]
+       }
+      }
+     ],
+     "relation": null,
+     "times": [
+      {
+       "encoding": "iso_instant",
+       "path": [
+        "placed_at"
+       ]
+      },
+      {
+       "encoding": "iso_date",
+       "path": [
+        "delivered_on"
+       ]
+      }
+     ],
+     "validity": null,
+     "version": 1
+    }
+   },
+   {
+    "description": "A member who throws or glazes pots at the co-op. The handle is the name\nused to mention them at the wheel, not a unique key. An unrecorded studio\nemail means the potter keeps it private, not that none exists.",
+    "name": "Potter",
+    "properties": [
+     {
+      "default_source": null,
+      "description": "",
+      "name": "handle",
+      "rules": [
+       "length(min: 1, max: 128)"
+      ],
+      "shape": "string"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "studio_email",
+      "rules": [],
+      "shape": {
+       "optional": "string"
+      }
+     }
+    ],
+    "rules": [],
+    "semantics": {
+     "absences": [
+      {
+       "code": "kept_private",
+       "path": [
+        "studio_email"
+       ]
+      }
+     ],
+     "identities": [],
+     "label": [
+      "handle"
+     ],
+     "quantities": [],
+     "relation": null,
+     "times": [],
+     "validity": null,
+     "version": 1
+    }
+   },
+   {
+    "description": "Embedded sum of money: a whole number of pence-like minor units and the\ncurrency code that gives it meaning. Never a bare number without its code.",
+    "name": "Sum",
+    "properties": [
+     {
+      "default_source": null,
+      "description": "",
+      "name": "minor_amount",
+      "rules": [],
+      "shape": "integer"
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "currency_code",
+      "rules": [
+       "length(min: 3, max: 3)"
+      ],
+      "shape": "string"
+     }
+    ],
+    "rules": [],
+    "semantics": {
+     "absences": [],
+     "identities": [],
+     "label": null,
+     "quantities": [
+      {
+       "amount": [
+        "minor_amount"
+       ],
+       "decimal_places": 2,
+       "unit": {
+        "path": [
+         "currency_code"
+        ]
+       }
+      }
+     ],
+     "relation": null,
+     "times": [],
+     "validity": null,
+     "version": 1
+    }
+   },
+   {
+    "description": "Embedded calendar span in which a kiln arrangement applied, as ISO dates.\nThe opening is inclusive and the closing exclusive. An unrecorded opening\nor closing is an open bound, not evidence that it held for all time.",
+    "name": "Window",
+    "properties": [
+     {
+      "default_source": null,
+      "description": "",
+      "name": "opens",
+      "rules": [],
+      "shape": {
+       "optional": "string"
+      }
+     },
+     {
+      "default_source": null,
+      "description": "",
+      "name": "closes",
+      "rules": [],
+      "shape": {
+       "optional": "string"
+      }
+     }
+    ],
+    "rules": [],
+    "semantics": {
+     "absences": [],
+     "identities": [],
+     "label": null,
+     "quantities": [],
+     "relation": null,
+     "times": [],
+     "validity": {
+      "encoding": "iso_date",
+      "from": [
+       "opens"
+      ],
+      "interval": "half_open",
+      "until": [
+       "closes"
+      ]
+     },
+     "version": 1
+    }
+   }
+  ],
+  "revision": 1,
+  "timezone": null
+ },
+ "made": {
+  "model": "claude-sonnet-5-5",
+  "prompt_sha": "4500b9565624f0c1"
+ }
+}

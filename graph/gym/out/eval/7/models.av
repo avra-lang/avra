@@ -1,0 +1,176 @@
+// domain: Kilnside Pottery Co-op
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    TimeBinding,
+    TimeEncoding,
+    AbsenceBinding,
+}
+use @std.validate.{length, one_of}
+
+/// Embedded calendar span in which a kiln arrangement applied, as ISO dates.
+/// The opening is inclusive and the closing exclusive. An unrecorded opening
+/// or closing is an open bound, not evidence that it held for all time.
+@model(quote { Semantics { validity: ValidityBinding { from: ["opens"], until: ["closes"], encoding: .IsoDate } } })
+export type Window = {
+    opens: string?,
+    closes: string?,
+}
+
+/// Embedded sum of money: a whole number of pence-like minor units and the
+/// currency code that gives it meaning. Never a bare number without its code.
+@model(quote { Semantics { quantities: [QuantityBinding { amount: ["minor_amount"], unit: .Field(["currency_code"]), decimal_places: 2 }] } })
+export type Sum = {
+    minor_amount: int,
+    @length(min: 3, max: 3) currency_code: string,
+}
+
+/// A member who throws or glazes pots at the co-op. The handle is the name
+/// used to mention them at the wheel, not a unique key. An unrecorded studio
+/// email means the potter keeps it private, not that none exists.
+@model(quote { Semantics {
+    label: ["handle"],
+    absences: [AbsenceBinding { path: ["studio_email"], code: "kept_private" }],
+} })
+export type Potter = {
+    @length(min: 1, max: 128) handle: string,
+    studio_email: string?,
+}
+
+/// A shop, gallery or private customer who buys finished pottery. The
+/// trading name is how staff mention them and is not unique. An unrecorded
+/// delivery zone means the customer always collects, not that it is blank.
+@model(quote { Semantics {
+    label: ["trading_name"],
+    absences: [AbsenceBinding { path: ["delivery_zone"], code: "pickup_only" }],
+} })
+export type Customer = {
+    @length(min: 1, max: 128) trading_name: string,
+    delivery_zone: string?,
+}
+
+/// One kiln in the firing shed. The kiln name is how it is mentioned and is
+/// not a unique key. An unrecorded install year means the data plate was
+/// unreadable, not that the kiln has no age.
+@model(quote { Semantics {
+    label: ["kiln_name"],
+    quantities: [QuantityBinding { amount: ["capacity_litres"], unit: .Constant("litre") }],
+    absences: [AbsenceBinding { path: ["install_year"], code: "plate_unreadable" }],
+} })
+export type Kiln = {
+    @length(min: 1, max: 128) kiln_name: string,
+    capacity_litres: int,
+    install_year: int?,
+}
+
+/// One loaded firing of a kiln by a potter. The loader put the work in; the
+/// supervisor watched the cycle, and is unrecorded when the loader did both.
+/// The collect date is an ISO date; unrecorded means nobody has been told a
+/// pick-up day yet, not that the work is abandoned. The fee is the shed
+/// charge for the firing, not what a customer paid for pots.
+@model(quote { Semantics {
+    quantities: [
+        QuantityBinding { amount: ["peak_celsius"], unit: .Constant("celsius") },
+        QuantityBinding { amount: ["shed_fee", "minor_amount"], unit: .Field(["shed_fee", "currency_code"]), decimal_places: 2 },
+    ],
+    times: [
+        TimeBinding { path: ["lit_at"], encoding: .UnixMillis },
+        TimeBinding { path: ["collect_on"], encoding: .IsoDate },
+    ],
+    absences: [
+        AbsenceBinding { path: ["collect_on"], code: "no_pickup_day_told" },
+        AbsenceBinding { path: ["supervisor"], code: "same_as_loader" },
+    ],
+} })
+export type Firing = {
+    kiln: Ref<Kiln>,
+    loader: Ref<Potter>,
+    supervisor: Ref<Potter>?,
+    shed_fee: Sum,
+    peak_celsius: int,
+    lit_at: int,
+    collect_on: string?,
+}
+
+/// A sale of pots to a customer. The purchaser placed the order; the payer
+/// settled the invoice, and is unrecorded when that was the purchaser. The
+/// delivered date is an ISO date; unrecorded means not yet delivered, not
+/// that the order was lost. The total is the invoiced sum at sale time.
+@model(quote { Semantics {
+    quantities: [
+        QuantityBinding { amount: ["parcel_grams"], unit: .Constant("gram") },
+        QuantityBinding { amount: ["total", "minor_amount"], unit: .Field(["total", "currency_code"]), decimal_places: 2 },
+    ],
+    times: [
+        TimeBinding { path: ["placed_at"], encoding: .IsoInstant },
+        TimeBinding { path: ["delivered_on"], encoding: .IsoDate },
+    ],
+    absences: [
+        AbsenceBinding { path: ["delivered_on"], code: "not_yet_delivered" },
+        AbsenceBinding { path: ["payer"], code: "same_as_purchaser" },
+    ],
+} })
+export type PotSale = {
+    purchaser: Ref<Customer>,
+    payer: Ref<Customer>?,
+    total: Sum,
+    parcel_grams: int,
+    placed_at: string,
+    delivered_on: string?,
+}
+
+/// A potter's clearance to run a kiln unsupervised during a window of days.
+/// For "Wren cleared on the Big Gas", member=Wren, kiln=the Big Gas,
+/// standing=cleared. Cleared and approved are the same clearance. It asserts
+/// nothing about renting the kiln, which is recorded as KilnTenancy.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["member"], to: ["kiln"], label: ["standing"],
+        phrasing: "{from} is {label} on {to}",
+        labels: [
+            RelationLabel { value: "cleared", forward: ["cleared"], reverse: ["has cleared"], broader: ["clearance"] },
+            RelationLabel { value: "approved", forward: ["approved"], reverse: ["has approved"], broader: ["clearance"] },
+            RelationLabel { value: "clearance", forward: ["holds clearance for"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["window", "opens"], until: ["window", "closes"], encoding: .IsoDate },
+} })
+export type KilnClearance = {
+    member: Ref<Potter>,
+    @one_of(["cleared", "approved", "clearance"]) standing: string,
+    kiln: Ref<Kiln>,
+    window: Window,
+}
+
+/// A potter's paid hold on a kiln during a window of days. For "Wren rents
+/// the Big Gas", member=Wren, kiln=the Big Gas, hold=rents. Rents and leases
+/// are the same paid hold. It asserts nothing about clearance to operate,
+/// which is recorded as KilnClearance.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["member"], to: ["kiln"], label: ["hold"],
+        phrasing: "{from} {label} {to}",
+        labels: [
+            RelationLabel { value: "rents", forward: ["rents"], reverse: ["is rented by"], broader: ["tenancy"] },
+            RelationLabel { value: "leases", forward: ["leases"], reverse: ["is leased by"], broader: ["tenancy"] },
+            RelationLabel { value: "tenancy", forward: ["has a paid hold on"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["window", "opens"], until: ["window", "closes"], encoding: .IsoDate },
+} })
+export type KilnTenancy = {
+    member: Ref<Potter>,
+    @one_of(["rents", "leases", "tenancy"]) hold: string,
+    kiln: Ref<Kiln>,
+    window: Window,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

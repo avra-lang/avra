@@ -1,0 +1,116 @@
+// domain: Kelpline Mussel Co-op
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    TimeBinding,
+    TimeEncoding,
+    AbsenceBinding,
+}
+use @std.validate.{length, one_of}
+
+/// A stretch of days when an assignment stood, in UTC Unix milliseconds,
+/// half-open [opens_at, closes_at). An unrecorded opens_at means the start
+/// was never written down; an unrecorded closes_at means no end is known yet,
+/// not that the assignment lasts forever.
+@model(quote { Semantics { validity: ValidityBinding { from: ["opens_at"], until: ["closes_at"] } } })
+export type Stint = {
+    opens_at: int?,
+    closes_at: int?,
+}
+
+/// A measured mass in whole units of the stated unit, for example 40 kg.
+/// It is always complete: both the amount and its unit are recorded together.
+@model(quote { Semantics { quantities: [QuantityBinding { amount: ["amount"], unit: .Field(["unit"]) }] } })
+export type Heft = {
+    amount: int,
+    @one_of(["kg", "lb", "crate"]) unit: string,
+}
+
+/// A floating mussel raft anchored in the bay, told apart by its painted
+/// callsign. A callsign can be repainted, so it is not a permanent key.
+/// An unrecorded mooring_depth_m means the depth was never sounded, not that
+/// the raft sits in zero-depth water.
+@model(quote { Semantics {
+    label: ["callsign"],
+    quantities: [QuantityBinding { amount: ["mooring_depth_m"], unit: .Constant("metre") }],
+    absences: [AbsenceBinding { path: ["mooring_depth_m"], code: "never_sounded" }],
+} })
+export type Raft = {
+    @length(min: 1, max: 64) callsign: string,
+    mooring_depth_m: int?,
+}
+
+/// A co-op worker who dives, sorts or inspects, mentioned by a handle used
+/// on the dock. Handles are shared nicknames and can collide.
+/// An unrecorded radio_channel means the worker carries no radio, not that
+/// the channel is zero.
+@model(quote { Semantics {
+    label: ["handle"],
+    absences: [AbsenceBinding { path: ["radio_channel"], code: "no_radio_issued" }],
+} })
+export type Hand = {
+    @length(min: 1, max: 128) handle: string,
+    radio_channel: int?,
+}
+
+/// One worker's duty on one raft during a stint. The duty text is the
+/// relationship kind: diver, sorter or lookout. A record says the worker
+/// held that duty then; the absence of a record says nothing about whether
+/// the worker was ever on the raft.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["worker"], to: ["raft"], label: ["duty"],
+        phrasing: "{from} serves as {label} on {to}",
+        labels: [
+            RelationLabel { value: "diver", forward: ["diver", "dives from"], reverse: ["dived from by"] },
+            RelationLabel { value: "sorter", forward: ["sorter"], broader: ["deckhand"] },
+            RelationLabel { value: "deckhand", forward: ["deckhand"] },
+            RelationLabel { value: "lookout", forward: ["lookout"], broader: ["deckhand"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["stint", "opens_at"], until: ["stint", "closes_at"] },
+} })
+export type Posting = {
+    worker: Ref<Hand>,
+    raft: Ref<Raft>,
+    @one_of(["diver", "sorter", "deckhand", "lookout"]) duty: string,
+    stint: Stint,
+}
+
+/// One haul of mussels lifted from a raft and weighed on the dock.
+/// gross_grams is the scale reading before culling; hauled_at is when the
+/// lift happened. checker and verifier are the two workers who signed off,
+/// possibly the same hand. An unrecorded checked_on means nobody has
+/// inspected the haul yet; an unrecorded shell_remark means the inspector
+/// wrote nothing, not that the shells were perfect.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["gross_grams"], unit: .Constant("gram") }],
+    times: [
+        TimeBinding { path: ["hauled_at"], encoding: .UnixMillis },
+        TimeBinding { path: ["checked_on"], encoding: .IsoDate },
+    ],
+    absences: [
+        AbsenceBinding { path: ["checked_on"], code: "not_yet_inspected" },
+        AbsenceBinding { path: ["shell_remark"], code: "inspector_silent" },
+    ],
+} })
+export type Haul = {
+    raft: Ref<Raft>,
+    checker: Ref<Hand>,
+    verifier: Ref<Hand>,
+    gross_grams: int,
+    net_weight: Heft,
+    hauled_at: int,
+    checked_on: string?,
+    @length(min: 1, max: 512) shell_remark: string?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

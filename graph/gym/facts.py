@@ -41,9 +41,10 @@ def readable(cat, world, model, value, prefix=()):
             q = qs[name]
             dp = q["decimal_places"]
             unit = q["unit"].get("constant") if isinstance(q["unit"], dict) and "constant" in q["unit"] else get_unit(value, q["unit"])
-            amount = f"{v // 10 ** dp}.{v % 10 ** dp:0{dp}d}" if dp else str(v)
+            whole = isinstance(v, int) and not isinstance(v, bool)
+            amount = f"{v // 10 ** dp}.{v % 10 ** dp:0{dp}d}" if dp and whole else f"{v:.{dp}f}" if dp else str(v)
             fields[name] = f"{amount} {unit}"
-            lits.append({"amount": (v // 10 ** dp, v % 10 ** dp)} if dp else {"number": v})
+            lits.append({"amount": (v // 10 ** dp, v % 10 ** dp)} if dp and whole else {"number": v})
         elif p.get("enum") or c == "boolean":
             fields[name] = v
         elif isinstance(v, str):

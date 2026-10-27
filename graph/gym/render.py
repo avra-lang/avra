@@ -85,3 +85,18 @@ def first_person_ok(llm, plan, question):
         return True
     p = llm.choose(f'Question: "{question}"', "Is the person asking speaking about themself?", ["yes", "no"])
     return p[0] > p[1]
+
+
+def steps_present(llm, plan, question):
+    """Whether the question asks for every step of the plan: one yes/no judgement per step."""
+    import json as _json
+    for step in plan["steps"]:
+        p = llm.choose(f'Question: "{question}"', f"Does the question require or ask for this exact condition or request: {_json.dumps(step)}?", ["yes", "no"])
+        if p[0] <= p[1]:
+            return False
+    return True
+
+
+def carries(question, plan):
+    """The structural half: every anchor and literal of the plan is in the question."""
+    return facts.faithful(question, [{"names": plan["anchors"], "literals": plan["literals"]}]) is None

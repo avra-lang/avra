@@ -98,5 +98,9 @@ class Hosted:
         letters = string.ascii_uppercase[: len(options)]
         listing = "\n".join(f"{l}. {o}" for l, o in zip(letters, options))
         reply = self.generate(f"{context}\n\n{question}\n{listing}\nAnswer with the single letter of the best option.").strip().upper()
-        pick = next((letters.index(c) for c in reply if c in letters), 0)
+        import re
+        found = re.search(rf"(?<![A-Za-z])([{letters}])(?![A-Za-z])", reply)
+        if not found:
+            raise SystemExit(f"gym: the judge named no option: {reply[:80]!r}")
+        pick = letters.index(found.group(1))
         return [1.0 if i == pick else 0.0 for i in range(len(options))]

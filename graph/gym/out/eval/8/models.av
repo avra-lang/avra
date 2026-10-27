@@ -1,0 +1,141 @@
+// domain: Lanternfall Community Radio
+
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    TimeBinding,
+    TimeEncoding,
+    AbsenceBinding,
+    UnitBinding,
+}
+use @std.validate.{length, one_of, items}
+
+/// An embedded sum of money: whole minor units together with the ISO
+/// currency code they are counted in. Never a standalone record.
+@model(quote { Semantics { quantities: [
+    QuantityBinding { amount: ["minor_units"], unit: .Field(["currency_code"]), decimal_places: 2 },
+] } })
+export type Fee = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency_code: string,
+}
+
+/// Embedded span during which a studio assignment held, half-open
+/// [starts_ms, ends_ms) in UTC Unix milliseconds. An unrecorded bound is
+/// unspecified, not proof that the assignment had no beginning or end.
+@model(quote { Semantics { validity: ValidityBinding { from: ["starts_ms"], until: ["ends_ms"] } } })
+export type Airtime = {
+    starts_ms: int?,
+    ends_ms: int?,
+}
+
+/// A volunteer or staff voice heard on the station. A stage name is not
+/// unique; the studio mailbox is. An unrecorded mailbox means none was
+/// given, not that the presenter has no way to be reached.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "studio-mailbox", path: ["mailbox"], normalization: .AsciiLowerTrim }],
+    absences: [AbsenceBinding { path: ["mailbox"], code: "prefers_station_desk" }],
+    label: ["stage_name"],
+} })
+export type Presenter = {
+    @length(min: 1, max: 160) stage_name: string,
+    @items(max: 8) on_air_languages: List<string> = [],
+    @length(min: 3, max: 200) mailbox: string?,
+}
+
+/// A recurring show in the schedule. The catalogue code is the station's
+/// own key; the title is only what listeners call it. An unrecorded
+/// website means the show has no page, not that the address is unknown.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "show-code", path: ["catalogue_code"], normalization: .Trim }],
+    quantities: [QuantityBinding { amount: ["runtime_minutes"], unit: .Constant("minute") }],
+    absences: [AbsenceBinding { path: ["website"], code: "no_show_page" }],
+    label: ["title"],
+} })
+export type Programme = {
+    @length(min: 1, max: 24) catalogue_code: string,
+    @length(min: 1, max: 200) title: string,
+    runtime_minutes: int,
+    @length(min: 4, max: 300) website: string?,
+}
+
+/// A business or charity that pays to be named on air. A trading name is
+/// shared by many firms and never a key.
+@model(quote { Semantics { label: ["trading_name"] } })
+export type Backer = {
+    @length(min: 1, max: 200) trading_name: string,
+}
+
+/// A presenter holding one role on one programme over an airtime span. The
+/// role text says which kind of part. It does not assert the part was
+/// paid or that the presenter appears in every episode.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["presenter"], to: ["programme"], label: ["role"],
+        phrasing: "{from} takes part as {label} in {to}",
+        labels: [
+            RelationLabel { value: "lead_host", forward: ["lead host", "main voice"], broader: ["host"] },
+            RelationLabel { value: "guest_host", forward: ["guest host", "fill-in"], broader: ["host"] },
+            RelationLabel { value: "host", forward: ["host"] },
+            RelationLabel { value: "producer", forward: ["producer", "show engineer"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["airtime", "starts_ms"], until: ["airtime", "ends_ms"] },
+} })
+export type Casting = {
+    presenter: Ref<Presenter>,
+    @one_of(["lead_host", "guest_host", "host", "producer"]) role: string,
+    programme: Ref<Programme>,
+    airtime: Airtime,
+}
+
+/// A sponsor's paid deal to be named on a programme. The fee is the whole
+/// agreed price. An unrecorded invoice reference means the deal was settled
+/// in kind or not yet billed, not that the amount is unknown.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["fee", "minor_units"], unit: .Field(["fee", "currency_code"]), decimal_places: 2 }],
+    times: [TimeBinding { path: ["agreed_on"], encoding: .IsoDate }],
+    absences: [AbsenceBinding { path: ["invoice_ref"], code: "settled_in_kind" }],
+} })
+export type Sponsorship = {
+    backer: Ref<Backer>,
+    programme: Ref<Programme>,
+    fee: Fee,
+    @length(min: 10, max: 10) agreed_on: string,
+    @length(min: 1, max: 64) invoice_ref: string?,
+}
+
+/// One transmission of a programme. The host opened the microphone and
+/// was responsible for the hour; the anchor, when present, read the news
+/// or links alongside. An unrecorded anchor means the host spoke alone, not
+/// that someone went uncredited. An unrecorded listener count means no
+/// stream measurement was taken.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["peak_listeners"], unit: .Constant("listener") }],
+    times: [
+        TimeBinding { path: ["aired_at"], encoding: .IsoInstant },
+        TimeBinding { path: ["logged_ms"], encoding: .UnixMillis },
+    ],
+    absences: [
+        AbsenceBinding { path: ["anchor"], code: "host_spoke_alone" },
+        AbsenceBinding { path: ["peak_listeners"], code: "stream_not_measured" },
+    ],
+} })
+export type Transmission = {
+    programme: Ref<Programme>,
+    host: Ref<Presenter>,
+    anchor: Ref<Presenter>?,
+    @length(min: 20, max: 40) aired_at: string,
+    logged_ms: int,
+    peak_listeners: int?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

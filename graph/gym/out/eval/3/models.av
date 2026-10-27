@@ -1,0 +1,128 @@
+// domain: Pipe Organ Maintenance Guild
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    TimeBinding,
+    TimeEncoding,
+    AbsenceBinding,
+}
+use @std.validate.{length, one_of}
+
+/// A sum of money as whole minor units plus the currency code they are
+/// counted in. A fee is never meaningful without both parts.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["minor_units"], unit: UnitBinding.Field(["currency_code"]), decimal_places: 2 }],
+} })
+export type Fee = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency_code: string,
+}
+
+/// Calendar dates (ISO yyyy-mm-dd, inclusive start, exclusive end) between
+/// which an engagement holds. An unrecorded opening date means the start was
+/// not documented; an unrecorded closing date means the engagement is still
+/// running, not that it lasted forever.
+@model(quote { Semantics {
+    validity: ValidityBinding { from: ["opens_on"], until: ["closes_on"], encoding: .IsoDate },
+} })
+export type Tenure = {
+    opens_on: string?,
+    closes_on: string?,
+}
+
+/// A building that houses organs: a church, concert hall or school chapel.
+/// Titles are not unique keys; two halls may share a title in different towns.
+@model(quote { Semantics { label: ["hall_title"] } })
+export type Hall = {
+    @length(min: 1, max: 200) hall_title: string,
+    @length(min: 1, max: 120) town: string,
+}
+
+/// A craftsperson enrolled with the guild who tunes, voices or restores
+/// pipework. The craft name is how colleagues refer to them, not a unique key.
+/// An unrecorded workshop phone means none was supplied, not that they have none.
+@model(quote { Semantics {
+    label: ["craft_name"],
+    absences: [AbsenceBinding { path: ["workshop_phone"], code: "declined_to_share" }],
+} })
+export type Artisan = {
+    @length(min: 1, max: 200) craft_name: string,
+    @length(min: 1, max: 64) workshop_phone: string?,
+}
+
+/// One pipe organ under the guild's care. The custodian hall holds legal
+/// title; the steward hall keeps it day to day and may be the same building.
+/// An unrecorded build year means the maker's records are lost or disputed,
+/// not that the organ is new. Wind pressure is in millimetres of water column.
+@model(quote { Semantics {
+    label: ["designation"],
+    quantities: [QuantityBinding { amount: ["wind_pressure"], unit: UnitBinding.Constant("mm_water_column"), decimal_places: 1 }],
+    absences: [AbsenceBinding { path: ["build_year"], code: "maker_records_lost" }],
+} })
+export type Organ = {
+    @length(min: 1, max: 200) designation: string,
+    custodian_hall: Ref<Hall>,
+    steward_hall: Ref<Hall>?,
+    build_year: int?,
+    wind_pressure: float,
+    stop_count: int,
+}
+
+/// An artisan's standing role on one organ for a span of dates. The role
+/// says what they do there, for example voicing or tuning. A lead tuner is
+/// also a tuner. A missing closing date means the role has not ended.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["artisan"], to: ["organ"], label: ["role"],
+        phrasing: "{from} acts as {label} on {to}",
+        labels: [
+            RelationLabel { value: "voicer", forward: ["voicer", "pipe voicer"] },
+            RelationLabel { value: "tuner", forward: ["tuner"] },
+            RelationLabel { value: "lead_tuner", forward: ["lead tuner", "head tuner"], broader: ["tuner"] },
+            RelationLabel { value: "restorer", forward: ["restorer"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["tenure", "opens_on"], until: ["tenure", "closes_on"], encoding: .IsoDate },
+} })
+export type OrganRole = {
+    artisan: Ref<Artisan>,
+    organ: Ref<Organ>,
+    @one_of(["voicer", "tuner", "lead_tuner", "restorer"]) role: string,
+    tenure: Tenure,
+}
+
+/// One on-site visit by an artisan to one organ. The visit code is a
+/// working label, not a unique key. Labour is counted in hours and the fee is
+/// what the hall was charged. An unrecorded report date means no written
+/// report has been filed yet, not that none is required.
+@model(quote { Semantics {
+    label: ["visit_code"],
+    quantities: [
+        QuantityBinding { amount: ["labour_hours"], unit: UnitBinding.Constant("hour"), decimal_places: 1 },
+        QuantityBinding { amount: ["fee", "minor_units"], unit: UnitBinding.Field(["fee", "currency_code"]), decimal_places: 2 },
+    ],
+    times: [
+        TimeBinding { path: ["visited_at_ms"], encoding: .UnixMillis },
+        TimeBinding { path: ["report_filed_on"], encoding: .IsoDate },
+    ],
+    absences: [AbsenceBinding { path: ["report_filed_on"], code: "report_pending" }],
+} })
+export type SiteVisit = {
+    @length(min: 1, max: 64) visit_code: string,
+    artisan: Ref<Artisan>,
+    organ: Ref<Organ>,
+    visited_at_ms: int,
+    labour_hours: float,
+    fee: Fee,
+    report_filed_on: string?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

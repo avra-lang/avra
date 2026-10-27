@@ -278,7 +278,7 @@ class Sampler:
                 continue
             from_ = lambda ver: ver
             if len(x["versions"]) > 1:
-                a, b = (self.get(x["versions"][i], v["from"]) for i in (0, 1))
+                a, b = (self.ms(self.get(x["versions"][i], v["from"]), v["encoding"]) for i in (0, 1))
                 cand.append((vid, [a + (b - a) // 2, b + 5 * 86_400_000]))
         if not cand:
             return None
@@ -302,6 +302,10 @@ class Sampler:
         ch.nodes.append(e["to"])
         prop = self.ask_column(ch, cat.prop(e["to"], cat.label(e["to"])) if cat.label(e["to"]) else None)
         return self.finish(ch, "temporal", f"n1.{prop['name']} AS value", ["temporal", "valid_time"], valid_at=rng.choice(moments))
+
+    @staticmethod
+    def ms(value, encoding):
+        return int(times.decode(value, encoding).timestamp() * 1000)
 
     @staticmethod
     def get(value, path):

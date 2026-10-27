@@ -50,9 +50,11 @@ def package(directory, models_text, name):
     return d / "src/main"
 
 
-def compile_package(directory, timeout=170):
+def compile_package(directory, timeout=None):
     done = subprocess.run(["sh", "tools/watch.sh", "3500", "./build/avra", "build", str(directory)], cwd=ROOT, text=True, capture_output=True, timeout=timeout)
     text = done.stdout + done.stderr
+    if "refusing to start" in text:
+        raise SystemExit("gym: the build lock refused to start (disk or memory floor): " + " ".join(text.split())[:200])
     binary = pathlib.Path(directory) / "src/main"
     errors = [l for l in text.splitlines() if re.match(r"^error", l)]
     detail = "\n".join(text.splitlines()[:60]) if errors else ""

@@ -1,0 +1,157 @@
+// domain: Lantern Harbour Pilotage
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    TimeBinding,
+    TimeEncoding,
+    AbsenceBinding,
+}
+use @std.validate.{length, one_of}
+
+/// Embedded bounds of a period in UTC Unix milliseconds, half-open
+/// [opens_at, closes_at). An unrecorded opens_at means the start was not
+/// noted; an unrecorded closes_at means the period has not been closed.
+/// Neither is evidence that it held for all time.
+@model(quote { Semantics { validity: ValidityBinding { from: ["opens_at"], until: ["closes_at"] } } })
+export type Span = {
+    opens_at: int?,
+    closes_at: int?,
+}
+
+/// Embedded money value: a count of minor currency units with its currency
+/// code. It never stands alone as a record.
+@model(quote { Semantics { quantities: [
+    QuantityBinding { amount: ["minor_units"], unit: .Field(["currency"]), decimal_places: 2 },
+] } })
+export type Charge = {
+    minor_units: int,
+    @length(min: 3, max: 3) currency: string,
+}
+
+/// A licensed harbour pilot who guides ships in and out of Lantern Harbour.
+/// The handle is how colleagues mention the pilot and is not a unique key.
+/// An unrecorded medical_expiry means the pilot's medical has not yet been
+/// assessed, not that it never expires.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "harbour_licence", path: ["licence_no"], normalization: .AsciiLowerTrim }],
+    label: ["handle"],
+    times: [TimeBinding { path: ["medical_expiry"], encoding: .IsoDate }],
+    absences: [AbsenceBinding { path: ["medical_expiry"], code: "not_yet_assessed" }],
+} })
+export type Pilot = {
+    @length(min: 1, max: 128) handle: string,
+    @length(min: 1, max: 32) licence_no: string,
+    medical_expiry: string?,
+}
+
+/// A ship that calls at the harbour. The ship_label is how it is mentioned
+/// and is not unique across owners. An unrecorded draught_cm means the
+/// vessel has not been surveyed, not a draught of zero.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "imo", path: ["imo_no"], normalization: .Trim }],
+    label: ["ship_label"],
+    quantities: [
+        QuantityBinding { amount: ["gross_tonnage"], unit: .Constant("gross_tonne") },
+        QuantityBinding { amount: ["draught_cm"], unit: .Constant("centimetre") },
+    ],
+    absences: [AbsenceBinding { path: ["draught_cm"], code: "not_surveyed" }],
+} })
+export type Vessel = {
+    @length(min: 1, max: 128) ship_label: string,
+    @length(min: 1, max: 16) imo_no: string,
+    gross_tonnage: int,
+    draught_cm: int?,
+}
+
+/// A wharf where vessels are moored or swung. The wharf_label is how crews
+/// mention it. An unrecorded max_draught_cm means the depth survey is
+/// pending, not that the wharf is unlimited.
+@model(quote { Semantics {
+    label: ["wharf_label"],
+    quantities: [QuantityBinding { amount: ["max_draught_cm"], unit: .Constant("centimetre") }],
+    absences: [AbsenceBinding { path: ["max_draught_cm"], code: "survey_pending" }],
+} })
+export type Wharf = {
+    @length(min: 1, max: 128) wharf_label: string,
+    max_draught_cm: int?,
+}
+
+/// One pilotage job: a pilot guiding a vessel to a wharf. booked_pilot is who
+/// the shipping agent requested, assigned_pilot is who the duty desk placed;
+/// they may differ. An unrecorded assigned_pilot means the desk has not yet
+/// placed anyone. An unrecorded completed_on means the job is unfinished.
+@model(quote { Semantics {
+    times: [
+        TimeBinding { path: ["scheduled_at"], encoding: .UnixMillis },
+        TimeBinding { path: ["completed_on"], encoding: .IsoDate },
+    ],
+    quantities: [QuantityBinding { amount: ["cargo_weight"], unit: .Field(["weight_unit"]) }],
+    absences: [
+        AbsenceBinding { path: ["completed_on"], code: "job_unfinished" },
+        AbsenceBinding { path: ["assigned_pilot"], code: "desk_not_placed" },
+    ],
+} })
+export type PilotageJob = {
+    vessel: Ref<Vessel>,
+    destination: Ref<Wharf>,
+    booked_pilot: Ref<Pilot>,
+    assigned_pilot: Ref<Pilot>?,
+    scheduled_at: int,
+    completed_on: string?,
+    cargo_weight: int,
+    @one_of(["tonne", "kilogram"]) weight_unit: string,
+    fee: Charge,
+}
+
+/// A pilot's qualification to handle a vessel over a span of time. The
+/// qualified and certified labels are the same standing worded differently
+/// by two authorities. An unrecorded span bound is unknown, not unbounded.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["pilot"], to: ["vessel"], label: ["standing"],
+        phrasing: "{from} is {label} on {to}",
+        labels: [
+            RelationLabel { value: "qualified", forward: ["qualified"] },
+            RelationLabel { value: "certified", forward: ["certified"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["span", "opens_at"], until: ["span", "closes_at"] },
+} })
+export type VesselQualification = {
+    pilot: Ref<Pilot>,
+    @one_of(["qualified", "certified"]) standing: string,
+    vessel: Ref<Vessel>,
+    span: Span,
+}
+
+/// A harbour master's endorsement of a pilot for a vessel over a span of
+/// time. The endorsed and approved labels are near-synonyms and overlap
+/// with VesselQualification in meaning. An unrecorded span bound is unknown.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["pilot"], to: ["vessel"], label: ["verdict"],
+        phrasing: "{from} is {label} for {to}",
+        labels: [
+            RelationLabel { value: "endorsed", forward: ["endorsed"] },
+            RelationLabel { value: "approved", forward: ["approved"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["span", "opens_at"], until: ["span", "closes_at"] },
+} })
+export type VesselEndorsement = {
+    pilot: Ref<Pilot>,
+    @one_of(["endorsed", "approved"]) verdict: string,
+    vessel: Ref<Vessel>,
+    span: Span,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

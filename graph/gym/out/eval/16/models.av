@@ -1,0 +1,137 @@
+// domain: Harrow Lane Observatory
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    QuantityBinding,
+    UnitBinding,
+    TimeBinding,
+    TimeEncoding,
+    AbsenceBinding,
+}
+use @std.validate.{length, email, one_of}
+
+/// A monetary figure in minor units with its ISO currency, embedded in other
+/// records. It carries no tax or discount information.
+@model(quote { Semantics {
+    quantities: [QuantityBinding { amount: ["cents"], unit: UnitBinding.Field(["iso"]), decimal_places: 2 }],
+} })
+export type Fee = {
+    cents: int,
+    @length(min: 3, max: 3) iso: string,
+}
+
+/// Embedded half-open period in UTC Unix milliseconds. An unrecorded bound is
+/// unspecified: it does not show that the arrangement always held or never ends.
+@model(quote { Semantics { validity: ValidityBinding { from: ["begins_ms"], until: ["ends_ms"] } } })
+export type Tenure = {
+    begins_ms: int?,
+    ends_ms: int?,
+}
+
+/// A club member who takes part in observing. Display names are not unique;
+/// the email is. An unrecorded email means none was supplied. An unrecorded
+/// sky_note means the member was never asked about their observing
+/// experience, not that they have none.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "stargazer_email", path: ["email"], normalization: .AsciiLowerTrim }],
+    label: ["display_name"],
+    times: [TimeBinding { path: ["enrolled_on"], encoding: .IsoDate }],
+    absences: [AbsenceBinding { path: ["sky_note"], code: "never_asked" }],
+} })
+export type Stargazer = {
+    @length(min: 1, max: 160) display_name: string,
+    @email email: string?,
+    enrolled_on: string,
+    @length(min: 1, max: 400) sky_note: string?,
+}
+
+/// A telescope or other optical instrument owned by the observatory. Its name
+/// tells it apart from the others. aperture_mm is the diameter of its main
+/// light-gathering element in millimetres.
+@model(quote { Semantics {
+    label: ["instrument_name"],
+    quantities: [QuantityBinding { amount: ["aperture_mm"], unit: UnitBinding.Constant("millimetre") }],
+} })
+export type Instrument = {
+    @length(min: 1, max: 120) instrument_name: string,
+    aperture_mm: int,
+}
+
+/// A member's responsibility for the physical upkeep of an instrument over a
+/// period. curates is the formal custodian role; maintains is the looser
+/// wording for hands-on care. It says nothing about who may operate the
+/// instrument. An unrecorded end of the period means the end is unknown.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["member"], to: ["instrument"], label: ["care"],
+        phrasing: "{from} {label} {to}",
+        labels: [
+            RelationLabel { value: "curates", forward: ["curates", "is custodian of"], reverse: ["is curated by"] },
+            RelationLabel { value: "maintains", forward: ["maintains", "services"], reverse: ["is maintained by"], broader: ["curates"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["period", "begins_ms"], until: ["period", "ends_ms"] },
+} })
+export type InstrumentCare = {
+    member: Ref<Stargazer>,
+    @one_of(["curates", "maintains"]) care: string,
+    instrument: Ref<Instrument>,
+    period: Tenure,
+}
+
+/// A member's permission to operate an instrument on their own over a period.
+/// clears and approves both mean the safety committee allowed solo use; it says
+/// nothing about who looks after the instrument. An unrecorded end of the
+/// period means the end is unknown, not that the permission is permanent.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["member"], to: ["instrument"], label: ["permission"],
+        phrasing: "{from} {label} {to}",
+        labels: [
+            RelationLabel { value: "clears", forward: ["is cleared on", "may operate"], reverse: ["clears"] },
+            RelationLabel { value: "approves", forward: ["is approved for", "is signed off on"], reverse: ["approves"], broader: ["clears"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["period", "begins_ms"], until: ["period", "ends_ms"] },
+} })
+export type InstrumentClearance = {
+    member: Ref<Stargazer>,
+    @one_of(["clears", "approves"]) permission: string,
+    instrument: Ref<Instrument>,
+    period: Tenure,
+}
+
+/// One public or members-only observing night. convener is the member who
+/// planned the programme and host the member who opened the building and was
+/// answerable on the night; they may be the same person. An unrecorded
+/// closed_at means the night was still open or the closing was not logged. An
+/// unrecorded visitor count means nobody tallied, not that nobody came.
+@model(quote { Semantics {
+    times: [TimeBinding { path: ["opened_at"], encoding: .UnixMillis }, TimeBinding { path: ["closed_at"], encoding: .UnixMillis }],
+    quantities: [
+        QuantityBinding { amount: ["visitors"], unit: UnitBinding.Constant("visitor") },
+        QuantityBinding { amount: ["entry_fee", "cents"], unit: UnitBinding.Field(["entry_fee", "iso"]), decimal_places: 2 },
+    ],
+    absences: [
+        AbsenceBinding { path: ["closed_at"], code: "closing_not_logged" },
+        AbsenceBinding { path: ["visitors"], code: "nobody_tallied" },
+    ],
+} })
+export type ObservingNight = {
+    instrument: Ref<Instrument>,
+    convener: Ref<Stargazer>,
+    host: Ref<Stargazer>,
+    opened_at: int,
+    closed_at: int?,
+    visitors: int?,
+    entry_fee: Fee,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name

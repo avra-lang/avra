@@ -1,0 +1,151 @@
+// domain: Nightjar Fell Mountain Rescue Team
+use @avra.graph.{
+    model,
+    Ref,
+    Registration,
+    registered,
+    Semantics,
+    IdentityBinding,
+    RelationBinding,
+    RelationLabel,
+    ValidityBinding,
+    TimeBinding,
+    TimeEncoding,
+    QuantityBinding,
+    UnitBinding,
+    AbsenceBinding,
+}
+use @std.validate.{length, one_of, items}
+
+/// Embedded valid-time bounds in UTC Unix milliseconds, half-open
+/// [begins_ms, ends_ms). An unrecorded bound means the team never logged
+/// that edge of the interval, not that the arrangement was open-ended.
+@model(quote { Semantics { validity: ValidityBinding { from: ["begins_ms"], until: ["ends_ms"] } } })
+export type Stretch = {
+    begins_ms: int?,
+    ends_ms: int?,
+}
+
+/// Embedded amount of money in minor units (hundredths) of a named
+/// currency. It is never a record of its own and says nothing about who
+/// paid or when.
+@model(quote { Semantics { quantities: [
+    QuantityBinding { amount: ["cents"], unit: UnitBinding.Field(["currency"]), decimal_places: 2 },
+] } })
+export type Charge = {
+    cents: int,
+    @length(min: 3, max: 3) currency: string,
+}
+
+/// A member of the rescue team, whether a field volunteer or a base
+/// helper. The name is how teammates mention them, not a unique key. An
+/// unrecorded mobile means the member is reachable by radio only.
+@model(quote { Semantics {
+    identities: [IdentityBinding { namespace: "callsign", path: ["callsign"], normalization: .AsciiLowerTrim }],
+    label: ["name"],
+    absences: [AbsenceBinding { path: ["mobile"], code: "radio_only" }],
+} })
+export type Volunteer = {
+    @length(min: 1, max: 128) name: string,
+    @length(min: 1, max: 16) callsign: string,
+    @length(min: 1, max: 64) mobile: string?,
+}
+
+/// A named feature of the fell such as a gully, ridge or scree slope,
+/// mentioned by the name walkers use. Names are not unique keys. An
+/// unrecorded elevation means nobody has fixed it with a GPS reading.
+@model(quote { Semantics {
+    label: ["name"],
+    quantities: [QuantityBinding { amount: ["elevation_m"], unit: UnitBinding.Constant("m") }],
+    absences: [AbsenceBinding { path: ["elevation_m"], code: "no_gps_fix" }],
+} })
+export type Crag = {
+    @length(min: 1, max: 128) name: string,
+    elevation_m: int?,
+}
+
+/// A hut, garage or lay-by where the team keeps vehicles and kit; its
+/// name is how members refer to it and is not a unique key.
+@model(quote { Semantics { label: ["name"] } })
+export type Base = {
+    @length(min: 1, max: 128) name: string,
+}
+
+/// A shop or maker that sells gear to the team. Names are not unique
+/// keys; one shop may trade under several banners.
+@model(quote { Semantics { label: ["name"] } })
+export type Outfitter = {
+    @length(min: 1, max: 128) name: string,
+    @items(max: 16) banners: List<string> = [],
+}
+
+/// A volunteer's duty at a base over an interval. `duty` is the capacity
+/// they served in then, not a lasting trait of the person. A duty with an
+/// unrecorded end is still running or was never closed in the roster.
+@model(quote { Semantics {
+    relation: RelationBinding {
+        from: ["volunteer"], to: ["base"], label: ["duty"],
+        phrasing: "{from} serves as {label} at {to}",
+        labels: [
+            RelationLabel { value: "warden", forward: ["warden of"], reverse: ["kept by"] },
+            RelationLabel { value: "driver", forward: ["driver at"], broader: ["crew"] },
+            RelationLabel { value: "medic", forward: ["medic at"], broader: ["crew"] },
+            RelationLabel { value: "crew", forward: ["crew at"] },
+        ],
+    },
+    validity: ValidityBinding { from: ["stretch", "begins_ms"], until: ["stretch", "ends_ms"] },
+} })
+export type BaseDuty = {
+    volunteer: Ref<Volunteer>,
+    base: Ref<Base>,
+    @one_of(["warden", "driver", "medic", "crew"]) duty: string,
+    stretch: Stretch,
+}
+
+/// One call-out to a casualty on the fell. `incident_lead` directs the
+/// search from the control vehicle and `field_commander` leads the party
+/// on the ground; they may be the same member or different ones. An
+/// unrecorded stand-down date means the call-out has not been closed. An
+/// unrecorded crag means the casualty was never placed on a named feature.
+/// An unrecorded search time means nobody kept a log of it.
+@model(quote { Semantics {
+    label: ["title"],
+    times: [
+        TimeBinding { path: ["raised_at"], encoding: .UnixMillis },
+        TimeBinding { path: ["stood_down_on"], encoding: .IsoDate },
+    ],
+    quantities: [QuantityBinding { amount: ["search_minutes"], unit: UnitBinding.Constant("minutes") }],
+    absences: [
+        AbsenceBinding { path: ["stood_down_on"], code: "not_yet_closed" },
+        AbsenceBinding { path: ["search_minutes"], code: "no_log_kept" },
+        AbsenceBinding { path: ["crag"], code: "location_unplaced" },
+    ],
+} })
+export type Callout = {
+    @length(min: 1, max: 256) title: string,
+    incident_lead: Ref<Volunteer>,
+    field_commander: Ref<Volunteer>,
+    crag: Ref<Crag>?,
+    raised_at: int,
+    stood_down_on: string?,
+    search_minutes: int?,
+    recovery_cost: Charge,
+}
+
+/// A counted item of team gear, such as ropes or stretcher straps.
+/// `on_hand` is counted in the unit named on the same record. An
+/// unrecorded outfitter means the item was donated or found, not bought.
+@model(quote { Semantics {
+    label: ["description"],
+    quantities: [QuantityBinding { amount: ["on_hand"], unit: UnitBinding.Field(["count_unit"]), decimal_places: 1 }],
+    absences: [AbsenceBinding { path: ["outfitter"], code: "donated_item" }],
+} })
+export type KitLine = {
+    @length(min: 1, max: 256) description: string,
+    on_hand: int,
+    @length(min: 1, max: 16) count_unit: string,
+    price_each: Charge,
+    outfitter: Ref<Outfitter>?,
+}
+
+export collect models: List<Registration> = @registered in package as Registration { make: it } by it.name
