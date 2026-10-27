@@ -2028,11 +2028,13 @@ impl Decls {
 
     fn const_type(f: FileId, s: StmtId) -> ConstType {
         if (self.ensure_const.get())(f, s) { return ConstType.Cyclic }
-        let held? = self.held_const_type(f, s) else { return ConstType.Refused }
-        ConstType.Known(held)
+        let ty? = self.const_type_lookup(f, s) else {
+            return ConstType.Refused
+        }
+        ConstType.Known(ty)
     }
 
-    fn held_const_type(f: FileId, s: StmtId) -> TypeId? { self.const_types.get().get(const_type_key(f, s)) }
+    fn const_type_lookup(f: FileId, s: StmtId) -> TypeId? { self.const_types.get().get(const_type_key(f, s)) }
 
     fn record_const_type(f: FileId, s: StmtId, ty: TypeId) {
         self.const_types.put(const_type_key(f, s), ty)
@@ -3296,7 +3298,7 @@ impl Decls {
     /// THE TYPES ARE READ FILE BY FILE, each file's rows as its own bucket. Asking a type's
     /// table then mints files that declare none, which moves no bucket this read stands on.
     fn implementors_of(tr: DeclId) -> List<DeclId> {
-        [d for f in self.unheld_files() for d in self.decls_of_file(f) if implements_kind(self.decl(d).kind) && self.implements(d, tr)]
+        [d for i in 0..self.file_count() for d in self.decls_of_file(FileId { index: i }) if implements_kind(self.decl(d).kind) && self.implements(d, tr)]
     }
 
     /// Whether a type answers a generic trait at these arguments: a
