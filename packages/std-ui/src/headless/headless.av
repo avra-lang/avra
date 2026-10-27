@@ -3,7 +3,23 @@
 //! any screen would: to a control BY ITS WORDS. An event runs the handler
 //! the view bound and the loop paints again, so a test drives the same
 //! door a host does and names no platform.
-use app.{Act, Door, Held, How, Msg, Shown, Want, Wants, replies_to, running, shown, stood, wants}
+use app.{
+    Heard,
+    Act,
+    Door,
+    Held,
+    How,
+    Msg,
+    Shown,
+    Want,
+    Wants,
+    listens_at,
+    replies_to,
+    running,
+    shown,
+    stood,
+    wants,
+}
 use native.net.{unwired}
 use native.sources.{one_loop, opened, served, unshown}
 use @std.http_message.message.{Reply, Request}
@@ -118,6 +134,7 @@ impl Screen {
         self.driving.set(true)
         self.wants.held.set([])
         self.queue.set([])
+        self.shown.app.observed.reset()
         let ended = Cell.new(false)
         self.shown.app.door.set(self.driver(ended))
         body()
@@ -136,6 +153,7 @@ impl Screen {
         Door {
             send: (m: Msg) -> self.left_for_loop(ended, m),
             ask: (w: Want, act: Act, owner: string?) -> self.asked_of(ended, w, act, owner),
+            hush: (url: string) -> { let _ = self.wants.hushed(url) },
             close: () -> ended.set(true),
         }
     }
@@ -255,7 +273,29 @@ impl Screen {
                 into.set((self.net.get())(request))
                 if self.shown.app.owns(h.owner) { let _ = self.shown.app.turn_for(h.owner, h.act) }
             },
+            .Listen(_, _) -> self.settled_nothing(),
         }
+    }
+
+    /// The stream the screen was asked to listen to at `url` speaks, as its host would deliver it:
+    /// queued where its listen put it, and the listen's act runs as a turn. A refusal ends the
+    /// listen. Nothing is delivered where no stream listens at `url`.
+    fn heard(url: string, said: Heard) {
+        let held? = self.wants.held.get().find(listens_at(it, url)) else { return }
+        let queue? = match held.how { .Listen(_, q) -> q, .Timer(_) or .Request(_, _) -> null } else {
+            return
+        }
+        queue.push(said)
+        if said is .Refused(_) { self.wants.dropped(held.token) }
+        let _ = self.shown.app.turn_for(held.owner, held.act)
+        self.settled()
+        self.framed()
+    }
+
+    /// The request the screen was asked to open a stream with at `url`, while one listens there.
+    fn listened(url: string) -> Request? {
+        let held? = self.wants.held.get().find(listens_at(it, url)) else { return null }
+        match held.how { .Listen(request, _) -> request, .Timer(_) or .Request(_, _) -> null }
     }
 
     /// The words of the failure that ended the last turn, until a turn
@@ -336,3 +376,4 @@ impl Screen {
         [b.chord.text() for b in live(root, c.seat)]
     }
 }
+

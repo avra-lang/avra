@@ -3,7 +3,7 @@
 //! (`avra_ui_event`), the handler the last paint bound there runs, and the page
 //! is sent only what changed. THIS MODULE NAMES THE HOST: `avra_dom_frame`
 //! is the page's to answer, so only a program built for a page imports it.
-use app.{Act, Door, Msg, Want, plain, remounted, stood}
+use app.{Act, Door, Heard, Msg, Want, plain, remounted, stood}
 use app.{Wants, replies_to, wants}
 use realize.dom.snapshot.{Page, taken}
 use shipped.{carried, carry, close}
@@ -20,6 +20,7 @@ extern fn avra_dom_frame(frame: Bytes)
 extern fn avra_ui_arm(token: int, ms: int, repeat: int)
 extern fn avra_ui_disarm(token: int)
 extern fn avra_ui_get(token: int, request: Bytes)
+extern fn avra_ui_listen(token: int, request: Bytes)
 extern fn avra_ui_next_paint()
 extern fn avra_ui_stood() -> int
 extern fn avra_bytes_with_room(n: int) -> Bytes
@@ -126,7 +127,12 @@ extern fn avra_ui_event(who: int, what: int, tag: int, num: int, len: int) {
 /// What a handler's ask is on a page: a timer the host keeps. No task, no
 /// loop — the host's callback is the turn.
 fn opened() -> Door {
-    Door { send: sent, ask: armed, close: unclosed }
+    Door { send: sent, ask: armed, hush: hushed, close: unclosed }
+}
+
+/// The host lets go of every stream listening at `url`.
+fn hushed(url: string) {
+    for h in wanted().hushed(url) { avra_ui_disarm(h.token) }
 }
 
 /// A page has no loop to end.
@@ -150,6 +156,7 @@ fn armed(want: Want, act: Act, owner: string?) -> bool {
         .After(ms) -> avra_ui_arm(h.token, ms, 0),
         .Every(ms) -> avra_ui_arm(h.token, ms, 1),
         .Get(request, _) -> avra_ui_get(h.token, request_frame(request)),
+        .Listen(request, _) -> avra_ui_listen(h.token, request_frame(request)),
     }
     true
 }
@@ -190,6 +197,36 @@ extern fn avra_ui_answered(token: int, status: int, len: int, fields: int) {
     let _ = held.app.turn_for(ask.owner, ask.act)
     swept(held)
     held.app.warn()
+}
+
+/// The host's stream `token` spoke: `kind` 0 it opened, 1 an event — the seat holds the event's name, a
+/// line end, then its data, and `id` is the number it ended at — 2 it dropped and the host will
+/// open it again, 3 the server refused it with status `id` and it is not opened again. The event is
+/// left where its listen put it and the listen's act runs as a turn.
+@host(Host.Page)
+extern fn avra_ui_noticed(token: int, kind: int, id: int, len: int) {
+    let held? = mounted().get() else { return }
+    let ask? = wanted().find(token) else { return }
+    let queue? = match ask.how { .Listen(_, heard) -> heard, .Timer(_) or .Request(_, _) -> null } else { return }
+    queue.push(heard_of(kind, id, len))
+    if kind == 3 { wanted().dropped(token) }
+    let _ = held.app.turn_for(ask.owner, ask.act)
+    swept(held)
+    held.app.warn()
+}
+
+/// What a stream said, as the program reads it.
+fn heard_of(kind: int, id: int, len: int) -> Heard {
+    match kind {
+        0 -> Heard.Opened,
+        1 -> {
+            let said = seated_text(len) ?? ""
+            let at = said.index_of("\n")
+            if at < 0 { Heard.Notice(id, said, "") } else { Heard.Notice(id, said.substring(0, at), said.substring(at + 1, said.length)) }
+        },
+        2 -> Heard.Closed,
+        rest -> Heard.Refused(id),
+    }
 }
 
 /// The words a failed request gives, or a plain one when it gave none.

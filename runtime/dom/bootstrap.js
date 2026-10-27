@@ -577,6 +577,108 @@ export function sendAnswer(mod, token, status, octets, fields = "") {
   mod[HOST.answered](BigInt(token), BigInt(status), BigInt(head.length + octets.length), BigInt(head.length));
 }
 
+// The page's streams, for the program's listens. The program names one by a number it counted out
+// (`listen(token, frame)`, the same request frame a get uses, its `Last-Event-ID` field naming where to
+// resume), the host reads its `text/event-stream` body off a `fetch` — so the request carries the
+// caller's own fields, which an EventSource cannot — and says what it hears through
+// `noticed(token, kind, id, text)`: kind 0 the stream opened, 1 an event (`text` is its name, a line end,
+// then its data; `id` the number it carried), 2 it dropped, 3 the server refused it with status `id`.
+// A stream that drops is opened again after a growing wait, from the last id heard; a refusal, or
+// `clear`, ends it. A stream that says nothing — not even the server's keep-alive comment — for
+// `silence` ms is a dropped one: a stream that is down must never be read as quiet.
+export function createFeeds(fetchFn, noticed, clock = globalThis, silence = 15000) {
+  const held = new Map();
+  const decoder = new TextDecoder();
+  const ended = (token, controller) => { if (held.get(token)?.controller === controller) held.get(token).controller = null; };
+  const heard = (token, block, last) => {
+    let event = "message";
+    let id = "";
+    const data = [];
+    for (const line of block.split("\n")) {
+      if (line === "" || line.startsWith(":")) continue;
+      const at = line.indexOf(":");
+      const name = at < 0 ? line : line.slice(0, at);
+      const value = at < 0 ? "" : line.slice(at + 1).replace(/^ /, "");
+      if (name === "event") event = value;
+      else if (name === "id") id = value;
+      else if (name === "data") data.push(value);
+    }
+    if (id !== "") last.id = id;
+    // A block that carries no data — a comment, a bare id — dispatches nothing.
+    if (data.length === 0) return;
+    noticed(token, 1, /^[0-9]{1,15}$/.test(id) ? Number(id) : 0, `${event}\n${data.join("\n")}`);
+  };
+  const open = async (token, r) => {
+    const last = { id: (r.headers.find(([name]) => name.toLowerCase() === "last-event-id") ?? [null, null])[1] };
+    let wait = 250;
+    while (held.has(token)) {
+      const controller = new AbortController();
+      held.get(token).controller = controller;
+      let quiet = null;
+      const listening = () => { if (quiet !== null) clock.clearTimeout(quiet); quiet = clock.setTimeout(() => controller.abort(), silence); };
+      try {
+        const headers = Object.fromEntries(r.headers.filter(([name]) => name.toLowerCase() !== "last-event-id"));
+        if (last.id !== null) headers["Last-Event-ID"] = last.id;
+        if (!Object.keys(headers).some((n) => n.toLowerCase() === "accept")) headers.Accept = "text/event-stream";
+        const res = await fetchFn(r.url, { method: "GET", headers, signal: controller.signal });
+        if (res.status >= 400 && res.status < 500) { held.delete(token); noticed(token, 3, res.status, ""); return; }
+        if (res.status < 200 || res.status > 299 || !res.body) throw new Error(`status ${res.status}`);
+        wait = 250;
+        noticed(token, 0, 0, "");
+        listening();
+        const reader = res.body.getReader();
+        let buffer = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          listening();
+          buffer += decoder.decode(value, { stream: true }).replace(/\r\n?/g, "\n");
+          for (let at = buffer.indexOf("\n\n"); at >= 0; at = buffer.indexOf("\n\n")) {
+            heard(token, buffer.slice(0, at), last);
+            buffer = buffer.slice(at + 2);
+          }
+        }
+      } catch (_) { /* the stream is gone: said below */ }
+      if (quiet !== null) clock.clearTimeout(quiet);
+      ended(token, controller);
+      if (!held.has(token)) return;
+      noticed(token, 2, 0, "");
+      await new Promise((go) => clock.setTimeout(go, wait));
+      wait = Math.min(wait * 2, 5000);
+    }
+  };
+  return {
+    listen: (token, frame) => {
+      const t = Number(token);
+      held.set(t, { controller: null });
+      open(t, parseRequest(frame));
+    },
+    // A stream let go is closed, unanswered; one that is not held is nothing.
+    unlisten: (token) => {
+      const t = Number(token);
+      const mine = held.get(t);
+      if (!mine) return;
+      held.delete(t);
+      mine.controller?.abort();
+    },
+    count: () => held.size,
+    // Every stream a module that stood down listened to is closed, unanswered.
+    clear: () => {
+      for (const mine of held.values()) mine.controller?.abort();
+      held.clear();
+    },
+  };
+}
+
+// The program's `noticed(token, kind, id, len)` — `HOST.noticed`: the text is written into the seat the
+// program hands out for exactly that many octets, then the four numbers cross as i64 seats.
+export function sendNoticed(mod, token, kind, id, text) {
+  const octets = new TextEncoder().encode(text);
+  const at = Number(mod[HOST.seat](BigInt(octets.length)));
+  new Uint8Array(mod.memory.buffer, at, octets.length).set(octets);
+  mod[HOST.noticed](BigInt(token), BigInt(kind), BigInt(id), BigInt(octets.length));
+}
+
 // The page's frames, for the program's paints. The program asks for one when
 // state moved (`next()`), once until it comes; the host calls `painted` from
 // the display's own frame (`raf`, the page's requestAnimationFrame, or a
@@ -624,6 +726,7 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
   const timers = createTimers(clock, into((token) => mod[HOST.fired](BigInt(token))));
   const frames = createFrames(raf, into(() => mod[HOST.painted]()));
   const fetches = createFetches(fetchFn, into((token, status, octets, fields) => sendAnswer(mod, token, status, octets, fields)), clock);
+  const feeds = createFeeds(fetchFn, into((token, kind, id, text) => sendNoticed(mod, token, kind, id, text)), clock);
   const windows = createWindows(document, mount, into((path, from, to, extent, pin) => sendScrolled(mod, path, from, to, extent, pin)));
   const apply = createApplier(document, mount, into((who, what, said) => sendEvent(mod, who, what, said)), style, into(() => mod[HOST.repaired]()));
 
@@ -640,8 +743,9 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
       rt: {
         [ROWS.frame]: (ptr) => { const bytes = frameOf(own.module.memory, ptr, own.module.avra_bytes_len); sent(bytes); apply(bytes); queueMicrotask(windows.check); },
         [ROWS.arm]: timers.arm,
-        [ROWS.disarm]: timers.disarm,
+        [ROWS.disarm]: (token) => { timers.disarm(token); feeds.unlisten(token); },
         [ROWS.get]: (token, ptr) => fetches.get(token, frameOf(own.module.memory, ptr, own.module.avra_bytes_len).slice()),
+        [ROWS.listen]: (token, ptr) => feeds.listen(token, frameOf(own.module.memory, ptr, own.module.avra_bytes_len).slice()),
         [ROWS.next_paint]: frames.next,
         [ROWS.stood]: () => BigInt(left ? 0 : printOf(mount)),
       },
@@ -679,6 +783,7 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
       const shipped = frameOf(mod.memory, Number(mod[HOST.state_said]()), mod.avra_bytes_len).slice();
       timers.clear();
       fetches.clear();
+      feeds.clear();
       return start(next, said, shipped);
     });
   }

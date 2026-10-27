@@ -639,11 +639,20 @@ impl Serving {
     /// pieces is as quiet as one answering nothing, and is cut by the
     /// same clock; and every piece yields, so a peer fast enough never
     /// to fill the socket still leaves the other connections their turn.
+    ///
+    /// A STREAMED RESPONSE OWNS ITS CONNECTION, SO IT ENDS WHEN THE PEER
+    /// MOVES ON — a write cannot say so. A peer that closed sent its own
+    /// end, and a write into a half-closed socket SUCCEEDS: the count a
+    /// stream keeps would stand for a reader that is gone, and only the
+    /// reset that may never come would clear it. A transport that is no
+    /// longer silent has either ended or sent what this response cannot
+    /// serve before it finishes, and `silent`'s own rule closes both.
     fn pumped(c: dyn Transport, owed: Bytes, s: Stream, delim: ReplyBody) -> bool {
         if !self.sent(c, owed) { return false }
         mut total = 0
         mut heard = now_ms()
         while true {
+            if !c.wire_silent() { return false }
             match within self.timing.idle { s.pull() } {
                 .Ok(.Data(b)) -> {
                     total = total + b.length
