@@ -4,7 +4,19 @@
 //! maps keys to names on the way out and names to keys on the way in.
 use @std.relation.engine.{Key, Saved, SavedRead, key_of, same_key}
 use @std.text.{parse_int}
-use core.{fp_str, sorted_texts, StmtId, FileId, DeclId, ModuleId, DeclKind, joined, traced, qtrace}
+use core.{
+    fp_str,
+    sorted_texts,
+    StmtId,
+    FileId,
+    DeclId,
+    ModuleId,
+    DeclKind,
+    joined,
+    flatten,
+    traced,
+    qtrace,
+}
 use @std.relation.engine.{Revival}
 use compiler.families.{Family, keyed_by}
 use core.debug.{qtrace, traced}
@@ -265,9 +277,18 @@ impl Workspace {
         let homes = [self.read_file(r.key) for r in reads]
         let outside = [r.key for i, r in reads if homes[i] != file.index]
         if outside.length < 2 { return reads }
-        self.env_noted(file, gathers, outside)
+        self.env_noted(file, gathers, flatten([self.probes_of(k) for k in outside]))
         [r for i, r in reads if homes[i] == file.index]
             .concat([SavedRead { key: Key { family: gathers.ordinal, arg: file.index }, digest: 0 }])
+    }
+
+    /// What an outside read adds to an environment: itself, or — for another file's environment —
+    /// the probes that one holds, so an environment never probes an environment.
+    fn probes_of(k: Key) -> List<Key> {
+        if !self.is_env(k.family) { return [k] }
+        let gathers = Family.all()[k.family]
+        let at = self.env_at(FileId { index: k.arg }, gathers)
+        self.env_probes.get().get(at) ?? self.env_staged(FileId { index: k.arg }, gathers)
     }
 
     /// Whether a family is a file's environment.
