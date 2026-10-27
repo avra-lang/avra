@@ -364,10 +364,11 @@ impl Workspace {
         digest
     }
 
-    /// What one probe stands at now: asked first, so the digest never depends on what the run happened to ask earlier.
+    /// What one probe stands at now: restored from its saved answer, else verified, so the digest never depends on what the run
+    /// happened to ask earlier.
     fn probe_digest(k: Key) -> int {
         if k.family == Family.Named.ordinal { return self.bucket_digest(k.arg) ?? 0 }
-        self.db.kernel.verified(k.family, k.arg)
+        if self.db.kernel.cell(k) != null || !self.db.kernel.restored(k) { self.db.kernel.verified(k.family, k.arg) }
         self.db.kernel.hash_forced(k) ?? 0
     }
 
