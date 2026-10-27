@@ -1,0 +1,88 @@
+// proves: a `@crud` model answers its doors as data — each door's method and path for a base, as a mount with the same
+// `without:` would answer them — and the description and the served router are one declaration: every door either names is
+// the other's, left-out doors are absent from both, and a soft-delete model's trash and restore are described and
+// served. A trailing slash names the same doors — eval == native.
+use @std.crud.{crud}
+use @std.crud.routes.{Door}
+use @std.http.route.{Route, prefixed}
+use @std.http_message.message.{Method}
+use @std.sqlite.{Db}
+
+@crud
+type Job = { id: int = 0, title: string, done: bool = false }
+
+@crud
+type Note = { id: int = 0, text: string, @soft_delete removed_at: int? = null }
+
+/// A described door as one word, or `-` when the mount leaves it out.
+fn word(method: Method?, path: string?) -> string {
+    let m? = method else { return "-" }
+    "${m.word()} ${path ?? ""}"
+}
+
+/// Whether the served routes hold a door at `method` and `path`, a typed hole written as the descriptor writes it.
+fn serves(found: List<Route>, method: Method, path: string) -> bool {
+    found.any(it.method == method && it.pattern.replace(": int", "") == path)
+}
+
+/// Whether a described door is exactly a served one, or both are absent.
+fn same(found: List<Route>, method: Method?, path: string?) -> bool {
+    let m? = method else { return true }
+    serves(found, m, path ?? "")
+}
+
+println(
+    "all: ${word(Job.paths("/jobs").list?.method, Job.paths("/jobs").list?.path)} | ${word(Job.paths("/jobs").update?.method, Job.paths("/jobs").update?.path)} | ${word(Job.paths("/jobs/").remove?.method, Job.paths("/jobs/").remove?.path)}",
+)
+let kept = Job.paths("/jobs", without: [.Remove, .Create])
+println(
+    "without remove and create: ${word(kept.remove?.method, kept.remove?.path)} | ${word(kept.create?.method, kept.create?.path)} | ${word(kept.find?.method, kept.find?.path)}",
+)
+let notes = Note.paths("/notes")
+println(
+    "soft: ${word(notes.trash?.method, notes.trash?.path)} | ${word(notes.restore?.method, notes.restore?.path)}",
+)
+println(
+    "a plain model has no trash: ${word(Job.paths("/jobs").trash?.method, Job.paths("/jobs").trash?.path)}",
+)
+
+/// The description against the router, door by door: every described door is served, and the count served is the count
+/// described.
+fn agrees(db: Db) -> string {
+    let all = prefixed("/jobs", Job.routes(db).found)
+    let d = Job.paths("/jobs")
+    let held = same(all, d.list?.method, d.list?.path) &&
+        same(all, d.find?.method, d.find?.path) &&
+        same(all, d.create?.method, d.create?.path) &&
+        same(all, d.update?.method, d.update?.path) &&
+        same(all, d.remove?.method, d.remove?.path)
+    "plain: described in the server ${held}, served ${all.length}"
+}
+
+fn agrees_without(db: Db) -> string {
+    let some = prefixed("/jobs", Job.routes(db, without: [.Remove]).found)
+    let d = Job.paths("/jobs", without: [.Remove])
+    let held = same(some, d.list?.method, d.list?.path) &&
+        same(some, d.find?.method, d.find?.path) &&
+        same(some, d.create?.method, d.create?.path) &&
+        same(some, d.update?.method, d.update?.path)
+    "without remove: described in the server ${held}, no remove described ${d.remove == null}, served ${some.length}, the remove served ${serves(some, Method.Delete, "/jobs/{id}")}"
+}
+
+fn agrees_soft(db: Db) -> string {
+    let all = prefixed("/notes", Note.routes(db).found)
+    let d = Note.paths("/notes")
+    let held = same(all, d.trash?.method, d.trash?.path) &&
+        same(all, d.restore?.method, d.restore?.path) &&
+        same(all, d.list?.method, d.list?.path)
+    "soft: trash and restore described and served ${held}, served ${all.length}"
+}
+
+match Db.memory() {
+    .Ok(db) -> {
+        println(agrees(db))
+        println(agrees_without(db))
+        println(agrees_soft(db))
+    },
+    .Err(e) -> println("no db: ${e.message}"),
+}
