@@ -17,6 +17,8 @@
 # ONE RULE builds all of them, the two above included: every object in
 # this tree comes from `build/%.o: %.c` and from nowhere else.
 
+# The default is one of two copies: `LLVM_PREFIXES` in packages/cli/src/commands/shared.av
+# holds the compiler's own, since this builds before any compiler exists.
 LLVM_PREFIX ?= /opt/homebrew/opt/llvm
 # a manifest's link flags name it as ${LLVM_PREFIX}
 export LLVM_PREFIX
@@ -394,7 +396,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell sh tools/avra_tools.sh suites 2>/dev/null)
 
-.PHONY: store-keys tools-suite dev-server census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
+.PHONY: ready tools-suite dev-server census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -469,6 +471,18 @@ bootstrap: recover
 	    echo "bootstrap: gen-2, the source compiled by gen-1"; \
 	    $(MAKE) -s avra || exit 1; \
 	    echo "bootstrap: build/avra is gen-2"; \
+	fi
+	@$(MAKE) -s ready
+
+# THE TREE A PROGRAM BUILDS IN: every package's C object, which a native
+# link names, and the wasm runtime with the wasm package objects, which a
+# page's build names. Without a wasm toolchain here the second half is
+# skipped, spoken — a page build then refuses by name.
+ready: $(PACKAGE_OBJS)
+	@if $(WASM_CC) --target=$(WASM_TARGET) -print-file-name=crt1.o 2>/dev/null | grep -q /; then \
+	    $(MAKE) -s wasm-runtime wasm-packages || exit 1; \
+	else \
+	    echo "ready: no WASI libc for $(WASM_CC) — a page build needs one (README.md); native programs are ready"; \
 	fi
 
 # A REFUSAL MUST SPEAK: the build's own words went to /dev/null, so a compiler

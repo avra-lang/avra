@@ -2,6 +2,8 @@
 // and the entry's own shape can each refuse, each answering through
 // @std.errors the same way every other compiler error does.
 use @std.avrac.compiler.{BuildError}
+use @std.text.{from_codepoint}
+use compiler.{named_in, armap_text}
 
 spec "BuildError" {
     given "an empty program" {
@@ -52,6 +54,15 @@ spec "BuildError" {
                 d.message == "avra: the built binary could not be moved into place — /tmp/x/build/suite"
         }
     }
+    given "a package whose C object is not built" {
+        then "the paths are named, with the target that builds them" {
+            let d = BuildError
+                .ObjectsMissing(["packages/std-sqlite/../../build/sqlite3.o"])
+                .describe()
+            d.kind == "build.objects_missing" &&
+                d.message == "avra: a package's C is not built: packages/std-sqlite/../../build/sqlite3.o — `make libs` builds the package objects of a checkout (`make wasm-packages` for a wasm target)"
+        }
+    }
     given "a symbol nothing in the program declares" {
         then "it names the missing symbol" {
             let d = BuildError.NotClosed("av_widget").describe()
@@ -63,6 +74,69 @@ spec "BuildError" {
         then "it passes through verbatim" {
             let d = BuildError.Diagnosed("error[manifest.no_target]: nothing to run").describe()
             d.kind == "build.diagnosed" && d.message == "error[manifest.no_target]: nothing to run"
+        }
+    }
+}
+
+/// What an archive's tables hold: names, each ended by a NUL.
+fn archive_of(names: List<string>) -> string {
+    [n + from_codepoint(0) for n in names].join("")
+}
+
+spec "named_in" {
+    given "an archive whose index names two symbols" {
+        then "each is named, whole" {
+            let a = archive_of(["_avra_str_parses_float", "avra_str_parsed_float"])
+            named_in(a, "avra_str_parses_float") && named_in(a, "avra_str_parsed_float")
+        }
+        then "a symbol it does not name is not, nor is a prefix of one it does" {
+            let a = archive_of(["avra_str_parses_float"])
+            !named_in(a, "avra_dom_frame") && !named_in(a, "avra_str_parses")
+        }
+    }
+}
+
+/// A field padded with spaces to `width`.
+fn padded(s: string, width: int) -> string {
+    s + [" " for _i in 0..width - s.length].join("")
+}
+
+/// An `ar` archive whose first member is `index`, named as GNU names it, and
+/// whose second member holds `body`.
+fn archive_over(index: string, body: string) -> Bytes {
+    let header = (name: string, data: string) -> padded(name, 16) +
+        padded("0", 12) +
+        padded("0", 6) +
+        padded("0", 6) +
+        padded("644", 8) +
+        padded("${data.length}", 10) +
+        "`\n"
+    ("!<arch>\n" + header("/", index) + index + header("m.o/", body) + body).bytes()
+}
+
+spec "armap_text" {
+    given "an archive whose index names a symbol and whose second member only mentions another" {
+        then "the index holds the defined one and not the merely referenced one" {
+            let a = archive_over(
+                "avra_defined_here" + from_codepoint(0),
+                "avra_only_referenced" + from_codepoint(0),
+            )
+            let index = armap_text(a)
+            named_in(index, "avra_defined_here") && !named_in(index, "avra_only_referenced")
+        }
+    }
+    given "an archive whose first member is no symbol index" {
+        then "nothing is taken as defined" {
+            let a = ("!<arch>\n" +
+                padded("m.o/", 16) +
+                padded("0", 12) +
+                padded("0", 6) +
+                padded("0", 6) +
+                padded("644", 8) +
+                padded("4", 10) +
+                "`\navra")
+                .bytes()
+            armap_text(a) == ""
         }
     }
 }

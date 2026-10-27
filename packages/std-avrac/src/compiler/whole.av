@@ -55,6 +55,7 @@ use compiler.lower.{
     FieldPlan,
     collect_answer_type,
 }
+use compiler.hosts.{BuildHost, host_named}
 use compiler.host.{library_stem, Beneath, Read, InputName, embedded_kind}
 use compiler.backend.{platform_defines, links_with_ld64}
 use @std.errors.{Loc}
@@ -439,6 +440,26 @@ impl Workspace {
         [x.id for x in self.decls.host_fns() if self.is_held(x.file) || read.any(same_file(it, x.file))]
     }
 
+    /// The host fns a build standing beside `hosts` exports: the program's
+    /// own, and a dependency's that names one of them.
+    fn exported_host_fns(read: List<FileId>, hosts: List<BuildHost>) -> List<DeclId> {
+        [d for d in self.program_host_fns(read) if self.speaks_for(d, hosts)]
+    }
+
+    /// Whether the host fn `d` is the build's: its own package's always, a
+    /// dependency's when the host it names is among `hosts`.
+    fn speaks_for(d: DeclId, hosts: List<BuildHost>) -> bool {
+        if self.packages()[self.holder_of_path(self.decls.file(self.decls.decl(d).file).path)]
+            .ordinal == 0 {
+            return true
+        }
+        let host? = self.named_host(d) else { return false }
+        hosts.any(it == host)
+    }
+
+    /// The host `d`'s `@host(…)` names; none when it names none the build knows.
+    fn named_host(d: DeclId) -> BuildHost? { host_named(self.decls.host_written(d) ?? "") }
+
     /// The packages the program's own sources import from, by key.
     fn root_imports() -> List<string> {
         distinct(
@@ -451,6 +472,7 @@ impl Workspace {
         let from = self.packages()[self.holder_of_path(self.decls.file(x.file).path)]
         if platform_defines(x.name) || entry_symbols.contains(x.name) { return [host_fn_shadows(self.decls.loc(d), x.name)] }
         if from.ordinal == 0 { return [] }
+        if self.named_host(d) == null { return [host_fn_unhosted(self.decls.loc(d), x.name, from.key)] }
         let theirs? = self
             .decls
             .externs_named(x.name)
@@ -699,6 +721,11 @@ impl Workspace {
         [joined_path(pkg.root, o) for o in self.filled_words(self.manifest(pkg.ordinal).wasm_objects)]
     }
 
+    /// The objects a link for `target` names that are not on disk.
+    fn absent_objects(target: string) -> List<string> {
+        [o for pkg in self.packages_by_name() for o in self.package_objects(pkg, target) if !self.there(o)]
+    }
+
     /// Every file a link reads besides the program's own objects: the
     /// runtime archive, and each reached package's objects.
     fn linked_files(runtime: string, target: string) -> List<string> {
@@ -814,6 +841,16 @@ fn host_fn_answers_another(at: Loc?, name: string, theirs: string, from: string)
         "`${name}` is `${theirs}`'s to name, and `${from}` answers it — only the package that names an extern, or the program's own, answers it",
         "answered here",
         "answer it in the program's own package: a test stands there, and so does a host's stand-in",
+    )
+}
+
+fn host_fn_unhosted(at: Loc?, name: string, from: string) -> Diag {
+    refusal(
+        "lower.host_fn_unhosted",
+        at,
+        "the host fn `${name}` of `${from}` names no host, so no build can say whose it is",
+        "declared here",
+        "mark it with `@host(Host.Page)` (`@std/meta`) — the host that calls it by name",
     )
 }
 

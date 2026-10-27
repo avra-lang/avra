@@ -4,9 +4,7 @@
 # second's check must print what the same program prints in a directory that never held the
 # first. The old record's imports are not the new text's, so they are never carried in.
 set -u
-cd "$(dirname "$0")/.."
-export AVRA_WATCH_HELD=1
-export AVRA_MAX_COMPILES=0
+. "$(dirname "$0")/lib/attack.sh"
 
 R=build/stale-imports; fails=0
 find "$R" -mindepth 1 -delete 2>/dev/null

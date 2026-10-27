@@ -19,9 +19,7 @@
 #    "each `CallRt` row's C body digest" is not folded. Measured by asking the program for
 #    `code_hash` of a fn that calls a row, with the package's C moved and moved back.
 set -u
-cd "$(dirname "$0")/.."
-export AVRA_WATCH_HELD=1
-export AVRA_MAX_COMPILES=0
+. "$(dirname "$0")/lib/attack.sh"
 R=build/db06-pkgc
 pkg=packages/std-time
 obj=build/std_time.o

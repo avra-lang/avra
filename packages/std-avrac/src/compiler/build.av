@@ -25,7 +25,7 @@ use core.{
 use features.{Wanted}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_bytes, make_dirs, remove}
-use @std.text.{parse_int}
+use @std.text.{parse_int, from_codepoint}
 use @std.time.{now_ns}
 use compiler.backend.{
     in_symbol_order,
@@ -58,6 +58,7 @@ use compiler.store.{
     pack_holding,
 }
 use compiler.host.{no_target, read_manifest, Stamp, Read}
+use compiler.hosts.{BuildHost, hosts_of, host_word}
 use @std.errors.{Error, ErrorInfo, info}
 use diagnostics.{new_source_file}
 use @std.relation.engine.{map_cell}
@@ -92,6 +93,8 @@ export enum BuildError {
     Diagnosed(report: string)
     /// The finished binary could not be renamed onto its path.
     Unpublished(path: string)
+    /// A reached package's C object is not where its manifest names it.
+    ObjectsMissing(paths: List<string>)
 }
 
 impl Error for BuildError {
@@ -106,6 +109,7 @@ impl Error for BuildError {
             .UnsupportedOnWasm(names) -> info("build.wasm_unsupported", wasm_unsupported(names)),
             .Diagnosed(report) -> info("build.diagnosed", report),
             .Unpublished(p) -> info("build.unpublished", unpublished(p)),
+            .ObjectsMissing(paths) -> info("build.objects_missing", objects_missing(paths)),
         }
     }
 }
@@ -891,8 +895,10 @@ impl Workspace {
         clock.mark("emit")
         let held = self.held_objects(d.store)?
         clock.mark("place")
+        let absent = self.absent_objects(tools.target)
+        if !absent.is_empty() { fail BuildError.ObjectsMissing(absent) }
         let staged = staged_beside(binary)
-        let hosted = [self.decls.decl(h).name for h in self.program_host_fns([a.view.file for a in d.program.files])]
+        let hosted = [self.decls.decl(h).name for h in self.exported_host_fns([a.view.file for a in d.program.files], hosts_of(tools.target))]
         let code = avra_spawn_status(
             tools.linker,
             link_objects(
@@ -910,7 +916,18 @@ impl Workspace {
         )
         if code != 0 {
             fail BuildError
-                .LinkFailed(code, if tools.target == "" { unanswered_externs(full, hosted) } else { [] })
+                .LinkFailed(
+                    code,
+                    if tools.target == "" {
+                        unanswered_externs(
+                            full,
+                            hosted,
+                            armap_text(self.listed_octets(tools.runtime)),
+                        )
+                    } else {
+                        []
+                    },
+                )
         }
         clock.mark("link")
         let shrunk = shipped(staged, tools)
@@ -919,7 +936,8 @@ impl Workspace {
         let fallback = self.fallback_made(d, full, ready, key, binary, tools)
         let warnings = spoken([d.warnings, shrunk.said, fallback.said])
         let _ = d.store.keep(Stored.Warn, key, warnings, [key])
-        let host_fns = self.host_fn_lines([a.view.file for a in d.program.files])
+        let host_fns = self
+            .host_fn_lines([a.view.file for a in d.program.files], hosts_of(tools.target))
         let reads = linked_reads(self.linked_files(tools.runtime, tools.target), tools.tools)
         if reads != null {
             let _ = d
@@ -972,13 +990,16 @@ impl Workspace {
     }
 
     /// The program's host fns, each as `package name`, in name order.
-    fn host_fn_lines(files: List<FileId>) -> List<string> {
-        sorted_texts([self.host_fn_line(d) for d in self.program_host_fns(files)])
+    fn host_fn_lines(files: List<FileId>, hosts: List<BuildHost>) -> List<string> {
+        sorted_texts([self.host_fn_line(d) for d in self.exported_host_fns(files, hosts)])
     }
 
+    /// `package name`, and `(Host)` after it when the fn names its host.
     fn host_fn_line(d: DeclId) -> string {
         let x = self.decls.decl(d)
-        "${self.packages()[self.holder_of_path(self.decls.file(x.file).path)].key} ${x.name}"
+        let at = "${self.packages()[self.holder_of_path(self.decls.file(x.file).path)].key} ${x.name}"
+        let host? = self.named_host(d) else { return at }
+        "${at} (${host_word(host)})"
     }
 
     /// A read file's object: kept under the file's key, standing beside the store's
@@ -1134,15 +1155,35 @@ fn program_asked_key(d: Derived, main: ProgramMain, tools: Toolchain) -> string 
 }
 
 /// THE EXTERNS NOTHING HERE ANSWERS: no runtime row, no package's
-/// library, no host fn of the program — what a failed link most likely
-/// lacked. A host's own row is one of these on every target but that
-/// host's.
+/// library, no host fn of the program, and no symbol the runtime archive
+/// defines — what a failed link most likely lacked. A host's own row is one
+/// of these on every target but that host's.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a program in, the names nothing in it defines out.
-fn unanswered_externs(l: Lowered, defined: List<string>) -> List<string> {
+fn unanswered_externs(l: Lowered, defined: List<string>, archive: string) -> List<string> {
     let claimed = flatten([p.externs for p in l.libraries if p.library != ""])
     [row.name for row in l.externs if !rt_sigs().any(it.name == row.name) &&
         !claimed.contains(row.name) &&
-        !defined.contains(row.name)]
+        !defined.contains(row.name) &&
+        !named_in(archive, row.name)]
+}
+
+/// Whether an archive's index text names `name` as a whole symbol: the index ends
+/// each name with a NUL, and a mach-o name wears a leading `_`.
+fn named_in(archive: string, name: string) -> bool {
+    archive.contains(name + from_codepoint(0))
+}
+
+/// The text of an `ar` archive's first member when it is the symbol index —
+/// GNU's `/` or the BSD `__.SYMDEF` — and none otherwise. A member's header is
+/// 60 bytes after the 8-byte magic, its size the ten digits at offset 48.
+fn armap_text(archive: Bytes) -> string {
+    if archive.length < 68 { return "" }
+    let name = archive.slice(8, 24).text_lossy()
+    let size = parse_int(archive.slice(56, 66).text_lossy().trim()) ?? 0
+    let data = archive
+        .slice(68, if 68 + size > archive.length { archive.length } else { 68 + size })
+        .text_lossy()
+    if name.starts_with("/ ") || name.starts_with("#1/") && data.contains("__.SYMDEF") { data } else { "" }
 }
 
 fn unanswered_note(names: List<string>) -> string {
@@ -1214,6 +1255,10 @@ fn handed(full: Lowered, owed: List<Made>, opt: int, target: string) -> string? 
 
 fn object_gone(path: string) -> string {
     "avra: a held object disappeared: ${path}"
+}
+
+fn objects_missing(paths: List<string>) -> string {
+    "avra: a package's C is not built: ${paths.join(", ")} — `make libs` builds the package objects of a checkout (`make wasm-packages` for a wasm target)"
 }
 
 fn unpublished(path: string) -> string {

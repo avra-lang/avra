@@ -802,8 +802,8 @@ ex=$R/ex; xl=$R/exl; x2=$R/exl2; mkdir -p $ex/src/x $xl/src $x2/src
 printf '[package]\nname = "ex"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/exl" = { path = "../exl" }\n"@rt/exl2" = { path = "../exl2" }\n' > $ex/avra.toml
 printf '[package]\nname = "@rt/exl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-exl"\npath = "src/lib.av"\n\n[dependencies]\n"@rt/exl2" = { path = "../exl2" }\n' > $xl/avra.toml
 printf '[package]\nname = "@rt/exl2"\nversion = "0.1.0"\n\n[lib]\nname = "rt-exl2"\npath = "src/lib.av"\n' > $x2/avra.toml
-printf 'extern fn avra_exl2_event(who: int) -> int { who + 7 }\nexport fn exl2_one() -> int { 2 }\n' > $x2/src/lib.av
-printf 'use @rt.exl2.{exl2_one}\nextern fn avra_exl_event(who: int) -> int { who + 5 }\nexport fn exl_one() -> int { exl2_one() - 1 }\n' > $xl/src/lib.av
+printf 'use @std.meta.{Host, host}\n@host(Host.Page)\nextern fn avra_exl2_event(who: int) -> int { who + 7 }\nexport fn exl2_one() -> int { 2 }\n' > $x2/src/lib.av
+printf 'use @rt.exl2.{exl2_one}\nuse @std.meta.{Host, host}\n@host(Host.Page)\nextern fn avra_exl_event(who: int) -> int { who + 5 }\nexport fn exl_one() -> int { exl2_one() - 1 }\n' > $xl/src/lib.av
 printf 'export fn one() -> int { 1 }\n' > $ex/src/x/a.av
 printf 'export fn two() -> int { 2 }\n' > $ex/src/x/b.av
 printf 'extern fn avra_ex_event(who: int) -> int { who + 1 }\n' > $ex/src/x/host.av
@@ -819,10 +819,15 @@ EXH() { # EXH <label> <symbol>: the build names the host fn and the binary defin
     case "$ex_b" in *"host fn: "*"$2"*) ;; *) fails=$((fails+1)); echo "FAIL  ex: $1: the build does not list the host fn $2: $(printf '%s' "$ex_b" | grep -a '^host fn' | tr '\n' ' ')" ;; esac
     nm $ex/src/main 2>/dev/null | grep -q "$2" || { fails=$((fails+1)); echo "FAIL  ex: $1: the binary does not define $2"; }
 }
+EXN() { # EXN <label> <symbol>: a native build lists no host fn of that name and defines none
+    steps=$((steps+1)); ex_b=$(./avra build --time $ex 2>&1)
+    case "$ex_b" in *"host fn: "*"$2"*) fails=$((fails+1)); echo "FAIL  ex: $1: a native build lists the page's host fn $2" ;; esac
+    if nm $ex/src/main 2>/dev/null | grep -q "$2"; then fails=$((fails+1)); echo "FAIL  ex: $1: a native binary defines the page's host fn $2"; fi
+}
 S "ex: cold" ex
 EXH "cold lists the program's host fns" avra_ex_event
-EXH "cold lists a dependency's host fn it imports" avra_exl_event
-EXH "cold lists a dependency's own dependency's host fn it imports" avra_exl2_event
+EXN "a native build carries no dependency host fn marked for the page" avra_exl_event
+EXN "nor a dependency's own dependency's" avra_exl2_event
 printf '// moved\n' >> $ex/src/main.av
 S "ex: an edit elsewhere, every module held" ex
 EXH "a held module's host fn is listed" avra_ex_event
