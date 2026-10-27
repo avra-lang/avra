@@ -220,8 +220,14 @@ export fn arg_text(store: SyntaxArena, e: ExprId) -> string {
     let expr = store.expr(e)
     match expr {
         .VariantLit(name, _) -> name.of,
-        _ -> scalar_text(expr) ?? list_text(store, expr) ?? store.ident_name(e) ?? "",
+        _ -> scalar_text(expr) ?? list_text(store, expr) ?? dotted_text(store, expr) ?? store
+            .ident_name(e) ?? "",
     }
+}
+
+/// A `Name.Variant` path as written; none for any other expression.
+fn dotted_text(store: SyntaxArena, e: Expr) -> string? {
+    match e { .Prop(subject, name) -> "${store.ident_name(subject) ?? ""}.${name.of}", _ -> null }
 }
 
 /// A text, int or bool literal's text.
@@ -2855,6 +2861,18 @@ impl Decls {
     /// Whether a declaration is a HOST FN: an `extern fn` with a body,
     /// which defines the symbol its name spells.
     fn is_host_fn(d: DeclId) -> bool { self.is_extern(d) && self.facts_of(d)?.hosted ?? false }
+
+    /// The variant `@host(…)` names on a declaration, as written (`Host.Page`);
+    /// none when it carries no such mark.
+    fn host_written(d: DeclId) -> string? {
+        let file = self.annotation_home(d)
+        let mark? = self
+            .annotations_of(d)
+            .find((a: AnnotationFact) -> self.is_meta_annotation(a, file, "host")) else {
+            return null
+        }
+        mark.args.first()?.text
+    }
 
     /// The host fns one file declares.
     fn host_fns_of_file(f: FileId) -> List<DeclId> { [d for d in self.decls_of_file(f) if self.is_host_fn(d)] }
