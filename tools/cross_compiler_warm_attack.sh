@@ -10,14 +10,14 @@
 # that examined nothing is not a pass. Needs a machine the published compiler runs on.
 set -u
 cd "$(dirname "$0")/.."
-fails=0
+who=cross_compiler_warm
+. tools/lib/steps.sh
 edited=packages/cli/src/commands/shared.av
-fail() { fails=$((fails + 1)); echo "FAIL  $1"; }
 if [ -n "${ATTACK_WARM_COMPILER:-}" ]; then
     cp "$ATTACK_WARM_COMPILER" build/avra-warm || { echo "cross_compiler_warm: cannot read ATTACK_WARM_COMPILER"; exit 1; }
 else
     mkdir -p build/warm-from
-    FETCH_BUILD=build/warm-from sh tools/fetch_compiler.sh ${ATTACK_WARM_KEY:+--key $ATTACK_WARM_KEY} >/dev/null 2>&1 \
+    python3 tools/compiler_release.py install ${ATTACK_WARM_KEY:+--key $ATTACK_WARM_KEY} --into build/warm-from >/dev/null 2>&1 \
         && cp build/warm-from/avra build/avra-warm \
         || { echo "cross_compiler_warm: no published compiler to warm with (set ATTACK_WARM_COMPILER)"; exit 1; }
 fi
@@ -59,4 +59,4 @@ PY
     echo "edit $i: $n file(s) parsed"
     [ "$n" = 3 ] || fail "edit $i parsed $n file(s), wanted 3 (shared.av, main.av, std-cli cli.av)"
 done
-if [ "$fails" -eq 0 ]; then echo "cross_compiler_warm: clean"; else echo "cross_compiler_warm: $fails failure(s)"; exit 1; fi
+verdict "clean"
