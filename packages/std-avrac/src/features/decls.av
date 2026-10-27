@@ -600,12 +600,6 @@ export type Decls = {
     /// `Cell`s already make it an identity, so no outer `Cell` wraps it,
     /// the same reason `Rows<R>` never gets one either.
     doc_facts_side: SideRows<DocFact>,
-    /// Settlements restored for declarations whose files were never parsed.
-    held_values: Cell<Map<string, Settled>>,
-    /// A held declaration's own const, restored as UNFOLDABLE rather than as
-    /// a value: the words its settlement reached the world with, so a later
-    /// ask answers the same `Unsettled.Reach` a fresh compile would.
-    held_reaches: Cell<Map<string, string>>,
     sigs: Cell<List<DeclSig?>>,
     /// A fn's own PARAMETERS, typed once — never inferred, unlike the answer
     /// `sigs` carries, so this memo carries no self-recursion risk. Whichever
@@ -675,7 +669,6 @@ export type Decls = {
     decl_fps: Cell<List<int>>,
     type_fps: Cell<List<int>>,
     rows_state: Cell<List<int>>,
-    held_rows: Cell<fn(FileId) -> void>,
     /// The revision each armed relation cell last moved at, by family.
 
     // a GENERATED declaration's origin — null for every written one
@@ -971,7 +964,6 @@ export fn new_decls_under(durable: Durable) -> Decls {
         decl_fps: list_cell(),
         type_fps: list_cell(),
         rows_state: list_cell(),
-        held_rows: Cell.new(no_store),
         ensure_store: Cell.new(no_store),
         ensure_file: Cell.new(no_store),
         externs_index: Cell.new(no_externs),
@@ -996,8 +988,6 @@ export fn new_decls_under(durable: Durable) -> Decls {
         faces: Cell.new(no_faces),
         doc_facts: Cell.new(side_table("doc_facts", 0, 0, DocFact { doc: null, annotations: [] })),
         doc_facts_side: side_rows(),
-        held_values: map_cell(),
-        held_reaches: map_cell(),
         sigs: Cell.new(no_sigs),
         seat_types: Cell.new(no_seat_types),
         bound_types: Cell.new(no_bound_types),
@@ -1222,14 +1212,9 @@ impl Decls {
     }
 
     /// A read of one row records what the row is a function of in the open query: its
-    /// name's bucket when its file's rows are settled, its module's record when the
-    /// file is held, nothing while the rows are being minted.
+    /// name's bucket when its file's rows stand, nothing while they are being minted.
     fn row_read(x: Decl) {
-        if x.standing == 1 {
-            self.name_read(x.kind, x.file, x.bucket)
-        } else if x.standing == 2 {
-            (self.held_rows.get())(x.file)
-        }
+        if x.standing >= 1 { self.name_read(x.kind, x.file, x.bucket) }
     }
 
     /// Name bucket `b`'s cell kept at the bucket's hash until a reader reads it — from
@@ -1333,27 +1318,20 @@ impl Decls {
     fn cell_name(b: int) -> string { self.cell_names.get()[b] }
 
     /// A walk of file `f`'s rows records what they are a function of in the open
-    /// query: the file's `Items` cell when its rows are settled, its module's record
-    /// when the file is held, nothing while the rows are being minted.
+    /// query: the file's `Items` cell when its rows stand, nothing while they are being minted.
     fn rows_read(f: FileId) {
         let state = self.rows_state.get()
         if f.index >= state.length { return }
-        if state[f.index] == 1 {
-            self.record_kernel.record_at(self.record_items.get(), f.index)
-        } else if state[f.index] == 2 {
-            (self.held_rows.get())(f)
-        }
+        if state[f.index] >= 1 { self.record_kernel.record_at(self.record_items.get(), f.index) }
     }
 
-    /// The workspace arms the recording once: the family a file's rows settle under,
-    /// and what a held file's rows read instead.
-    fn arm_recording(items: int, methods: int, names: int, held: fn(FileId) -> void) {
+    /// The workspace arms the recording once: the family a file's rows settle under.
+    fn arm_recording(items: int, methods: int, names: int) {
         self.record_items.set(items)
         self.record_methods.set(methods)
         self.record_names.set(names)
         self.recording.set(true)
         for b in 0..self.name_bucket_count() { self.bucket_moved(b) }
-        self.held_rows.set(held)
         self.rows_db.get().given_to(self.record_kernel)
     }
 
@@ -1926,7 +1904,6 @@ impl Decls {
     fn disarm() {
         self.auditing.set(false)
         self.rows_db.get().released()
-        self.held_rows.set(no_store)
         self.ensure.set(no_ensure)
         self.seat_ensure.set(no_ensure)
         self.ensure_const.set(no_const_ensure)
@@ -2092,14 +2069,6 @@ impl Decls {
     }
 
     fn held_const_type(f: FileId, s: StmtId) -> TypeId? { self.const_types.get().get(const_type_key(f, s)) }
-
-    fn held_value(d: DeclId) -> Settled? { self.held_values.get().get("${d.index}") }
-
-    fn remember_held_value(d: DeclId, value: Settled) { self.held_values.put("${d.index}", value) }
-
-    fn held_reach(d: DeclId) -> string? { self.held_reaches.get().get("${d.index}") }
-
-    fn remember_held_reach(d: DeclId, words: string) { self.held_reaches.put("${d.index}", words) }
 
     fn record_const_type(f: FileId, s: StmtId, ty: TypeId) {
         self.const_types.put(const_type_key(f, s), ty)
