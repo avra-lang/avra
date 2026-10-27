@@ -114,6 +114,27 @@ type WornMark = { mark: Mark, file: FileId, gatherer: string? = null }
 /// cycle the const law refuses.
 const const_chain_limit: int = 64
 
+/// Why a maker's run did not run: its lift refused, the `@std/meta` it reads is
+/// one the crossing cannot read, or the derive it names has no signature yet.
+enum Unrun {
+    Lift(why: Unsettled)
+    UnreadMeta
+    NoSignature
+}
+
+/// What a maker's producers answered: its directives, or that it did not run.
+/// Nothing declared is `Made([])`; a run that could not run never is.
+enum Directed {
+    Made(directives: List<Directive>)
+    Unrun(cause: Unrun)
+}
+
+/// What a maker's run made: its declarations, or that it did not run.
+enum Ran {
+    Made(ids: List<DeclId>)
+    Unrun(cause: Unrun)
+}
+
 impl Workspace {
 
     /// Memoized per file; minting is idempotent by the generated key,
@@ -177,32 +198,41 @@ impl Workspace {
     fn materialized(f: FileId, w: DeclareWork, p: Parsed, vis: Namespace) -> List<DeclId> {
         let maker = self.maker_said(f, w)
         let prior = self.decls.generation_opened(f, maker)
-        self.recursive_lift.set(false)
-        let made = self.directed(f, w, p, vis, maker)
-        self.decls.generation_kept(f, maker, made, prior, self.recursive_lift.get())
-        made
+        match self.directed(f, w, p, vis, maker) {
+            .Made(made) -> {
+                self.decls.generation_kept(f, maker, made, prior)
+                made
+            },
+            .Unrun(cause) -> self.decls.generation_unrun(f, maker, prior, unrun_words(cause)),
+        }
     }
 
     /// One annotation's directives, each fulfilled under `maker`.
-    fn directed(f: FileId, w: DeclareWork, p: Parsed, vis: Namespace, maker: string) -> List<DeclId> {
+    fn directed(f: FileId, w: DeclareWork, p: Parsed, vis: Namespace, maker: string) -> Ran {
         if !w
             .args
             .all((e: ExprId) -> source_spelled(p.store.expr(e)) || p.store.ident_name(e) != null) {
-            return []
+            return Ran.Made([])
         }
-        // a loaded `@std/meta` the crossing cannot read generates
-        // nothing; the annotation law speaks it
-        if self.decls.meta_disagreement() != null { return [] }
-        if !self.is_derived(w.ret) && self.spoke_unspelled(f, w, p) { return [] }
-        let directives = when {
+        // a loaded `@std/meta` the crossing cannot read runs nothing;
+        // the annotation law speaks it
+        if self.decls.meta_disagreement() != null { return Ran.Unrun(Unrun.UnreadMeta) }
+        if !self.is_derived(w.ret) && self.spoke_unspelled(f, w, p) { return Ran.Made([]) }
+        let directed = when {
             self.is_derived(w.ret) -> self.derive_directives(w, f, p, vis)
             self.is_declared(w.ret) -> self
                 .declared_directives(w.ann, f, w.stmt, w.callee, w.args, w.at)
             _ -> self.lifted_directives(w.ann, f, w.stmt, w.callee, w.args, w.at)
         }
-        flatten(
-            [self.materialized_directive(f, w, directive, vis, maker) for directive in directives],
-        )
+        match directed {
+            .Made(directives) -> Ran
+                .Made(
+                    flatten(
+                        [self.materialized_directive(f, w, directive, vis, maker) for directive in directives],
+                    ),
+                ),
+            .Unrun(cause) -> Ran.Unrun(cause),
+        }
     }
 
     /// Whether an argument names a declaration where the seat takes a
@@ -392,12 +422,16 @@ impl Workspace {
         }
         let maker = self.maker_said(f, w)
         let prior = self.decls.generation_opened(f, maker)
-        self.recursive_lift.set(false)
-        let made = flatten(
-            [self.materialized_directive(f, w, directive, vis, maker) for directive in self.trait_directives(composer, w, f)],
-        )
-        self.decls.generation_kept(f, maker, made, prior, self.recursive_lift.get())
-        made
+        match self.trait_directives(composer, w, f) {
+            .Made(directives) -> {
+                let made = flatten(
+                    [self.materialized_directive(f, w, directive, vis, maker) for directive in directives],
+                )
+                self.decls.generation_kept(f, maker, made, prior)
+                made
+            },
+            .Unrun(cause) -> self.decls.generation_unrun(f, maker, prior, unrun_words(cause)),
+        }
     }
 
     /// A `collect enum E: T`'s impls: `@std/meta`'s `delegate` run over
@@ -1044,9 +1078,9 @@ impl Workspace {
         call: ExprId,
         args: List<ExprId>,
         at: Span?,
-    ) -> List<Directive> {
+    ) -> Directed {
         match self.lifted(d, f, stmt, call, args) {
-            .Ok(crossed) -> crossed.directives(),
+            .Ok(crossed) -> Directed.Made(crossed.directives()),
             .Err(why) -> self.mute_lift(d, f, at, self.lift_refusal(d, f, stmt, call, args) ?? why),
         }
     }
@@ -1061,26 +1095,30 @@ impl Workspace {
         call: ExprId,
         args: List<ExprId>,
         at: Span?,
-    ) -> List<Directive> {
+    ) -> Directed {
         match self.lifted(d, f, stmt, call, args) {
-            .Ok(crossed) -> crossed.declared_made(),
+            .Ok(crossed) -> Directed.Made(crossed.declared_made()),
             .Err(why) -> self.mute_lift(d, f, at, self.lift_refusal(d, f, stmt, call, args) ?? why),
         }
     }
 
-    /// What the annotation could not do, at the annotation.
-    fn mute_lift(d: DeclId, f: FileId, at: Span?, why: Unsettled) -> List<Directive> {
+    /// What the annotation could not do, at the annotation: it did not run,
+    /// so it answers no directives at all — never an empty list, which would
+    /// say it declares nothing.
+    fn mute_lift(d: DeclId, f: FileId, at: Span?, why: Unsettled) -> Directed {
         let label = unsettled_label(self.decls.decl(d).name, why)
-        if why is .Recursive { self.recursive_lift.set(true) }
-        if label.is_empty() { return [] }
-        self.decls.speak_expansion(f, [lift_failed(label, loc_at(self.decls.file(f).path, at))])
-        []
+        if !label.is_empty() { self.decls.speak_expansion(f, [lift_failed(label, loc_at(self.decls.file(f).path, at))]) }
+        Directed.Unrun(Unrun.Lift(why))
     }
 
     /// A `@derive`'s directives: each named trait's associated
     /// `derive` run over the annotated declaration, concatenated.
-    fn derive_directives(w: DeclareWork, f: FileId, p: Parsed, vis: Namespace) -> List<Directive> {
-        flatten([self.trait_directives(self.named_arg(p, vis, e), w, f) for e in w.args])
+    fn derive_directives(w: DeclareWork, f: FileId, p: Parsed, vis: Namespace) -> Directed {
+        let each = [self.trait_directives(self.named_arg(p, vis, e), w, f) for e in w.args]
+        let unrun? = [d for d in each if d is .Unrun].first() else {
+            return Directed.Made(flatten([directives_of(d) for d in each]))
+        }
+        unrun
     }
 
     /// A declaration's NAME in an annotation's argument list, in this
@@ -1092,14 +1130,14 @@ impl Workspace {
 
     /// One trait's associated `derive` over the declaration — its
     /// directives, or none when the trait declares no `derive`.
-    fn trait_directives(tr: DeclId?, w: DeclareWork, f: FileId) -> List<Directive> {
-        if tr == null { return [] }
+    fn trait_directives(tr: DeclId?, w: DeclareWork, f: FileId) -> Directed {
+        if tr == null { return Directed.Made([]) }
         let trait_id = tr!
-        let m? = self.decls.trait_derive(trait_id) else { return [] }
+        let m? = self.decls.trait_derive(trait_id) else { return Directed.Made([]) }
         // The provider guard: a same-file derive would need this file's
         // names while they are still being made. `check_annotation` speaks.
-        if same_file(self.decls.decl(m).file, f) { return [] }
-        let sig? = self.decls.sig(m)?.fn_sig() else { return [] }
+        if same_file(self.decls.decl(m).file, f) { return Directed.Made([]) }
+        let sig? = self.decls.sig(m)?.fn_sig() else { return Directed.Unrun(Unrun.NoSignature) }
         // A `Declared` answer makes its declarations in `made`, beside
         // the problems the annotation law speaks — the SAME lift, read
         // through the other field. Both shapes generate.
@@ -1554,4 +1592,19 @@ fn written(p: Parsed, e: ExprId) -> string {
     let here: Span? = if p.store.spanned_elsewhere(e) { null } else { p.store.expr_span(e) }
     let at? = here else { return arg_text(p.store, e) }
     p.source.text.substring(at.lo, at.hi)
+}
+
+/// The directives a run answered; none for one that did not run.
+fn directives_of(d: Directed) -> List<Directive> {
+    match d { .Made(directives) -> directives, .Unrun(cause) -> [] }
+}
+
+// ── voices ──
+
+fn unrun_words(cause: Unrun) -> string {
+    match cause {
+        .Lift(why) -> "its lift did not settle (${unsettled_label("", why)})",
+        .UnreadMeta -> "the `@std/meta` it reads is one the crossing cannot read",
+        .NoSignature -> "the derive it names has no signature yet",
+    }
 }
