@@ -16,6 +16,7 @@ use features.{TypeFacts, Asked, Sub, ParamScope, RunChoice, PipeStage, Decl}
 use diagnostics.{no_voices}
 use compiler.{Workspace}
 use compiler.store.{Store, Stored, node_key, Reading, read_spelled, WIRE_FACTS}
+use core.debug.{qtrace, traced}
 use compiler.families.{Family}
 use core.digest.{hex, unhex}
 use @std.text.{parse_int}
@@ -474,11 +475,24 @@ impl Workspace {
         let x = self.decls.raw_decl(d)
         let octets? = facts_encoded_in(facts, self.facts_scope(x.lo, x.stmt_lo)) else { return }
         mut readings: List<Reading> = []
-        for dep in self.db.kernel.deps_of(key(Family.Typed, d.index)) {
-            let named? = self.saved_name(dep) else { return }
-            let digest? = self.db.kernel.value_hash_of(dep) else { return }
+        let deps = self.db.kernel.deps_of(key(Family.Typed, d.index))
+        for dep in deps {
+            let named? = self.saved_name(dep) else {
+                // FACTSPROBE: what a facts row could not name, and why it files nothing.
+                if traced() {
+                    qtrace(
+                        "Q\tfacts\tbail-name\t${Family.all()[dep.family].name}\t${x.name} ${deps.length}\n",
+                    )
+                }
+                return
+            }
+            let digest? = self.db.kernel.value_hash_of(dep) else {
+                if traced() { qtrace("Q\tfacts\tbail-digest\t${Family.all()[dep.family].name}\t${x.name}\n") }
+                return
+            }
             readings.push(Reading { name: named, digest: "${digest}" })
         }
+        if traced() { qtrace("Q\tfacts\tkept\t${x.name}\t${deps.length}\n") }
         let _ = store.keep_reading(Stored.Unit, self.facts_row_key(d), hex(octets), readings)
     }
 
