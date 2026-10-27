@@ -175,7 +175,7 @@ def main():
         path = sys.argv[sys.argv.index("--write") + 1]
         params = json.load(open(path))
         digest = lambda p: hashlib.sha256(open(p, "rb").read()).hexdigest()
-        data = {"rows": digest(ROWS), "scores": digest(SCORES)}
+        data = {"rows": digest(ROWS), "scores": digest(SCORES), "corpus": params["params"]["accept_record"]["data"]["corpus"]}
         k = int(best["variant"].split()[-1])
         yesno = best["variant"].startswith("yes/no")
         params["params"]["record_shortlist_k"] = {"value": k, "fitted": True, "objective": "held-out accuracy of the kind taken per sentence (a stated kind right, nothing taken right when none is stated); fewer calls on a tie",
