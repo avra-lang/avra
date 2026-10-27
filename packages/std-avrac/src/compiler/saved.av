@@ -364,10 +364,11 @@ impl Workspace {
         digest
     }
 
-    /// What one probe stands at now: asked first, so the digest never depends on what the run happened to ask earlier.
+    /// What one probe stands at now: restored from its saved answer, else verified, so the digest never depends on what the run
+    /// happened to ask earlier.
     fn probe_digest(k: Key) -> int {
         if k.family == Family.Named.ordinal { return self.bucket_digest(k.arg) ?? 0 }
-        self.db.kernel.verified(k.family, k.arg)
+        if self.db.kernel.cell(k) != null || !self.db.kernel.restored(k) { self.db.kernel.verified(k.family, k.arg) }
         self.db.kernel.hash_forced(k) ?? 0
     }
 
@@ -528,12 +529,18 @@ impl Workspace {
     }
 
     /// Whether a file's said row stands: asked, and answered from what is saved or settled here.
-    fn said_standing(f: FileId) {
+    fn said_standing(f: FileId) -> bool {
         let held = match self.relation(Family.FileSaid).ask(f.index) {
             .Reuse(_) -> true,
             .Compute or .Cycle -> false,
         }
         if traced() { qtrace("Q\tsaid\t${held}\t${self.decls.file(f).path}\n") }
+        held
+    }
+
+    /// A file's said row's text, as it is saved.
+    fn said_row_text(path: string) -> string? {
+        self.saved_value(Key { family: Family.FileSaid.ordinal, arg: self.file_id(path).index })
     }
 
     /// A file's said row read back.
