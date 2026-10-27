@@ -89,6 +89,16 @@ use issue.{Issues, root}
 use check.{Checking, filed}
 use shape.{FieldShape, FieldKind}
 
+/// What a route's args are: the tree that fills a path's holes and fills out a query or a body. A record that
+/// derives `Decode` is its own tree; `int` is the key a `{id}` hole takes.
+export trait Args {
+    fn args() -> Value
+}
+
+impl Args for int {
+    fn args() -> Value { Value.Map([Entry { key: "id", value: Value.Int(self) }]) }
+}
+
 export trait Decode {
     /// The value read as this type: it, or every issue.
     static fn decode(v: Value, coercion: Coercion = Coercion.Strict, limits: Limits = Limits {}) -> Result<
@@ -234,6 +244,10 @@ export fn decoder(t: Type) -> Decls {
             static fn fields() -> List<FieldShape> { ${shape_list(t)} }
 
             fn value() -> Value { ${valued(t)} }
+        }
+
+        impl Args for ${t} {
+            fn args() -> Value { self.value() }
         }
 
         impl ${t} {

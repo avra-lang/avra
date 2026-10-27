@@ -5,7 +5,7 @@ use @std.crud.{crud}
 use @std.meta.{derive}
 use @std.http_message.message.{Method, Reply, Request}
 use @std.http_message.route.{Nothing, Route, Routes}
-use @std.ui.app.{Async, Fetch, ask, ask_all, ask_list, ask_row, fetch, send}
+use @std.ui.app.{Async, Fetch, ask, ask_list, fetch, send}
 use @std.ui.components.{column}
 use @std.ui.headless.{headless}
 use @std.validate.{Decode}
@@ -38,6 +38,7 @@ fn serve(r: Request) -> Result<Reply, string> {
             "${r.method.word()} ${r.url}${if r.body is .Empty { "" } else { " " + r.body.encoded().bytes.text()! }}",
         )
     let single = "{\"id\":1,\"title\":\"a\",\"done\":false}"
+    if r.method is .Delete { return .Ok(Reply { status: 204, body: "".bytes() }) }
     if !(r.method is .Get) && r.url == "/todos" {
         return .Ok(
             Reply { status: 201, body: "{\"id\":9,\"title\":\"new\",\"done\":false}".bytes() },
@@ -70,6 +71,15 @@ fn one(f: Fetch<Todo>) -> string {
     }
 }
 
+fn nothing(f: Fetch<Nothing>) -> string {
+    match f.state() {
+        .Ready(_) -> "taken",
+        .Loading -> "loading",
+        .Idle -> "idle",
+        .Failed(m) -> "failed ${m}",
+    }
+}
+
 fn drained() -> string {
     let all = sent
     sent = []
@@ -86,17 +96,17 @@ screen
             let again: Fetch<List<Todo>> = fetch()
             let found: Fetch<Todo> = fetch()
             let list = routes.list!
-            let _ = ask_all(rows, list)
+            let _ = ask_list(rows, list, Nothing {})
             screen.advance(ms(10))
             println("a list: ${titles(rows)} | sent ${drained()}")
-            let _ = ask_all(rows, list)
-            let _ = ask_all(again, list)
+            let _ = ask_list(rows, list, Nothing {})
+            let _ = ask_list(again, list, Nothing {})
             screen.advance(ms(10))
             println("two views asking at once: ${titles(again)} | sent ${drained()}")
-            let _ = ask_row(found, routes.find!, 1)
+            let _ = ask(found, routes.find!, 1)
             screen.advance(ms(10))
             println("a row by its key: ${one(found)} | sent ${drained()}")
-            let _ = ask_row(found, routes.find!, 2)
+            let _ = ask(found, routes.find!, 2)
             screen.advance(ms(10))
             println("another key: ${one(found)} | sent ${drained()}")
             let filtered: Route<Filter, List<Todo>> = Route { method: Method.Get, path: "/todos" }
@@ -146,5 +156,9 @@ screen
             println("a text key is one escaped segment: sent ${drained()}")
             let _ = ask(found, maybe, Maybe {})
             println("a hole with no value is refused in words: ${one(found)} | sent ${drained()}")
+            let gone: Fetch<Nothing> = fetch()
+            let _ = send(gone, routes.remove!, 4)
+            screen.advance(ms(10))
+            println("a removal is sent by the key: ${nothing(gone)} | sent ${drained()}")
         },
     )
