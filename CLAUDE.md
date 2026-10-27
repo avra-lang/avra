@@ -519,7 +519,16 @@ registry is the idiom engine's spec, written by dogfooding.
   host fn stands (compiler/whole.av's `host_fn_owes`). WHO OPENS IT: a
   dependency's host fn is the program's export only when the program's
   OWN sources import that package (lower.host_fn_unasked), and a build
-  lists each as `host fn: <package> <name>`, fresh or kept. WHAT IT
+  lists each as `host fn: <package> <name>`, fresh or kept. AND A
+  DEPENDENCY'S HOST FN NAMES ITS HOST: `@host(Host.Page)` (`@std/meta`,
+  a typed value, never a string) says whose caller it is, and a build is
+  exported only the host fns whose host its target stands beside — a
+  wasm module is a page's (`compiler/hosts.av`'s `BuildHost`, every arm
+  spelled), a native binary has none, so a native program importing
+  `@std/ui` no longer carries the page's symbols. A dependency's host fn
+  naming none is `lower.host_fn_unhosted`; the program's own package
+  speaks for all of its own, marked or not, and the line a build prints
+  carries the host word (`host fn: @std/ui avra_ui_event (Page)`). WHAT IT
   MAY NAME: nothing the platform already defines (lower.host_fn_shadows
   — a host fn named `malloc` once linked and REPLACED the allocator),
   and a bodiless extern of ANOTHER package only from the program's own
