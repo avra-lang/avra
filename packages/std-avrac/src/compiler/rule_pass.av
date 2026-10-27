@@ -63,7 +63,7 @@ fn node_candidates(a: Analysed, index: RuleIndex, at: At) -> List<Candidate> {
 fn one_candidate(a: Analysed, at: At, r: RuleEntry) -> List<Candidate> {
     work_rule_run()
     let f? = r.run(code_at(a, at)) else { return [] }
-    if site_licenses(a, at, r) { return [] }
+    if site_licenses(a, at, f, r) { return [] }
     [Candidate { at: at, owner: r, fix: f }]
 }
 
@@ -72,9 +72,21 @@ fn one_candidate(a: Analysed, at: At, r: RuleEntry) -> List<Candidate> {
 /// `site_licensed`, CLAUDE.md's exemption law) — a finding never
 /// built for a site whose author already decided this IS the law,
 /// not a defect.
-fn site_licenses(a: Analysed, at: At, r: RuleEntry) -> bool {
-    let loc? = code_at(a, at).loc() else { return false }
+///
+/// The site is the FINDING's own place, the line the reader sees,
+/// never the matched subject's: a rule whose subject is a BLOCK (a
+/// `push(…)` held open across a stretch of work until a later `pop()`)
+/// has no span of its own, so reading one left every such licence
+/// unread — `resolution_state`'s `// LICENSED compiler.bracket_ritual`
+/// lines were decorative.
+fn site_licenses(a: Analysed, at: At, f: Fix, r: RuleEntry) -> bool {
+    let loc? = code_at(a, at).loc() ?? said_loc(f) else { return false }
     site_licensed(a.view.store, a.view.source, a.view.source.linecol(loc.lo).line, rule_id(r))
+}
+
+/// Where a `Say` finding points, when it points anywhere.
+fn said_loc(f: Fix) -> Loc? {
+    match f { .Say(voice) -> voice.primary.loc, rest -> null }
 }
 
 /// The one construction seam: a rule's own subject, one node in one
