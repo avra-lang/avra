@@ -42,6 +42,10 @@ export const outsidePresses = async (on, where, claim, named) => {
   await on.escape();
   const spot = await on.read(`(() => { const el = document.querySelector("li input"); const r = el.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), checked: el.checked }; })()`);
   await on.pressAt(spot.x, spot.y);
-  claim(says[5], await open() === false && await on.read(`document.querySelector("li input").checked`) !== spot.checked);
+  // A tick is a change the server answers: the box shows the other state once the board has the server's list.
+  const checkedNow = () => on.read(`document.querySelector("li input").checked`);
+  await on.quiet?.();
+  claim(says[5], await open() === false && await checkedNow() !== spot.checked, { open: await open(), checked: await checkedNow(), was: spot.checked, log: await on.read(`window.__log?.slice(-10)`) });
   await on.pressAt(spot.x, spot.y);
+  await on.quiet?.();
 };

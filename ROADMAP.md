@@ -3214,6 +3214,14 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### A control shows its pending change while the server answers
+
+The board (`tools/ui-board/src/board.av`) draws the list the server last answered, so a
+ticked checkbox is put back to the server's state at once and shows the new one only when
+the answer lands. The want: a change in flight is a value the view can read beside the
+observation (the control shows what was asked until the answer or its refusal), without the
+board keeping a copy of the tasks. Wanting site: `task_row`'s checkbox.
+
 ### Interim record — a `once fn` takes no type parameters
 
 std-ui keeps a stateful composition's instances in a derived

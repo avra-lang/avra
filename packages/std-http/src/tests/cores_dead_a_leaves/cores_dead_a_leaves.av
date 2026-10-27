@@ -1,0 +1,17 @@
+// proves: a program that ends with a transaction open leaves nothing behind — the evaluator closes what a run
+// registered, so the next program's fork in the same process is not refused (cores_dead_b_serves).
+use @std.io.{make_dirs}
+use @std.sqlite.{Db, sql}
+use @std.time.{stamp}
+
+fn left() -> string {
+    let dir = "/tmp/avra-http-cores-dead/${stamp()}"
+    let _ = make_dirs(dir)
+    let db = match Db.open("${dir}/rows.db") { .Ok(d) -> d, .Err(e) -> { return e.message } }
+    let _ = db.run(sql("CREATE TABLE rows (n INTEGER PRIMARY KEY, who INTEGER)"))
+    let _ = db.exec("BEGIN")
+    let _ = db.run(sql("INSERT INTO rows (who) VALUES (1)"))
+    "left open"
+}
+
+left()

@@ -1,0 +1,66 @@
+//! What the cores programs share: a client that asks the server one thing, a database opened with the
+//! one table they read, and a cycle that runs a server across three cores and stops it.
+use @std.http.server.{Server, Stateless}
+use @std.io.{make_dirs}
+use @std.net.{NetError, connect, timely}
+use @std.sqlite.{Db, sql}
+use @std.time.{secs, stamp}
+
+/// One request on its own connection, answered with its body.
+export fn asked(port: int, method: string) -> Result<string, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    c
+        .write(
+            "${method} / HTTP/1.1\r\nHost: a\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+                .bytes(),
+        )?
+    mut got = "".bytes()
+    while true {
+        match timely(within secs(2) { c.read(65536) }) {
+            .Ok(b) -> {
+                let more? = b else { break }
+                got = got.concat(more)
+            },
+            .Err(_) -> { break },
+        }
+    }
+    let parts = (got.text() ?? "?").split("\r\n\r\n")
+    .Ok(if parts.length > 1 { parts[1] } else { "?" })
+}
+
+/// A setup failure, in the one error these programs speak.
+export fn refused(why: string) -> NetError { NetError { verb: "setup", subject: why, errno: 1 } }
+
+/// The rows a database holds, or the refusal in words.
+export fn count(db: Db) -> string {
+    match db.scalar(sql("SELECT count(*) FROM rows")) {
+        .Ok(v) -> "${v.int() catch -1}",
+        .Err(e) -> e.message,
+    }
+}
+
+/// A database at `path` with the one table the cores programs read.
+export fn opened(path: string) -> Result<Db, NetError> {
+    let db = match Db.open(path) { .Ok(d) -> d, .Err(e) -> { return .Err(refused(e.message)) } }
+    let _ = db.run(sql("CREATE TABLE IF NOT EXISTS rows (n INTEGER PRIMARY KEY, who INTEGER)"))
+    .Ok(db)
+}
+
+/// A fresh directory for one program's databases.
+export fn dir() -> string {
+    let d = "/tmp/avra-rt/${stamp()}"
+    let _ = make_dirs(d)
+    d
+}
+
+/// One cycle: the server runs on 3 cores, answers 3 requests, stops.
+export fn cycle(up: Server<Stateless>) -> Result<string, NetError> {
+    let ran = spawn up.run(3)
+    let port = up.listener.port
+    let sent = [spawn asked(port, "GET") for i in 0..3]
+    let answers = [t.await? for t in sent]
+    up.stop()
+    let end = match ran.await { .Ok(n) -> "ran ${n}", .Err(e) -> "err ${e.errno} ${e.subject}" }
+    .Ok("${answers.join(",")} ${end}")
+}

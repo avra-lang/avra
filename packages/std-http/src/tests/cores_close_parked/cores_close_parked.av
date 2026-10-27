@@ -1,0 +1,29 @@
+// proves: `close` on a connection the fork parked answers 0 twice, later use says it is closed, and a fresh connection opens.
+use @std.http.http.{text}
+use @std.http.route.{get}
+use @std.http.server.{server}
+use @std.net.{NetError}
+use tests.support.{count, cycle, dir, opened, refused}
+
+fn shown() -> Result<string, NetError> {
+    let db = opened("${dir()}/rows.db")?
+    server app {
+        port: 0
+        get "/" { _req -> text(200, count(db)) }
+    }
+    let up = match app.listening() {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    let one = cycle(up)?
+    let closed = db.close()
+    let again = db.close()
+    let after = count(db)
+    let reopened = match opened("${dir()}/fresh.db") {
+        .Ok(d) -> count(d),
+        .Err(e) -> e.describe().message,
+    }
+    .Ok("${one} | close ${closed} again ${again} | use-after ${after} | fresh ${reopened}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
