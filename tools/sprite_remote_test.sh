@@ -21,11 +21,7 @@ unset AVRA_RUN
 # No attach here follows a run longer than this: one that should have ended and did not is a FAIL, never a wait.
 export AVRA_ATTACH_S=30
 
-total=0
-failed=0
-ok() { total=$((total + 1)); echo "ok    $1"; }
-bad() { total=$((total + 1)); failed=$((failed + 1)); echo "FAIL  $1"; [ -n "${2:-}" ] && sed 's/^/      | /' "$2" 2>/dev/null; }
-check() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3 (got '$1', wanted '$2')" "${4:-}"; fi; }
+. "$here/lib/checks.sh"
 
 remote() { sh -c 'AVRA_REMOTE_SCRIPT=$1; shift; eval "$AVRA_REMOTE_SCRIPT"' avra-remote "$script" "$@"; }
 begin() { id=$1 cmd_s=$2; shift 2; remote start "$id" "fixture 0 0" 60 "$cmd_s" "$scratch/tree" - "$@"; }
@@ -229,6 +225,4 @@ check "$(st)" "none" "a Sprite never provisioned reports no hash"
 check "$(remote reprovision abc123 "$scratch/tree")|$(st)" "reprovisioned=abc123|abc123" "a provisioning records the hash it came from, and status reports it"
 check "$(remote reprovision def456 "$scratch/tree" >/dev/null; st)" "def456" "a later provisioning replaces the record"
 
-echo "----------------------------------------"
-echo "sprite_remote_test: $total checks, $failed failed"
-[ "$failed" -eq 0 ]
+checks_done sprite_remote_test

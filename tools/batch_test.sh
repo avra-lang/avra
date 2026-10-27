@@ -14,11 +14,7 @@ scratch=$(cd "$scratch" && pwd -P)
 trap 'rm -rf "$scratch"' EXIT
 trap 'exit 130' INT TERM
 
-total=0
-failed=0
-ok() { total=$((total + 1)); echo "ok    $1"; }
-bad() { total=$((total + 1)); failed=$((failed + 1)); echo "FAIL  $1"; [ -n "${2:-}" ] && sed 's/^/      | /' "$2" 2>/dev/null; }
-check() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3 (got '$1', wanted '$2')" "${4:-}"; fi; }
+. "$here/lib/checks.sh"
 
 fx="$scratch/fx"
 mkdir -p "$fx"
