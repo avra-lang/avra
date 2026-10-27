@@ -2,7 +2,7 @@
 // and decides nothing: the frames below say what moved, what is a property
 // and what an event says. Op numbers come from the generated table, so a
 // wire the program changed is the wire this test speaks.
-import { stateOf, printOf, wordsOf, standingOf, createApplier, createFetches, createFrames, createTimers, guarded, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
+import { stateOf, printOf, wordsOf, standingOf, createApplier, createFetches, createFeeds, createFrames, createTimers, guarded, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
 import { AFTER, NO_ID, OP, SAYS, TAGS } from "./wire.gen.js";
 import v8 from "node:v8";
 import vm from "node:vm";
@@ -392,7 +392,7 @@ const clockAt = () => {
   timers.disarm(99n);
   clock.advance(10);
   check("a disarmed one-shot never fires; disarming twice, or a stranger, says nothing", [fired.length, timers.count()], [4, 0]);
-  check("the rows a page answers are named by the generated table", Object.keys(ROWS).sort(), ["arm", "disarm", "frame", "get", "next_paint", "stood"]);
+  check("the rows a page answers are named by the generated table", Object.keys(ROWS).sort(), ["arm", "disarm", "frame", "get", "listen", "next_paint", "stood"]);
 }
 
 // ── the page's requests ──
@@ -471,6 +471,81 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   sendAnswer(mod, 9, 201, new TextEncoder().encode("abc"), "etag: x");
   check("an answer writes its fields then its octets into the seat, then names the token, status, length and fields", [seen, new TextDecoder().decode(new Uint8Array(mod.memory.buffer, 16, 10))], [[["seat", 10], [9, 201, 10, 7]], "etag: xabc"]);
   check("the rows a page answers include the request rows", ["get"].every((k) => typeof ROWS[k] === "string"), true);
+}
+{
+  // A stream a test speaks on by hand: a fetch whose body is a reader the test feeds, closes, or lets be refused.
+  const streams = [];
+  let status = 200;
+  const streamFetch = (url, init) => new Promise((resolve, reject) => {
+    const queue = [];
+    let wake = null;
+    let over = false;
+    const stream = { url, init, push: (text) => { queue.push(text); if (wake) wake(); }, close: () => { over = true; if (wake) wake(); } };
+    streams.push(stream);
+    const reader = {
+      read: () => new Promise((done, fail) => {
+        const next = () => { wake = null; if (queue.length) done({ done: false, value: new TextEncoder().encode(queue.shift()) }); else if (over) done({ done: true }); else wake = next; };
+        init.signal.addEventListener("abort", () => fail(Object.assign(new Error("aborted"), { name: "AbortError" })));
+        next();
+      }),
+    };
+    resolve({ status, body: { getReader: () => reader } });
+  });
+  const said = [];
+  const clock = clockAt();
+  const feeds = createFeeds(streamFetch, (t, kind, id, text) => said.push([t, kind, id, text]), clock, 1000);
+  const settle = async () => { for (let k = 0; k < 8; k++) await Promise.resolve(); };
+
+  feeds.listen(1n, requestFrame({ url: "/jobs/events", headers: [["x-user", "7"], ["Last-Event-ID", "3"]] }));
+  await settle();
+  check("a stream is opened with the caller's fields and the cursor it was asked to resume from", [streams[0].url, streams[0].init.headers["x-user"], streams[0].init.headers["Last-Event-ID"]], ["/jobs/events", "7", "3"]);
+  check("it asks for an event stream", streams[0].init.headers.Accept, "text/event-stream");
+  check("it says it opened", said, [[1, 0, 0, ""]]);
+  streams[0].push(": keep-alive\n\nid: 5\nevent: notice\ndata: One, Two\n\n");
+  await settle();
+  check("an event crosses with its id, its name and its data, a keep-alive comment says nothing", said.slice(1), [[1, 1, 5, "notice\nOne, Two"]]);
+  streams[0].push("id: 6\nevent: notice\nda");
+  await settle();
+  streams[0].push("ta: Job\r\n\r\n");
+  await settle();
+  check("an event split across reads is one event", said.slice(2), [[1, 1, 6, "notice\nJob"]]);
+  streams[0].close();
+  await settle();
+  check("a stream that ends says it dropped", said.slice(3), [[1, 2, 0, ""]]);
+  clock.advance(250);
+  await settle();
+  check("it is opened again after a wait, from the last id it heard", [streams.length, streams[1].init.headers["Last-Event-ID"]], [2, "6"]);
+  check("and says it opened again", said.slice(4), [[1, 0, 0, ""]]);
+  clock.advance(1000);
+  await settle();
+  check("a stream that says nothing for the silence is a dropped one", said.slice(5), [[1, 2, 0, ""]]);
+  clock.advance(500);
+  await settle();
+  check("and is opened again with a longer wait behind it", streams.length, 3);
+  status = 401;
+  streams[2].close();
+  await settle();
+  clock.advance(1000);
+  await settle();
+  check("a server that refuses it with 401 ends it: said once, never opened again", [said.slice(-1)[0], streams.length, feeds.count()], [[1, 3, 401, ""], 4, 0]);
+  feeds.listen(2n, requestFrame({ url: "/x" }));
+  await settle();
+  streams[streams.length - 1].push("id: 1\nevent: notice\ndata: \n\n");
+  feeds.clear();
+  await settle();
+  check("clear lets every stream go", feeds.count(), 0);
+  const before = said.length;
+  status = 200;
+  feeds.listen(3n, requestFrame({ url: "/y" }));
+  await settle();
+  const open = streams.length;
+  feeds.unlisten(3n);
+  await settle();
+  clock.advance(10000);
+  await settle();
+  check("a stream let go is closed and not opened again, and says nothing of it", [feeds.count(), streams.length, said.slice(before)], [0, open, [[3, 0, 0, ""]]]);
+  feeds.unlisten(3n);
+  check("letting go of one that is not held is nothing", feeds.count(), 0);
 }
 
 // ── the page's frames ──

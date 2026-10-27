@@ -20,6 +20,12 @@ fn printed(main: string) -> string {
     }
 }
 
+/// The same headless instance before, inside and after a fn whose
+/// signature answers the component — a type use of the word.
+fn around_answer() -> string {
+    "component card {\n    items: List<int> = []\n}\n\nlet before = card {\n    1\n}\n\nfn made() -> card {\n    let c = card {\n        2\n        3\n    }\n    c\n}\n\nlet after = card {\n    4\n}\n\"\${before.items.length} \${made().items.length} \${after.items.length}\""
+}
+
 /// A component declared in the file that instances it.
 const nest = "component nest(depth: int) {\n    extra: int = 0\n    fn total() -> int { self.depth + self.extra }\n}\n"
 
@@ -103,6 +109,11 @@ spec "features/components — an instance's head" {
             provided(nest + "let d = 2\nlet n = nest (d - 1)\nn.total()", "").report().trim() == "error[type.lambda]: `nest` is a component, and a parenthesis after its word is read as a call\n  ╭─[/w/src/main.av:6:9]\n6 │ let n = nest (d - 1)\n  ·         ┬\n  ·         ╰── called here\n──╯\nhelp: an instance's head value follows its word bare — `nest value` — so bind a longer one first: `let value = …`"
         }
     }
+    given "a headless instance of the module's own word around a type use of it" {
+        then "is an instance before the signature, inside it and after it" {
+            answered(over(around_answer())) == "1 2 1"
+        }
+    }
     given "the formatter" {
         then "keeps a parenthesised literal head as written" {
             printed("let t = tally (Span { n: 2 }) {\n    extra: 3\n}\nt.total()\n") == "use @x.c.{tally, Span}\nlet t = tally (Span { n: 2 }) {\n    extra: 3\n}\nt.total()"
@@ -123,6 +134,9 @@ spec "features/components — an instance's head" {
         }
         then "keeps the parentheses where no block follows" {
             printed("let t = tally (Span { n: 2 })\nt.total()\n") == "use @x.c.{tally, Span}\nlet t = tally (Span { n: 2 })\nt.total()"
+        }
+        then "keeps a headless instance of the module's own word, before and after a signature answering it" {
+            printed(around_answer()) == "use @x.c.{tally, Span}\n" + around_answer()
         }
     }
 }

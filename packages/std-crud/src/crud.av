@@ -14,6 +14,9 @@
 //!         group "/tasks" { Task.routes(db) }
 //!     }
 //!
+//! The doors are also data, for a caller that holds no database: `Task.paths("/tasks")` answers the method and
+//! path of each door as a `Routes<Task>` (`@std/http_message`), page-safe — two scalars per door and no handler.
+//!
 //! A `@soft_delete` model also gets `GET /trash` and `POST /{id}/restore`, and
 //! its remove keeps the row. Stands ALONE with `@std/meta` and `@std/db`, per
 //! the derive-isolation law: the runtime is `routes.av`.
@@ -33,14 +36,17 @@ use @std.meta.{
 use @std.db.{model}
 use @std.db.scope.{Where}
 use @std.http.route.{Mounted}
+use @std.http_message.route.{Routes}
 use @std.json.{Json}
 use @std.sqlite.{Db}
+use @std.time.{Duration, ms}
 use routes.{
     Door,
     Access,
     Wire,
     empty,
     crud_routes,
+    described,
     listed,
     found,
     made,
@@ -68,8 +74,11 @@ fn doors(t: Type) -> Decls {
             /// The row as JSON, every field under its own name.
             fn crud_json() -> Json { json_obj([..${entries}]) }
 
+            /// The model's doors as data, as a mount with `without` would answer them at `base`: method and path, no handler.
+            static fn paths(base: string, without: List<Door> = []) -> Routes<${t}> { described(${soft(t)}, without, base) }
+
             /// The model's doors as routes, over this database.
-            static fn routes(db: Db, without: List<Door> = [], access: Access? = null) -> Mounted {
+            static fn routes(db: Db, without: List<Door> = [], access: Access? = null, every: Duration = ms(100)) -> Mounted {
                 let held = Cell.new(db)
                 crud_routes(
                     Wire {
@@ -86,9 +95,11 @@ fn doors(t: Type) -> Decls {
                         trash: ${trash_code(t)},
                         restore: ${restore_code(t)},
                         ledger: ledger(held.get()),
+                        tables: [${literal(t.name)}],
                     },
                     without,
                     access,
+                    every,
                 )
             }
         }

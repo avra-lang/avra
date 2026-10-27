@@ -3,7 +3,7 @@
 use @std.http_message.message.{Reply, Request, Version}
 use @std.text.{text_before}
 use @std.time.{now_ms}
-use app.{Async}
+use app.{Async, Heard}
 
 /// How long an entry nobody reads is kept.
 const KEPT_MS: int = 300000
@@ -12,7 +12,7 @@ const KEPT_MS: int = 300000
 const CAP_BYTES: int = 16777216
 
 /// What an observation is asked by: the path and its arguments, the query
-/// sorted so the order a caller wrote them in is no second observation.
+/// in `canonical_query`'s order so the order a caller wrote them in is no second observation.
 export type Key = { path: string, query: string }
 
 /// The key a request observes under, or none when it is no observation: only
@@ -20,9 +20,17 @@ export type Key = { path: string, query: string }
 export fn key_of(request: Request) -> Key? {
     if !(request.method is .Get) || !(request.body is .Empty) { return null }
     let parts = request.url.split("?")
+    Key {
+        path: parts.first() ?? "",
+        query: canonical_query(parts.drop(1).join("?").split("&")).join("&"),
+    }
+}
+
+/// The query words of one question in the order that names it: byte order, empty words gone. The one place the
+/// order is written — a key reads a request's query through it, and a typed ask writes its query through it.
+export fn canonical_query(words: List<string>) -> List<string> {
     let none: List<string> = []
-    let pairs = parts.drop(1).join("?").split("&").fold(none, inserted)
-    Key { path: parts.first() ?? "", query: pairs.join("&") }
+    words.fold(none, inserted)
 }
 
 /// `pairs` in byte order with `word` placed.
@@ -34,22 +42,30 @@ fn inserted(pairs: List<string>, word: string) -> List<string> {
 }
 
 /// A view that reads an entry: told each time the entry's state moves.
-export type Watcher = { id: int, apply: fn(Async<Reply>) -> void }
+/// `seen` is the paint that last showed what the view reads (none yet: zero).
+export type Watcher = { id: int, apply: fn(Async<Reply>) -> void, seen: Cell<int> }
 
 /// One observation: the answer to a key's request as the reply it came in, the
 /// version that answer carries, the tables the server said it read (none: it did not
-/// say), the request that asks it again, whether a request is out and whether a write
-/// landed meanwhile that asks for another, its readers, and when the last of them left.
+/// say), where changes to them are announced and the count the answer stood at, whether
+/// it is FRESH (its feed is up and no notice has reached it since), the request that asks it
+/// again, whether a request is out and whether a write landed meanwhile that asks for
+/// another, its readers, and when the last of them left.
 export type Entry = {
     id: int,
     key: Key?,
     now: Cell<Async<Reply>>,
     version: Cell<Version?>,
     reads: Cell<List<string>?>,
+    feed: Cell<string?>,
+    stand: Cell<int?>,
+    floor: Cell<int>,
+    fresh: Cell<bool>,
     request: Cell<Request?>,
     out: Cell<bool>,
     again: Cell<bool>,
     watchers: Cell<List<Watcher>>,
+    parked: Cell<List<Watcher>>,
     read: Cell<int>,
 }
 
@@ -97,7 +113,10 @@ impl Entry {
         match answer {
             .Err(why) -> self.now.set(Async.Failed(why)),
             .Ok(reply) -> {
-                if kept && reply.status == 304 { return false }
+                if kept && reply.status == 304 {
+                    self.stand.set(reply.stand() ?? self.stand.get())
+                    return false
+                }
                 let at = reply.version()
                 let current? = self.held() else { return self.taken(reply, at) }
                 if at != null && !at!.after(current) { return false }
@@ -113,6 +132,8 @@ impl Entry {
         self.now.set(Async.Ready(reply))
         self.version.set(at)
         self.reads.set(reply.reads())
+        self.feed.set(reply.feed())
+        self.stand.set(reply.stand())
         self.told()
         true
     }
@@ -131,14 +152,33 @@ impl Entry {
     /// `w` reads it from now, in place of any earlier word of the same view,
     /// and is told what it holds.
     fn joined(w: Watcher) {
+        self.parked.set([x for x in self.parked.get() if x.id != w.id])
         self.watchers.set([x for x in self.watchers.get() if x.id != w.id].concat([w]))
         (w.apply)(self.now.get())
     }
 
     /// The view `id` reads no more.
     fn left(id: int) {
+        self.parked.set([x for x in self.parked.get() if x.id != id])
         self.watchers.set([x for x in self.watchers.get() if x.id != id])
         if self.unread() { self.read.set(now_ms()) }
+    }
+
+    /// Every reader a paint showed once and `walk` did not has been removed from the screen: it reads no more.
+    fn unseen(walk: int) {
+        for w in self.watchers.get() {
+            if w.seen.get() > 0 && w.seen.get() < walk {
+                self.left(w.id)
+                self.parked.push(w)
+            }
+        }
+    }
+
+    /// A view a paint left out reads the entry again: it is told what the entry holds. Whether it was parked.
+    fn rejoined(id: int) -> bool {
+        let w? = self.parked.get().find(it.id == id) else { return false }
+        self.joined(w)
+        true
     }
 
     /// Its state moved: every reader is told.
@@ -147,12 +187,23 @@ impl Entry {
     }
 }
 
-/// The entries a loop holds.
-export type Cache = { entries: Cell<List<Entry>>, minted: Cell<int> }
+/// A stream a loop listens to for the changes of what its entries read: where it is, what it said
+/// (queued until its turn runs), whether it has said where the database stands since it was last
+/// opened — until it has, no entry on it is fresh — and whether the server refused it for good.
+export type Feed = { path: string, heard: Cell<List<Heard>>, synced: Cell<bool>, closed: Cell<bool> }
+
+/// The entries a loop holds, and the streams it listens to.
+export type Cache = { entries: Cell<List<Entry>>, minted: Cell<int>, feeds: Cell<List<Feed>>, known: Cell<int> }
 
 export fn cache() -> Cache {
     let none: List<Entry> = []
-    Cache { entries: Cell.new(none), minted: Cell.new(0) }
+    let silent: List<Feed> = []
+    Cache {
+        entries: Cell.new(none),
+        minted: Cell.new(0),
+        feeds: Cell.new(silent),
+        known: Cell.new(0),
+    }
 }
 
 impl Cache {
@@ -180,16 +231,23 @@ impl Cache {
         let unversioned: Version? = null
         let unsaid: List<string>? = null
         let unasked: Request? = null
+        let unfed: string? = null
+        let unstood: int? = null
         Entry {
             id: self.minted.get(),
             key: key,
             now: Cell.new(idle),
             version: Cell.new(unversioned),
             reads: Cell.new(unsaid),
+            feed: Cell.new(unfed),
+            stand: Cell.new(unstood),
+            floor: Cell.new(0),
+            fresh: Cell.new(false),
             request: Cell.new(unasked),
             out: Cell.new(false),
             again: Cell.new(false),
             watchers: Cell.new(nobody),
+            parked: Cell.new(nobody),
             read: Cell.new(now_ms()),
         }
     }
@@ -227,6 +285,11 @@ impl Cache {
     /// The observations a write that touched `written` leaves stale: those a view reads that the
     /// write reaches. (An entry no view reads keeps its version; its next ask sends it and the
     /// server answers by what it read.)
+    /// Every view the paint `walk` did not show, having shown before, lets go of what it read.
+    fn released(walk: int) {
+        for e in self.entries.get() { e.unseen(walk) }
+    }
+
     fn stale_by(written: List<string>) -> List<Entry> {
         [e for e in self.entries.get() if !e.unread() && self.reached(e, written)]
     }
@@ -234,6 +297,22 @@ impl Cache {
     /// Every entry is let go: a loop that ends takes the requests it kept.
     fn reset() {
         let none: List<Entry> = []
+        let silent: List<Feed> = []
         self.entries.set(none)
+        self.feeds.set(silent)
+        self.known.set(0)
     }
+
+    /// The database has been seen at `count`: an answer read at it, a write's answer, an announcement. A
+    /// request asked from now on reflects at least that.
+    fn learned(count: int?) {
+        let at? = count else { return }
+        if at > self.known.get() { self.known.set(at) }
+    }
+
+    /// The stream listened to at `path`, if one is.
+    fn feed_named(path: string) -> Feed? { self.feeds.get().find(it.path == path) }
+
+    /// The entries whose answers say they are announced on `path`.
+    fn on_feed(path: string) -> List<Entry> { [e for e in self.entries.get() if e.feed.get() == path] }
 }

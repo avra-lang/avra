@@ -42,12 +42,28 @@ export enum Want {
     After(ms: int)
     Every(ms: int)
     Get(request: Request, into: Cell<Result<Reply, string>?>)
+    Listen(request: Request, heard: Cell<List<Heard>>)
+}
+
+/// What a stream a source listens to says, as the target delivers it: the stream opened (again, after
+/// a drop), an event it named and carried (`event` and `data`, its `id` the number it ended at), the
+/// stream gone, or the server refusing it with a status — after which it is not reopened.
+export enum Heard {
+    Opened
+    Notice(id: int, event: string, data: string)
+    Closed
+    Refused(status: int)
 }
 
 /// The way into a running loop: where a message goes, what a source's ask
 /// is realized as, and how the loop is told to end. A target with no
 /// loop has none.
-export type Door = { send: fn(Msg) -> bool, ask: fn(Want, Act, string?) -> bool, close: fn() -> void }
+export type Door = {
+    send: fn(Msg) -> bool,
+    ask: fn(Want, Act, string?) -> bool,
+    hush: fn(string) -> void,
+    close: fn() -> void,
+}
 
 /// An app on one target. `show` is the target's own paint: the tree as it
 /// stands and the theme it wears, in; whatever the target does with them.
@@ -90,6 +106,7 @@ export type App = {
     asked: Cell<bool>,
     framer: Cell<fn() -> void>,
     walks: Cell<int>,
+    painting: Cell<bool>,
     frames: Cell<int>,
     observed: Cache,
 }
@@ -164,6 +181,7 @@ export fn owned_app<V: View>(
         asked: Cell.new(false),
         framer: Cell.new(nobody_asks),
         walks: Cell.new(0),
+        painting: Cell.new(false),
         frames: Cell.new(0),
         observed: cache(),
     }
@@ -189,7 +207,11 @@ impl App {
         let theme = self.theme.get()
         self.stands.begun()
         let before = self.standers()
+        self.painting.set(true)
         let root = view(self.stands)
+        self.painting.set(false)
+        self.observed.released(self.walks.get())
+        hung_up(self)
         for w in dead_keys(root) { self.stands.says(w) }
         self.show(root, theme())
         if self.standers() != before { self.woken() }
@@ -378,6 +400,12 @@ impl App {
     fn ask_observed(want: Want, act: Act) -> bool {
         let door? = self.door.get() else { return false }
         door.ask(want, act, null)
+    }
+
+    /// Every stream listening at `url` is ended. Nothing when no loop runs.
+    fn hush(url: string) {
+        let door? = self.door.get() else { return }
+        door.hush(url)
     }
 
     /// Where messages go now: the running loop's inbox, held — a source

@@ -1683,7 +1683,6 @@ Wants the typer does not carry yet:
 - A declaring annotation's argument is a literal or a const naming one: `@traced("a" + "b")` is "`traced` generates declarations, so its arguments come from the source alone" — not pinned (needs a package with `@std/meta`).
 - A generic struct literal's field seat unifies instead of planting a want: an unpinned `mk()` there is "`N` is not pinned by the arguments".
 - A lambda in a field or argument seat does not read the seat's answer ("`.Ok` needs a known enum"); a typed `let` does, and a named fn works everywhere.
-- A `dyn` want reaches `match` arms, not `if` branches ("an `if`'s branches disagree: `P` vs `Q`"); select among typed lets.
 - `Traced<E>`'s `cause`/`context`/`trace` stay inherent methods permanently (a trait member's answer is fixed by its signature); the real want is a bound on a type's own parameter.
 - A bound lands on a free fn's and a component's parameters only: `type T<K: Tr, V>` and `impl T<K: Tr, V>` are "expected `=`"/"expected `{`", a generic method is "generic methods are recorded, not landed"; a generic container keyed by a typed id keys by the slot (core's `SideTable`).
 - Variant arms or `is` over a nullable enum are "`match` chooses over an enum, found `K?`" / "`is` asks an enum for its variant, found `K?`"; unwrap first.

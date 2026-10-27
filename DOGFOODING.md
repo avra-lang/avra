@@ -1197,7 +1197,8 @@ refusal, or a check in a test that proves the write committed.
 
 Smell: `let _ = <call that answers Result<…, SqlError | ModelError>>`. Licensed: a best-effort cleanup that
 says why at the site. A rule would need the callee's answer type, which a rule over the typed program has; none
-flags it today. Found when a test discarded a busy insert and the lost write surfaced as a missing notice.
+flags it today. Found when a test discarded a busy insert and the lost write surfaced as a missing notice
+(`std-crud/src/tests/crud_feed`, which now reads each insert it makes).
 
 ## Generics: what infers, what needs pins
 

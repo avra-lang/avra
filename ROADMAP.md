@@ -3239,6 +3239,15 @@ handler first: `let fire? = self.submit else { return [] }` then
 propagation ("`?` makes this fn answer `null`"). The want: a call
 through a nullable fn value that runs when present and answers nothing
 when absent — `self.submit?.(value)` or the like.
+### Bounded and blanket impls — a typed ask over a list is its own verb
+
+`ask` reads a row (`T: Decode`) and `ask_list` a list of them, because `List<T>` has no `Decode` and neither
+`impl<T: Decode> Args for T` nor `impl Reads for List<T1: Reads>` parses ("expected NAME while parsing `stmt`" at
+the `<`; "expected `{`" at the bound). The want: an impl whose type parameters carry bounds, so a record that
+derives `Decode` is `Args` without its derive saying so and a list of readable rows is readable. Wanting site:
+`std-ui/src/app/typed.av` (`ask`, `ask_list`) and `std-validate`'s `Decode.derive`, which emits `impl Args` per
+record.
+
 ### A control shows its pending change while the server answers
 
 The board (`tools/ui-board/src/board.av`) draws the list the server last answered, so a
@@ -3256,6 +3265,17 @@ stateless generic over a non-generic stateful `form_inputs` that holds what
 was typed as text (std-ui/src/forms). The split is clean in its own right;
 the want is a `once fn` with type parameters — one cache per
 instantiation — so `$kept` can be derived for `X<T>`.
+
+### A `match` in a component body composes its arms' views
+
+In a component body `if`/`else` draws whichever branch holds, while a
+`match` is an expression whose arms must agree: `.Bool -> checkbox …` beside
+`.Record(fs) -> fieldset …` is "a `match`'s arms disagree: `fieldset` vs the
+first arm's `checkbox`", braced arms included. So `shape_inputs`
+(std-ui/src/forms/form_inputs.av) projects `FieldKind` through an exhaustive
+`drawn` into a payload-free `Drawn` and branches with `if … == Drawn.…`,
+reading the record's fields again through `grouped`. The want: a body
+`match` draws its matching arm, payloads bound, exactly as `if` does.
 
 ### A compile-time directory embed
 

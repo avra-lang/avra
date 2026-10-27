@@ -6,15 +6,19 @@
 //! host's timer or `fetch`; a headless screen reads the due time off its
 //! virtual clock. ONE DEFINITION: the table, the number, the sweep of what
 //! left and what a firing means are the same on every such target.
-use app.{Act, App, Want}
+use app.{Act, App, Heard, Want}
 use @std.http_message.message.{Reply, Request}
 
-/// How a source is kept: a timer that fires once or over and over, or a
-/// request whose reply is left in a cell.
+/// How a source is kept: a timer that fires once or over and over, a request whose reply is left in
+/// a cell, or a stream whose events are queued in a cell, each one running the act.
 export enum How {
     Timer(repeat: bool)
     Request(request: Request, into: Cell<Result<Reply, string>?>)
+    Listen(request: Request, heard: Cell<List<Heard>>)
 }
+
+/// When a stream "falls due": never — it speaks when its host does.
+const NEVER: int = 1000000000000000
 
 /// A source asked for: its number, what runs when it fires or is answered,
 /// whose it is, and how it is kept. `due` is when it next falls due and
@@ -61,6 +65,14 @@ impl Wants {
                 due: now,
                 period: 0,
             },
+            .Listen(request, heard) -> Held {
+                token: token,
+                act: act,
+                owner: owner,
+                how: How.Listen(request, heard),
+                due: NEVER,
+                period: 0,
+            },
         }
         self.held.push(made)
         made
@@ -72,6 +84,13 @@ impl Wants {
     /// A source is let go: it will not fire or answer, and a late fire is
     /// ignored.
     fn dropped(token: int) { self.held.set([h for h in self.held.get() if h.token != token]) }
+
+    /// The streams listening at `url`, let go.
+    fn hushed(url: string) -> List<Held> {
+        let ended = [h for h in self.held.get() if listens_at(h, url)]
+        self.held.set([h for h in self.held.get() if !listens_at(h, url)])
+        ended
+    }
 
     /// The timers whose control has left the screen. A request is the loop's
     /// own, owned by no control.
@@ -103,17 +122,22 @@ impl Wants {
                 if !repeat { self.dropped(h.token) }
                 true
             },
-            .Request(_, _) -> false,
+            .Request(_, _) or .Listen(_, _) -> false,
         }
     }
 }
 
 /// Whether a source is a timer, which a control owns, rather than a request.
 fn timed(h: Held) -> bool {
-    match h.how { .Timer(_) -> true, .Request(_, _) -> false }
+    match h.how { .Timer(_) -> true, .Request(_, _) or .Listen(_, _) -> false }
+}
+
+/// Whether a source is a stream listening at `url`.
+export fn listens_at(h: Held, url: string) -> bool {
+    match h.how { .Listen(request, _) -> request.url == url, .Timer(_) or .Request(_, _) -> false }
 }
 
 /// Where a request's reply is left; none for a timer.
 export fn replies_to(how: How) -> Cell<Result<Reply, string>?>? {
-    match how { .Request(_, into) -> into, .Timer(_) -> null }
+    match how { .Request(_, into) -> into, .Timer(_) or .Listen(_, _) -> null }
 }

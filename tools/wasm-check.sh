@@ -106,4 +106,5 @@ done
 
 [ "$fail" -eq 0 ] || exit 1
 sh "$here/wasm-size-guard.sh"
+sh "$here/wasm-routes-size.sh"
 say "all fixtures agree"
