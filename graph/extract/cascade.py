@@ -1596,6 +1596,9 @@ def answered(body, models):
     if body.get("op") == "choose":
         models.llm.source, models.llm.cache = "", None
         return {"p": models.llm.choose(body["context"], body["question"], body["options"], bool(body.get("options_first")))}
+    if body.get("op") == "choose_many":
+        models.llm.source, models.llm.cache = "", None
+        return {"p": models.llm.pick_many(body["items"], bool(body.get("options_first")))}
     if body.get("op") in ("rank", "embed"):
         return planned(body, models)
     if body.get("op") in ("link", "retrieve", "block"):

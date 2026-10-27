@@ -57,8 +57,15 @@ class Shared:
 
     def choose_many(self, items):
         """Each item's option probabilities, in the items' order, from one ask: the
-        service reads every choice in one prompt, so the items share its pass."""
-        return self.asked({"op": "choose_many", "items": items})["p"]
+        service reads every choice in one prompt, so the items share its pass. A
+        service that does not read them that way is asked item by item — batching
+        is an optimization and its absence must not lose a question."""
+        started = time.time()
+        try:
+            return self.exchanged({"op": "choose_many", "items": items})["p"]
+        except (KeyError, SystemExit):
+            log(f"planner: call op=choose_many ms={int((time.time() - started) * 1000)} (one at a time)")
+            return [self.choose(item["context"], item["question"], item["options"]) for item in items]
 
     def rank(self, context, question, shown, keys):
         """Each option's score as the service's rank op reports it, under the declared rule."""
@@ -261,7 +268,9 @@ def main():
         out = composed(llm, payload["question"], payload["schema"], payload["context"], graph_of(payload),
                        (payload.get("budget") or {}).get("depth"))
     except Refusal as refusal:
-        raise SystemExit(f"planner: the graph refuses the composed query ({refusal})")
+        # A plan the graph refuses is a composition that found no legal read — a
+        # decline, not a fault: the question is answered with no answer.
+        out = {"abstain": f"no legal read plan: {refusal}"}
     except Abstain as why:
         out = {"abstain": str(why)}
     print(json.dumps(out))
