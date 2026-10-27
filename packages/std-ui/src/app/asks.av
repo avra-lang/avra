@@ -25,7 +25,9 @@ export fn repeating(period: Duration, act: Act) -> bool {
 /// answer reaches every view that reads it. Of two asks by one view the LATEST
 /// is the one it shows, whatever order the answers come in. False, and the
 /// fetch untouched, when no loop runs. The request is data, so the page's host
-/// and a native client send the same value.
+/// and a native client send the same value. `parse` must be PURE: it answers the value the view shows
+/// and assigns no state, because it runs again for every answer the observation gets, a refresh after
+/// a write included.
 export fn fetched<T>(held: Fetch<T>, request: Request, parse: fn(Reply) -> Result<T, string>) -> bool {
     let on? = running() else { return false }
     let entry = on.observed.entry_of(request)
@@ -46,20 +48,49 @@ export fn fetched<T>(held: Fetch<T>, request: Request, parse: fn(Reply) -> Resul
         )
     on.observed.swept()
     if entry.loading() { return true }
+    asking(on, entry, request)
+}
+
+/// `request` goes out for `entry`, carrying the version it holds. The entry keeps the request,
+/// so a write that makes it stale can ask it again.
+fn asking(on: App, entry: Entry, request: Request) -> bool {
+    entry.request.set(request)
     let sent = entry.conditional(request)
     entry.asked()
     let into: Cell<Result<Reply, string>?> = Cell.new(null)
-    on.ask_observed(Want.Get(sent, into), () -> landed(on.observed, entry, into))
+    on.ask_observed(Want.Get(sent, into), () -> landed(on, entry, into))
 }
 
-/// The reply has come: the entry takes it if it is the latest it has seen, and
-/// every view that reads the entry shows it. Whether the screen follows: the
-/// entry changed and a view reads it.
-fn landed(cache: Cache, entry: Entry, into: Cell<Result<Reply, string>?>) -> bool {
+/// The reply has come: the entry takes it if it is the latest it has seen, and every view that
+/// reads the entry shows it. A write's answer names the tables it touched, and the observations
+/// those reach are asked again now. Whether the screen follows: the entry changed and a view
+/// reads it.
+fn landed(on: App, entry: Entry, into: Cell<Result<Reply, string>?>) -> bool {
     let answer? = into.get() else { return false }
     let changed = entry.offered(answer)
-    cache.swept()
+    on.observed.swept()
+    refreshed(on, entry, answer)
     changed && !entry.unread()
+}
+
+/// What an answer asks of the observations: a write's names the tables it touched, so each
+/// observation a view reads that reaches one is asked again — or, when a request for it is
+/// already out, once that one lands.
+fn refreshed(on: App, entry: Entry, answer: Result<Reply, string>) {
+    if entry.again.get() {
+        entry.again.set(false)
+        asked_again(on, entry)
+    }
+    let written? = match answer { .Ok(reply) -> reply.wrote(), .Err(_) -> null } else { return }
+    for e in on.observed.stale_by(written) {
+        if e.id == entry.id { continue }
+        if e.loading() { e.again.set(true) } else { asked_again(on, e) }
+    }
+}
+
+fn asked_again(on: App, entry: Entry) {
+    let request? = entry.request.get() else { return }
+    let _ = asking(on, entry, request)
 }
 
 /// What a view shows of the entry's state: its parser's word on a reply.

@@ -1,0 +1,140 @@
+// proves: a read answers the tables it actually read, from the database's own account — a hand-written
+// route on @std/db that reads two tables carries both in `avra-reads`, its version moves with a write to
+// either and holds through a write to a third, and a read that fetches a related table names it too
+use @std.crud.routes.{ledger, observed}
+use @std.db.{model, Many}
+use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.route.{Route, group, fixed, mounted}
+use @std.http.server.{server}
+use @std.http_message.message.{Method}
+use @std.net.{Conn, NetError, connect, timely}
+use @std.sqlite.{Db}
+use @std.time.{ms, secs}
+
+@model
+type Job = {
+    id: int = 0,
+    title: string,
+}
+
+@model
+type Note = {
+    id: int = 0,
+    text: string,
+}
+
+@model
+type Tag = {
+    id: int = 0,
+    word: string,
+}
+
+@model
+type Board = {
+    id: int = 0,
+    name: string,
+    cards: Many<Card> = Many {},
+}
+
+@model
+type Card = {
+    id: int = 0,
+    title: string,
+    board: Board,
+}
+
+type Heard = { status: string, tag: string, reads: string }
+
+fn exchanged(c: Conn, sent: string) -> Result<Heard, NetError> {
+    c.write(sent.bytes())?
+    mut got = "".bytes()
+    while true {
+        match timely(within ms(300) { c.read(65536) }) {
+            .Ok(b) -> {
+                let more? = b else { break }
+                got = got.concat(more)
+            },
+            .Err(_) -> { break },
+        }
+    }
+    let lines = (got.text() ?? "?").split("\r\n\r\n")[0].split("\r\n")
+    let field = (name: string) -> {
+        let held = lines.find(it.starts_with("${name}: "))
+        if held == null { "" } else { held!.replace("${name}: ", "") }
+    }
+    .Ok(Heard { status: lines.first() ?? "?", tag: field("etag"), reads: field("avra-reads") })
+}
+
+fn asked(port: int, path: string, held: string) -> Result<Heard, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    let validator = if held == "" { "" } else { "If-None-Match: ${held}\r\n" }
+    exchanged(c, "GET ${path} HTTP/1.1\r\nHost: a\r\nConnection: close\r\n${validator}\r\n")
+}
+
+fn refused(why: string) -> NetError { NetError { verb: "setup", subject: why, errno: 1 } }
+
+/// A route of one door at `/`, answering `read` under what it reads.
+fn reading(db: Db, read: fn() -> Response) -> Route {
+    fixed(Method.Get, "/", (q: Request<Unrouted>) -> observed(ledger(db), q, read))
+}
+
+fn pair(db: Db) -> Response {
+    let jobs = Job.all(db) catch []
+    let notes = Note.all(db) catch []
+    text(200, "${jobs.length} ${notes.length}")
+}
+
+fn card(db: Db) -> Response {
+    let cards = Card.all(db) catch []
+    text(200, "${cards.length}")
+}
+
+fn shown() -> Result<string, NetError> {
+    let db = match Db.memory() {
+        .Ok(opened) -> opened,
+        .Err(e) -> { return .Err(refused(e.message)) },
+    }
+    let _ = Job.create_table(db)
+    let _ = Note.create_table(db)
+    let _ = Tag.create_table(db)
+    let _ = Board.create_table(db)
+    let _ = Card.create_table(db)
+    let owner = match Board { name: "b" }.insert(db) {
+        .Ok(made) -> made,
+        .Err(_) -> { return .Err(refused("no board")) },
+    }
+    let _ = Card { title: "c", board: owner }.insert(db)
+    server app {
+        port: 0
+        group "/pair" { mounted([reading(db, () -> pair(db))]) }
+        group "/card" { mounted([reading(db, () -> card(db))]) }
+    }
+    let s = match app.listening() {
+        .Ok(up) -> up,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    spawn s.run(1)
+    defer s.stop()
+    let p = s.listener.port
+    let first = asked(p, "/pair", "")?
+    let _ = Job { title: "j" }.insert(db)
+    let after_job = asked(p, "/pair", first.tag)?
+    let _ = Note { text: "n" }.insert(db)
+    let after_note = asked(p, "/pair", after_job.tag)?
+    let _ = Tag { word: "t" }.insert(db)
+    let after_tag = asked(p, "/pair", after_note.tag)?
+    let related = asked(p, "/card", "")?
+    .Ok(
+        [
+            "a read of two tables: ${first.status}, reads ${first.reads}",
+            "a write to the first: ${after_job.status}, a new tag ${after_job.tag != first.tag}",
+            "a write to the second: ${after_note.status}, a new tag ${after_note.tag != after_job.tag}",
+            "a write to a third: ${after_tag.status}, reads ${after_tag.reads}",
+            "a read that fetches a related table: reads ${related.reads}",
+        ]
+            .join("\n"),
+    )
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
