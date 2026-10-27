@@ -72,10 +72,21 @@ fn heard_list(mut cx: TypeCx, e: ExprId, elems: List<ExprId>, want: TypeId) -> T
 /// collect holds lists, where a list is one element.
 fn collect_type(mut cx: TypeCx, e: ExprId, stmts: List<StmtId>) -> TypeId {
     let values = collection(cx, e, stmts)
+    fed(cx, e, values)
+    if values.any((v) -> cx.facts.hungry_at(v)) { return cx.hungry(e) }
     for v in values { cx.facts.spread(v, spreads(cx, e, v)) }
     let lists = [v for v in values if cx.facts.spreads_at(v)]
     if lists.is_empty() { return list_type(cx, e, values) }
     spread_type(cx, e, [v for v in values if !cx.facts.spreads_at(v)], lists)
+}
+
+/// Each kept value that waited for the element is handed it, once the
+/// collect's seat names one.
+fn fed(mut cx: TypeCx, e: ExprId, values: List<ExprId>) {
+    let elem? = wanted_elem(cx, e) else { return }
+    for v in values {
+        if cx.facts.hungry_at(v) { cx.feed(v, elem) }
+    }
 }
 
 /// A kept value spreads when it is a list and the collect's element is not.
@@ -120,7 +131,7 @@ fn spread_elem(cx: TypeCx, e: ExprId, singles: List<ExprId>, lists: List<ExprId>
 fn collection(mut cx: TypeCx, e: ExprId, stmts: List<StmtId>) -> List<ExprId> {
     let kept: List<ExprId>? = cx.facts.collection(e)
     if kept != null { return kept! }
-    let values = cx.gathered(stmts)
+    let values = cx.gathered(stmts, wanted_elem(cx, e))
     cx.facts.collected(e, values)
     values
 }

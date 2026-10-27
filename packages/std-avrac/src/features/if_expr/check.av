@@ -16,7 +16,7 @@ fn if_type(mut cx: TypeCx, e: ExprId) -> TypeId {
             walk_branches(cx, c, t, f)
             let other? = f else { return cx.type(void) }
             if cx.view.store.statement_if(e) { return cx.type(void) }
-            branch_type(cx, t, other)
+            branch_type(cx, e, t, other)
         },
         _ -> cx.error_type,
     }
@@ -51,9 +51,12 @@ fn walk_other(mut cx: TypeCx, f: ExprId?, narrowed: ExprId?) {
     let _ = cx.walk_narrowed(at, other)
 }
 
-/// The branches' one type. A branch that LEAVES answers nothing and
-/// joins with anything, so the other answers for both.
-fn branch_type(mut cx: TypeCx, t: ExprId, f: ExprId) -> TypeId {
+/// The branches' one type. A seat's want, planted on the `if`, judges
+/// both as it judges every arm; without one, they join. A branch that
+/// LEAVES answers nothing and joins with anything, so the other answers
+/// for both.
+fn branch_type(mut cx: TypeCx, e: ExprId, t: ExprId, f: ExprId) -> TypeId {
+    if cx.want_at(e) != null { return cx.arms_agree("type.mismatch", "an `if`'s branches", "the first branch", e, t, [f]) }
     if !cx.stays(t) { return cx.type_at(f) }
     if !cx.stays(f) { return cx.type_at(t) }
     if cx.errored(t) || cx.errored(f) { return cx.error_type }

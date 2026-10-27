@@ -4339,6 +4339,35 @@ error[type.list_element]: a list's elements share one type — the first is `int
 help: make the value `int`, or change the declaration that wants it
 ```
 
+## type.kept_arm
+
+a kept arm answers one of what its collect holds
+
+```avra
+enum K {
+    A
+    B
+}
+let k = K.A
+let xs: List<int> = collect {
+    match k {
+        .A -> [1, 2]
+        .B -> 3
+    }
+}
+xs.length
+```
+
+```
+error[type.kept_arm]: a kept arm answers one `int`, and this one answers `List<int>`
+  ╭─[witness.av:8:15]
+8 │         .A -> [1, 2]
+  ·               ┬
+  ·               ╰── this arm
+──╯
+help: write the list's values as the arm's statements — `.A -> {` with one per line, then `}`
+```
+
 ## type.list_scalar
 
 a list holds scalars for now

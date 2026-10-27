@@ -341,12 +341,32 @@ impl TypeCx {
     }
 
     /// A `collect`'s statements typed under their own frame: the values
-    /// they discard, in the order they ran.
-    mut fn gathered(stmts: List<StmtId>) -> List<ExprId> {
+    /// they discard, in the order they ran. `want` is the element its
+    /// seat wants, when one does.
+    mut fn gathered(stmts: List<StmtId>, want: TypeId?) -> List<ExprId> {
         // LICENSED compiler.bracket_ritual: this IS the bracket
-        self.gathers.push(Gathering { bars: self.lam_bar.length, values: [] })
+        self.gathers.push(Gathering { bars: self.lam_bar.length, want: want, values: [] })
         let _ = self.block_type(stmts, null)
         self.gathers.pop().values
+    }
+
+    /// The `collect` a statement stands in, when it stands in one —
+    /// none from behind a lambda.
+    fn gathering_at() -> int? {
+        let top = self.gathers.length - 1
+        if top < 0 || self.gathers[top].bars != self.lam_bar.length { return null }
+        top
+    }
+
+    /// A statement's value hears the element its `collect` wants, as a
+    /// list literal's element does, before it is typed — and, while no
+    /// want has arrived, is marked to wait for one.
+    mut fn hear_gathered(s: StmtId) {
+        let v? = self.view.store.stmt_value(s) else { return }
+        let top? = self.gathering_at() else { return }
+        self.facts.mark_heard(v)
+        let want? = self.gathers[top].want else { return }
+        self.plant_want(v, want)
     }
 
     /// A statement's discarded value, kept by the `collect` it stands
@@ -354,12 +374,8 @@ impl TypeCx {
     /// to keep.
     mut fn gather(s: StmtId) {
         let v? = self.view.store.stmt_value(s) else { return }
-        let top = self.gathers.length - 1
-        if top < 0 ||
-            self.gathers[top].bars != self.lam_bar.length ||
-            !self.view.types.holds_value(self.type_at(v)) {
-            return
-        }
+        let top? = self.gathering_at() else { return }
+        if !self.view.types.holds_value(self.type_at(v)) { return }
         self.gathers[top].values.push(v)
         self.facts.mark_kept(v)
     }
