@@ -1,0 +1,53 @@
+//! `forms/model_table.av` — the values of any decoded record as a table:
+//! a column per field `T` declares, never a secret's, a row per value,
+//! a press that asks the program to remove one, and a form that asks it
+//! to create one.
+//!
+//!     model_table<Member> members {
+//!         on remove { i -> drop(i) }
+//!         on create { m -> add(m) }
+//!     }
+use @std.validate.{Decode, Value, Entry}
+use components.{column, row, text, button}
+
+export component model_table<T: Decode>(rows: List<T>) {
+    on remove(index: int)
+    on create(value: T)
+    let shown = [f.name for f in T.fields() if !f.secret]
+    column {
+        row {
+            for n in shown { text n }
+        }
+        for i, r in self.rows {
+            row {
+                for c in cells(r.value(), shown) { text c }
+                button "Remove" { on press { self.removed(i) } }
+            }
+        }
+        model_form<T> { on submit: self.create }
+    }
+
+    /// The program asked to remove the row at `i`.
+    fn removed(i: int) {
+        let fire? = self.remove else { return }
+        fire(i)
+    }
+}
+
+/// A row's cells, one per shown field, its value read once.
+fn cells(v: Value, shown: List<string>) -> List<string> {
+    let entries = entries_of(v)
+    [cell(entries, n) for n in shown]
+}
+
+/// A field's value as a cell shows it: text as itself, any other value
+/// as the tree spells it; a field the value lacks, nothing.
+fn cell(entries: List<Entry>, name: string) -> string {
+    let held? = entries.find(it.key == name) else { return "" }
+    match held.value { .Text(s) -> s, other -> other.shown() }
+}
+
+/// A record's value as its entries; none for any other value.
+fn entries_of(v: Value) -> List<Entry> {
+    match v { .Map(entries) -> entries, rest -> [] }
+}

@@ -3,6 +3,7 @@
 //! decision here: drawn, or spelled as not drawn.
 use tree.node.{Attribute}
 use realize.tui.wrap.{shown}
+use @std.text.{repeat, cells}
 
 /// The attributes the terminal draws, each at its absent value until a
 /// node gives it.
@@ -18,6 +19,13 @@ export type Reads = {
     min: int = 0,
     max: int = 0,
     skipped: int = 0,
+    masked: bool = false,
+}
+
+impl Reads {
+    /// The value as the terminal draws it: a masked one as one mark per
+    /// character, never the text.
+    fn drawn_value() -> string { if self.masked { repeat("•", cells(self.value)) } else { self.value } }
 }
 
 /// `s` with what one attribute says. Words and a level are the node's own
@@ -36,6 +44,7 @@ fn heard(s: Reads, a: Attribute) -> Reads {
         .Min(n) -> s with { min: n },
         .Max(n) -> s with { max: n },
         .Skipped(_, rows, _) -> s with { skipped: rows },
+        .Masked(on) -> s with { masked: on },
         .Text(_) or .Label(_) or .Level(_) or .Placeholder(_) or .Source(_) or .Decorative(_) or .Disabled(_) or .Selected(_) or .Invalid(_) or .Loading(_) or .Urgency(_) or .Submits(_) or .Placed(_, _, _) -> s,
     }
 }

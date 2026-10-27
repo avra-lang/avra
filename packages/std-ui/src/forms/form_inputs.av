@@ -1,0 +1,57 @@
+//! `forms/form_inputs.av` — a form's inputs drawn from field shapes,
+//! one per field: a checkbox for a bool, a field for the rest, each
+//! labelled by its name, with the issue a submit earned beside it.
+use @std.validate.{Value, Entry, Issue, FieldShape}
+use components.{form, column, list, field, checkbox, button, error_text}
+
+/// The inputs a form draws for its fields, by their shapes: the text
+/// typed and the boxes ticked are this instance's own, and `judged`
+/// answers the issues a submit earns.
+export component form_inputs(shapes: List<FieldShape>) {
+    submit_label: string = "Save"
+    judged: fn(Value) -> List<Issue>
+    state typed: Map<string, string> = {}
+    state ticked: Map<string, bool> = {}
+    state issues: List<Issue> = []
+    form {
+        on submit { self.issues = self.judged(entered(self.shapes, self.typed, self.ticked)) }
+        list self.shapes by it.name { f ->
+            column {
+                if f.kind is .Bool {
+                    checkbox f.name {
+                        checked: self.ticked.get(f.name)
+                        on change { on -> self.ticked = {..self.ticked, "${f.name}": on} }
+                    }
+                } else {
+                    field f.name {
+                        value: self.typed.get(f.name)
+                        masked: f.secret
+                        invalid: !issued(self.issues, f.name).is_empty()
+                        on input { typed -> self.typed = {..self.typed, "${f.name}": typed} }
+                    }
+                }
+                for i in issued(self.issues, f.name) { error_text { message: i.message } }
+            }
+        }
+        button self.submit_label { submits: true }
+    }
+}
+
+/// The issues a submit earned at one field.
+fn issued(issues: List<Issue>, name: string) -> List<Issue> { [i for i in issues if i.path.text() == name] }
+
+/// What was entered, as the decode reads it: a field nothing was given
+/// is absent, so its default stands and an owed one is refused.
+fn entered(shapes: List<FieldShape>, typed: Map<string, string>, ticked: Map<string, bool>) -> Value {
+    Value.Map([e for f in shapes for e in entry(f, typed, ticked)])
+}
+
+fn entry(f: FieldShape, typed: Map<string, string>, ticked: Map<string, bool>) -> List<Entry> {
+    if f.kind is .Bool {
+        let on? = ticked.get(f.name) else { return [] }
+        return [Entry { key: f.name, value: Value.Bool(on) }]
+    }
+    let t? = typed.get(f.name) else { return [] }
+    if t.is_empty() { return [] }
+    [Entry { key: f.name, value: Value.Text(t) }]
+}
