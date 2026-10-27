@@ -5,9 +5,7 @@
 # a warm check reads does not grow with the record count: 400 and 1600 records read at most
 # the three rows of its answer.
 set -u
-cd "$(dirname "$0")/.."
-export AVRA_WATCH_HELD=1
-export AVRA_MAX_COMPILES=0
+. "$(dirname "$0")/lib/attack.sh"
 AVRA=${AVRA:-./avra}
 
 R=build/store-index; fails=0

@@ -6,9 +6,7 @@
 # one finds there: every module record it would have produced itself (a MISS, so it
 # recomputes), never the first one's rows.
 set -u
-cd "$(dirname "$0")/.."
-export AVRA_WATCH_HELD=1
-export AVRA_MAX_COMPILES=0
+. "$(dirname "$0")/lib/attack.sh"
 R=build/db06-step5
 mkdir -p $R
 pkg=${PKG:-packages/std-relation}

@@ -8,9 +8,7 @@
 #
 #   sh tools/db_corpus.sh
 set -u
-cd "$(dirname "$0")/.."
-export AVRA_WATCH_HELD=1
-export AVRA_MAX_COMPILES=0
+. "$(dirname "$0")/lib/attack.sh"
 BIN="$(pwd)/build/avra"
 R="$(pwd)/build/db-corpus"
 rm -rf "$R" && mkdir -p "$R/p/src/util" "$R/dep/src/sub" && git init -q "$R"
