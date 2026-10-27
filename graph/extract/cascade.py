@@ -297,8 +297,7 @@ class Plan:
         return [p["name"] for p in self.models[model]["properties"] if route(p) == "text"]
 
     def encoder_queries(self, text):
-        """Every encoder pass an extraction of this text can use. None depends
-        on a choice, so all of them run before any choice is made."""
+        """The encoder passes that depend on no choice: entities, statements, quotations, entity attributes and times."""
         q = {
             "entities": ("mentions", text, self.entity_labels()),
             "statements": ("mentions", text, {STATEMENT: STATEMENT_GLOSS}),
@@ -308,8 +307,14 @@ class Plan:
             extra = [p["name"] for p in texts if p["name"] != self.anchor(model)]
             if extra:
                 q[f"attributes:{model}"] = ("records", text, model, self.anchor(model), [self.anchor(model)] + extra)
-        fields = {}
-        for model in self.records:
+        if any(route(p) == "time" for m in self.records for p in self.models[m]["properties"]):
+            q["times"] = ("mentions", text, {TIME_EXPRESSION: TIME_GLOSS})
+        return q
+
+    def record_queries(self, text, kinds):
+        """The encoder passes filling the given record kinds needs: one structure query per kind with text fields, and one label query over their required text fields and quantity units."""
+        q, fields = {}, {}
+        for model in kinds:
             texts = self.texts(model)
             if texts:
                 q[f"record:{model}"] = ("records", text, model, texts[0], texts)
@@ -321,8 +326,6 @@ class Plan:
                     fields[f"{model}.{p['name']}.{quantity[1]}"] = f"the {quantity[1]} of the {p['name']} of a {model}: {gloss(self.models[self.embedded(p)])}"
         if fields:
             q["fields"] = ("mentions", text, fields)
-        if any(route(p) == "time" for m in self.records for p in self.models[m]["properties"]):
-            q["times"] = ("mentions", text, {TIME_EXPRESSION: TIME_GLOSS})
         return q
 
     def free_labels(self, name):
@@ -555,6 +558,12 @@ class Cascade:
         self.plan, self.spans, self.llm = plan, spans, scorer
 
     def run(self, source):
+        self.choose_records(source)
+        self.complete(source)
+        return self.records, self.frames
+
+    def choose_records(self, source):
+        """Entities, frames, relations and the record kinds each sentence states."""
         self.t = Text(source["content"])
         self.records, self.mentions, self.minted, self.resolved, self._units, self._timed = [], [], 0, {}, None, {}
         self.frames = [dict(f, _range=position(f["passage"]), _given=True) for f in source.get("frames", [])]
@@ -565,9 +574,18 @@ class Cascade:
         spans = time.time()
         self.frame_pass(source)
         self.relation_pass()
-        self.record_pass()
+        self.chosen = self.choose_kinds()
         log(f"prefix_s={prefix - clock:.2f} entities_s={spans - prefix:.2f} choices_s={time.time() - spans:.2f}")
-        return self.records, self.frames
+
+    def kinds_stated(self):
+        """The record kinds some sentence states, in declared order."""
+        return [m for m in self.plan.records if any(k == m for k, *_ in self.chosen)]
+
+    def complete(self, source):
+        """Fill every stated kind; the encoder's record passes for those kinds are in the spans."""
+        self.llm.begin(source["content"])
+        for kind, x, y, p in self.chosen:
+            self.fill(kind, x, y, p)
 
     # Entities: encoder spans, LLM picks the antecedent for partial names.
 
@@ -859,11 +877,11 @@ class Cascade:
     # Records: the LLM names which declared record a sentence states, then
     # fills each field from spans, offered entities or declared values.
 
-    def record_pass(self):
-        """Every sentence's kinds are chosen first, then each stated kind is filled, so the kind choices run back to back over one cached prefix."""
+    def choose_kinds(self):
+        """(kind, start, end, score) of every record kind each sentence states; the kind choices run back to back over one cached prefix."""
         kinds = list(self.plan.records)
         if not kinds:
-            return
+            return []
         opts = {m: FRAMINGS[RECORD_FRAMING](self.plan.models[m]) for m in kinds}
         stated = []
         for a, b in self.units():
@@ -871,8 +889,7 @@ class Cascade:
                 x, y = self.trimmed(x, y)
                 if y > x:
                     stated += [(kind, x, y, p) for kind, p in self.sentence_records(kinds, opts, x, y)]
-        for kind, x, y, p in stated:
-            self.fill(kind, x, y, p)
+        return stated
 
     def shortlisted(self, kinds, opts, x, y):
         """The kinds worth asking about a sentence: all of them, or the k its wording ranks nearest, in declared order."""
@@ -1298,6 +1315,46 @@ def finish(records, frames):
     ]
 
 
+CLAIM = ("value", "factuality", "speech_act", "frame", "normalization")
+
+
+def claim_of(field):
+    return tuple(json.dumps(field.get(k), sort_keys=True) for k in CLAIM)
+
+
+def reconciled(records):
+    """Records sharing an identity are one entity. A property they all state the same way is one
+    claim (their evidence joins at admission); a property they state differently is a conflict no
+    declaration settles, so every record keeps its identity and its other properties and none keeps
+    the conflicted one. Each conflict is answered in the log, never dropped silently."""
+    parent = list(range(len(records)))
+
+    def find(i):
+        while parent[i] != i:
+            i = parent[i]
+        return i
+
+    seen = {}
+    for i, r in enumerate(records):
+        for ident in r.get("identities", []):
+            key = (r["model"], ident["identity"]["namespace"], ident["identity"]["key"])
+            parent[find(i)] = find(seen.setdefault(key, i))
+    groups = {}
+    for i in range(len(records)):
+        groups.setdefault(find(i), []).append(records[i])
+    for members in groups.values():
+        claims = {}
+        for r in members:
+            for f in r["fields"]:
+                claims.setdefault(f["property"], set()).add(claim_of(f))
+        for prop in sorted(p for p, c in claims.items() if len(c) > 1):
+            values = sorted({json.dumps(f["value"]) for r in members for f in r["fields"] if f["property"] == prop})
+            log(f"conflict {members[0]['model']}.{prop} on one entity ({', '.join(values)}): kept partial without it")
+            for r in members:
+                r["fields"] = [f for f in r["fields"] if f["property"] != prop]
+    return records
+
+
 def reframe(cascade):
     for r in cascade.records:
         for f in r["fields"]:
@@ -1352,82 +1409,112 @@ class Models:
         return Encoder()
 
 
-def encoded(reqs, models):
-    """Phase one: every encoder pass for every request, in one encoder
-    process, with no scorer loaded beside it."""
+def encoded(reqs, models, asked):
+    """Encoder passes for every request, in one encoder process, with no scorer loaded beside it:
+    asked[i] is request i's queries ({key: (op, *args)}); the answer holds its spans by key, or the exception that stopped it."""
     models.drop_llm()
     t = time.time()
     enc = models.encoder()
     log(f"encoder_start_s={time.time() - t:.1f}")
     out = []
     try:
-        for req in reqs:
+        for queries in asked:
             try:
-                plan = Plan(req["catalog"]["descriptor"], req["catalog"].get("derivations", ()))
                 spans = {}
-                for key, (op, *args) in plan.encoder_queries(req["input"]["content"]).items():
-                    asked = time.time()
+                for key, (op, *args) in queries.items():
+                    started = time.time()
                     spans[key] = (enc.mentions(*args, SPAN_THRESHOLD) if key == "entities" else enc.mentions(*args)) if op == "mentions" else enc.records(*args)
-                    log(f"encoder {key} s={time.time() - asked:.2f}")
+                    log(f"encoder {key} s={time.time() - started:.2f}")
                 out.append(spans)
             except Exception as e:
                 out.append(e)
     finally:
         enc.close()
-    log(f"phase1_s={time.time() - t:.1f} sources={len(reqs)}")
+    log(f"encoder_s={time.time() - t:.1f} requests={len(asked)}")
     return out
 
 
+def profiled(llm):
+    """One log line per cascade method that asked the scorer since its last reset."""
+    for who, (n, took, tokens) in sorted(getattr(llm, "spent", {}).items(), key=lambda kv: -kv[1][1]):
+        log(f"profile {who} calls={n} s={took:.2f} tokens={tokens}")
+
+
+def planned_for(req):
+    return Plan(req["catalog"]["descriptor"], req["catalog"].get("derivations", ()))
+
+
 def extracted(reqs, models=None):
-    """(result, log) per request, yielded as each finishes: the encoder pass
-    for the whole batch first, then each request's choices. A failure is a
-    result, never an exception."""
+    """(result, log) per request, yielded as each finishes. The encoder passes no choice
+    depends on run for the whole batch; each request's choices follow, up to the record kinds
+    its sentences state; the encoder passes filling only those kinds run for the whole batch;
+    the fills follow. A failure is a result, never an exception."""
     LOG.clear()
     models = models or Models()
-    phase_one = encoded(reqs, models)
+    plans = [planned_for(r) for r in reqs]
+    first = encoded(reqs, models, [p.encoder_queries(r["input"]["content"]) for p, r in zip(plans, reqs)])
     head = list(LOG)
-    for req, spans in zip(reqs, phase_one):
-        result, logs = extract(req, models, spans)
-        yield result, head + logs
-
-
-def extract_batch(reqs, models=None):
-    return list(extracted(reqs, models))
-
-
-def extract(req, models, spans):
-    """Phase two for one request over its phase-one spans."""
+    runs = [started(r, p, models, s) for r, p, s in zip(reqs, plans, first)]
     LOG.clear()
-    result = {
-        "contract": 2,
-        "request": req["request"],
-        "source": req["input"]["source"],
-        "schema": req["catalog"]["fingerprint"],
-        "extractor": req["extractor"],
-    }
+    second = encoded(reqs, models, [p.record_queries(r["input"]["content"], run.kinds_stated()) if isinstance(run, Cascade) else {} for p, r, run in zip(plans, reqs, runs)])
+    middle = list(LOG)
+    for req, plan, run, spans in zip(reqs, plans, runs, second):
+        result, logs = finished(req, models, run, spans)
+        yield result, head + middle + logs
+
+
+def header(req):
+    return {"contract": 2, "request": req["request"], "source": req["input"]["source"], "schema": req["catalog"]["fingerprint"], "extractor": req["extractor"]}
+
+
+def started(req, plan, models, spans):
+    """The cascade after its record kinds are chosen, or the failure that stopped it (with its log)."""
+    LOG.clear()
     stage = "extractor.setup"
     try:
         if isinstance(spans, Exception):
             raise spans
-        plan = Plan(req["catalog"]["descriptor"], req["catalog"].get("derivations", ()))
         for m, why in plan.blocked.items():
             log(f"skip {m}: {why}")
         stage = "extractor.run"
+        c = Cascade(plan, spans, models.llm)
         llm = models.llm
-        started, calls = time.time(), llm.calls
-        c = Cascade(plan, spans, llm)
-        c.request = req
-        c.run(req["input"])
-        reframe(c)
-        records, frames = finish(c.records, c.frames)
+        c.request, began, calls = req, time.time(), llm.calls
+        c.choose_records(req["input"])
+        profiled(llm)
+        c.spent_s, c.asked, c.chosen_log = time.time() - began, llm.calls - calls, list(LOG)
+        return c
+    except Exception as e:
+        log(f"failed: {type(e).__name__}: {e}")
+        return {**header(req), "status": "failed", "records": [], "problems": [{"code": stage, "message": f"{type(e).__name__}: {e}"[:4096]}], "_log": list(LOG)}
+
+
+def finished(req, models, run, spans):
+    """The request's result: its fills over the second encoder pass, or the failure recorded for it."""
+    if not isinstance(run, Cascade):
+        return {k: v for k, v in run.items() if k != "_log"}, run["_log"]
+    LOG.clear()
+    LOG.extend(run.chosen_log)
+    result, stage, llm = header(req), "extractor.run", models.llm
+    try:
+        if isinstance(spans, Exception):
+            raise spans
+        run.spans.update(spans)
+        began, calls = time.time(), llm.calls
+        run.complete(req["input"])
+        reframe(run)
+        records, frames = finish(reconciled(run.records), run.frames)
         result.update(status="complete", records=records, proposed_frames=frames)
-        for who, (n, took, tokens) in sorted(getattr(llm, "spent", {}).items(), key=lambda kv: -kv[1][1]):
-            log(f"profile {who} calls={n} s={took:.2f} tokens={tokens}")
-        log(f"scorer_load_s={models.load_s:.1f} phase2_s={time.time() - started:.1f} llm_calls={llm.calls - calls} records={len(records)} frames={len(frames)}")
+        profiled(llm)
+        log(f"scorer_load_s={models.load_s:.1f} phase2_s={run.spent_s + time.time() - began:.1f} llm_calls={run.asked + llm.calls - calls} records={len(records)} frames={len(frames)}")
     except Exception as e:
         result.update(status="failed", records=[], problems=[{"code": stage, "message": f"{type(e).__name__}: {e}"[:4096]}])
         log(f"failed: {type(e).__name__}: {e}")
     return result, list(LOG)
+
+
+def extract_batch(reqs, models=None):
+    return list(extracted(reqs, models))
 
 
 def received(conn):

@@ -73,47 +73,40 @@ def main():
     reqs = [request(envelope(r), schema, cascade.MODEL_ID) for r in rows]
     models = cascade.Models() if "--local" in sys.argv else RemoteModels(os.environ["AVRA_GRAPH_SOCKET"])
     started = time.time()
-    cascade.LOG.clear()
-    spans = cascade.encoded(reqs, models)
-    encoded_s = time.time() - started
-    head = list(cascade.LOG)
     by_method = collections.defaultdict(lambda: [0, 0.0, 0])
     by_query = collections.defaultdict(lambda: [0, 0.0])
-    per_source, loads, dumped = [], [], []
-    for line in head:
-        parts = line.split()
-        if parts[:1] == ["encoder"] and len(parts) == 3:
-            q = by_query[parts[1].split(":")[0]]
-            q[0] += 1
-            q[1] += float(parts[2].split("=")[1])
-    for row, req, sp in zip(rows, reqs, spans) if "--encoder-only" not in sys.argv else ():
-        t = time.time()
-        result, logs = cascade.extract(req, models, sp)
-        wall = time.time() - t
-        dumped.append({"kind": "source", "source": row["id"], "log": logs, "result": result})
+    per_source, dumped, seen = [], [], False
+    for row, (result, logs) in zip(rows, cascade.extracted(reqs, models)):
         calls = 0
         for line in logs:
             parts = line.split()
             if parts[:1] == ["profile"]:
                 kv = dict(x.split("=") for x in parts[2:])
-                row_ = by_method[parts[1]]
-                row_[0] += int(kv["calls"])
-                row_[1] += float(kv["s"])
-                row_[2] += int(kv["tokens"])
+                entry = by_method[parts[1]]
+                entry[0] += int(kv["calls"])
+                entry[1] += float(kv["s"])
+                entry[2] += int(kv["tokens"])
                 calls += int(kv["calls"])
-        per_source.append((row["id"], len(row["content"]), calls, round(wall, 1), len(result.get("records", []))))
+            elif parts[:1] == ["encoder"] and len(parts) == 3 and not seen:
+                q = by_query[parts[1].split(":")[0]]
+                q[0] += 1
+                q[1] += float(parts[2].split("=")[1])
+        seen = True
+        dumped.append({"kind": "source", "source": row["id"], "log": logs, "result": result})
+        per_source.append((row["id"], len(row["content"]), calls, len(result.get("records", []))))
+    encoded_s = time.time() - started
     if "--dump" in sys.argv:
         json.dump({"extractions": dumped}, open(sys.argv[sys.argv.index("--dump") + 1], "w"))
     total_calls = sum(v[0] for v in by_method.values())
     llm_s = sum(v[1] for v in by_method.values())
-    print(f"sources={len(rows)} chars={sum(s[1] for s in per_source)} encoder_phase_s={encoded_s:.1f} llm_s={llm_s:.1f} llm_calls={total_calls} queue_wait_s={getattr(models._llm, 'waited', 0.0):.1f}")
+    print(f"sources={len(rows)} chars={sum(s[1] for s in per_source)} wall_s={encoded_s:.1f} llm_s={llm_s:.1f} llm_calls={total_calls} queue_wait_s={getattr(models._llm, 'waited', 0.0):.1f}")
     print("\nllm by cascade method (seconds, calls, prompt tokens):")
     for k, (n, s, tok) in sorted(by_method.items(), key=lambda kv: -kv[1][1]):
         print(f"  {k:20s} {s:7.1f}s {n:5d} calls {tok:8d} tok  {s / max(n, 1) * 1000:6.0f} ms/call")
     print("\nencoder by query kind (seconds, calls):")
     for k, (n, s) in sorted(by_query.items(), key=lambda kv: -kv[1][1]):
         print(f"  {k:20s} {s:7.1f}s {n:5d} calls")
-    print("\nper source (id, chars, llm calls, wall s, records):")
+    print("\nper source (id, chars, llm calls, records):")
     for row in per_source:
         print("  ", *row)
 
