@@ -2152,7 +2152,12 @@ impl Workspace {
         // caller depends on `Methods(target)` and never on the target's
         // whole resolved file or an impl's namespace.
         let k = key(Family.Methods, target.index)
-        if !(self.db.ask(k) is .Compute) { return self.decls.registered_methods(target) }
+        // A TABLE SETTLED EARLY IS SHORT, NEVER FINAL: a generated impl minted after it
+        // settled is registered here too, so the next read sees what the block names.
+        if !(self.db.ask(k) is .Compute) {
+            for b in self.method_blocks(target) { self.block_members(target, b) }
+            return self.decls.registered_methods(target)
+        }
         self.db.begin(k)
         // A GENERATED IMPL IS MINTED INTO THE TARGET'S OWN FILE, so the
         // table must not be read before that file's expansion has run —
@@ -2161,6 +2166,14 @@ impl Workspace {
         // target whose own file is resolving) answer the smaller view.
         let home = self.decls.decl(target).file
         let _ = self.resolved(home)
+        let growing = self.has_declares(home) || self.has_marks(home)
+        // A HOME STILL EXPANDING HAS NOT MINTED ITS GENERATED IMPLS: the table would be
+        // short, so it is not the table — the caller answers from what stands, and a
+        // later read sees the whole of it.
+        if growing && !(self.db.ask(key(Family.Expanded, home.index)) is .Reuse) {
+            self.db.abandon(k)
+            return self.decls.registered_methods(target)
+        }
         let blocks = self.method_blocks(target)
         // A BLOCK THAT STANDS NAMES ITS MEMBERS BEFORE ANY SIG IS ASKED. A derive MINTS ITS
         // IMPL INTO THE ANNOTATED FILE and runs inside that file's resolve, so a read
