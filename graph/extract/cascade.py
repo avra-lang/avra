@@ -490,6 +490,41 @@ class Scorer:
             out[len(options) + j] = final[len(winners) + j]
         return out
 
+    def pick_many(self, items, options_first=False):
+        """One probability list per item, in the items' order: the text the items
+        share is scored once and each block costs only the tokens it adds. A
+        block's letters are read where that block ends, so one pass serves them
+        all and letters restart at A in every block; an item whose context is not
+        the one standing writes it, as the first always does."""
+        import mlx.core as mx
+        from mlx_lm.models.cache import make_prompt_cache
+
+        if self.cache is None:
+            self.cache, self.held = make_prompt_cache(self.model), []
+        head = f'Text: "{self.source}"\n\n' if self.source else ""
+        prompt, standing, out = head, None, []
+        for item in items:
+            started = time.time()
+            letters = list(string.ascii_uppercase[: len(item["options"])])
+            if not 2 <= len(letters) <= MAX_OPTIONS:
+                raise ValueError(f"a choice takes 2 to {MAX_OPTIONS} options, got {len(letters)}; split it into heats")
+            if item["context"] != standing:
+                prompt, standing = prompt + ("\n\n" if prompt != head else "") + item["context"], item["context"]
+            prompt += choice_prompt("", item["question"], item["options"], "", item.get("options_first", options_first))
+            whole = self.tok.encode(self.render(prompt))
+            keep = self.reuse(whole)
+            ids = mx.array([self.tok.encode(l, add_special_tokens=False)[0] for l in letters])
+            out.append(mx.softmax(self.forward(whole[keep:])[ids].astype(mx.float32)).tolist())
+            self.held, self.calls = whole, self.calls + 1
+            self.spend(started, len(whole) - keep)
+            if self.calls % CLEAR_CACHE_EVERY == 0:
+                mx.clear_cache()
+            if os.environ.get("CASCADE_DECISIONS"):
+                with open(os.environ["CASCADE_DECISIONS"], "a") as log:
+                    log.write(json.dumps({"context": item["context"], "question": item["question"],
+                                          "options": list(item["options"]), "p": out[-1]}) + "\n")
+        return out
+
     def generate(self, messages, max_tokens, stop=()):
         """Greedy text for a chat, ended before the first stop string; the
         extraction prefix cache is untouched."""
@@ -1616,6 +1651,9 @@ def serve():
     `{"op":"generate","messages":[…],"max_tokens":n,"stop":[…]}` answers
     `{"text":…}` (greedy, ended before the first stop string);
     `{"op":"choose","context","question","options"}` answers `{"p":[…]}`;
+    `{"op":"choose_many","items":[{"context","question","options"},…]}`
+    answers one probability list per item, from the one prompt their blocks
+    share: `{"p":[[…],…]}`;
     `{"request":…}` or `{"requests":[…]}` answers extractions. A failure
     answers `{"error":…}`."""
     import queue

@@ -35,6 +35,8 @@ class Branching:
         self.budget = getattr(base, "budget", None)
         if hasattr(base, "rank"):
             self.rank = self.ranked
+        if hasattr(base, "choose_many"):
+            self.choose_many = self.chose_many
         if hasattr(base, "embed"):
             self.embed = self.embedded
 
@@ -45,6 +47,11 @@ class Branching:
 
     def choose(self, context, question, options):
         return self.remembered(("c", context, question, tuple(options)), lambda: self.base.choose(context, question, options))
+
+    def chose_many(self, items):
+        """Every item's answer from the base's one ask, remembered by the items."""
+        key = ("m", tuple((it["context"], it["question"], tuple(it["options"])) for it in items))
+        return self.remembered(key, lambda: self.base.choose_many(items))
 
     def ranked(self, context, question, shown, keys):
         return self.remembered(("r", context, question, tuple(shown), tuple(keys)),

@@ -55,6 +55,11 @@ class Shared:
     def choose(self, context, question, options):
         return self.asked({"op": "choose", "context": context, "question": question, "options": options})["p"]
 
+    def choose_many(self, items):
+        """Each item's option probabilities, in the items' order, from one ask: the
+        service reads every choice in one prompt, so the items share its pass."""
+        return self.asked({"op": "choose_many", "items": items})["p"]
+
     def rank(self, context, question, shown, keys):
         """Each option's score as the service's rank op reports it, under the declared rule."""
         answer = self.asked({"op": "rank", "context": context, "question": question, "options": shown, "keys": keys})["scores"]
@@ -166,7 +171,7 @@ class ChooseOnly:
     """The shared model with its lettered choice alone, when ranked answers are not declared in use."""
 
     def __init__(self, shared):
-        self.choose, self.asked, self.budget = shared.choose, shared.asked, None
+        self.choose, self.choose_many, self.asked, self.budget = shared.choose, shared.choose_many, shared.asked, None
 
 
 def chosen():

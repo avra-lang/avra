@@ -172,11 +172,53 @@ def best(chooser, context, question, options, keys=None):
         return options.index(winners[best(chooser, context, question, winners)])
     else:
         logp = [math.log(max(x, 1e-9)) for x in debiased(chooser, context, question, options)]
+    return decided(chooser, logp, options)
+
+
+def decided(chooser, logp, options):
+    """The likeliest option of a probability list, and the chooser's record of taking it."""
     pick = chooser.decide(logp) if hasattr(chooser, "decide") else max(range(len(logp)), key=logp.__getitem__)
     chooser.tally = getattr(chooser, "tally", 0.0) + logp[pick]
     if hasattr(chooser, "took"):
         chooser.took(options[pick])
     return pick
+
+
+def chosen_many(chooser, context, asks):
+    """Each ask's option probabilities averaged over the listed order and its
+    reverse, from one batched ask: both orders of every ask go in one prompt, so
+    the decisions a step makes over one context share its pass."""
+    listed = [{"context": context, "question": q, "options": list(o)} for q, o in asks]
+    flipped = [{"context": context, "question": q, "options": list(o)[::-1]} for q, o in asks]
+    p = chooser.choose_many(listed + flipped)
+    n = len(asks)
+    return [[(a + b) / 2 for a, b in zip(forward, backward[::-1])]
+            for forward, backward in zip(p[:n], p[n:])]
+
+
+def best_many(chooser, context, asks, keys=None):
+    """Each ask's likeliest option, in the asks' order. A chooser that reads
+    several choices in one prompt reads every lettered ask that way, so one
+    step's decisions share a pass; an ask it cannot hold that way (through the
+    letters, or ranked) is asked on its own."""
+    keys = list(keys or [None] * len(asks))
+    batched = [i for i, ((_, options), key) in enumerate(zip(asks, keys))
+               if hasattr(chooser, "choose_many") and 2 <= len(options) <= LETTERS
+               and not (key and hasattr(chooser, "rank"))]
+    budget = getattr(chooser, "budget", None)
+    if budget:
+        for question, options in asks:
+            budget.holds(context, question, *options)
+        if batched:
+            budget.holds(context, *[asks[i][0] for i in batched], *[o for i in batched for o in asks[i][1]])
+    picks = [None] * len(asks)
+    for i, ((question, options), key) in enumerate(zip(asks, keys)):
+        if i not in batched:
+            picks[i] = best(chooser, context, question, options, key)
+    if batched:
+        for i, logp in zip(batched, chosen_many(chooser, context, [asks[i] for i in batched])):
+            picks[i] = decided(chooser, logp, asks[i][1])
+    return picks
 
 
 def odds(chooser, context, question, options, keys):
@@ -417,26 +459,57 @@ def identified(models):
     return keyed or list(models)
 
 
-def narrowed(chooser, trail, model, var, out, question, evidence, look=None):
-    """A relationship record's declared label value, then a word its facts share with the question."""
-    relation = ((model.get("semantics") or {}).get("relation")) or {}
+def label_ask(model, relation, props):
+    """The ask that picks a relation's declared label value, with the values it offers."""
     label = relation.get("label") or []
-    props = {p["name"]: p for p in model["properties"]}
-    if len(label) == 1 and props.get(label[0], {}).get("enum"):
-        values = props[label[0]]["enum"]
-        words = {l["value"]: l.get("forward", []) for l in relation.get("labels", [])}
-        options = [f"{v} ({', '.join(words.get(v, [v]))})" for v in values] + ["any of them"]
-        pick = best(chooser, trail, f"Which {label[0]} does the question mean?", options)
-        if pick < len(values):
-            out.where.append(f"{var}.{label[0]} = {quoted(values[pick])}")
+    values = props.get(label[0], {}).get("enum") if len(label) == 1 else None
+    if not values:
+        return None
+    words = {l["value"]: l.get("forward", []) for l in relation.get("labels", [])}
+    return {"field": label[0], "values": values,
+            "question": f"Which {label[0]} does the question mean?",
+            "options": [f"{v} ({', '.join(words.get(v, [v]))})" for v in values] + ["any of them"]}
+
+
+def word_ask(model, shared, own):
+    """The ask that picks which word the question shares with the model's facts
+    narrows its records, offered as the options `own` holds."""
+    return {"question": f"Which of these narrows the {model['name']} records to the ones the question means?",
+            "options": list(own) + ["no narrowing"],
+            "keys": unique([f"its {prop} contains {w!r}" for prop, w in shared] + ["no narrowing"])}
+
+
+def shared_words(model, props, question, evidence):
+    """The (property, word) pairs of the model's facts that the question shares a word with."""
     shared = [(prop, w) for prop, words in evidence.about(model["name"], question) for w in words
               if base_shape(props[prop]["shape"]) == "string" and not props[prop].get("enum")]
-    shared = list(dict.fromkeys(shared))
+    return list(dict.fromkeys(shared))
+
+
+def narrowed(chooser, trail, model, var, out, question, evidence, look=None):
+    """A relationship record's declared label value, then a word its facts share
+    with the question. Neither pick's offer depends on the other unless an option
+    shows what the graph holds (a preview is taken against the query so far), so
+    the step asks once, and asks apart only when a preview is shown."""
+    relation = ((model.get("semantics") or {}).get("relation")) or {}
+    props = {p["name"]: p for p in model["properties"]}
+    declared = label_ask(model, relation, props)
+    shared = shared_words(model, props, question, evidence)
+    apart = [f"its {prop} contains {w!r}" for prop, w in shared]
+    asks = ([declared] if declared else []) + ([word_ask(model, shared, apart)] if shared and look is None else [])
+    picks = best_many(chooser, trail, [(a["question"], a["options"]) for a in asks], [a.get("keys") for a in asks])
+    if declared:
+        pick = picks.pop(0)
+        if pick < len(declared["values"]):
+            out.where.append(f"{var}.{declared['field']} = {quoted(declared['values'][pick])}")
     if not shared:
         return
-    ask = f"Which of these narrows the {model['name']} records to the ones the question means?"
-    options = [f"its {prop} contains {w!r}" + (look.kept(out, var, prop, w) if look else "") for prop, w in shared] + ["no narrowing"]
-    pick = best(chooser, trail, ask, options, unique([f"its {prop} contains {w!r}" for prop, w in shared] + ["no narrowing"]))
+    if look is None:
+        pick = picks.pop(0)
+    else:
+        shown = [o + look.kept(out, var, prop, w) for o, (prop, w) in zip(apart, shared)]
+        ask = word_ask(model, shared, shown)
+        pick = best(chooser, trail, ask["question"], ask["options"], ask["keys"])
     if pick < len(shared):
         prop, w = shared[pick]
         out.where.append(f"{var}.{prop} CONTAINS {quoted(w)}")

@@ -45,6 +45,8 @@ class Walker(Branching):
     def __init__(self, base, probe):
         super().__init__(base)
         self.probe, self.picks, self.plan, self.steps = probe, (), None, []
+        if hasattr(base, "choose_many"):
+            self.choose_many = self.chose_many
 
     def watch(self, plan):
         self.plan = plan
@@ -62,6 +64,11 @@ class Walker(Branching):
     def choose(self, context, question, options):
         self.vet()
         return super().choose(context, question, options)
+
+    def chose_many(self, items):
+        """The batched answer, refused from a pattern that binds nothing."""
+        self.vet()
+        return super().chose_many(items)
 
     def ranked(self, context, question, shown, keys):
         self.vet()
