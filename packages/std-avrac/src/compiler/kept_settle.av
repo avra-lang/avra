@@ -40,7 +40,7 @@ use core.{
 }
 use features.{Unsettled, Settled, Wanted, SettleRoot, SeatValue, Budgets}
 use compiler.backend.{reaches_world}
-use compiler.store.{Store, Stored, Reading, node_key}
+use compiler.store.{Store, Stored, Reading, node_key, StoredName}
 use compiler.work.{work_spell_lookup}
 use compiler.lower.{Unit, type_shape_key}
 use core.{Type}
@@ -339,7 +339,9 @@ impl Workspace {
     /// when it lowers again to its shape. What the unit sees is the file lines'.
     fn kept_unit_stands(r: List<string>) -> bool {
         if r.length < 7 { return false }
-        if self.text_digest(r[1]) == r[2] { return true }
+        // A ROW NAMES ITS FILE AS A STORED NAME, never a path: `path_named` is the one inverse,
+        // and it answers a path it is handed unchanged.
+        if self.text_digest(self.path_named(StoredName(r[1]))) == r[2] { return true }
         let d? = self.decl_from_ref(r[3]) else { return false }
         if "${self.syntax(d)}" == r[4] { return true }
         if r[6] == "1" { return false }
@@ -459,7 +461,9 @@ impl Workspace {
     /// its outline has not.
     fn kept_file_stands(r: List<string>) -> bool {
         if r.length < 3 || r.length > 4 { return false }
-        if self.text_digest(r[1]) == r[2] { return true }
+        // A ROW NAMES ITS FILE AS A STORED NAME, never a path: `path_named` is the one inverse,
+        // and it answers a path it is handed unchanged.
+        if self.text_digest(self.path_named(StoredName(r[1]))) == r[2] { return true }
         r.length == 4 && r[3] != "" && self.file_is_read(r[1]) && self.outline_matches(r[1], r[3])
     }
 
