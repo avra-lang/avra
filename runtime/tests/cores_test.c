@@ -111,6 +111,32 @@ static void sums(void) {
     printf("%lld", (long long)avra_cores_result(g));
 }
 
+// A package's prepare hook, asked once before the first fork: this one counts its asks and answers as told.
+static int g_hook_asked = 0, g_hook_refuses = 0;
+static int counting_hook(const char** why) {
+    g_hook_asked++;
+    if (g_hook_refuses) { *why = "a package holds state that cannot cross a fork"; return 1; }
+    return 0;
+}
+
+// The hook is asked once for a group of three, and the cores fork as usual.
+static void hook_asked_once(void) {
+    avra_fork_hook(counting_hook);
+    int64_t g = avra_cores_group(3);
+    int64_t core = avra_cores_fork(g, -1);
+    if (core < 3) avra_cores_leave(g, core, 1, 0);
+    awaited_all(g, 3);
+    printf("%d %lld", g_hook_asked, (long long)avra_cores_result(g));
+}
+
+// A hook that refuses stops the fork: it answers -EBUSY, forks nothing, and says why on stderr.
+static void hook_refuses(void) {
+    avra_fork_hook(counting_hook);
+    g_hook_refuses = 1;
+    int64_t g = avra_cores_group(3);
+    printf("%lld %d", (long long)avra_cores_fork(g, -1), g_hook_asked);
+}
+
 // Core 1 of 2 traps; core 0 waits to be told to stop.
 static void one_traps(void) {
     int64_t g = avra_cores_group(2);
@@ -327,6 +353,19 @@ int main(void) {
     {
         Outcome o = supervised(stop_reaches_all);
         CHECK(exited(o, 0) && !strcmp(o.out, "40 4"), "stop reaches every core, and the live counts sum");
+    }
+
+    // ── a package's fork hook ───────────────────────────────────
+    {
+        Outcome o = supervised(hook_asked_once);
+        CHECK(exited(o, 0) && !strcmp(o.out, "1 3"), "a fork hook is asked once, and the cores fork");
+    }
+    {
+        Outcome o = supervised(hook_refuses);
+        char want[32];
+        snprintf(want, sizeof want, "%d 1", -EBUSY);
+        CHECK(exited(o, 0) && !strcmp(o.out, want), "a hook that refuses stops the fork with -EBUSY");
+        CHECK(strstr(o.err, "a package holds state that cannot cross a fork") != NULL, "and says why on stderr");
     }
 
     // ── crashes trap the supervisor, naming the core ────────────

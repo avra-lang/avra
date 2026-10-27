@@ -1,0 +1,35 @@
+// proves: a transaction another task holds open at the fork refuses it; once that task commits the same server serves, and the parent reads on.
+use @std.http.http.{text}
+use @std.http.route.{get}
+use @std.http.server.{server}
+use @std.net.{NetError}
+use @std.sqlite.{Db, sql}
+use @std.time.{ms, sleep}
+use tests.support.{count, cycle, dir, opened, refused}
+
+fn hold(db: Db) -> string {
+    let _ = db.exec("BEGIN")
+    let _ = db.run(sql("INSERT INTO rows (who) VALUES (1)"))
+    sleep(ms(400))
+    match db.exec("COMMIT") { .Ok(_) -> "committed", .Err(e) -> e.message }
+}
+
+fn shown() -> Result<string, NetError> {
+    let db = opened("${dir()}/rows.db")?
+    server app {
+        port: 0
+        get "/" { _req -> text(200, count(db)) }
+    }
+    let up = match app.listening() {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    let holder = spawn hold(db)
+    sleep(ms(100))
+    let first = match up.run(3) { .Ok(_) -> "served", .Err(e) -> "refused ${e.errno}" }
+    let done = holder.await
+    let second = cycle(up)?
+    .Ok("${first} | ${done} | ${second} | parent ${count(db)}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

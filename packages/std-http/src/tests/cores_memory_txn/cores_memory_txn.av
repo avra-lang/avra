@@ -1,0 +1,34 @@
+// proves: a private in-memory database with a transaction open refuses the fork like a file one, and the parent's statements on it survive the cores.
+use @std.http.http.{text}
+use @std.http.route.{get}
+use @std.http.server.{server}
+use @std.net.{NetError}
+use @std.sqlite.{Db, sql}
+use tests.support.{count, cycle, refused}
+
+fn shown() -> Result<string, NetError> {
+    let db = match Db.memory() { .Ok(d) -> d, .Err(e) -> { return .Err(refused(e.message)) } }
+    let _ = db.run(sql("CREATE TABLE rows (n INTEGER PRIMARY KEY, who INTEGER)"))
+    let _ = db.run(sql("INSERT INTO rows (who) VALUES (1)"))
+    let st = match db.prepare("SELECT count(*) FROM rows") {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(refused(e.message)) },
+    }
+    let _ = db.exec("BEGIN")
+    let _ = db.run(sql("INSERT INTO rows (who) VALUES (2)"))
+    server app {
+        port: 0
+        get "/" { _req -> text(200, "up") }
+    }
+    let up = match app.listening() {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    let first = match up.run(3) { .Ok(_) -> "served", .Err(e) -> "refused ${e.errno}" }
+    let _ = db.exec("COMMIT")
+    let one = cycle(up)?
+    let stepped = match st.step() { .Ok(r) -> "row ${r}", .Err(e) -> e.message }
+    .Ok("${first} | ${one} | parent ${count(db)} stmt ${stepped}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

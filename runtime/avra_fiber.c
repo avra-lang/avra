@@ -3357,6 +3357,16 @@ static size_t g_runs = 0;
 static int run_deadlocked(void) { return g_vnext_asking && g_runs > 0; }
 static size_t g_runs_cap = 0;
 
+// RUN HOOKS: a package that keeps process-global state a run can leave behind (a database
+// driver's connections) registers a begin/end pair, so what an evaluated run opened dies with it.
+#define RUN_HOOKS 16
+static struct { void (*begins)(void); void (*ends)(void); } g_run_hooks[RUN_HOOKS];
+static int g_run_hook_count = 0;
+
+void avra_run_hook(void (*begins)(void), void (*ends)(void)) {
+    if (g_run_hook_count < RUN_HOOKS) { g_run_hooks[g_run_hook_count].begins = begins; g_run_hooks[g_run_hook_count++].ends = ends; }
+}
+
 void avra_sched_run_begins(void) {
     if (g_runs == g_runs_cap) {
         g_runs_cap = g_runs_cap ? g_runs_cap * 2 : 8;
@@ -3367,10 +3377,12 @@ void avra_sched_run_begins(void) {
     g_seeded = 0;
     __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
     avra_clock_run_begins();
+    for (int i = 0; i < g_run_hook_count; i++) g_run_hooks[i].begins();
 }
 
 void avra_sched_run_ends(void) {
     if (g_runs == 0) avra_trap("defect: a run's schedule ended that never began");
+    for (int i = g_run_hook_count - 1; i >= 0; i--) g_run_hooks[i].ends();
     Schedule outer = g_outer_schedules[--g_runs];
     g_seeded = outer.seeded;
     g_schedule = outer.schedule;
