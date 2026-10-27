@@ -2188,25 +2188,16 @@ impl Workspace {
     /// simply not there yet.
     fn sig(d: DeclId) -> DeclSig? {
         let k = key(Family.Sig, d.index)
-        let x = self.decls.decl(d)
-        if self.is_held(x.file) {
-            self.held_sig_dep(x.file)
-            // A HELD DECL'S FACT MAY BE ASKED BEFORE ITS RECORD FILLS
-            // IT: mint the module's identities first (so a name it
-            // carries resolves), then fill THIS row — which, filling,
-            // may itself ask for a row later in the same module's
-            // record, and that ask fills THAT row before this one
-            // reads it, rather than seeing the blank default a whole-
-            // module sweep would not have reached yet.
-            self.file_ensured(x.file)
-            self.fill_ensured(d)
-            return self.decls.sigs.get()[d.index]
-        }
+        let early = self.decls.decl(d)
         // the language's own declarations were signed at admission
-        if !(self.db.ask(k) is .Compute) || x.kind is .Builtin {
+        if !(self.db.ask(k) is .Compute) || early.kind is .Builtin {
             return self.decls.sigs.get()[d.index]
         }
         self.db.begin(k)
+        // THE ROW IS READ ONCE ITS PARSE STANDS: attaching a minted file's parse reseats its
+        // declarations with the parse's own ranges, so the row that stood before the attach
+        // names another arena's statements and its record would be read from them.
+        let x = self.decl_with_body(d)
         mut t = self.sign_cx_for(x)
         t.declare_one(x)
         self.sig_voices.keep(d.index, t.facts.voices)
