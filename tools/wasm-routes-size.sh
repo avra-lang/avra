@@ -1,9 +1,9 @@
 #!/bin/sh
-# THE SERVED MODEL'S WEIGHT ON A PAGE: a wasm program that imports an `@crud` model and reads its route
-# data (tools/wasm-routes/served) is within a few bytes of the same program over a plain record with the route
-# data written by hand (tools/wasm-routes/plain). The descriptor is two scalars; a rise past the cap means a
-# handler, the database or a closure rode the model onto the page. The cap is an absolute byte count, never a
-# ratio: the claim is that the derive adds nothing, so a few bytes of data is its whole allowance.
+# THE SERVED MODEL'S WEIGHT ON A PAGE. A wasm page that imports an `@crud` model and uses it as a record
+# (tools/wasm-routes/imported) is within a few bytes of the same page over a plain record (plain); one that also
+# reads the model's route data (served) adds the descriptor and nothing else. The IR of that page defines no
+# handler, router, database or decoder. The caps are absolute byte counts, never ratios: a rise past one means
+# something of the server rode the model, or the descriptor, onto the page.
 set -eu
 . "$(dirname "$0")/lib/tree.sh"
 work=$(mktemp -d "${TMPDIR:-/tmp}/avra-wr.XXXXXX")
@@ -26,7 +26,9 @@ say "the served page defines $(printf '%s\n' "$defined" | wc -l | tr -d ' ') fns
 needs_wasm_clang
 wasm_ready || skip "the wasm runtime archive did not build"
 
+# Importing a served model is free (a few bytes); reading its route data costs the descriptor, which is bounded.
 cap=${WASM_ROUTES_CAP:-64}
+reach_cap=${WASM_ROUTES_REACH_CAP:-4096}
 
 # The bytes of one fixture built for the target, or empty when it will not build. Each build has a directory of
 # its own, so one fixture's output is never mistaken for the other's.
@@ -40,11 +42,17 @@ bytes_of() { # fixture
 
 plain=$(bytes_of plain)
 [ -n "$plain" ] || { say "the plain page did not build"; exit 1; }
+imported=$(bytes_of imported)
+[ -n "$imported" ] || { say "the page over an @crud model did not build"; exit 1; }
 served=$(bytes_of served)
-[ -n "$served" ] || { say "the page over an @crud model did not build"; exit 1; }
-say "plain=${plain}B served=${served}B cap=${cap}B"
-if [ "$served" -gt "$(( plain + cap ))" ]; then
-    say "REGRESSED — the served model weighs $(( served - plain )) B more on a page than a plain record (cap ${cap}): something of the server rode the descriptor onto the page"
+[ -n "$served" ] || { say "the page reading an @crud model's routes did not build"; exit 1; }
+say "plain=${plain}B imported=${imported}B served=${served}B cap=${cap}B reach_cap=${reach_cap}B"
+if [ "$imported" -gt "$(( plain + cap ))" ]; then
+    say "REGRESSED — importing a served model weighs $(( imported - plain )) B on a page (cap ${cap}): something of the server rode the model onto it"
     exit 1
 fi
-say "the served model's route data is within its cap"
+if [ "$served" -gt "$(( imported + reach_cap ))" ]; then
+    say "REGRESSED — reading the route data weighs $(( served - imported )) B (cap ${reach_cap}): something of the server rode the descriptor onto the page"
+    exit 1
+fi
+say "importing a served model and reading its route data are within their caps"

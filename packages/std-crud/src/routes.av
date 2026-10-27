@@ -16,6 +16,7 @@
 //! one is refused with all of them (422), never one at a time.
 use @std.errors.{Error}
 use @std.http_message.message.{Header, Method, READS, Version, WROTE, named_field}
+use @std.http_message.route.{Nothing, Route as Described, Routes}
 use @std.http.http.{Request, Unrouted, Response, text, status, header_pair}
 use @std.http.validators.{tag_listed}
 use @std.http.route.{Route, Mounted, fixed, routed, mounted}
@@ -98,9 +99,65 @@ export fn ledger(db: Db) -> Ledger {
 
 type Opened = { door: Door, route: Route }
 
+/// Where a door answers: the method, and the pattern under the mount (`/` is the mount itself). The router and
+/// the description of it both read this table.
+type Address = { method: Method, pattern: string }
+
+fn address(d: Door) -> Address {
+    match d {
+        .List -> Address { method: Method.Get, pattern: "/" },
+        .Create -> Address { method: Method.Post, pattern: "/" },
+        .Find -> Address { method: Method.Get, pattern: "/{id: int}" },
+        .Update -> Address { method: Method.Patch, pattern: "/{id: int}" },
+        .Remove -> Address { method: Method.Delete, pattern: "/{id: int}" },
+        .Trash -> Address { method: Method.Get, pattern: "/trash" },
+        .Restore -> Address { method: Method.Post, pattern: "/{id: int}/restore" },
+    }
+}
+
+/// Whether a mount answers at `d`: a model that keeps its removed rows has a trash and a restore, every model the
+/// rest, and `without` leaves out what it names.
+fn standing(d: Door, soft: bool, without: List<Door>) -> bool {
+    let kept = match d {
+        .Trash or .Restore -> soft,
+        .List or .Find or .Create or .Update or .Remove -> true,
+    }
+    kept && !without.any(it == d)
+}
+
+/// The route of `d` as data, rooted at `base`: where the router answers it, or none when the mount does not.
+fn described_at<A, T>(d: Door, soft: bool, without: List<Door>, base: string) -> Described<A, T>? {
+    if !standing(d, soft, without) { return null }
+    let at = address(d)
+    let root = if base.ends_with("/") { base.substring(0, base.length - 1) } else { base }
+    let path = if at.pattern == "/" { if root.is_empty() { "/" } else { root } } else { root + at.pattern.replace(": int", "") }
+    Described { method: at.method, path: path }
+}
+
+/// The doors a mount answers, as data: the same declaration (`soft`, `without`) the router is built from, so the
+/// two cannot name different doors.
+export fn described<T>(soft: bool, without: List<Door>, base: string) -> Routes<T> {
+    let list: Described<Nothing, List<T>>? = described_at(.List, soft, without, base)
+    let find: Described<int, T>? = described_at(.Find, soft, without, base)
+    let create: Described<T, T>? = described_at(.Create, soft, without, base)
+    let update: Described<T, T>? = described_at(.Update, soft, without, base)
+    let remove: Described<int, Nothing>? = described_at(.Remove, soft, without, base)
+    let trash: Described<Nothing, List<T>>? = described_at(.Trash, soft, without, base)
+    let restore: Described<int, T>? = described_at(.Restore, soft, without, base)
+    Routes {
+        list: list,
+        find: find,
+        create: create,
+        update: update,
+        remove: remove,
+        trash: trash,
+        restore: restore,
+    }
+}
+
 /// The routes of a model's doors, but the ones left out.
 export fn crud_routes(w: Wire, without: List<Door>, access: Access? = null) -> Mounted {
-    mounted([d.route for d in opened(w, access) if !without.any(it == d.door)])
+    mounted([d.route for d in opened(w, access) if standing(d.door, w.soft, without)])
 }
 
 /// The scope a request's caller is held within, or the refusal to answer it.
@@ -118,8 +175,8 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
         Opened {
             door: .List,
             route: fixed(
-                Method.Get,
-                "/",
+                address(.List).method,
+                address(.List).pattern,
                 (q: Request<Unrouted>) -> scoped(
                     access,
                     q,
@@ -130,8 +187,8 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
         Opened {
             door: .Create,
             route: fixed(
-                Method.Post,
-                "/",
+                address(.Create).method,
+                address(.Create).pattern,
                 (q: Request<Unrouted>) -> scoped(
                     access,
                     q,
@@ -145,8 +202,8 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
         Opened {
             door: .Find,
             route: routed<Whole>(
-                Method.Get,
-                "/{id: int}",
+                address(.Find).method,
+                address(.Find).pattern,
                 (t: Bytes) -> Whole.parse(t),
                 (q: Request<Whole>) -> scoped(
                     access,
@@ -158,8 +215,8 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
         Opened {
             door: .Update,
             route: routed<Whole>(
-                Method.Patch,
-                "/{id: int}",
+                address(.Update).method,
+                address(.Update).pattern,
                 (t: Bytes) -> Whole.parse(t),
                 (q: Request<Whole>) -> scoped(
                     access,
@@ -174,8 +231,8 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
         Opened {
             door: .Remove,
             route: routed<Whole>(
-                Method.Delete,
-                "/{id: int}",
+                address(.Remove).method,
+                address(.Remove).pattern,
                 (t: Bytes) -> Whole.parse(t),
                 (q: Request<Whole>) -> scoped(
                     access,
@@ -193,8 +250,8 @@ fn soft_doors(w: Wire, access: Access?) -> List<Opened> {
         Opened {
             door: .Trash,
             route: fixed(
-                Method.Get,
-                "/trash",
+                address(.Trash).method,
+                address(.Trash).pattern,
                 (q: Request<Unrouted>) -> scoped(
                     access,
                     q,
@@ -205,8 +262,8 @@ fn soft_doors(w: Wire, access: Access?) -> List<Opened> {
         Opened {
             door: .Restore,
             route: routed<Restored>(
-                Method.Post,
-                "/{id: int}/restore",
+                address(.Restore).method,
+                address(.Restore).pattern,
                 (t: Bytes) -> Restored.parse(t),
                 (q: Request<Restored>) -> scoped(
                     access,

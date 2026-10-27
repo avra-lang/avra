@@ -9,27 +9,15 @@ export type Nothing = {}
 /// A door at `path` for `method`, taking an `A` and answering a `T`.
 export type Route<A, T> = { method: Method, path: string }
 
-/// The five doors every served model has, rooted at a path — what a mount may leave out (`without:`) is still
-/// named here, and a soft-delete model's `trash` and `restore` are not described yet. `A` is what the caller
-/// hands over (a row, a key) and `T` what comes back.
+/// The doors a served model answers at, rooted at a path: each is absent when the mount leaves it out, and trash and
+/// restore are present only for a model that keeps its removed rows. `A` is what the caller hands over (a row, a key) and
+/// `T` what comes back. The server builds this from the same declaration that builds its router (`@std/crud`).
 export type Routes<T> = {
-    list: Route<Nothing, List<T>>,
-    find: Route<int, T>,
-    create: Route<T, T>,
-    update: Route<T, T>,
-    remove: Route<int, Nothing>,
-}
-
-/// The doors of a model served at `base` (a trailing slash is the same path): the collection at `base` and one row at `base/{id}`, under the methods
-/// `@crud` serves them by. `T` comes from the seat the answer fills.
-export fn routes_at<T>(base: string) -> Routes<T> {
-    let root = if base.ends_with("/") { base.substring(0, base.length - 1) } else { base }
-    let collection = if root.is_empty() { "/" } else { root }
-    let one = "${root}/{id}"
-    let list: Route<Nothing, List<T>> = Route { method: Method.Get, path: collection }
-    let find: Route<int, T> = Route { method: Method.Get, path: one }
-    let create: Route<T, T> = Route { method: Method.Post, path: collection }
-    let update: Route<T, T> = Route { method: Method.Patch, path: one }
-    let remove: Route<int, Nothing> = Route { method: Method.Delete, path: one }
-    Routes { list: list, find: find, create: create, update: update, remove: remove }
+    list: Route<Nothing, List<T>>?,
+    find: Route<int, T>?,
+    create: Route<T, T>?,
+    update: Route<T, T>?,
+    remove: Route<int, Nothing>?,
+    trash: Route<Nothing, List<T>>?,
+    restore: Route<int, T>?,
 }

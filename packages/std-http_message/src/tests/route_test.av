@@ -1,27 +1,29 @@
-use route.{Routes, routes_at}
+use message.{Method}
+use route.{Nothing, Route, Routes}
 
-fn served() -> Routes<int> { routes_at("/tasks") }
-
-fn at(base: string) -> Routes<int> { routes_at(base) }
+/// A model whose mount left out everything but a read.
+fn read_only() -> Routes<int> {
+    let list: Route<Nothing, List<int>> = Route { method: Method.Get, path: "/tasks" }
+    let none_list: Route<Nothing, List<int>>? = list
+    let no_key: Route<int, int>? = null
+    let no_row: Route<int, Nothing>? = null
+    let no_write: Route<int, int>? = null
+    Routes {
+        list: none_list,
+        find: no_key,
+        create: no_write,
+        update: no_write,
+        remove: no_row,
+        trash: none_list,
+        restore: no_key,
+    }
+}
 
 spec "std/http_message routes" {
-    given "a base that is not the plain path" {
-        then "a trailing slash names the same doors" {
-            at("/tasks/").list.path == "/tasks" && at("/tasks/").find.path == "/tasks/{id}"
-        }
-        then "the root serves its collection at the slash and a row under it" {
-            at("/").list.path == "/" && at("/").create.path == "/" && at("/").find.path == "/{id}"
-        }
-        then "no base is the root" { at("").list.path == "/" && at("").update.path == "/{id}" }
-    }
-    given "the doors of a model served at a path" {
-        then "the collection is at the path" { served().list.path == "/tasks" && served().create.path == "/tasks" }
-        then "a row is at the path and its key" { served().find.path == "/tasks/{id}" && served().remove.path == "/tasks/{id}" }
-        then "each is served by its own method" {
-            served().list.method is .Get &&
-                served().create.method is .Post &&
-                served().update.method is .Patch &&
-                served().remove.method is .Delete
+    given "a descriptor of one door" {
+        then "carries its method and path, and the others are absent" {
+            let r = read_only()
+            r.list!.path == "/tasks" && r.list!.method is .Get && r.find == null && r.remove == null
         }
     }
 }
