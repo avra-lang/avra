@@ -13,11 +13,7 @@ scratch=$(cd "$scratch" && pwd -P)
 trap 'rm -rf "$scratch"' EXIT
 trap 'exit 130' INT TERM
 
-total=0
-failed=0
-ok() { total=$((total + 1)); echo "ok    $1"; }
-bad() { total=$((total + 1)); failed=$((failed + 1)); echo "FAIL  $1"; [ -n "${2:-}" ] && sed 's/^/      | /' "$2" 2>/dev/null; }
-check() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3 (got '$1', wanted '$2')" "${4:-}"; fi; }
+. "$here/lib/checks.sh"
 
 # The land guard's decision, proved on fixtures: the non-draft PRs of OTHER
 # branches whose test check is still running.
@@ -642,6 +638,4 @@ else
     echo "skip  END TO END and the Sprite's half: they need Linux (/proc, setsid) — \`sh tools/work run sh tools/work_test.sh\` runs them on this lane's Sprite"
 fi
 
-echo "----------------------------------------"
-echo "work_test: $total checks, $failed failed"
-[ "$failed" -eq 0 ]
+checks_done work_test

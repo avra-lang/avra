@@ -5,9 +5,7 @@
 # Held by mtime against a marker taken after the cold check, so a rewrite of
 # an existing file counts as a write, not only a new file.
 set -u
-cd "$(dirname "$0")/.."
-export AVRA_WATCH_HELD=1
-export AVRA_MAX_COMPILES=0
+. "$(dirname "$0")/lib/attack.sh"
 
 R=build/store-quiet; fails=0
 rm -rf "$R" && mkdir -p $R/p/src

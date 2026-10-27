@@ -8,9 +8,7 @@
 # that asserts nothing would pass vacuously, so the script first holds the assertion to a
 # phase that must FAIL (the miss phase while the blob stands).
 set -u
-cd "$(dirname "$0")/.."
-export AVRA_WATCH_HELD=1
-export AVRA_MAX_COMPILES=0
+. "$(dirname "$0")/lib/attack.sh"
 T=packages/std-avrac/src/compiler/tests/cas_phase_test.av
 D="$(pwd)/build/cas-attack"
 [ -d "$D" ] && find "$D" -depth -delete
