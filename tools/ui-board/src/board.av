@@ -22,10 +22,10 @@ use @std.json.{DecodeError}
 use @std.json.codec.{json}
 use @std.json.typed.{array_of, as_bool, bool_text, elements}
 use @std.time.{ms}
-use @std.ui.app.{Async, Fetch, fetch, fetched, later}
+use @std.ui.app.{Async, Fetch, ask_list, fetch, later, send_then}
 use @std.ui.shipped.{ship}
-use @std.http_message.message.{Body, Reply, Request}
-use @std.json.{Json, field as member, parse, to_text}
+use @std.http_message.route.{Nothing, Routes}
+use @ui.board_model.model.{Todo}
 use @std.ui.components.{
     button,
     card,
@@ -50,10 +50,6 @@ use @std.ui.style.theme.{Theme, dark_theme, default_theme}
 @json
 enum Show { All, Active, Done }
 
-/// One task. `id` is the item key; `done` is its state.
-@json
-type Todo = { id: string, title: string, done: bool }
-
 /// The board's heading.
 fn title() -> string { "Tasks" }
 
@@ -66,8 +62,10 @@ state dialog_open: bool = false
 state reminded: bool = false
 state tasks_ask: Fetch<List<Todo>> = fetch()
 state refused: string = ""
-state sending: Map<string, Fetch<int>> = {}
-state waiting: Map<string, Request> = {}
+state creating: Fetch<Todo> = fetch()
+state sending: Map<string, Fetch<Todo>> = {}
+state removing: Map<string, Fetch<Nothing>> = {}
+state waiting: Map<string, Change> = {}
 
 // ── the state a page carries ────────────────────────────────────
 
@@ -140,22 +138,31 @@ fn admits(t: Todo) -> bool {
 
 export fn theme() -> Theme { if dark { dark_theme } else { default_theme } }
 
-/// A task as the server's doors take it.
-fn row_of(title: string, done: bool) -> Body {
-    Body
-        .Json(to_text(Json.Obj([member("title", Json.Str(title)), member("done", Json.Bool(done))])))
+/// The server's doors, described by the model both sides share.
+fn doors() -> Routes<Todo> { Todo.paths("/tasks") }
+
+/// A change to a task: its row as it should now stand, or its removal.
+enum Change {
+    Mark(task: Todo)
+    Gone(task: Todo)
 }
 
 /// `title` is sent as the next task — nothing, when it says nothing.
 fn add(title: string) {
     if title == "" { return }
-    save(Request.post("/tasks", row_of(title, false)))
+    refused = ""
+    let _ = send_then(
+        creating,
+        doors().create!,
+        Todo { title: title },
+        (said: Result<Todo, string>) -> created(said),
+    )
 }
 
 /// The task is sent with the state the box now shows.
-fn mark(t: Todo, done: bool) { change(t.id, Request.patch("/tasks/${t.id}", row_of(t.title, done))) }
+fn mark(t: Todo, done: bool) { change(Change.Mark(t with { done: done })) }
 
-fn remove(t: Todo) { change(t.id, Request.delete("/tasks/${t.id}")) }
+fn remove(t: Todo) { change(Change.Gone(t)) }
 
 // ── view: state in, tree out ────────────────────────────────────
 
@@ -262,7 +269,7 @@ component task_rows {
         text "Nothing here yet." { style: Style { color: .Muted } }
     } else {
         list {
-            for t in visible() { task_row t { key: t.id } }
+            for t in visible() { task_row t { key: "${t.id}" } }
         }
     }
 }
@@ -295,98 +302,96 @@ fn remind_now() -> bool {
     true
 }
 
-/// A task as the server writes it: `{"id":1,"title":"…","done":false}`.
-fn todo_of(j: Json) -> Todo? {
-    let key? = j.get("id")?.int() else { return null }
-    let title? = j.get("title")?.text() else { return null }
-    Todo { id: "${key}", title: title, done: j.get("done")?.truth() ?? false }
-}
-
-/// The reply, when the server took the ask; the words of its refusal otherwise.
-fn taken(r: Reply) -> Result<Reply, string> {
-    if r.status >= 200 && r.status <= 299 { .Ok(r) } else { .Err("status ${r.status}") }
-}
-
-/// The reply's body as JSON, or why it is not.
-fn document(r: Reply) -> Result<Json, string> {
-    let held = taken(r)?
-    let words? = held.body.text() else { return .Err("not text") }
-    match parse(words) { .Ok(j) -> .Ok(j), .Err(e) -> .Err(e.describe().message) }
-}
-
-/// The tasks an answer holds.
-fn loaded(r: Reply) -> Result<List<Todo>, string> {
-    let doc = document(r)?
-    .Ok([t! for t in [todo_of(j) for j in doc.items()] if t != null])
-}
-
 /// The server's tasks are asked for: at start, and after every change.
 fn load() {
-    let _ = fetched(tasks_ask, Request.get("/tasks"), loaded)
+    let _ = ask_list(tasks_ask, doors().list!, Nothing {})
 }
 
-/// A change's answer: its status, or why it was refused, which the footer says.
-fn noted(r: Reply) -> Result<int, string> {
-    let said = taken(r)
+/// The words of a refusal, none for an answer the server took.
+fn refusal_of<T>(said: Result<T, string>) -> string? {
+    match said { .Ok(_) -> null, .Err(why) -> why }
+}
+
+/// A task was created: whatever the server answered, the board shows its list next.
+fn created(said: Result<Todo, string>) {
     refused = match said { .Ok(_) -> "", .Err(why) -> why }
-    match said { .Ok(_) -> .Ok(r.status), .Err(why) -> .Err(why) }
-}
-
-/// A change was answered. Whatever it answered, the board shows the
-/// server's list next.
-fn saved(r: Reply) -> Result<int, string> {
-    let verdict = noted(r)
     load()
-    verdict
 }
 
-/// A change with no task yet is sent through the server's doors at once.
-fn save(request: Request) {
-    refused = ""
-    let _ = fetched(fetch<int>(), request, saved)
+/// The row a change is about.
+fn row_of(c: Change) -> Todo {
+    match c { .Mark(task) -> task, .Gone(task) -> task }
 }
 
 /// A change to a task goes out when the task's last one has been answered, so the
 /// server meets them in click order; one still waiting is replaced by a later click,
 /// so a burst sends its first change and its last.
-fn change(id: string, request: Request) {
+fn change(c: Change) {
+    let id = "${row_of(c).id}"
     if in_flight(id) {
-        waiting.set(id, request)
+        waiting.set(id, c)
         return
     }
     waiting.remove(id)
     refused = ""
-    let held: Fetch<int> = fetch()
-    sending.set(id, held)
-    let _ = fetched(held, request, (r: Reply) -> answered(id, r))
+    sent(id, c)
+}
+
+/// A change goes to the server's door for it, and `settled` hears the answer.
+fn sent(id: string, c: Change) {
+    match c {
+        .Mark(task) -> {
+            let held: Fetch<Todo> = fetch()
+            sending.set(id, held)
+            let _ = send_then(
+                held,
+                doors().update!,
+                task,
+                (said: Result<Todo, string>) -> settled(id, refusal_of(said)),
+            )
+        },
+        .Gone(task) -> {
+            let held: Fetch<Nothing> = fetch()
+            removing.set(id, held)
+            let _ = send_then(
+                held,
+                doors().remove!,
+                task.id,
+                (said: Result<Nothing, string>) -> settled(id, refusal_of(said)),
+            )
+        },
+    }
 }
 
 /// Whether any change to any task is on its way: what Clear done would judge by is then not yet the server's.
-fn writing() -> bool { sending.values().any(it.is_loading()) }
+fn writing() -> bool { sending.values().any(it.is_loading()) || removing.values().any(it.is_loading()) }
 
 /// Whether the task's last change has neither been answered nor failed.
 fn in_flight(id: string) -> bool {
-    let held? = sending.get(id) else { return false }
-    held.is_loading()
+    sending.get(id)?.is_loading() ?? false || removing.get(id)?.is_loading() ?? false
 }
 
 /// A change to a task was answered: the next one waiting goes out, and only the last of a run refreshes the list.
-fn answered(id: string, r: Reply) -> Result<int, string> {
-    let verdict = noted(r)
+fn settled(id: string, refusal: string?) {
+    refused = refusal ?? ""
     sending.remove(id)
+    removing.remove(id)
     let next? = waiting.get(id) else {
         load()
-        return verdict
+        return
     }
     waiting.remove(id)
-    change(id, next)
-    verdict
+    sent(id, next)
 }
 
 /// How the last change stands, in words.
 fn saved_words() -> string {
     if refused != "" { return " · save failed: ${refused}" }
-    let lost? = [w! for w in [f.failure() for f in sending.values()] if w != null].first() else { return loading_words() }
+    let lost? = [w! for w in [f.failure() for f in sending.values()] if w != null]
+        .concat([w! for w in [f.failure() for f in removing.values()] if w != null])
+        .first() else {
+        return loading_words()
+    }
     " · save failed: ${lost}"
 }
 

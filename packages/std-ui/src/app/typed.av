@@ -58,6 +58,30 @@ export fn send<A: Args, T: Decode>(held: Fetch<T>, route: Route<A, T>, args: A) 
     }
 }
 
+/// `send`, and `after` is told the answer when it lands: the way a write that must move something on (the next change to
+/// a row) hears it was answered. `after` runs once per answer and is the write's own, never an observation's parse.
+export fn send_then<A: Args, T: Decode>(
+    held: Fetch<T>,
+    route: Route<A, T>,
+    args: A,
+    after: fn(Result<T, string>) -> void,
+) -> bool {
+    if reads(route.method) { return unaskable(
+            held,
+            "`send_then` writes, and ${route.method.word()} ${route.path} reads: use `ask`",
+        ) }
+    match requested(route.method, route.path, args.args()) {
+        .Ok(request) -> fetched(held, request, (r: Reply) -> told_by<T>(r, after)),
+        .Err(why) -> unaskable(held, why),
+    }
+}
+
+fn told_by<T: Decode>(r: Reply, after: fn(Result<T, string>) -> void) -> Result<T, string> {
+    let out = read_one<T>(r)
+    after(out)
+    out
+}
+
 /// Whether a request by `method` only reads.
 fn reads(method: Method) -> bool {
     match method {
