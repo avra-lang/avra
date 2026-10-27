@@ -495,8 +495,16 @@ impl Workspace {
         self.saves(Family.Sig, (arg: int) -> self.sig_text(arg))
         self.saves(Family.Lowered, (arg: int) -> self.lowered_text(arg))
         self.relation(Family.Lowered).revive.set((arg: int) -> self.lowered_revived(arg))
+        self.saves(Family.Consumed, (arg: int) -> self.consumed_text(arg))
+        self
+            .relation(Family.Consumed)
+            .revive
+            .set((arg: int) -> self.saved_words(Family.Consumed, arg))
         self.saves(Family.ComponentNames, (arg: int) -> self.words_of(arg))
-        self.relation(Family.ComponentNames).revive.set((arg: int) -> self.saved_words(arg))
+        self
+            .relation(Family.ComponentNames)
+            .revive
+            .set((arg: int) -> self.saved_words(Family.ComponentNames, arg))
     }
 
     /// A file's `Items` as its row's text: its declarations' identity rows, then the modules its
@@ -575,6 +583,14 @@ impl Workspace {
     /// None for one a run generated.
     fn syntax_text(arg: int) -> string? { if self.decl_at(DeclId { index: arg }).maker == "" { "" } else { null } }
 
+    /// A declaration's consumed seats as its row's text: one `1` or `0` a seat.
+    fn consumed_text(arg: int) -> string? {
+        match self.relation(Family.Consumed).values.entry(arg) {
+            .Present(row) -> scan_words(row).first(),
+            .Missing -> null,
+        }
+    }
+
     /// A `ComponentNames` answer as its row's text: its names, one to a line.
     fn words_of(arg: int) -> string? {
         match self.relation(Family.ComponentNames).values.entry(arg) {
@@ -583,9 +599,9 @@ impl Workspace {
         }
     }
 
-    /// A `ComponentNames` answer read back.
-    fn saved_words(arg: int) -> Revival<DbRow> {
-        let text? = self.saved_value(Key { family: Family.ComponentNames.ordinal, arg: arg }) else { return Revival.Gone }
+    /// A words answer read back, one to a line.
+    fn saved_words(family: Family, arg: int) -> Revival<DbRow> {
+        let text? = self.saved_value(Key { family: family.ordinal, arg: arg }) else { return Revival.Gone }
         Revival.Revived(DbRow.Words(text.split("\n")))
     }
 

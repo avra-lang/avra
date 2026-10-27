@@ -21,6 +21,7 @@ use core.{
     MethodParts,
     WithParts,
     filled,
+    joined,
     fp,
     fp_list,
     is_managed,
@@ -82,11 +83,21 @@ impl Workspace {
             let _ = self.computed_consumed(d)
             return 0
         }
-        let k = key(Family.Consumed, d.index)
-        if !(self.db.ask(k) is .Compute) { return 0 }
-        self.db.begin(k)
+        let rel = self.relation(Family.Consumed)
+        match rel.start(d.index) {
+            .Reuse(row) -> {
+                if !self.decls.consumed_known(d) { self.decls.record_consumed(d, consumed_of_word(scan_words(row).first() ?? "")) }
+                return 0
+            },
+            .Compute -> nothing(),
+        }
         let bits = if self.decls.consumed_known(d) { self.decls.consumed_bits(d) } else { self.computed_consumed(d) }
-        self.db.settle(k, fp(44, [fp_list([if b { 1 } else { 0 } for b in bits])]))
+        let _ = rel
+            .finish(
+                d.index,
+                DbRow.Words([consumed_word(bits)]),
+                fp(44, [fp_list([if b { 1 } else { 0 } for b in bits])]),
+            )
         0
     }
 
@@ -240,3 +251,9 @@ impl Consumed {
 
 /// The seats both sides keep.
 fn both(a: List<bool>, b: List<bool>) -> List<bool> { [x && b[i] for i, x in a] }
+
+/// A declaration's consumed seats as one word, a `1` or `0` per seat.
+fn consumed_word(bits: List<bool>) -> string { joined([if b { "1" } else { "0" } for b in bits], "") }
+
+/// `consumed_word`, read back.
+fn consumed_of_word(word: string) -> List<bool> { [word.substring(i, i + 1) == "1" for i in 0..word.length] }
