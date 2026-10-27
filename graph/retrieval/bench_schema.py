@@ -94,6 +94,32 @@ def reference_items(models):
     return out
 
 
+class Fused:
+    """A schema index read both ways: BM25 over the declared words and the embedder over the
+    declared meaning, fused by rank. A name the question spells is a lexical match the
+    embedder does not have to guess, and a paraphrase is the embedder's."""
+
+    def __init__(self, items, embedder, store, k=60):
+        import channels
+        import numpy as np
+
+        self.names = [c["name"] for c in items]
+        self.texts = [f"{c['name'].split('/', 1)[1]}: {c['description']}" for c in items]
+        self.lex = channels.Lexical(self.texts)
+        self.store, self.embedder, self.k = store, embedder, k
+        self.vectors = store.encode(embedder, self.texts, "document")
+        self.channels = channels
+
+    def link(self, phrase, n=None):
+        import numpy as np
+
+        qv = self.store.encode(self.embedder, [phrase], "query")[0]
+        dense = [int(i) for i in np.argsort(-(self.vectors @ qv), kind="stable")[: max(n or len(self.names), 20)]]
+        lexical = self.lex.rank(phrase, max(n or len(self.names), 20))
+        fused = self.channels.rrf([dense, lexical], self.k)
+        return [(self.names[i], 0.0) for i in fused[: n or len(self.names)]]
+
+
 def schema_of(models, kind):
     """The declared things a question can name, as one index (`flat`) or one per kind (`typed`)."""
     kinds = {
@@ -155,7 +181,7 @@ def ranks(links):
     return {name: i + 1 for i, (name, _) in enumerate(links)}
 
 
-def measure(worlds, kind, limit, retrieval):
+def measure(worlds, kind, limit, retrieval, index="dense"):
     """recall@k per target kind. A property the question asks for is judged twice: as the
     model's own label field (which the model's index must carry) and as any other declared
     property (which the property's own wording must carry)."""
@@ -169,7 +195,8 @@ def measure(worlds, kind, limit, retrieval):
         base = GRAPH / "gym" / "out" / family / seed
         catalog = json.loads((base / "catalog.json").read_text())["catalog"]
         models = {m["name"]: m for m in catalog["models"]}
-        linkers = {each: link.SchemaLinker(items, retrieval.embedder, retrieval.store) for each, items in schema_of(models, kind).items()}
+        readers = link.SchemaLinker if index == "dense" else Fused
+        linkers = {each: readers(items, retrieval.embedder, retrieval.store) for each, items in schema_of(models, kind).items()}
         for each, linker in linkers.items():
             sizes[each] += len(linker.names)
         for item in json.loads((base / "items.json").read_text()):
@@ -198,15 +225,16 @@ def main():
     parser.add_argument("--worlds", nargs="*", help="family,seed pairs; every built world by default")
     parser.add_argument("--kind", choices=("flat", "typed"), default="typed")
     parser.add_argument("--items", type=int, default=0, help="stop after this many questions (0 is every one)")
+    parser.add_argument("--index", choices=("dense", "fused"), default="dense", help="how a schema index is read")
     args = parser.parse_args()
     sys.path.insert(0, str(HERE))
     import service
 
     retrieval = service.Retrieval()
     retrieval.ready()
-    hits, totals, sizes, questions, worlds_read = measure(worlds(args.worlds), args.kind, args.items, retrieval)
+    hits, totals, sizes, questions, worlds_read = measure(worlds(args.worlds), args.kind, args.items, retrieval, args.index)
     index = ", ".join(f"{each} {sizes[each] / max(1, worlds_read):.0f}" for each in sorted(sizes))
-    print(f"{args.kind}: {questions} questions over {worlds_read} worlds, {sum(totals.values())} targets")
+    print(f"{args.kind}/{args.index}: {questions} questions over {worlds_read} worlds, {sum(totals.values())} targets")
     print(f"index sizes per world: {index}")
     print(f"{'target':10s} {'n':>5s} " + " ".join(f"@{k:<4d}" for k in KS))
     for target in sorted(totals):
