@@ -105,7 +105,7 @@ def anchor_queries(question, world, models):
             continue
         for version in instance["versions"][:1]:
             value = version.get(field)
-            if isinstance(value, str) and len(value) > 2 and value.lower() in said:
+            if isinstance(value, str) and len(value) >= 2 and value.lower() in said:
                 found.append((instance["model"], field, value))
     return [(m, f, v) for m, f, v in found if not any(m != o and v.lower() in w.lower() and v != w for o, _, w in found)]
 
@@ -215,30 +215,59 @@ def first_sentence(description):
     return text[: end.end()].strip() if end else text
 
 
-def stated(answer, anchor):
+def stated(answer, anchor, label=None):
     """The values a query answered with, one per property, with whether the answer cites
     anything: empties and the anchor itself dropped, since the thing a question starts from
     is never its answer, and an uncited value is a hole rather than evidence."""
-    out = {}
+    out, records = {}, {f["path"][0] for f in answer.get("fields") or [] if f.get("path")}
     for f in answer.get("fields") or []:
         path = f.get("path") or []
         value = f.get("value")
-        if len(path) == 2 and value is not None and value != anchor:
-            out[path[1]] = (value, bool(f.get("citations")))
-    return out
+        if len(path) != 2 or value is None:
+            continue
+        if path[1] == label and value == anchor:
+            continue
+        out[path[1]] = (value, bool(f.get("citations")))
+    return out, max(1, len(records))
 
 
-def verdict(item, survivors, golds):
-    """What the survivors add up to for one question. A value survives pruning when the answer
-    that carried it cites something; what is left is the answer set, and one distinct value in
-    it is an answer a question needs no model call to give."""
+def corpus_of(base):
+    """The world's own sources, one passage each, as the retrieval layer reads them."""
+    texts = json.loads((base / "texts.json").read_text())
+    return [{"id": each, "text": body["text"]} for each, body in texts.items() if body.get("text")]
+
+
+def grounded(value, passages):
+    """Whether a value's own words appear in the passages a question retrieves: an answer the
+    text never says is a wrong join, however well it cites the record it was read from."""
+    said = json.dumps(value, sort_keys=True).strip('"') if not isinstance(value, str) else value
+    if isinstance(value, (dict, list)):
+        said = " ".join(str(v) for v in (value.values() if isinstance(value, dict) else value))
+    said = str(said).strip().strip('"')
+    return bool(said) and len(said) > 2 and any(said.lower() in p.lower() for p in passages)
+
+
+def asked_property(item):
+    """The property the gold plan asks for, read from its steps. Used to bound a measurement
+    (what the space reaches once the property is chosen), never to answer a question."""
+    for step in item.get("steps") or []:
+        ask = step.get("ask")
+        if ask and ask.get("property"):
+            return f"{ask.get('model')}.{ask.get('property')}"
+    return None
+
+
+def verdict(item, survivors, golds, passages=()):
+    """What the survivors add up to for one question. A value votes once per path that reaches
+    it, weighted by how narrowly that path was drawn — a scan of a whole model votes for
+    everything and so votes for nothing — and only when the retrieved text says it."""
     votes = collections.Counter()
-    for cypher, _, values in survivors:
+    for cypher, _, values, records in survivors:
         for value, is_cited in values.values():
-            if is_cited:
-                votes[json.dumps(value, sort_keys=True)] += 1
-    reached = {json.dumps(value, sort_keys=True) for _, _, values in survivors for value, _ in values.values()}
-    hits = [name for _, name, values in survivors for value, _ in values.values() if json.dumps(value, sort_keys=True) in golds]
+            if is_cited and (not passages or grounded(value, passages)):
+                votes[json.dumps(value, sort_keys=True)] += 1 / records
+    reached = {json.dumps(value, sort_keys=True) for _, _, values, _ in survivors for value, _ in values.values()}
+    hits = [name for _, name, values, _ in survivors for value, _ in values.values() if json.dumps(value, sort_keys=True) in golds]
     if item["gold"]["status"] == "unknown":
         return "declined" if not votes else "answered-wrongly", hits
     if not survivors:
@@ -264,23 +293,32 @@ def world_of(family, seed):
     }
 
 
-def measure(selection, depth, retrieval=None):
+def measure(selection, depth, retrieval=None, oracle_property=False):
     tally, kinds, queries = collections.Counter(), collections.defaultdict(collections.Counter), 0
     for family, seed in selection:
         one = world_of(family, seed)
         for item in one["items"]:
             asked = candidates(item["question"], one["world"], one["models"], depth)
             kept_models, kept_properties = schema_ranks(one["models"], item["question"], retrieval) if retrieval else (set(one["models"]), set())
+            if oracle_property:
+                wanted = asked_property(item)
+                kept_properties = {wanted} if wanted else set()
             survivors = []
             for cypher, landed, name, extra in asked:
                 if landed not in kept_models:
                     continue
                 queries += 1
-                values = stated(one["app"].query(cypher, {**item["params"], **extra}), extra.get("anchor", ""))
+                values, records = stated(
+                    one["app"].query(cypher, {**item["params"], **extra}),
+                    extra.get("anchor", ""),
+                    label_field(one["models"][landed]),
+                )
                 values = {k: v for k, v in values.items() if f"{landed}.{k}" in kept_properties} if kept_properties else values
                 if values:
-                    survivors.append((cypher, name, values))
-            outcome, _ = verdict(item, survivors, item["gold"].get("values") or [])
+                    survivors.append((cypher, name, values, records))
+            first = corpus_of(one["base"])
+            passages = [p["text"] for p in first] if not retrieval else [p for p in (first and [x["text"] for x in retrieval.retrieve({"passages": first, "question": item["question"], "n": 5})["hits"]])]
+            outcome, _ = verdict(item, survivors, item["gold"].get("values") or [], passages)
             tally[outcome] += 1
             kinds[item["kind"]][outcome] += 1
     return tally, kinds, queries
@@ -291,6 +329,7 @@ def main():
     parser.add_argument("--worlds", nargs="*", default=["dev,2", "dev,1"])
     parser.add_argument("--depth", type=int, default=1)
     parser.add_argument("--prune", action="store_true", help="keep only what the schema link ranks nearest")
+    parser.add_argument("--oracle-property", action="store_true", help="bound the measurement: keep only the property the gold plan asks for")
     args = parser.parse_args()
     retrieval = None
     if args.prune:
@@ -299,7 +338,7 @@ def main():
 
         retrieval = service.Retrieval()
         retrieval.ready()
-    tally, kinds, queries = measure([tuple(w.split(",")) for w in args.worlds], args.depth, retrieval if args.prune else None)
+    tally, kinds, queries = measure([tuple(w.split(",")) for w in args.worlds], args.depth, retrieval if args.prune else None, args.oracle_property)
     total = sum(tally.values())
     covered = tally["one-right"] + tally["several"]
     print(f"{total} questions, {queries} queries, depth {args.depth}")
