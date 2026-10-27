@@ -1,0 +1,85 @@
+use @std.json.{Json, parse}
+use measure.{
+    Emitted,
+    Lost,
+    Measure,
+    Owed,
+    Question,
+    heldout_of,
+    losses,
+    questions_of,
+    stated_as,
+    stages_of,
+}
+
+/// A value as the oracle writes it.
+fn value(text: string) -> Json {
+    match parse(text) { .Ok(j) -> j, .Err(_) -> Json.Null }
+}
+
+/// One record the oracle owes a source.
+fn owed(model: string, fields: string) -> Owed {
+    Owed { source: "s1", model: model, value: value(fields) }
+}
+
+/// One record a source emitted, from the fields it states.
+fn emitted(model: string, fields: List<Json>) -> Emitted {
+    Emitted { source: "s1", model: model, fields: Json.Arr(fields) }
+}
+
+/// A measure over one source: the record a question's answer needs is one the
+/// extraction emitted, and the scalar the oracle states is one of two values.
+fn measured() -> Measure {
+    Measure {
+        results: value("{\"questions\": {\"q1\": {\"status\": \"fail\"}, \"q2\": {\"status\": \"pass\"}}}"),
+        owed: [owed("Pet", "{\"name\": \"Fig\"}")],
+        emitted: [emitted("Pet", [stated_as("name", value("\"Fig\""))])],
+    }
+}
+
+/// The same measure, with nothing emitted at all.
+fn empty() -> Measure { Measure { results: value("{}"), owed: [owed("Pet", "{\"name\": \"Fig\"}")], emitted: [] } }
+
+fn asked(id: string, cited: List<string>) -> Question { Question { id: id, cited: cited } }
+
+spec "measure: the stage a question's answer died at" {
+    given "an extraction that holds everything the answer cites" {
+        then "a question the read failed is the planner's, not the extraction's" {
+            measured().stage_of(asked("q1", ["s1"])) == "planner/read (extraction complete)"
+        }
+        then "a question whose answer the read returned passed" { measured().stage_of(asked("q2", ["s1"])) == "passed" }
+        then "a question that cites no source is its own stage" { measured().stage_of(asked("q1", [])) == "no cited evidence" }
+    }
+    given "a source the extraction never read a record from" {
+        then "the model it owed is missing, and that is the first stage" {
+            empty().stage_of(asked("q1", ["s1"])) == "missing: Pet"
+        }
+    }
+    given "a record the extraction emitted with the oracle's value" {
+        then "nothing is missing for a source it covers" { measured().stage_of(asked("q1", ["s1"])) != "missing: Pet" }
+    }
+}
+
+/// The two questions every loss case asks.
+fn asked_twice() -> List<Question> { [asked("q1", ["s1"]), asked("q2", ["s1"])] }
+
+fn lost_twice() -> List<Lost> { losses(measured(), asked_twice(), []) }
+
+spec "measure: a loss report names each question once, and tallies the stages" {
+    given "two questions over one source" {
+        then "each question is reported at its own stage" {
+            let lost = lost_twice()
+            lost.length == 2 &&
+                lost[0].id == "q1" &&
+                lost[0].stage.starts_with("planner/read") &&
+                lost[1].stage == "passed"
+        }
+        then "the tally counts the stage's own words" {
+            let tally = stages_of(lost_twice())
+            tally.length == 2 &&
+                tally[0].name == "planner/read (extraction complete)" &&
+                tally[0].n == 1
+        }
+        then "a held-out question is not reported at all" { losses(measured(), asked_twice(), ["q1"]).length == 1 }
+    }
+}

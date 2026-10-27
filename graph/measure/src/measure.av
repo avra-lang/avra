@@ -319,3 +319,79 @@ fn seed_of() -> List<string> {
     let seed: List<string> = []
     seed
 }
+
+// ── Where each question dies ──────────────────────────────────
+
+/// One question, and the sources its answer must cite.
+export type Question = { id: string, cited: List<string> }
+
+/// A question, and the stage its answer died at.
+export type Lost = { id: string, stage: string }
+
+/// Every question a fixture file declares, in written order.
+export fn questions_of(text: string) -> List<Question> {
+    [Question {
+        id: text_at(row, "id") ?? "",
+        cited: [text_of(c) ?? "" for c in items(member(member(row, "expect"), "evidence_all"))],
+    } for line in text.split("\n") if line.trim() != "" for row in [parsed(line)]]
+}
+
+/// The questions a split holds out of a development read.
+export fn heldout_of(split: Json) -> List<string> {
+    [text_of(q) ?? "" for q in items(member(split, "heldout"))]
+}
+
+impl Measure {
+    fn candidates_of(source: string, model: string) -> List<Emitted> {
+        self.emitted.filter((c: Emitted) -> c.source == source && c.model == model)
+    }
+
+    /// The status a results file gave one question, or none where it never ran.
+    fn status_of(id: string) -> string? {
+        text_at(member(member(self.results, "questions"), id), "status")
+    }
+
+    /// The models the sources a question cites owe and the extraction never emitted.
+    fn missing_for(cited: List<string>) -> List<string> {
+        [c.name for c in tallied(
+            [w.model for w in self.owed if cited.any((s: string) -> s == w.source) && self.candidates(w).is_empty()],
+        )]
+    }
+
+    /// The models whose oracle scalar the sources a question cites never hold.
+    fn unequal_for(cited: List<string>) -> List<string> {
+        [c.name for c in tallied(
+            [claim.record.model for claim in self.claims() if cited.any((s: string) -> s == claim.record.source) &&
+                !self.candidates(claim.record).any((c: Emitted) -> holds(c, claim))],
+        )]
+    }
+
+    /// The stage a question's answer died at: the first thing missing, in the
+    /// order the extraction has to get right before the planner is asked.
+    fn stage_of(q: Question) -> string {
+        let missing = self.missing_for(q.cited)
+        let unequal = self.unequal_for(q.cited)
+        when {
+            self.status_of(q.id) == "pass" -> "passed"
+            !missing.is_empty() -> "missing: ${missing.join(",")}"
+            !unequal.is_empty() -> "field values: ${unequal.join(",")}"
+            q.cited.is_empty() -> "no cited evidence"
+            _ -> "planner/read (extraction complete)"
+        }
+    }
+}
+
+/// Every development question's stage.
+export fn losses(m: Measure, questions: List<Question>, heldout: List<string>) -> List<Lost> {
+    [Lost { id: q.id, stage: m.stage_of(q) } for q in questions if !heldout.any((h: string) -> h == q.id)]
+}
+
+/// The lines a loss report is made of: a stage per question, then the tally.
+export fn loss_lines(lost: List<Lost>) -> List<string> {
+    lost.map((l: Lost) -> "${l.id}  ${l.stage}").concat(["", tallied_text(stages_of(lost))])
+}
+
+/// How many questions died at each stage, named by the stage's own words.
+export fn stages_of(lost: List<Lost>) -> List<Count> {
+    tallied([l.stage.split(":")[0] for l in lost])
+}

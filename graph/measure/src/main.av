@@ -1,5 +1,6 @@
 use @std.cli.{argv}
-use measure.{Measure, claim_lines, report}
+use @std.io.{read_text}
+use measure.{Measure, claim_lines, heldout_of, loss_lines, losses, questions_of, report}
 
 /// An empty accumulation, under a name that carries its element type.
 fn seed_of() -> List<string> {
@@ -30,10 +31,26 @@ fn claimed(path: string, facts: string) -> List<string> {
     }
 }
 
+/// Where each development question of one results file died.
+fn lost(facts: string, questions_path: string, split_path: string, path: string) -> List<string> {
+    match read_text(questions_path) {
+        .Err(_) -> ["cannot read ${questions_path}"],
+        .Ok(t) -> match file_json(split_path) {
+            .Err(e) -> [e],
+            .Ok(split) -> match Measure.read(path, facts) {
+                .Ok(m) -> loss_lines(losses(m, questions_of(t), heldout_of(split))),
+                .Err(e) -> ["${path}", "  refused: ${e}"],
+            },
+        },
+    }
+}
+
 let args = argv()
 let lines = when {
     args.length < 3 -> usage()
     args[0] == "claims" -> [claimed(path, args[1]) for path in args.slice(2, args.length)]
+        .fold(seed_of(), (all: List<string>, some: List<string>) -> all.concat(some))
+    args[0] == "loss" -> [lost(args[1], args[2], args[3], path) for path in args.slice(4, args.length)]
         .fold(seed_of(), (all: List<string>, some: List<string>) -> all.concat(some))
     _ -> [reported(path, args[1]) for path in args.slice(2, args.length)]
         .fold(seed_of(), (all: List<string>, some: List<string>) -> all.concat(some))
