@@ -278,6 +278,52 @@ class Contrasting(unittest.TestCase):
         self.assertTrue(any("chooses: follow recipient" in o and "leaves out 1: title='y'" in o for o in first))
 
 
+class Margin(unittest.TestCase):
+    def test_only_near_ties_of_the_best_plan_reach_the_model(self):
+        import beam
+        import contrast
+
+        plans = [beam.Plan("a", -1.0, 1, (), 2), beam.Plan("b", -1.5, 1, (), 2), beam.Plan("c", -4.0, 1, (), 1)]
+        self.assertEqual([p.cypher for p in contrast.near(plans, 1.0, False)], ["a", "b"])
+        self.assertEqual([p.cypher for p in contrast.near(plans, 9.0, True)], ["a", "b"])
+        self.assertEqual([p.cypher for p in contrast.near(plans, 9.0, False)], ["a", "b", "c"])
+
+
+class Anchors(unittest.TestCase):
+    MODELS = {"Vessel": {"name": "Vessel", "properties": [{"name": "name", "shape": "string"}], "semantics": {"label": ["name"]}}}
+
+    @staticmethod
+    def probe(ids):
+        def ask(query):
+            hit = [(e, v) for v, e in ids.items() if f"'{v}'" in query]
+            if "id" in query or not hit:
+                return {"status": "unknown", "fields": []}
+            return {"status": "answered", "fields": [{"path": [e, "v"], "value": v} for e, v in hit]}
+        return ask
+
+    def test_spellings_resolving_to_one_record_are_one_option(self):
+        import structured
+
+        facts = [("Vessel", "name", "Marguerite"), ("Vessel", "name", "marguerite")]
+        ids = {"Marguerite": "i1", "marguerite": "i1"}
+        self.assertEqual(structured.distinct(facts, self.probe(ids), self.MODELS), facts[:1])
+
+    def test_distinct_records_stay_two_options(self):
+        import structured
+
+        facts = [("Vessel", "name", "Marguerite"), ("Vessel", "name", "Odile")]
+        ids = {"Marguerite": "i1", "Odile": "i2"}
+        self.assertEqual(structured.distinct(facts, self.probe(ids), self.MODELS), facts)
+
+    def test_labels_are_read_as_the_graph_holds_them_not_as_a_line_shows_them(self):
+        import structured
+
+        def ask(query):
+            return {"status": "answered", "fields": [{"path": ["i1", "v"], "value": "Marguerite"}]}
+
+        self.assertEqual(structured.labels_of(ask, self.MODELS), [("Vessel", "name", "Marguerite")])
+
+
 class Speaker(unittest.TestCase):
     def test_the_gate_is_framed_with_the_speakers_declared_label(self):
         import structured

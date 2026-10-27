@@ -6,6 +6,8 @@ figure is read by executing a query against the graph (the `query` op), never
 from the catalog's words. A record is shown by its declared label property,
 else by its first declared string property (a structural default).
 """
+import json
+
 from catalog import base_shape, reference_target
 
 
@@ -22,12 +24,24 @@ class Sight:
             return answer["fields"][0]["value"]
         return 0 if answer.get("status") == "unknown" else None
 
-    def sample(self, query):
-        """The distinct values the query returns, in the graph's order; none when the graph refuses it."""
+    def values(self, query):
+        """The distinct values the query returns, as the graph holds them, in its order; none when the graph refuses it."""
         answer = self.probe(query)
         if answer.get("status") not in ("answered", "unknown"):
             return None
-        return list(dict.fromkeys(render(f["value"]) for f in answer["fields"]))
+        return list(dict.fromkeys(json.dumps(f["value"], sort_keys=True) for f in answer["fields"]))
+
+    def sample(self, query):
+        """The distinct values the query returns, as a line shows them; none when the graph refuses it."""
+        values = self.values(query)
+        return None if values is None else [render(json.loads(v)) for v in values]
+
+    def entities(self, model, prop, value):
+        """The records of a model holding the value in the property, by the ids the graph answers."""
+        answer = self.probe(f"MATCH (n:{model}) WHERE n.{prop} = '{value.replace(chr(39), '')}' RETURN n.{prop} AS v")
+        if answer.get("status") != "answered":
+            return frozenset()
+        return frozenset(f["path"][0] for f in answer["fields"])
 
     def label_of(self, model):
         """The property that names a record of this model."""

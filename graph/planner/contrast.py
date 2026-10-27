@@ -80,9 +80,17 @@ def described(group, others, n):
     return " — ".join(parts)
 
 
-def settle(chooser, head, plans, probe, most):
-    """The plan the model takes after contrasting the groups' answers, or none when it declines all of them."""
-    groups = grouped(plans, probe)
+def near(plans, margin, final_round):
+    """The plans (best first) scoring within `margin` of the best one, among those of the beam's last round when asked."""
+    pool = [p for p in plans if p.round == max(q.round for q in plans)] if final_round else plans
+    top = max(p.score() for p in pool)
+    return [p for p in pool if p.score() >= top - margin]
+
+
+def settle(chooser, head, plans, probe, most, margin=None, final_round=False):
+    """The plan the model takes after contrasting the groups' answers, or none when it declines all of them.
+    With a margin, only near-ties of the best-scoring plan are contrasted; the others never reach the model."""
+    groups = grouped(near(plans, margin, final_round) if margin is not None and plans else plans, probe)
     if not groups:
         return Verdict(None, 0, -1)
     if len(groups) == 1:

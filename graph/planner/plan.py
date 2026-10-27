@@ -216,7 +216,8 @@ def composed(chooser, question, schema, context, graph=None, depth=None):
     if not found:
         raise Abstain("every walk the beam tried binds nothing in the graph")
     if PARAMETERS["contrast"] and probe:
-        verdict = contrast.settle(chooser, f"Question: {question}", found, probe, PARAMETERS["preview_rows"])
+        verdict = contrast.settle(chooser, f"Question: {question}", found, probe, PARAMETERS["preview_rows"],
+                                  PARAMETERS["contrast_margin"], PARAMETERS["contrast_final_round"])
         if verdict.plan is None:
             raise Abstain("no reading of the question is supported by its answer")
         found = [verdict.plan]

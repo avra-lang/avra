@@ -8,6 +8,7 @@ phrases, enum values), the graph's own search over admitted facts, and the
 model's closed choices. A choice the evidence settles alone (one declared
 phrase spoken, one record the question names) is taken without the model.
 """
+import json
 import math
 import re
 
@@ -275,7 +276,7 @@ def plan(chooser, question, schema, context, search=None, depth=None, read=None,
     if hasattr(chooser, "watch"):
         chooser.watch(out)
     look = Sight(probe, models, PARAMETERS["preview_rows"]) if probe and PARAMETERS["preview"] else None
-    var, label = anchored(chooser, head, question, models, context, evidence, out, read, look)
+    var, label = anchored(chooser, head, question, models, context, evidence, out, read, look, probe)
     came, held = None, None
     phrasing = question.lower()
     for hop in range(depth if depth is not None else len(models)):
@@ -330,7 +331,8 @@ def labels_of(probe, models):
             out = Plan()
             var = out.node(name)
             out.parts.append(f"({var}:{name})")
-            facts += [(name, prop, v) for v in sight.sample(out.seen(f"{var}.{prop} AS v")) or []]
+            facts += [(name, prop, json.loads(v)) for v in sight.values(out.seen(f"{var}.{prop} AS v")) or []
+                      if isinstance(json.loads(v), str)]
     return facts
 
 
@@ -359,9 +361,9 @@ def speaking(chooser, head, models, context, read):
     return best(chooser, f"{head}\nAsked by {who}." if who else head, ask, ["no", "yes"]) == 1
 
 
-def anchored(chooser, head, question, models, context, evidence, out, read=None, look=None):
+def anchored(chooser, head, question, models, context, evidence, out, read=None, look=None, probe=None):
     """The first node: the speaker, a record the question names, or every record of a kind."""
-    named = evidence.named(question)
+    named = distinct(evidence.named(question), probe, models)
     if context.get("speaker") and speaking(chooser, head, models, context, read):
         # The speaker is a graph entity: its model is a fact the graph holds.
         label = (read(context["speaker"]) if read else {}).get("model")
@@ -392,6 +394,21 @@ def anchored(chooser, head, question, models, context, evidence, out, read=None,
         narrowed(chooser, head, models[label], var, out, question, evidence, look)
         evidence.spent.add(label)
     return var, label
+
+
+def distinct(facts, probe, models):
+    """The facts with one per record they name: spellings that resolve to the same records are one option.
+    A fact the graph does not resolve stands for itself."""
+    if not probe:
+        return facts
+    sight, seen, out = Sight(probe, models, 0), set(), []
+    for fact in facts:
+        found = sight.entities(*fact)
+        key = (fact[0], found) if found else fact
+        if key not in seen:
+            seen.add(key)
+            out.append(fact)
+    return out
 
 
 def identified(models):
