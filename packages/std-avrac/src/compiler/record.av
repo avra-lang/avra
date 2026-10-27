@@ -54,7 +54,7 @@ use features.{
     decl_key_text,
 }
 use compiler.lower.{FieldPlan}
-use compiler.store.{Store, Stored, Producer, node_key, producer_of}
+use compiler.store.{Store, Stored, Producer, node_key, producer_of, WIRE_ROW}
 use compiler.host.{Host}
 use @std.meta.{code_hash}
 use @std.path.{relative_path}
@@ -338,7 +338,7 @@ fn whole_row(parts: List<string>) -> List<string> { if parts.length == 13 { part
 /// runs over a whole record, over the one row a caller already has in hand.
 fn read_row(split: List<string>) -> Row? {
     let parts = whole_row(split)
-    if parts.length < 14 || nameless(parts) { return null }
+    if parts.length < WIRE_ROW || nameless(parts) { return null }
     let shape? = shape_of(parts[0]) else { return null }
     let sibling? = wire_number(parts[2]) else { return null }
     let stmt? = wire_number(parts[3]) else { return null }
@@ -521,7 +521,7 @@ fn interface_form(line: string) -> string {
     let p = line.split("\t")
     // a re-export's contract is the name it exports and what it names — never its path
     if p[0] == "reexport" { return p.slice(2, p.length).join("\t") }
-    if p.length < 14 { return "" }
+    if p.length < WIRE_ROW { return "" }
     let top = unpacked(p[12])
     let facts = if top.is_empty() { [] } else { top[0].split(";") }
     let seen = if facts.length >= 8 { facts.slice(0, 3).concat(facts.slice(5, 10)) } else { facts }

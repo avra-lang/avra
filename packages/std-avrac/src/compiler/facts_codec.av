@@ -15,10 +15,11 @@ use core.{DeclId, TypeId, FileId, ExprId, StmtId, SideTable, SeatMark, side_tabl
 use features.{TypeFacts, Asked, Sub, ParamScope, RunChoice, PipeStage, Decl}
 use diagnostics.{no_voices}
 use compiler.{Workspace}
-use compiler.store.{Stored, node_key}
+use compiler.store.{Store, Stored, node_key, Reading, read_spelled, WIRE_FACTS}
 use compiler.families.{Family}
 use core.digest.{hex, unhex}
 use @std.text.{parse_int}
+use @std.relation.engine.{Key}
 use @std.relation.stable.{
     Scope,
     CodecFault,
@@ -36,7 +37,7 @@ use @std.relation.stable.{
 
 /// The layout a row stands under: a wire that moves under a longer table misses once instead of
 /// being read as this one.
-const facts_wire: int = 1
+const facts_wire: int = WIRE_FACTS
 
 /// The id types a typing table holds.
 enum IdKind {
@@ -447,14 +448,17 @@ impl Workspace {
     }
 
     /// The facts a declaration's row holds, read back over its parse. Null when the file is
-    /// not parsed here, when the declaration is still expanding, or when the row names nothing
-    /// this scope can resolve — a stale fact is a miss, never a lie.
+    /// not parsed here, when the declaration is still expanding, when any answer the body read
+    /// has moved, or when the row names nothing this scope can resolve — a stale fact is a
+    /// miss, never a lie.
     fn facts_restored(d: DeclId) -> TypeFacts? {
         let store? = self.store.get() else { return null }
         let x = self.decls.raw_decl(d)
         if self.db.active(key(Family.Expanded, x.file.index)) { return null }
         if self.relation(Family.Parsed).values.entry(x.file.index) is .Missing { return null }
-        let text? = store.get(Stored.Unit, self.facts_row_key(d)) else { return null }
+        let row = self.facts_row_key(d)
+        let text? = store.get(Stored.Unit, row) else { return null }
+        if !self.facts_stands(row, store) { return null }
         let octets? = unhex(text) else { return null }
         match facts_decoded_in(octets, self.facts_scope(x.lo, x.stmt_lo)) {
             .Ok(facts) -> facts,
@@ -462,11 +466,35 @@ impl Workspace {
         }
     }
 
-    /// File a body's facts under the row it will be read from; a table that spoke files none.
+    /// File a body's facts under the row it will be read from, with the answers it read: the
+    /// row stands only while every one of them stands. A table that spoke files none, and so
+    /// does one whose read names nothing durable — such a row could never be checked again.
     fn facts_kept(d: DeclId, facts: TypeFacts) {
         let store? = self.store.get() else { return }
         let x = self.decls.raw_decl(d)
         let octets? = facts_encoded_in(facts, self.facts_scope(x.lo, x.stmt_lo)) else { return }
-        let _ = store.keep(Stored.Unit, self.facts_row_key(d), hex(octets), [])
+        mut readings: List<Reading> = []
+        for dep in self.db.kernel.deps_of(key(Family.Typed, d.index)) {
+            let named? = self.saved_name(dep) else { return }
+            let digest? = self.db.kernel.value_hash_of(dep) else { return }
+            readings.push(Reading { name: named, digest: "${digest}" })
+        }
+        let _ = store.keep_reading(Stored.Unit, self.facts_row_key(d), hex(octets), readings)
+    }
+
+    /// Whether every answer a facts row stood on still stands: one level, because a read's own
+    /// hash already folds what it read.
+    fn facts_stands(row: string, store: Store) -> bool {
+        let lines? = store.reads_of(Stored.Unit, row) else { return false }
+        let spelled? = readings_of(lines) else { return false }
+        for r in spelled {
+            let dep? = self.saved_read_key(row, r.name) else { return false }
+            let now = self.db.kernel.value_hash_of(dep)
+            if now == null || "${now!}" != r.digest { return false }
+        }
+        true
     }
 }
+
+/// A row's readings as they were written, or none when one of them is no reading.
+fn readings_of(lines: List<string>) -> List<Reading>? { [read_spelled(line)? for line in lines] }

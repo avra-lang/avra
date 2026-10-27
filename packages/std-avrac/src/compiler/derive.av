@@ -352,21 +352,33 @@ impl Workspace {
     /// WHAT WAS LEARNED, KEPT: the records first — every key folds them — then what stands in
     /// for each file, whole: what it said, and what its bodies ask.
     fn kept(want: Want, store: Store, p: Program, lo: Lowered) -> Result<List<Said>, string> {
+        let t0 = self.clock()
         let moved = [module_path(name.split(".")) for name in distinct([self.module_of(a.view.source.file) for a in p.files])]
         keep_interfaces(self, store, moved)
+        self.timed("keep-iface", t0)
+        let t1 = self.clock()
         let _ = self.keep_const_units(store, moved)
+        self.timed("keep-consts", t1)
         let defects = self.defects.get()
         if defects.length > p.defects.length { fail p.rendered(defects.drop(p.defects.length)) }
         let bodies = filed(lo.unmanaged, (b) -> b.file)
         let statics = filed(lo.statics, (s) -> s.file)
         let asks = filed(lo.hash_asks, (h) -> h.by)
+        let t2 = self.clock()
         for a in p.files {
             self.keep_asks(store, lo, a)
             self.keep_codes(store, a, bodies, statics, asks)
         }
+        self.timed("keep-asks-codes", t2)
+        let t3 = self.clock()
         self.keep_instances(store, lo)
+        self.timed("keep-insts", t3)
+        let t4 = self.clock()
         let said? = self.all_said(store, p, want) else { fail "what a file said could not be read" }
+        self.timed("keep-said", t4)
+        let t5 = self.clock()
         self.flush_saved()
+        self.timed("keep-flush", t5)
         said
     }
 

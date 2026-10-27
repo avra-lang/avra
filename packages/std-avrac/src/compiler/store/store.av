@@ -250,6 +250,29 @@ fn kind_line(op: string, hit: bool, family: Stored, key: string) -> string {
     "Q\tstore\tkind\t${op}\t${if hit { "hit" } else { "miss" }}\t${family.name()}\t${key_words().get().get(key) ?? "?"}\n"
 }
 
+/// THE WIRES THE STORE'S ROWS ARE WRITTEN IN — ONE TABLE, ONE SOURCE OF TRUTH. A row's stamp
+/// folds it, so a wire that moves drops every row it can reach and NOBODY has to remember a
+/// number: every codec reads its version FROM here, and `store_wire` is their fold.
+export const WIRE_FACTS: int = 1
+export const WIRE_PRODUCERS: int = 3
+export const WIRE_ROW: int = 14
+
+/// The word a row's stamp wears: the wires' own fold, never a number a hand bumps.
+export fn store_wire() -> string {
+    digest_of(
+        joined(
+            [
+                "pack ${FORMAT_VERSION}",
+                "body ${BODY_VERSION}",
+                "facts ${WIRE_FACTS}",
+                "producers ${WIRE_PRODUCERS}",
+                "row ${WIRE_ROW}",
+            ],
+            "\n",
+        ),
+    )
+}
+
 impl Store {
     /// A family's name as the pack files it: with the stamp its rows stand under.
     fn packed(family: Stored) -> string { "${family.name()}@${self.stamp_of(family)}" }
@@ -265,7 +288,14 @@ impl Store {
 
     fn shared_or_own(p: Producer) -> string { match p { .Hashed(stamp) -> "shared ${stamp}", .Absent -> self.own_stamp() } }
 
-    fn own_stamp() -> string { "own ${self.print}" }
+    /// A ROW STANDS UNDER THE SHAPE ITS WIRE WAS WRITTEN IN, NEVER UNDER THE COMPILER THAT
+    /// WROTE IT. A rebuilt compiler reads what it wrote before it moved; only a wire that
+    /// MOVED drops its rows, and then it drops all of them at once. Every wire a row can
+    /// carry keeps its own header and refuses a shape it does not know (`facts_wire`,
+    /// `producers_head`, a row's field count), so a moved wire is a miss and never a misread;
+    /// `STORE_WIRE` is the one word for a move no row header can see, and bumping it is the
+    /// price of such a move.
+    fn own_stamp() -> string { "wire ${store_wire()}" }
 
     /// THE SHARD a key lands in — one projection, because the writer that makes the
     /// directory and the writer that names the file must agree about it. A content key is
