@@ -106,9 +106,10 @@ fn scratch() -> string {
 }
 
 /// How many streams are still open once their clients are gone: each ends when the server next writes to
-/// it, so writes from outside the router are made until none is left.
+/// it, so writes from outside the router are made until none is left. The window is a load budget, not a
+/// verdict: a suite runs shards beside each other, and a reap waits for the router's own interval.
 fn released(db: Db) -> int {
-    let until = now_ms() + 3000
+    let until = now_ms() + 20000
     while subscribed() > 0 && now_ms() < until {
         let _ = Job { owner: 3, title: "wake" }.insert(db)
         sleep(ms(60))
@@ -117,10 +118,11 @@ fn released(db: Db) -> int {
 }
 
 /// A server of one process over `db`, three streams opened on it and then closed: the count of streams it
-/// serves with the three open, and once their clients are gone. The count is the PROCESS's, so the streams
-/// earlier sections left behind end first — a stream ends when its server next writes to it.
+/// serves with the three open, and once their clients are gone. The count is the PROCESS's, so what stood
+/// before this section is subtracted from the first number — the three are this section's own — while the
+/// last stays absolute: every stream in the process must be gone.
 fn counted(db: Db) -> Result<string, NetError> {
-    let _ = released(db)
+    let was = released(db)
     server solo {
         port: 0
         group "/jobs" { Job.routes(db, every: ms(50)) }
@@ -134,7 +136,7 @@ fn counted(db: Db) -> Result<string, NetError> {
     let p = s.listener.port
     let watchers = [opened(p, "")? for _n in 0..3]
     for w in watchers { let _ = heard(w, 1) }
-    let open_now = subscribed()
+    let open_now = subscribed() - was
     for w in watchers { let _ = w.close() }
     .Ok("${open_now} -> ${released(db)}")
 }
