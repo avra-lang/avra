@@ -153,6 +153,10 @@ impl TypeCx {
         let d? = self.impl_target(block, parts, false) else { return self.seated_wreckage(f) }
         self.view.decls.record_target(self.decl_of(block), d)
         self.declare_under(d, f)
+        let of? = parts.of else { return }
+        let tr? = self.impl_trait(block, of) else { return }
+        let member? = self.view.decls.trait_member(tr, self.fn_named(f)) else { return }
+        self.view.decls.record_answered(self.decl_of(f), member)
     }
 
     /// A method declared under the type it belongs to: that type's
@@ -474,17 +478,27 @@ impl TypeCx {
         if !(self.view.store.fn_parts(x.stmt)?.tparams ?? []).is_empty() { return }
         // the receiver's kind was checked above, so the absence here is
         // the INHERENT impl's, not a missing parts record
-        let of: string? = self.view.store.impl_parts(parent.stmt)?.of
         let writes = self.view.decls.writes_receiver(x.id)
-        if of == null {
+        let of? = self.view.store.impl_parts(parent.stmt)?.of else {
             if self.view.store.is_mutating(x.stmt) && self.view.decls.written_found(x.id) == false { self.never_writes(x) }
             // A STATIC SPENDS NO SEAT ON A RECEIVER: its first written seat is seat 0
             self.seat_contract(x, if self.view.store.is_static(x.stmt) { 0 } else { 1 })
             return
         }
-        let tdecl? = self.impl_trait(parent.stmt, of!) else { return }
+        let tdecl? = self.impl_trait(parent.stmt, of) else { return }
         let member? = self.view.decls.trait_member(tdecl, x.name) else { return }
-        if writes && !self.view.decls.declares_writing(member) { self.writes_under_plain_sig(x, of!) }
+        if writes && !self.view.decls.declares_writing(member) { self.writes_under_plain_sig(x, of) }
+        self.default_contract(x, member, of)
+    }
+
+    /// THE DEFAULTS' CONTRACT: a seat the trait member defaults takes
+    /// that default in every impl, so an impl's method writes none of
+    /// its own there — one seat, one default, whoever calls.
+    fn default_contract(x: Decl, member: DeclId, of: string) {
+        let theirs = self.view.decls.own_seat_defaults(member)
+        for j, d in self.view.decls.own_seat_defaults(x.id) {
+            if d != null && j < theirs.length && theirs[j] != null { self.default_twice(d!, of, x.name) }
+        }
     }
 
     // ── The declare voices — each refusal worded once, at its name ──
@@ -658,6 +672,20 @@ impl TypeCx {
                     "`mut fn` — `${x.name}` never writes through `self`",
                     "declared `mut`",
                     "drop `mut`: the compiler infers a writing method",
+                ),
+            )
+    }
+
+    fn default_twice(d: DeclId, of: string, name: string) {
+        let root: ExprId? = self.view.decls.decl(d).root
+        self
+            .emit(
+                refusal(
+                    "type.trait_member",
+                    if root == null { self.stmt_loc(self.view.decls.decl(d).stmt) } else { self.loc_of(root!) },
+                    "`${self.view.decls.decl(d).name}`'s default is `${of}.${name}`'s — an impl's method takes its trait's",
+                    "a second default",
+                    "drop this default: `${of}.${name}` writes the seat's for every impl",
                 ),
             )
     }

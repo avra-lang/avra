@@ -1,0 +1,32 @@
+// proves: a statement stepped to a row and not finished refuses the fork; once reset the same server serves.
+use @std.http.http.{text}
+use @std.http.route.{get}
+use @std.http.server.{server}
+use @std.net.{NetError}
+use @std.sqlite.{sql}
+use tests.support.{count, cycle, dir, opened, refused}
+
+fn shown() -> Result<string, NetError> {
+    let db = opened("${dir()}/rows.db")?
+    let _ = db.run(sql("INSERT INTO rows (who) VALUES (1)"))
+    let _ = db.run(sql("INSERT INTO rows (who) VALUES (2)"))
+    let st = match db.prepare("SELECT n FROM rows") {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(refused(e.message)) },
+    }
+    let _ = st.step()
+    server app {
+        port: 0
+        get "/" { _req -> text(200, count(db)) }
+    }
+    let up = match app.listening() {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    let first = match up.run(3) { .Ok(_) -> "served", .Err(e) -> "refused ${e.errno}" }
+    let _ = st.reset()
+    let one = cycle(up)?
+    .Ok("${first} | ${one}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

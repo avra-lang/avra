@@ -3,7 +3,7 @@
 //! decoder written once reads them all. A map keeps its entries in
 //! written order — a list of `Entry`, never a `Map` — so an issue list
 //! reads in the order the input was written.
-use @std.json.typed.{Path, Step, has_quote, shown_text}
+use @std.json.typed.{Path, Step, quoted}
 
 export type Entry = { key: string, value: Value }
 
@@ -26,7 +26,7 @@ impl Value {
             .Bool(b) -> "${b}",
             .Int(n) -> "${n}",
             .Float(x) -> "${x}",
-            .Text(s) -> shown_text(s),
+            .Text(s) -> quoted(s),
             .List(items) -> "[${[i.shown() for i in items].join(", ")}]",
             .Map(entries) -> "{${[shown_entry(e) for e in entries].join(", ")}}",
         }
@@ -74,12 +74,10 @@ impl Value {
 }
 
 fn shown_entry(e: Entry) -> string {
-    "${shown_text(e.key)}: ${e.value.shown()}"
+    "${quoted(e.key)}: ${e.value.shown()}"
 }
 
-/// Each text quoted, joined by a comma — one join when none needs an
-/// escape.
+/// Each text quoted, joined by a comma.
 export fn quoted_each(xs: List<string>) -> string {
-    if has_quote(xs.join("")) { return [shown_text(x) for x in xs].join(", ") }
-    "\"${xs.join("\", \"")}\""
+    [quoted(x) for x in xs].join(", ")
 }

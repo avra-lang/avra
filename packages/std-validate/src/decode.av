@@ -339,6 +339,25 @@ export fn ruled<T, E: Refusal>(mut d: Decoding, s: Slot, rule: string, verdict: 
     }
 }
 
+/// A text slot read through `read`: the value its text names, or null with
+/// an issue at the slot saying what the text should have been.
+export fn formed<T>(mut d: Decoding, s: Slot, wanted: string, read: fn(string) -> T?) -> T? {
+    let text? = d.text(s) else { return null }
+    let value? = read(text) else {
+        d
+            .say(
+                Issue {
+                    path: s.at,
+                    rule: "text",
+                    message: "must be ${wanted}",
+                    received: if s.hidden { null } else { Value.Text(text) },
+                },
+            )
+        return null
+    }
+    value
+}
+
 /// Each scalar reader as a decoder, for a list of them.
 export fn read_text(mut d: Decoding, s: Slot) -> string? { d.text(s) }
 export fn read_int(mut d: Decoding, s: Slot) -> int? { d.int(s) }

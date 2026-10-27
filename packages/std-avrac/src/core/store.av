@@ -67,13 +67,11 @@ fn no_stmt_marks() -> StmtMarks {
 /// back what was written.
 export type ImplTypeParams = { of: List<Plain>, target: List<Plain> }
 
-/// A payload `is`: the variant pattern it names (`.V(p, q)`), and — on
-/// the Match an `if` desugared it into — whether the source wrote an
-/// `else`, so the printer can spell an elseless guard back.
-export type PayloadIs = { pat: PatId, has_else: bool }
+/// A payload `is`: the variant pattern it names (`.V(p, q)`).
+export type PayloadIs = { pat: PatId }
 
-/// The payload ask of a binding `is` pattern, as the source wrote it: with an `else`.
-fn binding_payload(asked: PatId) -> PayloadIs { PayloadIs { pat: asked, has_else: true } }
+/// The payload ask of a binding `is` pattern.
+fn binding_payload(asked: PatId) -> PayloadIs { PayloadIs { pat: asked } }
 
 /// A seat's source in a call that spreads a record: argument `arg`, whole
 /// (`field` is -1) or its field `field`.
@@ -102,7 +100,6 @@ export type SyntaxArena = {
     // a trait impl's trait arguments (`impl Realize<Text> for Html`), by its statement
     @copied_by_hand("minted_stmt: its TypeRefs are rebuilt through tref") impl_trait_args: Cell<List<List<TypeRef>>>,
     // a trait's own type parameters beside `Self`, by its statement
-    @copied(stmt, wear_trait_tparams) trait_tparams: Cell<List<List<string>>>,
     // declarations an instance MINTED while its file parsed — a
     // route's pattern record — joining the file's top level
     @not_copied("the file's own top level, never a node's") hoisted: Cell<List<StmtId>>,
@@ -170,7 +167,6 @@ export type SyntaxArena = {
     // the variant pattern an `if` that binds desugared into a Match
     // (`.V(p, q)`) — the binder list a match arm would take, kept
     // beside the node so the printer can spell the `if` back
-    @copied_by_hand("minted_expr: its pattern is rebuilt through pat") is_payloads: Cell<List<PayloadIs?>>,
     // a component instance's WRAPPING STATEMENT — where its `///`
     // and `@name(args)` annotations live, attached from OUTSIDE once
     // the instance's own expression already stands; absent for an
@@ -224,7 +220,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         component_insts: list_cell(),
         impl_tparams: list_cell(),
         impl_trait_args: list_cell(),
-        trait_tparams: list_cell(),
         hoisted: list_cell(),
         annotations: list_cell(),
         docs: list_cell(),
@@ -246,7 +241,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         meaning: list_cell(),
         means_notes: list_cell(),
         extensions: list_cell(),
-        is_payloads: list_cell(),
         instance_owners: list_cell(),
         grammar_lits: list_cell(),
         instances: list_cell(),
@@ -319,7 +313,6 @@ impl SyntaxArena {
         self.meaning.push(null)
         self.means_notes.push(null)
         self.extensions.push([])
-        self.is_payloads.push(null)
         self.instance_owners.push(null)
         self.grammar_lits.push(null)
         self.instances.push(null)
@@ -551,6 +544,11 @@ impl SyntaxArena {
         [ExprId { index: i } for i, n in self.means_notes.get() if n != null && !n!.is_empty()]
     }
 
+    /// Every node allocated since `before`, the root last.
+    fn allocated_since(before: int, root: ExprId) -> List<ExprId> {
+        [ExprId { index: i } for i in before..self.exprs.count() if i != root.index].concat([root])
+    }
+
     /// What `sugar` means, minted beside it: its nodes answer for it, the
     /// last is the root a walk descends into in its place, and `note` is the
     /// sentence that says what the sugar means. The one door a builder and
@@ -670,22 +668,11 @@ impl SyntaxArena {
         self.sugar_matches.get()[e.index]
     }
 
-    /// The pattern of the Match an `if` desugared a payload `is` into.
-    fn mark_is_payload(e: ExprId, p: PatId, has_else: bool) {
-        self.is_payloads.set_at(e.index, PayloadIs { pat: p, has_else: has_else })
-    }
-
-    fn payload_marked(e: ExprId) -> PayloadIs? {
-        self.is_payloads.get()[e.index]
-    }
-
     /// `x is .V(p, q)` — the pattern that binds, or null for a bare
-    /// `is` and for every other node; a desugared `if`'s Match answers
-    /// its marked one. One question answered here so the `if` that
-    /// BINDS, the enum law that REFUSES and the printer that spells the
-    /// `if` back read the same fact.
+    /// `is` and for every other node. One question answered here so the
+    /// `if` that BINDS and the enum law that REFUSES read the same fact.
     fn is_payload(e: ExprId) -> PayloadIs? {
-        match self.expr(e) { .Is(_, asked) -> self.binding_ask(asked), _ -> self.payload_marked(e) }
+        match self.expr(e) { .Is(_, asked) -> self.binding_ask(asked), _ -> null }
     }
 
     fn binding_ask(asked: PatId) -> PayloadIs? {
@@ -772,6 +759,13 @@ impl SyntaxArena {
             .set_at(e.index, fp(189, [self.expr_fingerprints.get()[e.index], fp_str(event)]))
     }
 
+    /// A setting's value marked as the handler its name's event hears.
+    fn mark_setting_handler(s: StmtId) {
+        let parts? = self.setting_parts(s) else { return }
+        self.mark_on_handler(parts.value, parts.name)
+        self.restamp(s, 199)
+    }
+
     /// The event a handler the SUGAR wrote names — what the printer
     /// spells back as `on <event>`.
     fn on_handler_kind(e: ExprId) -> string? {
@@ -837,8 +831,6 @@ impl SyntaxArena {
         let own? = held else { return }
         self.mark_impl_tparams(s, own.of, own.target)
     }
-
-    fn wear_trait_tparams(s: StmtId, names: List<string>) { if !names.is_empty() { self.mark_trait_tparams(s, names) } }
 
     /// Gives `e` the handler `worn` records, if any, each mark through its own
     /// verb so the fingerprint follows — the door a copy uses.
@@ -1076,7 +1068,7 @@ impl SyntaxArena {
     fn answer_of(s: StmtId) -> ExprId? {
         match self.stmt(s) {
             .ExprStmt(v) -> self.answered_by(s, v),
-            .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+            .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
         }
     }
 
@@ -1085,7 +1077,7 @@ impl SyntaxArena {
     /// answers (`chain_value`).
     fn answered_by(s: StmtId, v: ExprId) -> ExprId? {
         match self.expr(v) {
-            .If(c, t, e) -> if self.statement_if(v) { self.chain_value(self.stmt_span(s), c, t, e) } else { v },
+            .If(c, t, e) -> if self.statement_if(v) && self.is_payload(c) == null { self.chain_value(self.stmt_span(s), c, t, e) } else { v },
             _ -> v,
         }
     }
@@ -1157,7 +1149,10 @@ impl SyntaxArena {
 
     /// Whether `v` is a statement `if` with an else.
     fn else_written(v: ExprId) -> bool {
-        match self.expr(v) { .If(_, _, e) -> self.statement_if(v) && e != null, _ -> false }
+        match self.expr(v) {
+            .If(c, _, e) -> self.statement_if(v) && e != null && self.is_payload(c) == null,
+            _ -> false,
+        }
     }
 
     /// The statements with a trailing if-chain that answers turned
@@ -1314,7 +1309,6 @@ impl SyntaxArena {
         self.component_insts.push(null)
         self.impl_tparams.push(null)
         self.impl_trait_args.push([])
-        self.trait_tparams.push([])
         self.annotations.push([])
         self.docs.push(null)
         self.doc_ats.push(-1)
@@ -1586,14 +1580,6 @@ impl SyntaxArena {
     }
 
     fn trait_args_of(s: StmtId) -> List<TypeRef> { self.impl_trait_args.get()[s.index] }
-
-    /// A trait's own type parameters, beside `Self`.
-    fn mark_trait_tparams(s: StmtId, names: List<string>) {
-        self.trait_tparams.set_at(s.index, names)
-        self.restamp_carrying(s, 154, [fp_str(n) for n in names])
-    }
-
-    fn trait_tparams_of(s: StmtId) -> List<string> { self.trait_tparams.get()[s.index] }
 
     /// A declaration an instance minted, joining its file's top level.
     fn hoist(s: StmtId) {

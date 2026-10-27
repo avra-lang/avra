@@ -15,13 +15,15 @@
 //! A body is JSON and is decoded by the model's own rules: a row that breaks
 //! one is refused with all of them (422), never one at a time.
 use @std.errors.{Error}
-use @std.http_message.message.{Header, Method}
-use @std.http.http.{Request, Unrouted, Response, text, status}
+use @std.http_message.message.{Header, Method, Version}
+use @std.http.http.{Request, Unrouted, Response, text, status, header_pair}
+use @std.http.validators.{tag_listed}
 use @std.http.route.{Route, Mounted, fixed, routed, mounted}
 use @std.json.{Json, Field, field, to_text}
+use @std.db.apply.{commits}
 use @std.db.error.{ModelError}
 use @std.db.scope.{Op, Where}
-use @std.sqlite.{SqlValue}
+use @std.sqlite.{Db, SqlValue}
 use @std.sqlite.error.{SqlError}
 use @std.validate.{Issue, Issues}
 
@@ -69,6 +71,12 @@ export type Wire = {
     remove: fn(Where?, int) -> Result<int, Failure>,
     trash: fn(Where?) -> Result<Json, Failure>,
     restore: fn(Where?, int) -> Result<Json, Failure>,
+    version: fn() -> Version?,
+}
+
+/// Where `db` stands, or none when its commit counter cannot be read.
+export fn versioned(db: Db) -> Version? {
+    match commits(db) { .Ok(n) -> Version { sequence: n }, .Err(_) -> null }
 }
 
 type Opened = { door: Door, route: Route }
@@ -95,7 +103,11 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
             route: fixed(
                 Method.Get,
                 "/",
-                (q: Request<Unrouted>) -> scoped(access, q, (sc) -> answered(w.list(sc))),
+                (q: Request<Unrouted>) -> scoped(
+                    access,
+                    q,
+                    (sc) -> validated(w, q, () -> answered(w.list(sc))),
+                ),
             ),
         },
         Opened {
@@ -116,7 +128,11 @@ fn opened(w: Wire, access: Access?) -> List<Opened> {
                 Method.Get,
                 "/{id: int}",
                 (t: Bytes) -> Whole.parse(t),
-                (q: Request<Whole>) -> scoped(access, q, (sc) -> answered(w.find(sc, q.params.id))),
+                (q: Request<Whole>) -> scoped(
+                    access,
+                    q,
+                    (sc) -> validated(w, q, () -> answered(w.find(sc, q.params.id))),
+                ),
             ),
         },
         Opened {
@@ -179,6 +195,20 @@ fn soft_doors(w: Wire, access: Access?) -> List<Opened> {
 
 fn answered(r: Result<Json, Failure>) -> Response {
     match r { .Ok(j) -> Response.json(j), .Err(f) -> refused(f) }
+}
+
+/// A read answered under the database's version, taken BEFORE the read so a
+/// write in between can only make the tag older than the data, never newer:
+/// a caller that already holds the version is answered 304 and no body, any
+/// other gets the answer tagged with it. A version that cannot be read is no
+/// tag, and the read is answered plainly.
+fn validated<P>(w: Wire, q: Request<P>, answer: fn() -> Response) -> Response {
+    let at? = w.version() else { return answer() }
+    let tag = at.tag()
+    if tag_listed(q.header("if-none-match"), tag) { return Response { status: 304, headers: [header_pair("etag", tag)] } }
+    let r = answer()
+    if r.status != 200 { return r }
+    r with { headers: r.headers.concat([header_pair("etag", tag)]) }
 }
 
 fn removed_answer(r: Result<int, Failure>) -> Response {

@@ -705,6 +705,19 @@ registry is the idiom engine's spec, written by dogfooding.
   failing), counts the lists it read, and claims the shared fold's
   tag in every file that CALLS it, since a borrowed tag mixes into
   that file's space.
+- AN IDENTITY ASSIGNED LATE MUST RE-KEY WHAT WAS FILED UNDER ITS ABSENCE. The evaluator files the program's own run as
+  a task the first time a task row asks (`rooted`), and a `contained` guard records the task that opened it — so a
+  guard opened BEFORE any task row ran was filed under "no task" (-1), and the first `spawn`, wait or write inside
+  its closure moved the run to task 0. The closure then returned to a guard that no longer matched, the guarded
+  call's register took the closure's own answer (a `bool`) instead of the status 0, and the next compare read a
+  bool where it wanted an int: "a non-int reached a runtime seat in a clean program", in the EVALUATOR only (native
+  keeps no such table), and only when the closure's first task row was the program's first. It hid for as long as
+  every guard's closure ran after the root was filed, and surfaced the first time a headless `turn` parsed JSON.
+  THE TELL: a defect worded about a type, raised in a body nowhere near the type — the register was written by a
+  path that mismatched silently (`guard_returned` answers null on a mismatch and the caller takes `gave`). THE FIX is
+  in `rooted`, which re-keys the guards it finds; the witness is features/fns/tests/contained_rooted. Instrumenting
+  the defect with the row, the body, the stack depth and the guard table found it in four builds: when a defect names
+  a seat, print what wore it and who last wrote its register.
 - A GUARD IS A PROPERTY OF EVERY CROSSING, NOT OF A PACKAGE. The law
   above says a NUL is spent at the C boundary; this one is where the
   refusal goes. THE CROSSING IS THE EXTERN SEAT, and only that: every
@@ -1630,7 +1643,7 @@ Syntax the grammar lacks:
 - A range takes methods (`any`, `find`, `map`, `all`) but has no `.length`.
 - A `once fn` takes no type parameters ("expected `(`"), no arguments, and answers a managed value ("`once fn seed` answers `int`, which the runtime cannot keep").
 - A trailing block in a head (`if f(a) { x -> x } { … }`) is "expected BREAK"; parenthesise the call. `a?.m { … }` and `(f(a)) { … }` take no trailing block either — not pinned.
-- A seat default lands on `fn`, `mut fn` and `static fn` only: `extern fn`, a trait's `fn`, and a lambda refuse it ("expected `)`", "expected `}`", "expected `)` to close the group"); a named argument skips a defaulted seat; a default reads no sibling param; a fn value of a defaulted fn wears every seat.
+- A seat default lands on `fn`, `mut fn`, `static fn` and a trait's `fn` (whose default every impl takes) only: `extern fn` and a lambda refuse it ("expected `)`", "expected `)` to close the group"); a named argument skips a defaulted seat; a default reads no sibling param; a fn value of a defaulted fn wears every seat.
 - A generic fn as a value: pinned `ident<int>` is "expected BREAK"; bare is "a generic fn is not a value — no single signature to wear".
 - Instantiation is a statement: as a fn's tail it answers `void` — bind, then return the name; a component block is `key: value` ("declares no `List` field, so its block holds settings only") — not pinned.
 - A shell `${VAR}` in a string is Avra's interpolation ("`HOME` is not defined", or silently the binding's value); write `$VAR`.
@@ -1663,9 +1676,8 @@ Wants the typer does not carry yet:
 - A lambda in a field or argument seat does not read the seat's answer ("`.Ok` needs a known enum"); a typed `let` does, and a named fn works everywhere.
 - A `dyn` want reaches `match` arms, not `if` branches ("an `if`'s branches disagree: `P` vs `Q`"); select among typed lets.
 - `Traced<E>`'s `cause`/`context`/`trace` stay inherent methods permanently (a trait member's answer is fixed by its signature); the real want is a bound on a type's own parameter.
-- A bound lands on a free fn's parameters only: `type T<K: Tr, V>` and `impl T<K: Tr, V>` are "expected `=`"/"expected `{`", a generic method is "generic methods are recorded, not landed"; a generic container keyed by a typed id keys by the slot (core's `SideTable`).
+- A bound lands on a free fn's and a component's parameters only: `type T<K: Tr, V>` and `impl T<K: Tr, V>` are "expected `=`"/"expected `{`", a generic method is "generic methods are recorded, not landed"; a generic container keyed by a typed id keys by the slot (core's `SideTable`).
 - Variant arms or `is` over a nullable enum are "`match` chooses over an enum, found `K?`" / "`is` asks an enum for its variant, found `K?`"; unwrap first.
-- A generic impl's local annotation naming `T` is "`T` names no type"; leave it un-annotated.
 - A bound method as a value (`xs.any(self.rides)`) is read as a property ("no field `rides` on `S`"); write `(k) -> self.rides(k)`.
 - `it` through a self-method wrapper (`xs.any(self.rides(it))`) is "`it` has no element here"; `it` binds to the nearest call, and a pipe stage is such a call.
 - `[1, 2].join(",")` is "`join` reads a list of text, this one holds `int`"; map to text first.
@@ -1697,7 +1709,8 @@ doctrine it expands.
       sh tools/work land         # push, PR, arm auto-merge — no Sprite involved
       sh tools/work status       # PRs and their merge state; each lane and its Sprite
       sh tools/work sprites      # every Sprite at a glance; `--fix [name]` repairs
-      sh tools/work done         # remove this lane, free its Sprite
+      sh tools/work unbind       # end this lane's run, free its Sprite, keep the worktree
+      sh tools/work done --remove-worktree   # remove this lane too: ONLY with the owner's say-so
 
   Main lives on GitHub (avra-lang/avra): squash merges, linear history,
   no direct pushes. It requires the `test` check AND that a branch be up
@@ -1737,7 +1750,7 @@ doctrine it expands.
   it prints is `build/avra fmt --write <files>`. Never `--no-verify`.
 - HEAVY RUNS GO ON SPRITES, ONE SPRITE A LANE: `sh tools/work run <cmd>`
   from inside the worktree. `work new` binds a free Sprite (`work bind`
-  for a worktree that has none, `work done` frees it), and the lane's
+  for a worktree that has none, `work unbind` frees it), and the lane's
   tree and compiler stay warm there between runs. Bootstraps, whole
   suites and censuses run there; the Mac keeps quick targeted checks and
   anything macOS-only. ONE RUN PER SPRITE, EVERY STEP BOUNDED: `run`

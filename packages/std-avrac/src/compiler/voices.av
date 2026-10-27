@@ -501,7 +501,7 @@ fn fields_of(s: Stmt) -> List<Param>? {
     match s {
         .StructDecl(_, _, fields) -> fields,
         .FnDecl(_, _, params, _, _) -> params,
-        .ExprStmt(_) or .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+        .ExprStmt(_) or .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
     }
 }
 
@@ -902,19 +902,24 @@ fn scan_text(text: string, keywords: List<string>) -> TextScan {
         }
     }
     let tokens = lex_source(text).tokens
-    let named = [tokens[j + 1].text for j in 0..tokens.length - 2 if tokens[j].lit_matches("component") &&
-        tokens[j + 1].kind == TokenKind.Name &&
-        (tokens[j + 2].lit_matches("{") || tokens[j + 2].lit_matches("("))]
+    let named = [tokens[j + 1].text for j in 0..tokens.length - 2 if declares_component_at(tokens, j)]
     TextScan {
         text: text,
         opens_block: opens_block(tokens, keywords),
         declares: !named.is_empty(),
         components: named,
-        exported: [tokens[j + 1].text for j in 1..tokens.length - 2 if tokens[j - 1].lit_matches("export") &&
-            tokens[j].lit_matches("component") &&
-            tokens[j + 1].kind == TokenKind.Name &&
-            (tokens[j + 2].lit_matches("{") || tokens[j + 2].lit_matches("("))],
+        exported: [tokens[j + 1].text for j in 1..tokens.length - 2 if tokens[j - 1].lit_matches("export") && declares_component_at(tokens, j)],
     }
+}
+
+/// Whether `component NAME` at `j` declares one — its block, its head,
+/// or its type parameters after the name.
+fn declares_component_at(tokens: List<Token>, j: int) -> bool {
+    tokens[j].lit_matches("component") &&
+        tokens[j + 1].kind == TokenKind.Name &&
+        (tokens[j + 2].lit_matches("{") ||
+            tokens[j + 2].lit_matches("(") ||
+            tokens[j + 2].lit_matches("<"))
 }
 
 /// Whether the stream may declare a block word: a `grammar` token

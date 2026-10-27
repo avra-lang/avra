@@ -12,6 +12,10 @@
 //! knowing. A new value CATEGORY joins here, beside the readers
 //! that make its layout nobody else's business.
 use core.{
+    MapEntry,
+    map_keys,
+    map_values,
+    map_spreads,
     Reg,
     Ins,
     BinOp,
@@ -64,7 +68,7 @@ export fn literal_meta(
             let slots? = spelled_all(store, decls, facts, elems, heap) else { return null }
             heap.node(slots)
         },
-        .MapLit(keys, values) -> literal_map(store, decls, facts, keys, values, heap),
+        .MapLit(entries) -> literal_map(store, decls, facts, entries, heap),
         .StructLit(_, fields, values) -> literal_record(store, decls, facts, e, [t.of for t in fields], values, heap),
         .VariantLit(name, args) -> literal_variant(store, decls, facts, e, name.of, args, heap),
         .BytesLit(spelled) -> match byte_string_octets(spelled) { .Ok(xs) -> MetaVal.Octets(xs), .Err(_) -> null },
@@ -93,10 +97,12 @@ fn literal_map(
     store: SyntaxArena,
     decls: Decls,
     facts: TypeFacts,
-    keys: List<ExprId>,
-    values: List<ExprId>,
+    entries: List<MapEntry>,
     mut heap: MetaHeap,
 ) -> MetaVal? {
+    if !map_spreads(entries).is_empty() { return null }
+    let keys = map_keys(entries)
+    let values = map_values(entries)
     mut ks: List<string> = []
     mut vs: List<MetaVal> = []
     for j, k in keys {

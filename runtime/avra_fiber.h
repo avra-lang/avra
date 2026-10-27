@@ -363,6 +363,7 @@ int64_t avra_program_verdict(int64_t code, const char* label, const char* expect
 // The settings an EVALUATED leg reads, as the native one does: how many
 // schedules to run, the schedule the i-th run uses, and whether a run's
 // clock is virtual.
+void avra_run_hook(void (*begins)(void), void (*ends)(void));
 int64_t avra_sched_runs_wanted(void);
 int64_t avra_sched_schedule_at(int64_t i);
 int64_t avra_case_clock_virtual(void);

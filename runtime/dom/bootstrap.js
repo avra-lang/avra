@@ -516,20 +516,26 @@ export function parseRequest(bytes) {
 }
 
 // The page's requests, for the program's asks. The program names one by a
-// number it counted out (`get(token, frame)`), the host keeps its abort handle,
-// and `answered(token, status, octets)` re-enters the program as a turn: the
-// status and body of the reply, or status -1 and the words of why there is
+// number it counted out (`get(token, frame)`), the host keeps its abort handle (a timeout, or the module standing down),
+// and `answered(token, status, octets, fields)` re-enters the program as a turn: the
+// status, the fields (`name: value` lines) and body of the reply, or status -1 and the words of why there is
 // none. An aborted request, or one already answered, never answers — a late
 // answer is dropped here, not by the program. `fetchFn` is the page's `fetch`,
 // or a test's; `clock` supplies the wait.
 export function createFetches(fetchFn, answered, clock = globalThis) {
   const held = new Map();
-  const finish = (token, status, octets) => {
+  const finish = (token, status, octets, fields = "") => {
     const mine = held.get(token);
     if (!mine) return;
     held.delete(token);
     if (mine.timer !== null) clock.clearTimeout(mine.timer);
-    answered(token, status, octets);
+    answered(token, status, octets, fields);
+  };
+  // The reply's fields as `name: value` lines; none for a reply that carries no headers.
+  const fieldsOf = (res) => {
+    const lines = [];
+    if (res.headers && typeof res.headers.forEach === "function") res.headers.forEach((value, name) => lines.push(`${name}: ${value}`));
+    return lines.join("\n");
   };
   return {
     get: (token, frame) => {
@@ -544,16 +550,8 @@ export function createFetches(fetchFn, answered, clock = globalThis) {
       if (r.body.length > 0 && r.method !== "GET" && r.method !== "HEAD") init.body = r.body;
       Promise.resolve()
         .then(() => fetchFn(r.url, init))
-        .then((res) => res.arrayBuffer().then((buf) => finish(t, res.status, new Uint8Array(buf))))
+        .then((res) => res.arrayBuffer().then((buf) => finish(t, res.status, new Uint8Array(buf), fieldsOf(res))))
         .catch((err) => finish(t, -1, new TextEncoder().encode(String(err && err.message ? err.message : err))));
-    },
-    abort: (token) => {
-      const t = Number(token);
-      const mine = held.get(t);
-      if (!mine) return;
-      held.delete(t);
-      if (mine.timer !== null) clock.clearTimeout(mine.timer);
-      mine.controller.abort();
     },
     count: () => held.size,
     // Every request a module that stood down asked is aborted, unanswered.
@@ -567,13 +565,16 @@ export function createFetches(fetchFn, answered, clock = globalThis) {
   };
 }
 
-// The program's `answered(token, status, len)` — `HOST.answered`: the octets
-// are written into the seat the program hands out for exactly that many
-// (`HOST.seat`), then the three numbers cross as i64 seats.
-export function sendAnswer(mod, token, status, octets) {
-  const at = Number(mod[HOST.seat](BigInt(octets.length)));
-  new Uint8Array(mod.memory.buffer, at, octets.length).set(octets);
-  mod[HOST.answered](BigInt(token), BigInt(status), BigInt(octets.length));
+// The program's `answered(token, status, len, fields)` — `HOST.answered`: the
+// fields' octets, then the body's, are written into the seat the program hands
+// out for exactly that many (`HOST.seat`), then the four numbers cross as i64
+// seats, `fields` being how many of the first octets are the fields.
+export function sendAnswer(mod, token, status, octets, fields = "") {
+  const head = new TextEncoder().encode(fields);
+  const at = Number(mod[HOST.seat](BigInt(head.length + octets.length)));
+  new Uint8Array(mod.memory.buffer, at, head.length).set(head);
+  new Uint8Array(mod.memory.buffer, at + head.length, octets.length).set(octets);
+  mod[HOST.answered](BigInt(token), BigInt(status), BigInt(head.length + octets.length), BigInt(head.length));
 }
 
 // The page's frames, for the program's paints. The program asks for one when
@@ -622,7 +623,7 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
   const into = guarded(failed);
   const timers = createTimers(clock, into((token) => mod[HOST.fired](BigInt(token))));
   const frames = createFrames(raf, into(() => mod[HOST.painted]()));
-  const fetches = createFetches(fetchFn, into((token, status, octets) => sendAnswer(mod, token, status, octets)), clock);
+  const fetches = createFetches(fetchFn, into((token, status, octets, fields) => sendAnswer(mod, token, status, octets, fields)), clock);
   const windows = createWindows(document, mount, into((path, from, to, extent, pin) => sendScrolled(mod, path, from, to, extent, pin)));
   const apply = createApplier(document, mount, into((who, what, said) => sendEvent(mod, who, what, said)), style, into(() => mod[HOST.repaired]()));
 
@@ -641,7 +642,6 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
         [ROWS.arm]: timers.arm,
         [ROWS.disarm]: timers.disarm,
         [ROWS.get]: (token, ptr) => fetches.get(token, frameOf(own.module.memory, ptr, own.module.avra_bytes_len).slice()),
-        [ROWS.abort]: fetches.abort,
         [ROWS.next_paint]: frames.next,
         [ROWS.stood]: () => BigInt(left ? 0 : printOf(mount)),
       },

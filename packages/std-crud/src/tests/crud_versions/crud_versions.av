@@ -1,0 +1,155 @@
+// proves: a crud read answers the database's version as its ETag, and a caller that sends it back with
+// If-None-Match is answered 304 and no body for as long as nothing in the database has changed. The version
+// is the database's own commit counter, so it is one number for every router and connection over the file:
+// a write through one is seen by the other (200, a new tag), two routers over unchanged data answer one tag
+// (a 304 lands on either), and a database reopened by a new router keeps its tag and never reuses one for
+// changed content
+use @std.crud.{crud}
+use @std.http.route.{group}
+use @std.http.server.{server}
+use @std.http_message.message.{Version}
+use @std.io.{env, make_dirs}
+use @std.net.{Conn, NetError, connect, timely}
+use @std.sqlite.{Db, sql}
+use @std.time.{ms, now_ns, secs}
+
+@crud
+type Job = {
+    id: int = 0,
+    title: string,
+}
+
+/// What one request answered: its status line, the entity tag it carried (none: ""), and whether a body followed.
+type Heard = { status: string, tag: string, body: bool }
+
+fn exchanged(c: Conn, sent: string) -> Result<Heard, NetError> {
+    c.write(sent.bytes())?
+    mut got = "".bytes()
+    while true {
+        match timely(within ms(300) { c.read(65536) }) {
+            .Ok(b) -> {
+                let more? = b else { break }
+                got = got.concat(more)
+            },
+            .Err(_) -> { break },
+        }
+    }
+    let parts = (got.text() ?? "?").split("\r\n\r\n")
+    let lines = parts[0].split("\r\n")
+    let tagged = lines.find(it.starts_with("etag: "))
+    .Ok(
+        Heard {
+            status: lines.first() ?? "?",
+            tag: if tagged == null { "" } else { tagged!.replace("etag: ", "") },
+            body: parts.length > 1 && !parts[1].is_empty(),
+        },
+    )
+}
+
+fn asked(port: int, method: string, path: string, body: string, held: string) -> Result<
+    Heard,
+    NetError,
+> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    let validator = if held == "" { "" } else { "If-None-Match: ${held}\r\n" }
+    exchanged(
+        c,
+        "${method} ${path} HTTP/1.1\r\nHost: a\r\nConnection: close\r\n${validator}Content-Type: application/json\r\nContent-Length: ${body.length}\r\n\r\n${body}",
+    )
+}
+
+fn refused(why: string) -> NetError { NetError { verb: "setup", subject: why, errno: 1 } }
+
+/// The version a tag names, as a word.
+fn read_of(tag: string) -> string {
+    let v? = Version.parsed(tag) else { return "none" }
+    if v.sequence >= 0 { "a version" } else { "negative" }
+}
+
+/// Whether every tag in `tags` is told from the others.
+fn all_apart(tags: List<string>) -> bool { [t for i, t in tags if tags.index_of(t) == i].length == tags.length }
+
+/// A database file of its own under the tree's scratch directory.
+fn scratch() -> string {
+    let dir = "${env("PWD") ?? "."}/build/scratch"
+    let _ = make_dirs(dir)
+    "${dir}/crud_versions_${now_ns()}.db"
+}
+
+fn opened(path: string) -> Result<Db, NetError> {
+    match Db.open(path) { .Ok(db) -> .Ok(db), .Err(e) -> .Err(refused(e.message)) }
+}
+
+/// A router over `db` answering for one connection's turn, and what it is asked: the jobs' list under `held`.
+fn listing(port: int, held: string) -> Result<Heard, NetError> { asked(port, "GET", "/jobs", "", held) }
+
+fn shown() -> Result<string, NetError> {
+    let path = scratch()
+    let first = opened(path)?
+    let second = opened(path)?
+    let _ = Job.create_table(first)
+    let _ = Job.create_table(second)
+    server near {
+        port: 0
+        group "/jobs" { Job.routes(first) }
+    }
+    server far {
+        port: 0
+        group "/jobs" { Job.routes(second) }
+    }
+    let a = match near.listening() {
+        .Ok(up) -> up,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    let b = match far.listening() {
+        .Ok(up) -> up,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    spawn a.run(1)
+    spawn b.run(1)
+    defer a.stop()
+    defer b.stop()
+    let pa = a.listener.port
+    let pb = b.listener.port
+    let one = listing(pa, "")?
+    let over = listing(pb, one.tag)?
+    let wrote = asked(pa, "POST", "/jobs", "{\"title\":\"write\"}", "")?
+    let seen = listing(pb, one.tag)?
+    let both = [listing(pa, seen.tag)?, listing(pb, seen.tag)?]
+    let _ = first.run(sql("UPDATE \"Job\" SET \"title\" = 'raw' WHERE \"id\" = 1"))
+    let raw_seen = listing(pb, seen.tag)?
+    let _ = first.close()
+    let _ = second.close()
+    let again = opened(path)?
+    server later {
+        port: 0
+        group "/jobs" { Job.routes(again) }
+    }
+    let c = match later.listening() {
+        .Ok(up) -> up,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    spawn c.run(1)
+    defer c.stop()
+    let pc = c.listener.port
+    let reopened = listing(pc, raw_seen.tag)?
+    let moved = asked(pc, "POST", "/jobs", "{\"title\":\"more\"}", "")?
+    let changed = listing(pc, raw_seen.tag)?
+    .Ok(
+        [
+            "a first read: ${one.status}, tag ${read_of(one.tag)}",
+            "another router over the same file, the tag held: ${over.status}, body ${over.body}",
+            "a write through the first: ${wrote.status}",
+            "the other connection's next answer: ${seen.status}, a new tag ${seen.tag != one.tag}",
+            "the new tag held, on each router: ${both.map(it.status).join(" ")}",
+            "a raw write through a connection: the other router answers ${raw_seen.status}, a new tag ${raw_seen.tag != seen.tag}",
+            "the file reopened by a new router, nothing changed since: ${reopened.status}",
+            "a write after the reopening: ${moved.status}, then ${changed.status} with a new tag ${changed.tag != raw_seen.tag}",
+            "no two states of the data shared a tag: ${all_apart([one.tag, seen.tag, raw_seen.tag, changed.tag])}",
+        ]
+            .join("\n"),
+    )
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

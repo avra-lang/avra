@@ -2,7 +2,7 @@
 // red-team pass that found five wrong answers, and each one names the
 // mechanism rather than the symptom, so it still means something after
 // the code that produced it has moved.
-use @std.sqlite.open.{Db}
+use @std.sqlite.open.{Db, OpenConfig}
 use @std.sqlite.stmt.{Stmt, run}
 use @std.sqlite.error.{SqlError}
 use @std.io.{exists, remove}
@@ -71,8 +71,11 @@ fn seeded_conflict(db: Db) -> Result<string, SqlError> {
 // no second connection to contend with.
 
 fn commit_under_a_standing_reader() -> string {
-    match Db.open(busy_path()) { .Ok(w) -> with_a_writer(w), .Err(e) -> e.cause.kind() }
+    match Db.open_with(refusing_at_once()) { .Ok(w) -> with_a_writer(w), .Err(e) -> e.cause.kind() }
 }
+
+/// No wait: the refusal this test is about is the one a held lock gives at once.
+fn refusing_at_once() -> OpenConfig { OpenConfig.config_at(busy_path()) with { busy: 0 } }
 
 fn busy_path() -> string { "build/sqlite-tx-busy.db" }
 
@@ -100,7 +103,7 @@ fn seeded_file(w: Db) -> Result<int, SqlError> {
 }
 
 fn with_a_reader(w: Db) -> string {
-    match Db.open(busy_path()) { .Ok(r) -> reading(w, r), .Err(e) -> e.cause.kind() }
+    match Db.open_with(refusing_at_once()) { .Ok(r) -> reading(w, r), .Err(e) -> e.cause.kind() }
 }
 
 fn reading(w: Db, r: Db) -> string {

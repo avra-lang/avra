@@ -241,7 +241,7 @@ export fn bound_decl_of(names: NameFacts, e: ExprId) -> DeclId? {
     let b? = names.binding(e) else { return null }
     match b {
         .Decl(d) -> d,
-        .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
+        .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .TypeParam(_) -> null,
     }
 }
 
@@ -286,7 +286,7 @@ export fn is_mut_at(names: NameFacts, view: FileView, e: ExprId) -> bool {
         // a `mut` seat is a place the fn was handed to write — a
         // lambda's written one as much as a fn's
         .Param(_) or .LambdaParam(_, _) -> names.reads_mut_seat(e),
-        .Decl(_) or .Pattern(_, _) or .Capture(_, _) or .Index(_) -> false,
+        .Decl(_) or .Pattern(_, _) or .Capture(_, _) or .Index(_) or .TypeParam(_) -> false,
     }
 }
 
@@ -298,7 +298,7 @@ export fn shares_place(view: FileView, names: NameFacts, b: Binding) -> bool {
         .Def(s) -> view.store.is_state_stmt(s),
         .Decl(d) -> declares_state(view.decls.decl(d).kind),
         .Capture(l, j) -> captured_place(view, names, l, j),
-        .Param(_) or .LambdaParam(_, _) or .Receiver or .Pattern(_, _) or .Index(_) -> false,
+        .Param(_) or .LambdaParam(_, _) or .Receiver or .Pattern(_, _) or .Index(_) or .TypeParam(_) -> false,
     }
 }
 
@@ -729,7 +729,7 @@ impl LowerCx {
         let b? = self.names.binding(e) else { return null }
         match b {
             .Def(s) if self.body.is_boxed(s) -> self.body.slot_of(s),
-            .Def(_) or .Decl(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
+            .Def(_) or .Decl(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .TypeParam(_) -> null,
         }
     }
 
@@ -892,5 +892,6 @@ export fn same_binding(a: Binding, b: Binding) -> bool {
         .Capture(l, j) -> match b { .Capture(m, k) -> same_expr(l, m) && j == k, _ -> false },
         .Index(s) -> match b { .Index(t) -> same_stmt(s, t), _ -> false },
         .Decl(d) -> match b { .Decl(e) -> same_decl(d, e), _ -> false },
+        .TypeParam(n) -> match b { .TypeParam(m) -> n == m, _ -> false },
     }
 }

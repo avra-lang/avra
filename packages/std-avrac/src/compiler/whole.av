@@ -10,7 +10,6 @@ use core.{
     CollectKind,
     StmtId,
     sorted_by,
-    text_before,
     ModulePath,
     module_path,
     SyntaxArena,
@@ -28,6 +27,7 @@ use core.{
     is_kind_word,
     key_spelled,
 }
+use @std.text.{text_before}
 use compiler.store.{Reading, Store, Stored}
 use @std.path.{under_dir, joined_path, normalized, dir_of}
 use features.{
@@ -69,14 +69,14 @@ impl Workspace {
         // a held file is not parsed — and asking its items would mint its module for nothing
         for path in self.entry_files(built) { let _ = self.file_id(path) }
         self.admit_all()
-        // A FILE MINTED FROM ITS SAVED ROWS HAS NO BODY YET: its parse is attached before anything
-        // types, so no declaration row is read at ranges the attach is about to give it
-        let _ = self.each_open_file((f: FileId) -> self.attach_parse(f))
         // the prelude is admitted by the first name any file looks up; asked here, every file's
         // answers are verified against the same program a cold run probed
         if self.std_admitted(prelude_key) { let _ = self.exported_decls(prelude_module()) }
+        self.hold_the_standing()
+        // A FILE MINTED FROM ITS SAVED ROWS HAS NO BODY YET: its parse is attached before anything
+        // types, so no declaration row is read at ranges the attach is about to give it
+        let _ = self.each_open_file((f: FileId) -> self.attach_parse(f))
         self.timed("parse", t0)
-        if traced() { let _ = self.each_open_file((f: FileId) -> self.said_standing(f)) }
         // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its declarations are
         // MINTED from its record, so every consumer sees the interface it had — and its
         // BODY is not wanted, because its object comes from the store. THIS IS WHERE THE
@@ -93,6 +93,18 @@ impl Workspace {
         let out = [self.analysis(f) for f in ids]
         self.timed("bodies", t3)
         out
+    }
+
+    /// A revived file whose said row stands is held: nothing of it is read, signed or analysed.
+    fn hold_the_standing() {
+        let _ = self.each_open_file((f: FileId) -> self.hold_if_standing(f))
+    }
+
+    fn hold_if_standing(f: FileId) {
+        if self.revived.get().get("${f.index}") == null || !self.said_standing(f) { return }
+        let path = self.decls.file(f).path
+        self.stood.put(path, true)
+        let _ = self.hold_only(path)
     }
 
     /// EVERY OPEN (non-held) FILE, WALKED AS THE TABLE ITSELF GROWS. A
@@ -461,7 +473,24 @@ impl Workspace {
     /// The deepest package root that holds `path`.
     fn root_over(path: string) -> string? {
         let over = [pkg.root for pkg in self.packages() if under_dir(path, pkg.root)]
-        over.find((root) -> over.all(it.length <= root.length))
+        over.find((root) -> over.all(it.length <= root.length)) ?? self.toolchain_root_over(path)
+    }
+
+    /// The toolchain package directory that holds `path`, entered or not: an
+    /// embedded file is read from its package without the package joining the build.
+    fn toolchain_root_over(path: string) -> string? {
+        let toolchain? = self.host.std_root else { return null }
+        if !under_dir(path, toolchain) { return null }
+        let named? = below(path, toolchain).split("/").first() else { return null }
+        joined_path(toolchain, named)
+    }
+
+    /// The root an `embed` of `@scope/name/…` reads beneath: a dependency's, or a
+    /// toolchain package's straight from the toolchain directory — never entered.
+    fn embed_root(from: Package, key: string) -> string? {
+        if key == from.key || self.depends_on(from, key) { return self.packages().find(it.key == key)?.root }
+        let dir? = self.host.std_dir(key) else { return null }
+        if self.there(joined_path(dir, "avra.toml")) { dir } else { null }
     }
 
     /// WHERE AN `embed` LITERAL'S FILE STANDS: beneath a package's root,
@@ -470,8 +499,9 @@ impl Workspace {
     /// names the machine, and a `..` past the root names what the package
     /// does not hold. A PATH THAT OPENS WITH `@` NAMES A PACKAGE, always:
     /// `@scope/name/…` is read from the root of that package when
-    /// `source`'s package depends on it, and refuses when it does not —
-    /// a directory of this package named so is written `./@scope/…`.
+    /// `source`'s package depends on it or the toolchain carries it, and
+    /// refuses when neither — reading a file admits no package. A directory
+    /// of this package named so is written `./@scope/…`.
     fn embed_place(source: string, rel: string, base: EmbedBase) -> Result<EmbedPlace, EmbedFault> {
         if rel.starts_with("/") { fail EmbedFault.Outside }
         let from = self.packages()[self.holder_of_path(source)]
@@ -481,8 +511,8 @@ impl Workspace {
         }
         let segments = rel.split("/")
         let key = segments.slice(0, 2).join("/")
-        if segments.length < 3 || !self.reaches(from, key) { fail EmbedFault.Undeclared(key) }
-        let root? = self.packages().find(it.key == key)?.root else { fail EmbedFault.Undeclared(key) }
+        if segments.length < 3 { fail EmbedFault.Undeclared(key) }
+        let root? = self.embed_root(from, key) else { fail EmbedFault.Undeclared(key) }
         placed_beneath(root, joined_path(root, segments.slice(2, segments.length).join("/")))
     }
 

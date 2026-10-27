@@ -157,11 +157,39 @@ static void became_core(Group* gr, int64_t i, int64_t serving) {
     close_all_but(keep, 6);
 }
 
+// THE FORK HOOKS: process-global state a package keeps (a database driver's connections and
+// the files they lock) does not survive a fork, so each package that holds some registers a
+// PREPARE hook here, and the cores' fork asks every one before it forks. A hook readies its
+// state to be dropped and rebuilt on either side of the fork, or refuses (nonzero) with its words
+// left in `*why`, and then nothing forks.
+#define FORK_HOOKS 16
+static int (*g_fork_hooks[FORK_HOOKS])(const char** why);
+static int g_fork_hook_count = 0;
+
+void avra_fork_hook(int (*prepare)(const char** why)) {
+    if (g_fork_hook_count < FORK_HOOKS) g_fork_hooks[g_fork_hook_count++] = prepare;
+}
+
+// The first refusal among the hooks, or 0. A refusal is reported on stderr in its own words,
+// and the fork answers EBUSY to its caller.
+static int fork_prepared(void) {
+    for (int i = 0; i < g_fork_hook_count; i++) {
+        const char* why = NULL;
+        if (g_fork_hooks[i](&why) != 0) {
+            fprintf(stderr, "avra: not forking cores: %s\n", why ? why : "a package holds state that cannot cross a fork");
+            return -EBUSY;
+        }
+    }
+    return 0;
+}
+
 // Forks the group: answers the core's index in each core, `n` in the
 // supervisor, or -errno — the cores already forked told to stop and
 // reaped. `serving` is the descriptor the cores keep.
 int64_t avra_cores_fork(int64_t g, int64_t serving) {
     Group* gr = group_at(g);
+    int refused = fork_prepared();
+    if (refused != 0) { group_free(gr); return refused; }
     fflush(NULL);
     for (int64_t i = 0; i < gr->n; i++) {
         pid_t pid = fork();

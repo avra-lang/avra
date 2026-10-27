@@ -3230,6 +3230,52 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### A control shows its pending change while the server answers
+
+The board (`tools/ui-board/src/board.av`) draws the list the server last answered, so a
+ticked checkbox is put back to the server's state at once and shows the new one only when
+the answer lands. The want: a change in flight is a value the view can read beside the
+observation (the control shows what was asked until the answer or its refusal), without the
+board keeping a copy of the tasks. Wanting site: `task_row`'s checkbox.
+
+### Interim record — a `once fn` takes no type parameters
+
+std-ui keeps a stateful composition's instances in a derived
+`once fn X$kept() -> Kept<X>` (tree/view.av's `composition`), so a STATEFUL
+generic component has no keeper to derive. `model_form<T>` is therefore a
+stateless generic over a non-generic stateful `form_inputs` that holds what
+was typed as text (std-ui/src/forms). The split is clean in its own right;
+the want is a `once fn` with type parameters — one cache per
+instantiation — so `$kept` can be derived for `X<T>`.
+
+### A compile-time directory embed
+
+`embed(path)` reads one file at a literal path, so the std-avrac witness fixtures
+(`packages/std-avrac/src/testing/mod.av`, `vendored_beside`) name every source a vendored
+std package needs, one `embed` per file. `tools/vendored_fixture.py` keeps that list equal
+to the manifest closure on disk, but the list itself is still hand-written. The want: an
+`embed_dir("@std/json/src")` that answers every `.av` under a directory as a list of
+`(path, text)`, so a fixture follows the tree by construction. Wanting site: the
+`vendored_beside` packages in `testing/mod.av`.
+
+### A declaring annotation takes a fn name as an argument
+
+`@json_text("iso", "parse_iso")` on `Time` (`packages/std-time/src/time.av`) spells the
+write and read fns as STRING literals, because a declaring annotation's arguments are
+literals and a bare fn name is refused ("a hole in name position takes a `string`"). A
+misspelled name is not caught at the annotation: the derive cannot ask whether `isoo`
+is a method, so the error appears in generated code. The want: a declaring annotation
+takes a fn name, checked where it is written.
+
+### Interim record — a generic fn's type argument cannot be written at a call
+
+A static through a bound (`T.zero()`) is the only use some fns make of
+`T`, so the parameter exists to pin it: `fn zero_of<T: Zeroed<int>>(_x: T)`
+takes a value it never reads (features/impls/tests/bound_statics). The
+want: `zero_of<P>()`, the type argument written at the call as a component
+instance already writes it (`box<int> { }`); today `ident<int>(…)` is
+"expected BREAK".
+
 ### Interim record — `Cell<T>` has no spelled form in a pass
 
 A type in a pass is spelled (`cx.type(List<string?>)`), but `types.type(Cell<ty>)` is

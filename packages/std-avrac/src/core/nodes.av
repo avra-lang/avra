@@ -108,6 +108,8 @@ export fn in_file(at: FileId?, f: FileId) -> bool {
 ///   Param      param_types[i]         the index IS the register
 ///   Def        decls[stmt]            slots[stmt]
 ///   Pattern    pattern_types[arm]     pattern_regs[arm]
+///   TypeParam  the body's Var         none — it stands only where a
+///                                     static is called on a type
 ///
 /// A new variant answers both columns or the build refuses.
 @derive(Fingerprint)
@@ -141,6 +143,9 @@ export enum Binding {
     /// A DECLARATION — a fn, a type, a trait — this file's or any
     /// other's, by the table's identity; the scope resolved it.
     Decl(decl: DeclId)
+    /// A TYPE PARAMETER of the enclosing declaration, read where a
+    /// static member is called on it — `T.m()` — and nowhere else.
+    TypeParam(name: string)
 }
 
 /// What a declaring statement declares. A Method is an impl's or a
@@ -368,6 +373,41 @@ export enum CompClause {
     Filter(cond: ExprId)
 }
 
+/// One entry of a map literal, in written order: a `key: value` pair, or
+/// a `..map` spread.
+@derive(Identity)
+@derive(Grammar)
+@derive(Makes)
+export enum MapEntry {
+    Pair(key: ExprId, value: ExprId)
+    Spread(from: ExprId)
+}
+
+/// The expressions one map entry holds, in written order.
+export fn map_entry_reach(m: MapEntry) -> List<ExprId> {
+    match m { .Pair(key, value) -> [key, value], .Spread(from) -> [from] }
+}
+
+/// The expression an entry begins at.
+export fn map_entry_head(m: MapEntry) -> ExprId {
+    match m { .Pair(key, _) -> key, .Spread(from) -> from }
+}
+
+/// The keys of an entry list's pairs, in order.
+export fn map_keys(entries: List<MapEntry>) -> List<ExprId> {
+    flatten([match m { .Pair(key, _) -> [key], .Spread(_) -> [] } for m in entries])
+}
+
+/// The values of an entry list's pairs, in order.
+export fn map_values(entries: List<MapEntry>) -> List<ExprId> {
+    flatten([match m { .Pair(_, value) -> [value], .Spread(_) -> [] } for m in entries])
+}
+
+/// The maps an entry list spreads, in order.
+export fn map_spreads(entries: List<MapEntry>) -> List<ExprId> {
+    flatten([match m { .Pair(_, _) -> [], .Spread(from) -> [from] } for m in entries])
+}
+
 /// The expressions one clause holds.
 export fn comp_clause_reach(c: CompClause) -> List<ExprId> {
     match c { .Head(_, _, source, hi) -> [source].concat(some_list(hi)), .Filter(cond) -> [cond] }
@@ -386,6 +426,7 @@ export fn node_payload_rows() -> List<PayloadRow> {
         .concat(grammar_payloads_VariantSyntax())
         .concat(grammar_payloads_TypeRef())
         .concat(grammar_payloads_CompClause())
+        .concat(grammar_payloads_MapEntry())
         .concat(grammar_payloads_Arm())
         .concat(grammar_payloads_Case())
         .concat(grammar_payloads_UseItem())
@@ -405,6 +446,11 @@ export fn pat_makers() -> List<Maker<Pat>> {
 /// Every comprehension clause's maker, read off `CompClause` by `@derive(Makes)`.
 export fn comp_clause_makers() -> List<Maker<CompClause>> {
     makers_CompClause()
+}
+
+/// Every map entry's maker, read off `MapEntry` by `@derive(Makes)`.
+export fn map_entry_makers() -> List<Maker<MapEntry>> {
+    makers_MapEntry()
 }
 
 /// Every flat statement variant's maker, read off `Stmt` by `@derive(Makes)`.
@@ -494,8 +540,6 @@ fn hole_free(e: Expr) -> bool {
     }
 }
 
-/// A map literal's keys and values, in written order.
-export type MapPairs = { keys: List<ExprId>, values: List<ExprId> }
 /// A hole-bearing body's word, its runs between holes, the holes, and
 /// its parsed form or expansion.
 export type BodyParts = { word: string, parts: List<string>, holes: List<ExprId>, view: BodyView }
@@ -694,7 +738,30 @@ export enum Unheard {
 /// string)`): the seats its handler is told, none for an event that
 /// says nothing — and absent on every seat that is not an event.
 @derive(Identity)
-export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, @local id: ParamId, marks: List<Mark> = [], state: bool = false, says: List<Param>? = null, variadic: bool = false, prop: bool = false }
+export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, @local id: ParamId, marks: List<Mark> = [], state: bool = false, says: List<Param>? = null, prop: bool = false, spread: SeatSpread? = null }
+
+/// What a seat standing for MANY says it is: the call's remaining arguments
+/// (`..rest: List<T>`), or a template hole that fills with whole entries
+/// (`..${xs}`), the hole's index.
+@derive(Identity)
+export enum SeatSpread {
+    Rest
+    Hole(index: int)
+}
+
+impl Param {
+    /// Whether the seat takes the arguments a call leaves.
+    fn is_rest() -> bool {
+        let held? = self.spread else { return false }
+        held is .Rest
+    }
+
+    /// The template hole the seat stands for, when it is a hole spread.
+    fn spread_hole() -> int? {
+        let held? = self.spread else { return null }
+        match held { .Hole(index) -> index, .Rest -> null }
+    }
+}
 
 /// What a parameter seat WRITES, as a grammar rule labels it: the
 /// marks are words (`mut`, `const`, `state`, and `isolated` as `unshared`)

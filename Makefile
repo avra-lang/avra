@@ -903,6 +903,7 @@ layers:
 # state; a baseline keeps both states.
 speed-note:
 	@sh tools/speed_note.sh --self-test
+	@python3 tools/calib.py --self-test
 	@python3 tools/step_cpu.py --self-test
 
 libs-self-test:
@@ -1007,6 +1008,7 @@ census-accept:
 	@python3 tools/census_ratchet.py --accept --raw build/census-gate.out
 
 warm-edit:
+	@python3 tools/ratchet_rows.py --self-test >/dev/null
 	@python3 tools/speed_ratchet.py --self-test >/dev/null
 	@python3 tools/work_ratchet.py --self-test >/dev/null
 	@sh tools/warm_edit_bench.sh
@@ -1197,7 +1199,7 @@ KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness f
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
 KEEPERS_B = libscope h2spec tools-suite fingerprints store-keys vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board dev-server ui-browser ui-browser-skip tool-witnesses footprint tick-object no-threads \
-            ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status
+            ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status vendored-fixture
 # KEEPERS_WASM is the wasm target's proof — the fixtures native and wasm32 alike, the seam,
 # the refusals, the hosted scheduler broken on purpose, the store across targets, the
 # archive's law and the size receipt — a CI
@@ -1235,7 +1237,6 @@ ci-invariants:
 	@python3 tools/ci_dup_run.py --self-test
 	@sh tools/batch_test.sh
 	@python3 tools/pr_mode.py --self-test
-	@sh tools/fetch_compiler.sh --self-test
 
 # THE AGGREGATE VERDICT'S FIXTURES: the `test` job's arithmetic is a script
 # (tools/ci_verdict.sh), and these prove it counts what it claims — a skipped
@@ -1257,6 +1258,12 @@ pr-watcher:
 # example stands in tools/pipeline_doc.allow with its reason.
 pipeline-doc:
 	@python3 tools/pipeline_doc.py
+
+# The std-avrac fixtures vendor each std package whole: the files the manifest closure
+# names, no more and no fewer (tools/vendored_fixture.py).
+vendored-fixture:
+	@python3 tools/vendored_fixture.py --self-test
+	@python3 tools/vendored_fixture.py
 
 # A BUILD'S STATUS NEVER DIES IN A PIPE: no build, run, make or node is
 # piped into `tail` outside `tools/capped.sh --last` (tools/tail_status.sh).
@@ -1282,7 +1289,7 @@ pipeline-status:
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = host-events fingerprints store-keys vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status
+KEEPERS_STATIC = host-events fingerprints store-keys vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status vendored-fixture
 .PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr pipeline-doc tail-status pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }

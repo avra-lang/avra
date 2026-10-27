@@ -1,0 +1,45 @@
+// proves: a database connection holding a transaction at the cores' fork REFUSES the fork — `run(3)` answers an
+// error naming it, nothing forks and nothing is lost — and the same server serves once the transaction is over.
+use @std.http.http.{text}
+use @std.http.route.{get}
+use @std.http.server.{server}
+use @std.io.{make_dirs}
+use @std.net.{NetError}
+use @std.sqlite.{Db, sql}
+use @std.time.{stamp}
+use tests.support.{asked, refused}
+
+fn shown() -> Result<string, NetError> {
+    let dir = "/tmp/avra-http-cores-open-txn/${stamp()}"
+    let _ = make_dirs(dir)
+    let db = match Db.open("${dir}/rows.db") {
+        .Ok(d) -> d,
+        .Err(e) -> { return .Err(refused(e.message)) },
+    }
+    defer { let _ = db.close() }
+    let _ = db.run(sql("CREATE TABLE rows (n INTEGER PRIMARY KEY, who INTEGER)"))
+    let _ = db.exec("BEGIN")
+    let _ = db.run(sql("INSERT INTO rows (who) VALUES (1)"))
+    server app {
+        port: 0
+        get "/" { _req -> text(200, "up") }
+    }
+    let up = match app.listening() {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    let first = match up.run(3) {
+        .Ok(_) -> "served",
+        .Err(e) -> "refused ${e.errno}: ${e.subject}",
+    }
+    let committed = match db.exec("COMMIT") { .Ok(_) -> "committed", .Err(e) -> e.message }
+    let ran = spawn up.run(3)
+    let port = up.listener.port
+    let sent = [spawn asked(port, "GET") for i in 0..6]
+    let answers = [t.await? for t in sent]
+    up.stop()
+    let second = match ran.await { .Ok(n) -> "ran ${n}", .Err(e) -> "err ${e.errno} ${e.subject}" }
+    .Ok("${first} | ${committed} ${answers.all(it == "up")} ${second}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

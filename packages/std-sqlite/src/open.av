@@ -19,6 +19,15 @@ use @std.text.{has_nul}
 use c.{sqlite3_open_v2, sqlite3_close_v2, sqlite3_errstr, sqlite3_last_insert_rowid}
 use stmt.{Stmt}
 
+/// How a database file is journaled. `Keep` leaves it as it is: a new file is SQLite's classic rollback
+/// journal, an existing one stays in whatever it was. `Wal` asks for a write-ahead log, which lets readers and
+/// the writer proceed together; its `-wal` and `-shm` files travel with the database, and its shared-memory
+/// state belongs to the PROCESS that opened the file, so the cores' fork closes every connection and each
+/// process reopens its own. `Rollback` asks for the classic journal, which converts a file back. The journal is a
+/// property of the FILE and persists, which is why only an explicit ask changes it, and a switch SQLite refuses
+/// (another connection holds a lock) leaves the file as it was and the open succeeds: ask `journal` which holds.
+export enum Journal { Keep, Wal, Rollback }
+
 /// How the file is opened. THREE MODES AND NO `create` FIELD, because
 /// the header allows exactly three flag combinations and a fourth
 /// cannot be spelled here.
@@ -67,6 +76,12 @@ export type OpenConfig = {
     threading: Threading = .Serialized,
     /// Refuse a path whose final component is a symbolic link.
     no_follow: bool = false,
+    /// How long, in milliseconds, a statement waits for a lock another connection holds before it
+    /// is refused as busy; zero refuses at once. Connections to one file contend as a matter of
+    /// course — the cores of a server, a tool beside it — so a lock held is waited out by default.
+    busy: int = 5000,
+    /// The journal the file is kept in; see `Journal`. Applies to a file this connection may write.
+    journal: Journal = .Keep,
 }
 
 impl OpenConfig {
@@ -130,9 +145,17 @@ impl OpenConfig {
         if self.path == ":memory:" { return spent_empty }
         if !self.uri && self.path.starts_with("file:") { return reads_as_uri(self.path) }
         if self.uri && empty_uri_path(self.path) { return spent_empty }
+        if self.busy < 0 { return negative_wait }
         null
     }
 }
+
+/// A busy wait is zero or more milliseconds; none below it is a wait.
+const negative_wait: SqlError = SqlError
+    .refused(
+        Cause.NegativeWait,
+        "a busy wait is zero or more milliseconds — `busy: 0` refuses a held lock at once, and a negative wait names no wait at all",
+    )
 
 const open_readonly: int = 1
 const open_readwrite: int = 2
@@ -274,11 +297,15 @@ export type Db = {
     home: Cell<Home>,
 }
 
-/// The process, file and flags a connection was opened with.
-type Home = { pid: int, path: string, flags: int }
+/// The registry epoch, file, flags and lock wait a connection was opened with.
+type Home = { epoch: int, path: string, flags: int, busy: int }
 
-/// This process's id.
-extern fn avra_own_pid() -> int
+/// Every connection is registered when opened and forgotten when closed. Before the cores fork the registry
+/// refuses a held transaction, closes every file-backed one and bumps the epoch (`sqlite_sentinel.c`).
+extern fn avra_sqlite_opened(db: ptr)
+extern fn avra_sqlite_closed(db: ptr)
+extern fn avra_sqlite_epoch() -> int
+extern fn avra_sqlite_foreign(db: ptr) -> int
 
 impl Db {
     /// A database at a path, opened for reading and writing and created
@@ -295,12 +322,12 @@ impl Db {
     /// dies with the connection, which is why it is a VERB and never a
     /// path — a config whose `path =` key went missing must not become
     /// one.
-    static fn memory() -> Result<Db, SqlError> { opened(":memory:", OpenConfig.config_at(":memory:").flags_of()) }
+    static fn memory() -> Result<Db, SqlError> { opened(OpenConfig.config_at(":memory:")) }
 
     /// Every knob, spelled. `open(p)` is `open_with(config_at(p))`.
     static fn open_with(c: OpenConfig) -> Result<Db, SqlError> {
         let _ = barred(c.path_fault())?
-        opened(c.path, c.flags_of())
+        opened(c)
     }
 
     /// The connection closed, and the handle NULLED so it cannot be
@@ -331,6 +358,12 @@ impl Db {
     fn close() -> int {
         let handle: ptr? = self.raw.get()
         if handle == null { return 0 }
+        if self.parked() {
+            self.cache.set([])
+            self.raw.set(null)
+            return 0
+        }
+        avra_sqlite_closed(handle!)
         for c in self.cache.get() {
             let _ = c.stmt.finalize()
         }
@@ -360,30 +393,46 @@ impl Db {
     /// otherwise report the caller's own sequence as SQLite's opinion asks
     /// here first.
     fn closed_fault() -> SqlError? {
-        if self.live() == null { return connection_closed }
+        let handle? = self.live() else { return connection_closed }
+        if self.in_memory() && avra_sqlite_foreign(handle) != 0 { return memory_foreign }
         null
     }
 
-    /// The handle this process may use: the one it opened, or after a
-    /// fork a fresh one on the same file. The inherited handle and the
-    /// statements prepared on it are abandoned unclosed, since closing
-    /// them would release locks the parent holds. A private in-memory
-    /// database has no file to reopen and keeps its inherited copy.
+    /// Whether the cores' fork closed this connection's handle since it was made or last reopened: the
+    /// driver's registry closes every file-backed connection before a fork (`sqlite_sentinel.c`), and a
+    /// connection made under an earlier epoch holds a handle that is gone.
+    fn parked() -> bool { !self.in_memory() && self.home.get().epoch != avra_sqlite_epoch() }
+
+    /// Whether this is a private in-memory database: no file to reopen, and a copy in every forked process.
+    fn in_memory() -> bool { self.home.get().path == ":memory:" }
+
+    /// The journal mode the file is in right now, by SQLite's own word: `wal`, `delete`, `memory`…
+    fn journal() -> Result<string, SqlError> {
+        let v = self.scalar(sql("PRAGMA journal_mode"))?
+        v.text()
+    }
+
+    /// The handle this process may use: the one it opened, or one fresh on the same file when the cores'
+    /// fork closed it (each process, parent and core alike, reopens on first use, so no process-wide
+    /// state of SQLite's reaches a child). The statements cached on the closed handle were finalized with
+    /// it. A private in-memory database has no file to reopen and is never parked.
     fn live() -> ptr? {
-        let now = avra_own_pid()
         let home = self.home.get()
         let held: ptr? = self.raw.get()
-        if held == null || home.pid == now || home.path == ":memory:" { return held }
+        if held == null || !self.parked() { return held }
         avra_sqlite_sleeps_held()
         mut handle: ptr? = null
         if sqlite3_open_v2(home.path, handle, home.flags, null) != 0 || handle == null {
             let _ = sqlite3_close_v2(handle)
-            return held
+            self.cache.set([])
+            self.raw.set(null)
+            return null
         }
+        avra_sqlite_opened(handle!)
         self.cache.set([])
         self.raw.set(handle)
-        self.home.set(home with { pid: now })
-        let _ = patient(self)
+        self.home.set(home with { epoch: avra_sqlite_epoch() })
+        let _ = patient(self, home.busy)
         handle
     }
 
@@ -392,7 +441,7 @@ impl Db {
     /// hottest call on the cached path — every `run`/`one`/`first`/
     /// `all`/`scalar` reaches it once.
     fn cached(text: string) -> Stmt? {
-        let _ = self.live()
+        if self.closed_fault() != null { return null }
         for c in self.cache.get() {
             if c.text == text { return c.stmt }
         }
@@ -416,29 +465,42 @@ extern fn avra_sqlite_sleeps_held()
 /// object even for a FAILED open — its header says so — so a driver
 /// that closes only on success leaks one per failure, and the leak is
 /// invisible because the caller has an error in hand.
-fn opened(path: string, flags: int) -> Result<Db, SqlError> {
+fn opened(c: OpenConfig) -> Result<Db, SqlError> {
+    let flags = c.flags_of()
+    let path = c.path
     avra_sqlite_sleeps_held()
     mut handle: ptr? = null
     let rc = sqlite3_open_v2(path, handle, flags, null)
     if rc != 0 { fail closing(handle, rc) }
     if handle == null { fail SqlError.refused(Cause.CantOpen, "SQLite answered success and no handle") }
+    avra_sqlite_opened(handle!)
     let db = Db {
         raw: Cell.new(handle),
-        home: Cell.new(Home { pid: avra_own_pid(), path: path, flags: flags }),
+        home: Cell.new(Home { epoch: avra_sqlite_epoch(), path: path, flags: flags, busy: c.busy }),
     }
-    let fault: SqlError? = unreadable(db)
+    let fault: SqlError? = patient(db, c.busy) ?? unreadable(db)
     if fault != null {
         let _ = db.close()
         fail fault!
     }
+    let _ = journaled(db, c)
     db
 }
 
 /// How long a core's connection waits on a lock another core holds: the
 /// cores of one server write one file, so a held lock is contention, not
 /// an error.
-fn patient(db: Db) -> SqlError? {
-    match db.prepare("PRAGMA busy_timeout = 5000") { .Ok(s) -> ran(s), .Err(e) -> e }
+fn patient(db: Db, wait: int) -> SqlError? {
+    match db.prepare("PRAGMA busy_timeout = ${wait}") { .Ok(s) -> ran(s), .Err(e) -> e }
+}
+
+/// The journal `c` asks for, set on a file this connection may write. A switch SQLite refuses leaves the
+/// file as it was, and the connection stays open: nothing the caller asked for is lost by the file keeping
+/// the journal it had.
+fn journaled(db: Db, c: OpenConfig) -> SqlError? {
+    if c.path == ":memory:" || c.mode is .ReadOnly { return null }
+    let word = match c.journal { .Keep -> { return null }, .Wal -> "wal", .Rollback -> "delete" }
+    match db.prepare("PRAGMA journal_mode = ${word}") { .Ok(s) -> ran(s), .Err(e) -> e }
 }
 
 /// T127 CLOSED: the one trivial statement that tells a database from a
@@ -481,6 +543,12 @@ fn closing(handle: ptr?, rc: int) -> SqlError {
         sql: null,
     }
 }
+
+const memory_foreign: SqlError = SqlError
+    .refused(
+        Cause.Foreign,
+        "a memory database lives in the process that opened it: a core would hold a private copy — open it inside the core, or use a file",
+    )
 
 const connection_closed: SqlError = SqlError
     .refused(Cause.Closed, "this connection was closed — open it again")

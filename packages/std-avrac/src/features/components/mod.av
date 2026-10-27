@@ -35,9 +35,6 @@ export fn components() -> LanguageFeature {
         "component_named"       | build_component_named
         "component_named_bare"  | build_component_named_bare
         "on_handler"            | build_on_handler
-        "on_value"              | build_on_value
-        "instance_body"         | build_instance_body
-        "instance_arms_body"    | build_instance_arms_body
     }
     let codes = table<DiagCode> {
         kind                      | summary
@@ -54,16 +51,17 @@ export fn components() -> LanguageFeature {
     }
     LanguageFeature components {
         gram: grammar {
-            stmt = "component" n:NAME ( "<" tp:NAME ( ":" tb:type )? ( "," tp:NAME ( ":" tb:type )? )* ","? ">" )? ( "(" ( head:hseat ( "," head:hseat )* ","? )? ")" )? "{" ( fields:cfield | events:cevent | rs:".." ( dd:"." )? rt:type | m:stmt | BREAK )* "}" END @recover(sync_to: "END") -> component_decl(n, tp, tb, head, fields, events, m, rs, rt, dd)
+            stmt = "component" n:NAME ( "<" tp:tparam ( "," tp:tparam )* ","? ">" )? ( "(" ( head:hseat ( "," head:hseat )* ","? )? ")" )? "{" ( fields:cfield | events:cevent | rs:".." ( dd:"." )? rt:type | m:stmt | BREAK )* "}" END @recover(sync_to: "END") -> component_decl(n, tp, head, fields, events, m, rs, rt, dd)
             hseat = ( marks:mark )* name:NAME ":" ty:type -> Record.ParamSyntax
             cfield = ( marks:mark )* ( state_field:STATE )? name:NAME ":" ty:type ( "=" default:expression )? -> Record.ParamSyntax
             cevent = ( marks:mark )* ON name:NAME ( "(" ( says:eseat ( "," says:eseat )* ","? )? ")" )? -> component_event(marks, name, says)
             eseat = name:NAME ":" ty:type -> Record.ParamSyntax
             stmt = w:COMPONENT ( "<" ta:type ( "," ta:type )* ","? ">" )? n:NAME b:named_inst_body END -> component_named(w, ta, n, b) | w:COMPONENT ( "<" ta:type ( "," ta:type )* ","? ">" )? n:NAME END -> component_named_bare(w, ta, n)
-            setting = name:NAME ":" value:expression END -> Stmt.Setting | w:ON kw:NAME "{" BREAK* ( ip:handler_seat ( "," ip:handler_seat )* ","? "->" )? ( s:stmt | BREAK )* "}" -> on_handler(w, kw, ip, s) | w:ON kw:NAME ":" v:expression END -> on_value(w, kw, v)
-            named_inst_body = "{" BREAK* hp:nonbind_pattern ( "if" hg:expression )? "->" hv:expression ( BREAK | "," | a:arm | a:hole_arm )* "}" @expect("}", "expected `}` to close the arms block") -> instance_arms_body(hp, hg, hv, a)
+            setting = name:NAME ":" value:expression END -> Stmt.Setting | w:ON kw:NAME "{" BREAK* ( ip:handler_seat ( "," ip:handler_seat )* ","? "->" )? ( s:stmt | BREAK )* "}" -> on_handler(w, kw, ip, s) | heard:ON name:NAME ":" value:expression END -> Stmt.Setting
+            head_arm = pats:nonbind_pattern ( "if" guard:expression )? "->" value:expression -> Record.Arm
+            named_inst_body = "{" BREAK* arms:head_arm ( BREAK | "," | arms:arm | arms:hole_arm )* "}" @expect("}", "expected `}` to close the arms block") -> Expr.ArmsBody
                 | b:instance_body -> b
-            instance_body = "{" BREAK* ( ip:handler_seat ( "," ip:handler_seat )* ","? "->" )? ( s:setting | s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> instance_body(ip, s)
+            instance_body = "{" BREAK* seats:handler_seat ( "," seats:handler_seat )* ","? "->" ( stmts:setting | stmts:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> Expr.InstanceFn | "{" BREAK* ( stmts:setting | stmts:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> Expr.Block
             handler_seat = name:NAME -> Record.ParamSyntax
             primary = w:COMPONENT ( "<" ta:type ( "," ta:type )* ","? ">" )? hn:NAME b:instance_body x:instance_body -> component_braced_head(w, ta, hn) @trailer(x) | word:COMPONENT ( "<" targs:type ( "," targs:type )* ","? ">" )? heads:head_name body:instance_body -> Expr.Component | word:COMPONENT ( "<" targs:type ( "," targs:type )* ","? ">" )? body:instance_body -> Expr.Component | word:COMPONENT ( "<" targs:type ( "," targs:type )* ","? ">" )? heads:expression body:instance_body -> Expr.Component @head(heads) | w:COMPONENT h:expression kw:NAME iw:NAME "." fp:NAME b:instance_body -> component_keyed(w, h, kw, iw, fp, b) @head(h) | word:COMPONENT ( "<" targs:type ( "," targs:type )* ","? ">" )? heads:expression -> Expr.Component @head(heads)
             head_name = name:NAME -> Expr.Ident

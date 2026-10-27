@@ -72,17 +72,8 @@ if [ ! -f build/libavra_runtime.a ]; then
     make -s -o avra objects libs >&2 || { echo "warm_edit_bench: objects and libs did not build" >&2; exit 1; }
 fi
 
-# The host the number is keyed by, in the budget's own spelling — the CPU is
-# in the key because two x86_64 Linux machines are not one machine.
-token() { printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//;s/-*$//'; }
-cpu() {
-    if [ -r /proc/cpuinfo ]; then
-        awk -F: '/model name/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }' /proc/cpuinfo
-    else
-        sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -p
-    fi
-}
-host=${SPEED_HOST:-$(token "$(uname -s)")-$(token "$(uname -m)")-$(token "$(cpu)")}
+# The host the number is keyed by (tools/host_key.sh).
+host=$(sh tools/host_key.sh)
 
 # Nanoseconds from GNU date; a BSD date that does not answer falls back to
 # Python's clock (the measurement itself runs on the Sprite, where date is GNU).

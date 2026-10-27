@@ -1,36 +1,6 @@
-//! Parse-time lowering: three captured expressions -> the If node;
-//! a payload `is` condition desugars into the Match it means.
-use core.{Expr, ExprId, Stmt, StmtId, Arm, Pat, PatId, PayloadIs}
+//! Parse-time lowering: the statement form of `if` — a guard or a chain.
+use core.{Expr, ExprId, Stmt, StmtId}
 use features.{LangNode, Builder, expr_id_at, stmt_id_at}
-
-fn build_if(b: Builder) -> Result<LangNode, string> {
-    let c = b.expr(0)?
-    let t = b.expr(1)?
-    let e = b.expr(2)?
-    let payload? = b.store.is_payload(c) else { return b.make_expr(Expr.If(c, t, e)) }
-    desugared(b, c, payload, bound_arms(b, payload.pat, t, e))
-}
-
-/// `if x is .V(p) { A } else { B }` is `match x { .V(p) -> A, _ -> B }`
-/// — the binding law's one meaning, spelled by the machinery that
-/// already carries it (spec 10.4: bind-fresh, scoped to the arm).
-fn bound_arms(b: Builder, pat: PatId, taken: ExprId, other: ExprId) -> List<Arm> {
-    let rest = b.store.alloc_pat(Pat.Wild, b.span)
-    [
-        Arm { pats: [pat], guard: null, value: taken },
-        Arm { pats: [rest], guard: null, value: other },
-    ]
-}
-
-/// The desugared Match, MARKED with the payload and whether an else was
-/// written — the printer spells `if x is .V(p) { A }` back from the
-/// mark rather than losing the form (a bare `match` would move tokens
-/// `fmt` refuses).
-fn desugared(b: Builder, c: ExprId, payload: PayloadIs, arms: List<Arm>) -> Result<LangNode, string> {
-    let m = b.expr_node(Expr.Match(b.store.is_subject(c) ?? c, arms))
-    b.store.mark_is_payload(m, payload.pat, payload.has_else)
-    b.wrap_expr(m)
-}
 
 /// The STATEMENT form: a guard, or a chain — `else { … }` is a block,
 /// `else if …` is the nested `if` itself. In a block's TAIL position
@@ -44,30 +14,8 @@ fn build_if_stmt(b: Builder) -> Result<LangNode, string> {
     let chained: StmtId? = stmt_id_at(b.args, 3)
     let linked: ExprId? = if chained == null { null } else { b.store.stmt_value(chained!) }
     let other: ExprId? = blocked ?? linked
-    let payload? = b.store.is_payload(c) else {
-        let guard = b.expr_node(Expr.If(c, t, other))
-        b.store.mark_statement_if(guard)
-        return b.make_stmt(Stmt.ExprStmt(guard))
-    }
-    // `block_of` — not a valueless block — so a branch that ANSWERS keeps
-    // its value when the whole guard stands in tail position, exactly as
-    // `chain_value` promotes a plain `if` statement; a branch whose tail
-    // is no value (or leaves) is void either way, and the arms agree.
-    let arms = bound_arms(
-        b,
-        payload.pat,
-        b.block_of(b.store.block_stmts(t) ?? []),
-        else_arm(b, blocked, linked),
-    )
-    let m = b.expr_node(Expr.Match(b.store.is_subject(c) ?? c, arms))
-    b.store.mark_is_payload(m, payload.pat, other != null)
-    b.make_stmt(Stmt.ExprStmt(m))
-}
-
-/// The else side a binding `if` desugars over: a chained link is its
-/// own expression, a written block answers as its statements do.
-fn else_arm(b: Builder, blocked: ExprId?, linked: ExprId?) -> ExprId {
-    if linked != null { return linked! }
-    let held? = blocked else { return b.block_of([]) }
-    b.block_of(b.store.block_stmts(held) ?? [])
+    let guard = b.expr_node(Expr.If(c, t, other))
+    b.store.mark_statement_if(guard)
+    let _ = b.meant(guard)?
+    b.make_stmt(Stmt.ExprStmt(guard))
 }

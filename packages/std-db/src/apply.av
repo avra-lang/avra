@@ -9,7 +9,7 @@ use @std.sqlite.{Db, Row, SqlValue, sql}
 use @std.sqlite.error.{SqlError}
 use @std.time.{now_ms}
 use migrate.{Plan, Renamed, diff, refusals, statements}
-use shape.{Shape, shape_read, shape_text}
+use shape.{Shape, quoted, shape_read, shape_text}
 
 /// Why a table was not migrated.
 export enum MigrateError {
@@ -95,8 +95,27 @@ export fn claim_table(db: Db, name: string, owner: string, declared_at: string, 
                 )?
         }
     }
-    db.run(sql(create_sql(read.name, read.columns)))
+    let made = db.run(sql(create_sql(read.name, read.columns)))?
+    let _ = counted(db, read.name)?
+    .Ok(made)
 }
+
+/// THE DATABASE'S COMMIT COUNTER, one row every write to a model's table moves:
+/// a trigger per kind of write bumps it inside the writer's own transaction, so
+/// it is persisted with the data, the same for every connection and every
+/// process, and only rises. Raw SQL against a model's table counts like any
+/// other write. Made with the table, and again on every claim, so a database
+/// older than the counter gains it.
+fn counted(db: Db, on: string) -> Result<int, SqlError> {
+    let _ = db.run(sql(commits_sql()))?
+    let _ = db.run(sql(commits_seed_sql()))?
+    for kind in ["INSERT", "UPDATE", "DELETE"] { let _ = db.run(sql(bump_sql(on, kind)))? }
+    .Ok(0)
+}
+
+/// Where the database stands: how many writes its model tables have taken, or
+/// the refusal when the counter is not there (a database no model has claimed).
+export fn commits(db: Db) -> Result<int, SqlError> { (db.scalar(sql(read_commits_sql()))?).int() }
 
 /// A table brought to the shape a model's text declares, answering how many
 /// steps it took; a text that is no shape is a defect of the caller. A column and its old
@@ -141,6 +160,20 @@ fn texted(v: SqlValue) -> string {
 fn recorded(db: Db, name: string) -> Result<Shape?, SqlError> {
     let row? = db.first(sql(recorded_sql(), [.Text(name)]))? else { return .Ok(null) }
     .Ok(shape_read(texted(row.values[0])))
+}
+
+/// Every shape the registry holds, in table order; none for a database no
+/// model has claimed a table in.
+export fn recorded_shapes(db: Db) -> Result<List<Shape>, SqlError> {
+    if (db.scalar(sql(registry_probe_sql()))?).int()? == 0 { return .Ok([]) }
+    let held: List<Shape?> = [shape_read(texted(r.values[0])) for r in db.all(sql(all_recorded_sql()))?]
+    .Ok([s! for s in held if s != null])
+}
+
+fn registry_probe_sql() -> string { "SELECT count(*) FROM sqlite_master WHERE name = '__avra_models__'" }
+
+fn all_recorded_sql() -> string {
+    "SELECT \"shape\" FROM \"__avra_models__\" WHERE \"shape\" IS NOT NULL ORDER BY \"table_name\""
 }
 
 // ── The copy ────────────────────────────────────────────────────
@@ -224,6 +257,19 @@ fn checked(db: Db, name: string) -> Result<int, MigrateError> {
 }
 
 // ── SQL ─────────────────────────────────────────────────────────
+
+fn commits_sql() -> string {
+    "CREATE TABLE IF NOT EXISTS \"avra_commits\" (\"id\" INTEGER PRIMARY KEY CHECK (\"id\" = 1), \"seq\" INTEGER NOT NULL)"
+}
+
+fn commits_seed_sql() -> string { "INSERT OR IGNORE INTO \"avra_commits\" (\"id\", \"seq\") VALUES (1, 0)" }
+
+fn read_commits_sql() -> string { "SELECT \"seq\" FROM \"avra_commits\" WHERE \"id\" = 1" }
+
+/// The trigger that counts one kind of write to the table `on`.
+fn bump_sql(on: string, kind: string) -> string {
+    "CREATE TRIGGER IF NOT EXISTS ${quoted("avra_commit_${on}_${kind}")} AFTER ${kind} ON ${quoted(on)} BEGIN UPDATE \"avra_commits\" SET \"seq\" = \"seq\" + 1 WHERE \"id\" = 1; END"
+}
 
 fn registry_sql() -> string {
     "CREATE TABLE IF NOT EXISTS \"__avra_models__\" (\"table_name\" TEXT PRIMARY KEY, \"declared_at\" TEXT, \"shape\" TEXT, \"owner\" TEXT)"

@@ -5,7 +5,7 @@
 //! input is read again, and only one whose digest differs moves the
 //! revision.
 use compiler.families.{Family}
-use core.{EmbedKind}
+use core.{EmbedKind, fp}
 use compiler.host.{Read, InputName, InputKind, Listed, Stamp}
 use @std.relation.engine.{Loaded}
 
@@ -193,8 +193,15 @@ impl Workspace {
 
     fn input_at(at: int) -> Read { self.input(self.input_names.get()[at]) }
 
-    /// The word a file's Text input is cut by; zero before it is read.
-    fn text_word(path: string) -> int { self.db.value_hash_of(key(Family.Input, self.text_key(path))) ?? 0 }
+    /// The word a file's Text input is cut by; zero before it is read. A file the host
+    /// silences is cut by its text AND the offset below which its statements are silenced,
+    /// so a quieted file and a whole one never share a word; an unsilenced file keeps the
+    /// text's own.
+    fn text_word(path: string) -> int {
+        let text = self.db.value_hash_of(key(Family.Input, self.text_key(path))) ?? 0
+        let below? = (self.host.quiet)(path) else { return text }
+        fp(1, [text, below])
+    }
 
     fn octets_word(path: string) -> int { self.db.value_hash_of(key(Family.Input, self.octets_key(path))) ?? 0 }
 
