@@ -1,0 +1,41 @@
+use @std.cli.{argv}
+use measure.{Measure, claim_lines, report}
+
+/// An empty accumulation, under a name that carries its element type.
+fn seed_of() -> List<string> {
+    let seed: List<string> = []
+    seed
+}
+
+/// One results file's report, or the refusal that kept it from being read.
+fn reported(path: string, facts: string) -> List<string> {
+    match Measure.read(path, facts) {
+        .Ok(m) -> report(path, m.counts()),
+        .Err(e) -> ["${path}", "  refused: ${e}"],
+    }
+}
+
+fn usage() -> List<string> {
+    [
+        "usage: graph-measure recall FACTS.jsonl RESULTS.json [more RESULTS.json ...]",
+        "       graph-measure claims FACTS.jsonl RESULTS.json",
+    ]
+}
+
+/// Every oracle scalar of one results file, judged.
+fn claimed(path: string, facts: string) -> List<string> {
+    match Measure.read(path, facts) {
+        .Ok(m) -> claim_lines(m),
+        .Err(e) -> ["${path}", "  refused: ${e}"],
+    }
+}
+
+let args = argv()
+let lines = when {
+    args.length < 3 -> usage()
+    args[0] == "claims" -> [claimed(path, args[1]) for path in args.slice(2, args.length)]
+        .fold(seed_of(), (all: List<string>, some: List<string>) -> all.concat(some))
+    _ -> [reported(path, args[1]) for path in args.slice(2, args.length)]
+        .fold(seed_of(), (all: List<string>, some: List<string>) -> all.concat(some))
+}
+println(lines.join("\n"))

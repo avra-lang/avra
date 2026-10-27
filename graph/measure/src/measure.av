@@ -1,0 +1,321 @@
+use @std.cli.{argv}
+use @std.http.date.{civil_days}
+use @std.io.{read_text}
+use @std.json.{Json, Field, field, parse, member_once, to_text}
+use @std.text.{ascii_lower, parse_int}
+
+/// One record the oracle says a source owes.
+export type Owed = { source: string, model: string, value: Json }
+
+/// One record a source's extraction emitted.
+export type Emitted = { source: string, model: string, fields: Json }
+
+/// One scalar the oracle states, and the record that owes it.
+export type Claim = { record: Owed, name: string, want: Json }
+
+/// A name and how many of it.
+export type Count = { name: string, n: int }
+
+/// The resolver's decisions over every source.
+export type Decisions = { links: int, fresh: int, abstains: int }
+
+/// What a results file came to, against the oracle's records: the numbers
+/// `recall_measure.py` reports, read from the same two files.
+export type Counts = {
+    records: int,
+    by_model: List<Count>,
+    owed: int,
+    present: int,
+    fields: int,
+    equal: int,
+    missing: List<Count>,
+    decisions: Decisions,
+    answers_ok: int,
+    questions: int,
+}
+
+// ── Reading JSON: absence reads straight ────────────────────────
+
+/// A field of an object, or null.
+export fn member(o: Json?, key: string) -> Json? {
+    if o == null { return null }
+    match member_once(o!, key, key) { .Ok(v) -> v, .Err(_) -> null }
+}
+
+/// An array's items, or none.
+export fn items(j: Json?) -> List<Json> {
+    match j ?? Json.Null { .Arr(v) -> v, rest -> [] }
+}
+
+/// The text a value is, or null.
+export fn text_of(j: Json?) -> string? {
+    match j ?? Json.Null { .Str(s) -> s, rest -> null }
+}
+
+/// A text field of an object, or null.
+export fn text_at(o: Json?, key: string) -> string? {
+    text_of(member(o, key))
+}
+
+/// The integer a value is, or null.
+export fn int_of(j: Json?) -> int? {
+    match j ?? Json.Null { .Int(n) -> n, rest -> null }
+}
+
+/// An object's fields, or none.
+export fn fields_of(j: Json?) -> List<Field> {
+    match j ?? Json.Null { .Obj(v) -> v, rest -> [] }
+}
+
+/// A line of JSON, or an empty object where it is not JSON.
+export fn parsed(line: string) -> Json {
+    match parse(line) { .Ok(v) -> v, .Err(_) -> Json.Obj([]) }
+}
+
+// ── Instants ───────────────────────────────────────────────────
+
+/// A bounded number read from a written field, or null where the text is not one.
+export fn digits(parts: List<string>, i: int, upto: int?) -> int? {
+    if i >= parts.length { return null }
+    if parts[i].length == 0 || parts[i].length > 4 { return null }
+    let n? = parse_int(parts[i]) else { return null }
+    if n < 0 { return null }
+    if upto != null && n > upto! { return null }
+    n
+}
+
+/// The seconds east of UTC a written clock's tail names: `Z` names none, an
+/// offset names its own, and a fraction of a second changes nothing.
+fn offset_seconds(clock: string) -> int {
+    let plus = clock.split("+")
+    if plus.length > 1 { return east(plus[1]) }
+    let minus = clock.split("-")
+    if minus.length > 1 { return 0 - east(minus[1]) }
+    0
+}
+
+/// The seconds east that a written `hours:minutes` names.
+fn east(tail: string) -> int {
+    let parts = tail.split(":")
+    let hours = digits(parts, 0, 23) ?? 0
+    let minutes = digits(parts, 1, 59) ?? 0
+    hours * 3600 + minutes * 60
+}
+
+/// Epoch milliseconds of an ISO date or instant, or null where the text is not
+/// one. An absent offset is UTC, the reading every fixture clock is written in.
+export fn instant_ms(v: Json?) -> int? {
+    let s? = text_of(v) else { return null }
+    let pieces = s.split("T")
+    let date = pieces[0].split("-")
+    if date.length != 3 { return null }
+    let year? = digits(date, 0, null) else { return null }
+    let month? = digits(date, 1, 12) else { return null }
+    let day? = digits(date, 2, 31) else { return null }
+    let clock = if pieces.length > 1 { pieces[1].split(":") } else { [] }
+    let hour = digits(clock, 0, 23) ?? 0
+    let minute = digits(clock, 1, 59) ?? 0
+    let second = digits(clock, 2, 59) ?? 0
+    let offset = if pieces.length > 1 { offset_seconds(pieces[1]) } else { 0 }
+    (civil_days(year, month, day) * 86400 + hour * 3600 + minute * 60 + second - offset) * 1000
+}
+
+// ── Judgement ──────────────────────────────────────────────────
+
+/// Whether the oracle's value is held by the extracted one: an instant by its
+/// milliseconds, an embedded value field by field, a scalar by its spelling.
+export fn same(want: Json?, got: Json?) -> bool {
+    if want == null { return got == null }
+    if instant_ms(want) != null && int_of(got) != null { return int_of(got) == instant_ms(want) }
+    match want! {
+        .Null -> match got ?? Json.Null { .Null -> true, rest -> false },
+        .Bool(b) -> match got ?? Json.Null { .Bool(g) -> b == g, rest -> false },
+        .Int(n) -> match got ?? Json.Null { .Int(m) -> n == m, rest -> spelled_same(to_text(want!), got) },
+        .Float(x) -> spelled_same(to_text(want!), got),
+        .Str(s) -> spelled_same(s, got),
+        .Arr(ws) -> match got ?? Json.Null {
+            .Arr(gs) -> ws.length == gs.length && (0..ws.length).all((i: int) -> same(ws[i], gs[i])),
+            rest -> false,
+        },
+        .Obj(ws) -> ws.all((f: Field) -> same(f.value, member(got, f.key))),
+    }
+}
+
+/// Whether two scalars read the same, whatever case or surrounding space they wear.
+export fn spelled_same(want: string, got: Json?) -> bool {
+    let g? = text_of(got) else { return false }
+    ascii_lower(want.trim()) == ascii_lower(g.trim())
+}
+
+/// Whether the oracle's value is one a record can be expected to carry: a list
+/// says which records a field points at, and `oracle:` names one of them.
+export fn scalar(v: Json) -> bool {
+    match v { .Arr(xs) -> false, .Str(s) -> !s.starts_with("oracle:"), rest -> true }
+}
+
+// ── The file's own shapes ──────────────────────────────────────
+
+/// One line per oracle scalar: the source, the record, the property, and
+/// whether a candidate of that model holds it.
+export fn claim_lines(m: Measure) -> List<string> {
+    ["${claim.record.source} ${claim.record.model}.${claim.name} ${text_of(claim.want) ?? to_text(claim.want)} ${if m.candidates(claim.record).any((c: Emitted) -> holds(c, claim)) { "held" } else { "absent" }}" for claim in m.claims()]
+}
+
+/// One results file, as the tables a measure is a projection of.
+export type Measure = { results: Json, owed: List<Owed>, emitted: List<Emitted> }
+
+/// The source extractions a results file holds, one per source: a resumed run
+/// records the same source twice, and the later record is the one it stands by.
+fn source_extractions(results: Json) -> List<Json> {
+    let all = [e for e in items(member(results, "extractions")) if text_at(e, "kind") == "source"]
+    let names = tallied([text_at(e, "source") ?? "" for e in all])
+    [latest(all, n.name) for n in names]
+}
+
+/// The extraction of one source that stands, or an empty object.
+fn latest(all: List<Json>, source: string) -> Json {
+    let mine = all.filter((e: Json) -> text_at(e, "source") ?? "" == source)
+    if mine.is_empty() { return Json.Obj([]) }
+    mine.last()!
+}
+
+fn result_of(e: Json) -> Json {
+    member(e, "result") ?? Json.Obj([])
+}
+
+fn emitted_of(results: Json) -> List<Emitted> {
+    [Emitted {
+        source: text_at(e, "source") ?? "",
+        model: text_at(r, "model") ?? "",
+        fields: member(r, "fields") ?? Json.Arr([]),
+    } for e in source_extractions(results) for r in items(member(result_of(e), "records"))]
+}
+
+fn owed_of(facts: string) -> List<Owed> {
+    [Owed {
+        source: text_at(row, "source") ?? "",
+        model: text_at(rec, "model") ?? "",
+        value: member(rec, "value") ?? Json.Obj([]),
+    } for line in facts.split("\n") if line.trim() != "" for row in [parsed(line)] for rec in items(member(row, "records"))]
+}
+
+/// The value a candidate record states for one property, or null.
+export fn stated(candidate: Emitted, name: string) -> Json? {
+    let field? = items(candidate.fields).find((f: Json) -> text_at(f, "property") == name) else { return null }
+    member(field, "value")
+}
+
+/// Whether a candidate states the property at all: a field it never wrote is
+/// no evidence for a null value.
+export fn states(candidate: Emitted, name: string) -> bool {
+    items(candidate.fields).any((f: Json) -> text_at(f, "property") == name)
+}
+
+/// One field as an extraction writes it, for the tests that build a record.
+export fn stated_as(name: string, value: Json) -> Json {
+    Json.Obj([field("property", Json.Str(name)), field("value", value)])
+}
+
+/// Whether a candidate holds the oracle's field.
+export fn holds(candidate: Emitted, claim: Claim) -> bool {
+    states(candidate, claim.name) && same(claim.want, stated(candidate, claim.name))
+}
+
+impl Measure {
+    static fn read(results_path: string, facts_path: string) -> Result<Measure, string> {
+        let facts = match read_text(facts_path) {
+            .Ok(t) -> t,
+            .Err(_) -> { fail "cannot read ${facts_path}" },
+        }
+        let results = match file_json(results_path) { .Ok(j) -> j, .Err(e) -> { fail e } }
+        Measure { results: results, owed: owed_of(facts), emitted: emitted_of(results) }
+    }
+
+    fn candidates(owed: Owed) -> List<Emitted> {
+        self.emitted.filter((c: Emitted) -> c.source == owed.source && c.model == owed.model)
+    }
+
+    fn present() -> List<Owed> {
+        self.owed.filter((w: Owed) -> !self.candidates(w).is_empty())
+    }
+
+    /// Every scalar the oracle states, in the order its records are written.
+    fn claims() -> List<Claim> {
+        [Claim { record: w, name: f.key, want: f.value } for w in self.owed for f in fields_of(w.value) if scalar(f.value)]
+    }
+
+    fn equal() -> List<Claim> {
+        self
+            .claims()
+            .filter((claim: Claim) -> self.candidates(claim.record).any((c: Emitted) -> holds(c, claim)))
+    }
+
+    fn decisions() -> Decisions {
+        let chosen = [text_at(d, "choice") ?? "" for e in source_extractions(self.results) for d in items(member(member(e, "resolve"), "resolved"))]
+        Decisions {
+            links: chosen.filter((c: string) -> c != "new" && c != "abstain").length,
+            fresh: chosen.filter((c: string) -> c == "new").length,
+            abstains: chosen.filter((c: string) -> c == "abstain").length,
+        }
+    }
+
+    fn missing() -> List<Count> {
+        tallied([w.model for w in self.owed if self.candidates(w).is_empty()])
+    }
+
+    fn counts() -> Counts {
+        Counts {
+            records: self.emitted.length,
+            by_model: tallied([c.model for c in self.emitted]),
+            owed: self.owed.length,
+            present: self.present().length,
+            fields: self.claims().length,
+            equal: self.equal().length,
+            missing: self.missing(),
+            decisions: self.decisions(),
+            answers_ok: int_of(member(member(self.results, "counts"), "pass")) ?? 0,
+            questions: fields_of(member(self.results, "questions")).length,
+        }
+    }
+}
+
+fn file_json(path: string) -> Result<Json, string> {
+    let text = match read_text(path) { .Ok(t) -> t, .Err(_) -> { fail "cannot read ${path}" } }
+    match parse(text) { .Ok(v) -> .Ok(v), .Err(_) -> { fail "${path} is not JSON" } }
+}
+
+/// Every name once, in the order it is first read, and how many of it.
+export fn tallied(names: List<string>) -> List<Count> {
+    let seed: List<string> = []
+    let firsts = names
+        .fold(
+            seed,
+            (kept: List<string>, name: string) -> if kept.any((k: string) -> k == name) { kept } else { kept.concat([name]) },
+        )
+    [Count { name: f, n: names.filter((x: string) -> x == f).length } for f in firsts]
+}
+
+// ── Report ────────────────────────────────────────────────────
+
+fn tallied_text(counts: List<Count>) -> string {
+    if counts.is_empty() { return "-" }
+    counts.map((c: Count) -> "${c.name}=${c.n}").join(" ")
+}
+
+export fn report(path: string, c: Counts) -> List<string> {
+    [
+        path,
+        "  records ${c.records}",
+        "  by_model ${tallied_text(c.by_model)}",
+        "  oracle_owed ${c.owed} present ${c.present}",
+        "  scalar_fields ${c.fields} fields_equal ${c.equal}",
+        "  missing_models ${tallied_text(c.missing)}",
+        "  resolver link ${c.decisions.links} new ${c.decisions.fresh} abstain ${c.decisions.abstains}",
+        "  answers_ok ${c.answers_ok} of ${c.questions}",
+    ]
+}
+
+fn seed_of() -> List<string> {
+    let seed: List<string> = []
+    seed
+}

@@ -1,0 +1,100 @@
+use @std.json.{Json, parse}
+use measure.{Claim, Emitted, Owed, holds, instant_ms, same, scalar, states, stated_as, tallied}
+
+/// A value as the oracle writes it.
+fn value(text: string) -> Json {
+    match parse(text) { .Ok(j) -> j, .Err(_) -> Json.Null }
+}
+
+/// One record a source emitted, from the fields it states.
+fn emitted(source: string, model: string, fields: List<Json>) -> Emitted {
+    Emitted { source: source, model: model, fields: Json.Arr(fields) }
+}
+
+/// One scalar the oracle states for a record.
+fn claim(name: string, want: string) -> Claim {
+    Claim {
+        record: Owed { source: "s1", model: "Pet", value: value("{}") },
+        name: name,
+        want: value(want),
+    }
+}
+
+/// A pet named Fig, with nothing said about its species.
+fn named_fig() -> Emitted { emitted("s1", "Pet", [stated_as("name", value("\"Fig\""))]) }
+
+/// The same pet, its species stated as absent rather than left unwritten.
+fn species_absent() -> Emitted { emitted("s1", "Pet", [stated_as("species", value("null"))]) }
+
+/// A name written with padding and lower case.
+fn padded_fig() -> Emitted { emitted("s1", "Pet", [stated_as("name", value("\"  fig \""))]) }
+
+/// An appointment the extraction dates in epoch milliseconds.
+fn dated() -> Emitted { emitted("s1", "Appointment", [stated_as("scheduled_at_ms", value("1792060200000"))]) }
+
+spec "measure: an oracle record against the one the extraction emitted" {
+    given "a record whose property the candidate never states" {
+        then "an absent property is no evidence, even for a null value" {
+            !states(named_fig(), "species") && !holds(named_fig(), claim("species", "null"))
+        }
+    }
+    given "a candidate that states the property as absent" {
+        then "a stated null holds the oracle's null" { holds(species_absent(), claim("species", "null")) }
+        then "and it is no evidence of a value" { !holds(species_absent(), claim("species", "\"cat\"")) }
+    }
+    given "a value written as text" {
+        then "case and surrounding space are not part of it" { holds(padded_fig(), claim("name", "\"Fig\"")) }
+        then "another word is another value" { !holds(named_fig(), claim("name", "\"Figment\"")) }
+    }
+    given "an instant the oracle writes as a stamp and the extraction as milliseconds" {
+        then "a date-only stamp is midnight UTC of that day" { instant_ms(value("\"2026-10-15\"")) == 1792022400000 }
+        then "a written instant is its own milliseconds" { instant_ms(value("\"2026-10-15T10:30:00Z\"")) == 1792060200000 }
+        then "a trailing offset moves it east" { instant_ms(value("\"2026-10-15T10:30:00+02:00\"")) == 1792053000000 }
+        then "and the record holds the oracle's stamp" { holds(dated(), claim("scheduled_at_ms", "\"2026-10-15T10:30:00Z\"")) }
+        then "a stamp the oracle writes differently is another instant" {
+            !holds(dated(), claim("scheduled_at_ms", "\"2026-10-16T10:30:00Z\""))
+        }
+    }
+    given "text that is no date" {
+        then "no instant is read from a name" { instant_ms(value("\"r4\"")) == null }
+        then "nor from half a date" { instant_ms(value("\"2026-10\"")) == null }
+    }
+}
+
+spec "measure: what a record carries, and what it points at" {
+    given "an oracle value" {
+        then "a list says which records a field names, never a value" { !scalar(value("[\"r1\"]")) }
+        then "an `oracle:` name is a record too" { !scalar(value("\"oracle:velluto\"")) }
+        then "a word, a count and an absent value are values" {
+            scalar(value("\"Velluto Works\"")) && scalar(value("60")) && scalar(value("null"))
+        }
+    }
+    given "an embedded value" {
+        then "every field the oracle writes must be held" {
+            same(
+                value("{\"minor\": 21000, \"currency\": \"EUR\"}"),
+                value("{\"currency\": \"eur\", \"minor\": 21000}"),
+            )
+        }
+        then "one field that differs is not held" {
+            !same(
+                value("{\"minor\": 21000, \"currency\": \"EUR\"}"),
+                value("{\"minor\": 21000, \"currency\": \"GBP\"}"),
+            )
+        }
+    }
+}
+
+spec "measure: a count keeps the order it was first read" {
+    given "names read more than once" {
+        then "each name appears once, where it first did, with its count" {
+            let counts = tallied(["Pet", "Person", "Pet", "Pet"])
+            counts.length == 2 &&
+                counts[0].name == "Pet" &&
+                counts[0].n == 3 &&
+                counts[1].name == "Person" &&
+                counts[1].n == 1
+        }
+        then "no name is no count" { tallied([]).is_empty() }
+    }
+}
