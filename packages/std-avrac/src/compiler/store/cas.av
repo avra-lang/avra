@@ -134,6 +134,12 @@ export fn cas_named_in(stored: string) -> List<string> {
     [piece.substring(0, width) for piece in stored.split(cas_prefix()).drop(1) if piece.length >= width]
 }
 
+once fn read_tally() -> Cell<int> { Cell.new(0) }
+
+/// The octets of shared-store blobs this process read to answer rows — what an edit costs in bytes
+/// of kept values read back, counted beside the work (`check --counts`, compiler/work.av).
+export fn cas_bytes_read() -> int { read_tally().get() }
+
 /// The value a reference names, checked against its digest: absent when the blob is missing
 /// or damaged, and a damaged one is removed so the next writer puts it back.
 export fn cas_value(stored: string) -> string? {
@@ -146,6 +152,7 @@ export fn cas_value(stored: string) -> string? {
     o.close()
     let v? = raw.text() else { return damaged(at) }
     if digest_of_octets(v.bytes()) != digest { return damaged(at) }
+    read_tally().set(read_tally().get() + raw.length)
     v
 }
 
