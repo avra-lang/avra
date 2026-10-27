@@ -569,6 +569,19 @@ impl Workspace {
         [s! for s in said]
     }
 
+    /// What a held file said, read from the said row it stands on: its warnings and cases, then
+    /// its rule findings.
+    fn stood_said(path: string, want: Want) -> Said? {
+        let text? = self.said_row_text(path) else { return null }
+        let parts = unpacked(text)
+        if parts.length < 3 { return null }
+        let said? = said_of(path, parts[0]) else { return null }
+        match want {
+            .Diagnostics -> said with { warnings: spoken([said.warnings, parts[1]]), findings: findings_read(parts[2]) },
+            .Binary -> said,
+        }
+    }
+
     /// What a parsed file says now: its warnings, and its rule findings —
     /// kept under every want, printed only under a diagnostics want.
     fn says(store: Store, p: Program, a: Analysis) -> Spoken {
@@ -627,6 +640,7 @@ impl Workspace {
     fn file_said(store: Store, path: string, fresh: Spoken?, want: Want) -> Said? {
         let okey = self.held_okey(store, path)
         let told? = fresh else {
+            if self.stood.get().get(path) != null { return self.stood_said(path, want) }
             let kept? = store.get(Stored.Warn, said_key(okey)) else { return null }
             let said? = said_of(path, kept) else { return null }
             return held_said(store, okey, said, want)
