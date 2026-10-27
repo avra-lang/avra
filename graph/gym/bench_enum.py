@@ -287,13 +287,42 @@ def retrieved(base, question, retrieval, n=5):
 _held = None
 
 
+SHAPE_SAID = {
+    "time": "a date or a point in time",
+    "integer": "a whole number",
+    "number": "a measured amount",
+    "boolean": "a yes or a no",
+    "string": "a word or a piece of text",
+    "enum": "one of a declared set of values",
+    "reference": "another record it points at",
+    "embedded": "a value made of several declared fields",
+    "structured": "a value made of several declared fields",
+}
+
+
+def chosen_shape(question, fields, models, chooser):
+    """The kind of value the question is after, chosen from the kinds the reached fields are —
+    the one decision a question cannot be answered without, and the one that narrows the field
+    to a couple of rivals rather than a dozen."""
+    shapes = sorted({shape for shape in fields.values()})
+    if len(shapes) <= 1:
+        return shapes[0] if shapes else None
+    options = [f"{SHAPE_SAID.get(s, s)}: {', '.join(sorted({p.replace('_', ' ') for (m, p), sh in fields.items() if sh == s}))}" for s in shapes]
+    picked = chooser.choose(f'Question: "{question}"', "What kind of answer does the question ask for?", options)
+    best = max(range(len(options)), key=lambda i: picked[i])
+    return shapes[best] if picked[best] > 0 else None
+
+
 def chosen_field(question, fields, models, chooser):
     """The one declared field a question is asking for, chosen from the fields the enumeration
     reached — the single model call the whole search is replaced by. Options are the fields'
     own declarations, so a new declared property enters the choice with no code change."""
     if len(fields) <= 1:
         return next(iter(fields), None)
-    options = [f"the {p.replace('_', ' ')} of a {m}: {first_sentence(models[m].get('description'))}" for m, p in sorted(fields)]
+    options = [
+        f"{'the name it is known by (its declared label)' if p == label_field(models[m]) else 'the ' + p.replace('_', ' ')} of a {m}: {first_sentence(models[m].get('description'))}"
+        for m, p in sorted(fields)
+    ]
     picked = chooser.choose(f'Question: "{question}"', "Which of these answers the question?", options)
     best = max(range(len(options)), key=lambda i: picked[i])
     return sorted(fields)[best] if picked[best] > 0 else None
@@ -306,7 +335,7 @@ def written_instant(question):
     return {"valid_at": found.group(0)} if found else None
 
 
-def verdict(item, survivors, golds, passages=()):
+def verdict(item, survivors, golds, passages=(), chosen=False):
     """What the survivors add up to for one question. A value votes once per path that reaches
     it, weighted by how narrowly that path was drawn — a scan of a whole model votes for
     everything and so votes for nothing — and only when the retrieved text says it."""
@@ -314,7 +343,7 @@ def verdict(item, survivors, golds, passages=()):
     by_shape = collections.defaultdict(set)
     for cypher, _, values, records in survivors:
         for name, (value, is_cited, shape) in values.items():
-            if is_cited and (not passages or grounded(value, passages)):
+            if (chosen or is_cited) and (chosen or not passages or grounded(value, passages)):
                 votes[json.dumps(value, sort_keys=True)] += 1 / records
                 by_shape[shape].add(json.dumps(value, sort_keys=True))
     reached = {json.dumps(value, sort_keys=True) for _, _, values, _ in survivors for value, _, _ in values.values()}
@@ -347,7 +376,7 @@ def world_of(family, seed):
     }
 
 
-def measure(selection, depth, retrieval=None, oracle_property=False, evidence=None, chooser=None):
+def measure(selection, depth, retrieval=None, oracle_property=False, evidence=None, chooser=None, prune_choice=False):
     tally, kinds, queries = collections.Counter(), collections.defaultdict(collections.Counter), 0
     for family, seed in selection:
         one = world_of(family, seed)
@@ -376,12 +405,15 @@ def measure(selection, depth, retrieval=None, oracle_property=False, evidence=No
                     survivors.append((cypher, landed, values, records))
             passages = retrieved(one["base"], item["question"], evidence) if evidence is not None else []
             if chooser is not None and survivors:
-                reached_fields = {(model, p) for _, model, values, _ in survivors for p in values}
-                picked = chosen_field(item["question"], reached_fields, one["models"], chooser)
-                if picked is not None:
-                    survivors = [(c, l, {k: v for k, v in vals.items() if (l, k) == picked}, r) for c, l, vals, r in survivors]
+                reached = {(model, p): shape for (model, p), shape in shapes.items() if any(p in vals for _, model, vals, _ in survivors)}
+                pruned = prune_choice and _held is not None
+                near_models, near_fields = schema_ranks(one["models"], item["question"], _held) if pruned else (set(), set())
+                narrowed = ({f for f in reached if f"{f[0]}.{f[1]}" in near_fields} or {f for f in reached if f[0] in near_models} or reached) if pruned else reached
+                pick = chosen_field(item["question"], narrowed, one["models"], chooser)
+                if pick is not None:
+                    survivors = [(c, l, {k: v for k, v in vals.items() if (l, k) == pick}, r) for c, l, vals, r in survivors]
                     survivors = [s for s in survivors if s[2]]
-            outcome, _ = verdict(item, survivors, item["gold"].get("values") or [], passages)
+            outcome, _ = verdict(item, survivors, item["gold"].get("values") or [], passages, chooser is not None)
             tally[outcome] += 1
             kinds[item["kind"]][outcome] += 1
     return tally, kinds, queries
@@ -397,7 +429,7 @@ def main():
     parser.add_argument("--choose", action="store_true", help="one model call: which of the reached fields answers the question")
     args = parser.parse_args()
     evidence = None
-    if args.evidence:
+    if args.evidence or args.prune:
         global _held
         sys.path.insert(0, str(GRAPH / "retrieval"))
         import service
@@ -418,7 +450,7 @@ def main():
         import plan as planner
 
         chooser = planner.Shared(planner.SOCKET)
-    tally, kinds, queries = measure([tuple(w.split(",")) for w in args.worlds], args.depth, retrieval if args.prune else None, args.oracle_property, evidence, chooser)
+    tally, kinds, queries = measure([tuple(w.split(",")) for w in args.worlds], args.depth, retrieval if args.prune else None, args.oracle_property, evidence, chooser, args.prune)
     total = sum(tally.values())
     covered = tally["one-right"] + tally["several"]
     print(f"{total} questions, {queries} queries, depth {args.depth}")
