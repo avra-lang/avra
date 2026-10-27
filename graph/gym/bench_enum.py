@@ -31,6 +31,20 @@ from engine import App  # noqa: E402
 MODELS_KEPT, PROPERTIES_KEPT = 4, 3
 
 
+def shape_of(p):
+    """The declared shape of a value: what kind of thing a property holds, read from its own
+    declaration rather than from its name."""
+    shape = p["shape"]
+    inner = (shape.get("optional") or shape.get("list")) if isinstance(shape, dict) else shape
+    if isinstance(inner, dict):
+        return "reference" if "reference" in inner else ("embedded" if "embedded" in inner else "structured")
+    if p.get("time"):
+        return "time"
+    if p.get("enum"):
+        return "enum"
+    return str(inner)
+
+
 def is_enum(p):
     return any(rule.startswith("one_of(") for rule in p.get("rules") or [])
 
@@ -215,7 +229,7 @@ def first_sentence(description):
     return text[: end.end()].strip() if end else text
 
 
-def stated(answer, anchor, label=None):
+def stated(answer, anchor, label=None, shapes=None, model=None):
     """The values a query answered with, one per property, with whether the answer cites
     anything: empties and the anchor itself dropped, since the thing a question starts from
     is never its answer, and an uncited value is a hole rather than evidence."""
@@ -227,7 +241,7 @@ def stated(answer, anchor, label=None):
             continue
         if path[1] == label and value == anchor:
             continue
-        out[path[1]] = (value, bool(f.get("citations")))
+        out[path[1]] = (value, bool(f.get("citations")), (shapes or {}).get((model, path[1]), "?"))
     return out, max(1, len(records))
 
 
@@ -257,17 +271,49 @@ def asked_property(item):
     return None
 
 
+def retrieved(base, question, retrieval, n=5):
+    """The passages a question retrieves from its own world's sources — the evidence an answer
+    has to be consistent with, read once per world and searched once per question."""
+    import hybrid
+
+    index = retrieval.setdefault(base, None)
+    if index is None:
+        passages = [hybrid.Passage(p["id"], p["text"]) for p in corpus_of(base)]
+        index = retrieval[base] = hybrid.Index(passages, [], _held.embedder, _held.store)
+    return [hit["text"] for hit in index.search(question, [], n)]
+
+
+_held = None
+
+
+def chosen_field(question, fields, models, chooser):
+    """The one declared field a question is asking for, chosen from the fields the enumeration
+    reached — the single model call the whole search is replaced by. Options are the fields'
+    own declarations, so a new declared property enters the choice with no code change."""
+    if len(fields) <= 1:
+        return next(iter(fields), None)
+    options = [f"the {p.replace('_', ' ')} of a {m}: {first_sentence(models[m].get('description'))}" for m, p in sorted(fields)]
+    picked = chooser.choose(f'Question: "{question}"', "Which of these answers the question?", options)
+    best = max(range(len(options)), key=lambda i: picked[i])
+    return sorted(fields)[best] if picked[best] > 0 else None
+
+
 def verdict(item, survivors, golds, passages=()):
     """What the survivors add up to for one question. A value votes once per path that reaches
     it, weighted by how narrowly that path was drawn — a scan of a whole model votes for
     everything and so votes for nothing — and only when the retrieved text says it."""
     votes = collections.Counter()
+    by_shape = collections.defaultdict(set)
     for cypher, _, values, records in survivors:
-        for value, is_cited in values.values():
+        for name, (value, is_cited, shape) in values.items():
             if is_cited and (not passages or grounded(value, passages)):
                 votes[json.dumps(value, sort_keys=True)] += 1 / records
-    reached = {json.dumps(value, sort_keys=True) for _, _, values, _ in survivors for value, _ in values.values()}
-    hits = [name for _, name, values, _ in survivors for value, _ in values.values() if json.dumps(value, sort_keys=True) in golds]
+                by_shape[shape].add(json.dumps(value, sort_keys=True))
+    reached = {json.dumps(value, sort_keys=True) for _, _, values, _ in survivors for value, _, _ in values.values()}
+    pinned = [next(iter(v)) for v in by_shape.values() if len(v) == 1]
+    if item["gold"]["status"] != "unknown" and len(set(pinned)) == 1 and pinned[0] in golds:
+        return "one-right", [pinned[0]]
+    hits = [name for _, name, values, _ in survivors for value, _, _ in values.values() if json.dumps(value, sort_keys=True) in golds]
     if item["gold"]["status"] == "unknown":
         return "declined" if not votes else "answered-wrongly", hits
     if not survivors:
@@ -293,12 +339,13 @@ def world_of(family, seed):
     }
 
 
-def measure(selection, depth, retrieval=None, oracle_property=False):
+def measure(selection, depth, retrieval=None, oracle_property=False, evidence=None, chooser=None):
     tally, kinds, queries = collections.Counter(), collections.defaultdict(collections.Counter), 0
     for family, seed in selection:
         one = world_of(family, seed)
         for item in one["items"]:
             asked = candidates(item["question"], one["world"], one["models"], depth)
+            shapes = {(n, p["name"]): shape_of(p) for n, m in one["models"].items() for p in m["properties"]}
             kept_models, kept_properties = schema_ranks(one["models"], item["question"], retrieval) if retrieval else (set(one["models"]), set())
             if oracle_property:
                 wanted = asked_property(item)
@@ -312,12 +359,19 @@ def measure(selection, depth, retrieval=None, oracle_property=False):
                     one["app"].query(cypher, {**item["params"], **extra}),
                     extra.get("anchor", ""),
                     label_field(one["models"][landed]),
+                    shapes,
+                    landed,
                 )
                 values = {k: v for k, v in values.items() if f"{landed}.{k}" in kept_properties} if kept_properties else values
                 if values:
-                    survivors.append((cypher, name, values, records))
-            first = corpus_of(one["base"])
-            passages = [p["text"] for p in first] if not retrieval else [p for p in (first and [x["text"] for x in retrieval.retrieve({"passages": first, "question": item["question"], "n": 5})["hits"]])]
+                    survivors.append((cypher, landed, values, records))
+            passages = retrieved(one["base"], item["question"], evidence) if evidence is not None else []
+            if chooser is not None and survivors:
+                reached_fields = {(model, p) for _, model, values, _ in survivors for p in values}
+                picked = chosen_field(item["question"], reached_fields, one["models"], chooser)
+                if picked is not None:
+                    survivors = [(c, l, {k: v for k, v in vals.items() if (l, k) == picked}, r) for c, l, vals, r in survivors]
+                    survivors = [s for s in survivors if s[2]]
             outcome, _ = verdict(item, survivors, item["gold"].get("values") or [], passages)
             tally[outcome] += 1
             kinds[item["kind"]][outcome] += 1
@@ -330,7 +384,18 @@ def main():
     parser.add_argument("--depth", type=int, default=1)
     parser.add_argument("--prune", action="store_true", help="keep only what the schema link ranks nearest")
     parser.add_argument("--oracle-property", action="store_true", help="bound the measurement: keep only the property the gold plan asks for")
+    parser.add_argument("--evidence", action="store_true", help="keep only a value the question's own retrieved passages say")
+    parser.add_argument("--choose", action="store_true", help="one model call: which of the reached fields answers the question")
     args = parser.parse_args()
+    evidence = None
+    if args.evidence:
+        global _held
+        sys.path.insert(0, str(GRAPH / "retrieval"))
+        import service
+
+        _held = service.Retrieval()
+        _held.ready()
+        evidence = {}
     retrieval = None
     if args.prune:
         sys.path.insert(0, str(GRAPH / "retrieval"))
@@ -338,7 +403,13 @@ def main():
 
         retrieval = service.Retrieval()
         retrieval.ready()
-    tally, kinds, queries = measure([tuple(w.split(",")) for w in args.worlds], args.depth, retrieval if args.prune else None, args.oracle_property)
+    chooser = None
+    if args.choose:
+        sys.path.insert(0, str(GRAPH / "planner"))
+        import plan as planner
+
+        chooser = planner.Shared(planner.SOCKET)
+    tally, kinds, queries = measure([tuple(w.split(",")) for w in args.worlds], args.depth, retrieval if args.prune else None, args.oracle_property, evidence, chooser)
     total = sum(tally.values())
     covered = tally["one-right"] + tally["several"]
     print(f"{total} questions, {queries} queries, depth {args.depth}")
