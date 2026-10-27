@@ -373,9 +373,7 @@ impl Workspace {
         if kept != null { return kept! }
         let digest = fp_str(
             joined(
-                sorted_texts(
-                    ["${self.saved_name(k) ?? ""}\t${self.probe_digest(k)}" for k in probes],
-                ),
+                sorted_texts(["${self.saved_name(k) ?? ""}\t${self.probe_word(k)}" for k in probes]),
                 "\n",
             ),
         )
@@ -383,12 +381,19 @@ impl Workspace {
         digest
     }
 
-    /// What one probe stands at now: restored from its saved answer, else verified, so the digest never depends on what the run
-    /// happened to ask earlier.
-    fn probe_digest(k: Key) -> int {
-        if k.family == Family.Named.ordinal { return self.bucket_digest(k.arg) ?? 0 }
+    /// What one probe stands at now, as a word: its digest, or `absent` for one that has none, which
+    /// no digest equals.
+    fn probe_word(k: Key) -> string {
+        let h? = self.probe_digest(k) else { return "absent" }
+        "${h}"
+    }
+
+    /// A probe's digest: restored from its saved answer, else verified, so it never depends on what
+    /// the run happened to ask earlier.
+    fn probe_digest(k: Key) -> int? {
+        if k.family == Family.Named.ordinal { return self.bucket_digest(k.arg) }
         if self.db.kernel.cell(k) != null || !self.db.kernel.restored(k) { self.db.kernel.verified(k.family, k.arg) }
-        self.db.kernel.hash_forced(k) ?? 0
+        self.db.kernel.hash_forced(k)
     }
 
     /// A file's environment as a derived answer: every probe read, hashed together. It is
