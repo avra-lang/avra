@@ -310,25 +310,62 @@ fn encoded(k: Kind, v: Code, depth: int) -> Code {
 /// draw none.
 fn shape_list(t: Type) -> Code {
     if names_a_shape(t) || !t.variants.is_empty() { return quote { [] } }
-    literal_list([field_shape(f) for f in t.fields])
+    literal_list([field_shape(t, f) for f in t.fields])
 }
 
-fn field_shape(f: Field) -> Code {
+fn field_shape(t: Type, f: Field) -> Code {
     let owed = if optional(f) { quote { false } } else { quote { true } }
     let hidden = if f.annotations.any(is_secret(it)) { quote { true } } else { quote { false } }
-    quote { FieldShape { name: ${literal(f.name)}, kind: ${field_kind(inner(f.kind))}, required: ${owed}, secret: ${hidden} } }
+    quote { FieldShape { name: ${literal(f.name)}, kind: ${field_kind(inner(f.kind), t.name)}, required: ${owed}, secret: ${hidden} } }
 }
 
-/// A field's kind as an input reads it: a scalar by its own word, any
-/// other type by its spelling.
-fn field_kind(k: Kind) -> Code {
+/// A field's kind as an input reads it: a scalar by its own word, a
+/// record by its own fields — unless it leads back to `owner`, whose
+/// fields would then never end — and any other type by its spelling.
+fn field_kind(k: Kind, owner: string) -> Code {
     match k {
         .Str -> quote { FieldKind.Text },
         .Int -> quote { FieldKind.Int },
         .Float -> quote { FieldKind.Float },
         .Bool -> quote { FieldKind.Bool },
-        .Ptr or .Void or .List(_) or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Named(_, _) or .Var(_) or .Unspelled(_) -> quote { FieldKind.Other(${literal(k.spelled())}) },
+        .Named(n, _) -> if nested(k) != null && !reaches(n, owner, []) {
+            quote { FieldKind.Record(${name(n)}.fields()) }
+        } else {
+            spelled_kind(k)
+        },
+        .List(each) -> if nested(each) != null { quote { FieldKind.Records(${literal(k.spelled())}) } } else { spelled_kind(k) },
+        .Ptr or .Void or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> spelled_kind(k),
     }
+}
+
+fn spelled_kind(k: Kind) -> Code { quote { FieldKind.Other(${literal(k.spelled())}) } }
+
+/// The record a kind names, when it names one a form can draw by its
+/// fields: declared, not generic, neither text-formed, a named shape nor
+/// an enum.
+fn nested(k: Kind) -> Type? {
+    match k {
+        .Named(n, args) -> {
+            if !args.is_empty() || texted(n) { return null }
+            let t? = type_named(n) else { return null }
+            if names_a_shape(t) || !t.variants.is_empty() { null } else { t }
+        },
+        .Str or .Int or .Float or .Bool or .Ptr or .Void or .List(_) or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
+    }
+}
+
+/// Whether the record `from` holds `to`, through its fields' records.
+fn reaches(from: string, to: string, seen: List<string>) -> bool {
+    if from == to { return true }
+    if seen.contains(from) { return false }
+    let t? = type_named(from) else { return false }
+    t.fields.any((f) -> held_record(f.kind).any((n) -> reaches(n, to, seen.concat([from]))))
+}
+
+/// The record a field holds, itself or as an option.
+fn held_record(k: Kind) -> List<string> {
+    let t? = nested(inner(k)) else { return [] }
+    [t.name]
 }
 
 /// A decoder's body: what it runs, then what it answers.

@@ -3241,6 +3241,17 @@ was typed as text (std-ui/src/forms). The split is clean in its own right;
 the want is a `once fn` with type parameters — one cache per
 instantiation — so `$kept` can be derived for `X<T>`.
 
+### A `match` in a component body composes its arms' views
+
+In a component body `if`/`else` draws whichever branch holds, while a
+`match` is an expression whose arms must agree: `.Bool -> checkbox …` beside
+`.Record(fs) -> fieldset …` is "a `match`'s arms disagree: `fieldset` vs the
+first arm's `checkbox`", braced arms included. So `shape_inputs`
+(std-ui/src/forms/form_inputs.av) projects `FieldKind` through an exhaustive
+`drawn` into a payload-free `Drawn` and branches with `if … == Drawn.…`,
+reading the record's fields again through `grouped`. The want: a body
+`match` draws its matching arm, payloads bound, exactly as `if` does.
+
 ### A compile-time directory embed
 
 `embed(path)` reads one file at a literal path, so the std-avrac witness fixtures
