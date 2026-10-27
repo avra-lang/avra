@@ -26,9 +26,10 @@ say "the served page defines $(printf '%s\n' "$defined" | wc -l | tr -d ' ') fns
 needs_wasm_clang
 wasm_ready || skip "the wasm runtime archive did not build"
 
-# Importing a served model is free (a few bytes); reading its route data costs the descriptor, which is bounded.
+# Importing a served model is free (CI measured 0 B); reading its route data costs the descriptor and the string work that
+# places it (4195 B measured: seven optional doors, path joining). A server riding along is tens of KB, so 8 KB tells them apart.
 cap=${WASM_ROUTES_CAP:-64}
-reach_cap=${WASM_ROUTES_REACH_CAP:-4096}
+reach_cap=${WASM_ROUTES_REACH_CAP:-8192}
 
 # The bytes of one fixture built for the target, or empty when it will not build. Each build has a directory of
 # its own, so one fixture's output is never mistaken for the other's.
