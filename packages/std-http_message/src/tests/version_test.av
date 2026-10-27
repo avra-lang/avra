@@ -1,6 +1,6 @@
 // `Version`: the tag a server answers and the order a client keeps answers in are one value — it reads back
 // what it wrote, an equal version is no later, and what is no version parses to none.
-use @std.http_message.message.{Header, Reply, Version, headers_of}
+use @std.http_message.message.{Header, Reply, Version, headers_of, named_field}
 
 fn at(sequence: int) -> Version { Version { sequence: sequence } }
 
@@ -49,5 +49,22 @@ spec "Version" {
                 fields[1].value == "1: 2"
         }
         then "nothing is no field" { headers_of("").is_empty() }
+    }
+    given "the tables a server names" {
+        then "an answer reads its names from the fields, and none from a field it does not carry" {
+            let said = Reply {
+                status: 200,
+                headers: [
+                    Header { name: "Avra-Reads", value: named_field(["Job", "Note"]) },
+                    Header { name: "avra-wrote", value: "" },
+                ],
+                body: "".bytes(),
+            }
+            let silent = Reply { status: 200, body: "".bytes() }
+            said.reads()?.join(",") ?? "-" == "Job,Note" &&
+                said.wrote()?.length ?? -1 == 0 &&
+                silent.reads() == null &&
+                silent.wrote() == null
+        }
     }
 }

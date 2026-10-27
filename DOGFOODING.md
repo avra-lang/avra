@@ -578,6 +578,19 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       synthetic". Not ratcheted: the smell is a naming choice, not a
       shape a grep can see.
 
+- ui.pure_observation_parse (unratcheted) A PARSE THAT ASSIGNS A `state` IS RUN AGAIN BY
+      THE NEXT REFRESH. `fetched(held, request, parse)` hands `parse` the reply of an
+      observation shared by every view that reads it, and the cache asks that observation
+      again — at once, when a write's answer names a table it read — so `parse` runs once per
+      view per answer, not once per ask. A parse answers the VALUE a view shows (`Ok(rows)`,
+      `Ok(count)`) and assigns nothing: the board's `loaded` set `tasks = rows`, and the first
+      refresh replaced the page's own unsynced tasks with the server's. State that must move
+      with an answer moves in the view's own turn, from `held.state()`, or in the action that
+      asked. Not ratcheted: the shape is a NAMED fn handed to `fetched` whose body assigns a
+      `state` — a call site and a declaration body apart, so a `rule` pattern over one
+      statement cannot see it, and a body-reaches-assignment predicate is not in the rule
+      vocabulary. The lambda form (`fetched(h, r, (x) -> { s = … })`) is the same smell.
+
 - style.arm_duplicates_sibling_answer (unratcheted) A MATCH ARM'S VALUE THAT IS `if c { x } else { y }`,
       WHERE ONE BRANCH ANSWERS WHAT ANOTHER ARM OF THE SAME MATCH
       ALREADY ANSWERS, IS A GUARD — the branch that duplicates becomes

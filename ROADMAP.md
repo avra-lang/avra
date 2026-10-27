@@ -3415,6 +3415,16 @@ modules as text and cannot reach a real package. The want: a marker
 naming the kind — `<name>.refused-at-check` holding `type.sealed` — that
 `avra test` passes only when `check` refuses with it (avra-8sb5.34.53.50).
 
+### Interim record — a rule cannot ask what a fn handed to another fn does
+
+`ui.pure_observation_parse` (DOGFOODING.md) is unratcheted because its shape is a NAMED fn handed
+to `fetched` whose body assigns a `state`: the call site and the body are two declarations, and a
+`rule` pattern sees one statement. The want: a predicate over a fn argument — "a fn handed to
+`fetched` (or any named seat) whose body assigns a `state`" — so a rule can say it and the gate can
+hold it. The wanting site is the board's `loaded` (tools/ui-board/src/board.av), a parse that set
+`tasks = rows` and was run again by every refresh. A lambda-only rule was refused: it would read as
+coverage of a shape it does not see.
+
 Tracked in the tasks db under epic `avra-8sb5.10` (the canonical SUGAR BACKLOG epic; `tasks tree avra-8sb5.10`), not here — this section used to hand-list them, which let the same ask get filed three or four times under different wording before anyone noticed. Every ticket carries an `Example:` and a `Callsite:`. Landed asks are closed there with the evidence that proved it (a probe against `build/avra check`, not a doc's memory); duplicates found across ROADMAP/FEEDBACK/DOGFOODING and the SURVEY epic were merged into one ticket each.
 
 ### Interim record — the tasks server was unreachable at landing
