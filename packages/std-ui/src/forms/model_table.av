@@ -1,5 +1,6 @@
 //! `forms/model_table.av` — the values of any decoded record as a table:
-//! a column per field `T` declares, never a secret's, a row per value,
+//! a column per field `T` declares — a record's own fields under its
+//! path, never a secret's at any depth — a row per value,
 //! a press that asks the program to remove one, and a form that asks it
 //! to create one.
 //!
@@ -7,13 +8,13 @@
 //!         on remove { i -> drop(i) }
 //!         on create { m -> add(m) }
 //!     }
-use @std.validate.{Decode, Value, Entry}
+use @std.validate.{Decode, Value, Entry, FieldShape}
 use components.{column, row, text, button}
 
 export component model_table<T: Decode>(rows: List<T>) {
     on remove(index: int)
     on create(value: T)
-    let shown = [f.name for f in T.fields() if !f.secret]
+    let shown = shown_paths(T.fields(), "")
     column {
         row {
             for n in shown { text n }
@@ -34,17 +35,35 @@ export component model_table<T: Decode>(rows: List<T>) {
     }
 }
 
-/// A row's cells, one per shown field, its value read once.
-fn cells(v: Value, shown: List<string>) -> List<string> {
-    let entries = entries_of(v)
-    [cell(entries, n) for n in shown]
+/// Each shown field's path: a record's fields under its own, a
+/// secret's never.
+fn shown_paths(shapes: List<FieldShape>, prefix: string) -> List<string> {
+    [p for f in shapes if !f.secret for p in shown_at(f, path(prefix, f.name))]
 }
+
+/// The paths one field shows. Every kind spelled.
+fn shown_at(f: FieldShape, at: string) -> List<string> {
+    match f.kind {
+        .Record(fs) -> shown_paths(fs, at),
+        .Text or .Int or .Float or .Bool or .Records(_) or .Other(_) -> [at],
+    }
+}
+
+/// A row's cells, one per shown path.
+fn cells(v: Value, shown: List<string>) -> List<string> { [cell(v, at) for at in shown] }
 
 /// A field's value as a cell shows it: text as itself, any other value
 /// as the tree spells it; a field the value lacks, nothing.
-fn cell(entries: List<Entry>, name: string) -> string {
-    let held? = entries.find(it.key == name) else { return "" }
-    match held.value { .Text(s) -> s, other -> other.shown() }
+fn cell(v: Value, at: string) -> string {
+    let held? = reached(v, at.split(".")) else { return "" }
+    match held { .Text(s) -> s, other -> other.shown() }
+}
+
+/// The value at a path's steps, each a record's field.
+fn reached(v: Value, steps: List<string>) -> Value? {
+    let step? = steps.first() else { return v }
+    let held? = entries_of(v).find(it.key == step) else { return null }
+    reached(held.value, steps.drop(1))
 }
 
 /// A record's value as its entries; none for any other value.

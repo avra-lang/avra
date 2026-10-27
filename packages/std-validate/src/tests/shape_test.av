@@ -18,16 +18,44 @@ type Chore = {
 @range(1, 5)
 type Small = int
 
+@derive(Decode)
+type Address = { city: string, @secret code: string? = null }
+
+@derive(Decode)
+type Order = { item: string, ship: Address, bill: Address? = null, lines: List<Address> = [] }
+
+@derive(Decode)
+type Account = { owner: string, order: Order }
+
+@derive(Decode)
+type Link = { label: string, next: Link? = null }
+
+@derive(Decode)
+type Ping = { pong: Pong? = null }
+
+@derive(Decode)
+type Pong = { ping: Ping? = null }
+
 fn json(text: string) -> Value { from_json(text) catch Value.Null }
 
 /// A field's kind as one word.
 fn kind_word(k: FieldKind) -> string {
-    match k { .Text -> "text", .Int -> "int", .Float -> "float", .Bool -> "bool", .Other(t) -> t }
+    match k {
+        .Text -> "text",
+        .Int -> "int",
+        .Float -> "float",
+        .Bool -> "bool",
+        .Record(fs) -> "{${shapes(fs)}}",
+        .Records(t) -> "rows(${t})",
+        .Other(t) -> t,
+    }
 }
 
 fn described(s: FieldShape) -> string {
     "${s.name}:${kind_word(s.kind)}${if s.required { "!" } else { "" }}${if s.secret { "*" } else { "" }}"
 }
+
+fn shapes(fs: List<FieldShape>) -> string { [described(s) for s in fs].join(" ") }
 
 /// The shape of whatever `T` stands for, read through its bound.
 fn shape_of<T: Decode>(_x: T) -> string { [described(s) for s in T.fields()].join(" ") }
@@ -43,6 +71,30 @@ spec "std/validate — the Decode contract" {
             [described(s) for s in Chore.fields()].join(" ") == "title:text! priority:int done:bool! note:text* weight:float tags:List<string>"
         }
         then "a named type draws no fields" { Small.fields().is_empty() }
+    }
+    given "a record's field that is a record" {
+        then "carries that record's own fields, its secret and option marks kept" {
+            shapes(Order.fields()) == "item:text! ship:{city:text! code:text*}! bill:{city:text! code:text*} lines:rows(List<Address>)"
+        }
+        then "nests two levels deep" {
+            shapes(Account.fields()) == "owner:text! order:{item:text! ship:{city:text! code:text*}! bill:{city:text! code:text*} lines:rows(List<Address>)}!"
+        }
+        then "that holds its own type is drawn by its spelling, so its fields end" {
+            shapes(Link.fields()) == "label:text! next:Link"
+        }
+        then "two records that hold each other are each drawn by the other's spelling" {
+            shapes(Ping.fields()) == "pong:Pong" && shapes(Pong.fields()) == "ping:Ping"
+        }
+        then "decodes from the nested tree its value answers" {
+            let o = Order { item: "pen", ship: Address { city: "Oslo", code: "k" } }
+            match Order.decode(o.value()) {
+                .Ok(back) -> back.item == "pen" &&
+                    back.ship.city == "Oslo" &&
+                    back.ship.code == "k" &&
+                    back.bill == null,
+                .Err(_) -> false,
+            }
+        }
     }
     given "a bounded parameter" {
         then "reads the shape of the type it stands for" {
