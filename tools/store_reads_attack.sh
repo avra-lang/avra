@@ -7,9 +7,7 @@
 # assertion to a phase that must FAIL (the answer asked as a miss while the input stands).
 # The last phase prices `get_valid`: 10,000 calls, 3 reads each, over 70,000 records.
 set -u
-cd "$(dirname "$0")/.."
-export AVRA_WATCH_HELD=1
-export AVRA_MAX_COMPILES=0
+. "$(dirname "$0")/lib/attack.sh"
 T=packages/std-avrac/src/compiler/tests/store_reads_process_test.av
 D="$(pwd)/build/store-reads-attack"
 rm -rf "$D" && mkdir -p "$D"

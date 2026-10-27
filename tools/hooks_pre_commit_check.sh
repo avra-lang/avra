@@ -1,8 +1,8 @@
 #!/bin/sh
 # THE PRE-COMMIT HOOK REFUSES WITHOUT A COMPILER: staged `.av` and no `build/avra` is exit 1
 # naming how to get one; no staged `.av` passes with no compiler. A compiler's stamp: unstamped
-# refuses, one older than the merge-base refuses (naming the way out), one at the merge-base or
-# built from its own edits is accepted and reported.
+# refuses, one older than the merge-base is replaced from a door that answers and refused (naming the
+# way out) when none does, one at the merge-base or built from its own edits is accepted and reported.
 #
 #   sh tools/hooks_pre_commit_check.sh
 set -u
@@ -68,9 +68,31 @@ hook_in "$(stamped_repo none)"
 hook_in "$(stamped_repo old)"
 { [ "$status" = 1 ] && printf '%s' "$err" | grep -q "1 compiler commit(s) older" && printf '%s' "$err" | grep -q "tools/work compiler"; } ||
     fail "a compiler older than the merge-base gave $status: $err"
+# A STALE COMPILER IS REPLACED, never refused when a door answers: `work compiler` stamping a current one,
+# or, on Linux, the published compiler for the merge-base installed. Formatting still runs on the new one.
+helped() { # helped <name> <script>: a stale repo whose tools/<name> is the stub
+    d=$(stamped_repo old)
+    printf '%s' "$2" > "$d/tools/$1"
+    echo "$d"
+}
+d=$(helped work 'cd "$(dirname "$0")/.." && printf "hash111 %s\n" "$(git rev-parse origin/main)" > build/.avra-built-from
+')
+hook_in "$d"
+{ [ "$status" = 0 ] && printf '%s' "$err" | grep -q "replaced it" && printf '%s' "$err" | grep -q "formatting with"; } ||
+    fail "a stale compiler with a depot door gave $status: $err"
+d=$(helped compiler_release.py 'import sys
+sys.exit(0) if sys.argv[1] == "install" else print("key123")
+')
+mkdir -p "$d/fakebin"
+printf '#!/bin/sh\necho Linux\n' > "$d/fakebin/uname"
+chmod 755 "$d/fakebin/uname"
+err=$(cd "$d" && PATH="$d/fakebin:$PATH" sh "$hook" 2>&1 >/dev/null)
+status=$?
+{ [ "$status" = 0 ] && printf '%s' "$err" | grep -q "replaced it" && [ "$(cut -d' ' -f1 "$d/build/.avra-built-from")" = key123 ]; } ||
+    fail "a stale compiler with a published door gave $status: $err"
 for kind in current edited; do
     hook_in "$(stamped_repo $kind)"
     { [ "$status" = 0 ] && printf '%s' "$err" | grep -q "formatting with"; } ||
         fail "a $kind compiler gave $status: $err"
 done
-echo "hooks_pre_commit_check: refusal and accept witnessed — 6 fixtures"
+echo "hooks_pre_commit_check: refusal and accept witnessed — 8 fixtures"

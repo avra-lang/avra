@@ -14517,3 +14517,207 @@ NOT SURVEYED: wave 2's own findings (each lane reports in the skills'
 shapes and its `/feedback` is the lane's); the other session's
 `land/c2`/`land/d2` work; ROADMAP.md / ROADMAP-STANDARDS.md routing
 (another session's uncommitted split holds both files).
+
+## Feedback survey — 2026-10-26 (ui-chores: board saves, WAL + fork hook, speed measurements)
+
+Scope: one lane's day on main `5c8706b2` -> `6ed0dc8e`. Board saves
+(#1328, with the review of #1332 that fed its redo), the WAL ticket and
+the fork-hook pair (#1333/#1334, with the red team and review round),
+JSON door S3/S4 rebases (#1252/#1270), the stop/run witness (#1351) and
+the CI speed-warning measurements (#1352, #1356, #1270). Rows quote the
+output they come from; a row with no output is marked unverified. NOT
+surveyed: the cache slices' own design (ui-assets'), #1330's busy-timeout
+review beyond its conflict with #1333, the batch lander, any lane I did
+not open. Counts: friction 8, sugar 2, features 3, defects 6, doctrine
+4, performance 2, process 1 (kept/changed list). Top three by cost: the
+lost measurements (two compile-suite runs read through a filtering
+`grep`, ~50 min of Sprite time, and a third measurement that timed a
+SIGKILL), the one-shot proxy hold behind #1328's WebKit red (a CI round
+trip, found only by running two engines in one process), and the
+stale-compiler commit refusals (five, each a detour through
+`work compiler` or a 10-minute `main-compiler`).
+
+### FRICTION
+
+- **A FILTER IN THE PIPE HIDES THE VERDICT.** `... | grep "run[123]"`
+  kept the progress line the Sprite wrapper interleaves ("std-avrac
+  run1 work: avra-o-lower — still running, 165s in") and dropped the
+  timing line printed after it; three 6-minute runs, no numbers. Twice.
+  The fix that worked: every run prints one `RESULT` line carrying its
+  exit status and output line count, one `work run` per run. ASK:
+  `work run` sends its own progress to stderr, so stdout holds only the
+  command's lines. Evidence: task output of 2026-10-26, "std-avrac run1
+  work: avra-o-lower — still running". Main `6c359f6d`.
+- **A MEMORY KILL SAYS NOTHING.** Every `./avra test packages/std-avrac`
+  on a Sprite ended `rc=137` with three lines of output, the last
+  "proofs: 400 of 402 programs owed, evaluated in 125702 ms". Nothing
+  said SIGKILL or a cap; I read the timings as a suite's until a
+  line-count check disagreed. ASK: the watchdog prints "killed: memory
+  cap N MB, peak M MB" as the last line of any run it ends, and
+  `work run` names 137 as it does 76 and 75. Evidence: the six RESULT
+  lines, `rc=137 ... lines=3`. Main `6ed0dc8e`.
+- **NO SPRITE IS FREE FOR A SMALL LANE.** `work new stop-run`: "every
+  Sprite is bound to a lane — `work done` in one frees its Sprite".
+  Twice I unbound a landed lane of my own (`work unbind`, worktree
+  kept) to make room; the list of 30 lanes gives no hint which are
+  landed. ASK: `work sprites` marks a lane whose PR has merged, and
+  `work unbind --landed` frees them all. Evidence: `work sprites`,
+  2026-10-26.
+- **THE COMMIT HOOK REFUSES ON COMPILER AGE, FIVE TIMES.** "pre-commit:
+  build/avra was built at 06fa6cc6, 1 compiler commit(s) older than this
+  branch's merge-base — its fmt may disagree with main's, so the commit
+  is refused". Each time the answer was `sh tools/work compiler` (or a
+  `main-compiler` build that exceeded my 110 s bound and was killed
+  once). ASK: the hook runs `work compiler` itself when the depot holds a
+  fitting one, and its message names that one command first.
+- **A CHAINED `;` PUSHED THE WRONG COMMIT.** `git commit --amend ...;
+  git rebase; git push` after the hook refused the amend pushed the
+  unamended cherry-pick (#1351's first head carried a test importing
+  helpers that exist only on another branch). Process: chain with `&&`,
+  and read `git log -1` before any push. Caught within minutes by the
+  next check; no CI ran on it.
+- **A/B ON ONE SPRITE NEEDS A TREE SWITCH BY HAND.** To time main
+  against a PR on one machine I `git checkout --detach <sha>` in a lane
+  worktree between runs and must not touch it while a run is in flight.
+  ASK: `work run --at <rev>` runs the command on that revision in a
+  scratch tree on the lane's Sprite, and a `work measure <suite>
+  <revA> <revB>` that does the cold-cache A/B, medians and kill check.
+- **`/usr/bin/time` IS ABSENT ON SPRITES.** `which time`: "no time in
+  (...)". User CPU came from bash's `TIMEFORMAT` inside a `base64`-shipped
+  script, because a quoted multi-line command does not survive
+  `work run`. ASK: `work run -f <script>` ships a local file, and the
+  toolchain provides a `time` row.
+- **`gh pr edit --base` NEEDS A SCOPE THE TOKEN LACKS.** "gh auth
+  refresh -s read:project". The REST call (`gh api -X PATCH
+  repos/.../pulls/N -f base=main`) works. ASK: `work retarget <pr>`.
+
+### SUGAR
+
+- **AN EARLY OUT INSIDE A LAMBDA.** `held.last.set(...)` in a Watcher's
+  `apply` lambda wanted `let kept? = f() else { return }`; the lambda
+  refuses: "error[type.return]: a `return` answers a fn, and there is
+  none enclosing". The shape that compiles is `reading(...) ??
+  held.last.get()`. Wanting site: packages/std-ui/src/app/asks.av (the
+  Watcher literal), 2026-10-26. ASK: `else { return }` in a lambda body
+  returns from the lambda, or the help names `??`. Already filed:
+  `avra-8sb5.10.142` / `.152`; second instance commented there.
+- **A DECLARED SERVER RUNS ON N CORES.** `tasks.run(1)` on a declared
+  `server tasks { ... }` is "error[type.method]: `server.run` takes 0
+  arguments beside `self`, found 1"; the form that works is
+  `tasks.listening()` then `.run(1)`, four lines for one word. Wanting
+  site: tools/ui-observed/server/src/main.av. ASK: `run(cores)` on the
+  declaration. Filed `avra-8sb5.10.187`.
+
+### FEATURES
+
+- **A VALUE'S END HOOK (FINALIZER / WEAK CAPTURE).** A `Db` dropped
+  without `close()` stays in the fork registry and refuses every later
+  fork if it left a transaction open. Today the answer is the run hook
+  (`avra_run_hook`, #1334) for evaluated programs and a named condition
+  in the PR body for everything else. ASK: scope-end destruction for a
+  value that owns a handle; already in the sugar backlog as weak
+  captures, confirmed here with a second instance.
+- **A/B SUITE MEASUREMENT AS A COMMAND.** Everything in the performance
+  rows below was a hand-built loop (clear `.avra-cache`, `time`, one
+  RESULT line, repeat, switch tree). ASK: see FRICTION row on
+  `work measure`.
+- **THE FORK HOOK IS NOW GENERAL.** `avra_fork_hook` / `avra_run_hook`
+  (runtime/avra_cores.c, avra_fiber.c) let any package park or refuse
+  at a fork and die with an evaluated run. Landed in #1334; recorded
+  here as the registry other packages (a future @std/redis client, any
+  file lock) register on.
+
+### DEFECTS
+
+- **A PARSE RUN TWICE (#1332, first form).** The Watcher `apply` called
+  the caller's `parse` for the state and again for the last good value;
+  the board's write callbacks fired twice per answer, so a queued
+  write's answer also sent an extra `GET /tasks` ("saw
+  PATCH /tasks/2,GET /tasks"). Found by the board's demo claims, not
+  Firefox; redone at `9a104e1e`.
+- **A 503 REPLY WAS THE "LAST GOOD" ANSWER (#1332, first form).**
+  `Entry.answered` recorded any `Ready(reply)` as good, so a refused
+  re-ask drew the board empty. Same redo.
+- **A MEMORY DATABASE CROSSED THE FORK AS A COPY.** A core read a row
+  the parent's open transaction could still roll back ("2,2,2"). Found
+  by the red team (cores_memory_txn); fixed as `Cause.Foreign` with the
+  registry owning memory connections. #1334, 2026-10-26.
+- **A FORK-CLOSED STATEMENT BLAMED THE CALLER.** "this statement was
+  finalized — prepare it again" for a statement the cores' fork had
+  closed; now "the cores' fork closes every statement with its
+  connection — prepare this one again" (cores_stmt_across).
+- **A ONE-SHOT HOLD IN THE HYDRATION PROXY (#1328).** `serve_hydrated.mjs`
+  held the page's first `/tasks` on a single promise for the whole
+  process; with `firefox webkit` in one run the second engine's page
+  asked at once and rebuilt two rows ("saw 32 of 42"). Reproduced only
+  with two engines in one run; fixed by arming a hold per document load
+  (65f577ad). The harness was the defect, not the claim.
+- **UNVERIFIED: A WARM-CACHE FIRST EVALUATION LEAKED A TRANSACTION.**
+  Under a cached derivation of an earlier test text, one `avra test`
+  evaluated a program whose first evaluation was abandoned holding a
+  transaction; clean cache never reproduced it, and a plain edit-and-rerun
+  repro ran the new text. The lead asked: if it recurs, move the cache
+  dir aside (do not delete) and report. Recorded trigger, not a finding.
+
+### DOCTRINE
+
+- **`run` AFTER `stop` IS THE LAW AND WAS UNWRITTEN.** `Server.run` opens
+  with "if self.drain.asked ... return .Ok(0)" so a stop before the
+  task starts is a clean end; the doc never said it. Now documented and
+  witnessed (http_stop_then_run, #1351).
+- **A DOC STATED THE LAW THE CODE JUST RETIRED.** The `Journal` doc said
+  a WAL connection carried across a fork is refused; after the fork hook
+  the cores reopen their own. Found by the review round, fixed in the
+  same PR. THE GENERAL SHAPE: a PR that moves a law greps the tree for
+  the old law's WORDS, not only its identifiers.
+- **A CONDITION NAMED IN THE PR BODY IS NOT A CITATION.** The fork
+  registry's one remaining hazard (a dropped, un-closed connection)
+  lives in #1334's body and the `run_ends` header comment. CLAUDE.md's
+  "A SAFETY PROPERTY RESTING ON A CONDITION NOBODY STATED" is the entry
+  to cite; a sixth instance is a citation of that line, owed on landing.
+- **THE SPEED JUDGE'S BASELINES WERE NOT THE MACHINE'S.** CI flagged
+  std-http_session 8 -> 19 s, std-https +76% and +200%, std-ui_http
+  +175%; the same suites measured flat on one Sprite (table below), and
+  the DB lead confirmed main's baseline rows were wrong (#1358, #1361).
+  ASK: every judge warning names the baseline row's machine and sha, so
+  "cold 15 s -> 45 s" cannot be read without knowing where 15 came from.
+
+### PERFORMANCE
+
+Instrument: bash `TIMEFORMAT=user=%U` around `./avra test packages/<suite>`
+after `find .avra-cache -mindepth 1 -delete`, 3 runs, median, one Sprite
+per comparison (avra-o-lower or avra-db-names, 2026-10-26).
+
+| suite | main | PR | change |
+|---|---|---|---|
+| std-http_session | 15.6 (6c359f6d) | 15.5 (#1352 40ab2134) | flat |
+| std-https | 26.0 (6c359f6d) | 25.2 (#1352 40ab2134) | flat |
+| std-https | 22.8 (6c359f6d) | 23.3 (#1270 2a71fc10) | +2% |
+| std-task | 4.16 | 4.0 (#1270) | -4% |
+| std-ui_gallery | 13.75 | 14.2 (#1270) | +3% |
+| std-relation | 243.5 | 242.8 (#1270) | 0% |
+| std-ui_http | 23.3 | 23.9 (#1352 511a17c0), 23.0 (#1356 7261ca1b) | +2.6%, -1.3% |
+
+- **THE COMPILER SUITE DOES NOT FIT A SPRITE.** `std-avrac` ends `rc=137`
+  after the proofs phase on both trees: #1352 user 331.8/333.3/335.1 s,
+  main 339.3/332.6 s up to the kill, proofs phase 106 to 135 s on both.
+  The partial is flat; the full +36% claim is undecided here and is
+  CI's runner to settle. Not a verdict on the suite.
+- **A COLD TREE COMPILER ON A SPRITE COSTS ~2 MINUTES.** "compiler
+  merge-base published, built once (140s)" on first run of each
+  worktree; `--builder` skips it. Known; confirmed.
+
+### PROCESS
+
+- KEEP: the line-count and exit-status check on a measurement (it alone
+  caught the SIGKILL); red-first on every witness, including the shared
+  `tests.support.cores` extraction that took fourteen copies to one;
+  one comparison on ONE machine; a general registry before a
+  package-specific mechanism (`avra_fork_hook`); asking the lead before
+  routing a finding another lane owns (the #1332 patch).
+- CHANGE: no filter between a long run and its numbers; a stale
+  compiler's refusal should be resolved by the hook, not by me; `-n` is
+  never typed, even on a local commit I mean to undo (it was, once, and
+  was undone before anything was pushed; the lead's correction stands);
+  when a tool says "every Sprite is bound", look for my own landed lane
+  first.

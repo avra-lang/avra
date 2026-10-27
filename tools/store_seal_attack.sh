@@ -10,9 +10,7 @@
 #     change;
 #   a warm run reads one body.
 set -u
-cd "$(dirname "$0")/.."
-export AVRA_WATCH_HELD=1
-export AVRA_MAX_COMPILES=0
+. "$(dirname "$0")/lib/attack.sh"
 
 R=build/store-seal
 rm -rf "$R" .avra-cache && mkdir -p $R/small/src $R/big/src

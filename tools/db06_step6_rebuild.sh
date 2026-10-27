@@ -17,9 +17,7 @@
 #   unit  `own ${print}` — the running compiler's own bytes, so ANY rebuild re-keys every row
 #         of that family at once
 set -u
-cd "$(dirname "$0")/.."
-export AVRA_WATCH_HELD=1
-export AVRA_MAX_COMPILES=0
+. "$(dirname "$0")/lib/attack.sh"
 R=build/db06-step6
 mkdir -p $R
 pkg=${PKG:-packages/std-avrac}
