@@ -1426,14 +1426,18 @@ fn witnesses() -> List<CodeWitness> {
             code: "lower.host_fn_unasked",
             witness: near_far_program(
                 "use @x.near.{used}\nextern fn page_row(n: int) -> int {\n    n\n}\n\"\${used(1)}\"",
-                "extern fn far_event(n: int) -> int {\n    n\n}\n",
+                "use @std.meta.{Host, host}\n@host(Host.Page)\nextern fn far_event(n: int) -> int {\n    n\n}\n",
             ),
+        },
+        CodeWitness {
+            code: "lower.host_fn_unhosted",
+            witness: near_far_program(unhosted_main, "extern fn far_event(n: int) -> int {\n    n\n}\n"),
         },
         CodeWitness {
             code: "lower.host_fn_answers",
             witness: near_far_program(
                 "use @x.near.{used}\nuse @x.far.{helper}\n\"\${used(helper(1))}\"",
-                "extern fn page_row(n: int) -> int {\n    0\n}\n",
+                "use @std.meta.{Host, host}\n@host(Host.Page)\nextern fn page_row(n: int) -> int {\n    0\n}\n",
             ),
         },
         CodeWitness {
@@ -1532,17 +1536,22 @@ fn moved_meta_program(main: string) -> Witness {
 
 /// A program `app` over two packages: `@x/near`, which names an extern bodiless
 /// and imports `@x/far`; and `@x/far`, which declares `far_src` — built.
+/// The program the unhosted witness and its remedy row share: it answers `page_row` and imports `@x/far`.
+const unhosted_main: string = "use @x.near.{used}\nuse @x.far.{helper}\nextern fn page_row(n: int) -> int {\n    n\n}\n\"\${used(helper(1))}\""
+
 fn near_far_program(main: string, far_src: string) -> Witness {
     Witness
         .Built(
-            {
-                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/near\" = { path = \"vendor/near\" }\n\"@x/far\" = { path = \"vendor/far\" }\n",
-                "/w/src/main.av": main,
-                "/w/vendor/near/avra.toml": "[package]\nname = \"@x/near\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/far\" = { path = \"../far\" }\n",
-                "/w/vendor/near/src/near.av": "use @x.far.{helper}\nextern fn page_row(n: int) -> int\nexport fn used(n: int) -> int {\n    page_row(helper(n))\n}\n",
-                "/w/vendor/far/avra.toml": "[package]\nname = \"@x/far\"\nversion = \"0.1.0\"\n",
-                "/w/vendor/far/src/far.av": "export fn helper(n: int) -> int {\n    n * 2\n}\n" + far_src,
-            },
+            vendored_meta(
+                {
+                    "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/near\" = { path = \"vendor/near\" }\n\"@x/far\" = { path = \"vendor/far\" }\n",
+                    "/w/src/main.av": main,
+                    "/w/vendor/near/avra.toml": "[package]\nname = \"@x/near\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/far\" = { path = \"../far\" }\n",
+                    "/w/vendor/near/src/near.av": "use @x.far.{helper}\nextern fn page_row(n: int) -> int\nexport fn used(n: int) -> int {\n    page_row(helper(n))\n}\n",
+                    "/w/vendor/far/avra.toml": "[package]\nname = \"@x/far\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+                    "/w/vendor/far/src/far.av": "export fn helper(n: int) -> int {\n    n * 2\n}\n" + far_src,
+                },
+            ),
         )
 }
 
