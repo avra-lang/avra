@@ -20,6 +20,7 @@ import argparse
 import collections
 import json
 import pathlib
+import re
 import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -298,6 +299,13 @@ def chosen_field(question, fields, models, chooser):
     return sorted(fields)[best] if picked[best] > 0 else None
 
 
+def written_instant(question):
+    """The instant a question writes, in one of the encodings the catalog declares (ISO date or
+    instant): the view an answer is read at. Absent when the question writes none."""
+    found = re.search(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2})?)?", question)
+    return {"valid_at": found.group(0)} if found else None
+
+
 def verdict(item, survivors, golds, passages=()):
     """What the survivors add up to for one question. A value votes once per path that reaches
     it, weighted by how narrowly that path was drawn — a scan of a whole model votes for
@@ -346,6 +354,7 @@ def measure(selection, depth, retrieval=None, oracle_property=False, evidence=No
         for item in one["items"]:
             asked = candidates(item["question"], one["world"], one["models"], depth)
             shapes = {(n, p["name"]): shape_of(p) for n, m in one["models"].items() for p in m["properties"]}
+            view = written_instant(item["question"])
             kept_models, kept_properties = schema_ranks(one["models"], item["question"], retrieval) if retrieval else (set(one["models"]), set())
             if oracle_property:
                 wanted = asked_property(item)
@@ -356,7 +365,7 @@ def measure(selection, depth, retrieval=None, oracle_property=False, evidence=No
                     continue
                 queries += 1
                 values, records = stated(
-                    one["app"].query(cypher, {**item["params"], **extra}),
+                    one["app"].query(cypher, {**item["params"], **extra}, as_of=view),
                     extra.get("anchor", ""),
                     label_field(one["models"][landed]),
                     shapes,
