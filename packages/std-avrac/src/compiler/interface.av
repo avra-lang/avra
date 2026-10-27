@@ -52,21 +52,19 @@ impl Workspace {
     /// EVERY MODULE'S CONSTS, KEPT: a settled value under its key, or — for a
     /// const whose settlement is STRUCTURALLY refused (`Unsettled.structural`,
     /// `Reach`) — the refusal itself, since that verdict is as stable as a
-    /// value and is what lets the file hold. A non-structural refusal SPEAKS a
-    /// diagnostic elsewhere and stays unkept, so the next build asks again.
+    /// value. A non-structural refusal SPEAKS a diagnostic elsewhere and
+    /// stays unkept, so the next build asks again.
     /// A gathered member — a `rule`'s `run: fn(Code) -> Fix?`, any declared
     /// instance holding behavior — refuses structurally too and is kept the
     /// same way: `lower_collect` and a direct read (`instance_value_reg`)
     /// both call such a member by its `instance_unit` symbol, and
-    /// `held_stubs`/`Workspace.stub_of` already declare that symbol for a
-    /// held file exactly as a held fn's own symbol is declared — the same
-    /// door an ordinary call into a held function goes through, never a
-    /// second one for collects.
+    /// `Workspace.stub_of` already declares that symbol — the same door an
+    /// ordinary call goes through, never a second one for collects.
     fn keep_const_units(store: Store, modules: List<ModulePath>) -> int {
         mut count = 0
         for m in modules {
             for d in self.interface_decls(m) {
-                if d.kind is .Const && !self.is_held(d.file) {
+                if d.kind is .Const {
                     let path = self.decls.file(d.file).path
                     let key = self.const_unit_key(store, m, path, d.name)
                     if !store.has(Stored.Unit, key) {
@@ -207,10 +205,6 @@ impl Workspace {
     fn mint_file(path: string, rows: List<List<string>>) -> List<DeclId> {
         work_file_minted()
         let f = self.file_id(path)
-        let makers = distinct(
-            [r!.maker for parts in rows for r in [read_row(parts)] if r != null && r!.maker != ""],
-        )
-        self.decls.held_opened(f, makers)
         mut by_stmt = self.decls.decl_ids.get()[f.index].get()
         mut top: List<DeclId> = []
         mut named: Map<string, DeclId> = {}
@@ -223,7 +217,6 @@ impl Workspace {
             if id != null && row?.item ?? false { top.push(id!) }
             if id != null { named.set(self.decls.within_of(id!), id!) }
         }
-        self.decls.held_closed(f, makers)
         self.decls.keep_stmt_decls(f, by_stmt)
         self.adopted_by_keys(rows, named)
         top
@@ -412,12 +405,8 @@ impl Workspace {
         )
     }
 
-    /// Whether this attempt READ the file: met and not held. A file nothing
-    /// met has no row, and its record lines carry forward as a held one's do.
-    fn read_here(path: string) -> bool {
-        let f? = self.decls.known_file_id(path) else { return false }
-        !self.is_held(f)
-    }
+    /// Whether this attempt READ the file: met. A file nothing met has no row.
+    fn read_here(path: string) -> bool { self.decls.known_file_id(path) != null }
 
     fn record_of(store: Store, m: ModulePath) -> string {
         let prior_lines = record_cached(self, store, m).split("\n")

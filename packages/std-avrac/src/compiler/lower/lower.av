@@ -315,7 +315,6 @@ export fn lower(a: Analysis) -> Lowered {
             [],
             (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross),
             (_f: FileId) -> false,
-            (_f: FileId) -> false,
             no_kept,
         )
 }
@@ -464,7 +463,6 @@ impl Decls {
         held_asks: HeldWants,
         held_codes: List<CodeFacts>,
         unit_of: fn(Wanted) -> Unit,
-        is_held: fn(FileId) -> bool,
         is_program: fn(FileId) -> bool,
         kept_instance: fn(Instance) -> KeptInstance,
     ) -> Lowered {
@@ -509,9 +507,7 @@ impl Decls {
             wants.concat(held_asks.read),
             held_asks,
             unit_of,
-            is_held,
             (w: Wanted) -> self.instantiated(w),
-            (w: Wanted) -> self.unlowered_stub(w),
             (w: Wanted) -> instance_of(self, w),
             if hashed { kept_instance } else { no_kept },
         )
@@ -687,9 +683,7 @@ impl Decls {
             ru.wants,
             no_held_wants(),
             unit_of,
-            (_f: FileId) -> false,
             (_w: Wanted) -> false,
-            (_w: Wanted) -> null,
             (w: Wanted) -> instance_of(self, w),
             no_kept,
         )
@@ -792,9 +786,7 @@ fn drained(
     pending: List<Wanted>,
     asked: HeldWants,
     unit_of: fn(Wanted) -> Unit,
-    is_held: fn(FileId) -> bool,
     instantiated: fn(Wanted) -> bool,
-    held_stub: fn(Wanted) -> Body?,
     instance_key: fn(Wanted) -> Instance,
     kept_instance: fn(Instance) -> KeptInstance,
 ) -> Drained {
@@ -816,40 +808,15 @@ fn drained(
         kept = kept.concat(k.facts)
         held = held.concat(k.held)
     }
-    // a stub is a fresh caller's, whoever first asked the name
-    mut stubbed: Map<string, bool> = {}
     mut minted = 0
     while !wants.is_empty() && minted < unit_ceiling {
         let w = wants.pop()
-        // A HELD FILE'S BODIES ARE ITS STORED OBJECT, so they are never asked for.
         // An instantiation is no file's content: it lowers in every program that
-        // wants it, WEAK and owned by no file — and its home is reported, because
-        // a home that is held has no body to lower from.
+        // wants it, WEAK and owned by no file — and its home is reported.
         let roams = instantiated(w)
         if roams { homes.push(w.file) }
         let fresh = claim_seen(seen, w.name)
-        if is_held(w.file) && claim_seen(stubbed, w.name) {
-            // THE BODY IS THE STORE'S, BUT THE CONTRACT MUST STILL BE HERE: a
-            // fresh caller's memory pass reads a called-by-name callee's seat
-            // marks from `l.fns` alone (`marks_by_name`), and a held callee is
-            // never unit_of'd into it. Without a stub a held `consumed` seat
-            // reads as plain, the caller skips the retain the callee's own
-            // (held, unseen) release still performs, and the caller reads
-            // freed memory (.66 hole 3).
-            let stub: Body? = held_stub(w)
-            // LICENSED input.debug_flag: a debug flag is the process's own, not an input
-            if env("AVRA_STUB_DEBUG") ?? "" != "" && w.name.contains("rules") { eprintln("drained: name=${w.name} stub_null=${stub == null}") }
-            if stub != null { fns.push(stub!) }
-        }
-        if fresh && is_held(w.file) {
-            held.push(w.name)
-            if roams {
-                let k = kept_instance(instance_key(w))
-                kept = kept.concat(k.facts)
-                held = held.concat(k.held)
-            }
-        }
-        if fresh && !is_held(w.file) {
+        if fresh {
             minted = minted + 1
             let u = unit_of(w)
             kept = kept.concat(u.kept)

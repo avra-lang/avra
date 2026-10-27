@@ -551,12 +551,6 @@ export type Decls = {
     counted: Cell<Siblings>,
     stores: Cell<List<SyntaxArena?>>,
     ensure_store: Cell<fn(FileId) -> void>,
-    /// A HELD FILE'S DECLARATIONS ARE MINTED WHEN ASKED FOR: the hook the
-    /// workspace arms, called before a file's declarations are read.
-    /// A held module's externs, by symbol, off the producer index.
-    externs_index: Cell<fn() -> List<ExternNote>>,
-    /// The held files that declare a type, off the producer index.
-    types_index: Cell<fn() -> List<string>>,
     /// THE FILE AN `embed` LITERAL NAMES, or why a const may not read
     /// it: the hook the workspace arms — it knows the package a file
     /// stands in and the ones it depends on, and its host is what reads.
@@ -575,9 +569,6 @@ export type Decls = {
     /// declaration, written once per file in `range_bodies` — `expr_owner`'s
     /// O(1) read, never the linear `innermost` rescan.
     expr_owners: Cell<List<Cell<SideTable<DeclAt>>>>,
-    /// THE FILES ANSWERED FROM A RECORD — never parsed, so their declarations were
-    /// MINTED and their objects come from the store. Keyed by path.
-    held: Cell<Map<string, bool>>,
     spliced: Cell<Map<string, List<DeclId>>>,
     reentered: Table<List<DeclId>>,
     reentering: Table<bool>,
@@ -758,14 +749,11 @@ export type Decls = {
     // evidence is local to its own body alone.
     consumed: Cell<List<List<bool>?>>,
     ensure_consumed: Cell<fn(DeclId) -> void>,
-    /// Whether a HELD file stood in the workspace the last time the
-    /// pass ran — that file was never surveyed, so the relation
-    /// cannot answer "used nowhere" with any confidence.
+    /// Whether the references relation could not be surveyed whole the
+    /// last time the pass ran, so it cannot answer "used nowhere" with
+    /// any confidence.
     refs_incomplete: Cell<bool>,
     ensure_refs: Cell<fn() -> bool>,
-    /// The references a HELD file makes to a declaration, restored on the ask that names it:
-    /// the relation holds only the ones a read file's declaration receives.
-    ensure_held_refs: Cell<fn(DeclId) -> List<Ref>>,
     /// Whether each declaration is read as a value anywhere, as the references pass found it,
     /// by DeclId; a declaration past the end is read nowhere.
     read_flags: Cell<List<bool>>,
@@ -866,10 +854,6 @@ fn no_store(f: FileId) {}
 
 // LICENSED fns.dead_parameter: a fn VALUE filling the module-ensure seat — no workspace stands behind the table, so no module is minted
 
-fn no_externs() -> List<ExternNote> { [] }
-
-fn no_modules() -> List<string> { [] }
-
 /// An `extern fn` a record declares: its module and file, its symbol, and whether it has a body.
 export type ExternNote = { module: string, path: string, name: string, hosted: bool }
 
@@ -896,9 +880,6 @@ fn no_entry_ensure() -> bool { false }
 // LICENSED fns.dead_parameter: a fn VALUE filling the references-ensure seat — no pass runs before the workspace arms it
 /// No pass to run: what the relation holds is what stands.
 fn no_refs_ensure() -> bool { true }
-
-// LICENSED fns.dead_parameter: a fn VALUE filling the held-references seat — no workspace stands behind the table, so none is restored
-fn no_held_refs(_d: DeclId) -> List<Ref> { [] }
 
 /// A const's type as the program answers it — or why it has none:
 /// the const REFUSED (spoken at its own value), or its value asks
@@ -963,8 +944,6 @@ export fn new_decls_under(durable: Durable) -> Decls {
         type_fps: list_cell(),
         rows_state: list_cell(),
         ensure_store: Cell.new(no_store),
-        externs_index: Cell.new(no_externs),
-        types_index: Cell.new(no_modules),
         embed_judge: Cell.new(embed_unjudged),
         ensure_package: Cell.new(no_store),
         scoped: map_cell(),
@@ -976,7 +955,6 @@ export fn new_decls_under(durable: Durable) -> Decls {
         written_defaults: map_cell(),
         expansion_voices: Cell.new(no_expansion_voices),
         meta_ids: map_cell(),
-        held: map_cell(),
         spliced: map_cell(),
         reentered: new_table(),
         reentering: new_table(),
@@ -1024,7 +1002,6 @@ export fn new_decls_under(durable: Durable) -> Decls {
         composers_of: Cell.new(none_apart),
         refs_incomplete: Cell.new(false),
         ensure_refs: Cell.new(no_refs_ensure),
-        ensure_held_refs: Cell.new(no_held_refs),
         read_flags: list_cell(),
         ensure_read: Cell.new(no_answer),
         mut_seat_index: map_cell(),
@@ -1921,10 +1898,7 @@ impl Decls {
         self.ensure_target.set(no_ensure)
         self.ensure_consumed.set(no_ensure)
         self.ensure_refs.set(no_refs_ensure)
-        self.ensure_held_refs.set(no_held_refs)
         self.ensure_read.set(no_answer)
-        self.externs_index.set(no_externs)
-        self.types_index.set(no_modules)
         self.rows_db.get().answers_forgotten()
         self.embed_judge.set(embed_unjudged)
         self.audit_hook.set(no_audit)
@@ -2537,7 +2511,7 @@ impl Decls {
     /// asking runs the references pass.
     fn refs_of(d: DeclId) -> List<Ref> {
         if !self.refs_stand() { return [] }
-        Ref.by_decl(self.rows_db.get(), d).concat((self.ensure_held_refs.get())(d))
+        Ref.by_decl(self.rows_db.get(), d)
     }
 
     /// Whether the references relation stands to be read — asking runs
@@ -2609,8 +2583,6 @@ impl Decls {
     fn arm_references(ensure: fn() -> bool) {
         self.ensure_refs.set(ensure)
     }
-
-    fn arm_held_refs(held: fn(DeclId) -> List<Ref>) { self.ensure_held_refs.set(held) }
 
     /// The workspace arms the failures hook once.
     fn arm_failures(ensure: fn() -> void) {
@@ -2787,10 +2759,6 @@ impl Decls {
     fn grammar_of(d: DeclId) -> GrammarSpec? {
         let x = self.decl(d)
         if !(x.kind is .Record) { return null }
-        // A GRAMMAR SPEC IS ITS OWN PARSE, and only a PARSED file can answer it: the hold
-        // refuses a file that declares a grammar record (`grammar_free`), so the store is
-        // always here when the answer is not null.
-        if self.held.get().get(self.file(x.file).path) != null { return null }
         self.store(d).grammar_of(x.stmt)
     }
 
@@ -2823,19 +2791,14 @@ impl Decls {
         [x for x in rs.members(rs.bucket_of(external_index, bool_key(true))) if self.is_extern(x.id)]
     }
 
-    /// Every extern of the program by symbol, whether or not its module stands: a held
-    /// module's off the producer index, a read file's off the bucket.
+    /// Every extern of the program by symbol.
     fn extern_notes() -> List<ExternNote> {
-        self
-            .held_externs()
-            .concat(
-                [ExternNote {
-                    module: self.module_of(x.id),
-                    path: self.file(x.file).path,
-                    name: x.name,
-                    hosted: self.is_host_fn(x.id),
-                } for x in self.standing_externs() if !self.file_held(x.file)],
-            )
+        [ExternNote {
+            module: self.module_of(x.id),
+            path: self.file(x.file).path,
+            name: x.name,
+            hosted: self.is_host_fn(x.id),
+        } for x in self.standing_externs()]
     }
 
     /// The externs answering one symbol.
@@ -3328,15 +3291,12 @@ impl Decls {
     }
 
     /// Every type in the program that implements `tr` — its records,
-    /// enums, named types and builtins, each asked through the hook, so
-    /// a held module answers from its interface.
+    /// enums, named types and builtins, each asked through the hook.
     ///
-    /// THE TYPES ARE READ FILE BY FILE, each file's rows as its own bucket: a file read as
-    /// source, and every held file whose record declares a type (minted first). Asking a type's
+    /// THE TYPES ARE READ FILE BY FILE, each file's rows as its own bucket. Asking a type's
     /// table then mints files that declare none, which moves no bucket this read stands on.
     fn implementors_of(tr: DeclId) -> List<DeclId> {
-        let held = [f for p in (self.types_index.get())() for f in some_list(self.known_file_id(p)) if self.file_held(f)]
-        [d for f in self.unheld_files().concat(held) for d in self.decls_of_file(f) if implements_kind(self.decl(d).kind) && self.implements(d, tr)]
+        [d for f in self.unheld_files() for d in self.decls_of_file(f) if implements_kind(self.decl(d).kind) && self.implements(d, tr)]
     }
 
     /// Whether a type answers a generic trait at these arguments: a

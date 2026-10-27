@@ -67,22 +67,15 @@ impl Workspace {
     /// asked for every file before the next, so the phases time apart.
     fn analyze_all(built: string?) -> List<Analysis> {
         let t0 = self.clock()
-        // a held file is not parsed — and asking its items would mint its module for nothing
         for path in self.entry_files(built) { let _ = self.file_id(path) }
         self.admit_all()
         // the prelude is admitted by the first name any file looks up; asked here, every file's
         // answers are verified against the same program a cold run probed
         if self.std_admitted(prelude_key) { let _ = self.exported_decls(prelude_module()) }
-        self.hold_the_standing()
         // A FILE MINTED FROM ITS SAVED ROWS HAS NO BODY YET: its parse is attached before anything
         // types, so no declaration row is read at ranges the attach is about to give it
         let _ = self.each_open_file((f: FileId) -> self.attach_parse(f))
         self.timed("parse", t0)
-        // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its declarations are
-        // MINTED from its record, so every consumer sees the interface it had — and its
-        // BODY is not wanted, because its object comes from the store. THIS IS WHERE THE
-        // SUB-SECOND EDIT LIVES: one file read, 199 answered from what a previous build
-        // wrote down.
         let t1 = self.clock()
         let _ = self.each_open_file((f: FileId) -> { let _ = self.resolved(f) })
         self.timed("resolve", t1)
@@ -96,19 +89,7 @@ impl Workspace {
         out
     }
 
-    /// A revived file whose said row stands is held: nothing of it is read, signed or analysed.
-    fn hold_the_standing() {
-        let _ = self.each_open_file((f: FileId) -> self.hold_if_standing(f))
-    }
-
-    fn hold_if_standing(f: FileId) {
-        if self.revived.get().get("${f.index}") == null || !self.said_standing(f) { return }
-        let path = self.decls.file(f).path
-        self.stood.put(path, true)
-        let _ = self.hold_only(path)
-    }
-
-    /// EVERY OPEN (non-held) FILE, WALKED AS THE TABLE ITSELF GROWS. A
+    /// EVERY OPEN FILE, WALKED AS THE TABLE ITSELF GROWS. A
     /// file's own resolve or its own body can admit a file none of this
     /// phase's earlier turns had ever seen — an expression reaches
     /// further than a signature does — so the walk re-reads the table's
@@ -121,7 +102,7 @@ impl Workspace {
         mut i = 0
         while i < self.decls.file_count() {
             let fi = self.decls.file(file_at(i))
-            if !self.is_held(fi.id) && self.reads_as_source(fi.path) {
+            if self.reads_as_source(fi.path) {
                 act(fi.id)
                 out.push(fi.id)
             }
@@ -171,34 +152,23 @@ impl Workspace {
         )
     }
 
-    /// WHETHER A FILE IS HELD — answered from a record rather than read. The one
-    /// question the analysis asks before it does anything at all.
-    fn is_held(f: FileId) -> bool { self.decls.held.get().get(self.decls.file(f).path) != null }
-
     /// THE FILES A RECORD SUPPLIED: whose interface was loaded from the store,
     /// never parsed. The receipt an on-demand load pays against.
     fn loaded_files() -> int { self.records.met_files.get().length }
 
-    /// Every file the program knows, held or read.
+    /// Every file the program knows.
     fn program_files() -> int { self.decls.file_count() }
 
-    /// HOLD A FILE: from here it contributes its minted declarations and what the
-    /// store keeps for it, and nothing reads it. Per FILE — a module with fifty
-    /// files holds forty-nine.
-    fn hold_only(path: string) { self.decls.held.put(path, true) }
-
-    /// MEET FILES: each enters the table, so it is read unless it is held.
+    /// MEET FILES: each enters the table.
     fn met_all(paths: List<string>) { for path in paths { let _ = self.file_id(path) } }
 
     /// ADMIT EVERY FILE — parse and mint the whole closure, which GROWS as a file's `use`
-    /// lines admit packages. Held sigs are rebuilt from records and may name a PARSED
-    /// module's type, so every name must exist before any held shape is filled.
+    /// lines admit packages.
     fn admit_all() {
         mut i = 0
         while i < self.decls.file_count() {
             let id = file_at(i)
-            // a held file's declarations are minted when something reads them
-            if !self.is_held(id) && self.reads_as_source(self.decls.file(id).path) {
+            if self.reads_as_source(self.decls.file(id).path) {
                 let _ = self.items(id)
                 self.admit_used(id)
             }
@@ -316,12 +286,9 @@ impl Workspace {
         Reading { name: name, digest: digest }
     }
 
-    /// Whether `d` is a collect gathering across files — for a held file, whether its
-    /// record holds one.
+    /// Whether `d` is a collect gathering across files.
     fn gathers_across(d: DeclId) -> bool {
         let x = self.decls.decl(d)
-        let path = self.decls.file(x.file).path
-        if self.is_held(x.file) { return self.hold.gathered.get().any(it.collector == path) }
         let scope? = self.parsed(x.file).store.collect_scope(x.stmt) else { return false }
         gathers_across_files(scope)
     }
@@ -335,11 +302,9 @@ impl Workspace {
         self.collect_digest(path, gathers)
     }
 
-    /// The set the collect `name` in `path` gathers now — a held file's from its record,
-    /// since a held collector is one whose sets did not move.
+    /// The set the collect `name` in `path` gathers now.
     fn collect_digest(path: string, name: string) -> string? {
         let f = self.file_id(path)
-        if self.is_held(f) { return self.hold.gathered.get().find(it.collector == path && it.gathering.name == name)?.digest }
         let g? = self.gatherings(path).find(it.name == name) else { return null }
         self.gathered_set(g, f)
     }
@@ -382,37 +347,6 @@ impl Workspace {
     /// The text a member is declared in, as one digest.
     fn member_text(m: Decl) -> string { self.text_digest(self.decls.file(m.file).path) }
 
-    /// EVERY HELD COLLECTOR WHOSE SET MOVED, to be read: what it gathers now, from
-    /// held members' records and moved members' fresh declarations, against what
-    /// its record says it gathered.
-    fn gathered_moved(read: List<FileId>) -> List<ReadFile> {
-        [ReadFile { path: g.collector, why: Reads.Gathered(g.package) } for g in self.hold.gathered.get() if self.gathered_away(g, read)]
-    }
-
-    /// Whether a held collector's set moved since its record was written.
-    fn gathered_away(g: HeldGather, read: List<FileId>) -> bool {
-        let f = self.file_id(g.collector)
-        self.is_held(f) &&
-            self.gathering_read(g.gathering.kind, read) &&
-            self.gathered_set(g.gathering, f) != g.digest
-    }
-
-    /// Whether a file this attempt does not hold gathers by `kind`, now or when its record was
-    /// written: a set gathered from held files alone stands as its collector's record says.
-    fn gathering_read(kind: CollectKind, read: List<FileId>) -> bool {
-        self.producers_of(kind).any((path) -> !self.held_path(path)) ||
-            read.any((f) -> self.gathers_in(kind, f))
-    }
-
-    /// The files a module record says produce what `kind` gathers by.
-    fn producers_of(kind: CollectKind) -> List<string> {
-        match kind {
-            .Component(w) -> self.hold.worded_by.get().get(w) ?? [],
-            .Annotated(w) -> self.hold.marked_by.get().get(w) ?? [],
-            .UnknownKind(_) -> [],
-        }
-    }
-
     /// Whether a read file declares something `kind` gathers by.
     fn gathers_in(kind: CollectKind, f: FileId) -> bool {
         self.decls.decls_of_file(f).any((d) -> gathered_by(kind, self.decls.decl(d)))
@@ -434,10 +368,9 @@ impl Workspace {
         flatten([self.host_fn_owes(d, asked) for d in hosted])
     }
 
-    /// The host fns of the files a program reads and of the files it holds: a
-    /// held module defines its symbols for the link as a read one does.
+    /// The host fns of the files a program reads: each defines its symbols for the link.
     fn program_host_fns(read: List<FileId>) -> List<DeclId> {
-        [x.id for x in self.decls.host_fns() if self.is_held(x.file) || read.any(same_file(it, x.file))]
+        [x.id for x in self.decls.host_fns() if read.any(same_file(it, x.file))]
     }
 
     /// The host fns a build standing beside `hosts` exports: the program's

@@ -53,7 +53,7 @@ use features.{
     Decls,
     decl_key_text,
 }
-use compiler.lower.{Body, program_symbol, FieldPlan}
+use compiler.lower.{FieldPlan}
 use compiler.store.{Store, Stored, Producer, node_key, producer_of}
 use compiler.host.{Host}
 use @std.meta.{code_hash}
@@ -786,28 +786,6 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
 }
 
 // ── REBUILDING ──────────────────────────────────────────────────────
-
-/// A `gathers` line read back as the collect it holds a file to; null for a line
-/// this compiler never wrote.
-fn held_gather(parts: List<string>, package: string, digest: string) -> HeldGather? {
-    if parts.length < 8 { return null }
-    let kind? = kind_of_words(parts[3], parts[4]) else { return null }
-    let order? = hex_fields_of(parts[5]) else { return null }
-    let plans? = plans_of(parts[6]) else { return null }
-    let scope? = scope_of_word(if parts.length > 8 { parts[8] } else { "package" }) else { return null }
-    HeldGather {
-        collector: parts[2],
-        package: package,
-        gathering: Gathering {
-            name: if parts.length > 9 { parts[9] } else { "" },
-            kind: kind,
-            scope: scope,
-            order: [Plain(o) for o in order],
-            plans: plans,
-        },
-        digest: digest,
-    }
-}
 
 /// A package's files a `collect` gathers from: every one that is not a test.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace and a source root in, the files out.
@@ -1989,23 +1967,19 @@ fn imports_kept(ws: Workspace, store: Store, name: string) -> List<string> {
 }
 
 /// THE MODULES A PROGRAM REACHES: its own package's, the prelude, and the closure of what they
-/// import — a parsed module by the `use` lines it has now, a held one by its record — with each
-/// package a held `collect` gathers whole, as `pkg:KEY`. What a held file said stands in the store
-/// whatever else ran in the directory; it is printed only when the program reaches it.
+/// import — a parsed module by the `use` lines it has now.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — the workspace, a store and the program in, the modules reached out.
-fn reached_modules(ws: Workspace, store: Store, p: Program) -> Map<string, bool> {
+fn reached_modules(ws: Workspace, p: Program) -> Map<string, bool> {
     mut reached: Map<string, bool> = {}
     mut parsed_in: Map<string, List<Analysis>> = {}
     for a in p.files {
         let m = ws.module_of(a.view.source.file)
         parsed_in.set(m, (parsed_in.get(m) ?? []).concat([a]))
     }
-    mut held_in: Map<string, bool> = {}
-    for path in ws.decls.held.get().keys() { held_in.set(ws.module_of(path), true) }
     mut work: List<string> = [prelude_module().text()]
         .concat(
             distinct(
-                [ws.module_of(path) for path in ws.decls.held.get().keys().concat([a.view.source.file for a in p.files]) if ws.holder_of_path(path) == 0],
+                [ws.module_of(path) for path in [a.view.source.file for a in p.files] if ws.holder_of_path(path) == 0],
             ),
         )
     mut at = 0
@@ -2014,12 +1988,6 @@ fn reached_modules(ws: Workspace, store: Store, p: Program) -> Map<string, bool>
         at = at + 1
         if reached.get(m) != null { continue }
         reached.set(m, true)
-        if held_in.get(m) != null {
-            work = work.concat(imports_kept(ws, store, m))
-            for parts in ws.producers_in(store, module_path(m.split("."))).walk {
-                if parts[0] == "gathers" && parts.length > 1 { reached.set("pkg:${parts[1]}", true) }
-            }
-        }
         for a in parsed_in.get(m) ?? [] {
             let from = ws.packages()[ws.holder_of_path(a.view.source.file)]
             for s in a.view.stmts {
@@ -2056,59 +2024,6 @@ fn seen_modules(ws: Workspace, store: Store, m: ModulePath) -> List<string> {
         at = at + 1
     }
     sorted_texts(seen)
-}
-
-/// EVERY ROOT MODULE A PREVIOUS BUILD WROTE DOWN — where the held walk starts. Whether
-/// a FILE is held is `load_interface`'s question, asked per file of its object and its
-/// asks; a module is walked for its record alone, because the entry's object is keyed
-/// by its own bytes and a root that is only an entry has no other.
-// LICENSED compiler.free_state_verb: THE HELD WALK — a workspace and a store in, the modules worth loading out.
-export fn held_modules(ws: Workspace, store: Store, built: string?) -> List<ModulePath> {
-    [m for m in [module_path(n.split(".")) for n in distinct([ws.module_of(p) for p in ws.entry_files(built)])] if record_cached(ws, store, m) != ""]
-}
-
-/// EVERY HELD FILE, by path — ONE derivation for the stubs, the objects and the
-/// interface writes, so no list of modules can disagree with the files actually held.
-// LICENSED compiler.free_state_verb: a pure PROJECTION — the workspace in, its held files' paths out.
-export fn held_paths(ws: Workspace) -> List<string> {
-    [ws.decls.file(f).path for f in ws.decls.held_files()]
-}
-
-// ── STUB BODIES FOR HELD FUNCTIONS ──────────────────────────────────
-
-/// A HELD FN, AS A DECLARATION THE EMITTER CAN SEE. A body that is never LOWED into
-/// instructions is still a NAME and a SIGNATURE, and that is exactly what a caller's module
-/// needs: `emit_module` declares what its bodies NAME, so a call to a held function finds a
-/// declaration. IT IS NEVER DEFINED, because the file it belongs to is never emitted — its
-/// machine code comes from the object the store already holds.
-///
-/// WITHOUT THIS A FRESH MODULE THAT CALLS A HELD ONE HAS NOTHING TO DECLARE THE CALL
-/// AGAINST: `main.av` calling `twice` whose module was skipped died in the link, and that
-/// was the one thing between the skip and a sub-second edit.
-///
-/// AND A HELD FILE MAY BE AN IMPORT — the modules `held_modules` walks are the ROOT's,
-/// while `load_interface` holds imported files too — so the stub set is EVERY held file,
-/// never the root's module list.
-// LICENSED compiler.free_state_verb: A STUB — the workspace in, the bodies every held file lets a caller name.
-export fn held_stubs(ws: Workspace) -> List<Body> {
-    mut out: List<Body> = []
-    for d in ws.decls.all_decls() {
-        let stub = if ws.is_held(d.file) { ws.stub_of(d) } else { null }
-        if stub != null { out.push(stub!) }
-    }
-    // a held file's top level is a body of its object too
-    out
-        .concat(
-            [Body {
-                name: program_symbol(ws.file_name(path)),
-                params: [],
-                ret: ws.decls.types.type(int),
-                gives: null,
-                ins: [],
-                reg_types: [],
-                file: ws.file_id(path),
-            } for path in held_paths(ws)],
-        )
 }
 
 fn gathers_collectorless() -> string {

@@ -21,7 +21,6 @@ use core.{
     fp,
     fp_list,
     joined,
-    some_list,
 }
 use @std.path.{dir_of}
 use features.{
@@ -52,7 +51,7 @@ use features.{
     TypeFacts,
 }
 use core.{StmtId}
-use diagnostics.{Diag, no_voices, has_errors}
+use diagnostics.{Diag, has_errors}
 use compiler.families.{Family}
 use compiler.backend.{
     run_crossed,
@@ -70,7 +69,6 @@ use compiler.lower.{
     Instance,
     CodeFacts,
     KeptInstance,
-    HeldWants,
     lower_unit,
     code_facts_from_wire,
 }
@@ -237,7 +235,7 @@ impl Workspace {
         // resolved and a declaration a `@derive` generated stands —
         // the same completeness `failures()` leans on. A pass that ran
         // earlier is refused above.
-        let fns = [x.id for x in self.decls.unheld_decls() if self.read_member(x.kind, x.external, x.file, x.root)]
+        let fns = [x.id for x in self.decls.unheld_decls() if self.read_member(x.kind, x.external, x.root)]
         let solved = self
             .read_fixpoint
             .solve([d.index for d in fns], (arg: int) -> self.read_contribution(DeclId { index: arg }))
@@ -258,7 +256,7 @@ impl Workspace {
     /// `Unknown`, which a site never hoists nor writes directly.
     fn decl_places(d: DeclId) -> List<int> {
         let x = self.decls.decl(d)
-        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        if x.external { return [unknown_key()] }
         match x.kind {
             .State -> [place_key(StatePlace.Global(d))],
             .Fn or .Method or .Default or .Main or .Case -> {
@@ -275,8 +273,8 @@ impl Workspace {
     }
 
     /// A declaration the read-reach fixpoint holds: a body it can walk.
-    fn read_member(kind: DeclKind, external: bool, file: FileId, root: ExprId?) -> bool {
-        if external || self.is_held(file) || root == null { return false }
+    fn read_member(kind: DeclKind, external: bool, root: ExprId?) -> bool {
+        if external || root == null { return false }
         match kind { .Fn or .Method or .Default or .Main or .Case -> true, rest -> false }
     }
 
@@ -307,7 +305,7 @@ impl Workspace {
     /// fixpoint.
     fn callee_places(g: DeclId) -> List<int> {
         let x = self.decls.decl(g)
-        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        if x.external { return [unknown_key()] }
         match x.kind {
             .State -> [place_key(StatePlace.Global(g))],
             rest -> plain_places(self.read_fixpoint.value_at(g.index)),
@@ -323,7 +321,7 @@ impl Workspace {
     fn structural_places(d: DeclId) -> List<int> {
         let x = self.decls.decl(d)
         let root? = x.root else { return [unknown_key()] }
-        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        if x.external { return [unknown_key()] }
         let _ = self.read_reach()
         let names = self.names_of(d)
         let view = file_view(self.lang, self.parsed(x.file), self.decls, x.file)
@@ -345,7 +343,7 @@ impl Workspace {
     /// structural half.
     fn callee_structural(g: DeclId) -> List<int> {
         let x = self.decls.decl(g)
-        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        if x.external { return [unknown_key()] }
         match x.kind {
             .State -> [place_key(StatePlace.Global(g))],
             rest -> structural_places_of_keys(self.read_fixpoint.value_at(g.index)),
@@ -514,57 +512,6 @@ impl Workspace {
     /// FILE-SAID: a file's asks, keyed by its stored name — written beside the object-keyed row.
     fn asks_row(path: string) -> string { self.file_key(Stored.Unit, "asks-row", path) }
 
-    /// EVERY ASK THE HELD FILES' BODIES MAKE, read by name where the bodies are not —
-    /// kept for the lowering, nothing resolved — and the held files whose row could NOT be read.
-    /// An unread row is a file that must parse: holding it would link a program
-    /// missing whatever its bodies ask for.
-    /// A link resolves every ask up front, as it lowers their instantiations from the store.
-    fn read_held_asks(s: Store, links: bool) -> List<ReadFile> {
-        mut unread: List<ReadFile> = []
-        mut asks: List<HeldAsk> = []
-        for path in held_paths(self) {
-            let held = self
-                .held_asks_from_wire(path, s.get(Stored.Unit, self.asks_key(self.held_okey(s, path))) ?? "")
-            if held == null || !held!.all((h) -> self.ask_stands(h, links)) { unread.push(ReadFile { path: path, why: Reads.AsksUnread }) } else { asks = asks.concat(held!) }
-        }
-        self.hold.held_asks.set(asks)
-        unread
-    }
-
-    /// Whether a held ask names a file here — and, for a link, a declaration that resolves.
-    fn ask_stands(h: HeldAsk, links: bool) -> bool {
-        self.ask_home(h) != null && (!links || self.held_ask_wanted(h) != null)
-    }
-
-    /// A held ask's home, as this attempt knows it.
-    fn ask_home(h: HeldAsk) -> FileId? { self.decls.known_file_id(h.home) }
-
-    /// Whether a held ask's home is held: its body is the store's.
-    fn home_held(h: HeldAsk) -> bool {
-        let f? = self.ask_home(h) else { return false }
-        self.is_held(f)
-    }
-
-    /// A held ask resolved; one whose declaration no longer resolves sends its asking file to be read.
-    fn asked_want(h: HeldAsk) -> Wanted? {
-        let w = self.held_ask_wanted(h)
-        if w == null { self.hold.asks_lost.push(h.by) }
-        w
-    }
-
-    /// WHAT HELD BODIES ASK, for the lowering: an ask homed in a read file resolved — it lowers
-    /// here — and the rest by name, resolved only where it roams and a link owes code hashes.
-    fn held_wants(hashed: bool) -> HeldWants {
-        let asks = self.hold.held_asks.get()
-        let stored = [h for h in asks if self.home_held(h)]
-        HeldWants {
-            read: flatten([some_list(self.asked_want(h)) for h in asks if !self.home_held(h)]),
-            names: [h.name for h in stored],
-            homes: [self.ask_home(h)! for h in stored if h.roams],
-            roaming: if hashed { flatten([some_list(self.asked_want(h)) for h in stored if h.roams]) } else { [] },
-        }
-    }
-
     /// Where a file's code lives: beside its object, under the object's key.
     fn codes_key(okey: string) -> string { node_key(Stored.Unit, ["codes", okey]) }
 
@@ -608,20 +555,6 @@ impl Workspace {
         KeptInstance { facts: facts, held: held }
     }
 
-    /// WHAT EVERY HELD FILE'S CODE IS, read where its bodies are not — so a
-    /// code hash reaching one is computed through it — and the held files
-    /// whose row could NOT be read, which must parse.
-    fn read_held_codes(s: Store) -> List<ReadFile> {
-        mut unread: List<ReadFile> = []
-        for path in held_paths(self) {
-            let codes = code_facts_from_wire(
-                s.get(Stored.Unit, self.codes_key(self.held_okey(s, path))) ?? "",
-            )
-            if codes == null { unread.push(ReadFile { path: path, why: Reads.CodesUnread }) } else { self.hold.held_codes.push(codes!) }
-        }
-        unread
-    }
-
     fn held_okey(s: Store, path: string) -> string {
         let at = "${self.module_path_of(path).text()}\t${path}"
         let known: string? = self.keys.object_keys.get().get(at)
@@ -645,17 +578,8 @@ impl Workspace {
     /// check — the row it would call has no body on that target.
     fn wasm_target() -> bool { self.keys.build_mode.get().starts_with("wasm") }
 
-    /// One unit lowered. A HELD FILE HAS NO BODY TO LOWER: asked for one — a
-    /// compile-time run reads the body it calls — it answers nothing and NOTES the
-    /// file, and the build starts again with that file parsed.
+    /// One unit lowered.
     fn lower_requested(w: Wanted) -> Unit {
-        if self.is_held(w.file) {
-            self
-                .hold
-                .body_asks
-                .set(self.hold.body_asks.get().concat([self.decls.file(w.file).path]))
-            return Unit { bodies: [], wants: [], voices: no_voices(), statics: [] }
-        }
         let ws = self
         let settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> = (
             f: FileId,
@@ -690,16 +614,9 @@ impl Workspace {
         own_body && self.decls.owns_a_range(d)
     }
 
-    /// An isolated compile-time run needs the body of every function it
-    /// reaches, including one whose machine-code object is held. Parse and
-    /// lower that source on demand; ordinary program lowering still reuses
-    /// the held object through `lowered` above. Every unit this asks for
-    /// is the RUN's own, remembered under `lift_lowered`, never `lowered`.
-    fn lowered_for_eval(id: int) -> Unit {
-        let w = self.asks.get()[id]
-        if w.decl == null || !self.is_held(w.file) { return self.lift_lowered(id) }
-        self.lower_requested(w)
-    }
+    /// The unit a compile-time run asks for: the RUN's own, remembered
+    /// under `lift_lowered`, never `lowered`.
+    fn lowered_for_eval(id: int) -> Unit { self.lift_lowered(id) }
 
     /// A const's value, settled ONCE per workspace: its initializer
     /// lowered as a program of its own — the units it reaches are the
@@ -840,8 +757,8 @@ impl Workspace {
             path: path,
             digest: self.text_digest(path),
             ref: self.decl_ref(d),
-            print: if self.is_held(f) { "" } else { "${self.syntax(d!)}" },
-            outline: if self.is_held(f) { "" } else { self.outline(path) },
+            print: "${self.syntax(d!)}",
+            outline: self.outline(path),
         }
     }
 

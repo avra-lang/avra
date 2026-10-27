@@ -47,8 +47,6 @@ use core.{
 use @std.path.{dir_of, joined_path, relative_path}
 use features.components.{word_of, instanced, named_instances}
 use features.{
-    ExternNote,
-    Ref,
     takes_receiver,
     Unsettled,
     Settled,
@@ -247,8 +245,6 @@ type ViewStand = { files: int, asks: int, stands: bool }
 @identity
 type Hold = {
     forced: Cell<Map<string, Reads>>,
-    held_asks: Cell<List<HeldAsk>>,
-    asks_lost: Cell<List<string>>,
     held_codes: Cell<List<CodeFacts>>,
     body_asks: Cell<List<string>>,
     runs: Cell<Map<string, List<RunRead>>>,
@@ -263,22 +259,6 @@ type Hold = {
     pending_resolved: Cell<Map<string, string>>,
     settling: Cell<List<string>>,
     read_files: Cell<List<ReadFile>>,
-    /// THE PRODUCER INDEX: for each held module, every declaration NAME,
-    /// WORD and MARK its record lines carry, and each extern it declares. A bucket
-    /// reader mints the modules listed for its value before it reads the bucket, so a
-    /// held module's row exists before the read that wants it — never eagerly, never late.
-    named_by: Cell<Map<string, List<string>>>,
-    worded_by: Cell<Map<string, List<string>>>,
-    marked_by: Cell<Map<string, List<string>>>,
-    externed_by: Cell<List<ExternNote>>,
-    /// The held files whose records declare a type that may implement a trait.
-    typed_by: Cell<List<string>>,
-    /// The files whose records' `ref` rows name each target file, by the target's path.
-    refs_by_target: Cell<Map<string, List<string>>>,
-    /// The references held files make into a held file, restored once per target.
-    held_refs: Cell<Map<string, List<Ref>>>,
-    /// A held file's `ref` lines off its module's kept record, decoded once a process.
-    kept_refs: Cell<Map<string, List<List<string>>>>,
     /// What each surveyed file's references pass filed, by the file's index.
     file_refs: Cell<Map<string, Surveyed>>,
     /// The owners the references pass has filed rows under.
@@ -289,13 +269,8 @@ type Hold = {
     forms_moved: Cell<Map<string, Map<string, bool>>>,
     /// Each judged file's run tokens off its module's row, decoded once per build.
     lite_runs: Cell<Map<string, List<string>>>,
-    linked_by: Cell<List<string>>,
     moved: Cell<Map<string, List<PartMoved>>>,
-    // each held file's re-exports, read off its record as it loads
-    reexports: Cell<Map<string, List<Reexport>>>,
     settle_frames: Cell<List<Cell<List<KeptLine>>>>,
-    // each held collector, with the set its record says it gathered
-    gathered: Cell<List<HeldGather>>,
     lowering: Cell<List<int>>,
     unit_asks: Cell<Map<string, Cell<Map<string, ConstAsk>>>>,
     owners: Cell<Map<string, DeclId>>,
@@ -311,14 +286,10 @@ type ConstAsk = { file: FileId, root: SettleRoot, seats: List<SeatValue> }
 /// decided: the file whose key carries it, and the read itself.
 type PendingRead = { reader: string, read: RunRead }
 
-/// A held file's `collect` that gathers across files: the file, the package's source,
-/// what it gathers, and the set it gathered when it was last read.
 /// WHAT A HELD BODY ASKS, AS A NAME: the held file that asks, the want's symbol and home, whether
 /// it roams (an instantiation, lowered wherever it is wanted), and its own wire — resolved into a
 /// want only when a reader needs its declaration.
 type HeldAsk = { by: string, name: string, home: string, roams: bool, wire: string }
-
-type HeldGather = { collector: string, package: string, gathering: Gathering, digest: string }
 
 /// A `collect`'s name, what it gathers by, from where, the order it gathers in, and what it
 /// reads of each member, one plan per projected field.
@@ -346,16 +317,11 @@ type KeptLine = {
 
 fn new_hold() -> Hold {
     let no_forced: Map<string, Reads> = {}
-    let no_asks: List<HeldAsk> = []
     let no_runs: Map<string, List<RunRead>> = {}
     let no_read_files: List<ReadFile> = []
-    let no_producers: Map<string, List<string>> = {}
     let no_moved: Map<string, List<PartMoved>> = {}
-    let no_reexports: Map<string, List<Reexport>> = {}
     Hold {
         forced: Cell.new(no_forced),
-        held_asks: Cell.new(no_asks),
-        asks_lost: list_cell(),
         held_codes: Cell.new(no_codes()),
         body_asks: Cell.new(no_paths()),
         runs: Cell.new(no_runs),
@@ -370,24 +336,13 @@ fn new_hold() -> Hold {
         pending_resolved: map_cell(),
         settling: Cell.new(no_paths()),
         read_files: Cell.new(no_read_files),
-        named_by: Cell.new(no_producers),
-        worded_by: Cell.new(no_producers),
-        marked_by: Cell.new(no_producers),
-        externed_by: list_cell(),
-        typed_by: list_cell(),
-        refs_by_target: Cell.new(no_producers),
-        held_refs: map_cell(),
-        kept_refs: map_cell(),
         file_refs: map_cell(),
         refs_owners: list_cell(),
         standing: map_cell(),
         forms_moved: map_cell(),
         lite_runs: map_cell(),
-        linked_by: list_cell(),
         moved: Cell.new(no_moved),
-        reexports: Cell.new(no_reexports),
         settle_frames: list_cell(),
-        gathered: list_cell(),
         lowering: list_cell(),
         unit_asks: map_cell(),
         owners: map_cell(),
@@ -518,8 +473,6 @@ export type Workspace = {
     revived: Cell<Map<string, List<string>>>,
     /// The revived files whose parse has been attached to their minted declarations.
     attached: Cell<Map<string, bool>>,
-    /// The revived files held because their said row stands, by path: what they said is that row.
-    stood: Cell<Map<string, bool>>,
     // plain for its identity: the host capability table, set once at
     // construction and never reassigned
     host: Host,
@@ -1131,7 +1084,6 @@ fn built(
         said_rows: map_cell(),
         revived: map_cell(),
         attached: map_cell(),
-        stood: map_cell(),
     }
     // The registration IS `Family`'s declaration order: `Family.all()`
     // answers the variants in ordinal order, so `db.family`'s minted index
@@ -1153,7 +1105,6 @@ fn built(
     ws.decls.arm_seats((d: DeclId) -> ws.seats_ensured(d))
     ws.decls.arm_target((d: DeclId) -> ws.ensured(d))
     ws.decls.arm_store((f: FileId) -> ws.store_ensured(f))
-    ws.decls.arm_externs(() -> ws.hold.externed_by.get(), () -> ws.hold.typed_by.get())
     ws
         .decls
         .arm_embeds(
@@ -1168,7 +1119,6 @@ fn built(
     ws.decls.arm_cancels((d: DeclId) -> ws.cancel_ensured(d))
     ws.decls.arm_consumed((d: DeclId) -> ws.consumed_ensured(d))
     ws.decls.arm_references(() -> ws.refs_ensured())
-    ws.decls.arm_held_refs((d: DeclId) -> ws.held_refs_to(d))
     ws.decls.arm_read_found((d: DeclId) -> ws.read_found_ensured(d))
     ws.decls.arm_failures(() -> ws.failures_ensured())
     ws.decls.arm_marks((d: DeclId) -> ws.marks_ensured(d))
@@ -1249,12 +1199,11 @@ impl Workspace {
         let _ = self.sig(d)
     }
 
-    /// Every read source file of the package `f` stands in admitted, its tests aside. A held
-    /// file stands for its record: the producer doors mint it when a read wants its rows.
+    /// Every read source file of the package `f` stands in admitted, its tests aside.
     fn package_admitted(f: FileId) {
         let path = self.decls.file(f).path
         let pkg? = self.packages().find((k) -> path.starts_with("${k.src}/")) else { return }
-        for p in [p for p in self.all_files(pkg.src) if !self.is_test_path(p) && self.decls.held.get().get(p) == null] {
+        for p in [p for p in self.all_files(pkg.src) if !self.is_test_path(p)] {
             let _ = self.items(self.file_id(p))
         }
     }
@@ -1410,12 +1359,11 @@ impl Workspace {
     // ── The families ──
     /// A path's identity — the table mints it at first mention.
     /// A file's identity — and a file READ reaches its module whole and every
-    /// component its directory declares, so those stand the moment it does; a
-    /// held file reaches only itself, its module's record answering for the rest.
+    /// component its directory declares, so those stand the moment it does.
     fn file_id(path: string) -> FileId {
         let known? = self.decls.known_file_id(path) else {
             let f = self.minted_file(path)
-            if !self.lone && !self.is_held(f) && self.reads_as_source(path) {
+            if !self.lone && self.reads_as_source(path) {
                 // listed, not `module_files`: its cache would answer the query that
                 // later reads the module, which then records no edge on the manifest
                 for sibling in self.listed_files(self.module_path_of(path)) { let _ = self.minted_file(sibling) }
@@ -1918,10 +1866,8 @@ impl Workspace {
     }
 
     /// A file's rows standing before a reader reads them through their buckets: its
-    /// admission asked under a cell whose hash never moves. A held file's rows stand
-    /// through the producer index, which mints a module for the name a bucket read asks.
+    /// admission asked under a cell whose hash never moves.
     fn admission(f: FileId) {
-        if self.is_held(f) { return }
         let k = key(Family.Admitted, f.index)
         let rev = self.db.revision()
         if self.admission_asked.at(f.index) ?? 0 == rev {
@@ -2213,10 +2159,8 @@ impl Workspace {
         // or a caller in another file sees a table missing the derived
         // methods. The kernel's recursion guard makes the re-entry (a
         // target whose own file is resolving) answer the smaller view.
-        // A HELD FILE NEVER EXPANDS: its generated impls were minted from
-        // its record, so its table is whole without a parse.
         let home = self.decls.decl(target).file
-        if !self.is_held(home) { let _ = self.resolved(home) }
+        let _ = self.resolved(home)
         let blocks = self.method_blocks(target)
         // A table that cannot be COMPLETED is not the table, and must
         // not be memoized: an impl still registering, or an impl in a
@@ -2231,9 +2175,7 @@ impl Workspace {
             self.db.abandon(k)
             return self.decls.registered_methods(target)
         }
-        for b in blocks {
-            if self.is_held(self.decls.decl(b).file) { self.held_methods(target, b) } else { touch(self.sig(b)) }
-        }
+        for b in blocks { touch(self.sig(b)) }
         let out = self.decls.registered_methods(target)
         self.note_methods(k, target)
         self.method_clashes.keep(target.index, self.decls.method_clashes(target))
@@ -2318,36 +2260,10 @@ impl Workspace {
     /// is asking — `@std.meta.Code` and the compiler's own `Code` met
     /// so, inside a derive, and poisoned a sig computed mid-resolve.
     fn aims_at(b: DeclId, target: DeclId) -> bool {
-        // a held impl has no namespace to ask: its record kept the declaration it aims at
-        if self.is_held(self.decls.decl(b).file) {
-            let aimed = self.decls.target_of(b)
-            return aimed != null && same_decl(aimed!, target)
-        }
         let seen: DeclId? = self
             .visible(self.decls.decl(b).file)
             .type_decl(self.decls.decl(target).name)
         seen != null && same_decl(seen!, target)
-    }
-
-    /// A HELD IMPL'S METHODS, registered from the interface. The typer SIGNS an
-    /// impl to fill the table; a held impl has no body to sign, so its RECORD's
-    /// children are the table's entries — and a record's own method (a
-    /// component's) is an entry itself.
-    fn held_methods(target: DeclId, block: DeclId) {
-        if self.decls.decl(block).kind is .Method { return self.decls.declare_method(target, block) }
-        for m in self.decls.children_of(block) { self.decls.declare_method(target, m) }
-        let tr = self.held_trait(block)
-        if tr != null { self.decls.record_impl(target, tr!) }
-    }
-
-    /// The trait a held `impl … for` block answers. A held block has no namespace to
-    /// resolve the name in, so the name must be ONE trait's: two of a name answer
-    /// nothing, and the box that wanted the impl is refused rather than guessed.
-    fn held_trait(block: DeclId) -> DeclId? {
-        let of? = self.decls.facts_of(block)?.of else { return null }
-        if of == "" { return null }
-        let named = [d.id for d in self.decls.named_rows(of) if d.kind is .Trait]
-        if named.length == 1 { named.first() } else { null }
     }
 
     /// Whether a declaration's signature is being computed right now.

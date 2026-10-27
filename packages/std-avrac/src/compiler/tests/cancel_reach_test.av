@@ -1,12 +1,10 @@
 // Whether a call may reach a cancel point (`Family.CancelBits`): a
 // fixpoint over the calls each body makes, settled per strongly-connected set, seeded by a
 // row that may switch the task out, a read that waits, a spawn, a
-// `while`, and a call through a value. A held fn answers from its
-// interface, where the bit is contract.
+// `while`, and a call through a value.
 use compiler.{Workspace}
 use compiler.host.{memory_host}
-use compiler.record.{read_fields, iface_digest}
-use compiler.producers.{note_producers, producers_of}
+use compiler.record.{iface_digest}
 use core.{DeclId, flatten}
 use @std.avrac.testing.{provided, test_workspace, ir_of}
 use compiler.backend.{render_ir}
@@ -406,39 +404,6 @@ spec "compiler/cancel_reach — recursion" {
     }
 }
 
-/// The record lines of the program's file, and a fresh workspace
-/// that holds the file from them alone.
-fn held_from(lines: List<string>) -> Workspace { held_reading(lines, (line) -> line) }
-
-/// As `held_from`, each record line passed through `edited` first.
-fn held_reading(lines: List<string>, edited: fn(string) -> string) -> Workspace {
-    let source = lines.concat([""]).join("\n")
-    let parsed = reach_workspace(source)
-    let _ = parsed.analyze_file(REACH_PATH)
-    let f? = parsed.decls.known_file_id(REACH_PATH) else { return parsed }
-    let records = [parsed.record_line(parsed.decls.raw_decl(d), false) for d in parsed.decls.decls_of_file(f)]
-    let held = reach_workspace(source)
-    held.hold_only(REACH_PATH)
-    let rows = [read_fields(edited(line)) for line in records]
-    held.mint_file(REACH_PATH, rows)
-    note_producers(held, producers_of(held.module_path_of(REACH_PATH), rows))
-    held
-}
-
-/// A record line with BOTH cancel bits dropped: one that says nothing
-/// of either.
-fn bitless(line: string) -> string {
-    let fields = line.split("\t")
-    fields.slice(0, fields.length - 2).join("\t")
-}
-
-/// A record line whose spins bit is dropped but whose parks bit stands:
-/// one written between the two bits landed.
-fn spin_less(line: string) -> string {
-    let fields = line.split("\t")
-    fields.slice(0, fields.length - 1).join("\t")
-}
-
 /// Each named fn's record line as its analysed pass writes it, one a line.
 fn record_lines(lines: List<string>, names: List<string>) -> string {
     let ws = reach_workspace(lines.concat([""]).join("\n"))
@@ -456,42 +421,14 @@ fn line_with(lines: List<string>, name: string, parks: string, spins: string) ->
 }
 
 spec "compiler/cancel_reach — the interface" {
-    then "a held fn answers the bit its record carries" {
-        let held = held_from(napping().concat(["fn plain() -> int { 1 }", "plain()"]))
-        [reach_word(held, n) for n in ["nap", "plain"]].join(" ") == "nap=1 plain=0"
-    }
-    then "a held fn answers both bits its record carries" {
-        let held = held_from(
-            napping().concat(spinning()).concat(["fn plain() -> int { 1 }", "plain()"]),
-        )
-        [bits_word(held, n) for n in ["nap", "spin", "plain"]].join(" ") == "nap=p- spin=-s plain=--"
-    }
     then "the record line's last two fields are the bits — how it waits (`2`: through a row), then whether it spins" {
         let lines = napping().concat(spinning()).concat(["nap()"])
         let analysed = record_lines(lines, ["nap", "spin"])
         analysed == [line_with(lines, "nap", "2", "0"), line_with(lines, "spin", "0", "1")].join("\n")
     }
-    then "a held fn that links makes its program link, though nothing calls it by name" {
-        held_from(napping().concat(["fn plain() -> int { 1 }", "plain()"])).members_link_scheduler()
-    }
-    then "a program holding only fns that link nothing links none" {
-        !held_from(["fn call(f: fn() -> int) -> int { f() }", "fn plain() -> int { 1 }", "plain()"])
-            .members_link_scheduler()
-    }
     then "a fn that parks only through a value records `1`: it may wait, and links nothing" {
         let lines = ["fn call(f: fn() -> int) -> int { f() }", "call(() -> 1)"]
         record_lines(lines, ["call"]) == line_with(lines, "call", "1", "1")
-    }
-    then "a held fn links by the word its record carries, and one that says nothing links" {
-        let lines = napping().concat(["fn plain() -> int { 1 }", "plain()"])
-        let said = held_from(lines)
-        let spoken = said.reach_of(reach_decl(said, "nap")).links &&
-            !said.reach_of(reach_decl(said, "plain")).links
-        let silent = held_reading(
-            lines,
-            (line) -> if line.contains("\tplain\t") { bitless(line) } else { line },
-        )
-        spoken && silent.reach_of(reach_decl(silent, "plain")).links
     }
     then "each bit moves the interface digest, so a caller keyed on it is rebuilt" {
         let lines = napping().concat(["nap()"])
@@ -502,20 +439,6 @@ spec "compiler/cancel_reach — the interface" {
     then "a fn that starts or stops linking moves its interface digest: `1` and `2` are two records" {
         let lines = napping().concat(["nap()"])
         iface_digest([line_with(lines, "nap", "2", "0")]) != iface_digest([line_with(lines, "nap", "1", "0")])
-    }
-    then "a record that says nothing of either bit says a fn may reach both" {
-        let held = held_reading(
-            ["fn plain() -> int { 1 }", "plain()"],
-            (line) -> if line.contains("\tplain\t") { bitless(line) } else { line },
-        )
-        bits_word(held, "plain") == "plain=ps"
-    }
-    then "a record with a parks bit and no spins bit says a fn may spin" {
-        let held = held_reading(
-            ["fn plain() -> int { 1 }", "plain()"],
-            (line) -> if line.contains("\tplain\t") { spin_less(line) } else { line },
-        )
-        bits_word(held, "plain") == "plain=-s"
     }
 }
 

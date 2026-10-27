@@ -823,19 +823,11 @@ impl Workspace {
         if mark == 0 { "" } else { "${mark}" }
     }
 
-    /// Whether a body's home cannot emit it: the home is held, so its object
-    /// is the store's.
-    fn homed_in_held(bd: Body) -> bool {
-        let home? = home_of(bd) else { return false }
-        self.is_held(home)
-    }
-
-    /// The derivation as a build links it: a held fn as a declaration alone, and
-    /// what ROAMS — an instantiation no file owns, a body whose held home cannot
-    /// emit it — owned by no file and weak, in name order, so the program's
-    /// module has the same bytes whatever order the walk met them in.
+    /// The derivation as a build links it: what ROAMS — an instantiation no file
+    /// owns — owned by no file and weak, in name order, so the program's module
+    /// has the same bytes whatever order the walk met them in.
     fn homed(lo: Lowered, m: ProgramModule, main: ProgramMain, unlowered: List<Wanted>) -> Lowered {
-        let roams = [bd for bd in lo.fns if home_of(bd) == null || self.homed_in_held(bd)]
+        let roams = [bd for bd in lo.fns if home_of(bd) == null]
         mut by_name: Map<string, Body> = {}
         // with instantiations owed, the program's module is the STORE's: what roams
         // here is already in it, and stands as a declaration alone
@@ -848,8 +840,7 @@ impl Workspace {
         }
         let stay = [bd for bd in lo.fns if by_name.get(bd.name) == null]
         let owed = [stub! for stub in [self.decls.unlowered_stub(w) for w in unlowered] if stub != null]
-        // a symbol is one body: a held stub stands only where nothing lowered the symbol
-        let stand = undeclared(held_stubs(self).concat(owed), lo.fns)
+        let stand = undeclared(owed, lo.fns)
             .concat(stay)
             .concat([by_name.get(n)! for n in sorted_texts(distinct([bd.name for bd in roams]))])
         // a held module nobody read is never minted, so nothing else declares its cases
@@ -873,8 +864,8 @@ impl Workspace {
     }
 
     /// THE BUILD: every object the program links — the read files' and the program's
-    /// module made or placed, the held ones standing in the store — linked in their
-    /// SOURCES' order, and the binary kept under its key.
+    /// module made or placed — linked in their SOURCES' order, and the binary kept
+    /// under its key.
     fn linked(d: Derived, m: ProgramModule, under: Keyed, binary: string, tools: Toolchain) -> Result<
         BuildOutcome,
         BuildError,
@@ -893,7 +884,6 @@ impl Workspace {
         // the program's buckets stand under what they are a function of, too
         let _ = d.store.keep_once(Stored.Unit, buckets_key(asked), buckets_text(programs))
         clock.mark("emit")
-        let held = self.held_objects(d.store)?
         clock.mark("place")
         let absent = self.absent_objects(tools.target)
         if !absent.is_empty() { fail BuildError.ObjectsMissing(absent) }
@@ -902,7 +892,7 @@ impl Workspace {
         let code = avra_spawn_status(
             tools.linker,
             link_objects(
-                [d.store.path(Stored.Obj, o.key) for o in by_source(read.concat(held)).concat(programs)],
+                [d.store.path(Stored.Obj, o.key) for o in by_source(read).concat(programs)],
                 self,
                 tools.runtime,
                 staged,
@@ -1079,23 +1069,6 @@ impl Workspace {
         owed.length
     }
 
-    /// Every held file's object, where the store keeps it: it links in place.
-    fn held_objects(store: Store) -> Result<List<Made>, BuildError> {
-        let held = [self.held_object(store, path) for path in held_paths(self)]
-        let gone = held.find((o: Made) -> !store.has(Stored.Obj, o.key))
-        if gone != null { fail BuildError.ObjectGone(gone!.source) }
-        held
-    }
-
-    fn held_object(store: Store, path: string) -> Made {
-        let key = self.held_okey(store, path)
-        Made {
-            which: Owned.File(self.file_id(path)),
-            key: key,
-            obj: store.path(Stored.Obj, key),
-            source: path,
-        }
-    }
 }
 
 /// A program's own module.

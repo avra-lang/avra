@@ -129,10 +129,7 @@ impl Workspace {
         if runs.all((r) -> asked.contains(r.path)) { [] } else { [r.path for r in runs] }
     }
 
-    /// A KEPT VERDICT THAT DID NOT STAND ASKS ALL IT READ AT ONCE: the run
-    /// about to replace it reads the bodies the verdict's run read, so every
-    /// held one among them — and what their own runs read — is asked now, and
-    /// the attempt turns once, never once per level the run would reach.
+    /// A KEPT VERDICT THAT DID NOT STAND ASKS ALL IT READ AT ONCE.
     /// A read MANY CONSTS REACH is expanded once, under the open ask generation,
     /// so the whole file's consts ask one read, never one read per const. The
     /// reads already decoded by `kept_verdict` are read back, not decoded twice.
@@ -141,11 +138,7 @@ impl Workspace {
         let read = self.hold.settle_reads.get().get(id) ?? kept_reads(store, key) ?? []
         if read.is_empty() { return }
         self.ask_reads_scope()
-        let fresh = self.unseen_reads(ASK_READS_READER, read)
-        if fresh.is_empty() { return }
-        let reached = flatten([self.ran_by(store, p.path) for p in fresh])
-        let held = [p.path for p in fresh.concat(reached) if self.held_path(p.path)]
-        if !held.is_empty() { self.hold.body_asks.set(self.hold.body_asks.get().concat(held)) }
+        let _ = self.unseen_reads(ASK_READS_READER, read)
     }
 
     /// The ask generation, opened on first use: a unique one, so its reads are
@@ -154,12 +147,6 @@ impl Workspace {
         if self.hold.read_gen.get().get(ASK_READS_READER) == null {
             let _ = self.opened_reads(ASK_READS_READER)
         }
-    }
-
-    /// Whether `path` is a file this attempt holds.
-    fn held_path(path: string) -> bool {
-        let f? = self.decls.known_file_id(path) else { return false }
-        self.is_held(f)
     }
 
     /// The innermost open settlement's lines, its frame closed.
@@ -197,7 +184,7 @@ impl Workspace {
                     path,
                     self.text_digest(path),
                     self.decl_ref(d),
-                    if d == null || self.is_held(w.file) { "" } else { "${self.syntax(d!)}" },
+                    if d == null { "" } else { "${self.syntax(d!)}" },
                     self.unit_shape(u),
                 ],
                 "\t",
@@ -305,7 +292,6 @@ impl Workspace {
     /// The named types a declaration's own expressions carry, read from its typed facts.
     fn note_decl_types(d: DeclId) {
         let x = self.decls.decl(d)
-        if self.is_held(x.file) { return }
         let facts = self.typed(d)
         for e in x.body_exprs() { self.decls.note_named(facts.type_at(e)) }
     }
@@ -355,7 +341,6 @@ impl Workspace {
         if r.length < 7 { return false }
         if self.text_digest(r[1]) == r[2] { return true }
         let d? = self.decl_from_ref(r[3]) else { return false }
-        if self.is_held(self.decls.decl(d).file) { return false }
         if "${self.syntax(d)}" == r[4] { return true }
         if r[6] == "1" { return false }
         let wanted? = self.wanted_list_from_wire(joined(r.slice(7, r.length), "\t")) else { return false }
@@ -451,11 +436,8 @@ impl Workspace {
         distinct(kept.concat(flatten([[i.text() for i in self.imported_by(p)] for p in read])))
     }
 
-    /// Whether `path` is parsed in this build: loaded, and not held.
-    fn file_is_read(path: string) -> bool {
-        let f? = self.decls.known_file_id(path) else { return false }
-        !self.is_held(f)
-    }
+    /// Whether `path` is parsed in this build.
+    fn file_is_read(path: string) -> bool { self.decls.known_file_id(path) != null }
 
     /// A module's kept line: its files, so a file added or removed moves it.
     fn module_line(m: ModulePath) -> string { joined(["m", m.text(), self.module_files(m).join(",")], "\t") }
@@ -526,20 +508,10 @@ impl Workspace {
     /// other's from its declarations.
     fn file_bound_digest(path: string) -> string { names_digest_of([unmarked(b) for b in self.bound_of(path)]) }
 
-    /// A file's bound names, a plain free fn's marked `*`: off its module's producer row when it is
-    /// held, from its declarations otherwise.
+    /// A file's bound names, a plain free fn's marked `*`.
     fn bound_of(path: string) -> List<string> {
-        let held = self.held_names(path)
-        if held != null { return held!.bound }
         let f? = self.decls.known_file_id(path) else { return [] }
         [if self.plain_free(d) { "*${self.decls.decl(d).name}" } else { self.decls.decl(d).name } for d in self.decls.decls_of_file(f) if binds_name(self.decls.decl(d).kind)]
-    }
-
-    /// A held file's names off its module's producer row; null for a file no record answers for.
-    fn held_names(path: string) -> FileNames? {
-        let store? = self.store.get() else { return null }
-        if !self.held_path(path) { return null }
-        (self.producers_for(store, self.module_path_of(path))?.narrows ?? []).find(it.path == path)
     }
 
     /// A names line stands when the names are the ones it was kept with, or, for a plain free fn
@@ -652,11 +624,7 @@ impl Workspace {
 
     /// What a file's `s` line says of its names apart from what a view counts: the non-plain names'
     /// digest, whether it holds generated code, and every bound name's digest.
-    fn state_head(path: string) -> string {
-        let held = self.held_names(path)
-        if held != null { return held!.head }
-        head_of(self.bound_of(path), self.has_generated(path))
-    }
+    fn state_head(path: string) -> string { head_of(self.bound_of(path), self.has_generated(path)) }
 
     /// Each file of the modules, as an `s` line — its path, its head, and what its view counted of
     /// it — with the narrowed names digest the same walk counts.
@@ -695,13 +663,7 @@ impl Workspace {
     /// its text does not.
     fn has_generated(path: string) -> bool {
         let f? = self.decls.known_file_id(path) else { return false }
-        let held? = self.held_names(path) else {
-            return self
-                .decls
-                .decls_of_file(f)
-                .any((d: DeclId) -> !self.decls.decl(d).maker.is_empty())
-        }
-        held.generated
+        self.decls.decls_of_file(f).any((d: DeclId) -> !self.decls.decl(d).maker.is_empty())
     }
 
     /// A file's declaration names, when the file is known; a plain free fn's only when `files`

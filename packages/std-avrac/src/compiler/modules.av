@@ -386,12 +386,9 @@ impl Workspace {
         flatten([self.file_reexports(path) for path in self.module_files(m)])
     }
 
-    /// One file's re-exports: a read file's `export use` items, a held
-    /// file's `reexport` record lines.
+    /// One file's re-exports: its `export use` items.
     fn file_reexports(path: string) -> List<Reexport> {
-        let f = self.file_id(path)
-        if self.is_held(f) { return self.hold.reexports.get().get(path) ?? [] }
-        let p = self.parsed(f)
+        let p = self.parsed(self.file_id(path))
         let from = self.packages()[self.holder_of_path(path)]
         flatten([self.use_reexports(u, from) for u in use_lines(p) if p.store.is_exported(u.stmt)])
     }
@@ -425,10 +422,9 @@ impl Workspace {
     }
 
     /// A file's own generated, exported declarations — empty without a
-    /// parse for a file that carries no annotation, and empty outright
-    /// for a held one.
+    /// parse for a file that carries no annotation.
     fn expanded_exports(f: FileId) -> List<DeclId> {
-        if self.is_held(f) || !(self.has_declares(f) || self.has_marks(f)) { return [] }
+        if !(self.has_declares(f) || self.has_marks(f)) { return [] }
         [d for d in self.expanded(f) if self.is_exported(d)]
     }
 
@@ -592,16 +588,6 @@ type Reexport = { name: string, from: ModulePath, item: string }
 /// A re-export as its record line.
 fn reexport_line(path: string, r: Reexport) -> string {
     "reexport\t${path}\t${r.name}\t${r.from.text()}\t${r.item}"
-}
-
-/// A record's re-export lines for one file, read back.
-fn reexports_in(fields: List<List<string>>, path: string) -> List<Reexport> {
-    [held_reexport(p) for p in fields if p.length >= 5 && p[0] == "reexport" && p[1] == path]
-}
-
-/// `reexport_line`'s inverse.
-fn held_reexport(p: List<string>) -> Reexport {
-    Reexport { name: p[2], from: module_path(p[3].split(".")), item: p[4] }
 }
 
 /// A `use` whose every item was refused as a whole.

@@ -151,25 +151,9 @@ impl Workspace {
     }
 
     /// Whether any fn this compile knows LINKS A SCHEDULER: a member by
-    /// the bit the pass settled, a held fn by its interface's. PURE: it
-    /// reads the bits and writes nothing.
+    /// the bit the pass settled. PURE: it reads the bits and writes nothing.
     fn members_link_scheduler() -> bool {
-        self.decls.unheld_decls().any((x) -> self.cancel_member(x.id) && self.call_links(x.id)) ||
-            self.held_link_scheduler()
-    }
-
-    /// Whether a HELD fn links, by its interface's bit. It counts though
-    /// nothing here calls it by name: its body may be reached through a
-    /// value, and a build that holds it must answer as one that parsed it.
-    fn held_link_scheduler() -> bool {
-        [self.file_id(p) for p in self.hold.linked_by.get() if self.held_path(p)]
-            .any((f) -> self.decls.decls_of_file(f).any((d) -> self.held_links(d)))
-    }
-
-    /// A held fn's own word. Only a fn's record carries one: every other
-    /// row says nothing, and nothing calls it.
-    fn held_links(d: DeclId) -> bool {
-        records_cancel(self.decls.raw_decl(d).kind) && self.decls.cancel_bits(d)?.links ?? false
+        self.decls.unheld_decls().any((x) -> self.cancel_member(x.id) && self.call_links(x.id))
     }
 
     /// Whether a FILE's own expressions wait through a row that links a
@@ -207,7 +191,7 @@ impl Workspace {
     /// A declaration the pass surveys: a body this compile holds.
     fn cancel_member(d: DeclId) -> bool {
         let x = self.decls.decl(d)
-        !x.external && x.root != null && !self.is_held(x.file) && calls_kind(x.kind)
+        !x.external && x.root != null && calls_kind(x.kind)
     }
 
     /// What a call to a declaration that is no member answers: a
@@ -226,7 +210,6 @@ impl Workspace {
                     spins: false,
                     links: rt_waits(x.name),
                 }
-                self.is_held(x.file) -> self.decls.cancel_bits(g) ?? reaches_all()
                 _ -> reaches_both()
             },
             .Const or .State -> reaches_both(),
@@ -310,7 +293,6 @@ impl Workspace {
         let x = self.decls.decl(d)
         when {
             x.external -> "the runtime row `${x.name}`"
-            self.is_held(x.file) -> interface_says()
             _ -> "a body this compile cannot see"
         }
     }
@@ -338,7 +320,7 @@ impl Workspace {
     fn call_links(g: DeclId) -> bool {
         let x = self.decls.decl(g)
         if x.external { return rt_waits(x.name) }
-        if self.cancel_member(g) || self.is_held(x.file) { return self.decls.cancel_bits(g)?.links ?? false }
+        if self.cancel_member(g) { return self.decls.cancel_bits(g)?.links ?? false }
         false
     }
 

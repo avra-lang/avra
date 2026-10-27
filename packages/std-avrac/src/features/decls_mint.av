@@ -392,31 +392,13 @@ impl Decls {
         [DeclId { index: i } for i in rs.ids_in(rs.bucket_of(home_index, dense_key(f.index)))]
     }
 
-    /// The declarations of the files not held, each file's own rows. A pass that
-    /// surveys bodies never surveys a held one, so it reads no row a held file minted.
+    /// The declarations of every file, each file's own rows.
     fn unheld_decls() -> List<Decl> {
         flatten([[self.raw_decl(d) for d in self.decls_of_file(f)] for f in self.unheld_files()])
     }
 
-    fn unheld_files() -> List<FileId> {
-        [FileId { index: i } for i in 0..self.file_count() if !self.file_held(FileId { index: i })]
-    }
-
-    /// The externs the records of the files held now declare.
-    fn held_externs() -> List<ExternNote> { [n for n in (self.externs_index.get())() if self.held.get().get(n.path) != null] }
-
-    /// The files whose rows came from a record.
-    fn held_files() -> List<FileId> {
-        [FileId { index: i } for i in 0..self.file_count() if self.file_held(FileId { index: i })]
-    }
-
-    /// Whether a file's rows came from a record rather than a parse.
-    fn file_held(f: FileId) -> bool { self.held.get().get(self.file(f).path) != null }
-
-    fn arm_externs(index: fn() -> List<ExternNote>, types: fn() -> List<string>) {
-        self.externs_index.set(index)
-        self.types_index.set(types)
-    }
+    /// Every file id, in order.
+    fn unheld_files() -> List<FileId> { [FileId { index: i } for i in 0..self.file_count()] }
 
     /// A file's main seat: the declaration its top-level statements make.
     fn seat_main(f: FileId, d: DeclId) { self.mains.set_at(f.index, d) }
@@ -448,19 +430,12 @@ impl Decls {
     }
 
     /// THE unit a declaration's own body lowers as: named by its
-    /// DECLARATION's symbol — stable across builds, so a held file's
-    /// object answers the name a reader asks for — its root the
-    /// declaration's value. A HELD FILE'S ROOT IS ABSENT: its object
-    /// holds the body already, so the arena is never read for it —
-    /// reading it would parse the whole held file.
+    /// DECLARATION's symbol — stable across builds — its root the
+    /// declaration's value.
     fn declared_unit(d: DeclId) -> Wanted {
         let x = self.decl(d)
-        let root: ExprId? = if self.held.get().get(self.file(x.file).path) != null {
-            null
-        } else {
-            let store = self.store_of(x.file)
-            if x.stmt.index < store.stmts.count() { store.stmt_value(x.stmt) } else { null }
-        }
+        let store = self.store_of(x.file)
+        let root: ExprId? = if x.stmt.index < store.stmts.count() { store.stmt_value(x.stmt) } else { null }
         Wanted { file: x.file, decl: d, name: self.symbol(d), sub: null, root: root }
     }
 
@@ -779,18 +754,6 @@ impl Decls {
         if traced() { qtrace("Q\tunrun\t${maker}\t${why}\n") }
         self.counted.get().resumed(f, maker, prior)
         [d for d in self.decls_so_far(f) if self.raw_decl(d).maker == maker]
-    }
-
-    /// A held file's rows are about to be minted from its record: a run of
-    /// the empty maker, and of each maker the record names.
-    fn held_opened(f: FileId, makers: List<string>) {
-        for maker in [""].concat(makers) { let _ = self.counted.get().opened(f, maker) }
-    }
-
-    /// A held file's rows are minted: each maker's run closes, the empty
-    /// maker's standing as an admission's does.
-    fn held_closed(f: FileId, makers: List<string>) {
-        for maker in makers { self.counted.get().closed(f, maker) }
     }
 
     /// The name a row's key spells its file by: a builtin is the language's.
