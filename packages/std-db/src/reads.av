@@ -1,0 +1,31 @@
+//! What a body read: the tables the model queries it ran went to, in the order they were
+//! first reached. A model's read methods note their table (`read_noted`); a caller that
+//! wants to know what an answer read runs it under `observing`. A recording nests: what an
+//! inner one reached the outer one reached too. Nothing records while none is open, and
+//! no recording names a row.
+
+/// The tables the innermost open recording has reached, and how many are open.
+once fn open_reads() -> Cell<List<string>> { Cell.new([]) }
+
+once fn depth() -> Cell<int> { Cell.new(0) }
+
+/// A model read reached `name`'s table.
+export fn read_noted(name: string) {
+    if depth().get() == 0 || open_reads().get().contains(name) { return }
+    open_reads().push(name)
+}
+
+/// A value and the tables its making read.
+export type Observed<T> = { value: T, reads: List<string> }
+
+/// `body`, run under a recording: its value and the tables it read.
+export fn observing<T>(body: fn() -> T) -> Observed<T> {
+    let outer = open_reads().get()
+    open_reads().set([])
+    depth().set(depth().get() + 1)
+    let value = body()
+    depth().set(depth().get() - 1)
+    let reached = open_reads().get()
+    open_reads().set(outer.concat([t for t in reached if !outer.contains(t)]))
+    Observed { value: value, reads: reached }
+}

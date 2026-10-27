@@ -109,6 +109,7 @@ export fn claim_table(db: Db, name: string, owner: string, declared_at: string, 
 fn counted(db: Db, on: string) -> Result<int, SqlError> {
     let _ = db.run(sql(commits_sql()))?
     let _ = db.run(sql(commits_seed_sql()))?
+    let _ = db.run(sql(tables_sql()))?
     for kind in ["INSERT", "UPDATE", "DELETE"] { let _ = db.run(sql(bump_sql(on, kind)))? }
     .Ok(0)
 }
@@ -116,6 +117,33 @@ fn counted(db: Db, on: string) -> Result<int, SqlError> {
 /// Where the database stands: how many writes its model tables have taken, or
 /// the refusal when the counter is not there (a database no model has claimed).
 export fn commits(db: Db) -> Result<int, SqlError> { (db.scalar(sql(read_commits_sql()))?).int() }
+
+/// The count at which the latest of `names` was last written: the version of an
+/// answer that read exactly those tables. A table never written is at nothing.
+export fn last_of(db: Db, names: List<string>) -> Result<int, SqlError> {
+    let marks = ["?" for _n in names].join(", ")
+    let held = db
+        .scalar(
+            sql(
+                "SELECT COALESCE(MAX(\"last\"), 0) FROM \"avra_tables\" WHERE \"name\" IN (${marks})",
+                [SqlValue.Text(n) for n in names],
+            ),
+        )?
+    held.int()
+}
+
+/// The tables written since the database stood at `since`: what the writes between
+/// the two readings touched, and nothing about which rows.
+export fn touched(db: Db, since: int) -> Result<List<string>, SqlError> {
+    let rows = db
+        .all(
+            sql(
+                "SELECT \"name\" FROM \"avra_tables\" WHERE \"last\" > ? ORDER BY \"name\"",
+                [.Int(since)],
+            ),
+        )?
+    .Ok([texted(r.values[0]) for r in rows])
+}
 
 /// A table brought to the shape a model's text declares, answering how many
 /// steps it took; a text that is no shape is a defect of the caller. A column and its old
@@ -266,10 +294,19 @@ fn commits_seed_sql() -> string { "INSERT OR IGNORE INTO \"avra_commits\" (\"id\
 
 fn read_commits_sql() -> string { "SELECT \"seq\" FROM \"avra_commits\" WHERE \"id\" = 1" }
 
-/// The trigger that counts one kind of write to the table `on`.
-fn bump_sql(on: string, kind: string) -> string {
-    "CREATE TRIGGER IF NOT EXISTS ${quoted("avra_commit_${on}_${kind}")} AFTER ${kind} ON ${quoted(on)} BEGIN UPDATE \"avra_commits\" SET \"seq\" = \"seq\" + 1 WHERE \"id\" = 1; END"
+fn tables_sql() -> string {
+    "CREATE TABLE IF NOT EXISTS \"avra_tables\" (\"name\" TEXT PRIMARY KEY, \"last\" INTEGER NOT NULL)"
 }
+
+/// The trigger that counts one kind of write to the table `on`, and stamps the table with the
+/// count it reached: the table's own version. An upsert, never `OR REPLACE`: a write made
+/// by a foreign-key action runs under its own conflict policy, which overrides a trigger's.
+fn bump_sql(on: string, kind: string) -> string {
+    "CREATE TRIGGER IF NOT EXISTS ${quoted("avra_commit_${on}_${kind}")} AFTER ${kind} ON ${quoted(on)} BEGIN UPDATE \"avra_commits\" SET \"seq\" = \"seq\" + 1 WHERE \"id\" = 1; INSERT INTO \"avra_tables\" (\"name\", \"last\") VALUES (${literal_text(on)}, (SELECT \"seq\" FROM \"avra_commits\" WHERE \"id\" = 1)) ON CONFLICT (\"name\") DO UPDATE SET \"last\" = excluded.\"last\"; END"
+}
+
+/// `name` as an SQL text literal.
+fn literal_text(name: string) -> string { "'${name.replace("'", "''")}'" }
 
 fn registry_sql() -> string {
     "CREATE TABLE IF NOT EXISTS \"__avra_models__\" (\"table_name\" TEXT PRIMARY KEY, \"declared_at\" TEXT, \"shape\" TEXT, \"owner\" TEXT)"

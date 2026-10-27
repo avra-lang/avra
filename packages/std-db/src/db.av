@@ -47,6 +47,7 @@ use @std.sqlite.error.{SqlError}
 use @std.validate.{Checked, Issues, checker, decoder, stripped}
 use @std.time.{now}
 use apply.{Entry, MigrateError, claim_table, grown, lifted}
+use reads.{read_noted}
 use shape.{ColumnFacts, Shape, create_sql, quoted, shape_text}
 use scope.{Where, scope_clause, scope_text, scope_args}
 use error.{ModelError, UniqueField, or_attributed, or_invalid, modeled, parent_of, removed}
@@ -221,6 +222,7 @@ fn generated(t: Type) -> Decls {
 
             /// The row by key, held within `scope` (none: unheld).
             static fn find(db: Db, id: int, scope: Where? = null) -> Result<${t}?, SqlError> {
+                read_noted(${literal(table_name_of(t))})
                 ${[cache_stmt(f) for f in links(t)]}
                 let s = prepared(db, sql(${literal(select_by_id_sql_of(t))} + scope_text(scope), scope_args([.Int(id)], scope)))?
                 defer s.reset()
@@ -375,6 +377,7 @@ fn filter_kind(k: Kind) -> Kind {
 
 fn where_body(t: Type) -> Stmts {
     quote {
+        read_noted(${literal(table_name_of(t))})
         mut clauses: List<string> = ${clauses_code(live_clause(t))}
         mut args: List<SqlValue> = []
         ${[cache_stmt(f) for f in links(t)]}
@@ -391,6 +394,7 @@ fn where_body(t: Type) -> Stmts {
 /// `all`'s body: the live rows within the scope, with no filter seats.
 fn all_body(t: Type) -> Stmts {
     quote {
+        read_noted(${literal(table_name_of(t))})
         mut clauses: List<string> = ${clauses_code(live_clause(t))}
         let args = scope_args([], scope)
         ${[cache_stmt(f) for f in links(t)]}
@@ -545,6 +549,7 @@ fn link_decl(t: Type, f: Field) -> Decls {
     let live = live_clause(t)
     quote {
         static fn ${"in_" + f.name}(db: Db, owners: List<${parent}>) -> Result<List<${t}>, SqlError> {
+            read_noted(${literal(table_name_of(t))})
             if owners.is_empty() { return [] }
             ${[cache_stmt(g) for g in links(t)]}
             let marks = ["?" for _o in owners].join(", ")
@@ -594,6 +599,7 @@ fn soft_decls(t: Type) -> List<Decls> {
             /// The removed rows held within `scope` (none: every one), in the order
             /// they were inserted.
             static fn trash(db: Db, scope: Where? = null) -> Result<List<${t}>, SqlError> {
+                read_noted(${literal(table_name_of(t))})
                 ${[cache_stmt(f) for f in links(t)]}
                 let s = prepared(db, sql(${literal(trash_prefix_sql_of(t))} + scope_text(scope) + ${literal(order_suffix_sql())}, scope_args([], scope)))?
                 defer s.reset()
