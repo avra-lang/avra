@@ -96,8 +96,9 @@ def main():
         s.add_argument("--family", default="eval")
         s.add_argument("--seeds", required=True)
         s.add_argument("--per-world", type=int, default=12)
+        s.add_argument("--model", default="haiku")
     args = p.parse_args()
-    llm = llmmod.Hosted()
+    llm = llmmod.Hosted(args.model)
     seeds = args.seeds.split(",")
     if args.cmd == "selftest":
         report = selftest(args.family, seeds, llm, args.per_world)

@@ -109,13 +109,13 @@ def questions_of(llm, domain, items, rng, family, workers=4):
         return [r for r in pool.map(one, zip(items, rivals)) if r]
 
 
-def build(family, seed, llm, root=OUT, avoid_domains=(), stop_after=None):
+def build(family, seed, llm, root=OUT, avoid_domains=(), stop_after=None, author=None):
     d = pathlib.Path(root) / family / str(seed)
     d.mkdir(parents=True, exist_ok=True)
     tag = f"{family}-{seed}"
     name = "gym_" + tag.replace("-", "_")
     if not (d / "catalog.json").exists():
-        text, catalog, made = schemagen.author(llm, d / "app", name, random.Random(f"schema:{family}:{seed}"), avoid_domains)
+        text, catalog, made = schemagen.author(author or llm, d / "app", name, random.Random(f"schema:{family}:{seed}"), avoid_domains)
         (d / "models.av").write_text(text)
         save(d / "catalog.json", {"catalog": catalog, "made": made})
     catalog = json.loads((d / "catalog.json").read_text())["catalog"]
@@ -174,19 +174,22 @@ def main():
     p.add_argument("--seeds", required=True, help="comma separated seeds")
     p.add_argument("--out", default=str(OUT))
     p.add_argument("--generator", choices=("hosted", "local"), default="hosted")
+    p.add_argument("--model", default="haiku", help="hosted model for pools, texts and questions")
+    p.add_argument("--author-model", default="sonnet", help="hosted model that authors schemas")
     p.add_argument("--avoid-family", help="family whose built domains this run must differ from")
     p.add_argument("--stop-after", choices=("world", "plans"))
     args = p.parse_args()
-    llm = llmmod.Hosted() if args.generator == "hosted" else llmmod.Llm()
+    llm = llmmod.Hosted(args.model) if args.generator == "hosted" else llmmod.Llm()
+    author = llmmod.Hosted(args.author_model) if args.generator == "hosted" else None
     domains = []
     if args.avoid_family:
-        for f in sorted((pathlib.Path(args.out) / args.avoid_family).glob("*/models.av")):
+        for f in sorted(g for fam in args.avoid_family.split(",") for g in (pathlib.Path(args.out) / fam).glob("*/models.av")):
             first = f.read_text().splitlines()[0]
             if first.lower().startswith("// domain:"):
                 domains.append(first.split(":", 1)[1].strip())
     for seed in args.seeds.split(","):
         try:
-            d = build(args.family, seed, llm, args.out, domains, args.stop_after)
+            d = build(args.family, seed, llm, args.out, domains, args.stop_after, author)
         except (SystemExit, Exception) as why:
             print(f"failed {args.family}-{seed}: {str(why)[:300]}", flush=True)
             continue

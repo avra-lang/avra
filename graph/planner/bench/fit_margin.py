@@ -50,6 +50,8 @@ def main():
                                                               "question_at_ms": item["params"]["now"]}))
         correct[rec["id"]] = {p["cypher"]: p["correct"] for p in rec["plans"]}
     gaps = sorted({0.0} | {round(max(x["score"] for x in r["plans"]) - p["score"], 6) for r in recorded for p in r["plans"]})
+    cache_path = pathlib.Path(args.candidates).with_suffix(".verdicts.json")
+    cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
     table = []
     for last in (False, True):
         for margin in gaps:
@@ -59,10 +61,16 @@ def main():
                 if not plans:
                     continue
                 plans.sort(key=beam.Plan.score, reverse=True)
-                verdict = contrast.settle(model, f"Question: {items[rec['id']]['question']}", plans, probes[rec["id"]],
-                                          PARAMETERS["preview_rows"], margin, last)
-                asked += verdict.groups > 1
-                right += bool(verdict.plan) and correct[rec["id"]][verdict.plan.cypher]
+                held = contrast.near(plans, margin, last)
+                key = json.dumps([rec["id"], [p.cypher for p in held]])
+                if key not in cache:
+                    verdict = contrast.settle(model, f"Question: {items[rec['id']]['question']}", held, probes[rec["id"]],
+                                              PARAMETERS["preview_rows"])
+                    cache[key] = [verdict.plan.cypher if verdict.plan else None, verdict.groups]
+                    cache_path.write_text(json.dumps(cache))
+                chosen, groups = cache[key]
+                asked += groups > 1
+                right += bool(chosen) and correct[rec["id"]][chosen]
             table.append({"final_round": last, "margin": margin, "right": right, "asked_model": asked})
             print(table[-1], flush=True)
     best = min((t for t in table if t["right"] == max(x["right"] for x in table)), key=lambda t: (t["margin"], t["asked_model"]))

@@ -34,8 +34,8 @@ def snapshot(rev="HEAD"):
     """The committed planner at `rev`, unpacked once under out/planner@<sha>; returns (dir, sha)."""
     sha = subprocess.run(["git", "rev-parse", "--short", rev], cwd=ROOT, text=True, capture_output=True, check=True).stdout.strip()
     target = OUT / f"planner@{sha}"
-    if not target.exists():
-        data = subprocess.run(["git", "archive", rev, "graph/planner"], cwd=ROOT, capture_output=True, check=True).stdout
+    if not (target / "graph/extract/timex.py").exists():
+        data = subprocess.run(["git", "archive", rev, "graph/planner", "graph/retrieval", ":(glob)graph/extract/*.py"], cwd=ROOT, capture_output=True, check=True).stdout
         with tarfile.open(fileobj=io.BytesIO(data)) as tar:
             tar.extractall(target)
     return target / "graph/planner", sha
@@ -76,8 +76,20 @@ def run(args):
     items = load_split(args.split)
     if args.limit:
         items = items[: args.limit]
+    RESULTS.mkdir(exist_ok=True)
+    partial = RESULTS / f"{args.name}.rows.jsonl"
+    done = {}
+    if partial.exists():
+        for l in partial.read_text().splitlines():
+            r = json.loads(l)
+            if not r["error"]:
+                done[r["id"]] = r
+        partial.write_text("".join(json.dumps(r) + "\n" for r in done.values()))
     rows, apps = [], {}
     for n, item in enumerate(items, 1):
+        if item["id"] in done:
+            rows.append(done[item["id"]])
+            continue
         d = OUT / item["world_dir"]
         if item["world"] not in apps:
             app = App(d / "app/src/main", d / "graph.db", d / "scratch")
@@ -87,7 +99,9 @@ def run(args):
                    "valid_at_ms": None, "known_revision": schema.get("revision", 0), "previous_answer": None}
         params = plan.params_of(context)
         started, error, chosen = time.time(), None, None
-        try:
+        for attempt in range(3):
+          error = None
+          try:
             seek, read, probe = plan.remembered(graph.search), plan.remembered(graph.read), graph.prober(params)
             found = beam.candidates(llm, lambda w: structured.plan(w, item["question"], schema, context, seek, None, read, probe), probe)
             for path in found:
@@ -97,14 +111,18 @@ def run(args):
                     continue
                 chosen = {"cypher": path.cypher, "score": path.score(), "as_of": plan.viewed(llm, item["question"], context)}
                 break
-        except SystemExit as why:
+            break
+          except (SystemExit, OSError, ValueError) as why:
             error = str(why)[:300]
+            time.sleep(60)
         got = gymplans.read_answer(app.query(chosen["cypher"], params, chosen["as_of"])) if chosen else {"status": None, "values": [], "support": []}
         right = correct_of(item, chosen, got)
         rows.append({"id": item["id"], "world": item["world"], "kind": item["kind"], "intent": item["intent"], "tags": item["tags"],
                      "planned": bool(chosen), "cypher": chosen and chosen["cypher"], "as_of": chosen and chosen["as_of"], "status": got["status"],
                      "score": chosen and chosen["score"], "correct": bool(right), "plan_exact": bool(chosen and chosen["cypher"] == item["cypher"]),
                      "ms": int((time.time() - started) * 1000), "error": error})
+        with partial.open("a") as out:
+            out.write(json.dumps(rows[-1]) + "\n")
         print(f"{n}/{len(items)} {item['id']} {item['kind']:<12} {'+' if right else '-'} {rows[-1]['ms']} ms {error or ''}", flush=True)
     result = {"name": args.name, "split": str(args.split), "planner_commit": sha, "overrides": args.set or [], "socket": str(sock),
               "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "rows": rows}
