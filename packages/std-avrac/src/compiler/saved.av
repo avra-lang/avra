@@ -221,12 +221,12 @@ impl Workspace {
         Prepared { name: name, value: value, hash: hash, reads: reads }
     }
 
-    /// The hash a saved row stands on, 0 when it names none.
-    fn row_hash(store: Store, row: string) -> int {
-        let lines? = store.reads_of(Stored.Unit, row) else { return 0 }
+    /// The hash a saved row stands on, null when it names none.
+    fn row_hash(store: Store, row: string) -> int? {
+        let lines? = store.reads_of(Stored.Unit, row) else { return null }
         let spelled = [read_spelled(line)? for line in lines]
-        let hashed? = spelled.find(it.name == HASH_READ) else { return 0 }
-        parse_int(hashed.digest) ?? 0
+        let hashed? = spelled.find(it.name == HASH_READ) else { return null }
+        parse_int(hashed.digest)
     }
 
     /// A prepared answer filed, its environment read at the digest it has now.
@@ -236,7 +236,8 @@ impl Workspace {
         // AN ANSWER THAT STANDS UNCHANGED IS NOT FILED AGAIN: its row's hash is the fold of
         // everything it read, so equal text and an equal hash mean every reading is equal too.
         let at = store.get(Stored.Unit, row)
-        if at != null && at! == p.value && self.row_hash(store, row) == p.hash { return true }
+        let standing = self.row_hash(store, row)
+        if at != null && at! == p.value && standing != null && standing! == p.hash { return true }
         mut readings: List<Reading> = [Reading { name: HASH_READ, digest: "${p.hash}" }]
         for r in p.reads {
             let named? = self.saved_name(r.key) else { return false }
