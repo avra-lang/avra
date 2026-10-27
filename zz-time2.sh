@@ -10,6 +10,7 @@ sed -i 's/· memo/· memo zz9/' packages/cli/src/commands/shared.av
 t2=$(date +%s)
 AVRA_QTRACE=1 ./avra-try check --time packages/cli > zt3.out 2> zt3.err; echo "EDIT_STATUS $? wall $(( $(date +%s) - t2 ))s"
 grep -a "^time:" zt3.out
+echo "--- probes"; grep -a "KEEPPROBE\|LOWERPROBE" zt3.err zt3.out 2>/dev/null | tail -6
 echo "--- edit queries"
 grep -ac "^Q	parse" zt3.err | sed 's/^/parses /'
 grep -ac "^Q	saved	no row" zt3.err | sed 's/^/saved-misses /'
