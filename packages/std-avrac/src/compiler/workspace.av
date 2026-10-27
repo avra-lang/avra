@@ -219,18 +219,11 @@ fn new_keys() -> Keys {
 /// each with why (`read_files`) — the read set the hold is settled by,
 /// which is every file a text was taken of and nothing else; the held
 /// modules minted so far, by name
-/// (`minted`); the files whose declarations stand, read or minted
-/// (`file_ready`); whether the holds are settled, before which no file's
-/// standing is known (`holds_settled`); which
+/// (`minted`); which
 /// held module files a declaration under each bucket value its record
 /// carries — name, word, mark, extern — so a bucket read mints its
 /// producer before it reads (`named_by`, `worded_by`, `marked_by`,
-/// `externed_by`, and the files holding a fn that links a scheduler, `linked_by`); the
-/// records a held file's line declared FLAT (`held_flat`); and the
-/// declarations whose OWN row has been filled from the record, by
-/// DeclId — a module mints every identity at once, but fills each
-/// row on the ask that names it, so a row that names another still
-/// unfilled in the same module can fill it first (`row_filled`); and what
+/// `externed_by`, and the files holding a fn that links a scheduler, `linked_by`); and what
 /// moved in each file's key when this build replaced its kept parts
 /// (`moved`); each open
 /// settlement's kept lines, innermost last (`settle_frames`), what each
@@ -270,9 +263,6 @@ type Hold = {
     pending_resolved: Cell<Map<string, string>>,
     settling: Cell<List<string>>,
     read_files: Cell<List<ReadFile>>,
-    file_ready: Table<bool>,
-    row_filled: Table<bool>,
-    holds_settled: Cell<bool>,
     /// THE PRODUCER INDEX: for each held module, every declaration NAME,
     /// WORD and MARK its record lines carry, and each extern it declares. A bucket
     /// reader mints the modules listed for its value before it reads the bucket, so a
@@ -300,7 +290,6 @@ type Hold = {
     /// Each judged file's run tokens off its module's row, decoded once per build.
     lite_runs: Cell<Map<string, List<string>>>,
     linked_by: Cell<List<string>>,
-    held_flat: Cell<List<TypeId>>,
     moved: Cell<Map<string, List<PartMoved>>>,
     // each held file's re-exports, read off its record as it loads
     reexports: Cell<Map<string, List<Reexport>>>,
@@ -361,7 +350,6 @@ fn new_hold() -> Hold {
     let no_runs: Map<string, List<RunRead>> = {}
     let no_read_files: List<ReadFile> = []
     let no_producers: Map<string, List<string>> = {}
-    let no_flat: List<TypeId> = []
     let no_moved: Map<string, List<PartMoved>> = {}
     let no_reexports: Map<string, List<Reexport>> = {}
     Hold {
@@ -382,9 +370,6 @@ fn new_hold() -> Hold {
         pending_resolved: map_cell(),
         settling: Cell.new(no_paths()),
         read_files: Cell.new(no_read_files),
-        file_ready: new_table<bool>(),
-        row_filled: new_table<bool>(),
-        holds_settled: Cell.new(false),
         named_by: Cell.new(no_producers),
         worded_by: Cell.new(no_producers),
         marked_by: Cell.new(no_producers),
@@ -399,7 +384,6 @@ fn new_hold() -> Hold {
         forms_moved: map_cell(),
         lite_runs: map_cell(),
         linked_by: list_cell(),
-        held_flat: Cell.new(no_flat),
         moved: Cell.new(no_moved),
         reexports: Cell.new(no_reexports),
         settle_frames: list_cell(),
@@ -1169,7 +1153,6 @@ fn built(
     ws.decls.arm_seats((d: DeclId) -> ws.seats_ensured(d))
     ws.decls.arm_target((d: DeclId) -> ws.ensured(d))
     ws.decls.arm_store((f: FileId) -> ws.store_ensured(f))
-    ws.decls.arm_file((f: FileId) -> ws.file_ensured(f))
     ws.decls.arm_externs(() -> ws.hold.externed_by.get(), () -> ws.hold.typed_by.get())
     ws
         .decls
@@ -1264,14 +1247,6 @@ impl Workspace {
 
     fn ensured(d: DeclId) {
         let _ = self.sig(d)
-    }
-
-    /// A FILE'S DECLARATIONS STAND before they are read: a read file's by its
-    /// parse, a held file's minted with its module the first time anything asks.
-    fn file_ensured(f: FileId) {
-        if self.hold.file_ready.at(f.index) != null || !self.hold.holds_settled.get() { return }
-        self.hold.file_ready.keep(f.index, true)
-        if self.is_held(f) && self.store.get() != null { self.decls.note_module_rows(self.decls.file(f).module_id, 2) }
     }
 
     /// Every read source file of the package `f` stands in admitted, its tests aside. A held
@@ -1922,9 +1897,6 @@ impl Workspace {
     /// The declarations a file MINTS into the one table; the answer's
     /// hash is the item tree's — names and kinds.
     fn items(f: FileId) -> List<DeclId> {
-        // A HELD FILE ANSWERS FROM ITS RECORD, before anything reaches for a parse: its
-        // declarations were MINTED, and `file_items` is a memo over a paree it never had.
-        if self.is_held(f) { return self.decls.held_items_of_file(f) }
         match self.relation(Family.Items).start(f.index) {
             .Reuse(value) -> { return items_of(value) },
             .Compute -> nothing(),

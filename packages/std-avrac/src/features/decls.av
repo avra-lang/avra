@@ -553,7 +553,6 @@ export type Decls = {
     ensure_store: Cell<fn(FileId) -> void>,
     /// A HELD FILE'S DECLARATIONS ARE MINTED WHEN ASKED FOR: the hook the
     /// workspace arms, called before a file's declarations are read.
-    ensure_file: Cell<fn(FileId) -> void>,
     /// A held module's externs, by symbol, off the producer index.
     externs_index: Cell<fn() -> List<ExternNote>>,
     /// The held files that declare a type, off the producer index.
@@ -579,7 +578,6 @@ export type Decls = {
     /// THE FILES ANSWERED FROM A RECORD — never parsed, so their declarations were
     /// MINTED and their objects come from the store. Keyed by path.
     held: Cell<Map<string, bool>>,
-    held_items: Cell<Map<string, List<DeclId>>>,
     spliced: Cell<Map<string, List<DeclId>>>,
     reentered: Table<List<DeclId>>,
     reentering: Table<bool>,
@@ -965,7 +963,6 @@ export fn new_decls_under(durable: Durable) -> Decls {
         type_fps: list_cell(),
         rows_state: list_cell(),
         ensure_store: Cell.new(no_store),
-        ensure_file: Cell.new(no_store),
         externs_index: Cell.new(no_externs),
         types_index: Cell.new(no_modules),
         embed_judge: Cell.new(embed_unjudged),
@@ -980,7 +977,6 @@ export fn new_decls_under(durable: Durable) -> Decls {
         expansion_voices: Cell.new(no_expansion_voices),
         meta_ids: map_cell(),
         held: map_cell(),
-        held_items: map_cell(),
         spliced: map_cell(),
         reentered: new_table(),
         reentering: new_table(),
@@ -1355,11 +1351,6 @@ impl Decls {
     fn restood(d: DeclId, state: int) {
         let x = self.raw_decl(d)
         if x.standing != state { self.decl_row_rows.get().reseat(d.index, x with { standing: state }) }
-    }
-
-    /// Every file of a module, once its held rows are minted.
-    fn note_module_rows(m: ModuleId, state: int) {
-        for f in self.files_of_module(m) { self.note_rows(f, state) }
     }
 
     /// A generated declaration's origin, or null for a written one.
@@ -1913,7 +1904,6 @@ impl Decls {
         self.ensure_cancels.set(no_answer)
         self.ensure_marks.set(no_marks)
         self.ensure_store.set(no_store)
-        self.ensure_file.set(no_store)
         self.ensure_package.set(no_store)
         self.ensure_failures.set(no_failures_ensure)
         self.lifter.set(no_lifter)
