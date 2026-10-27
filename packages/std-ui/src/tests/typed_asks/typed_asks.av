@@ -1,0 +1,150 @@
+// proves: a route's descriptor is asked with typed args and answered as typed rows — the request is built from the
+// descriptor, the answer read with the model's own `Decode`, and two spellings of one question are one observation.
+// Args that are nested are refused in words, and a write is sent as a JSON body — eval == native.
+use @std.crud.{crud}
+use @std.meta.{derive}
+use @std.http_message.message.{Method, Reply, Request}
+use @std.http_message.route.{Nothing, Route, Routes}
+use @std.ui.app.{Async, Fetch, ask, ask_all, ask_list, ask_row, fetch, send}
+use @std.ui.components.{column}
+use @std.ui.headless.{headless}
+use @std.validate.{Decode}
+use @std.text.{parse_int}
+use @std.time.{ms}
+
+@crud
+type Todo = { id: int = 0, title: string, done: bool = false }
+
+/// A list's filter: the optional members are absent when null.
+@derive(Decode)
+type Filter = { done: bool? = null, title: string? = null, limit: int = 10 }
+
+/// Args with a list member and a nested record.
+/// A key that is text, and one that may be absent.
+@derive(Decode)
+type Slug = { slug: string }
+
+@derive(Decode)
+type Maybe = { slug: string? = null }
+
+@derive(Decode)
+type Tagged = { tags: List<string>, by: Filter }
+
+state sent: List<string> = []
+
+fn serve(r: Request) -> Result<Reply, string> {
+    sent
+        .push(
+            "${r.method.word()} ${r.url}${if r.body is .Empty { "" } else { " " + r.body.encoded().bytes.text()! }}",
+        )
+    let single = "{\"id\":1,\"title\":\"a\",\"done\":false}"
+    if !(r.method is .Get) && r.url == "/todos" {
+        return .Ok(
+            Reply { status: 201, body: "{\"id\":9,\"title\":\"new\",\"done\":false}".bytes() },
+        )
+    }
+    if r.url.starts_with("/todos/") {
+        let id = parse_int(r.url.split("/").last() ?? "") ?? 1
+        return .Ok(
+            Reply { status: 200, body: "{\"id\":${id},\"title\":\"a\",\"done\":false}".bytes() },
+        )
+    }
+    .Ok(Reply { status: 200, body: "[${single},{\"id\":2,\"title\":\"b\",\"done\":true}]".bytes() })
+}
+
+fn titles(f: Fetch<List<Todo>>) -> string {
+    match f.state() {
+        .Ready(rows) -> [r.title for r in rows].join(","),
+        .Loading -> "loading",
+        .Idle -> "idle",
+        .Failed(m) -> "failed ${m}",
+    }
+}
+
+fn one(f: Fetch<Todo>) -> string {
+    match f.state() {
+        .Ready(row) -> "${row.id}:${row.title}",
+        .Loading -> "loading",
+        .Idle -> "idle",
+        .Failed(m) -> "failed ${m}",
+    }
+}
+
+fn drained() -> string {
+    let all = sent
+    sent = []
+    all.join(" | ")
+}
+
+let routes = Todo.paths("/todos")
+let screen = headless(() -> column {})
+screen.wired(serve)
+screen
+    .running(
+        () -> {
+            let rows: Fetch<List<Todo>> = fetch()
+            let again: Fetch<List<Todo>> = fetch()
+            let found: Fetch<Todo> = fetch()
+            let list = routes.list!
+            let _ = ask_all(rows, list)
+            screen.advance(ms(10))
+            println("a list: ${titles(rows)} | sent ${drained()}")
+            let _ = ask_all(rows, list)
+            let _ = ask_all(again, list)
+            screen.advance(ms(10))
+            println("two views asking at once: ${titles(again)} | sent ${drained()}")
+            let _ = ask_row(found, routes.find!, 1)
+            screen.advance(ms(10))
+            println("a row by its key: ${one(found)} | sent ${drained()}")
+            let _ = ask_row(found, routes.find!, 2)
+            screen.advance(ms(10))
+            println("another key: ${one(found)} | sent ${drained()}")
+            let filtered: Route<Filter, List<Todo>> = Route { method: Method.Get, path: "/todos" }
+            let a: Fetch<List<Todo>> = fetch()
+            let b: Fetch<List<Todo>> = fetch()
+            let c: Fetch<List<Todo>> = fetch()
+            let d: Fetch<List<Todo>> = fetch()
+            let _ = ask_list(a, filtered, Filter { done: true, title: "a" })
+            let _ = ask_list(b, filtered, Filter { title: "a", limit: 10, done: true })
+            let _ = ask_list(c, filtered, Filter { done: true, title: "a", limit: 10 })
+            screen.advance(ms(10))
+            println("order and a default written out are one ask: ${drained()}")
+            let _ = ask_list(a, filtered, Filter { done: null, title: "a" })
+            let _ = ask_list(b, filtered, Filter { title: "a" })
+            screen.advance(ms(10))
+            println("a null member and an absent one are one ask: ${drained()}")
+            let _ = ask_list(a, filtered, Filter { title: "a" })
+            let _ = ask_list(b, filtered, Filter { title: "a", limit: 11 })
+            let _ = ask_list(c, filtered, Filter { title: "a", done: false })
+            let _ = ask_list(d, filtered, Filter { title: "a b&c" })
+            screen.advance(ms(10))
+            println("different values are different asks, escaped: ${drained()}")
+            let tagged: Route<Tagged, List<Todo>> = Route { method: Method.Get, path: "/todos" }
+            let _ = ask_list(a, tagged, Tagged { tags: ["x", "y"], by: Filter { title: "a" } })
+            println("a nested record cannot be a query: ${titles(a)} | sent ${drained()}")
+            let created = routes.create!
+            let made: Fetch<Todo> = fetch()
+            let _ = send(made, created, Todo { title: "new" })
+            screen.advance(ms(10))
+            println("a create is a body in name order: ${one(made)} | sent ${drained()}")
+            let _ = send(made, routes.update!, Todo { id: 5, title: "edited", done: true })
+            screen.advance(ms(10))
+            println(
+                "an update fills the key's hole and leaves it out of the body: ${one(made)} | sent ${drained()}",
+            )
+            let wrong: Fetch<Todo> = fetch()
+            let _ = ask(wrong, created, Todo { title: "x" })
+            let readish: Route<Todo, Todo> = Route { method: Method.Get, path: "/todos" }
+            let _ = send(found, readish, Todo { title: "x" })
+            println(
+                "a read sent and a write asked are refused: ${one(wrong)} | ${one(found)} | sent ${drained()}",
+            )
+            let noted: Route<Slug, Todo> = Route { method: Method.Get, path: "/notes/{slug}" }
+            let maybe: Route<Maybe, Todo> = Route { method: Method.Get, path: "/notes/{slug}" }
+            let _ = ask(found, noted, Slug { slug: "a/b c" })
+            screen.advance(ms(10))
+            println("a text key is one escaped segment: sent ${drained()}")
+            let _ = ask(found, maybe, Maybe {})
+            println("a hole with no value is refused in words: ${one(found)} | sent ${drained()}")
+        },
+    )
