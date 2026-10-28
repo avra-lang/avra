@@ -73,3 +73,30 @@ Gate: a warm edit over 10 s is a failure. Target 300 ms.
    - a **stale `avra-try`** silently measured an old binary: always build in the same run;
    - a **trapping run poisons `.avra-cache`**: `rm -rf .avra-cache` before re-measuring;
    - the branch being **behind main** breaks `@std` resolution: check `git merge-base` first.
+
+## Measured, 2026-10-27 late: what `hd-sigfix` actually does
+
+`hd-sigfix` (the holds deleted) was built from the seed and run, so this is not an
+assumption:
+
+| test | `hd-sigfix` | `hd-clean` (main + 3) |
+|---|---|---|
+| builds from the seed | yes | yes |
+| cold `check packages/cli` | **killed at 600 s (timeout)** | 39 s, exit 0 |
+| one-comment edit | **exit 2 (crash), 55 s** | **5 s, exit 0** |
+| `check packages/std-avrac` | dies: `@std/relation:src/input.av` | exit 0 |
+
+Both branches sit on today's main (`merge-base` = `5f65f027`), so the deletion is not
+"stranded on an old base" — it is **entangled with the branch's other changes** (the facts
+codec, `TextDigest`, the 5-argument `store_stamped`). Copying the 25 deletion files onto
+`hd-clean` fails to compile because those APIs do not exist there; copying the whole set
+reproduces the broken compiler.
+
+**Therefore the deletion lands by PORT, one file per commit, each behind the gate**
+(cold exit 0, edit ≤ 5 s): start with the files that only carry the deletion
+(`whole.av`, `references.av`, `receivers.av`, `consumes.av`, `unit_rows.av`, `leaves.av`),
+leaving `workspace.av`/`build.av`/`kept_settle.av` for last since they also carry the
+entangled changes.
+
+Constraint to plan around: the machine has ~1.2–1.4 GB free, so a compiler build is the
+scarce step; batch several ported files per build.
