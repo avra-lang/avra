@@ -3445,9 +3445,10 @@ impl Decls {
     /// again (a recomputed sig) is the same entry.
     @bracket("methods")
     fn declare_method(target: DeclId, m: DeclId) {
-        // A NAME IS THE TABLE'S KEY: one method per name per type. Registering the same
-        // block twice (a re-entrant read, a re-run expansion) must not add a second entry.
-        if self.held_method(target, self.decl(m).name) != null { return }
+        // ONE ENTRY PER DECLARATION: registering the same block twice (a re-entrant read, a
+        // re-run expansion) must not add it again, while two instantiations that share a NAME
+        // are different declarations and both belong in the table.
+        if self.methods.get()[target.index].get().any((prior: DeclId) -> same_decl(prior, m)) { return }
         self.methods.get()[target.index].push(m)
     }
 
