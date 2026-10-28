@@ -2171,14 +2171,6 @@ impl Workspace {
         // target whose own file is resolving) answer the smaller view.
         let home = self.decls.decl(target).file
         let _ = self.resolved(home)
-        let growing = self.has_declares(home) || self.has_marks(home)
-        // A HOME STILL EXPANDING HAS NOT MINTED ITS GENERATED IMPLS: the table would be
-        // short, so it is not the table — the caller answers from what stands, and a
-        // later read sees the whole of it.
-        if growing && !(self.db.ask(key(Family.Expanded, home.index)) is .Reuse) {
-            self.db.abandon(k)
-            return self.decls.registered_methods(target)
-        }
         let blocks = self.method_blocks(target)
         // A BLOCK THAT STANDS NAMES ITS MEMBERS BEFORE ANY SIG IS ASKED. A derive MINTS ITS
         // IMPL INTO THE ANNOTATED FILE and runs inside that file's resolve, so a read
@@ -2197,7 +2189,6 @@ impl Workspace {
                     (b) -> self.registering(b) ||
                         self.db.active(key(Family.Resolved, self.decls.decl(b).file.index)),
                 ) {
-            self.db.abandon(k)
             return self.decls.registered_methods(target)
         }
         for b in blocks { touch(self.sig(b)) }
@@ -2375,7 +2366,6 @@ impl Workspace {
         // so it answers this asker alone and is never memoized — the
         // facts settle once the expansion has closed.
         if self.db.active(key(Family.Expanded, x.file.index)) {
-            self.db.abandon(key(Family.Typed, d.index))
             return out
         }
         let ids = self.decls.ids()
@@ -2422,7 +2412,6 @@ impl Workspace {
         // answers this asker alone and is never memoized — the fold
         // settles once the expansion has closed.
         if self.db.family_active(Family.Expanded.ordinal) {
-            self.db.abandon(key(Family.Folded, f.index))
             return folded_facts
         }
         // DERIVED, AND LAZY: `folded_facts` is entirely `absorb`ed
