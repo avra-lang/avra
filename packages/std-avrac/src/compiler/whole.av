@@ -58,6 +58,7 @@ use compiler.hosts.{BuildHost, host_named}
 use compiler.host.{library_stem, Beneath, Read, InputName, embedded_kind}
 use compiler.backend.{platform_defines, links_with_ld64}
 use @std.errors.{Loc}
+use compiler.store.{Store}
 
 impl Workspace {
 
@@ -166,6 +167,17 @@ impl Workspace {
     /// store keeps for it, and nothing reads it. Per FILE — a module with fifty
     /// files holds forty-nine.
     fn hold_only(path: string) { self.decls.held.put(path, true) }
+
+    /// THE RULE: a file's rows stand, its module was not loaded for real this attempt, no read
+    /// reached it, and nothing forced it. This is the one definition; the map is its projection.
+    fn held_by_rule(store: Store, path: string, want: Want) -> bool {
+        let _ = store
+        let _ = want
+        self.hold.holds_now.get() &&
+            self.hold.loaded_turn.get().get(self.module_path_of(path).text()) == null &&
+            !self.hold.read_files.get().any((r: ReadFile) -> r.path == path) &&
+            self.hold.forced.get().get(path) == null
+    }
 
     /// MEET FILES: each enters the table, so it is read unless it is held.
     fn met_all(paths: List<string>) { for path in paths { let _ = self.file_id(path) } }

@@ -693,6 +693,7 @@ impl Workspace {
         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
         if at.hold {
             let interfaces = self.clock()
+            self.hold.holds_now.set(at.hold)
             let roots = held_modules(self, store, built_entry(at))
             self.timed("roots", interfaces)
             let naming = self.clock()
@@ -714,15 +715,16 @@ impl Workspace {
             let reading = self.clock()
             for path in unstood { self.declarers_registered(path) }
             let loading = distinct([self.module_path_of(path).text() for path in unstood])
-            for name in loading { load_interface(self, store, module_path(segments_of(name)), at.entry, at.want) }
+            for name in loading {
+                self.hold.loaded_turn.put(name, true)
+                load_interface(self, store, module_path(segments_of(name)), at.entry, at.want)
+            }
             self.timed("loaded", reading)
             let holding = self.clock()
             // every file a module did not load stands in the store's own rows
+            self.hold.holds_now.set(at.hold)
             for fi in self.decls.files_standing() {
-                if loading.contains(self.module_path_of(fi.path).text()) { continue }
-                if self.hold.read_files.get().any(it.path == fi.path) { continue }
-                if self.hold.forced.get().get(fi.path) != null { continue }
-                self.hold_only(fi.path)
+                if self.held_by_rule(store, fi.path, at.want) { self.hold_only(fi.path) }
             }
             self.timed("held only", holding)
             self.timed("interfaces", interfaces)
@@ -749,6 +751,7 @@ impl Workspace {
         self.hold.warm.set(!held_paths(self).is_empty())
         self.host.reads_ahead(self.reads_ahead())
         self.hold.holds_settled.set(true)
+
         store
     }
 
