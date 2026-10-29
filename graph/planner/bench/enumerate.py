@@ -13,7 +13,7 @@ import collections, datetime, json, os, pathlib, subprocess, sys, tempfile
 HERE = pathlib.Path(__file__).resolve().parent.parent.parent
 APP, ORM = HERE / 'acceptance/app/src/main', HERE / 'acceptance/oracle'
 DB = pathlib.Path(tempfile.mkdtemp()) / 'r1.db'
-DEPTH = 3
+DEPTH = 3   # overridden by --depth; a bound on the walk, not a fact about any model
 
 def app(body):
     with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
@@ -90,6 +90,12 @@ def walk(edges, start, depth):
 def candidate_props(model):
     return [p['name'] for p in model['properties']]
 
+def declared_filters(question, model):
+    """The enum values a question speaks that this model declares, as (property, value):
+    a narrowing the schema itself names, so no word list is involved."""
+    said = question.lower()
+    return [(p['name'], v) for p in model['properties'] for v in (p.get('enum') or []) if v.lower() in said]
+
 def label_of(model):
     """The property a model is named by: its declared label, else its first required text."""
     declared = ((model.get('semantics') or {}).get('label') or [None])[0]
@@ -113,23 +119,31 @@ def anchors(question, models):
                 out.append((name, lab, v))
     return out
 
-def queries_for(seed_model, seed_where, edges, models):
-    """(cypher, landing, property) for every declared path out of one anchor."""
+def queries_for(seed_model, seed_where, edges, models, question):
+    """(cypher, landing, property) for every declared path out of one anchor, each in the
+    plain form and narrowed by the enum values the question speaks at the landing."""
     out, seen = [], set()
     for steps, landing in [( [], seed_model)] + walk(edges, seed_model, DEPTH):
-        body = "".join(steps)
-        for prop in candidate_props(models[landing]):
-            var = f"b{len(steps) - 1}" if steps else "a"
-            cy = f"MATCH (a:{seed_model}) WHERE {seed_where} {body} RETURN {var}.{prop} AS value"
-            if cy in seen: continue
-            seen.add(cy); out.append((cy, landing, prop))
+        pattern = f"(a:{seed_model})" + "".join(steps)
+        var = f"b{len(steps) - 1}" if steps else "a"
+        narrowings = [[]] + [[f"{var}.{prop} = {json.dumps(v)}"] for prop, v in declared_filters(question, models[landing])]
+        narrowings += [[f"{var}.{prop} <> {json.dumps(v)}"] for prop, v in declared_filters(question, models[landing])]
+        for extra in narrowings:
+            for prop in candidate_props(models[landing]):
+                conds = " AND ".join([seed_where] + extra)
+                cy = f"MATCH {pattern} WHERE {conds} RETURN {var}.{prop} AS value"
+                if cy in seen: continue
+                seen.add(cy); out.append((cy, landing, prop))
     return out
 
 def values(ans):
     return sorted({json.dumps(f['value'], sort_keys=True) for f in ans.get('fields', []) if 'terms' not in f.get('path', [])})
 
 def main():
-    global PARAMS
+    global PARAMS, DEPTH, asker
+    args = sys.argv[1:]
+    if "--depth" in args: DEPTH = int(args[args.index("--depth") + 1])
+    asker = args[args.index("--asker") + 1] if "--asker" in args else None
     schema = app({"op": "schema"})
     build(schema)
     models = {m['name']: m for m in schema['models']}
@@ -143,20 +157,26 @@ def main():
     for q in questions:
         if q['id'] in split: continue
         ctx = {**manifest['default_context'], **q.get('context', {})}
-        # the oracle publishes its records under `oracle:` ids
-        as_oracle = lambda v: v.replace("person:", "oracle:") if isinstance(v, str) else v
-        PARAMS = {"asker": as_oracle(ctx['principal']), "now": iso_ms(manifest['evaluation_time']),
-                  "speaker": as_oracle(ctx.get('speaker') or ctx['principal']),
+        PARAMS = {"asker": asker or ctx['principal'], "now": iso_ms(manifest['evaluation_time']),
+                  "speaker": asker or ctx.get('speaker') or ctx['principal'],
                   "valid_at": iso_ms(q['valid_at']) if 'valid_at' in q else None}
         gold = plans.get(q['id'])
-        want = values(app({"op": "query", "cypher": gold, "params": PARAMS})) if gold else []
+        goldview = {"as_of": {"valid_at": PARAMS["valid_at"]}} if PARAMS.get("valid_at") else {}
+        want = values(app({"op": "query", "cypher": gold, "params": PARAMS, **goldview})) if gold else []
         seeds = [(m, lab, f"a.{lab} = $anchor", {"anchor": v}) for m, lab, v in anchors(q['question'], models)]
-        seeds.append(("Person", None, "id(a) = $asker", {}))
+        # the party asking is whatever type the graph files that id under; nothing is assumed
+        holder = app({"op": "get", "id": PARAMS["asker"]})
+        if holder.get("model"):
+            seeds.append((holder["model"], None, "id(a) = $asker", {}))
+        elif q is questions[0]:
+            print(f"  (the asker {PARAMS['asker']!r} is not in the graph; pass --asker with an id it holds)",
+                  file=sys.stderr)
         got, asked, empties = set(), 0, 0
         for model, lab, where, extra in seeds:
-            for cy, landing, prop in queries_for(model, where, edges, models):
+            for cy, landing, prop in queries_for(model, where, edges, models, q['question']):
                 asked += 1
-                ans = app({"op": "query", "cypher": cy, "params": {**PARAMS, **extra}})
+                view = {"as_of": {"valid_at": PARAMS["valid_at"]}} if PARAMS.get("valid_at") else {}
+                ans = app({"op": "query", "cypher": cy, "params": {**PARAMS, **extra}, **view})
                 vs = values(ans)
                 if not vs: empties += 1
                 got |= set(vs)
@@ -174,6 +194,6 @@ def main():
     print("mean queries asked:", round(sum(r[2] for r in rows) / len(rows), 1),
           "| mean empties:", round(sum(r[3] for r in rows) / len(rows), 1))
 
-PARAMS = {}
+PARAMS, asker = {}, None
 if __name__ == '__main__':
     main()
