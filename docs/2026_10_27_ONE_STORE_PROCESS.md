@@ -118,3 +118,31 @@ and `FnSig` is two fields — so a row looks free. It is not, and both attempts 
 So the row must restore the DECLARATION, not the signature: `declare_one` needs to accept a
 signature it does not have to compute, and the row must carry whatever else that door
 registers. That is the slice, and it is why this is not a cache entry.
+
+### Two predicates, two questions — do not merge them (probed)
+
+`stands_in(store, okey, want)` asks **are the rows PRESENT** (said, asks, codes, and the object
+under a binary want). `file_rows_stand(store, path, want)` asks **do the rows' READS still
+stand** — it judges each row against its recorded digests (`unsuspected` / `file_judged`) and
+requires `file_ruled`. Pointing `stands_in`'s callers at `file_rows_stand` was tried and is
+wrong: the `adrift` check then reports every file whose rulings were never computed, and the
+build fails (`index -1 is out of bounds`). The pair is not duplication — the names must say
+which question they answer, and a call site must pick one deliberately.
+
+### Where the 4 s edit goes, and the only three ways down
+
+```
+ast 2.19 s · sigs 2.29 s · load 0.90 s · interfaces 0.35 · sublang 0.34 · bodies 0.29
+lower 0.46 · keep 0.35 · names 0.21 · resolve 0.13      (held 578/580)
+```
+
+Both big numbers are **work on two files**, not cache misses:
+
+1. **sigs** — a signature row is not a cache entry: `declare_one` also REGISTERS a
+   declaration, so the row must restore the declaration (probed three times; see above).
+   The slice is: `declare_one` accepts a signature it need not compute, and the row carries
+   what that door registers.
+2. **ast** — the dependent file is parsed because its rows say a read moved. It must not be
+   parsed at all: the per-file **analysis row**.
+3. **load 0.9 s** — the interface of the modules that moved is rebuilt; a module record that
+   stands should answer instead (`record_of` already returns text; the row feeds it).
