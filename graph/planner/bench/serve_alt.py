@@ -23,8 +23,11 @@ class Scorer(cascade.Scorer):
         from mlx_lm import load
 
         self.model, self.tok = load(SCORER, adapter_path=ADAPTER)
-        template = self.tok.apply_chat_template
-        self.tok.apply_chat_template = functools.partial(template, enable_thinking=False)
+        # A prompt is rendered the way the extraction service renders it, because an adapter is
+        # trained on those bytes; a caller that wants the template altered asks for it.
+        if os.environ.get("ALT_THINKING") == "off":
+            template = self.tok.apply_chat_template
+            self.tok.apply_chat_template = functools.partial(template, enable_thinking=False)
         self.calls, self.source, self.cache, self.prefix = 0, "", None, True
 
 

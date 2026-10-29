@@ -14,7 +14,7 @@ import collections, json, os, pathlib, re, socket, subprocess, sys, tempfile
 
 HERE = pathlib.Path(__file__).resolve().parent.parent.parent
 ORM = HERE/'acceptance/oracle'
-SOCK = os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
+SOCK = os.environ.get("AVRA_GRAPH_SOCKET") or os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
 DB = pathlib.Path(tempfile.mkdtemp())/'llm.db'
 
 import importlib.util
@@ -25,7 +25,7 @@ enum.DB = pathlib.Path(tempfile.mkdtemp())/'llm.db'
 app, build, ref, iso_ms, values = enum.app, enum.build, enum.ref, enum.iso_ms, enum.values
 
 def gen(prompt, messages=()):
-    body = {"op": "generate", "messages": [{"role":"user","content":prompt}, *messages], "max_tokens": 150, "stop": ["\n\n"]}
+    body = {"op": "generate", "messages": [{"role":"user","content":prompt}, *messages], "max_tokens": 260}
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(600); s.connect(SOCK)
     s.sendall((json.dumps(body)+"\n").encode())
     d = b""
@@ -36,10 +36,19 @@ def gen(prompt, messages=()):
     return json.loads(d).get("text","")
 
 def clean(t):
+    """The query a reply carries: a reasoning block dropped, fences stripped, and the
+    statement taken from where it starts — the model may think before it answers."""
     t = t.strip()
-    for f in ("```cypher","```Cypher","```"): t = t[len(f):] if t.startswith(f) else t
+    t = re.sub(r"(?s)^\s*<think.*?<\/think>\s*", "", t)   # a closed reasoning block
+    t = re.sub(r"(?s)^\s*<\/think>\s*", "", t)            # its tail, when the head was cut
+    t = re.sub(r"(?s)^\s*<think\s*", "", t)
+    for f in ("```cypher", "```Cypher", "```"):
+        if t.startswith(f): t = t[len(f):]
     if "```" in t: t = t.split("```")[0]
-    return " ".join(t.split())
+    lines = [l for l in t.splitlines() if l.strip()]
+    start = next((i for i, l in enumerate(lines) if l.lstrip().upper().startswith(("MATCH", "OPTIONAL"))), 0)
+    return " ".join(" ".join(lines[start:]).split())
+
 
 def desugar(t):
     return re.sub(r"\bWITH\s+[A-Za-z_]\w*(\s*,\s*[A-Za-z_]\w*)*\s+", "", t)
