@@ -217,7 +217,7 @@ fn new_keys() -> Keys {
 /// modules minted so far, by name
 /// (`minted`); the files whose declarations stand, read or minted
 /// (`file_ready`); whether the holds are settled, before which no file's
-/// standing is known (`holds_settled`); which
+/// standing is known (`holds_now`); which
 /// held module files a declaration under each bucket value its record
 /// carries — name, word, mark, extern — so a bucket read mints its
 /// producer before it reads (`named_by`, `worded_by`, `marked_by`,
@@ -275,7 +275,6 @@ type Hold = {
     minted: Cell<Map<string, bool>>,
     file_ready: Table<bool>,
     row_filled: Table<bool>,
-    holds_settled: Cell<bool>,
     /// THE PRODUCER INDEX: for each held module, every declaration NAME,
     /// WORD and MARK its record lines carry, and each extern it declares. A bucket
     /// reader mints the modules listed for its value before it reads the bucket, so a
@@ -396,7 +395,6 @@ fn new_hold() -> Hold {
         minted: Cell.new(no_minted),
         file_ready: new_table<bool>(),
         row_filled: new_table<bool>(),
-        holds_settled: Cell.new(false),
         named_by: Cell.new(no_producers),
         worded_by: Cell.new(no_producers),
         marked_by: Cell.new(no_producers),
@@ -1263,7 +1261,7 @@ impl Workspace {
     /// A FILE'S DECLARATIONS STAND before they are read: a read file's by its
     /// parse, a held file's minted with its module the first time anything asks.
     fn file_ensured(f: FileId) {
-        if self.hold.file_ready.at(f.index) != null || !self.hold.holds_settled.get() { return }
+        if self.hold.file_ready.at(f.index) != null || !self.hold.holds_now.get() { return }
         self.hold.file_ready.keep(f.index, true)
         if self.is_held(f) && self.store.get() != null {
             self.minted_files([self.decls.file(f).path])
