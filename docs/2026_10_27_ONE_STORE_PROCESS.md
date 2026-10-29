@@ -100,3 +100,21 @@ entangled changes.
 
 Constraint to plan around: the machine has ~1.2–1.4 GB free, so a compiler build is the
 scarce step; batch several ported files per build.
+
+### The signature row (probed, reverted twice)
+
+A signature is the biggest per-declaration cost on a warm run (`sigs` 2.3 s of a 5 s edit),
+and `FnSig` is two fields — so a row looks free. It is not, and both attempts say why:
+
+1. **A row keyed by the declaration and its syntax, restored into `decls.sigs`** breaks
+   generic code: a signature carrying a `Type.Var` means something only inside the scope that
+   declared that parameter, so it restores as a different type wearing the same spelling
+   (`rule` lost its `check` method).
+2. **Restricting to monomorphic, top-level declarations** still breaks, for a different and
+   more important reason: **`declare_one` is not only a signature** — it also REGISTERS the
+   declaration (its methods, its namespace entry). Restoring the sig skips the registration,
+   so a declaration whose sig was restored is invisible to everything that looks it up.
+
+So the row must restore the DECLARATION, not the signature: `declare_one` needs to accept a
+signature it does not have to compute, and the row must carry whatever else that door
+registers. That is the slice, and it is why this is not a cache entry.
