@@ -2195,6 +2195,15 @@ impl Workspace {
         if !(self.db.ask(k) is .Compute) || early.kind is .Builtin {
             return self.decls.sigs.get()[d.index]
         }
+        // A HELD DECLARATION'S SIGNATURE IS ITS RECORD'S: filling the row declares
+        // what the record wrote, where computing it re-reads every type it names.
+        if self.is_held(early.file) {
+            self.db.begin(k)
+            self.fill_ensured(d)
+            let held: DeclSig? = self.decls.sigs.get()[d.index]
+            self.db.settle(k, sig_hash(held))
+            return held
+        }
         self.db.begin(k)
         // THE ROW IS READ ONCE ITS PARSE STANDS: attaching a minted file's parse reseats its
         // declarations with the parse's own ranges, so the row that stood before the attach
