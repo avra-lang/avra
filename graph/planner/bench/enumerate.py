@@ -119,6 +119,46 @@ def anchors(question, models):
                 out.append((name, lab, v))
     return out
 
+def derivation_queries(seed_model, seed_where, models, cat, edges):
+    """Every declared derivation the seed can feed: each `one` seat takes a node of its
+    declared type (the seed, or a scan), each `all` seat a collection of its declared type.
+    A seat declared as a scalar needs a value from the question, so such a derivation is
+    reported as ungenerated rather than invented."""
+    out, skipped = [], []
+    for d in cat.get('derivations', []):
+        seats = [(p['name'], p['input']) for p in d['parameters']]
+        if any(not isinstance(i, dict) for _, i in seats):
+            skipped.append(d['name']); continue
+        if not any(i.get('one') == seed_model for _, i in seats):
+            continue
+        args, matchers, ok = [], [], True
+        for k, (name, inp) in enumerate(seats):
+            var = f"d{k}"
+            model = inp.get('one') or inp.get('all')
+            if model not in models: ok = False; break
+            if inp.get('all'):
+                args.append(f"collect({var})"); matchers.append(f"MATCH ({var}:{model})")
+            elif inp.get('one') == seed_model and not any(a.startswith(f"id(a)") for a in args):
+                args.append("a")
+            else:
+                args.append(var); matchers.append(f"MATCH ({var}:{model})")
+        if not ok: continue
+        cy = f"MATCH (a:{seed_model}) WHERE {seed_where} " + " ".join(matchers) + f" RETURN {d['name']}({', '.join(args)}) AS value"
+        out.append((cy, d['output'], d['name']))
+    return out, skipped
+
+def aggregate_queries(models, cat):
+    """A count over every declared type, and a sum over every declared quantity: the shapes
+    the catalog itself names, so nothing here is a guess about the domain."""
+    out = []
+    for name, m in models.items():
+        out.append((f"MATCH (a:{name}) RETURN count(a) AS count", name, "count"))
+        for q in (m.get('semantics') or {}).get('quantities') or []:
+            amount = q.get('amount') or []
+            if len(amount) == 1 and any(p['name'] == amount[0] for p in m['properties']):
+                out.append((f"MATCH (a:{name}) RETURN sum(a.{amount[0]}) AS total", name, f"sum {amount[0]}"))
+    return out
+
 def queries_for(seed_model, seed_where, edges, models, question):
     """(cypher, landing, property) for every declared path out of one anchor, each in the
     plain form and narrowed by the enum values the question speaks at the landing."""
@@ -140,11 +180,12 @@ def values(ans):
     return sorted({json.dumps(f['value'], sort_keys=True) for f in ans.get('fields', []) if 'terms' not in f.get('path', [])})
 
 def main():
-    global PARAMS, DEPTH, asker
+    global PARAMS, DEPTH, asker, CATALOG
     args = sys.argv[1:]
     if "--depth" in args: DEPTH = int(args[args.index("--depth") + 1])
     asker = args[args.index("--asker") + 1] if "--asker" in args else None
     schema = app({"op": "schema"})
+    CATALOG = schema
     build(schema)
     models = {m['name']: m for m in schema['models']}
     edges = graph_of(models)
@@ -171,9 +212,16 @@ def main():
         elif q is questions[0]:
             print(f"  (the asker {PARAMS['asker']!r} is not in the graph; pass --asker with an id it holds)",
                   file=sys.stderr)
-        got, asked, empties = set(), 0, 0
+        got, asked, empties, ungenerated = set(), 0, 0, []
+        for cy, landing, prop in aggregate_queries(models, CATALOG):
+            asked += 1
+            vs = values(app({"op": "query", "cypher": cy, "params": PARAMS}))
+            if not vs: empties += 1
+            got |= set(vs)
         for model, lab, where, extra in seeds:
-            for cy, landing, prop in queries_for(model, where, edges, models, q['question']):
+            derivations, skipped = derivation_queries(model, where, models, CATALOG, edges)
+            ungenerated += skipped
+            for cy, landing, prop in derivations + queries_for(model, where, edges, models, q['question']):
                 asked += 1
                 view = {"as_of": {"valid_at": PARAMS["valid_at"]}} if PARAMS.get("valid_at") else {}
                 ans = app({"op": "query", "cypher": cy, "params": {**PARAMS, **extra}, **view})
@@ -194,6 +242,6 @@ def main():
     print("mean queries asked:", round(sum(r[2] for r in rows) / len(rows), 1),
           "| mean empties:", round(sum(r[3] for r in rows) / len(rows), 1))
 
-PARAMS, asker = {}, None
+PARAMS, asker, CATALOG = {}, None, {}
 if __name__ == '__main__':
     main()
