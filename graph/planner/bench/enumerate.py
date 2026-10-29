@@ -15,6 +15,21 @@ APP, ORM = HERE / 'acceptance/app/src/main', HERE / 'acceptance/oracle'
 DB = pathlib.Path(tempfile.mkdtemp()) / 'r1.db'
 DEPTH = 3   # overridden by --depth; a bound on the walk, not a fact about any model
 
+SOCK = os.path.expanduser("~/.cache/avra-graph-ml/cascade.sock")
+
+def CHOOSE(context, options):
+    """The service's closed choice over the declared shapes."""
+    import socket as _s
+    body = {"op": "choose", "context": f'Question: "{context}"', "question": "What kind of answer does the question ask for?", "options": options}
+    sk = _s.socket(_s.AF_UNIX, _s.SOCK_STREAM); sk.settimeout(300); sk.connect(SOCK)
+    sk.sendall((json.dumps(body) + "\n").encode())
+    d = b""
+    while not d.endswith(b"\n"):
+        c = sk.recv(65536)
+        if not c: break
+        d += c
+    return json.loads(d).get("p") or [0.0] * len(options)
+
 def app(body):
     with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
         json.dump(body, f); p = f.name
@@ -119,6 +134,46 @@ def anchors(question, models):
                 out.append((name, lab, v))
     return out
 
+SHAPE_SAID = {
+    "text": "a word, a name or a piece of text",
+    "number": "a number",
+    "time": "a date or a point in time",
+    "bool": "a yes or a no",
+    "enum": "one of the values that type declares",
+    "entity": "another record it points at",
+    "count": "how many of something",
+}
+
+def shape_of_property(p):
+    """The declared shape of a property's value, read from its own declaration."""
+    sh = p['shape']
+    inner = (sh.get('optional') or sh.get('list') or sh) if isinstance(sh, dict) else sh
+    if isinstance(inner, dict) and 'reference' in inner: return 'entity'
+    if isinstance(inner, dict) and 'embedded' in inner: return 'embedded'
+    if p.get('time'): return 'time'
+    if p.get('enum'): return 'enum'
+    return {'string': 'text', 'integer': 'number', 'number': 'number', 'boolean': 'bool'}.get(str(inner), 'other')
+
+def shape_options(models, cat, question):
+    """The shapes this question might want, each worded from the declarations that hold it."""
+    seen = {}
+    for name, m in models.items():
+        for p in m['properties']:
+            k = shape_of_property(p)
+            seen.setdefault(k, []).append(p['name'].replace('_', ' '))
+    for q in (m.get('semantics') or {}).get('quantities') or []:
+        seen.setdefault('count', []).append('units')
+    for d in cat.get('derivations', []):
+        seen.setdefault("derived:" + d['name'], []).append((d.get('description') or d['name']).split('.')[0])
+    rendered = []
+    for k, names in seen.items():
+        if k.startswith('derived:'):
+            rendered.append((k, names[0] if names else k))
+        else:
+            said = SHAPE_SAID.get(k, k)
+            rendered.append((k, f"{said}: {', '.join(sorted(set(names))[:6])}"))
+    return rendered
+
 def derivation_queries(seed_model, seed_where, models, cat, edges):
     """Every declared derivation the seed can feed: each `one` seat takes a node of its
     declared type (the seed, or a scan), each `all` seat a collection of its declared type.
@@ -212,22 +267,38 @@ def main():
         elif q is questions[0]:
             print(f"  (the asker {PARAMS['asker']!r} is not in the graph; pass --asker with an id it holds)",
                   file=sys.stderr)
-        got, asked, empties, ungenerated = set(), 0, 0, []
-        for cy, landing, prop in aggregate_queries(models, CATALOG):
-            asked += 1
-            vs = values(app({"op": "query", "cypher": cy, "params": PARAMS}))
-            if not vs: empties += 1
-            got |= set(vs)
+        ungenerated = []
+        # every candidate carries the declared shape of the value it would answer with
+        pool = [(cy, 'count', {}) for cy, _, _ in aggregate_queries(models, CATALOG)]
         for model, lab, where, extra in seeds:
             derivations, skipped = derivation_queries(model, where, models, CATALOG, edges)
             ungenerated += skipped
-            for cy, landing, prop in derivations + queries_for(model, where, edges, models, q['question']):
+            pool += [(cy, "derived:" + name, extra) for cy, _, name in derivations]
+            for cy, landing, prop in queries_for(model, where, edges, models, q['question']):
+                decl = next(p for p in models[landing]['properties'] if p['name'] == prop)
+                pool.append((cy, shape_of_property(decl), extra))
+        # one closed choice over the shapes the declarations name, then run only those
+        options = shape_options(models, CATALOG, q['question'])
+        keys = [k for k, _ in options]
+        want_shape = None
+        if len(options) > 1:
+            p_ = CHOOSE(q['question'], [text for _, text in options])
+            best = max(range(len(p_)), key=lambda i: p_[i])
+            want_shape = keys[best] if p_[best] > 0 else None
+        # the declared shape is a TIER, not a filter: its candidates are tried first, and the
+        # rest are tried only when it yields nothing, so a wrong shape costs ordering, not recall
+        first = [c for c in pool if want_shape is not None and c[1] == want_shape]
+        rest = [c for c in pool if want_shape is None or c[1] != want_shape]
+        got, asked, empties = set(), 0, 0
+        view = {"as_of": {"valid_at": PARAMS["valid_at"]}} if PARAMS.get("valid_at") else {}
+        for tier in (first, rest):
+            for cy, shape, extra in tier:
                 asked += 1
-                view = {"as_of": {"valid_at": PARAMS["valid_at"]}} if PARAMS.get("valid_at") else {}
-                ans = app({"op": "query", "cypher": cy, "params": {**PARAMS, **extra}, **view})
-                vs = values(ans)
+                vs = values(app({"op": "query", "cypher": cy, "params": {**PARAMS, **extra}, **view}))
                 if not vs: empties += 1
                 got |= set(vs)
+            if got:
+                break
         hit = [w for w in want if w in got]
         stage = ('no gold plan' if not gold else 'reachable' if hit else 'unreachable')
         tally[stage] += 1
