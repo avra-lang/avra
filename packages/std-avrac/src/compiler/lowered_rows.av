@@ -39,14 +39,17 @@ impl Workspace {
         if !rdb
             .read_ids(
                 [r!.name for r in [read_spelled(l) for l in s.reads_of(Stored.Unit, key) ?? []] if r != null],
-            ) { return null }
+            ) {
+            return null
+        }
         u
     }
 
     /// A unit's lowering kept, once its cell settled: with the names it read, when every read
-    /// has one.
+    /// has one — and only by a WARM derivation, one that stood on the store for some file. A
+    /// cold one would keep every unit of the program, each with its whole read list.
     fn unit_saved(id: int, w: Wanted, u: Unit) {
-        if self.comptime_active() || !u.voices.list.is_empty() { return }
+        if self.comptime_active() || !u.voices.list.is_empty() || held_paths(self).is_empty() { return }
         let s? = self.store.get() else { return }
         let leaves? = self
             .decls
