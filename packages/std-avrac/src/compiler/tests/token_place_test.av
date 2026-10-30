@@ -42,13 +42,18 @@ spec "compiler/token-place — a place follows its tokens" {
     }
 }
 
-/// `text`'s shape, lexed under `grammars`.
-fn tp_shape(text: string, grammars: List<string>) -> string {
+/// `text`'s shape, lexed under `grammars`, its docs unread.
+fn tp_shape(text: string, grammars: List<string>) -> string { tp_shaped(text, grammars, false) }
+
+fn tp_shaped(text: string, grammars: List<string>, docs: bool) -> string {
     shape_digest(
         text,
         lexed_under(text, LexWords { grammars: grammars, components: [], own: [] }, avra().keywords),
+        docs,
     )
 }
+
+fn tp_claimed(gap: string) -> string { "// LICENSED style.x: a reason\nfn f() -> int { g(1,${gap} 2) }\n\nfn h() -> int {\n    3\n}\n" }
 
 fn tp_raw(note: string) -> string { "fn f() -> int {\n    let q = sql { // ${note}\n    }\n    1\n}\n" }
 
@@ -62,8 +67,14 @@ spec "compiler/token-place — a shape is what a file says" {
         }
     }
     given "a doc comment" {
-        then "its words are part of the shape" {
-            tp_shape("/// one\n${tp_text()}", []) != tp_shape("/// two\n${tp_text()}", [])
+        then "its words are part of the shape once something reads them" {
+            tp_shaped("/// one\n${tp_text()}", [], true) != tp_shaped("/// two\n${tp_text()}", [], true)
+        }
+        then "its words leave the shape while nothing reads them" {
+            tp_shape("/// one\n${tp_text()}", []) == tp_shape("/// two\n${tp_text()}", [])
+        }
+        then "a doc line added moves the shape, read or not" {
+            tp_shape("/// one\n${tp_text()}", []) != tp_shape("/// one\n/// two\n${tp_text()}", [])
         }
     }
     given "a license claim" {
@@ -72,6 +83,12 @@ spec "compiler/token-place — a shape is what a file says" {
         }
         then "a line break between it and the token below moves the shape" {
             tp_shape("// LICENSED style.x: a reason\n${tp_text()}", []) != tp_shape("// LICENSED style.x: a reason\n\n${tp_text()}", [])
+        }
+        then "a break inside the line it licenses moves the shape" {
+            tp_shape(tp_claimed(""), []) != tp_shape(tp_claimed("\n"), [])
+        }
+        then "a blank line below that line moves nothing" {
+            tp_shape(tp_claimed(""), []) == tp_shape(tp_claimed("").replace("\n\nfn h", "\n\n\nfn h"), [])
         }
     }
     given "a raw block's body" {

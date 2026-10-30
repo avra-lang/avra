@@ -547,6 +547,8 @@ export type Decls = {
     file_names: Cell<List<string>>,
     /// Every named type the typer resolved, in order: a settlement keeps the ones it resolved.
     touched_types: Cell<List<TypeId>>,
+    /// Every file whose docs a reader asked for: a doc is an answer only to its readers.
+    docs_read: Cell<Map<string, bool>>,
     /// The sibling each group's next declaration takes, per run.
     counted: Cell<Siblings>,
     stores: Cell<List<SyntaxArena?>>,
@@ -961,6 +963,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         mains: Cell.new(no_mains),
         file_names: list_cell(),
         touched_types: list_cell(),
+        docs_read: map_cell(),
         counted: Cell.new(Siblings { runs: map_cell() }),
         // LICENSED compiler.repeated_projection: each `Cell.new` mints its own cell — one binding would make two hooks one slot
         stores: Cell.new(no_stores),
@@ -2921,12 +2924,24 @@ impl Decls {
     /// file_doc_of(file)`. Never `store_of`: a held declaration has no
     /// store to force, and a declaration minted with no facts at all
     /// must still answer null rather than trap.
-    fn doc_of(d: DeclId) -> List<string>? { self.facts_of(d)?.doc }
+    fn doc_of(d: DeclId) -> List<string>? {
+        self.docs_were_read(self.decl(d).file)
+        self.facts_of(d)?.doc
+    }
 
     /// A file's `//!` header when it has a real store, null for a held
     /// file (its record carries no file-level doc) or an out-of-range
     /// one (a declaration minted with no file behind it at all).
-    fn file_doc_of(f: FileId) -> List<string>? { self.admitted_store(f)?.file_doc() }
+    fn file_doc_of(f: FileId) -> List<string>? {
+        self.docs_were_read(f)
+        self.admitted_store(f)?.file_doc()
+    }
+
+    /// A file's docs, noted as read — nothing for a file minted with no row.
+    fn docs_were_read(f: FileId) {
+        let row? = self.file_rows.get().row(f.index) else { return }
+        self.docs_read.put(file_info(row).path, true)
+    }
 
     /// THE ONE READING DOOR for a declaration's `@name(args)` annotations, in
     /// written order — the fact `avra docs`, the formatter's `Code` and

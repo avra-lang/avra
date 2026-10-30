@@ -97,32 +97,25 @@ const SHAPE_DOC: int = 3
 const SHAPE_FILE_DOC: int = 4
 const SHAPE_FAULT: int = 5
 
-/// WHAT A FILE SAYS, WITHOUT WHAT IT ONLY SHOWS: every token, every doc line and the token it
-/// documents, and each `// LICENSED` claim with the token below it. A plain comment and the
-/// space between tokens are gone — an edit to them leaves the digest, and every answer drawn
-/// from the stream, where it was. A file that carries a claim keeps its line breaks too: a
-/// claim licenses the line directly below it.
-export fn shape_digest(text: string, lexed: LexResult) -> string {
+/// WHAT A FILE SAYS, WITHOUT WHAT IT ONLY SHOWS: every token, where each doc stands and how long
+/// it is — its words too when something read them (`docs_read`) — and each `// LICENSED` claim
+/// with the line it licenses. A plain comment and the space between tokens are gone, a line
+/// break included: the lexer's BREAK tokens carry the line law, so a blank line above a fn
+/// leaves the digest, and every answer drawn from the stream, where it was.
+export fn shape_digest(text: string, lexed: LexResult, docs_read: bool) -> string {
     let tokens = lexed.tokens
-    let lined = lexed.remarks.any(license_claimed(it) != null)
     mut d = new_digest()
-    mut at = 0
-    for t in tokens {
-        d = digest_int(d, SHAPE_TOKEN)
-        if lined { d = digest_int(d, breaks_in(text, at, t.span.lo)) }
-        d = digest_text(d, t.text)
-        at = t.span.hi
-    }
+    for t in tokens { d = digest_text(digest_int(d, SHAPE_TOKEN), t.text) }
     for r in lexed.remarks { d = claim_folded(d, text, tokens, r) }
     for doc in lexed.docs {
         d = digest_int(
             digest_int(digest_int(d, SHAPE_DOC), token_at(tokens, doc.before) ?? -1),
             doc.lines.length,
         )
-        for l in doc.lines { d = digest_text(d, l) }
+        if docs_read { for l in doc.lines { d = digest_text(d, l) } }
     }
     d = digest_int(digest_int(d, SHAPE_FILE_DOC), lexed.file_doc.length)
-    for l in lexed.file_doc { d = digest_text(d, l) }
+    if docs_read { for l in lexed.file_doc { d = digest_text(d, l) } }
     for e in lexed.errors { d = digest_text(digest_int(d, SHAPE_FAULT), e.message) }
     digest_key(d)
 }
@@ -130,16 +123,24 @@ export fn shape_digest(text: string, lexed: LexResult) -> string {
 /// The line breaks between two offsets.
 fn breaks_in(text: string, from: int, to: int) -> int { [k for k in from..to if text.char_code(k) == 10].length }
 
-/// A remark's claim, folded with the token below it and the breaks between — nothing for a
-/// remark that claims nothing.
+/// A remark's claim, folded with the line it licenses — `site_licensed` reads a claim on the
+/// line directly above a site, so what it licenses is the run of tokens sharing the first line
+/// below it. Nothing for a remark that claims nothing.
 fn claim_folded(d: Digest, text: string, tokens: List<Token>, r: Remark) -> Digest {
     let c? = license_claimed(r) else { return d }
-    let below = tokens.find(it.span.lo >= r.at)
-    let next = if below == null { text.length } else { below!.span.lo }
-    let at = digest_int(digest_int(d, SHAPE_CLAIM), [t for t in tokens if t.span.lo < r.at].length)
-    let lined = digest_int(
-        digest_int(at, breaks_in(text, r.at, next)),
+    let below = [t for t in tokens if t.span.lo < r.at].length
+    let next = if below < tokens.length { tokens[below].span.lo } else { text.length }
+    let at = digest_int(digest_int(digest_int(d, SHAPE_CLAIM), below), breaks_in(text, r.at, next))
+    let licensed = digest_int(
+        digest_int(at, line_run(text, tokens, below)),
         if r.same_line { 1 } else { 0 },
     )
-    digest_text(digest_text(lined, c.id), c.reason)
+    digest_text(digest_text(licensed, c.id), c.reason)
+}
+
+/// How many tokens from `from` stand on its line.
+fn line_run(text: string, tokens: List<Token>, from: int) -> int {
+    let end = (from + 1..tokens.length)
+        .find(breaks_in(text, tokens[it - 1].span.hi, tokens[it].span.lo) > 0)
+    (end ?? tokens.length) - from
 }

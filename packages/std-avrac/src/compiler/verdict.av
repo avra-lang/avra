@@ -78,8 +78,9 @@ impl CheckSaid {
     fn findings() -> List<Finding> { flatten([f.findings for f in self.files]) }
 }
 
-/// A file's shape as it is kept: the digest, and the words its text was lexed under.
-export type Shaped = { digest: string, words: LexWords }
+/// A file's shape as it is kept: the digest, the words its text was lexed under, and whether
+/// its docs' words are in it.
+export type Shaped = { digest: string, words: LexWords, docs: bool }
 
 export fn shape_wire(s: Shaped) -> string {
     let w = writer()
@@ -87,6 +88,7 @@ export fn shape_wire(s: Shaped) -> string {
     written_texts(w, s.words.grammars)
     written_texts(w, s.words.components)
     written_texts(w, s.words.own)
+    w.bool(s.docs)
     hex(w.bytes())
 }
 
@@ -99,9 +101,11 @@ fn read_shaped(r: Reader) -> Result<Shaped, CodecFault> {
     let digest = r.text()?
     let grammars = read_texts(r)?
     let components = read_texts(r)?
+    let own = read_texts(r)?
     Shaped {
         digest: digest,
-        words: LexWords { grammars: grammars, components: components, own: read_texts(r)? },
+        words: LexWords { grammars: grammars, components: components, own: own },
+        docs: r.bool()?,
     }
 }
 
@@ -229,19 +233,36 @@ impl Workspace {
     /// for a file whose words nothing recorded.
     fn shape_now(path: string) -> string? {
         let store = self.opened_store()
-        let kept = store
-            .get_valid(Stored.Unit, self.shape_key(path), (name) -> self.named_now(name))
-        if kept != null { return shape_of_wire(kept!)?.digest }
+        let docs = self.docs_are_read(store, path)
+        let kept = shape_of_wire(
+            store.get_valid(Stored.Unit, self.shape_key(path), (name) -> self.named_now(name)) ?? "",
+        )
+        if kept != null && kept!.docs == docs { return kept!.digest }
         let words? = self.lex_words(path) else { return null }
-        let made = shape_digest(self.listed_text(path), self.lexed_now(path, words))
+        let made = shape_digest(self.listed_text(path), self.lexed_now(path, words), docs)
         let _ = store
             .keep_reading(
                 Stored.Unit,
                 self.shape_key(path),
-                shape_wire(Shaped { digest: made, words: words }),
+                shape_wire(Shaped { digest: made, words: words, docs: docs }),
                 self.readings([VerdictRead.Text(path)]),
             )
         made
+    }
+
+    /// WHETHER ANYTHING READS `path`'s DOCS: a reader in this process, or one any derivation
+    /// over this store noted. A doc read by nothing is no answer to anything, so its words
+    /// stay out of the shape; once read they stay in.
+    fn docs_are_read(store: Store, path: string) -> bool {
+        self.decls.docs_read.get().get(path) != null ||
+            store.has(Stored.Unit, docs_read_key(self.root, path))
+    }
+
+    /// The files whose docs this derivation read, noted for every later one.
+    fn keep_docs_read(store: Store) {
+        for path in self.decls.docs_read.get().keys() {
+            let _ = store.keep_once(Stored.Unit, docs_read_key(self.root, path), "read")
+        }
     }
 
     /// The words `path` was last lexed under: this process's parse, else its kept shape's.
@@ -397,3 +418,6 @@ fn facts_locs(d: DiagFacts) -> List<Loc> {
 
 /// A lexed text, kept with the text it lexed.
 type Lexing = { text: string, lexed: LexResult }
+
+/// Where a file's docs are noted as read.
+fn docs_read_key(root: string, path: string) -> string { node_key(Stored.Unit, ["docs-read", root, path]) }
