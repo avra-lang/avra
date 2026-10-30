@@ -503,7 +503,7 @@ fn fields_of(s: Stmt) -> List<Param>? {
     match s {
         .StructDecl(_, _, fields) -> fields,
         .FnDecl(_, _, params, _, _) -> params,
-        .ExprStmt(_) or .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+        .ExprStmt(_) or .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
     }
 }
 
@@ -769,19 +769,19 @@ fn maybe_declares_block(ws: Workspace, files: List<string>) -> bool {
 }
 
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
-fn file_lexes_block(ws: Workspace, path: string) -> bool { opens_block_in(ws.scanning(path), path) }
+fn file_lexes_block(ws: Workspace, path: string) -> bool { opens_block_in(ws.text_staged(path), path) }
 
 /// Whether a file declares a component — `component NAME`, then its
 /// block or its head — read off its tokens. A SCAN IS A QUERY OVER ITS
 /// TEXT: a reader depends on the answer, so an edit that leaves the
 /// answer standing leaves the reader standing.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
-fn file_declares_component(ws: Workspace, path: string) -> bool { declares_component_in(ws.scanning(path), path) }
+fn file_declares_component(ws: Workspace, path: string) -> bool { declares_component_in(ws.text_staged(path), path) }
 
 /// The names a file's `component NAME` declarations wear — read off its
 /// tokens.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
-fn component_names(ws: Workspace, path: string) -> List<string> { components_in(ws.scanning(path), path) }
+fn component_names(ws: Workspace, path: string) -> List<string> { components_in(ws.text_staged(path), path) }
 
 /// What one lex of a file's text answers about its block words — the scans' one query.
 @query
@@ -802,21 +802,6 @@ fn components_in(db: RelDb, path: string) -> List<string> { text_scan_of(db, pat
 /// The components a file exports.
 @query
 fn exported_in(db: RelDb, path: string) -> List<string> { text_scan_of(db, path).exported }
-
-impl Workspace {
-    /// The relation Db, `path`'s text staged in it — once, by the driver, so the query asking
-    /// reads the scan and never the text; the world moving stages it again.
-    fn scanning(path: string) -> RelDb {
-        if self.keys.staged.get().get(path) == null { self.db.kernel.unheard(() -> self.restaged(path)) }
-        self.decls.rows_db.get()
-    }
-
-    /// `path`'s text staged as it is read now.
-    fn restaged(path: string) {
-        self.stage_text(path)
-        self.keys.staged.put(path, self.text_word(path))
-    }
-}
 
 /// A component word known by its name alone: its instance parses as
 /// one and stands as a hole.

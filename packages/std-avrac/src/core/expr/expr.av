@@ -41,10 +41,12 @@ export type StrLit = { value: string }
 export type BoolLit = { value: bool }
 
 /// A name read: the node begins where the name was written, so a rule
-/// that NESTS one in a wider branch (`break row`) anchors it there.
+/// that NESTS one in a wider branch (`break row`) anchors it there. Its
+/// `run` facet marks a template hole `${..name}` that binds a run of
+/// siblings rather than one node.
 @expr_node
 @sequence
-export type Ident = { @anchor name: Scoped }
+export type Ident = { @anchor name: Scoped, @facet(run_hole) run: bool = false }
 
 /// `self` — the enclosing method's receiver. A keyword, so it
 /// carries no name: the binding says what it is.
@@ -142,9 +144,11 @@ export type Body = { word: string, parts: List<string>, holes: List<ExprId>, vie
 @sequence
 export type Component = { word: string, targs: List<TypeRef> = [], heads: List<ExprId> = [], body: ExprId? = null, name: Scoped? = null, key: ExprId? = null }
 
+/// `if c { a } else { b }`. Its `statement` facet marks one written at
+/// statement position, where its value is nothing — the guard idiom.
 @expr_node
 @branches
-export type If = { cond: ExprId, on_true: ExprId, on_false: ExprId? }
+export type If = { cond: ExprId, on_true: ExprId, on_false: ExprId?, @facet(statement_if) statement: bool = false }
 
 /// Multi-way choice; `defaults` are the `_` arms, in written order —
 /// exactly one of them, and last, is `when`'s law and the checker's
