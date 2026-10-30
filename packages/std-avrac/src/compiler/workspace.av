@@ -77,6 +77,7 @@ use features.{
     BlockWords,
 }
 use core.{ComponentWord, Instanced}
+use grammar.{Token}
 use @std.meta.{Diagnostic, bracket, identity, plain_field, derive, code_hash}
 use core.{
     EmbedKind,
@@ -154,7 +155,7 @@ type ExternNames = { decls: int, names: List<string> }
 type Suspects = { files: int, rows: Map<string, bool>, paths: Map<string, bool> }
 
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, staged: Cell<Map<string, int>>, lex_words: Cell<Map<string, LexWords>>, lexings: Cell<Map<string, Lexing>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, sig_producer: Cell<Producer?>, build_mode: Cell<string>, one_shot: Cell<bool> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, staged: Cell<Map<string, int>>, lex_words: Cell<Map<string, LexWords>>, placing: Cell<Map<string, List<Token>>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, sig_producer: Cell<Producer?>, build_mode: Cell<string>, one_shot: Cell<bool> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -168,7 +169,7 @@ fn new_keys() -> Keys {
     let no_digests: Map<string, string> = {}
     let no_staged: Map<string, int> = {}
     let no_words: Map<string, LexWords> = {}
-    let no_lexings: Map<string, Lexing> = {}
+    let no_placing: Map<string, List<Token>> = {}
     let no_tokens: Map<string, Spelling> = {}
     let no_views: Map<string, SeenView> = {}
     let no_named: Map<string, int> = {}
@@ -189,7 +190,7 @@ fn new_keys() -> Keys {
         text_digests: Cell.new(no_digests),
         staged: Cell.new(no_staged),
         lex_words: Cell.new(no_words),
-        lexings: Cell.new(no_lexings),
+        placing: Cell.new(no_placing),
         file_tokens: Cell.new(no_tokens),
         seen_views: Cell.new(no_views),
         suspects: Cell.new(Suspects { files: -1, rows: {}, paths: {} }),
@@ -818,10 +819,6 @@ fn lifted_verified(ws: Workspace, arg: int) -> int {
     touch(ws.lifted_at(arg))
     ws.db.changed_at(key(Family.Lifted, arg))
 }
-fn manifest_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.manifest(arg))
-    ws.db.changed_at(key(Family.Manifest, arg))
-}
 // LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
 fn writes_verified(ws: Workspace, arg: int) -> int {
     touch(ws.writes_of(decl_at_arg(arg)))
@@ -841,7 +838,7 @@ fn plain_verified(ws: Workspace, arg: int) -> int {
     ws.db.changed_at(key(Family.Plain, arg))
 }
 fn references_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.references())
+    if !ws.typing_open() { touch(ws.references()) }
     ws.db.changed_at(key(Family.References, arg))
 }
 // LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
@@ -925,7 +922,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Lowered -> lowered_verified(ws, arg),
         .LiftLowered -> lift_lowered_verified(ws, arg),
         .Lifted -> lifted_verified(ws, arg),
-        .Manifest -> manifest_verified(ws, arg),
         .Expanded -> expanded_verified(ws, arg),
         .Plain -> plain_verified(ws, arg),
         .References -> references_verified(ws, arg),
@@ -1313,14 +1309,14 @@ impl Workspace {
     /// Runs the references pass and says so, or says it cannot: a whole-program pass
     /// never runs inside a resolve.
     fn refs_ensured() -> bool {
-        if self.db.family_active(Family.Resolved.ordinal) { return false }
+        if self.db.family_active(Family.Resolved.ordinal) || self.typing_open() { return false }
         let _ = self.references()
         true
     }
 
     /// Runs the references pass for one declaration's read bit and says so, or says it cannot.
     fn read_found_ensured(d: DeclId) -> bool {
-        if self.db.family_active(Family.Resolved.ordinal) { return false }
+        if self.db.family_active(Family.Resolved.ordinal) || self.typing_open() { return false }
         let _ = read_found(self, d)
         true
     }
@@ -2652,7 +2648,6 @@ export fn family_code_hash(f: Family) -> string {
         .Lowered -> code_hash(lowered_verified) ?? "",
         .LiftLowered -> code_hash(lift_lowered_verified) ?? "",
         .Lifted -> code_hash(lifted_verified) ?? "",
-        .Manifest -> code_hash(manifest_verified) ?? "",
         .Expanded -> code_hash(expanded_verified) ?? "",
         .Plain -> code_hash(plain_verified) ?? "",
         .References -> code_hash(references_verified) ?? "",

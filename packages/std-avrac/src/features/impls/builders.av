@@ -1,49 +1,9 @@
-//! Parse-time lowering: captures -> the ImplDecl and TraitDecl
-//! statements. An impl's contained statements must each be fn
-//! declarations; a trait's SIGS mint as BODYLESS FnDecls (the body
-//! is a hole no pass walks), so declare and totality reuse the fn
+//! Parse-time lowering: a trait's SIGS mint as BODYLESS FnDecls (the
+//! body is a hole no pass walks), so declare and totality reuse the fn
 //! machinery whole. A trait's members arrive built, one
 //! `trait_member` each.
-use core.{Expr, Stmt, StmtId, Span, Nominal, Scoped, Plain, spelled}
+use core.{Expr, Stmt, Span, Scoped}
 use features.{LangNode, Builder, params_at}
-/// The target's type parameters (`impl Arena<N>`, `impl Show<X> for
-/// Box<T>`). A written parameter names a Var the target's own
-/// declaration supplies, and `impl_target` reads the mark to refuse a
-/// CONCRETE argument (`impl Show for Box<int>`); the printer spells
-/// them back from the same mark.
-fn build_impl(b: Builder) -> Result<LangNode, string> {
-    let t = b.token(0)?
-    let written = b.type_refs(1)?
-    let tp = [Plain(spelled(w)) for w in written]
-    let ib = b.tokens(2)?
-    let tp2 = b.tokens(3)?
-    let fns = b.stmts(4)?
-    for s in fns {
-        if !is_fn(b, s) && b.store.hole_stmt(s) == null { return .Err("an `impl` block holds `fn` declarations only") }
-    }
-    // with a `for`, the FIRST name is the trait and the for-name
-    // is the target; without one, the first name IS the target.
-    let forred? = ib.first() else {
-        let s = b.store.alloc_stmt(Stmt.ImplDecl(null, Nominal(t.text), fns), b.span)
-        mark_written_tparams(b, s, [], tp)
-        return .Ok(LangNode.NStmt(s))
-    }
-    let s = b.store.alloc_stmt(Stmt.ImplDecl(Nominal(t.text), Nominal(forred.text), fns), b.span)
-    mark_written_tparams(b, s, tp, [Plain(t.text) for t in tp2])
-    if !written.is_empty() { b.store.mark_trait_args(s, written) }
-    .Ok(LangNode.NStmt(s))
-}
-
-/// Skipped on a plain impl, so only a generic one carries the mark.
-fn mark_written_tparams(b: Builder, s: StmtId, of: List<Plain>, target: List<Plain>) {
-    if of.is_empty() && target.is_empty() { return }
-    b.store.mark_impl_tparams(s, of, target)
-}
-
-fn is_fn(b: Builder, s: StmtId) -> bool {
-    b.store.stmt(s) is .FnDecl
-}
-
 /// One trait member: a sig with a HOLE body, or a DEFAULT with the
 /// block written under it — spanning name to body's end, so the
 /// body's expressions are the member's own range. A sig wears its

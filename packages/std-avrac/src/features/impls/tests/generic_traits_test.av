@@ -2,13 +2,27 @@
 // each argument, the call choosing by argument type, and every misuse
 // refused once.
 use @std.avrac.testing.{shown, refused_with, refusals}
+use @std.avrac.compiler.{analyze_source, Analysis}
+use @std.avrac.features.{Decl}
 
 /// A trait with a parameter and two impls of it on one type.
 fn realize() -> string {
     "type Text = { content: string }\ntype Button = { label: string }\ntype Html = { tag: string = \"\" }\ntrait Realize<T> {\n    fn draw(t: T) -> string\n}\nimpl Realize<Text> for Html {\n    fn draw(t: Text) -> string { t.content }\n}\nimpl Realize<Button> for Html {\n    fn draw(t: Button) -> string { t.label }\n}\n"
 }
 
+/// Every method `Html` holds, registered once more: a re-run that must add nothing.
+fn reregistered(a: Analysis) -> int {
+    let html = a.view.decls.all_decls().find((d: Decl) -> d.name == "Html")!.id
+    for m in a.view.decls.registered_methods(html) { a.view.decls.declare_method(html, m) }
+    a.view.decls.registered_methods(html).length
+}
+
 spec "features/impls — generic traits" {
+    given "the method table" {
+        then "two members sharing a name are two entries, and registering them again adds none" {
+            reregistered(analyze_source(realize() + "Html {}.draw(Text { content: \"a\" })")) == 2
+        }
+    }
     given "a type implementing one generic trait at two arguments" {
         then "a call picks the member its argument fits" {
             shown(
