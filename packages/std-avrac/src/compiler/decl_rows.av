@@ -1,0 +1,78 @@
+//! A FILE'S ROWS, ONE COPY OF EACH LINE. A file's Items row keeps its declaration and maker
+//! lines, standing on its text; a module's record keeps neither, and reads them back whole
+//! (`record_whole`). A declaration no parse declares is filled from its own line, found by
+//! its name (`decl_row_filled`).
+use core.{DeclId, ModulePath, joined, flatten, same_decl, some_list}
+use features.{Decl, kind_word}
+use compiler.store.{Store, Stored, node_key}
+
+impl Workspace {
+    /// EVERY FILE OF `m` THIS ATTEMPT READ KEEPS ITS ITEMS: its declaration and maker lines in
+    /// the record just made, under the text they were read from. An unread file's stand as its last read kept
+    /// them.
+    fn keep_items(store: Store, m: ModulePath, made: string) {
+        let by_file = lines_by_file(made.split("\n"))
+        for path in [p for p in self.module_files(m) if self.read_here(p)] {
+            let text = joined(
+                ["items"].concat([l for l in by_file.get(path) ?? [] if items_line(read_fields(l))]),
+                "\n",
+            )
+            let key = items_key(self.root, path, self.text_digest(path))
+            if store.get(Stored.Unit, key) != text { let _ = store.keep(Stored.Unit, key, text, []) }
+        }
+    }
+
+    /// A file's kept Items lines, split — none when no read of its text as it stands kept them.
+    fn items_lines(path: string) -> List<List<string>>? {
+        let store? = self.store.get() else { return null }
+        let text? = store.get(Stored.Unit, items_key(self.root, path, self.text_digest(path))) else { return null }
+        [read_fields(l) for l in text.split("\n").drop(1)]
+    }
+
+    /// A declaration no parse declares, filled from its own line on the ask that names it,
+    /// never before: a line can name a declaration whose own is filled later, and a read through
+    /// that name must see that fill. Once per declaration, so a name reached while filling its
+    /// own line (a cycle) sees "not filled yet" rather than recursing.
+    fn decl_row_filled(d: DeclId) {
+        if self.hold.row_filled.at(d.index) != null { return }
+        self.hold.row_filled.keep(d.index, true)
+        let store? = self.store.get() else { return }
+        let x = self.decls.decl(d)
+        let path = self.decls.file(x.file).path
+        let m = self.module_path_of(path)
+        let row? = self.line_named(file_lines(self, store, m, path), x) else { return self.defect("a declaration has no line — ${self.decl_ref(d)}") }
+        self.fill_shape(store, m, d, row.shaped())
+    }
+
+    /// A declaration's line among its file's, by its name: its kind, owner and name, and its
+    /// place among the declarations that share them, as its durable name spells it.
+    fn line_named(lines: List<List<string>>, x: Decl) -> Row? {
+        let kind = kind_word(x.kind)
+        let same = [r for p in lines for r in some_list(read_row(p)) if wears(r, kind, x)]
+        let siblings = self.decls.wire_siblings(x.file, kind, x.owner, x.name)
+        let at? = [j for j, id in siblings if same_decl(id, x.id)].first() else { return null }
+        if at < same.length { same[at] } else { null }
+    }
+}
+
+/// Whether a line declares what `x` is, under `x`'s kind word, owner and name.
+fn wears(r: Row, kind: string, x: Decl) -> bool { r.kind == kind && r.owner == x.owner && r.name == x.name }
+
+impl RecordBodies {
+    /// A module's record as it was made: its kept lines, then each file's Items lines under the
+    /// text its `file` line names, in file order. A file whose Items are gone contributes none.
+    fn whole(store: Store, headers: string) -> string {
+        let lines = headers.split("\n")
+        let files = [l.split("\t") for l in lines if l.starts_with("file\t")]
+        joined(lines.concat(flatten([self.file_items(store, f[1], f[2]) for f in files])), "\n")
+    }
+
+    fn file_items(store: Store, path: string, digest: string) -> List<string> {
+        let text? = store.get(Stored.Unit, items_key(self.root, path, digest)) else { return [] }
+        text.split("\n").drop(1)
+    }
+}
+
+/// WHERE A FILE'S ITEMS ARE KEPT: its path and the digest of the text they were read from, so
+/// a record of any revision reads back the lines it was made with.
+fn items_key(root: string, path: string, digest: string) -> string { node_key(Stored.Unit, ["items", root, path, digest]) }
