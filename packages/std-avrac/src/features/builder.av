@@ -486,19 +486,9 @@ impl Builder {
         .Ok(LangNode.NStmt(id))
     }
 
-    /// A head WIDENED by its trailing blocks — each marked as one,
-    /// the call given them as its last arguments through the call
-    /// protocol. A head that is no call refuses in the block's words.
+    /// A head widened by its trailing blocks, at this build's place.
     fn trailed(h: ExprId, blocks: List<ExprId>) -> Result<ExprId, string> {
-        if blocks.is_empty() { return .Ok(h) }
-        for k in blocks { self.store.mark_trailing(k) }
-        let widened: Expr? = self.store.called_with(h, blocks)
-        if widened == null {
-            return .Err(
-                "a trailing block follows this expression, and only a call takes one — `f(…) { … }`, `a.m(…) { … }`, a name, a field read",
-            )
-        }
-        .Ok(self.expr_node(widened!))
+        self.store.trailed(h, blocks, self.node_span())
     }
 
     /// THE BLOCK LAW: statements as a scope answering with its tail.
@@ -520,12 +510,7 @@ impl Builder {
     }
 
     /// The span from the first statement's start to the last one's end.
-    fn extent_of(stmts: List<StmtId>) -> Span? {
-        let first? = stmts.first() else { return null }
-        let a? = self.store.stmt_span(first) else { return null }
-        let b? = self.store.stmt_span(stmts.last()!) else { return a }
-        a.cover(b)
-    }
+    fn extent_of(stmts: List<StmtId>) -> Span? { self.store.stmts_extent(stmts) }
 
     /// Where this build's branch ENDED — the bound a positional
     /// reconstruction measures against. Absent for a synthesized

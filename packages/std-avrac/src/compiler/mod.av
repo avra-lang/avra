@@ -29,7 +29,7 @@
 //!   dev/       the compiler's own proofs: attacks, diagnostic witnesses
 use core.{flatten, some_list, row_for, PayloadRow, node_payload_rows, has_anchor}
 use @std.meta.{Field}
-use @std.grammar.{Grammar, Build, Diagnostic, Ready, ready, node_builder_name, defect}
+use @std.grammar.{Grammar, Build, Seq, Diagnostic, Ready, ready, node_builder_name, defect}
 use grammar.{avra_known_terminals}
 use compiler.format.{rule_scale, worded_nodes}
 use features.{
@@ -47,6 +47,7 @@ use features.{
     bind_nodes,
     node_builders,
     computes,
+    computed_extras,
     BlockWords,
 }
 use diagnostics.{Diag, DiagCode, new_source_file}
@@ -134,7 +135,7 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
             bound.defects,
             template_defects(bound.g, rows),
             builder_defects(features, g),
-            computed_defects(g),
+            computed_defects(g, rows),
             code_defects(codes),
             wording_defects(wordings, worded_nodes),
         ],
@@ -169,36 +170,62 @@ fn with_nodes(
         let held? = out.get(name) else { continue }
         out.set(name, held with { payloads: row.payloads, anchor: anchorage(row.payloads) })
     }
-    // a computed node's fn reads the labels of the node its rule names
-    for c in computed_builds(g) {
+    // a computed node's fn reads its node's labels, then the branch's own
+    for c in computed_builds(g, rows) {
         let row? = row_for(rows, c.owner, c.variant) else { continue }
         let held? = out.get(c.by) else { continue }
-        out.set(c.by, held with { payloads: row.payloads, anchor: anchorage(row.payloads) })
+        let extras = [Field { name: x, ty: "", at: null } for x in c.extras]
+        out
+            .set(
+                c.by,
+                held with { payloads: row.payloads.concat(extras), anchor: anchorage(row.payloads) },
+            )
     }
     out
 }
 
-/// One `-> Owner.Variant by fn` a rule writes.
-type ComputedBuild = { rule: string, owner: string, variant: string, by: string }
+/// One `-> Owner.Variant by fn` a rule writes, and the labels it writes
+/// beyond the node's payloads.
+type ComputedBuild = { rule: string, owner: string, variant: string, by: string, extras: List<string> }
 
 /// Every computed build the grammar's branches write.
-fn computed_builds(g: Grammar) -> List<ComputedBuild> {
-    flatten([some_list(computed_of(r.name, s.build)) for r in g.rules for s in r.body.seqs()])
+fn computed_builds(g: Grammar, rows: List<PayloadRow>) -> List<ComputedBuild> {
+    flatten([some_list(computed_of(r.name, s, rows)) for r in g.rules for s in r.body.seqs()])
 }
 
-fn computed_of(rule: string, b: Build?) -> ComputedBuild? {
-    let held? = b else { return null }
+fn computed_of(rule: string, s: Seq, rows: List<PayloadRow>) -> ComputedBuild? {
+    let held? = s.build else { return null }
     match held {
-        .Computed(owner, variant, by, _) -> ComputedBuild { rule: rule, owner: owner, variant: variant, by: by },
+        .Computed(owner, variant, by, _) -> ComputedBuild {
+            rule: rule,
+            owner: owner,
+            variant: variant,
+            by: by,
+            extras: computed_extras(
+                s,
+                row_for(rows, owner, variant) ?? PayloadRow {
+                    owner: owner,
+                    variant: variant,
+                    payloads: [],
+                },
+            ),
+        },
         _ -> null,
     }
 }
 
-/// A computed build names a `@computed` fn, and each fn computes one node.
-fn computed_defects(g: Grammar) -> List<Diagnostic> {
-    let builds = computed_builds(g)
+/// A computed build names a `@computed` fn, and each fn computes one node
+/// from one set of labels.
+fn computed_defects(g: Grammar, rows: List<PayloadRow>) -> List<Diagnostic> {
+    let builds = computed_builds(g, rows)
     let unknown = [defect(c.rule, no_computed_fn(c.by)) for c in builds if computes.find(it.name == c.by) == null]
-    let split = [defect(c.rule, computes_two_nodes(c.by)) for c in builds if builds.any(it.by == c.by && (it.owner != c.owner || it.variant != c.variant))]
+    let split = [defect(c.rule, computes_two_nodes(c.by)) for c in builds if builds
+        .any(
+            it.by == c.by &&
+                (it.owner != c.owner ||
+                    it.variant != c.variant ||
+                    it.extras.join(",") != c.extras.join(",")),
+        )]
     unknown.concat(split)
 }
 
@@ -395,5 +422,5 @@ fn no_computed_fn(by: string) -> string {
 }
 
 fn computes_two_nodes(by: string) -> string {
-    "`${by}` computes two different nodes — a `@computed` fn computes the one node its rules name"
+    "`${by}` computes two different nodes, or one from two sets of labels — a `@computed` fn computes the one node its rules name, from one set"
 }

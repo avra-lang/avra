@@ -3,18 +3,13 @@
 //! passes through: a one-expression block costs no node, so every
 //! one-line fn and if keeps its exact tree. The multi-line form
 //! arrives by deferred commitment.
-use features.{LanguageFeature, BuilderRow}
+use features.{LanguageFeature}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 export fn block() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name    | build
-        "block" | build_block
-    }
     LanguageFeature block {
         gram: grammar {
-            block = "{" ( s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the block") -> block(s)
+            block = "{" ( stmts:stmt | BREAK )* "}" @expect("}", "expected `}` to close the block") -> Expr.Block by block_written
         }
-        builders: rows
     }
     // LICENSED compiler.duplicated_message: grammar TEXT — both branches need the message inline
     block
