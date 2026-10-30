@@ -29,6 +29,7 @@ use core.{
     Scoped,
     Variant,
     Case,
+    Given,
     Annotation,
     TypeRef,
     FormatPart,
@@ -166,34 +167,6 @@ type SourceText = { store: SyntaxArena, trivia: List<Remark>, next: int, text: s
 /// itself a `.Prop`/`.MethodCall`) and its links, outermost last —
 /// `chain_walk`'s answer.
 type ChainWalk = { root: ExprId, links: List<string> }
-
-/// A `given` block, as read back off a `Spec`'s flat `cases`: a run
-/// of CONSECUTIVE cases sharing one non-empty group name. Two
-/// `given "a"` blocks the author wrote apart stay apart — nothing
-/// between them shares the run — and an empty group is never
-/// merged: it is a bare `then`, one case to its own group.
-type CaseGroup = { group: string, cases: List<Case> }
-
-/// Whether `c` continues `prev`'s run — the same non-empty group.
-fn continues_run(prev: CaseGroup?, c: Case) -> bool {
-    if prev == null || c.group.is_empty() { return false }
-    prev!.group == c.group
-}
-
-/// `cases` folded into its `given` runs, in order.
-fn grouped_cases(cases: List<Case>) -> List<CaseGroup> {
-    mut out: List<CaseGroup> = []
-    for c in cases {
-        let prev: CaseGroup? = out.last()
-        if continues_run(prev, c) {
-            let g = prev!
-            out.set(out.length - 1, g with { cases: g.cases.concat([c]) })
-        } else {
-            out.push(CaseGroup { group: c.group, cases: [c] })
-        }
-    }
-    out
-}
 
 /// The last `{`'s own index in `s`, or -1.
 fn last_brace(s: string) -> int {
@@ -594,7 +567,7 @@ impl SourceText {
                         depth,
                     ),
             ],
-            .Spec(name, cases) -> [self.spec_decl(name, cases, self.stmt_end(s), self.stmt_flat(s), depth)],
+            .Spec(name, groups) -> [self.spec_decl(name, groups, self.stmt_end(s), self.stmt_flat(s), depth)],
             .Defer(body, on_error) -> [
                 source_line(
                     depth,
@@ -1135,8 +1108,8 @@ impl SourceText {
         "${head}${self.params_wrapped(v.payloads, depth, col_after(head, depth * 4))}"
     }
 
-    mut fn spec_decl(name: string, cases: List<Case>, end: int, one_line: bool, depth: int) -> string {
-        let body = flatten([self.given_lines(g, one_line, depth + 1) for g in grouped_cases(cases)])
+    mut fn spec_decl(name: string, groups: List<Given>, end: int, one_line: bool, depth: int) -> string {
+        let body = flatten([self.given_lines(g, one_line, depth + 1) for g in groups])
             .concat(self.trivia_before(end, depth + 1))
         if body.is_empty() { return source_line(depth, "spec ${quoted_text(name)} {}") }
         if one_line && body.length == 1 {
@@ -1228,9 +1201,10 @@ impl SourceText {
     /// (`render_source`, no written form to keep) the split cannot be
     /// found and the sweep is skipped; `then_line`'s own call still
     /// reaches every remark, at its one depth.
-    mut fn given_lines(g: CaseGroup, one_line: bool, depth: int) -> List<string> {
-        if g.group.is_empty() { return self.then_line(g.cases[0], depth) }
-        let target = start_of(g.cases[0].span)
+    mut fn given_lines(g: Given, one_line: bool, depth: int) -> List<string> {
+        let first? = g.cases.first() else { return [source_line(depth, "given ${quoted_text(g.name)} {}")] }
+        if g.name.is_empty() { return self.then_line(first, depth) }
+        let target = start_of(first.span)
         let lead = self.trivia_before(self.given_split(target), depth)
         let at = depth + 1
         let thens = flatten([self.then_line(c, at) for c in g.cases])
@@ -1240,13 +1214,13 @@ impl SourceText {
                     [
                         source_line(
                             depth,
-                            "given ${quoted_text(g.group)} { ${unpadded(thens[0], at)} }",
+                            "given ${quoted_text(g.name)} { ${unpadded(thens[0], at)} }",
                         ),
                     ],
                 )
         }
         lead
-            .concat([source_line(depth, "given ${quoted_text(g.group)} {")])
+            .concat([source_line(depth, "given ${quoted_text(g.name)} {")])
             .concat(thens)
             .concat([source_line(depth, "}")])
     }
