@@ -46,9 +46,12 @@ fn fits(tail: string, shape: string) -> bool { if shape == "snake" { snake(tail)
 /// Every stale citation across `p`'s files, one `file\tline\tid` per
 /// line, joined — "" for a clean program.
 export fn stale_license_lines(p: Program) -> string {
-    let known = [rule_id(r) for r in rules]
+    let known = known_rule_ids()
     joined(flatten([file_stale_lines(a, known) for a in p.files]), "\n")
 }
+
+/// Every rule a citation may name.
+fn known_rule_ids() -> List<string> { [rule_id(r) for r in rules] }
 
 /// Whether a citation's id names nothing that reads it: no rule among
 /// `known`, and no member of a keeper's family.
@@ -57,14 +60,18 @@ export fn cites_nothing(id: string, known: List<string>) -> bool {
 }
 
 fn file_stale_lines(a: Analysis, known: List<string>) -> List<string> {
-    flatten([remark_line(a, r, known) for r in a.view.store.remarks.get()])
+    stale_lines_of(a.view.source, a.view.store.remarks.get(), known)
 }
 
-fn remark_line(a: Analysis, r: Remark, known: List<string>) -> List<string> {
+/// A source's stale citations among `remarks`.
+fn stale_lines_of(src: SourceFile, remarks: List<Remark>, known: List<string>) -> List<string> {
+    flatten([remark_line(src, r, known) for r in remarks])
+}
+
+fn remark_line(src: SourceFile, r: Remark, known: List<string>) -> List<string> {
     let c? = claimed(r) else { return [] }
     if !cites_nothing(c.id, known) { return [] }
-    let line = a.view.source.linecol(r.at).line
-    ["${a.view.source.file}\t${line}\t${c.id}"]
+    ["${src.file}\t${src.linecol(r.at).line}\t${c.id}"]
 }
 
 /// One `// LICENSED <id>: <reason>` comment, parsed — the id and
@@ -75,6 +82,9 @@ type Cited = { id: string, reason: string }
 /// A remark's own claim, or absence — a bare `// LICENSED — reason`
 /// (no id: a doctrine exemption, never a rule's) claims nothing, and
 /// neither does a comment that merely mentions the word.
+/// A remark's license claim, as a shape reads it.
+fn license_claimed(r: Remark) -> Cited? { claimed(r) }
+
 fn claimed(r: Remark) -> Cited? {
     match r.trivia { .Comment(text) -> claimed_in(text), .Blank -> null }
 }

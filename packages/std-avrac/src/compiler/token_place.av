@@ -7,8 +7,8 @@
 //! A place past the last token, or before the first, has no token identity: `NoToken`, never a
 //! clamped position. Absence is its own arm.
 use @std.errors.{Loc}
-use grammar.{Token, lex_source}
-use core.{Span, new_digest, digest_text, digest_key}
+use grammar.{Token, LexResult, lex_source, lex_blocks}
+use core.{Span, Digest, Remark, new_digest, digest_text, digest_int, digest_key}
 
 /// A place within a token stream: the token each end stands in, and each end's distance from
 /// that token's first byte.
@@ -40,14 +40,16 @@ fn token_at(tokens: List<Token>, at: int) -> int? {
         }
     }
     // a place at the exact end of the last token is that token's end
-    if at == tokens[tokens.length - 1].span.hi { return tokens.length - 1 }
+    if at == tokens.last()!.span.hi { return tokens.length - 1 }
     null
 }
 
 /// `at` as a token identity, over the text it was found in.
-export fn anchored_at(text: string, at: Loc) -> Anchored {
+export fn anchored_at(text: string, at: Loc) -> Anchored { anchored_among(tokens_of(text), at) }
+
+/// `at` as a token identity, over the stream its text lexed to.
+export fn anchored_among(tokens: List<Token>, at: Loc) -> Anchored {
     if at.lo < 0 || at.hi < at.lo { return .NoToken }
-    let tokens = tokens_of(text)
     let lo? = token_at(tokens, at.lo) else { return .NoToken }
     let hi? = token_at(tokens, at.hi) else { return .NoToken }
     .In(
@@ -62,11 +64,13 @@ export fn anchored_at(text: string, at: Loc) -> Anchored {
 
 /// `kept` against a text that may have moved above it since; null where the stream no longer
 /// has that token, or the place stood past its end.
-export fn placed_in(text: string, kept: Anchored) -> Loc? {
+export fn placed_in(text: string, kept: Anchored) -> Loc? { placed_among(tokens_of(text), kept) }
+
+/// `kept` against the stream a text lexes to now.
+export fn placed_among(tokens: List<Token>, kept: Anchored) -> Loc? {
     match kept {
         .NoToken -> null,
         .In(p) -> {
-            let tokens = tokens_of(text)
             if p.lo_token >= tokens.length || p.hi_token >= tokens.length { return null }
             if p.lo_token < 0 || p.hi_token < 0 { return null }
             let lo = tokens[p.lo_token].span
@@ -77,12 +81,65 @@ export fn placed_in(text: string, kept: Anchored) -> Loc? {
     }
 }
 
-/// THE TOKEN STREAM'S OWN DIGEST: what the file SAYS, with every comment and every space
-/// between tokens gone. Two texts that differ only in trivia have one digest — and a parser
-/// over that stream would answer the same, which is what makes this the right question to ask
-/// before reusing a file's answers.
-export fn token_digest(text: string) -> string {
+/// The words a file is lexed under: its sublanguages', the components it imports, and the
+/// components its own module declares.
+export type LexWords = { grammars: List<string>, components: List<string>, own: List<string> }
+
+/// A text lexed as its parse lexes it — under the file's words, so a raw block's body is the
+/// block's and never read as comments.
+export fn lexed_under(text: string, words: LexWords, keywords: List<string>) -> LexResult {
+    lex_blocks(text, words.grammars, words.components, words.own, keywords)
+}
+
+const SHAPE_TOKEN: int = 1
+const SHAPE_CLAIM: int = 2
+const SHAPE_DOC: int = 3
+const SHAPE_FILE_DOC: int = 4
+const SHAPE_FAULT: int = 5
+
+/// WHAT A FILE SAYS, WITHOUT WHAT IT ONLY SHOWS: every token, every doc line and the token it
+/// documents, and each `// LICENSED` claim with the token below it. A plain comment and the
+/// space between tokens are gone — an edit to them leaves the digest, and every answer drawn
+/// from the stream, where it was. A file that carries a claim keeps its line breaks too: a
+/// claim licenses the line directly below it.
+export fn shape_digest(text: string, lexed: LexResult) -> string {
+    let tokens = lexed.tokens
+    let lined = lexed.remarks.any(license_claimed(it) != null)
     mut d = new_digest()
-    for t in tokens_of(text) { d = digest_text(d, t.text) }
+    mut at = 0
+    for t in tokens {
+        d = digest_int(d, SHAPE_TOKEN)
+        if lined { d = digest_int(d, breaks_in(text, at, t.span.lo)) }
+        d = digest_text(d, t.text)
+        at = t.span.hi
+    }
+    for r in lexed.remarks { d = claim_folded(d, text, tokens, r) }
+    for doc in lexed.docs {
+        d = digest_int(
+            digest_int(digest_int(d, SHAPE_DOC), token_at(tokens, doc.before) ?? -1),
+            doc.lines.length,
+        )
+        for l in doc.lines { d = digest_text(d, l) }
+    }
+    d = digest_int(digest_int(d, SHAPE_FILE_DOC), lexed.file_doc.length)
+    for l in lexed.file_doc { d = digest_text(d, l) }
+    for e in lexed.errors { d = digest_text(digest_int(d, SHAPE_FAULT), e.message) }
     digest_key(d)
+}
+
+/// The line breaks between two offsets.
+fn breaks_in(text: string, from: int, to: int) -> int { [k for k in from..to if text.char_code(k) == 10].length }
+
+/// A remark's claim, folded with the token below it and the breaks between — nothing for a
+/// remark that claims nothing.
+fn claim_folded(d: Digest, text: string, tokens: List<Token>, r: Remark) -> Digest {
+    let c? = license_claimed(r) else { return d }
+    let below = tokens.find(it.span.lo >= r.at)
+    let next = if below == null { text.length } else { below!.span.lo }
+    let at = digest_int(digest_int(d, SHAPE_CLAIM), [t for t in tokens if t.span.lo < r.at].length)
+    let lined = digest_int(
+        digest_int(at, breaks_in(text, r.at, next)),
+        if r.same_line { 1 } else { 0 },
+    )
+    digest_text(digest_text(lined, c.id), c.reason)
 }

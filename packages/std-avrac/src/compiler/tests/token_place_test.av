@@ -1,10 +1,10 @@
 // A PLACE IS A TOKEN, NOT A BYTE. Every comment and every space a file gains moves the offsets
 // below it and no token at all, so a place kept as (token index, distance into it) still names
-// the same program text afterwards — resolved with the lexer alone, no grammar, no parse. The
-// same identity is what decides whether a file's answers may be reused: one token digest for
-// texts that differ only in trivia, and a different one for any edit that changes a token.
+// the same program text afterwards — resolved with the lexer alone, no grammar, no parse. A
+// SHAPE decides whether a file's answers may be reused: one for texts that differ only in plain
+// comments and spaces, another for any edit to a token, a doc or a license claim.
 use @std.errors.{Loc}
-use compiler.{anchored_at, placed_in, token_digest}
+use compiler.{anchored_at, placed_in, avra, shape_digest, lexed_under, LexWords}
 
 fn tp_text() -> string { "fn first() -> int {\n    1\n}\n\nfn second(n: int) -> int {\n    n + 2\n}\n" }
 
@@ -40,12 +40,46 @@ spec "compiler/token-place — a place follows its tokens" {
             placed_in(tp_body_edited(), anchored_at(tp_text(), at)) != null
         }
     }
-    given "two texts that differ only in comments and blank lines" {
-        then "they have one token digest" {
-            token_digest(tp_text()) == token_digest(tp_shifted())
+}
+
+/// `text`'s shape, lexed under `grammars`.
+fn tp_shape(text: string, grammars: List<string>) -> string {
+    shape_digest(
+        text,
+        lexed_under(text, LexWords { grammars: grammars, components: [], own: [] }, avra().keywords),
+    )
+}
+
+fn tp_raw(note: string) -> string { "fn f() -> int {\n    let q = sql { // ${note}\n    }\n    1\n}\n" }
+
+spec "compiler/token-place — a shape is what a file says" {
+    given "two texts that differ only in plain comments and blank lines" {
+        then "they have one shape" {
+            tp_shape(tp_text(), []) == tp_shape(tp_shifted(), [])
         }
         then "an edit inside a token moves it" {
-            token_digest(tp_text()) != token_digest(tp_body_edited())
+            tp_shape(tp_text(), []) != tp_shape(tp_body_edited(), [])
+        }
+    }
+    given "a doc comment" {
+        then "its words are part of the shape" {
+            tp_shape("/// one\n${tp_text()}", []) != tp_shape("/// two\n${tp_text()}", [])
+        }
+    }
+    given "a license claim" {
+        then "adding one moves the shape" {
+            tp_shape(tp_text(), []) != tp_shape("// LICENSED style.x: a reason\n${tp_text()}", [])
+        }
+        then "a line break between it and the token below moves the shape" {
+            tp_shape("// LICENSED style.x: a reason\n${tp_text()}", []) != tp_shape("// LICENSED style.x: a reason\n\n${tp_text()}", [])
+        }
+    }
+    given "a raw block's body" {
+        then "under its word, a `//` there is the block's text and moves the shape" {
+            tp_shape(tp_raw("a"), ["sql"]) != tp_shape(tp_raw("b"), ["sql"])
+        }
+        then "read without the word, it is a comment and moves nothing" {
+            tp_shape(tp_raw("a"), []) == tp_shape(tp_raw("b"), [])
         }
     }
 }

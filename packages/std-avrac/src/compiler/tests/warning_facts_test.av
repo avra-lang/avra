@@ -1,18 +1,12 @@
-// A FILE'S WARNINGS ARE KEPT AS DATA, AND THEIR PLACES FOLLOW THE DECLARATIONS HOLDING THEM.
-// The row is the durable witness `render_facts_among` reads: every diagnostic through
-// `diag_facts_wire`, whose `Loc` crosses as (the declaration that holds it, offsets within
-// that declaration). So an edit ABOVE the declaration moves the text this row was made over
-// and leaves the row's own words true — the reader lands on the same bytes at their new place.
-// Absence is its own arm: a file with no rows answers null, never an empty list.
-use @std.io.{write_text}
-use @std.time.{stamp}
+// A FILE'S WARNINGS ARE KEPT AS DATA, AND THEIR PLACES FOLLOW THE TOKENS HOLDING THEM. The row
+// is the durable witness `render_facts_among` reads: every diagnostic through `diag_facts_wire`,
+// whose `Loc` crosses as a token place. So comment lines added above move the text this row was
+// made over and leave the row standing — the reader lands on the same bytes at their new place —
+// while a token edit leaves no row standing. Absence is its own arm: a file with no row answers
+// null, never an empty list.
 use @std.errors.{Loc, Frame}
 use @std.avrac.diagnostics.{Diag, Severity}
 use compiler.{Workspace}
-use compiler.store.{Store}
-use compiler.store.{store_at}
-
-once fn wf_base() -> string { "/tmp/avra-warning-facts/${stamp()}" }
 
 fn wf_path() -> string { "/w/src/b.av" }
 
@@ -35,37 +29,42 @@ fn wf_diag(text: string, needle: string, width: int) -> Diag {
     }
 }
 
-fn wf_store() -> Store {
-    let dir = "${wf_base()}/store"
-    let _ = write_text("${dir}/keep", "")
-    store_at("${wf_base()}/s")
+/// A process over `text` that keeps its rows in memory, beside `kept`'s.
+fn wf_over(text: string, kept: Workspace?) -> Workspace {
+    let ws = a_process_over({wf_path(): text}, [wf_path()])
+    ws.inspecting()
+    if kept != null { ws.keys.keeping.set(kept!.keys.keeping.get()) }
+    ws
+}
+
+/// `text`'s facts, as a process over `now` reads them back.
+fn wf_back(text: string, now: string) -> List<Loc>? {
+    let a = wf_over(text, null)
+    a.keep_warning_facts(a.opened_store(), wf_path(), [wf_diag(text, "n + 2", 5)], [])
+    let b = wf_over(now, a)
+    let back? = b.facts_standing(b.opened_store(), wf_path()) else { return null }
+    [f.primary.loc! for f in back.warnings if f.primary.loc != null]
 }
 
 const WF_SHIFT: int = 21
 
-spec "compiler/warning-facts — a kept warning follows its declaration" {
+spec "compiler/warning-facts — a kept warning follows its tokens" {
     given "a file's warning, kept over the text it was found in" {
         then "the row reads back at the same place while the text stands" {
-            let a = a_process_over({wf_path(): wf_text()}, [wf_path()])
-            let store = wf_store()
-            a.keep_warning_facts(store, wf_path(), [wf_diag(wf_text(), "n + 2", 5)])
-            let back? = a.warning_facts_of(store, wf_path()) else { return false }
-            let at? = back[0].primary.loc else { return false }
-            at.lo == wf_text().index_of("n + 2") && back.length == 1
+            let at? = wf_back(wf_text(), wf_text())?.first() else { return false }
+            at.lo == wf_text().index_of("n + 2")
         }
-        then "two lines inserted above move it by exactly their length" {
-            let a = a_process_over({wf_path(): wf_text()}, [wf_path()])
-            let store = wf_store()
-            a.keep_warning_facts(store, wf_path(), [wf_diag(wf_text(), "n + 2", 5)])
-            let b = a_process_over({wf_path(): wf_shifted()}, [wf_path()])
-            let back? = b.warning_facts_of(store, wf_path()) else { return false }
-            let at? = back[0].primary.loc else { return false }
+        then "two comment lines inserted above move it by exactly their length" {
+            let at? = wf_back(wf_text(), wf_shifted())?.first() else { return false }
             at.lo == wf_text().index_of("n + 2") + WF_SHIFT &&
                 at.hi == wf_text().index_of("n + 2") + 5 + WF_SHIFT
         }
+        then "a token edit leaves no row standing" {
+            wf_back(wf_text(), wf_text().replace("n + 2", "n + 3")) == null
+        }
         then "a file nothing kept answers null, never an empty list" {
-            let a = a_process_over({wf_path(): wf_text()}, [wf_path()])
-            a.warning_facts_of(wf_store(), "/w/src/never.av") == null
+            let a = wf_over(wf_text(), null)
+            a.facts_standing(a.opened_store(), "/w/src/never.av") == null
         }
     }
 }

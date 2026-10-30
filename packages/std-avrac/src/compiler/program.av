@@ -42,7 +42,7 @@ use @std.grammar.{
     Diagnostic,
     Cause,
 }
-use grammar.{Token, DocComment, lex_source, lex_blocks, TokenKind, avra_lexeme}
+use grammar.{Token, DocComment, lex_source, TokenKind, avra_lexeme}
 use features.{
     LangNode,
     PatSemantics,
@@ -121,6 +121,15 @@ export fn parse_program(lang: Language, src: SourceFile, words: BlockWords) -> P
     if quiet.voices.list.is_empty() { quiet } else { parsed_fresh(lang, src, words, true) }
 }
 
+/// The words a parse under `words` lexes by.
+fn words_lexed(words: BlockWords) -> LexWords {
+    LexWords {
+        grammars: [g.word for g in words.grammars],
+        components: [c.word for c in words.components if !c.own],
+        own: [c.word for c in words.components if c.own],
+    }
+}
+
 fn parsed_fresh(lang: Language, src: SourceFile, words: BlockWords, telling: bool) -> Parsed {
     let store = new_node_store(src.file)
     parsed_as(lang, store, src, words, telling)
@@ -142,13 +151,7 @@ fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWo
             voices: Voices { list: lang.diagnostics },
         }
     }
-    let lexed = lex_blocks(
-        src.text,
-        [g.word for g in words.grammars],
-        [c.word for c in words.components if !c.own],
-        [c.word for c in words.components if c.own],
-        lang.keywords,
-    )
+    let lexed = lexed_under(src.text, words_lexed(words), lang.keywords)
     let door = words with { door: sugar_door(lang) }
     let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(
         lang.builders,

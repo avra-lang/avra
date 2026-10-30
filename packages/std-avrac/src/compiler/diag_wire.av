@@ -8,20 +8,15 @@
 //! per shape, folded by `written_list`/a counted comprehension, never by
 //! hand at the call site.
 //!
-//! A `Loc` crosses as `(anchor declaration, lo offset, hi offset)`: the
-//! smallest declaration of its file whose span holds the WHOLE loc,
-//! named by `decl_wire` (its path travels with the name, so a
-//! cross-file span anchors in that file), plus each end's distance from
-//! the declaration's start. Moving the declaration moves the span with
-//! it, so an edit above it changes no stored diagnostic's bytes. A span
-//! no single declaration holds — one past its declaration's end — is
-//! REFUSED: `loc_of_wire` answers null rather than clamp a position to
-//! somewhere it never pointed. A loc with no file has no declaration to
-//! anchor in and keeps its absolute offsets.
+//! A `Loc` crosses as its file and the TOKEN PLACE it stands in (`token_place.av`), over
+//! that file's stream lexed under its words: a comment or a space added above it moves no
+//! byte the row says, and reading it back needs a lex of the text now and nothing more. A
+//! place no token holds crosses as none, and reads back refused — never clamped to where it
+//! never pointed. A loc with no file keeps its offsets.
 use @std.relation.stable.{Writer, Reader, writer, decoded_with, written_list, CodecFault}
 use @std.avrac.diagnostics.{DiagFacts, Severity}
 use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
-use core.{DeclId, Span}
+use core.{hex, unhex}
 use compiler.{Workspace}
 
 fn severity_tag(s: Severity) -> int {
@@ -51,52 +46,51 @@ fn confidence_of(tag: int) -> Result<Confidence, CodecFault> {
 }
 
 impl Workspace {
-    /// The declaration a `Loc` anchors to — the smallest declaration of
-    /// its file whose span holds the whole loc. Absence is a loc no one
-    /// declaration holds, refused by `written_loc`.
-    fn loc_anchor(l: Loc) -> DeclId? {
-        let path? = l.file else { return null }
-        let f? = self.decls.known_file_id(path) else { return null }
-        self.decls.innermost(self.decls.owner_spans(f), Span { lo: l.lo, hi: l.hi })
-    }
-
     fn written_loc(w: Writer, l: Loc) {
-        match self.loc_anchor(l) {
-            a? -> {
+        let path? = l.file else {
+            w.present(false)
+            w.int(l.lo)
+            w.int(l.hi)
+            return
+        }
+        w.present(true)
+        w.text(path)
+        let tokens? = self.tokens_now(path) else {
+            w.present(false)
+            return
+        }
+        match anchored_among(tokens, l) {
+            .In(p) -> {
                 w.present(true)
-                w.text(self.decls.decl_wire(a))
-                let start = self.decls.decl_span(a)!.lo
-                w.int(l.lo - start)
-                w.int(l.hi - start)
-            }
-            null -> {
-                w.present(false)
-                let has_file = l.file != null
-                w.present(has_file)
-                if has_file { return }
-                w.int(l.lo)
-                w.int(l.hi)
-            }
+                w.int(p.lo_token)
+                w.int(p.lo_at)
+                w.int(p.hi_token)
+                w.int(p.hi_at)
+            },
+            .NoToken -> w.present(false),
         }
     }
 
     fn read_loc(r: Reader) -> Result<Loc, CodecFault> {
         if !r.present()? {
-            let has_file = r.present()?
-            if has_file { fail CodecFault.NotVariant }
             let lo = r.int()?
             let hi = r.int()?
             return Loc { file: null, lo: lo, hi: hi }
         }
-        let anchor? = self.decl_from_ref(r.text()?) else { fail CodecFault.NotVariant }
-        let span? = self.decls.decl_span(anchor) else { fail CodecFault.NotVariant }
-        let lo = r.int()?
-        let hi = r.int()?
-        Loc {
-            file: self.decls.file(self.decls.decl(anchor).file).path,
-            lo: span.lo + lo,
-            hi: span.lo + hi,
+        let path = r.text()?
+        if !r.present()? { fail CodecFault.NotVariant }
+        let lo_token = r.int()?
+        let lo_at = r.int()?
+        let hi_token = r.int()?
+        let kept = TokenPlace {
+            lo_token: lo_token,
+            lo_at: lo_at,
+            hi_token: hi_token,
+            hi_at: r.int()?,
         }
+        let tokens? = self.tokens_now(path) else { fail CodecFault.NotVariant }
+        let at? = placed_among(tokens, Anchored.In(kept)) else { fail CodecFault.NotVariant }
+        at with { file: path }
     }
 
     fn written_frame(w: Writer, f: Frame) {
@@ -207,5 +201,38 @@ impl Workspace {
     fn diag_facts_of_wire(b: Bytes) -> DiagFacts? {
         let back = decoded_with(b, (r: Reader) -> self.read_diag_facts(r))
         match back { .Ok(d) -> d, .Err(e) -> null }
+    }
+}
+
+/// A file's diagnostics and its rule findings, as its facts row keeps them — `rules` none
+/// where the run that kept the row did not find them anew.
+export type FileFacts = { warnings: List<DiagFacts>, rules: List<DiagFacts>? }
+
+impl Workspace {
+    fn file_facts_wire(f: FileFacts) -> string {
+        let w = writer()
+        written_list(w, f.warnings, (w: Writer, d: DiagFacts) -> self.written_diag_facts(w, d))
+        w.present(f.rules != null)
+        if f.rules != null { written_list(w, f.rules!, (w: Writer, d: DiagFacts) -> self.written_diag_facts(w, d)) }
+        hex(w.bytes())
+    }
+
+    fn file_facts_of_wire(raw: string) -> FileFacts? {
+        let b? = unhex(raw) else { return null }
+        match decoded_with(b, (r: Reader) -> self.read_file_facts(r)) {
+            .Ok(f) -> f,
+            .Err(_) -> null,
+        }
+    }
+
+    fn read_file_facts(r: Reader) -> Result<FileFacts, CodecFault> {
+        let warnings = self.read_facts_list(r)?
+        if !r.present()? { return FileFacts { warnings: warnings, rules: null } }
+        FileFacts { warnings: warnings, rules: self.read_facts_list(r)? }
+    }
+
+    fn read_facts_list(r: Reader) -> Result<List<DiagFacts>, CodecFault> {
+        let n = r.count()?
+        [self.read_diag_facts(r)? for _k in 0..n]
     }
 }
