@@ -2,23 +2,32 @@
 //! lines, standing on its text; a module's record keeps neither, and reads them back whole
 //! (`record_whole`). A declaration no parse declares is filled from its own line, found by
 //! its name (`decl_row_filled`).
-use core.{DeclId, ModulePath, joined, flatten, same_decl, some_list}
+use core.{DeclId, ModulePath, joined, flatten, same_decl, some_list, touch}
+use core.debug.{db_verified_items}
 use features.{Decl, kind_word}
 use compiler.store.{Store, Stored, node_key}
 
 impl Workspace {
     /// EVERY FILE OF `m` THIS ATTEMPT READ KEEPS ITS ITEMS: its declaration and maker lines in
-    /// the record just made, under the text they were read from. An unread file's stand as its last read kept
-    /// them.
+    /// the record just made, under the text they were read from, with the named reads its
+    /// lines were made from — none when one has no name. An unread file's stand as its last
+    /// read kept them.
     fn keep_items(store: Store, m: ModulePath, made: string) {
         let by_file = lines_by_file(made.split("\n"))
+        let rdb = self.decls.rows_db.get()
         for path in [p for p in self.module_files(m) if self.read_here(p)] {
             let text = joined(
                 ["items"].concat([l for l in by_file.get(path) ?? [] if items_line(read_fields(l))]),
                 "\n",
             )
             let key = items_key(self.root, path, self.text_digest(path))
-            if store.get(Stored.Unit, key) != text { let _ = store.keep(Stored.Unit, key, text, []) }
+            let stood = store.get_valid(Stored.Unit, key, (n) -> rdb.leaf_digest(n))
+            if db_verified_items() { eprintln(items_said(path, stood, text)) }
+            if stood != text {
+                let read = self.db.kernel.reads_of(() -> touch(self.lines_of(path)))
+                let _ = store
+                    .keep_reading(Stored.Unit, key, text, saved_reads(rdb.leaves_of(read) ?? []))
+            }
         }
     }
 
@@ -76,3 +85,13 @@ impl RecordBodies {
 /// WHERE A FILE'S ITEMS ARE KEPT: its path and the digest of the text they were read from, so
 /// a record of any revision reads back the lines it was made with.
 fn items_key(root: string, path: string, digest: string) -> string { node_key(Stored.Unit, ["items", root, path, digest]) }
+
+/// One file's Items judged: a kept row whose reads stand must say what was made now.
+fn items_said(path: string, stood: string?, made: string) -> string {
+    let verdict = when {
+        stood == null -> "recomputed"
+        stood! == made -> "valid"
+        _ -> "MISMATCH"
+    }
+    "itemssaid\t${verdict}\t${path}"
+}

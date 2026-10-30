@@ -616,6 +616,14 @@ impl Kernel {
         self.hash_forced(key)
     }
 
+    /// The keys `run` reads, in a frame of its own that settles nothing: what a value made
+    /// outside any query stood on. Its reads reach no frame around it.
+    fn reads_of(run: fn() -> void) -> List<Key> {
+        self.begin(Key { family: 0 - 1, arg: 0 })
+        run()
+        [key_of(e) for e in self.closed_frame()]
+    }
+
     /// What a settled key stands on, as a saved answer keeps it: each read with its value
     /// hash. Absent when a read has no hash.
     fn saved_reads(key: Key) -> List<SavedRead>? {
@@ -1075,6 +1083,7 @@ impl Kernel {
         dropped(self.starts)
         dropped(self.inners)
         if !self.inners.get().is_empty() { self.inners.set_at(self.inners.get().length - 1, self.inners.get().last()! + elapsed) }
+        if family < 0 { return }
         while self.spent.get().length <= family { self.spent.push(0) }
         self.spent.set_at(family, self.spent.get()[family] + elapsed - inner)
     }
