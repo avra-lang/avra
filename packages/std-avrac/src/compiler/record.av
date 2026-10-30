@@ -134,7 +134,8 @@ fn record_cached(ws: Workspace, store: Store, m: ModulePath) -> string {
     let known = ws.records.record_texts.get().get(key)
     if known != null { return known! }
     let iface = ws.db.sig(store, key) ?? ""
-    let text = if iface == "" { "" } else { ws.record_bodies().body(store, m.text(), iface) ?? "" }
+    let headers = if iface == "" { "" } else { ws.record_bodies().body(store, m.text(), iface) ?? "" }
+    let text = if headers == "" { "" } else { ws.record_whole(store, headers) }
     ws.records.record_texts.put(key, text)
     if text != "" { ws.records.record_lines.put(key, text.split("\n")) }
     text
@@ -725,7 +726,7 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
         // a record is keyed by its module's NAME: a write is owed when its words moved
         if made != prior {
             let iface = iface_of(made) ?? ""
-            ws.db.insert_sig(store, ws.record_bodies().key(m.text(), iface), made)
+            ws.db.insert_sig(store, ws.record_bodies().key(m.text(), iface), record_headers(made))
             ws.db.insert_sig(store, ws.record_key(m), iface)
             record_known(ws, m, made)
             ws.keep_producers(store, m, iface)
@@ -2001,6 +2002,10 @@ fn forms_moved(was: List<string>?, now: List<string>?) -> List<string> {
 }
 
 /// The interface digest a record names on its `iface` line.
+/// What a record keeps of itself: every line but its files' declaration and maker lines,
+/// which their own rows hold.
+fn record_headers(made: string) -> string { joined([l for l in made.split("\n") if !items_line(read_fields(l))], "\n") }
+
 fn iface_of(record: string) -> string? {
     let line? = record.split("\n").find(it.starts_with("iface\t")) else { return null }
     line.substring(6, line.length)

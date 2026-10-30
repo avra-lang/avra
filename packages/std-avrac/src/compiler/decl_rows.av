@@ -1,23 +1,78 @@
-//! A DECLARATION'S SAVED ROW: its signature and declaration facts — its shape word and
-//! payload — filed under its durable name. One writer, `keep_decl_rows`, files
-//! every declaration of a file this attempt read; one reader, `decl_row_filled`, fills a
-//! declaration no parse declares from it.
-use core.{DeclId, FileId}
+//! A FILE'S ROWS, ONE COPY OF EACH LINE. A file's Items row lists its declarations in
+//! order — each one's identity columns and its durable name — and the makers that made
+//! them; each declaration's own row, filed under that name, holds its shape: its word and
+//! payload. A module's record keeps neither, and reads them back whole (`record_whole`).
+//! One writer, `keep_items`, files both from the lines a read file's record carries.
+use core.{DeclId, ModulePath, joined, flatten}
 use compiler.store.{Store, Stored, node_key}
+
+/// A declaration line's identity: every column before its payload.
+const IDENTITY: int = 13
 
 impl Workspace {
     /// Where a declaration's row is filed: its durable name, never a position.
-    fn decl_row_key(d: DeclId) -> string { node_key(Stored.Unit, ["decl", self.decl_ref(d)]) }
+    fn decl_row_key(d: DeclId) -> string { decl_key(self.decl_ref(d)) }
 
-    /// Every declaration of `files`, filed. A row whose words did not move is not filed again.
-    fn keep_decl_rows(store: Store, files: List<FileId>) {
-        for f in files {
-            for id in self.decls.decls_of_file(f) {
-                let key = self.decl_row_key(id)
-                let shape = self.row_shape(self.decl_at(id))
-                if store.get(Stored.Unit, key) != shape { let _ = store.keep(Stored.Unit, key, shape, []) }
-            }
+    /// EVERY FILE OF `m` THIS ATTEMPT READ KEEPS ITS ROWS, standing on its text: the Items
+    /// row its declaration and maker lines in the record just made, each declaration line's
+    /// payload filed apart under its name. An unread file's stand as its last read kept them.
+    fn keep_items(store: Store, m: ModulePath, made: string) {
+        let by_file = lines_by_file(made.split("\n"))
+        for path in [p for p in self.module_files(m) if self.read_here(p)] {
+            let ids = self.decls.decls_of_file(self.file_id(path))
+            let lines = [l for l in by_file.get(path) ?? [] if items_line(read_fields(l))]
+            let text = joined(
+                ["items"].concat([self.item_kept(store, ids, l) for l in lines]),
+                "\n",
+            )
+            let key = self.items_key(path)
+            let reads = self.readings([VerdictRead.Text(path)])
+            if store.get_valid(Stored.Unit, key, (name) -> self.named_now(name)) != text { let _ = store.keep_reading(Stored.Unit, key, text, reads) }
         }
+    }
+
+    /// One Items line as kept: a declaration's identity and name, its shape filed apart under
+    /// that name when its words moved; a maker line as it is.
+    fn item_kept(store: Store, ids: List<DeclId>, line: string) -> string {
+        let cols = line.split("\t")
+        if !declares(cols) { return line }
+        let ordinal = wire_number(cols[2]) ?? -1
+        if ordinal < 0 || ordinal >= ids.length {
+            self.defect("a record line names no declaration of its file — ${cols[1]}")
+            return line
+        }
+        let name = self.decl_ref(ids[ordinal])
+        let shape = joined([cols[0]].concat(cols.drop(IDENTITY)), "\t")
+        if store.get(Stored.Unit, decl_key(name)) != shape { let _ = store.keep(Stored.Unit, decl_key(name), shape, []) }
+        joined(cols.slice(0, IDENTITY).concat([name]), "\t")
+    }
+
+    /// WHERE A FILE'S ITEMS ARE KEPT: its declaration and maker lines, standing on its text.
+    fn items_key(path: string) -> string { node_key(Stored.Unit, ["items", self.root, path]) }
+
+    /// A file's kept lines, whole and split — none when its text moved since they were kept,
+    /// or a declaration's row is gone.
+    fn items_lines(path: string) -> List<List<string>>? {
+        let store? = self.store.get() else { return null }
+        let text? = store
+            .get_valid(Stored.Unit, self.items_key(path), (name) -> self.named_now(name)) else {
+            return null
+        }
+        let lines? = items_whole(store, text) else { return null }
+        [read_fields(l) for l in lines]
+    }
+
+    /// A module's record as it was made: its kept lines, then each file's lines read back from
+    /// its rows, in file order. A file whose rows are gone contributes none.
+    fn record_whole(store: Store, headers: string) -> string {
+        let lines = headers.split("\n")
+        let files = [l.split("\t")[1] for l in lines if l.starts_with("file\t")]
+        joined(lines.concat(flatten([self.file_items(store, path) for path in files])), "\n")
+    }
+
+    fn file_items(store: Store, path: string) -> List<string> {
+        let text? = store.get(Stored.Unit, self.items_key(path)) else { return [] }
+        items_whole(store, text) ?? []
     }
 
     /// A declaration no parse declares, filled from its row on the ask that names it, never
@@ -33,4 +88,20 @@ impl Workspace {
         let row? = shaped_of(line) else { return self.defect("a declaration's row did not decode — ${self.decl_ref(d)}") }
         self.fill_shape(store, self.module_path_of(path), d, row)
     }
+}
+
+/// A declaration's row key, by its durable name.
+fn decl_key(name: string) -> string { node_key(Stored.Unit, ["decl", name]) }
+
+/// An Items row's lines as the record wrote them — each declaration's identity joined to its
+/// row's payload; null when a declaration's row is gone.
+fn items_whole(store: Store, text: string) -> List<string>? {
+    [item_whole(store, l)? for l in text.split("\n").drop(1)]
+}
+
+fn item_whole(store: Store, line: string) -> string? {
+    let cols = line.split("\t")
+    if !declares(cols) { return line }
+    let shape? = store.get(Stored.Unit, decl_key(cols[IDENTITY])) else { return null }
+    joined(cols.slice(0, IDENTITY).concat(shape.split("\t").drop(1)), "\t")
 }
