@@ -25,21 +25,66 @@ import enumerate as bench  # noqa: E402   the graph, the walk and the anchors, o
 app, build, ref, iso_ms, values = bench.app, bench.build, bench.ref, bench.iso_ms, bench.values
 
 
-def row_queries(seed_model, seed_where, edges, models, question):
-    """One query per declared walk, answering with the whole record it lands on: a question
-    may ask for several fields of one record, and a row is what the gold plans return."""
-    out, seen = [], set()
+WORD = __import__("re").compile(r"[A-Za-z][A-Za-z'-]{3,}")
+
+
+def content_words(question):
+    """The words a question carries that could name a value: no list decides, the text does."""
+    return [w for w in dict.fromkeys(WORD.findall(question))]
+
+
+def text_props(models, model):
+    """The declared text properties of a model: a value written in words."""
+    out = []
+    for p in models[model]["properties"]:
+        shape = p["shape"]
+        inner = (shape.get("optional") or shape.get("list") or shape) if isinstance(shape, dict) else shape
+        if inner == "string" and not p.get("enum") and not p.get("time"):
+            out.append(p["name"])
+    return out
+
+
+def row_queries(seed_model, seed_where, edges, models, question, budget):
+    """Every declared walk answering with the whole record it lands on, then each walk's
+    narrowings. A question may ask for several fields of one record, so a row is the unit.
+
+    The walks come first because they are the axis a budget must not starve: every walk is
+    tried plainly, and only then is any walk narrowed — by a declared enum value the question
+    speaks, or by one of its words against a declared text field of the record the answer
+    comes from or the record it hangs off. The order is fixed, so a question's cost is bounded
+    and nothing about the corpus decides it."""
+    words = content_words(question)
+    walks, seen, out = [], set(), []
     for steps, landing in [([], seed_model)] + bench.walk(edges, seed_model, bench.DEPTH):
         pattern = f"(a:{seed_model})" + "".join(steps)
         var = f"b{len(steps) - 1}" if steps else "a"
-        picks = [p["name"] for p in models[landing]["properties"]]
-        ret = ", ".join(f"{var}.{p} AS {p}" for p in picks)
-        for prop, value in [(None, None)] + bench.declared_filters(question, models[landing]):
-            conds = seed_where if prop is None else f"{seed_where} AND {var}.{prop} = {json.dumps(value)}"
-            cy = f"MATCH {pattern} WHERE {conds} RETURN {ret}"
-            if cy not in seen:
-                seen.add(cy); out.append((cy, landing))
-    return out
+        nodes = [(var, landing)]
+        if steps:
+            made = __import__("re").findall(r"\(b\d+:(\w+)\)", "".join(steps))
+            nodes += [(f"b{len(steps) - 2}", made[-2])] if len(made) >= 2 else [("a", seed_model)]
+        ret = ", ".join(f"{var}.{p['name']} AS {p['name']}" for p in models[landing]["properties"])
+        walks.append((pattern, var, landing, nodes, ret))
+
+    def emit(conds, landing):
+        cy = f"MATCH {pattern} WHERE {' AND '.join(conds)} RETURN {ret}"
+        if cy not in seen and len(out) < budget:
+            seen.add(cy)
+            out.append((cy, landing))
+        return len(out) >= budget
+
+    for pattern, var, landing, nodes, ret in walks:            # every walk, plainly
+        if emit([seed_where], landing):
+            return out, True
+    for pattern, var, landing, nodes, ret in walks:            # then its narrowings
+        for prop, value in bench.declared_filters(question, models[landing]):
+            if emit([seed_where, f"{var}.{prop} = {json.dumps(value)}"], landing):
+                return out, True
+        for node, model in nodes:
+            for prop in text_props(models, model):
+                for word in words:
+                    if emit([seed_where, f"{node}.{prop} CONTAINS {json.dumps(word)}"], landing):
+                        return out, True
+    return out, False
 
 
 def options_for(distinct, models):
@@ -57,6 +102,7 @@ def main():
     parser.add_argument("--asker", default="oracle:rowan")
     parser.add_argument("--depth", type=int, default=3)
     parser.add_argument("--no-choose", action="store_true")
+    parser.add_argument("--budget", type=int, default=400, help="queries a question may run")
     parser.add_argument("--cache", default=str(HERE / "choose.cache.json"),
                         help="the candidates a question produced, kept so the choice can be iterated")
     args = parser.parse_args()
@@ -88,10 +134,12 @@ def main():
         if holder.get("model"):
             seeds.append((holder["model"], "id(a) = $asker", {}))
 
-        pool, ran = [], 0
+        pool, ran, caps = [], 0, 0
         for model, where, extra in seeds:
-            for cy, landing in row_queries(model, where, edges, models, q["question"]):
-                pool.append((cy, landing, "row", extra))
+            made, capped = row_queries(model, where, edges, models, q["question"], args.budget)
+            pool += [(cy, landing, "row", extra) for cy, landing in made]
+            if capped:
+                caps += 1
         if q["id"] in cache:
             distinct = {tuple(k): tuple(v) for k, v in cache[q["id"]]["distinct"].items()}
             want = cache[q["id"]]["want"]
@@ -118,7 +166,8 @@ def main():
             picked = choose(q["question"], options_for({a: distinct[a] for a in covers}, models))
             outcome = "answered-correct" if picked is not None and picked < len(covers) else "answered-wrong"
         tally[outcome] += 1
-        print(f"  {q['id']:4s} {outcome:17s} candidates={len(pool):4d} distinct={len(distinct):3d} gold={len(want)}")
+        print(f"  {q['id']:4s} {outcome:17s} candidates={len(pool):4d} distinct={len(distinct):3d} gold={len(want)}"
+              + ("  (budget hit)" if caps else ""))
 
     pathlib.Path(args.cache).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(args.cache).write_text(json.dumps(cache))
