@@ -8,6 +8,7 @@
 //! (`cx.type(Map<string, want>)`). A declared type has no spelling
 //! here: its id is a binding, so the hole is how it is named.
 use core.{
+    void_ref,
     Expr,
     ExprId,
     TypeRef,
@@ -20,8 +21,6 @@ use core.{
     minting,
     expr_node,
     plain,
-    mut_mark,
-    settled_mark,
     Plain,
     Scoped,
 }
@@ -90,33 +89,32 @@ impl SyntaxArena {
         if t.arrow { return self.fn_spelling(t) }
         let word: Word? = words.find(it.name == t.name)
         if word != null {
-            if !t.args.is_empty() { return .Err("`${t.name}` takes no type arguments") }
+            if !t.applied.is_empty() { return .Err("`${t.name}` takes no type arguments") }
             return .Ok(self.spelled(t, word!.variant, []))
         }
         let found: Applied? = applieds.find(it.name == t.name)
         if found == null {
-            if !t.args.is_empty() { return .Err(no_spelling("`${t.name}<…>`")) }
+            if !t.applied.is_empty() { return .Err(no_spelling("`${t.name}<…>`")) }
             let hole = self.alloc_expr(Expr.Ident(Scoped(t.name)), t.span)
             self.mark_hole(hole)
             return .Ok(self.spelled(t, "Id", [hole]))
         }
         let applied = found!
-        if t.args.length != applied.arity {
+        if t.applied.length != applied.arity {
             return .Err(
-                "`${t.name}` is applied to ${t.args.length} types; it takes ${applied.arity}",
+                "`${t.name}` is applied to ${t.applied.length} types; it takes ${applied.arity}",
             )
         }
-        .Ok(self.spelled(t, applied.variant, [self.spelling(a)? for a in t.args]))
+        .Ok(self.spelled(t, applied.variant, [self.spelling(a)? for a in t.applied]))
     }
 
-    /// `fn(a, mut b) -> r` — the seats, their marks, the answer: the
-    /// LAST written type is the answer, the fn-type builder's contract.
+    /// `fn(a, mut b) -> r` — the seats, their marks, the answer (`void`
+    /// when none is written).
     fn fn_spelling(t: TypeRef) -> Result<ExprId, string> {
-        let seats = t.args.length - 1
-        let params = [self.spelling(t.args[j])? for j in 0..seats]
-        let muts = [self.alloc_expr(Expr.BoolLit(mut_mark(t.marks, j)), t.span) for j in 0..seats]
-        let consts = [self.alloc_expr(Expr.BoolLit(settled_mark(t.marks, j)), t.span) for j in 0..seats]
-        let ret = self.spelling(t.args[seats])?
+        let params = [self.spelling(s.ty)? for s in t.seats]
+        let muts = [self.alloc_expr(Expr.BoolLit(s.mutable), t.span) for s in t.seats]
+        let consts = [self.alloc_expr(Expr.BoolLit(s.settled), t.span) for s in t.seats]
+        let ret = self.spelling(t.answer ?? void_ref)?
         .Ok(
             self
                 .spelled(

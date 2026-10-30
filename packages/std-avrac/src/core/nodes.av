@@ -429,6 +429,7 @@ export fn node_payload_rows() -> List<PayloadRow> {
         .concat(grammar_payloads_UseItem())
         .concat(grammar_payloads_FieldPat())
         .concat(grammar_payloads_Given())
+        .concat(grammar_payloads_FnSeat())
         .concat(grammar_payloads_CatchArm())
 }
 
@@ -619,7 +620,26 @@ export type Annotation = { name: string, callee: ExprId, args: List<ExprId>, spa
 @derive(Grammar)
 @derive(Fingerprint)
 @derive(Makes)
-export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, @local span: Span?, marks: List<SeatMark> = [], spliced: bool = false, alternatives: List<TypeRef> = [] }
+export type TypeRef = {
+    name: string,
+    applied: List<TypeRef>,
+    optional: bool,
+    dynamic: bool,
+    arrow: bool,
+    @local span: Span?,
+    seats: List<FnSeat> = [],
+    answer: TypeRef? = null,
+    spliced: bool = false,
+    alternatives: List<TypeRef> = [],
+}
+
+/// One seat of a written fn type: the type it takes and what it
+/// promises — `mut` writes through it, `const` settles it at compile time.
+@derive(Identity)
+@derive(Grammar)
+@derive(Fingerprint)
+@derive(Makes)
+export type FnSeat = { ty: TypeRef, mutable: bool = false, settled: bool = false }
 
 /// The same written type with its `?` dropped — what a nullable
 /// CARRIES, which is the thing the declared-slot law judges. EVERY
@@ -635,7 +655,7 @@ export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynam
 /// differs, so a field added to `TypeRef` reaches every site through
 /// one edit instead of dropping silently at each hand-spelling.
 export fn named_ref(name: string) -> TypeRef {
-    TypeRef { name: name, args: [], optional: false, dynamic: false, arrow: false, span: null }
+    TypeRef { name: name, applied: [], optional: false, dynamic: false, arrow: false, span: null }
 }
 
 /// The answer a fn declares by writing none: `void`.
@@ -646,6 +666,18 @@ export fn plain(t: TypeRef) -> TypeRef {
 }
 
 impl TypeRef {
+    /// What the type is applied to: a fn type's seat types and then its
+    /// answer (`void` when none is written), any other type's arguments.
+    fn type_args() -> List<TypeRef> {
+        if !self.arrow { return self.applied }
+        [s.ty for s in self.seats].concat([self.answer ?? void_ref])
+    }
+
+    /// A fn type's seat promises, one per seat.
+    fn seat_marks() -> List<SeatMark> {
+        [SeatMark { mutable: s.mutable, settled: s.settled } for s in self.seats]
+    }
+
     /// This type, spelled back — `spelled`, as a method a quote
     /// pattern's bound TYPE hole reads the same way a bound NAME
     /// hole reads its own text.
@@ -657,19 +689,17 @@ export fn spelled(t: TypeRef) -> string {
     if !t.alternatives.is_empty() { return joined([spelled(a) for a in t.alternatives], " or ") }
     let base = when {
         t.arrow -> spelled_arrow(t)
-        t.args.is_empty() -> "${if t.dynamic { "dyn " } else { "" }}${t.name}"
-        _ -> "${t.name}<${joined([spelled(a) for a in t.args], ", ")}>"
+        t.applied.is_empty() -> "${if t.dynamic { "dyn " } else { "" }}${t.name}"
+        _ -> "${t.name}<${joined([spelled(a) for a in t.applied], ", ")}>"
     }
     if t.optional { return "${base}?" }
     base
 }
 
-/// A fn type's arguments are its seats followed by its answer.
+/// A fn type: its seats, each with its promise, then its answer.
 fn spelled_arrow(t: TypeRef) -> string {
-    let n = t.args.length
-    if n == 0 { return "fn()" }
-    let seats = [mark_prefixed(mark_at(t.marks, j), spelled(a)) for j, a in t.args.slice(0, n - 1)]
-    "fn(${joined(seats, ", ")}) -> ${spelled(t.args[n - 1])}"
+    let seats = [mark_prefixed(SeatMark { mutable: s.mutable, settled: s.settled }, spelled(s.ty)) for s in t.seats]
+    "fn(${joined(seats, ", ")}) -> ${spelled(t.answer ?? void_ref)}"
 }
 
 /// The pronoun's own seat — what an implicit `it` lambda declares.
@@ -1128,8 +1158,8 @@ fn exact_type_ref(a: TypeRef?, b: TypeRef?) -> bool {
         wa.dynamic == wb.dynamic &&
         wa.arrow == wb.arrow &&
         wa.spliced == wb.spliced &&
-        exact_seat_marks(wa.marks, wb.marks) &&
-        exact_type_refs(wa.args, wb.args)
+        exact_seat_marks(wa.seat_marks(), wb.seat_marks()) &&
+        exact_type_refs(wa.type_args(), wb.type_args())
 }
 
 fn exact_type_refs(a: List<TypeRef>, b: List<TypeRef>) -> bool {
