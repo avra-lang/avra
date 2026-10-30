@@ -7,8 +7,26 @@
 //! NAME is a hole — a `TypeId` binding in scope
 //! (`cx.type(Map<string, want>)`). A declared type has no spelling
 //! here: its id is a binding, so the hole is how it is named.
-use core.{Expr, ExprId, TypeRef, Span, SyntaxArena, plain, mut_mark, settled_mark, Plain, Scoped}
-use features.{Builder, LangNode}
+use core.{
+    Expr,
+    ExprId,
+    TypeRef,
+    TypeId,
+    Reg,
+    Span,
+    SyntaxArena,
+    NodeFacts,
+    Minting,
+    minting,
+    expr_node,
+    plain,
+    mut_mark,
+    settled_mark,
+    Plain,
+    Scoped,
+}
+use core.marks.{sequence}
+use features.{Meaning, MeanCx, ResolveCx, TypeCx, LowerCx, nothing}
 
 /// A word that spells a shape of its own.
 type Word = { name: string, variant: string }
@@ -32,20 +50,35 @@ export const applieds: List<Applied> = [
     Applied { name: "Result", variant: "Res", arity: 2 },
 ]
 
-/// `subject.type(T)` — the literal over the value so far.
-fn build_type_link(b: Builder) -> Result<LangNode, string> {
-    let subject = b.expr(0)?
-    let lit = b.store.spelling(b.type_ref(1)?)?
-    b.wrap_expr(b.store.type_literal(subject, lit, b.span))
+/// `subject.type(T)` — the literal over the value so far, meaning the
+/// receiver's `interned` over the type's spelling.
+@expr_node
+@sequence
+export type TypeLiteral = { subject: ExprId, ty: TypeRef }
+
+impl NodeFacts for TypeLiteral {
+    fn says(written: string) -> string? {
+        "`${written}` asks the receiver to fold the type, spelled as a value, into its id"
+    }
+}
+
+impl Meaning for TypeLiteral {
+    fn minted(cx: MeanCx) -> Result<Minting, string> {
+        let before = cx.store.exprs.count()
+        let root = cx.store.type_literal(self.subject, cx.store.spelling(self.ty)?, cx.span)
+        .Ok(minting(cx.store.allocated_since(before, root)))
+    }
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { cx.meant_type(e) }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { cx.meant_reg(e) }
 }
 
 impl SyntaxArena {
-    /// The literal's call: the receiver's `interned` over the spelling,
-    /// marked so a receiver that cannot answer refuses in the literal's words.
+    /// The literal's call: the receiver's `interned` over the spelling.
     fn type_literal(subject: ExprId, lit: ExprId, span: Span?) -> ExprId {
-        let call = self.alloc_expr(Expr.MethodCall(subject, "interned", [lit]), span)
-        self.mark_type_lit(call)
-        call
+        self.alloc_expr(Expr.MethodCall(subject, "interned", [lit]), span)
     }
 
     /// A written type as a `TypeLit` VALUE — bare variants, heard from

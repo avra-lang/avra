@@ -427,6 +427,9 @@ export fn node_payload_rows() -> List<PayloadRow> {
         .concat(grammar_payloads_Arm())
         .concat(grammar_payloads_Case())
         .concat(grammar_payloads_UseItem())
+        .concat(grammar_payloads_FieldPat())
+        .concat(grammar_payloads_Given())
+        .concat(grammar_payloads_CatchArm())
 }
 
 /// Every flat expression variant's maker, read off `Expr` by
@@ -615,6 +618,7 @@ export type Annotation = { name: string, callee: ExprId, args: List<ExprId>, spa
 /// types in their own right, each resolved the usual way.
 @derive(Grammar)
 @derive(Fingerprint)
+@derive(Makes)
 export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, @local span: Span?, marks: List<SeatMark> = [], spliced: bool = false, alternatives: List<TypeRef> = [] }
 
 /// The same written type with its `?` dropped — what a nullable
@@ -861,11 +865,20 @@ export fn bound_names(parts: List<FormatPart>) -> List<string> {
     [p.hole.name for p in parts if binds(p.hole)]
 }
 
+/// One `catch` arm: the failure variant it names (a union member's name for
+/// a union catch, `""` for a catch-all or a bare value), the name its
+/// payload binds (`""` binds nothing), and the value it recovers to.
+@derive(Identity)
+@derive(Grammar)
+@derive(Makes)
+export type CatchArm = { variant: Plain = Plain(""), bind: Scoped = Scoped(""), value: ExprId }
+
 /// One match arm: its alternatives (`a or b`), an optional guard, and
 /// its value. A false guard tries the next arm; a guarded arm covers
 /// nothing, so coverage and repeats never count it.
 @derive(Identity)
 @derive(Grammar)
+@derive(Makes)
 export type Arm = { pats: List<PatId>, guard: ExprId? = null, value: ExprId }
 
 /// One declared variant: its name, what it carries in order — a
@@ -876,14 +889,30 @@ export type Variant = { name: Plain, payloads: List<Param>, @local span: Span? =
 
 /// One imported item: its name, and the name it binds under when it
 /// writes one.
+/// One field a record pattern looks at, and the pattern it takes — a
+/// punned field's is a binder of its own name.
 @derive(Identity)
 @derive(Grammar)
+@derive(Makes)
+export type FieldPat = { name: Plain, pat: PatId }
+
+@derive(Identity)
+@derive(Grammar)
+@derive(Makes)
 export type UseItem = { name: string, rename: string? = null }
+
+/// A `given` group as written: its name and its cases — a lone `then`
+/// is a group with no name.
+@derive(Identity)
+@derive(Grammar)
+@derive(Makes)
+export type Given = { name: string, cases: List<Case> }
 
 /// One test case: its `given` group's name, its own name (the
 /// `then`'s), and its body — a block answering a bool.
 @derive(Identity)
 @derive(Grammar)
+@derive(Makes)
 export type Case = { group: string, name: string, body: ExprId, @local span: Span? = null }
 
 /// One step of a PLACE — where a mutation lands.

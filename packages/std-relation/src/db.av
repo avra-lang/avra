@@ -1064,7 +1064,7 @@ impl AnswersUnder<V> {
         self.again.keep(arg, again)
         db.read_leaves(kept.leaves)
         db.noted(edge_of(self.memo.query_key(arg)), kept.leaves)
-        self.memo.finish_lazy(arg, kept.value, digest)
+        self.memo.finish(arg, kept.value, digest(kept.value))
     }
 
     /// What a settled call stands on, absent when a read of rows it could not hear
@@ -1131,7 +1131,8 @@ impl AnswersUnder<V> {
         let value = body()
         db.left()
         settled.set(true)
-        let answer = self.memo.finish_lazy(arg, value, digest)
+        // digested as it settles: its readers cut off on that digest
+        let answer = self.memo.finish(arg, value, digest(value))
         let key = self.memo.query_key(arg)
         db.noted(edge_of(key), self.leaves_after(db, key, foreign))
         Run { value: answer, wrote: db.written.get() > before }

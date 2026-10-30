@@ -552,7 +552,7 @@ fn match_seq<T, N>(
     for member in s.items {
         let r = when {
             member.trailer && !open -> missed<T, N>(cx, cursor, bindings, cx.silence, null)
-            s.fold != null && member.rep == Rep.Star -> match_fold<T, N>(
+            s.fold != null && (member.rep == Rep.Star || member.rep == Rep.Opt) -> match_fold<T, N>(
                 cx,
                 rule_name,
                 s.fold!,
@@ -847,7 +847,8 @@ fn with_seed<T, N>(bindings: List<Binding<T, N>>, field: string, acc: Captured<T
 /// value. `origin` is where the fold's branch began, so a turn's node
 /// spans the seed and everything folded into it. A turn's own labels
 /// die with the turn — what a later turn reads is the value so far and
-/// nothing else. Iterations speculate as a repetition's do.
+/// nothing else. Iterations speculate as a repetition's do; an optional
+/// group is one turn at most.
 fn match_fold<T, N>(
     mut cx: MatchContext<T, N>,
     rule_name: string,
@@ -898,6 +899,7 @@ fn match_fold<T, N>(
         diagnostics = diagnostics.concat(r.diagnostics)
         acc = r.value
         cursor = r.cursor
+        if member.rep == Rep.Opt { break }
     }
     matched<T, N>(cursor, with_seed<T, N>(bindings, field, acc), acc, diagnostics, farthest)
 }
@@ -1280,9 +1282,8 @@ fn untaken<T, N>(cx: MatchContext<T, N>, status: MatchStatus, farthest: Farthest
 /// and ended at `from`, takes every operator of tier `min` and
 /// tighter that follows. A taken operator's right side is an operand
 /// climbed at the next tighter tier, so a tier groups to the left;
-/// a `Single` tier takes no second operator of its own, and an
-/// `Unmixed` one asks its builder about each operator after the first
-/// of a run. Answers a hit at the end of what was taken, or a fatal.
+/// and a `Single` tier takes no second operator of its own. Answers a
+/// hit at the end of what was taken, or a fatal.
 fn climb<T, N>(
     mut cx: MatchContext<T, N>,
     k: Climbing,
@@ -1299,9 +1300,6 @@ fn climb<T, N>(
     mut farthest = farthest0
     mut spent = 0 - 1
     mut ceil = k.ops.tiers.length - 1
-    mut run_tier = 0 - 1
-    mut run_first = 0
-    mut refused: List<string> = []
     while true {
         let t = one_operator<T, N>(cx, k, cursor, min, spent, ceil)
         farthest = far_merge(farthest, t.farthest)
@@ -1310,13 +1308,6 @@ fn climb<T, N>(
         }
         if t.status != MatchStatus.Hit { break }
         let tier = k.ops.tiers[t.tier]
-        if run_tier != t.tier {
-            if !refused.is_empty() { return refused_run<T, N>(cx, k, refused[0], start, cursor, diagnostics, farthest) }
-            run_tier = t.tier
-            run_first = t.op_at
-        } else if refused.is_empty() {
-            refused = mixing<T, N>(cx, tier, run_first, t.op_at, start, t.cursor)
-        }
         diagnostics = diagnostics.concat(t.diagnostics)
         let paired = pair<T, N>(cx, k, tier, left, t, start)
         match paired {
@@ -1327,7 +1318,6 @@ fn climb<T, N>(
         spent = if tier.assoc.spends() { t.tier } else { 0 - 1 }
         if t.suffixed { ceil = t.tier }
     }
-    if !refused.is_empty() { return refused_run<T, N>(cx, k, refused[0], start, cursor, diagnostics, farthest) }
     farthest = far_merge(
         farthest,
         cx.miss_story(cursor, k.rule_name, k.ops.expected_from(min, spent, ceil)),
@@ -1338,7 +1328,7 @@ fn climb<T, N>(
 impl Assoc {
     /// Whether a second operator of the same tier is left unconsumed.
     fn spends() -> bool {
-        match self { .Single -> true, .Left or .Unmixed(_) -> false }
+        match self { .Single -> true, .Left -> false }
     }
 }
 
@@ -1487,25 +1477,6 @@ fn operator_capture<T, N>(cx: MatchContext<T, N>, t: Taken<T, N>, branch: Loc?) 
     captured_terminal<T, N>(
         cx.lex.stated([cx.lex.text(cx.tokens[t.op_at + k]) for k in 0..t.op_words].join(""), branch),
     )
-}
-
-/// What an `Unmixed` tier's builder says of the run's first operator
-/// and this one: its refusal, if any.
-fn mixing<T, N>(cx: MatchContext<T, N>, tier: Tier, first: int, this: int, start: int, until: int) -> List<
-    string,
-> {
-    match tier.assoc {
-        .Unmixed(refusal) -> match cx
-            .build(
-                refusal,
-                [
-                    captured_terminal<T, N>(cx.tokens[first]),
-                    captured_terminal<T, N>(cx.tokens[this]),
-                ],
-                consumed_loc<T>(cx.lex, cx.tokens, start, until),
-            ) { .Err(m) -> [m], .Ok(_) -> [] },
-        .Left or .Single -> [],
-    }
 }
 
 /// A builder's refusal inside a climb: spoken as the branch's own build

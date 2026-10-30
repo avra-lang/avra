@@ -5,6 +5,7 @@ use core.{
     Arm,
     BinOp,
     BodyView,
+    CatchArm,
     CompClause,
     MapEntry,
     ExprId,
@@ -55,7 +56,7 @@ export type Receiver = {}
 @branches
 export type Binary = { op: BinOp, left: ExprId, right: ExprId }
 
-/// Boolean negation — the one unary, until minus.
+/// Boolean negation.
 @expr_node
 @sequence
 export type Not = { value: ExprId }
@@ -65,6 +66,12 @@ export type Not = { value: ExprId }
 @expr_node
 @sequence
 export type Bitnot = { value: ExprId }
+
+/// `-value` — what it means is minted beside it (`minted`): a literal
+/// folds, so `-1` IS the literal, and any other value is `0 - value`.
+@expr_node
+@sequence
+export type Neg = { value: ExprId }
 
 /// `value |> stage` — the stage applied to the value, which becomes its
 /// first argument. What it means is the call (`minted`), walked in its place.
@@ -257,14 +264,13 @@ export type VariantLit = { name: Plain, args: List<ExprId> }
 export type Propagate = { subject: ExprId }
 
 /// `subject catch <recovery>` — recover from a Result's
-/// failure. Arms mirror Match's shape: `variants[j]` names the
-/// error variant an arm takes ("" is a catch-all arm),
-/// `binds[j]` what it receives ("" is nothing). COVERAGE
+/// failure. Each arm names the error variant it takes (`""` is a
+/// catch-all arm) and what it receives (`""` is nothing). COVERAGE
 /// decides the type: a total catch recovers to the ok side; a
 /// selective one stays the Result, the unmatched propagating.
 @expr_node
 @branches
-export type Catch = { subject: ExprId, variants: List<Plain>, binds: List<Scoped>, values: List<ExprId> }
+export type Catch = { subject: ExprId, arms: List<CatchArm> }
 
 /// `subject.name(args)` — a METHOD call: the impl the
 /// receiver's TYPE names supplies the fn; `subject` rides as

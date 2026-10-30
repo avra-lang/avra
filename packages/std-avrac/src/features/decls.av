@@ -217,7 +217,7 @@ impl NamedLit {
 /// An argument's literal text, when it has one — a computed expression answers "".
 /// A list is its source spelling, each element as source writes it.
 export fn arg_text(store: SyntaxArena, e: ExprId) -> string {
-    let expr = store.expr(e)
+    let expr = store.valued(e)
     match expr {
         .VariantLit(name, _) -> name.of,
         _ -> scalar_text(expr) ?? list_text(store, expr) ?? dotted_text(store, expr) ?? store
@@ -244,7 +244,7 @@ fn list_text(store: SyntaxArena, e: Expr) -> string? {
 
 /// A literal inside a list, as source spells it: text quoted, a variant dotted.
 fn source_text(store: SyntaxArena, e: ExprId) -> string {
-    let expr = store.expr(e)
+    let expr = store.valued(e)
     match expr {
         .VariantLit(name, _) -> ".${name.of}",
         _ -> {
@@ -257,7 +257,7 @@ fn source_text(store: SyntaxArena, e: ExprId) -> string {
 /// `arg_text`'s typed twin, for the facts `by` orders by: the written
 /// text beside the kind it was written as.
 export fn arg_lit(store: SyntaxArena, e: ExprId) -> LitArg {
-    let expr = store.expr(e)
+    let expr = store.valued(e)
     let t? = expr.text_of() else { return int_lit(expr) ?? bool_lit(expr) ?? other_lit(store, e) }
     LitArg { text: t, kind: LitKind.Text }
 }
@@ -538,6 +538,19 @@ export type WireIndex = { count: int, by: Map<string, List<DeclId>> }
 /// ONE IDENTITY: every table is a `Cell`, or itself an `@identity`
 /// type, so a copy of `Decls` still reads and writes the tables the
 /// workspace built.
+/// The name buckets one frame's reads touched, each once: which are marked, and the order
+/// they were first read in.
+type Gather = { seen: Cell<List<bool>>, out: Cell<List<int>> }
+
+impl Gather {
+    fn note(b: int) {
+        while self.seen.get().length <= b { self.seen.push(false) }
+        if self.seen.get()[b] { return }
+        self.seen.set_at(b, true)
+        self.out.push(b)
+    }
+}
+
 @identity
 @plain_field("rows")
 export type Decls = {
@@ -547,6 +560,8 @@ export type Decls = {
     file_names: Cell<List<string>>,
     /// Every named type the typer resolved, in order: a settlement keeps the ones it resolved.
     touched_types: Cell<List<TypeId>>,
+    /// Every file whose docs a reader asked for: a doc is an answer only to its readers.
+    docs_read: Cell<Map<string, bool>>,
     /// The sibling each group's next declaration takes, per run.
     counted: Cell<Siblings>,
     stores: Cell<List<SyntaxArena?>>,
@@ -671,6 +686,13 @@ export type Decls = {
     record_items: Cell<int>,
     record_methods: Cell<int>,
     record_names: Cell<int>,
+    /// THE NAME READS A FRAME GATHERS: while a run's frame gathers, the name buckets its own
+    /// reads touch are held here and recorded as ONE read of their digest, never one each.
+    /// `gathering` is the depth of the innermost gathering frame (-1 for none); `gathered`
+    /// holds each open gather's buckets, `gather_depths` the depth each one stands at.
+    gathering: Cell<int>,
+    gather_depths: Cell<List<int>>,
+    gathered: Cell<List<Gather>>,
     /// Whether the workspace armed the recording: the rows minted before it — the
     /// language's own — are filed under their cells when it does.
     recording: Cell<bool>,
@@ -961,6 +983,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         mains: Cell.new(no_mains),
         file_names: list_cell(),
         touched_types: list_cell(),
+        docs_read: map_cell(),
         counted: Cell.new(Siblings { runs: map_cell() }),
         // LICENSED compiler.repeated_projection: each `Cell.new` mints its own cell — one binding would make two hooks one slot
         stores: Cell.new(no_stores),
@@ -975,6 +998,9 @@ export fn new_decls_under(durable: Durable) -> Decls {
         record_items: Cell.new(0),
         record_methods: Cell.new(0),
         record_names: Cell.new(0),
+        gathering: Cell.new(0 - 1),
+        gather_depths: list_cell(),
+        gathered: list_cell(),
         recording: Cell.new(false),
         name_buckets: list_cell(),
         cell_names: list_cell(),
@@ -1229,10 +1255,44 @@ impl Decls {
     /// name, so the bucket holds a `main` per file and would tie each to every other file's;
     /// a `main` is a function of its own file's rows alone.
     fn name_read(kind: DeclKind, f: FileId, b: int) {
-        match kind {
-            .Main -> self.rows_read(f),
-            rest -> self.record_kernel.record_at(self.record_names.get(), b),
+        match kind { .Main -> self.rows_read(f), rest -> self.name_recorded(b) }
+    }
+
+    /// A read of name bucket `b`, recorded in the open query — or held, when the frame
+    /// now open is gathering its name reads.
+    fn name_recorded(b: int) {
+        let at = self.gathering.get()
+        if at >= 0 && at == self.record_kernel.asker.open.get().length {
+            self.gathered.get().last()!.note(b)
+        } else {
+            self.record_kernel.record_at(self.record_names.get(), b)
         }
+    }
+
+    /// The frame now open gathers its own name reads from here, until `gather_close`.
+    fn gather_open() {
+        let depth = self.record_kernel.asker.open.get().length
+        self.gather_depths.push(depth)
+        self.gathered.push(Gather { seen: list_cell(), out: list_cell() })
+        self.gathering.set(depth)
+    }
+
+    /// The name buckets the gathering frame read, each once; its reads resume recording.
+    fn gather_close() -> List<int> {
+        let held = self.gathered.get().last()!.out.get()
+        let depths = self.gather_depths.get()
+        self.gather_depths.set(depths.slice(0, depths.length - 1))
+        self.gathered.set(self.gathered.get().slice(0, depths.length - 1))
+        self.gathering.set(self.gather_depths.get().last() ?? 0 - 1)
+        held
+    }
+
+    /// What name buckets `buckets` hold together: a fold of their own hashes, read from the
+    /// rows and recorded by nobody.
+    @bracket("decls")
+    fn buckets_print(buckets: List<int>) -> int {
+        let rows = self.decl_row_rows.get()
+        fp_list([rows.bucket_hash(b) for b in buckets])
     }
 
     /// A read of one row records what the row is a function of in the open query: its
@@ -1274,7 +1334,7 @@ impl Decls {
         let b = self.name_bucket(name)
         if b >= self.cell_names.get().length { self.room_for_cell(b, name) }
         self.bucket_moved(b)
-        self.record_kernel.record_at(self.record_names.get(), b)
+        self.name_recorded(b)
         self.decl_row_rows.get().members(b)
     }
 
@@ -2917,12 +2977,24 @@ impl Decls {
     /// file_doc_of(file)`. Never `store_of`: a held declaration has no
     /// store to force, and a declaration minted with no facts at all
     /// must still answer null rather than trap.
-    fn doc_of(d: DeclId) -> List<string>? { self.facts_of(d)?.doc }
+    fn doc_of(d: DeclId) -> List<string>? {
+        self.docs_were_read(self.decl(d).file)
+        self.facts_of(d)?.doc
+    }
 
     /// A file's `//!` header when it has a real store, null for a held
     /// file (its record carries no file-level doc) or an out-of-range
     /// one (a declaration minted with no file behind it at all).
-    fn file_doc_of(f: FileId) -> List<string>? { self.admitted_store(f)?.file_doc() }
+    fn file_doc_of(f: FileId) -> List<string>? {
+        self.docs_were_read(f)
+        self.admitted_store(f)?.file_doc()
+    }
+
+    /// A file's docs, noted as read — nothing for a file minted with no row.
+    fn docs_were_read(f: FileId) {
+        let row? = self.file_rows.get().row(f.index) else { return }
+        self.docs_read.put(file_info(row).path, true)
+    }
 
     /// THE ONE READING DOOR for a declaration's `@name(args)` annotations, in
     /// written order — the fact `avra docs`, the formatter's `Code` and

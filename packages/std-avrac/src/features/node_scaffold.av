@@ -2,12 +2,24 @@
 //! `Pat` and `Stmt`, each maker read off its enum by `@derive(Makes)`
 //! (core/makers_derive.av), and each comprehension clause's the same
 //! way. A variant with a payload no `Slots` accessor reads has no maker,
-//! and keeps its own builder. A record that is no node
-//! (`Record.ParamSyntax`, `Record.VariantSyntax`, `Record.TypeRef`,
-//! `Record.Arm`, `Record.Case`) names its builder directly.
-use core.{expr_makers, pat_makers, stmt_makers, comp_clause_makers, map_entry_makers}
-use features.{BuilderRow}
-use features.type_expr.{build_type_ref}
+//! and keeps its own builder. A record that is no node is made the same
+//! way (`make_<Record>`) and carried by its own `LangNode` variant;
+//! `Record.ParamSyntax` and `Record.VariantSyntax` still name a builder.
+use core.{
+    expr_makers,
+    pat_makers,
+    stmt_makers,
+    comp_clause_makers,
+    map_entry_makers,
+    make_TypeRef,
+    make_Arm,
+    make_Case,
+    make_UseItem,
+    make_FieldPat,
+    make_Given,
+    make_CatchArm,
+}
+use features.{BuilderRow, LangNode}
 
 /// Each flat variant's builder: its maker, then the node it makes.
 export fn node_builders() -> List<BuilderRow> {
@@ -41,8 +53,65 @@ export fn node_builders() -> List<BuilderRow> {
         )
         .concat([BuilderRow { name: "Record.ParamSyntax", build: (b) -> b.seat() }])
         .concat([BuilderRow { name: "Record.VariantSyntax", build: (b) -> b.variant() }])
-        .concat([BuilderRow { name: "Record.TypeRef", build: build_type_ref }])
-        .concat([BuilderRow { name: "Record.Arm", build: (b) -> b.arm() }])
-        .concat([BuilderRow { name: "Record.Case", build: (b) -> b.case() }])
-        .concat([BuilderRow { name: "Record.UseItem", build: (b) -> b.use_item() }])
+        .concat(
+            [
+                BuilderRow {
+                    name: "Record.TypeRef",
+                    build: (b) -> carried(make_TypeRef(b), (t) -> LangNode.NType(t)),
+                },
+            ],
+        )
+        .concat(
+            [
+                BuilderRow {
+                    name: "Record.Arm",
+                    build: (b) -> carried(make_Arm(b), (a) -> LangNode.NArm(a)),
+                },
+            ],
+        )
+        .concat(
+            [
+                BuilderRow {
+                    name: "Record.Case",
+                    build: (b) -> carried(make_Case(b), (c) -> LangNode.NCases([c])),
+                },
+            ],
+        )
+        .concat(
+            [
+                BuilderRow {
+                    name: "Record.UseItem",
+                    build: (b) -> carried(make_UseItem(b), (u) -> LangNode.NUseItem(u)),
+                },
+            ],
+        )
+        .concat(
+            [
+                BuilderRow {
+                    name: "Record.FieldPat",
+                    build: (b) -> carried(make_FieldPat(b), (f) -> LangNode.NFieldPat(f)),
+                },
+            ],
+        )
+        .concat(
+            [
+                BuilderRow {
+                    name: "Record.Given",
+                    build: (b) -> carried(make_Given(b), (g) -> LangNode.NGiven(g)),
+                },
+            ],
+        )
+        .concat(
+            [
+                BuilderRow {
+                    name: "Record.CatchArm",
+                    build: (b) -> carried(make_CatchArm(b), (a) -> LangNode.NCatchArm(a)),
+                },
+            ],
+        )
+}
+
+/// A made record in the `LangNode` variant that carries it.
+fn carried<R>(made: Result<R, string>, carrier: fn(R) -> LangNode) -> Result<LangNode, string> {
+    match made { .Ok(r) -> .Ok(carrier(r)), .Err(m) -> .Err(m) }
 }

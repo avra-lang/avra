@@ -26,11 +26,14 @@ use core.{
     Arm,
     Case,
     UseItem,
+    FieldPat,
+    Given,
     Mark,
     Variant,
     CompClause,
     MapEntry,
     Refused,
+    CatchArm,
     flatten,
     some_list,
     SeatMark,
@@ -102,6 +105,18 @@ impl Slots for Builder {
         .Ok(use_items_at(self.args, self.slot_of(label)?))
     }
 
+    /// The `given` groups the payload `label` carries.
+    fn givens_of(label: string) -> Result<List<Given>, string> {
+        let items = list_at(self.args, self.slot_of(label)?)
+        .Ok(flatten([some_list(given_at(items, j)) for j in 0..items.length]))
+    }
+
+    /// The record-pattern fields the payload `label` carries.
+    fn field_pats_of(label: string) -> Result<List<FieldPat>, string> {
+        let items = list_at(self.args, self.slot_of(label)?)
+        .Ok(flatten([some_list(field_pat_at(items, j)) for j in 0..items.length]))
+    }
+
     /// The marks the payload `label` carries.
     fn marks_of(label: string) -> Result<List<Mark>, string> {
         .Ok(marks_at(self.args, self.slot_of(label)?))
@@ -120,6 +135,14 @@ impl Slots for Builder {
     /// The map entries the payload `label` carries.
     fn map_entries_of(label: string) -> Result<List<MapEntry>, string> {
         .Ok(map_entries_at(self.args, self.slot_of(label)?))
+    }
+
+    /// The span this build was written at.
+    fn built_at() -> Span? { self.span }
+
+    /// The catch arms the payload `label` carries.
+    fn catch_arms_of(label: string) -> Result<List<CatchArm>, string> {
+        .Ok(catch_arms_at(self.args, self.slot_of(label)?))
     }
 
     /// The spec cases the payload `label` carries.
@@ -316,11 +339,6 @@ impl Builder {
         .Err(facet_not_a_pattern(f.name))
     }
 
-    /// One match arm, as data — `guard` null for an unguarded one.
-    fn make_arm(pats: List<PatId>, value: ExprId, guard: ExprId?) -> Result<LangNode, string> {
-        .Ok(LangNode.NArm(Arm { pats: pats, guard: guard, value: value }))
-    }
-
     /// The grammar's own refusal spoken where this branch matched, and an
     /// error node standing in its place so the parse goes on.
     fn refused(kind: string, words: RefusalWords) -> Result<LangNode, string> {
@@ -328,42 +346,6 @@ impl Builder {
             .store
             .refuse(Refused { kind: kind, message: words.message, help: words.help, span: self.span })
         .Ok(LangNode.NExpr(self.store.alloc_expr(Expr.Error, self.span)))
-    }
-
-    /// One match arm read off its rule's labels.
-    fn arm() -> Result<LangNode, string> {
-        self.make_arm(self.pats_of("pats")?, self.expr_of("value")?, self.expr_opt_of("guard")?)
-    }
-
-    /// One spec case read off its rule's labels, in the group its
-    /// `given` names later.
-    fn case() -> Result<LangNode, string> {
-        .Ok(
-            LangNode
-                .NCases(
-                    [
-                        Case {
-                            group: self.text_of("group")?,
-                            name: self.text_of("name")?,
-                            body: self.expr_of("body")?,
-                            span: self.span,
-                        },
-                    ],
-                ),
-        )
-    }
-
-    /// One imported item read off its rule's labels.
-    fn use_item() -> Result<LangNode, string> {
-        .Ok(
-            LangNode
-                .NUseItem(
-                    UseItem {
-                        name: self.text_of("name")?,
-                        rename: (self.tokens(self.slot_of("rename")?)?).first()?.text,
-                    },
-                ),
-        )
     }
 
     /// One map entry, as data.
@@ -633,6 +615,14 @@ export fn use_items_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Us
     flatten([some_list(use_item_of(items, j)) for j in 0..items.length])
 }
 
+fn given_at(args: List<Captured<Token, LangNode>>, i: int) -> Given? {
+    match args[i] { .Node(.NGiven(g)) -> g, _ -> null }
+}
+
+fn field_pat_at(args: List<Captured<Token, LangNode>>, i: int) -> FieldPat? {
+    match args[i] { .Node(.NFieldPat(f)) -> f, _ -> null }
+}
+
 fn use_item_of(args: List<Captured<Token, LangNode>>, i: int) -> UseItem? {
     match args[i] { .Node(.NUseItem(u)) -> u, _ -> null }
 }
@@ -651,6 +641,16 @@ fn map_entry_at(args: List<Captured<Token, LangNode>>, i: int) -> MapEntry? {
 export fn arms_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Arm> {
     let items = list_at(args, i)
     flatten([some_list(arm_at(items, j)) for j in 0..items.length])
+}
+
+/// The repeated catch-arm capture at `args[i]`.
+export fn catch_arms_at(args: List<Captured<Token, LangNode>>, i: int) -> List<CatchArm> {
+    let items = list_at(args, i)
+    flatten([some_list(catch_arm_at(items, j)) for j in 0..items.length])
+}
+
+fn catch_arm_at(args: List<Captured<Token, LangNode>>, i: int) -> CatchArm? {
+    match args[i] { .Node(.NCatchArm(a)) -> a, _ -> null }
 }
 
 /// The repeated case capture at `args[i]`, flattened — a `given`

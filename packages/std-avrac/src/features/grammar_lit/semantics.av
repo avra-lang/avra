@@ -1,0 +1,328 @@
+//! The DSL text READ, and the Grammar it names written back out as the
+//! literal that builds it. The parse happens once, while this feature's
+//! own file is compiled; assembly then merges values and never parses
+//! text.
+use core.{
+    Expr,
+    ExprId,
+    TypeId,
+    Reg,
+    Span,
+    Nominal,
+    Plain,
+    Scoped,
+    SyntaxArena,
+    NodeFacts,
+    Minting,
+    minting,
+    expr_node,
+}
+use core.marks.{sequence}
+use features.{Meaning, MeanCx, ResolveCx, TypeCx, LowerCx, nothing}
+use @std.grammar.{
+    Grammar,
+    Rule,
+    Alt,
+    Seq,
+    Item,
+    Prim,
+    Rep,
+    Build,
+    Fixed,
+    Term,
+    Expect,
+    Recover,
+    Diagnostic,
+    Cause,
+    Operators,
+    Tier,
+    Assoc,
+    Suffix,
+}
+use grammar.{parse_grammar}
+
+/// `grammar { … }` — the DSL text as written, meaning the `Grammar`
+/// literal that builds it, minted where the literal stands.
+@expr_node
+@sequence
+export type GrammarLit = { source: string }
+
+impl NodeFacts for GrammarLit {
+    fn says(written: string) -> string? { "`grammar { … }` builds the `Grammar` its text spells" }
+}
+
+impl Meaning for GrammarLit {
+    /// A PARTIAL PARSE IS A TREE WITH TOKENS LEFT: a built start rule
+    /// beside a parse diagnostic is refused, never kept. Coherence
+    /// defects (`Cause.Defect`) are gated where the assembled grammar
+    /// validates.
+    fn minted(cx: MeanCx) -> Result<Minting, string> {
+        let gp = parse_grammar(self.source)
+        if gp.built == null || gp.diagnostics.any(it.cause != Cause.Defect) { return .Err(unparsed(gp.diagnostics)) }
+        let writing = cx.store.marks()
+        let root = grammar_expr(cx.store, gp.built!, cx.span)
+        cx.store.note_written_in(writing, "@std.grammar")
+        .Ok(minting(cx.store.allocated_since(writing.exprs, root)))
+    }
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { cx.meant_type(e) }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { cx.meant_reg(e) }
+}
+
+/// The one word a grammar the DSL could not read whole speaks.
+fn unparsed(ds: List<Diagnostic>) -> string {
+    "the grammar does not parse: ${first_defect(ds)}"
+}
+
+/// The first thing wrong with the text, for the builder's one word.
+fn first_defect(ds: List<Diagnostic>) -> string {
+    let held? = ds.first() else { return "no rule was built" }
+    held.message
+}
+
+// ── The Grammar, written as the literal that builds it ──
+
+fn grammar_expr(store: SyntaxArena, g: Grammar, sp: Span?) -> ExprId {
+    let rules = [rule_expr(store, r, sp) for r in g.rules]
+    lit_struct(
+        store,
+        "Grammar",
+        ["name", "start", "rules"],
+        [text_expr(store, g.name, sp), text_expr(store, g.start, sp), list_expr(store, rules, sp)],
+        sp,
+    )
+}
+
+fn rule_expr(store: SyntaxArena, r: Rule, sp: Span?) -> ExprId {
+    lit_struct(
+        store,
+        "Rule",
+        ["name", "body"],
+        [text_expr(store, r.name, sp), alt_expr(store, r.body, sp)],
+        sp,
+    )
+}
+
+fn alt_expr(store: SyntaxArena, a: Alt, sp: Span?) -> ExprId {
+    let branches = [seq_expr(store, s, sp) for s in a.branches]
+    lit_struct(store, "Alt", ["branches"], [list_expr(store, branches, sp)], sp)
+}
+
+fn seq_expr(store: SyntaxArena, s: Seq, sp: Span?) -> ExprId {
+    let items = [item_expr(store, i, sp) for i in s.items]
+    lit_struct(
+        store,
+        "Seq",
+        ["items", "build", "recover", "operators", "fold", "seed"],
+        [
+            list_expr(store, items, sp),
+            build_expr(store, s.build, sp),
+            recover_expr(store, s.recover, sp),
+            operators_expr(store, s.operators, sp),
+            text_opt(store, s.fold, sp),
+            text_opt(store, s.seed, sp),
+        ],
+        sp,
+    )
+}
+
+/// EVERY FIELD IS SPELLED: a field the literal leaves out takes its
+/// default, and a mark the notation set then reaches no product —
+/// the head marks vanished so, for one generation.
+fn item_expr(store: SyntaxArena, i: Item, sp: Span?) -> ExprId {
+    lit_struct(
+        store,
+        "Item",
+        ["label", "prim", "rep", "expect", "head", "trailer"],
+        [
+            text_opt(store, i.label, sp),
+            prim_expr(store, i.prim, sp),
+            rep_expr(store, i.rep, sp),
+            expect_expr(store, i.expect, sp),
+            bool_expr(store, i.head, sp),
+            bool_expr(store, i.trailer, sp),
+        ],
+        sp,
+    )
+}
+
+fn prim_expr(store: SyntaxArena, p: Prim, sp: Span?) -> ExprId {
+    match p {
+        .Ref(name) -> variant(store, "Prim", "Ref", [text_expr(store, name, sp)], sp),
+        .Lit(text) -> variant(store, "Prim", "Lit", [text_expr(store, text, sp)], sp),
+        .Named(term) -> variant(store, "Prim", "Named", [text_expr(store, term, sp)], sp),
+        .Group(inner) -> variant(store, "Prim", "Group", [alt_expr(store, inner, sp)], sp),
+        .NotChar(inner) -> variant(store, "Prim", "NotChar", [prim_expr(store, inner, sp)], sp),
+    }
+}
+
+fn rep_expr(store: SyntaxArena, r: Rep, sp: Span?) -> ExprId {
+    match r {
+        .One -> unit(store, "Rep", "One", sp),
+        .Star -> unit(store, "Rep", "Star", sp),
+        .Plus -> unit(store, "Rep", "Plus", sp),
+        .Opt -> unit(store, "Rep", "Opt", sp),
+    }
+}
+
+fn build_expr(store: SyntaxArena, held: Build?, sp: Span?) -> ExprId {
+    if held == null { return store.alloc_expr(Expr.NullLit, sp) }
+    match held! {
+        .Var(name) -> variant(store, "Build", "Var", [text_expr(store, name, sp)], sp),
+        .Call(name, args) -> variant(
+            store,
+            "Build",
+            "Call",
+            [
+                text_expr(store, name, sp),
+                list_expr(store, [text_expr(store, a, sp) for a in args], sp),
+            ],
+            sp,
+        ),
+        // SLOTS ARE NOT WRITTEN: binding fills them where the node
+        // model lives, and a grammar value carries them unbound.
+        .Node(owner, vname, fixed, _) -> variant(
+            store,
+            "Build",
+            "Node",
+            [
+                text_expr(store, owner, sp),
+                text_expr(store, vname, sp),
+                list_expr(store, [fixed_expr(store, f, sp) for f in fixed], sp),
+                store.alloc_expr(Expr.NullLit, sp),
+            ],
+            sp,
+        ),
+    }
+}
+
+fn fixed_expr(store: SyntaxArena, f: Fixed, sp: Span?) -> ExprId {
+    let stated? = f.term else {
+        return lit_struct(
+            store,
+            "Fixed",
+            ["name", "text"],
+            [text_expr(store, f.name, sp), text_expr(store, f.text, sp)],
+            sp,
+        )
+    }
+    lit_struct(
+        store,
+        "Fixed",
+        ["name", "text", "term"],
+        [text_expr(store, f.name, sp), text_expr(store, f.text, sp), term_expr(store, stated, sp)],
+        sp,
+    )
+}
+
+/// A stated term as the value that builds it: a node's build or a list's
+/// items, written whole.
+fn term_expr(store: SyntaxArena, t: Term, sp: Span?) -> ExprId {
+    match t {
+        .Text(text) -> variant(store, "Term", "Text", [text_expr(store, text, sp)], sp),
+        .Node(built) -> variant(store, "Term", "Node", [build_expr(store, built, sp)], sp),
+        .List(items) -> variant(
+            store,
+            "Term",
+            "List",
+            [list_expr(store, [term_expr(store, i, sp) for i in items], sp)],
+            sp,
+        ),
+    }
+}
+
+/// An `@operators` block is written as the call that reads its tables
+/// off the tiers, so the literal carries only what the notation said.
+fn operators_expr(store: SyntaxArena, held: Operators?, sp: Span?) -> ExprId {
+    if held == null { return store.alloc_expr(Expr.NullLit, sp) }
+    let tiers = [tier_expr(store, t, sp) for t in held!.tiers]
+    store.alloc_expr(Expr.Call(Scoped("operators_of"), [], [list_expr(store, tiers, sp)]), sp)
+}
+
+fn tier_expr(store: SyntaxArena, t: Tier, sp: Span?) -> ExprId {
+    let words = [list_expr(store, [text_expr(store, w, sp) for w in word], sp) for word in t.words]
+    let suffixes = [suffix_expr(store, x, sp) for x in t.suffixes]
+    lit_struct(
+        store,
+        "Tier",
+        ["assoc", "words", "suffixes", "build"],
+        [
+            assoc_expr(store, t.assoc, sp),
+            list_expr(store, words, sp),
+            list_expr(store, suffixes, sp),
+            build_expr(store, t.build, sp),
+        ],
+        sp,
+    )
+}
+
+fn suffix_expr(store: SyntaxArena, x: Suffix, sp: Span?) -> ExprId {
+    lit_struct(
+        store,
+        "Suffix",
+        ["word", "rule", "build"],
+        [text_expr(store, x.word, sp), text_expr(store, x.rule, sp), build_expr(store, x.build, sp)],
+        sp,
+    )
+}
+
+fn assoc_expr(store: SyntaxArena, a: Assoc, sp: Span?) -> ExprId {
+    match a {
+        .Left -> unit(store, "Assoc", "Left", sp),
+        .Single -> unit(store, "Assoc", "Single", sp),
+    }
+}
+
+fn expect_expr(store: SyntaxArena, held: Expect?, sp: Span?) -> ExprId {
+    if held == null { return store.alloc_expr(Expr.NullLit, sp) }
+    lit_struct(store, "Expect", ["message"], [text_expr(store, held!.message, sp)], sp)
+}
+
+fn recover_expr(store: SyntaxArena, held: Recover?, sp: Span?) -> ExprId {
+    if held == null { return store.alloc_expr(Expr.NullLit, sp) }
+    lit_struct(store, "Recover", ["sync_to"], [text_expr(store, held!.sync_to, sp)], sp)
+}
+
+// ── The four shapes every writer above spells ──
+
+fn lit_struct(
+    store: SyntaxArena,
+    name: string,
+    fields: List<string>,
+    values: List<ExprId>,
+    sp: Span?,
+) -> ExprId {
+    store.alloc_expr(Expr.StructLit(Nominal(name), [Plain(t) for t in fields], values), sp)
+}
+
+/// A CARRYING variant, built on its own type — what `Prim.Lit` and
+/// `Build.Call` are written as.
+fn variant(store: SyntaxArena, ty: string, name: string, args: List<ExprId>, sp: Span?) -> ExprId {
+    let subject = store.alloc_expr(Expr.Ident(Scoped(ty)), sp)
+    store.alloc_expr(Expr.MethodCall(subject, Plain(name), args), sp)
+}
+
+/// A variant that CARRIES NOTHING — what `Rep.Star` is written as.
+fn unit(store: SyntaxArena, ty: string, name: string, sp: Span?) -> ExprId {
+    let subject = store.alloc_expr(Expr.Ident(Scoped(ty)), sp)
+    store.alloc_expr(Expr.Prop(subject, Plain(name)), sp)
+}
+
+fn bool_expr(store: SyntaxArena, v: bool, sp: Span?) -> ExprId {
+    store.alloc_expr(Expr.BoolLit(v), sp)
+}
+
+fn text_expr(store: SyntaxArena, s: string, sp: Span?) -> ExprId {
+    store.alloc_expr(Expr.StrLit(s), sp)
+}
+
+fn text_opt(store: SyntaxArena, held: string?, sp: Span?) -> ExprId {
+    if held == null { return store.alloc_expr(Expr.NullLit, sp) }
+    text_expr(store, held!, sp)
+}
+
+fn list_expr(store: SyntaxArena, items: List<ExprId>, sp: Span?) -> ExprId {
+    store.alloc_expr(Expr.ListLit(items), sp)
+}

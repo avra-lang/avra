@@ -12,7 +12,7 @@
 //! guarded arm covers nothing towards coverage.
 //! Typing proves coverage — every variant, or a catch-all — and
 //! warns when a hole sits under two or more answering arms.
-use features.{LanguageFeature, BuilderRow, MethodRow, PropertyRow, ReceiverEffect, unknown_answer}
+use features.{LanguageFeature, MethodRow, PropertyRow, ReceiverEffect, unknown_answer}
 use features.enums.{bool_variant_match, bool_variant_match_negated}
 use core.{Type}
 // LICENSED modules.unused_import: `Fixed` and `Term` are named by GENERATED code, not by this
@@ -22,10 +22,6 @@ use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Term, 
 use diagnostics.{DiagCode}
 
 export fn enums() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name       | build
-        "hole_arm" | build_hole_arm
-    }
     let codes = table<DiagCode> {
         kind                   | summary
         "type.enum_decl"       | "an enum declares at least one variant, each named once"
@@ -60,10 +56,9 @@ export fn enums() -> LanguageFeature {
             primary = "." name:NAME ( "(" ( args:element ( "," args:element )* ","? )? ")" )? -> Expr.VariantLit
             primary = "match" subject:expression "{" ( BREAK | "," | arms:arm | arms:hole_arm )* "}" @expect("}", "expected `}` to close the `match`") -> Expr.Match @head(subject)
             arm = pats:pattern ( "or" pats:pattern )* ( "if" guard:expression )? "->" value:expression -> Record.Arm
-            hole_arm = h:HOLE -> hole_arm(h)
+            hole_arm = h:HOLE -> Record.Arm(pats = [Pat.Bind(name = h)], value = Expr.Ident(name = h))
             pattern = "." name:NAME "as" bind:NAME -> Pat.Member | "." name:NAME ( "(" args:pattern ( "," args:pattern )* ","? ")" )? -> Pat.Variant | "_" -> Pat.Wild | "true" -> Pat.Lit(value = Expr.BoolLit(value = true)) | "false" -> Pat.Lit(value = Expr.BoolLit(value = false)) | value:NUMBER -> Pat.Lit(value = Expr.IntLit(value = value)) | n:NAME -> bind_pat(n)
         }
-        builders: rows
         diags: codes
         properties: properties
         methods: methods

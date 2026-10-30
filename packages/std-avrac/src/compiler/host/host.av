@@ -17,7 +17,7 @@ export enum Beneath { Text(text: string), Octets(octets: Bytes), Missing, Linked
 /// cause, since every file is octets.
 export enum Octet { Bytes(octets: Bytes), Missing, Refused(why: string) }
 
-export type Host = { exists: fn(string) -> bool, peek: fn(string) -> Beneath, refused: fn(string) -> void, beneath: fn(string, string, EmbedKind) -> Beneath, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, stamp: fn(string) -> int?, reads_ahead: fn(int) -> void, env: fn(string) -> string?, print: fn() -> string?, tool: fn(string) -> Stamp?, octets: fn(string) -> Octet = no_octets, quiet: fn(string) -> int? = never_quiet, std_root: string? = null, cwd: string = "", compiler: string? = null }
+export type Host = { exists: fn(string) -> bool, peek: fn(string) -> Beneath, refused: fn(string) -> void, beneath: fn(string, string, EmbedKind) -> Beneath, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, reads_ahead: fn(int) -> void, env: fn(string) -> string?, print: fn() -> string?, tool: fn(string) -> Stamp?, octets: fn(string) -> Octet = no_octets, quiet: fn(string) -> int? = never_quiet, std_root: string? = null, cwd: string = "", compiler: string? = null }
 
 impl Host {
     /// One spelling for one directory: a relative path rooted at the
@@ -75,11 +75,6 @@ impl Host {
 
     /// Whether anything stands at `path`, through the door.
     fn there(path: string) -> Read { Read.Exists(path, self.exists(path)) }
-
-    /// A file's stamp, as a CONFIRMATION of an input already read — never an input of its
-    /// own: a stamp in a key would move the key without moving the bytes. Zero where the
-    /// host makes no claim.
-    fn confirming_stamp(path: string) -> int { (self.stamp)(path) ?? 0 }
 
     /// A variable's value through the door; none when it is unset.
     fn variable(name: string) -> Read { Read.Env(name, (self.env)(name)) }
@@ -156,7 +151,6 @@ export fn memory_host_at(files: Map<string, string>, names: List<string>, cwd: s
         write: (p: string, text: string) -> memory_put(held, normalized(joined_path(cwd, p)), text),
         list: (dir: string) -> children_of(names, normalized(joined_path(cwd, dir))),
         is_dir: (dir: string) -> names.any(under_dir(it, normalized(joined_path(cwd, dir)))),
-        stamp: no_stamp,
         reads_ahead: any_reads,
         env: unset,
         print: no_print,
@@ -233,7 +227,6 @@ export fn plainly(exists: fn(string) -> bool, read: fn(string) -> string) -> fn(
 fn any_reads(_files: int) {}
 
 /// A host that cannot tell: every text is read.
-fn no_stamp(_path: string) -> int? { null }
 
 /// A write through the in-memory table — a named fn because the field's answer is
 /// `string?` and a lambda ending in `null` answers `null` alone.

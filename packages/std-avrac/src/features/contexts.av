@@ -411,22 +411,14 @@ export fn known_def_type_of(facts: TypeFacts, view: FileView, s: StmtId) -> Type
     if view.store.const_value(s) != null || view.store.collect_parts(s) != null { return view.decls.type_of_const(view.file, s) }
     let declared: TypeId? = facts.declared_binding(s)
     if declared != null { return declared }
-    if view.store.stmt(s) is .For { return view.types.known(Type.Int) }
     let v? = view.store.stmt_value(s) else { return null }
     facts.type_at(v)
 }
 
-/// What a `let`/`mut` binding holds: its declared type, its value's
-/// type, or — for a loop's counter — int. Total: `known_def_type_of`
-/// answers every case but the one that can still need a mint (a
-/// `for` loop's counter, the first time it is asked), which this
-/// alone is trusted to grow the registry for.
+/// What a `let`/`mut` binding holds: its declared type or its value's
+/// type; the error type for a binding nothing typed.
 export fn def_type_of(facts: TypeFacts, view: FileView, error_type: TypeId, s: StmtId) -> TypeId {
-    let known? = known_def_type_of(facts, view, s) else {
-        if view.store.stmt(s) is .For { return view.types.type(int) }
-        return error_type
-    }
-    known
+    known_def_type_of(facts, view, s) ?? error_type
 }
 
 impl Decls {
@@ -455,7 +447,7 @@ impl Decls {
 /// Computed and nominal types fall through to the ConstTyped family.
 fn settled_type(store: SyntaxArena, types: TypeRegistry, s: StmtId) -> TypeId? {
     let v? = store.const_value(s) else { return null }
-    let word? = literal_shape(store.expr(v)) else { return spelled_type(types, store.binding_ty(s)) }
+    let word? = literal_shape(store.valued(v)) else { return spelled_type(types, store.binding_ty(s)) }
     let held = types.intern(word)
     if store.binding_ty(s)?.optional ?? false { return types.type(held?) }
     held

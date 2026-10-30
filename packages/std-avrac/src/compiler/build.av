@@ -352,33 +352,15 @@ fn compiler_print(ws: Workspace) -> string {
     "${digest}${codegen_mode()}${proof_mode()}${if mode == "" { "" } else { "@${mode}" }}"
 }
 
-/// WHERE A KEPT BINARY'S LINK ANSWER STANDS: the host fns it lists, kept with what the link
-/// read — the tools that linked it and each file it linked beside its sources (the runtime
-/// archive, the package objects), by their digests. A program's key covers what it was
-/// COMPILED from; these are what it was LINKED with, and an archive rebuilt from unchanged
-/// sources moves no source digest. So the answer stands while every read still has its digest.
-fn host_fns_key(key: string) -> string { node_key(Stored.Unit, ["host-fns", key]) }
-
 /// The name of the read that stands for the tools as a set: a link made by other tools is
 /// another link, whichever file it read.
 const TOOLS_READ: string = "tools"
 
-/// What a link read, as the reads its answer is kept with — none when the host cannot tell
-/// a tool, which makes nothing a kept binary can be trusted for.
-fn linked_reads(files: List<string>, tools: List<Stamp>) -> List<Reading>? {
+/// The tools a link ran, as one read — none when the host cannot tell a tool, which makes
+/// nothing a kept binary can be trusted for.
+fn tools_reading(tools: List<Stamp>) -> Reading? {
     let tooled? = told(tools) else { return null }
-    [Reading { name: TOOLS_READ, digest: digest_of(tooled) }]
-        .concat([Reading { name: f, digest: linked_now(f, tools) ?? "-" } for f in files])
-}
-
-/// A link read's digest now: the tools', or the bytes of a file — `-` for one gone, which no
-/// digest equals.
-fn linked_now(name: string, tools: List<Stamp>) -> string? {
-    if name == TOOLS_READ {
-        let tooled? = told(tools) else { return null }
-        return digest_of(tooled)
-    }
-    digest_of_binary(name) ?? "-"
+    Reading { name: TOOLS_READ, digest: digest_of(tooled) }
 }
 
 /// The tools as their inputs' digests, one per line — none for no tools,
@@ -482,7 +464,7 @@ impl Workspace {
         BuildError,
     > {
         self.built_for(tools)
-        let kept = self.kept_binary(self.program_key(entry, []), binary, tools)
+        let kept = self.kept_linked(Keyed { named: entry, beside: [] }, binary, tools)
         if kept != null { return .Ok(kept!) }
         let d = diagnosed(
             self
@@ -505,33 +487,17 @@ impl Workspace {
             )
     }
 
-    /// A binary these exact inputs linked before, placed where a fresh one would
-    /// be — with the warnings that build spoke.
-    fn kept_binary(key: string, binary: string, tools: Toolchain) -> BuildOutcome? {
-        let store = self.opened_store()
-        let staged = staged_beside(binary)
-        let warnings? = store.get(Stored.Warn, key) else { return null }
-        let host_fns? = store
-            .get_valid(Stored.Unit, host_fns_key(key), (name: string) -> linked_now(name, tools.tools)) else {
-            return null
-        }
-        if !store.has(Stored.Bin, key) { return null }
-        // A binary already standing at its place with the kept bytes is left untouched: replacing
-        // a file costs more than the hit it answers.
+    /// The kept binary placed where a fresh one would be. A binary already standing there with
+    /// the kept bytes (`kept`, their digest when it was kept) is left untouched: replacing a file
+    /// costs more than the hit it answers.
+    fn placed_kept(store: Store, key: string, binary: string, kept: string?) -> bool {
         let there = digest_of_binary(binary)
-        if there == null || there != digest_of_binary(store.path(Stored.Bin, key)) {
-            if !store.place(Stored.Bin, key, staged) { return null }
-            // a stored binary is bytes, and its mode is not in them
-            let _ = avra_spawn_status("chmod", ["+x", staged])
-            if !published(staged, binary) { return null }
-        }
-        self.fallback_kept(store, key, binary, tools)
-        BuildOutcome {
-            binary: binary,
-            warnings: warnings,
-            reused: true,
-            host_fns: [line for line in host_fns.split("\n") if !line.is_empty()],
-        }
+        if there != null && there == kept ?? digest_of_binary(store.path(Stored.Bin, key)) { return true }
+        let staged = staged_beside(binary)
+        if !store.place(Stored.Bin, key, staged) { return false }
+        // a stored binary is bytes, and its mode is not in them
+        let _ = avra_spawn_status("chmod", ["+x", staged])
+        published(staged, binary)
     }
 
     /// The fallback a kept binary was built with, placed beside it; none standing
@@ -600,157 +566,12 @@ impl Workspace {
         }
     }
 
-    /// An embedded file's line of the key.
-    fn embed_line(path: string) -> string { "${relative_path(self.root, path)}\t${self.embed_said(path)}" }
-
-    /// THE INPUT MANIFEST: what the last derivation of a program read — its closure, each
-    /// covered directory's listing, and every input, embed and object with its line of the
-    /// key — kept as ONE record beside the key it produced. An unchanged run confirms the
-    /// record by recomputing those lines and reads the key off it, instead of rebuilding the
-    /// input set (the closure walk, the embeds of every record, the reached objects).
-    fn manifest_key(under: Keyed) -> string {
-        node_key(Stored.Fp, ["manifest", self.root, under.named, joined(under.beside, "\t")])
-    }
-
-    fn keep_manifest(store: Store, under: Keyed, key: string) {
-        let inputs = self.source_inputs(under.named).concat(under.beside)
-        let covered = self.closure(under.named)
-        let entries = [ManifestEntry.Covered(c) for c in covered]
-            .concat(
-                [ManifestEntry.Listing(c.split("\t")[0], self.listing_word(c.split("\t")[0])) for c in covered],
-            )
-            .concat([self.input_entry(f) for f in inputs])
-            .concat([ManifestEntry.Embed(f, self.embed_line(f)) for f in self.embeds(inputs)])
-            .concat(
-                [ManifestEntry.Object(o, self.object_line(o)) for o in self.reached_objects(under.named)],
-            )
-        let _ = store
-            .keep(
-                Stored.Fp,
-                self.manifest_key(under),
-                joined([key].concat([e.spelled() for e in entries]), "\n"),
-                [],
-            )
-    }
-
-    /// The key of a run: the manifest's, when every line it holds still stands; else folded.
-    fn confirmed_key(store: Store, under: Keyed) -> string {
-        let reading = self.clock()
-        let row = store.get(Stored.Fp, self.manifest_key(under))
-        self.timed("manifest read", reading)
-        if row != null {
-            let parsing = self.clock()
-            let lines = row!.split("\n")
-            let entries = [read_entry(l) for l in lines.slice(1, lines.length)]
-            self.timed("manifest parse", parsing)
-            if !entries.any(it == null) && self.manifest_stands(under, [e! for e in entries]) { return lines[0] }
-        }
-        self.program_key(under.named, under.beside)
-    }
-
-    fn manifest_stands(under: Keyed, entries: List<ManifestEntry>) -> bool {
-        let closing = self.clock()
-        let same = joined(self.closure(under.named), "\n") == joined([c for e in entries for c in e.covered()], "\n")
-        self.timed("closure", closing)
-        same && entries.all((e) -> self.entry_timed(e))
-    }
-
-    /// One entry confirmed, its time kept under what kind of input it is.
-    fn entry_timed(e: ManifestEntry) -> bool {
-        let confirming = self.clock()
-        let stands = self.entry_stands(e)
-        self.timed(e.kind_word(), confirming)
-        stands
-    }
-
-    fn entry_stands(e: ManifestEntry) -> bool {
-        match e {
-            .Covered(_) -> true,
-            .Listing(dir, word) -> self.listing_word(dir) == word,
-            .Input(path, line, stamp) -> self.input_stands(path, line, stamp),
-            .Embed(path, line) -> self.embed_line(path) == line,
-            .Object(path, line) -> self.object_line(path) == line,
-        }
-    }
-
-    /// An input's manifest entry: the line of the key it stands for, then the
-    /// stamp its bytes wore when that line's digest was taken. The line comes
-    /// first, because taking the digest is what takes the stamp.
-    fn input_entry(path: string) -> ManifestEntry {
-        let line = self.input_line(path)
-        ManifestEntry.Input(path, line, self.text_stamp(path))
-    }
-
-    /// Whether an input still stands: the stamp it was recorded with, when the
-    /// host gives the same one now, and the bytes themselves for every other
-    /// answer. A stamp that moved says nothing about the bytes — it only says
-    /// they must be read — so only an equal stamp skips the digest.
-    fn input_stands(path: string, line: string, stamp: string) -> bool {
-        if !stamp.is_empty() && stamp == self.held_stamp(path) { return true }
-        self.input_line(path) == line
-    }
-
-    /// A file's stamp as it stands now, in the same spelling a record keeps —
-    /// empty where the host will not make the claim.
-    fn held_stamp(path: string) -> string {
-        let mark = self.file_stamp(path)
-        if mark == 0 { "" } else { "${mark}" }
-    }
-
-    /// A file's stamp: its size, times and inode as the host folds them, and
-    /// zero for a file that moved inside the window where two writes can wear
-    /// one time.
-    fn file_stamp(path: string) -> int { self.host.confirming_stamp(path) }
-
     /// A directory's files as one word, as a walk lists them now — the files `source_inputs`
     /// reads of it: a dependency's tests are no input, so they are never walked.
     fn listing_word(dir: string) -> string {
         let files = if dir == self.packages()[0].src { self.all_files(dir) } else { self.all_files_no_tests(dir) }
         digest_of(joined(files, "\n"))
     }
-
-    /// The key a finished derivation keeps under: its closure remembered
-    /// first, so the next ask — before anything is read — names the same
-    /// inputs.
-    fn kept_key(under: Keyed) -> string {
-        self.keep_closure(under.named)
-        self.program_key(under.named, under.beside)
-    }
-
-    /// THE PROGRAM'S KEY — every input's path, length and digest, under what
-    /// names the program: a whitespace-only edit moves it. `beside` are inputs
-    /// that are not sources. THIS COMPILER'S OWN PRINT JOINS FIRST: a kept
-    /// binary is this generation's object code and a kept `Warn` row is this
-    /// generation's diagnostic wording, so both are keyed by the compiler
-    /// that made them, not only by the store root they happen to sit under.
-    /// EVERY REACHED PACKAGE'S OWN OBJECTS JOIN LAST: a package's `.av`
-    /// files name its C externs, never their bodies, so a C-only edit moves
-    /// no `.av` digest — the object's own bytes are the only witness a
-    /// kept binary that linked them is still the one these bytes would
-    /// produce.
-    fn program_key(named: string, beside: List<string>) -> string {
-        let named_inputs = self.source_inputs(named).concat(beside)
-        let inputs = joined(
-            [self.input_line(f) for f in named_inputs]
-                .concat([self.embed_line(f) for f in self.embeds(named_inputs)]),
-            "\n",
-        )
-        let objects = joined([self.object_line(o) for o in self.reached_objects(named)], "\n")
-        digest_key(
-            digest_text(
-                digest_text(
-                    digest_text(
-                        digest_text(new_digest(), self.compiler_id()),
-                        relative_path(self.root, named),
-                    ),
-                    inputs,
-                ),
-                objects,
-            ),
-        )
-    }
-
-    fn input_line(path: string) -> string { "${relative_path(self.root, path)}\t${self.text_digest(path)}" }
 
     /// Every object every reached package's manifest names — a C-only edit
     /// moves this list's digests though it moves no `.av` file's. Read over
@@ -779,9 +600,6 @@ impl Workspace {
 
     /// A file's text as one digest, through its Text input: kept per read of
     /// that input, so a turn that reads the file again digests the text it read.
-    /// The stamp those bytes wore is kept BESIDE the digest, taken in the same
-    /// breath: a stamp on its own is a claim about bytes nobody hashed, and a
-    /// digest with no stamp cannot be confirmed without reading.
     fn text_digest(path: string) -> string {
         let octets = self.listed_octets(path)
         let at = "${self.octets_word(path)}\t${path}"
@@ -789,28 +607,7 @@ impl Workspace {
         if known != null { return known! }
         let made = "${octets.length}.${digest_of_octets(octets)}"
         self.keys.text_digests.put(at, made)
-        self.keys.text_stamps.put(at, self.file_stamp(path))
         made
-    }
-
-    /// What one lex of a file's text answers about its block words, kept while the
-    /// text it was read from is the one read now.
-    fn text_scan(path: string) -> TextScan {
-        let text = self.listed_text(path)
-        let known: TextScan? = self.keys.text_scans.get().get(path)
-        if known != null && known!.text == text { return known! }
-        let made = scan_text(text, self.lang.keywords)
-        self.keys.text_scans.put(path, made)
-        made
-    }
-
-    /// The stamp the digest of `path` was taken with, empty where nothing here
-    /// hashed it or the host would not make the claim. Never a stamp on its
-    /// own: a stamp is only worth what the bytes it was taken beside.
-    fn text_stamp(path: string) -> string {
-        let at = "${self.octets_word(path)}\t${path}"
-        let mark? = self.keys.text_stamps.get().get(at) else { return "" }
-        if mark == 0 { "" } else { "${mark}" }
     }
 
     /// Whether a body's home cannot emit it: the home is held, so its object
@@ -927,29 +724,24 @@ impl Workspace {
         clock.mark("link")
         let shrunk = shipped(staged, tools)
         let ready = shrunk.path ?? staged
-        let key = self.kept_key(under)
-        let fallback = self.fallback_made(d, full, ready, key, binary, tools)
-        let warnings = spoken([d.warnings, shrunk.said, fallback.said])
-        let _ = d.store.keep(Stored.Warn, key, warnings, [key])
-        let host_fns = self
-            .host_fn_lines([a.view.file for a in d.program.files], hosts_of(tools.target))
-        let reads = linked_reads(self.linked_files(tools.runtime, tools.target), tools.tools)
-        if reads != null {
-            let _ = d
-                .store
-                .keep_reading(Stored.Unit, host_fns_key(key), joined(host_fns, "\n"), reads!)
+        let fallback = self
+            .fallback_made(d, full, ready, self.linked_key(under.named), binary, tools)
+        let said = LinkedSaid {
+            said: self.check_said(d),
+            after: spoken([shrunk.said, fallback.said]),
+            host_fns: self.host_fn_lines([a.view.file for a in d.program.files], hosts_of(tools.target)),
         }
-        let _ = d.store.keep_file(Stored.Bin, key, ready, [key])
+        self.keep_linked(d.store, under, ready, said, tools)
         clock.mark("keep binary")
         if !published(ready, binary) { fail BuildError.Unpublished(binary) }
         self.fallback_published(fallback.path, binary)
         clock.mark("publish")
         BuildOutcome {
             binary: binary,
-            warnings: warnings,
+            warnings: said.warnings(),
             reused: false,
             phases: d.timed(clock.spans),
-            host_fns: host_fns,
+            host_fns: said.host_fns,
         }
     }
 
@@ -1291,82 +1083,6 @@ fn no_fallback(tool: string) -> string {
 
 fn wasm_unsupported(names: List<string>) -> string {
     "avra: a wasm module has no body for ${names.join(", ")} — a fiber, a core and a package's C are not available on this target"
-}
-
-/// One line of an input manifest.
-enum ManifestEntry {
-    Covered(line: string)
-    Listing(dir: string, word: string)
-    /// An input: its path, the line of the key it stands for, and the stamp its
-    /// bytes wore when that line's digest was taken — empty when the host would
-    /// not make that claim, and then its bytes are read again.
-    Input(path: string, line: string, stamp: string)
-    Embed(path: string, line: string)
-    Object(path: string, line: string)
-}
-
-impl ManifestEntry {
-    /// The entry as a manifest spells it: a tag, then its fields, tab-apart.
-    fn spelled() -> string {
-        match self {
-            .Covered(line) -> "C\t${line}",
-            .Listing(dir, word) -> "L\t${dir}\t${word}",
-            // `S` carries the stamp its digest was taken with; `I` (a record
-            // older than stamps, or one whose host would not give one) carries
-            // the digest alone and is always read again.
-            .Input(path, line, stamp) -> if stamp.is_empty() { "I\t${path}\t${line}" } else { "S\t${path}\t${stamp}\t${line}" },
-            .Embed(path, line) -> "E\t${path}\t${line}",
-            .Object(path, line) -> "O\t${path}\t${line}",
-        }
-    }
-
-    /// What kind of input the entry confirms, as a phase's name.
-    fn kind_word() -> string {
-        match self {
-            .Covered(_) -> "covered",
-            .Listing(_, _) -> "listings",
-            .Input(_, _, _) -> "inputs",
-            .Embed(_, _) -> "embeds",
-            .Object(_, _) -> "objects",
-        }
-    }
-
-    /// The closure line this entry stands for, none for any other.
-    fn covered() -> List<string> {
-        match self {
-            .Covered(line) -> [line],
-            .Listing(_, _) or .Input(_, _, _) or .Embed(_, _) or .Object(_, _) -> [],
-        }
-    }
-}
-
-/// An entry read back; none for a line that is no entry.
-fn read_entry(line: string) -> ManifestEntry? {
-    let at = line.index_of("\t")
-    if at < 1 { return null }
-    let tag = line.substring(0, at)
-    let rest = line.substring(at + 1, line.length)
-    if tag == "C" { return ManifestEntry.Covered(rest) }
-    let cut = rest.index_of("\t")
-    if cut < 0 { return null }
-    let first = rest.substring(0, cut)
-    let second = rest.substring(cut + 1, rest.length)
-    when {
-        tag == "L" -> ManifestEntry.Listing(first, second)
-        tag == "I" -> ManifestEntry.Input(first, second, "")
-        tag == "S" -> {
-            let mark = second.index_of("\t")
-            if mark < 1 {
-                null
-            } else {
-                ManifestEntry
-                    .Input(first, second.substring(mark + 1, second.length), second.substring(0, mark))
-            }
-        }
-        tag == "E" -> ManifestEntry.Embed(first, second)
-        tag == "O" -> ManifestEntry.Object(first, second)
-        _ -> null
-    }
 }
 
 /// Whether `wasm-opt` ran clean over `words`.

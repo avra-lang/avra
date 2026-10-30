@@ -1,0 +1,458 @@
+//! THE CHECK VERDICT: what `check` said of a program, kept as ONE saved answer whose read
+//! list is what it stood on — the compiler, the covered packages and their files, every
+//! source, embed and object, each with the digest it was read at. It stands while every
+//! read does (`get_standing`); nothing is folded into its key.
+//!
+//! A SOURCE IS READ TWO-LEVEL: its text, and when the text moved, its SHAPE — what its
+//! tokens say (`shape_digest`). A text that moved and kept its shape leaves every answer
+//! standing but the places printed, so the files that point into it are said again from
+//! their facts rows, placed against a lex of the text now; nothing is parsed.
+use core.{digest_of, joined, flatten, distinct, hex, unhex, some_list}
+use @std.errors.{Loc}
+use grammar.{Token, LexResult}
+use @std.relation.engine.{list_cell}
+use @std.relation.stable.{Writer, Reader, writer, decoded_with, written_list, CodecFault}
+use diagnostics.{DiagFacts, SourceFile, new_source_file, render_facts_among, located_files}
+use compiler.store.{Store, Stored, Reading, node_key, read_spelled}
+use compiler.findings.{Finding, finding_line, findings_read, finding_at}
+
+/// One read the verdict stands on, by the door that answers it.
+export enum VerdictRead {
+    Compiler
+    Closure(named: string)
+    Files(dir: string)
+    Text(path: string)
+    Shape(path: string)
+    Lined(path: string)
+    Embed(path: string)
+    Object(path: string)
+}
+
+/// A read as its saved list names it: a word, then what it reads.
+export fn verdict_read_word(r: VerdictRead) -> string {
+    match r {
+        .Compiler -> "compiler",
+        .Closure(named) -> "closure ${named}",
+        .Files(dir) -> "files ${dir}",
+        .Text(path) -> "text ${path}",
+        .Shape(path) -> "shape ${path}",
+        .Lined(path) -> "lined ${path}",
+        .Embed(path) -> "embed ${path}",
+        .Object(path) -> "object ${path}",
+    }
+}
+
+/// A saved read's name read back; none for a name no read spells.
+export fn verdict_read_of_word(name: string) -> VerdictRead? {
+    if name == "compiler" { return .Compiler }
+    let at = name.index_of(" ")
+    if at < 1 { return null }
+    let key = name.substring(at + 1, name.length)
+    match name.substring(0, at) {
+        "closure" -> VerdictRead.Closure(key),
+        "files" -> VerdictRead.Files(key),
+        "text" -> VerdictRead.Text(key),
+        "shape" -> VerdictRead.Shape(key),
+        "lined" -> VerdictRead.Lined(key),
+        "embed" -> VerdictRead.Embed(key),
+        "object" -> VerdictRead.Object(key),
+        rest -> null,
+    }
+}
+
+/// How a source is read: an Avra file by its shape, anything else by its text.
+fn source_read(path: string, lined: bool) -> VerdictRead {
+    if !path.ends_with(".av") { return VerdictRead.Text(path) }
+    if lined { VerdictRead.Lined(path) } else { VerdictRead.Shape(path) }
+}
+
+/// WHAT `check` SAID, AS DATA: the program's own voices and the files they point into, then
+/// each file's part, in file order.
+export type CheckSaid = { voices: string, voice_files: List<string>, files: List<FileSpoke> }
+
+/// One file's part: its warnings as printed (empty where the program does not reach it),
+/// whether it is reached, its rule findings and its stale license lines.
+export type FileSpoke = { path: string, reached: bool, said: string, findings: List<Finding>, licenses: List<string> }
+
+impl CheckSaid {
+    fn warnings() -> string { spoken([self.voices].concat([f.said for f in self.files])) }
+
+    fn licenses() -> string { joined(flatten([f.licenses for f in self.files]), "\n") }
+
+    fn findings() -> List<Finding> { flatten([f.findings for f in self.files]) }
+}
+
+/// A file's shape as it is kept: the digest, the words its text was lexed under, and whether
+/// its docs' words are in it.
+export type Shaped = { digest: string, words: LexWords, docs: bool }
+
+export fn shape_wire(s: Shaped) -> string {
+    let w = writer()
+    w.text(s.digest)
+    written_texts(w, s.words.grammars)
+    written_texts(w, s.words.components)
+    written_texts(w, s.words.own)
+    w.bool(s.docs)
+    hex(w.bytes())
+}
+
+export fn shape_of_wire(raw: string) -> Shaped? {
+    let b? = unhex(raw) else { return null }
+    match decoded_with(b, read_shaped) { .Ok(s) -> s, .Err(_) -> null }
+}
+
+fn read_shaped(r: Reader) -> Result<Shaped, CodecFault> {
+    let digest = r.text()?
+    let grammars = read_texts(r)?
+    let components = read_texts(r)?
+    let own = read_texts(r)?
+    Shaped {
+        digest: digest,
+        words: LexWords { grammars: grammars, components: components, own: own },
+        docs: r.bool()?,
+    }
+}
+
+export fn verdict_wire(v: CheckSaid) -> string {
+    let w = writer()
+    w.text(v.voices)
+    written_texts(w, v.voice_files)
+    written_list(w, v.files, written_spoke)
+    hex(w.bytes())
+}
+
+export fn verdict_of_wire(raw: string) -> CheckSaid? {
+    let b? = unhex(raw) else { return null }
+    match decoded_with(b, read_check_said) { .Ok(v) -> v, .Err(_) -> null }
+}
+
+fn read_check_said(r: Reader) -> Result<CheckSaid, CodecFault> {
+    let voices = r.text()?
+    let voice_files = read_texts(r)?
+    CheckSaid { voices: voices, voice_files: voice_files, files: read_spokes(r)? }
+}
+
+fn written_spoke(w: Writer, f: FileSpoke) {
+    w.text(f.path)
+    w.bool(f.reached)
+    w.text(f.said)
+    written_texts(w, [finding_line(x) for x in f.findings])
+    written_texts(w, f.licenses)
+}
+
+fn read_spokes(r: Reader) -> Result<List<FileSpoke>, CodecFault> {
+    let n = r.count()?
+    [read_spoke(r)? for _k in 0..n]
+}
+
+fn read_spoke(r: Reader) -> Result<FileSpoke, CodecFault> {
+    let path = r.text()?
+    let reached = r.bool()?
+    let said = r.text()?
+    let findings = findings_read(joined(read_texts(r)?, "\n"))
+    FileSpoke {
+        path: path,
+        reached: reached,
+        said: said,
+        findings: findings,
+        licenses: read_texts(r)?,
+    }
+}
+
+fn written_texts(w: Writer, xs: List<string>) { written_list(w, xs, (w: Writer, x: string) -> w.text(x)) }
+
+fn read_texts(r: Reader) -> Result<List<string>, CodecFault> {
+    let n = r.count()?
+    [r.text()? for _k in 0..n]
+}
+
+impl Workspace {
+    /// Where the verdict on `named` is kept: the program's name, never an input.
+    fn verdict_key(named: string) -> string { node_key(Stored.Unit, ["verdict", self.root, named]) }
+
+    /// What the verdict on `named` reads, as the analysed program holds it.
+    fn verdict_reads(named: string) -> List<VerdictRead> { self.program_reads(named, false) }
+
+    /// What a program's answer reads: its sources by shape — LINED where it prints a place by
+    /// its line — and everything else by its bytes.
+    fn program_reads(named: string, lined: bool) -> List<VerdictRead> {
+        let closure = self.closure(named)
+        let inputs = self.source_inputs(named)
+        [VerdictRead.Compiler, VerdictRead.Closure(named)]
+            .concat([VerdictRead.Files(line.split("\t")[0]) for line in closure])
+            .concat([source_read(f, lined) for f in inputs])
+            .concat([VerdictRead.Embed(f) for f in self.embeds(inputs)])
+            .concat([VerdictRead.Object(o) for o in self.reached_objects(named)])
+    }
+
+    /// Each read with the digest it answers now.
+    fn readings(reads: List<VerdictRead>) -> List<Reading> {
+        [Reading { name: verdict_read_word(r), digest: self.read_now(r) } for r in reads]
+    }
+
+    /// What a read digests to now. A source's shape read carries its text first: the
+    /// cheap witness, then what it vouches for.
+    fn read_now(r: VerdictRead) -> string {
+        match r {
+            .Compiler -> digest_of(self.compiler_id()),
+            .Closure(named) -> digest_of(joined(self.closure(named), "\n")),
+            .Files(dir) -> self.listing_word(dir),
+            .Text(path) -> self.text_now(path),
+            .Shape(path) -> "${self.text_now(path)}/${self.shape_now(path, false) ?? "-"}",
+            .Lined(path) -> "${self.text_now(path)}/${self.shape_now(path, true) ?? "-"}",
+            .Embed(path) -> digest_of(self.embed_said(path)),
+            .Object(path) -> digest_of(digest_of_binary(path) ?? "-"),
+        }
+    }
+
+    /// A named read's digest now; none for a name no read spells.
+    fn named_now(name: string) -> string? {
+        let r? = verdict_read_of_word(name) else { return null }
+        self.read_now(r)
+    }
+
+    /// WHETHER ONE SAVED READ STILL STANDS. A shape read stands on its text, or — the text
+    /// moved — on its shape, and then its file is `moved`.
+    fn verdict_read_stands(r: Reading, moved: Cell<List<string>>) -> bool {
+        let read? = verdict_read_of_word(r.name) else { return false }
+        match read {
+            .Shape(path) -> self.shape_stands(path, false, r.digest, moved),
+            .Lined(path) -> self.shape_stands(path, true, r.digest, moved),
+            .Compiler or .Closure(_) or .Files(_) or .Text(_) or .Embed(_) or .Object(_) -> self.read_now(read) == r.digest,
+        }
+    }
+
+    fn shape_stands(path: string, lined: bool, digest: string, moved: Cell<List<string>>) -> bool {
+        let cut = digest.index_of("/")
+        if cut < 0 { return false }
+        if self.text_now(path) == digest.substring(0, cut) { return true }
+        let shape? = self.shape_now(path, lined) else { return false }
+        if shape != digest.substring(cut + 1, digest.length) { return false }
+        moved.push(path)
+        true
+    }
+
+    /// A file's text digest, through its door.
+    fn text_now(path: string) -> string { self.input(text_named(path)).input().digest.key }
+
+    /// Where a file's shape is kept, against its text.
+    fn shape_key(path: string, lined: bool) -> string {
+        node_key(Stored.Unit, [if lined { "lined" } else { "shape" }, self.root, path])
+    }
+
+    /// WHAT A SOURCE'S TOKENS SAY NOW: its kept shape while its text stands, else a lex of
+    /// the text now under its words — kept again, so the next ask is a digest compare. None
+    /// for a file whose words nothing recorded.
+    fn shape_now(path: string, lined: bool) -> string? {
+        let store = self.opened_store()
+        let docs = self.docs_are_read(store, path)
+        let kept = shape_of_wire(
+            store
+                .get_valid(Stored.Unit, self.shape_key(path, lined), (name) -> self.named_now(name)) ?? "",
+        )
+        if kept != null && kept!.docs == docs { return kept!.digest }
+        let words? = self.lex_words(path) else { return null }
+        let made = shape_digest(self.listed_text(path), self.lexed_now(path, words), docs, lined)
+        let _ = store
+            .keep_reading(
+                Stored.Unit,
+                self.shape_key(path, lined),
+                shape_wire(Shaped { digest: made, words: words, docs: docs }),
+                self.readings([VerdictRead.Text(path)]),
+            )
+        made
+    }
+
+    /// WHETHER ANYTHING READS `path`'s DOCS: a reader in this process, or one any derivation
+    /// over this store noted. A doc read by nothing is no answer to anything, so its words
+    /// stay out of the shape; once read they stay in.
+    fn docs_are_read(store: Store, path: string) -> bool {
+        self.decls.docs_read.get().get(path) != null ||
+            store.has(Stored.Unit, docs_read_key(self.root, path))
+    }
+
+    /// The files whose docs this derivation read, noted for every later one.
+    fn keep_docs_read(store: Store) {
+        for path in self.decls.docs_read.get().keys() {
+            let _ = store.keep_once(Stored.Unit, docs_read_key(self.root, path), "read")
+        }
+    }
+
+    /// The words `path` was last lexed under: this process's parse, else its kept shape's.
+    fn lex_words(path: string) -> LexWords? {
+        let known: LexWords? = self.keys.lex_words.get().get(path)
+        if known != null { return known }
+        let store = self.opened_store()
+        shape_of_wire(
+            store.get(Stored.Unit, self.shape_key(path, false)) ?? store
+                .get(Stored.Unit, self.shape_key(path, true)) ?? "",
+        )?.words
+    }
+
+    /// `path`'s text now, lexed under `words` — once per text.
+    fn lexed_now(path: string, words: LexWords) -> LexResult {
+        let text = self.listed_text(path)
+        let known: Lexing? = self.keys.lexings.get().get(path)
+        if known != null && known!.text == text { return known!.lexed }
+        let made = lexed_under(text, words, self.lang.keywords)
+        self.keys.lexings.put(path, Lexing { text: text, lexed: made })
+        made
+    }
+
+    /// `path`'s token stream now, under its recorded words; none where no words are known.
+    fn tokens_now(path: string) -> List<Token>? {
+        let words? = self.lex_words(path) else { return null }
+        self.lexed_now(path, words).tokens
+    }
+
+    /// THE VERDICT KEPT: what a derivation said, with everything it read.
+    fn keep_check_verdict(store: Store, named: string, said: CheckSaid) {
+        self.keep_closure(named)
+        let _ = store
+            .keep_reading(
+                Stored.Unit,
+                self.verdict_key(named),
+                verdict_wire(said),
+                self.readings(self.verdict_reads(named)),
+            )
+    }
+
+    /// THE VERDICT THAT STANDS for `named`, its places said again wherever a text moved
+    /// and kept its shape. None when it does not stand, or a moved place cannot be said again.
+    fn standing_verdict(store: Store, named: string) -> CheckSaid? {
+        let key = self.verdict_key(named)
+        let row? = self
+            .standing_row(
+                store,
+                key,
+                (r: Reading, moved: Cell<List<string>>) -> self.verdict_read_stands(r, moved),
+            ) else {
+            return null
+        }
+        let said? = verdict_of_wire(row.bytes) else { return null }
+        if row.moved.is_empty() { return said }
+        let again? = self.said_again(store, said, row.moved) else { return null }
+        self.kept_again(store, key, verdict_wire(again))
+        again
+    }
+
+    /// A saved answer that stands, with the files whose text moved and kept their shape.
+    fn standing_row(store: Store, key: string, stands: fn(Reading, Cell<List<string>>) -> bool) -> Standing? {
+        let moved: Cell<List<string>> = list_cell()
+        let bytes? = store.get_standing(Stored.Unit, key, (r: Reading) -> stands(r, moved)) else { return null }
+        Standing { bytes: bytes, moved: moved.get() }
+    }
+
+    /// A standing answer kept again with what it says now and every read at its digest now, so
+    /// the next ask needs no lex.
+    fn kept_again(store: Store, key: string, bytes: string) {
+        let reads = [r! for r in [read_spelled(l) for l in store.reads_of(Stored.Unit, key) ?? []] if r != null]
+        let _ = store
+            .keep_reading(
+                Stored.Unit,
+                key,
+                bytes,
+                [Reading { name: r.name, digest: self.named_now(r.name) ?? r.digest } for r in reads],
+            )
+    }
+
+    /// The verdict with every part that points into a moved text said again.
+    fn said_again(store: Store, said: CheckSaid, moved: List<string>) -> CheckSaid? {
+        if said.voice_files.any((f) -> moved.contains(f)) { return null }
+        let files = [self.spoke_again(store, f, moved) for f in said.files]
+        if files.any(it == null) { return null }
+        said with { files: [f! for f in files] }
+    }
+
+    /// One file's part, said again where it points into a moved text: its licenses from a
+    /// lex of its own text, its warnings and findings from its facts row.
+    fn spoke_again(store: Store, f: FileSpoke, moved: List<string>) -> FileSpoke? {
+        let own = moved.contains(f.path)
+        let shown = f.said != "" || !f.findings.is_empty()
+        if !own && !(shown && self.facts_point_into(store, f.path, moved)) { return f }
+        let licenses = if own { self.stale_lines_now(f.path) } else { f.licenses }
+        if licenses == null { return null }
+        if !shown { return f with { licenses: licenses! } }
+        let facts? = self.facts_standing(store, f.path) else { return null }
+        let rules? = facts.rules else { return null }
+        let said = if f.reached { self.facts_said(facts.warnings, rules) } else { "" }
+        if said == null { return null }
+        let src = new_source_file(f.path, self.listed_text(f.path))
+        f with { said: said!, findings: flatten([finding_at(src, d.kind, d.primary.loc) for d in rules]), licenses: licenses! }
+    }
+
+    /// Whether a file's facts row places anything in a moved text.
+    fn facts_point_into(store: Store, path: string, moved: List<string>) -> bool {
+        let lines = store.reads_of(Stored.Warn, self.warning_facts_row(path)) ?? []
+        let named = [verdict_read_word(VerdictRead.Shape(m)) for m in moved]
+        lines.any((l) -> named.contains(read_spelled(l)?.name ?? ""))
+    }
+
+    /// A file's warnings and rule findings rendered as a derivation renders them: the
+    /// warnings among each, over the texts they point into now. None where a place names no
+    /// file — a frame with no file reads the program's first source.
+    fn facts_said(warnings: List<DiagFacts>, rules: List<DiagFacts>) -> string? {
+        let all = warnings.concat(rules)
+        if all.any((d) -> facts_files(d).length < facts_places(d)) { return null }
+        let sources = [new_source_file(p, self.listed_text(p)) for p in distinct(flatten([facts_files(d) for d in all]))]
+        spoken([warned_facts(warnings, sources), warned_facts(rules, sources)])
+    }
+
+    /// A file's stale license lines, from a lex of its text now.
+    fn stale_lines_now(path: string) -> List<string>? {
+        let words? = self.lex_words(path) else { return null }
+        stale_lines_of(
+            new_source_file(path, self.listed_text(path)),
+            self.lexed_now(path, words).remarks,
+            known_rule_ids(),
+        )
+    }
+
+    /// WHAT A DERIVATION SAID, AS THE VERDICT KEEPS IT: each file's part in the order it was
+    /// said, the unreached ones silent.
+    fn check_said(d: Derived) -> CheckSaid {
+        let p = d.program
+        let voiced = [v for v in p.voices if is_warning(v)]
+        mut stale: Map<string, List<string>> = {}
+        for a in p.files { stale.set(a.view.source.file, file_stale_lines(a, known_rule_ids())) }
+        CheckSaid {
+            voices: p.warned(p.voices),
+            voice_files: distinct(flatten([located_files(v) for v in voiced])),
+            files: [file_spoke(s, !d.unreached.contains(s.path), stale.get(s.path) ?? []) for s in d.said],
+        }
+    }
+}
+
+fn file_spoke(s: Said, reached: bool, licenses: List<string>) -> FileSpoke {
+    FileSpoke {
+        path: s.path,
+        reached: reached,
+        said: if reached { s.warnings } else { "" },
+        findings: s.findings,
+        licenses: licenses,
+    }
+}
+
+/// The warnings among `facts`, rendered — "" when none spoke.
+fn warned_facts(facts: List<DiagFacts>, sources: List<SourceFile>) -> string {
+    joined([render_facts_among(f, sources) for f in facts if !(f.severity is .Error)], "\n\n")
+}
+
+/// The files a diagnostic's places name, and how many places it has.
+fn facts_files(d: DiagFacts) -> List<string> { flatten([some_list(l.file) for l in facts_locs(d)]) }
+
+fn facts_places(d: DiagFacts) -> int { facts_locs(d).length }
+
+fn facts_locs(d: DiagFacts) -> List<Loc> {
+    [f.loc! for f in [d.primary].concat(d.secondary) if f.loc != null]
+        .concat([e.loc for s in d.suggestions for e in s.edits])
+}
+
+/// A saved answer's bytes, and the files whose text moved under it and kept their shape.
+type Standing = { bytes: string, moved: List<string> }
+
+/// A lexed text, kept with the text it lexed.
+type Lexing = { text: string, lexed: LexResult }
+
+/// Where a file's docs are noted as read.
+fn docs_read_key(root: string, path: string) -> string { node_key(Stored.Unit, ["docs-read", root, path]) }

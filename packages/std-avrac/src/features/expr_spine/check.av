@@ -75,6 +75,43 @@ fn member_type(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> Type
 /// own law still runs over the SHAPE, so `Rows + Rows` refuses in
 /// the shape's words.
 fn binary_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+    let mixed? = mixed_run(cx, e, op, l) else { return named_or_op(cx, e, op, l, r) }
+    mixed_bitwise(cx, e, mixed, op)
+}
+
+/// THE BITWISE BAND'S ONE LAW, and the reason it is one tier rather
+/// than five: A RUN THAT MIXES TWO DIFFERENT BITWISE OPERATORS IS
+/// REFUSED. `a | b & c` has two readings a reader must know a table to
+/// choose between, and a generated one is as likely to mean either —
+/// so it names both and asks for parentheses instead of picking. Only
+/// the run is in reach: `a << 1 + 2` is a different tier and reads as C
+/// reads it. What C gets wrong is `a & b == c`, and the band's PLACE in
+/// the table — tighter than comparison — fixes that without any law.
+///
+/// The band groups left, so a run's earlier operator is the left
+/// operand's; a left operand that begins where its parent begins was
+/// written in the same run, one in parentheses begins after them. An
+/// errored left operand has already spoken for the run.
+fn mixed_run(cx: TypeCx, e: ExprId, op: BinOp, l: ExprId) -> BinOp? {
+    if !in_band(op) || cx.errored(l) { return null }
+    let held? = binary_op(cx, l) else { return null }
+    let at? = cx.view.store.expr_span(e) else { return null }
+    let left_at? = cx.view.store.expr_span(l) else { return null }
+    if !in_band(held) || op_symbol(held) == op_symbol(op) || left_at.lo != at.lo { return null }
+    held
+}
+
+/// The operator of a binary node; null for any other node.
+fn binary_op(cx: TypeCx, e: ExprId) -> BinOp? {
+    match cx.view.store.expr(e) { .Binary(op, _, _) -> op, rest -> null }
+}
+
+/// Whether `op` is in the bitwise band.
+fn in_band(op: BinOp) -> bool {
+    match op { .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> true, rest -> false }
+}
+
+fn named_or_op(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     let named: TypeId? = named_side(cx, l) ?? named_side(cx, r)
     if named != null && !named_agree(cx, l, r, named!) { return cx.error_type }
     let answer = op_type(cx, e, op, l, r)
@@ -135,7 +172,7 @@ fn op_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId
 /// compiler cannot read traps instead — `avra_int_shl` guards it, and
 /// both engines call that same body, so neither can be wrong alone.
 fn shifted_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
-    let count? = cx.view.store.expr(r).int_of() else { return op_over(cx, op, l, r, Type.Int, Type.Int) }
+    let count? = cx.view.store.valued(r).int_of() else { return op_over(cx, op, l, r, Type.Int, Type.Int) }
     if count < 0 || count > 63 { return bad_shift_count(cx, r, count) }
     op_over(cx, op, l, r, Type.Int, Type.Int)
 }
@@ -468,6 +505,19 @@ fn bad_shift_count(mut cx: TypeCx, r: ExprId, count: int) -> TypeId {
                 "a shift count must be between 0 and 63, this is ${count}",
                 "shifted by this",
                 "an `int` is 64 bits, so a wider shift has no answer to give",
+            ),
+        )
+}
+
+fn mixed_bitwise(mut cx: TypeCx, e: ExprId, first: BinOp, second: BinOp) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.mixed_bitwise",
+                cx.loc_of(e),
+                "`${op_symbol(first)}` and `${op_symbol(second)}` in one expression have no agreed order",
+                "two bitwise operators in one run",
+                "write parentheses to say which binds first — `(a | b) & c`",
             ),
         )
 }

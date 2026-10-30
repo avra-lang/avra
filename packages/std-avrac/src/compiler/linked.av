@@ -1,0 +1,109 @@
+//! THE LINKED ANSWER: what a build made of a program, kept as ONE saved answer — its binary
+//! under the program's name, what the build said, and the host fns it exports — with what it
+//! read: the program's inputs as a check's verdict reads them, but each source by its LINED
+//! shape (a task's `file:line` is in the binary), the files the link read and the tools that
+//! made it. It stands while every read does; a text that moved and kept its lined shape leaves
+//! the binary standing and its warnings said again from their facts rows.
+use core.{hex, unhex}
+use @std.relation.stable.{Reader, writer, decoded_with, CodecFault}
+use compiler.store.{Store, Stored, Reading, node_key}
+
+/// What a build said, beside the binary it kept, and that binary's digest once it is kept.
+export type LinkedSaid = { said: CheckSaid, after: string, host_fns: List<string>, bin: string? = null }
+
+impl LinkedSaid {
+    fn warnings() -> string { spoken([self.said.warnings(), self.after]) }
+}
+
+export fn linked_wire(l: LinkedSaid) -> string {
+    let w = writer()
+    w.text(verdict_wire(l.said))
+    w.text(l.after)
+    written_texts(w, l.host_fns)
+    w.present(l.bin != null)
+    if l.bin != null { w.text(l.bin!) }
+    hex(w.bytes())
+}
+
+export fn linked_of_wire(raw: string) -> LinkedSaid? {
+    let b? = unhex(raw) else { return null }
+    match decoded_with(b, read_linked) { .Ok(l) -> l, .Err(_) -> null }
+}
+
+fn read_linked(r: Reader) -> Result<LinkedSaid, CodecFault> {
+    let said? = verdict_of_wire(r.text()?) else { fail CodecFault.NotVariant }
+    let after = r.text()?
+    let host_fns = read_texts(r)?
+    if !r.present()? { return LinkedSaid { said: said, after: after, host_fns: host_fns } }
+    LinkedSaid { said: said, after: after, host_fns: host_fns, bin: r.text()? }
+}
+
+impl Workspace {
+    /// Where the linked answer for `named` is kept, and its binary beside it: the program's
+    /// name, never an input.
+    fn linked_key(named: string) -> string { node_key(Stored.Unit, ["linked", self.root, named]) }
+
+    /// What a link of `under` reads, at its digests now — none when the host cannot tell a
+    /// tool, which makes nothing a kept binary can be trusted for.
+    fn link_readings(under: Keyed, tools: Toolchain) -> List<Reading>? {
+        let tooled? = tools_reading(tools.tools) else { return null }
+        let reads = self
+            .program_reads(under.named, !tools.debug)
+            .concat([VerdictRead.Text(f) for f in under.beside])
+            .concat([VerdictRead.Object(f) for f in self.linked_files(tools.runtime, tools.target)])
+        self.readings(reads).concat([tooled])
+    }
+
+    /// Whether one of a link's reads still stands: the tools against the tools now, every
+    /// other read as the verdict's does.
+    fn link_read_stands(r: Reading, moved: Cell<List<string>>, tools: Toolchain) -> bool {
+        if r.name == TOOLS_READ { return tools_reading(tools.tools)?.digest == r.digest }
+        self.verdict_read_stands(r, moved)
+    }
+
+    /// THE LINKED ANSWER KEPT: the binary first, then what the build said with what it read —
+    /// a read list never stands in front of an answer that was not kept.
+    fn keep_linked(store: Store, under: Keyed, staged: string, said: LinkedSaid, tools: Toolchain) {
+        self.keep_closure(under.named)
+        let key = self.linked_key(under.named)
+        if !store.keep_file(Stored.Bin, key, staged, [key]) { return }
+        let reads? = self.link_readings(under, tools) else { return }
+        let _ = store
+            .keep_reading(Stored.Unit, key, linked_wire(said with { bin: digest_of_binary(staged) }), reads)
+    }
+
+    /// A BINARY THAT STANDS for `under`, placed where a fresh one would be — with what its build
+    /// said, its places said again wherever a text moved and kept its lined shape.
+    fn kept_linked(under: Keyed, binary: string, tools: Toolchain) -> BuildOutcome? {
+        let store = self.opened_store()
+        let key = self.linked_key(under.named)
+        let row? = self
+            .standing_row(
+                store,
+                key,
+                (r: Reading, moved: Cell<List<string>>) -> self.link_read_stands(r, moved, tools),
+            ) else {
+            return null
+        }
+        let kept? = linked_of_wire(row.bytes) else { return null }
+        if !store.has(Stored.Bin, key) { return null }
+        let said? = self.linked_again(store, key, kept, row.moved) else { return null }
+        if !self.placed_kept(store, key, binary, said.bin) { return null }
+        self.fallback_kept(store, key, binary, tools)
+        BuildOutcome {
+            binary: binary,
+            warnings: said.warnings(),
+            reused: true,
+            host_fns: said.host_fns,
+        }
+    }
+
+    /// What a standing link said, its moved places said again and kept so.
+    fn linked_again(store: Store, key: string, kept: LinkedSaid, moved: List<string>) -> LinkedSaid? {
+        if moved.is_empty() { return kept }
+        let again? = self.said_again(store, kept.said, moved) else { return null }
+        let now = kept with { said: again }
+        self.kept_again(store, key, linked_wire(now))
+        now
+    }
+}
