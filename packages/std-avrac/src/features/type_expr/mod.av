@@ -3,33 +3,29 @@
 //! nullable (`int?`). Ordered choice, LONGEST FIRST: every branch
 //! starts with NAME, so a shorter one placed earlier would win and
 //! strand the rest — the applied branches precede `?`, which
-//! precedes the bare name.
+//! precedes the bare name. `A or B` folds the atoms into one union
+//! ref; a lone atom is the type itself.
 //!
 //! This feature owns no node and no semantics — an annotation is
 //! DATA a builder hands over, never a node a pass walks. Features
 //! that spell a type REFERENCE `type`, the way several already
 //! reference `expression`; an assembly that parses annotations must
 //! therefore include this feature.
-use features.{LanguageFeature, BuilderRow}
+use features.{LanguageFeature}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn type_expr() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name         | build
-        "union_type" | build_union_type
-    }
     let codes = table<DiagCode> {
         kind           | summary
         "type.applied" | "a type applied to arguments it does not take"
     }
     LanguageFeature type_expr {
         gram: grammar {
-            type = t:type_atom ( "or" a:type_atom )* -> union_type(t, a)
+            type = t:type_atom ( ( "or" more:type_atom )+ -> Record.TypeRef(name = "", optional = false, dynamic = false, arrow = false, alternatives = [t, more]) )? @fold(t) -> t
             type_atom = dynamic:"dyn" name:NAME ( optional:"?" )? -> Record.TypeRef(arrow = false)
             type_atom = name:NAME ( "<" args:type ( "," args:type )* ","? ">" )? ( optional:"?" )? -> Record.TypeRef(dynamic = false, arrow = false)
         }
-        builders: rows
         diags: codes
     }
     type_expr
