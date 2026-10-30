@@ -28,15 +28,16 @@ spec "features/expr_spine — a sugar's meaning" {
         then "it answers what `x ^ -1` answers" {
             shown("let x = 5\n~x") == "-6"
         }
-        then "its minted nodes answer for the sugar" {
+        then "its minted nodes answer for the sugar, and the `-1` they hold is a sugar of its own" {
             let p = parse_source("let x = 1\n~x")
             let root = p.store.stmt_value(p.stmts[1])!
             let meant = p.store.meant(root)
             meant != null &&
                 p.store.minted_for(meant!)?.index ?? 0 - 1 == root.index &&
                 p.store.minted_for(root) == null &&
-                p.store.sugars().length == 1 &&
-                p.store.sugars().first()?.index ?? 0 - 1 == root.index
+                p.store.sugars().length == 2 &&
+                p.store.sugars().first()?.index ?? 0 - 1 == root.index &&
+                p.store.expr(p.store.sugars()[1]) is .Neg
         }
         then "the statement notes what it means" {
             let p = parse_source("let x = 1\n~x")
@@ -78,7 +79,7 @@ help: give the operand the type the operator needs — `.length` measures text a
         then "the copy's minted nodes answer for the copy" {
             let p = provided("use @x.c.{inverted}\nlet v = inverted 5 { 1 }\nv", inverting())
             let store = p.ws.parsed(p.ws.file_id("/w/src/main.av")).store
-            store.sugars().length == 2 &&
+            [s for s in store.sugars() if store.expr(s) is .Bitnot].length == 2 &&
                 store
                     .sugars()
                     .all(
