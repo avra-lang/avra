@@ -662,7 +662,7 @@ impl SyntaxArena {
     fn binding_ask(asked: PatId) -> PayloadIs? {
         match self.pat(asked) {
             .Variant(_, args) -> if args.is_empty() { null } else { binding_payload(asked) },
-            .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> binding_payload(asked),
+            .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> binding_payload(asked),
             .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Member(_, _) -> null,
         }
     }
@@ -672,7 +672,7 @@ impl SyntaxArena {
         match self.pat(asked) {
             .Variant(name, _) -> name.of,
             .Typed(_, ty) -> ty.name,
-            .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> "",
+            .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> "",
         }
     }
 
@@ -1204,7 +1204,8 @@ impl SyntaxArena {
     fn pattern_binds(id: PatId) -> List<Binder> {
         match self.pat(id) {
             .Bind(name) or .Typed(name, _) or .Member(_, name) -> [Binder { pat: id, name: name.of }],
-            .Variant(_, args) or .Fields(_, _, args, _) -> flatten([self.pattern_binds(a) for a in args]),
+            .Variant(_, args) -> flatten([self.pattern_binds(a) for a in args]),
+            .Fields(_, fields, _) -> flatten([self.pattern_binds(f.pat) for f in fields]),
             .Seq(before, middle, after) -> flatten([self.pattern_binds(a) for a in before.concat(middle).concat(after)]),
             .Format(_, parts) -> named_binders(id, bound_names(parts)),
             .Quote(body) -> named_binders(id, quote_pat_names(quote_pat_holes(self, body))),
@@ -1221,7 +1222,7 @@ impl SyntaxArena {
     fn irrefutable(id: PatId) -> bool {
         match self.pat(id) {
             .Wild or .Rest or .Bind(_) -> true,
-            .Variant(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> false,
+            .Variant(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> false,
         }
     }
 
@@ -1246,12 +1247,12 @@ impl SyntaxArena {
                     fp_list([self.pat_fingerprint(a) for a in after]),
                 ],
             ),
-            .Fields(name, fields, args, open) -> fp(
+            .Fields(name, fields, open) -> fp(
                 316,
                 [
                     fp_str(name.of),
-                    fp_list([fp_str(f.of) for f in fields]),
-                    fp_list([self.pat_fingerprint(a) for a in args]),
+                    fp_list([fp_str(f.name.of) for f in fields]),
+                    fp_list([self.pat_fingerprint(f.pat) for f in fields]),
                     if open { 1 } else { 0 },
                 ],
             ),
