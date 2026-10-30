@@ -1,0 +1,61 @@
+//! AN AGREEMENT IS KEPT WITH WHAT IT READ: a program the evaluator agreed with is not
+//! evaluated again while the program, its `.expected` and every file it can reach have the
+//! digests the agreement read, and is the moment any of them moves. `scratch_dir` and
+//! `avra_ran` are the neighbouring tests' own: this module shares one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+
+/// A package of one module and one program test over it. Answers the package's root.
+fn proof_package(name: string) -> string {
+    let root = "${scratch_dir()}/proofs_${name}_${stamp()}"
+    let _ = make_dirs("${root}/src/tests/greet")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${root}/src/greeting.av", "export fn word() -> string { \"hi\" }\n")
+    let _ = write_text("${root}/src/unrelated.av", "export fn other() -> int { 1 }\n")
+    let _ = write_text(
+        "${root}/src/tests/greet/greet.av",
+        "use greeting.{word}\n\nprintln(word())\n",
+    )
+    let _ = write_text("${root}/src/tests/greet/greet.expected", "hi\n")
+    root
+}
+
+/// What `avra test` says of the programs it owes proofs for: the `proofs:` line.
+fn owed_line(root: string) -> string {
+    match avra_ran(["test", root]) {
+        .Ok(o) -> [l for l in (o.out.stdout + o.out.stderr).split("\n") if l.starts_with("proofs:")].first() ?? "none",
+        .Err(_) -> "refused",
+    }
+}
+
+fn owes(line: string, n: int) -> bool { line.starts_with("proofs: ${n} of 1 programs owed") }
+
+spec "test — an agreement stands on what it read" {
+    given "a program the evaluator agreed with" {
+        then "is owed the first time, and the second asks nothing: the suite's binary stands" {
+            let root = proof_package("warm")
+            owes(owed_line(root), 1) && owed_line(root) == "none"
+        }
+        then "is not owed again when only a file it cannot reach moves: its proof stands though the suite rebuilds" {
+            let root = proof_package("unrelated")
+            let _ = owed_line(root)
+            let _ = write_text("${root}/src/unrelated.av", "export fn other() -> int { 2 }\n")
+            owes(owed_line(root), 0)
+        }
+        then "is owed again when a module it reaches moves, whatever the move" {
+            let root = proof_package("module")
+            let _ = owed_line(root)
+            let _ = write_text(
+                "${root}/src/greeting.av",
+                "// moved\nexport fn word() -> string { \"hi\" }\n",
+            )
+            owes(owed_line(root), 1)
+        }
+        then "is owed again when the file holding the text it must print moves, though the text does not" {
+            let root = proof_package("expected")
+            let _ = owed_line(root)
+            let _ = write_text("${root}/src/tests/greet/greet.expected", "hi")
+            owes(owed_line(root), 1)
+        }
+    }
+}
