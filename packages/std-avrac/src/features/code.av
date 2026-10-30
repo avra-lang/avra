@@ -223,26 +223,26 @@ impl Code {
     }
 
     /// This node's own RANGE `for` head — `for NAME in FROM..TO {
-    /// STMTS }` — absent for every other shape, `ForEach` included. A
-    /// quote pattern cannot hold the loop variable open itself: the
-    /// range desugars to a `cond`/`step` that reads the variable
-    /// AGAIN (`features/loops/builders.av`'s `build_for`), and the
-    /// matcher's NAME-SEAT binder and an ordinary value `Hole` share
-    /// one accumulator slot under two incompatible comparisons — a
-    /// whole-statement `own_name_at` check, then a `subtree_fp` one —
-    /// so a pattern naming the loop variable twice can never hit
-    /// (avra-8sb5.25.45). Read structurally instead, off the
-    /// declaration's own fields.
+    /// STMTS }` — absent for every other shape: a `for` over anything
+    /// but a range, and every other statement.
     fn for_range() -> ForRange? {
         match self.at {
             .Stmt(id) -> match self.of.view.store.stmt(id) {
-                .For(name, from, to, _, _, stmts) -> ForRange {
-                    name: name.of,
-                    from: Code { of: self.of, at: At.Expr(from) },
-                    to: Code { of: self.of, at: At.Expr(to) },
-                    body: [Code { of: self.of, at: At.Stmt(s) } for s in stmts],
-                },
+                .ForEach(null, name, subject, stmts) -> self.ranged(name.of, subject, stmts),
                 _ -> null,
+            },
+            _ -> null,
+        }
+    }
+
+    /// The range a `for` walks, with its binder and body.
+    fn ranged(name: string, subject: ExprId, stmts: List<StmtId>) -> ForRange? {
+        match self.of.view.store.expr(subject) {
+            .Range(from, to) -> ForRange {
+                name: name,
+                from: Code { of: self.of, at: At.Expr(from) },
+                to: Code { of: self.of, at: At.Expr(to) },
+                body: [Code { of: self.of, at: At.Stmt(s) } for s in stmts],
             },
             _ -> null,
         }

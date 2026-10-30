@@ -1,7 +1,6 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{void_ref, Expr, binop_of, Pat, want, pronoun_param, Plain, Scoped, some_list}
-use features.{LangNode, Builder, expr_id_at, zip_defect, aligned_binds, params_at}
-use grammar.{Token}
+use core.{void_ref, Expr, Pat, pronoun_param, Plain, Scoped, some_list}
+use features.{LangNode, Builder, expr_id_at, params_at}
 
 fn build_int_lit(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
@@ -49,22 +48,6 @@ fn build_bind_pat(b: Builder) -> Result<LangNode, string> {
     b.make_pat(Pat.Bind(Scoped(n.text)))
 }
 
-/// `-v` is `0 - v`: the parse desugars, so no pass learns a node.
-/// A LITERAL FOLDS INSTEAD — `-1` and `-1.5` ARE literals, so a const
-/// takes them and every reader that asks the value protocol gets
-/// one. Only the literal: `-A` needs a general folder, which is a
-/// core event because consts cannot match another feature's node.
-fn build_neg(b: Builder) -> Result<LangNode, string> {
-    let v = b.expr(0)?
-    let held: int? = b.store.expr(v).int_of()
-    if held != null { return b.make_expr(Expr.IntLit(0 - held!)) }
-    let bits: int? = b.store.expr(v).bits_of()
-    if bits != null { return b.make_expr(Expr.FloatLit(bits! ^ (1 << 63))) }
-    let zero = b.store.alloc_expr(Expr.IntLit(0), b.span)
-    let minus = want(binop_of("-"), "the minus operator")?
-    b.make_expr(Expr.Binary(minus, zero, v))
-}
-
 /// `subject.name(args)` — a method call; an argument the pronoun rides
 /// becomes a one-seat lambda (`xs.map(it * 2)`).
 fn build_method_link(b: Builder) -> Result<LangNode, string> {
@@ -90,70 +73,6 @@ fn build_trailing(b: Builder) -> Result<LangNode, string> {
     let body = b.block_of(b.stmts(1)?)
     let seats = if written.is_empty() && b.store.pronoun_rides(body) { [pronoun_param] } else { written }
     b.make_expr(Expr.Lambda(seats, body))
-}
-
-/// The one catch builder — the six surfaces are alternatives of ONE
-/// optional group, so `disjunction` parses once and the form is read
-/// off which captures arrived: braced enum arms (cv/cb/ca), braced
-/// union arms (tb/tn/ta), one selective enum arm (sv/sb/sa), one
-/// union arm (ub/un/ua), a catch-all bind (eb/ea), or a value (rv).
-/// No captures at all means no `catch` was written. A union arm's
-/// `name: Type` reverses the enum arm's `.Variant(name)` — the bind
-/// sits where the dot's variant would, the type where its payload
-/// bind would — so both spellings hand `Expr.Catch` the same one
-/// shape: a `Plain` naming what to match, a `Scoped` naming the bind.
-fn build_catch(b: Builder) -> Result<LangNode, string> {
-    let l = b.expr(0)?
-    let rv = b.exprs(10)?
-    if !rv.is_empty() { return b.make_expr(Expr.Catch(l, [Plain("")], [Scoped("")], [rv[0]])) }
-    let eb = b.tokens(8)?
-    if !eb.is_empty() {
-        let ea = b.expr(9)?
-        return b.make_expr(Expr.Catch(l, [Plain("")], [Scoped(eb[0].text)], [ea]))
-    }
-    let ub = b.tokens(14)?
-    if !ub.is_empty() {
-        let ua = b.expr(16)?
-        let un = b.tokens(15)?
-        return b.make_expr(Expr.Catch(l, [Plain(un[0].text)], [Scoped(ub[0].text)], [ua]))
-    }
-    let sv = b.tokens(5)?
-    if !sv.is_empty() {
-        let sa = b.expr(7)?
-        let sb = b.tokens(6)?
-        let bound: Token? = sb.first()
-        return b.make_expr(Expr.Catch(l, [Plain(sv[0].text)], [Scoped(bound?.text ?? "")], [sa]))
-    }
-    let tb = b.tokens(11)?
-    if !tb.is_empty() {
-        let tn = b.tokens(12)?
-        let ta = b.exprs(13)?
-        if tb.length != tn.length || tb.length != ta.length { return .Err(zip_defect) }
-        return b
-            .make_expr(Expr.Catch(l, [Plain(n.text) for n in tn], [Scoped(n.text) for n in tb], ta))
-    }
-    let cv = b.tokens(2)?
-    if cv.is_empty() {
-        // the keyword is the witness: `catch { }` wrote a recovery
-        // with nothing in it; NO keyword means no catch at all.
-        let ck = b.tokens(1)?
-        if ck.is_empty() { return b.wrap_expr(l) }
-        return .Err("a `catch` needs at least one arm")
-    }
-    let ca = b.exprs(4)?
-    let ends: int? = b.span_end()
-    if cv.length != ca.length { return .Err(zip_defect) }
-    if ends == null { return .Err("defect: a catch without a span — the arena and the grammar disagree") }
-    b
-        .make_expr(
-            Expr
-                .Catch(
-                    l,
-                    [Plain(v.text) for v in cv],
-                    [Scoped(t) for t in aligned_binds(cv, b.tokens(3)?, ends!)],
-                    ca,
-                ),
-        )
 }
 
 // ── voices ──
