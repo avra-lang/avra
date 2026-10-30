@@ -64,6 +64,7 @@ use features.{
     LANGUAGE_HOME,
 }
 use compiler.families.{Family}
+use @std.relation.{query}
 use compiler.store.{Store}
 
 const HELD_OWNER: string = "references"
@@ -163,18 +164,6 @@ impl Workspace {
                 "defect: the references relation settles after typing, and something asked for it while a file was still typing",
             )
         }
-    }
-
-    /// Whether a declaration is read as a value anywhere, as the pass settled it: the cell a
-    /// consumer of that one bit stands on, so a use of another name leaves it standing.
-    fn read_found_of(d: DeclId) -> int {
-        if self.db.family_active(Family.Resolved.ordinal) { return 0 }
-        let k = key(Family.ReadFound, d.index)
-        if !(self.db.ask(k) is .Compute) { return 0 }
-        self.db.begin(k)
-        let _ = self.references()
-        self.db.settle(k, fp(43, [if self.decls.read_flag_of(d) { 1 } else { 0 }]))
-        0
     }
 
     /// The references held files' bodies once made to anything a read file holds, read back
@@ -539,4 +528,12 @@ fn expr_use(d: DeclId, f: FileId, e: ExprId, kind: UseKind) -> Ref { Ref { decl:
 
 fn references_refused(found: int) -> string {
     "the references relation is filed whole or not at all — its ${found} rows were refused, so every answer from it is the last pass's"
+}
+
+/// Whether a declaration is read as a value anywhere, as the references pass settled it: a
+/// consumer of that one bit stands on this answer, so a use of another name leaves it standing.
+@query
+fn read_found(ws: Workspace, d: DeclId) -> bool {
+    let _ = ws.references()
+    ws.decls.read_flag_of(d)
 }

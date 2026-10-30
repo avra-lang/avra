@@ -9,12 +9,12 @@
 // file names their stable, append-only ordinals directly: `Receivers`
 // is 16, `Syntax` is 25 (places in `Family`, compiler/workspace.av).
 use @std.avrac.testing.{test_workspace}
-use compiler.{Workspace}
+use compiler.{Workspace, write_summary, write_summary_answers}
 use compiler.host.{memory_host}
 use core.{DeclId}
 use @std.relation.engine.{Key}
 
-fn summary_key(d: DeclId) -> Key { Key { family: family_ordinal("WriteSummary"), arg: d.index } }
+fn summary_key(ws: Workspace, d: DeclId) -> Key { write_summary_answers().under(ws.query_db()).int_key(d.index) }
 
 fn syntax_key(d: DeclId) -> Key { Key { family: family_ordinal("Syntax"), arg: d.index } }
 
@@ -46,7 +46,7 @@ fn receivers_source(a_body: string, b_body: string) -> string {
 /// would settle on.
 fn receivers_synced_b(ws: Workspace) -> int {
     let _ = ws.items(ws.file_id("/w/src/main.av"))
-    let _ = ws.summary_of(receivers_decl_named(ws, "b"))
+    let _ = write_summary(ws, receivers_decl_named(ws, "b"))
     ws.syntax(receivers_decl_named(ws, "b"))
 }
 
@@ -56,10 +56,10 @@ spec "compiler/receivers — a foreign store_of read depends on the declaration'
             let ws = receivers_workspace(receivers_source("1", "2"))
             let _ = ws.items(ws.file_id("/w/src/main.av"))
             let b = receivers_decl_named(ws, "b")
-            let _ = ws.summary_of(b)
+            let _ = write_summary(ws, b)
             ws
                 .db
-                .edges_by_reader(summary_key(b))
+                .edges_by_reader(summary_key(ws, b))
                 .any((k: Key) -> k.family == syntax_key(b).family && k.arg == syntax_key(b).arg)
         }
     }

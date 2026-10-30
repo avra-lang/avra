@@ -610,10 +610,8 @@ export type Workspace = {
     /// The whole-program raised-error fixpoint over `ErrorSite` — its
     /// members' in-flight answers; everyone else reads `Raised`.
     raised_fixpoint: Fixpoint<List<TypeId>>,
-    summaries: Table<Summary>,
     walking: Cell<bool>,
     walk_family: Cell<int>,
-    cancel_summaries: Table<CancelEvidence>,
     cancel_walking: Cell<bool>,
     cancel_walk_family: Cell<int>,
     /// The whole-program read-reach fixpoint over the declarations' call
@@ -825,21 +823,6 @@ fn manifest_verified(ws: Workspace, arg: int) -> int {
     ws.db.changed_at(key(Family.Manifest, arg))
 }
 // LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
-fn write_summary_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.summary_of(decl_at_arg(arg)))
-    ws.db.changed_at(key(Family.WriteSummary, arg))
-}
-// LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
-fn consumed_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.consumed_cell(decl_at_arg(arg)))
-    ws.db.changed_at(key(Family.Consumed, arg))
-}
-// LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
-fn read_found_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.read_found_of(decl_at_arg(arg)))
-    ws.db.changed_at(key(Family.ReadFound, arg))
-}
-// LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
 fn writes_verified(ws: Workspace, arg: int) -> int {
     touch(ws.writes_of(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Writes, arg))
@@ -919,11 +902,6 @@ fn input_verified(ws: Workspace, arg: int) -> int {
     touch(ws.input_at(arg))
     ws.db.changed_at(key(Family.Input, arg))
 }
-// LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
-fn cancel_summary_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.cancel_evidence_of(decl_at_arg(arg)))
-    ws.db.changed_at(key(Family.CancelSummary, arg))
-}
 
 /// The per-family dispatch: the ONE fn value the kernel holds, never a
 /// list of per-family fns. Each arm is a DIRECT call to a named
@@ -948,7 +926,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .LiftLowered -> lift_lowered_verified(ws, arg),
         .Lifted -> lifted_verified(ws, arg),
         .Manifest -> manifest_verified(ws, arg),
-        .WriteSummary -> write_summary_verified(ws, arg),
         .Expanded -> expanded_verified(ws, arg),
         .Plain -> plain_verified(ws, arg),
         .References -> references_verified(ws, arg),
@@ -963,14 +940,11 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Marks -> marks_verified(ws, arg),
         .Writes -> writes_verified(ws, arg),
         .CancelBits -> cancel_bits_verified(ws, arg),
-        .ReadFound -> read_found_verified(ws, arg),
-        .Consumed -> consumed_verified(ws, arg),
         .Admitted -> admitted_verified(ws, arg),
         .Named -> named_verified(ws, arg),
         .ReadReach -> read_reach_verified(ws, arg),
         .DeclReads -> decl_reads_verified(ws, arg),
         .Input -> input_verified(ws, arg),
-        .CancelSummary -> cancel_summary_verified(ws, arg),
     }
 }
 
@@ -1111,10 +1085,8 @@ fn built(
         clock: clock,
         phases: list_cell(),
         raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, Family.Raised.ordinal, [], raised_join, raised_fp),
-        summaries: new_table<Summary>(),
         walking: Cell.new(false),
         walk_family: Cell.new(0 - 1),
-        cancel_summaries: new_table<CancelEvidence>(),
         cancel_walking: Cell.new(false),
         cancel_walk_family: Cell.new(0 - 1),
         read_fixpoint: new_fixpoint<List<int>>(kernel, Family.DeclReads.ordinal, [], places_join, places_fp),
@@ -1338,10 +1310,6 @@ impl Workspace {
         true
     }
 
-    fn consumed_ensured(d: DeclId) {
-        let _ = self.consumed_cell(d)
-    }
-
     /// Runs the references pass and says so, or says it cannot: a whole-program pass
     /// never runs inside a resolve.
     fn refs_ensured() -> bool {
@@ -1353,7 +1321,7 @@ impl Workspace {
     /// Runs the references pass for one declaration's read bit and says so, or says it cannot.
     fn read_found_ensured(d: DeclId) -> bool {
         if self.db.family_active(Family.Resolved.ordinal) { return false }
-        let _ = self.read_found_of(d)
+        let _ = read_found(self, d)
         true
     }
 
@@ -2685,7 +2653,6 @@ export fn family_code_hash(f: Family) -> string {
         .LiftLowered -> code_hash(lift_lowered_verified) ?? "",
         .Lifted -> code_hash(lifted_verified) ?? "",
         .Manifest -> code_hash(manifest_verified) ?? "",
-        .WriteSummary -> code_hash(write_summary_verified) ?? "",
         .Expanded -> code_hash(expanded_verified) ?? "",
         .Plain -> code_hash(plain_verified) ?? "",
         .References -> code_hash(references_verified) ?? "",
@@ -2700,13 +2667,10 @@ export fn family_code_hash(f: Family) -> string {
         .Marks -> code_hash(marks_verified) ?? "",
         .Writes -> code_hash(writes_verified) ?? "",
         .CancelBits -> code_hash(cancel_bits_verified) ?? "",
-        .ReadFound -> code_hash(read_found_verified) ?? "",
-        .Consumed -> code_hash(consumed_verified) ?? "",
         .Admitted -> code_hash(admitted_verified) ?? "",
         .Named -> code_hash(named_verified) ?? "",
         .ReadReach -> code_hash(read_reach_verified) ?? "",
         .DeclReads -> code_hash(decl_reads_verified) ?? "",
         .Input -> code_hash(input_verified) ?? "",
-        .CancelSummary -> code_hash(cancel_summary_verified) ?? "",
     }
 }

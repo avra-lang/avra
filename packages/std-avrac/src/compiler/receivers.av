@@ -19,7 +19,6 @@ use core.{
     MethodParts,
     fp,
     fp_list,
-    fp_str,
     touch,
     filled,
     SeatMark,
@@ -30,6 +29,7 @@ use core.{
 }
 use features.{NameFacts, Decls, Decl, bound_decl_of, nothing, property_row}
 use @std.meta.{bracket}
+use @std.relation.{query}
 use @std.relation.engine.{Key}
 use compiler.families.{Family}
 
@@ -78,7 +78,7 @@ impl Workspace {
 
     /// The fns a member calls whose bits the walk settles before its own.
     fn writes_callees(d: DeclId) -> List<DeclId> {
-        once_each([f.callee for f in self.summary_of(d).edges if self.writes_member(f.callee)])
+        once_each([f.callee for f in write_summary(self, d).edges if self.writes_member(f.callee)])
     }
 
     /// A held declaration's recorded bits, as the cell a reader stands on.
@@ -94,7 +94,7 @@ impl Workspace {
     /// One set's least fixpoint, recorded and settled: every member's cell stands on the
     /// summaries of the set and on the settled bits of what the set calls from outside.
     fn settle_writes(members: List<DeclId>) {
-        let sums = [self.summary_of(m) for m in members]
+        let sums = [write_summary(self, m) for m in members]
         let states = scc_fixpoint(
             members,
             (m: DeclId) -> filled(self.decls.seat_count(m), false),
@@ -111,7 +111,7 @@ impl Workspace {
             for j, w in states[i] { if w { self.decls.record_seat_written(m, j) } }
             let k = key(Family.Writes, m.index)
             self.db.begin(k)
-            for x in members { touch(self.summary_of(x)) }
+            for x in members { touch(write_summary(self, x)) }
             for c in outside { touch(self.writes_of(c)) }
             self.db.settle(k, self.writes_word(m))
         }
@@ -131,35 +131,6 @@ impl Workspace {
         f.to == 0 && self.decls.declares_writing(f.callee) || bit_at(read(f.callee), f.to)
     }
 
-    /// A fn's own evidence as a settled row: asking IS the query, and the row stands until the
-    /// body, the seats or what the body reads move.
-    fn summary_of(d: DeclId) -> Summary {
-        let k = key(Family.WriteSummary, d.index)
-        if !(self.db.ask(k) is .Compute) { return self.summaries.at(d.index) ?? Summary { own: [], edges: [] } }
-        self.db.begin(k)
-        touch(self.sig(d))
-        let s = self.summary(d)
-        self.summaries.keep(d.index, s)
-        self.db.settle(k, self.summary_word(s))
-        s
-    }
-
-    /// A summary as a reader can tell it: its own bits, and each flow named by the callee's
-    /// durable key, so a bystander renamed or added moves nothing.
-    fn summary_word(s: Summary) -> int {
-        fp(
-            19,
-            [
-                fp_list([if b { 1 } else { 0 } for b in s.own]),
-                fp_list([self.flow_word(f) for f in s.edges]),
-            ],
-        )
-    }
-
-    fn flow_word(f: Flow) -> int {
-        fp(20, [f.from, f.to, fp_str(Decl.key_text(self.decls.raw_decl(f.callee).key()))])
-    }
-
     /// The scratch frame a walk's own reads land in, minted once into `family`: a read made
     /// while finding the sets belongs to no member, and never to whoever asked.
     fn frame_in(family: Cell<int>) -> Key {
@@ -170,6 +141,14 @@ impl Workspace {
         family.set(minted)
         Key { family: minted, arg: 0 }
     }
+}
+
+/// A fn's own evidence: asking IS the query, and it stands until the body, the seats or what
+/// the body reads move.
+@query
+fn write_summary(ws: Workspace, d: DeclId) -> Summary {
+    touch(ws.sig(d))
+    ws.summary(d)
 }
 
 /// Each declaration once, in first-seen order.
