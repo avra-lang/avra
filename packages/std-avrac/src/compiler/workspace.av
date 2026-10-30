@@ -1920,12 +1920,23 @@ impl Workspace {
     /// The declarations a file MINTS into the one table; the answer's
     /// hash is the item tree's — names and kinds.
     fn items(f: FileId) -> List<DeclId> {
+        // AN UNREAD FILE'S ITEMS ARE AN INPUT: minted once from what its last read kept,
+        // never parsed and never computed
+        if self.is_held(f) {
+            return items_of(
+                self
+                    .relation(Family.Items)
+                    .input(
+                        f.index,
+                        () -> DbRow.Items(self.items_minted(f)),
+                        (_r: DbRow) -> self.rows_print(f),
+                    ),
+            )
+        }
         match self.relation(Family.Items).start(f.index) {
             .Reuse(value) -> { return items_of(value) },
             .Compute -> nothing(),
         }
-        // AN UNREAD FILE IS MINTED FROM THE ITEMS ITS LAST READ KEPT, never parsed
-        if self.is_held(f) { return self.items_settled(f, self.items_minted(f)) }
         self.decls.note_rows(f, 0)
         let p = self.parsed(f)
         let out = self.items_settled(f, self.decls.admit(f, p.store, p.stmts))
@@ -1935,16 +1946,11 @@ impl Workspace {
 
     /// A file's `Items` settled: the top-level ids, hashed by every row the file minted.
     fn items_settled(f: FileId, ids: List<DeclId>) -> List<DeclId> {
-        items_of(
-            self
-                .relation(Family.Items)
-                .finish(
-                    f.index,
-                    DbRow.Items(ids),
-                    fp_list([self.row_print(d) for d in self.decls.decls_so_far(f)]),
-                ),
-        )
+        items_of(self.relation(Family.Items).finish(f.index, DbRow.Items(ids), self.rows_print(f)))
     }
+
+    /// Every row a file minted, as one hash.
+    fn rows_print(f: FileId) -> int { fp_list([self.row_print(d) for d in self.decls.decls_so_far(f)]) }
 
     /// A file's rows standing before a reader reads them through their buckets: its
     /// admission asked under a cell whose hash never moves. A held file's rows stand
