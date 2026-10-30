@@ -32,7 +32,6 @@ use core.{
     MapEntry,
     Refused,
     CatchArm,
-    Plain,
     flatten,
     some_list,
     SeatMark,
@@ -123,6 +122,9 @@ impl Slots for Builder {
     fn map_entries_of(label: string) -> Result<List<MapEntry>, string> {
         .Ok(map_entries_at(self.args, self.slot_of(label)?))
     }
+
+    /// The span this build was written at.
+    fn built_at() -> Span? { self.span }
 
     /// The catch arms the payload `label` carries.
     fn catch_arms_of(label: string) -> Result<List<CatchArm>, string> {
@@ -323,11 +325,6 @@ impl Builder {
         .Err(facet_not_a_pattern(f.name))
     }
 
-    /// One match arm, as data — `guard` null for an unguarded one.
-    fn make_arm(pats: List<PatId>, value: ExprId, guard: ExprId?) -> Result<LangNode, string> {
-        .Ok(LangNode.NArm(Arm { pats: pats, guard: guard, value: value }))
-    }
-
     /// The grammar's own refusal spoken where this branch matched, and an
     /// error node standing in its place so the parse goes on.
     fn refused(kind: string, words: RefusalWords) -> Result<LangNode, string> {
@@ -335,57 +332,6 @@ impl Builder {
             .store
             .refuse(Refused { kind: kind, message: words.message, help: words.help, span: self.span })
         .Ok(LangNode.NExpr(self.store.alloc_expr(Expr.Error, self.span)))
-    }
-
-    /// One match arm read off its rule's labels.
-    fn arm() -> Result<LangNode, string> {
-        self.make_arm(self.pats_of("pats")?, self.expr_of("value")?, self.expr_opt_of("guard")?)
-    }
-
-    /// One spec case read off its rule's labels, in the group its
-    /// `given` names later.
-    fn case() -> Result<LangNode, string> {
-        .Ok(
-            LangNode
-                .NCases(
-                    [
-                        Case {
-                            group: self.text_of("group")?,
-                            name: self.text_of("name")?,
-                            body: self.expr_of("body")?,
-                            span: self.span,
-                        },
-                    ],
-                ),
-        )
-    }
-
-    /// One `catch` arm read off its rule's labels — a name it does not
-    /// write is `""`.
-    fn catch_arm() -> Result<LangNode, string> {
-        .Ok(
-            LangNode
-                .NCatchArm(
-                    CatchArm {
-                        variant: Plain((self.texts_of("variant")?).first() ?? ""),
-                        bind: Scoped((self.texts_of("bind")?).first() ?? ""),
-                        value: self.expr_of("value")?,
-                    },
-                ),
-        )
-    }
-
-    /// One imported item read off its rule's labels.
-    fn use_item() -> Result<LangNode, string> {
-        .Ok(
-            LangNode
-                .NUseItem(
-                    UseItem {
-                        name: self.text_of("name")?,
-                        rename: (self.tokens(self.slot_of("rename")?)?).first()?.text,
-                    },
-                ),
-        )
     }
 
     /// One map entry, as data.
