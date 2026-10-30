@@ -153,7 +153,7 @@ type ExternNames = { decls: int, names: List<string> }
 type Suspects = { files: int, rows: Map<string, bool>, paths: Map<string, bool> }
 
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, text_scans: Cell<Map<string, TextScan>>, lex_words: Cell<Map<string, LexWords>>, lexings: Cell<Map<string, Lexing>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, sig_producer: Cell<Producer?>, build_mode: Cell<string>, one_shot: Cell<bool> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, staged: Cell<Map<string, int>>, lex_words: Cell<Map<string, LexWords>>, lexings: Cell<Map<string, Lexing>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, sig_producer: Cell<Producer?>, build_mode: Cell<string>, one_shot: Cell<bool> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -165,7 +165,7 @@ fn new_keys() -> Keys {
     let no_object: Map<string, string> = {}
     let no_parts: Map<string, KeyParts> = {}
     let no_digests: Map<string, string> = {}
-    let no_scans: Map<string, TextScan> = {}
+    let no_staged: Map<string, int> = {}
     let no_words: Map<string, LexWords> = {}
     let no_lexings: Map<string, Lexing> = {}
     let no_tokens: Map<string, Spelling> = {}
@@ -186,7 +186,7 @@ fn new_keys() -> Keys {
         object_keys: Cell.new(no_object),
         object_parts: Cell.new(no_parts),
         text_digests: Cell.new(no_digests),
-        text_scans: Cell.new(no_scans),
+        staged: Cell.new(no_staged),
         lex_words: Cell.new(no_words),
         lexings: Cell.new(no_lexings),
         file_tokens: Cell.new(no_tokens),
@@ -925,18 +925,6 @@ fn input_verified(ws: Workspace, arg: int) -> int {
     touch(ws.input_at(arg))
     ws.db.changed_at(key(Family.Input, arg))
 }
-fn block_scan_verified(ws: Workspace, arg: int) -> int {
-    touch(file_lexes_block(ws, ws.input_names.get()[arg].key))
-    ws.db.changed_at(key(Family.BlockScan, arg))
-}
-fn component_scan_verified(ws: Workspace, arg: int) -> int {
-    touch(file_declares_component(ws, ws.input_names.get()[arg].key))
-    ws.db.changed_at(key(Family.ComponentScan, arg))
-}
-fn component_names_verified(ws: Workspace, arg: int) -> int {
-    touch(component_names(ws, ws.input_names.get()[arg].key))
-    ws.db.changed_at(key(Family.ComponentNames, arg))
-}
 // LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
 fn cancel_summary_verified(ws: Workspace, arg: int) -> int {
     touch(ws.cancel_evidence_of(decl_at_arg(arg)))
@@ -989,9 +977,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .ReadReach -> read_reach_verified(ws, arg),
         .DeclReads -> decl_reads_verified(ws, arg),
         .Input -> input_verified(ws, arg),
-        .BlockScan -> block_scan_verified(ws, arg),
-        .ComponentScan -> component_scan_verified(ws, arg),
-        .ComponentNames -> component_names_verified(ws, arg),
         .CancelSummary -> cancel_summary_verified(ws, arg),
     }
 }
@@ -1775,7 +1760,7 @@ impl Workspace {
     /// The components a file's own tokens export, counted as a read.
     fn lexed_components(path: string) -> List<string> {
         self.records.component_lexes.set(self.records.component_lexes.get() + 1)
-        self.text_scan(path).exported
+        exported_in(self.scanning(path), path)
     }
 
     /// A provider read as it parses — under its OWN block words, since a
@@ -2736,9 +2721,6 @@ export fn family_code_hash(f: Family) -> string {
         .ReadReach -> code_hash(read_reach_verified) ?? "",
         .DeclReads -> code_hash(decl_reads_verified) ?? "",
         .Input -> code_hash(input_verified) ?? "",
-        .BlockScan -> code_hash(block_scan_verified) ?? "",
-        .ComponentScan -> code_hash(component_scan_verified) ?? "",
-        .ComponentNames -> code_hash(component_names_verified) ?? "",
         .CancelSummary -> code_hash(cancel_summary_verified) ?? "",
     }
 }
