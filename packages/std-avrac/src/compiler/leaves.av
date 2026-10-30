@@ -124,12 +124,31 @@ impl Workspace {
     fn type_digest(t: TypeId) -> int { fp_str(self.type_ref(t)) }
 
     /// A signature's digest is its wire: types by their spelling, never by the interner's index.
+    /// It is asked first, so a held declaration's is filled from its row as a run would.
     fn sig_digest(arg: int) -> int? {
-        if arg < 0 || arg >= self.decls.sigs.get().length { return null }
-        let s? = self.decls.sigs.get()[arg] else {
-            return if self.is_held(self.decls.decl(DeclId { index: arg }).file) { null } else { fp_str("refused") }
-        }
+        if arg < 0 || arg >= self.decls.decl_count() { return null }
+        let s? = self.sig(DeclId { index: arg }) else { return fp_str("refused") }
         fp_str(self.decl_sig_wire(s))
+    }
+
+    /// The receiver bits, spelled by declaration and asked first: a held declaration's are its
+    /// row's, a read one's what the walk settles, as a run asks them.
+    fn named_writes() -> AnswerRef {
+        let ws = self
+        let ordinal = Family.Writes.ordinal
+        AnswerRef {
+            name: "Writes",
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_decl(arg),
+            arg: (spelled: string) -> ws.decl_arg(spelled),
+            hash: (arg: int) -> ws.writes_digest(ordinal, arg),
+        }
+    }
+
+    fn writes_digest(ordinal: int, arg: int) -> int? {
+        if arg < 0 || arg >= self.decls.decl_count() { return null }
+        let _ = self.writes_of(DeclId { index: arg })
+        self.held_hash(ordinal, arg)
     }
 
     /// The consts' types, spelled by the const's declaration and the seats it was asked
@@ -334,7 +353,7 @@ impl Workspace {
                     ),
             )
         rdb.answer_known(self.named_syntax("Marks", Family.Marks))
-        rdb.answer_known(self.named_by_decl("Writes", Family.Writes))
+        rdb.answer_known(self.named_writes())
         rdb.answer_known(self.named_by_decl("WriteSummary", Family.WriteSummary))
         rdb.answer_known(self.named_by_decl("CancelSummary", Family.CancelSummary))
         rdb.answer_known(self.named_by_decl("CancelBits", Family.CancelBits))
