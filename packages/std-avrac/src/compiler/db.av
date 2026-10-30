@@ -56,7 +56,6 @@ use core.debug.{qtrace, traced}
 use core.{watched_kernel, digest_of, joined, sorted_texts, flatten, DeclId, TypeId}
 use compiler.store.{Store, Stored, node_key}
 use compiler.host.{Manifest, Read}
-use diagnostics.{SourceFile}
 use compiler.lower.{Unit}
 use features.{ModuleNames, Namespace, NameFacts, TypeFacts, Settlement}
 use @std.io.{list_dir, is_dir, exists, read_text}
@@ -82,7 +81,6 @@ use @std.relation.engine.{
 /// attempting it, twice) — neither has the "Many"-joining a Statement
 /// or Arms hole gets. Grows exactly when `DbRow` does.
 export enum DbKind {
-    Source
     Parsed
     Lowered
     Plain
@@ -105,7 +103,6 @@ export enum DbKind {
 impl DbKind {
     fn tag() -> string {
         match self {
-            .Source -> "Source",
             .Parsed -> "Parsed",
             .Lowered -> "Lowered",
             .Plain -> "Plain",
@@ -134,7 +131,7 @@ extern fn avra_trap(message: string)
 /// dense slot per registered family, on `Db.families`
 /// (`Workspace.relation`, below), dying with the `Workspace` that
 /// computed them, proven across every access pattern that exists (an
-/// INPUT — `Source`, `Manifest`; a plain derived query — `Parsed`,
+/// INPUT — `Manifest`; a plain derived query — `Parsed`,
 /// `Plain`, `Items`; a RECURSIVE one — `Lowered`, `Namespace`,
 /// `Visible`, `Resolved`, `Typed`, `Folded`, `Analysis`, `Expanded`,
 /// each re-entering itself or a peer; a manual ask/begin/finish one
@@ -185,7 +182,6 @@ extern fn avra_trap(message: string)
 /// blocking a working `DbRow` on it.
 @derive(Rows)
 export enum DbRow {
-    Source(SourceFile)
     Parsed(Parsed)
     Lowered(Unit)
     Plain(Parsed)
@@ -215,7 +211,6 @@ export enum DbRow {
 impl DbRow {
     fn kind() -> DbKind {
         match self {
-            .Source(_) -> DbKind.Source,
             .Parsed(_) -> DbKind.Parsed,
             .Lowered(_) -> DbKind.Lowered,
             .Plain(_) -> DbKind.Plain,
@@ -262,16 +257,6 @@ fn read_of(r: DbRow) -> Read {
         rest -> {
             avra_trap("defect: DbRow.Input expected")
             read_of(r)
-        },
-    }
-}
-
-fn source_of(r: DbRow) -> SourceFile {
-    match r {
-        .Source(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Source expected")
-            source_of(r)
         },
     }
 }
