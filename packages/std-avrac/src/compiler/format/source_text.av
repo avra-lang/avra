@@ -1321,6 +1321,7 @@ impl SourceText {
             .FloatLit(bits) -> numeric(avra_float_text_bits(bits), parent),
             .StrLit(value) -> grouped(self.str_lit_text(id, value), atom_tier, parent),
             .BytesLit(spelled) -> grouped("b\"${spelled}\"", atom_tier, parent),
+            .GrammarLit(source) -> grouped("grammar {${source}}", atom_tier, parent),
             .Not(_) or .NullLit or .Receiver or .Channel(_, _) or .Ident(_) or .Index(_, _) or .Force(_) -> self.worded(id, parent, depth, c),
             .BoolLit(value) -> grouped(if value { "true" } else { "false" }, atom_tier, parent),
             .Range(lo, hi) -> grouped(
@@ -1667,11 +1668,7 @@ impl SourceText {
         }
     }
 
-    /// A struct literal's text: the DSL text an expression-position
-    /// `grammar { … }` read, for the `Grammar` literal it fully
-    /// expanded into (`store.grammar_lit_of` — the raw block's own
-    /// words, never rebuilt from the expansion), the ordinary
-    /// field-list form otherwise.
+    /// A struct literal's text: its name, its pins and its fields.
     mut fn struct_lit_text(
         id: ExprId,
         name: string,
@@ -1680,11 +1677,8 @@ impl SourceText {
         depth: int,
         col: int = -1,
     ) -> string {
-        let text? = self.store.grammar_lit_of(id) else {
-            let head = "${source_name(name)}${self.pins(self.store.targs_of_lit(id))} "
-            return "${head}${self.struct_fields_text(id, fields, values, depth, col_after(head, resolved_col(col, depth)))}"
-        }
-        "grammar {${text}}"
+        let head = "${source_name(name)}${self.pins(self.store.targs_of_lit(id))} "
+        "${head}${self.struct_fields_text(id, fields, values, depth, col_after(head, resolved_col(col, depth)))}"
     }
 
     /// A struct literal's braced fields, one line or many as written

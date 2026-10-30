@@ -171,10 +171,6 @@ export type SyntaxArena = {
     // the instance's own expression already stands; absent for an
     // instance that binds no statement of its own (a nested child)
     @not_copied("an owner is a statement of the source, attached from outside once a copy's own statement stands") instance_owners: Cell<List<StmtId?>>,
-    // the DSL text an expression-position `grammar { … }` literal
-    // read, by the `Grammar` struct literal it fully expanded into —
-    // the raw block's own words, never rebuilt from the expansion
-    @copied(expr, wear_grammar_lit) grammar_lits: Cell<List<string?>>,
     // what an instance stands on, by the instance: its component as the
     // file read it, then the literal its meaning minted
     @copied(expr, wear_instance) instances: Cell<List<InstanceFacts?>>,
@@ -240,7 +236,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         means_notes: list_cell(),
         extensions: list_cell(),
         instance_owners: list_cell(),
-        grammar_lits: list_cell(),
         instances: list_cell(),
         struct_targs: list_cell(),
         written_close: list_cell(),
@@ -311,7 +306,6 @@ impl SyntaxArena {
         self.means_notes.push(null)
         self.extensions.push([])
         self.instance_owners.push(null)
-        self.grammar_lits.push(null)
         self.instances.push(null)
         self.struct_targs.push([])
         self.written_close.push(null)
@@ -424,20 +418,6 @@ impl SyntaxArena {
 
     fn is_raw_string(e: ExprId) -> bool {
         self.expr_marks_at(e).is_raw
-    }
-
-    /// An expression-position `grammar { … }` literal fully expanded
-    /// into this `Grammar` struct literal — its own DSL text, the
-    /// mark's code 147.
-    fn mark_grammar_lit(e: ExprId, text: string) {
-        self.grammar_lits.set_at(e.index, text)
-        self
-            .expr_fingerprints
-            .set_at(e.index, fp(147, [self.expr_fingerprints.get()[e.index], fp_str(text)]))
-    }
-
-    fn grammar_lit_of(e: ExprId) -> string? {
-        self.grammar_lits.get()[e.index]
     }
 
     /// `tail_scoped` narrowed this Block's own span to its lone tail
@@ -797,11 +777,6 @@ impl SyntaxArena {
     fn wear_sugar_match(e: ExprId, on: bool) { if on { self.mark_sugar_match(e) } }
 
     fn wear_statement_if(e: ExprId, on: bool) { if on { self.mark_statement_if(e) } }
-
-    fn wear_grammar_lit(e: ExprId, text: string?) {
-        let held? = text else { return }
-        self.mark_grammar_lit(e, held)
-    }
 
     fn wear_written_close(e: ExprId, hi: int?) {
         let held? = hi else { return }
