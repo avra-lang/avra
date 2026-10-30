@@ -440,27 +440,11 @@ impl Decls {
         self.ensure_modules.set(ensure)
     }
 
-    fn held_items_of_file(f: FileId) -> List<DeclId> {
-        (self.ensure_file.get())(f)
-        self.held_items.get().get(self.file(f).path) ?? []
-    }
-
-    /// A held declaration joins its file: the main's seat, the items — its
-    /// row files under the file on its own.
-    fn held_joins(f: FileId, d: DeclId, main: bool, item: bool) {
-        if main { self.mains.set_at(f.index, d) }
-        if item { self.remember_held_item(f, d) }
-    }
+    /// A file's main seat: the declaration its top-level statements make.
+    fn seat_main(f: FileId, d: DeclId) { self.mains.set_at(f.index, d) }
 
     /// A file's statement table, written whole.
     fn keep_stmt_decls(f: FileId, by_stmt: SideTable<DeclAt>) { self.decl_ids.get()[f.index].set(by_stmt) }
-
-    fn remember_held_item(f: FileId, d: DeclId) {
-        let path = self.file(f).path
-        mut xs = self.held_items.get().get(path) ?? []
-        xs.push(d)
-        self.held_items.put(path, xs)
-    }
 
     /// A declaration whose body owns its expressions: not Main (it
     /// takes the rest), not nested (its enclosing body walks it).
