@@ -727,35 +727,38 @@ impl Decls {
     /// position. A moved declaration keeps this wire; a declaration reordered
     /// around it never steals it. `owner` is a method's impl target ("" for
     /// anything not one), which is what tells `impl Word { fn one() }`'s `one`
-    /// apart from a free `fn one()` sharing its name. Two declarations sharing
-    /// kind+owner+name in one file is the namespace law's to refuse (F3003) for
-    /// every kind decl_wire actually names; the trailing index is a belt for a
-    /// kind the law does not police (defaults, generated members) — a tilde in
-    /// owner or name (case labels are sentences) has none of decl_wire's
-    /// callers, and wears NO_ORDINAL rather than corrupt the tilde stream.
+    /// apart from a free `fn one()` sharing its name. A generated declaration
+    /// adds its maker, and declarations sharing all of these are told apart by
+    /// their place among them — a group that arrives whole, written ones at
+    /// the parse and a maker's at its expansion, so its count never depends on
+    /// what else is minted yet (`wire_spelled`). A tilde in owner, name or maker
+    /// (case labels are sentences) wears NO_ORDINAL rather than corrupt the
+    /// tilde stream.
     fn decl_wire(d: DeclId) -> string { self.decl_wire_from(d, (f: FileId) -> self.file(f).path) }
 
     /// `decl_wire`, its file spelled by `home`.
     fn decl_wire_from(d: DeclId, home: fn(FileId) -> string) -> string {
         let x = self.decl(d)
-        if x.owner.contains("~") || x.name.contains("~") { return "${home(x.file)}~${NO_ORDINAL}" }
         let kind = kind_word(x.kind)
         // A BUILTIN SITS IN NO FILE OF THE PROGRAM'S: its wire names the language, so
         // one declaration has one spelling whichever file a process met first.
-        if self.is_builtin(d) { return "${LANGUAGE_HOME}~${kind}~${field_text(x.owner)}~${field_text(x.name)}" }
-        let siblings = self.wire_siblings(x.file, kind, x.owner, x.name)
-        let base = "${home(x.file)}~${kind}~${field_text(x.owner)}~${field_text(x.name)}"
-        if siblings.length <= 1 { return base }
-        let at = [j for j, id in siblings if same_decl(id, d)].first() ?? 0
-        "${base}~${at}"
+        if self.is_builtin(d) && !x.owner.contains("~") && !x.name.contains("~") { return "${LANGUAGE_HOME}~${kind}~${field_text(x.owner)}~${field_text(x.name)}" }
+        let group = self.wire_siblings(x.file, kind, x.owner, x.name, x.maker)
+        let at = [j for j, id in group if same_decl(id, d)].first() ?? 0
+        wire_spelled(
+            home(x.file),
+            WireName { kind: kind, owner: x.owner, name: x.name, maker: x.maker },
+            at,
+            group.length,
+        )
     }
 
-    /// Every declaration of one file sharing a wire's identity — one, almost
-    /// always; more only for a kind the namespace law leaves unpoliced.
-    /// `f`'s declarations of one kind, owner and name, in file order. The
+    /// `f`'s declarations of one kind, owner, name and maker, in file order. The
     /// reader owes only the NAME's bucket, so a declaration of another name
     /// never moves it.
-    fn wire_siblings(f: FileId, kind: string, owner: string, name: string) -> List<DeclId> {
+    fn wire_siblings(f: FileId, kind: string, owner: string, name: string, maker: string) -> List<
+        DeclId,
+    > {
         let ids = self.wire_rows(f)
         let kept = self.wire_index.get().get("${f.index}")
         let by = if kept != null && kept!.count == ids.length { kept!.by } else { self.wire_indexed(f, ids) }
@@ -764,7 +767,7 @@ impl Decls {
         self.bucket_moved(b)
         // a `main` is its own file's: the shared bucket holds one per file
         if kind == kind_word(DeclKind.Main) { self.rows_read(f) } else { self.record_kernel.record_at(self.record_names.get(), b) }
-        by.get(wire_key(kind, owner, name)) ?? []
+        by.get(wire_key(kind, owner, name, maker)) ?? []
     }
 
     /// `f`'s declaration ids for the wire index: the rows are minted, and
@@ -780,7 +783,7 @@ impl Decls {
         mut by: Map<string, List<DeclId>> = {}
         for id in ids {
             let x = self.raw_decl(id)
-            let k = wire_key(kind_word(x.kind), x.owner, x.name)
+            let k = wire_key(kind_word(x.kind), x.owner, x.name, x.maker)
             by.set(k, (by.get(k) ?? []).concat([id]))
         }
         self.wire_index.put("${f.index}", WireIndex { count: ids.length, by: by })
@@ -956,7 +959,8 @@ impl Decls {
     }
 
     /// `decl_wire`'s inverse — the declaration a wire names, and how many
-    /// words it read (4, or 5 across a name it shared with a sibling).
+    /// words it read: four, then a maker's when one is spelled, then a place
+    /// when its group has more than one.
     fn wire_decl(words: List<string>, at: int) -> WireDeclRef? {
         if at + 3 >= words.length { return null }
         let kind = words[at + 1]
@@ -970,18 +974,59 @@ impl Decls {
         }
         let f: FileId? = self.known_file_id(words[at])
         if f == null { return null }
-        let siblings = self.wire_siblings(f!, kind, owner, name)
-        if siblings.length == 1 { return WireDeclRef { id: siblings[0], next: at + 4 } }
-        if siblings.is_empty() { return null }
-        if at + 4 >= words.length { return null }
-        let idx? = wire_number(words[at + 4]) else { return null }
-        if idx < 0 || idx >= siblings.length { return null }
-        WireDeclRef { id: siblings[idx], next: at + 5 }
+        let made = at + 4 < words.length && words[at + 4].starts_with(MAKER_MARK)
+        let maker = if made { text_of_field(words[at + 4].substring(MAKER_MARK.length, words[at + 4].length)) } else { "" }
+        let past = if made { at + 5 } else { at + 4 }
+        let group = self.wire_siblings(f!, kind, owner, name, maker)
+        if group.length == 1 { return WireDeclRef { id: group[0], next: past } }
+        if group.is_empty() || past >= words.length { return null }
+        let idx? = wire_number(words[past]) else { return null }
+        if idx < 0 || idx >= group.length { return null }
+        WireDeclRef { id: group[idx], next: past + 1 }
     }
 }
 
 /// A declaration's place in its file's wire index.
-fn wire_key(kind: string, owner: string, name: string) -> string { "${kind}\t${owner}\t${name}" }
+fn wire_key(kind: string, owner: string, name: string, maker: string) -> string { "${kind}\t${owner}\t${name}\t${maker}" }
+
+/// What a declaration's wire names it by, apart from its file and place.
+export type WireName = { kind: string, owner: string, name: string, maker: string }
+
+/// The word a generated declaration's maker opens with in its wire.
+const MAKER_MARK: string = "="
+
+/// THE ONE SPELLING of a declaration's wire: its file, kind, owner and name, its maker's
+/// when one made it, and its place `at` among the `count` that share all of these.
+export fn wire_spelled(home: string, n: WireName, at: int, count: int) -> string {
+    if [n.owner, n.name, n.maker].any(it.contains("~")) { return "${home}~${NO_ORDINAL}" }
+    let base = "${home}~${n.kind}~${field_text(n.owner)}~${field_text(n.name)}"
+    let made = if n.maker == "" { base } else { "${base}~${MAKER_MARK}${field_text(n.maker)}" }
+    if count <= 1 { made } else { "${made}~${at}" }
+}
+
+/// Every declaration line's wire, from a file's Items lines alone — what `decl_wire` spells
+/// for each once it is minted, so an unminted file is named without minting it.
+export fn line_wires(path: string, lines: List<List<string>>) -> List<string> {
+    let makers = makers_in(lines, path)
+    let names = [line_name(p, makers) for p in lines if declares(p)]
+    let counts: Cell<Map<string, int>> = Cell.new({})
+    for n in names { counts.put(name_key(n), (counts.get().get(name_key(n)) ?? 0) + 1) }
+    let seen: Cell<Map<string, int>> = Cell.new({})
+    [wire_spelled(path, n, seen_once(seen, name_key(n)), counts.get().get(name_key(n)) ?? 1) for n in names]
+}
+
+/// The place of the next declaration filed under `key`: how many came before it.
+fn seen_once(seen: Cell<Map<string, int>>, key: string) -> int {
+    let at = seen.get().get(key) ?? 0
+    seen.put(key, at + 1)
+    at
+}
+
+fn name_key(n: WireName) -> string { wire_key(n.kind, n.owner, n.name, n.maker) }
+
+fn line_name(p: List<string>, makers: Map<string, string>) -> WireName {
+    WireName { kind: p[6], owner: p[7], name: p[5], maker: makers.get(p[2]) ?? "" }
+}
 
 /// `wire_decl`'s answer: the declaration, and where the next field starts.
 type WireDeclRef = { id: DeclId, next: int }
