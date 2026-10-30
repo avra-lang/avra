@@ -150,6 +150,14 @@ def main():
         for model, where, extra in seeds:
             made, _ = row_queries(model, where, edges, models, q["question"], 10_000, phase="plain")
             pool += [(cy, landing, "row", extra) for cy, landing in made]
+        # the two families a property row cannot express: a declared derivation's call, and an
+        # aggregate over a declared type or quantity. Both come from the catalog.
+        for cy, landing, _ in bench.aggregate_queries(models, bench.CATALOG):
+            pool.append((cy, landing, "aggregate", {}))
+        for model, where, extra in seeds:
+            calls, _ = bench.derivation_queries(model, where, models, bench.CATALOG, edges)
+            pool += [(cy, landing, "derivation", extra) for cy, landing, _ in calls]
+
         room = max(0, args.budget - len(pool))
         share = max(1, room // max(1, len(seeds)))
         for model, where, extra in seeds:
