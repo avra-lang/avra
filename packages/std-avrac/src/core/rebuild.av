@@ -407,10 +407,10 @@ impl Rebuilder {
             self.classify(k!, HoleKind.Type)
             if !self.copying { return t }
             let f = self.fill_type(k!)
-            if t.args.is_empty() { return f with { optional: f.optional || t.optional, span: t.span, spliced: true } }
-            return t with { name: f.name, args: self.trefs(t.args), spliced: true }
+            if t.applied.is_empty() { return f with { optional: f.optional || t.optional, span: t.span, spliced: true } }
+            return t with { name: f.name, applied: self.trefs(t.applied), spliced: true }
         }
-        t with { name: self.rewritten(t.name), args: self.trefs(t.args), alternatives: self.trefs(t.alternatives), spliced: t.spliced || hole_name(t.name) != null }
+        t with { name: self.rewritten(t.name), applied: self.trefs(t.applied), seats: [s with { ty: self.tref(s.ty) } for s in t.seats], answer: self.tref_opt(t.answer), alternatives: self.trefs(t.alternatives), spliced: t.spliced || hole_name(t.name) != null }
     }
 
     mut fn trefs(ts: List<TypeRef>) -> List<TypeRef> { [self.tref(t) for t in ts] }
@@ -628,8 +628,6 @@ impl Rebuilder {
     mut fn minted_stmt(s: StmtId, x: Stmt, holed: bool, annotations: List<Annotation>) -> StmtId {
         let id = self.dst.alloc_stmt(x, self.src.stmt_span(s))
         self.src.copy_stmt_tables(s, self.dst, id)
-        let args = self.src.trait_args_of(s)
-        if !args.is_empty() { self.dst.mark_trait_args(id, [self.tref(a) for a in args]) }
         let spreads = self.src.spreads_of(s)
         if !spreads.is_empty() { self.dst.spread_fields(id, [x with { of: self.tref(x.of) } for x in spreads]) }
         let docs: List<string>? = self.src.doc_comment(s)

@@ -303,8 +303,8 @@ impl Workspace {
 
     /// A MODULE'S UNREAD FILES, MINTED: each file's `Items`, minted from its kept lines. A
     /// file stands once, and its flag stands before the work does, so two files that name
-    /// each other meet once. SHAPES ARE NOT FILLED HERE: `decl_row_filled` fills each declaration
-    /// from its own row, on the ask that names it.
+    /// each other meet once. SHAPES ARE NOT FILLED HERE: `decl_row_filled` fills each
+    /// declaration from its own row, on the ask that names it.
     fn mint_files(paths: List<string>) {
         let unread = [p for p in paths if self.decls.held.get().get(p) != null && self.hold.minted.get().get(p) == null]
         if unread.is_empty() { return }
@@ -320,6 +320,7 @@ impl Workspace {
     /// kept order, adopted by their parents. Answers the top-level ids.
     fn items_minted(f: FileId) -> List<DeclId> {
         let path = self.decls.file(f).path
+        self.hold.minted.put(path, true)
         self.decls.note_rows(f, 0)
         let lines? = self.items_lines(path) else {
             self.defect("an unread file's items were not kept — ${path}")
@@ -353,35 +354,6 @@ impl Workspace {
         self.decls.held_closed(f, makers.values())
         self.decls.keep_stmt_decls(f, by_stmt)
         top
-    }
-
-    /// WHERE A FILE'S ITEMS ARE KEPT: its declaration and maker lines, standing on its text.
-    fn items_key(path: string) -> string { node_key(Stored.Unit, ["items", self.root, path]) }
-
-    /// A file's kept Items lines, split, under their one header line — none when its text moved
-    /// since they were kept. The header keeps a file that declares nothing from keeping nothing.
-    fn items_lines(path: string) -> List<List<string>>? {
-        let store? = self.store.get() else { return null }
-        let text? = store
-            .get_valid(Stored.Unit, self.items_key(path), (name) -> self.named_now(name)) else {
-            return null
-        }
-        [read_fields(l) for l in text.split("\n").drop(1)]
-    }
-
-    /// EVERY FILE OF `m` THIS ATTEMPT READ KEEPS ITS ITEMS: its lines in the record just made,
-    /// standing on its text. An unread file's stand as its last read kept them.
-    fn keep_items(store: Store, m: ModulePath, made: string) {
-        let by_file = lines_by_file(made.split("\n"))
-        for path in [p for p in self.module_files(m) if self.read_here(p)] {
-            let text = joined(
-                ["items"].concat([l for l in by_file.get(path) ?? [] if items_line(read_fields(l))]),
-                "\n",
-            )
-            let key = self.items_key(path)
-            let reads = self.readings([VerdictRead.Text(path)])
-            if store.get_valid(Stored.Unit, key, (name) -> self.named_now(name)) != text { let _ = store.keep_reading(Stored.Unit, key, text, reads) }
-        }
     }
 
     /// One record line as a declaration — null for a line that names nothing. A line
@@ -550,7 +522,8 @@ impl Workspace {
                 .concat(here)
                 .concat(refs)
                 .concat(read)
-                .concat(flatten([f.lines for f in parts])),
+                .concat(flatten([[l for l in f.lines if !items_line(read_fields(l))] for f in parts]))
+                .concat(flatten([[l for l in f.lines if items_line(read_fields(l))] for f in parts])),
             "\n",
         )
     }

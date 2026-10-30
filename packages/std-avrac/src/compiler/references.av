@@ -150,17 +150,23 @@ impl Workspace {
         self.hold.refs_owners.set(distinct(standing))
     }
 
+    /// Whether a body is typing or a compile-time run is lowering: no whole-program pass
+    /// computes then.
+    fn typing_open() -> bool {
+        self.db.family_active(Family.Typed.ordinal) ||
+            self.db.family_active(Family.Folded.ordinal) ||
+            self.comptime_active()
+    }
+
     /// THE RELATION SETTLES AFTER TYPING. Computed while a file is still typing, or while a
     /// compile-time run is lowering, its walk would read `folded`'s smaller recursive view
     /// for that file and settle on an incomplete one — permanently, since a settled answer is
     /// never redone. An ask that reuses the settled rows reads nothing new, so only a COMPUTE
     /// there is the defect this names.
     fn stand_after_typing() {
-        if self.db.family_active(Family.Typed.ordinal) ||
-            self.db.family_active(Family.Folded.ordinal) ||
-            self.comptime_active() {
+        if self.typing_open() {
             avra_trap(
-                "defect: the references relation settles after typing, and something asked for it while a file was still typing",
+                "defect: the references relation settles after typing, and something asked for it while a file was still typing; open: ${self.db.kernel.open_stack()}",
             )
         }
     }
@@ -459,7 +465,7 @@ impl Workspace {
 fn type_use_decls(names: NameFacts, tparams: List<string>, t: TypeRef) -> List<DeclId> {
     let here = if t.name.is_empty() || tparams.contains(t.name) { [] } else { some_list(names.names.type_decl(t.name)) }
     here
-        .concat(flatten([type_use_decls(names, tparams, a) for a in t.args]))
+        .concat(flatten([type_use_decls(names, tparams, a) for a in t.type_args()]))
         .concat(flatten([type_use_decls(names, tparams, a) for a in t.alternatives]))
 }
 
