@@ -174,33 +174,46 @@ def shape_options(models, cat, question):
             rendered.append((k, f"{said}: {', '.join(sorted(set(names))[:6])}"))
     return rendered
 
-def derivation_queries(seed_model, seed_where, models, cat, edges):
+def derivation_queries(seed_model, seed_where, models, cat, edges, literals=()):
     """Every declared derivation the seed can feed: each `one` seat takes a node of its
-    declared type (the seed, or a scan), each `all` seat a collection of its declared type.
-    A seat declared as a scalar needs a value from the question, so such a derivation is
-    reported as ungenerated rather than invented."""
+    declared type (the seed itself, or a scan), each `all` seat a collection of its type, and
+    a seat declared as a bare scalar takes a value the caller offers — the graph's own, never
+    an invented one. A derivation with a scalar seat and no value offered is reported instead
+    of guessed."""
     out, skipped = [], []
     for d in cat.get('derivations', []):
         seats = [(p['name'], p['input']) for p in d['parameters']]
-        if any(not isinstance(i, dict) for _, i in seats):
-            skipped.append(d['name']); continue
-        if not any(i.get('one') == seed_model for _, i in seats):
+        if any(not isinstance(i, dict) for _, i in seats) and not literals:
+            skipped.append(d['name'])
             continue
-        args, matchers, ok = [], [], True
+        if not any(isinstance(i, dict) and i.get('one') == seed_model for _, i in seats):
+            continue
+        args, matchers, ok, took_seed = [], [], True, False
         for k, (name, inp) in enumerate(seats):
+            if not isinstance(inp, dict):
+                args.append(json.dumps(literals[0]))
+                continue
             var = f"d{k}"
             model = inp.get('one') or inp.get('all')
-            if model not in models: ok = False; break
+            if model not in models:
+                ok = False
+                break
             if inp.get('all'):
-                args.append(f"collect({var})"); matchers.append(f"MATCH ({var}:{model})")
-            elif inp.get('one') == seed_model and not any(a.startswith(f"id(a)") for a in args):
+                args.append(f"collect({var})")
+                matchers.append(f"MATCH ({var}:{model})")
+            elif inp.get('one') == seed_model and not took_seed:
                 args.append("a")
+                took_seed = True
             else:
-                args.append(var); matchers.append(f"MATCH ({var}:{model})")
-        if not ok: continue
-        cy = f"MATCH (a:{seed_model}) WHERE {seed_where} " + " ".join(matchers) + f" RETURN {d['name']}({', '.join(args)}) AS value"
+                args.append(var)
+                matchers.append(f"MATCH ({var}:{model})")
+        if not ok:
+            continue
+        cy = (f"MATCH (a:{seed_model}) WHERE {seed_where} " + " ".join(matchers)
+              + f" RETURN {d['name']}({', '.join(args)}) AS value")
         out.append((cy, d['output'], d['name']))
     return out, skipped
+
 
 def aggregate_queries(models, cat):
     """A count over every declared type, and a sum over every declared quantity: the shapes

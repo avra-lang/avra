@@ -59,10 +59,9 @@ def row_queries(seed_model, seed_where, edges, models, question, budget, phase="
     for steps, landing in [([], seed_model)] + bench.walk(edges, seed_model, bench.DEPTH):
         pattern = f"(a:{seed_model})" + "".join(steps)
         var = f"b{len(steps) - 1}" if steps else "a"
-        nodes = [(var, landing)]
-        if steps:
-            made = __import__("re").findall(r"\(b\d+:(\w+)\)", "".join(steps))
-            nodes += [(f"b{len(steps) - 2}", made[-2])] if len(made) >= 2 else [("a", seed_model)]
+        # every node on the path may carry the word a question uses to narrow it
+        made = __import__("re").findall(r"\(b(\d+):(\w+)\)", "".join(steps))
+        nodes = [("a", seed_model)] + [(f"b{i}", t) for i, t in made]
         ret = ", ".join(f"{var}.{p['name']} AS {p['name']}" for p in models[landing]["properties"])
         walks.append((pattern, var, landing, nodes, ret))
 
@@ -123,7 +122,20 @@ def main():
     # a read needs the bindings the graph requires; the index is one read per declared text property
     index_params = {"asker": args.asker, "now": iso_ms(manifest["evaluation_time"]), "speaker": args.asker}
     value_index = anchors_of.index(models, lambda cy: app({"op": "query", "cypher": cy, "params": index_params}))
-    print(f"anchor index: {len(value_index)} declared text values")
+    # A derivation seat declared as a bare scalar takes a value the GRAPH holds: the distinct
+    # units its declared quantities carry. A unit lives inside an embedded record, which the
+    # language cannot reach by a path, but a row returns the record whole — so it is read from
+    # the row and no currency or unit is named here.
+    literals = []
+    for model, m in models.items():
+        for q in (m.get("semantics") or {}).get("quantities") or []:
+            amount, unit = q.get("amount") or [], (q.get("unit") or {}).get("path") or []
+            if len(amount) == 2 and len(unit) == 2 and amount[0] == unit[0]:
+                for f in app({"op": "query", "cypher": f"MATCH (a:{model}) RETURN a.{amount[0]} AS v", "params": index_params}).get("fields", []):
+                    held = f.get("value")
+                    if isinstance(held, dict) and isinstance(held.get(unit[1]), str) and held[unit[1]] not in literals:
+                        literals.append(held[unit[1]])
+    print(f"anchor index: {len(value_index)} declared text values | seat literals: {literals}")
     questions = [json.loads(l) for l in open(bench.HERE / "acceptance/questions.jsonl")]
     plans = {r["question"]: r["cypher"] for r in (json.loads(l) for l in open(bench.ORM / "plans.jsonl")) if "cypher" in r}
     split = set(json.load(open(bench.HERE / "acceptance/split.json"))["heldout"])
@@ -156,7 +168,7 @@ def main():
         for cy, landing, _ in bench.aggregate_queries(models, bench.CATALOG):
             pool.append((cy, landing, "aggregate", {}))
         for model, where, extra in seeds:
-            calls, _ = bench.derivation_queries(model, where, models, bench.CATALOG, edges)
+            calls, _ = bench.derivation_queries(model, where, models, bench.CATALOG, edges, literals)
             pool += [(cy, landing, "derivation", extra) for cy, landing, _ in calls]
 
         room = max(0, args.budget - len(pool))
