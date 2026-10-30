@@ -14,7 +14,19 @@
 //! bug"). `tools/codecs.py` is this file's OTHER surface: it refuses
 //! an encoder/decoder-shaped pair the tree carries that this registry
 //! does not name.
-use core.{DeclId, SeatMark, TypeId, Type, DeclKind, CollectScope, list_eq}
+use core.{
+    DeclId,
+    SeatMark,
+    TypeId,
+    Type,
+    DeclKind,
+    CollectScope,
+    ExprId,
+    SideTable,
+    list_eq,
+    opt_eq,
+    side_table_of,
+}
 use features.{
     DeclFacts,
     AnnotationFact,
@@ -33,8 +45,16 @@ use features.{
     EnumSig,
     NamedSig,
     Lacked,
+    TypeFacts,
+    Asked,
+    Sub,
+    ParamScope,
+    RunChoice,
+    PipeStage,
+    new_type_facts,
 }
-use diagnostics.{SourceFile, DiagFacts, Severity}
+use diagnostics.{SourceFile, DiagFacts, Severity, no_voices}
+use @std.relation.stable.{indexed_scope}
 use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
 use compiler.{avra, new_workspace, one_shot_let_go, Workspace}
 use compiler.host.{memory_host}
@@ -765,6 +785,153 @@ fn same_fact_node(a: FactNode, b: FactNode) -> bool { a.name == b.name && a.own 
 
 fn same_texts(a: List<string>, b: List<string>) -> bool { list_eq(a, b, (x, y) -> x == y) }
 
+// ── `facts_encoded_in`/`facts_decoded_in` — a body's typing table, under a scope. ──
+
+/// An empty table first, then one with EVERY column holding something: an absent optional, an
+/// empty list and a populated one, so the three shapes a column can wear are all on the wire.
+fn facts_exemplars() -> List<TypeFacts> {
+    let no_types: List<TypeId> = []
+    let widens: List<TypeId?> = [null, ty_at(12), null]
+    let asks: List<Asked?> = [null, Asked { subject: ExprId { index: 5 }, on_present: true }]
+    let substs: List<Sub?> = [
+        Sub { target: DeclId { index: 7 }, args: [ty_at(1), ty_at(2)], consts: ["c"] },
+        null,
+    ]
+    let params: List<List<TypeId>?> = [[ty_at(21), ty_at(22)]]
+    let marks: List<List<SeatMark>?> = [
+        [
+            SeatMark { mutable: true, settled: false },
+            SeatMark { mutable: false, settled: true, state: true, unshared: true, consumed: true },
+        ],
+    ]
+    let captures: List<List<TypeId>?> = [[], null]
+    let wants: List<TypeId?> = [ty_at(31)]
+    let starved: List<TypeId?> = [null, ty_at(41)]
+    let scopes: List<ParamScope?> = [ParamScope { params: [ty_at(51)] }, null]
+    let patterns: List<List<TypeId>> = [[ty_at(61)], no_types]
+    let bindings: List<TypeId?> = [null, ty_at(71)]
+    let indexes: List<TypeId?> = [ty_at(81), null]
+    let collections: List<List<ExprId>?> = [[ExprId { index: 63 }], []]
+    let chosen: List<DeclId?> = [null, DeclId { index: 91 }]
+    let dispatches: List<RunChoice?> = [
+        RunChoice { seat: 1, members: [DeclId { index: 92 }, DeclId { index: 93 }] },
+    ]
+    let stages: List<PipeStage?> = [null, PipeStage.FlatMap]
+    [
+        new_type_facts(0, 0, 0, 0, 0, ty_at(0)),
+        TypeFacts {
+            of_expr: side_table_of("of_expr", 4, [ty_at(11), ty_at(12), ty_at(13)], ty_at(9)),
+            widens: side_table_of("widens", 4, widens, null),
+            narrows: side_table_of("narrows", 4, widens, null),
+            asks: side_table_of("asks", 4, asks, null),
+            substs: side_table_of("substs", 4, substs, null),
+            lambda_params: side_table_of("lambda_params", 4, params, null),
+            lambda_marks: side_table_of("lambda_marks", 4, marks, null),
+            captures: side_table_of("captures", 4, captures, null),
+            wants: side_table_of("wants", 4, wants, null),
+            flags: side_table_of("flags", 4, [0, 257], 0),
+            starved: side_table_of("starved", 4, starved, null),
+            scopes: side_table_of("scopes", 4, scopes, null),
+            pattern_types: side_table_of("pattern_types", 4, patterns, no_types),
+            binding_types: side_table_of("binding_types", 4, bindings, null),
+            index_types: side_table_of("index_types", 4, indexes, null),
+            stmt_flags: side_table_of("stmt_flags", 4, [0, 1], 0),
+            collections: side_table_of("collections", 4, collections, null),
+            chosen: side_table_of("chosen", 4, chosen, null),
+            dispatches: side_table_of("dispatches", 4, dispatches, null),
+            stages: side_table_of("stages", 4, stages, null),
+            voices: no_voices(),
+        },
+    ]
+}
+
+fn facts_labels() -> List<string> { ["an empty table", "every column holding something"] }
+
+fn ty_at(i: int) -> TypeId { TypeId { index: i } }
+
+/// A table read back under the scope it was written in; absent for one that did not read back.
+fn facts_read_back(b: Bytes?) -> TypeFacts? {
+    let octets? = b else { return null }
+    match facts_decoded_in(octets, indexed_scope()) { .Ok(t) -> t, .Err(_) -> null }
+}
+
+/// Two tables compared WHOLE, column by column: its name, where its window starts, the value it
+/// grows with, and every cell in order.
+fn same_facts(a: TypeFacts, b: TypeFacts) -> bool {
+    same_column(a.of_expr, b.of_expr, same_type_id) &&
+        same_column(a.widens, b.widens, same_opt_type) &&
+        same_column(a.narrows, b.narrows, same_opt_type) &&
+        same_column(a.asks, b.asks, (x, y) -> opt_eq(x, y, same_asked)) &&
+        same_column(a.substs, b.substs, (x, y) -> opt_eq(x, y, same_sub)) &&
+        same_column(a.lambda_params, b.lambda_params, same_opt_types) &&
+        same_column(a.lambda_marks, b.lambda_marks, (x, y) -> opt_eq(x, y, same_marks)) &&
+        same_column(a.captures, b.captures, same_opt_types) &&
+        same_column(a.wants, b.wants, same_opt_type) &&
+        same_column(a.flags, b.flags, (x: int, y: int) -> x == y) &&
+        same_column(a.starved, b.starved, same_opt_type) &&
+        same_column(
+            a.scopes,
+            b.scopes,
+            (x, y) -> opt_eq(
+                x,
+                y,
+                (p: ParamScope, q: ParamScope) -> same_type_ids(p.params, q.params),
+            ),
+        ) &&
+        same_column(a.pattern_types, b.pattern_types, same_type_ids) &&
+        same_column(a.binding_types, b.binding_types, same_opt_type) &&
+        same_column(a.index_types, b.index_types, same_opt_type) &&
+        same_column(a.stmt_flags, b.stmt_flags, (x: int, y: int) -> x == y) &&
+        same_column(
+            a.collections,
+            b.collections,
+            (x, y) -> opt_eq(
+                x,
+                y,
+                (p: List<ExprId>, q: List<ExprId>) -> list_eq(
+                    p,
+                    q,
+                    (e: ExprId, f: ExprId) -> e.index == f.index,
+                ),
+            ),
+        ) &&
+        same_column(a.chosen, b.chosen, (x, y) -> opt_eq(x, y, same_decl_id)) &&
+        same_column(a.dispatches, b.dispatches, (x, y) -> opt_eq(x, y, same_choice)) &&
+        same_column(
+            a.stages,
+            b.stages,
+            (x, y) -> opt_eq(x, y, (p: PipeStage, q: PipeStage) -> p.ordinal == q.ordinal),
+        ) &&
+        a.voices.list.is_empty() &&
+        b.voices.list.is_empty()
+}
+
+fn same_column<T>(a: SideTable<T>, b: SideTable<T>, eq: fn(T, T) -> bool) -> bool {
+    a.name == b.name && a.lo == b.lo && eq(a.seed, b.seed) && list_eq(a.cells, b.cells, eq)
+}
+
+fn same_type_id(a: TypeId, b: TypeId) -> bool { a.index == b.index }
+
+fn same_decl_id(a: DeclId, b: DeclId) -> bool { a.index == b.index }
+
+fn same_opt_type(a: TypeId?, b: TypeId?) -> bool { opt_eq(a, b, same_type_id) }
+
+fn same_type_ids(a: List<TypeId>, b: List<TypeId>) -> bool { list_eq(a, b, same_type_id) }
+
+fn same_opt_types(a: List<TypeId>?, b: List<TypeId>?) -> bool { opt_eq(a, b, same_type_ids) }
+
+fn same_marks(a: List<SeatMark>, b: List<SeatMark>) -> bool { list_eq(a, b, (x, y) -> x.codec_same(y)) }
+
+fn same_asked(a: Asked, b: Asked) -> bool { a.subject.index == b.subject.index && a.on_present == b.on_present }
+
+fn same_sub(a: Sub, b: Sub) -> bool {
+    same_decl_id(a.target, b.target) &&
+        same_type_ids(a.args, b.args) &&
+        same_texts(a.consts, b.consts)
+}
+
+fn same_choice(a: RunChoice, b: RunChoice) -> bool { a.seat == b.seat && list_eq(a.members, b.members, same_decl_id) }
+
 // ── `use_kind_word`/`use_kind_of_word` — every variant, one character each. ──
 
 fn use_kind_exemplars() -> List<UseKind> {
@@ -967,6 +1134,14 @@ export fn codec_w2_asks_unread() -> bool {
 export fn codec_pairs() -> List<CodecCheck> {
     let ws = codec_workspace()
     [
+        derived(
+            "facts_codec.facts_encoded_in/facts_decoded_in",
+            facts_exemplars(),
+            facts_labels(),
+            (t) -> facts_encoded_in(t, indexed_scope()),
+            facts_read_back,
+            same_facts,
+        ),
         derived(
             "lower.code_facts_wire/code_facts_from_wire",
             code_facts_exemplars(),
