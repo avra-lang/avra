@@ -2,7 +2,7 @@
 //! StructDecl or NamedType statement and the StructLit node. A
 //! declaration's fields arrive built; a literal's names and values
 //! arrive as parallel capture lists and zip.
-use core.{Expr, ExprId, PatId, Pat, Stmt, Nominal, Plain, Scoped, sorted_by, spread_entry}
+use core.{Expr, ExprId, Stmt, Nominal, Plain, Scoped, sorted_by, spread_entry}
 use features.{
     LangNode,
     Builder,
@@ -15,9 +15,7 @@ use features.{
     valued_spread,
     typed_spread,
     bare_spread,
-    pat_ids_at,
 }
-use grammar.{Token}
 
 /// THE ONE `type` BUILDER: the grammar's ordered choice captures a
 /// record's fields OR one written shape, and the capture that
@@ -73,34 +71,3 @@ fn build_struct_lit(b: Builder) -> Result<LangNode, string> {
     b.wrap_expr(lit)
 }
 
-/// `P { x, y: pattern, .. }` — each field with the pattern it takes: the
-/// pattern written after its name, or a binder of the field's own name
-/// when it is punned. The `..` ends the list.
-fn build_fields_pat(b: Builder) -> Result<LangNode, string> {
-    let t = b.token(0)?
-    let names = b.tokens(1)?
-    let pats = pat_ids_at(b.args, 2)
-    let dots = b.tokens(3)?
-    if dots.length > 1 { return .Err("a record pattern has one `..` — it ends the fields") }
-    if dots.any(named_after(names, it)) { return .Err("`..` ends a record pattern — nothing is named after it") }
-    let args = [field_pat(b, names, pats, j) for j in 0..names.length]
-    b.make_pat(Pat.Fields(Plain(t.text), [Plain(n.text) for n in names], args, !dots.is_empty()))
-}
-
-/// Whether any field is named after the `..` at `d`.
-fn named_after(names: List<Token>, d: Token) -> bool { names.any(it.span.lo > d.span.lo) }
-
-/// The pattern field `j` takes: the one written between its name and
-/// the next field's, else a binder of its own name.
-fn field_pat(b: Builder, names: List<Token>, pats: List<PatId>, j: int) -> PatId {
-    let lo = names[j].span.lo
-    let hi: int = if j + 1 < names.length { names[j + 1].span.lo } else { 1000000000 }
-    pats.find((p) -> written_between(b, p, lo, hi)) ?? b
-        .store
-        .alloc_pat(Pat.Bind(Scoped(names[j].text)), names[j].span)
-}
-
-fn written_between(b: Builder, p: PatId, lo: int, hi: int) -> bool {
-    let at = b.store.pat_span(p)?.lo ?? 0
-    at > lo && at < hi
-}
