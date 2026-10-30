@@ -36,13 +36,20 @@ export type ToolRow = { name: string, from: Provenance, var: string?, default: s
 /// `budgets` is what a settlement may spend — `[lifted]`'s `steps` in
 /// instructions and `memory` in MiB of the compiler's heap, resolved
 /// to the measured defaults where the manifest writes none.
-export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, wasm_objects: List<string>, search: List<string>, libs: List<string>, dynamic_symbols: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, voices: List<Diag>, dev_server: string? = null }
+export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, wasm_objects: List<string>, search: List<string>, libs: List<string>, dynamic_symbols: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, dev_server: string? = null }
 
 /// A reader over one document: the source for positions, the
 /// document, and what it has said so far.
 type Reader = { src: SourceFile, doc: TomlDoc, voices: List<Diag> }
 
-export fn read_manifest(src: SourceFile) -> Manifest {
+/// A manifest as a value, and what reading it said — two answers, so the value carries no voice.
+export type ManifestRead = { manifest: Manifest, voices: List<Diag> }
+
+/// A manifest's value.
+export fn read_manifest(src: SourceFile) -> Manifest { manifest_read(src).manifest }
+
+/// A manifest read whole: its value and its voices.
+export fn manifest_read(src: SourceFile) -> ManifestRead {
     mut r = Reader { src: src, doc: parse_toml(src.text), voices: [] }
     for e in r.doc.errors {
         r
@@ -70,20 +77,22 @@ export fn read_manifest(src: SourceFile) -> Manifest {
                     ),
                 )
         }
-        return Manifest {
-            name: "",
-            version: "",
-            bin: null,
-            lib: null,
-            deps: [],
-            deps_at: null,
-            excludes: [],
-            objects: [],
-            wasm_objects: [],
-            search: [],
-            libs: [],
-            raw: [],
-            budgets: budgets_of(),
+        return ManifestRead {
+            manifest: Manifest {
+                name: "",
+                version: "",
+                bin: null,
+                lib: null,
+                deps: [],
+                deps_at: null,
+                excludes: [],
+                objects: [],
+                wasm_objects: [],
+                search: [],
+                libs: [],
+                raw: [],
+                budgets: budgets_of(),
+            },
             voices: r.voices,
         }
     }
@@ -94,7 +103,7 @@ export fn read_manifest(src: SourceFile) -> Manifest {
     }
     if version != "" && !is_semver(version) { r.speak(r.bad_version(version)) }
     r.profiles()
-    Manifest {
+    let made = Manifest {
         name: name,
         version: version,
         bin: r.target("bin", "src/main.av"),
@@ -113,8 +122,8 @@ export fn read_manifest(src: SourceFile) -> Manifest {
         deps_at: r.deps_at(),
         tools: r.tools(),
         budgets: budgets_of(r.budget("steps"), r.budget("memory")),
-        voices: r.voices,
     }
+    ManifestRead { manifest: made, voices: r.voices }
 }
 
 /// A package name: `@scope/name`, or one bare word for a program
