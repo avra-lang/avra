@@ -23,7 +23,6 @@ use compiler.rel_loc.{anchoring_wire}
 use compiler.store.{Store, Stored, Reading, node_key}
 use compiler.voices.{type_facts_fp, diag_fp, name_slice_fp, unit_fp_in}
 use features.{SettleRoot, SeatValue}
-use compiler.lower.{code_facts, code_facts_wire}
 use @std.relation.db.{AnswerRef, Leaf}
 use @std.relation.engine.{Key, edge_of}
 use compiler.families.{Family}
@@ -662,64 +661,6 @@ impl Workspace {
             "typedsaid: ${settled} settled, ${stood} stand on names; valid ${valid}, recomputed ${recomputed}, unplaceable ${unplaceable}, mismatched ${mismatched}; recomputed because: ${why.entries().map("${it.key} ${it.value}").join(", ")}",
         )
         if mismatched > 0 { wreck("a valid TypedSaid differs from a fresh typing: a read is missing") }
-    }
-}
-
-impl Workspace {
-    /// What a unit's lowering says: the instantiations it asks for and the code it hashed. Absent
-    /// for a unit that spoke, which is never kept.
-    fn lowered_says(id: int) -> string? {
-        let u = self.lowered(id)
-        if !u.voices.list.is_empty() { return null }
-        joined(
-            [
-                self.wanted_list_wire(u.wants),
-                code_facts_wire(code_facts(self.decls, u.bodies, u.statics, u.hashes)),
-            ],
-            "\n",
-        )
-    }
-
-    /// Lowered answers standing on names, kept as saved answers and judged against what a fresh
-    /// lowering says: a kept answer still valid must equal it, or a read is missing.
-    fn lowered_said_pass(store: Store) {
-        let rdb = self.decls.rows_db.get()
-        mut settled = 0
-        mut stood = 0
-        mut why: Map<string, int> = {}
-        mut valid = 0
-        mut recomputed = 0
-        mut spoke = 0
-        mut mismatched = 0
-        for id, ask in self.asks.get() {
-            let reads = self.db.kernel.deps_of(key_at(Family.Lowered.ordinal, id))
-            if reads.is_empty() { continue }
-            settled = settled + 1
-            let leaves? = rdb.leaves_of(reads) else { continue }
-            stood = stood + 1
-            let says? = self.lowered_says(id) else {
-                spoke = spoke + 1
-                continue
-            }
-            let row = node_key(Stored.Unit, ["loweredsaid", self.wanted_list_wire([ask])])
-            let kept = store.get_valid(Stored.Unit, row, (n) -> rdb.leaf_digest(n))
-            if kept == null {
-                recomputed = recomputed + 1
-                let cause = self.first_moved(store, row, (n) -> rdb.leaf_digest(n))
-                why.set(cause, (why.get(cause) ?? 0) + 1)
-            } else {
-                valid = valid + 1
-                if kept != says {
-                    mismatched = mismatched + 1
-                    eprintln("Q loweredsaid mismatch ${ask.name}")
-                }
-            }
-            let _ = store.keep_reading(Stored.Unit, row, says, saved_reads(leaves))
-        }
-        eprintln(
-            "loweredsaid: ${settled} settled, ${stood} stand on names; valid ${valid}, recomputed ${recomputed}, spoke ${spoke}, mismatched ${mismatched}; recomputed because: ${why.entries().map("${it.key} ${it.value}").join(", ")}",
-        )
-        if mismatched > 0 { wreck("a valid LoweredSaid differs from a fresh lowering: a read is missing") }
     }
 }
 
