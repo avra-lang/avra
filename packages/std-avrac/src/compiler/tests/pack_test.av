@@ -11,6 +11,7 @@ use compiler.store.{
     pack_has,
     pack_get,
     pack_suspects,
+    pack_readers,
     pack_traffic,
     seal,
     val_path,
@@ -154,11 +155,11 @@ spec "store/pack — segments, commit markers, the two tiers" {
                 if file.starts_with("seg-") { let _ = remove(joined_path("${root}/store", file)) }
             }
             let r = pack_at(root, "print-one")
-            pack_suspects(r, ["a.av"]).length == 1 &&
-                pack_suspects(r, ["shared.av"]).length == 2 &&
-                pack_suspects(r, ["c.av", "a.av"]).length == 2 &&
-                pack_suspects(r, []).is_empty() &&
-                pack_suspects(r, ["nothing.av"]).is_empty()
+            pack_suspects(r, ["a.av"], pack_readers(r)).length == 1 &&
+                pack_suspects(r, ["shared.av"], pack_readers(r)).length == 2 &&
+                pack_suspects(r, ["c.av", "a.av"], pack_readers(r)).length == 2 &&
+                pack_suspects(r, [], pack_readers(r)).is_empty() &&
+                pack_suspects(r, ["nothing.av"], pack_readers(r)).is_empty()
         }
         then "a row overwritten after the seal is judged by its new reads" {
             let root = pack_root("suspects-over")
@@ -167,14 +168,16 @@ spec "store/pack — segments, commit markers, the two tiers" {
             let _ = seal(w)
             let r = pack_at(root, "print-one")
             let _ = pack_put(r, "unit", "a", "2", ["d1 z.av"])
-            pack_suspects(r, ["a.av"]).is_empty() && pack_suspects(r, ["z.av"]).length == 1
+            pack_suspects(r, ["a.av"], pack_readers(r)).is_empty() &&
+                pack_suspects(r, ["z.av"], pack_readers(r)).length == 1
         }
     }
     given "a sealed body of many rows" {
         then "a moved input names its readers by decoding each row once" {
             let root = sealed_many("bulk", 64)
             let r = pack_at(root, "print-one")
-            pack_suspects(r, ["shared.av"]).length == 64 && pack_traffic(r).rows == 64
+            pack_suspects(r, ["shared.av"], pack_readers(r)).length == 64 &&
+                pack_traffic(r).rows == 64
         }
         then "a single lookup bisects the index and decodes one row" {
             let root = sealed_many("bisect", 64)

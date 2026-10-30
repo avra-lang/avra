@@ -31,7 +31,7 @@ use @std.path.{joined_path, dir_of, file_name}
 use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, written_list, read_list}
 use @std.relation.engine.{map_cell, list_cell}
 use @std.text.{parse_int}
-use core.{digest_of_octets, distinct, sorted_by}
+use core.{digest_of_octets, distinct, sorted_by, flatten}
 use core.debug.{qtrace, traced}
 use @std.time.{now_ns, wall_secs}
 
@@ -246,18 +246,33 @@ export fn read_name(line: string) -> string? {
 }
 
 /// THE SUSPECT SET: the record keys of the rows that read any input in `moved` — the sealed
-/// body's rows through its reverse section, the live segment rows by their own read lists.
-/// Ids only: no value is fetched and no row decoded.
-export fn pack_suspects(pack: Pack, moved: List<string>) -> List<string> {
+/// body's rows through its reverse section, the live rows through the reverse `pack_readers`
+/// built. Ids only: no value is fetched and no row decoded.
+export fn pack_suspects(pack: Pack, moved: List<string>, readers: Map<string, List<string>>) -> List<
+    string,
+> {
     opened_at(pack, true)
     mut wanted: Map<string, bool> = {}
     for m in moved { wanted.set(m, true) }
-    mut out = sealed_readers(pack, wanted)
+    distinct(sealed_readers(pack, wanted).concat(flatten([readers.get(m) ?? [] for m in moved])))
+}
+
+/// THE OPEN INDEX'S ROWS BY THE INPUT EACH NAMES — the reverse the sealed body keeps in a
+/// section, for the rows not sealed yet. A fixpoint asks again with a larger `moved` each
+/// round, so the caller builds this once and passes it down: a suspect set costs the open
+/// index once, not once per round. It is READ, never remembered: rows join the index as the
+/// derivation writes them, and a remembered reverse goes stale the moment one does.
+export fn pack_readers(pack: Pack) -> Map<string, List<string>> {
+    opened_at(pack, true)
+    mut out: Map<string, List<string>> = {}
     for k, h in pack.records.get() {
         if h.set >= 0 || withdrawn(pack, k) { continue }
-        if reads_of(pack, h).any((line) -> wanted.get(read_name(line) ?? "") != null) { out.push(k) }
+        for line in reads_of(pack, h) {
+            let n? = read_name(line) else { continue }
+            out.set(n, (out.get(n) ?? []).concat([k]))
+        }
     }
-    distinct(out)
+    out
 }
 
 /// The format a pack and its bodies are written in: a stamp folds it, so rows of another

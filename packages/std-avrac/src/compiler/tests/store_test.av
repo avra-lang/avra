@@ -246,11 +246,11 @@ spec "store" {
                     ],
                 )
             let _ = s.keep_reading(Stored.Unit, c, "3", [Reading { name: "c.av", digest: "d3" }])
-            s.suspects(["a.av"]).length == 1 &&
-                s.suspects(["shared.av"]).length == 2 &&
-                s.suspects(["a.av", "shared.av"]).length == 2 &&
-                s.suspects([]).is_empty() &&
-                s.suspects(["nothing.av"]).is_empty()
+            s.suspects(["a.av"], s.readers()).length == 1 &&
+                s.suspects(["shared.av"], s.readers()).length == 2 &&
+                s.suspects(["a.av", "shared.av"], s.readers()).length == 2 &&
+                s.suspects([], s.readers()).is_empty() &&
+                s.suspects(["nothing.av"], s.readers()).is_empty()
         }
         then "a moved input names exactly its readers, and no moved input names none" {
             let s = at("suspects-exact")
@@ -266,19 +266,19 @@ spec "store" {
                 )
             let _ = s.keep_reading(Stored.Unit, b, "2", [Reading { name: "s.av", digest: "d9" }])
             let _ = s.keep_reading(Stored.Unit, c, "3", [Reading { name: "c.av", digest: "d3" }])
-            let readers = s.suspects(["s.av"])
+            let readers = s.suspects(["s.av"], s.readers())
             readers.length == 2 &&
                 readers.any(it.ends_with("\n${a}")) &&
                 readers.any(it.ends_with("\n${b}")) &&
-                s.suspects(["c.av"]).length == 1 &&
-                s.suspects(["c.av"])[0].ends_with("\n${c}") &&
-                s.suspects([]).is_empty()
+                s.suspects(["c.av"], s.readers()).length == 1 &&
+                s.suspects(["c.av"], s.readers())[0].ends_with("\n${c}") &&
+                s.suspects([], s.readers()).is_empty()
         }
         then "a write after the index was built is seen" {
             let s = at("suspects-later")
             let a = node_key(Stored.Unit, ["a"])
             let _ = s.keep_reading(Stored.Unit, a, "1", [Reading { name: "a.av", digest: "d1" }])
-            let before = s.suspects(["z.av"]).length
+            let before = s.suspects(["z.av"], s.readers()).length
             let _ = s
                 .keep_reading(
                     Stored.Unit,
@@ -286,7 +286,7 @@ spec "store" {
                     "2",
                     [Reading { name: "z.av", digest: "d1" }],
                 )
-            before == 0 && s.suspects(["z.av"]).length == 1
+            before == 0 && s.suspects(["z.av"], s.readers()).length == 1
         }
     }
 
