@@ -22,7 +22,7 @@
 //!
 //! ONE NODE, ONE SURFACE. A variant built by several rules is worded
 //! only when every rule reads the same, at the same tier.
-use core.{PayloadRow, row_for, carried, flatten, distinct, found_at, is_name_start}
+use core.{PayloadRow, row_for, carried, facet_table, flatten, distinct, found_at, is_name_start}
 use @std.meta.{Field}
 use @std.grammar.{Grammar, Alt, Seq, Item, Prim, Rep, Build, Diagnostic, defect, node_builder_name}
 
@@ -146,7 +146,7 @@ fn worded(rule: string, s: Seq, seed: string?, row: PayloadRow?, plain: bool, sc
     if !plain || row == null || s.operators != null || s.fold != null { return null }
     let held = [f for f in row!.payloads if carried(f)]
     let lead? = seeded(seed, held, rule, scale) else { return null }
-    let parts = [item_pieces(m, held, scale) for m in s.items]
+    let parts = [item_pieces(m, held, scale) for m in s.items if !faceted_word(m, row!)]
     if parts.any(it == null) { return null }
     let pieces? = spaced(lead.concat(flatten([p! for p in parts]))) else { return null }
     Wording {
@@ -164,6 +164,16 @@ fn seeded(seed: string?, held: List<Field>, rule: string, scale: List<RuleTier>)
     let tier? = tier_of(scale, rule) else { return null }
     if !valued(held[at]) { return null }
     [Piece.Hole(at, tier)]
+}
+
+/// A literal captured under a `@facet` payload: the node keeps the word
+/// in a side table, and the printer that reads the table says it.
+fn faceted_word(m: Item, row: PayloadRow) -> bool {
+    let label? = m.label else { return false }
+    match m.prim {
+        .Lit(_) -> row.payloads.any(it.name == label && facet_table(it) != null),
+        rest -> false,
+    }
 }
 
 /// One item's pieces, or nothing when no template can say it.
