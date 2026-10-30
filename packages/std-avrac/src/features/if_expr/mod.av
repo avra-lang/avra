@@ -5,25 +5,20 @@
 //! line or many — the guard idiom's home. Elseless keeps the two
 //! forms unambiguous; the opening BREAK keeps single-line
 //! expression arms out of the statement parse.
-use features.{LanguageFeature, BuilderRow}
+use features.{LanguageFeature}
 use features.if_expr.{when_ladder}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 
 export fn if_expr() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name      | build
-        "if_stmt" | build_if_stmt
-    }
     LanguageFeature if_expr {
         gram: grammar {
-            stmt = v:if_stmt END -> v
+            stmt = value:if_stmt END -> Stmt.ExprStmt
             // every line a statement, the last included: no tail is promoted
             stmt_block = "{" ( stmts:stmt | BREAK )* "}" -> Expr.Block
-            if_stmt = "if" c:expression t:stmt_block ( "else" ( e:stmt_block | ei:if_stmt ) )? -> if_stmt(c, t, e, ei) @head(c)
+            if_stmt = statement:"if" cond:expression on_true:stmt_block ( "else" ( on_false:stmt_block | on_false:if_stmt ) )? -> Expr.If @head(cond)
             primary = "if" cond:expression on_true:block "else" ( on_false:block | on_false:if_expr ) @expect("else", "an `if` expression needs its `else` branch") -> Expr.If @head(cond)
             if_expr = "if" cond:expression on_true:block "else" ( on_false:block | on_false:if_expr ) -> Expr.If @head(cond)
         }
-        builders: rows
     }
     if_expr
 }

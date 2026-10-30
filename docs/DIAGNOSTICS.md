@@ -3714,6 +3714,28 @@ error[resolve.nested_impl]: impl and trait blocks live at the top level
 help: move it out of the block
 ```
 
+## resolve.impl_member
+
+an `impl` block holds `fn` declarations only
+
+```avra
+type C = { n: int }
+impl C {
+    mut x = 1
+}
+2
+```
+
+```
+error[resolve.impl_member]: an `impl` block holds `fn` declarations only
+  ╭─[witness.av:3:5]
+3 │     mut x = 1
+  ·     ┬
+  ·     ╰── not a `fn`
+──╯
+help: move it out of the block — an `impl` holds the type's methods
+```
+
 ## type.receiver
 
 a writing method is called on a `mut` place
@@ -6173,6 +6195,12 @@ error[type.shift_count]: a shift count must be between 0 and 63, this is 99
 ──╯
 help: an `int` is 64 bits, so a wider shift has no answer to give
 ```
+
+## type.mixed_bitwise
+
+a run of bitwise operators uses one operator
+
+No witness yet.
 
 ## parse.leading_pipe
 

@@ -62,10 +62,11 @@ fn no_stmt_marks() -> StmtMarks {
 }
 
 /// An impl's OWN written type-parameter lists (`impl Traced<E>`,
-/// `impl Show<X> for Box<T>`) — typing reads the target's declared
-/// tparams instead of this copy; kept only so the printer can spell
-/// back what was written.
+/// `impl Show<X> for Box<T>`), spelled.
 export type ImplTypeParams = { of: List<Plain>, target: List<Plain> }
+
+/// Each written type, as the name it was spelled with.
+fn spelled_all(ts: List<TypeRef>) -> List<Plain> { [Plain(spelled(t)) for t in ts] }
 
 /// A payload `is`: the variant pattern it names (`.V(p, q)`).
 export type PayloadIs = { pat: PatId }
@@ -94,11 +95,6 @@ export type SyntaxArena = {
     // desugars to carries every field the sugar would print, so the
     // mark alone is enough to read the spelling back
     @copied(stmt, wear_component_inst) component_insts: Cell<List<string?>>,
-    // an impl's own written type-parameter lists, by its statement —
-    // printing only, absent on a plain (non-generic) impl
-    @copied(stmt, wear_impl_tparams) impl_tparams: Cell<List<ImplTypeParams?>>,
-    // a trait impl's trait arguments (`impl Realize<Text> for Html`), by its statement
-    @copied_by_hand("minted_stmt: its TypeRefs are rebuilt through tref") impl_trait_args: Cell<List<List<TypeRef>>>,
     // a trait's own type parameters beside `Self`, by its statement
     // declarations an instance MINTED while its file parsed — a
     // route's pattern record — joining the file's top level
@@ -213,8 +209,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         marks: list_cell(),
         grammars: list_cell(),
         component_insts: list_cell(),
-        impl_tparams: list_cell(),
-        impl_trait_args: list_cell(),
         hoisted: list_cell(),
         annotations: list_cell(),
         docs: list_cell(),
@@ -805,11 +799,6 @@ impl SyntaxArena {
         self.mark_component_inst(s, held)
     }
 
-    fn wear_impl_tparams(s: StmtId, held: ImplTypeParams?) {
-        let own? = held else { return }
-        self.mark_impl_tparams(s, own.of, own.target)
-    }
-
     /// Gives `e` the handler `worn` records, if any, each mark through its own
     /// verb so the fingerprint follows — the door a copy uses.
     fn wear_handler(e: ExprId, worn: OnHandler?) {
@@ -1046,7 +1035,7 @@ impl SyntaxArena {
     fn answer_of(s: StmtId) -> ExprId? {
         match self.stmt(s) {
             .ExprStmt(v) -> self.answered_by(s, v),
-            .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+            .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
         }
     }
 
@@ -1247,13 +1236,13 @@ impl SyntaxArena {
                     fp_list([self.pat_fingerprint(a) for a in after]),
                 ],
             ),
-            .Fields(name, fields, open) -> fp(
+            .Fields(name, fields, rests) -> fp(
                 316,
                 [
                     fp_str(name.of),
                     fp_list([fp_str(f.name.of) for f in fields]),
                     fp_list([self.pat_fingerprint(f.pat) for f in fields]),
-                    if open { 1 } else { 0 },
+                    if rests.is_empty() { 0 } else { 1 },
                 ],
             ),
         }
@@ -1286,8 +1275,6 @@ impl SyntaxArena {
         self.marks.push(no_stmt_marks())
         self.grammars.push(null)
         self.component_insts.push(null)
-        self.impl_tparams.push(null)
-        self.impl_trait_args.push([])
         self.annotations.push([])
         self.docs.push(null)
         self.doc_ats.push(-1)
@@ -1539,26 +1526,20 @@ impl SyntaxArena {
         self.restamp(s, 146)
     }
 
-    /// `impl Traced<E>`/`impl Show<X> for Box<T>` crossed this
-    /// declaration wearing type parameters of its own — the mark's
-    /// code is 151, carrying what was written.
-    fn mark_impl_tparams(s: StmtId, of: List<Plain>, target: List<Plain>) {
-        self.impl_tparams.set_at(s.index, ImplTypeParams { of: of, target: target })
-        self.restamp_carrying(s, 151, [fp_list(plain_fps(of)), fp_list(plain_fps(target))])
-    }
-
+    /// The type parameters an impl wrote of its own, spelled — absent on a
+    /// plain (non-generic) impl.
     fn impl_tparams_of(s: StmtId) -> ImplTypeParams? {
-        self.impl_tparams.get()[s.index]
+        match self.stmt(s) {
+            .ImplDecl(_, of, _, target, _) -> if of.is_empty() && target.is_empty() { null } else { ImplTypeParams { of: spelled_all(of), target: spelled_all(target) } },
+            _ -> null,
+        }
     }
 
     /// The arguments a trait impl gives its trait — part of what the
     /// impl declares.
-    fn mark_trait_args(s: StmtId, args: List<TypeRef>) {
-        self.impl_trait_args.set_at(s.index, args)
-        self.restamp_carrying(s, 153, [type_fp(a) for a in args])
+    fn trait_args_of(s: StmtId) -> List<TypeRef> {
+        match self.stmt(s) { .ImplDecl(_, of, _, _, _) -> of, _ -> [] }
     }
-
-    fn trait_args_of(s: StmtId) -> List<TypeRef> { self.impl_trait_args.get()[s.index] }
 
     /// A declaration an instance minted, joining its file's top level.
     fn hoist(s: StmtId) {
