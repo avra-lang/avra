@@ -22,20 +22,30 @@ use core.{Span, span_of}
 type TermKind = { name: string, kind: TokenKind, form: TokenForm = TokenForm.Any }
 
 /// Which of a kind's tokens a terminal takes: all of them, or the ones
-/// spelled one way — a `"""raw"""` string.
+/// spelled one way — a `"""raw"""` string, a number with a point or
+/// without one.
 enum TokenForm {
     Any
     Raw
+    Fraction
+    Integer
 }
 
 /// Whether the token is spelled the way the form asks.
 fn spelled_as(form: TokenForm, t: Token) -> bool {
-    match form { .Any -> true, .Raw -> t.raw }
+    match form {
+        .Any -> true,
+        .Raw -> t.raw,
+        .Fraction -> t.is_fraction(),
+        .Integer -> !t.is_fraction(),
+    }
 }
 
 const terminal_kinds: List<TermKind> = [
     TermKind { name: "NAME", kind: TokenKind.Name },
     TermKind { name: "NUMBER", kind: TokenKind.Num },
+    TermKind { name: "INTEGER", kind: TokenKind.Num, form: TokenForm.Integer },
+    TermKind { name: "FRACTION", kind: TokenKind.Num, form: TokenForm.Fraction },
     TermKind { name: "STRING", kind: TokenKind.Str },
     TermKind { name: "RAW_STRING", kind: TokenKind.Str, form: TokenForm.Raw },
     TermKind { name: "OCTETS", kind: TokenKind.Octets },

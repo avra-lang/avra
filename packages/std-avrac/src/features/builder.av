@@ -202,11 +202,13 @@ impl Slots for Builder {
         .Ok((self.token(self.slot_of(label)?)?).text)
     }
 
-    /// The integer the number the payload `label` carries spells.
+    /// The int the number the payload `label` carries spells: an integer's
+    /// value, a fraction's bits. The lexer refuses a literal no `int`
+    /// holds, so its stand-in here speaks nothing twice.
     fn int_of(label: string) -> Result<int, string> {
         let t = self.token(self.slot_of(label)?)?
-        let n? = t.int_value() else { return .Err(no_integer(t.text)) }
-        .Ok(n)
+        if t.is_fraction() { return .Ok(t.float_bits()) }
+        .Ok(t.int_value() ?? 0)
     }
 
     /// The operator the word the payload `label` carries spells.
@@ -836,10 +838,6 @@ fn facet_not_a_pattern(field: string) -> string {
 fn unknown_payload(ps: List<Field>, n: string) -> string {
     if ps.is_empty() { return "no payload `${n}` — this build carries none" }
     "no payload `${n}` — this build carries `${[p.name for p in ps].join("`, `")}`"
-}
-
-fn no_integer(written: string) -> string {
-    "`${written}` is no integer — a number pattern matches an `int`"
 }
 
 fn no_pattern(label: string) -> string {

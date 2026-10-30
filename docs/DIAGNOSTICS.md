@@ -39,7 +39,7 @@ error[parse.expected]: this cannot start or continue a `stmt`
 1 │ }
   · ┬
 ──╯
-help: it could begin with `yield`, `@fair`, PKG, `component`, COMPONENT, `use`, `export`, `spec` — and 55 more
+help: it could begin with `yield`, `@fair`, PKG, `component`, COMPONENT, `use`, `export`, `spec` — and 56 more
 ```
 
 ## build.failed
