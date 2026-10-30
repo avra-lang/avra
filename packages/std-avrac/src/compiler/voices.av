@@ -87,6 +87,8 @@ use diagnostics.{Diag, refusal, Severity, DiagFacts, diag_facts_of, Voices}
 use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
 use @std.testing.{words}
 use compiler.store.{Store, Stored}
+use @std.relation.{query}
+use @std.relation.db.{Db as RelDb}
 use compiler.lower.{Unit, code_facts_wire}
 
 // ── voices ──
@@ -767,78 +769,39 @@ fn maybe_declares_block(ws: Workspace, files: List<string>) -> bool {
 }
 
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
-fn file_lexes_block(ws: Workspace, path: string) -> bool {
-    scan_flag(
-        ws
-            .relation(Family.BlockScan)
-            .demand(
-                ws.text_key(path),
-                () -> DbRow
-                    .Flag(
-                        scanned_flag(
-                            ws,
-                            "block",
-                            ws.listed_text(path),
-                            () -> ws.text_scan(path).opens_block,
-                        ),
-                    ),
-                flag_print,
-            ),
-    )
-}
-
-/// A text's yes-or-no scan verdict, answered by the store before the lexer runs. The verdict is
-/// the text's own and this compiler's grammar's, so the row's key is the text under `tag` and the
-/// compiler's print; what the store answers is a function of the input the query already read.
-// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
-fn scanned_flag(ws: Workspace, tag: string, text: string, asked: fn() -> bool) -> bool {
-    let store = ws.opened_store()
-    let key = digest_of("${tag}\n${ws.compiler_id()}\n${text}")
-    let kept = ws.db.scan(store, key)
-    let found = if kept != null { kept! == "1" } else { asked() }
-    if kept == null { ws.db.insert_scan(store, key, if found { "1" } else { "0" }) }
-    found
-}
+fn file_lexes_block(ws: Workspace, path: string) -> bool { opens_block_in(ws.text_staged(path), path) }
 
 /// Whether a file declares a component — `component NAME`, then its
 /// block or its head — read off its tokens. A SCAN IS A QUERY OVER ITS
 /// TEXT: a reader depends on the answer, so an edit that leaves the
 /// answer standing leaves the reader standing.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
-fn file_declares_component(ws: Workspace, path: string) -> bool {
-    scan_flag(
-        ws
-            .relation(Family.ComponentScan)
-            .demand(
-                ws.text_key(path),
-                () -> DbRow
-                    .Flag(
-                        scanned_flag(
-                            ws,
-                            "component",
-                            ws.listed_text(path),
-                            () -> ws.text_scan(path).declares,
-                        ),
-                    ),
-                flag_print,
-            ),
-    )
-}
+fn file_declares_component(ws: Workspace, path: string) -> bool { declares_component_in(ws.text_staged(path), path) }
 
 /// The names a file's `component NAME` declarations wear — read off its
 /// tokens.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
-fn component_names(ws: Workspace, path: string) -> List<string> {
-    scan_words(
-        ws
-            .relation(Family.ComponentNames)
-            .demand(ws.text_key(path), () -> DbRow.Words(ws.text_scan(path).components), words_print),
-    )
-}
+fn component_names(ws: Workspace, path: string) -> List<string> { components_in(ws.text_staged(path), path) }
 
-fn flag_print(r: DbRow) -> int { if scan_flag(r) { 1 } else { 0 } }
+/// What one lex of a file's text answers about its block words — the scans' one query.
+@query
+fn text_scan_of(db: RelDb, path: string) -> TextScan { scan_text(file_text(db, path), avra().keywords) }
 
-fn words_print(r: DbRow) -> int { fp_str(joined(scan_words(r), "\n")) }
+/// Whether a file may declare a block word.
+@query
+fn opens_block_in(db: RelDb, path: string) -> bool { text_scan_of(db, path).opens_block }
+
+/// Whether a file declares a component.
+@query
+fn declares_component_in(db: RelDb, path: string) -> bool { text_scan_of(db, path).declares }
+
+/// The components a file declares.
+@query
+fn components_in(db: RelDb, path: string) -> List<string> { text_scan_of(db, path).components }
+
+/// The components a file exports.
+@query
+fn exported_in(db: RelDb, path: string) -> List<string> { text_scan_of(db, path).exported }
 
 /// A component word known by its name alone: its instance parses as
 /// one and stands as a hole.
@@ -881,30 +844,17 @@ fn component_index_of(ws: Workspace, paths: List<string>) -> Map<string, List<st
 /// What one lex of a text answers: whether it may declare a block word, and the
 /// components it declares and the ones it exports — `component NAME` before its
 /// block or its head.
-type TextScan = {
-    text: string,
-    opens_block: bool,
-    declares: bool,
-    components: List<string>,
-    exported: List<string>,
-}
+type TextScan = { opens_block: bool, declares: bool, components: List<string>, exported: List<string> }
 
 /// THE CHEAPEST GATE FIRST: no `grammar`/`component`/`export` substring anywhere, no
 /// token stream worth building.
 fn scan_text(text: string, keywords: List<string>) -> TextScan {
     if !(text.contains("grammar") || text.contains("component") || text.contains("export")) {
-        return TextScan {
-            text: text,
-            opens_block: false,
-            declares: false,
-            components: [],
-            exported: [],
-        }
+        return TextScan { opens_block: false, declares: false, components: [], exported: [] }
     }
     let tokens = lex_source(text).tokens
     let named = [tokens[j + 1].text for j in 0..tokens.length - 2 if declares_component_at(tokens, j)]
     TextScan {
-        text: text,
         opens_block: opens_block(tokens, keywords),
         declares: !named.is_empty(),
         components: named,

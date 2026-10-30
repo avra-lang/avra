@@ -602,7 +602,6 @@ export type Decls = {
     /// THE FILES ANSWERED FROM A RECORD — never parsed, so their declarations were
     /// MINTED and their objects come from the store. Keyed by path.
     held: Cell<Map<string, bool>>,
-    held_items: Cell<Map<string, List<DeclId>>>,
     spliced: Cell<Map<string, List<DeclId>>>,
     reentered: Table<List<DeclId>>,
     reentering: Table<bool>,
@@ -1028,7 +1027,6 @@ export fn new_decls_under(durable: Durable) -> Decls {
         expansion_voices: Cell.new(no_expansion_voices),
         meta_ids: map_cell(),
         held: map_cell(),
-        held_items: map_cell(),
         spliced: map_cell(),
         reentered: new_table(),
         reentering: new_table(),
@@ -1452,11 +1450,6 @@ impl Decls {
     fn restood(d: DeclId, state: int) {
         let x = self.raw_decl(d)
         if x.standing != state { self.decl_row_rows.get().reseat(d.index, x with { standing: state }) }
-    }
-
-    /// Every file of a module, once its held rows are minted.
-    fn note_module_rows(m: ModuleId, state: int) {
-        for f in self.files_of_module(m) { self.note_rows(f, state) }
     }
 
     /// A generated declaration's origin, or null for a written one.
@@ -3615,12 +3608,12 @@ impl Decls {
         self.ensure_methods.set(ensure)
     }
 
-    /// A method registered under its type — the same declaration
-    /// again (a recomputed sig) is the same entry.
+    /// A method registered under its type — one entry per declaration: the
+    /// same declaration again (a recomputed sig) is the same entry, while two
+    /// that share a name (instantiations) both stand.
     @bracket("methods")
     fn declare_method(target: DeclId, m: DeclId) {
-        let prior: DeclId? = self.held_method(target, self.decl(m).name)
-        if prior != null && same_decl(prior!, m) { return }
+        if self.methods.get()[target.index].get().any((prior: DeclId) -> same_decl(prior, m)) { return }
         self.methods.get()[target.index].push(m)
     }
 

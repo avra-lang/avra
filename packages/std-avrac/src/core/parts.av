@@ -31,11 +31,12 @@ impl SyntaxArena {
     /// A record pattern's parts, when the pattern is one.
     fn fields_parts(p: PatId) -> FieldsParts? {
         match self.pat(p) {
-            .Fields(name, fields, open) -> FieldsParts {
+            .Fields(name, fields, rests) -> FieldsParts {
                 name: name.of,
                 fields: [f.name.of for f in fields],
                 args: [f.pat for f in fields],
-                open: open,
+                open: !rests.is_empty(),
+                rests: rests,
             },
             _ -> null,
         }
@@ -539,7 +540,11 @@ impl SyntaxArena {
     /// A spec's pieces, when the statement is one.
     fn spec_parts(s: StmtId) -> SpecParts? {
         match self.stmt(s) {
-            .Spec(name, cases) -> SpecParts { name: name, cases: cases },
+            .Spec(name, groups) -> SpecParts {
+                name: name,
+                cases: flatten([[c with { group: g.name } for c in g.cases] for g in groups]),
+                groups: groups,
+            },
             _ -> null,
         }
     }
@@ -715,7 +720,8 @@ export type Spread = { at: int, of: TypeRef, lo: int }
 export type NamedParts = { name: string, tparams: List<string>, of: TypeRef }
 
 /// What a spec carries, projected once.
-export type SpecParts = { name: string, cases: List<Case> }
+/// A spec's groups as written, and its cases each stamped with its group.
+export type SpecParts = { name: string, cases: List<Case>, groups: List<Given> }
 
 /// What a collect declaration carries, projected once. `proj_names[j]`
 /// and `proj_paths[j]` zip: the field it fills, and the `it` path it
@@ -736,6 +742,6 @@ fn name_over(name: Scoped, tparams: List<Plain>, of: TypeRef) -> NamedParts {
 }
 
 export type SeqParts = { before: List<PatId>, rest: List<PatId>, after: List<PatId> }
-export type FieldsParts = { name: string, fields: List<string>, args: List<PatId>, open: bool }
+export type FieldsParts = { name: string, fields: List<string>, args: List<PatId>, open: bool, rests: List<PatId> }
 
 export type LetParts = { pat: PatId, subject: ExprId, otherwise: ExprId? }
