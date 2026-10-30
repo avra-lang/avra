@@ -137,7 +137,7 @@ impl Workspace {
             attempts: d.turned + 1,
             discarded: d.turned,
             turns: [left_line(l) for l in d.left],
-            phases: grouped_phases(d.program.phases.concat(d.spans)),
+            phases: grouped_phases(d.program.ws.phases.get().concat(d.spans)),
         }
         d.program.ws.discarded()
         walk
@@ -149,7 +149,7 @@ impl Workspace {
     fn walk_graph() -> Graphed {
         self.inspecting()
         let g = self.anew()
-        Graphed { ws: g, phases: grouped_phases(g.program(null).phases) }
+        Graphed { ws: g, phases: grouped_phases(g.program(null).ws.phases.get()) }
     }
 
     /// THE GRAPH OF `--stats`: the derivation's own workspace, which is the one
@@ -158,7 +158,10 @@ impl Workspace {
         self.inspecting()
         let g = self.anew()
         match g.derived(self.entry_of(), Want.Diagnostics) {
-            .Ok(d) -> Graphed { ws: d.program.ws, phases: grouped_phases(d.program.phases.concat(d.spans)) },
+            .Ok(d) -> Graphed {
+                ws: d.program.ws,
+                phases: grouped_phases(d.program.ws.phases.get().concat(d.spans)),
+            },
             .Err(_) -> self.walk_graph(),
         }
     }
