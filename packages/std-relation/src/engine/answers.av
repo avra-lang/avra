@@ -34,7 +34,7 @@ impl Relation {
         let a = match self.kernel.ask(self.query_key(arg)) {
             .Reuse -> match self.values.entry(arg) {
                 .Present(value) -> MemoAsk.Reuse(value),
-                .Missing -> missing_value(self.family, arg),
+                .Missing -> missing_value(self.kernel, self.family, arg),
             },
             .Compute -> MemoAsk.Compute,
             .Cycle -> MemoAsk.Cycle,
@@ -184,7 +184,7 @@ impl Relation {
     fn cycle_value(arg: int) -> T {
         match self.values.entry(arg) {
             .Present(value) -> value,
-            .Missing -> missing_value(self.family, arg),
+            .Missing -> missing_value(self.kernel, self.family, arg),
         }
     }
 }
@@ -195,7 +195,10 @@ fn ask_tag<T>(a: MemoAsk<T>) -> string {
     match a { .Reuse(_) -> "reuse", .Compute -> "compute", .Cycle -> "cycle" }
 }
 
-fn missing_value<T>(family: int, arg: int) -> T {
-    avra_trap("defect: memo family ${family} reused missing key ${arg}")
-    missing_value<T>(family, arg)
+/// A reused key holding no value: a defect naming the family, the key and who asked.
+fn missing_value<T>(k: Kernel, family: int, arg: int) -> T {
+    avra_trap(
+        "defect: memo family ${k.family_name(family)} reused missing key ${arg}; open: ${k.open_stack()}",
+    )
+    missing_value<T>(k, family, arg)
 }

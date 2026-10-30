@@ -599,10 +599,21 @@ impl Kernel {
     /// The revision a cell last changed at, by its family's verifier.
     fn verified(family: int, arg: int) -> int {
         match self.verifiers.get()[family] {
-            .By -> (self.by_dispatch.get())(family, arg),
+            .By -> self.settled_change(Key { family: family, arg: arg }) ?? (self.by_dispatch.get())(
+                family,
+                arg,
+            ),
             .Input -> self.changed_at(Key { family: family, arg: arg }),
             .Hash(live, seen, moved) -> self.moved_at(seen, moved, arg, live(arg)),
         }
+    }
+
+    /// A cell verified at this revision: the revision it last changed at,
+    /// read without its verifier.
+    fn settled_change(key: Key) -> int? {
+        let cell? = self.cell(key) else { return null }
+        if cell.verified_at != self.rev.get() { return null }
+        cell.changed_at
     }
 
     /// A hashed cell's hash as it stands, against the one last seen: the
@@ -619,6 +630,12 @@ impl Kernel {
     }
 
     fn active(key: Key) -> bool { self.asker.open.get().contains(edge_of(key)) }
+
+    /// The open frames, outermost first, as `family:arg` — what a defect names, so the asker
+    /// is never a hunt.
+    fn open_stack() -> string {
+        [self.edge_text(e) for e in self.asker.open.get()].join(" > ")
+    }
 
     /// Whether ANY key of a family is open — a query of that family is
     /// in flight. The kernel is language-agnostic, so the family is
