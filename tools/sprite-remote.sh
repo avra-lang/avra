@@ -51,11 +51,21 @@ home=${AVRA_SPRITE_HOME:-/home/sprite}
 runs=$home/avra-runs
 compilers=$home/avra-compilers
 trees=$home/avra-build
+# A route's build log outlives its run: the next run removes the run's directory.
+probes=$home/avra-probes
 floor_mb=${AVRA_RUN_FLOOR_MB:-600}
 # Under this much available memory a Sprite answers nobody.
 stall_mb=250
 
 avail_mb() { awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo; }
+
+# A compiler build's cap: the Sprite's memory less its floor, never the
+# shim's laptop default. The keeper guards what is available as the run goes.
+build_cap() { printf '%s' "${AVRA_BUILD_CAP_MB:-$(awk '/^MemTotal:/ { print int($2 / 1024) - 1200 }' /proc/meminfo)}"; }
+
+# The builder's stamp: its key and the bytes standing under it, so a
+# build/avra another route wrote over is never read as the builder.
+builder_stamp() { printf '%s %s' "$1" "$(sha256sum build/avra | cut -c1-64)"; }
 
 # The pids carrying a run's mark, this shell's own excluded.
 members() {
@@ -220,6 +230,8 @@ prune_now() {
         case "$busy" in *"$d/"*) continue ;; esac
         rm -rf "$d"
     done
+    find "$probes" -mindepth 1 -maxdepth 1 -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn |
+        awk 'NR > 20 { print $2 }' | while IFS= read -r f; do find "$f" -delete; done
     find /tmp -mindepth 1 -maxdepth 1 -user "$(id -un)" -mtime +"$days" ! -name '.avra-*' -exec rm -rf {} + 2>/dev/null || :
     rm -f "$home"/.avra-info-*.sh "$home"/.avra-run-*.sh "$home"/.avra-provision.sh
     after=$(df -Pm "$home" | awk 'NR == 2 { print $4 }')
@@ -293,8 +305,7 @@ compiler_objs() { make -s compiler-files; }
 # differs between two builds of one source.
 advance_and_cache() {
     log=/tmp/.avra-adv-$$
-    # A build's cap leaves the machine its floor; the shim's default is the laptop's.
-    export AVRA_CAP_MB="${AVRA_BUILD_CAP_MB:-$(awk '/^MemTotal:/ { print int($2 / 1024) - 1200 }' /proc/meminfo)}"
+    export AVRA_CAP_MB="$(build_cap)"
     ok=0
     # Each step says how long it took: a build's time is read, never guessed.
     step() {
@@ -442,7 +453,8 @@ supervise() {
     (
         trap - EXIT TERM
         export LLVM_PREFIX=/usr/lib/llvm-22 CC=/usr/lib/llvm-22/bin/clang AVRA_CXX_RUNTIME=stdc++
-        mkdir -p "$remote/build" "$compilers"
+        mkdir -p "$remote/build" "$compilers" "$probes"
+        probe_log=$probes/$id.log
         cd "$remote"
         t0=$(date +%s)
         if [ "$chash" = - ]; then
@@ -453,18 +465,18 @@ supervise() {
             rm -f build/.avra-compiler-hash
             [ -x build/avra ] || { echo "sprite-run: AVRA_PROBE_BUILD=one needs a standing compiler — \`sh tools/work run make bootstrap\` first" >&2; exit 70; }
             s0=$(date +%s)
-            if make -s avra >> "$rd/probe.log" 2>&1; then
+            if AVRA_CAP_MB="$(build_cap)" make -s avra >> "$probe_log" 2>&1; then
                 compiler="one generation, not a fixed point (probe, $(($(date +%s) - s0))s)"
             else
-                echo "sprite-run: the probe generation FAILED — see $rd/probe.log" >&2; exit 70
+                echo "sprite-run: the probe generation FAILED — see $probe_log" >&2; exit 70
             fi
         elif [ "${route%%:*}" = builder ]; then
             # The merge-base's published compiler stands as the builder, byte for byte across runs, so
             # the store it filled is still its own; this tree's compiler is never built for the run.
-            if [ -x build/avra ] && [ "$(cat build/.avra-builder-key 2>/dev/null)" = "${route#builder:}" ]; then
+            if [ -x build/avra ] && [ "$(cat build/.avra-builder-key 2>/dev/null)" = "$(builder_stamp "${route#builder:}")" ]; then
                 compiler="builder, warm (merge-base key ${route#builder:})"
             elif install_published "${route#builder:}"; then
-                printf '%s' "${route#builder:}" > build/.avra-builder-key
+                builder_stamp "${route#builder:}" > build/.avra-builder-key
                 : > build/.avra-compiler-hash
                 compiler="builder, installed (merge-base key ${route#builder:})"
             else
@@ -479,8 +491,8 @@ supervise() {
             if [ ! -x "$mbt/build/avra" ]; then
                 s0=$(date +%s)
                 mkdir -p "$mbt" && tar -xzf "$home/avra-mb/$mbk.tgz" -C "$mbt" \
-                    && (python3 "$remote/tools/compiler_release.py" install --key "$anc" --into "$mbt/build" >&2 && cd "$mbt" && make -s compiler GENS=1) >> "$rd/probe.log" 2>&1 \
-                    || { echo "sprite-run: the merge-base's source (key $mbk) did not build from the published ancestor $anc — see $rd/probe.log" >&2; exit 70; }
+                    && (python3 "$remote/tools/compiler_release.py" install --key "$anc" --into "$mbt/build" >&2 && cd "$mbt" && AVRA_CAP_MB="$(build_cap)" make -s compiler GENS=1) >> "$probe_log" 2>&1 \
+                    || { echo "sprite-run: the merge-base's source (key $mbk) did not build from the published ancestor $anc — see $probe_log" >&2; exit 70; }
                 echo "sprite-run: merge-base builder $mbk built once from $anc ($(($(date +%s) - s0))s)" >&2
             fi
             if [ -x build/avra ] && cmp -s "$mbt/build/avra" build/avra; then
@@ -502,11 +514,11 @@ supervise() {
             # the seed is the floor — `make bootstrap` builds from the committed
             # seed, whatever the standing compiler knows.
             s0=$(date +%s)
-            if make -s compiler GENS=1 >> "$rd/probe.log" 2>&1; then
+            if AVRA_CAP_MB="$(build_cap)" make -s compiler GENS=1 >> "$probe_log" 2>&1; then
                 : > build/.avra-compiler-hash
                 compiler="merge-base published, built once ($(($(date +%s) - s0))s)"
             else
-                echo "sprite-run: the merge-base generation and the seed both FAILED — see $rd/probe.log" >&2; exit 70
+                echo "sprite-run: the merge-base generation and the seed both FAILED — see $probe_log" >&2; exit 70
             fi
         elif [ -x "$compilers/$chash/avra" ]; then
             for f in $(compiler_objs); do
