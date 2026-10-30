@@ -99,7 +99,7 @@ spec "compiler/cache_walk — a query's label" {
     }
     then "an empty subject names no answer, whatever its family keys by" {
         let ws = walked()
-        ["Source()", "Namespace()", "Sig()", "WriteSummary()", "Lowered()", "Named()", "Input()"]
+        ["Namespace()", "Sig()", "WriteSummary()", "Lowered()", "Named()", "Input()"]
             .all((l: string) -> named_by(ws, l).is_empty() && unknown_family(ws, l) == "")
     }
     then "every settled answer's label, read backwards, names that answer" {
@@ -119,7 +119,7 @@ spec "compiler/cache_walk — a graph of two packages" {
         unread(packaged()).length == 0
     }
     then "a dependency's file is found by its path from the asked package" {
-        named_by(packaged(), "Source(vendor/greet/src/greet.av)").length == 1
+        named_by(packaged(), "Parsed(vendor/greet/src/greet.av)").length == 1
     }
 }
 
@@ -165,13 +165,12 @@ spec "compiler/cache_walk — down from a file's analysis" {
 }
 
 spec "compiler/cache_walk — up from a text" {
-    then "a callee's text is read by its own source and parse and by its caller's analysis, never by itself" {
+    then "a callee's text is read by its own parse and by its caller's analysis, never by itself" {
         let ws = walked()
         let text = ws.input_key("/w/src/a.av")!
         let labels = [ws.key_label(k) for k in above(ws, text)]
         labels.contains("Parsed(src/a.av)") &&
             labels.contains("Analysis(src/b.av)") &&
-            labels.contains("Source(src/a.av)") &&
             !labels.contains("Input(text src/a.av)")
     }
     then "its direct readers are among its readers at any depth, and fewer" {
@@ -239,19 +238,6 @@ spec "compiler/cache_walk — the families, counted" {
     then "each family's cells are counted once, and the input family reads nothing" {
         let input = walked().family_counts().families.find(it.family == "Input")
         input != null && input!.cells > 0 && input!.edges == 0 && input!.longest == 0
-    }
-    then "a source reads one thing, its text" {
-        let source = walked().family_counts().families.find(it.family == "Source")
-        source != null &&
-            source!.cells > 0 &&
-            source!.edges == source!.cells &&
-            source!.longest == 1
-    }
-    then "a source's one read is the text input of its own file" {
-        let ws = walked()
-        let f? = ws.walked_file("/w/src/a.av") else { return false }
-        [ws.key_label(k) for k in ws.db.edges_by_reader(Key { family: Family.Source.ordinal, arg: f.index })]
-            .join(",") == "Input(text src/a.av)"
     }
     then "a family's median read list is no longer than its ninety-ninth, nor that than its longest" {
         walked()

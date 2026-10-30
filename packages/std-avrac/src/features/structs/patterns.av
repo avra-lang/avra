@@ -37,6 +37,8 @@ impl PatSemantics for FieldPatSemantics {
 /// The subject is the named record; every field named is its, once;
 /// without a `..` every field is named; each pattern takes its field.
 fn fields_types(mut cx: TypeCx, p: PatId, parts: FieldsParts, expected: TypeId) -> List<TypeId> {
+    if parts.rests.length > 1 { return rest_twice(cx, p) }
+    if parts.args.any(named_after(cx, parts, it)) { return named_after_rest(cx, p) }
     let sig? = cx.fields_of(cx.view.types.seen_through(expected)) else { return not_a_record(cx, p, parts.name, expected) }
     if declared_name(cx, expected) != parts.name { return other_record(cx, p, parts.name, expected) }
     let stray: string? = parts.fields.find((f) -> sig.slot_of(f) == null || sig.lacked(f) != null)
@@ -50,6 +52,12 @@ fn fields_types(mut cx: TypeCx, p: PatId, parts: FieldsParts, expected: TypeId) 
     flatten(
         [sub_types(cx, a, slot_want(cx.view.types, sig, sig.slot_of(parts.fields[j])!)) for j, a in parts.args],
     )
+}
+
+/// Whether field pattern `a` was written after the `..`.
+fn named_after(cx: TypeCx, parts: FieldsParts, a: PatId) -> bool {
+    let rest? = parts.rests.first() else { return false }
+    cx.view.store.pat_span(a)?.lo ?? 0 > cx.view.store.pat_span(rest)?.lo ?? 0
 }
 
 /// Whether a field is named more than once.
@@ -199,6 +207,34 @@ fn field_unlisted(mut cx: TypeCx, p: PatId, name: string, field: string) -> List
                 "this `${name}` pattern leaves field `${field}` out",
                 "this pattern",
                 "name `${field}`, or end the pattern with `..` — `${name} { …, .. }`",
+            ),
+        )
+    []
+}
+
+fn rest_twice(mut cx: TypeCx, p: PatId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.record_pattern",
+                cx.pat_loc(p),
+                "a record pattern has one `..` — it ends the fields",
+                "two `..` here",
+                "keep one `..`, after the last field",
+            ),
+        )
+    []
+}
+
+fn named_after_rest(mut cx: TypeCx, p: PatId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.record_pattern",
+                cx.pat_loc(p),
+                "`..` ends a record pattern — nothing is named after it",
+                "a field after `..`",
+                "move the `..` after the last field",
             ),
         )
     []

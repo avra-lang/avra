@@ -111,6 +111,7 @@ use compiler.families.{Family}
 use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
+use @std.relation.{query}
 use @std.relation.engine.{
     Table,
     new_table,
@@ -218,8 +219,7 @@ fn new_keys() -> Keys {
 /// each with why (`read_files`) — the read set the hold is settled by,
 /// which is every file a text was taken of and nothing else; the held
 /// modules minted so far, by name
-/// (`minted`); the files whose declarations stand, read or minted
-/// (`file_ready`); whether the holds are settled, before which no file's
+/// (`minted`); whether the holds are settled, before which no file's
 /// standing is known (`holds_now`); which
 /// held module files a declaration under each bucket value its record
 /// carries — name, word, mark, extern — so a bucket read mints its
@@ -279,7 +279,6 @@ type Hold = {
     /// Whether THIS attempt holds at all: the unheld retry holds nothing, by definition.
     holds_now: Cell<bool>,
     minted: Cell<Map<string, bool>>,
-    file_ready: Table<bool>,
     row_filled: Table<bool>,
     /// THE PRODUCER INDEX: for each held module, every declaration NAME,
     /// WORD and MARK its record lines carry, and each extern it declares. A bucket
@@ -404,7 +403,6 @@ fn new_hold() -> Hold {
         loaded_turn: map_cell(),
         holds_now: Cell.new(false),
         minted: Cell.new(no_minted),
-        file_ready: new_table<bool>(),
         row_filled: new_table<bool>(),
         named_by: Cell.new(no_producers),
         worded_by: Cell.new(no_producers),
@@ -763,10 +761,6 @@ fn syntax_hash(store: SyntaxArena, x: Decl) -> int {
 
 // Per-family verifiers — each calls only its own query, so a family's
 // code hash moves only when its own answer does.
-fn source_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.source(file_at(arg)))
-    ws.db.changed_at(key(Family.Source, arg))
-}
 fn parsed_verified(ws: Workspace, arg: int) -> int {
     touch(ws.parsed(file_at(arg)))
     ws.db.changed_at(key(Family.Parsed, arg))
@@ -935,7 +929,6 @@ fn cancel_summary_verified(ws: Workspace, arg: int) -> int {
 fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
     if family >= Family.all().length { return 0 }
     match Family.all()[family] {
-        .Source -> source_verified(ws, arg),
         .Parsed -> parsed_verified(ws, arg),
         .Items -> items_verified(ws, arg),
         .Namespace -> namespace_verified(ws, arg),
@@ -975,6 +968,14 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Input -> input_verified(ws, arg),
         .CancelSummary -> cancel_summary_verified(ws, arg),
     }
+}
+
+/// A file's text as a source, over its Text input: its text and where each line starts.
+@query
+fn source_of(ws: Workspace, f: FileId) -> SourceFile {
+    work_loaded()
+    let path = ws.decls.file(f).path
+    new_source_file(path, ws.listed_text(path))
 }
 
 export fn new_workspace(host: Host, root: string, lang: Language) -> Workspace {
@@ -1260,12 +1261,13 @@ impl Workspace {
     /// A FILE'S DECLARATIONS STAND before they are read: a read file's by its
     /// parse, a held file's minted with its module the first time anything asks.
     fn file_ensured(f: FileId) {
-        if self.hold.file_ready.at(f.index) != null || !self.hold.holds_now.get() { return }
-        self.hold.file_ready.keep(f.index, true)
-        if self.is_held(f) && self.store.get() != null {
-            self.minted_files([self.decls.file(f).path])
-            self.decls.note_module_rows(self.decls.file(f).module_id, 2)
+        let path = self.decls.file(f).path
+        if !self.hold.holds_now.get() ||
+            self.hold.minted.get().get(path) != null ||
+            !self.is_held(f) {
+            return
         }
+        self.minted_files([path])
     }
 
     /// Every read source file of the package `f` stands in admitted, its tests aside. A held
@@ -1289,11 +1291,8 @@ impl Workspace {
 
     /// Every held file of each listed module minted, once.
     fn minted_modules(modules: List<string>) {
-        let store? = self.store.get() else { return }
-        for m in modules {
-            let at = module_path(segments_of(m))
-            self.mint_files(store, at, self.module_files(at))
-        }
+        if self.store.get() == null { return }
+        for m in modules { self.mint_files(self.module_files(module_path(segments_of(m)))) }
     }
 
     /// The held modules of the listed files minted whole, once: a module stands as one
@@ -1574,23 +1573,8 @@ impl Workspace {
         null
     }
 
-    /// A file's text read from disk, as the Source row its input holds.
-    fn read_source(path: string) -> DbRow {
-        work_loaded()
-        DbRow.Source(new_source_file(path, self.listed_text(path)))
-    }
-
-    /// A file's text as a source, over its Text input: the input's cell
-    /// is the one place the text is read, and the source is cut by the
-    /// word that cell is.
-    fn source(f: FileId) -> SourceFile {
-        let path = self.decls.file(f).path
-        source_of(
-            self
-                .relation(Family.Source)
-                .demand(f.index, () -> self.read_source(path), (s: DbRow) -> self.text_word(path)),
-        )
-    }
+    /// A file's text as a source.
+    fn source(f: FileId) -> SourceFile { source_of(self, f) }
 
     /// The file parsed — pure in its text.
     /// A file parsed — under the sublanguages it imports: a first parse
@@ -1756,7 +1740,7 @@ impl Workspace {
     /// The components a file's own tokens export, counted as a read.
     fn lexed_components(path: string) -> List<string> {
         self.records.component_lexes.set(self.records.component_lexes.get() + 1)
-        exported_in(self.scanning(path), path)
+        exported_in(self.text_staged(path), path)
     }
 
     /// A provider read as it parses — under its OWN block words, since a
@@ -1923,17 +1907,22 @@ impl Workspace {
     /// The declarations a file MINTS into the one table; the answer's
     /// hash is the item tree's — names and kinds.
     fn items(f: FileId) -> List<DeclId> {
-        // A HELD FILE ANSWERS FROM ITS RECORD, before anything reaches for a parse: its
-        // declarations were MINTED, and `file_items` is a memo over a paree it never had.
-        if self.is_held(f) { return self.decls.held_items_of_file(f) }
         match self.relation(Family.Items).start(f.index) {
             .Reuse(value) -> { return items_of(value) },
             .Compute -> nothing(),
         }
+        // AN UNREAD FILE IS MINTED FROM THE ITEMS ITS LAST READ KEPT, never parsed
+        if self.is_held(f) { return self.items_settled(f, self.items_minted(f)) }
         self.decls.note_rows(f, 0)
         let p = self.parsed(f)
-        let ids = self.decls.admit(f, p.store, p.stmts)
-        let out = items_of(
+        let out = self.items_settled(f, self.decls.admit(f, p.store, p.stmts))
+        self.decls.note_rows(f, 1)
+        out
+    }
+
+    /// A file's `Items` settled: the top-level ids, hashed by every row the file minted.
+    fn items_settled(f: FileId, ids: List<DeclId>) -> List<DeclId> {
+        items_of(
             self
                 .relation(Family.Items)
                 .finish(
@@ -1942,8 +1931,6 @@ impl Workspace {
                     fp_list([self.row_print(d) for d in self.decls.decls_so_far(f)]),
                 ),
         )
-        self.decls.note_rows(f, 1)
-        out
     }
 
     /// A file's rows standing before a reader reads them through their buckets: its
@@ -2678,7 +2665,6 @@ fn declared_components(p: Parsed) -> List<ComponentWord> {
 /// family. Baked at build time; the store keys a saved answer by it.
 export fn family_code_hash(f: Family) -> string {
     match f {
-        .Source -> code_hash(source_verified) ?? "",
         .Parsed -> code_hash(parsed_verified) ?? "",
         .Items -> code_hash(items_verified) ?? "",
         .Namespace -> code_hash(namespace_verified) ?? "",

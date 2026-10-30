@@ -22,8 +22,23 @@ impl Workspace {
     /// A source's text staged as the relation Db's `file_text` input — what a query that
     /// reads the file is asked of, so its record names the text by its hash.
     fn stage_text(path: string) { set_file_text(self.decls.rows_db.get(), path, self.listed_text(path)) }
-}
 
+    /// The relation Db, `path`'s text staged in it — once, by the driver, so the query asking
+    /// reads its own answer and never the text; the world moving stages it again.
+    fn text_staged(path: string) -> RelDb {
+        if self.keys.staged.get().get(path) == null { self.db.kernel.unheard(() -> self.restaged(path)) }
+        self.decls.rows_db.get()
+    }
+
+    /// The Db a query over the workspace is asked under.
+    fn query_db() -> RelDb { self.decls.rows_db.get() }
+
+    /// `path`'s text staged as it is read now.
+    fn restaged(path: string) {
+        self.stage_text(path)
+        self.keys.staged.put(path, self.text_word(path))
+    }
+}
 /// The door a workspace's relation Db keeps its answers through: `slot` is the
 /// store the workspace attaches when it opens one.
 // LICENSED compiler.free_state_verb: a CONSTRUCTOR — the store's slot in, the hooks out.
