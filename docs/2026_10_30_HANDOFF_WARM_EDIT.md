@@ -444,3 +444,33 @@ grep -a '^Q	store	open'  trace.txt     # the store opened once
 AVRA_MEM_STATS=1 ./build/avra check packages/std-avrac   # live bytes by category + site
 AVRA_DEBUG=1     …                                      # avra_debug (no-op unless set)
 ```
+
+---
+
+## 13. The hold: what it is, what exists, what must NOT be deleted
+
+This is the most likely thing for a new agent to get wrong, because the campaign doc
+(`2026_10_27_ONE_STORE.md`) claimed for a week that "the hold is deleted". **It is not** — that
+claim described `hd-sigfix`. Verified against `hd-clean` on 2026-10-30:
+
+| what | where | count |
+|---|---|---|
+| `is_held(f: FileId)` | `whole.av:156` | 1 definition, **53 call sites** |
+| `hold_only(path)` | `whole.av:168` | 1 definition, **2 real callers** (`derive.av:727,746`) + 3 tests |
+| `held_by_rule(path)` | `whole.av:173` | the ONE rule; `hold_only` is its only writer |
+| map `decls.held` | `decls` | written only by `hold_only`; read only by `is_held` |
+
+**HELD-NESS IS THE SPEED.** A held file contributes its declarations from the module's stored
+record and is never parsed. On a warm `packages/cli` check, **577 of 579** files are held; that
+is the whole difference between 1.7 s and a full rebuild. **Never delete held-ness.**
+
+What is *owed* is only the **projection**: `decls.held` is a second place holding a fact that
+`held_by_rule` already answers, so `is_held` could call `held_by_rule` directly and the map
+could go. That is blocked on `Want`: `held_by_rule` needs the attempt's want and ~60 consumer
+sites have none in scope (recorded in `2026_10_27_ONE_STORE.md`, "Why deleting the hold is not a
+substitution"). It is a **refactor with no measured win** — do it for cleanliness, never as a
+speed change, and never confuse it with removing the hold.
+
+Four symbols the old doc said were "already true" have **zero occurrences** on this branch:
+`facts_restored`, `facts_kept`, `facts_codec`, `store_wire`. Do not cite that list; re-check the
+tree.
