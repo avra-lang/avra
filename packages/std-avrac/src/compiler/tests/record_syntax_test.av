@@ -1,0 +1,41 @@
+// A FILE'S PARSE DIGEST IS ITS SYNTAX, NOT ITS BYTES. The module record's `file` line carries
+// it, and the whole point of the column is that a comment moves the text and not the digest:
+// that is the question "may I reuse this file's answers?" asked at the right grain. A body
+// edit must move it, or a warm answer would outlive the code it describes.
+use @std.avrac.diagnostics.{new_source_file}
+use compiler.{avra, parse_program, fingerprint_of_parsed}
+use features.{BlockWords}
+
+fn rs_plain() -> string {
+    "use @std.io.{println}\n\nexport fn twice(n: int) -> int {\n    n * 2\n}\n\nfn helper() -> int { twice(2) }\n"
+}
+
+fn rs_commented() -> string { "// a note\n//! and a doc line\n\n${rs_plain()}" }
+
+fn rs_body_edited() -> string { rs_plain().replace("n * 2", "n * 3") }
+
+fn rs_decl_added() -> string { rs_plain().replace("export fn twice", "fn inserted() -> int { 0 }\n\nexport fn twice") }
+
+fn rs_digest(text: string) -> int {
+    fingerprint_of_parsed(
+        parse_program(avra(), new_source_file("/w/src/a.av", text), BlockWords {}),
+    )
+}
+
+spec "record/syntax — the parse digest is the file's own syntax" {
+    given "a file, and the same file with comments added above it" {
+        then "a comment moves no byte of the syntax" {
+            rs_digest(rs_plain()) == rs_digest(rs_commented())
+        }
+    }
+    given "a file, and the same file with one character of a body changed" {
+        then "a body edit moves the digest" {
+            rs_digest(rs_plain()) != rs_digest(rs_body_edited())
+        }
+    }
+    given "a file, and the same file with a declaration inserted above" {
+        then "a declaration added above moves the digest" {
+            rs_digest(rs_plain()) != rs_digest(rs_decl_added())
+        }
+    }
+}

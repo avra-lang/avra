@@ -42,7 +42,7 @@ use compiler.lower.{Body, collect_answer_type}
 use compiler.store.{Store, Stored, node_key}
 
 /// One file's lines in its module's record, and the digest of what a caller can see of them.
-type FileLines = { path: string, lines: List<string>, iface: string, idents: string, global: string }
+type FileLines = { path: string, lines: List<string>, iface: string, idents: string, global: string, syntax: string }
 
 impl Workspace {
 
@@ -519,7 +519,10 @@ impl Workspace {
         let parts = [self.file_lines(store, m, path, kept) for path in files]
         // what a file's lines were read from, what its runs read and its own interface
         // stand on its `file` line; the module's interface is its files', in name order
-        let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${reads_field(self.runs_recorded(store, m, f.path))}\t${f.iface}\t${f.idents}\t${f.global}" for f in parts]
+        // A FILE'S OWN PARSE DIGEST rides its `file` line: the body-inclusive, comment-free
+        // answer to "did only a comment move?", which no other column gives — `iface` is the
+        // contracts alone, deliberately, so a body edit moves no dependent.
+        let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${reads_field(self.runs_recorded(store, m, f.path))}\t${f.iface}\t${f.idents}\t${f.global}\t${f.syntax}" for f in parts]
         let iface = ifaces_digest([f.iface for f in parts])
         joined(
             ["iface\t${iface}"]
@@ -550,6 +553,7 @@ impl Workspace {
                 iface: iface_digest(lines),
                 idents: self.mentioned(path),
                 global: global_digest(lines),
+                syntax: "${fingerprint_of_parsed(self.parsed(self.file_id(path)))}",
             }
         }
         let lines = [line for line in kept.get(path) ?? [] if !line.starts_with("ref\t")]
@@ -560,6 +564,7 @@ impl Workspace {
             iface: if columns.length > 4 { columns[4] } else { iface_digest(lines) },
             idents: if columns.length > 6 { columns[5] } else { "" },
             global: if columns.length > 6 { columns[6] } else { "" },
+            syntax: if columns.length > 7 { columns[7] } else { "" },
         }
     }
 
