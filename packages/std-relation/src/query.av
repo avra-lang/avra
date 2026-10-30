@@ -13,6 +13,11 @@
 //! arguments' hash, and a run that wrote no rows hands its answer over.
 //! An answer whose kind does not read back stays in the process.
 //!
+//! The first seat is the `Db`, or a CONTEXT that answers one through
+//! `query_db()` — a call over a context reads what the context holds, so
+//! its answer stays in the process (`saved`), re-asked whenever a read it
+//! recorded moves. A dense id (`@dense`) is a seat in the process too.
+//!
 //!     @query
 //!     fn open_for(db: Db, owner: string) -> int { … }
 //!
@@ -177,9 +182,55 @@ fn nothing_made(problems: List<Diagnostic>) -> Declared { Declared { made: [], p
 /// argument or an answer with no stable encoding, and a record or payload
 /// enum named there whose type declares no codec.
 export fn query_problems(f: Fn) -> List<Diagnostic> {
-    let seats = seat_problems(f, no_db, arg_not_carried, answer_not_carried)
+    let first? = f.params.first() else { return [no_db(f)] }
+    if !seated(first.kind) { return [no_db(f)] }
+    let args = [arg_not_carried(f, p) for p in f.params.slice(1, f.params.length) if !asked_by(p.kind)]
+    let answer = if carried(f.answers, in_process) { [] } else { [answer_not_carried(f)] }
+    let seats = args.concat(answer)
     if !seats.is_empty() { return seats }
     codec_problems(f)
+}
+
+/// A query's first seat: the `Db`, or a context that answers one through `query_db()`.
+fn seated(k: Kind) -> bool { match k { .Named(_, _) -> true, rest -> false } }
+
+/// The `Db` a call is kept under, read off its first seat.
+fn db_code(f: Fn) -> Code {
+    let first = name(f.params[0].name)
+    if is_db(f.params[0].kind) { first } else { quote { ${first}.query_db() } }
+}
+
+/// Whether an argument can name a call: a stable encoding, or a dense id the process spells.
+fn asked_by(k: Kind) -> bool { carried(k, named_shape) || dense_field(k) != null }
+
+/// A dense id's one field, none for any other kind.
+fn dense_field(k: Kind) -> string? {
+    match k {
+        .Named(n, _) -> match named_shape(n) { .Dense(field) -> field, rest -> null },
+        rest -> null,
+    }
+}
+
+/// A seat as a number, when it is one: an int's own, a dense id's.
+fn numbered(p: Param) -> Code? {
+    if p.kind is .Int { return name(p.name) }
+    let field? = dense_field(p.kind) else { return null }
+    quote { ${name(p.name)}.${field} }
+}
+
+/// A shape as the process hashes it: a dense id is its number.
+fn in_process(n: string) -> NamedShape {
+    let shape = named_shape(n)
+    match shape { .Dense(_) -> NamedShape.Tagged([]), rest -> shape }
+}
+
+/// THE DURABILITY LAW: an answer outlives the process exactly when every read it makes is
+/// recorded and its key names the same call in the next one — the `Db` alone as its first
+/// seat, every argument a stable encoding, an answer that reads back. Nothing declares it.
+fn saved(f: Fn) -> bool {
+    is_db(f.params[0].kind) &&
+        f.params.slice(1, f.params.length).all((p: Param) -> carried(p.kind, named_shape)) &&
+        decodable(f.answers)
 }
 
 /// A record and a payload enum are called by name on the way through a query — hashed for the
@@ -229,10 +280,10 @@ fn kept_name(f: Fn) -> string { "${f.name}_answers" }
 fn wrapper(f: Fn) -> Decls {
     let seats = [quote { fn _(${p.name}: ${p.ty}) {} } for p in f.params]
     let args = [name(p.name) for p in f.params]
-    let db = name(f.params[0].name)
+    let db = db_code(f)
     let body = quote { () -> ${wrapped(f)}(${..args}) }
     let again = quote { () -> ${f.name}(${..args}) }
-    if decodable(f.answers) {
+    if saved(f) {
         let record = quote { KeptRecord { query: code_keyed(${literal(durable_name(f))}, code_hash(${name(wrapped(f).name)})), args: ${args_hash(f)}, write: ${write_each(f.answers, answer_owner(f))}, read: ${answer_read(f)} } }
         return quote {
             fn ${f.name}(..${seats}) -> ${f.answer} {
@@ -265,17 +316,27 @@ fn wrapper(f: Fn) -> Decls {
 /// order through the codec, the octets spelled out. What a call's cell
 /// is interned by — never a hash, which two calls may share.
 export fn args_spelled(f: Fn) -> Code {
-    let writes = [quote { (w: Writer) -> ${written(quote { w }, name(p.name), p.kind, answer_owner(f))} } for p in f.params.slice(1, f.params.length)]
+    let writes = [quote { (w: Writer) -> ${seat_written(p, answer_owner(f))} } for p in f.params.slice(1, f.params.length)]
     quote { spelled_with([${..writes}]) }
 }
 
-/// The dense arg a call is asked under: an int seat's own number, else its spelled arguments.
+/// One seat written: a number as its number, any other kind through the codec.
+fn seat_written(p: Param, owner: Owner) -> Code {
+    let n? = numbered(p) else { return written(quote { w }, name(p.name), p.kind, owner) }
+    quote { w.int(${n}) }
+}
+
+/// The dense arg a call is asked under: a lone numbered seat's own number, else its spelled
+/// arguments.
 fn arg_code(f: Fn) -> Code {
-    if f.params.length == 2 && f.params[1].kind is .Int {
-        quote { held.int_arg(${name(f.params[1].name)}) }
-    } else {
-        quote { held.arg(${args_spelled(f)}) }
-    }
+    let n? = lone_number(f) else { return quote { held.arg(${args_spelled(f)}) } }
+    quote { held.int_arg(${n}) }
+}
+
+/// A query's one argument as a number, when it has one and it is one.
+fn lone_number(f: Fn) -> Code? {
+    if f.params.length != 2 { return null }
+    numbered(f.params[1])
 }
 
 /// The answer's own stable hash, one value folded alone.
@@ -302,7 +363,7 @@ fn no_db(f: Fn) -> Diagnostic {
     refuse_as_at(
         "query_db",
         f.at,
-        "`@query fn ${f.name}` takes the `Db` its answer is kept under as its first seat",
+        "`@query fn ${f.name}` takes the `Db` its answer is kept under, or a context answering it through `query_db()`, as its first seat",
         "write `fn ${f.name}(db: Db, …)`",
     )
 }
@@ -366,7 +427,7 @@ fn arg_not_carried(f: Fn, p: Param) -> Diagnostic {
         "query_arg",
         p.at ?? f.at,
         "`${f.name}`'s seat `${p.name}` is `${p.ty}`, which has no stable encoding — a query's call is named by its arguments' hash",
-        "take an int, a bool, a string, a tagged enum or a nested record of those",
+        "take an int, a bool, a string, a tagged enum, a dense id or a nested record of those",
     )
 }
 
