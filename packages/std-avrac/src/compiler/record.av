@@ -88,7 +88,6 @@ impl Workspace {
     fn made_sig_producer() -> Producer {
         producer_of(
             [
-                code_hash(held_sig_verified),
                 code_hash(keep_interfaces),
                 code_hash(record_cached),
                 code_hash(producers_of),
@@ -121,8 +120,12 @@ export type RecordBodies = { root: string, db: Db }
 impl RecordBodies {
     fn key(module: string, iface: string) -> string { node_key(Stored.Sig, [self.root, module, iface]) }
 
-    /// The body kept for a module under one interface, when one was.
-    fn body(store: Store, module: string, iface: string) -> string? { self.db.sig(store, self.key(module, iface)) }
+    /// The record kept for a module under one interface, when one was: its kept lines, then
+    /// each file's Items lines (`whole`).
+    fn body(store: Store, module: string, iface: string) -> string? {
+        let headers? = self.db.sig(store, self.key(module, iface)) else { return null }
+        self.whole(store, headers)
+    }
 }
 
 /// ONE READ PER RECORD PER BUILD. The record for a module, from the cache when this
@@ -134,8 +137,7 @@ fn record_cached(ws: Workspace, store: Store, m: ModulePath) -> string {
     let known = ws.records.record_texts.get().get(key)
     if known != null { return known! }
     let iface = ws.db.sig(store, key) ?? ""
-    let headers = if iface == "" { "" } else { ws.record_bodies().body(store, m.text(), iface) ?? "" }
-    let text = if headers == "" { "" } else { ws.record_whole(store, headers) }
+    let text = if iface == "" { "" } else { ws.record_bodies().body(store, m.text(), iface) ?? "" }
     ws.records.record_texts.put(key, text)
     if text != "" { ws.records.record_lines.put(key, text.split("\n")) }
     text
