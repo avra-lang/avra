@@ -110,6 +110,7 @@ use compiler.families.{Family}
 use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
+use @std.relation.{query}
 use @std.relation.engine.{
     Table,
     new_table,
@@ -762,10 +763,6 @@ fn syntax_hash(store: SyntaxArena, x: Decl) -> int {
 
 // Per-family verifiers — each calls only its own query, so a family's
 // code hash moves only when its own answer does.
-fn source_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.source(file_at(arg)))
-    ws.db.changed_at(key(Family.Source, arg))
-}
 fn parsed_verified(ws: Workspace, arg: int) -> int {
     touch(ws.parsed(file_at(arg)))
     ws.db.changed_at(key(Family.Parsed, arg))
@@ -938,7 +935,6 @@ fn cancel_summary_verified(ws: Workspace, arg: int) -> int {
 fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
     if family >= Family.all().length { return 0 }
     match Family.all()[family] {
-        .Source -> source_verified(ws, arg),
         .Parsed -> parsed_verified(ws, arg),
         .Items -> items_verified(ws, arg),
         .Namespace -> namespace_verified(ws, arg),
@@ -979,6 +975,14 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Input -> input_verified(ws, arg),
         .CancelSummary -> cancel_summary_verified(ws, arg),
     }
+}
+
+/// A file's text as a source, over its Text input: its text and where each line starts.
+@query
+fn source_of(ws: Workspace, f: FileId) -> SourceFile {
+    work_loaded()
+    let path = ws.decls.file(f).path
+    new_source_file(path, ws.listed_text(path))
 }
 
 export fn new_workspace(host: Host, root: string, lang: Language) -> Workspace {
@@ -1578,23 +1582,8 @@ impl Workspace {
         null
     }
 
-    /// A file's text read from disk, as the Source row its input holds.
-    fn read_source(path: string) -> DbRow {
-        work_loaded()
-        DbRow.Source(new_source_file(path, self.listed_text(path)))
-    }
-
-    /// A file's text as a source, over its Text input: the input's cell
-    /// is the one place the text is read, and the source is cut by the
-    /// word that cell is.
-    fn source(f: FileId) -> SourceFile {
-        let path = self.decls.file(f).path
-        source_of(
-            self
-                .relation(Family.Source)
-                .demand(f.index, () -> self.read_source(path), (s: DbRow) -> self.text_word(path)),
-        )
-    }
+    /// A file's text as a source.
+    fn source(f: FileId) -> SourceFile { source_of(self, f) }
 
     /// The file parsed — pure in its text.
     /// A file parsed — under the sublanguages it imports: a first parse
@@ -1760,7 +1749,7 @@ impl Workspace {
     /// The components a file's own tokens export, counted as a read.
     fn lexed_components(path: string) -> List<string> {
         self.records.component_lexes.set(self.records.component_lexes.get() + 1)
-        exported_in(self.scanning(path), path)
+        exported_in(self.text_staged(path), path)
     }
 
     /// A provider read as it parses — under its OWN block words, since a
@@ -2682,7 +2671,6 @@ fn declared_components(p: Parsed) -> List<ComponentWord> {
 /// family. Baked at build time; the store keys a saved answer by it.
 export fn family_code_hash(f: Family) -> string {
     match f {
-        .Source -> code_hash(source_verified) ?? "",
         .Parsed -> code_hash(parsed_verified) ?? "",
         .Items -> code_hash(items_verified) ?? "",
         .Namespace -> code_hash(namespace_verified) ?? "",
