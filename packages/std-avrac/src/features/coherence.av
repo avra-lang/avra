@@ -107,3 +107,23 @@ export fn code_defects(codes: List<DiagCode>) -> List<Diagnostic> {
     }
     out
 }
+
+/// The keywords the language reserves: every word a rule writes, less the
+/// soft ones.
+export fn reserved_words(features: List<LanguageFeature>, g: Grammar) -> List<string> {
+    let soft = flatten([f.soft_words for f in features])
+    [w for w in g.keywords() if !soft.contains(w)]
+}
+
+/// A soft word is soft in every feature that writes it: one that reserves
+/// the word would be overruled silently.
+export fn soft_word_defects(features: List<LanguageFeature>) -> List<Diagnostic> {
+    let soft = flatten([f.soft_words for f in features])
+    flatten(
+        [[defect(f.name, hard_soft_word(w)) for w in f.gram.keywords() if soft.contains(w) && !f.soft_words.contains(w)] for f in features],
+    )
+}
+
+fn hard_soft_word(word: string) -> string {
+    "writes `${word}` as a keyword, and another feature declares it a soft word"
+}

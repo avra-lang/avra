@@ -204,13 +204,11 @@ export fn binds_type(kind: DeclKind) -> bool {
 }
 
 /// The declaration kinds a `collect` may gather — grown with the
-/// build order (fn, case next). An unknown word is KEPT, never
-/// refused at the parse: `collect`'s own laws speak the refusal
-/// (features/collects/check.av), with the word in hand to name. A
-/// word that names no imported component is `UnknownKind`; one that
-/// names a component (`model in closure`, `rule in closure`) is
-/// `Component` — the owner's ruling: `collect` is a keyword, so the
-/// kind is bare, never `instance of`. `@name in scope` — a kind
+/// build order (fn, case next). A bare word is `Component` — the
+/// owner's ruling: `collect` is a keyword, so the kind is bare, never
+/// `instance of` (`model in closure`, `rule in closure`); `collect`'s
+/// own laws refuse a word the file names no component by
+/// (features/collects/check.av). `@name in scope` — a kind
 /// slot spelled with its `@` — is `Annotated`: every declaration
 /// wearing that annotation, of any DeclKind, gathered by its
 /// written name alone (a declaration's annotations are a fact of
@@ -218,7 +216,6 @@ export fn binds_type(kind: DeclKind) -> bool {
 @derive(Identity)
 export enum CollectKind {
     Component(word: string)
-    UnknownKind(word: string)
     Annotated(name: string)
 }
 
@@ -1030,11 +1027,7 @@ fn type_fp(t: TypeRef?) -> int { t?.fingerprint() ?? 0 }
 /// A collect's kind: the ordinal, `fp_binop`'s shape — a plain int
 /// costs no tag; only the payload-carrying variant folds one.
 fn collectkind_fp(k: CollectKind) -> int {
-    match k {
-        .Component(w) -> fp(136, [fp_str(w)]),
-        .UnknownKind(w) -> fp(132, [fp_str(w)]),
-        .Annotated(w) -> fp(137, [fp_str(w)]),
-    }
+    match k { .Component(w) -> fp(136, [fp_str(w)]), .Annotated(w) -> fp(137, [fp_str(w)]) }
 }
 
 /// A collect's scope, the same shape.
@@ -1131,7 +1124,6 @@ fn exact_type_refs(a: List<TypeRef>, b: List<TypeRef>) -> bool {
 fn exact_collect_kind(a: CollectKind, b: CollectKind) -> bool {
     match a {
         .Component(w1) -> match b { .Component(w2) -> w1 == w2, rest -> false },
-        .UnknownKind(w1) -> match b { .UnknownKind(w2) -> w1 == w2, rest -> false },
         .Annotated(w1) -> match b { .Annotated(w2) -> w1 == w2, rest -> false },
     }
 }
