@@ -7,6 +7,7 @@
 use core.{joined, flatten}
 use diagnostics.{Diag, SourceFile, new_source_file}
 use compiler.host.{Host}
+use @std.errors.{Loc}
 
 export type Finding = { rule: string, file: string, text: string }
 
@@ -62,8 +63,11 @@ fn finding_of_line(line: string) -> Finding? {
 /// A finding with no place to point (a locationless `Say` voice) rows
 /// nothing — a baseline site is always a source line, never a bare
 /// claim.
-fn filed_finding(src: SourceFile, d: Diag) -> List<Finding> {
-    let loc? = d.primary.loc else { return [] }
+fn filed_finding(src: SourceFile, d: Diag) -> List<Finding> { finding_at(src, d.kind, d.primary.loc) }
+
+/// A rule's finding at its place, its line read from `src`.
+export fn finding_at(src: SourceFile, rule: string, at: Loc?) -> List<Finding> {
+    let loc? = at else { return [] }
     let line = src.linecol(loc.lo).line
-    [Finding { rule: d.kind, file: loc.file ?? src.file, text: src.line_text(line).trim() }]
+    [Finding { rule: rule, file: loc.file ?? src.file, text: src.line_text(line).trim() }]
 }

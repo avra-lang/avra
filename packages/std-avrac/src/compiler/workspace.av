@@ -153,7 +153,7 @@ type ExternNames = { decls: int, names: List<string> }
 type Suspects = { files: int, rows: Map<string, bool>, paths: Map<string, bool> }
 
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, text_stamps: Cell<Map<string, int>>, text_scans: Cell<Map<string, TextScan>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, sig_producer: Cell<Producer?>, build_mode: Cell<string>, one_shot: Cell<bool> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, text_scans: Cell<Map<string, TextScan>>, lex_words: Cell<Map<string, LexWords>>, lexings: Cell<Map<string, Lexing>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, sig_producer: Cell<Producer?>, build_mode: Cell<string>, one_shot: Cell<bool> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -165,8 +165,9 @@ fn new_keys() -> Keys {
     let no_object: Map<string, string> = {}
     let no_parts: Map<string, KeyParts> = {}
     let no_digests: Map<string, string> = {}
-    let no_stamps: Map<string, int> = {}
     let no_scans: Map<string, TextScan> = {}
+    let no_words: Map<string, LexWords> = {}
+    let no_lexings: Map<string, Lexing> = {}
     let no_tokens: Map<string, Spelling> = {}
     let no_views: Map<string, SeenView> = {}
     let no_named: Map<string, int> = {}
@@ -185,8 +186,9 @@ fn new_keys() -> Keys {
         object_keys: Cell.new(no_object),
         object_parts: Cell.new(no_parts),
         text_digests: Cell.new(no_digests),
-        text_stamps: Cell.new(no_stamps),
         text_scans: Cell.new(no_scans),
+        lex_words: Cell.new(no_words),
+        lexings: Cell.new(no_lexings),
         file_tokens: Cell.new(no_tokens),
         seen_views: Cell.new(no_views),
         suspects: Cell.new(Suspects { files: -1, rows: {}, paths: {} }),
@@ -1640,11 +1642,9 @@ impl Workspace {
 
     fn clocked_parse(f: FileId) -> Parsed {
         let t0 = self.clock()
-        let p = parse_program(
-            self.lang,
-            self.source(f),
-            BlockWords { components: self.unread_words(f) },
-        )
+        let words = BlockWords { components: self.unread_words(f) }
+        let p = parse_program(self.lang, self.source(f), words)
+        self.keys.lex_words.put(self.decls.file(f).path, words_lexed(words))
         self.timed("ast", t0)
         self.quieted(f, p)
     }
@@ -1679,6 +1679,7 @@ impl Workspace {
         self.timed("sublang", t0)
         if words.is_empty() { return self.noted_origins(f, self.with_import_remedies(first, words)) }
         let t1 = self.clock()
+        self.keys.lex_words.put(self.decls.file(f).path, words_lexed(words))
         let p = self
             .quieted(f, self.with_import_remedies(parse_program(self.lang, self.source(f), words), words))
         self.timed("ast", t1)

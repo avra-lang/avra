@@ -372,16 +372,22 @@ impl Store {
     /// absent for a name that cannot be read. A row kept with no pairs, or whose reads
     /// cannot be read back, is a miss — no other check stands in.
     fn get_valid(family: Stored, key: string, now: fn(string) -> string?) -> string? {
-        if !self.holds(family, key, now) { return null }
+        self.get_standing(family, key, (r: Reading) -> now(r.name) == r.digest)
+    }
+
+    /// THE SAME RULE, with the reader saying whether one read still stands — a read whose
+    /// digest is two-level (a cheap witness, then what it vouches for) stands at either.
+    fn get_standing(family: Stored, key: string, stands: fn(Reading) -> bool) -> string? {
+        if !self.holds(family, key, stands) { return null }
         self.get(family, key)
     }
 
-    /// Whether a row's reads all still have their digests — the rule alone, with no value
-    /// fetched. A row not present, or kept with edges that are no pairs, does not hold.
-    fn holds(family: Stored, key: string, now: fn(string) -> string?) -> bool {
+    /// Whether a row's reads all still stand — the rule alone, with no value fetched. A row
+    /// not present, or kept with edges that are no pairs, does not hold.
+    fn holds(family: Stored, key: string, stands: fn(Reading) -> bool) -> bool {
         let lines? = self.reads_of(family, key) else { return false }
         let reads = [read_spelled(l) for l in lines]
-        !reads.any(it == null || now(it!.name) != it!.digest)
+        !reads.any(it == null || !stands(it!))
     }
 
     /// THE SUSPECT SET: the record keys of the rows that read any of the inputs in `moved`, by

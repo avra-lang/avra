@@ -196,7 +196,7 @@ export type Said = { path: string, warnings: string, cases: List<CaseCall>, find
 /// `unlowered` resolves them for a link — and `asked` names what they and every other would lower to: the
 /// program's root asks, and the key of every home it has ever lowered from. The
 /// same `asked` is the same instantiations, whoever lowered them.
-export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, owed: int, asked: string, held: int, files: int, turns: int, turned: int = 0, spans: List<Phase>, read: List<ReadFile>, refused: int = 0, left: List<Left> = [] }
+export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, owed: int, asked: string, held: int, files: int, turns: int, turned: int = 0, spans: List<Phase>, read: List<ReadFile>, refused: int = 0, left: List<Left> = [], unreached: List<string> = [] }
 
 /// One file's hold: held, or read with why (null for a file no record
 /// knows), the stored rows a read-for-want-of-rows file lacks, and what
@@ -360,57 +360,47 @@ export type Checked = { warnings: string, reused: bool, timed: string, program: 
 
 impl Workspace {
     /// EVERYTHING WRONG WITH THE PROGRAM, as the refusal — or what merely warned,
-    /// kept under the program's key, so an unchanged program costs a hash. A
+    /// kept as the program's verdict, so an unchanged program costs its reads. A
     /// refusal is never kept.
     fn checked(entry: string?) -> Result<Checked, string> {
         if self.nothing_to_check() { fail self.rendered_shape([no_source(self.root)]) }
         let opening = self.clock()
         let store = self.opened_store()
         self.timed("open", opening)
-        let under = Keyed { named: "check:${entry ?? ""}", beside: [] }
+        let named = "check:${entry ?? ""}"
         let judging = self.clock()
-        let key0 = self.confirmed_key(store, under)
+        let standing = self.standing_verdict(store, named)
         self.timed("judge", judging)
-        let loading = self.clock()
-        let kept: string? = self.db.warn(store, key0)
-        let found: string? = self.db.findings(store, key0)
-        let licensed: string? = self.db.licenses(store, key0)
-        self.timed("load", loading)
-        // A missing row is UNKNOWN, never EMPTY: no hit.
-        if kept != null && found != null && licensed != null {
-            return Checked {
-                warnings: kept!,
-                reused: true,
-                timed: joined(
-                    ["${ph.name} ${ph.ns / 1000}us" for ph in grouped_phases(self.phases.get())],
-                    ", ",
-                ),
-                licenses: licensed!,
-                findings: findings_read(found!),
-            }
+        let kept? = standing else { return self.checked_anew(store, entry, named) }
+        Checked {
+            warnings: kept.warnings(),
+            reused: true,
+            timed: joined(
+                ["${ph.name} ${ph.ns / 1000}us" for ph in grouped_phases(self.phases.get())],
+                ", ",
+            ),
+            licenses: kept.licenses(),
+            findings: kept.findings(),
         }
+    }
+
+    /// What `check` says when no verdict stands: the program derived, and its verdict kept.
+    fn checked_anew(store: Store, entry: string?, named: string) -> Result<Checked, string> {
         let d = self.derived(entry, Want.Diagnostics)?
-        // a check derives the same answer for every target: the target rides
-        // the key only when a binary or an object is what is kept
-        let key = d.program.ws.kept_key(under)
-        d.program.ws.keep_manifest(store, under, key)
-        let licenses = stale_license_lines(d.program)
-        let found = flatten([s.findings for s in d.said])
-        self.db.insert_warn(store, key, d.warnings)
-        self.db.insert_licenses(store, key, licenses)
-        self.db.insert_findings(store, key, findings_text(found))
+        let said = d.program.ws.check_said(d)
+        d.program.ws.keep_check_verdict(store, named, said)
         work_sized(
             d.program.ws.decls.file_count(),
             d.program.ws.decls.module_count(),
             d.program.ws.decls.decl_count(),
         )
         Checked {
-            warnings: d.warnings,
+            warnings: said.warnings(),
             reused: false,
             timed: d.timed([]),
             program: d.program,
-            licenses: licenses,
-            findings: found,
+            licenses: said.licenses(),
+            findings: said.findings(),
             held: held_paths(d.program.ws),
         }
     }
@@ -992,6 +982,7 @@ impl Workspace {
             self.typed_said_pass(store)
         }
         if at.want is .Diagnostics { self.keep_held_set(store, at.entry, at.want, held_paths(self)) }
+        self.keep_docs_read(store)
         store.settle()
         Derived {
             entry: at.entry,
@@ -1004,6 +995,7 @@ impl Workspace {
                 [p.warned(p.voices)]
                     .concat([s.warnings for s in said if reaches_file(self, reach, s.path)]),
             ),
+            unreached: [s.path for s in said if !reaches_file(self, reach, s.path)],
             unlowered: unlowered,
             owed: owed,
             asked: asked,
@@ -1276,18 +1268,21 @@ impl Workspace {
     /// What a parsed file says now: its warnings, and its rule findings —
     /// kept under every want, printed only under a diagnostics want.
     fn says(store: Store, p: Program, a: Analysis) -> Spoken {
-        // THE WARNINGS ARE KEPT AS DATA beside what they say: a durable witness whose places
-        // are anchored to the declarations holding them, so they print correctly wherever the
-        // text has moved to (`render_facts_among`). The rendered string above is the projection.
-        self.keep_warning_facts(store, a.view.source.file, a.diagnostics)
         let said = Said {
             path: a.view.source.file,
             warnings: p.warned(a.diagnostics),
             cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)],
         }
         let kept = self.kept_ruled(store, a.view.source.file)
-        if kept != null && !db_verified_files() { return Spoken { said: said, rules: kept! } }
-        let now = ruled_now(p, a, rule_findings(analysed(a), a.view.stmts))
+        if kept != null && !db_verified_files() {
+            self.keep_warning_facts(store, a.view.source.file, a.diagnostics, null)
+            return Spoken { said: said, rules: kept! }
+        }
+        let found = rule_findings(analysed(a), a.view.stmts)
+        // THE WARNINGS ARE KEPT AS DATA beside what they say, their places token places, so a
+        // text that moved and kept its shape is said again from them (`standing_verdict`).
+        self.keep_warning_facts(store, a.view.source.file, a.diagnostics, found)
+        let now = ruled_now(p, a, found)
         if kept != null && kept!.rendered != now.rendered { self.defect(kept_rules_stale(a.view.source.file)) }
         Spoken { said: said, rules: now }
     }
