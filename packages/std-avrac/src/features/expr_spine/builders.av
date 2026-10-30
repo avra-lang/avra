@@ -1,5 +1,5 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{void_ref, Expr, binop_of, Pat, want, pronoun_param, Plain, Scoped, some_list}
+use core.{void_ref, Expr, Pat, pronoun_param, Plain, Scoped, some_list}
 use features.{LangNode, Builder, expr_id_at, params_at}
 
 fn build_int_lit(b: Builder) -> Result<LangNode, string> {
@@ -46,22 +46,6 @@ fn build_bind_pat(b: Builder) -> Result<LangNode, string> {
     if n.text == "rest" { return b.make_pat(Pat.Rest) }
     if n.text == "null" { return b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.NullLit, b.span))) }
     b.make_pat(Pat.Bind(Scoped(n.text)))
-}
-
-/// `-v` is `0 - v`: the parse desugars, so no pass learns a node.
-/// A LITERAL FOLDS INSTEAD — `-1` and `-1.5` ARE literals, so a const
-/// takes them and every reader that asks the value protocol gets
-/// one. Only the literal: `-A` needs a general folder, which is a
-/// core event because consts cannot match another feature's node.
-fn build_neg(b: Builder) -> Result<LangNode, string> {
-    let v = b.expr(0)?
-    let held: int? = b.store.expr(v).int_of()
-    if held != null { return b.make_expr(Expr.IntLit(0 - held!)) }
-    let bits: int? = b.store.expr(v).bits_of()
-    if bits != null { return b.make_expr(Expr.FloatLit(bits! ^ (1 << 63))) }
-    let zero = b.store.alloc_expr(Expr.IntLit(0), b.span)
-    let minus = want(binop_of("-"), "the minus operator")?
-    b.make_expr(Expr.Binary(minus, zero, v))
 }
 
 /// `subject.name(args)` — a method call; an argument the pronoun rides
