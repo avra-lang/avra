@@ -1,0 +1,88 @@
+//! A PLACE KEPT AS A TOKEN, NOT AN OFFSET. A comment moves every byte below it and no token at
+//! all — so the smallest identity a place can wear is the token it starts in and how far into
+//! that token it stands, and that identity survives any trivia edit. Resolving it back to bytes
+//! needs ONE thing: the lexer. Not the grammar, not a parse, not the declaration table — which is
+//! what lets a caller holding no program still say where a kept place stands now.
+//!
+//! A place past the last token, or before the first, has no token identity: `NoToken`, never a
+//! clamped position. Absence is its own arm.
+use @std.errors.{Loc}
+use grammar.{Token, lex_source}
+use core.{Span, new_digest, digest_text, digest_key}
+
+/// A place within a token stream: the token each end stands in, and each end's distance from
+/// that token's first byte.
+export type TokenPlace = { lo_token: int, lo_at: int, hi_token: int, hi_at: int }
+
+export enum Anchored {
+    In(TokenPlace)
+    NoToken
+}
+
+/// The token stream a text lexes to, comments and layout dropped.
+export fn tokens_of(text: string) -> List<Token> { lex_source(text).tokens }
+
+fn in_token(s: Span, at: int) -> bool { s.lo <= at && at <= s.hi }
+
+/// The token index holding byte `at`, and its distance into that token.
+fn token_at(tokens: List<Token>, at: int) -> int? {
+    if tokens.is_empty() { return null }
+    mut lo = 0
+    mut hi = tokens.length - 1
+    while lo <= hi {
+        let mid = (lo + hi) / 2
+        if at < tokens[mid].span.lo {
+            hi = mid - 1
+        } else if at > tokens[mid].span.hi {
+            lo = mid + 1
+        } else {
+            return mid
+        }
+    }
+    // a place at the exact end of the last token is that token's end
+    if at == tokens[tokens.length - 1].span.hi { return tokens.length - 1 }
+    null
+}
+
+/// `at` as a token identity, over the text it was found in.
+export fn anchored_at(text: string, at: Loc) -> Anchored {
+    if at.lo < 0 || at.hi < at.lo { return .NoToken }
+    let tokens = tokens_of(text)
+    let lo? = token_at(tokens, at.lo) else { return .NoToken }
+    let hi? = token_at(tokens, at.hi) else { return .NoToken }
+    .In(
+        TokenPlace {
+            lo_token: lo,
+            lo_at: at.lo - tokens[lo].span.lo,
+            hi_token: hi,
+            hi_at: at.hi - tokens[hi].span.lo,
+        },
+    )
+}
+
+/// `kept` against a text that may have moved above it since; null where the stream no longer
+/// has that token, or the place stood past its end.
+export fn placed_in(text: string, kept: Anchored) -> Loc? {
+    match kept {
+        .NoToken -> null,
+        .In(p) -> {
+            let tokens = tokens_of(text)
+            if p.lo_token >= tokens.length || p.hi_token >= tokens.length { return null }
+            if p.lo_token < 0 || p.hi_token < 0 { return null }
+            let lo = tokens[p.lo_token].span
+            let hi = tokens[p.hi_token].span
+            if !in_token(lo, lo.lo + p.lo_at) || !in_token(hi, hi.lo + p.hi_at) { return null }
+            Loc { file: null, lo: lo.lo + p.lo_at, hi: hi.lo + p.hi_at }
+        },
+    }
+}
+
+/// THE TOKEN STREAM'S OWN DIGEST: what the file SAYS, with every comment and every space
+/// between tokens gone. Two texts that differ only in trivia have one digest — and a parser
+/// over that stream would answer the same, which is what makes this the right question to ask
+/// before reusing a file's answers.
+export fn token_digest(text: string) -> string {
+    mut d = new_digest()
+    for t in tokens_of(text) { d = digest_text(d, t.text) }
+    digest_key(d)
+}

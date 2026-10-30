@@ -1,0 +1,51 @@
+// A PLACE IS A TOKEN, NOT A BYTE. Every comment and every space a file gains moves the offsets
+// below it and no token at all, so a place kept as (token index, distance into it) still names
+// the same program text afterwards — resolved with the lexer alone, no grammar, no parse. The
+// same identity is what decides whether a file's answers may be reused: one token digest for
+// texts that differ only in trivia, and a different one for any edit that changes a token.
+use @std.errors.{Loc}
+use compiler.{anchored_at, placed_in, token_digest}
+
+fn tp_text() -> string { "fn first() -> int {\n    1\n}\n\nfn second(n: int) -> int {\n    n + 2\n}\n" }
+
+fn tp_shifted() -> string { "// a line\n// another\n\n${tp_text()}" }
+
+fn tp_body_edited() -> string { tp_text().replace("n + 2", "n + 3") }
+
+/// `needle`'s first occurrence, `width` bytes wide.
+fn tp_place(text: string, needle: string, width: int) -> Loc {
+    let lo = text.index_of(needle)
+    Loc { file: null, lo: lo, hi: lo + width }
+}
+
+spec "compiler/token-place — a place follows its tokens" {
+    given "a place in a file, read back over the same text" {
+        then "it stands where it stood" {
+            let at = tp_place(tp_text(), "n + 2", 5)
+            let back? = placed_in(tp_text(), anchored_at(tp_text(), at)) else { return false }
+            back.lo == at.lo && back.hi == at.hi
+        }
+    }
+    given "two comment lines and a blank added above the file" {
+        then "the place moves by exactly their length and names the same bytes" {
+            let at = tp_place(tp_text(), "n + 2", 5)
+            let kept = anchored_at(tp_text(), at)
+            let back? = placed_in(tp_shifted(), kept) else { return false }
+            back.lo == at.lo + 22 && back.hi == at.hi + 22
+        }
+    }
+    given "a file whose body changed" {
+        then "a kept place still resolves — the token it names is still there" {
+            let at = tp_place(tp_text(), "n + 2", 5)
+            placed_in(tp_body_edited(), anchored_at(tp_text(), at)) != null
+        }
+    }
+    given "two texts that differ only in comments and blank lines" {
+        then "they have one token digest" {
+            token_digest(tp_text()) == token_digest(tp_shifted())
+        }
+        then "an edit inside a token moves it" {
+            token_digest(tp_text()) != token_digest(tp_body_edited())
+        }
+    }
+}
