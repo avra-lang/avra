@@ -215,6 +215,34 @@ def derivation_queries(seed_model, seed_where, models, cat, edges, literals=()):
     return out, skipped
 
 
+def derivation_scans(models, cat, literals=()):
+    """Every declared derivation computed over the records themselves, with no anchor: a
+    question may ask about "the invoice" without naming one, and then the derivation is the
+    answer's shape. Each seat scans its declared type; a scalar seat takes a value offered."""
+    out, skipped = [], []
+    for d in cat.get('derivations', []):
+        seats = [(p['name'], p['input']) for p in d['parameters']]
+        if any(not isinstance(i, dict) for _, i in seats) and not literals:
+            skipped.append(d['name'])
+            continue
+        args, matchers, ok = [], [], True
+        for k, (name, inp) in enumerate(seats):
+            if not isinstance(inp, dict):
+                args.append(json.dumps(literals[0]))
+                continue
+            var = f"e{k}"
+            model = inp.get('one') or inp.get('all')
+            if model not in models:
+                ok = False
+                break
+            args.append(f"collect({var})" if inp.get('all') else var)
+            matchers.append(f"MATCH ({var}:{model})")
+        if not ok:
+            continue
+        out.append((" ".join(matchers) + f" RETURN {d['name']}({', '.join(args)}) AS value", d['output'], d['name']))
+    return out, skipped
+
+
 def aggregate_queries(models, cat):
     """A count over every declared type, and a sum over every declared quantity: the shapes
     the catalog itself names, so nothing here is a guess about the domain."""

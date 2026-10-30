@@ -90,6 +90,11 @@ def row_queries(seed_model, seed_where, edges, models, question, budget, phase="
     return out, False
 
 
+def seed_where(prop, var, param):
+    """The condition a seed states, on whichever node and parameter a query gives it."""
+    return f"id({var}) = ${param}" if prop == "id" else f"{var}.{prop} = ${param}"
+
+
 def options_for(distinct, models):
     """One sentence per distinct ANSWER — a whole result set, because a question may ask for
     several records — worded from the declarations that produced it."""
@@ -151,31 +156,48 @@ def main():
         view = {"as_of": {"valid_at": bench.PARAMS["valid_at"]}} if bench.PARAMS.get("valid_at") else {}
         want = values(app({"op": "query", "cypher": plans[q["id"]], "params": bench.PARAMS, **view}))
 
-        seeds = [(m, f"a.{prop} = $anchor", {"anchor": value})
-                 for m, prop, value in anchors_of.named(q["question"], value_index, args.evidence)]
+        seeds = [(m, prop, value) for m, prop, value
+                 in anchors_of.named(q["question"], value_index, args.evidence)]
         holder = app({"op": "get", "id": args.asker})
         if holder.get("model"):
-            seeds.append((holder["model"], "id(a) = $asker", {}))
+            seeds.append((holder["model"], "id", args.asker))
 
         pool, ran, caps = [], 0, 0
         # every anchor contributes its plain walks before any anchor narrows one, so a budget
         # cannot starve an anchor: the first phase is bounded by the schema, the second by it
-        for model, where, extra in seeds:
-            made, _ = row_queries(model, where, edges, models, q["question"], 10_000, phase="plain")
-            pool += [(cy, landing, "row", extra) for cy, landing in made]
+        for model, prop, value in seeds:
+            made, _ = row_queries(model, seed_where(prop, "a", "anchor"), edges, models, q["question"], 10_000, phase="plain")
+            pool += [(cy, landing, "row", {"anchor": value}) for cy, landing in made]
         # the two families a property row cannot express: a declared derivation's call, and an
         # aggregate over a declared type or quantity. Both come from the catalog.
+        scans, _ = bench.derivation_scans(models, bench.CATALOG, literals)
+        pool += [(cy, landing, "derivation", {}) for cy, landing, _ in scans]
         for cy, landing, _ in bench.aggregate_queries(models, bench.CATALOG):
             pool.append((cy, landing, "aggregate", {}))
-        for model, where, extra in seeds:
-            calls, _ = bench.derivation_queries(model, where, models, bench.CATALOG, edges, literals)
-            pool += [(cy, landing, "derivation", extra) for cy, landing, _ in calls]
+        for model, prop, value in seeds:
+            calls, _ = bench.derivation_queries(model, seed_where(prop, "a", "anchor"), models, bench.CATALOG, edges, literals)
+            pool += [(cy, landing, "derivation", {"anchor": value}) for cy, landing, _ in calls]
+
+        # two named things joined: the answer may be either end, so every ordered pair and
+        # every declared walk between their types is a candidate
+        for i, (mi, pi, vi) in enumerate(seeds):
+            for j, (mj, pj, vj) in enumerate(seeds):
+                if i == j:
+                    continue
+                for steps, landing in bench.walk(edges, mi, 2):
+                    if not steps or landing != mj:
+                        continue
+                    var = f"b{len(steps) - 1}"
+                    ret = ", ".join(f"{var}.{p['name']} AS {p['name']}" for p in models[mj]["properties"])
+                    conds = [seed_where(pi, "a", "anchor"), seed_where(pj, var, "anchor2")]
+                    cy = f"MATCH (a:{mi})" + "".join(steps) + f" WHERE {' AND '.join(conds)} RETURN {ret}"
+                    pool.append((cy, mj, "between", {"anchor": vi, "anchor2": vj}))
 
         room = max(0, args.budget - len(pool))
         share = max(1, room // max(1, len(seeds)))
-        for model, where, extra in seeds:
-            made, capped = row_queries(model, where, edges, models, q["question"], share, phase="narrow")
-            pool += [(cy, landing, "row", extra) for cy, landing in made]
+        for model, prop, value in seeds:
+            made, capped = row_queries(model, seed_where(prop, "a", "anchor"), edges, models, q["question"], share, phase="narrow")
+            pool += [(cy, landing, "row", {"anchor": value}) for cy, landing in made]
             caps += capped
         if q["id"] in cache:
             distinct = {tuple(k): tuple(v) for k, v in cache[q["id"]]["distinct"].items()}
