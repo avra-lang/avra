@@ -1,5 +1,5 @@
-//! A DECLARATION'S SAVED ROW: its signature and declaration facts — the line its module's
-//! record writes for it — filed under its durable name. One writer, `keep_decl_rows`, files
+//! A DECLARATION'S SAVED ROW: its signature and declaration facts — its shape word and
+//! payload — filed under its durable name. One writer, `keep_decl_rows`, files
 //! every declaration of a file this attempt read; one reader, `decl_row_filled`, fills a
 //! declaration no parse declares from it.
 use core.{DeclId, FileId}
@@ -12,11 +12,10 @@ impl Workspace {
     /// Every declaration of `files`, filed. A row whose words did not move is not filed again.
     fn keep_decl_rows(store: Store, files: List<FileId>) {
         for f in files {
-            let top = self.items(f)
-            for ordinal, id in self.decls.decls_of_file(f) {
+            for id in self.decls.decls_of_file(f) {
                 let key = self.decl_row_key(id)
-                let line = self.record_line(self.decl_at(id), ordinal, on_top(top, id))
-                if store.get(Stored.Unit, key) != line { let _ = store.keep(Stored.Unit, key, line, []) }
+                let shape = self.row_shape(self.decl_at(id))
+                if store.get(Stored.Unit, key) != shape { let _ = store.keep(Stored.Unit, key, shape, []) }
             }
         }
     }
@@ -31,7 +30,7 @@ impl Workspace {
         let store? = self.store.get() else { return }
         let path = self.decls.file(self.decls.decl(d).file).path
         let line? = store.get(Stored.Unit, self.decl_row_key(d)) else { return self.defect("a declaration has no row — ${self.decl_ref(d)}") }
-        let row? = read_row(read_fields(line)) else { return self.defect("a declaration's row did not decode — ${self.decl_ref(d)}") }
+        let row? = shaped_of(line) else { return self.defect("a declaration's row did not decode — ${self.decl_ref(d)}") }
         self.fill_shape(store, self.module_path_of(path), d, row)
     }
 }

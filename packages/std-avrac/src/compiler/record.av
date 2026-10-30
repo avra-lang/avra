@@ -293,7 +293,7 @@ fn shape_of(word: string) -> Shape? {
 /// (interface.av, the one writer). `payload` is what is left past the facts
 /// block: one field for most shapes, six for `Fn`/`Extern` (seats, return,
 /// marks, written bits, bounds, whether it may reach a cancel point), read
-/// through `Row`'s own verbs below.
+/// through `RowShape`'s verbs below.
 type Row = { shape: Shape, path: string, ordinal: int, stmt: int, exported: bool, name: string, kind: string, owner: string, parent_at: int, enclosing: string, root: int, item: bool, facts: string, payload: List<string> }
 
 /// A declaration row, decoded from its already-split fields — null for a
@@ -324,7 +324,23 @@ fn read_row(parts: List<string>) -> Row? {
     }
 }
 
+/// A declaration's shape: its word and the payload past the facts block — what fills a
+/// declaration's signature, read the same from its record line and from its own row.
+type RowShape = { shape: Shape, payload: List<string> }
+
 impl Row {
+    fn shaped() -> RowShape { RowShape { shape: self.shape, payload: self.payload } }
+}
+
+/// A declaration row's value — its shape word, then its payload — decoded; null for one
+/// that does not.
+fn shaped_of(line: string) -> RowShape? {
+    let parts = line.split("\t")
+    let shape? = shape_of(parts[0]) else { return null }
+    RowShape { shape: shape, payload: parts.drop(1) }
+}
+
+impl RowShape {
     /// Payload field `j`, or "" past its end — every shape but `Fn`/`Extern`
     /// writes one field, and one with nothing to say writes it empty.
     fn field(j: int) -> string { if self.payload.length > j { self.payload[j] } else { "" } }

@@ -127,10 +127,10 @@ impl Workspace {
     // spelling it does not know is a DEFECT in the record, not a name to guess at. The
     // fallback is `error`, the ABSORBING type, so a broken record produces a type that
     // refuses rather than one that is silently wrong.
-    fn fill_shape(store: Store, m: ModulePath, id: DeclId, row: Row) {
+    fn fill_shape(store: Store, m: ModulePath, id: DeclId, row: RowShape) {
         let d = self.decls.decl(id)
         match row.shape {
-            .Const -> self.fill_const(store, m, row, d.file, d.stmt, id),
+            .Const -> self.fill_const(store, m, row, d, id),
             .Collect or .State -> self.decls.record_const_type(d.file, d.stmt, self.interface_type(row.of_wire())),
             .Aims -> self.fill_aims(row, id),
             .Named -> self.fill_named(row, id),
@@ -143,37 +143,40 @@ impl Workspace {
         }
     }
 
-    fn fill_const(store: Store, m: ModulePath, row: Row, f: FileId, stmt: StmtId, id: DeclId) {
+    fn fill_const(store: Store, m: ModulePath, row: RowShape, d: Decl, id: DeclId) {
         let ty = self.interface_type(row.of_wire())
-        self.decls.record_const_type(f, stmt, ty)
+        self.decls.record_const_type(d.file, d.stmt, ty)
         // a held const has no initializer to settle again: its kept row is the
         // only one, and one that decodes as neither a value nor a structural
         // refusal is a defect said
-        let raw = store.get(Stored.Unit, self.const_unit_key(store, m, row.path, row.name)) ?? ""
+        let raw = store
+            .get(Stored.Unit, self.const_unit_key(store, m, self.decls.file(d.file).path, d.name)) ?? ""
         let value? = settled_from_wire(raw) else {
             let words? = reach_from_wire(raw) else {
                 return self
-                    .defect("a held const's value did not decode — `${row.name}` in ${row.path}")
+                    .defect(
+                        "a held const's value did not decode — `${d.name}` in ${self.decls.file(d.file).path}",
+                    )
             }
             return self.decls.remember_held_reach(id, words)
         }
         self.decls.remember_held_value(id, value)
     }
 
-    fn fill_aims(row: Row, id: DeclId) {
+    fn fill_aims(row: RowShape, id: DeclId) {
         let aimed = self.decl_from_ref(row.field(0))
         if aimed != null { self.decls.record_target(id, aimed!) }
     }
 
-    fn fill_named(row: Row, id: DeclId) {
+    fn fill_named(row: RowShape, id: DeclId) {
         let of = self.interface_type(row.of_wire())
         self.decls.declare(id, .Named(NamedSig { of: of }))
-        let named = self.decls.types.intern(Type.Struct(id, row.name))
+        let named = self.decls.types.intern(Type.Struct(id, self.decls.decl(id).name))
         self.decls.types.mark_named(named, of)
         self.decls.types.mark_flat(named, [of])
     }
 
-    fn fill_record(row: Row, id: DeclId, boxed: bool) {
+    fn fill_record(row: RowShape, id: DeclId, boxed: bool) {
         // a seal is sticky, so the layout the record kept lands before the declaration
         if boxed { self.decls.types.unflatten(self.decls.record_type(id)) }
         let fields = row.items()
@@ -209,7 +212,7 @@ impl Workspace {
             .decl_from_ref(if j < refs.length { refs[j] } else { "" })
     }
 
-    fn fill_enum(row: Row, id: DeclId) {
+    fn fill_enum(row: RowShape, id: DeclId) {
         let arms = row.items()
         self
             .decls
@@ -224,7 +227,7 @@ impl Workspace {
             )
     }
 
-    fn fill_fn(row: Row, id: DeclId) {
+    fn fill_fn(row: RowShape, id: DeclId) {
         let seats = row.items()
         self.decls.record_seats(id, row.marks())
         self
@@ -266,7 +269,7 @@ impl Workspace {
 
     /// A `trait`/`syntax`/`default`/`main`/`case`/`builtin` declaration has no
     /// signature to fill — `sig(d.id)` answered null when its line was written.
-    fn fill_opaque(_row: Row, _id: DeclId) {}
+    fn fill_opaque(_row: RowShape, _id: DeclId) {}
 
     fn interface_decls(m: ModulePath) -> List<Decl> {
         mut ids: List<DeclId> = []
@@ -369,22 +372,15 @@ impl Workspace {
             )
         self.decls.held_joins(f, id, kind! is .Main, row.item)
         // the cancel bit is read before any signature is asked, so it lands with the row
-        self.decls.record_cancel(id, row.reach())
+        self.decls.record_cancel(id, row.shaped().reach())
         id
     }
 
     fn record_line(d: Decl, ordinal: int, item: bool) -> string {
-        let shape = self.record_shape(d)
+        let shape = self.row_shape(d)
         let at = shape.index_of("\t")
         let visibility = bit_word(d.exported)
-        // AN `extern fn` WEARS ITS OWN SHAPE WORD. The fact is a STORE read (`extern_parts`),
-        // and a held file has no store, so the record must carry it: the word is the one
-        // column every kind already has, and the payload's layout is unchanged.
-        let first = when {
-            self.decls.is_extern(d.id) -> "extern"
-            at < 0 -> shape
-            _ -> shape.substring(0, at)
-        }
+        let first = if at < 0 { shape } else { shape.substring(0, at) }
         let payload = if at < 0 { "" } else { shape.substring(at + 1, shape.length) }
         mut parent_at = 0 - 1
         if d.parent != null {
@@ -401,7 +397,17 @@ impl Workspace {
         "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${field_text(d.enclosing)}\t${root}\t${bit_word(item)}\t${block}\t${payload}"
     }
 
-    /// The shape word and payload a declaration's record line carries.
+    /// The shape word and payload a declaration's row and record line carry. AN `extern fn`
+    /// WEARS ITS OWN SHAPE WORD: the fact is a STORE read (`extern_parts`), which a held file
+    /// has none of, and the payload's layout is unchanged.
+    fn row_shape(d: Decl) -> string {
+        let shape = self.record_shape(d)
+        if !self.decls.is_extern(d.id) { return shape }
+        let at = shape.index_of("\t")
+        if at < 0 { "extern" } else { "extern${shape.substring(at, shape.length)}" }
+    }
+
+    /// The shape word and payload of a declaration's kind.
     fn record_shape(d: Decl) -> string {
         match d.kind {
             // a reader bakes the VALUE in, so the value is the interface
