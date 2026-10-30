@@ -42,13 +42,20 @@ impl Decls {
     fn file_id(path: string, name: string, module: string, test: bool) -> FileId {
         let known? = self.known_file_id(path) else {
             let m = self.module_id(module)
-            let id = File
-                .insert(self.rows_db.get(), path: path, name: name, module: m, test: test)
-                .id
+            let db = self.rows_db.get()
+            let id = FileId { index: self.file_rows.get().next_id() }
+            let owner = db.owner_named("file ${id.index}")
+            File
+                .put_owned(
+                    db,
+                    id.index,
+                    File { id: id, path: path, name: name, module: m, test: test },
+                    owner,
+                )
             self.file_names.push(name)
             self.stores.push(null)
             self.decl_ids.push(Cell.new(side_table("decl_ids", 0, 0, DeclAt { decl: null })))
-            self.file_owners.push(self.rows_db.get().owner_named("file ${id.index}"))
+            self.file_owners.push(owner)
             self
                 .expr_owners
                 .push(Cell.new(side_table<DeclAt>("expr_owners", 0, 0, DeclAt { decl: null })))
@@ -73,7 +80,13 @@ impl Decls {
 
     /// A module's identity — minted at first mention.
     fn module_id(module: string) -> ModuleId {
-        let known? = self.known_module_id(module) else { return Module.insert(self.rows_db.get(), name: module).id }
+        let known? = self.known_module_id(module) else {
+            let db = self.rows_db.get()
+            let id = ModuleId { index: self.module_rows.get().next_id() }
+            Module
+                .put_owned(db, id.index, Module { id: id, name: module }, db.owner_named("module ${module}"))
+            return id
+        }
         known
     }
 
