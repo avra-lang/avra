@@ -101,11 +101,18 @@ const SHAPE_FAULT: int = 5
 /// it is — its words too when something read them (`docs_read`) — and each `// LICENSED` claim
 /// with the line it licenses. A plain comment and the space between tokens are gone, a line
 /// break included: the lexer's BREAK tokens carry the line law, so a blank line above a fn
-/// leaves the digest, and every answer drawn from the stream, where it was.
-export fn shape_digest(text: string, lexed: LexResult, docs_read: bool) -> string {
+/// leaves the digest, and every answer drawn from the stream, where it was. A LINED shape keeps
+/// every token's line too, for what prints a place by its line (a task's `file:line`).
+export fn shape_digest(text: string, lexed: LexResult, docs_read: bool, lined: bool) -> string {
     let tokens = lexed.tokens
     mut d = new_digest()
-    for t in tokens { d = digest_text(digest_int(d, SHAPE_TOKEN), t.text) }
+    mut at = 0
+    for t in tokens {
+        d = digest_int(d, SHAPE_TOKEN)
+        if lined { d = digest_int(d, breaks_in(text, at, t.span.lo)) }
+        d = digest_text(d, t.text)
+        at = t.span.hi
+    }
     for r in lexed.remarks { d = claim_folded(d, text, tokens, r) }
     for doc in lexed.docs {
         d = digest_int(

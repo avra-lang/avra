@@ -23,6 +23,7 @@ export enum VerdictRead {
     Files(dir: string)
     Text(path: string)
     Shape(path: string)
+    Lined(path: string)
     Embed(path: string)
     Object(path: string)
 }
@@ -35,6 +36,7 @@ export fn verdict_read_word(r: VerdictRead) -> string {
         .Files(dir) -> "files ${dir}",
         .Text(path) -> "text ${path}",
         .Shape(path) -> "shape ${path}",
+        .Lined(path) -> "lined ${path}",
         .Embed(path) -> "embed ${path}",
         .Object(path) -> "object ${path}",
     }
@@ -51,6 +53,7 @@ export fn verdict_read_of_word(name: string) -> VerdictRead? {
         "files" -> VerdictRead.Files(key),
         "text" -> VerdictRead.Text(key),
         "shape" -> VerdictRead.Shape(key),
+        "lined" -> VerdictRead.Lined(key),
         "embed" -> VerdictRead.Embed(key),
         "object" -> VerdictRead.Object(key),
         rest -> null,
@@ -58,8 +61,9 @@ export fn verdict_read_of_word(name: string) -> VerdictRead? {
 }
 
 /// How a source is read: an Avra file by its shape, anything else by its text.
-fn source_read(path: string) -> VerdictRead {
-    if path.ends_with(".av") { VerdictRead.Shape(path) } else { VerdictRead.Text(path) }
+fn source_read(path: string, lined: bool) -> VerdictRead {
+    if !path.ends_with(".av") { return VerdictRead.Text(path) }
+    if lined { VerdictRead.Lined(path) } else { VerdictRead.Shape(path) }
 }
 
 /// WHAT `check` SAID, AS DATA: the program's own voices and the files they point into, then
@@ -167,12 +171,16 @@ impl Workspace {
     fn verdict_key(named: string) -> string { node_key(Stored.Unit, ["verdict", self.root, named]) }
 
     /// What the verdict on `named` reads, as the analysed program holds it.
-    fn verdict_reads(named: string) -> List<VerdictRead> {
+    fn verdict_reads(named: string) -> List<VerdictRead> { self.program_reads(named, false) }
+
+    /// What a program's answer reads: its sources by shape — LINED where it prints a place by
+    /// its line — and everything else by its bytes.
+    fn program_reads(named: string, lined: bool) -> List<VerdictRead> {
         let closure = self.closure(named)
         let inputs = self.source_inputs(named)
         [VerdictRead.Compiler, VerdictRead.Closure(named)]
             .concat([VerdictRead.Files(line.split("\t")[0]) for line in closure])
-            .concat([source_read(f) for f in inputs])
+            .concat([source_read(f, lined) for f in inputs])
             .concat([VerdictRead.Embed(f) for f in self.embeds(inputs)])
             .concat([VerdictRead.Object(o) for o in self.reached_objects(named)])
     }
@@ -190,7 +198,8 @@ impl Workspace {
             .Closure(named) -> digest_of(joined(self.closure(named), "\n")),
             .Files(dir) -> self.listing_word(dir),
             .Text(path) -> self.text_now(path),
-            .Shape(path) -> "${self.text_now(path)}/${self.shape_now(path) ?? "-"}",
+            .Shape(path) -> "${self.text_now(path)}/${self.shape_now(path, false) ?? "-"}",
+            .Lined(path) -> "${self.text_now(path)}/${self.shape_now(path, true) ?? "-"}",
             .Embed(path) -> digest_of(self.embed_said(path)),
             .Object(path) -> digest_of(digest_of_binary(path) ?? "-"),
         }
@@ -207,16 +216,17 @@ impl Workspace {
     fn verdict_read_stands(r: Reading, moved: Cell<List<string>>) -> bool {
         let read? = verdict_read_of_word(r.name) else { return false }
         match read {
-            .Shape(path) -> self.shape_stands(path, r.digest, moved),
+            .Shape(path) -> self.shape_stands(path, false, r.digest, moved),
+            .Lined(path) -> self.shape_stands(path, true, r.digest, moved),
             .Compiler or .Closure(_) or .Files(_) or .Text(_) or .Embed(_) or .Object(_) -> self.read_now(read) == r.digest,
         }
     }
 
-    fn shape_stands(path: string, digest: string, moved: Cell<List<string>>) -> bool {
+    fn shape_stands(path: string, lined: bool, digest: string, moved: Cell<List<string>>) -> bool {
         let cut = digest.index_of("/")
         if cut < 0 { return false }
         if self.text_now(path) == digest.substring(0, cut) { return true }
-        let shape? = self.shape_now(path) else { return false }
+        let shape? = self.shape_now(path, lined) else { return false }
         if shape != digest.substring(cut + 1, digest.length) { return false }
         moved.push(path)
         true
@@ -226,24 +236,27 @@ impl Workspace {
     fn text_now(path: string) -> string { self.input(text_named(path)).input().digest.key }
 
     /// Where a file's shape is kept, against its text.
-    fn shape_key(path: string) -> string { node_key(Stored.Unit, ["shape", self.root, path]) }
+    fn shape_key(path: string, lined: bool) -> string {
+        node_key(Stored.Unit, [if lined { "lined" } else { "shape" }, self.root, path])
+    }
 
     /// WHAT A SOURCE'S TOKENS SAY NOW: its kept shape while its text stands, else a lex of
     /// the text now under its words — kept again, so the next ask is a digest compare. None
     /// for a file whose words nothing recorded.
-    fn shape_now(path: string) -> string? {
+    fn shape_now(path: string, lined: bool) -> string? {
         let store = self.opened_store()
         let docs = self.docs_are_read(store, path)
         let kept = shape_of_wire(
-            store.get_valid(Stored.Unit, self.shape_key(path), (name) -> self.named_now(name)) ?? "",
+            store
+                .get_valid(Stored.Unit, self.shape_key(path, lined), (name) -> self.named_now(name)) ?? "",
         )
         if kept != null && kept!.docs == docs { return kept!.digest }
         let words? = self.lex_words(path) else { return null }
-        let made = shape_digest(self.listed_text(path), self.lexed_now(path, words), docs)
+        let made = shape_digest(self.listed_text(path), self.lexed_now(path, words), docs, lined)
         let _ = store
             .keep_reading(
                 Stored.Unit,
-                self.shape_key(path),
+                self.shape_key(path, lined),
                 shape_wire(Shaped { digest: made, words: words, docs: docs }),
                 self.readings([VerdictRead.Text(path)]),
             )
@@ -269,7 +282,11 @@ impl Workspace {
     fn lex_words(path: string) -> LexWords? {
         let known: LexWords? = self.keys.lex_words.get().get(path)
         if known != null { return known }
-        shape_of_wire(self.opened_store().get(Stored.Unit, self.shape_key(path)) ?? "")?.words
+        let store = self.opened_store()
+        shape_of_wire(
+            store.get(Stored.Unit, self.shape_key(path, false)) ?? store
+                .get(Stored.Unit, self.shape_key(path, true)) ?? "",
+        )?.words
     }
 
     /// `path`'s text now, lexed under `words` — once per text.
@@ -301,27 +318,42 @@ impl Workspace {
     }
 
     /// THE VERDICT THAT STANDS for `named`, its places said again wherever a text moved
-    /// and kept its shape — and kept again so, so the next ask needs no lex. None when it
-    /// does not stand, or a moved place cannot be said again.
+    /// and kept its shape. None when it does not stand, or a moved place cannot be said again.
     fn standing_verdict(store: Store, named: string) -> CheckSaid? {
-        let moved: Cell<List<string>> = list_cell()
         let key = self.verdict_key(named)
-        let row? = store
-            .get_standing(Stored.Unit, key, (r: Reading) -> self.verdict_read_stands(r, moved)) else {
+        let row? = self
+            .standing_row(
+                store,
+                key,
+                (r: Reading, moved: Cell<List<string>>) -> self.verdict_read_stands(r, moved),
+            ) else {
             return null
         }
-        let said? = verdict_of_wire(row) else { return null }
-        if moved.get().is_empty() { return said }
-        let again? = self.said_again(store, said, moved.get()) else { return null }
+        let said? = verdict_of_wire(row.bytes) else { return null }
+        if row.moved.is_empty() { return said }
+        let again? = self.said_again(store, said, row.moved) else { return null }
+        self.kept_again(store, key, verdict_wire(again))
+        again
+    }
+
+    /// A saved answer that stands, with the files whose text moved and kept their shape.
+    fn standing_row(store: Store, key: string, stands: fn(Reading, Cell<List<string>>) -> bool) -> Standing? {
+        let moved: Cell<List<string>> = list_cell()
+        let bytes? = store.get_standing(Stored.Unit, key, (r: Reading) -> stands(r, moved)) else { return null }
+        Standing { bytes: bytes, moved: moved.get() }
+    }
+
+    /// A standing answer kept again with what it says now and every read at its digest now, so
+    /// the next ask needs no lex.
+    fn kept_again(store: Store, key: string, bytes: string) {
         let reads = [r! for r in [read_spelled(l) for l in store.reads_of(Stored.Unit, key) ?? []] if r != null]
         let _ = store
             .keep_reading(
                 Stored.Unit,
                 key,
-                verdict_wire(again),
+                bytes,
                 [Reading { name: r.name, digest: self.named_now(r.name) ?? r.digest } for r in reads],
             )
-        again
     }
 
     /// The verdict with every part that points into a moved text said again.
@@ -415,6 +447,9 @@ fn facts_locs(d: DiagFacts) -> List<Loc> {
     [f.loc! for f in [d.primary].concat(d.secondary) if f.loc != null]
         .concat([e.loc for s in d.suggestions for e in s.edits])
 }
+
+/// A saved answer's bytes, and the files whose text moved under it and kept their shape.
+type Standing = { bytes: string, moved: List<string> }
 
 /// A lexed text, kept with the text it lexed.
 type Lexing = { text: string, lexed: LexResult }
