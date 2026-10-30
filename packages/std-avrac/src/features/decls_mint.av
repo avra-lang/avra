@@ -376,7 +376,6 @@ impl Decls {
     /// READS THE FILE WHOLE, so it records the file's own rows — a row read
     /// by id records its name alone, which a row arriving later never moves.
     fn decls_of_file(f: FileId) -> List<DeclId> {
-        (self.ensure_file.get())(f)
         self.rows_read(f)
         self.decls_so_far(f)
     }
@@ -399,16 +398,6 @@ impl Decls {
         [FileId { index: i } for i in 0..self.file_count() if !self.file_held(FileId { index: i })]
     }
 
-    /// The four producer doors, read by the bucket readers and answered by the armed
-    /// workspace hook: mint the held modules whose record files a row under this value.
-    fn hold_named(name: string) { (self.ensure_named.get())(name) }
-
-    fn hold_worded(word: string) { (self.ensure_worded.get())(word) }
-
-    fn hold_marked(mark: string) { (self.ensure_marked.get())(mark) }
-
-    fn hold_modules(modules: List<string>) { (self.ensure_modules.get())(modules) }
-
     /// The externs the records of the files held now declare.
     fn held_externs() -> List<ExternNote> { [n for n in (self.externs_index.get())() if self.held.get().get(n.path) != null] }
 
@@ -420,24 +409,9 @@ impl Decls {
     /// Whether a file's rows came from a record rather than a parse.
     fn file_held(f: FileId) -> bool { self.held.get().get(self.file(f).path) != null }
 
-    fn arm_file(ensure: fn(FileId) -> void) { self.ensure_file.set(ensure) }
-
-    /// THE FOUR PRODUCER DOORS: a bucket reader mints the held modules whose record files
-    /// a row under the value it is about to read, through the workspace armed here.
-    fn arm_named(ensure: fn(string) -> void) { self.ensure_named.set(ensure) }
-
-    fn arm_worded(ensure: fn(string) -> void) { self.ensure_worded.set(ensure) }
-
-    fn arm_marked(ensure: fn(string) -> void) { self.ensure_marked.set(ensure) }
-
-    fn arm_externs(
-        index: fn() -> List<ExternNote>,
-        types: fn() -> List<string>,
-        ensure: fn(List<string>) -> void,
-    ) {
+    fn arm_externs(index: fn() -> List<ExternNote>, types: fn() -> List<string>) {
         self.externs_index.set(index)
         self.types_index.set(types)
-        self.ensure_modules.set(ensure)
     }
 
     /// A file's main seat: the declaration its top-level statements make.

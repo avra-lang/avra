@@ -215,14 +215,11 @@ fn new_keys() -> Keys {
 /// (`runs`); the files whose runs are being lowered, innermost last
 /// (`settling`); the files a record knows that are read all the same,
 /// each with why (`read_files`) — the read set the hold is settled by,
-/// which is every file a text was taken of and nothing else; the held
-/// modules minted so far, by name
-/// (`minted`); whether the holds are settled, before which no file's
+/// which is every file a text was taken of and nothing else; whether the holds are settled, before which no file's
 /// standing is known (`holds_now`); which
-/// held module files a declaration under each bucket value its record
-/// carries — name, word, mark, extern — so a bucket read mints its
-/// producer before it reads (`named_by`, `worded_by`, `marked_by`,
-/// `externed_by`, and the files holding a fn that links a scheduler, `linked_by`); the
+/// held module files a declaration under each word, mark and extern its
+/// record carries (`worded_by`, `marked_by`, `externed_by`, and the files
+/// holding a fn that links a scheduler, `linked_by`); the
 /// records a held file's line declared FLAT (`held_flat`); and the
 /// declarations whose OWN row has been filled from the record, by
 /// DeclId — a module mints every identity at once, but fills each
@@ -276,13 +273,11 @@ type Hold = {
     loaded_turn: Cell<Map<string, bool>>,
     /// Whether THIS attempt holds at all: the unheld retry holds nothing, by definition.
     holds_now: Cell<bool>,
-    minted: Cell<Map<string, bool>>,
     row_filled: Table<bool>,
     /// THE PRODUCER INDEX: for each held module, every declaration NAME,
     /// WORD and MARK its record lines carry, and each extern it declares. A bucket
     /// reader mints the modules listed for its value before it reads the bucket, so a
     /// held module's row exists before the read that wants it — never eagerly, never late.
-    named_by: Cell<Map<string, List<string>>>,
     worded_by: Cell<Map<string, List<string>>>,
     marked_by: Cell<Map<string, List<string>>>,
     externed_by: Cell<List<ExternNote>>,
@@ -375,7 +370,6 @@ fn new_hold() -> Hold {
     let no_asks: List<HeldAsk> = []
     let no_runs: Map<string, List<RunRead>> = {}
     let no_read_files: List<ReadFile> = []
-    let no_minted: Map<string, bool> = {}
     let no_producers: Map<string, List<string>> = {}
     let no_flat: List<TypeId> = []
     let no_moved: Map<string, List<PartMoved>> = {}
@@ -400,9 +394,7 @@ fn new_hold() -> Hold {
         read_files: Cell.new(no_read_files),
         loaded_turn: map_cell(),
         holds_now: Cell.new(false),
-        minted: Cell.new(no_minted),
         row_filled: new_table<bool>(),
-        named_by: Cell.new(no_producers),
         worded_by: Cell.new(no_producers),
         marked_by: Cell.new(no_producers),
         externed_by: list_cell(),
@@ -1139,17 +1131,7 @@ fn built(
     ws.decls.arm_seats((d: DeclId) -> ws.seats_ensured(d))
     ws.decls.arm_target((d: DeclId) -> ws.target_ensured(d))
     ws.decls.arm_store((f: FileId) -> ws.store_ensured(f))
-    ws.decls.arm_file((f: FileId) -> ws.file_ensured(f))
-    ws.decls.arm_named((name: string) -> ws.held_named(name))
-    ws.decls.arm_worded((word: string) -> ws.held_worded(word))
-    ws.decls.arm_marked((mark: string) -> ws.held_marked(mark))
-    ws
-        .decls
-        .arm_externs(
-            () -> ws.hold.externed_by.get(),
-            () -> ws.hold.typed_by.get(),
-            (modules: List<string>) -> ws.minted_modules(modules),
-        )
+    ws.decls.arm_externs(() -> ws.hold.externed_by.get(), () -> ws.hold.typed_by.get())
     ws
         .decls
         .arm_embeds(
@@ -1258,18 +1240,6 @@ impl Workspace {
         if self.is_held(self.decls.decl(d).file) { self.fill_ensured(d) }
     }
 
-    /// A FILE'S DECLARATIONS STAND before they are read: a read file's by its
-    /// parse, a held file's minted with its module the first time anything asks.
-    fn file_ensured(f: FileId) {
-        let path = self.decls.file(f).path
-        if !self.hold.holds_now.get() ||
-            self.hold.minted.get().get(path) != null ||
-            !self.is_held(f) {
-            return
-        }
-        self.minted_files([path])
-    }
-
     /// Every read source file of the package `f` stands in admitted, its tests aside. A held
     /// file stands for its record: the producer doors mint it when a read wants its rows.
     fn package_admitted(f: FileId) {
@@ -1278,27 +1248,6 @@ impl Workspace {
         for p in [p for p in self.all_files(pkg.src) if !self.is_test_path(p) && self.decls.held.get().get(p) == null] {
             let _ = self.items(self.file_id(p))
         }
-    }
-
-    /// THE PRODUCER INDEX'S FOUR DOORS: a bucket reader asks for the value it is about to
-    /// read, and every held module whose record files a row there is minted first — so the
-    /// row exists before the read, and only where it is wanted.
-    fn held_named(name: string) { self.minted_files(self.hold.named_by.get().get(name) ?? []) }
-
-    fn held_worded(word: string) { self.minted_files(self.hold.worded_by.get().get(word) ?? []) }
-
-    fn held_marked(mark: string) { self.minted_files(self.hold.marked_by.get().get(mark) ?? []) }
-
-    /// Every held file of each listed module minted, once.
-    fn minted_modules(modules: List<string>) {
-        if self.store.get() == null { return }
-        for m in modules { self.mint_files(self.module_files(module_path(segments_of(m)))) }
-    }
-
-    /// The held modules of the listed files minted whole, once: a module stands as one
-    /// namespace, so no sibling is left to mint inside a query that already read the rows.
-    fn minted_files(paths: List<string>) {
-        self.minted_modules(distinct([self.module_path_of(p).text() for p in paths]))
     }
 
     /// A held declaration may need syntax-only facts that were not part of
@@ -2295,7 +2244,6 @@ impl Workspace {
         // its record, so its table is whole without a parse.
         let home = self.decls.decl(target).file
         if !self.is_held(home) { let _ = self.resolved(home) }
-        self.decls.hold_named(self.decls.decl(target).name)
         let blocks = self.method_blocks(target)
         // A table that cannot be COMPLETED is not the table, and must
         // not be memoized: an impl still registering, or an impl in a

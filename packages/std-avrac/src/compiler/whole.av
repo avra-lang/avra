@@ -67,7 +67,6 @@ impl Workspace {
     /// asked for every file before the next, so the phases time apart.
     fn analyze_all(built: string?) -> List<Analysis> {
         let t0 = self.clock()
-        // a held file is not parsed — and asking its items would mint its module for nothing
         for path in self.entry_files(built) { let _ = self.file_id(path) }
         self.admit_all()
         self.timed("parse", t0)
@@ -186,10 +185,10 @@ impl Workspace {
         mut i = 0
         while i < self.decls.file_count() {
             let id = file_at(i)
-            // a held file's declarations are minted when something reads them
-            if !self.is_held(id) && self.reads_as_source(self.decls.file(id).path) {
+            // an unread file's declarations are minted from its kept Items
+            if self.reads_as_source(self.decls.file(id).path) {
                 let _ = self.items(id)
-                self.admit_used(id)
+                if !self.is_held(id) { self.admit_used(id) }
             }
             i = i + 1
         }
