@@ -75,7 +75,11 @@ use compiler.lower.{
     code_facts_from_wire,
 }
 use compiler.memory.{memory}
+use core.debug.{lowered_verified}
 use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
+
+/// A unit as a lowering answered it: made now, or restored from its saved answer.
+type Lowering = { unit: Unit, restored: bool }
 
 /// An interned table's answer for one name: already there, or freshly
 /// minted at `next` (the table's own current length) — registered in
@@ -459,14 +463,17 @@ impl Workspace {
             .Compute -> nothing(),
         }
         self.hold.lowering.push(id)
-        let out = self.lowered_unit(self.asks.get()[id], rows)
+        let w = self.asks.get()[id]
+        let made = self.lowered_unit(w, rows)
         let open = self.hold.lowering.get()
         self.hold.lowering.set(open.slice(0, open.length - 1))
-        lowered_of(
+        let out = lowered_of(
             self
                 .relation(fam)
-                .finish_lazy(id, DbRow.Lowered(out), (r: DbRow) -> unit_fp(lowered_of(r))),
+                .finish_lazy(id, DbRow.Lowered(made.unit), (r: DbRow) -> unit_fp(lowered_of(r))),
         )
+        if rows && !made.restored { self.unit_saved(id, w, out) }
+        out
     }
 
     /// Every body a unit lowered belongs to the unit's declaration: a specialization
@@ -477,9 +484,8 @@ impl Workspace {
         for b in out.bodies { self.hold.owners.put(b.name, d) }
     }
 
-    /// One unit: served from its kept row when `rows` allows, else lowered and,
-    /// when it spoke nothing, kept.
-    fn lowered_unit(w: Wanted, rows: bool) -> Unit {
+    /// One unit: its saved answer when `rows` allows and it stands, else lowered.
+    fn lowered_unit(w: Wanted, rows: bool) -> Lowering {
         // A unit's OWN body is a read whatever its shape: a declaration's
         // range, or — for a program's entry, a body no declaration owns —
         // the whole file's parse, which is where that body lives. Without
@@ -489,13 +495,17 @@ impl Workspace {
         } else if w.root == null {
             let _ = self.parsed(w.file)
         }
-        let served = if rows { self.unit_served(w) } else { null }
-        if traced() { qtrace("Q\tunit\t${if served == null { "lowered" } else { "served" }}\t${w.name}\n") }
-        if served != null { return served! }
-        let out = self.lower_requested(w)
+        let restored = if rows { self.unit_restored(w) } else { null }
+        if traced() { qtrace("Q\tunit\t${if restored == null { "lowered" } else { "restored" }}\t${w.name}\n") }
+        if rows && lowered_verified() {
+            let fresh = self.lower_requested(w)
+            self.unit_judged(w, restored, fresh)
+            self.owned(w, fresh)
+            return Lowering { unit: fresh, restored: false }
+        }
+        let out = restored ?? self.lower_requested(w)
         self.owned(w, out)
-        if rows { self.unit_kept(w, out) }
-        out
+        Lowering { unit: out, restored: restored != null }
     }
 
     /// Whether a compile-time run — a lift, an argument crossing, a

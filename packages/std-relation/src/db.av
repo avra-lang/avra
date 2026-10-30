@@ -609,6 +609,32 @@ impl Db {
         }
     }
 
+    /// An answer read back by its reads' identities (`Leaf.id`) reads what it stood on, as
+    /// `read_leaves` does — all of them, or none when one is no read a query here can record.
+    fn read_ids(ids: List<string>) -> bool {
+        let kernel = self.engine()
+        if !ids.all((id) -> self.recordable(id)) { return false }
+        for id in ids {
+            if id.starts_with("r\t") { self.read_rows_leaf(kernel, id.substring(2, id.length)) }
+            if !id.starts_with("i\t") { continue }
+            let rest = id.substring(2, id.length)
+            let at = rest.index_of("\t")
+            self.read_input_leaf(kernel, rest.substring(0, at), rest.substring(at + 1, rest.length))
+        }
+        true
+    }
+
+    /// Whether a read's identity names a relation, or a query or input whose answers stand here.
+    fn recordable(id: string) -> bool {
+        if id.starts_with("r\t") { return true }
+        if !id.starts_with("i\t") { return false }
+        let rest = id.substring(2, id.length)
+        let at = rest.index_of("\t")
+        if at < 1 { return false }
+        let owner? = self.answer_named(rest.substring(0, at)) else { return false }
+        owner.family_now() >= 0 && owner.arg_of(rest.substring(at + 1, rest.length)) != null
+    }
+
     fn read_rows_leaf(kernel: Kernel, name: string) {
         let rel = self.relations.get().find(it.name == name)
         if rel != null { kernel.record_at(rel!.family_now(), 0) } else { self.watch_reach(name) }

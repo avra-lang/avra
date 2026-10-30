@@ -6,7 +6,7 @@
 //! minted from its module's record, its warnings and its object come from the
 //! store. The sources are the hold's oracle — a derivation that fails under a
 //! hold is answered again from the sources alone.
-use core.debug.{db_verified_files}
+use core.debug.{db_verified_files, lowered_verified}
 use core.{
     distinct,
     flatten,
@@ -677,7 +677,6 @@ impl Workspace {
     fn holding(at: Attempt) -> Result<Store, Turn> {
         let store = self.opened_store()
         self.attach_store(store)
-        self.hold.serving.set(match at.want { .Diagnostics -> !db_verified(), .Binary -> false })
         // a home is read only when the instantiations are owed
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
@@ -738,7 +737,6 @@ impl Workspace {
             self.timed("runs", settled)
             self.timed("settle", settling)
         }
-        self.hold.warm.set(!held_paths(self).is_empty())
         self.host.reads_ahead(self.reads_ahead())
 
         store
@@ -889,7 +887,6 @@ impl Workspace {
             self.keep_asks(store, lo, a)
             self.keep_codes(store, a, bodies, statics, asks)
         }
-        self.keep_unit_rows(store)
         self.keep_instances(store, lo)
         let said? = self.all_said(store, p, at.want) else { fail at.unheld("what a held file said could not be read") }
         said
@@ -940,18 +937,14 @@ impl Workspace {
             statics.get(at) ?? [],
             [h.target for h in asks.get(at) ?? []],
         )
-        let facts = merged_facts(
-            fresh,
-            [s.facts for s in self.hold.served.get() if same_file(s.file, f)],
-        )
         let _ = store
             .keep_once(
                 Stored.Unit,
                 self.codes_key(self.held_okey(store, a.view.source.file)),
-                code_facts_wire(facts),
+                code_facts_wire(fresh),
             )
         let path = a.view.source.file
-        self.keep_file_row(store, path, Stored.Unit, self.codes_row(path), code_facts_wire(facts))
+        self.keep_file_row(store, path, Stored.Unit, self.codes_row(path), code_facts_wire(fresh))
     }
 
     /// THE ATTEMPT THAT STOOD, as the program derived. The instantiations a held
@@ -977,10 +970,8 @@ impl Workspace {
             )
         let owed = owed_fresh.length + owed_held.length
         if owed == 0 { let _ = store.keep_once(Stored.Unit, clean_key(asked), "") }
-        if db_verified() {
-            self.lowered_said_pass(store)
-            self.typed_said_pass(store)
-        }
+        if db_verified() { self.typed_said_pass(store) }
+        if lowered_verified() { self.lowered_judgement() }
         if at.want is .Diagnostics { self.keep_held_set(store, at.entry, at.want, held_paths(self)) }
         self.keep_docs_read(store)
         store.settle()

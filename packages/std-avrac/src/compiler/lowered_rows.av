@@ -1,64 +1,89 @@
-//! A LOWERED UNIT AS A SAVED ANSWER: what a unit's lowering says, kept under its ask's name
-//! with the names it read, and judged against a fresh lowering.
-use core.{joined, wreck}
-use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{code_facts, code_facts_wire}
+//! A LOWERED UNIT AS A SAVED ANSWER: one row per unit, under the name its ask spells, kept with
+//! the names its lowering read (`leaves_of` the Lowered cell's reads) and served while every one
+//! still has its digest — to a check and a build alike. A unit that spoke is never kept, and a
+//! compile-time run neither keeps nor reads one: its seats are borrowed.
+use compiler.store.{Stored, Reading, node_key, read_spelled}
 use compiler.families.{Family}
+use compiler.lower.{Unit}
+use compiler.voices.{unit_fp}
+use features.{Wanted}
+use core.{wreck}
+use @std.relation.engine.{map_cell}
+
+/// What `AVRA_DB_VERIFY=lowered` found of the saved units this process asked, each count by its
+/// word, and each recomputation by the read that moved first.
+once fn lowered_judged() -> Cell<Map<string, int>> { map_cell() }
+
+once fn lowered_moved() -> Cell<Map<string, int>> { map_cell() }
+
+fn counted_in(c: Cell<Map<string, int>>, word: string) { c.put(word, (c.get().get(word) ?? 0) + 1) }
+
+fn judged_once(word: string) { counted_in(lowered_judged(), word) }
+
+fn judged_count(word: string) -> int { lowered_judged().get().get(word) ?? 0 }
 
 impl Workspace {
-    /// What a unit's lowering says: the instantiations it asks for and the code it hashed. Absent
-    /// for a unit that spoke, which is never kept.
-    fn lowered_says(id: int) -> string? {
-        let u = self.lowered(id)
-        if !u.voices.list.is_empty() { return null }
-        joined(
-            [
-                self.wanted_list_wire(u.wants),
-                code_facts_wire(code_facts(self.decls, u.bodies, u.statics, u.hashes)),
-            ],
-            "\n",
-        )
+    /// Where the unit `w` asks for is kept: its ask's name, never a position.
+    fn lowered_key(w: Wanted) -> string { node_key(Stored.Unit, ["lowered", self.wanted_list_wire([w])]) }
+
+    /// THE UNIT KEPT FOR `w`, while every name its lowering read still has its digest — read as
+    /// a lowering reads, so a reader of the unit follows what it stood on. None for no store, a
+    /// compile-time run, or a row that does not stand.
+    fn unit_restored(w: Wanted) -> Unit? {
+        if self.comptime_active() { return null }
+        let s? = self.store.get() else { return null }
+        let rdb = self.decls.rows_db.get()
+        let key = self.lowered_key(w)
+        let raw? = s.get_valid(Stored.Unit, key, (n) -> rdb.leaf_digest(n)) else { return null }
+        let u? = self.unit_of_wire(raw) else { return null }
+        if !rdb
+            .read_ids(
+                [r!.name for r in [read_spelled(l) for l in s.reads_of(Stored.Unit, key) ?? []] if r != null],
+            ) { return null }
+        u
     }
 
-    /// Lowered answers standing on names, kept as saved answers and judged against what a fresh
-    /// lowering says: a kept answer still valid must equal it, or a read is missing.
-    fn lowered_said_pass(store: Store) {
-        let rdb = self.decls.rows_db.get()
-        mut settled = 0
-        mut stood = 0
-        mut why: Map<string, int> = {}
-        mut valid = 0
-        mut recomputed = 0
-        mut spoke = 0
-        mut mismatched = 0
-        for id, ask in self.asks.get() {
-            let reads = self.db.kernel.deps_of(key_at(Family.Lowered.ordinal, id))
-            if reads.is_empty() { continue }
-            settled = settled + 1
-            let leaves? = rdb.leaves_of(reads) else { continue }
-            stood = stood + 1
-            let says? = self.lowered_says(id) else {
-                spoke = spoke + 1
-                continue
-            }
-            let row = node_key(Stored.Unit, ["loweredsaid", self.wanted_list_wire([ask])])
-            let kept = store.get_valid(Stored.Unit, row, (n) -> rdb.leaf_digest(n))
-            if kept == null {
-                recomputed = recomputed + 1
-                let cause = self.first_moved(store, row, (n) -> rdb.leaf_digest(n))
-                why.set(cause, (why.get(cause) ?? 0) + 1)
-            } else {
-                valid = valid + 1
-                if kept != says {
-                    mismatched = mismatched + 1
-                    eprintln("Q loweredsaid mismatch ${ask.name}")
-                }
-            }
-            let _ = store.keep_reading(Stored.Unit, row, says, saved_reads(leaves))
+    /// A unit's lowering kept, once its cell settled: with the names it read, when every read
+    /// has one.
+    fn unit_saved(id: int, w: Wanted, u: Unit) {
+        if self.comptime_active() || !u.voices.list.is_empty() { return }
+        let s? = self.store.get() else { return }
+        let leaves? = self
+            .decls
+            .rows_db
+            .get()
+            .leaves_of(self.db.kernel.deps_of(key_at(Family.Lowered.ordinal, id))) else {
+            return
         }
+        let _ = s
+            .keep_reading(Stored.Unit, self.lowered_key(w), self.unit_wire(u), saved_reads(leaves))
+    }
+
+    /// THE ORACLE, under `AVRA_DB_VERIFY=lowered`: a unit restored must equal a fresh lowering,
+    /// and one that was not is counted under the read that moved first.
+    fn unit_judged(w: Wanted, restored: Unit?, fresh: Unit) {
+        judged_once("settled")
+        let r? = restored else {
+            judged_once("recomputed")
+            let s? = self.store.get() else { return }
+            let rdb = self.decls.rows_db.get()
+            counted_in(
+                lowered_moved(),
+                self.first_moved(s, self.lowered_key(w), (n) -> rdb.leaf_digest(n)),
+            )
+            return
+        }
+        judged_once("valid")
+        if unit_fp(r) == unit_fp(fresh) { return }
+        judged_once("mismatched")
+        eprintln("Q loweredsaid mismatch ${w.name}")
+    }
+
+    /// The oracle's verdict, said once a derivation kept its rows.
+    fn lowered_judgement() {
         eprintln(
-            "loweredsaid: ${settled} settled, ${stood} stand on names; valid ${valid}, recomputed ${recomputed}, spoke ${spoke}, mismatched ${mismatched}; recomputed because: ${why.entries().map("${it.key} ${it.value}").join(", ")}",
+            "loweredsaid: ${judged_count("settled")} settled; valid ${judged_count("valid")}, recomputed ${judged_count("recomputed")}, mismatched ${judged_count("mismatched")}; recomputed because: ${lowered_moved().get().entries().map("${it.key} ${it.value}").join(", ")}",
         )
-        if mismatched > 0 { wreck("a valid LoweredSaid differs from a fresh lowering: a read is missing") }
+        if judged_count("mismatched") > 0 { wreck("a valid saved unit differs from a fresh lowering: a read is missing") }
     }
 }
