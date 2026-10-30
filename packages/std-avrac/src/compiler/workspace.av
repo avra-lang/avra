@@ -15,6 +15,7 @@
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
 use core.{
+    Ids,
     CollectKind,
     CollectScope,
     Plain,
@@ -2203,7 +2204,7 @@ impl Workspace {
             self.db.begin(k)
             self.decl_row_filled(d)
             let held: DeclSig? = self.decls.sigs.get()[d.index]
-            self.db.settle(k, sig_hash(held))
+            self.db.settle(k, sig_hash(held, self.decls.ids()))
             return held
         }
         self.db.begin(k)
@@ -2215,7 +2216,7 @@ impl Workspace {
         t.declare_one(x)
         self.sig_voices.keep(d.index, t.facts.voices)
         let out: DeclSig? = self.decls.sigs.get()[d.index]
-        self.db.settle(k, sig_hash(out))
+        self.db.settle(k, sig_hash(out, self.decls.ids()))
         out
     }
 
@@ -2627,9 +2628,11 @@ fn program_hash(p: Parsed) -> int {
 /// and every one of them was a field added after its hash was
 /// written. Exported because the shapes that once collided are pinned
 /// as cases.
-export fn sig_hash(s: DeclSig?) -> int {
+/// A signature's digest, durable: types by their spelling and declarations by their name,
+/// never an interner's index, so another process digests one signature alike.
+export fn sig_hash(s: DeclSig?, ids: Ids) -> int {
     if s == null { return 0 }
-    s!.fingerprint()
+    s!.fingerprint_in(ids)
 }
 
 impl Decls {
