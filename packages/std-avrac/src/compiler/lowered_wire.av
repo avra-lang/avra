@@ -1,0 +1,632 @@
+//! A LOWERED UNIT ON THE WIRE: its bodies, instruction by instruction, its statics, the
+//! instantiations it asks and the hashes it answers — written by ONE executor and read by ONE,
+//! never a codec generated per type. A type crosses by name (`type_wire`), once per unit in a
+//! table its registers index; a file crosses by its path. A unit that spoke is never written.
+use core.{
+    Type,
+    TypeId,
+    FileId,
+    SeatMark,
+    Reg,
+    Ins,
+    Level,
+    BinOp,
+    UnOp,
+    Rounding,
+    RtFlag,
+    Static,
+    StaticBox,
+    Slot,
+    distinct,
+    hex,
+    unhex,
+}
+use @std.relation.stable.{Writer, Reader, writer, decoded_with, written_list, CodecFault}
+use diagnostics.{no_voices}
+use compiler.lower.{Unit, Body}
+
+impl Workspace {
+    /// A unit as text, for a row.
+    fn unit_wire(u: Unit) -> string {
+        let types = distinct_types(flatten_types(u.bodies))
+        let at = type_places(types)
+        let w = writer()
+        w.text(self.wanted_list_wire(u.wants))
+        written_list(w, types, (w: Writer, t: TypeId) -> w.text(self.decls.type_wire(t)))
+        written_list(w, u.bodies, (w: Writer, b: Body) -> self.written_body(w, b, at))
+        written_list(w, u.statics, (w: Writer, s: Static) -> self.written_static(w, s))
+        written_list(w, u.hashes, (w: Writer, h: string) -> w.text(h))
+        hex(w.bytes())
+    }
+
+    /// `unit_wire`'s inverse; none for text it did not write, or a name this program no longer
+    /// knows.
+    fn unit_of_wire(raw: string) -> Unit? {
+        let b? = unhex(raw) else { return null }
+        match decoded_with(b, (r: Reader) -> self.read_unit(r)) { .Ok(u) -> u, .Err(_) -> null }
+    }
+
+    fn read_unit(r: Reader) -> Result<Unit, CodecFault> {
+        let wants? = self.wanted_list_from_wire(r.text()?) else { fail CodecFault.NotVariant }
+        let types = self.read_types(r)?
+        let nb = r.count()?
+        let bodies = [self.read_body(r, types)? for _k in 0..nb]
+        let ns = r.count()?
+        let statics = [self.read_static(r)? for _k in 0..ns]
+        let nh = r.count()?
+        let hashes = [r.text()? for _k in 0..nh]
+        Unit { bodies: bodies, wants: wants, voices: no_voices(), statics: statics, hashes: hashes }
+    }
+
+    fn read_types(r: Reader) -> Result<List<TypeId>, CodecFault> {
+        let n = r.count()?
+        [self.read_type(r)? for _k in 0..n]
+    }
+
+    /// A type by name; one whose name no longer reads back is no type here.
+    fn read_type(r: Reader) -> Result<TypeId, CodecFault> {
+        let t = self.interface_type(r.text()?)
+        if t == self.decls.types.intern(Type.Error) { fail CodecFault.NotVariant }
+        t
+    }
+
+    fn written_body(w: Writer, b: Body, at: Map<string, int>) {
+        w.text(b.name)
+        written_list(w, b.params, (w: Writer, t: TypeId) -> w.count(at.get("${t.index}") ?? 0))
+        w.count(at.get("${b.ret.index}") ?? 0)
+        written_reg_opt(w, b.gives)
+        written_list(w, b.ins, written_ins)
+        written_list(w, b.reg_types, (w: Writer, t: TypeId) -> w.count(at.get("${t.index}") ?? 0))
+        self.unit_file_written(w, b.file)
+        w.bool(b.weak)
+        written_text_opt(w, b.site)
+        written_list(w, b.marks, written_mark)
+        w.bool(b.hosted)
+        w.bool(b.hash_answer)
+    }
+
+    fn read_body(r: Reader, types: List<TypeId>) -> Result<Body, CodecFault> {
+        let name = r.text()?
+        let params = read_indexed(r, types)?
+        let ret = typed_at(types, r.count()?)?
+        let gives = read_reg_opt(r)?
+        let ni = r.count()?
+        let ins = [read_ins(r)? for _k in 0..ni]
+        let reg_types = read_indexed(r, types)?
+        let file = self.read_unit_file(r)?
+        let weak = r.bool()?
+        let site = read_text_opt(r)?
+        let nm = r.count()?
+        let marks = [read_mark(r)? for _k in 0..nm]
+        let hosted = r.bool()?
+        Body {
+            name: name,
+            params: params,
+            ret: ret,
+            gives: gives,
+            ins: ins,
+            reg_types: reg_types,
+            file: file,
+            weak: weak,
+            site: site,
+            marks: marks,
+            hosted: hosted,
+            hash_answer: r.bool()?,
+        }
+    }
+
+    fn written_static(w: Writer, s: Static) {
+        w.text(s.name)
+        written_list(w, s.boxes, written_box)
+        self.unit_file_written(w, s.file)
+        w.bool(s.debug)
+    }
+
+    fn read_static(r: Reader) -> Result<Static, CodecFault> {
+        let name = r.text()?
+        let n = r.count()?
+        let boxes = [read_box(r)? for _k in 0..n]
+        let file = self.read_unit_file(r)?
+        Static { name: name, boxes: boxes, file: file, debug: r.bool()? }
+    }
+
+    /// A file by its path; one this program no longer knows is no file here.
+    fn unit_file_written(w: Writer, f: FileId?) {
+        w.present(f != null)
+        if f != null { w.text(self.decls.file(f!).path) }
+    }
+
+    fn read_unit_file(r: Reader) -> Result<FileId?, CodecFault> {
+        if !r.present()? { return .Ok(null) }
+        let f? = self.decls.known_file_id(r.text()?) else { fail CodecFault.NotVariant }
+        .Ok(f)
+    }
+}
+
+/// Each type once, in the order first named.
+fn distinct_types(ts: List<TypeId>) -> List<TypeId> {
+    mut seen: Map<string, bool> = {}
+    mut out: List<TypeId> = []
+    for t in ts {
+        if seen.get("${t.index}") != null { continue }
+        seen.set("${t.index}", true)
+        out.push(t)
+    }
+    out
+}
+
+/// Each type's place in the table.
+fn type_places(types: List<TypeId>) -> Map<string, int> {
+    mut at: Map<string, int> = {}
+    for i, t in types { at.set("${t.index}", i) }
+    at
+}
+
+/// Every type a unit's bodies name.
+fn flatten_types(bodies: List<Body>) -> List<TypeId> {
+    [t for b in bodies for t in b.params.concat([b.ret]).concat(b.reg_types)]
+}
+
+fn read_indexed(r: Reader, types: List<TypeId>) -> Result<List<TypeId>, CodecFault> {
+    let n = r.count()?
+    [typed_at(types, r.count()?)? for _k in 0..n]
+}
+
+fn typed_at(types: List<TypeId>, at: int) -> Result<TypeId, CodecFault> {
+    if at < 0 || at >= types.length { fail CodecFault.NotVariant }
+    types[at]
+}
+
+fn written_text_opt(w: Writer, s: string?) {
+    w.present(s != null)
+    if s != null { w.text(s!) }
+}
+
+fn read_text_opt(r: Reader) -> Result<string?, CodecFault> {
+    if !r.present()? { return .Ok(null) }
+    .Ok(r.text()?)
+}
+
+fn written_reg(w: Writer, g: Reg) { w.int(g.index) }
+
+fn read_reg(r: Reader) -> Result<Reg, CodecFault> { Reg { index: r.int()? } }
+
+fn written_reg_opt(w: Writer, g: Reg?) {
+    w.present(g != null)
+    if g != null { written_reg(w, g!) }
+}
+
+fn read_reg_opt(r: Reader) -> Result<Reg?, CodecFault> {
+    if !r.present()? { return .Ok(null) }
+    .Ok(read_reg(r)?)
+}
+
+fn written_regs(w: Writer, gs: List<Reg>) { written_list(w, gs, written_reg) }
+
+fn read_regs(r: Reader) -> Result<List<Reg>, CodecFault> {
+    let n = r.count()?
+    [read_reg(r)? for _k in 0..n]
+}
+
+fn written_ints(w: Writer, xs: List<int>) { written_list(w, xs, (w: Writer, x: int) -> w.int(x)) }
+
+fn read_ints(r: Reader) -> Result<List<int>, CodecFault> {
+    let n = r.count()?
+    [r.int()? for _k in 0..n]
+}
+
+fn written_mark(w: Writer, m: SeatMark) {
+    w.bool(m.mutable)
+    w.bool(m.settled)
+    w.bool(m.state)
+    w.bool(m.unshared)
+    w.bool(m.consumed)
+}
+
+fn read_mark(r: Reader) -> Result<SeatMark, CodecFault> {
+    let mutable = r.bool()?
+    let settled = r.bool()?
+    let state = r.bool()?
+    let unshared = r.bool()?
+    SeatMark {
+        mutable: mutable,
+        settled: settled,
+        state: state,
+        unshared: unshared,
+        consumed: r.bool()?,
+    }
+}
+
+/// One instruction: its tag, then its fields in declared order.
+fn written_ins(w: Writer, i: Ins) {
+    match i {
+        .ConstInt(dst, v) -> {
+            w.count(0)
+            written_reg(w, dst)
+            w.int(v)
+        },
+        .ConstFloat(dst, bits) -> {
+            w.count(1)
+            written_reg(w, dst)
+            w.int(bits)
+        },
+        .ConstStr(dst, s) -> {
+            w.count(2)
+            written_reg(w, dst)
+            w.text(s)
+        },
+        .ConstBool(dst, v) -> {
+            w.count(3)
+            written_reg(w, dst)
+            w.bool(v)
+        },
+        .Bin(dst, op, a, b) -> {
+            w.count(4)
+            written_reg(w, dst)
+            w.count(bin_tag(op))
+            written_reg(w, a)
+            written_reg(w, b)
+        },
+        .Un(dst, op, src) -> {
+            w.count(5)
+            written_reg(w, dst)
+            written_un(w, op)
+            written_reg(w, src)
+        },
+        .CallRtVoid(callee, args) -> {
+            w.count(6)
+            w.text(callee)
+            written_regs(w, args)
+        },
+        .CallRt(dst, callee, args) -> {
+            w.count(7)
+            written_reg(w, dst)
+            w.text(callee)
+            written_regs(w, args)
+        },
+        .Pack(dst, elems) -> {
+            w.count(8)
+            written_reg(w, dst)
+            written_regs(w, elems)
+        },
+        .Extract(dst, src, at) -> {
+            w.count(9)
+            written_reg(w, dst)
+            written_reg(w, src)
+            w.int(at)
+        },
+        .FnAddr(dst, sym) -> {
+            w.count(10)
+            written_reg(w, dst)
+            w.text(sym)
+        },
+        .StaticAddr(dst, sym) -> {
+            w.count(11)
+            written_reg(w, dst)
+            w.text(sym)
+        },
+        .OnceRead(dst, sym) -> {
+            w.count(12)
+            written_reg(w, dst)
+            w.text(sym)
+        },
+        .OnceCommit(sym, value) -> {
+            w.count(13)
+            w.text(sym)
+            written_reg(w, value)
+        },
+        .FlagRead(dst, flag) -> {
+            w.count(14)
+            written_reg(w, dst)
+            w.count(flag_tag(flag))
+        },
+        .ScopeEnter(tier) -> {
+            w.count(15)
+            w.count(level_tag(tier))
+        },
+        .ScopeExit(gives) -> {
+            w.count(16)
+            written_reg_opt(w, gives)
+        },
+        .Cleanup(id) -> {
+            w.count(17)
+            w.int(id)
+        },
+        .IfStart(cond) -> {
+            w.count(18)
+            written_reg(w, cond)
+        },
+        .SwitchStart(selector, cases) -> {
+            w.count(19)
+            written_reg(w, selector)
+            written_ints(w, cases)
+        },
+        .ArmEnd(gives) -> {
+            w.count(20)
+            written_reg(w, gives)
+        },
+        .RegionEnd(dst, gives) -> {
+            w.count(21)
+            written_reg(w, dst)
+            written_reg(w, gives)
+        },
+        .Call(dst, callee, args) -> {
+            w.count(22)
+            written_reg(w, dst)
+            w.text(callee)
+            written_regs(w, args)
+        },
+        .CallPtr(dst, f, args) -> {
+            w.count(23)
+            written_reg(w, dst)
+            written_reg(w, f)
+            written_regs(w, args)
+        },
+        .RetVal(g) -> {
+            w.count(24)
+            written_reg(w, g)
+        },
+        .FnExit(gives) -> {
+            w.count(25)
+            written_reg(w, gives)
+        },
+        .Alloca(dst) -> {
+            w.count(26)
+            written_reg(w, dst)
+        },
+        .Load(dst, slot) -> {
+            w.count(27)
+            written_reg(w, dst)
+            written_reg(w, slot)
+        },
+        .Store(slot, src) -> {
+            w.count(28)
+            written_reg(w, slot)
+            written_reg(w, src)
+        },
+        .LoopStart -> w.count(29),
+        .LoopCond(c) -> {
+            w.count(30)
+            written_reg(w, c)
+        },
+        .LoopEnd -> w.count(31),
+        .LoopJump(outward, again) -> {
+            w.count(32)
+            w.int(outward)
+            w.bool(again)
+        },
+        .Retain(g) -> {
+            w.count(33)
+            written_reg(w, g)
+        },
+        .Release(g) -> {
+            w.count(34)
+            written_reg(w, g)
+        },
+        .Ret(code) -> {
+            w.count(35)
+            w.int(code)
+        },
+    }
+}
+
+/// `written_ins`'s inverse.
+fn read_ins(r: Reader) -> Result<Ins, CodecFault> {
+    match r.count()? {
+        0 -> Ins.ConstInt(read_reg(r)?, r.int()?),
+        1 -> Ins.ConstFloat(read_reg(r)?, r.int()?),
+        2 -> Ins.ConstStr(read_reg(r)?, r.text()?),
+        3 -> Ins.ConstBool(read_reg(r)?, r.bool()?),
+        4 -> Ins.Bin(read_reg(r)?, bin_of(r.count()?)?, read_reg(r)?, read_reg(r)?),
+        5 -> Ins.Un(read_reg(r)?, read_un(r)?, read_reg(r)?),
+        6 -> Ins.CallRtVoid(r.text()?, read_regs(r)?),
+        7 -> Ins.CallRt(read_reg(r)?, r.text()?, read_regs(r)?),
+        8 -> Ins.Pack(read_reg(r)?, read_regs(r)?),
+        9 -> Ins.Extract(read_reg(r)?, read_reg(r)?, r.int()?),
+        10 -> Ins.FnAddr(read_reg(r)?, r.text()?),
+        11 -> Ins.StaticAddr(read_reg(r)?, r.text()?),
+        12 -> Ins.OnceRead(read_reg(r)?, r.text()?),
+        13 -> Ins.OnceCommit(r.text()?, read_reg(r)?),
+        14 -> Ins.FlagRead(read_reg(r)?, flag_of(r.count()?)?),
+        15 -> Ins.ScopeEnter(level_of(r.count()?)?),
+        16 -> Ins.ScopeExit(read_reg_opt(r)?),
+        17 -> Ins.Cleanup(r.int()?),
+        18 -> Ins.IfStart(read_reg(r)?),
+        19 -> Ins.SwitchStart(read_reg(r)?, read_ints(r)?),
+        20 -> Ins.ArmEnd(read_reg(r)?),
+        21 -> Ins.RegionEnd(read_reg(r)?, read_reg(r)?),
+        22 -> Ins.Call(read_reg(r)?, r.text()?, read_regs(r)?),
+        23 -> Ins.CallPtr(read_reg(r)?, read_reg(r)?, read_regs(r)?),
+        24 -> Ins.RetVal(read_reg(r)?),
+        25 -> Ins.FnExit(read_reg(r)?),
+        26 -> Ins.Alloca(read_reg(r)?),
+        27 -> Ins.Load(read_reg(r)?, read_reg(r)?),
+        28 -> Ins.Store(read_reg(r)?, read_reg(r)?),
+        29 -> Ins.LoopStart,
+        30 -> Ins.LoopCond(read_reg(r)?),
+        31 -> Ins.LoopEnd,
+        32 -> Ins.LoopJump(r.int()?, r.bool()?),
+        33 -> Ins.Retain(read_reg(r)?),
+        34 -> Ins.Release(read_reg(r)?),
+        35 -> Ins.Ret(r.int()?),
+        rest -> { fail CodecFault.NotVariant },
+    }
+}
+
+fn bin_tag(op: BinOp) -> int {
+    match op {
+        .Add -> 0,
+        .Sub -> 1,
+        .Mul -> 2,
+        .Div -> 3,
+        .Mod -> 4,
+        .Eq -> 5,
+        .Ne -> 6,
+        .Lt -> 7,
+        .Le -> 8,
+        .Gt -> 9,
+        .Ge -> 10,
+        .And -> 11,
+        .Or -> 12,
+        .BitAnd -> 13,
+        .BitOr -> 14,
+        .BitXor -> 15,
+        .Shl -> 16,
+        .Shr -> 17,
+    }
+}
+
+fn bin_of(tag: int) -> Result<BinOp, CodecFault> {
+    match tag {
+        0 -> BinOp.Add,
+        1 -> BinOp.Sub,
+        2 -> BinOp.Mul,
+        3 -> BinOp.Div,
+        4 -> BinOp.Mod,
+        5 -> BinOp.Eq,
+        6 -> BinOp.Ne,
+        7 -> BinOp.Lt,
+        8 -> BinOp.Le,
+        9 -> BinOp.Gt,
+        10 -> BinOp.Ge,
+        11 -> BinOp.And,
+        12 -> BinOp.Or,
+        13 -> BinOp.BitAnd,
+        14 -> BinOp.BitOr,
+        15 -> BinOp.BitXor,
+        16 -> BinOp.Shl,
+        17 -> BinOp.Shr,
+        rest -> { fail CodecFault.NotVariant },
+    }
+}
+
+fn written_un(w: Writer, op: UnOp) {
+    match op {
+        .Not -> w.count(0),
+        .ToFloat -> w.count(1),
+        .ToInt(rounding) -> {
+            w.count(2)
+            w.count(rounding_tag(rounding))
+        },
+    }
+}
+
+fn read_un(r: Reader) -> Result<UnOp, CodecFault> {
+    match r.count()? {
+        0 -> UnOp.Not,
+        1 -> UnOp.ToFloat,
+        2 -> UnOp.ToInt(rounding_of(r.count()?)?),
+        rest -> { fail CodecFault.NotVariant },
+    }
+}
+
+fn rounding_tag(x: Rounding) -> int { match x { .Floor -> 0, .Ceil -> 1, .Nearest -> 2, .Trunc -> 3 } }
+
+fn rounding_of(tag: int) -> Result<Rounding, CodecFault> {
+    match tag {
+        0 -> Rounding.Floor,
+        1 -> Rounding.Ceil,
+        2 -> Rounding.Nearest,
+        3 -> Rounding.Trunc,
+        rest -> { fail CodecFault.NotVariant },
+    }
+}
+
+fn level_tag(x: Level) -> int { match x { .Application -> 0, .Systems -> 1, .Bare -> 2, .Hardware -> 3 } }
+
+fn level_of(tag: int) -> Result<Level, CodecFault> {
+    match tag {
+        0 -> Level.Application,
+        1 -> Level.Systems,
+        2 -> Level.Bare,
+        3 -> Level.Hardware,
+        rest -> { fail CodecFault.NotVariant },
+    }
+}
+
+fn flag_tag(x: RtFlag) -> int { match x { .Unwinding -> 0, .Tick -> 1 } }
+
+fn flag_of(tag: int) -> Result<RtFlag, CodecFault> {
+    match tag { 0 -> RtFlag.Unwinding, 1 -> RtFlag.Tick, rest -> { fail CodecFault.NotVariant } }
+}
+
+fn written_box(w: Writer, b: StaticBox) {
+    match b {
+        .Slots(cells) -> {
+            w.count(0)
+            written_list(w, cells, written_slot)
+        },
+        .Table(keys, values) -> {
+            w.count(1)
+            written_list(w, keys, (w: Writer, k: string) -> w.text(k))
+            written_list(w, values, written_slot)
+        },
+        .Octets(b) -> {
+            w.count(2)
+            w.octets(b)
+        },
+    }
+}
+
+fn read_box(r: Reader) -> Result<StaticBox, CodecFault> {
+    match r.count()? {
+        0 -> StaticBox.Slots(read_slots(r)?),
+        1 -> {
+            let nk = r.count()?
+            let keys = [r.text()? for _k in 0..nk]
+            StaticBox.Table(keys, read_slots(r)?)
+        },
+        2 -> StaticBox.Octets(r.octets()?),
+        rest -> { fail CodecFault.NotVariant },
+    }
+}
+
+fn read_slots(r: Reader) -> Result<List<Slot>, CodecFault> {
+    let n = r.count()?
+    [read_slot(r)? for _k in 0..n]
+}
+
+fn written_slot(w: Writer, s: Slot) {
+    match s {
+        .Int(v) -> {
+            w.count(0)
+            w.int(v)
+        },
+        .Float(bits) -> {
+            w.count(1)
+            w.int(bits)
+        },
+        .Bool(v) -> {
+            w.count(2)
+            w.bool(v)
+        },
+        .Text(t) -> {
+            w.count(3)
+            w.text(t)
+        },
+        .Box(at) -> {
+            w.count(4)
+            w.int(at)
+        },
+        .Null -> w.count(5),
+        .Absent -> w.count(6),
+        .Code(sym) -> {
+            w.count(7)
+            w.text(sym)
+        },
+    }
+}
+
+fn read_slot(r: Reader) -> Result<Slot, CodecFault> {
+    match r.count()? {
+        0 -> Slot.Int(r.int()?),
+        1 -> Slot.Float(r.int()?),
+        2 -> Slot.Bool(r.bool()?),
+        3 -> Slot.Text(r.text()?),
+        4 -> Slot.Box(r.int()?),
+        5 -> Slot.Null,
+        6 -> Slot.Absent,
+        7 -> Slot.Code(r.text()?),
+        rest -> { fail CodecFault.NotVariant },
+    }
+}

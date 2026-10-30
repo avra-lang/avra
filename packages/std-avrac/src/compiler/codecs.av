@@ -38,9 +38,10 @@ use diagnostics.{SourceFile, DiagFacts, Severity}
 use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
 use compiler.{avra, new_workspace, one_shot_let_go, Workspace}
 use compiler.host.{memory_host}
-use compiler.lower.{CodeFacts, FactNode, code_facts_wire, code_facts_from_wire}
+use compiler.lower.{CodeFacts, FactNode, Unit, code_facts_wire, code_facts_from_wire}
 use @std.text.{from_codepoint}
 use compiler.failures.{Raised}
+use compiler.voices.{unit_fp}
 use compiler.findings.{Finding}
 
 // ── THE HARNESS ─────────────────────────────────────────────────────
@@ -392,6 +393,18 @@ impl Workspace {
                     },
                 ],
             },
+        ]
+    }
+
+    /// Units lowered here: a plain fn's, and one from the file declaring a component.
+    fn codec_unit_exemplars() -> List<Unit> {
+        let a = self.codec_decl_exemplars().find((d) -> self.decls.decl(d).name == "a")!
+        let b = self
+            .items(self.file_id("/w/src/other.av"))
+            .find((d) -> self.decls.decl(d).name == "b")!
+        [
+            self.lowered_unit(self.decls.declared_unit(a), false),
+            self.lowered_unit(self.decls.declared_unit(b), false),
         ]
     }
 
@@ -1238,6 +1251,14 @@ export fn codec_pairs() -> List<CodecCheck> {
             shape_wire,
             shape_of_wire,
             same_shaped,
+        ),
+        derived(
+            "lowered_wire.unit_wire/unit_of_wire",
+            ws.codec_unit_exemplars(),
+            ["a fn's unit", "another file's fn's unit"],
+            (u) -> ws.unit_wire(u),
+            (w) -> ws.unit_of_wire(w),
+            (a, b) -> unit_fp(a) == unit_fp(b),
         ),
         derived(
             "linked.linked_wire/linked_of_wire",
