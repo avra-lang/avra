@@ -1,24 +1,5 @@
-//! Parse-time lowering: the list pattern's `..` and the blockless
-//! `collect` refusal.
-use core.{Pat, Scoped}
-use features.{pat_ids_at, LangNode, Builder, RefusalWords}
-
-/// `[a, ..rest, z]` — the element patterns on either side of the `..`,
-/// which binds the middle (or discards it, bare). Without a `..` every
-/// pattern is one of the list's elements.
-fn build_list_pat(b: Builder) -> Result<LangNode, string> {
-    let pats = pat_ids_at(b.args, 0)
-    let dots = b.tokens(1)?
-    let binds = b.tokens(2)?
-    if dots.length > 1 { return .Err("a list pattern has one `..` — it stands for the middle") }
-    let d? = dots.first() else { return b.make_pat(Pat.Seq(pats, [], [])) }
-    let before = [p for p in pats if b.store.pat_span(p)?.lo ?? 0 < d.span.lo]
-    let after = [p for p in pats if b.store.pat_span(p)?.lo ?? 0 > d.span.lo]
-    let rest = b
-        .store
-        .alloc_pat(if binds.is_empty() { Pat.Wild } else { Pat.Bind(Scoped(binds[0].text)) }, d.span)
-    b.make_pat(Pat.Seq(before, [rest], after))
-}
+//! The blockless `collect` refusal's words.
+use features.{RefusalWords}
 
 // ── voices ──
 

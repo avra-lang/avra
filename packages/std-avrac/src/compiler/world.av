@@ -7,7 +7,7 @@
 use compiler.families.{Family}
 use core.{EmbedKind, fp}
 use compiler.host.{Read, InputName, InputKind, Listed, Stamp}
-use @std.relation.engine.{Loaded}
+use @std.relation.engine.{Loaded, list_cell}
 
 /// What reading the world again found.
 export enum Moved {
@@ -49,6 +49,14 @@ fn names_the_set(k: InputKind) -> bool {
     match k {
         .Exists or .Listing -> true,
         .Text or .Octets or .Range or .Env or .Tool or .Compiler or .Embedded or .EmbeddedOctets -> false,
+    }
+}
+
+/// Whether a kind of input reads a file's text.
+fn is_text(k: InputKind) -> bool {
+    match k {
+        .Text -> true,
+        .Octets or .Range or .Listing or .Exists or .Env or .Tool or .Compiler or .Embedded or .EmbeddedOctets -> false,
     }
 }
 
@@ -191,8 +199,16 @@ impl Workspace {
         if !self.db.kernel.asker.open.get().is_empty() { fail world_moved_in_query() }
         if self.let_go() { fail stand_voice(self.stand.get()) }
         let again = [at for at, name in self.input_names.get() if !name.kind.stands_for_process()]
-        if [at for at in again if self.input_reread(at, self.input_names.get()[at])]
-            .any((at) -> self.shapes_graph(at)) {
+        let differed: Cell<List<int>> = list_cell()
+        self
+            .db
+            .kernel
+            .moved_once(
+                () -> {
+                    for at in again { if self.input_reread(at, self.input_names.get()[at]) { differed.push(at) } }
+                },
+            )
+        if differed.get().any((at) -> self.shapes_graph(at)) {
             self.discarded()
             return .Ok(Moved.Graph)
         }
@@ -211,6 +227,7 @@ impl Workspace {
         let word = seen.input().digest.word
         let differed = self.db.value_hash_of(key(Family.Input, at)) ?? 0 != word
         self.relation(Family.Input).set(at, DbRow.Input(seen), word)
+        if differed && is_text(name.kind) && self.keys.staged.get().get(name.key) != null { self.restaged(name.key) }
         differed
     }
 
