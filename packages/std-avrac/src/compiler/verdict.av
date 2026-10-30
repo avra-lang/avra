@@ -290,19 +290,23 @@ impl Workspace {
     }
 
     /// `path`'s text now, lexed under `words` — once per text.
-    fn lexed_now(path: string, words: LexWords) -> LexResult {
-        let text = self.listed_text(path)
-        let known: Lexing? = self.keys.lexings.get().get(path)
-        if known != null && known!.text == text { return known!.lexed }
-        let made = lexed_under(text, words, self.lang.keywords)
-        self.keys.lexings.put(path, Lexing { text: text, lexed: made })
+    fn lexed_now(path: string, words: LexWords) -> LexResult { lexed_under(self.listed_text(path), words, self.lang.keywords) }
+
+    /// `path`'s token stream now, under its recorded words; none where no words are known. Kept
+    /// only while a row's places are written or read (`placing`), never past it.
+    fn tokens_now(path: string) -> List<Token>? {
+        let known: List<Token>? = self.keys.placing.get().get(path)
+        if known != null { return known }
+        let words? = self.lex_words(path) else { return null }
+        let made = self.lexed_now(path, words).tokens
+        self.keys.placing.put(path, made)
         made
     }
 
-    /// `path`'s token stream now, under its recorded words; none where no words are known.
-    fn tokens_now(path: string) -> List<Token>? {
-        let words? = self.lex_words(path) else { return null }
-        self.lexed_now(path, words).tokens
+    /// The token streams a row placed against, let go: they are kept for one row alone.
+    fn placed_done() {
+        let none: Map<string, List<Token>> = {}
+        self.keys.placing.set(none)
     }
 
     /// THE VERDICT KEPT: what a derivation said, with everything it read.
@@ -450,9 +454,6 @@ fn facts_locs(d: DiagFacts) -> List<Loc> {
 
 /// A saved answer's bytes, and the files whose text moved under it and kept their shape.
 type Standing = { bytes: string, moved: List<string> }
-
-/// A lexed text, kept with the text it lexed.
-type Lexing = { text: string, lexed: LexResult }
 
 /// Where a file's docs are noted as read.
 fn docs_read_key(root: string, path: string) -> string { node_key(Stored.Unit, ["docs-read", root, path]) }
