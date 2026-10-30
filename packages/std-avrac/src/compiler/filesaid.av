@@ -349,9 +349,14 @@ impl Workspace {
 
     /// THE HELD SET: the files whose holds a derivation of this program confirmed standing
     /// under this name and want — one line a file, so it is bounded by the program's own
-    /// files and rewritten only when the set moves.
+    /// files and rewritten only when the set moves. THE PROGRAM'S FILE COUNT IS PART OF THE
+    /// NAME: two programs under one root (a package's check and a test beside it) share a
+    /// name and want, and a set one wrote is not the other's.
     fn held_set_key(entry: string?, want: Want) -> string {
-        node_key(Stored.Fp, ["held-set", self.root, entry ?? "", want_word(want)])
+        node_key(
+            Stored.Fp,
+            ["held-set", self.root, entry ?? "", want_word(want), "${self.decls.file_count()}"],
+        )
     }
 
     /// The files the last derivation confirmed standing; null for one never confirmed, which
@@ -366,6 +371,10 @@ impl Workspace {
     /// REMEMBER THE HELD SET. A row that stands on nothing is never suspect, so it is
     /// rewritten only when the set itself moves — never an action frame per derivation.
     fn keep_held_set(store: Store, entry: string?, want: Want, paths: List<string>) {
+        // A DERIVATION THAT HELD NOTHING REMEMBERS NOTHING: its row would name every file of
+        // the program as untrusted, and an absent row already says that. Writing it erases a
+        // set another program of this root confirmed, and the next edit then asks every file.
+        if paths.is_empty() { return }
         let text = joined(sorted_texts(distinct(paths)), "\n")
         let key = self.held_set_key(entry, want)
         if store.get(Stored.Fp, key) == text { return }
