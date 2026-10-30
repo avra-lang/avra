@@ -39,6 +39,7 @@ fn reached_wrongly(mut cx: LowerCx) -> Reg {
 /// The element patterns each against the list's element, the `..`
 /// against the list itself; the subject must be a list.
 fn seq_types(mut cx: TypeCx, p: PatId, parts: SeqParts, expected: TypeId) -> List<TypeId> {
+    if parts.rest.length > 1 { return two_middles(cx, p) }
     let elem? = cx.view.types.element(cx.seen(expected)) else { return not_a_list(cx, p, expected) }
     let listed = cx.type(List<elem>)
     flatten([sub_types(cx, a, elem) for a in parts.before])
@@ -156,6 +157,21 @@ fn middle_binds(mut cx: LowerCx, rest: PatId, parts: SeqParts, v: Reg, vty: Type
 
 fn no_list(mut cx: LowerCx) {
     cx.defect("a list pattern over a value that is no list survived typing")
+}
+
+/// A list pattern has one `..`: it stands for the middle.
+fn two_middles(mut cx: TypeCx, p: PatId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.list_pattern",
+                cx.pat_loc(p),
+                "a list pattern has one `..` — it stands for the middle",
+                "two `..` here",
+                "keep one `..`; the elements before and after it are matched by place",
+            ),
+        )
+    []
 }
 
 fn not_a_list(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
