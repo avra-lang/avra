@@ -355,35 +355,6 @@ impl Workspace {
         top
     }
 
-    /// WHERE A FILE'S ITEMS ARE KEPT: its declaration and maker lines, standing on its text.
-    fn items_key(path: string) -> string { node_key(Stored.Unit, ["items", self.root, path]) }
-
-    /// A file's kept Items lines, split, under their one header line — none when its text moved
-    /// since they were kept. The header keeps a file that declares nothing from keeping nothing.
-    fn items_lines(path: string) -> List<List<string>>? {
-        let store? = self.store.get() else { return null }
-        let text? = store
-            .get_valid(Stored.Unit, self.items_key(path), (name) -> self.named_now(name)) else {
-            return null
-        }
-        [read_fields(l) for l in text.split("\n").drop(1)]
-    }
-
-    /// EVERY FILE OF `m` THIS ATTEMPT READ KEEPS ITS ITEMS: its lines in the record just made,
-    /// standing on its text. An unread file's stand as its last read kept them.
-    fn keep_items(store: Store, m: ModulePath, made: string) {
-        let by_file = lines_by_file(made.split("\n"))
-        for path in [p for p in self.module_files(m) if self.read_here(p)] {
-            let text = joined(
-                ["items"].concat([l for l in by_file.get(path) ?? [] if items_line(read_fields(l))]),
-                "\n",
-            )
-            let key = self.items_key(path)
-            let reads = self.readings([VerdictRead.Text(path)])
-            if store.get_valid(Stored.Unit, key, (name) -> self.named_now(name)) != text { let _ = store.keep_reading(Stored.Unit, key, text, reads) }
-        }
-    }
-
     /// One record line as a declaration — null for a line that names nothing. A line
     /// that does not decode is a DEFECT spoken: the hold's attempt fails, and the
     /// sources answer.
@@ -550,7 +521,8 @@ impl Workspace {
                 .concat(here)
                 .concat(refs)
                 .concat(read)
-                .concat(flatten([f.lines for f in parts])),
+                .concat(flatten([[l for l in f.lines if !items_line(read_fields(l))] for f in parts]))
+                .concat(flatten([[l for l in f.lines if items_line(read_fields(l))] for f in parts])),
             "\n",
         )
     }
