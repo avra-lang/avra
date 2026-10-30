@@ -4,15 +4,13 @@
 use @std.avrac.diagnostics.{new_source_file, render}
 
 use features.{budgets_of}
-use compiler.host.{Manifest, deps_offset, read_manifest}
+use compiler.host.{Manifest, ManifestRead, deps_offset, manifest_read}
 
 fn reference() -> string {
     "[package]\nname    = \"@acme/app\"\nversion = \"0.1.0\"\n\n[bin]\npath = \"src/main.av\"\n\n[lib]\n\n[dependencies]\n\"@std/http\" = { path = \"../http\" }\n\"@std/toml\" = { path = \"../toml\" }\n\n[dev-dependencies]\n\"@std/test\" = { path = \"../test\" }\n\n[profile.dev]\nopt_level = 0\ndebug = true\n"
 }
 
-fn read(text: string) -> Manifest {
-    read_manifest(new_source_file("avra.toml", text))
-}
+fn read(text: string) -> ManifestRead { manifest_read(new_source_file("avra.toml", text)) }
 
 /// A manifest whose [package] carries these lines.
 fn packaged(rest: string) -> string { scoped("app", rest) }
@@ -44,18 +42,20 @@ spec "compiler/manifest" {
         then "tools are read in both spellings, with their provenance and their terminator" {
             let m = read(tooled(""))
             m.voices.length == 0 &&
-                m.tools.length == 3 &&
-                m.tools[0].name == "git" &&
-                m.tools[0].terminator == "--end-of-options" &&
-                m.tools[1].terminator == null &&
-                m.tools[2].name == "clang" &&
-                m.tools[2].from is .Env &&
-                m.tools[2].var == "CC" &&
-                m.tools[2].default == "clang"
+                m.manifest.tools.length == 3 &&
+                m.manifest.tools[0].name == "git" &&
+                m.manifest.tools[0].terminator == "--end-of-options" &&
+                m.manifest.tools[1].terminator == null &&
+                m.manifest.tools[2].name == "clang" &&
+                m.manifest.tools[2].from is .Env &&
+                m.manifest.tools[2].var == "CC" &&
+                m.manifest.tools[2].default == "clang"
         }
         then "a tool not saying where it comes from comes from the PATH, ending its options at `--`" {
             let m = read(tooled(""))
-            m.tools[1].from is .Path && m.tools[0].from is .Path && m.tools[2].terminator == "--"
+            m.manifest.tools[1].from is .Path &&
+                m.manifest.tools[0].from is .Path &&
+                m.manifest.tools[2].terminator == "--"
         }
         then "an unknown key under [process] REFUSES — a bound on what may run is never degraded" {
             let m = read(tooled("nope = 1\n"))
@@ -89,29 +89,29 @@ spec "compiler/manifest" {
     given "the reference manifest" {
         then "its facts are read" {
             let m = read(reference())
-            m.name == "@acme/app" &&
-                m.version == "0.1.0" &&
-                m.bin == "src/main.av" &&
-                m.lib == "src/lib.av" &&
+            m.manifest.name == "@acme/app" &&
+                m.manifest.version == "0.1.0" &&
+                m.manifest.bin == "src/main.av" &&
+                m.manifest.lib == "src/lib.av" &&
                 m.voices.is_empty()
         }
         then "its dependencies are keys with paths, tests' marked" {
             let m = read(reference())
-            m.deps.length == 3 &&
-                m.deps[0].key == "@std/http" &&
-                m.deps[0].path == "../http" &&
-                !m.deps[0].dev &&
-                m.deps[2].dev
+            m.manifest.deps.length == 3 &&
+                m.manifest.deps[0].key == "@std/http" &&
+                m.manifest.deps[0].path == "../http" &&
+                !m.manifest.deps[0].dev &&
+                m.manifest.deps[2].dev
         }
         then "a new dependency line goes after the last one" {
             let m = read(reference())
-            let at = deps_offset(m)!
+            let at = deps_offset(m.manifest)!
             reference().substring(at - 3, at) == "\" }" &&
-                deps_offset(read("[package]\nname = \"app\"\nversion = \"1.0.0\"\n")) == null
+                deps_offset(read("[package]\nname = \"app\"\nversion = \"1.0.0\"\n").manifest) == null
         }
         then "an undeclared target is absent, a bare one is its default" {
-            read("[package]\nname = \"app\"\nversion = \"1.0.0\"\n").bin == null &&
-                read(packaged("[bin]\n")).bin == "src/main.av"
+            read("[package]\nname = \"app\"\nversion = \"1.0.0\"\n").manifest.bin == null &&
+                read(packaged("[bin]\n")).manifest.bin == "src/main.av"
         }
     }
     given "the rules refuse" {
@@ -167,9 +167,9 @@ spec "compiler/manifest" {
                     "[link]\nobjects = [\"a.o\"]\nsearch = [\"/opt/lib\"]\nlibs = [\"m\", \"pthread\"]\n",
                 ),
             )
-            m.objects.join(",") == "a.o" &&
-                m.search.join(",") == "/opt/lib" &&
-                m.libs.join(",") == "m,pthread"
+            m.manifest.objects.join(",") == "a.o" &&
+                m.manifest.search.join(",") == "/opt/lib" &&
+                m.manifest.libs.join(",") == "m,pthread"
         }
         then "a `-`-leading token in libs is refused — the row spells the NAME" {
             speaks(packaged("[link]\nlibs = [\"-lm\"]\n"), "manifest.link_option")
@@ -181,19 +181,19 @@ spec "compiler/manifest" {
             speaks(packaged("[link]\nobjects = [\"-Wl,--wrap=malloc\"]\n"), "manifest.link_option")
         }
         then "dynamic_symbols reads true when written true, false when absent" {
-            read(packaged("[link]\ndynamic_symbols = true\n")).dynamic_symbols &&
-                !read(packaged("[link]\ndynamic_symbols = false\n")).dynamic_symbols &&
-                !read(packaged("[link]\nlibs = [\"m\"]\n")).dynamic_symbols
+            read(packaged("[link]\ndynamic_symbols = true\n")).manifest.dynamic_symbols &&
+                !read(packaged("[link]\ndynamic_symbols = false\n")).manifest.dynamic_symbols &&
+                !read(packaged("[link]\nlibs = [\"m\"]\n")).manifest.dynamic_symbols
         }
         then "dynamic_symbols written as anything but a bool is refused and read false" {
             let text = packaged("[link]\ndynamic_symbols = \"yes\"\n")
-            speaks(text, "manifest.link_flag") && !read(text).dynamic_symbols
+            speaks(text, "manifest.link_flag") && !read(text).manifest.dynamic_symbols
         }
         then "`flags` is no longer a [link] key" {
             speaks(packaged("[link]\nflags = [\"-lm\"]\n"), "manifest.unknown_key")
         }
         then "[link.raw] reads its flags — the root's escape hatch" {
-            read(packaged("[link.raw]\nflags = [\"-Wl,-dead_strip\"]\n")).raw.join(",") == "-Wl,-dead_strip"
+            read(packaged("[link.raw]\nflags = [\"-Wl,-dead_strip\"]\n")).manifest.raw.join(",") == "-Wl,-dead_strip"
         }
         then "[link.raw] is not refused at the manifest layer — only the workspace knows the root" {
             read(packaged("[link.raw]\nflags = [\"-Wl,-dead_strip\"]\n")).voices.is_empty()
@@ -264,23 +264,25 @@ spec "compiler/manifest" {
     given "[lifted]" {
         then "steps and memory are read, memory in MiB" {
             let m = read(packaged("\n[lifted]\nsteps = 500\nmemory = 2\n"))
-            m.voices.length == 0 && m.budgets.steps == 500 && m.budgets.bytes == 2097152
+            m.voices.length == 0 &&
+                m.manifest.budgets.steps == 500 &&
+                m.manifest.budgets.bytes == 2097152
         }
         then "an absent row takes the measured default" {
             let m = read(packaged("\n[lifted]\nsteps = 500\n"))
-            m.budgets.steps == 500 && m.budgets.bytes == budgets_of().bytes
+            m.manifest.budgets.steps == 500 && m.manifest.budgets.bytes == budgets_of().bytes
         }
         then "a row that is not a count of at least 1 is refused and reads as the default" {
             let m = read(packaged("\n[lifted]\nsteps = 0\nmemory = \"lots\"\n"))
             m.voices.length == 2 &&
                 m.voices.all(it.kind == "manifest.bad_budget") &&
-                m.budgets.steps == budgets_of().steps
+                m.manifest.budgets.steps == budgets_of().steps
         }
         then "a memory past what bytes can hold is no ceiling, never a wrapped one" {
             let m = read(packaged("\n[lifted]\nmemory = 9223372036854775807\n"))
             m.voices.length == 0 &&
-                m.budgets.bytes > 0 &&
-                m.budgets.bytes >= budgets_of(null, 8796093022207).bytes
+                m.manifest.budgets.bytes > 0 &&
+                m.manifest.budgets.bytes >= budgets_of(null, 8796093022207).bytes
         }
         then "the refusal names the row and its units" {
             let text = packaged("\n[lifted]\nmemory = 0\n")
