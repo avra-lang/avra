@@ -112,10 +112,19 @@ spec "features/lists — patterns, adversarial" {
                 "this `P` pattern leaves field `y` out",
             )
         }
-        then "two rests in one list pattern" {
-            !analyze_source("let xs = [1]\nmatch xs {\n    [..a, ..b] -> 1\n    _ -> 0\n}")
-                .diagnostics
-                .is_empty()
+        then "two rests in one list pattern refuse once, in the pattern's words" {
+            refused_with(
+                "let xs = [1]\nmatch xs {\n    [..a, ..b] -> 1\n    _ -> 0\n}",
+                "a list pattern has one `..` — it stands for the middle",
+            )
+        }
+        then "a rest between two elements binds the middle" {
+            shown(
+                "let xs = [1, 2, 3, 4]\nmatch xs {\n    [a, ..m, z] -> a + m.length + z\n    _ -> 0\n}",
+            ) == "7"
+        }
+        then "a bare rest and a trailing comma" {
+            shown("let xs = [1, 2, 3]\nmatch xs {\n    [a, .., ] -> a\n    _ -> 0\n}") == "1"
         }
         then "a rest that is not last in a record pattern" {
             !analyze_source("${PT}let p = P { x: 1, y: 2 }\nmatch p {\n    P { .., x } -> x\n}")
