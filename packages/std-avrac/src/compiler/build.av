@@ -352,33 +352,15 @@ fn compiler_print(ws: Workspace) -> string {
     "${digest}${codegen_mode()}${proof_mode()}${if mode == "" { "" } else { "@${mode}" }}"
 }
 
-/// WHERE A KEPT BINARY'S LINK ANSWER STANDS: the host fns it lists, kept with what the link
-/// read — the tools that linked it and each file it linked beside its sources (the runtime
-/// archive, the package objects), by their digests. A program's key covers what it was
-/// COMPILED from; these are what it was LINKED with, and an archive rebuilt from unchanged
-/// sources moves no source digest. So the answer stands while every read still has its digest.
-fn host_fns_key(key: string) -> string { node_key(Stored.Unit, ["host-fns", key]) }
-
 /// The name of the read that stands for the tools as a set: a link made by other tools is
 /// another link, whichever file it read.
 const TOOLS_READ: string = "tools"
 
-/// What a link read, as the reads its answer is kept with — none when the host cannot tell
-/// a tool, which makes nothing a kept binary can be trusted for.
-fn linked_reads(files: List<string>, tools: List<Stamp>) -> List<Reading>? {
+/// The tools a link ran, as one read — none when the host cannot tell a tool, which makes
+/// nothing a kept binary can be trusted for.
+fn tools_reading(tools: List<Stamp>) -> Reading? {
     let tooled? = told(tools) else { return null }
-    [Reading { name: TOOLS_READ, digest: digest_of(tooled) }]
-        .concat([Reading { name: f, digest: linked_now(f, tools) ?? "-" } for f in files])
-}
-
-/// A link read's digest now: the tools', or the bytes of a file — `-` for one gone, which no
-/// digest equals.
-fn linked_now(name: string, tools: List<Stamp>) -> string? {
-    if name == TOOLS_READ {
-        let tooled? = told(tools) else { return null }
-        return digest_of(tooled)
-    }
-    digest_of_binary(name) ?? "-"
+    Reading { name: TOOLS_READ, digest: digest_of(tooled) }
 }
 
 /// The tools as their inputs' digests, one per line — none for no tools,
@@ -482,7 +464,7 @@ impl Workspace {
         BuildError,
     > {
         self.built_for(tools)
-        let kept = self.kept_binary(self.program_key(entry, []), binary, tools)
+        let kept = self.kept_linked(Keyed { named: entry, beside: [] }, binary, tools)
         if kept != null { return .Ok(kept!) }
         let d = diagnosed(
             self
@@ -505,33 +487,17 @@ impl Workspace {
             )
     }
 
-    /// A binary these exact inputs linked before, placed where a fresh one would
-    /// be — with the warnings that build spoke.
-    fn kept_binary(key: string, binary: string, tools: Toolchain) -> BuildOutcome? {
-        let store = self.opened_store()
-        let staged = staged_beside(binary)
-        let warnings? = store.get(Stored.Warn, key) else { return null }
-        let host_fns? = store
-            .get_valid(Stored.Unit, host_fns_key(key), (name: string) -> linked_now(name, tools.tools)) else {
-            return null
-        }
-        if !store.has(Stored.Bin, key) { return null }
-        // A binary already standing at its place with the kept bytes is left untouched: replacing
-        // a file costs more than the hit it answers.
+    /// The kept binary placed where a fresh one would be. A binary already standing there with
+    /// the kept bytes (`kept`, their digest when it was kept) is left untouched: replacing a file
+    /// costs more than the hit it answers.
+    fn placed_kept(store: Store, key: string, binary: string, kept: string?) -> bool {
         let there = digest_of_binary(binary)
-        if there == null || there != digest_of_binary(store.path(Stored.Bin, key)) {
-            if !store.place(Stored.Bin, key, staged) { return null }
-            // a stored binary is bytes, and its mode is not in them
-            let _ = avra_spawn_status("chmod", ["+x", staged])
-            if !published(staged, binary) { return null }
-        }
-        self.fallback_kept(store, key, binary, tools)
-        BuildOutcome {
-            binary: binary,
-            warnings: warnings,
-            reused: true,
-            host_fns: [line for line in host_fns.split("\n") if !line.is_empty()],
-        }
+        if there != null && there == kept ?? digest_of_binary(store.path(Stored.Bin, key)) { return true }
+        let staged = staged_beside(binary)
+        if !store.place(Stored.Bin, key, staged) { return false }
+        // a stored binary is bytes, and its mode is not in them
+        let _ = avra_spawn_status("chmod", ["+x", staged])
+        published(staged, binary)
     }
 
     /// The fallback a kept binary was built with, placed beside it; none standing
@@ -600,58 +566,12 @@ impl Workspace {
         }
     }
 
-    /// An embedded file's line of the key.
-    fn embed_line(path: string) -> string { "${relative_path(self.root, path)}\t${self.embed_said(path)}" }
-
     /// A directory's files as one word, as a walk lists them now — the files `source_inputs`
     /// reads of it: a dependency's tests are no input, so they are never walked.
     fn listing_word(dir: string) -> string {
         let files = if dir == self.packages()[0].src { self.all_files(dir) } else { self.all_files_no_tests(dir) }
         digest_of(joined(files, "\n"))
     }
-
-    /// The key a finished derivation keeps under: its closure remembered
-    /// first, so the next ask — before anything is read — names the same
-    /// inputs.
-    fn kept_key(under: Keyed) -> string {
-        self.keep_closure(under.named)
-        self.program_key(under.named, under.beside)
-    }
-
-    /// THE PROGRAM'S KEY — every input's path, length and digest, under what
-    /// names the program: a whitespace-only edit moves it. `beside` are inputs
-    /// that are not sources. THIS COMPILER'S OWN PRINT JOINS FIRST: a kept
-    /// binary is this generation's object code and a kept `Warn` row is this
-    /// generation's diagnostic wording, so both are keyed by the compiler
-    /// that made them, not only by the store root they happen to sit under.
-    /// EVERY REACHED PACKAGE'S OWN OBJECTS JOIN LAST: a package's `.av`
-    /// files name its C externs, never their bodies, so a C-only edit moves
-    /// no `.av` digest — the object's own bytes are the only witness a
-    /// kept binary that linked them is still the one these bytes would
-    /// produce.
-    fn program_key(named: string, beside: List<string>) -> string {
-        let named_inputs = self.source_inputs(named).concat(beside)
-        let inputs = joined(
-            [self.input_line(f) for f in named_inputs]
-                .concat([self.embed_line(f) for f in self.embeds(named_inputs)]),
-            "\n",
-        )
-        let objects = joined([self.object_line(o) for o in self.reached_objects(named)], "\n")
-        digest_key(
-            digest_text(
-                digest_text(
-                    digest_text(
-                        digest_text(new_digest(), self.compiler_id()),
-                        relative_path(self.root, named),
-                    ),
-                    inputs,
-                ),
-                objects,
-            ),
-        )
-    }
-
-    fn input_line(path: string) -> string { "${relative_path(self.root, path)}\t${self.text_digest(path)}" }
 
     /// Every object every reached package's manifest names — a C-only edit
     /// moves this list's digests though it moves no `.av` file's. Read over
@@ -687,17 +607,6 @@ impl Workspace {
         if known != null { return known! }
         let made = "${octets.length}.${digest_of_octets(octets)}"
         self.keys.text_digests.put(at, made)
-        made
-    }
-
-    /// What one lex of a file's text answers about its block words, kept while the
-    /// text it was read from is the one read now.
-    fn text_scan(path: string) -> TextScan {
-        let text = self.listed_text(path)
-        let known: TextScan? = self.keys.text_scans.get().get(path)
-        if known != null && known!.text == text { return known! }
-        let made = scan_text(text, self.lang.keywords)
-        self.keys.text_scans.put(path, made)
         made
     }
 
@@ -815,29 +724,24 @@ impl Workspace {
         clock.mark("link")
         let shrunk = shipped(staged, tools)
         let ready = shrunk.path ?? staged
-        let key = self.kept_key(under)
-        let fallback = self.fallback_made(d, full, ready, key, binary, tools)
-        let warnings = spoken([d.warnings, shrunk.said, fallback.said])
-        let _ = d.store.keep(Stored.Warn, key, warnings, [key])
-        let host_fns = self
-            .host_fn_lines([a.view.file for a in d.program.files], hosts_of(tools.target))
-        let reads = linked_reads(self.linked_files(tools.runtime, tools.target), tools.tools)
-        if reads != null {
-            let _ = d
-                .store
-                .keep_reading(Stored.Unit, host_fns_key(key), joined(host_fns, "\n"), reads!)
+        let fallback = self
+            .fallback_made(d, full, ready, self.linked_key(under.named), binary, tools)
+        let said = LinkedSaid {
+            said: self.check_said(d),
+            after: spoken([shrunk.said, fallback.said]),
+            host_fns: self.host_fn_lines([a.view.file for a in d.program.files], hosts_of(tools.target)),
         }
-        let _ = d.store.keep_file(Stored.Bin, key, ready, [key])
+        self.keep_linked(d.store, under, ready, said, tools)
         clock.mark("keep binary")
         if !published(ready, binary) { fail BuildError.Unpublished(binary) }
         self.fallback_published(fallback.path, binary)
         clock.mark("publish")
         BuildOutcome {
             binary: binary,
-            warnings: warnings,
+            warnings: said.warnings(),
             reused: false,
             phases: d.timed(clock.spans),
-            host_fns: host_fns,
+            host_fns: said.host_fns,
         }
     }
 
