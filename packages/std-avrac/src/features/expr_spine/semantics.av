@@ -1,10 +1,10 @@
 //! The spine's dispatch: typing rules live in check.av, lowering
 //! rules in lower.av.
-use core.{Minting, minting, ExprId, TypeId, Reg, Ins, Expr, BinOp, op_symbol}
+use core.{Minting, minting, ExprId, TypeId, Reg, Ins, Expr, BinOp, Span, SyntaxArena, op_symbol}
 use features.{ResolveCx, TypeCx, LowerCx, MeanCx, nothing, Meaning}
 use @std.meta.{Rewrite}
 
-use core.expr.{IntLit, FloatLit, Ident, Binary, Not, Bitnot, Pipe, Index, Prop, Error, Env}
+use core.expr.{IntLit, FloatLit, Ident, Binary, Not, Bitnot, Neg, Pipe, Index, Prop, Error, Env}
 
 impl Meaning for IntLit {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
@@ -78,6 +78,22 @@ impl Meaning for Bitnot {
     }
     fn means(cx: MeanCx) -> Result<Rewrite, string>? {
         .Ok(quote { ${self.value} ^ -1 })
+    }
+}
+impl Meaning for Neg {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        cx.meant_type(e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        cx.meant_reg(e)
+    }
+    fn minted(cx: MeanCx) -> Result<Minting, string> {
+        let before = cx.store.exprs.count()
+        let root = cx.store.negated(self.value, cx.span)
+        .Ok(minting(cx.store.allocated_since(before, root)))
     }
 }
 impl Meaning for Pipe {
@@ -156,4 +172,18 @@ fn stage_is_a_call() -> string {
 
 fn operator_after_stage(op: string) -> string {
     "a pipe's right side is a call, and `|>` binds looser than `${op}` — write `(x |> f) ${op} …` to pipe first"
+}
+
+impl SyntaxArena {
+    /// `-value`: a literal folds — `-1` and `-1.5` ARE literals, so a
+    /// const takes them and every reader of the value protocol gets one —
+    /// and any other value is `0 - value`.
+    fn negated(value: ExprId, span: Span?) -> ExprId {
+        let held = self.valued(value)
+        let n: int? = held.int_of()
+        if n != null { return self.alloc_expr(Expr.IntLit(0 - n!), span) }
+        let bits: int? = held.bits_of()
+        if bits != null { return self.alloc_expr(Expr.FloatLit(bits! ^ (1 << 63)), span) }
+        self.alloc_expr(Expr.Binary(BinOp.Sub, self.alloc_expr(Expr.IntLit(0), span), value), span)
+    }
 }

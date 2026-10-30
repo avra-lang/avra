@@ -4,7 +4,7 @@ use @std.avrac.testing.{test_workspace}
 use compiler.{findings_of, Finding}
 use compiler.host.{memory_host}
 
-const HOST = "type Host = { exists: fn(string) -> bool, peek: fn(string) -> string, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, stamp: fn(string) -> int }\nimpl Host {\n    fn read(p: string) -> string { p }\n    fn there(p: string) -> bool { p.is_empty() }\n    fn listing(p: string) -> List<string> { [p] }\n    fn spared_text(p: string) -> string { p }\n}\ntype Ws = { host: Host }\n"
+const HOST = "type Host = { exists: fn(string) -> bool, peek: fn(string) -> string, list: fn(string) -> List<string>, is_dir: fn(string) -> bool }\nimpl Host {\n    fn read(p: string) -> string { p }\n    fn there(p: string) -> bool { p.is_empty() }\n    fn listing(p: string) -> List<string> { [p] }\n    fn spared_text(p: string) -> string { p }\n}\ntype Ws = { host: Host }\n"
 
 /// Findings of the rule over one file, `rel` under the package at `root`.
 fn asked_at(root: string, rel: string, body: string) -> int {
@@ -21,12 +21,11 @@ spec "compiler/idioms (host_asked_directly)" {
         then "`.exists` through a field fires" { in_compiler("fn f(ws: Ws) -> bool { ws.host.exists(\"a\") }\n") == 1 }
         then "`.list` fires" { in_compiler("fn f(host: Host) -> List<string> { host.list(\"a\") }\n") == 1 }
         then "`.is_dir` fires" { in_compiler("fn f(host: Host) -> bool { host.is_dir(\"a\") }\n") == 1 }
-        then "`.stamp` fires" { in_compiler("fn f(host: Host) -> int { host.stamp(\"a\") }\n") == 1 }
         then "`.peek` fires" { in_compiler("fn f(host: Host) -> string { host.peek(\"a\") }\n") == 1 }
         then "a field read then called fires" {
             in_compiler(
-                "fn f(ws: Ws) -> bool { (ws.host.exists)(\"a\") || (ws.host.is_dir)(\"a\") || (ws.host.stamp)(\"a\") > 0 || (ws.host.list)(\"a\").is_empty() || (ws.host.peek)(\"a\").is_empty() }\n",
-            ) == 5
+                "fn f(ws: Ws) -> bool { (ws.host.exists)(\"a\") || (ws.host.is_dir)(\"a\") || (ws.host.list)(\"a\").is_empty() || (ws.host.peek)(\"a\").is_empty() }\n",
+            ) == 4
         }
         then "a door verb asked of the host fires" {
             in_compiler(

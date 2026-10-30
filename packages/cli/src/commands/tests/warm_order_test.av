@@ -1,0 +1,54 @@
+//! A warm check says what a cold one says, in the same order: the root package's files
+//! first, each by path — never the order a hold minted them in, which puts a held
+//! dependency's files ahead of the file just read.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+use @std.avrac.compiler.{Checked}
+use commands.{checked_at}
+
+/// An app over a path dependency, both with warnings, its own body as given.
+fn wo_tree(name: string, body: string) -> string {
+    let root = "/tmp/avra-warm-order-test/${name}-${stamp()}"
+    let _ = make_dirs("${root}/app/src")
+    let _ = make_dirs("${root}/lib/src")
+    let _ = write_text(
+        "${root}/lib/avra.toml",
+        "[package]\nname = \"@x/lib\"\nversion = \"0.0.1\"\n\n[lib]\nname = \"x-lib\"\npath = \"src/main.av\"\n",
+    )
+    let _ = write_text("${root}/lib/src/main.av", "export fn k(x: int) -> int { x ?? 1 }\n")
+    let _ = write_text(
+        "${root}/app/avra.toml",
+        "[package]\nname = \"app\"\nversion = \"0.0.1\"\n\n[lib]\nname = \"app\"\npath = \"src/main.av\"\n\n[dependencies]\n\"@x/lib\" = { path = \"../lib\" }\n",
+    )
+    let _ = write_text(
+        "${root}/app/src/main.av",
+        "use @x.lib.{k}\nexport fn f() -> int { ${body} }\n",
+    )
+    let _ = write_text("${root}/app/src/b.av", "export fn h(x: int) -> int { x ?? 1 }\n")
+    root
+}
+
+/// What a check of `root`'s app warns, its root spelled out of it.
+fn wo_warned(root: string) -> string? {
+    match checked_at("${root}/app") {
+        .Ok(c) -> c.warnings.replace(root, "<root>"),
+        .Err(_) -> null,
+    }
+}
+
+/// A warm check after a body edit, beside a cold check of the edited tree.
+fn wo_pair() -> List<string?> {
+    let warm = wo_tree("warm", "k(1)")
+    let _ = wo_warned(warm)
+    let _ = write_text("${warm}/app/src/main.av", "use @x.lib.{k}\nexport fn f() -> int { k(2) }\n")
+    [wo_warned(warm), wo_warned(wo_tree("cold", "k(2)"))]
+}
+
+spec "commands/check warm order" {
+    given "a body edit in an app over a dependency with warnings" {
+        then "the warm check says what a cold check says, in its order" {
+            let both = wo_pair()
+            both[0] != null && both[0] == both[1] && both[0]!.contains("lib/src/main.av")
+        }
+    }
+}

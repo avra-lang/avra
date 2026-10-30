@@ -6,8 +6,6 @@
 //! which files hold.
 use @std.text.{parse_int}
 use core.{
-    hex,
-    unhex,
     digest_of,
     joined,
     sorted_texts,
@@ -22,6 +20,7 @@ use core.debug.{db_verified_files}
 use compiler.{Want}
 use compiler.store.{Store, Stored, Reading, node_key, read_name, read_spelled}
 use diagnostics.{Diag, DiagFacts, diag_facts_of}
+use @std.relation.engine.{list_cell}
 
 use compiler.record.{KeyParts}
 use compiler.findings.{findings_read}
@@ -111,30 +110,43 @@ impl Workspace {
     /// FILE-SAID: a file's findings rows.
     fn findings_row(path: string) -> string { node_key(Stored.Warn, ["findings-row", self.root, path]) }
 
-    /// A FILE'S WARNINGS AS DATA, the row `render_facts_among` reads: each diagnostic through
-    /// `diag_facts_wire`, whose places cross ANCHORED (the declaration that holds them, the
-    /// offset within it), so an edit above them moves nothing this row says — only the render,
-    /// made at print time over the current sources, knows where they stand now. `hex` is the
-    /// one text form the store's rows take; the wire is bytes and its inverse is `unhex`.
+    /// A FILE'S WARNINGS AS DATA, the row `render_facts_among` reads: its diagnostics and its
+    /// rule findings through `diag_facts_wire`, whose places cross as TOKEN places, so the row
+    /// stands while the shape of every file it points into does (`verdict_read_stands`) and reads back
+    /// against a lex of their texts now.
     fn warning_facts_row(path: string) -> string { node_key(Stored.Warn, ["facts-row", self.root, path]) }
 
-    fn keep_warning_facts(store: Store, path: string, diags: List<Diag>) {
-        let text = joined([hex(self.diag_facts_wire(diag_facts_of(d))) for d in diags], "\n")
-        let key = self.warning_facts_row(path)
-        if store.get(Stored.Warn, key) == text { return }
-        let _ = store.keep(Stored.Warn, key, text, [])
+    /// A read file's facts kept. Rule findings kept from an earlier run are no `Diag`s here
+    /// (`rules` null), and the row says they are unknown.
+    fn keep_warning_facts(store: Store, path: string, diags: List<Diag>, rules: List<Diag>?) {
+        let facts = FileFacts {
+            warnings: [diag_facts_of(d) for d in diags],
+            rules: if rules == null { null } else { [diag_facts_of(d) for d in rules!] },
+        }
+        let places = flatten([facts_files(d) for d in facts.warnings.concat(facts.rules ?? [])])
+        let pointed = [VerdictRead.Shape(f) for f in distinct([path].concat(places)) if f.ends_with(".av")]
+        let _ = store
+            .keep_reading(
+                Stored.Warn,
+                self.warning_facts_row(path),
+                self.file_facts_wire(facts),
+                self.readings(pointed),
+            )
     }
 
-    /// THE WARNINGS THAT ROW KEEPS, read back against the current parse — a place whose
-    /// declaration is gone answers `Gone`, and the render says so rather than pointing at
-    /// bytes that have moved.
-    fn warning_facts_of(store: Store, path: string) -> List<DiagFacts>? {
-        let row? = store.get(Stored.Warn, self.warning_facts_row(path)) else { return null }
-        let raw = [unhex(l) for l in row.split("\n") if l != ""]
-        if raw.any(it == null) { return null }
-        let facts = [self.diag_facts_of_wire(b!) for b in raw]
-        if facts.any(it == null) { return null }
-        [f! for f in facts]
+    /// THE FACTS THAT ROW KEEPS, while every shape it points into stands, placed in the texts
+    /// as they are now.
+    fn facts_standing(store: Store, path: string) -> FileFacts? {
+        let moved: Cell<List<string>> = list_cell()
+        let row? = store
+            .get_standing(
+                Stored.Warn,
+                self.warning_facts_row(path),
+                (r: Reading) -> self.verdict_read_stands(r, moved),
+            ) else {
+            return null
+        }
+        self.file_facts_of_wire(row)
     }
 
     /// A file's kept answer filed under its path with what it stood on.

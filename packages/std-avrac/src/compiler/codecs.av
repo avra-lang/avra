@@ -41,6 +41,7 @@ use compiler.host.{memory_host}
 use compiler.lower.{CodeFacts, FactNode, code_facts_wire, code_facts_from_wire}
 use @std.text.{from_codepoint}
 use compiler.failures.{Raised}
+use compiler.findings.{Finding}
 
 // ── THE HARNESS ─────────────────────────────────────────────────────
 
@@ -394,6 +395,12 @@ impl Workspace {
         ]
     }
 
+    /// A facts row of each shape: rules unknown, and rules found.
+    fn codec_file_facts_exemplars() -> List<FileFacts> {
+        let d = self.codec_diag_exemplars()
+        [FileFacts { warnings: [d[1]], rules: null }, FileFacts { warnings: [], rules: d }]
+    }
+
     fn codec_diag_labels() -> List<string> { ["an unlocated warning", "a note pointing elsewhere", "an error with a frame and a fix"] }
 }
 
@@ -428,14 +435,7 @@ fn wanted_batch_labels() -> List<string> {
 // not `fn(W) -> T?` shaped and stands outside `derived`. ──
 
 fn dbrow_exemplars() -> List<DbRow> {
-    [
-        DbRow.Sig("n", "text"),
-        DbRow.Warn("n", "warn\ntext"),
-        DbRow.Scan("n", "1"),
-        DbRow.Licenses("n", "a.av\t7\tstyle.thing"),
-        DbRow.Findings("n", "style.thing\ta.av\tsome line"),
-        DbRow.Answer("n", "0aff"),
-    ]
+    [DbRow.Sig("n", "text"), DbRow.Scan("n", "1"), DbRow.Answer("n", "0aff")]
 }
 
 fn dbrow_check() -> CodecCheck {
@@ -457,10 +457,7 @@ fn dbrow_one(r: DbRow) -> string? {
 fn dbrow_same(a: DbRow, b: DbRow) -> bool {
     match a {
         .Sig(name, text) -> match b { .Sig(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
-        .Warn(name, text) -> match b { .Warn(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
         .Scan(name, text) -> match b { .Scan(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
-        .Licenses(name, text) -> match b { .Licenses(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
-        .Findings(name, text) -> match b { .Findings(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
         .Answer(name, text) -> match b { .Answer(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
         rest -> false,
     }
@@ -838,6 +835,101 @@ fn same_suggestion(a: Suggestion, b: Suggestion) -> bool {
         list_eq(a.edits, b.edits, same_edit)
 }
 
+fn same_file_facts(a: FileFacts, b: FileFacts) -> bool {
+    list_eq(a.warnings, b.warnings, same_diag_facts) &&
+        (a.rules == null) == (b.rules == null) &&
+        list_eq(a.rules ?? [], b.rules ?? [], same_diag_facts)
+}
+
+fn shaped_exemplars() -> List<Shaped> {
+    [
+        Shaped {
+            digest: "1.2.3.4",
+            words: LexWords { grammars: [], components: [], own: [] },
+            docs: false,
+        },
+        Shaped {
+            digest: "",
+            words: LexWords { grammars: ["sql", ""], components: ["scales"], own: ["a\tb"] },
+            docs: true,
+        },
+    ]
+}
+
+fn same_shaped(a: Shaped, b: Shaped) -> bool {
+    a.digest == b.digest &&
+        a.docs == b.docs &&
+        list_eq(a.words.grammars, b.words.grammars, (x, y) -> x == y) &&
+        list_eq(a.words.components, b.words.components, (x, y) -> x == y) &&
+        list_eq(a.words.own, b.words.own, (x, y) -> x == y)
+}
+
+fn check_said_exemplars() -> List<CheckSaid> {
+    [
+        CheckSaid { voices: "", voice_files: [], files: [] },
+        CheckSaid {
+            voices: "warning[x]: a voice",
+            voice_files: ["/w/avra.toml"],
+            files: [
+                FileSpoke {
+                    path: "/w/src/a.av",
+                    reached: true,
+                    said: "warning[y]: said\nover lines",
+                    findings: [Finding { rule: "style.thing", file: "/w/src/a.av", text: "let x =\t1" }],
+                    licenses: ["/w/src/a.av\t3\tstyle.gone"],
+                },
+                FileSpoke {
+                    path: "/w/src/b c.av",
+                    reached: false,
+                    said: "",
+                    findings: [],
+                    licenses: [],
+                },
+            ],
+        },
+    ]
+}
+
+fn same_finding(a: Finding, b: Finding) -> bool { a.rule == b.rule && a.file == b.file && a.text == b.text }
+
+fn same_spoke(a: FileSpoke, b: FileSpoke) -> bool {
+    a.path == b.path &&
+        a.reached == b.reached &&
+        a.said == b.said &&
+        list_eq(a.findings, b.findings, same_finding) &&
+        list_eq(a.licenses, b.licenses, (x, y) -> x == y)
+}
+
+fn same_check_said(a: CheckSaid, b: CheckSaid) -> bool {
+    a.voices == b.voices &&
+        list_eq(a.voice_files, b.voice_files, (x, y) -> x == y) &&
+        list_eq(a.files, b.files, same_spoke)
+}
+
+fn verdict_read_exemplars() -> List<VerdictRead> {
+    [
+        VerdictRead.Compiler,
+        VerdictRead.Closure("check:/w/src/main.av"),
+        VerdictRead.Files("/w/a dir"),
+        VerdictRead.Text("/w/avra.toml"),
+        VerdictRead.Shape("/w/src/a b.av"),
+        VerdictRead.Embed("/w/data.txt"),
+        VerdictRead.Object("/w/c/x.o"),
+    ]
+}
+
+fn same_verdict_read(a: VerdictRead, b: VerdictRead) -> bool {
+    match a {
+        .Compiler -> b is .Compiler,
+        .Closure(x) -> match b { .Closure(y) -> x == y, rest -> false },
+        .Files(x) -> match b { .Files(y) -> x == y, rest -> false },
+        .Text(x) -> match b { .Text(y) -> x == y, rest -> false },
+        .Shape(x) -> match b { .Shape(y) -> x == y, rest -> false },
+        .Embed(x) -> match b { .Embed(y) -> x == y, rest -> false },
+        .Object(x) -> match b { .Object(y) -> x == y, rest -> false },
+    }
+}
+
 fn same_diag_facts(a: DiagFacts, b: DiagFacts) -> bool {
     a.kind == b.kind &&
         a.severity == b.severity &&
@@ -855,14 +947,12 @@ fn same_diag_facts(a: DiagFacts, b: DiagFacts) -> bool {
 /// id-writing codecs name a real `DeclId` rather than an empty list.
 export fn codec_fixture_decl_names() -> List<string> { codec_workspace().codec_decl_labels() }
 
-/// The refusal law, exercised: a span no single declaration holds whole
-/// — one byte past its declaration's end — is refused, so a position
-/// that pointed outside its declaration never decodes to a moved one.
+/// The refusal law, exercised: a place no token holds — past the text's
+/// last — is refused, never clamped to a position it never named.
 export fn codec_loc_past_end_refused() -> bool {
     let ws = codec_workspace()
-    let a = ws.codec_decl_exemplars().find((d) -> ws.decls.decl(d).name == "a")!
-    let sp = ws.decls.decl_span(a)!
-    let past = Loc { file: "/w/src/main.av", lo: sp.lo, hi: sp.hi + 1 }
+    let _ = ws.codec_decl_exemplars()
+    let past = Loc { file: "/w/src/main.av", lo: 40, hi: 41 }
     ws.loc_of_wire(ws.loc_wire(past)) == null
 }
 
@@ -1131,6 +1221,38 @@ export fn codec_pairs() -> List<CodecCheck> {
             (l) -> ws.loc_wire(l),
             (b) -> ws.loc_of_wire(b),
             same_loc,
+        ),
+        derived(
+            "diag_wire.file_facts_wire/file_facts_of_wire",
+            ws.codec_file_facts_exemplars(),
+            ["no rules found anew", "rules found, one a fix"],
+            (f) -> ws.file_facts_wire(f),
+            (w) -> ws.file_facts_of_wire(w),
+            same_file_facts,
+        ),
+        derived(
+            "verdict.shape_wire/shape_of_wire",
+            shaped_exemplars(),
+            ["no words", "every kind of word"],
+            shape_wire,
+            shape_of_wire,
+            same_shaped,
+        ),
+        derived(
+            "verdict.verdict_wire/verdict_of_wire",
+            check_said_exemplars(),
+            ["nothing said", "voices, a reached file and a silent one"],
+            verdict_wire,
+            verdict_of_wire,
+            same_check_said,
+        ),
+        derived(
+            "verdict.verdict_read_word/verdict_read_of_word",
+            verdict_read_exemplars(),
+            ["compiler", "closure", "files", "text", "shape", "embed", "object"],
+            verdict_read_word,
+            verdict_read_of_word,
+            same_verdict_read,
         ),
         derived(
             "codec.diag_facts_wire/diag_facts_of_wire",

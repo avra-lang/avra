@@ -46,11 +46,8 @@ export fn expr_spine() -> LanguageFeature {
         name              | build
         "int_lit"         | build_int_lit
         "unmixed_bitwise" | build_unmixed_bitwise
-        "neg_expr"        | build_neg
-        "type_link"       | build_type_link
         "method_link"     | build_method_link
         "trailed_link"    | build_trailed_link
-        "catch_any"       | build_catch
         "trailing"        | build_trailing
         "bind_pat"        | build_bind_pat
     }
@@ -63,7 +60,11 @@ export fn expr_spine() -> LanguageFeature {
     }
     LanguageFeature expr_spine {
         gram: grammar {
-            expression = l:climbed ( ck:"catch" ( "{" BREAK ( "." cv:NAME ( "(" cb:NAME ")" )? "->" ca:expression BREAK )* "}" | "{" BREAK ( tb:NAME ":" tn:NAME "->" ta:expression BREAK )+ "}" | "." sv:NAME ( "(" sb:NAME ")" )? "->" sa:expression | ub:NAME ":" un:NAME "->" ua:expression | eb:NAME "->" ea:expression | rv:expression ) )? -> catch_any(l, ck, cv, cb, ca, sv, sb, sa, eb, ea, rv, tb, tn, ta, ub, un, ua)
+            expression = subject:climbed ( "catch" ( "{" BREAK ( arms:catch_enum_arm BREAK )* "}" | "{" BREAK ( arms:catch_union_arm BREAK )+ "}" | arms:catch_enum_arm | arms:catch_union_arm | arms:catch_bind_arm | arms:catch_value ) -> Expr.Catch )? @fold(subject) -> subject
+            catch_enum_arm = "." variant:NAME ( "(" bind:NAME ")" )? "->" value:expression -> Record.CatchArm
+            catch_union_arm = bind:NAME ":" variant:NAME "->" value:expression -> Record.CatchArm
+            catch_bind_arm = bind:NAME "->" value:expression -> Record.CatchArm
+            catch_value = value:expression -> Record.CatchArm
             argument = name:NAME ":" value:expression -> Expr.Named | ".." value:postfix -> Expr.Named(name = "..", value = value) | expression
             element = ".." value:postfix -> Expr.Named(name = "..", value = value) | expression
             trailing = "{" ( ps:trailing_seat ( "," ps:trailing_seat )* ","? "->" )? ( ts:stmt | BREAK )* "}" @expect("}", "expected `}` to close the trailing block") -> trailing(ps, ts)
@@ -83,9 +84,9 @@ export fn expr_spine() -> LanguageFeature {
                 left "+" "-"
                 left "*" "/" "%"
             } -> Expr.Binary
-            unary = "!" value:unary -> Expr.Not | "-" v:unary -> neg_expr(v) | "~" value:unary -> Expr.Bitnot | withed
+            unary = "!" value:unary -> Expr.Not | "-" value:unary -> Expr.Neg | "~" value:unary -> Expr.Bitnot | withed
             withed = subject:postfix "with" "{" BREAK? fields:NAME ":" values:expression ( "," BREAK? fields:NAME ":" values:expression )* ","? BREAK? "}" -> Expr.With | v:postfix
-            postfix = subject:primary ( "." "type" "(" ty:type ")" @expect(")", "expected `)` to close the type literal") -> type_link(subject, ty) | "?." "type" "(" ty:type ")" @expect(")", "expected `)` to close the chained type literal") -> Expr.ChainType | "." name:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" -> method_link(subject, name, args) | "." name:NAME -> Expr.Prop | "?." name:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.ChainCall | "?." name:NAME -> Expr.Chain | "?." "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.ChainApply | "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.CallValue | "[" index:expression "]" @expect("]", "expected `]` to close the index") -> Expr.Index | "!" -> Expr.Force | "?" -> Expr.Propagate | blocks:trailing ( "else" else_block:trailing )? @trailer(blocks) -> trailed_link(subject, blocks, else_block) )* @fold(subject) -> subject
+            postfix = subject:primary ( "." "type" "(" ty:type ")" @expect(")", "expected `)` to close the type literal") -> Expr.TypeLiteral | "?." "type" "(" ty:type ")" @expect(")", "expected `)` to close the chained type literal") -> Expr.ChainType | "." name:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" -> method_link(subject, name, args) | "." name:NAME -> Expr.Prop | "?." name:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.ChainCall | "?." name:NAME -> Expr.Chain | "?." "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.ChainApply | "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.CallValue | "[" index:expression "]" @expect("]", "expected `]` to close the index") -> Expr.Index | "!" -> Expr.Force | "?" -> Expr.Propagate | blocks:trailing ( "else" else_block:trailing )? @trailer(blocks) -> trailed_link(subject, blocks, else_block) )* @fold(subject) -> subject
             primary = v:NUMBER -> int_lit(v) | name:NAME -> Expr.Ident | "(" e:expression ")" @expect(")", "expected `)` to close the group") -> e
         }
         builders: rows

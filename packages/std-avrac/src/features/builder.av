@@ -31,6 +31,8 @@ use core.{
     CompClause,
     MapEntry,
     Refused,
+    CatchArm,
+    Plain,
     flatten,
     some_list,
     SeatMark,
@@ -120,6 +122,11 @@ impl Slots for Builder {
     /// The map entries the payload `label` carries.
     fn map_entries_of(label: string) -> Result<List<MapEntry>, string> {
         .Ok(map_entries_at(self.args, self.slot_of(label)?))
+    }
+
+    /// The catch arms the payload `label` carries.
+    fn catch_arms_of(label: string) -> Result<List<CatchArm>, string> {
+        .Ok(catch_arms_at(self.args, self.slot_of(label)?))
     }
 
     /// The spec cases the payload `label` carries.
@@ -349,6 +356,21 @@ impl Builder {
                             span: self.span,
                         },
                     ],
+                ),
+        )
+    }
+
+    /// One `catch` arm read off its rule's labels — a name it does not
+    /// write is `""`.
+    fn catch_arm() -> Result<LangNode, string> {
+        .Ok(
+            LangNode
+                .NCatchArm(
+                    CatchArm {
+                        variant: Plain((self.texts_of("variant")?).first() ?? ""),
+                        bind: Scoped((self.texts_of("bind")?).first() ?? ""),
+                        value: self.expr_of("value")?,
+                    },
                 ),
         )
     }
@@ -651,6 +673,16 @@ fn map_entry_at(args: List<Captured<Token, LangNode>>, i: int) -> MapEntry? {
 export fn arms_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Arm> {
     let items = list_at(args, i)
     flatten([some_list(arm_at(items, j)) for j in 0..items.length])
+}
+
+/// The repeated catch-arm capture at `args[i]`.
+export fn catch_arms_at(args: List<Captured<Token, LangNode>>, i: int) -> List<CatchArm> {
+    let items = list_at(args, i)
+    flatten([some_list(catch_arm_at(items, j)) for j in 0..items.length])
+}
+
+fn catch_arm_at(args: List<Captured<Token, LangNode>>, i: int) -> CatchArm? {
+    match args[i] { .Node(.NCatchArm(a)) -> a, _ -> null }
 }
 
 /// The repeated case capture at `args[i]`, flattened — a `given`
