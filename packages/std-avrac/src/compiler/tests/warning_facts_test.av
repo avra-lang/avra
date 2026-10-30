@@ -1,0 +1,71 @@
+// A FILE'S WARNINGS ARE KEPT AS DATA, AND THEIR PLACES FOLLOW THE DECLARATIONS HOLDING THEM.
+// The row is the durable witness `render_facts_among` reads: every diagnostic through
+// `diag_facts_wire`, whose `Loc` crosses as (the declaration that holds it, offsets within
+// that declaration). So an edit ABOVE the declaration moves the text this row was made over
+// and leaves the row's own words true — the reader lands on the same bytes at their new place.
+// Absence is its own arm: a file with no rows answers null, never an empty list.
+use @std.io.{write_text}
+use @std.time.{stamp}
+use @std.errors.{Loc, Frame}
+use @std.avrac.diagnostics.{Diag, Severity}
+use compiler.{Workspace}
+use compiler.store.{Store}
+use compiler.store.{store_at}
+
+once fn wf_base() -> string { "/tmp/avra-warning-facts/${stamp()}" }
+
+fn wf_path() -> string { "/w/src/b.av" }
+
+fn wf_text() -> string { "fn first() -> int {\n    1\n}\n\nfn second(n: int) -> int {\n    n + 2\n}\n" }
+
+fn wf_shifted() -> string { "// a line\n// another\n${wf_text()}" }
+
+/// A warning whose one place is `needle`'s first occurrence, `width` bytes wide.
+fn wf_diag(text: string, needle: string, width: int) -> Diag {
+    let lo = text.index_of(needle)
+    Diag {
+        kind: "spec.kept_warning",
+        severity: Severity.Warning,
+        primary: Frame { label: "here", loc: Loc { file: wf_path(), lo: lo, hi: lo + width } },
+        secondary: [],
+        cause: null,
+        message: "a kept warning",
+        help: null,
+        suggestions: [],
+    }
+}
+
+fn wf_store() -> Store {
+    let dir = "${wf_base()}/store"
+    let _ = write_text("${dir}/keep", "")
+    store_at("${wf_base()}/s")
+}
+
+const WF_SHIFT: int = 21
+
+spec "compiler/warning-facts — a kept warning follows its declaration" {
+    given "a file's warning, kept over the text it was found in" {
+        then "the row reads back at the same place while the text stands" {
+            let a = a_process_over({wf_path(): wf_text()}, [wf_path()])
+            let store = wf_store()
+            a.keep_warning_facts(store, wf_path(), [wf_diag(wf_text(), "n + 2", 5)])
+            let back? = a.warning_facts_of(store, wf_path()) else { return false }
+            let at? = back[0].primary.loc else { return false }
+            at.lo == wf_text().index_of("n + 2") && back.length == 1
+        }
+        then "two lines inserted above move it by exactly their length" {
+            let a = a_process_over({wf_path(): wf_text()}, [wf_path()])
+            let store = wf_store()
+            a.keep_warning_facts(store, wf_path(), [wf_diag(wf_text(), "n + 2", 5)])
+            let b = a_process_over({wf_path(): wf_shifted()}, [wf_path()])
+            let back? = b.warning_facts_of(store, wf_path()) else { return false }
+            let at? = back[0].primary.loc else { return false }
+            at.lo == wf_text().index_of("n + 2") + WF_SHIFT &&
+                at.hi == wf_text().index_of("n + 2") + 5 + WF_SHIFT
+        }
+        then "a file nothing kept answers null, never an empty list" {
+            let a = a_process_over({wf_path(): wf_text()}, [wf_path()])
+            a.warning_facts_of(wf_store(), "/w/src/never.av") == null
+        }
+    }
+}

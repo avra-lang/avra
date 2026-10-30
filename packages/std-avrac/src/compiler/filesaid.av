@@ -6,6 +6,8 @@
 //! which files hold.
 use @std.text.{parse_int}
 use core.{
+    hex,
+    unhex,
     digest_of,
     joined,
     sorted_texts,
@@ -19,6 +21,8 @@ use core.{
 use core.debug.{db_verified_files}
 use compiler.{Want}
 use compiler.store.{Store, Stored, Reading, node_key, read_name, read_spelled}
+use diagnostics.{Diag, DiagFacts, diag_facts_of}
+
 use compiler.record.{KeyParts}
 use compiler.findings.{findings_read}
 
@@ -106,6 +110,32 @@ impl Workspace {
 
     /// FILE-SAID: a file's findings rows.
     fn findings_row(path: string) -> string { node_key(Stored.Warn, ["findings-row", self.root, path]) }
+
+    /// A FILE'S WARNINGS AS DATA, the row `render_facts_among` reads: each diagnostic through
+    /// `diag_facts_wire`, whose places cross ANCHORED (the declaration that holds them, the
+    /// offset within it), so an edit above them moves nothing this row says — only the render,
+    /// made at print time over the current sources, knows where they stand now. `hex` is the
+    /// one text form the store's rows take; the wire is bytes and its inverse is `unhex`.
+    fn warning_facts_row(path: string) -> string { node_key(Stored.Warn, ["facts-row", self.root, path]) }
+
+    fn keep_warning_facts(store: Store, path: string, diags: List<Diag>) {
+        let text = joined([hex(self.diag_facts_wire(diag_facts_of(d))) for d in diags], "\n")
+        let key = self.warning_facts_row(path)
+        if store.get(Stored.Warn, key) == text { return }
+        let _ = store.keep(Stored.Warn, key, text, [])
+    }
+
+    /// THE WARNINGS THAT ROW KEEPS, read back against the current parse — a place whose
+    /// declaration is gone answers `Gone`, and the render says so rather than pointing at
+    /// bytes that have moved.
+    fn warning_facts_of(store: Store, path: string) -> List<DiagFacts>? {
+        let row? = store.get(Stored.Warn, self.warning_facts_row(path)) else { return null }
+        let raw = [unhex(l) for l in row.split("\n") if l != ""]
+        if raw.any(it == null) { return null }
+        let facts = [self.diag_facts_of_wire(b!) for b in raw]
+        if facts.any(it == null) { return null }
+        [f! for f in facts]
+    }
 
     /// A file's kept answer filed under its path with what it stood on.
     fn keep_file_row(store: Store, path: string, family: Stored, key: string, bytes: string) {
