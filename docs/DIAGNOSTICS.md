@@ -4877,6 +4877,25 @@ error[type.sealed]: `Url` is sealed — only `urls`, the module that declares it
 help: ask `urls` for one through a fn it exports; reading it — a field, equality, a pattern — is open everywhere
 ```
 
+## parse.spread
+
+a field spread is written `..R`
+
+```avra
+type C = { a: int }
+type A = { x: int, ..C = 1 }
+1
+```
+
+```
+error[parse.spread]: a spread places a record's fields and takes no value
+  ╭─[witness.av:2:20]
+2 │ type A = { x: int, ..C = 1 }
+  ·                    ┬
+──╯
+help: write the record whose fields it places — `..R`
+```
+
 ## type.coalesce
 
 `??` answers a nullable with a value of its type

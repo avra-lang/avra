@@ -11,7 +11,7 @@ which only shrinks.
 | family | kinds | witnessed | help | fix |
 |---|---|---|---|---|
 | lex | 1 | 1 | 1 | 0 |
-| parse | 5 | 5 | 5 | 0 |
+| parse | 6 | 6 | 6 | 0 |
 | build | 1 | 1 | 0 | 0 |
 | language | 1 | 0 | 0 | 0 |
 | block | 1 | 1 | 1 | 0 |
@@ -26,7 +26,7 @@ which only shrinks.
 | const | 6 | 6 | 6 | 0 |
 | shape | 1 | 0 | 0 | 0 |
 | loop | 2 | 2 | 2 | 0 |
-| **all** | 281 | 254 | 253 | 8 |
+| **all** | 282 | 255 | 254 | 8 |
 
 ## Rules
 

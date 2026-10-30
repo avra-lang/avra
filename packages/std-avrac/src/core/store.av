@@ -132,7 +132,6 @@ export type SyntaxArena = {
     // a call written as a PIPE (`x |> f(a)`), its first argument
     // a call written as a TYPE LITERAL (`v.type(T)`)
     // a record's `..R` entries, by its statement
-    @copied_by_hand("minted_stmt: its TypeRefs are rebuilt through tref") spreads: Cell<List<List<Spread>>>,
     // a collect's `dense` mark, by its statement: its order is data,
     // unique and gap-free from 0
     @copied(stmt, wear_collect_dense) collect_dense: Cell<List<bool>>,
@@ -221,7 +220,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         pat_fingerprints: list_cell(),
         param_spans: list_cell(),
         expr_marks: list_cell(),
-        spreads: list_cell(),
         collect_dense: list_cell(),
         sugar_matches: list_cell(),
         statement_ifs: list_cell(),
@@ -443,25 +441,6 @@ impl SyntaxArena {
         self.update_expr_marks(e, (m) -> m with { is_run_hole: true })
         self.expr_fingerprints.set_at(e.index, fp(149, [self.expr_fingerprints.get()[e.index]]))
     }
-
-    /// A record's `..R` entries, part of the statement's identity.
-    fn spread_fields(s: StmtId, xs: List<Spread>) {
-        self.spreads.set_at(s.index, xs)
-        self
-            .stmt_fingerprints
-            .set_at(
-                s.index,
-                fp(
-                    153,
-                    [
-                        self.stmt_fingerprints.get()[s.index],
-                        fp_list([fp_list([x.at, type_fp(x.of)]) for x in xs]),
-                    ],
-                ),
-            )
-    }
-
-    fn spreads_of(s: StmtId) -> List<Spread> { self.spreads.get()[s.index] }
 
     /// A collect's `dense` mark — part of the statement's identity, so
     /// two collects differing only in it do not share a fingerprint.
@@ -1035,7 +1014,7 @@ impl SyntaxArena {
     fn answer_of(s: StmtId) -> ExprId? {
         match self.stmt(s) {
             .ExprStmt(v) -> self.answered_by(s, v),
-            .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+            .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
         }
     }
 
@@ -1278,7 +1257,6 @@ impl SyntaxArena {
         self.annotations.push([])
         self.docs.push(null)
         self.doc_ats.push(-1)
-        self.spreads.push([])
         self.collect_dense.push(false)
         StmtId { index: self.stmts.add(s, span) }
     }
