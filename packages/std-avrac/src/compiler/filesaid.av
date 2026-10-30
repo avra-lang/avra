@@ -135,6 +135,13 @@ impl Workspace {
 
     /// A file's kept answer, while every answer it stood on has its digest.
     fn file_row(store: Store, path: string, family: Stored, key: string) -> string? {
+        // ONE PREDICATE FOR A ROW'S STANDING: a row the suspect set does not name stands with
+        // nothing judged, exactly as `file_kept` answers — only a row it might name is judged
+        // read by read. Asking `get_valid` first judges every read of every held file's row,
+        // for rows that were never in doubt.
+        if store.unsuspected(family, key, self.suspect_rows(store)) && !db_verified_files() {
+            return store.get(family, key)
+        }
         let k = self.key_parts_cached(store, self.module_path_of(path), path)
         store.get_valid(family, key, (name) -> self.stood_on(k, name))
     }
