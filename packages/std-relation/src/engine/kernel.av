@@ -213,6 +213,9 @@ fn spelled(edges: List<int>) -> string { ["${family_of(e)}:${arg_of(e)}" for e i
 @plain_field("reporting")
 export type Kernel = {
     rev: Cell<int>,
+    /// The revision one move of the world took — -1 in a move that has moved nothing yet, 0
+    /// outside one: every input a move sets moves to that one revision.
+    moving: Cell<int>,
     /// ONE TABLE PER FAMILY, each its own `Cell` — `cells[family]`
     /// holds that family's cells, indexed directly by `arg`. Grown in
     /// lockstep with `verifiers` and `stamps`: a cell's address never
@@ -290,6 +293,7 @@ fn unsaved(_key: Key) -> Saved? { null }
 export fn new_kernel() -> Kernel {
     Kernel {
         rev: Cell.new(1),
+        moving: Cell.new(0),
         cells: list_cell(),
         verifiers: list_cell(),
         by_dispatch: Cell.new(no_dispatch),
@@ -530,8 +534,18 @@ impl Kernel {
             self.write_cell(key, prior with { deps: [], verified_at: rev, value_hash: value_hash })
             return
         }
-        self.rev.set(rev + 1)
-        self.write_cell(key, input_cell(rev + 1, value_hash))
+        if self.moving.get() != rev {
+            self.rev.set(rev + 1)
+            if self.moving.get() != 0 { self.moving.set(rev + 1) }
+        }
+        self.write_cell(key, input_cell(self.rev.get(), value_hash))
+    }
+
+    /// ONE MOVE OF THE WORLD IS ONE REVISION: every input `run` sets moves together.
+    fn moved_once(run: fn() -> void) {
+        self.moving.set(0 - 1)
+        run()
+        self.moving.set(0)
     }
 
     /// An input set again before any reader read it: no reader can have seen the
@@ -904,6 +918,17 @@ impl Kernel {
         let row = self.stamp_row(family)
         let stamp = stamp_in(row.get(), arg)
         if stamp != reader { self.newly_read(row, family, arg, stamp, reader) }
+    }
+
+    /// `run` with no frame hearing its reads — a driver's act made from inside a query, such as
+    /// staging an input. `run` opens no frame of its own.
+    fn unheard(run: fn() -> void) {
+        let reader = self.asker.reader.get()
+        let last = self.asker.last.get()
+        self.asker.reader.set(0)
+        run()
+        self.asker.reader.set(reader)
+        self.asker.last.set(last)
     }
 
     /// The reader that last recorded a key, 0 for none.

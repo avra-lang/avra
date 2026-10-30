@@ -26,6 +26,8 @@ use core.{
     Arm,
     Case,
     UseItem,
+    FieldPat,
+    Given,
     Mark,
     Variant,
     CompClause,
@@ -101,6 +103,18 @@ impl Slots for Builder {
     /// The imported items the payload `label` carries.
     fn use_items_of(label: string) -> Result<List<UseItem>, string> {
         .Ok(use_items_at(self.args, self.slot_of(label)?))
+    }
+
+    /// The `given` groups the payload `label` carries.
+    fn givens_of(label: string) -> Result<List<Given>, string> {
+        let items = list_at(self.args, self.slot_of(label)?)
+        .Ok(flatten([some_list(given_at(items, j)) for j in 0..items.length]))
+    }
+
+    /// The record-pattern fields the payload `label` carries.
+    fn field_pats_of(label: string) -> Result<List<FieldPat>, string> {
+        let items = list_at(self.args, self.slot_of(label)?)
+        .Ok(flatten([some_list(field_pat_at(items, j)) for j in 0..items.length]))
     }
 
     /// The marks the payload `label` carries.
@@ -599,6 +613,14 @@ fn variant_of(args: List<Captured<Token, LangNode>>, i: int) -> Variant? {
 export fn use_items_at(args: List<Captured<Token, LangNode>>, i: int) -> List<UseItem> {
     let items = list_at(args, i)
     flatten([some_list(use_item_of(items, j)) for j in 0..items.length])
+}
+
+fn given_at(args: List<Captured<Token, LangNode>>, i: int) -> Given? {
+    match args[i] { .Node(.NGiven(g)) -> g, _ -> null }
+}
+
+fn field_pat_at(args: List<Captured<Token, LangNode>>, i: int) -> FieldPat? {
+    match args[i] { .Node(.NFieldPat(f)) -> f, _ -> null }
 }
 
 fn use_item_of(args: List<Captured<Token, LangNode>>, i: int) -> UseItem? {
