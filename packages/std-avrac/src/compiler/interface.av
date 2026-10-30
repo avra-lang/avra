@@ -324,28 +324,28 @@ impl Workspace {
         if ordinal < rows.length { self.fill_row(store, m, ids, rows[ordinal]) }
     }
 
-    /// HELD FILES OF ONE MODULE, MINTED: each file's `Items`, minted from its kept lines. A
+    /// A MODULE'S UNREAD FILES, MINTED: each file's `Items`, minted from its kept lines. A
     /// file stands once, and its flag stands before the work does, so two files that name
     /// each other meet once. SHAPES ARE NOT FILLED HERE: `fill_ensured` fills each row
     /// lazily, on the ask that names it.
     fn mint_files(paths: List<string>) {
-        let held = [p for p in paths if self.decls.held.get().get(p) != null && self.hold.minted.get().get(p) == null]
-        if held.is_empty() { return }
-        for path in held {
+        let unread = [p for p in paths if self.decls.held.get().get(p) != null && self.hold.minted.get().get(p) == null]
+        if unread.is_empty() { return }
+        for path in unread {
             if traced() { qtrace("Q\tmint\t${path}\n") }
             self.hold.minted.put(path, true)
         }
         work_module_minted()
-        for path in held { let _ = self.items(self.file_id(path)) }
+        for path in unread { let _ = self.items(self.file_id(path)) }
     }
 
-    /// A HELD FILE'S ITEMS, minted from the lines its last read kept: its declarations in
+    /// AN UNREAD FILE'S ITEMS, minted from the lines its last read kept: its declarations in
     /// kept order, adopted by their parents. Answers the top-level ids.
     fn items_minted(f: FileId) -> List<DeclId> {
         let path = self.decls.file(f).path
         self.decls.note_rows(f, 0)
         let lines? = self.items_lines(path) else {
-            self.defect("a held file's items were not kept — ${path}")
+            self.defect("an unread file's items were not kept — ${path}")
             return []
         }
         let rows = [p for p in lines if declares(p)]
@@ -355,9 +355,9 @@ impl Workspace {
         top
     }
 
-    /// ONE HELD FILE'S DECLARATIONS, minted from its kept lines in kept order; answers the
+    /// ONE UNREAD FILE'S DECLARATIONS, minted from its kept lines in kept order; answers the
     /// top-level ones. The file's statement table is written ONCE: read out and stored back
-    /// per line, it is held twice while it is written, and every line copies it.
+    /// per line, two copies stand while it is written, and every line copies it.
     fn mint_file(path: string, rows: List<List<string>>, makers: Map<string, string>) -> List<
         DeclId,
     > {
@@ -386,12 +386,14 @@ impl Workspace {
     fn items_lines(path: string) -> List<List<string>>? {
         let store? = self.store.get() else { return null }
         let text? = store
-            .get_valid(Stored.Unit, self.items_key(path), (name) -> self.named_now(name)) else { return null }
+            .get_valid(Stored.Unit, self.items_key(path), (name) -> self.named_now(name)) else {
+            return null
+        }
         [read_fields(l) for l in text.split("\n").drop(1)]
     }
 
     /// EVERY FILE OF `m` THIS ATTEMPT READ KEEPS ITS ITEMS: its lines in the record just made,
-    /// standing on its text. A held file's stand as its last read kept them.
+    /// standing on its text. An unread file's stand as its last read kept them.
     fn keep_items(store: Store, m: ModulePath, made: string) {
         let by_file = lines_by_file(made.split("\n"))
         for path in [p for p in self.module_files(m) if self.read_here(p)] {
