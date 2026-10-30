@@ -913,6 +913,7 @@ fn verdict_read_exemplars() -> List<VerdictRead> {
         VerdictRead.Files("/w/a dir"),
         VerdictRead.Text("/w/avra.toml"),
         VerdictRead.Shape("/w/src/a b.av"),
+        VerdictRead.Lined("/w/src/c.av"),
         VerdictRead.Embed("/w/data.txt"),
         VerdictRead.Object("/w/c/x.o"),
     ]
@@ -925,6 +926,7 @@ fn same_verdict_read(a: VerdictRead, b: VerdictRead) -> bool {
         .Files(x) -> match b { .Files(y) -> x == y, rest -> false },
         .Text(x) -> match b { .Text(y) -> x == y, rest -> false },
         .Shape(x) -> match b { .Shape(y) -> x == y, rest -> false },
+        .Lined(x) -> match b { .Lined(y) -> x == y, rest -> false },
         .Embed(x) -> match b { .Embed(y) -> x == y, rest -> false },
         .Object(x) -> match b { .Object(y) -> x == y, rest -> false },
     }
@@ -1239,6 +1241,25 @@ export fn codec_pairs() -> List<CodecCheck> {
             same_shaped,
         ),
         derived(
+            "linked.linked_wire/linked_of_wire",
+            [
+                LinkedSaid { said: check_said_exemplars()[0], after: "", host_fns: [] },
+                LinkedSaid {
+                    said: check_said_exemplars()[1],
+                    after: "warning: no fallback\nmade",
+                    host_fns: ["pkg f", "pkg g (Host)"],
+                    bin: "ab12",
+                },
+            ],
+            ["nothing said", "said, a link's words after, two host fns, a binary's digest"],
+            linked_wire,
+            linked_of_wire,
+            (a, b) -> same_check_said(a.said, b.said) &&
+                a.after == b.after &&
+                a.bin == b.bin &&
+                list_eq(a.host_fns, b.host_fns, (x, y) -> x == y),
+        ),
+        derived(
             "verdict.verdict_wire/verdict_of_wire",
             check_said_exemplars(),
             ["nothing said", "voices, a reached file and a silent one"],
@@ -1249,7 +1270,7 @@ export fn codec_pairs() -> List<CodecCheck> {
         derived(
             "verdict.verdict_read_word/verdict_read_of_word",
             verdict_read_exemplars(),
-            ["compiler", "closure", "files", "text", "shape", "embed", "object"],
+            ["compiler", "closure", "files", "text", "shape", "lined", "embed", "object"],
             verdict_read_word,
             verdict_read_of_word,
             same_verdict_read,

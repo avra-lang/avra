@@ -45,11 +45,14 @@ spec "compiler/token-place — a place follows its tokens" {
 /// `text`'s shape, lexed under `grammars`, its docs unread.
 fn tp_shape(text: string, grammars: List<string>) -> string { tp_shaped(text, grammars, false) }
 
-fn tp_shaped(text: string, grammars: List<string>, docs: bool) -> string {
+fn tp_shaped(text: string, grammars: List<string>, docs: bool) -> string { tp_lined(text, grammars, docs, false) }
+
+fn tp_lined(text: string, grammars: List<string>, docs: bool, lined: bool) -> string {
     shape_digest(
         text,
         lexed_under(text, LexWords { grammars: grammars, components: [], own: [] }, avra().keywords),
         docs,
+        lined,
     )
 }
 
@@ -89,6 +92,14 @@ spec "compiler/token-place — a shape is what a file says" {
         }
         then "a blank line below that line moves nothing" {
             tp_shape(tp_claimed(""), []) == tp_shape(tp_claimed("").replace("\n\nfn h", "\n\n\nfn h"), [])
+        }
+    }
+    given "a lined shape" {
+        then "a blank line above a fn moves it" {
+            tp_lined(tp_text(), [], false, true) != tp_lined("\n${tp_text()}", [], false, true)
+        }
+        then "a comment's words within its line do not" {
+            tp_lined("// a\n${tp_text()}", [], false, true) == tp_lined("// bb\n${tp_text()}", [], false, true)
         }
     }
     given "a raw block's body" {
