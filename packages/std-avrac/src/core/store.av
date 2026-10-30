@@ -135,7 +135,6 @@ export type SyntaxArena = {
     @copied(expr, wear_expr) expr_marks: Cell<List<ExprMarks>>,
     // a call written as a PIPE (`x |> f(a)`), its first argument
     // a call written as a TYPE LITERAL (`v.type(T)`)
-    @copied(expr, wear_type_lit) type_lits: Cell<List<bool>>,
     // a record's `..R` entries, by its statement
     @copied_by_hand("minted_stmt: its TypeRefs are rebuilt through tref") spreads: Cell<List<List<Spread>>>,
     // a collect's `dense` mark, by its statement: its order is data,
@@ -172,10 +171,6 @@ export type SyntaxArena = {
     // the instance's own expression already stands; absent for an
     // instance that binds no statement of its own (a nested child)
     @not_copied("an owner is a statement of the source, attached from outside once a copy's own statement stands") instance_owners: Cell<List<StmtId?>>,
-    // the DSL text an expression-position `grammar { … }` literal
-    // read, by the `Grammar` struct literal it fully expanded into —
-    // the raw block's own words, never rebuilt from the expansion
-    @copied(expr, wear_grammar_lit) grammar_lits: Cell<List<string?>>,
     // what an instance stands on, by the instance: its component as the
     // file read it, then the literal its meaning minted
     @copied(expr, wear_instance) instances: Cell<List<InstanceFacts?>>,
@@ -232,7 +227,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         pat_fingerprints: list_cell(),
         param_spans: list_cell(),
         expr_marks: list_cell(),
-        type_lits: list_cell(),
         spreads: list_cell(),
         collect_dense: list_cell(),
         sugar_matches: list_cell(),
@@ -242,7 +236,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         means_notes: list_cell(),
         extensions: list_cell(),
         instance_owners: list_cell(),
-        grammar_lits: list_cell(),
         instances: list_cell(),
         struct_targs: list_cell(),
         written_close: list_cell(),
@@ -306,7 +299,6 @@ impl SyntaxArena {
     fn alloc_expr(e: Expr, span: Span? = null) -> ExprId {
         self.expr_fingerprints.push(e.identity(self))
         self.expr_marks.push(no_expr_marks())
-        self.type_lits.push(false)
         self.sugar_matches.push(false)
         self.statement_ifs.push(false)
         self.minted_by.push(null)
@@ -314,7 +306,6 @@ impl SyntaxArena {
         self.means_notes.push(null)
         self.extensions.push([])
         self.instance_owners.push(null)
-        self.grammar_lits.push(null)
         self.instances.push(null)
         self.struct_targs.push([])
         self.written_close.push(null)
@@ -389,24 +380,21 @@ impl SyntaxArena {
         [filler(labels, seats[j], j) for j in 0..seats.length]
     }
 
-    /// A call written as a TYPE LITERAL — the mark is part of the
-    /// node: a receiver that cannot answer refuses in the literal's words.
-    fn mark_type_lit(e: ExprId) {
-        self.type_lits.set_at(e.index, true)
-        self.expr_fingerprints.set_at(e.index, fp(112, [self.expr_fingerprints.get()[e.index]]))
-    }
-
+    /// Whether `e` is the call a type literal means — the receiver's
+    /// `interned` — so a receiver that cannot answer refuses in the
+    /// literal's words.
     fn is_type_lit(e: ExprId) -> bool {
-        self.type_lits.get()[e.index]
+        let sugar? = self.minted_for(e) else { return false }
+        match self.expr(sugar) {
+            .TypeLiteral(_, _) or .ChainType(_, _) -> self.expr(e) is .MethodCall,
+            _ -> false,
+        }
     }
 
     /// Whether this value is a type literal, or the chain over one
     /// (`a?.type(T)`) — a literal is no call, so no block follows it.
     fn spells_a_type(e: ExprId) -> bool {
-        match self.expr(e) {
-            .MatchOpt(_, _, call, _) -> self.is_type_lit(call),
-            _ -> self.is_type_lit(e),
-        }
+        match self.expr(e) { .TypeLiteral(_, _) or .ChainType(_, _) -> true, _ -> false }
     }
 
     /// Whether this is a call whose last argument is a trailing block.
@@ -430,20 +418,6 @@ impl SyntaxArena {
 
     fn is_raw_string(e: ExprId) -> bool {
         self.expr_marks_at(e).is_raw
-    }
-
-    /// An expression-position `grammar { … }` literal fully expanded
-    /// into this `Grammar` struct literal — its own DSL text, the
-    /// mark's code 147.
-    fn mark_grammar_lit(e: ExprId, text: string) {
-        self.grammar_lits.set_at(e.index, text)
-        self
-            .expr_fingerprints
-            .set_at(e.index, fp(147, [self.expr_fingerprints.get()[e.index], fp_str(text)]))
-    }
-
-    fn grammar_lit_of(e: ExprId) -> string? {
-        self.grammar_lits.get()[e.index]
     }
 
     /// `tail_scoped` narrowed this Block's own span to its lone tail
@@ -519,10 +493,14 @@ impl SyntaxArena {
         self.expr_fingerprints.set_at(e.index, fp(150, [self.expr_fingerprints.get()[e.index]]))
     }
 
-    /// `nodes` are what `sugar`'s meaning minted: each answers for it,
+    /// `nodes` are what `sugar`'s meaning minted: each answers for it —
+    /// or for the sugar nearer it, when a sugar the meaning holds minted
+    /// it first (`~x` means `x ^ -1`, and that `-1` means its literal) —
     /// and `note` is the sentence that says what the sugar means.
     fn mint_for(sugar: ExprId, nodes: List<ExprId>, note: string) {
-        for n in nodes { self.minted_by.set_at(n.index, sugar) }
+        for n in nodes {
+            if self.minted_by.get()[n.index] == null { self.minted_by.set_at(n.index, sugar) }
+        }
         self.means_notes.set_at(sugar.index, note)
     }
 
@@ -590,6 +568,12 @@ impl SyntaxArena {
     /// The root of what `sugar` means; null for any other node.
     fn meant(e: ExprId) -> ExprId? {
         self.meaning.get()[e.index]
+    }
+
+    /// The node a value read judges: what a sugar means, any other node
+    /// itself — `-1`, written as a negation, reads as the literal it means.
+    fn valued(e: ExprId) -> Expr {
+        self.expr(self.meant(e) ?? e)
     }
 
     /// The nodes a walk descends into from `e`: a sugar walks as what it
@@ -799,16 +783,10 @@ impl SyntaxArena {
 
     /// The writers a template copy reaches, one per `@copied` table: each takes
     /// the table's own element for the node and does nothing for the empty one.
-    fn wear_type_lit(e: ExprId, on: bool) { if on { self.mark_type_lit(e) } }
 
     fn wear_sugar_match(e: ExprId, on: bool) { if on { self.mark_sugar_match(e) } }
 
     fn wear_statement_if(e: ExprId, on: bool) { if on { self.mark_statement_if(e) } }
-
-    fn wear_grammar_lit(e: ExprId, text: string?) {
-        let held? = text else { return }
-        self.mark_grammar_lit(e, held)
-    }
 
     fn wear_written_close(e: ExprId, hi: int?) {
         let held? = hi else { return }
@@ -1068,7 +1046,7 @@ impl SyntaxArena {
     fn answer_of(s: StmtId) -> ExprId? {
         match self.stmt(s) {
             .ExprStmt(v) -> self.answered_by(s, v),
-            .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+            .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
         }
     }
 
