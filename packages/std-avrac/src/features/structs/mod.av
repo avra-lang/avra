@@ -55,9 +55,10 @@ export fn structs() -> LanguageFeature {
             field = ( marks:mark )* ( state_field:STATE )? name:NAME ":" ty:type ( "=" default:expression )? -> Record.ParamSyntax | spread:".." name:HOLE -> Record.ParamSyntax
             stmt = "alias" name:NAME ( "<" tparams:NAME ( "," tparams:NAME )* ","? ">" )? "=" of:type END @recover(sync_to: "END") -> Stmt.Alias
             primary = t:NAME ( "<" ta:type ( "," ta:type )* ","? ">" )? "{" BREAK? ( ( vn:NAME ":" ve:expression | sp:".." ( vn:HOLE | se:postfix ) ) ( ( "," | BREAK ) BREAK? ( vn:NAME ":" ve:expression | sp:".." ( vn:HOLE | se:postfix ) ) )* ","? BREAK? )? "}" -> struct_lit(t, ta, vn, ve, sp, se)
-            pattern = name:NAME "{" BREAK? ( fields:field_pat ( ( "," | BREAK ) BREAK? fields:field_pat )* ( ( "," | BREAK ) BREAK? open:".." )? | open:".." )? ","? BREAK? "}" -> Pat.Fields
-            asked = name:NAME "{" BREAK? ( fields:field_pat ( ( "," | BREAK ) BREAK? fields:field_pat )* ( ( "," | BREAK ) BREAK? open:".." )? | open:".." )? ","? BREAK? "}" -> Pat.Fields
-            destructure = name:NAME "{" BREAK? ( fields:field_pat ( ( "," | BREAK ) BREAK? fields:field_pat )* ( ( "," | BREAK ) BREAK? open:".." )? | open:".." )? ","? BREAK? "}" -> Pat.Fields
+            pattern = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields
+            asked = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields
+            destructure = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields
+            fields_rest = ".." -> Pat.Wild
             field_pat = name:NAME ":" pat:pattern -> Record.FieldPat | name:NAME -> Record.FieldPat(pat = Pat.Bind(name = name))
         }
         builders: rows
