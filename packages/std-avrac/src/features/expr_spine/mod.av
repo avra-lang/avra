@@ -43,19 +43,19 @@ use diagnostics.{DiagCode, Remedy}
 
 export fn expr_spine() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name              | build
-        "int_lit"         | build_int_lit
-        "unmixed_bitwise" | build_unmixed_bitwise
-        "method_link"     | build_method_link
-        "trailed_link"    | build_trailed_link
-        "trailing"        | build_trailing
-        "bind_pat"        | build_bind_pat
+        name           | build
+        "int_lit"      | build_int_lit
+        "method_link"  | build_method_link
+        "trailed_link" | build_trailed_link
+        "trailing"     | build_trailing
+        "bind_pat"     | build_bind_pat
     }
     let codes = table<DiagCode> {
         kind                 | summary                                            | remedy
         "type.mismatch"      | "an operand has the wrong type"                    | Remedy.Fix
         "type.unknown_prop"  | "a property name nothing answers to"               | Remedy.Fix
         "type.shift_count"   | "a shift count is between 0 and 63"                | Remedy.Help
+        "type.mixed_bitwise" | "a run of bitwise operators uses one operator"     | Remedy.Help
         "parse.leading_pipe" | "a continuing operator ends the line it continues" | Remedy.Help
     }
     LanguageFeature expr_spine {
@@ -78,7 +78,7 @@ export fn expr_spine() -> LanguageFeature {
                 none "==" "!=" "<=" ">=" "<" ">" suffix "is" asked -> Expr.Is(left = left, right = right)
                 left "??" -> Expr.Coalesce
                 left "|>" -> Expr.Pipe(value = left, stage = right)
-                unmixed(unmixed_bitwise) "|" "^" "&" "<<" (">" ">")
+                left "|" "^" "&" "<<" (">" ">")
             } -> Expr.Binary
             additive = left:unary @operators {
                 left "+" "-"

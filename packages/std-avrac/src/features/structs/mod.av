@@ -21,7 +21,6 @@ export fn structs() -> LanguageFeature {
         name         | build
         "type_decl"  | build_type_decl
         "struct_lit" | build_struct_lit
-        "fields_pat" | build_fields_pat
     }
     let codes = table<DiagCode> {
         kind                     | summary                                                                | remedy
@@ -56,9 +55,10 @@ export fn structs() -> LanguageFeature {
             field = ( marks:mark )* ( state_field:STATE )? name:NAME ":" ty:type ( "=" default:expression )? -> Record.ParamSyntax | spread:".." name:HOLE -> Record.ParamSyntax
             stmt = "alias" name:NAME ( "<" tparams:NAME ( "," tparams:NAME )* ","? ">" )? "=" of:type END @recover(sync_to: "END") -> Stmt.Alias
             primary = t:NAME ( "<" ta:type ( "," ta:type )* ","? ">" )? "{" BREAK? ( ( vn:NAME ":" ve:expression | sp:".." ( vn:HOLE | se:postfix ) ) ( ( "," | BREAK ) BREAK? ( vn:NAME ":" ve:expression | sp:".." ( vn:HOLE | se:postfix ) ) )* ","? BREAK? )? "}" -> struct_lit(t, ta, vn, ve, sp, se)
-            pattern = t:NAME "{" BREAK? ( ( names:NAME ( ":" pats:pattern )? | dots:".." ) ( ( "," | BREAK ) BREAK? ( names:NAME ( ":" pats:pattern )? | dots:".." ) )* ","? BREAK? )? "}" -> fields_pat(t, names, pats, dots)
-            asked = t:NAME "{" BREAK? ( ( names:NAME ( ":" pats:pattern )? | dots:".." ) ( ( "," | BREAK ) BREAK? ( names:NAME ( ":" pats:pattern )? | dots:".." ) )* ","? BREAK? )? "}" -> fields_pat(t, names, pats, dots)
-            destructure = t:NAME "{" BREAK? ( ( names:NAME ( ":" pats:pattern )? | dots:".." ) ( ( "," | BREAK ) BREAK? ( names:NAME ( ":" pats:pattern )? | dots:".." ) )* ","? BREAK? )? "}" -> fields_pat(t, names, pats, dots)
+            pattern = name:NAME "{" BREAK? ( fields:field_pat ( ( "," | BREAK ) BREAK? fields:field_pat )* ( ( "," | BREAK ) BREAK? open:".." )? | open:".." )? ","? BREAK? "}" -> Pat.Fields
+            asked = name:NAME "{" BREAK? ( fields:field_pat ( ( "," | BREAK ) BREAK? fields:field_pat )* ( ( "," | BREAK ) BREAK? open:".." )? | open:".." )? ","? BREAK? "}" -> Pat.Fields
+            destructure = name:NAME "{" BREAK? ( fields:field_pat ( ( "," | BREAK ) BREAK? fields:field_pat )* ( ( "," | BREAK ) BREAK? open:".." )? | open:".." )? ","? BREAK? "}" -> Pat.Fields
+            field_pat = name:NAME ":" pat:pattern -> Record.FieldPat | name:NAME -> Record.FieldPat(pat = Pat.Bind(name = name))
         }
         builders: rows
         diags: codes

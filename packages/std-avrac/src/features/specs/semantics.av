@@ -4,20 +4,16 @@
 //! does nothing there.
 use core.{StmtId, Case, distinct, flatten}
 use core.stmt.{Spec}
-use features.{StmtSemantics, ResolveCx, nothing, duplicate_names}
+use features.{StmtSemantics, ResolveCx, duplicate_names}
 use diagnostics.{Diag}
 use @std.errors.{Loc}
 
 impl StmtSemantics for Spec {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
         if cx.refuses_nested(s, "resolve.nested_spec", "spec blocks") { return }
-        match cx.view.store.stmt(s) {
-            .Spec(name, cases) -> {
-                for d in repeated_cases(name, cases, cx.stmt_loc(s)) { cx.emit(d) }
-                for c in cases { cx.walk_under([], c.body) }
-            },
-            _ -> nothing(),
-        }
+        let parts? = cx.view.store.spec_parts(s) else { return }
+        for d in repeated_cases(parts.name, parts.cases, cx.stmt_loc(s)) { cx.emit(d) }
+        for c in parts.cases { cx.walk_under([], c.body) }
     }
 
 }
