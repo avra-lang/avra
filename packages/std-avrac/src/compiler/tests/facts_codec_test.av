@@ -1,0 +1,61 @@
+//! THE TYPING TABLE'S WIRE, held by machine: a table read back is the table written, field by
+//! field (the registry's `same_facts`), and the wire refuses what it cannot carry.
+use compiler.{facts_encoded_in, facts_decoded_in, facts_exemplars, same_facts}
+use core.{TypeId, side_table_of}
+use features.{TypeFacts}
+use diagnostics.{Voices, Diag, error_at}
+use @std.relation.stable.{Scope, indexed_scope}
+
+/// The table with every column holding something.
+fn sample() -> TypeFacts { facts_exemplars()[1] }
+
+fn back(facts: TypeFacts) -> Result<TypeFacts, string> {
+    facts_decoded_in(facts_encoded_in(facts, indexed_scope())!, indexed_scope())
+}
+
+/// A scope whose inverse holds nothing: the wire it wrote names ids it can no longer resolve.
+type Forgetful = {}
+
+impl Scope for Forgetful {
+    fn spelled(kind: string, index: int) -> string { "${index}" }
+
+    fn unspelled(kind: string, text: string) -> int? { null }
+}
+
+fn no_captures() -> List<List<TypeId>?> { [null] }
+
+fn empty_captures() -> List<List<TypeId>?> { [[]] }
+
+spec "compiler/facts_codec — a typing table crosses as one wire" {
+    given "every exemplar" {
+        then "each reads back as written, field by field" {
+            facts_exemplars()
+                .all((t) -> match back(t) { .Ok(r) -> same_facts(t, r), .Err(_) -> false })
+        }
+    }
+    given "a table with every column populated" {
+        then "one body's table is a few hundred octets, never a few thousand" {
+            facts_encoded_in(sample(), indexed_scope())!.length <= 400
+        }
+        then "an absent optional and an empty list are different wires" {
+            let absent = sample() with { captures: side_table_of("captures", 4, no_captures(), null) }
+            let empty = sample() with { captures: side_table_of("captures", 4, empty_captures(), null) }
+            facts_encoded_in(absent, indexed_scope()) != facts_encoded_in(empty, indexed_scope())
+        }
+    }
+    given "a table that spoke" {
+        then "it has no wire, so no row is kept for it" {
+            let said: Diag = error_at("facts.spoken", null, "a table that spoke")
+            facts_encoded_in(sample() with { voices: Voices { list: [said] } }, indexed_scope()) == null
+        }
+    }
+    given "a spelling the reading scope does not hold" {
+        then "the read is refused, never guessed" {
+            let deaf: dyn Scope = Forgetful {}
+            match facts_decoded_in(facts_encoded_in(sample(), indexed_scope())!, deaf) {
+                .Ok(_) -> false,
+                .Err(_) -> true,
+            }
+        }
+    }
+}

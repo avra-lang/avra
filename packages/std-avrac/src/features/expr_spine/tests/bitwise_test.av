@@ -3,6 +3,8 @@
 // shift count — refused when the compiler can read it, trapped when
 // it cannot.
 use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.compiler.{avra}
+use @std.avrac.diagnostics.{new_source_file}
 
 spec "features/expr_spine (bitwise)" {
     given "the six operators" {
@@ -53,6 +55,22 @@ spec "features/expr_spine (bitwise)" {
         }
         then "parentheses settle it" {
             shown("let a = 1\nlet b = 2\nlet c = 3\na | (b & c)") == "3"
+        }
+        then "parentheses around the left run settle it too" {
+            shown("let a = 1\nlet b = 2\nlet c = 3\n(a | b) & c") == "3"
+        }
+        then "the whole refusal, rendered" {
+            let expected = """error[type.mixed_bitwise]: `|` and `&` in one expression have no agreed order
+  ╭─[app.av:3:1]
+3 │ a | b & 3
+  · ┬
+  · ╰── two bitwise operators in one run
+──╯
+help: write parentheses to say which binds first — `(a | b) & c`"""
+            avra().check(new_source_file("app.av", "let a = 1\nlet b = 2\na | b & 3")) == expected
+        }
+        then "a run of three that mixes refuses once" {
+            refused_with("let a = 1\nlet b = 2\nlet c = 3\nlet d = 4\na | b & c ^ d", "`|` and `&`")
         }
     }
     given "the shift count" {

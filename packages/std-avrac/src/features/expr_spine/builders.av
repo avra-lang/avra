@@ -1,5 +1,5 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{void_ref, Expr, Pat, pronoun_param, Plain, Scoped, some_list}
+use core.{Expr, Pat, pronoun_param, Plain, Scoped, some_list}
 use features.{LangNode, Builder, expr_id_at, params_at}
 
 fn build_int_lit(b: Builder) -> Result<LangNode, string> {
@@ -11,32 +11,6 @@ fn build_int_lit(b: Builder) -> Result<LangNode, string> {
     // here is a defect, not a program's mistake
     b.make_expr(Expr.IntLit(t.int_value() ?? 0))
 }
-/// THE BITWISE BAND'S ONE LAW, and the reason it is one tier rather
-/// than five: A RUN THAT MIXES TWO DIFFERENT BITWISE OPERATORS IS
-/// REFUSED. `a | b & c` has two readings a reader must know a table to
-/// choose between, and a generated one is as likely to mean either —
-/// so it names both and asks for parentheses instead of picking. Only
-/// the run is visible there, which is exactly the right reach: `a << 1
-/// + 2` is a DIFFERENT level (the additive arrives already built) and
-/// reads as C reads it, because C is arbitrary there rather than wrong.
-/// What C gets wrong is `a & b == c`, and the band's PLACE in the table
-/// — tighter than comparison — fixes that without any law at all.
-///
-/// A run's agreement: its first operator and the one just taken. The
-/// climb reads only a refusal, so agreement answers a placeholder.
-fn build_unmixed_bitwise(b: Builder) -> Result<LangNode, string> {
-    let first = (b.token(0)?).text
-    let second = (b.token(1)?).text
-    if first != second { return .Err(mixed_bitwise(first, second)) }
-    b.make_type(void_ref)
-}
-
-/// The words that law refuses in — one place, so the two operators
-/// it names are always the two the reader wrote.
-fn mixed_bitwise(first: string, second: string) -> string {
-    "`${first}` and `${second}` in one expression have no agreed order — write parentheses to say which binds first"
-}
-
 /// A bare name binds — except `rest`, the spec's deliberate
 /// remainder, and `null`, a LITERAL never a binder: read as
 /// `Pat.Bind` it earns the keyword refusal beside whatever else the

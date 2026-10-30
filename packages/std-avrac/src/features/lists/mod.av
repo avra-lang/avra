@@ -12,7 +12,6 @@
 //! discard.
 use features.{
     LanguageFeature,
-    BuilderRow,
     RefusalRow,
     MethodRow,
     ReceiverEffect,
@@ -34,10 +33,6 @@ use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recov
 use diagnostics.{DiagCode}
 
 export fn lists() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name       | build
-        "list_pat" | build_list_pat
-    }
     let codes = table<DiagCode> {
         kind                      | summary
         "type.spread_list"        | "a list literal spreads lists"
@@ -104,13 +99,14 @@ export fn lists() -> LanguageFeature {
     LanguageFeature lists {
         gram: grammar {
             primary = "[" elem:expression clauses:comp_head ( clauses:comp_head | clauses:comp_filter )* "]" @expect("]", "expected `]` to close the comprehension") -> Expr.Comp | "[" BREAK? ( elems:element ( "," BREAK? elems:element )* ","? BREAK? )? "]" @expect("]", "expected `]` to close the list") -> Expr.ListLit | "collect" "{" ( stmts:stmt | BREAK )* "}" @expect("}", "expected `}` to close the `collect`") -> Expr.Collect | "collect" expression -> Refusal.blockless_collect
-            pattern = "[" BREAK? ( ( pats:pattern | dots:".." ( bind:NAME )? ) ( "," BREAK? ( pats:pattern | dots:".." ( bind:NAME )? ) )* ","? BREAK? )? "]" -> list_pat(pats, dots, bind)
-            asked = "[" BREAK? ( ( pats:pattern | dots:".." ( bind:NAME )? ) ( "," BREAK? ( pats:pattern | dots:".." ( bind:NAME )? ) )* ","? BREAK? )? "]" -> list_pat(pats, dots, bind)
-            destructure = "[" BREAK? ( ( pats:pattern | dots:".." ( bind:NAME )? ) ( "," BREAK? ( pats:pattern | dots:".." ( bind:NAME )? ) )* ","? BREAK? )? "]" -> list_pat(pats, dots, bind)
+            pattern = p:list_pattern -> p
+            asked = p:list_pattern -> p
+            destructure = p:list_pattern -> p
+            list_pattern = "[" BREAK? ( ( before:pattern ( "," BREAK? before:pattern )* ( "," BREAK? rest:list_middle ( "," BREAK? ( after:pattern | rest:list_middle ) )* )? | rest:list_middle ( "," BREAK? ( after:pattern | rest:list_middle ) )* ) ","? BREAK? )? "]" -> Pat.Seq
+            list_middle = ".." name:NAME -> Pat.Bind | ".." -> Pat.Wild
             comp_head = "for" ( "(" index:NAME "," name:NAME ")" | index:NAME "," name:NAME | name:NAME ) "in" source:expression ( ".." hi:expression )? -> CompClause.Head
             comp_filter = "if" cond:expression -> CompClause.Filter
         }
-        builders: rows
         refusals: [
             RefusalRow {
                 name: "blockless_collect",

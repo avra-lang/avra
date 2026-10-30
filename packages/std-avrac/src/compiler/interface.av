@@ -324,46 +324,87 @@ impl Workspace {
         if ordinal < rows.length { self.fill_row(store, m, ids, rows[ordinal]) }
     }
 
-    /// HELD FILES OF ONE MODULE, MINTED: each file's declarations from its record
-    /// lines, adopted by their parents — names before shapes, since a shape names a
-    /// type of its own module. A file stands once, and its flag stands before the
-    /// work does, so two files that name each other meet once. SHAPES ARE NOT FILLED
-    /// HERE: `fill_ensured` fills each row lazily, on the ask that names it.
-    fn mint_files(store: Store, m: ModulePath, paths: List<string>) {
-        let held = [p for p in paths if self.decls.held.get().get(p) != null && self.hold.minted.get().get(p) == null]
-        if held.is_empty() { return }
-        for path in held {
-            if traced() { qtrace("Q\tmint\t${m.text()}\t${path}\n") }
+    /// A MODULE'S UNREAD FILES, MINTED: each file's `Items`, minted from its kept lines. A
+    /// file stands once, and its flag stands before the work does, so two files that name
+    /// each other meet once. SHAPES ARE NOT FILLED HERE: `fill_ensured` fills each row
+    /// lazily, on the ask that names it.
+    fn mint_files(paths: List<string>) {
+        let unread = [p for p in paths if self.decls.held.get().get(p) != null && self.hold.minted.get().get(p) == null]
+        if unread.is_empty() { return }
+        for path in unread {
+            if traced() { qtrace("Q\tmint\t${path}\n") }
             self.hold.minted.put(path, true)
         }
         work_module_minted()
-        let fields = record_fields(self, store, m)
-        let places = record_places(self, store, m)
-        for path in held {
-            let lines = file_lines(self, store, m, path)
-            self.mint_file(path, file_rows(fields, places.get(path)), makers_in(lines, path))
-        }
-        for path in held { self.link_file(path, file_rows(fields, places.get(path))) }
-        let lead? = held.first() else { return }
-        self.decls.note_module_rows(self.decls.file(self.file_id(lead)).module_id, 2)
+        for path in unread { let _ = self.items(self.file_id(path)) }
     }
 
-    /// ONE HELD FILE'S DECLARATIONS, minted from its record lines in record order. The
-    /// file's statement table is written ONCE: read out and stored back per line, it
-    /// is held twice while it is written, and every line copies it.
-    fn mint_file(path: string, rows: List<List<string>>, makers: Map<string, string>) {
+    /// AN UNREAD FILE'S ITEMS, minted from the lines its last read kept: its declarations in
+    /// kept order, adopted by their parents. Answers the top-level ids.
+    fn items_minted(f: FileId) -> List<DeclId> {
+        let path = self.decls.file(f).path
+        self.decls.note_rows(f, 0)
+        let lines? = self.items_lines(path) else {
+            self.defect("an unread file's items were not kept — ${path}")
+            return []
+        }
+        let rows = [p for p in lines if declares(p)]
+        let top = self.mint_file(path, rows, makers_in(lines, path))
+        self.link_file(path, rows)
+        self.decls.note_rows(f, 2)
+        top
+    }
+
+    /// ONE UNREAD FILE'S DECLARATIONS, minted from its kept lines in kept order; answers the
+    /// top-level ones. The file's statement table is written ONCE: read out and stored back
+    /// per line, two copies stand while it is written, and every line copies it.
+    fn mint_file(path: string, rows: List<List<string>>, makers: Map<string, string>) -> List<
+        DeclId,
+    > {
         work_file_minted()
         let f = self.file_id(path)
         self.decls.held_opened(f, makers.values())
         mut by_stmt = self.decls.decl_ids.get()[f.index].get()
+        mut top: List<DeclId> = []
         for parts in rows {
             let id: DeclId? = self.minted(f, path, parts, makers)
-            let stmt_index = read_row(parts)?.stmt ?? 0
-            by_stmt.grow_to(stmt_index + 1)
-            if id != null && by_stmt.get(stmt_index).decl == null { by_stmt.set(stmt_index, DeclAt { decl: id }) }
+            let row? = read_row(parts) else { continue }
+            by_stmt.grow_to(row.stmt + 1)
+            if id != null && by_stmt.get(row.stmt).decl == null { by_stmt.set(row.stmt, DeclAt { decl: id }) }
+            if id != null && row.item { top.push(id!) }
         }
         self.decls.held_closed(f, makers.values())
         self.decls.keep_stmt_decls(f, by_stmt)
+        top
+    }
+
+    /// WHERE A FILE'S ITEMS ARE KEPT: its declaration and maker lines, standing on its text.
+    fn items_key(path: string) -> string { node_key(Stored.Unit, ["items", self.root, path]) }
+
+    /// A file's kept Items lines, split, under their one header line — none when its text moved
+    /// since they were kept. The header keeps a file that declares nothing from keeping nothing.
+    fn items_lines(path: string) -> List<List<string>>? {
+        let store? = self.store.get() else { return null }
+        let text? = store
+            .get_valid(Stored.Unit, self.items_key(path), (name) -> self.named_now(name)) else {
+            return null
+        }
+        [read_fields(l) for l in text.split("\n").drop(1)]
+    }
+
+    /// EVERY FILE OF `m` THIS ATTEMPT READ KEEPS ITS ITEMS: its lines in the record just made,
+    /// standing on its text. An unread file's stand as its last read kept them.
+    fn keep_items(store: Store, m: ModulePath, made: string) {
+        let by_file = lines_by_file(made.split("\n"))
+        for path in [p for p in self.module_files(m) if self.read_here(p)] {
+            let text = joined(
+                ["items"].concat([l for l in by_file.get(path) ?? [] if items_line(read_fields(l))]),
+                "\n",
+            )
+            let key = self.items_key(path)
+            let reads = self.readings([VerdictRead.Text(path)])
+            if store.get_valid(Stored.Unit, key, (name) -> self.named_now(name)) != text { let _ = store.keep_reading(Stored.Unit, key, text, reads) }
+        }
     }
 
     /// One record line as a declaration — null for a line that names nothing. A line
@@ -393,7 +434,7 @@ impl Workspace {
                 makers.get("${row.ordinal}") ?? "",
                 facts!,
             )
-        self.decls.held_joins(f, id, kind! is .Main, row.item)
+        if kind! is .Main { self.decls.seat_main(f, id) }
         // the cancel bit is read before any signature is asked, so it lands with the row
         self.decls.record_cancel(id, row.reach())
         id
@@ -1028,3 +1069,6 @@ fn parks_word(r: CancelReach) -> string {
 
 /// One read's identity: the file and the declaration read in it.
 fn read_id(r: RunRead) -> string { "${r.path}\t${r.ref}" }
+
+/// Whether a record line is one a file's Items keep: a declaration's, or the maker that made it.
+fn items_line(parts: List<string>) -> bool { declares(parts) || parts[0] == "maker" }
