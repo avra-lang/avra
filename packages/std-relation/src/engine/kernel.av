@@ -52,6 +52,13 @@ export fn key_of(edge: int) -> Key { Key { family: family_of(edge), arg: arg_of(
 /// equal.
 type QueryCell = { deps: List<int>, changed_at: int, verified_at: int, value_hash: int? }
 
+/// One read a saved answer stood on: the key it read and that key's value hash then.
+export type SavedRead = { key: Key, digest: int }
+
+/// A saved answer as the kernel's owner restores it: what it read and the hash it answered.
+/// The owner resolves its durable names to this kernel's keys, so the kernel holds no name.
+export type Saved = { reads: List<SavedRead>, value_hash: int }
+
 /// A fresh cell for an input: no deps, changed and verified as of
 /// `rev` alike.
 fn input_cell(rev: int, value_hash: int) -> QueryCell {
@@ -221,6 +228,10 @@ export type Kernel = {
     /// over its families; tests chain per-family fns through
     /// `set_verify`. A default that answers 0 stands until then.
     by_dispatch: Cell<fn(int, int) -> int>,
+    /// Where a key this process never settled is looked up among the answers saved past it.
+    saved: Cell<fn(Key) -> Saved?>,
+    /// The saved answers being stood on now, as edges: a read that returns to one is a miss.
+    restoring: Cell<List<int>>,
     /// The LAST-READER STAMP of every key, laid out as `cells` is: the
     /// reader id that last recorded it, 0 for none. A row only grows
     /// (`read_any`).
@@ -276,6 +287,9 @@ fn uncovering(_b: Bypass) -> List<Key> { [] }
 /// every cell recomputes until a dispatcher is set.
 fn no_dispatch(_family: int, _arg: int) -> int { 0 }
 
+/// Nothing is saved, so a never-settled key computes.
+fn unsaved(_key: Key) -> Saved? { null }
+
 export fn new_kernel() -> Kernel {
     Kernel {
         rev: Cell.new(1),
@@ -283,6 +297,8 @@ export fn new_kernel() -> Kernel {
         cells: list_cell(),
         verifiers: list_cell(),
         by_dispatch: Cell.new(no_dispatch),
+        saved: Cell.new(unsaved),
+        restoring: list_cell(),
         stamps: list_cell(),
         minted: Cell.new(0),
         asker: new_asker(),
@@ -545,6 +561,7 @@ impl Kernel {
         self.record_at(key.family, key.arg)
         if self.active(key) { return Verdict.Cycle }
         let cell? = self.cell(key) else {
+            if self.restored(key) { return self.hit(key.family) }
             self.why(key.family, "new")
             return self.miss(key.family)
         }
@@ -562,6 +579,54 @@ impl Kernel {
             return self.miss(key.family)
         }
         self.hit(key.family)
+    }
+
+    /// Tells the kernel where answers saved past this process are looked up.
+    fn set_saved(find: fn(Key) -> Saved?) { self.saved.set(find) }
+
+    /// A KEY THIS PROCESS NEVER SETTLED, STOOD ON ITS SAVED ANSWER: each read it names is
+    /// demanded in order and its value hash compared with the one the answer stood on; the
+    /// first to differ ends the walk. All equal, the key settles as the saved answer says, so
+    /// its readers meet an ordinary verified cell. A read that moved but answers the same
+    /// hash leaves every reader standing.
+    fn restored(key: Key) -> bool {
+        let edge = edge_of(key)
+        if self.restoring.get().contains(edge) { return false }
+        let find = self.saved.get()
+        let saved? = find(key) else { return false }
+        self.restoring.push(edge)
+        let stands = self.reads_stand(saved.reads)
+        self.restoring.set(self.restoring.get().filter(it != edge))
+        if !stands {
+            if self.tracing.get() { avra_qtrace("Q\trestore\tmoved\t${self.edge_text(edge)}\n") }
+            return false
+        }
+        let rev = self.rev.get()
+        self.settled(key, [edge_of(r.key) for r in saved.reads], rev, saved.value_hash, rev)
+        true
+    }
+
+    /// Whether every read still has the hash it was saved at, demanded in order.
+    fn reads_stand(reads: List<SavedRead>) -> bool { reads.all((r) -> self.demanded(r.key) == r.digest) }
+
+    /// A key's value hash as this revision answers it: verified where it has a cell, stood
+    /// on its saved answer where it has none, else computed. Null for a key nothing can hash.
+    fn demanded(key: Key) -> int? {
+        if self.cell(key) != null || !self.restored(key) { let _ = self.verified(key.family, key.arg) }
+        self.hash_forced(key)
+    }
+
+    /// What a settled key stands on, as a saved answer keeps it: each read with its value
+    /// hash. Absent when a read has no hash.
+    fn saved_reads(key: Key) -> List<SavedRead>? {
+        let edges? = self.edges_of(key) else { return null }
+        mut out: List<SavedRead> = []
+        for e in edges {
+            let k = key_of(e)
+            let h? = self.hash_forced(k) else { return null }
+            out.push(SavedRead { key: k, digest: h })
+        }
+        out
     }
 
     /// The first of `cell`'s dependencies that moved since it was verified, as an edge; -1 for none.

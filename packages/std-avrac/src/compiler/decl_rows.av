@@ -1,0 +1,36 @@
+//! A DECLARATION'S SAVED ROW: its signature and declaration facts — its shape word and
+//! payload — filed under its durable name. One writer, `keep_decl_rows`, files
+//! every declaration of a file this attempt read; one reader, `decl_row_filled`, fills a
+//! declaration no parse declares from it.
+use core.{DeclId, FileId}
+use compiler.store.{Store, Stored, node_key}
+
+impl Workspace {
+    /// Where a declaration's row is filed: its durable name, never a position.
+    fn decl_row_key(d: DeclId) -> string { node_key(Stored.Unit, ["decl", self.decl_ref(d)]) }
+
+    /// Every declaration of `files`, filed. A row whose words did not move is not filed again.
+    fn keep_decl_rows(store: Store, files: List<FileId>) {
+        for f in files {
+            for id in self.decls.decls_of_file(f) {
+                let key = self.decl_row_key(id)
+                let shape = self.row_shape(self.decl_at(id))
+                if store.get(Stored.Unit, key) != shape { let _ = store.keep(Stored.Unit, key, shape, []) }
+            }
+        }
+    }
+
+    /// A declaration no parse declares, filled from its row on the ask that names it, never
+    /// before: a row can name a declaration whose own row is filled later, and a read through
+    /// that name must see that fill. Once per declaration, so a name reached while filling
+    /// its own row (a cycle) sees "not filled yet" rather than recursing.
+    fn decl_row_filled(d: DeclId) {
+        if self.hold.row_filled.at(d.index) != null { return }
+        self.hold.row_filled.keep(d.index, true)
+        let store? = self.store.get() else { return }
+        let path = self.decls.file(self.decls.decl(d).file).path
+        let line? = store.get(Stored.Unit, self.decl_row_key(d)) else { return self.defect("a declaration has no row — ${self.decl_ref(d)}") }
+        let row? = shaped_of(line) else { return self.defect("a declaration's row did not decode — ${self.decl_ref(d)}") }
+        self.fill_shape(store, self.module_path_of(path), d, row)
+    }
+}
