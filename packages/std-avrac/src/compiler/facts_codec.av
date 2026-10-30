@@ -33,7 +33,7 @@ use @std.relation.stable.{
 
 /// The layout a row stands under: a wire that moves under a longer table misses once instead of
 /// being read as this one.
-const facts_wire: int = 1
+const facts_wire: int = 2
 
 /// The id types a typing table holds.
 enum IdKind {
@@ -285,21 +285,30 @@ fn read_opt_stage(r: Reader) -> Result<PipeStage?, CodecFault> {
     read_opt(r, (rr: Reader) -> read_stage(rr))
 }
 
-/// A column written: its window's start, its seed, then every cell in window order — so a
-/// decoded table sits where the written one did and grows holding what it grew with.
-fn written_column<V>(w: Writer, t: SideTable<V>, each: fn(Writer, V) -> void) {
+/// A column written: its window's start, an id of `kind` crossing through the scope as any
+/// other does, its seed, then every cell in window order — so a decoded table sits where the
+/// written one did, wherever its declaration sits now, and grows holding what it grew with.
+fn written_column<V>(
+    w: Writer,
+    scope: dyn Scope,
+    kind: string,
+    t: SideTable<V>,
+    each: fn(Writer, V) -> void,
+) {
     w.text(t.name)
-    w.int(t.lo)
+    written_dense(w, scope, kind, t.lo)
     each(w, t.seed)
     written_list(w, t.cells, each)
 }
 
-fn read_column<V>(r: Reader, each: fn(Reader) -> Result<V, CodecFault>) -> Result<
-    SideTable<V>,
-    CodecFault,
-> {
+fn read_column<V>(
+    r: Reader,
+    scope: dyn Scope,
+    kind: string,
+    each: fn(Reader) -> Result<V, CodecFault>,
+) -> Result<SideTable<V>, CodecFault> {
     let name = r.text()?
-    let lo = r.int()?
+    let lo = dense_read(r, scope, kind, (i: int) -> i)?
     let seed = each(r)?
     let cells = read_list(r, each)?
     .Ok(side_table_of(name, lo, cells, seed))
@@ -307,42 +316,134 @@ fn read_column<V>(r: Reader, each: fn(Reader) -> Result<V, CodecFault>) -> Resul
 
 /// Every column of a body's typing table, in declaration order, under one walk.
 fn written_columns(w: Writer, scope: dyn Scope, t: TypeFacts) {
-    written_column(w, t.of_expr, (ww: Writer, v: TypeId) -> written_type_id(ww, scope, v))
-    written_column(w, t.widens, (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v))
-    written_column(w, t.narrows, (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v))
-    written_column(w, t.asks, (ww: Writer, v: Asked?) -> written_opt_asked(ww, scope, v))
-    written_column(w, t.substs, (ww: Writer, v: Sub?) -> written_opt_sub(ww, scope, v))
     written_column(
         w,
+        scope,
+        "ExprId",
+        t.of_expr,
+        (ww: Writer, v: TypeId) -> written_type_id(ww, scope, v),
+    )
+    written_column(
+        w,
+        scope,
+        "ExprId",
+        t.widens,
+        (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v),
+    )
+    written_column(
+        w,
+        scope,
+        "ExprId",
+        t.narrows,
+        (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v),
+    )
+    written_column(
+        w,
+        scope,
+        "ExprId",
+        t.asks,
+        (ww: Writer, v: Asked?) -> written_opt_asked(ww, scope, v),
+    )
+    written_column(
+        w,
+        scope,
+        "ExprId",
+        t.substs,
+        (ww: Writer, v: Sub?) -> written_opt_sub(ww, scope, v),
+    )
+    written_column(
+        w,
+        scope,
+        "ExprId",
         t.lambda_params,
         (ww: Writer, v: List<TypeId>?) -> written_opt_type_ids(ww, scope, v),
     )
-    written_column(w, t.lambda_marks, (ww: Writer, v: List<SeatMark>?) -> written_opt_marks(ww, v))
     written_column(
         w,
+        scope,
+        "ExprId",
+        t.lambda_marks,
+        (ww: Writer, v: List<SeatMark>?) -> written_opt_marks(ww, v),
+    )
+    written_column(
+        w,
+        scope,
+        "ExprId",
         t.captures,
         (ww: Writer, v: List<TypeId>?) -> written_opt_type_ids(ww, scope, v),
     )
-    written_column(w, t.wants, (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v))
-    written_column(w, t.flags, (ww: Writer, v: int) -> ww.int(v))
-    written_column(w, t.starved, (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v))
-    written_column(w, t.scopes, (ww: Writer, v: ParamScope?) -> written_opt_scope(ww, scope, v))
     written_column(
         w,
+        scope,
+        "ExprId",
+        t.wants,
+        (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v),
+    )
+    written_column(w, scope, "ExprId", t.flags, (ww: Writer, v: int) -> ww.int(v))
+    written_column(
+        w,
+        scope,
+        "ExprId",
+        t.starved,
+        (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v),
+    )
+    written_column(
+        w,
+        scope,
+        "ExprId",
+        t.scopes,
+        (ww: Writer, v: ParamScope?) -> written_opt_scope(ww, scope, v),
+    )
+    written_column(
+        w,
+        scope,
+        "ExprId",
         t.pattern_types,
         (ww: Writer, v: List<TypeId>) -> written_type_ids(ww, scope, v),
     )
-    written_column(w, t.binding_types, (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v))
-    written_column(w, t.index_types, (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v))
-    written_column(w, t.stmt_flags, (ww: Writer, v: int) -> ww.int(v))
     written_column(
         w,
+        scope,
+        "StmtId",
+        t.binding_types,
+        (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v),
+    )
+    written_column(
+        w,
+        scope,
+        "StmtId",
+        t.index_types,
+        (ww: Writer, v: TypeId?) -> written_opt_type(ww, scope, v),
+    )
+    written_column(w, scope, "StmtId", t.stmt_flags, (ww: Writer, v: int) -> ww.int(v))
+    written_column(
+        w,
+        scope,
+        "ExprId",
         t.collections,
         (ww: Writer, v: List<ExprId>?) -> written_opt_expr_ids(ww, scope, v),
     )
-    written_column(w, t.chosen, (ww: Writer, v: DeclId?) -> written_opt_decl(ww, scope, v))
-    written_column(w, t.dispatches, (ww: Writer, v: RunChoice?) -> written_opt_choice(ww, scope, v))
-    written_column(w, t.stages, (ww: Writer, v: PipeStage?) -> written_opt_stage(ww, v))
+    written_column(
+        w,
+        scope,
+        "ExprId",
+        t.chosen,
+        (ww: Writer, v: DeclId?) -> written_opt_decl(ww, scope, v),
+    )
+    written_column(
+        w,
+        scope,
+        "ExprId",
+        t.dispatches,
+        (ww: Writer, v: RunChoice?) -> written_opt_choice(ww, scope, v),
+    )
+    written_column(
+        w,
+        scope,
+        "ExprId",
+        t.stages,
+        (ww: Writer, v: PipeStage?) -> written_opt_stage(ww, v),
+    )
 }
 
 /// A body's typing table as octets, or null for a table that spoke — a voice carries a `dyn
@@ -371,26 +472,31 @@ export fn facts_decoded_in(b: Bytes, scope: dyn Scope) -> Result<TypeFacts, stri
 
 fn read_facts(r: Reader, scope: dyn Scope) -> Result<TypeFacts, CodecFault> {
     if r.int()? != facts_wire { fail CodecFault.OtherShape }
-    let of_expr = read_column(r, (rr: Reader) -> read_type_id(rr, scope))?
-    let widens = read_column(r, (rr: Reader) -> read_opt_type(rr, scope))?
-    let narrows = read_column(r, (rr: Reader) -> read_opt_type(rr, scope))?
-    let asks = read_column(r, (rr: Reader) -> read_opt_asked(rr, scope))?
-    let substs = read_column(r, (rr: Reader) -> read_opt_sub(rr, scope))?
-    let lambda_params = read_column(r, (rr: Reader) -> read_opt_type_ids(rr, scope))?
-    let lambda_marks = read_column(r, (rr: Reader) -> read_opt_marks(rr))?
-    let captures = read_column(r, (rr: Reader) -> read_opt_type_ids(rr, scope))?
-    let wants = read_column(r, (rr: Reader) -> read_opt_type(rr, scope))?
-    let flags = read_column(r, (rr: Reader) -> rr.int())?
-    let starved = read_column(r, (rr: Reader) -> read_opt_type(rr, scope))?
-    let scopes = read_column(r, (rr: Reader) -> read_opt_scope(rr, scope))?
-    let pattern_types = read_column(r, (rr: Reader) -> read_type_ids(rr, scope))?
-    let binding_types = read_column(r, (rr: Reader) -> read_opt_type(rr, scope))?
-    let index_types = read_column(r, (rr: Reader) -> read_opt_type(rr, scope))?
-    let stmt_flags = read_column(r, (rr: Reader) -> rr.int())?
-    let collections = read_column(r, (rr: Reader) -> read_opt_expr_ids(rr, scope))?
-    let chosen = read_column(r, (rr: Reader) -> read_opt_decl(rr, scope))?
-    let dispatches = read_column(r, (rr: Reader) -> read_opt_choice(rr, scope))?
-    let stages = read_column(r, (rr: Reader) -> read_opt_stage(rr))?
+    let of_expr = read_column(r, scope, "ExprId", (rr: Reader) -> read_type_id(rr, scope))?
+    let widens = read_column(r, scope, "ExprId", (rr: Reader) -> read_opt_type(rr, scope))?
+    let narrows = read_column(r, scope, "ExprId", (rr: Reader) -> read_opt_type(rr, scope))?
+    let asks = read_column(r, scope, "ExprId", (rr: Reader) -> read_opt_asked(rr, scope))?
+    let substs = read_column(r, scope, "ExprId", (rr: Reader) -> read_opt_sub(rr, scope))?
+    let lambda_params = read_column(
+        r,
+        scope,
+        "ExprId",
+        (rr: Reader) -> read_opt_type_ids(rr, scope),
+    )?
+    let lambda_marks = read_column(r, scope, "ExprId", (rr: Reader) -> read_opt_marks(rr))?
+    let captures = read_column(r, scope, "ExprId", (rr: Reader) -> read_opt_type_ids(rr, scope))?
+    let wants = read_column(r, scope, "ExprId", (rr: Reader) -> read_opt_type(rr, scope))?
+    let flags = read_column(r, scope, "ExprId", (rr: Reader) -> rr.int())?
+    let starved = read_column(r, scope, "ExprId", (rr: Reader) -> read_opt_type(rr, scope))?
+    let scopes = read_column(r, scope, "ExprId", (rr: Reader) -> read_opt_scope(rr, scope))?
+    let pattern_types = read_column(r, scope, "ExprId", (rr: Reader) -> read_type_ids(rr, scope))?
+    let binding_types = read_column(r, scope, "StmtId", (rr: Reader) -> read_opt_type(rr, scope))?
+    let index_types = read_column(r, scope, "StmtId", (rr: Reader) -> read_opt_type(rr, scope))?
+    let stmt_flags = read_column(r, scope, "StmtId", (rr: Reader) -> rr.int())?
+    let collections = read_column(r, scope, "ExprId", (rr: Reader) -> read_opt_expr_ids(rr, scope))?
+    let chosen = read_column(r, scope, "ExprId", (rr: Reader) -> read_opt_decl(rr, scope))?
+    let dispatches = read_column(r, scope, "ExprId", (rr: Reader) -> read_opt_choice(rr, scope))?
+    let stages = read_column(r, scope, "ExprId", (rr: Reader) -> read_opt_stage(rr))?
     .Ok(
         TypeFacts {
             of_expr: of_expr,
