@@ -1,15 +1,18 @@
 //! The manifest closure: the root package, its path dependencies, and
 //! the module path each names. Moved out of the workspace god-object.
-use core.{ModulePath, key_spelled, flatten}
+use core.{ModulePath, Span, key_spelled, flatten}
 use @std.path.{under_dir, joined_path, normalized, relative_path}
 use features.{nothing, Budgets, budgets_of}
 use diagnostics.{SourceFile, new_source_file, Diag, refusal}
 use compiler.families.{Family}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
-use @std.relation.engine.{Loaded}
+use @std.relation.{query}
+use @std.relation.db.{Db as RelDb}
 use compiler.host.{
     Dependency,
     Manifest,
+    ToolRow,
+    Provenance,
     bad_dependency_path,
     dependency_cycle,
     deps_offset,
@@ -17,6 +20,7 @@ use compiler.host.{
     name_mismatch,
     prelude_depends,
     read_manifest,
+    manifest_read,
     row_at,
     unset_link_variable,
 }
@@ -39,7 +43,6 @@ fn empty_manifest() -> Manifest {
         libs: [],
         raw: [],
         tools: [],
-        voices: [],
     }
 }
 
@@ -58,34 +61,29 @@ fn link_rows(m: Manifest, own: bool) -> List<LinkRow> {
         .concat(if own { [LinkRow { section: "link.raw", key: "flags", words: m.raw }] } else { [] })
 }
 
+/// A manifest's value over its staged text.
+@query
+fn manifest_in(db: RelDb, path: string) -> Manifest { read_manifest(new_source_file(path, file_text(db, path))) }
+
 impl Workspace {
-    /// A package's manifest, read from its `avra.toml` — an INPUT: the
-    /// revision moves only when the text did. A root without a manifest
-    /// reads as an empty one, quietly.
+    /// A package's manifest, read from its `avra.toml` — a query over that text, staged
+    /// through the input door, so a reader moves only when the value did. A root without a
+    /// manifest reads as an empty one, quietly. A manifest's text is the one text the package
+    /// graph is shaped by, so its cell is marked the first time it is asked.
     fn manifest(i: int) -> Manifest {
         let pkg = self.packages()[i]
+        if !self.has_manifest(pkg) { return empty_manifest() }
         let path = joined_path(pkg.root, "avra.toml")
-        if !self.has_manifest(pkg) {
-            return manifest_of(
-                self
-                    .relation(Family.Manifest)
-                    .input(i, () -> DbRow.Manifest(empty_manifest()), (s: DbRow) -> 0),
-            )
-        }
-        manifest_of(
-            self.relation(Family.Manifest).input_loaded(i, () -> self.loaded_manifest(path)),
-        )
+        let at = self.text_key(path)
+        if !self.manifest_texts.get().contains(at) { self.manifest_texts.push(at) }
+        manifest_in(self.scanning(path), path)
     }
 
-    /// A manifest's row over its Text input, cut by the word that cell
-    /// is. Loaded once a package, so its text's cell is marked once: a
-    /// manifest's text is the one text the package graph is shaped by.
-    fn loaded_manifest(path: string) -> Loaded<DbRow> {
-        self.manifest_texts.push(self.text_key(path))
-        Loaded {
-            value: DbRow.Manifest(read_manifest(new_source_file(path, self.listed_text(path)))),
-            fingerprint: self.text_word(path),
-        }
+    /// What reading a package's manifest said — nothing for a package with none.
+    fn manifest_voices(pkg: Package) -> List<Diag> {
+        if !self.has_manifest(pkg) { return [] }
+        let path = joined_path(pkg.root, "avra.toml")
+        manifest_read(new_source_file(path, self.listed_text(path))).voices
     }
 
     /// What a settlement may spend: the ROOT package's `[lifted]` rows,
@@ -195,7 +193,7 @@ impl Workspace {
     /// Everything the packages said: each manifest's own voices, then
     /// the graph's.
     fn packages_voiced() -> List<Diag> {
-        flatten([self.manifest(pkg.ordinal).voices for pkg in self.packages()])
+        flatten([self.manifest_voices(pkg) for pkg in self.packages()])
             .concat([borrowed_raw(pkg) for pkg in self.packages() if self.raw_from_dependency(pkg)])
             .concat(flatten([self.unset_link_holes(pkg) for pkg in self.packages()]))
             .concat(self.package_voices.get())
