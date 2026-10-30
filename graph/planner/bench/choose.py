@@ -106,7 +106,7 @@ def main():
     parser.add_argument("--asker", default="oracle:rowan")
     parser.add_argument("--depth", type=int, default=3)
     parser.add_argument("--no-choose", action="store_true")
-    parser.add_argument("--coverage", type=float, default=0.6, help="share of a value's words a question must carry to name it")
+    parser.add_argument("--coverage", type=float, default=0.5, help="share of a value's words a question must carry to name it")
     parser.add_argument("--budget", type=int, default=400, help="queries a question may run")
     parser.add_argument("--cache", default=str(HERE / "choose.cache.json"),
                         help="the candidates a question produced, kept so the choice can be iterated")
