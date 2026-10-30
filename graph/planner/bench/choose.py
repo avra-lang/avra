@@ -106,7 +106,8 @@ def main():
     parser.add_argument("--asker", default="oracle:rowan")
     parser.add_argument("--depth", type=int, default=3)
     parser.add_argument("--no-choose", action="store_true")
-    parser.add_argument("--coverage", type=float, default=0.5, help="share of a value's words a question must carry to name it")
+    parser.add_argument("--evidence", type=float, default=4.5,
+                        help="weight a value's matched words must carry to name it; a word's weight falls with the share of values that hold it")
     parser.add_argument("--budget", type=int, default=400, help="queries a question may run")
     parser.add_argument("--cache", default=str(HERE / "choose.cache.json"),
                         help="the candidates a question produced, kept so the choice can be iterated")
@@ -139,7 +140,7 @@ def main():
         want = values(app({"op": "query", "cypher": plans[q["id"]], "params": bench.PARAMS, **view}))
 
         seeds = [(m, f"a.{prop} = $anchor", {"anchor": value})
-                 for m, prop, value in anchors_of.named(q["question"], value_index, args.coverage)]
+                 for m, prop, value in anchors_of.named(q["question"], value_index, args.evidence)]
         holder = app({"op": "get", "id": args.asker})
         if holder.get("model"):
             seeds.append((holder["model"], "id(a) = $asker", {}))
