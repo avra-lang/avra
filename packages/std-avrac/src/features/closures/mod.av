@@ -22,7 +22,6 @@ use diagnostics.{DiagCode}
 export fn closures() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name            | build
-        "fn_type"       | build_fn_type
         "trailing_arms" | build_trailing_arms
     }
     let codes = table<DiagCode> {
@@ -32,8 +31,8 @@ export fn closures() -> LanguageFeature {
     }
     LanguageFeature closures {
         gram: grammar {
-            type = "fn" "(" ( ps:fn_seat ( "," ps:fn_seat )* ","? )? ")" ( "->" r:type )? -> fn_type(ps, r)
-            fn_seat = ( constant:"const" )? ( mutable:"mut" )? ty:type -> Record.ParamSyntax
+            type = "fn" "(" ( seats:fn_seat ( "," seats:fn_seat )* ","? )? ")" ( "->" answer:type )? -> Record.TypeRef(name = "fn", optional = false, dynamic = false, arrow = true)
+            fn_seat = ( settled:"const" )? ( mutable:"mut" )? ty:type -> Record.FnSeat
             primary = "(" ( params:seat ( "," params:seat )* ","? )? ")" "->" body:expression -> Expr.Lambda
             trailing = "{" BREAK* hp:nonbind_pattern ( "if" hg:expression )? "->" hv:expression ( BREAK | "," | a:arm | a:hole_arm )* "}" @expect("}", "expected `}` to close the arms block") -> trailing_arms(hp, hg, hv, a)
             nonbind_pattern = "." name:NAME "as" bind:NAME -> Pat.Member | "." name:NAME ( "(" args:pattern ( "," args:pattern )* ","? ")" )? -> Pat.Variant | "_" -> Pat.Wild | "true" -> Pat.Lit(value = Expr.BoolLit(value = true)) | "false" -> Pat.Lit(value = Expr.BoolLit(value = false)) | value:NUMBER -> Pat.Lit(value = Expr.IntLit(value = value))

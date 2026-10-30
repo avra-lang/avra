@@ -1,0 +1,47 @@
+//! The nodes a rule COMPUTES from its labels (`-> Owner.Variant by fn`):
+//! each fn reads what the rule wrote and answers the node it means, its
+//! own law applied once, where the rule stands.
+use @std.meta.{Named}
+
+/// Marks a fn that computes a node from its rule's labels — the fn a
+/// rule's `by` names, gathered by `computes` (features/node_scaffold.av).
+export fn computed(_f: Named) {}
+
+/// THE BLOCK LAW: statements as a scope answering with its tail.
+@computed
+fn block_written(s: dyn Slots) -> Result<Built, string> {
+    .Ok(Built.Expr(s.arena().block_over(s.stmts_of("stmts")?, s.built_at())))
+}
+
+/// An expression alone on a line, or an assignment when an `=` follows
+/// it: one parse of the expression serves both.
+@computed
+fn expr_stmt_written(s: dyn Slots) -> Result<Built, string> {
+    let target = s.expr_of("target")?
+    let value? = s.expr_opt_of("value")? else { return .Ok(Built.Stmt(s.made_stmt(Stmt.ExprStmt(target))?)) }
+    .Ok(Built.Stmt(s.made_stmt(Stmt.Assign(target, value))?))
+}
+
+/// `let x? = subject { … } else { … }` — the subject takes the one
+/// trailing block written before the `else`; the `else` is the let's own.
+@computed
+fn let_else_written(s: dyn Slots) -> Result<Built, string> {
+    let subject = s.arena().trailed(s.expr_of("subject")?, s.exprs_of("trailing")?, s.built_at())?
+    .Ok(
+        Built
+            .Stmt(s.made_stmt(Stmt.LetElse(Scoped(s.text_of("name")?), subject, s.stmts_of("stmts")?))?),
+    )
+}
+
+/// `let pattern = subject [else { … }]` — a node still waiting for its
+/// block, wrapped in the statement that evaluates the subject; the block
+/// the statement lands in folds the statements after it into the node.
+@computed
+fn let_pattern_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let otherwise = s.stmts_of("otherwise")?
+    let held: ExprId? = if otherwise.is_empty() { null } else { store.block_over(otherwise, store.stmts_extent(otherwise)) }
+    let node = store
+        .alloc_expr(Expr.LetPattern(s.pat_of("pat")?, s.expr_of("subject")?, held, null), s.built_at())
+    .Ok(Built.Stmt(store.alloc_stmt(Stmt.ExprStmt(node), s.built_at())))
+}

@@ -49,6 +49,7 @@ use @std.path.{dir_of, joined_path, relative_path}
 use features.components.{word_of, instanced, named_instances}
 use features.{
     ExternNote,
+    Listed,
     Ref,
     takes_receiver,
     Unsettled,
@@ -221,11 +222,8 @@ fn new_keys() -> Keys {
 /// which is every file a text was taken of and nothing else; the held
 /// modules minted so far, by name
 /// (`minted`); whether the holds are settled, before which no file's
-/// standing is known (`holds_now`); which
-/// held module files a declaration under each bucket value its record
-/// carries — name, word, mark, extern — so a bucket read mints its
-/// producer before it reads (`named_by`, `worded_by`, `marked_by`,
-/// `externed_by`, and the files holding a fn that links a scheduler, `linked_by`); the
+/// standing is known (`holds_now`); the files holding a fn that links a
+/// scheduler (`linked_by`); the
 /// records a held file's line declared FLAT (`held_flat`); and the
 /// declarations whose OWN row has been filled from the record, by
 /// DeclId — a module mints every identity at once, but fills each
@@ -255,6 +253,29 @@ type ViewStand = { files: int, asks: int, stands: bool }
 /// The name buckets one answer's run read, held for the group cell that stands for them.
 type Group = { owner: int, id: int, buckets: List<int> }
 
+/// THE NAME ENVIRONMENTS, as the modules' kept producers file them: the files declaring under
+/// each declaration name, component word and annotation mark; every extern; and the files
+/// declaring a kind that implements a trait for a type. A bucket reader mints the unread files
+/// listed for its value before it reads (`Workspace.minted_for`).
+@identity
+type NameEnvs = {
+    names: Cell<Map<string, List<string>>>,
+    words: Cell<Map<string, List<string>>>,
+    marks: Cell<Map<string, List<string>>>,
+    externs: Cell<List<ExternNote>>,
+    implementors: Cell<List<string>>,
+}
+
+fn new_name_envs() -> NameEnvs {
+    NameEnvs {
+        names: map_cell(),
+        words: map_cell(),
+        marks: map_cell(),
+        externs: list_cell(),
+        implementors: list_cell(),
+    }
+}
+
 @identity
 type Hold = {
     forced: Cell<Map<string, Reads>>,
@@ -280,16 +301,6 @@ type Hold = {
     holds_now: Cell<bool>,
     minted: Cell<Map<string, bool>>,
     row_filled: Table<bool>,
-    /// THE PRODUCER INDEX: for each held module, every declaration NAME,
-    /// WORD and MARK its record lines carry, and each extern it declares. A bucket
-    /// reader mints the modules listed for its value before it reads the bucket, so a
-    /// held module's row exists before the read that wants it — never eagerly, never late.
-    named_by: Cell<Map<string, List<string>>>,
-    worded_by: Cell<Map<string, List<string>>>,
-    marked_by: Cell<Map<string, List<string>>>,
-    externed_by: Cell<List<ExternNote>>,
-    /// The held files whose records declare a type that may implement a trait.
-    typed_by: Cell<List<string>>,
     /// The files whose records' `ref` rows name each target file, by the target's path.
     refs_by_target: Cell<Map<string, List<string>>>,
     /// The references held files make into a held file, restored once per target.
@@ -402,11 +413,6 @@ fn new_hold() -> Hold {
         holds_now: Cell.new(false),
         minted: Cell.new(no_minted),
         row_filled: new_table<bool>(),
-        named_by: Cell.new(no_producers),
-        worded_by: Cell.new(no_producers),
-        marked_by: Cell.new(no_producers),
-        externed_by: list_cell(),
-        typed_by: list_cell(),
         refs_by_target: Cell.new(no_producers),
         held_refs: map_cell(),
         kept_refs: map_cell(),
@@ -591,6 +597,8 @@ export type Workspace = {
     import_lists: Cell<Map<string, List<string>>>,
     /// WHAT IS HELD THIS BUILD.
     hold: Hold,
+    /// The name environments the bucket readers mint through.
+    envs: NameEnvs,
     /// THE MODULES A HELD LOAD TOUCHED, in order — phase one mints and INTERNS every name;
     /// phase two FILLS every shape. A mutual import (language <-> features <-> core) is a
     /// cycle, and one module's shapes cannot be filled until every other module's NAMES are
@@ -1092,6 +1100,7 @@ fn built(
         reexporting: map_cell(),
         import_lists: Cell.new(no_import_lists),
         hold: new_hold(),
+        envs: new_name_envs(),
         defects: Cell.new(no_defects),
         package_rows: list_cell(),
         package_voices: list_cell(),
@@ -1134,15 +1143,12 @@ fn built(
     ws.decls.arm_target((d: DeclId) -> ws.target_ensured(d))
     ws.decls.arm_store((f: FileId) -> ws.store_ensured(f))
     ws.decls.arm_file((f: FileId) -> ws.file_ensured(f))
-    ws.decls.arm_named((name: string) -> ws.held_named(name))
-    ws.decls.arm_worded((word: string) -> ws.held_worded(word))
-    ws.decls.arm_marked((mark: string) -> ws.held_marked(mark))
     ws
         .decls
-        .arm_externs(
-            () -> ws.hold.externed_by.get(),
-            () -> ws.hold.typed_by.get(),
-            (modules: List<string>) -> ws.minted_modules(modules),
+        .arm_listed(
+            (l: Listed) -> ws.minted_for(l),
+            () -> ws.envs.externs.get(),
+            () -> ws.envs.implementors.get(),
         )
     ws
         .decls
@@ -1267,14 +1273,21 @@ impl Workspace {
         }
     }
 
-    /// THE PRODUCER INDEX'S FOUR DOORS: a bucket reader asks for the value it is about to
-    /// read, and every held module whose record files a row there is minted first — so the
-    /// row exists before the read, and only where it is wanted.
-    fn held_named(name: string) { self.minted_files(self.hold.named_by.get().get(name) ?? []) }
-
-    fn held_worded(word: string) { self.minted_files(self.hold.worded_by.get().get(word) ?? []) }
-
-    fn held_marked(mark: string) { self.minted_files(self.hold.marked_by.get().get(mark) ?? []) }
+    /// THE NAME ENVIRONMENTS' DOOR: a bucket reader names what it is about to read, and the
+    /// modules of every unread file listed under it are minted first — so the row exists
+    /// before the read, and only where it is wanted.
+    fn minted_for(l: Listed) {
+        self
+            .minted_files(
+                match l {
+                    .Name(name) -> self.envs.names.get().get(name) ?? [],
+                    .Word(word) -> self.envs.words.get().get(word) ?? [],
+                    .Mark(mark) -> self.envs.marks.get().get(mark) ?? [],
+                    .Extern(name) -> [n.path for n in self.envs.externs.get() if n.name == name],
+                    .Hosted -> [n.path for n in self.envs.externs.get() if n.hosted],
+                },
+            )
+    }
 
     /// Every held file of each listed module minted, once.
     fn minted_modules(modules: List<string>) {
@@ -1894,12 +1907,23 @@ impl Workspace {
     /// The declarations a file MINTS into the one table; the answer's
     /// hash is the item tree's — names and kinds.
     fn items(f: FileId) -> List<DeclId> {
+        // AN UNREAD FILE'S ITEMS ARE AN INPUT: minted once from what its last read kept,
+        // never parsed and never computed
+        if self.is_held(f) {
+            return items_of(
+                self
+                    .relation(Family.Items)
+                    .input(
+                        f.index,
+                        () -> DbRow.Items(self.items_minted(f)),
+                        (_r: DbRow) -> self.rows_print(f),
+                    ),
+            )
+        }
         match self.relation(Family.Items).start(f.index) {
             .Reuse(value) -> { return items_of(value) },
             .Compute -> nothing(),
         }
-        // AN UNREAD FILE IS MINTED FROM THE ITEMS ITS LAST READ KEPT, never parsed
-        if self.is_held(f) { return self.items_settled(f, self.items_minted(f)) }
         self.decls.note_rows(f, 0)
         let p = self.parsed(f)
         let out = self.items_settled(f, self.decls.admit(f, p.store, p.stmts))
@@ -1909,16 +1933,11 @@ impl Workspace {
 
     /// A file's `Items` settled: the top-level ids, hashed by every row the file minted.
     fn items_settled(f: FileId, ids: List<DeclId>) -> List<DeclId> {
-        items_of(
-            self
-                .relation(Family.Items)
-                .finish(
-                    f.index,
-                    DbRow.Items(ids),
-                    fp_list([self.row_print(d) for d in self.decls.decls_so_far(f)]),
-                ),
-        )
+        items_of(self.relation(Family.Items).finish(f.index, DbRow.Items(ids), self.rows_print(f)))
     }
+
+    /// Every row a file minted, as one hash.
+    fn rows_print(f: FileId) -> int { fp_list([self.row_print(d) for d in self.decls.decls_so_far(f)]) }
 
     /// A file's rows standing before a reader reads them through their buckets: its
     /// admission asked under a cell whose hash never moves. A held file's rows stand
@@ -2222,7 +2241,7 @@ impl Workspace {
         // its record, so its table is whole without a parse.
         let home = self.decls.decl(target).file
         if !self.is_held(home) { let _ = self.resolved(home) }
-        self.decls.hold_named(self.decls.decl(target).name)
+        self.minted_for(Listed.Name(self.decls.decl(target).name))
         let blocks = self.method_blocks(target)
         // A table that cannot be COMPLETED is not the table, and must
         // not be memoized: an impl still registering, or an impl in a

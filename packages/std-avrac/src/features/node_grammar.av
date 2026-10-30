@@ -18,7 +18,17 @@
 //! `Field.kind` answers "is this a list", "is this text-filled"
 //! structurally, so the answer holds under renaming and cannot forget
 //! the next declared type the way a string table would.
-use core.{flatten, joined, PayloadRow, row_for, binop_of, facet_table, has_anchor, anchor_word}
+use core.{
+    flatten,
+    joined,
+    distinct,
+    PayloadRow,
+    row_for,
+    binop_of,
+    facet_table,
+    has_anchor,
+    anchor_word,
+}
 use @std.meta.{Field, Kind}
 use @std.grammar.{
     Grammar,
@@ -109,8 +119,24 @@ fn bound_build(held: Build?, outer: Seq, rows: List<PayloadRow>) -> Build? {
     let b? = held else { return null }
     match b {
         .Node(owner, variant, fixed, _) -> Build.Node(owner, variant, fixed, filled_slots(outer, owner, variant, fixed, rows)),
+        .Computed(owner, variant, by, _) -> Build.Computed(owner, variant, by, computed_slots(outer, owner, variant, rows)),
         .Call(_, _) or .Var(_) -> b,
     }
+}
+
+/// A computed build's slots: the node's payloads, then each label the
+/// branch writes that names none of them — read by its fn under its own
+/// name (`computed_extras`).
+fn computed_slots(outer: Seq, owner: string, variant: string, rows: List<PayloadRow>) -> List<Slot>? {
+    let row? = row_for(rows, owner, variant) else { return null }
+    [filling(p, outer, [], rows) for p in row.payloads]
+        .concat([Slot.Label(x) for x in computed_extras(outer, row)])
+}
+
+/// The labels a computed build's branch writes beyond its node's
+/// payloads, in the order the branch first writes them.
+export fn computed_extras(outer: Seq, row: PayloadRow) -> List<string> {
+    distinct([l for l in outer.labels() if !row.payloads.any(it.name == l)])
 }
 
 fn filled_slots(
@@ -208,8 +234,18 @@ fn build_defects(
     let b? = held else { return [] }
     match b {
         .Node(owner, variant, fixed, _) -> node_defects(rname, outer, owner, variant, fixed, rows, words),
+        .Computed(owner, variant, _, _) -> computed_defects(rname, owner, variant, rows),
         .Call(_, _) or .Var(_) -> [],
     }
+}
+
+/// A computed build names a node the model answers; its fn decides how
+/// each label is read, so nothing else of the node is judged here.
+fn computed_defects(rname: string, owner: string, variant: string, rows: List<PayloadRow>) -> List<
+    Diagnostic,
+> {
+    if row_for(rows, owner, variant) != null { return [] }
+    [node_refusal(rname, no_such_variant(owner, variant))]
 }
 
 fn node_defects(
@@ -297,7 +333,7 @@ fn nested_judged(rname: string, s: Seq, row: PayloadRow, f: Fixed, n: Build, row
     match n {
         .Node(owner, variant, inner, _) -> nested_fit(rname, row, held, owner, variant)
             .concat(node_defects(rname, s, owner, variant, inner, rows, [], false)),
-        .Call(_, _) or .Var(_) -> [],
+        .Computed(_, _, _, _) or .Call(_, _) or .Var(_) -> [],
     }
 }
 
@@ -364,7 +400,7 @@ fn words_in(t: Term) -> List<string> {
         .Text(text) -> [text],
         .Node(b) -> match b {
             .Node(_, _, inner, _) -> flatten([words_in(f.stated()) for f in inner]),
-            .Call(_, _) or .Var(_) -> [],
+            .Computed(_, _, _, _) or .Call(_, _) or .Var(_) -> [],
         },
         .List(items) -> flatten([words_in(i) for i in items]),
     }
