@@ -3,9 +3,9 @@
 //! it must print beside it. Every proof is both engines: a program the
 //! evaluator has not agreed with since anything it can see last moved runs
 //! there first, and a disagreement stops the run before a binary exists.
-use core.{sorted_texts, joined, flatten, module_path, TypeRegistry, counted, FileId}
+use core.{sorted_texts, joined, flatten, distinct, module_path, TypeRegistry, counted, FileId}
 use @std.path.{joined_path, dir_of, stem_of, relative_path, normalized, under_dir}
-use @std.io.{make_dirs, exists, write_text}
+use @std.io.{make_dirs}
 use compiler.backend.{run_scheduled}
 use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Lowered, program_symbol}
@@ -229,8 +229,7 @@ impl Workspace {
 
     /// The evaluator agreed with each: remembered under what the program can see.
     fn agreed(store: Store, d: Derived, owed: List<string>) -> Derived {
-        let _ = make_dirs(self.proofs_dir())
-        for path in owed { let _ = write_text(self.proof_file(store, path), "") }
+        for path in owed { self.prove(store, path) }
         d
     }
 
@@ -285,31 +284,32 @@ impl Workspace {
         )
     }
 
-    /// WHERE THE EVALUATOR'S AGREEMENT IS REMEMBERED: under the compiler that agreed, the
-    /// text the program must print and the text of every file it can reach — a BODY moves
-    /// a run, so an interface digest would not do, and a compiler can move the answer.
-    fn proved_key(store: Store, path: string) -> string {
-        let texts = [self.text_digest(f) for f in self.seen_files(store, path)]
-        node_key(
-            Stored.Unit,
-            [
-                "proved",
-                self.compiler_id(),
-                path,
-                self.listed_text(beside(path, "expected")),
-                joined(texts, "\n"),
-            ],
-        )
+    /// WHERE THE EVALUATOR'S AGREEMENT IS REMEMBERED: a row under the compiler that agreed,
+    /// kept with what the agreement READ — the program, the text it must print and every file
+    /// it can reach, each by its text (a BODY moves a run, and so can a line a task prints).
+    /// It stands while every read does, and nothing else judges it.
+    fn proof_row(path: string) -> string { node_key(Stored.Proof, ["proved", self.compiler_id(), path]) }
+
+    /// What a program's agreement stands on.
+    fn proof_reads(store: Store, path: string) -> List<VerdictRead> {
+        [VerdictRead.Text(f) for f in distinct([path, beside(path, "expected")].concat(self.seen_files(store, path)))]
     }
 
-    /// A PROOF IS A FILE, one per key: empty, present once the evaluator agreed. A directory
-    /// of them moves between machines and runs by itself, which a packed store's rows do not.
-    fn proofs_dir() -> string { joined_path(build_cache_root(self), "proofs") }
-
-    fn proof_file(store: Store, path: string) -> string { joined_path(self.proofs_dir(), self.proved_key(store, path)) }
+    /// The evaluator agreed with `path`: kept with what it read.
+    fn prove(store: Store, path: string) {
+        let _ = store
+            .keep_reading(
+                Stored.Proof,
+                self.proof_row(path),
+                "proved",
+                self.readings(self.proof_reads(store, path)),
+            )
+    }
 
     // LICENSED input.test_setting: a proof only skips a test run, never an input of what is built
-    fn proved(store: Store, path: string) -> bool { exists(self.proof_file(store, path)) }
+    fn proved(store: Store, path: string) -> bool {
+        store.get_valid(Stored.Proof, self.proof_row(path), (name) -> self.named_now(name)) != null
+    }
 }
 
 /// The file beside a program that wears its stem and this extension.
