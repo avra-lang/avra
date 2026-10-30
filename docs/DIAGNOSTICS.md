@@ -39,7 +39,7 @@ error[parse.expected]: this cannot start or continue a `stmt`
 1 │ }
   · ┬
 ──╯
-help: it could begin with `yield`, `@fair`, PKG, `component`, COMPONENT, `use`, `export`, `spec` — and 54 more
+help: it could begin with `yield`, `@fair`, PKG, `component`, COMPONENT, `use`, `export`, `spec` — and 55 more
 ```
 
 ## build.failed
@@ -3617,10 +3617,10 @@ trait T {
 
 ```
 error[type.trait_member]: `T.a` is declared twice
-  ╭─[witness.av:3:8]
+  ╭─[witness.av:3:5]
 3 │     fn a() -> int
-  ·        ┬
-  ·        ╰── declared again here
+  ·     ┬
+  ·     ╰── declared again here
 ──╯
 help: a trait names each member once — drop or rename one
 ```
@@ -3943,10 +3943,10 @@ trait T {
 
 ```
 error[type.derive_contract]: a trait's `derive` answers the declarations it makes
-  ╭─[witness.av:2:15]
+  ╭─[witness.av:2:5]
 2 │     static fn derive(n: int) -> int { n }
-  ·               ┬
-  ·               ╰── declared here
+  ·     ┬
+  ·     ╰── declared here
 ──╯
 help: take the declaration (`t: Type`, `f: Fn` or `n: Named`) and answer `List<Directive>` (or `Declared`) as a `static fn`
 ```

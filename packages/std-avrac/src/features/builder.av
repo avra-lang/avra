@@ -133,6 +133,9 @@ impl Slots for Builder {
     /// The span this build was written at.
     fn built_at() -> Span? { self.span }
 
+    /// An error node, placeless, for a payload the rule left unwritten.
+    fn hollow() -> ExprId { self.store.alloc_expr(Expr.Error) }
+
     /// The catch arms the payload `label` carries.
     fn catch_arms_of(label: string) -> Result<List<CatchArm>, string> {
         .Ok(catch_arms_at(self.args, self.slot_of(label)?))
@@ -365,7 +368,7 @@ impl Builder {
     fn faceted_stmt(id: StmtId) -> Result<LangNode, string> {
         for f in self.payloads {
             let side? = facet_table(f) else { continue }
-            if !self.flag_of(f.name)? { continue }
+            if !self.present_of(f.name)? { continue }
             let row? = facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
             (row.mark)(self.store, id)
         }
@@ -379,7 +382,7 @@ impl Builder {
         let id = self.store.alloc_expr(e, self.node_span())
         for f in self.payloads {
             let side? = facet_table(f) else { continue }
-            if !self.flag_of(f.name)? { continue }
+            if !self.present_of(f.name)? { continue }
             let row? = expr_facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
             (row.mark)(self.store, id)
         }
