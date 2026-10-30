@@ -217,8 +217,7 @@ fn new_keys() -> Keys {
 /// each with why (`read_files`) — the read set the hold is settled by,
 /// which is every file a text was taken of and nothing else; the held
 /// modules minted so far, by name
-/// (`minted`); the files whose declarations stand, read or minted
-/// (`file_ready`); whether the holds are settled, before which no file's
+/// (`minted`); whether the holds are settled, before which no file's
 /// standing is known (`holds_now`); which
 /// held module files a declaration under each bucket value its record
 /// carries — name, word, mark, extern — so a bucket read mints its
@@ -278,7 +277,6 @@ type Hold = {
     /// Whether THIS attempt holds at all: the unheld retry holds nothing, by definition.
     holds_now: Cell<bool>,
     minted: Cell<Map<string, bool>>,
-    file_ready: Table<bool>,
     row_filled: Table<bool>,
     /// THE PRODUCER INDEX: for each held module, every declaration NAME,
     /// WORD and MARK its record lines carry, and each extern it declares. A bucket
@@ -403,7 +401,6 @@ fn new_hold() -> Hold {
         loaded_turn: map_cell(),
         holds_now: Cell.new(false),
         minted: Cell.new(no_minted),
-        file_ready: new_table<bool>(),
         row_filled: new_table<bool>(),
         named_by: Cell.new(no_producers),
         worded_by: Cell.new(no_producers),
@@ -1264,12 +1261,13 @@ impl Workspace {
     /// A FILE'S DECLARATIONS STAND before they are read: a read file's by its
     /// parse, a held file's minted with its module the first time anything asks.
     fn file_ensured(f: FileId) {
-        if self.hold.file_ready.at(f.index) != null || !self.hold.holds_now.get() { return }
-        self.hold.file_ready.keep(f.index, true)
-        if self.is_held(f) && self.store.get() != null {
-            self.minted_files([self.decls.file(f).path])
-            self.decls.note_module_rows(self.decls.file(f).module_id, 2)
+        let path = self.decls.file(f).path
+        if !self.hold.holds_now.get() ||
+            self.hold.minted.get().get(path) != null ||
+            !self.is_held(f) {
+            return
         }
+        self.minted_files([path])
     }
 
     /// Every read source file of the package `f` stands in admitted, its tests aside. A held
@@ -1293,11 +1291,8 @@ impl Workspace {
 
     /// Every held file of each listed module minted, once.
     fn minted_modules(modules: List<string>) {
-        let store? = self.store.get() else { return }
-        for m in modules {
-            let at = module_path(segments_of(m))
-            self.mint_files(store, at, self.module_files(at))
-        }
+        if self.store.get() == null { return }
+        for m in modules { self.mint_files(self.module_files(module_path(segments_of(m)))) }
     }
 
     /// The held modules of the listed files minted whole, once: a module stands as one
@@ -1927,17 +1922,22 @@ impl Workspace {
     /// The declarations a file MINTS into the one table; the answer's
     /// hash is the item tree's — names and kinds.
     fn items(f: FileId) -> List<DeclId> {
-        // A HELD FILE ANSWERS FROM ITS RECORD, before anything reaches for a parse: its
-        // declarations were MINTED, and `file_items` is a memo over a paree it never had.
-        if self.is_held(f) { return self.decls.held_items_of_file(f) }
         match self.relation(Family.Items).start(f.index) {
             .Reuse(value) -> { return items_of(value) },
             .Compute -> nothing(),
         }
+        // AN UNREAD FILE IS MINTED FROM THE ITEMS ITS LAST READ KEPT, never parsed
+        if self.is_held(f) { return self.items_settled(f, self.items_minted(f)) }
         self.decls.note_rows(f, 0)
         let p = self.parsed(f)
-        let ids = self.decls.admit(f, p.store, p.stmts)
-        let out = items_of(
+        let out = self.items_settled(f, self.decls.admit(f, p.store, p.stmts))
+        self.decls.note_rows(f, 1)
+        out
+    }
+
+    /// A file's `Items` settled: the top-level ids, hashed by every row the file minted.
+    fn items_settled(f: FileId, ids: List<DeclId>) -> List<DeclId> {
+        items_of(
             self
                 .relation(Family.Items)
                 .finish(
@@ -1946,8 +1946,6 @@ impl Workspace {
                     fp_list([self.row_print(d) for d in self.decls.decls_so_far(f)]),
                 ),
         )
-        self.decls.note_rows(f, 1)
-        out
     }
 
     /// A file's rows standing before a reader reads them through their buckets: its

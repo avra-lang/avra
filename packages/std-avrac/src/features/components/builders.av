@@ -15,7 +15,6 @@ use core.{
     ExprId,
     Plain,
     Scoped,
-    SyntaxArena,
     BodyView,
     TypeRef,
     Param,
@@ -31,7 +30,7 @@ use grammar.{Token}
 fn build_component_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let held = b.stmts(5)?
-    let made = [s for s in held if !holds_a_member(b.store, s)]
+    let made = [s for s in held if !b.store.holds_a_member(s)]
     if made.any((s) -> b.store.is_state_stmt(s)) { return .Err(untyped_state()) }
     if made.any((s) -> b.store.is_declaration(s)) { return .Err(foreign_member()) }
     let fns = b.with_body(held, made)
@@ -88,13 +87,6 @@ fn build_component_event(b: Builder) -> Result<LangNode, string> {
                 },
             ),
     )
-}
-
-/// A member a component may hold besides its fields: a `fn`, or a
-/// recovery's hole. Any other statement is part of its BODY — what it
-/// is made of.
-fn holds_a_member(store: SyntaxArena, s: StmtId) -> bool {
-    store.fn_parts(s) != null || store.hole_stmt(s) != null
 }
 
 /// `list visible() by it.id { t -> item { … } }` — a KEYED list. The
