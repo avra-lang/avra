@@ -147,6 +147,36 @@ impl Slots for Builder {
     /// The span this build was written at.
     fn built_at() -> Span? { self.span }
 
+    /// The arena this build allocates into.
+    fn arena() -> SyntaxArena { self.store }
+
+    /// A new statement at this build's place, every facet field the rule's
+    /// payload carries written into the store table its mark names. A
+    /// table no row names is a defect at the mark, never a silent drop.
+    fn made_stmt(s: Stmt) -> Result<StmtId, string> {
+        let id = self.store.alloc_stmt(s, self.node_span())
+        for f in self.payloads {
+            let side? = facet_table(f) else { continue }
+            if !self.flag_of(f.name)? { continue }
+            let row? = facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
+            (row.mark)(self.store, id)
+        }
+        .Ok(id)
+    }
+
+    /// A new expression at this build's place, its facet fields written
+    /// like a statement's.
+    fn made_expr(e: Expr) -> Result<ExprId, string> {
+        let id = self.store.alloc_expr(e, self.node_span())
+        for f in self.payloads {
+            let side? = facet_table(f) else { continue }
+            if !self.flag_of(f.name)? { continue }
+            let row? = expr_facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
+            (row.mark)(self.store, id)
+        }
+        .Ok(id)
+    }
+
     /// The catch arms the payload `label` carries.
     fn catch_arms_of(label: string) -> Result<List<CatchArm>, string> {
         .Ok(catch_arms_at(self.args, self.slot_of(label)?))
@@ -369,35 +399,14 @@ impl Builder {
     /// branch's. A `@facet` field the rule's payload carries is written to
     /// its side table here, keyed by the node just allocated.
     fn make_stmt(s: Stmt) -> Result<LangNode, string> {
-        let id = self.store.alloc_stmt(s, self.node_span())
-        self.faceted_stmt(id)
-    }
-
-    /// The node `id` names, once every facet field the rule's payload
-    /// carries is written into the store table its mark names. A table
-    /// no row names is a defect at the mark, never a silent drop.
-    fn faceted_stmt(id: StmtId) -> Result<LangNode, string> {
-        for f in self.payloads {
-            let side? = facet_table(f) else { continue }
-            if !self.flag_of(f.name)? { continue }
-            let row? = facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
-            (row.mark)(self.store, id)
-        }
-        .Ok(LangNode.NStmt(id))
+        .Ok(LangNode.NStmt(self.made_stmt(s)?))
     }
 
     /// A new expression node, at the span its anchor names or the matched
     /// branch's, its facet fields written to their side tables like a
     /// statement's.
     fn make_expr(e: Expr) -> Result<LangNode, string> {
-        let id = self.store.alloc_expr(e, self.node_span())
-        for f in self.payloads {
-            let side? = facet_table(f) else { continue }
-            if !self.flag_of(f.name)? { continue }
-            let row? = expr_facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
-            (row.mark)(self.store, id)
-        }
-        self.meant(id)
+        self.meant(self.made_expr(e)?)
     }
 
     /// `id` as this build's node, with what it means minted beside it when

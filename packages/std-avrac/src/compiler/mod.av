@@ -27,9 +27,9 @@
 //!   host/      the filesystem seam and the manifest
 //!   format/    the AST's source projection (`avra fmt`)
 //!   dev/       the compiler's own proofs: attacks, diagnostic witnesses
-use core.{flatten, PayloadRow, node_payload_rows, has_anchor}
+use core.{flatten, some_list, row_for, PayloadRow, node_payload_rows, has_anchor}
 use @std.meta.{Field}
-use @std.grammar.{Diagnostic, Ready, ready, node_builder_name}
+use @std.grammar.{Grammar, Build, Diagnostic, Ready, ready, node_builder_name, defect}
 use grammar.{avra_known_terminals}
 use compiler.format.{rule_scale, worded_nodes}
 use features.{
@@ -46,6 +46,7 @@ use features.{
     Dispatch,
     bind_nodes,
     node_builders,
+    computes,
     BlockWords,
 }
 use diagnostics.{Diag, DiagCode, new_source_file}
@@ -133,6 +134,7 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
             bound.defects,
             template_defects(bound.g, rows),
             builder_defects(features, g),
+            computed_defects(g),
             code_defects(codes),
             wording_defects(wordings, worded_nodes),
         ],
@@ -140,7 +142,7 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     if !defects.is_empty() { return unassembled(features, defects) }
     Language {
         features: features,
-        builders: with_nodes(builder_index(features), rows, refusal_builders(features)),
+        builders: with_nodes(builder_index(features), rows, refusal_builders(features), g),
         syntax: rd,
         wordings: wordings.found,
         keywords: g.keywords(),
@@ -154,10 +156,12 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
 /// builder a rule may name — a node builder's name is the variant's
 /// own, which no feature can spell, and a hand builder for the same
 /// variant wears them too, so the mark holds wherever a node is made.
-fn with_nodes(index: Map<string, BuilderRow>, rows: List<PayloadRow>, refusals: List<BuilderRow>) -> Map<
-    string,
-    BuilderRow,
-> {
+fn with_nodes(
+    index: Map<string, BuilderRow>,
+    rows: List<PayloadRow>,
+    refusals: List<BuilderRow>,
+    g: Grammar,
+) -> Map<string, BuilderRow> {
     mut out = index
     for row in node_builders().concat(refusals) { out.set(row.name, row) }
     for row in rows {
@@ -165,7 +169,37 @@ fn with_nodes(index: Map<string, BuilderRow>, rows: List<PayloadRow>, refusals: 
         let held? = out.get(name) else { continue }
         out.set(name, held with { payloads: row.payloads, anchor: anchorage(row.payloads) })
     }
+    // a computed node's fn reads the labels of the node its rule names
+    for c in computed_builds(g) {
+        let row? = row_for(rows, c.owner, c.variant) else { continue }
+        let held? = out.get(c.by) else { continue }
+        out.set(c.by, held with { payloads: row.payloads, anchor: anchorage(row.payloads) })
+    }
     out
+}
+
+/// One `-> Owner.Variant by fn` a rule writes.
+type ComputedBuild = { rule: string, owner: string, variant: string, by: string }
+
+/// Every computed build the grammar's branches write.
+fn computed_builds(g: Grammar) -> List<ComputedBuild> {
+    flatten([some_list(computed_of(r.name, s.build)) for r in g.rules for s in r.body.seqs()])
+}
+
+fn computed_of(rule: string, b: Build?) -> ComputedBuild? {
+    let held? = b else { return null }
+    match held {
+        .Computed(owner, variant, by, _) -> ComputedBuild { rule: rule, owner: owner, variant: variant, by: by },
+        _ -> null,
+    }
+}
+
+/// A computed build names a `@computed` fn, and each fn computes one node.
+fn computed_defects(g: Grammar) -> List<Diagnostic> {
+    let builds = computed_builds(g)
+    let unknown = [defect(c.rule, no_computed_fn(c.by)) for c in builds if computes.find(it.name == c.by) == null]
+    let split = [defect(c.rule, computes_two_nodes(c.by)) for c in builds if builds.any(it.by == c.by && (it.owner != c.owner || it.variant != c.variant))]
+    unknown.concat(split)
 }
 
 /// Each grammar refusal as the payload row its `Refusal.<name>` binds: it
@@ -354,4 +388,12 @@ export fn parse_source(text: string) -> Parsed {
 /// The canonical language's whole pipeline over one nameless source.
 export fn analyze_source(text: string) -> Analysis {
     avra().analyze(new_source_file("<source>", text))
+}
+
+fn no_computed_fn(by: string) -> string {
+    "`by ${by}` names no `@computed` fn — a computed build names the fn that computes its node"
+}
+
+fn computes_two_nodes(by: string) -> string {
+    "`${by}` computes two different nodes — a `@computed` fn computes the one node its rules name"
 }

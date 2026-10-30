@@ -78,7 +78,7 @@ fn build_defects(rule_name: string, s: Seq, value_needed: bool) -> List<Diagnost
         .Call(_, args) -> [defect(rule_name, "build argument `${a}` is not captured in its branch") for a in args if !labels.contains(a)],
         // A node build's labels are checked against the NODE's
         // payloads, by whoever holds the node model — never here.
-        .Node(_, _, _, _) -> [],
+        .Node(_, _, _, _) or .Computed(_, _, _, _) -> [],
     }
 }
 
@@ -129,7 +129,7 @@ fn tier_build_defects(rule_name: string, b: Build?) -> List<Diagnostic> {
         .Call(_, args) -> [defect(rule_name, "an @operators build reads `left`, `op` and `right`, not `${a}`") for a in args if !["left", "op", "right"].contains(a)],
         // a node build's labels are checked against the NODE's payloads,
         // by whoever holds the node model — never here
-        .Node(_, _, _, _) -> [],
+        .Node(_, _, _, _) or .Computed(_, _, _, _) -> [],
     }
 }
 
@@ -187,12 +187,18 @@ fn group_turns(p: Prim) -> List<Seq> {
 
 fn is_var(b: Build?) -> bool {
     let held? = b else { return false }
-    match held { .Var(_) -> true, .Call(_, _) or .Node(_, _, _, _) -> false }
+    match held {
+        .Var(_) -> true,
+        .Call(_, _) or .Node(_, _, _, _) or .Computed(_, _, _, _) -> false,
+    }
 }
 
 fn is_answer(b: Build?, field: string) -> bool {
     let held? = b else { return false }
-    match held { .Var(name) -> name == field, .Call(_, _) or .Node(_, _, _, _) -> false }
+    match held {
+        .Var(name) -> name == field,
+        .Call(_, _) or .Node(_, _, _, _) or .Computed(_, _, _, _) -> false,
+    }
 }
 
 /// One branch's defects: its items', then its build's.
