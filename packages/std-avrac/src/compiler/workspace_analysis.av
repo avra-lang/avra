@@ -1028,10 +1028,9 @@ impl Workspace {
             .Reuse(held) -> { return reused_settlement(settled_of(held)) },
             .Compute -> self.relation(Family.Settled).begin(id),
         }
-        let ask = self.settle_asks.get()[id]
-        self.decls.gather_open()
-        let r = self.settle_result(ask)
-        self.grouped(Family.Settled, id, self.decls.gather_close())
+        let asked = self.hold.body_asks.get().length
+        let restored = self.settled_restored(id)
+        let r = restored ?? self.settled_ran(id)
         // every file `embed` read is this query's input, a held answer's too
         match r {
             .Ok(value) -> { for path in value.embeds { let _ = self.embedded(path, EmbedKind.Octets) } },
@@ -1039,6 +1038,15 @@ impl Workspace {
         }
         let held = match r { .Ok(x) -> Settlement.Held(x), .Err(why) -> Settlement.Refused(why) }
         let _ = self.relation(Family.Settled).finish(id, DbRow.Settled(held), settlement_hash(held))
+        if restored == null { self.settled_kept(id, r, asked) }
+        r
+    }
+
+    /// A const's settlement run, its name reads gathered into one group.
+    fn settled_ran(id: int) -> Result<Settled, Unsettled> {
+        self.decls.gather_open()
+        let r = self.settle_result(self.settle_asks.get()[id])
+        self.grouped(Family.Settled, id, self.decls.gather_close())
         r
     }
 
