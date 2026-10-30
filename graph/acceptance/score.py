@@ -112,6 +112,25 @@ class App:
         return body
 
 
+def known_names(app, schema, params):
+    """Every name the graph already holds, with the kind it holds it as: what the reader is
+    told so a possessive or abbreviated mention settles to the record instead of minting a
+    second one. Read from the graph, never from the fixture's answers."""
+    out = []
+    for model in schema["models"]:
+        label = ((model.get("semantics") or {}).get("label") or [None])[0]
+        if not label:
+            continue
+        answer = app.call({"op": "query",
+                           "cypher": f"MATCH (a:{model['name']}) RETURN a.{label} AS v",
+                           "params": params})
+        for field in (answer or {}).get("fields") or []:
+            value = field.get("value")
+            if isinstance(value, str) and value:
+                out.append({"kind": model["name"], "name": value})
+    return out
+
+
 def run_hook(command, payload, timeout=None, log=None, env=None):
     """The hook's JSON answer; its stderr is appended to `log` when given."""
     done = subprocess.run(shlex.split(command), input=json.dumps(payload), text=True,
@@ -615,8 +634,13 @@ def publish_source(app, mode, hooks, source, schema, revision, trace=None):
         record["cached"] = result is not None
         if result is None:
             started = time.time()
+            known_file = app.scratch / "known.json"
+            known_file.write_text(json.dumps(known_names(app, schema, {
+                "asker": source["author"], "speaker": source["author"],
+                "now": utc_ms(source["received_at"])})))
             result = run_hook(hooks["extractor"].replace("{schema}", str(schema_file)), envelope(source),
-                              timeout=extract_timeout(), log=log)
+                              timeout=extract_timeout(), log=log,
+                              env={"CASCADE_CANDIDATES": str(known_file)})
             record["ms"] = int((time.time() - started) * 1000)
             if CACHE and result.get("status") == "complete":
                 CACHE.put("extractions", key, result)

@@ -1,6 +1,6 @@
 """Build a C01 ExtractionRequest from an acceptance source row and a catalog.
 
-usage: python request.py SOURCE_ID CATALOG_JSON [SOURCES_JSONL] > request.json
+usage: python request.py SOURCE_ID CATALOG_JSON [SOURCES_JSONL] [--candidates FILE] > request.json
 CATALOG_JSON is the app's `{"op":"schema"}` answer.
 """
 import json
@@ -45,9 +45,14 @@ def request(source, catalog, model_id):
 
 
 if __name__ == "__main__":
-    sid, catalog_path = sys.argv[1], sys.argv[2]
-    sources = sys.argv[3] if len(sys.argv) > 3 else Path(__file__).parent.parent / "acceptance" / "sources.jsonl"
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    cand = sys.argv[sys.argv.index("--candidates") + 1] if "--candidates" in sys.argv else None
+    sid, catalog_path = args[0], args[1]
+    sources = args[2] if len(args) > 2 else Path(__file__).parent.parent / "acceptance" / "sources.jsonl"
     row = next(r for r in map(json.loads, open(sources)) if r["id"] == sid)
     from pins import MODEL_ID
 
-    json.dump(request(envelope(row), json.load(open(catalog_path)), MODEL_ID), sys.stdout)
+    made = request(envelope(row), json.load(open(catalog_path)), MODEL_ID)
+    if cand:
+        made["candidates"] = json.load(open(cand))
+    json.dump(made, sys.stdout)

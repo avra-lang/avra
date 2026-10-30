@@ -1,7 +1,7 @@
 """Local extraction cascade: an encoder proposes spans, a small LLM only
 scores closed choices, and every proposal is an exact source anchor.
 
-usage: python cascade.py [--catalog SCHEMA_JSON] [--local] [--stream] [--no-prefix] [--units M] < in.json > out.json
+usage: python cascade.py [--catalog SCHEMA_JSON] [--candidates JSON] [--local] [--stream] [--no-prefix] [--units M] < in.json > out.json
        python cascade.py --identity   # what decides the results (identity.py), as JSON
        python cascade.py --serve   # keep both models resident behind a Unix socket
 
@@ -621,8 +621,63 @@ class Cascade:
         self.llm.begin(source["content"])
         for kind, x, y, p in self.chosen:
             self.fill(kind, x, y, p)
+        self.settle_known_names()
 
     # Entities: encoder spans, LLM picks the antecedent for partial names.
+
+    def known_spans(self, by_label):
+        """Spans the source writes that are already records the graph holds. A name the graph
+        knows is evidence the text names it, so it is a candidate the encoder need not see —
+        the encoder is blind to constructions it has never been asked about, and confidence is
+        no guide there. Matched by the name and every alias, longest first, non-overlapping."""
+        text, out, taken = self.t.s, [], []
+        wanted = []
+        for candidate in self.request.get("candidates") or []:
+            kind = candidate.get("kind")
+            if not kind or kind.lower() not in by_label:
+                continue
+            for said in [candidate.get("name"), *(candidate.get("aliases") or [])]:
+                if isinstance(said, str) and len(said) > 1:
+                    wanted.append((said, by_label[kind.lower()]))
+        for said, model in sorted(wanted, key=lambda w: -len(w[0])):
+            start = text.find(said)
+            while start >= 0:
+                end = start + len(said)
+                if all(end <= a or start >= b for a, b in taken):
+                    taken.append((start, end))
+                    out.append((start, end, model, 1.0))
+                start = text.find(said, start + 1)
+        return out
+
+    def settle_known_names(self):
+        """A name the graph knows, said in part, IS that name: a value that begins exactly ONE
+        known name takes that name, whatever kind the reader guessed — a possessive fragment
+        names the record the graph already holds, and a second record splits one thing in two.
+        The record takes that kind too, when it declares every field the record already holds.
+        Ambiguity leaves the text alone."""
+        known = []
+        for candidate in self.request.get("candidates") or []:
+            kind, name = candidate.get("kind"), candidate.get("name")
+            if isinstance(kind, str) and isinstance(name, str) and name:
+                known.append((kind, name))
+        for rec in self.records:
+            for field in rec.get("fields") or []:
+                held = field.get("value")
+                if not isinstance(held, str) or len(held) < 3:
+                    continue
+                longer = [(k, n) for k, n in known if len(n) > len(held) and n.lower().startswith(held.lower())]
+                same = [h for h in longer if h[0] == rec.get("model")]
+                pick = same if same else longer
+                if len(pick) != 1:
+                    continue
+                kind, name = pick[0]
+                declared = (self.plan.models.get(kind) or {}).get("properties") or []
+                can_be = kind == rec.get("model") or {f.get("property") for f in rec["fields"]} <= {p["name"] for p in declared}
+                if not can_be:
+                    continue
+                log(f"known name {held!r} is {name!r}")
+                field["value"] = name
+                rec["model"] = kind
 
     def entity_pass(self):
         labels = self.plan.entity_labels()
@@ -633,7 +688,11 @@ class Cascade:
         for l, xs in found.items():
             for x in xs:
                 typed.setdefault((x["start"], x["end"]), []).append((l, x["confidence"]))
-        spans = sorted((a, b, *self.typed(a, b, ls, labels)) for (a, b), ls in typed.items())
+        spans = [(a, b, *self.typed(a, b, ls, labels)) for (a, b), ls in typed.items()]
+        known = self.known_spans(by_label)
+        if known:
+            log("known " + " ".join(f"{m}:{self.t.s[a:b]}" for a, b, m, _ in known))
+        spans = sorted(spans + known)
         spans.sort(key=lambda x: (-(x[1] - x[0]), x[0]))
         for a, b, label, conf in spans:
             if label not in by_label:
@@ -1798,6 +1857,14 @@ def main():
     catalog = args[args.index("--catalog") + 1] if "--catalog" in args else None
     batch = isinstance(stdin, list)
     reqs = [requested(s, catalog) for s in (stdin if batch else [stdin])]
+    known_from_env = os.environ.get("CASCADE_CANDIDATES")
+    if known_from_env:
+        for r in reqs:
+            r["candidates"] = json.load(open(known_from_env))
+    if "--candidates" in args:
+        known = json.load(open(args[args.index("--candidates") + 1]))
+        for r in reqs:
+            r["candidates"] = known
     if "--stream" in args:
         return streamed(reqs, args)
     if "--local" in args or os.environ.get("CASCADE_LOCAL"):
