@@ -2491,14 +2491,15 @@ impl Workspace {
     fn typed(d: DeclId) -> TypeFacts {
         // Annotation evaluation re-types the declaration after hiding
         // the active annotation, so this family also has a smaller
-        // recursive view.
+        // recursive view, typed afresh and never kept.
+        let nested = self.db.active(key(Family.Typed, d.index))
         match self.relation(Family.Typed).start_recursive(d.index) {
             .Reuse(value) -> { return typed_of(value) },
             .Compute -> nothing(),
         }
         let x = self.decls.decl(d)
-        mut t = self.type_cx_for(x)
-        let out = t.type_decl(x)
+        let kept = if nested { null } else { self.typed_restored(x) }
+        let out = kept ?? self.typed_fresh(x)
         // A DECLARATION STILL EXPANDING HAS A RANGE THAT WILL GROW: a
         // window typed now lacks the ids the expansion is about to add,
         // so it answers this asker alone and is never memoized — the
@@ -2512,7 +2513,7 @@ impl Workspace {
         // they are placed, so a shift that leaves `syntax(d)` and
         // `names(d)` alike still reads this body's value as moved.
         let spot = self.placed(d)
-        typed_of(
+        let facts = typed_of(
             self
                 .relation(Family.Typed)
                 .finish_lazy(
@@ -2521,6 +2522,14 @@ impl Workspace {
                     (r: DbRow) -> fp(123, [spot, type_facts_fp(typed_of(r), ids, true)]),
                 ),
         )
+        if kept == null && !nested { self.typed_kept(x, facts) }
+        facts
+    }
+
+    /// One declaration's body typed here.
+    fn typed_fresh(x: Decl) -> TypeFacts {
+        mut t = self.type_cx_for(x)
+        t.type_decl(x)
     }
 
     /// A file's bodies as one table: Main's facts first (its range

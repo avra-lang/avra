@@ -29,6 +29,31 @@ use @std.relation.engine.{Key, edge_of}
 use compiler.families.{Family}
 
 impl Workspace {
+    /// A declaration's own syntax answer's hash at `arg`, demanded first: a pure read of its
+    /// file's parse, so a saved answer's read of it is judged by what a run here answers.
+    fn syntax_hash(ordinal: int, arg: int) -> int? {
+        let _ = self.db.kernel.verified(ordinal, arg)
+        self.held_hash(ordinal, arg)
+    }
+
+    /// An answer's hash at `arg` as this process holds it. A saved answer's read of anything
+    /// but syntax is never demanded while it is judged: demanding a body's typing, a summary
+    /// or a compile-time run inside another body's frame reads what that body reads.
+    fn held_hash(ordinal: int, arg: int) -> int? { self.db.kernel.hash_forced(key_at(ordinal, arg)) }
+
+    /// A declaration's syntax answers, spelled by the declaration's wire and demanded when judged.
+    fn named_syntax(name: string, fam: Family) -> AnswerRef {
+        let ws = self
+        let ordinal = fam.ordinal
+        AnswerRef {
+            name: name,
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_decl(arg),
+            arg: (spelled: string) -> ws.decl_arg(spelled),
+            hash: (arg: int) -> ws.syntax_hash(ordinal, arg),
+        }
+    }
+
     /// The answers of `fam`, keyed by declaration, spelled by the declaration's wire.
     fn named_by_decl(name: string, fam: Family) -> AnswerRef {
         let ws = self
@@ -38,7 +63,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_decl(arg),
             arg: (spelled: string) -> ws.decl_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.held_hash(ordinal, arg),
         }
     }
 
@@ -115,7 +140,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_settle(arg),
             arg: (spelled: string) -> ws.settle_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.held_hash(ordinal, arg),
         }
     }
 
@@ -229,7 +254,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: spell,
             arg: find,
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.held_hash(ordinal, arg),
         }
     }
 
@@ -242,7 +267,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_file(arg),
             arg: (spelled: string) -> ws.file_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.held_hash(ordinal, arg),
         }
     }
 
@@ -255,7 +280,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_module(arg),
             arg: (spelled: string) -> ws.module_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.held_hash(ordinal, arg),
         }
     }
 
@@ -268,7 +293,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> if arg == 0 { name } else { null },
             arg: (spelled: string) -> if spelled == name { 0 } else { null },
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.held_hash(ordinal, arg),
         }
     }
 
@@ -281,8 +306,8 @@ impl Workspace {
         rdb.answer_known(self.named_consts("ConstTyped", Family.ConstTyped))
         rdb.answer_known(self.named_consts("Settled", Family.Settled))
         let ws = self
-        rdb.answer_known(self.named_by_decl("Syntax", Family.Syntax))
-        rdb.answer_known(self.named_by_decl("Placed", Family.Placed))
+        rdb.answer_known(self.named_syntax("Syntax", Family.Syntax))
+        rdb.answer_known(self.named_syntax("Placed", Family.Placed))
         rdb.answer_known(self.named_typed())
         rdb.answer_known(self.named_units())
         rdb.answer_known(self.named_lifts())
@@ -306,7 +331,7 @@ impl Workspace {
                         (s: string) -> ws.package_arg(s),
                     ),
             )
-        rdb.answer_known(self.named_by_decl("Marks", Family.Marks))
+        rdb.answer_known(self.named_syntax("Marks", Family.Marks))
         rdb.answer_known(self.named_by_decl("Writes", Family.Writes))
         rdb.answer_known(self.named_by_decl("WriteSummary", Family.WriteSummary))
         rdb.answer_known(self.named_by_decl("CancelSummary", Family.CancelSummary))
@@ -361,7 +386,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_lift(arg),
             arg: (spelled: string) -> ws.lift_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+            hash: (arg: int) -> ws.held_hash(ordinal, arg),
         }
     }
 
@@ -397,7 +422,7 @@ impl Workspace {
 
     fn durable_slice(arg: int) -> int? {
         if arg < 0 || arg >= self.decls.decl_count() { return null }
-        if self.db.value_hash_of(key(Family.Names, arg)) == null { return null }
+        if self.syntax_hash(Family.Names.ordinal, arg) == null { return null }
         let x = self.decls.decl(DeclId { index: arg })
         match self.relation(Family.Resolved).values.entry(x.file.index) {
             .Present(r) -> name_slice_fp(
@@ -590,49 +615,6 @@ impl Workspace {
         if wires.any(it == anchoring_wire(.Unplaceable)) { return null }
         "${diag_fp(unplaced(v))}\t${joined(wires, ",")}"
     }
-
-    /// Typed answers standing on names, kept as saved answers and judged against what a
-    /// fresh typing says: a kept answer still valid must equal it, or a read is missing.
-    fn typed_said_pass(store: Store) {
-        let rdb = self.decls.rows_db.get()
-        mut settled = 0
-        mut stood = 0
-        mut why: Map<string, int> = {}
-        mut valid = 0
-        mut recomputed = 0
-        mut unplaceable = 0
-        mut mismatched = 0
-        for arg in 0..self.decls.decl_count() {
-            let reads = self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg))
-            if reads.is_empty() { continue }
-            settled = settled + 1
-            let leaves? = rdb.leaves_of(reads) else { continue }
-            let d = DeclId { index: arg }
-            stood = stood + 1
-            let says? = self.typed_says(d) else {
-                unplaceable = unplaceable + 1
-                continue
-            }
-            let row = node_key(Stored.Unit, ["typedsaid", self.decl_ref(d)])
-            let kept = store.get_valid(Stored.Unit, row, (n) -> rdb.leaf_digest(n))
-            if kept == null {
-                recomputed = recomputed + 1
-                let cause = self.first_moved(store, row, (n) -> rdb.leaf_digest(n))
-                why.set(cause, (why.get(cause) ?? 0) + 1)
-            } else {
-                valid = valid + 1
-                if kept != says {
-                    mismatched = mismatched + 1
-                    eprintln("Q typedsaid mismatch ${self.decl_ref(d)}")
-                }
-            }
-            let _ = store.keep_reading(Stored.Unit, row, says, saved_reads(leaves))
-        }
-        eprintln(
-            "typedsaid: ${settled} settled, ${stood} stand on names; valid ${valid}, recomputed ${recomputed}, unplaceable ${unplaceable}, mismatched ${mismatched}; recomputed because: ${why.entries().map("${it.key} ${it.value}").join(", ")}",
-        )
-        if mismatched > 0 { wreck("a valid TypedSaid differs from a fresh typing: a read is missing") }
-    }
 }
 
 impl Workspace {
@@ -701,7 +683,7 @@ impl Workspace {
         let gone? = lines.find(now_of(read_name(it)) != read_digest(it)) else { return "unknown" }
         let id = read_name(gone)
         let now = now_of(id)
-        if traced() { eprintln("Q typedsaid moved ${id} was ${read_digest(gone)} now ${now ?? "-"}") }
+        if traced() { eprintln("Q row moved ${id} was ${read_digest(gone)} now ${now ?? "-"}") }
         "${id.split("\t")[1]} ${if now == null { "unreadable" } else { "moved" }}"
     }
 }

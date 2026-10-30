@@ -1,0 +1,104 @@
+//! A BODY'S TYPING, KEPT: a declaration typed in one process is read back in the next while
+//! every answer it stood on has the digest it had. The row is a plain unit per declaration,
+//! never a family answer, so no reader's read set grows a row per body it reaches. A body that
+//! spoke is never kept, so a restored body says nothing it did not say when typed.
+use core.{DeclId, qtrace, traced, wreck, db_verified_typed, flatten, some_list}
+use compiler.voices.{type_facts_fp}
+use core.digest.{hex, unhex}
+use features.{TypeFacts, Decl}
+use compiler.store.{Stored, node_key, read_spelled}
+use compiler.families.{Family}
+use @std.relation.db.{Db as RelDb, Leaf, leaf_read}
+use @std.text.{parse_int}
+use @std.relation.stable.{Scope}
+
+impl Workspace {
+    /// Where a declaration's kept typing stands.
+    fn typed_row(d: DeclId) -> string { node_key(Stored.Unit, ["typed", self.decl_ref(d)]) }
+
+    /// A declaration's typing as kept, while what it stood on still stands and it reads back
+    /// whole; absent otherwise. Its reads are read again, so its readers stand where a typing
+    /// would have left them.
+    fn typed_restored(x: Decl) -> TypeFacts? {
+        let store? = self.store.get() else { return null }
+        // a body reads back only over its own file's parse, while that file is not expanding
+        if self.db.active(key(Family.Expanded, x.file.index)) { return null }
+        if self.relation(Family.Parsed).values.entry(x.file.index) is .Missing { return null }
+        let rdb = self.decls.rows_db.get()
+        let row = self.typed_row(x.id)
+        let text? = store.get_valid(Stored.Unit, row, (n) -> rdb.leaf_digest(n)) else {
+            if traced() {
+                qtrace(
+                    "Q\ttyped\tmissed\t${x.name}\t${self.first_moved(store, row, (n) -> rdb.leaf_digest(n))}\n",
+                )
+            }
+            return null
+        }
+        let octets? = unhex(text) else { return null }
+        let facts? = facts_read(octets, self.facts_scope(x.lo, x.stmt_lo)) else { return null }
+        let leaves? = kept_leaves(store.reads_of(Stored.Unit, row) ?? []) else { return null }
+        rdb.read_leaves(leaves)
+        // asking a signature declares what it declares — methods, impls, the members they
+        // answer — which a body's typing does on its way
+        for d in self.sigs_read(leaves) { let _ = self.sig(d) }
+        if db_verified_typed() { self.restore_judged(x, facts) }
+        if traced() { qtrace("Q\ttyped\trestored\t${x.name}\n") }
+        facts
+    }
+
+    /// A restored body judged against a fresh typing of it: the two agree, or a read the row
+    /// stood on is missing.
+    fn restore_judged(x: Decl, kept: TypeFacts) {
+        let ids = self.decls.ids()
+        if type_facts_fp(kept, ids, true) != type_facts_fp(self.typed_fresh(x), ids, true) {
+            wreck(
+                "a restored body differs from a fresh typing of `${x.name}`: a read it stood on is missing",
+            )
+        }
+    }
+
+    /// The declarations whose signatures a run read, among its leaves.
+    fn sigs_read(leaves: List<Leaf>) -> List<DeclId> {
+        let rdb = self.decls.rows_db.get()
+        flatten([some_list(self.sig_leaf(rdb, l)) for l in leaves])
+    }
+
+    fn sig_leaf(rdb: RelDb, l: Leaf) -> DeclId? {
+        match l {
+            .Input(name, spelled, _) -> {
+                let owner? = rdb.answer_named(name) else { return null }
+                if owner.family_now() != Family.Sig.ordinal { return null }
+                let arg? = owner.arg_of(spelled) else { return null }
+                DeclId { index: arg }
+            },
+            .Rows(_, _) -> null,
+        }
+    }
+
+    /// A body this process typed, kept under what it stood on. A body that spoke has no wire,
+    /// and one whose read has no name could never be judged again: neither is kept.
+    fn typed_kept(x: Decl, facts: TypeFacts) {
+        let store? = self.store.get() else { return }
+        let octets? = facts_encoded_in(facts, self.facts_scope(x.lo, x.stmt_lo)) else { return }
+        let leaves? = self
+            .decls
+            .rows_db
+            .get()
+            .leaves_of(self.db.kernel.deps_of(key(Family.Typed, x.id.index))) else {
+            if traced() { qtrace("Q\ttyped\tunnamed\t${x.name}\n") }
+            return
+        }
+        let _ = store
+            .keep_reading(Stored.Unit, self.typed_row(x.id), hex(octets), saved_reads(leaves))
+    }
+}
+
+/// A table read back under its scope; absent for one that does not read back.
+fn facts_read(octets: Bytes, scope: dyn Scope) -> TypeFacts? {
+    match facts_decoded_in(octets, scope) { .Ok(facts) -> facts, .Err(_) -> null }
+}
+
+/// A row's kept reads as the leaves they were; absent when one is no leaf.
+fn kept_leaves(lines: List<string>) -> List<Leaf>? {
+    [leaf_read(r.name, parse_int(r.digest)?)? for r in [read_spelled(l)? for l in lines]]
+}
