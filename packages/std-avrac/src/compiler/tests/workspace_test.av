@@ -3,7 +3,7 @@
 // and every failed `use` speaks in its own words.
 use @std.avrac.testing.{test_workspace}
 use compiler.{Workspace, sig_hash}
-use @std.avrac.core.{TypeId, DeclId}
+use @std.avrac.core.{TypeId, DeclId, indexed_ids}
 use @std.avrac.features.{DeclSig, EnumSig, StructSig, NamedSig}
 use compiler.host.{memory_host, memory_host_at}
 use @std.avrac.diagnostics.{Diag, render, new_source_file}
@@ -464,7 +464,7 @@ spec "signatures" {
             let y = TypeId { index: 2 }
             let together = DeclSig.Enum(EnumSig { names: ["A", "B"], payloads: [[x, y], []] })
             let apart = DeclSig.Enum(EnumSig { names: ["A", "B"], payloads: [[x], [y]] })
-            sig_hash(together) != sig_hash(apart)
+            sig_hash(together, indexed_ids()) != sig_hash(apart, indexed_ids())
         }
         then "a field's default is part of the record that declares it" {
             let x = TypeId { index: 1 }
@@ -474,12 +474,12 @@ spec "signatures" {
             let present: List<DeclId?> = [DeclId { index: 0 }]
             let held = StructSig { names: ["a"], types: [x], defaults: absent }
             let seeded = StructSig { names: ["a"], types: [x], defaults: present }
-            sig_hash(DeclSig.Record(held)) != sig_hash(DeclSig.Record(seeded))
+            sig_hash(DeclSig.Record(held), indexed_ids()) != sig_hash(DeclSig.Record(seeded), indexed_ids())
         }
         then "a named type's shape is its signature — `type Id = int` is not `type Id = string`" {
             let over_int = DeclSig.Named(NamedSig { of: TypeId { index: 1 } })
             let over_text = DeclSig.Named(NamedSig { of: TypeId { index: 2 } })
-            sig_hash(over_int) != sig_hash(over_text)
+            sig_hash(over_int, indexed_ids()) != sig_hash(over_text, indexed_ids())
         }
     }
 }
