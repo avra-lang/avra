@@ -18,15 +18,10 @@
 //! The `mark` rule lives here because the `@` surface is one
 //! feature's; the members that may carry one are spelled by the
 //! features that declare them.
-use features.{LanguageFeature, BuilderRow}
+use features.{LanguageFeature}
 use diagnostics.{DiagCode}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 export fn annotations() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name        | build
-        "annotated" | build_annotated
-        "mark"      | build_mark
-    }
     let codes = table<DiagCode> {
         kind                         | summary
         "annotation.callee"          | "an annotation names a fn over a declaration"
@@ -49,11 +44,10 @@ export fn annotations() -> LanguageFeature {
     }
     LanguageFeature annotations {
         gram: grammar {
-            stmt = a:PKG ( "(" ( e:argument ( "," e:argument )* ","? )? ")" )? BREAK? d:stmt -> annotated(a, e, d)
-            mark = m:PKG ( "(" ( g:argument ( "," g:argument )* ","? )? ")" @expect(")", "expected `)` to close the mark's arguments") )? -> mark(m, g)
+            stmt = name:PKG ( "(" ( args:argument ( "," args:argument )* ","? )? ")" )? BREAK? decl:stmt -> Stmt.FnDecl by annotated_written
+            mark = name:PKG ( "(" ( args:argument ( "," args:argument )* ","? )? ")" @expect(")", "expected `)` to close the mark's arguments") )? -> Record.Mark by mark_written
         }
         diags: codes
-        builders: rows
     }
     annotations
 }
