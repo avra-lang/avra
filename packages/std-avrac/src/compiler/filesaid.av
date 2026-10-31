@@ -53,6 +53,13 @@ impl FileRead {
     }
 }
 
+/// The path a `Text` read names; null for every other read.
+fn text_read_path(name: string) -> string? {
+    let text = FileRead.Text.name("")
+    if !name.starts_with(text) { return null }
+    name.substring(text.length, name.length)
+}
+
 /// A read of `path`'s row read back from its name; null for one this compiler never wrote.
 fn file_read_of(name: string, path: string) -> FileRead? {
     let run = "run ${path} "
@@ -355,15 +362,17 @@ impl Workspace {
     }
 
     /// THE ROWS THAT READ AN INPUT THAT MOVED, once per record write and per file admitted: the files whose text
-    /// differs from what their row was kept on, then every file seeing a module those sit in,
-    /// to a fixpoint. A row outside the set read nothing that moved.
+    /// differs from what their row was kept on, and the files a row read that no longer stand, then
+    /// every file seeing a module those sit in, to a fixpoint. A row outside the set read nothing that
+    /// moved.
     fn suspect_rows(store: Store) -> Map<string, bool> {
         let paths = self.decls.file_paths()
         if self.keys.suspects.get().files == paths.length { return self.keys.suspects.get().rows }
         mut row_of: Map<string, string> = {}
         for p in paths { row_of.set(store.suspect_key(Stored.Warn, self.said_row(p)), p) }
-        let edited = [p for p in paths if self.text_moved(store, p)]
         let readers = store.readers()
+        let edited = [p for p in paths if self.text_moved(store, p)]
+            .concat(self.gone_files(readers, paths))
         mut moved = [FileRead.Text.name(p) for p in edited]
             .concat([self.seen_name(p) for p in edited])
         mut rows: Map<string, bool> = {}
@@ -460,6 +469,14 @@ impl Workspace {
 
     /// The read a file's module is seen through.
     fn seen_name(path: string) -> string { FileRead.Seen(self.module_of(path)).name(path) }
+
+    /// The files a kept row read the text of that stand nowhere now: a deletion moves its module.
+    fn gone_files(readers: Map<string, List<string>>, paths: List<string>) -> List<string> {
+        mut known: Map<string, bool> = {}
+        for p in paths { known.set(p, true) }
+        let read = [text_read_path(name) for name in readers.keys()]
+        [p! for p in read if p != null && known.get(p!) == null && !self.there(p!)]
+    }
 
     /// Whether a file's text differs from what its kept row stood on; a file never kept has moved.
     fn text_moved(store: Store, path: string) -> bool {
