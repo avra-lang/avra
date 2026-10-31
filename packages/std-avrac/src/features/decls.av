@@ -367,6 +367,10 @@ export type DeclFacts = {
     /// provider's parse. An importing file reads it here, so a held provider is never
     /// parsed for the words it opens.
     form: Record? = null,
+    /// THE FINGERPRINT OF A COMPONENT WHOSE FORM IS NODES — a template, or one its
+    /// library refuses — as its file's parse read it: an importing file re-reads the
+    /// declaration ALONE from its span and takes that read only when it prints the same.
+    template: int? = null,
 }
 
 impl DeclFacts {
@@ -398,6 +402,13 @@ impl DeclFacts {
 fn record_form_of(store: SyntaxArena, s: StmtId) -> Record? {
     let c? = store.component_parts(s) else { return null }
     record_form(store, c)
+}
+
+/// The fingerprint of the component a statement declares, when its form is nodes.
+fn template_print_of(store: SyntaxArena, s: StmtId) -> int? {
+    let c? = store.component_parts(s) else { return null }
+    if record_form(store, c) != null { return null }
+    store.stmt_fingerprint(s)
 }
 
 /// An extern's raw seat widths: one name per parameter, then the answer's.
@@ -434,6 +445,7 @@ fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
         is_grammar: readable && x.kind is .Record && store.grammar_of(x.stmt) != null,
         is_component: readable && x.kind is .Record && store.component_parts(x.stmt) != null,
         form: if readable && x.kind is .Record { record_form_of(store, x.stmt) } else { null },
+        template: if readable && x.kind is .Record { template_print_of(store, x.stmt) } else { null },
         span: occupied(store, x),
         tparams: if readable { store.decl_tparams(x.stmt) } else { [] },
         bounds: if readable { [p.ty?.name ?? "" for p in store.decl_tbounds(x.stmt)] } else { [] },

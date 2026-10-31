@@ -51,26 +51,38 @@ fn wf_said(root: string) -> string {
     }
 }
 
-/// A warm check after one provider file is rewritten, beside a cold check of the rewritten tree.
+/// A warm check after one file is rewritten, beside a cold check of the rewritten tree.
 fn wf_pair(file: string, text: string) -> List<string> {
     let warm = wf_tree("warm", pane_titled(), twice_doubled())
     let before = wf_said(warm)
-    let _ = write_text("${warm}/lib/src/${file}", text)
+    let _ = write_text("${warm}/${file}", text)
     let cold = wf_tree("cold", pane_titled(), twice_doubled())
-    let _ = write_text("${cold}/lib/src/${file}", text)
+    let _ = write_text("${cold}/${file}", text)
     [before, wf_said(warm), wf_said(cold)]
+}
+
+/// The app's body edited so its template instance reads a different head, its `use` lines
+/// unchanged.
+fn app_retyped() -> string {
+    "use @x.lib.pane.{pane}\nuse @x.lib.twice.{twice}\n\nexport fn f() -> int {\n    pane top { title: \"a\" }\n    twice true { 0 } + top.title.length\n}\n"
 }
 
 spec "commands/check warm after a provider's component changes" {
     given "a record component that gains a head after a check, so a named instance stops binding its name" {
         then "the warm check reads the new form, as a cold check does" {
-            let said = wf_pair("pane.av", pane_headed())
+            let said = wf_pair("lib/src/pane.av", pane_headed())
             said[0].starts_with("ok") && said[1] == said[2] && said[1].starts_with("refused")
         }
     }
     given "a template component whose quote changes after a check, no `use` line moving" {
         then "the warm check copies the changed template, as a cold check does" {
-            let said = wf_pair("twice.av", twice_texted())
+            let said = wf_pair("lib/src/twice.av", twice_texted())
+            said[0].starts_with("ok") && said[1] == said[2] && said[1].starts_with("refused")
+        }
+    }
+    given "an importer's body edited over a template provider that did not move" {
+        then "the warm check copies the provider's template, as a cold check does" {
+            let said = wf_pair("app/src/main.av", app_retyped())
             said[0].starts_with("ok") && said[1] == said[2] && said[1].starts_with("refused")
         }
     }

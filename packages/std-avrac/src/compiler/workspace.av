@@ -78,7 +78,8 @@ use features.{
     SettleRoot,
     BlockWords,
 }
-use core.{ComponentWord, Instanced}
+use core.{ComponentWord, Instanced, Span}
+use @std.text.{repeat}
 use grammar.{Token}
 use @std.meta.{Diagnostic, bracket, identity, plain_field, derive, code_hash}
 use core.{
@@ -485,6 +486,8 @@ type Records = {
     block_rows: Cell<Map<string, List<Row>>>,
     /// The text digest each provider file's recorded rows were read from, by path.
     block_digests: Cell<Map<string, string>>,
+    /// What each provider file's record says of its block words, once asked.
+    recorded: Cell<Map<string, Recorded>>,
     /// Files whose text a component lookup lexed, this build: what the witness counts.
     component_lexes: Cell<int>,
     /// The modules that export a component, by its name; null until first asked.
@@ -519,6 +522,7 @@ fn new_records() -> Records {
         block_named: Cell.new(no_block_named),
         block_rows: Cell.new(no_block_rows),
         block_digests: map_cell(),
+        recorded: map_cell(),
         component_lexes: Cell.new(0),
         component_index: Cell.new(no_index),
     }
@@ -1807,12 +1811,35 @@ impl Workspace {
     /// Every block word a module's files declare: what the record says whole, else read
     /// off the parse of a file that can OPEN one. No other file of the module is parsed.
     fn declared_words(m: ModulePath) -> BlockWords {
-        let declared = [recorded_words(self, m, path) ?? self.lexed_words(path) for path in self.module_files(m)]
+        let declared = [recorded_words(self, path) ?? self.lexed_words(path) for path in self.module_files(m)]
         BlockWords {
             grammars: flatten([d.grammars for d in declared]),
             components: flatten([d.components for d in declared]),
             instances: flatten([d.instances for d in declared]),
         }
+    }
+
+    /// The components a provider declares at `spans`, read off those declarations ALONE — each
+    /// from where its own text begins (`declared_from`): the file's text
+    /// with every other byte but a line break blanked to a space, so each node stands at the
+    /// offset, line and column the whole file gives it. Null unless every statement `prints`
+    /// names is among those read, and for two declarations that share a line.
+    fn read_alone(path: string, spans: List<Span>, prints: List<int>) -> List<ComponentWord>? {
+        if spans.is_empty() { return [] }
+        let f = self.file_id(path)
+        let source = self.source(f)
+        let froms = [declared_from(source, s.lo) for s in spans]
+        let ends = [0].concat([s.hi for s in spans])
+        if ![j for j, from in froms if from < ends[j]].is_empty() { return null }
+        let kept = [blanked(source.text.substring(ends[j], from)) + source.text.substring(from, spans[j].hi) for j, from in froms]
+        let p = parse_program(
+            self.lang,
+            new_source_file(path, joined(kept, "")),
+            BlockWords { components: self.unread_words(f) },
+        )
+        let found = [p.stmts.find((st: StmtId) -> p.store.stmt_fingerprint(st) == print) for print in prints]
+        if found.any(it == null) { return null }
+        flatten([some_list(word_of(p.store, s!, path)) for s in found])
     }
 
     /// A file's block words read off its parse — none for a file whose text opens none.
@@ -2635,4 +2662,26 @@ export fn family_code_hash(f: Family) -> string {
         .DeclReads -> code_hash(decl_reads_verified) ?? "",
         .Input -> code_hash(input_verified) ?? "",
     }
+}
+
+/// Text with every byte but a line break turned to a space.
+fn blanked(text: string) -> string {
+    let starts = new_source_file("", text).line_starts
+    let ends = [at - 1 for at in starts.drop(1)].concat([text.length])
+    joined([repeat(" ", ends[j] - at) for j, at in starts], "\n")
+}
+
+/// Where a declaration's own text begins: the start of its line, so a prefix like `export`
+/// is read with it, taken up over the doc lines and annotations written directly above it,
+/// which are part of the statement.
+fn declared_from(source: SourceFile, lo: int) -> int {
+    mut line = source.line_starts.filter(it <= lo).length - 1
+    while line > 0 && heads_a_declaration(source, line - 1) { line = line - 1 }
+    source.line_starts[line]
+}
+
+/// Whether a line is a doc line or an annotation.
+fn heads_a_declaration(source: SourceFile, line: int) -> bool {
+    let text = source.text.substring(source.line_starts[line], source.line_starts[line + 1]).trim()
+    text.starts_with("///") || text.starts_with("@")
 }
