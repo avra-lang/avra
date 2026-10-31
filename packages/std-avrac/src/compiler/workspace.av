@@ -457,6 +457,8 @@ type Records = {
     record_files: Cell<Map<string, Map<string, List<List<string>>>>>,
     /// Each held file's declaration lines by the wire each spells, built once per build.
     line_index: Cell<Map<string, Map<string, List<string>>>>,
+    /// Each file's use lines as its parse said them this build, kept at its end.
+    uses_seen: Cell<Map<string, string>>,
     /// A MODULE'S RE-EXPORTING FILES, keyed by record key: the files its record
     /// marks as re-exporting a name, read once per build however many
     /// modules see it.
@@ -510,6 +512,7 @@ fn new_records() -> Records {
         record_places: Cell.new(no_places),
         record_files: Cell.new(no_files),
         line_index: map_cell(),
+        uses_seen: map_cell(),
         record_producers: Cell.new(no_producers_of),
         record_stamps: map_cell(),
         record_reexports: Cell.new(no_reexports),
@@ -565,7 +568,7 @@ export type Workspace = {
     externs: Table<ExternNames>,
     sig_voices: Table<Voices>,
     method_clashes: Table<List<Clash>>,
-    /// each file's clash diagnostics as `Family.MethodDiags` last settled them
+    /// each file's clash diagnostics as `method_clashes` last settled them
     method_diag_rows: Table<List<Diag>>,
     asks: Cell<List<Wanted>>,
     /// `asks`' own name -> index, so `spec_id` interns in O(1) rather
@@ -861,10 +864,6 @@ fn raised_verified(ws: Workspace, arg: int) -> int {
     touch(ws.raised_by(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Raised, arg))
 }
-fn method_diags_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.method_diagnostics(file_at(arg)))
-    ws.db.changed_at(key(Family.MethodDiags, arg))
-}
 fn syntax_verified(ws: Workspace, arg: int) -> int {
     touch(ws.syntax(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Syntax, arg))
@@ -889,10 +888,6 @@ fn admitted_verified(ws: Workspace, arg: int) -> int {
 fn named_verified(ws: Workspace, arg: int) -> int {
     ws.decls.named_now(arg)
     ws.db.changed_at(key(Family.Named, arg))
-}
-fn read_reach_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.read_reach())
-    ws.db.changed_at(key(Family.ReadReach, arg))
 }
 fn decl_reads_verified(ws: Workspace, arg: int) -> int {
     touch(ws.decl_places(decl_at_arg(arg)).length)
@@ -931,7 +926,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .FileRefs -> file_refs_verified(ws, arg),
         .Failures -> failures_verified(ws, arg),
         .Raised -> raised_verified(ws, arg),
-        .MethodDiags -> method_diags_verified(ws, arg),
         .Syntax -> syntax_verified(ws, arg),
         .Names -> names_verified(ws, arg),
         .Placed -> placed_verified(ws, arg),
@@ -940,7 +934,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .CancelBits -> cancel_bits_verified(ws, arg),
         .Admitted -> admitted_verified(ws, arg),
         .Named -> named_verified(ws, arg),
-        .ReadReach -> read_reach_verified(ws, arg),
         .DeclReads -> decl_reads_verified(ws, arg),
         .Input -> input_verified(ws, arg),
     }
@@ -1618,18 +1611,51 @@ impl Workspace {
         [unread_word(name, declared) for declared in files for name in component_names(self, declared)]
     }
 
+    /// A FILE PARSED ONCE, UNDER THE WORDS ITS OWN `use` LINES GIVE IT. The use lines its last
+    /// parse said are the guess: parsed under their words, a parse whose own use lines say the
+    /// same is the parse, since its words are those lines'. Anything else, or a file that
+    /// declares a component, reads its use lines off a plain parse first.
     fn parsed_under_blocks(f: FileId) -> Parsed {
+        let path = self.decls.file(f).path
+        let kept = self.kept_uses(path)
+        let guessed = if kept == null { null } else { self.parsed_guessed(f, kept!) }
+        if guessed != null { return guessed! }
         let first = self.plain_parsed(f)
         let t0 = self.clock()
         let words = self.block_words(f, first)
         self.timed("sublang", t0)
-        if words.is_empty() { return self.noted_origins(f, self.with_import_remedies(first, words)) }
+        let made = if words.is_empty() { self.with_import_remedies(first, words) } else { self.parsed_under(f, words) }
+        // a file that declares a component is parsed for its words first, every time
+        self
+            .records
+            .uses_seen
+            .put(
+                path,
+                if declared_components(made).is_empty() { uses_wire(made.store.built_uses()) } else { DECLARES },
+            )
+        self.noted_origins(f, made)
+    }
+
+    /// A file parsed under the words its kept use lines give, when its own use lines say the
+    /// same and it declares no component; null otherwise.
+    fn parsed_guessed(f: FileId, kept: KeptUses) -> Parsed? {
+        let t0 = self.clock()
+        let words = self.words_under(f, self.source(f).text, kept.uses, [])
+        self.timed("sublang", t0)
+        let p = if words.is_empty() { self.plain_parsed(f) } else { self.parsed_under(f, words) }
+        if !declared_components(p).is_empty() || uses_wire(p.store.built_uses()) != kept.wire { return null }
+        let out = if words.is_empty() { self.with_import_remedies(p, words) } else { p }
+        self.noted_origins(f, out)
+    }
+
+    /// A file parsed under `words`, timed and kept as its lexing.
+    fn parsed_under(f: FileId, words: BlockWords) -> Parsed {
         let t1 = self.clock()
         self.keys.lex_words.put(self.decls.file(f).path, words_lexed(words))
         let p = self
             .quieted(f, self.with_import_remedies(parse_program(self.lang, self.source(f), words), words))
         self.timed("ast", t1)
-        self.noted_origins(f, p)
+        p
     }
 
     /// Each run of nodes written elsewhere — a template's, a sublanguage's, a builder's —
@@ -1726,13 +1752,20 @@ impl Workspace {
     /// (readied) or a component, under its alias — and every component
     /// its own module declares, which needs no `use`, as no name a
     /// module declares does in its own files.
-    fn block_words(f: FileId, p: Parsed) -> BlockWords {
-        if self.lone { return BlockWords { components: declared_components(p) } }
-        let from = self.packages()[self.holder_of_path(p.source.file)]
+    fn block_words(f: FileId, p: Parsed) -> BlockWords { self.words_under(f, p.source.text, p.store.built_uses(), declared_components(p)) }
+
+    /// The block words a file of `text` stands under, from what its parse says alone: its `use`
+    /// lines and the components it declares.
+    fn words_under(f: FileId, text: string, uses: List<UseParts>, declared: List<ComponentWord>) -> BlockWords {
+        if self.lone { return BlockWords { components: declared } }
+        let path = self.decls.file(f).path
+        let from = self.packages()[self.holder_of_path(path)]
         let own = self.decls.module_name(self.decls.file(f).module_id)
-        let lines = [self.line_words(from, own, u) for u in p.store.built_uses()]
-        let components = self.module_components(f, p).concat(flatten([l.components for l in lines]))
-        let local = if components.is_empty() { [] } else { named_instances(p.source.text, components) }
+        let lines = [self.line_words(from, own, u) for u in uses]
+        let components = self
+            .module_components(f, declared)
+            .concat(flatten([l.components for l in lines]))
+        let local = if components.is_empty() { [] } else { named_instances(text, components) }
         BlockWords {
             grammars: flatten([l.grammars for l in lines]),
             components: components,
@@ -1740,13 +1773,12 @@ impl Workspace {
         }
     }
 
-    /// The components a file's own module declares: its own file's, read
-    /// off the parse in hand, and each sibling file's that declares one,
-    /// read off its PLAIN parse — a declaration's words stand under no
-    /// block word, and a full parse of a sibling would re-enter this one.
-    fn module_components(f: FileId, p: Parsed) -> List<ComponentWord> {
-        let siblings = [self.file_id(s) for s in self.declaring_siblings(p.source.file)]
-        declared_components(p)
+    /// The components a file's own module declares: the file's own, `declared`, and each
+    /// sibling file's that declares one, read off its PLAIN parse — a declaration's words
+    /// stand under no block word, and a full parse of a sibling would re-enter this one.
+    fn module_components(f: FileId, declared: List<ComponentWord>) -> List<ComponentWord> {
+        let siblings = [self.file_id(s) for s in self.declaring_siblings(self.decls.file(f).path)]
+        declared
             .concat(
                 flatten(
                     [declared_components(self.plain_parsed(s)) for s in siblings if !same_file(s, f)],
@@ -2618,7 +2650,6 @@ export fn family_code_hash(f: Family) -> string {
         .FileRefs -> code_hash(file_refs_verified) ?? "",
         .Failures -> code_hash(failures_verified) ?? "",
         .Raised -> code_hash(raised_verified) ?? "",
-        .MethodDiags -> code_hash(method_diags_verified) ?? "",
         .Syntax -> code_hash(syntax_verified) ?? "",
         .Names -> code_hash(names_verified) ?? "",
         .Placed -> code_hash(placed_verified) ?? "",
@@ -2627,7 +2658,6 @@ export fn family_code_hash(f: Family) -> string {
         .CancelBits -> code_hash(cancel_bits_verified) ?? "",
         .Admitted -> code_hash(admitted_verified) ?? "",
         .Named -> code_hash(named_verified) ?? "",
-        .ReadReach -> code_hash(read_reach_verified) ?? "",
         .DeclReads -> code_hash(decl_reads_verified) ?? "",
         .Input -> code_hash(input_verified) ?? "",
     }
