@@ -5,10 +5,10 @@
 //! record's instance is its literal, the body's settings by name and
 //! its other statements `collect`ed into its one `List` field.
 use core.{
+    FnSeat,
     ComponentWord,
     Template,
     Record,
-    void_ref,
     Expr,
     Stmt,
     StmtId,
@@ -24,7 +24,7 @@ use core.{
     flatten,
     some_list,
 }
-use features.{LangNode, Builder, marks_at, params_at, record_spreads, three_dots}
+use features.{LangNode, Builder, marks_at, params_at, three_dots}
 use grammar.{Token}
 
 fn build_component_decl(b: Builder) -> Result<LangNode, string> {
@@ -39,12 +39,14 @@ fn build_component_decl(b: Builder) -> Result<LangNode, string> {
         params_at(b.args, 3).concat(params_at(b.args, 4)),
         (x: Param, y: Param) -> b.written_at(x) < b.written_at(y),
     )
-    let records = record_spreads([b.written_at(m) for m in members], b.tokens(6)?, b.type_refs(7)?)?
     let head = if members.any(it.state) { [propped_param(p) for p in params_at(b.args, 2)] } else { params_at(b.args, 2) }
     let s = b
         .store
-        .alloc_stmt(Stmt.ComponentDecl(Scoped(n.text), params_at(b.args, 1), head, members, fns), b.span)
-    if !records.is_empty() { b.store.spread_fields(s, records) }
+        .alloc_stmt(
+            Stmt
+                .ComponentDecl(Scoped(n.text), params_at(b.args, 1), head, members, fns, b.type_refs(7)?),
+            b.span,
+        )
     .Ok(LangNode.NStmt(s))
 }
 
@@ -72,7 +74,8 @@ fn build_component_event(b: Builder) -> Result<LangNode, string> {
                     name: Scoped(name.text),
                     ty: TypeRef {
                         name: "fn",
-                        args: flatten([some_list(s.ty) for s in says]).concat([void_ref]),
+                        applied: [],
+                        seats: [FnSeat { ty: t } for t in flatten([some_list(s.ty) for s in says])],
                         optional: true,
                         dynamic: false,
                         arrow: true,

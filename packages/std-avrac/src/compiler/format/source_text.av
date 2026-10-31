@@ -476,14 +476,14 @@ impl SourceText {
             ],
             .SyntaxDecl(name, text) -> [source_line(depth, "${exported}grammar ${source_name(name.of)} {${text}}")],
             .Setting(name, value) -> self.setting(name.of, value, depth),
-            .ComponentDecl(name, tparams, head, fields, fns) -> [
+            .ComponentDecl(name, tparams, head, fields, fns, spreads) -> [
                 self
                     .component_decl(
                         exported,
                         name.of,
                         tparams,
                         head,
-                        self.entries(fields, self.store.spreads_of(s), depth + 1),
+                        self.entries(fields, self.store.placed(fields, spreads), depth + 1),
                         fns,
                         self.stmt_end(s),
                         depth,
@@ -524,7 +524,7 @@ impl SourceText {
                         ),
                 ]
             },
-            .StructDecl(name, tparams, fields) -> [
+            .StructDecl(name, tparams, fields, _) -> [
                 self
                     .struct_or_grammar_decl(
                         s,
@@ -670,12 +670,12 @@ impl SourceText {
     /// generics is rare enough that one broken level is where this
     /// stops).
     fn type_ref_wrapped(t: TypeRef, depth: int, col: int = -1) -> string {
-        if t.arrow || t.args.is_empty() || !t.alternatives.is_empty() { return spelled(t) }
+        if t.arrow || t.applied.is_empty() || !t.alternatives.is_empty() { return spelled(t) }
         let head = "${if t.dynamic { "dyn " } else { "" }}${t.name}"
         let body = self
             .wrapped_list(
                 "<",
-                [spelled(a) for a in t.args],
+                [spelled(a) for a in t.applied],
                 ">",
                 false,
                 depth,
@@ -692,7 +692,7 @@ impl SourceText {
     }
 
     fn collect_kind_word(k: CollectKind) -> string {
-        match k { .Component(w) or .UnknownKind(w) -> w, .Annotated(w) -> "@${w}" }
+        match k { .Component(w) -> w, .Annotated(w) -> "@${w}" }
     }
 
     fn collect_scope_word(s: CollectScope) -> string {
@@ -2578,7 +2578,7 @@ impl SourceText {
 }
 
 fn is_void_ret(ret: TypeRef) -> bool {
-    ret.name == "void" && ret.args.is_empty() && !ret.optional
+    ret.name == "void" && ret.applied.is_empty() && !ret.optional
 }
 
 fn comparison(op: BinOp) -> bool {

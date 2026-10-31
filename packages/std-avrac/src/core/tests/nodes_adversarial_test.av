@@ -6,6 +6,7 @@
 use @std.avrac.core.{
     Scoped,
     Plain,
+    FnSeat,
     CatchArm,
     new_node_store,
     SyntaxArena,
@@ -267,8 +268,8 @@ spec "core/nodes adversarial" {
                 promises: plain_mark,
                 id: s.alloc_param_id(null),
             }
-            let first = s.alloc_stmt(Stmt.StructDecl("S", [], [a_def, seat(s, "b", t)]))
-            let second = s.alloc_stmt(Stmt.StructDecl("S", [], [seat(s, "a", t), b_def]))
+            let first = s.alloc_stmt(Stmt.StructDecl("S", [], [a_def, seat(s, "b", t)], []))
+            let second = s.alloc_stmt(Stmt.StructDecl("S", [], [seat(s, "a", t), b_def], []))
             s.stmt_fingerprint(first) != s.stmt_fingerprint(second)
         }
         then "`dyn Show` is not `Show`" {
@@ -293,11 +294,11 @@ spec "core/nodes adversarial" {
         then "a marked field is not a plain one" {
             mut s = new_node_store()
             let t = written("int", false)
-            let plain = s.alloc_stmt(Stmt.StructDecl("S", [], [seat(s, "a", t)]))
+            let plain = s.alloc_stmt(Stmt.StructDecl("S", [], [seat(s, "a", t)], []))
             let held = s
                 .alloc_stmt(
                     Stmt
-                        .StructDecl("S", [], [seat(s, "a", t) with { marks: [marked("excluded", [])] }]),
+                        .StructDecl("S", [], [seat(s, "a", t) with { marks: [marked("excluded", [])] }], []),
                 )
             s.stmt_fingerprint(plain) != s.stmt_fingerprint(held)
         }
@@ -358,8 +359,8 @@ spec "core/nodes adversarial" {
             mut s = new_node_store()
             let v = s.alloc_expr(Expr.IntLit(1))
             let t = written("int", false)
-            let unmarked = named_ref("fn") with { args: [t, t], arrow: true, marks: [plain_mark, plain_mark] }
-            let writes = unmarked with { marks: [mut_mark, plain_mark] }
+            let unmarked = named_ref("fn") with { arrow: true, seats: [FnSeat { ty: t }], answer: t }
+            let writes = unmarked with { seats: [FnSeat { ty: t, mutable: true }] }
             let a = s.alloc_stmt(Stmt.Let("f", unmarked, v))
             let b = s.alloc_stmt(Stmt.Let("f", writes, v))
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)

@@ -30,7 +30,11 @@ use features.{
     pat_semantics_of,
 }
 use features.enums.{all_irrefutable, hole_of, binders, catches}
-use diagnostics.{refusal, warning, defect_at}
+use diagnostics.{refusal, warning, defect_at, Diag}
+use @std.errors.{Loc}
+
+/// A real's shortest text, from its bits.
+extern fn avra_float_text_bits(bits: int) -> string
 
 /// The declaration's own law.
 export fn check_enum_decl(mut cx: TypeCx, s: StmtId) {
@@ -269,6 +273,13 @@ fn member_types(mut cx: TypeCx, p: PatId, name: string, expected: TypeId) -> Lis
 /// because only `Type.Null` inhabits a type it is never equal to by
 /// interned identity.
 fn lit_types(mut cx: TypeCx, p: PatId, v: ExprId, expected: TypeId) -> List<TypeId> {
+    let bits? = cx.view.store.expr(v).bits_of() else { return lit_compared(cx, p, v, expected) }
+    cx.emit(fraction_pattern(cx.pat_loc(p), avra_float_text_bits(bits)))
+    []
+}
+
+/// A literal pattern compared with its subject, of the subject's type.
+fn lit_compared(mut cx: TypeCx, p: PatId, v: ExprId, expected: TypeId) -> List<TypeId> {
     let got = cx.walk_type(v)
     let seen = cx.seen(expected)
     if cx.view.types.shape_of(got) is .Null && cx.view.types.shape_of(seen) is .Opt { return [] }
@@ -844,6 +855,16 @@ fn member_written(mut cx: TypeCx, p: PatId, name: string, expected: TypeId) -> L
             ),
         )
     []
+}
+
+fn fraction_pattern(at: Loc?, written: string) -> Diag {
+    refusal(
+        "type.fraction_pattern",
+        at,
+        "`${written}` is no integer — a number pattern matches an `int`",
+        "a fraction",
+        "compare a `float` with `==` in a guard — `x if x == ${written} -> …`",
+    )
 }
 
 fn literal_mismatch(mut cx: TypeCx, p: PatId, got: TypeId, expected: TypeId) {

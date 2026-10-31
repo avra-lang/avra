@@ -399,15 +399,9 @@ impl Decls {
         [FileId { index: i } for i in 0..self.file_count() if !self.file_held(FileId { index: i })]
     }
 
-    /// The four producer doors, read by the bucket readers and answered by the armed
-    /// workspace hook: mint the held modules whose record files a row under this value.
-    fn hold_named(name: string) { (self.ensure_named.get())(name) }
-
-    fn hold_worded(word: string) { (self.ensure_worded.get())(word) }
-
-    fn hold_marked(mark: string) { (self.ensure_marked.get())(mark) }
-
-    fn hold_modules(modules: List<string>) { (self.ensure_modules.get())(modules) }
+    /// The name environments' door, read by the bucket readers and answered by the armed
+    /// workspace hook: mint the unread files listed under what is about to be read.
+    fn listed(l: Listed) { (self.ensure_listed.get())(l) }
 
     /// The externs the records of the files held now declare.
     fn held_externs() -> List<ExternNote> { [n for n in (self.externs_index.get())() if self.held.get().get(n.path) != null] }
@@ -422,22 +416,16 @@ impl Decls {
 
     fn arm_file(ensure: fn(FileId) -> void) { self.ensure_file.set(ensure) }
 
-    /// THE FOUR PRODUCER DOORS: a bucket reader mints the held modules whose record files
-    /// a row under the value it is about to read, through the workspace armed here.
-    fn arm_named(ensure: fn(string) -> void) { self.ensure_named.set(ensure) }
-
-    fn arm_worded(ensure: fn(string) -> void) { self.ensure_worded.set(ensure) }
-
-    fn arm_marked(ensure: fn(string) -> void) { self.ensure_marked.set(ensure) }
-
-    fn arm_externs(
-        index: fn() -> List<ExternNote>,
+    /// THE NAME ENVIRONMENTS, armed: the door a bucket reader mints through, and the
+    /// extern and implementor indexes it reads.
+    fn arm_listed(
+        ensure: fn(Listed) -> void,
+        externs: fn() -> List<ExternNote>,
         types: fn() -> List<string>,
-        ensure: fn(List<string>) -> void,
     ) {
-        self.externs_index.set(index)
+        self.ensure_listed.set(ensure)
+        self.externs_index.set(externs)
         self.types_index.set(types)
-        self.ensure_modules.set(ensure)
     }
 
     /// A file's main seat: the declaration its top-level statements make.

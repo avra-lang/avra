@@ -4,24 +4,19 @@
 //! `type Name = <type>` declares a NAMED TYPE over a shape — always
 //! DISTINCT from it, never an alias; `Name(v)` wraps and `v.of`
 //! reads the shape back, free at runtime. `alias Name = <type>` is
-//! the other door: a SHORTHAND, the same type under a second name. ONE `stmt` rule carries both
-//! forms as an ordered choice, so one keyword claim and one
-//! recovery stand where two branches on `type` could not.
+//! the other door: a SHORTHAND, the same type under a second name. Two
+//! `stmt` branches on `type` carry the two forms, the record's last and
+//! alone recovering.
 //! Fields are scalars until ownership analysis covers managed
 //! values. The literal branch merges into `primary` BEFORE the
 //! spine's bare NAME; a non-literal brace falls through by
 //! backtracking, so conditions like `if x { ... }` stay whole.
-use features.{LanguageFeature, BuilderRow, PropertyRow}
+use features.{LanguageFeature, PropertyRow, RefusalRow}
 use features.structs.{index_compared}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode, Remedy}
 
 export fn structs() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name         | build
-        "type_decl"  | build_type_decl
-        "struct_lit" | build_struct_lit
-    }
     let codes = table<DiagCode> {
         kind                     | summary                                                                | remedy
         "resolve.duplicate_type" | "two types share one name"                                             | Remedy.Help
@@ -44,6 +39,7 @@ export fn structs() -> LanguageFeature {
         "type.identity_field"    | "an identity's field is a Cell, or another identity"                   | Remedy.Help
         "type.lacks"             | "only a record lacks a field — each once, and none it declares"      | Remedy.Help
         "type.sealed"            | "a sealed type is built and rewritten in the module that declares it"  | Remedy.Help
+        "parse.spread"           | "a field spread is written `..R`"                                      | Remedy.Help
     }
     let properties = table<PropertyRow> {
         name | takes      | check          | lower
@@ -51,19 +47,28 @@ export fn structs() -> LanguageFeature {
     }
     LanguageFeature structs {
         gram: grammar {
-            stmt = "type" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? "=" ( "{" BREAK? ( ( fields:field | rs:".." ( dd:"." )? ( rt:type )? ( ev:"=" expression )? ( tv:":" type )? | od:"." rt:type ) ( ( "," | BREAK ) BREAK? ( fields:field | rs:".." ( dd:"." )? ( rt:type )? ( ev:"=" expression )? ( tv:":" type )? | od:"." rt:type ) )* ","? BREAK? )? "}" | nt:type ) END @recover(sync_to: "END") -> type_decl(n, tp, fields, nt, rs, rt, dd, od, ev, tv)
+            stmt = "type" name:NAME ( "<" tparams:NAME ( "," tparams:NAME )* ","? ">" )? "=" of:type END -> Stmt.NamedType
+            stmt = "type" name:NAME ( "<" tparams:NAME ( "," tparams:NAME )* ","? ">" )? "=" "{" BREAK? ( ( fields:field | spread_fault | ".." spreads:type | bare_spread ) ( ( "," | BREAK ) BREAK? ( fields:field | spread_fault | ".." spreads:type | bare_spread ) )* ","? BREAK? )? "}" END @recover(sync_to: "END") -> Stmt.StructDecl
+            spread_fault = ".." "." type -> Refusal.spread_three_dots | "." type -> Refusal.spread_one_dot | ".." type "=" expression -> Refusal.spread_valued | ".." type ":" type -> Refusal.spread_typed
+            bare_spread = ".." -> Refusal.spread_bare
             field = ( marks:mark )* ( state_field:STATE )? name:NAME ":" ty:type ( "=" default:expression )? -> Record.ParamSyntax | spread:".." name:HOLE -> Record.ParamSyntax
             stmt = "alias" name:NAME ( "<" tparams:NAME ( "," tparams:NAME )* ","? ">" )? "=" of:type END @recover(sync_to: "END") -> Stmt.Alias
-            primary = t:NAME ( "<" ta:type ( "," ta:type )* ","? ">" )? "{" BREAK? ( ( vn:NAME ":" ve:expression | sp:".." ( vn:HOLE | se:postfix ) ) ( ( "," | BREAK ) BREAK? ( vn:NAME ":" ve:expression | sp:".." ( vn:HOLE | se:postfix ) ) )* ","? BREAK? )? "}" -> struct_lit(t, ta, vn, ve, sp, se)
+            primary = name:NAME ( "<" targs:type ( "," targs:type )* ","? ">" )? "{" BREAK? ( ( keys:NAME ":" vals:expression | dots:".." ( keys:HOLE | whole:postfix ) ) ( ( "," | BREAK ) BREAK? ( keys:NAME ":" vals:expression | dots:".." ( keys:HOLE | whole:postfix ) ) )* ","? BREAK? )? "}" -> Expr.StructLit by struct_lit_written
             pattern = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields
             asked = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields
             destructure = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields
             fields_rest = ".." -> Pat.Wild
             field_pat = name:NAME ":" pat:pattern -> Record.FieldPat | name:NAME -> Record.FieldPat(pat = Pat.Bind(name = name))
         }
-        builders: rows
         diags: codes
         properties: properties
+        refusals: [
+            RefusalRow { name: "spread_three_dots", kind: "parse.spread", voice: spread_three_dots },
+            RefusalRow { name: "spread_one_dot", kind: "parse.spread", voice: spread_one_dot },
+            RefusalRow { name: "spread_valued", kind: "parse.spread", voice: spread_valued },
+            RefusalRow { name: "spread_typed", kind: "parse.spread", voice: spread_typed },
+            RefusalRow { name: "spread_bare", kind: "parse.spread", voice: spread_bare },
+        ]
     }
     structs
 }

@@ -31,6 +31,7 @@ use core.{
     UseItem,
     FieldPat,
     Given,
+    FnSeat,
 }
 use @std.meta.{Field}
 use diagnostics.{DiagCode}
@@ -70,6 +71,8 @@ export enum LangNode {
     NFieldPat(field: FieldPat)
     /// One `given` group of a spec, as data.
     NGiven(group: Given)
+    /// One `FnSeat` record, as data.
+    NFnSeat(record: FnSeat)
     /// One `catch` arm, as data — its value is an expression the arm
     /// carries, and nothing else in it is a node.
     NCatchArm(arm: CatchArm)
@@ -95,6 +98,7 @@ impl LangNode {
             .NVariant(variant) -> variant.span,
             .NUseItem(_) -> null,
             .NFieldPat(field) -> store.pat_span(field.pat),
+            .NFnSeat(record) -> record.ty.span,
             .NGiven(group) -> cover_of([c.span! for c in group.cases if c.span != null]),
             .NCatchArm(arm) -> store.expr_span(arm.value),
             .NMark(mark) -> mark.span,
@@ -331,6 +335,9 @@ export component LanguageFeature {
     properties: List<PropertyRow> = []
     remedies: List<KeywordRemedy> = []
     refusals: List<RefusalRow> = []
+    /// The words its rules write that stay NAMEs everywhere else: matched
+    /// where the rule writes them, never reserved.
+    soft_words: List<string> = []
 }
 
 /// A grammar's own refusal: a rule ending `-> Refusal.<name>` speaks the

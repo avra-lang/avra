@@ -10,7 +10,6 @@ use core.{
     void_ref,
     Means,
     no_door,
-    Spread,
     found_at,
     Expr,
     Stmt,
@@ -28,6 +27,7 @@ use core.{
     UseItem,
     FieldPat,
     Given,
+    FnSeat,
     Mark,
     Variant,
     CompClause,
@@ -105,6 +105,12 @@ impl Slots for Builder {
         .Ok(use_items_at(self.args, self.slot_of(label)?))
     }
 
+    /// The `FnSeat` records the payload `label` carries.
+    fn fn_seats_of(label: string) -> Result<List<FnSeat>, string> {
+        let items = list_at(self.args, self.slot_of(label)?)
+        .Ok(flatten([some_list(fn_seat_at(items, j)) for j in 0..items.length]))
+    }
+
     /// The `given` groups the payload `label` carries.
     fn givens_of(label: string) -> Result<List<Given>, string> {
         let items = list_at(self.args, self.slot_of(label)?)
@@ -137,8 +143,49 @@ impl Slots for Builder {
         .Ok(map_entries_at(self.args, self.slot_of(label)?))
     }
 
+    /// Where each capture under `label` was written, in order.
+    fn spans_of(label: string) -> Result<List<Span?>, string> {
+        .Ok([extent_of_capture(c, self.store) for c in list_at(self.args, self.slot_of(label)?)])
+    }
+
+    /// The text of the file this build reads.
+    fn source() -> string { self.text }
+
     /// The span this build was written at.
     fn built_at() -> Span? { self.span }
+
+    /// An error node, placeless, for a payload the rule left unwritten.
+    fn hollow() -> ExprId { self.store.alloc_expr(Expr.Error) }
+
+    /// The arena this build allocates into.
+    fn arena() -> SyntaxArena { self.store }
+
+    /// A new statement at this build's place, every facet field the rule's
+    /// payload carries written into the store table its mark names. A
+    /// table no row names is a defect at the mark, never a silent drop.
+    fn made_stmt(s: Stmt) -> Result<StmtId, string> {
+        let id = self.store.alloc_stmt(s, self.node_span())
+        for f in self.payloads {
+            let side? = facet_table(f) else { continue }
+            if !self.present_of(f.name)? { continue }
+            let row? = facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
+            (row.mark)(self.store, id)
+        }
+        .Ok(id)
+    }
+
+    /// A new expression at this build's place, its facet fields written
+    /// like a statement's.
+    fn made_expr(e: Expr) -> Result<ExprId, string> {
+        let id = self.store.alloc_expr(e, self.node_span())
+        for f in self.payloads {
+            let side? = facet_table(f) else { continue }
+            if !self.present_of(f.name)? { continue }
+            let row? = expr_facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
+            (row.mark)(self.store, id)
+        }
+        .Ok(id)
+    }
 
     /// The catch arms the payload `label` carries.
     fn catch_arms_of(label: string) -> Result<List<CatchArm>, string> {
@@ -199,11 +246,13 @@ impl Slots for Builder {
         .Ok((self.token(self.slot_of(label)?)?).text)
     }
 
-    /// The integer the number the payload `label` carries spells.
+    /// The int the number the payload `label` carries spells: an integer's
+    /// value, a fraction's bits. The lexer refuses a literal no `int`
+    /// holds, so its stand-in here speaks nothing twice.
     fn int_of(label: string) -> Result<int, string> {
         let t = self.token(self.slot_of(label)?)?
-        let n? = t.int_value() else { return .Err(no_integer(t.text)) }
-        .Ok(n)
+        if t.is_fraction() { return .Ok(t.float_bits()) }
+        .Ok(t.int_value() ?? 0)
     }
 
     /// The operator the word the payload `label` carries spells.
@@ -362,35 +411,14 @@ impl Builder {
     /// branch's. A `@facet` field the rule's payload carries is written to
     /// its side table here, keyed by the node just allocated.
     fn make_stmt(s: Stmt) -> Result<LangNode, string> {
-        let id = self.store.alloc_stmt(s, self.node_span())
-        self.faceted_stmt(id)
-    }
-
-    /// The node `id` names, once every facet field the rule's payload
-    /// carries is written into the store table its mark names. A table
-    /// no row names is a defect at the mark, never a silent drop.
-    fn faceted_stmt(id: StmtId) -> Result<LangNode, string> {
-        for f in self.payloads {
-            let side? = facet_table(f) else { continue }
-            if !self.flag_of(f.name)? { continue }
-            let row? = facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
-            (row.mark)(self.store, id)
-        }
-        .Ok(LangNode.NStmt(id))
+        .Ok(LangNode.NStmt(self.made_stmt(s)?))
     }
 
     /// A new expression node, at the span its anchor names or the matched
     /// branch's, its facet fields written to their side tables like a
     /// statement's.
     fn make_expr(e: Expr) -> Result<LangNode, string> {
-        let id = self.store.alloc_expr(e, self.node_span())
-        for f in self.payloads {
-            let side? = facet_table(f) else { continue }
-            if !self.flag_of(f.name)? { continue }
-            let row? = expr_facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
-            (row.mark)(self.store, id)
-        }
-        self.meant(id)
+        self.meant(self.made_expr(e)?)
     }
 
     /// `id` as this build's node, with what it means minted beside it when
@@ -470,19 +498,9 @@ impl Builder {
         .Ok(LangNode.NStmt(id))
     }
 
-    /// A head WIDENED by its trailing blocks — each marked as one,
-    /// the call given them as its last arguments through the call
-    /// protocol. A head that is no call refuses in the block's words.
+    /// A head widened by its trailing blocks, at this build's place.
     fn trailed(h: ExprId, blocks: List<ExprId>) -> Result<ExprId, string> {
-        if blocks.is_empty() { return .Ok(h) }
-        for k in blocks { self.store.mark_trailing(k) }
-        let widened: Expr? = self.store.called_with(h, blocks)
-        if widened == null {
-            return .Err(
-                "a trailing block follows this expression, and only a call takes one — `f(…) { … }`, `a.m(…) { … }`, a name, a field read",
-            )
-        }
-        .Ok(self.expr_node(widened!))
+        self.store.trailed(h, blocks, self.node_span())
     }
 
     /// THE BLOCK LAW: statements as a scope answering with its tail.
@@ -504,12 +522,7 @@ impl Builder {
     }
 
     /// The span from the first statement's start to the last one's end.
-    fn extent_of(stmts: List<StmtId>) -> Span? {
-        let first? = stmts.first() else { return null }
-        let a? = self.store.stmt_span(first) else { return null }
-        let b? = self.store.stmt_span(stmts.last()!) else { return a }
-        a.cover(b)
-    }
+    fn extent_of(stmts: List<StmtId>) -> Span? { self.store.stmts_extent(stmts) }
 
     /// Where this build's branch ENDED — the bound a positional
     /// reconstruction measures against. Absent for a synthesized
@@ -613,6 +626,10 @@ fn variant_of(args: List<Captured<Token, LangNode>>, i: int) -> Variant? {
 export fn use_items_at(args: List<Captured<Token, LangNode>>, i: int) -> List<UseItem> {
     let items = list_at(args, i)
     flatten([some_list(use_item_of(items, j)) for j in 0..items.length])
+}
+
+fn fn_seat_at(args: List<Captured<Token, LangNode>>, i: int) -> FnSeat? {
+    match args[i] { .Node(.NFnSeat(r)) -> r, _ -> null }
 }
 
 fn given_at(args: List<Captured<Token, LangNode>>, i: int) -> Given? {
@@ -723,33 +740,8 @@ fn token_between(tokens: List<Token>, after: int, before: int) -> string {
 }
 
 impl Builder {
-    /// The value between field `j`'s name and the next field's — null
-    /// for a hole standing as the whole field.
-    fn value_after(vn: List<Token>, ve: List<ExprId>, j: int) -> ExprId? {
-        let lo = vn[j].span.lo
-        let hi: int = if j + 1 < vn.length { vn[j + 1].span.lo } else { 1000000000 }
-        ve.find((e) -> self.starts_between(e, lo, hi))
-    }
-
     /// Where a member was written.
     fn written_at(p: Param) -> int { self.store.param_id_span(p.id)?.lo ?? 0 }
-
-    fn starts_between(e: ExprId, lo: int, hi: int) -> bool {
-        let sp: Span? = self.store.expr_span(e)
-        sp != null && between(sp!.lo, lo, hi)
-    }
-}
-
-/// An entry's name as written: a hole SPREAD by `..` keeps the `..`,
-/// which is how a template tells a run of entries from a name hole.
-export fn spread_name(f: Token, spreads: List<Token>, all: List<Token>) -> string {
-    if spreads.any((s: Token) -> spread_before(s, f, all)) { "..${f.text}" } else { f.text }
-}
-
-/// Whether `..` stands directly before entry `f` — after every entry
-/// written before it.
-fn spread_before(s: Token, f: Token, all: List<Token>) -> bool {
-    s.span.hi == f.span.lo && !all.any((g: Token) -> g.span.lo > s.span.lo && g.span.lo < f.span.lo)
 }
 
 /// The mark that makes an event the one bare statements in an instance fill.
@@ -769,18 +761,6 @@ export fn typed_spread() -> string { "a spread names a record, not a field type"
 
 /// A spread with no record after the dots.
 export fn bare_spread() -> string { "a spread names the record it places: `..R`" }
-
-/// A field list's `..R` entries: each record, placed after the
-/// entries written before it — `entries` holds where each began.
-export fn record_spreads(entries: List<int>, rs: List<Token>, rt: List<TypeRef>) -> Result<
-    List<Spread>,
-    string,
-> {
-    if rs.length != rt.length { return .Err(zip_defect_of("spreads and their records")) }
-    .Ok(
-        [Spread { at: [lo for lo in entries if lo < r.span.lo].length, of: rt[j], lo: r.span.lo } for j, r in rs],
-    )
-}
 
 /// Strictly inside the window `after..before`.
 export fn between(at: int, after: int, before: int) -> bool {
@@ -833,10 +813,6 @@ fn facet_not_a_pattern(field: string) -> string {
 fn unknown_payload(ps: List<Field>, n: string) -> string {
     if ps.is_empty() { return "no payload `${n}` — this build carries none" }
     "no payload `${n}` — this build carries `${[p.name for p in ps].join("`, `")}`"
-}
-
-fn no_integer(written: string) -> string {
-    "`${written}` is no integer — a number pattern matches an `int`"
 }
 
 fn no_pattern(label: string) -> string {
