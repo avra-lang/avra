@@ -705,11 +705,15 @@ const state_types: List<string> = [
     "Scope",
 ]
 
+/// The marks that make a free fn a QUERY: the engine asks it by its context, so its first
+/// seat is that context by the engine's law, never a verb astray from its state's impl.
+const query_marks: List<string> = ["query", "over"]
+
 /// `lit`'s first param, when `lit` is a TOP-LEVEL free `fn` declared
 /// directly under `features/` or `compiler/` and that param's own
 /// written type is one of `state_types` — absent for every other
 /// shape (not a `fn`, no params, a nested feature file, an unrelated
-/// first type, or a `fn` that is not top-level: a trait's own method
+/// first type, a query, or a `fn` that is not top-level: a trait's own method
 /// SIGNATURE (`fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId`,
 /// features/contract.av's `NodeSemantics`) is a DISPATCH TARGET
 /// `cx` reaches BY NODE KIND, never a vocabulary verb wanting to move
@@ -720,6 +724,7 @@ fn free_state_param(lit: Code) -> Code? {
     let params? = lit.fn_params() else { return null }
     if !is_pass_file(lit.of.view.source.file) { return null }
     if !is_top_level(lit) { return null }
+    if lit.annotations().any((a) -> query_marks.contains(a.name)) { return null }
     let p0? = params.first() else { return null }
     if !is_state_type(p0.decl_type()) { return null }
     p0
