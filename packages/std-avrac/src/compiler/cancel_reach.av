@@ -28,9 +28,6 @@ use core.{
     FileId,
     IndexRange,
     Stmt,
-    fp,
-    fp_list,
-    fp_str,
     rt_waits,
     flatten,
     touch,
@@ -38,13 +35,19 @@ use core.{
     scc_fixpoint,
     same_decl,
 }
-use features.{NameFacts, TypeFacts, FileView, Decls, Decl, CancelReach}
+use features.{NameFacts, TypeFacts, FileView, Decls, CancelReach}
 use compiler.families.{Family}
+use @std.relation.{query}
 use @std.relation.engine.{Key}
 
 /// One member's survey: what its own body may reach, and the members it
 /// calls, whose answers it takes.
 type CancelEvidence = { own: CancelReach, callees: List<DeclId> }
+
+/// A fn's own evidence: asking IS the query, and it stands until the body, the facts it reads
+/// or what the body names move.
+@query
+fn cancel_evidence(ws: Workspace, d: DeclId) -> CancelEvidence { ws.cancel_summary(d) }
 
 /// What one call answers a survey: known now, or a member's answer.
 enum CallAnswer {
@@ -86,12 +89,12 @@ impl Workspace {
     }
 
     /// The members a member calls, whose bits the walk settles before its own.
-    fn cancel_callees(d: DeclId) -> List<DeclId> { once_each(self.cancel_evidence_of(d).callees) }
+    fn cancel_callees(d: DeclId) -> List<DeclId> { once_each(cancel_evidence(self, d).callees) }
 
     /// One set's least fixpoint, recorded and settled: every member's cell stands on the
     /// evidence of the set and on the settled bits of what the set calls from outside.
     fn settle_cancels(members: List<DeclId>) {
-        let sums = [self.cancel_evidence_of(m) for m in members]
+        let sums = [cancel_evidence(self, m) for m in members]
         let states = scc_fixpoint(
             members,
             (m: DeclId) -> reaches_nothing(),
@@ -109,39 +112,10 @@ impl Workspace {
         for m in members {
             let k = key(Family.CancelBits, m.index)
             self.db.begin(k)
-            for x in members { touch(self.cancel_evidence_of(x)) }
+            for x in members { touch(cancel_evidence(self, x)) }
             for c in outside { touch(self.cancel_bits_of(c)) }
             self.db.settle(k, cancel_word(self.decls.cancels_so_far(m)))
         }
-    }
-
-    /// A fn's own evidence as a settled row: asking IS the query, and the row stands until
-    /// the body, the facts it reads or what the body names move.
-    fn cancel_evidence_of(d: DeclId) -> CancelEvidence {
-        let k = key(Family.CancelSummary, d.index)
-        if !(self.db.ask(k) is .Compute) {
-            return self.cancel_summaries.at(d.index) ?? CancelEvidence {
-                own: reaches_nothing(),
-                callees: [],
-            }
-        }
-        self.db.begin(k)
-        let s = self.cancel_summary(d)
-        self.cancel_summaries.keep(d.index, s)
-        self.db.settle(k, self.evidence_word(s))
-        s
-    }
-
-    /// Evidence as a reader can tell it: its own bits, and each callee named by its durable
-    /// key, so a bystander renamed or added moves nothing.
-    fn evidence_word(s: CancelEvidence) -> int {
-        fp(
-            2,
-            [
-                cancel_word(s.own),
-                fp_list([fp_str(Decl.key_text(self.decls.raw_decl(c).key())) for c in s.callees]),
-            ],
-        )
     }
 
     /// Every member's bits settled — the lowering of a program reads them one by one, and
