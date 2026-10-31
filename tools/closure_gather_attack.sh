@@ -9,8 +9,8 @@
 # gathers them, while a dependency's private member (`@t/far`) stays unseen; a
 # member C adds re-lowers the collect and never a module that does not read it.
 set -u
-cd "$(dirname "$0")/.."
-T=$(pwd); B=build/closure-gather-attack; fails=0; steps=0
+. "$(dirname "$0")/lib/attack.sh"
+T=$(pwd); B=build/closure-gather-attack
 AVRA=${AVRA_BIN:-$T/build/avra}
 [ -d "$B" ] && find "$B" -depth -delete
 mkdir -p $B/lib/src/other $B/far/src $B/a/src $B/b/src $B/c/src
@@ -105,9 +105,9 @@ AV
 S() { # S <program> <want output>
     steps=$((steps+1))
     $AVRA build $B/$1/src/main.av > $B/out 2> $B/err; st=$?
-    if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  $1: did not build (status $st)"; tail -5 $B/err; return; fi
+    if [ $st -ne 0 ]; then fail "$1: did not build (status $st)"; tail -5 $B/err; return; fi
     got=$($B/$1/src/main 2>&1)
-    [ "$got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  program $1 printed '$got', wanted '$2'"; }
+    [ "$got" = "$2" ] || fail "program $1 printed '$got', wanted '$2'"
 }
 S a "[]";       S b "[knob]"
 S a "[]";       S b "[knob]"
@@ -116,12 +116,12 @@ S c "[knob] 1 7"
 L() { # L <want output>: built, and the units it lowered afresh hold `rows` and nothing of `other`
     steps=$((steps+1))
     AVRA_QTRACE=1 $AVRA build $B/c/src/main.av > $B/out 2> $B/err; st=$?
-    if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  c: did not build (status $st)"; tail -5 $B/err; return; fi
+    if [ $st -ne 0 ]; then fail "c: did not build (status $st)"; tail -5 $B/err; return; fi
     got=$($B/c/src/main 2>&1)
-    [ "$got" = "$1" ] || { fails=$((fails+1)); echo "FAIL  program c printed '$got', wanted '$1'"; }
+    [ "$got" = "$1" ] || fail "program c printed '$got', wanted '$1'"
     fresh=$(awk -F'\t' '$1 == "Q" && $2 == "unit" && $3 == "lowered" { print $4 }' $B/err | tr '\n' ' ')
-    case " $fresh" in *" @t.libx.rows "*) ;; *) fails=$((fails+1)); echo "FAIL  c: a member arrived and \`rows\` was not lowered afresh: $fresh" ;; esac
-    case " $fresh" in *"other"*) fails=$((fails+1)); echo "FAIL  c: a module that reads no collect was lowered afresh: $fresh" ;; esac
+    case " $fresh" in *" @t.libx.rows "*) ;; *) fail "c: a member arrived and \`rows\` was not lowered afresh: $fresh" ;; esac
+    case " $fresh" in *"other"*) fail "c: a module that reads no collect was lowered afresh: $fresh" ;; esac
 }
 printf '\n@seat\nconst lamp: Row = Row { owner: "lamp" }\n' >> $B/c/src/main.av
 L "[knob,lamp] 1 7"
@@ -130,7 +130,6 @@ L "[knob,lamp,mop] 1 7"
 S b "[knob]";   S a "[]"
 # the library checked alone is its own root: it gathers its own closure, and says nothing
 steps=$((steps+1))
-$AVRA check $B/lib > $B/out 2>&1 || { fails=$((fails+1)); echo "FAIL  the library alone did not check clean"; tail -5 $B/out; }
-grep -qE '(error|warning)\[' $B/out && { fails=$((fails+1)); echo "FAIL  the library alone spoke:"; head -5 $B/out; }
-echo "closure-gather-attack: $steps builds through one store, $fails failed"
-[ "$fails" -eq 0 ]
+$AVRA check $B/lib > $B/out 2>&1 || { fail "the library alone did not check clean"; tail -5 $B/out; }
+grep -qE '(error|warning)\[' $B/out && { fail "the library alone spoke:"; head -5 $B/out; }
+verdict "closure-gather-attack" "$steps builds through one store"

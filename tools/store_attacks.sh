@@ -28,7 +28,7 @@
 #   one store · one open · kill mid-append · two writers · compaction contended ·
 #   a flipped byte · another compiler · a claim conflict
 set -u
-cd "$(dirname "$0")/.."
+. "$(dirname "$0")/lib/attack.sh"
 # THE HARNESS HOLDS THE SLOT: two writers and a contended compaction need two
 # processes AT ONCE, and the `avra` shim serialises package-scale runs on the
 # machine lock. `AVRA_WATCH_HELD` tells the shim this harness is the slot —

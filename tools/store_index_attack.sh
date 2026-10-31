@@ -8,7 +8,7 @@ set -u
 . "$(dirname "$0")/lib/attack.sh"
 AVRA=${AVRA:-./avra}
 
-R=build/store-index; fails=0
+R=build/store-index
 rm -rf "$R" .avra-cache && mkdir -p $R
 fixture() { # fixture <dir> <count>
     mkdir -p $1/src

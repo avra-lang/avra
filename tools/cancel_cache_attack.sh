@@ -8,9 +8,9 @@
 # under test is never the entry. Each step edits the callee, asks the reader's
 # hold, then checks so the next step starts from a kept state.
 set -u
-cd "$(dirname "$0")/.."
+. "$(dirname "$0")/lib/attack.sh"
 
-R=build/cancel-cache-attack; fails=0; steps=0
+R=build/cancel-cache-attack
 rm -rf "$R" .avra-cache && mkdir -p $R/src/lib
 printf '[package]\nname = "rt-cc"\nversion = "0.1.0"\n' > $R/avra.toml
 printf 'use lib.{work}\nuse mid.{mid}\nfn handle() -> int { work() }\nhandle() + mid()\n' > $R/src/main.av
@@ -27,7 +27,7 @@ inspected() {
 says() { # says <label> <a line the answer holds> <the answer>
     steps=$((steps+1))
     printf '%s\n' "$3" | grep -qF -- "$2" ||
-        { fails=$((fails+1)); echo "FAIL  $1: never said '$2': $(printf '%s\n' "$3" | head -3 | tr '\n' ' ')"; }
+        { fail "$1: never said '$2': $(printf '%s\n' "$3" | head -3 | tr '\n' ' ')"; }
 }
 callee() { printf '%s\n' "$1" > $R/src/lib/a.av; }
 kept() { ./avra check $R >/dev/null 2>&1; }
