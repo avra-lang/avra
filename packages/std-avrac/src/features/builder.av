@@ -26,6 +26,8 @@ use core.{
     Case,
     UseItem,
     FieldPat,
+    ProjField,
+    OrderKey,
     Given,
     FnSeat,
     Mark,
@@ -123,6 +125,18 @@ impl Slots for Builder {
         .Ok(flatten([some_list(field_pat_at(items, j)) for j in 0..items.length]))
     }
 
+    /// The projected fields the payload `label` carries.
+    fn proj_fields_of(label: string) -> Result<List<ProjField>, string> {
+        let items = list_at(self.args, self.slot_of(label)?)
+        .Ok(flatten([some_list(proj_field_at(items, j)) for j in 0..items.length]))
+    }
+
+    /// The `by` keys the payload `label` carries.
+    fn order_keys_of(label: string) -> Result<List<OrderKey>, string> {
+        let items = list_at(self.args, self.slot_of(label)?)
+        .Ok(flatten([some_list(order_key_at(items, j)) for j in 0..items.length]))
+    }
+
     /// The marks the payload `label` carries.
     fn marks_of(label: string) -> Result<List<Mark>, string> {
         .Ok(marks_at(self.args, self.slot_of(label)?))
@@ -160,6 +174,9 @@ impl Slots for Builder {
     /// The arena this build allocates into.
     fn arena() -> SyntaxArena { self.store }
 
+    /// The imported component `word` opens in this build's file.
+    fn component_word(word: string) -> ComponentWord? { self.words.component(word) }
+
     /// A new statement at this build's place, every facet field the rule's
     /// payload carries written into the store table its mark names. A
     /// table no row names is a defect at the mark, never a silent drop.
@@ -175,7 +192,8 @@ impl Slots for Builder {
     }
 
     /// A new expression at this build's place, its facet fields written
-    /// like a statement's.
+    /// like a statement's, and what it means minted beside it when it is
+    /// a sugar.
     fn made_expr(e: Expr) -> Result<ExprId, string> {
         let id = self.store.alloc_expr(e, self.node_span())
         for f in self.payloads {
@@ -184,7 +202,7 @@ impl Slots for Builder {
             let row? = expr_facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
             (row.mark)(self.store, id)
         }
-        .Ok(id)
+        self.mint(id)
     }
 
     /// The catch arms the payload `label` carries.
@@ -232,6 +250,11 @@ impl Slots for Builder {
     /// The expressions the payload `n` carries.
     fn exprs_of(label: string) -> Result<List<ExprId>, string> {
         self.exprs(self.slot_of(label)?)
+    }
+
+    /// The expressions under `label`, each riding the pronoun.
+    fn riding_of(label: string) -> Result<List<ExprId>, string> {
+        .Ok([self.store.pronouned(a) for a in self.exprs_of(label)?])
     }
 
     /// The expression the payload `n` carries.
@@ -376,7 +399,7 @@ impl Builder {
                     ),
                 span,
             )
-        let _ = self.meant(node)
+        let _ = self.mint(node)
         items.slice(0, at).concat([self.store.alloc_stmt(Stmt.ExprStmt(node), span)])
     }
 
@@ -418,17 +441,17 @@ impl Builder {
     /// branch's, its facet fields written to their side tables like a
     /// statement's.
     fn make_expr(e: Expr) -> Result<LangNode, string> {
-        self.meant(self.made_expr(e)?)
+        .Ok(LangNode.NExpr(self.made_expr(e)?))
     }
 
     /// `id` as this build's node, with what it means minted beside it when
     /// it is a sugar. A sugar whose shape means nothing refuses in its own
     /// words.
-    fn meant(id: ExprId) -> Result<LangNode, string> {
+    fn mint(id: ExprId) -> Result<ExprId, string> {
         self.provide(id)
         let minted = (self.words.door)(self.store, id)?
         if !minted.nodes.is_empty() { self.store.means_as(id, minted, self.said(id, self.store.expr(id))) }
-        .Ok(LangNode.NExpr(id))
+        .Ok(id)
     }
 
     /// The component an instance's word names in this file, handed to its
@@ -496,11 +519,6 @@ impl Builder {
     /// answering it.
     fn wrap_stmt(id: StmtId) -> Result<LangNode, string> {
         .Ok(LangNode.NStmt(id))
-    }
-
-    /// A head widened by its trailing blocks, at this build's place.
-    fn trailed(h: ExprId, blocks: List<ExprId>) -> Result<ExprId, string> {
-        self.store.trailed(h, blocks, self.node_span())
     }
 
     /// THE BLOCK LAW: statements as a scope answering with its tail.
@@ -640,6 +658,14 @@ fn field_pat_at(args: List<Captured<Token, LangNode>>, i: int) -> FieldPat? {
     match args[i] { .Node(.NFieldPat(f)) -> f, _ -> null }
 }
 
+fn proj_field_at(args: List<Captured<Token, LangNode>>, i: int) -> ProjField? {
+    match args[i] { .Node(.NProjField(f)) -> f, _ -> null }
+}
+
+fn order_key_at(args: List<Captured<Token, LangNode>>, i: int) -> OrderKey? {
+    match args[i] { .Node(.NOrderKey(k)) -> k, _ -> null }
+}
+
 fn use_item_of(args: List<Captured<Token, LangNode>>, i: int) -> UseItem? {
     match args[i] { .Node(.NUseItem(u)) -> u, _ -> null }
 }
@@ -718,25 +744,6 @@ export fn list_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Capture
         .Terminal(t) -> [Captured.Terminal(t)],
         .Node(n) -> [Captured.Node(n)],
     }
-}
-
-/// The window an arm's captures live in: from this anchor to the
-/// next (or the whole span's end) — how PER-ARM optional captures
-/// re-align with their arms after a flat repeated parse.
-export fn window_end(anchors: List<Token>, j: int, ends: int) -> int {
-    if j + 1 < anchors.length { return anchors[j + 1].span.lo }
-    ends
-}
-
-/// Each arm's optional bind — "" IS an arm that names nothing.
-export fn aligned_binds(anchors: List<Token>, optional: List<Token>, ends: int) -> List<string> {
-    [token_between(optional, a.span.lo, window_end(anchors, j, ends)) for j, a in anchors]
-}
-
-/// The one optional token written between two anchors, or "".
-fn token_between(tokens: List<Token>, after: int, before: int) -> string {
-    let hit? = tokens.find(between(it.span.lo, after, before)) else { return "" }
-    hit.text
 }
 
 impl Builder {

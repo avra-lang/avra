@@ -50,7 +50,8 @@ use @std.meta.{
     refuse_as_at,
     code_hash,
 }
-use db.{Db, Answers, answers, KeptRecord, code_keyed}
+use db.{Db, Answers, answers, KeptRecord, code_keyed, DenseNames}
+use @std.text.{ascii_lower}
 use stable.{
     stable_hasher,
     text_hash,
@@ -78,16 +79,62 @@ export fn query(f: Fn) -> Declared {
     let kept = kept_name(f)
     Declared {
         made: [
-            Directive {
-                twin: "",
-                name: kept,
-                at: f.at,
-                source: quote { once fn ${kept}() -> Answers<${f.answer}> { answers(${literal(durable_name(f))}, ${literal(f.name)}) } },
-            },
+            Directive { twin: "", name: kept, at: f.at, source: kept_source(f, kept) },
             Directive { twin: "", name: f.name, at: f.at, wraps: true, source: wrapper(f) },
         ],
         problems: [],
     }
+}
+
+/// Where a query's answers are kept: a dense-keyed one is named past the process only by its
+/// context's speller (`named_by`).
+fn kept_source(f: Fn, kept: string) -> Decls {
+    if keyed_densely(f) {
+        return quote { once fn ${kept}() -> Answers<${f.answer}> { answers(${literal(durable_name(f))}, ${literal(f.name)}, true) } }
+    }
+    quote { once fn ${kept}() -> Answers<${f.answer}> { answers(${literal(durable_name(f))}, ${literal(f.name)}, false) } }
+}
+
+/// Whether a call is keyed by a dense number of the process's own.
+fn keyed_densely(f: Fn) -> bool { f.params.slice(1, f.params.length).any(dense_field(it.kind) != null) }
+
+/// A DENSE KEY NAMED PAST THE PROCESS: a query of one dense seat, asked through a context,
+/// names its calls by the context's own speller for that seat's type —
+/// `<type>_spelled(id) -> string?` and `<type>_numbered(spelled) -> <type>?` — set by its first
+/// call. A missing speller is the ordinary refusal at the generated site.
+fn named_by(f: Fn) -> List<Stmts> {
+    if f.params.length != 2 || is_db(f.params[0].kind) { return [] }
+    let seat = f.params[1]
+    let field? = dense_field(seat.kind) else { return [] }
+    let ctx = name(f.params[0].name)
+    let stem = snake_of(seat.ty)
+    let id = quote { ${seat.ty} { ..${[quote { W { ${field}: n } }]} } }
+    [
+        quote {
+            if !held.durably_named() {
+                held.durable_by(
+                    DenseNames {
+                        spell: (n: int) -> ${ctx}.${"${stem}_spelled"}(${id}),
+                        number: (s: string) -> ${ctx}.${"${stem}_numbered"}(s)?.${field},
+                        ask: (n: int) -> {
+                            let _ = ${f.name}(${ctx}, ${id})
+                        },
+                    },
+                )
+            }
+        },
+    ]
+}
+
+/// A type's name in snake case: `DeclId` is `decl_id`.
+fn snake_of(ty: string) -> string {
+    mut out = ""
+    for j in 0..ty.length {
+        let c = ty.substring(j, j + 1)
+        let lower = ascii_lower(c)
+        out = if j > 0 && lower != c { "${out}_${lower}" } else { "${out}${lower}" }
+    }
+    out
 }
 
 /// The reader a record answer needs, bound beside the call: a TYPED LET
@@ -326,6 +373,7 @@ fn wrapper(f: Fn) -> Decls {
         return quote {
             fn ${f.name}(..${seats}) -> ${f.answer} {
                 let held = ${kept_name(f)}().under(${db})
+                ${named_by(f)}
                 let arg = ${arg_code(f)}
                 match ${opened(f)} {
                     .Reuse(value) -> value,
@@ -341,6 +389,7 @@ fn wrapper(f: Fn) -> Decls {
     quote {
         fn ${f.name}(..${seats}) -> ${f.answer} {
             let held = ${kept_name(f)}().under(${db})
+            ${named_by(f)}
             let arg = ${arg_code(f)}
             match ${opened(f)} {
                 .Reuse(value) -> value,

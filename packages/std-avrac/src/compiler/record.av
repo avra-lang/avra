@@ -726,6 +726,7 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
         // a module none of whose files this attempt read has its lines carried forward whole
         if !ws.module_files(m).any((path) -> ws.read_here(path)) { continue }
         let prior = record_cached(ws, store, m)
+        let forms_were = ws.producers_for(store, m)?.forms
         let made = ws.record_of(store, m)
         ws.keep_items(store, m, made)
         // a record is keyed by its module's NAME: a write is owed when its words moved
@@ -735,7 +736,11 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
             ws.db.insert_sig(store, ws.record_key(m), iface)
             record_known(ws, m, made)
             ws.keep_producers(store, m, iface)
-            if seen_part(made) != seen_part(prior) { seen_moved = true }
+            // a plain free fn's form is what a file that spells its name sees of it
+            if seen_part(made) != seen_part(prior) ||
+                ws.producers_for(store, m)?.forms != forms_were {
+                seen_moved = true
+            }
         }
     }
     // A BODY EDIT MOVES A RECORD'S `file` LINES, and with them no key but its own
