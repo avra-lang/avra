@@ -44,6 +44,7 @@ use compiler.backend.{
     runs_tasks,
 }
 use compiler.lower.{Body, Lowered, program_symbol}
+use @std.grammar.{render_grammar}
 use compiler.memory.{sound_checked}
 use compiler.store.{
     Store,
@@ -349,7 +350,19 @@ fn unnamed_print() -> string {
 fn compiler_print(ws: Workspace) -> string {
     let digest? = ws.running_print() else { return unnamed_print() }
     let mode = ws.keys.build_mode.get()
-    "${digest}${codegen_mode()}${proof_mode()}${if mode == "" { "" } else { "@${mode}" }}"
+    "${digest}.${language_mark(ws.lang)}${codegen_mode()}${proof_mode()}${if mode == "" { "" } else { "@${mode}" }}"
+}
+
+/// THE LANGUAGE A PRINT NAMES: every feature's rules and soft words, as one digest. One
+/// binary can assemble two languages — a test's feature list, a compiler evaluated from
+/// its source — and what one parsed is never the other's answer.
+export fn language_mark(lang: Language) -> string {
+    digest_of(
+        joined(
+            [joined([f.name, render_grammar(f.gram), joined(f.soft_words, ",")], "\t") for f in lang.features],
+            "\n",
+        ),
+    )
 }
 
 /// The name of the read that stands for the tools as a set: a link made by other tools is

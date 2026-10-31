@@ -1,0 +1,28 @@
+// A plain declaration is one body under any caller's substitution, so it lowers under its
+// own symbol: a static call whose answer pins a generic type's argument names no
+// specialization, or a held file — which declares only the plain symbol — leaves the
+// caller's call naming nothing.
+use @std.avrac.testing.{ir_of}
+
+/// Every body the program lowered whose symbol begins with `name`.
+fn lowered_named(source: string, name: string) -> List<string> {
+    [b.name for b in ir_of(source).fns if b.name.starts_with(name)]
+}
+
+spec "compiler/lower — a substitution reaches a generic body alone" {
+    given "a plain static method whose answer is a generic type at a concrete argument" {
+        then "its call and its body wear the plain symbol" {
+            lowered_named(
+                "type W<R> = { v: R }\ntype Row = { n: int }\nimpl Row {\n    static fn rows_in(x: int) -> W<Row> { W { v: Row { n: x } } }\n    static fn all(x: int) -> int { Row.rows_in(x).v.n }\n}\nRow.all(3)",
+                "Row.rows_in",
+            )
+                .join(",") == "Row.rows_in"
+        }
+    }
+    given "a generic fn" {
+        then "it is specialized under its arguments" {
+            let picks = lowered_named("fn pick<T>(a: T) -> T { a }\npick(3)", "pick")
+            !picks.is_empty() && picks.all(it.contains("\$"))
+        }
+    }
+}
