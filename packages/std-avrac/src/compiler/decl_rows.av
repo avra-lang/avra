@@ -2,7 +2,7 @@
 //! lines, standing on its text; a module's record keeps neither, and reads them back whole
 //! (`record_whole`). A declaration no parse declares is filled from its own line, found by
 //! its name (`decl_row_filled`).
-use core.{DeclId, ModulePath, joined, flatten, wreck, qtrace}
+use core.{DeclId, ModulePath, joined, flatten, wreck, qtrace, traced}
 use core.debug.{db_verified_decl, db_verified_items}
 use compiler.store.{Store, Stored, node_key}
 
@@ -20,8 +20,8 @@ impl Workspace {
             )
             let key = items_key(self.root, path, self.text_digest(path))
             let kept = store.get(Stored.Unit, key)
+            if kept != null && db_verified_items() { items_judged(path, kept!, text) }
             if kept == text { continue }
-            if kept != null && db_verified_items() && items_identity(kept!) != items_identity(text) { wreck(items_drifted(path)) }
             if kept != null && db_verified_decl() { shapes_judged(path, kept!, text) }
             let _ = store.keep(Stored.Unit, key, text, [])
         }
@@ -86,6 +86,14 @@ impl RecordBodies {
 /// WHERE A FILE'S ITEMS ARE KEPT: its path and the digest of the text they were read from, so
 /// a record of any revision reads back the lines it was made with.
 fn items_key(root: string, path: string, digest: string) -> string { node_key(Stored.Unit, ["items", root, path, digest]) }
+
+/// A file's kept Items judged against the ones made now by what its text alone decides; a
+/// difference wrecks. Each judged file is traced with its line count, so a run that judged
+/// nothing says so.
+fn items_judged(path: string, kept: string, made: string) {
+    if traced() { qtrace("Q\titems\tjudged\t${path}\t${kept.split("\n").length - 1}\n") }
+    if items_identity(kept) != items_identity(made) { wreck(items_drifted(path)) }
+}
 
 /// WHAT A FILE'S TEXT ALONE DECIDES OF ITS ITEMS: each line's identity columns, its shape and
 /// payload left out — those read the declarations it names, which move without its text.
