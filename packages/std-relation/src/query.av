@@ -65,6 +65,7 @@ use stable.{
     read_list,
     tagged,
     spelled_with,
+    spelled_hash,
     text_spelled,
     int_spelled,
     Writer,
@@ -371,7 +372,7 @@ fn wrapper(f: Fn) -> Decls {
     let body = quote { () -> ${wrapped(f)}(${..args}) }
     let again = quote { () -> ${f.name}(${..args}) }
     if saved(f) {
-        let record = quote { KeptRecord { query: code_keyed(${literal(durable_name(f))}, code_hash(${name(wrapped(f).name)})), args: ${args_hash(f)}, write: ${write_each(f.answers, answer_owner(f))}, read: ${answer_read(f)} } }
+        let record = quote { KeptRecord { query: code_keyed(${literal(durable_name(f))}, code_hash(${name(wrapped(f).name)})), args: spelled_hash(${literal(f.name)}, spelled), write: ${write_each(f.answers, answer_owner(f))}, read: ${answer_read(f)} } }
         return quote {
             fn ${f.name}(..${seats}) -> ${f.answer} {
                 let held = ${kept_name(f)}().under(${db})
@@ -456,14 +457,6 @@ export fn answer_hash(f: Fn) -> Code {
 /// name and every seat's and the answer's spelling, so a changed
 /// signature never reads an old record.
 fn durable_name(f: Fn) -> string { "${f.name}(${[p.ty for p in f.params].join(",")}) -> ${f.answer}" }
-
-/// A call's arguments folded in order through the stable encoding, the
-/// query's own name the seed — two queries never share a cell.
-fn args_hash(f: Fn) -> Code {
-    mut acc: Code = quote { stable_hasher(${text_hash(f.name)}) }
-    for p in f.params.slice(1, f.params.length) { acc = hashed(acc, name(p.name), p.kind, answer_owner(f)) }
-    quote { ${acc}.finish() }
-}
 
 // ── voices ──
 
