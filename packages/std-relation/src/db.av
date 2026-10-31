@@ -184,6 +184,9 @@ export type AnswerRef = {
     /// Whether a reader of one of these answers stands on the answer itself, by its name and
     /// digest, rather than on what it read: a query's, whose key is a name another process reads.
     by_answer: bool = false,
+    /// The family whose cell a read of these answers records, for answers no cell of their own
+    /// settles: the cell that notes them as its leaves. -1 for answers recorded as themselves.
+    noted_by: int = -1,
 }
 
 impl AnswerRef {
@@ -191,6 +194,9 @@ impl AnswerRef {
         let f = self.family
         f()
     }
+
+    /// The family a read of one of these answers records.
+    fn recorded_family() -> int { if self.noted_by >= 0 { self.noted_by } else { self.family_now() } }
 
     fn spelled_at(arg: int) -> string? {
         let f = self.spelled
@@ -735,7 +741,7 @@ impl Db {
         let at = rest.index_of("\t")
         if at < 1 { return false }
         let owner? = self.answer_named(rest.substring(0, at)) else { return false }
-        owner.family_now() >= 0 && owner.arg_of(rest.substring(at + 1, rest.length)) != null
+        owner.recorded_family() >= 0 && owner.arg_of(rest.substring(at + 1, rest.length)) != null
     }
 
     fn read_rows_leaf(kernel: Kernel, name: string) {
@@ -746,7 +752,7 @@ impl Db {
     fn read_input_leaf(kernel: Kernel, name: string, spelled: string) {
         let owner? = self.answer_named(name) else { return }
         let arg? = owner.arg_of(spelled) else { return }
-        kernel.record_at(owner.family_now(), arg)
+        kernel.record_at(owner.recorded_family(), arg)
     }
 
     /// A query or input asked here, as a saved answer may name it.

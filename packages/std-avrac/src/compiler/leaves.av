@@ -45,8 +45,8 @@ impl Workspace {
     }
 
     /// The impl sets, spelled by their type: a set is the blocks aimed at it and their members, so
-    /// an impl joining or leaving, or a method added to a block that already stood, moves it. No
-    /// kernel key carries it.
+    /// an impl joining or leaving, or a method added to a block that already stood, moves it. Read,
+    /// it records the type's method table, whose cell notes it.
     fn named_impl_sets() -> AnswerRef {
         let ws = self
         AnswerRef {
@@ -55,6 +55,7 @@ impl Workspace {
             spelled: (arg: int) -> ws.spelled_decl(arg),
             arg: (spelled: string) -> ws.decl_arg(spelled),
             hash: (arg: int) -> ws.impl_set_hash(DeclId { index: arg }),
+            noted_by: Family.Methods.ordinal,
         }
     }
 
@@ -96,10 +97,13 @@ impl Workspace {
     }
 
     /// A file-keyed answer's digest as this revision answers it: asked for a file this process
-    /// reads, as it stands for one it holds — a held file's answer is never computed to be read.
+    /// reads, as it stands for one it holds — a held file's answer is computed only when nothing
+    /// in this revision settled it, so a read saved over it is judged against what it reads now.
     fn file_hash(ordinal: int, arg: int) -> int? {
         let k = key_at(ordinal, arg)
-        if arg >= 0 && arg < self.decls.file_count() && self.is_held(FileId { index: arg }) { return self.db.kernel.hash_forced(k) }
+        if arg >= 0 && arg < self.decls.file_count() && self.is_held(FileId { index: arg }) {
+            return self.db.kernel.hash_forced(k) ?? self.db.kernel.demanded(k)
+        }
         self.db.kernel.demanded(k)
     }
 
