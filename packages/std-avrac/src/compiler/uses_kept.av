@@ -1,6 +1,6 @@
 //! A FILE'S USE LINES, KEPT: what its last parse said they were, the guess its next parse
 //! is made under and checks (`Workspace.parsed_under_blocks`).
-use core.{UseParts, StmtId, joined}
+use core.{UseParts, StmtId, joined, wire_fields}
 use compiler.store.{Store, Stored, node_key}
 
 impl Workspace {
@@ -45,22 +45,21 @@ fn uses_wire(uses: List<UseParts>) -> string {
 
 /// `uses_wire`'s inverse; null for a text that is no such wire.
 fn uses_of_wire(wire: string) -> List<UseParts>? {
-    let lines = wire.split("\n")
+    let lines = wire_fields(wire, "\n")
     if lines.first() != "uses" { return null }
     [use_of_line(l)? for l in lines.drop(1)]
 }
 
 fn use_of_line(line: string) -> UseParts? {
-    // a split drops the trailing empty fields an itemless or aliasless line ends with
-    let cols = line.split("\t")
-    if cols.is_empty() || cols.length > 3 { return null }
+    let cols = wire_fields(line, "\t")
+    if cols.length != 3 { return null }
     UseParts {
-        path: cols[0].split("."),
-        items: some_words(if cols.length > 1 { cols[1] } else { "" }),
-        aliases: some_words(if cols.length > 2 { cols[2] } else { "" }),
+        path: wire_fields(cols[0], "."),
+        items: some_words(cols[1]),
+        aliases: some_words(cols[2]),
         stmt: StmtId { index: 0 },
     }
 }
 
 /// A comma list's words; none for an empty one.
-fn some_words(field: string) -> List<string> { if field.is_empty() { [] } else { field.split(",") } }
+fn some_words(field: string) -> List<string> { if field.is_empty() { [] } else { wire_fields(field, ",") } }
