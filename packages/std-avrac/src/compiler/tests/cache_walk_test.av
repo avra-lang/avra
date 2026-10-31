@@ -4,7 +4,7 @@
 // `a_process_over`, `checked`, `package_files` and the ordinals are
 // workspace_fixtures.av's own.
 use @std.avrac.testing.{test_workspace}
-use compiler.{Workspace, Subject}
+use compiler.{Workspace, Subject, parsed_of_key}
 use compiler.host.{memory_host}
 use compiler.families.{Family}
 use core.{sorted_texts, digest_of}
@@ -74,7 +74,7 @@ spec "compiler/cache_walk — a query's label" {
     then "each ordinal the fixtures use names its family and its subject" {
         let ws = walked()
         let f = decl_in_file(ws, "/w/src/a.av", "f").index
-        label_at(ws, parsed_ordinal(), ws.file_id("/w/src/a.av").index) == "Parsed(src/a.av)" &&
+        ws.key_label(parsed_of_key(ws, ws.file_id("/w/src/a.av"))) == "parsed_of(src/a.av)" &&
             label_at(ws, namespace_ordinal(), ws.decls.module_id("").index) == "Namespace(the root module)" &&
             label_at(ws, sig_ordinal(), f) == "Sig(f · src/a.av)" &&
             label_at(ws, methods_ordinal(), f) == "Methods(f · src/a.av)"
@@ -184,7 +184,7 @@ spec "compiler/cache_walk — up from a text" {
     }
     then "an answer never settled is read by nothing" {
         let ws = walked()
-        let gone = Key { family: parsed_ordinal(), arg: 4096 }
+        let gone = Key { family: parsed_of_key(ws, ws.file_id("/w/src/a.av")).family, arg: 4096 }
         ws.db.cell(gone) == null &&
             ws.db.edges_by_read(gone).is_empty() &&
             above(ws, gone).is_empty()
