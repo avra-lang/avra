@@ -790,10 +790,6 @@ fn const_typed_verified(ws: Workspace, arg: int) -> int {
     touch(ws.const_type_at(arg))
     ws.db.changed_at(key(Family.ConstTyped, arg))
 }
-fn analysis_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.analysis(file_at(arg)))
-    ws.db.changed_at(key(Family.Analysis, arg))
-}
 fn settled_verified(ws: Workspace, arg: int) -> int {
     touch(ws.settled_at(arg))
     ws.db.changed_at(key(Family.Settled, arg))
@@ -884,7 +880,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Sig -> sig_verified(ws, arg),
         .Typed -> typed_verified(ws, arg),
         .ConstTyped -> const_typed_verified(ws, arg),
-        .Analysis -> analysis_verified(ws, arg),
         .Settled -> settled_verified(ws, arg),
         .Lowered -> lowered_verified(ws, arg),
         .LiftLowered -> lift_lowered_verified(ws, arg),
@@ -1202,7 +1197,7 @@ impl Workspace {
     fn disarmed() {
         // An Analysis holds the program closure back to this workspace.
         // Evict its typed values and kernel cells as one operation.
-        self.relation(Family.Analysis).evict()
+        analysis_in_dropped(self)
         self.db.disarm()
         self.decls.disarm()
         self.closed.set(true)
@@ -2617,7 +2612,6 @@ export fn family_code_hash(f: Family) -> string {
         .Sig -> code_hash(sig_verified) ?? "",
         .Typed -> code_hash(typed_verified) ?? "",
         .ConstTyped -> code_hash(const_typed_verified) ?? "",
-        .Analysis -> code_hash(analysis_verified) ?? "",
         .Settled -> code_hash(settled_verified) ?? "",
         .Lowered -> code_hash(lowered_verified) ?? "",
         .LiftLowered -> code_hash(lift_lowered_verified) ?? "",

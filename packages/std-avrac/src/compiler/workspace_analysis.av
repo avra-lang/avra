@@ -75,7 +75,7 @@ use compiler.lower.{
     code_facts_from_wire,
 }
 use compiler.memory.{memory}
-use @std.relation.{query}
+use @std.relation.{query, digested_by, recursive}
 use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
 
 /// An interned table's answer for one name: already there, or freshly
@@ -142,6 +142,26 @@ export fn inst_key_of(home_key: string, shapes: string, symbol: string) -> strin
     node_key(Stored.Unit, ["codes", "inst", home_key, shapes, symbol])
 }
 
+/// One file's analysis. Its digest is what an Analysis carries beyond its
+/// file's names and fold — every diagnostic, in pipeline order; `view` is
+/// the workspace's own state and `program` a closure, a pure fn of the
+/// file's path.
+@query
+@recursive
+@digested_by(analysis_digest)
+fn analysis_in(ws: Workspace, f: FileId) -> Analysis { ws.analyzed(f) }
+
+fn analysis_digest(ws: Workspace, f: FileId, a: Analysis) -> int {
+    fp(
+        1,
+        [
+            dep_hash_fp(ws.db.value_hash_of(resolved_in_key(ws, f))),
+            dep_hash_fp(ws.db.value_hash_of(folded_in_key(ws, f))),
+            fp_list([diag_fp(d) for d in a.diagnostics]),
+        ],
+    )
+}
+
 impl Workspace {
     /// The method-table clashes spoken in a file, asked as `method_clashes`, so the file's
     /// `Analysis` depends on the method tables its own methods belong to — never the whole
@@ -193,43 +213,7 @@ impl Workspace {
         // A closed one-shot workspace retains no Analysis because its
         // program closure points back here.
         if self.closed.get() { return self.analyzed(f) }
-        match self.relation(Family.Analysis).start_recursive(f.index) {
-            .Reuse(value) -> { return analysis_of(value) },
-            .Compute -> nothing(),
-        }
-        let out = self.analyzed(f)
-        // DERIVED, LAZY, never re-walked: `analyzed` just asked
-        // `resolved` and `folded` above (their own fingerprints
-        // fresh once asked), so this adds only what an `Analysis`
-        // carries beyond them — every diagnostic in pipeline order,
-        // `sig_diagnostics` and `method_diagnostics` included. `view`
-        // and `program` are left out: `view` is shared/derived state
-        // (the workspace's own Decls/TypeRegistry, `p.store` already
-        // covered by `Parsed`/`Resolved`/`Folded`), and `program` is
-        // a CLOSURE — structurally unfoldable — whose behavior is a
-        // pure fn of `f`'s own stable path, never independent
-        // content. LAZY because reading Resolved's/Folded's hash
-        // back would otherwise force THEIR folds (and, through
-        // Folded's own derivation, every body's Typed) on every cold
-        // compile; this closure runs only when Analysis itself has a
-        // prior settle to compare against.
-        let ws = self
-        analysis_of(
-            self
-                .relation(Family.Analysis)
-                .finish_lazy(
-                    f.index,
-                    DbRow.Analysis(out),
-                    (r: DbRow) -> fp(
-                        1,
-                        [
-                            dep_hash_fp(ws.db.value_hash_of(resolved_in_key(ws, f))),
-                            dep_hash_fp(ws.db.value_hash_of(folded_in_key(ws, f))),
-                            fp_list([diag_fp(d) for d in analysis_of(r).diagnostics]),
-                        ],
-                    ),
-                ),
-        )
+        analysis_in(self, f)
     }
 
     /// THE INTERPROCEDURAL READ SET, as ONE whole-program growing-set
