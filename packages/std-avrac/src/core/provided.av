@@ -1,13 +1,25 @@
 //! WHAT A COMPONENT'S WORD IS TO THE FILE THAT USES IT: how an instance
 //! stands in place, read off its provider's parse. The door that mints an
 //! instance's meaning hands this in, never the registry it was found in.
-use core.{SyntaxArena, StmtId}
+use @std.meta.{derive}
+use core.{
+    SyntaxArena,
+    StmtId,
+    Fingerprint,
+    Exemplar,
+    fp,
+    fp_list,
+    mix_final,
+    touch,
+    list_eq,
+    opt_eq,
+}
 
 /// A component a file stands under: its word, how an instance of it
-/// stands in place, the store and file its provider parsed it in, and
+/// stands in place, the file its provider declared it in, and
 /// whether the file's own module declares it — a word that opens an
 /// instance only where it names one.
-export type ComponentWord = { word: string, declared: string, form: Instancing, store: SyntaxArena, origin: string, own: bool = false }
+export type ComponentWord = { word: string, declared: string, form: Instancing, origin: string, own: bool = false }
 
 /// How an instance stands in place: by its TEMPLATE, as a literal of
 /// its RECORD, or REFUSED in the library's words, spoken at the
@@ -32,6 +44,8 @@ export enum Instancing {
 /// and whether ITS ANSWER is nullable, which decides whether an ARMS
 /// body written over it takes an implicit `_ -> null` tail. Its
 /// `events` are what an instance may hear.
+@derive(Fingerprint)
+@derive(Exemplar)
 export type Record = {
     head: List<string>,
     slots: List<ChildSlot>,
@@ -45,17 +59,46 @@ export type Record = {
 
 /// An event a component declares, the seats its handler is told, and whether
 /// bare statements in an instance's block are its handler (`@default`).
+@derive(Fingerprint)
+@derive(Exemplar)
 export type Event = { name: string, says: List<string>, default: bool = false }
 
 /// A `List` field children fill, and the name its elements are
 /// written with — a child instance of that component lands here.
+@derive(Fingerprint)
+@derive(Exemplar)
 export type ChildSlot = { name: string, of: string, gathers: bool = true }
 
+impl Record {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> Record {
+        Record {
+            head: [],
+            slots: [],
+            named: false,
+            checks: false,
+            fn_optional: false,
+            words: false,
+        }
+    }
+}
+
+impl Event {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> Event { Event { name: "", says: [], default: false } }
+}
+
+impl ChildSlot {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> ChildSlot { ChildSlot { name: "", of: "", gathers: false } }
+}
+
 /// An `expand` of ONE `quote`: the head's fields in order, the field
-/// the block fills, the field each hole reads, the quote's statements,
-/// and the head fields that are PATTERNS (`Format`) — each read as its
-/// text where a value stands and as its record where a type does.
-export type Template = { head: List<string>, block: string, reads: List<string>, stmts: List<StmtId>, formats: List<string> = [] }
+/// the block fills, the field each hole reads, the quote's statements
+/// and the store its provider parsed them in, and the head fields that
+/// are PATTERNS (`Format`) — each read as its text where a value stands
+/// and as its record where a type does.
+export type Template = { head: List<string>, block: string, reads: List<string>, stmts: List<StmtId>, store: SyntaxArena, formats: List<string> = [] }
 
 /// A named instance a record's body may list by its name alone: the
 /// name, and the component it instances.

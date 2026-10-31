@@ -78,7 +78,8 @@ use features.{
     SettleRoot,
     BlockWords,
 }
-use core.{ComponentWord, Instanced}
+use core.{ComponentWord, Instanced, Span}
+use @std.text.{repeat}
 use grammar.{Token}
 use @std.meta.{Diagnostic, bracket, identity, plain_field, derive, code_hash}
 use core.{
@@ -493,6 +494,10 @@ type Records = {
     /// block word, decoded once per build — the names, and the instances whose
     /// word alone answers (no form to parse).
     block_rows: Cell<Map<string, List<Row>>>,
+    /// The text digest each provider file's recorded rows were read from, by path.
+    block_digests: Cell<Map<string, string>>,
+    /// What each provider file's record says of its block words, once asked.
+    recorded: Cell<Map<string, Recorded>>,
     /// Files whose text a component lookup lexed, this build: what the witness counts.
     component_lexes: Cell<int>,
     /// The modules that export a component, by its name; null until first asked.
@@ -533,6 +538,8 @@ fn new_records() -> Records {
         met_files: Cell.new(no_met),
         block_named: Cell.new(no_block_named),
         block_rows: Cell.new(no_block_rows),
+        block_digests: map_cell(),
+        recorded: map_cell(),
         component_lexes: Cell.new(0),
         component_index: Cell.new(no_index),
     }
@@ -1831,36 +1838,61 @@ impl Workspace {
         // (`maybe_declares_block`), and only a file that survives THAT
         // reaches the parse below.
         if !module_names_block_word(self, m, self.module_files(m), u.items) { return BlockWords {} }
-        // A BLOCK NAME WITH NO FORM TO READ — an instance — is answered by the record
-        // alone, so a `use` of one never parses its provider. A module that also declares
-        // a grammar or a component must be parsed: their FORMS are not in the record.
-        if !module_has_forms(self, m) {
-            let insts: List<Instanced> = module_block_instances(self, m) ?? []
-            return BlockWords {
-                grammars: [],
-                components: [],
-                instances: flatten(
-                    [[x with { name: u.bound_as(j) } for x in insts if x.name == item] for j, item in u.items],
-                ),
-            }
-        }
-        // Only a file that can OPEN a block word is parsed for its words;
-        // the rest of the module never is.
-        let declared = [self.provided_words(path) for path in self.module_files(m) if file_lexes_block(self, path)]
-        let grammars = flatten([d.grammars for d in declared])
-        let components = flatten([d.components for d in declared])
-        let instances = flatten([d.instances for d in declared])
+        // A BLOCK WORD WHOSE FORM IS DATA — an instance, a component that is a literal of
+        // its record — is answered by the record alone, so a `use` of one never parses its
+        // provider. A module that declares a grammar or a template must be parsed: their
+        // FORMS are nodes, not in the record.
+        let declared = self.declared_words(m)
         BlockWords {
             grammars: flatten(
-                [[g with { word: u.bound_as(j) } for g in grammars if g.word == item] for j, item in u.items],
+                [[g with { word: u.bound_as(j) } for g in declared.grammars if g.word == item] for j, item in u.items],
             ),
             components: flatten(
-                [[c with { word: u.bound_as(j) } for c in components if c.word == item] for j, item in u.items],
+                [[c with { word: u.bound_as(j) } for c in declared.components if c.word == item] for j, item in u.items],
             ),
             instances: flatten(
-                [[x with { name: u.bound_as(j) } for x in instances if x.name == item] for j, item in u.items],
+                [[x with { name: u.bound_as(j) } for x in declared.instances if x.name == item] for j, item in u.items],
             ),
         }
+    }
+
+    /// Every block word a module's files declare: what the record says whole, else read
+    /// off the parse of a file that can OPEN one. No other file of the module is parsed.
+    fn declared_words(m: ModulePath) -> BlockWords {
+        let declared = [recorded_words(self, path) ?? self.lexed_words(path) for path in self.module_files(m)]
+        BlockWords {
+            grammars: flatten([d.grammars for d in declared]),
+            components: flatten([d.components for d in declared]),
+            instances: flatten([d.instances for d in declared]),
+        }
+    }
+
+    /// The components a provider declares at `spans`, read off those declarations ALONE — each
+    /// from where its own text begins (`declared_from`): the file's text
+    /// with every other byte but a line break blanked to a space, so each node stands at the
+    /// offset, line and column the whole file gives it. Null unless every statement `prints`
+    /// names is among those read, and for two declarations that share a line.
+    fn read_alone(path: string, spans: List<Span>, prints: List<int>) -> List<ComponentWord>? {
+        if spans.is_empty() { return [] }
+        let f = self.file_id(path)
+        let source = self.source(f)
+        let froms = [declared_from(source, s.lo) for s in spans]
+        let ends = [0].concat([s.hi for s in spans])
+        if ![j for j, from in froms if from < ends[j]].is_empty() { return null }
+        let kept = [blanked(source.text.substring(ends[j], from)) + source.text.substring(from, spans[j].hi) for j, from in froms]
+        let p = parse_program(
+            self.lang,
+            new_source_file(path, joined(kept, "")),
+            BlockWords { components: self.unread_words(f) },
+        )
+        let found = [p.stmts.find((st: StmtId) -> p.store.stmt_fingerprint(st) == print) for print in prints]
+        if found.any(it == null) { return null }
+        flatten([some_list(word_of(p.store, s!, path)) for s in found])
+    }
+
+    /// A file's block words read off its parse — none for a file whose text opens none.
+    fn lexed_words(path: string) -> BlockWords {
+        if file_lexes_block(self, path) { self.provided_words(path) } else { BlockWords {} }
     }
 
     /// The exported block words a provider file declares, each under
@@ -2675,4 +2707,26 @@ export fn family_code_hash(f: Family) -> string {
         .DeclReads -> code_hash(decl_reads_verified) ?? "",
         .Input -> code_hash(input_verified) ?? "",
     }
+}
+
+/// Text with every byte but a line break turned to a space.
+fn blanked(text: string) -> string {
+    let starts = new_source_file("", text).line_starts
+    let ends = [at - 1 for at in starts.drop(1)].concat([text.length])
+    joined([repeat(" ", ends[j] - at) for j, at in starts], "\n")
+}
+
+/// Where a declaration's own text begins: the start of its line, so a prefix like `export`
+/// is read with it, taken up over the doc lines and annotations written directly above it,
+/// which are part of the statement.
+fn declared_from(source: SourceFile, lo: int) -> int {
+    mut line = source.line_starts.filter(it <= lo).length - 1
+    while line > 0 && heads_a_declaration(source, line - 1) { line = line - 1 }
+    source.line_starts[line]
+}
+
+/// Whether a line is a doc line or an annotation.
+fn heads_a_declaration(source: SourceFile, line: int) -> bool {
+    let text = source.text.substring(source.line_starts[line], source.line_starts[line + 1]).trim()
+    text.starts_with("///") || text.starts_with("@")
 }
