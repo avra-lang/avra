@@ -25,6 +25,7 @@ use core.{
 }
 use @std.path.{dir_of}
 use features.{
+    NameFacts,
     Unsettled,
     Settled,
     Settlement,
@@ -396,13 +397,19 @@ impl Workspace {
     }
 
     /// One declaration's analysis over its own range's facts, windowed as typed: a fn or
-    /// a method reads nothing outside it, so no file-wide table is laid per body.
-    fn ranged_analysis(f: FileId, d: DeclId) -> Analysis { self.analysis_over(f, self.typed(d)) }
+    /// a method reads nothing outside it, so no file-wide table is laid per body, and its
+    /// reader stands on that declaration's syntax, placement and names, never its file's.
+    fn ranged_analysis(f: FileId, d: DeclId) -> Analysis {
+        let _ = self.syntax(d)
+        let _ = self.placed(d)
+        self.analysis_from(f, self.parse_standing(f), self.names_of(d), self.typed(d))
+    }
 
     /// An analysis of `f` whose body facts are `facts`.
-    fn analysis_over(f: FileId, facts: TypeFacts) -> Analysis {
-        let p = self.parsed(f)
-        let names = self.resolved(f)
+    fn analysis_over(f: FileId, facts: TypeFacts) -> Analysis { self.analysis_from(f, self.parsed(f), self.resolved(f), facts) }
+
+    /// An analysis of `f` over its parse, its names and the body facts `facts`.
+    fn analysis_from(f: FileId, p: Parsed, names: NameFacts, facts: TypeFacts) -> Analysis {
         Analysis {
             view: file_view(self.lang, p, self.decls, f),
             names: names,
@@ -472,7 +479,9 @@ impl Workspace {
                 .relation(fam)
                 .finish_lazy(id, DbRow.Lowered(made.unit), (r: DbRow) -> unit_fp(lowered_of(r))),
         )
+        let t0 = self.clock()
         if rows && !made.restored { self.unit_saved(id, w, out) }
+        self.timed("unit save", t0)
         out
     }
 
@@ -495,7 +504,9 @@ impl Workspace {
         } else if w.root == null {
             let _ = self.parsed(w.file)
         }
+        let t0 = self.clock()
         let restored = if rows { self.unit_restored(w) } else { null }
+        self.timed("unit restore", t0)
         if traced() { qtrace("Q\tunit\t${if restored == null { "lowered" } else { "restored" }}\t${w.name}\n") }
         if rows && lowered_verified() {
             let fresh = self.lower_requested(w)

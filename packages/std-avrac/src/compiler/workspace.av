@@ -2353,20 +2353,22 @@ impl Workspace {
     /// on `placed(x)` — WHERE those nodes sit, since the context is over
     /// an arena range. Reads the file's `parsed` table UNRECORDED, so an
     /// edit elsewhere in the file never retypes this declaration.
+    /// `f`'s parse as it stands, read UNRECORDED: a reader that owes only one declaration's
+    /// edges (`syntax`, `placed`, `name_slice`) never stands on the whole file's parse.
+    fn parse_standing(f: FileId) -> Parsed {
+        if self.relation(Family.Parsed).open(f.index) { return self.parsed(f) }
+        match self.relation(Family.Parsed).values.entry(f.index) {
+            .Present(r) -> parsed_of(r),
+            .Missing -> self.parsed(f),
+        }
+    }
+
     fn cx_over(x: Decl, names: NameFacts) -> TypeCx {
         // A file's module pseudo-declaration owns no statements, so it
         // owes no own-syntax edge.
         if x.stmt.index < self.decls.store(x.id).stmts.count() { let _ = self.syntax(x.id) }
         let _ = self.placed(x.id)
-        let p = if self.relation(Family.Parsed).open(x.file.index) {
-            self.parsed(x.file)
-        } else {
-            match self.relation(Family.Parsed).values.entry(x.file.index) {
-                .Present(r) -> parsed_of(r),
-                .Missing -> self.parsed(x.file),
-            }
-        }
-        let view = file_view(self.lang, p, self.decls, x.file)
+        let view = file_view(self.lang, self.parse_standing(x.file), self.decls, x.file)
         new_type_cx(
             self.lang.dispatch,
             self.lang.keywords,

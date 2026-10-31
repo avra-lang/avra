@@ -4,6 +4,7 @@
 //! declaration it answers for and its settled hash.
 use core.{
     TypeId,
+    touch,
     sorted_texts,
     fp_str,
     traced,
@@ -39,7 +40,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_decl(arg),
             arg: (spelled: string) -> ws.decl_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.db.kernel.demanded(key_at(ordinal, arg)),
         }
     }
 
@@ -94,12 +95,21 @@ impl Workspace {
         }
     }
 
+    /// A file-keyed answer's digest as this revision answers it: asked for a file this process
+    /// reads, as it stands for one it holds — a held file's answer is never computed to be read.
+    fn file_hash(ordinal: int, arg: int) -> int? {
+        let k = key_at(ordinal, arg)
+        if arg >= 0 && arg < self.decls.file_count() && self.is_held(FileId { index: arg }) { return self.db.kernel.hash_forced(k) }
+        self.db.kernel.demanded(k)
+    }
+
     /// A type's digest is its spelling, which another process spells alike.
     fn type_digest(t: TypeId) -> int { fp_str(self.type_ref(t)) }
 
     /// A signature's digest is its wire: types by their spelling, never by the interner's index.
     fn sig_digest(arg: int) -> int? {
         if arg < 0 || arg >= self.decls.sigs.get().length { return null }
+        touch(self.sig(DeclId { index: arg }))
         let s? = self.decls.sigs.get()[arg] else {
             return if self.is_held(self.decls.decl(DeclId { index: arg }).file) { null } else { fp_str("refused") }
         }
@@ -116,7 +126,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_settle(arg),
             arg: (spelled: string) -> ws.settle_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.db.kernel.demanded(key_at(ordinal, arg)),
         }
     }
 
@@ -217,7 +227,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: spell,
             arg: find,
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.db.kernel.demanded(key_at(ordinal, arg)),
         }
     }
 
@@ -230,7 +240,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_file(arg),
             arg: (spelled: string) -> ws.file_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.file_hash(ordinal, arg),
         }
     }
 
@@ -243,7 +253,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_module(arg),
             arg: (spelled: string) -> ws.module_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.db.kernel.demanded(key_at(ordinal, arg)),
         }
     }
 
@@ -256,7 +266,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> if arg == 0 { name } else { null },
             arg: (spelled: string) -> if spelled == name { 0 } else { null },
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.db.kernel.demanded(key_at(ordinal, arg)),
         }
     }
 
