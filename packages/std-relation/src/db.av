@@ -26,7 +26,7 @@
 //! held rows is let go with its last holder.
 //!
 use rows.{Rows, named_rows, Stamp, INT_CAP}
-use engine.{Kernel, Key, new_kernel, Relation, new_memo, Table, new_table, edge_of}
+use engine.{Kernel, Key, new_kernel, Relation, new_memo, Table, new_table, edge_of, map_cell}
 use stable.{
     Writer,
     Reader,
@@ -79,7 +79,16 @@ export type Db = {
     written: Cell<int>,
     /// Settled calls one query keeps under this Db before an epoch drops them; 0 keeps all.
     cap: Cell<int>,
+    /// What a read named by a saved answer answers at `known_at`: each answer's digest by its
+    /// identity (`NO_DIGEST` for none) and each cell's leaves, asked once a revision however
+    /// many saved answers name them.
+    digests_known: Cell<Map<string, string>>,
+    leaves_known: Cell<Map<string, List<Leaf>>>,
+    known_at: Cell<int>,
 }
+
+/// A read a revision asked and found no digest for.
+const NO_DIGEST: string = "-"
 
 /// Whose kernel a Db's cells live in, and so how a write is heard.
 /// `Own`: the Db's own kernel — a cell is verified by its live hash, and a
@@ -272,6 +281,9 @@ fn made(durable: Durable) -> Db {
         asking: asking,
         cap: Cell.new(0),
         written: Cell.new(0),
+        digests_known: map_cell(),
+        leaves_known: map_cell(),
+        known_at: Cell.new(0 - 1),
     }
 }
 
@@ -540,8 +552,30 @@ impl Db {
     }
 
     fn leaves_at(k: Key) -> List<Leaf>? {
-        let rel? = self.relations.get().find(it.family_now() == k.family) else { return self.answer_leaves(k) }
+        let rel? = self.relations.get().find(it.family_now() == k.family) else { return self.answer_leaves_known(k) }
         [Leaf.Rows(rel.name, rel.hash_now())]
+    }
+
+    /// The tables of what this revision answered, emptied when the revision moved.
+    fn known_now() {
+        let rev = self.kernel.get()?.revision() ?? 0 - 1
+        if rev == self.known_at.get() { return }
+        let none: Map<string, string> = {}
+        self.digests_known.set(none)
+        let no_leaves: Map<string, List<Leaf>> = {}
+        self.leaves_known.set(no_leaves)
+        self.known_at.set(rev)
+    }
+
+    /// `answer_leaves`, asked once a revision for a cell that answers some.
+    fn answer_leaves_known(k: Key) -> List<Leaf>? {
+        self.known_now()
+        let at = "${edge_of(k)}"
+        let known = self.leaves_known.get().get(at)
+        if known != null { return known }
+        let made? = self.answer_leaves(k) else { return null }
+        self.leaves_known.put(at, made)
+        made
     }
 
     fn answer_leaves(k: Key) -> List<Leaf>? {
@@ -602,6 +636,17 @@ impl Db {
     /// The digest of the read `Leaf.id` names, as it stands here; absent when this Db cannot
     /// name the read.
     fn leaf_digest(id: string) -> string? {
+        // a relation's rows may move within a revision; an answer's digest never does
+        if !id.starts_with("i\t") { return self.leaf_digest_now(id) }
+        self.known_now()
+        let known = self.digests_known.get().get(id)
+        if known != null { return if known! == NO_DIGEST { null } else { known } }
+        let made = self.leaf_digest_now(id)
+        self.digests_known.put(id, made ?? NO_DIGEST)
+        made
+    }
+
+    fn leaf_digest_now(id: string) -> string? {
         if id.starts_with("r\t") { return "${self.rows_digest(id.substring(2, id.length))}" }
         if !id.starts_with("i\t") { return null }
         let rest = id.substring(2, id.length)
