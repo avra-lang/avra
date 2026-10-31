@@ -22,7 +22,7 @@ use @std.errors.{Loc, Frame, Edit}
 use compiler.rel_loc.{anchoring_wire}
 use compiler.store.{Store, Stored, Reading, node_key}
 use compiler.voices.{type_facts_fp, diag_fp, name_slice_fp, unit_fp_in}
-use features.{SettleRoot, SeatValue}
+use features.{SettleRoot, SeatValue, Decl}
 use compiler.lower.{code_facts, code_facts_wire}
 use @std.relation.db.{AnswerRef, Leaf}
 use @std.relation.engine.{Key, edge_of}
@@ -470,11 +470,47 @@ impl Workspace {
     }
 
     /// A bucket's digest is its members' identities, which another process names alike.
+    /// Hashed WHOLE, at any moment and minting nothing: every file the name's environment
+    /// lists, or a row stands in, spells its declarations under the name through the one
+    /// speller — its rows once they are all made, its kept lines while it is held. A read
+    /// file whose expansion has not made its rows yet leaves the bucket unread.
     fn bucket_digest(b: int) -> int? {
         let name? = self.decls.bucket_label(b) else { return null }
-        fp_str(
-            joined(sorted_texts([self.decl_ref(x.id) for x in self.decls.named_rows(name)]), "\n"),
+        let rows = self.decls.decl_row_rows.get().members(b)
+        let paths = distinct(
+            (self.envs.names.get().get(name) ?? [])
+                .concat([self.decls.file(x.file).path for x in rows]),
         )
+        let spelled = [self.wires_under(name, p, rows) for p in paths]
+        if spelled.any(it == null) { return null }
+        fp_str(joined(sorted_texts(flatten([s! for s in spelled])), "\n"))
+    }
+
+    /// One file's declarations under `name`, each as its wire: a read file's rows once its
+    /// expansion has made them, a held one's kept lines; null for a read file still owing
+    /// its expansion, or a held one with no kept lines.
+    fn wires_under(name: string, path: string, rows: List<Decl>) -> List<string>? {
+        if !self.read_here(path) { return self.kept_wires(name, path) }
+        let f = self.decls.known_file_id(path)!
+        if !self.made_whole(f) { return null }
+        [self.decl_ref(x.id) for x in rows if x.file.index == f.index]
+    }
+
+    /// Whether every declaration a read file makes is a row: it is parsed, and it generates
+    /// none or its expansion has finished.
+    fn made_whole(f: FileId) -> bool {
+        if self.relation(Family.Parsed).values.entry(f.index) is .Missing { return false }
+        if !self.has_declares(f) && !self.has_marks(f) { return true }
+        if self.db.active(key(Family.Expanded, f.index)) { return false }
+        self.relation(Family.Expanded).values.entry(f.index) is .Present
+    }
+
+    /// A held file's declarations under `name`, spelled from its kept lines alone.
+    fn kept_wires(name: string, path: string) -> List<string>? {
+        let store? = self.store.get() else { return null }
+        let lines = file_lines(self, store, self.module_path_of(path), path)
+        if lines.is_empty() { return null }
+        line_wires_named(path, lines, name)
     }
 
     fn spelled_file(arg: int) -> string? {
