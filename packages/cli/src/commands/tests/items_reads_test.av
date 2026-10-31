@@ -1,0 +1,49 @@
+//! A file's kept Items row stands on what its lines were made from: a const's line reads the
+//! const's own settlement, which stands on the const it folds from another file, so an edit
+//! that moves that one refiles the row at the new digest, whatever the reading file's own
+//! text did.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+use commands.{checked_at, root_workspace}
+
+/// A package whose `a.av` folds `b.av`'s const into its own, read by `main.av`.
+fn folding(name: string) -> string {
+    let root = "/tmp/avra-items-reads-test/${name}-${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
+    let _ = write_text("${root}/src/a.av", "use b.{B}\n\nexport const A: int = B + 1\n")
+    let _ = write_text("${root}/src/b.av", "export const B: int = 1\n")
+    let _ = write_text("${root}/src/main.av", "use a.{A}\n\nA\n")
+    let _ = checked_at(root)
+    root
+}
+
+/// The reads of `a.av`'s kept Items row that name `A`'s settlement.
+fn reads_of_a(root: string) -> List<string> {
+    root_workspace(root)
+        .items_reads("${root}/src/a.av")
+        .filter(it.contains("\tSettled\t") && it.contains("a.av~const~~A"))
+}
+
+/// The package checked, `B` moved, checked again: `a.av`'s reads of `A`, before and after.
+fn across_an_edit() -> List<List<string>> {
+    let root = folding("moved")
+    let before = reads_of_a(root)
+    let _ = write_text("${root}/src/b.av", "export const B: int = 2\n")
+    let _ = checked_at(root)
+    [before, reads_of_a(root)]
+}
+
+spec "compiler/decl_rows — an Items row stands on what its lines were made from" {
+    given "a const that folds another file's const" {
+        then "its file's row reads the const's settlement" { !reads_of_a(folding("reads")).is_empty() }
+        then "the folded file's own row reads nothing of the reader" {
+            let root = folding("apart")
+            root_workspace(root).items_reads("${root}/src/b.av").all(!it.contains("a.av~"))
+        }
+        then "moving the const it folds refiles the reader's row at the new digest" {
+            let seen = across_an_edit()
+            !seen[0].is_empty() && !seen[1].is_empty() && seen[0].join("\n") != seen[1].join("\n")
+        }
+    }
+}
