@@ -16,6 +16,7 @@ use core.{
     touch,
 }
 use @std.path.{dir_of, under_dir, joined_path, normalized, file_name}
+use @std.relation.{query}
 use features.{Decl, Import, nothing, table_of}
 use diagnostics.{Diag, loc_at, is_error}
 use @std.testing.{words}
@@ -31,16 +32,7 @@ impl Workspace {
     /// The module a file belongs to: its directory under its package's
     /// source root, `.`-joined — "" for a file at the root package's
     /// source root, `@scope.name.a` for a dependency's.
-    fn module_of(path: string) -> string {
-        // the answer is a walk over every package, and packages are admitted as
-        // `use` lines reach them: it is remembered for ONE size of that table
-        let key = "${self.packages().length}\t${path}"
-        let known: string? = self.module_names_of.get().get(key)
-        if known != null { return known! }
-        let made = self.module_named(path)
-        self.module_names_of.put(key, made)
-        made
-    }
+    fn module_of(path: string) -> string { module_at(self, self.packages().length, path) }
 
     /// `module_of`, as the path it names.
     fn module_path_of(path: string) -> ModulePath { module_path(self.module_of(path).split(".")) }
@@ -61,17 +53,7 @@ impl Workspace {
     /// the one file, else nothing (the module does not exist). A
     /// directory holding its own `avra.toml` is a package, never a
     /// module of the one above it.
-    fn module_files(m: ModulePath) -> List<string> {
-        // a listing is the host's to give, and a `use` line asks it of the same
-        // module a hundred times: remembered for ONE size of the package table,
-        // since a package admitted later answers for modules it holds
-        let key = self.module_slot(m)
-        let known: List<string>? = self.files_of.get().get(key)
-        if known != null { return known! }
-        let made = self.listed_files(m)
-        self.files_of.put(key, made)
-        made
-    }
+    fn module_files(m: ModulePath) -> List<string> { module_listed(self, self.packages().length, m.text()) }
 
     /// The files of `m` the program MET, in listing order — the files it registered.
     fn met_files(m: ModulePath) -> List<string> {
@@ -614,4 +596,15 @@ fn refused_line(u: UseParts, diagnostics: List<Diag>) -> Imported {
 /// The names a `use` line binds that no import answered.
 fn unbound(u: UseParts, imports: List<Import>) -> List<string> {
     [u.bound_as(j) for j, _item in u.items if !imports.any(it.renamed == u.bound_as(j))]
+}
+
+/// A file's module, asked for ONE count of admitted packages: packages are admitted as `use`
+/// lines reach them, and one admitted later answers for files it holds.
+@query
+fn module_at(ws: Workspace, _admitted: int, path: string) -> string { ws.module_named(path) }
+
+/// A module's files, through the host's listing, asked for one count of admitted packages.
+@query
+fn module_listed(ws: Workspace, _admitted: int, module: string) -> List<string> {
+    ws.listed_files(module_path(module.split(".")))
 }
