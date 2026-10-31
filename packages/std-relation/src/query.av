@@ -65,6 +65,8 @@ use stable.{
     read_list,
     tagged,
     spelled_with,
+    text_spelled,
+    int_spelled,
     Writer,
     Reader,
 }
@@ -403,8 +405,27 @@ fn wrapper(f: Fn) -> Decls {
 /// order through the codec, the octets spelled out. What a call's cell
 /// is interned by — never a hash, which two calls may share.
 export fn args_spelled(f: Fn) -> Code {
+    let seats = f.params.slice(1, f.params.length)
+    if seats.length == 1 && seats[0].kind is .Str { return name(seats[0].name) }
+    let plain = [plain_spelled(p) for p in seats]
+    if !plain.any(it == null) { return joined_spelling([p! for p in plain]) }
     let writes = [quote { (w: Writer) -> ${seat_written(p, answer_owner(f))} } for p in f.params.slice(1, f.params.length)]
     quote { spelled_with([${..writes}]) }
+}
+
+/// A seat spelled straight, never through the codec: a text by its length and itself — a
+/// lone text seat as itself, which nothing beside it can run into — a number as itself. None for any other kind, which the codec spells.
+fn plain_spelled(p: Param) -> Code? {
+    if p.kind is .Str { return quote { text_spelled(${name(p.name)}) } }
+    let n? = numbered(p) else { return null }
+    quote { int_spelled(${n}) }
+}
+
+/// Plain seats' spellings as one key: none as empty, one alone, more joined by `/`, which no
+/// number spells and a text's own length puts past.
+fn joined_spelling(parts: List<Code>) -> Code {
+    let first? = parts.first() else { return quote { "" } }
+    parts.drop(1).fold(first, (at: Code, p: Code) -> quote { ${at} + "/" + ${p} })
 }
 
 /// One seat written: a number as its number, any other kind through the codec.
