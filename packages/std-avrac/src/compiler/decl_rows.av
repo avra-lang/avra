@@ -2,8 +2,7 @@
 //! lines, standing on its text; a module's record keeps neither, and reads them back whole
 //! (`record_whole`). A declaration no parse declares is filled from its own line, found by
 //! its name (`decl_row_filled`).
-use core.{DeclId, ModulePath, joined, flatten, same_decl, some_list}
-use features.{Decl, kind_word}
+use core.{DeclId, ModulePath, joined, flatten}
 use compiler.store.{Store, Stored, node_key}
 use core.debug.{db_verified_items, wreck}
 
@@ -44,23 +43,28 @@ impl Workspace {
         let x = self.decls.decl(d)
         let path = self.decls.file(x.file).path
         let m = self.module_path_of(path)
-        let row? = self.line_named(file_lines(self, store, m, path), x) else { return self.defect("a declaration has no line — ${self.decl_ref(d)}") }
+        let row? = self.line_named(path, file_lines(self, store, m, path), d) else { return self.defect("a declaration has no line — ${self.decl_ref(d)}") }
         self.fill_shape(store, m, d, row.shaped())
     }
 
-    /// A declaration's line among its file's, by its name: its kind, owner and name, and its
-    /// place among the declarations that share them, as its durable name spells it.
-    fn line_named(lines: List<List<string>>, x: Decl) -> Row? {
-        let kind = kind_word(x.kind)
-        let same = [r for p in lines for r in some_list(read_row(p)) if wears(r, kind, x)]
-        let siblings = self.decls.wire_siblings(x.file, kind, x.owner, x.name)
-        let at? = [j for j, id in siblings if same_decl(id, x.id)].first() else { return null }
-        if at < same.length { same[at] } else { null }
+    /// A declaration's line among its file's, found by its name: the line whose wire, spelled
+    /// from the lines alone, is the declaration's.
+    fn line_named(path: string, lines: List<List<string>>, d: DeclId) -> Row? {
+        let line? = self.lines_by_wire(path, lines).get(self.decl_ref(d)) else { return null }
+        read_row(line)
+    }
+
+    /// A file's declaration lines by the wire each spells — indexed once per build.
+    fn lines_by_wire(path: string, lines: List<List<string>>) -> Map<string, List<string>> {
+        let known = self.records.line_index.get().get(path)
+        if known != null { return known! }
+        let decls = [p for p in lines if declares(p)]
+        mut by: Map<string, List<string>> = {}
+        for j, w in line_wires(path, lines) { by.set(w, decls[j]) }
+        self.records.line_index.put(path, by)
+        by
     }
 }
-
-/// Whether a line declares what `x` is, under `x`'s kind word, owner and name.
-fn wears(r: Row, kind: string, x: Decl) -> bool { r.kind == kind && r.owner == x.owner && r.name == x.name }
 
 impl RecordBodies {
     /// A module's record as it was made: its kept lines, then each file's Items lines under the

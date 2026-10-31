@@ -218,6 +218,9 @@ fn places_of(fields: List<List<string>>) -> Map<string, Placed> {
     out
 }
 
+/// Whether a declaration line keeps what holding it needs: a const's verdict, or nothing to keep.
+fn const_kept(parts: List<string>) -> bool { parts[0] != "const" || parts.length > 14 && parts[14] != "" }
+
 /// One file's declaration lines.
 fn file_rows(fields: List<List<string>>, at: Placed?) -> List<List<string>> {
     if at == null { [] } else { fields.slice(at!.lo, at!.hi) }
@@ -1110,7 +1113,7 @@ fn read_why(
     if ws.reads_pending(store, m, f) { return null }
     if !ws.stands_in(store, obj_key_cached(ws, store, m, f), want) { return Reads.Unkept }
     let rows = file_rows(record_fields(ws, store, m), at)
-    if !ws.const_rows_ready(store, m, f, rows) { return Reads.Consts }
+    if !rows.all(const_kept) { return Reads.Consts }
     if !holdable(rows) { return Reads.Unholdable }
     null
 }
