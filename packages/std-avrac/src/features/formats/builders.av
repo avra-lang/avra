@@ -23,7 +23,6 @@ use core.{
     binds,
     plain_mark,
 }
-use features.{LangNode, Builder}
 use features.formats.{read_format, has_holes, Format, Fault, reads_of, read_type_name}
 
 /// A STRING in pattern position: the format it spells, or the literal
@@ -54,10 +53,16 @@ fn refusal_of(fault: Fault?) -> string? {
 /// declared once so the shape and the text it reads cannot drift.
 /// Every fault refuses here: a declaration's format is known whole at
 /// build time, so there is no later place that knows more.
-fn build_grammar_decl(b: Builder) -> Result<LangNode, string> {
-    let n = b.token(0)?
-    let t = b.token(1)?
-    .Ok(LangNode.NStmt(b.store.declared_format(n.text, t.text, b.span, true)?))
+@computed
+fn grammar_written(s: dyn Slots) -> Result<Built, string> {
+    .Ok(
+        Built
+            .Stmt(
+                s
+                    .arena()
+                    .declared_format(s.text_of("name")?, s.text_of("text")?, s.built_at(), true)?,
+            ),
+    )
 }
 
 impl SyntaxArena {
@@ -76,7 +81,12 @@ impl SyntaxArena {
         let s = self
             .alloc_stmt(
                 Stmt
-                    .StructDecl(Scoped(name), [], [self.field_of(p.hole) for p in f.parts if binds(p.hole)]),
+                    .StructDecl(
+                        Scoped(name),
+                        [],
+                        [self.field_of(p.hole) for p in f.parts if binds(p.hole)],
+                        [],
+                    ),
                 span,
             )
         self.mark_grammar(s, GrammarSpec { head: f.head, parts: f.parts })

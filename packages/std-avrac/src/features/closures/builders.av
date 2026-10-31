@@ -1,22 +1,14 @@
-//! Parse-time lowering: captures -> the Lambda node and the fn
-//! TYPE. A param's annotation is optional in the PARSE (the typing
-//! law demands it until the expected-type channel lands). A fn type's
-//! seats arrive built, one `Record.ParamSyntax` each.
-use core.{Expr, Arm, TypeRef, Scoped, pronoun_param, flatten, some_list}
-use features.{LangNode, Builder, params_at, pat_id_at, expr_id_at, arms_at}
+//! A block of arms after a call: a one-seat lambda that matches its seat.
+use core.{Expr, Scoped, Slots, Built, pronoun_param, computed}
 
-fn build_trailing_arms(b: Builder) -> Result<LangNode, string> {
-    let hp? = pat_id_at(b.args, 0) else {
-        return .Err(
-            "defect: an arms block's first pattern is missing — the arena and the grammar disagree",
-        )
-    }
-    let hg = expr_id_at(b.args, 1)
-    let hv = b.expr(2)?
-    let rest = arms_at(b.args, 3)
-    let arms = [Arm { pats: [hp], guard: hg, value: hv }].concat(rest)
-    let subject = b.expr_node(Expr.Ident(Scoped("it")))
-    let matched = b.expr_node(Expr.Match(subject, arms))
-    b.store.mark_sugar_match(matched)
-    b.make_expr(Expr.Lambda([pronoun_param], matched))
+/// `f { pattern -> value, … }` — the call's last argument is `it ->
+/// match it { … }`, the match marked as the sugar's own (its implicit
+/// tail is the arms block's, never a program's).
+@computed
+fn arms_lambda_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let subject = store.alloc_expr(Expr.Ident(Scoped("it")), s.built_at())
+    let matched = store.alloc_expr(Expr.Match(subject, s.arms_of("arms")?), s.built_at())
+    store.mark_sugar_match(matched)
+    .Ok(Built.Expr(s.made_expr(Expr.Lambda([pronoun_param], matched))?))
 }

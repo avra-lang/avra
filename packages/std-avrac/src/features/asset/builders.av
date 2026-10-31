@@ -2,34 +2,35 @@
 //! file through its kind — `provided<Kind>("path")`, whose literal the
 //! embed law judges and whose kind the checker holds to `Provider` — and
 //! wears the `bundled` mark a library `collect` gathers it by. Both names
-//! are written where their libraries declare them (`written_in`), so no
-//! declaration of the landing file can stand in for either.
-use core.{Expr, Stmt, Scoped, Annotation}
-use features.{LangNode, Builder}
+//! are written where their libraries declare them (`note_written_in`), so
+//! no declaration of the landing file can stand in for either.
+use core.{Expr, Stmt, Scoped, Annotation, Slots, Built, computed}
 
-fn build_asset(b: Builder) -> Result<LangNode, string> {
-    let name = b.token(0)?
-    let kinds = b.type_refs(1)?
-    let kind? = kinds.first() else { return .Err(unpinned_asset(name.text)) }
-    let path = b.token(2)?
-    let reading = b.store.marks()
-    let read = b
-        .expr_node(
+@computed
+fn asset_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let name = s.text_of("name")?
+    let kind? = s.type_opt_of("ty")? else { return .Err(unpinned_asset(name)) }
+    let path_at = s.at_of("path")?
+    let reading = store.marks()
+    let read = store
+        .alloc_expr(
             Expr
                 .Call(
                     Scoped("provided"),
                     [kind with { spliced: true }],
-                    [b.store.alloc_expr(Expr.StrLit(path.text), path.span)],
+                    [store.alloc_expr(Expr.StrLit(s.text_of("path")?), path_at)],
                 ),
+            s.built_at(),
         )
-    b.written_in(reading, "@std.meta")
-    let s = b.store.alloc_stmt(Stmt.ConstDecl(Scoped(name.text), kind, read), b.span)
-    b.store.mark_asset(s)
-    let marking = b.store.marks()
-    let callee = b.store.alloc_expr(Expr.Ident(Scoped("bundled")), path.span)
-    b.written_in(marking, "@std.assets")
-    b.store.annotate(s, Annotation { name: "bundled", callee: callee, args: [], span: null })
-    b.wrap_stmt(s)
+    store.note_written_in(reading, "@std.meta")
+    let c = store.alloc_stmt(Stmt.ConstDecl(Scoped(name), kind, read), s.built_at())
+    store.mark_asset(c)
+    let marking = store.marks()
+    let callee = store.alloc_expr(Expr.Ident(Scoped("bundled")), path_at)
+    store.note_written_in(marking, "@std.assets")
+    store.annotate(c, Annotation { name: "bundled", callee: callee, args: [], span: null })
+    .Ok(Built.Stmt(c))
 }
 
 // ── voices ──────────────────────────────────────────────────────
