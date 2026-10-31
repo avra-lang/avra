@@ -174,6 +174,9 @@ impl Slots for Builder {
     /// The arena this build allocates into.
     fn arena() -> SyntaxArena { self.store }
 
+    /// The imported component `word` opens in this build's file.
+    fn component_word(word: string) -> ComponentWord? { self.words.component(word) }
+
     /// A new statement at this build's place, every facet field the rule's
     /// payload carries written into the store table its mark names. A
     /// table no row names is a defect at the mark, never a silent drop.
@@ -189,7 +192,8 @@ impl Slots for Builder {
     }
 
     /// A new expression at this build's place, its facet fields written
-    /// like a statement's.
+    /// like a statement's, and what it means minted beside it when it is
+    /// a sugar.
     fn made_expr(e: Expr) -> Result<ExprId, string> {
         let id = self.store.alloc_expr(e, self.node_span())
         for f in self.payloads {
@@ -198,7 +202,7 @@ impl Slots for Builder {
             let row? = expr_facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
             (row.mark)(self.store, id)
         }
-        .Ok(id)
+        self.mint(id)
     }
 
     /// The catch arms the payload `label` carries.
@@ -246,6 +250,11 @@ impl Slots for Builder {
     /// The expressions the payload `n` carries.
     fn exprs_of(label: string) -> Result<List<ExprId>, string> {
         self.exprs(self.slot_of(label)?)
+    }
+
+    /// The expressions under `label`, each riding the pronoun.
+    fn riding_of(label: string) -> Result<List<ExprId>, string> {
+        .Ok([self.store.pronouned(a) for a in self.exprs_of(label)?])
     }
 
     /// The expression the payload `n` carries.
@@ -390,7 +399,7 @@ impl Builder {
                     ),
                 span,
             )
-        let _ = self.meant(node)
+        let _ = self.mint(node)
         items.slice(0, at).concat([self.store.alloc_stmt(Stmt.ExprStmt(node), span)])
     }
 
@@ -432,17 +441,17 @@ impl Builder {
     /// branch's, its facet fields written to their side tables like a
     /// statement's.
     fn make_expr(e: Expr) -> Result<LangNode, string> {
-        self.meant(self.made_expr(e)?)
+        .Ok(LangNode.NExpr(self.made_expr(e)?))
     }
 
     /// `id` as this build's node, with what it means minted beside it when
     /// it is a sugar. A sugar whose shape means nothing refuses in its own
     /// words.
-    fn meant(id: ExprId) -> Result<LangNode, string> {
+    fn mint(id: ExprId) -> Result<ExprId, string> {
         self.provide(id)
         let minted = (self.words.door)(self.store, id)?
         if !minted.nodes.is_empty() { self.store.means_as(id, minted, self.said(id, self.store.expr(id))) }
-        .Ok(LangNode.NExpr(id))
+        .Ok(id)
     }
 
     /// The component an instance's word names in this file, handed to its
@@ -510,11 +519,6 @@ impl Builder {
     /// answering it.
     fn wrap_stmt(id: StmtId) -> Result<LangNode, string> {
         .Ok(LangNode.NStmt(id))
-    }
-
-    /// A head widened by its trailing blocks, at this build's place.
-    fn trailed(h: ExprId, blocks: List<ExprId>) -> Result<ExprId, string> {
-        self.store.trailed(h, blocks, self.node_span())
     }
 
     /// THE BLOCK LAW: statements as a scope answering with its tail.

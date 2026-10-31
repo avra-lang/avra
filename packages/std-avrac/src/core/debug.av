@@ -48,11 +48,15 @@ export fn leaves_traced() -> bool { leaves_flag() != null }
 // LICENSED input.debug_flag: a debug flag is the process's own, not an input
 once fn verify_flag() -> string? { env("AVRA_DB_VERIFY") }
 
-/// Whether `AVRA_DB_VERIFY` names `judgement` (a comma list of `filesaid`, `typed`, `lowered`, `producers`, `decl`), or `all`.
+/// Whether `AVRA_DB_VERIFY` names `judgement` (a comma list of `filesaid`, `typed`, `lowered`, `producers`, `items`, `decl`), or `all`.
 fn verifying(judgement: string) -> bool {
     let v? = verify_flag() else { return false }
     v == "all" || v == "1" || v.split(",").contains(judgement)
 }
+
+/// Whether any saved answer is judged this run: it then reads every file and stands on no kept
+/// verdict, so every judgement meets a fresh answer.
+export fn db_judging() -> bool { verify_flag() != null }
 
 /// Whether the typed and lowered saved-answer rules are judged beside what the compiler decides.
 export fn db_verified() -> bool { verifying("typed") || verifying("lowered") }
@@ -65,6 +69,9 @@ export fn db_verified_decl() -> bool { verifying("decl") }
 
 /// Whether the suspect set's verdicts are judged against the file-row rule's.
 export fn db_verified_files() -> bool { verifying("filesaid") }
+
+/// Whether a file's kept Items row is judged against what its read admits now.
+export fn db_verified_items() -> bool { verifying("items") }
 
 /// A kernel that traces and writes its graph when the flags ask.
 export fn watched_kernel() -> Kernel {
