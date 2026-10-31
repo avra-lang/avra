@@ -10,10 +10,10 @@
 //! unread rather than half read, and a torn frame ends that segment's
 //! read. Nothing past a torn frame is trusted.
 //!
-//! `body-<rev>.pack` is the SEALED half (`store/body.av`), folded
-//! by compaction under the flock at open: the process that takes the lock
-//! seals what it read into one body and retires the dead segments it
-//! folded; a process that cannot take the lock says it skipped.
+//! `body-<rev>.pack` is the SEALED half (`store/body.av`), a chain of runs,
+//! folded by compaction under the flock: the process that takes the lock seals
+//! what it read into a run and retires the dead segments it folded; a process
+//! that cannot take the lock says it skipped.
 use @std.io.{
     read_bytes,
     make_dirs,
@@ -31,7 +31,7 @@ use @std.path.{joined_path, dir_of, file_name}
 use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, written_list, read_list}
 use @std.relation.engine.{map_cell, list_cell}
 use @std.text.{parse_int}
-use core.{digest_of_octets, distinct, sorted_by, flatten}
+use core.{digest_of_octets, distinct, sorted_by, flatten, reversed}
 use core.debug.{qtrace, traced}
 use @std.time.{now_ns, wall_secs}
 
@@ -97,7 +97,6 @@ export type CleanReport = {
 
 /// Frames in live segments before a writer seals them into a body.
 const SEAL_FRAMES: int = 32
-const SEAL_SPARE: int = 64
 
 fn hooked_frames() -> int? {
     // LICENSED input.debug_flag: a test hook that sets the seal threshold, never an input of what is built
@@ -105,19 +104,14 @@ fn hooked_frames() -> int? {
     parse_int(raw)
 }
 
-/// The frames a derivation's end lets stand unsealed: SEAL_FRAMES, or in a larger store a
-/// sixty-fourth of its sealed records — a one-function edit appends a few dozen frames and
-/// must not rewrite the whole body, while the next open reads at most this many.
-fn seal_frames(pack: Pack) -> int {
-    let spare = sealed_count(pack) / SEAL_SPARE
-    hooked_frames() ?? if spare > SEAL_FRAMES { spare } else { SEAL_FRAMES }
-}
+fn seal_frames() -> int { hooked_frames() ?? SEAL_FRAMES }
 
 /// ONE ROW: the family and key it answers, the digest of its value and the
-/// keys it read — listed here, or, for a row a sealed body carries, the id of
-/// its read set in that body's tables (`set` is -1 when `read` is the list).
-/// `stamp` is when its writer appended it (0 for a sealed row): of two segment
-/// frames for one key the later stands, whatever order the files merge in.
+/// keys it read — listed here, or, for a row a run carries, the id of its read
+/// set in that run's tables (`set` is -1 when `read` is the list). `stamp` is
+/// when its writer appended it (0 for a sealed row): of two segment frames for
+/// one key the later stands, whatever order the files merge in. `rev` is the run
+/// a sealed row came from, 0 for a listed one.
 export type Held = {
     family: string,
     key: string,
@@ -125,14 +119,15 @@ export type Held = {
     read: List<string>,
     set: int,
     stamp: int,
+    rev: int,
 }
 
 /// A row whose read list is spelled out, as a segment frame or a write carries it.
 fn listed_row(family: string, key: string, digest: string, read: List<string>, stamp: int) -> Held {
-    Held { family: family, key: key, digest: digest, read: read, set: 0 - 1, stamp: stamp }
+    Held { family: family, key: key, digest: digest, read: read, set: 0 - 1, stamp: stamp, rev: 0 }
 }
 
-/// A sealed body's names and read sets, decoded the first time a read set is asked.
+/// A run's names and read sets, decoded the first time a read set is asked.
 export type Tables = { names: Names, sets: Sets }
 
 /// ONE ANSWER CLAIM for an action key: the value a writer named, and who.
@@ -148,15 +143,17 @@ export type Pack = {
     dir: string,
     print: string,
     records: Cell<Map<string, Held>>,
+    /// The record keys no run carries yet: written here, or read from a segment.
+    pending: Cell<Map<string, bool>>,
     withdrawn: Cell<Map<string, bool>>,
     /// Values this process holds in memory: its own writes and segments.
     content: Cell<Map<string, string>>,
-    /// Values the newest sealed body holds, read from its `.val` on demand.
+    /// Values the runs hold, read from their `.val` on demand.
     slots: Cell<Map<string, ValueSlot>>,
-    /// The newest sealed body, open and lazy (none or one), whose rows a lookup decodes on
-    /// demand, and the tables decoded from its names and sets.
+    /// The runs, newest first, open and lazy, whose rows a lookup decodes on demand, and
+    /// the tables decoded from each run's names and sets, by its revision.
     sealed: Cell<List<Sealed>>,
-    tables: Cell<List<Tables>>,
+    tables: Cell<Map<string, Tables>>,
     /// Whether every sealed row has been lifted into `records`, as a seal needs.
     whole: Cell<bool>,
     opened: Cell<bool>,
@@ -203,11 +200,12 @@ export fn pack_at(root: string, print: string) -> Pack {
         dir: store_dir_of(root),
         print: print,
         records: map_cell(),
+        pending: map_cell(),
         withdrawn: map_cell(),
         content: map_cell(),
         slots: map_cell(),
         sealed: list_cell(),
-        tables: list_cell(),
+        tables: map_cell(),
         whole: Cell.new(false),
         opened: Cell.new(false),
         admitted: Cell.new(false),
@@ -463,6 +461,7 @@ fn claimed(
     let standing = pack.records.get().get(at)
     if standing != null && standing!.stamp > stamp { return }
     pack.records.put(at, listed_row(family, key, digest, read, stamp))
+    pack.pending.put(at, true)
 }
 
 /// A record folded in without a claim: this process's own writes are the only
@@ -476,6 +475,7 @@ export fn held(
     stamp: int,
 ) {
     pack.records.put(record_key(family, key), listed_row(family, key, digest, read, stamp))
+    pack.pending.put(record_key(family, key), true)
 }
 
 /// THE SEGMENTS OTHER WRITERS APPENDED since this pack opened — each worker's, once it
@@ -512,12 +512,18 @@ fn segments(dir: string) -> List<string> {
 /// that cannot take the lock says it skipped and returns without sealing.
 fn admit(pack: Pack) {
     if pack.lock_fd.get() < 0 && !locked(pack) { return }
+    // LICENSED input.store_clock: a seal's cost, said under the trace, never an input of what is built
+    let began = now_ns()
     if seal(pack) {
-        if traced() { qtrace("Q\tstore\tsealed\t${pack.rev.get()}\t${pack.records.get().length}\n") }
         retire(pack)
         enforce_limits(pack)
         emptied(pack)
         pack.frames.set(0)
+        if traced() {
+            qtrace(
+                "Q\tstore\tsealed\t${pack.rev.get()}\t${pack.sealed.get().length}\t${sealed_count(pack)}\t${(now_ns() - began) / 1000}us\n",
+            )
+        }
     }
 }
 
@@ -543,20 +549,27 @@ fn emptied(pack: Pack) {
     pack.headed.set(false)
 }
 
-/// Seals only from a write, once the segments hold SEAL_FRAMES frames — or, in a
-/// larger store, half its records, so a cold run's seals sum to a few times its
-/// size. A process that appended nothing never reaches here, so it takes no lock
-/// and writes no store file.
-fn settled(pack: Pack) {
-    let half = (pack.records.get().length + sealed_count(pack)) / 2
-    let due = hooked_frames() ?? if half > SEAL_FRAMES { half } else { SEAL_FRAMES }
-    if pack.frames.get() >= due { admit(pack) }
+/// THE ONE SEALING RULE: the unsealed frames reach the floor, and — while the process
+/// still writes — a quarter of the newest run as well, so a long derivation seals in
+/// geometric steps and its end seals what it left, as a run of its own.
+fn seal_due(pack: Pack, closing: bool) -> bool {
+    let frames = pack.frames.get()
+    if frames < seal_frames() { return false }
+    closing ||
+        hooked_frames() != null ||
+        frames * RUN_RATIO >= pack.sealed.get().first()?.count ?? 0
 }
 
-/// A derivation's end: what it left in the segments is folded into a body once it
-/// is more than a floor's worth, so the next open reads an index and not a log.
+/// Seals only from a write, under the one rule. A process that appended nothing never
+/// reaches here, so it takes no lock and writes no store file.
+fn settled(pack: Pack) {
+    if seal_due(pack, false) { admit(pack) }
+}
+
+/// A derivation's end: what it left in the segments is folded into a run once it is a
+/// floor's worth, so the next open reads an index and not a log.
 export fn pack_settle(pack: Pack) {
-    if pack.opened.get() && pack.frames.get() >= seal_frames(pack) { admit(pack) }
+    if pack.opened.get() && seal_due(pack, true) { admit(pack) }
 }
 
 /// A test hook: hold the lock so a second process's admission fails.
@@ -630,8 +643,8 @@ export fn pack_clean(pack: Pack, limits: StoreLimits) -> CleanReport {
         }
     }
     mut sealed = false
-    if pack.frames.get() > 0 || pack.torn.get() {
-        if seal(pack) {
+    if pack.frames.get() > 0 || pack.torn.get() || pack.sealed.get().length > 1 {
+        if sealed_whole(pack) {
             if traced() { qtrace("Q\tstore\tclean-sealed\t${pack.rev.get()}\n") }
             retire(pack)
             emptied(pack)
@@ -727,45 +740,63 @@ fn kept_file(path: string) -> KeptFile? {
 
 fn file_part(path: string) -> string { path.substring(dir_of(path).length + 1, path.length) }
 
-/// Evict sealed revisions past the time window, past the age, or to fit the byte
-/// ceiling — oldest first, and NEVER the newest, so a store always answers. A
-/// value file is shared by the bodies that appended to it and goes only when the
-/// last of them is evicted. Answers the revisions evicted.
+/// RECLAIM BY REACHABILITY (§6.7): every body is the head of its revision, and the window
+/// keeps the newest `revisions` heads that are not past the age — each with the runs its
+/// chain stands on, so a kept revision costs only what it alone holds. The newest whole
+/// chain is the roots, kept whatever the limit, so a store always answers. The byte
+/// ceiling then lets the oldest kept heads go. Answers the revisions evicted.
 fn prune_bodies(dir: string, limits: StoreLimits) -> List<int> {
     let names = sorted_by(all_body_names(dir), rev_before)
-    // THE NEWEST REVISION IS THE ROOTS: it is never doomed, whatever the limit,
-    // so a store always answers. Evict the history around it.
-    let newest? = names.last() else { return [] }
-    let over = if limits.revisions > 0 && names.length > limits.revisions { names.length - limits.revisions } else { 0 }
-    let doomed = names
-        .slice(0, over)
-        .concat(aged_out(dir, names.slice(over, names.length), newest, limits))
+    let roots = roots_of(dir, names)
+    let window = if limits.revisions > 0 && names.length > limits.revisions { names.slice(names.length - limits.revisions, names.length) } else { names }
+    let heads = [n for n in window if !aged(dir, n, limits)]
+    let doomed = unreachable(dir, names, roots, heads)
     for n in doomed { drop_body(dir, n) }
     drop_unreferenced_values(dir)
-    [body_rev_of(n) for n in doomed.concat(trimmed_to_fit(dir, limits))]
+    [body_rev_of(n) for n in doomed.concat(trimmed_to_fit(dir, roots, heads, limits))]
 }
 
-/// The bodies past the age limit, oldest first, never the newest.
-fn aged_out(dir: string, names: List<string>, newest: string, limits: StoreLimits) -> List<string> {
-    if limits.max_age_ns <= 0 { return [] }
+/// The newest whole chain: the bodies an open reads.
+fn roots_of(dir: string, names: List<string>) -> List<string> {
+    for n in reversed(names) {
+        let chain = chain_names(dir, n)
+        if !chain.is_empty() { return chain }
+    }
+    []
+}
+
+/// The bodies no kept head's chain reaches.
+fn unreachable(dir: string, names: List<string>, roots: List<string>, heads: List<string>) -> List<
+    string,
+> {
+    mut kept: Map<string, bool> = {}
+    for n in roots.concat(flatten([chain_names(dir, h) for h in heads])) { kept.set(n, true) }
+    [n for n in names if !kept.has(n)]
+}
+
+/// Whether a body is past the age limit.
+fn aged(dir: string, name: string, limits: StoreLimits) -> bool {
+    if limits.max_age_ns <= 0 { return false }
     // The file's time is WALL seconds, so the clock is read the same way —
     // `now_ns` is monotonic and would never compare to it.
     // LICENSED input.store_clock: the age limit reads the wall clock, never an input of what is built
     let now_s = wall_secs()
-    let age_s = limits.max_age_ns / 1000000000
-    [n for n in names if n != newest && now_s - (body_mtime_s(dir, n) ?? now_s) > age_s]
+    now_s - (body_mtime_s(dir, name) ?? now_s) > limits.max_age_ns / 1000000000
 }
 
-/// The oldest bodies dropped until the store fits its byte ceiling; the newest stays.
-fn trimmed_to_fit(dir: string, limits: StoreLimits) -> List<string> {
+/// The oldest kept heads let go until the store fits its byte ceiling; the roots stay.
+fn trimmed_to_fit(dir: string, roots: List<string>, heads: List<string>, limits: StoreLimits) -> List<
+    string,
+> {
     if limits.max_bytes <= 0 { return [] }
+    mut left = [h for h in heads if !roots.contains(h)]
     mut gone: List<string> = []
-    while store_bytes(dir) > limits.max_bytes {
-        let keep = sorted_by(all_body_names(dir), rev_before)
-        if keep.length <= 1 { break }
-        drop_body(dir, keep.first()!)
+    while store_bytes(dir) > limits.max_bytes && !left.is_empty() {
+        left = left.slice(1, left.length)
+        let doomed = unreachable(dir, all_body_names(dir), roots, left)
+        for n in doomed { drop_body(dir, n) }
         drop_unreferenced_values(dir)
-        gone.push(keep.first()!)
+        gone = gone.concat(doomed)
     }
     gone
 }
