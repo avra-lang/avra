@@ -33,6 +33,15 @@ impl Workspace {
     /// parsed or expanded and nothing recorded: each file the name environments or the standing
     /// rows place it in, answered by `refs_in`. None while a file cannot answer whole.
     fn named_refs(name: string) -> List<string>? {
+        let known = self.records.named_refs.get().get(name)
+        if known != null { return known! }
+        let refs? = self.named_refs_now(name) else { return null }
+        self.records.named_refs.put(name, refs)
+        refs
+    }
+
+    /// `named_refs` as the build stands now.
+    fn named_refs_now(name: string) -> List<string>? {
         let b = self.decls.bucket_standing(name)
         let standing = if b == null { [] } else { self.decls.decl_row_rows.get().members(b!) }
         let files = distinct(
@@ -48,8 +57,24 @@ impl Workspace {
     /// answer never depends on what this process minted or expanded; else off its rows once
     /// the file is made whole; else none.
     fn refs_in(path: string, name: string, standing: List<Decl>) -> List<string>? {
-        let lines? = self.items_lines(path) else { return self.rows_in(path, standing) }
-        line_wires_named(path, lines, name)
+        let kept = self.line_refs_of(path)
+        if !kept.kept { return self.rows_in(path, standing) }
+        kept.by.get(name) ?? []
+    }
+
+    /// A file's kept declaration wires by name, off its kept lines.
+    fn line_refs_read(path: string) -> LineRefs {
+        let lines? = self.items_lines(path) else { return LineRefs { kept: false, by: {} } }
+        LineRefs { kept: true, by: line_wires_by_name(path, lines) }
+    }
+
+    /// A file's kept declaration wires by name, read once per build.
+    fn line_refs_of(path: string) -> LineRefs {
+        let known = self.records.line_refs.get().get(path)
+        if known != null { return known! }
+        let made = self.line_refs_read(path)
+        self.records.line_refs.put(path, made)
+        made
     }
 
     /// A read file's standing rows as refs, once every declaration it makes is one.
