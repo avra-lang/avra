@@ -11,16 +11,12 @@
 //! values. The literal branch merges into `primary` BEFORE the
 //! spine's bare NAME; a non-literal brace falls through by
 //! backtracking, so conditions like `if x { ... }` stay whole.
-use features.{LanguageFeature, BuilderRow, PropertyRow, RefusalRow}
+use features.{LanguageFeature, PropertyRow, RefusalRow}
 use features.structs.{index_compared}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode, Remedy}
 
 export fn structs() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name         | build
-        "struct_lit" | build_struct_lit
-    }
     let codes = table<DiagCode> {
         kind                     | summary                                                                | remedy
         "resolve.duplicate_type" | "two types share one name"                                             | Remedy.Help
@@ -57,14 +53,13 @@ export fn structs() -> LanguageFeature {
             bare_spread = ".." -> Refusal.spread_bare
             field = ( marks:mark )* ( state_field:STATE )? name:NAME ":" ty:type ( "=" default:expression )? -> Record.ParamSyntax | spread:".." name:HOLE -> Record.ParamSyntax
             stmt = "alias" name:NAME ( "<" tparams:NAME ( "," tparams:NAME )* ","? ">" )? "=" of:type END @recover(sync_to: "END") -> Stmt.Alias
-            primary = t:NAME ( "<" ta:type ( "," ta:type )* ","? ">" )? "{" BREAK? ( ( vn:NAME ":" ve:expression | sp:".." ( vn:HOLE | se:postfix ) ) ( ( "," | BREAK ) BREAK? ( vn:NAME ":" ve:expression | sp:".." ( vn:HOLE | se:postfix ) ) )* ","? BREAK? )? "}" -> struct_lit(t, ta, vn, ve, sp, se)
+            primary = name:NAME ( "<" targs:type ( "," targs:type )* ","? ">" )? "{" BREAK? ( ( keys:NAME ":" vals:expression | dots:".." ( keys:HOLE | whole:postfix ) ) ( ( "," | BREAK ) BREAK? ( keys:NAME ":" vals:expression | dots:".." ( keys:HOLE | whole:postfix ) ) )* ","? BREAK? )? "}" -> Expr.StructLit by struct_lit_written
             pattern = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields
             asked = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields
             destructure = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields
             fields_rest = ".." -> Pat.Wild
             field_pat = name:NAME ":" pat:pattern -> Record.FieldPat | name:NAME -> Record.FieldPat(pat = Pat.Bind(name = name))
         }
-        builders: rows
         diags: codes
         properties: properties
         refusals: [
