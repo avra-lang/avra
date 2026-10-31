@@ -9,11 +9,6 @@ use compiler.host.{memory_host}
 use core.{DeclId}
 use @std.relation.engine.{Key}
 
-/// Every write summary settled — the cells of the query's own family.
-fn names_summary_cells(ws: Workspace) -> List<Key> {
-    [c.key for cells in ws.db.cells_by_family() for c in cells if ws.db.kernel.family_name(c.key.family) == "write_summary"]
-}
-
 fn names_key(d: DeclId) -> Key { Key { family: family_ordinal("Names"), arg: d.index } }
 
 fn names_visible_key(ws: Workspace) -> Key { Key { family: family_ordinal("Visible"), arg: ws.file_id("/w/src/main.av").index } }
@@ -53,7 +48,8 @@ spec "compiler/workspace — Family.Names is declaration-grain" {
             let _ = ws.items(ws.file_id("/w/src/main.av"))
             let b = names_decl_named(ws, "b")
             let _ = ws.writes_of(b)
-            names_summary_cells(ws)
+            ws
+                .cells_named("write_summary")
                 .any(
                     (s: Key) -> ws
                         .db
@@ -67,7 +63,8 @@ spec "compiler/workspace — Family.Names is declaration-grain" {
             let b = names_decl_named(ws, "b")
             let _ = ws.writes_of(b)
             let v = names_visible_key(ws)
-            names_summary_cells(ws)
+            ws
+                .cells_named("write_summary")
                 .any(
                     (s: Key) -> ws
                         .db

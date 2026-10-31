@@ -43,7 +43,7 @@ use core.{
 }
 use features.{Decls, Decl, TypeCx, bound_decl_of}
 use @std.meta.{bracket}
-use @std.relation.{relation}
+use @std.relation.{relation, query}
 use compiler.families.{Family}
 use @std.relation.engine.{FixpointRefusal, spoken as fixpoint_spoken}
 
@@ -441,6 +441,10 @@ fn within_is(enclosing: ExprId?, c: ExprId) -> bool {
     same_expr(w, c)
 }
 
+/// Every `_`-declared fn's inferred error union, solved once per program state.
+@query
+fn failures_solved(ws: Workspace) -> int { ws.failure_survey() }
+
 /// M6 PREP: the growing-set fixpoint's lattice over `raised_by`'s
 /// answer — sets of `TypeId`, join = union, deduped by index.
 fn raised_join(a: List<TypeId>, b: List<TypeId>) -> List<TypeId> {
@@ -454,30 +458,23 @@ fn refusal_of(r: Result<int, FixpointRefusal>) -> FixpointRefusal? {
 }
 
 impl Workspace {
-    /// The pass: every `_`-declared fn's inferred error union,
-    /// settled once per program state. ONE whole-program key, never
-    /// a per-decl memo (see this file's header).
-    @bracket("fail_summary")
+    /// The pass: every `_`-declared fn's inferred error union, settled once per program state
+    /// (`failures_solved`) — ONE whole-program answer, never a per-decl memo (see this file's
+    /// header). Never inside a resolve, which would read a half-built namespace.
     fn failures() -> int {
         if self.db.family_active(Family.Resolved.ordinal) { return 0 }
-        let k = key(Family.Failures, 0)
-        if !(self.db.ask(k) is .Compute) { return 0 }
-        self.db.begin(k)
+        failures_solved(self)
+    }
+
+    /// The survey and the solve, run: every inferring fn's union, as one word.
+    @bracket("fail_summary")
+    fn failure_survey() -> int {
         let fns = [x.id for x in self.decls.unheld_decls() if self.decls.inferring(x)]
         self.decls.clear_inferred()
         let sums = self.surveyed(fns)
         self.decls.settle_failures(fns, sums)
         self.solve_raised(fns)
-        self
-            .db
-            .settle(
-                k,
-                fp(
-                    21,
-                    [fp_list([m.index for m in self.decls.inferred_errors_so_far(d)]) for d in fns],
-                ),
-            )
-        fns.length
+        fp(21, [fp_list([m.index for m in self.decls.inferred_errors_so_far(d)]) for d in fns])
     }
 
     /// Every fn's summary, the sites they hold filed as the survey's rows
