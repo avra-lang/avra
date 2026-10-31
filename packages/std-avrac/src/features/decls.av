@@ -569,18 +569,14 @@ export type Decls = {
     /// A HELD FILE'S DECLARATIONS ARE MINTED WHEN ASKED FOR: the hook the
     /// workspace arms, called before a file's declarations are read.
     ensure_file: Cell<fn(FileId) -> void>,
-    /// THE PRODUCER INDEX'S FOUR DOORS, the workspace's to arm: a bucket reader asks for
-    /// the value it is about to read and every held module with a row filed there is
-    /// minted first — `named_rows`, `indexed`, `indexed_by_mark`.
-    ensure_named: Cell<fn(string) -> void>,
-    ensure_worded: Cell<fn(string) -> void>,
-    ensure_marked: Cell<fn(string) -> void>,
-    /// A held module's externs, by symbol, off the producer index — no module is minted
-    /// to answer, and `ensure_modules` mints the ones a reader then wants rows of.
+    /// THE NAME ENVIRONMENTS' DOOR, the workspace's to arm: a bucket reader names the value
+    /// it is about to read, and every unread file the environments list under it is minted
+    /// first — `named_rows`, `indexed`, `indexed_by_mark`, the extern readers.
+    ensure_listed: Cell<fn(Listed) -> void>,
+    /// Every extern the name environments list, by symbol.
     externs_index: Cell<fn() -> List<ExternNote>>,
-    /// The held files that declare a type, off the producer index.
+    /// The files the name environments list as declaring a type that may implement a trait.
     types_index: Cell<fn() -> List<string>>,
-    ensure_modules: Cell<fn(List<string>) -> void>,
     /// THE FILE AN `embed` LITERAL NAMES, or why a const may not read
     /// it: the hook the workspace arms — it knows the package a file
     /// stands in and the ones it depends on, and its host is what reads.
@@ -704,7 +700,6 @@ export type Decls = {
     decl_fps: Cell<List<int>>,
     type_fps: Cell<List<int>>,
     rows_state: Cell<List<int>>,
-    held_rows: Cell<fn(FileId) -> void>,
     /// The revision each armed relation cell last moved at, by family.
 
     // a GENERATED declaration's origin — null for every written one
@@ -900,11 +895,8 @@ fn embed_unjudged(_f: FileId, _rel: string, _kind: EmbedKind, _base: EmbedBase) 
 // LICENSED fns.dead_parameter: the hook's contract carries the declaration
 fn no_store(f: FileId) {}
 
-// LICENSED fns.dead_parameter: a fn VALUE filling a producer-ensure seat — no workspace stands behind the table, so no module is minted
-fn no_holder(_v: string) {}
-
-// LICENSED fns.dead_parameter: a fn VALUE filling the module-ensure seat — no workspace stands behind the table, so no module is minted
-fn no_holders(_modules: List<string>) {}
+// LICENSED fns.dead_parameter: a fn VALUE filling the listing seat — no workspace stands behind the table, so no file is minted
+fn no_listing(_l: Listed) {}
 
 fn no_externs() -> List<ExternNote> { [] }
 
@@ -912,6 +904,10 @@ fn no_modules() -> List<string> { [] }
 
 /// An `extern fn` a record declares: its module and file, its symbol, and whether it has a body.
 export type ExternNote = { module: string, path: string, name: string, hosted: bool }
+
+/// What a bucket reader is about to read, as the name environments list it: a declaration
+/// name, a component word, an annotation mark, an extern's symbol, or every host fn.
+export enum Listed { Name(name: string), Word(word: string), Mark(mark: string), Extern(name: string), Hosted }
 
 fn no_audit(_r: Bypassed) {}
 
@@ -1006,15 +1002,11 @@ export fn new_decls_under(durable: Durable) -> Decls {
         decl_fps: list_cell(),
         type_fps: list_cell(),
         rows_state: list_cell(),
-        held_rows: Cell.new(no_store),
         ensure_store: Cell.new(no_store),
         ensure_file: Cell.new(no_store),
-        ensure_named: Cell.new(no_holder),
-        ensure_worded: Cell.new(no_holder),
-        ensure_marked: Cell.new(no_holder),
+        ensure_listed: Cell.new(no_listing),
         externs_index: Cell.new(no_externs),
         types_index: Cell.new(no_modules),
-        ensure_modules: Cell.new(no_holders),
         embed_judge: Cell.new(embed_unjudged),
         ensure_package: Cell.new(no_store),
         scoped: map_cell(),
@@ -1285,14 +1277,10 @@ impl Decls {
     }
 
     /// A read of one row records what the row is a function of in the open query: its
-    /// name's bucket when its file's rows are settled, its module's record when the
-    /// file is held, nothing while the rows are being minted.
+    /// name's bucket once its file's rows stand, settled or minted from what a read kept;
+    /// nothing while they are being minted.
     fn row_read(x: Decl) {
-        if x.standing == 1 {
-            self.name_read(x.kind, x.file, x.bucket)
-        } else if x.standing == 2 {
-            (self.held_rows.get())(x.file)
-        }
+        if x.standing != 0 { self.name_read(x.kind, x.file, x.bucket) }
     }
 
     /// Name bucket `b`'s cell kept at the bucket's hash until a reader reads it — from
@@ -1316,7 +1304,7 @@ impl Decls {
     /// what this read saw.
     @bracket("decls")
     fn named(name: string) -> List<Decl> {
-        self.hold_named(name)
+        self.listed(Listed.Name(name))
         self.named_filed(name)
     }
 
@@ -1397,27 +1385,21 @@ impl Decls {
     fn cell_name(b: int) -> string { self.cell_names.get()[b] }
 
     /// A walk of file `f`'s rows records what they are a function of in the open
-    /// query: the file's `Items` cell when its rows are settled, its module's record
-    /// when the file is held, nothing while the rows are being minted.
+    /// query: the file's `Items` cell once its rows stand, nothing while they are being
+    /// minted.
     fn rows_read(f: FileId) {
         let state = self.rows_state.get()
-        if f.index >= state.length { return }
-        if state[f.index] == 1 {
-            self.record_kernel.record_at(self.record_items.get(), f.index)
-        } else if state[f.index] == 2 {
-            (self.held_rows.get())(f)
-        }
+        if f.index < state.length && state[f.index] != 0 { self.record_kernel.record_at(self.record_items.get(), f.index) }
     }
 
-    /// The workspace arms the recording once: the family a file's rows settle under,
-    /// and what a held file's rows read instead.
-    fn arm_recording(items: int, methods: int, names: int, held: fn(FileId) -> void) {
+    /// The workspace arms the recording once: the families a file's rows, methods and
+    /// names settle under.
+    fn arm_recording(items: int, methods: int, names: int) {
         self.record_items.set(items)
         self.record_methods.set(methods)
         self.record_names.set(names)
         self.recording.set(true)
         for b in 0..self.name_bucket_count() { self.bucket_moved(b) }
-        self.held_rows.set(held)
         self.rows_db.get().given_to(self.record_kernel)
     }
 
@@ -1726,7 +1708,7 @@ impl Decls {
     /// Every declaration `collect` gathers under `word` — a declared instance
     /// of that component — in id order.
     fn indexed(word: string) -> List<Decl> {
-        self.hold_worded(word)
+        self.listed(Listed.Word(word))
         self.filed(word_index, word)
     }
 
@@ -1735,7 +1717,7 @@ impl Decls {
 
     /// Every declaration wearing `@name`, in id order.
     fn indexed_by_mark(name: string) -> List<Decl> {
-        self.hold_marked(name)
+        self.listed(Listed.Mark(name))
         self.filed(marks_index, name)
     }
 
@@ -1987,7 +1969,6 @@ impl Decls {
     fn disarm() {
         self.auditing.set(false)
         self.rows_db.get().released()
-        self.held_rows.set(no_store)
         self.ensure.set(no_ensure)
         self.seat_ensure.set(no_ensure)
         self.ensure_const.set(no_const_ensure)
@@ -2014,15 +1995,12 @@ impl Decls {
         self.disarm()
         self.ensure_target.set(no_ensure)
         self.ensure_consumed.set(no_ensure)
-        self.ensure_named.set(no_holder)
-        self.ensure_worded.set(no_holder)
-        self.ensure_marked.set(no_holder)
+        self.ensure_listed.set(no_listing)
         self.ensure_refs.set(no_refs_ensure)
         self.ensure_held_refs.set(no_held_refs)
         self.ensure_read.set(no_answer)
         self.externs_index.set(no_externs)
         self.types_index.set(no_modules)
-        self.ensure_modules.set(no_holders)
         self.rows_db.get().answers_forgotten()
         self.embed_judge.set(embed_unjudged)
         self.audit_hook.set(no_audit)
@@ -2068,14 +2046,13 @@ impl Decls {
     }
 
     /// A collect's members — A REGISTRY, exhaustive over `CollectKind`:
-    /// `.Component`'s instances read `gathered`, `.Annotated`'s every
-    /// declaration wearing that mark reads `gathered_by_mark`;
-    /// `.UnknownKind` was refused at its own check and gathers nothing.
+    /// `.Component`'s instances read `gathered` (none for a word that names
+    /// no component), `.Annotated`'s every declaration wearing that mark
+    /// reads `gathered_by_mark`.
     fn gathered_into(kind: CollectKind, scope: CollectScope, owner: FileId) -> List<Decl> {
         match kind {
             .Component(w) -> self.gathered(w, scope, owner),
             .Annotated(w) -> self.gathered_by_mark(w, scope, owner),
-            .UnknownKind(_) -> [],
         }
     }
 
@@ -2946,13 +2923,13 @@ impl Decls {
 
     /// The externs answering one symbol, their held modules minted first.
     fn externs_named(name: string) -> List<Decl> {
-        self.hold_modules([n.module for n in self.held_externs() if n.name == name])
+        self.listed(Listed.Extern(name))
         [x for x in self.standing_externs() if x.name == name]
     }
 
     /// The program's host fns, their held modules minted first.
     fn host_fns() -> List<Decl> {
-        self.hold_modules([n.module for n in self.held_externs() if n.hosted])
+        self.listed(Listed.Hosted)
         [x for x in self.standing_externs() if self.is_host_fn(x.id)]
     }
 
@@ -3111,7 +3088,7 @@ impl Decls {
     /// unrecorded.
     @bracket("decls")
     fn named_rows(name: string) -> List<Decl> {
-        self.hold_named(name)
+        self.listed(Listed.Name(name))
         let rs = self.decl_row_rows.get()
         rs.members(rs.bucket_of_text(name_index, name))
     }

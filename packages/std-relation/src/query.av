@@ -18,6 +18,14 @@
 //! its answer stays in the process (`saved`), re-asked whenever a read it
 //! recorded moves. A dense id (`@dense`) is a seat in the process too.
 //!
+//! Two marks shape a query's cell. `@digested_by(f)` names the fn its
+//! answer is digested by — what its readers cut off on — where the
+//! answer's own fold would read more than the readers do.
+//! `@recursive` lets a call re-entered before it settles compute again,
+//! a smaller view, where a plain query answers the cycle with the value
+//! it last held. A body that cannot finish its answer says so with
+//! `db.unkept()`: the answer reaches its asker and no cell holds it.
+//!
 //!     @query
 //!     fn open_for(db: Db, owner: string) -> int { … }
 //!
@@ -42,7 +50,8 @@ use @std.meta.{
     refuse_as_at,
     code_hash,
 }
-use db.{Db, Answers, answers, KeptRecord, code_keyed}
+use db.{Db, Answers, answers, KeptRecord, code_keyed, DenseNames}
+use @std.text.{ascii_lower}
 use stable.{
     stable_hasher,
     text_hash,
@@ -70,16 +79,62 @@ export fn query(f: Fn) -> Declared {
     let kept = kept_name(f)
     Declared {
         made: [
-            Directive {
-                twin: "",
-                name: kept,
-                at: f.at,
-                source: quote { once fn ${kept}() -> Answers<${f.answer}> { answers(${literal(durable_name(f))}) } },
-            },
+            Directive { twin: "", name: kept, at: f.at, source: kept_source(f, kept) },
             Directive { twin: "", name: f.name, at: f.at, wraps: true, source: wrapper(f) },
         ],
         problems: [],
     }
+}
+
+/// Where a query's answers are kept: a dense-keyed one is named past the process only by its
+/// context's speller (`named_by`).
+fn kept_source(f: Fn, kept: string) -> Decls {
+    if keyed_densely(f) {
+        return quote { once fn ${kept}() -> Answers<${f.answer}> { answers(${literal(durable_name(f))}, ${literal(f.name)}, true) } }
+    }
+    quote { once fn ${kept}() -> Answers<${f.answer}> { answers(${literal(durable_name(f))}, ${literal(f.name)}, false) } }
+}
+
+/// Whether a call is keyed by a dense number of the process's own.
+fn keyed_densely(f: Fn) -> bool { f.params.slice(1, f.params.length).any(dense_field(it.kind) != null) }
+
+/// A DENSE KEY NAMED PAST THE PROCESS: a query of one dense seat, asked through a context,
+/// names its calls by the context's own speller for that seat's type —
+/// `<type>_spelled(id) -> string?` and `<type>_numbered(spelled) -> <type>?` — set by its first
+/// call. A missing speller is the ordinary refusal at the generated site.
+fn named_by(f: Fn) -> List<Stmts> {
+    if f.params.length != 2 || is_db(f.params[0].kind) { return [] }
+    let seat = f.params[1]
+    let field? = dense_field(seat.kind) else { return [] }
+    let ctx = name(f.params[0].name)
+    let stem = snake_of(seat.ty)
+    let id = quote { ${seat.ty} { ..${[quote { W { ${field}: n } }]} } }
+    [
+        quote {
+            if !held.durably_named() {
+                held.durable_by(
+                    DenseNames {
+                        spell: (n: int) -> ${ctx}.${"${stem}_spelled"}(${id}),
+                        number: (s: string) -> ${ctx}.${"${stem}_numbered"}(s)?.${field},
+                        ask: (n: int) -> {
+                            let _ = ${f.name}(${ctx}, ${id})
+                        },
+                    },
+                )
+            }
+        },
+    ]
+}
+
+/// A type's name in snake case: `DeclId` is `decl_id`.
+fn snake_of(ty: string) -> string {
+    mut out = ""
+    for j in 0..ty.length {
+        let c = ty.substring(j, j + 1)
+        let lower = ascii_lower(c)
+        out = if j > 0 && lower != c { "${out}_${lower}" } else { "${out}${lower}" }
+    }
+    out
 }
 
 /// The reader a record answer needs, bound beside the call: a TYPED LET
@@ -185,7 +240,7 @@ export fn query_problems(f: Fn) -> List<Diagnostic> {
     let first? = f.params.first() else { return [no_db(f)] }
     if !seated(first.kind) { return [no_db(f)] }
     let args = [arg_not_carried(f, p) for p in f.params.slice(1, f.params.length) if !asked_by(p.kind)]
-    let answer = if carried(f.answers, in_process) { [] } else { [answer_not_carried(f)] }
+    let answer = if carried(f.answers, in_process) || digest_word(f) != null { [] } else { [answer_not_carried(f)] }
     let seats = args.concat(answer)
     if !seats.is_empty() { return seats }
     codec_problems(f)
@@ -222,6 +277,36 @@ fn numbered(p: Param) -> Code? {
 fn in_process(n: string) -> NamedShape {
     let shape = named_shape(n)
     match shape { .Dense(_) -> NamedShape.Tagged([]), rest -> shape }
+}
+
+/// `@digested_by(f)`: the fn a query's answer is digested by — one seat of the answer, an int out.
+export fn digested_by(f: Fn, by: Fn) -> List<Diagnostic> {
+    if by.params.length != 1 || by.params[0].ty != f.answer || by.answer != "int" { return [digest_shape(f, by)] }
+    if !queried(f) { return [mark_alone(f, "digested_by")] }
+    []
+}
+
+/// `@recursive`: a call re-entered before it settles computes again — the smaller view.
+export fn recursive(f: Fn) -> List<Diagnostic> { if queried(f) { [] } else { [mark_alone(f, "recursive")] } }
+
+/// Whether a fn is a query.
+fn queried(f: Fn) -> bool { f.annotations.any((a: Annotation) -> a.name == "query" || a.name == "over") }
+
+/// The fn a query's answer is digested by, when it names one.
+fn digest_word(f: Fn) -> string? {
+    let mark? = f.annotations.find((a: Annotation) -> a.name == "digested_by") else { return null }
+    mark.args.first()
+}
+
+/// The answer's digest: the named fn, else the answer's own fold.
+fn digest_code(f: Fn) -> Code {
+    let by? = digest_word(f) else { return answer_hash(f) }
+    name(by)
+}
+
+/// How a call opens: a recursive query computes again on re-entry.
+fn opened(f: Fn) -> Code {
+    if f.annotations.any((a: Annotation) -> a.name == "recursive") { quote { held.memo.start_recursive(arg) } } else { quote { held.memo.start(arg) } }
 }
 
 /// THE DURABILITY LAW: an answer outlives the process exactly when every read it makes is
@@ -288,13 +373,14 @@ fn wrapper(f: Fn) -> Decls {
         return quote {
             fn ${f.name}(..${seats}) -> ${f.answer} {
                 let held = ${kept_name(f)}().under(${db})
+                ${named_by(f)}
                 let arg = ${arg_code(f)}
-                match held.memo.start(arg) {
+                match ${opened(f)} {
                     .Reuse(value) -> value,
                     .Compute -> {
                         ${answer_reader(f)}
                         let spelled = ${args_spelled(f)}
-                        held.ran_lasting(${db}, arg, spelled, ${body}, ${again}, ${answer_hash(f)}, ${record})
+                        held.ran_lasting(${db}, arg, spelled, ${body}, ${again}, ${digest_code(f)}, ${record})
                     },
                 }
             }
@@ -303,10 +389,11 @@ fn wrapper(f: Fn) -> Decls {
     quote {
         fn ${f.name}(..${seats}) -> ${f.answer} {
             let held = ${kept_name(f)}().under(${db})
+            ${named_by(f)}
             let arg = ${arg_code(f)}
-            match held.memo.start(arg) {
+            match ${opened(f)} {
                 .Reuse(value) -> value,
-                .Compute -> held.ran(${db}, arg, ${body}, ${again}, ${answer_hash(f)}),
+                .Compute -> held.ran(${db}, arg, ${body}, ${again}, ${digest_code(f)}),
             }
         }
     }
@@ -419,6 +506,24 @@ fn over_rows(f: Fn) -> Diagnostic {
         f.at,
         "a listing collects the rows its producers own, so `${f.name}` answers a plain `List<R>`, this is `${f.answer}`",
         "answer `List<R>` — the rows its key owns",
+    )
+}
+
+fn digest_shape(f: Fn, by: Fn) -> Diagnostic {
+    refuse_as_at(
+        "query_digest",
+        by.at ?? f.at,
+        "`${by.name}` digests `${f.name}`'s answer, so it takes one `${f.answer}` and answers an `int`",
+        "write `fn ${by.name}(v: ${f.answer}) -> int`",
+    )
+}
+
+fn mark_alone(f: Fn, mark: string) -> Diagnostic {
+    refuse_as_at(
+        "query_mark",
+        f.at,
+        "`@${mark}` shapes a query's cell, and `${f.name}` is no query",
+        "write `@query` over `${f.name}`",
     )
 }
 

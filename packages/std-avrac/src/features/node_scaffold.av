@@ -5,6 +5,8 @@
 //! and keeps its own builder. A record that is no node is made the same
 //! way (`make_<Record>`) and carried by its own `LangNode` variant;
 //! `Record.ParamSyntax` and `Record.VariantSyntax` still name a builder.
+//! A node a rule COMPUTES (`-> Owner.Variant by fn`) is built by its
+//! `@computed` fn, every one gathered here — one door, no table.
 use core.{
     expr_makers,
     pat_makers,
@@ -16,10 +18,22 @@ use core.{
     make_Case,
     make_UseItem,
     make_FieldPat,
+    make_ProjField,
+    make_OrderKey,
     make_Given,
+    make_FnSeat,
     make_CatchArm,
+    Slots,
+    Built,
 }
 use features.{BuilderRow, LangNode}
+
+/// A fn that computes a node from its rule's labels: the name a rule's
+/// `by` names it by, and the fn.
+export type ComputeRow = { name: string, make: fn(dyn Slots) -> Result<Built, string> }
+
+/// Every `@computed` fn of the compiler, by name.
+export collect computes: List<ComputeRow> = @computed in package as ComputeRow { name: it.name, make: it } by it.name
 
 /// Each flat variant's builder: its maker, then the node it makes.
 export fn node_builders() -> List<BuilderRow> {
@@ -96,8 +110,32 @@ export fn node_builders() -> List<BuilderRow> {
         .concat(
             [
                 BuilderRow {
+                    name: "Record.ProjField",
+                    build: (b) -> carried(make_ProjField(b), (f) -> LangNode.NProjField(f)),
+                },
+            ],
+        )
+        .concat(
+            [
+                BuilderRow {
+                    name: "Record.OrderKey",
+                    build: (b) -> carried(make_OrderKey(b), (k) -> LangNode.NOrderKey(k)),
+                },
+            ],
+        )
+        .concat(
+            [
+                BuilderRow {
                     name: "Record.Given",
                     build: (b) -> carried(make_Given(b), (g) -> LangNode.NGiven(g)),
+                },
+            ],
+        )
+        .concat(
+            [
+                BuilderRow {
+                    name: "Record.FnSeat",
+                    build: (b) -> carried(make_FnSeat(b), (r) -> LangNode.NFnSeat(r)),
                 },
             ],
         )
@@ -109,9 +147,23 @@ export fn node_builders() -> List<BuilderRow> {
                 },
             ],
         )
+        .concat(
+            [BuilderRow { name: c.name, build: (b) -> carried((c.make)(b), carried_built) } for c in computes],
+        )
 }
 
 /// A made record in the `LangNode` variant that carries it.
 fn carried<R>(made: Result<R, string>, carrier: fn(R) -> LangNode) -> Result<LangNode, string> {
     match made { .Ok(r) -> .Ok(carrier(r)), .Err(m) -> .Err(m) }
+}
+
+/// A computed node in the `LangNode` variant its kind rides.
+fn carried_built(n: Built) -> LangNode {
+    match n {
+        .Expr(id) -> LangNode.NExpr(id),
+        .Stmt(id) -> LangNode.NStmt(id),
+        .Pat(id) -> LangNode.NPat(id),
+        .Seat(param) -> LangNode.NParam(param),
+        .Marked(mark) -> LangNode.NMark(mark),
+    }
 }

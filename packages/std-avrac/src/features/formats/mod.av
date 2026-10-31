@@ -25,16 +25,11 @@
 //!   semantics.av the PatSemantics impl — dispatch one-liners
 //!   check.av    the laws a format must keep
 //!   lower.av    the scan, emitted
-use features.{LanguageFeature, BuilderRow, MethodRow, ReceiverEffect, unknown_answer}
+use features.{LanguageFeature, MethodRow, ReceiverEffect, unknown_answer}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn formats() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name           | build
-        "format_pat"   | build_format_pat
-        "grammar_decl" | build_grammar_decl
-    }
     let doors = table<MethodRow> {
         name      | takes      | check         | lower         | effect              | answers
         "parse"   | on_grammar | check_parse   | lower_parse   | ReceiverEffect.Read | unknown_answer
@@ -50,10 +45,9 @@ export fn formats() -> LanguageFeature {
     }
     LanguageFeature formats {
         gram: grammar {
-            stmt = "grammar" n:NAME "=" s:STRING END -> grammar_decl(n, s)
-            pattern = s:STRING -> format_pat(s)
+            stmt = "grammar" name:NAME "=" text:STRING END -> Stmt.StructDecl by grammar_written
+            pattern = text:STRING -> Pat.Format by format_written
         }
-        builders: rows
         diags: codes
         methods: doors
     }

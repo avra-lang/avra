@@ -1,73 +1,76 @@
-//! Parse-time lowering: captured tokens and expressions -> the
-//! StructDecl or NamedType statement and the StructLit node. A
-//! declaration's fields arrive built; a literal's names and values
-//! arrive as parallel capture lists and zip.
-use core.{Expr, ExprId, Stmt, Nominal, Plain, Scoped, sorted_by, spread_entry}
-use features.{
-    LangNode,
-    Builder,
-    zip_defect,
-    params_at,
-    spread_name,
-    record_spreads,
-    three_dots,
-    one_dot,
-    valued_spread,
-    typed_spread,
-    bare_spread,
+//! Parse-time lowering: the StructLit node, computed from its
+//! entries in written order.
+use core.{
+    Expr,
+    ExprId,
+    Nominal,
+    Plain,
+    Scoped,
+    Span,
+    SyntaxArena,
+    Slots,
+    Built,
+    computed,
+    sorted_by,
+    spread_entry,
+    flatten,
+    some_list,
 }
-
-/// THE ONE `type` BUILDER: the grammar's ordered choice captures a
-/// record's fields OR one written shape, and the capture that
-/// arrived picks the node — a NAMED TYPE when a shape was written.
-/// The fields arrive built, one `Record.ParamSyntax` each.
-fn build_type_decl(b: Builder) -> Result<LangNode, string> {
-    let n = b.token(0)?
-    let tparams = [Plain(t.text) for t in b.tokens(1)?]
-    let shape = b.type_refs(3)?
-    if !shape.is_empty() { return b.make_stmt(Stmt.NamedType(Scoped(n.text), tparams, shape[0])) }
-    if !(b.tokens(6)?).is_empty() { return .Err(three_dots()) }
-    if !(b.tokens(7)?).is_empty() { return .Err(one_dot()) }
-    if !(b.tokens(8)?).is_empty() { return .Err(valued_spread()) }
-    if !(b.tokens(9)?).is_empty() { return .Err(typed_spread()) }
-    if (b.tokens(4)?).length > (b.type_refs(5)?).length { return .Err(bare_spread()) }
-    let fields = params_at(b.args, 2)
-    let records = record_spreads([b.written_at(f) for f in fields], b.tokens(4)?, b.type_refs(5)?)?
-    let s = b.store.alloc_stmt(Stmt.StructDecl(Scoped(n.text), tparams, fields), b.span)
-    if !records.is_empty() { b.store.spread_fields(s, records) }
-    .Ok(LangNode.NStmt(s))
-}
+use features.{zip_defect, between}
 
 /// One literal entry in written order: a field's name and value, or
 /// a spread (`spread_entry`) and the record it places.
 type Written = { at: int, name: string, value: ExprId }
 
+/// An entry name as written, and where.
+type Key = { text: string, at: Span }
+
 /// `T { a: x, ..r, b: y }` — every field written with its value: a
 /// punned `{ b }` would make `null { v }` a literal and swallow every
 /// `if … != null { v }`, since a type name and a value name share
-/// one lexical class (ROADMAP: the bs2 debt ledger). Entries keep
-/// written order, which is the spread's precedence.
-fn build_struct_lit(b: Builder) -> Result<LangNode, string> {
-    let t = b.token(0)?
-    let targs = b.type_refs(1)?
-    let vn = b.tokens(2)?
-    let ve = b.exprs(3)?
-    let spreads = b.tokens(4)?
-    let written = [b.value_after(vn, ve, j) for j, k in vn]
-    if [v for v in written if v != null].length != ve.length { return .Err(zip_defect) }
+/// one lexical class. Entries keep written order, which is the
+/// spread's precedence.
+@computed
+fn struct_lit_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let spans = s.spans_of("keys")?
+    let keys = [Key { text: t, at: spans[j]! } for j, t in s.texts_of("keys")?]
+    let vals = s.exprs_of("vals")?
+    let dots = flatten([some_list(d) for d in s.spans_of("dots")?])
+    let written = [value_after(store, keys, vals, j) for j, _k in keys]
+    if [v for v in written if v != null].length != vals.length { return .Err(zip_defect) }
     let named = [Written {
-        at: vn[j].span.lo,
-        name: spread_name(vn[j], spreads, vn),
-        value: v ?? b.expr_node(Expr.Ident(Scoped(vn[j].text))),
+        at: keys[j].at.lo,
+        name: if dots.any(spreads_onto(it, keys[j].at, keys)) { "..${keys[j].text}" } else { keys[j].text },
+        value: v ?? store.alloc_expr(Expr.Ident(Scoped(keys[j].text)), s.built_at()),
     } for j, v in written]
-    let whole = [Written { at: b.store.expr_span(w)?.lo ?? 0, name: spread_entry, value: w } for w in b.exprs(5)?]
+    let whole = [Written { at: store.expr_span(w)?.lo ?? 0, name: spread_entry, value: w } for w in s.exprs_of("whole")?]
     let entries = sorted_by(named.concat(whole), (x, y) -> x.at < y.at)
-    let lit = b
-        .expr_node(
+    let lit = store
+        .alloc_expr(
             Expr
-                .StructLit(Nominal(t.text), [Plain(x.name) for x in entries], [x.value for x in entries]),
+                .StructLit(
+                    Nominal(s.text_of("name")?),
+                    [Plain(x.name) for x in entries],
+                    [x.value for x in entries],
+                ),
+            s.built_at(),
         )
-    b.store.mark_struct_targs(lit, targs)
-    b.wrap_expr(lit)
+    store.mark_struct_targs(lit, s.types_of("targs")?)
+    .Ok(Built.Expr(lit))
+}
+
+/// The value written after key `j`, before the next key.
+fn value_after(store: SyntaxArena, keys: List<Key>, vals: List<ExprId>, j: int) -> ExprId? {
+    let lo = keys[j].at.lo
+    let hi: int = if j + 1 < keys.length { keys[j + 1].at.lo } else { 1000000000 }
+    vals.find((e) -> between(store.expr_span(e)?.lo ?? 0 - 1, lo, hi))
+}
+
+/// Whether the `..` at `dot` stands directly before the key at `at` —
+/// after every key written before it: a hole spread by `..` keeps the
+/// `..`, which is how a template tells a run of entries from a name hole.
+fn spreads_onto(dot: Span, at: Span, keys: List<Key>) -> bool {
+    dot.hi == at.lo && !keys.any(it.at.lo > dot.lo && it.at.lo < at.lo)
 }
 

@@ -231,10 +231,13 @@ impl LowerCx {
 
     /// A declaration's body under an instantiation, as the symbol a
     /// call or an address names — enqueued on first sight, so the
-    /// program lowers exactly what it reaches.
+    /// program lowers exactly what it reaches. A substitution reaches a
+    /// GENERIC body alone: a plain declaration is one body under any
+    /// caller's, so it wears its own symbol and stays its file's content.
     fn wanted(d: DeclId, sub: Sub? = null, seats: List<SeatValue> = []) -> string {
+        let own = if self.view.decls.generic(d) { sub } else { null }
         let sym = self.view.decls.symbol(d)
-        let name = if sub == null { sym } else { self.view.decls.mangle(sym, sub!) }
+        let name = if own == null { sym } else { self.view.decls.mangle(sym, own!) }
         self.jobs.callees.set(name, d)
         if self.unseen(name) {
             self
@@ -245,7 +248,7 @@ impl LowerCx {
                         file: self.view.decls.decl(d).file,
                         decl: d,
                         name: name,
-                        sub: sub,
+                        sub: own,
                         seats: seats,
                         root: null,
                     },

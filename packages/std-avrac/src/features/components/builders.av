@@ -5,10 +5,9 @@
 //! record's instance is its literal, the body's settings by name and
 //! its other statements `collect`ed into its one `List` field.
 use core.{
+    FnSeat,
     ComponentWord,
-    Template,
     Record,
-    void_ref,
     Expr,
     Stmt,
     StmtId,
@@ -18,34 +17,43 @@ use core.{
     BodyView,
     TypeRef,
     Param,
+    Slots,
+    Built,
+    computed,
     sorted_by,
     same_stmt,
     plain_mark,
     flatten,
     some_list,
 }
-use features.{LangNode, Builder, marks_at, params_at, record_spreads, three_dots}
-use grammar.{Token}
+use features.{three_dots}
 
-fn build_component_decl(b: Builder) -> Result<LangNode, string> {
-    let n = b.token(0)?
-    let held = b.stmts(5)?
-    let made = [s for s in held if !b.store.holds_a_member(s)]
-    if made.any((s) -> b.store.is_state_stmt(s)) { return .Err(untyped_state()) }
-    if made.any((s) -> b.store.is_declaration(s)) { return .Err(foreign_member()) }
-    let fns = b.with_body(held, made)
-    if !(b.tokens(8)?).is_empty() { return .Err(three_dots()) }
+/// `component Name(head) { fields, events, body }` — the declaration, its
+/// members in written order and its body folded into one quote.
+@computed
+fn component_decl_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let held = s.stmts_of("body")?
+    let made = [m for m in held if !store.holds_a_member(m)]
+    if made.any((m) -> store.is_state_stmt(m)) { return .Err(untyped_state()) }
+    if made.any((m) -> store.is_declaration(m)) { return .Err(foreign_member()) }
+    if s.present_of("third")? { return .Err(three_dots()) }
     let members = sorted_by(
-        params_at(b.args, 3).concat(params_at(b.args, 4)),
-        (x: Param, y: Param) -> b.written_at(x) < b.written_at(y),
+        (s.params_of("fields")?).concat(s.params_of("events")?),
+        (x: Param, y: Param) -> store.param_id_span(x.id)?.lo ?? 0 < store.param_id_span(y.id)?.lo ?? 0,
     )
-    let records = record_spreads([b.written_at(m) for m in members], b.tokens(6)?, b.type_refs(7)?)?
-    let head = if members.any(it.state) { [propped_param(p) for p in params_at(b.args, 2)] } else { params_at(b.args, 2) }
-    let s = b
-        .store
-        .alloc_stmt(Stmt.ComponentDecl(Scoped(n.text), params_at(b.args, 1), head, members, fns), b.span)
-    if !records.is_empty() { b.store.spread_fields(s, records) }
-    .Ok(LangNode.NStmt(s))
+    let written = s.params_of("head")?
+    let head = if members.any(it.state) { [propped_param(p) for p in written] } else { written }
+    let decl = Stmt
+        .ComponentDecl(
+            Scoped(s.text_of("name")?),
+            s.params_of("tparams")?,
+            head,
+            members,
+            with_body(s, held, made),
+            s.types_of("spreads")?,
+        )
+    .Ok(Built.Stmt(store.alloc_stmt(decl, s.built_at())))
 }
 
 /// A head param of a STATEFUL composition marked a prop: the signature makes
@@ -59,29 +67,52 @@ fn propped_param(p: Param) -> Param {
 /// a place the component keeps, and a kept place is never a projection.
 fn passed(p: Param) -> bool { !p.marks.is_empty() || p.says != null }
 
+/// A component's members with its BODY — the statements `made` — folded
+/// into one: a quote of them, standing where the first was written.
+/// Nothing walks a body where it is written; what reads the declaration
+/// splices it where it means something.
+fn with_body(s: dyn Slots, held: List<StmtId>, made: List<StmtId>) -> List<StmtId> {
+    let store = s.arena()
+    let first? = made.first() else { return held }
+    let from? = store.stmt_span(first) else { return held }
+    let over = from.cover(store.stmt_span(made.last()!) ?? from)
+    let q = store
+        .alloc_expr(
+            Expr
+                .Body("quote", [s.source().substring(over.lo, over.hi)], [], BodyView.Verbatim(made, [])),
+            over,
+        )
+    store.mark_quote_at(q)
+    let body = store.alloc_stmt(Stmt.ExprStmt(q), over)
+    [if same_stmt(m, first) { body } else { m } for m in held if same_stmt(m, first) || !made.any((x) -> same_stmt(x, m))]
+}
+
 /// `on name(seat: T, …)` — an event, as the member that holds its
 /// handler: a nullable fn over the seats the event says, absent until
 /// an instance hears it.
-fn build_component_event(b: Builder) -> Result<LangNode, string> {
-    let name = b.token(1)?
-    let says = params_at(b.args, 2)
+@computed
+fn event_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let at = s.at_of("name")?
+    let says = s.params_of("says")?
     .Ok(
-        LangNode
-            .NParam(
+        Built
+            .Seat(
                 Param {
-                    name: Scoped(name.text),
+                    name: Scoped(s.text_of("name")?),
                     ty: TypeRef {
                         name: "fn",
-                        args: flatten([some_list(s.ty) for s in says]).concat([void_ref]),
+                        applied: [],
+                        seats: [FnSeat { ty: t } for t in flatten([some_list(p.ty) for p in says])],
                         optional: true,
                         dynamic: false,
                         arrow: true,
-                        span: name.span,
+                        span: at,
                     },
-                    default: b.store.alloc_expr(Expr.NullLit, name.span),
+                    default: store.alloc_expr(Expr.NullLit, at),
                     promises: plain_mark,
-                    id: b.store.alloc_param_id(name.span),
-                    marks: marks_at(b.args, 0),
+                    id: store.alloc_param_id(at),
+                    marks: s.marks_of("marks")?,
                     says: says,
                 },
             ),
@@ -95,41 +126,79 @@ fn build_component_event(b: Builder) -> Result<LangNode, string> {
 /// the key spliced into the child — so the tree, and the frame, are
 /// unchanged — and the instance marked with its key, the fact
 /// `read_set`'s `SiteLowering.Keyed` reads.
-fn build_component_keyed(b: Builder) -> Result<LangNode, string> {
-    let word = b.word_at(0)?
-    let source = b.expr(1)?
-    let kw = b.token(2)?
-    let iw = b.token(3)?
-    let field = b.token(4)?
-    let body = b.expr(5)?
-    if kw.text != "by" { return .Err(keyed_clause(word.word, kw.text)) }
-    if iw.text != "it" { return .Err(keyed_pronoun(word.word, iw.text)) }
-    let lam? = b.store.body_fn(body) else { return .Err(keyed_body(word.word)) }
-    let parts? = b.store.lambda_parts(lam) else { return .Err(keyed_body(word.word)) }
+@computed
+fn keyed_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let word = opened(s)?
+    let clause = s.text_of("clause")?
+    let pronoun = s.text_of("pronoun")?
+    if clause != "by" { return .Err(keyed_clause(word.word, clause)) }
+    if pronoun != "it" { return .Err(keyed_pronoun(word.word, pronoun)) }
+    let body = s.expr_of("body")?
+    let lam? = store.body_fn(body) else { return .Err(keyed_body(word.word)) }
+    let parts? = store.lambda_parts(lam) else { return .Err(keyed_body(word.word)) }
     let seat? = parts.params.first() else { return .Err(keyed_binder(word.word)) }
-    let subject = b.store.alloc_expr(Expr.Ident(Scoped(seat.name.of)), b.span)
-    let key = b.store.alloc_expr(Expr.Prop(subject, Plain(field.text)), b.span)
-    b.make_expr(Expr.Component(word.word, [], [source], body, null, key))
+    let subject = store.alloc_expr(Expr.Ident(Scoped(seat.name.of)), s.built_at())
+    let key = store.alloc_expr(Expr.Prop(subject, Plain(s.text_of("field")?)), s.built_at())
+    .Ok(
+        Built
+            .Expr(s.made_expr(Expr.Component(word.word, [], [s.expr_of("source")?], body, null, key))?),
+    )
 }
 
 /// `counter id { … } { … }` — a head's name takes ONE block; a second
 /// is the head law's refusal, in its words.
-fn build_component_braced_head(b: Builder) -> Result<LangNode, string> {
-    let word = (b.token(0)?).text
-    let head = (b.token(2)?).text
-    .Err("${braced_head(head)} — ${parenthesised_head(word, head)}")
+@computed
+fn braced_head_written(s: dyn Slots) -> Result<Built, string> {
+    let head = s.text_of("head")?
+    .Err("${braced_head(head)} — ${parenthesised_head(s.text_of("word")?, head)}")
 }
 
 /// `table orders { … }` at a statement: a record without a head BINDS
 /// the name, and fills its `name` field; any other component reads the
-/// name as its head value.
-fn build_component_named(b: Builder) -> Result<LangNode, string> {
-    b.named(b.word_at(0)?, b.type_refs(1)?, b.token(2)?, b.expr(3)?)
+/// name as its head value. `secret stripe_key` is one with no block.
+@computed
+fn named_written(s: dyn Slots) -> Result<Built, string> {
+    let word = opened(s)?
+    match word.form {
+        .Record(r) -> if r.head.is_empty() { bound(s, word) } else { headed(s, word) },
+        .Template(_) or .Refused(_) or .Spoken or .Unread -> headed(s, word),
+    }
 }
 
-/// `secret stripe_key` — a named instance with no block.
-fn build_component_named_bare(b: Builder) -> Result<LangNode, string> {
-    b.named(b.word_at(0)?, b.type_refs(1)?, b.token(2)?, null)
+/// The imported component the build's `word` opens.
+fn opened(s: dyn Slots) -> Result<ComponentWord, string> {
+    let w = s.text_of("word")?
+    let word? = s.component_word(w) else { return .Err(unimported(w)) }
+    .Ok(word)
+}
+
+/// A named instance whose component reads the name as its head value.
+fn headed(s: dyn Slots, word: ComponentWord) -> Result<Built, string> {
+    let store = s.arena()
+    let at = s.at_of("name")?
+    let name = store.alloc_expr(Expr.Ident(Scoped(s.text_of("name")?)), at)
+    let inst = s
+        .made_expr(
+            Expr
+                .Component(word.word, s.types_of("targs")?, [name], s.expr_opt_of("body")?, null, null),
+        )?
+    let stmt = store.alloc_stmt(Stmt.ExprStmt(inst), s.built_at())
+    store.mark_instance_owner(inst, stmt)
+    .Ok(Built.Stmt(stmt))
+}
+
+/// A headless record's named instance: `let n =` the instance, which
+/// the printer spells back as it was written.
+fn bound(s: dyn Slots, word: ComponentWord) -> Result<Built, string> {
+    let store = s.arena()
+    let name = Scoped(s.text_of("name")?)
+    let value = s
+        .made_expr(Expr.Component(word.word, s.types_of("targs")?, [], s.expr_opt_of("body")?, name, null))?
+    let stmt = store.alloc_stmt(Stmt.Let(name, null, value), s.built_at())
+    store.mark_component_inst(stmt, word.declared)
+    store.mark_instance_owner(value, stmt)
+    .Ok(Built.Stmt(stmt))
 }
 
 /// `on <event> { … }` — a handler written where the control is: the
@@ -138,100 +207,17 @@ fn build_component_named_bare(b: Builder) -> Result<LangNode, string> {
 /// event's own member, which the instance's component declares.
 /// `on` is a SOFT keyword, tagged by the lexer only where an event
 /// follows it — never a reserved word.
-fn build_on_handler(b: Builder) -> Result<LangNode, string> {
-    let event = (b.token(1)?).text
-    let stmts = b.stmts(3)?
-    let lam = b.expr_node(Expr.Lambda(params_at(b.args, 2), b.block_of(stmts)))
-    b.store.mark_on_handler(lam, event)
-    b.make_stmt(Stmt.Setting(Plain(event), lam))
-}
-
-impl Builder {
-    /// A component's members with its BODY — the statements `made` —
-    /// folded into one: a quote of them, standing where the first was
-    /// written. Nothing walks a body where it is written; what reads the
-    /// declaration splices it where it means something.
-    fn with_body(held: List<StmtId>, made: List<StmtId>) -> List<StmtId> {
-        let first? = made.first() else { return held }
-        let last? = made.last() else { return held }
-        let from? = self.store.stmt_span(first) else { return held }
-        let over = from.cover(self.store.stmt_span(last) ?? from)
-        let q = self
-            .store
-            .alloc_expr(
-                Expr
-                    .Body(
-                        "quote",
-                        [self.text.substring(over.lo, over.hi)],
-                        [],
-                        BodyView.Verbatim(made, []),
-                    ),
-                over,
-            )
-        self.store.mark_quote_at(q)
-        let body = self.store.alloc_stmt(Stmt.ExprStmt(q), over)
-        [if same_stmt(s, first) { body } else { s } for s in held if same_stmt(s, first) || !made.any((m) -> same_stmt(m, s))]
-    }
-
-    /// The imported component the word at `args[i]` opens.
-    fn word_at(i: int) -> Result<ComponentWord, string> {
-        let w = self.token(i)?
-        let word? = self.words.component(w.text) else { return .Err(unimported(w.text)) }
-        .Ok(word)
-    }
-
-    fn named(word: ComponentWord, targs: List<TypeRef>, n: Token, body: ExprId?) -> Result<
-        LangNode,
-        string,
-    > {
-        match word.form {
-            .Record(r) -> if r.head.is_empty() { self.bound(word, targs, n, body) } else { self.headed(word, targs, n, body) },
-            .Template(_) or .Refused(_) or .Spoken or .Unread -> self.headed(word, targs, n, body),
-        }
-    }
-
-    /// A named instance whose component reads the name as its head value.
-    fn headed(word: ComponentWord, targs: List<TypeRef>, n: Token, body: ExprId?) -> Result<
-        LangNode,
-        string,
-    > {
-        let inst = Expr.Component(word.word, targs, [self.name_value(n)], body, null, null)
-        self.wrap_expr_stmt(self.instance_node(inst)?)
-    }
-
-    /// The instance `e` names, its meaning minted beside it.
-    fn instance_node(e: Expr) -> Result<ExprId, string> {
-        let made = self.make_expr(e)?
-        match made {
-            .NExpr(id) -> .Ok(id),
-            rest -> .Err("defect: an instance was built as something else"),
-        }
-    }
-
-    /// A headless record's named instance: `let n =` the instance, which
-    /// the printer spells back as it was written.
-    fn bound(word: ComponentWord, targs: List<TypeRef>, n: Token, body: ExprId?) -> Result<
-        LangNode,
-        string,
-    > {
-        let value = self
-            .instance_node(Expr.Component(word.word, targs, [], body, Scoped(n.text), null))?
-        let s = self.store.alloc_stmt(Stmt.Let(Scoped(n.text), null, value), self.span)
-        self.store.mark_component_inst(s, word.declared)
-        self.store.mark_instance_owner(value, s)
-        self.wrap_stmt(s)
-    }
-
-    fn wrap_expr_stmt(e: ExprId) -> Result<LangNode, string> {
-        let s = self.store.alloc_stmt(Stmt.ExprStmt(e), self.span)
-        self.store.mark_instance_owner(e, s)
-        self.wrap_stmt(s)
-    }
-
-    /// A name standing where a head value goes — read as the value.
-    fn name_value(n: Token) -> ExprId {
-        self.store.alloc_expr(Expr.Ident(Scoped(n.text)), n.span)
-    }
+@computed
+fn on_handler_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let event = s.text_of("event")?
+    let lam = store
+        .alloc_expr(
+            Expr.Lambda(s.params_of("seats")?, store.block_over(s.stmts_of("stmts")?, s.built_at())),
+            s.built_at(),
+        )
+    store.mark_on_handler(lam, event)
+    .Ok(Built.Stmt(s.made_stmt(Stmt.Setting(Plain(event), lam))?))
 }
 
 // ── voices ──

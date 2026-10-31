@@ -17,14 +17,27 @@ export type Loaded<T> = { value: T, fingerprint: int }
 /// A family's dense value table over the Kernel: the shape a compile's
 /// 22 in-process query families and, later, a `Db`'s durable relations
 /// both are — ONE DEFINITION (COMPILER DB townhall §6.2).
-export type Relation<T> = { kernel: Kernel, family: int, values: Table<T> }
+export type Relation<T> = {
+    kernel: Kernel,
+    family: int,
+    values: Table<T>,
+    /// Reads a verified key's value back from where it was saved, when this process holds none.
+    revive: Cell<fn(int) -> Revival<T>>,
+}
+
+/// A saved answer's value read back, or that its owner cannot give it.
+export enum Revival<T> {
+    Revived(T)
+    Gone
+}
 
 /// `Memo<T>`'s old name, kept as the same type: nothing that already
 /// spells `Memo<T>` moves.
 export alias Memo<T> = Relation<T>
 
 export fn new_memo<T>(db: Kernel, family: int) -> Relation<T> {
-    Relation { kernel: db, family: family, values: new_table<T>() }
+    let gone: fn(int) -> Revival<T> = (_arg: int) -> Revival.Gone
+    Relation { kernel: db, family: family, values: new_table<T>(), revive: Cell.new(gone) }
 }
 
 impl Relation {
@@ -34,13 +47,29 @@ impl Relation {
         let a = match self.kernel.ask(self.query_key(arg)) {
             .Reuse -> match self.values.entry(arg) {
                 .Present(value) -> MemoAsk.Reuse(value),
-                .Missing -> missing_value(self.kernel, self.family, arg),
+                .Missing -> self.revived(arg),
             },
             .Compute -> MemoAsk.Compute,
             .Cycle -> MemoAsk.Cycle,
         }
         if self.kernel.tracing.get() { avra_qtrace("Q\task\t${self.kernel.family_name(self.family)}\t${arg}\t${ask_tag(a)}\n") }
         a
+    }
+
+    /// A key stood on its saved answer with no value here: read back from where it was saved,
+    /// or forgotten so it computes.
+    fn revived(arg: int) -> MemoAsk<T> {
+        let read = self.revive.get()
+        match read(arg) {
+            .Revived(value) -> {
+                self.values.keep(arg, value)
+                MemoAsk.Reuse(value)
+            },
+            .Gone -> {
+                self.kernel.forget(self.query_key(arg))
+                MemoAsk.Compute
+            },
+        }
     }
 
     /// Open an acyclic query unless its typed value is reusable. The
@@ -62,7 +91,12 @@ impl Relation {
     fn start_recursive(arg: int) -> MemoStart<T> {
         match self.ask(arg) {
             .Reuse(value) -> MemoStart.Reuse(value),
-            .Cycle or .Compute -> {
+            .Cycle -> {
+                self.kernel.reentered(self.query_key(arg))
+                self.kernel.begin(self.query_key(arg))
+                MemoStart.Compute
+            },
+            .Compute -> {
                 self.kernel.begin(self.query_key(arg))
                 MemoStart.Compute
             },

@@ -88,7 +88,6 @@ impl Workspace {
     fn made_sig_producer() -> Producer {
         producer_of(
             [
-                code_hash(held_sig_verified),
                 code_hash(keep_interfaces),
                 code_hash(record_cached),
                 code_hash(producers_of),
@@ -121,8 +120,12 @@ export type RecordBodies = { root: string, db: Db }
 impl RecordBodies {
     fn key(module: string, iface: string) -> string { node_key(Stored.Sig, [self.root, module, iface]) }
 
-    /// The body kept for a module under one interface, when one was.
-    fn body(store: Store, module: string, iface: string) -> string? { self.db.sig(store, self.key(module, iface)) }
+    /// The record kept for a module under one interface, when one was: its kept lines, then
+    /// each file's Items lines (`whole`).
+    fn body(store: Store, module: string, iface: string) -> string? {
+        let headers? = self.db.sig(store, self.key(module, iface)) else { return null }
+        self.whole(store, headers)
+    }
 }
 
 /// ONE READ PER RECORD PER BUILD. The record for a module, from the cache when this
@@ -215,6 +218,9 @@ fn places_of(fields: List<List<string>>) -> Map<string, Placed> {
     out
 }
 
+/// Whether a declaration line keeps what holding it needs: a const's verdict, or nothing to keep.
+fn const_kept(parts: List<string>) -> bool { parts[0] != "const" || parts.length > 14 && parts[14] != "" }
+
 /// One file's declaration lines.
 fn file_rows(fields: List<List<string>>, at: Placed?) -> List<List<string>> {
     if at == null { [] } else { fields.slice(at!.lo, at!.hi) }
@@ -293,7 +299,7 @@ fn shape_of(word: string) -> Shape? {
 /// (interface.av, the one writer). `payload` is what is left past the facts
 /// block: one field for most shapes, six for `Fn`/`Extern` (seats, return,
 /// marks, written bits, bounds, whether it may reach a cancel point), read
-/// through `Row`'s own verbs below.
+/// through `RowShape`'s verbs below.
 type Row = { shape: Shape, path: string, ordinal: int, stmt: int, exported: bool, name: string, kind: string, owner: string, parent_at: int, enclosing: string, root: int, item: bool, facts: string, payload: List<string> }
 
 /// A declaration row, decoded from its already-split fields — null for a
@@ -324,7 +330,23 @@ fn read_row(parts: List<string>) -> Row? {
     }
 }
 
+/// A declaration's shape: its word and the payload past the facts block — what fills a
+/// declaration's signature, read the same from its record line and from its own row.
+type RowShape = { shape: Shape, payload: List<string> }
+
 impl Row {
+    fn shaped() -> RowShape { RowShape { shape: self.shape, payload: self.payload } }
+}
+
+/// A declaration row's value — its shape word, then its payload — decoded; null for one
+/// that does not.
+fn shaped_of(line: string) -> RowShape? {
+    let parts = line.split("\t")
+    let shape? = shape_of(parts[0]) else { return null }
+    RowShape { shape: shape, payload: parts.drop(1) }
+}
+
+impl RowShape {
     /// Payload field `j`, or "" past its end — every shape but `Fn`/`Extern`
     /// writes one field, and one with nothing to say writes it empty.
     fn field(j: int) -> string { if self.payload.length > j { self.payload[j] } else { "" } }
@@ -704,16 +726,21 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
         // a module none of whose files this attempt read has its lines carried forward whole
         if !ws.module_files(m).any((path) -> ws.read_here(path)) { continue }
         let prior = record_cached(ws, store, m)
+        let forms_were = ws.producers_for(store, m)?.forms
         let made = ws.record_of(store, m)
         ws.keep_items(store, m, made)
         // a record is keyed by its module's NAME: a write is owed when its words moved
         if made != prior {
             let iface = iface_of(made) ?? ""
-            ws.db.insert_sig(store, ws.record_bodies().key(m.text(), iface), made)
+            ws.db.insert_sig(store, ws.record_bodies().key(m.text(), iface), record_headers(made))
             ws.db.insert_sig(store, ws.record_key(m), iface)
             record_known(ws, m, made)
             ws.keep_producers(store, m, iface)
-            if seen_part(made) != seen_part(prior) { seen_moved = true }
+            // a plain free fn's form is what a file that spells its name sees of it
+            if seen_part(made) != seen_part(prior) ||
+                ws.producers_for(store, m)?.forms != forms_were {
+                seen_moved = true
+            }
         }
     }
     // A BODY EDIT MOVES A RECORD'S `file` LINES, and with them no key but its own
@@ -967,11 +994,7 @@ fn plan_of_field(field: string) -> FieldPlan? {
 
 /// What a collect gathers by, as a record's two words.
 fn kind_words(kind: CollectKind) -> List<string> {
-    match kind {
-        .Annotated(w) -> ["mark", w],
-        .Component(w) -> ["component", w],
-        .UnknownKind(w) -> ["unknown", w],
-    }
+    match kind { .Annotated(w) -> ["mark", w], .Component(w) -> ["component", w] }
 }
 
 /// The scope a `gathers` line holds its collect to, as its last field.
@@ -994,7 +1017,6 @@ fn kind_of_words(word: string, name: string) -> CollectKind? {
     match word {
         "mark" -> CollectKind.Annotated(name),
         "component" -> CollectKind.Component(name),
-        "unknown" -> CollectKind.UnknownKind(name),
         _ -> null,
     }
 }
@@ -1091,7 +1113,7 @@ fn read_why(
     if ws.reads_pending(store, m, f) { return null }
     if !ws.stands_in(store, obj_key_cached(ws, store, m, f), want) { return Reads.Unkept }
     let rows = file_rows(record_fields(ws, store, m), at)
-    if !ws.const_rows_ready(store, m, f, rows) { return Reads.Consts }
+    if !rows.all(const_kept) { return Reads.Consts }
     if !holdable(rows) { return Reads.Unholdable }
     null
 }
@@ -1985,6 +2007,10 @@ fn forms_moved(was: List<string>?, now: List<string>?) -> List<string> {
 }
 
 /// The interface digest a record names on its `iface` line.
+/// What a record keeps of itself: every line but its files' declaration and maker lines,
+/// which their own rows hold.
+fn record_headers(made: string) -> string { joined([l for l in made.split("\n") if !items_line(read_fields(l))], "\n") }
+
 fn iface_of(record: string) -> string? {
     let line? = record.split("\n").find(it.starts_with("iface\t")) else { return null }
     line.substring(6, line.length)

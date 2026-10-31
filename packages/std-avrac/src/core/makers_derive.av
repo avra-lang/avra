@@ -31,7 +31,7 @@ export trait Makes {
 
     /// The marks a maker reads: a facet rides to the payload's writer,
     /// and an anchor tells it where the node begins.
-    static fn marks(t: MetaType) -> List<string> { [facet_word, anchor_word, local_word] }
+    static fn marks(t: MetaType) -> List<string> { [facet_word, anchor_word, local_word, hollow_word, pronoun_word] }
 }
 
 /// A record's maker: the record built from its fields' labels.
@@ -82,6 +82,7 @@ fn known(f: Field) -> bool {
         "List<UseItem>",
         "List<FieldPat>",
         "List<Given>",
+        "List<FnSeat>",
         "List<TypeRef>",
         "TypeRef",
         "TypeRef?",
@@ -143,9 +144,17 @@ fn slot(f: Field) -> Code {
 
 /// A carried payload's value, by its label or its default.
 fn payload_slot(f: Field) -> Code {
-    let fallback? = f.default else { return read(f) }
+    if is_hollow(f) { return quote { if s.present_of(${literal(f.name)})? { ${ridden(f)} } else { s.hollow() } } }
+    let fallback? = f.default else { return ridden(f) }
     if !known(f) { return fallback }
-    quote { if s.present_of(${literal(f.name)})? { ${read(f)} } else { ${fallback} } }
+    quote { if s.present_of(${literal(f.name)})? { ${ridden(f)} } else { ${fallback} } }
+}
+
+/// A payload's read, each expression riding the pronoun when its field
+/// says so.
+fn ridden(f: Field) -> Code {
+    if !rides_pronoun(f) { return read(f) }
+    quote { s.riding_of(${literal(f.name)})? }
 }
 
 /// One payload's read: the `Slots` accessor its type names, by its label.
@@ -165,6 +174,7 @@ fn read(f: Field) -> Code {
         "List<UseItem>" -> quote { s.use_items_of(${literal(f.name)})? },
         "List<FieldPat>" -> quote { s.field_pats_of(${literal(f.name)})? },
         "List<Given>" -> quote { s.givens_of(${literal(f.name)})? },
+        "List<FnSeat>" -> quote { s.fn_seats_of(${literal(f.name)})? },
         "List<Plain>" -> quote { [Plain(t) for t in s.texts_of(${literal(f.name)})?] },
         "List<string>" -> quote { s.texts_of(${literal(f.name)})? },
         "Scoped?" -> quote { s.scoped_opt_of(${literal(f.name)})? },

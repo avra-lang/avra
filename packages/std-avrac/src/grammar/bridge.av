@@ -19,12 +19,35 @@ use core.{Span, span_of}
 /// membership test (`term_kind`) and the vocabulary a grammar's own
 /// coherence check is handed (`avra_known_terminals`) both read it, so
 /// neither can list a name the other forgets.
-type TermKind = { name: string, kind: TokenKind }
+type TermKind = { name: string, kind: TokenKind, form: TokenForm = TokenForm.Any }
+
+/// Which of a kind's tokens a terminal takes: all of them, or the ones
+/// spelled one way — a `"""raw"""` string, a number with a point or
+/// without one.
+enum TokenForm {
+    Any
+    Raw
+    Fraction
+    Integer
+}
+
+/// Whether the token is spelled the way the form asks.
+fn spelled_as(form: TokenForm, t: Token) -> bool {
+    match form {
+        .Any -> true,
+        .Raw -> t.raw,
+        .Fraction -> t.is_fraction(),
+        .Integer -> !t.is_fraction(),
+    }
+}
 
 const terminal_kinds: List<TermKind> = [
     TermKind { name: "NAME", kind: TokenKind.Name },
     TermKind { name: "NUMBER", kind: TokenKind.Num },
+    TermKind { name: "INTEGER", kind: TokenKind.Num, form: TokenForm.Integer },
+    TermKind { name: "FRACTION", kind: TokenKind.Num, form: TokenForm.Fraction },
     TermKind { name: "STRING", kind: TokenKind.Str },
+    TermKind { name: "RAW_STRING", kind: TokenKind.Str, form: TokenForm.Raw },
     TermKind { name: "OCTETS", kind: TokenKind.Octets },
     TermKind { name: "ISTR_BEGIN", kind: TokenKind.IStrBegin },
     TermKind { name: "ISTR_MID", kind: TokenKind.IStrMid },
@@ -84,7 +107,9 @@ fn token_kind_of(term: string) -> int {
     [i for i, k in terminal_kinds if k.name == term].first() ?? 0 - 1
 }
 
-fn token_wears_kind(t: Token, k: int) -> bool { k >= 0 && kind_is(t.kind, terminal_kinds[k].kind) }
+fn token_wears_kind(t: Token, k: int) -> bool {
+    k >= 0 && kind_is(t.kind, terminal_kinds[k].kind) && spelled_as(terminal_kinds[k].form, t)
+}
 
 fn token_text(t: Token) -> string { t.text }
 

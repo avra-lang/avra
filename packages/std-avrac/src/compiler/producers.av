@@ -239,20 +239,20 @@ fn implements_a_type(row: Row) -> bool {
 /// Whether a row is a fn whose record says it links a scheduler.
 fn links_a_scheduler(row: Row) -> bool {
     let kind? = declared_kind(row.shape, row.kind) else { return false }
-    records_cancel(kind) && row.reach().links
+    records_cancel(kind) && row.shaped().reach().links
 }
 
 /// THE PRODUCERS FILED, each bucket reader's index and the load walk's: the one place a
 /// module's filings reach the hold.
 // LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a module and its producers in.
 export fn note_producers(ws: Workspace, p: Producers) {
-    for f in p.names { filed_under(ws.hold.named_by, f) }
-    for f in p.words { filed_under(ws.hold.worded_by, f) }
-    for f in p.marks { filed_under(ws.hold.marked_by, f) }
-    ws.hold.externed_by.set(ws.hold.externed_by.get().concat(p.externs))
+    for f in p.names { filed_under(ws.envs.names, f) }
+    for f in p.words { filed_under(ws.envs.words, f) }
+    for f in p.marks { filed_under(ws.envs.marks, f) }
+    ws.envs.externs.set(ws.envs.externs.get().concat(p.externs))
     ws.hold.linked_by.set(distinct(ws.hold.linked_by.get().concat(p.links)))
     for f in p.refs { filed_under(ws.hold.refs_by_target, f) }
-    for path in p.implementors { if !ws.hold.typed_by.get().contains(path) { ws.hold.typed_by.push(path) } }
+    for path in p.implementors { if !ws.envs.implementors.get().contains(path) { ws.envs.implementors.push(path) } }
     for path in distinct([r[1] for r in p.reexports]) { ws.hold.reexports.put(path, reexports_in(p.reexports, path)) }
 }
 
@@ -494,9 +494,11 @@ impl Workspace {
     }
 
     /// The plain free fn names whose form differs between the forms a module had at `was` and its
-    /// forms now — added, removed or changed; null where either side's forms cannot be read.
+    /// forms now — added, removed or changed; null where either side's forms cannot be read. Both
+    /// sides key the answer: a record written mid-build moves the forms now.
     fn moved_forms(store: Store, m: ModulePath, was: string) -> Map<string, bool>? {
-        let known: Map<string, bool>? = self.hold.forms_moved.get().get("${m.text()}\t${was}")
+        let at = "${m.text()}\t${was}\t${self.forms_stamp(store, m)}"
+        let known: Map<string, bool>? = self.hold.forms_moved.get().get(at)
         if known != null { return known }
         let kept? = store.get(Stored.Unit, forms_key(was)) else { return null }
         let now? = self.forms_at(store, m) else { return null }
@@ -505,7 +507,7 @@ impl Workspace {
         let moved: Cell<Map<string, bool>> = Cell.new({})
         for l in before.keys() { if !after.has(l) { moved.put(l.split("\t")[1], true) } }
         for l in after.keys() { if !before.has(l) { moved.put(l.split("\t")[1], true) } }
-        self.hold.forms_moved.put("${m.text()}\t${was}", moved.get())
+        self.hold.forms_moved.put(at, moved.get())
         moved.get()
     }
 }
