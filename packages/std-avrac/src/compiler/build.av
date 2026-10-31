@@ -277,6 +277,26 @@ export fn build_cache_root(ws: Workspace) -> string {
     ws.keys.store_root.get()
 }
 
+/// A PATH AS A DURABLE NAME SPELLS IT: from the tree the store stands in, so a store that
+/// moves with its tree — another checkout, machine or runner — names the same files. A
+/// path outside the tree is spelled as it is.
+impl Workspace {
+    fn saved(path: string) -> string {
+        let tree = "${dir_of(build_cache_root(self))}/"
+        if path.starts_with(tree) { "${TREE_MARK}/${path.substring(tree.length, path.length)}" } else { path }
+    }
+
+    /// The path a durable name spells, where the store stands now.
+    fn unsaved(name: string) -> string {
+        let mark = "${TREE_MARK}/"
+        if !name.starts_with(mark) { return name }
+        "${dir_of(build_cache_root(self))}/${name.substring(mark.length, name.length)}"
+    }
+}
+
+/// How a durable name begins for a path under the tree.
+const TREE_MARK: string = "{tree}"
+
 /// Where a tree's cache stands.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, a directory out.
 fn stores_dir(ws: Workspace) -> string { joined_path(tree_root(ws), ".avra-cache") }

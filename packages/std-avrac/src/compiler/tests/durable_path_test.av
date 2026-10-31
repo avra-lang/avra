@@ -1,0 +1,41 @@
+// A file crosses a process as a durable name spelled from the tree its store stands in,
+// so a store that moves with its tree names the same files.
+use @std.avrac.testing.{test_workspace}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+
+/// A workspace over one package at `/w`.
+fn dp_workspace() -> Workspace {
+    test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "fn a() -> int { 1 }\n",
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+    )
+}
+
+spec "compiler — a file's durable name" {
+    given "a path under the tree" {
+        then "it is spelled from the tree, and the spelling reads back as the path" {
+            let ws = dp_workspace()
+            ws.saved("/w/src/main.av") == "{tree}/src/main.av" &&
+                ws.unsaved("{tree}/src/main.av") == "/w/src/main.av"
+        }
+        then "a file's durable name reads back as the file" {
+            let ws = dp_workspace()
+            let f = ws.file_id("/w/src/main.av")
+            ws.file_id_numbered(ws.file_id_spelled(f) ?? "")?.index == f.index
+        }
+    }
+    given "a path outside the tree" {
+        then "it is spelled as it is" {
+            let ws = dp_workspace()
+            ws.saved("/elsewhere/x.av") == "/elsewhere/x.av" &&
+                ws.unsaved("/elsewhere/x.av") == "/elsewhere/x.av"
+        }
+    }
+}

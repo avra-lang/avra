@@ -247,18 +247,18 @@ impl Workspace {
     /// The declaration a durable name names in this process, none for one gone.
     fn decl_id_numbered(spelled: string) -> DeclId? { self.decl_from_ref(spelled) }
 
-    /// A file's durable name for a query keyed by it: its path.
-    fn file_id_spelled(f: FileId) -> string? { self.decls.file(f).path }
+    /// A file's durable name for a query keyed by it: its path, spelled from the tree.
+    fn file_id_spelled(f: FileId) -> string? { self.saved(self.decls.file(f).path) }
 
-    /// The file a path names in this process, none for one this process never met.
-    fn file_id_numbered(spelled: string) -> FileId? { self.decls.known_file_id(spelled) }
+    /// The file a durable name spells in this process, none for one this process never met.
+    fn file_id_numbered(spelled: string) -> FileId? { self.decls.known_file_id(self.unsaved(spelled)) }
 
     fn decl_ref(d: DeclId?) -> string {
         if d == null { return "" }
         self.decls.decl_wire(d!)
     }
 
-    fn file_ref(f: FileId) -> string { self.decls.file(f).path }
+    fn file_ref(f: FileId) -> string { self.saved(self.decls.file(f).path) }
 
     fn seat_wire(s: SeatValue) -> string {
         wire_field("${s.index}") +
@@ -316,7 +316,7 @@ impl Workspace {
         let decl_raw? = r.field() else { return null }
         let root_mark? = r.field() else { return null }
         let sub_mark? = r.field() else { return null }
-        let f? = self.decls.known_file_id(file_path) else { return null }
+        let f? = self.file_id_numbered(file_path) else { return null }
         let decl = self.decl_from_ref(decl_raw)
         let root: ExprId? = if root_mark == "+" {
             let d? = decl else { return null }
