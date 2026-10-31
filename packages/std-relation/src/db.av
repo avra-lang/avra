@@ -95,6 +95,8 @@ export type Db = {
     /// many saved answers name them.
     digests_known: Cell<Map<string, string>>,
     leaves_known: Cell<Map<string, List<Leaf>>>,
+    /// Each named read's key, by its identity: the cell a read of it records.
+    keys_known: Cell<Map<string, Key>>,
     known_at: Cell<int>,
 }
 
@@ -303,6 +305,7 @@ fn made(durable: Durable) -> Db {
         written: Cell.new(0),
         digests_known: map_cell(),
         leaves_known: map_cell(),
+        keys_known: map_cell(),
         known_at: Cell.new(0 - 1),
     }
 }
@@ -584,6 +587,8 @@ impl Db {
         self.digests_known.set(none)
         let no_leaves: Map<string, List<Leaf>> = {}
         self.leaves_known.set(no_leaves)
+        let no_keys: Map<string, Key> = {}
+        self.keys_known.set(no_keys)
         self.known_at.set(rev)
     }
 
@@ -740,8 +745,7 @@ impl Db {
         let rest = id.substring(2, id.length)
         let at = rest.index_of("\t")
         if at < 1 { return false }
-        let owner? = self.answer_named(rest.substring(0, at)) else { return false }
-        owner.recorded_family() >= 0 && owner.arg_of(rest.substring(at + 1, rest.length)) != null
+        self.input_key(rest.substring(0, at), rest.substring(at + 1, rest.length)) != null
     }
 
     fn read_rows_leaf(kernel: Kernel, name: string) {
@@ -750,9 +754,24 @@ impl Db {
     }
 
     fn read_input_leaf(kernel: Kernel, name: string, spelled: string) {
-        let owner? = self.answer_named(name) else { return }
-        let arg? = owner.arg_of(spelled) else { return }
-        kernel.record_at(owner.recorded_family(), arg)
+        let k? = self.input_key(name, spelled) else { return }
+        kernel.record_at(k.family, k.arg)
+    }
+
+    /// The cell a read of the answer `spelled` of `name` records, asked once a revision; none
+    /// for one no family here records — not kept, since a declaration minted later may name it.
+    fn input_key(name: string, spelled: string) -> Key? {
+        self.known_now()
+        let id = "${name}\t${spelled}"
+        let known = self.keys_known.get().get(id)
+        if known != null { return known }
+        let owner? = self.answer_named(name) else { return null }
+        let family = owner.recorded_family()
+        if family < 0 { return null }
+        let arg? = owner.arg_of(spelled) else { return null }
+        let made = Key { family: family, arg: arg }
+        self.keys_known.put(id, made)
+        made
     }
 
     /// A query or input asked here, as a saved answer may name it.

@@ -35,14 +35,23 @@ impl Workspace {
         let s? = self.store.get() else { return null }
         let rdb = self.decls.rows_db.get()
         let key = self.lowered_key(w)
-        let raw? = s.get_valid(Stored.Unit, key, (n) -> rdb.leaf_digest(n)) else { return null }
+        let t0 = self.clock()
+        let raw? = s.get_valid(Stored.Unit, key, (n) -> rdb.leaf_digest(n)) else {
+            self.timed("unit check", t0)
+            return null
+        }
+        self.timed("unit check", t0)
+        let t1 = self.clock()
         let u? = self.unit_of_wire(raw) else { return null }
+        self.timed("unit decode", t1)
+        let t2 = self.clock()
         if !rdb
             .read_ids(
                 [r!.name for r in [read_spelled(l) for l in s.reads_of(Stored.Unit, key) ?? []] if r != null],
             ) {
             return null
         }
+        self.timed("unit replay", t2)
         u
     }
 
