@@ -1,0 +1,82 @@
+// A NAME'S BUCKET IS HASHED WHOLE: what a derive generates under the name
+// joins the bucket when its file expands, and the digest a saved row stands
+// on is the same whether it is asked before that expansion or after it.
+use compiler.{Workspace, line_wires_by_name}
+use compiler.store.{Keeping, store_with}
+use core.{sorted_texts}
+use @std.avrac.testing.{test_workspace, vendored_meta, vendored_meta_paths}
+use compiler.host.{memory_host}
+
+/// A module whose `Box` wears an annotation that generates an `impl Box`.
+fn derived_impl() -> Workspace {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            "/w/src/marks.av": "use @std.meta.{Type, Directive}\nexport fn twin(t: Type) -> List<Directive> {\n    [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn made() -> int { 7 } } } }]\n}\n",
+            "/w/src/main.av": "@twin\ntype Box = { v: int }\nimpl Box {\n    fn own() -> int { 1 }\n}\nBox { v: 1 }.made()\n",
+        },
+    )
+    test_workspace(
+        memory_host(
+            files,
+            ["/w/avra.toml", "/w/src/marks.av", "/w/src/main.av"].concat(vendored_meta_paths()),
+        ),
+        "/w",
+    )
+}
+
+const MAIN: string = "/w/src/main.av"
+
+/// `Box`'s bucket digest once its program is analyzed — or, with `early`, asked once
+/// `main.av`'s written declarations are rows and before its expansion makes the derived
+/// one, then the program analyzed and the digest asked again; `early` answers the first ask
+/// when it is not the second, so an early digest that is partial shows.
+fn box_digest(early: bool) -> string {
+    let ws = derived_impl()
+    if early { let _ = ws.items(ws.file_id(MAIN)) }
+    let first = if early { asked(ws) } else { "" }
+    let _ = ws.program(MAIN)
+    let last = asked(ws)
+    if first != "none" && first != "" && first != last { return "partial ${first}" }
+    last
+}
+
+/// `Box`'s bucket digest as `ws` answers it now, "none" while the bucket is unread.
+fn asked(ws: Workspace) -> string {
+    let b? = ws.decls.bucket_standing("Box") else { return "none" }
+    let d? = ws.bucket_digest(b) else { return "none" }
+    "${d}"
+}
+
+/// `Box`'s declarations in `main.av`, spelled from their rows and from the module's
+/// record lines, each sorted — the same declarations through the one speller twice.
+fn spelled_both_ways() -> List<string> {
+    let ws = derived_impl()
+    let _ = ws.program(MAIN)
+    let rows: Cell<Map<string, string>> = Cell.new({})
+    let store = store_with("/w/.avra-cache", "print", Keeping.Aside(rows))
+    let lines = [l.split("\t") for l in ws.record_of(store, ws.module_path_of(MAIN)).split("\n")]
+    let held = line_wires_by_name(MAIN, [p for p in lines if p.length > 1 && p[1] == MAIN])
+        .get("Box") ?? []
+    let rowed = [ws.decl_ref(x.id) for x in ws.decls.named_rows("Box") if ws.decls.file(x.file).path == MAIN]
+    [sorted_texts(rowed).join("|"), sorted_texts(held).join("|")]
+}
+
+/// How many declarations file under `Box` once the program is analyzed.
+fn box_members() -> int {
+    let ws = derived_impl()
+    let _ = ws.program(MAIN)
+    ws.decls.named_rows("Box").length
+}
+
+spec "compiler — a Named digest is the whole bucket" {
+    given "a record whose derive generates an impl under its own name" {
+        then "the generated impl files under the name beside the written two" { box_members() == 3 }
+        then "a digest asked before the expansion is never a partial one" { box_digest(true) == box_digest(false) }
+        then "a declaration spells alike from its row and from its kept line" {
+            let both = spelled_both_ways()
+            both[0] == both[1]
+        }
+        then "the kept lines spell all three" { spelled_both_ways()[1].split("|").length == 3 }
+    }
+}
