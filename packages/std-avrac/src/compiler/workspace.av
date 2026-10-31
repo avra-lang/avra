@@ -565,7 +565,7 @@ export type Workspace = {
     externs: Table<ExternNames>,
     sig_voices: Table<Voices>,
     method_clashes: Table<List<Clash>>,
-    /// each file's clash diagnostics as `Family.MethodDiags` last settled them
+    /// each file's clash diagnostics as `method_clashes` last settled them
     method_diag_rows: Table<List<Diag>>,
     asks: Cell<List<Wanted>>,
     /// `asks`' own name -> index, so `spec_id` interns in O(1) rather
@@ -861,10 +861,6 @@ fn raised_verified(ws: Workspace, arg: int) -> int {
     touch(ws.raised_by(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Raised, arg))
 }
-fn method_diags_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.method_diagnostics(file_at(arg)))
-    ws.db.changed_at(key(Family.MethodDiags, arg))
-}
 fn syntax_verified(ws: Workspace, arg: int) -> int {
     touch(ws.syntax(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Syntax, arg))
@@ -889,10 +885,6 @@ fn admitted_verified(ws: Workspace, arg: int) -> int {
 fn named_verified(ws: Workspace, arg: int) -> int {
     ws.decls.named_now(arg)
     ws.db.changed_at(key(Family.Named, arg))
-}
-fn read_reach_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.read_reach())
-    ws.db.changed_at(key(Family.ReadReach, arg))
 }
 fn decl_reads_verified(ws: Workspace, arg: int) -> int {
     touch(ws.decl_places(decl_at_arg(arg)).length)
@@ -931,7 +923,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .FileRefs -> file_refs_verified(ws, arg),
         .Failures -> failures_verified(ws, arg),
         .Raised -> raised_verified(ws, arg),
-        .MethodDiags -> method_diags_verified(ws, arg),
         .Syntax -> syntax_verified(ws, arg),
         .Names -> names_verified(ws, arg),
         .Placed -> placed_verified(ws, arg),
@@ -940,7 +931,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .CancelBits -> cancel_bits_verified(ws, arg),
         .Admitted -> admitted_verified(ws, arg),
         .Named -> named_verified(ws, arg),
-        .ReadReach -> read_reach_verified(ws, arg),
         .DeclReads -> decl_reads_verified(ws, arg),
         .Input -> input_verified(ws, arg),
     }
@@ -2617,7 +2607,6 @@ export fn family_code_hash(f: Family) -> string {
         .FileRefs -> code_hash(file_refs_verified) ?? "",
         .Failures -> code_hash(failures_verified) ?? "",
         .Raised -> code_hash(raised_verified) ?? "",
-        .MethodDiags -> code_hash(method_diags_verified) ?? "",
         .Syntax -> code_hash(syntax_verified) ?? "",
         .Names -> code_hash(names_verified) ?? "",
         .Placed -> code_hash(placed_verified) ?? "",
@@ -2626,7 +2615,6 @@ export fn family_code_hash(f: Family) -> string {
         .CancelBits -> code_hash(cancel_bits_verified) ?? "",
         .Admitted -> code_hash(admitted_verified) ?? "",
         .Named -> code_hash(named_verified) ?? "",
-        .ReadReach -> code_hash(read_reach_verified) ?? "",
         .DeclReads -> code_hash(decl_reads_verified) ?? "",
         .Input -> code_hash(input_verified) ?? "",
     }

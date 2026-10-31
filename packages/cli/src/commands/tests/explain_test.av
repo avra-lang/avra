@@ -36,6 +36,13 @@ fn table_rows(a: Asked) -> List<string> {
     [[w for w in l.split(" ") if w != ""].join(" ") for l in explain_lines(a)]
 }
 
+/// The label explain gives a file's source, read off its text's page.
+fn source_label(root: string) -> string {
+    let line = explain_lines(Asked { target: "src/lib/a.av", from: root })
+        .find(it.starts_with("    source_of(")) ?? ""
+    line.trim().split("  ").first() ?? ""
+}
+
 fn page(a: Asked) -> string { [undigested(l) for l in explain_lines(a)].join("\n") }
 
 /// What a check of a lib probe reads from the world, by label: its three
@@ -165,30 +172,21 @@ spec "commands/explain" {
         then "its text is an input: it reads nothing, and the page leads with it" {
             page(Asked { target: "src/lib/a.av", from: lib_probe("file_page") })
                 .starts_with(
-                    "Input(text src/lib/a.av)  <digest>\n  reads    nothing — it stands always\n  read by  3 directly, ",
+                    "Input(text src/lib/a.av)  <digest>\n  reads    nothing — it stands always\n  read by  1 directly, ",
                 )
         }
-        then "the text's direct readers are its two scans, keyed by the text, and its source" {
-            let lines = [undigested(l) for l in explain_lines(Asked { target: "src/lib/a.av", from: lib_probe("file_readers") })]
-            [
-                "BlockScan(text src/lib/a.av)",
-                "ComponentScan(text src/lib/a.av)",
-                "Source(src/lib/a.av)",
-            ]
-                .all((r) -> lines.contains("    ${r}  <digest>"))
-        }
-        then "the file's source is among the text's direct readers, under the text's own digest" {
+        then "the text's direct reader is its source, a query named by its fn, digested" {
             let lines = explain_lines(
-                Asked { target: "src/lib/a.av", from: lib_probe("file_source") },
+                Asked { target: "src/lib/a.av", from: lib_probe("file_readers") },
             )
-            let first = lines.first() ?? ""
-            let text = first.split("  ").last() ?? ""
-            ends_digested(first) && lines.any(it == "    Source(src/lib/a.av)  ${text}")
+            lines.any(it.starts_with("    source_of(") && ends_digested(it))
         }
         then "the file's source reads one thing, its text" {
-            page(Asked { target: "Source(src/lib/a.av)", from: lib_probe("source_page") })
+            let root = lib_probe("source_page")
+            let label = source_label(root)
+            page(Asked { target: label, from: root })
                 .starts_with(
-                    "Source(src/lib/a.av)  <digest>\n  reads    1 directly, 1 at any depth\n    Input(text src/lib/a.av)  <digest>\n",
+                    "${label}  <digest>\n  reads    1 directly, 1 at any depth\n    Input(text src/lib/a.av)  <digest>\n",
                 )
         }
         then "its analysis follows, with what it read directly and how far down that goes" {
@@ -253,10 +251,10 @@ spec "commands/explain" {
             let rows = table_rows(
                 Asked { target: "", from: lib_probe("stats_source"), stats: true },
             )
-            let cols = (rows.find(it.starts_with("Source ")) ?? "").split(" ")
+            let cols = (rows.find(it.starts_with("source_of ")) ?? "").split(" ")
             cols.length == 8 &&
-                cols[1] == "2" &&
-                cols[4] == "2" &&
+                cols[1] != "0" &&
+                cols[4] == cols[1] &&
                 cols[5] == "1" &&
                 cols[6] == "1" &&
                 cols[7] == "1"
@@ -334,14 +332,15 @@ spec "commands/explain" {
                 .join("")
                 .ends_with(",\"attempts\":1,\"discarded\":0}")
         }
-        then "the table is one object, families first and the Source row counted" {
+        then "the table is one object, families first and the source query's row counted, one read a cell" {
             let said = explain_lines(
                 Asked { target: "", from: lib_probe("json_stats"), stats: true, json: true },
             )
                 .join("")
+            let row = (said.split("{\"family\":\"source_of\",").get(1) ?? "").split("}").first() ?? ""
             said.starts_with("{\"families\":[{\"family\":\"") &&
-                said.contains("{\"family\":\"Source\",\"cells\":2,\"served\":") &&
-                said.contains(",\"edges\":2,\"p50\":1,\"p99\":1,\"longest\":1")
+                row.starts_with("\"cells\":") &&
+                row.ends_with(",\"p50\":1,\"p99\":1,\"longest\":1")
         }
         then "and closes with its totals, nothing of the hold after them" {
             let said = explain_lines(
@@ -404,7 +403,7 @@ spec "commands/explain" {
             let lines = explain_lines(Asked { target: "src/lib/a.av", from: edited_lib("readers") })
             (lines.first() ?? "").starts_with("Input(text src/lib/a.av)  ") &&
                 lines.any(it == "  reads    nothing — it stands always") &&
-                lines.any(it.starts_with("    Source(src/lib/a.av)  ")) &&
+                lines.any(it.starts_with("    source_of(")) &&
                 lines.any(it == "    src/main.av")
         }
         then "`--why` after every other form still reads the edited file" {

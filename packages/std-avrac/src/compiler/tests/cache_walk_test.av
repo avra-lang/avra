@@ -4,7 +4,7 @@
 // `a_process_over`, `checked`, `package_files` and the ordinals are
 // workspace_fixtures.av's own.
 use @std.avrac.testing.{test_workspace}
-use compiler.{Workspace, Subject, family_word}
+use compiler.{Workspace, Subject}
 use compiler.host.{memory_host}
 use compiler.families.{Family}
 use core.{sorted_texts, digest_of}
@@ -79,10 +79,12 @@ spec "compiler/cache_walk — a query's label" {
             label_at(ws, sig_ordinal(), f) == "Sig(f · src/a.av)" &&
             label_at(ws, methods_ordinal(), f) == "Methods(f · src/a.av)"
     }
-    then "a family past the declared ones is a relation, named by its place" {
-        family_word(4096) == "Relation 4096" &&
-            family_word(-1) == "Relation -1" &&
-            family_word(family_ordinal("Raised")) == "Raised"
+    then "a family past the declared ones is named by the kernel, else by its place" {
+        let ws = walked()
+        ws.family_word(4096) == "Relation 4096" &&
+            ws.family_word(-1) == "Relation -1" &&
+            ws.family_word(family_ordinal("Raised")) == "Raised" &&
+            ws.family_word(ws.db.kernel.named_family("source_of") ?? -1) == "source_of"
     }
     then "a label typed whole names exactly that query" {
         named_by(walked(), "Sig(f · src/a.av)").length == 1

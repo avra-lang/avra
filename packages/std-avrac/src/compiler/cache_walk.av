@@ -79,10 +79,10 @@ enum KeyedBy { File, Module, Decl, Package, Program, Unit, Name, Input, Row }
 /// What each family keys by.
 fn keyed_by(f: Family) -> KeyedBy {
     match f {
-        .Parsed or .Items or .Admitted or .FileRefs or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .MethodDiags -> KeyedBy.File,
+        .Parsed or .Items or .Admitted or .FileRefs or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain -> KeyedBy.File,
         .Namespace -> KeyedBy.Module,
         .Sig or .Methods or .Typed or .ConstTyped or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .Writes or .CancelBits -> KeyedBy.Decl,
-        .References or .Failures or .ReadReach -> KeyedBy.Program,
+        .References or .Failures -> KeyedBy.Program,
         .Lowered or .LiftLowered or .Lifted or .Settled -> KeyedBy.Unit,
         .Named -> KeyedBy.Name,
         .Input -> KeyedBy.Input,
@@ -97,7 +97,6 @@ fn keyed(family: int) -> KeyedBy {
 }
 
 /// A family by its word — a relation's minted family by its place.
-export fn family_word(family: int) -> string { Family.all().get(family)?.name ?? "${RELATION}${family}" }
 
 /// Whether a family keys by a declaration.
 fn keyed_by_decl(f: Family) -> bool {
@@ -226,7 +225,7 @@ impl Workspace {
     /// The family a word names: a declared one by its name, a relation's
     /// minted one by its place among the families holding an answer.
     fn family_worded(word: string) -> int? {
-        let declared? = Family.all().find(it.name == word) else { return self.relation_worded(word) }
+        let declared? = Family.all().find(it.name == word) else { return self.db.kernel.named_family(word) ?? self.relation_worded(word) }
         declared.ordinal
     }
 
@@ -310,7 +309,7 @@ impl Workspace {
     fn family_count(family: int, reads: List<int>) -> FamilyCount {
         let ranked = sorted_by(reads, (a: int, b: int) -> a < b)
         FamilyCount {
-            family: family_word(family),
+            family: self.family_word(family),
             cells: ranked.length,
             edges: total(ranked),
             served: self.db.kernel.served_computed(family)[0],
@@ -361,7 +360,14 @@ impl Workspace {
     }
 
     /// A query as a person reads it: its family's word and what it keys by.
-    fn key_label(k: Key) -> string { "${family_word(k.family)}(${self.key_subject(k)})" }
+    fn key_label(k: Key) -> string { "${self.family_word(k.family)}(${self.key_subject(k)})" }
+
+    /// A family by its word: a declared one by its name, a query or a relation by the name the
+    /// kernel holds for it, an unnamed one by its place.
+    fn family_word(family: int) -> string {
+        let declared? = Family.all().get(family) else { return self.db.kernel.named_word(family) ?? "${RELATION}${family}" }
+        declared.name
+    }
 
     /// The file a query analyses, for a file's analysis alone.
     fn analysed_path(k: Key) -> string? {
