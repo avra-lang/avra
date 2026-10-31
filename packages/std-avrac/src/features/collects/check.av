@@ -36,13 +36,13 @@ export fn check_collect(mut cx: TypeCx, s: StmtId) {
     let declared: TypeId = cx.annotated(s, p.ty)
     cx.view.decls.record_const_type(cx.view.file, s, declared)
     if cx.view.types.shape_of(declared) is .Error { return }
-    checked_kind(cx, s, p.kind)
+    let kind = checked_kind(cx, s, p.kind)
     checked_scope(cx, s, p.scope)
     if p.order.is_empty() { cx.emit(order_required(cx.stmt_loc(s), p.name)) }
     let entry_ty: TypeId? = cx.view.types.element(declared)
     if entry_ty == null { return cx.emit(not_a_list(cx.stmt_loc(s), p.name)) }
-    checked_projection(cx, s, p.proj, p.kind, entry_ty!)
-    checked_order(cx, s, p.kind, p.scope, p.order, p.dense)
+    checked_projection(cx, s, p.proj, kind, entry_ty!)
+    checked_order(cx, s, kind, p.scope, p.order, p.dense)
 }
 
 /// `check_collect`'s twin over `collect enum` — no declared type, no
@@ -51,10 +51,10 @@ export fn check_collect(mut cx: TypeCx, s: StmtId) {
 /// record cannot be a payload.
 export fn check_collect_enum(mut cx: TypeCx, s: StmtId) {
     let p? = cx.view.store.collect_enum_parts(s) else { return }
-    checked_kind(cx, s, p.kind)
+    let kind = checked_kind(cx, s, p.kind)
     checked_scope(cx, s, p.scope)
     if p.order.is_empty() { cx.emit(order_required(cx.stmt_loc(s), p.name)) }
-    checked_order(cx, s, p.kind, p.scope, p.order, p.dense)
+    checked_order(cx, s, kind, p.scope, p.order, p.dense)
     let members = cx.view.decls.gathered_into(p.kind, p.scope, cx.view.file)
     let twice = duplicate_names(
         "collect_enum.variant",
@@ -62,7 +62,7 @@ export fn check_collect_enum(mut cx: TypeCx, s: StmtId) {
         [m.name for m in members],
         cx.stmt_loc(s),
     )
-    if members.is_empty() && lawful_header(p) && cx.elsewhere.unread_root() == null {
+    if members.is_empty() && kind != null && lawful_header(p) && cx.elsewhere.unread_root() == null {
         cx.emit(gathers_nothing(cx.stmt_loc(s), p.name))
     }
     for d in twice { cx.emit(d) }
@@ -70,7 +70,7 @@ export fn check_collect_enum(mut cx: TypeCx, s: StmtId) {
     for t in p.traits { checked_trait(cx, s, p.name, t, members) }
     checked_enum_scope(cx, s, p.name, p.scope)
     // two members of one name are refused as that; their shared key is the same mistake
-    if !p.dense && twice.is_empty() { checked_ties(cx, s, p.kind, p.order, members) }
+    if !p.dense && twice.is_empty() { checked_ties(cx, s, kind, p.order, members) }
 }
 
 /// Every member implements each trait the enum is written over; one
@@ -130,11 +130,12 @@ fn checked_enum_scope(mut cx: TypeCx, s: StmtId, owner: string, scope: CollectSc
 fn checked_ties(
     mut cx: TypeCx,
     s: StmtId,
-    kind: CollectKind,
+    kind: CollectKind?,
     order: List<Plain>,
     members: List<Decl>,
 ) {
-    let keys = [[sort_value(cx.view.decls, kind, k, m) for k in order] for m in members]
+    let k? = kind else { return }
+    let keys = [[sort_value(cx.view.decls, k, key, m) for key in order] for m in members]
     // no order, or a key nothing can compare, is refused as that already
     if order.is_empty() || keys.any((key) -> key.any(it is .Other)) { return }
     let ordered = sorted_by(keys, sort_key_before)
@@ -151,13 +152,24 @@ fn checked_member(mut cx: TypeCx, s: StmtId, owner: string, m: Decl) {
     if !record.spreads.is_empty() { cx.emit(spread_member(cx.stmt_loc(s), owner, m.name)) }
 }
 
-/// A REGISTRY match over `CollectKind` — the next kind (fn, case)
-/// answers here, never a string compare.
-fn checked_kind(mut cx: TypeCx, s: StmtId, kind: CollectKind) {
+/// The kind as the file can gather it: an annotation always, a word
+/// only when the file names a component by it — absent, and refused,
+/// otherwise. A REGISTRY match over `CollectKind`.
+fn checked_kind(mut cx: TypeCx, s: StmtId, kind: CollectKind) -> CollectKind? {
     match kind {
-        .Component(_) or .Annotated(_) -> nothing(),
-        .UnknownKind(w) -> cx.emit(unknown_kind(cx.stmt_loc(s), w)),
+        .Annotated(_) -> kind,
+        .Component(w) -> {
+            if names_component(cx, w) { return kind }
+            cx.emit(unknown_kind(cx.stmt_loc(s), w))
+            null
+        },
     }
+}
+
+/// Whether `word` names, in this file, a record a block instantiates.
+fn names_component(cx: TypeCx, word: string) -> bool {
+    let d? = cx.names.names.type_decl(word) else { return false }
+    cx.view.decls.facts_of(d)?.is_component ?? false
 }
 
 /// Whether the declaration's own words are lawful — a kind and a scope
@@ -165,11 +177,7 @@ fn checked_kind(mut cx: TypeCx, s: StmtId, kind: CollectKind) {
 /// is empty because of that refusal, so it speaks only once — and a
 /// module with an unread file may have lost the member there.
 fn lawful_header(p: CollectEnumParts) -> bool {
-    !p.order.is_empty() && known_kind(p.kind) && known_scope(p.scope)
-}
-
-fn known_kind(kind: CollectKind) -> bool {
-    match kind { .Component(_) or .Annotated(_) -> true, .UnknownKind(_) -> false }
+    !p.order.is_empty() && known_scope(p.scope)
 }
 
 fn known_scope(scope: CollectScope) -> bool {
@@ -187,7 +195,7 @@ fn checked_projection(
     mut cx: TypeCx,
     s: StmtId,
     proj: Projection,
-    kind: CollectKind,
+    kind: CollectKind?,
     entry_ty: TypeId,
 ) {
     let elem_name = cx.view.types.name_of(entry_ty)
@@ -204,7 +212,7 @@ fn checked_projection(
 /// declaration) always is; one generic word always is; a kind's own
 /// word is this REGISTRY's, spelled per kind, never a string list
 /// grown ad hoc.
-fn known_path(kind: CollectKind, path: List<Plain>) -> bool {
+fn known_path(kind: CollectKind?, path: List<Plain>) -> bool {
     if path.is_empty() { return true }
     if path.length > 1 { return false }
     generic_words.contains(path[0].of) || kind_word(kind, path[0].of)
@@ -222,10 +230,11 @@ fn known_path(kind: CollectKind, path: List<Plain>) -> bool {
 /// alone — the matched annotation's own name and literal args
 /// (`collect_field_reg`, compiler/lower/lower.av); an annotated
 /// declaration has no instance value to read an arbitrary field
-/// off, so nothing past `mark` is honest to accept. `UnknownKind`
+/// off, so nothing past `mark` is honest to accept. An unknown kind
 /// names no declarations at all, so it answers no word.
-fn kind_word(kind: CollectKind, word: string) -> bool {
-    match kind { .Component(_) -> true, .UnknownKind(_) -> false, .Annotated(_) -> word == "mark" }
+fn kind_word(kind: CollectKind?, word: string) -> bool {
+    let k? = kind else { return false }
+    match k { .Component(_) -> true, .Annotated(_) -> word == "mark" }
 }
 
 fn path_word(path: List<Plain>) -> string {
@@ -242,7 +251,7 @@ fn path_word(path: List<Plain>) -> string {
 fn checked_order(
     mut cx: TypeCx,
     s: StmtId,
-    kind: CollectKind,
+    kind: CollectKind?,
     scope: CollectScope,
     order: List<Plain>,
     dense: bool,
@@ -250,26 +259,24 @@ fn checked_order(
     for k in order {
         if !order_known(kind, k) { cx.emit(unknown_order(cx.stmt_loc(s), k)) }
     }
-    for k in order { if order_known(kind, k) { checked_column(cx, s, kind, scope, k) } }
-    if dense && !order.is_empty() { checked_dense(cx, s, kind, scope, order) }
+    let known? = kind else { return }
+    for k in order { if order_known(known, k) { checked_column(cx, s, known, scope, k) } }
+    if dense && !order.is_empty() { checked_dense(cx, s, known, scope, order) }
 }
 
 /// Whether `text` names a path the kind answers at all — the
 /// vocabulary law, beside the comparability one.
-fn order_known(kind: CollectKind, text: Plain) -> bool {
+fn order_known(kind: CollectKind?, text: Plain) -> bool {
     let path = order_path(text)
-    if path.index != null { return mark_args_path(kind, path) }
+    if path.index == null && path.segs.length == 1 && generic_words.contains(path.segs[0]) { return true }
+    let k? = kind else { return false }
+    if path.index != null { return mark_args_path(k, path) }
     if path.segs.length == 1 {
-        if generic_words.contains(path.segs[0]) { return true }
-        match kind {
-            .Component(_) -> true,
-            .Annotated(_) -> path.segs[0] == "mark",
-            .UnknownKind(_) -> false,
-        }
+        match k { .Component(_) -> true, .Annotated(_) -> path.segs[0] == "mark" }
     } else if path.segs.length == 2 {
-        match kind {
+        match k {
             .Annotated(_) -> path.segs[0] == "mark" && (path.segs[1] == "name" || path.segs[1] == "args"),
-            .Component(_) or .UnknownKind(_) -> false,
+            .Component(_) -> false,
         }
     } else {
         false
@@ -279,7 +286,7 @@ fn order_known(kind: CollectKind, text: Plain) -> bool {
 fn mark_args_path(kind: CollectKind, path: OrderPath) -> bool {
     match kind {
         .Annotated(_) -> path.segs.length == 2 && path.segs[0] == "mark" && path.segs[1] == "args",
-        .Component(_) or .UnknownKind(_) -> false,
+        .Component(_) -> false,
     }
 }
 
@@ -293,7 +300,7 @@ fn order_comparable(kind: CollectKind, text: Plain) -> bool {
     match kind {
         .Annotated(_) -> path.segs[0] == "mark" &&
             (path.segs[1] == "name" || path.segs[1] == "args" && path.index != null),
-        .Component(_) or .UnknownKind(_) -> false,
+        .Component(_) -> false,
     }
 }
 
