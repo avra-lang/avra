@@ -22,8 +22,6 @@ use core.{
     Type,
     TypeId,
     digest_of,
-    qtrace,
-    traced,
     FileId,
     DeclId,
     DeclKind,
@@ -51,14 +49,11 @@ use @std.relation.engine.{list_cell}
 const ASK_READS_READER: string = "kept-ask-reads"
 
 impl Workspace {
-    /// A read file's const, settled: its kept verdict when everything it is a
-    /// function of stands, else a settlement run, kept when it may be.
+    /// A read file's const, settled by a run — its saved row did not stand — and its verdict
+    /// kept when it may be.
     fn const_settlement(ask: SettleAsk, s: StmtId) -> Result<Settled, Unsettled> {
         let id = "${self.settle_id(ask.file, SettleRoot.Const(s), ask.seats)}"
         let at? = self.kept_at(ask, s) else { return self.settle_run(ask, s, id, self.hold.body_asks.get().length, null) }
-        let kept = self.kept_verdict(ask.file, at.key, at.layout, id)
-        if traced() { qtrace("Q\tconst_verdict\t${ask.name}\t${if kept != null { "stood" } else { "ran" }}\n") }
-        if kept != null { return kept! }
         let asked = self.hold.body_asks.get().length
         self.ask_kept_reads(id, at.key)
         self.settle_run(ask, s, id, asked, at)
@@ -132,7 +127,7 @@ impl Workspace {
     /// the attempt turns once, never once per level the run would reach.
     /// A read MANY CONSTS REACH is expanded once, under the open ask generation,
     /// so the whole file's consts ask one read, never one read per const. The
-    /// reads already decoded by `kept_verdict` are read back, not decoded twice.
+    /// reads its run recorded are read back, not decoded twice.
     fn ask_kept_reads(id: string, key: string) {
         let store? = self.store.get() else { return }
         let read = self.hold.settle_reads.get().get(id) ?? kept_reads(store, key) ?? []
@@ -262,34 +257,6 @@ impl Workspace {
         self.view_kept(store, view)
         if !store.keep_reading(Stored.Unit, key, value!, frame_reads(frame)) { return }
         let _ = store.keep(Stored.Unit, "${key}#lines", joined(lines, "\n"), [])
-    }
-
-    /// The kept verdict for `key`, when it was kept under this `layout` and
-    /// every line it was kept with stands. A VERDICT CARRIES THE READS OF THE RUN
-    /// THAT MADE IT — its `r` line, there even when the run read nothing — and
-    /// standing on it records them for its file and for whoever reads the const.
-    fn kept_verdict(f: FileId, key: string, layout: string, id: string) -> Result<
-        Settled,
-        Unsettled,
-    >? {
-        let store? = self.store.get() else { return null }
-        let value? = store.get_valid(Stored.Unit, key, (name) -> self.collect_read_now(name)) else { return null }
-        let lines? = store.get(Stored.Unit, "${key}#lines") else { return null }
-        let said = lines.split("\n")
-        if !said.contains(layout) { return null }
-        let rows = [l.split("\t") for l in said if !l.is_empty() && l != layout]
-        if !rows.all((r: List<string>) -> r[0] != "v" || self.view_stands(store, r)) { return null }
-        if !self.rows_stand([r for r in rows if r[0] != "v"]) { return null }
-        let reads? = rows.find(it[0] == "r") else { return null }
-        let decoded = [read_of_wire(w) for w in reads.slice(1, reads.length)]
-        if decoded.any(it == null) { return null }
-        let read = [r! for r in decoded]
-        self.read_by(self.decls.file(f).path, read)
-        self.hold.settle_reads.put(id, read)
-        let v = settled_from_wire(value)
-        if v != null { return .Ok(v!) }
-        let words? = reach_from_wire(value) else { return null }
-        .Err(Unsettled.Reach(words))
     }
 
     /// The named types a const's own expressions carry: the typer resolved them when the file
