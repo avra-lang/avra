@@ -37,6 +37,7 @@ use core.{
     faceted,
 }
 use features.{
+    AnnotationFact,
     Unsettled,
     unsettled_label,
     MetaVal,
@@ -631,6 +632,7 @@ impl Workspace {
     }
 
     fn hold_the_marks_of(f: FileId, s: StmtId, p: Parsed, vis: Namespace) {
+        self.hold_own_marks(f, s, p, vis)
         let worn = self.worn_marks(f, s, p)
         if worn.is_empty() { return }
         let owner? = self
@@ -647,6 +649,41 @@ impl Workspace {
         self
             .decls
             .speak_expansion(f, [self.unclaimed(w, claimed) for w in worn if !claimed.contains(w.mark.name)])
+    }
+
+    /// A declaration's OWN marks are data for the collect that gathers it, and one the
+    /// program does not export is gathered only from inside the build — so a mark on such a
+    /// declaration no collect of the build gathers, and its own derives do not claim, is
+    /// read by nothing — a gathered one's marks are its collect's to hold. An exported
+    /// one may be gathered by a package outside the build, and is not judged here. A
+    /// collect is found by its spelling, `@word in`, in any file of the build's packages:
+    /// expansion reads text and admits no declaration.
+    fn hold_own_marks(f: FileId, s: StmtId, p: Parsed, vis: Namespace) {
+        let d? = self
+            .decls
+            .decls_of_file(f)
+            .find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s)) else {
+            return
+        }
+        if self.decls.decl(d).exported { return }
+        let marks = self.decls.member_marks(d, null)
+        if marks.is_empty() { return }
+        let worn = self.decls.annotations_of(d)
+        if worn.any((a: AnnotationFact) -> self.gathers_by_mark(f, a.name)) { return }
+        let claimed? = self.claimed_marks(f, d, p, vis) ?? marks_alone(marks, worn) else { return }
+        let unread = [m for m in marks if !claimed.contains(m.name)]
+        self
+            .decls
+            .speak_expansion(f, [self.unclaimed(WornMark { mark: m, file: f }, claimed) for m in unread])
+    }
+
+    /// Whether the declaration's own file, or any source file of the build's packages, spells
+    /// a collect that gathers by `@word`.
+    fn gathers_by_mark(f: FileId, word: string) -> bool {
+        let spelled = "@${word} in"
+        let files = [self.decls.file(f).path]
+            .concat(flatten([self.all_files_no_tests(pkg.src) for pkg in self.packages()]))
+        files.any((path: string) -> self.listed_text(path).contains(spelled))
     }
 
     /// The marks a declaring statement wears, each with the file that
@@ -1547,4 +1584,10 @@ fn written(p: Parsed, e: ExprId) -> string {
     let here: Span? = if p.store.spanned_elsewhere(e) { null } else { p.store.expr_span(e) }
     let at? = here else { return arg_text(p.store, e) }
     p.source.text.substring(at.lo, at.hi)
+}
+
+/// What a declaration wearing nothing but marks claims: the compiler's own words alone —
+/// no derive stands on it to read the rest. Unknowable when it wears anything else.
+fn marks_alone(marks: List<Mark>, worn: List<AnnotationFact>) -> List<string>? {
+    if marks.length == worn.length { own_marks() } else { null }
 }
