@@ -1155,6 +1155,7 @@ layout-oracle:
 # A fingerprint tag NAMES a node kind: inside one fold space no two
 # kinds may wear one number, or they fingerprint alike by construction.
 fingerprints:
+	@python3 tools/avsrc.py >/dev/null
 	@python3 tools/fingerprints.py
 
 # THE FOOTPRINT: a program that spawns nothing links no scheduler, and the
